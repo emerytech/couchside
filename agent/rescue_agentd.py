@@ -7,13 +7,16 @@ in --mock mode for phone-app development.
 """
 
 import argparse
+import base64
 import glob
+import hashlib
 import hmac
 import json
 import os
 import random
 import shutil
 import socket
+import struct
 import subprocess
 import sys
 import threading
@@ -21,8 +24,13 @@ import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import urlparse, parse_qs
 
+try:
+    import fcntl  # POSIX only; uinput needs it (Linux), absent on Windows
+except ImportError:  # pragma: no cover
+    fcntl = None
+
 APP_NAME = "rescue-agent"
-VERSION = "1.0.0"
+VERSION = "1.1.0"
 UID = 1000
 XDG_RUNTIME_DIR = "/run/user/%d" % UID
 
@@ -393,7 +401,7 @@ MOCK_LOG_TEMPLATES = {
     ],
     "rescue-agent.service": [
         "Started Rescue Remote box agent.",
-        "rescue-agent 1.0.0 listening on 0.0.0.0:8787",
+        "rescue-agent 1.1.0 listening on 0.0.0.0:8787",
         "GET /api/ping 200 0ms",
         "GET /api/status 200 4ms",
         "GET /api/units 200 61ms",
@@ -441,6 +449,345 @@ def mock_action(action_id):
 
 
 # ---------------------------------------------------------------------------
+# Virtual gamepad — evdev/uinput constants and pure-stdlib uinput driver
+# ---------------------------------------------------------------------------
+
+EV_SYN = 0x00
+EV_KEY = 0x01
+EV_ABS = 0x03
+SYN_REPORT = 0
+
+ABS_X, ABS_Y, ABS_Z, ABS_RX, ABS_RY, ABS_RZ = 0, 1, 2, 3, 4, 5
+ABS_HAT0X, ABS_HAT0Y = 16, 17
+
+# protocol button key -> evdev key code
+BTN_CODES = {
+    "a": 304,       # BTN_SOUTH
+    "b": 305,       # BTN_EAST
+    "x": 308,       # BTN_WEST
+    "y": 307,       # BTN_NORTH
+    "lb": 310,      # BTN_TL
+    "rb": 311,      # BTN_TR
+    "select": 314,  # BTN_SELECT
+    "start": 315,   # BTN_START
+    "guide": 316,   # BTN_MODE
+    "l3": 317,      # BTN_THUMBL
+    "r3": 318,      # BTN_THUMBR
+}
+
+# dpad "buttons" -> (hat axis, pressed value); released -> 0
+DPAD_MAP = {
+    "dl": (ABS_HAT0X, -1),
+    "dr": (ABS_HAT0X, 1),
+    "du": (ABS_HAT0Y, -1),
+    "dd": (ABS_HAT0Y, 1),
+}
+
+# (axis code, absmin, absmax) — all axes the virtual pad declares
+GAMEPAD_AXES = [
+    (ABS_X, -32768, 32767),
+    (ABS_Y, -32768, 32767),
+    (ABS_Z, 0, 255),
+    (ABS_RX, -32768, 32767),
+    (ABS_RY, -32768, 32767),
+    (ABS_RZ, 0, 255),
+    (ABS_HAT0X, -1, 1),
+    (ABS_HAT0Y, -1, 1),
+]
+
+KEY_NAMES = {
+    304: "BTN_SOUTH", 305: "BTN_EAST", 307: "BTN_NORTH", 308: "BTN_WEST",
+    310: "BTN_TL", 311: "BTN_TR", 314: "BTN_SELECT", 315: "BTN_START",
+    316: "BTN_MODE", 317: "BTN_THUMBL", 318: "BTN_THUMBR",
+}
+ABS_NAMES = {
+    0: "ABS_X", 1: "ABS_Y", 2: "ABS_Z", 3: "ABS_RX", 4: "ABS_RY",
+    5: "ABS_RZ", 16: "ABS_HAT0X", 17: "ABS_HAT0Y",
+}
+
+
+def _event_name(etype, code):
+    if etype == EV_KEY:
+        return KEY_NAMES.get(code, "KEY_%d" % code)
+    if etype == EV_ABS:
+        return ABS_NAMES.get(code, "ABS_%d" % code)
+    if etype == EV_SYN:
+        return "SYN_REPORT"
+    return "code_%d" % code
+
+
+# Linux ioctl request encoding: dir<<30 | size<<16 | type<<8 | nr
+_IOC_NONE, _IOC_WRITE = 0, 1
+
+
+def _ioc(direction, typ, nr, size):
+    return (direction << 30) | (size << 16) | (ord(typ) << 8) | nr
+
+
+def _IO(typ, nr):
+    return _ioc(_IOC_NONE, typ, nr, 0)
+
+
+def _IOW(typ, nr, size):
+    return _ioc(_IOC_WRITE, typ, nr, size)
+
+
+UI_SET_EVBIT = _IOW("U", 100, 4)   # int
+UI_SET_KEYBIT = _IOW("U", 101, 4)  # int
+UI_SET_ABSBIT = _IOW("U", 103, 4)  # int
+UI_DEV_CREATE = _IO("U", 1)
+UI_DEV_DESTROY = _IO("U", 2)
+
+# struct input_event on 64-bit Linux: struct timeval (2x long) + u16 + u16 + s32
+_INPUT_EVENT = "=qqHHi"
+# struct uinput_user_dev: name[80], input_id{4x u16}, ff_effects_max u32,
+# absmax[64], absmin[64], absfuzz[64], absflat[64] (s32 arrays) = 1116 bytes
+_UINPUT_USER_DEV = "=80sHHHHI64i64i64i64i"
+
+GAMEPAD_DEV_NAME = "Microsoft X-Box 360 pad"
+GAMEPAD_BUSTYPE = 0x03
+GAMEPAD_VENDOR = 0x045E
+GAMEPAD_PRODUCT = 0x028E
+GAMEPAD_VERSION = 0x110
+
+
+class UInputGamepad:
+    """Virtual Xbox 360 pad via /dev/uinput (legacy uinput_user_dev API)."""
+
+    name = GAMEPAD_DEV_NAME
+
+    def __init__(self):
+        if fcntl is None:
+            raise RuntimeError("fcntl module unavailable on this platform")
+        if struct.calcsize(_UINPUT_USER_DEV) != 1116:  # survives python3 -O
+            raise RuntimeError("uinput_user_dev struct packs to %d bytes, expected 1116"
+                               % struct.calcsize(_UINPUT_USER_DEV))
+        self.fd = None
+        fd = os.open("/dev/uinput", os.O_WRONLY | os.O_NONBLOCK)
+        try:
+            fcntl.ioctl(fd, UI_SET_EVBIT, EV_KEY)
+            fcntl.ioctl(fd, UI_SET_EVBIT, EV_ABS)
+            for code in BTN_CODES.values():
+                fcntl.ioctl(fd, UI_SET_KEYBIT, code)
+            for code, _lo, _hi in GAMEPAD_AXES:
+                fcntl.ioctl(fd, UI_SET_ABSBIT, code)
+            absmin = [0] * 64
+            absmax = [0] * 64
+            for code, lo, hi in GAMEPAD_AXES:
+                absmin[code] = lo
+                absmax[code] = hi
+            setup = struct.pack(
+                _UINPUT_USER_DEV,
+                self.name.encode("utf-8"),
+                GAMEPAD_BUSTYPE, GAMEPAD_VENDOR, GAMEPAD_PRODUCT,
+                GAMEPAD_VERSION,
+                0,  # ff_effects_max
+                *(absmax + absmin + [0] * 64 + [0] * 64),
+            )
+            os.write(fd, setup)
+            fcntl.ioctl(fd, UI_DEV_CREATE)
+        except Exception:
+            os.close(fd)
+            raise
+        self.fd = fd
+
+    def emit(self, events):
+        """Write (type, code, value) events followed by EV_SYN/SYN_REPORT."""
+        if self.fd is None:
+            return
+        data = b"".join(
+            struct.pack(_INPUT_EVENT, 0, 0, etype, code, value)
+            for etype, code, value in events
+        )
+        data += struct.pack(_INPUT_EVENT, 0, 0, EV_SYN, SYN_REPORT, 0)
+        os.write(self.fd, data)
+
+    def destroy(self):
+        fd, self.fd = self.fd, None
+        if fd is None:
+            return
+        try:
+            fcntl.ioctl(fd, UI_DEV_DESTROY)
+        except OSError:
+            pass
+        try:
+            os.close(fd)
+        except OSError:
+            pass
+
+
+class MockGamepad:
+    """--mock stand-in: logs decoded events instead of touching uinput."""
+
+    name = "mock"
+
+    def emit(self, events):
+        for etype, code, value in events:
+            print("[gamepad] %s %s(%d) = %d" % (
+                "EV_KEY" if etype == EV_KEY else "EV_ABS",
+                _event_name(etype, code), code, value), flush=True)
+        print("[gamepad] EV_SYN SYN_REPORT", flush=True)
+
+    def destroy(self):
+        print("[gamepad] mock device destroyed", flush=True)
+
+
+def _scale_stick(f):
+    return max(-32768, min(32767, int(round(f * 32767))))
+
+
+def gamepad_events(msg):
+    """Decode one client JSON message into a list of (type, code, value).
+
+    Raises ValueError for malformed/unknown messages ("ping" is handled by
+    the caller, not here).
+    """
+    t = msg.get("t")
+    if t == "b":
+        k = msg.get("k")
+        v = msg.get("v")
+        if v not in (0, 1):
+            raise ValueError("button v must be 0 or 1")
+        if k in BTN_CODES:
+            return [(EV_KEY, BTN_CODES[k], v)]
+        if k in DPAD_MAP:
+            code, pressed = DPAD_MAP[k]
+            return [(EV_ABS, code, pressed if v else 0)]
+        raise ValueError("unknown button %r" % (k,))
+    if t == "t":
+        k = msg.get("k")
+        v = msg.get("v")
+        if k not in ("lt", "rt"):
+            raise ValueError("unknown trigger %r" % (k,))
+        if not isinstance(v, (int, float)) or isinstance(v, bool):
+            raise ValueError("trigger v must be a number")
+        value = max(0, min(255, int(v)))
+        return [(EV_ABS, ABS_Z if k == "lt" else ABS_RZ, value)]
+    if t == "s":
+        k = msg.get("k")
+        x = msg.get("x")
+        y = msg.get("y")
+        if k not in ("l", "r"):
+            raise ValueError("unknown stick %r" % (k,))
+        if (not isinstance(x, (int, float)) or isinstance(x, bool) or
+                not isinstance(y, (int, float)) or isinstance(y, bool)):
+            raise ValueError("stick x/y must be numbers")
+        xcode, ycode = (ABS_X, ABS_Y) if k == "l" else (ABS_RX, ABS_RY)
+        return [(EV_ABS, xcode, _scale_stick(x)),
+                (EV_ABS, ycode, _scale_stick(y))]
+    raise ValueError("unknown message type %r" % (t,))
+
+
+# ---------------------------------------------------------------------------
+# Minimal RFC6455 WebSocket support (server side, no fragmentation)
+# ---------------------------------------------------------------------------
+
+WS_GUID = "258EAFA5-E914-47DA-95CA-C5AB0DC85B11"
+WS_OP_TEXT, WS_OP_CLOSE, WS_OP_PING, WS_OP_PONG = 0x1, 0x8, 0x9, 0xA
+WS_MAX_FRAME = 1 << 20
+
+
+def ws_try_parse(buf):
+    """Try to parse one complete frame from the front of buf (bytearray).
+
+    Returns (opcode, payload) and consumes the bytes, or None if more data
+    is needed. Raises ValueError on protocol violations (fragmentation,
+    unmasked client frame, oversized frame).
+    """
+    if len(buf) < 2:
+        return None
+    b0, b1 = buf[0], buf[1]
+    if not (b0 & 0x80) or (b0 & 0x0F) == 0:
+        raise ValueError("fragmented frames not supported")
+    if b0 & 0x70:
+        raise ValueError("RSV bits set")
+    if not (b1 & 0x80):
+        raise ValueError("client frames must be masked")
+    length = b1 & 0x7F
+    idx = 2
+    if length == 126:
+        if len(buf) < 4:
+            return None
+        length = int.from_bytes(buf[2:4], "big")
+        idx = 4
+    elif length == 127:
+        if len(buf) < 10:
+            return None
+        length = int.from_bytes(buf[2:10], "big")
+        idx = 10
+    if length > WS_MAX_FRAME:
+        raise ValueError("frame too large")
+    end = idx + 4 + length
+    if len(buf) < end:
+        return None
+    mask = buf[idx:idx + 4]
+    payload = bytearray(buf[idx + 4:end])
+    for i in range(length):
+        payload[i] ^= mask[i & 3]
+    opcode = b0 & 0x0F
+    del buf[:end]
+    return opcode, bytes(payload)
+
+
+def ws_recv_frame(conn, buf):
+    """Return the next (opcode, payload) frame, buffering partial TCP reads.
+
+    Returns None if the socket is dead (EOF, timeout, error). Raises
+    ValueError on protocol violations.
+    """
+    while True:
+        frame = ws_try_parse(buf)
+        if frame is not None:
+            return frame
+        try:
+            chunk = conn.recv(4096)
+        except (TimeoutError, OSError):
+            return None
+        if not chunk:
+            return None
+        buf.extend(chunk)
+
+
+def ws_send(conn, opcode, payload=b""):
+    n = len(payload)
+    header = bytes([0x80 | opcode])
+    if n < 126:
+        header += bytes([n])
+    elif n < (1 << 16):
+        header += bytes([126]) + n.to_bytes(2, "big")
+    else:
+        header += bytes([127]) + n.to_bytes(8, "big")
+    conn.sendall(header + payload)
+
+
+def ws_send_json(conn, obj):
+    ws_send(conn, WS_OP_TEXT, json.dumps(obj).encode("utf-8"))
+
+
+# Single active gamepad connection: a new valid connection replaces the old
+# one (old uinput device destroyed first, then its socket closed).
+GAMEPAD_LOCK = threading.Lock()
+GAMEPAD_ACTIVE = None  # {"conn": socket, "device": gamepad-or-None}
+
+
+def _gamepad_teardown(entry):
+    device = entry.get("device")
+    if device is not None:
+        try:
+            device.destroy()
+        except Exception:
+            pass
+    try:
+        entry["conn"].shutdown(socket.SHUT_RDWR)
+    except OSError:
+        pass
+    try:
+        entry["conn"].close()
+    except OSError:
+        pass
+
+
+# ---------------------------------------------------------------------------
 # HTTP server
 # ---------------------------------------------------------------------------
 
@@ -458,8 +805,13 @@ class Handler(BaseHTTPRequestHandler):
 
     def _log(self, code, started):
         dur_ms = int((time.monotonic() - started) * 1000)
+        # Never log query strings: /ws/gamepad carries ?token=<secret>, and
+        # this stdout lands in journald (which /api/journal serves back out).
+        path = self.path.split("?", 1)[0]
+        if "?" in self.path:
+            path += "?<redacted>"
         print("%s %s %s %d %dms" % (
-            self.client_address[0], self.command, self.path, code, dur_ms),
+            self.client_address[0], self.command, path, code, dur_ms),
             flush=True)
 
     def _send(self, code, payload, started, extra_headers=None):
@@ -498,6 +850,10 @@ class Handler(BaseHTTPRequestHandler):
         try:
             parsed = urlparse(self.path)
             path = parsed.path.rstrip("/") or "/"
+
+            if path == "/ws/gamepad":
+                self._handle_gamepad_ws(parsed, started)
+                return
 
             if path == "/api/ping":
                 self._send(200, {"ok": True, "app": APP_NAME,
@@ -608,6 +964,152 @@ class Handler(BaseHTTPRequestHandler):
             log_lines = real_journal(unit, scope, lines)
         self._send(200, {"unit": unit, "scope": scope,
                          "lines": log_lines}, started)
+
+    # -- gamepad websocket -----------------------------------------------------
+
+    def _handle_gamepad_ws(self, parsed, started):
+        # This socket never returns to HTTP keep-alive.
+        self.close_connection = True
+
+        # Auth BEFORE any handshake response: token query param.
+        qs = parse_qs(parsed.query)
+        supplied = qs.get("token", [""])[0]
+        if not supplied or not hmac.compare_digest(supplied, self.token):
+            self._send(401, {"error": "unauthorized"}, started,
+                       extra_headers={"Connection": "close"})
+            return
+
+        key = self.headers.get("Sec-WebSocket-Key", "")
+        upgrade = (self.headers.get("Upgrade") or "").lower()
+        if upgrade != "websocket" or not key:
+            self._send(400, {"error": "websocket upgrade required"}, started,
+                       extra_headers={"Connection": "close"})
+            return
+
+        accept = base64.b64encode(
+            hashlib.sha1((key + WS_GUID).encode("ascii")).digest()
+        ).decode("ascii")
+        try:
+            self.connection.sendall(
+                b"HTTP/1.1 101 Switching Protocols\r\n"
+                b"Upgrade: websocket\r\n"
+                b"Connection: Upgrade\r\n"
+                b"Sec-WebSocket-Accept: " + accept.encode("ascii") +
+                b"\r\n\r\n")
+        except OSError:
+            return
+        self._log(101, started)
+
+        try:
+            self._gamepad_session()
+        except Exception as e:  # never fall back to HTTP error responses
+            print("[gamepad] session error: %s: %s"
+                  % (e.__class__.__name__, e), flush=True)
+
+    def _gamepad_session(self):
+        global GAMEPAD_ACTIVE
+        conn = self.connection
+        entry = {"conn": conn, "device": None}
+
+        # One active gamepad connection: replace (and tear down) the old one.
+        with GAMEPAD_LOCK:
+            old, GAMEPAD_ACTIVE = GAMEPAD_ACTIVE, entry
+        if old is not None:
+            print("[gamepad] replacing previous connection", flush=True)
+            _gamepad_teardown(old)
+
+        mine = True
+        try:
+            try:
+                device = MockGamepad() if self.mock else UInputGamepad()
+            except Exception as e:
+                print("[gamepad] device create failed: %s" % e, flush=True)
+                try:
+                    ws_send_json(conn, {"t": "err",
+                                        "msg": "uinput unavailable: %s" % e})
+                    ws_send(conn, WS_OP_CLOSE)
+                except OSError:
+                    pass
+                return
+            entry["device"] = device
+            print("[gamepad] connected (%s)" % device.name, flush=True)
+            ws_send_json(conn, {"t": "hello", "dev": device.name})
+
+            conn.settimeout(60.0)
+            buf = bytearray()
+            while True:
+                try:
+                    frame = ws_recv_frame(conn, buf)
+                except ValueError as e:
+                    print("[gamepad] protocol violation: %s" % e, flush=True)
+                    try:
+                        ws_send(conn, WS_OP_CLOSE)
+                    except OSError:
+                        pass
+                    return
+                if frame is None:  # EOF / timeout / socket error -> dead
+                    return
+                opcode, payload = frame
+                try:
+                    if opcode == WS_OP_CLOSE:
+                        ws_send(conn, WS_OP_CLOSE, payload[:2])
+                        return
+                    if opcode == WS_OP_PING:
+                        ws_send(conn, WS_OP_PONG, payload)
+                        continue
+                    if opcode != WS_OP_TEXT:
+                        continue  # ignore binary / stray pong
+                    if not self._gamepad_message(conn, device, payload):
+                        return
+                except OSError:
+                    return
+        finally:
+            with GAMEPAD_LOCK:
+                mine = GAMEPAD_ACTIVE is entry
+                if mine:
+                    GAMEPAD_ACTIVE = None
+                # Always destroy OUR device (destroy() is idempotent): if a
+                # replacer tore us down while our device was still being
+                # created, it saw device=None and only closed the socket —
+                # without this, that freshly created uinput device (and fd)
+                # would leak as a phantom pad until service restart.
+                device = entry.get("device")
+            if device is not None:
+                try:
+                    device.destroy()
+                except Exception:
+                    pass
+            if mine:
+                print("[gamepad] disconnected", flush=True)
+            # socket itself is closed by the http.server machinery
+            # (close_connection is set), or already closed by a replacer.
+
+    def _gamepad_message(self, conn, device, payload):
+        """Handle one text frame. Returns False when the session must end."""
+        try:
+            msg = json.loads(payload.decode("utf-8"))
+            if not isinstance(msg, dict):
+                raise ValueError("message must be a JSON object")
+        except (ValueError, UnicodeDecodeError):
+            ws_send_json(conn, {"t": "err", "msg": "invalid JSON message"})
+            ws_send(conn, WS_OP_CLOSE)
+            return False
+        if msg.get("t") == "ping":
+            ws_send_json(conn, {"t": "pong"})
+            return True
+        try:
+            events = gamepad_events(msg)
+        except ValueError as e:
+            ws_send_json(conn, {"t": "err", "msg": str(e)})
+            ws_send(conn, WS_OP_CLOSE)
+            return False
+        try:
+            device.emit(events)
+        except OSError as e:
+            ws_send_json(conn, {"t": "err", "msg": "uinput write failed: %s" % e})
+            ws_send(conn, WS_OP_CLOSE)
+            return False
+        return True
 
 
 def load_token(args):

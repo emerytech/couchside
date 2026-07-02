@@ -94,3 +94,14 @@ echo
 echo " Paste this token into the Rescue Remote app settings"
 echo " (Authorization: Bearer <token>)."
 echo "============================================================"
+
+PAIR_URL="rescueremote://setup?host=${HOST}&port=8787&token=${TOKEN}"
+echo
+echo "Scan with iPhone camera to configure the app:"
+echo
+if command -v npx > /dev/null 2>&1; then
+    # no -t flag: the qrcode CLI's default renderer draws in the terminal
+    npx --yes qrcode "${PAIR_URL}" || echo "${PAIR_URL}"
+else
+    echo "${PAIR_URL}"
+fi

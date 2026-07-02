@@ -1,4 +1,5 @@
-import React, { useCallback, useState } from 'react';
+import { useLocalSearchParams } from 'expo-router';
+import React, { useCallback, useEffect, useRef, useState } from 'react';
 import {
   KeyboardAvoidingView,
   Platform,
@@ -112,6 +113,40 @@ export default function SetupScreen() {
     setTimeout(() => setSaved(false), 2000);
   }, [update, draftSettings]);
 
+  // QR / deep-link pairing: rescueremote://setup?host=..&port=..&token=..
+  // Prefills the draft fields (never auto-saves) and auto-runs the test once.
+  const params = useLocalSearchParams<{ host?: string; port?: string; token?: string }>();
+  const [fromQr, setFromQr] = useState(false);
+  // Guard: the same params must apply exactly once, not on every re-render.
+  const appliedQrRef = useRef<string | null>(null);
+  const pendingQrTestRef = useRef(false);
+
+  useEffect(() => {
+    const qHost = params.host;
+    const qToken = params.token;
+    if (!qHost || !qToken) return;
+    const key = `${qHost}|${params.port ?? '8787'}|${qToken}`;
+    if (appliedQrRef.current === key) return;
+    appliedQrRef.current = key;
+    setHost(qHost);
+    setPort(params.port ?? '8787');
+    setToken(qToken);
+    setFromQr(true);
+    pendingQrTestRef.current = true;
+  }, [params.host, params.port, params.token]);
+
+  // Run the connection test once after the QR drafts have been applied
+  // (test() is recreated with the new drafts, which re-fires this effect).
+  // Only consume the pending flag once the current drafts actually match the
+  // applied QR values — on a cold-start deep link both effects run in the same
+  // mount flush, where test() still closes over the pre-QR drafts.
+  useEffect(() => {
+    if (!pendingQrTestRef.current) return;
+    if (`${draftHost}|${draftPort}|${draftToken}` !== appliedQrRef.current) return;
+    pendingQrTestRef.current = false;
+    test();
+  }, [test, draftHost, draftPort, draftToken]);
+
   return (
     <KeyboardAvoidingView
       style={styles.screen}
@@ -124,6 +159,12 @@ export default function SetupScreen() {
         }}
         keyboardShouldPersistTaps="handled">
         <Text style={styles.title}>Setup</Text>
+
+        {fromQr && (
+          <View style={styles.qrBanner}>
+            <Text style={styles.qrBannerText}>Loaded from QR — test &amp; save</Text>
+          </View>
+        )}
 
         <View style={styles.card}>
           <Text style={styles.fieldLabel}>HOST</Text>
@@ -216,6 +257,16 @@ const styles = StyleSheet.create({
     padding: 14,
     marginBottom: 12,
   },
+  qrBanner: {
+    backgroundColor: theme.card,
+    borderColor: theme.blue,
+    borderWidth: 1,
+    borderRadius: 12,
+    paddingVertical: 10,
+    paddingHorizontal: 14,
+    marginBottom: 12,
+  },
+  qrBannerText: { color: theme.blue, fontSize: 13, fontFamily: mono, fontWeight: '700' },
   fieldLabel: {
     color: theme.textFaint,
     fontSize: 11,

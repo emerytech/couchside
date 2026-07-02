@@ -39,3 +39,8 @@ yarn-error.*
 # generated native folders
 /ios
 /android
+
+# signing secrets — never commit
+asc-key.p8
+credentials.json
+credentials/
