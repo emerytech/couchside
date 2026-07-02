@@ -1,0 +1,14 @@
+[Unit]
+Description=Rescue Remote box agent
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+User=bazzite
+Environment=XDG_RUNTIME_DIR=/run/user/1000
+ExecStart=/usr/bin/python3 /home/bazzite/.local/opt/rescue-agent/rescue_agentd.py
+Restart=always
+RestartSec=3
+
+[Install]
+WantedBy=multi-user.target

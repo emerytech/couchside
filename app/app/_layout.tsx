@@ -1,0 +1,37 @@
+import { DarkTheme, Stack, ThemeProvider } from 'expo-router';
+import { StatusBar } from 'expo-status-bar';
+import 'react-native-reanimated';
+
+import { SettingsProvider } from '@/lib/SettingsContext';
+import { theme } from '@/lib/theme';
+
+export { ErrorBoundary } from 'expo-router';
+
+export const unstable_settings = {
+  initialRouteName: '(tabs)',
+};
+
+const opsTheme = {
+  ...DarkTheme,
+  colors: {
+    ...DarkTheme.colors,
+    background: theme.bg,
+    card: theme.tabBar,
+    border: theme.tabBarBorder,
+    text: theme.text,
+    primary: theme.blue,
+  },
+};
+
+export default function RootLayout() {
+  return (
+    <SettingsProvider>
+      <ThemeProvider value={opsTheme}>
+        <StatusBar style="light" />
+        <Stack>
+          <Stack.Screen name="(tabs)" options={{ headerShown: false }} />
+        </Stack>
+      </ThemeProvider>
+    </SettingsProvider>
+  );
+}
