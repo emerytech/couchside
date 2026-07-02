@@ -169,6 +169,11 @@ def read_disks():
     for mount in ("/", "/var"):
         try:
             du = shutil.disk_usage(mount)
+            # Skip synthetic mounts with no real capacity (e.g. the composefs
+            # read-only / on Bazzite/Fedora Atomic reports a tiny total that is
+            # always "100% used" — meaningless and alarming on the dashboard).
+            if du.total < 1024 ** 3:
+                continue
             total_gb = du.total / (1024 ** 3)
             used_gb = du.used / (1024 ** 3)
             free_gb = du.free / (1024 ** 3)

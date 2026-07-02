@@ -1,16 +1,23 @@
 #!/usr/bin/env bash
 # deploy.sh — deploy the Rescue Remote box agent to the HTPC. Run FROM THE MAC.
-# Usage: ./deploy.sh [host]   (default: bazzite.local; fallback: 10.1.1.60)
+# Usage: ./deploy.sh [host|user@host]   (default: bazzite@bazzite.local; fallback IP: 10.1.1.60)
 set -euo pipefail
 
-HOST=${1:-bazzite.local}
+ARG=${1:-bazzite.local}
+if [[ "${ARG}" == *@* ]]; then
+    DEST="${ARG}"          # ssh/scp destination (user@host)
+    HOST="${ARG#*@}"       # bare host for URLs
+else
+    DEST="bazzite@${ARG}"
+    HOST="${ARG}"
+fi
 SRC_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REMOTE_APP_DIR='~/.local/opt/rescue-agent'
 
 echo "==> Deploying rescue-agent to ${HOST}"
 
 echo "==> Copying files to ${HOST}"
-scp "${SRC_DIR}/rescue_agentd.py" "${SRC_DIR}/rescue-agent.service" "${HOST}:/tmp/"
+scp "${SRC_DIR}/rescue_agentd.py" "${SRC_DIR}/rescue-agent.service" "${DEST}:/tmp/"
 
 echo "==> Installing agent, token, sudoers rule, systemd unit, and firewall rule on ${HOST}"
 echo "    (sudo on the box may prompt for the bazzite password)"
@@ -52,7 +59,9 @@ rm -f /tmp/rescue-agent-sudoers
 echo "  -> Installing systemd unit"
 sudo install -m 0644 /tmp/rescue-agent.service /etc/systemd/system/rescue-agent.service
 sudo systemctl daemon-reload
-sudo systemctl enable --now rescue-agent.service
+sudo systemctl enable rescue-agent.service
+# restart (not `enable --now`) so re-deploys replace the running process too
+sudo systemctl restart rescue-agent.service
 
 echo "  -> Opening 8787/tcp in firewalld"
 sudo firewall-cmd --add-port=8787/tcp --permanent
@@ -64,8 +73,8 @@ REMOTE
 # Run the install via a real TTY (ssh -t) so sudo can prompt for a password —
 # piping a heredoc into `ssh bash -s` gives sudo no terminal and the deploy
 # would abort at the first sudo on default (password-required) sudoers.
-scp "${INSTALL_SCRIPT}" "${HOST}:/tmp/rescue-agent-install.sh"
-ssh -t "${HOST}" 'bash /tmp/rescue-agent-install.sh'
+scp "${INSTALL_SCRIPT}" "${DEST}:/tmp/rescue-agent-install.sh"
+ssh -t "${DEST}" 'bash /tmp/rescue-agent-install.sh'
 
 echo "==> Waiting for agent to come up"
 sleep 2
@@ -75,7 +84,7 @@ curl -fsS "http://${HOST}:8787/api/ping"
 echo
 
 # Token file is owned by bazzite (chown'd above), so no sudo/TTY needed here.
-TOKEN=$(ssh "${HOST}" 'cat /etc/rescue-agent/token')
+TOKEN=$(ssh "${DEST}" 'cat /etc/rescue-agent/token')
 echo
 echo "============================================================"
 echo " Rescue agent deployed and running on ${HOST}:8787"
