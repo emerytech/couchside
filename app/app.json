@@ -2,6 +2,7 @@
   "expo": {
     "name": "Rescue Remote",
     "slug": "rescue-remote",
+    "owner": "ets3d-llc",
     "version": "1.0.0",
     "orientation": "portrait",
     "icon": "./assets/images/icon.png",
@@ -9,15 +10,21 @@
     "userInterfaceStyle": "dark",
     "ios": {
       "supportsTablet": true,
+      "bundleIdentifier": "com.ets3d.rescueremote",
+      "buildNumber": "2",
       "infoPlist": {
+        "ITSAppUsesNonExemptEncryption": false,
         "NSAppTransportSecurity": {
           "NSAllowsLocalNetworking": true
         },
         "NSLocalNetworkUsageDescription": "Rescue Remote connects to the rescue agent on your media center over your local network.",
-        "NSBonjourServices": ["_http._tcp"]
+        "NSBonjourServices": [
+          "_http._tcp"
+        ]
       }
     },
     "android": {
+      "package": "com.ets3d.rescueremote",
       "adaptiveIcon": {
         "backgroundColor": "#0b1220",
         "foregroundImage": "./assets/images/android-icon-foreground.png",
@@ -53,6 +60,12 @@
     ],
     "experiments": {
       "typedRoutes": true
+    },
+    "extra": {
+      "router": {},
+      "eas": {
+        "projectId": "6105d470-3027-4fd5-9535-64532334fe88"
+      }
     }
   }
 }
