@@ -5,7 +5,7 @@
 import { Settings } from './settings';
 
 /** The subset of Settings the API client actually needs. */
-export type ConnSettings = Pick<Settings, 'host' | 'port' | 'token'>;
+export type ConnSettings = Pick<Settings, 'host' | 'port' | 'token' | 'lastIp'>;
 
 // ---------- Contract types ----------
 
@@ -13,7 +13,32 @@ export type Ping = {
   ok: boolean;
   app: string;
   version: string;
+  /** The LAN IP the agent was reached on (agent >= 2.3); cached as Box.lastIp. */
+  ip?: string | null;
+  /** The agent's short hostname (agent >= 2.3); used to verify fallback identity. */
+  host?: string | null;
 };
+
+/** Agent families this app will talk to (current + prior product names). */
+const AGENT_APPS = /^(couchside|couchpilot|rescue)-agent$/;
+
+/**
+ * Does this ping body identify OUR box? Requires the agent family, and — when
+ * both sides know a hostname (box.host is an mDNS name and the agent reports
+ * host, >= 2.3) — a hostname match. Guards the cached-IP fallback: a DHCP
+ * lease that wandered to a different machine must never receive this box's
+ * bearer token or count as "reachable".
+ */
+export function pingMatchesBox(body: unknown, expectedHost: string): boolean {
+  if (!body || typeof body !== 'object') return false;
+  const p = body as Record<string, unknown>;
+  if (p.ok !== true || typeof p.app !== 'string' || !AGENT_APPS.test(p.app)) return false;
+  const expected = expectedHost.toLowerCase().replace(/\.local\.?$/, '');
+  if (expected !== expectedHost.toLowerCase() && typeof p.host === 'string' && p.host) {
+    return p.host.toLowerCase() === expected;
+  }
+  return true;
+}
 
 export type DiskInfo = {
   mount: string;
@@ -108,7 +133,9 @@ function baseUrl(settings: Pick<Settings, 'host' | 'port'>): string {
   return `http://${settings.host}:${settings.port}`;
 }
 
-async function request<T>(
+/** One fetch attempt against a specific host. Throws ApiError on transport failure. */
+async function attempt(
+  host: string,
   settings: ConnSettings,
   path: string,
   opts: {
@@ -116,18 +143,16 @@ async function request<T>(
     auth?: boolean;
     timeoutMs?: number;
     body?: unknown;
-  } = {},
-): Promise<T> {
+  },
+): Promise<Response> {
   const { method = 'GET', auth = true, timeoutMs = TIMEOUT_MS, body } = opts;
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), timeoutMs);
-
-  let res: Response;
   try {
     const headers: Record<string, string> = {};
     if (auth) headers.Authorization = `Bearer ${settings.token}`;
     if (body !== undefined) headers['Content-Type'] = 'application/json';
-    res = await fetch(`${baseUrl(settings)}${path}`, {
+    return await fetch(`${baseUrl({ host, port: settings.port })}${path}`, {
       method,
       headers,
       body: body !== undefined ? JSON.stringify(body) : undefined,
@@ -140,6 +165,73 @@ async function request<T>(
     throw new ApiError('unreachable', 'Box unreachable — network error');
   } finally {
     clearTimeout(timer);
+  }
+}
+
+const PROBE_TIMEOUT_MS = 2500;
+
+/**
+ * Unauthenticated identity probe: does `host` answer /api/ping AS this box
+ * (see pingMatchesBox)? Never sends the bearer token. False on any failure.
+ */
+async function probeTarget(host: string, settings: ConnSettings): Promise<boolean> {
+  try {
+    const res = await attempt(host, settings, '/api/ping', {
+      auth: false,
+      timeoutMs: PROBE_TIMEOUT_MS,
+    });
+    if (!res.ok) return false;
+    return pingMatchesBox(await res.json(), settings.host);
+  } catch {
+    return false;
+  }
+}
+
+async function request<T>(
+  settings: ConnSettings,
+  path: string,
+  opts: {
+    method?: 'GET' | 'POST' | 'DELETE';
+    auth?: boolean;
+    timeoutMs?: number;
+    body?: unknown;
+  } = {},
+): Promise<T> {
+  // Cached-IP fallback: keeps the app working when mDNS breaks (SteamOS Game
+  // Mode) but the box is still up. The fallback target must first prove via
+  // an unauthenticated ping that it IS this box (pingMatchesBox) — a DHCP
+  // lease that wandered to another machine gets neither the bearer token nor
+  // a misleading 401.
+  const method = opts.method ?? 'GET';
+  const fallback =
+    settings.lastIp && settings.lastIp !== settings.host ? settings.lastIp : undefined;
+
+  let res: Response;
+  if (method === 'GET' || !fallback) {
+    try {
+      res = await attempt(settings.host, settings, path, opts);
+    } catch (e: unknown) {
+      // Only idempotent GETs may re-send after a transport failure — React
+      // Native's fetch reports "connection lost after the request was
+      // delivered" identically to "never connected", so a re-sent POST could
+      // run an action (reboot!) twice.
+      const retriable =
+        e instanceof ApiError && (e.kind === 'unreachable' || e.kind === 'timeout');
+      if (retriable && fallback && method === 'GET' && (await probeTarget(fallback, settings))) {
+        res = await attempt(fallback, settings, path, opts);
+      } else {
+        throw e;
+      }
+    }
+  } else {
+    // Non-idempotent (POST/DELETE): pick the working target FIRST with cheap
+    // ping probes, then send the request EXACTLY ONCE — never retried.
+    let target = settings.host;
+    if (!(await probeTarget(settings.host, settings))) {
+      if (await probeTarget(fallback, settings)) target = fallback;
+      // else: send to the configured host anyway and surface its real error.
+    }
+    res = await attempt(target, settings, path, opts);
   }
 
   if (res.status === 401) {

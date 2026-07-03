@@ -93,7 +93,7 @@ const BACKOFF_MS = [1000, 2000, 4000];
 
 export type GamepadStatusListener = (status: GamepadStatus, dev: string | null) => void;
 
-type Conn = Pick<Settings, 'host' | 'port' | 'token'>;
+type Conn = Pick<Settings, 'host' | 'port' | 'token' | 'lastIp'>;
 
 function clamp(v: number, lo: number, hi: number): number {
   return v < lo ? lo : v > hi ? hi : v;
@@ -114,6 +114,13 @@ export class GamepadClient {
   private active = false;
   private conn: Conn | null = null;
   private attempt = 0;
+  /**
+   * When true, open() dials conn.lastIp instead of conn.host. Failed attempts
+   * alternate this so a box whose .local name has gone dark (SteamOS Game
+   * Mode mDNS) is reached via its cached IP on the next try. Sticky while the
+   * target stays the same, so a working fallback keeps being used.
+   */
+  private useFallback = false;
 
   private pingTimer: ReturnType<typeof setInterval> | null = null;
   private reconnectTimer: ReturnType<typeof setTimeout> | null = null;
@@ -156,6 +163,9 @@ export class GamepadClient {
       this.conn.host === conn.host &&
       this.conn.port === conn.port &&
       this.conn.token === conn.token;
+    // Always take the latest conn (a refreshed lastIp must be visible to
+    // future reconnects), but never tear down a healthy socket for it.
+    this.conn = conn;
     if (
       same &&
       this.active &&
@@ -163,7 +173,7 @@ export class GamepadClient {
     ) {
       return;
     }
-    this.conn = conn;
+    if (!same) this.useFallback = false;
     this.active = true;
     this.attempt = 0;
     this.clearReconnect();
@@ -309,8 +319,9 @@ export class GamepadClient {
     this.teardownSocket(false);
     this.setStatus('connecting', null);
 
-    const { host, port, token } = this.conn;
-    const url = `ws://${host}:${port}/ws/gamepad?token=${encodeURIComponent(token)}`;
+    const { host, port, token, lastIp } = this.conn;
+    const target = this.useFallback && lastIp ? lastIp : host;
+    const url = `ws://${target}:${port}/ws/gamepad?token=${encodeURIComponent(token)}`;
 
     let ws: WebSocket;
     try {
@@ -362,6 +373,12 @@ export class GamepadClient {
 
   private scheduleReconnect(): void {
     if (!this.active || this.reconnectTimer != null) return;
+    // Alternate hostname <-> cached IP between attempts so whichever path is
+    // alive gets tried within one backoff step.
+    const c = this.conn;
+    if (c?.lastIp && c.lastIp !== c.host) {
+      this.useFallback = !this.useFallback;
+    }
     const delay = BACKOFF_MS[Math.min(this.attempt, BACKOFF_MS.length - 1)];
     this.attempt += 1;
     this.reconnectTimer = setTimeout(() => {

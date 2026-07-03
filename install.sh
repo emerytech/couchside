@@ -3,7 +3,7 @@
 #
 # Run this ON the box (SteamOS / Bazzite), as your normal desktop user:
 #
-#   curl -fsSL https://couchside.ets3d.com/install.sh | bash
+#   curl -fsSL https://couchside.tv/install.sh | bash
 #
 # Or from a git checkout:  ./install.sh
 #
@@ -25,6 +25,11 @@ TOKEN_FILE="${ETC_DIR}/token"
 CONFIG_FILE="${ETC_DIR}/config.json"
 SUDOERS_FILE="/etc/sudoers.d/couchside"
 UNIT_DST="/etc/systemd/system/couchside.service"
+
+# Pairing-QR launcher: a script that opens http://localhost:PORT/pair full-screen
+# on the box's own display, plus a .desktop entry to add it to Steam (Game Mode).
+PAIR_SCRIPT="${INSTALL_DIR}/couchside-pair"
+PAIR_DESKTOP="${HOME}/.local/share/applications/couchside-pair.desktop"
 
 # Prior installs to migrate FROM, oldest first. The chain is:
 #   rescue-agent  ->  couchpilot  ->  couchside
@@ -111,7 +116,9 @@ if [ "$UNINSTALL" -eq 1 ]; then
     sudo systemctl daemon-reload
     note "removed couchside.service"
     rm -rf "$INSTALL_DIR"
-    note "removed $INSTALL_DIR"
+    note "removed $INSTALL_DIR (incl. the couchside-pair launcher script)"
+    rm -f "$PAIR_DESKTOP"
+    note "removed $PAIR_DESKTOP"
     if sudo test -e "$ETC_DIR"; then
         if ask_yn "Remove $ETC_DIR (pairing token + config — phones will need re-pairing)?"; then
             sudo rm -rf "$ETC_DIR"
@@ -342,6 +349,61 @@ else
 fi
 
 # ---------------------------------------------------------------------------
+# (h2) Pairing-QR launcher: browser opener script + Steam/Game-Mode .desktop
+# ---------------------------------------------------------------------------
+# These let the user re-show the pairing QR full-screen on the TV with no
+# terminal: add the .desktop once via Steam > Add a Non-Steam Game, then launch
+# the "Pair Phone" tile in Game Mode. The script opens http://localhost:PORT/pair
+# full-screen, preferring a Flatpak Chrome/Chromium app-window, then xdg-open.
+say "Installing the pairing-QR launcher ($PAIR_SCRIPT)"
+mkdir -p "$INSTALL_DIR"
+cat > "$PAIR_SCRIPT" <<'PAIREOF'
+#!/usr/bin/env bash
+# couchside-pair — open the Couchside pairing QR full-screen on this box.
+# The /pair page is served LOCALHOST-ONLY by the agent, so it must be opened
+# here on the box (never over the network). Reads PORT from the agent config.
+set -u
+CONFIG_FILE="/etc/couchside/config.json"
+PORT_DEFAULT=8787
+PORT="$(python3 - "$CONFIG_FILE" "$PORT_DEFAULT" <<'PYEOF' 2>/dev/null || echo "$PORT_DEFAULT"
+import json, sys
+try:
+    with open(sys.argv[1]) as f:
+        print(json.load(f).get("port") or int(sys.argv[2]))
+except Exception:
+    print(int(sys.argv[2]))
+PYEOF
+)"
+URL="http://localhost:${PORT}/pair"
+echo "Opening ${URL} full-screen…"
+if command -v flatpak >/dev/null 2>&1 && flatpak info com.google.Chrome >/dev/null 2>&1; then
+    exec flatpak run com.google.Chrome --app="$URL" --start-fullscreen
+elif command -v flatpak >/dev/null 2>&1 && flatpak info org.chromium.Chromium >/dev/null 2>&1; then
+    exec flatpak run org.chromium.Chromium --app="$URL" --start-fullscreen
+elif command -v xdg-open >/dev/null 2>&1; then
+    exec xdg-open "$URL"
+else
+    echo "No browser launcher found. Open this URL on the box:"
+    echo "  $URL"
+fi
+PAIREOF
+chmod +x "$PAIR_SCRIPT"
+note "wrote $PAIR_SCRIPT"
+
+say "Installing the Game-Mode launcher entry ($PAIR_DESKTOP)"
+mkdir -p "$(dirname "$PAIR_DESKTOP")"
+cat > "$PAIR_DESKTOP" <<DESKTOPEOF
+[Desktop Entry]
+Type=Application
+Name=Couchside — Pair Phone
+Comment=Show the Couchside pairing QR full-screen on this TV
+Exec=${PAIR_SCRIPT}
+Terminal=false
+Categories=Utility;
+DESKTOPEOF
+note "wrote $PAIR_DESKTOP"
+
+# ---------------------------------------------------------------------------
 # (i) Migration: retire every pre-rename install (rescue-agent, couchpilot)
 # ---------------------------------------------------------------------------
 # The token was already inherited above (section d). Here we disable+remove the
@@ -384,7 +446,22 @@ TOKEN="$(cat "$TOKEN_FILE")"
 # /proc/sys/kernel/hostname is always present on Linux; strip any domain part.
 HOST_SHORT="$(cat /proc/sys/kernel/hostname 2>/dev/null || cat /etc/hostname 2>/dev/null || echo localhost)"
 HOST_SHORT="${HOST_SHORT%%.*}"
+# LAN IP for the &ip= fallback param (UDP connect trick — nothing is sent).
+# The app caches it per box and uses it when mDNS breaks (SteamOS Game Mode).
+LAN_IP="$(python3 - <<'PYEOF' 2>/dev/null || true
+import socket
+try:
+    s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    s.connect(("192.0.2.1", 9))
+    ip = s.getsockname()[0]
+    s.close()
+    print("" if ip.startswith("127.") else ip)
+except OSError:
+    pass
+PYEOF
+)"
 PAIR_URL="couchside://setup?host=${HOST_SHORT}.local&port=${PORT}&token=${TOKEN}"
+[ -n "$LAN_IP" ] && PAIR_URL="${PAIR_URL}&ip=${LAN_IP}"
 
 echo
 echo "=================================================================="
@@ -404,3 +481,8 @@ elif command -v npx >/dev/null 2>&1; then
 else
     echo "(install 'qrencode' for a terminal QR code; for now copy the URL above)"
 fi
+
+echo
+echo "To re-show the pairing QR later without a terminal: in Desktop mode add"
+echo "'Couchside — Pair Phone' via Steam > Add a Non-Steam Game (one time);"
+echo "launching that tile shows the QR full-screen on your TV."

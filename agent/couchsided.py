@@ -36,7 +36,7 @@ except ImportError:  # pragma: no cover
     fcntl = None
 
 APP_NAME = "couchside-agent"
-VERSION = "2.2.0"
+VERSION = "2.3.0"
 UID = os.getuid()
 XDG_RUNTIME_DIR = "/run/user/%d" % UID
 
@@ -1709,6 +1709,292 @@ def _gamepad_teardown(entry):
 
 
 # ---------------------------------------------------------------------------
+# Pairing QR page (GET /pair) — LOCALHOST-ONLY, serves the pairing deep link
+# as an offline-rendered QR so the box's own TV can show it in Game Mode.
+#
+# SECURITY: /pair exposes the pairing token in the clear, so it is gated to
+# loopback clients only (see Handler.do_GET). It is NOT under /api and is NOT
+# bearer-authed — the loopback check IS the entire security model.
+# ---------------------------------------------------------------------------
+
+# Inlined, MIT-licensed pure-JS QR generator (Kazuhiko Arase's
+# qrcode-generator, reduced to 8-bit byte mode / EC level M / auto type).
+# Rendered fully client-side and OFFLINE — no CDN, so it works on a box with
+# no internet. Exposes a global `qrcode(typeNumber)` factory.
+PAIR_QR_JS = r"""
+var qrcode = (function () {
+  function QR8bitByte(data) { this.mode = 4; this.data = data; this.parsedData = [];
+    for (var i = 0, l = this.data.length; i < l; i++) {
+      var byteArray = [], code = this.data.charCodeAt(i);
+      if (code > 0x10000) { byteArray[0]=0xF0|((code&0x1C0000)>>>18); byteArray[1]=0x80|((code&0x3F000)>>>12); byteArray[2]=0x80|((code&0xFC0)>>>6); byteArray[3]=0x80|(code&0x3F); }
+      else if (code > 0x800) { byteArray[0]=0xE0|((code&0xF000)>>>12); byteArray[1]=0x80|((code&0xFC0)>>>6); byteArray[2]=0x80|(code&0x3F); }
+      else if (code > 0x80) { byteArray[0]=0xC0|((code&0x7C0)>>>6); byteArray[1]=0x80|(code&0x3F); }
+      else { byteArray[0]=code; }
+      this.parsedData.push(byteArray);
+    }
+    this.parsedData = Array.prototype.concat.apply([], this.parsedData);
+    if (this.parsedData.length != this.data.length) { this.parsedData.unshift(191); this.parsedData.unshift(187); this.parsedData.unshift(239); }
+  }
+  QR8bitByte.prototype = { getLength: function () { return this.parsedData.length; },
+    write: function (buffer) { for (var i=0,l=this.parsedData.length;i<l;i++){ buffer.put(this.parsedData[i],8);} } };
+
+  function QRCodeModel(typeNumber, errorCorrectLevel) { this.typeNumber=typeNumber; this.errorCorrectLevel=errorCorrectLevel; this.modules=null; this.moduleCount=0; this.dataCache=null; this.dataList=[]; }
+  QRCodeModel.prototype = {
+    addData: function (data) { var d = new QR8bitByte(data); this.dataList.push(d); this.dataCache=null; },
+    isDark: function (row, col) { if (row<0||this.moduleCount<=row||col<0||this.moduleCount<=col) throw new Error(row+","+col); return this.modules[row][col]; },
+    getModuleCount: function () { return this.moduleCount; },
+    make: function () { this.makeImpl(false, this.getBestMaskPattern()); },
+    makeImpl: function (test, maskPattern) {
+      this.moduleCount = this.typeNumber*4+17; this.modules = new Array(this.moduleCount);
+      for (var row=0;row<this.moduleCount;row++){ this.modules[row]=new Array(this.moduleCount); for (var col=0;col<this.moduleCount;col++) this.modules[row][col]=null; }
+      this.setupPositionProbePattern(0,0); this.setupPositionProbePattern(this.moduleCount-7,0); this.setupPositionProbePattern(0,this.moduleCount-7);
+      this.setupPositionAdjustPattern(); this.setupTimingPattern(); this.setupTypeInfo(test, maskPattern);
+      if (this.typeNumber>=7) this.setupTypeNumber(test);
+      if (this.dataCache==null) this.dataCache = QRCodeModel.createData(this.typeNumber, this.errorCorrectLevel, this.dataList);
+      this.mapData(this.dataCache, maskPattern);
+    },
+    setupPositionProbePattern: function (row, col) {
+      for (var r=-1;r<=7;r++){ if (row+r<=-1||this.moduleCount<=row+r) continue;
+        for (var c=-1;c<=7;c++){ if (col+c<=-1||this.moduleCount<=col+c) continue;
+          if ((0<=r&&r<=6&&(c==0||c==6))||(0<=c&&c<=6&&(r==0||r==6))||(2<=r&&r<=4&&2<=c&&c<=4)) this.modules[row+r][col+c]=true; else this.modules[row+r][col+c]=false; } } },
+    getBestMaskPattern: function () { var minLostPoint=0, pattern=0;
+      for (var i=0;i<8;i++){ this.makeImpl(true,i); var lostPoint=QRUtil.getLostPoint(this); if (i==0||minLostPoint>lostPoint){ minLostPoint=lostPoint; pattern=i; } } return pattern; },
+    setupTimingPattern: function () { for (var r=8;r<this.moduleCount-8;r++){ if (this.modules[r][6]!=null) continue; this.modules[r][6]=(r%2==0); }
+      for (var c=8;c<this.moduleCount-8;c++){ if (this.modules[6][c]!=null) continue; this.modules[6][c]=(c%2==0); } },
+    setupPositionAdjustPattern: function () { var pos=QRUtil.getPatternPosition(this.typeNumber);
+      for (var i=0;i<pos.length;i++){ for (var j=0;j<pos.length;j++){ var row=pos[i],col=pos[j]; if (this.modules[row][col]!=null) continue;
+        for (var r=-2;r<=2;r++){ for (var c=-2;c<=2;c++){ if (r==-2||r==2||c==-2||c==2||(r==0&&c==0)) this.modules[row+r][col+c]=true; else this.modules[row+r][col+c]=false; } } } } },
+    setupTypeNumber: function (test) { var bits=QRUtil.getBCHTypeNumber(this.typeNumber);
+      for (var i=0;i<18;i++){ var mod=(!test&&((bits>>i)&1)==1); this.modules[Math.floor(i/3)][i%3+this.moduleCount-8-3]=mod; }
+      for (var i=0;i<18;i++){ var mod=(!test&&((bits>>i)&1)==1); this.modules[i%3+this.moduleCount-8-3][Math.floor(i/3)]=mod; } },
+    setupTypeInfo: function (test, maskPattern) { var data=(this.errorCorrectLevel<<3)|maskPattern; var bits=QRUtil.getBCHTypeInfo(data);
+      for (var i=0;i<15;i++){ var mod=(!test&&((bits>>i)&1)==1);
+        if (i<6) this.modules[i][8]=mod; else if (i<8) this.modules[i+1][8]=mod; else this.modules[this.moduleCount-15+i][8]=mod; }
+      for (var i=0;i<15;i++){ var mod=(!test&&((bits>>i)&1)==1);
+        if (i<8) this.modules[8][this.moduleCount-i-1]=mod; else if (i<9) this.modules[8][15-i-1+1]=mod; else this.modules[8][15-i-1]=mod; }
+      this.modules[this.moduleCount-8][8]=(!test); },
+    mapData: function (data, maskPattern) { var inc=-1,row=this.moduleCount-1,bitIndex=7,byteIndex=0;
+      for (var col=this.moduleCount-1;col>0;col-=2){ if (col==6) col--;
+        while (true){ for (var c=0;c<2;c++){ if (this.modules[row][col-c]==null){ var dark=false; if (byteIndex<data.length) dark=(((data[byteIndex]>>>bitIndex)&1)==1);
+          var mask=QRUtil.getMask(maskPattern,row,col-c); if (mask) dark=!dark; this.modules[row][col-c]=dark; bitIndex--; if (bitIndex==-1){ byteIndex++; bitIndex=7; } } }
+          row+=inc; if (row<0||this.moduleCount<=row){ row-=inc; inc=-inc; break; } } } }
+  };
+  QRCodeModel.PAD0=0xEC; QRCodeModel.PAD1=0x11;
+  QRCodeModel.createData = function (typeNumber, errorCorrectLevel, dataList) {
+    var rsBlocks=QRRSBlock.getRSBlocks(typeNumber, errorCorrectLevel); var buffer=new QRBitBuffer();
+    for (var i=0;i<dataList.length;i++){ var data=dataList[i]; buffer.put(data.mode,4); buffer.put(data.getLength(), QRUtil.getLengthInBits(data.mode, typeNumber)); data.write(buffer); }
+    var totalDataCount=0; for (var i=0;i<rsBlocks.length;i++) totalDataCount+=rsBlocks[i].dataCount;
+    if (buffer.getLengthInBits()>totalDataCount*8) throw new Error("code length overflow. ("+buffer.getLengthInBits()+">"+totalDataCount*8+")");
+    if (buffer.getLengthInBits()+4<=totalDataCount*8) buffer.put(0,4);
+    while (buffer.getLengthInBits()%8!=0) buffer.putBit(false);
+    while (true){ if (buffer.getLengthInBits()>=totalDataCount*8) break; buffer.put(QRCodeModel.PAD0,8); if (buffer.getLengthInBits()>=totalDataCount*8) break; buffer.put(QRCodeModel.PAD1,8); }
+    return QRCodeModel.createBytes(buffer, rsBlocks);
+  };
+  QRCodeModel.createBytes = function (buffer, rsBlocks) {
+    var offset=0, maxDcCount=0, maxEcCount=0; var dcdata=new Array(rsBlocks.length), ecdata=new Array(rsBlocks.length);
+    for (var r=0;r<rsBlocks.length;r++){ var dcCount=rsBlocks[r].dataCount, ecCount=rsBlocks[r].totalCount-dcCount; maxDcCount=Math.max(maxDcCount,dcCount); maxEcCount=Math.max(maxEcCount,ecCount);
+      dcdata[r]=new Array(dcCount); for (var i=0;i<dcdata[r].length;i++) dcdata[r][i]=0xff&buffer.buffer[i+offset]; offset+=dcCount;
+      var rsPoly=QRUtil.getErrorCorrectPolynomial(ecCount); var rawPoly=new QRPolynomial(dcdata[r], rsPoly.getLength()-1); var modPoly=rawPoly.mod(rsPoly); ecdata[r]=new Array(rsPoly.getLength()-1);
+      for (var i=0;i<ecdata[r].length;i++){ var modIndex=i+modPoly.getLength()-ecdata[r].length; ecdata[r][i]=(modIndex>=0)?modPoly.get(modIndex):0; } }
+    var totalCodeCount=0; for (var i=0;i<rsBlocks.length;i++) totalCodeCount+=rsBlocks[i].totalCount;
+    var data=new Array(totalCodeCount), index=0;
+    for (var i=0;i<maxDcCount;i++){ for (var r=0;r<rsBlocks.length;r++){ if (i<dcdata[r].length) data[index++]=dcdata[r][i]; } }
+    for (var i=0;i<maxEcCount;i++){ for (var r=0;r<rsBlocks.length;r++){ if (i<ecdata[r].length) data[index++]=ecdata[r][i]; } }
+    return data;
+  };
+
+  var QRErrorCorrectLevel = { M: 0 };
+  var QRUtil = {
+    PATTERN_POSITION_TABLE: [[],[6,18],[6,22],[6,26],[6,30],[6,34],[6,22,38],[6,24,42],[6,26,46],[6,28,50],[6,30,54],[6,32,58],[6,34,62],[6,26,46,66],[6,26,48,70],[6,26,50,74],[6,30,54,78],[6,30,56,82],[6,30,58,86],[6,34,62,90],[6,28,50,72,94],[6,26,50,74,98],[6,30,54,78,102],[6,28,54,80,106],[6,32,58,84,110],[6,30,58,86,114],[6,34,62,90,118],[6,26,50,74,98,122],[6,30,54,78,102,126],[6,26,52,78,104,130],[6,30,56,82,108,134],[6,34,60,86,112,138],[6,30,58,86,114,142],[6,34,62,90,118,146],[6,30,54,78,102,126,150],[6,24,50,76,102,128,154],[6,28,54,80,106,132,158],[6,32,58,84,110,136,162],[6,26,54,82,110,138,166],[6,30,58,86,114,142,170]],
+    G15: (1<<10)|(1<<8)|(1<<5)|(1<<4)|(1<<2)|(1<<1)|(1<<0),
+    G18: (1<<12)|(1<<11)|(1<<10)|(1<<9)|(1<<8)|(1<<5)|(1<<2)|(1<<0),
+    G15_MASK: (1<<14)|(1<<12)|(1<<10)|(1<<4)|(1<<1),
+    getBCHTypeInfo: function (data) { var d=data<<10; while (QRUtil.getBCHDigit(d)-QRUtil.getBCHDigit(QRUtil.G15)>=0) d^=(QRUtil.G15<<(QRUtil.getBCHDigit(d)-QRUtil.getBCHDigit(QRUtil.G15))); return ((data<<10)|d)^QRUtil.G15_MASK; },
+    getBCHTypeNumber: function (data) { var d=data<<12; while (QRUtil.getBCHDigit(d)-QRUtil.getBCHDigit(QRUtil.G18)>=0) d^=(QRUtil.G18<<(QRUtil.getBCHDigit(d)-QRUtil.getBCHDigit(QRUtil.G18))); return (data<<12)|d; },
+    getBCHDigit: function (data) { var digit=0; while (data!=0){ digit++; data>>>=1; } return digit; },
+    getPatternPosition: function (typeNumber) { return QRUtil.PATTERN_POSITION_TABLE[typeNumber-1]; },
+    getMask: function (maskPattern, i, j) { switch (maskPattern){
+      case 0: return (i+j)%2==0; case 1: return i%2==0; case 2: return j%3==0; case 3: return (i+j)%3==0;
+      case 4: return (Math.floor(i/2)+Math.floor(j/3))%2==0; case 5: return (i*j)%2+(i*j)%3==0;
+      case 6: return ((i*j)%2+(i*j)%3)%2==0; case 7: return ((i*j)%3+(i+j)%2)%2==0; default: throw new Error("bad maskPattern:"+maskPattern); } },
+    getErrorCorrectPolynomial: function (errorCorrectLength) { var a=new QRPolynomial([1],0); for (var i=0;i<errorCorrectLength;i++) a=a.multiply(new QRPolynomial([1,QRMath.gexp(i)],0)); return a; },
+    getLengthInBits: function (mode, type) { if (1<=type&&type<10) return 8; else if (type<27) return 16; else if (type<41) return 16; else throw new Error("type:"+type); },
+    getLostPoint: function (qrCode) { var moduleCount=qrCode.getModuleCount(), lostPoint=0;
+      for (var row=0;row<moduleCount;row++){ for (var col=0;col<moduleCount;col++){ var sameCount=0, dark=qrCode.isDark(row,col);
+        for (var r=-1;r<=1;r++){ if (row+r<0||moduleCount<=row+r) continue; for (var c=-1;c<=1;c++){ if (col+c<0||moduleCount<=col+c) continue; if (r==0&&c==0) continue; if (dark==qrCode.isDark(row+r,col+c)) sameCount++; } }
+        if (sameCount>5) lostPoint+=(3+sameCount-5); } }
+      for (var row=0;row<moduleCount-1;row++){ for (var col=0;col<moduleCount-1;col++){ var count=0; if (qrCode.isDark(row,col)) count++; if (qrCode.isDark(row+1,col)) count++; if (qrCode.isDark(row,col+1)) count++; if (qrCode.isDark(row+1,col+1)) count++; if (count==0||count==4) lostPoint+=3; } }
+      for (var row=0;row<moduleCount;row++){ for (var col=0;col<moduleCount-6;col++){ if (qrCode.isDark(row,col)&&!qrCode.isDark(row,col+1)&&qrCode.isDark(row,col+2)&&qrCode.isDark(row,col+3)&&qrCode.isDark(row,col+4)&&!qrCode.isDark(row,col+5)&&qrCode.isDark(row,col+6)) lostPoint+=40; } }
+      for (var col=0;col<moduleCount;col++){ for (var row=0;row<moduleCount-6;row++){ if (qrCode.isDark(row,col)&&!qrCode.isDark(row+1,col)&&qrCode.isDark(row+2,col)&&qrCode.isDark(row+3,col)&&qrCode.isDark(row+4,col)&&!qrCode.isDark(row+5,col)&&qrCode.isDark(row+6,col)) lostPoint+=40; } }
+      var darkCount=0; for (var col=0;col<moduleCount;col++){ for (var row=0;row<moduleCount;row++){ if (qrCode.isDark(row,col)) darkCount++; } }
+      var ratio=Math.abs(100*darkCount/moduleCount/moduleCount-50)/5; lostPoint+=ratio*10; return lostPoint; }
+  };
+  var QRMath = { glog: function (n) { if (n<1) throw new Error("glog("+n+")"); return QRMath.LOG_TABLE[n]; },
+    gexp: function (n) { while (n<0) n+=255; while (n>=256) n-=255; return QRMath.EXP_TABLE[n]; },
+    EXP_TABLE: new Array(256), LOG_TABLE: new Array(256) };
+  for (var i=0;i<8;i++) QRMath.EXP_TABLE[i]=1<<i;
+  for (var i=8;i<256;i++) QRMath.EXP_TABLE[i]=QRMath.EXP_TABLE[i-4]^QRMath.EXP_TABLE[i-5]^QRMath.EXP_TABLE[i-6]^QRMath.EXP_TABLE[i-8];
+  for (var i=0;i<255;i++) QRMath.LOG_TABLE[QRMath.EXP_TABLE[i]]=i;
+
+  function QRPolynomial(num, shift) { if (num.length==undefined) throw new Error(num.length+"/"+shift); var offset=0; while (offset<num.length&&num[offset]==0) offset++;
+    this.num=new Array(num.length-offset+shift); for (var i=0;i<num.length-offset;i++) this.num[i]=num[i+offset]; }
+  QRPolynomial.prototype = { get: function (index) { return this.num[index]; }, getLength: function () { return this.num.length; },
+    multiply: function (e) { var num=new Array(this.getLength()+e.getLength()-1);
+      for (var i=0;i<this.getLength();i++){ for (var j=0;j<e.getLength();j++){ num[i+j]^=QRMath.gexp(QRMath.glog(this.get(i))+QRMath.glog(e.get(j))); } } return new QRPolynomial(num,0); },
+    mod: function (e) { if (this.getLength()-e.getLength()<0) return this; var ratio=QRMath.glog(this.get(0))-QRMath.glog(e.get(0)); var num=new Array(this.getLength());
+      for (var i=0;i<this.getLength();i++) num[i]=this.get(i); for (var i=0;i<e.getLength();i++) num[i]^=QRMath.gexp(QRMath.glog(e.get(i))+ratio); return new QRPolynomial(num,0).mod(e); } };
+
+  function QRRSBlock(totalCount, dataCount) { this.totalCount=totalCount; this.dataCount=dataCount; }
+  QRRSBlock.RS_BLOCK_TABLE = [
+    [1,26,16],[1,44,28],[1,70,44],[2,50,32],[2,67,43],[4,43,27],[4,49,31],[2,60,38,2,61,39],[3,58,24,2,59,25],
+    [4,69,43,1,70,44],[1,80,50,4,81,51],[6,58,36,2,59,37],[8,59,37,1,60,38],[4,64,40,5,65,41],[5,65,41,5,66,42],
+    [7,73,45,3,74,46],[10,74,46,1,75,47],[9,69,43,4,70,44],[3,70,44,11,71,45],[3,67,41,13,68,42],[17,68,42],
+    [17,74,46],[4,75,47,14,76,48],[6,73,45,14,74,46],[8,75,47,13,76,48],[19,74,46,4,75,47],[22,73,45,3,74,46],
+    [3,73,45,23,74,46],[21,73,45,7,74,46],[19,75,47,10,76,48],[2,74,46,29,75,47],[10,74,46,23,75,47],
+    [14,74,46,21,75,47],[14,74,46,23,75,47],[12,75,47,26,76,48],[6,75,47,34,76,48],[29,74,46,14,75,47],
+    [13,74,46,32,75,47],[40,75,47,7,76,48],[18,75,47,31,76,48]
+  ];
+  QRRSBlock.getRSBlocks = function (typeNumber, errorCorrectLevel) {
+    var rsBlock = QRRSBlock.RS_BLOCK_TABLE[typeNumber-1]; if (rsBlock==undefined) throw new Error("bad rs block @ typeNumber:"+typeNumber);
+    var length=rsBlock.length/3, list=[];
+    for (var i=0;i<length;i++){ var count=rsBlock[i*3+0], totalCount=rsBlock[i*3+1], dataCount=rsBlock[i*3+2]; for (var j=0;j<count;j++) list.push(new QRRSBlock(totalCount, dataCount)); }
+    return list;
+  };
+
+  function QRBitBuffer() { this.buffer=[]; this.length=0; }
+  QRBitBuffer.prototype = { get: function (index) { var bufIndex=Math.floor(index/8); return ((this.buffer[bufIndex]>>>(7-index%8))&1)==1; },
+    put: function (num, length) { for (var i=0;i<length;i++) this.putBit(((num>>>(length-i-1))&1)==1); },
+    getLengthInBits: function () { return this.length; },
+    putBit: function (bit) { var bufIndex=Math.floor(this.length/8); if (this.buffer.length<=bufIndex) this.buffer.push(0); if (bit) this.buffer[bufIndex]|=(0x80>>>(this.length%8)); this.length++; } };
+
+  var _factory = function (typeNumber) {
+    var _model = null;
+    return {
+      addData: function (data) {
+        var t = typeNumber || 0;
+        if (t === 0) {
+          for (t = 1; t <= 40; t++) {
+            try { var m = new QRCodeModel(t, QRErrorCorrectLevel.M); m.addData(data); m.make(); _model = m; break; }
+            catch (e) { _model = null; }
+          }
+          if (!_model) throw new Error("data too long for QR level M");
+        } else {
+          _model = new QRCodeModel(t, QRErrorCorrectLevel.M); _model.addData(data); _model.make();
+        }
+      },
+      make: function () { if (_model === null) throw new Error("call addData first"); },
+      getModuleCount: function () { return _model.getModuleCount(); },
+      isDark: function (r, c) { return _model.isDark(r, c); }
+    };
+  };
+  return _factory;
+})();
+"""
+
+
+def _pair_hostname():
+    """Short hostname + .local for the pairing deep link (mDNS reachable)."""
+    host = socket.gethostname().split(".")[0] or "localhost"
+    return host + ".local"
+
+
+def _pair_lan_ip():
+    """Best-effort primary LAN IP for the pairing deep link's &ip= fallback.
+
+    UDP connect() picks the interface the default route would use without
+    sending a single packet. Returns None when it can't be determined (or is
+    loopback) — the ip param is simply omitted then.
+    """
+    try:
+        s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        try:
+            s.connect(("192.0.2.1", 9))  # TEST-NET-1: never actually sent
+            ip = s.getsockname()[0]
+        finally:
+            s.close()
+        return None if ip.startswith("127.") else ip
+    except OSError:
+        return None
+
+
+def build_pair_url(token, port):
+    """The Couchside pairing deep link.
+
+    host= stays the mDNS name (survives DHCP lease changes); ip= is the
+    current LAN IP the app caches as a fallback for when mDNS breaks (e.g.
+    SteamOS Game Mode WiFi power-save). Old apps ignore the extra param.
+    """
+    from urllib.parse import quote
+    url = "couchside://setup?host=%s&port=%d&token=%s" % (
+        quote(_pair_hostname(), safe=""), port, quote(token, safe=""))
+    ip = _pair_lan_ip()
+    if ip:
+        url += "&ip=" + quote(ip, safe="")
+    return url
+
+
+def render_pair_page(token, port):
+    """Self-contained dark HTML page rendering the pairing QR offline.
+
+    The pairing URL is injected as a JSON string literal (json.dumps) so it is
+    safely escaped for the inline <script>. The QR is drawn client-side to a
+    canvas from the inlined generator above; the couchside:// URL is shown as a
+    small text fallback. No external resources — works on a box with no net.
+    """
+    pair_url = build_pair_url(token, port)
+    url_js = json.dumps(pair_url)          # safe JS string literal
+    url_html = (pair_url.replace("&", "&amp;").replace("<", "&lt;")
+                        .replace(">", "&gt;"))  # safe HTML text
+    return (
+        "<!doctype html><html lang=\"en\"><head>"
+        "<meta charset=\"utf-8\">"
+        "<meta name=\"viewport\" content=\"width=device-width,initial-scale=1\">"
+        "<title>Pair Couchside</title>"
+        "<style>"
+        "html,body{margin:0;height:100%;background:#0d0f14;color:#e8ecf3;"
+        "font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;}"
+        "body{display:flex;flex-direction:column;align-items:center;"
+        "justify-content:center;text-align:center;padding:4vmin;box-sizing:border-box;}"
+        "h1{font-size:min(6vmin,42px);font-weight:650;margin:0 0 3vmin;letter-spacing:.2px;}"
+        ".sub{color:#9aa4b2;font-size:min(3vmin,20px);margin:0 0 4vmin;max-width:36ch;}"
+        ".card{background:#fff;border-radius:24px;padding:min(5vmin,40px);"
+        "box-shadow:0 12px 40px rgba(0,0,0,.5);}"
+        "#qr{display:block;image-rendering:pixelated;width:min(70vmin,560px);"
+        "height:min(70vmin,560px);}"
+        ".url{margin-top:4vmin;color:#5a6472;font-size:min(2.2vmin,14px);"
+        "word-break:break-all;max-width:80ch;font-family:ui-monospace,SFMono-Regular,Menlo,monospace;}"
+        ".err{color:#ff6b6b;margin-top:3vmin;font-size:min(3vmin,18px);}"
+        "</style></head><body>"
+        "<h1>Scan to pair Couchside</h1>"
+        "<div class=\"sub\">Open the Couchside app on your phone and scan this code, "
+        "or point your phone camera at it.</div>"
+        "<div class=\"card\"><canvas id=\"qr\" width=\"560\" height=\"560\"></canvas></div>"
+        "<div class=\"url\">" + url_html + "</div>"
+        "<div id=\"err\" class=\"err\"></div>"
+        "<script>\n" + PAIR_QR_JS + "\n"
+        "(function(){\n"
+        "  var url = " + url_js + ";\n"
+        "  try {\n"
+        "    var qr = qrcode(0); qr.addData(url); qr.make();\n"
+        "    var n = qr.getModuleCount();\n"
+        "    var quiet = 4, total = n + quiet*2;\n"
+        "    var canvas = document.getElementById('qr');\n"
+        "    var px = Math.max(4, Math.floor(560/total));\n"
+        "    var size = total*px; canvas.width = size; canvas.height = size;\n"
+        "    var ctx = canvas.getContext('2d');\n"
+        "    ctx.fillStyle = '#ffffff'; ctx.fillRect(0,0,size,size);\n"
+        "    ctx.fillStyle = '#000000';\n"
+        "    for (var r=0;r<n;r++){ for (var c=0;c<n;c++){ if (qr.isDark(r,c)) {\n"
+        "      ctx.fillRect((c+quiet)*px,(r+quiet)*px,px,px); } } }\n"
+        "  } catch (e) {\n"
+        "    document.getElementById('err').textContent = 'Could not render QR: ' + e;\n"
+        "  }\n"
+        "})();\n"
+        "</script></body></html>"
+    )
+
+
+# ---------------------------------------------------------------------------
 # HTTP server
 # ---------------------------------------------------------------------------
 
@@ -1719,10 +2005,69 @@ class Handler(BaseHTTPRequestHandler):
 
     # set by main()
     token = ""
+    token_file = None   # path to re-read the current token for /pair
+    port = DEFAULT_PORT  # advertised in the pairing deep link
     mock = False
 
     def log_message(self, fmt, *args):  # route BaseHTTPRequestHandler logs away
         pass
+
+    def _is_loopback(self):
+        """True iff the connecting client is on the loopback interface.
+
+        Half the security model for /pair (which exposes the token): only
+        127.0.0.0/8 and ::1 (incl. the ::ffff:127.0.0.1 v4-mapped form) are
+        allowed. self.client_address[0] is the peer IP as seen by the
+        kernel-accepted socket, so it cannot be spoofed by a request header.
+        The other half is _host_header_is_local (DNS rebinding).
+        """
+        host = self.client_address[0]
+        if host == "::1":
+            return True
+        if host.startswith("::ffff:"):
+            host = host[len("::ffff:"):]  # IPv4-mapped IPv6
+        return host == "localhost" or host.startswith("127.")
+
+    def _host_header_is_local(self):
+        """True iff the request's Host header names loopback.
+
+        Anti-DNS-rebinding gate for /pair: a malicious web page loaded in the
+        box's own browser can rebind its domain to 127.0.0.1 and fetch
+        http://attacker.tld:PORT/pair — the socket peer IS loopback then, but
+        the Host header still says attacker.tld. The legitimate launcher opens
+        http://localhost:PORT/pair, so requiring a loopback Host costs nothing.
+        """
+        host = (self.headers.get("Host") or "").strip().lower()
+        if host.startswith("["):  # [::1] or [::1]:port
+            host = host[1:].split("]", 1)[0]
+        elif host.count(":") == 1:
+            host = host.rsplit(":", 1)[0]  # strip :port
+        return host in ("localhost", "::1") or host.startswith("127.")
+
+    def _current_token(self):
+        """The token to advertise on /pair: fresh from the token file if we
+        can read it (picks up a re-generated token without a restart), else
+        the token loaded at startup."""
+        if self.token_file:
+            try:
+                with open(self.token_file) as f:
+                    tok = f.read().strip()
+                if tok:
+                    return tok
+            except OSError:
+                pass
+        return self.token
+
+    def _send_html(self, code, html, started):
+        body = html.encode("utf-8")
+        self.send_response(code)
+        self.send_header("Content-Type", "text/html; charset=utf-8")
+        self.send_header("Cache-Control", "no-store")
+        self.send_header("Content-Length", str(len(body)))
+        self.end_headers()
+        if body:
+            self.wfile.write(body)
+        self._log(code, started)
 
     def _log(self, code, started):
         dur_ms = int((time.monotonic() - started) * 1000)
@@ -1777,9 +2122,36 @@ class Handler(BaseHTTPRequestHandler):
                 self._handle_gamepad_ws(parsed, started)
                 return
 
+            if path == "/pair":
+                # LOCALHOST-ONLY: /pair renders the pairing token as a QR, so a
+                # non-loopback client MUST NOT see it. Two gates, both required:
+                # peer IP must be loopback AND the Host header must name
+                # loopback (anti-DNS-rebinding — see _host_header_is_local).
+                if not self._is_loopback() or not self._host_header_is_local():
+                    self._send(403, {"error": "forbidden"}, started)
+                    return
+                html = render_pair_page(self._current_token(), self.port)
+                self._send_html(200, html, started)
+                return
+
             if path == "/api/ping":
+                # "ip" is the server-side address of THIS connection — i.e. the
+                # LAN IP the client actually reached us on. The app caches it
+                # per box and falls back to it when mDNS (.local) resolution
+                # breaks (classic SteamOS Game Mode: WiFi power-save drops the
+                # multicast that mDNS needs while unicast HTTP still works).
+                # "host" (short hostname) lets the app verify that a cached IP
+                # still points at THIS box before trusting it with the bearer
+                # token. Hostname disclosure is acceptable: mDNS broadcasts it
+                # to the whole LAN anyway.
+                try:
+                    own_ip = self.connection.getsockname()[0]
+                except OSError:
+                    own_ip = None
+                short_host = socket.gethostname().split(".")[0] or None
                 self._send(200, {"ok": True, "app": APP_NAME,
-                                 "version": VERSION}, started)
+                                 "version": VERSION, "ip": own_ip,
+                                 "host": short_host}, started)
                 return
 
             if not path.startswith("/api/"):
@@ -2198,6 +2570,10 @@ def main():
     port = args.port if args.port is not None else (CONFIG_PORT or DEFAULT_PORT)
 
     Handler.token = load_token(args)
+    # Remembered so GET /pair can re-read the current token (unless a literal
+    # --token was supplied, in which case there is no file to re-read).
+    Handler.token_file = None if args.token else args.token_file
+    Handler.port = port
     Handler.mock = args.mock
 
     server = ThreadingHTTPServer((args.host, port), Handler)

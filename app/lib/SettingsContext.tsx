@@ -9,6 +9,7 @@ import React, {
 } from 'react';
 import { AppState, AppStateStatus } from 'react-native';
 
+import { pingMatchesBox } from './api';
 import {
   Box,
   BoxesState,
@@ -16,6 +17,7 @@ import {
   DEFAULT_PAD_MODE,
   DEFAULT_PORT,
   Settings,
+  isValidLanIp,
   loadBoxes,
   nextBoxId,
   saveBoxes,
@@ -30,6 +32,8 @@ export type AddBoxInput = {
   token?: string;
   name?: string;
   padMode?: Box['padMode'];
+  /** Fallback IP (e.g. from the pairing QR's &ip= param). */
+  lastIp?: string;
 };
 
 type BoxesContextValue = {
@@ -116,6 +120,10 @@ export function SettingsProvider({ children }: { children: React.ReactNode }) {
           ? input.port
           : DEFAULT_PORT;
       const token = input.token ?? '';
+      // Same validation as the ping learner: a QR/deep-link ip param must be
+      // a plausible LAN address before it becomes a token destination.
+      const inputIp =
+        input.lastIp && isValidLanIp(input.lastIp) ? input.lastIp : undefined;
 
       const existing = cur.boxes.find((b) => sameTarget(b, host, port));
       if (existing) {
@@ -125,6 +133,8 @@ export function SettingsProvider({ children }: { children: React.ReactNode }) {
           token: token || existing.token,
           name: input.name?.trim() ? input.name.trim() : existing.name,
           padMode: input.padMode ?? existing.padMode,
+          // A fresh pairing's IP is newer than whatever was cached.
+          lastIp: inputIp || existing.lastIp,
         };
         const boxes = cur.boxes.map((b) => (b.id === existing.id ? updated : b));
         await commit({ boxes, activeBoxId: existing.id });
@@ -138,6 +148,7 @@ export function SettingsProvider({ children }: { children: React.ReactNode }) {
         port,
         token,
         padMode: input.padMode ?? DEFAULT_PAD_MODE,
+        lastIp: inputIp,
       };
       await commit({
         boxes: [...cur.boxes, box],
@@ -231,6 +242,7 @@ export function useSettings(): SettingsContextValue {
       port: activeBox.port,
       token: activeBox.token,
       padMode: activeBox.padMode,
+      lastIp: activeBox.lastIp,
     };
   }, [activeBox]);
 
@@ -252,9 +264,25 @@ export type BoxReachability = 'reachable' | 'offline' | 'unknown';
 
 type OnlineStatusMap = Record<string, BoxReachability>;
 
-/** Unauthenticated /api/ping probe with a hard timeout. */
-async function pingBox(host: string, port: number, timeoutMs: number): Promise<boolean> {
-  if (!host) return false;
+type PingProbe = {
+  ok: boolean;
+  /** LAN IP reported by the agent (>= 2.3), for the Box.lastIp cache. */
+  ip: string | null;
+};
+
+/**
+ * One unauthenticated /api/ping probe against a specific host, hard timeout.
+ * `expectedHost` enables the identity check (pingMatchesBox) — pass it on the
+ * cached-IP fallback leg so a DHCP lease that wandered to a different machine
+ * doesn't count as "this box is reachable".
+ */
+async function pingHost(
+  host: string,
+  port: number,
+  timeoutMs: number,
+  expectedHost?: string,
+): Promise<PingProbe> {
+  if (!host) return { ok: false, ip: null };
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), timeoutMs);
   try {
@@ -262,12 +290,40 @@ async function pingBox(host: string, port: number, timeoutMs: number): Promise<b
       method: 'GET',
       signal: controller.signal,
     });
-    return res.ok;
+    if (!res.ok) return { ok: false, ip: null };
+    let body: unknown = null;
+    try {
+      body = await res.json();
+    } catch {
+      // pre-2.3 agent with a non-JSON body — reachable is all we learn
+    }
+    if (expectedHost != null && !pingMatchesBox(body, expectedHost)) {
+      return { ok: false, ip: null };
+    }
+    const ip = body && typeof (body as { ip?: unknown }).ip === 'string'
+      ? ((body as { ip: string }).ip || null)
+      : null;
+    return { ok: true, ip };
   } catch {
-    return false;
+    return { ok: false, ip: null };
   } finally {
     clearTimeout(timer);
   }
+}
+
+/**
+ * Probe a box: its hostname first, then the cached lastIp fallback. This is
+ * the same fallback the API client uses — a box whose .local name has gone
+ * dark (SteamOS Game Mode mDNS) still reports reachable via its cached IP,
+ * but only if the responder proves it IS this box.
+ */
+async function pingBox(box: Box, timeoutMs: number): Promise<PingProbe> {
+  const primary = await pingHost(box.host, box.port, timeoutMs);
+  if (primary.ok) return primary;
+  if (box.lastIp && box.lastIp !== box.host) {
+    return pingHost(box.lastIp, box.port, timeoutMs, box.host);
+  }
+  return primary;
 }
 
 /**
@@ -285,6 +341,8 @@ export function useBoxOnlineStatus(
 ): OnlineStatusMap {
   const { active = true, intervalMs = 10_000, timeoutMs = 3000 } = opts;
   const [status, setStatus] = useState<OnlineStatusMap>({});
+  // For persisting freshly-learned box IPs (Box.lastIp) from ping responses.
+  const { updateBox } = useBoxes();
 
   // Keep a stable, current view of the boxes for the interval closure.
   const boxesRef = useRef<Box[]>(boxes);
@@ -327,14 +385,32 @@ export function useBoxOnlineStatus(
       for (const box of boxesRef.current) {
         if (inFlight.current.has(box.id)) continue;
         inFlight.current.add(box.id);
-        void pingBox(box.host, box.port, timeoutMs)
-          .then((ok) => {
+        void pingBox(box, timeoutMs)
+          .then((probe) => {
             if (!mounted.current) return;
             setStatus((prev) => {
-              const nextVal: BoxReachability = ok ? 'reachable' : 'offline';
+              const nextVal: BoxReachability = probe.ok ? 'reachable' : 'offline';
               if (prev[box.id] === nextVal) return prev;
               return { ...prev, [box.id]: nextVal };
             });
+            // Cache the IP the box was actually reached on so the app can
+            // fall back to it when the hostname stops resolving.
+            //  - isValidLanIp: never persist a non-LAN string from an
+            //    unauthenticated response as a future token destination.
+            //  - re-read the CURRENT box: if the user re-targeted it (host/
+            //    port edit) while this probe was in flight, the old
+            //    machine's IP must not be written onto the new target.
+            if (probe.ok && probe.ip && isValidLanIp(probe.ip)) {
+              const cur = boxesRef.current.find((b) => b.id === box.id);
+              if (
+                cur &&
+                cur.host === box.host &&
+                cur.port === box.port &&
+                cur.lastIp !== probe.ip
+              ) {
+                void updateBox(box.id, { lastIp: probe.ip });
+              }
+            }
           })
           .finally(() => {
             inFlight.current.delete(box.id);
@@ -369,7 +445,7 @@ export function useBoxOnlineStatus(
       stop();
       sub.remove();
     };
-  }, [active, intervalMs, timeoutMs]);
+  }, [active, intervalMs, timeoutMs, updateBox]);
 
   return status;
 }

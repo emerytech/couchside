@@ -14,6 +14,7 @@ import React, { useCallback, useEffect, useRef, useState } from 'react';
 import {
   Animated,
   AppState,
+  Keyboard,
   PanResponder,
   Platform,
   Pressable,
@@ -331,20 +332,64 @@ type KeyboardBarProps = {
  * keyboard. Printable characters are streamed via onText; Backspace and Enter
  * are surfaced as their own callbacks. The input is kept effectively empty so
  * each keystroke is captured individually rather than accumulating a value.
+ *
+ * Dismissal is made bulletproof: an explicit "Done" button, a swipe-DOWN drag
+ * handle, and a subscription to the OS 'keyboardDidHide' event that resyncs the
+ * bar's open/closed state so the affordance can never get stuck showing "open"
+ * while the real keyboard is down (or vice-versa). `open` is mirrored into a ref
+ * so callbacks always see the live value without stale closures.
  */
 function KeyboardBar({ onText, onBackspace, onEnter }: KeyboardBarProps) {
   const inputRef = useRef<TextInput>(null);
   const [open, setOpen] = useState(false);
-  // Sentinel char so backspace on an "empty" field still fires onKeyPress with
-  // a real deletion target on some platforms; onChangeText handles the rest.
+  // Live mirror of `open` for use inside event callbacks/PanResponder, which
+  // capture their closure once and would otherwise read a stale value.
+  const openRef = useRef(false);
+  const setOpenSynced = useCallback((v: boolean) => {
+    openRef.current = v;
+    setOpen(v);
+  }, []);
   const [value, setValue] = useState('');
+
+  // Belt-and-suspenders dismiss: hide the OS keyboard AND blur our input, so it
+  // works no matter which one is actually holding focus.
+  const dismiss = useCallback(() => {
+    Keyboard.dismiss();
+    inputRef.current?.blur();
+    setOpenSynced(false);
+    setValue('');
+  }, [setOpenSynced]);
 
   const focus = useCallback(() => {
     haptic();
-    setOpen(true);
+    setOpenSynced(true);
     // Focus after mount/visibility settles.
     requestAnimationFrame(() => inputRef.current?.focus());
+  }, [setOpenSynced]);
+
+  // Source of truth: whenever the OS reports the keyboard went down, mark the
+  // bar closed. This catches every dismissal path (Done, swipe, the system
+  // keyboard's own hide, app backgrounding) so state can't drift.
+  useEffect(() => {
+    const sub = Keyboard.addListener('keyboardDidHide', () => {
+      openRef.current = false;
+      setOpen(false);
+      setValue('');
+    });
+    return () => sub.remove();
   }, []);
+
+  // Swipe-DOWN on the bar dismisses. A downward drag past a small threshold, or
+  // a downward flick, closes the keyboard.
+  const panResponder = useRef(
+    PanResponder.create({
+      onMoveShouldSetPanResponder: (_e, g) =>
+        g.dy > 6 && g.dy > Math.abs(g.dx),
+      onPanResponderRelease: (_e, g) => {
+        if (openRef.current && (g.dy > 24 || g.vy > 0.4)) dismiss();
+      },
+    }),
+  ).current;
 
   const onChangeText = useCallback(
     (next: string) => {
@@ -372,24 +417,37 @@ function KeyboardBar({ onText, onBackspace, onEnter }: KeyboardBarProps) {
 
   return (
     <>
-      <Pressable
-        onPress={open ? () => inputRef.current?.blur() : focus}
-        style={({ pressed }) => [
-          styles.kbBar,
-          open && styles.kbBarOpen,
-          pressed && styles.btnPressed,
-        ]}>
-        <Text style={[styles.kbBarText, open && styles.kbBarTextOpen]}>
-          {open ? '⌨  keyboard open — type to send · tap done' : '⌨  KEYBOARD'}
-        </Text>
-      </Pressable>
+      <View style={styles.kbBarRow} {...(open ? panResponder.panHandlers : {})}>
+        <Pressable
+          onPress={open ? dismiss : focus}
+          style={({ pressed }) => [
+            styles.kbBar,
+            styles.kbBarFlex,
+            open && styles.kbBarOpen,
+            pressed && styles.btnPressed,
+          ]}>
+          {open && <View style={styles.kbDragHandle} pointerEvents="none" />}
+          <Text style={[styles.kbBarText, open && styles.kbBarTextOpen]}>
+            {open ? '⌨  type to send · swipe down or tap Done' : '⌨  KEYBOARD'}
+          </Text>
+        </Pressable>
+        {open && (
+          <Pressable
+            onPress={dismiss}
+            hitSlop={8}
+            style={({ pressed }) => [styles.kbDone, pressed && styles.btnPressed]}>
+            <Text style={styles.kbDoneText}>DONE</Text>
+          </Pressable>
+        )}
+      </View>
       <TextInput
         ref={inputRef}
         value={value}
         onChangeText={onChangeText}
         onKeyPress={onKeyPress}
+        onSubmitEditing={onEnter}
         onBlur={() => {
-          setOpen(false);
+          setOpenSynced(false);
           setValue('');
         }}
         style={styles.hiddenInput}
@@ -461,6 +519,13 @@ function PadScreen() {
   }
   const client = clientRef.current;
 
+  // Latest settings for connect() calls. The lifecycle effect below keys on
+  // the connection identity (host/port/token) only — a background patch to
+  // the active box (the lastIp learner, a padMode toggle) must NOT tear down
+  // a healthy socket mid-game via a `settings` object-identity change.
+  const settingsRef = useRef(settings);
+  settingsRef.current = settings;
+
   // Manage the connection off the screen's mount lifecycle (reliable on web
   // and native) rather than useFocusEffect, whose callback-body timing is
   // unreliable on web. This screen mounts lazily on first visit to the Pad tab
@@ -477,7 +542,7 @@ function PadScreen() {
     });
 
     const connect = () => {
-      client.connect(settings);
+      client.connect(settingsRef.current);
       if (Platform.OS !== 'web') {
         activateKeepAwakeAsync(KEEP_AWAKE_TAG).catch(() => {});
       }
@@ -507,7 +572,19 @@ function PadScreen() {
       disconnect();
       client.onStatus(null);
     };
-  }, [client, ready, settings, navigation]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- connection
+    // identity only; settingsRef carries the rest without re-running.
+  }, [client, ready, settings.host, settings.port, settings.token, navigation]);
+
+  // A freshly-learned lastIp should reach the client's stored conn so future
+  // reconnects can use it. connect() with an unchanged host/port/token just
+  // refreshes the stored conn — it never drops a live socket.
+  useEffect(() => {
+    if (!ready || !settings.lastIp) return;
+    if (client.getStatus() === 'connected' || client.getStatus() === 'connecting') {
+      client.connect(settingsRef.current);
+    }
+  }, [client, ready, settings.lastIp]);
 
   const retry = useCallback(() => {
     if (status !== 'connected') {
@@ -944,8 +1021,13 @@ const styles = StyleSheet.create({
   },
 
   // Keyboard bar
-  kbBar: {
+  kbBarRow: {
     marginTop: 12,
+    flexDirection: 'row',
+    alignItems: 'stretch',
+    gap: 8,
+  },
+  kbBar: {
     backgroundColor: theme.card,
     borderColor: theme.cardBorder,
     borderWidth: 1,
@@ -954,9 +1036,34 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     justifyContent: 'center',
   },
+  kbBarFlex: {
+    flex: 1,
+  },
   kbBarOpen: {
     borderColor: theme.blue,
     backgroundColor: theme.inset,
+  },
+  kbDragHandle: {
+    width: 36,
+    height: 4,
+    borderRadius: 2,
+    backgroundColor: theme.blue,
+    opacity: 0.5,
+    marginBottom: 6,
+  },
+  kbDone: {
+    backgroundColor: theme.blue,
+    borderRadius: 999,
+    paddingHorizontal: 20,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  kbDoneText: {
+    color: '#0b1220',
+    fontFamily: mono,
+    fontSize: 13,
+    fontWeight: '800',
+    letterSpacing: 1,
   },
   kbBarText: {
     color: theme.textDim,
