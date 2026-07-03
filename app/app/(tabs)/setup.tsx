@@ -260,7 +260,7 @@ function SetupBody() {
   }, [addBox, draftConn, name]);
 
   // ---------- QR / deep-link pairing ----------
-  // couchpilot://setup?host=..&port=..&token=..  → ADD (or update+select) a box.
+  // couchside://setup?host=..&port=..&token=..  → ADD (or update+select) a box.
   const params = useLocalSearchParams<{ host?: string; port?: string; token?: string }>();
   const [fromQr, setFromQr] = useState(false);
   const appliedQrRef = useRef<string | null>(null);

@@ -1,8 +1,8 @@
-; CouchPilot box agent — systemd unit TEMPLATE.
+; Couchside box agent — systemd unit TEMPLATE.
 ; install.sh substitutes __USER__ and __UID__ with the invoking desktop user
-; and installs the result to /etc/systemd/system/couchpilot.service.
+; and installs the result to /etc/systemd/system/couchside.service.
 [Unit]
-Description=CouchPilot box agent
+Description=Couchside box agent
 After=network-online.target
 Wants=network-online.target
 
@@ -13,7 +13,7 @@ User=__USER__
 ; with the udev rule the installer writes for /dev/uinput.
 SupplementaryGroups=input
 Environment=XDG_RUNTIME_DIR=/run/user/__UID__
-ExecStart=/usr/bin/python3 /home/__USER__/.local/opt/couchpilot/couchpilotd.py
+ExecStart=/usr/bin/python3 /home/__USER__/.local/opt/couchside/couchsided.py
 Restart=always
 RestartSec=3
 

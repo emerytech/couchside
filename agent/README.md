@@ -1,6 +1,6 @@
-# CouchPilot — box agent
+# Couchside — box agent
 
-The box-side half of CouchPilot: a tiny pure-stdlib python3 daemon for your
+The box-side half of Couchside: a tiny pure-stdlib python3 daemon for your
 couch gaming box (Steam Deck / SteamOS, Bazzite, or any systemd Linux HTPC)
 that lets the phone app check health, watch service logs, fire recovery
 actions ("restart the session", "reboot"), and act as a virtual Xbox 360
@@ -12,21 +12,21 @@ Bazzite/Fedora Atomic ostree) with nothing but the preinstalled `python3`.
 ## Install (run ON the box, as your normal desktop user)
 
 ```sh
-curl -fsSL https://raw.githubusercontent.com/emerytech/couchpilot/main/install.sh | bash
+curl -fsSL https://raw.githubusercontent.com/emerytech/couchside/main/install.sh | bash
 ```
 
 The installer refuses to run as root (it uses `sudo` only where needed) and:
 
-1. installs the daemon to `~/.local/opt/couchpilot/`,
-2. creates `/etc/couchpilot/token` (pairing secret, `chmod 600`),
-3. generates an initial `/etc/couchpilot/config.json` tailored to the box
+1. installs the daemon to `~/.local/opt/couchside/`,
+2. creates `/etc/couchside/token` (pairing secret, `chmod 600`),
+3. generates an initial `/etc/couchside/config.json` tailored to the box
    (adds `sddm.service` and a session-restart action only if sddm exists;
    adds a stop-kodi action only if the Kodi flatpak is installed),
 4. installs a **narrow sudoers rule** (see Security below) — it prints the
    exact contents first, and `--no-sudoers` skips it,
-5. installs + starts `couchpilot.service` (systemd, `Restart=always`),
+5. installs + starts `couchside.service` (systemd, `Restart=always`),
 6. opens the port in firewalld if firewalld is running (Bazzite),
-7. prints your token and a `couchpilot://setup?...` QR code — scan it with
+7. prints your token and a `couchside://setup?...` QR code — scan it with
    your phone camera to pair the app.
 
 Idempotent: safe to re-run for upgrades. An existing token and config.json
@@ -42,14 +42,14 @@ Upgrading from the pre-rename "Rescue Remote" agent: the installer migrates
 your token from `/etc/rescue-agent/token` automatically and removes the old
 `rescue-agent.service`, so existing phone pairings keep working.
 
-## Configuration — /etc/couchpilot/config.json
+## Configuration — /etc/couchside/config.json
 
 Watched units and actions are yours to define. The daemon loads
-`/etc/couchpilot/config.json` at startup (`--config` overrides the path);
+`/etc/couchside/config.json` at startup (`--config` overrides the path);
 if the file is missing or invalid it logs a warning and uses safe generic
-defaults (units: `sddm.service`, `couchpilot.service`; actions:
+defaults (units: `sddm.service`, `couchside.service`; actions:
 `restart-session`, `reboot`, `poweroff`). Restart the service after editing:
-`sudo systemctl restart couchpilot`.
+`sudo systemctl restart couchside`.
 
 ```jsonc
 {
@@ -57,7 +57,7 @@ defaults (units: `sddm.service`, `couchpilot.service`; actions:
   "units": [                          // the watchlist shown in the app; ALSO
     {"name": "sddm.service",          // the journal-read allowlist
      "scope": "system"},              // "system" or "user" (systemctl --user)
-    {"name": "couchpilot.service", "scope": "system"}
+    {"name": "couchside.service", "scope": "system"}
   ],
   "actions": {
     "restart-session": {
@@ -82,7 +82,7 @@ Watch a user-scope service and give it a restart button:
 {
   "units": [
     {"name": "sddm.service", "scope": "system"},
-    {"name": "couchpilot.service", "scope": "system"},
+    {"name": "couchside.service", "scope": "system"},
     {"name": "sunshine.service", "scope": "user"}
   ],
   "actions": {
@@ -116,7 +116,7 @@ Notes:
 - Anything needing root must go through `sudo` **and** have a matching
   `NOPASSWD` sudoers entry (the daemon has no TTY to type a password into).
   The installer's rule covers `systemctl restart sddm`, `reboot`, `poweroff`,
-  and `journalctl`; add your own entries to `/etc/sudoers.d/couchpilot` (via
+  and `journalctl`; add your own entries to `/etc/sudoers.d/couchside` (via
   `visudo`) for other privileged actions.
 - Journal reads are allowed **only** for units in `units` — that list is the
   allowlist.
@@ -129,7 +129,7 @@ All responses carry permissive CORS headers; `OPTIONS` returns 204.
 
 | Route | Method | Description |
 |---|---|---|
-| `/api/ping` | GET | Unauthenticated reachability probe: `{"ok":true,"app":"couchpilot-agent","version":"2.0.0"}` |
+| `/api/ping` | GET | Unauthenticated reachability probe: `{"ok":true,"app":"couchside-agent","version":"2.0.0"}` |
 | `/api/status` | GET | hostname, time, uptime, load, CPU temp, memory, disk usage (`/`, `/var`) |
 | `/api/units` | GET | State of the configured watchlist units |
 | `/api/journal?unit=<name>&lines=<n>&scope=system\|user` | GET | Last n journal lines (default 100, clamped 1–500). Unit must be in the configured watchlist, else 400 |
@@ -195,7 +195,7 @@ sockets time out after ~60 s.
 
 ## Security model
 
-- **Token**: a random 48-hex-char secret in `/etc/couchpilot/token`
+- **Token**: a random 48-hex-char secret in `/etc/couchside/token`
   (`chmod 600`, owned by the agent user). Compared with
   `hmac.compare_digest` (constant-time). Every route except `/api/ping`
   requires it.
@@ -231,7 +231,7 @@ Both are immutable-rootfs distros; the agent deliberately touches only
 Mock mode (fake data, no real commands — for phone-app development on macOS):
 
 ```sh
-python3 agent/couchpilotd.py --mock --host 127.0.0.1 --port 8787 --token devtoken
+python3 agent/couchsided.py --mock --host 127.0.0.1 --port 8787 --token devtoken
 # optionally: --config /path/to/config.json to mock your own unit list
 ```
 

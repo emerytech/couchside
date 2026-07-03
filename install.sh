@@ -1,46 +1,52 @@
 #!/usr/bin/env bash
-# install.sh — CouchPilot box agent installer.
+# install.sh — Couchside box agent installer.
 #
 # Run this ON the box (SteamOS / Bazzite), as your normal desktop user:
 #
-#   curl -fsSL https://raw.githubusercontent.com/emerytech/couchpilot/main/install.sh | bash
+#   curl -fsSL https://couchside.ets3d.com/install.sh | bash
 #
 # Or from a git checkout:  ./install.sh
 #
 # Flags:
-#   --no-sudoers   skip installing /etc/sudoers.d/couchpilot (high-danger
+#   --no-sudoers   skip installing /etc/sudoers.d/couchside (high-danger
 #                  actions and system journal reads will fail without it)
 #   --uninstall    remove the agent (asks before deleting the token/sudoers)
 #   --help         this text
 set -euo pipefail
 
 # Raw file sources (used when not running from a git checkout)
-DAEMON_URL="https://raw.githubusercontent.com/emerytech/couchpilot/main/agent/couchpilotd.py"
-UNIT_URL="https://raw.githubusercontent.com/emerytech/couchpilot/main/agent/couchpilot.service"
+DAEMON_URL="https://raw.githubusercontent.com/emerytech/couchside/main/agent/couchsided.py"
+UNIT_URL="https://raw.githubusercontent.com/emerytech/couchside/main/agent/couchside.service"
 
 PORT_DEFAULT=8787
-INSTALL_DIR="${HOME}/.local/opt/couchpilot"
-ETC_DIR="/etc/couchpilot"
+INSTALL_DIR="${HOME}/.local/opt/couchside"
+ETC_DIR="/etc/couchside"
 TOKEN_FILE="${ETC_DIR}/token"
 CONFIG_FILE="${ETC_DIR}/config.json"
-SUDOERS_FILE="/etc/sudoers.d/couchpilot"
-UNIT_DST="/etc/systemd/system/couchpilot.service"
-OLD_ETC_DIR="/etc/rescue-agent"
-OLD_TOKEN_FILE="${OLD_ETC_DIR}/token"
-OLD_UNIT="rescue-agent.service"
-OLD_SUDOERS="/etc/sudoers.d/rescue-agent"
+SUDOERS_FILE="/etc/sudoers.d/couchside"
+UNIT_DST="/etc/systemd/system/couchside.service"
+
+# Prior installs to migrate FROM, oldest first. The chain is:
+#   rescue-agent  ->  couchpilot  ->  couchside
+# Each entry is "etc_dir|unit|sudoers"; the migration step below retires every
+# one it finds — copying the first token it sees into TOKEN_FILE (so paired
+# phones keep working) and disabling/removing the old unit + sudoers rule.
+OLD_INSTALLS=(
+    "/etc/rescue-agent|rescue-agent.service|/etc/sudoers.d/rescue-agent"
+    "/etc/couchpilot|couchpilot.service|/etc/sudoers.d/couchpilot"
+)
 
 NO_SUDOERS=0
 UNINSTALL=0
 
 usage() {
     cat <<'USAGE'
-CouchPilot box agent installer. Run ON the box as your desktop user.
+Couchside box agent installer. Run ON the box as your desktop user.
 
 Usage: install.sh [--no-sudoers] [--uninstall] [--help]
 
   (no flags)     install/upgrade the agent (idempotent, safe to re-run)
-  --no-sudoers   skip installing /etc/sudoers.d/couchpilot (high-danger
+  --no-sudoers   skip installing /etc/sudoers.d/couchside (high-danger
                  actions and system journal reads will fail without it)
   --uninstall    remove the agent (asks before deleting the token/sudoers)
   --help         this text
@@ -80,9 +86,9 @@ if [ "$(id -u)" -eq 0 ]; then
        bazzite, ...) — the agent runs as that user and the script uses sudo
        only for the few steps that need it."
 fi
-command -v python3 >/dev/null 2>&1 || die "python3 not found. CouchPilot needs
+command -v python3 >/dev/null 2>&1 || die "python3 not found. Couchside needs
        python3 (preinstalled on SteamOS and Bazzite). Install it and re-run."
-command -v systemctl >/dev/null 2>&1 || die "systemctl not found — CouchPilot requires a systemd distro."
+command -v systemctl >/dev/null 2>&1 || die "systemctl not found — Couchside requires a systemd distro."
 
 USER_NAME="$(id -un)"
 USER_UID="$(id -u)"
@@ -99,11 +105,11 @@ fi
 # --uninstall
 # ---------------------------------------------------------------------------
 if [ "$UNINSTALL" -eq 1 ]; then
-    say "Uninstalling CouchPilot agent (sudo may prompt for your password)"
-    sudo systemctl disable --now couchpilot.service 2>/dev/null || true
+    say "Uninstalling Couchside agent (sudo may prompt for your password)"
+    sudo systemctl disable --now couchside.service 2>/dev/null || true
     sudo rm -f "$UNIT_DST"
     sudo systemctl daemon-reload
-    note "removed couchpilot.service"
+    note "removed couchside.service"
     rm -rf "$INSTALL_DIR"
     note "removed $INSTALL_DIR"
     if sudo test -e "$ETC_DIR"; then
@@ -122,7 +128,7 @@ if [ "$UNINSTALL" -eq 1 ]; then
             note "kept $SUDOERS_FILE"
         fi
     fi
-    say "CouchPilot agent uninstalled."
+    say "Couchside agent uninstalled."
     exit 0
 fi
 
@@ -137,38 +143,52 @@ if [ -n "${BASH_SOURCE[0]:-}" ] && [ -f "${BASH_SOURCE[0]:-}" ]; then
     SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 fi
 
-if [ -n "$SCRIPT_DIR" ] && [ -f "$SCRIPT_DIR/agent/couchpilotd.py" ]; then
+if [ -n "$SCRIPT_DIR" ] && [ -f "$SCRIPT_DIR/agent/couchsided.py" ]; then
     say "Installing from local checkout: $SCRIPT_DIR"
-    cp "$SCRIPT_DIR/agent/couchpilotd.py" "$WORK_DIR/couchpilotd.py"
-    cp "$SCRIPT_DIR/agent/couchpilot.service" "$WORK_DIR/couchpilot.service"
+    cp "$SCRIPT_DIR/agent/couchsided.py" "$WORK_DIR/couchsided.py"
+    cp "$SCRIPT_DIR/agent/couchside.service" "$WORK_DIR/couchside.service"
 else
     command -v curl >/dev/null 2>&1 || die "curl not found (needed to fetch the agent files)."
     say "Fetching agent files from GitHub"
     note "$DAEMON_URL"
-    curl -fsSL "$DAEMON_URL" -o "$WORK_DIR/couchpilotd.py"
+    curl -fsSL "$DAEMON_URL" -o "$WORK_DIR/couchsided.py"
     note "$UNIT_URL"
-    curl -fsSL "$UNIT_URL" -o "$WORK_DIR/couchpilot.service"
+    curl -fsSL "$UNIT_URL" -o "$WORK_DIR/couchside.service"
 fi
-python3 -m py_compile "$WORK_DIR/couchpilotd.py" || die "downloaded couchpilotd.py does not compile — aborting."
+python3 -m py_compile "$WORK_DIR/couchsided.py" || die "downloaded couchsided.py does not compile — aborting."
 
 # ---------------------------------------------------------------------------
-# (c) Install the daemon to ~/.local/opt/couchpilot
+# (c) Install the daemon to ~/.local/opt/couchside
 # ---------------------------------------------------------------------------
 say "Installing daemon to $INSTALL_DIR"
 mkdir -p "$INSTALL_DIR"
-install -m 0755 "$WORK_DIR/couchpilotd.py" "$INSTALL_DIR/couchpilotd.py"
+install -m 0755 "$WORK_DIR/couchsided.py" "$INSTALL_DIR/couchsided.py"
 
 # ---------------------------------------------------------------------------
-# (d) Token: /etc/couchpilot/token (sudo from here on)
+# (d) Token: /etc/couchside/token (sudo from here on)
 # ---------------------------------------------------------------------------
 say "Setting up $ETC_DIR (sudo may prompt for your password)"
 sudo mkdir -p "$ETC_DIR"
 
+MIGRATED_TOKEN=""
 if sudo test -s "$TOKEN_FILE"; then
     note "token already exists — keeping it (existing phone pairings keep working)"
-elif sudo test -s "$OLD_TOKEN_FILE"; then
-    note "migrating token from $OLD_TOKEN_FILE (existing phone pairings keep working)"
-    sudo cp "$OLD_TOKEN_FILE" "$TOKEN_FILE"
+else
+    # Look for a token to inherit from any prior install (newest-named first so
+    # couchpilot wins over rescue-agent if somehow both are present).
+    for entry in "${OLD_INSTALLS[@]}"; do
+        old_etc="${entry%%|*}"
+        old_token="${old_etc}/token"
+        if sudo test -s "$old_token"; then
+            MIGRATED_TOKEN="$old_token"
+        fi
+    done
+fi
+if sudo test -s "$TOKEN_FILE"; then
+    :
+elif [ -n "$MIGRATED_TOKEN" ]; then
+    note "migrating token from $MIGRATED_TOKEN (existing phone pairings keep working)"
+    sudo cp "$MIGRATED_TOKEN" "$TOKEN_FILE"
 else
     note "generating new pairing token"
     if command -v openssl >/dev/null 2>&1; then
@@ -209,7 +229,7 @@ have_kodi = os.environ.get("HAVE_KODI") == "1"
 units = []
 if have_sddm:
     units.append({"name": "sddm.service", "scope": "system"})
-units.append({"name": "couchpilot.service", "scope": "system"})
+units.append({"name": "couchside.service", "scope": "system"})
 
 actions, order = {}, []
 if have_sddm:
@@ -257,8 +277,8 @@ else
     say "Installing sudoers rule at $SUDOERS_FILE"
     note "This grants user '$USER_NAME' passwordless sudo for EXACTLY these commands"
     note "(and nothing else) — the daemon needs them because it runs with no TTY:"
-    cat > "$WORK_DIR/couchpilot-sudoers" <<SUDOERS
-# couchpilot: allow the CouchPilot agent (running as $USER_NAME, no TTY) to run
+    cat > "$WORK_DIR/couchside-sudoers" <<SUDOERS
+# couchside: allow the Couchside agent (running as $USER_NAME, no TTY) to run
 # exactly the privileged commands it needs, without a password.
 $USER_NAME ALL=(root) NOPASSWD: /usr/bin/systemctl restart sddm
 $USER_NAME ALL=(root) NOPASSWD: /usr/bin/systemctl reboot
@@ -266,10 +286,10 @@ $USER_NAME ALL=(root) NOPASSWD: /usr/bin/systemctl poweroff
 $USER_NAME ALL=(root) NOPASSWD: /usr/bin/journalctl *
 SUDOERS
     echo "------------------------------------------------------------------"
-    cat "$WORK_DIR/couchpilot-sudoers"
+    cat "$WORK_DIR/couchside-sudoers"
     echo "------------------------------------------------------------------"
-    sudo visudo -cf "$WORK_DIR/couchpilot-sudoers"
-    sudo install -m 0440 -o root -g root "$WORK_DIR/couchpilot-sudoers" "$SUDOERS_FILE"
+    sudo visudo -cf "$WORK_DIR/couchside-sudoers"
+    sudo install -m 0440 -o root -g root "$WORK_DIR/couchside-sudoers" "$SUDOERS_FILE"
 fi
 
 # ---------------------------------------------------------------------------
@@ -283,8 +303,8 @@ fi
 say "Granting the agent access to /dev/uinput (virtual gamepad)"
 sudo install -d /etc/udev/rules.d
 printf '%s\n' 'KERNEL=="uinput", SUBSYSTEM=="misc", GROUP="input", MODE="0660", OPTIONS+="static_node=uinput"' \
-    | sudo tee /etc/udev/rules.d/99-couchpilot-uinput.rules >/dev/null
-printf '%s\n' 'uinput' | sudo tee /etc/modules-load.d/couchpilot-uinput.conf >/dev/null
+    | sudo tee /etc/udev/rules.d/99-couchside-uinput.rules >/dev/null
+printf '%s\n' 'uinput' | sudo tee /etc/modules-load.d/couchside-uinput.conf >/dev/null
 sudo modprobe uinput 2>/dev/null || note "uinput module not loadable now (loads on next boot)"
 if getent group input >/dev/null 2>&1; then
     sudo usermod -aG input "$USER_NAME"
@@ -298,12 +318,12 @@ sudo udevadm trigger --name-match=uinput 2>/dev/null || true
 # ---------------------------------------------------------------------------
 say "Installing systemd unit $UNIT_DST"
 sed -e "s|__USER__|$USER_NAME|g" -e "s|__UID__|$USER_UID|g" \
-    "$WORK_DIR/couchpilot.service" > "$WORK_DIR/couchpilot.service.rendered"
-sudo install -m 0644 -o root -g root "$WORK_DIR/couchpilot.service.rendered" "$UNIT_DST"
+    "$WORK_DIR/couchside.service" > "$WORK_DIR/couchside.service.rendered"
+sudo install -m 0644 -o root -g root "$WORK_DIR/couchside.service.rendered" "$UNIT_DST"
 sudo systemctl daemon-reload
-sudo systemctl enable couchpilot.service
+sudo systemctl enable couchside.service
 # restart (not `enable --now`) so re-installs replace the running process too
-sudo systemctl restart couchpilot.service
+sudo systemctl restart couchside.service
 
 # ---------------------------------------------------------------------------
 # (h) Firewall (Bazzite/Fedora ships firewalld; SteamOS generally has none)
@@ -322,23 +342,34 @@ else
 fi
 
 # ---------------------------------------------------------------------------
-# (i) Migration: retire a pre-rename rescue-agent install
+# (i) Migration: retire every pre-rename install (rescue-agent, couchpilot)
 # ---------------------------------------------------------------------------
-if sudo test -e "$OLD_TOKEN_FILE" || [ -f "/etc/systemd/system/$OLD_UNIT" ]; then
-    say "Found a pre-rename Rescue Remote install — migrating"
-    if [ -f "/etc/systemd/system/$OLD_UNIT" ]; then
-        sudo systemctl disable --now "$OLD_UNIT" 2>/dev/null || true
-        sudo rm -f "/etc/systemd/system/$OLD_UNIT"
-        sudo systemctl daemon-reload
-        note "removed old $OLD_UNIT (replaced by couchpilot.service)"
+# The token was already inherited above (section d). Here we disable+remove the
+# old units and sudoers rules for BOTH prior names so they don't linger or fight
+# the new couchside.service for /dev/uinput or the listen port.
+for entry in "${OLD_INSTALLS[@]}"; do
+    old_etc="${entry%%|*}"
+    rest="${entry#*|}"
+    old_unit="${rest%%|*}"
+    old_sudoers="${rest##*|}"
+    old_token="${old_etc}/token"
+    if sudo test -e "$old_token" || [ -f "/etc/systemd/system/$old_unit" ] \
+       || sudo test -e "$old_sudoers"; then
+        say "Retiring old install: $old_unit"
+        if [ -f "/etc/systemd/system/$old_unit" ]; then
+            sudo systemctl disable --now "$old_unit" 2>/dev/null || true
+            sudo rm -f "/etc/systemd/system/$old_unit"
+            sudo systemctl daemon-reload
+            note "removed old $old_unit (replaced by couchside.service)"
+        fi
+        if sudo test -e "$old_sudoers"; then
+            sudo rm -f "$old_sudoers"
+            note "removed old $old_sudoers (replaced by $SUDOERS_FILE)"
+        fi
+        note "($old_etc left in place — its token was already migrated;"
+        note " remove it manually when you're satisfied paired phones still work)"
     fi
-    if sudo test -e "$OLD_SUDOERS"; then
-        sudo rm -f "$OLD_SUDOERS"
-        note "removed old $OLD_SUDOERS (replaced by $SUDOERS_FILE)"
-    fi
-    note "the old token was copied to $TOKEN_FILE, so paired phones keep working"
-    note "($OLD_ETC_DIR left in place — remove it manually when you're satisfied)"
-fi
+done
 
 # ---------------------------------------------------------------------------
 # (j) Verify + pairing info
@@ -353,11 +384,11 @@ TOKEN="$(cat "$TOKEN_FILE")"
 # /proc/sys/kernel/hostname is always present on Linux; strip any domain part.
 HOST_SHORT="$(cat /proc/sys/kernel/hostname 2>/dev/null || cat /etc/hostname 2>/dev/null || echo localhost)"
 HOST_SHORT="${HOST_SHORT%%.*}"
-PAIR_URL="couchpilot://setup?host=${HOST_SHORT}.local&port=${PORT}&token=${TOKEN}"
+PAIR_URL="couchside://setup?host=${HOST_SHORT}.local&port=${PORT}&token=${TOKEN}"
 
 echo
 echo "=================================================================="
-echo " CouchPilot agent is running on ${HOST_SHORT}.local:${PORT}"
+echo " Couchside agent is running on ${HOST_SHORT}.local:${PORT}"
 echo
 echo " TOKEN: ${TOKEN}"
 echo

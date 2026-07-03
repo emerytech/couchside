@@ -1,4 +1,4 @@
-# CouchPilot brand pack
+# Couchside brand pack
 
 Everything here regenerates from one command:
 
@@ -26,7 +26,7 @@ A minimal geometric couch (backrest, two cushions, two arms) with a green
 | `svg/mark-mono-navy.svg` | All-navy, for light surfaces. |
 | `svg/icon.svg` | The app-icon badge (mark on a navy rounded square). |
 | `svg/favicon.svg` | Same badge, ships as the site favicon. |
-| `svg/wordmark.svg` | `CouchPilot` two-tone wordmark, Space Mono. |
+| `svg/wordmark.svg` | `Couchside` two-tone wordmark, Space Mono. |
 | `svg/lockup-horizontal.svg` | Badge + wordmark + tagline, side by side. |
 | `svg/lockup-stacked.svg` | Badge above wordmark. |
 | `png/icon-1024.png`, `icon-512.png` | Raster app icon / store listing. |
@@ -46,14 +46,14 @@ A minimal geometric couch (backrest, two cushions, two arms) with a green
 | card | `#141c2e` | Cards, buttons |
 | ink | `#e6edf7` | Primary text, "Couch" |
 | muted | `#8b98ad` | Secondary text |
-| green | `#34d399` | Status dot, "Pilot", success |
+| green | `#34d399` | Status dot, "side", success |
 | blue | `#60a5fa` | Links, secondary accent |
 
 ## Type
 
 **Space Mono** everywhere — it is the app's own typeface, so the brand reads as
 one system across product and marketing. Wordmark is two-tone: `Couch` in ink,
-`Pilot` in green (echoing the status dot). Tagline: **Remote console for your HTPC.**
+`side` in green (echoing the status dot). Tagline: **Remote console for your HTPC.**
 
 ## Usage rules
 

@@ -1,12 +1,12 @@
 #!/usr/bin/env python3
-"""couchpilotd.py — box-side agent for CouchPilot.
+"""couchsided.py — box-side agent for Couchside.
 
-Pure python3 stdlib. Serves the CouchPilot agent API contract v1 on port 8787.
+Pure python3 stdlib. Serves the Couchside agent API contract v1 on port 8787.
 Runs on SteamOS (Arch) and Bazzite (Fedora Atomic) as a systemd service; also
 runs on macOS in --mock mode for phone-app development.
 
 Watched units and recovery actions are config-driven:
-/etc/couchpilot/config.json (overridable with --config). On a missing or
+/etc/couchside/config.json (overridable with --config). On a missing or
 invalid config the agent logs a warning and falls back to safe generic
 defaults.
 """
@@ -34,18 +34,18 @@ try:
 except ImportError:  # pragma: no cover
     fcntl = None
 
-APP_NAME = "couchpilot-agent"
+APP_NAME = "couchside-agent"
 VERSION = "2.1.0"
 UID = os.getuid()
 XDG_RUNTIME_DIR = "/run/user/%d" % UID
 
-DEFAULT_CONFIG_PATH = "/etc/couchpilot/config.json"
+DEFAULT_CONFIG_PATH = "/etc/couchside/config.json"
 DEFAULT_PORT = 8787
 
 # ---------------------------------------------------------------------------
 # Config: watched units + recovery actions
 #
-# /etc/couchpilot/config.json schema:
+# /etc/couchside/config.json schema:
 # {
 #   "port": 8787,                                   # optional
 #   "units": [{"name": "sddm.service", "scope": "system"|"user"}, ...],
@@ -78,7 +78,7 @@ DEFAULT_PORT = 8787
 DEFAULT_UNITS = [
     # (name, scope)
     ("sddm.service", "system"),
-    ("couchpilot.service", "system"),
+    ("couchside.service", "system"),
 ]
 
 DEFAULT_ACTIONS = {
@@ -518,7 +518,7 @@ def mock_status():
     base = 55.0 + 4.5 * math.sin(now / 97.0)
     temp = round(base + random.uniform(-0.8, 0.8), 1)
     return {
-        "hostname": "couchpilot-box",
+        "hostname": "couchside-box",
         "time": int(now),
         "uptime_s": int(now - MOCK_START + MOCK_BOOT_OFFSET),
         "load": [round(random.uniform(0.2, 1.4), 2),
@@ -538,7 +538,7 @@ def mock_status():
 
 MOCK_UNIT_DESCS = {
     "sddm.service": "Simple Desktop Display Manager",
-    "couchpilot.service": "CouchPilot box agent",
+    "couchside.service": "Couchside box agent",
 }
 
 
@@ -582,9 +582,9 @@ MOCK_LOG_TEMPLATES = {
         "Auth: sddm-helper exited successfully",
         "Greeter stopped",
     ],
-    "couchpilot.service": [
-        "Started CouchPilot box agent.",
-        "couchpilot-agent %s listening on 0.0.0.0:8787" % VERSION,
+    "couchside.service": [
+        "Started Couchside box agent.",
+        "couchside-agent %s listening on 0.0.0.0:8787" % VERSION,
         "GET /api/ping 200 0ms",
         "GET /api/status 200 4ms",
         "GET /api/units 200 61ms",
@@ -601,7 +601,7 @@ def mock_journal(unit, scope, lines):
     out = []
     n = min(lines, 30)
     t = time.time() - n * 47
-    host = "couchpilot-box"
+    host = "couchside-box"
     for i in range(n):
         msg = templates[i % len(templates)]
         ts = time.strftime("%Y-%m-%dT%H:%M:%S%z", time.localtime(t))
@@ -1304,13 +1304,13 @@ def load_token(args):
 
 
 def main():
-    p = argparse.ArgumentParser(description="CouchPilot box agent")
+    p = argparse.ArgumentParser(description="Couchside box agent")
     p.add_argument("--port", type=int, default=None,
                    help="listen port (overrides config; default %d)" % DEFAULT_PORT)
     p.add_argument("--host", default="0.0.0.0")
     p.add_argument("--config", default=DEFAULT_CONFIG_PATH,
                    help="path to config.json (default %s)" % DEFAULT_CONFIG_PATH)
-    p.add_argument("--token-file", default="/etc/couchpilot/token")
+    p.add_argument("--token-file", default="/etc/couchside/token")
     p.add_argument("--token", default=None,
                    help="literal token (overrides --token-file; dev only)")
     p.add_argument("--mock", action="store_true",

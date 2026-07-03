@@ -108,7 +108,7 @@ function ConsoleScreen() {
           ]}
         />
         <Text style={styles.hostname}>
-          {s?.hostname ?? (configured ? settings.host : 'CouchPilot')}
+          {s?.hostname ?? (configured ? settings.host : 'Couchside')}
         </Text>
         <Text style={styles.headerSub}>
           {reachable ? `agent v${s?.agent_version}` : configured ? 'offline' : 'not set up'}
@@ -120,7 +120,7 @@ function ConsoleScreen() {
         <View style={styles.emptyCard}>
           <Text style={styles.emptyTitle}>No box configured</Text>
           <Text style={styles.emptyText}>
-            Open the Setup tab to pair with the CouchPilot agent on your media center or Steam
+            Open the Setup tab to pair with the Couchside agent on your media center or Steam
             machine.
           </Text>
         </View>

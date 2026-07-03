@@ -22,7 +22,7 @@ type PickerUnit = { unit: string; scope: UnitScope; short: string };
 // Shown until /api/units answers (or if it never does).
 const FALLBACK_UNITS: PickerUnit[] = [
   { unit: 'sddm.service', scope: 'system', short: 'sddm' },
-  { unit: 'couchpilot.service', scope: 'system', short: 'couchpilot' },
+  { unit: 'couchside.service', scope: 'system', short: 'couchside' },
 ];
 
 function toPicker(units: Unit[]): PickerUnit[] {

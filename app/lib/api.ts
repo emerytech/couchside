@@ -1,5 +1,5 @@
 /**
- * Typed client for the CouchPilot agent API (contract v1).
+ * Typed client for the Couchside agent API (contract v1).
  * Base URL: http://<host>:<port>  (default port 8787)
  */
 import { Settings } from './settings';

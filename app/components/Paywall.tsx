@@ -76,10 +76,10 @@ export default function Paywall() {
         <View style={styles.markWrap}>
           <Image source={require('@/assets/images/icon.png')} style={styles.mark} />
         </View>
-        <Text style={styles.appName}>CouchPilot</Text>
+        <Text style={styles.appName}>Couchside</Text>
         <Text style={styles.title}>7-day trial ended</Text>
         <Text style={styles.blurb}>
-          Unlock CouchPilot forever with a one-time purchase. No subscription, no account, no
+          Unlock Couchside forever with a one-time purchase. No subscription, no account, no
           tracking.
         </Text>
 

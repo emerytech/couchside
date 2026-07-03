@@ -1,5 +1,5 @@
 /**
- * WebSocket client for the CouchPilot agent virtual gamepad (protocol v1).
+ * WebSocket client for the Couchside agent virtual gamepad (protocol v1).
  *
  * Endpoint: ws://<host>:<port>/ws/gamepad?token=<token>
  * Client -> server (one JSON object per text frame):

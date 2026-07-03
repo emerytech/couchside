@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Regenerate the entire CouchPilot brand asset pack.
+"""Regenerate the entire Couchside brand asset pack.
 
 Single source of truth for the logomark geometry (a minimal geometric couch
 with a green status dot) and the brand palette. Emits scalable SVG masters and
@@ -30,7 +30,7 @@ NAVY_DEEP = "#070d18"
 CARD = "#141c2e"
 INK = "#e6edf7"        # primary text
 MUTED = "#8b98ad"
-GREEN = "#34d399"      # status dot + "Pilot" accent
+GREEN = "#34d399"      # status dot + "side" accent
 BLUE = "#60a5fa"
 WHITE = "#ffffff"
 
@@ -85,7 +85,7 @@ def svg_doc(w, h, body, view=None):
     vb = view or f"0 0 {w} {h}"
     return (
         f'<svg xmlns="http://www.w3.org/2000/svg" width="{w}" height="{h}" '
-        f'viewBox="{vb}" role="img" aria-label="CouchPilot">\n{body}\n</svg>\n'
+        f'viewBox="{vb}" role="img" aria-label="Couchside">\n{body}\n</svg>\n'
     )
 
 
@@ -108,12 +108,12 @@ def write_svgs():
     # already reads well shrunk — ship it as-is for a consistent mark).
     files["favicon.svg"] = files["icon.svg"]
 
-    # Wordmark: two-tone "Couch" + green "Pilot" in Space Mono.
+    # Wordmark: two-tone "Couch" + green "side" in Space Mono.
     wm = (
         '  <style>text{font-family:"Space Mono",ui-monospace,SFMono-Regular,'
         'Menlo,monospace;font-weight:700}</style>\n'
         f'  <text x="0" y="150" font-size="200" letter-spacing="-6" fill="{INK}">'
-        f'Couch<tspan fill="{GREEN}">Pilot</tspan></text>'
+        f'Couch<tspan fill="{GREEN}">side</tspan></text>'
     )
     files["wordmark.svg"] = svg_doc(1160, 210, wm, view="0 0 1160 210")
 
@@ -124,7 +124,7 @@ def write_svgs():
         f'    <rect width="1024" height="1024" rx="224" fill="{NAVY}"/>\n'
         f'{couch_svg(WHITE, GREEN, indent="    ")}\n  </g>\n'
         f'  <text x="380" y="150" font-size="118" font-weight="700" '
-        f'letter-spacing="-4" fill="{INK}">Couch<tspan fill="{GREEN}">Pilot</tspan></text>\n'
+        f'letter-spacing="-4" fill="{INK}">Couch<tspan fill="{GREEN}">side</tspan></text>\n'
         f'  <text x="384" y="212" font-size="41" fill="{MUTED}">'
         f'Remote console for your HTPC</text>'
     )
@@ -138,7 +138,7 @@ def write_svgs():
         f'{couch_svg(WHITE, GREEN, indent="    ")}\n  </g>\n'
         f'  <text x="330" y="470" text-anchor="middle" font-size="120" '
         f'font-weight="700" letter-spacing="-4" fill="{INK}">'
-        f'Couch<tspan fill="{GREEN}">Pilot</tspan></text>'
+        f'Couch<tspan fill="{GREEN}">side</tspan></text>'
     )
     files["lockup-stacked.svg"] = svg_doc(660, 520, lock_v, view="0 0 660 520")
 
@@ -193,15 +193,15 @@ def font(px):
 
 
 def draw_wordmark(d, x, baseline, px, weight=2):
-    """Two-tone 'CouchPilot' with a faux-bold stroke; returns end-x."""
+    """Two-tone 'Couchside' with a faux-bold stroke; returns end-x."""
     f = font(px)
-    couch, pilot = "Couch", "Pilot"
+    couch, side = "Couch", "side"
     d.text((x, baseline), couch, font=f, fill=_rgb(INK), anchor="ls",
            stroke_width=weight, stroke_fill=_rgb(INK))
     w = d.textlength(couch, font=f)
-    d.text((x + w, baseline), pilot, font=f, fill=_rgb(GREEN), anchor="ls",
+    d.text((x + w, baseline), side, font=f, fill=_rgb(GREEN), anchor="ls",
            stroke_width=weight, stroke_fill=_rgb(GREEN))
-    return x + w + d.textlength(pilot, font=f)
+    return x + w + d.textlength(side, font=f)
 
 
 def social_card(w, h, mark_px, wordmark_px, tagline, with_badges):
@@ -214,7 +214,7 @@ def social_card(w, h, mark_px, wordmark_px, tagline, with_badges):
     art = render_art(mark_px, _rgb(WHITE), _rgb(GREEN))
     # The couch body sits at y 370..730 of the tile; center that band vertically.
     band_cy = int(mark_px * (370 + 730) / 2 / 1024)
-    total_w = mark_px + int(mark_px * 0.10) + int(d.textlength("CouchPilot", font=font(wordmark_px)))
+    total_w = mark_px + int(mark_px * 0.10) + int(d.textlength("Couchside", font=font(wordmark_px)))
     ox = (w - total_w) // 2 - int(mark_px * 0.08)
     oy = h // 2 - band_cy - 12
     img.alpha_composite(art, (ox, oy))
