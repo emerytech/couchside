@@ -12,6 +12,7 @@ import {
 
 import { Gated } from '@/components/Gated';
 import { TabScreen } from '@/components/TabScreen';
+import { useLockOrientation } from '@/hooks/useLockOrientation';
 import { usePoll } from '@/hooks/usePoll';
 import { ActionInfo, ActionResult, api, Danger } from '@/lib/api';
 import { useSettings } from '@/lib/SettingsContext';
@@ -58,6 +59,7 @@ type RunRecord = {
 };
 
 export default function ActionsTab() {
+  useLockOrientation('portrait');
   return (
     <TabScreen>
       <Gated>

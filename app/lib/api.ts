@@ -67,6 +67,25 @@ export type Journal = {
   lines: string[];
 };
 
+/**
+ * A launcher tile. Steam games are auto-discovered by the agent (kind
+ * "steam", carrying the numeric appid used for cover art); "custom" launchers
+ * are user-defined argv commands the app can add/delete.
+ */
+export type Launcher = {
+  id: string;
+  label: string;
+  kind: 'steam' | 'custom';
+  /** Steam appid, present for kind "steam" — used for library cover art. */
+  appid?: number;
+};
+
+export type LaunchResult = {
+  ok: boolean;
+  /** Present when ok is false. */
+  error?: string;
+};
+
 // ---------- Errors ----------
 
 export type ApiErrorKind = 'unreachable' | 'unauthorized' | 'http' | 'timeout';
@@ -92,9 +111,14 @@ function baseUrl(settings: Pick<Settings, 'host' | 'port'>): string {
 async function request<T>(
   settings: ConnSettings,
   path: string,
-  opts: { method?: 'GET' | 'POST'; auth?: boolean; timeoutMs?: number } = {},
+  opts: {
+    method?: 'GET' | 'POST' | 'DELETE';
+    auth?: boolean;
+    timeoutMs?: number;
+    body?: unknown;
+  } = {},
 ): Promise<T> {
-  const { method = 'GET', auth = true, timeoutMs = TIMEOUT_MS } = opts;
+  const { method = 'GET', auth = true, timeoutMs = TIMEOUT_MS, body } = opts;
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), timeoutMs);
 
@@ -102,9 +126,11 @@ async function request<T>(
   try {
     const headers: Record<string, string> = {};
     if (auth) headers.Authorization = `Bearer ${settings.token}`;
+    if (body !== undefined) headers['Content-Type'] = 'application/json';
     res = await fetch(`${baseUrl(settings)}${path}`, {
       method,
       headers,
+      body: body !== undefined ? JSON.stringify(body) : undefined,
       signal: controller.signal,
     });
   } catch (e: unknown) {
@@ -170,6 +196,39 @@ export const api = {
     return request<ActionResult>(settings, `/api/actions/${encodeURIComponent(id)}`, {
       method: 'POST',
       timeoutMs: 20000,
+    });
+  },
+
+  // ---------- launchers ----------
+
+  /** List discovered Steam games + user-defined custom launchers. */
+  launchers(settings: ConnSettings): Promise<{ launchers: Launcher[] }> {
+    return request<{ launchers: Launcher[] }>(settings, '/api/launchers');
+  },
+
+  /** Launch a game/app by launcher id. */
+  launch(settings: ConnSettings, id: string): Promise<LaunchResult> {
+    return request<LaunchResult>(settings, `/api/launchers/${encodeURIComponent(id)}`, {
+      method: 'POST',
+      timeoutMs: 15000,
+    });
+  },
+
+  /** Add a custom launcher (a label + argv command). Returns the created row. */
+  addLauncher(
+    settings: ConnSettings,
+    input: { label: string; cmd: string[] },
+  ): Promise<Launcher> {
+    return request<Launcher>(settings, '/api/launchers', {
+      method: 'POST',
+      body: input,
+    });
+  },
+
+  /** Delete a custom launcher by id. */
+  deleteLauncher(settings: ConnSettings, id: string): Promise<{ ok: boolean }> {
+    return request<{ ok: boolean }>(settings, `/api/launchers/${encodeURIComponent(id)}`, {
+      method: 'DELETE',
     });
   },
 };

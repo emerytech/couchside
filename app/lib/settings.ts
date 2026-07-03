@@ -1,8 +1,13 @@
 import { Platform } from 'react-native';
 import * as SecureStore from 'expo-secure-store';
 
-/** Input style for the Pad tab: full gamepad or Apple-TV-style swipe surface. */
-export type PadMode = 'gamepad' | 'swipe';
+/**
+ * Input style for the Pad tab:
+ *  - gamepad:  full on-screen Xbox controller
+ *  - swipe:    Apple-TV-style d-pad swipe surface
+ *  - trackpad: relative mouse + scroll surface (protocol v2)
+ */
+export type PadMode = 'gamepad' | 'swipe' | 'trackpad';
 
 /**
  * A single paired box (Bazzite media center, Steam Deck, ...). The app manages
@@ -113,7 +118,9 @@ export function nextBoxId(): string {
 // ---------- normalization ----------
 
 function normalizePadMode(v: unknown): PadMode {
-  return v === 'gamepad' ? 'gamepad' : 'swipe';
+  if (v === 'gamepad') return 'gamepad';
+  if (v === 'trackpad') return 'trackpad';
+  return 'swipe';
 }
 
 /** Coerce an arbitrary parsed value into a valid Box, or null if unusable. */

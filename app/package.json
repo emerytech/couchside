@@ -12,6 +12,7 @@
     "expo-iap": "^4.3.6",
     "expo-linking": "~57.0.1",
     "expo-router": "~57.0.2",
+    "expo-screen-orientation": "~57.0.0",
     "expo-secure-store": "~57.0.0",
     "expo-splash-screen": "~57.0.1",
     "expo-status-bar": "~57.0.0",

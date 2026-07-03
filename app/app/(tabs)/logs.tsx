@@ -10,6 +10,7 @@ import {
 
 import { Gated } from '@/components/Gated';
 import { TabScreen } from '@/components/TabScreen';
+import { useLockOrientation } from '@/hooks/useLockOrientation';
 import { usePoll } from '@/hooks/usePoll';
 import { api, Journal, Unit, UnitScope } from '@/lib/api';
 import { useSettings } from '@/lib/SettingsContext';
@@ -34,6 +35,7 @@ function toPicker(units: Unit[]): PickerUnit[] {
 }
 
 export default function LogsTab() {
+  useLockOrientation('portrait');
   return (
     <TabScreen>
       <Gated>

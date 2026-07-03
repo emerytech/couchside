@@ -1,12 +1,24 @@
 /**
- * WebSocket client for the Couchside agent virtual gamepad (protocol v1).
+ * WebSocket client for the Couchside agent virtual gamepad (protocol v2).
  *
  * Endpoint: ws://<host>:<port>/ws/gamepad?token=<token>
+ * The session creates a virtual Xbox 360 pad on connect; mouse + keyboard
+ * uinput devices are created lazily on the server on first use and torn down
+ * with the pad on disconnect.
+ *
  * Client -> server (one JSON object per text frame):
+ *   -- gamepad (v1) --
  *   {"t":"b","k":K,"v":0|1}            button
  *   {"t":"t","k":"lt"|"rt","v":0..255} analog trigger
  *   {"t":"s","k":"l"|"r","x":F,"y":F}  stick, -1..1, +y DOWN
  *   {"t":"ping"}                       keepalive
+ *   -- mouse (v2) --
+ *   {"t":"m","dx":I,"dy":I}            relative move (REL_X/REL_Y)
+ *   {"t":"mb","k":"l"|"r"|"m","v":0|1} button (BTN_LEFT/RIGHT/MIDDLE)
+ *   {"t":"mw","dy":I}                  vertical wheel (dy>0 = scroll up)
+ *   -- keyboard (v2) --
+ *   {"t":"kt","text":S}                type a string
+ *   {"t":"k","key":NAME}              a single special key
  * Server -> client: {"t":"hello","dev":...} | {"t":"pong"} | {"t":"err","msg":...}
  */
 import { Settings } from './settings';
@@ -33,6 +45,23 @@ export type ButtonKey =
 export type TriggerKey = 'lt' | 'rt';
 export type StickKey = 'l' | 'r';
 
+/** Mouse button keys (BTN_LEFT/RIGHT/MIDDLE). */
+export type MouseButton = 'l' | 'r' | 'm';
+
+/** Special keys the server maps to KEY_* codes (see protocol v2). */
+export type SpecialKey =
+  | 'backspace'
+  | 'enter'
+  | 'tab'
+  | 'esc'
+  | 'space'
+  | 'up'
+  | 'down'
+  | 'left'
+  | 'right'
+  | 'home'
+  | 'end';
+
 export const BUTTON_KEYS: ButtonKey[] = [
   'a',
   'b',
@@ -54,6 +83,12 @@ export const BUTTON_KEYS: ButtonKey[] = [
 const PING_INTERVAL_MS = 20_000;
 /** Per-stick send throttle: ~50 Hz. */
 const STICK_INTERVAL_MS = 20;
+/**
+ * Mouse-move send throttle: ~90 Hz. Deltas that arrive between sends are
+ * accumulated (coalesced) and flushed as one {"t":"m"} frame, so a burst of
+ * PanResponder callbacks never floods the socket yet no motion is lost.
+ */
+const MOUSE_MOVE_INTERVAL_MS = 11;
 const BACKOFF_MS = [1000, 2000, 4000];
 
 export type GamepadStatusListener = (status: GamepadStatus, dev: string | null) => void;
@@ -92,6 +127,12 @@ export class GamepadClient {
     l: null,
     r: null,
   };
+
+  // Mouse-move coalescing: accumulate sub-throttle deltas and flush on a
+  // trailing timer so fast drags don't storm the socket.
+  private mouseLastSent = 0;
+  private mousePending: { dx: number; dy: number } = { dx: 0, dy: 0 };
+  private mouseTimer: ReturnType<typeof setTimeout> | null = null;
 
   /** Register the (single) status listener; fires immediately with current state. */
   onStatus(fn: GamepadStatusListener | null): void {
@@ -199,6 +240,68 @@ export class GamepadClient {
     this.sendStick('r', 0, 0);
   }
 
+  // ---------- mouse (v2) ----------
+
+  /**
+   * Relative pointer move. Deltas are accumulated and sent at ~90 Hz; the
+   * server creates the virtual mouse on the first frame. Zero-delta calls are
+   * dropped so idle drags emit nothing.
+   */
+  sendMouseMove(dx: number, dy: number): void {
+    const idx = Math.round(dx);
+    const idy = Math.round(dy);
+    if (idx === 0 && idy === 0) return;
+
+    this.mousePending.dx += idx;
+    this.mousePending.dy += idy;
+
+    const now = Date.now();
+    if (now - this.mouseLastSent >= MOUSE_MOVE_INTERVAL_MS && this.mouseTimer == null) {
+      this.flushMouseMove();
+      return;
+    }
+    if (this.mouseTimer == null) {
+      const wait = Math.max(1, MOUSE_MOVE_INTERVAL_MS - (now - this.mouseLastSent));
+      this.mouseTimer = setTimeout(() => {
+        this.mouseTimer = null;
+        this.flushMouseMove();
+      }, wait);
+    }
+  }
+
+  private flushMouseMove(): void {
+    const { dx, dy } = this.mousePending;
+    this.mousePending = { dx: 0, dy: 0 };
+    this.mouseLastSent = Date.now();
+    if (dx === 0 && dy === 0) return;
+    this.sendRaw({ t: 'm', dx, dy });
+  }
+
+  /** Mouse button press/release (BTN_LEFT/RIGHT/MIDDLE). */
+  sendMouseButton(k: MouseButton, v: 0 | 1): void {
+    this.sendRaw({ t: 'mb', k, v });
+  }
+
+  /** Vertical wheel scroll; dy>0 scrolls up. */
+  sendWheel(dy: number): void {
+    const idy = Math.round(dy);
+    if (idy === 0) return;
+    this.sendRaw({ t: 'mw', dy: idy });
+  }
+
+  // ---------- keyboard (v2) ----------
+
+  /** Type a string (printable ASCII). Server maps each char to KEY_* codes. */
+  sendText(text: string): void {
+    if (!text) return;
+    this.sendRaw({ t: 'kt', text });
+  }
+
+  /** A single special key press+release (backspace, enter, arrows, …). */
+  sendKey(key: SpecialKey): void {
+    this.sendRaw({ t: 'k', key });
+  }
+
   // ---------- internals ----------
 
   private open(): void {
@@ -298,6 +401,11 @@ export class GamepadClient {
       }
       this.stickPending[k] = null;
     }
+    if (this.mouseTimer != null) {
+      clearTimeout(this.mouseTimer);
+      this.mouseTimer = null;
+    }
+    this.mousePending = { dx: 0, dy: 0 };
     const ws = this.ws;
     if (ws) {
       this.ws = null;

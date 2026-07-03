@@ -13,6 +13,7 @@ import {
 } from 'react-native';
 
 import { TabScreen } from '@/components/TabScreen';
+import { useLockOrientation } from '@/hooks/useLockOrientation';
 import { api, ApiError } from '@/lib/api';
 import { recordPurchaseDate } from '@/lib/entitlement';
 import { useEntitlement } from '@/lib/EntitlementContext';
@@ -108,6 +109,7 @@ function confirmRemove(name: string, onConfirm: () => void) {
 }
 
 export default function SetupScreen() {
+  useLockOrientation('portrait');
   return (
     <TabScreen>
       <SetupBody />

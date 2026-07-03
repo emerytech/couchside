@@ -9,6 +9,7 @@ import {
 
 import { Gated } from '@/components/Gated';
 import { TabScreen } from '@/components/TabScreen';
+import { useLockOrientation } from '@/hooks/useLockOrientation';
 import { usePoll } from '@/hooks/usePoll';
 import { api, humanizeUptime, Status, Unit } from '@/lib/api';
 import { useSettings } from '@/lib/SettingsContext';
@@ -68,6 +69,7 @@ function fmtLastSeen(ts: number | null): string {
 }
 
 export default function ConsoleTab() {
+  useLockOrientation('portrait');
   return (
     <TabScreen>
       <Gated>

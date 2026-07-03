@@ -1,7 +1,11 @@
 /**
- * Virtual gamepad. Emulates an Xbox 360 pad on the box over the agent's
- * /ws/gamepad WebSocket (protocol v1). Connected only while this tab is
- * focused and the app is foregrounded; everything is released on the way out.
+ * Virtual gamepad + trackpad + keyboard. Emulates an Xbox 360 pad, a relative
+ * mouse, and a keyboard on the box over the agent's /ws/gamepad WebSocket
+ * (protocol v2). Connected only while this tab is focused and the app is
+ * foregrounded; everything is released on the way out.
+ *
+ * The Pad tab is the one screen that allows landscape (see useLockOrientation);
+ * in landscape the gamepad controls spread out like a real controller.
  */
 import * as Haptics from 'expo-haptics';
 import { activateKeepAwakeAsync, deactivateKeepAwake } from 'expo-keep-awake';
@@ -15,6 +19,8 @@ import {
   Pressable,
   StyleSheet,
   Text,
+  TextInput,
+  useWindowDimensions,
   View,
   ViewStyle,
 } from 'react-native';
@@ -22,6 +28,7 @@ import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
 import { Gated } from '@/components/Gated';
 import { TabScreen } from '@/components/TabScreen';
+import { useLockOrientation } from '@/hooks/useLockOrientation';
 import { ButtonKey, GamepadClient, GamepadStatus, StickKey, TriggerKey } from '@/lib/gamepad';
 import { PadMode } from '@/lib/settings';
 import { useSettings } from '@/lib/SettingsContext';
@@ -198,6 +205,206 @@ function SwipeSurface({ onStep, onSelect }: SwipeSurfaceProps) {
   );
 }
 
+// ---------- Trackpad surface (relative mouse, protocol v2) ----------
+
+/** Movement under this (px) still counts as a tap/click. */
+const TP_TAP_SLOP = 8;
+/** Touches longer than this aren't taps. */
+const TP_TAP_MS = 350;
+/**
+ * Light acceleration: pointer delta = raw * (BASE + GAIN * speed). Slow drags
+ * track 1:1-ish for precision; fast flicks cover more screen.
+ */
+const TP_BASE = 1.1;
+const TP_GAIN = 0.05;
+/** Screen px of two-finger drag per wheel notch. */
+const TP_SCROLL_STEP = 18;
+
+type TrackpadProps = {
+  onMove: (dx: number, dy: number) => void;
+  onLeftClick: () => void;
+  onRightClick: () => void;
+  onScroll: (notches: number) => void;
+};
+
+/**
+ * Relative-mouse surface:
+ *  - 1-finger drag  -> sendMouseMove (with a light acceleration curve)
+ *  - 1-finger tap   -> left click
+ *  - 2-finger tap   -> right click
+ *  - 2-finger drag  -> vertical scroll (wheel)
+ */
+function Trackpad({ onMove, onLeftClick, onRightClick, onScroll }: TrackpadProps) {
+  const cb = useRef({ onMove, onLeftClick, onRightClick, onScroll });
+  cb.current = { onMove, onLeftClick, onRightClick, onScroll };
+
+  const st = useRef({
+    lastX: 0,
+    lastY: 0,
+    lastT: 0,
+    moved: false,
+    t0: 0,
+    maxTouches: 1,
+    scrollAccum: 0,
+    scrollLastY: 0,
+  });
+
+  const responder = useRef(
+    PanResponder.create({
+      onStartShouldSetPanResponder: () => true,
+      onMoveShouldSetPanResponder: () => true,
+      onPanResponderGrant: (evt) => {
+        const touches = evt.nativeEvent.touches.length || 1;
+        st.current = {
+          lastX: 0,
+          lastY: 0,
+          lastT: Date.now(),
+          moved: false,
+          t0: Date.now(),
+          maxTouches: touches,
+          scrollAccum: 0,
+          scrollLastY: 0,
+        };
+      },
+      onPanResponderMove: (evt, g) => {
+        const s = st.current;
+        const touches = evt.nativeEvent.touches.length;
+        if (touches > s.maxTouches) s.maxTouches = touches;
+        if (!s.moved && Math.hypot(g.dx, g.dy) > TP_TAP_SLOP) s.moved = true;
+
+        if (s.maxTouches >= 2) {
+          // Two-finger drag -> vertical scroll. g.dy is cumulative from grant.
+          const delta = g.dy - s.scrollLastY;
+          s.scrollAccum += delta;
+          while (Math.abs(s.scrollAccum) >= TP_SCROLL_STEP) {
+            const dir = s.scrollAccum > 0 ? 1 : -1;
+            s.scrollAccum -= dir * TP_SCROLL_STEP;
+            // Drag down (dy>0) scrolls content up -> wheel down (negative).
+            cb.current.onScroll(-dir);
+          }
+          s.scrollLastY = g.dy;
+          return;
+        }
+
+        // One-finger drag -> relative pointer move with light acceleration.
+        const now = Date.now();
+        const rawDx = g.dx - s.lastX;
+        const rawDy = g.dy - s.lastY;
+        const dt = Math.max(1, now - s.lastT);
+        const speed = Math.hypot(rawDx, rawDy) / dt; // px/ms
+        const gain = TP_BASE + TP_GAIN * speed * 16; // scale speed to ~per-frame
+        s.lastX = g.dx;
+        s.lastY = g.dy;
+        s.lastT = now;
+        cb.current.onMove(rawDx * gain, rawDy * gain);
+      },
+      onPanResponderRelease: () => {
+        const s = st.current;
+        const wasTap = !s.moved && Date.now() - s.t0 < TP_TAP_MS;
+        if (wasTap) {
+          if (s.maxTouches >= 2) cb.current.onRightClick();
+          else cb.current.onLeftClick();
+        }
+      },
+    }),
+  ).current;
+
+  return (
+    <View style={styles.trackpadSurface} {...responder.panHandlers}>
+      <Text style={styles.swipeHint}>
+        drag to move · tap = click · two-finger tap = right-click · two-finger drag = scroll
+      </Text>
+    </View>
+  );
+}
+
+// ---------- Keyboard bar (off-screen TextInput -> protocol v2 keys) ----------
+
+type KeyboardBarProps = {
+  onText: (s: string) => void;
+  onBackspace: () => void;
+  onEnter: () => void;
+};
+
+/**
+ * A visible "keyboard" button that focuses a hidden TextInput to raise the iOS
+ * keyboard. Printable characters are streamed via onText; Backspace and Enter
+ * are surfaced as their own callbacks. The input is kept effectively empty so
+ * each keystroke is captured individually rather than accumulating a value.
+ */
+function KeyboardBar({ onText, onBackspace, onEnter }: KeyboardBarProps) {
+  const inputRef = useRef<TextInput>(null);
+  const [open, setOpen] = useState(false);
+  // Sentinel char so backspace on an "empty" field still fires onKeyPress with
+  // a real deletion target on some platforms; onChangeText handles the rest.
+  const [value, setValue] = useState('');
+
+  const focus = useCallback(() => {
+    haptic();
+    setOpen(true);
+    // Focus after mount/visibility settles.
+    requestAnimationFrame(() => inputRef.current?.focus());
+  }, []);
+
+  const onChangeText = useCallback(
+    (next: string) => {
+      // New printable characters are whatever got appended past the sentinel.
+      if (next.length > 0) {
+        onText(next);
+      }
+      // Reset so the field never grows; keeps each keystroke atomic.
+      setValue('');
+    },
+    [onText],
+  );
+
+  const onKeyPress = useCallback(
+    (e: { nativeEvent: { key: string } }) => {
+      const key = e.nativeEvent.key;
+      if (key === 'Backspace') {
+        onBackspace();
+      } else if (key === 'Enter') {
+        onEnter();
+      }
+    },
+    [onBackspace, onEnter],
+  );
+
+  return (
+    <>
+      <Pressable
+        onPress={open ? () => inputRef.current?.blur() : focus}
+        style={({ pressed }) => [
+          styles.kbBar,
+          open && styles.kbBarOpen,
+          pressed && styles.btnPressed,
+        ]}>
+        <Text style={[styles.kbBarText, open && styles.kbBarTextOpen]}>
+          {open ? '⌨  keyboard open — type to send · tap done' : '⌨  KEYBOARD'}
+        </Text>
+      </Pressable>
+      <TextInput
+        ref={inputRef}
+        value={value}
+        onChangeText={onChangeText}
+        onKeyPress={onKeyPress}
+        onBlur={() => {
+          setOpen(false);
+          setValue('');
+        }}
+        style={styles.hiddenInput}
+        autoCapitalize="none"
+        autoCorrect={false}
+        autoComplete="off"
+        spellCheck={false}
+        blurOnSubmit={false}
+        keyboardAppearance="dark"
+        caretHidden
+      />
+    </>
+  );
+}
+
 // ---------- Status pill ----------
 
 const STATUS_COLOR: Record<GamepadStatus, string> = {
@@ -221,6 +428,8 @@ function statusLabel(status: GamepadStatus, dev: string | null): string {
 // ---------- Screen ----------
 
 export default function PadTab() {
+  // The one tab that allows landscape so the controller can spread out.
+  useLockOrientation('allow-landscape');
   return (
     <TabScreen>
       <Gated>
@@ -230,9 +439,17 @@ export default function PadTab() {
   );
 }
 
+const MODES: { key: PadMode; label: string }[] = [
+  { key: 'gamepad', label: 'PAD' },
+  { key: 'swipe', label: 'SWIPE' },
+  { key: 'trackpad', label: 'TRACKPAD' },
+];
+
 function PadScreen() {
   const insets = useSafeAreaInsets();
   const navigation = useNavigation();
+  const { width, height } = useWindowDimensions();
+  const landscape = width > height;
   const { settings, ready, update } = useSettings();
   const mode: PadMode = settings.padMode ?? 'swipe';
   const [status, setStatus] = useState<GamepadStatus>('closed');
@@ -350,13 +567,42 @@ function PadScreen() {
     setTimeout(() => client.sendButton('a', 0), 50);
   }, [client]);
 
+  // Trackpad handlers (protocol v2 mouse).
+  const tpMove = useCallback(
+    (dx: number, dy: number) => client.sendMouseMove(dx, dy),
+    [client],
+  );
+  const tpLeft = useCallback(() => {
+    haptic();
+    client.sendMouseButton('l', 1);
+    setTimeout(() => client.sendMouseButton('l', 0), 40);
+  }, [client]);
+  const tpRight = useCallback(() => {
+    haptic();
+    client.sendMouseButton('r', 1);
+    setTimeout(() => client.sendMouseButton('r', 0), 40);
+  }, [client]);
+  const tpScroll = useCallback(
+    (notches: number) => client.sendWheel(notches),
+    [client],
+  );
+
+  // Keyboard handlers (protocol v2 keyboard).
+  const kbText = useCallback((s: string) => client.sendText(s), [client]);
+  const kbBackspace = useCallback(() => client.sendKey('backspace'), [client]);
+  const kbEnter = useCallback(() => client.sendKey('enter'), [client]);
+
+  const keyboardBar = (
+    <KeyboardBar onText={kbText} onBackspace={kbBackspace} onEnter={kbEnter} />
+  );
+
   return (
     <View
       style={[
         styles.screen,
         { paddingTop: 10, paddingBottom: Math.max(insets.bottom, 10) },
       ]}>
-      {/* Header: status pill + input-mode toggle (both modes) */}
+      {/* Header: status pill + input-mode toggle (all modes) */}
       <View style={styles.headerRow}>
         <Pressable onPress={retry} style={styles.pill} hitSlop={8}>
           <View style={[styles.pillDot, { backgroundColor: STATUS_COLOR[status] }]} />
@@ -365,20 +611,17 @@ function PadScreen() {
           </Text>
         </Pressable>
         <View style={styles.modeToggle}>
-          <Pressable
-            onPress={() => setMode('gamepad')}
-            style={[styles.modeSeg, mode === 'gamepad' && styles.modeSegActive]}>
-            <Text style={[styles.modeSegText, mode === 'gamepad' && styles.modeSegTextActive]}>
-              PAD
-            </Text>
-          </Pressable>
-          <Pressable
-            onPress={() => setMode('swipe')}
-            style={[styles.modeSeg, mode === 'swipe' && styles.modeSegActive]}>
-            <Text style={[styles.modeSegText, mode === 'swipe' && styles.modeSegTextActive]}>
-              SWIPE
-            </Text>
-          </Pressable>
+          {MODES.map((m) => (
+            <Pressable
+              key={m.key}
+              onPress={() => setMode(m.key)}
+              style={[styles.modeSeg, mode === m.key && styles.modeSegActive]}>
+              <Text
+                style={[styles.modeSegText, mode === m.key && styles.modeSegTextActive]}>
+                {m.label}
+              </Text>
+            </Pressable>
+          ))}
         </View>
       </View>
 
@@ -403,8 +646,124 @@ function PadScreen() {
             />
             <PadButton label="MENU" {...btn('start')} style={styles.swipeBtn} fontSize={12} />
           </View>
+          {keyboardBar}
         </>
+      ) : mode === 'trackpad' ? (
+        <>
+          {/* Relative-mouse surface + a mouse-button row + keyboard */}
+          <Trackpad
+            onMove={tpMove}
+            onLeftClick={tpLeft}
+            onRightClick={tpRight}
+            onScroll={tpScroll}
+          />
+          <View style={styles.swipeBtnRow}>
+            <PadButton
+              label="L-CLICK"
+              onDown={() => client.sendMouseButton('l', 1)}
+              onUp={() => client.sendMouseButton('l', 0)}
+              style={styles.swipeBtn}
+              fontSize={12}
+            />
+            <PadButton
+              label="M-CLICK"
+              onDown={() => client.sendMouseButton('m', 1)}
+              onUp={() => client.sendMouseButton('m', 0)}
+              style={styles.swipeBtn}
+              fontSize={12}
+            />
+            <PadButton
+              label="R-CLICK"
+              onDown={() => client.sendMouseButton('r', 1)}
+              onUp={() => client.sendMouseButton('r', 0)}
+              style={styles.swipeBtn}
+              fontSize={12}
+            />
+          </View>
+          {keyboardBar}
+        </>
+      ) : landscape ? (
+        // ---------- Landscape gamepad: real-controller spread ----------
+        <View style={styles.landRoot}>
+          {/* Bumpers/triggers along the top */}
+          <View style={styles.landShoulderRow}>
+            <View style={styles.landShoulderSide}>
+              <PadButton label="LT" {...trig('lt')} style={styles.shoulderBtn} />
+              <PadButton label="LB" {...btn('lb')} style={styles.shoulderBtn} />
+            </View>
+            <View style={styles.landShoulderSide}>
+              <PadButton label="RB" {...btn('rb')} style={styles.shoulderBtn} />
+              <PadButton label="RT" {...trig('rt')} style={styles.shoulderBtn} />
+            </View>
+          </View>
+
+          <View style={styles.landMain}>
+            {/* LEFT: stick above d-pad */}
+            <View style={styles.landColumn}>
+              <Stick onMove={stickMove('l')} onRelease={stickRelease('l')} />
+              <View style={styles.dpad}>
+                <View style={styles.dpadRow}>
+                  <View style={styles.dpadSpacer} />
+                  <PadButton label="▲" {...btn('du')} style={styles.dpadBtn} />
+                  <View style={styles.dpadSpacer} />
+                </View>
+                <View style={styles.dpadRow}>
+                  <PadButton label="◀" {...btn('dl')} style={styles.dpadBtn} />
+                  <View style={styles.dpadCenter} />
+                  <PadButton label="▶" {...btn('dr')} style={styles.dpadBtn} />
+                </View>
+                <View style={styles.dpadRow}>
+                  <View style={styles.dpadSpacer} />
+                  <PadButton label="▼" {...btn('dd')} style={styles.dpadBtn} />
+                  <View style={styles.dpadSpacer} />
+                </View>
+              </View>
+            </View>
+
+            {/* CENTER: menu cluster + thumb-clicks */}
+            <View style={styles.landCenter}>
+              <View style={styles.menuRow}>
+                <PadButton label="SELECT" {...btn('select')} style={styles.menuBtn} fontSize={11} />
+                <PadButton
+                  label="STEAM"
+                  {...btn('guide')}
+                  style={[styles.menuBtn, styles.guideBtn]}
+                  color={theme.blue}
+                  fontSize={11}
+                />
+                <PadButton label="START" {...btn('start')} style={styles.menuBtn} fontSize={11} />
+              </View>
+              <View style={styles.landThumbRow}>
+                <PadButton label="L3" {...btn('l3')} style={styles.thumbBtn} fontSize={11} />
+                <PadButton label="R3" {...btn('r3')} style={styles.thumbBtn} fontSize={11} />
+              </View>
+            </View>
+
+            {/* RIGHT: ABXY above right stick */}
+            <View style={styles.landColumn}>
+              <View style={styles.abxy}>
+                <View style={styles.abxyRow}>
+                  <View style={styles.faceSpacer} />
+                  <PadButton label="Y" {...btn('y')} style={styles.faceBtn} color={theme.amber} />
+                  <View style={styles.faceSpacer} />
+                </View>
+                <View style={styles.abxyRow}>
+                  <PadButton label="X" {...btn('x')} style={styles.faceBtn} color={theme.blue} />
+                  <View style={styles.faceSpacer} />
+                  <PadButton label="B" {...btn('b')} style={styles.faceBtn} color={theme.red} />
+                </View>
+                <View style={styles.abxyRow}>
+                  <View style={styles.faceSpacer} />
+                  <PadButton label="A" {...btn('a')} style={styles.faceBtn} color={theme.green} />
+                  <View style={styles.faceSpacer} />
+                </View>
+              </View>
+              <Stick onMove={stickMove('r')} onRelease={stickRelease('r')} />
+            </View>
+          </View>
+        </View>
       ) : (
+        // ---------- Portrait gamepad: original stacked layout ----------
         <>
           {/* Top row: triggers + bumpers */}
           <View style={styles.topRow}>
@@ -529,7 +888,7 @@ const styles = StyleSheet.create({
   },
   modeSeg: {
     paddingVertical: 5,
-    paddingHorizontal: 14,
+    paddingHorizontal: 12,
     borderRadius: 999,
   },
   modeSegActive: {
@@ -556,10 +915,21 @@ const styles = StyleSheet.create({
     justifyContent: 'flex-end',
     padding: 18,
   },
+  trackpadSurface: {
+    flex: 1,
+    backgroundColor: theme.card,
+    borderColor: theme.cardBorder,
+    borderWidth: 1,
+    borderRadius: 24,
+    alignItems: 'center',
+    justifyContent: 'flex-end',
+    padding: 18,
+  },
   swipeHint: {
     color: theme.textFaint,
     fontFamily: mono,
     fontSize: 11,
+    textAlign: 'center',
   },
   swipeBtnRow: {
     flexDirection: 'row',
@@ -571,6 +941,40 @@ const styles = StyleSheet.create({
     width: 96,
     height: 64,
     borderRadius: 999,
+  },
+
+  // Keyboard bar
+  kbBar: {
+    marginTop: 12,
+    backgroundColor: theme.card,
+    borderColor: theme.cardBorder,
+    borderWidth: 1,
+    borderRadius: 999,
+    paddingVertical: 12,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  kbBarOpen: {
+    borderColor: theme.blue,
+    backgroundColor: theme.inset,
+  },
+  kbBarText: {
+    color: theme.textDim,
+    fontFamily: mono,
+    fontSize: 12,
+    fontWeight: '700',
+    letterSpacing: 1,
+  },
+  kbBarTextOpen: {
+    color: theme.blue,
+  },
+  hiddenInput: {
+    position: 'absolute',
+    width: 1,
+    height: 1,
+    opacity: 0,
+    left: -100,
+    top: -100,
   },
 
   topRow: {
@@ -714,5 +1118,39 @@ const styles = StyleSheet.create({
     backgroundColor: theme.card,
     borderColor: theme.blue,
     borderWidth: 1,
+  },
+
+  // ---------- Landscape gamepad layout ----------
+  landRoot: {
+    flex: 1,
+  },
+  landShoulderRow: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    marginBottom: 8,
+  },
+  landShoulderSide: {
+    flexDirection: 'row',
+    gap: 8,
+  },
+  landMain: {
+    flex: 1,
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+  },
+  landColumn: {
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 14,
+  },
+  landCenter: {
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 16,
+  },
+  landThumbRow: {
+    flexDirection: 'row',
+    gap: 16,
   },
 });
