@@ -2,6 +2,7 @@ import { DarkTheme, Stack, ThemeProvider } from 'expo-router';
 import { StatusBar } from 'expo-status-bar';
 import 'react-native-reanimated';
 
+import { EntitlementProvider } from '@/lib/EntitlementContext';
 import { SettingsProvider } from '@/lib/SettingsContext';
 import { theme } from '@/lib/theme';
 
@@ -26,12 +27,14 @@ const opsTheme = {
 export default function RootLayout() {
   return (
     <SettingsProvider>
-      <ThemeProvider value={opsTheme}>
-        <StatusBar style="light" />
-        <Stack>
-          <Stack.Screen name="(tabs)" options={{ headerShown: false }} />
-        </Stack>
-      </ThemeProvider>
+      <EntitlementProvider>
+        <ThemeProvider value={opsTheme}>
+          <StatusBar style="light" />
+          <Stack>
+            <Stack.Screen name="(tabs)" options={{ headerShown: false }} />
+          </Stack>
+        </ThemeProvider>
+      </EntitlementProvider>
     </SettingsProvider>
   );
 }

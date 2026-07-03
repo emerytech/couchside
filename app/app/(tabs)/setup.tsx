@@ -13,6 +13,8 @@ import {
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
 import { api, ApiError } from '@/lib/api';
+import { useEntitlement } from '@/lib/EntitlementContext';
+import { buy, getProduct, restore } from '@/lib/purchase';
 import { useSettings } from '@/lib/SettingsContext';
 import { mono, theme } from '@/lib/theme';
 
@@ -49,9 +51,88 @@ function StepRow({ label, step }: { label: string; step: StepState }) {
   );
 }
 
+/** Subtle entitlement pill: trial countdown (amber) / unlocked (green). */
+function EntitlementPill() {
+  const { entitlement, ready } = useEntitlement();
+  if (!ready) return null;
+  const label =
+    entitlement.state === 'purchased'
+      ? 'Unlocked — thank you'
+      : entitlement.state === 'trial'
+        ? `Trial — ${entitlement.trialDaysLeft} day${entitlement.trialDaysLeft === 1 ? '' : 's'} left`
+        : 'Trial ended';
+  const color =
+    entitlement.state === 'purchased'
+      ? theme.green
+      : entitlement.state === 'trial'
+        ? theme.amber
+        : theme.red;
+  return (
+    <View style={[styles.pill, { borderColor: color }]}>
+      <Text style={[styles.pillText, { color }]}>{label}</Text>
+    </View>
+  );
+}
+
 export default function SetupScreen() {
   const insets = useSafeAreaInsets();
   const { settings, ready, update } = useSettings();
+  const { entitlement, recordPurchase } = useEntitlement();
+
+  const [restoring, setRestoring] = useState(false);
+  const [buying, setBuying] = useState(false);
+  const [restoreMsg, setRestoreMsg] = useState<{ text: string; ok: boolean } | null>(null);
+
+  // Localized price for the Setup buy button (spec: the unlock is purchasable
+  // from the Setup tab, not just the post-trial paywall).
+  const [price, setPrice] = useState<string | null>(null);
+  useEffect(() => {
+    let cancelled = false;
+    getProduct().then((p) => {
+      if (!cancelled && p?.displayPrice) setPrice(p.displayPrice);
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  const onBuy = useCallback(async () => {
+    setBuying(true);
+    setRestoreMsg(null);
+    const result = await buy();
+    if (result.ok) {
+      await recordPurchase();
+      setRestoreMsg({ text: 'Purchased — unlocked. Thank you!', ok: true });
+    } else if (result.reason === 'pending') {
+      setRestoreMsg({
+        text: "Purchase pending — you'll be unlocked once payment completes.",
+        ok: true,
+      });
+    } else if (result.reason === 'unavailable') {
+      setRestoreMsg({ text: 'Store unavailable — try again later.', ok: false });
+    } else if (result.reason === 'error') {
+      setRestoreMsg({ text: result.message || 'Purchase failed — try again.', ok: false });
+    }
+    // 'cancelled': no message, the user changed their mind
+    setBuying(false);
+  }, [recordPurchase]);
+
+  const onRestore = useCallback(async () => {
+    setRestoring(true);
+    setRestoreMsg(null);
+    const result = await restore();
+    if (result.state === 'purchased') {
+      await recordPurchase();
+      setRestoreMsg({ text: 'Purchase restored — unlocked.', ok: true });
+    } else if (result.state === 'none') {
+      setRestoreMsg({ text: 'No previous purchase found for this account.', ok: false });
+    } else if (result.state === 'unavailable') {
+      setRestoreMsg({ text: 'Store unavailable — try again later.', ok: false });
+    } else {
+      setRestoreMsg({ text: result.message || 'Restore failed — try again.', ok: false });
+    }
+    setRestoring(false);
+  }, [recordPurchase]);
 
   const [host, setHost] = useState<string | null>(null);
   const [port, setPort] = useState<string | null>(null);
@@ -158,7 +239,10 @@ export default function SetupScreen() {
           paddingBottom: 32,
         }}
         keyboardShouldPersistTaps="handled">
-        <Text style={styles.title}>Setup</Text>
+        <View style={styles.titleRow}>
+          <Text style={styles.title}>Setup</Text>
+          <EntitlementPill />
+        </View>
 
         {fromQr && (
           <View style={styles.qrBanner}>
@@ -249,6 +333,45 @@ export default function SetupScreen() {
           )}
         </View>
 
+        <View style={styles.card}>
+          <Text style={styles.fieldLabel}>PURCHASE</Text>
+          {entitlement.state !== 'purchased' && (
+            <Pressable
+              onPress={onBuy}
+              disabled={buying || restoring}
+              style={({ pressed }) => [
+                styles.btnBuy,
+                (pressed || buying) && styles.pressed,
+              ]}>
+              <Text style={styles.btnBuyText}>
+                {buying ? 'PURCHASING…' : `UNLOCK — ${price ?? '$4.99'}`}
+              </Text>
+            </Pressable>
+          )}
+          <Pressable
+            onPress={onRestore}
+            disabled={restoring || buying}
+            style={({ pressed }) => [
+              styles.btnRestore,
+              (pressed || restoring) && styles.pressed,
+            ]}>
+            <Text style={styles.btnRestoreText}>
+              {restoring ? 'RESTORING…' : 'RESTORE PURCHASES'}
+            </Text>
+          </Pressable>
+          {restoreMsg != null && (
+            <Text
+              style={[styles.restoreMsg, { color: restoreMsg.ok ? theme.green : theme.red }]}>
+              {restoreMsg.text}
+            </Text>
+          )}
+          {entitlement.state !== 'purchased' && (
+            <Text style={styles.purchaseHint}>
+              One-time unlock · no subscription, no account, no tracking.
+            </Text>
+          )}
+        </View>
+
         <Text style={styles.hint}>
           The agent listens on http://{draftHost.trim() || '<host>'}:{draftPort || '8787'}. All
           routes except /api/ping require the bearer token.
@@ -260,7 +383,21 @@ export default function SetupScreen() {
 
 const styles = StyleSheet.create({
   screen: { flex: 1, backgroundColor: theme.bg },
-  title: { color: theme.text, fontSize: 26, fontWeight: '700', marginBottom: 12, fontFamily: mono },
+  title: { color: theme.text, fontSize: 26, fontWeight: '700', fontFamily: mono },
+  titleRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    marginBottom: 12,
+  },
+  pill: {
+    borderWidth: 1,
+    borderRadius: 999,
+    paddingVertical: 4,
+    paddingHorizontal: 10,
+    backgroundColor: theme.inset,
+  },
+  pillText: { fontSize: 11, fontWeight: '700', letterSpacing: 0.5, fontFamily: mono },
   card: {
     backgroundColor: theme.card,
     borderColor: theme.cardBorder,
@@ -309,6 +446,25 @@ const styles = StyleSheet.create({
   btnTestText: { color: theme.blue, fontWeight: '800', fontSize: 13, letterSpacing: 1 },
   btnSave: { backgroundColor: theme.blue },
   btnSaveText: { color: '#0b1220', fontWeight: '800', fontSize: 13, letterSpacing: 1 },
+  btnBuy: {
+    backgroundColor: theme.blue,
+    borderRadius: 8,
+    paddingVertical: 14,
+    alignItems: 'center',
+    marginBottom: 10,
+  },
+  btnBuyText: { color: '#0b1220', fontWeight: '800', fontSize: 13, letterSpacing: 1 },
+  btnRestore: {
+    backgroundColor: theme.inset,
+    borderColor: theme.cardBorder,
+    borderWidth: 1,
+    borderRadius: 8,
+    paddingVertical: 14,
+    alignItems: 'center',
+  },
+  btnRestoreText: { color: theme.textDim, fontWeight: '800', fontSize: 13, letterSpacing: 1 },
+  restoreMsg: { fontSize: 12, fontFamily: mono, marginTop: 10 },
+  purchaseHint: { color: theme.textFaint, fontSize: 11, marginTop: 10 },
   demoBtn: { alignSelf: 'center', paddingVertical: 10, paddingHorizontal: 8, marginTop: 4 },
   demoBtnText: { color: theme.textFaint, fontSize: 12, fontWeight: '700', letterSpacing: 1.2 },
   pressed: { opacity: 0.7 },

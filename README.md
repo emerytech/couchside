@@ -88,10 +88,10 @@ Mock mode serves believable fake data and never executes real commands. The HTTP
 
 ## Pricing & license
 
-**The agent is free. The app's code is free. The official app builds cost $4.99, once.**
+**The agent is free. The app's code is free. The official app builds are a free 7-day trial, then $4.99 — once.**
 
 - **Agent, installer, brand, docs — MIT.** Use them anywhere, for anything. See [LICENSE](LICENSE).
-- **The mobile app (`app/`) — GPLv3.** Clone the repo, `npx expo run:ios` onto your own phone, modify it, fork it — all welcome. See [app/LICENSE](app/LICENSE).
-- **The official builds on the [App Store] and [Google Play] are a $4.99 one-time purchase** — no subscription, no in-app purchases, no accounts. You're paying for signed, notarized, auto-updating builds and a setup that goes from `curl` to couch in under ten minutes. It's also the only funding this project has — thank you.
+- **The mobile app (`app/`) — GPLv3.** Clone the repo, `npx expo run:ios` onto your own phone, modify it, fork it — all welcome. See [app/LICENSE](app/LICENSE). The trial gate ships in this open source; self-built copies may remove it, and that's fine.
+- **The official builds on the [App Store] and [Google Play] are free to download** with everything unlocked for 7 days, then a **$4.99 one-time in-app unlock** — no subscription, no accounts, and demo mode stays free forever. You're paying for signed, notarized, auto-updating builds and a setup that goes from `curl` to couch in under ten minutes. It's also the only funding this project has — thank you.
 
 © 2026 Taylor Emery (ETS3D LLC).

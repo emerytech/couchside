@@ -20,6 +20,7 @@ import {
 } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
+import { Gated } from '@/components/Gated';
 import { ButtonKey, GamepadClient, GamepadStatus, StickKey, TriggerKey } from '@/lib/gamepad';
 import { PadMode } from '@/lib/settings';
 import { useSettings } from '@/lib/SettingsContext';
@@ -218,7 +219,15 @@ function statusLabel(status: GamepadStatus, dev: string | null): string {
 
 // ---------- Screen ----------
 
-export default function PadScreen() {
+export default function PadTab() {
+  return (
+    <Gated>
+      <PadScreen />
+    </Gated>
+  );
+}
+
+function PadScreen() {
   const insets = useSafeAreaInsets();
   const navigation = useNavigation();
   const { settings, ready, update } = useSettings();

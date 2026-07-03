@@ -9,6 +9,7 @@ import {
 } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
+import { Gated } from '@/components/Gated';
 import { usePoll } from '@/hooks/usePoll';
 import { api, Journal, Unit, UnitScope } from '@/lib/api';
 import { useSettings } from '@/lib/SettingsContext';
@@ -32,7 +33,15 @@ function toPicker(units: Unit[]): PickerUnit[] {
   }));
 }
 
-export default function LogsScreen() {
+export default function LogsTab() {
+  return (
+    <Gated>
+      <LogsScreen />
+    </Gated>
+  );
+}
+
+function LogsScreen() {
   const insets = useSafeAreaInsets();
   const { settings, ready } = useSettings();
 

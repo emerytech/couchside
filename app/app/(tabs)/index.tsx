@@ -8,6 +8,7 @@ import {
 } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
+import { Gated } from '@/components/Gated';
 import { usePoll } from '@/hooks/usePoll';
 import { api, humanizeUptime, Status, Unit } from '@/lib/api';
 import { useSettings } from '@/lib/SettingsContext';
@@ -66,7 +67,15 @@ function fmtLastSeen(ts: number | null): string {
   return `${Math.floor(m / 60)}h ${m % 60}m ago`;
 }
 
-export default function ConsoleScreen() {
+export default function ConsoleTab() {
+  return (
+    <Gated>
+      <ConsoleScreen />
+    </Gated>
+  );
+}
+
+function ConsoleScreen() {
   const insets = useSafeAreaInsets();
   const { settings, ready } = useSettings();
 

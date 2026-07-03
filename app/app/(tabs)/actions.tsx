@@ -11,6 +11,7 @@ import {
 } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
+import { Gated } from '@/components/Gated';
 import { usePoll } from '@/hooks/usePoll';
 import { ActionInfo, ActionResult, api, Danger } from '@/lib/api';
 import { useSettings } from '@/lib/SettingsContext';
@@ -56,7 +57,15 @@ type RunRecord = {
   running: boolean;
 };
 
-export default function ActionsScreen() {
+export default function ActionsTab() {
+  return (
+    <Gated>
+      <ActionsScreen />
+    </Gated>
+  );
+}
+
+function ActionsScreen() {
   const insets = useSafeAreaInsets();
   const { settings, ready } = useSettings();
   const [run, setRun] = useState<RunRecord | null>(null);
