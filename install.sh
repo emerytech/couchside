@@ -349,7 +349,10 @@ curl -fsS "http://127.0.0.1:${PORT}/api/ping"
 echo
 
 TOKEN="$(cat "$TOKEN_FILE")"
-HOST_SHORT="$(hostname -s 2>/dev/null || hostname)"
+# Resolve the hostname WITHOUT the `hostname` command — SteamOS doesn't ship it.
+# /proc/sys/kernel/hostname is always present on Linux; strip any domain part.
+HOST_SHORT="$(cat /proc/sys/kernel/hostname 2>/dev/null || cat /etc/hostname 2>/dev/null || echo localhost)"
+HOST_SHORT="${HOST_SHORT%%.*}"
 PAIR_URL="couchpilot://setup?host=${HOST_SHORT}.local&port=${PORT}&token=${TOKEN}"
 
 echo
