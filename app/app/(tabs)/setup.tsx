@@ -307,18 +307,6 @@ export default function SetupScreen() {
               <Text style={styles.btnSaveText}>{saved ? 'SAVED ✓' : 'SAVE'}</Text>
             </Pressable>
           </View>
-
-          <Pressable
-            onPress={() => {
-              // No box handy? Fill in the built-in demo target and test it.
-              setHost('demo');
-              setPort('8787');
-              test({ host: 'demo', port: 8787, token: draftToken });
-            }}
-            disabled={testing || !ready}
-            style={({ pressed }) => [styles.demoBtn, pressed && styles.pressed]}>
-            <Text style={styles.demoBtnText}>TRY DEMO MODE</Text>
-          </Pressable>
         </View>
 
         <View style={styles.card}>
@@ -465,8 +453,6 @@ const styles = StyleSheet.create({
   btnRestoreText: { color: theme.textDim, fontWeight: '800', fontSize: 13, letterSpacing: 1 },
   restoreMsg: { fontSize: 12, fontFamily: mono, marginTop: 10 },
   purchaseHint: { color: theme.textFaint, fontSize: 11, marginTop: 10 },
-  demoBtn: { alignSelf: 'center', paddingVertical: 10, paddingHorizontal: 8, marginTop: 4 },
-  demoBtnText: { color: theme.textFaint, fontSize: 12, fontWeight: '700', letterSpacing: 1.2 },
   pressed: { opacity: 0.7 },
   stepRow: { flexDirection: 'row', alignItems: 'flex-start', marginBottom: 10, gap: 10 },
   stepMark: { fontSize: 18, fontWeight: '800', width: 22, textAlign: 'center' },

@@ -4,7 +4,6 @@ import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
 import { useEntitlement } from '@/lib/EntitlementContext';
 import { buy, getProduct, restore } from '@/lib/purchase';
-import { useSettings } from '@/lib/SettingsContext';
 import { mono, theme } from '@/lib/theme';
 
 const FALLBACK_PRICE = '$4.99';
@@ -12,11 +11,10 @@ const FALLBACK_PRICE = '$4.99';
 /**
  * Full-screen gate shown on Console/Actions/Pad/Logs once the 7-day trial is
  * over and the unlock hasn't been purchased. Setup stays reachable via the
- * tab bar; demo mode ("keep exploring") is never gated.
+ * tab bar.
  */
 export default function Paywall() {
   const insets = useSafeAreaInsets();
-  const { update } = useSettings();
   const { recordPurchase } = useEntitlement();
 
   const [price, setPrice] = useState<string | null>(null);
@@ -66,11 +64,6 @@ export default function Paywall() {
     setBusy(null);
   }, [recordPurchase]);
 
-  const onDemo = useCallback(() => {
-    // Demo mode is free forever; switching the host dismisses the gate.
-    void update({ host: 'demo' });
-  }, [update]);
-
   return (
     <View
       style={[
@@ -114,14 +107,6 @@ export default function Paywall() {
 
         {error != null && <Text style={styles.error}>{error}</Text>}
       </View>
-
-      {/* Never disabled: a hung store flow (e.g. iOS Ask-to-Buy deferral)
-          must not trap the user — demo mode stays reachable. */}
-      <Pressable
-        onPress={onDemo}
-        style={({ pressed }) => [styles.demoLink, pressed && styles.pressed]}>
-        <Text style={styles.demoLinkText}>Keep exploring in demo mode</Text>
-      </Pressable>
     </View>
   );
 }
@@ -182,13 +167,6 @@ const styles = StyleSheet.create({
     fontFamily: mono,
     textAlign: 'center',
     marginTop: 14,
-  },
-  demoLink: { alignSelf: 'center', paddingVertical: 12, paddingHorizontal: 12 },
-  demoLinkText: {
-    color: theme.textFaint,
-    fontSize: 13,
-    fontWeight: '600',
-    textDecorationLine: 'underline',
   },
   pressed: { opacity: 0.7 },
 });

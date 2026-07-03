@@ -120,7 +120,7 @@ function ConsoleScreen() {
           <Text style={styles.emptyTitle}>No box configured</Text>
           <Text style={styles.emptyText}>
             Open the Setup tab to pair with the CouchPilot agent on your media center or Steam
-            machine — or try demo mode.
+            machine.
           </Text>
         </View>
       )}

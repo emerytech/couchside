@@ -5,8 +5,8 @@
  *   'purchased' — couchpilot_unlock owned (cached locally, re-validated
  *                 against the store on app start).
  *   'trial'     — within TRIAL_DAYS of first launch.
- *   'expired'   — trial over, not purchased. The tabs gate on this (demo mode
- *                 is never gated — see components/Gated.tsx).
+ *   'expired'   — trial over, not purchased. The tabs gate on this
+ *                 (see components/Gated.tsx).
  *
  * No account, no server: the first-launch timestamp lives in the iOS
  * Keychain / Android Keystore via expo-secure-store (localStorage on the

@@ -12,7 +12,7 @@ export type Settings = {
 };
 
 export const DEFAULT_SETTINGS: Settings = {
-  // Empty until the user pairs a box (Setup tab). "demo" enables demo mode.
+  // Empty until the user pairs a box (Setup tab).
   host: '',
   port: 8787,
   token: '',
