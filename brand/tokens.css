@@ -1,0 +1,11 @@
+:root {
+  --cp-navy: #0b1220;
+  --cp-navyDeep: #070d18;
+  --cp-card: #141c2e;
+  --cp-ink: #e6edf7;
+  --cp-muted: #8b98ad;
+  --cp-green: #34d399;
+  --cp-blue: #60a5fa;
+  --cp-white: #ffffff;
+  --cp-mono: "Space Mono", ui-monospace, SFMono-Regular, Menlo, monospace;
+}

@@ -1,0 +1,13 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="660" height="520" viewBox="0 0 660 520" role="img" aria-label="CouchPilot">
+  <style>text{font-family:"Space Mono",ui-monospace,monospace}</style>
+  <g transform="translate(228,0) scale(0.34)">
+    <rect width="1024" height="1024" rx="224" fill="#0b1220"/>
+    <rect x="194" y="440" width="92" height="290" rx="42" fill="#ffffff"/>
+    <rect x="738" y="440" width="92" height="290" rx="42" fill="#ffffff"/>
+    <rect x="294" y="370" width="436" height="230" rx="40" fill="#ffffff"/>
+    <rect x="294" y="608" width="214" height="122" rx="26" fill="#ffffff"/>
+    <rect x="516" y="608" width="214" height="122" rx="26" fill="#ffffff"/>
+    <circle cx="806" cy="318" r="40" fill="#34d399"/>
+  </g>
+  <text x="330" y="470" text-anchor="middle" font-size="120" font-weight="700" letter-spacing="-4" fill="#e6edf7">Couch<tspan fill="#34d399">Pilot</tspan></text>
+</svg>
