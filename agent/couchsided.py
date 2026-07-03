@@ -28,7 +28,7 @@ import tempfile
 import threading
 import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
-from urllib.parse import urlparse, parse_qs
+from urllib.parse import urlparse, parse_qs, unquote
 
 try:
     import fcntl  # POSIX only; uinput needs it (Linux), absent on Windows
@@ -36,7 +36,7 @@ except ImportError:  # pragma: no cover
     fcntl = None
 
 APP_NAME = "couchside-agent"
-VERSION = "2.3.0"
+VERSION = "2.4.0"
 UID = os.getuid()
 XDG_RUNTIME_DIR = "/run/user/%d" % UID
 
@@ -110,6 +110,32 @@ DEFAULT_ACTIONS = {
 }
 
 DEFAULT_ACTION_ORDER = ["restart-session", "reboot", "poweroff"]
+
+# SteamOS session-switch actions, injected at load time when
+# steamos-session-select exists (see _inject_session_actions). Built-in rather
+# than config-driven so they appear on any SteamOS box without editing
+# /etc/couchside/config.json. No sudo needed — session-select runs as the user.
+SESSION_ACTIONS = {
+    "switch-desktop": {
+        "label": "Switch to Desktop",
+        "description": "Leave Game Mode for the SteamOS desktop",
+        "danger": "medium",
+        # "plasma" = one-time switch to the desktop (doesn't change the default
+        # login mode, so the box still boots into Game Mode). NB: session-select
+        # has no "desktop" arg — valid targets are plasma*/gamescope.
+        "cmd": ["steamos-session-select", "plasma"],
+        "user_env": True,
+        "detached": True,
+    },
+    "return-gamemode": {
+        "label": "Return to Game Mode",
+        "description": "Switch back from the desktop to Steam Game Mode",
+        "danger": "medium",
+        "cmd": ["steamos-session-select", "gamescope"],
+        "user_env": True,
+        "detached": True,
+    },
+}
 
 # Custom launcher limits (see the SECURITY NOTE in the launcher routes).
 MAX_LAUNCHERS = 100        # cap on total custom launchers
@@ -291,6 +317,21 @@ def load_config(path):
     LAUNCHERS = launchers
     print("config loaded from %s: %d units, %d actions, %d launchers"
           % (path, len(WATCHLIST), len(ACTIONS), len(LAUNCHERS)), flush=True)
+
+
+def _inject_session_actions():
+    """Add the SteamOS session-switch actions (Switch to Desktop / Return to
+    Game Mode) when steamos-session-select is present and the config didn't
+    already define them. Called after load_config so it applies whether config
+    loaded or fell back to defaults. Idempotent."""
+    global ACTIONS, ACTION_ORDER
+    if not shutil.which("steamos-session-select"):
+        return
+    for aid, spec in SESSION_ACTIONS.items():
+        if aid not in ACTIONS:
+            ACTIONS[aid] = dict(spec)
+            if aid not in ACTION_ORDER:
+                ACTION_ORDER.append(aid)
 
 # ---------------------------------------------------------------------------
 # Real-mode data collection (Linux; each helper degrades gracefully)
@@ -2241,7 +2282,9 @@ class Handler(BaseHTTPRequestHandler):
             # POST /api/launchers/<id> — fire-and-forget launch.
             lprefix = "/api/launchers/"
             if path.startswith(lprefix):
-                launcher_id = path[len(lprefix):]
+                # The app percent-encodes the id (encodeURIComponent turns the
+                # "steam:"/"custom:" colon into %3A), so decode before matching.
+                launcher_id = unquote(path[len(lprefix):])
                 argv = _launcher_argv(launcher_id)
                 if argv is None:
                     self._send(404, {"ok": False,
@@ -2279,7 +2322,7 @@ class Handler(BaseHTTPRequestHandler):
 
             lprefix = "/api/launchers/"
             if path.startswith(lprefix):
-                launcher_id = path[len(lprefix):]
+                launcher_id = unquote(path[len(lprefix):])
                 if launcher_id.startswith("steam:"):
                     self._send(400, {"error": "not deletable"}, started)
                     return
@@ -2567,6 +2610,7 @@ def main():
     args = p.parse_args()
 
     load_config(args.config)
+    _inject_session_actions()
     port = args.port if args.port is not None else (CONFIG_PORT or DEFAULT_PORT)
 
     Handler.token = load_token(args)
