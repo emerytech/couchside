@@ -5,7 +5,6 @@
  * deleted here. Tapping a tile launches it (haptic + brief toast).
  */
 import Ionicons from '@expo/vector-icons/Ionicons';
-import * as Haptics from 'expo-haptics';
 import React, { useCallback, useMemo, useState } from 'react';
 import {
   ActivityIndicator,
@@ -28,20 +27,9 @@ import { TabScreen } from '@/components/TabScreen';
 import { useLockOrientation } from '@/hooks/useLockOrientation';
 import { usePoll } from '@/hooks/usePoll';
 import { api, Launcher } from '@/lib/api';
+import { hapticError, hapticLight, hapticMedium, hapticSuccess } from '@/lib/haptics';
 import { useSettings } from '@/lib/SettingsContext';
 import { mono, theme } from '@/lib/theme';
-
-function hapticImpact(style: Haptics.ImpactFeedbackStyle) {
-  if (Platform.OS !== 'web') {
-    Haptics.impactAsync(style).catch(() => {});
-  }
-}
-
-function hapticNotify(type: Haptics.NotificationFeedbackType) {
-  if (Platform.OS !== 'web') {
-    Haptics.notificationAsync(type).catch(() => {});
-  }
-}
 
 /** Steam library cover art (600x900 portrait). */
 function coverUrl(appid: number): string {
@@ -270,18 +258,18 @@ function LaunchScreen() {
 
   const launch = useCallback(
     async (l: Launcher) => {
-      hapticImpact(Haptics.ImpactFeedbackStyle.Medium);
+      hapticMedium();
       try {
         const res = await api.launch(settings, l.id);
         if (res.ok) {
-          hapticNotify(Haptics.NotificationFeedbackType.Success);
+          hapticSuccess();
           showToast(`Launching ${l.label}…`);
         } else {
-          hapticNotify(Haptics.NotificationFeedbackType.Error);
+          hapticError();
           showToast(res.error ? `Failed: ${res.error}` : `Failed to launch ${l.label}`);
         }
       } catch (e: unknown) {
-        hapticNotify(Haptics.NotificationFeedbackType.Error);
+        hapticError();
         showToast(e instanceof Error ? e.message : 'Launch failed');
       }
     },
@@ -293,10 +281,10 @@ function LaunchScreen() {
       confirmDelete(l.label, async () => {
         try {
           await api.deleteLauncher(settings, l.id);
-          hapticNotify(Haptics.NotificationFeedbackType.Success);
+          hapticSuccess();
           list.refresh();
         } catch (e: unknown) {
-          hapticNotify(Haptics.NotificationFeedbackType.Error);
+          hapticError();
           showToast(e instanceof Error ? e.message : 'Delete failed');
         }
       });
@@ -307,7 +295,7 @@ function LaunchScreen() {
   const add = useCallback(
     async (label: string, cmd: string[]) => {
       await api.addLauncher(settings, { label, cmd });
-      hapticNotify(Haptics.NotificationFeedbackType.Success);
+      hapticSuccess();
       list.refresh();
     },
     [settings, list],
@@ -335,7 +323,7 @@ function LaunchScreen() {
         <Text style={styles.title}>Launch</Text>
         <Pressable
           onPress={() => {
-            hapticImpact(Haptics.ImpactFeedbackStyle.Light);
+            hapticLight();
             setAddOpen(true);
           }}
           style={({ pressed }) => [styles.addBtn, pressed && styles.pressed]}>

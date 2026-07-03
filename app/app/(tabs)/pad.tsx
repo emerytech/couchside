@@ -7,7 +7,7 @@
  * The Pad tab is the one screen that allows landscape (see useLockOrientation);
  * in landscape the gamepad controls spread out like a real controller.
  */
-import * as Haptics from 'expo-haptics';
+import { hapticSelection } from '@/lib/haptics';
 import { activateKeepAwakeAsync, deactivateKeepAwake } from 'expo-keep-awake';
 import { useNavigation } from 'expo-router';
 import React, { useCallback, useEffect, useRef, useState } from 'react';
@@ -37,10 +37,10 @@ import { mono, theme } from '@/lib/theme';
 
 const KEEP_AWAKE_TAG = 'rescue-remote-pad';
 
+// All Pad haptics (swipe steps, taps, buttons, sticks, mode switch) route
+// through the app-wide gated emitter so the Settings toggle governs them.
 function haptic() {
-  if (Platform.OS !== 'web') {
-    Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light).catch(() => {});
-  }
+  hapticSelection();
 }
 
 // ---------- Buttons ----------

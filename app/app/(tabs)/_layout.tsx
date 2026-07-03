@@ -2,6 +2,7 @@ import Ionicons from '@expo/vector-icons/Ionicons';
 import { router, Tabs } from 'expo-router';
 import { useEffect, useRef } from 'react';
 
+import { hapticSelection } from '@/lib/haptics';
 import { useBoxes } from '@/lib/SettingsContext';
 import { theme } from '@/lib/theme';
 
@@ -27,6 +28,7 @@ export default function TabLayout() {
 
   return (
     <Tabs
+      screenListeners={{ tabPress: () => hapticSelection() }}
       screenOptions={{
         headerShown: false,
         tabBarActiveTintColor: theme.blue,

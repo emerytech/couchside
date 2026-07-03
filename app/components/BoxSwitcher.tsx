@@ -16,6 +16,7 @@ import {
 } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
+import { hapticSelection } from '@/lib/haptics';
 import {
   BoxReachability,
   useBoxes,
@@ -51,11 +52,13 @@ export function BoxSwitcher() {
   const pillLabel = activeBox?.name ?? 'No box — tap to add';
 
   const goToSetup = () => {
+    hapticSelection();
     setOpen(false);
     router.navigate('/(tabs)/setup');
   };
 
   const onPickBox = (id: string) => {
+    hapticSelection();
     switchBox(id);
     setOpen(false);
   };
@@ -65,7 +68,9 @@ export function BoxSwitcher() {
   return (
     <View style={[styles.headerWrap, { paddingTop: insets.top + 8 }]}>
       <Pressable
-        onPress={() => (boxes.length === 0 ? goToSetup() : setOpen(true))}
+        onPress={() =>
+          boxes.length === 0 ? goToSetup() : (hapticSelection(), setOpen(true))
+        }
         style={({ pressed }) => [styles.pill, pressed && styles.pressed]}
         hitSlop={6}>
         {boxes.length > 0 && <Dot status={activeStatus} />}

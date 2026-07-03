@@ -9,6 +9,7 @@ import {
   Pressable,
   ScrollView,
   StyleSheet,
+  Switch,
   Text,
   TextInput,
   View,
@@ -19,6 +20,12 @@ import { useLockOrientation } from '@/hooks/useLockOrientation';
 import { api, ApiError } from '@/lib/api';
 import { recordPurchaseDate } from '@/lib/entitlement';
 import { useEntitlement } from '@/lib/EntitlementContext';
+import {
+  hapticSelection,
+  hapticSuccess,
+  setHapticsEnabled,
+  useHapticsEnabled,
+} from '@/lib/haptics';
 import { buy, getProduct, restore } from '@/lib/purchase';
 import { Box, DEFAULT_PORT } from '@/lib/settings';
 import { useBoxes, useBoxOnlineStatus, BoxReachability } from '@/lib/SettingsContext';
@@ -386,6 +393,7 @@ function SetupBody() {
   } = useBoxes();
 
   const status = useBoxOnlineStatus(boxes, { active: true, intervalMs: 10000 });
+  const hapticsOn = useHapticsEnabled();
 
   const [restoring, setRestoring] = useState(false);
   const [buying, setBuying] = useState(false);
@@ -409,6 +417,7 @@ function SetupBody() {
     const result = await buy();
     if (result.ok) {
       await recordPurchase();
+      hapticSuccess();
       setRestoreMsg({ text: 'Purchased — unlocked. Thank you!', ok: true });
     } else if (result.reason === 'pending') {
       setRestoreMsg({
@@ -513,6 +522,7 @@ function SetupBody() {
     setPingStep({ state: 'idle' });
     setAuthStep({ state: 'idle' });
     setAgentVersion(null);
+    hapticSuccess();
     setSaved(true);
     setTimeout(() => setSaved(false), 2000);
   }, [addBox, draftConn, name]);
@@ -601,7 +611,10 @@ function SetupBody() {
                   <View style={styles.boxActions}>
                     {!isActive && (
                       <Pressable
-                        onPress={() => switchBox(box.id)}
+                        onPress={() => {
+                          hapticSelection();
+                          switchBox(box.id);
+                        }}
                         hitSlop={8}
                         style={styles.iconBtn}>
                         <Text style={[styles.iconBtnText, { color: theme.blue }]}>SET ACTIVE</Text>
@@ -719,6 +732,30 @@ function SetupBody() {
               <Text style={styles.versionValue}>{agentVersion}</Text>
             </View>
           )}
+        </View>
+
+        <View style={styles.card}>
+          <Text style={styles.fieldLabel}>PREFERENCES</Text>
+          <View style={styles.prefRow}>
+            <View style={styles.prefBody}>
+              <Text style={styles.prefLabel}>Haptic feedback</Text>
+              <Text style={styles.prefSub}>
+                Vibration on taps, buttons, swipes, and actions.
+              </Text>
+            </View>
+            <Switch
+              value={hapticsOn}
+              onValueChange={(v) => {
+                // Buzz on enable so the toggle confirms itself; setHapticsEnabled
+                // runs first so the cue isn't gated off when turning it on.
+                void setHapticsEnabled(v);
+                if (v) hapticSelection();
+              }}
+              trackColor={{ false: theme.inset, true: theme.blue }}
+              thumbColor="#f8fafc"
+              ios_backgroundColor={theme.inset}
+            />
+          </View>
         </View>
 
         <View style={styles.card}>
@@ -959,6 +996,15 @@ const styles = StyleSheet.create({
     paddingTop: 10,
     marginTop: 2,
   },
+  prefRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    gap: 12,
+  },
+  prefBody: { flex: 1, minWidth: 0 },
+  prefLabel: { color: theme.text, fontSize: 15, fontWeight: '600', fontFamily: mono },
+  prefSub: { color: theme.textFaint, fontSize: 12, marginTop: 3 },
   versionLabel: { color: theme.textDim, fontSize: 13 },
   versionValue: { color: theme.green, fontSize: 13, fontFamily: mono, fontWeight: '700' },
   hint: { color: theme.textFaint, fontSize: 12, lineHeight: 17, fontFamily: mono },

@@ -1,4 +1,3 @@
-import * as Haptics from 'expo-haptics';
 import React, { useCallback, useState } from 'react';
 import {
   Alert,
@@ -15,6 +14,7 @@ import { TabScreen } from '@/components/TabScreen';
 import { useLockOrientation } from '@/hooks/useLockOrientation';
 import { usePoll } from '@/hooks/usePoll';
 import { ActionInfo, ActionResult, api, Danger } from '@/lib/api';
+import { hapticError, hapticHeavy, hapticLight, hapticSuccess } from '@/lib/haptics';
 import { useSettings } from '@/lib/SettingsContext';
 import { mono, numeric, theme } from '@/lib/theme';
 
@@ -25,18 +25,6 @@ const DANGER_COLOR: Record<Danger, string> = {
   medium: theme.amber,
   high: theme.red,
 };
-
-function hapticImpact(style: Haptics.ImpactFeedbackStyle) {
-  if (Platform.OS !== 'web') {
-    Haptics.impactAsync(style).catch(() => {});
-  }
-}
-
-function hapticNotify(type: Haptics.NotificationFeedbackType) {
-  if (Platform.OS !== 'web') {
-    Haptics.notificationAsync(type).catch(() => {});
-  }
-}
 
 /** Confirm helper that also works on web (Alert buttons are no-ops on web). */
 function confirm(title: string, message: string, onConfirm: () => void) {
@@ -81,23 +69,20 @@ function ActionsScreen() {
 
   const execute = useCallback(
     async (action: ActionInfo) => {
-      hapticImpact(Haptics.ImpactFeedbackStyle.Heavy);
+      hapticHeavy();
       setRun({ action, running: true });
       try {
         const result = await api.runAction(settings, action.id);
         setRun({ action, result, running: false });
-        hapticNotify(
-          result.ok
-            ? Haptics.NotificationFeedbackType.Success
-            : Haptics.NotificationFeedbackType.Error,
-        );
+        if (result.ok) hapticSuccess();
+        else hapticError();
       } catch (e: unknown) {
         setRun({
           action,
           error: e instanceof Error ? e.message : String(e),
           running: false,
         });
-        hapticNotify(Haptics.NotificationFeedbackType.Error);
+        hapticError();
       }
     },
     [settings],
@@ -105,7 +90,7 @@ function ActionsScreen() {
 
   const onTap = useCallback(
     (action: ActionInfo) => {
-      hapticImpact(Haptics.ImpactFeedbackStyle.Light);
+      hapticLight();
       confirm(action.label, `${action.description}\n\nRun this action?`, () => {
         if (action.danger === 'high') {
           confirm('Are you sure?', `Really run "${action.label}"? This is a HIGH danger action.`, () =>
