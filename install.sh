@@ -376,12 +376,23 @@ PYEOF
 )"
 URL="http://localhost:${PORT}/pair"
 echo "Opening ${URL} full-screen…"
+# Game Mode (gamescope session): there's no desktop browser, but Steam's own
+# built-in browser renders the page — steam://openurl works from a non-Steam
+# shortcut tile. This is what makes the "Pair Phone" tile work on stock
+# SteamOS with no Chrome/Chromium installed.
+if [ "${XDG_CURRENT_DESKTOP:-}" = "gamescope" ] \
+   || pgrep -x gamescope-session >/dev/null 2>&1 \
+   || pgrep -x gamescope >/dev/null 2>&1; then
+    exec steam -ifrunning "steam://openurl/${URL}"
+fi
 if command -v flatpak >/dev/null 2>&1 && flatpak info com.google.Chrome >/dev/null 2>&1; then
     exec flatpak run com.google.Chrome --app="$URL" --start-fullscreen
 elif command -v flatpak >/dev/null 2>&1 && flatpak info org.chromium.Chromium >/dev/null 2>&1; then
     exec flatpak run org.chromium.Chromium --app="$URL" --start-fullscreen
 elif command -v xdg-open >/dev/null 2>&1; then
     exec xdg-open "$URL"
+elif command -v steam >/dev/null 2>&1; then
+    exec steam -ifrunning "steam://openurl/${URL}"
 else
     echo "No browser launcher found. Open this URL on the box:"
     echo "  $URL"
@@ -402,6 +413,183 @@ Terminal=false
 Categories=Utility;
 DESKTOPEOF
 note "wrote $PAIR_DESKTOP"
+
+# ---------------------------------------------------------------------------
+# (h3) Register "Couchside — Pair Phone" as a Steam (non-Steam) shortcut
+# ---------------------------------------------------------------------------
+# Appends an entry to every Steam account's shortcuts.vdf so the pairing tile
+# shows up in Game Mode with no manual "Add a Non-Steam Game" step. Steam only
+# reads shortcuts.vdf at startup and REWRITES it on exit, so edits made while
+# Steam runs are lost — if it's running we offer to shut it down first.
+register_steam_shortcut() {
+    local steamroot=""
+    for d in "$HOME/.local/share/Steam" "$HOME/.steam/steam" \
+             "$HOME/.var/app/com.valvesoftware.Steam/data/Steam"; do
+        [ -d "$d/userdata" ] && { steamroot="$(cd "$d" && pwd -P)"; break; }
+    done
+    if [ -z "$steamroot" ]; then
+        note "no Steam userdata found — skipping the Game Mode tile"
+        return 0
+    fi
+
+    if pgrep -x steam >/dev/null 2>&1; then
+        note "Steam is running. It rewrites its shortcut list on exit, so the"
+        note "tile can only be added while Steam is closed."
+        if ask_yn "Close Steam now to add the 'Couchside — Pair Phone' tile (it will need relaunching)?"; then
+            steam -shutdown >/dev/null 2>&1 || true
+            local waited=0
+            while pgrep -x steam >/dev/null 2>&1 && [ "$waited" -lt 30 ]; do
+                sleep 1; waited=$((waited + 1))
+            done
+            if pgrep -x steam >/dev/null 2>&1; then
+                note "Steam didn't exit in time — skipping. Re-run the installer"
+                note "with Steam closed, or add $PAIR_SCRIPT via"
+                note "Steam > Add a Non-Steam Game."
+                return 0
+            fi
+        else
+            note "skipped. Re-run the installer with Steam closed, or add"
+            note "$PAIR_SCRIPT via Steam > Add a Non-Steam Game."
+            return 0
+        fi
+    fi
+
+    PAIR_SCRIPT="$PAIR_SCRIPT" STEAMROOT="$steamroot" python3 - <<'PYVDF'
+# Append a non-Steam shortcut to shortcuts.vdf (binary VDF, pure stdlib).
+# Idempotent: an existing "Couchside - Pair Phone" entry is updated in place.
+# Writes a .couchside-bak backup and replaces the file atomically.
+import os, struct, sys, zlib
+
+APPNAME = "Couchside — Pair Phone"
+EXE = os.environ["PAIR_SCRIPT"]
+STEAMROOT = os.environ["STEAMROOT"]
+
+
+def parse_map(buf, pos):
+    out = {}
+    while True:
+        t = buf[pos]; pos += 1
+        if t == 0x08:
+            return out, pos
+        end = buf.index(b"\x00", pos)
+        key = buf[pos:end].decode("utf-8", "replace"); pos = end + 1
+        if t == 0x00:
+            val, pos = parse_map(buf, pos)
+        elif t == 0x01:
+            end = buf.index(b"\x00", pos)
+            val = buf[pos:end].decode("utf-8", "replace"); pos = end + 1
+        elif t == 0x02:
+            val = struct.unpack_from("<i", buf, pos)[0]; pos += 4
+        else:
+            raise ValueError("unknown VDF field type 0x%02x" % t)
+        out[key] = val
+
+
+def ser_map(m):
+    out = bytearray()
+    for k, v in m.items():
+        kb = k.encode("utf-8")
+        if isinstance(v, dict):
+            out += b"\x00" + kb + b"\x00" + ser_map(v)
+        elif isinstance(v, int):
+            out += b"\x02" + kb + b"\x00" + struct.pack("<i", v)
+        else:
+            out += b"\x01" + kb + b"\x00" + str(v).encode("utf-8") + b"\x00"
+    out += b"\x08"
+    return bytes(out)
+
+
+def new_entry():
+    # Signed view of crc32(exe+name)|0x80000000 — the appid scheme Steam uses.
+    appid_u = (zlib.crc32((EXE + APPNAME).encode("utf-8")) & 0xFFFFFFFF) | 0x80000000
+    appid = struct.unpack("<i", struct.pack("<I", appid_u))[0]
+    return {
+        "appid": appid,
+        "AppName": APPNAME,
+        "Exe": '"%s"' % EXE,
+        "StartDir": '"%s"' % os.path.dirname(EXE),
+        "icon": "",
+        "ShortcutPath": "",
+        "LaunchOptions": "",
+        "IsHidden": 0,
+        "AllowDesktopConfig": 1,
+        "AllowOverlay": 1,
+        "OpenVR": 0,
+        "Devkit": 0,
+        "DevkitGameID": "",
+        "DevkitOverrideAppID": 0,
+        "LastPlayTime": 0,
+        "FlatpakAppID": "",
+        "tags": {},
+    }
+
+
+def is_ours(entry):
+    if not isinstance(entry, dict):
+        return False
+    name = entry.get("AppName", entry.get("appname", ""))
+    return isinstance(name, str) and name.strip().lower() == APPNAME.strip().lower()
+
+
+added = 0
+for acct in sorted(os.listdir(os.path.join(STEAMROOT, "userdata"))):
+    if not acct.isdigit() or acct == "0":
+        continue
+    cfg = os.path.join(STEAMROOT, "userdata", acct, "config")
+    if not os.path.isdir(cfg):
+        continue
+    path = os.path.join(cfg, "shortcuts.vdf")
+    root = {"shortcuts": {}}
+    if os.path.exists(path):
+        with open(path, "rb") as f:
+            buf = f.read()
+        try:
+            root, _ = parse_map(buf, 0)
+        except Exception as e:
+            print("    ! %s: could not parse (%s) — leaving it alone" % (path, e))
+            continue
+        if not isinstance(root.get("shortcuts"), dict):
+            root["shortcuts"] = {}
+        # Round-trip guard: never touch a file we can't reproduce byte-for-byte.
+        if ser_map(root) != buf:
+            print("    ! %s: reserialization mismatch — leaving it alone" % path)
+            continue
+    shortcuts = root["shortcuts"]
+
+    existing = [k for k, v in shortcuts.items() if is_ours(v)]
+    if existing:
+        for k in existing:  # heal the path if the install dir moved
+            shortcuts[k]["Exe"] = '"%s"' % EXE
+            shortcuts[k]["StartDir"] = '"%s"' % os.path.dirname(EXE)
+        print("    = account %s: tile already present (path refreshed)" % acct)
+    else:
+        idx = 0
+        while str(idx) in shortcuts:
+            idx += 1
+        shortcuts[str(idx)] = new_entry()
+        print("    + account %s: tile added" % acct)
+        added += 1
+
+    data = ser_map(root)
+    # Back up ONCE — the pristine pre-Couchside file. On a re-run the on-disk
+    # file already contains our entry, so re-copying it would clobber the only
+    # good backup; the existence check preserves the original.
+    bak = path + ".couchside-bak"
+    if os.path.exists(path) and not os.path.exists(bak):
+        with open(bak, "wb") as f:
+            with open(path, "rb") as orig:
+                f.write(orig.read())
+    tmp = path + ".couchside-tmp"
+    with open(tmp, "wb") as f:
+        f.write(data)
+    os.replace(tmp, path)
+
+print("    done (%d added). The tile appears next time Steam starts." % added)
+PYVDF
+}
+
+say "Registering the 'Couchside — Pair Phone' tile in Steam (Game Mode)"
+register_steam_shortcut || note "shortcut registration failed — add $PAIR_SCRIPT via Steam > Add a Non-Steam Game"
 
 # ---------------------------------------------------------------------------
 # (i) Migration: retire every pre-rename install (rescue-agent, couchpilot)
@@ -483,6 +671,7 @@ else
 fi
 
 echo
-echo "To re-show the pairing QR later without a terminal: in Desktop mode add"
-echo "'Couchside — Pair Phone' via Steam > Add a Non-Steam Game (one time);"
-echo "launching that tile shows the QR full-screen on your TV."
+echo "To re-show the pairing QR later without a terminal: launch the"
+echo "'Couchside — Pair Phone' tile from your Steam library (Game Mode included"
+echo "— it opens in Steam's built-in browser). If the tile isn't there yet,"
+echo "restart Steam once, or add $PAIR_SCRIPT via Steam > Add a Non-Steam Game."

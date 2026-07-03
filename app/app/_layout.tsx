@@ -2,6 +2,7 @@ import { DarkTheme, Stack, ThemeProvider } from 'expo-router';
 import { StatusBar } from 'expo-status-bar';
 import 'react-native-reanimated';
 
+import { DeepLinkHandler } from '@/lib/DeepLink';
 import { EntitlementProvider } from '@/lib/EntitlementContext';
 import { SettingsProvider } from '@/lib/SettingsContext';
 import { theme } from '@/lib/theme';
@@ -30,6 +31,7 @@ export default function RootLayout() {
       <EntitlementProvider>
         <ThemeProvider value={opsTheme}>
           <StatusBar style="light" />
+          <DeepLinkHandler />
           <Stack>
             <Stack.Screen name="(tabs)" options={{ headerShown: false }} />
           </Stack>

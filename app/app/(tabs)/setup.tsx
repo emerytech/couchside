@@ -1,6 +1,5 @@
-import { useLocalSearchParams } from 'expo-router';
 import QRCode from 'qrcode';
-import React, { useCallback, useEffect, useRef, useState } from 'react';
+import React, { useCallback, useEffect, useState } from 'react';
 import {
   Alert,
   Image,
@@ -518,39 +517,9 @@ function SetupBody() {
     setTimeout(() => setSaved(false), 2000);
   }, [addBox, draftConn, name]);
 
-  // ---------- QR / deep-link pairing ----------
-  // couchside://setup?host=..&port=..&token=..[&ip=..]  → ADD (or update+select) a box.
-  const params = useLocalSearchParams<{
-    host?: string;
-    port?: string;
-    token?: string;
-    ip?: string;
-  }>();
-  const [fromQr, setFromQr] = useState(false);
-  const appliedQrRef = useRef<string | null>(null);
-
-  useEffect(() => {
-    if (!ready) return;
-    const qHost = typeof params.host === 'string' ? params.host : undefined;
-    const qToken = typeof params.token === 'string' ? params.token : undefined;
-    if (!qHost || !qToken) return;
-    const qPort = typeof params.port === 'string' ? params.port : String(DEFAULT_PORT);
-    const qIp = typeof params.ip === 'string' && params.ip ? params.ip : undefined;
-    // ip is part of the key: re-scanning a fresh QR after a DHCP change (same
-    // host/port/token, new ip) must refresh the cached fallback, not no-op.
-    const key = `${qHost}|${qPort}|${qToken}|${qIp ?? ''}`;
-    if (appliedQrRef.current === key) return;
-    appliedQrRef.current = key;
-
-    const p = parseInt(qPort, 10);
-    void addBox({
-      host: qHost.trim(),
-      port: Number.isFinite(p) && p > 0 && p <= 65535 ? p : DEFAULT_PORT,
-      token: qToken,
-      lastIp: qIp,
-    });
-    setFromQr(true);
-  }, [ready, params.host, params.port, params.token, params.ip, addBox]);
+  // QR / deep-link pairing is handled entirely by the root <DeepLinkHandler/>
+  // (app/lib/DeepLink.tsx): it adds the box and navigates here, where the new
+  // box appears active at the top of the fleet.
 
   // ---------- Show pairing QR ----------
   const [qrBox, setQrBox] = useState<Box | null>(null);
@@ -578,12 +547,6 @@ function SetupBody() {
             <EntitlementPill />
           </View>
         </View>
-
-        {fromQr && (
-          <View style={styles.qrBanner}>
-            <Text style={styles.qrBannerText}>Added from QR — now active</Text>
-          </View>
-        )}
 
         {/* ---- Fleet list ---- */}
         <Text style={styles.sectionLabel}>YOUR FLEET</Text>
@@ -933,16 +896,6 @@ const styles = StyleSheet.create({
     letterSpacing: 1,
     fontFamily: mono,
   },
-  qrBanner: {
-    backgroundColor: theme.card,
-    borderColor: theme.blue,
-    borderWidth: 1,
-    borderRadius: 12,
-    paddingVertical: 10,
-    paddingHorizontal: 14,
-    marginBottom: 12,
-  },
-  qrBannerText: { color: theme.blue, fontSize: 13, fontFamily: mono, fontWeight: '700' },
   fieldLabel: {
     color: theme.textFaint,
     fontSize: 11,
