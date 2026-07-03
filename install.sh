@@ -265,6 +265,27 @@ SUDOERS
 fi
 
 # ---------------------------------------------------------------------------
+# (f2) Virtual-gamepad device access (/dev/uinput)
+# ---------------------------------------------------------------------------
+# The gamepad needs the daemon to write /dev/uinput. On seat-based desktops
+# (Bazzite in Game Mode) udev's uaccess tag grants the active user; on a
+# headless box there is no seat, so grant access explicitly: a udev rule puts
+# the node in group "input" mode 0660 (+autoload the module), and the agent
+# user joins that group (the unit also sets SupplementaryGroups=input).
+say "Granting the agent access to /dev/uinput (virtual gamepad)"
+sudo install -d /etc/udev/rules.d
+printf '%s\n' 'KERNEL=="uinput", SUBSYSTEM=="misc", GROUP="input", MODE="0660", OPTIONS+="static_node=uinput"' \
+    | sudo tee /etc/udev/rules.d/99-couchpilot-uinput.rules >/dev/null
+printf '%s\n' 'uinput' | sudo tee /etc/modules-load.d/couchpilot-uinput.conf >/dev/null
+sudo modprobe uinput 2>/dev/null || note "uinput module not loadable now (loads on next boot)"
+if getent group input >/dev/null 2>&1; then
+    sudo usermod -aG input "$USER_NAME"
+fi
+# Apply the rule to the already-present node so no reboot is needed.
+sudo udevadm control --reload-rules 2>/dev/null || true
+sudo udevadm trigger --name-match=uinput 2>/dev/null || true
+
+# ---------------------------------------------------------------------------
 # (g) systemd unit
 # ---------------------------------------------------------------------------
 say "Installing systemd unit $UNIT_DST"

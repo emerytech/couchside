@@ -8,6 +8,10 @@ Wants=network-online.target
 
 [Service]
 User=__USER__
+; input group gives the daemon access to /dev/uinput for the virtual gamepad,
+; without depending on an active login seat (headless boxes have none). Paired
+; with the udev rule the installer writes for /dev/uinput.
+SupplementaryGroups=input
 Environment=XDG_RUNTIME_DIR=/run/user/__UID__
 ExecStart=/usr/bin/python3 /home/__USER__/.local/opt/couchpilot/couchpilotd.py
 Restart=always
