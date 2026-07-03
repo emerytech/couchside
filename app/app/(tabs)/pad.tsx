@@ -365,8 +365,11 @@ function KeyboardBar({ onText, onBackspace, onEnter }: KeyboardBarProps) {
   const focus = useCallback(() => {
     haptic();
     setOpenSynced(true);
-    // Focus after mount/visibility settles.
-    requestAnimationFrame(() => inputRef.current?.focus());
+    // Focus SYNCHRONOUSLY inside the tap handler. Deferring with
+    // requestAnimationFrame pushed focus() into a later tick, outside the touch
+    // event, which iOS can treat as non-interactive and refuse to raise the
+    // keyboard. The input is always mounted, so the ref is ready here.
+    inputRef.current?.focus();
   }, [setOpenSynced]);
 
   // Source of truth: whenever the OS reports the keyboard went down, mark the
@@ -1092,12 +1095,17 @@ const styles = StyleSheet.create({
     color: theme.blue,
   },
   hiddenInput: {
+    // Invisible but FOCUSABLE. iOS won't let a fully transparent (alpha 0) or
+    // off-window view become first responder, so a hidden keyboard-capture
+    // input must stay on-screen with a hair of opacity. Transparent text keeps
+    // the captured keystrokes from ever being seen.
     position: 'absolute',
+    bottom: 0,
+    left: 0,
     width: 1,
     height: 1,
-    opacity: 0,
-    left: -100,
-    top: -100,
+    opacity: 0.02,
+    color: 'transparent',
   },
 
   topRow: {
