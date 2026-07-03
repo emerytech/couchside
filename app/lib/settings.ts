@@ -1,16 +1,21 @@
 import { Platform } from 'react-native';
 import * as SecureStore from 'expo-secure-store';
 
+/** Input style for the Pad tab: full gamepad or Apple-TV-style swipe surface. */
+export type PadMode = 'gamepad' | 'swipe';
+
 export type Settings = {
   host: string;
   port: number;
   token: string;
+  padMode: PadMode;
 };
 
 export const DEFAULT_SETTINGS: Settings = {
   host: 'bazzite.local',
   port: 8787,
   token: '',
+  padMode: 'gamepad',
 };
 
 const KEY = 'rescue-remote.settings.v1';
@@ -57,6 +62,7 @@ export async function loadSettings(): Promise<Settings> {
           ? parsed.port
           : DEFAULT_SETTINGS.port,
       token: typeof parsed.token === 'string' ? parsed.token : DEFAULT_SETTINGS.token,
+      padMode: parsed.padMode === 'swipe' ? 'swipe' : 'gamepad',
     };
   } catch {
     return { ...DEFAULT_SETTINGS };

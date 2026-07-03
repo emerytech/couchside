@@ -4,6 +4,9 @@
  */
 import { Settings } from './settings';
 
+/** The subset of Settings the API client actually needs. */
+export type ConnSettings = Pick<Settings, 'host' | 'port' | 'token'>;
+
 // ---------- Contract types ----------
 
 export type Ping = {
@@ -96,7 +99,7 @@ function baseUrl(settings: Pick<Settings, 'host' | 'port'>): string {
 }
 
 async function request<T>(
-  settings: Settings,
+  settings: ConnSettings,
   path: string,
   opts: { method?: 'GET' | 'POST'; auth?: boolean; timeoutMs?: number } = {},
 ): Promise<T> {
@@ -145,19 +148,19 @@ async function request<T>(
 
 export const api = {
   /** Unauthenticated reachability probe. */
-  ping(settings: Settings): Promise<Ping> {
+  ping(settings: ConnSettings): Promise<Ping> {
     return request<Ping>(settings, '/api/ping', { auth: false });
   },
 
-  status(settings: Settings): Promise<Status> {
+  status(settings: ConnSettings): Promise<Status> {
     return request<Status>(settings, '/api/status');
   },
 
-  units(settings: Settings): Promise<{ units: Unit[] }> {
+  units(settings: ConnSettings): Promise<{ units: Unit[] }> {
     return request<{ units: Unit[] }>(settings, '/api/units');
   },
 
-  journal(settings: Settings, unit: string, scope: UnitScope, lines = 100): Promise<Journal> {
+  journal(settings: ConnSettings, unit: string, scope: UnitScope, lines = 100): Promise<Journal> {
     const q = new URLSearchParams({
       unit,
       lines: String(lines),
@@ -166,11 +169,11 @@ export const api = {
     return request<Journal>(settings, `/api/journal?${q.toString()}`);
   },
 
-  actions(settings: Settings): Promise<{ actions: ActionInfo[] }> {
+  actions(settings: ConnSettings): Promise<{ actions: ActionInfo[] }> {
     return request<{ actions: ActionInfo[] }>(settings, '/api/actions');
   },
 
-  runAction(settings: Settings, id: string): Promise<ActionResult> {
+  runAction(settings: ConnSettings, id: string): Promise<ActionResult> {
     // Actions block server-side for up to 15s (e.g. `systemctl restart sddm`);
     // outlive that so a slow-but-successful action isn't reported as a timeout.
     return request<ActionResult>(settings, `/api/actions/${encodeURIComponent(id)}`, {

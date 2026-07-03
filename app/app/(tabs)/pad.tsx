@@ -21,6 +21,7 @@ import {
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
 import { ButtonKey, GamepadClient, GamepadStatus, StickKey, TriggerKey } from '@/lib/gamepad';
+import { PadMode } from '@/lib/settings';
 import { useSettings } from '@/lib/SettingsContext';
 import { mono, theme } from '@/lib/theme';
 
@@ -129,6 +130,72 @@ function Stick({ onMove, onRelease }: StickProps) {
   );
 }
 
+// ---------- Swipe surface (Apple TV remote style) ----------
+
+/** Pixels of travel per emitted d-pad step. */
+const SWIPE_STEP = 56;
+/** Movement under this is still a tap. */
+const TAP_SLOP = 12;
+/** Touches longer than this aren't taps. */
+const TAP_MS = 450;
+
+type DpadKey = 'du' | 'dd' | 'dl' | 'dr';
+
+type SwipeSurfaceProps = {
+  onStep: (k: DpadKey) => void;
+  onSelect: () => void;
+};
+
+/**
+ * Trackpad-like surface: dragging emits one d-pad step per SWIPE_STEP px along
+ * the dominant axis (a long swipe = several steps, like scrolling a menu);
+ * a quick tap is A/select.
+ */
+function SwipeSurface({ onStep, onSelect }: SwipeSurfaceProps) {
+  const cb = useRef({ onStep, onSelect });
+  cb.current = { onStep, onSelect };
+  const track = useRef({ consumedX: 0, consumedY: 0, moved: false, t0: 0 });
+
+  const responder = useRef(
+    PanResponder.create({
+      onStartShouldSetPanResponder: () => true,
+      onMoveShouldSetPanResponder: () => true,
+      onPanResponderGrant: () => {
+        track.current = { consumedX: 0, consumedY: 0, moved: false, t0: Date.now() };
+      },
+      onPanResponderMove: (_evt, g) => {
+        const t = track.current;
+        if (!t.moved && Math.hypot(g.dx, g.dy) > TAP_SLOP) t.moved = true;
+        // Emit steps until the un-consumed travel is under one step on both axes.
+        for (;;) {
+          const availX = g.dx - t.consumedX;
+          const availY = g.dy - t.consumedY;
+          const ax = Math.abs(availX);
+          const ay = Math.abs(availY);
+          if (ax < SWIPE_STEP && ay < SWIPE_STEP) break;
+          if (ax >= ay) {
+            t.consumedX += Math.sign(availX) * SWIPE_STEP;
+            cb.current.onStep(availX > 0 ? 'dr' : 'dl');
+          } else {
+            t.consumedY += Math.sign(availY) * SWIPE_STEP;
+            cb.current.onStep(availY > 0 ? 'dd' : 'du');
+          }
+        }
+      },
+      onPanResponderRelease: () => {
+        const t = track.current;
+        if (!t.moved && Date.now() - t.t0 < TAP_MS) cb.current.onSelect();
+      },
+    }),
+  ).current;
+
+  return (
+    <View style={styles.swipeSurface} {...responder.panHandlers}>
+      <Text style={styles.swipeHint}>swipe to move · tap to select</Text>
+    </View>
+  );
+}
+
 // ---------- Status pill ----------
 
 const STATUS_COLOR: Record<GamepadStatus, string> = {
@@ -154,7 +221,8 @@ function statusLabel(status: GamepadStatus, dev: string | null): string {
 export default function PadScreen() {
   const insets = useSafeAreaInsets();
   const navigation = useNavigation();
-  const { settings, ready } = useSettings();
+  const { settings, ready, update } = useSettings();
+  const mode: PadMode = settings.padMode ?? 'gamepad';
   const [status, setStatus] = useState<GamepadStatus>('closed');
   const [dev, setDev] = useState<string | null>(null);
 
@@ -244,89 +312,162 @@ export default function PadScreen() {
     [client],
   );
 
+  const setMode = useCallback(
+    (m: PadMode) => {
+      if (m !== mode) {
+        haptic();
+        update({ padMode: m }).catch(() => {});
+      }
+    },
+    [mode, update],
+  );
+
+  // Swipe mode emits self-contained press+release pulses; releaseAll() on
+  // blur/close still covers a pulse interrupted mid-flight.
+  const dpadStep = useCallback(
+    (k: DpadKey) => {
+      haptic();
+      client.sendButton(k, 1);
+      setTimeout(() => client.sendButton(k, 0), 50);
+    },
+    [client],
+  );
+  const selectTap = useCallback(() => {
+    haptic();
+    client.sendButton('a', 1);
+    setTimeout(() => client.sendButton('a', 0), 50);
+  }, [client]);
+
   return (
     <View
       style={[
         styles.screen,
         { paddingTop: insets.top + 10, paddingBottom: Math.max(insets.bottom, 10) },
       ]}>
-      {/* Top row: triggers + bumpers with the status pill between them */}
-      <View style={styles.topRow}>
-        <PadButton label="LT" {...trig('lt')} style={styles.shoulderBtn} />
-        <PadButton label="LB" {...btn('lb')} style={styles.shoulderBtn} />
+      {/* Header: status pill + input-mode toggle (both modes) */}
+      <View style={styles.headerRow}>
         <Pressable onPress={retry} style={styles.pill} hitSlop={8}>
           <View style={[styles.pillDot, { backgroundColor: STATUS_COLOR[status] }]} />
           <Text style={styles.pillText} numberOfLines={1}>
             {statusLabel(status, dev)}
           </Text>
         </Pressable>
-        <PadButton label="RB" {...btn('rb')} style={styles.shoulderBtn} />
-        <PadButton label="RT" {...trig('rt')} style={styles.shoulderBtn} />
-      </View>
-
-      {/* Middle row: select / guide / start */}
-      <View style={styles.menuRow}>
-        <PadButton label="SELECT" {...btn('select')} style={styles.menuBtn} fontSize={11} />
-        <PadButton
-          label="STEAM"
-          {...btn('guide')}
-          style={[styles.menuBtn, styles.guideBtn]}
-          color={theme.blue}
-          fontSize={11}
-        />
-        <PadButton label="START" {...btn('start')} style={styles.menuBtn} fontSize={11} />
-      </View>
-
-      {/* Main clusters: d-pad left, ABXY right */}
-      <View style={styles.clusterRow}>
-        <View style={styles.dpad}>
-          <View style={styles.dpadRow}>
-            <View style={styles.dpadSpacer} />
-            <PadButton label="▲" {...btn('du')} style={styles.dpadBtn} />
-            <View style={styles.dpadSpacer} />
-          </View>
-          <View style={styles.dpadRow}>
-            <PadButton label="◀" {...btn('dl')} style={styles.dpadBtn} />
-            <View style={styles.dpadCenter} />
-            <PadButton label="▶" {...btn('dr')} style={styles.dpadBtn} />
-          </View>
-          <View style={styles.dpadRow}>
-            <View style={styles.dpadSpacer} />
-            <PadButton label="▼" {...btn('dd')} style={styles.dpadBtn} />
-            <View style={styles.dpadSpacer} />
-          </View>
-        </View>
-
-        <View style={styles.abxy}>
-          <View style={styles.abxyRow}>
-            <View style={styles.faceSpacer} />
-            <PadButton label="Y" {...btn('y')} style={styles.faceBtn} color={theme.amber} />
-            <View style={styles.faceSpacer} />
-          </View>
-          <View style={styles.abxyRow}>
-            <PadButton label="X" {...btn('x')} style={styles.faceBtn} color={theme.blue} />
-            <View style={styles.faceSpacer} />
-            <PadButton label="B" {...btn('b')} style={styles.faceBtn} color={theme.red} />
-          </View>
-          <View style={styles.abxyRow}>
-            <View style={styles.faceSpacer} />
-            <PadButton label="A" {...btn('a')} style={styles.faceBtn} color={theme.green} />
-            <View style={styles.faceSpacer} />
-          </View>
+        <View style={styles.modeToggle}>
+          <Pressable
+            onPress={() => setMode('gamepad')}
+            style={[styles.modeSeg, mode === 'gamepad' && styles.modeSegActive]}>
+            <Text style={[styles.modeSegText, mode === 'gamepad' && styles.modeSegTextActive]}>
+              PAD
+            </Text>
+          </Pressable>
+          <Pressable
+            onPress={() => setMode('swipe')}
+            style={[styles.modeSeg, mode === 'swipe' && styles.modeSegActive]}>
+            <Text style={[styles.modeSegText, mode === 'swipe' && styles.modeSegTextActive]}>
+              SWIPE
+            </Text>
+          </Pressable>
         </View>
       </View>
 
-      {/* Bottom corners: analog sticks with thumb-click buttons beside them */}
-      <View style={styles.stickRow}>
-        <View style={styles.stickGroup}>
-          <Stick onMove={stickMove('l')} onRelease={stickRelease('l')} />
-          <PadButton label="L3" {...btn('l3')} style={styles.thumbBtn} fontSize={11} />
-        </View>
-        <View style={styles.stickGroup}>
-          <PadButton label="R3" {...btn('r3')} style={styles.thumbBtn} fontSize={11} />
-          <Stick onMove={stickMove('r')} onRelease={stickRelease('r')} />
-        </View>
-      </View>
+      {mode === 'swipe' ? (
+        <>
+          {/* Apple-TV-remote style: big swipe/tap surface + three big buttons */}
+          <SwipeSurface onStep={dpadStep} onSelect={selectTap} />
+          <View style={styles.swipeBtnRow}>
+            <PadButton
+              label="‹ BACK"
+              {...btn('b')}
+              style={styles.swipeBtn}
+              color={theme.red}
+              fontSize={12}
+            />
+            <PadButton
+              label="STEAM"
+              {...btn('guide')}
+              style={[styles.swipeBtn, styles.guideBtn]}
+              color={theme.blue}
+              fontSize={12}
+            />
+            <PadButton label="MENU" {...btn('start')} style={styles.swipeBtn} fontSize={12} />
+          </View>
+        </>
+      ) : (
+        <>
+          {/* Top row: triggers + bumpers */}
+          <View style={styles.topRow}>
+            <PadButton label="LT" {...trig('lt')} style={styles.shoulderBtn} />
+            <PadButton label="LB" {...btn('lb')} style={styles.shoulderBtn} />
+            <View style={styles.topSpacer} />
+            <PadButton label="RB" {...btn('rb')} style={styles.shoulderBtn} />
+            <PadButton label="RT" {...trig('rt')} style={styles.shoulderBtn} />
+          </View>
+
+          {/* Middle row: select / guide / start */}
+          <View style={styles.menuRow}>
+            <PadButton label="SELECT" {...btn('select')} style={styles.menuBtn} fontSize={11} />
+            <PadButton
+              label="STEAM"
+              {...btn('guide')}
+              style={[styles.menuBtn, styles.guideBtn]}
+              color={theme.blue}
+              fontSize={11}
+            />
+            <PadButton label="START" {...btn('start')} style={styles.menuBtn} fontSize={11} />
+          </View>
+
+          {/* Main clusters: d-pad left, ABXY right */}
+          <View style={styles.clusterRow}>
+            <View style={styles.dpad}>
+              <View style={styles.dpadRow}>
+                <View style={styles.dpadSpacer} />
+                <PadButton label="▲" {...btn('du')} style={styles.dpadBtn} />
+                <View style={styles.dpadSpacer} />
+              </View>
+              <View style={styles.dpadRow}>
+                <PadButton label="◀" {...btn('dl')} style={styles.dpadBtn} />
+                <View style={styles.dpadCenter} />
+                <PadButton label="▶" {...btn('dr')} style={styles.dpadBtn} />
+              </View>
+              <View style={styles.dpadRow}>
+                <View style={styles.dpadSpacer} />
+                <PadButton label="▼" {...btn('dd')} style={styles.dpadBtn} />
+                <View style={styles.dpadSpacer} />
+              </View>
+            </View>
+
+            <View style={styles.abxy}>
+              <View style={styles.abxyRow}>
+                <View style={styles.faceSpacer} />
+                <PadButton label="Y" {...btn('y')} style={styles.faceBtn} color={theme.amber} />
+                <View style={styles.faceSpacer} />
+              </View>
+              <View style={styles.abxyRow}>
+                <PadButton label="X" {...btn('x')} style={styles.faceBtn} color={theme.blue} />
+                <View style={styles.faceSpacer} />
+                <PadButton label="B" {...btn('b')} style={styles.faceBtn} color={theme.red} />
+              </View>
+              <View style={styles.abxyRow}>
+                <View style={styles.faceSpacer} />
+                <PadButton label="A" {...btn('a')} style={styles.faceBtn} color={theme.green} />
+                <View style={styles.faceSpacer} />
+              </View>
+            </View>
+          </View>
+
+          {/* Bottom corners: analog sticks with thumb-click buttons beside them */}
+          <View style={styles.stickRow}>
+            <View style={styles.stickGroup}>
+              <Stick onMove={stickMove('l')} onRelease={stickRelease('l')} />
+              <PadButton label="L3" {...btn('l3')} style={styles.thumbBtn} fontSize={11} />
+            </View>
+            <View style={styles.stickGroup}>
+              <PadButton label="R3" {...btn('r3')} style={styles.thumbBtn} fontSize={11} />
+              <Stick onMove={stickMove('r')} onRelease={stickRelease('r')} />
+            </View>
+          </View>
+        </>
+      )}
     </View>
   );
 }
@@ -359,10 +500,74 @@ const styles = StyleSheet.create({
     letterSpacing: 1,
   },
 
+  headerRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+    marginBottom: 10,
+  },
+  modeToggle: {
+    flexDirection: 'row',
+    backgroundColor: theme.inset,
+    borderColor: theme.cardBorder,
+    borderWidth: 1,
+    borderRadius: 999,
+    padding: 3,
+    gap: 2,
+  },
+  modeSeg: {
+    paddingVertical: 5,
+    paddingHorizontal: 14,
+    borderRadius: 999,
+  },
+  modeSegActive: {
+    backgroundColor: theme.card,
+  },
+  modeSegText: {
+    color: theme.textFaint,
+    fontFamily: mono,
+    fontSize: 10,
+    fontWeight: '700',
+    letterSpacing: 1,
+  },
+  modeSegTextActive: {
+    color: theme.blue,
+  },
+
+  swipeSurface: {
+    flex: 1,
+    backgroundColor: theme.card,
+    borderColor: theme.cardBorder,
+    borderWidth: 1,
+    borderRadius: 24,
+    alignItems: 'center',
+    justifyContent: 'flex-end',
+    padding: 18,
+  },
+  swipeHint: {
+    color: theme.textFaint,
+    fontFamily: mono,
+    fontSize: 11,
+  },
+  swipeBtnRow: {
+    flexDirection: 'row',
+    justifyContent: 'center',
+    gap: 16,
+    marginTop: 14,
+  },
+  swipeBtn: {
+    width: 96,
+    height: 64,
+    borderRadius: 999,
+  },
+
   topRow: {
     flexDirection: 'row',
     alignItems: 'center',
     gap: 8,
+  },
+  topSpacer: {
+    flex: 1,
   },
   shoulderBtn: {
     width: 60,
