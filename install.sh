@@ -87,6 +87,14 @@ command -v systemctl >/dev/null 2>&1 || die "systemctl not found — CouchPilot 
 USER_NAME="$(id -un)"
 USER_UID="$(id -u)"
 
+# Heads-up for the Steam Deck's most common snag: a fresh Deck's "deck" user
+# has no password, so sudo can't authenticate until one is set.
+if ! sudo -n true 2>/dev/null; then
+    note "The next steps use sudo and will prompt for your password."
+    note "On a fresh Steam Deck the 'deck' user has NO password yet — if sudo"
+    note "rejects you, run 'passwd' to set one, then re-run this installer."
+fi
+
 # ---------------------------------------------------------------------------
 # --uninstall
 # ---------------------------------------------------------------------------
