@@ -1,3 +1,16 @@
+CouchPilot is dual-licensed by directory:
+
+  - Everything in this repository EXCEPT the app/ directory (the agent,
+    installer, brand assets, docs, and scripts) is licensed under the MIT
+    License below.
+  - The mobile app in app/ is licensed under the GNU General Public License
+    v3.0 — see app/LICENSE. You are free to build and modify the app for
+    yourself; GPLv3 terms apply to redistribution. The official builds on the
+    App Store and Google Play are sold by the copyright holder (ETS3D LLC),
+    which as licensor is not bound by the GPL's terms for its own code.
+
+---------------------------------------------------------------------------
+
 MIT License
 
 Copyright (c) 2026 Taylor Emery (ETS3D LLC)
