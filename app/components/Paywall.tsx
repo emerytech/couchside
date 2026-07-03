@@ -2,6 +2,7 @@ import React, { useCallback, useEffect, useState } from 'react';
 import { Image, Pressable, StyleSheet, Text, View } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
+import { recordPurchaseDate } from '@/lib/entitlement';
 import { useEntitlement } from '@/lib/EntitlementContext';
 import { buy, getProduct, restore } from '@/lib/purchase';
 import { mono, theme } from '@/lib/theme';
@@ -53,6 +54,7 @@ export default function Paywall() {
     setError(null);
     const result = await restore();
     if (result.state === 'purchased') {
+      if (result.purchaseDateMs != null) await recordPurchaseDate(result.purchaseDateMs);
       await recordPurchase();
     } else if (result.state === 'none') {
       setError('No previous purchase found for this account.');

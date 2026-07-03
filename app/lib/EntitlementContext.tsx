@@ -11,6 +11,7 @@ import {
   Entitlement,
   getEntitlement,
   markPurchased,
+  recordPurchaseDate,
   revalidateWithStore,
   TRIAL_DAYS,
 } from './entitlement';
@@ -27,7 +28,7 @@ type EntitlementContextValue = {
 };
 
 const EntitlementContext = createContext<EntitlementContextValue>({
-  entitlement: { state: 'trial', trialDaysLeft: TRIAL_DAYS },
+  entitlement: { state: 'trial', trialDaysLeft: TRIAL_DAYS, isEarlyAdopter: false },
   ready: false,
   refresh: async () => {},
   recordPurchase: async () => {},
@@ -37,6 +38,7 @@ export function EntitlementProvider({ children }: { children: React.ReactNode })
   const [entitlement, setEntitlement] = useState<Entitlement>({
     state: 'trial',
     trialDaysLeft: TRIAL_DAYS,
+    isEarlyAdopter: false,
   });
   const [ready, setReady] = useState(false);
 
@@ -65,8 +67,11 @@ export function EntitlementProvider({ children }: { children: React.ReactNode })
     })();
     // Out-of-band purchases delivered by the store listener (e.g. a purchase
     // interrupted by an app kill and completed on next launch).
-    setOnPurchased(() => {
-      void recordPurchase();
+    setOnPurchased((purchaseDateMs) => {
+      void (async () => {
+        if (purchaseDateMs != null) await recordPurchaseDate(purchaseDateMs);
+        await recordPurchase();
+      })();
     });
     return () => {
       cancelled = true;

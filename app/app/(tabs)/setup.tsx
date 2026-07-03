@@ -1,6 +1,7 @@
 import { useLocalSearchParams } from 'expo-router';
 import React, { useCallback, useEffect, useRef, useState } from 'react';
 import {
+  Alert,
   KeyboardAvoidingView,
   Platform,
   Pressable,
@@ -10,12 +11,14 @@ import {
   TextInput,
   View,
 } from 'react-native';
-import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
+import { TabScreen } from '@/components/TabScreen';
 import { api, ApiError } from '@/lib/api';
+import { recordPurchaseDate } from '@/lib/entitlement';
 import { useEntitlement } from '@/lib/EntitlementContext';
 import { buy, getProduct, restore } from '@/lib/purchase';
-import { useSettings } from '@/lib/SettingsContext';
+import { DEFAULT_PORT } from '@/lib/settings';
+import { useBoxes, useBoxOnlineStatus, BoxReachability } from '@/lib/SettingsContext';
 import { mono, theme } from '@/lib/theme';
 
 type StepState =
@@ -74,17 +77,63 @@ function EntitlementPill() {
   );
 }
 
+/** Subtle gold Early Adopter badge — purchased before the cutoff, local-only. */
+function EarlyAdopterBadge() {
+  const { entitlement, ready } = useEntitlement();
+  if (!ready || !entitlement.isEarlyAdopter) return null;
+  return (
+    <View style={styles.earlyBadge}>
+      <Text style={styles.earlyBadgeText}>★ EARLY ADOPTER</Text>
+    </View>
+  );
+}
+
+function dotColor(status: BoxReachability | undefined): string {
+  if (status === 'reachable') return theme.green;
+  if (status === 'offline') return theme.slate;
+  return theme.amber;
+}
+
+/** Cross-platform confirm (Alert buttons are no-ops on web). */
+function confirmRemove(name: string, onConfirm: () => void) {
+  if (Platform.OS === 'web') {
+    // eslint-disable-next-line no-alert
+    if (typeof window !== 'undefined' && window.confirm(`Remove "${name}"?`)) onConfirm();
+    return;
+  }
+  Alert.alert('Remove box', `Remove "${name}"?`, [
+    { text: 'Cancel', style: 'cancel' },
+    { text: 'Remove', style: 'destructive', onPress: onConfirm },
+  ]);
+}
+
 export default function SetupScreen() {
-  const insets = useSafeAreaInsets();
-  const { settings, ready, update } = useSettings();
+  return (
+    <TabScreen>
+      <SetupBody />
+    </TabScreen>
+  );
+}
+
+function SetupBody() {
   const { entitlement, recordPurchase } = useEntitlement();
+  const {
+    boxes,
+    activeBoxId,
+    ready,
+    addBox,
+    removeBox,
+    renameBox,
+    switchBox,
+  } = useBoxes();
+
+  const status = useBoxOnlineStatus(boxes, { active: true, intervalMs: 10000 });
 
   const [restoring, setRestoring] = useState(false);
   const [buying, setBuying] = useState(false);
   const [restoreMsg, setRestoreMsg] = useState<{ text: string; ok: boolean } | null>(null);
 
-  // Localized price for the Setup buy button (spec: the unlock is purchasable
-  // from the Setup tab, not just the post-trial paywall).
+  // Localized price for the Setup buy button.
   const [price, setPrice] = useState<string | null>(null);
   useEffect(() => {
     let cancelled = false;
@@ -113,7 +162,6 @@ export default function SetupScreen() {
     } else if (result.reason === 'error') {
       setRestoreMsg({ text: result.message || 'Purchase failed — try again.', ok: false });
     }
-    // 'cancelled': no message, the user changed their mind
     setBuying(false);
   }, [recordPurchase]);
 
@@ -122,6 +170,7 @@ export default function SetupScreen() {
     setRestoreMsg(null);
     const result = await restore();
     if (result.state === 'purchased') {
+      if (result.purchaseDateMs != null) await recordPurchaseDate(result.purchaseDateMs);
       await recordPurchase();
       setRestoreMsg({ text: 'Purchase restored — unlocked.', ok: true });
     } else if (result.state === 'none') {
@@ -134,14 +183,12 @@ export default function SetupScreen() {
     setRestoring(false);
   }, [recordPurchase]);
 
-  const [host, setHost] = useState<string | null>(null);
-  const [port, setPort] = useState<string | null>(null);
-  const [token, setToken] = useState<string | null>(null);
+  // ---------- Add / pair draft ----------
 
-  // Draft values fall back to persisted settings until the field is edited.
-  const draftHost = host ?? settings.host;
-  const draftPort = port ?? String(settings.port);
-  const draftToken = token ?? settings.token;
+  const [name, setName] = useState('');
+  const [host, setHost] = useState('');
+  const [port, setPort] = useState('');
+  const [token, setToken] = useState('');
 
   const [pingStep, setPingStep] = useState<StepState>({ state: 'idle' });
   const [authStep, setAuthStep] = useState<StepState>({ state: 'idle' });
@@ -149,84 +196,107 @@ export default function SetupScreen() {
   const [testing, setTesting] = useState(false);
   const [saved, setSaved] = useState(false);
 
-  const draftSettings = useCallback(() => {
-    const p = parseInt(draftPort, 10);
+  const draftConn = useCallback(() => {
+    const p = parseInt(port, 10);
     return {
-      host: draftHost.trim(),
-      port: Number.isFinite(p) && p > 0 && p <= 65535 ? p : 8787,
-      token: draftToken,
+      host: host.trim(),
+      port: Number.isFinite(p) && p > 0 && p <= 65535 ? p : DEFAULT_PORT,
+      token,
     };
-  }, [draftHost, draftPort, draftToken]);
+  }, [host, port, token]);
 
-  const test = useCallback(async (override?: { host: string; port: number; token: string }) => {
-    const s = override ?? draftSettings();
-    setTesting(true);
-    setAgentVersion(null);
-    setAuthStep({ state: 'idle' });
-    setPingStep({ state: 'running' });
+  const test = useCallback(
+    async (override?: { host: string; port: number; token: string }) => {
+      const s = override ?? draftConn();
+      setTesting(true);
+      setAgentVersion(null);
+      setAuthStep({ state: 'idle' });
+      setPingStep({ state: 'running' });
 
-    try {
-      const ping = await api.ping(s);
-      setPingStep({ state: 'ok', detail: `${ping.app} v${ping.version}` });
-    } catch (e: unknown) {
-      setPingStep({ state: 'fail', detail: errDetail(e) });
+      try {
+        const ping = await api.ping(s);
+        setPingStep({ state: 'ok', detail: `${ping.app} v${ping.version}` });
+      } catch (e: unknown) {
+        setPingStep({ state: 'fail', detail: errDetail(e) });
+        setTesting(false);
+        return;
+      }
+
+      setAuthStep({ state: 'running' });
+      try {
+        const st = await api.status(s);
+        setAuthStep({
+          state: 'ok',
+          detail: `${st.hostname} · agent v${st.agent_version}`,
+        });
+        setAgentVersion(st.agent_version);
+      } catch (e: unknown) {
+        setAuthStep({ state: 'fail', detail: errDetail(e) });
+      }
       setTesting(false);
-      return;
-    }
-
-    setAuthStep({ state: 'running' });
-    try {
-      const status = await api.status(s);
-      setAuthStep({
-        state: 'ok',
-        detail: `${status.hostname} · agent v${status.agent_version}`,
-      });
-      setAgentVersion(status.agent_version);
-    } catch (e: unknown) {
-      setAuthStep({ state: 'fail', detail: errDetail(e) });
-    }
-    setTesting(false);
-  }, [draftSettings]);
+    },
+    [draftConn],
+  );
 
   const save = useCallback(async () => {
-    await update(draftSettings());
+    const conn = draftConn();
+    if (!conn.host) return;
+    await addBox({
+      host: conn.host,
+      port: conn.port,
+      token: conn.token,
+      name: name.trim() || undefined,
+    });
+    // Clear the add form after a successful add/pair.
+    setName('');
+    setHost('');
+    setPort('');
+    setToken('');
+    setPingStep({ state: 'idle' });
+    setAuthStep({ state: 'idle' });
+    setAgentVersion(null);
     setSaved(true);
     setTimeout(() => setSaved(false), 2000);
-  }, [update, draftSettings]);
+  }, [addBox, draftConn, name]);
 
-  // QR / deep-link pairing: couchpilot://setup?host=..&port=..&token=..
-  // Prefills the draft fields (never auto-saves) and auto-runs the test once.
+  // ---------- QR / deep-link pairing ----------
+  // couchpilot://setup?host=..&port=..&token=..  → ADD (or update+select) a box.
   const params = useLocalSearchParams<{ host?: string; port?: string; token?: string }>();
   const [fromQr, setFromQr] = useState(false);
-  // Guard: the same params must apply exactly once, not on every re-render.
   const appliedQrRef = useRef<string | null>(null);
-  const pendingQrTestRef = useRef(false);
 
   useEffect(() => {
-    const qHost = params.host;
-    const qToken = params.token;
+    if (!ready) return;
+    const qHost = typeof params.host === 'string' ? params.host : undefined;
+    const qToken = typeof params.token === 'string' ? params.token : undefined;
     if (!qHost || !qToken) return;
-    const key = `${qHost}|${params.port ?? '8787'}|${qToken}`;
+    const qPort = typeof params.port === 'string' ? params.port : String(DEFAULT_PORT);
+    const key = `${qHost}|${qPort}|${qToken}`;
     if (appliedQrRef.current === key) return;
     appliedQrRef.current = key;
-    setHost(qHost);
-    setPort(params.port ?? '8787');
-    setToken(qToken);
-    setFromQr(true);
-    pendingQrTestRef.current = true;
-  }, [params.host, params.port, params.token]);
 
-  // Run the connection test once after the QR drafts have been applied
-  // (test() is recreated with the new drafts, which re-fires this effect).
-  // Only consume the pending flag once the current drafts actually match the
-  // applied QR values — on a cold-start deep link both effects run in the same
-  // mount flush, where test() still closes over the pre-QR drafts.
-  useEffect(() => {
-    if (!pendingQrTestRef.current) return;
-    if (`${draftHost}|${draftPort}|${draftToken}` !== appliedQrRef.current) return;
-    pendingQrTestRef.current = false;
-    test();
-  }, [test, draftHost, draftPort, draftToken]);
+    const p = parseInt(qPort, 10);
+    void addBox({
+      host: qHost.trim(),
+      port: Number.isFinite(p) && p > 0 && p <= 65535 ? p : DEFAULT_PORT,
+      token: qToken,
+    });
+    setFromQr(true);
+  }, [ready, params.host, params.port, params.token, addBox]);
+
+  // ---------- Rename in place ----------
+  const [renamingId, setRenamingId] = useState<string | null>(null);
+  const [renameText, setRenameText] = useState('');
+
+  const beginRename = (id: string, current: string) => {
+    setRenamingId(id);
+    setRenameText(current);
+  };
+  const commitRename = async () => {
+    if (renamingId) await renameBox(renamingId, renameText);
+    setRenamingId(null);
+    setRenameText('');
+  };
 
   return (
     <KeyboardAvoidingView
@@ -234,27 +304,114 @@ export default function SetupScreen() {
       behavior={Platform.OS === 'ios' ? 'padding' : undefined}>
       <ScrollView
         contentContainerStyle={{
-          paddingTop: insets.top + 12,
+          paddingTop: 12,
           paddingHorizontal: 14,
           paddingBottom: 32,
         }}
         keyboardShouldPersistTaps="handled">
         <View style={styles.titleRow}>
-          <Text style={styles.title}>Setup</Text>
-          <EntitlementPill />
+          <Text style={styles.title}>Boxes</Text>
+          <View style={styles.titleBadges}>
+            <EarlyAdopterBadge />
+            <EntitlementPill />
+          </View>
         </View>
 
         {fromQr && (
           <View style={styles.qrBanner}>
-            <Text style={styles.qrBannerText}>Loaded from QR — test &amp; save</Text>
+            <Text style={styles.qrBannerText}>Added from QR — now active</Text>
           </View>
         )}
 
+        {/* ---- Fleet list ---- */}
+        <Text style={styles.sectionLabel}>YOUR FLEET</Text>
+        {boxes.length === 0 ? (
+          <View style={styles.card}>
+            <Text style={styles.emptyText}>
+              No boxes yet. Pair your first machine below — enter its host, port,
+              and token, or scan a QR from the agent.
+            </Text>
+          </View>
+        ) : (
+          boxes.map((box) => {
+            const isActive = box.id === activeBoxId;
+            const isRenaming = renamingId === box.id;
+            return (
+              <View key={box.id} style={styles.boxCard}>
+                <Pressable
+                  onPress={() => switchBox(box.id)}
+                  style={styles.boxMain}
+                  disabled={isRenaming}>
+                  <View style={[styles.boxDot, { backgroundColor: dotColor(status[box.id]) }]} />
+                  <View style={styles.boxBody}>
+                    {isRenaming ? (
+                      <TextInput
+                        style={styles.renameInput}
+                        value={renameText}
+                        onChangeText={setRenameText}
+                        onSubmitEditing={commitRename}
+                        autoFocus
+                        placeholder="box name"
+                        placeholderTextColor={theme.textFaint}
+                        autoCapitalize="none"
+                      />
+                    ) : (
+                      <Text style={styles.boxName} numberOfLines={1}>
+                        {box.name}
+                        {isActive && <Text style={styles.activeTag}>  · active</Text>}
+                      </Text>
+                    )}
+                    <Text style={styles.boxHost} numberOfLines={1}>
+                      {box.host}:{box.port}
+                    </Text>
+                  </View>
+                </Pressable>
+                <View style={styles.boxActions}>
+                  {isRenaming ? (
+                    <Pressable onPress={commitRename} hitSlop={8} style={styles.iconBtn}>
+                      <Text style={styles.iconBtnText}>DONE</Text>
+                    </Pressable>
+                  ) : (
+                    <>
+                      <Pressable
+                        onPress={() => beginRename(box.id, box.name)}
+                        hitSlop={8}
+                        style={styles.iconBtn}>
+                        <Text style={styles.iconBtnText}>RENAME</Text>
+                      </Pressable>
+                      <Pressable
+                        onPress={() => confirmRemove(box.name, () => void removeBox(box.id))}
+                        hitSlop={8}
+                        style={styles.iconBtn}>
+                        <Text style={[styles.iconBtnText, { color: theme.red }]}>REMOVE</Text>
+                      </Pressable>
+                    </>
+                  )}
+                </View>
+              </View>
+            );
+          })
+        )}
+
+        {/* ---- Add / pair ---- */}
+        <Text style={[styles.sectionLabel, { marginTop: 18 }]}>ADD / PAIR A BOX</Text>
         <View style={styles.card}>
+          <Text style={styles.fieldLabel}>NAME (optional)</Text>
+          <TextInput
+            style={styles.input}
+            value={name}
+            onChangeText={setName}
+            placeholder="Media center · Steam Deck"
+            placeholderTextColor={theme.textFaint}
+            autoCapitalize="none"
+            autoCorrect={false}
+            editable={ready}
+          />
+
           <Text style={styles.fieldLabel}>HOST</Text>
           <TextInput
             style={styles.input}
-            value={draftHost}
+            value={host}
             onChangeText={setHost}
             placeholder="steamdeck.local · bazzite.local"
             placeholderTextColor={theme.textFaint}
@@ -266,7 +423,7 @@ export default function SetupScreen() {
           <Text style={styles.fieldLabel}>PORT</Text>
           <TextInput
             style={styles.input}
-            value={draftPort}
+            value={port}
             onChangeText={setPort}
             placeholder="8787"
             placeholderTextColor={theme.textFaint}
@@ -277,7 +434,7 @@ export default function SetupScreen() {
           <Text style={styles.fieldLabel}>TOKEN</Text>
           <TextInput
             style={styles.input}
-            value={draftToken}
+            value={token}
             onChangeText={setToken}
             placeholder="bearer token"
             placeholderTextColor={theme.textFaint}
@@ -302,9 +459,13 @@ export default function SetupScreen() {
             </Pressable>
             <Pressable
               onPress={save}
-              disabled={!ready}
-              style={({ pressed }) => [styles.btn, styles.btnSave, pressed && styles.pressed]}>
-              <Text style={styles.btnSaveText}>{saved ? 'SAVED ✓' : 'SAVE'}</Text>
+              disabled={!ready || host.trim().length === 0}
+              style={({ pressed }) => [
+                styles.btn,
+                styles.btnSave,
+                (pressed || host.trim().length === 0) && styles.pressed,
+              ]}>
+              <Text style={styles.btnSaveText}>{saved ? 'ADDED ✓' : 'ADD BOX'}</Text>
             </Pressable>
           </View>
         </View>
@@ -361,8 +522,8 @@ export default function SetupScreen() {
         </View>
 
         <Text style={styles.hint}>
-          The agent listens on http://{draftHost.trim() || '<host>'}:{draftPort || '8787'}. All
-          routes except /api/ping require the bearer token.
+          Each agent listens on http://&lt;host&gt;:&lt;port&gt;. All routes except
+          /api/ping require the bearer token.
         </Text>
       </ScrollView>
     </KeyboardAvoidingView>
@@ -378,6 +539,7 @@ const styles = StyleSheet.create({
     justifyContent: 'space-between',
     marginBottom: 12,
   },
+  titleBadges: { flexDirection: 'row', alignItems: 'center', gap: 8, flexShrink: 1 },
   pill: {
     borderWidth: 1,
     borderRadius: 999,
@@ -386,6 +548,28 @@ const styles = StyleSheet.create({
     backgroundColor: theme.inset,
   },
   pillText: { fontSize: 11, fontWeight: '700', letterSpacing: 0.5, fontFamily: mono },
+  earlyBadge: {
+    borderWidth: 1,
+    borderColor: theme.amber,
+    borderRadius: 999,
+    paddingVertical: 4,
+    paddingHorizontal: 10,
+    backgroundColor: 'rgba(251,191,36,0.12)',
+  },
+  earlyBadgeText: {
+    color: theme.amber,
+    fontSize: 10,
+    fontWeight: '800',
+    letterSpacing: 0.6,
+    fontFamily: mono,
+  },
+  sectionLabel: {
+    color: theme.textFaint,
+    fontSize: 11,
+    fontWeight: '700',
+    letterSpacing: 1.2,
+    marginBottom: 8,
+  },
   card: {
     backgroundColor: theme.card,
     borderColor: theme.cardBorder,
@@ -393,6 +577,47 @@ const styles = StyleSheet.create({
     borderRadius: 12,
     padding: 14,
     marginBottom: 12,
+  },
+  emptyText: { color: theme.textDim, fontSize: 13, lineHeight: 19 },
+  boxCard: {
+    backgroundColor: theme.card,
+    borderColor: theme.cardBorder,
+    borderWidth: 1,
+    borderRadius: 12,
+    paddingVertical: 12,
+    paddingHorizontal: 14,
+    marginBottom: 8,
+  },
+  boxMain: { flexDirection: 'row', alignItems: 'center', gap: 12 },
+  boxDot: { width: 10, height: 10, borderRadius: 5 },
+  boxBody: { flex: 1, minWidth: 0 },
+  boxName: { color: theme.text, fontSize: 15, fontWeight: '700', fontFamily: mono },
+  activeTag: { color: theme.blue, fontSize: 12, fontWeight: '700' },
+  boxHost: { color: theme.textFaint, fontSize: 12, fontFamily: mono, marginTop: 2 },
+  renameInput: {
+    backgroundColor: theme.inset,
+    borderColor: theme.blue,
+    borderWidth: 1,
+    borderRadius: 8,
+    color: theme.text,
+    fontSize: 15,
+    fontFamily: mono,
+    paddingVertical: 6,
+    paddingHorizontal: 10,
+  },
+  boxActions: {
+    flexDirection: 'row',
+    justifyContent: 'flex-end',
+    gap: 16,
+    marginTop: 10,
+  },
+  iconBtn: { paddingVertical: 2 },
+  iconBtnText: {
+    color: theme.textDim,
+    fontSize: 11,
+    fontWeight: '800',
+    letterSpacing: 1,
+    fontFamily: mono,
   },
   qrBanner: {
     backgroundColor: theme.card,

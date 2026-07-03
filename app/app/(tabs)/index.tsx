@@ -6,9 +6,9 @@ import {
   Text,
   View,
 } from 'react-native';
-import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
 import { Gated } from '@/components/Gated';
+import { TabScreen } from '@/components/TabScreen';
 import { usePoll } from '@/hooks/usePoll';
 import { api, humanizeUptime, Status, Unit } from '@/lib/api';
 import { useSettings } from '@/lib/SettingsContext';
@@ -69,14 +69,15 @@ function fmtLastSeen(ts: number | null): string {
 
 export default function ConsoleTab() {
   return (
-    <Gated>
-      <ConsoleScreen />
-    </Gated>
+    <TabScreen>
+      <Gated>
+        <ConsoleScreen />
+      </Gated>
+    </TabScreen>
   );
 }
 
 function ConsoleScreen() {
-  const insets = useSafeAreaInsets();
   const { settings, ready } = useSettings();
 
   // No host yet (fresh install): don't poll, and show the pairing hint
@@ -94,7 +95,7 @@ function ConsoleScreen() {
     <ScrollView
       style={styles.screen}
       contentContainerStyle={{
-        paddingTop: insets.top + 12,
+        paddingTop: 12,
         paddingBottom: 32,
         paddingHorizontal: 14,
       }}>

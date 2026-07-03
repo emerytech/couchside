@@ -20,13 +20,52 @@ import * as SecureStore from 'expo-secure-store';
 import { getProduct, restore } from './purchase';
 
 export type EntitlementState = 'trial' | 'expired' | 'purchased';
-export type Entitlement = { state: EntitlementState; trialDaysLeft: number };
+export type Entitlement = {
+  state: EntitlementState;
+  trialDaysLeft: number;
+  /**
+   * True only when we can prove the unlock was purchased before the early-
+   * adopter cutoff. Conservative: unknown purchase date => false.
+   */
+  isEarlyAdopter: boolean;
+};
 
 export const TRIAL_DAYS = 7;
 const DAY_MS = 24 * 60 * 60 * 1000;
 
+/** Purchases completed before this instant earn the Early Adopter badge. */
+export const EARLY_ADOPTER_CUTOFF_MS = Date.UTC(2026, 8, 1, 0, 0, 0); // 2026-09-01T00:00:00Z
+
 const FIRST_LAUNCH_KEY = 'couchpilot.entitlement.first-launch.v1';
 const PURCHASED_KEY = 'couchpilot.entitlement.unlocked.v1';
+/** Cached original purchase date (ms) when the store reported one. */
+const PURCHASE_DATE_KEY = 'couchpilot.entitlement.purchase-date.v1';
+
+/** True iff a known purchase timestamp falls before the early-adopter cutoff. */
+function earlyAdopterFromDate(purchaseDateMs: number | null): boolean {
+  return purchaseDateMs != null && purchaseDateMs < EARLY_ADOPTER_CUTOFF_MS;
+}
+
+/** Read the cached purchase date, or null when absent/invalid. */
+async function purchaseDateMs(): Promise<number | null> {
+  try {
+    const raw = await storageGet(PURCHASE_DATE_KEY);
+    const ts = raw == null ? NaN : Number(raw);
+    return Number.isFinite(ts) && ts > 0 ? ts : null;
+  } catch {
+    return null;
+  }
+}
+
+/** Cache the store-reported purchase date (best effort). */
+export async function recordPurchaseDate(ms: number): Promise<void> {
+  if (!Number.isFinite(ms) || ms <= 0) return;
+  try {
+    await storageSet(PURCHASE_DATE_KEY, String(Math.round(ms)));
+  } catch {
+    // best effort — the badge just won't show without a persisted date
+  }
+}
 
 /**
  * Persistence wrapper: expo-secure-store on native, localStorage on web —
@@ -92,7 +131,11 @@ export async function markPurchased(): Promise<void> {
 export async function getEntitlement(): Promise<Entitlement> {
   try {
     if ((await storageGet(PURCHASED_KEY)) === '1') {
-      return { state: 'purchased', trialDaysLeft: 0 };
+      return {
+        state: 'purchased',
+        trialDaysLeft: 0,
+        isEarlyAdopter: earlyAdopterFromDate(await purchaseDateMs()),
+      };
     }
   } catch {
     // unreadable cache: fall back to the trial clock
@@ -100,8 +143,8 @@ export async function getEntitlement(): Promise<Entitlement> {
   const elapsedMs = Date.now() - (await firstLaunchMs());
   const daysLeft = Math.max(0, Math.ceil((TRIAL_DAYS * DAY_MS - elapsedMs) / DAY_MS));
   return daysLeft > 0
-    ? { state: 'trial', trialDaysLeft: daysLeft }
-    : { state: 'expired', trialDaysLeft: 0 };
+    ? { state: 'trial', trialDaysLeft: daysLeft, isEarlyAdopter: false }
+    : { state: 'expired', trialDaysLeft: 0, isEarlyAdopter: false };
 }
 
 /**
@@ -119,14 +162,34 @@ export async function getEntitlement(): Promise<Entitlement> {
  *     (never revoke a cached purchase on a flaky store response).
  */
 export async function revalidateWithStore(local: Entitlement): Promise<Entitlement> {
-  if (local.state === 'purchased') return local;
+  if (local.state === 'purchased') {
+    // Already unlocked locally. Opportunistically confirm the purchase date so
+    // the Early Adopter badge can appear even if we cached the purchase before
+    // ever recording a date. Never revoke the purchase on a flaky response.
+    if (!local.isEarlyAdopter) {
+      const result = await restore();
+      if (result.state === 'purchased' && result.purchaseDateMs != null) {
+        await recordPurchaseDate(result.purchaseDateMs);
+        return {
+          ...local,
+          isEarlyAdopter: earlyAdopterFromDate(result.purchaseDateMs),
+        };
+      }
+    }
+    return local;
+  }
   const result = await restore();
   if (result.state === 'purchased') {
     await markPurchased();
-    return { state: 'purchased', trialDaysLeft: 0 };
+    if (result.purchaseDateMs != null) await recordPurchaseDate(result.purchaseDateMs);
+    return {
+      state: 'purchased',
+      trialDaysLeft: 0,
+      isEarlyAdopter: earlyAdopterFromDate(result.purchaseDateMs ?? null),
+    };
   }
   if (result.state === 'unavailable') {
-    return { state: 'purchased', trialDaysLeft: local.trialDaysLeft };
+    return { state: 'purchased', trialDaysLeft: local.trialDaysLeft, isEarlyAdopter: false };
   }
   if (result.state === 'none' && (await getProduct()) == null) {
     // The store connected but couchpilot_unlock is not fetchable: this is a
@@ -134,7 +197,7 @@ export async function revalidateWithStore(local: Entitlement): Promise<Entitleme
     // listing) that cannot possibly sell the unlock — treat like
     // 'unavailable' so such builds are never locked out. NOT cached, so an
     // official store build (which can always fetch the product) still gates.
-    return { state: 'purchased', trialDaysLeft: local.trialDaysLeft };
+    return { state: 'purchased', trialDaysLeft: local.trialDaysLeft, isEarlyAdopter: false };
   }
   return local;
 }

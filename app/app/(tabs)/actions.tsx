@@ -9,9 +9,9 @@ import {
   Text,
   View,
 } from 'react-native';
-import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
 import { Gated } from '@/components/Gated';
+import { TabScreen } from '@/components/TabScreen';
 import { usePoll } from '@/hooks/usePoll';
 import { ActionInfo, ActionResult, api, Danger } from '@/lib/api';
 import { useSettings } from '@/lib/SettingsContext';
@@ -59,14 +59,15 @@ type RunRecord = {
 
 export default function ActionsTab() {
   return (
-    <Gated>
-      <ActionsScreen />
-    </Gated>
+    <TabScreen>
+      <Gated>
+        <ActionsScreen />
+      </Gated>
+    </TabScreen>
   );
 }
 
 function ActionsScreen() {
-  const insets = useSafeAreaInsets();
   const { settings, ready } = useSettings();
   const [run, setRun] = useState<RunRecord | null>(null);
 
@@ -122,7 +123,7 @@ function ActionsScreen() {
   })).filter((g) => g.items.length > 0);
 
   return (
-    <View style={[styles.screen, { paddingTop: insets.top + 12 }]}>
+    <View style={[styles.screen, { paddingTop: 12 }]}>
       <Text style={styles.title}>Actions</Text>
       <ScrollView style={styles.list} contentContainerStyle={{ paddingBottom: 12 }}>
         {actions.error != null && !actions.data && (

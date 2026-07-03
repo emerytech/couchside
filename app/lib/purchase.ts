@@ -20,7 +20,7 @@ export type BuyResult =
   | { ok: false; reason: 'cancelled' | 'unavailable' | 'pending' | 'error'; message?: string };
 
 export type RestoreResult =
-  | { state: 'purchased' }
+  | { state: 'purchased'; purchaseDateMs?: number }
   | { state: 'none' }
   | { state: 'unavailable' }
   | { state: 'error'; message?: string };
@@ -29,7 +29,15 @@ export type RestoreResult =
 // initConnection / fetchProducts / requestPurchase / getAvailablePurchases /
 // finishTransaction + event listeners). Kept local so the module can be
 // require()'d lazily and the app never depends on it at import time.
-type IapPurchase = { productId: string; purchaseState: 'pending' | 'purchased' | 'unknown' };
+type IapPurchase = {
+  productId: string;
+  purchaseState: 'pending' | 'purchased' | 'unknown';
+  // Original transaction time (ms since epoch). Open IAP surfaces this as
+  // `transactionDate`; some platforms also carry a StoreKit
+  // `originalPurchaseDate`. Both optional — never depend on either existing.
+  transactionDate?: number;
+  originalPurchaseDate?: number;
+};
 type IapProduct = { id: string; title: string; displayPrice: string };
 type IapModule = {
   initConnection: () => Promise<boolean>;
@@ -74,9 +82,15 @@ let listenersAttached = false;
  * completed unlock purchase (including ones that finish out-of-band, e.g. a
  * purchase interrupted by an app kill and delivered on next launch).
  */
-let onPurchased: (() => void) | null = null;
-export function setOnPurchased(cb: (() => void) | null): void {
+let onPurchased: ((purchaseDateMs?: number) => void) | null = null;
+export function setOnPurchased(cb: ((purchaseDateMs?: number) => void) | null): void {
   onPurchased = cb;
+}
+
+/** Extract a usable original-purchase timestamp from an IAP purchase, if any. */
+function purchaseDateOf(p: IapPurchase): number | undefined {
+  const raw = p.originalPurchaseDate ?? p.transactionDate;
+  return typeof raw === 'number' && Number.isFinite(raw) && raw > 0 ? raw : undefined;
 }
 
 // At most one buy() in flight; settled by the purchase listeners.
@@ -110,7 +124,7 @@ async function connect(): Promise<boolean> {
             }
             // Non-consumable: acknowledge/finish so the store stops retrying.
             m.finishTransaction({ purchase, isConsumable: false }).catch(() => {});
-            onPurchased?.();
+            onPurchased?.(purchaseDateOf(purchase));
             settleBuy({ ok: true });
           });
           m.purchaseErrorListener((error) => {
@@ -174,11 +188,16 @@ export async function restore(): Promise<RestoreResult> {
     const purchases = (await m.getAvailablePurchases()) ?? [];
     // getAvailablePurchases can also return pending (unpaid) transactions —
     // only a completed purchase counts as owned.
-    return purchases.some(
+    const owned = purchases.find(
       (p) => p.productId === UNLOCK_PRODUCT_ID && p.purchaseState !== 'pending',
-    )
-      ? { state: 'purchased' }
-      : { state: 'none' };
+    );
+    if (!owned) return { state: 'none' };
+    // Prefer the original purchase date (StoreKit) then the transaction date;
+    // both are optional, so a purchase may be owned with no known date.
+    const raw = owned.originalPurchaseDate ?? owned.transactionDate;
+    const purchaseDateMs =
+      typeof raw === 'number' && Number.isFinite(raw) && raw > 0 ? raw : undefined;
+    return { state: 'purchased', purchaseDateMs };
   } catch (e: unknown) {
     return { state: 'error', message: e instanceof Error ? e.message : String(e) };
   }

@@ -1,9 +1,30 @@
 import Ionicons from '@expo/vector-icons/Ionicons';
-import { Tabs } from 'expo-router';
+import { router, Tabs } from 'expo-router';
+import { useEffect, useRef } from 'react';
 
+import { useBoxes } from '@/lib/SettingsContext';
 import { theme } from '@/lib/theme';
 
+// Default screen = the swipe Remote (Pad). First-run (empty fleet) is redirected
+// to Setup below so the user pairs a box before landing on the remote.
+export const unstable_settings = {
+  initialRouteName: 'pad',
+};
+
 export default function TabLayout() {
+  const { boxes, ready } = useBoxes();
+
+  // On true first run (persisted fleet loaded, but empty) send the user to
+  // Setup to pair. Runs once — after that, the Pad initial route stands.
+  const redirected = useRef(false);
+  useEffect(() => {
+    if (!ready || redirected.current) return;
+    redirected.current = true;
+    if (boxes.length === 0) {
+      router.replace('/(tabs)/setup');
+    }
+  }, [ready, boxes.length]);
+
   return (
     <Tabs
       screenOptions={{

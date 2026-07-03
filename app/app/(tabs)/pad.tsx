@@ -21,6 +21,7 @@ import {
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
 import { Gated } from '@/components/Gated';
+import { TabScreen } from '@/components/TabScreen';
 import { ButtonKey, GamepadClient, GamepadStatus, StickKey, TriggerKey } from '@/lib/gamepad';
 import { PadMode } from '@/lib/settings';
 import { useSettings } from '@/lib/SettingsContext';
@@ -221,9 +222,11 @@ function statusLabel(status: GamepadStatus, dev: string | null): string {
 
 export default function PadTab() {
   return (
-    <Gated>
-      <PadScreen />
-    </Gated>
+    <TabScreen>
+      <Gated>
+        <PadScreen />
+      </Gated>
+    </TabScreen>
   );
 }
 
@@ -231,7 +234,7 @@ function PadScreen() {
   const insets = useSafeAreaInsets();
   const navigation = useNavigation();
   const { settings, ready, update } = useSettings();
-  const mode: PadMode = settings.padMode ?? 'gamepad';
+  const mode: PadMode = settings.padMode ?? 'swipe';
   const [status, setStatus] = useState<GamepadStatus>('closed');
   const [dev, setDev] = useState<string | null>(null);
 
@@ -351,7 +354,7 @@ function PadScreen() {
     <View
       style={[
         styles.screen,
-        { paddingTop: insets.top + 10, paddingBottom: Math.max(insets.bottom, 10) },
+        { paddingTop: 10, paddingBottom: Math.max(insets.bottom, 10) },
       ]}>
       {/* Header: status pill + input-mode toggle (both modes) */}
       <View style={styles.headerRow}>

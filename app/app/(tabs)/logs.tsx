@@ -7,9 +7,9 @@ import {
   Text,
   View,
 } from 'react-native';
-import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
 import { Gated } from '@/components/Gated';
+import { TabScreen } from '@/components/TabScreen';
 import { usePoll } from '@/hooks/usePoll';
 import { api, Journal, Unit, UnitScope } from '@/lib/api';
 import { useSettings } from '@/lib/SettingsContext';
@@ -35,14 +35,15 @@ function toPicker(units: Unit[]): PickerUnit[] {
 
 export default function LogsTab() {
   return (
-    <Gated>
-      <LogsScreen />
-    </Gated>
+    <TabScreen>
+      <Gated>
+        <LogsScreen />
+      </Gated>
+    </TabScreen>
   );
 }
 
 function LogsScreen() {
-  const insets = useSafeAreaInsets();
   const { settings, ready } = useSettings();
 
   const [selected, setSelected] = useState(0);
@@ -80,7 +81,7 @@ function LogsScreen() {
   const lines = journal.data ? [...journal.data.lines].reverse() : [];
 
   return (
-    <View style={[styles.screen, { paddingTop: insets.top + 12 }]}>
+    <View style={[styles.screen, { paddingTop: 12 }]}>
       <Text style={styles.title}>Logs</Text>
 
       {/* Segmented unit picker */}
