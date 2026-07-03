@@ -648,7 +648,10 @@ except OSError:
     pass
 PYEOF
 )"
-PAIR_URL="couchside://setup?host=${HOST_SHORT}.local&port=${PORT}&token=${TOKEN}"
+# HTTPS pair link (couchside.tv/pair relaunches the app) — Android cameras
+# won't open custom schemes from a QR. Params ride the #fragment so the token
+# is never sent to the web server.
+PAIR_URL="https://couchside.tv/pair#host=${HOST_SHORT}.local&port=${PORT}&token=${TOKEN}"
 [ -n "$LAN_IP" ] && PAIR_URL="${PAIR_URL}&ip=${LAN_IP}"
 
 echo

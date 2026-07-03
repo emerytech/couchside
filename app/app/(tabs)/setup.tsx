@@ -1,8 +1,6 @@
-import QRCode from 'qrcode';
 import React, { useCallback, useEffect, useState } from 'react';
 import {
   Alert,
-  Image,
   KeyboardAvoidingView,
   Modal,
   Platform,
@@ -15,6 +13,7 @@ import {
   View,
 } from 'react-native';
 
+import { QrView } from '@/components/QrView';
 import { TabScreen } from '@/components/TabScreen';
 import { useLockOrientation } from '@/hooks/useLockOrientation';
 import { api, ApiError } from '@/lib/api';
@@ -31,7 +30,15 @@ import { Box, DEFAULT_PORT } from '@/lib/settings';
 import { useBoxes, useBoxOnlineStatus, BoxReachability } from '@/lib/SettingsContext';
 import { mono, theme } from '@/lib/theme';
 
-/** Build the pairing deep link for a box: couchside://setup?host=&port=&token=[&ip=] */
+/**
+ * Build the pairing link for a box.
+ *
+ * HTTPS (not couchside://) because Android camera apps won't open custom
+ * schemes from a QR; every scanner opens https. The couchside.tv/pair page
+ * relaunches the app via the scheme (or offers install links). Params ride
+ * the #FRAGMENT so the token never leaves the browser — fragments aren't
+ * sent to the server or its logs.
+ */
 function pairingUrl(box: Box): string {
   let q =
     `host=${encodeURIComponent(box.host)}` +
@@ -39,40 +46,19 @@ function pairingUrl(box: Box): string {
     `&token=${encodeURIComponent(box.token)}`;
   // Pass the cached fallback IP along so the next device starts resilient too.
   if (box.lastIp) q += `&ip=${encodeURIComponent(box.lastIp)}`;
-  return `couchside://setup?${q}`;
+  return `https://couchside.tv/pair#${q}`;
 }
 
 /**
  * Modal that renders a box's pairing deep link as a scannable QR on a white
  * card (QRs need a light background + quiet zone). The host + token are shown
- * as small monospace text as a copy-by-hand fallback. Pure-JS render via the
- * 'qrcode' package -> data URL -> <Image>; no native module.
+ * as small monospace text as a copy-by-hand fallback. Rendered by <QrView>
+ * (pure-JS bit matrix -> Views) — qrcode's toDataURL needs a canvas/zlib and
+ * silently fails on native, which is exactly the "Could not render QR" bug.
  */
+const QR_SIZE = 232;
+
 function PairingQrModal({ box, onClose }: { box: Box | null; onClose: () => void }) {
-  const [uri, setUri] = useState<string | null>(null);
-  const [err, setErr] = useState(false);
-
-  useEffect(() => {
-    if (!box) {
-      setUri(null);
-      setErr(false);
-      return;
-    }
-    let cancelled = false;
-    setUri(null);
-    setErr(false);
-    QRCode.toDataURL(pairingUrl(box), { margin: 1, width: 512 })
-      .then((u) => {
-        if (!cancelled) setUri(u);
-      })
-      .catch(() => {
-        if (!cancelled) setErr(true);
-      });
-    return () => {
-      cancelled = true;
-    };
-  }, [box]);
-
   return (
     <Modal
       visible={box != null}
@@ -84,13 +70,7 @@ function PairingQrModal({ box, onClose }: { box: Box | null; onClose: () => void
         <Pressable style={styles.qrSheet} onPress={() => {}}>
           <Text style={styles.qrTitle}>{box?.name ?? 'Pair box'}</Text>
           <View style={styles.qrCard}>
-            {uri ? (
-              <Image source={{ uri }} style={styles.qrImage} resizeMode="contain" />
-            ) : (
-              <Text style={styles.qrPlaceholder}>
-                {err ? 'Could not render QR' : 'Rendering…'}
-              </Text>
-            )}
+            {box && <QrView value={pairingUrl(box)} size={QR_SIZE} />}
           </View>
           <Text style={styles.qrCaption}>Scan with another device to pair it</Text>
           {box && (
@@ -1038,14 +1018,10 @@ const styles = StyleSheet.create({
   qrCard: {
     backgroundColor: '#ffffff',
     borderRadius: 16,
-    padding: 16,
+    padding: 10,
     alignItems: 'center',
     justifyContent: 'center',
-    aspectRatio: 1,
-    width: '80%',
   },
-  qrImage: { width: '100%', height: '100%' },
-  qrPlaceholder: { color: '#334155', fontSize: 13, fontFamily: mono },
   qrCaption: {
     color: theme.textDim,
     fontSize: 13,

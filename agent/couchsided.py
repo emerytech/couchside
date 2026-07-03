@@ -1959,14 +1959,20 @@ def _pair_lan_ip():
 
 
 def build_pair_url(token, port):
-    """The Couchside pairing deep link.
+    """The Couchside pairing link.
+
+    HTTPS (not couchside://) because Android camera apps won't open custom
+    schemes from a QR code; every scanner opens https. couchside.tv/pair
+    relaunches the app via the scheme (or shows install links). The params
+    ride the URL #FRAGMENT, which browsers never send to the server — the
+    token stays between the QR and the phone.
 
     host= stays the mDNS name (survives DHCP lease changes); ip= is the
     current LAN IP the app caches as a fallback for when mDNS breaks (e.g.
-    SteamOS Game Mode WiFi power-save). Old apps ignore the extra param.
+    SteamOS Game Mode WiFi power-save).
     """
     from urllib.parse import quote
-    url = "couchside://setup?host=%s&port=%d&token=%s" % (
+    url = "https://couchside.tv/pair#host=%s&port=%d&token=%s" % (
         quote(_pair_hostname(), safe=""), port, quote(token, safe=""))
     ip = _pair_lan_ip()
     if ip:
