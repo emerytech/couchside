@@ -35,7 +35,7 @@ except ImportError:  # pragma: no cover
     fcntl = None
 
 APP_NAME = "couchpilot-agent"
-VERSION = "2.0.0"
+VERSION = "2.1.0"
 UID = os.getuid()
 XDG_RUNTIME_DIR = "/run/user/%d" % UID
 
@@ -59,11 +59,20 @@ DEFAULT_PORT = 8787
 #       "detached": bool                            # optional, default false
 #     }, ...
 #   },
-#   "action_order": ["<id>", ...]                   # optional listing order
+#   "action_order": ["<id>", ...],                  # optional listing order
+#   "launchers": [                                  # optional custom launchers
+#     {"id": "custom:<slug>",                       # id (generated on POST)
+#      "label": "...",                              # required non-empty string
+#      "cmd": ["argv0", "arg1", ...]}               # required non-empty argv
+#   ]
 # }
 #
 # The journal allowlist is exactly the configured unit names. On a missing or
 # invalid config the GENERIC defaults below apply.
+#
+# "launchers" holds user-defined custom launchers (persisted here by the
+# POST/DELETE /api/launchers routes); Steam games are auto-discovered at
+# request time and NOT stored in config.
 # ---------------------------------------------------------------------------
 
 DEFAULT_UNITS = [
@@ -101,20 +110,53 @@ DEFAULT_ACTIONS = {
 
 DEFAULT_ACTION_ORDER = ["restart-session", "reboot", "poweroff"]
 
+# Custom launcher limits (see the SECURITY NOTE in the launcher routes).
+MAX_LAUNCHERS = 100        # cap on total custom launchers
+MAX_CMD_ARGS = 64          # cap on argv count per launcher
+MAX_CMD_ARG_LEN = 4096     # cap on a single argv token
+MAX_LABEL_LEN = 200        # cap on a launcher label
+
 # Effective config — set by load_config() before the server starts.
 WATCHLIST = list(DEFAULT_UNITS)
 WATCHLIST_NAMES = {name for name, _scope in WATCHLIST}
 ACTIONS = dict(DEFAULT_ACTIONS)
 ACTION_ORDER = list(DEFAULT_ACTION_ORDER)
 CONFIG_PORT = None  # optional "port" from config.json
+LAUNCHERS = []  # list of {"id","label","cmd":[...]} — custom launchers only
+CONFIG_PATH = DEFAULT_CONFIG_PATH  # remembered by load_config() for rewrites
+CONFIG_LOCK = threading.Lock()  # serializes launcher config rewrites
 
 
 class ConfigError(ValueError):
     pass
 
 
+def _valid_launcher_id(lid):
+    """A stored custom launcher id: "custom:" + a filesystem-safe slug.
+
+    No path separators / traversal (".", "..", "/") — the id is never used as
+    a path, but this keeps ids inert and predictable regardless of downstream use.
+    """
+    if not isinstance(lid, str) or not lid.startswith("custom:"):
+        return False
+    slug = lid[len("custom:"):]
+    if not slug or slug in (".", ".."):
+        return False
+    return all(c.isalnum() or c in "-_" for c in slug)
+
+
+def _valid_cmd(cmd):
+    """A launcher/action argv: non-empty list of non-empty bounded strings."""
+    if not isinstance(cmd, list) or not cmd or len(cmd) > MAX_CMD_ARGS:
+        return False
+    return all(isinstance(a, str) and a and len(a) <= MAX_CMD_ARG_LEN
+               for a in cmd)
+
+
 def _parse_config(raw):
-    """Validate a parsed config.json dict. Returns (units, actions, order, port).
+    """Validate a parsed config.json dict.
+
+    Returns (units, actions, order, port, launchers).
 
     Raises ConfigError on any schema violation — the caller falls back to the
     generic defaults wholesale (no partial merges).
@@ -195,16 +237,43 @@ def _parse_config(raw):
         order = list(order_raw)
         order += [a for a in actions if a not in order]  # unlisted go last
 
-    return units, actions, order, port
+    launchers_raw = raw.get("launchers")
+    launchers = []
+    if launchers_raw is not None:
+        if not isinstance(launchers_raw, list):
+            raise ConfigError("launchers must be a list")
+        if len(launchers_raw) > MAX_LAUNCHERS:
+            raise ConfigError("too many launchers (max %d)" % MAX_LAUNCHERS)
+        seen_ids = set()
+        for i, l in enumerate(launchers_raw):
+            if not isinstance(l, dict):
+                raise ConfigError("launchers[%d] must be an object" % i)
+            lid = l.get("id")
+            if not _valid_launcher_id(lid):
+                raise ConfigError("launchers[%d].id must be a valid custom: id" % i)
+            if lid in seen_ids:
+                raise ConfigError("duplicate launcher id %r" % lid)
+            seen_ids.add(lid)
+            label = l.get("label")
+            if not isinstance(label, str) or not label or len(label) > MAX_LABEL_LEN:
+                raise ConfigError("launchers[%d].label must be a non-empty string" % i)
+            cmd = l.get("cmd")
+            if not _valid_cmd(cmd):
+                raise ConfigError("launchers[%d].cmd must be a non-empty argv list" % i)
+            launchers.append({"id": lid, "label": label, "cmd": list(cmd)})
+
+    return units, actions, order, port, launchers
 
 
 def load_config(path):
     """Load config.json into the module globals; fall back to defaults."""
     global WATCHLIST, WATCHLIST_NAMES, ACTIONS, ACTION_ORDER, CONFIG_PORT
+    global LAUNCHERS, CONFIG_PATH
+    CONFIG_PATH = path  # remembered so launcher POST/DELETE can rewrite it
     try:
         with open(path) as f:
             raw = json.load(f)
-        units, actions, order, port = _parse_config(raw)
+        units, actions, order, port, launchers = _parse_config(raw)
     except FileNotFoundError:
         print("warning: config %s not found — using built-in generic defaults"
               % path, file=sys.stderr, flush=True)
@@ -218,8 +287,9 @@ def load_config(path):
     ACTIONS = actions
     ACTION_ORDER = order
     CONFIG_PORT = port
-    print("config loaded from %s: %d units, %d actions"
-          % (path, len(WATCHLIST), len(ACTIONS)), flush=True)
+    LAUNCHERS = launchers
+    print("config loaded from %s: %d units, %d actions, %d launchers"
+          % (path, len(WATCHLIST), len(ACTIONS), len(LAUNCHERS)), flush=True)
 
 # ---------------------------------------------------------------------------
 # Real-mode data collection (Linux; each helper degrades gracefully)
