@@ -220,6 +220,8 @@ const TP_BASE = 1.1;
 const TP_GAIN = 0.05;
 /** Screen px of two-finger drag per wheel notch. */
 const TP_SCROLL_STEP = 18;
+/** Pointer travel (px) per haptic "texture" tick while dragging. */
+const TP_HAPTIC_PX = 56;
 
 type TrackpadProps = {
   onMove: (dx: number, dy: number) => void;
@@ -645,8 +647,19 @@ function PadScreen() {
   }, [client]);
 
   // Trackpad handlers (protocol v2 mouse).
+  // Drags emit a subtle "texture" tick per TP_HAPTIC_PX of pointer travel —
+  // like detents under the finger — so moving the mouse feels alive without
+  // buzzing continuously. Scroll ticks once per wheel notch.
+  const tpHapticAcc = useRef(0);
   const tpMove = useCallback(
-    (dx: number, dy: number) => client.sendMouseMove(dx, dy),
+    (dx: number, dy: number) => {
+      client.sendMouseMove(dx, dy);
+      tpHapticAcc.current += Math.hypot(dx, dy);
+      if (tpHapticAcc.current >= TP_HAPTIC_PX) {
+        tpHapticAcc.current = 0;
+        haptic();
+      }
+    },
     [client],
   );
   const tpLeft = useCallback(() => {
@@ -660,7 +673,10 @@ function PadScreen() {
     setTimeout(() => client.sendMouseButton('r', 0), 40);
   }, [client]);
   const tpScroll = useCallback(
-    (notches: number) => client.sendWheel(notches),
+    (notches: number) => {
+      if (notches !== 0) haptic();
+      client.sendWheel(notches);
+    },
     [client],
   );
 
