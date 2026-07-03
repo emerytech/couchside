@@ -1,9 +1,14 @@
 #!/usr/bin/env python3
-"""rescue_agentd.py — box-side agent for Rescue Remote.
+"""couchpilotd.py — box-side agent for CouchPilot.
 
-Pure python3 stdlib. Serves the Rescue Agent API contract v1 on port 8787.
-Runs on Bazzite (Fedora Atomic) as a systemd service; also runs on macOS
-in --mock mode for phone-app development.
+Pure python3 stdlib. Serves the CouchPilot agent API contract v1 on port 8787.
+Runs on SteamOS (Arch) and Bazzite (Fedora Atomic) as a systemd service; also
+runs on macOS in --mock mode for phone-app development.
+
+Watched units and recovery actions are config-driven:
+/etc/couchpilot/config.json (overridable with --config). On a missing or
+invalid config the agent logs a warning and falls back to safe generic
+defaults.
 """
 
 import argparse
@@ -29,48 +34,51 @@ try:
 except ImportError:  # pragma: no cover
     fcntl = None
 
-APP_NAME = "rescue-agent"
-VERSION = "1.1.0"
-UID = 1000
+APP_NAME = "couchpilot-agent"
+VERSION = "2.0.0"
+UID = os.getuid()
 XDG_RUNTIME_DIR = "/run/user/%d" % UID
 
+DEFAULT_CONFIG_PATH = "/etc/couchpilot/config.json"
+DEFAULT_PORT = 8787
+
 # ---------------------------------------------------------------------------
-# Watchlist / allowlists (contract constants)
+# Config: watched units + recovery actions
+#
+# /etc/couchpilot/config.json schema:
+# {
+#   "port": 8787,                                   # optional
+#   "units": [{"name": "sddm.service", "scope": "system"|"user"}, ...],
+#   "actions": {
+#     "<id>": {
+#       "label": "...",                             # optional, defaults to id
+#       "description": "...",                       # optional, defaults to ""
+#       "danger": "low"|"medium"|"high",            # required
+#       "cmd": ["argv0", "arg1", ...],              # required, non-empty
+#       "user_env": bool,                           # optional, default false
+#       "detached": bool                            # optional, default false
+#     }, ...
+#   },
+#   "action_order": ["<id>", ...]                   # optional listing order
+# }
+#
+# The journal allowlist is exactly the configured unit names. On a missing or
+# invalid config the GENERIC defaults below apply.
 # ---------------------------------------------------------------------------
 
-WATCHLIST = [
+DEFAULT_UNITS = [
     # (name, scope)
     ("sddm.service", "system"),
-    ("htpc-nosleep.service", "system"),
-    ("greenboot-healthcheck.service", "system"),
-    ("rescue-agent.service", "system"),
-    ("skyscrape.service", "user"),
+    ("couchpilot.service", "system"),
 ]
-WATCHLIST_NAMES = {name for name, _scope in WATCHLIST}
 
-ACTIONS = {
-    "restart-sddm": {
+DEFAULT_ACTIONS = {
+    "restart-session": {
         "label": "Restart Session",
-        "description": "Restart display session — fixes wedged gamescope (black screen)",
+        "description": "Restart the display session (sddm) — fixes a wedged/black screen",
         "danger": "high",
         "cmd": ["sudo", "systemctl", "restart", "sddm"],
         "user_env": False,
-        "detached": False,
-    },
-    "restart-kodi": {
-        "label": "Stop Kodi",
-        "description": "Stop Kodi — relaunch from the Steam tile",
-        "danger": "medium",
-        "cmd": ["flatpak", "kill", "tv.kodi.Kodi"],
-        "user_env": True,
-        "detached": False,
-    },
-    "restart-skyscrape": {
-        "label": "Restart Skyscrape",
-        "description": "Restart the box-art scraper service",
-        "danger": "low",
-        "cmd": ["systemctl", "--user", "restart", "skyscrape.service"],
-        "user_env": True,
         "detached": False,
     },
     "reboot": {
@@ -91,8 +99,127 @@ ACTIONS = {
     },
 }
 
-# Order for /api/actions listing
-ACTION_ORDER = ["restart-sddm", "restart-kodi", "restart-skyscrape", "reboot", "poweroff"]
+DEFAULT_ACTION_ORDER = ["restart-session", "reboot", "poweroff"]
+
+# Effective config — set by load_config() before the server starts.
+WATCHLIST = list(DEFAULT_UNITS)
+WATCHLIST_NAMES = {name for name, _scope in WATCHLIST}
+ACTIONS = dict(DEFAULT_ACTIONS)
+ACTION_ORDER = list(DEFAULT_ACTION_ORDER)
+CONFIG_PORT = None  # optional "port" from config.json
+
+
+class ConfigError(ValueError):
+    pass
+
+
+def _parse_config(raw):
+    """Validate a parsed config.json dict. Returns (units, actions, order, port).
+
+    Raises ConfigError on any schema violation — the caller falls back to the
+    generic defaults wholesale (no partial merges).
+    """
+    if not isinstance(raw, dict):
+        raise ConfigError("config root must be a JSON object")
+
+    port = raw.get("port")
+    if port is not None:
+        if not isinstance(port, int) or isinstance(port, bool) or not (1 <= port <= 65535):
+            raise ConfigError("port must be an integer 1-65535")
+
+    units_raw = raw.get("units")
+    if not isinstance(units_raw, list) or not units_raw:
+        raise ConfigError("units must be a non-empty list")
+    units = []
+    seen = set()
+    for i, u in enumerate(units_raw):
+        if not isinstance(u, dict):
+            raise ConfigError("units[%d] must be an object" % i)
+        name = u.get("name")
+        scope = u.get("scope")
+        if not isinstance(name, str) or not name:
+            raise ConfigError("units[%d].name must be a non-empty string" % i)
+        if scope not in ("system", "user"):
+            raise ConfigError("units[%d].scope must be \"system\" or \"user\"" % i)
+        if name in seen:
+            raise ConfigError("duplicate unit %r" % name)
+        seen.add(name)
+        units.append((name, scope))
+
+    actions_raw = raw.get("actions")
+    if not isinstance(actions_raw, dict):
+        raise ConfigError("actions must be an object")
+    actions = {}
+    for aid, spec in actions_raw.items():
+        if not isinstance(aid, str) or not aid:
+            raise ConfigError("action ids must be non-empty strings")
+        if not isinstance(spec, dict):
+            raise ConfigError("actions[%r] must be an object" % aid)
+        danger = spec.get("danger")
+        if danger not in ("low", "medium", "high"):
+            raise ConfigError("actions[%r].danger must be low|medium|high" % aid)
+        cmd = spec.get("cmd")
+        if (not isinstance(cmd, list) or not cmd or
+                not all(isinstance(a, str) and a for a in cmd)):
+            raise ConfigError("actions[%r].cmd must be a non-empty list of strings" % aid)
+        label = spec.get("label", aid)
+        description = spec.get("description", "")
+        if not isinstance(label, str) or not isinstance(description, str):
+            raise ConfigError("actions[%r] label/description must be strings" % aid)
+        user_env = spec.get("user_env", False)
+        detached = spec.get("detached", False)
+        if not isinstance(user_env, bool) or not isinstance(detached, bool):
+            raise ConfigError("actions[%r] user_env/detached must be booleans" % aid)
+        actions[aid] = {
+            "label": label,
+            "description": description,
+            "danger": danger,
+            "cmd": list(cmd),
+            "user_env": user_env,
+            "detached": detached,
+        }
+
+    order_raw = raw.get("action_order")
+    if order_raw is None:
+        order = list(actions.keys())
+    else:
+        if (not isinstance(order_raw, list) or
+                not all(isinstance(a, str) for a in order_raw)):
+            raise ConfigError("action_order must be a list of strings")
+        unknown = [a for a in order_raw if a not in actions]
+        if unknown:
+            raise ConfigError("action_order references unknown actions: %s"
+                              % ", ".join(unknown))
+        if len(set(order_raw)) != len(order_raw):
+            raise ConfigError("action_order has duplicates")
+        order = list(order_raw)
+        order += [a for a in actions if a not in order]  # unlisted go last
+
+    return units, actions, order, port
+
+
+def load_config(path):
+    """Load config.json into the module globals; fall back to defaults."""
+    global WATCHLIST, WATCHLIST_NAMES, ACTIONS, ACTION_ORDER, CONFIG_PORT
+    try:
+        with open(path) as f:
+            raw = json.load(f)
+        units, actions, order, port = _parse_config(raw)
+    except FileNotFoundError:
+        print("warning: config %s not found — using built-in generic defaults"
+              % path, file=sys.stderr, flush=True)
+        return
+    except (OSError, ValueError) as e:  # ValueError covers JSON + ConfigError
+        print("warning: invalid config %s (%s) — using built-in generic defaults"
+              % (path, e), file=sys.stderr, flush=True)
+        return
+    WATCHLIST = units
+    WATCHLIST_NAMES = {name for name, _scope in WATCHLIST}
+    ACTIONS = actions
+    ACTION_ORDER = order
+    CONFIG_PORT = port
+    print("config loaded from %s: %d units, %d actions"
+          % (path, len(WATCHLIST), len(ACTIONS)), flush=True)
 
 # ---------------------------------------------------------------------------
 # Real-mode data collection (Linux; each helper degrades gracefully)
@@ -321,7 +448,7 @@ def mock_status():
     base = 55.0 + 4.5 * math.sin(now / 97.0)
     temp = round(base + random.uniform(-0.8, 0.8), 1)
     return {
-        "hostname": "bazzite",
+        "hostname": "couchpilot-box",
         "time": int(now),
         "uptime_s": int(now - MOCK_START + MOCK_BOOT_OFFSET),
         "load": [round(random.uniform(0.2, 1.4), 2),
@@ -341,29 +468,31 @@ def mock_status():
 
 MOCK_UNIT_DESCS = {
     "sddm.service": "Simple Desktop Display Manager",
-    "htpc-nosleep.service": "Inhibit sleep for HTPC duty",
-    "greenboot-healthcheck.service": "greenboot Health Checks Runner",
-    "rescue-agent.service": "Rescue Remote box agent",
-    "skyscrape.service": "Box-art scraper for RetroArch library",
+    "couchpilot.service": "CouchPilot box agent",
 }
 
 
 def mock_units():
     units = []
     for name, scope in WATCHLIST:
-        if name == "skyscrape.service":
-            active, sub = "inactive", "dead"
-        else:
-            active, sub = "active", "running"
         units.append({
             "name": name,
             "scope": scope,
-            "active": active,
-            "sub": sub,
+            "active": "active",
+            "sub": "running",
             "description": MOCK_UNIT_DESCS.get(name, name),
         })
     return units
 
+
+MOCK_GENERIC_LOG = [
+    "Starting %(unit)s...",
+    "Started %(unit)s.",
+    "%(src)s: initialized",
+    "%(src)s: heartbeat ok",
+    "%(src)s: work item processed",
+    "%(src)s: idle",
+]
 
 MOCK_LOG_TEMPLATES = {
     "sddm.service": [
@@ -378,56 +507,31 @@ MOCK_LOG_TEMPLATES = {
         "Setting default cursor",
         "Running display setup script",
         "Greeter starting...",
-        "Session started for user bazzite",
-        "Authentication for user \"bazzite\" successful",
+        "Session started for user gamer",
+        "Authentication for user \"gamer\" successful",
         "Auth: sddm-helper exited successfully",
         "Greeter stopped",
     ],
-    "htpc-nosleep.service": [
-        "Started Inhibit sleep for HTPC duty.",
-        "systemd-inhibit: taking idle+sleep lock",
-        "Inhibitor lock active (what=sleep:idle, who=htpc-nosleep)",
-        "Watchdog ping ok",
-        "Lock refreshed",
-    ],
-    "greenboot-healthcheck.service": [
-        "Starting greenboot Health Checks Runner...",
-        "Running Required Health Check Scripts...",
-        "Script '01_repository_dns_check.sh' SUCCESS",
-        "Script '02_watchdog.sh' SUCCESS",
-        "Running Wanted Health Check Scripts...",
-        "Boot Status is GREEN - Health Check SUCCESS",
-        "Finished greenboot Health Checks Runner.",
-    ],
-    "rescue-agent.service": [
-        "Started Rescue Remote box agent.",
-        "rescue-agent 1.1.0 listening on 0.0.0.0:8787",
+    "couchpilot.service": [
+        "Started CouchPilot box agent.",
+        "couchpilot-agent %s listening on 0.0.0.0:8787" % VERSION,
         "GET /api/ping 200 0ms",
         "GET /api/status 200 4ms",
         "GET /api/units 200 61ms",
-        "GET /api/journal?unit=sddm.service 200 88ms",
-        "POST /api/actions/restart-skyscrape 200 412ms",
-    ],
-    "skyscrape.service": [
-        "Started Box-art scraper for RetroArch library.",
-        "skyscrape: scanning /home/bazzite/ROMs (37 systems)",
-        "skyscrape: 4100 entries indexed",
-        "skyscrape: fetching artwork batch 12/40",
-        "skyscrape: rate limited by upstream, backing off 30s",
-        "skyscrape: wrote 118 thumbnails",
-        "skyscrape: run complete in 214s",
-        "skyscrape.service: Deactivated successfully.",
+        "GET /api/journal?<redacted> 200 88ms",
+        "POST /api/actions/reboot 200 412ms",
     ],
 }
 
 
 def mock_journal(unit, scope, lines):
-    templates = MOCK_LOG_TEMPLATES.get(unit, ["(no logs)"])
+    src = unit.replace(".service", "")
+    templates = MOCK_LOG_TEMPLATES.get(
+        unit, [t % {"unit": unit, "src": src} for t in MOCK_GENERIC_LOG])
     out = []
     n = min(lines, 30)
     t = time.time() - n * 47
-    host = "bazzite"
-    src = unit.replace(".service", "")
+    host = "couchpilot-box"
     for i in range(n):
         msg = templates[i % len(templates)]
         ts = time.strftime("%Y-%m-%dT%H:%M:%S%z", time.localtime(t))
@@ -793,7 +897,7 @@ def _gamepad_teardown(entry):
 
 
 class Handler(BaseHTTPRequestHandler):
-    server_version = "rescue-agent/" + VERSION
+    server_version = APP_NAME + "/" + VERSION
     protocol_version = "HTTP/1.1"
 
     # set by main()
@@ -1130,24 +1234,30 @@ def load_token(args):
 
 
 def main():
-    p = argparse.ArgumentParser(description="Rescue Remote box agent")
-    p.add_argument("--port", type=int, default=8787)
+    p = argparse.ArgumentParser(description="CouchPilot box agent")
+    p.add_argument("--port", type=int, default=None,
+                   help="listen port (overrides config; default %d)" % DEFAULT_PORT)
     p.add_argument("--host", default="0.0.0.0")
-    p.add_argument("--token-file", default="/etc/rescue-agent/token")
+    p.add_argument("--config", default=DEFAULT_CONFIG_PATH,
+                   help="path to config.json (default %s)" % DEFAULT_CONFIG_PATH)
+    p.add_argument("--token-file", default="/etc/couchpilot/token")
     p.add_argument("--token", default=None,
                    help="literal token (overrides --token-file; dev only)")
     p.add_argument("--mock", action="store_true",
                    help="serve fake data, never run real commands")
     args = p.parse_args()
 
+    load_config(args.config)
+    port = args.port if args.port is not None else (CONFIG_PORT or DEFAULT_PORT)
+
     Handler.token = load_token(args)
     Handler.mock = args.mock
 
-    server = ThreadingHTTPServer((args.host, args.port), Handler)
+    server = ThreadingHTTPServer((args.host, port), Handler)
     server.daemon_threads = True
     mode = "mock" if args.mock else "real"
     print("%s %s listening on %s:%d (%s mode)" % (
-        APP_NAME, VERSION, args.host, args.port, mode), flush=True)
+        APP_NAME, VERSION, args.host, port, mode), flush=True)
     try:
         server.serve_forever()
     except KeyboardInterrupt:

@@ -10,11 +10,27 @@ import {
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
 import { usePoll } from '@/hooks/usePoll';
-import { api, Journal, WATCHLIST } from '@/lib/api';
+import { api, Journal, Unit, UnitScope } from '@/lib/api';
 import { useSettings } from '@/lib/SettingsContext';
 import { mono, theme } from '@/lib/theme';
 
 const LINES = 100;
+
+type PickerUnit = { unit: string; scope: UnitScope; short: string };
+
+// Shown until /api/units answers (or if it never does).
+const FALLBACK_UNITS: PickerUnit[] = [
+  { unit: 'sddm.service', scope: 'system', short: 'sddm' },
+  { unit: 'couchpilot.service', scope: 'system', short: 'couchpilot' },
+];
+
+function toPicker(units: Unit[]): PickerUnit[] {
+  return units.map((u) => ({
+    unit: u.name,
+    scope: u.scope,
+    short: u.name.replace(/\.service$/, ''),
+  }));
+}
 
 export default function LogsScreen() {
   const insets = useSafeAreaInsets();
@@ -23,7 +39,13 @@ export default function LogsScreen() {
   const [selected, setSelected] = useState(0);
   const [auto, setAuto] = useState(false);
 
-  const target = WATCHLIST[selected];
+  // The picker mirrors the agent's journal watchlist (/api/units). The huge
+  // interval parks the timer; usePoll still fetches on mount and every focus.
+  const units = usePoll<{ units: Unit[] }>(() => api.units(settings), 3600_000, ready);
+  const picker =
+    units.data && units.data.units.length > 0 ? toPicker(units.data.units) : FALLBACK_UNITS;
+
+  const target = picker[Math.min(selected, picker.length - 1)];
 
   const journal = usePoll<Journal>(
     () => api.journal(settings, target.unit, target.scope, LINES),
@@ -33,11 +55,12 @@ export default function LogsScreen() {
     ready,
   );
 
-  // Re-fetch immediately when the selected unit changes.
+  // Re-fetch immediately when the selected unit changes (index or, once the
+  // real watchlist arrives, the unit that index resolves to).
   const { refresh } = journal;
   useEffect(() => {
     refresh();
-  }, [selected, refresh]);
+  }, [target.unit, target.scope, refresh]);
 
   const renderLine = useCallback(
     ({ item }: { item: string }) => <Text style={styles.line}>{item}</Text>,
@@ -53,12 +76,12 @@ export default function LogsScreen() {
 
       {/* Segmented unit picker */}
       <View style={styles.segments}>
-        {WATCHLIST.map((w, i) => (
+        {picker.map((w, i) => (
           <Pressable
-            key={w.unit}
+            key={`${w.scope}:${w.unit}`}
             onPress={() => setSelected(i)}
-            style={[styles.segment, i === selected && styles.segmentActive]}>
-            <Text style={[styles.segmentText, i === selected && styles.segmentTextActive]}>
+            style={[styles.segment, target === w && styles.segmentActive]}>
+            <Text style={[styles.segmentText, target === w && styles.segmentTextActive]}>
               {w.short}
             </Text>
           </Pressable>

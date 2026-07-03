@@ -12,7 +12,8 @@ export type Settings = {
 };
 
 export const DEFAULT_SETTINGS: Settings = {
-  host: 'bazzite.local',
+  // Empty until the user pairs a box (Setup tab). "demo" enables demo mode.
+  host: '',
   port: 8787,
   token: '',
   padMode: 'gamepad',

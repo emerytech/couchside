@@ -1,0 +1,17 @@
+; CouchPilot box agent — systemd unit TEMPLATE.
+; install.sh substitutes __USER__ and __UID__ with the invoking desktop user
+; and installs the result to /etc/systemd/system/couchpilot.service.
+[Unit]
+Description=CouchPilot box agent
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+User=__USER__
+Environment=XDG_RUNTIME_DIR=/run/user/__UID__
+ExecStart=/usr/bin/python3 /home/__USER__/.local/opt/couchpilot/couchpilotd.py
+Restart=always
+RestartSec=3
+
+[Install]
+WantedBy=multi-user.target

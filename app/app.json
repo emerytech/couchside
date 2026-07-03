@@ -1,12 +1,12 @@
 {
   "expo": {
-    "name": "Rescue Remote",
+    "name": "CouchPilot",
     "slug": "rescue-remote",
     "owner": "ets3d-llc",
-    "version": "1.2.0",
+    "version": "2.0.0",
     "orientation": "portrait",
     "icon": "./assets/images/icon.png",
-    "scheme": "rescueremote",
+    "scheme": "couchpilot",
     "userInterfaceStyle": "dark",
     "ios": {
       "supportsTablet": true,
@@ -17,7 +17,7 @@
         "NSAppTransportSecurity": {
           "NSAllowsLocalNetworking": true
         },
-        "NSLocalNetworkUsageDescription": "Rescue Remote connects to the rescue agent on your media center over your local network.",
+        "NSLocalNetworkUsageDescription": "CouchPilot connects to the CouchPilot agent on your media center or Steam machine over your local network.",
         "NSBonjourServices": [
           "_http._tcp"
         ]

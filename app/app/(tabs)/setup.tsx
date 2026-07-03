@@ -71,14 +71,14 @@ export default function SetupScreen() {
   const draftSettings = useCallback(() => {
     const p = parseInt(draftPort, 10);
     return {
-      host: draftHost.trim() || 'bazzite.local',
+      host: draftHost.trim(),
       port: Number.isFinite(p) && p > 0 && p <= 65535 ? p : 8787,
       token: draftToken,
     };
   }, [draftHost, draftPort, draftToken]);
 
-  const test = useCallback(async () => {
-    const s = draftSettings();
+  const test = useCallback(async (override?: { host: string; port: number; token: string }) => {
+    const s = override ?? draftSettings();
     setTesting(true);
     setAgentVersion(null);
     setAuthStep({ state: 'idle' });
@@ -113,7 +113,7 @@ export default function SetupScreen() {
     setTimeout(() => setSaved(false), 2000);
   }, [update, draftSettings]);
 
-  // QR / deep-link pairing: rescueremote://setup?host=..&port=..&token=..
+  // QR / deep-link pairing: couchpilot://setup?host=..&port=..&token=..
   // Prefills the draft fields (never auto-saves) and auto-runs the test once.
   const params = useLocalSearchParams<{ host?: string; port?: string; token?: string }>();
   const [fromQr, setFromQr] = useState(false);
@@ -172,7 +172,7 @@ export default function SetupScreen() {
             style={styles.input}
             value={draftHost}
             onChangeText={setHost}
-            placeholder="bazzite.local"
+            placeholder="steamdeck.local · bazzite.local"
             placeholderTextColor={theme.textFaint}
             autoCapitalize="none"
             autoCorrect={false}
@@ -205,7 +205,7 @@ export default function SetupScreen() {
 
           <View style={styles.btnRow}>
             <Pressable
-              onPress={test}
+              onPress={() => test()}
               disabled={testing || !ready}
               style={({ pressed }) => [
                 styles.btn,
@@ -223,6 +223,18 @@ export default function SetupScreen() {
               <Text style={styles.btnSaveText}>{saved ? 'SAVED ✓' : 'SAVE'}</Text>
             </Pressable>
           </View>
+
+          <Pressable
+            onPress={() => {
+              // No box handy? Fill in the built-in demo target and test it.
+              setHost('demo');
+              setPort('8787');
+              test({ host: 'demo', port: 8787, token: draftToken });
+            }}
+            disabled={testing || !ready}
+            style={({ pressed }) => [styles.demoBtn, pressed && styles.pressed]}>
+            <Text style={styles.demoBtnText}>TRY DEMO MODE</Text>
+          </Pressable>
         </View>
 
         <View style={styles.card}>
@@ -238,7 +250,7 @@ export default function SetupScreen() {
         </View>
 
         <Text style={styles.hint}>
-          The agent listens on http://{draftHost || 'bazzite.local'}:{draftPort || '8787'}. All
+          The agent listens on http://{draftHost.trim() || '<host>'}:{draftPort || '8787'}. All
           routes except /api/ping require the bearer token.
         </Text>
       </ScrollView>
@@ -297,6 +309,8 @@ const styles = StyleSheet.create({
   btnTestText: { color: theme.blue, fontWeight: '800', fontSize: 13, letterSpacing: 1 },
   btnSave: { backgroundColor: theme.blue },
   btnSaveText: { color: '#0b1220', fontWeight: '800', fontSize: 13, letterSpacing: 1 },
+  demoBtn: { alignSelf: 'center', paddingVertical: 10, paddingHorizontal: 8, marginTop: 4 },
+  demoBtnText: { color: theme.textFaint, fontSize: 12, fontWeight: '700', letterSpacing: 1.2 },
   pressed: { opacity: 0.7 },
   stepRow: { flexDirection: 'row', alignItems: 'flex-start', marginBottom: 10, gap: 10 },
   stepMark: { fontSize: 18, fontWeight: '800', width: 22, textAlign: 'center' },

@@ -1,26 +1,32 @@
 #!/usr/bin/env bash
-# show-qr.sh — print the Rescue Remote pairing QR code. Run FROM THE MAC.
+# show-qr.sh — print the CouchPilot pairing QR code. Run FROM YOUR MAC/PC.
 # Reads the agent token over ssh and renders a QR of the app deep link:
-#   rescueremote://setup?host=<host>&port=8787&token=<token>
-# Usage: ./show-qr.sh [host|user@host]   (default: bazzite@bazzite.local)
+#   couchpilot://setup?host=<host>&port=8787&token=<token>
+# Usage: ./show-qr.sh user@host      e.g. ./show-qr.sh deck@steamdeck.local
 set -euo pipefail
 
-ARG=${1:-bazzite.local}
+ARG=${1:-}
+if [[ -z "${ARG}" ]]; then
+    echo "usage: ./show-qr.sh user@host   (e.g. deck@steamdeck.local)" >&2
+    exit 2
+fi
 if [[ "${ARG}" == *@* ]]; then
     DEST="${ARG}"          # ssh destination (user@host)
     HOST="${ARG#*@}"       # bare host for the URL
 else
-    DEST="bazzite@${ARG}"
+    DEST="${ARG}"
     HOST="${ARG}"
 fi
 
-# Token file is owned by user bazzite (mode 600), so a plain cat works — no sudo/TTY.
-TOKEN=$(ssh "${DEST}" 'cat /etc/rescue-agent/token')
+# Token file is owned by the agent user (mode 600), so a plain cat works — no sudo/TTY.
+TOKEN=$(ssh "${DEST}" 'cat /etc/couchpilot/token')
 
-PAIR_URL="rescueremote://setup?host=${HOST}&port=8787&token=${TOKEN}"
-echo "Scan with iPhone camera to configure the app:"
+PAIR_URL="couchpilot://setup?host=${HOST}&port=8787&token=${TOKEN}"
+echo "Scan with your phone camera to configure the app:"
 echo
-if command -v npx > /dev/null 2>&1; then
+if command -v qrencode > /dev/null 2>&1; then
+    qrencode -t ansiutf8 "${PAIR_URL}"
+elif command -v npx > /dev/null 2>&1; then
     # no -t flag: the qrcode CLI's default renderer draws in the terminal
     npx --yes qrcode "${PAIR_URL}" || echo "${PAIR_URL}"
 else

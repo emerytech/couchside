@@ -1,11 +1,127 @@
-# Rescue Remote — box agent
+# CouchPilot — box agent
 
-Box-side half of Rescue Remote: a tiny pure-stdlib python3 HTTP daemon that runs
-on the Bazzite HTPC (`bazzite.local` / `10.1.1.60`) and lets the phone app check
-health, read unit logs, and fire a small fixed set of recovery actions.
-No pip dependencies — Bazzite is immutable (Fedora Atomic/ostree).
+The box-side half of CouchPilot: a tiny pure-stdlib python3 daemon for your
+couch gaming box (Steam Deck / SteamOS, Bazzite, or any systemd Linux HTPC)
+that lets the phone app check health, watch service logs, fire recovery
+actions ("restart the session", "reboot"), and act as a virtual Xbox 360
+gamepad — so you can un-wedge the box from the couch without a keyboard.
 
-## API (v1, port 8787)
+No pip dependencies — it runs on immutable distros (SteamOS read-only rootfs,
+Bazzite/Fedora Atomic ostree) with nothing but the preinstalled `python3`.
+
+## Install (run ON the box, as your normal desktop user)
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/emerytech/couchpilot/main/install.sh | bash
+```
+
+The installer refuses to run as root (it uses `sudo` only where needed) and:
+
+1. installs the daemon to `~/.local/opt/couchpilot/`,
+2. creates `/etc/couchpilot/token` (pairing secret, `chmod 600`),
+3. generates an initial `/etc/couchpilot/config.json` tailored to the box
+   (adds `sddm.service` and a session-restart action only if sddm exists;
+   adds a stop-kodi action only if the Kodi flatpak is installed),
+4. installs a **narrow sudoers rule** (see Security below) — it prints the
+   exact contents first, and `--no-sudoers` skips it,
+5. installs + starts `couchpilot.service` (systemd, `Restart=always`),
+6. opens the port in firewalld if firewalld is running (Bazzite),
+7. prints your token and a `couchpilot://setup?...` QR code — scan it with
+   your phone camera to pair the app.
+
+Idempotent: safe to re-run for upgrades. An existing token and config.json
+are always kept, so paired phones keep working.
+
+Uninstall:
+
+```sh
+./install.sh --uninstall     # asks before deleting the token and sudoers rule
+```
+
+Upgrading from the pre-rename "Rescue Remote" agent: the installer migrates
+your token from `/etc/rescue-agent/token` automatically and removes the old
+`rescue-agent.service`, so existing phone pairings keep working.
+
+## Configuration — /etc/couchpilot/config.json
+
+Watched units and actions are yours to define. The daemon loads
+`/etc/couchpilot/config.json` at startup (`--config` overrides the path);
+if the file is missing or invalid it logs a warning and uses safe generic
+defaults (units: `sddm.service`, `couchpilot.service`; actions:
+`restart-session`, `reboot`, `poweroff`). Restart the service after editing:
+`sudo systemctl restart couchpilot`.
+
+```jsonc
+{
+  "port": 8787,                       // optional; default 8787
+  "units": [                          // the watchlist shown in the app; ALSO
+    {"name": "sddm.service",          // the journal-read allowlist
+     "scope": "system"},              // "system" or "user" (systemctl --user)
+    {"name": "couchpilot.service", "scope": "system"}
+  ],
+  "actions": {
+    "restart-session": {
+      "label": "Restart Session",     // optional; defaults to the id
+      "description": "Restart the display session (sddm)",  // optional
+      "danger": "high",               // required: "low" | "medium" | "high"
+      "cmd": ["sudo", "systemctl", "restart", "sddm"],  // required argv list
+      "user_env": false,              // optional: run with XDG_RUNTIME_DIR set
+                                      // (needed for systemctl --user, flatpak)
+      "detached": false               // optional: fire-and-forget (reboot etc.)
+    }
+  },
+  "action_order": ["restart-session"] // optional listing order for the app
+}
+```
+
+### Examples: adding your own units and actions
+
+Watch a user-scope service and give it a restart button:
+
+```json
+{
+  "units": [
+    {"name": "sddm.service", "scope": "system"},
+    {"name": "couchpilot.service", "scope": "system"},
+    {"name": "sunshine.service", "scope": "user"}
+  ],
+  "actions": {
+    "restart-sunshine": {
+      "label": "Restart Sunshine",
+      "description": "Restart the game-streaming host",
+      "danger": "low",
+      "cmd": ["systemctl", "--user", "restart", "sunshine.service"],
+      "user_env": true
+    },
+    "reboot": {"label": "Reboot", "danger": "high",
+               "cmd": ["sudo", "systemctl", "reboot"], "detached": true}
+  }
+}
+```
+
+Kill a flatpak app (`user_env: true` so flatpak can find the session bus):
+
+```json
+"stop-kodi": {
+  "label": "Stop Kodi",
+  "danger": "medium",
+  "cmd": ["flatpak", "kill", "tv.kodi.Kodi"],
+  "user_env": true
+}
+```
+
+Notes:
+
+- `cmd` is an argv list run with `shell=False` — no shell, no expansion.
+- Anything needing root must go through `sudo` **and** have a matching
+  `NOPASSWD` sudoers entry (the daemon has no TTY to type a password into).
+  The installer's rule covers `systemctl restart sddm`, `reboot`, `poweroff`,
+  and `journalctl`; add your own entries to `/etc/sudoers.d/couchpilot` (via
+  `visudo`) for other privileged actions.
+- Journal reads are allowed **only** for units in `units` — that list is the
+  allowlist.
+
+## API (v1, default port 8787)
 
 All responses are JSON. Every route except `/api/ping` requires
 `Authorization: Bearer <token>`; failures return `401 {"error":"unauthorized"}`.
@@ -13,22 +129,12 @@ All responses carry permissive CORS headers; `OPTIONS` returns 204.
 
 | Route | Method | Description |
 |---|---|---|
-| `/api/ping` | GET | Unauthenticated reachability probe: `{"ok":true,"app":"rescue-agent","version":"1.1.0"}` |
+| `/api/ping` | GET | Unauthenticated reachability probe: `{"ok":true,"app":"couchpilot-agent","version":"2.0.0"}` |
 | `/api/status` | GET | hostname, time, uptime, load, CPU temp, memory, disk usage (`/`, `/var`) |
-| `/api/units` | GET | State of the watchlist units (system: sddm, htpc-nosleep, greenboot-healthcheck, rescue-agent; user: skyscrape) |
-| `/api/journal?unit=<name>&lines=<n>&scope=system\|user` | GET | Last n journal lines (default 100, clamped 1–500). Unit must be on the watchlist, else 400 |
-| `/api/actions` | GET | List of available actions with id/label/description/danger |
+| `/api/units` | GET | State of the configured watchlist units |
+| `/api/journal?unit=<name>&lines=<n>&scope=system\|user` | GET | Last n journal lines (default 100, clamped 1–500). Unit must be in the configured watchlist, else 400 |
+| `/api/actions` | GET | Configured actions with id/label/description/danger |
 | `/api/actions/<id>` | POST | Run an action; returns `{ok, exit_code, stdout, stderr, duration_ms}`. Unknown id → 404 |
-
-### Actions
-
-| id | danger | command |
-|---|---|---|
-| `restart-sddm` | high | `sudo systemctl restart sddm` (fixes wedged gamescope / black screen) |
-| `restart-kodi` | medium | `flatpak kill tv.kodi.Kodi` (relaunch from the Steam tile) |
-| `restart-skyscrape` | low | `systemctl --user restart skyscrape.service` |
-| `reboot` | high | `sudo systemctl reboot` (fire-and-forget) |
-| `poweroff` | high | `sudo systemctl poweroff` (fire-and-forget) |
 
 ## Virtual gamepad (WS protocol v1)
 
@@ -76,69 +182,72 @@ sockets time out after ~60 s.
   `ABS_HAT0X/Y` (−1/0/+1); sticks → `ABS_X/Y` and `ABS_RX/RY`
   (−32768..32767); triggers → `ABS_Z`/`ABS_RZ` (0..255). Every batch is
   followed by `EV_SYN`/`SYN_REPORT`.
-- `/dev/uinput` must be writable by the daemon user — on Bazzite the udev
-  `uaccess` tag grants this to the logged-in user; no sudo needed.
+- `/dev/uinput` must be writable by the daemon user. On SteamOS and Bazzite
+  the udev `uaccess` tag grants this to the user with an **active seat
+  session** — i.e. someone is logged in on the box (Game Mode counts). If no
+  seat session is active, or your distro lacks the uaccess rule, the gamepad
+  reports `uinput unavailable`; a udev rule or an input-group membership can
+  grant access permanently.
 - On non-Linux (or if `/dev/uinput` can't be opened) the agent still
   completes the handshake but replies with an `err` frame and closes.
 - In `--mock` mode no uinput device is created; every decoded event is
   logged to stdout and `hello` reports `dev:"mock"`.
 
-## Deploy (from the Mac)
+## Security model
+
+- **Token**: a random 48-hex-char secret in `/etc/couchpilot/token`
+  (`chmod 600`, owned by the agent user). Compared with
+  `hmac.compare_digest` (constant-time). Every route except `/api/ping`
+  requires it.
+- **Scoped sudoers**: the daemon runs as your desktop user with no TTY, so
+  privileged actions need `NOPASSWD` rules. The installer grants exactly
+  four commands — `systemctl restart sddm`, `systemctl reboot`,
+  `systemctl poweroff`, `journalctl *` — nothing else, validated with
+  `visudo -cf` before install. Skip with `--no-sudoers` (those actions and
+  system-journal reads will then fail).
+- **Allowlists, not shells**: journal reads are limited to the configured
+  unit list; actions are a fixed config table run with argument lists
+  (`shell=False`) — no arbitrary commands, no file-serving routes. The
+  `lines` parameter is clamped; errors return brief JSON, never tracebacks.
+- **LAN-only, plain HTTP**: there is no TLS. Keep port 8787 on your local
+  network — do **not** port-forward it. Anyone with the token on your LAN
+  controls the box.
+
+## SteamOS vs Bazzite notes
+
+| | SteamOS (Steam Deck) | Bazzite |
+|---|---|---|
+| User | `deck` | whatever you created (e.g. `bazzite`) |
+| Firewall | none enabled by default — nothing to open | firewalld — installer opens 8787/tcp |
+| python3 | preinstalled | preinstalled |
+| `/dev/uinput` | `uaccess` grants the active-seat user; Game Mode session counts | same |
+| sudo password | must be set once (`passwd` in Desktop Mode) before the installer's sudo steps work | set during install |
+
+Both are immutable-rootfs distros; the agent deliberately touches only
+`~/.local/opt`, `/etc`, and `/etc/systemd/system`, which are writable on both.
+
+## Development
+
+Mock mode (fake data, no real commands — for phone-app development on macOS):
 
 ```sh
-./deploy.sh                # deploys to bazzite.local
-./deploy.sh 10.1.1.60      # or by IP
+python3 agent/couchpilotd.py --mock --host 127.0.0.1 --port 8787 --token devtoken
+# optionally: --config /path/to/config.json to mock your own unit list
 ```
 
-The script copies the agent and unit file over SSH, generates a token at
-`/etc/rescue-agent/token` if one doesn't exist, installs a sudoers rule,
-installs and starts `rescue-agent.service`, opens `8787/tcp` in firewalld,
-pings the agent, and prints the token to paste into the app.
-Idempotent — safe to re-run. The install step runs over `ssh -t`, so sudo on
-the box may prompt for the `bazzite` password during deploy.
+Serves believable fake data (wandering CPU temp, counting uptime, plausible
+journal lines) and never executes real commands. Actions sleep 0.3 s and
+return `ok:true`.
 
-The daemon runs as `User=bazzite` with no TTY, so the deploy installs
-`/etc/sudoers.d/rescue-agent` (validated with `visudo -cf`) granting `bazzite`
-passwordless sudo for exactly: `systemctl restart sddm`, `systemctl reboot`,
-`systemctl poweroff`, and `journalctl` (system-scope journal reads). Without
-this rule, sudo fails with "a terminal is required" and those actions break.
-
-## Pairing via QR
-
-`deploy.sh` ends by printing a terminal QR code of the app deep link
-(`rescueremote://setup?host=<host>&port=8787&token=<token>`). Scan it with the
-iPhone camera: the Rescue Remote app opens on the Setup tab with host, port,
-and token prefilled and runs the connection test automatically — then tap
-SAVE. Nothing is saved until you tap SAVE.
-
-To show the QR again any time (reads the token over ssh):
+Deploy a working checkout to a test box (dev only; end users use the curl
+one-liner):
 
 ```sh
-./show-qr.sh                # bazzite@bazzite.local
-./show-qr.sh 10.1.1.60      # or by IP / user@host
+./agent/deploy.sh deck@steamdeck.local
 ```
 
-Rendering uses `npx --yes qrcode` (its default renderer draws in the
-terminal); if `npx` is missing or fails, the scripts fall back to printing
-the raw URL.
-
-## Mock mode (develop the app on macOS)
+Re-print the pairing QR any time (reads the token over ssh):
 
 ```sh
-python3 rescue_agentd.py --mock --host 127.0.0.1 --port 8787 --token devtoken
+./agent/show-qr.sh deck@steamdeck.local
 ```
-
-Serves believable fake data (wandering CPU temp, counting uptime, all units
-green except `skyscrape.service`, plausible journal lines) and never executes
-real commands. Actions sleep 0.3 s and return `ok:true`.
-
-## Security notes
-
-- Token comparison uses `hmac.compare_digest` (constant-time).
-- Journal access is limited to the fixed watchlist allowlist; actions are a
-  fixed table — no arbitrary commands or units.
-- All subprocesses use argument lists (`shell=False`); the `lines` parameter is
-  clamped; there are no file-serving routes.
-- Errors return brief JSON messages, never tracebacks.
-- The token file is `chmod 600`. The API is plain HTTP — keep it LAN-only
-  (firewalld only opens 8787 to the local network; do not port-forward it).

@@ -70,11 +70,15 @@ export default function ConsoleScreen() {
   const insets = useSafeAreaInsets();
   const { settings, ready } = useSettings();
 
-  const status = usePoll<Status>(() => api.status(settings), 5000, ready);
-  const units = usePoll<{ units: Unit[] }>(() => api.units(settings), 10000, ready);
+  // No host yet (fresh install): don't poll, and show the pairing hint
+  // instead of the unreachable banner.
+  const configured = settings.host.trim().length > 0;
+
+  const status = usePoll<Status>(() => api.status(settings), 5000, ready && configured);
+  const units = usePoll<{ units: Unit[] }>(() => api.units(settings), 10000, ready && configured);
 
   const s = status.data;
-  const reachable = status.error == null && s != null;
+  const reachable = configured && status.error == null && s != null;
   const memPct = s ? Math.round((s.mem.used_mb / s.mem.total_mb) * 100) : 0;
 
   return (
@@ -93,14 +97,27 @@ export default function ConsoleScreen() {
             { backgroundColor: reachable ? theme.green : theme.red },
           ]}
         />
-        <Text style={styles.hostname}>{s?.hostname ?? settings.host}</Text>
+        <Text style={styles.hostname}>
+          {s?.hostname ?? (configured ? settings.host : 'CouchPilot')}
+        </Text>
         <Text style={styles.headerSub}>
-          {reachable ? `agent v${s?.agent_version}` : 'offline'}
+          {reachable ? `agent v${s?.agent_version}` : configured ? 'offline' : 'not set up'}
         </Text>
       </View>
 
+      {/* Fresh install: nothing paired yet, so nothing is "unreachable". */}
+      {!configured && (
+        <View style={styles.emptyCard}>
+          <Text style={styles.emptyTitle}>No box configured</Text>
+          <Text style={styles.emptyText}>
+            Open the Setup tab to pair with the CouchPilot agent on your media center or Steam
+            machine — or try demo mode.
+          </Text>
+        </View>
+      )}
+
       {/* Unreachable banner — the whole point of this app */}
-      {status.error != null && (
+      {configured && status.error != null && (
         <View style={styles.banner}>
           <Text style={styles.bannerTitle}>BOX UNREACHABLE</Text>
           <Text style={styles.bannerDetail}>{status.error.message}</Text>
@@ -176,6 +193,7 @@ export default function ConsoleScreen() {
       )}
 
       {/* Units */}
+      {configured && (
       <Card title="UNITS">
         {units.error != null && !units.data ? (
           <Text style={styles.unitErr}>{units.error.message}</Text>
@@ -189,6 +207,7 @@ export default function ConsoleScreen() {
           <Text style={styles.unitErr}>loading…</Text>
         )}
       </Card>
+      )}
     </ScrollView>
   );
 }
@@ -204,6 +223,16 @@ const styles = StyleSheet.create({
   dot: { width: 14, height: 14, borderRadius: 7 },
   hostname: { color: theme.text, fontSize: 26, fontWeight: '700', fontFamily: mono },
   headerSub: { color: theme.textDim, fontSize: 13, marginLeft: 'auto' },
+  emptyCard: {
+    backgroundColor: theme.card,
+    borderColor: theme.cardBorder,
+    borderWidth: 1,
+    borderRadius: 12,
+    padding: 16,
+    marginBottom: 12,
+  },
+  emptyTitle: { color: theme.text, fontSize: 16, fontWeight: '700', marginBottom: 6 },
+  emptyText: { color: theme.textDim, fontSize: 13, lineHeight: 19 },
   banner: {
     backgroundColor: theme.redDeep,
     borderColor: theme.red,

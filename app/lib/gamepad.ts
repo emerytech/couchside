@@ -1,5 +1,5 @@
 /**
- * WebSocket client for the Rescue Agent virtual gamepad (protocol v1).
+ * WebSocket client for the CouchPilot agent virtual gamepad (protocol v1).
  *
  * Endpoint: ws://<host>:<port>/ws/gamepad?token=<token>
  * Client -> server (one JSON object per text frame):
@@ -9,6 +9,7 @@
  *   {"t":"ping"}                       keepalive
  * Server -> client: {"t":"hello","dev":...} | {"t":"pong"} | {"t":"err","msg":...}
  */
+import { isDemoHost } from './demo';
 import { Settings } from './settings';
 
 export type GamepadStatus = 'connecting' | 'connected' | 'error' | 'closed';
@@ -126,6 +127,15 @@ export class GamepadClient {
     this.active = true;
     this.attempt = 0;
     this.clearReconnect();
+
+    // Demo mode: no box, no socket. Report connected; sends are no-ops
+    // (sendRaw drops frames while this.ws is null).
+    if (isDemoHost(conn.host)) {
+      this.teardownSocket(true);
+      this.setStatus('connected', 'demo pad (no box)');
+      return;
+    }
+
     this.open();
   }
 

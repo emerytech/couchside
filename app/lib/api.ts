@@ -1,7 +1,19 @@
 /**
- * Typed client for the Rescue Agent API (contract v1).
- * Base URL: http://<host>:<port>  (default bazzite.local:8787)
+ * Typed client for the CouchPilot agent API (contract v1).
+ * Base URL: http://<host>:<port>  (default port 8787)
+ *
+ * Demo mode: when the configured host is "demo" (see lib/demo.ts), every
+ * method returns canned data without touching the network.
  */
+import {
+  demoActions,
+  demoJournal,
+  demoPing,
+  demoRunAction,
+  demoStatus,
+  demoUnits,
+  isDemo,
+} from './demo';
 import { Settings } from './settings';
 
 /** The subset of Settings the API client actually needs. */
@@ -66,15 +78,6 @@ export type Journal = {
   scope: string;
   lines: string[];
 };
-
-// The agent-side watchlist allowlist for /api/journal.
-export const WATCHLIST: { unit: string; scope: UnitScope; short: string }[] = [
-  { unit: 'sddm.service', scope: 'system', short: 'sddm' },
-  { unit: 'htpc-nosleep.service', scope: 'system', short: 'nosleep' },
-  { unit: 'greenboot-healthcheck.service', scope: 'system', short: 'greenboot' },
-  { unit: 'rescue-agent.service', scope: 'system', short: 'agent' },
-  { unit: 'skyscrape.service', scope: 'user', short: 'skyscrape' },
-];
 
 // ---------- Errors ----------
 
@@ -149,18 +152,22 @@ async function request<T>(
 export const api = {
   /** Unauthenticated reachability probe. */
   ping(settings: ConnSettings): Promise<Ping> {
+    if (isDemo(settings)) return demoPing();
     return request<Ping>(settings, '/api/ping', { auth: false });
   },
 
   status(settings: ConnSettings): Promise<Status> {
+    if (isDemo(settings)) return demoStatus();
     return request<Status>(settings, '/api/status');
   },
 
   units(settings: ConnSettings): Promise<{ units: Unit[] }> {
+    if (isDemo(settings)) return demoUnits();
     return request<{ units: Unit[] }>(settings, '/api/units');
   },
 
   journal(settings: ConnSettings, unit: string, scope: UnitScope, lines = 100): Promise<Journal> {
+    if (isDemo(settings)) return demoJournal(unit, scope, lines);
     const q = new URLSearchParams({
       unit,
       lines: String(lines),
@@ -170,10 +177,12 @@ export const api = {
   },
 
   actions(settings: ConnSettings): Promise<{ actions: ActionInfo[] }> {
+    if (isDemo(settings)) return demoActions();
     return request<{ actions: ActionInfo[] }>(settings, '/api/actions');
   },
 
   runAction(settings: ConnSettings, id: string): Promise<ActionResult> {
+    if (isDemo(settings)) return demoRunAction(id);
     // Actions block server-side for up to 15s (e.g. `systemctl restart sddm`);
     // outlive that so a slow-but-successful action isn't reported as a timeout.
     return request<ActionResult>(settings, `/api/actions/${encodeURIComponent(id)}`, {
