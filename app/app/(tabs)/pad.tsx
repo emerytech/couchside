@@ -28,6 +28,7 @@ import {
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
 import { Gated } from '@/components/Gated';
+import { RemotePowerBar } from '@/components/RemotePowerBar';
 import { TabScreen } from '@/components/TabScreen';
 import { useLockOrientation } from '@/hooks/useLockOrientation';
 import { ButtonKey, GamepadClient, GamepadStatus, StickKey, TriggerKey } from '@/lib/gamepad';
@@ -728,6 +729,9 @@ function PadScreen() {
           ))}
         </View>
       </View>
+
+      {/* Box power (suspend/wake) + volume, shared with the Console tab. */}
+      <RemotePowerBar />
 
       {mode === 'swipe' ? (
         <>
