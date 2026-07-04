@@ -17,6 +17,10 @@ set -euo pipefail
 # Raw file sources (used when not running from a git checkout)
 DAEMON_URL="https://raw.githubusercontent.com/emerytech/couchside/main/agent/couchsided.py"
 UNIT_URL="https://raw.githubusercontent.com/emerytech/couchside/main/agent/couchside.service"
+# Pure-stdlib terminal QR renderer, so the installer can draw the pairing QR
+# without qrencode (immutable distros like Bazzite rarely ship it). Optional:
+# a failed fetch just falls back to printing the URL.
+QR_URL="https://raw.githubusercontent.com/emerytech/couchside/main/agent/qr.py"
 # Built Decky Loader plugin, shipped as a tarball because the compiled frontend
 # (dist/) isn't checked into git, so raw source wouldn't give a working panel.
 PLUGIN_URL="https://github.com/emerytech/couchside-decky/releases/latest/download/Couchside.tar.gz"
@@ -172,6 +176,8 @@ if [ -n "$SCRIPT_DIR" ] && [ -f "$SCRIPT_DIR/agent/couchsided.py" ]; then
     say "Installing from local checkout: $SCRIPT_DIR"
     cp "$SCRIPT_DIR/agent/couchsided.py" "$WORK_DIR/couchsided.py"
     cp "$SCRIPT_DIR/agent/couchside.service" "$WORK_DIR/couchside.service"
+    # Optional QR helper: present in a checkout, harmless if not.
+    [ -f "$SCRIPT_DIR/agent/qr.py" ] && cp "$SCRIPT_DIR/agent/qr.py" "$WORK_DIR/qr.py"
 else
     command -v curl >/dev/null 2>&1 || die "curl not found (needed to fetch the agent files)."
     say "Fetching agent files from GitHub"
@@ -179,6 +185,8 @@ else
     curl -fsSL "$DAEMON_URL" -o "$WORK_DIR/couchsided.py"
     note "$UNIT_URL"
     curl -fsSL "$UNIT_URL" -o "$WORK_DIR/couchside.service"
+    # Optional: don't abort the install if only the QR helper fails to fetch.
+    curl -fsSL "$QR_URL" -o "$WORK_DIR/qr.py" 2>/dev/null || true
 fi
 python3 -m py_compile "$WORK_DIR/couchsided.py" || die "downloaded couchsided.py does not compile, aborting."
 
@@ -188,6 +196,11 @@ python3 -m py_compile "$WORK_DIR/couchsided.py" || die "downloaded couchsided.py
 say "Installing daemon to $INSTALL_DIR"
 mkdir -p "$INSTALL_DIR"
 install -m 0755 "$WORK_DIR/couchsided.py" "$INSTALL_DIR/couchsided.py"
+# The QR helper is optional: install it only if it fetched and compiles, so the
+# terminal pairing QR works without qrencode. Its absence just prints the URL.
+if [ -f "$WORK_DIR/qr.py" ] && python3 -m py_compile "$WORK_DIR/qr.py" 2>/dev/null; then
+    install -m 0755 "$WORK_DIR/qr.py" "$INSTALL_DIR/qr.py"
+fi
 
 # ---------------------------------------------------------------------------
 # (d) Token: /etc/couchside/token (sudo from here on)
@@ -757,11 +770,14 @@ echo "=================================================================="
 echo
 if command -v qrencode >/dev/null 2>&1; then
     qrencode -t ansiutf8 "$PAIR_URL"
+elif [ -f "$INSTALL_DIR/qr.py" ] && python3 "$INSTALL_DIR/qr.py" "$PAIR_URL" 2>/dev/null; then
+    # Pure-stdlib fallback: works on immutable distros with no qrencode.
+    :
 elif command -v npx >/dev/null 2>&1; then
     # no -t flag: the qrcode CLI's default renderer draws in the terminal
     npx --yes qrcode "$PAIR_URL" || echo "$PAIR_URL"
 else
-    echo "(install 'qrencode' for a terminal QR code; for now copy the URL above)"
+    echo "(couldn't render a terminal QR here; copy the URL above to pair)"
 fi
 
 echo
