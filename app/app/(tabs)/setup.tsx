@@ -25,8 +25,10 @@ import {
   setHapticsEnabled,
   useHapticsEnabled,
 } from '@/lib/haptics';
+import { setKeepAwakeEnabled, useKeepAwakeEnabled } from '@/lib/keepAwake';
 import { buy, getProduct, restore } from '@/lib/purchase';
-import { Box, DEFAULT_PORT } from '@/lib/settings';
+import { Box, DEFAULT_PORT, normalizeMac } from '@/lib/settings';
+import { VolumeTarget } from '@/lib/api';
 import { useBoxes, useBoxOnlineStatus, BoxReachability } from '@/lib/SettingsContext';
 import { mono, theme } from '@/lib/theme';
 
@@ -191,11 +193,21 @@ function confirmRemove(name: string, onConfirm: () => void) {
 function BoxEditPanel({
   box,
   onSave,
+  onVolumeTarget,
   onCancel,
   conflict,
 }: {
   box: Box;
-  onSave: (patch: { name: string; host: string; port: number; token: string }) => void | Promise<void>;
+  onSave: (patch: {
+    name: string;
+    host: string;
+    port: number;
+    token: string;
+    mac?: string;
+  }) => void | Promise<void>;
+  /** Persist the volume target immediately (like the header control), so it
+   * can't be reverted by a stale draft on a later Save. */
+  onVolumeTarget: (target: VolumeTarget) => void;
   onCancel: () => void;
   /** True if the given host+port already belongs to a *different* box. */
   conflict: (host: string, port: number) => boolean;
@@ -205,6 +217,12 @@ function BoxEditPanel({
   const [port, setPort] = useState(String(box.port));
   const [token, setToken] = useState(box.token);
   const [showToken, setShowToken] = useState(false);
+  const [mac, setMac] = useState(box.mac ?? '');
+  // The MAC known when the editor opened. Save only writes MAC when the field
+  // was actually changed, so a value auto-learned from /api/status while the
+  // editor is open (RemotePowerBar polls the active box) is never clobbered.
+  const [seedMac] = useState<string | undefined>(box.mac ?? undefined);
+  const volumeTarget: VolumeTarget = box.volumeTarget ?? 'box';
   const [error, setError] = useState<string | null>(null);
 
   const [pingStep, setPingStep] = useState<StepState>({ state: 'idle' });
@@ -251,10 +269,35 @@ function BoxEditPanel({
       setError('Another box already uses this host:port.');
       return;
     }
-    // Preserve the existing token if the (masked) field was left blank. Mirrors
-    // addBox, so clearing it can't silently destroy a working credential.
-    void onSave({ name: name.trim() || c.host, host: c.host, port: c.port, token: c.token || box.token });
-  }, [conn, hostEmpty, name, box.token, conflict, onSave]);
+    // A typed MAC must be a real address. A blank field means "leave it alone"
+    // (not "clear"), so a MAC auto-learned while the editor was open survives.
+    const macTrim = mac.trim();
+    const patch: {
+      name: string;
+      host: string;
+      port: number;
+      token: string;
+      mac?: string;
+    } = {
+      name: name.trim() || c.host,
+      host: c.host,
+      port: c.port,
+      // Preserve the existing token if the (masked) field was left blank.
+      // Mirrors addBox, so clearing it can't destroy a working credential.
+      token: c.token || box.token,
+    };
+    if (macTrim) {
+      const n = normalizeMac(macTrim);
+      if (!n) {
+        setError('MAC must look like aa:bb:cc:dd:ee:ff.');
+        return;
+      }
+      // Only write when the user actually changed it, so we never overwrite a
+      // newer auto-learned MAC with the value that was on screen at open time.
+      if (n !== seedMac) patch.mac = n;
+    }
+    void onSave(patch);
+  }, [conn, hostEmpty, name, box.token, conflict, onSave, mac, seedMac]);
 
   const showSteps = pingStep.state !== 'idle' || authStep.state !== 'idle';
 
@@ -315,6 +358,38 @@ function BoxEditPanel({
         autoCorrect={false}
       />
 
+      <Text style={styles.fieldLabel}>MAC (WAKE-ON-LAN)</Text>
+      <TextInput
+        style={styles.input}
+        value={mac}
+        onChangeText={(t) => {
+          setMac(t);
+          setError(null);
+        }}
+        placeholder="aa:bb:cc:dd:ee:ff · auto-learned when reachable"
+        placeholderTextColor={theme.textFaint}
+        autoCapitalize="none"
+        autoCorrect={false}
+      />
+
+      <Text style={styles.fieldLabel}>VOLUME CONTROLS</Text>
+      <View style={styles.segRow}>
+        <Pressable
+          onPress={() => onVolumeTarget('box')}
+          style={[styles.seg, volumeTarget === 'box' && styles.segActive]}>
+          <Text style={[styles.segText, volumeTarget === 'box' && styles.segTextActive]}>
+            Box
+          </Text>
+        </Pressable>
+        <Pressable
+          onPress={() => onVolumeTarget('tv')}
+          style={[styles.seg, volumeTarget === 'tv' && styles.segActive]}>
+          <Text style={[styles.segText, volumeTarget === 'tv' && styles.segTextActive]}>
+            TV
+          </Text>
+        </Pressable>
+      </View>
+
       <View style={styles.btnRow}>
         <Pressable
           onPress={test}
@@ -374,6 +449,7 @@ function SetupBody() {
 
   const status = useBoxOnlineStatus(boxes, { active: true, intervalMs: 10000 });
   const hapticsOn = useHapticsEnabled();
+  const keepAwakeOn = useKeepAwakeEnabled();
 
   const [restoring, setRestoring] = useState(false);
   const [buying, setBuying] = useState(false);
@@ -585,6 +661,7 @@ function SetupBody() {
                       );
                       setEditingId(null);
                     }}
+                    onVolumeTarget={(target) => void updateBox(box.id, { volumeTarget: target })}
                     onCancel={() => setEditingId(null)}
                   />
                 ) : (
@@ -730,6 +807,24 @@ function SetupBody() {
                 // runs first so the cue isn't gated off when turning it on.
                 void setHapticsEnabled(v);
                 if (v) hapticSelection();
+              }}
+              trackColor={{ false: theme.inset, true: theme.blue }}
+              thumbColor="#f8fafc"
+              ios_backgroundColor={theme.inset}
+            />
+          </View>
+          <View style={styles.prefRow}>
+            <View style={styles.prefBody}>
+              <Text style={styles.prefLabel}>Keep screen awake on Pad</Text>
+              <Text style={styles.prefSub}>
+                Hold the display on while the controller is open. Off saves battery.
+              </Text>
+            </View>
+            <Switch
+              value={keepAwakeOn}
+              onValueChange={(v) => {
+                void setKeepAwakeEnabled(v);
+                hapticSelection();
               }}
               trackColor={{ false: theme.inset, true: theme.blue }}
               thumbColor="#f8fafc"
@@ -985,6 +1080,17 @@ const styles = StyleSheet.create({
   prefBody: { flex: 1, minWidth: 0 },
   prefLabel: { color: theme.text, fontSize: 15, fontWeight: '600', fontFamily: mono },
   prefSub: { color: theme.textFaint, fontSize: 12, marginTop: 3 },
+  segRow: {
+    flexDirection: 'row',
+    gap: 2,
+    padding: 2,
+    borderRadius: 10,
+    backgroundColor: theme.inset,
+  },
+  seg: { flex: 1, paddingVertical: 10, borderRadius: 8, alignItems: 'center' },
+  segActive: { backgroundColor: theme.card },
+  segText: { color: theme.textDim, fontSize: 13, fontWeight: '700', fontFamily: mono },
+  segTextActive: { color: theme.text },
   versionLabel: { color: theme.textDim, fontSize: 13 },
   versionValue: { color: theme.green, fontSize: 13, fontFamily: mono, fontWeight: '700' },
   hint: { color: theme.textFaint, fontSize: 12, lineHeight: 17, fontFamily: mono },

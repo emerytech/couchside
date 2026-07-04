@@ -121,6 +121,25 @@ export function RemotePowerBar() {
     [settings],
   );
 
+  // TV power goes to the panel/CEC backend regardless of the volume target
+  // (the agent ignores target for power ops).
+  const sendPower = React.useCallback(
+    async (op: 'power_on' | 'power_off') => {
+      hapticLight();
+      setBusy(true);
+      try {
+        await api.tvSend(settings, op);
+        // The TV gives no on-screen confirmation of a power command, so buzz.
+        hapticSuccess();
+      } catch {
+        hapticError();
+      } finally {
+        setBusy(false);
+      }
+    },
+    [settings],
+  );
+
   // Mute returns the new state so the button can show it (gamescope has no
   // mute OSD on the panel, so this is the only feedback).
   const onMute = React.useCallback(async () => {
@@ -179,20 +198,28 @@ export function RemotePowerBar() {
   if (!ready || !configured) return null;
 
   const wired = s?.net?.wired;
+  const wolArmed = s?.net?.wol_armed;
   const boxVol = tv?.box_volume ?? false;
   // Old agents (< 2.6.2) don't split volume; treat an available backend as TV volume.
   const tvVol = tv?.tv_volume ?? tv?.available === true;
   const hasVolume = reachable && (boxVol || tvVol);
   const canToggleVolume = boxVol && tvVol;
   const volumeTarget: VolumeTarget = settings.volumeTarget ?? 'box';
+  const hasTvPower = reachable && tv?.tv_power === true;
   const canSuspend = reachable && hasSuspend;
   const canWake = !reachable && !!settings.mac && wolAvailable;
 
   // Nothing to control on this box right now.
-  if (!canSuspend && !canWake && !hasVolume) return null;
+  if (!canSuspend && !canWake && !hasVolume && !hasTvPower) return null;
 
-  // Trigger icon hints at what's inside: volume when it's the main use, else power.
-  const triggerIcon: IoniconName = hasVolume ? 'volume-high' : canWake ? 'power' : 'moon';
+  // Trigger icon hints at what's inside: volume first, then box power, then TV.
+  const triggerIcon: IoniconName = hasVolume
+    ? 'volume-high'
+    : canWake
+    ? 'power'
+    : canSuspend
+    ? 'moon'
+    : 'tv-outline';
 
   return (
     <>
@@ -231,22 +258,49 @@ export function RemotePowerBar() {
               )}
 
               {canSuspend && (
-                <Pressable
-                  disabled={wired === false}
-                  onPress={() => {
-                    setOpen(false);
-                    onSuspend();
-                  }}
-                  style={({ pressed }) => [
-                    styles.bigBtn,
-                    wired === false && styles.disabled,
-                    pressed && styles.pressed,
-                  ]}>
-                  <Ionicons name="moon" size={22} color={theme.amber} />
-                  <Text style={[styles.bigLabel, { color: theme.amber }]}>
-                    {wired === false ? 'Suspend (needs Ethernet)' : 'Suspend'}
-                  </Text>
-                </Pressable>
+                <View style={styles.suspendGroup}>
+                  <Pressable
+                    disabled={wired === false}
+                    onPress={() => {
+                      setOpen(false);
+                      onSuspend();
+                    }}
+                    style={({ pressed }) => [
+                      styles.bigBtn,
+                      wired === false && styles.disabled,
+                      pressed && styles.pressed,
+                    ]}>
+                    <Ionicons name="moon" size={22} color={theme.amber} />
+                    <Text style={[styles.bigLabel, { color: theme.amber }]}>
+                      {wired === false ? 'Suspend (needs Ethernet)' : 'Suspend'}
+                    </Text>
+                  </Pressable>
+                  {wired !== false && wolArmed === false && (
+                    <Text style={styles.warnText}>
+                      Wake-on-LAN is not armed on this box. It will sleep, but the
+                      Wake button may not bring it back.
+                    </Text>
+                  )}
+                </View>
+              )}
+
+              {hasTvPower && (
+                <View style={styles.tvPowerRow}>
+                  <Pressable
+                    disabled={busy}
+                    onPress={() => sendPower('power_on')}
+                    style={({ pressed }) => [styles.tvBtn, pressed && styles.pressed]}>
+                    <Ionicons name="power" size={18} color={theme.green} />
+                    <Text style={[styles.tvBtnText, { color: theme.green }]}>TV On</Text>
+                  </Pressable>
+                  <Pressable
+                    disabled={busy}
+                    onPress={() => sendPower('power_off')}
+                    style={({ pressed }) => [styles.tvBtn, pressed && styles.pressed]}>
+                    <Ionicons name="power-outline" size={18} color={theme.textDim} />
+                    <Text style={[styles.tvBtnText, { color: theme.textDim }]}>TV Off</Text>
+                  </Pressable>
+                </View>
               )}
 
               {hasVolume && (
@@ -348,6 +402,26 @@ const styles = StyleSheet.create({
     backgroundColor: theme.inset,
   },
   bigLabel: { fontSize: 15, fontWeight: '800', fontFamily: mono, letterSpacing: 0.5 },
+  suspendGroup: { gap: 6 },
+  warnText: {
+    color: theme.amber,
+    fontSize: 11,
+    fontFamily: mono,
+    lineHeight: 15,
+    paddingHorizontal: 4,
+  },
+  tvPowerRow: { flexDirection: 'row', gap: 8 },
+  tvBtn: {
+    flex: 1,
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 8,
+    height: 48,
+    borderRadius: 10,
+    backgroundColor: theme.inset,
+  },
+  tvBtnText: { fontSize: 14, fontWeight: '800', fontFamily: mono, letterSpacing: 0.5 },
   volRow: { flexDirection: 'row', gap: 8 },
   volBtn: {
     flex: 1,

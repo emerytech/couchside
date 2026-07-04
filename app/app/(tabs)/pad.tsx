@@ -8,6 +8,7 @@
  * in landscape the gamepad controls spread out like a real controller.
  */
 import { hapticSelection } from '@/lib/haptics';
+import { getKeepAwakeEnabled, useKeepAwakeEnabled } from '@/lib/keepAwake';
 import { activateKeepAwakeAsync, deactivateKeepAwake } from 'expo-keep-awake';
 import { useNavigation } from 'expo-router';
 import React, { useCallback, useEffect, useRef, useState } from 'react';
@@ -534,6 +535,11 @@ function PadScreen() {
   const settingsRef = useRef(settings);
   settingsRef.current = settings;
 
+  // Whether the Pad is currently connected/focused, so the keep-awake effect
+  // below can (de)acquire the wake lock when the pref loads or is toggled.
+  const focusedRef = useRef(false);
+  const keepAwakeOn = useKeepAwakeEnabled();
+
   // Manage the connection off the screen's mount lifecycle (reliable on web
   // and native) rather than useFocusEffect, whose callback-body timing is
   // unreliable on web. This screen mounts lazily on first visit to the Pad tab
@@ -550,12 +556,20 @@ function PadScreen() {
     });
 
     const connect = () => {
+      focusedRef.current = true;
       client.connect(settingsRef.current);
       if (Platform.OS !== 'web') {
-        activateKeepAwakeAsync(KEEP_AWAKE_TAG).catch(() => {});
+        // Honor the "keep screen awake on Pad" pref; if it was turned off while
+        // focused, this re-connect path also releases a prior lock.
+        if (getKeepAwakeEnabled()) {
+          activateKeepAwakeAsync(KEEP_AWAKE_TAG).catch(() => {});
+        } else {
+          deactivateKeepAwake(KEEP_AWAKE_TAG).catch(() => {});
+        }
       }
     };
     const disconnect = () => {
+      focusedRef.current = false;
       client.close();
       if (Platform.OS !== 'web') {
         deactivateKeepAwake(KEEP_AWAKE_TAG).catch(() => {});
@@ -583,6 +597,19 @@ function PadScreen() {
     // eslint-disable-next-line react-hooks/exhaustive-deps -- connection
     // identity only; settingsRef carries the rest without re-running.
   }, [client, ready, settings.host, settings.port, settings.token, navigation]);
+
+  // Re-apply the wake lock when the keep-awake pref loads or is toggled. The
+  // pref loads asynchronously, so on a cold start straight onto the Pad tab the
+  // first connect() can read the default (on) before a user's "off" resolves;
+  // this corrects the lock once the real value arrives (and on later toggles).
+  useEffect(() => {
+    if (Platform.OS === 'web') return;
+    if (focusedRef.current && keepAwakeOn) {
+      activateKeepAwakeAsync(KEEP_AWAKE_TAG).catch(() => {});
+    } else {
+      deactivateKeepAwake(KEEP_AWAKE_TAG).catch(() => {});
+    }
+  }, [keepAwakeOn]);
 
   // A freshly-learned lastIp should reach the client's stored conn so future
   // reconnects can use it. connect() with an unchanged host/port/token just
