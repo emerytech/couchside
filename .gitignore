@@ -8,3 +8,9 @@ store/
 # The Decky Loader plugin is its own git repo (built + released separately);
 # the installer pulls its release tarball, so it isn't vendored here.
 couchside-decky/
+
+# Store-signing secrets: never commit these. EAS reads them locally only.
+app/play-service-account.json
+*service-account*.json
+app/asc-key.p8
+*.p8
