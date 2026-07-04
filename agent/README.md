@@ -210,13 +210,17 @@ are probed once at startup, and `GET /api/tv` reports what is available.
 |---|---|---|---|
 | `panel` | TV power + volume | RS-232 serial command frames | `config.json` names a serial `device` that exists (see below) |
 | `cec` | TV power + volume | HDMI-CEC via `cec-ctl` (v4l-utils) or `cec-client` (libcec) | a CEC tool is on `PATH` **and** a **connected** `/dev/cec*` port or a libcec adapter is found |
-| `soft` | box volume + mute | the OS volume media keys via `/dev/uinput` (volume up/down, so the SteamOS OSD shows) plus `wpctl` for mute | `/dev/uinput` is writable |
+| `soft` | box volume + mute | the OS volume media keys via `/dev/uinput`, so the SteamOS volume OSD shows | `/dev/uinput` is writable |
 
 The unified op set is `power_on power_off volume_up volume_down mute`. Power
 always goes to the panel/CEC backend. Volume goes to the box (`soft`) by
 default; `POST /api/tv/volume_*?target=tv` sends it to the panel/CEC instead.
 The `soft` media-key device is created at startup so the compositor has it
-enumerated before the first press. `GET /api/tv` returns `box_volume`,
+enumerated before the first press. Mute is a special case: gamescope binds no
+mute key and shows no mute OSD, so mute instead drives the volume to 0 with the
+volume-down key (the on-screen bar empties to the muted-speaker icon, the panel
+gets a real indicator) and restores the saved level on unmute. `GET /api/tv`
+returns `box_volume`,
 `tv_volume`, `tv_power`, and the current `muted` state; it 404s only when the
 box has neither box volume nor a TV backend. The startup banner logs
 `tv: <backend> (<adapter>)`.

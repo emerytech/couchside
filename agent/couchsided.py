@@ -38,7 +38,7 @@ except ImportError:  # pragma: no cover
     fcntl = None
 
 APP_NAME = "couchside-agent"
-VERSION = "2.6.5"
+VERSION = "2.6.6"
 UID = os.getuid()
 XDG_RUNTIME_DIR = "/run/user/%d" % UID
 
@@ -1529,6 +1529,7 @@ def mock_panel(op):
 SOFT_OPS = ("volume_up", "volume_down", "mute")
 SOFT = None           # {"adapter": ...} when the media-key device exists, else None
 _MEDIA_DEV = None      # the persistent UInputMediaKeys device, created by set_soft
+_PRE_MUTE_VOL = None   # volume before we muted, so unmute restores it (see _soft_mute)
 
 
 def set_soft(mock):
@@ -1557,9 +1558,9 @@ def soft_available():
 
 def real_soft(op):
     """Change box volume. Volume up/down emit media keys via the media-key device
-    so the OS moves the volume and (in Game Mode) shows its OSD. Mute is toggled
-    with wpctl on the default sink, because gamescope does not bind KEY_MUTE.
-    ActionResult-shaped. Power ops are rejected (no volume key for them)."""
+    so the OS moves the volume and (in Game Mode) shows its OSD. Mute drives the
+    volume to 0 the same way (see _soft_mute), because gamescope does not bind
+    KEY_MUTE. ActionResult-shaped. Power ops are rejected (no volume key)."""
     start = time.monotonic()
     if op == "mute":
         return _soft_mute(start)
@@ -1581,9 +1582,9 @@ def real_soft(op):
             "duration_ms": int((time.monotonic() - start) * 1000)}
 
 
-def _soft_muted():
-    """Current mute state of the box's default sink (True/False), or None if it
-    can't be read. wpctl get-volume prints '[MUTED]' when the sink is muted."""
+def _wpctl_volume_line():
+    """Raw 'wpctl get-volume @DEFAULT_AUDIO_SINK@' stdout, or None if unreadable.
+    Looks like 'Volume: 0.45' or 'Volume: 0.00 [MUTED]'."""
     wp = shutil.which("wpctl")
     if wp is None:
         return None
@@ -1594,31 +1595,82 @@ def _soft_muted():
         return None
     if r.returncode != 0:
         return None
-    return "MUTED" in (r.stdout or b"").decode("utf-8", "replace").upper()
+    return (r.stdout or b"").decode("utf-8", "replace")
+
+
+def _soft_muted():
+    """Current mute state of the box's default sink (True/False), or None if it
+    can't be read. Volume 0 counts as muted: driving the volume to 0 with the
+    media key is exactly how mute is applied, and the sink reads '[MUTED]' there."""
+    line = _wpctl_volume_line()
+    if line is None:
+        return None
+    return "MUTED" in line.upper()
+
+
+def _soft_volume():
+    """Current box volume as a float (0.0-1.0+), or None if unreadable."""
+    line = _wpctl_volume_line()
+    if line is None:
+        return None
+    for tok in line.split():
+        try:
+            return float(tok)
+        except ValueError:
+            continue
+    return None
+
+
+def _wpctl_set(*args):
+    """Run 'wpctl <args>' in the user's audio session. Returns the CompletedProcess
+    or None if wpctl is missing / the call raised."""
+    wp = shutil.which("wpctl")
+    if wp is None:
+        return None
+    try:
+        return subprocess.run([wp] + list(args), capture_output=True,
+                              timeout=4, env=_user_env())
+    except Exception:
+        return None
 
 
 def _soft_mute(start):
-    """Toggle mute on the box's default sink via wpctl, in the user's audio
-    session. Returns the new state as "muted" so the app can show a mute
-    indicator (gamescope shows no mute OSD). ActionResult-shaped."""
-    wp = shutil.which("wpctl")
-    if wp is None:
-        return {"ok": False, "exit_code": -1, "stdout": "",
-                "stderr": "wpctl not found for mute",
+    """Toggle box mute. gamescope binds no KEY_MUTE and shows no mute OSD, so a
+    plain wpctl mute would be invisible on the panel. Instead mute drives the
+    volume to 0 with the volume-down media key: that fires the on-screen volume
+    OSD (bar empties to the muted-speaker icon) AND leaves the sink '[MUTED]'.
+    The pre-mute level is saved so unmute restores it. ActionResult-shaped with a
+    "muted" field for the app's own indicator."""
+    global _PRE_MUTE_VOL
+    def result(ok, muted, stdout="", stderr=""):
+        return {"ok": ok, "exit_code": 0 if ok else -1, "stdout": stdout,
+                "stderr": stderr, "muted": muted,
                 "duration_ms": int((time.monotonic() - start) * 1000)}
-    try:
-        r = subprocess.run([wp, "set-mute", "@DEFAULT_AUDIO_SINK@", "toggle"],
-                           capture_output=True, timeout=4, env=_user_env())
-    except Exception as e:
-        return {"ok": False, "exit_code": -1, "stdout": "",
-                "stderr": "%s: %s" % (e.__class__.__name__, e),
-                "duration_ms": int((time.monotonic() - start) * 1000)}
-    muted = _soft_muted()
-    return {"ok": r.returncode == 0, "exit_code": r.returncode,
-            "stdout": "muted" if muted else "unmuted",
-            "stderr": (r.stderr or b"").decode("utf-8", "replace"),
-            "muted": muted,
-            "duration_ms": int((time.monotonic() - start) * 1000)}
+    if shutil.which("wpctl") is None:
+        return result(False, None, stderr="wpctl not found for mute")
+    if _soft_muted():
+        # Unmute: clear the flag and restore the volume we saved when muting.
+        _wpctl_set("set-mute", "@DEFAULT_AUDIO_SINK@", "0")
+        if _PRE_MUTE_VOL is not None:
+            _wpctl_set("set-volume", "@DEFAULT_AUDIO_SINK@", "%.2f" % _PRE_MUTE_VOL)
+            _PRE_MUTE_VOL = None
+        return result(True, False, stdout="unmuted")
+    # Mute: remember the current level, drop just above zero silently, then one
+    # volume-down media key to land on 0 with the OSD showing.
+    _PRE_MUTE_VOL = _soft_volume()
+    _wpctl_set("set-volume", "@DEFAULT_AUDIO_SINK@", "0.02")
+    tapped = False
+    if _MEDIA_DEV is not None:
+        try:
+            _MEDIA_DEV.tap(KEY_VOLUMEDOWN)
+            tapped = True
+        except OSError:
+            tapped = False
+    if not tapped:
+        # No media-key device (or it failed): no OSD is possible, so just set the
+        # mute flag directly. Correct state, only the on-screen indicator is lost.
+        _wpctl_set("set-mute", "@DEFAULT_AUDIO_SINK@", "1")
+    return result(True, True, stdout="muted")
 
 
 def mock_soft(op):
