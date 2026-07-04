@@ -38,7 +38,7 @@ except ImportError:  # pragma: no cover
     fcntl = None
 
 APP_NAME = "couchside-agent"
-VERSION = "2.6.0"
+VERSION = "2.6.1"
 UID = os.getuid()
 XDG_RUNTIME_DIR = "/run/user/%d" % UID
 
@@ -1208,9 +1208,9 @@ def delete_launcher(launcher_id):
 #           the panel MCU listens even in standby, so power-on-from-off works.
 #   cec:   HDMI-CEC via cec-ctl (kernel framework) or cec-client (libcec).
 #           Auto-probed; only counts when the HDMI connector is actually live.
-#   soft:  the box's own audio sink via wpctl (PipeWire) or pactl (PulseAudio).
-#           Volume and mute only, no power. Lowest priority, so it appears as a
-#           fallback when neither panel nor CEC can drive the TV.
+#   soft:  the box's own volume via the OS media keys (uinput), like a hardware
+#           volume rocker. Volume and mute only, no power. Lowest priority, so it
+#           appears as a fallback when neither panel nor CEC can drive the TV.
 #
 # Unified ops (TV_OPS): power_on, power_off, volume_up, volume_down, mute. The
 # soft backend serves the volume/mute subset (SOFT_OPS) and rejects power ops.
@@ -1517,56 +1517,32 @@ def mock_panel(op):
             "stderr": "", "duration_ms": 100}
 
 
-# ---- soft backend (box audio via PipeWire / PulseAudio) -------------------
-# Controls the box's OWN default output sink, not the TV. It offers volume and
-# mute only: a software sink has no "power", so power ops are unsupported. Soft
-# is the lowest-priority backend, so it surfaces only when neither panel nor CEC
-# can drive the TV. That gives a box with no RS-232 and no working CEC a way to
-# change its game/OS volume from the phone. Commands run in the desktop user's
-# audio session (XDG_RUNTIME_DIR), never sudo.
+# ---- soft backend (box volume via the OS media keys) ----------------------
+# Controls the box's own volume by emitting the KEY_VOLUMEUP/DOWN/MUTE media
+# keys through uinput, exactly as the hardware volume rocker does. This matters
+# on SteamOS Game Mode: Steam manages its own volume node and shows an on-screen
+# volume OSD in response to those keys, whereas a direct wpctl change to the
+# default sink neither shows the OSD nor affects what Steam is playing. Volume
+# and mute only (there is no power key), and it is the lowest-priority backend,
+# so it appears only when neither panel nor CEC drives the TV. Uses the virtual
+# media-key device (see UInputMediaKeys), so it needs /dev/uinput, never sudo.
 SOFT_OPS = ("volume_up", "volume_down", "mute")
-SOFT_STEP = "5%"      # volume change per press
-SOFT = None           # {"tool","bin","adapter"} set at startup, or None
-
-
-def _soft_tool():
-    """First usable (tool, bin) for driving the default sink, or None. Prefers
-    wpctl (PipeWire, which SteamOS and Bazzite use), then pactl (PulseAudio)."""
-    wp = shutil.which("wpctl")
-    if wp:
-        return ("wpctl", wp)
-    pa = shutil.which("pactl")
-    if pa:
-        return ("pactl", pa)
-    return None
-
-
-def _soft_probe_ok(tool, binp):
-    """True when the default sink answers a read, i.e. a usable audio session
-    exists. Runs in the user env so it finds the desktop user's PipeWire or
-    PulseAudio socket. Never raises."""
-    argv = ([binp, "get-volume", "@DEFAULT_AUDIO_SINK@"] if tool == "wpctl"
-            else [binp, "get-sink-volume", "@DEFAULT_SINK@"])
-    try:
-        r = subprocess.run(argv, capture_output=True, timeout=4,
-                           env=_user_env())
-        return r.returncode == 0
-    except Exception:
-        return False
+SOFT = None           # {"adapter": ...} when uinput is usable, else None
 
 
 def set_soft(mock):
-    """Startup probe for box-audio control. In --mock the soft backend stays
-    off so the mock TV strip runs on the panel path (see set_panel)."""
+    """Check for box-volume control at startup. Available when /dev/uinput can be
+    opened; the media-key device itself is created lazily on first use. In --mock
+    the soft backend stays off so the mock TV strip runs on the panel path."""
     global SOFT
     if mock:
         SOFT = None
         return
-    tool = _soft_tool()
-    if tool and _soft_probe_ok(*tool):
-        SOFT = {"tool": tool[0], "bin": tool[1],
-                "adapter": "%s (default sink)" % tool[0]}
-    else:
+    try:
+        fd = os.open("/dev/uinput", os.O_WRONLY | os.O_NONBLOCK)
+        os.close(fd)
+        SOFT = {"adapter": "OS volume keys"}
+    except OSError:
         SOFT = None
 
 
@@ -1574,54 +1550,32 @@ def soft_available():
     return SOFT is not None
 
 
-def _soft_argv(op):
-    """argv for a soft op against the default sink. On wpctl the volume is
-    clamped to 1.0 (-l 1.0) so a press cannot push PipeWire past 100%."""
-    tool, binp = SOFT["tool"], SOFT["bin"]
-    if tool == "wpctl":
-        sink = "@DEFAULT_AUDIO_SINK@"
-        if op == "volume_up":
-            return [binp, "set-volume", "-l", "1.0", sink, SOFT_STEP + "+"]
-        if op == "volume_down":
-            return [binp, "set-volume", sink, SOFT_STEP + "-"]
-        return [binp, "set-mute", sink, "toggle"]
-    sink = "@DEFAULT_SINK@"
-    if op == "volume_up":
-        return [binp, "set-sink-volume", sink, "+" + SOFT_STEP]
-    if op == "volume_down":
-        return [binp, "set-sink-volume", sink, "-" + SOFT_STEP]
-    return [binp, "set-sink-mute", sink, "toggle"]
-
-
 def real_soft(op):
-    """Run a box-audio op in the desktop user's session. ActionResult-shaped.
-    Power ops are rejected here because a sink cannot be powered on or off."""
+    """Emit the media key for a volume op via the virtual media-key device, so
+    the OS changes the volume and (in Game Mode) shows its OSD. ActionResult-
+    shaped. Power ops are rejected because there is no volume key for them."""
     start = time.monotonic()
-    if op not in SOFT_OPS:
+    code = SOFT_MEDIA_KEYS.get(op)
+    if code is None:
         return {"ok": False, "exit_code": -1, "stdout": "",
-                "stderr": "%s is not available on the soft-audio backend" % op,
-                "duration_ms": 0}
-    argv = _soft_argv(op)
-    try:
-        r = subprocess.run(argv, capture_output=True, timeout=5,
-                           env=_user_env())
-    except subprocess.TimeoutExpired:
+                "stderr": "%s is not a volume op" % op, "duration_ms": 0}
+    dev = _media_device()
+    if dev is None:
         return {"ok": False, "exit_code": -1, "stdout": "",
-                "stderr": "audio command timed out",
+                "stderr": "uinput unavailable for volume keys",
                 "duration_ms": int((time.monotonic() - start) * 1000)}
-    except Exception as e:
+    try:
+        dev.tap(code)
+    except OSError as e:
         return {"ok": False, "exit_code": -1, "stdout": "",
                 "stderr": "%s: %s" % (e.__class__.__name__, e),
                 "duration_ms": int((time.monotonic() - start) * 1000)}
-    out = (r.stdout or b"").decode("utf-8", "replace")
-    err = (r.stderr or b"").decode("utf-8", "replace")
-    return {"ok": r.returncode == 0, "exit_code": r.returncode,
-            "stdout": out, "stderr": err,
+    return {"ok": True, "exit_code": 0, "stdout": "sent %s" % op, "stderr": "",
             "duration_ms": int((time.monotonic() - start) * 1000)}
 
 
 def mock_soft(op):
-    """--mock stand-in for a box-audio op: log it, touch nothing, succeed."""
+    """--mock stand-in for a box-volume op: log it, touch nothing, succeed."""
     time.sleep(0.1)
     print("[soft] %s" % op, flush=True)
     return {"ok": True, "exit_code": 0, "stdout": "[mock soft] %s\n" % op,
@@ -1787,6 +1741,14 @@ KEY_COMMA, KEY_DOT, KEY_SLASH = 51, 52, 53
 KEY_SPACE = 57
 KEY_HOME, KEY_UP = 102, 103
 KEY_LEFT, KEY_RIGHT, KEY_END, KEY_DOWN = 105, 106, 107, 108
+KEY_MUTE, KEY_VOLUMEDOWN, KEY_VOLUMEUP = 113, 114, 115
+
+# Volume ops -> media key code, emitted by the soft backend (see UInputMediaKeys).
+SOFT_MEDIA_KEYS = {
+    "volume_up": KEY_VOLUMEUP,
+    "volume_down": KEY_VOLUMEDOWN,
+    "mute": KEY_MUTE,
+}
 
 # ASCII printable char -> (keycode, needs_shift)
 def _build_char_map():
@@ -2053,6 +2015,63 @@ def _emit_events(fd, events):
     )
     data += struct.pack(_INPUT_EVENT, 0, 0, EV_SYN, SYN_REPORT, 0)
     os.write(fd, data)
+
+
+class UInputMediaKeys:
+    """Virtual device that emits the volume media keys (mute / down / up). The OS
+    handles them exactly like a hardware volume rocker: it changes the real
+    volume and, in SteamOS Game Mode, shows the on-screen volume OSD. Kept
+    separate from the WS keyboard (torn down each gamepad session) so /api/tv
+    volume stands on its own."""
+
+    name = "Couchside Media Keys"
+
+    def __init__(self):
+        if fcntl is None:
+            raise RuntimeError("fcntl module unavailable on this platform")
+        self.fd = None
+        fd = os.open("/dev/uinput", os.O_WRONLY | os.O_NONBLOCK)
+        try:
+            fcntl.ioctl(fd, UI_SET_EVBIT, EV_KEY)
+            for code in (KEY_MUTE, KEY_VOLUMEDOWN, KEY_VOLUMEUP):
+                fcntl.ioctl(fd, UI_SET_KEYBIT, code)
+            setup = struct.pack(
+                _UINPUT_USER_DEV,
+                self.name.encode("utf-8"),
+                0x03, 0x045E, 0x028B, 0x111,
+                0,  # ff_effects_max
+                *([0] * 64 + [0] * 64 + [0] * 64 + [0] * 64),
+            )
+            os.write(fd, setup)
+            fcntl.ioctl(fd, UI_DEV_CREATE)
+        except Exception:
+            os.close(fd)
+            raise
+        self.fd = fd
+
+    def tap(self, code):
+        """Press then release one media key."""
+        _emit_events(self.fd, [(EV_KEY, code, 1)])
+        _emit_events(self.fd, [(EV_KEY, code, 0)])
+
+
+_MEDIA_DEV = None
+
+
+def _media_device():
+    """Lazily create and cache the media-key device, or None if uinput can't be
+    opened. Sleeps briefly after creating it so the compositor enumerates the new
+    device before the first keypress (otherwise the first press can be missed)."""
+    global _MEDIA_DEV
+    if _MEDIA_DEV is not None:
+        return _MEDIA_DEV
+    try:
+        dev = UInputMediaKeys()
+    except Exception:
+        return None
+    time.sleep(0.2)
+    _MEDIA_DEV = dev
+    return dev
 
 
 class UInputMouse:

@@ -94,6 +94,12 @@ const MOUSE_MOVE_INTERVAL_MS = 11;
  * is still held; 120ms sits in the reliable 80-150ms window for SteamOS.
  */
 const QAM_CHORD_HOLD_MS = 120;
+/**
+ * Head start for Guide before A in the QAM chord. Sending both in the same tick
+ * often reads as a bare Guide press (which opens the Steam menu, not the QAM),
+ * so hold Guide alone briefly first.
+ */
+const QAM_GUIDE_LEAD_MS = 60;
 const BACKOFF_MS = [1000, 2000, 4000];
 
 export type GamepadStatusListener = (status: GamepadStatus, dev: string | null) => void;
@@ -210,11 +216,15 @@ export class GamepadClient {
    */
   qamChord(): void {
     this.sendButton('guide', 1);
-    this.sendButton('a', 1);
+    // Hold Guide alone first, then press A, so Steam reads a real Guide+A chord
+    // (QAM) rather than a bare Guide press (Steam menu). Release A before Guide.
     setTimeout(() => {
-      this.sendButton('a', 0);
-      this.sendButton('guide', 0);
-    }, QAM_CHORD_HOLD_MS);
+      this.sendButton('a', 1);
+      setTimeout(() => {
+        this.sendButton('a', 0);
+        this.sendButton('guide', 0);
+      }, QAM_CHORD_HOLD_MS);
+    }, QAM_GUIDE_LEAD_MS);
   }
 
   sendTrigger(k: TriggerKey, v: number): void {

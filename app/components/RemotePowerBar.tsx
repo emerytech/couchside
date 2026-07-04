@@ -1,13 +1,14 @@
 import Ionicons from '@expo/vector-icons/Ionicons';
 import React from 'react';
-import { Alert, Platform, Pressable, StyleSheet, View } from 'react-native';
+import { Alert, Modal, Platform, Pressable, StyleSheet, Text, View } from 'react-native';
+import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
 import { usePoll } from '@/hooks/usePoll';
 import { api, Status, Tv, TvOp } from '@/lib/api';
 import { hapticError, hapticLight, hapticSuccess } from '@/lib/haptics';
 import { normalizeMac } from '@/lib/settings';
 import { useSettings } from '@/lib/SettingsContext';
-import { theme } from '@/lib/theme';
+import { mono, theme } from '@/lib/theme';
 import { sendWol, wolAvailable } from '@/lib/wol';
 
 type IoniconName = React.ComponentProps<typeof Ionicons>['name'];
@@ -25,39 +26,19 @@ function confirmSuspend(message: string, onConfirm: () => void) {
   ]);
 }
 
-function IconBtn({
-  name,
-  color,
-  onPress,
-  disabled,
-}: {
-  name: IoniconName;
-  color: string;
-  onPress: () => void;
-  disabled?: boolean;
-}) {
-  return (
-    <Pressable
-      disabled={disabled}
-      onPress={onPress}
-      hitSlop={6}
-      style={({ pressed }) => [styles.iconBtn, disabled && styles.disabled, pressed && styles.pressed]}>
-      <Ionicons name={name} size={20} color={color} />
-    </Pressable>
-  );
-}
-
 /**
- * Compact power + volume controls for the header row (right of the box picker,
- * on every tab). Box power adapts to reachability: a moon (suspend) while the
- * box is reachable, a power icon (Wake-on-LAN) once it has gone offline, dimmed
- * on a WiFi box that WoL cannot wake. Volume/mute appear when the agent reports
- * a TV or audio backend. Self-contained (its own status poll and probes), and
- * it renders nothing when there is nothing to control.
+ * Power + volume controls for the header row (right of the box picker). A
+ * compact trigger opens a dropdown (like the box switcher) with big buttons:
+ * box power that adapts to reachability (suspend while up, Wake-on-LAN once
+ * offline, blocked on WiFi), and volume/mute when the agent reports a backend.
+ * Self-contained (own status poll + probes); renders nothing when there is
+ * nothing to control.
  */
 export function RemotePowerBar() {
+  const insets = useSafeAreaInsets();
   const { settings, ready, update } = useSettings();
   const configured = settings.host.trim().length > 0;
+  const [open, setOpen] = React.useState(false);
 
   const status = usePoll<Status>(() => api.status(settings), 5000, ready && configured);
   const s = status.data;
@@ -184,42 +165,145 @@ export function RemotePowerBar() {
   const canSuspend = reachable && hasSuspend;
   const canWake = !reachable && !!settings.mac && wolAvailable;
 
-  // Nothing to control on this box right now: render nothing.
+  // Nothing to control on this box right now.
   if (!canSuspend && !canWake && !hasVolume) return null;
 
+  // Trigger icon hints at what's inside: volume when it's the main use, else power.
+  const triggerIcon: IoniconName = hasVolume ? 'volume-high' : canWake ? 'power' : 'moon';
+
   return (
-    <View style={styles.group}>
-      {canWake && (
-        <IconBtn name="power" color={theme.green} onPress={onWake} disabled={waking} />
-      )}
-      {canSuspend && (
-        <IconBtn
-          name="moon"
-          color={wired === false ? theme.slate : theme.amber}
-          onPress={onSuspend}
-          disabled={wired === false}
-        />
-      )}
-      {hasVolume && (
-        <>
-          <IconBtn name="volume-low" color={theme.text} onPress={() => sendTv('volume_down')} disabled={busy} />
-          <IconBtn name="volume-mute" color={theme.text} onPress={() => sendTv('mute')} disabled={busy} />
-          <IconBtn name="volume-high" color={theme.text} onPress={() => sendTv('volume_up')} disabled={busy} />
-        </>
-      )}
-    </View>
+    <>
+      <Pressable
+        onPress={() => {
+          hapticLight();
+          setOpen(true);
+        }}
+        hitSlop={8}
+        style={({ pressed }) => [styles.trigger, pressed && styles.pressed]}>
+        <Ionicons name={triggerIcon} size={20} color={theme.text} />
+        <Ionicons name="chevron-down" size={14} color={theme.textDim} />
+      </Pressable>
+
+      <Modal
+        visible={open}
+        transparent
+        animationType="fade"
+        onRequestClose={() => setOpen(false)}>
+        <Pressable style={styles.backdrop} onPress={() => setOpen(false)}>
+          <View style={[styles.dropWrap, { paddingTop: insets.top + 8 }]}>
+            <Pressable style={styles.card} onPress={() => {}}>
+              {canWake && (
+                <Pressable
+                  disabled={waking}
+                  onPress={() => {
+                    setOpen(false);
+                    onWake();
+                  }}
+                  style={({ pressed }) => [styles.bigBtn, pressed && styles.pressed]}>
+                  <Ionicons name="power" size={22} color={theme.green} />
+                  <Text style={[styles.bigLabel, { color: theme.green }]}>
+                    {waking ? 'Waking…' : 'Wake box'}
+                  </Text>
+                </Pressable>
+              )}
+
+              {canSuspend && (
+                <Pressable
+                  disabled={wired === false}
+                  onPress={() => {
+                    setOpen(false);
+                    onSuspend();
+                  }}
+                  style={({ pressed }) => [
+                    styles.bigBtn,
+                    wired === false && styles.disabled,
+                    pressed && styles.pressed,
+                  ]}>
+                  <Ionicons name="moon" size={22} color={theme.amber} />
+                  <Text style={[styles.bigLabel, { color: theme.amber }]}>
+                    {wired === false ? 'Suspend (needs Ethernet)' : 'Suspend'}
+                  </Text>
+                </Pressable>
+              )}
+
+              {hasVolume && (
+                <View style={styles.volRow}>
+                  <Pressable
+                    disabled={busy}
+                    onPress={() => sendTv('volume_down')}
+                    style={({ pressed }) => [styles.volBtn, pressed && styles.pressed]}>
+                    <Ionicons name="volume-low" size={24} color={theme.text} />
+                  </Pressable>
+                  <Pressable
+                    disabled={busy}
+                    onPress={() => sendTv('mute')}
+                    style={({ pressed }) => [styles.volBtn, pressed && styles.pressed]}>
+                    <Ionicons name="volume-mute" size={24} color={theme.text} />
+                  </Pressable>
+                  <Pressable
+                    disabled={busy}
+                    onPress={() => sendTv('volume_up')}
+                    style={({ pressed }) => [styles.volBtn, pressed && styles.pressed]}>
+                    <Ionicons name="volume-high" size={24} color={theme.text} />
+                  </Pressable>
+                </View>
+              )}
+            </Pressable>
+          </View>
+        </Pressable>
+      </Modal>
+    </>
   );
 }
 
 const styles = StyleSheet.create({
-  group: { flexDirection: 'row', alignItems: 'center', gap: 2 },
-  iconBtn: {
-    width: 36,
-    height: 36,
-    borderRadius: 8,
+  trigger: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 2,
+    paddingVertical: 8,
+    paddingHorizontal: 10,
+    borderRadius: 999,
+    borderWidth: 1,
+    borderColor: theme.cardBorder,
+    backgroundColor: theme.card,
+  },
+  pressed: { opacity: 0.6 },
+  disabled: { opacity: 0.45 },
+  backdrop: { flex: 1, backgroundColor: 'rgba(0,0,0,0.35)' },
+  dropWrap: { paddingHorizontal: 14, alignItems: 'flex-end' },
+  card: {
+    width: 260,
+    maxWidth: '100%',
+    backgroundColor: theme.card,
+    borderColor: theme.cardBorder,
+    borderWidth: 1,
+    borderRadius: 14,
+    padding: 8,
+    gap: 8,
+    shadowColor: '#000',
+    shadowOpacity: 0.4,
+    shadowRadius: 16,
+    shadowOffset: { width: 0, height: 8 },
+    elevation: 8,
+  },
+  bigBtn: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 12,
+    height: 52,
+    paddingHorizontal: 14,
+    borderRadius: 10,
+    backgroundColor: theme.inset,
+  },
+  bigLabel: { fontSize: 15, fontWeight: '800', fontFamily: mono, letterSpacing: 0.5 },
+  volRow: { flexDirection: 'row', gap: 8 },
+  volBtn: {
+    flex: 1,
+    height: 56,
+    borderRadius: 10,
+    backgroundColor: theme.inset,
     alignItems: 'center',
     justifyContent: 'center',
   },
-  disabled: { opacity: 0.4 },
-  pressed: { opacity: 0.6 },
 });
