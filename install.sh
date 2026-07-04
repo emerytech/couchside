@@ -17,6 +17,9 @@ set -euo pipefail
 # Raw file sources (used when not running from a git checkout)
 DAEMON_URL="https://raw.githubusercontent.com/emerytech/couchside/main/agent/couchsided.py"
 UNIT_URL="https://raw.githubusercontent.com/emerytech/couchside/main/agent/couchside.service"
+# Built Decky Loader plugin, shipped as a tarball because the compiled frontend
+# (dist/) isn't checked into git, so raw source wouldn't give a working panel.
+PLUGIN_URL="https://github.com/emerytech/couchside-decky/releases/latest/download/Couchside.tar.gz"
 
 PORT_DEFAULT=8787
 INSTALL_DIR="${HOME}/.local/opt/couchside"
@@ -43,16 +46,18 @@ OLD_INSTALLS=(
 
 NO_SUDOERS=0
 UNINSTALL=0
+NO_DECKY=0
 
 usage() {
     cat <<'USAGE'
 Couchside box agent installer. Run ON the box as your desktop user.
 
-Usage: install.sh [--no-sudoers] [--uninstall] [--help]
+Usage: install.sh [--no-sudoers] [--no-decky] [--uninstall] [--help]
 
   (no flags)     install/upgrade the agent (idempotent, safe to re-run)
   --no-sudoers   skip installing /etc/sudoers.d/couchside (high-danger
                  actions and system journal reads will fail without it)
+  --no-decky     skip the Decky Loader Game Mode panel even if Decky is found
   --uninstall    remove the agent (asks before deleting the token/sudoers)
   --help         this text
 USAGE
@@ -61,6 +66,7 @@ USAGE
 for arg in "$@"; do
     case "$arg" in
         --no-sudoers) NO_SUDOERS=1 ;;
+        --no-decky)   NO_DECKY=1 ;;
         --uninstall)  UNINSTALL=1 ;;
         --help|-h)    usage; exit 0 ;;
         *) echo "error: unknown flag: $arg" >&2; usage >&2; exit 2 ;;
@@ -640,6 +646,32 @@ PYVDF
 
 say "Registering the 'Couchside — Pair Phone' tile in Steam (Game Mode)"
 register_steam_shortcut || note "shortcut registration failed. Add $PAIR_SCRIPT via Steam > Add a Non-Steam Game"
+
+# ---------------------------------------------------------------------------
+# (h2) Optional: Decky Loader Game Mode panel
+# ---------------------------------------------------------------------------
+# If Decky Loader is installed, drop in the Couchside plugin so it appears in
+# the Quick Access Menu without the plugin store. The panel is a convenience on
+# top of the agent, not the agent itself, so nothing here is allowed to abort
+# the install: the whole thing runs inside an `if` condition (set -e is
+# suspended there) and any failure just prints a note and moves on. --no-decky
+# skips it entirely.
+DECKY_PLUGINS="${HOME}/homebrew/plugins"
+if [ "$NO_DECKY" -eq 0 ] && [ -d "$DECKY_PLUGINS" ]; then
+    say "Decky Loader detected: installing the Couchside Game Mode panel"
+    decky_tmp="$(mktemp -d)"
+    # Decky's plugin dir is root-owned (same as a store install), so place the
+    # files with sudo and let plugin_loader load them on restart.
+    if curl -fsSL "$PLUGIN_URL" -o "${decky_tmp}/Couchside.tar.gz" \
+        && sudo rm -rf "${DECKY_PLUGINS}/Couchside" \
+        && sudo tar -xzf "${decky_tmp}/Couchside.tar.gz" -C "$DECKY_PLUGINS"; then
+        sudo systemctl restart plugin_loader.service 2>/dev/null || true
+        note "panel installed. Open the Decky menu in Game Mode to see it."
+    else
+        note "couldn't install the panel (skipping); the agent still works."
+    fi
+    rm -rf "$decky_tmp"
+fi
 
 # ---------------------------------------------------------------------------
 # (i) Migration: retire every pre-rename install (rescue-agent, couchpilot)
