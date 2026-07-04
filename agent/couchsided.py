@@ -38,7 +38,7 @@ except ImportError:  # pragma: no cover
     fcntl = None
 
 APP_NAME = "couchside-agent"
-VERSION = "2.5.0"
+VERSION = "2.6.0"
 UID = os.getuid()
 XDG_RUNTIME_DIR = "/run/user/%d" % UID
 
@@ -137,6 +137,21 @@ SESSION_ACTIONS = {
         "user_env": True,
         "detached": True,
     },
+}
+
+# Suspend action, injected at load time when the scoped sudoers rule allows it
+# (see _inject_suspend_action). Built-in like the session actions so it appears
+# without a config edit, but gated on sudo: the agent is a system service with
+# no login seat, so logind/polkit will not grant suspend, and the installer's
+# sudoers rule must permit `systemctl suspend`. The app pairs this with a
+# Wake-on-LAN magic packet to wake the box back up (see read_net).
+SUSPEND_ACTION = {
+    "label": "Suspend",
+    "description": "Suspend the box to RAM; wake it from the app over Wake-on-LAN",
+    "danger": "medium",
+    "cmd": ["sudo", "systemctl", "suspend"],
+    "user_env": False,
+    "detached": True,
 }
 
 # Custom launcher limits (see the SECURITY NOTE in the launcher routes).
@@ -358,6 +373,34 @@ def _inject_session_actions():
             if aid not in ACTION_ORDER:
                 ACTION_ORDER.append(aid)
 
+
+def _can_sudo_suspend():
+    """True when the sudoers rule lets the agent run `systemctl suspend` without
+    a password. Probes with `sudo -n -l`, which lists the permission and never
+    runs the command. False on any failure, so a box whose installer predates
+    the suspend rule simply omits the action instead of offering a dead one."""
+    try:
+        r = subprocess.run(["sudo", "-n", "-l", "/usr/bin/systemctl", "suspend"],
+                           capture_output=True, timeout=4)
+        return r.returncode == 0
+    except Exception:
+        return False
+
+
+def _inject_suspend_action(mock):
+    """Add the Suspend action when the box can run it. In --mock it is always
+    added so the app's power control can be developed off-box; in real mode it
+    appears only when the sudoers rule permits suspend. Called after load_config,
+    idempotent, and skipped when the config already defines a suspend action."""
+    global ACTIONS, ACTION_ORDER
+    if "suspend" in ACTIONS:
+        return
+    if not mock and not _can_sudo_suspend():
+        return
+    ACTIONS["suspend"] = dict(SUSPEND_ACTION)
+    if "suspend" not in ACTION_ORDER:
+        ACTION_ORDER.append("suspend")
+
 # ---------------------------------------------------------------------------
 # Real-mode data collection (Linux; each helper degrades gracefully)
 # ---------------------------------------------------------------------------
@@ -375,6 +418,95 @@ def read_uptime_s():
             return int(float(f.read().split()[0]))
     except Exception:
         return 0
+
+
+# --- primary-interface network facts (for the app's Wake-on-LAN power path) --
+# The app's power button suspends the box over the LAN while it is awake, then
+# wakes it with a Wake-on-LAN magic packet once it is asleep and the agent is
+# gone. For that the app needs the box's MAC, whether the link is wired (WoL
+# over WiFi rarely works), and whether magic-packet wake is armed. These facts
+# rarely change, so read_net() is cached for _NET_TTL seconds (see
+# net_info_cached) instead of shelling out to ethtool on every status poll.
+_NET_TTL = 30.0
+_NET_CACHE = {"at": 0.0, "val": None}
+
+
+def _default_iface():
+    """Interface name of the IPv4 default route, or None. Reads /proc/net/route
+    (the row whose destination is 00000000). Pure stdlib, no shell."""
+    try:
+        with open("/proc/net/route") as f:
+            next(f)  # skip the header row
+            for line in f:
+                cols = line.split()
+                if len(cols) > 1 and cols[1] == "00000000":
+                    return cols[0]
+    except (OSError, StopIteration):
+        return None
+    return None
+
+
+def _iface_mac(iface):
+    try:
+        with open("/sys/class/net/%s/address" % iface) as f:
+            return f.read().strip() or None
+    except OSError:
+        return None
+
+
+def _iface_wired(iface):
+    """True wired, False wireless. A wireless NIC exposes a
+    /sys/class/net/<if>/wireless directory or DEVTYPE=wlan in its uevent."""
+    if os.path.isdir("/sys/class/net/%s/wireless" % iface):
+        return False
+    try:
+        with open("/sys/class/net/%s/uevent" % iface) as f:
+            if "DEVTYPE=wlan" in f.read():
+                return False
+    except OSError:
+        pass
+    return True
+
+
+def _iface_wol_armed(iface):
+    """True when magic-packet wake (WoL flag 'g') is enabled per ethtool, False
+    when disabled, None when ethtool is missing or the read fails. Reading the
+    WoL state does not need root."""
+    ethtool = shutil.which("ethtool")
+    if not ethtool:
+        return None
+    try:
+        r = subprocess.run([ethtool, iface], capture_output=True, text=True,
+                           timeout=4)
+    except Exception:
+        return None
+    if r.returncode != 0:
+        return None
+    for line in r.stdout.splitlines():
+        s = line.strip()
+        if s.startswith("Wake-on:"):
+            return "g" in s.split(":", 1)[1]
+    return None
+
+
+def read_net():
+    """Primary-interface facts for the app's Wake-on-LAN power path. Every field
+    degrades to None when it can't be read."""
+    iface = _default_iface()
+    if not iface:
+        return {"iface": None, "mac": None, "wired": None, "wol_armed": None}
+    return {"iface": iface, "mac": _iface_mac(iface),
+            "wired": _iface_wired(iface), "wol_armed": _iface_wol_armed(iface)}
+
+
+def net_info_cached():
+    """read_net() memoized for _NET_TTL seconds so status polls do not shell out
+    to ethtool every few seconds. A lost race just recomputes, which is fine."""
+    now = time.monotonic()
+    if _NET_CACHE["val"] is None or now - _NET_CACHE["at"] > _NET_TTL:
+        _NET_CACHE["val"] = read_net()
+        _NET_CACHE["at"] = now
+    return _NET_CACHE["val"]
 
 
 def read_load():
@@ -471,6 +603,7 @@ def real_status():
         "cpu_temp_c": read_cpu_temp_c(),
         "mem": read_mem(),
         "disks": read_disks(),
+        "net": net_info_cached(),
         "agent_version": VERSION,
     }
 
@@ -599,6 +732,8 @@ def mock_status():
             {"mount": "/var", "total_gb": 465.1, "used_gb": 198.2,
              "free_gb": 266.9, "pct": 43},
         ],
+        "net": {"iface": "eth0", "mac": "de:ad:be:ef:00:01",
+                "wired": True, "wol_armed": True},
         "agent_version": VERSION,
     }
 
@@ -1053,14 +1188,17 @@ def delete_launcher(launcher_id):
 
 
 # ---------------------------------------------------------------------------
-# TV control (probe-and-appear): two interchangeable backends
+# TV control (probe-and-appear): three interchangeable backends
 #
-# GET  /api/tv        -> {"available": true, "backend": "...", "adapter": "..."}
+# GET  /api/tv        -> {"available": true, "backend": "...", "adapter": "...",
+#                         "ops": [...]}
 # POST /api/tv/<op>   -> ActionResult; op ∈ TV_OPS
 #
 # The app polls GET /api/tv once per box connect and shows a compact TV strip
 # only when a backend answers; both routes 404 like any unknown route when no
-# backend is present, so a box with no TV hardware surfaces no strip.
+# backend is present, so a box with no TV hardware surfaces no strip. The "ops"
+# list tells the app which controls the active backend supports, so it can hide
+# the power buttons on a backend that only does volume.
 #
 # Backends, preferred in this order:
 #   panel: RS-232 serial control (e.g. Newline TruTouch). CONFIG-DRIVEN: only
@@ -1069,8 +1207,12 @@ def delete_launcher(launcher_id):
 #           the panel MCU listens even in standby, so power-on-from-off works.
 #   cec:   HDMI-CEC via cec-ctl (kernel framework) or cec-client (libcec).
 #           Auto-probed; only counts when the HDMI connector is actually live.
+#   soft:  the box's own audio sink via wpctl (PipeWire) or pactl (PulseAudio).
+#           Volume and mute only, no power. Lowest priority, so it appears as a
+#           fallback when neither panel nor CEC can drive the TV.
 #
-# Unified ops (TV_OPS): power_on, power_off, volume_up, volume_down, mute.
+# Unified ops (TV_OPS): power_on, power_off, volume_up, volume_down, mute. The
+# soft backend serves the volume/mute subset (SOFT_OPS) and rejects power ops.
 # CEC has no discrete "off": power_off maps to CEC standby.
 # ---------------------------------------------------------------------------
 
@@ -1372,6 +1514,117 @@ def mock_panel(op):
             "stderr": "", "duration_ms": 100}
 
 
+# ---- soft backend (box audio via PipeWire / PulseAudio) -------------------
+# Controls the box's OWN default output sink, not the TV. It offers volume and
+# mute only: a software sink has no "power", so power ops are unsupported. Soft
+# is the lowest-priority backend, so it surfaces only when neither panel nor CEC
+# can drive the TV. That gives a box with no RS-232 and no working CEC a way to
+# change its game/OS volume from the phone. Commands run in the desktop user's
+# audio session (XDG_RUNTIME_DIR), never sudo.
+SOFT_OPS = ("volume_up", "volume_down", "mute")
+SOFT_STEP = "5%"      # volume change per press
+SOFT = None           # {"tool","bin","adapter"} set at startup, or None
+
+
+def _soft_tool():
+    """First usable (tool, bin) for driving the default sink, or None. Prefers
+    wpctl (PipeWire, which SteamOS and Bazzite use), then pactl (PulseAudio)."""
+    wp = shutil.which("wpctl")
+    if wp:
+        return ("wpctl", wp)
+    pa = shutil.which("pactl")
+    if pa:
+        return ("pactl", pa)
+    return None
+
+
+def _soft_probe_ok(tool, binp):
+    """True when the default sink answers a read, i.e. a usable audio session
+    exists. Runs in the user env so it finds the desktop user's PipeWire or
+    PulseAudio socket. Never raises."""
+    argv = ([binp, "get-volume", "@DEFAULT_AUDIO_SINK@"] if tool == "wpctl"
+            else [binp, "get-sink-volume", "@DEFAULT_SINK@"])
+    try:
+        r = subprocess.run(argv, capture_output=True, timeout=4,
+                           env=_user_env())
+        return r.returncode == 0
+    except Exception:
+        return False
+
+
+def set_soft(mock):
+    """Startup probe for box-audio control. In --mock the soft backend stays
+    off so the mock TV strip runs on the panel path (see set_panel)."""
+    global SOFT
+    if mock:
+        SOFT = None
+        return
+    tool = _soft_tool()
+    if tool and _soft_probe_ok(*tool):
+        SOFT = {"tool": tool[0], "bin": tool[1],
+                "adapter": "%s (default sink)" % tool[0]}
+    else:
+        SOFT = None
+
+
+def soft_available():
+    return SOFT is not None
+
+
+def _soft_argv(op):
+    """argv for a soft op against the default sink. On wpctl the volume is
+    clamped to 1.0 (-l 1.0) so a press cannot push PipeWire past 100%."""
+    tool, binp = SOFT["tool"], SOFT["bin"]
+    if tool == "wpctl":
+        sink = "@DEFAULT_AUDIO_SINK@"
+        if op == "volume_up":
+            return [binp, "set-volume", "-l", "1.0", sink, SOFT_STEP + "+"]
+        if op == "volume_down":
+            return [binp, "set-volume", sink, SOFT_STEP + "-"]
+        return [binp, "set-mute", sink, "toggle"]
+    sink = "@DEFAULT_SINK@"
+    if op == "volume_up":
+        return [binp, "set-sink-volume", sink, "+" + SOFT_STEP]
+    if op == "volume_down":
+        return [binp, "set-sink-volume", sink, "-" + SOFT_STEP]
+    return [binp, "set-sink-mute", sink, "toggle"]
+
+
+def real_soft(op):
+    """Run a box-audio op in the desktop user's session. ActionResult-shaped.
+    Power ops are rejected here because a sink cannot be powered on or off."""
+    start = time.monotonic()
+    if op not in SOFT_OPS:
+        return {"ok": False, "exit_code": -1, "stdout": "",
+                "stderr": "%s is not available on the soft-audio backend" % op,
+                "duration_ms": 0}
+    argv = _soft_argv(op)
+    try:
+        r = subprocess.run(argv, capture_output=True, timeout=5,
+                           env=_user_env())
+    except subprocess.TimeoutExpired:
+        return {"ok": False, "exit_code": -1, "stdout": "",
+                "stderr": "audio command timed out",
+                "duration_ms": int((time.monotonic() - start) * 1000)}
+    except Exception as e:
+        return {"ok": False, "exit_code": -1, "stdout": "",
+                "stderr": "%s: %s" % (e.__class__.__name__, e),
+                "duration_ms": int((time.monotonic() - start) * 1000)}
+    out = (r.stdout or b"").decode("utf-8", "replace")
+    err = (r.stderr or b"").decode("utf-8", "replace")
+    return {"ok": r.returncode == 0, "exit_code": r.returncode,
+            "stdout": out, "stderr": err,
+            "duration_ms": int((time.monotonic() - start) * 1000)}
+
+
+def mock_soft(op):
+    """--mock stand-in for a box-audio op: log it, touch nothing, succeed."""
+    time.sleep(0.1)
+    print("[soft] %s" % op, flush=True)
+    return {"ok": True, "exit_code": 0, "stdout": "[mock soft] %s\n" % op,
+            "stderr": "", "duration_ms": 100}
+
+
 # ---- unified dispatch -----------------------------------------------------
 # CEC has no discrete power-off; its standby command IS the off state.
 _TV_TO_CEC = {"power_on": "power_on", "power_off": "standby",
@@ -1380,32 +1633,42 @@ _TV_TO_CEC = {"power_on": "power_on", "power_off": "standby",
 
 
 def set_tv(mock):
-    """Probe both TV backends at startup (call after load_config)."""
+    """Probe every TV backend at startup (call after load_config)."""
     set_cec(mock)
     set_panel(mock)
+    set_soft(mock)
 
 
 def tv_backend():
-    """Active backend name (the serial panel is preferred over CEC because it
-    is reliable and can power on from standby), or None when neither exists."""
+    """Active backend name, or None when no backend exists. The serial panel is
+    preferred over CEC because it is reliable and can power on from standby;
+    soft (box audio) is the last resort when neither can drive the TV."""
     if panel_available():
         return "panel"
     if cec_available():
         return "cec"
+    if soft_available():
+        return "soft"
     return None
 
 
 def tv_info():
-    """GET /api/tv body, or None when no backend is available."""
+    """GET /api/tv body, or None when no backend is available. "ops" lists the
+    controls the active backend supports so the app can hide the rest."""
     b = tv_backend()
     if b == "panel":
         return {"available": True, "backend": "panel",
                 "adapter": "Newline RS-232 (%s @ %d)"
-                           % (PANEL["device"], PANEL["baud"])}
+                           % (PANEL["device"], PANEL["baud"]),
+                "ops": list(TV_OPS)}
     if b == "cec":
         cec = cec_current()
         adapter = cec["adapter"] if cec else "CEC"
-        return {"available": True, "backend": "cec", "adapter": adapter}
+        return {"available": True, "backend": "cec", "adapter": adapter,
+                "ops": list(TV_OPS)}
+    if b == "soft":
+        return {"available": True, "backend": "soft",
+                "adapter": SOFT["adapter"], "ops": list(SOFT_OPS)}
     return None
 
 
@@ -1418,6 +1681,8 @@ def tv_send(op, mock):
     if b == "cec":
         cec_op = _TV_TO_CEC[op]
         return mock_cec(cec_op) if mock else real_cec(cec_op)
+    if b == "soft":
+        return mock_soft(op) if mock else real_soft(op)
     return None
 
 
@@ -3033,6 +3298,7 @@ def main():
 
     load_config(args.config)
     _inject_session_actions()
+    _inject_suspend_action(args.mock)
     set_tv(args.mock)
     port = args.port if args.port is not None else (CONFIG_PORT or DEFAULT_PORT)
 

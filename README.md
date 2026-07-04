@@ -60,7 +60,7 @@ Free 7-day trial with every feature unlocked, then a one-time unlock ($4.99 summ
 Couchside is deliberately small and boring about security:
 
 - **Bearer token auth.** Every API route except the reachability ping requires `Authorization: Bearer <token>`; the gamepad WebSocket authenticates before the handshake completes. Comparisons are constant-time (`hmac.compare_digest`). The token file is `chmod 600`; on the phone it lives in the iOS Keychain / Android Keystore.
-- **Scoped sudo, nothing more.** The installer writes a `visudo`-validated sudoers rule granting the agent user passwordless sudo for exactly four things: `systemctl restart sddm`, `systemctl reboot`, `systemctl poweroff`, and `journalctl`. Nothing else. Actions are a fixed table; there is no "run arbitrary command" route.
+- **Scoped sudo, nothing more.** The installer writes a `visudo`-validated sudoers rule granting the agent user passwordless sudo for exactly five things: `systemctl restart sddm`, `systemctl reboot`, `systemctl poweroff`, `systemctl suspend`, and `journalctl`. Nothing else. Actions are a fixed table; there is no "run arbitrary command" route.
 - **Journal access is allowlisted.** Only units on the configured watchlist can be read, with line counts clamped server-side, so a leaked token can't be used to trawl the whole system journal.
 - **LAN-only by design.** The API is plain HTTP on port 8787 and is meant to stay on your local network. The firewall rule opens the port locally; **do not port-forward it**. There is no relay, no cloud endpoint, and the app never talks to anything except your agent.
 - No file-serving routes, subprocesses run with `shell=False`, errors return brief JSON, never tracebacks.

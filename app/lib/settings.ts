@@ -28,6 +28,12 @@ export type Box = {
    * power-save breaks mDNS while plain HTTP to the IP keeps working.
    */
   lastIp?: string;
+  /**
+   * Box MAC address, learned from /api/status while the box is reachable and
+   * kept so the app can send a Wake-on-LAN magic packet after the box suspends
+   * and the agent is no longer answering.
+   */
+  mac?: string;
 };
 
 /**
@@ -41,6 +47,8 @@ export type Settings = {
   padMode: PadMode;
   /** Cached fallback IP of the active box (see Box.lastIp). */
   lastIp?: string;
+  /** Cached MAC of the active box for Wake-on-LAN (see Box.mac). */
+  mac?: string;
 };
 
 /** Safe placeholder used when no box is active (nothing paired yet). */
@@ -146,6 +154,17 @@ export function isValidLanIp(v: string): boolean {
   return false;
 }
 
+/** A canonical "aa:bb:cc:dd:ee:ff" MAC, or null. Accepts ':' or '-' separators
+ * and lowercases the result. Rejects the all-zero address, which no NIC uses
+ * and which would broadcast a useless magic packet. */
+export function normalizeMac(v: unknown): string | null {
+  if (typeof v !== 'string') return null;
+  const m = v.trim().toLowerCase();
+  if (!/^([0-9a-f]{2}[:-]){5}[0-9a-f]{2}$/.test(m)) return null;
+  const canon = m.replace(/-/g, ':');
+  return canon === '00:00:00:00:00:00' ? null : canon;
+}
+
 function normalizePadMode(v: unknown): PadMode {
   if (v === 'gamepad') return 'gamepad';
   if (v === 'trackpad') return 'trackpad';
@@ -166,7 +185,8 @@ function normalizeBox(raw: unknown): Box | null {
     typeof o.name === 'string' && o.name.trim() ? o.name.trim() : host;
   const lastIp =
     typeof o.lastIp === 'string' && isValidLanIp(o.lastIp) ? o.lastIp : undefined;
-  return { id, name, host, port, token, padMode: normalizePadMode(o.padMode), lastIp };
+  const mac = normalizeMac(o.mac) ?? undefined;
+  return { id, name, host, port, token, padMode: normalizePadMode(o.padMode), lastIp, mac };
 }
 
 // ---------- load / save ----------
@@ -253,6 +273,7 @@ export function activeSettings(state: BoxesState): Settings {
     token: active.token,
     padMode: active.padMode,
     lastIp: active.lastIp,
+    mac: active.mac,
   };
 }
 

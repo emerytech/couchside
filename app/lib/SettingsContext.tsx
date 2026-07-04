@@ -243,6 +243,7 @@ export function useSettings(): SettingsContextValue {
       token: activeBox.token,
       padMode: activeBox.padMode,
       lastIp: activeBox.lastIp,
+      mac: activeBox.mac,
     };
   }, [activeBox]);
 

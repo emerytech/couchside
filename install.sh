@@ -119,6 +119,8 @@ if [ "$UNINSTALL" -eq 1 ]; then
     note "removed $INSTALL_DIR (incl. the couchside-pair launcher script)"
     rm -f "$PAIR_DESKTOP"
     note "removed $PAIR_DESKTOP"
+    sudo rm -f /etc/systemd/network/50-couchside-wol.link
+    note "removed the Wake-on-LAN .link file"
     if sudo test -e "$ETC_DIR"; then
         if ask_yn "Remove $ETC_DIR (pairing token + config; phones will need re-pairing)?"; then
             sudo rm -rf "$ETC_DIR"
@@ -290,6 +292,7 @@ else
 $USER_NAME ALL=(root) NOPASSWD: /usr/bin/systemctl restart sddm
 $USER_NAME ALL=(root) NOPASSWD: /usr/bin/systemctl reboot
 $USER_NAME ALL=(root) NOPASSWD: /usr/bin/systemctl poweroff
+$USER_NAME ALL=(root) NOPASSWD: /usr/bin/systemctl suspend
 $USER_NAME ALL=(root) NOPASSWD: /usr/bin/journalctl *
 SUDOERS
     echo "------------------------------------------------------------------"
@@ -319,6 +322,53 @@ fi
 # Apply the rule to the already-present node so no reboot is needed.
 sudo udevadm control --reload-rules 2>/dev/null || true
 sudo udevadm trigger --name-match=uinput 2>/dev/null || true
+
+# ---------------------------------------------------------------------------
+# (f3) Wake-on-LAN: arm the wired NIC so the phone can wake the box from suspend
+# ---------------------------------------------------------------------------
+# The app's power control suspends the box over the LAN and wakes it with a
+# Wake-on-LAN magic packet. That works only on wired Ethernet with WoL armed, so
+# arm it here on the wired default-route interface: a systemd .link file makes it
+# persist (udev applies it every boot, no ethtool needed) and ethtool arms it now
+# if present. WoL must also be enabled in the box's BIOS/firmware, which software
+# cannot set. WiFi boxes are skipped (WoL over WiFi is unreliable).
+WOL_IFACE="$(python3 - <<'PYEOF' 2>/dev/null || true
+import os
+def default_iface():
+    try:
+        with open("/proc/net/route") as f:
+            next(f)
+            for line in f:
+                c = line.split()
+                if len(c) > 1 and c[1] == "00000000":
+                    return c[0]
+    except Exception:
+        return ""
+    return ""
+i = default_iface()
+# Wired only: a wireless NIC has a /sys/class/net/<if>/wireless directory.
+if i and not os.path.isdir("/sys/class/net/%s/wireless" % i):
+    print(i)
+PYEOF
+)"
+if [ -n "$WOL_IFACE" ]; then
+    WOL_MAC="$(cat "/sys/class/net/$WOL_IFACE/address" 2>/dev/null || true)"
+    if [ -n "$WOL_MAC" ]; then
+        say "Arming Wake-on-LAN on $WOL_IFACE ($WOL_MAC)"
+        sudo install -d /etc/systemd/network
+        printf '[Match]\nMACAddress=%s\n\n[Link]\nWakeOnLan=magic\n' "$WOL_MAC" \
+            | sudo tee /etc/systemd/network/50-couchside-wol.link >/dev/null
+        if command -v ethtool >/dev/null 2>&1; then
+            sudo ethtool -s "$WOL_IFACE" wol g 2>/dev/null \
+                || note "ethtool could not arm WoL now; it applies on the next boot"
+        else
+            note "ethtool not installed; WoL arms on the next boot via the .link file"
+        fi
+        note "Enable Wake-on-LAN in the box's BIOS/firmware too if it isn't already."
+    fi
+else
+    note "No wired interface found; skipping Wake-on-LAN arming (WiFi cannot wake)."
+fi
 
 # ---------------------------------------------------------------------------
 # (g) systemd unit

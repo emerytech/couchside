@@ -48,6 +48,19 @@ export type DiskInfo = {
   pct: number;
 };
 
+/**
+ * Primary-interface facts the agent reports (>= 2.6) for the app's power path:
+ * the box's MAC (for a Wake-on-LAN magic packet), whether the link is wired
+ * (WoL rarely works over WiFi), and whether magic-packet wake is armed. Any
+ * field is null when the agent could not read it.
+ */
+export type NetInfo = {
+  iface: string | null;
+  mac: string | null;
+  wired: boolean | null;
+  wol_armed: boolean | null;
+};
+
 export type Status = {
   hostname: string;
   time: number;
@@ -56,6 +69,8 @@ export type Status = {
   cpu_temp_c: number | null;
   mem: { total_mb: number; used_mb: number; available_mb: number };
   disks: DiskInfo[];
+  /** Network facts for the power/Wake-on-LAN path (agent >= 2.6). */
+  net?: NetInfo;
   agent_version: string;
 };
 
@@ -111,16 +126,26 @@ export type LaunchResult = {
   error?: string;
 };
 
-/** Which TV-control backend the agent is using (agent >= 2.5). */
-export type TvBackend = 'panel' | 'cec';
+/**
+ * Which TV-control backend the agent is using (agent >= 2.5). "panel" (RS-232)
+ * and "cec" (HDMI-CEC) drive the TV; "soft" (agent >= 2.6) drives the box's own
+ * audio sink and does volume/mute only, with no power.
+ */
+export type TvBackend = 'panel' | 'cec' | 'soft';
 
 /** TV-control probe result. The route 404s when no backend is available. */
 export type Tv = {
   available: boolean;
-  /** The active backend: "panel" (RS-232 serial) or "cec" (HDMI-CEC). */
+  /** The active backend: "panel" (RS-232), "cec" (HDMI-CEC), or "soft" (box audio). */
   backend: TvBackend;
   /** Human description, e.g. "Newline RS-232 (/dev/ttyUSB0 @ 19200)". */
   adapter: string;
+  /**
+   * The ops this backend supports (agent >= 2.6). The "soft" backend omits the
+   * power ops, so the app hides the power button. Absent on older agents, which
+   * the app treats as the full op set.
+   */
+  ops?: TvOp[];
 };
 
 /** The unified TV ops the agent accepts at POST /api/tv/<op>. */

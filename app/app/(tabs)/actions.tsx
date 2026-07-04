@@ -104,9 +104,14 @@ function ActionsScreen() {
     [execute],
   );
 
+  // "suspend" is handled by the Console tab's power control, which pairs it
+  // with the Wake-on-LAN wake button and the wired-only guard, so it is left
+  // out of the generic action list here to keep one safe entry point.
   const groups = DANGER_ORDER.map((danger) => ({
     danger,
-    items: (actions.data?.actions ?? []).filter((a) => a.danger === danger),
+    items: (actions.data?.actions ?? []).filter(
+      (a) => a.danger === danger && a.id !== 'suspend',
+    ),
   })).filter((g) => g.items.length > 0);
 
   return (

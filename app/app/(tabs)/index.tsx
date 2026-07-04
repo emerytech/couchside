@@ -1,5 +1,7 @@
 import React from 'react';
 import {
+  Alert,
+  Platform,
   Pressable,
   ScrollView,
   StyleSheet,
@@ -12,9 +14,11 @@ import { TabScreen } from '@/components/TabScreen';
 import { useLockOrientation } from '@/hooks/useLockOrientation';
 import { usePoll } from '@/hooks/usePoll';
 import { api, ConnSettings, humanizeUptime, Status, Tv, TvOp, Unit } from '@/lib/api';
-import { hapticError, hapticLight } from '@/lib/haptics';
+import { hapticError, hapticLight, hapticSuccess } from '@/lib/haptics';
+import { normalizeMac } from '@/lib/settings';
 import { useSettings } from '@/lib/SettingsContext';
 import { mono, numeric, pctColor, tempColor, theme } from '@/lib/theme';
+import { sendWol, wolAvailable } from '@/lib/wol';
 
 function Bar({ pct, color }: { pct: number; color: string }) {
   return (
@@ -60,17 +64,26 @@ function UnitChip({ unit }: { unit: Unit }) {
   );
 }
 
+const TV_BACKEND_LABEL: Record<Tv['backend'], string> = {
+  panel: 'RS-232',
+  cec: 'CEC',
+  soft: 'AUDIO',
+};
+
 /**
  * TV controls. Probe-and-appear: only rendered when the box reported a TV
  * backend (see ConsoleScreen). Danger-free single-tap: each button fires its
  * POST immediately (no confirm), like a real remote. Power is an optimistic
  * toggle: the agent has no power-state query, so we track it locally and start
- * "on" (the box is reachable, so the display is almost certainly awake).
+ * "on" (the box is reachable, so the display is almost certainly awake). The
+ * "soft" backend drives the box's own audio and has no power op, so the power
+ * button is hidden when the backend's ops omit it.
  */
 function TvStrip({ settings, tv }: { settings: ConnSettings; tv: Tv }) {
   const [tvOn, setTvOn] = React.useState(true);
   const [busy, setBusy] = React.useState(false);
   const [failed, setFailed] = React.useState(false);
+  const hasPower = tv.ops ? tv.ops.includes('power_on') : true;
 
   const send = React.useCallback(
     async (op: TvOp) => {
@@ -102,21 +115,23 @@ function TvStrip({ settings, tv }: { settings: ConnSettings; tv: Tv }) {
   return (
     <View style={styles.card}>
       <View style={styles.tvHead}>
-        <Text style={styles.cardTitle}>TV</Text>
-        <Text style={styles.tvBackend}>{tv.backend === 'panel' ? 'RS-232' : 'CEC'}</Text>
+        <Text style={styles.cardTitle}>{tv.backend === 'soft' ? 'AUDIO' : 'TV'}</Text>
+        <Text style={styles.tvBackend}>{TV_BACKEND_LABEL[tv.backend]}</Text>
         {failed && <Text style={styles.tvFailed}>no ack</Text>}
       </View>
       <View style={styles.tvRow}>
-        <Pressable
-          disabled={busy}
-          onPress={onPower}
-          style={({ pressed }) => [
-            styles.tvBtn,
-            !tvOn && styles.tvBtnOff,
-            pressed && styles.pressed,
-          ]}>
-          <Text style={[styles.tvGlyph, !tvOn && styles.tvGlyphOff]}>⏻</Text>
-        </Pressable>
+        {hasPower && (
+          <Pressable
+            disabled={busy}
+            onPress={onPower}
+            style={({ pressed }) => [
+              styles.tvBtn,
+              !tvOn && styles.tvBtnOff,
+              pressed && styles.pressed,
+            ]}>
+            <Text style={[styles.tvGlyph, !tvOn && styles.tvGlyphOff]}>⏻</Text>
+          </Pressable>
+        )}
         <Pressable
           disabled={busy}
           onPress={() => send('volume_down')}
@@ -149,6 +164,80 @@ function fmtLastSeen(ts: number | null): string {
   return `${Math.floor(m / 60)}h ${m % 60}m ago`;
 }
 
+/** Confirm dialog; on web, Alert buttons are no-ops so fall back to window.confirm. */
+function confirmSuspend(message: string, onConfirm: () => void) {
+  if (Platform.OS === 'web') {
+    // eslint-disable-next-line no-alert
+    if (typeof window !== 'undefined' && window.confirm(message)) onConfirm();
+    return;
+  }
+  Alert.alert('Suspend box', message, [
+    { text: 'Cancel', style: 'cancel' },
+    { text: 'Suspend', style: 'default', onPress: onConfirm },
+  ]);
+}
+
+/**
+ * Box power control: suspend the box while it is reachable, then wake it with a
+ * Wake-on-LAN magic packet after it goes offline. Suspend is offered only on a
+ * wired box, because WoL cannot wake it back up over WiFi; on WiFi the button
+ * is disabled with that reason. The Wake button lives in the unreachable banner
+ * (that is when you need it), so this card only owns the suspend half.
+ */
+function BoxPowerCard({
+  settings,
+  net,
+}: {
+  settings: ReturnType<typeof useSettings>['settings'];
+  net?: Status['net'];
+}) {
+  const wired = net?.wired;
+  const wolArmed = net?.wol_armed;
+  const canSuspend = wired !== false; // allow when wired or unknown, block on WiFi
+
+  const onSuspend = React.useCallback(() => {
+    hapticLight();
+    confirmSuspend(
+      'Put the box to sleep? It will drop offline; wake it with the Wake button that appears here.',
+      () => {
+        void (async () => {
+          try {
+            await api.runAction(settings, 'suspend');
+          } catch {
+            // The box usually drops the connection mid-suspend, so a transport
+            // error here is expected; the unreachable banner takes over.
+          }
+        })();
+      },
+    );
+  }, [settings]);
+
+  return (
+    <View style={styles.card}>
+      <Text style={styles.cardTitle}>BOX POWER</Text>
+      <Pressable
+        disabled={!canSuspend}
+        onPress={onSuspend}
+        style={({ pressed }) => [
+          styles.powerBtn,
+          !canSuspend && styles.powerBtnDisabled,
+          pressed && styles.pressed,
+        ]}>
+        <Text style={[styles.powerLabel, !canSuspend && styles.powerLabelDim]}>SUSPEND</Text>
+      </Pressable>
+      <Text style={styles.powerNote}>
+        {!canSuspend
+          ? 'Suspend needs wired Ethernet: Wake-on-LAN cannot wake the box over WiFi.'
+          : !settings.mac
+            ? 'Sleeps the box. The MAC needed to wake it is learned on the next status refresh.'
+            : wolArmed === false
+              ? 'Sleeps the box. Wake-on-LAN looks disabled in the OS, so enable it to wake remotely.'
+              : 'Sleeps the box. Wake it with the button in the offline banner.'}
+      </Text>
+    </View>
+  );
+}
+
 export default function ConsoleTab() {
   useLockOrientation('portrait');
   return (
@@ -161,7 +250,7 @@ export default function ConsoleTab() {
 }
 
 function ConsoleScreen() {
-  const { settings, ready } = useSettings();
+  const { settings, ready, update } = useSettings();
 
   // No host yet (fresh install): don't poll, and show the pairing hint
   // instead of the unreachable banner.
@@ -200,6 +289,64 @@ function ConsoleScreen() {
       cancelled = true;
     };
   }, [reachable, settings]);
+
+  // Learn the box MAC from status so Wake-on-LAN works after it goes offline.
+  React.useEffect(() => {
+    const mac = normalizeMac(s?.net?.mac);
+    if (mac && mac !== settings.mac) void update({ mac });
+  }, [s?.net?.mac, settings.mac, update]);
+
+  // Probe once per reachable connect whether this box exposes the suspend
+  // action (agent >= 2.6 with the sudoers rule); the power card gates on it.
+  const [hasSuspend, setHasSuspend] = React.useState(false);
+  const suspendProbedFor = React.useRef<string | null>(null);
+  React.useEffect(() => {
+    if (!reachable) {
+      suspendProbedFor.current = null;
+      return;
+    }
+    const key = `${settings.host}:${settings.port}`;
+    if (suspendProbedFor.current === key) return;
+    suspendProbedFor.current = key;
+    let cancelled = false;
+    api
+      .actions(settings)
+      .then((r) => {
+        if (!cancelled) setHasSuspend(r.actions.some((a) => a.id === 'suspend'));
+      })
+      .catch(() => {
+        if (!cancelled) setHasSuspend(false);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [reachable, settings]);
+
+  // Wake-on-LAN: broadcast a magic packet to the offline box, then re-probe.
+  const [waking, setWaking] = React.useState(false);
+  const onWake = React.useCallback(() => {
+    const mac = settings.mac;
+    if (!mac) return;
+    hapticLight();
+    setWaking(true);
+    void (async () => {
+      try {
+        const ok = await sendWol(mac, { ip: settings.lastIp });
+        if (ok) {
+          hapticSuccess();
+          status.refresh();
+        } else {
+          hapticError();
+          Alert.alert('Wake failed', 'No magic packet could be sent on this network.');
+        }
+      } catch (e: unknown) {
+        hapticError();
+        Alert.alert('Wake failed', e instanceof Error ? e.message : String(e));
+      } finally {
+        setWaking(false);
+      }
+    })();
+  }, [settings.mac, settings.lastIp, status]);
 
   return (
     <ScrollView
@@ -244,14 +391,24 @@ function ConsoleScreen() {
           <Text style={styles.bannerDetail}>
             last seen: {fmtLastSeen(status.lastSuccess)}
           </Text>
-          <Pressable
-            style={({ pressed }) => [styles.retryBtn, pressed && styles.pressed]}
-            onPress={() => {
-              status.refresh();
-              units.refresh();
-            }}>
-            <Text style={styles.retryText}>RETRY</Text>
-          </Pressable>
+          <View style={styles.bannerBtnRow}>
+            <Pressable
+              style={({ pressed }) => [styles.retryBtn, pressed && styles.pressed]}
+              onPress={() => {
+                status.refresh();
+                units.refresh();
+              }}>
+              <Text style={styles.retryText}>RETRY</Text>
+            </Pressable>
+            {settings.mac && wolAvailable && (
+              <Pressable
+                disabled={waking}
+                style={({ pressed }) => [styles.wakeBtn, pressed && styles.pressed]}
+                onPress={onWake}>
+                <Text style={styles.wakeText}>{waking ? 'WAKING…' : 'WAKE BOX'}</Text>
+              </Pressable>
+            )}
+          </View>
         </View>
       )}
 
@@ -310,6 +467,12 @@ function ConsoleScreen() {
             ))}
           </Card>
         </>
+      )}
+
+      {/* Box power: suspend (wired boxes) + Wake-on-LAN. Only when the agent
+          exposes the suspend action. */}
+      {reachable && hasSuspend && s && (
+        <BoxPowerCard settings={settings} net={s.net} />
       )}
 
       {/* TV controls: only when the box reported a TV backend. Keyed by box
@@ -385,6 +548,33 @@ const styles = StyleSheet.create({
     borderRadius: 8,
   },
   retryText: { color: '#450a0a', fontWeight: '800', fontSize: 15, letterSpacing: 1 },
+  bannerBtnRow: { flexDirection: 'row', gap: 10, marginTop: 12 },
+  wakeBtn: {
+    backgroundColor: theme.green,
+    paddingVertical: 12,
+    paddingHorizontal: 28,
+    borderRadius: 8,
+  },
+  wakeText: { color: '#052e16', fontWeight: '800', fontSize: 15, letterSpacing: 1 },
+  powerBtn: {
+    height: 46,
+    borderRadius: 8,
+    borderWidth: 1,
+    borderColor: theme.cardBorder,
+    backgroundColor: theme.inset,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  powerBtnDisabled: { opacity: 0.5 },
+  powerLabel: {
+    color: theme.amber,
+    fontSize: 15,
+    fontWeight: '800',
+    letterSpacing: 1.5,
+    ...numeric,
+  },
+  powerLabelDim: { color: theme.textFaint },
+  powerNote: { color: theme.textDim, fontSize: 12, lineHeight: 17, marginTop: 8 },
   pressed: { opacity: 0.7 },
   row: { flexDirection: 'row', gap: 10 },
   half: { flex: 1 },

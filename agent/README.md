@@ -290,10 +290,10 @@ success, so the app's TV strip can be built without any hardware.
   requires it.
 - **Scoped sudoers**: the daemon runs as your desktop user with no TTY, so
   privileged actions need `NOPASSWD` rules. The installer grants exactly
-  four commands (`systemctl restart sddm`, `systemctl reboot`,
-  `systemctl poweroff`, `journalctl *`) and nothing else, validated with
-  `visudo -cf` before install. Skip with `--no-sudoers` (those actions and
-  system-journal reads will then fail).
+  five commands (`systemctl restart sddm`, `systemctl reboot`,
+  `systemctl poweroff`, `systemctl suspend`, `journalctl *`) and nothing else,
+  validated with `visudo -cf` before install. Skip with `--no-sudoers` (those
+  actions and system-journal reads will then fail).
 - **Allowlists, not shells**: journal reads are limited to the configured
   unit list; actions are a fixed config table run with argument lists
   (`shell=False`), so no arbitrary commands and no file-serving routes. The
