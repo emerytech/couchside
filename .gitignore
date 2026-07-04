@@ -1,3 +1,6 @@
 __pycache__/
 *.pyc
 .DS_Store
+
+# Internal store listing prep (App/Play copy, screenshots, launch plan) — local only
+store/
