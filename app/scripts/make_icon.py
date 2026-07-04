@@ -82,27 +82,27 @@ def main() -> None:
         img.save(path)
         print(f"wrote {path} {img.size} {img.mode}")
 
-    # icon.png — 1024, opaque (App Store icons must have no alpha)
+    # icon.png: 1024, opaque (App Store icons must have no alpha)
     art_1024 = draw_art(1024, WHITE, dot=True)
     icon = on_bg(art_1024, 1024).convert("RGB")
     save(icon, "icon.png")
 
-    # android-icon-foreground.png — 1024, art at 66% scale on transparent
+    # android-icon-foreground.png: 1024, art at 66% scale on transparent
     fg = Image.new("RGBA", (1024, 1024), (0, 0, 0, 0))
     small = draw_art(676, WHITE, dot=True)  # 1024 * 0.66 ≈ 676
     fg.alpha_composite(small, ((1024 - 676) // 2, (1024 - 676) // 2))
     save(fg, "android-icon-foreground.png")
 
-    # android-icon-background.png — solid brand background
+    # android-icon-background.png: solid brand background
     save(Image.new("RGBA", (1024, 1024), BG), "android-icon-background.png")
 
-    # android-icon-monochrome.png — white art on transparent (dot white too)
+    # android-icon-monochrome.png: white art on transparent (dot white too)
     save(draw_art(1024, WHITE, dot=True, dot_color=WHITE), "android-icon-monochrome.png")
 
-    # splash-icon.png — 512, white couch (no dot) on transparent
+    # splash-icon.png: 512, white couch (no dot) on transparent
     save(draw_art(512, WHITE, dot=False), "splash-icon.png")
 
-    # favicon.png — 48, the full icon shrunk down
+    # favicon.png: 48, the full icon shrunk down
     save(on_bg(art_1024, 1024).resize((48, 48), Image.LANCZOS), "favicon.png")
 
 

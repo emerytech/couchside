@@ -1,7 +1,7 @@
 /**
  * Apple-TV-remote-style device picker, rendered as a persistent header pill on
  * every tab. Shows the active box (name + a live reachability dot) and, on tap,
- * drops a card listing the whole fleet with per-box online dots — tap one to
+ * drops a card listing the whole fleet with per-box online dots: tap one to
  * switch, or "+ Add a box" to jump to Setup.
  */
 import Ionicons from '@expo/vector-icons/Ionicons';
@@ -49,7 +49,7 @@ export function BoxSwitcher() {
 
   const activeStatus = activeBoxId ? status[activeBoxId] : undefined;
 
-  const pillLabel = activeBox?.name ?? 'No box — tap to add';
+  const pillLabel = activeBox?.name ?? 'No box, tap to add';
 
   const goToSetup = () => {
     hapticSelection();

@@ -23,7 +23,7 @@ PNG = os.path.join(HERE, "png")
 FONT_PATH = os.path.join(HERE, "fonts", "SpaceMono-Regular.ttf")
 
 # ---------------------------------------------------------------------------
-# Palette (see tokens.json / tokens.css — keep in sync)
+# Palette (see tokens.json / tokens.css, keep in sync)
 # ---------------------------------------------------------------------------
 NAVY = "#0b1220"       # page / icon background
 NAVY_DEEP = "#070d18"
@@ -105,7 +105,7 @@ def write_svgs():
     )
 
     # favicon: same badge, tuned to read at 16px (the app icon, unmodified,
-    # already reads well shrunk — ship it as-is for a consistent mark).
+    # already reads well shrunk, ship it as-is for a consistent mark).
     files["favicon.svg"] = files["icon.svg"]
 
     # Wordmark: two-tone "Couch" + green "side" in Space Mono.
@@ -149,7 +149,7 @@ def write_svgs():
 
 
 # ---------------------------------------------------------------------------
-# Raster (PIL) — reuses the geometry above at supersampled quality.
+# Raster (PIL): reuses the geometry above at supersampled quality.
 # ---------------------------------------------------------------------------
 SS = 4  # supersample factor
 

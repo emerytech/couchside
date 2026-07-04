@@ -36,7 +36,7 @@ import { mono, theme } from '@/lib/theme';
  * HTTPS (not couchside://) because Android camera apps won't open custom
  * schemes from a QR; every scanner opens https. The couchside.tv/pair page
  * relaunches the app via the scheme (or offers install links). Params ride
- * the #FRAGMENT so the token never leaves the browser — fragments aren't
+ * the #FRAGMENT so the token never leaves the browser. Fragments aren't
  * sent to the server or its logs.
  */
 function pairingUrl(box: Box): string {
@@ -53,7 +53,7 @@ function pairingUrl(box: Box): string {
  * Modal that renders a box's pairing deep link as a scannable QR on a white
  * card (QRs need a light background + quiet zone). The host + token are shown
  * as small monospace text as a copy-by-hand fallback. Rendered by <QrView>
- * (pure-JS bit matrix -> Views) — qrcode's toDataURL needs a canvas/zlib and
+ * (pure-JS bit matrix -> Views): qrcode's toDataURL needs a canvas/zlib and
  * silently fails on native, which is exactly the "Could not render QR" bug.
  */
 const QR_SIZE = 232;
@@ -133,9 +133,9 @@ function EntitlementPill() {
   if (!ready) return null;
   const label =
     entitlement.state === 'purchased'
-      ? 'Unlocked — thank you'
+      ? 'Unlocked, thank you'
       : entitlement.state === 'trial'
-        ? `Trial — ${entitlement.trialDaysLeft} day${entitlement.trialDaysLeft === 1 ? '' : 's'} left`
+        ? `Trial: ${entitlement.trialDaysLeft} day${entitlement.trialDaysLeft === 1 ? '' : 's'} left`
         : 'Trial ended';
   const color =
     entitlement.state === 'purchased'
@@ -150,7 +150,7 @@ function EntitlementPill() {
   );
 }
 
-/** Subtle gold Early Adopter badge — purchased before the cutoff, local-only. */
+/** Subtle gold Early Adopter badge: purchased before the cutoff, local-only. */
 function EarlyAdopterBadge() {
   const { entitlement, ready } = useEntitlement();
   if (!ready || !entitlement.isEarlyAdopter) return null;
@@ -186,7 +186,7 @@ function confirmRemove(name: string, onConfirm: () => void) {
  * runs its own ping/auth test, and saves back via updateBox (padMode left
  * untouched). The mount site keys this on the box's id + host/port/token, so
  * it remounts (reseeding the draft) if the underlying box changes out from
- * under it — e.g. an inbound QR re-pair updates the same box while it's open.
+ * under it, e.g. an inbound QR re-pair updates the same box while it's open.
  */
 function BoxEditPanel({
   box,
@@ -251,7 +251,7 @@ function BoxEditPanel({
       setError('Another box already uses this host:port.');
       return;
     }
-    // Preserve the existing token if the (masked) field was left blank — mirrors
+    // Preserve the existing token if the (masked) field was left blank. Mirrors
     // addBox, so clearing it can't silently destroy a working credential.
     void onSave({ name: name.trim() || c.host, host: c.host, port: c.port, token: c.token || box.token });
   }, [conn, hostEmpty, name, box.token, conflict, onSave]);
@@ -398,16 +398,16 @@ function SetupBody() {
     if (result.ok) {
       await recordPurchase();
       hapticSuccess();
-      setRestoreMsg({ text: 'Purchased — unlocked. Thank you!', ok: true });
+      setRestoreMsg({ text: 'Purchased, unlocked. Thank you!', ok: true });
     } else if (result.reason === 'pending') {
       setRestoreMsg({
-        text: "Purchase pending — you'll be unlocked once payment completes.",
+        text: "Purchase pending: you'll be unlocked once payment completes.",
         ok: true,
       });
     } else if (result.reason === 'unavailable') {
-      setRestoreMsg({ text: 'Store unavailable — try again later.', ok: false });
+      setRestoreMsg({ text: 'Store unavailable, try again later.', ok: false });
     } else if (result.reason === 'error') {
-      setRestoreMsg({ text: result.message || 'Purchase failed — try again.', ok: false });
+      setRestoreMsg({ text: result.message || 'Purchase failed, try again.', ok: false });
     }
     setBuying(false);
   }, [recordPurchase]);
@@ -419,13 +419,13 @@ function SetupBody() {
     if (result.state === 'purchased') {
       if (result.purchaseDateMs != null) await recordPurchaseDate(result.purchaseDateMs);
       await recordPurchase();
-      setRestoreMsg({ text: 'Purchase restored — unlocked.', ok: true });
+      setRestoreMsg({ text: 'Purchase restored, unlocked.', ok: true });
     } else if (result.state === 'none') {
       setRestoreMsg({ text: 'No previous purchase found for this account.', ok: false });
     } else if (result.state === 'unavailable') {
-      setRestoreMsg({ text: 'Store unavailable — try again later.', ok: false });
+      setRestoreMsg({ text: 'Store unavailable, try again later.', ok: false });
     } else {
-      setRestoreMsg({ text: result.message || 'Restore failed — try again.', ok: false });
+      setRestoreMsg({ text: result.message || 'Restore failed, try again.', ok: false });
     }
     setRestoring(false);
   }, [recordPurchase]);
@@ -543,7 +543,7 @@ function SetupBody() {
         {boxes.length === 0 ? (
           <View style={styles.card}>
             <Text style={styles.emptyText}>
-              No boxes yet. Pair your first machine below — enter its host, port,
+              No boxes yet. Pair your first machine below: enter its host, port,
               and token, or scan a QR from the agent.
             </Text>
           </View>
@@ -577,7 +577,7 @@ function SetupBody() {
                     }
                     onSave={async (patch) => {
                       // A changed host points at a (potentially) different
-                      // machine — drop the cached fallback IP so requests
+                      // machine, so drop the cached fallback IP so requests
                       // can't silently keep landing on the old box.
                       await updateBox(
                         box.id,
@@ -749,7 +749,7 @@ function SetupBody() {
                 (pressed || buying) && styles.pressed,
               ]}>
               <Text style={styles.btnBuyText}>
-                {buying ? 'PURCHASING…' : `UNLOCK — ${price ?? '$4.99'}`}
+                {buying ? 'PURCHASING…' : `UNLOCK ${price ?? '$4.99'}`}
               </Text>
             </Pressable>
           )}

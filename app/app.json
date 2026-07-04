@@ -3,7 +3,7 @@
     "name": "Couchside",
     "slug": "rescue-remote",
     "owner": "ets3d-llc",
-    "version": "2.2.1",
+    "version": "2.3.0",
     "orientation": "default",
     "icon": "./assets/images/icon.png",
     "scheme": "couchside",

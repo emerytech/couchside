@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""couchsided.py — box-side agent for Couchside.
+"""couchsided.py: box-side agent for Couchside.
 
 Pure python3 stdlib. Serves the Couchside agent API contract v1 on port 8787.
 Runs on SteamOS (Arch) and Bazzite (Fedora Atomic) as a systemd service; also
@@ -19,12 +19,14 @@ import hmac
 import json
 import os
 import random
+import select
 import shutil
 import socket
 import struct
 import subprocess
 import sys
 import tempfile
+import termios
 import threading
 import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -36,7 +38,7 @@ except ImportError:  # pragma: no cover
     fcntl = None
 
 APP_NAME = "couchside-agent"
-VERSION = "2.4.0"
+VERSION = "2.5.0"
 UID = os.getuid()
 XDG_RUNTIME_DIR = "/run/user/%d" % UID
 
@@ -85,7 +87,7 @@ DEFAULT_UNITS = [
 DEFAULT_ACTIONS = {
     "restart-session": {
         "label": "Restart Session",
-        "description": "Restart the display session (sddm) — fixes a wedged/black screen",
+        "description": "Restart the display session (sddm), fixes a wedged/black screen",
         "danger": "high",
         "cmd": ["sudo", "systemctl", "restart", "sddm"],
         "user_env": False,
@@ -114,7 +116,7 @@ DEFAULT_ACTION_ORDER = ["restart-session", "reboot", "poweroff"]
 # SteamOS session-switch actions, injected at load time when
 # steamos-session-select exists (see _inject_session_actions). Built-in rather
 # than config-driven so they appear on any SteamOS box without editing
-# /etc/couchside/config.json. No sudo needed — session-select runs as the user.
+# /etc/couchside/config.json. No sudo needed: session-select runs as the user.
 SESSION_ACTIONS = {
     "switch-desktop": {
         "label": "Switch to Desktop",
@@ -122,7 +124,7 @@ SESSION_ACTIONS = {
         "danger": "medium",
         # "plasma" = one-time switch to the desktop (doesn't change the default
         # login mode, so the box still boots into Game Mode). NB: session-select
-        # has no "desktop" arg — valid targets are plasma*/gamescope.
+        # has no "desktop" arg: valid targets are plasma*/gamescope.
         "cmd": ["steamos-session-select", "plasma"],
         "user_env": True,
         "detached": True,
@@ -143,13 +145,14 @@ MAX_CMD_ARGS = 64          # cap on argv count per launcher
 MAX_CMD_ARG_LEN = 4096     # cap on a single argv token
 MAX_LABEL_LEN = 200        # cap on a launcher label
 
-# Effective config — set by load_config() before the server starts.
+# Effective config: set by load_config() before the server starts.
 WATCHLIST = list(DEFAULT_UNITS)
 WATCHLIST_NAMES = {name for name, _scope in WATCHLIST}
 ACTIONS = dict(DEFAULT_ACTIONS)
 ACTION_ORDER = list(DEFAULT_ACTION_ORDER)
 CONFIG_PORT = None  # optional "port" from config.json
-LAUNCHERS = []  # list of {"id","label","cmd":[...]} — custom launchers only
+CONFIG_PANEL = None  # optional {"device","baud"} RS-232 panel-control config
+LAUNCHERS = []  # list of {"id","label","cmd":[...]}, custom launchers only
 CONFIG_PATH = DEFAULT_CONFIG_PATH  # remembered by load_config() for rewrites
 CONFIG_LOCK = threading.Lock()  # serializes launcher config rewrites
 
@@ -161,7 +164,7 @@ class ConfigError(ValueError):
 def _valid_launcher_id(lid):
     """A stored custom launcher id: "custom:" + a filesystem-safe slug.
 
-    No path separators / traversal (".", "..", "/") — the id is never used as
+    No path separators / traversal (".", "..", "/"): the id is never used as
     a path, but this keeps ids inert and predictable regardless of downstream use.
     """
     if not isinstance(lid, str) or not lid.startswith("custom:"):
@@ -185,7 +188,7 @@ def _parse_config(raw):
 
     Returns (units, actions, order, port, launchers).
 
-    Raises ConfigError on any schema violation — the caller falls back to the
+    Raises ConfigError on any schema violation; the caller falls back to the
     generic defaults wholesale (no partial merges).
     """
     if not isinstance(raw, dict):
@@ -289,24 +292,45 @@ def _parse_config(raw):
                 raise ConfigError("launchers[%d].cmd must be a non-empty argv list" % i)
             launchers.append({"id": lid, "label": label, "cmd": list(cmd)})
 
-    return units, actions, order, port, launchers
+    # Optional RS-232 panel control (e.g. Newline TruTouch over a USB-serial
+    # adapter). device must live under /dev/: this string is opened and
+    # written raw command frames, so it must never be attacker-influenced or a
+    # path outside the device tree.
+    panel = None
+    panel_raw = raw.get("panel")
+    if panel_raw is not None:
+        if not isinstance(panel_raw, dict):
+            raise ConfigError("panel must be an object")
+        device = panel_raw.get("device")
+        if not isinstance(device, str) or not device.startswith("/dev/"):
+            raise ConfigError("panel.device must be a string path under /dev/")
+        baud = panel_raw.get("baud", 19200)
+        if baud not in PANEL_BAUDS:
+            raise ConfigError("panel.baud must be one of %s"
+                              % ", ".join(str(b) for b in sorted(PANEL_BAUDS)))
+        proto = panel_raw.get("protocol", "newline")
+        if proto != "newline":
+            raise ConfigError("panel.protocol must be \"newline\"")
+        panel = {"device": device, "baud": int(baud), "protocol": proto}
+
+    return units, actions, order, port, launchers, panel
 
 
 def load_config(path):
     """Load config.json into the module globals; fall back to defaults."""
     global WATCHLIST, WATCHLIST_NAMES, ACTIONS, ACTION_ORDER, CONFIG_PORT
-    global LAUNCHERS, CONFIG_PATH
+    global LAUNCHERS, CONFIG_PATH, CONFIG_PANEL
     CONFIG_PATH = path  # remembered so launcher POST/DELETE can rewrite it
     try:
         with open(path) as f:
             raw = json.load(f)
-        units, actions, order, port, launchers = _parse_config(raw)
+        units, actions, order, port, launchers, panel = _parse_config(raw)
     except FileNotFoundError:
-        print("warning: config %s not found — using built-in generic defaults"
+        print("warning: config %s not found, using built-in generic defaults"
               % path, file=sys.stderr, flush=True)
         return
     except (OSError, ValueError) as e:  # ValueError covers JSON + ConfigError
-        print("warning: invalid config %s (%s) — using built-in generic defaults"
+        print("warning: invalid config %s (%s), using built-in generic defaults"
               % (path, e), file=sys.stderr, flush=True)
         return
     WATCHLIST = units
@@ -315,6 +339,7 @@ def load_config(path):
     ACTION_ORDER = order
     CONFIG_PORT = port
     LAUNCHERS = launchers
+    CONFIG_PANEL = panel
     print("config loaded from %s: %d units, %d actions, %d launchers"
           % (path, len(WATCHLIST), len(ACTIONS), len(LAUNCHERS)), flush=True)
 
@@ -418,7 +443,7 @@ def read_disks():
             du = shutil.disk_usage(mount)
             # Skip synthetic mounts with no real capacity (e.g. the composefs
             # read-only / on Bazzite/Fedora Atomic reports a tiny total that is
-            # always "100% used" — meaningless and alarming on the dashboard).
+            # always "100% used": meaningless and alarming on the dashboard).
             if du.total < 1024 ** 3:
                 continue
             total_gb = du.total / (1024 ** 3)
@@ -665,7 +690,7 @@ def mock_action(action_id):
 
 
 # ---------------------------------------------------------------------------
-# Launchers — custom (config) + auto-discovered Steam games
+# Launchers: custom (config) + auto-discovered Steam games
 #
 # GET  /api/launchers      -> {"launchers": [Launcher, ...]}
 # POST /api/launchers      -> Launcher (add a custom launcher)
@@ -682,7 +707,7 @@ STEAM_ROOTS = [
     "~/.var/app/com.valvesoftware.Steam/data/Steam",
 ]
 
-# Steam runtime/tool appids that ship in every library — never real games.
+# Steam runtime/tool appids that ship in every library, never real games.
 # (Name-based filtering catches the rest; this covers a few odd names.)
 STEAM_TOOL_APPIDS = frozenset({
     "228980",   # Steamworks Common Redistributables
@@ -708,7 +733,7 @@ def _steam_root():
 def _parse_vdf_paths(text):
     """Extract library "path" values from a libraryfolders.vdf blob.
 
-    Best-effort line scan for `"path"   "<value>"` — the VDF is a simple quoted
+    Best-effort line scan for `"path"   "<value>"`: the VDF is a simple quoted
     key/value tree and we only need the path strings. Never raises.
     """
     paths = []
@@ -846,7 +871,7 @@ def list_launchers():
 def _launcher_argv(launcher_id):
     """Resolve a KNOWN launcher id to its argv, or None if unknown.
 
-    The id must correspond to a launcher currently in the list — a configured
+    The id must correspond to a launcher currently in the list: a configured
     custom launcher, or a Steam game actually discovered on disk. An id that is
     well-formed but not present (e.g. steam:<appid> for a game that isn't
     installed) resolves to None so the route returns 404 "unknown launcher".
@@ -1028,7 +1053,376 @@ def delete_launcher(launcher_id):
 
 
 # ---------------------------------------------------------------------------
-# Virtual gamepad — evdev/uinput constants and pure-stdlib uinput driver
+# TV control (probe-and-appear): two interchangeable backends
+#
+# GET  /api/tv        -> {"available": true, "backend": "...", "adapter": "..."}
+# POST /api/tv/<op>   -> ActionResult; op ∈ TV_OPS
+#
+# The app polls GET /api/tv once per box connect and shows a compact TV strip
+# only when a backend answers; both routes 404 like any unknown route when no
+# backend is present, so a box with no TV hardware surfaces no strip.
+#
+# Backends, preferred in this order:
+#   panel: RS-232 serial control (e.g. Newline TruTouch). CONFIG-DRIVEN: only
+#           active when config.json names a serial device (never auto-probed,
+#           so we never blast command frames at an unrelated tty). Reliable:
+#           the panel MCU listens even in standby, so power-on-from-off works.
+#   cec:   HDMI-CEC via cec-ctl (kernel framework) or cec-client (libcec).
+#           Auto-probed; only counts when the HDMI connector is actually live.
+#
+# Unified ops (TV_OPS): power_on, power_off, volume_up, volume_down, mute.
+# CEC has no discrete "off": power_off maps to CEC standby.
+# ---------------------------------------------------------------------------
+
+TV_OPS = ("power_on", "power_off", "volume_up", "volume_down", "mute")
+
+# ---- CEC backend ----------------------------------------------------------
+# CEC availability is re-evaluated CHEAPLY per request (see cec_current), not
+# frozen at startup: the kernel-CEC path is a few sysfs reads, so a TV powered
+# on after the agent started becomes controllable without a restart, and a dark
+# HDMI port stays hidden. Only the expensive libcec probe (a ~6 s cec-client
+# shell-out) is done once at startup and cached in CEC_LIBCEC.
+CEC_CTL_BIN = None   # path to cec-ctl if on PATH, else None (set at startup)
+CEC_LIBCEC = None    # cached libcec descriptor {tool,bin,device,adapter} or None
+
+
+def _cec_connector_status(dev):
+    """DRM connector status ('connected'/'disconnected'/…) for a /dev/cecN, or
+    None if it can't be mapped. The kernel nests each CEC device's sysfs node
+    under its HDMI connector dir, e.g. /sys/class/drm/card1/card1-HDMI-A-1/cec0.
+    """
+    name = os.path.basename(dev)
+    try:
+        for status_path in glob.glob("/sys/class/drm/*/*/status"):
+            if os.path.isdir(os.path.join(os.path.dirname(status_path), name)):
+                with open(status_path) as f:
+                    return f.read().strip()
+    except OSError:
+        return None
+    return None
+
+
+def _usable_cec_dev():
+    """First /dev/cec[0-9] whose HDMI connector is not 'disconnected'. Skips
+    adapters bound to a dark port (box HDMI unplugged, display on DisplayPort)
+    so the TV strip never appears over a dead CEC bus. A device whose connector
+    can't be mapped (status None) is permitted: unknown != disconnected.
+
+    Because cec_current() calls this per request, a display that asserts HPD
+    (any powered-on TV, and the many TVs that keep HPD live in standby) is
+    picked up dynamically; only a TV in deep-off that drops HPD is missed until
+    it is woken once by other means (such TVs rarely CEC-wake reliably anyway)."""
+    for dev in sorted(glob.glob("/dev/cec[0-9]")):
+        if _cec_connector_status(dev) != "disconnected":
+            return dev
+    return None
+
+
+def _libcec_has_adapter(cec_client_bin):
+    """True if libcec's `cec-client -l` enumerates at least one adapter
+    (e.g. a Pulse-Eight USB-CEC dongle). Never raises; false on any failure."""
+    try:
+        r = subprocess.run([cec_client_bin, "-l"], capture_output=True,
+                           timeout=6)
+    except Exception:
+        return False
+    out = (r.stdout or b"").decode("utf-8", "replace").lower()
+    if "com port:" in out:
+        return True
+    # Fallback: parse the "Found devices: N" summary line.
+    for line in out.splitlines():
+        s = line.strip()
+        if s.startswith("found devices:"):
+            try:
+                return int(s.split(":", 1)[1].strip()) > 0
+            except ValueError:
+                return False
+    return False
+
+
+def set_cec(mock):
+    """Startup CEC probe: cache cec-ctl's presence and (via one ~6 s shell-out)
+    whether libcec sees an adapter. In --mock no CEC is registered: the mock
+    TV strip runs on the panel backend (see set_panel) so development exercises
+    the serial path the user is building toward."""
+    global CEC_CTL_BIN, CEC_LIBCEC
+    if mock:
+        CEC_CTL_BIN = None
+        CEC_LIBCEC = None
+        return
+    CEC_CTL_BIN = shutil.which("cec-ctl")
+    client = shutil.which("cec-client")
+    if client and _libcec_has_adapter(client):
+        CEC_LIBCEC = {"tool": "cec-client", "bin": client, "device": None,
+                      "adapter": "libcec adapter"}
+    else:
+        CEC_LIBCEC = None
+
+
+def cec_current():
+    """Live CEC descriptor, recomputed cheaply per call, or None. Prefers the
+    kernel framework (cec-ctl) on a connected /dev/cec port (re-checked each
+    call), then the cached libcec adapter. Never raises."""
+    try:
+        if CEC_CTL_BIN:
+            dev = _usable_cec_dev()
+            if dev:
+                return {"tool": "cec-ctl", "bin": CEC_CTL_BIN, "device": dev,
+                        "adapter": "kernel CEC (%s)" % dev}
+    except Exception:
+        pass
+    return CEC_LIBCEC
+
+
+def cec_available():
+    return cec_current() is not None
+
+
+def _cec_argv(cec, op):
+    """Return (argv, stdin_bytes|None) for a CEC op against descriptor <cec>.
+    Ops here are the CEC-internal names (power_on/standby/volume_*/mute). All
+    target the TV (logical address 0); volume/mute use CEC User Control (UI)
+    commands, which a TV forwards to an ARC audio system when system-audio is
+    on."""
+    if cec["tool"] == "cec-ctl":
+        base = [cec["bin"], "-d", cec["device"], "--to", "0"]
+        if op == "power_on":
+            return base + ["--image-view-on"], None
+        if op == "standby":
+            return base + ["--standby"], None
+        ui = {"volume_up": "volume-up", "volume_down": "volume-down",
+              "mute": "mute"}[op]
+        # Press + release in one invocation is the one-shot UI-command idiom.
+        return base + ["--user-control-pressed", "ui-cmd=" + ui,
+                       "--user-control-released"], None
+    # cec-client (libcec): single-command mode (-s), command on stdin.
+    cmd = {"power_on": "on 0", "standby": "standby 0", "volume_up": "volup",
+           "volume_down": "voldown", "mute": "mute"}[op]
+    return [cec["bin"], "-s", "-d", "1"], (cmd + "\n").encode("ascii")
+
+
+def real_cec(op):
+    """Run a CEC op via a one-shot arg-list subprocess. ActionResult-shaped."""
+    start = time.monotonic()
+    cec = cec_current()
+    if cec is None:  # raced from available to gone (TV/HDMI dropped)
+        return {"ok": False, "exit_code": -1, "stdout": "",
+                "stderr": "cec backend unavailable", "duration_ms": 0}
+    argv, stdin = _cec_argv(cec, op)
+    try:
+        r = subprocess.run(argv, input=stdin, capture_output=True, timeout=10)
+    except subprocess.TimeoutExpired:
+        return {"ok": False, "exit_code": -1, "stdout": "",
+                "stderr": "cec command timed out",
+                "duration_ms": int((time.monotonic() - start) * 1000)}
+    except Exception as e:
+        return {"ok": False, "exit_code": -1, "stdout": "",
+                "stderr": "%s: %s" % (e.__class__.__name__, e),
+                "duration_ms": int((time.monotonic() - start) * 1000)}
+    out = (r.stdout or b"").decode("utf-8", "replace")
+    err = (r.stderr or b"").decode("utf-8", "replace")
+    return {"ok": r.returncode == 0, "exit_code": r.returncode,
+            "stdout": out, "stderr": err,
+            "duration_ms": int((time.monotonic() - start) * 1000)}
+
+
+def mock_cec(op):
+    """--mock stand-in for a CEC op: log it, never touch hardware, succeed."""
+    time.sleep(0.1)
+    print("[cec] %s" % op, flush=True)
+    return {"ok": True, "exit_code": 0, "stdout": "[mock cec] %s\n" % op,
+            "stderr": "", "duration_ms": 100}
+
+
+# ---- panel backend (RS-232 serial) ----------------------------------------
+# Supported serial line speeds (int -> termios constant). Membership is also
+# the config validator for panel.baud (see _parse_config).
+PANEL_BAUDS = {
+    9600: termios.B9600,
+    19200: termios.B19200,
+    38400: termios.B38400,
+    57600: termios.B57600,
+    115200: termios.B115200,
+}
+
+# Newline TruTouch RS-232 protocol (19200 8N1). Frame is a fixed 9-byte header,
+# a one-byte key code, then a 0xCF terminator: 7F 08 99 A2 B3 C4 02 FF 01 XX CF.
+# The panel echoes 7F 09 99 A2 B3 C4 02 FF 01 XX 01 CF on success.
+PANEL_FRAME_HEAD = bytes([0x7F, 0x08, 0x99, 0xA2, 0xB3, 0xC4, 0x02, 0xFF, 0x01])
+PANEL_FRAME_TAIL = 0xCF
+PANEL_CODES = {
+    "power_on": 0x00,
+    "power_off": 0x01,
+    "mute": 0x02,
+    "volume_down": 0x17,
+    "volume_up": 0x18,
+}
+
+# Populated at startup by set_panel(); {"device","baud","protocol"} or None.
+PANEL = None
+
+
+def _panel_frame(op):
+    """Build the 11-byte Newline command frame for a unified TV op."""
+    return PANEL_FRAME_HEAD + bytes([PANEL_CODES[op], PANEL_FRAME_TAIL])
+
+
+def _hexstr(b):
+    return " ".join("%02X" % x for x in b)
+
+
+def _serial_send(device, baud, frame, expect_reply=True, timeout=1.0):
+    """Open <device> raw at <baud> 8N1 (pure stdlib termios), write <frame>
+    bytes, optionally read a short reply. Returns the reply bytes (may be
+    empty). Raises OSError on open/IO failure."""
+    speed = PANEL_BAUDS[baud]
+    fd = os.open(device, os.O_RDWR | os.O_NOCTTY | os.O_NONBLOCK)
+    try:
+        iflag, oflag, cflag, lflag, _ispeed, _ospeed, cc = termios.tcgetattr(fd)
+        # 8 data bits, no parity, 1 stop bit, ignore modem lines, receiver on.
+        cflag = (cflag & ~termios.CSIZE) | termios.CS8
+        cflag &= ~(termios.PARENB | termios.CSTOPB)
+        if hasattr(termios, "CRTSCTS"):
+            cflag &= ~termios.CRTSCTS
+        cflag |= (termios.CLOCAL | termios.CREAD)
+        iflag &= ~(termios.IXON | termios.IXOFF | termios.IXANY)
+        iflag &= ~(termios.INLCR | termios.IGNCR | termios.ICRNL)
+        oflag &= ~termios.OPOST
+        lflag &= ~(termios.ICANON | termios.ECHO | termios.ECHOE | termios.ISIG)
+        termios.tcsetattr(fd, termios.TCSANOW,
+                          [iflag, oflag, cflag, lflag, speed, speed, cc])
+        termios.tcflush(fd, termios.TCIOFLUSH)
+        # Write fully (device opened non-blocking; a short frame won't block,
+        # but loop defensively on partial writes).
+        mv = memoryview(frame)
+        wdeadline = time.monotonic() + timeout
+        while mv:
+            try:
+                n = os.write(fd, mv)
+                mv = mv[n:]
+            except BlockingIOError:
+                if time.monotonic() >= wdeadline:
+                    raise
+                select.select([], [fd], [], max(0.0, wdeadline - time.monotonic()))
+        termios.tcdrain(fd)
+        reply = b""
+        if expect_reply:
+            deadline = time.monotonic() + timeout
+            while time.monotonic() < deadline:
+                r, _, _ = select.select([fd], [], [],
+                                        max(0.0, deadline - time.monotonic()))
+                if not r:
+                    break
+                try:
+                    chunk = os.read(fd, 64)
+                except (BlockingIOError, OSError):
+                    break
+                if not chunk:
+                    break
+                reply += chunk
+                if len(reply) >= 12:  # a full Newline return frame
+                    break
+        return reply
+    finally:
+        os.close(fd)
+
+
+def set_panel(mock):
+    """Populate the panel descriptor. In --mock a fake serial device is always
+    reported so the TV strip can be developed before the RS-232 adapter exists.
+    Real mode: active only when config.json named a serial device that exists."""
+    global PANEL
+    if mock:
+        PANEL = {"device": "mock", "baud": 19200, "protocol": "newline"}
+    elif CONFIG_PANEL and os.path.exists(CONFIG_PANEL["device"]):
+        PANEL = dict(CONFIG_PANEL)
+    else:
+        PANEL = None
+
+
+def panel_available():
+    return PANEL is not None
+
+
+def real_panel(op):
+    """Send a Newline command frame over the configured serial line. Success
+    means the frame was written (the panel may or may not reply); the reply, if
+    any, is echoed in stdout for diagnostics. ActionResult-shaped."""
+    start = time.monotonic()
+    frame = _panel_frame(op)
+    try:
+        reply = _serial_send(PANEL["device"], PANEL["baud"], frame)
+    except Exception as e:
+        return {"ok": False, "exit_code": -1, "stdout": "",
+                "stderr": "%s: %s" % (e.__class__.__name__, e),
+                "duration_ms": int((time.monotonic() - start) * 1000)}
+    stdout = "sent %s | reply %s" % (
+        _hexstr(frame), _hexstr(reply) if reply else "(none)")
+    return {"ok": True, "exit_code": 0, "stdout": stdout, "stderr": "",
+            "duration_ms": int((time.monotonic() - start) * 1000)}
+
+
+def mock_panel(op):
+    """--mock stand-in: log the frame that would go out, never open a device."""
+    time.sleep(0.1)
+    frame = _panel_frame(op)
+    print("[panel] %s -> %s" % (op, _hexstr(frame)), flush=True)
+    return {"ok": True, "exit_code": 0,
+            "stdout": "[mock panel] %s -> %s\n" % (op, _hexstr(frame)),
+            "stderr": "", "duration_ms": 100}
+
+
+# ---- unified dispatch -----------------------------------------------------
+# CEC has no discrete power-off; its standby command IS the off state.
+_TV_TO_CEC = {"power_on": "power_on", "power_off": "standby",
+              "volume_up": "volume_up", "volume_down": "volume_down",
+              "mute": "mute"}
+
+
+def set_tv(mock):
+    """Probe both TV backends at startup (call after load_config)."""
+    set_cec(mock)
+    set_panel(mock)
+
+
+def tv_backend():
+    """Active backend name (the serial panel is preferred over CEC because it
+    is reliable and can power on from standby), or None when neither exists."""
+    if panel_available():
+        return "panel"
+    if cec_available():
+        return "cec"
+    return None
+
+
+def tv_info():
+    """GET /api/tv body, or None when no backend is available."""
+    b = tv_backend()
+    if b == "panel":
+        return {"available": True, "backend": "panel",
+                "adapter": "Newline RS-232 (%s @ %d)"
+                           % (PANEL["device"], PANEL["baud"])}
+    if b == "cec":
+        cec = cec_current()
+        adapter = cec["adapter"] if cec else "CEC"
+        return {"available": True, "backend": "cec", "adapter": adapter}
+    return None
+
+
+def tv_send(op, mock):
+    """Dispatch a unified TV op to the active backend. Returns an ActionResult,
+    or None when no backend is available (caller 404s)."""
+    b = tv_backend()
+    if b == "panel":
+        return mock_panel(op) if mock else real_panel(op)
+    if b == "cec":
+        cec_op = _TV_TO_CEC[op]
+        return mock_cec(cec_op) if mock else real_cec(cec_op)
+    return None
+
+
+# ---------------------------------------------------------------------------
+# Virtual gamepad: evdev/uinput constants and pure-stdlib uinput driver
 # ---------------------------------------------------------------------------
 
 EV_SYN = 0x00
@@ -1066,7 +1460,7 @@ DPAD_MAP = {
     "dd": (ABS_HAT0Y, 1),
 }
 
-# (axis code, absmin, absmax) — all axes the virtual pad declares
+# (axis code, absmin, absmax): all axes the virtual pad declares
 GAMEPAD_AXES = [
     (ABS_X, -32768, 32767),
     (ABS_Y, -32768, 32767),
@@ -1089,7 +1483,7 @@ ABS_NAMES = {
 }
 
 # ---------------------------------------------------------------------------
-# Virtual mouse — evdev EV_REL / EV_KEY (buttons)
+# Virtual mouse: evdev EV_REL / EV_KEY (buttons)
 # ---------------------------------------------------------------------------
 
 BTN_LEFT, BTN_RIGHT, BTN_MIDDLE = 0x110, 0x111, 0x112
@@ -1106,7 +1500,7 @@ MOUSE_REL_AXES = (REL_X, REL_Y, REL_WHEEL)
 REL_NAMES = {REL_X: "REL_X", REL_Y: "REL_Y", REL_WHEEL: "REL_WHEEL"}
 
 # ---------------------------------------------------------------------------
-# Virtual keyboard — evdev EV_KEY over KEY_* codes
+# Virtual keyboard: evdev EV_KEY over KEY_* codes
 # ---------------------------------------------------------------------------
 
 # Linux input-event-codes KEY_* values.
@@ -1750,17 +2144,17 @@ def _gamepad_teardown(entry):
 
 
 # ---------------------------------------------------------------------------
-# Pairing QR page (GET /pair) — LOCALHOST-ONLY, serves the pairing deep link
+# Pairing QR page (GET /pair): LOCALHOST-ONLY, serves the pairing deep link
 # as an offline-rendered QR so the box's own TV can show it in Game Mode.
 #
 # SECURITY: /pair exposes the pairing token in the clear, so it is gated to
 # loopback clients only (see Handler.do_GET). It is NOT under /api and is NOT
-# bearer-authed — the loopback check IS the entire security model.
+# bearer-authed: the loopback check IS the entire security model.
 # ---------------------------------------------------------------------------
 
 # Inlined, MIT-licensed pure-JS QR generator (Kazuhiko Arase's
 # qrcode-generator, reduced to 8-bit byte mode / EC level M / auto type).
-# Rendered fully client-side and OFFLINE — no CDN, so it works on a box with
+# Rendered fully client-side and OFFLINE: no CDN, so it works on a box with
 # no internet. Exposes a global `qrcode(typeNumber)` factory.
 PAIR_QR_JS = r"""
 var qrcode = (function () {
@@ -1944,7 +2338,7 @@ def _pair_lan_ip():
 
     UDP connect() picks the interface the default route would use without
     sending a single packet. Returns None when it can't be determined (or is
-    loopback) — the ip param is simply omitted then.
+    loopback); the ip param is simply omitted then.
     """
     try:
         s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
@@ -1964,7 +2358,7 @@ def build_pair_url(token, port):
     HTTPS (not couchside://) because Android camera apps won't open custom
     schemes from a QR code; every scanner opens https. couchside.tv/pair
     relaunches the app via the scheme (or shows install links). The params
-    ride the URL #FRAGMENT, which browsers never send to the server — the
+    ride the URL #FRAGMENT, which browsers never send to the server: the
     token stays between the QR and the phone.
 
     host= stays the mDNS name (survives DHCP lease changes); ip= is the
@@ -1986,7 +2380,7 @@ def render_pair_page(token, port):
     The pairing URL is injected as a JSON string literal (json.dumps) so it is
     safely escaped for the inline <script>. The QR is drawn client-side to a
     canvas from the inlined generator above; the couchside:// URL is shown as a
-    small text fallback. No external resources — works on a box with no net.
+    small text fallback. No external resources: works on a box with no net.
     """
     pair_url = build_pair_url(token, port)
     url_js = json.dumps(pair_url)          # safe JS string literal
@@ -2080,7 +2474,7 @@ class Handler(BaseHTTPRequestHandler):
 
         Anti-DNS-rebinding gate for /pair: a malicious web page loaded in the
         box's own browser can rebind its domain to 127.0.0.1 and fetch
-        http://attacker.tld:PORT/pair — the socket peer IS loopback then, but
+        http://attacker.tld:PORT/pair: the socket peer IS loopback then, but
         the Host header still says attacker.tld. The legitimate launcher opens
         http://localhost:PORT/pair, so requiring a loopback Host costs nothing.
         """
@@ -2173,7 +2567,7 @@ class Handler(BaseHTTPRequestHandler):
                 # LOCALHOST-ONLY: /pair renders the pairing token as a QR, so a
                 # non-loopback client MUST NOT see it. Two gates, both required:
                 # peer IP must be loopback AND the Host header must name
-                # loopback (anti-DNS-rebinding — see _host_header_is_local).
+                # loopback (anti-DNS-rebinding, see _host_header_is_local).
                 if not self._is_loopback() or not self._host_header_is_local():
                     self._send(403, {"error": "forbidden"}, started)
                     return
@@ -2182,7 +2576,7 @@ class Handler(BaseHTTPRequestHandler):
                 return
 
             if path == "/api/ping":
-                # "ip" is the server-side address of THIS connection — i.e. the
+                # "ip" is the server-side address of THIS connection, i.e. the
                 # LAN IP the client actually reached us on. The app caches it
                 # per box and falls back to it when mDNS (.local) resolution
                 # breaks (classic SteamOS Game Mode: WiFi power-save drops the
@@ -2228,6 +2622,14 @@ class Handler(BaseHTTPRequestHandler):
                 self._send(200, {"actions": actions}, started)
             elif path == "/api/launchers":
                 self._send(200, {"launchers": list_launchers()}, started)
+            elif path == "/api/tv":
+                # Probe-and-appear: 404 when no TV backend so the app shows no
+                # TV strip; a body only when a backend is live.
+                info = tv_info()
+                if info is None:
+                    self._send(404, {"error": "not found"}, started)
+                else:
+                    self._send(200, info, started)
             else:
                 self._send(404, {"error": "not found"}, started)
         except BrokenPipeError:
@@ -2254,8 +2656,8 @@ class Handler(BaseHTTPRequestHandler):
 
     def do_POST(self):
         started = time.monotonic()
-        # Always drain the body first (see _read_body) — even on the paths that
-        # ignore it — so keep-alive connections never desync.
+        # Always drain the body first (see _read_body), even on the paths that
+        # ignore it, so keep-alive connections never desync.
         body = self._read_body()
         try:
             parsed = urlparse(self.path)
@@ -2280,12 +2682,12 @@ class Handler(BaseHTTPRequestHandler):
                 self._send(200, result, started)
                 return
 
-            # POST /api/launchers — add a custom launcher from a JSON body.
+            # POST /api/launchers: add a custom launcher from a JSON body.
             if path == "/api/launchers":
                 self._handle_add_launcher(body, started)
                 return
 
-            # POST /api/launchers/<id> — fire-and-forget launch.
+            # POST /api/launchers/<id>: fire-and-forget launch.
             lprefix = "/api/launchers/"
             if path.startswith(lprefix):
                 # The app percent-encodes the id (encodeURIComponent turns the
@@ -2297,6 +2699,20 @@ class Handler(BaseHTTPRequestHandler):
                                      "error": "unknown launcher"}, started)
                     return
                 result = mock_launch(argv) if self.mock else real_launch(argv)
+                self._send(200, result, started)
+                return
+
+            # POST /api/tv/<op>: one-shot TV control (panel or CEC backend).
+            tprefix = "/api/tv/"
+            if path.startswith(tprefix):
+                op = path[len(tprefix):]
+                if op not in TV_OPS:
+                    self._send(404, {"error": "unknown tv op"}, started)
+                    return
+                result = tv_send(op, self.mock)
+                if result is None:  # no backend available
+                    self._send(404, {"error": "not found"}, started)
+                    return
                 self._send(200, result, started)
                 return
 
@@ -2499,8 +2915,8 @@ class Handler(BaseHTTPRequestHandler):
                     GAMEPAD_ACTIVE = None
                 # Always destroy ALL of OUR devices (destroy() is idempotent):
                 # if a replacer tore us down while our gamepad was still being
-                # created, it saw device=None and only closed the socket —
-                # without this, that freshly created uinput device (and fd)
+                # created, it saw device=None and only closed the socket.
+                # Without this, that freshly created uinput device (and fd)
                 # would leak as a phantom pad until service restart. The lazily
                 # created mouse/keyboard are torn down here too.
                 devices = [entry.get("device"), entry.get("mouse"),
@@ -2617,6 +3033,7 @@ def main():
 
     load_config(args.config)
     _inject_session_actions()
+    set_tv(args.mock)
     port = args.port if args.port is not None else (CONFIG_PORT or DEFAULT_PORT)
 
     Handler.token = load_token(args)
@@ -2631,6 +3048,9 @@ def main():
     mode = "mock" if args.mock else "real"
     print("%s %s listening on %s:%d (%s mode)" % (
         APP_NAME, VERSION, args.host, port, mode), flush=True)
+    info = tv_info()
+    print("tv: %s" % ("%s (%s)" % (info["backend"], info["adapter"])
+                      if info else "unavailable"), flush=True)
     try:
         server.serve_forever()
     except KeyboardInterrupt:

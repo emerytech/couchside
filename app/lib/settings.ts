@@ -24,7 +24,7 @@ export type Box = {
   /**
    * Last IP this box was actually reached on (learned from /api/ping's "ip"
    * field or the pairing QR's &ip= param). Used as an automatic fallback when
-   * the .local hostname stops resolving — e.g. SteamOS Game Mode's WiFi
+   * the .local hostname stops resolving. e.g. SteamOS Game Mode's WiFi
    * power-save breaks mDNS while plain HTTP to the IP keeps working.
    */
   lastIp?: string;
@@ -142,7 +142,7 @@ export function isValidLanIp(v: string): boolean {
   if (a === 192 && b === 168) return true;
   if (a === 172 && b >= 16 && b <= 31) return true;
   if (a === 169 && b === 254) return true; // link-local
-  if (a === 100 && b >= 64 && b <= 127) return true; // CGNAT — Tailscale lives here
+  if (a === 100 && b >= 64 && b <= 127) return true; // CGNAT (Tailscale lives here)
   return false;
 }
 
@@ -175,7 +175,7 @@ const EMPTY_STATE: BoxesState = { boxes: [], activeBoxId: null };
 
 /**
  * Load the fleet. Migrates a legacy single-settings user into one active box.
- * Never throws — malformed storage falls back to an empty fleet.
+ * Never throws: malformed storage falls back to an empty fleet.
  */
 export async function loadBoxes(): Promise<BoxesState> {
   // Preferred: the v2 fleet key.

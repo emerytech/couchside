@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# deploy.sh — DEVELOPMENT helper: push this checkout to a box and run install.sh
+# deploy.sh: DEVELOPMENT helper: push this checkout to a box and run install.sh
 # there. Run FROM YOUR MAC/PC. End users should not use this; they use:
 #
 #   curl -fsSL https://raw.githubusercontent.com/emerytech/couchside/main/install.sh | bash

@@ -23,9 +23,9 @@ export type Ping = {
 const AGENT_APPS = /^(couchside|couchpilot|rescue)-agent$/;
 
 /**
- * Does this ping body identify OUR box? Requires the agent family, and — when
+ * Does this ping body identify OUR box? Requires the agent family, and (when
  * both sides know a hostname (box.host is an mDNS name and the agent reports
- * host, >= 2.3) — a hostname match. Guards the cached-IP fallback: a DHCP
+ * host, >= 2.3)) a hostname match. Guards the cached-IP fallback: a DHCP
  * lease that wandered to a different machine must never receive this box's
  * bearer token or count as "reachable".
  */
@@ -101,7 +101,7 @@ export type Launcher = {
   id: string;
   label: string;
   kind: 'steam' | 'custom';
-  /** Steam appid, present for kind "steam" — used for library cover art. */
+  /** Steam appid, present for kind "steam": used for library cover art. */
   appid?: number;
 };
 
@@ -110,6 +110,21 @@ export type LaunchResult = {
   /** Present when ok is false. */
   error?: string;
 };
+
+/** Which TV-control backend the agent is using (agent >= 2.5). */
+export type TvBackend = 'panel' | 'cec';
+
+/** TV-control probe result. The route 404s when no backend is available. */
+export type Tv = {
+  available: boolean;
+  /** The active backend: "panel" (RS-232 serial) or "cec" (HDMI-CEC). */
+  backend: TvBackend;
+  /** Human description, e.g. "Newline RS-232 (/dev/ttyUSB0 @ 19200)". */
+  adapter: string;
+};
+
+/** The unified TV ops the agent accepts at POST /api/tv/<op>. */
+export type TvOp = 'power_on' | 'power_off' | 'volume_up' | 'volume_down' | 'mute';
 
 // ---------- Errors ----------
 
@@ -162,7 +177,7 @@ async function attempt(
     if (e instanceof Error && e.name === 'AbortError') {
       throw new ApiError('timeout', `Timed out after ${timeoutMs / 1000}s`);
     }
-    throw new ApiError('unreachable', 'Box unreachable — network error');
+    throw new ApiError('unreachable', 'Box unreachable: network error');
   } finally {
     clearTimeout(timer);
   }
@@ -199,7 +214,7 @@ async function request<T>(
 ): Promise<T> {
   // Cached-IP fallback: keeps the app working when mDNS breaks (SteamOS Game
   // Mode) but the box is still up. The fallback target must first prove via
-  // an unauthenticated ping that it IS this box (pingMatchesBox) — a DHCP
+  // an unauthenticated ping that it IS this box (pingMatchesBox). A DHCP
   // lease that wandered to another machine gets neither the bearer token nor
   // a misleading 401.
   const method = opts.method ?? 'GET';
@@ -211,7 +226,7 @@ async function request<T>(
     try {
       res = await attempt(settings.host, settings, path, opts);
     } catch (e: unknown) {
-      // Only idempotent GETs may re-send after a transport failure — React
+      // Only idempotent GETs may re-send after a transport failure. React
       // Native's fetch reports "connection lost after the request was
       // delivered" identically to "never connected", so a re-sent POST could
       // run an action (reboot!) twice.
@@ -225,7 +240,7 @@ async function request<T>(
     }
   } else {
     // Non-idempotent (POST/DELETE): pick the working target FIRST with cheap
-    // ping probes, then send the request EXACTLY ONCE — never retried.
+    // ping probes, then send the request EXACTLY ONCE, never retried.
     let target = settings.host;
     if (!(await probeTarget(settings.host, settings))) {
       if (await probeTarget(fallback, settings)) target = fallback;
@@ -235,7 +250,7 @@ async function request<T>(
   }
 
   if (res.status === 401) {
-    throw new ApiError('unauthorized', 'Unauthorized — check token');
+    throw new ApiError('unauthorized', 'Unauthorized: check token');
   }
   if (!res.ok) {
     let detail = `HTTP ${res.status}`;
@@ -321,6 +336,25 @@ export const api = {
   deleteLauncher(settings: ConnSettings, id: string): Promise<{ ok: boolean }> {
     return request<{ ok: boolean }>(settings, `/api/launchers/${encodeURIComponent(id)}`, {
       method: 'DELETE',
+    });
+  },
+
+  // ---------- TV control (probe-and-appear) ----------
+
+  /**
+   * Probe for TV control. Resolves to the active backend + adapter when the
+   * agent has one (RS-232 panel or HDMI-CEC); the route 404s (ApiError kind
+   * "http") on boxes without any, which the caller treats as "no TV strip".
+   */
+  tv(settings: ConnSettings): Promise<Tv> {
+    return request<Tv>(settings, '/api/tv');
+  },
+
+  /** Send a one-shot TV command. Returns an ActionResult. */
+  tvSend(settings: ConnSettings, op: TvOp): Promise<ActionResult> {
+    return request<ActionResult>(settings, `/api/tv/${op}`, {
+      method: 'POST',
+      timeoutMs: 12000,
     });
   },
 };

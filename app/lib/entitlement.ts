@@ -2,10 +2,10 @@
  * Single source of truth for the 7-day trial + one-time unlock.
  *
  * State machine:
- *   'purchased' — couchpilot_unlock owned (cached locally, re-validated
+ *   'purchased': couchpilot_unlock owned (cached locally, re-validated
  *                 against the store on app start).
- *   'trial'     — within TRIAL_DAYS of first launch.
- *   'expired'   — trial over, not purchased. The tabs gate on this
+ *   'trial'    : within TRIAL_DAYS of first launch.
+ *   'expired'  : trial over, not purchased. The tabs gate on this
  *                 (see components/Gated.tsx).
  *
  * No account, no server: the first-launch timestamp lives in the iOS
@@ -63,12 +63,12 @@ export async function recordPurchaseDate(ms: number): Promise<void> {
   try {
     await storageSet(PURCHASE_DATE_KEY, String(Math.round(ms)));
   } catch {
-    // best effort — the badge just won't show without a persisted date
+    // best effort: the badge just won't show without a persisted date
   }
 }
 
 /**
- * Persistence wrapper: expo-secure-store on native, localStorage on web —
+ * Persistence wrapper: expo-secure-store on native, localStorage on web,
  * same pattern as lib/settings.ts. Keychain entries survive OS cache clears
  * (and on iOS typically app reinstalls), which is as durable as a
  * client-only trial clock can reasonably be.
@@ -113,7 +113,7 @@ async function firstLaunchMs(): Promise<number> {
   try {
     await storageSet(FIRST_LAUNCH_KEY, String(now));
   } catch {
-    // best effort — an unwritable clock just restarts the trial next launch
+    // best effort: an unwritable clock just restarts the trial next launch
   }
   return now;
 }
@@ -124,7 +124,7 @@ export async function markPurchased(): Promise<void> {
 }
 
 /**
- * Local entitlement: purchase cache + trial clock only. Fast and offline —
+ * Local entitlement: purchase cache + trial clock only. Fast and offline:
  * this is what the UI reads. Store re-validation is layered on top via
  * revalidateWithStore().
  */
@@ -194,7 +194,7 @@ export async function revalidateWithStore(local: Entitlement): Promise<Entitleme
   if (result.state === 'none' && (await getProduct()) == null) {
     // The store connected but couchpilot_unlock is not fetchable: this is a
     // dev / simulator / self-compiled binary (different bundle id or no store
-    // listing) that cannot possibly sell the unlock — treat like
+    // listing) that cannot possibly sell the unlock: treat like
     // 'unavailable' so such builds are never locked out. NOT cached, so an
     // official store build (which can always fetch the product) still gates.
     return { state: 'purchased', trialDaysLeft: local.trialDaysLeft, isEarlyAdopter: false };

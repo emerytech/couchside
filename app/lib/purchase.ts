@@ -1,6 +1,6 @@
 /**
  * Thin, no-throw wrapper around expo-iap (direct StoreKit / Google Play
- * Billing — no third-party purchase service, receipts stay on-device).
+ * Billing, no third-party purchase service, receipts stay on-device).
  *
  * Resilience contract: every exported function is safe to call on web, in the
  * iOS simulator, or in a self-compiled build without the native module. When
@@ -34,7 +34,7 @@ type IapPurchase = {
   purchaseState: 'pending' | 'purchased' | 'unknown';
   // Original transaction time (ms since epoch). Open IAP surfaces this as
   // `transactionDate`; some platforms also carry a StoreKit
-  // `originalPurchaseDate`. Both optional — never depend on either existing.
+  // `originalPurchaseDate`. Both optional: never depend on either existing.
   transactionDate?: number;
   originalPurchaseDate?: number;
 };
@@ -115,7 +115,7 @@ async function connect(): Promise<boolean> {
             if (purchase.productId !== UNLOCK_PRODUCT_ID) return;
             if (purchase.purchaseState === 'pending') {
               // Not paid yet (e.g. a slow payment method like cash/konbini on
-              // Play): do NOT grant and do NOT finish — the store fires this
+              // Play): do NOT grant and do NOT finish, the store fires this
               // listener again with state 'purchased' once payment completes,
               // and that event grants the unlock (possibly on a later launch,
               // via onPurchased).
@@ -186,7 +186,7 @@ export async function restore(): Promise<RestoreResult> {
   if (!m || !(await connect())) return { state: 'unavailable' };
   try {
     const purchases = (await m.getAvailablePurchases()) ?? [];
-    // getAvailablePurchases can also return pending (unpaid) transactions —
+    // getAvailablePurchases can also return pending (unpaid) transactions,
     // only a completed purchase counts as owned.
     const owned = purchases.find(
       (p) => p.productId === UNLOCK_PRODUCT_ID && p.purchaseState !== 'pending',

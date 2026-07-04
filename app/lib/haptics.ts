@@ -35,7 +35,7 @@ async function storageSet(key: string, value: string): Promise<void> {
         window.localStorage.setItem(key, value);
       }
     } catch {
-      // storage unavailable (private mode) — pref lives in memory this session
+      // storage unavailable (private mode): pref lives in memory this session
     }
     return;
   }
@@ -94,27 +94,27 @@ function active(): boolean {
   return enabled && Platform.OS !== 'web';
 }
 
-/** Light selection tick — taps, d-pad steps, nav, toggles. */
+/** Light selection tick: taps, d-pad steps, nav, toggles. */
 export function hapticSelection(): void {
   if (active()) Haptics.selectionAsync().catch(() => {});
 }
 
-/** Light impact — button presses, stick grab. */
+/** Light impact: button presses, stick grab. */
 export function hapticLight(): void {
   if (active()) Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light).catch(() => {});
 }
 
-/** Medium impact — launches, mode switches, meaningful taps. */
+/** Medium impact: launches, mode switches, meaningful taps. */
 export function hapticMedium(): void {
   if (active()) Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium).catch(() => {});
 }
 
-/** Heavy impact — high-danger action confirmations. */
+/** Heavy impact: high-danger action confirmations. */
 export function hapticHeavy(): void {
   if (active()) Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Heavy).catch(() => {});
 }
 
-/** Success notification — an action/purchase/pairing succeeded. */
+/** Success notification: an action/purchase/pairing succeeded. */
 export function hapticSuccess(): void {
   if (active()) Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success).catch(() => {});
 }
@@ -124,7 +124,7 @@ export function hapticWarning(): void {
   if (active()) Haptics.notificationAsync(Haptics.NotificationFeedbackType.Warning).catch(() => {});
 }
 
-/** Error notification — a request/action failed. */
+/** Error notification: a request/action failed. */
 export function hapticError(): void {
   if (active()) Haptics.notificationAsync(Haptics.NotificationFeedbackType.Error).catch(() => {});
 }

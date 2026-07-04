@@ -11,7 +11,8 @@ import { Gated } from '@/components/Gated';
 import { TabScreen } from '@/components/TabScreen';
 import { useLockOrientation } from '@/hooks/useLockOrientation';
 import { usePoll } from '@/hooks/usePoll';
-import { api, humanizeUptime, Status, Unit } from '@/lib/api';
+import { api, ConnSettings, humanizeUptime, Status, Tv, TvOp, Unit } from '@/lib/api';
+import { hapticError, hapticLight } from '@/lib/haptics';
 import { useSettings } from '@/lib/SettingsContext';
 import { mono, numeric, pctColor, tempColor, theme } from '@/lib/theme';
 
@@ -59,6 +60,86 @@ function UnitChip({ unit }: { unit: Unit }) {
   );
 }
 
+/**
+ * TV controls. Probe-and-appear: only rendered when the box reported a TV
+ * backend (see ConsoleScreen). Danger-free single-tap: each button fires its
+ * POST immediately (no confirm), like a real remote. Power is an optimistic
+ * toggle: the agent has no power-state query, so we track it locally and start
+ * "on" (the box is reachable, so the display is almost certainly awake).
+ */
+function TvStrip({ settings, tv }: { settings: ConnSettings; tv: Tv }) {
+  const [tvOn, setTvOn] = React.useState(true);
+  const [busy, setBusy] = React.useState(false);
+  const [failed, setFailed] = React.useState(false);
+
+  const send = React.useCallback(
+    async (op: TvOp) => {
+      hapticLight();
+      setBusy(true);
+      setFailed(false);
+      try {
+        const r = await api.tvSend(settings, op);
+        if (!r.ok) {
+          setFailed(true);
+          hapticError();
+        }
+      } catch {
+        setFailed(true);
+        hapticError();
+      } finally {
+        setBusy(false);
+      }
+    },
+    [settings],
+  );
+
+  const onPower = React.useCallback(() => {
+    const next = !tvOn;
+    setTvOn(next);
+    void send(next ? 'power_on' : 'power_off');
+  }, [tvOn, send]);
+
+  return (
+    <View style={styles.card}>
+      <View style={styles.tvHead}>
+        <Text style={styles.cardTitle}>TV</Text>
+        <Text style={styles.tvBackend}>{tv.backend === 'panel' ? 'RS-232' : 'CEC'}</Text>
+        {failed && <Text style={styles.tvFailed}>no ack</Text>}
+      </View>
+      <View style={styles.tvRow}>
+        <Pressable
+          disabled={busy}
+          onPress={onPower}
+          style={({ pressed }) => [
+            styles.tvBtn,
+            !tvOn && styles.tvBtnOff,
+            pressed && styles.pressed,
+          ]}>
+          <Text style={[styles.tvGlyph, !tvOn && styles.tvGlyphOff]}>⏻</Text>
+        </Pressable>
+        <Pressable
+          disabled={busy}
+          onPress={() => send('volume_down')}
+          style={({ pressed }) => [styles.tvBtn, pressed && styles.pressed]}>
+          <Text style={styles.tvLabel}>VOL −</Text>
+        </Pressable>
+        <Pressable
+          disabled={busy}
+          onPress={() => send('mute')}
+          style={({ pressed }) => [styles.tvBtn, pressed && styles.pressed]}>
+          <Text style={styles.tvLabel}>MUTE</Text>
+        </Pressable>
+        <Pressable
+          disabled={busy}
+          onPress={() => send('volume_up')}
+          style={({ pressed }) => [styles.tvBtn, pressed && styles.pressed]}>
+          <Text style={styles.tvLabel}>VOL +</Text>
+        </Pressable>
+      </View>
+    </View>
+  );
+}
+
 function fmtLastSeen(ts: number | null): string {
   if (!ts) return 'never';
   const s = Math.round((Date.now() - ts) / 1000);
@@ -92,6 +173,33 @@ function ConsoleScreen() {
   const s = status.data;
   const reachable = configured && status.error == null && s != null;
   const memPct = s ? Math.round((s.mem.used_mb / s.mem.total_mb) * 100) : 0;
+
+  // TV-control probe-and-appear: fetch GET /api/tv once each time a box becomes
+  // reachable (re-probed on box switch via the host:port key). The route 404s
+  // on boxes without a TV backend, so `tv` stays null and no strip shows.
+  const [tv, setTv] = React.useState<Tv | null>(null);
+  const tvProbedFor = React.useRef<string | null>(null);
+  React.useEffect(() => {
+    if (!reachable) {
+      tvProbedFor.current = null; // reprobe on the next reconnect
+      return;
+    }
+    const key = `${settings.host}:${settings.port}`;
+    if (tvProbedFor.current === key) return;
+    tvProbedFor.current = key;
+    let cancelled = false;
+    api
+      .tv(settings)
+      .then((t) => {
+        if (!cancelled) setTv(t.available ? t : null);
+      })
+      .catch(() => {
+        if (!cancelled) setTv(null);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [reachable, settings]);
 
   return (
     <ScrollView
@@ -128,7 +236,7 @@ function ConsoleScreen() {
         </View>
       )}
 
-      {/* Unreachable banner — the whole point of this app */}
+      {/* Unreachable banner: the whole point of this app */}
       {configured && status.error != null && (
         <View style={styles.banner}>
           <Text style={styles.bannerTitle}>BOX UNREACHABLE</Text>
@@ -202,6 +310,13 @@ function ConsoleScreen() {
             ))}
           </Card>
         </>
+      )}
+
+      {/* TV controls: only when the box reported a TV backend. Keyed by box
+          identity so TvStrip remounts on a box switch (its optimistic power
+          state must not carry over to a different box). */}
+      {reachable && tv?.available && (
+        <TvStrip key={`${settings.host}:${settings.port}`} settings={settings} tv={tv} />
       )}
 
       {/* Units */}
@@ -324,4 +439,35 @@ const styles = StyleSheet.create({
   chipName: { color: theme.text, fontSize: 13, fontFamily: mono, flexShrink: 1 },
   chipState: { fontSize: 12, marginLeft: 'auto', ...numeric },
   unitErr: { color: theme.textDim, fontSize: 13 },
+  tvHead: { flexDirection: 'row', alignItems: 'center', marginBottom: 8 },
+  tvBackend: {
+    color: theme.textFaint,
+    fontSize: 11,
+    fontWeight: '700',
+    letterSpacing: 1,
+    marginLeft: 'auto',
+    ...numeric,
+  },
+  tvFailed: {
+    color: theme.red,
+    fontSize: 11,
+    fontWeight: '700',
+    letterSpacing: 1,
+    marginLeft: 8,
+  },
+  tvRow: { flexDirection: 'row', gap: 8 },
+  tvBtn: {
+    flex: 1,
+    height: 46,
+    borderRadius: 8,
+    borderWidth: 1,
+    borderColor: theme.cardBorder,
+    backgroundColor: theme.inset,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  tvBtnOff: { borderColor: theme.slate, backgroundColor: theme.bg },
+  tvGlyph: { color: theme.green, fontSize: 20, fontWeight: '700' },
+  tvGlyphOff: { color: theme.slate },
+  tvLabel: { color: theme.text, fontSize: 13, fontWeight: '700', ...numeric },
 });

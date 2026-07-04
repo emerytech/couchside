@@ -1,4 +1,4 @@
-; Couchside box agent — systemd unit TEMPLATE.
+; Couchside box agent: systemd unit TEMPLATE.
 ; install.sh substitutes __USER__ and __UID__ with the invoking desktop user
 ; and installs the result to /etc/systemd/system/couchside.service.
 [Unit]

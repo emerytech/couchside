@@ -5,12 +5,12 @@ import { View } from 'react-native';
 /**
  * Pure-View QR renderer.
  *
- * qrcode's toDataURL/toString renderers need a browser canvas or Node zlib —
- * neither exists in React Native, which is why the pairing modal rendered
+ * qrcode's toDataURL/toString renderers need a browser canvas or Node zlib,
+ * neither of which exists in React Native, which is why the pairing modal rendered
  * blank on-device ("Could not render QR"). QRCode.create() is pure JS: it
  * returns the module bit-matrix, which we draw as rows of Views. Consecutive
  * dark modules in a row are merged into single segments, so a v5-ish pairing
- * QR is ~600 Views — fine for a static modal.
+ * QR is ~600 Views, fine for a static modal.
  *
  * Rendered black-on-white inside its own white quiet zone (QRs need both to
  * scan reliably).

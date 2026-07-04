@@ -16,7 +16,7 @@ export default function TabLayout() {
   const { boxes, ready } = useBoxes();
 
   // On true first run (persisted fleet loaded, but empty) send the user to
-  // Setup to pair. Runs once — after that, the Pad initial route stands.
+  // Setup to pair. Runs once. After that, the Pad initial route stands.
   const redirected = useRef(false);
   useEffect(() => {
     if (!ready || redirected.current) return;

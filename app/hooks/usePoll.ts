@@ -88,7 +88,7 @@ export function usePoll<T>(
   const tickRef = useRef(tick);
   tickRef.current = tick;
 
-  // Fire immediately (cancelling any pending timer) — used by focus, refresh,
+  // Fire immediately (cancelling any pending timer): used by focus, refresh,
   // and AppState 'active'.
   const fireNow = useCallback(() => {
     if (!aliveRef.current) return;

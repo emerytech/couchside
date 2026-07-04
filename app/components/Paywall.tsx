@@ -39,11 +39,11 @@ export default function Paywall() {
     if (result.ok) {
       await recordPurchase(); // gate unmounts via context state
     } else if (result.reason === 'pending') {
-      setError("Purchase pending — you'll be unlocked once payment completes.");
+      setError("Purchase pending. You'll be unlocked once payment completes.");
     } else if (result.reason === 'unavailable') {
-      setError('Store unavailable — please try again later.');
+      setError('Store unavailable. Please try again later.');
     } else if (result.reason === 'error') {
-      setError(result.message || 'Purchase failed — please try again.');
+      setError(result.message || 'Purchase failed. Please try again.');
     }
     // 'cancelled': no error text, the user changed their mind
     setBusy(null);
@@ -59,9 +59,9 @@ export default function Paywall() {
     } else if (result.state === 'none') {
       setError('No previous purchase found for this account.');
     } else if (result.state === 'unavailable') {
-      setError('Store unavailable — please try again later.');
+      setError('Store unavailable. Please try again later.');
     } else {
-      setError(result.message || 'Restore failed — please try again.');
+      setError(result.message || 'Restore failed. Please try again.');
     }
     setBusy(null);
   }, [recordPurchase]);
@@ -91,7 +91,7 @@ export default function Paywall() {
             (pressed || busy != null) && styles.pressed,
           ]}>
           <Text style={styles.buyBtnText}>
-            {busy === 'buy' ? 'PURCHASING…' : `UNLOCK — ${price ?? FALLBACK_PRICE}`}
+            {busy === 'buy' ? 'PURCHASING…' : `UNLOCK ${price ?? FALLBACK_PRICE}`}
           </Text>
         </Pressable>
 

@@ -1,12 +1,12 @@
-# Couchside — box agent
+# Couchside: box agent
 
 The box-side half of Couchside: a tiny pure-stdlib python3 daemon for your
 couch gaming box (Steam Deck / SteamOS, Bazzite, or any systemd Linux HTPC)
 that lets the phone app check health, watch service logs, fire recovery
 actions ("restart the session", "reboot"), and act as a virtual Xbox 360
-gamepad — so you can un-wedge the box from the couch without a keyboard.
+gamepad, so you can un-wedge the box from the couch without a keyboard.
 
-No pip dependencies — it runs on immutable distros (SteamOS read-only rootfs,
+No pip dependencies. It runs on immutable distros (SteamOS read-only rootfs,
 Bazzite/Fedora Atomic ostree) with nothing but the preinstalled `python3`.
 
 ## Install (run ON the box, as your normal desktop user)
@@ -22,11 +22,11 @@ The installer refuses to run as root (it uses `sudo` only where needed) and:
 3. generates an initial `/etc/couchside/config.json` tailored to the box
    (adds `sddm.service` and a session-restart action only if sddm exists;
    adds a stop-kodi action only if the Kodi flatpak is installed),
-4. installs a **narrow sudoers rule** (see Security below) — it prints the
+4. installs a **narrow sudoers rule** (see Security below). It prints the
    exact contents first, and `--no-sudoers` skips it,
 5. installs + starts `couchside.service` (systemd, `Restart=always`),
 6. opens the port in firewalld if firewalld is running (Bazzite),
-7. prints your token and a `couchside://setup?...` QR code — scan it with
+7. prints your token and a `couchside://setup?...` QR code; scan it with
    your phone camera to pair the app.
 
 Idempotent: safe to re-run for upgrades. An existing token and config.json
@@ -42,7 +42,7 @@ Upgrading from the pre-rename "Rescue Remote" agent: the installer migrates
 your token from `/etc/rescue-agent/token` automatically and removes the old
 `rescue-agent.service`, so existing phone pairings keep working.
 
-## Configuration — /etc/couchside/config.json
+## Configuration: /etc/couchside/config.json
 
 Watched units and actions are yours to define. The daemon loads
 `/etc/couchside/config.json` at startup (`--config` overrides the path);
@@ -70,7 +70,12 @@ defaults (units: `sddm.service`, `couchside.service`; actions:
       "detached": false               // optional: fire-and-forget (reboot etc.)
     }
   },
-  "action_order": ["restart-session"] // optional listing order for the app
+  "action_order": ["restart-session"], // optional listing order for the app
+  "panel": {                            // optional RS-232 TV/panel control;
+    "device": "/dev/ttyUSB0",           // omit to disable. See "TV control".
+    "baud": 19200,                      // 9600|19200|38400|57600|115200
+    "protocol": "newline"               // only "newline" today
+  }
 }
 ```
 
@@ -112,13 +117,13 @@ Kill a flatpak app (`user_env: true` so flatpak can find the session bus):
 
 Notes:
 
-- `cmd` is an argv list run with `shell=False` — no shell, no expansion.
+- `cmd` is an argv list run with `shell=False`: no shell, no expansion.
 - Anything needing root must go through `sudo` **and** have a matching
   `NOPASSWD` sudoers entry (the daemon has no TTY to type a password into).
   The installer's rule covers `systemctl restart sddm`, `reboot`, `poweroff`,
   and `journalctl`; add your own entries to `/etc/sudoers.d/couchside` (via
   `visudo`) for other privileged actions.
-- Journal reads are allowed **only** for units in `units` — that list is the
+- Journal reads are allowed **only** for units in `units`; that list is the
   allowlist.
 
 ## API (v1, default port 8787)
@@ -132,9 +137,11 @@ All responses carry permissive CORS headers; `OPTIONS` returns 204.
 | `/api/ping` | GET | Unauthenticated reachability probe: `{"ok":true,"app":"couchside-agent","version":"2.0.0"}` |
 | `/api/status` | GET | hostname, time, uptime, load, CPU temp, memory, disk usage (`/`, `/var`) |
 | `/api/units` | GET | State of the configured watchlist units |
-| `/api/journal?unit=<name>&lines=<n>&scope=system\|user` | GET | Last n journal lines (default 100, clamped 1–500). Unit must be in the configured watchlist, else 400 |
+| `/api/journal?unit=<name>&lines=<n>&scope=system\|user` | GET | Last n journal lines (default 100, clamped 1 to 500). Unit must be in the configured watchlist, else 400 |
 | `/api/actions` | GET | Configured actions with id/label/description/danger |
 | `/api/actions/<id>` | POST | Run an action; returns `{ok, exit_code, stdout, stderr, duration_ms}`. Unknown id → 404 |
+| `/api/tv` | GET | TV-control probe. `{"available":true,"backend":"panel"\|"cec","adapter":"<desc>"}` when a backend is live, else **404** (feature absent). Bearer-gated |
+| `/api/tv/<op>` | POST | Send a one-shot TV command; returns `{ok, exit_code, stdout, stderr, duration_ms}`. `<op>` ∈ `power_on power_off volume_up volume_down mute`. Unknown op → 404; no backend → 404 |
 
 ## Virtual gamepad (WS protocol v1)
 
@@ -146,16 +153,16 @@ ws://<host>:8787/ws/gamepad?token=<token>
 ```
 
 Auth is the `token` query parameter, checked with `hmac.compare_digest`
-**before** the handshake response — a bad/missing token gets a plain HTTP
+**before** the handshake response: a bad/missing token gets a plain HTTP
 `401` and the socket is closed (no WebSocket handshake). On success the agent
 completes the RFC6455 handshake, creates the uinput device, and sends
 `{"t":"hello","dev":"Microsoft X-Box 360 pad"}` (`dev:"mock"` in `--mock`).
 
 **One-connection rule:** only one gamepad connection is active at a time. A
-new valid connection *replaces* the old one — the old uinput device is
+new valid connection *replaces* the old one: the old uinput device is
 destroyed first, then the old socket is closed.
 
-Client → server messages (one JSON object per masked text frame; no
+Client to server messages (one JSON object per masked text frame; no
 fragmentation):
 
 | Message | Meaning |
@@ -165,7 +172,7 @@ fragmentation):
 | `{"t":"s","k":"l"\|"r","x":F,"y":F}` | Stick, floats −1..1; +x right, **+y down** (screen coords, maps directly to Xbox ABS) |
 | `{"t":"ping"}` | Keepalive → `{"t":"pong"}` |
 
-Server → client: `hello` (after device ready), `pong`, and
+Server to client: `hello` (after device ready), `pong`, and
 `{"t":"err","msg":"..."}` followed by close on any error (bad message,
 uinput failure). WS ping (opcode 0x9) is answered with pong (0xA). Idle
 sockets time out after ~60 s.
@@ -175,7 +182,7 @@ sockets time out after ~60 s.
 - Pure stdlib (`fcntl.ioctl` + `struct`), legacy uinput API: write
   `struct uinput_user_dev` (1116 bytes) then `UI_DEV_CREATE`.
 - Device identity: name `Microsoft X-Box 360 pad`, bustype `0x03`,
-  vendor `0x045e`, product `0x028e`, version `0x110` — games see a real
+  vendor `0x045e`, product `0x028e`, version `0x110`; games see a real
   wired 360 pad.
 - Mapping: face/shoulder/thumb/menu buttons → `BTN_SOUTH/EAST/WEST/NORTH`,
   `BTN_TL/TR`, `BTN_THUMBL/R`, `BTN_SELECT/START/MODE`; dpad →
@@ -184,7 +191,7 @@ sockets time out after ~60 s.
   followed by `EV_SYN`/`SYN_REPORT`.
 - `/dev/uinput` must be writable by the daemon user. On SteamOS and Bazzite
   the udev `uaccess` tag grants this to the user with an **active seat
-  session** — i.e. someone is logged in on the box (Game Mode counts). If no
+  session**, i.e. someone is logged in on the box (Game Mode counts). If no
   seat session is active, or your distro lacks the uaccess rule, the gamepad
   reports `uinput unavailable`; a udev rule or an input-group membership can
   grant access permanently.
@@ -192,6 +199,88 @@ sockets time out after ~60 s.
   completes the handshake but replies with an `err` frame and closes.
 - In `--mock` mode no uinput device is created; every decoded event is
   logged to stdout and `hello` reports `dev:"mock"`.
+
+## TV control (probe-and-appear)
+
+The agent can power the TV/panel on and off and change its volume. It is
+**probed once at startup** and the app's TV strip appears only when a backend
+is live. Two interchangeable backends, preferred in this order:
+
+| Backend | How it drives the display | Detected when |
+|---|---|---|
+| `panel` | RS-232 serial command frames | `config.json` names a serial `device` that exists (see below) |
+| `cec` | HDMI-CEC via `cec-ctl` (v4l-utils) or `cec-client` (libcec) | a CEC tool is on `PATH` **and** a **connected** `/dev/cec*` port or a libcec adapter is found |
+
+The unified op set is `power_on power_off volume_up volume_down mute`. Responses
+are `ActionResult`-shaped (`{ok, exit_code, stdout, stderr, duration_ms}`).
+When no backend is live, `GET /api/tv` and `POST /api/tv/<op>` return **404**,
+so the app (which polls `GET /api/tv` once per connect) shows no strip. The
+startup banner logs `tv: <backend> (<adapter>)` or `tv: unavailable`.
+
+### panel backend: RS-232 serial (preferred)
+
+Config-driven so the agent never blasts command frames at an unrelated tty.
+Add a `panel` block to `config.json`:
+
+```json
+"panel": { "device": "/dev/ttyUSB0", "baud": 19200, "protocol": "newline" }
+```
+
+- `device`: the serial port (must live under `/dev/`); typically a
+  USB-to-RS-232 adapter (`/dev/ttyUSB0`). Active only when the path exists.
+- `baud`: one of `9600 19200 38400 57600 115200` (default `19200`).
+- `protocol`: only `"newline"` today (Newline TruTouch / TT-series).
+
+The line is opened raw at `<baud>` 8N1 (pure-stdlib `termios`), the command
+frame is written, and a short reply is read back (echoed in `stdout`). Frame =
+`7F 08 99 A2 B3 C4 02 FF 01 XX CF`; the panel echoes
+`7F 09 99 A2 B3 C4 02 FF 01 XX 01 CF` on success. Key codes `XX`:
+
+| Op | `XX` | Frame |
+|---|---|---|
+| `power_on` | `00` | `7F 08 99 A2 B3 C4 02 FF 01 00 CF` |
+| `power_off` | `01` | `7F 08 99 A2 B3 C4 02 FF 01 01 CF` |
+| `mute` | `02` | `7F 08 99 A2 B3 C4 02 FF 01 02 CF` |
+| `volume_down` | `17` | `7F 08 99 A2 B3 C4 02 FF 01 17 CF` |
+| `volume_up` | `18` | `7F 08 99 A2 B3 C4 02 FF 01 18 CF` |
+
+Unlike CEC, power-on/off are **discrete** codes and the panel MCU listens even
+in standby, so **power-on-from-off works**. Codes are from Newline's RS-series
+manual; verify against your panel with the harmless firmware-query frame
+(`…01 3D CF`) before trusting power.
+
+### cec backend: HDMI-CEC (fallback)
+
+Each op shells **one** command through an arg-list subprocess (`shell=False`,
+10 s timeout); libcec commands are fed on **stdin** (never `echo | cec-client`).
+All target the TV (logical address `0`); `power_off` maps to CEC **standby**:
+
+| Op | `cec-ctl` | `cec-client` (stdin) |
+|---|---|---|
+| `power_on` | `--to 0 --image-view-on` | `on 0` |
+| `power_off` | `--to 0 --standby` | `standby 0` |
+| `volume_up` | `--to 0 --user-control-pressed ui-cmd=volume-up --user-control-released` | `volup` |
+| `volume_down` | `--to 0 --user-control-pressed ui-cmd=volume-down --user-control-released` | `voldown` |
+| `mute` | `--to 0 --user-control-pressed ui-cmd=mute --user-control-released` | `mute` |
+
+Volume/mute use CEC **User Control** (UI) commands; a TV with
+system-audio-control on forwards them to an ARC audio system.
+
+CEC availability is **re-evaluated per request** (cheap sysfs reads), not frozen
+at startup, so a display powered on after the agent started becomes controllable
+without a restart. A `/dev/cec*` node is used only while its DRM HDMI connector
+is not `disconnected`; a CEC adapter bound to a dark port (box HDMI unplugged,
+display on DisplayPort) is ignored, so the strip never appears over a dead bus.
+Note a TV in deep-off that drops HPD reads `disconnected` and is hidden until
+woken once by other means (only the expensive libcec adapter probe is cached
+from startup). The RS-232 `panel` backend has none of these caveats and is
+preferred when configured.
+
+### mock
+
+In `--mock` the **panel** backend is faked (`available:true`, backend
+`panel`): every op logs `[panel] <op> -> <frame>` and returns synthetic
+success, so the app's TV strip can be built without any hardware.
 
 ## Security model
 
@@ -201,16 +290,16 @@ sockets time out after ~60 s.
   requires it.
 - **Scoped sudoers**: the daemon runs as your desktop user with no TTY, so
   privileged actions need `NOPASSWD` rules. The installer grants exactly
-  four commands — `systemctl restart sddm`, `systemctl reboot`,
-  `systemctl poweroff`, `journalctl *` — nothing else, validated with
+  four commands (`systemctl restart sddm`, `systemctl reboot`,
+  `systemctl poweroff`, `journalctl *`) and nothing else, validated with
   `visudo -cf` before install. Skip with `--no-sudoers` (those actions and
   system-journal reads will then fail).
 - **Allowlists, not shells**: journal reads are limited to the configured
   unit list; actions are a fixed config table run with argument lists
-  (`shell=False`) — no arbitrary commands, no file-serving routes. The
+  (`shell=False`), so no arbitrary commands and no file-serving routes. The
   `lines` parameter is clamped; errors return brief JSON, never tracebacks.
 - **LAN-only, plain HTTP**: there is no TLS. Keep port 8787 on your local
-  network — do **not** port-forward it. Anyone with the token on your LAN
+  network and do **not** port-forward it. Anyone with the token on your LAN
   controls the box.
 
 ## SteamOS vs Bazzite notes
@@ -218,17 +307,17 @@ sockets time out after ~60 s.
 | | SteamOS (Steam Deck) | Bazzite |
 |---|---|---|
 | User | `deck` | whatever you created (e.g. `bazzite`) |
-| Firewall | none enabled by default — nothing to open | firewalld — installer opens 8787/tcp |
+| Firewall | none enabled by default, nothing to open | firewalld, installer opens 8787/tcp |
 | python3 | preinstalled | preinstalled |
 | `/dev/uinput` | `uaccess` grants the active-seat user; Game Mode session counts | same |
 | sudo password | must be set once (`passwd` in Desktop Mode) before the installer's sudo steps work | set during install |
 
-Both are immutable-rootfs distros; the agent deliberately touches only
+Both are immutable-rootfs distros. The agent deliberately touches only
 `~/.local/opt`, `/etc`, and `/etc/systemd/system`, which are writable on both.
 
 ## Development
 
-Mock mode (fake data, no real commands — for phone-app development on macOS):
+Mock mode (fake data, no real commands, for phone-app development on macOS):
 
 ```sh
 python3 agent/couchsided.py --mock --host 127.0.0.1 --port 8787 --token devtoken

@@ -40,7 +40,7 @@ yarn-error.*
 /ios
 /android
 
-# signing secrets — never commit
+# signing secrets, never commit
 asc-key.p8
 credentials.json
 credentials/

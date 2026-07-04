@@ -43,6 +43,9 @@ function haptic() {
   hapticSelection();
 }
 
+/** Stable no-op for momentary buttons whose action fires (and self-releases) on press. */
+const NOOP = () => {};
+
 // ---------- Buttons ----------
 
 type PadButtonProps = {
@@ -484,7 +487,7 @@ function statusLabel(status: GamepadStatus, dev: string | null): string {
     case 'connecting':
       return 'connecting…';
     default:
-      return 'disconnected — tap to retry';
+      return 'disconnected, tap to retry';
   }
 }
 
@@ -525,7 +528,7 @@ function PadScreen() {
   const client = clientRef.current;
 
   // Latest settings for connect() calls. The lifecycle effect below keys on
-  // the connection identity (host/port/token) only — a background patch to
+  // the connection identity (host/port/token) only. A background patch to
   // the active box (the lastIp learner, a padMode toggle) must NOT tear down
   // a healthy socket mid-game via a `settings` object-identity change.
   const settingsRef = useRef(settings);
@@ -583,7 +586,7 @@ function PadScreen() {
 
   // A freshly-learned lastIp should reach the client's stored conn so future
   // reconnects can use it. connect() with an unchanged host/port/token just
-  // refreshes the stored conn — it never drops a live socket.
+  // refreshes the stored conn: it never drops a live socket.
   useEffect(() => {
     if (!ready || !settings.lastIp) return;
     if (client.getStatus() === 'connected' || client.getStatus() === 'connecting') {
@@ -605,6 +608,11 @@ function PadScreen() {
     }),
     [client],
   );
+
+  // ⋯ Quick Access Menu. Steam opens the QAM on an Xbox pad via a Guide + A
+  // chord (Guide alone is the Steam menu); the client presses both and
+  // auto-releases, so one tap opens the ⋯ panel where Decky / plugins live.
+  const qam = useCallback(() => client.qamChord(), [client]);
 
   const trig = useCallback(
     (k: TriggerKey) => ({
@@ -650,8 +658,8 @@ function PadScreen() {
   }, [client]);
 
   // Trackpad handlers (protocol v2 mouse).
-  // Drags emit a subtle "texture" tick per TP_HAPTIC_PX of pointer travel —
-  // like detents under the finger — so moving the mouse feels alive without
+  // Drags emit a subtle "texture" tick per TP_HAPTIC_PX of pointer travel,
+  // like detents under the finger, so moving the mouse feels alive without
   // buzzing continuously. Scroll ticks once per wheel notch.
   const tpHapticAcc = useRef(0);
   const tpMove = useCallback(
@@ -740,6 +748,14 @@ function PadScreen() {
               color={theme.blue}
               fontSize={12}
             />
+            <PadButton
+              label="⋯"
+              onDown={qam}
+              onUp={NOOP}
+              style={[styles.swipeBtn, styles.guideBtn]}
+              color={theme.blue}
+              fontSize={26}
+            />
             <PadButton label="MENU" {...btn('start')} style={styles.swipeBtn} fontSize={12} />
           </View>
           {keyboardBar}
@@ -827,6 +843,14 @@ function PadScreen() {
                   color={theme.blue}
                   fontSize={11}
                 />
+                <PadButton
+                  label="⋯"
+                  onDown={qam}
+                  onUp={NOOP}
+                  style={[styles.menuBtn, styles.qamBtn, styles.guideBtn]}
+                  color={theme.blue}
+                  fontSize={20}
+                />
                 <PadButton label="START" {...btn('start')} style={styles.menuBtn} fontSize={11} />
               </View>
               <View style={styles.landThumbRow}>
@@ -879,6 +903,14 @@ function PadScreen() {
               style={[styles.menuBtn, styles.guideBtn]}
               color={theme.blue}
               fontSize={11}
+            />
+            <PadButton
+              label="⋯"
+              onDown={qam}
+              onUp={NOOP}
+              style={[styles.menuBtn, styles.qamBtn, styles.guideBtn]}
+              color={theme.blue}
+              fontSize={20}
             />
             <PadButton label="START" {...btn('start')} style={styles.menuBtn} fontSize={11} />
           </View>
@@ -1030,11 +1062,12 @@ const styles = StyleSheet.create({
   swipeBtnRow: {
     flexDirection: 'row',
     justifyContent: 'center',
-    gap: 16,
+    gap: 12,
     marginTop: 14,
   },
   swipeBtn: {
-    width: 96,
+    flex: 1,
+    maxWidth: 140,
     height: 64,
     borderRadius: 999,
   },
@@ -1149,13 +1182,17 @@ const styles = StyleSheet.create({
   menuRow: {
     flexDirection: 'row',
     justifyContent: 'center',
-    gap: 14,
+    gap: 8,
     marginTop: 12,
   },
   menuBtn: {
-    width: 84,
+    width: 80,
     height: 40,
     borderRadius: 999,
+  },
+  // Compact icon-only ⋯ (Quick Access) button; overrides menuBtn's width.
+  qamBtn: {
+    width: 48,
   },
   guideBtn: {
     borderColor: theme.blue,

@@ -9,7 +9,7 @@ import { useBoxes } from './SettingsContext';
  * Parse a URL's query string, decoding each value EXACTLY ONCE.
  *
  * Deliberately not expo-linking's Linking.parse: in expo-linking 57 that runs
- * decodeURIComponent on values URLSearchParams has already decoded — a double
+ * decodeURIComponent on values URLSearchParams has already decoded: a double
  * decode that mangles (or, on an invalid %-escape, throws away) any param
  * value containing '%'. A hand-entered token with a '%' would silently fail to
  * pair. This single-decodes, tolerates a missing '=', strips a fragment, and
@@ -80,7 +80,7 @@ export function DeepLinkHandler() {
       // Only a link that carries BOTH host and token is a pairing link.
       if (!host || !token) return;
 
-      // Arrived before the fleet loaded — apply it once ready (see effect below).
+      // Arrived before the fleet loaded, apply it once ready (see effect below).
       if (!readyRef.current) {
         pendingUrl.current = url;
         return;

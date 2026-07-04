@@ -272,7 +272,7 @@ type PingProbe = {
 
 /**
  * One unauthenticated /api/ping probe against a specific host, hard timeout.
- * `expectedHost` enables the identity check (pingMatchesBox) — pass it on the
+ * `expectedHost` enables the identity check (pingMatchesBox). Pass it on the
  * cached-IP fallback leg so a DHCP lease that wandered to a different machine
  * doesn't count as "this box is reachable".
  */
@@ -295,7 +295,7 @@ async function pingHost(
     try {
       body = await res.json();
     } catch {
-      // pre-2.3 agent with a non-JSON body — reachable is all we learn
+      // pre-2.3 agent with a non-JSON body: reachable is all we learn
     }
     if (expectedHost != null && !pingMatchesBox(body, expectedHost)) {
       return { ok: false, ip: null };
@@ -313,7 +313,7 @@ async function pingHost(
 
 /**
  * Probe a box: its hostname first, then the cached lastIp fallback. This is
- * the same fallback the API client uses — a box whose .local name has gone
+ * the same fallback the API client uses: a box whose .local name has gone
  * dark (SteamOS Game Mode mDNS) still reports reachable via its cached IP,
  * but only if the responder proves it IS this box.
  */

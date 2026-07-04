@@ -89,6 +89,11 @@ const STICK_INTERVAL_MS = 20;
  * PanResponder callbacks never floods the socket yet no motion is lost.
  */
 const MOUSE_MOVE_INTERVAL_MS = 11;
+/**
+ * Guide+A "Quick Access Menu" chord hold. Steam needs A to register while Guide
+ * is still held; 120ms sits in the reliable 80-150ms window for SteamOS.
+ */
+const QAM_CHORD_HOLD_MS = 120;
 const BACKOFF_MS = [1000, 2000, 4000];
 
 export type GamepadStatusListener = (status: GamepadStatus, dev: string | null) => void;
@@ -192,6 +197,24 @@ export class GamepadClient {
 
   sendButton(k: ButtonKey, v: 0 | 1): void {
     this.sendRaw({ t: 'b', k, v });
+  }
+
+  /**
+   * Fire the Steam Deck "Quick Access Menu" (⋯) chord. Steam maps Guide + A on
+   * an Xbox pad to the QAM (the right-side panel where Decky and other plugins
+   * live), while Guide alone opens the Steam menu. So press Guide, then A (Guide
+   * first, so it is already held when A registers), hold briefly, then release A
+   * before Guide. Auto-releases: one call = one momentary ⋯ press. A no-op while
+   * disconnected (sendRaw drops frames when the socket is down), and releaseAll()
+   * on blur/close covers a chord interrupted mid-hold.
+   */
+  qamChord(): void {
+    this.sendButton('guide', 1);
+    this.sendButton('a', 1);
+    setTimeout(() => {
+      this.sendButton('a', 0);
+      this.sendButton('guide', 0);
+    }, QAM_CHORD_HOLD_MS);
   }
 
   sendTrigger(k: TriggerKey, v: number): void {

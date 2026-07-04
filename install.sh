@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# install.sh — Couchside box agent installer.
+# install.sh: Couchside box agent installer.
 #
 # Run this ON the box (SteamOS / Bazzite), as your normal desktop user:
 #
@@ -34,7 +34,7 @@ PAIR_DESKTOP="${HOME}/.local/share/applications/couchside-pair.desktop"
 # Prior installs to migrate FROM, oldest first. The chain is:
 #   rescue-agent  ->  couchpilot  ->  couchside
 # Each entry is "etc_dir|unit|sudoers"; the migration step below retires every
-# one it finds — copying the first token it sees into TOKEN_FILE (so paired
+# one it finds, copying the first token it sees into TOKEN_FILE (so paired
 # phones keep working) and disabling/removing the old unit + sudoers rule.
 OLD_INSTALLS=(
     "/etc/rescue-agent|rescue-agent.service|/etc/sudoers.d/rescue-agent"
@@ -88,12 +88,12 @@ ask_yn() {
 # ---------------------------------------------------------------------------
 if [ "$(id -u)" -eq 0 ]; then
     die "do not run this as root. Run it as your normal desktop user (deck,
-       bazzite, ...) — the agent runs as that user and the script uses sudo
+       bazzite, ...). The agent runs as that user and the script uses sudo
        only for the few steps that need it."
 fi
 command -v python3 >/dev/null 2>&1 || die "python3 not found. Couchside needs
        python3 (preinstalled on SteamOS and Bazzite). Install it and re-run."
-command -v systemctl >/dev/null 2>&1 || die "systemctl not found — Couchside requires a systemd distro."
+command -v systemctl >/dev/null 2>&1 || die "systemctl not found: Couchside requires a systemd distro."
 
 USER_NAME="$(id -un)"
 USER_UID="$(id -u)"
@@ -102,7 +102,7 @@ USER_UID="$(id -u)"
 # has no password, so sudo can't authenticate until one is set.
 if ! sudo -n true 2>/dev/null; then
     note "The next steps use sudo and will prompt for your password."
-    note "On a fresh Steam Deck the 'deck' user has NO password yet — if sudo"
+    note "On a fresh Steam Deck the 'deck' user has NO password yet. If sudo"
     note "rejects you, run 'passwd' to set one, then re-run this installer."
 fi
 
@@ -120,7 +120,7 @@ if [ "$UNINSTALL" -eq 1 ]; then
     rm -f "$PAIR_DESKTOP"
     note "removed $PAIR_DESKTOP"
     if sudo test -e "$ETC_DIR"; then
-        if ask_yn "Remove $ETC_DIR (pairing token + config — phones will need re-pairing)?"; then
+        if ask_yn "Remove $ETC_DIR (pairing token + config; phones will need re-pairing)?"; then
             sudo rm -rf "$ETC_DIR"
             note "removed $ETC_DIR"
         else
@@ -162,7 +162,7 @@ else
     note "$UNIT_URL"
     curl -fsSL "$UNIT_URL" -o "$WORK_DIR/couchside.service"
 fi
-python3 -m py_compile "$WORK_DIR/couchsided.py" || die "downloaded couchsided.py does not compile — aborting."
+python3 -m py_compile "$WORK_DIR/couchsided.py" || die "downloaded couchsided.py does not compile, aborting."
 
 # ---------------------------------------------------------------------------
 # (c) Install the daemon to ~/.local/opt/couchside
@@ -179,7 +179,7 @@ sudo mkdir -p "$ETC_DIR"
 
 MIGRATED_TOKEN=""
 if sudo test -s "$TOKEN_FILE"; then
-    note "token already exists — keeping it (existing phone pairings keep working)"
+    note "token already exists, keeping it (existing phone pairings keep working)"
 else
     # Look for a token to inherit from any prior install (newest-named first so
     # couchpilot wins over rescue-agent if somehow both are present).
@@ -204,7 +204,7 @@ else
         python3 -c 'import secrets; print(secrets.token_hex(24))' | sudo tee "$TOKEN_FILE" > /dev/null
     fi
 fi
-# Daemon reads the token as the desktop user — enforce every run.
+# Daemon reads the token as the desktop user, so enforce every run.
 sudo chmod 600 "$TOKEN_FILE"
 sudo chown "$USER_NAME" "$TOKEN_FILE"
 
@@ -212,20 +212,20 @@ sudo chown "$USER_NAME" "$TOKEN_FILE"
 # (e) Initial config.json (only if absent)
 # ---------------------------------------------------------------------------
 if sudo test -s "$CONFIG_FILE"; then
-    say "Config $CONFIG_FILE already exists — keeping it"
+    say "Config $CONFIG_FILE already exists, keeping it"
 else
     say "Generating initial $CONFIG_FILE"
     HAVE_SDDM=0
     if systemctl cat sddm.service >/dev/null 2>&1; then
         HAVE_SDDM=1
-        note "found sddm.service — adding it to the watchlist + restart-session action"
+        note "found sddm.service, adding it to the watchlist + restart-session action"
     else
-        note "no sddm.service on this box — skipping session-restart action"
+        note "no sddm.service on this box, skipping session-restart action"
     fi
     HAVE_KODI=0
     if command -v flatpak >/dev/null 2>&1 && flatpak info tv.kodi.Kodi >/dev/null 2>&1; then
         HAVE_KODI=1
-        note "found Kodi flatpak — adding a stop-kodi action"
+        note "found Kodi flatpak, adding a stop-kodi action"
     fi
     HAVE_SDDM="$HAVE_SDDM" HAVE_KODI="$HAVE_KODI" python3 - > "$WORK_DIR/config.json" <<'PYEOF'
 import json, os
@@ -242,7 +242,7 @@ actions, order = {}, []
 if have_sddm:
     actions["restart-session"] = {
         "label": "Restart Session",
-        "description": "Restart the display session (sddm) — fixes a wedged/black screen",
+        "description": "Restart the display session (sddm), fixes a wedged/black screen",
         "danger": "high",
         "cmd": ["sudo", "systemctl", "restart", "sddm"],
         "user_env": False, "detached": False,
@@ -251,7 +251,7 @@ if have_sddm:
 if have_kodi:
     actions["stop-kodi"] = {
         "label": "Stop Kodi",
-        "description": "Stop the Kodi flatpak — relaunch it from Game Mode",
+        "description": "Stop the Kodi flatpak, relaunch it from Game Mode",
         "danger": "medium",
         "cmd": ["flatpak", "kill", "tv.kodi.Kodi"],
         "user_env": True, "detached": False,
@@ -273,17 +273,17 @@ PYEOF
 fi
 
 # ---------------------------------------------------------------------------
-# (f) Sudoers rule — security-sensitive, so here is exactly what gets written
+# (f) Sudoers rule: security-sensitive, so here is exactly what gets written
 # ---------------------------------------------------------------------------
 if [ "$NO_SUDOERS" -eq 1 ]; then
     say "Skipping sudoers rule (--no-sudoers)"
     note "WARNING: without $SUDOERS_FILE, high-danger actions"
-    note "(restart-session / reboot / poweroff) and system-journal reads WILL FAIL —"
+    note "(restart-session / reboot / poweroff) and system-journal reads WILL FAIL:"
     note "the daemon has no TTY, so sudo cannot prompt for a password."
 else
     say "Installing sudoers rule at $SUDOERS_FILE"
     note "This grants user '$USER_NAME' passwordless sudo for EXACTLY these commands"
-    note "(and nothing else) — the daemon needs them because it runs with no TTY:"
+    note "(and nothing else). The daemon needs them because it runs with no TTY:"
     cat > "$WORK_DIR/couchside-sudoers" <<SUDOERS
 # couchside: allow the Couchside agent (running as $USER_NAME, no TTY) to run
 # exactly the privileged commands it needs, without a password.
@@ -344,7 +344,7 @@ if command -v firewall-cmd >/dev/null 2>&1 && sudo firewall-cmd --state >/dev/nu
     sudo firewall-cmd --add-port="${PORT}/tcp" --permanent
     sudo firewall-cmd --reload
 else
-    say "No running firewalld detected — skipping firewall step"
+    say "No running firewalld detected, skipping firewall step"
     note "(SteamOS ships with no firewall enabled; nothing to open.)"
 fi
 
@@ -359,7 +359,7 @@ say "Installing the pairing-QR launcher ($PAIR_SCRIPT)"
 mkdir -p "$INSTALL_DIR"
 cat > "$PAIR_SCRIPT" <<'PAIREOF'
 #!/usr/bin/env bash
-# couchside-pair — open the Couchside pairing QR full-screen on this box.
+# couchside-pair: open the Couchside pairing QR full-screen on this box.
 # The /pair page is served LOCALHOST-ONLY by the agent, so it must be opened
 # here on the box (never over the network). Reads PORT from the agent config.
 set -u
@@ -377,7 +377,7 @@ PYEOF
 URL="http://localhost:${PORT}/pair"
 echo "Opening ${URL} full-screen…"
 # Game Mode (gamescope session): there's no desktop browser, but Steam's own
-# built-in browser renders the page — steam://openurl works from a non-Steam
+# built-in browser renders the page: steam://openurl works from a non-Steam
 # shortcut tile. This is what makes the "Pair Phone" tile work on stock
 # SteamOS with no Chrome/Chromium installed.
 if [ "${XDG_CURRENT_DESKTOP:-}" = "gamescope" ] \
@@ -420,7 +420,7 @@ note "wrote $PAIR_DESKTOP"
 # Appends an entry to every Steam account's shortcuts.vdf so the pairing tile
 # shows up in Game Mode with no manual "Add a Non-Steam Game" step. Steam only
 # reads shortcuts.vdf at startup and REWRITES it on exit, so edits made while
-# Steam runs are lost — if it's running we offer to shut it down first.
+# Steam runs are lost. If it's running we offer to shut it down first.
 register_steam_shortcut() {
     local steamroot=""
     for d in "$HOME/.local/share/Steam" "$HOME/.steam/steam" \
@@ -428,7 +428,7 @@ register_steam_shortcut() {
         [ -d "$d/userdata" ] && { steamroot="$(cd "$d" && pwd -P)"; break; }
     done
     if [ -z "$steamroot" ]; then
-        note "no Steam userdata found — skipping the Game Mode tile"
+        note "no Steam userdata found, skipping the Game Mode tile"
         return 0
     fi
 
@@ -442,7 +442,7 @@ register_steam_shortcut() {
                 sleep 1; waited=$((waited + 1))
             done
             if pgrep -x steam >/dev/null 2>&1; then
-                note "Steam didn't exit in time — skipping. Re-run the installer"
+                note "Steam didn't exit in time. Skipping. Re-run the installer"
                 note "with Steam closed, or add $PAIR_SCRIPT via"
                 note "Steam > Add a Non-Steam Game."
                 return 0
@@ -500,7 +500,7 @@ def ser_map(m):
 
 
 def new_entry():
-    # Signed view of crc32(exe+name)|0x80000000 — the appid scheme Steam uses.
+    # Signed view of crc32(exe+name)|0x80000000: the appid scheme Steam uses.
     appid_u = (zlib.crc32((EXE + APPNAME).encode("utf-8")) & 0xFFFFFFFF) | 0x80000000
     appid = struct.unpack("<i", struct.pack("<I", appid_u))[0]
     return {
@@ -546,13 +546,13 @@ for acct in sorted(os.listdir(os.path.join(STEAMROOT, "userdata"))):
         try:
             root, _ = parse_map(buf, 0)
         except Exception as e:
-            print("    ! %s: could not parse (%s) — leaving it alone" % (path, e))
+            print("    ! %s: could not parse (%s), leaving it alone" % (path, e))
             continue
         if not isinstance(root.get("shortcuts"), dict):
             root["shortcuts"] = {}
         # Round-trip guard: never touch a file we can't reproduce byte-for-byte.
         if ser_map(root) != buf:
-            print("    ! %s: reserialization mismatch — leaving it alone" % path)
+            print("    ! %s: reserialization mismatch, leaving it alone" % path)
             continue
     shortcuts = root["shortcuts"]
 
@@ -571,7 +571,7 @@ for acct in sorted(os.listdir(os.path.join(STEAMROOT, "userdata"))):
         added += 1
 
     data = ser_map(root)
-    # Back up ONCE — the pristine pre-Couchside file. On a re-run the on-disk
+    # Back up ONCE: the pristine pre-Couchside file. On a re-run the on-disk
     # file already contains our entry, so re-copying it would clobber the only
     # good backup; the existence check preserves the original.
     bak = path + ".couchside-bak"
@@ -589,7 +589,7 @@ PYVDF
 }
 
 say "Registering the 'Couchside — Pair Phone' tile in Steam (Game Mode)"
-register_steam_shortcut || note "shortcut registration failed — add $PAIR_SCRIPT via Steam > Add a Non-Steam Game"
+register_steam_shortcut || note "shortcut registration failed. Add $PAIR_SCRIPT via Steam > Add a Non-Steam Game"
 
 # ---------------------------------------------------------------------------
 # (i) Migration: retire every pre-rename install (rescue-agent, couchpilot)
@@ -616,7 +616,7 @@ for entry in "${OLD_INSTALLS[@]}"; do
             sudo rm -f "$old_sudoers"
             note "removed old $old_sudoers (replaced by $SUDOERS_FILE)"
         fi
-        note "($old_etc left in place — its token was already migrated;"
+        note "($old_etc left in place, its token was already migrated;"
         note " remove it manually when you're satisfied paired phones still work)"
     fi
 done
@@ -630,11 +630,11 @@ curl -fsS "http://127.0.0.1:${PORT}/api/ping"
 echo
 
 TOKEN="$(cat "$TOKEN_FILE")"
-# Resolve the hostname WITHOUT the `hostname` command — SteamOS doesn't ship it.
+# Resolve the hostname WITHOUT the `hostname` command. SteamOS doesn't ship it.
 # /proc/sys/kernel/hostname is always present on Linux; strip any domain part.
 HOST_SHORT="$(cat /proc/sys/kernel/hostname 2>/dev/null || cat /etc/hostname 2>/dev/null || echo localhost)"
 HOST_SHORT="${HOST_SHORT%%.*}"
-# LAN IP for the &ip= fallback param (UDP connect trick — nothing is sent).
+# LAN IP for the &ip= fallback param (UDP connect trick, nothing is sent).
 # The app caches it per box and uses it when mDNS breaks (SteamOS Game Mode).
 LAN_IP="$(python3 - <<'PYEOF' 2>/dev/null || true
 import socket
@@ -648,7 +648,7 @@ except OSError:
     pass
 PYEOF
 )"
-# HTTPS pair link (couchside.tv/pair relaunches the app) — Android cameras
+# HTTPS pair link (couchside.tv/pair relaunches the app). Android cameras
 # won't open custom schemes from a QR. Params ride the #fragment so the token
 # is never sent to the web server.
 PAIR_URL="https://couchside.tv/pair#host=${HOST_SHORT}.local&port=${PORT}&token=${TOKEN}"
@@ -676,5 +676,5 @@ fi
 echo
 echo "To re-show the pairing QR later without a terminal: launch the"
 echo "'Couchside — Pair Phone' tile from your Steam library (Game Mode included"
-echo "— it opens in Steam's built-in browser). If the tile isn't there yet,"
+echo ", it opens in Steam's built-in browser). If the tile isn't there yet,"
 echo "restart Steam once, or add $PAIR_SCRIPT via Steam > Add a Non-Steam Game."

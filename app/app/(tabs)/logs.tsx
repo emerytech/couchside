@@ -61,7 +61,7 @@ function LogsScreen() {
 
   const journal = usePoll<Journal>(
     () => api.journal(settings, target.unit, target.scope, LINES),
-    // Auto-refresh every 5s; otherwise park the interval (manual refresh only —
+    // Auto-refresh every 5s; otherwise park the interval (manual refresh only;
     // usePoll still fires immediately on focus / refresh()).
     auto ? 5000 : 3600_000,
     ready,
