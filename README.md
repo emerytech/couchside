@@ -19,7 +19,7 @@ Couchside pairs a native iOS & Android app with a tiny, dependency-free Python a
   - **Swipe:** an Apple-TV-remote-style surface. Swipe to move through menus, tap to select, plus Back / Guide / Menu buttons. Perfect for Kodi and Big Picture navigation.
   - **Trackpad:** a relative-mouse trackpad with tap-to-click, two-finger right-click and scroll, for desktop sessions.
 - **QR pairing:** the installer prints a QR code; scan it with the phone camera and the app opens with host, port, and token prefilled.
-- **TV power & volume (coming soon).** On HDMI-CEC-capable setups, turn your TV on/off and change its volume straight from the app. Built and in pre-release now, shipping in an upcoming update.
+- **Volume, mute, and box power.** A control next to the device picker adjusts the box's own OS volume and mute, with the on-screen volume slider on SteamOS/Bazzite. On an HDMI-CEC or RS-232 setup you can switch it to drive the TV/panel volume and power instead. The same control suspends the box and, once it is offline, wakes it back up with a Wake-on-LAN magic packet.
 
 ![Actions](docs/img/actions.png) ![Pad](docs/img/pad.png)
 

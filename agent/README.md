@@ -135,13 +135,13 @@ All responses carry permissive CORS headers; `OPTIONS` returns 204.
 | Route | Method | Description |
 |---|---|---|
 | `/api/ping` | GET | Unauthenticated reachability probe: `{"ok":true,"app":"couchside-agent","version":"2.0.0"}` |
-| `/api/status` | GET | hostname, time, uptime, load, CPU temp, memory, disk usage (`/`, `/var`) |
+| `/api/status` | GET | hostname, time, uptime, load, CPU temp, memory, disk usage (`/`, `/var`), and `net` (`iface`, `mac`, `wired`, `wol_armed`) for the app's Wake-on-LAN power path |
 | `/api/units` | GET | State of the configured watchlist units |
 | `/api/journal?unit=<name>&lines=<n>&scope=system\|user` | GET | Last n journal lines (default 100, clamped 1 to 500). Unit must be in the configured watchlist, else 400 |
 | `/api/actions` | GET | Configured actions with id/label/description/danger |
 | `/api/actions/<id>` | POST | Run an action; returns `{ok, exit_code, stdout, stderr, duration_ms}`. Unknown id → 404 |
-| `/api/tv` | GET | TV-control probe. `{"available":true,"backend":"panel"\|"cec","adapter":"<desc>"}` when a backend is live, else **404** (feature absent). Bearer-gated |
-| `/api/tv/<op>` | POST | Send a one-shot TV command; returns `{ok, exit_code, stdout, stderr, duration_ms}`. `<op>` ∈ `power_on power_off volume_up volume_down mute`. Unknown op → 404; no backend → 404 |
+| `/api/tv` | GET | TV/volume probe. `{"available":true,"backend":..,"adapter":..,"box_volume":bool,"tv_volume":bool,"tv_power":bool,"muted":bool\|null}`. `box_volume` is the box's own OS volume; `tv_volume`/`tv_power` mean a panel/CEC backend is present. 404 only when the box has neither. Bearer-gated |
+| `/api/tv/<op>` | POST | One-shot command; returns `{ok, exit_code, stdout, stderr, duration_ms}` (+ `muted` for the mute op). `<op>` ∈ `power_on power_off volume_up volume_down mute`. Power goes to the TV backend; volume goes to the box by default, or add `?target=tv` to send it to the panel/CEC. Unknown op → 404 |
 
 ## Virtual gamepad (WS protocol v1)
 
@@ -202,20 +202,24 @@ sockets time out after ~60 s.
 
 ## TV control (probe-and-appear)
 
-The agent can power the TV/panel on and off and change its volume. It is
-**probed once at startup** and the app's TV strip appears only when a backend
-is live. Two interchangeable backends, preferred in this order:
+Two concerns, kept separate. Power (and, if you opt in, volume) can drive an
+external TV/panel; volume by default drives the box's own OS output. Backends
+are probed once at startup, and `GET /api/tv` reports what is available.
 
-| Backend | How it drives the display | Detected when |
-|---|---|---|
-| `panel` | RS-232 serial command frames | `config.json` names a serial `device` that exists (see below) |
-| `cec` | HDMI-CEC via `cec-ctl` (v4l-utils) or `cec-client` (libcec) | a CEC tool is on `PATH` **and** a **connected** `/dev/cec*` port or a libcec adapter is found |
+| Backend | Drives | How | Detected when |
+|---|---|---|---|
+| `panel` | TV power + volume | RS-232 serial command frames | `config.json` names a serial `device` that exists (see below) |
+| `cec` | TV power + volume | HDMI-CEC via `cec-ctl` (v4l-utils) or `cec-client` (libcec) | a CEC tool is on `PATH` **and** a **connected** `/dev/cec*` port or a libcec adapter is found |
+| `soft` | box volume + mute | the OS volume media keys via `/dev/uinput` (volume up/down, so the SteamOS OSD shows) plus `wpctl` for mute | `/dev/uinput` is writable |
 
-The unified op set is `power_on power_off volume_up volume_down mute`. Responses
-are `ActionResult`-shaped (`{ok, exit_code, stdout, stderr, duration_ms}`).
-When no backend is live, `GET /api/tv` and `POST /api/tv/<op>` return **404**,
-so the app (which polls `GET /api/tv` once per connect) shows no strip. The
-startup banner logs `tv: <backend> (<adapter>)` or `tv: unavailable`.
+The unified op set is `power_on power_off volume_up volume_down mute`. Power
+always goes to the panel/CEC backend. Volume goes to the box (`soft`) by
+default; `POST /api/tv/volume_*?target=tv` sends it to the panel/CEC instead.
+The `soft` media-key device is created at startup so the compositor has it
+enumerated before the first press. `GET /api/tv` returns `box_volume`,
+`tv_volume`, `tv_power`, and the current `muted` state; it 404s only when the
+box has neither box volume nor a TV backend. The startup banner logs
+`tv: <backend> (<adapter>)`.
 
 ### panel backend: RS-232 serial (preferred)
 
