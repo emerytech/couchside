@@ -38,7 +38,7 @@ except ImportError:  # pragma: no cover
     fcntl = None
 
 APP_NAME = "couchside-agent"
-VERSION = "2.6.2"
+VERSION = "2.6.3"
 UID = os.getuid()
 XDG_RUNTIME_DIR = "/run/user/%d" % UID
 
@@ -1527,23 +1527,28 @@ def mock_panel(op):
 # so it appears only when neither panel nor CEC drives the TV. Uses the virtual
 # media-key device (see UInputMediaKeys), so it needs /dev/uinput, never sudo.
 SOFT_OPS = ("volume_up", "volume_down", "mute")
-SOFT = None           # {"adapter": ...} when uinput is usable, else None
+SOFT = None           # {"adapter": ...} when the media-key device exists, else None
+_MEDIA_DEV = None      # the persistent UInputMediaKeys device, created by set_soft
 
 
 def set_soft(mock):
-    """Check for box-volume control at startup. Available when /dev/uinput can be
-    opened; the media-key device itself is created lazily on first use. In --mock
-    the soft backend stays off so the mock TV strip runs on the panel path."""
-    global SOFT
+    """Create the virtual media-key device at startup. It is built once, up
+    front, rather than on first use, because the compositor does not read a
+    freshly hot-plugged input device for a second or two, which would silently
+    drop the first volume presses. Creating it early gives gamescope time to
+    enumerate it well before anyone touches volume. In --mock the soft backend
+    stays off so the mock TV strip runs on the panel path. SOFT is set only when
+    the device is created."""
+    global SOFT, _MEDIA_DEV
     if mock:
         SOFT = None
         return
-    try:
-        fd = os.open("/dev/uinput", os.O_WRONLY | os.O_NONBLOCK)
-        os.close(fd)
-        SOFT = {"adapter": "OS volume keys"}
-    except OSError:
-        SOFT = None
+    if _MEDIA_DEV is None:
+        try:
+            _MEDIA_DEV = UInputMediaKeys()
+        except Exception:
+            _MEDIA_DEV = None
+    SOFT = {"adapter": "OS volume keys"} if _MEDIA_DEV is not None else None
 
 
 def soft_available():
@@ -1551,21 +1556,20 @@ def soft_available():
 
 
 def real_soft(op):
-    """Emit the media key for a volume op via the virtual media-key device, so
-    the OS changes the volume and (in Game Mode) shows its OSD. ActionResult-
-    shaped. Power ops are rejected because there is no volume key for them."""
+    """Emit the media key for a volume op via the media-key device, so the OS
+    changes the volume and (in Game Mode) shows its OSD. ActionResult-shaped.
+    Power ops are rejected because there is no volume key for them."""
     start = time.monotonic()
     code = SOFT_MEDIA_KEYS.get(op)
     if code is None:
         return {"ok": False, "exit_code": -1, "stdout": "",
                 "stderr": "%s is not a volume op" % op, "duration_ms": 0}
-    dev = _media_device()
-    if dev is None:
+    if _MEDIA_DEV is None:
         return {"ok": False, "exit_code": -1, "stdout": "",
-                "stderr": "uinput unavailable for volume keys",
+                "stderr": "media-key device unavailable",
                 "duration_ms": int((time.monotonic() - start) * 1000)}
     try:
-        dev.tap(code)
+        _MEDIA_DEV.tap(code)
     except OSError as e:
         return {"ok": False, "exit_code": -1, "stdout": "",
                 "stderr": "%s: %s" % (e.__class__.__name__, e),
@@ -2075,25 +2079,6 @@ class UInputMediaKeys:
         """Press then release one media key."""
         _emit_events(self.fd, [(EV_KEY, code, 1)])
         _emit_events(self.fd, [(EV_KEY, code, 0)])
-
-
-_MEDIA_DEV = None
-
-
-def _media_device():
-    """Lazily create and cache the media-key device, or None if uinput can't be
-    opened. Sleeps briefly after creating it so the compositor enumerates the new
-    device before the first keypress (otherwise the first press can be missed)."""
-    global _MEDIA_DEV
-    if _MEDIA_DEV is not None:
-        return _MEDIA_DEV
-    try:
-        dev = UInputMediaKeys()
-    except Exception:
-        return None
-    time.sleep(0.2)
-    _MEDIA_DEV = dev
-    return dev
 
 
 class UInputMouse:
