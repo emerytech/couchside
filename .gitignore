@@ -4,3 +4,7 @@ __pycache__/
 
 # Internal store listing prep (App/Play copy, screenshots, launch plan) — local only
 store/
+
+# The Decky Loader plugin is its own git repo (built + released separately);
+# the installer pulls its release tarball, so it isn't vendored here.
+couchside-decky/

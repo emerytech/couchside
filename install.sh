@@ -29,6 +29,11 @@ CONFIG_FILE="${ETC_DIR}/config.json"
 SUDOERS_FILE="/etc/sudoers.d/couchside"
 UNIT_DST="/etc/systemd/system/couchside.service"
 
+# Decky Loader's plugin directory (root-owned). The optional Game Mode panel is
+# installed here when Decky is present, and removed from here on --uninstall.
+DECKY_PLUGINS="${HOME}/homebrew/plugins"
+DECKY_PLUGIN_DIR="${DECKY_PLUGINS}/Couchside"
+
 # Pairing-QR launcher: a script that opens http://localhost:PORT/pair full-screen
 # on the box's own display, plus a .desktop entry to add it to Steam (Game Mode).
 PAIR_SCRIPT="${INSTALL_DIR}/couchside-pair"
@@ -127,6 +132,11 @@ if [ "$UNINSTALL" -eq 1 ]; then
     note "removed $PAIR_DESKTOP"
     sudo rm -f /etc/systemd/network/50-couchside-wol.link
     note "removed the Wake-on-LAN .link file"
+    if [ "$NO_DECKY" -eq 0 ] && sudo test -d "$DECKY_PLUGIN_DIR"; then
+        sudo rm -rf "$DECKY_PLUGIN_DIR"
+        sudo systemctl restart plugin_loader.service 2>/dev/null || true
+        note "removed the Decky Loader Game Mode panel"
+    fi
     if sudo test -e "$ETC_DIR"; then
         if ask_yn "Remove $ETC_DIR (pairing token + config; phones will need re-pairing)?"; then
             sudo rm -rf "$ETC_DIR"
@@ -656,14 +666,13 @@ register_steam_shortcut || note "shortcut registration failed. Add $PAIR_SCRIPT 
 # the install: the whole thing runs inside an `if` condition (set -e is
 # suspended there) and any failure just prints a note and moves on. --no-decky
 # skips it entirely.
-DECKY_PLUGINS="${HOME}/homebrew/plugins"
 if [ "$NO_DECKY" -eq 0 ] && [ -d "$DECKY_PLUGINS" ]; then
     say "Decky Loader detected: installing the Couchside Game Mode panel"
     decky_tmp="$(mktemp -d)"
     # Decky's plugin dir is root-owned (same as a store install), so place the
     # files with sudo and let plugin_loader load them on restart.
     if curl -fsSL "$PLUGIN_URL" -o "${decky_tmp}/Couchside.tar.gz" \
-        && sudo rm -rf "${DECKY_PLUGINS}/Couchside" \
+        && sudo rm -rf "$DECKY_PLUGIN_DIR" \
         && sudo tar -xzf "${decky_tmp}/Couchside.tar.gz" -C "$DECKY_PLUGINS"; then
         sudo systemctl restart plugin_loader.service 2>/dev/null || true
         note "panel installed. Open the Decky menu in Game Mode to see it."
