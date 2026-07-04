@@ -99,6 +99,8 @@ export type ActionResult = {
   stdout: string;
   stderr: string;
   duration_ms: number;
+  /** New mute state, returned by the mute op (agent >= 2.6.5). */
+  muted?: boolean | null;
 };
 
 export type Journal = {
@@ -152,6 +154,8 @@ export type Tv = {
   tv_volume?: boolean;
   /** An external TV backend (panel/CEC) can drive power (agent >= 2.6.2). */
   tv_power?: boolean;
+  /** Current box mute state at probe time (agent >= 2.6.5), or null if unknown. */
+  muted?: boolean | null;
 };
 
 /** Where volume goes: the box's own OS volume, or the TV/panel over CEC/RS-232. */

@@ -50,8 +50,9 @@ export function RemotePowerBar() {
     if (mac && mac !== settings.mac) void update({ mac });
   }, [s?.net?.mac, settings.mac, update]);
 
-  // TV/audio backend probe (volume), once per connect.
+  // TV/audio backend probe (volume + mute state), once per connect.
   const [tv, setTv] = React.useState<Tv | null>(null);
+  const [muted, setMuted] = React.useState<boolean | null>(null);
   const tvProbedFor = React.useRef<string | null>(null);
   React.useEffect(() => {
     if (!reachable) {
@@ -65,7 +66,9 @@ export function RemotePowerBar() {
     api
       .tv(settings)
       .then((t) => {
-        if (!cancelled) setTv(t.available ? t : null);
+        if (cancelled) return;
+        setTv(t.available ? t : null);
+        setMuted(t.available ? t.muted ?? null : null);
       })
       .catch(() => {
         if (!cancelled) setTv(null);
@@ -117,6 +120,21 @@ export function RemotePowerBar() {
     },
     [settings],
   );
+
+  // Mute returns the new state so the button can show it (gamescope has no
+  // mute OSD on the panel, so this is the only feedback).
+  const onMute = React.useCallback(async () => {
+    hapticLight();
+    setBusy(true);
+    try {
+      const r = await api.tvSend(settings, 'mute', settings.volumeTarget ?? 'box');
+      if (typeof r.muted === 'boolean') setMuted(r.muted);
+    } catch {
+      hapticError();
+    } finally {
+      setBusy(false);
+    }
+  }, [settings]);
 
   const onSuspend = React.useCallback(() => {
     hapticLight();
@@ -260,9 +278,17 @@ export function RemotePowerBar() {
                     </Pressable>
                     <Pressable
                       disabled={busy}
-                      onPress={() => sendTv('mute')}
-                      style={({ pressed }) => [styles.volBtn, pressed && styles.pressed]}>
-                      <Ionicons name="volume-mute" size={24} color={theme.text} />
+                      onPress={onMute}
+                      style={({ pressed }) => [
+                        styles.volBtn,
+                        muted && styles.volBtnMuted,
+                        pressed && styles.pressed,
+                      ]}>
+                      <Ionicons
+                        name={muted ? 'volume-mute' : 'volume-medium'}
+                        size={24}
+                        color={muted ? theme.red : theme.text}
+                      />
                     </Pressable>
                     <Pressable
                       disabled={busy}
@@ -331,6 +357,7 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     justifyContent: 'center',
   },
+  volBtnMuted: { backgroundColor: theme.redDeep, borderWidth: 1, borderColor: theme.red },
   segRow: {
     flexDirection: 'row',
     gap: 2,

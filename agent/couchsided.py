@@ -38,7 +38,7 @@ except ImportError:  # pragma: no cover
     fcntl = None
 
 APP_NAME = "couchside-agent"
-VERSION = "2.6.4"
+VERSION = "2.6.5"
 UID = os.getuid()
 XDG_RUNTIME_DIR = "/run/user/%d" % UID
 
@@ -1581,9 +1581,26 @@ def real_soft(op):
             "duration_ms": int((time.monotonic() - start) * 1000)}
 
 
+def _soft_muted():
+    """Current mute state of the box's default sink (True/False), or None if it
+    can't be read. wpctl get-volume prints '[MUTED]' when the sink is muted."""
+    wp = shutil.which("wpctl")
+    if wp is None:
+        return None
+    try:
+        r = subprocess.run([wp, "get-volume", "@DEFAULT_AUDIO_SINK@"],
+                           capture_output=True, timeout=4, env=_user_env())
+    except Exception:
+        return None
+    if r.returncode != 0:
+        return None
+    return "MUTED" in (r.stdout or b"").decode("utf-8", "replace").upper()
+
+
 def _soft_mute(start):
-    """Toggle mute on the box's default sink via wpctl, run in the user's audio
-    session (XDG_RUNTIME_DIR). ActionResult-shaped."""
+    """Toggle mute on the box's default sink via wpctl, in the user's audio
+    session. Returns the new state as "muted" so the app can show a mute
+    indicator (gamescope shows no mute OSD). ActionResult-shaped."""
     wp = shutil.which("wpctl")
     if wp is None:
         return {"ok": False, "exit_code": -1, "stdout": "",
@@ -1596,9 +1613,11 @@ def _soft_mute(start):
         return {"ok": False, "exit_code": -1, "stdout": "",
                 "stderr": "%s: %s" % (e.__class__.__name__, e),
                 "duration_ms": int((time.monotonic() - start) * 1000)}
+    muted = _soft_muted()
     return {"ok": r.returncode == 0, "exit_code": r.returncode,
-            "stdout": (r.stdout or b"").decode("utf-8", "replace"),
+            "stdout": "muted" if muted else "unmuted",
             "stderr": (r.stderr or b"").decode("utf-8", "replace"),
+            "muted": muted,
             "duration_ms": int((time.monotonic() - start) * 1000)}
 
 
@@ -1662,6 +1681,8 @@ def tv_info():
         "box_volume": box_vol,
         "tv_volume": hw is not None,
         "tv_power": hw is not None,
+        # Box mute state, so the app shows the right mute indicator on connect.
+        "muted": _soft_muted() if box_vol else None,
     }
 
 
