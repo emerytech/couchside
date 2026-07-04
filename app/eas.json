@@ -18,11 +18,29 @@
         "buildType": "apk"
       }
     },
+    "beta": {
+      "autoIncrement": true,
+      "env": {
+        "EXPO_PUBLIC_BETA_UNLOCK": "1"
+      },
+      "ios": {
+        "simulator": false
+      }
+    },
     "production": {
       "autoIncrement": true
     }
   },
   "submit": {
+    "beta": {
+      "ios": {
+        "ascAppId": "6786884115",
+        "ascApiKeyPath": "./asc-key.p8",
+        "ascApiKeyId": "URS64G4G4P",
+        "ascApiKeyIssuerId": "91ab3221-7136-47ce-910a-de13972509f5",
+        "appleTeamId": "XK6QP975ZQ"
+      }
+    },
     "production": {
       "ios": {
         "ascAppId": "6786884115",

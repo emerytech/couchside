@@ -41,6 +41,21 @@ const PURCHASED_KEY = 'couchpilot.entitlement.unlocked.v1';
 /** Cached original purchase date (ms) when the store reported one. */
 const PURCHASE_DATE_KEY = 'couchpilot.entitlement.purchase-date.v1';
 
+/**
+ * Beta builds unlock everything so testers never hit the trial or the paywall
+ * (and Android open testers are never charged for a real purchase). This is set
+ * ONLY on the beta EAS profile via EXPO_PUBLIC_BETA_UNLOCK=1; the production
+ * profile leaves it unset, so official store builds still gate. EXPO_PUBLIC_*
+ * is inlined at build time, so this is a per-build constant, not a runtime
+ * toggle. The badge stays off in beta (no false permanent Early Adopter).
+ */
+const BETA_UNLOCK = process.env.EXPO_PUBLIC_BETA_UNLOCK === '1';
+const BETA_ENTITLEMENT: Entitlement = {
+  state: 'purchased',
+  trialDaysLeft: 0,
+  isEarlyAdopter: false,
+};
+
 /** True iff a known purchase timestamp falls before the early-adopter cutoff. */
 function earlyAdopterFromDate(purchaseDateMs: number | null): boolean {
   return purchaseDateMs != null && purchaseDateMs < EARLY_ADOPTER_CUTOFF_MS;
@@ -129,6 +144,8 @@ export async function markPurchased(): Promise<void> {
  * revalidateWithStore().
  */
 export async function getEntitlement(): Promise<Entitlement> {
+  // Beta builds are unlocked outright, ahead of the trial clock and the cache.
+  if (BETA_UNLOCK) return BETA_ENTITLEMENT;
   try {
     if ((await storageGet(PURCHASED_KEY)) === '1') {
       return {
@@ -162,6 +179,9 @@ export async function getEntitlement(): Promise<Entitlement> {
  *     (never revoke a cached purchase on a flaky store response).
  */
 export async function revalidateWithStore(local: Entitlement): Promise<Entitlement> {
+  // Beta builds stay unlocked without ever touching the store (so Android open
+  // testers are not prompted to buy, and nothing can downgrade them).
+  if (BETA_UNLOCK) return BETA_ENTITLEMENT;
   if (local.state === 'purchased') {
     // Already unlocked locally. Opportunistically confirm the purchase date so
     // the Early Adopter badge can appear even if we cached the purchase before
