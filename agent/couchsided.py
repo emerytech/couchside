@@ -38,7 +38,7 @@ except ImportError:  # pragma: no cover
     fcntl = None
 
 APP_NAME = "couchside-agent"
-VERSION = "2.6.3"
+VERSION = "2.6.4"
 UID = os.getuid()
 XDG_RUNTIME_DIR = "/run/user/%d" % UID
 
@@ -1556,10 +1556,13 @@ def soft_available():
 
 
 def real_soft(op):
-    """Emit the media key for a volume op via the media-key device, so the OS
-    changes the volume and (in Game Mode) shows its OSD. ActionResult-shaped.
-    Power ops are rejected because there is no volume key for them."""
+    """Change box volume. Volume up/down emit media keys via the media-key device
+    so the OS moves the volume and (in Game Mode) shows its OSD. Mute is toggled
+    with wpctl on the default sink, because gamescope does not bind KEY_MUTE.
+    ActionResult-shaped. Power ops are rejected (no volume key for them)."""
     start = time.monotonic()
+    if op == "mute":
+        return _soft_mute(start)
     code = SOFT_MEDIA_KEYS.get(op)
     if code is None:
         return {"ok": False, "exit_code": -1, "stdout": "",
@@ -1575,6 +1578,27 @@ def real_soft(op):
                 "stderr": "%s: %s" % (e.__class__.__name__, e),
                 "duration_ms": int((time.monotonic() - start) * 1000)}
     return {"ok": True, "exit_code": 0, "stdout": "sent %s" % op, "stderr": "",
+            "duration_ms": int((time.monotonic() - start) * 1000)}
+
+
+def _soft_mute(start):
+    """Toggle mute on the box's default sink via wpctl, run in the user's audio
+    session (XDG_RUNTIME_DIR). ActionResult-shaped."""
+    wp = shutil.which("wpctl")
+    if wp is None:
+        return {"ok": False, "exit_code": -1, "stdout": "",
+                "stderr": "wpctl not found for mute",
+                "duration_ms": int((time.monotonic() - start) * 1000)}
+    try:
+        r = subprocess.run([wp, "set-mute", "@DEFAULT_AUDIO_SINK@", "toggle"],
+                           capture_output=True, timeout=4, env=_user_env())
+    except Exception as e:
+        return {"ok": False, "exit_code": -1, "stdout": "",
+                "stderr": "%s: %s" % (e.__class__.__name__, e),
+                "duration_ms": int((time.monotonic() - start) * 1000)}
+    return {"ok": r.returncode == 0, "exit_code": r.returncode,
+            "stdout": (r.stdout or b"").decode("utf-8", "replace"),
+            "stderr": (r.stderr or b"").decode("utf-8", "replace"),
             "duration_ms": int((time.monotonic() - start) * 1000)}
 
 
@@ -1769,11 +1793,12 @@ KEY_HOME, KEY_UP = 102, 103
 KEY_LEFT, KEY_RIGHT, KEY_END, KEY_DOWN = 105, 106, 107, 108
 KEY_MUTE, KEY_VOLUMEDOWN, KEY_VOLUMEUP = 113, 114, 115
 
-# Volume ops -> media key code, emitted by the soft backend (see UInputMediaKeys).
+# Volume up/down go through the media keys so the OS shows its volume OSD. Mute
+# is NOT here: gamescope does not bind KEY_MUTE, so real_soft toggles mute via
+# wpctl on the default sink instead.
 SOFT_MEDIA_KEYS = {
     "volume_up": KEY_VOLUMEUP,
     "volume_down": KEY_VOLUMEDOWN,
-    "mute": KEY_MUTE,
 }
 
 # ASCII printable char -> (keycode, needs_shift)
