@@ -50,33 +50,15 @@ export function RemotePowerBar() {
     if (mac && mac !== settings.mac) void update({ mac });
   }, [s?.net?.mac, settings.mac, update]);
 
-  // TV/audio backend probe (volume + mute state), once per connect.
-  const [tv, setTv] = React.useState<Tv | null>(null);
-  const [muted, setMuted] = React.useState<boolean | null>(null);
-  const tvProbedFor = React.useRef<string | null>(null);
-  React.useEffect(() => {
-    if (!reachable) {
-      tvProbedFor.current = null;
-      return;
-    }
-    const key = `${settings.host}:${settings.port}`;
-    if (tvProbedFor.current === key) return;
-    tvProbedFor.current = key;
-    let cancelled = false;
-    api
-      .tv(settings)
-      .then((t) => {
-        if (cancelled) return;
-        setTv(t.available ? t : null);
-        setMuted(t.available ? t.muted ?? null : null);
-      })
-      .catch(() => {
-        if (!cancelled) setTv(null);
-      });
-    return () => {
-      cancelled = true;
-    };
-  }, [reachable, settings]);
+  // TV/audio backend + mute state. Polled (not probed once per connect) so the
+  // mute indicator self-heals when the box is muted out of band (controller,
+  // keyboard, a stale seed), and a TV backend appearing/disappearing shows up
+  // without a reconnect. api.tv 404s when there is no backend, which surfaces
+  // as tvPoll.error, so tv stays null there.
+  const tvPoll = usePoll<Tv>(() => api.tv(settings), 5000, reachable);
+  const refreshTv = tvPoll.refresh;
+  const tv = reachable && tvPoll.error == null && tvPoll.data?.available ? tvPoll.data : null;
+  const muted = tv?.muted ?? null;
 
   // Suspend-action availability, once per connect (agent >= 2.6 with the rule).
   const [hasSuspend, setHasSuspend] = React.useState(false);
@@ -112,13 +94,16 @@ export function RemotePowerBar() {
       setBusy(true);
       try {
         await api.tvSend(settings, op, settings.volumeTarget ?? 'box');
+        // Volume keys can clear the mute flag (dropping to 0 sets it), so
+        // re-read state now rather than waiting out the poll tick.
+        refreshTv();
       } catch {
         hapticError();
       } finally {
         setBusy(false);
       }
     },
-    [settings],
+    [settings, refreshTv],
   );
 
   // TV power goes to the panel/CEC backend regardless of the volume target
@@ -146,14 +131,16 @@ export function RemotePowerBar() {
     hapticLight();
     setBusy(true);
     try {
-      const r = await api.tvSend(settings, 'mute', settings.volumeTarget ?? 'box');
-      if (typeof r.muted === 'boolean') setMuted(r.muted);
+      await api.tvSend(settings, 'mute', settings.volumeTarget ?? 'box');
+      // Re-read the mute state immediately so the button reflects it in ~100ms
+      // instead of on the next poll tick.
+      refreshTv();
     } catch {
       hapticError();
     } finally {
       setBusy(false);
     }
-  }, [settings]);
+  }, [settings, refreshTv]);
 
   const onSuspend = React.useCallback(() => {
     hapticLight();
