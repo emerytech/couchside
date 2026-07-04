@@ -26,6 +26,7 @@ import {
   useHapticsEnabled,
 } from '@/lib/haptics';
 import { setKeepAwakeEnabled, useKeepAwakeEnabled } from '@/lib/keepAwake';
+import { setPref, usePref } from '@/lib/prefs';
 import { buy, getProduct, restore } from '@/lib/purchase';
 import { Box, DEFAULT_PORT, normalizeMac } from '@/lib/settings';
 import { VolumeTarget } from '@/lib/api';
@@ -435,6 +436,71 @@ export default function SetupScreen() {
   );
 }
 
+/** A labeled on/off row for the Preferences card. */
+function TogglePref({
+  label,
+  sub,
+  value,
+  onValueChange,
+}: {
+  label: string;
+  sub: string;
+  value: boolean;
+  onValueChange: (v: boolean) => void;
+}) {
+  return (
+    <View style={styles.prefRow}>
+      <View style={styles.prefBody}>
+        <Text style={styles.prefLabel}>{label}</Text>
+        <Text style={styles.prefSub}>{sub}</Text>
+      </View>
+      <Switch
+        value={value}
+        onValueChange={onValueChange}
+        trackColor={{ false: theme.inset, true: theme.blue }}
+        thumbColor="#f8fafc"
+        ios_backgroundColor={theme.inset}
+      />
+    </View>
+  );
+}
+
+/** A labeled segmented picker for the Preferences card. */
+function SegPref<T extends string | number>({
+  label,
+  sub,
+  options,
+  value,
+  onSelect,
+}: {
+  label: string;
+  sub: string;
+  options: { value: T; label: string }[];
+  value: T;
+  onSelect: (v: T) => void;
+}) {
+  return (
+    <View style={styles.prefCol}>
+      <View style={styles.prefBody}>
+        <Text style={styles.prefLabel}>{label}</Text>
+        <Text style={styles.prefSub}>{sub}</Text>
+      </View>
+      <View style={styles.segRow}>
+        {options.map((o) => (
+          <Pressable
+            key={String(o.value)}
+            onPress={() => onSelect(o.value)}
+            style={[styles.seg, value === o.value && styles.segActive]}>
+            <Text style={[styles.segText, value === o.value && styles.segTextActive]}>
+              {o.label}
+            </Text>
+          </Pressable>
+        ))}
+      </View>
+    </View>
+  );
+}
+
 function SetupBody() {
   const { entitlement, recordPurchase } = useEntitlement();
   const {
@@ -450,6 +516,13 @@ function SetupBody() {
   const status = useBoxOnlineStatus(boxes, { active: true, intervalMs: 10000 });
   const hapticsOn = useHapticsEnabled();
   const keepAwakeOn = useKeepAwakeEnabled();
+  const confirmSuspend = usePref('confirmSuspend');
+  const defaultPadMode = usePref('defaultPadMode');
+  const statusIntervalMs = usePref('statusIntervalMs');
+  const journalLines = usePref('journalLines');
+  const swipeSensitivity = usePref('swipeSensitivity');
+  const trackpadSensitivity = usePref('trackpadSensitivity');
+  const naturalScroll = usePref('naturalScroll');
 
   const [restoring, setRestoring] = useState(false);
   const [buying, setBuying] = useState(false);
@@ -831,6 +904,96 @@ function SetupBody() {
               ios_backgroundColor={theme.inset}
             />
           </View>
+          <TogglePref
+            label="Confirm before suspend"
+            sub="Ask before putting the box to sleep."
+            value={confirmSuspend}
+            onValueChange={(v) => {
+              void setPref('confirmSuspend', v);
+              hapticSelection();
+            }}
+          />
+          <SegPref
+            label="Default input mode"
+            sub="What a newly paired box starts on."
+            options={[
+              { value: 'gamepad', label: 'Gamepad' },
+              { value: 'swipe', label: 'Swipe' },
+              { value: 'trackpad', label: 'Trackpad' },
+            ]}
+            value={defaultPadMode}
+            onSelect={(v) => {
+              void setPref('defaultPadMode', v);
+              hapticSelection();
+            }}
+          />
+          <SegPref
+            label="Vitals refresh"
+            sub="How often the console polls the box."
+            options={[
+              { value: 2000, label: '2s' },
+              { value: 5000, label: '5s' },
+              { value: 15000, label: '15s' },
+              { value: 30000, label: '30s' },
+            ]}
+            value={statusIntervalMs}
+            onSelect={(v) => {
+              void setPref('statusIntervalMs', v);
+              hapticSelection();
+            }}
+          />
+          <SegPref
+            label="Journal lines"
+            sub="Lines fetched per unit on the Logs tab."
+            options={[
+              { value: 50, label: '50' },
+              { value: 100, label: '100' },
+              { value: 250, label: '250' },
+              { value: 500, label: '500' },
+            ]}
+            value={journalLines}
+            onSelect={(v) => {
+              void setPref('journalLines', v);
+              hapticSelection();
+            }}
+          />
+          <SegPref
+            label="Swipe sensitivity"
+            sub="Steps per swipe on the Pad's swipe surface."
+            options={[
+              { value: 0.6, label: 'Low' },
+              { value: 1, label: 'Normal' },
+              { value: 1.6, label: 'High' },
+            ]}
+            value={swipeSensitivity}
+            onSelect={(v) => {
+              void setPref('swipeSensitivity', v);
+              hapticSelection();
+            }}
+          />
+          <SegPref
+            label="Trackpad speed"
+            sub="Pointer speed on the trackpad surface."
+            options={[
+              { value: 0.6, label: 'Low' },
+              { value: 1, label: 'Normal' },
+              { value: 1.6, label: 'High' },
+            ]}
+            value={trackpadSensitivity}
+            onSelect={(v) => {
+              void setPref('trackpadSensitivity', v);
+              hapticSelection();
+            }}
+          />
+          <TogglePref
+            label="Natural scrolling"
+            sub="Two-finger scroll follows your fingers (macOS style)."
+            value={naturalScroll}
+            onValueChange={(v) => {
+              void setPref('naturalScroll', v);
+              hapticSelection();
+            }}
+          />
         </View>
 
         <View style={styles.card}>
@@ -1078,6 +1241,7 @@ const styles = StyleSheet.create({
     gap: 12,
   },
   prefBody: { flex: 1, minWidth: 0 },
+  prefCol: { gap: 10 },
   prefLabel: { color: theme.text, fontSize: 15, fontWeight: '600', fontFamily: mono },
   prefSub: { color: theme.textFaint, fontSize: 12, marginTop: 3 },
   segRow: {

@@ -9,6 +9,7 @@
  */
 import { hapticSelection } from '@/lib/haptics';
 import { getKeepAwakeEnabled, useKeepAwakeEnabled } from '@/lib/keepAwake';
+import { usePref } from '@/lib/prefs';
 import { activateKeepAwakeAsync, deactivateKeepAwake } from 'expo-keep-awake';
 import { useNavigation } from 'expo-router';
 import React, { useCallback, useEffect, useRef, useState } from 'react';
@@ -169,6 +170,11 @@ function SwipeSurface({ onStep, onSelect }: SwipeSurfaceProps) {
   const cb = useRef({ onStep, onSelect });
   cb.current = { onStep, onSelect };
   const track = useRef({ consumedX: 0, consumedY: 0, moved: false, t0: 0 });
+  // Sensitivity read into a ref so the once-created responder sees live changes.
+  // Higher sensitivity = smaller step = more steps per swipe.
+  const sens = usePref('swipeSensitivity');
+  const sensRef = useRef(sens);
+  sensRef.current = sens;
 
   const responder = useRef(
     PanResponder.create({
@@ -180,18 +186,19 @@ function SwipeSurface({ onStep, onSelect }: SwipeSurfaceProps) {
       onPanResponderMove: (_evt, g) => {
         const t = track.current;
         if (!t.moved && Math.hypot(g.dx, g.dy) > TAP_SLOP) t.moved = true;
+        const step = SWIPE_STEP / sensRef.current;
         // Emit steps until the un-consumed travel is under one step on both axes.
         for (;;) {
           const availX = g.dx - t.consumedX;
           const availY = g.dy - t.consumedY;
           const ax = Math.abs(availX);
           const ay = Math.abs(availY);
-          if (ax < SWIPE_STEP && ay < SWIPE_STEP) break;
+          if (ax < step && ay < step) break;
           if (ax >= ay) {
-            t.consumedX += Math.sign(availX) * SWIPE_STEP;
+            t.consumedX += Math.sign(availX) * step;
             cb.current.onStep(availX > 0 ? 'dr' : 'dl');
           } else {
-            t.consumedY += Math.sign(availY) * SWIPE_STEP;
+            t.consumedY += Math.sign(availY) * step;
             cb.current.onStep(availY > 0 ? 'dd' : 'du');
           }
         }
@@ -244,6 +251,13 @@ type TrackpadProps = {
 function Trackpad({ onMove, onLeftClick, onRightClick, onScroll }: TrackpadProps) {
   const cb = useRef({ onMove, onLeftClick, onRightClick, onScroll });
   cb.current = { onMove, onLeftClick, onRightClick, onScroll };
+  // Pointer speed + scroll direction, in refs so the once-created responder
+  // reads live values.
+  const feel = useRef({ sens: 1, natural: false });
+  feel.current = {
+    sens: usePref('trackpadSensitivity'),
+    natural: usePref('naturalScroll'),
+  };
 
   const st = useRef({
     lastX: 0,
@@ -287,7 +301,8 @@ function Trackpad({ onMove, onLeftClick, onRightClick, onScroll }: TrackpadProps
             const dir = s.scrollAccum > 0 ? 1 : -1;
             s.scrollAccum -= dir * TP_SCROLL_STEP;
             // Drag down (dy>0) scrolls content up -> wheel down (negative).
-            cb.current.onScroll(-dir);
+            // "Natural" scrolling inverts that (content follows the fingers).
+            cb.current.onScroll(feel.current.natural ? dir : -dir);
           }
           s.scrollLastY = g.dy;
           return;
@@ -299,7 +314,7 @@ function Trackpad({ onMove, onLeftClick, onRightClick, onScroll }: TrackpadProps
         const rawDy = g.dy - s.lastY;
         const dt = Math.max(1, now - s.lastT);
         const speed = Math.hypot(rawDx, rawDy) / dt; // px/ms
-        const gain = TP_BASE + TP_GAIN * speed * 16; // scale speed to ~per-frame
+        const gain = (TP_BASE + TP_GAIN * speed * 16) * feel.current.sens; // scale speed to ~per-frame
         s.lastX = g.dx;
         s.lastY = g.dy;
         s.lastT = now;

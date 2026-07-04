@@ -6,6 +6,7 @@ import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { usePoll } from '@/hooks/usePoll';
 import { api, Status, Tv, TvOp, VolumeTarget } from '@/lib/api';
 import { hapticError, hapticLight, hapticSuccess } from '@/lib/haptics';
+import { getPref, usePref } from '@/lib/prefs';
 import { normalizeMac } from '@/lib/settings';
 import { useSettings } from '@/lib/SettingsContext';
 import { mono, theme } from '@/lib/theme';
@@ -40,7 +41,8 @@ export function RemotePowerBar() {
   const configured = settings.host.trim().length > 0;
   const [open, setOpen] = React.useState(false);
 
-  const status = usePoll<Status>(() => api.status(settings), 5000, ready && configured);
+  const statusInterval = usePref('statusIntervalMs');
+  const status = usePoll<Status>(() => api.status(settings), statusInterval, ready && configured);
   const s = status.data;
   const reachable = configured && status.error == null && s != null;
 
@@ -144,18 +146,24 @@ export function RemotePowerBar() {
 
   const onSuspend = React.useCallback(() => {
     hapticLight();
-    confirmSuspend(
-      'Put the box to sleep? It will drop offline; wake it with the power button here.',
-      () => {
-        void (async () => {
-          try {
-            await api.runAction(settings, 'suspend');
-          } catch {
-            // The box usually drops the connection mid-suspend; expected.
-          }
-        })();
-      },
-    );
+    const runSuspend = () => {
+      void (async () => {
+        try {
+          await api.runAction(settings, 'suspend');
+        } catch {
+          // The box usually drops the connection mid-suspend; expected.
+        }
+      })();
+    };
+    // Skippable confirmation: on for the cautious, off for one-tap nightly sleep.
+    if (getPref('confirmSuspend')) {
+      confirmSuspend(
+        'Put the box to sleep? It will drop offline; wake it with the power button here.',
+        runSuspend,
+      );
+    } else {
+      runSuspend();
+    }
   }, [settings]);
 
   const onWake = React.useCallback(() => {

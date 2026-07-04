@@ -10,6 +10,7 @@ import React, {
 import { AppState, AppStateStatus } from 'react-native';
 
 import { pingMatchesBox } from './api';
+import { getPref } from './prefs';
 import {
   Box,
   BoxesState,
@@ -147,7 +148,8 @@ export function SettingsProvider({ children }: { children: React.ReactNode }) {
         host,
         port,
         token,
-        padMode: input.padMode ?? DEFAULT_PAD_MODE,
+        // A newly paired box starts on the user's preferred input mode.
+        padMode: input.padMode ?? getPref('defaultPadMode'),
         lastIp: inputIp,
       };
       await commit({

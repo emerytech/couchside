@@ -13,10 +13,9 @@ import { TabScreen } from '@/components/TabScreen';
 import { useLockOrientation } from '@/hooks/useLockOrientation';
 import { usePoll } from '@/hooks/usePoll';
 import { api, Journal, Unit, UnitScope } from '@/lib/api';
+import { usePref } from '@/lib/prefs';
 import { useSettings } from '@/lib/SettingsContext';
 import { mono, theme } from '@/lib/theme';
-
-const LINES = 100;
 
 type PickerUnit = { unit: string; scope: UnitScope; short: string };
 
@@ -50,6 +49,7 @@ function LogsScreen() {
 
   const [selected, setSelected] = useState(0);
   const [auto, setAuto] = useState(false);
+  const journalLines = usePref('journalLines');
 
   // The picker mirrors the agent's journal watchlist (/api/units). The huge
   // interval parks the timer; usePoll still fetches on mount and every focus.
@@ -60,7 +60,7 @@ function LogsScreen() {
   const target = picker[Math.min(selected, picker.length - 1)];
 
   const journal = usePoll<Journal>(
-    () => api.journal(settings, target.unit, target.scope, LINES),
+    () => api.journal(settings, target.unit, target.scope, journalLines),
     // Auto-refresh every 5s; otherwise park the interval (manual refresh only;
     // usePoll still fires immediately on focus / refresh()).
     auto ? 5000 : 3600_000,

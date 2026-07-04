@@ -6,6 +6,7 @@ import { TabScreen } from '@/components/TabScreen';
 import { useLockOrientation } from '@/hooks/useLockOrientation';
 import { usePoll } from '@/hooks/usePoll';
 import { api, humanizeUptime, Status, Unit } from '@/lib/api';
+import { usePref } from '@/lib/prefs';
 import { useSettings } from '@/lib/SettingsContext';
 import { mono, numeric, pctColor, tempColor, theme } from '@/lib/theme';
 
@@ -80,7 +81,8 @@ function ConsoleScreen() {
   // instead of the unreachable banner.
   const configured = settings.host.trim().length > 0;
 
-  const status = usePoll<Status>(() => api.status(settings), 5000, ready && configured);
+  const statusInterval = usePref('statusIntervalMs');
+  const status = usePoll<Status>(() => api.status(settings), statusInterval, ready && configured);
   const units = usePoll<{ units: Unit[] }>(() => api.units(settings), 10000, ready && configured);
 
   const s = status.data;
