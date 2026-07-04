@@ -16,6 +16,7 @@ import {
 } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
+import { RemotePowerBar } from '@/components/RemotePowerBar';
 import { hapticSelection } from '@/lib/haptics';
 import {
   BoxReachability,
@@ -67,24 +68,29 @@ export function BoxSwitcher() {
 
   return (
     <View style={[styles.headerWrap, { paddingTop: insets.top + 8 }]}>
-      <Pressable
-        onPress={() =>
-          boxes.length === 0 ? goToSetup() : (hapticSelection(), setOpen(true))
-        }
-        style={({ pressed }) => [styles.pill, pressed && styles.pressed]}
-        hitSlop={6}>
-        {boxes.length > 0 && <Dot status={activeStatus} />}
-        <Text style={styles.pillLabel} numberOfLines={1}>
-          {pillLabel}
-        </Text>
-        {boxes.length > 0 && (
-          <Ionicons
-            name={open ? 'chevron-up' : 'chevron-down'}
-            size={16}
-            color={theme.textDim}
-          />
-        )}
-      </Pressable>
+      <View style={styles.headerRow}>
+        <Pressable
+          onPress={() =>
+            boxes.length === 0 ? goToSetup() : (hapticSelection(), setOpen(true))
+          }
+          style={({ pressed }) => [styles.pill, pressed && styles.pressed]}
+          hitSlop={6}>
+          {boxes.length > 0 && <Dot status={activeStatus} />}
+          <Text style={styles.pillLabel} numberOfLines={1}>
+            {pillLabel}
+          </Text>
+          {boxes.length > 0 && (
+            <Ionicons
+              name={open ? 'chevron-up' : 'chevron-down'}
+              size={16}
+              color={theme.textDim}
+            />
+          )}
+        </Pressable>
+
+        {/* Power + volume controls fill the otherwise-empty right of the row. */}
+        <RemotePowerBar />
+      </View>
 
       {/* Dropdown sheet: a Modal so it floats above tab content without any
           position:fixed / z-index fights with the navigator. */}
@@ -149,12 +155,17 @@ const styles = StyleSheet.create({
     borderBottomWidth: 1,
     borderBottomColor: theme.cardBorder,
   },
+  headerRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    gap: 8,
+  },
   pill: {
     flexDirection: 'row',
     alignItems: 'center',
-    alignSelf: 'flex-start',
+    flexShrink: 1,
     gap: 8,
-    maxWidth: '100%',
     backgroundColor: theme.card,
     borderColor: theme.cardBorder,
     borderWidth: 1,

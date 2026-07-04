@@ -1,13 +1,16 @@
+import Ionicons from '@expo/vector-icons/Ionicons';
 import React from 'react';
-import { Alert, Platform, Pressable, StyleSheet, Text, View } from 'react-native';
+import { Alert, Platform, Pressable, StyleSheet, View } from 'react-native';
 
 import { usePoll } from '@/hooks/usePoll';
 import { api, Status, Tv, TvOp } from '@/lib/api';
 import { hapticError, hapticLight, hapticSuccess } from '@/lib/haptics';
 import { normalizeMac } from '@/lib/settings';
 import { useSettings } from '@/lib/SettingsContext';
-import { numeric, theme } from '@/lib/theme';
+import { theme } from '@/lib/theme';
 import { sendWol, wolAvailable } from '@/lib/wol';
+
+type IoniconName = React.ComponentProps<typeof Ionicons>['name'];
 
 /** Confirm dialog; on web Alert buttons are no-ops, so use window.confirm there. */
 function confirmSuspend(message: string, onConfirm: () => void) {
@@ -22,13 +25,35 @@ function confirmSuspend(message: string, onConfirm: () => void) {
   ]);
 }
 
+function IconBtn({
+  name,
+  color,
+  onPress,
+  disabled,
+}: {
+  name: IoniconName;
+  color: string;
+  onPress: () => void;
+  disabled?: boolean;
+}) {
+  return (
+    <Pressable
+      disabled={disabled}
+      onPress={onPress}
+      hitSlop={6}
+      style={({ pressed }) => [styles.iconBtn, disabled && styles.disabled, pressed && styles.pressed]}>
+      <Ionicons name={name} size={20} color={color} />
+    </Pressable>
+  );
+}
+
 /**
- * The remote control strip that sits at the top of the Console and Pad screens.
- * It owns the box power button (suspend while the box is reachable, Wake-on-LAN
- * once it has gone offline) and, when the agent reports a TV/audio backend, the
- * TV power toggle and volume. Self-contained: it runs its own status poll and
- * probes, so a screen only has to drop it in. Renders nothing until there is
- * something to control, so it never shows an empty bar.
+ * Compact power + volume controls for the header row (right of the box picker,
+ * on every tab). Box power adapts to reachability: a moon (suspend) while the
+ * box is reachable, a power icon (Wake-on-LAN) once it has gone offline, dimmed
+ * on a WiFi box that WoL cannot wake. Volume/mute appear when the agent reports
+ * a TV or audio backend. Self-contained (its own status poll and probes), and
+ * it renders nothing when there is nothing to control.
  */
 export function RemotePowerBar() {
   const { settings, ready, update } = useSettings();
@@ -44,7 +69,7 @@ export function RemotePowerBar() {
     if (mac && mac !== settings.mac) void update({ mac });
   }, [s?.net?.mac, settings.mac, update]);
 
-  // TV/audio backend probe (volume, and TV power on panel/CEC), once per connect.
+  // TV/audio backend probe (volume), once per connect.
   const [tv, setTv] = React.useState<Tv | null>(null);
   const tvProbedFor = React.useRef<string | null>(null);
   React.useEffect(() => {
@@ -95,7 +120,6 @@ export function RemotePowerBar() {
   }, [reachable, settings]);
 
   const [busy, setBusy] = React.useState(false);
-  const [tvOn, setTvOn] = React.useState(true);
   const [waking, setWaking] = React.useState(false);
 
   const sendTv = React.useCallback(
@@ -113,23 +137,16 @@ export function RemotePowerBar() {
     [settings],
   );
 
-  const onTvPower = React.useCallback(() => {
-    const next = !tvOn;
-    setTvOn(next);
-    void sendTv(next ? 'power_on' : 'power_off');
-  }, [tvOn, sendTv]);
-
   const onSuspend = React.useCallback(() => {
     hapticLight();
     confirmSuspend(
-      'Put the box to sleep? It will drop offline; wake it with the Wake button that appears here.',
+      'Put the box to sleep? It will drop offline; wake it with the power button here.',
       () => {
         void (async () => {
           try {
             await api.runAction(settings, 'suspend');
           } catch {
-            // The box usually drops the connection mid-suspend, so a transport
-            // error here is expected.
+            // The box usually drops the connection mid-suspend; expected.
           }
         })();
       },
@@ -164,68 +181,30 @@ export function RemotePowerBar() {
 
   const wired = s?.net?.wired;
   const hasVolume = reachable && tv?.available === true;
-  const hasTvPower = hasVolume && (tv?.ops ? tv.ops.includes('power_on') : true);
   const canSuspend = reachable && hasSuspend;
   const canWake = !reachable && !!settings.mac && wolAvailable;
 
-  // Nothing to control on this box right now: render nothing, not an empty bar.
+  // Nothing to control on this box right now: render nothing.
   if (!canSuspend && !canWake && !hasVolume) return null;
 
   return (
-    <View style={styles.bar}>
+    <View style={styles.group}>
       {canWake && (
-        <Pressable
-          disabled={waking}
-          onPress={onWake}
-          style={({ pressed }) => [styles.btn, styles.wakeBtn, pressed && styles.pressed]}>
-          <Text style={styles.wakeText}>{waking ? '…' : 'WAKE'}</Text>
-        </Pressable>
+        <IconBtn name="power" color={theme.green} onPress={onWake} disabled={waking} />
       )}
       {canSuspend && (
-        <Pressable
-          disabled={wired === false}
+        <IconBtn
+          name="moon"
+          color={wired === false ? theme.slate : theme.amber}
           onPress={onSuspend}
-          style={({ pressed }) => [
-            styles.btn,
-            wired === false && styles.btnDisabled,
-            pressed && styles.pressed,
-          ]}>
-          <Text style={[styles.powerText, wired === false && styles.dim]}>
-            {wired === false ? 'WIFI' : 'SLEEP'}
-          </Text>
-        </Pressable>
-      )}
-
-      {hasVolume && <View style={styles.spacer} />}
-
-      {hasTvPower && (
-        <Pressable
-          disabled={busy}
-          onPress={onTvPower}
-          style={({ pressed }) => [styles.btn, pressed && styles.pressed]}>
-          <Text style={[styles.glyph, !tvOn && styles.dim]}>⏻</Text>
-        </Pressable>
+          disabled={wired === false}
+        />
       )}
       {hasVolume && (
         <>
-          <Pressable
-            disabled={busy}
-            onPress={() => sendTv('volume_down')}
-            style={({ pressed }) => [styles.btn, pressed && styles.pressed]}>
-            <Text style={styles.label}>VOL −</Text>
-          </Pressable>
-          <Pressable
-            disabled={busy}
-            onPress={() => sendTv('mute')}
-            style={({ pressed }) => [styles.btn, pressed && styles.pressed]}>
-            <Text style={styles.label}>MUTE</Text>
-          </Pressable>
-          <Pressable
-            disabled={busy}
-            onPress={() => sendTv('volume_up')}
-            style={({ pressed }) => [styles.btn, pressed && styles.pressed]}>
-            <Text style={styles.label}>VOL +</Text>
-          </Pressable>
+          <IconBtn name="volume-low" color={theme.text} onPress={() => sendTv('volume_down')} disabled={busy} />
+          <IconBtn name="volume-mute" color={theme.text} onPress={() => sendTv('mute')} disabled={busy} />
+          <IconBtn name="volume-high" color={theme.text} onPress={() => sendTv('volume_up')} disabled={busy} />
         </>
       )}
     </View>
@@ -233,46 +212,14 @@ export function RemotePowerBar() {
 }
 
 const styles = StyleSheet.create({
-  bar: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 6,
-    paddingHorizontal: 10,
-    paddingVertical: 8,
-    backgroundColor: theme.card,
-    borderBottomWidth: 1,
-    borderBottomColor: theme.cardBorder,
-  },
-  spacer: { flex: 1 },
-  btn: {
-    minWidth: 44,
-    height: 40,
-    paddingHorizontal: 10,
+  group: { flexDirection: 'row', alignItems: 'center', gap: 2 },
+  iconBtn: {
+    width: 36,
+    height: 36,
     borderRadius: 8,
-    borderWidth: 1,
-    borderColor: theme.cardBorder,
-    backgroundColor: theme.inset,
     alignItems: 'center',
     justifyContent: 'center',
   },
-  btnDisabled: { opacity: 0.45 },
-  powerText: {
-    color: theme.amber,
-    fontSize: 13,
-    fontWeight: '800',
-    letterSpacing: 1,
-    ...numeric,
-  },
-  glyph: { color: theme.green, fontSize: 18, fontWeight: '700' },
-  label: { color: theme.text, fontSize: 13, fontWeight: '700', ...numeric },
-  dim: { color: theme.slate },
-  wakeBtn: { backgroundColor: theme.green, borderColor: theme.green },
-  wakeText: {
-    color: '#052e16',
-    fontSize: 13,
-    fontWeight: '800',
-    letterSpacing: 1,
-    ...numeric,
-  },
-  pressed: { opacity: 0.7 },
+  disabled: { opacity: 0.4 },
+  pressed: { opacity: 0.6 },
 });

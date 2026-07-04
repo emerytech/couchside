@@ -2,7 +2,6 @@ import React from 'react';
 import { Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
 
 import { Gated } from '@/components/Gated';
-import { RemotePowerBar } from '@/components/RemotePowerBar';
 import { TabScreen } from '@/components/TabScreen';
 import { useLockOrientation } from '@/hooks/useLockOrientation';
 import { usePoll } from '@/hooks/usePoll';
@@ -90,8 +89,6 @@ function ConsoleScreen() {
 
   return (
     <View style={styles.screen}>
-      {/* Power + volume live in the shared top bar (also pinned atop the Pad). */}
-      <RemotePowerBar />
       <ScrollView
         style={styles.scroll}
         contentContainerStyle={{
