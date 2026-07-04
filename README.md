@@ -1,6 +1,6 @@
 # Couchside
 
-**Your phone is the monitor, remote console, and game controller for your living-room Linux box.**
+**Your phone is the dashboard, remote console, and game controller for your living-room Linux box.**
 
 Couchside pairs a native iOS & Android app with a tiny, dependency-free Python agent that runs on a SteamOS / Bazzite HTPC, a Steam Deck, or any systemd Linux machine. When gamescope wedges into a black screen and the TV shows nothing, Couchside is the screen: see live vitals, read the logs, restart the display session, or become an Xbox 360 controller, all from the couch and entirely on your own LAN. No cloud, no accounts, no analytics.
 
