@@ -1911,7 +1911,10 @@ def _event_name(etype, code):
     return "code_%d" % code
 
 
-# Linux ioctl request encoding: dir<<30 | size<<16 | type<<8 | nr
+# Python's stdlib has no helper for ioctl request numbers, so reproduce the
+# kernel's _IOC macros from <asm-generic/ioctl.h> by hand: each uinput request
+# below is built as direction<<30 | size<<16 | type<<8 | nr, the same way the C
+# header builds it.
 _IOC_NONE, _IOC_WRITE = 0, 1
 
 
@@ -1927,6 +1930,8 @@ def _IOW(typ, nr, size):
     return _ioc(_IOC_WRITE, typ, nr, size)
 
 
+# uinput's own ioctls. "U" is uinput's magic type byte; the numbers and the
+# int-sized argument come straight from <linux/uinput.h>.
 UI_SET_EVBIT = _IOW("U", 100, 4)   # int
 UI_SET_KEYBIT = _IOW("U", 101, 4)  # int
 UI_SET_RELBIT = _IOW("U", 102, 4)  # int
@@ -1955,23 +1960,35 @@ class UInputGamepad:
     def __init__(self):
         if fcntl is None:
             raise RuntimeError("fcntl module unavailable on this platform")
+        # A real size check, not an assert (python3 -O strips asserts). A struct
+        # that packed to the wrong size would silently scramble the descriptor
+        # handed to the kernel; 1116 is the fixed uinput_user_dev size.
         if struct.calcsize(_UINPUT_USER_DEV) != 1116:  # survives python3 -O
             raise RuntimeError("uinput_user_dev struct packs to %d bytes, expected 1116"
                                % struct.calcsize(_UINPUT_USER_DEV))
         self.fd = None
         fd = os.open("/dev/uinput", os.O_WRONLY | os.O_NONBLOCK)
         try:
-            fcntl.ioctl(fd, UI_SET_EVBIT, EV_KEY)
-            fcntl.ioctl(fd, UI_SET_EVBIT, EV_ABS)
+            # Legacy uinput handshake, strictly in this order: declare which
+            # event types and codes the device can emit (UI_SET_*), write the
+            # uinput_user_dev descriptor, then UI_DEV_CREATE to bring it to life.
+            fcntl.ioctl(fd, UI_SET_EVBIT, EV_KEY)   # buttons
+            fcntl.ioctl(fd, UI_SET_EVBIT, EV_ABS)   # sticks, triggers, dpad
             for code in BTN_CODES.values():
                 fcntl.ioctl(fd, UI_SET_KEYBIT, code)
             for code, _lo, _hi in GAMEPAD_AXES:
                 fcntl.ioctl(fd, UI_SET_ABSBIT, code)
+            # Axis ranges are indexed by the ABS_* code itself, so the arrays
+            # need a slot for every possible code (64). The concrete per-axis
+            # numbers (signed sticks, 0..255 triggers) live in GAMEPAD_AXES.
             absmin = [0] * 64
             absmax = [0] * 64
             for code, lo, hi in GAMEPAD_AXES:
                 absmin[code] = lo
                 absmax[code] = hi
+            # The struct ends with four s32[64] arrays: absmax, absmin, absfuzz,
+            # absflat. We fill max/min and leave fuzz/flat zero (no dead zone or
+            # jitter filter here; the phone side already smooths the sticks).
             setup = struct.pack(
                 _UINPUT_USER_DEV,
                 self.name.encode("utf-8"),
@@ -2317,6 +2334,10 @@ def ws_try_parse(buf):
     if len(buf) < 2:
         return None
     b0, b1 = buf[0], buf[1]
+    # Byte 0 packs FIN (0x80), three RSV bits (0x70), and the opcode (0x0F);
+    # byte 1 packs the MASK bit (0x80) and a 7-bit length (0x7F). The app only
+    # ever sends whole, single-frame, masked messages, so anything else is a
+    # protocol violation we reject rather than try to handle.
     if not (b0 & 0x80) or (b0 & 0x0F) == 0:
         raise ValueError("fragmented frames not supported")
     if b0 & 0x70:
@@ -2325,6 +2346,8 @@ def ws_try_parse(buf):
         raise ValueError("client frames must be masked")
     length = b1 & 0x7F
     idx = 2
+    # A 7-bit length of 126 means the real length is the next 2 bytes, 127 the
+    # next 8, both big-endian.
     if length == 126:
         if len(buf) < 4:
             return None
@@ -2340,6 +2363,8 @@ def ws_try_parse(buf):
     end = idx + 4 + length
     if len(buf) < end:
         return None
+    # The 4-byte masking key sits right before the payload; unmask by XOR-ing
+    # each byte with the key byte it cycles through (i mod 4).
     mask = buf[idx:idx + 4]
     payload = bytearray(buf[idx + 4:end])
     for i in range(length):
@@ -2369,8 +2394,11 @@ def ws_recv_frame(conn, buf):
 
 
 def ws_send(conn, opcode, payload=b""):
+    # Server frames are never masked. The header is FIN|opcode, then the length
+    # in its smallest form: inline 7-bit when under 126, otherwise the 126+u16
+    # or 127+u64 escape (this mirrors the read side in ws_try_parse).
     n = len(payload)
-    header = bytes([0x80 | opcode])
+    header = bytes([0x80 | opcode])   # 0x80 = FIN, i.e. a complete message
     if n < 126:
         header += bytes([n])
     elif n < (1 << 16):
