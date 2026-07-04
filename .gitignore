@@ -10,6 +10,7 @@ store/
 couchside-decky/
 
 # Store-signing secrets: never commit these. EAS reads them locally only.
+secrets/
 app/play-service-account.json
 *service-account*.json
 app/asc-key.p8
