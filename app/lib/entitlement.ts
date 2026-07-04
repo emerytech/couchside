@@ -49,7 +49,9 @@ const PURCHASE_DATE_KEY = 'couchpilot.entitlement.purchase-date.v1';
  * is inlined at build time, so this is a per-build constant, not a runtime
  * toggle. The badge stays off in beta (no false permanent Early Adopter).
  */
-const BETA_UNLOCK = process.env.EXPO_PUBLIC_BETA_UNLOCK === '1';
+/** True on beta builds (drives both the unlock and the in-app BETA badge). */
+export const IS_BETA_BUILD = process.env.EXPO_PUBLIC_BETA_UNLOCK === '1';
+const BETA_UNLOCK = IS_BETA_BUILD;
 const BETA_ENTITLEMENT: Entitlement = {
   state: 'purchased',
   trialDaysLeft: 0,
