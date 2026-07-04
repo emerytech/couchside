@@ -146,7 +146,16 @@ export type Tv = {
    * the app treats as the full op set.
    */
   ops?: TvOp[];
+  /** Box's own OS volume (media keys) is available (agent >= 2.6.2). */
+  box_volume?: boolean;
+  /** An external TV backend (panel/CEC) can drive volume (agent >= 2.6.2). */
+  tv_volume?: boolean;
+  /** An external TV backend (panel/CEC) can drive power (agent >= 2.6.2). */
+  tv_power?: boolean;
 };
+
+/** Where volume goes: the box's own OS volume, or the TV/panel over CEC/RS-232. */
+export type VolumeTarget = 'box' | 'tv';
 
 /** The unified TV ops the agent accepts at POST /api/tv/<op>. */
 export type TvOp = 'power_on' | 'power_off' | 'volume_up' | 'volume_down' | 'mute';
@@ -375,9 +384,14 @@ export const api = {
     return request<Tv>(settings, '/api/tv');
   },
 
-  /** Send a one-shot TV command. Returns an ActionResult. */
-  tvSend(settings: ConnSettings, op: TvOp): Promise<ActionResult> {
-    return request<ActionResult>(settings, `/api/tv/${op}`, {
+  /**
+   * Send a one-shot TV command. Volume ops take an optional target: "box" (the
+   * box's own OS volume, the default) or "tv" (the panel/CEC backend). Power
+   * ops ignore it.
+   */
+  tvSend(settings: ConnSettings, op: TvOp, target?: VolumeTarget): Promise<ActionResult> {
+    const q = target ? `?target=${target}` : '';
+    return request<ActionResult>(settings, `/api/tv/${op}${q}`, {
       method: 'POST',
       timeoutMs: 12000,
     });

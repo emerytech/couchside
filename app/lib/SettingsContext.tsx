@@ -244,6 +244,7 @@ export function useSettings(): SettingsContextValue {
       padMode: activeBox.padMode,
       lastIp: activeBox.lastIp,
       mac: activeBox.mac,
+      volumeTarget: activeBox.volumeTarget,
     };
   }, [activeBox]);
 

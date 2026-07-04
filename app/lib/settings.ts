@@ -34,6 +34,11 @@ export type Box = {
    * and the agent is no longer answering.
    */
   mac?: string;
+  /**
+   * Which volume the header controls drive: 'box' (the box's own OS volume via
+   * media keys, the default) or 'tv' (the panel/CEC backend). Per box.
+   */
+  volumeTarget?: 'box' | 'tv';
 };
 
 /**
@@ -49,6 +54,8 @@ export type Settings = {
   lastIp?: string;
   /** Cached MAC of the active box for Wake-on-LAN (see Box.mac). */
   mac?: string;
+  /** Volume target of the active box (see Box.volumeTarget). */
+  volumeTarget?: 'box' | 'tv';
 };
 
 /** Safe placeholder used when no box is active (nothing paired yet). */
@@ -165,6 +172,10 @@ export function normalizeMac(v: unknown): string | null {
   return canon === '00:00:00:00:00:00' ? null : canon;
 }
 
+function normalizeVolumeTarget(v: unknown): 'box' | 'tv' | undefined {
+  return v === 'tv' ? 'tv' : v === 'box' ? 'box' : undefined;
+}
+
 function normalizePadMode(v: unknown): PadMode {
   if (v === 'gamepad') return 'gamepad';
   if (v === 'trackpad') return 'trackpad';
@@ -186,7 +197,11 @@ function normalizeBox(raw: unknown): Box | null {
   const lastIp =
     typeof o.lastIp === 'string' && isValidLanIp(o.lastIp) ? o.lastIp : undefined;
   const mac = normalizeMac(o.mac) ?? undefined;
-  return { id, name, host, port, token, padMode: normalizePadMode(o.padMode), lastIp, mac };
+  const volumeTarget = normalizeVolumeTarget(o.volumeTarget);
+  return {
+    id, name, host, port, token, padMode: normalizePadMode(o.padMode),
+    lastIp, mac, volumeTarget,
+  };
 }
 
 // ---------- load / save ----------
@@ -274,6 +289,7 @@ export function activeSettings(state: BoxesState): Settings {
     padMode: active.padMode,
     lastIp: active.lastIp,
     mac: active.mac,
+    volumeTarget: active.volumeTarget,
   };
 }
 

@@ -4,7 +4,7 @@ import { Alert, Modal, Platform, Pressable, StyleSheet, Text, View } from 'react
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
 import { usePoll } from '@/hooks/usePoll';
-import { api, Status, Tv, TvOp } from '@/lib/api';
+import { api, Status, Tv, TvOp, VolumeTarget } from '@/lib/api';
 import { hapticError, hapticLight, hapticSuccess } from '@/lib/haptics';
 import { normalizeMac } from '@/lib/settings';
 import { useSettings } from '@/lib/SettingsContext';
@@ -108,7 +108,7 @@ export function RemotePowerBar() {
       hapticLight();
       setBusy(true);
       try {
-        await api.tvSend(settings, op);
+        await api.tvSend(settings, op, settings.volumeTarget ?? 'box');
       } catch {
         hapticError();
       } finally {
@@ -161,7 +161,12 @@ export function RemotePowerBar() {
   if (!ready || !configured) return null;
 
   const wired = s?.net?.wired;
-  const hasVolume = reachable && tv?.available === true;
+  const boxVol = tv?.box_volume ?? false;
+  // Old agents (< 2.6.2) don't split volume; treat an available backend as TV volume.
+  const tvVol = tv?.tv_volume ?? tv?.available === true;
+  const hasVolume = reachable && (boxVol || tvVol);
+  const canToggleVolume = boxVol && tvVol;
+  const volumeTarget: VolumeTarget = settings.volumeTarget ?? 'box';
   const canSuspend = reachable && hasSuspend;
   const canWake = !reachable && !!settings.mac && wolAvailable;
 
@@ -227,26 +232,46 @@ export function RemotePowerBar() {
               )}
 
               {hasVolume && (
-                <View style={styles.volRow}>
-                  <Pressable
-                    disabled={busy}
-                    onPress={() => sendTv('volume_down')}
-                    style={({ pressed }) => [styles.volBtn, pressed && styles.pressed]}>
-                    <Ionicons name="volume-low" size={24} color={theme.text} />
-                  </Pressable>
-                  <Pressable
-                    disabled={busy}
-                    onPress={() => sendTv('mute')}
-                    style={({ pressed }) => [styles.volBtn, pressed && styles.pressed]}>
-                    <Ionicons name="volume-mute" size={24} color={theme.text} />
-                  </Pressable>
-                  <Pressable
-                    disabled={busy}
-                    onPress={() => sendTv('volume_up')}
-                    style={({ pressed }) => [styles.volBtn, pressed && styles.pressed]}>
-                    <Ionicons name="volume-high" size={24} color={theme.text} />
-                  </Pressable>
-                </View>
+                <>
+                  {canToggleVolume && (
+                    <View style={styles.segRow}>
+                      <Pressable
+                        onPress={() => void update({ volumeTarget: 'box' })}
+                        style={[styles.seg, volumeTarget === 'box' && styles.segActive]}>
+                        <Text style={[styles.segText, volumeTarget === 'box' && styles.segTextActive]}>
+                          Box
+                        </Text>
+                      </Pressable>
+                      <Pressable
+                        onPress={() => void update({ volumeTarget: 'tv' })}
+                        style={[styles.seg, volumeTarget === 'tv' && styles.segActive]}>
+                        <Text style={[styles.segText, volumeTarget === 'tv' && styles.segTextActive]}>
+                          TV
+                        </Text>
+                      </Pressable>
+                    </View>
+                  )}
+                  <View style={styles.volRow}>
+                    <Pressable
+                      disabled={busy}
+                      onPress={() => sendTv('volume_down')}
+                      style={({ pressed }) => [styles.volBtn, pressed && styles.pressed]}>
+                      <Ionicons name="volume-low" size={24} color={theme.text} />
+                    </Pressable>
+                    <Pressable
+                      disabled={busy}
+                      onPress={() => sendTv('mute')}
+                      style={({ pressed }) => [styles.volBtn, pressed && styles.pressed]}>
+                      <Ionicons name="volume-mute" size={24} color={theme.text} />
+                    </Pressable>
+                    <Pressable
+                      disabled={busy}
+                      onPress={() => sendTv('volume_up')}
+                      style={({ pressed }) => [styles.volBtn, pressed && styles.pressed]}>
+                      <Ionicons name="volume-high" size={24} color={theme.text} />
+                    </Pressable>
+                  </View>
+                </>
               )}
             </Pressable>
           </View>
@@ -306,4 +331,15 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     justifyContent: 'center',
   },
+  segRow: {
+    flexDirection: 'row',
+    gap: 2,
+    padding: 2,
+    borderRadius: 10,
+    backgroundColor: theme.inset,
+  },
+  seg: { flex: 1, paddingVertical: 8, borderRadius: 8, alignItems: 'center' },
+  segActive: { backgroundColor: theme.card },
+  segText: { color: theme.textDim, fontSize: 13, fontWeight: '700', fontFamily: mono },
+  segTextActive: { color: theme.text },
 });

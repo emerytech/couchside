@@ -38,7 +38,7 @@ except ImportError:  # pragma: no cover
     fcntl = None
 
 APP_NAME = "couchside-agent"
-VERSION = "2.6.1"
+VERSION = "2.6.2"
 UID = os.getuid()
 XDG_RUNTIME_DIR = "/run/user/%d" % UID
 
@@ -1588,6 +1588,8 @@ _TV_TO_CEC = {"power_on": "power_on", "power_off": "standby",
               "volume_up": "volume_up", "volume_down": "volume_down",
               "mute": "mute"}
 
+_POWER_OPS = ("power_on", "power_off")
+
 
 def set_tv(mock):
     """Probe every TV backend at startup (call after load_config)."""
@@ -1596,49 +1598,69 @@ def set_tv(mock):
     set_soft(mock)
 
 
-def tv_backend():
-    """Active backend name, or None when no backend exists. The serial panel is
-    preferred over CEC because it is reliable and can power on from standby;
-    soft (box audio) is the last resort when neither can drive the TV."""
+def _tv_hw_backend():
+    """The external TV backend for power (and TV volume, when chosen): the serial
+    panel first (it can power on from standby), then CEC. None when neither
+    exists. Kept separate from box volume, which the soft backend handles."""
     if panel_available():
         return "panel"
     if cec_available():
         return "cec"
-    if soft_available():
-        return "soft"
     return None
 
 
 def tv_info():
-    """GET /api/tv body, or None when no backend is available. "ops" lists the
-    controls the active backend supports so the app can hide the rest."""
-    b = tv_backend()
-    if b == "panel":
-        return {"available": True, "backend": "panel",
-                "adapter": "Newline RS-232 (%s @ %d)"
-                           % (PANEL["device"], PANEL["baud"]),
-                "ops": list(TV_OPS)}
-    if b == "cec":
+    """GET /api/tv body, or None when nothing is controllable. The two concerns
+    are split so the app can offer box vs TV volume: tv_power/tv_volume mean an
+    external TV backend (panel/CEC) is present; box_volume means the box's own OS
+    volume (soft) is available. Volume defaults to the box (see tv_send)."""
+    hw = _tv_hw_backend()
+    box_vol = soft_available()
+    if hw is None and not box_vol:
+        return None
+    if hw == "panel":
+        backend, adapter = "panel", "Newline RS-232 (%s @ %d)" % (
+            PANEL["device"], PANEL["baud"])
+    elif hw == "cec":
         cec = cec_current()
-        adapter = cec["adapter"] if cec else "CEC"
-        return {"available": True, "backend": "cec", "adapter": adapter,
-                "ops": list(TV_OPS)}
-    if b == "soft":
-        return {"available": True, "backend": "soft",
-                "adapter": SOFT["adapter"], "ops": list(SOFT_OPS)}
-    return None
+        backend, adapter = "cec", (cec["adapter"] if cec else "CEC")
+    else:
+        backend, adapter = "soft", (SOFT["adapter"] if SOFT else "OS volume keys")
+    return {
+        "available": True,
+        "backend": backend,
+        "adapter": adapter,
+        "ops": list(TV_OPS),
+        "box_volume": box_vol,
+        "tv_volume": hw is not None,
+        "tv_power": hw is not None,
+    }
 
 
-def tv_send(op, mock):
-    """Dispatch a unified TV op to the active backend. Returns an ActionResult,
-    or None when no backend is available (caller 404s)."""
-    b = tv_backend()
+def _send_tv_hw(op, mock):
+    """Route an op to the external TV backend (panel/CEC), or None if neither."""
+    b = _tv_hw_backend()
     if b == "panel":
         return mock_panel(op) if mock else real_panel(op)
     if b == "cec":
         cec_op = _TV_TO_CEC[op]
         return mock_cec(cec_op) if mock else real_cec(cec_op)
-    if b == "soft":
+    return None
+
+
+def tv_send(op, mock, target=None):
+    """Dispatch a TV op. Power always goes to the external TV backend. Volume
+    goes to the box's own OS volume (soft) by default, or to the TV backend when
+    target == "tv" (the app's opt-in). Falls back to whichever exists when the
+    chosen target is missing. None when nothing can handle it (caller 404s)."""
+    if op in _POWER_OPS:
+        return _send_tv_hw(op, mock)
+    if target != "tv" and soft_available():
+        return mock_soft(op) if mock else real_soft(op)
+    r = _send_tv_hw(op, mock)
+    if r is not None:
+        return r
+    if soft_available():
         return mock_soft(op) if mock else real_soft(op)
     return None
 
@@ -3017,15 +3039,17 @@ class Handler(BaseHTTPRequestHandler):
                 self._send(200, result, started)
                 return
 
-            # POST /api/tv/<op>: one-shot TV control (panel or CEC backend).
+            # POST /api/tv/<op>: TV power / volume. Volume defaults to the box's
+            # own OS volume; ?target=tv routes it to the panel/CEC backend.
             tprefix = "/api/tv/"
             if path.startswith(tprefix):
                 op = path[len(tprefix):]
                 if op not in TV_OPS:
                     self._send(404, {"error": "unknown tv op"}, started)
                     return
-                result = tv_send(op, self.mock)
-                if result is None:  # no backend available
+                target = parse_qs(parsed.query).get("target", [None])[0]
+                result = tv_send(op, self.mock, target)
+                if result is None:  # nothing can handle this op
                     self._send(404, {"error": "not found"}, started)
                     return
                 self._send(200, result, started)
