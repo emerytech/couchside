@@ -868,8 +868,9 @@ def _steam_root():
 def _parse_vdf_paths(text):
     """Extract library "path" values from a libraryfolders.vdf blob.
 
-    Best-effort line scan for `"path"   "<value>"`: the VDF is a simple quoted
-    key/value tree and we only need the path strings. Never raises.
+    Steam's VDF has no stdlib parser and the agent ships pure-stdlib (no pip on
+    immutable distros), so rather than vendor a parser we line-scan for the one
+    thing needed here: `"path"   "<value>"`. Best-effort; never raises.
     """
     paths = []
     for line in text.splitlines():
@@ -1268,10 +1269,12 @@ def _libcec_has_adapter(cec_client_bin):
                            timeout=6)
     except Exception:
         return False
+    # cec-client's `-l` output format shifts between libcec versions: newer
+    # builds print a "COM port:" line per adapter, older ones only a "Found
+    # devices: N" summary line, so accept either as proof of an adapter.
     out = (r.stdout or b"").decode("utf-8", "replace").lower()
     if "com port:" in out:
         return True
-    # Fallback: parse the "Found devices: N" summary line.
     for line in out.splitlines():
         s = line.strip()
         if s.startswith("found devices:"):

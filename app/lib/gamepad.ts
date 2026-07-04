@@ -357,6 +357,9 @@ export class GamepadClient {
     this.ws = ws;
 
     ws.onmessage = (ev: WebSocketMessageEvent) => {
+      // A reconnect can replace this.ws while this socket's callbacks are still
+      // pending, so ignore events from a socket we have already superseded.
+      // (Same guard in onerror/onclose below.)
       if (ws !== this.ws) return;
       let msg: { t?: string; dev?: string; msg?: string };
       try {
