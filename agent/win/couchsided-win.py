@@ -1058,6 +1058,49 @@ def _steam_exe(root):
     return exe if os.path.isfile(exe) else None
 
 
+# Steam Big Picture action, injected at load time when steam.exe exists (see
+# _inject_steam_action). The Windows analog of the Linux agent's built-in
+# SteamOS session-switch actions: one tap puts the box in couch/controller
+# mode. Uses the steam://open/bigpicture URL (validated on a real box): the
+# URL handler COLD-STARTS Steam into Big Picture when it isn't running AND
+# flips an already-running instance, whereas the `-bigpicture` flag is only
+# honored at process start (a running instance ignores it as a forwarded
+# arg). Runs in the interactive session (the agent's scheduled task lives
+# there), so the UI lands on the actual screen.
+STEAM_BIGPICTURE_ACTION = {
+    "label": "Steam Big Picture",
+    "description": "Open Steam in Big Picture (couch) mode; starts Steam if it isn't running",
+    "danger": "low",
+    "cmd": [],  # filled with the discovered steam.exe path at inject time
+    "user_env": False,
+    "detached": True,
+}
+
+
+def _inject_steam_action(mock):
+    """Add the Steam Big Picture action when steam.exe is present. Called
+    after load_config so it applies whether config loaded or fell back to
+    defaults; a config-defined "steam-bigpicture" wins. In --mock it is
+    always injected (fake argv) so the app's Actions tab can be developed
+    off-box. Idempotent."""
+    global ACTIONS, ACTION_ORDER
+    if "steam-bigpicture" in ACTIONS:
+        return
+    if mock:
+        cmd = ["steam", "steam://open/bigpicture"]
+    else:
+        root = _steam_root()
+        exe = _steam_exe(root) if root else None
+        if exe is None:
+            return
+        cmd = [exe, "steam://open/bigpicture"]
+    spec = dict(STEAM_BIGPICTURE_ACTION)
+    spec["cmd"] = cmd
+    ACTIONS["steam-bigpicture"] = spec
+    if "steam-bigpicture" not in ACTION_ORDER:
+        ACTION_ORDER.append("steam-bigpicture")
+
+
 def _parse_vdf_paths(text):
     """Extract library "path" values from a libraryfolders.vdf blob.
     Line-scan, best-effort; never raises. VDF escapes backslashes ("C:\\\\...")
@@ -3039,6 +3082,7 @@ def main():
         sys.exit(1)
 
     load_config(args.config)
+    _inject_steam_action(args.mock)
     set_tv(args.mock)
     if IS_WINDOWS and not args.mock:
         start_load_sampler()
