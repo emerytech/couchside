@@ -53,6 +53,11 @@
         "ascApiKeyId": "URS64G4G4P",
         "ascApiKeyIssuerId": "91ab3221-7136-47ce-910a-de13972509f5",
         "appleTeamId": "XK6QP975ZQ"
+      },
+      "android": {
+        "serviceAccountKeyPath": "../secrets/play-service-account.json",
+        "track": "production",
+        "releaseStatus": "completed"
       }
     }
   }
