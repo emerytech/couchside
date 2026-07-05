@@ -26,7 +26,7 @@ Couchside pairs a native iOS & Android app with a tiny, dependency-free Python a
 ## Requirements
 
 - A **SteamOS, Bazzite, or other systemd-based Linux** machine on your home network (HTPC, Steam Deck in desktop/docked use, mini PC…). The agent is pure Python 3 stdlib: no pip, and it works on immutable/ostree systems.
-  - **Windows HTPC?** An experimental Windows agent with the same API lives in [`agent/win/`](agent/win/README.md) (services, Event Log, Steam launching, volume, ViGEm virtual gamepad).
+  - **Windows HTPC?** There's a Windows agent with the same API ([`agent/win/`](agent/win/README.md)) — services, Event Log, Steam launching + Big Picture, volume, and a ViGEm virtual gamepad. Install it in one line from PowerShell: `irm https://couchside.tv/install.ps1 | iex`.
 - An **iPhone or Android phone** on the same LAN.
 
 ## Install the agent

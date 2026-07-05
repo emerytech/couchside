@@ -6,35 +6,57 @@ app pairs with and controls a Windows HTPC exactly like a SteamOS/Bazzite
 box — health, service watchlist, event-log tails, recovery actions, Steam
 game launching, TV/volume control, and the virtual gamepad/mouse/keyboard.
 
-Pure Python stdlib (`ctypes` for Win32); no pip dependencies. Ships either
-as `couchsided-win.py` (needs Python 3.9+ on the box) or as a self-contained
+Pure Python stdlib (`ctypes` for Win32); no pip dependencies. Runs as
+`couchsided-win.py` (Python 3.9+) or as a self-contained
 `couchside-agent.exe` built with `build.ps1`.
 
-## Install (run ON the box, elevated PowerShell)
+## Install (one line)
+
+Open **PowerShell** on the box and run — it self-elevates via UAC:
 
 ```powershell
-powershell -ExecutionPolicy Bypass -File install.ps1
+irm https://couchside.tv/install.ps1 | iex
 ```
+
+That single command installs Python (via winget) if needed, downloads the
+agent, installs the ViGEmBus virtual-gamepad driver, sets up the token +
+firewall + at-logon task, and opens the pairing page. When it finishes,
+scan the QR with the Couchside app (phone on the same Wi-Fi/LAN).
 
 The installer:
 
-1. installs the agent to `%LOCALAPPDATA%\Couchside\agent\`,
-2. creates `%ProgramData%\Couchside\token` (pairing secret, ACL-restricted)
+1. installs **Python 3** via winget if not already present (skipped when a
+   real Python 3 is found; the Microsoft Store stub is rejected),
+2. downloads the agent to `%LOCALAPPDATA%\Couchside\agent\` (or copies it
+   from a local checkout when run from `agent\win\`),
+3. installs the **ViGEmBus** driver + client DLL for the virtual gamepad
+   (skip with `-NoGamepad`),
+4. creates `%ProgramData%\Couchside\token` (pairing secret, ACL-restricted)
    and an initial `config.json` tailored to the box (adds the
    `Steam Client Service` watch only if Steam is installed),
-3. disables hibernation so the Suspend action sleeps to RAM
+5. disables hibernation so the Suspend action sleeps to RAM
    (`-KeepHibernate` to skip),
-4. opens the port in Windows Firewall (**Private profile only**),
-5. registers + starts a **Scheduled Task** ("Couchside Agent"): at-logon,
+6. opens the port in Windows Firewall (**Private profile only**; warns if the
+   active network is classed Public, which would block pairing),
+7. registers + starts a **Scheduled Task** ("Couchside Agent"): at-logon,
    current user, **non-elevated**, in the interactive session,
-6. opens `http://localhost:8787/pair` — scan the QR with the Couchside app.
+8. opens `http://localhost:8787/pair` — scan the QR with the Couchside app.
 
 Idempotent: safe to re-run for upgrades. An existing token and config.json
 are always kept, so paired phones keep working.
 
+### Options / uninstall
+
+Options don't survive the `| iex` pipe, so download the script to pass them:
+
 ```powershell
+irm https://couchside.tv/install.ps1 -OutFile install.ps1
+powershell -ExecutionPolicy Bypass -File install.ps1 -Port 9000 -NoGamepad
 powershell -ExecutionPolicy Bypass -File install.ps1 -Uninstall
 ```
+
+Flags: `-Port <n>`, `-NoGamepad`, `-NoFirewall`, `-KeepHibernate`,
+`-Uninstall`.
 
 ### Why a Scheduled Task and not a Windows service
 
