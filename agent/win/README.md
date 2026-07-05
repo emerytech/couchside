@@ -36,8 +36,9 @@ The installer:
    `Steam Client Service` watch only if Steam is installed),
 5. disables hibernation so the Suspend action sleeps to RAM
    (`-KeepHibernate` to skip),
-6. opens the port in Windows Firewall (**Private profile only**; warns if the
-   active network is classed Public, which would block pairing),
+6. opens the port in Windows Firewall for the network profile(s) the box is on
+   (Private, plus Public/Domain when the active network is classed that way, so
+   a home LAN that Windows misclassifies as **Public** still pairs),
 7. registers + starts a **Scheduled Task** ("Couchside Agent"): at-logon,
    current user, **non-elevated**, in the interactive session,
 8. opens `http://localhost:8787/pair` — scan the QR with the Couchside app.
@@ -135,5 +136,9 @@ with the sudoers model replaced by a **non-elevated** interactive scheduled
 task (LAN clients holding the token can only ever execute as the ordinary
 desktop user, never as Administrator). The token file is ACL-restricted via
 language-neutral SIDs to SYSTEM/Administrators/the installing user. The
-firewall rule is Private-profile only, so the port is closed on networks
-Windows classifies as Public.
+firewall rule opens the port for the profile(s) the box is actually on —
+Private always, plus Public/Domain only when the active network is classed
+that way (so a misclassified home LAN pairs, while a truly-private box stays
+Private-only). If the box roams to untrusted Wi-Fi, tighten the rule to
+Private and rely on the bearer token, which every route but `/api/ping`
+requires regardless.

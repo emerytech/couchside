@@ -21,7 +21,9 @@
 #   3. installs the ViGEmBus driver + client DLL for the virtual gamepad
 #      (skip with -NoGamepad)
 #   4. creates %ProgramData%\Couchside\token (pairing secret) + config.json
-#   5. opens TCP 8787 inbound on the Private firewall profile
+#   5. opens TCP 8787 inbound for the network profile(s) this box is on
+#      (Private, plus Public/Domain when the active network is classed that way,
+#      so a home LAN Windows misclassifies as "Public" still pairs)
 #   6. registers a Scheduled Task that starts the agent at logon, in the
 #      interactive desktop session, NON-elevated (virtual input can't reach
 #      the desktop from a session-0 service; unprivileged mirrors the Linux
@@ -368,21 +370,25 @@ if (-not $KeepHibernate) {
     Write-Host 'Disabled hibernation (so Suspend sleeps to RAM; -KeepHibernate to skip).'
 }
 
-# --- 6. firewall (Private profile only: LAN-only plain-HTTP agent) -----------
+# --- 6. firewall: open for the profile(s) this box is actually on ------------
+# Windows often misclassifies a home LAN as "Public"; a Private-only rule then
+# silently blocks the phone (the #1 pairing failure). So open Private always,
+# and add Public/Domain only when the active network is that category — a truly
+# private box stays tight, a misclassified one still pairs.
 if (-not $NoFirewall) {
     Remove-NetFirewallRule -DisplayName $FwRule -ErrorAction SilentlyContinue
+    $active = @(Get-NetConnectionProfile -ErrorAction SilentlyContinue |
+                Select-Object -ExpandProperty NetworkCategory)
+    $fwProfiles = @('Private')
+    if ($active -contains 'Public') { $fwProfiles += 'Public' }
+    if ($active -contains 'DomainAuthenticated') { $fwProfiles += 'Domain' }
+    $profileArg = ($fwProfiles | Select-Object -Unique) -join ','
     New-NetFirewallRule -DisplayName $FwRule -Direction Inbound -Action Allow `
-        -Protocol TCP -LocalPort $Port -Profile Private | Out-Null
-    Write-Host "Firewall: allowed TCP $Port on the Private profile."
-    # The rule only applies on a Private network. A LAN classed Public blocks
-    # the phone; warn with the one-line fix rather than silently changing it.
-    $pub = Get-NetConnectionProfile | Where-Object { $_.NetworkCategory -eq 'Public' }
-    if ($pub) {
-        Write-Host ''
-        Write-Host 'WARNING: an active network is set to "Public", which blocks pairing.' -ForegroundColor Yellow
-        foreach ($p in $pub) {
-            Write-Host ("  Set it Private:  Set-NetConnectionProfile -InterfaceAlias '{0}' -NetworkCategory Private" -f $p.InterfaceAlias)
-        }
+        -Protocol TCP -LocalPort $Port -Profile $profileArg | Out-Null
+    Write-Host "Firewall: allowed TCP $Port for the $profileArg profile(s)."
+    if ($fwProfiles -contains 'Public') {
+        Write-Host "  (This network is classed Public, so the port is open there too. If this"
+        Write-Host "   box ever roams to untrusted Wi-Fi, restrict the '$FwRule' rule to Private.)"
     }
 }
 
