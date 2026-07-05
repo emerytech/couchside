@@ -1061,12 +1061,15 @@ def _steam_exe(root):
 # Steam Big Picture action, injected at load time when steam.exe exists (see
 # _inject_steam_action). The Windows analog of the Linux agent's built-in
 # SteamOS session-switch actions: one tap puts the box in couch/controller
-# mode. Uses the steam://open/bigpicture URL (validated on a real box): the
-# URL handler COLD-STARTS Steam into Big Picture when it isn't running AND
-# flips an already-running instance, whereas the `-bigpicture` flag is only
-# honored at process start (a running instance ignores it as a forwarded
-# arg). Runs in the interactive session (the agent's scheduled task lives
-# there), so the UI lands on the actual screen.
+# mode. Uses the `-bigpicture` flag (validated on a real box): it reliably
+# COLD-STARTS a closed Steam directly into Big Picture — the couch use case.
+# The `steam://open/bigpicture` URL was tried and REJECTED: on a cold start
+# its handler brings Steam up in ordinary desktop mode (the URL is consumed
+# before the UI is ready), which is exactly the "nothing happens" symptom.
+# Trade-off: the flag does not flip an already-running desktop instance into
+# Big Picture, but the target scenario is an idle box with Steam closed.
+# Runs in the interactive session (the agent's scheduled task lives there),
+# so the UI lands on the actual screen.
 STEAM_BIGPICTURE_ACTION = {
     "label": "Steam Big Picture",
     "description": "Open Steam in Big Picture (couch) mode; starts Steam if it isn't running",
@@ -1087,13 +1090,13 @@ def _inject_steam_action(mock):
     if "steam-bigpicture" in ACTIONS:
         return
     if mock:
-        cmd = ["steam", "steam://open/bigpicture"]
+        cmd = ["steam", "-bigpicture"]
     else:
         root = _steam_root()
         exe = _steam_exe(root) if root else None
         if exe is None:
             return
-        cmd = [exe, "steam://open/bigpicture"]
+        cmd = [exe, "-bigpicture"]
     spec = dict(STEAM_BIGPICTURE_ACTION)
     spec["cmd"] = cmd
     ACTIONS["steam-bigpicture"] = spec
@@ -1322,6 +1325,10 @@ def _write_config_launchers(new_launchers):
             for l in new_launchers
         ]
         directory = os.path.dirname(CONFIG_PATH) or "."
+        # Create the config dir if it's missing: on Windows the agent may run
+        # with a literal --token and no pre-existing %ProgramData%\Couchside,
+        # and the first launcher POST would otherwise 500 on a FileNotFoundError.
+        os.makedirs(directory, exist_ok=True)
         fd, tmp = tempfile.mkstemp(prefix=".couchside-config-", dir=directory)
         try:
             with os.fdopen(fd, "w", encoding="utf-8") as f:
