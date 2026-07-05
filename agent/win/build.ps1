@@ -3,8 +3,9 @@
 #
 #   powershell -ExecutionPolicy Bypass -File build.ps1
 #
-# Output: dist\couchside-agent.exe (copy it next to install.ps1, optionally
-# with ViGEmClient.dll, and ship those two files).
+# Output: dist\couchside-agent.exe. Drop it (optionally with ViGEmClient.dll)
+# next to this script in agent\win\ — the root install.ps1 finds an exe there
+# and installs it instead of downloading the Python agent.
 
 $ErrorActionPreference = 'Stop'
 $here = Split-Path -Parent $MyInvocation.MyCommand.Path

@@ -17,7 +17,7 @@
 # What it does (all reversible with -Uninstall):
 #   1. installs Python 3 (via winget) if it isn't already present
 #   2. downloads the agent to %LOCALAPPDATA%\Couchside\agent\ (or copies it
-#      from a local checkout when run from agent\win\)
+#      from a repo checkout when this script sits next to agent\win\)
 #   3. installs the ViGEmBus driver + client DLL for the virtual gamepad
 #      (skip with -NoGamepad)
 #   4. creates %ProgramData%\Couchside\token (pairing secret) + config.json
@@ -186,23 +186,36 @@ $here    = if ($PSCommandPath) { Split-Path -Parent $PSCommandPath } else { $nul
 $usePython = $true
 $pyPath  = $null
 
+function Find-Local {
+    # First existing candidate under $here, or $null. Candidates are given
+    # relative to the script so this works whether the installer is run from
+    # the repo ROOT (this file's home, mirroring install.sh -> agent files
+    # live under agent\win\) or from a standalone agent\win\ folder.
+    param([string[]]$rels)
+    if (-not $here) { return $null }
+    foreach ($r in $rels) {
+        $p = Join-Path $here $r
+        if (Test-Path $p) { return $p }
+    }
+    return $null
+}
+
 Stop-AgentTask
 New-Item -ItemType Directory -Force -Path $InstallDir | Out-Null
 New-Item -ItemType Directory -Force -Path $DataDir | Out-Null
 
-$localExe = if ($here) { Join-Path $here 'couchside-agent.exe' } else { $null }
-$localPy  = if ($here) { Join-Path $here 'couchsided-win.py' }  else { $null }
+$localExe = Find-Local @('couchside-agent.exe','agent\win\couchside-agent.exe')
+$localPy  = Find-Local @('couchsided-win.py','agent\win\couchsided-win.py')
+$localQr  = Find-Local @('qr.py','agent\qr.py','..\qr.py','agent\win\qr.py')
+$localDll = Find-Local @('ViGEmClient.dll','agent\win\ViGEmClient.dll')
 
-if ($localExe -and (Test-Path $localExe)) {
+if ($localExe) {
     # Prebuilt exe: no Python needed.
     $usePython = $false
     Copy-Item $localExe (Join-Path $InstallDir 'couchside-agent.exe') -Force
     Write-Host 'Using local couchside-agent.exe'
-    $localQr = Join-Path $here 'qr.py'
-    if (-not (Test-Path $localQr)) { $localQr = Join-Path (Split-Path $here -Parent) 'qr.py' }
-    if (Test-Path $localQr) { Copy-Item $localQr (Join-Path $InstallDir 'qr.py') -Force }
-    $localDll = Join-Path $here 'ViGEmClient.dll'
-    if (Test-Path $localDll) { Copy-Item $localDll (Join-Path $InstallDir 'ViGEmClient.dll') -Force }
+    if ($localQr)  { Copy-Item $localQr  (Join-Path $InstallDir 'qr.py') -Force }
+    if ($localDll) { Copy-Item $localDll (Join-Path $InstallDir 'ViGEmClient.dll') -Force }
 }
 else {
     # Python path (local checkout or web download). Ensure Python first.
@@ -216,11 +229,9 @@ else {
     }
     Write-Host "Using Python: $pyPath"
 
-    if ($localPy -and (Test-Path $localPy)) {
+    if ($localPy) {
         Copy-Item $localPy (Join-Path $InstallDir 'couchsided-win.py') -Force
-        $localQr = Join-Path $here 'qr.py'
-        if (-not (Test-Path $localQr)) { $localQr = Join-Path (Split-Path $here -Parent) 'qr.py' }
-        if (Test-Path $localQr) { Copy-Item $localQr (Join-Path $InstallDir 'qr.py') -Force }
+        if ($localQr) { Copy-Item $localQr (Join-Path $InstallDir 'qr.py') -Force }
         Write-Host 'Installed agent from local checkout.'
     } else {
         Write-Host "Downloading agent from $RawBase ..."
