@@ -16,6 +16,7 @@ import React, { useCallback, useEffect, useRef, useState } from 'react';
 import {
   Animated,
   AppState,
+  InputAccessoryView,
   Keyboard,
   PanResponder,
   Platform,
@@ -342,6 +343,11 @@ function Trackpad({ onMove, onLeftClick, onRightClick, onScroll }: TrackpadProps
 
 // ---------- Keyboard bar (off-screen TextInput -> protocol v2 keys) ----------
 
+// iOS accessory bar id: rides on TOP of the system keyboard so a Done button is
+// always visible while typing (the in-layout bar below is hidden behind the
+// raised keyboard, which left users no obvious way to dismiss it).
+const KB_ACCESSORY_ID = 'couchside-kb-accessory';
+
 type KeyboardBarProps = {
   onText: (s: string) => void;
   onBackspace: () => void;
@@ -482,7 +488,27 @@ function KeyboardBar({ onText, onBackspace, onEnter }: KeyboardBarProps) {
         blurOnSubmit={false}
         keyboardAppearance="dark"
         caretHidden
+        inputAccessoryViewID={Platform.OS === 'ios' ? KB_ACCESSORY_ID : undefined}
       />
+      {/* Done bar pinned to the top of the iOS keyboard — always reachable,
+          unlike the in-layout bar which the raised keyboard covers. */}
+      {Platform.OS === 'ios' && (
+        <InputAccessoryView nativeID={KB_ACCESSORY_ID}>
+          <View style={styles.kbAccessory}>
+            <Text style={styles.kbAccessoryHint}>⌨  type to send</Text>
+            <Pressable
+              onPress={dismiss}
+              hitSlop={10}
+              style={({ pressed }) => [
+                styles.kbDone,
+                styles.kbAccessoryDone,
+                pressed && styles.btnPressed,
+              ]}>
+              <Text style={styles.kbDoneText}>DONE</Text>
+            </Pressable>
+          </View>
+        </InputAccessoryView>
+      )}
     </>
   );
 }
@@ -1165,6 +1191,26 @@ const styles = StyleSheet.create({
     fontSize: 12,
     fontWeight: '700',
     letterSpacing: 1,
+  },
+  kbAccessory: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    paddingHorizontal: 12,
+    paddingVertical: 8,
+    backgroundColor: theme.inset,
+    borderTopWidth: 1,
+    borderTopColor: theme.cardBorder,
+  },
+  kbAccessoryHint: {
+    color: theme.textDim,
+    fontFamily: mono,
+    fontSize: 12,
+    fontWeight: '700',
+    letterSpacing: 1,
+  },
+  kbAccessoryDone: {
+    paddingVertical: 8,
   },
   kbBarTextOpen: {
     color: theme.blue,
