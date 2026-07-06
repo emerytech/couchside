@@ -41,7 +41,11 @@ The installer:
    a home LAN that Windows misclassifies as **Public** still pairs),
 7. registers + starts a **Scheduled Task** ("Couchside Agent"): at-logon,
    current user, **non-elevated**, in the interactive session,
-8. opens `http://localhost:8787/pair` — scan the QR with the Couchside app.
+8. installs a **taskbar tray widget** (a Startup-folder shortcut running
+   `couchside-tray.pyw` windowless under `pythonw`) and launches it — see
+   [Tray widget](#tray-widget) (Python installs only; the prebuilt-exe path has
+   no interpreter for the `.pyw` GUI),
+9. opens `http://localhost:8787/pair` — scan the QR with the Couchside app.
 
 Idempotent: safe to re-run for upgrades. An existing token and config.json
 are always kept, so paired phones keep working.
@@ -80,6 +84,23 @@ same driver DS4Windows uses) driven via `ViGEmClient.dll` placed next to the
 agent. Without it, everything else still works and the app's pad screen
 shows "gamepad unavailable" — mouse, keyboard, and volume need **no driver**
 (they go through `SendInput`).
+
+### Tray widget
+
+`couchside-tray.pyw` is an optional taskbar tray icon (green = agent running,
+gray = stopped) that opens a small dark flyout panel: **Start / Stop / Restart**
+the agent's scheduled task, the **pairing QR** + connection details, a
+**start-at-logon** toggle, and Quit. It's the quick console for the agent
+without opening a browser or Task Scheduler.
+
+Pure stdlib — `ctypes` drives the Win32 tray icon (`Shell_NotifyIcon`) and a
+runtime-drawn GDI icon; `tkinter` (bundled with the python.org install) draws
+the panel; `qr.py` renders the matrix. It runs **windowless** under `pythonw`,
+**non-elevated**, and controls only the current user's own "Couchside Agent"
+task. The installer adds a Startup-folder shortcut so it's in the tray at
+logon; remove it by deleting that shortcut (or run the installer with
+`-Uninstall`, which removes the shortcut and stops the icon). Skipped on the
+prebuilt-exe path (the `.pyw` needs a Python interpreter + tkinter).
 
 ## What maps to what
 
