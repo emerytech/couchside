@@ -1449,9 +1449,15 @@ if IS_WINDOWS:
     class _INPUT(ctypes.Structure):
         _fields_ = [("type", ctypes.c_uint32), ("u", _INPUT_UNION)]
 
+    # Pin the signature: without argtypes ctypes defaults every arg to c_int,
+    # which truncates the _INPUT array pointer on 64-bit Windows.
+    _user32.SendInput.argtypes = [wintypes.UINT, ctypes.POINTER(_INPUT), ctypes.c_int]
+    _user32.SendInput.restype = wintypes.UINT
+
     def _send_inputs(inputs):
         """SendInput a list of _INPUT; raises OSError when Windows swallows
-        them (secure desktop / UIPI), so callers can report failure."""
+        them (secure desktop / UIPI / wrong session), so callers can report
+        failure. Callers must treat this as NON-fatal — see _gamepad_message."""
         if not inputs:
             return
         n = len(inputs)
@@ -3021,17 +3027,35 @@ class Handler(BaseHTTPRequestHandler):
 
         try:
             target.emit(events)
-        except ValueError as e:
-            # Layout-dependent character resolution (WinKeyboard) surfaces
-            # here; same contract as a decode error.
-            ws_send_json(conn, {"t": "err", "msg": str(e)})
-            ws_send(conn, WS_OP_CLOSE)
-            return False
-        except OSError as e:
-            ws_send_json(conn, {"t": "err", "msg": "input write failed: %s" % e})
-            ws_send(conn, WS_OP_CLOSE)
-            return False
+            entry["input_err_count"] = 0  # injection working (again)
+        except (OSError, ValueError) as e:
+            # An input-injection failure is NOT fatal to the session. SendInput
+            # is refused whenever the box is on the lock/secure desktop, the
+            # agent is not in the ACTIVE interactive session (session-0, a
+            # disconnected RDP session), or an elevated window is focused
+            # (UIPI) — all transient conditions. Tearing the socket down here
+            # turned every such moment into "the trackpad stopped working" plus
+            # a reconnect storm (one failed move killed the whole pad/mouse/
+            # keyboard session). Instead: swallow it, log rate-limited, and keep
+            # the connection alive so input resumes automatically the moment
+            # injection is possible again.
+            self._note_input_error(entry, slot or "gamepad", e)
         return True
+
+    def _note_input_error(self, entry, kind, exc):
+        """Rate-limited log for a non-fatal input-injection failure (see
+        _gamepad_message). Logs the first failure, then at most once per 5s
+        with a running count, so a persistently-blocked session can't flood
+        the log that /api/journal serves back."""
+        now = time.monotonic()
+        n = entry.get("input_err_count", 0) + 1
+        entry["input_err_count"] = n
+        last = entry.get("input_err_logged_at", 0.0)
+        if n == 1 or now - last > 5.0:
+            entry["input_err_logged_at"] = now
+            print("[gamepad] %s input blocked (%s) — connection kept alive; "
+                  "resumes when the box's desktop is active and unlocked [x%d]"
+                  % (kind, exc, n), flush=True)
 
 
 def load_token(args):
