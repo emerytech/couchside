@@ -4,8 +4,6 @@
 
 Couchside pairs a native iOS & Android app with a tiny, dependency-free Python agent that runs on a SteamOS / Bazzite HTPC, a Steam Deck, or any systemd Linux machine. When gamescope wedges into a black screen and the TV shows nothing, Couchside is the screen: see live vitals, read the logs, restart the display session, or become an Xbox 360 controller, all from the couch and entirely on your own LAN. No cloud, no accounts, no analytics.
 
-![Console](docs/img/console.png)
-
 ## Features
 
 - **Live console:** hostname, uptime, CPU temperature, load averages, memory and per-disk usage with color-coded bars, refreshed every few seconds. A big red BOX UNREACHABLE banner (with last-seen time) when the box drops off the network, which is exactly when you need it.
@@ -14,14 +12,13 @@ Couchside pairs a native iOS & Android app with a tiny, dependency-free Python a
   - **Restart display session** fixes the classic wedged-gamescope black screen without touching anything else.
   - **Reboot** / **Power off** are clean and fire-and-forget.
 - **Journal viewer:** the last journald lines for any watchlist unit, newest first, straight from the phone.
-- **Virtual game controller:** the agent creates a real virtual **Xbox 360 pad** via `/dev/uinput`; games and Steam Big Picture see genuine wired-360 input. Three input modes, switchable with one tap:
+- **Virtual game controller:** the agent creates a real virtual **Xbox 360 pad** via `/dev/uinput`; games and Steam Big Picture see genuine wired-360 input. Four input modes, switchable with one tap:
   - **Gamepad:** full layout with dual analog sticks, D-pad, ABXY, bumpers, analog triggers, Start/Select/Guide, and haptic feedback.
   - **Swipe:** an Apple-TV-remote-style surface. Swipe to move through menus, tap to select, plus Back / Guide / Menu buttons. Perfect for Kodi and Big Picture navigation.
   - **Trackpad:** a relative-mouse trackpad with tap-to-click, two-finger right-click and scroll, for desktop sessions.
+  - **Remote:** a classic TV-remote layout — a big circular D-pad with OK, Back/Menu/Home/Settings keys, volume and brightness rockers, and Steam/QAM shortcuts. On an RS-232 panel it adds input-source buttons and a BOX/TV toggle that drives either the box (as the virtual gamepad) or the TV's own factory remote over serial.
 - **QR pairing:** the installer prints a QR code; scan it with the phone camera and the app opens with host, port, and token prefilled.
-- **Volume, mute, and box power.** A control next to the device picker adjusts the box's own OS volume and mute, with the on-screen volume slider on SteamOS/Bazzite. On an HDMI-CEC or RS-232 setup you can switch it to drive the TV/panel volume and power instead. The same control suspends the box and, once it is offline, wakes it back up with a Wake-on-LAN magic packet.
-
-![Actions](docs/img/actions.png) ![Pad](docs/img/pad.png)
+- **Volume, mute, and box power.** A control next to the device picker adjusts the box's own OS volume and mute (a real drag-to-set 0–100 slider on SteamOS/Bazzite). On an HDMI-CEC or RS-232 setup you can switch it to drive the TV/panel instead — and on an RS-232 panel, also switch the display's input source, blank the screen without cutting power to an OPS box, and pass factory-remote keys. The same control suspends the box and, once it is offline, wakes it back up with a Wake-on-LAN magic packet.
 
 ## Requirements
 
@@ -54,8 +51,6 @@ Free 7-day trial with every feature unlocked, then a one-time unlock ($4.99 summ
 
 **Manual:** on the Setup tab enter the host (e.g. `mybox.local`), port (`8787`), and the contents of `/etc/couchside/token`, tap **TEST**, then **SAVE**.
 
-![Setup](docs/img/setup.png)
-
 ## Security model
 
 Couchside is deliberately small and boring about security:
@@ -69,9 +64,18 @@ Couchside is deliberately small and boring about security:
 ## Uninstall
 
 ```sh
-systemctl disable --now couchside.service
+curl -fsSL https://couchside.tv/install.sh | bash -s -- --uninstall
+```
+
+That removes the service, sudoers rule, udev/modules-load drop-ins, and the install dir (it asks before deleting the token). To do it by hand:
+
+```sh
+sudo systemctl disable --now couchside.service
 sudo rm -rf /etc/couchside /etc/sudoers.d/couchside ~/.local/opt/couchside
-sudo rm /etc/systemd/system/couchside.service && sudo systemctl daemon-reload
+sudo rm -f /etc/udev/rules.d/99-couchside-uinput.rules \
+           /etc/modules-load.d/couchside-uinput.conf \
+           /etc/systemd/network/50-couchside-wol.link
+sudo rm -f /etc/systemd/system/couchside.service && sudo systemctl daemon-reload
 ```
 
 Then delete the app from your phone.
@@ -81,7 +85,7 @@ Then delete the app from your phone.
 ```
 agent/   couchsided.py: pure-stdlib Python 3 daemon (HTTP API + gamepad WebSocket)
 agent/win/  Windows port of the agent (same API; SendInput + ViGEmBus)
-app/     Expo / React Native app for iOS & Android (tabs: Console, Actions, Pad, Logs, Setup)
+app/     Expo / React Native app for iOS & Android (tabs: Console, Actions, Pad, Launch, Setup; the journal viewer lives inside Setup)
 docs/    privacy policy, images
 store/   App Store & Google Play metadata, review notes, screenshot plan
 ```
@@ -92,7 +96,7 @@ Develop the app without hardware using the agent's mock mode on your Mac:
 python3 agent/couchsided.py --mock --host 127.0.0.1 --port 8787 --token devtoken
 ```
 
-Mock mode serves believable fake data and never executes real commands. The HTTP API and the `/ws/gamepad` WebSocket protocol (v1) are documented in [`agent/README.md`](agent/README.md).
+Mock mode serves believable fake data and never executes real commands. The HTTP API and the `/ws/gamepad` WebSocket protocol (v2) are documented in [`agent/README.md`](agent/README.md).
 
 ## Pricing & license
 

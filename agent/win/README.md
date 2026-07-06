@@ -106,6 +106,14 @@ Config schema is identical (see the [Linux README](../README.md#configuration-et
 differences: `units[].name` is a Windows **service name** (scope is accepted
 but ignored), and `panel.device` is a COM port (`"COM3"`).
 
+The Windows panel backend drives the **core** TV op set (power, volume, mute)
+over the same Newline RS-232 frames. The newer RS-232 extensions — input-source
+switching (`/api/tv/source/<id>`), screen blank (`screen_toggle`), factory-remote
+keys (`/api/tv/key/<k>`), and absolute-volume set (`/api/tv/volume`) — are Linux
+(`couchsided.py`) only for now; the Windows agent's `/api/tv` reports neither the
+`sources`/`keys`/`screen_toggle` flags nor the `*_level` readings, so the app's
+Remote-view TV clusters and absolute slider stay hidden on a Windows box.
+
 ## Suspend / Wake-on-LAN notes
 
 - The Suspend action uses `rundll32 powrprof.dll,SetSuspendState 0,1,0`,
