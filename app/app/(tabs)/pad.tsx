@@ -860,25 +860,40 @@ function PadScreen() {
           />
           <View style={styles.swipeBtnRow}>
             <PadButton
-              label="L-CLICK"
+              label="L"
               onDown={() => client.sendMouseButton('l', 1)}
               onUp={() => client.sendMouseButton('l', 0)}
-              style={styles.swipeBtn}
-              fontSize={12}
+              style={styles.tpBtn}
+              fontSize={14}
             />
             <PadButton
-              label="M-CLICK"
+              label="M"
               onDown={() => client.sendMouseButton('m', 1)}
               onUp={() => client.sendMouseButton('m', 0)}
-              style={styles.swipeBtn}
-              fontSize={12}
+              style={styles.tpBtn}
+              fontSize={14}
             />
             <PadButton
-              label="R-CLICK"
+              label="R"
               onDown={() => client.sendMouseButton('r', 1)}
               onUp={() => client.sendMouseButton('r', 0)}
-              style={styles.swipeBtn}
-              fontSize={12}
+              style={styles.tpBtn}
+              fontSize={14}
+            />
+            <PadButton
+              label="STEAM"
+              {...btn('guide')}
+              style={[styles.tpBtn, styles.tpBtnWide, styles.guideBtn]}
+              color={theme.blue}
+              fontSize={11}
+            />
+            <PadButton
+              label="⋯"
+              onDown={qam}
+              onUp={NOOP}
+              style={[styles.tpBtn, styles.guideBtn]}
+              color={theme.blue}
+              fontSize={22}
             />
           </View>
           {keyboardBar}
@@ -1160,6 +1175,14 @@ const styles = StyleSheet.create({
     height: 64,
     borderRadius: 999,
   },
+  // Trackpad button row: five buttons (L/M/R click + Steam + QAM) share the
+  // width evenly — single-character labels so nothing wraps on narrow phones.
+  tpBtn: {
+    flex: 1,
+    height: 64,
+    borderRadius: 999,
+  },
+  tpBtnWide: { flex: 1.6 },
 
   // Keyboard bar
   kbBarRow: {
