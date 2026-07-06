@@ -1,6 +1,6 @@
 import Ionicons from '@expo/vector-icons/Ionicons';
 import React from 'react';
-import { Alert, Modal, Platform, Pressable, StyleSheet, Text, View } from 'react-native';
+import { Alert, Modal, PanResponder, Platform, Pressable, StyleSheet, Text, View } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
 import { usePoll } from '@/hooks/usePoll';
@@ -27,6 +27,91 @@ function confirmSuspend(message: string, onConfirm: () => void) {
   ]);
 }
 
+const STEP_PX = 14; // horizontal drag distance per one volume step
+const STEP_MIN_MS = 55; // floor between fired steps, so a fast drag can't flood
+
+/**
+ * Relative "jog" volume slider revealed by holding the mute button. Dragging the
+ * thumb fires volume up/down steps in the drag direction — there is no absolute
+ * level because SteamOS Game Mode (box audio) and this Newline panel both refuse
+ * a reliable absolute set, so relative stepping is the one path that works on box
+ * media-keys, RS-232, and CEC alike. The thumb tracks the finger and springs
+ * back to center on release (it is a jog, not a position slider).
+ */
+function VolumeSlider({ onStep, onDone }: { onStep: (dir: 1 | -1) => void; onDone: () => void }) {
+  const [w, setW] = React.useState(0);
+  const [frac, setFrac] = React.useState(0.5);
+  const acc = React.useRef(0); // px accumulated since the last fired step
+  const lastX = React.useRef<number | null>(null);
+  const lastFire = React.useRef(0);
+
+  const fire = React.useCallback(
+    (x: number) => {
+      if (lastX.current == null) {
+        lastX.current = x;
+        return;
+      }
+      acc.current += x - lastX.current;
+      lastX.current = x;
+      const now = Date.now();
+      if (now - lastFire.current < STEP_MIN_MS) return; // rate cap for the box
+      // Emit every whole step the accumulator holds (not just one), so a fast
+      // drag or a drag-then-stop applies the full change instead of stranding
+      // steps until the next move event. Cap the burst so one huge jump can't
+      // flood the box; the sub-step remainder carries in `acc`.
+      const steps = Math.trunc(acc.current / STEP_PX);
+      if (steps === 0) return;
+      const dir: 1 | -1 = steps > 0 ? 1 : -1;
+      const n = Math.min(Math.abs(steps), 4);
+      for (let i = 0; i < n; i++) onStep(dir);
+      acc.current -= dir * STEP_PX * n;
+      lastFire.current = now;
+    },
+    [onStep],
+  );
+
+  const end = React.useCallback(() => {
+    lastX.current = null;
+    acc.current = 0;
+    setFrac(0.5);
+    onDone();
+  }, [onDone]);
+
+  const pan = React.useMemo(
+    () =>
+      PanResponder.create({
+        onStartShouldSetPanResponder: () => true,
+        onMoveShouldSetPanResponder: () => true,
+        onPanResponderGrant: (e) => {
+          lastX.current = e.nativeEvent.locationX;
+          acc.current = 0;
+          if (w > 0) setFrac(Math.max(0, Math.min(1, e.nativeEvent.locationX / w)));
+        },
+        onPanResponderMove: (e) => {
+          const x = e.nativeEvent.locationX;
+          if (w > 0) setFrac(Math.max(0, Math.min(1, x / w)));
+          fire(x);
+        },
+        onPanResponderRelease: end,
+        onPanResponderTerminate: end,
+      }),
+    [w, fire, end],
+  );
+
+  return (
+    <View style={styles.sliderRow}>
+      <Ionicons name="volume-low" size={18} color={theme.textDim} />
+      <View
+        style={styles.sliderTrack}
+        onLayout={(e) => setW(e.nativeEvent.layout.width)}
+        {...pan.panHandlers}>
+        <View pointerEvents="none" style={[styles.sliderThumb, { left: `${frac * 100}%` }]} />
+      </View>
+      <Ionicons name="volume-high" size={18} color={theme.textDim} />
+    </View>
+  );
+}
+
 /**
  * Power + volume controls for the header row (right of the box picker). A
  * compact trigger opens a dropdown (like the box switcher) with big buttons:
@@ -40,6 +125,11 @@ export function RemotePowerBar() {
   const { settings, ready, update } = useSettings();
   const configured = settings.host.trim().length > 0;
   const [open, setOpen] = React.useState(false);
+  const [sliderOpen, setSliderOpen] = React.useState(false);
+  // Collapse the hold-to-reveal volume slider whenever the dropdown closes.
+  React.useEffect(() => {
+    if (!open) setSliderOpen(false);
+  }, [open]);
 
   const statusInterval = usePref('statusIntervalMs');
   const status = usePoll<Status>(() => api.status(settings), statusInterval, ready && configured);
@@ -127,6 +217,56 @@ export function RemotePowerBar() {
     [settings],
   );
 
+  // Fire-and-forget volume step for the drag slider. Deliberately bypasses the
+  // `busy` flag (toggling it per step would flicker every other button) and the
+  // per-op mute refresh; the slider refreshes mute once, on release (onDone).
+  const stepErrAt = React.useRef(0);
+  const stepVolume = React.useCallback(
+    (dir: 1 | -1) => {
+      void api
+        .tvSend(settings, dir > 0 ? 'volume_up' : 'volume_down', settings.volumeTarget ?? 'box')
+        .catch(() => {
+          // Fire-and-forget, but don't fail totally silently: buzz at most once
+          // every ~1.5s so a drag against an offline box gives some feedback.
+          const now = Date.now();
+          if (now - stepErrAt.current > 1500) {
+            stepErrAt.current = now;
+            hapticError();
+          }
+        });
+    },
+    [settings],
+  );
+
+  // Jump the panel's input back to the box's OPS slot (RS-232 panel only).
+  const onSwitchToBox = React.useCallback(async () => {
+    hapticLight();
+    setBusy(true);
+    try {
+      await api.tvSource(settings);
+      hapticSuccess();
+    } catch {
+      hapticError();
+    } finally {
+      setBusy(false);
+    }
+  }, [settings]);
+
+  // Blank/unblank the panel without cutting power, so the box keeps running
+  // (RS-232 panel only — on an OPS display, real power-off would kill the box).
+  const onBlankScreen = React.useCallback(async () => {
+    hapticLight();
+    setBusy(true);
+    try {
+      await api.tvScreenToggle(settings);
+      hapticSuccess();
+    } catch {
+      hapticError();
+    } finally {
+      setBusy(false);
+    }
+  }, [settings]);
+
   // Mute returns the new state so the button can show it (gamescope has no
   // mute OSD on the panel, so this is the only feedback).
   const onMute = React.useCallback(async () => {
@@ -201,11 +341,16 @@ export function RemotePowerBar() {
   const canToggleVolume = boxVol && tvVol;
   const volumeTarget: VolumeTarget = settings.volumeTarget ?? 'box';
   const hasTvPower = reachable && tv?.tv_power === true;
+  // RS-232-only capabilities (panel backend). Gated so CEC/soft boxes never
+  // show these buttons — they keep the standard power/volume UI.
+  const canSourceBox = reachable && tv?.source_box === true;
+  const canBlankScreen = reachable && tv?.screen_toggle === true;
   const canSuspend = reachable && hasSuspend;
   const canWake = !reachable && !!settings.mac && wolAvailable;
 
   // Nothing to control on this box right now.
-  if (!canSuspend && !canWake && !hasVolume && !hasTvPower) return null;
+  if (!canSuspend && !canWake && !hasVolume && !hasTvPower && !canSourceBox && !canBlankScreen)
+    return null;
 
   // Trigger icon hints at what's inside: volume first, then box power, then TV.
   const triggerIcon: IoniconName = hasVolume
@@ -298,6 +443,26 @@ export function RemotePowerBar() {
                 </View>
               )}
 
+              {canSourceBox && (
+                <Pressable
+                  disabled={busy}
+                  onPress={onSwitchToBox}
+                  style={({ pressed }) => [styles.sourceBtn, pressed && styles.pressed]}>
+                  <Ionicons name="tv" size={18} color={theme.green} />
+                  <Text style={[styles.sourceBtnText, { color: theme.green }]}>Switch to Box</Text>
+                </Pressable>
+              )}
+
+              {canBlankScreen && (
+                <Pressable
+                  disabled={busy}
+                  onPress={onBlankScreen}
+                  style={({ pressed }) => [styles.sourceBtn, pressed && styles.pressed]}>
+                  <Ionicons name="eye-off-outline" size={18} color={theme.amber} />
+                  <Text style={[styles.sourceBtnText, { color: theme.amber }]}>Blank Screen</Text>
+                </Pressable>
+              )}
+
               {hasVolume && (
                 <>
                   {canToggleVolume && (
@@ -318,6 +483,7 @@ export function RemotePowerBar() {
                       </Pressable>
                     </View>
                   )}
+                  {sliderOpen && <VolumeSlider onStep={stepVolume} onDone={refreshTv} />}
                   <View style={styles.volRow}>
                     <Pressable
                       disabled={busy}
@@ -328,9 +494,15 @@ export function RemotePowerBar() {
                     <Pressable
                       disabled={busy}
                       onPress={onMute}
+                      onLongPress={() => {
+                        hapticLight();
+                        setSliderOpen((v) => !v);
+                      }}
+                      delayLongPress={250}
                       style={({ pressed }) => [
                         styles.volBtn,
                         muted && styles.volBtnMuted,
+                        sliderOpen && styles.volBtnActive,
                         pressed && styles.pressed,
                       ]}>
                       <Ionicons
@@ -427,6 +599,34 @@ const styles = StyleSheet.create({
     justifyContent: 'center',
   },
   volBtnMuted: { backgroundColor: theme.redDeep, borderWidth: 1, borderColor: theme.red },
+  volBtnActive: { borderWidth: 1, borderColor: theme.green },
+  sourceBtn: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 8,
+    height: 48,
+    borderRadius: 10,
+    backgroundColor: theme.inset,
+  },
+  sourceBtnText: { fontSize: 14, fontWeight: '800', fontFamily: mono, letterSpacing: 0.5 },
+  sliderRow: { flexDirection: 'row', alignItems: 'center', gap: 10, paddingHorizontal: 2 },
+  sliderTrack: {
+    flex: 1,
+    height: 40,
+    borderRadius: 20,
+    backgroundColor: theme.inset,
+    justifyContent: 'center',
+  },
+  sliderThumb: {
+    position: 'absolute',
+    width: 26,
+    height: 26,
+    marginLeft: -13,
+    top: 7,
+    borderRadius: 13,
+    backgroundColor: theme.text,
+  },
   segRow: {
     flexDirection: 'row',
     gap: 2,

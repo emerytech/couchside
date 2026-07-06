@@ -1,3 +1,4 @@
+import Ionicons from '@expo/vector-icons/Ionicons';
 import React, { useCallback, useEffect, useState } from 'react';
 import {
   Alert,
@@ -501,6 +502,50 @@ function SegPref<T extends string | number>({
   );
 }
 
+type IoniconName = React.ComponentProps<typeof Ionicons>['name'];
+
+/** The category tabs across the top of the setup screen. */
+type SetupTab = 'boxes' | 'prefs' | 'account';
+const SETUP_TABS: { key: SetupTab; label: string; icon: IoniconName }[] = [
+  { key: 'boxes', label: 'Boxes', icon: 'hardware-chip-outline' },
+  { key: 'prefs', label: 'Preferences', icon: 'options-outline' },
+  { key: 'account', label: 'Account', icon: 'card-outline' },
+];
+
+function CategoryTabs({ tab, onTab }: { tab: SetupTab; onTab: (t: SetupTab) => void }) {
+  return (
+    <View style={styles.tabBar}>
+      {SETUP_TABS.map((t) => {
+        const active = t.key === tab;
+        return (
+          <Pressable
+            key={t.key}
+            onPress={() => {
+              hapticSelection();
+              onTab(t.key);
+            }}
+            style={[styles.tabItem, active && styles.tabItemActive]}>
+            <Ionicons name={t.icon} size={15} color={active ? theme.text : theme.textFaint} />
+            <Text style={[styles.tabLabel, active && styles.tabLabelActive]} numberOfLines={1}>
+              {t.label}
+            </Text>
+          </Pressable>
+        );
+      })}
+    </View>
+  );
+}
+
+/** A small section header inside a card: icon + uppercase label. */
+function CardHeader({ icon, label }: { icon: IoniconName; label: string }) {
+  return (
+    <View style={styles.cardHeader}>
+      <Ionicons name={icon} size={14} color={theme.textDim} />
+      <Text style={styles.cardHeaderText}>{label}</Text>
+    </View>
+  );
+}
+
 function SetupBody() {
   const { entitlement, recordPurchase } = useEntitlement();
   const {
@@ -668,27 +713,27 @@ function SetupBody() {
   // toggles this; only one box edits at a time.
   const [editingId, setEditingId] = useState<string | null>(null);
 
+  // Active category tab (Boxes / Preferences / Account).
+  const [tab, setTab] = useState<SetupTab>('boxes');
+
   return (
     <KeyboardAvoidingView
       style={styles.screen}
       behavior={Platform.OS === 'ios' ? 'padding' : undefined}>
+      <View style={styles.header}>
+        <CategoryTabs tab={tab} onTab={setTab} />
+      </View>
       <ScrollView
         contentContainerStyle={{
-          paddingTop: 12,
+          paddingTop: 14,
           paddingHorizontal: 14,
           paddingBottom: 32,
         }}
         keyboardShouldPersistTaps="handled">
-        <View style={styles.titleRow}>
-          <Text style={styles.title}>Boxes</Text>
-          <View style={styles.titleBadges}>
-            <EarlyAdopterBadge />
-            <EntitlementPill />
-          </View>
-        </View>
-
-        {/* ---- Fleet list ---- */}
-        <Text style={styles.sectionLabel}>YOUR FLEET</Text>
+        {tab === 'boxes' && (
+          <>
+            {/* ---- Fleet list ---- */}
+            <Text style={styles.sectionLabel}>YOUR FLEET</Text>
         {boxes.length === 0 ? (
           <View style={styles.card}>
             <Text style={styles.emptyText}>
@@ -853,7 +898,7 @@ function SetupBody() {
         </View>
 
         <View style={styles.card}>
-          <Text style={styles.fieldLabel}>CONNECTION TEST</Text>
+          <CardHeader icon="pulse-outline" label="CONNECTION TEST" />
           <StepRow label="1 · /api/ping (unauthenticated)" step={pingStep} />
           <StepRow label="2 · /api/status (Bearer token)" step={authStep} />
           {agentVersion != null && (
@@ -863,182 +908,194 @@ function SetupBody() {
             </View>
           )}
         </View>
+          </>
+        )}
 
-        <View style={styles.card}>
-          <Text style={styles.fieldLabel}>PREFERENCES</Text>
-          <View style={styles.prefRow}>
-            <View style={styles.prefBody}>
-              <Text style={styles.prefLabel}>Haptic feedback</Text>
-              <Text style={styles.prefSub}>
-                Vibration on taps, buttons, swipes, and actions.
-              </Text>
+        {tab === 'prefs' && (
+          <>
+            <View style={[styles.card, styles.cardGroup]}>
+              <CardHeader icon="options-outline" label="GENERAL" />
+              <View style={styles.prefRow}>
+                <View style={styles.prefBody}>
+                  <Text style={styles.prefLabel}>Haptic feedback</Text>
+                  <Text style={styles.prefSub}>
+                    Vibration on taps, buttons, swipes, and actions.
+                  </Text>
+                </View>
+                <Switch
+                  value={hapticsOn}
+                  onValueChange={(v) => {
+                    // Buzz on enable so the toggle confirms itself;
+                    // setHapticsEnabled runs first so the cue isn't gated off.
+                    void setHapticsEnabled(v);
+                    if (v) hapticSelection();
+                  }}
+                  trackColor={{ false: theme.inset, true: theme.blue }}
+                  thumbColor="#f8fafc"
+                  ios_backgroundColor={theme.inset}
+                />
+              </View>
+              <TogglePref
+                label="Confirm before suspend"
+                sub="Ask before putting the box to sleep."
+                value={confirmSuspend}
+                onValueChange={(v) => {
+                  void setPref('confirmSuspend', v);
+                  hapticSelection();
+                }}
+              />
+              <SegPref
+                label="Vitals refresh"
+                sub="How often the console polls the box."
+                options={[
+                  { value: 2000, label: '2s' },
+                  { value: 5000, label: '5s' },
+                  { value: 15000, label: '15s' },
+                  { value: 30000, label: '30s' },
+                ]}
+                value={statusIntervalMs}
+                onSelect={(v) => {
+                  void setPref('statusIntervalMs', v);
+                  hapticSelection();
+                }}
+              />
+              <SegPref
+                label="Journal lines"
+                sub="Lines fetched per unit on the Logs tab."
+                options={[
+                  { value: 50, label: '50' },
+                  { value: 100, label: '100' },
+                  { value: 250, label: '250' },
+                  { value: 500, label: '500' },
+                ]}
+                value={journalLines}
+                onSelect={(v) => {
+                  void setPref('journalLines', v);
+                  hapticSelection();
+                }}
+              />
             </View>
-            <Switch
-              value={hapticsOn}
-              onValueChange={(v) => {
-                // Buzz on enable so the toggle confirms itself; setHapticsEnabled
-                // runs first so the cue isn't gated off when turning it on.
-                void setHapticsEnabled(v);
-                if (v) hapticSelection();
-              }}
-              trackColor={{ false: theme.inset, true: theme.blue }}
-              thumbColor="#f8fafc"
-              ios_backgroundColor={theme.inset}
-            />
-          </View>
-          <View style={styles.prefRow}>
-            <View style={styles.prefBody}>
-              <Text style={styles.prefLabel}>Keep screen awake on Pad</Text>
-              <Text style={styles.prefSub}>
-                Hold the display on while the controller is open. Off saves battery.
-              </Text>
+
+            <View style={[styles.card, styles.cardGroup]}>
+              <CardHeader icon="game-controller-outline" label="INPUT & PAD" />
+              <View style={styles.prefRow}>
+                <View style={styles.prefBody}>
+                  <Text style={styles.prefLabel}>Keep screen awake on Pad</Text>
+                  <Text style={styles.prefSub}>
+                    Hold the display on while the controller is open. Off saves
+                    battery.
+                  </Text>
+                </View>
+                <Switch
+                  value={keepAwakeOn}
+                  onValueChange={(v) => {
+                    void setKeepAwakeEnabled(v);
+                    hapticSelection();
+                  }}
+                  trackColor={{ false: theme.inset, true: theme.blue }}
+                  thumbColor="#f8fafc"
+                  ios_backgroundColor={theme.inset}
+                />
+              </View>
+              <SegPref
+                label="Default input mode"
+                sub="What a newly paired box starts on."
+                options={[
+                  { value: 'gamepad', label: 'Gamepad' },
+                  { value: 'swipe', label: 'Swipe' },
+                  { value: 'trackpad', label: 'Trackpad' },
+                ]}
+                value={defaultPadMode}
+                onSelect={(v) => {
+                  void setPref('defaultPadMode', v);
+                  hapticSelection();
+                }}
+              />
+              <SegPref
+                label="Swipe sensitivity"
+                sub="Steps per swipe on the Pad's swipe surface."
+                options={[
+                  { value: 0.6, label: 'Low' },
+                  { value: 1, label: 'Normal' },
+                  { value: 1.6, label: 'High' },
+                ]}
+                value={swipeSensitivity}
+                onSelect={(v) => {
+                  void setPref('swipeSensitivity', v);
+                  hapticSelection();
+                }}
+              />
+              <SegPref
+                label="Trackpad speed"
+                sub="Pointer speed on the trackpad surface."
+                options={[
+                  { value: 0.6, label: 'Low' },
+                  { value: 1, label: 'Normal' },
+                  { value: 1.6, label: 'High' },
+                ]}
+                value={trackpadSensitivity}
+                onSelect={(v) => {
+                  void setPref('trackpadSensitivity', v);
+                  hapticSelection();
+                }}
+              />
+              <TogglePref
+                label="Natural scrolling"
+                sub="Two-finger scroll follows your fingers (macOS style)."
+                value={naturalScroll}
+                onValueChange={(v) => {
+                  void setPref('naturalScroll', v);
+                  hapticSelection();
+                }}
+              />
             </View>
-            <Switch
-              value={keepAwakeOn}
-              onValueChange={(v) => {
-                void setKeepAwakeEnabled(v);
-                hapticSelection();
-              }}
-              trackColor={{ false: theme.inset, true: theme.blue }}
-              thumbColor="#f8fafc"
-              ios_backgroundColor={theme.inset}
-            />
-          </View>
-          <TogglePref
-            label="Confirm before suspend"
-            sub="Ask before putting the box to sleep."
-            value={confirmSuspend}
-            onValueChange={(v) => {
-              void setPref('confirmSuspend', v);
-              hapticSelection();
-            }}
-          />
-          <SegPref
-            label="Default input mode"
-            sub="What a newly paired box starts on."
-            options={[
-              { value: 'gamepad', label: 'Gamepad' },
-              { value: 'swipe', label: 'Swipe' },
-              { value: 'trackpad', label: 'Trackpad' },
-            ]}
-            value={defaultPadMode}
-            onSelect={(v) => {
-              void setPref('defaultPadMode', v);
-              hapticSelection();
-            }}
-          />
-          <SegPref
-            label="Vitals refresh"
-            sub="How often the console polls the box."
-            options={[
-              { value: 2000, label: '2s' },
-              { value: 5000, label: '5s' },
-              { value: 15000, label: '15s' },
-              { value: 30000, label: '30s' },
-            ]}
-            value={statusIntervalMs}
-            onSelect={(v) => {
-              void setPref('statusIntervalMs', v);
-              hapticSelection();
-            }}
-          />
-          <SegPref
-            label="Journal lines"
-            sub="Lines fetched per unit on the Logs tab."
-            options={[
-              { value: 50, label: '50' },
-              { value: 100, label: '100' },
-              { value: 250, label: '250' },
-              { value: 500, label: '500' },
-            ]}
-            value={journalLines}
-            onSelect={(v) => {
-              void setPref('journalLines', v);
-              hapticSelection();
-            }}
-          />
-          <SegPref
-            label="Swipe sensitivity"
-            sub="Steps per swipe on the Pad's swipe surface."
-            options={[
-              { value: 0.6, label: 'Low' },
-              { value: 1, label: 'Normal' },
-              { value: 1.6, label: 'High' },
-            ]}
-            value={swipeSensitivity}
-            onSelect={(v) => {
-              void setPref('swipeSensitivity', v);
-              hapticSelection();
-            }}
-          />
-          <SegPref
-            label="Trackpad speed"
-            sub="Pointer speed on the trackpad surface."
-            options={[
-              { value: 0.6, label: 'Low' },
-              { value: 1, label: 'Normal' },
-              { value: 1.6, label: 'High' },
-            ]}
-            value={trackpadSensitivity}
-            onSelect={(v) => {
-              void setPref('trackpadSensitivity', v);
-              hapticSelection();
-            }}
-          />
-          <TogglePref
-            label="Natural scrolling"
-            sub="Two-finger scroll follows your fingers (macOS style)."
-            value={naturalScroll}
-            onValueChange={(v) => {
-              void setPref('naturalScroll', v);
-              hapticSelection();
-            }}
-          />
-        </View>
+          </>
+        )}
 
-        <View style={styles.card}>
-          <Text style={styles.fieldLabel}>PURCHASE</Text>
-          {entitlement.state !== 'purchased' && (
-            <Pressable
-              onPress={onBuy}
-              disabled={buying || restoring}
-              style={({ pressed }) => [
-                styles.btnBuy,
-                (pressed || buying) && styles.pressed,
-              ]}>
-              <Text style={styles.btnBuyText}>
-                {buying ? 'PURCHASING…' : `UNLOCK ${price ?? '$4.99'}`}
-              </Text>
-            </Pressable>
-          )}
-          <Pressable
-            onPress={onRestore}
-            disabled={restoring || buying}
-            style={({ pressed }) => [
-              styles.btnRestore,
-              (pressed || restoring) && styles.pressed,
-            ]}>
-            <Text style={styles.btnRestoreText}>
-              {restoring ? 'RESTORING…' : 'RESTORE PURCHASES'}
-            </Text>
-          </Pressable>
-          {restoreMsg != null && (
-            <Text
-              style={[styles.restoreMsg, { color: restoreMsg.ok ? theme.green : theme.red }]}>
-              {restoreMsg.text}
-            </Text>
-          )}
-          {entitlement.state !== 'purchased' && (
-            <Text style={styles.purchaseHint}>
-              One-time unlock · no subscription, no account, no tracking.
-            </Text>
-          )}
-        </View>
+        {tab === 'account' && (
+          <>
+            <View style={styles.accountBadges}>
+              <EarlyAdopterBadge />
+              <EntitlementPill />
+            </View>
+            <View style={styles.card}>
+              <CardHeader icon="card-outline" label="PURCHASE" />
+              {entitlement.state !== 'purchased' && (
+                <Pressable
+                  onPress={onBuy}
+                  disabled={buying || restoring}
+                  style={({ pressed }) => [styles.btnBuy, (pressed || buying) && styles.pressed]}>
+                  <Text style={styles.btnBuyText}>
+                    {buying ? 'PURCHASING…' : `UNLOCK ${price ?? '$4.99'}`}
+                  </Text>
+                </Pressable>
+              )}
+              <Pressable
+                onPress={onRestore}
+                disabled={restoring || buying}
+                style={({ pressed }) => [styles.btnRestore, (pressed || restoring) && styles.pressed]}>
+                <Text style={styles.btnRestoreText}>
+                  {restoring ? 'RESTORING…' : 'RESTORE PURCHASES'}
+                </Text>
+              </Pressable>
+              {restoreMsg != null && (
+                <Text style={[styles.restoreMsg, { color: restoreMsg.ok ? theme.green : theme.red }]}>
+                  {restoreMsg.text}
+                </Text>
+              )}
+              {entitlement.state !== 'purchased' && (
+                <Text style={styles.purchaseHint}>
+                  One-time unlock · no subscription, no account, no tracking.
+                </Text>
+              )}
+            </View>
 
-        <Text style={styles.hint}>
-          Each agent listens on http://&lt;host&gt;:&lt;port&gt;. All routes except
-          /api/ping require the bearer token.
-        </Text>
+            <Text style={styles.hint}>
+              Each agent listens on http://&lt;host&gt;:&lt;port&gt;. All routes except
+              /api/ping require the bearer token.
+            </Text>
+          </>
+        )}
       </ScrollView>
       <PairingQrModal box={qrBox} onClose={() => setQrBox(null)} />
     </KeyboardAvoidingView>
@@ -1084,6 +1141,67 @@ const styles = StyleSheet.create({
     fontWeight: '700',
     letterSpacing: 1.2,
     marginBottom: 8,
+  },
+  header: {
+    paddingHorizontal: 14,
+    paddingTop: 8,
+    paddingBottom: 10,
+    borderBottomColor: theme.cardBorder,
+    borderBottomWidth: 1,
+    backgroundColor: theme.bg,
+  },
+  tabBar: {
+    flexDirection: 'row',
+    gap: 4,
+    padding: 4,
+    borderRadius: 12,
+    backgroundColor: theme.inset,
+    borderWidth: 1,
+    borderColor: theme.cardBorder,
+  },
+  tabItem: {
+    flex: 1,
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 6,
+    paddingVertical: 9,
+    borderRadius: 9,
+  },
+  tabItemActive: {
+    backgroundColor: theme.card,
+    borderWidth: 1,
+    borderColor: theme.cardBorder,
+  },
+  tabLabel: {
+    color: theme.textFaint,
+    fontSize: 12,
+    fontWeight: '700',
+    letterSpacing: 0.3,
+    fontFamily: mono,
+  },
+  tabLabelActive: { color: theme.text },
+  cardHeader: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 7,
+    marginBottom: 12,
+  },
+  cardHeaderText: {
+    color: theme.textDim,
+    fontSize: 11,
+    fontWeight: '800',
+    letterSpacing: 1.2,
+    fontFamily: mono,
+  },
+  cardGroup: { gap: 16 },
+  accountBadges: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'flex-end',
+    gap: 8,
+    marginBottom: 12,
+    minHeight: 26,
   },
   card: {
     backgroundColor: theme.card,

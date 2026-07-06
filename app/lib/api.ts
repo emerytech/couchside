@@ -156,6 +156,18 @@ export type Tv = {
   tv_power?: boolean;
   /** Current box mute state at probe time (agent >= 2.6.5), or null if unknown. */
   muted?: boolean | null;
+  /**
+   * The panel can jump its input to the box's OPS slot (agent >= 2.6.7). Only
+   * the RS-232 panel backend reports this, so the "Switch to box" button is
+   * hidden on CEC/soft boxes — it is an opt-in RS-232 feature.
+   */
+  source_box?: boolean;
+  /**
+   * The panel can blank/unblank the screen without cutting power (agent >=
+   * 2.6.8), so the box keeps running when an OPS display would otherwise power
+   * it off in standby. RS-232 panel only — CEC/soft boxes never report it.
+   */
+  screen_toggle?: boolean;
 };
 
 /** Where volume goes: the box's own OS volume, or the TV/panel over CEC/RS-232. */
@@ -396,6 +408,30 @@ export const api = {
   tvSend(settings: ConnSettings, op: TvOp, target?: VolumeTarget): Promise<ActionResult> {
     const q = target ? `?target=${target}` : '';
     return request<ActionResult>(settings, `/api/tv/${op}${q}`, {
+      method: 'POST',
+      timeoutMs: 12000,
+    });
+  },
+
+  /**
+   * Switch the panel's input to the box's OPS slot (RS-232 panel backend only;
+   * gated behind Tv.source_box). Pulls the display back to the box from any
+   * other source in one tap.
+   */
+  tvSource(settings: ConnSettings): Promise<ActionResult> {
+    return request<ActionResult>(settings, '/api/tv/source_box', {
+      method: 'POST',
+      timeoutMs: 12000,
+    });
+  },
+
+  /**
+   * Toggle the panel backlight (screen dark / lit) without touching power, so
+   * the box stays running (RS-232 panel backend only; gated behind
+   * Tv.screen_toggle). Toggle-only — the panel reports no readable state.
+   */
+  tvScreenToggle(settings: ConnSettings): Promise<ActionResult> {
+    return request<ActionResult>(settings, '/api/tv/screen_toggle', {
       method: 'POST',
       timeoutMs: 12000,
     });
