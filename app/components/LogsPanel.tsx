@@ -1,16 +1,6 @@
 import React, { useCallback, useEffect, useState } from 'react';
-import {
-  FlatList,
-  Pressable,
-  StyleSheet,
-  Switch,
-  Text,
-  View,
-} from 'react-native';
+import { FlatList, Pressable, StyleSheet, Switch, Text, View } from 'react-native';
 
-import { Gated } from '@/components/Gated';
-import { TabScreen } from '@/components/TabScreen';
-import { useLockOrientation } from '@/hooks/useLockOrientation';
 import { usePoll } from '@/hooks/usePoll';
 import { api, Journal, Unit, UnitScope } from '@/lib/api';
 import { usePref } from '@/lib/prefs';
@@ -33,18 +23,12 @@ function toPicker(units: Unit[]): PickerUnit[] {
   }));
 }
 
-export default function LogsTab() {
-  useLockOrientation('portrait');
-  return (
-    <TabScreen>
-      <Gated>
-        <LogsScreen />
-      </Gated>
-    </TabScreen>
-  );
-}
-
-function LogsScreen() {
+/**
+ * The journal viewer, hosted inside the Settings screen's Logs tab (it used to
+ * be a top-level tab). Owns its own vertical layout — the parent must give it
+ * flex room, not wrap it in a ScrollView.
+ */
+export function LogsPanel() {
   const { settings, ready } = useSettings();
 
   const [selected, setSelected] = useState(0);
@@ -83,9 +67,7 @@ function LogsScreen() {
   const lines = journal.data ? [...journal.data.lines].reverse() : [];
 
   return (
-    <View style={[styles.screen, { paddingTop: 12 }]}>
-      <Text style={styles.title}>Logs</Text>
-
+    <View style={styles.root}>
       {/* Segmented unit picker */}
       <View style={styles.segments}>
         {picker.map((w, i) => (
@@ -148,8 +130,7 @@ function LogsScreen() {
 }
 
 const styles = StyleSheet.create({
-  screen: { flex: 1, backgroundColor: theme.bg, paddingHorizontal: 14 },
-  title: { color: theme.text, fontSize: 26, fontWeight: '700', marginBottom: 12, fontFamily: mono },
+  root: { flex: 1, paddingHorizontal: 14, paddingTop: 14 },
   segments: {
     flexDirection: 'row',
     backgroundColor: theme.inset,

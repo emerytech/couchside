@@ -14,6 +14,8 @@ import {
   View,
 } from 'react-native';
 
+import { Gated } from '@/components/Gated';
+import { LogsPanel } from '@/components/LogsPanel';
 import { QrView } from '@/components/QrView';
 import { TabScreen } from '@/components/TabScreen';
 import { useLockOrientation } from '@/hooks/useLockOrientation';
@@ -505,10 +507,11 @@ function SegPref<T extends string | number>({
 type IoniconName = React.ComponentProps<typeof Ionicons>['name'];
 
 /** The category tabs across the top of the setup screen. */
-type SetupTab = 'boxes' | 'prefs' | 'account';
+type SetupTab = 'boxes' | 'prefs' | 'logs' | 'account';
 const SETUP_TABS: { key: SetupTab; label: string; icon: IoniconName }[] = [
   { key: 'boxes', label: 'Boxes', icon: 'hardware-chip-outline' },
-  { key: 'prefs', label: 'Preferences', icon: 'options-outline' },
+  { key: 'prefs', label: 'Prefs', icon: 'options-outline' },
+  { key: 'logs', label: 'Logs', icon: 'reader-outline' },
   { key: 'account', label: 'Account', icon: 'card-outline' },
 ];
 
@@ -723,7 +726,16 @@ function SetupBody() {
       <View style={styles.header}>
         <CategoryTabs tab={tab} onTab={setTab} />
       </View>
+      {/* Logs hosts its own FlatList and must not live inside a ScrollView.
+          Gated like the old top-level Logs tab (the journal is a paid surface;
+          Setup itself stays un-gated so purchase/restore is always reachable). */}
+      {tab === 'logs' && (
+        <Gated>
+          <LogsPanel />
+        </Gated>
+      )}
       <ScrollView
+        style={tab === 'logs' ? styles.hidden : undefined}
         contentContainerStyle={{
           paddingTop: 14,
           paddingHorizontal: 14,
@@ -1001,9 +1013,10 @@ function SetupBody() {
                 label="Default input mode"
                 sub="What a newly paired box starts on."
                 options={[
-                  { value: 'gamepad', label: 'Gamepad' },
+                  { value: 'gamepad', label: 'Pad' },
                   { value: 'swipe', label: 'Swipe' },
-                  { value: 'trackpad', label: 'Trackpad' },
+                  { value: 'trackpad', label: 'Track' },
+                  { value: 'remote', label: 'Remote' },
                 ]}
                 value={defaultPadMode}
                 onSelect={(v) => {
@@ -1104,6 +1117,8 @@ function SetupBody() {
 
 const styles = StyleSheet.create({
   screen: { flex: 1, backgroundColor: theme.bg },
+  // Collapse the ScrollView while the Logs tab (its own FlatList) is showing.
+  hidden: { display: 'none' },
   title: { color: theme.text, fontSize: 26, fontWeight: '700', fontFamily: mono },
   titleRow: {
     flexDirection: 'row',

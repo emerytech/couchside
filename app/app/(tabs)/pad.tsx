@@ -31,6 +31,7 @@ import {
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
 import { Gated } from '@/components/Gated';
+import { RemoteView } from '@/components/RemoteView';
 import { TabScreen } from '@/components/TabScreen';
 import { useLockOrientation } from '@/hooks/useLockOrientation';
 import { ButtonKey, GamepadClient, GamepadStatus, StickKey, TriggerKey } from '@/lib/gamepad';
@@ -550,7 +551,8 @@ export default function PadTab() {
 const MODES: { key: PadMode; label: string }[] = [
   { key: 'gamepad', label: 'PAD' },
   { key: 'swipe', label: 'SWIPE' },
-  { key: 'trackpad', label: 'TRACKPAD' },
+  { key: 'trackpad', label: 'TRACK' },
+  { key: 'remote', label: 'REMOTE' },
 ];
 
 function PadScreen() {
@@ -814,7 +816,9 @@ function PadScreen() {
         </View>
       )}
 
-      {mode === 'swipe' ? (
+      {mode === 'remote' ? (
+        <RemoteView client={client} settings={settings} />
+      ) : mode === 'swipe' ? (
         <>
           {/* Apple-TV-remote style: big swipe/tap surface + three big buttons */}
           <SwipeSurface onStep={dpadStep} onSelect={selectTap} />

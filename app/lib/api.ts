@@ -174,7 +174,34 @@ export type Tv = {
    * absent on CEC/soft boxes, which can't route a display's input.
    */
   sources?: { id: string; label: string }[];
+  /**
+   * Factory-remote key emulation over RS-232 (agent >= 2.7.0): arrows / ok /
+   * menu / home / back / settings via POST /api/tv/key/<k>. Panel only.
+   */
+  keys?: boolean;
+  /** Current box OS volume 0-100 (agent >= 2.7.0), or null when unreadable. */
+  box_volume_level?: number | null;
+  /**
+   * Current panel speaker volume 0-100 (agent >= 2.7.0), or null. NOTE: on
+   * some panels this register stops tracking after source switches — treat as
+   * advisory; the box level is the reliable one.
+   */
+  tv_volume_level?: number | null;
 };
+
+/** Factory-remote keys the agent accepts at POST /api/tv/key/<k>. */
+export type TvKey =
+  | 'up'
+  | 'down'
+  | 'left'
+  | 'right'
+  | 'ok'
+  | 'menu'
+  | 'home'
+  | 'back'
+  | 'settings'
+  | 'bright_up'
+  | 'bright_down';
 
 /** Where volume goes: the box's own OS volume, or the TV/panel over CEC/RS-232. */
 export type VolumeTarget = 'box' | 'tv';
@@ -448,6 +475,31 @@ export const api = {
    */
   tvSelectSource(settings: ConnSettings, id: string): Promise<ActionResult> {
     return request<ActionResult>(settings, `/api/tv/source/${encodeURIComponent(id)}`, {
+      method: 'POST',
+      timeoutMs: 12000,
+    });
+  },
+
+  /**
+   * Set the absolute volume level (0-100). Box target converges via media-key
+   * steps (Game Mode OSD shows); TV target uses the RS-232 closed loop. The
+   * result carries the final `level` the agent landed on.
+   */
+  tvSetVolume(
+    settings: ConnSettings,
+    level: number,
+    target: VolumeTarget,
+  ): Promise<ActionResult & { level?: number | null }> {
+    return request<ActionResult & { level?: number | null }>(settings, '/api/tv/volume', {
+      method: 'POST',
+      timeoutMs: 20000,
+      body: { level, target },
+    });
+  },
+
+  /** Send one factory-remote key to the panel (RS-232 only; see Tv.keys). */
+  tvKey(settings: ConnSettings, key: TvKey): Promise<ActionResult> {
+    return request<ActionResult>(settings, `/api/tv/key/${key}`, {
       method: 'POST',
       timeoutMs: 12000,
     });

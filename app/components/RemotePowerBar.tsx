@@ -27,25 +27,55 @@ function confirmSuspend(message: string, onConfirm: () => void) {
   ]);
 }
 
-const STEP_PX = 14; // horizontal drag distance per one volume step
-const STEP_MIN_MS = 55; // floor between fired steps, so a fast drag can't flood
+const STEP_PX = 14; // jog mode: horizontal drag distance per one volume step
+const STEP_MIN_MS = 55; // jog mode: floor between fired steps
 
 /**
- * Relative "jog" volume slider revealed by holding the mute button. Dragging the
- * thumb fires volume up/down steps in the drag direction — there is no absolute
- * level because SteamOS Game Mode (box audio) and this Newline panel both refuse
- * a reliable absolute set, so relative stepping is the one path that works on box
- * media-keys, RS-232, and CEC alike. The thumb tracks the finger and springs
- * back to center on release (it is a jog, not a position slider).
+ * Volume slider revealed by holding the mute button. Two behaviors:
+ *
+ * Absolute (level != null — box volume, which the agent can read and set):
+ * a real 0-100 slider. The thumb sits at the current level, drag it anywhere
+ * and on release the agent converges the box volume to that percentage (media
+ * key steps, so Game Mode shows its OSD). It stays where you put it.
+ *
+ * Jog (level == null — TV/CEC volume, no trustworthy readback): dragging fires
+ * relative volume steps in the drag direction and the thumb springs back to
+ * center on release.
  */
-function VolumeSlider({ onStep, onDone }: { onStep: (dir: 1 | -1) => void; onDone: () => void }) {
+function VolumeSlider({
+  level,
+  onSet,
+  onStep,
+  onDone,
+}: {
+  level: number | null;
+  onSet: (pct: number) => void;
+  onStep: (dir: 1 | -1) => void;
+  onDone: () => void;
+}) {
+  const absolute = level != null;
   const [w, setW] = React.useState(0);
-  const [frac, setFrac] = React.useState(0.5);
-  const acc = React.useRef(0); // px accumulated since the last fired step
+  const [frac, setFrac] = React.useState(absolute ? level / 100 : 0.5);
+  const dragging = React.useRef(false);
+  const fracRef = React.useRef(frac);
+  fracRef.current = frac;
+  // Jog-mode accumulators.
+  const acc = React.useRef(0);
   const lastX = React.useRef<number | null>(null);
   const lastFire = React.useRef(0);
 
-  const fire = React.useCallback(
+  // Follow the polled level while the finger is up (absolute mode only), so an
+  // out-of-band change (volume rocker on the box) moves the thumb too. Skipped
+  // for a short window after a release: an ambient poll tick can read the
+  // agent mid-convergence and would briefly snap the thumb to a stale level.
+  const settleUntil = React.useRef(0);
+  React.useEffect(() => {
+    if (absolute && !dragging.current && Date.now() >= settleUntil.current) {
+      setFrac(level / 100);
+    }
+  }, [absolute, level]);
+
+  const fireJog = React.useCallback(
     (x: number) => {
       if (lastX.current == null) {
         lastX.current = x;
@@ -54,11 +84,7 @@ function VolumeSlider({ onStep, onDone }: { onStep: (dir: 1 | -1) => void; onDon
       acc.current += x - lastX.current;
       lastX.current = x;
       const now = Date.now();
-      if (now - lastFire.current < STEP_MIN_MS) return; // rate cap for the box
-      // Emit every whole step the accumulator holds (not just one), so a fast
-      // drag or a drag-then-stop applies the full change instead of stranding
-      // steps until the next move event. Cap the burst so one huge jump can't
-      // flood the box; the sub-step remainder carries in `acc`.
+      if (now - lastFire.current < STEP_MIN_MS) return;
       const steps = Math.trunc(acc.current / STEP_PX);
       if (steps === 0) return;
       const dir: 1 | -1 = steps > 0 ? 1 : -1;
@@ -71,11 +97,21 @@ function VolumeSlider({ onStep, onDone }: { onStep: (dir: 1 | -1) => void; onDon
   );
 
   const end = React.useCallback(() => {
-    lastX.current = null;
-    acc.current = 0;
-    setFrac(0.5);
-    onDone();
-  }, [onDone]);
+    dragging.current = false;
+    if (absolute) {
+      // No onDone() here: an immediate /api/tv refresh would race the agent's
+      // still-converging volume loop and snap the thumb back to a stale level.
+      // onSet's caller refreshes after the POST resolves (the agent replies
+      // with the final level), which is the correct sync point.
+      settleUntil.current = Date.now() + 2500;
+      onSet(Math.round(fracRef.current * 100));
+    } else {
+      lastX.current = null;
+      acc.current = 0;
+      setFrac(0.5);
+      onDone();
+    }
+  }, [absolute, onSet, onDone]);
 
   const pan = React.useMemo(
     () =>
@@ -83,19 +119,25 @@ function VolumeSlider({ onStep, onDone }: { onStep: (dir: 1 | -1) => void; onDon
         onStartShouldSetPanResponder: () => true,
         onMoveShouldSetPanResponder: () => true,
         onPanResponderGrant: (e) => {
-          lastX.current = e.nativeEvent.locationX;
-          acc.current = 0;
-          if (w > 0) setFrac(Math.max(0, Math.min(1, e.nativeEvent.locationX / w)));
+          dragging.current = true;
+          const x = e.nativeEvent.locationX;
+          if (absolute) {
+            if (w > 0) setFrac(Math.max(0, Math.min(1, x / w)));
+          } else {
+            lastX.current = x;
+            acc.current = 0;
+            if (w > 0) setFrac(Math.max(0, Math.min(1, x / w)));
+          }
         },
         onPanResponderMove: (e) => {
           const x = e.nativeEvent.locationX;
           if (w > 0) setFrac(Math.max(0, Math.min(1, x / w)));
-          fire(x);
+          if (!absolute) fireJog(x);
         },
         onPanResponderRelease: end,
         onPanResponderTerminate: end,
       }),
-    [w, fire, end],
+    [w, absolute, fireJog, end],
   );
 
   return (
@@ -105,9 +147,16 @@ function VolumeSlider({ onStep, onDone }: { onStep: (dir: 1 | -1) => void; onDon
         style={styles.sliderTrack}
         onLayout={(e) => setW(e.nativeEvent.layout.width)}
         {...pan.panHandlers}>
+        {absolute && (
+          <View pointerEvents="none" style={[styles.sliderFill, { width: `${frac * 100}%` }]} />
+        )}
         <View pointerEvents="none" style={[styles.sliderThumb, { left: `${frac * 100}%` }]} />
       </View>
-      <Ionicons name="volume-high" size={18} color={theme.textDim} />
+      {absolute ? (
+        <Text style={styles.sliderPct}>{Math.round(frac * 100)}</Text>
+      ) : (
+        <Ionicons name="volume-high" size={18} color={theme.textDim} />
+      )}
     </View>
   );
 }
@@ -220,6 +269,18 @@ export function RemotePowerBar() {
   // Fire-and-forget volume step for the drag slider. Deliberately bypasses the
   // `busy` flag (toggling it per step would flicker every other button) and the
   // per-op mute refresh; the slider refreshes mute once, on release (onDone).
+  // Absolute set for the slider (box target only — the box level is the one
+  // the agent can actually read back; panel readback is untrustworthy).
+  const setVolume = React.useCallback(
+    (pct: number) => {
+      void api
+        .tvSetVolume(settings, pct, 'box')
+        .then(() => refreshTv())
+        .catch(() => hapticError());
+    },
+    [settings, refreshTv],
+  );
+
   const stepErrAt = React.useRef(0);
   const stepVolume = React.useCallback(
     (dir: 1 | -1) => {
@@ -526,7 +587,16 @@ export function RemotePowerBar() {
                       </Pressable>
                     </View>
                   )}
-                  {sliderOpen && <VolumeSlider onStep={stepVolume} onDone={refreshTv} />}
+                  {sliderOpen && (
+                    <VolumeSlider
+                      level={
+                        volumeTarget === 'box' ? (tv?.box_volume_level ?? null) : null
+                      }
+                      onSet={setVolume}
+                      onStep={stepVolume}
+                      onDone={refreshTv}
+                    />
+                  )}
                   <View style={styles.volRow}>
                     <Pressable
                       disabled={busy}
@@ -688,6 +758,22 @@ const styles = StyleSheet.create({
     top: 7,
     borderRadius: 13,
     backgroundColor: theme.text,
+  },
+  sliderFill: {
+    position: 'absolute',
+    left: 0,
+    top: 0,
+    bottom: 0,
+    borderRadius: 20,
+    backgroundColor: 'rgba(96,165,250,0.25)',
+  },
+  sliderPct: {
+    color: theme.text,
+    fontSize: 13,
+    fontWeight: '700',
+    fontFamily: mono,
+    width: 30,
+    textAlign: 'right',
   },
   segRow: {
     flexDirection: 'row',
