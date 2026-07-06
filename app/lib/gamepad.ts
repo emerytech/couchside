@@ -121,6 +121,16 @@ export class GamepadClient {
   private dev: string | null = null;
   private listener: GamepadStatusListener | null = null;
 
+  // Input-injection paused state, signalled by the server (Windows agent):
+  // input is refused while the box is locked / not the active desktop / an
+  // elevated window has focus. The session stays connected; this just lets the
+  // Pad tab hint at why nothing is moving.
+  private inputBlocked = false;
+  private blockedMsg: string | null = null;
+  private blockedListener:
+    | ((blocked: boolean, msg: string | null) => void)
+    | null = null;
+
   /** True between connect() and close(): reconnect on failure while set. */
   private active = false;
   private conn: Conn | null = null;
@@ -156,6 +166,19 @@ export class GamepadClient {
   onStatus(fn: GamepadStatusListener | null): void {
     this.listener = fn;
     if (fn) fn(this.status, this.dev);
+  }
+
+  /**
+   * Register the (single) input-blocked listener; fires immediately with the
+   * current state. Fires with `true` when the server reports input injection
+   * is paused (box locked / not the active desktop / elevated window focused)
+   * and `false` when it resumes or the connection drops.
+   */
+  onInputBlocked(
+    fn: ((blocked: boolean, msg: string | null) => void) | null,
+  ): void {
+    this.blockedListener = fn;
+    if (fn) fn(this.inputBlocked, this.blockedMsg);
   }
 
   getStatus(): GamepadStatus {
@@ -385,6 +408,10 @@ export class GamepadClient {
       } else if (msg.t === 'err') {
         // Server reports the failure then closes; onclose handles reconnect.
         this.setStatus('error', null);
+      } else if (msg.t === 'blocked') {
+        this.setInputBlocked(true, typeof msg.msg === 'string' ? msg.msg : null);
+      } else if (msg.t === 'resumed') {
+        this.setInputBlocked(false, null);
       }
       // {"t":"pong"} needs no handling.
     };
@@ -487,6 +514,17 @@ export class GamepadClient {
   private setStatus(status: GamepadStatus, dev: string | null): void {
     this.status = status;
     this.dev = dev;
+    // A blocked hint only makes sense while connected; clear it otherwise so a
+    // stale banner can't outlive the connection.
+    if (status !== 'connected') this.setInputBlocked(false, null);
     if (this.listener) this.listener(status, dev);
+  }
+
+  private setInputBlocked(blocked: boolean, msg: string | null): void {
+    const nextMsg = blocked ? msg : null;
+    if (this.inputBlocked === blocked && this.blockedMsg === nextMsg) return;
+    this.inputBlocked = blocked;
+    this.blockedMsg = nextMsg;
+    if (this.blockedListener) this.blockedListener(blocked, nextMsg);
   }
 }

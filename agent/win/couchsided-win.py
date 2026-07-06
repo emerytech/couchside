@@ -3027,7 +3027,13 @@ class Handler(BaseHTTPRequestHandler):
 
         try:
             target.emit(events)
-            entry["input_err_count"] = 0  # injection working (again)
+            entry["input_err_count"] = 0
+            if entry.get("input_blocked"):  # was blocked, now working again
+                entry["input_blocked"] = False
+                try:
+                    ws_send_json(conn, {"t": "resumed"})
+                except OSError:
+                    pass
         except (OSError, ValueError) as e:
             # An input-injection failure is NOT fatal to the session. SendInput
             # is refused whenever the box is on the lock/secure desktop, the
@@ -3036,20 +3042,27 @@ class Handler(BaseHTTPRequestHandler):
             # (UIPI) — all transient conditions. Tearing the socket down here
             # turned every such moment into "the trackpad stopped working" plus
             # a reconnect storm (one failed move killed the whole pad/mouse/
-            # keyboard session). Instead: swallow it, log rate-limited, and keep
-            # the connection alive so input resumes automatically the moment
-            # injection is possible again.
-            self._note_input_error(entry, slot or "gamepad", e)
+            # keyboard session). Instead: swallow it, log rate-limited, keep the
+            # connection alive, and tell the app so it can show a hint.
+            self._note_input_error(conn, entry, slot or "gamepad", e)
         return True
 
-    def _note_input_error(self, entry, kind, exc):
-        """Rate-limited log for a non-fatal input-injection failure (see
-        _gamepad_message). Logs the first failure, then at most once per 5s
-        with a running count, so a persistently-blocked session can't flood
-        the log that /api/journal serves back."""
+    def _note_input_error(self, conn, entry, kind, exc):
+        """Non-fatal input-injection failure (see _gamepad_message). Keeps the
+        session, logs rate-limited (first failure then <=once/5s so a stuck
+        session can't flood the log /api/journal serves back), and tells the
+        app ONCE on the transition into the blocked state so the Pad tab can
+        surface a 'input paused — unlock the box' hint."""
         now = time.monotonic()
         n = entry.get("input_err_count", 0) + 1
         entry["input_err_count"] = n
+        if not entry.get("input_blocked"):
+            entry["input_blocked"] = True
+            try:
+                ws_send_json(conn, {"t": "blocked",
+                    "msg": "Input paused — unlock the box or bring it to front."})
+            except OSError:
+                pass
         last = entry.get("input_err_logged_at", 0.0)
         if n == 1 or now - last > 5.0:
             entry["input_err_logged_at"] = now

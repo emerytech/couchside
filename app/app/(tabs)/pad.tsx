@@ -562,6 +562,9 @@ function PadScreen() {
   const mode: PadMode = settings.padMode ?? 'swipe';
   const [status, setStatus] = useState<GamepadStatus>('closed');
   const [dev, setDev] = useState<string | null>(null);
+  // Non-null when the box is refusing input injection (locked / not the active
+  // desktop / an elevated window has focus); the string is the hint to show.
+  const [inputBlocked, setInputBlocked] = useState<string | null>(null);
 
   const clientRef = useRef<GamepadClient | null>(null);
   if (clientRef.current == null) {
@@ -594,6 +597,10 @@ function PadScreen() {
     client.onStatus((s, d) => {
       setStatus(s);
       setDev(d);
+    });
+
+    client.onInputBlocked((blocked, msg) => {
+      setInputBlocked(blocked ? (msg ?? 'Input paused — unlock the box.') : null);
     });
 
     const connect = () => {
@@ -634,6 +641,7 @@ function PadScreen() {
       appSub.remove();
       disconnect();
       client.onStatus(null);
+      client.onInputBlocked(null);
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps -- connection
     // identity only; settingsRef carries the rest without re-running.
@@ -796,6 +804,15 @@ function PadScreen() {
           ))}
         </View>
       </View>
+
+      {inputBlocked != null && status === 'connected' && (
+        <View style={styles.inputBlockedBar}>
+          <Text style={styles.inputBlockedText} numberOfLines={2}>
+            {'⚠  '}
+            {inputBlocked}
+          </Text>
+        </View>
+      )}
 
       {mode === 'swipe' ? (
         <>
@@ -1211,6 +1228,22 @@ const styles = StyleSheet.create({
   },
   kbAccessoryDone: {
     paddingVertical: 8,
+  },
+  inputBlockedBar: {
+    marginTop: 8,
+    backgroundColor: 'rgba(251, 191, 36, 0.12)',
+    borderColor: theme.amber,
+    borderWidth: 1,
+    borderRadius: 10,
+    paddingVertical: 8,
+    paddingHorizontal: 12,
+  },
+  inputBlockedText: {
+    color: theme.amber,
+    fontFamily: mono,
+    fontSize: 12,
+    fontWeight: '700',
+    lineHeight: 16,
   },
   kbBarTextOpen: {
     color: theme.blue,
