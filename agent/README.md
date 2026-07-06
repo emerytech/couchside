@@ -121,8 +121,8 @@ Notes:
 - Anything needing root must go through `sudo` **and** have a matching
   `NOPASSWD` sudoers entry (the daemon has no TTY to type a password into).
   The installer's rule covers `systemctl restart sddm`, `reboot`, `poweroff`,
-  and `journalctl`; add your own entries to `/etc/sudoers.d/couchside` (via
-  `visudo`) for other privileged actions.
+  `suspend`, and `journalctl`; add your own entries to `/etc/sudoers.d/couchside`
+  (via `visudo`) for other privileged actions.
 - Journal reads are allowed **only** for units in `units`; that list is the
   allowlist.
 
@@ -134,16 +134,19 @@ All responses carry permissive CORS headers; `OPTIONS` returns 204.
 
 | Route | Method | Description |
 |---|---|---|
-| `/api/ping` | GET | Unauthenticated reachability probe: `{"ok":true,"app":"couchside-agent","version":"2.0.0"}` |
+| `/api/ping` | GET | Unauthenticated reachability probe: `{"ok":true,"app":"couchside-agent","version":"<agent version>","host":"…","ip":"…"}` |
 | `/api/status` | GET | hostname, time, uptime, load, CPU temp, memory, disk usage (`/`, `/var`), and `net` (`iface`, `mac`, `wired`, `wol_armed`) for the app's Wake-on-LAN power path |
 | `/api/units` | GET | State of the configured watchlist units |
 | `/api/journal?unit=<name>&lines=<n>&scope=system\|user` | GET | Last n journal lines (default 100, clamped 1 to 500). Unit must be in the configured watchlist, else 400 |
 | `/api/actions` | GET | Configured actions with id/label/description/danger |
 | `/api/actions/<id>` | POST | Run an action; returns `{ok, exit_code, stdout, stderr, duration_ms}`. Unknown id → 404 |
-| `/api/tv` | GET | TV/volume probe. `{"available":true,"backend":..,"adapter":..,"box_volume":bool,"tv_volume":bool,"tv_power":bool,"muted":bool\|null}`. `box_volume` is the box's own OS volume; `tv_volume`/`tv_power` mean a panel/CEC backend is present. 404 only when the box has neither. Bearer-gated |
-| `/api/tv/<op>` | POST | One-shot command; returns `{ok, exit_code, stdout, stderr, duration_ms}` (+ `muted` for the mute op). `<op>` ∈ `power_on power_off volume_up volume_down mute`. Power goes to the TV backend; volume goes to the box by default, or add `?target=tv` to send it to the panel/CEC. Unknown op → 404 |
+| `/api/tv` | GET | TV/volume probe. `{"available":true,"backend":..,"adapter":..,"box_volume":bool,"tv_volume":bool,"tv_power":bool,"muted":bool\|null,"source_box":bool,"sources":[{"id","label"}],"screen_toggle":bool,"keys":bool,"box_volume_level":0-100\|null,"tv_volume_level":0-100\|null}`. `box_volume` is the box's own OS volume; `tv_volume`/`tv_power` mean a panel/CEC backend is present; `source_box`/`sources`/`screen_toggle`/`keys` and the `*_level` readings are panel-only (RS-232). 404 only when the box has neither. Bearer-gated |
+| `/api/tv/<op>` | POST | One-shot command; returns `{ok, exit_code, stdout, stderr, duration_ms}` (+ `muted` for the mute op). `<op>` ∈ `power_on power_off volume_up volume_down mute` (plus panel-only `source_box`, `screen_toggle`). Power goes to the TV backend; volume goes to the box by default, or add `?target=tv` to send it to the panel/CEC. Unknown op → 404 |
+| `/api/tv/volume` | POST | Absolute volume. Body `{"level":0-100,"target":"box"\|"tv"}`. Box converges via media-key steps (Game-Mode OSD); TV via the RS-232 closed loop. Returns the ActionResult plus the final `level` |
+| `/api/tv/source/<id>` | POST | Switch the display's input source (panel only). `<id>` is one of the `sources` from `GET /api/tv`. Unknown id / no panel → 404 |
+| `/api/tv/key/<k>` | POST | Send a factory-remote key (panel only). `<k>` ∈ `up down left right ok menu home back settings bright_up bright_down` |
 
-## Virtual gamepad (WS protocol v1)
+## Virtual gamepad, mouse & keyboard (WS protocol v2)
 
 The agent exposes a virtual Xbox 360 controller over a WebSocket on the same
 port:
@@ -163,13 +166,20 @@ new valid connection *replaces* the old one: the old uinput device is
 destroyed first, then the old socket is closed.
 
 Client to server messages (one JSON object per masked text frame; no
-fragmentation):
+fragmentation). The gamepad, virtual mouse, and virtual keyboard uinput devices
+are each created lazily on first use — the Trackpad and Remote input modes drive
+the mouse/keyboard messages (v2):
 
 | Message | Meaning |
 |---|---|
 | `{"t":"b","k":K,"v":0\|1}` | Button; `K` ∈ `a b x y lb rb l3 r3 start select guide dl dr du dd` |
 | `{"t":"t","k":"lt"\|"rt","v":0..255}` | Analog trigger |
 | `{"t":"s","k":"l"\|"r","x":F,"y":F}` | Stick, floats −1..1; +x right, **+y down** (screen coords, maps directly to Xbox ABS) |
+| `{"t":"m","dx":I,"dy":I}` | Relative mouse move (virtual mouse) |
+| `{"t":"mb","k":"l"\|"r"\|"m","v":0\|1}` | Mouse button down/up |
+| `{"t":"mw","dy":I}` | Mouse wheel |
+| `{"t":"kt","text":"…"}` | Type Unicode text — layout-independent (virtual keyboard) |
+| `{"t":"k","key":K}` | One special key; `K` ∈ `backspace enter tab esc space up down left right home end` |
 | `{"t":"ping"}` | Keepalive → `{"t":"pong"}` |
 
 Server to client: `hello` (after device ready), `pong`, and
