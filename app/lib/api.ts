@@ -168,6 +168,12 @@ export type Tv = {
    * it off in standby. RS-232 panel only — CEC/soft boxes never report it.
    */
   screen_toggle?: boolean;
+  /**
+   * Display inputs the panel can switch to (agent >= 2.6.9): the app renders a
+   * source picker and POSTs /api/tv/source/<id>. Panel (RS-232) only — empty or
+   * absent on CEC/soft boxes, which can't route a display's input.
+   */
+  sources?: { id: string; label: string }[];
 };
 
 /** Where volume goes: the box's own OS volume, or the TV/panel over CEC/RS-232. */
@@ -432,6 +438,16 @@ export const api = {
    */
   tvScreenToggle(settings: ConnSettings): Promise<ActionResult> {
     return request<ActionResult>(settings, '/api/tv/screen_toggle', {
+      method: 'POST',
+      timeoutMs: 12000,
+    });
+  },
+
+  /**
+   * Switch the display to input `id` (one of Tv.sources; RS-232 panel only).
+   */
+  tvSelectSource(settings: ConnSettings, id: string): Promise<ActionResult> {
+    return request<ActionResult>(settings, `/api/tv/source/${encodeURIComponent(id)}`, {
       method: 'POST',
       timeoutMs: 12000,
     });

@@ -38,7 +38,7 @@ except ImportError:  # pragma: no cover
     fcntl = None
 
 APP_NAME = "couchside-agent"
-VERSION = "2.6.8"
+VERSION = "2.6.9"
 UID = os.getuid()
 XDG_RUNTIME_DIR = "/run/user/%d" % UID
 
@@ -1414,6 +1414,19 @@ PANEL_CODES = {
     "screen_toggle": 0x15,
 }
 
+# Ordered display inputs the Newline RS-232 panel can switch to, surfaced to the
+# app as a source picker. Codes validated on a TT-7516UB (OPS / HDMI 1 / Home
+# confirmed live; HDMI 2 / HDMI 3 per the Newline UB/C/STV code tables). This is
+# panel-only: CEC cannot arbitrarily route a display's input from the box side.
+PANEL_SOURCES = (
+    ("ops", "Box (OPS)", 0x38),
+    ("hdmi1", "HDMI 1", 0x0A),
+    ("hdmi2", "HDMI 2", 0x52),
+    ("hdmi3", "HDMI 3", 0x53),
+    ("home", "Home", 0x1C),
+)
+PANEL_SOURCE_CODES = {sid: code for (sid, _label, code) in PANEL_SOURCES}
+
 # Populated at startup by set_panel(); {"device","baud","protocol"} or None.
 PANEL = None
 
@@ -1500,12 +1513,12 @@ def panel_available():
     return PANEL is not None
 
 
-def real_panel(op):
-    """Send a Newline command frame over the configured serial line. Success
-    means the frame was written (the panel may or may not reply); the reply, if
-    any, is echoed in stdout for diagnostics. ActionResult-shaped."""
+def _panel_send_code(code):
+    """Send one raw Newline key code over the serial line. Success means the
+    frame was written (the panel may or may not reply); the reply, if any, is
+    echoed in stdout for diagnostics. ActionResult-shaped."""
     start = time.monotonic()
-    frame = _panel_frame(op)
+    frame = PANEL_FRAME_HEAD + bytes([code, PANEL_FRAME_TAIL])
     try:
         reply = _serial_send(PANEL["device"], PANEL["baud"], frame)
     except Exception as e:
@@ -1516,6 +1529,16 @@ def real_panel(op):
         _hexstr(frame), _hexstr(reply) if reply else "(none)")
     return {"ok": True, "exit_code": 0, "stdout": stdout, "stderr": "",
             "duration_ms": int((time.monotonic() - start) * 1000)}
+
+
+def real_panel(op):
+    """Send the Newline command frame for a unified TV op. ActionResult-shaped."""
+    return _panel_send_code(PANEL_CODES[op])
+
+
+def real_panel_source(sid):
+    """Switch the panel to display input <sid> (see PANEL_SOURCES)."""
+    return _panel_send_code(PANEL_SOURCE_CODES[sid])
 
 
 def mock_panel(op):
@@ -1752,6 +1775,11 @@ def tv_info():
         # RS-232 panel backend can do it, so the app shows the button solely for
         # panel boxes — CEC/soft boxes never see it (keeps the default UI clean).
         "source_box": panel_available(),
+        # Full display-input picker (panel only). Each entry: {id,label}; the app
+        # POSTs /api/tv/source/<id> to switch. Empty when no panel backend.
+        "sources": ([{"id": sid, "label": label}
+                     for (sid, label, _code) in PANEL_SOURCES]
+                    if panel_available() else []),
         # Screen blank/unblank without cutting power (keeps the box alive when an
         # OPS display would otherwise power the box off in standby). Panel-only.
         "screen_toggle": panel_available(),
@@ -3148,6 +3176,23 @@ class Handler(BaseHTTPRequestHandler):
                                      "error": "unknown launcher"}, started)
                     return
                 result = mock_launch(argv) if self.mock else real_launch(argv)
+                self._send(200, result, started)
+                return
+
+            # POST /api/tv/source/<id>: switch the display input (panel only).
+            # Checked before the generic /api/tv/ route since it is more specific.
+            srcprefix = "/api/tv/source/"
+            if path.startswith(srcprefix):
+                sid = unquote(path[len(srcprefix):])
+                if not panel_available() or sid not in PANEL_SOURCE_CODES:
+                    self._send(404, {"error": "unknown source"}, started)
+                    return
+                if self.mock:
+                    result = {"ok": True, "exit_code": 0,
+                              "stdout": "[mock panel] source %s" % sid,
+                              "stderr": "", "duration_ms": 100}
+                else:
+                    result = real_panel_source(sid)
                 self._send(200, result, started)
                 return
 

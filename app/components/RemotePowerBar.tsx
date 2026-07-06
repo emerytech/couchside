@@ -267,6 +267,23 @@ export function RemotePowerBar() {
     }
   }, [settings]);
 
+  // Switch the display to a specific input (RS-232 panel source picker).
+  const onSelectSource = React.useCallback(
+    async (id: string) => {
+      hapticLight();
+      setBusy(true);
+      try {
+        await api.tvSelectSource(settings, id);
+        hapticSuccess();
+      } catch {
+        hapticError();
+      } finally {
+        setBusy(false);
+      }
+    },
+    [settings],
+  );
+
   // Mute returns the new state so the button can show it (gamescope has no
   // mute OSD on the panel, so this is the only feedback).
   const onMute = React.useCallback(async () => {
@@ -343,13 +360,22 @@ export function RemotePowerBar() {
   const hasTvPower = reachable && tv?.tv_power === true;
   // RS-232-only capabilities (panel backend). Gated so CEC/soft boxes never
   // show these buttons — they keep the standard power/volume UI.
+  const sources = (reachable && tv?.sources) || [];
   const canSourceBox = reachable && tv?.source_box === true;
   const canBlankScreen = reachable && tv?.screen_toggle === true;
   const canSuspend = reachable && hasSuspend;
   const canWake = !reachable && !!settings.mac && wolAvailable;
 
   // Nothing to control on this box right now.
-  if (!canSuspend && !canWake && !hasVolume && !hasTvPower && !canSourceBox && !canBlankScreen)
+  if (
+    !canSuspend &&
+    !canWake &&
+    !hasVolume &&
+    !hasTvPower &&
+    !canSourceBox &&
+    !canBlankScreen &&
+    sources.length === 0
+  )
     return null;
 
   // Trigger icon hints at what's inside: volume first, then box power, then TV.
@@ -443,14 +469,31 @@ export function RemotePowerBar() {
                 </View>
               )}
 
-              {canSourceBox && (
-                <Pressable
-                  disabled={busy}
-                  onPress={onSwitchToBox}
-                  style={({ pressed }) => [styles.sourceBtn, pressed && styles.pressed]}>
-                  <Ionicons name="tv" size={18} color={theme.green} />
-                  <Text style={[styles.sourceBtnText, { color: theme.green }]}>Switch to Box</Text>
-                </Pressable>
+              {sources.length > 0 ? (
+                <View style={styles.sourceSection}>
+                  <Text style={styles.sourceHdr}>SOURCE</Text>
+                  <View style={styles.sourceGrid}>
+                    {sources.map((s) => (
+                      <Pressable
+                        key={s.id}
+                        disabled={busy}
+                        onPress={() => onSelectSource(s.id)}
+                        style={({ pressed }) => [styles.sourcePill, pressed && styles.pressed]}>
+                        <Text style={styles.sourcePillText}>{s.label}</Text>
+                      </Pressable>
+                    ))}
+                  </View>
+                </View>
+              ) : (
+                canSourceBox && (
+                  <Pressable
+                    disabled={busy}
+                    onPress={onSwitchToBox}
+                    style={({ pressed }) => [styles.sourceBtn, pressed && styles.pressed]}>
+                    <Ionicons name="tv" size={18} color={theme.green} />
+                    <Text style={[styles.sourceBtnText, { color: theme.green }]}>Switch to Box</Text>
+                  </Pressable>
+                )
               )}
 
               {canBlankScreen && (
@@ -610,6 +653,25 @@ const styles = StyleSheet.create({
     backgroundColor: theme.inset,
   },
   sourceBtnText: { fontSize: 14, fontWeight: '800', fontFamily: mono, letterSpacing: 0.5 },
+  sourceSection: { gap: 6 },
+  sourceHdr: {
+    color: theme.textFaint,
+    fontSize: 11,
+    fontWeight: '700',
+    letterSpacing: 1.2,
+    fontFamily: mono,
+    marginLeft: 2,
+  },
+  sourceGrid: { flexDirection: 'row', flexWrap: 'wrap', gap: 6 },
+  sourcePill: {
+    paddingVertical: 9,
+    paddingHorizontal: 12,
+    borderRadius: 8,
+    backgroundColor: theme.inset,
+    borderWidth: 1,
+    borderColor: theme.cardBorder,
+  },
+  sourcePillText: { color: theme.text, fontSize: 12, fontWeight: '700', fontFamily: mono },
   sliderRow: { flexDirection: 'row', alignItems: 'center', gap: 10, paddingHorizontal: 2 },
   sliderTrack: {
     flex: 1,
