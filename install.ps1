@@ -29,7 +29,11 @@
 #      the desktop from a session-0 service; unprivileged mirrors the Linux
 #      agent's least-privilege model — its LAN-facing action/launcher API
 #      must never run as admin)
-#   7. opens http://localhost:8787/pair so you can scan the QR to pair
+#   7. installs a taskbar tray widget (Startup shortcut) — a Decky-style panel
+#      to start/stop/restart the agent, show the pairing QR, and toggle
+#      start-at-logon (Python installs only; the prebuilt-exe path has no
+#      interpreter for the .pyw GUI)
+#   8. opens http://localhost:8787/pair so you can scan the QR to pair
 
 [CmdletBinding()]
 param(
@@ -54,6 +58,8 @@ $DataDir    = Join-Path $env:ProgramData 'Couchside'
 $TokenPath  = Join-Path $DataDir 'token'
 $ConfigPath = Join-Path $DataDir 'config.json'
 $FwRule     = 'Couchside Agent'
+$TrayName   = 'Couchside Tray'
+$StartupLnk = Join-Path ([Environment]::GetFolderPath('Startup')) 'Couchside Tray.lnk'
 
 function Test-Admin {
     $id = [Security.Principal.WindowsIdentity]::GetCurrent()
@@ -100,6 +106,11 @@ function Uninstall-Couchside {
     Stop-AgentTask
     Unregister-ScheduledTask -TaskName $TaskName -Confirm:$false -ErrorAction SilentlyContinue
     Remove-NetFirewallRule -DisplayName $FwRule -ErrorAction SilentlyContinue
+    # Tray widget: kill the running icon + remove its Startup shortcut.
+    Get-CimInstance Win32_Process -Filter "Name='pythonw.exe' OR Name='python.exe'" -ErrorAction SilentlyContinue |
+        Where-Object { $_.CommandLine -like '*couchside-tray.pyw*' } |
+        ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }
+    if (Test-Path $StartupLnk) { Remove-Item -Force $StartupLnk -ErrorAction SilentlyContinue }
     if (Test-Path $InstallDir) { Remove-Item -Recurse -Force $InstallDir }
     Write-Host "Left in place (delete manually to unpair phones): $DataDir"
     Write-Host 'Note: if install disabled hibernation, restore it with `powercfg /hibernate on`.'
@@ -209,6 +220,7 @@ New-Item -ItemType Directory -Force -Path $DataDir | Out-Null
 $localExe = Find-Local @('couchside-agent.exe','agent\win\couchside-agent.exe')
 $localPy  = Find-Local @('couchsided-win.py','agent\win\couchsided-win.py')
 $localQr  = Find-Local @('qr.py','agent\qr.py','..\qr.py','agent\win\qr.py')
+$localTray = Find-Local @('couchside-tray.pyw','agent\win\couchside-tray.pyw')
 $localDll = Find-Local @('ViGEmClient.dll','agent\win\ViGEmClient.dll')
 
 if ($localExe) {
@@ -234,11 +246,14 @@ else {
     if ($localPy) {
         Copy-Item $localPy (Join-Path $InstallDir 'couchsided-win.py') -Force
         if ($localQr) { Copy-Item $localQr (Join-Path $InstallDir 'qr.py') -Force }
+        if ($localTray) { Copy-Item $localTray (Join-Path $InstallDir 'couchside-tray.pyw') -Force }
         Write-Host 'Installed agent from local checkout.'
     } else {
         Write-Host "Downloading agent from $RawBase ..."
         Invoke-WebRequest -UseBasicParsing "$RawBase/win/couchsided-win.py" -OutFile (Join-Path $InstallDir 'couchsided-win.py')
         Invoke-WebRequest -UseBasicParsing "$RawBase/qr.py"                 -OutFile (Join-Path $InstallDir 'qr.py')
+        # Tray widget is optional; don't fail the install if it can't be fetched.
+        try { Invoke-WebRequest -UseBasicParsing "$RawBase/win/couchside-tray.pyw" -OutFile (Join-Path $InstallDir 'couchside-tray.pyw') } catch {}
         # Sanity-check the download compiles before we wire it to a logon task.
         & $pyPath -m py_compile (Join-Path $InstallDir 'couchsided-win.py')
         if ($LASTEXITCODE -ne 0) { throw 'Downloaded agent failed to compile — aborting.' }
@@ -418,6 +433,37 @@ Register-ScheduledTask -TaskName $TaskName -Action $action -Trigger $trigger `
     -Principal $principal -Settings $settings | Out-Null
 Start-ScheduledTask -TaskName $TaskName
 Write-Host "Scheduled task '$TaskName' registered and started."
+
+# --- 7b. tray widget: Startup shortcut + launch now (Python installs only) ----
+# The tray is a .pyw GUI (needs Python + tkinter); the prebuilt-exe path has no
+# interpreter to run it, so it is skipped there. Runs windowless under
+# pythonw.exe, in the interactive user session (a Startup shortcut, like any
+# tray app) — never elevated.
+$trayPy = Join-Path $InstallDir 'couchside-tray.pyw'
+if ($usePython -and (Test-Path $trayPy)) {
+    # Prefer pythonw.exe (no console flash); fall back to whatever we resolved.
+    $pyw = $pyPath
+    if ($pyPath -notlike '*pythonw.exe') {
+        $sib = Join-Path (Split-Path $pyPath) 'pythonw.exe'
+        if (Test-Path $sib) { $pyw = $sib }
+    }
+    try {
+        $ws = New-Object -ComObject WScript.Shell
+        $lnk = $ws.CreateShortcut($StartupLnk)
+        $lnk.TargetPath = $pyw
+        $lnk.Arguments = '"{0}"' -f $trayPy
+        $lnk.WorkingDirectory = $InstallDir
+        $lnk.WindowStyle = 7           # minimized (belt-and-suspenders; pythonw is windowless)
+        $lnk.Description = 'Couchside tray widget'
+        $lnk.Save()
+        Write-Host "Tray widget: added to Startup ($StartupLnk)."
+    } catch { Write-Host "Tray widget: could not create Startup shortcut ($_)." }
+    # Launch it now so it appears in the tray immediately (kill a stale one first).
+    Get-CimInstance Win32_Process -Filter "Name='pythonw.exe' OR Name='python.exe'" -ErrorAction SilentlyContinue |
+        Where-Object { $_.CommandLine -like '*couchside-tray.pyw*' } |
+        ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }
+    try { Start-Process $pyw -ArgumentList ('"{0}"' -f $trayPy) -WorkingDirectory $InstallDir } catch {}
+}
 
 # --- 8. pairing --------------------------------------------------------------
 Write-Host ''
