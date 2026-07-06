@@ -6,8 +6,9 @@ import * as SecureStore from 'expo-secure-store';
  *  - gamepad:  full on-screen Xbox controller
  *  - swipe:    Apple-TV-style d-pad swipe surface
  *  - trackpad: relative mouse + scroll surface (protocol v2)
+ *  - remote:   traditional TV-remote layout (D-pad/OK, TV keys, Steam/QAM)
  */
-export type PadMode = 'gamepad' | 'swipe' | 'trackpad';
+export type PadMode = 'gamepad' | 'swipe' | 'trackpad' | 'remote';
 
 /**
  * A single paired box (Bazzite media center, Steam Deck, ...). The app manages
@@ -179,6 +180,7 @@ function normalizeVolumeTarget(v: unknown): 'box' | 'tv' | undefined {
 function normalizePadMode(v: unknown): PadMode {
   if (v === 'gamepad') return 'gamepad';
   if (v === 'trackpad') return 'trackpad';
+  if (v === 'remote') return 'remote';
   return 'swipe';
 }
 

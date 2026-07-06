@@ -54,13 +54,6 @@ export default function TabLayout() {
         }}
       />
       <Tabs.Screen
-        name="launch"
-        options={{
-          title: 'Launch',
-          tabBarIcon: ({ color }) => <Ionicons name="rocket" size={24} color={color} />,
-        }}
-      />
-      <Tabs.Screen
         name="pad"
         options={{
           title: 'Pad',
@@ -68,10 +61,10 @@ export default function TabLayout() {
         }}
       />
       <Tabs.Screen
-        name="logs"
+        name="launch"
         options={{
-          title: 'Logs',
-          tabBarIcon: ({ color }) => <Ionicons name="reader" size={24} color={color} />,
+          title: 'Launch',
+          tabBarIcon: ({ color }) => <Ionicons name="rocket" size={24} color={color} />,
         }}
       />
       <Tabs.Screen

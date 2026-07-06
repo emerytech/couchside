@@ -92,7 +92,9 @@ function normalize(raw: unknown): Prefs {
   const num = (v: unknown, allowed: readonly number[], fallback: number): number =>
     typeof v === 'number' && allowed.includes(v) ? v : fallback;
   const padMode: PadMode =
-    o.defaultPadMode === 'gamepad' || o.defaultPadMode === 'trackpad'
+    o.defaultPadMode === 'gamepad' ||
+    o.defaultPadMode === 'trackpad' ||
+    o.defaultPadMode === 'remote'
       ? o.defaultPadMode
       : 'swipe';
   return {

@@ -156,7 +156,52 @@ export type Tv = {
   tv_power?: boolean;
   /** Current box mute state at probe time (agent >= 2.6.5), or null if unknown. */
   muted?: boolean | null;
+  /**
+   * The panel can jump its input to the box's OPS slot (agent >= 2.6.7). Only
+   * the RS-232 panel backend reports this, so the "Switch to box" button is
+   * hidden on CEC/soft boxes — it is an opt-in RS-232 feature.
+   */
+  source_box?: boolean;
+  /**
+   * The panel can blank/unblank the screen without cutting power (agent >=
+   * 2.6.8), so the box keeps running when an OPS display would otherwise power
+   * it off in standby. RS-232 panel only — CEC/soft boxes never report it.
+   */
+  screen_toggle?: boolean;
+  /**
+   * Display inputs the panel can switch to (agent >= 2.6.9): the app renders a
+   * source picker and POSTs /api/tv/source/<id>. Panel (RS-232) only — empty or
+   * absent on CEC/soft boxes, which can't route a display's input.
+   */
+  sources?: { id: string; label: string }[];
+  /**
+   * Factory-remote key emulation over RS-232 (agent >= 2.7.0): arrows / ok /
+   * menu / home / back / settings via POST /api/tv/key/<k>. Panel only.
+   */
+  keys?: boolean;
+  /** Current box OS volume 0-100 (agent >= 2.7.0), or null when unreadable. */
+  box_volume_level?: number | null;
+  /**
+   * Current panel speaker volume 0-100 (agent >= 2.7.0), or null. NOTE: on
+   * some panels this register stops tracking after source switches — treat as
+   * advisory; the box level is the reliable one.
+   */
+  tv_volume_level?: number | null;
 };
+
+/** Factory-remote keys the agent accepts at POST /api/tv/key/<k>. */
+export type TvKey =
+  | 'up'
+  | 'down'
+  | 'left'
+  | 'right'
+  | 'ok'
+  | 'menu'
+  | 'home'
+  | 'back'
+  | 'settings'
+  | 'bright_up'
+  | 'bright_down';
 
 /** Where volume goes: the box's own OS volume, or the TV/panel over CEC/RS-232. */
 export type VolumeTarget = 'box' | 'tv';
@@ -396,6 +441,65 @@ export const api = {
   tvSend(settings: ConnSettings, op: TvOp, target?: VolumeTarget): Promise<ActionResult> {
     const q = target ? `?target=${target}` : '';
     return request<ActionResult>(settings, `/api/tv/${op}${q}`, {
+      method: 'POST',
+      timeoutMs: 12000,
+    });
+  },
+
+  /**
+   * Switch the panel's input to the box's OPS slot (RS-232 panel backend only;
+   * gated behind Tv.source_box). Pulls the display back to the box from any
+   * other source in one tap.
+   */
+  tvSource(settings: ConnSettings): Promise<ActionResult> {
+    return request<ActionResult>(settings, '/api/tv/source_box', {
+      method: 'POST',
+      timeoutMs: 12000,
+    });
+  },
+
+  /**
+   * Toggle the panel backlight (screen dark / lit) without touching power, so
+   * the box stays running (RS-232 panel backend only; gated behind
+   * Tv.screen_toggle). Toggle-only — the panel reports no readable state.
+   */
+  tvScreenToggle(settings: ConnSettings): Promise<ActionResult> {
+    return request<ActionResult>(settings, '/api/tv/screen_toggle', {
+      method: 'POST',
+      timeoutMs: 12000,
+    });
+  },
+
+  /**
+   * Switch the display to input `id` (one of Tv.sources; RS-232 panel only).
+   */
+  tvSelectSource(settings: ConnSettings, id: string): Promise<ActionResult> {
+    return request<ActionResult>(settings, `/api/tv/source/${encodeURIComponent(id)}`, {
+      method: 'POST',
+      timeoutMs: 12000,
+    });
+  },
+
+  /**
+   * Set the absolute volume level (0-100). Box target converges via media-key
+   * steps (Game Mode OSD shows); TV target uses the RS-232 closed loop. The
+   * result carries the final `level` the agent landed on.
+   */
+  tvSetVolume(
+    settings: ConnSettings,
+    level: number,
+    target: VolumeTarget,
+  ): Promise<ActionResult & { level?: number | null }> {
+    return request<ActionResult & { level?: number | null }>(settings, '/api/tv/volume', {
+      method: 'POST',
+      timeoutMs: 20000,
+      body: { level, target },
+    });
+  },
+
+  /** Send one factory-remote key to the panel (RS-232 only; see Tv.keys). */
+  tvKey(settings: ConnSettings, key: TvKey): Promise<ActionResult> {
+    return request<ActionResult>(settings, `/api/tv/key/${key}`, {
       method: 'POST',
       timeoutMs: 12000,
     });

@@ -38,7 +38,7 @@ except ImportError:  # pragma: no cover
     fcntl = None
 
 APP_NAME = "couchside-agent"
-VERSION = "2.6.6"
+VERSION = "2.7.0"
 UID = os.getuid()
 XDG_RUNTIME_DIR = "/run/user/%d" % UID
 
@@ -1401,10 +1401,63 @@ PANEL_CODES = {
     "mute": 0x02,
     "volume_down": 0x17,
     "volume_up": 0x18,
+    # Select the OPS / Internal-PC input (the slot the box lives in), so a phone
+    # tap pulls the panel back to the box from any other source. Validated on a
+    # Newline TruTouch TT-7516UB; the OPS select code is shared across the UB/C
+    # series. Panel-only: CEC/soft have no input-select equivalent.
+    "source_box": 0x38,
+    # Toggle the panel backlight (screen dark / lit) WITHOUT touching power. On
+    # OPS displays, standby cuts power to the OPS slot and kills the box, so this
+    # is the way to "turn the screen off" while the box keeps running in the
+    # background. Toggle-only (the panel exposes no readable backlight state on
+    # this firmware). Validated on a TT-7516UB: box stayed reachable after blank.
+    "screen_toggle": 0x15,
 }
+
+# Ordered display inputs the Newline RS-232 panel can switch to, surfaced to the
+# app as a source picker. Codes validated on a TT-7516UB (OPS / HDMI 1 / Home
+# confirmed live; HDMI 2 / HDMI 3 per the Newline UB/C/STV code tables). This is
+# panel-only: CEC cannot arbitrarily route a display's input from the box side.
+PANEL_SOURCES = (
+    ("ops", "Box (OPS)", 0x38),
+    ("hdmi1", "HDMI 1", 0x0A),
+    ("hdmi2", "HDMI 2", 0x52),
+    ("hdmi3", "HDMI 3", 0x53),
+    ("home", "Home", 0x1C),
+)
+PANEL_SOURCE_CODES = {sid: code for (sid, _label, code) in PANEL_SOURCES}
+
+# Factory-remote keys (Newline UB/C/STV code tables; OK/arrows/menu/home/return
+# validated against the UB manual). Lets the app emulate the physical Newline
+# remote entirely over RS-232: navigate the panel OSD / Android home, open its
+# menu and settings, without the IR remote. Panel-only.
+PANEL_KEYS = {
+    "up": 0x2E,
+    "down": 0x2F,
+    "left": 0x2C,
+    "right": 0x2D,
+    "ok": 0x2B,
+    "menu": 0x1B,
+    "home": 0x1C,
+    "back": 0x1D,
+    "settings": 0x20,
+    "bright_up": 0x47,
+    "bright_down": 0x48,
+}
+
+# Absolute-volume closed loop bounds. The panel has no working absolute-set
+# command (0x05 ACKs but does nothing on the UB), yet volume READ (0x33) tracks
+# step-by-step exactly, so absolute set = read, then step vol+/- until the
+# target is reached. 110 caps a full 0->100 sweep with margin.
+PANEL_VOL_MAX_STEPS = 110
 
 # Populated at startup by set_panel(); {"device","baud","protocol"} or None.
 PANEL = None
+
+# One transaction on the panel's serial line at a time. The HTTP server is
+# threaded, so a tv_info poll (volume read) can otherwise interleave with a
+# running volume closed loop on the same /dev/ttyS*, crossing their replies.
+PANEL_IO_LOCK = threading.Lock()
 
 
 def _panel_frame(op):
@@ -1419,7 +1472,13 @@ def _hexstr(b):
 def _serial_send(device, baud, frame, expect_reply=True, timeout=1.0):
     """Open <device> raw at <baud> 8N1 (pure stdlib termios), write <frame>
     bytes, optionally read a short reply. Returns the reply bytes (may be
-    empty). Raises OSError on open/IO failure."""
+    empty). Raises OSError on open/IO failure. Serialized on PANEL_IO_LOCK so
+    threaded HTTP handlers can't interleave transactions on the one line."""
+    with PANEL_IO_LOCK:
+        return _serial_send_locked(device, baud, frame, expect_reply, timeout)
+
+
+def _serial_send_locked(device, baud, frame, expect_reply, timeout):
     speed = PANEL_BAUDS[baud]
     fd = os.open(device, os.O_RDWR | os.O_NOCTTY | os.O_NONBLOCK)
     try:
@@ -1489,12 +1548,12 @@ def panel_available():
     return PANEL is not None
 
 
-def real_panel(op):
-    """Send a Newline command frame over the configured serial line. Success
-    means the frame was written (the panel may or may not reply); the reply, if
-    any, is echoed in stdout for diagnostics. ActionResult-shaped."""
+def _panel_send_code(code):
+    """Send one raw Newline key code over the serial line. Success means the
+    frame was written (the panel may or may not reply); the reply, if any, is
+    echoed in stdout for diagnostics. ActionResult-shaped."""
     start = time.monotonic()
-    frame = _panel_frame(op)
+    frame = PANEL_FRAME_HEAD + bytes([code, PANEL_FRAME_TAIL])
     try:
         reply = _serial_send(PANEL["device"], PANEL["baud"], frame)
     except Exception as e:
@@ -1505,6 +1564,83 @@ def real_panel(op):
         _hexstr(frame), _hexstr(reply) if reply else "(none)")
     return {"ok": True, "exit_code": 0, "stdout": stdout, "stderr": "",
             "duration_ms": int((time.monotonic() - start) * 1000)}
+
+
+def real_panel(op):
+    """Send the Newline command frame for a unified TV op. ActionResult-shaped."""
+    return _panel_send_code(PANEL_CODES[op])
+
+
+def real_panel_source(sid):
+    """Switch the panel to display input <sid> (see PANEL_SOURCES)."""
+    return _panel_send_code(PANEL_SOURCE_CODES[sid])
+
+
+def real_panel_key(key):
+    """Send one factory-remote key (see PANEL_KEYS) to the panel."""
+    return _panel_send_code(PANEL_KEYS[key])
+
+
+def _panel_read_volume():
+    """Current panel speaker volume (0-100 int), or None if unreadable. Uses the
+    0x33 status query; the reply carries the level at byte 10:
+    7F 09 99 A2 B3 C4 02 FF 01 33 <VOL> CF."""
+    frame = PANEL_FRAME_HEAD + bytes([0x33, PANEL_FRAME_TAIL])
+    try:
+        reply = _serial_send(PANEL["device"], PANEL["baud"], frame)
+    except Exception:
+        return None
+    if len(reply) >= 12 and reply[8:10] == bytes([0x01, 0x33]):
+        return reply[10]
+    return None
+
+
+def panel_set_volume(level):
+    """Set the panel volume to <level> (0-100) via a closed loop: read the
+    current level, then step vol+/vol- until it matches. The panel ignores its
+    documented absolute-set frame, but the read tracks each step exactly (one
+    step = one unit, verified on a TT-7516UB), so stepping converges. Bails on
+    read failure or a stalled loop. ActionResult-shaped, plus "level". The whole
+    loop holds VOLUME_LOCK (individual frames are already serialized by
+    PANEL_IO_LOCK, but two overlapping loops would still interleave steps)."""
+    with VOLUME_LOCK:
+        return _panel_set_volume_locked(level)
+
+
+def _panel_set_volume_locked(level):
+    start = time.monotonic()
+    level = max(0, min(100, int(level)))
+
+    def result(ok, cur, note):
+        return {"ok": ok, "exit_code": 0 if ok else -1,
+                "stdout": note, "stderr": "" if ok else note, "level": cur,
+                "duration_ms": int((time.monotonic() - start) * 1000)}
+
+    cur = _panel_read_volume()
+    if cur is None:
+        return result(False, None, "panel volume unreadable")
+    steps = 0
+    while cur != level and steps < PANEL_VOL_MAX_STEPS:
+        code = 0x18 if level > cur else 0x17  # vol+ / vol-
+        r = _panel_send_code(code)
+        if not r["ok"]:
+            return result(False, cur, "step failed: %s" % r["stderr"])
+        steps += 1
+        # The panel ACKs the key before it applies the level change, so give it
+        # a moment to settle before reading — an immediate read sees the OLD
+        # value and would misdiagnose a stall (measured on the TT-7516UB).
+        time.sleep(0.12)
+        nxt = _panel_read_volume()
+        if nxt == cur:  # slow apply? one grace re-read before declaring a stall
+            time.sleep(0.2)
+            nxt = _panel_read_volume()
+        if nxt is None:
+            return result(False, cur, "panel volume unreadable mid-loop")
+        if nxt == cur:  # panel stopped moving (limit or wedged) — don't spin
+            return result(nxt == level, nxt,
+                          "stalled at %d after %d steps" % (nxt, steps))
+        cur = nxt
+    return result(cur == level, cur, "level %d in %d steps" % (cur, steps))
 
 
 def mock_panel(op):
@@ -1530,6 +1666,12 @@ SOFT_OPS = ("volume_up", "volume_down", "mute")
 SOFT = None           # {"adapter": ...} when the media-key device exists, else None
 _MEDIA_DEV = None      # the persistent UInputMediaKeys device, created by set_soft
 _PRE_MUTE_VOL = None   # volume before we muted, so unmute restores it (see _soft_mute)
+
+# Serializes stateful volume transactions (mute's read-modify-write of the sink
+# + _PRE_MUTE_VOL, and both absolute-set convergence loops). The HTTP server is
+# threaded; two overlapping loops would fight step-against-step and the stale
+# request could win.
+VOLUME_LOCK = threading.Lock()
 
 
 def set_soft(mock):
@@ -1640,7 +1782,15 @@ def _soft_mute(start):
     volume to 0 with the volume-down media key: that fires the on-screen volume
     OSD (bar empties to the muted-speaker icon) AND leaves the sink '[MUTED]'.
     The pre-mute level is saved so unmute restores it. ActionResult-shaped with a
-    "muted" field for the app's own indicator."""
+    "muted" field for the app's own indicator. Serialized on VOLUME_LOCK: it is
+    a read-modify-write of sink state + _PRE_MUTE_VOL, and a double-tap from the
+    app would otherwise interleave two toggles into a wrong final state."""
+    global _PRE_MUTE_VOL
+    with VOLUME_LOCK:
+        return _soft_mute_locked(start)
+
+
+def _soft_mute_locked(start):
     global _PRE_MUTE_VOL
     def result(ok, muted, stdout="", stderr=""):
         return {"ok": ok, "exit_code": 0 if ok else -1, "stdout": stdout,
@@ -1656,8 +1806,12 @@ def _soft_mute(start):
             _PRE_MUTE_VOL = None
         return result(True, False, stdout="unmuted")
     # Mute: remember the current level, drop just above zero silently, then one
-    # volume-down media key to land on 0 with the OSD showing.
-    _PRE_MUTE_VOL = _soft_volume()
+    # volume-down media key to land on 0 with the OSD showing. Keep an already
+    # saved pre-mute level: the media tap applies asynchronously, so a rapid
+    # second toggle can arrive while the sink still reads unmuted at 0.02 —
+    # overwriting would trade the user's real level for that 2%.
+    if _PRE_MUTE_VOL is None:
+        _PRE_MUTE_VOL = _soft_volume()
     _wpctl_set("set-volume", "@DEFAULT_AUDIO_SINK@", "0.02")
     tapped = False
     if _MEDIA_DEV is not None:
@@ -1666,11 +1820,82 @@ def _soft_mute(start):
             tapped = True
         except OSError:
             tapped = False
+    if tapped:
+        # Wait for the compositor to apply the tap so the sink reads [MUTED]
+        # before the lock releases — a back-to-back toggle then sees the truth.
+        deadline = time.monotonic() + 0.6
+        while time.monotonic() < deadline:
+            time.sleep(0.08)
+            if _soft_muted():
+                break
+        else:
+            tapped = False  # never landed; fall through to the direct flag
     if not tapped:
         # No media-key device (or it failed): no OSD is possible, so just set the
         # mute flag directly. Correct state, only the on-screen indicator is lost.
         _wpctl_set("set-mute", "@DEFAULT_AUDIO_SINK@", "1")
     return result(True, True, stdout="muted")
+
+
+def soft_set_volume(level):
+    """Set the box volume to <level> percent (0-100). Prefers media-key stepping
+    (Game Mode shows its OSD and Steam tracks it; direct wpctl writes are
+    invisible there), converging via a closed loop on the sink's real level. If
+    stepping doesn't move the sink (desktop session with no key handler), falls
+    back to one direct wpctl set. ActionResult-shaped, plus "level". Serialized
+    on VOLUME_LOCK so two overlapping sets can't fight step-against-step."""
+    with VOLUME_LOCK:
+        return _soft_set_volume_locked(level)
+
+
+def _soft_set_volume_locked(level):
+    global _PRE_MUTE_VOL
+    start = time.monotonic()
+    level = max(0, min(100, int(level)))
+    target = level / 100.0
+    # Slider endpoints mean exactly "silent" / "max": no convergence tolerance
+    # there, or a request for 0 could return ok while audio still plays.
+    tol = 0.001 if level in (0, 100) else 0.025
+
+    def result(ok, cur, note):
+        return {"ok": ok, "exit_code": 0 if ok else -1,
+                "stdout": note, "stderr": "" if ok else note,
+                "level": None if cur is None else int(round(cur * 100)),
+                "duration_ms": int((time.monotonic() - start) * 1000)}
+
+    cur = _soft_volume()
+    if cur is None:
+        return result(False, None, "box volume unreadable (wpctl)")
+    # Mute leaves the flag set at 0; a positive target should unmute first so
+    # the level change is audible (mirrors what the volume keys do). The saved
+    # pre-mute level is stale once an explicit level is chosen — drop it so a
+    # later mute/unmute cycle can't restore a forgotten volume.
+    if level > 0 and _soft_muted():
+        _wpctl_set("set-mute", "@DEFAULT_AUDIO_SINK@", "0")
+        _PRE_MUTE_VOL = None
+    for _ in range(40):  # media-key steps are ~5%, so 40 covers 0->100 twice
+        if abs(cur - target) <= tol:
+            return result(True, cur, "level %d" % int(round(cur * 100)))
+        if _MEDIA_DEV is None:
+            break
+        code = KEY_VOLUMEUP if target > cur else KEY_VOLUMEDOWN
+        try:
+            _MEDIA_DEV.tap(code)
+        except OSError:
+            break
+        time.sleep(0.08)  # let the compositor apply the step before re-reading
+        nxt = _soft_volume()
+        if nxt is None or abs(nxt - cur) < 0.001:
+            break  # no handler moving the sink — fall through to direct set
+        # Overshoot straddling the target counts as done (step > remaining gap).
+        if (cur < target < nxt) or (nxt < target < cur):
+            return result(True, nxt, "level %d" % int(round(nxt * 100)))
+        cur = nxt
+    # Direct fallback (desktop sessions; no OSD, but the level is correct).
+    r = _wpctl_set("set-volume", "@DEFAULT_AUDIO_SINK@", "%.2f" % target)
+    if r is None or r.returncode != 0:
+        return result(False, cur, "wpctl set-volume failed")
+    return result(True, target, "level %d (direct)" % level)
 
 
 def mock_soft(op):
@@ -1688,6 +1913,10 @@ _TV_TO_CEC = {"power_on": "power_on", "power_off": "standby",
               "mute": "mute"}
 
 _POWER_OPS = ("power_on", "power_off")
+
+# Ops only the RS-232 panel can do (no CEC/soft equivalent): jump to the box's
+# OPS input, and blank/unblank the screen without cutting power.
+_PANEL_ONLY_OPS = ("source_box", "screen_toggle")
 
 
 def set_tv(mock):
@@ -1733,8 +1962,29 @@ def tv_info():
         "box_volume": box_vol,
         "tv_volume": hw is not None,
         "tv_power": hw is not None,
+        # Input source switch (jump the panel to the box's OPS input). Only the
+        # RS-232 panel backend can do it, so the app shows the button solely for
+        # panel boxes — CEC/soft boxes never see it (keeps the default UI clean).
+        "source_box": panel_available(),
+        # Full display-input picker (panel only). Each entry: {id,label}; the app
+        # POSTs /api/tv/source/<id> to switch. Empty when no panel backend.
+        "sources": ([{"id": sid, "label": label}
+                     for (sid, label, _code) in PANEL_SOURCES]
+                    if panel_available() else []),
+        # Screen blank/unblank without cutting power (keeps the box alive when an
+        # OPS display would otherwise power the box off in standby). Panel-only.
+        "screen_toggle": panel_available(),
+        # Factory-remote key emulation (arrows/ok/menu/home/back/settings) over
+        # RS-232, so the app's Remote view can drive the panel OSD. Panel-only.
+        "keys": panel_available(),
         # Box mute state, so the app shows the right mute indicator on connect.
         "muted": _soft_muted() if box_vol else None,
+        # Current levels (0-100 or null) so the app's volume slider can show and
+        # keep a real position. Both are cheap reads (wpctl / one serial query).
+        "box_volume_level": (None if (v := _soft_volume()) is None
+                             else max(0, min(100, int(round(v * 100)))))
+                            if box_vol else None,
+        "tv_volume_level": _panel_read_volume() if panel_available() else None,
     }
 
 
@@ -1754,6 +2004,12 @@ def tv_send(op, mock, target=None):
     goes to the box's own OS volume (soft) by default, or to the TV backend when
     target == "tv" (the app's opt-in). Falls back to whichever exists when the
     chosen target is missing. None when nothing can handle it (caller 404s)."""
+    if op in _PANEL_ONLY_OPS:
+        # Input-select and screen-blank are panel-only (RS-232). No CEC/soft
+        # fallback exists for them.
+        if not panel_available():
+            return None
+        return mock_panel(op) if mock else real_panel(op)
     if op in _POWER_OPS:
         return _send_tv_hw(op, mock)
     if target != "tv" and soft_available():
@@ -3123,12 +3379,85 @@ class Handler(BaseHTTPRequestHandler):
                 self._send(200, result, started)
                 return
 
+            # POST /api/tv/volume: absolute volume {"level": 0-100, "target":
+            # "box"|"tv"}. Box converges via media-key steps (Game Mode OSD),
+            # TV via the RS-232 closed loop. Checked before /api/tv/<op>.
+            if path == "/api/tv/volume":
+                try:
+                    req = json.loads(body.decode("utf-8")) if body else {}
+                    if not isinstance(req, dict):
+                        raise ValueError("body must be a JSON object")
+                    lvl = int(req.get("level"))
+                except (ValueError, TypeError, UnicodeDecodeError):
+                    self._send(400, {"error": "level must be an integer"},
+                               started)
+                    return
+                if not 0 <= lvl <= 100:
+                    self._send(400, {"error": "level must be 0-100"}, started)
+                    return
+                tgt = req.get("target") or "box"
+                if tgt == "tv":
+                    if not panel_available():
+                        self._send(404, {"error": "no tv volume backend"},
+                                   started)
+                        return
+                    result = ({"ok": True, "exit_code": 0, "level": lvl,
+                               "stdout": "[mock] tv volume %d" % lvl,
+                               "stderr": "", "duration_ms": 100}
+                              if self.mock else panel_set_volume(lvl))
+                else:
+                    if not soft_available():
+                        self._send(404, {"error": "no box volume backend"},
+                                   started)
+                        return
+                    result = ({"ok": True, "exit_code": 0, "level": lvl,
+                               "stdout": "[mock] box volume %d" % lvl,
+                               "stderr": "", "duration_ms": 100}
+                              if self.mock else soft_set_volume(lvl))
+                self._send(200, result, started)
+                return
+
+            # POST /api/tv/key/<k>: factory-remote key (panel only).
+            keyprefix = "/api/tv/key/"
+            if path.startswith(keyprefix):
+                k = unquote(path[len(keyprefix):])
+                if not panel_available() or k not in PANEL_KEYS:
+                    self._send(404, {"error": "unknown key"}, started)
+                    return
+                if self.mock:
+                    result = {"ok": True, "exit_code": 0,
+                              "stdout": "[mock panel] key %s" % k,
+                              "stderr": "", "duration_ms": 100}
+                else:
+                    result = real_panel_key(k)
+                self._send(200, result, started)
+                return
+
+            # POST /api/tv/source/<id>: switch the display input (panel only).
+            # Checked before the generic /api/tv/ route since it is more specific.
+            srcprefix = "/api/tv/source/"
+            if path.startswith(srcprefix):
+                sid = unquote(path[len(srcprefix):])
+                if not panel_available() or sid not in PANEL_SOURCE_CODES:
+                    self._send(404, {"error": "unknown source"}, started)
+                    return
+                if self.mock:
+                    result = {"ok": True, "exit_code": 0,
+                              "stdout": "[mock panel] source %s" % sid,
+                              "stderr": "", "duration_ms": 100}
+                else:
+                    result = real_panel_source(sid)
+                self._send(200, result, started)
+                return
+
             # POST /api/tv/<op>: TV power / volume. Volume defaults to the box's
             # own OS volume; ?target=tv routes it to the panel/CEC backend.
             tprefix = "/api/tv/"
             if path.startswith(tprefix):
                 op = path[len(tprefix):]
-                if op not in TV_OPS:
+                # source_box/screen_toggle ride the same route but are not
+                # volume/power ops, so they are not in TV_OPS; allow explicitly.
+                if op not in TV_OPS and op not in _PANEL_ONLY_OPS:
                     self._send(404, {"error": "unknown tv op"}, started)
                     return
                 target = parse_qs(parsed.query).get("target", [None])[0]
