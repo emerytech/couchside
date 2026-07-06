@@ -38,7 +38,7 @@ except ImportError:  # pragma: no cover
     fcntl = None
 
 APP_NAME = "couchside-agent"
-VERSION = "2.6.6"
+VERSION = "2.6.8"
 UID = os.getuid()
 XDG_RUNTIME_DIR = "/run/user/%d" % UID
 
@@ -1401,6 +1401,17 @@ PANEL_CODES = {
     "mute": 0x02,
     "volume_down": 0x17,
     "volume_up": 0x18,
+    # Select the OPS / Internal-PC input (the slot the box lives in), so a phone
+    # tap pulls the panel back to the box from any other source. Validated on a
+    # Newline TruTouch TT-7516UB; the OPS select code is shared across the UB/C
+    # series. Panel-only: CEC/soft have no input-select equivalent.
+    "source_box": 0x38,
+    # Toggle the panel backlight (screen dark / lit) WITHOUT touching power. On
+    # OPS displays, standby cuts power to the OPS slot and kills the box, so this
+    # is the way to "turn the screen off" while the box keeps running in the
+    # background. Toggle-only (the panel exposes no readable backlight state on
+    # this firmware). Validated on a TT-7516UB: box stayed reachable after blank.
+    "screen_toggle": 0x15,
 }
 
 # Populated at startup by set_panel(); {"device","baud","protocol"} or None.
@@ -1689,6 +1700,10 @@ _TV_TO_CEC = {"power_on": "power_on", "power_off": "standby",
 
 _POWER_OPS = ("power_on", "power_off")
 
+# Ops only the RS-232 panel can do (no CEC/soft equivalent): jump to the box's
+# OPS input, and blank/unblank the screen without cutting power.
+_PANEL_ONLY_OPS = ("source_box", "screen_toggle")
+
 
 def set_tv(mock):
     """Probe every TV backend at startup (call after load_config)."""
@@ -1733,6 +1748,13 @@ def tv_info():
         "box_volume": box_vol,
         "tv_volume": hw is not None,
         "tv_power": hw is not None,
+        # Input source switch (jump the panel to the box's OPS input). Only the
+        # RS-232 panel backend can do it, so the app shows the button solely for
+        # panel boxes — CEC/soft boxes never see it (keeps the default UI clean).
+        "source_box": panel_available(),
+        # Screen blank/unblank without cutting power (keeps the box alive when an
+        # OPS display would otherwise power the box off in standby). Panel-only.
+        "screen_toggle": panel_available(),
         # Box mute state, so the app shows the right mute indicator on connect.
         "muted": _soft_muted() if box_vol else None,
     }
@@ -1754,6 +1776,12 @@ def tv_send(op, mock, target=None):
     goes to the box's own OS volume (soft) by default, or to the TV backend when
     target == "tv" (the app's opt-in). Falls back to whichever exists when the
     chosen target is missing. None when nothing can handle it (caller 404s)."""
+    if op in _PANEL_ONLY_OPS:
+        # Input-select and screen-blank are panel-only (RS-232). No CEC/soft
+        # fallback exists for them.
+        if not panel_available():
+            return None
+        return mock_panel(op) if mock else real_panel(op)
     if op in _POWER_OPS:
         return _send_tv_hw(op, mock)
     if target != "tv" and soft_available():
@@ -3128,7 +3156,9 @@ class Handler(BaseHTTPRequestHandler):
             tprefix = "/api/tv/"
             if path.startswith(tprefix):
                 op = path[len(tprefix):]
-                if op not in TV_OPS:
+                # source_box/screen_toggle ride the same route but are not
+                # volume/power ops, so they are not in TV_OPS; allow explicitly.
+                if op not in TV_OPS and op not in _PANEL_ONLY_OPS:
                     self._send(404, {"error": "unknown tv op"}, started)
                     return
                 target = parse_qs(parsed.query).get("target", [None])[0]
