@@ -43,9 +43,10 @@ curl -s localhost:8799/api/ping
 
 ## Wire it to the box
 
-Add a `cec_bridge` block to the Couchside agent's `config.json` (Linux:
-`/etc/couchside/config.json`; Windows: `%ProgramData%\Couchside\config.json`),
-then restart the agent:
+Add a `cec_bridge` block to the **Windows** agent's `config.json`
+(`%ProgramData%\Couchside\config.json`), then restart the agent. (The Linux
+agent doesn't read `cec_bridge` — it drives HDMI-CEC / RS-232 directly from
+its own ports and doesn't need a relay.)
 
 ```json
 "cec_bridge": {
