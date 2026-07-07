@@ -136,6 +136,10 @@ if [ "$UNINSTALL" -eq 1 ]; then
     note "removed $PAIR_DESKTOP"
     sudo rm -f /etc/systemd/network/50-couchside-wol.link
     note "removed the Wake-on-LAN .link file"
+    sudo rm -f /etc/udev/rules.d/99-couchside-uinput.rules \
+               /etc/modules-load.d/couchside-uinput.conf
+    sudo udevadm control --reload-rules 2>/dev/null || true
+    note "removed the udev/modules-load drop-ins"
     if [ "$NO_DECKY" -eq 0 ] && sudo test -d "$DECKY_PLUGIN_DIR"; then
         sudo rm -rf "$DECKY_PLUGIN_DIR"
         sudo systemctl restart plugin_loader.service 2>/dev/null || true
