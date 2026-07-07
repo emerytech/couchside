@@ -37,6 +37,11 @@ type IapPurchase = {
   // `originalPurchaseDate`. Both optional: never depend on either existing.
   transactionDate?: number;
   originalPurchaseDate?: number;
+  // Android only: false until we acknowledge the purchase. An owned purchase
+  // left unacknowledged for 3 days is auto-refunded by Google. Undefined on iOS.
+  isAcknowledgedAndroid?: boolean | null;
+  // Android acknowledge/finish needs the purchase token.
+  purchaseToken?: string | null;
 };
 type IapProduct = { id: string; title: string; displayPrice: string };
 type IapModule = {
@@ -108,8 +113,12 @@ async function connect(): Promise<boolean> {
   if (!connectPromise) {
     connectPromise = (async () => {
       try {
-        const ok = await m.initConnection();
-        if (ok && !listenersAttached) {
+        // Attach the purchase listeners BEFORE initConnection resolves. The
+        // native module flushes any buffered purchase-updated events at the
+        // instant the connection opens; a listener registered after the await
+        // can miss an out-of-band purchase delivered on this launch (e.g. a
+        // slow-payment purchase that completed while the app was dead).
+        if (!listenersAttached) {
           listenersAttached = true;
           m.purchaseUpdatedListener((purchase) => {
             if (purchase.productId !== UNLOCK_PRODUCT_ID) return;
@@ -135,7 +144,7 @@ async function connect(): Promise<boolean> {
             );
           });
         }
-        return ok;
+        return await m.initConnection();
       } catch {
         return false;
       }
@@ -192,6 +201,15 @@ export async function restore(): Promise<RestoreResult> {
       (p) => p.productId === UNLOCK_PRODUCT_ID && p.purchaseState !== 'pending',
     );
     if (!owned) return { state: 'none' };
+    // Acknowledge an owned-but-unacknowledged Android purchase. The buy-time
+    // ack (in the purchase-updated listener) can be missed — the event may
+    // arrive while the app is dead, or the fire-and-forget finishTransaction
+    // there can fail silently. Google auto-refunds any purchase left
+    // unacknowledged for 3 days, so we re-finish here on every restore.
+    // iOS leaves isAcknowledgedAndroid undefined, so this is a no-op there.
+    if (owned.isAcknowledgedAndroid === false) {
+      await m.finishTransaction({ purchase: owned, isConsumable: false }).catch(() => {});
+    }
     // Prefer the original purchase date (StoreKit) then the transaction date;
     // both are optional, so a purchase may be owned with no known date.
     const raw = owned.originalPurchaseDate ?? owned.transactionDate;
