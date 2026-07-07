@@ -38,10 +38,8 @@ The installer copies the agent to `~/.local/opt/couchside/`, generates a token a
 
 ## Get the app
 
-**Coming soon.** Couchside is in review on both stores:
-
-- iPhone / iPad → [App Store](https://apps.apple.com/app/id6786884115)
-- Android → [Google Play](https://play.google.com/store/apps/details?id=com.ets3d.rescueremote)
+- **Android → [Google Play](https://play.google.com/store/apps/details?id=com.ets3d.rescueremote)** — available now.
+- **iPhone / iPad → [App Store](https://apps.apple.com/app/id6786884115)** — in review.
 
 Free 7-day trial with every feature unlocked, then a one-time unlock ($4.99 summer launch price). Prefer to build it yourself? The app is open source: clone this repo and run it on your own device.
 
