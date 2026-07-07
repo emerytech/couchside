@@ -84,7 +84,7 @@ except ImportError:
 # Same app id the phone expects (AGENT_APPS in app/lib/api.ts); the Windows
 # agent versions independently of the Linux one.
 APP_NAME = "couchside-agent"
-VERSION = "0.2.0-win"
+VERSION = "0.3.0-win"
 
 _PROGRAMDATA = os.environ.get("ProgramData", r"C:\ProgramData")
 DEFAULT_CONFIG_PATH = os.path.join(_PROGRAMDATA, "Couchside", "config.json")
@@ -1053,6 +1053,22 @@ STEAM_TOOL_APPIDS = frozenset({
     "228980",   # Steamworks Common Redistributables
 })
 
+# appmanifest StateFlags bits meaning "an operation is in progress" (see the
+# Linux agent for the full rationale). A game appears in /api/downloads only
+# when one of these is set, or its byte counters prove an incomplete transfer.
+DL_UPDATE_RUNNING = 256
+DL_UPDATE_STARTED = 512
+DL_UPDATE_STOPPING = 1024
+DL_UNINSTALLING = 2048        # excluded: an uninstall is not a download
+DL_VALIDATING = 131072
+DL_PREALLOCATING = 524288
+DL_DOWNLOADING = 1048576
+DL_STAGING = 2097152
+DL_COMMITTING = 4194304
+DL_ACTIVE_OP = (DL_UPDATE_RUNNING | DL_UPDATE_STARTED | DL_UPDATE_STOPPING
+                | DL_VALIDATING | DL_PREALLOCATING | DL_DOWNLOADING
+                | DL_STAGING | DL_COMMITTING)
+
 
 def _steam_root():
     """Steam install dir from the registry, or None (never raises)."""
@@ -1174,8 +1190,9 @@ def _steam_libraries(root):
     return libs
 
 
-def _parse_acf(text):
-    """Extract "appid"/"name" from an appmanifest .acf blob. Never raises."""
+def _parse_acf(text, keys=("appid", "name")):
+    """Extract the requested top-level quoted keys from an appmanifest .acf blob
+    (default "appid"/"name", so existing callers are unchanged). Never raises."""
     out = {}
     for line in text.splitlines():
         s = line.strip()
@@ -1185,7 +1202,7 @@ def _parse_acf(text):
         if end <= 1:
             continue
         key = s[1:end]
-        if key not in ("appid", "name"):
+        if key not in keys:
             continue
         rest = s[end + 1:].lstrip()
         if len(rest) >= 2 and rest[0] == '"':
@@ -1243,6 +1260,91 @@ def discover_steam_games():
         return []
 
 
+def _acf_int(s):
+    """Parse an ACF numeric string to int; 0 on missing/garbage (never raises)."""
+    try:
+        return int(s)
+    except (TypeError, ValueError):
+        return 0
+
+
+def _download_state(flags):
+    """Map StateFlags to a coarse, user-facing operation label."""
+    if flags & (DL_DOWNLOADING | DL_PREALLOCATING):
+        return "downloading"
+    if flags & DL_VALIDATING:
+        return "validating"
+    if flags & (DL_STAGING | DL_COMMITTING):
+        return "finalizing"
+    if flags & (DL_UPDATE_RUNNING | DL_UPDATE_STARTED | DL_UPDATE_STOPPING):
+        return "updating"
+    # Incomplete bytes with no active-op bit: paused and queued look identical
+    # in the appmanifest, so report the more useful "paused".
+    return "paused"
+
+
+def steam_downloads():
+    """Steam apps with an in-progress download/update/validation, best-effort.
+
+    Read-only; any failure yields []. Walks the same libraries as
+    discover_steam_games() but reads StateFlags + byte counters per appmanifest.
+    Inclusion is an allowlist: an app is reported only when an active-op bit is
+    set OR its byte counters prove an incomplete transfer. Uninstalls (2048) and
+    fully-installed / stale pending-update entries with equal counters are
+    omitted, so the list reflects only what is actually moving.
+    """
+    try:
+        root = _steam_root()
+        if root is None:
+            return []
+        keys = ("appid", "name", "StateFlags", "BytesToDownload", "BytesDownloaded")
+        found = {}
+        for steamapps in _steam_libraries(root):
+            try:
+                manifests = glob.glob(os.path.join(steamapps, "appmanifest_*.acf"))
+            except Exception:
+                continue
+            for mf in manifests:
+                try:
+                    with open(mf, "r", encoding="utf-8", errors="replace") as f:
+                        fields = _parse_acf(f.read(), keys=keys)
+                except OSError:
+                    continue
+                except Exception:
+                    continue
+                appid = fields.get("appid")
+                name = fields.get("name")
+                if not appid or not appid.isdigit() or not name:
+                    continue
+                if _is_steam_tool(appid, name):
+                    continue
+                flags = _acf_int(fields.get("StateFlags"))
+                total = _acf_int(fields.get("BytesToDownload"))
+                done = _acf_int(fields.get("BytesDownloaded"))
+                if flags & DL_UNINSTALLING:
+                    continue
+                incomplete = total > 0 and done < total
+                if not (flags & DL_ACTIVE_OP) and not incomplete:
+                    continue
+                percent = (
+                    int(max(0, min(100, round(done * 100.0 / total)))) if total > 0 else 0
+                )
+                found[appid] = {
+                    "appid": int(appid),
+                    "name": name,
+                    "state": _download_state(flags),
+                    "bytes_total": total,
+                    "bytes_downloaded": done,
+                    "percent": percent,
+                }
+        order = {"downloading": 0, "paused": 1}
+        items = list(found.values())
+        items.sort(key=lambda d: (order.get(d["state"], 2), d["name"].lower(), d["appid"]))
+        return items
+    except Exception:
+        return []
+
+
 def list_launchers():
     """All launchers: configured custom launchers first, then Steam games."""
     customs = [
@@ -1296,6 +1398,24 @@ def mock_launch(argv):
     """--mock stand-in: log the argv, never execute anything real."""
     print("[launch] %s" % " ".join(argv), flush=True)
     return {"ok": True}
+
+
+_MOCK_DL_PCT = 0
+
+
+def mock_downloads():
+    """--mock stand-in: one advancing download (+7%/poll) and one paused entry."""
+    global _MOCK_DL_PCT
+    _MOCK_DL_PCT = (_MOCK_DL_PCT + 7) % 101
+    total = 42_000_000_000
+    done = int(total * _MOCK_DL_PCT / 100)
+    return [
+        {"appid": 1091500, "name": "Cyberpunk 2077", "state": "downloading",
+         "bytes_total": total, "bytes_downloaded": done, "percent": _MOCK_DL_PCT},
+        {"appid": 570, "name": "Dota 2", "state": "paused",
+         "bytes_total": 18_000_000_000, "bytes_downloaded": 5_400_000_000,
+         "percent": 30},
+    ]
 
 
 def _slugify_label(label):
@@ -2765,6 +2885,11 @@ class Handler(BaseHTTPRequestHandler):
                 self._send(200, {"actions": actions}, started)
             elif path == "/api/launchers":
                 self._send(200, {"launchers": list_launchers()}, started)
+            elif path == "/api/downloads":
+                # Always 200 (list may be empty). Old agents lack this route and
+                # 404 -> the app hides the section (probe-and-appear).
+                downloads = mock_downloads() if self.mock else steam_downloads()
+                self._send(200, {"downloads": downloads}, started)
             elif path == "/api/tv":
                 info = tv_info()
                 if info is None:

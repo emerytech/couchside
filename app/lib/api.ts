@@ -122,6 +122,27 @@ export type Launcher = {
   appid?: number;
 };
 
+/** State of an in-progress Steam operation. Unknown values render as 'updating'. */
+export type SteamDownloadState =
+  | 'downloading'
+  | 'paused'
+  | 'queued'
+  | 'validating'
+  | 'finalizing'
+  | 'updating';
+
+/** One Steam app with an active download/update/validation operation. */
+export type SteamDownload = {
+  appid: number;
+  name: string;
+  state: SteamDownloadState;
+  bytes_total: number;
+  bytes_downloaded: number;
+  percent: number;
+};
+
+export type Downloads = { downloads: SteamDownload[] };
+
 export type LaunchResult = {
   ok: boolean;
   /** Present when ok is false. */
@@ -215,11 +236,35 @@ export type ApiErrorKind = 'unreachable' | 'unauthorized' | 'http' | 'timeout';
 
 export class ApiError extends Error {
   kind: ApiErrorKind;
+  /**
+   * HTTP status code, set only when kind === 'http'. Lets probe methods map an
+   * exact 404 (route/feature absent on this agent) to "feature not present"
+   * without also swallowing transient 5xx. See probeOrNull().
+   */
+  status?: number;
 
-  constructor(kind: ApiErrorKind, message: string) {
+  constructor(kind: ApiErrorKind, message: string, status?: number) {
     super(message);
     this.name = 'ApiError';
     this.kind = kind;
+    this.status = status;
+  }
+}
+
+/**
+ * House pattern for probe-and-appear methods added from v2.8 on (downloads,
+ * screenInfo, media, power, powerSchedule): a 404 means the agent is too old
+ * or the feature is absent, so resolve `null` and let the UI stay hidden while
+ * usePoll keeps its slow cadence. EXACTLY 404 — a transient 500 still throws,
+ * so a momentarily unhealthy agent does NOT read as "feature vanished".
+ * Deliberately NOT retrofitted onto api.tv() (its throw-on-404 is shipped).
+ */
+async function probeOrNull<T>(p: Promise<T>): Promise<T | null> {
+  try {
+    return await p;
+  } catch (e: unknown) {
+    if (e instanceof ApiError && e.kind === 'http' && e.status === 404) return null;
+    throw e;
   }
 }
 
@@ -343,7 +388,7 @@ async function request<T>(
     } catch {
       // non-JSON body; keep the status line
     }
-    throw new ApiError('http', detail);
+    throw new ApiError('http', detail, res.status);
   }
 
   try {
@@ -394,6 +439,15 @@ export const api = {
   /** List discovered Steam games + user-defined custom launchers. */
   launchers(settings: ConnSettings): Promise<{ launchers: Launcher[] }> {
     return request<{ launchers: Launcher[] }>(settings, '/api/launchers');
+  },
+
+  /**
+   * In-progress Steam downloads/updates. Probe-and-appear: resolves null on a
+   * 404 (agent < 2.8 or no route) so the Launch tab hides the section; a 200
+   * with an empty list also means "nothing pending".
+   */
+  downloads(settings: ConnSettings): Promise<Downloads | null> {
+    return probeOrNull(request<Downloads>(settings, '/api/downloads'));
   },
 
   /** Launch a game/app by launcher id. */

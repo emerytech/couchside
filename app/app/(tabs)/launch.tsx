@@ -5,7 +5,7 @@
  * deleted here. Tapping a tile launches it (haptic + brief toast).
  */
 import Ionicons from '@expo/vector-icons/Ionicons';
-import React, { useCallback, useMemo, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   ActivityIndicator,
   Alert,
@@ -26,7 +26,7 @@ import { Gated } from '@/components/Gated';
 import { TabScreen } from '@/components/TabScreen';
 import { useLockOrientation } from '@/hooks/useLockOrientation';
 import { usePoll } from '@/hooks/usePoll';
-import { api, Launcher } from '@/lib/api';
+import { api, Downloads, Launcher, SteamDownload } from '@/lib/api';
 import { hapticError, hapticLight, hapticMedium, hapticSuccess } from '@/lib/haptics';
 import { useSettings } from '@/lib/SettingsContext';
 import { mono, theme } from '@/lib/theme';
@@ -56,9 +56,11 @@ type TileProps = {
   width: number;
   onLaunch: () => void;
   onDelete?: () => void;
+  /** When this game is mid-download, drives a small progress pill on the tile. */
+  download?: SteamDownload;
 };
 
-function LauncherTile({ launcher, width, onLaunch, onDelete }: TileProps) {
+function LauncherTile({ launcher, width, onLaunch, onDelete, download }: TileProps) {
   const [imgFailed, setImgFailed] = useState(false);
   const showArt = launcher.kind === 'steam' && launcher.appid != null && !imgFailed;
   const height = Math.round(width * 1.5); // 600x900 aspect
@@ -96,6 +98,17 @@ function LauncherTile({ launcher, width, onLaunch, onDelete }: TileProps) {
         </View>
       )}
 
+      {download && (
+        <View style={styles.tilePill}>
+          <Ionicons
+            name={download.state === 'paused' ? 'pause' : 'cloud-download'}
+            size={11}
+            color={download.state === 'paused' ? theme.amber : theme.blue}
+          />
+          <Text style={styles.tilePillText}>{download.percent}%</Text>
+        </View>
+      )}
+
       {onDelete && (
         <Pressable
           onPress={onDelete}
@@ -105,6 +118,56 @@ function LauncherTile({ launcher, width, onLaunch, onDelete }: TileProps) {
         </Pressable>
       )}
     </Pressable>
+  );
+}
+
+/** GB with one decimal (Steam's own display convention). */
+function fmtGB(bytes: number): string {
+  return (bytes / 1e9).toFixed(1);
+}
+
+function DownloadRow({ d }: { d: SteamDownload }) {
+  const paused = d.state === 'paused';
+  const fill = paused ? theme.amber : theme.blue;
+  const pct = Math.max(0, Math.min(100, d.percent));
+  return (
+    <View style={styles.dlRow}>
+      <View style={styles.dlTop}>
+        <Text style={styles.dlName} numberOfLines={1}>
+          {d.name}
+        </Text>
+        <Text style={styles.dlPct}>{d.percent}%</Text>
+      </View>
+      <View style={styles.dlTrack}>
+        <View style={[styles.dlFill, { width: `${Math.max(2, pct)}%`, backgroundColor: fill }]} />
+      </View>
+      <View style={styles.dlMeta}>
+        <Text style={[styles.dlState, paused && { color: theme.amber }]}>
+          {d.state.toUpperCase()}
+        </Text>
+        {d.bytes_total > 0 && (
+          <Text style={styles.dlBytes}>
+            {fmtGB(d.bytes_downloaded)} / {fmtGB(d.bytes_total)} GB
+          </Text>
+        )}
+      </View>
+    </View>
+  );
+}
+
+/** Active Steam downloads, shown above the launcher grid. Hidden when empty. */
+function DownloadsSection({ downloads }: { downloads: SteamDownload[] }) {
+  if (downloads.length === 0) return null;
+  return (
+    <View style={styles.dlCard}>
+      <View style={styles.dlHeader}>
+        <Ionicons name="cloud-download" size={14} color={theme.blue} />
+        <Text style={styles.dlHeaderText}>DOWNLOADS</Text>
+      </View>
+      {downloads.map((d) => (
+        <DownloadRow key={d.appid} d={d} />
+      ))}
+    </View>
   );
 }
 
@@ -250,6 +313,42 @@ function LaunchScreen() {
     setTimeout(() => setToast((cur) => (cur === msg ? null : cur)), TOAST_MS);
   }, []);
 
+  // ---- Steam downloads (probe-and-appear; api.downloads() 404 -> null hides it) ----
+  // `active` is declared BEFORE the poll that reads it (avoids a TDZ self-ref)
+  // and flipped by the effect below; poll fast while something is downloading.
+  const [active, setActive] = useState(false);
+  const dl = usePoll<Downloads | null>(() => api.downloads(settings), active ? 5000 : 20000, ready);
+  const downloads = useMemo(() => dl.data?.downloads ?? [], [dl.data]);
+  const dlByAppid = useMemo(() => new Map(downloads.map((d) => [d.appid, d])), [downloads]);
+
+  // Completion: an appid seen downloading/paused this session that then vanishes
+  // from the list has finished — toast once and pull the game into the grid.
+  const prevDl = useRef<Map<number, SteamDownload>>(new Map());
+  const observedDl = useRef<Set<number>>(new Set());
+  useEffect(() => {
+    setActive(downloads.length > 0);
+    const curIds = new Set(downloads.map((d) => d.appid));
+    for (const d of downloads) {
+      if (d.state === 'downloading' || d.state === 'paused') observedDl.current.add(d.appid);
+    }
+    for (const [appid, prev] of prevDl.current) {
+      if (!curIds.has(appid) && observedDl.current.has(appid)) {
+        observedDl.current.delete(appid);
+        // Disappearance means finished OR cancelled (the agent lists an app only
+        // while an op runs). Only claim "finished" when it vanished near-complete;
+        // a mid-progress vanish is a cancel/removal. Refresh either way so the
+        // grid reflects the new install (or the cancellation).
+        if (prev.percent >= 90 || prev.state === 'finalizing') {
+          showToast(`${prev.name} finished downloading`);
+        }
+        list.refresh();
+      }
+    }
+    prevDl.current = new Map(downloads.map((d) => [d.appid, d]));
+    // showToast + list.refresh are stable; keying on `downloads` only.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [downloads]);
+
   // Two columns with padding; each tile ~ half the content width.
   const COLS = 2;
   const H_PAD = 14;
@@ -342,6 +441,9 @@ function LaunchScreen() {
             tintColor={theme.textDim}
           />
         }>
+        {/* Active Steam downloads (hidden when none / agent < 2.8) */}
+        <DownloadsSection downloads={downloads} />
+
         {/* Error (no data yet) */}
         {list.error != null && !list.data && (
           <View style={styles.errBox}>
@@ -390,6 +492,7 @@ function LaunchScreen() {
                 width={tileWidth}
                 onLaunch={() => launch(l)}
                 onDelete={l.kind === 'custom' ? () => remove(l) : undefined}
+                download={l.appid != null ? dlByAppid.get(l.appid) : undefined}
               />
             ))}
             {/* Pad an odd final row so the single tile stays left-aligned. */}
@@ -435,6 +538,54 @@ const styles = StyleSheet.create({
 
   list: { flex: 1 },
   row: { flexDirection: 'row' },
+
+  // Downloads section
+  dlCard: {
+    backgroundColor: theme.card,
+    borderColor: theme.cardBorder,
+    borderWidth: 1,
+    borderRadius: 14,
+    padding: 14,
+    marginBottom: 14,
+    gap: 12,
+  },
+  dlHeader: { flexDirection: 'row', alignItems: 'center', gap: 6 },
+  dlHeaderText: {
+    color: theme.textDim,
+    fontSize: 11,
+    fontWeight: '700',
+    fontFamily: mono,
+    letterSpacing: 1,
+  },
+  dlRow: { gap: 6 },
+  dlTop: { flexDirection: 'row', alignItems: 'center' },
+  dlName: { color: theme.text, fontSize: 14, fontWeight: '600', flex: 1, fontFamily: mono },
+  dlPct: { color: theme.text, fontSize: 13, fontWeight: '700', fontFamily: mono, marginLeft: 8 },
+  dlTrack: {
+    height: 6,
+    borderRadius: 3,
+    backgroundColor: theme.cardBorder,
+    overflow: 'hidden',
+  },
+  dlFill: { height: '100%', borderRadius: 3 },
+  dlMeta: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between' },
+  dlState: { color: theme.blue, fontSize: 10, fontWeight: '700', fontFamily: mono, letterSpacing: 0.8 },
+  dlBytes: { color: theme.textDim, fontSize: 11, fontFamily: mono },
+
+  // Per-tile download pill
+  tilePill: {
+    position: 'absolute',
+    top: 6,
+    left: 6,
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 3,
+    backgroundColor: 'rgba(0,0,0,0.72)',
+    borderRadius: 999,
+    paddingVertical: 3,
+    paddingHorizontal: 7,
+  },
+  tilePillText: { color: theme.text, fontSize: 11, fontWeight: '700', fontFamily: mono },
 
   tile: {
     borderRadius: 14,

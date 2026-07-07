@@ -114,6 +114,7 @@ prebuilt-exe path (the `.pyw` needs a Python interpreter + tkinter).
 | `/api/journal` | journalctl | Event Log (`wevtutil`), provider = unit name, SCM fallback |
 | `/api/actions` | sudo systemctl | `shutdown.exe` / `rundll32` (task already elevated) |
 | `/api/launchers` steam: | `~/.steam` + VDF/ACF | registry `SteamPath` + same VDF/ACF parsing; `steam.exe steam://rungameid/…` |
+| `/api/downloads` steam | ACF `StateFlags` + byte counters | same ACF parse (`StateFlags`/`BytesToDownload`/`BytesDownloaded`); read-only |
 | `/api/tv` soft volume | uinput media keys | `SendInput` `VK_VOLUME_*` (native mute + OSD; `muted` read via Core Audio) |
 | `/api/tv` panel (RS-232) | `/dev/ttyUSB*` termios | `COMn` via `CreateFileW`/`SetCommState` (same Newline frames) |
 | `/api/tv` CEC | cec-ctl / cec-client | not available on Windows (panel or soft only) |
