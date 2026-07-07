@@ -7,6 +7,12 @@ import { Settings } from './settings';
 /** The subset of Settings the API client actually needs. */
 export type ConnSettings = Pick<Settings, 'host' | 'port' | 'token' | 'lastIp'>;
 
+/**
+ * A remote image source (uri + optional request headers). Structurally a subset
+ * of React Native's ImageURISource, so it drops straight into <Image source>.
+ */
+export type ImageSource = { uri: string; headers?: Record<string, string> };
+
 // ---------- Contract types ----------
 
 export type Ping = {
@@ -285,6 +291,15 @@ async function probeTarget(host: string, settings: ConnSettings): Promise<boolea
   }
 }
 
+/**
+ * The address request() last reached this box on — settings.host normally, or
+ * settings.lastIp after an mDNS-break fallback. Cover-art <Image> loads can't
+ * run the fallback probe themselves, so they reuse this to stay on the working
+ * target (see steamCoverSource). Module-scoped: the app talks to one box at a
+ * time, and steamCoverSource only trusts it when it matches the box's host/IP.
+ */
+let lastGoodHost: string | null = null;
+
 async function request<T>(
   settings: ConnSettings,
   path: string,
@@ -305,6 +320,7 @@ async function request<T>(
     settings.lastIp && settings.lastIp !== settings.host ? settings.lastIp : undefined;
 
   let res: Response;
+  let usedHost = settings.host;
   if (method === 'GET' || !fallback) {
     try {
       res = await attempt(settings.host, settings, path, opts);
@@ -317,6 +333,7 @@ async function request<T>(
         e instanceof ApiError && (e.kind === 'unreachable' || e.kind === 'timeout');
       if (retriable && fallback && method === 'GET' && (await probeTarget(fallback, settings))) {
         res = await attempt(fallback, settings, path, opts);
+        usedHost = fallback;
       } else {
         throw e;
       }
@@ -330,7 +347,11 @@ async function request<T>(
       // else: send to the configured host anyway and surface its real error.
     }
     res = await attempt(target, settings, path, opts);
+    usedHost = target;
   }
+  // Remember which address actually reached the box, so cover-art <Image> loads
+  // (which can't run the fallback probe) can reuse the same working target.
+  lastGoodHost = usedHost;
 
   if (res.status === 401) {
     throw new ApiError('unauthorized', 'Unauthorized: check token');
@@ -394,6 +415,32 @@ export const api = {
   /** List discovered Steam games + user-defined custom launchers. */
   launchers(settings: ConnSettings): Promise<{ launchers: Launcher[] }> {
     return request<{ launchers: Launcher[] }>(settings, '/api/launchers');
+  },
+
+  /**
+   * Image source for a Steam game's library cover art (agent >= 2.7.1). The
+   * agent serves the art from the box's OWN local Steam cache, so the phone
+   * never contacts Steam or any CDN — the app stays LAN-only (see PRIVACY.md).
+   *
+   * Auth rides as a Bearer header, which React Native's Image sends on native;
+   * web <img> can't carry it, so covers fall back to the text card there. Reuses
+   * the address request() last reached this box on (so covers follow the cached-IP
+   * fallback in SteamOS Game Mode instead of a dead .local name); if that target
+   * is unreachable, the agent is older, or the art isn't cached yet, the request
+   * fails and the tile's onError shows the text card.
+   */
+  steamCoverSource(settings: ConnSettings, appid: number): ImageSource {
+    // Reuse the last address that reached THIS box (host, or the cached IP after
+    // an mDNS-break fallback). Guarded to this box's known addresses so a stale
+    // value left by a different box is never used.
+    const host =
+      lastGoodHost && (lastGoodHost === settings.host || lastGoodHost === settings.lastIp)
+        ? lastGoodHost
+        : settings.host;
+    return {
+      uri: `${baseUrl({ host, port: settings.port })}/api/steam/${appid}/cover`,
+      headers: { Authorization: `Bearer ${settings.token}` },
+    };
   },
 
   /** Launch a game/app by launcher id. */
