@@ -48,6 +48,7 @@ import sys
 import tempfile
 import threading
 import time
+import urllib.request
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import urlparse, parse_qs, unquote
 
@@ -83,7 +84,7 @@ except ImportError:
 # Same app id the phone expects (AGENT_APPS in app/lib/api.ts); the Windows
 # agent versions independently of the Linux one.
 APP_NAME = "couchside-agent"
-VERSION = "0.1.0-win"
+VERSION = "0.2.0-win"
 
 _PROGRAMDATA = os.environ.get("ProgramData", r"C:\ProgramData")
 DEFAULT_CONFIG_PATH = os.path.join(_PROGRAMDATA, "Couchside", "config.json")
@@ -205,6 +206,7 @@ ACTIONS = dict(DEFAULT_ACTIONS)
 ACTION_ORDER = list(DEFAULT_ACTION_ORDER)
 CONFIG_PORT = None
 CONFIG_PANEL = None
+CONFIG_CEC_BRIDGE = None  # optional {"host","port","token"}: forward TV ops to a Pi
 LAUNCHERS = []
 CONFIG_PATH = DEFAULT_CONFIG_PATH
 CONFIG_LOCK = threading.Lock()
@@ -367,18 +369,39 @@ def _parse_config(raw):
             raise ConfigError("panel.protocol must be \"newline\"")
         panel = {"device": device.upper(), "baud": int(baud), "protocol": proto}
 
-    return units, actions, order, port, launchers, panel
+    # Optional CEC bridge: forward TV power/volume to a Raspberry Pi (or any
+    # Linux box) wired to the TV's HDMI running couchside-cec-bridge. Lets a
+    # Windows box (no CEC) still drive TV power. See cec-bridge/.
+    cec_bridge = None
+    cb_raw = raw.get("cec_bridge")
+    if cb_raw is not None:
+        if not isinstance(cb_raw, dict):
+            raise ConfigError("cec_bridge must be an object")
+        host = cb_raw.get("host")
+        if not isinstance(host, str) or not host.strip():
+            raise ConfigError("cec_bridge.host must be a non-empty string")
+        cb_port = cb_raw.get("port", 8799)
+        if not isinstance(cb_port, int) or not (1 <= cb_port <= 65535):
+            raise ConfigError("cec_bridge.port must be an int 1-65535")
+        cb_token = cb_raw.get("token")
+        if not isinstance(cb_token, str) or not cb_token:
+            raise ConfigError("cec_bridge.token must be a non-empty string")
+        cec_bridge = {"host": host.strip(), "port": int(cb_port),
+                      "token": cb_token}
+
+    return units, actions, order, port, launchers, panel, cec_bridge
 
 
 def load_config(path):
     """Load config.json into the module globals; fall back to defaults."""
     global WATCHLIST, WATCHLIST_NAMES, ACTIONS, ACTION_ORDER, CONFIG_PORT
-    global LAUNCHERS, CONFIG_PATH, CONFIG_PANEL
+    global LAUNCHERS, CONFIG_PATH, CONFIG_PANEL, CONFIG_CEC_BRIDGE
     CONFIG_PATH = path  # remembered so launcher POST/DELETE can rewrite it
     try:
         with open(path, encoding="utf-8-sig") as f:
             raw = json.load(f)
-        units, actions, order, port, launchers, panel = _parse_config(raw)
+        units, actions, order, port, launchers, panel, cec_bridge = \
+            _parse_config(raw)
     except FileNotFoundError:
         print("warning: config %s not found, using built-in generic defaults"
               % path, file=sys.stderr, flush=True)
@@ -394,6 +417,7 @@ def load_config(path):
     CONFIG_PORT = port
     LAUNCHERS = launchers
     CONFIG_PANEL = panel
+    CONFIG_CEC_BRIDGE = cec_bridge
     print("config loaded from %s: %d units, %d actions, %d launchers"
           % (path, len(WATCHLIST), len(ACTIONS), len(LAUNCHERS)), flush=True)
 
@@ -1852,16 +1876,71 @@ def mock_soft(op):
 # ---- unified dispatch --------------------------------------------------------
 
 
+# ---- cec_bridge backend (forward TV ops to a Pi wired to the TV over CEC) ----
+# Windows has no local CEC stack, so a box whose HDMI carries no CEC (most
+# desktops) can instead point at a Raspberry Pi running couchside-cec-bridge
+# that is plugged into the TV's HDMI. Config-driven (config.json "cec_bridge").
+CEC_BRIDGE = None
+CEC_BRIDGE_TIMEOUT = 12
+
+
+def set_cec_bridge(mock):
+    global CEC_BRIDGE
+    CEC_BRIDGE = dict(CONFIG_CEC_BRIDGE) if CONFIG_CEC_BRIDGE else None
+
+
+def cec_bridge_available():
+    return CEC_BRIDGE is not None
+
+
+def real_cec_bridge(op):
+    """Forward one TV op to the bridge (POST /cec/<op>, bearer token). The bridge
+    returns an ActionResult; pass it straight through. Transport errors become a
+    synthetic failure so the app shows a clean error, not a 500."""
+    b = CEC_BRIDGE
+    start = time.monotonic()
+    url = "http://%s:%d/cec/%s" % (b["host"], b["port"], op)
+    req = urllib.request.Request(
+        url, data=b"", method="POST",
+        headers={"Authorization": "Bearer " + b["token"]})
+    try:
+        with urllib.request.urlopen(req, timeout=CEC_BRIDGE_TIMEOUT) as resp:
+            body = json.loads(resp.read().decode("utf-8", "replace"))
+        if isinstance(body, dict) and "ok" in body:
+            return body
+        return {"ok": False, "exit_code": -1, "stdout": "",
+                "stderr": "cec bridge returned an unexpected body",
+                "duration_ms": int((time.monotonic() - start) * 1000)}
+    except Exception as e:
+        return {"ok": False, "exit_code": -1, "stdout": "",
+                "stderr": "cec bridge %s: %s" % (url, e),
+                "duration_ms": int((time.monotonic() - start) * 1000)}
+
+
+def mock_cec_bridge(op):
+    time.sleep(0.1)
+    print("[cec_bridge] %s -> %s:%d" % (op, CEC_BRIDGE["host"],
+                                        CEC_BRIDGE["port"]), flush=True)
+    return {"ok": True, "exit_code": 0,
+            "stdout": "[mock cec_bridge] %s\n" % op, "stderr": "",
+            "duration_ms": 100}
+
+
 def set_tv(mock):
     """Probe every TV backend at startup (call after load_config)."""
     set_panel(mock)
+    set_cec_bridge(mock)
     set_soft(mock)
 
 
 def _tv_hw_backend():
-    """The external TV backend for power: the serial panel or nothing (no CEC
-    stack on Windows)."""
-    return "panel" if panel_available() else None
+    """The external TV backend for power: the serial panel, then a CEC bridge
+    Pi, then nothing (Windows has no local CEC stack)."""
+    if panel_available():
+        return "panel"
+    if cec_bridge_available():
+        return "cec_bridge"
+    return None
 
 
 def tv_info():
@@ -1873,6 +1952,10 @@ def tv_info():
     if hw == "panel":
         backend, adapter = "panel", "Newline RS-232 (%s @ %d)" % (
             PANEL["device"], PANEL["baud"])
+    elif hw == "cec_bridge":
+        # Report as "cec" so the app treats it as a normal CEC TV backend.
+        backend, adapter = "cec", "CEC bridge (%s:%d)" % (
+            CEC_BRIDGE["host"], CEC_BRIDGE["port"])
     else:
         backend, adapter = "soft", SOFT["adapter"]
     return {
@@ -1888,9 +1971,12 @@ def tv_info():
 
 
 def _send_tv_hw(op, mock):
-    """Route an op to the external TV backend (panel), or None if absent."""
-    if _tv_hw_backend() == "panel":
+    """Route an op to the external TV backend (panel or CEC bridge), or None."""
+    b = _tv_hw_backend()
+    if b == "panel":
         return mock_panel(op) if mock else real_panel(op)
+    if b == "cec_bridge":
+        return mock_cec_bridge(op) if mock else real_cec_bridge(op)
     return None
 
 
