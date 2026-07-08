@@ -57,7 +57,7 @@ Couchside is deliberately small and boring about security:
 - **Scoped sudo, nothing more.** The installer writes a `visudo`-validated sudoers rule granting the agent user passwordless sudo for exactly five things: `systemctl restart sddm`, `systemctl reboot`, `systemctl poweroff`, `systemctl suspend`, and `journalctl`. Nothing else. Actions are a fixed table; there is no "run arbitrary command" route.
 - **Journal access is allowlisted.** Only units on the configured watchlist can be read, with line counts clamped server-side, so a leaked token can't be used to trawl the whole system journal.
 - **LAN-only by design.** The API is plain HTTP on port 8787 and is meant to stay on your local network. The firewall rule opens the port locally; **do not port-forward it**. There is no relay, no cloud endpoint, and the app never talks to anything except your agent.
-- No file-serving routes, subprocesses run with `shell=False`, errors return brief JSON, never tracebacks.
+- No client-addressable file routes — the only file the agent ever serves is the album-art image a running media player itself advertises (validated against a small realpath allowlist, image-sniffed, 2 MiB cap; the client passes a player id, never a path). Subprocesses run with `shell=False`, errors return brief JSON, never tracebacks.
 
 ## Uninstall
 

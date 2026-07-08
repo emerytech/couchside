@@ -143,6 +143,33 @@ export type SteamDownload = {
 
 export type Downloads = { downloads: SteamDownload[] };
 
+/** MPRIS transport op, POSTed as /api/media/<player>/<op>. */
+export type MediaOp = 'play' | 'pause' | 'play_pause' | 'next' | 'previous' | 'stop' | 'seek';
+
+/** One MPRIS media player's now-playing snapshot. */
+export type MediaPlayer = {
+  id: string;
+  identity: string;
+  status: 'Playing' | 'Paused' | 'Stopped';
+  title: string;
+  artist: string;
+  album: string;
+  position_ms: number;
+  length_ms: number;
+  rate: number;
+  can_seek: boolean;
+  can_go_next: boolean;
+  can_go_previous: boolean;
+  can_play: boolean;
+  can_pause: boolean;
+  /** True when the agent can serve the art bytes (a file:// the player advertised). */
+  art: boolean;
+  /** Cache-buster for the art fetch; changes when the track changes. */
+  art_key: string;
+};
+
+export type Media = { available: boolean; players: MediaPlayer[] };
+
 export type LaunchResult = {
   ok: boolean;
   /** Present when ok is false. */
@@ -276,6 +303,63 @@ function baseUrl(settings: Pick<Settings, 'host' | 'port'>): string {
   return `http://${settings.host}:${settings.port}`;
 }
 
+// §3b resolved-host: the host that last served each box (keyed host:port).
+// Binary fetches (album art, later screen frames) must hit the SAME host the
+// JSON API proved reachable, not a blind settings.host that mDNS may have
+// stopped resolving under SteamOS Game Mode WiFi power-save.
+const lastGoodHost = new Map<string, string>();
+function hostKey(s: Pick<Settings, 'host' | 'port'>): string {
+  return `${s.host}:${s.port}`;
+}
+export function resolveEffectiveHost(settings: ConnSettings): string {
+  return lastGoodHost.get(hostKey(settings)) ?? settings.host;
+}
+
+const B64_ALPHABET = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/';
+/** base64-encode raw bytes (no reliance on btoa/Buffer, which RN may lack). */
+function base64FromArrayBuffer(buf: ArrayBuffer): string {
+  const bytes = new Uint8Array(buf);
+  const len = bytes.length;
+  let out = '';
+  for (let i = 0; i < len; i += 3) {
+    const b0 = bytes[i];
+    const b1 = i + 1 < len ? bytes[i + 1] : 0;
+    const b2 = i + 2 < len ? bytes[i + 2] : 0;
+    out += B64_ALPHABET[b0 >> 2];
+    out += B64_ALPHABET[((b0 & 3) << 4) | (b1 >> 4)];
+    out += i + 1 < len ? B64_ALPHABET[((b1 & 15) << 2) | (b2 >> 6)] : '=';
+    out += i + 2 < len ? B64_ALPHABET[b2 & 63] : '=';
+  }
+  return out;
+}
+
+/**
+ * Album art for a player's current track, as a base64 `data:` URI for <Image>.
+ * Fetches from the resolved host (§3b) with the bearer token (an <Image> URL
+ * can't carry Authorization) and inlines the bytes, so nothing sensitive lands
+ * in Fresco's disk cache. Resolves null on any failure / 404 (no art).
+ */
+export async function mediaArtSource(
+  settings: ConnSettings,
+  player: string,
+  artKey: string,
+): Promise<string | null> {
+  const host = resolveEffectiveHost(settings);
+  const url = `http://${host}:${settings.port}/api/media/art?player=${encodeURIComponent(
+    player,
+  )}&k=${encodeURIComponent(artKey)}`;
+  try {
+    const res = await fetch(url, { headers: { Authorization: `Bearer ${settings.token}` } });
+    if (!res.ok) return null;
+    const type = res.headers.get('Content-Type') || 'image/jpeg';
+    const buf = await res.arrayBuffer();
+    if (buf.byteLength === 0) return null;
+    return `data:${type};base64,${base64FromArrayBuffer(buf)}`;
+  } catch {
+    return null;
+  }
+}
+
 /** One fetch attempt against a specific host. Throws ApiError on transport failure. */
 async function attempt(
   host: string,
@@ -350,6 +434,7 @@ async function request<T>(
     settings.lastIp && settings.lastIp !== settings.host ? settings.lastIp : undefined;
 
   let res: Response;
+  let usedHost = settings.host;
   if (method === 'GET' || !fallback) {
     try {
       res = await attempt(settings.host, settings, path, opts);
@@ -361,6 +446,7 @@ async function request<T>(
       const retriable =
         e instanceof ApiError && (e.kind === 'unreachable' || e.kind === 'timeout');
       if (retriable && fallback && method === 'GET' && (await probeTarget(fallback, settings))) {
+        usedHost = fallback;
         res = await attempt(fallback, settings, path, opts);
       } else {
         throw e;
@@ -374,8 +460,15 @@ async function request<T>(
       if (await probeTarget(fallback, settings)) target = fallback;
       // else: send to the configured host anyway and surface its real error.
     }
+    usedHost = target;
     res = await attempt(target, settings, path, opts);
   }
+
+  // Remember which host actually answered (any HTTP status proves it IS this
+  // box and is reachable), so binary fetches — album art, later screen frames —
+  // can target the SAME host instead of a blind settings.host that mDNS may
+  // have stopped resolving. (§3b resolved-host.)
+  lastGoodHost.set(hostKey(settings), usedHost);
 
   if (res.status === 401) {
     throw new ApiError('unauthorized', 'Unauthorized: check token');
@@ -556,6 +649,29 @@ export const api = {
     return request<ActionResult>(settings, `/api/tv/key/${key}`, {
       method: 'POST',
       timeoutMs: 12000,
+    });
+  },
+
+  /**
+   * Now-playing / transport across MPRIS players. Probe-and-appear: resolves
+   * null on 404 (agent < 2.8 or no session bus) so the card hides; 200 with an
+   * empty list means "nothing playing". 8 s budget matches the agent's ceiling.
+   */
+  media(settings: ConnSettings): Promise<Media | null> {
+    return probeOrNull(request<Media>(settings, '/api/media', { timeoutMs: 8000 }));
+  },
+
+  /** One transport op on a player; `seek` carries { position_ms }. */
+  mediaOp(
+    settings: ConnSettings,
+    player: string,
+    op: MediaOp,
+    body?: { position_ms: number },
+  ): Promise<ActionResult> {
+    return request<ActionResult>(settings, `/api/media/${encodeURIComponent(player)}/${op}`, {
+      method: 'POST',
+      timeoutMs: 8000,
+      body,
     });
   },
 };

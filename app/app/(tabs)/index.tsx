@@ -2,6 +2,7 @@ import React from 'react';
 import { Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
 
 import { Gated } from '@/components/Gated';
+import { NowPlayingCard } from '@/components/NowPlayingCard';
 import { TabScreen } from '@/components/TabScreen';
 import { useLockOrientation } from '@/hooks/useLockOrientation';
 import { usePoll } from '@/hooks/usePoll';
@@ -144,6 +145,9 @@ function ConsoleScreen() {
             </Pressable>
           </View>
         )}
+
+        {/* Now Playing (MPRIS) — probe-and-appear; hidden when no media backend */}
+        <NowPlayingCard />
 
         {s && (
           <>

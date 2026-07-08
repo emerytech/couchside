@@ -2147,6 +2147,347 @@ def tv_send(op, mock, target=None):
 
 
 # ---------------------------------------------------------------------------
+# MPRIS media-player control (now-playing + transport) over the user session
+# bus via `busctl`. Named MPRIS_*/mpris_* so it never collides with the box's
+# OS-volume media-key device (_MEDIA_DEV / SOFT_MEDIA_KEYS / UInputMediaKeys),
+# which is a different "media". No new listener/port; ships with systemd.
+# ---------------------------------------------------------------------------
+
+MPRIS_PREFIX = "org.mpris.MediaPlayer2."
+MPRIS_OBJPATH = "/org/mpris/MediaPlayer2"
+MPRIS_PLAYER_IFACE = "org.mpris.MediaPlayer2.Player"
+MPRIS_MAX_PLAYERS = 8
+MPRIS_ART_MAX = 2 * 1024 * 1024  # 2 MiB read cap on album art
+
+# Fixed transport op -> Player method. Closed table: no client string reaches
+# D-Bus; "seek" is handled separately (SetPosition, Seek-delta fallback).
+MPRIS_METHODS = {
+    "play": "Play", "pause": "Pause", "play_pause": "PlayPause",
+    "next": "Next", "previous": "Previous", "stop": "Stop",
+}
+MPRIS_OPS = tuple(MPRIS_METHODS) + ("seek",)
+
+BUSCTL = None            # "busctl" when usable (or in --mock), else None
+_MPRIS_ART_ROOTS = ()    # realpath allowlist for file:// art, set by set_mpris
+
+
+def mpris_available():
+    """True when the user session bus and busctl are both present."""
+    return (shutil.which("busctl") is not None
+            and os.path.exists(os.path.join(XDG_RUNTIME_DIR, "bus")))
+
+
+def set_mpris(mock):
+    """Startup probe. Enables MPRIS when busctl + the session bus exist (always
+    in --mock), and computes the realpath allowlist for file:// album art."""
+    global BUSCTL, _MPRIS_ART_ROOTS
+    home = os.path.expanduser("~")
+    roots = []
+    for p in ("/tmp", XDG_RUNTIME_DIR, os.path.join(home, ".cache"),
+              os.path.join(home, ".var"), os.path.join(home, ".mozilla")):
+        try:
+            roots.append(os.path.realpath(p))
+        except Exception:
+            pass
+    _MPRIS_ART_ROOTS = tuple(roots)
+    BUSCTL = "busctl" if (mock or mpris_available()) else None
+
+
+def _bus_val(v):
+    """Unwrap one busctl --json=short variant {"type","data"} to a Python value,
+    recursing into a{sv} dicts. Arrays/scalars pass through. Never raises."""
+    if not isinstance(v, dict) or "data" not in v:
+        return v
+    d = v["data"]
+    if str(v.get("type", "")).startswith("a{") and isinstance(d, dict):
+        return {k: _bus_val(x) for k, x in d.items()}
+    return d
+
+
+def _busctl_json(args, timeout=2):
+    """busctl --user --json=short <args> -> parsed JSON, or None. Never raises;
+    runs with the user session env so it targets the right bus."""
+    if BUSCTL is None:
+        return None
+    try:
+        r = subprocess.run([BUSCTL, "--user", "--json=short"] + list(args),
+                           capture_output=True, timeout=timeout, env=_user_env())
+    except Exception:
+        return None
+    if r.returncode != 0:
+        return None
+    try:
+        return json.loads(r.stdout.decode("utf-8", "replace"))
+    except Exception:
+        return None
+
+
+def _busctl_call(argv, start, timeout=3):
+    """Run a busctl method call; return an ActionResult (mirrors real_cec)."""
+    try:
+        r = subprocess.run(argv, capture_output=True, timeout=timeout,
+                           env=_user_env())
+    except subprocess.TimeoutExpired:
+        return {"ok": False, "exit_code": -1, "stdout": "",
+                "stderr": "busctl timed out",
+                "duration_ms": int((time.monotonic() - start) * 1000)}
+    except Exception as e:
+        return {"ok": False, "exit_code": -1, "stdout": "",
+                "stderr": "%s: %s" % (e.__class__.__name__, e),
+                "duration_ms": int((time.monotonic() - start) * 1000)}
+    return {"ok": r.returncode == 0, "exit_code": r.returncode,
+            "stdout": (r.stdout or b"").decode("utf-8", "replace"),
+            "stderr": (r.stderr or b"").decode("utf-8", "replace"),
+            "duration_ms": int((time.monotonic() - start) * 1000)}
+
+
+def _mpris_list_names():
+    """Bus names of all MPRIS players (org.mpris.MediaPlayer2.*)."""
+    obj = _busctl_json(["call", "org.freedesktop.DBus", "/org/freedesktop/DBus",
+                        "org.freedesktop.DBus", "ListNames"])
+    names = obj.get("data") if isinstance(obj, dict) else None
+    if not isinstance(names, list):
+        return []
+    return [n for n in names
+            if isinstance(n, str) and n.startswith(MPRIS_PREFIX)
+            and all(c.isalnum() or c in "._-" for c in n)]
+
+
+def _mpris_getall(name):
+    """Merged GetAll on the empty interface -> every property across BOTH MPRIS
+    interfaces (Identity + PlaybackStatus/Metadata/...) in one call. Returns a
+    flat {prop: value} dict (values unwrapped), or {} on failure."""
+    obj = _busctl_json(["call", name, MPRIS_OBJPATH,
+                        "org.freedesktop.DBus.Properties", "GetAll", "s", ""])
+    if not isinstance(obj, dict):
+        return {}
+    data = obj.get("data")
+    if isinstance(data, list) and data and isinstance(data[0], dict):
+        data = data[0]  # tolerate a single-out-arg wrapped as a list
+    if not isinstance(data, dict):
+        return {}
+    return {k: _bus_val(v) for k, v in data.items()}
+
+
+def _mpris_str(v):
+    return v if isinstance(v, str) else ""
+
+
+def _mpris_int(v):
+    try:
+        return int(v)
+    except (TypeError, ValueError):
+        return 0
+
+
+def _art_key(url):
+    """Short stable cache-buster for an art URL (changes with the track)."""
+    if not url:
+        return ""
+    return hashlib.sha1(url.encode("utf-8", "replace")).hexdigest()[:16]
+
+
+def _art_url_path(url):
+    """If `url` is a file:// path under the art allowlist, return the real path;
+    else None. Keeps "no client-addressable file routes" honest — only art a
+    running player advertises, under a small set of cache dirs. Never raises."""
+    if not isinstance(url, str) or not url.startswith("file://"):
+        return None
+    try:
+        real = os.path.realpath(unquote(urlparse(url).path))
+    except Exception:
+        return None
+    for root in _MPRIS_ART_ROOTS:
+        if real == root or real.startswith(root + os.sep):
+            return real
+    return None
+
+
+def _mpris_player_info(name):
+    """Build the player dict for one MPRIS name, or None on failure."""
+    props = _mpris_getall(name)
+    if not props:
+        return None
+    meta = props.get("Metadata")
+    if not isinstance(meta, dict):
+        meta = {}
+    artists = meta.get("xesam:artist")
+    if isinstance(artists, list):
+        artist = ", ".join(str(a) for a in artists if isinstance(a, str))
+    else:
+        artist = _mpris_str(artists)
+    art_url = _mpris_str(meta.get("mpris:artUrl"))
+    servable = _art_url_path(art_url) is not None  # file:// only; http(s) never fetched
+    length_us = _mpris_int(meta.get("mpris:length"))
+    pos_us = _mpris_int(props.get("Position"))
+    status = _mpris_str(props.get("PlaybackStatus"))
+    try:
+        rate = float(props.get("Rate"))
+    except (TypeError, ValueError):
+        rate = 1.0
+    return {
+        "id": name[len(MPRIS_PREFIX):],
+        "identity": _mpris_str(props.get("Identity")) or name[len(MPRIS_PREFIX):],
+        "status": status if status in ("Playing", "Paused", "Stopped") else "Stopped",
+        "title": _mpris_str(meta.get("xesam:title")),
+        "artist": artist,
+        "album": _mpris_str(meta.get("xesam:album")),
+        "position_ms": pos_us // 1000 if pos_us > 0 else 0,
+        "length_ms": length_us // 1000 if length_us > 0 else 0,
+        "rate": rate,
+        "can_seek": bool(props.get("CanSeek")),
+        "can_go_next": bool(props.get("CanGoNext")),
+        "can_go_previous": bool(props.get("CanGoPrevious")),
+        "can_play": bool(props.get("CanPlay")),
+        "can_pause": bool(props.get("CanPause")),
+        "art": servable,
+        "art_key": _art_key(art_url) if servable else "",
+    }
+
+
+def list_mpris_players():
+    """All MPRIS players, Playing first, capped at MPRIS_MAX_PLAYERS. Best-effort;
+    per-player failures are skipped. The name list is capped BEFORE the (one
+    GetAll each) loop so a box that spawns many idle players (Chromium) can't
+    blow the time budget; results are then sorted Playing-first. Worst case is
+    (1 + MPRIS_MAX_PLAYERS) busctl calls, each bounded by the 2 s subprocess
+    timeout (a live bus answers in ms); pathological all-hang ceiling ~18 s."""
+    names = _mpris_list_names()[:MPRIS_MAX_PLAYERS]
+    players = []
+    for n in names:
+        info = _mpris_player_info(n)
+        if info is not None:
+            players.append(info)
+    order = {"Playing": 0, "Paused": 1}
+    players.sort(key=lambda p: (order.get(p["status"], 2), p["identity"].lower()))
+    return players
+
+
+def mpris_info():
+    """{"available":True,"players":[...]} or None when MPRIS is unavailable."""
+    if BUSCTL is None:
+        return None
+    return {"available": True, "players": list_mpris_players()}
+
+
+def _mpris_seek(name, position_ms, start):
+    """Seek to an absolute position (ms). Prefers SetPosition (needs the current
+    trackid); falls back to a relative Seek for players that reject it."""
+    if position_ms is None or position_ms < 0:
+        return {"ok": False, "exit_code": -1, "stdout": "",
+                "stderr": "position_ms required", "duration_ms": 0}
+    props = _mpris_getall(name)
+    meta = props.get("Metadata") if isinstance(props.get("Metadata"), dict) else {}
+    trackid = _mpris_str(meta.get("mpris:trackid"))
+    length_us = _mpris_int(meta.get("mpris:length"))
+    pos_us = position_ms * 1000
+    if length_us > 0:
+        pos_us = max(0, min(length_us, pos_us))
+    if trackid:
+        r = _busctl_call([BUSCTL, "--user", "call", name, MPRIS_OBJPATH,
+                          MPRIS_PLAYER_IFACE, "SetPosition", "ox",
+                          trackid, str(pos_us)], start)
+        if r["ok"]:
+            return r
+    delta = pos_us - _mpris_int(props.get("Position"))
+    return _busctl_call([BUSCTL, "--user", "call", name, MPRIS_OBJPATH,
+                         MPRIS_PLAYER_IFACE, "Seek", "x", str(delta)], start)
+
+
+def real_mpris_op(player, op, position_ms=None):
+    """Run a transport op on <player>. ActionResult-shaped, or None for an
+    unknown/dead player or op (route 404s). Re-validates the player against a
+    fresh ListNames so we never act on a name that vanished."""
+    start = time.monotonic()
+    name = MPRIS_PREFIX + player
+    if name not in _mpris_list_names():
+        return None
+    if op == "seek":
+        return _mpris_seek(name, position_ms, start)
+    method = MPRIS_METHODS.get(op)
+    if method is None:
+        return None
+    return _busctl_call([BUSCTL, "--user", "call", name, MPRIS_OBJPATH,
+                         MPRIS_PLAYER_IFACE, method], start)
+
+
+_ART_MAGIC = (
+    (b"\xff\xd8\xff", "image/jpeg"),
+    (b"\x89PNG\r\n\x1a\n", "image/png"),
+    (b"GIF87a", "image/gif"),
+    (b"GIF89a", "image/gif"),
+)
+
+
+def _sniff_image(data):
+    """Magic-byte image type, or None (so a text/HTML file can't be served)."""
+    for magic, mime in _ART_MAGIC:
+        if data.startswith(magic):
+            return mime
+    if len(data) >= 12 and data[:4] == b"RIFF" and data[8:12] == b"WEBP":
+        return "image/webp"
+    return None
+
+
+def mpris_art(player, art_key):
+    """Resolve <player>'s CURRENT advertised art file (the client never supplies
+    a path), enforce the 2 MiB read cap, and sniff the image type. Returns
+    (data, mime) or None. `art_key` must match the current track's key (else the
+    track changed — 404)."""
+    props = _mpris_getall(MPRIS_PREFIX + player)
+    meta = props.get("Metadata") if isinstance(props.get("Metadata"), dict) else {}
+    art_url = _mpris_str(meta.get("mpris:artUrl"))
+    if art_key and _art_key(art_url) != art_key:
+        return None
+    path = _art_url_path(art_url)
+    if path is None:
+        return None
+    try:
+        if os.path.getsize(path) > MPRIS_ART_MAX:  # cheap pre-filter
+            return None
+        with open(path, "rb") as f:
+            data = f.read(MPRIS_ART_MAX + 1)  # read-time enforcement
+    except OSError:
+        return None
+    if len(data) > MPRIS_ART_MAX:
+        return None
+    mime = _sniff_image(data)
+    return (data, mime) if mime else None
+
+
+_MOCK_MPRIS_POS = 0
+# 1x1 transparent PNG, so --mock album art works on macOS with no player.
+_MOCK_ART_PNG = base64.b64decode(
+    "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==")
+
+
+def mock_mpris_info():
+    """--mock: one advancing Spotify-like player."""
+    global _MOCK_MPRIS_POS
+    _MOCK_MPRIS_POS = (_MOCK_MPRIS_POS + 3000) % 214000
+    return {"available": True, "players": [{
+        "id": "spotify", "identity": "Spotify", "status": "Playing",
+        "title": "Midnight City", "artist": "M83",
+        "album": "Hurry Up, We're Dreaming",
+        "position_ms": _MOCK_MPRIS_POS, "length_ms": 214000, "rate": 1.0,
+        "can_seek": True, "can_go_next": True, "can_go_previous": True,
+        "can_play": True, "can_pause": True, "art": True, "art_key": "mockart1",
+    }]}
+
+
+def mock_mpris_op(player, op, position_ms=None):
+    print("[mpris] %s %s%s" % (player, op,
+          "" if position_ms is None else " -> %dms" % position_ms), flush=True)
+    return {"ok": True, "exit_code": 0,
+            "stdout": "[mock mpris] %s %s" % (player, op),
+            "stderr": "", "duration_ms": 40}
+
+
+def mock_mpris_art(player, art_key):
+    return (_MOCK_ART_PNG, "image/png")
+
+
+# ---------------------------------------------------------------------------
 # Virtual gamepad: evdev/uinput constants and pure-stdlib uinput driver
 # ---------------------------------------------------------------------------
 
@@ -3486,6 +3827,25 @@ class Handler(BaseHTTPRequestHandler):
             self.wfile.write(body)
         self._log(code, started)
 
+    def _send_bytes(self, code, data, content_type, started, cache_control=None):
+        """Write a raw binary body with an EXACT Content-Length (keep-alive
+        safety under protocol_version HTTP/1.1) and the same CORS headers as
+        _send. Used for image bytes — album art now, screen frames later."""
+        self.send_response(code)
+        self.send_header("Access-Control-Allow-Origin", "*")
+        self.send_header("Access-Control-Allow-Headers",
+                         "Authorization, Content-Type")
+        self.send_header("Access-Control-Allow-Methods",
+                         "GET, POST, DELETE, OPTIONS")
+        self.send_header("Content-Type", content_type)
+        self.send_header("Content-Length", str(len(data)))
+        if cache_control:
+            self.send_header("Cache-Control", cache_control)
+        self.end_headers()
+        if data:
+            self.wfile.write(data)
+        self._log(code, started)
+
     def _authorized(self):
         auth = self.headers.get("Authorization", "")
         if not auth.startswith("Bearer "):
@@ -3581,6 +3941,30 @@ class Handler(BaseHTTPRequestHandler):
                     self._send(404, {"error": "not found"}, started)
                 else:
                     self._send(200, info, started)
+            elif path == "/api/media":
+                # Probe-and-appear: 404 when no session bus / busctl so the app
+                # hides the Now Playing card; 200 with an empty list when idle.
+                info = mock_mpris_info() if self.mock else mpris_info()
+                if info is None:
+                    self._send(404, {"error": "not found"}, started)
+                else:
+                    self._send(200, info, started)
+            elif path == "/api/media/art":
+                # Album art bytes for a player's CURRENT track. The client passes
+                # only player id + art_key (a cache-buster) — never a path.
+                q = parse_qs(parsed.query)
+                player = (q.get("player") or [""])[0]
+                key = (q.get("k") or [""])[0]
+                art = None
+                if player:
+                    art = (mock_mpris_art(player, key) if self.mock
+                           else (mpris_art(player, key) if BUSCTL else None))
+                if art is None:
+                    self._send(404, {"error": "not found"}, started)
+                else:
+                    data, mime = art
+                    self._send_bytes(200, data, mime, started,
+                                     cache_control="private, max-age=3600")
             else:
                 self._send(404, {"error": "not found"}, started)
         except BrokenPipeError:
@@ -3721,6 +4105,39 @@ class Handler(BaseHTTPRequestHandler):
                               "stderr": "", "duration_ms": 100}
                 else:
                     result = real_panel_source(sid)
+                self._send(200, result, started)
+                return
+
+            # POST /api/media/<player>/<op>: MPRIS transport. <op> is a fixed
+            # word; the seek op carries {"position_ms":int}. Unknown op / dead
+            # player -> 404. Placed before the generic /api/tv/ route.
+            mprefix = "/api/media/"
+            if path.startswith(mprefix):
+                rest = path[len(mprefix):]
+                parts = rest.rsplit("/", 1)
+                if len(parts) != 2 or not parts[0] or not parts[1]:
+                    self._send(404, {"error": "not found"}, started)
+                    return
+                player, op = unquote(parts[0]), parts[1]
+                if op not in MPRIS_OPS:
+                    self._send(404, {"error": "unknown media op"}, started)
+                    return
+                position_ms = None
+                if op == "seek":
+                    try:
+                        req = json.loads(body.decode("utf-8")) if body else {}
+                        if not isinstance(req, dict):
+                            raise ValueError("body must be a JSON object")
+                        position_ms = int(req.get("position_ms"))
+                    except (ValueError, TypeError, UnicodeDecodeError):
+                        self._send(400, {"error": "position_ms must be an integer"},
+                                   started)
+                        return
+                result = (mock_mpris_op(player, op, position_ms) if self.mock
+                          else real_mpris_op(player, op, position_ms))
+                if result is None:
+                    self._send(404, {"error": "unknown player"}, started)
+                    return
                 self._send(200, result, started)
                 return
 
@@ -4112,6 +4529,7 @@ def main():
     _inject_session_actions()
     _inject_suspend_action(args.mock)
     set_tv(args.mock)
+    set_mpris(args.mock)
     port = args.port if args.port is not None else (CONFIG_PORT or DEFAULT_PORT)
 
     Handler.token = load_token(args)
@@ -4129,6 +4547,7 @@ def main():
     info = tv_info()
     print("tv: %s" % ("%s (%s)" % (info["backend"], info["adapter"])
                       if info else "unavailable"), flush=True)
+    print("mpris: %s" % ("available" if BUSCTL else "unavailable"), flush=True)
     try:
         server.serve_forever()
     except KeyboardInterrupt:
