@@ -1,0 +1,35 @@
+name: Notify Decky plugin of agent changes
+
+# When the agent changes on main, ping emerytech/couchside-decky so it rebuilds
+# and cuts a fresh plugin release immediately, instead of waiting for that repo's
+# daily safety-net schedule.
+#
+# OPTIONAL SETUP for the instant path: add a repo secret DECKY_DISPATCH_TOKEN — a
+# fine-grained PAT with "Contents: read/write" (or classic `repo`) scope on
+# emerytech/couchside-decky. Without it this job is a harmless no-op and the
+# couchside-decky daily schedule still keeps the plugin in sync within 24h.
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "agent/couchsided.py"
+
+jobs:
+  dispatch:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Trigger couchside-decky sync & release
+        env:
+          TOKEN: ${{ secrets.DECKY_DISPATCH_TOKEN }}
+        run: |
+          if [ -z "$TOKEN" ]; then
+            echo "DECKY_DISPATCH_TOKEN not set — skipping instant sync."
+            echo "couchside-decky's daily schedule will pick up this change within 24h."
+            exit 0
+          fi
+          curl -fsSL -X POST \
+            -H "Authorization: Bearer $TOKEN" \
+            -H "Accept: application/vnd.github+json" \
+            https://api.github.com/repos/emerytech/couchside-decky/dispatches \
+            -d '{"event_type":"agent-updated"}'
