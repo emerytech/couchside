@@ -648,10 +648,24 @@ def real_units():
     return units
 
 
+# Fixed-argument, root-owned journal wrapper installed by install.sh / the Decky
+# plugin. The couchside sudoers rule grants ONLY this script (no wildcards), and
+# the script validates the unit + line count before calling journalctl with a
+# locked-down option set — so a caller can never inject --file/--directory to
+# read arbitrary files as root. See install.sh's (f) section.
+JOURNAL_WRAPPER = "/etc/couchside/couchside-journal"
+
+
 def real_journal(unit, scope, lines):
     if scope == "system":
-        cmd = ["sudo", "journalctl", "-u", unit, "-n", str(lines),
-               "--no-pager", "-o", "short-iso"]
+        # Prefer the wrapper (airtight). Fall back to a direct sudo journalctl on
+        # installs that predate it, so a freshly-fetched agent on an older box
+        # still reads the journal via the legacy sudoers rule.
+        if os.path.exists(JOURNAL_WRAPPER):
+            cmd = ["sudo", JOURNAL_WRAPPER, unit, str(lines)]
+        else:
+            cmd = ["sudo", "journalctl", "-u", unit, "-n", str(lines),
+                   "--no-pager", "-o", "short-iso"]
         env = None
     else:
         cmd = ["journalctl", "--user", "-u", unit, "-n", str(lines),

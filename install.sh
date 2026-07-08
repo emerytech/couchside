@@ -30,6 +30,12 @@ INSTALL_DIR="${HOME}/.local/opt/couchside"
 ETC_DIR="/etc/couchside"
 TOKEN_FILE="${ETC_DIR}/token"
 CONFIG_FILE="${ETC_DIR}/config.json"
+# Fixed-argument, root-owned wrapper for system-journal reads. The sudoers rule
+# grants ONLY this script (no wildcards); it validates its inputs and calls
+# journalctl with a locked-down option set, so --file/--directory can't be
+# injected to read arbitrary files as root. Lives in the root-owned ETC_DIR so
+# the desktop user can execute but never modify it.
+JOURNAL_WRAPPER="${ETC_DIR}/couchside-journal"
 SUDOERS_FILE="/etc/sudoers.d/couchside"
 UNIT_DST="/etc/systemd/system/couchside.service"
 
@@ -268,6 +274,8 @@ if [ "$UNINSTALL" -eq 1 ]; then
     deregister_steam_shortcut || note "couldn't clean the Steam tile (skipping)"
     sudo rm -f /etc/systemd/network/50-couchside-wol.link
     note "removed the Wake-on-LAN .link file"
+    # Drop the journal wrapper explicitly so a KEPT $ETC_DIR doesn't retain it.
+    sudo rm -f "$JOURNAL_WRAPPER"
     sudo rm -f /etc/udev/rules.d/99-couchside-uinput.rules \
                /etc/udev/rules.d/99-couchside-rtc.rules \
                /etc/modules-load.d/couchside-uinput.conf
@@ -464,6 +472,35 @@ else
     say "Installing sudoers rule at $SUDOERS_FILE"
     note "This grants user '$USER_NAME' passwordless sudo for EXACTLY these commands"
     note "(and nothing else). The daemon needs them because it runs with no TTY:"
+    # Install the fixed-arg journal wrapper that the sudoers rule below grants.
+    # Root-owned, in the root-owned ETC_DIR, so the desktop user can execute but
+    # never modify it (modifiable => root-code injection via the sudo grant).
+    cat > "$WORK_DIR/couchside-journal" <<'JWRAP'
+#!/usr/bin/env bash
+# couchside-journal <unit> <lines>: read ONE system unit's journal, safely.
+# The Couchside sudoers rule grants ONLY this script. It validates its inputs
+# and calls journalctl with a fixed option set, so --file/--directory can never
+# be injected (arbitrary-file read as root) the way a wildcard rule on
+# journalctl itself would allow.
+set -euo pipefail
+unit="${1:-}"
+lines="${2:-200}"
+# Unit: a strict systemd unit name — no leading dash, slash, space, or option.
+case "$unit" in
+    ''|-*|*/*|*[[:space:]]*) echo "couchside-journal: invalid unit" >&2; exit 2 ;;
+esac
+case "$unit" in
+    *.service|*.socket|*.target|*.timer|*.mount|*.scope|*.slice|*.path|*.device|*.swap|*.automount) : ;;
+    *) echo "couchside-journal: invalid unit" >&2; exit 2 ;;
+esac
+# Lines: positive integer, clamped to 1..2000.
+case "$lines" in ''|*[!0-9]*) lines=200 ;; esac
+if [ "$lines" -lt 1 ]; then lines=1; fi
+if [ "$lines" -gt 2000 ]; then lines=2000; fi
+exec journalctl -u "$unit" -n "$lines" --no-pager -o short-iso
+JWRAP
+    sudo install -m 0755 -o root -g root "$WORK_DIR/couchside-journal" "$JOURNAL_WRAPPER"
+
     cat > "$WORK_DIR/couchside-sudoers" <<SUDOERS
 # couchside: allow the Couchside agent (running as $USER_NAME, no TTY) to run
 # exactly the privileged commands it needs, without a password.
@@ -471,11 +508,12 @@ $USER_NAME ALL=(root) NOPASSWD: /usr/bin/systemctl restart sddm
 $USER_NAME ALL=(root) NOPASSWD: /usr/bin/systemctl reboot
 $USER_NAME ALL=(root) NOPASSWD: /usr/bin/systemctl poweroff
 $USER_NAME ALL=(root) NOPASSWD: /usr/bin/systemctl suspend
-# Constrain to the exact call the daemon makes: real_journal() runs
-# journalctl -u <unit> -n <n> --no-pager -o short-iso via sudo. Requiring the
-# leading -u blocks a bare journalctl --file=/... or --directory=/... that a
-# trailing bare wildcard would have allowed (arbitrary-file read as root).
-$USER_NAME ALL=(root) NOPASSWD: /usr/bin/journalctl -u *
+# System-journal reads go through a fixed-argument, root-owned wrapper that
+# validates the unit + line count and calls journalctl with a locked-down
+# option set. Granting the wrapper (never journalctl itself) is the only way to
+# block --file/--directory injection, which ANY wildcard rule on journalctl
+# would permit (arbitrary-file read as root).
+$USER_NAME ALL=(root) NOPASSWD: $JOURNAL_WRAPPER
 SUDOERS
     echo "------------------------------------------------------------------"
     cat "$WORK_DIR/couchside-sudoers"
