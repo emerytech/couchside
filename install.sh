@@ -703,6 +703,11 @@ if [ "$NO_DECKY" -eq 0 ] && [ -d "$DECKY_PLUGINS" ]; then
     if curl -fsSL "$PLUGIN_URL" -o "${decky_tmp}/Couchside.tar.gz" \
         && sudo rm -rf "$DECKY_PLUGIN_DIR" \
         && sudo tar -xzf "${decky_tmp}/Couchside.tar.gz" -C "$DECKY_PLUGINS"; then
+        # Force root ownership: a release archive built in CI can carry the
+        # runner's UID/GID, and `sudo tar -x` preserves it — Decky Loader then
+        # skips a plugin it doesn't see as root-owned (no error, just missing
+        # from the menu). Store installs are root-owned; match that.
+        sudo chown -R root:root "$DECKY_PLUGIN_DIR" 2>/dev/null || true
         sudo systemctl restart plugin_loader.service 2>/dev/null || true
         note "panel installed. Open the Decky menu in Game Mode to see it."
     else
