@@ -2,6 +2,7 @@ import { DarkTheme, Stack, ThemeProvider } from 'expo-router';
 import { StatusBar } from 'expo-status-bar';
 import 'react-native-reanimated';
 
+import { UnlockToast } from '@/components/UnlockToast';
 import { DeepLinkHandler } from '@/lib/DeepLink';
 import { EntitlementProvider } from '@/lib/EntitlementContext';
 import { SettingsProvider } from '@/lib/SettingsContext';
@@ -35,6 +36,8 @@ export default function RootLayout() {
           <Stack>
             <Stack.Screen name="(tabs)" options={{ headerShown: false }} />
           </Stack>
+          {/* Global overlay: survives the Paywall unmount on unlock (see UnlockToast). */}
+          <UnlockToast />
         </ThemeProvider>
       </EntitlementProvider>
     </SettingsProvider>
