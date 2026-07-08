@@ -26,15 +26,10 @@ import { Gated } from '@/components/Gated';
 import { TabScreen } from '@/components/TabScreen';
 import { useLockOrientation } from '@/hooks/useLockOrientation';
 import { usePoll } from '@/hooks/usePoll';
-import { api, Downloads, Launcher, SteamDownload } from '@/lib/api';
+import { api, Downloads, ImageSource, Launcher, SteamDownload } from '@/lib/api';
 import { hapticError, hapticLight, hapticMedium, hapticSuccess } from '@/lib/haptics';
 import { useSettings } from '@/lib/SettingsContext';
 import { mono, theme } from '@/lib/theme';
-
-/** Steam library cover art (600x900 portrait). */
-function coverUrl(appid: number): string {
-  return `https://cdn.cloudflare.steamstatic.com/steam/apps/${appid}/library_600x900.jpg`;
-}
 
 /** Cross-platform confirm (Alert buttons are no-ops on web). */
 function confirmDelete(label: string, onConfirm: () => void) {
@@ -54,24 +49,46 @@ function confirmDelete(label: string, onConfirm: () => void) {
 type TileProps = {
   launcher: Launcher;
   width: number;
+  /** Agent-served cover art, present for Steam tiles; undefined shows the text card. */
+  coverSource?: ImageSource;
+  /** Bumped on pull-to-refresh to retry a cover that previously failed to load. */
+  retryKey?: number;
   onLaunch: () => void;
   onDelete?: () => void;
   /** When this game is mid-download, drives a small progress pill on the tile. */
   download?: SteamDownload;
 };
 
-function LauncherTile({ launcher, width, onLaunch, onDelete, download }: TileProps) {
+function LauncherTile({
+  launcher,
+  width,
+  coverSource,
+  retryKey,
+  onLaunch,
+  onDelete,
+  download,
+}: TileProps) {
   const [imgFailed, setImgFailed] = useState(false);
-  const showArt = launcher.kind === 'steam' && launcher.appid != null && !imgFailed;
+  // A failed cover latches to the text card so <Image> doesn't error-loop; clear
+  // the latch when the URL changes (e.g. the app healed to the box's cached IP)
+  // or the user pull-to-refreshes, so a recovered / newly-cached cover repaints.
+  const uri = coverSource?.uri;
+  useEffect(() => {
+    setImgFailed(false);
+  }, [uri, retryKey]);
+  // Narrowed to a local so the <Image> branch sees a defined source (not the
+  // `ImageSource | undefined` prop): shown only for Steam tiles that haven't errored.
+  const art = imgFailed ? undefined : coverSource;
+  const showArt = art != null;
   const height = Math.round(width * 1.5); // 600x900 aspect
 
   return (
     <Pressable
       onPress={onLaunch}
       style={({ pressed }) => [styles.tile, { width, height }, pressed && styles.tilePressed]}>
-      {showArt ? (
+      {art ? (
         <Image
-          source={{ uri: coverUrl(launcher.appid as number) }}
+          source={art}
           style={styles.tileArt}
           resizeMode="cover"
           onError={() => setImgFailed(true)}
@@ -301,6 +318,8 @@ function LaunchScreen() {
   const [addOpen, setAddOpen] = useState(false);
   const [toast, setToast] = useState<string | null>(null);
   const [refreshing, setRefreshing] = useState(false);
+  // Bumped on pull-to-refresh so tiles retry any cover that failed to load.
+  const [retryKey, setRetryKey] = useState(0);
 
   const list = usePoll<{ launchers: Launcher[] }>(
     () => api.launchers(settings),
@@ -402,6 +421,7 @@ function LaunchScreen() {
 
   const onRefresh = useCallback(() => {
     setRefreshing(true);
+    setRetryKey((k) => k + 1); // let previously-failed covers try again
     list.refresh();
     // usePoll.refresh() re-runs on the next focus tick; drop the spinner soon.
     setTimeout(() => setRefreshing(false), 600);
@@ -490,6 +510,12 @@ function LaunchScreen() {
                 key={l.id}
                 launcher={l}
                 width={tileWidth}
+                coverSource={
+                  l.kind === 'steam' && l.appid != null
+                    ? api.steamCoverSource(settings, l.appid)
+                    : undefined
+                }
+                retryKey={retryKey}
                 onLaunch={() => launch(l)}
                 onDelete={l.kind === 'custom' ? () => remove(l) : undefined}
                 download={l.appid != null ? dlByAppid.get(l.appid) : undefined}

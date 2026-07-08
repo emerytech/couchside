@@ -1100,6 +1100,40 @@ def steam_downloads():
         return []
 
 
+# Steam caches each game's portrait "library capsule" (600x900 cover art) on
+# disk under the Steam root. Two on-disk layouts exist across Steam versions;
+# the app fetches this from the agent (never a CDN) so it stays LAN-only.
+STEAM_COVER_CACHE = ("appcache", "librarycache")
+
+
+def _steam_cover_path(appid):
+    """Local path to the 600x900 library cover for a Steam appid, or None.
+
+    Looks in <root>/appcache/librarycache/ for both known layouts:
+      new (2023+):  <appid>/library_600x900.jpg
+      old (flat):   <appid>_library_600x900.jpg
+    appid must be all-digits (caller-validated too) so the path can never
+    escape the cache dir. Read-only, best-effort; never raises.
+    """
+    if not (isinstance(appid, str) and appid.isdigit()):
+        return None
+    root = _steam_root()
+    if root is None:
+        return None
+    cache = os.path.join(root, *STEAM_COVER_CACHE)
+    candidates = (
+        os.path.join(cache, appid, "library_600x900.jpg"),
+        os.path.join(cache, "%s_library_600x900.jpg" % appid),
+    )
+    for p in candidates:
+        try:
+            if os.path.isfile(p):
+                return p
+        except OSError:
+            continue
+    return None
+
+
 def list_launchers():
     """All launchers: configured custom launchers first, then Steam games."""
     customs = [
@@ -3893,10 +3927,11 @@ class Handler(BaseHTTPRequestHandler):
             self.wfile.write(body)
         self._log(code, started)
 
-    def _send_bytes(self, code, data, content_type, started, cache_control=None):
-        """Write a raw binary body with an EXACT Content-Length (keep-alive
-        safety under protocol_version HTTP/1.1) and the same CORS headers as
-        _send. Used for image bytes — album art now, screen frames later."""
+    def _send_bytes(self, code, data, content_type, started,
+                    cache_control=None, extra_headers=None):
+        """Write a raw binary body (image bytes: Steam covers, album art, later
+        screen frames) with an EXACT Content-Length (keep-alive safety under
+        protocol_version HTTP/1.1) and the same CORS headers as _send."""
         self.send_response(code)
         self.send_header("Access-Control-Allow-Origin", "*")
         self.send_header("Access-Control-Allow-Headers",
@@ -3907,6 +3942,9 @@ class Handler(BaseHTTPRequestHandler):
         self.send_header("Content-Length", str(len(data)))
         if cache_control:
             self.send_header("Cache-Control", cache_control)
+        if extra_headers:
+            for k, v in extra_headers.items():
+                self.send_header(k, v)
         self.end_headers()
         if data:
             self.wfile.write(data)
@@ -3999,6 +4037,9 @@ class Handler(BaseHTTPRequestHandler):
                 # 404 -> the app hides the section (probe-and-appear via 404->null).
                 downloads = mock_downloads() if self.mock else steam_downloads()
                 self._send(200, {"downloads": downloads}, started)
+            elif path.startswith("/api/steam/") and path.endswith("/cover"):
+                appid = path[len("/api/steam/"):-len("/cover")]
+                self._handle_steam_cover(appid, started)
             elif path == "/api/tv":
                 # Probe-and-appear: 404 when no TV backend so the app shows no
                 # TV strip; a body only when a backend is live.
@@ -4040,6 +4081,26 @@ class Handler(BaseHTTPRequestHandler):
                 self._send(500, {"error": e.__class__.__name__}, started)
             except Exception:
                 pass
+
+    def _handle_steam_cover(self, appid, started):
+        """Serve a Steam game's 600x900 cover art from the box's LOCAL Steam
+        cache. No CDN / third-party fetch: the phone talks only to this agent,
+        so the app stays LAN-only. 404 when the appid is malformed, the game
+        isn't installed, or Steam hasn't cached its portrait art yet (the app
+        then shows its text-card fallback)."""
+        cover = _steam_cover_path(appid)
+        if cover is None:
+            self._send(404, {"error": "no cover"}, started)
+            return
+        try:
+            with open(cover, "rb") as f:
+                body = f.read()
+        except OSError:
+            self._send(404, {"error": "no cover"}, started)
+            return
+        # Art is keyed by appid and effectively immutable; let the phone cache it.
+        self._send_bytes(200, body, "image/jpeg", started,
+                         extra_headers={"Cache-Control": "public, max-age=604800"})
 
     def _read_body(self):
         """Read and return the request body bytes (always drains it).

@@ -7,6 +7,12 @@ import { Settings } from './settings';
 /** The subset of Settings the API client actually needs. */
 export type ConnSettings = Pick<Settings, 'host' | 'port' | 'token' | 'lastIp'>;
 
+/**
+ * A remote image source (uri + optional request headers). Structurally a subset
+ * of React Native's ImageURISource, so it drops straight into <Image source>.
+ */
+export type ImageSource = { uri: string; headers?: Record<string, string> };
+
 // ---------- Contract types ----------
 
 export type Ping = {
@@ -448,6 +454,7 @@ async function request<T>(
       if (retriable && fallback && method === 'GET' && (await probeTarget(fallback, settings))) {
         usedHost = fallback;
         res = await attempt(fallback, settings, path, opts);
+        usedHost = fallback;
       } else {
         throw e;
       }
@@ -465,9 +472,9 @@ async function request<T>(
   }
 
   // Remember which host actually answered (any HTTP status proves it IS this
-  // box and is reachable), so binary fetches — album art, later screen frames —
-  // can target the SAME host instead of a blind settings.host that mDNS may
-  // have stopped resolving. (§3b resolved-host.)
+  // box and is reachable), so binary fetches — Steam cover art, album art, later
+  // screen frames — can target the SAME host instead of a blind settings.host
+  // that mDNS may have stopped resolving. (§3b resolved-host.)
   lastGoodHost.set(hostKey(settings), usedHost);
 
   if (res.status === 401) {
@@ -541,6 +548,26 @@ export const api = {
    */
   downloads(settings: ConnSettings): Promise<Downloads | null> {
     return probeOrNull(request<Downloads>(settings, '/api/downloads'));
+  },
+
+  /**
+   * Image source for a Steam game's library cover art (agent >= 2.7.1). The
+   * agent serves the art from the box's OWN local Steam cache, so the phone
+   * never contacts Steam or any CDN — the app stays LAN-only (see PRIVACY.md).
+   *
+   * Auth rides as a Bearer header, which React Native's Image sends on native;
+   * web <img> can't carry it, so covers fall back to the text card there. Reuses
+   * the address request() last reached this box on (§3b resolved-host) so covers
+   * follow the cached-IP fallback in SteamOS Game Mode instead of a dead .local
+   * name; if that target is unreachable, the agent is older, or the art isn't
+   * cached yet, the request fails and the tile's onError shows the text card.
+   */
+  steamCoverSource(settings: ConnSettings, appid: number): ImageSource {
+    const host = resolveEffectiveHost(settings);
+    return {
+      uri: `${baseUrl({ host, port: settings.port })}/api/steam/${appid}/cover`,
+      headers: { Authorization: `Bearer ${settings.token}` },
+    };
   },
 
   /** Launch a game/app by launcher id. */
