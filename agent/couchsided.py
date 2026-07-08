@@ -2246,6 +2246,9 @@ def _mpris_list_names():
     obj = _busctl_json(["call", "org.freedesktop.DBus", "/org/freedesktop/DBus",
                         "org.freedesktop.DBus", "ListNames"])
     names = obj.get("data") if isinstance(obj, dict) else None
+    # busctl wraps the single 'as' out-arg as data:[[name, ...]] — unwrap it.
+    if isinstance(names, list) and names and isinstance(names[0], list):
+        names = names[0]
     if not isinstance(names, list):
         return []
     return [n for n in names
@@ -2254,19 +2257,27 @@ def _mpris_list_names():
 
 
 def _mpris_getall(name):
-    """Merged GetAll on the empty interface -> every property across BOTH MPRIS
-    interfaces (Identity + PlaybackStatus/Metadata/...) in one call. Returns a
-    flat {prop: value} dict (values unwrapped), or {} on failure."""
-    obj = _busctl_json(["call", name, MPRIS_OBJPATH,
-                        "org.freedesktop.DBus.Properties", "GetAll", "s", ""])
-    if not isinstance(obj, dict):
-        return {}
-    data = obj.get("data")
-    if isinstance(data, list) and data and isinstance(data[0], dict):
-        data = data[0]  # tolerate a single-out-arg wrapped as a list
-    if not isinstance(data, dict):
-        return {}
-    return {k: _bus_val(v) for k, v in data.items()}
+    """Every property across BOTH MPRIS interfaces (Player transport props +
+    the root MediaPlayer2 Identity), merged into a flat {prop: value} dict
+    (values unwrapped), or {} on total failure.
+
+    The empty-interface form `GetAll s ""` is NOT supported by real players
+    (verified on-box: busctl returns 'No such interface ""'), so we query each
+    interface explicitly. Per-call D-Bus wait is bounded with --timeout=1 so a
+    hung player can't stall the list."""
+    props = {}
+    for iface in (MPRIS_PLAYER_IFACE, "org.mpris.MediaPlayer2"):
+        obj = _busctl_json(["--timeout=1", "call", name, MPRIS_OBJPATH,
+                            "org.freedesktop.DBus.Properties", "GetAll", "s", iface])
+        if not isinstance(obj, dict):
+            continue
+        data = obj.get("data")
+        if isinstance(data, list) and data and isinstance(data[0], dict):
+            data = data[0]  # single a{sv} out-arg wrapped as a list
+        if isinstance(data, dict):
+            for k, v in data.items():
+                props[k] = _bus_val(v)
+    return props
 
 
 def _mpris_str(v):
@@ -3213,25 +3224,80 @@ _CTRL_V_EVENTS = [
 ]
 
 
-def _wayland_sockets():
-    """Non-lock wayland-* sockets in XDG_RUNTIME_DIR (best-effort, never raises)."""
+def _wayland_display_sockets():
+    """Names of wayland DISPLAY sockets in XDG_RUNTIME_DIR. Recognizes the
+    standard wayland-<N> and gamescope's gamescope-<N> (Bazzite / Steam Deck
+    Game Mode names its compositor socket gamescope-0, NOT wayland-0), while
+    excluding lock files and gamescope's -ei / -stats side sockets. Never raises."""
+    out = []
     try:
-        return [e for e in os.listdir(XDG_RUNTIME_DIR)
-                if e.startswith("wayland-") and not e.endswith(".lock")]
+        for e in os.listdir(XDG_RUNTIME_DIR):
+            if e.endswith(".lock"):
+                continue
+            if e.startswith("wayland-") and e[len("wayland-"):].isdigit():
+                out.append(e)
+            elif e.startswith("gamescope-") and e[len("gamescope-"):].isdigit():
+                out.append(e)
     except OSError:
-        return []
+        pass
+    return out
+
+
+def _paste_env():
+    """Session env for wl-copy/wl-paste, with WAYLAND_DISPLAY pinned to the one
+    detected display socket (gamescope-0 in Game Mode); _session_env alone only
+    finds wayland-<N>, which gamescope does not create."""
+    env = _session_env()
+    socks = _wayland_display_sockets()
+    if len(socks) == 1:
+        env["WAYLAND_DISPLAY"] = socks[0]
+    return env
+
+
+_PASTE_OK = None  # tri-state cache: None = unprobed, then True/False
 
 
 def _paste_available():
-    """True when a SAFE clipboard-paste path exists: wl-copy AND wl-paste are
-    present AND exactly one wayland session socket exists. The single-socket
-    requirement is a safety gate — with two sessions, wl-copy could set the
-    clipboard on one while Ctrl+V lands in the other (pasting a stale/foreign
-    clipboard, e.g. a password), so we decline (ascii-degrade) rather than risk
-    it. Delivery is additionally verified per-paste via wl-paste read-back."""
+    """True only when a clipboard paste actually WORKS: wl-copy + wl-paste exist,
+    exactly one wayland display socket exists (single-socket safety gate against
+    wrong-session pastes), AND a real wl-copy->wl-paste roundtrip succeeds.
+
+    The roundtrip is essential, not paranoia: gamescope (Bazzite / Steam Deck
+    Game Mode) exposes a wayland socket but does NOT implement
+    wl_data_device_manager, so wl-copy silently fails there. Presence alone would
+    wrongly advertise unicode; the roundtrip degrades Game Mode to ascii while
+    keeping real Desktop-Mode wayland sessions on unicode. Probed once, cached,
+    and clipboard-preserving (restores whatever was there)."""
+    global _PASTE_OK
+    if _PASTE_OK is not None:
+        return _PASTE_OK
+    _PASTE_OK = False
     if shutil.which("wl-copy") is None or shutil.which("wl-paste") is None:
         return False
-    return len(_wayland_sockets()) == 1
+    if len(_wayland_display_sockets()) != 1:
+        return False
+    env = _paste_env()
+    sentinel = b"couchside-clip-probe"
+    try:
+        orig = subprocess.run(["wl-paste", "-n"], env=env, timeout=2,
+                              stdout=subprocess.PIPE, stderr=subprocess.DEVNULL)
+        saved = orig.stdout if orig.returncode == 0 else None
+        subprocess.run(["wl-copy"], input=sentinel, env=env, timeout=2,
+                       stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        time.sleep(0.05)
+        rb = subprocess.run(["wl-paste", "-n"], env=env, timeout=2,
+                            stdout=subprocess.PIPE, stderr=subprocess.DEVNULL)
+        _PASTE_OK = rb.returncode == 0 and rb.stdout == sentinel
+        if _PASTE_OK:  # restore the user's clipboard, don't leave the sentinel
+            if saved:
+                subprocess.run(["wl-copy"], input=saved, env=env, timeout=2,
+                               stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            else:
+                subprocess.run(["wl-copy", "--clear"], env=env, timeout=2,
+                               stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    except Exception:
+        _PASTE_OK = False
+    return _PASTE_OK
 
 
 def _text_caps(mock):
@@ -3282,7 +3348,7 @@ def clipboard_paste(text, kbd, mock, entry):
         return True
     if entry.get("_paste_dead"):
         return False
-    env = _session_env()
+    env = _paste_env()
     try:
         subprocess.run(["wl-copy"], input=text.encode("utf-8"), env=env,
                        timeout=2, check=True,
