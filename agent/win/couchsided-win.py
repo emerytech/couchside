@@ -1694,13 +1694,29 @@ if IS_WINDOWS:
         except Exception:
             pass
 
-    def read_box_muted():
-        """Current default-render-endpoint mute (True/False), or None."""
+    # CoInitializeEx return values that mean THIS call took ownership and the
+    # thread must balance with CoUninitialize: S_OK (0) and S_FALSE (1, already
+    # inited in the SAME mode). RPC_E_CHANGED_MODE means another init on this
+    # thread owns COM in a different mode — do NOT uninit then.
+    _RPC_E_CHANGED_MODE = 0x80010106
+
+    def _with_endpoint_volume(fn):
+        """Acquire the default-render-endpoint IAudioEndpointVolume, invoke
+        fn(volume_ptr_value), and tear everything down: releases every COM
+        object AND balances CoInitializeEx with CoUninitialize (the missing
+        CoUninitialize was leaking a COM apartment refcount on every /api/tv
+        poll). Returns fn's result, or None on any failure. Never raises."""
         enumerator = ctypes.c_void_p()
         device = ctypes.c_void_p()
         volume = ctypes.c_void_p()
+        need_uninit = False
         try:
-            _ole32.CoInitializeEx(None, 0)  # COINIT_MULTITHREADED
+            hr = _ole32.CoInitializeEx(None, 0)  # COINIT_MULTITHREADED
+            # Uninit only when we actually initialized (S_OK/S_FALSE), never on
+            # RPC_E_CHANGED_MODE or any hard failure.
+            need_uninit = hr in (0, 1)
+            if hr not in (0, 1) and hr != _RPC_E_CHANGED_MODE:
+                return None
             clsid = _GUID.from_str(_CLSID_MMDeviceEnumerator)
             iid_enum = _GUID.from_str(_IID_IMMDeviceEnumerator)
             hr = _ole32.CoCreateInstance(
@@ -1724,23 +1740,69 @@ if IS_WINDOWS:
                           ctypes.byref(volume))
             if hr != 0 or not volume:
                 return None
-            # IAudioEndpointVolume::GetMute (slot 15)
-            muted = ctypes.c_int(0)
-            get_mute = _com_method(volume.value, 15,
-                                   ctypes.POINTER(ctypes.c_int))
-            hr = get_mute(ctypes.byref(muted))
-            if hr != 0:
-                return None
-            return bool(muted.value)
+            return fn(volume.value)
         except Exception:
             return None
         finally:
             for obj in (volume, device, enumerator):
                 if obj:
                     _com_release(obj.value)
+            if need_uninit:
+                try:
+                    _ole32.CoUninitialize()
+                except Exception:
+                    pass
+
+    def read_box_muted():
+        """Current default-render-endpoint mute (True/False), or None."""
+        def _get(vol):
+            # IAudioEndpointVolume::GetMute (slot 15)
+            muted = ctypes.c_int(0)
+            get_mute = _com_method(vol, 15, ctypes.POINTER(ctypes.c_int))
+            if get_mute(ctypes.byref(muted)) != 0:
+                return None
+            return bool(muted.value)
+        return _with_endpoint_volume(_get)
+
+    def read_box_volume():
+        """Current default-render-endpoint scalar volume as a float 0.0-1.0,
+        or None. Uses IAudioEndpointVolume::GetMasterVolumeLevelScalar
+        (vtable slot 9): the same 0..1 taper the Windows volume slider uses,
+        so it lines up with the app's percentage."""
+        def _get(vol):
+            level = ctypes.c_float(0.0)
+            get_scalar = _com_method(vol, 9, ctypes.POINTER(ctypes.c_float))
+            if get_scalar(ctypes.byref(level)) != 0:
+                return None
+            return max(0.0, min(1.0, float(level.value)))
+        return _with_endpoint_volume(_get)
+
+    def set_box_volume_scalar(level01):
+        """Set the endpoint scalar volume to level01 (0.0-1.0) via
+        IAudioEndpointVolume::SetMasterVolumeLevelScalar (vtable slot 7).
+        Returns True on success. A positive level also clears mute (slot 14
+        SetMute) so the change is audible, matching the Linux soft_set_volume
+        unmute-on-raise behaviour."""
+        lvl = max(0.0, min(1.0, float(level01)))
+        def _set(vol):
+            set_scalar = _com_method(vol, 7, ctypes.c_float, ctypes.c_void_p)
+            if set_scalar(ctypes.c_float(lvl), None) != 0:
+                return False
+            if lvl > 0.0:
+                # SetMute(FALSE, NULL) — best-effort; ignore its hr.
+                set_mute = _com_method(vol, 14, ctypes.c_int, ctypes.c_void_p)
+                set_mute(0, None)
+            return True
+        return bool(_with_endpoint_volume(_set))
 else:
     def read_box_muted():
         return None
+
+    def read_box_volume():
+        return None
+
+    def set_box_volume_scalar(level01):
+        return False
 
 
 # ---------------------------------------------------------------------------
@@ -1993,6 +2055,38 @@ def mock_soft(op):
             "stderr": "", "duration_ms": 100}
 
 
+def _soft_volume_pct():
+    """Box volume as an integer 0-100, or None if unreadable. Reads the same
+    Core Audio endpoint that backs the mute state, so the app's slider and the
+    volume rocker agree."""
+    v = read_box_volume()
+    if v is None:
+        return None
+    return max(0, min(100, int(round(v * 100))))
+
+
+def soft_set_volume(level):
+    """Set the box volume to <level> percent (0-100) directly on the Core Audio
+    endpoint (SetMasterVolumeLevelScalar). Unlike the Linux agent, Windows has
+    no gamescope OSD to satisfy, and SetMasterVolumeLevelScalar is exactly what
+    the volume slider drives, so a single scalar write both changes the level
+    and shows nothing surprising. ActionResult-shaped, plus a "level" field so
+    the app's slider can snap to the real value."""
+    start = time.monotonic()
+    level = max(0, min(100, int(level)))
+
+    def result(ok, cur, note):
+        return {"ok": ok, "exit_code": 0 if ok else -1,
+                "stdout": note if ok else "", "stderr": "" if ok else note,
+                "level": cur,
+                "duration_ms": int((time.monotonic() - start) * 1000)}
+
+    if not set_box_volume_scalar(level / 100.0):
+        return result(False, _soft_volume_pct(), "box volume set failed")
+    cur = _soft_volume_pct()
+    return result(True, level if cur is None else cur, "level %d" % level)
+
+
 # ---- unified dispatch --------------------------------------------------------
 
 
@@ -2087,6 +2181,11 @@ def tv_info():
         "tv_volume": hw is not None,
         "tv_power": hw is not None,
         "muted": read_box_muted() if box_vol else None,
+        # Current levels (0-100 or null) so the app's slider shows and keeps a
+        # real position. Box level is the Core Audio scalar; the Windows panel
+        # backend has no volume read-back, so tv_volume_level stays null.
+        "box_volume_level": _soft_volume_pct() if box_vol else None,
+        "tv_volume_level": None,
     }
 
 
@@ -2115,6 +2214,904 @@ def tv_send(op, mock, target=None):
     if soft_available():
         return mock_soft(op) if mock else real_soft(op)
     return None
+
+
+# ---------------------------------------------------------------------------
+# Now-playing + transport via Windows System Media Transport Controls (SMTC)
+#
+# The Windows analog of the Linux agent's MPRIS control. Two halves, each
+# best-effort and fully wrapped so failure degrades to 404/unavailable and
+# never touches an existing endpoint:
+#   * metadata  — the current SMTC session (title/artist/album/status/timeline)
+#                 read through WinRT's GlobalSystemMediaTransportControlsSession-
+#                 Manager, driven from a short PowerShell script (no pip WinRT
+#                 dep; stdlib only). Read-only.
+#   * transport — the OS media keys via SendInput (VK_MEDIA_*), exactly like a
+#                 keyboard's play/next/prev buttons. These are GLOBAL (the shell
+#                 routes them to the active session), so there is one synthetic
+#                 player id ("system") rather than a per-app address.
+#
+# NEEDS ON-WINDOWS TESTING: the PowerShell WinRT bridge (async GetAwaiter /
+# thumbnail stream) is written to the documented API but unverified on a real
+# box. All of it is wrapped; on any failure smtc_info() returns an available
+# session list that may be empty, and the app simply shows nothing.
+# ---------------------------------------------------------------------------
+
+VK_MEDIA_NEXT_TRACK = 0xB0
+VK_MEDIA_PREV_TRACK = 0xB1
+VK_MEDIA_STOP = 0xB2
+VK_MEDIA_PLAY_PAUSE = 0xB3
+
+# Transport op -> media-key VK. play/pause/play_pause all fold onto the single
+# hardware PLAY_PAUSE toggle (media keys expose no distinct play vs pause), so
+# the app's play and pause buttons both toggle — matching a real remote.
+SMTC_KEY_OPS = {
+    "play": VK_MEDIA_PLAY_PAUSE,
+    "pause": VK_MEDIA_PLAY_PAUSE,
+    "play_pause": VK_MEDIA_PLAY_PAUSE,
+    "next": VK_MEDIA_NEXT_TRACK,
+    "previous": VK_MEDIA_PREV_TRACK,
+    "stop": VK_MEDIA_STOP,
+}
+# Contract parity with MPRIS_OPS: the app may offer a seek control, but media
+# keys can't seek, so "seek" is accepted as a known op and reported unsupported.
+SMTC_OPS = tuple(SMTC_KEY_OPS) + ("seek",)
+
+# The single synthetic player id. SMTC transport is global, so there is no real
+# per-app addressing; the app just needs a stable id to POST ops against.
+SMTC_PLAYER_ID = "system"
+
+SMTC_ART_MAX = 2 * 1024 * 1024  # 2 MiB read cap on album art (MPRIS parity)
+SMTC_TIMEOUT = 6
+
+# Cache the last metadata read briefly so a poll of /api/media plus the app's
+# art fetch don't each spawn PowerShell; art resolution reuses the cached key.
+_SMTC_LOCK = threading.Lock()
+_SMTC_CACHE = {"at": 0.0, "val": None}
+_SMTC_TTL = 1.0
+
+# PowerShell that prints ONE line of JSON describing the current SMTC session,
+# or "null". Kept inert on failure (any throw -> the outer runner returns None).
+_SMTC_PS = r"""
+$ErrorActionPreference = 'Stop'
+function Await($t, $rt) {
+  $m = [System.WindowsRuntimeSystemExtensions].GetMethods() |
+    Where-Object { $_.Name -eq 'AsTask' -and $_.GetParameters().Count -eq 1 -and $_.IsGenericMethod } |
+    Select-Object -First 1
+  $g = $m.MakeGenericMethod($rt)
+  $task = $g.Invoke($null, @($t))
+  $task.Wait(-1) | Out-Null
+  return $task.Result
+}
+try {
+  [Windows.Media.Control.GlobalSystemMediaTransportControlsSessionManager, Windows.Media.Control, ContentType=WindowsRuntime] | Out-Null
+  [Windows.Media.Control.GlobalSystemMediaTransportControlsSessionManagerRequestedEventArgs, Windows.Media.Control, ContentType=WindowsRuntime] | Out-Null
+  $mgrType = [Windows.Media.Control.GlobalSystemMediaTransportControlsSessionManager]
+  $mgr = Await ($mgrType::RequestAsync()) ([Windows.Media.Control.GlobalSystemMediaTransportControlsSessionManager])
+  $s = $mgr.GetCurrentSession()
+  if ($null -eq $s) { 'null'; exit 0 }
+  $props = Await ($s.TryGetMediaPropertiesAsync()) ([Windows.Media.Control.GlobalSystemMediaTransportControlsSessionMediaProperties])
+  $pb = $s.GetPlaybackInfo()
+  $tl = $s.GetTimelineProperties()
+  $status = [int]$pb.PlaybackStatus
+  $hasArt = $false
+  if ($props.Thumbnail -ne $null) { $hasArt = $true }
+  $o = [ordered]@{
+    id       = [string]$s.SourceAppUserModelId
+    title    = [string]$props.Title
+    artist   = [string]$props.Artist
+    album    = [string]$props.AlbumTitle
+    status   = $status
+    pos_ms   = [long]$tl.Position.TotalMilliseconds
+    len_ms   = [long]$tl.EndTime.TotalMilliseconds
+    can_next = [bool]$pb.Controls.IsNextEnabled
+    can_prev = [bool]$pb.Controls.IsPreviousEnabled
+    can_play = [bool]$pb.Controls.IsPlayEnabled
+    can_pause= [bool]$pb.Controls.IsPauseEnabled
+    has_art  = $hasArt
+  }
+  ($o | ConvertTo-Json -Compress)
+} catch { 'null' }
+"""
+
+# PowerShell that writes the current SMTC thumbnail to $env:CS_ART_OUT and
+# prints "ok"/"none". Separate from metadata so the (heavier) stream copy runs
+# only when the app actually requests art.
+_SMTC_ART_PS = r"""
+$ErrorActionPreference = 'Stop'
+function Await($t, $rt) {
+  $m = [System.WindowsRuntimeSystemExtensions].GetMethods() |
+    Where-Object { $_.Name -eq 'AsTask' -and $_.GetParameters().Count -eq 1 -and $_.IsGenericMethod } |
+    Select-Object -First 1
+  $g = $m.MakeGenericMethod($rt)
+  $task = $g.Invoke($null, @($t))
+  $task.Wait(-1) | Out-Null
+  return $task.Result
+}
+try {
+  [Windows.Media.Control.GlobalSystemMediaTransportControlsSessionManager, Windows.Media.Control, ContentType=WindowsRuntime] | Out-Null
+  $mgrType = [Windows.Media.Control.GlobalSystemMediaTransportControlsSessionManager]
+  $mgr = Await ($mgrType::RequestAsync()) ([Windows.Media.Control.GlobalSystemMediaTransportControlsSessionManager])
+  $s = $mgr.GetCurrentSession()
+  if ($null -eq $s) { 'none'; exit 0 }
+  $props = Await ($s.TryGetMediaPropertiesAsync()) ([Windows.Media.Control.GlobalSystemMediaTransportControlsSessionMediaProperties])
+  if ($props.Thumbnail -eq $null) { 'none'; exit 0 }
+  $stream = Await ($props.Thumbnail.OpenReadAsync()) ([Windows.Storage.Streams.IRandomAccessStreamWithContentType])
+  $size = [int]$stream.Size
+  if ($size -le 0 -or $size -gt 2097152) { 'none'; exit 0 }
+  $reader = [Windows.Storage.Streams.DataReader]::new($stream)
+  Await ($reader.LoadAsync($size)) ([uint32]) | Out-Null
+  $bytes = New-Object byte[] $size
+  $reader.ReadBytes($bytes)
+  [System.IO.File]::WriteAllBytes($env:CS_ART_OUT, $bytes)
+  'ok'
+} catch { 'none' }
+"""
+
+# SMTC PlaybackStatus enum -> the app's status vocabulary (MPRIS parity).
+_SMTC_STATUS = {4: "Playing", 5: "Paused"}
+
+
+def _smtc_str(v):
+    return v if isinstance(v, str) else ""
+
+
+def _smtc_art_key(session):
+    """Stable cache-buster for the current track's art, derived from the track
+    identity (never a path). Changes when the track changes."""
+    basis = "%s|%s|%s" % (session.get("title", ""), session.get("artist", ""),
+                          session.get("album", ""))
+    return hashlib.sha1(basis.encode("utf-8", "replace")).hexdigest()[:16]
+
+
+def _run_powershell(script, timeout, env=None):
+    """Run a PowerShell script from stdin; return stdout text, or None on any
+    failure. -Command - reads the script from stdin so no temp file / no
+    quoting minefield. Never raises."""
+    try:
+        r = subprocess.run(
+            ["powershell", "-NoProfile", "-NonInteractive",
+             "-ExecutionPolicy", "Bypass", "-Command", "-"],
+            input=script, capture_output=True, text=True, timeout=timeout,
+            creationflags=_RUN_FLAGS, env=env)
+    except Exception:
+        return None
+    if r.returncode != 0:
+        return None
+    return r.stdout
+
+
+def _smtc_read():
+    """Current SMTC session as a raw dict (PowerShell JSON), or None. Cached
+    for _SMTC_TTL to keep /api/media polling cheap. Never raises."""
+    if not IS_WINDOWS:
+        return None
+    now = time.monotonic()
+    with _SMTC_LOCK:
+        if _SMTC_CACHE["val"] is not None and now - _SMTC_CACHE["at"] < _SMTC_TTL:
+            return _SMTC_CACHE["val"]
+    out = _run_powershell(_SMTC_PS, SMTC_TIMEOUT)
+    val = None
+    if out:
+        line = out.strip()
+        if line and line.lower() != "null":
+            try:
+                parsed = json.loads(line)
+                if isinstance(parsed, dict):
+                    val = parsed
+            except Exception:
+                val = None
+    with _SMTC_LOCK:
+        _SMTC_CACHE.update(at=time.monotonic(), val=val)
+    return val
+
+
+def _smtc_player_info():
+    """The single SMTC player dict (MPRIS-player-shaped), or None when nothing
+    is playing/paused. Never raises."""
+    session = _smtc_read()
+    if not isinstance(session, dict):
+        return None
+    status = _SMTC_STATUS.get(session.get("status"), "Stopped")
+    def _int(v):
+        try:
+            return max(0, int(v))
+        except (TypeError, ValueError):
+            return 0
+    has_art = bool(session.get("has_art"))
+    return {
+        "id": SMTC_PLAYER_ID,
+        "identity": _smtc_str(session.get("id")) or "Media",
+        "status": status,
+        "title": _smtc_str(session.get("title")),
+        "artist": _smtc_str(session.get("artist")),
+        "album": _smtc_str(session.get("album")),
+        "position_ms": _int(session.get("pos_ms")),
+        "length_ms": _int(session.get("len_ms")),
+        "rate": 1.0,
+        # Media keys can't seek; report no seek so the app hides the scrubber.
+        "can_seek": False,
+        "can_go_next": bool(session.get("can_next")),
+        "can_go_previous": bool(session.get("can_prev")),
+        "can_play": bool(session.get("can_play")),
+        "can_pause": bool(session.get("can_pause")),
+        "art": has_art,
+        "art_key": _smtc_art_key(session) if has_art else "",
+    }
+
+
+def smtc_available():
+    """True when SMTC control is even plausible (Windows). The metadata read is
+    probe-and-appear at /api/media, so this only gates the whole feature off on
+    non-Windows."""
+    return IS_WINDOWS
+
+
+def smtc_info():
+    """{"available":True,"players":[...]} or None when SMTC is unavailable.
+    A live-but-idle box returns an empty players list (matches MPRIS)."""
+    if not smtc_available():
+        return None
+    info = _smtc_player_info()
+    return {"available": True, "players": [info] if info is not None else []}
+
+
+def real_smtc_op(player, op):
+    """Run a transport op by tapping the matching media key. ActionResult-shaped,
+    or None for an unknown player / unsupported op (route 404s). The media key is
+    global, so `player` is validated only against the synthetic id."""
+    if player != SMTC_PLAYER_ID:
+        return None
+    start = time.monotonic()
+    if op == "seek":
+        return {"ok": False, "exit_code": -1, "stdout": "",
+                "stderr": "seek is not supported over media keys",
+                "duration_ms": int((time.monotonic() - start) * 1000)}
+    vk = SMTC_KEY_OPS.get(op)
+    if vk is None:
+        return None
+    try:
+        _send_inputs([_key_input(vk, True), _key_input(vk, False)])
+    except OSError as e:
+        return {"ok": False, "exit_code": -1, "stdout": "",
+                "stderr": "%s: %s" % (e.__class__.__name__, e),
+                "duration_ms": int((time.monotonic() - start) * 1000)}
+    # A key tap invalidates the cached metadata (status likely changed).
+    with _SMTC_LOCK:
+        _SMTC_CACHE.update(at=0.0, val=None)
+    return {"ok": True, "exit_code": 0, "stdout": "sent %s" % op, "stderr": "",
+            "duration_ms": int((time.monotonic() - start) * 1000)}
+
+
+def smtc_art(player, art_key):
+    """Resolve the CURRENT session's thumbnail bytes (the client supplies no
+    path), enforce the 2 MiB cap, and sniff the image type. Returns (data, mime)
+    or None. `art_key` must match the current track's key (else the track
+    changed -> 404). Never raises."""
+    if player != SMTC_PLAYER_ID:
+        return None
+    session = _smtc_read()
+    if not isinstance(session, dict) or not session.get("has_art"):
+        return None
+    if art_key and _smtc_art_key(session) != art_key:
+        return None
+    tmp = None
+    try:
+        fd, tmp = tempfile.mkstemp(prefix="cs-art-", suffix=".img")
+        os.close(fd)
+        env = dict(os.environ)
+        env["CS_ART_OUT"] = tmp
+        out = _run_powershell(_SMTC_ART_PS, SMTC_TIMEOUT, env=env)
+        if not out or out.strip().lower() != "ok":
+            return None
+        if os.path.getsize(tmp) > SMTC_ART_MAX:
+            return None
+        with open(tmp, "rb") as f:
+            data = f.read(SMTC_ART_MAX + 1)
+        if not data or len(data) > SMTC_ART_MAX:
+            return None
+        mime = _sniff_image(data)
+        return (data, mime) if mime else None
+    except Exception:
+        return None
+    finally:
+        if tmp:
+            try:
+                os.remove(tmp)
+            except OSError:
+                pass
+
+
+# --- SMTC mock (parity with mock_mpris_*) ------------------------------------
+_MOCK_SMTC_POS = 0
+# 1x1 transparent PNG so --mock album art works off-box.
+_MOCK_ART_PNG = base64.b64decode(
+    "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==")
+
+
+def mock_smtc_info():
+    global _MOCK_SMTC_POS
+    _MOCK_SMTC_POS = (_MOCK_SMTC_POS + 3000) % 214000
+    return {"available": True, "players": [{
+        "id": SMTC_PLAYER_ID, "identity": "Groove", "status": "Playing",
+        "title": "Midnight City", "artist": "M83",
+        "album": "Hurry Up, We're Dreaming",
+        "position_ms": _MOCK_SMTC_POS, "length_ms": 214000, "rate": 1.0,
+        "can_seek": False, "can_go_next": True, "can_go_previous": True,
+        "can_play": True, "can_pause": True, "art": True,
+        "art_key": "mockart1",
+    }]}
+
+
+def mock_smtc_op(player, op):
+    if player != SMTC_PLAYER_ID:
+        return None
+    if op == "seek":
+        return {"ok": False, "exit_code": -1, "stdout": "",
+                "stderr": "seek is not supported over media keys",
+                "duration_ms": 10}
+    if op not in SMTC_KEY_OPS:
+        return None
+    print("[smtc] %s %s" % (player, op), flush=True)
+    return {"ok": True, "exit_code": 0,
+            "stdout": "[mock smtc] %s %s" % (player, op),
+            "stderr": "", "duration_ms": 40}
+
+
+def mock_smtc_art(player, art_key):
+    if player != SMTC_PLAYER_ID:
+        return None
+    return (_MOCK_ART_PNG, "image/png")
+
+
+# --- image magic-byte sniffing (shared by SMTC art + screen frames) ----------
+_ART_MAGIC = (
+    (b"\xff\xd8\xff", "image/jpeg"),
+    (b"\x89PNG\r\n\x1a\n", "image/png"),
+    (b"GIF87a", "image/gif"),
+    (b"GIF89a", "image/gif"),
+)
+
+
+def _sniff_image(data):
+    """Magic-byte image type, or None (so a text/HTML file can't be served)."""
+    for magic, mime in _ART_MAGIC:
+        if data.startswith(magic):
+            return mime
+    if len(data) >= 12 and data[:4] == b"RIFF" and data[8:12] == b"WEBP":
+        return "image/webp"
+    return None
+
+
+# ---------------------------------------------------------------------------
+# Screen preview: one downscaled JPEG frame per request via GDI BitBlt.
+#
+# The Windows analog of the Linux agent's gamescope/grim capture. Pure ctypes
+# GDI (CreateCompatibleDC/BitBlt/GetDIBits over the virtual screen), downscaled
+# with StretchBlt (HALFTONE), then encoded to JPEG. No PIL: JPEG comes from the
+# built-in Windows Imaging Component (WIC) via a tiny PowerShell one-liner that
+# re-encodes a stdlib-written BMP, keeping this dependency-free. Single-flight +
+# a short cache cap the capture rate exactly like the Linux path.
+#
+# 404 semantics: capture is BLOCKED on the secure desktop (UAC / lock screen)
+# and from a session-0 service; both surface as a BitBlt/GetDIBits failure, and
+# real_screen_frame() returns None so the route replies 503 (transient) while
+# screen_info() still advertises the backend. When capture can never work
+# (non-Windows real mode) screen_info() returns None so /api/screen 404s and the
+# app hides the card entirely.
+#
+# NEEDS ON-WINDOWS TESTING: the GDI structs + the BMP->JPEG WIC re-encode are
+# written to the documented APIs but unverified on a real box.
+# ---------------------------------------------------------------------------
+
+SCREEN_WIDTH = 960                 # downscale target width
+SCREEN_MAX_BYTES = 12 * 1024 * 1024
+SCREEN_MIN_INTERVAL_S = 0.5        # server floor: at most ~2 captures/sec
+SCREEN_CAPTURE_TIMEOUT_S = 8
+SCREEN_LOCK = threading.Lock()     # single-flight: never stack captures
+_SCREEN_CACHE = {"ts": 0.0, "data": None, "mime": None}
+_SCREEN = None                     # capability dict or None; set by set_screen
+
+if IS_WINDOWS:
+    _gdi32 = ctypes.WinDLL("gdi32", use_last_error=True)
+
+    SM_XVIRTUALSCREEN = 76
+    SM_YVIRTUALSCREEN = 77
+    SM_CXVIRTUALSCREEN = 78
+    SM_CYVIRTUALSCREEN = 79
+    SRCCOPY = 0x00CC0020
+    DIB_RGB_COLORS = 0
+    BI_RGB = 0
+    HALFTONE = 4
+
+    class _BITMAPINFOHEADER(ctypes.Structure):
+        _fields_ = [
+            ("biSize", ctypes.c_uint32), ("biWidth", ctypes.c_int32),
+            ("biHeight", ctypes.c_int32), ("biPlanes", ctypes.c_uint16),
+            ("biBitCount", ctypes.c_uint16), ("biCompression", ctypes.c_uint32),
+            ("biSizeImage", ctypes.c_uint32),
+            ("biXPelsPerMeter", ctypes.c_int32),
+            ("biYPelsPerMeter", ctypes.c_int32),
+            ("biClrUsed", ctypes.c_uint32), ("biClrImportant", ctypes.c_uint32),
+        ]
+
+    class _BITMAPINFO(ctypes.Structure):
+        _fields_ = [("bmiHeader", _BITMAPINFOHEADER),
+                    ("bmiColors", ctypes.c_uint32 * 3)]
+
+
+def _bmp_bytes(width, height, bgr_rows_top_down):
+    """Wrap top-down 24-bit BGR scanlines (each padded to a 4-byte boundary) in
+    a BITMAPFILEHEADER+BITMAPINFOHEADER so WIC can re-encode it. Negative height
+    marks the DIB top-down."""
+    row_stride = (width * 3 + 3) & ~3
+    pixel_bytes = row_stride * height
+    # BITMAPFILEHEADER (14) + BITMAPINFOHEADER (40)
+    file_size = 14 + 40 + pixel_bytes
+    fileheader = struct.pack("<2sIHHI", b"BM", file_size, 0, 0, 14 + 40)
+    infoheader = struct.pack("<IiiHHIIiiII", 40, width, -height, 1, 24,
+                             BI_RGB, pixel_bytes, 0, 0, 0, 0)
+    return fileheader + infoheader + bgr_rows_top_down
+
+
+def set_screen(mock):
+    """Probe the capture path (call after load_config). --mock always advertises
+    a stdlib PNG backend. Real Windows advertises the GDI backend unconditionally
+    (whether a given frame succeeds is decided per-request); non-Windows real
+    mode has no capture path."""
+    global _SCREEN
+    if mock:
+        _SCREEN = {"session": "mock", "backends": ["mock"]}
+    elif IS_WINDOWS:
+        _SCREEN = {"session": "desktop", "backends": ["gdi"]}
+    else:
+        _SCREEN = None
+
+
+def screen_info():
+    """{available, session, backends, formats} or None when no capture path."""
+    if _SCREEN is None:
+        return None
+    return {"available": True, "session": _SCREEN["session"],
+            "backends": _SCREEN["backends"], "formats": ["image/jpeg"]}
+
+
+def _capture_bmp():
+    """Grab the whole virtual screen, downscale to SCREEN_WIDTH via StretchBlt,
+    and return (bmp_bytes, w, h) or None on any failure (secure desktop, no
+    session). Never raises. Pure GDI: no third-party capture lib."""
+    if not IS_WINDOWS:
+        return None
+    src_dc = mem_dc = dst_dc = None
+    src_bmp = dst_bmp = None
+    try:
+        _user32.GetSystemMetrics.restype = ctypes.c_int
+        vx = _user32.GetSystemMetrics(SM_XVIRTUALSCREEN)
+        vy = _user32.GetSystemMetrics(SM_YVIRTUALSCREEN)
+        vw = _user32.GetSystemMetrics(SM_CXVIRTUALSCREEN)
+        vh = _user32.GetSystemMetrics(SM_CYVIRTUALSCREEN)
+        if vw <= 0 or vh <= 0:
+            return None
+        # Downscale target: cap width at SCREEN_WIDTH, keep aspect (never upsize).
+        if vw > SCREEN_WIDTH:
+            dw = SCREEN_WIDTH
+            dh = max(1, int(round(vh * (SCREEN_WIDTH / float(vw)))))
+        else:
+            dw, dh = vw, vh
+
+        _user32.GetDC.restype = ctypes.c_void_p
+        _user32.GetDC.argtypes = [ctypes.c_void_p]
+        src_dc = _user32.GetDC(None)
+        if not src_dc:
+            return None
+        _gdi32.CreateCompatibleDC.restype = ctypes.c_void_p
+        _gdi32.CreateCompatibleDC.argtypes = [ctypes.c_void_p]
+        _gdi32.CreateCompatibleBitmap.restype = ctypes.c_void_p
+        _gdi32.CreateCompatibleBitmap.argtypes = [ctypes.c_void_p,
+                                                  ctypes.c_int, ctypes.c_int]
+        mem_dc = _gdi32.CreateCompatibleDC(src_dc)
+        dst_dc = _gdi32.CreateCompatibleDC(src_dc)
+        if not mem_dc or not dst_dc:
+            return None
+        src_bmp = _gdi32.CreateCompatibleBitmap(src_dc, vw, vh)
+        dst_bmp = _gdi32.CreateCompatibleBitmap(src_dc, dw, dh)
+        if not src_bmp or not dst_bmp:
+            return None
+        _gdi32.SelectObject.restype = ctypes.c_void_p
+        _gdi32.SelectObject.argtypes = [ctypes.c_void_p, ctypes.c_void_p]
+        _gdi32.SelectObject(mem_dc, src_bmp)
+        _gdi32.SelectObject(dst_dc, dst_bmp)
+        _gdi32.BitBlt.argtypes = [ctypes.c_void_p, ctypes.c_int, ctypes.c_int,
+                                  ctypes.c_int, ctypes.c_int, ctypes.c_void_p,
+                                  ctypes.c_int, ctypes.c_int, ctypes.c_uint32]
+        if not _gdi32.BitBlt(mem_dc, 0, 0, vw, vh, src_dc, vx, vy, SRCCOPY):
+            return None
+        _gdi32.SetStretchBltMode.argtypes = [ctypes.c_void_p, ctypes.c_int]
+        _gdi32.SetStretchBltMode(dst_dc, HALFTONE)
+        _gdi32.StretchBlt.argtypes = [
+            ctypes.c_void_p, ctypes.c_int, ctypes.c_int, ctypes.c_int,
+            ctypes.c_int, ctypes.c_void_p, ctypes.c_int, ctypes.c_int,
+            ctypes.c_int, ctypes.c_int, ctypes.c_uint32]
+        if not _gdi32.StretchBlt(dst_dc, 0, 0, dw, dh, mem_dc, 0, 0, vw, vh,
+                                 SRCCOPY):
+            return None
+        # Pull the downscaled bitmap out as top-down 24-bit BGR.
+        bmi = _BITMAPINFO()
+        bmi.bmiHeader.biSize = ctypes.sizeof(_BITMAPINFOHEADER)
+        bmi.bmiHeader.biWidth = dw
+        bmi.bmiHeader.biHeight = -dh   # negative => top-down
+        bmi.bmiHeader.biPlanes = 1
+        bmi.bmiHeader.biBitCount = 24
+        bmi.bmiHeader.biCompression = BI_RGB
+        row_stride = (dw * 3 + 3) & ~3
+        buf = ctypes.create_string_buffer(row_stride * dh)
+        _gdi32.GetDIBits.argtypes = [
+            ctypes.c_void_p, ctypes.c_void_p, ctypes.c_uint32, ctypes.c_uint32,
+            ctypes.c_void_p, ctypes.POINTER(_BITMAPINFO), ctypes.c_uint32]
+        scanned = _gdi32.GetDIBits(dst_dc, dst_bmp, 0, dh, buf,
+                                   ctypes.byref(bmi), DIB_RGB_COLORS)
+        if scanned == 0:
+            return None
+        return (_bmp_bytes(dw, dh, buf.raw), dw, dh)
+    except Exception:
+        return None
+    finally:
+        try:
+            if src_bmp:
+                _gdi32.DeleteObject.argtypes = [ctypes.c_void_p]
+                _gdi32.DeleteObject(src_bmp)
+            if dst_bmp:
+                _gdi32.DeleteObject(dst_bmp)
+            if mem_dc:
+                _gdi32.DeleteDC.argtypes = [ctypes.c_void_p]
+                _gdi32.DeleteDC(mem_dc)
+            if dst_dc:
+                _gdi32.DeleteDC(dst_dc)
+            if src_dc:
+                _user32.ReleaseDC.argtypes = [ctypes.c_void_p, ctypes.c_void_p]
+                _user32.ReleaseDC(None, src_dc)
+        except Exception:
+            pass
+
+
+# PowerShell that re-encodes a BMP ($env:CS_BMP_IN) to a JPEG
+# ($env:CS_JPG_OUT) using the built-in System.Drawing codec (WIC). Prints
+# "ok"/"err". Keeps JPEG encoding dependency-free (no PIL).
+_SCREEN_JPEG_PS = r"""
+$ErrorActionPreference = 'Stop'
+try {
+  Add-Type -AssemblyName System.Drawing
+  $img = [System.Drawing.Image]::FromFile($env:CS_BMP_IN)
+  try { $img.Save($env:CS_JPG_OUT, [System.Drawing.Imaging.ImageFormat]::Jpeg) }
+  finally { $img.Dispose() }
+  'ok'
+} catch { 'err' }
+"""
+
+
+def _bmp_to_jpeg(bmp):
+    """Re-encode BMP bytes to JPEG via the Windows System.Drawing codec. Returns
+    JPEG bytes or None. Never raises."""
+    bmp_path = jpg_path = None
+    try:
+        fd, bmp_path = tempfile.mkstemp(prefix="cs-scr-", suffix=".bmp")
+        with os.fdopen(fd, "wb") as f:
+            f.write(bmp)
+        fd, jpg_path = tempfile.mkstemp(prefix="cs-scr-", suffix=".jpg")
+        os.close(fd)
+        env = dict(os.environ)
+        env["CS_BMP_IN"] = bmp_path
+        env["CS_JPG_OUT"] = jpg_path
+        out = _run_powershell(_SCREEN_JPEG_PS, SCREEN_CAPTURE_TIMEOUT_S, env=env)
+        if not out or out.strip().lower() != "ok":
+            return None
+        with open(jpg_path, "rb") as f:
+            data = f.read(SCREEN_MAX_BYTES + 1)
+        if not data or len(data) > SCREEN_MAX_BYTES:
+            return None
+        return data if _sniff_image(data) == "image/jpeg" else None
+    except Exception:
+        return None
+    finally:
+        for p in (bmp_path, jpg_path):
+            if p:
+                try:
+                    os.remove(p)
+                except OSError:
+                    pass
+
+
+def real_screen_frame():
+    """One fresh JPEG frame as (data, "image/jpeg"), or None when capture is
+    blocked/failing (secure desktop, session-0). Single-flight + short cache so
+    concurrent clients share one capture (matches the Linux path). Never raises."""
+    if _SCREEN is None:
+        return None
+    now = time.monotonic()
+    if _SCREEN_CACHE["data"] is not None and now - _SCREEN_CACHE["ts"] < SCREEN_MIN_INTERVAL_S:
+        return (_SCREEN_CACHE["data"], _SCREEN_CACHE["mime"])
+    if not SCREEN_LOCK.acquire(blocking=False):
+        # Another capture is in flight; serve the last frame if we have one.
+        if _SCREEN_CACHE["data"] is not None:
+            return (_SCREEN_CACHE["data"], _SCREEN_CACHE["mime"])
+        SCREEN_LOCK.acquire()
+    try:
+        now = time.monotonic()
+        if _SCREEN_CACHE["data"] is not None and now - _SCREEN_CACHE["ts"] < SCREEN_MIN_INTERVAL_S:
+            return (_SCREEN_CACHE["data"], _SCREEN_CACHE["mime"])
+        cap = _capture_bmp()
+        if cap is None:
+            return None
+        bmp, _w, _h = cap
+        data = _bmp_to_jpeg(bmp)
+        if not data:
+            return None
+        _SCREEN_CACHE.update(ts=time.monotonic(), data=data, mime="image/jpeg")
+        return (data, "image/jpeg")
+    finally:
+        SCREEN_LOCK.release()
+
+
+_MOCK_SCREEN_N = 0
+
+
+def _encode_png(w, h, rows):
+    """Encode 8-bit RGBA scanlines (each `bytes` of length w*4) to PNG bytes.
+    Pure zlib + struct, no PIL (mirrors the Linux agent)."""
+    import zlib
+
+    def _chunk(tag, data):
+        body = tag + data
+        return (struct.pack(">I", len(data)) + body
+                + struct.pack(">I", zlib.crc32(body) & 0xffffffff))
+    ihdr = struct.pack(">IIBBBBB", w, h, 8, 6, 0, 0, 0)  # RGBA, no interlace
+    raw = b"".join(b"\x00" + r for r in rows)  # per-scanline filter byte 0
+    return (b"\x89PNG\r\n\x1a\n" + _chunk(b"IHDR", ihdr)
+            + _chunk(b"IDAT", zlib.compress(raw, 6)) + _chunk(b"IEND", b""))
+
+
+def mock_screen_frame():
+    """--mock: a small stdlib PNG with a moving band, so the app's preview works
+    off-box."""
+    global _MOCK_SCREEN_N
+    _MOCK_SCREEN_N += 1
+    w, h = 320, 180
+    band = (_MOCK_SCREEN_N * 12) % w
+    rows = []
+    for y in range(h):
+        row = bytearray()
+        for x in range(w):
+            r = 220 if abs(x - band) <= 6 else 30
+            row += bytes((r, (255 * y) // h, (255 * x) // w, 255))
+        rows.append(bytes(row))
+    return (_encode_png(w, h, rows), "image/png")
+
+
+# ---------------------------------------------------------------------------
+# Sleep timer + scheduled wake (/api/power/schedule|sleep|wake).
+#
+# The Windows analog of the Linux agent's threading.Timer suspend + RTC alarm.
+#   * sleep — an in-process one-shot threading.Timer firing the existing
+#             suspend/poweroff action; deliberately volatile (a restart clears
+#             it; the app detects that by polling). Identical to Linux.
+#   * wake  — a scheduled wake set with SetWaitableTimer(fResume=TRUE) on a
+#             DEDICATED daemon thread that blocks in WaitForSingleObject until
+#             the timer fires (the OS then resumes the machine from sleep). This
+#             mirrors the Linux RTC alarm's "survives the suspend" contract as
+#             closely as a user-mode agent can: the timer object lives as long
+#             as the agent process, so the wake holds across a suspend but NOT
+#             across an agent restart/reboot (documented; the app polls state).
+#
+# A waitable timer only resumes the box if the platform allows wake timers
+# (powercfg) and the agent process stays alive across the suspend — true for the
+# logon-triggered task the agent runs under. NEEDS ON-WINDOWS TESTING.
+# ---------------------------------------------------------------------------
+
+SLEEP_MIN_S, SLEEP_MAX_S = 60, 8 * 3600
+WAKE_MIN_S, WAKE_MAX_S = 120, 86100
+SLEEP_ACTIONS = ("suspend", "poweroff")
+
+POWER_MOCK = False          # set by set_power_schedule(mock)
+SLEEP_LOCK = threading.Lock()
+_SLEEP = {"timer": None, "action": None, "fire_at": 0.0}
+
+WAKE_LOCK = threading.Lock()
+# {"handle": HANDLE, "thread": Thread, "fire_at": epoch, "cancel": Event} or None
+_WAKE = None
+_MOCK_WAKE = {"fire_at": 0}
+
+
+def set_power_schedule(mock):
+    global POWER_MOCK
+    POWER_MOCK = mock
+
+
+def sleep_can_arm(action):
+    """(ok, error). The action must be a known sleep action present in ACTIONS.
+    Unlike Linux there is no sudoers gate (an interactive Windows user may
+    suspend/shutdown unprivileged), so presence in ACTIONS is sufficient."""
+    if action not in SLEEP_ACTIONS:
+        return (False, "unknown action")
+    if POWER_MOCK:
+        return (True, None)
+    if ACTIONS.get(action) is None:
+        return (False, "%s unavailable" % action)
+    return (True, None)
+
+
+def _sleep_info_locked():
+    if _SLEEP["timer"] is None:
+        return None
+    return {"action": _SLEEP["action"], "fire_at": int(_SLEEP["fire_at"]),
+            "remaining_s": max(0, int(_SLEEP["fire_at"] - time.time()))}
+
+
+def _sleep_cancel_locked():
+    if _SLEEP["timer"] is not None:
+        _SLEEP["timer"].cancel()
+    _SLEEP.update(timer=None, action=None, fire_at=0.0)
+
+
+def sleep_arm(delay_s, action):
+    """Arm a one-shot suspend/poweroff after delay_s, replacing any prior arm."""
+    with SLEEP_LOCK:
+        _sleep_cancel_locked()
+        fire_at = time.time() + delay_s
+
+        def _fire():
+            with SLEEP_LOCK:
+                if _SLEEP["timer"] is not timer:  # cancelled or superseded
+                    return
+                _SLEEP.update(timer=None, action=None, fire_at=0.0)
+            r = mock_action(action) if POWER_MOCK else real_action(action)
+            print("[sleep] fired %s: ok=%s" % (action, r.get("ok")), flush=True)
+
+        timer = threading.Timer(delay_s, _fire)
+        timer.daemon = True
+        _SLEEP.update(timer=timer, action=action, fire_at=fire_at)
+        timer.start()
+        return _sleep_info_locked()
+
+
+def sleep_cancel():
+    with SLEEP_LOCK:
+        _sleep_cancel_locked()
+
+
+def sleep_info():
+    with SLEEP_LOCK:
+        return _sleep_info_locked()
+
+
+def wake_available():
+    """True when a scheduled wake can be armed: --mock, or a real Windows box
+    (waitable timers are always present; whether the platform actually resumes
+    is a powercfg/BIOS concern the app surfaces to the user)."""
+    return POWER_MOCK or IS_WINDOWS
+
+
+if IS_WINDOWS:
+    # SetWaitableTimer / CreateWaitableTimerW signatures.
+    _kernel32.CreateWaitableTimerW.restype = ctypes.c_void_p
+    _kernel32.CreateWaitableTimerW.argtypes = [ctypes.c_void_p, ctypes.c_int,
+                                               ctypes.c_wchar_p]
+    _kernel32.SetWaitableTimer.argtypes = [
+        ctypes.c_void_p, ctypes.POINTER(ctypes.c_int64), ctypes.c_long,
+        ctypes.c_void_p, ctypes.c_void_p, ctypes.c_int]
+    _kernel32.WaitForSingleObject.argtypes = [ctypes.c_void_p, ctypes.c_uint32]
+    _kernel32.WaitForSingleObject.restype = ctypes.c_uint32
+
+
+def _wake_clear_locked():
+    global _WAKE
+    if _WAKE is not None:
+        _WAKE["cancel"].set()
+        if IS_WINDOWS and _WAKE.get("handle"):
+            try:
+                # CancelWaitableTimer then CloseHandle so the waiter unblocks.
+                _kernel32.CancelWaitableTimer(ctypes.c_void_p(_WAKE["handle"]))
+                _kernel32.CloseHandle(ctypes.c_void_p(_WAKE["handle"]))
+            except Exception:
+                pass
+        _WAKE = None
+
+
+def wake_set(at_epoch):
+    """Arm a resume-from-sleep at wall-time at_epoch via SetWaitableTimer with
+    fResume=TRUE, replacing any prior wake. Returns True on success. A dedicated
+    daemon thread blocks on the timer so the object stays referenced until it
+    fires or is cancelled."""
+    global _WAKE
+    if POWER_MOCK:
+        with WAKE_LOCK:
+            _MOCK_WAKE["fire_at"] = int(at_epoch)
+        print("[wake] mock alarm at %d" % int(at_epoch), flush=True)
+        return True
+    if not IS_WINDOWS:
+        return False
+    with WAKE_LOCK:
+        _wake_clear_locked()
+        try:
+            handle = _kernel32.CreateWaitableTimerW(None, 1, None)  # manual reset
+            if not handle:
+                return False
+            # Negative 100ns relative time, or a positive absolute FILETIME. Use
+            # an ABSOLUTE due-time so clock skew between now and fire is exact:
+            # FILETIME epoch is 1601-01-01; 116444736000000000 100ns ticks to
+            # the Unix epoch.
+            due_ft = int((at_epoch + 11644473600) * 10000000)
+            due = ctypes.c_int64(due_ft)
+            # fResume=TRUE (last arg) => wake the system from sleep when it fires.
+            ok = _kernel32.SetWaitableTimer(
+                ctypes.c_void_p(handle), ctypes.byref(due), 0, None, None, 1)
+            if not ok:
+                _kernel32.CloseHandle(ctypes.c_void_p(handle))
+                return False
+        except Exception:
+            return False
+
+        cancel = threading.Event()
+
+        def _waiter(h=handle, ev=cancel, fire_at=int(at_epoch)):
+            # Block until the timer fires (resuming the box) or we're cancelled.
+            try:
+                _kernel32.WaitForSingleObject(ctypes.c_void_p(h), 0xFFFFFFFF)
+            except Exception:
+                pass
+            if not ev.is_set():
+                print("[wake] fired at %d" % fire_at, flush=True)
+            with WAKE_LOCK:
+                global _WAKE
+                if _WAKE is not None and _WAKE.get("handle") == h:
+                    try:
+                        _kernel32.CloseHandle(ctypes.c_void_p(h))
+                    except Exception:
+                        pass
+                    _WAKE = None
+
+        t = threading.Thread(target=_waiter, daemon=True, name="wake-timer")
+        _WAKE = {"handle": handle, "thread": t, "fire_at": int(at_epoch),
+                 "cancel": cancel}
+        t.start()
+        return True
+
+
+def wake_clear():
+    """Cancel the scheduled wake (idempotent)."""
+    if POWER_MOCK:
+        with WAKE_LOCK:
+            _MOCK_WAKE["fire_at"] = 0
+        return True
+    with WAKE_LOCK:
+        _wake_clear_locked()
+    return True
+
+
+def wake_info():
+    """Current scheduled wake as {fire_at, remaining_s} (wall time) or None."""
+    if POWER_MOCK:
+        fa = _MOCK_WAKE["fire_at"]
+        if fa and fa > time.time():
+            return {"fire_at": int(fa), "remaining_s": int(fa - time.time())}
+        return None
+    with WAKE_LOCK:
+        if _WAKE is None:
+            return None
+        fa = _WAKE["fire_at"]
+    if fa and fa > time.time():
+        return {"fire_at": int(fa), "remaining_s": int(fa - time.time())}
+    return None
+
+
+def power_schedule_info():
+    """The /api/power/schedule payload (matches the Linux shape)."""
+    return {
+        "sleep": sleep_info(),
+        "wake": wake_info(),
+        "wake_available": wake_available(),
+        "limits": {"sleep_min_s": SLEEP_MIN_S, "sleep_max_s": SLEEP_MAX_S,
+                   "wake_min_s": WAKE_MIN_S, "wake_max_s": WAKE_MAX_S},
+    }
 
 
 # ---------------------------------------------------------------------------
@@ -2782,10 +3779,22 @@ class Handler(BaseHTTPRequestHandler):
             self.wfile.write(body)
         self._log(code, started)
 
+    # Chatty routes whose success (2xx) is sampled so a ~1-2 fps poll can't
+    # scroll real diagnostics out of the journal's window. Errors and the first
+    # hit of a burst still log.
+    _SAMPLED_PATHS = ("/api/screen/frame",)
+    _sample_last = {}  # path -> monotonic time of last logged success
+    _SAMPLE_EVERY_S = 15
+
     def _log(self, code, started):
         dur_ms = int((time.monotonic() - started) * 1000)
         # Never log query strings: /ws/gamepad carries ?token=<secret>.
         path = self.path.split("?", 1)[0]
+        if path in self._SAMPLED_PATHS and code < 400:
+            now = time.monotonic()
+            if now - Handler._sample_last.get(path, 0) < self._SAMPLE_EVERY_S:
+                return  # suppress this frame; a recent one already logged
+            Handler._sample_last[path] = now
         if "?" in self.path:
             path += "?<redacted>"
         print("%s %s %s %d %dms" % (
@@ -2809,6 +3818,29 @@ class Handler(BaseHTTPRequestHandler):
         self.end_headers()
         if body:
             self.wfile.write(body)
+        self._log(code, started)
+
+    def _send_bytes(self, code, data, content_type, started,
+                    cache_control=None, extra_headers=None):
+        """Write a raw binary body (album art, screen frames) with an EXACT
+        Content-Length (keep-alive safety under HTTP/1.1) and the same CORS
+        headers as _send."""
+        self.send_response(code)
+        self.send_header("Access-Control-Allow-Origin", "*")
+        self.send_header("Access-Control-Allow-Headers",
+                         "Authorization, Content-Type")
+        self.send_header("Access-Control-Allow-Methods",
+                         "GET, POST, DELETE, OPTIONS")
+        self.send_header("Content-Type", content_type)
+        self.send_header("Content-Length", str(len(data)))
+        if cache_control:
+            self.send_header("Cache-Control", cache_control)
+        if extra_headers:
+            for k, v in extra_headers.items():
+                self.send_header(k, v)
+        self.end_headers()
+        if data:
+            self.wfile.write(data)
         self._log(code, started)
 
     def _authorized(self):
@@ -2896,6 +3928,55 @@ class Handler(BaseHTTPRequestHandler):
                     self._send(404, {"error": "not found"}, started)
                 else:
                     self._send(200, info, started)
+            elif path == "/api/media":
+                # Probe-and-appear: 404 when SMTC is unavailable so the app
+                # hides the Now Playing card; 200 with an empty list when idle.
+                info = mock_smtc_info() if self.mock else smtc_info()
+                if info is None:
+                    self._send(404, {"error": "not found"}, started)
+                else:
+                    self._send(200, info, started)
+            elif path == "/api/media/art":
+                # Album art bytes for a player's CURRENT track. The client passes
+                # only player id + art_key (a cache-buster) — never a path.
+                q = parse_qs(parsed.query)
+                player = (q.get("player") or [""])[0]
+                key = (q.get("k") or [""])[0]
+                art = None
+                if player:
+                    art = (mock_smtc_art(player, key) if self.mock
+                           else smtc_art(player, key))
+                if art is None:
+                    self._send(404, {"error": "not found"}, started)
+                else:
+                    data, mime = art
+                    self._send_bytes(200, data, mime, started,
+                                     cache_control="private, max-age=3600")
+            elif path == "/api/screen":
+                # Probe-and-appear: 404 when no capture path so the app hides the
+                # preview card; a body describes the session + backends.
+                info = ({"available": True, "session": "mock",
+                         "backends": ["mock"], "formats": ["image/png"]}
+                        if self.mock else screen_info())
+                if info is None:
+                    self._send(404, {"error": "not found"}, started)
+                else:
+                    self._send(200, info, started)
+            elif path == "/api/screen/frame":
+                # One fresh frame. Single-flight + short cache cap captures
+                # server-side; no-store so frames (may show passwords) are never
+                # cached. High-frequency, so _log samples it.
+                frame = mock_screen_frame() if self.mock else real_screen_frame()
+                if frame is None:
+                    self._send(503, {"error": "capture failed"}, started)
+                else:
+                    data, mime = frame
+                    self._send_bytes(200, data, mime, started,
+                                     cache_control="no-store")
+            elif path == "/api/power/schedule":
+                # Always 200: reports the (volatile) sleep timer + the scheduled
+                # wake. Old agents 404 -> the app hides the rows.
+                self._send(200, power_schedule_info(), started)
             else:
                 self._send(404, {"error": "not found"}, started)
         except BrokenPipeError:
@@ -2959,6 +4040,108 @@ class Handler(BaseHTTPRequestHandler):
                 self._send(200, result, started)
                 return
 
+            # POST /api/tv/volume: absolute volume {"level": 0-100, "target":
+            # "box"|"tv"}. Box converges on the Core Audio endpoint scalar; the
+            # Windows panel has no absolute-set/read frame, so target "tv" 404s
+            # (no backend). Checked before the generic /api/tv/<op> route.
+            if path == "/api/tv/volume":
+                try:
+                    req = json.loads(body.decode("utf-8")) if body else {}
+                    if not isinstance(req, dict):
+                        raise ValueError("body must be a JSON object")
+                    lvl = int(req.get("level"))
+                except (ValueError, TypeError, UnicodeDecodeError):
+                    self._send(400, {"error": "level must be an integer"},
+                               started)
+                    return
+                if not 0 <= lvl <= 100:
+                    self._send(400, {"error": "level must be 0-100"}, started)
+                    return
+                tgt = req.get("target") or "box"
+                if tgt == "tv":
+                    # No Windows TV backend can set an absolute level.
+                    self._send(404, {"error": "no tv volume backend"}, started)
+                    return
+                if not soft_available():
+                    self._send(404, {"error": "no box volume backend"}, started)
+                    return
+                result = ({"ok": True, "exit_code": 0, "level": lvl,
+                           "stdout": "[mock] box volume %d" % lvl,
+                           "stderr": "", "duration_ms": 100}
+                          if self.mock else soft_set_volume(lvl))
+                self._send(200, result, started)
+                return
+
+            # POST /api/media/<player>/<op>: SMTC transport. Checked before the
+            # generic /api/tv/ route (both live under /api/, distinct prefixes).
+            mprefix = "/api/media/"
+            if path.startswith(mprefix):
+                rest = path[len(mprefix):]
+                parts = rest.rsplit("/", 1)
+                if len(parts) != 2 or not parts[0] or not parts[1]:
+                    self._send(404, {"error": "not found"}, started)
+                    return
+                player, op = unquote(parts[0]), parts[1]
+                if op not in SMTC_OPS:
+                    self._send(404, {"error": "unknown media op"}, started)
+                    return
+                result = (mock_smtc_op(player, op) if self.mock
+                          else real_smtc_op(player, op))
+                if result is None:
+                    self._send(404, {"error": "unknown player"}, started)
+                    return
+                self._send(200, result, started)
+                return
+
+            # POST /api/power/sleep: arm a delayed suspend/poweroff.
+            if path == "/api/power/sleep":
+                try:
+                    req = json.loads(body.decode("utf-8")) if body else {}
+                    if not isinstance(req, dict):
+                        raise ValueError
+                    delay_s = int(req.get("delay_s"))
+                    action = req.get("action")
+                except (ValueError, TypeError, UnicodeDecodeError):
+                    self._send(400,
+                               {"error": "delay_s (int) and action required"},
+                               started)
+                    return
+                if not SLEEP_MIN_S <= delay_s <= SLEEP_MAX_S:
+                    self._send(400, {"error": "delay_s out of range"}, started)
+                    return
+                ok, err = sleep_can_arm(action)
+                if not ok:
+                    self._send(400, {"error": err}, started)
+                    return
+                self._send(200, {"sleep": sleep_arm(delay_s, action)}, started)
+                return
+
+            # POST /api/power/wake: set a scheduled wake to an absolute time.
+            if path == "/api/power/wake":
+                if not wake_available():
+                    self._send(409, {"error": "no wake backend"}, started)
+                    return
+                try:
+                    req = json.loads(body.decode("utf-8")) if body else {}
+                    at = int(req.get("at"))
+                except (ValueError, TypeError, UnicodeDecodeError):
+                    self._send(400, {"error": "at (epoch seconds) required"},
+                               started)
+                    return
+                now = time.time()
+                if not now + WAKE_MIN_S <= at <= now + WAKE_MAX_S:
+                    self._send(400, {"error": "at must be %d-%ds out"
+                                     % (WAKE_MIN_S, WAKE_MAX_S)}, started)
+                    return
+                if not wake_set(at):
+                    # 503 not 500: the platform/driver refusing the wake timer is
+                    # a transient/unsupported-backend condition, not an agent bug
+                    # (matches the capture-failed convention elsewhere).
+                    self._send(503, {"error": "wake set failed"}, started)
+                    return
+                self._send(200, {"wake": wake_info()}, started)
+                return
+
             tprefix = "/api/tv/"
             if path.startswith(tprefix):
                 op = path[len(tprefix):]
@@ -3010,6 +4193,17 @@ class Handler(BaseHTTPRequestHandler):
                     self._send(404, {"error": "unknown launcher"}, started)
                     return
                 self._send(200, {"ok": True}, started)
+                return
+
+            # DELETE /api/power/sleep: cancel the armed sleep timer (idempotent).
+            if path == "/api/power/sleep":
+                sleep_cancel()
+                self._send(200, {"sleep": None}, started)
+                return
+            # DELETE /api/power/wake: clear the scheduled wake (idempotent).
+            if path == "/api/power/wake":
+                wake_clear()
+                self._send(200, {"wake": None}, started)
                 return
 
             self._send(404, {"error": "not found"}, started)
@@ -3343,6 +4537,8 @@ def main():
     load_config(args.config)
     _inject_steam_action(args.mock)
     set_tv(args.mock)
+    set_screen(args.mock)
+    set_power_schedule(args.mock)
     if IS_WINDOWS and not args.mock:
         start_load_sampler()
     port = args.port if args.port is not None else (CONFIG_PORT or DEFAULT_PORT)

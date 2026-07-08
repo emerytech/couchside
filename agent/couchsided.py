@@ -1150,6 +1150,69 @@ def _steam_libraries(root):
     return libs
 
 
+# The set of steamapps library dirs changes rarely (only when the user adds a
+# Steam library), but re-reading libraryfolders.vdf + realpath'ing every entry
+# on each launch and each downloads poll is wasteful. Cache the discovered
+# library list per root for _STEAM_LIB_TTL seconds. Best-effort: never raises.
+_STEAM_LIB_TTL = 30.0
+_STEAM_LIB_CACHE = {"root": None, "at": 0.0, "val": None}
+_STEAM_LIB_LOCK = threading.Lock()
+
+
+def _steam_libraries_cached(root):
+    """_steam_libraries(root) memoized for _STEAM_LIB_TTL seconds. Keyed on the
+    root path so a changed root invalidates the cache. A lost race just
+    recomputes, which is harmless."""
+    now = time.monotonic()
+    with _STEAM_LIB_LOCK:
+        c = _STEAM_LIB_CACHE
+        if (c["val"] is not None and c["root"] == root
+                and now - c["at"] <= _STEAM_LIB_TTL):
+            return list(c["val"])
+    libs = _steam_libraries(root)
+    with _STEAM_LIB_LOCK:
+        _STEAM_LIB_CACHE.update(root=root, at=now, val=list(libs))
+    return libs
+
+
+def _steam_game_installed(appid):
+    """True iff appid names a real (non-tool) Steam game with a manifest on disk.
+
+    Validates against the SPECIFIC appmanifest_<appid>.acf in each library
+    instead of globbing + parsing every manifest, so the launch path is O(#
+    libraries) file stats rather than O(# installed games) parses. appid must
+    be all-digits (caller-validated) so the filename can't escape the dir.
+    Read-only, best-effort; never raises.
+    """
+    try:
+        if not (isinstance(appid, str) and appid.isdigit()):
+            return False
+        root = _steam_root()
+        if root is None:
+            return False
+        for steamapps in _steam_libraries_cached(root):
+            mf = os.path.join(steamapps, "appmanifest_%s.acf" % appid)
+            try:
+                if not os.path.isfile(mf):
+                    continue
+                with open(mf, "r", encoding="utf-8", errors="replace") as f:
+                    fields = _parse_acf(f.read())
+            except OSError:
+                continue
+            except Exception:
+                continue
+            mid = fields.get("appid")
+            name = fields.get("name")
+            if mid != appid or not name:
+                continue
+            if _is_steam_tool(appid, name):
+                continue
+            return True
+        return False
+    except Exception:
+        return False
+
+
 def _parse_acf(text, keys=("appid", "name")):
     """Extract simple quoted top-level keys from an appmanifest .acf blob.
 
@@ -1197,7 +1260,7 @@ def discover_steam_games():
         if root is None:
             return []
         games = {}  # appid(str) -> name
-        for steamapps in _steam_libraries(root):
+        for steamapps in _steam_libraries_cached(root):
             try:
                 manifests = glob.glob(os.path.join(steamapps, "appmanifest_*.acf"))
             except Exception:
@@ -1268,7 +1331,7 @@ def steam_downloads():
             return []
         keys = ("appid", "name", "StateFlags", "BytesToDownload", "BytesDownloaded")
         found = {}  # appid(str) -> dict
-        for steamapps in _steam_libraries(root):
+        for steamapps in _steam_libraries_cached(root):
             try:
                 manifests = glob.glob(os.path.join(steamapps, "appmanifest_*.acf"))
             except Exception:
@@ -1374,11 +1437,12 @@ def _launcher_argv(launcher_id):
         appid = launcher_id[len("steam:"):]
         if not appid.isdigit():
             return None
-        # Only launch a Steam game we actually discovered (matches the listed
-        # launchers); an unknown/uninstalled appid is not a launcher.
-        for game in discover_steam_games():
-            if game["id"] == launcher_id:
-                return ["steam", "steam://rungameid/%s" % appid]
+        # Only launch a Steam game we actually have installed (matches the
+        # listed launchers); an unknown/uninstalled appid is not a launcher.
+        # Validate the SPECIFIC appmanifest_<appid>.acf rather than globbing +
+        # parsing every manifest on each launch.
+        if _steam_game_installed(appid):
+            return ["steam", "steam://rungameid/%s" % appid]
         return None
     if _valid_launcher_id(launcher_id):
         for l in LAUNCHERS:
@@ -1478,87 +1542,100 @@ def _new_launcher_id(label, existing_ids):
     return candidate
 
 
-def _write_config_launchers(new_launchers):
+def _write_config_launchers_locked(new_launchers):
     """Persist LAUNCHERS = new_launchers to CONFIG_PATH atomically.
+
+    CONFIG_LOCK MUST already be held by the caller — this is the body of the
+    read-modify-write and callers (add_launcher/delete_launcher) hold the lock
+    across their cap-check + build + this write so a concurrent writer can't
+    clobber from a stale LAUNCHERS snapshot.
 
     Reads the current config.json (or starts from a minimal skeleton if it is
     missing/unreadable/malformed), replaces the "launchers" key, and writes it
     back via a temp file + os.replace so a crash never leaves a truncated
-    config that would wedge the Restart=always daemon. Serialized by
-    CONFIG_LOCK. Raises on I/O failure (the caller maps it to a 500).
+    config that would wedge the Restart=always daemon. Raises on I/O failure
+    (the caller maps it to a 500).
     """
-    with CONFIG_LOCK:
+    raw = None
+    try:
+        with open(CONFIG_PATH, "r", encoding="utf-8") as f:
+            raw = json.load(f)
+    except (OSError, ValueError):
         raw = None
+    if not isinstance(raw, dict):
+        # No usable config on disk: build a minimal one that still round-
+        # trips through _parse_config (units/actions are required there).
+        raw = {
+            "units": [{"name": name, "scope": scope}
+                      for name, scope in WATCHLIST],
+            "actions": {
+                aid: {"danger": spec["danger"], "cmd": list(spec["cmd"]),
+                      "label": spec["label"],
+                      "description": spec["description"],
+                      "user_env": spec["user_env"],
+                      "detached": spec["detached"]}
+                for aid, spec in ACTIONS.items()
+            },
+        }
+    raw["launchers"] = [
+        {"id": l["id"], "label": l["label"], "cmd": list(l["cmd"])}
+        for l in new_launchers
+    ]
+    directory = os.path.dirname(CONFIG_PATH) or "."
+    fd, tmp = tempfile.mkstemp(prefix=".couchside-config-", dir=directory)
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as f:
+            json.dump(raw, f, indent=2)
+            f.write("\n")
+            f.flush()
+            os.fsync(f.fileno())
+        os.replace(tmp, CONFIG_PATH)
+    except Exception:
         try:
-            with open(CONFIG_PATH, "r", encoding="utf-8") as f:
-                raw = json.load(f)
-        except (OSError, ValueError):
-            raw = None
-        if not isinstance(raw, dict):
-            # No usable config on disk: build a minimal one that still round-
-            # trips through _parse_config (units/actions are required there).
-            raw = {
-                "units": [{"name": name, "scope": scope}
-                          for name, scope in WATCHLIST],
-                "actions": {
-                    aid: {"danger": spec["danger"], "cmd": list(spec["cmd"]),
-                          "label": spec["label"],
-                          "description": spec["description"],
-                          "user_env": spec["user_env"],
-                          "detached": spec["detached"]}
-                    for aid, spec in ACTIONS.items()
-                },
-            }
-        raw["launchers"] = [
-            {"id": l["id"], "label": l["label"], "cmd": list(l["cmd"])}
-            for l in new_launchers
-        ]
-        directory = os.path.dirname(CONFIG_PATH) or "."
-        fd, tmp = tempfile.mkstemp(prefix=".couchside-config-", dir=directory)
-        try:
-            with os.fdopen(fd, "w", encoding="utf-8") as f:
-                json.dump(raw, f, indent=2)
-                f.write("\n")
-                f.flush()
-                os.fsync(f.fileno())
-            os.replace(tmp, CONFIG_PATH)
-        except Exception:
-            try:
-                os.unlink(tmp)
-            except OSError:
-                pass
-            raise
-        # Only mutate the in-memory list once the write succeeded.
-        global LAUNCHERS
-        LAUNCHERS = new_launchers
+            os.unlink(tmp)
+        except OSError:
+            pass
+        raise
+    # Only mutate the in-memory list once the write succeeded.
+    global LAUNCHERS
+    LAUNCHERS = new_launchers
 
 
 def add_launcher(label, cmd):
     """Validate + persist a new custom launcher; return its Launcher dict.
 
     Raises ConfigError on invalid input (mapped to HTTP 400 by the caller).
+
+    The whole read-modify-write (cap-check, id-derivation from the current set,
+    build, persist) runs under CONFIG_LOCK so two concurrent adds can't both
+    snapshot the same LAUNCHERS and clobber each other's write.
     """
     if not isinstance(label, str) or not label.strip() or len(label) > MAX_LABEL_LEN:
         raise ConfigError("label must be a non-empty string")
     if not _valid_cmd(cmd):
         raise ConfigError("cmd must be a non-empty list of non-empty strings")
-    if len(LAUNCHERS) >= MAX_LAUNCHERS:
-        raise ConfigError("too many launchers (max %d)" % MAX_LAUNCHERS)
     label = label.strip()
-    existing = {l["id"] for l in LAUNCHERS}
-    lid = _new_launcher_id(label, existing)
-    new = list(LAUNCHERS) + [{"id": lid, "label": label, "cmd": list(cmd)}]
-    _write_config_launchers(new)
+    with CONFIG_LOCK:
+        if len(LAUNCHERS) >= MAX_LAUNCHERS:
+            raise ConfigError("too many launchers (max %d)" % MAX_LAUNCHERS)
+        existing = {l["id"] for l in LAUNCHERS}
+        lid = _new_launcher_id(label, existing)
+        new = list(LAUNCHERS) + [{"id": lid, "label": label, "cmd": list(cmd)}]
+        _write_config_launchers_locked(new)
     return {"id": lid, "label": label, "kind": "custom"}
 
 
 def delete_launcher(launcher_id):
     """Remove a custom launcher by id; persist. Returns True, or False if the
-    id is a valid custom id that isn't present. Raises on persist failure."""
-    if not any(l["id"] == launcher_id for l in LAUNCHERS):
-        return False
-    new = [l for l in LAUNCHERS if l["id"] != launcher_id]
-    _write_config_launchers(new)
+    id is a valid custom id that isn't present. Raises on persist failure.
+
+    Presence-check + build + persist run under CONFIG_LOCK together so a
+    concurrent add/delete can't clobber from a stale LAUNCHERS snapshot."""
+    with CONFIG_LOCK:
+        if not any(l["id"] == launcher_id for l in LAUNCHERS):
+            return False
+        new = [l for l in LAUNCHERS if l["id"] != launcher_id]
+        _write_config_launchers_locked(new)
     return True
 
 
@@ -4276,6 +4353,17 @@ class Handler(BaseHTTPRequestHandler):
     server_version = APP_NAME + "/" + VERSION
     protocol_version = "HTTP/1.1"
 
+    # Per-connection socket read timeout. socketserver's setup() applies this
+    # via connection.settimeout(), so a stalled or idle keep-alive client can't
+    # pin a worker thread forever (a timed-out read raises and the thread ends).
+    timeout = 30
+
+    # Hard cap on a request body we will read into memory. Enforced BEFORE any
+    # body read (see _read_body) so an unauthenticated LAN client can't force a
+    # huge allocation via a large Content-Length. 8 MiB comfortably covers the
+    # only bodies this agent accepts (tiny launcher/volume/power JSON).
+    MAX_BODY_BYTES = 8 * 1024 * 1024
+
     # set by main()
     token = ""
     token_file = None   # path to re-read the current token for /pair
@@ -4584,11 +4672,27 @@ class Handler(BaseHTTPRequestHandler):
         self._send_bytes(200, body, "image/jpeg", started,
                          extra_headers={"Cache-Control": "public, max-age=604800"})
 
+    def _body_too_large(self):
+        """True iff the declared Content-Length exceeds MAX_BODY_BYTES.
+
+        Checked from the header alone, BEFORE any read, so a huge declared body
+        is rejected without allocating for it. Callers that hit this must reply
+        413 and close the connection (the body is never drained)."""
+        try:
+            n = int(self.headers.get("Content-Length") or 0)
+        except ValueError:
+            return False
+        return n > self.MAX_BODY_BYTES
+
     def _read_body(self):
         """Read and return the request body bytes (always drains it).
 
         Draining is mandatory: on an HTTP/1.1 keep-alive connection any leftover
-        body bytes would be parsed as the next request line and desync it.
+        body bytes would be parsed as the next request line and desync it. The
+        size is capped at MAX_BODY_BYTES; callers must gate on _body_too_large()
+        first so an oversize body is rejected before we ever read it. A
+        Content-Length above the cap that slips through here is clamped and the
+        connection marked for close, so we still never allocate unbounded.
         """
         try:
             n = int(self.headers.get("Content-Length") or 0)
@@ -4596,24 +4700,43 @@ class Handler(BaseHTTPRequestHandler):
             n = 0
         if n <= 0:
             return b""
+        if n > self.MAX_BODY_BYTES:
+            # Defensive: normal paths gate on _body_too_large() before reading.
+            self.close_connection = True
+            n = self.MAX_BODY_BYTES
         return self.rfile.read(n)
 
     def do_POST(self):
         started = time.monotonic()
-        # Always drain the body first (see _read_body), even on the paths that
-        # ignore it, so keep-alive connections never desync.
-        body = self._read_body()
         try:
             parsed = urlparse(self.path)
             path = parsed.path.rstrip("/")
 
             if not path.startswith("/api/"):
+                # Unknown route: authorize-agnostic 404, but drain the body so a
+                # keep-alive connection doesn't desync (unless it's oversize).
+                if self._body_too_large():
+                    self.close_connection = True
+                    self._send(413, {"error": "request body too large"}, started)
+                    return
+                self._read_body()
                 self._send(404, {"error": "not found"}, started)
                 return
 
+            # Authorize BEFORE reading the body: an unauthenticated client must
+            # not be able to make us allocate for its body. Reject + close so the
+            # undrained body can't desync a keep-alive connection.
             if not self._authorized():
+                self.close_connection = True
                 self._send(401, {"error": "unauthorized"}, started)
                 return
+
+            # Authorized: now enforce the size cap, then read the body.
+            if self._body_too_large():
+                self.close_connection = True
+                self._send(413, {"error": "request body too large"}, started)
+                return
+            body = self._read_body()
 
             prefix = "/api/actions/"
             if path.startswith(prefix):
@@ -4822,20 +4945,32 @@ class Handler(BaseHTTPRequestHandler):
 
     def do_DELETE(self):
         started = time.monotonic()
-        # Drain any body for keep-alive safety (DELETE bodies are unusual but
-        # a client may send Content-Length: 0 or a stray body).
-        self._read_body()
         try:
             parsed = urlparse(self.path)
             path = parsed.path.rstrip("/")
 
             if not path.startswith("/api/"):
+                if self._body_too_large():
+                    self.close_connection = True
+                    self._send(413, {"error": "request body too large"}, started)
+                    return
+                self._read_body()  # drain for keep-alive safety
                 self._send(404, {"error": "not found"}, started)
                 return
 
+            # Authorize BEFORE reading the body (see do_POST).
             if not self._authorized():
+                self.close_connection = True
                 self._send(401, {"error": "unauthorized"}, started)
                 return
+
+            # DELETE bodies are unusual but a client may send one; cap + drain it
+            # for keep-alive safety now that we've authorized.
+            if self._body_too_large():
+                self.close_connection = True
+                self._send(413, {"error": "request body too large"}, started)
+                return
+            self._read_body()
 
             lprefix = "/api/launchers/"
             if path.startswith(lprefix):

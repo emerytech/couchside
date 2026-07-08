@@ -4,10 +4,19 @@ name: Notify Decky plugin of agent changes
 # and cuts a fresh plugin release immediately, instead of waiting for that repo's
 # daily safety-net schedule.
 #
-# OPTIONAL SETUP for the instant path: add a repo secret DECKY_DISPATCH_TOKEN — a
+# INSTANT SYNC IS OPT-IN AND REQUIRES A SECRET.
+#   - WITH the DECKY_DISPATCH_TOKEN repo secret set: this job fires a
+#     repository_dispatch at couchside-decky the moment the agent changes on
+#     main, so the plugin rebuilds within minutes.
+#   - WITHOUT the secret (the default): this job is a deliberate, harmless no-op.
+#     It does NOT fail the run. The couchside-decky repo's own DAILY scheduled
+#     job still picks up this change and rebuilds the plugin within 24h, so the
+#     plugin never goes stale — you just don't get the instant rebuild.
+#
+# To enable the instant path, add a repo secret named DECKY_DISPATCH_TOKEN — a
 # fine-grained PAT with "Contents: read/write" (or classic `repo`) scope on
-# emerytech/couchside-decky. Without it this job is a harmless no-op and the
-# couchside-decky daily schedule still keeps the plugin in sync within 24h.
+# emerytech/couchside-decky. This workflow does NOT create or assume any token;
+# it reads the secret if present and otherwise skips cleanly.
 
 on:
   push:
@@ -24,8 +33,10 @@ jobs:
           TOKEN: ${{ secrets.DECKY_DISPATCH_TOKEN }}
         run: |
           if [ -z "$TOKEN" ]; then
-            echo "DECKY_DISPATCH_TOKEN not set — skipping instant sync."
-            echo "couchside-decky's daily schedule will pick up this change within 24h."
+            echo "SKIP: repo secret DECKY_DISPATCH_TOKEN is not set."
+            echo "Instant sync is OPT-IN and needs that secret; this run is a clean no-op (not a failure)."
+            echo "The couchside-decky repo's own DAILY schedule will still rebuild the plugin within 24h."
+            echo "To enable instant sync, add DECKY_DISPATCH_TOKEN (see the comment at the top of this file)."
             exit 0
           fi
           curl -fsSL -X POST \
