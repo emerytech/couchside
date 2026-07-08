@@ -149,6 +149,8 @@ All responses carry permissive CORS headers; `OPTIONS` returns 204.
 | `/api/media` | GET | Now-playing across MPRIS players: `{"available":true,"players":[{id,identity,status,title,artist,album,position_ms,length_ms,rate,can_seek,can_go_next,can_go_previous,can_play,can_pause,art,art_key}]}`. Read over the user session bus via `busctl` (ships with systemd). 404 when there is no session bus / `busctl`; 200 with an empty list when idle. Playing players first, capped at 8. Added in 2.8.0 |
 | `/api/media/<player>/<op>` | POST | Transport op; `<op>` ∈ `play pause play_pause next previous stop seek`. `seek` body `{"position_ms":int}` (absolute; `SetPosition` with a `Seek`-delta fallback). Unknown op / dead player → 404. ActionResult shape |
 | `/api/media/art?player=<id>&k=<art_key>` | GET | Album-art bytes for the player's current track. Serves only a `file://` image the player advertised, under a realpath allowlist, image-sniffed, 2 MiB cap; `http(s)` art is never fetched. The client passes a player id + cache-key, never a path. `Cache-Control: private, max-age=3600`. 404 when no servable art |
+| `/api/screen` | GET | Screen-capture probe: `{"available":true,"session":"gamescope"\|"desktop","backends":[...],"formats":["image/jpeg"]}`. 404 when no capture path (no gamescope socket / no `spectacle`, or no downscaler). Added in 2.8.0 |
+| `/api/screen/frame` | GET | One freshly-captured frame, downscaled to a ~960px JPEG (`Cache-Control: no-store`). gamescope Game Mode via `gamescopectl screenshot` (async write, polled to completion); KDE Desktop via `spectacle`; downscaled with ImageMagick/ffmpeg. A single-flight lock + 500 ms server cache cap captures at ~2/s no matter how many clients poll; 503 on capture failure. The client passes no path; `?t=` is ignored server-side |
 
 **Media players:** any MPRIS-speaking app works (Spotify, Firefox/Chromium, VLC, mpv, …). **Kodi** needs its MPRIS add-on enabled to appear here.
 
@@ -342,12 +344,14 @@ success, so the app's TV strip can be built without any hardware.
   actions and system-journal reads will then fail).
 - **Allowlists, not shells**: journal reads are limited to the configured
   unit list; actions are a fixed config table run with argument lists
-  (`shell=False`), so no arbitrary commands. The only file the agent serves is
-  the album-art image a running media player advertises — validated against a
-  small realpath allowlist (`/tmp`, `$XDG_RUNTIME_DIR`, `~/.cache`, `~/.var`,
-  `~/.mozilla`), image-sniffed, 2 MiB cap; the client passes a player id, never
-  a path. The `lines` parameter is clamped; errors return brief JSON, never
-  tracebacks.
+  (`shell=False`), so no arbitrary commands. No route takes a client-supplied
+  file path. The agent serves image bytes on exactly two routes: the album-art
+  image a running media player advertises (validated against a small realpath
+  allowlist — `/tmp`, `$XDG_RUNTIME_DIR`, `~/.cache`, `~/.var`, `~/.mozilla` —
+  image-sniffed, 2 MiB cap; client passes a player id) and an on-demand screen
+  frame captured to a tmpfs file that is deleted immediately after
+  (rate-clamped to ~2/s, 12 MiB cap; client passes no path). The `lines`
+  parameter is clamped; errors return brief JSON, never tracebacks.
 - **LAN-only, plain HTTP**: there is no TLS. Keep port 8787 on your local
   network and do **not** port-forward it. Anyone with the token on your LAN
   controls the box.

@@ -29,6 +29,7 @@ import tempfile
 import termios
 import threading
 import time
+import zlib
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import urlparse, parse_qs, unquote
 
@@ -2533,6 +2534,235 @@ def mock_mpris_art(player, art_key):
 
 
 # ---------------------------------------------------------------------------
+# Live screen preview: grab one composited frame on demand, downscale to a
+# small JPEG, serve over the bearer port (reuses _send_bytes, §3c). gamescope
+# (Game Mode) does NOT implement wlr-screencopy, so grim fails — the primary
+# path is `gamescopectl screenshot <path>`, which writes a 4K PNG
+# ASYNCHRONOUSLY (~1.4s on a real Bazzite box), downscaled to a ~60KB 960px
+# JPEG via ImageMagick/ffmpeg. KDE Desktop sessions use spectacle. All
+# invocations + timings verified on-box.
+# ---------------------------------------------------------------------------
+
+SCREEN_MIN_INTERVAL_S = 0.5       # server floor: at most ~2 captures/sec, any client count
+SCREEN_CAPTURE_TIMEOUT_S = 8      # per-step ceiling (gamescopectl async write + downscale)
+SCREEN_MAX_BYTES = 12 * 1024 * 1024
+SCREEN_WIDTH = 960                # downscale target width
+SCREEN_LOCK = threading.Lock()    # single-flight: never stack captures
+_SCREEN = None                    # capability dict or None; set by set_screen
+_SCREEN_CACHE = {"ts": 0.0, "data": None, "mime": None}  # 500 ms frame cache
+
+
+def _screen_downscaler():
+    """(argv-builder, name) for a PNG->JPEG downscaler, or (None, None). Prefers
+    ImageMagick, then ffmpeg — both ship on gaming boxes; keeps the agent off PIL
+    (absent on stock SteamOS)."""
+    if shutil.which("magick"):
+        return (lambda src, dst: ["magick", src, "-resize", "%dx" % SCREEN_WIDTH,
+                                  "-quality", "80", dst], "magick")
+    if shutil.which("convert"):
+        return (lambda src, dst: ["convert", src, "-resize", "%dx" % SCREEN_WIDTH,
+                                  "-quality", "80", dst], "convert")
+    if shutil.which("ffmpeg"):
+        return (lambda src, dst: ["ffmpeg", "-y", "-loglevel", "error", "-i", src,
+                                  "-vf", "scale=%d:-1" % SCREEN_WIDTH, "-q:v", "6", dst],
+                "ffmpeg")
+    return (None, None)
+
+
+def set_screen(mock):
+    """Detect a capture path at startup: gamescopectl when a gamescope socket
+    exists, else spectacle for a KDE desktop. Requires a downscaler for real
+    frames (a raw 4K PNG is too big to stream)."""
+    global _SCREEN
+    if mock:
+        _SCREEN = {"session": "mock", "backends": ["mock"], "dscale": None}
+        return
+    dbuild, _ = _screen_downscaler()
+    if dbuild is None:
+        _SCREEN = None
+        return
+    gs = [s for s in _wayland_display_sockets() if s.startswith("gamescope-")]
+    backends = []
+    if shutil.which("gamescopectl") and gs:
+        backends.append("gamescopectl")
+    if shutil.which("spectacle"):
+        backends.append("spectacle")
+    if not backends:
+        _SCREEN = None
+        return
+    _SCREEN = {"session": "gamescope" if gs else "desktop", "backends": backends,
+               "dscale": dbuild, "gs_socket": gs[0] if gs else None}
+
+
+def _screen_env():
+    env = _user_env()
+    if _SCREEN and _SCREEN.get("gs_socket"):
+        env["WAYLAND_DISPLAY"] = _SCREEN["gs_socket"]
+    else:
+        socks = _wayland_display_sockets()
+        if len(socks) == 1:
+            env["WAYLAND_DISPLAY"] = socks[0]
+    env.setdefault("DISPLAY", ":0")
+    return env
+
+
+def _png_complete(path):
+    """True when a PNG is fully written: >=100 bytes and ends in the IEND chunk.
+    gamescopectl writes async, so the file appears before it is complete."""
+    try:
+        if os.path.getsize(path) < 100:
+            return False
+        with open(path, "rb") as f:
+            f.seek(-8, os.SEEK_END)
+            return f.read(8) == b"IEND\xaeB`\x82"
+    except OSError:
+        return False
+
+
+def _grab_gamescopectl(env, outdir):
+    """`gamescopectl screenshot <png>` then poll for the async write to settle."""
+    png = os.path.join(outdir, "frame.png")
+    try:
+        os.unlink(png)
+    except OSError:
+        pass
+    try:
+        subprocess.run(["gamescopectl", "screenshot", png], env=env,
+                       timeout=SCREEN_CAPTURE_TIMEOUT_S,
+                       stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    except Exception:
+        return None
+    deadline = time.monotonic() + SCREEN_CAPTURE_TIMEOUT_S
+    while time.monotonic() < deadline:
+        if os.path.exists(png):
+            s1 = os.path.getsize(png)
+            time.sleep(0.1)
+            if s1 == os.path.getsize(png) and _png_complete(png):
+                return png
+        time.sleep(0.1)
+    return None
+
+
+def _grab_spectacle(env, outdir):
+    """`spectacle -b -n -o <png>` (background, no notify) for a KDE desktop."""
+    png = os.path.join(outdir, "frame.png")
+    try:
+        os.unlink(png)
+    except OSError:
+        pass
+    try:
+        subprocess.run(["spectacle", "-b", "-n", "-o", png], env=env,
+                       timeout=SCREEN_CAPTURE_TIMEOUT_S,
+                       stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    except Exception:
+        return None
+    return png if _png_complete(png) else None
+
+
+def real_screen_frame():
+    """Capture one frame -> (jpeg_bytes, "image/jpeg") or None. Single-flight +
+    500 ms cache so any number of pollers cause at most ~2 captures/sec."""
+    if _SCREEN is None:
+        return None
+    now = time.monotonic()
+    if _SCREEN_CACHE["data"] is not None and now - _SCREEN_CACHE["ts"] < SCREEN_MIN_INTERVAL_S:
+        return (_SCREEN_CACHE["data"], _SCREEN_CACHE["mime"])
+    if not SCREEN_LOCK.acquire(blocking=False):
+        # A capture is already running: serve the last frame if we have one,
+        # else wait for the in-flight capture rather than starting a second.
+        if _SCREEN_CACHE["data"] is not None:
+            return (_SCREEN_CACHE["data"], _SCREEN_CACHE["mime"])
+        SCREEN_LOCK.acquire()
+    try:
+        now = time.monotonic()
+        if _SCREEN_CACHE["data"] is not None and now - _SCREEN_CACHE["ts"] < SCREEN_MIN_INTERVAL_S:
+            return (_SCREEN_CACHE["data"], _SCREEN_CACHE["mime"])
+        env = _screen_env()
+        outdir = os.path.join(XDG_RUNTIME_DIR, "couchside-screen")
+        try:
+            os.makedirs(outdir, mode=0o700, exist_ok=True)
+        except OSError:
+            return None
+        png = os.path.join(outdir, "frame.png")
+        jpg = os.path.join(outdir, "frame.jpg")
+        try:
+            grabbed = None
+            for backend in _SCREEN["backends"]:
+                if backend == "gamescopectl":
+                    grabbed = _grab_gamescopectl(env, outdir)
+                elif backend == "spectacle":
+                    grabbed = _grab_spectacle(env, outdir)
+                if grabbed:
+                    break
+            if not grabbed:
+                return None
+            data = None
+            try:
+                subprocess.run(_SCREEN["dscale"](grabbed, jpg), env=env,
+                               timeout=SCREEN_CAPTURE_TIMEOUT_S,
+                               stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+                with open(jpg, "rb") as f:
+                    data = f.read(SCREEN_MAX_BYTES + 1)
+            except Exception:
+                return None
+            if not data or len(data) > SCREEN_MAX_BYTES:
+                return None
+            _SCREEN_CACHE.update(ts=time.monotonic(), data=data, mime="image/jpeg")
+            return (data, "image/jpeg")
+        finally:
+            # Always clean tmpfs, even when the grab itself failed (no partial
+            # frame.png left behind on a box that never captures successfully).
+            for p in (png, jpg):
+                try:
+                    os.unlink(p)
+                except OSError:
+                    pass
+    finally:
+        SCREEN_LOCK.release()
+
+
+def screen_info():
+    """{available, session, backends, formats} or None when no capture path."""
+    if _SCREEN is None:
+        return None
+    return {"available": True, "session": _SCREEN["session"],
+            "backends": _SCREEN["backends"], "formats": ["image/jpeg"]}
+
+
+def _encode_png(w, h, rows):
+    """Encode 8-bit RGBA scanlines (each `bytes` of length w*4) to PNG bytes.
+    Pure zlib + struct, no PIL (§3e); also copied to the Windows GDI port."""
+    def _chunk(tag, data):
+        body = tag + data
+        return (struct.pack(">I", len(data)) + body
+                + struct.pack(">I", zlib.crc32(body) & 0xffffffff))
+    ihdr = struct.pack(">IIBBBBB", w, h, 8, 6, 0, 0, 0)  # RGBA, no interlace
+    raw = b"".join(b"\x00" + r for r in rows)  # per-scanline filter byte 0
+    return (b"\x89PNG\r\n\x1a\n" + _chunk(b"IHDR", ihdr)
+            + _chunk(b"IDAT", zlib.compress(raw, 6)) + _chunk(b"IEND", b""))
+
+
+_MOCK_SCREEN_N = 0
+
+
+def mock_screen_frame():
+    """--mock: a small stdlib PNG with a moving band, so the app's preview works
+    on macOS without a compositor."""
+    global _MOCK_SCREEN_N
+    _MOCK_SCREEN_N += 1
+    w, h = 320, 180
+    band = (_MOCK_SCREEN_N * 12) % w
+    rows = []
+    for y in range(h):
+        row = bytearray()
+        for x in range(w):
+            r = 220 if abs(x - band) <= 6 else 30
+            row += bytes((r, (255 * y) // h, (255 * x) // w, 255))
+        rows.append(bytes(row))
+    return (_encode_png(w, h, rows), "image/png")
+
+
+# ---------------------------------------------------------------------------
 # Virtual gamepad: evdev/uinput constants and pure-stdlib uinput driver
 # ---------------------------------------------------------------------------
 
@@ -3897,11 +4127,23 @@ class Handler(BaseHTTPRequestHandler):
             self.wfile.write(body)
         self._log(code, started)
 
+    # Chatty routes whose success (2xx) is sampled so a ~1-2 fps poll can't
+    # scroll real diagnostics out of the journal's window (§3f). Errors and the
+    # first hit of a burst still log.
+    _SAMPLED_PATHS = ("/api/screen/frame",)
+    _sample_last = {}  # path -> monotonic time of last logged success
+    _SAMPLE_EVERY_S = 15
+
     def _log(self, code, started):
         dur_ms = int((time.monotonic() - started) * 1000)
         # Never log query strings: /ws/gamepad carries ?token=<secret>, and
         # this stdout lands in journald (which /api/journal serves back out).
         path = self.path.split("?", 1)[0]
+        if path in self._SAMPLED_PATHS and code < 400:
+            now = time.monotonic()
+            if now - Handler._sample_last.get(path, 0) < self._SAMPLE_EVERY_S:
+                return  # suppress this frame; a recent one already logged
+            Handler._sample_last[path] = now
         if "?" in self.path:
             path += "?<redacted>"
         print("%s %s %s %d %dms" % (
@@ -4072,6 +4314,27 @@ class Handler(BaseHTTPRequestHandler):
                     data, mime = art
                     self._send_bytes(200, data, mime, started,
                                      cache_control="private, max-age=3600")
+            elif path == "/api/screen":
+                # Probe-and-appear: 404 when no capture path so the app hides the
+                # preview card; a body describes the session + backends.
+                info = {"available": True, "session": "mock",
+                        "backends": ["mock"], "formats": ["image/png"]} \
+                    if self.mock else screen_info()
+                if info is None:
+                    self._send(404, {"error": "not found"}, started)
+                else:
+                    self._send(200, info, started)
+            elif path == "/api/screen/frame":
+                # One fresh frame. Single-flight + 500ms cache cap captures at
+                # ~2/s server-side; no-store so frames (may show passwords) are
+                # never cached. High-frequency, so _log samples it.
+                frame = mock_screen_frame() if self.mock else real_screen_frame()
+                if frame is None:
+                    self._send(503, {"error": "capture failed"}, started)
+                else:
+                    data, mime = frame
+                    self._send_bytes(200, data, mime, started,
+                                     cache_control="no-store")
             else:
                 self._send(404, {"error": "not found"}, started)
         except BrokenPipeError:
@@ -4657,6 +4920,7 @@ def main():
     _inject_suspend_action(args.mock)
     set_tv(args.mock)
     set_mpris(args.mock)
+    set_screen(args.mock)
     port = args.port if args.port is not None else (CONFIG_PORT or DEFAULT_PORT)
 
     Handler.token = load_token(args)
@@ -4675,6 +4939,8 @@ def main():
     print("tv: %s" % ("%s (%s)" % (info["backend"], info["adapter"])
                       if info else "unavailable"), flush=True)
     print("mpris: %s" % ("available" if BUSCTL else "unavailable"), flush=True)
+    print("screen: %s" % (("%s (%s)" % (_SCREEN["session"], ",".join(_SCREEN["backends"])))
+                          if _SCREEN else "unavailable"), flush=True)
     try:
         server.serve_forever()
     except KeyboardInterrupt:

@@ -3,6 +3,7 @@ import { Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
 
 import { Gated } from '@/components/Gated';
 import { NowPlayingCard } from '@/components/NowPlayingCard';
+import { ScreenPreview } from '@/components/ScreenPreview';
 import { TabScreen } from '@/components/TabScreen';
 import { useLockOrientation } from '@/hooks/useLockOrientation';
 import { usePoll } from '@/hooks/usePoll';
@@ -205,6 +206,9 @@ function ConsoleScreen() {
             </Card>
           </>
         )}
+
+        {/* Live screen preview (probe-and-appear; hidden when no capture path) */}
+        <ScreenPreview />
 
         {/* Units */}
         {configured && (

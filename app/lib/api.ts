@@ -176,6 +176,14 @@ export type MediaPlayer = {
 
 export type Media = { available: boolean; players: MediaPlayer[] };
 
+/** Screen-capture capability of the box (probe-and-appear). */
+export type ScreenInfo = {
+  available: boolean;
+  session: 'gamescope' | 'desktop' | 'mock' | null;
+  backends: string[];
+  formats: string[];
+};
+
 export type LaunchResult = {
   ok: boolean;
   /** Present when ok is false. */
@@ -354,6 +362,28 @@ export async function mediaArtSource(
   const url = `http://${host}:${settings.port}/api/media/art?player=${encodeURIComponent(
     player,
   )}&k=${encodeURIComponent(artKey)}`;
+  try {
+    const res = await fetch(url, { headers: { Authorization: `Bearer ${settings.token}` } });
+    if (!res.ok) return null;
+    const type = res.headers.get('Content-Type') || 'image/jpeg';
+    const buf = await res.arrayBuffer();
+    if (buf.byteLength === 0) return null;
+    return `data:${type};base64,${base64FromArrayBuffer(buf)}`;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Fetch one live screen-preview frame from the resolved host (§3b) with bearer
+ * auth, as a base64 data: URI for <Image>. Inlined (never a raw <Image> URL)
+ * because the URL can't carry the token and frames are no-store — a frame may
+ * show a password prompt, so nothing is written to Fresco's disk cache. null on
+ * failure or 503 (capture failed). `t` cache-busts each frame.
+ */
+export async function screenFrameSource(settings: ConnSettings): Promise<string | null> {
+  const host = resolveEffectiveHost(settings);
+  const url = `http://${host}:${settings.port}/api/screen/frame?t=${Date.now()}`;
   try {
     const res = await fetch(url, { headers: { Authorization: `Bearer ${settings.token}` } });
     if (!res.ok) return null;
@@ -700,6 +730,15 @@ export const api = {
       timeoutMs: 8000,
       body,
     });
+  },
+
+  /**
+   * Screen-capture capability. Probe-and-appear: resolves null on 404 (agent
+   * < 2.8 or no capture path) so the preview card hides. Frames come from
+   * screenFrameSource(), not this method.
+   */
+  screenInfo(settings: ConnSettings): Promise<ScreenInfo | null> {
+    return probeOrNull(request<ScreenInfo>(settings, '/api/screen', { timeoutMs: 8000 }));
   },
 };
 
