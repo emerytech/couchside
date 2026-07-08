@@ -3132,7 +3132,10 @@ class Handler(BaseHTTPRequestHandler):
                 return
             entry["device"] = device
             print("[gamepad] connected (%s)" % device.name, flush=True)
-            ws_send_json(conn, {"t": "hello", "dev": device.name})
+            # Windows types arbitrary unicode directly via KEYEVENTF_UNICODE,
+            # so it always advertises full-text capability (no paste needed).
+            ws_send_json(conn, {"t": "hello", "dev": device.name,
+                                "text": "unicode"})
 
             conn.settimeout(60.0)
             buf = bytearray()

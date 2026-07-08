@@ -19,7 +19,10 @@
  *   -- keyboard (v2) --
  *   {"t":"kt","text":S}                type a string
  *   {"t":"k","key":NAME}              a single special key
- * Server -> client: {"t":"hello","dev":...} | {"t":"pong"} | {"t":"err","msg":...}
+ * Server -> client: {"t":"hello","dev":...,"text":"unicode"|"ascii"} |
+ *   {"t":"pong"} | {"t":"err","msg":...}
+ *   The hello `text` field advertises how much of a typed string the agent can
+ *   deliver; sendText() strips non-typeable chars when it is not "unicode".
  */
 import { Settings } from './settings';
 
@@ -119,6 +122,8 @@ export class GamepadClient {
   private ws: WebSocket | null = null;
   private status: GamepadStatus = 'closed';
   private dev: string | null = null;
+  /** Text capability from the hello frame ('unicode'|'ascii'); null until known. */
+  private textCaps: 'unicode' | 'ascii' | null = null;
   private listener: GamepadStatusListener | null = null;
 
   // Input-injection paused state, signalled by the server (Windows agent):
@@ -357,10 +362,27 @@ export class GamepadClient {
 
   // ---------- keyboard (v2) ----------
 
-  /** Type a string (printable ASCII). Server maps each char to KEY_* codes. */
+  /**
+   * Type a string. Smart-quote / dash / ellipsis / NBSP autocorrect artifacts
+   * are ALWAYS normalized to ASCII (they are never user intent, and this routes
+   * the common case through the reliable per-key path on every agent version).
+   * When the agent did not advertise unicode support, anything the ASCII keymap
+   * cannot type is stripped, so an old agent never receives an unmappable char
+   * (which previously dropped the whole WebSocket).
+   */
   sendText(text: string): void {
-    if (!text) return;
-    this.sendRaw({ t: 'kt', text });
+    let s = text
+      .replace(/[‘’]/g, "'") // smart single quotes
+      .replace(/[“”]/g, '"') // smart double quotes
+      .replace(/[–—]/g, '-') // en/em dash
+      .replace(/…/g, '...') // ellipsis
+      .replace(/\u00a0/g, ' '); // non-breaking space
+    if (this.textCaps !== 'unicode') {
+      // Keep printable ASCII plus tab/newline; drop everything else.
+      s = s.replace(/[^\x20-\x7e\t\n]/g, '');
+    }
+    if (!s) return;
+    this.sendRaw({ t: 'kt', text: s });
   }
 
   /** A single special key press+release (backspace, enter, arrows, …). */
@@ -394,7 +416,7 @@ export class GamepadClient {
       // pending, so ignore events from a socket we have already superseded.
       // (Same guard in onerror/onclose below.)
       if (ws !== this.ws) return;
-      let msg: { t?: string; dev?: string; msg?: string };
+      let msg: { t?: string; dev?: string; msg?: string; text?: string };
       try {
         msg = JSON.parse(String(ev.data));
       } catch {
@@ -403,6 +425,15 @@ export class GamepadClient {
       if (msg.t === 'hello') {
         this.attempt = 0;
         this.dev = typeof msg.dev === 'string' ? msg.dev : null;
+        // Text capability: an explicit hello field wins; otherwise default by
+        // device — old Windows agents (ViGEm) already type full unicode via
+        // KEYEVENTF_UNICODE, old Linux agents are ASCII-only.
+        this.textCaps =
+          msg.text === 'unicode' || msg.text === 'ascii'
+            ? msg.text
+            : this.dev === 'ViGEm X360 pad'
+              ? 'unicode'
+              : 'ascii';
         this.setStatus('connected', this.dev);
         this.startPing();
       } else if (msg.t === 'err') {
@@ -514,9 +545,12 @@ export class GamepadClient {
   private setStatus(status: GamepadStatus, dev: string | null): void {
     this.status = status;
     this.dev = dev;
-    // A blocked hint only makes sense while connected; clear it otherwise so a
-    // stale banner can't outlive the connection.
-    if (status !== 'connected') this.setInputBlocked(false, null);
+    // A blocked hint (and the negotiated text caps) only make sense while
+    // connected; clear them otherwise so nothing stale outlives the connection.
+    if (status !== 'connected') {
+      this.setInputBlocked(false, null);
+      this.textCaps = null;
+    }
     if (this.listener) this.listener(status, dev);
   }
 

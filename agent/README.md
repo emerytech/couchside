@@ -160,7 +160,10 @@ Auth is the `token` query parameter, checked with `hmac.compare_digest`
 **before** the handshake response: a bad/missing token gets a plain HTTP
 `401` and the socket is closed (no WebSocket handshake). On success the agent
 completes the RFC6455 handshake, creates the uinput device, and sends
-`{"t":"hello","dev":"Microsoft X-Box 360 pad"}` (`dev:"mock"` in `--mock`).
+`{"t":"hello","dev":"Microsoft X-Box 360 pad","text":"unicode"|"ascii"}`
+(`dev:"mock"` in `--mock`). The `text` field advertises how much of a typed
+string the agent can deliver (see **Text input** below); older agents omit it
+and the app defaults by device name.
 
 **One-connection rule:** only one gamepad connection is active at a time. A
 new valid connection *replaces* the old one: the old uinput device is
@@ -179,7 +182,7 @@ the mouse/keyboard messages (v2):
 | `{"t":"m","dx":I,"dy":I}` | Relative mouse move (virtual mouse) |
 | `{"t":"mb","k":"l"\|"r"\|"m","v":0\|1}` | Mouse button down/up |
 | `{"t":"mw","dy":I}` | Mouse wheel |
-| `{"t":"kt","text":"…"}` | Type Unicode text — layout-independent (virtual keyboard) |
+| `{"t":"kt","text":"…"}` | Type text (virtual keyboard) — see **Text input** |
 | `{"t":"k","key":K}` | One special key; `K` ∈ `backspace enter tab esc space up down left right home end` |
 | `{"t":"ping"}` | Keepalive → `{"t":"pong"}` |
 
@@ -187,6 +190,25 @@ Server to client: `hello` (after device ready), `pong`, and
 `{"t":"err","msg":"..."}` followed by close on any error (bad message,
 uinput failure). WS ping (opcode 0x9) is answered with pong (0xA). Idle
 sockets time out after ~60 s.
+
+### Text input
+
+A `{"t":"kt"}` frame never closes the session: characters the ASCII keymap can
+type go through the uinput keyboard; any run of genuinely non-ASCII text
+(emoji, CJK, accents) is delivered by setting the wayland clipboard
+(`wl-copy`, text on stdin) and sending Ctrl+V. Before pressing Ctrl+V the agent
+reads the clipboard back with `wl-paste` and only proceeds if it matches — so a
+failed or wrong-session copy can never paste a stale clipboard. The clipboard is
+cleared a few seconds later.
+
+The `hello` frame's `text` capability is `unicode` only when a **safe** paste
+path exists: `wl-copy` **and** `wl-paste` are installed **and** exactly one
+wayland session socket is present (two sessions make the target ambiguous). Else
+it is `ascii`, and the app strips non-typeable characters client-side. Stock
+SteamOS has no `wl-clipboard` (→ `ascii`); it is common on Bazzite (→ `unicode`).
+The app always normalizes autocorrect artifacts (smart quotes, em dash,
+ellipsis, NBSP) to ASCII regardless, so the common paste-from-notes case types
+reliably on every agent version.
 
 ### uinput notes
 

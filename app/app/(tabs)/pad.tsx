@@ -817,7 +817,10 @@ function PadScreen() {
       )}
 
       {mode === 'remote' ? (
-        <RemoteView client={client} settings={settings} />
+        <>
+          <RemoteView client={client} settings={settings} />
+          {keyboardBar}
+        </>
       ) : mode === 'swipe' ? (
         <>
           {/* Apple-TV-remote style: big swipe/tap surface + three big buttons */}
@@ -1069,6 +1072,7 @@ function PadScreen() {
               <Stick onMove={stickMove('r')} onRelease={stickRelease('r')} />
             </View>
           </View>
+          {keyboardBar}
         </>
       )}
     </View>

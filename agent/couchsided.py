@@ -2236,6 +2236,7 @@ KEY_MINUS, KEY_EQUAL, KEY_BACKSPACE, KEY_TAB = 12, 13, 14, 15
 KEY_Q, KEY_W, KEY_E, KEY_R, KEY_T, KEY_Y = 16, 17, 18, 19, 20, 21
 KEY_U, KEY_I, KEY_O, KEY_P = 22, 23, 24, 25
 KEY_LEFTBRACE, KEY_RIGHTBRACE, KEY_ENTER = 26, 27, 28
+KEY_LEFTCTRL = 29  # for the Ctrl+V paste chord (non-ASCII text delivery)
 KEY_A, KEY_S, KEY_D, KEY_F, KEY_G, KEY_H = 30, 31, 32, 33, 34, 35
 KEY_J, KEY_K, KEY_L, KEY_SEMICOLON = 36, 37, 38, 39
 KEY_APOSTROPHE, KEY_GRAVE, KEY_LEFTSHIFT, KEY_BACKSLASH = 40, 41, 42, 43
@@ -2326,16 +2327,19 @@ SPECIAL_KEYS = {
 }
 
 # All KEY_* codes the virtual keyboard may emit (declared at device create).
+# KEY_LEFTCTRL is included for the Ctrl+V paste chord even though no char maps
+# to it, else the uinput device won't declare the capability and emit fails.
 KEYBOARD_CODES = sorted(
     {code for code, _shift in CHAR_KEYMAP.values()}
     | set(SPECIAL_KEYS.values())
-    | {KEY_LEFTSHIFT}
+    | {KEY_LEFTSHIFT, KEY_LEFTCTRL}
 )
 
 # Names for mock logging of keyboard/mouse EV_KEY events.
 _KEY_CODE_NAMES = {
     KEY_ESC: "KEY_ESC", KEY_BACKSPACE: "KEY_BACKSPACE", KEY_TAB: "KEY_TAB",
     KEY_ENTER: "KEY_ENTER", KEY_SPACE: "KEY_SPACE", KEY_LEFTSHIFT: "KEY_LEFTSHIFT",
+    KEY_LEFTCTRL: "KEY_LEFTCTRL",
     KEY_UP: "KEY_UP", KEY_DOWN: "KEY_DOWN", KEY_LEFT: "KEY_LEFT",
     KEY_RIGHT: "KEY_RIGHT", KEY_HOME: "KEY_HOME", KEY_END: "KEY_END",
     KEY_MINUS: "KEY_MINUS", KEY_EQUAL: "KEY_EQUAL", KEY_LEFTBRACE: "KEY_LEFTBRACE",
@@ -2800,19 +2804,12 @@ def keyboard_events(msg):
         text = msg.get("text")
         if not isinstance(text, str):
             raise ValueError("kt text must be a string")
-        events = []
-        for ch in text:
-            entry = CHAR_KEYMAP.get(ch)
-            if entry is None:
-                raise ValueError("unsupported character %r" % (ch,))
-            code, shift = entry
-            if shift:
-                events.append((EV_KEY, KEY_LEFTSHIFT, 1))
-            events.append((EV_KEY, code, 1))
-            events.append((EV_KEY, code, 0))
-            if shift:
-                events.append((EV_KEY, KEY_LEFTSHIFT, 0))
-        return events
+        # Tolerant: unmappable chars are skipped, never raised. A single smart
+        # quote / emoji used to raise here and kill the whole WS session.
+        # Genuine non-ASCII is delivered via the paste path in
+        # Handler._handle_kt, which intercepts 'kt' before this decoder; this
+        # stays a safe fallback if 'kt' is ever routed straight through.
+        return _type_events(text)
     if t == "k":
         key = msg.get("key")
         if key not in SPECIAL_KEYS:
@@ -2820,6 +2817,154 @@ def keyboard_events(msg):
         code = SPECIAL_KEYS[key]
         return [(EV_KEY, code, 1), (EV_KEY, code, 0)]
     raise ValueError("unknown keyboard message type %r" % (t,))
+
+
+def _type_events(text):
+    """Uinput events to type `text`, skipping any char the ASCII keymap can't
+    produce (tolerant — never raises). Non-typeable chars are handled elsewhere
+    via paste; here they are simply omitted."""
+    events = []
+    for ch in text:
+        entry = CHAR_KEYMAP.get(ch)
+        if entry is None:
+            continue
+        code, shift = entry
+        if shift:
+            events.append((EV_KEY, KEY_LEFTSHIFT, 1))
+        events.append((EV_KEY, code, 1))
+        events.append((EV_KEY, code, 0))
+        if shift:
+            events.append((EV_KEY, KEY_LEFTSHIFT, 0))
+    return events
+
+
+def _split_typeable(text):
+    """Split text into ordered ('type'|'paste', chunk) runs by whether each
+    char is in CHAR_KEYMAP. Typeable runs go through uinput; paste runs go
+    through the clipboard (unicode delivery)."""
+    runs = []
+    cur, buf = None, []
+    for ch in text:
+        kind = "type" if ch in CHAR_KEYMAP else "paste"
+        if kind != cur:
+            if buf:
+                runs.append((cur, "".join(buf)))
+            cur, buf = kind, [ch]
+        else:
+            buf.append(ch)
+    if buf:
+        runs.append((cur, "".join(buf)))
+    return runs
+
+
+# Bounds for one 'kt' frame, so a giant or pathologically-alternating string
+# can't tie up the session's reader thread (each paste run costs ~2 subprocesses
+# + a settle sleep). A real typed message is tiny; these are generous.
+_KT_MAX_CHARS = 4096
+_KT_MAX_PASTE_RUNS = 8
+
+# Ctrl+V chord as uinput events (press ctrl, tap v, release ctrl).
+_CTRL_V_EVENTS = [
+    (EV_KEY, KEY_LEFTCTRL, 1),
+    (EV_KEY, KEY_V, 1),
+    (EV_KEY, KEY_V, 0),
+    (EV_KEY, KEY_LEFTCTRL, 0),
+]
+
+
+def _wayland_sockets():
+    """Non-lock wayland-* sockets in XDG_RUNTIME_DIR (best-effort, never raises)."""
+    try:
+        return [e for e in os.listdir(XDG_RUNTIME_DIR)
+                if e.startswith("wayland-") and not e.endswith(".lock")]
+    except OSError:
+        return []
+
+
+def _paste_available():
+    """True when a SAFE clipboard-paste path exists: wl-copy AND wl-paste are
+    present AND exactly one wayland session socket exists. The single-socket
+    requirement is a safety gate — with two sessions, wl-copy could set the
+    clipboard on one while Ctrl+V lands in the other (pasting a stale/foreign
+    clipboard, e.g. a password), so we decline (ascii-degrade) rather than risk
+    it. Delivery is additionally verified per-paste via wl-paste read-back."""
+    if shutil.which("wl-copy") is None or shutil.which("wl-paste") is None:
+        return False
+    return len(_wayland_sockets()) == 1
+
+
+def _text_caps(mock):
+    """Capability advertised in the hello frame: 'unicode' when we can deliver
+    arbitrary text (via paste), else 'ascii' so the app strips non-typeable
+    chars client-side. --mock always claims unicode."""
+    return "unicode" if (mock or _paste_available()) else "ascii"
+
+
+def _paste_log_once(entry, msg):
+    """Log a paste diagnostic at most once per WS session."""
+    if not entry.get("_paste_logged"):
+        entry["_paste_logged"] = True
+        print("[keyboard] %s" % msg, flush=True)
+
+
+def _schedule_clipboard_clear(entry, env, delay=3.0):
+    """Clear the wayland clipboard a few seconds after a paste, so pasted text
+    (possibly sensitive) does not linger. Generation-guarded: a newer paste
+    bumps the counter and cancels this clear (that paste owns the clipboard and
+    schedules its own)."""
+    gen = entry.get("_paste_gen", 0) + 1
+    entry["_paste_gen"] = gen
+
+    def _clear():
+        if entry.get("_paste_gen") != gen:
+            return
+        try:
+            subprocess.run(["wl-copy", "--clear"], env=env, timeout=2,
+                           stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        except Exception:
+            pass
+
+    threading.Timer(delay, _clear).start()
+
+
+def clipboard_paste(text, kbd, mock, entry):
+    """Deliver non-ASCII `text` by setting the wayland clipboard and sending
+    Ctrl+V on the session keyboard device. Returns True on a delivered paste.
+
+    Safety: wl-copy receives the text on STDIN (never argv — process cmdlines
+    are world-readable and could leak a password). After copying we read the
+    clipboard back with wl-paste; only if it matches do we press Ctrl+V, so a
+    failed/again-wrong-socket copy can never paste a stale clipboard. On the
+    first hard failure the paste path is marked dead for the session."""
+    if mock:
+        print("[mock] paste %d chars" % len(text), flush=True)
+        return True
+    if entry.get("_paste_dead"):
+        return False
+    env = _session_env()
+    try:
+        subprocess.run(["wl-copy"], input=text.encode("utf-8"), env=env,
+                       timeout=2, check=True,
+                       stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        time.sleep(0.05)  # let the compositor take ownership of the selection
+        rb = subprocess.run(["wl-paste", "-n"], env=env, timeout=2,
+                            stdout=subprocess.PIPE, stderr=subprocess.DEVNULL)
+    except Exception as e:
+        entry["_paste_dead"] = True
+        _paste_log_once(entry, "paste unavailable (%s); non-ASCII dropped" % e)
+        return False
+    if rb.returncode != 0 or rb.stdout.decode("utf-8", "replace") != text:
+        # The compositor did not accept our clipboard on this socket: do NOT
+        # Ctrl+V (would paste whatever was there before). Drop this chunk.
+        _paste_log_once(entry, "clipboard read-back mismatch; non-ASCII dropped")
+        return False
+    try:
+        kbd.emit(_CTRL_V_EVENTS)
+    except Exception as e:
+        _paste_log_once(entry, "Ctrl+V emit failed: %s" % e)
+        return False
+    _schedule_clipboard_clear(entry, env)
+    return True
 
 
 # ---------------------------------------------------------------------------
@@ -3759,7 +3904,8 @@ class Handler(BaseHTTPRequestHandler):
                 return
             entry["device"] = device
             print("[gamepad] connected (%s)" % device.name, flush=True)
-            ws_send_json(conn, {"t": "hello", "dev": device.name})
+            ws_send_json(conn, {"t": "hello", "dev": device.name,
+                                "text": _text_caps(self.mock)})
 
             conn.settimeout(60.0)
             buf = bytearray()
@@ -3817,6 +3963,51 @@ class Handler(BaseHTTPRequestHandler):
     _MOUSE_TYPES = frozenset(("m", "mb", "mw"))
     _KEYBOARD_TYPES = frozenset(("kt", "k"))
 
+    def _handle_kt(self, conn, entry, msg):
+        """Type text tolerantly and keep the session alive no matter what.
+
+        Typeable chars go through the uinput keyboard; genuine non-ASCII goes
+        through the clipboard-paste path. A missing keyboard device or an
+        unavailable paste path just drops the affected chars (logged once) — no
+        err frame, no close. Only a malformed message (non-string text) still
+        err+closes, preserving the protocol contract.
+        """
+        text = msg.get("text")
+        if not isinstance(text, str):
+            ws_send_json(conn, {"t": "err", "msg": "kt text must be a string"})
+            ws_send(conn, WS_OP_CLOSE)
+            return False
+        if not text:
+            return True
+        if len(text) > _KT_MAX_CHARS:
+            _paste_log_once(entry, "kt text too long (%d chars); truncated" % len(text))
+            text = text[:_KT_MAX_CHARS]
+        kbd = entry.get("keyboard")
+        if kbd is None:
+            try:
+                kbd = MockKeyboard() if self.mock else UInputKeyboard()
+            except Exception as e:
+                _paste_log_once(entry, "keyboard unavailable (%s); text dropped" % e)
+                return True
+            entry["keyboard"] = kbd
+            print("[gamepad] keyboard device created (%s)" % kbd.name, flush=True)
+        paste_runs = 0
+        for kind, chunk in _split_typeable(text):
+            if kind == "type":
+                events = _type_events(chunk)
+                if events:
+                    try:
+                        kbd.emit(events)
+                    except Exception as e:
+                        _paste_log_once(entry, "type emit failed: %s" % e)
+            else:
+                paste_runs += 1
+                if paste_runs > _KT_MAX_PASTE_RUNS:
+                    _paste_log_once(entry, "too many paste runs; remaining non-ASCII dropped")
+                    continue
+                clipboard_paste(chunk, kbd, self.mock, entry)
+        return True
+
     def _gamepad_message(self, conn, entry, device, payload):
         """Handle one text frame. Returns False when the session must end.
 
@@ -3836,6 +4027,11 @@ class Handler(BaseHTTPRequestHandler):
         if t == "ping":
             ws_send_json(conn, {"t": "pong"})
             return True
+        if t == "kt":
+            # Text passthrough is handled here, BEFORE the decode table, so it
+            # can never close the session: unmappable chars are dropped and
+            # genuine non-ASCII is pasted, all tolerantly.
+            return self._handle_kt(conn, entry, msg)
 
         # Select decoder, target device slot, and lazy device factory.
         if t in self._MOUSE_TYPES:
