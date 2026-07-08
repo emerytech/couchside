@@ -398,7 +398,22 @@ export class GamepadClient {
     this.setStatus('connecting', null);
 
     const { host, port, token, lastIp } = this.conn;
-    const target = this.useFallback && lastIp ? lastIp : host;
+    // Resolve to a NON-EMPTY host. `host` is blank when the box was paired by IP
+    // before its mDNS name was learned (the settings default host is ''), and the
+    // cached LAN IP is then the real address — the HTTP API falls back to it the
+    // same way. This MUST never hand an empty host to the native WebSocket: okhttp
+    // throws IllegalArgumentException("Invalid URL host: \"\"") on the native
+    // modules thread (mqt_v_native), which the try/catch below CANNOT catch (it is
+    // raised asynchronously, off the JS thread) and which crashes the whole app.
+    const cleanHost = (host || '').trim();
+    const cleanIp = (lastIp || '').trim();
+    const target = this.useFallback && cleanIp ? cleanIp : cleanHost || cleanIp;
+    if (!target || !port) {
+      // Nothing dialable yet (box not paired, no address). Stay quietly errored;
+      // connect() re-runs when host/port/token change, so pairing recovers this.
+      this.setStatus('error', null);
+      return;
+    }
     const url = `ws://${target}:${port}/ws/gamepad?token=${encodeURIComponent(token)}`;
 
     let ws: WebSocket;
