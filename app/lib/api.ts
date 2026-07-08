@@ -184,6 +184,18 @@ export type ScreenInfo = {
   formats: string[];
 };
 
+/** Delayed suspend/poweroff timer (in-process on the box; cleared by a restart). */
+export type PowerSleep = { action: 'suspend' | 'poweroff'; fire_at: number; remaining_s: number };
+/** Scheduled RTC wake alarm. */
+export type PowerWake = { fire_at: number; remaining_s: number };
+/** Sleep timer + wake schedule state (GET /api/power/schedule). */
+export type PowerSchedule = {
+  sleep: PowerSleep | null;
+  wake: PowerWake | null;
+  wake_available: boolean;
+  limits: { sleep_min_s: number; sleep_max_s: number; wake_min_s: number; wake_max_s: number };
+};
+
 export type LaunchResult = {
   ok: boolean;
   /** Present when ok is false. */
@@ -739,6 +751,37 @@ export const api = {
    */
   screenInfo(settings: ConnSettings): Promise<ScreenInfo | null> {
     return probeOrNull(request<ScreenInfo>(settings, '/api/screen', { timeoutMs: 8000 }));
+  },
+
+  /**
+   * Sleep timer + wake schedule. Probe-and-appear: resolves null ONLY on 404
+   * (agent < 2.8.1) so the rows hide; a transient 500 still throws, never
+   * reading as "timer vanished".
+   */
+  powerSchedule(settings: ConnSettings): Promise<PowerSchedule | null> {
+    return probeOrNull(request<PowerSchedule>(settings, '/api/power/schedule'));
+  },
+
+  /** Arm a delayed suspend/poweroff. */
+  powerSleep(
+    settings: ConnSettings,
+    delay_s: number,
+    action: 'suspend' | 'poweroff',
+  ): Promise<{ sleep: PowerSleep | null }> {
+    return request(settings, '/api/power/sleep', { method: 'POST', body: { delay_s, action } });
+  },
+  /** Cancel the armed sleep timer (idempotent). */
+  powerSleepCancel(settings: ConnSettings): Promise<{ sleep: null }> {
+    return request(settings, '/api/power/sleep', { method: 'DELETE' });
+  },
+
+  /** Set the RTC wake alarm to an absolute epoch. */
+  powerWake(settings: ConnSettings, at: number): Promise<{ wake: PowerWake | null }> {
+    return request(settings, '/api/power/wake', { method: 'POST', body: { at } });
+  },
+  /** Clear the RTC wake alarm (idempotent). */
+  powerWakeCancel(settings: ConnSettings): Promise<{ wake: null }> {
+    return request(settings, '/api/power/wake', { method: 'DELETE' });
   },
 };
 

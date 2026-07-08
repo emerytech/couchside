@@ -3,8 +3,9 @@ import React from 'react';
 import { Alert, Modal, PanResponder, Platform, Pressable, StyleSheet, Text, View } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
+import { SleepTimerSheet } from '@/components/SleepTimerSheet';
 import { usePoll } from '@/hooks/usePoll';
-import { api, Status, Tv, TvOp, VolumeTarget } from '@/lib/api';
+import { api, PowerSchedule, Status, Tv, TvOp, VolumeTarget } from '@/lib/api';
 import { hapticError, hapticLight, hapticSuccess } from '@/lib/haptics';
 import { getPref, usePref } from '@/lib/prefs';
 import { normalizeMac } from '@/lib/settings';
@@ -200,6 +201,16 @@ export function RemotePowerBar() {
   const refreshTv = tvPoll.refresh;
   const tv = reachable && tvPoll.error == null && tvPoll.data?.available ? tvPoll.data : null;
   const muted = tv?.muted ?? null;
+
+  // Sleep timer + wake schedule (agent >= 2.8.1). Probe-and-appear: null on an
+  // older agent, so the sleep-timer entry stays hidden.
+  const schedulePoll = usePoll<PowerSchedule | null>(
+    () => api.powerSchedule(settings),
+    15000,
+    reachable,
+  );
+  const schedule = reachable ? schedulePoll.data ?? null : null;
+  const [sleepOpen, setSleepOpen] = React.useState(false);
 
   // Suspend-action availability, once per connect (agent >= 2.6 with the rule).
   const [hasSuspend, setHasSuspend] = React.useState(false);
@@ -511,6 +522,26 @@ export function RemotePowerBar() {
                 </View>
               )}
 
+              {/* Sleep timer / wake schedule (agent >= 2.8.1) */}
+              {schedule != null && (
+                <Pressable
+                  onPress={() => {
+                    setOpen(false);
+                    setSleepOpen(true);
+                  }}
+                  style={({ pressed }) => [styles.bigBtn, pressed && styles.pressed]}>
+                  <Ionicons name="timer-outline" size={22} color={theme.text} />
+                  <Text style={styles.bigLabel}>
+                    {schedule.sleep
+                      ? `${schedule.sleep.action === 'poweroff' ? 'Power off' : 'Suspend'} in ${Math.max(
+                          0,
+                          Math.round(schedule.sleep.remaining_s / 60),
+                        )}m`
+                      : 'Sleep timer'}
+                  </Text>
+                </Pressable>
+              )}
+
               {hasTvPower && (
                 <View style={styles.tvPowerRow}>
                   <Pressable
@@ -637,6 +668,14 @@ export function RemotePowerBar() {
           </View>
         </Pressable>
       </Modal>
+
+      <SleepTimerSheet
+        visible={sleepOpen}
+        settings={settings}
+        schedule={schedule}
+        onChanged={schedulePoll.refresh}
+        onClose={() => setSleepOpen(false)}
+      />
     </>
   );
 }

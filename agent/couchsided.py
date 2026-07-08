@@ -13,6 +13,7 @@ defaults.
 
 import argparse
 import base64
+import calendar
 import glob
 import hashlib
 import hmac
@@ -39,7 +40,7 @@ except ImportError:  # pragma: no cover
     fcntl = None
 
 APP_NAME = "couchside-agent"
-VERSION = "2.8.0"
+VERSION = "2.8.1"
 UID = os.getuid()
 XDG_RUNTIME_DIR = "/run/user/%d" % UID
 
@@ -701,6 +702,220 @@ def real_action(action_id):
         "stdout": r.stdout,
         "stderr": r.stderr,
         "duration_ms": int((time.monotonic() - start) * 1000),
+    }
+
+
+# ---------------------------------------------------------------------------
+# Sleep timer + scheduled wake (/api/power/schedule|sleep|wake).
+#
+# Delayed suspend/poweroff is an in-process one-shot threading.Timer firing the
+# existing suspend/poweroff action — deliberately volatile (a restart clears it;
+# the app detects that by polling). Scheduled wake is an RTC alarm set via ioctl
+# on /dev/rtc0, reachable through a udev rule that adds rtc0 to group `input`
+# (the agent already has SupplementaryGroups=input) — NO sudoers change; the
+# alarm survives restarts and the suspend itself. The ioctl numbers + struct
+# layout + the valid-date-clear + single-open behaviour were all verified on a
+# real Bazzite rtc0.
+# ---------------------------------------------------------------------------
+
+SLEEP_MIN_S, SLEEP_MAX_S = 60, 8 * 3600
+WAKE_MIN_S, WAKE_MAX_S = 120, 86100   # just under 24h (exact-day is ambiguous on some CMOS RTCs)
+SLEEP_ACTIONS = ("suspend", "poweroff")
+
+POWER_MOCK = False          # set by set_power_schedule(mock)
+SLEEP_LOCK = threading.Lock()
+_SLEEP = {"timer": None, "action": None, "fire_at": 0.0}
+
+RTC_DEV = "/dev/rtc0"
+RTC_LOCK = threading.Lock()
+# ioctl request numbers (validated on hardware); _IOR('p',0x09,36) etc.
+RTC_RD_TIME = 0x80247009
+RTC_WKALM_RD = 0x80287010
+RTC_WKALM_SET = 0x4028700f
+_RTC_TIME = "=9i"           # sec,min,hour,mday,mon,year,wday,yday,isdst
+_RTC_WK = "=BB2x9i"         # enabled, pending, 2 pad, rtc_time
+_MOCK_WAKE = {"fire_at": 0}  # --mock in-memory alarm
+
+
+def set_power_schedule(mock):
+    global POWER_MOCK
+    POWER_MOCK = mock
+
+
+def _can_sudo_action(cmd):
+    """True iff the agent user has passwordless sudo for exactly `cmd`. Probes
+    with `sudo -n -l` (never runs it). Generalises _can_sudo_suspend."""
+    try:
+        r = subprocess.run(["sudo", "-n", "-l"] + list(cmd), capture_output=True, timeout=4)
+        return r.returncode == 0
+    except Exception:
+        return False
+
+
+def sleep_can_arm(action):
+    """(ok, error). The action must be a known sleep action, present in ACTIONS,
+    and its privileged command actually permitted — so we never arm a timer that
+    silently fails when it fires (poweroff is in ACTIONS unconditionally but sudo
+    may still refuse it)."""
+    if action not in SLEEP_ACTIONS:
+        return (False, "unknown action")
+    if POWER_MOCK:
+        return (True, None)
+    spec = ACTIONS.get(action)
+    if spec is None:
+        return (False, "%s unavailable" % action)
+    cmd = list(spec["cmd"])
+    if cmd and cmd[0] == "sudo":
+        probe = cmd[1:]
+        if probe and not probe[0].startswith("/"):
+            probe = ["/usr/bin/" + probe[0]] + probe[1:]  # sudo -l wants an absolute path
+        if not _can_sudo_action(probe):
+            return (False, "%s not permitted (sudoers)" % action)
+    return (True, None)
+
+
+def _sleep_info_locked():
+    if _SLEEP["timer"] is None:
+        return None
+    return {"action": _SLEEP["action"], "fire_at": int(_SLEEP["fire_at"]),
+            "remaining_s": max(0, int(_SLEEP["fire_at"] - time.time()))}
+
+
+def _sleep_cancel_locked():
+    if _SLEEP["timer"] is not None:
+        _SLEEP["timer"].cancel()
+    _SLEEP.update(timer=None, action=None, fire_at=0.0)
+
+
+def sleep_arm(delay_s, action):
+    """Arm a one-shot suspend/poweroff after delay_s, replacing any prior arm."""
+    with SLEEP_LOCK:
+        _sleep_cancel_locked()
+        fire_at = time.time() + delay_s
+
+        def _fire():
+            with SLEEP_LOCK:
+                if _SLEEP["timer"] is not timer:  # cancelled or superseded
+                    return
+                _SLEEP.update(timer=None, action=None, fire_at=0.0)
+            r = mock_action(action) if POWER_MOCK else real_action(action)
+            print("[sleep] fired %s: ok=%s" % (action, r.get("ok")), flush=True)
+
+        timer = threading.Timer(delay_s, _fire)
+        timer.daemon = True
+        _SLEEP.update(timer=timer, action=action, fire_at=fire_at)
+        timer.start()
+        return _sleep_info_locked()
+
+
+def sleep_cancel():
+    with SLEEP_LOCK:
+        _sleep_cancel_locked()
+
+
+def sleep_info():
+    with SLEEP_LOCK:
+        return _sleep_info_locked()
+
+
+def rtc_available():
+    if POWER_MOCK:
+        return True
+    return os.path.exists(RTC_DEV) and os.access(RTC_DEV, os.R_OK | os.W_OK)
+
+
+def _rtc_ioctl_read(fd, req, size):
+    buf = bytearray(size)
+    fcntl.ioctl(fd, req, buf, True)
+    return bytes(buf)
+
+
+def _rtc_now_epoch(fd):
+    """Current RTC time as an epoch in the RTC's OWN timebase (fields read as if
+    UTC), so alarm math is immune to whether the RTC runs UTC or LOCAL."""
+    t = struct.unpack(_RTC_TIME, _rtc_ioctl_read(fd, RTC_RD_TIME, 36))
+    return calendar.timegm((t[5] + 1900, t[4] + 1, t[3], t[2], t[1], t[0], 0, 0, 0))
+
+
+def rtc_wake_info():
+    """Current wake alarm as {fire_at, remaining_s} (wall time) or None."""
+    if POWER_MOCK:
+        fa = _MOCK_WAKE["fire_at"]
+        if fa and fa > time.time():
+            return {"fire_at": int(fa), "remaining_s": int(fa - time.time())}
+        return None
+    if not rtc_available():
+        return None
+    try:
+        with RTC_LOCK:
+            with open(RTC_DEV, "rb") as fd:
+                rtc_epoch = _rtc_now_epoch(fd)
+                w = struct.unpack(_RTC_WK, _rtc_ioctl_read(fd, RTC_WKALM_RD, 40))
+    except OSError:
+        return None
+    if not w[0]:
+        return None
+    alarm_epoch = calendar.timegm((w[7] + 1900, w[6] + 1, w[5], w[4], w[3], w[2], 0, 0, 0))
+    fire_at = time.time() + (alarm_epoch - rtc_epoch)  # RTC-timebase -> wall
+    return {"fire_at": int(fire_at), "remaining_s": max(0, int(fire_at - time.time()))}
+
+
+def rtc_set_wake(at_epoch):
+    """Set the RTC wake alarm to fire at wall-time `at_epoch`; verify read-back.
+    Returns True on success."""
+    if POWER_MOCK:
+        _MOCK_WAKE["fire_at"] = int(at_epoch)
+        print("[wake] mock alarm at %d" % int(at_epoch), flush=True)
+        return True
+    if not rtc_available():
+        return False
+    try:
+        with RTC_LOCK:
+            with open(RTC_DEV, "rb") as fd:
+                target = _rtc_now_epoch(fd) + int(at_epoch - time.time())
+                tm = time.gmtime(target)
+                alarm = struct.pack(_RTC_WK, 1, 0, tm.tm_sec, tm.tm_min, tm.tm_hour,
+                                    tm.tm_mday, tm.tm_mon - 1, tm.tm_year - 1900,
+                                    tm.tm_wday, tm.tm_yday, tm.tm_isdst)
+                fcntl.ioctl(fd, RTC_WKALM_SET, alarm)
+                r = struct.unpack(_RTC_WK, _rtc_ioctl_read(fd, RTC_WKALM_RD, 40))
+        # Verify enabled + Y/M/D/h/m/s; the kernel normalises wday/yday/isdst.
+        return (r[0] == 1 and r[2] == tm.tm_sec and r[3] == tm.tm_min
+                and r[4] == tm.tm_hour and r[5] == tm.tm_mday
+                and r[6] == tm.tm_mon - 1 and r[7] == tm.tm_year - 1900)
+    except OSError:
+        return False
+
+
+def rtc_clear_wake():
+    """Disable the wake alarm. enabled=0 must still carry a VALID date — a zero
+    date is rejected with EINVAL (verified on hardware)."""
+    if POWER_MOCK:
+        _MOCK_WAKE["fire_at"] = 0
+        return True
+    if not rtc_available():
+        return False
+    try:
+        with RTC_LOCK:
+            with open(RTC_DEV, "rb") as fd:
+                tm = time.gmtime(_rtc_now_epoch(fd))
+                clr = struct.pack(_RTC_WK, 0, 0, tm.tm_sec, tm.tm_min, tm.tm_hour,
+                                  tm.tm_mday, tm.tm_mon - 1, tm.tm_year - 1900,
+                                  tm.tm_wday, tm.tm_yday, tm.tm_isdst)
+                fcntl.ioctl(fd, RTC_WKALM_SET, clr)
+        return True
+    except OSError:
+        return False
+
+
+def power_schedule_info():
+    """The /api/power/schedule payload."""
+    return {
+        "sleep": sleep_info(),
+        "wake": rtc_wake_info(),
+        "wake_available": rtc_available(),
+        "limits": {"sleep_min_s": SLEEP_MIN_S, "sleep_max_s": SLEEP_MAX_S,
+                   "wake_min_s": WAKE_MIN_S, "wake_max_s": WAKE_MAX_S},
     }
 
 
@@ -4335,6 +4550,10 @@ class Handler(BaseHTTPRequestHandler):
                     data, mime = frame
                     self._send_bytes(200, data, mime, started,
                                      cache_control="no-store")
+            elif path == "/api/power/schedule":
+                # Always 200: reports the (volatile) sleep timer + the RTC wake
+                # alarm read from hardware. Old agents 404 -> app hides the rows.
+                self._send(200, power_schedule_info(), started)
             else:
                 self._send(404, {"error": "not found"}, started)
         except BrokenPipeError:
@@ -4531,6 +4750,49 @@ class Handler(BaseHTTPRequestHandler):
                 self._send(200, result, started)
                 return
 
+            # POST /api/power/sleep: arm a delayed suspend/poweroff.
+            if path == "/api/power/sleep":
+                try:
+                    req = json.loads(body.decode("utf-8")) if body else {}
+                    if not isinstance(req, dict):
+                        raise ValueError
+                    delay_s = int(req.get("delay_s"))
+                    action = req.get("action")
+                except (ValueError, TypeError, UnicodeDecodeError):
+                    self._send(400, {"error": "delay_s (int) and action required"}, started)
+                    return
+                if not SLEEP_MIN_S <= delay_s <= SLEEP_MAX_S:
+                    self._send(400, {"error": "delay_s out of range"}, started)
+                    return
+                ok, err = sleep_can_arm(action)
+                if not ok:
+                    self._send(400, {"error": err}, started)
+                    return
+                self._send(200, {"sleep": sleep_arm(delay_s, action)}, started)
+                return
+
+            # POST /api/power/wake: set the RTC wake alarm to an absolute time.
+            if path == "/api/power/wake":
+                if not rtc_available():
+                    self._send(409, {"error": "no writable /dev/rtc0"}, started)
+                    return
+                try:
+                    req = json.loads(body.decode("utf-8")) if body else {}
+                    at = int(req.get("at"))
+                except (ValueError, TypeError, UnicodeDecodeError):
+                    self._send(400, {"error": "at (epoch seconds) required"}, started)
+                    return
+                now = time.time()
+                if not now + WAKE_MIN_S <= at <= now + WAKE_MAX_S:
+                    self._send(400, {"error": "at must be %d-%ds out"
+                                     % (WAKE_MIN_S, WAKE_MAX_S)}, started)
+                    return
+                if not rtc_set_wake(at):
+                    self._send(500, {"error": "rtc set failed"}, started)
+                    return
+                self._send(200, {"wake": rtc_wake_info()}, started)
+                return
+
             # POST /api/tv/<op>: TV power / volume. Volume defaults to the box's
             # own OS volume; ?target=tv routes it to the panel/CEC backend.
             tprefix = "/api/tv/"
@@ -4588,6 +4850,17 @@ class Handler(BaseHTTPRequestHandler):
                     self._send(404, {"error": "unknown launcher"}, started)
                     return
                 self._send(200, {"ok": True}, started)
+                return
+
+            # DELETE /api/power/sleep: cancel the armed sleep timer (idempotent).
+            if path == "/api/power/sleep":
+                sleep_cancel()
+                self._send(200, {"sleep": None}, started)
+                return
+            # DELETE /api/power/wake: clear the RTC wake alarm (idempotent).
+            if path == "/api/power/wake":
+                rtc_clear_wake()
+                self._send(200, {"wake": None}, started)
                 return
 
             self._send(404, {"error": "not found"}, started)
@@ -4921,6 +5194,7 @@ def main():
     set_tv(args.mock)
     set_mpris(args.mock)
     set_screen(args.mock)
+    set_power_schedule(args.mock)
     port = args.port if args.port is not None else (CONFIG_PORT or DEFAULT_PORT)
 
     Handler.token = load_token(args)

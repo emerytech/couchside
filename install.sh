@@ -137,6 +137,7 @@ if [ "$UNINSTALL" -eq 1 ]; then
     sudo rm -f /etc/systemd/network/50-couchside-wol.link
     note "removed the Wake-on-LAN .link file"
     sudo rm -f /etc/udev/rules.d/99-couchside-uinput.rules \
+               /etc/udev/rules.d/99-couchside-rtc.rules \
                /etc/modules-load.d/couchside-uinput.conf
     sudo udevadm control --reload-rules 2>/dev/null || true
     note "removed the udev/modules-load drop-ins"
@@ -352,9 +353,20 @@ sudo modprobe uinput 2>/dev/null || note "uinput module not loadable now (loads 
 if getent group input >/dev/null 2>&1; then
     sudo usermod -aG input "$USER_NAME"
 fi
-# Apply the rule to the already-present node so no reboot is needed.
+
+# Scheduled-wake RTC access: the agent sets an RTC alarm via ioctl on /dev/rtc0,
+# which is root:clock by default. Add it to group input (which the agent is
+# already in) — no sudoers needed. Kernel-verified: RTC_WKALM_SET carries no
+# capability check; only RTC_SET_TIME needs CAP_SYS_TIME, so this grants
+# scheduling a wake, NOT skewing the clock.
+say "Granting the agent access to /dev/rtc0 (scheduled wake)"
+printf '%s\n' 'KERNEL=="rtc0", SUBSYSTEM=="rtc", GROUP="input", MODE="0660"' \
+    | sudo tee /etc/udev/rules.d/99-couchside-rtc.rules >/dev/null
+
+# Apply the rules to the already-present nodes so no reboot is needed.
 sudo udevadm control --reload-rules 2>/dev/null || true
 sudo udevadm trigger --name-match=uinput 2>/dev/null || true
+sudo udevadm trigger --subsystem-match=rtc --action=change 2>/dev/null || true
 
 # ---------------------------------------------------------------------------
 # (f3) Wake-on-LAN: arm the wired NIC so the phone can wake the box from suspend
