@@ -98,6 +98,135 @@ ask_yn() {
     [[ "$reply" == [yY]* ]]
 }
 
+deregister_steam_shortcut() {
+    # Remove the "Couchside — Pair Phone" tile from every Steam account's
+    # shortcuts.vdf (symmetric with register_steam_shortcut, used on --uninstall).
+    # If a pristine .couchside-bak backup exists, restore it verbatim; otherwise
+    # surgically drop our entry and reserialize. Steam only reads shortcuts.vdf at
+    # startup and rewrites it on exit, so edits while Steam runs are lost — note
+    # that and continue (best-effort, never fatal).
+    local steamroot=""
+    for d in "$HOME/.local/share/Steam" "$HOME/.steam/steam" \
+             "$HOME/.var/app/com.valvesoftware.Steam/data/Steam"; do
+        [ -d "$d/userdata" ] && { steamroot="$(cd "$d" && pwd -P)"; break; }
+    done
+    if [ -z "$steamroot" ]; then
+        return 0
+    fi
+    if pgrep -x steam >/dev/null 2>&1; then
+        note "Steam is running; it rewrites shortcuts.vdf on exit. Close Steam and"
+        note "re-run --uninstall if the 'Couchside — Pair Phone' tile lingers."
+    fi
+
+    STEAMROOT="$steamroot" python3 - <<'PYVDF'
+# Remove our non-Steam shortcut from shortcuts.vdf (binary VDF, pure stdlib).
+# Prefer restoring the pristine .couchside-bak; else drop our entry in place.
+import os, struct
+
+APPNAME = "Couchside — Pair Phone"
+STEAMROOT = os.environ["STEAMROOT"]
+
+
+def parse_map(buf, pos):
+    out = {}
+    while True:
+        t = buf[pos]; pos += 1
+        if t == 0x08:
+            return out, pos
+        end = buf.index(b"\x00", pos)
+        key = buf[pos:end].decode("utf-8", "replace"); pos = end + 1
+        if t == 0x00:
+            val, pos = parse_map(buf, pos)
+        elif t == 0x01:
+            end = buf.index(b"\x00", pos)
+            val = buf[pos:end].decode("utf-8", "replace"); pos = end + 1
+        elif t == 0x02:
+            val = struct.unpack_from("<i", buf, pos)[0]; pos += 4
+        else:
+            raise ValueError("unknown VDF field type 0x%02x" % t)
+        out[key] = val
+
+
+def ser_map(m):
+    out = bytearray()
+    for k, v in m.items():
+        kb = k.encode("utf-8")
+        if isinstance(v, dict):
+            out += b"\x00" + kb + b"\x00" + ser_map(v)
+        elif isinstance(v, int):
+            out += b"\x02" + kb + b"\x00" + struct.pack("<i", v)
+        else:
+            out += b"\x01" + kb + b"\x00" + str(v).encode("utf-8") + b"\x00"
+    out += b"\x08"
+    return bytes(out)
+
+
+def is_ours(entry):
+    if not isinstance(entry, dict):
+        return False
+    name = entry.get("AppName", entry.get("appname", ""))
+    return isinstance(name, str) and name.strip().lower() == APPNAME.strip().lower()
+
+
+udir = os.path.join(STEAMROOT, "userdata")
+if not os.path.isdir(udir):
+    raise SystemExit(0)
+for acct in sorted(os.listdir(udir)):
+    if not acct.isdigit() or acct == "0":
+        continue
+    cfg = os.path.join(udir, acct, "config")
+    path = os.path.join(cfg, "shortcuts.vdf")
+    bak = path + ".couchside-bak"
+    if not os.path.exists(path):
+        continue
+    # Surgically remove ONLY our entry and reserialize. Do NOT restore the
+    # pristine .couchside-bak verbatim as the preferred path: Steam rewrites
+    # shortcuts.vdf on exit, so the backup lacks any non-Steam tiles the user
+    # added AFTER install — restoring it would silently wipe them. The backup is
+    # kept only as a last-resort fallback when the live file can't be parsed.
+    with open(path, "rb") as f:
+        buf = f.read()
+    root = None
+    try:
+        root, _ = parse_map(buf, 0)
+    except Exception as e:
+        print("    ! %s: could not parse (%s)" % (path, e))
+    # Edit in place only if we parsed it AND can reproduce it byte-for-byte.
+    if root is not None and isinstance(root.get("shortcuts"), dict) and ser_map(root) == buf:
+        shortcuts = root["shortcuts"]
+        ours = [k for k, v in shortcuts.items() if is_ours(v)]
+        if ours:
+            for k in ours:
+                del shortcuts[k]
+            # Renumber remaining entries to keep the 0..N-1 index Steam expects.
+            kept = [shortcuts[k] for k in sorted(shortcuts, key=lambda x: int(x)
+                                                 if x.isdigit() else 1 << 30)]
+            root["shortcuts"] = {str(i): v for i, v in enumerate(kept)}
+            tmp = path + ".couchside-tmp"
+            with open(tmp, "wb") as f:
+                f.write(ser_map(root))
+            os.replace(tmp, path)
+            print("    - account %s: removed the Couchside tile" % acct)
+    elif os.path.exists(bak):
+        # Live file unparseable/unreproducible: fall back to the pristine backup.
+        tmp = path + ".couchside-tmp"
+        with open(bak, "rb") as bf, open(tmp, "wb") as tf:
+            tf.write(bf.read())
+        os.replace(tmp, path)
+        print("    = account %s: unparseable live file; restored pre-Couchside backup" % acct)
+    else:
+        print("    ! %s: could not edit and no backup, leaving it alone" % path)
+        continue
+    # The pristine backup has served its purpose; drop it so a later reinstall
+    # re-captures a fresh one.
+    if os.path.exists(bak):
+        try:
+            os.remove(bak)
+        except OSError:
+            pass
+PYVDF
+}
+
 # ---------------------------------------------------------------------------
 # (a) Preflight checks
 # ---------------------------------------------------------------------------
@@ -134,6 +263,9 @@ if [ "$UNINSTALL" -eq 1 ]; then
     note "removed $INSTALL_DIR (incl. the couchside-pair launcher script)"
     rm -f "$PAIR_DESKTOP"
     note "removed $PAIR_DESKTOP"
+    # Symmetric with install: pull the "Couchside — Pair Phone" tile out of every
+    # Steam account's shortcuts.vdf so uninstall doesn't leave a dead tile.
+    deregister_steam_shortcut || note "couldn't clean the Steam tile (skipping)"
     sudo rm -f /etc/systemd/network/50-couchside-wol.link
     note "removed the Wake-on-LAN .link file"
     sudo rm -f /etc/udev/rules.d/99-couchside-uinput.rules \
@@ -193,7 +325,19 @@ else
     # Optional: don't abort the install if only the QR helper fails to fetch.
     curl -fsSL "$QR_URL" -o "$WORK_DIR/qr.py" 2>/dev/null || true
 fi
+# Integrity / sanity gate (FAIL CLOSED): never install code we just fetched
+# without first checking it parses. py_compile catches a truncated download or an
+# HTML error page served in place of the .py, so a half-written daemon can't be
+# installed and left crash-looping. This is a SANITY gate, not authentication.
+# TODO (stronger follow-up): pin DAEMON_URL/UNIT_URL to a tagged release and
+# verify a published SHA256SUMS (curl the sums + `sha256sum -c`) so a
+# compromised or MITM'd raw.githubusercontent.com response is rejected too.
 python3 -m py_compile "$WORK_DIR/couchsided.py" || die "downloaded couchsided.py does not compile, aborting."
+# The unit is not Python; sanity-check it's a non-empty [Service] file so a
+# failed/HTML fetch can't be installed as the systemd unit.
+if ! grep -q '^\[Service\]' "$WORK_DIR/couchside.service" 2>/dev/null; then
+    die "downloaded couchside.service is missing/invalid (no [Service] section), aborting."
+fi
 
 # ---------------------------------------------------------------------------
 # (c) Install the daemon to ~/.local/opt/couchside
@@ -327,7 +471,11 @@ $USER_NAME ALL=(root) NOPASSWD: /usr/bin/systemctl restart sddm
 $USER_NAME ALL=(root) NOPASSWD: /usr/bin/systemctl reboot
 $USER_NAME ALL=(root) NOPASSWD: /usr/bin/systemctl poweroff
 $USER_NAME ALL=(root) NOPASSWD: /usr/bin/systemctl suspend
-$USER_NAME ALL=(root) NOPASSWD: /usr/bin/journalctl *
+# Constrain to the exact call the daemon makes: real_journal() runs
+# journalctl -u <unit> -n <n> --no-pager -o short-iso via sudo. Requiring the
+# leading -u blocks a bare journalctl --file=/... or --directory=/... that a
+# trailing bare wildcard would have allowed (arbitrary-file read as root).
+$USER_NAME ALL=(root) NOPASSWD: /usr/bin/journalctl -u *
 SUDOERS
     echo "------------------------------------------------------------------"
     cat "$WORK_DIR/couchside-sudoers"
@@ -419,7 +567,16 @@ fi
 # (g) systemd unit
 # ---------------------------------------------------------------------------
 say "Installing systemd unit $UNIT_DST"
-sed -e "s|__USER__|$USER_NAME|g" -e "s|__UID__|$USER_UID|g" \
+# Inject the RESOLVED daemon path (never a hardcoded /home): $HOME may be
+# /var/home on Bazzite/ostree, a systemd-homed image, or an LDAP path, so a
+# literal /home/$USER ExecStart would silently never start there. Substitute the
+# __EXEC__ placeholder (current template) AND rewrite the old hardcoded
+# /home/__USER__/.local/opt/couchside/couchsided.py path so a raw-fetched older
+# unit is healed the same way.
+DAEMON_PATH="$INSTALL_DIR/couchsided.py"
+sed -e "s|/home/__USER__/.local/opt/couchside/couchsided.py|__EXEC__|g" \
+    -e "s|__EXEC__|$DAEMON_PATH|g" \
+    -e "s|__USER__|$USER_NAME|g" -e "s|__UID__|$USER_UID|g" \
     "$WORK_DIR/couchside.service" > "$WORK_DIR/couchside.service.rendered"
 sudo install -m 0644 -o root -g root "$WORK_DIR/couchside.service.rendered" "$UNIT_DST"
 sudo systemctl daemon-reload
@@ -750,9 +907,23 @@ done
 # (j) Verify + pairing info
 # ---------------------------------------------------------------------------
 say "Verifying: http://127.0.0.1:${PORT}/api/ping"
-sleep 2
-curl -fsS "http://127.0.0.1:${PORT}/api/ping"
-echo
+# Soft retry with backoff: a slow-binding agent must NOT trip `set -e` and abort
+# the script BEFORE we print the pairing token/QR below. Poll a few times, then
+# degrade to a warning — the token/QR still print so pairing isn't blocked.
+ping_ok=0
+for attempt in 1 2 3 4 5 6; do
+    if curl -fsS "http://127.0.0.1:${PORT}/api/ping" 2>/dev/null; then
+        ping_ok=1
+        echo
+        break
+    fi
+    sleep "$attempt"   # 1s,2s,3s,... ~21s total before giving up
+done
+if [ "$ping_ok" -ne 1 ]; then
+    note "agent not answering on :${PORT} yet. It may still be starting; check"
+    note "'systemctl status couchside.service' and 'journalctl -u couchside'."
+    note "Your pairing token/QR are below and remain valid once it comes up."
+fi
 
 TOKEN="$(cat "$TOKEN_FILE")"
 # Resolve the hostname WITHOUT the `hostname` command. SteamOS doesn't ship it.
