@@ -1,0 +1,101 @@
+name: CI
+
+# Fast, minimal gate for the box agent. Two jobs:
+#   compile — cross-platform py_compile syntax check of every agent entrypoint,
+#             including the Windows agent (py_compile is syntax-only, so it is a
+#             valid gate on ubuntu; a real windows-latest smoke build is a
+#             future add — see the note in the job below).
+#   smoke   — boot couchsided.py headless in --mock mode on a spare port and hit
+#             a real authed endpoint to prove it serves + auth still works.
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  compile:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      # py_compile is a pure-syntax check and is cross-platform: compiling the
+      # Windows agent here on ubuntu catches syntax regressions without a Windows
+      # runner. Task 27: a genuine windows-latest build/import of couchsided-win.py
+      # (pywin32 / ViGEmBus deps, tray widget) is a FUTURE add and intentionally
+      # not gated here so CI stays fast and free of Windows-only dependencies.
+      - name: py_compile agent entrypoints
+        run: |
+          python3 -m py_compile \
+            agent/couchsided.py \
+            agent/win/couchsided-win.py \
+            agent/qr.py
+          echo "py_compile OK"
+
+  smoke:
+    runs-on: ubuntu-latest
+    needs: compile
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      # Boot the agent headless with --mock (never touches uinput/hardware/CEC),
+      # a throwaway literal token, and a minimal valid config on a spare port.
+      # Then hit an AUTHED endpoint (/api/status) with the token and assert
+      # 200 + JSON. /api/ping is public by design (pre-auth), so we also verify a
+      # no-token request to /api/status is rejected (401) to prove the auth gate.
+      - name: Boot agent (mock) and probe authed endpoint
+        run: |
+          set -euo pipefail
+          PORT=8791
+          TOKEN="ci-smoke-$RANDOM$RANDOM"
+          CFG="$RUNNER_TEMP/couchside-ci-config.json"
+          cat > "$CFG" <<'JSON'
+          {
+            "units": [{"name": "sshd.service", "scope": "system"}],
+            "actions": {}
+          }
+          JSON
+
+          python3 agent/couchsided.py \
+            --mock --host 127.0.0.1 --port "$PORT" \
+            --token "$TOKEN" --config "$CFG" \
+            > "$RUNNER_TEMP/agent.log" 2>&1 &
+          AGENT_PID=$!
+          # Always dump the log and reap the agent, even on failure.
+          trap 'echo "----- agent.log -----"; cat "$RUNNER_TEMP/agent.log" || true; kill "$AGENT_PID" 2>/dev/null || true' EXIT
+
+          # Wait for the socket to bind (best-effort boot; ~9s budget).
+          for i in $(seq 1 30); do
+            if curl -fsS "http://127.0.0.1:$PORT/api/ping" >/dev/null 2>&1; then
+              echo "agent bound after $i tries"
+              break
+            fi
+            if ! kill -0 "$AGENT_PID" 2>/dev/null; then
+              echo "agent process exited during boot" >&2
+              exit 1
+            fi
+            sleep 0.3
+          done
+
+          # Public pre-auth endpoint must be 200.
+          PING_CODE=$(curl -s -o /dev/null -w '%{http_code}' "http://127.0.0.1:$PORT/api/ping")
+          echo "GET /api/ping -> $PING_CODE"
+          [ "$PING_CODE" = "200" ] || { echo "expected /api/ping 200, got $PING_CODE" >&2; exit 1; }
+
+          # No token -> the authed endpoint must reject (proves the gate is live).
+          NOAUTH_CODE=$(curl -s -o /dev/null -w '%{http_code}' "http://127.0.0.1:$PORT/api/status")
+          echo "GET /api/status (no token) -> $NOAUTH_CODE"
+          [ "$NOAUTH_CODE" = "401" ] || { echo "expected /api/status 401 without token, got $NOAUTH_CODE" >&2; exit 1; }
+
+          # With token -> 200 and a JSON body.
+          BODY="$RUNNER_TEMP/status.json"
+          AUTH_CODE=$(curl -s -o "$BODY" -w '%{http_code}' \
+            -H "Authorization: Bearer $TOKEN" "http://127.0.0.1:$PORT/api/status")
+          echo "GET /api/status (token) -> $AUTH_CODE"
+          [ "$AUTH_CODE" = "200" ] || { echo "expected /api/status 200 with token, got $AUTH_CODE" >&2; exit 1; }
+          python3 -c "import json,sys; json.load(open('$BODY')); print('authed body is valid JSON')"
+
+          echo "smoke OK"
