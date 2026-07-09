@@ -3,11 +3,14 @@ Couchside is dual-licensed by directory:
   - Everything in this repository EXCEPT the app/ directory (the agent,
     installer, brand assets, docs, and scripts) is licensed under the MIT
     License below.
-  - The mobile app in app/ is licensed under the GNU General Public License
-    v3.0. See app/LICENSE. You are free to build and modify the app for
-    yourself; GPLv3 terms apply to redistribution. The official builds on the
-    App Store and Google Play are sold by the copyright holder (ETS3D LLC),
-    which as licensor is not bound by the GPL's terms for its own code.
+  - The mobile app in app/ is SOURCE-AVAILABLE (not open source) under the
+    PolyForm Noncommercial License 1.0.0. See app/LICENSE. You may read, audit,
+    modify, and build the app for your own personal, noncommercial use, but you
+    may not sell it or redistribute it commercially. The official builds on the
+    App Store and Google Play are the paid, maintained distribution, sold by the
+    copyright holder (ETS3D LLC). Because the agent and protocol (everything
+    outside app/) are MIT, anyone is free to build their own independent client
+    against the Couchside agent.
 
 ---------------------------------------------------------------------------
 

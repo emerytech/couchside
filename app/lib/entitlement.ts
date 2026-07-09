@@ -11,8 +11,9 @@
  * No account, no server: the first-launch timestamp lives in the iOS
  * Keychain / Android Keystore via expo-secure-store (localStorage on the
  * dev-only web build). A determined user can evade this; that is accepted by
- * design. The gate ships in the open GPLv3 source and self-compiled builds
- * without a reachable store are treated as purchased.
+ * design. The gate ships in the app's source-available code (PolyForm
+ * Noncommercial; see app/LICENSE), and self-compiled builds without a reachable
+ * store are treated as purchased.
  */
 import { Platform } from 'react-native';
 import * as SecureStore from 'expo-secure-store';
