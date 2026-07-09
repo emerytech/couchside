@@ -3725,6 +3725,12 @@ class Handler(BaseHTTPRequestHandler):
     server_version = APP_NAME + "/" + VERSION
     protocol_version = "HTTP/1.1"
 
+    # Hard cap on a request body we will read into memory. Enforced BEFORE any
+    # body read (see _read_body) so an unauthenticated LAN client can't force a
+    # huge allocation via a large Content-Length. 8 MiB comfortably covers the
+    # only bodies this agent accepts (tiny launcher/volume/power JSON).
+    MAX_BODY_BYTES = 8 * 1024 * 1024
+
     # set by main()
     token = ""
     token_file = None   # path to re-read the current token for /pair
@@ -3804,11 +3810,9 @@ class Handler(BaseHTTPRequestHandler):
     def _send(self, code, payload, started, extra_headers=None):
         body = b"" if payload is None else json.dumps(payload).encode("utf-8")
         self.send_response(code)
-        self.send_header("Access-Control-Allow-Origin", "*")
-        self.send_header("Access-Control-Allow-Headers",
-                         "Authorization, Content-Type")
-        self.send_header("Access-Control-Allow-Methods",
-                         "GET, POST, DELETE, OPTIONS")
+        # No CORS: this is a LAN service for the native app + WS, neither of
+        # which need it; sending ACAO:* let a malicious browser tab read
+        # responses cross-origin.
         if payload is not None:
             self.send_header("Content-Type", "application/json")
         self.send_header("Content-Length", str(len(body)))
@@ -3823,14 +3827,11 @@ class Handler(BaseHTTPRequestHandler):
     def _send_bytes(self, code, data, content_type, started,
                     cache_control=None, extra_headers=None):
         """Write a raw binary body (album art, screen frames) with an EXACT
-        Content-Length (keep-alive safety under HTTP/1.1) and the same CORS
-        headers as _send."""
+        Content-Length (keep-alive safety under HTTP/1.1)."""
         self.send_response(code)
-        self.send_header("Access-Control-Allow-Origin", "*")
-        self.send_header("Access-Control-Allow-Headers",
-                         "Authorization, Content-Type")
-        self.send_header("Access-Control-Allow-Methods",
-                         "GET, POST, DELETE, OPTIONS")
+        # No CORS: this is a LAN service for the native app + WS, neither of
+        # which need it; sending ACAO:* let a malicious browser tab read
+        # responses cross-origin.
         self.send_header("Content-Type", content_type)
         self.send_header("Content-Length", str(len(data)))
         if cache_control:
@@ -3987,31 +3988,70 @@ class Handler(BaseHTTPRequestHandler):
             except Exception:
                 pass
 
+    def _body_too_large(self):
+        """True iff the declared Content-Length exceeds MAX_BODY_BYTES.
+
+        Checked from the header alone, BEFORE any read, so a huge declared body
+        is rejected without allocating for it. Callers that hit this must reply
+        413 and close the connection (the body is never drained)."""
+        try:
+            n = int(self.headers.get("Content-Length") or 0)
+        except ValueError:
+            return False
+        return n > self.MAX_BODY_BYTES
+
     def _read_body(self):
         """Read and return the request body bytes (always drains it, so
-        keep-alive connections never desync)."""
+        keep-alive connections never desync).
+
+        The size is capped at MAX_BODY_BYTES; callers must gate on
+        _body_too_large() first so an oversize body is rejected before we ever
+        read it. A Content-Length above the cap that slips through here is
+        clamped and the connection marked for close, so we never allocate
+        unbounded."""
         try:
             n = int(self.headers.get("Content-Length") or 0)
         except ValueError:
             n = 0
         if n <= 0:
             return b""
+        if n > self.MAX_BODY_BYTES:
+            # Defensive: normal paths gate on _body_too_large() before reading.
+            self.close_connection = True
+            n = self.MAX_BODY_BYTES
         return self.rfile.read(n)
 
     def do_POST(self):
         started = time.monotonic()
-        body = self._read_body()
         try:
             parsed = urlparse(self.path)
             path = parsed.path.rstrip("/")
 
             if not path.startswith("/api/"):
+                # Unknown route: authorize-agnostic 404, but drain the body so a
+                # keep-alive connection doesn't desync (unless it's oversize).
+                if self._body_too_large():
+                    self.close_connection = True
+                    self._send(413, {"error": "request body too large"}, started)
+                    return
+                self._read_body()
                 self._send(404, {"error": "not found"}, started)
                 return
 
+            # Authorize BEFORE reading the body: an unauthenticated client must
+            # not be able to make us allocate for its body. Reject + close so the
+            # undrained body can't desync a keep-alive connection.
             if not self._authorized():
+                self.close_connection = True
                 self._send(401, {"error": "unauthorized"}, started)
                 return
+
+            # Authorized: now enforce the size cap, then read the body.
+            if self._body_too_large():
+                self.close_connection = True
+                self._send(413, {"error": "request body too large"}, started)
+                return
+            body = self._read_body()
 
             prefix = "/api/actions/"
             if path.startswith(prefix):
@@ -4167,18 +4207,32 @@ class Handler(BaseHTTPRequestHandler):
 
     def do_DELETE(self):
         started = time.monotonic()
-        self._read_body()
         try:
             parsed = urlparse(self.path)
             path = parsed.path.rstrip("/")
 
             if not path.startswith("/api/"):
+                if self._body_too_large():
+                    self.close_connection = True
+                    self._send(413, {"error": "request body too large"}, started)
+                    return
+                self._read_body()  # drain for keep-alive safety
                 self._send(404, {"error": "not found"}, started)
                 return
 
+            # Authorize BEFORE reading the body (see do_POST).
             if not self._authorized():
+                self.close_connection = True
                 self._send(401, {"error": "unauthorized"}, started)
                 return
+
+            # DELETE bodies are unusual but a client may send one; cap + drain it
+            # for keep-alive safety now that we've authorized.
+            if self._body_too_large():
+                self.close_connection = True
+                self._send(413, {"error": "request body too large"}, started)
+                return
+            self._read_body()
 
             lprefix = "/api/launchers/"
             if path.startswith(lprefix):
