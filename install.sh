@@ -31,6 +31,14 @@ PLUGIN_URL="https://github.com/emerytech/couchside-decky/releases/latest/downloa
 # — a signing key + branch protection would be needed to prove the release itself
 # wasn't produced maliciously (out of scope here).
 PLUGIN_SUMS_URL="https://github.com/emerytech/couchside-decky/releases/latest/download/SHA256SUMS"
+PLUGIN_SIG_URL="https://github.com/emerytech/couchside-decky/releases/latest/download/SHA256SUMS.sig"
+# Ed25519 public key for verifying that SHA256SUMS was signed by the maintainer.
+# The matching SECRET key is held OFFLINE (never in CI), so a compromised
+# repo/CI/account cannot forge a signature. This half is public — safe to embed.
+# Signed with: openssl pkeyutl -sign -rawin (see scripts/sign-release.sh).
+RELEASE_PUBKEY_PEM='-----BEGIN PUBLIC KEY-----
+MCowBQYDK2VwAyEA+9aBnheHC7N3J9JNfkP2PoBf89SCkBxmqlZ/2lrcwGA=
+-----END PUBLIC KEY-----'
 
 PORT_DEFAULT=8787
 INSTALL_DIR="${HOME}/.local/opt/couchside"
@@ -903,13 +911,14 @@ if [ "$NO_DECKY" -eq 0 ] && [ -d "$DECKY_PLUGINS" ]; then
     # Decky's plugin dir is root-owned (same as a store install), so place the
     # files with sudo and let plugin_loader load them on restart.
     #
-    # Supply-chain integrity gate: fetch SHA256SUMS from the SAME release and
-    # verify Couchside.tar.gz against it before extracting. This catches a
-    # corrupted/truncated download, transport tampering, or a swapped-in tarball
-    # asset. It is NOT full authenticity — the sums file is from the same release,
-    # so proving the release itself is genuine would need branch protection +
-    # release signing (out of scope here). A mismatch or missing checksum aborts
-    # only the panel install (non-fatal: the agent is already installed above).
+    # Supply-chain gate: verify the release is (1) SIGNED by the maintainer's
+    # offline Ed25519 key and (2) matches its SHA256SUMS, before extracting. The
+    # signature proves authenticity even against a repo/CI/account compromise (the
+    # secret key is never in CI); the checksum catches corruption/transport
+    # tampering. A present-but-invalid signature or a checksum mismatch aborts the
+    # panel install (non-fatal: the agent is already installed above). An older,
+    # UNSIGNED release, or a box whose openssl lacks Ed25519, falls back to
+    # checksum-only with a warning rather than breaking the install.
     decky_verify_ok() {
         curl -fsSL "$PLUGIN_URL" -o "${decky_tmp}/Couchside.tar.gz" || {
             note "couldn't download the panel tarball (skipping)."
@@ -919,6 +928,26 @@ if [ "$NO_DECKY" -eq 0 ] && [ -d "$DECKY_PLUGINS" ]; then
             note "couldn't download SHA256SUMS for the panel; refusing to install unverified (skipping)."
             return 1
         }
+        # (1) Authenticity: verify SHA256SUMS.sig against the embedded public key.
+        # openssl's own words distinguish a real bad signature ("Verification
+        # Failure" -> abort) from an openssl that can't do Ed25519 -rawin (any
+        # other output -> fall back to checksum-only).
+        if curl -fsSL "$PLUGIN_SIG_URL" -o "${decky_tmp}/SHA256SUMS.sig" 2>/dev/null; then
+            printf '%s\n' "$RELEASE_PUBKEY_PEM" > "${decky_tmp}/couchside-release.pub"
+            sig_out="$(openssl pkeyutl -verify -pubin -inkey "${decky_tmp}/couchside-release.pub" \
+                        -rawin -in "${decky_tmp}/SHA256SUMS" \
+                        -sigfile "${decky_tmp}/SHA256SUMS.sig" 2>&1 || true)"
+            if printf '%s' "$sig_out" | grep -qi 'Verified Successfully'; then
+                note "release signature: verified (maintainer offline key)."
+            elif printf '%s' "$sig_out" | grep -qi 'Verification Failure'; then
+                note "release signature INVALID — refusing to install the panel (skipping)."
+                return 1
+            else
+                note "can't verify release signature (openssl lacks Ed25519); checksum only."
+            fi
+        else
+            note "no release signature found (older/unsigned release); checksum only."
+        fi
         # Verify only our tarball's line. `-c` checks entries whose filename
         # exists in the cwd, so run it from the temp dir. Prefer sha256sum, fall
         # back to `shasum -a 256` (present on Bazzite / most distros).
