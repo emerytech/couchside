@@ -24,6 +24,13 @@ QR_URL="https://raw.githubusercontent.com/emerytech/couchside/main/agent/qr.py"
 # Built Decky Loader plugin, shipped as a tarball because the compiled frontend
 # (dist/) isn't checked into git, so raw source wouldn't give a working panel.
 PLUGIN_URL="https://github.com/emerytech/couchside-decky/releases/latest/download/Couchside.tar.gz"
+# Checksum for the tarball above, published as a sibling asset in the SAME
+# release. Verifying against it guards against a corrupted/truncated download,
+# transport tampering, or a swapped-in Couchside.tar.gz asset. Note: because the
+# sums file comes from the same release, this is integrity, NOT full authenticity
+# — a signing key + branch protection would be needed to prove the release itself
+# wasn't produced maliciously (out of scope here).
+PLUGIN_SUMS_URL="https://github.com/emerytech/couchside-decky/releases/latest/download/SHA256SUMS"
 
 PORT_DEFAULT=8787
 INSTALL_DIR="${HOME}/.local/opt/couchside"
@@ -895,7 +902,43 @@ if [ "$NO_DECKY" -eq 0 ] && [ -d "$DECKY_PLUGINS" ]; then
     decky_tmp="$(mktemp -d)"
     # Decky's plugin dir is root-owned (same as a store install), so place the
     # files with sudo and let plugin_loader load them on restart.
-    if curl -fsSL "$PLUGIN_URL" -o "${decky_tmp}/Couchside.tar.gz" \
+    #
+    # Supply-chain integrity gate: fetch SHA256SUMS from the SAME release and
+    # verify Couchside.tar.gz against it before extracting. This catches a
+    # corrupted/truncated download, transport tampering, or a swapped-in tarball
+    # asset. It is NOT full authenticity — the sums file is from the same release,
+    # so proving the release itself is genuine would need branch protection +
+    # release signing (out of scope here). A mismatch or missing checksum aborts
+    # only the panel install (non-fatal: the agent is already installed above).
+    decky_verify_ok() {
+        curl -fsSL "$PLUGIN_URL" -o "${decky_tmp}/Couchside.tar.gz" || {
+            note "couldn't download the panel tarball (skipping)."
+            return 1
+        }
+        curl -fsSL "$PLUGIN_SUMS_URL" -o "${decky_tmp}/SHA256SUMS" || {
+            note "couldn't download SHA256SUMS for the panel; refusing to install unverified (skipping)."
+            return 1
+        }
+        # Verify only our tarball's line. `-c` checks entries whose filename
+        # exists in the cwd, so run it from the temp dir. Prefer sha256sum, fall
+        # back to `shasum -a 256` (present on Bazzite / most distros).
+        (
+            cd "$decky_tmp" || exit 1
+            grep -F ' Couchside.tar.gz' SHA256SUMS > SHA256SUMS.tarball || exit 1
+            if command -v sha256sum >/dev/null 2>&1; then
+                sha256sum -c SHA256SUMS.tarball >/dev/null 2>&1
+            elif command -v shasum >/dev/null 2>&1; then
+                shasum -a 256 -c SHA256SUMS.tarball >/dev/null 2>&1
+            else
+                exit 1
+            fi
+        ) || {
+            note "panel checksum verification FAILED (corrupt/tampered/missing entry); refusing to install (skipping)."
+            return 1
+        }
+        return 0
+    }
+    if decky_verify_ok \
         && sudo rm -rf "$DECKY_PLUGIN_DIR" \
         && sudo tar -xzf "${decky_tmp}/Couchside.tar.gz" -C "$DECKY_PLUGINS"; then
         # Force root ownership: a release archive built in CI can carry the

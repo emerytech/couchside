@@ -4470,11 +4470,9 @@ class Handler(BaseHTTPRequestHandler):
     def _send(self, code, payload, started, extra_headers=None):
         body = b"" if payload is None else json.dumps(payload).encode("utf-8")
         self.send_response(code)
-        self.send_header("Access-Control-Allow-Origin", "*")
-        self.send_header("Access-Control-Allow-Headers",
-                         "Authorization, Content-Type")
-        self.send_header("Access-Control-Allow-Methods",
-                         "GET, POST, DELETE, OPTIONS")
+        # No CORS: this is a LAN service for the native app + WS, neither of
+        # which need it; sending ACAO:* let a malicious browser tab read
+        # responses cross-origin.
         if payload is not None:
             self.send_header("Content-Type", "application/json")
         self.send_header("Content-Length", str(len(body)))
@@ -4490,13 +4488,11 @@ class Handler(BaseHTTPRequestHandler):
                     cache_control=None, extra_headers=None):
         """Write a raw binary body (image bytes: Steam covers, album art, later
         screen frames) with an EXACT Content-Length (keep-alive safety under
-        protocol_version HTTP/1.1) and the same CORS headers as _send."""
+        protocol_version HTTP/1.1)."""
         self.send_response(code)
-        self.send_header("Access-Control-Allow-Origin", "*")
-        self.send_header("Access-Control-Allow-Headers",
-                         "Authorization, Content-Type")
-        self.send_header("Access-Control-Allow-Methods",
-                         "GET, POST, DELETE, OPTIONS")
+        # No CORS: this is a LAN service for the native app + WS, neither of
+        # which need it; sending ACAO:* let a malicious browser tab read
+        # responses cross-origin.
         self.send_header("Content-Type", content_type)
         self.send_header("Content-Length", str(len(data)))
         if cache_control:
@@ -5306,6 +5302,41 @@ class Handler(BaseHTTPRequestHandler):
         return True
 
 
+class BoundedThreadingHTTPServer(ThreadingHTTPServer):
+    """ThreadingHTTPServer with a hard cap on concurrent connections so a
+    connection flood cannot exhaust threads/FDs. A non-blocking semaphore is
+    acquired before the worker thread is spawned; over the cap the socket is
+    closed and the connection rejected. Released when the request finishes.
+
+    Note: the long-lived /ws/gamepad connection holds a slot for the entire
+    Pad session, so the cap must comfortably exceed a household's phones.
+    """
+    _MAX_CONNECTIONS = 128
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self._conn_sem = threading.BoundedSemaphore(self._MAX_CONNECTIONS)
+
+    def process_request(self, request, client_address):
+        if not self._conn_sem.acquire(blocking=False):
+            # Over the concurrency cap: reject rather than pile up threads.
+            try:
+                self.shutdown_request(request)
+            except Exception:
+                pass
+            return
+        super().process_request(request, client_address)
+
+    def process_request_thread(self, request, client_address):
+        try:
+            super().process_request_thread(request, client_address)
+        finally:
+            try:
+                self._conn_sem.release()
+            except ValueError:
+                pass
+
+
 def load_token(args):
     if args.token:
         return args.token
@@ -5353,7 +5384,7 @@ def main():
     Handler.port = port
     Handler.mock = args.mock
 
-    server = ThreadingHTTPServer((args.host, port), Handler)
+    server = BoundedThreadingHTTPServer((args.host, port), Handler)
     server.daemon_threads = True
     mode = "mock" if args.mock else "real"
     print("%s %s listening on %s:%d (%s mode)" % (
