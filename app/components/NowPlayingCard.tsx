@@ -10,7 +10,7 @@ import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { Image, LayoutChangeEvent, Pressable, StyleSheet, Text, View } from 'react-native';
 
 import { usePoll } from '@/hooks/usePoll';
-import { api, Media, MediaOp, MediaPlayer, mediaArtSource } from '@/lib/api';
+import { api, hostKey, Media, MediaOp, MediaPlayer, mediaArtSource } from '@/lib/api';
 import { hapticLight, hapticMedium } from '@/lib/haptics';
 import { useSettings } from '@/lib/SettingsContext';
 import { mono, numeric, theme } from '@/lib/theme';
@@ -26,7 +26,8 @@ export function NowPlayingCard() {
   const { settings, ready } = useSettings();
   const configured = !!settings.host && !!settings.token;
 
-  const poll = usePoll<Media | null>(() => api.media(settings), 5000, ready && configured);
+  const poll = usePoll<Media | null>(
+    () => api.media(settings), 5000, ready && configured, hostKey(settings));
   const players = poll.data?.players ?? [];
 
   // Active player: user's pick if still present, else first Playing, else first.

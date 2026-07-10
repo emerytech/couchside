@@ -67,6 +67,30 @@ export type NetInfo = {
   wol_armed: boolean | null;
 };
 
+/**
+ * Optional-feature summary a box reports on /api/status (agent >= 2.8.2). Lets
+ * the app hide UI a box can't back — and skip the per-feature probe requests it
+ * otherwise fires on connect (GET /api/tv, /api/media, /api/screen, ...) — from
+ * the status poll it already makes, instead of N separate probe-and-appear
+ * round-trips. A hint, not authority: a live op still confirms (e.g. gamepad
+ * true but the controller node's perms broke). Absent on older agents — when
+ * `caps` is undefined the app falls back to probing each feature individually.
+ */
+export type BoxCaps = {
+  /** Virtual game controller (/dev/uinput on Linux, ViGEmBus on Windows). Gates the Pad tab. */
+  gamepad: boolean;
+  /** A Steam install is present. Gates the Launch tab: games, launch, downloads, cover art. */
+  steam: boolean;
+  /** Now-playing / transport (MPRIS on Linux, SMTC on Windows). Gates the media card. */
+  media: boolean;
+  /** A TV / volume backend (RS-232 panel, HDMI-CEC, or box soft-volume). Gates the TV strip. */
+  tv: boolean;
+  /** A screen-capture path for the live preview. Gates the preview card. */
+  screen: boolean;
+  /** Scheduled wake can be armed (RTC alarm on Linux, waitable timer on Windows). Gates the sleep/wake rows. */
+  power_schedule: boolean;
+};
+
 export type Status = {
   hostname: string;
   time: number;
@@ -78,6 +102,8 @@ export type Status = {
   /** Network facts for the power/Wake-on-LAN path (agent >= 2.6). */
   net?: NetInfo;
   agent_version: string;
+  /** Optional-feature summary (agent >= 2.8.2); undefined on older agents. See BoxCaps. */
+  caps?: BoxCaps;
 };
 
 export type UnitScope = 'system' | 'user';
@@ -321,6 +347,22 @@ async function probeOrNull<T>(p: Promise<T>): Promise<T | null> {
   }
 }
 
+/**
+ * Gate an optional-feature probe on the box's advertised caps (Status.caps).
+ * When `cap` is explicitly false the feature is absent, so resolve null WITHOUT
+ * a request — the round-trip the caps summary exists to save. When `cap` is
+ * undefined (older agent that doesn't report caps) we still run the probe, so
+ * behaviour is unchanged against agents < 2.8.2. A 404 from the probe itself is
+ * handled by probeOrNull, so this stays correct even if caps disagrees.
+ */
+function probeGated<T>(
+  cap: boolean | undefined,
+  probe: () => Promise<T | null>,
+): Promise<T | null> {
+  if (cap === false) return Promise.resolve(null);
+  return probe();
+}
+
 // ---------- Client ----------
 
 const TIMEOUT_MS = 4000;
@@ -334,11 +376,40 @@ function baseUrl(settings: Pick<Settings, 'host' | 'port'>): string {
 // JSON API proved reachable, not a blind settings.host that mDNS may have
 // stopped resolving under SteamOS Game Mode WiFi power-save.
 const lastGoodHost = new Map<string, string>();
-function hostKey(s: Pick<Settings, 'host' | 'port'>): string {
+/** Stable identity of a poll/connection target ("host:port"). Exported as the
+ *  canonical `resetKey` for usePoll: every active-box poll passes it so a box
+ *  switch clears stale data instead of briefly showing the previous box's. */
+export function hostKey(s: Pick<Settings, 'host' | 'port'>): string {
   return `${s.host}:${s.port}`;
 }
 export function resolveEffectiveHost(settings: ConnSettings): string {
   return lastGoodHost.get(hostKey(settings)) ?? settings.host;
+}
+
+// Latest capability summary each box reported on /api/status (keyed host:port),
+// so the optional-feature probes can skip a request the box has said it can't
+// answer without every caller threading caps down. Populated by api.status();
+// empty until the first status poll of a box returns (and always empty for
+// agents < 2.8.2 that don't report caps), in which case the probes fall back to
+// probing — never a false skip. Mirrors the lastGoodHost cache above.
+const lastCaps = new Map<string, BoxCaps>();
+function cachedCaps(settings: Pick<Settings, 'host' | 'port'>): BoxCaps | undefined {
+  return lastCaps.get(hostKey(settings));
+}
+
+/** Value-equality for BoxCaps (either may be undefined). Lets callers persist
+ *  caps onto a box only when it actually changed, avoiding write churn. */
+export function capsEqual(a?: BoxCaps, b?: BoxCaps): boolean {
+  if (a === b) return true;
+  if (!a || !b) return false;
+  return (
+    a.gamepad === b.gamepad &&
+    a.steam === b.steam &&
+    a.media === b.media &&
+    a.tv === b.tv &&
+    a.screen === b.screen &&
+    a.power_schedule === b.power_schedule
+  );
 }
 
 const B64_ALPHABET = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/';
@@ -546,8 +617,13 @@ export const api = {
     return request<Ping>(settings, '/api/ping', { auth: false });
   },
 
-  status(settings: ConnSettings): Promise<Status> {
-    return request<Status>(settings, '/api/status');
+  async status(settings: ConnSettings): Promise<Status> {
+    const s = await request<Status>(settings, '/api/status');
+    // Cache caps so the optional-feature probes can skip dead requests (see
+    // lastCaps). Only overwrite when present, so a momentary old-agent reply
+    // never clears a good entry.
+    if (s.caps) lastCaps.set(hostKey(settings), s.caps);
+    return s;
   },
 
   units(settings: ConnSettings): Promise<{ units: Unit[] }> {
@@ -588,8 +664,12 @@ export const api = {
    * 404 (agent < 2.8 or no route) so the Launch tab hides the section; a 200
    * with an empty list also means "nothing pending".
    */
-  downloads(settings: ConnSettings): Promise<Downloads | null> {
-    return probeOrNull(request<Downloads>(settings, '/api/downloads'));
+  downloads(
+    settings: ConnSettings,
+    caps: BoxCaps | undefined = cachedCaps(settings),
+  ): Promise<Downloads | null> {
+    return probeGated(caps?.steam, () =>
+      probeOrNull(request<Downloads>(settings, '/api/downloads')));
   },
 
   /**
@@ -726,8 +806,12 @@ export const api = {
    * null on 404 (agent < 2.8 or no session bus) so the card hides; 200 with an
    * empty list means "nothing playing". 8 s budget matches the agent's ceiling.
    */
-  media(settings: ConnSettings): Promise<Media | null> {
-    return probeOrNull(request<Media>(settings, '/api/media', { timeoutMs: 8000 }));
+  media(
+    settings: ConnSettings,
+    caps: BoxCaps | undefined = cachedCaps(settings),
+  ): Promise<Media | null> {
+    return probeGated(caps?.media, () =>
+      probeOrNull(request<Media>(settings, '/api/media', { timeoutMs: 8000 })));
   },
 
   /** One transport op on a player; `seek` carries { position_ms }. */
@@ -749,8 +833,12 @@ export const api = {
    * < 2.8 or no capture path) so the preview card hides. Frames come from
    * screenFrameSource(), not this method.
    */
-  screenInfo(settings: ConnSettings): Promise<ScreenInfo | null> {
-    return probeOrNull(request<ScreenInfo>(settings, '/api/screen', { timeoutMs: 8000 }));
+  screenInfo(
+    settings: ConnSettings,
+    caps: BoxCaps | undefined = cachedCaps(settings),
+  ): Promise<ScreenInfo | null> {
+    return probeGated(caps?.screen, () =>
+      probeOrNull(request<ScreenInfo>(settings, '/api/screen', { timeoutMs: 8000 })));
   },
 
   /**
@@ -758,8 +846,12 @@ export const api = {
    * (agent < 2.8.1) so the rows hide; a transient 500 still throws, never
    * reading as "timer vanished".
    */
-  powerSchedule(settings: ConnSettings): Promise<PowerSchedule | null> {
-    return probeOrNull(request<PowerSchedule>(settings, '/api/power/schedule'));
+  powerSchedule(
+    settings: ConnSettings,
+    caps: BoxCaps | undefined = cachedCaps(settings),
+  ): Promise<PowerSchedule | null> {
+    return probeGated(caps?.power_schedule, () =>
+      probeOrNull(request<PowerSchedule>(settings, '/api/power/schedule')));
   },
 
   /** Arm a delayed suspend/poweroff. */

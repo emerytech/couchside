@@ -3,7 +3,7 @@ import React, { useCallback, useState } from 'react';
 import { Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
 
 import { usePoll } from '@/hooks/usePoll';
-import { api, Tv, TvKey, TvOp } from '@/lib/api';
+import { api, hostKey, Tv, TvKey, TvOp } from '@/lib/api';
 import { GamepadClient } from '@/lib/gamepad';
 import { hapticLight } from '@/lib/haptics';
 import { Settings } from '@/lib/settings';
@@ -34,7 +34,7 @@ export function RemoteView({
   // flip the nav target from TV to BOX mid-interaction (one lost poll would
   // turn OSD arrow presses into gamepad presses inside a game). A box with no
   // backend never yields data (404), so the TV clusters still stay hidden.
-  const tvPoll = usePoll<Tv>(() => api.tv(settings), 15000, true);
+  const tvPoll = usePoll<Tv>(() => api.tv(settings), 15000, true, hostKey(settings));
   const tv = tvPoll.data?.available ? tvPoll.data : null;
   const hasTvKeys = tv?.keys === true;
   const sources = tv?.sources ?? [];

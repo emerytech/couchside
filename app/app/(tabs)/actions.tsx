@@ -13,7 +13,7 @@ import { Gated } from '@/components/Gated';
 import { TabScreen } from '@/components/TabScreen';
 import { useLockOrientation } from '@/hooks/useLockOrientation';
 import { usePoll } from '@/hooks/usePoll';
-import { ActionInfo, ActionResult, api, Danger } from '@/lib/api';
+import { ActionInfo, ActionResult, api, Danger, hostKey } from '@/lib/api';
 import { hapticError, hapticHeavy, hapticLight, hapticSuccess } from '@/lib/haptics';
 import { useSettings } from '@/lib/SettingsContext';
 import { mono, numeric, theme } from '@/lib/theme';
@@ -65,6 +65,7 @@ function ActionsScreen() {
     () => api.actions(settings),
     30000,
     ready,
+    hostKey(settings), // clear the previous box's actions on switch
   );
 
   const execute = useCallback(
