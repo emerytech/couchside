@@ -111,6 +111,14 @@ function Uninstall-Couchside {
         Where-Object { $_.CommandLine -like '*couchside-tray.pyw*' } |
         ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }
     if (Test-Path $StartupLnk) { Remove-Item -Force $StartupLnk -ErrorAction SilentlyContinue }
+    # Remove our ms-gamebar no-op handlers, but only if they are still OURS
+    # (command == systray.exe): never clobber a real Game Bar the user may have
+    # reinstalled since.
+    foreach ($s in 'ms-gamebar','ms-gamebarservices','ms-gamingoverlay') {
+        $b = "HKCU:\Software\Classes\$s"
+        $cmd = (Get-ItemProperty "$b\shell\open\command" -Name '(default)' -ErrorAction SilentlyContinue).'(default)'
+        if ($cmd -eq 'systray.exe') { Remove-Item $b -Recurse -Force -ErrorAction SilentlyContinue }
+    }
     if (Test-Path $InstallDir) { Remove-Item -Recurse -Force $InstallDir }
     Write-Host "Left in place (delete manually to unpair phones): $DataDir"
     Write-Host 'Note: if install disabled hibernation, restore it with `powercfg /hibernate on`.'
@@ -313,6 +321,27 @@ if tgz:
     }
     if (Test-Path $dllDest) { Write-Host 'Virtual gamepad ready (ViGEmBus + client DLL).' }
     else { Write-Host 'Gamepad driver step incomplete; the pad may be unavailable (everything else works).' }
+
+    # Silence the "Get an app to open this 'ms-gamebar' link" popup. Windows
+    # globally binds the Xbox *Guide* button to Xbox Game Bar; the app's Guide
+    # button drives that bit on the virtual pad, so on a box where Game Bar has
+    # been uninstalled every Guide press dead-ends in that dialog. Point the
+    # Game Bar URI schemes at a no-op (systray.exe exits instantly) so Windows
+    # opens nothing instead. Written to HKCU of the installing user, which is
+    # the agent's target user ($env:USERNAME — same identity the scheduled task
+    # below runs as); no effect on other accounts, reversible on --uninstall,
+    # no reboot. Steam Big Picture still intercepts Guide first while it is
+    # running, so this only changes the "nothing else handled Guide" case.
+    foreach ($s in 'ms-gamebar','ms-gamebarservices','ms-gamingoverlay') {
+        try {
+            $b = "HKCU:\Software\Classes\$s"
+            New-Item "$b\shell\open\command" -Force | Out-Null
+            Set-ItemProperty $b '(default)'    "URL:$s"
+            Set-ItemProperty $b 'URL Protocol' ''
+            Set-ItemProperty "$b\shell\open\command" '(default)' 'systray.exe'
+        } catch { }
+    }
+    Write-Host 'Silenced the Xbox Game Bar (ms-gamebar) popup for the Guide button.'
 }
 
 # --- 3. token (kept across reinstalls so paired phones keep working) ---------
