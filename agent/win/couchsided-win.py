@@ -1580,11 +1580,15 @@ VK_BACK, VK_TAB, VK_RETURN, VK_SHIFT, VK_ESCAPE, VK_SPACE = (
 VK_END, VK_HOME = 0x23, 0x24
 VK_LEFT, VK_UP, VK_RIGHT, VK_DOWN = 0x25, 0x26, 0x27, 0x28
 VK_VOLUME_MUTE, VK_VOLUME_DOWN, VK_VOLUME_UP = 0xAD, 0xAE, 0xAF
+# Modifier + Windows-key virtual codes, for the system-shortcut chords below.
+VK_LWIN, VK_LCONTROL, VK_LMENU = 0x5B, 0xA2, 0xA4
+VK_L = 0x4C  # letter L, for Win+L (lock)
 
 # E0-prefixed extended keys: SendInput needs KEYEVENTF_EXTENDEDKEY or their
-# scan codes alias onto the numpad for raw-input consumers.
+# scan codes alias onto the numpad for raw-input consumers. LWIN is E0-prefixed
+# too; without the flag Win+L / the Start menu can misfire.
 EXTENDED_VKS = frozenset((VK_LEFT, VK_UP, VK_RIGHT, VK_DOWN, VK_HOME, VK_END,
-                          VK_VOLUME_MUTE, VK_VOLUME_DOWN, VK_VOLUME_UP))
+                          VK_VOLUME_MUTE, VK_VOLUME_DOWN, VK_VOLUME_UP, VK_LWIN))
 
 # named special key -> virtual-key code (same protocol names as Linux)
 SPECIAL_KEYS = {
@@ -1599,6 +1603,18 @@ SPECIAL_KEYS = {
     "right": VK_RIGHT,
     "home": VK_HOME,
     "end": VK_END,
+}
+
+# System-shortcut chords (Windows desktop). One protocol name -> an ordered VK
+# sequence pressed down in order then released in reverse (see Keyboard.emit).
+# Ctrl+Alt+Del is deliberately absent: it is the Secure Attention Sequence, which
+# SendInput cannot generate by design (only the kernel/SendSAS can). These are
+# all plain injectable keystrokes.
+KEY_CHORDS = {
+    "win": (VK_LWIN,),                                # Start menu
+    "alt-tab": (VK_LMENU, VK_TAB),                    # switch window
+    "lock": (VK_LWIN, VK_L),                          # Win+L, lock the session
+    "taskmgr": (VK_LCONTROL, VK_SHIFT, VK_ESCAPE),    # Ctrl+Shift+Esc
 }
 
 if IS_WINDOWS:
@@ -3421,6 +3437,13 @@ class WinKeyboard:
                 vk = SPECIAL_KEYS[ev[1]]
                 inputs.append(_key_input(vk, True))
                 inputs.append(_key_input(vk, False))
+            elif kind == "chord":
+                # Press modifiers/keys in order, release in reverse — the
+                # standard hotkey shape (e.g. Alt down, Tab down, Tab up, Alt up).
+                for vk in ev[1]:
+                    inputs.append(_key_input(vk, True))
+                for vk in reversed(ev[1]):
+                    inputs.append(_key_input(vk, False))
         _send_inputs(inputs)
 
     def destroy(self):
@@ -3546,6 +3569,8 @@ def keyboard_events(msg):
         return [("text", text)]
     if t == "k":
         key = msg.get("key")
+        if key in KEY_CHORDS:
+            return [("chord", KEY_CHORDS[key])]
         if key not in SPECIAL_KEYS:
             raise ValueError("unknown special key %r" % (key,))
         return [("key", key)]

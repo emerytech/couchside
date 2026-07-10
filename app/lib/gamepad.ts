@@ -45,6 +45,9 @@ export type ButtonKey =
   | 'du'
   | 'dd';
 
+/** Windows desktop system shortcuts (one-shot chords the agent expands). */
+export type SystemChord = 'win' | 'alt-tab' | 'lock' | 'taskmgr';
+
 export type TriggerKey = 'lt' | 'rt';
 export type StickKey = 'l' | 'r';
 
@@ -388,6 +391,17 @@ export class GamepadClient {
   /** A single special key press+release (backspace, enter, arrows, …). */
   sendKey(key: SpecialKey): void {
     this.sendRaw({ t: 'k', key });
+  }
+
+  /**
+   * Fire a one-shot Windows system shortcut (Start / Alt+Tab / Lock / Task
+   * Manager). Rides the same {t:'k'} channel — the agent maps the name to a
+   * key-chord and presses/releases it. Windows-only (the buttons that call this
+   * only render for a ViGEm box); a Linux agent rejects the unknown name and
+   * drops the frame.
+   */
+  sendSystemChord(name: SystemChord): void {
+    this.sendRaw({ t: 'k', key: name });
   }
 
   // ---------- internals ----------
