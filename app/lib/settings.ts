@@ -1,6 +1,8 @@
 import { Platform } from 'react-native';
 import * as SecureStore from 'expo-secure-store';
 
+import type { BoxCaps } from './api';
+
 /**
  * Input style for the Pad tab:
  *  - gamepad:  full on-screen Xbox controller
@@ -40,6 +42,13 @@ export type Box = {
    * media keys, the default) or 'tv' (the panel/CEC backend). Per box.
    */
   volumeTarget?: 'box' | 'tv';
+  /**
+   * Optional-feature summary this box last reported on /api/status (agent >=
+   * 2.8.2), learned + persisted like `mac`. Lets the tab bar hide gaming tabs
+   * (Pad/Launch) on a server box immediately on launch, before the first live
+   * poll. Undefined until first learned / on older agents.
+   */
+  caps?: BoxCaps;
 };
 
 /**
@@ -57,6 +66,8 @@ export type Settings = {
   mac?: string;
   /** Volume target of the active box (see Box.volumeTarget). */
   volumeTarget?: 'box' | 'tv';
+  /** Capability summary of the active box (see Box.caps). */
+  caps?: BoxCaps;
 };
 
 /** Safe placeholder used when no box is active (nothing paired yet). */
@@ -184,6 +195,28 @@ function normalizePadMode(v: unknown): PadMode {
   return 'swipe';
 }
 
+/** Coerce a parsed value into a BoxCaps, or undefined unless all six flags are
+ *  present as booleans (a partial/garbage blob is dropped, not half-trusted). */
+function normalizeCaps(raw: unknown): BoxCaps | undefined {
+  if (!raw || typeof raw !== 'object') return undefined;
+  const o = raw as Record<string, unknown>;
+  const bool = (k: string): boolean | undefined =>
+    typeof o[k] === 'boolean' ? (o[k] as boolean) : undefined;
+  const gamepad = bool('gamepad');
+  const steam = bool('steam');
+  const media = bool('media');
+  const tv = bool('tv');
+  const screen = bool('screen');
+  const power_schedule = bool('power_schedule');
+  if (
+    gamepad === undefined || steam === undefined || media === undefined ||
+    tv === undefined || screen === undefined || power_schedule === undefined
+  ) {
+    return undefined;
+  }
+  return { gamepad, steam, media, tv, screen, power_schedule };
+}
+
 /** Coerce an arbitrary parsed value into a valid Box, or null if unusable. */
 function normalizeBox(raw: unknown): Box | null {
   if (!raw || typeof raw !== 'object') return null;
@@ -200,9 +233,10 @@ function normalizeBox(raw: unknown): Box | null {
     typeof o.lastIp === 'string' && isValidLanIp(o.lastIp) ? o.lastIp : undefined;
   const mac = normalizeMac(o.mac) ?? undefined;
   const volumeTarget = normalizeVolumeTarget(o.volumeTarget);
+  const caps = normalizeCaps(o.caps);
   return {
     id, name, host, port, token, padMode: normalizePadMode(o.padMode),
-    lastIp, mac, volumeTarget,
+    lastIp, mac, volumeTarget, caps,
   };
 }
 
@@ -292,6 +326,7 @@ export function activeSettings(state: BoxesState): Settings {
     lastIp: active.lastIp,
     mac: active.mac,
     volumeTarget: active.volumeTarget,
+    caps: active.caps,
   };
 }
 

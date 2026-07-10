@@ -1,5 +1,5 @@
 import Ionicons from '@expo/vector-icons/Ionicons';
-import { router, Tabs } from 'expo-router';
+import { router, Tabs, useSegments } from 'expo-router';
 import { useEffect, useRef } from 'react';
 
 import { hapticSelection } from '@/lib/haptics';
@@ -13,7 +13,15 @@ export const unstable_settings = {
 };
 
 export default function TabLayout() {
-  const { boxes, ready } = useBoxes();
+  const { boxes, activeBox, ready } = useBoxes();
+  const segments = useSegments();
+
+  // A "server box" (headless: no virtual gamepad, no Steam) reports these false
+  // in /api/status caps, so its gaming tabs are hidden. Undefined caps (unknown,
+  // or agent < 2.8.2) leaves both visible — never hide a tab on a guess.
+  const caps = activeBox?.caps;
+  const hidePad = caps?.gamepad === false;
+  const hideLaunch = caps?.steam === false;
 
   // On true first run (persisted fleet loaded, but empty) send the user to
   // Setup to pair. Runs once. After that, the Pad initial route stands.
@@ -25,6 +33,17 @@ export default function TabLayout() {
       router.replace('/(tabs)/setup');
     }
   }, [ready, boxes.length]);
+
+  // Bounce off a tab hidden for the active box — landing on the Pad initial
+  // route for a server box, or switching from an HTPC to a server box while the
+  // Pad/Launch tab is focused. Sends the user to Console (the tabs index).
+  useEffect(() => {
+    if (!ready) return;
+    const leaf = segments[segments.length - 1];
+    if ((hidePad && leaf === 'pad') || (hideLaunch && leaf === 'launch')) {
+      router.replace('/(tabs)');
+    }
+  }, [ready, hidePad, hideLaunch, segments]);
 
   return (
     <Tabs
@@ -47,6 +66,15 @@ export default function TabLayout() {
         }}
       />
       <Tabs.Screen
+        name="fleet"
+        options={{
+          title: 'Fleet',
+          tabBarIcon: ({ color }) => <Ionicons name="server" size={24} color={color} />,
+          // Only useful with several boxes; single-box users keep a clean bar.
+          href: boxes.length >= 2 ? undefined : null,
+        }}
+      />
+      <Tabs.Screen
         name="actions"
         options={{
           title: 'Actions',
@@ -58,6 +86,8 @@ export default function TabLayout() {
         options={{
           title: 'Pad',
           tabBarIcon: ({ color }) => <Ionicons name="game-controller" size={24} color={color} />,
+          // Hidden on a server box (no virtual gamepad). null = no tab bar entry.
+          href: hidePad ? null : undefined,
         }}
       />
       <Tabs.Screen
@@ -65,6 +95,8 @@ export default function TabLayout() {
         options={{
           title: 'Launch',
           tabBarIcon: ({ color }) => <Ionicons name="rocket" size={24} color={color} />,
+          // Hidden on a server box (no Steam install). null = no tab bar entry.
+          href: hideLaunch ? null : undefined,
         }}
       />
       <Tabs.Screen

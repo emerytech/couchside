@@ -247,6 +247,7 @@ export function useSettings(): SettingsContextValue {
       lastIp: activeBox.lastIp,
       mac: activeBox.mac,
       volumeTarget: activeBox.volumeTarget,
+      caps: activeBox.caps,
     };
   }, [activeBox]);
 

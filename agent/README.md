@@ -135,7 +135,7 @@ All responses carry permissive CORS headers; `OPTIONS` returns 204.
 | Route | Method | Description |
 |---|---|---|
 | `/api/ping` | GET | Unauthenticated reachability probe: `{"ok":true,"app":"couchside-agent","version":"<agent version>","host":"…","ip":"…"}` |
-| `/api/status` | GET | hostname, time, uptime, load, CPU temp, memory, disk usage (`/`, `/var`), and `net` (`iface`, `mac`, `wired`, `wol_armed`) for the app's Wake-on-LAN power path |
+| `/api/status` | GET | hostname, time, uptime, load, CPU temp, memory, disk usage (`/`, `/var`), `net` (`iface`, `mac`, `wired`, `wol_armed`) for the app's Wake-on-LAN power path, and `caps` (added in 2.8.2): a boot-time summary `{"gamepad","steam","media","tv","screen","power_schedule"}` of booleans saying which optional features this box supports, so the app hides unsupported UI and skips the per-feature probes (`/api/tv`, `/api/media`, `/api/screen`, `/api/downloads`, `/api/power/schedule`) on connect. A hint, not authority — a live op still confirms. Older agents omit `caps` and the app falls back to probing each feature |
 | `/api/units` | GET | State of the configured watchlist units |
 | `/api/journal?unit=<name>&lines=<n>&scope=system\|user` | GET | Last n journal lines (default 100, clamped 1 to 500). Unit must be in the configured watchlist, else 400 |
 | `/api/actions` | GET | Configured actions with id/label/description/danger |

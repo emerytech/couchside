@@ -5,7 +5,7 @@ import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
 import { SleepTimerSheet } from '@/components/SleepTimerSheet';
 import { usePoll } from '@/hooks/usePoll';
-import { api, PowerSchedule, Status, Tv, TvOp, VolumeTarget } from '@/lib/api';
+import { api, capsEqual, hostKey, PowerSchedule, Status, Tv, TvOp, VolumeTarget } from '@/lib/api';
 import { hapticError, hapticLight, hapticSuccess } from '@/lib/haptics';
 import { getPref, usePref } from '@/lib/prefs';
 import { normalizeMac } from '@/lib/settings';
@@ -182,7 +182,15 @@ export function RemotePowerBar() {
   }, [open]);
 
   const statusInterval = usePref('statusIntervalMs');
-  const status = usePoll<Status>(() => api.status(settings), statusInterval, ready && configured);
+  // hostKey as resetKey: usePoll guarantees `status.data` always belongs to
+  // the CURRENT box (cleared on switch, in-flight results for the old box
+  // discarded). The learners below persist onto the active box, and this bar
+  // is mounted once per tab screen — without that guarantee a stale instance
+  // once mis-attributed one box's data to another and the competing writes
+  // ping-ponged forever ("Maximum update depth exceeded").
+  const boxKey = hostKey(settings);
+  const status = usePoll<Status>(
+    () => api.status(settings), statusInterval, ready && configured, boxKey);
   const s = status.data;
   const reachable = configured && status.error == null && s != null;
 
@@ -192,12 +200,22 @@ export function RemotePowerBar() {
     if (mac && mac !== settings.mac) void update({ mac });
   }, [s?.net?.mac, settings.mac, update]);
 
+  // Learn + persist the box's capability summary from status (agent >= 2.8.2),
+  // so the tab bar can hide gaming tabs on a server box immediately on next
+  // launch. Value-equality gate (caps is a fresh object every poll) so it
+  // writes storage once per real change, not once per poll.
+  React.useEffect(() => {
+    if (s?.caps && !capsEqual(s.caps, settings.caps)) {
+      void update({ caps: s.caps });
+    }
+  }, [s?.caps, settings.caps, update]);
+
   // TV/audio backend + mute state. Polled (not probed once per connect) so the
   // mute indicator self-heals when the box is muted out of band (controller,
   // keyboard, a stale seed), and a TV backend appearing/disappearing shows up
   // without a reconnect. api.tv 404s when there is no backend, which surfaces
   // as tvPoll.error, so tv stays null there.
-  const tvPoll = usePoll<Tv>(() => api.tv(settings), 5000, reachable);
+  const tvPoll = usePoll<Tv>(() => api.tv(settings), 5000, reachable, boxKey);
   const refreshTv = tvPoll.refresh;
   const tv = reachable && tvPoll.error == null && tvPoll.data?.available ? tvPoll.data : null;
   const muted = tv?.muted ?? null;
@@ -208,6 +226,7 @@ export function RemotePowerBar() {
     () => api.powerSchedule(settings),
     15000,
     reachable,
+    boxKey,
   );
   const schedule = reachable ? schedulePoll.data ?? null : null;
   const [sleepOpen, setSleepOpen] = React.useState(false);

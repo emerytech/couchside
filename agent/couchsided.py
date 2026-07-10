@@ -40,7 +40,7 @@ except ImportError:  # pragma: no cover
     fcntl = None
 
 APP_NAME = "couchside-agent"
-VERSION = "2.8.1"
+VERSION = "2.8.2"
 UID = os.getuid()
 XDG_RUNTIME_DIR = "/run/user/%d" % UID
 
@@ -596,6 +596,64 @@ def read_disks():
     return disks
 
 
+# ---------------------------------------------------------------------------
+# Box capability summary (rides /api/status).
+#
+# The app learns which optional features a box supports (gamepad, Steam,
+# now-playing, TV strip, screen preview, scheduled wake) so it can hide UI the
+# box can't back. Historically it discovered each one with its own probe-and-
+# appear request (GET /api/tv, /api/media, /api/screen, ...): N round-trips per
+# connect, each independently version-sniffed. Folding a boolean summary into
+# the status poll it already makes lets the app skip those probes and paint the
+# right UI on the first frame. A boot-time snapshot, like the existing probes it
+# replaces: presence here (a controller node, a Steam install, a session bus) is
+# static per boot, so it is computed once in main() and served from CAPS.
+#
+# It is a hint, not authority: a live op still confirms (e.g. gamepad=True but
+# /dev/uinput perms broke). Absent on agents < this version, so the app keeps
+# its 404 fallbacks. In --mock every capability reads True so the whole app is
+# exercisable on a dev machine with no hardware.
+# ---------------------------------------------------------------------------
+
+CAPS = {}  # set once by set_caps() in main(); returned by real_/mock_status
+
+
+def _uinput_writable():
+    """Best-effort: can this process open /dev/uinput for the virtual gamepad?
+    The udev rule + `input` group grant rw; os.access uses the real uid/gid,
+    which is what the service runs as. Never raises."""
+    try:
+        return os.access("/dev/uinput", os.W_OK)
+    except Exception:
+        return False
+
+
+def set_caps(mock):
+    """Snapshot box capabilities into CAPS. Call in main() AFTER set_tv/
+    set_mpris/set_screen so the availability helpers reflect real startup
+    detection. In --mock everything is available (see module note)."""
+    global CAPS
+
+    def safe(fn):
+        try:
+            return bool(fn())
+        except Exception:
+            return False
+
+    if mock:
+        CAPS = {k: True for k in
+                ("gamepad", "steam", "media", "tv", "screen", "power_schedule")}
+        return
+    CAPS = {
+        "gamepad": _uinput_writable(),
+        "steam": _steam_root() is not None,
+        "media": safe(mpris_available),
+        "tv": safe(lambda: _tv_hw_backend() is not None or soft_available()),
+        "screen": _SCREEN is not None,
+        "power_schedule": safe(rtc_available),
+    }
+
+
 def real_status():
     return {
         "hostname": socket.gethostname().split(".")[0],
@@ -607,6 +665,7 @@ def real_status():
         "disks": read_disks(),
         "net": net_info_cached(),
         "agent_version": VERSION,
+        "caps": CAPS,
     }
 
 
@@ -965,6 +1024,7 @@ def mock_status():
         "net": {"iface": "eth0", "mac": "de:ad:be:ef:00:01",
                 "wired": True, "wol_armed": True},
         "agent_version": VERSION,
+        "caps": CAPS,
     }
 
 
@@ -5375,6 +5435,7 @@ def main():
     set_mpris(args.mock)
     set_screen(args.mock)
     set_power_schedule(args.mock)
+    set_caps(args.mock)  # after the detectors above; snapshots CAPS
     port = args.port if args.port is not None else (CONFIG_PORT or DEFAULT_PORT)
 
     Handler.token = load_token(args)
@@ -5395,6 +5456,8 @@ def main():
     print("mpris: %s" % ("available" if BUSCTL else "unavailable"), flush=True)
     print("screen: %s" % (("%s (%s)" % (_SCREEN["session"], ",".join(_SCREEN["backends"])))
                           if _SCREEN else "unavailable"), flush=True)
+    print("caps: %s" % (",".join(sorted(k for k, v in CAPS.items() if v)) or "none"),
+          flush=True)
     try:
         server.serve_forever()
     except KeyboardInterrupt:

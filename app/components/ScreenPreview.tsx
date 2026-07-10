@@ -12,7 +12,7 @@ import React, { useCallback, useEffect, useRef, useState } from 'react';
 import { AppState, AppStateStatus, Image, Modal, Pressable, StyleSheet, Text, View } from 'react-native';
 
 import { usePoll } from '@/hooks/usePoll';
-import { api, screenFrameSource, ScreenInfo } from '@/lib/api';
+import { api, hostKey, screenFrameSource, ScreenInfo } from '@/lib/api';
 import { hapticLight } from '@/lib/haptics';
 import { useSettings } from '@/lib/SettingsContext';
 import { mono, theme } from '@/lib/theme';
@@ -25,15 +25,32 @@ export function ScreenPreview() {
   const configured = !!settings.host && !!settings.token;
 
   // Slow probe: just detects whether capture is possible on this box.
+  const boxKey = hostKey(settings);
   const probe = usePoll<ScreenInfo | null>(
     () => api.screenInfo(settings),
     30000,
     ready && configured,
+    boxKey, // clear the previous box's probe on switch
   );
-  // Sticky: once a box has ever reported capture support, keep the card so a
-  // later 404 (e.g. the greeter after a session restart) is explained, not hidden.
+  // Sticky PER BOX: once this box has ever reported capture support, keep the
+  // card so a later 404 (e.g. the greeter after a session restart) is
+  // explained, not hidden. Stickiness must not survive a box switch — that
+  // once left the card showing "no capturable session" on a headless box that
+  // never supported capture at all.
+  //
+  // The dataKey check is load-bearing, not belt-and-braces: on a box switch,
+  // React finishes executing the discarded render pass with the OLD box's
+  // probe.data still visible, and a bare `if (probe.data)` there re-poisons
+  // this ref right after the reset below. dataKey identifies which box the
+  // data belongs to, so the doomed pass can't attribute it to the new box.
+  // (See PollState.dataKey in hooks/usePoll.ts.)
   const everSupported = useRef(false);
-  if (probe.data) everSupported.current = true;
+  const supportKeyRef = useRef(boxKey);
+  if (supportKeyRef.current !== boxKey) {
+    supportKeyRef.current = boxKey;
+    everSupported.current = false;
+  }
+  if (probe.data && probe.dataKey === boxKey) everSupported.current = true;
   const supported = probe.data != null;
 
   const [active, setActive] = useState(false);

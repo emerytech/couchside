@@ -7,7 +7,7 @@ import { ScreenPreview } from '@/components/ScreenPreview';
 import { TabScreen } from '@/components/TabScreen';
 import { useLockOrientation } from '@/hooks/useLockOrientation';
 import { usePoll } from '@/hooks/usePoll';
-import { api, humanizeUptime, Status, Unit } from '@/lib/api';
+import { api, hostKey, humanizeUptime, Status, Unit } from '@/lib/api';
 import { usePref } from '@/lib/prefs';
 import { useSettings } from '@/lib/SettingsContext';
 import { mono, numeric, pctColor, tempColor, theme } from '@/lib/theme';
@@ -84,8 +84,11 @@ function ConsoleScreen() {
   const configured = settings.host.trim().length > 0;
 
   const statusInterval = usePref('statusIntervalMs');
-  const status = usePoll<Status>(() => api.status(settings), statusInterval, ready && configured);
-  const units = usePoll<{ units: Unit[] }>(() => api.units(settings), 10000, ready && configured);
+  const boxKey = hostKey(settings); // resetKey: clear stale data on box switch
+  const status = usePoll<Status>(
+    () => api.status(settings), statusInterval, ready && configured, boxKey);
+  const units = usePoll<{ units: Unit[] }>(
+    () => api.units(settings), 10000, ready && configured, boxKey);
 
   const s = status.data;
   const reachable = configured && status.error == null && s != null;
@@ -224,6 +227,12 @@ function ConsoleScreen() {
             ) : (
               <Text style={styles.unitErr}>loading…</Text>
             )}
+            {/* The watchlist is box-side config, not app state — point at it so
+                homelab users know they can watch their own services. */}
+            <Text style={styles.unitHint}>
+              watchlist: /etc/couchside/config.json on the box (units[]), then
+              restart couchside.service
+            </Text>
           </Card>
         )}
       </ScrollView>
@@ -332,4 +341,5 @@ const styles = StyleSheet.create({
   chipName: { color: theme.text, fontSize: 13, fontFamily: mono, flexShrink: 1 },
   chipState: { fontSize: 12, marginLeft: 'auto', ...numeric },
   unitErr: { color: theme.textDim, fontSize: 13 },
+  unitHint: { color: theme.textFaint, fontFamily: mono, fontSize: 10, marginTop: 10 },
 });

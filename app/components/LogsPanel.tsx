@@ -1,8 +1,8 @@
-import React, { useCallback, useEffect, useState } from 'react';
+import React, { useCallback, useState } from 'react';
 import { FlatList, Pressable, StyleSheet, Switch, Text, View } from 'react-native';
 
 import { usePoll } from '@/hooks/usePoll';
-import { api, Journal, Unit, UnitScope } from '@/lib/api';
+import { api, hostKey, Journal, Unit, UnitScope } from '@/lib/api';
 import { usePref } from '@/lib/prefs';
 import { useSettings } from '@/lib/SettingsContext';
 import { mono, theme } from '@/lib/theme';
@@ -37,7 +37,8 @@ export function LogsPanel() {
 
   // The picker mirrors the agent's journal watchlist (/api/units). The huge
   // interval parks the timer; usePoll still fetches on mount and every focus.
-  const units = usePoll<{ units: Unit[] }>(() => api.units(settings), 3600_000, ready);
+  const boxKey = hostKey(settings); // resetKey: clear stale data on box switch
+  const units = usePoll<{ units: Unit[] }>(() => api.units(settings), 3600_000, ready, boxKey);
   const picker =
     units.data && units.data.units.length > 0 ? toPicker(units.data.units) : FALLBACK_UNITS;
 
@@ -49,14 +50,12 @@ export function LogsPanel() {
     // usePoll still fires immediately on focus / refresh()).
     auto ? 5000 : 3600_000,
     ready,
+    // Keyed by box AND selected unit: switching either clears the old lines in
+    // the same render and refires — no flash of another unit's journal. This
+    // replaces the manual refresh-on-unit-change effect this panel used to
+    // carry (resetKey also covers the box switch that effect missed).
+    `${boxKey}|${target.scope}:${target.unit}`,
   );
-
-  // Re-fetch immediately when the selected unit changes (index or, once the
-  // real watchlist arrives, the unit that index resolves to).
-  const { refresh } = journal;
-  useEffect(() => {
-    refresh();
-  }, [target.unit, target.scope, refresh]);
 
   const renderLine = useCallback(
     ({ item }: { item: string }) => <Text style={styles.line}>{item}</Text>,

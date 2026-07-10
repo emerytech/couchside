@@ -84,7 +84,7 @@ except ImportError:
 # Same app id the phone expects (AGENT_APPS in app/lib/api.ts); the Windows
 # agent versions independently of the Linux one.
 APP_NAME = "couchside-agent"
-VERSION = "0.3.0-win"
+VERSION = "0.3.1-win"
 
 _PROGRAMDATA = os.environ.get("ProgramData", r"C:\ProgramData")
 DEFAULT_CONFIG_PATH = os.path.join(_PROGRAMDATA, "Couchside", "config.json")
@@ -737,6 +737,40 @@ def net_info_cached():
     return _NET_CACHE["val"]
 
 
+# Box capability summary (rides /api/status); see the Linux agent's real_status
+# for the full rationale. Mirrors the same six flags so one app codebase reads
+# either agent. Snapshotted once in main() after the detectors run; a hint, not
+# authority; absent on older agents (app keeps its 404 fallbacks); all True in
+# --mock. vigem_available() is a load-only DLL check (no bus connect).
+CAPS = {}  # set once by set_caps() in main(); returned by real_/mock_status
+
+
+def set_caps(mock):
+    """Snapshot box capabilities into CAPS. Call in main() AFTER set_tv/
+    set_screen/set_power_schedule so the availability helpers reflect startup
+    detection. In --mock everything reads True."""
+    global CAPS
+
+    def safe(fn):
+        try:
+            return bool(fn())
+        except Exception:
+            return False
+
+    if mock:
+        CAPS = {k: True for k in
+                ("gamepad", "steam", "media", "tv", "screen", "power_schedule")}
+        return
+    CAPS = {
+        "gamepad": safe(vigem_available),
+        "steam": _steam_root() is not None,
+        "media": safe(smtc_available),
+        "tv": safe(lambda: _tv_hw_backend() is not None or soft_available()),
+        "screen": _SCREEN is not None,
+        "power_schedule": safe(wake_available),
+    }
+
+
 def real_status():
     return {
         "hostname": socket.gethostname().split(".")[0],
@@ -748,6 +782,7 @@ def real_status():
         "disks": read_disks(),
         "net": net_info_cached(),
         "agent_version": VERSION,
+        "caps": CAPS,
     }
 
 
@@ -973,6 +1008,7 @@ def mock_status():
         "net": {"iface": "Intel(R) Ethernet Connection I219-V",
                 "mac": "de:ad:be:ef:00:02", "wired": True, "wol_armed": True},
         "agent_version": VERSION,
+        "caps": CAPS,
     }
 
 
@@ -3153,6 +3189,39 @@ _VIGEM_LOCK = threading.Lock()
 _VIGEM = {"dll": None, "client": None}
 
 
+def _vigem_dll_candidates():
+    """Where ViGEmClient.dll might live, in load order."""
+    candidates = []
+    base = getattr(sys, "_MEIPASS", None)  # PyInstaller onefile extract dir
+    if base:
+        candidates.append(os.path.join(base, "ViGEmClient.dll"))
+    candidates.append(os.path.join(
+        os.path.dirname(os.path.abspath(__file__)), "ViGEmClient.dll"))
+    candidates.append("ViGEmClient.dll")  # PATH / System32
+    return candidates
+
+
+def _vigem_load_dll():
+    """Load ViGEmClient.dll (no client connect), or None if not found. A
+    side-effect-free presence check for caps; the real client connect happens in
+    _load_vigem()."""
+    for cand in _vigem_dll_candidates():
+        try:
+            return ctypes.CDLL(cand)
+        except OSError:
+            continue
+    return None
+
+
+def vigem_available():
+    """True when ViGEmClient.dll loads. A hint (the ViGEmBus driver could still
+    be down); the gamepad WS connect is the ground-truth check."""
+    try:
+        return _vigem_load_dll() is not None
+    except Exception:
+        return False
+
+
 def _load_vigem():
     """Load ViGEmClient.dll and connect a shared client (cached on success).
     Returns (dll, client) or raises RuntimeError with a useful message.
@@ -3164,20 +3233,7 @@ def _load_vigem():
     with _VIGEM_LOCK:
         if _VIGEM["client"] is not None:
             return _VIGEM["dll"], _VIGEM["client"]
-        candidates = []
-        base = getattr(sys, "_MEIPASS", None)  # PyInstaller onefile extract dir
-        if base:
-            candidates.append(os.path.join(base, "ViGEmClient.dll"))
-        candidates.append(os.path.join(
-            os.path.dirname(os.path.abspath(__file__)), "ViGEmClient.dll"))
-        candidates.append("ViGEmClient.dll")  # PATH / System32
-        dll = None
-        for cand in candidates:
-            try:
-                dll = ctypes.CDLL(cand)
-                break
-            except OSError:
-                continue
+        dll = _vigem_load_dll()
         if dll is None:
             raise RuntimeError(
                 "ViGEmClient.dll not found (install ViGEmBus and place "
@@ -4593,6 +4649,7 @@ def main():
     set_tv(args.mock)
     set_screen(args.mock)
     set_power_schedule(args.mock)
+    set_caps(args.mock)  # after the detectors above; snapshots CAPS
     if IS_WINDOWS and not args.mock:
         start_load_sampler()
     port = args.port if args.port is not None else (CONFIG_PORT or DEFAULT_PORT)

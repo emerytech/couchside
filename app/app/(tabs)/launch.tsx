@@ -26,7 +26,7 @@ import { Gated } from '@/components/Gated';
 import { TabScreen } from '@/components/TabScreen';
 import { useLockOrientation } from '@/hooks/useLockOrientation';
 import { usePoll } from '@/hooks/usePoll';
-import { api, Downloads, ImageSource, Launcher, SteamDownload } from '@/lib/api';
+import { api, Downloads, hostKey, ImageSource, Launcher, SteamDownload } from '@/lib/api';
 import { hapticError, hapticLight, hapticMedium, hapticSuccess } from '@/lib/haptics';
 import { useSettings } from '@/lib/SettingsContext';
 import { mono, theme } from '@/lib/theme';
@@ -321,10 +321,12 @@ function LaunchScreen() {
   // Bumped on pull-to-refresh so tiles retry any cover that failed to load.
   const [retryKey, setRetryKey] = useState(0);
 
+  const boxKey = hostKey(settings); // resetKey: clear stale data on box switch
   const list = usePoll<{ launchers: Launcher[] }>(
     () => api.launchers(settings),
     30000,
     ready,
+    boxKey,
   );
 
   const showToast = useCallback((msg: string) => {
@@ -336,7 +338,8 @@ function LaunchScreen() {
   // `active` is declared BEFORE the poll that reads it (avoids a TDZ self-ref)
   // and flipped by the effect below; poll fast while something is downloading.
   const [active, setActive] = useState(false);
-  const dl = usePoll<Downloads | null>(() => api.downloads(settings), active ? 5000 : 20000, ready);
+  const dl = usePoll<Downloads | null>(
+    () => api.downloads(settings), active ? 5000 : 20000, ready, boxKey);
   const downloads = useMemo(() => dl.data?.downloads ?? [], [dl.data]);
   const dlByAppid = useMemo(() => new Map(downloads.map((d) => [d.appid, d])), [downloads]);
 
