@@ -34,7 +34,7 @@ import { Gated } from '@/components/Gated';
 import { RemoteView } from '@/components/RemoteView';
 import { TabScreen } from '@/components/TabScreen';
 import { useLockOrientation } from '@/hooks/useLockOrientation';
-import { ButtonKey, GamepadClient, GamepadStatus, StickKey, TriggerKey } from '@/lib/gamepad';
+import { ButtonKey, GamepadClient, GamepadStatus, StickKey, SystemChord, TriggerKey } from '@/lib/gamepad';
 import { PadMode } from '@/lib/settings';
 import { useSettings } from '@/lib/SettingsContext';
 import { mono, theme } from '@/lib/theme';
@@ -692,6 +692,14 @@ function PadScreen() {
   // auto-releases, so one tap opens the ⋯ panel where Decky / plugins live.
   const qam = useCallback(() => client.qamChord(), [client]);
 
+  // Windows desktop shortcuts (Start / Alt+Tab / Lock / Task Manager). Only a
+  // ViGEm (Windows) box maps these; the row that uses them is gated on that.
+  const isWindows = dev === 'ViGEm X360 pad';
+  const sys = useCallback(
+    (name: SystemChord) => () => client.sendSystemChord(name),
+    [client],
+  );
+
   const trig = useCallback(
     (k: TriggerKey) => ({
       onDown: () => client.sendTrigger(k, 255),
@@ -899,6 +907,19 @@ function PadScreen() {
               fontSize={22}
             />
           </View>
+          {/* Windows desktop shortcuts — one-shot chords, ViGEm boxes only. */}
+          {isWindows && (
+            <View style={styles.swipeBtnRow}>
+              <PadButton label="⊞ WIN" onDown={sys('win')} onUp={NOOP}
+                style={[styles.tpBtn, styles.tpBtnWide]} fontSize={12} />
+              <PadButton label="ALT+TAB" onDown={sys('alt-tab')} onUp={NOOP}
+                style={[styles.tpBtn, styles.tpBtnWide]} fontSize={11} />
+              <PadButton label="LOCK" onDown={sys('lock')} onUp={NOOP}
+                style={styles.tpBtn} fontSize={11} />
+              <PadButton label="TASK" onDown={sys('taskmgr')} onUp={NOOP}
+                style={styles.tpBtn} fontSize={11} />
+            </View>
+          )}
           {keyboardBar}
         </>
       ) : landscape ? (
