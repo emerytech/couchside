@@ -214,7 +214,10 @@ function normalizeCaps(raw: unknown): BoxCaps | undefined {
   ) {
     return undefined;
   }
-  return { gamepad, steam, media, tv, screen, power_schedule };
+  // screensaver arrived later (agent 2.8.4): optional, so caps persisted from
+  // a 2.8.2/2.8.3 box still round-trip. undefined = unknown -> the app probes.
+  const screensaver = bool('screensaver');
+  return { gamepad, steam, media, tv, screen, power_schedule, screensaver };
 }
 
 /** Coerce an arbitrary parsed value into a valid Box, or null if unusable. */

@@ -21,6 +21,9 @@ UNIT_URL="https://raw.githubusercontent.com/emerytech/couchside/main/agent/couch
 # without qrencode (immutable distros like Bazzite rarely ship it). Optional:
 # a failed fetch just falls back to printing the URL.
 QR_URL="https://raw.githubusercontent.com/emerytech/couchside/main/agent/qr.py"
+# Aerial-screensaver player script (agent's /api/screensaver launches it via a
+# Steam shortcut). Optional: a failed fetch just means the feature stays absent.
+SCREENSAVER_URL="https://raw.githubusercontent.com/emerytech/couchside/main/agent/couchside-screensaver.sh"
 # Built Decky Loader plugin, shipped as a tarball because the compiled frontend
 # (dist/) isn't checked into git, so raw source wouldn't give a working panel.
 PLUGIN_URL="https://github.com/emerytech/couchside-decky/releases/latest/download/Couchside.tar.gz"
@@ -338,6 +341,9 @@ if [ -n "$SCRIPT_DIR" ] && [ -f "$SCRIPT_DIR/agent/couchsided.py" ]; then
     cp "$SCRIPT_DIR/agent/couchside.service" "$WORK_DIR/couchside.service"
     # Optional QR helper: present in a checkout, harmless if not.
     [ -f "$SCRIPT_DIR/agent/qr.py" ] && cp "$SCRIPT_DIR/agent/qr.py" "$WORK_DIR/qr.py"
+    # Optional aerial-screensaver player (the agent's /api/screensaver drives it).
+    [ -f "$SCRIPT_DIR/agent/couchside-screensaver.sh" ] && \
+        cp "$SCRIPT_DIR/agent/couchside-screensaver.sh" "$WORK_DIR/couchside-screensaver.sh"
 else
     command -v curl >/dev/null 2>&1 || die "curl not found (needed to fetch the agent files)."
     say "Fetching agent files from GitHub"
@@ -347,6 +353,8 @@ else
     curl -fsSL "$UNIT_URL" -o "$WORK_DIR/couchside.service"
     # Optional: don't abort the install if only the QR helper fails to fetch.
     curl -fsSL "$QR_URL" -o "$WORK_DIR/qr.py" 2>/dev/null || true
+    # Optional aerial-screensaver player, same policy.
+    curl -fsSL "$SCREENSAVER_URL" -o "$WORK_DIR/couchside-screensaver.sh" 2>/dev/null || true
 fi
 # Integrity / sanity gate (FAIL CLOSED): never install code we just fetched
 # without first checking it parses. py_compile catches a truncated download or an
@@ -368,6 +376,13 @@ fi
 say "Installing daemon to $INSTALL_DIR"
 mkdir -p "$INSTALL_DIR"
 install -m 0755 "$WORK_DIR/couchsided.py" "$INSTALL_DIR/couchsided.py"
+# The aerial-screensaver player is optional: install only if it fetched and
+# parses (bash -n), so a failed/HTML fetch can't land as an executable script.
+if [ -f "$WORK_DIR/couchside-screensaver.sh" ] \
+   && bash -n "$WORK_DIR/couchside-screensaver.sh" 2>/dev/null \
+   && head -1 "$WORK_DIR/couchside-screensaver.sh" | grep -q '^#!'; then
+    install -m 0755 "$WORK_DIR/couchside-screensaver.sh" "$INSTALL_DIR/couchside-screensaver.sh"
+fi
 # The QR helper is optional: install it only if it fetched and compiles, so the
 # terminal pairing QR works without qrencode. Its absence just prints the URL.
 if [ -f "$WORK_DIR/qr.py" ] && python3 -m py_compile "$WORK_DIR/qr.py" 2>/dev/null; then

@@ -84,7 +84,7 @@ except ImportError:
 # Same app id the phone expects (AGENT_APPS in app/lib/api.ts); the Windows
 # agent versions independently of the Linux one.
 APP_NAME = "couchside-agent"
-VERSION = "0.3.2-win"
+VERSION = "0.3.3-win"
 
 _PROGRAMDATA = os.environ.get("ProgramData", r"C:\ProgramData")
 DEFAULT_CONFIG_PATH = os.path.join(_PROGRAMDATA, "Couchside", "config.json")
@@ -758,8 +758,11 @@ def set_caps(mock):
             return False
 
     if mock:
+        # screensaver stays False even in mock: it is a gamescope/Steam-shortcut
+        # feature the Windows agent does not implement (see the Linux agent).
         CAPS = {k: True for k in
                 ("gamepad", "steam", "media", "tv", "screen", "power_schedule")}
+        CAPS["screensaver"] = False
         return
     CAPS = {
         "gamepad": safe(vigem_available),
@@ -768,6 +771,7 @@ def set_caps(mock):
         "tv": safe(lambda: _tv_hw_backend() is not None or soft_available()),
         "screen": _SCREEN is not None,
         "power_schedule": safe(wake_available),
+        "screensaver": False,
     }
 
 

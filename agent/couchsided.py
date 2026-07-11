@@ -40,7 +40,7 @@ except ImportError:  # pragma: no cover
     fcntl = None
 
 APP_NAME = "couchside-agent"
-VERSION = "2.8.3"
+VERSION = "2.8.4"
 UID = os.getuid()
 XDG_RUNTIME_DIR = "/run/user/%d" % UID
 
@@ -642,7 +642,8 @@ def set_caps(mock):
 
     if mock:
         CAPS = {k: True for k in
-                ("gamepad", "steam", "media", "tv", "screen", "power_schedule")}
+                ("gamepad", "steam", "media", "tv", "screen", "power_schedule",
+                 "screensaver")}
         return
     CAPS = {
         "gamepad": _uinput_writable(),
@@ -651,7 +652,204 @@ def set_caps(mock):
         "tv": safe(lambda: _tv_hw_backend() is not None or soft_available()),
         "screen": _SCREEN is not None,
         "power_schedule": safe(rtc_available),
+        "screensaver": safe(screensaver_available),
     }
+
+
+# ---------------------------------------------------------------------------
+# Aerial screensaver (/api/screensaver).
+#
+# Apple-TV-style flyover screensaver. The heavy lifting lives in the installed
+# couchside-screensaver.sh (deployed by install.sh / the Decky plugin next to
+# this agent): it caches Apple's public aerial catalog, filters by THEME, picks
+# a quality TIER, and loops shuffled videos with ffplay. This agent only
+# manages it:
+#   - it must be launched THROUGH STEAM (gamescope surfaces only what Steam
+#     focuses — the atom tricks were tested and do not work), so first start
+#     registers it as a non-Steam shortcut via steamos-add-to-steam and
+#     launches it with steam://rungameid/<id>;
+#   - stop kills the pid from the script's pidfile (NOT the pgid — Steam's
+#     reaper owns the process group);
+#   - theme/tier are written to the script's conf before each start.
+# ---------------------------------------------------------------------------
+
+SCREENSAVER_SCRIPT = os.path.expanduser(
+    "~/.local/opt/couchside/couchside-screensaver.sh")
+SCREENSAVER_CONF = os.path.expanduser("~/.config/couchside/screensaver.conf")
+SCREENSAVER_PIDFILE = os.path.expanduser("~/.cache/couchside/screensaver.pid")
+SCREENSAVER_THEMES = ("all", "landscapes", "cities", "space", "underwater")
+SCREENSAVER_TIERS = ("1080-H264", "1080-SDR", "1080-HDR", "4K-SDR", "4K-HDR")
+# How long to wait for steamos-add-to-steam's async registration to land in
+# shortcuts.vdf, and the gap between the double rungameid fire on a fresh
+# registration (the first open only shows the shortcut's page).
+SS_REGISTER_WAIT_S = 10
+SS_FIRST_LAUNCH_GAP_S = 4
+
+SS_MOCK = False
+_SS_MOCK = {"running": False, "theme": "all", "tier": "1080-H264"}
+_SS_LOCK = threading.Lock()   # one start/stop mutation at a time
+
+
+def set_screensaver(mock):
+    global SS_MOCK
+    SS_MOCK = mock
+
+
+def screensaver_available():
+    """Script deployed + the Steam-launch toolchain present. Boot-time hint
+    (rides caps); GET /api/screensaver is the live authority."""
+    return (os.path.isfile(SCREENSAVER_SCRIPT)
+            and shutil.which("ffplay") is not None
+            and shutil.which("steam") is not None
+            and shutil.which("steamos-add-to-steam") is not None)
+
+
+def _ss_running():
+    try:
+        with open(SCREENSAVER_PIDFILE) as f:
+            pid = int(f.read().strip())
+        os.kill(pid, 0)
+        return True
+    except (OSError, ValueError):
+        return False
+
+
+def _ss_conf_read():
+    """(theme, tier) from the script's conf, defaults when absent/partial."""
+    theme, tier = "all", "1080-H264"
+    try:
+        with open(SCREENSAVER_CONF) as f:
+            for line in f:
+                line = line.strip()
+                if line.startswith("THEME="):
+                    theme = line.split("=", 1)[1].strip() or theme
+                elif line.startswith("TIER="):
+                    tier = line.split("=", 1)[1].strip() or tier
+    except OSError:
+        pass
+    return theme, tier
+
+
+def _ss_conf_write(theme, tier):
+    os.makedirs(os.path.dirname(SCREENSAVER_CONF), exist_ok=True)
+    with open(SCREENSAVER_CONF, "w") as f:
+        f.write("TIER=%s\nTHEME=%s\n" % (tier, theme))
+
+
+def _ss_validate(theme, tier):
+    """Validated (theme, tier), raising ValueError on junk. theme may be a
+    comma list of known themes ("space,underwater")."""
+    parts = [t.strip().lower() for t in str(theme).split(",") if t.strip()]
+    if not parts:
+        parts = ["all"]
+    for t in parts:
+        if t not in SCREENSAVER_THEMES:
+            raise ValueError("unknown theme %r" % t)
+    if tier not in SCREENSAVER_TIERS:
+        raise ValueError("unknown tier %r" % tier)
+    return ",".join(parts), tier
+
+
+def _ss_appid():
+    """The registered shortcut's appid from shortcuts.vdf, or None. Matched by
+    exe path so a rename of the tile doesn't break the lookup."""
+    for p in glob.glob(os.path.expanduser(
+            "~/.steam/steam/userdata/*/config/shortcuts.vdf")):
+        try:
+            with open(p, "rb") as f:
+                data = f.read()
+        except OSError:
+            continue
+        i = data.find(b"couchside-screensaver.sh")
+        if i < 0:
+            continue
+        # The appid field precedes the exe/appname block of the same entry.
+        seg = data[max(0, i - 300):i]
+        j = seg.rfind(b"\x02appid\x00")
+        if j >= 0 and j + 12 <= len(seg):
+            return struct.unpack("<I", seg[j + 8:j + 12])[0]
+    return None
+
+
+def _ss_gameid(appid):
+    """steam://rungameid id for a non-Steam shortcut."""
+    return (appid << 32) | 0x02000000
+
+
+def _ss_fire(gameid):
+    subprocess.Popen(
+        ["steam", "steam://rungameid/%d" % gameid],
+        env=_user_env(), start_new_session=True,
+        stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+
+
+def screensaver_info():
+    if SS_MOCK:
+        return {"available": True, "running": _SS_MOCK["running"],
+                "theme": _SS_MOCK["theme"], "tier": _SS_MOCK["tier"],
+                "themes": list(SCREENSAVER_THEMES),
+                "tiers": list(SCREENSAVER_TIERS)}
+    theme, tier = _ss_conf_read()
+    return {"available": screensaver_available(), "running": _ss_running(),
+            "theme": theme, "tier": tier,
+            "themes": list(SCREENSAVER_THEMES),
+            "tiers": list(SCREENSAVER_TIERS)}
+
+
+def screensaver_start(theme, tier):
+    """Write conf and launch via Steam. Registration (first ever start) and
+    the fresh-registration double-fire run in a background thread — the POST
+    returns immediately and the app watches `running` flip via GET."""
+    theme, tier = _ss_validate(theme, tier)
+    if SS_MOCK:
+        _SS_MOCK.update(running=True, theme=theme, tier=tier)
+        return {"ok": True, "running": True}
+    if not screensaver_available():
+        raise RuntimeError("screensaver not installed on this box")
+    with _SS_LOCK:
+        _ss_conf_write(theme, tier)
+        if _ss_running():
+            # Restart with the new theme/tier: kill, then relaunch below.
+            screensaver_stop()
+        appid = _ss_appid()
+
+    def launch():
+        aid = appid
+        fresh = aid is None
+        if fresh:
+            subprocess.run(
+                ["steamos-add-to-steam", SCREENSAVER_SCRIPT],
+                env=_user_env(), timeout=30,
+                stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            deadline = time.monotonic() + SS_REGISTER_WAIT_S
+            while aid is None and time.monotonic() < deadline:
+                time.sleep(1)
+                aid = _ss_appid()
+            if aid is None:
+                print("[screensaver] registration did not appear in shortcuts.vdf",
+                      flush=True)
+                return
+        _ss_fire(_ss_gameid(aid))
+        if fresh:
+            # A shortcut's very first rungameid only opens its page.
+            time.sleep(SS_FIRST_LAUNCH_GAP_S)
+            _ss_fire(_ss_gameid(aid))
+
+    threading.Thread(target=launch, daemon=True).start()
+    return {"ok": True, "starting": True}
+
+
+def screensaver_stop():
+    if SS_MOCK:
+        _SS_MOCK["running"] = False
+        return {"ok": True, "running": False}
+    try:
+        with open(SCREENSAVER_PIDFILE) as f:
+            pid = int(f.read().strip())
+        os.kill(pid, 15)  # SIGTERM; the script forwards it to its ffplay child
+    except (OSError, ValueError):
+        pass  # not running = already stopped; stop is idempotent
+    return {"ok": True, "running": False}
 
 
 # ---------------------------------------------------------------------------
@@ -4763,6 +4961,15 @@ class Handler(BaseHTTPRequestHandler):
                 # Always 200: reports the (volatile) sleep timer + the RTC wake
                 # alarm read from hardware. Old agents 404 -> app hides the rows.
                 self._send(200, power_schedule_info(), started)
+            elif path == "/api/screensaver":
+                # Probe-and-appear like /api/tv: 404 when the script/toolchain
+                # is absent so the app hides the feature (and old apps that
+                # never ask are unaffected).
+                info = screensaver_info()
+                if info["available"]:
+                    self._send(200, info, started)
+                else:
+                    self._send(404, {"error": "screensaver not installed"}, started)
             else:
                 self._send(404, {"error": "not found"}, started)
         except BrokenPipeError:
@@ -4992,6 +5199,37 @@ class Handler(BaseHTTPRequestHandler):
                     self._send(404, {"error": "unknown player"}, started)
                     return
                 self._send(200, result, started)
+                return
+
+            # POST /api/screensaver: {"op":"start","theme"?,"tier"?} | {"op":"stop"}
+            if path == "/api/screensaver":
+                if not (SS_MOCK or screensaver_available()):
+                    self._send(404, {"error": "screensaver not installed"}, started)
+                    return
+                try:
+                    req = json.loads(body.decode("utf-8")) if body else {}
+                    if not isinstance(req, dict):
+                        raise ValueError
+                    op = req.get("op")
+                except (ValueError, UnicodeDecodeError):
+                    self._send(400, {"error": "json body with op required"}, started)
+                    return
+                cur_theme, cur_tier = _ss_conf_read()
+                if op == "start":
+                    try:
+                        r = screensaver_start(req.get("theme", cur_theme),
+                                              req.get("tier", cur_tier))
+                    except ValueError as e:
+                        self._send(400, {"error": str(e)}, started)
+                        return
+                    except RuntimeError as e:
+                        self._send(409, {"error": str(e)}, started)
+                        return
+                    self._send(200, r, started)
+                elif op == "stop":
+                    self._send(200, screensaver_stop(), started)
+                else:
+                    self._send(400, {"error": "op must be start|stop"}, started)
                 return
 
             # POST /api/power/sleep: arm a delayed suspend/poweroff.
@@ -5486,6 +5724,7 @@ def main():
     set_mpris(args.mock)
     set_screen(args.mock)
     set_power_schedule(args.mock)
+    set_screensaver(args.mock)
     set_caps(args.mock)  # after the detectors above; snapshots CAPS
     port = args.port if args.port is not None else (CONFIG_PORT or DEFAULT_PORT)
 

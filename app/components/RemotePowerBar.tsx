@@ -3,9 +3,10 @@ import React from 'react';
 import { Alert, Modal, PanResponder, Platform, Pressable, StyleSheet, Text, View } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
+import { ScreensaverSheet } from '@/components/ScreensaverSheet';
 import { SleepTimerSheet } from '@/components/SleepTimerSheet';
 import { usePoll } from '@/hooks/usePoll';
-import { api, capsEqual, hostKey, PowerSchedule, Status, Tv, TvOp, VolumeTarget } from '@/lib/api';
+import { api, capsEqual, hostKey, PowerSchedule, Screensaver, Status, Tv, TvOp, VolumeTarget } from '@/lib/api';
 import { hapticError, hapticLight, hapticSuccess } from '@/lib/haptics';
 import { getPref, usePref } from '@/lib/prefs';
 import { normalizeMac } from '@/lib/settings';
@@ -230,6 +231,17 @@ export function RemotePowerBar() {
   );
   const schedule = reachable ? schedulePoll.data ?? null : null;
   const [sleepOpen, setSleepOpen] = React.useState(false);
+
+  // Aerial screensaver (agent >= 2.8.4, gamescope boxes). Probe-and-appear:
+  // null hides the row; caps.screensaver === false skips the request entirely.
+  const saverPoll = usePoll<Screensaver | null>(
+    () => api.screensaver(settings),
+    15000,
+    reachable,
+    boxKey,
+  );
+  const saver = reachable ? saverPoll.data ?? null : null;
+  const [saverOpen, setSaverOpen] = React.useState(false);
 
   // Suspend-action availability, once per connect (agent >= 2.6 with the rule).
   const [hasSuspend, setHasSuspend] = React.useState(false);
@@ -456,6 +468,7 @@ export function RemotePowerBar() {
   const canBlankScreen = reachable && tv?.screen_toggle === true;
   const canSuspend = reachable && hasSuspend;
   const canWake = !reachable && !!settings.mac && wolAvailable;
+  const hasSaver = reachable && saver?.available === true;
 
   // Nothing to control on this box right now.
   if (
@@ -465,6 +478,7 @@ export function RemotePowerBar() {
     !hasTvPower &&
     !canSourceBox &&
     !canBlankScreen &&
+    !hasSaver &&
     sources.length === 0
   )
     return null;
@@ -539,6 +553,21 @@ export function RemotePowerBar() {
                     </Text>
                   )}
                 </View>
+              )}
+
+              {/* Aerial screensaver (agent >= 2.8.4, gamescope boxes) */}
+              {hasSaver && (
+                <Pressable
+                  onPress={() => {
+                    setOpen(false);
+                    setSaverOpen(true);
+                  }}
+                  style={({ pressed }) => [styles.bigBtn, pressed && styles.pressed]}>
+                  <Ionicons name="film-outline" size={22} color={theme.text} />
+                  <Text style={styles.bigLabel}>
+                    {saver?.running ? 'Screensaver · playing' : 'Screensaver'}
+                  </Text>
+                </Pressable>
               )}
 
               {/* Sleep timer / wake schedule (agent >= 2.8.1) */}
@@ -694,6 +723,13 @@ export function RemotePowerBar() {
         schedule={schedule}
         onChanged={schedulePoll.refresh}
         onClose={() => setSleepOpen(false)}
+      />
+      <ScreensaverSheet
+        visible={saverOpen}
+        settings={settings}
+        saver={saver}
+        onChanged={saverPoll.refresh}
+        onClose={() => setSaverOpen(false)}
       />
     </>
   );
