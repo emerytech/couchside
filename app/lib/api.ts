@@ -91,6 +91,18 @@ export type BoxCaps = {
   power_schedule: boolean;
 };
 
+/**
+ * Recent-vitals ring (agent >= 2.8.3): parallel arrays, oldest first, sampled
+ * on the status poll itself (>=10s apart, ~30 samples ≈ 5 min). Entries may be
+ * null when the box couldn't read a value — gap the sparkline, don't draw 0.
+ */
+export type StatusHistory = {
+  t: number[];
+  temp: (number | null)[];
+  load: (number | null)[];
+  mem_pct: (number | null)[];
+};
+
 export type Status = {
   hostname: string;
   time: number;
@@ -104,6 +116,8 @@ export type Status = {
   agent_version: string;
   /** Optional-feature summary (agent >= 2.8.2); undefined on older agents. See BoxCaps. */
   caps?: BoxCaps;
+  /** Recent-vitals ring for sparklines (agent >= 2.8.3); undefined on older agents. */
+  history?: StatusHistory;
 };
 
 export type UnitScope = 'system' | 'user';

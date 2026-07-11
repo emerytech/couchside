@@ -3,6 +3,7 @@ import React from 'react';
 import { AppState, AppStateStatus, Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
 
 import { Gated } from '@/components/Gated';
+import { Sparkline } from '@/components/Sparkline';
 import { TabScreen } from '@/components/TabScreen';
 import { useFocusEffect } from 'expo-router';
 import { useLockOrientation } from '@/hooks/useLockOrientation';
@@ -168,24 +169,30 @@ function Tile({ box, entry, active, onPress }: {
       </Text>
 
       {up && s ? (
-        <View style={styles.metricsRow}>
-          <View style={styles.metric}>
-            <Text style={styles.metricLabel}>TEMP</Text>
-            <Text style={[styles.metricValue, { color: tempColor(s.cpu_temp_c) }]}>
-              {s.cpu_temp_c != null ? `${Math.round(s.cpu_temp_c)}°` : '—'}
-            </Text>
+        <>
+          <View style={styles.metricsRow}>
+            <View style={styles.metric}>
+              <Text style={styles.metricLabel}>TEMP</Text>
+              <Text style={[styles.metricValue, { color: tempColor(s.cpu_temp_c) }]}>
+                {s.cpu_temp_c != null ? `${Math.round(s.cpu_temp_c)}°` : '—'}
+              </Text>
+            </View>
+            <View style={styles.metric}>
+              <Text style={styles.metricLabel}>LOAD</Text>
+              <Text style={[styles.metricValue, { color: theme.text }]}>
+                {s.load[0].toFixed(2)}
+              </Text>
+            </View>
+            <View style={styles.metric}>
+              <Text style={styles.metricLabel}>MEM</Text>
+              <Text style={[styles.metricValue, { color: pctColor(memPct) }]}>{memPct}%</Text>
+            </View>
           </View>
-          <View style={styles.metric}>
-            <Text style={styles.metricLabel}>LOAD</Text>
-            <Text style={[styles.metricValue, { color: theme.text }]}>
-              {s.load[0].toFixed(2)}
-            </Text>
+          {/* Load trend, indented to align with the metrics row. */}
+          <View style={styles.sparkWrap}>
+            <Sparkline values={s.history?.load} color={theme.blue} height={16} />
           </View>
-          <View style={styles.metric}>
-            <Text style={styles.metricLabel}>MEM</Text>
-            <Text style={[styles.metricValue, { color: pctColor(memPct) }]}>{memPct}%</Text>
-          </View>
-        </View>
+        </>
       ) : (
         <Text style={styles.downText}>
           {entry == null ? 'probing…' : `DOWN · last seen ${fmtLastSeen(entry.lastSuccess)}`}
@@ -277,6 +284,7 @@ const styles = StyleSheet.create({
     marginLeft: 17,
   },
   metricsRow: { flexDirection: 'row', gap: 18, marginTop: 10, marginLeft: 17 },
+  sparkWrap: { marginLeft: 17 },
   metric: {},
   metricLabel: {
     color: theme.textFaint,

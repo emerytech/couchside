@@ -2,6 +2,7 @@ import { DarkTheme, Stack, ThemeProvider } from 'expo-router';
 import { StatusBar } from 'expo-status-bar';
 import 'react-native-reanimated';
 
+import { ReviewPrompt } from '@/components/ReviewPrompt';
 import { UnlockToast } from '@/components/UnlockToast';
 import { DeepLinkHandler } from '@/lib/DeepLink';
 import { EntitlementProvider } from '@/lib/EntitlementContext';
@@ -38,6 +39,8 @@ export default function RootLayout() {
           </Stack>
           {/* Global overlay: survives the Paywall unmount on unlock (see UnlockToast). */}
           <UnlockToast />
+          {/* One-shot store-review ask a few seconds after the unlock toast. */}
+          <ReviewPrompt />
         </ThemeProvider>
       </EntitlementProvider>
     </SettingsProvider>
