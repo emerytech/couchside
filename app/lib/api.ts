@@ -89,6 +89,23 @@ export type BoxCaps = {
   screen: boolean;
   /** Scheduled wake can be armed (RTC alarm on Linux, waitable timer on Windows). Gates the sleep/wake rows. */
   power_schedule: boolean;
+  /**
+   * Aerial screensaver (Steam-shortcut launched, Linux/gamescope boxes only).
+   * Optional: absent on agents < 2.8.4, so undefined must read as "unknown,
+   * probe" — only an explicit false skips the probe.
+   */
+  screensaver?: boolean;
+};
+
+/** GET/POST /api/screensaver state (agent >= 2.8.4). */
+export type Screensaver = {
+  available: boolean;
+  running: boolean;
+  /** Current theme ("all" or comma list, e.g. "space,underwater"). */
+  theme: string;
+  tier: string;
+  themes: string[];
+  tiers: string[];
 };
 
 /**
@@ -422,7 +439,8 @@ export function capsEqual(a?: BoxCaps, b?: BoxCaps): boolean {
     a.media === b.media &&
     a.tv === b.tv &&
     a.screen === b.screen &&
-    a.power_schedule === b.power_schedule
+    a.power_schedule === b.power_schedule &&
+    a.screensaver === b.screensaver
   );
 }
 
@@ -866,6 +884,31 @@ export const api = {
   ): Promise<PowerSchedule | null> {
     return probeGated(caps?.power_schedule, () =>
       probeOrNull(request<PowerSchedule>(settings, '/api/power/schedule')));
+  },
+
+  /**
+   * Aerial screensaver state. Probe-and-appear: null on 404 (agent < 2.8.4 or
+   * script not installed) so the row hides. caps.screensaver === false skips
+   * the request outright; undefined (older agent) still probes.
+   */
+  screensaver(
+    settings: ConnSettings,
+    caps: BoxCaps | undefined = cachedCaps(settings),
+  ): Promise<Screensaver | null> {
+    return probeGated(caps?.screensaver, () =>
+      probeOrNull(request<Screensaver>(settings, '/api/screensaver')));
+  },
+
+  /** Start the screensaver (optionally switching theme/tier) or stop it. */
+  screensaverOp(
+    settings: ConnSettings,
+    op: 'start' | 'stop',
+    opts: { theme?: string; tier?: string } = {},
+  ): Promise<{ ok: boolean; running?: boolean; starting?: boolean }> {
+    return request(settings, '/api/screensaver', {
+      method: 'POST',
+      body: { op, ...opts },
+    });
   },
 
   /** Arm a delayed suspend/poweroff. */
