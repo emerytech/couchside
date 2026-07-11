@@ -40,7 +40,7 @@ except ImportError:  # pragma: no cover
     fcntl = None
 
 APP_NAME = "couchside-agent"
-VERSION = "2.8.2"
+VERSION = "2.8.3"
 UID = os.getuid()
 XDG_RUNTIME_DIR = "/run/user/%d" % UID
 
@@ -654,18 +654,63 @@ def set_caps(mock):
     }
 
 
+# ---------------------------------------------------------------------------
+# Metrics history (rides /api/status as "history").
+#
+# A small ring of recent vitals so the app can draw sparklines instead of a
+# single point-in-time number. Sampled ON the status poll itself — no
+# background thread, no idle cost; the ring only advances while a client is
+# actually watching, which is exactly when the trend matters. Samples are
+# rate-limited to one per HISTORY_MIN_INTERVAL_S no matter how many clients
+# poll (Fleet polls every box), and the ring holds HISTORY_LEN samples
+# (~5 min at the app's cadence). Parallel arrays keep the payload tiny.
+# ---------------------------------------------------------------------------
+
+HISTORY_LEN = 30
+HISTORY_MIN_INTERVAL_S = 10
+_HISTORY = {"t": [], "temp": [], "load": [], "mem_pct": []}
+_HISTORY_LOCK = threading.Lock()
+
+
+def _record_history(now, temp, load1, mem):
+    """Append one sample (rate-limited, ring-capped). Values may be None —
+    recorded as-is so the app can gap the sparkline rather than draw a lie."""
+    mem_pct = None
+    if isinstance(mem, dict) and mem.get("total_mb"):
+        mem_pct = round(mem.get("used_mb", 0) * 100.0 / mem["total_mb"], 1)
+    with _HISTORY_LOCK:
+        if _HISTORY["t"] and now - _HISTORY["t"][-1] < HISTORY_MIN_INTERVAL_S:
+            return
+        for key, val in (("t", now), ("temp", temp),
+                         ("load", load1), ("mem_pct", mem_pct)):
+            _HISTORY[key].append(val)
+            if len(_HISTORY[key]) > HISTORY_LEN:
+                del _HISTORY[key][0]
+
+
+def _history_snapshot():
+    with _HISTORY_LOCK:
+        return {k: list(v) for k, v in _HISTORY.items()}
+
+
 def real_status():
+    load = read_load()
+    temp = read_cpu_temp_c()
+    mem = read_mem()
+    now = int(time.time())
+    _record_history(now, temp, load[0] if load else None, mem)
     return {
         "hostname": socket.gethostname().split(".")[0],
-        "time": int(time.time()),
+        "time": now,
         "uptime_s": read_uptime_s(),
-        "load": read_load(),
-        "cpu_temp_c": read_cpu_temp_c(),
-        "mem": read_mem(),
+        "load": load,
+        "cpu_temp_c": temp,
+        "mem": mem,
         "disks": read_disks(),
         "net": net_info_cached(),
         "agent_version": VERSION,
         "caps": CAPS,
+        "history": _history_snapshot(),
     }
 
 
@@ -1006,15 +1051,20 @@ def mock_status():
     import math
     base = 55.0 + 4.5 * math.sin(now / 97.0)
     temp = round(base + random.uniform(-0.8, 0.8), 1)
+    load1 = round(random.uniform(0.2, 1.4), 2)
+    mem = {"total_mb": 15803, "used_mb": 6212, "available_mb": 9591}
+    # Feed the same history ring as real mode so sparklines are exercisable in
+    # --mock (rate-limited exactly the same way).
+    _record_history(int(now), temp, load1, mem)
     return {
         "hostname": "couchside-box",
         "time": int(now),
         "uptime_s": int(now - MOCK_START + MOCK_BOOT_OFFSET),
-        "load": [round(random.uniform(0.2, 1.4), 2),
+        "load": [load1,
                  round(random.uniform(0.3, 1.1), 2),
                  round(random.uniform(0.3, 0.9), 2)],
         "cpu_temp_c": temp,
-        "mem": {"total_mb": 15803, "used_mb": 6212, "available_mb": 9591},
+        "mem": mem,
         "disks": [
             {"mount": "/", "total_gb": 465.1, "used_gb": 210.4,
              "free_gb": 254.7, "pct": 45},
@@ -1025,6 +1075,7 @@ def mock_status():
                 "wired": True, "wol_armed": True},
         "agent_version": VERSION,
         "caps": CAPS,
+        "history": _history_snapshot(),
     }
 
 

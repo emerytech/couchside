@@ -4,6 +4,7 @@ import { Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
 import { Gated } from '@/components/Gated';
 import { NowPlayingCard } from '@/components/NowPlayingCard';
 import { ScreenPreview } from '@/components/ScreenPreview';
+import { Sparkline } from '@/components/Sparkline';
 import { TabScreen } from '@/components/TabScreen';
 import { useLockOrientation } from '@/hooks/useLockOrientation';
 import { usePoll } from '@/hooks/usePoll';
@@ -161,6 +162,7 @@ function ConsoleScreen() {
                   <Text style={[styles.bigMetric, { color: tempColor(s.cpu_temp_c) }]}>
                     {s.cpu_temp_c != null ? `${s.cpu_temp_c.toFixed(1)}°C` : '—'}
                   </Text>
+                  <Sparkline values={s.history?.temp} color={tempColor(s.cpu_temp_c)} />
                 </Card>
               </View>
               <View style={styles.half}>
@@ -180,6 +182,7 @@ function ConsoleScreen() {
                   </Text>
                 ))}
               </View>
+              <Sparkline values={s.history?.load} color={theme.blue} />
             </Card>
 
             <Card title="MEMORY">
@@ -190,6 +193,9 @@ function ConsoleScreen() {
                 <Text style={[styles.barLabel, { color: pctColor(memPct) }]}>{memPct}%</Text>
               </View>
               <Bar pct={memPct} color={pctColor(memPct)} />
+              {/* Fixed 0-100 scale: a memory sparkline that auto-scales would
+                  make a 2% wiggle look like a cliff. */}
+              <Sparkline values={s.history?.mem_pct} color={pctColor(memPct)} min={0} max={100} />
             </Card>
 
             <Card title="DISKS">
