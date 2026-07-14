@@ -3,6 +3,8 @@ import { StatusBar } from 'expo-status-bar';
 import 'react-native-reanimated';
 
 import { ReviewPrompt } from '@/components/ReviewPrompt';
+import { ReviewToast } from '@/components/ReviewToast';
+import { TrialEndsToast } from '@/components/TrialEndsToast';
 import { UnlockToast } from '@/components/UnlockToast';
 import { DeepLinkHandler } from '@/lib/DeepLink';
 import { EntitlementProvider } from '@/lib/EntitlementContext';
@@ -39,8 +41,12 @@ export default function RootLayout() {
           </Stack>
           {/* Global overlay: survives the Paywall unmount on unlock (see UnlockToast). */}
           <UnlockToast />
-          {/* One-shot store-review ask a few seconds after the unlock toast. */}
+          {/* Last word before the paywall lands: one-shot, on the trial's final day. */}
+          <TrialEndsToast />
+          {/* Decides whether to ask for a review, and how. Asks once, ever. */}
           <ReviewPrompt />
+          {/* The fallback invite ReviewPrompt falls back to when the OS sheet can't run. */}
+          <ReviewToast />
         </ThemeProvider>
       </EntitlementProvider>
     </SettingsProvider>

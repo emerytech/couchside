@@ -1,4 +1,4 @@
-import React from 'react';
+import React, { useEffect } from 'react';
 import { Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
 
 import { Gated } from '@/components/Gated';
@@ -10,6 +10,7 @@ import { useLockOrientation } from '@/hooks/useLockOrientation';
 import { usePoll } from '@/hooks/usePoll';
 import { api, hostKey, humanizeUptime, Status, Unit } from '@/lib/api';
 import { usePref } from '@/lib/prefs';
+import { noteBoxReachable } from '@/lib/review';
 import { useSettings } from '@/lib/SettingsContext';
 import { mono, numeric, pctColor, tempColor, theme } from '@/lib/theme';
 
@@ -94,6 +95,12 @@ function ConsoleScreen() {
   const s = status.data;
   const reachable = configured && status.error == null && s != null;
   const memPct = s ? Math.round((s.mem.used_mb / s.mem.total_mb) * 100) : 0;
+
+  // The app did its job: a paired box answered. Counted at most once per launch
+  // (noteBoxReachable guards); at EARNED_SESSIONS it earns a review ask.
+  useEffect(() => {
+    if (reachable) void noteBoxReachable();
+  }, [reachable]);
 
   return (
     <View style={styles.screen}>

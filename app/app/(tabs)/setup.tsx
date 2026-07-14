@@ -1,4 +1,5 @@
 import Ionicons from '@expo/vector-icons/Ionicons';
+import { useLocalSearchParams, useRouter } from 'expo-router';
 import React, { useCallback, useEffect, useState } from 'react';
 import {
   Alert,
@@ -22,6 +23,7 @@ import { useLockOrientation } from '@/hooks/useLockOrientation';
 import { api, ApiError } from '@/lib/api';
 import { isGenuinelyPurchased, recordPurchaseDate } from '@/lib/entitlement';
 import { useEntitlement } from '@/lib/EntitlementContext';
+import { openWriteReview } from '@/lib/review';
 import {
   hapticLight,
   hapticSelection,
@@ -721,6 +723,18 @@ function SetupBody() {
   // Active category tab (Boxes / Preferences / Account).
   const [tab, setTab] = useState<SetupTab>('boxes');
 
+  // Deep-link straight to the purchase: the trial nudge banner pushes
+  // /setup?tab=account. Clear the param once applied, so tapping the banner
+  // again still lands here instead of being swallowed as a no-op re-render.
+  const params = useLocalSearchParams<{ tab?: string }>();
+  const router = useRouter();
+  useEffect(() => {
+    if (params.tab === 'account') {
+      setTab('account');
+      router.setParams({ tab: undefined });
+    }
+  }, [params.tab, router]);
+
   return (
     <KeyboardAvoidingView
       style={styles.screen}
@@ -1130,6 +1144,26 @@ function SetupBody() {
               )}
             </View>
 
+            {/* User-initiated, always available. This LINKS OUT to the store's
+                write-review page — it must never call requestReview(): Apple
+                does not allow the native sheet to be summoned by a tap. The
+                app-triggered sheet lives in components/ReviewPrompt.tsx. */}
+            <Pressable
+              onPress={() => {
+                hapticLight();
+                void openWriteReview();
+              }}
+              style={({ pressed }) => [styles.rateRow, pressed && styles.pressed]}>
+              <Ionicons name="star-outline" size={18} color={theme.amber} />
+              <View style={styles.rateBody}>
+                <Text style={styles.rateTitle}>Rate Couchside</Text>
+                <Text style={styles.rateSub}>
+                  A quick review helps other people find it.
+                </Text>
+              </View>
+              <Ionicons name="open-outline" size={16} color={theme.textDim} />
+            </Pressable>
+
             <Text style={styles.hint}>
               Each agent listens on http://&lt;host&gt;:&lt;port&gt;. All routes except
               /api/ping require the bearer token.
@@ -1361,6 +1395,24 @@ const styles = StyleSheet.create({
   btnTestText: { color: theme.blue, fontWeight: '800', fontSize: 13, letterSpacing: 1 },
   btnSave: { backgroundColor: theme.blue },
   btnSaveText: { color: '#0b1220', fontWeight: '800', fontSize: 13, letterSpacing: 1 },
+  rateRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 10,
+    marginTop: 12,
+    // `hint` below carries no margin of its own — it leans on the preceding
+    // block's bottom margin, so this row has to provide it.
+    marginBottom: 16,
+    paddingVertical: 12,
+    paddingHorizontal: 14,
+    backgroundColor: theme.card,
+    borderColor: theme.cardBorder,
+    borderWidth: 1,
+    borderRadius: 12,
+  },
+  rateBody: { flex: 1 },
+  rateTitle: { color: theme.text, fontSize: 14, fontWeight: '700' },
+  rateSub: { color: theme.textDim, fontSize: 11, marginTop: 2 },
   unlockRow: {
     flexDirection: 'row',
     alignItems: 'center',

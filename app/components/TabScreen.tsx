@@ -8,6 +8,7 @@ import React from 'react';
 import { StyleSheet, Text, View } from 'react-native';
 
 import { BoxSwitcher } from '@/components/BoxSwitcher';
+import { TrialNudge } from '@/components/TrialNudge';
 import { IS_BETA_BUILD } from '@/lib/entitlement';
 import { mono, theme } from '@/lib/theme';
 
@@ -15,6 +16,9 @@ export function TabScreen({ children }: { children: React.ReactNode }) {
   return (
     <View style={styles.root}>
       <BoxSwitcher />
+      {/* Near the end of the trial only, and never on Setup (which already
+          carries the permanent unlock row). Self-hides otherwise. */}
+      <TrialNudge />
       <View style={styles.body}>{children}</View>
       {IS_BETA_BUILD && (
         <View pointerEvents="none" style={styles.betaBadge}>
