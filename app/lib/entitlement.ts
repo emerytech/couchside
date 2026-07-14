@@ -111,7 +111,7 @@ export async function recordPurchaseDate(ms: number): Promise<void> {
  * (and on iOS typically app reinstalls), which is as durable as a
  * client-only trial clock can reasonably be.
  */
-async function storageGet(key: string): Promise<string | null> {
+export async function storageGet(key: string): Promise<string | null> {
   if (Platform.OS === 'web') {
     try {
       return typeof window !== 'undefined' && window.localStorage
@@ -124,7 +124,7 @@ async function storageGet(key: string): Promise<string | null> {
   return SecureStore.getItemAsync(key);
 }
 
-async function storageSet(key: string, value: string): Promise<void> {
+export async function storageSet(key: string, value: string): Promise<void> {
   if (Platform.OS === 'web') {
     try {
       if (typeof window !== 'undefined' && window.localStorage) {
