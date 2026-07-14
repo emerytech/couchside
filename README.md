@@ -57,7 +57,9 @@ The installer copies the agent to `~/.local/opt/couchside/`, generates a token a
 ## Get the app
 
 - **Android → [Google Play](https://play.google.com/store/apps/details?id=com.ets3d.rescueremote)** — available now.
-- **iPhone / iPad → [App Store](https://apps.apple.com/app/id6786884115)** — in review.
+<!-- iOS: the App Store listing 404s until the first release is approved. Swap this
+     line back to https://apps.apple.com/app/id6786884115 once 2.6.0 goes live. -->
+- **iPhone / iPad → [TestFlight beta](https://testflight.apple.com/join/1ytzGkMT)** — the App Store release is in review; until it lands, iPhone and iPad users can ride along on the public beta. Same app, same features.
 
 Free 7-day trial with every feature unlocked, then a one-time unlock ($4.99 summer launch price). Prefer to build it yourself? The app's full source is right here: clone this repo and run it on your own device for personal use (see [app/LICENSE](app/LICENSE)).
 
@@ -120,6 +122,8 @@ Mock mode serves believable fake data and never executes real commands. The HTTP
 
 - **Agent, installer, brand, docs: MIT.** Use them anywhere, for anything — including building your own client against the protocol. See [LICENSE](LICENSE).
 - **The mobile app (`app/`): source-available under the PolyForm Noncommercial License 1.0.0.** Read it, audit it, `npx expo run:ios` / `npx expo run:android` it onto your own phone, and modify it for personal, noncommercial use. What you can't do is sell it or redistribute it commercially. See [app/LICENSE](app/LICENSE). The trial gate ships in this public source; self-built personal copies without a store build are treated as unlocked by design, and that's fine.
-- **The official builds on the [App Store](https://apps.apple.com/app/id6786884115) and [Google Play](https://play.google.com/store/apps/details?id=com.ets3d.rescueremote) are free to download** with everything unlocked for 7 days, then a **one-time in-app unlock: $4.99 through the summer, rising to $7.99 on September 1**. No subscription, no accounts. Unlock before September 1 to keep a permanent **Early Adopter** badge. You're paying for signed, notarized, auto-updating builds and a setup that goes from `curl` to couch in under ten minutes. It's also the only funding this project has, so thank you.
+<!-- iOS: point this at https://apps.apple.com/app/id6786884115 once the first
+     App Store release is approved; the listing 404s until then. -->
+- **The official builds on [TestFlight](https://testflight.apple.com/join/1ytzGkMT) (iOS, pending App Store review) and [Google Play](https://play.google.com/store/apps/details?id=com.ets3d.rescueremote) are free to download** with everything unlocked for 7 days, then a **one-time in-app unlock: $4.99 through the summer, rising to $7.99 on September 1**. No subscription, no accounts. Unlock before September 1 to keep a permanent **Early Adopter** badge. You're paying for signed, notarized, auto-updating builds and a setup that goes from `curl` to couch in under ten minutes. It's also the only funding this project has, so thank you.
 
 © 2026 Taylor Emery (ETS3D LLC).
