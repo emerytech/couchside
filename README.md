@@ -4,6 +4,24 @@
 
 Couchside pairs a native iOS & Android app with a tiny, dependency-free Python agent that runs on a SteamOS / Bazzite HTPC, a Steam Deck, or any systemd Linux machine. When gamescope wedges into a black screen and the TV shows nothing, Couchside is the screen: see live vitals, read the logs, restart the display session, or become an Xbox 360 controller, all from the couch and entirely on your own LAN. No cloud, no accounts, no analytics.
 
+## See it in action
+
+Real footage — a phone driving Steam Big Picture on the TV over the LAN, nothing staged.
+
+| Navigate & switch input modes | Browse and launch the library |
+| --- | --- |
+| ![Driving the Steam sidebar from the phone, then switching input modes](docs/media/couchside-remote-nav.gif) | ![Browsing the Steam cover-art library from the phone](docs/media/couchside-launcher.gif) |
+
+| Type from the phone | Big Picture & Quick Access Menu |
+| --- | --- |
+| ![Typing into the Steam search box on the TV from the phone's keyboard bar](docs/media/couchside-keyboard.gif) | ![Steam Big Picture and the Quick Access Menu, controlled from the phone](docs/media/couchside-bigpicture.gif) |
+
+The full install — one command, scan the QR, drive the box — is on the site: [couchside.tv](https://couchside.tv/#how) (terminal sped up, nothing else).
+
+The gamepad UI on the phone and the Steam sidebar responding on the TV, at the same time:
+
+![Phone showing the Couchside gamepad while the TV shows the Steam menu it is driving](docs/media/couchside-hero-real.jpg)
+
 ## Features
 
 - **Live console:** hostname, uptime, CPU temperature, load averages, memory and per-disk usage with color-coded bars, refreshed every few seconds. A big red BOX UNREACHABLE banner (with last-seen time) when the box drops off the network, which is exactly when you need it.
