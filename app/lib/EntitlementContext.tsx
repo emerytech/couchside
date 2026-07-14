@@ -68,7 +68,12 @@ type EntitlementContextValue = {
 };
 
 const EntitlementContext = createContext<EntitlementContextValue>({
-  entitlement: { state: 'trial', trialDaysLeft: TRIAL_DAYS, isEarlyAdopter: false },
+  entitlement: {
+    state: 'trial',
+    trialDaysLeft: TRIAL_DAYS,
+    isEarlyAdopter: false,
+    unlockedByFallback: false,
+  },
   ready: false,
   refresh: async () => {},
   recordPurchase: async () => {},
@@ -79,6 +84,7 @@ export function EntitlementProvider({ children }: { children: React.ReactNode })
     state: 'trial',
     trialDaysLeft: TRIAL_DAYS,
     isEarlyAdopter: false,
+    unlockedByFallback: false,
   });
   const [ready, setReady] = useState(false);
 

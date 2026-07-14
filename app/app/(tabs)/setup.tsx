@@ -20,9 +20,10 @@ import { QrView } from '@/components/QrView';
 import { TabScreen } from '@/components/TabScreen';
 import { useLockOrientation } from '@/hooks/useLockOrientation';
 import { api, ApiError } from '@/lib/api';
-import { recordPurchaseDate } from '@/lib/entitlement';
+import { isGenuinelyPurchased, recordPurchaseDate } from '@/lib/entitlement';
 import { useEntitlement } from '@/lib/EntitlementContext';
 import {
+  hapticLight,
   hapticSelection,
   hapticSuccess,
   setHapticsEnabled,
@@ -137,18 +138,19 @@ function StepRow({ label, step }: { label: string; step: StepState }) {
 function EntitlementPill() {
   const { entitlement, ready } = useEntitlement();
   if (!ready) return null;
-  const label =
-    entitlement.state === 'purchased'
-      ? 'Unlocked, thank you'
-      : entitlement.state === 'trial'
-        ? `Trial: ${entitlement.trialDaysLeft} day${entitlement.trialDaysLeft === 1 ? '' : 's'} left`
-        : 'Trial ended';
-  const color =
-    entitlement.state === 'purchased'
-      ? theme.green
-      : entitlement.state === 'trial'
-        ? theme.amber
-        : theme.red;
+  // A store-unreachable fail-open must not claim "Unlocked": report the real
+  // trial clock it still carries, so the Buy button beside it makes sense.
+  const purchased = isGenuinelyPurchased(entitlement);
+  const label = purchased
+    ? 'Unlocked, thank you'
+    : entitlement.trialDaysLeft > 0
+      ? `Trial: ${entitlement.trialDaysLeft} day${entitlement.trialDaysLeft === 1 ? '' : 's'} left`
+      : 'Trial ended';
+  const color = purchased
+    ? theme.green
+    : entitlement.trialDaysLeft > 0
+      ? theme.amber
+      : theme.red;
   return (
     <View style={[styles.pill, { borderColor: color }]}>
       <Text style={[styles.pillText, { color }]}>{label}</Text>
@@ -726,6 +728,31 @@ function SetupBody() {
       <View style={styles.header}>
         <CategoryTabs tab={tab} onTab={setTab} />
       </View>
+      {/* The unlock is a one-time purchase buried under the Account category,
+          and during the trial nothing else points at it — App Review could not
+          find it at all (2.1(b), build 27). This row is the signpost: always on
+          screen while unpurchased, on whichever category is open. */}
+      {!isGenuinelyPurchased(entitlement) && tab !== 'account' && (
+        <Pressable
+          onPress={() => {
+            hapticLight();
+            setTab('account');
+          }}
+          style={({ pressed }) => [styles.unlockRow, pressed && styles.pressed]}>
+          <Ionicons name="lock-open-outline" size={18} color={theme.blue} />
+          <View style={styles.unlockRowBody}>
+            <Text style={styles.unlockRowTitle}>Unlock Couchside — {price ?? '$4.99'}</Text>
+            <Text style={styles.unlockRowSub}>
+              {entitlement.trialDaysLeft > 0
+                ? `Trial: ${entitlement.trialDaysLeft} day${
+                    entitlement.trialDaysLeft === 1 ? '' : 's'
+                  } left · one-time purchase, no subscription`
+                : 'Trial ended · one-time purchase, no subscription'}
+            </Text>
+          </View>
+          <Ionicons name="chevron-forward" size={18} color={theme.textDim} />
+        </Pressable>
+      )}
       {/* Logs hosts its own FlatList and must not live inside a ScrollView.
           Gated like the old top-level Logs tab (the journal is a paid surface;
           Setup itself stays un-gated so purchase/restore is always reachable). */}
@@ -1073,7 +1100,7 @@ function SetupBody() {
             </View>
             <View style={styles.card}>
               <CardHeader icon="card-outline" label="PURCHASE" />
-              {entitlement.state !== 'purchased' && (
+              {!isGenuinelyPurchased(entitlement) && (
                 <Pressable
                   onPress={onBuy}
                   disabled={buying || restoring}
@@ -1096,7 +1123,7 @@ function SetupBody() {
                   {restoreMsg.text}
                 </Text>
               )}
-              {entitlement.state !== 'purchased' && (
+              {!isGenuinelyPurchased(entitlement) && (
                 <Text style={styles.purchaseHint}>
                   One-time unlock · no subscription, no account, no tracking.
                 </Text>
@@ -1334,6 +1361,22 @@ const styles = StyleSheet.create({
   btnTestText: { color: theme.blue, fontWeight: '800', fontSize: 13, letterSpacing: 1 },
   btnSave: { backgroundColor: theme.blue },
   btnSaveText: { color: '#0b1220', fontWeight: '800', fontSize: 13, letterSpacing: 1 },
+  unlockRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 10,
+    marginHorizontal: 14,
+    marginTop: 10,
+    paddingVertical: 12,
+    paddingHorizontal: 14,
+    backgroundColor: theme.card,
+    borderColor: theme.blue,
+    borderWidth: 1,
+    borderRadius: 12,
+  },
+  unlockRowBody: { flex: 1 },
+  unlockRowTitle: { color: theme.text, fontSize: 14, fontWeight: '800' },
+  unlockRowSub: { color: theme.textDim, fontSize: 11, marginTop: 2 },
   btnBuy: {
     backgroundColor: theme.blue,
     borderRadius: 8,
