@@ -29,6 +29,14 @@ export type Entitlement = {
    * adopter cutoff. Conservative: unknown purchase date => false.
    */
   isEarlyAdopter: boolean;
+  /**
+   * True when 'purchased' was granted by the fail-open below (unreachable store
+   * / unfetchable product) rather than by an actual purchase. The gate honours
+   * it, but the Setup > Account purchase UI must NOT: hiding the only Buy
+   * button behind a transient store hiccup is what got build 26/27 rejected
+   * under 2.1(b) ("we cannot locate the In-App Purchases").
+   */
+  unlockedByFallback: boolean;
 };
 
 export const TRIAL_DAYS = 7;
@@ -57,7 +65,19 @@ const BETA_ENTITLEMENT: Entitlement = {
   state: 'purchased',
   trialDaysLeft: 0,
   isEarlyAdopter: false,
+  unlockedByFallback: false,
 };
+
+/**
+ * True only for a real, owned unlock — never for the store-unreachable
+ * fail-open. The Setup > Account purchase UI keys off this (not off
+ * `state === 'purchased'`) so the Buy/Restore buttons stay on screen when the
+ * store is having a bad day. The feature gate deliberately does NOT use this:
+ * a fail-open build stays unlocked.
+ */
+export function isGenuinelyPurchased(e: Entitlement): boolean {
+  return e.state === 'purchased' && !e.unlockedByFallback;
+}
 
 /** True iff a known purchase timestamp falls before the early-adopter cutoff. */
 function earlyAdopterFromDate(purchaseDateMs: number | null): boolean {
@@ -155,6 +175,7 @@ export async function getEntitlement(): Promise<Entitlement> {
         state: 'purchased',
         trialDaysLeft: 0,
         isEarlyAdopter: earlyAdopterFromDate(await purchaseDateMs()),
+        unlockedByFallback: false,
       };
     }
   } catch {
@@ -163,8 +184,8 @@ export async function getEntitlement(): Promise<Entitlement> {
   const elapsedMs = Date.now() - (await firstLaunchMs());
   const daysLeft = Math.max(0, Math.ceil((TRIAL_DAYS * DAY_MS - elapsedMs) / DAY_MS));
   return daysLeft > 0
-    ? { state: 'trial', trialDaysLeft: daysLeft, isEarlyAdopter: false }
-    : { state: 'expired', trialDaysLeft: 0, isEarlyAdopter: false };
+    ? { state: 'trial', trialDaysLeft: daysLeft, isEarlyAdopter: false, unlockedByFallback: false }
+    : { state: 'expired', trialDaysLeft: 0, isEarlyAdopter: false, unlockedByFallback: false };
 }
 
 /**
@@ -209,10 +230,16 @@ export async function revalidateWithStore(local: Entitlement): Promise<Entitleme
       state: 'purchased',
       trialDaysLeft: 0,
       isEarlyAdopter: earlyAdopterFromDate(result.purchaseDateMs ?? null),
+      unlockedByFallback: false,
     };
   }
   if (result.state === 'unavailable') {
-    return { state: 'purchased', trialDaysLeft: local.trialDaysLeft, isEarlyAdopter: false };
+    return {
+      state: 'purchased',
+      trialDaysLeft: local.trialDaysLeft,
+      isEarlyAdopter: false,
+      unlockedByFallback: true,
+    };
   }
   if (result.state === 'none' && (await getProduct()) == null) {
     // The store connected but couchpilot_unlock is not fetchable: this is a
@@ -220,7 +247,12 @@ export async function revalidateWithStore(local: Entitlement): Promise<Entitleme
     // listing) that cannot possibly sell the unlock: treat like
     // 'unavailable' so such builds are never locked out. NOT cached, so an
     // official store build (which can always fetch the product) still gates.
-    return { state: 'purchased', trialDaysLeft: local.trialDaysLeft, isEarlyAdopter: false };
+    return {
+      state: 'purchased',
+      trialDaysLeft: local.trialDaysLeft,
+      isEarlyAdopter: false,
+      unlockedByFallback: true,
+    };
   }
   return local;
 }

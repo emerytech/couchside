@@ -321,11 +321,15 @@ function LaunchScreen() {
   // Bumped on pull-to-refresh so tiles retry any cover that failed to load.
   const [retryKey, setRetryKey] = useState(0);
 
+  // No host yet (fresh install): don't poll, and show the pairing hint instead
+  // of a red "Box unreachable" banner retrying every 2s against http://:8787.
+  const configured = settings.host.trim().length > 0;
+
   const boxKey = hostKey(settings); // resetKey: clear stale data on box switch
   const list = usePoll<{ launchers: Launcher[] }>(
     () => api.launchers(settings),
     30000,
-    ready,
+    ready && configured,
     boxKey,
   );
 
@@ -339,7 +343,7 @@ function LaunchScreen() {
   // and flipped by the effect below; poll fast while something is downloading.
   const [active, setActive] = useState(false);
   const dl = usePoll<Downloads | null>(
-    () => api.downloads(settings), active ? 5000 : 20000, ready, boxKey);
+    () => api.downloads(settings), active ? 5000 : 20000, ready && configured, boxKey);
   const downloads = useMemo(() => dl.data?.downloads ?? [], [dl.data]);
   const dlByAppid = useMemo(() => new Map(downloads.map((d) => [d.appid, d])), [downloads]);
 
@@ -443,15 +447,18 @@ function LaunchScreen() {
     <View style={styles.screen}>
       <View style={styles.header}>
         <Text style={styles.title}>Launch</Text>
-        <Pressable
-          onPress={() => {
-            hapticLight();
-            setAddOpen(true);
-          }}
-          style={({ pressed }) => [styles.addBtn, pressed && styles.pressed]}>
-          <Ionicons name="add" size={18} color={theme.blue} />
-          <Text style={styles.addBtnText}>Add</Text>
-        </Pressable>
+        {/* Nothing to add a launcher to until a box is paired. */}
+        {configured && (
+          <Pressable
+            onPress={() => {
+              hapticLight();
+              setAddOpen(true);
+            }}
+            style={({ pressed }) => [styles.addBtn, pressed && styles.pressed]}>
+            <Ionicons name="add" size={18} color={theme.blue} />
+            <Text style={styles.addBtnText}>Add</Text>
+          </Pressable>
+        )}
       </View>
 
       <ScrollView
@@ -467,8 +474,20 @@ function LaunchScreen() {
         {/* Active Steam downloads (hidden when none / agent < 2.8) */}
         <DownloadsSection downloads={downloads} />
 
+        {/* Fresh install: nothing paired yet, so nothing is "unreachable". */}
+        {!configured && (
+          <View style={styles.emptyCard}>
+            <Ionicons name="rocket" size={40} color={theme.textFaint} />
+            <Text style={styles.emptyTitle}>No box configured</Text>
+            <Text style={styles.emptyText}>
+              Open the Setup tab to pair with the Couchside agent on your media center or Steam
+              machine.
+            </Text>
+          </View>
+        )}
+
         {/* Error (no data yet) */}
-        {list.error != null && !list.data && (
+        {configured && list.error != null && !list.data && (
           <View style={styles.errBox}>
             <Text style={styles.errText}>{list.error.message}</Text>
             <Pressable
@@ -480,7 +499,7 @@ function LaunchScreen() {
         )}
 
         {/* Loading */}
-        {!list.data && list.error == null && (
+        {configured && !list.data && list.error == null && (
           <View style={styles.center}>
             <ActivityIndicator color={theme.textDim} />
             <Text style={styles.dim}>loading launchers…</Text>

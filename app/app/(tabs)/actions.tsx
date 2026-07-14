@@ -61,10 +61,14 @@ function ActionsScreen() {
   const { settings, ready } = useSettings();
   const [run, setRun] = useState<RunRecord | null>(null);
 
+  // No host yet (fresh install): don't poll, and show the pairing hint instead
+  // of a red "Box unreachable" banner retrying every 2s against http://:8787.
+  const configured = settings.host.trim().length > 0;
+
   const actions = usePoll<{ actions: ActionInfo[] }>(
     () => api.actions(settings),
     30000,
-    ready,
+    ready && configured,
     hostKey(settings), // clear the previous box's actions on switch
   );
 
@@ -119,7 +123,17 @@ function ActionsScreen() {
     <View style={[styles.screen, { paddingTop: 12 }]}>
       <Text style={styles.title}>Actions</Text>
       <ScrollView style={styles.list} contentContainerStyle={{ paddingBottom: 12 }}>
-        {actions.error != null && !actions.data && (
+        {/* Fresh install: nothing paired yet, so nothing is "unreachable". */}
+        {!configured && (
+          <View style={styles.emptyCard}>
+            <Text style={styles.emptyTitle}>No box configured</Text>
+            <Text style={styles.emptyText}>
+              Open the Setup tab to pair with the Couchside agent on your media center or Steam
+              machine.
+            </Text>
+          </View>
+        )}
+        {configured && actions.error != null && !actions.data && (
           <View style={styles.errBox}>
             <Text style={styles.errText}>{actions.error.message}</Text>
             <Pressable
@@ -129,7 +143,7 @@ function ActionsScreen() {
             </Pressable>
           </View>
         )}
-        {!actions.data && actions.error == null && (
+        {configured && !actions.data && actions.error == null && (
           <Text style={styles.dim}>loading…</Text>
         )}
         {groups.map((g) => (
@@ -224,6 +238,16 @@ const styles = StyleSheet.create({
   badgeText: { color: '#0b1220', fontSize: 11, fontWeight: '800' },
   cardDesc: { color: theme.textDim, fontSize: 13, lineHeight: 18 },
   pressed: { opacity: 0.7 },
+  emptyCard: {
+    backgroundColor: theme.card,
+    borderColor: theme.cardBorder,
+    borderWidth: 1,
+    borderRadius: 12,
+    padding: 16,
+    marginBottom: 12,
+  },
+  emptyTitle: { color: theme.text, fontSize: 16, fontWeight: '700', marginBottom: 6 },
+  emptyText: { color: theme.textDim, fontSize: 13, lineHeight: 19 },
   errBox: {
     backgroundColor: theme.redDeep,
     borderColor: theme.red,
