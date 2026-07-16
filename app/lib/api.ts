@@ -125,6 +125,10 @@ export type Displays = {
   game_outputs: string[];
   /** Current session: 'gamescope' when already in Game Mode, else 'desktop'. */
   session: 'gamescope' | 'desktop';
+  /** Whether the box's session honors the chosen output (Bazzite: yes; SteamOS
+      hardcodes its preference: no). false hides the picker — a dead control is
+      worse than none. undefined (older agent) keeps the picker visible. */
+  output_forcing?: boolean;
 };
 
 /** GET/POST /api/screensaver state (agent >= 2.8.4). */

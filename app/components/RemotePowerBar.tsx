@@ -254,6 +254,17 @@ export function RemotePowerBar() {
   );
   const displays = reachable ? displaysPoll.data ?? null : null;
   const [couchOpen, setCouchOpen] = React.useState(false);
+  // Optimistic session: the couch-mode POST response already says which
+  // session the box is entering, and the box goes briefly unreachable during
+  // the switch (Game Mode can drop .local resolution), so waiting on the poll
+  // left the button stale. Show the known target now; the next successful
+  // displays poll is the source of truth again.
+  const [sessionOverride, setSessionOverride] =
+    React.useState<'gamescope' | 'desktop' | null>(null);
+  const polledSession = displaysPoll.data?.session;
+  React.useEffect(() => {
+    if (polledSession != null) setSessionOverride(null);
+  }, [polledSession]);
 
   // Suspend-action availability, once per connect (agent >= 2.6 with the rule).
   const [hasSuspend, setHasSuspend] = React.useState(false);
@@ -507,7 +518,7 @@ export function RemotePowerBar() {
     ? 'moon'
     : 'tv-outline';
 
-  const inGameMode = displays?.session === 'gamescope';
+  const inGameMode = (sessionOverride ?? displays?.session) === 'gamescope';
 
   return (
     <>
@@ -777,7 +788,10 @@ export function RemotePowerBar() {
         visible={couchOpen}
         settings={settings}
         displays={displays}
-        onChanged={displaysPoll.refresh}
+        onChanged={(session) => {
+          setSessionOverride(session);
+          displaysPoll.refresh();
+        }}
         onClose={() => setCouchOpen(false)}
       />
     </>
