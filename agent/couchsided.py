@@ -1264,14 +1264,48 @@ def _session_to_desktop():
     ])
 
 
+_ENVD_OUTPUT_CONF = os.path.expanduser(
+    "~/.config/environment.d/95-couchside-couchmode.conf")
+
+
+def _set_preferred_output(output):
+    """Make the app's display picker REAL where the platform allows it.
+
+    Bazzite's gamescope-session-plus sources ~/.config/environment.d/*.conf and
+    feeds $OUTPUT_CONNECTOR to gamescope's --prefer-output (verified on a
+    bazzite-deck box). Write the chosen connector there, with the platform's
+    own fallbacks after it, so an unplugged monitor degrades instead of
+    blanking. SteamOS's session hardcodes its preference and ignores this file
+    — harmless there, picker stays advisory.
+
+    SECURITY: `output` is client-supplied and lands in a file systemd parses —
+    accept it only if it exactly matches a CONNECTED DRM connector name.
+    Returns a step dict."""
+    if not output:
+        return {"skipped": True}
+    if output not in {o["name"] for o in _connected_outputs()}:
+        return {"ok": False, "exit_code": 1, "stdout": "",
+                "stderr": "unknown output %r" % (output,)}
+    try:
+        os.makedirs(os.path.dirname(_ENVD_OUTPUT_CONF), exist_ok=True)
+        with open(_ENVD_OUTPUT_CONF, "w") as f:
+            f.write("# Written by couchside couch-mode (app display picker).\n"
+                    "OUTPUT_CONNECTOR=%s,*,eDP-1\n" % output)
+        return {"ok": True, "exit_code": 0, "stdout": "", "stderr": ""}
+    except OSError as e:
+        return {"ok": False, "exit_code": 1, "stdout": "",
+                "stderr": "envd write: %s" % e}
+
+
 def couchmode_start(output, hdr=False):
     """Fling the box into Game Mode on the TV. Steps, all best-effort except the
     session switch: (0) TV power-on + input-to-box where the box can drive the
     panel/CEC (inert otherwise), (1) move audio to the TV's HDMI sink, (2)
-    transient switch to Game Mode. gamescope lands on the external output on its
-    own (see the section header); `output` is recorded but not forced. The switch
-    tears down the desktop session — the agent (system service) survives, so the
-    app reads session=gamescope on its next /api/displays poll."""
+    transient switch to Game Mode. On platforms whose session honors
+    $OUTPUT_CONNECTOR (Bazzite) the chosen `output` is FORCED via an
+    environment.d drop-in; elsewhere gamescope picks its own external. The
+    switch tears down the desktop session — the agent (system service)
+    survives, so the app reads session=gamescope on its next poll."""
     steps = {}
     # (0) Fold in TV power + input. tv_send returns None when no backend exists.
     pwr = tv_send("power_on", False)
@@ -1282,7 +1316,9 @@ def couchmode_start(output, hdr=False):
     sink = _tv_audio_sink()
     steps["audio"] = (_couch_run(["pactl", "set-default-sink", sink])
                       if sink else {"skipped": True})
-    # (2) Enter Game Mode (the one step that must succeed).
+    # (2) Honor the display picker where the platform allows it.
+    steps["output"] = _set_preferred_output(output)
+    # (3) Enter Game Mode (the one step that must succeed).
     sw = _session_to_game()
     steps["session"] = sw
     return {"ok": sw["ok"], "output": output, "hdr": bool(hdr),

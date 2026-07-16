@@ -26,7 +26,10 @@ export function CouchModeSheet({
   visible: boolean;
   settings: ConnSettings;
   displays: Displays | null;
-  onChanged: () => void;
+  /** Fired after a successful switch with the session the box is entering —
+      the caller shows it optimistically (the box goes briefly unreachable
+      mid-switch, so waiting on a poll leaves the UI stale). */
+  onChanged: (session: 'gamescope' | 'desktop') => void;
   onClose: () => void;
 }) {
   const inGameMode = displays?.session === 'gamescope';
@@ -51,7 +54,7 @@ export function CouchModeSheet({
     try {
       await api.couchModeStart(settings, output);
       hapticSuccess();
-      onChanged();
+      onChanged('gamescope');
       onClose();
     } catch {
       hapticError();
@@ -67,7 +70,7 @@ export function CouchModeSheet({
     try {
       await api.desktopMode(settings);
       hapticSuccess();
-      onChanged();
+      onChanged('desktop');
       onClose();
     } catch {
       hapticError();
