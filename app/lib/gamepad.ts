@@ -48,6 +48,14 @@ export type ButtonKey =
 /** Windows desktop system shortcuts (one-shot chords the agent expands). */
 export type SystemChord = 'win' | 'alt-tab' | 'lock' | 'taskmgr';
 
+/**
+ * SteamOS/Bazzite (KDE Plasma) desktop actions the Linux agent maps on the
+ * {t:'k'} channel: 'meta' taps Super (opens the Kickoff "start menu"),
+ * 'overview' fires the KWin overview chord (Meta+W). Gated in the UI on
+ * caps.desktop; an agent that doesn't know the name drops the frame.
+ */
+export type DesktopKey = 'meta' | 'overview';
+
 export type TriggerKey = 'lt' | 'rt';
 export type StickKey = 'l' | 'r';
 
@@ -390,6 +398,17 @@ export class GamepadClient {
 
   /** A single special key press+release (backspace, enter, arrows, …). */
   sendKey(key: SpecialKey): void {
+    this.sendRaw({ t: 'k', key });
+  }
+
+  /**
+   * Fire a SteamOS/Bazzite (KDE Plasma) desktop action — the Start menu (Meta)
+   * or Overview (Meta+W). Rides the same {t:'k'} channel; the Linux agent maps
+   * the name to a key/chord and presses/releases it. Linux-desktop-only (the
+   * buttons that call this render only when caps.desktop is set); another agent
+   * rejects the unknown name and drops the frame.
+   */
+  sendDesktopKey(key: DesktopKey): void {
     this.sendRaw({ t: 'k', key });
   }
 

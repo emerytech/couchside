@@ -3,10 +3,11 @@ import React from 'react';
 import { Alert, Modal, PanResponder, Platform, Pressable, StyleSheet, Text, View } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
+import { CouchModeSheet } from '@/components/CouchModeSheet';
 import { ScreensaverSheet } from '@/components/ScreensaverSheet';
 import { SleepTimerSheet } from '@/components/SleepTimerSheet';
 import { usePoll } from '@/hooks/usePoll';
-import { api, capsEqual, hostKey, PowerSchedule, Screensaver, Status, Tv, TvOp, VolumeTarget } from '@/lib/api';
+import { api, capsEqual, Displays, hostKey, PowerSchedule, Screensaver, Status, Tv, TvOp, VolumeTarget } from '@/lib/api';
 import { hapticError, hapticLight, hapticSuccess } from '@/lib/haptics';
 import { getPref, usePref } from '@/lib/prefs';
 import { normalizeMac } from '@/lib/settings';
@@ -243,6 +244,17 @@ export function RemotePowerBar() {
   const saver = reachable ? saverPoll.data ?? null : null;
   const [saverOpen, setSaverOpen] = React.useState(false);
 
+  // Couch Mode displays (agent >= 2.9, SteamOS/Bazzite desktop w/ TV). Probe-
+  // and-appear: null hides the header button; caps.couchmode === false skips it.
+  const displaysPoll = usePoll<Displays | null>(
+    () => api.displays(settings),
+    15000,
+    reachable,
+    boxKey,
+  );
+  const displays = reachable ? displaysPoll.data ?? null : null;
+  const [couchOpen, setCouchOpen] = React.useState(false);
+
   // Suspend-action availability, once per connect (agent >= 2.6 with the rule).
   const [hasSuspend, setHasSuspend] = React.useState(false);
   const suspendProbedFor = React.useRef<string | null>(null);
@@ -469,8 +481,10 @@ export function RemotePowerBar() {
   const canSuspend = reachable && hasSuspend;
   const canWake = !reachable && !!settings.mac && wolAvailable;
   const hasSaver = reachable && saver?.available === true;
+  const hasCouch = reachable && displays?.available === true;
 
-  // Nothing to control on this box right now.
+  // Nothing to control on this box right now. (Couch Mode counts: it renders
+  // its own header button, so the bar must not bail when it's the only thing.)
   if (
     !canSuspend &&
     !canWake &&
@@ -479,6 +493,7 @@ export function RemotePowerBar() {
     !canSourceBox &&
     !canBlankScreen &&
     !hasSaver &&
+    !hasCouch &&
     sources.length === 0
   )
     return null;
@@ -492,8 +507,35 @@ export function RemotePowerBar() {
     ? 'moon'
     : 'tv-outline';
 
+  const inGameMode = displays?.session === 'gamescope';
+
   return (
     <>
+      {/* Couch Mode: fling this desktop box to the TV in Game Mode (or come
+          back). Fills the header's empty middle; only shows on capable boxes. */}
+      {hasCouch && (
+        <Pressable
+          onPress={() => {
+            hapticLight();
+            setCouchOpen(true);
+          }}
+          hitSlop={8}
+          style={({ pressed }) => [
+            styles.couchBtn,
+            inGameMode && styles.couchBtnActive,
+            pressed && styles.pressed,
+          ]}>
+          <Ionicons
+            name={inGameMode ? 'game-controller' : 'tv-outline'}
+            size={16}
+            color={inGameMode ? theme.green : theme.text}
+          />
+          <Text style={[styles.couchLabel, inGameMode && { color: theme.green }]}>
+            {inGameMode ? 'On TV' : 'Couch'}
+          </Text>
+        </Pressable>
+      )}
+
       <Pressable
         onPress={() => {
           hapticLight();
@@ -731,11 +773,32 @@ export function RemotePowerBar() {
         onChanged={saverPoll.refresh}
         onClose={() => setSaverOpen(false)}
       />
+      <CouchModeSheet
+        visible={couchOpen}
+        settings={settings}
+        displays={displays}
+        onChanged={displaysPoll.refresh}
+        onClose={() => setCouchOpen(false)}
+      />
     </>
   );
 }
 
 const styles = StyleSheet.create({
+  couchBtn: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+    paddingVertical: 8,
+    paddingHorizontal: 12,
+    borderRadius: 999,
+    borderWidth: 1,
+    borderColor: theme.cardBorder,
+    backgroundColor: theme.card,
+    marginRight: 8,
+  },
+  couchBtnActive: { borderColor: theme.green, backgroundColor: 'rgba(52,211,153,0.10)' },
+  couchLabel: { color: theme.text, fontSize: 13, fontWeight: '700', fontFamily: mono },
   trigger: {
     flexDirection: 'row',
     alignItems: 'center',

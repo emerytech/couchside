@@ -40,7 +40,7 @@ except ImportError:  # pragma: no cover
     fcntl = None
 
 APP_NAME = "couchside-agent"
-VERSION = "2.8.4"
+VERSION = "2.9.0"
 UID = os.getuid()
 XDG_RUNTIME_DIR = "/run/user/%d" % UID
 
@@ -643,7 +643,7 @@ def set_caps(mock):
     if mock:
         CAPS = {k: True for k in
                 ("gamepad", "steam", "media", "tv", "screen", "power_schedule",
-                 "screensaver")}
+                 "screensaver", "couchmode", "desktop")}
         return
     CAPS = {
         "gamepad": _uinput_writable(),
@@ -653,6 +653,8 @@ def set_caps(mock):
         "screen": _SCREEN is not None,
         "power_schedule": safe(rtc_available),
         "screensaver": safe(screensaver_available),
+        "couchmode": safe(couchmode_available),
+        "desktop": safe(desktop_available),
     }
 
 
@@ -907,7 +909,11 @@ def real_status():
         "disks": read_disks(),
         "net": net_info_cached(),
         "agent_version": VERSION,
-        "caps": CAPS,
+        # CAPS is a boot-time snapshot, but "desktop" is SESSION-volatile (it
+        # flips with every Game Mode <-> desktop switch), so recompute it per
+        # request — a cheap pgrep — or the app's desktop cluster would freeze
+        # at whatever session the agent booted in.
+        "caps": dict(CAPS, desktop=desktop_available()),
         "history": _history_snapshot(),
     }
 
@@ -1019,6 +1025,254 @@ def real_action(action_id):
         "stderr": r.stderr,
         "duration_ms": int((time.monotonic() - start) * 1000),
     }
+
+
+# ---------------------------------------------------------------------------
+# Couch Mode (/api/displays, /api/couch-mode, /api/desktop-mode).
+#
+# For a box run as a DESKTOP (Plasma) that also has a TV wired in: one tap flings
+# it into Game Mode on the TV. The desktop→couch handoff, phone-triggered.
+#
+# Output mechanism (verified on a real SteamOS box, 2026-07-15): the SteamOS
+# gamescope session hardcodes `-O '*',eDP-1` — prefer ANY external output, fall
+# back to the internal panel — so a box with a single external (the TV) lands
+# Game Mode on it automatically; nothing to inject. gamescope reads DRM directly
+# and ignores the X11 "primary" flag, so the old set-primary theory does nothing
+# for it. Forcing a SPECIFIC external when several are connected would need a
+# gamescope session override we don't ship yet, so `output` is advisory and the
+# app's picker (shown only with 2+ externals) is best-effort there.
+#
+# SteamOS/Bazzite only (shared tooling: gamescope, steamos-session-select,
+# kscreen-doctor, wpctl). Gated to boxes with 2+ connected outputs, so a
+# single-display box (a handheld with nothing plugged in, or a dedicated Game
+# Mode box) never shows the button. Outputs are read from DRM sysfs, which works
+# regardless of the current session (kscreen-doctor only answers inside Plasma).
+#
+# The switch (couchmode_start / desktop_mode) runs entirely from the agent's own
+# service env: it's a SYSTEM service running as the desktop user with
+# XDG_RUNTIME_DIR set, which is all pactl/wpctl (audio, over the user runtime
+# socket) and steamosctl (session switch, over the system bus) need — no DISPLAY
+# or session D-Bus. Being a system service, the agent SURVIVES the session tear-
+# down, so it keeps answering and reports the new session on the next poll.
+# ---------------------------------------------------------------------------
+
+# DRM connector name prefixes that are a built-in panel, not a TV/monitor.
+_INTERNAL_OUTPUT_PREFIXES = ("eDP", "LVDS", "DSI")
+# The session tools Couch Mode drives; all must be present to offer it.
+_COUCHMODE_TOOLS = ("gamescope", "steamos-session-select", "kscreen-doctor", "wpctl")
+
+
+def _is_steamos_like():
+    """True on SteamOS or Bazzite — the only platforms Couch Mode targets."""
+    try:
+        rel = open("/etc/os-release").read().lower()
+    except OSError:
+        return False
+    return "steamos" in rel or "bazzite" in rel
+
+
+def _connected_outputs():
+    """Connected DRM outputs as [{name, internal}], newest-sorted by connector.
+
+    Read straight from /sys/class/drm/*/status so it works in ANY session
+    (Plasma, Game Mode, or the bare login state) — kscreen-doctor only answers
+    while a KWin session is up.
+    """
+    outs = []
+    for path in sorted(glob.glob("/sys/class/drm/card*-*")):
+        try:
+            if open(os.path.join(path, "status")).read().strip() != "connected":
+                continue
+        except OSError:
+            continue
+        # cardN-DP-2 -> DP-2 ; cardN-eDP-1 -> eDP-1
+        name = os.path.basename(path).split("-", 1)[1]
+        outs.append({
+            "name": name,
+            "internal": name.startswith(_INTERNAL_OUTPUT_PREFIXES),
+        })
+    return outs
+
+
+def couchmode_available():
+    """True when this box can do the desktop→TV Game Mode handoff: SteamOS/Bazzite,
+    the session tools present, and 2+ connected outputs (so there's a TV to fling
+    Game Mode onto, distinct from the built-in panel)."""
+    if not _is_steamos_like():
+        return False
+    if not all(shutil.which(t) for t in _COUCHMODE_TOOLS):
+        return False
+    return len(_connected_outputs()) >= 2
+
+
+def _couchmode_session():
+    """'gamescope' when this box is currently in Game Mode, else 'desktop'.
+    Lets the app show 'Back to Desktop' vs the fling-to-TV picker.
+
+    The gamescope compositor runs with process name (comm) 'gamescope-wl' even
+    though its argv[0] is 'gamescope' — so an exact `pgrep -x gamescope` MISSES
+    it. Match either name with an anchored regex; the anchor also avoids matching
+    the 'start-gamescope-session' launcher script."""
+    try:
+        r = subprocess.run(["pgrep", "-x", "gamescope(-wl)?"],
+                           capture_output=True, timeout=3)
+        return "gamescope" if r.returncode == 0 else "desktop"
+    except Exception:
+        return "desktop"
+
+
+def couchmode_info():
+    """Payload for GET /api/displays: the connected outputs, which are TV
+    candidates (external) to offer as the game display, and the current session
+    so the app shows enter-vs-exit. None when unavailable, so the route 404s and
+    the app hides the Couch Mode control (probe-and-appear)."""
+    if not couchmode_available():
+        return None
+    outs = _connected_outputs()
+    return {
+        "available": True,
+        "outputs": outs,
+        # External (non-panel) outputs are the game-display candidates. Default
+        # to the first external one in the app's picker.
+        "game_outputs": [o["name"] for o in outs if not o["internal"]],
+        "session": _couchmode_session(),
+    }
+
+
+def desktop_available():
+    """True on a SteamOS/Bazzite box currently in the Plasma DESKTOP session —
+    gates the app's desktop-nav cluster (Start menu / pointer / overview), which
+    only makes sense in the desktop, not in Game Mode. Session-aware so the
+    buttons appear when you're on the desktop and hide once you fling to Game
+    Mode. The keys themselves ride the existing /ws/gamepad uinput keyboard."""
+    return _is_steamos_like() and _couchmode_session() == "desktop"
+
+
+def _couch_run(cmd, timeout=25, max_out=1500):
+    """Run a Couch Mode switch command from the agent's service env. The agent
+    runs as the desktop user with XDG_RUNTIME_DIR set (ensured here for safety),
+    which is all pactl/wpctl and steamosctl need. Returns a compact result dict;
+    never raises. `max_out` caps stdout/stderr (tail) for the JSON reply; pass
+    None when a caller needs to PARSE full output (e.g. `pactl list sinks`)."""
+    env = dict(os.environ)
+    env.setdefault("XDG_RUNTIME_DIR", "/run/user/%d" % os.getuid())
+    try:
+        r = subprocess.run(cmd, capture_output=True, text=True,
+                           timeout=timeout, env=env)
+        out, err = r.stdout or "", r.stderr or ""
+        if max_out is not None:
+            out, err = out[-max_out:], err[-max_out:]
+        return {"ok": r.returncode == 0, "exit_code": r.returncode,
+                "stdout": out, "stderr": err}
+    except FileNotFoundError:
+        return {"ok": False, "exit_code": 127, "stdout": "",
+                "stderr": "%s: not found" % cmd[0]}
+    except subprocess.TimeoutExpired:
+        return {"ok": False, "exit_code": 124, "stdout": "",
+                "stderr": "%s: timed out" % cmd[0]}
+    except Exception as e:  # never let a switch step crash the request
+        return {"ok": False, "exit_code": 1, "stdout": "",
+                "stderr": "%s: %s" % (cmd[0], e.__class__.__name__)}
+
+
+def _pactl_sinks():
+    """Parse `pactl list sinks` into [{name, hdmi, available}]. `available` is
+    True only when a port on the sink reports availability 'available' (an
+    HDMI/DP output with a live display), so the TV's audio sink is the one that's
+    both hdmi and available. [] when pactl is missing or errors."""
+    if not shutil.which("pactl"):
+        return []
+    r = _couch_run(["pactl", "list", "sinks"], timeout=8, max_out=None)
+    if not r["ok"]:
+        return []
+    sinks, cur = [], None
+    for raw in r["stdout"].splitlines():
+        s = raw.strip()
+        if s.startswith("Name:"):
+            cur = {"name": s.split(":", 1)[1].strip(),
+                   "hdmi": False, "available": False}
+            sinks.append(cur)
+        elif cur is not None and "type: HDMI" in s:
+            cur["hdmi"] = True
+            # port line ends "..., available)" vs "..., not available)"
+            if s.endswith("available)") and "not available)" not in s:
+                cur["available"] = True
+    return sinks
+
+
+def _tv_audio_sink():
+    """Node name of the connected TV's HDMI/DP audio sink (hdmi + available), or
+    None so the audio move no-ops rather than guessing."""
+    for s in _pactl_sinks():
+        if s["hdmi"] and s["available"]:
+            return s["name"]
+    return None
+
+
+def _internal_audio_sink():
+    """Node name of the built-in speaker/analog sink (for restoring on return)."""
+    for s in _pactl_sinks():
+        low = s["name"].lower()
+        if not s["hdmi"] and ("speaker" in low or "analog" in low
+                              or "pci" in low):
+            return s["name"]
+    return None
+
+
+def _session_to_game():
+    """Transient switch to Game Mode. Prefer steamosctl (does NOT change the
+    boot default) over the deprecated steamos-session-select wrapper (which
+    would)."""
+    if shutil.which("steamosctl"):
+        return _couch_run(["steamosctl", "switch-to-game-mode"])
+    return _couch_run(["steamos-session-select", "gamescope"])
+
+
+def _session_to_desktop():
+    """Transient switch back to the Plasma X11 desktop."""
+    if shutil.which("steamosctl"):
+        return _couch_run(["steamosctl", "switch-to-desktop-mode",
+                           "plasmax11.desktop"])
+    return _couch_run(["steamos-session-select", "plasma"])
+
+
+def couchmode_start(output, hdr=False):
+    """Fling the box into Game Mode on the TV. Steps, all best-effort except the
+    session switch: (0) TV power-on + input-to-box where the box can drive the
+    panel/CEC (inert otherwise), (1) move audio to the TV's HDMI sink, (2)
+    transient switch to Game Mode. gamescope lands on the external output on its
+    own (see the section header); `output` is recorded but not forced. The switch
+    tears down the desktop session — the agent (system service) survives, so the
+    app reads session=gamescope on its next /api/displays poll."""
+    steps = {}
+    # (0) Fold in TV power + input. tv_send returns None when no backend exists.
+    pwr = tv_send("power_on", False)
+    steps["tv_power_on"] = pwr if pwr is not None else {"skipped": True}
+    src = tv_send("source_box", False)
+    steps["tv_input"] = src if src is not None else {"skipped": True}
+    # (1) Route audio to the TV.
+    sink = _tv_audio_sink()
+    steps["audio"] = (_couch_run(["pactl", "set-default-sink", sink])
+                      if sink else {"skipped": True})
+    # (2) Enter Game Mode (the one step that must succeed).
+    sw = _session_to_game()
+    steps["session"] = sw
+    return {"ok": sw["ok"], "output": output, "hdr": bool(hdr),
+            "session": "gamescope" if sw["ok"] else _couchmode_session(),
+            "steps": steps}
+
+
+def desktop_mode():
+    """Return from Game Mode to the Plasma desktop and route audio back to the
+    built-in speaker."""
+    sw = _session_to_desktop()
+    steps = {"session": sw}
+    sink = _internal_audio_sink()
+    steps["audio"] = (_couch_run(["pactl", "set-default-sink", sink])
+                      if sink else {"skipped": True})
+    return {"ok": sw["ok"],
+            "session": "desktop" if sw["ok"] else _couchmode_session(),
+            "steps": steps}
 
 
 # ---------------------------------------------------------------------------
@@ -3473,10 +3727,12 @@ KEY_J, KEY_K, KEY_L, KEY_SEMICOLON = 36, 37, 38, 39
 KEY_APOSTROPHE, KEY_GRAVE, KEY_LEFTSHIFT, KEY_BACKSLASH = 40, 41, 42, 43
 KEY_Z, KEY_X, KEY_C, KEY_V, KEY_B, KEY_N, KEY_M = 44, 45, 46, 47, 48, 49, 50
 KEY_COMMA, KEY_DOT, KEY_SLASH = 51, 52, 53
+KEY_LEFTALT = 56
 KEY_SPACE = 57
 KEY_HOME, KEY_UP = 102, 103
 KEY_LEFT, KEY_RIGHT, KEY_END, KEY_DOWN = 105, 106, 107, 108
 KEY_MUTE, KEY_VOLUMEDOWN, KEY_VOLUMEUP = 113, 114, 115
+KEY_LEFTMETA = 125  # Super/Windows key — KDE opens the app launcher (Kickoff)
 
 # Volume up/down go through the media keys so the OS shows its volume OSD. Mute
 # is NOT here: gamescope does not bind KEY_MUTE, so real_soft toggles mute via
@@ -3542,7 +3798,7 @@ def _build_char_map():
 
 CHAR_KEYMAP = _build_char_map()
 
-# named special key -> keycode
+# named special key -> keycode (one press+release)
 SPECIAL_KEYS = {
     "backspace": KEY_BACKSPACE,
     "enter": KEY_ENTER,
@@ -3555,6 +3811,15 @@ SPECIAL_KEYS = {
     "right": KEY_RIGHT,
     "home": KEY_HOME,
     "end": KEY_END,
+    # Desktop nav (KDE Plasma): a bare Meta tap opens the app launcher (Kickoff),
+    # the SteamOS/Bazzite desktop "start menu".
+    "meta": KEY_LEFTMETA,
+}
+
+# named chord -> ordered keycodes, pressed in order then released in reverse.
+# Desktop (KDE Plasma) window/overview shortcut for the app's desktop cluster.
+DESKTOP_CHORDS = {
+    "overview": (KEY_LEFTMETA, KEY_W),  # KWin "Overview" effect (Plasma 6)
 }
 
 # All KEY_* codes the virtual keyboard may emit (declared at device create).
@@ -3563,14 +3828,16 @@ SPECIAL_KEYS = {
 KEYBOARD_CODES = sorted(
     {code for code, _shift in CHAR_KEYMAP.values()}
     | set(SPECIAL_KEYS.values())
-    | {KEY_LEFTSHIFT, KEY_LEFTCTRL}
+    | {c for codes in DESKTOP_CHORDS.values() for c in codes}
+    | {KEY_LEFTSHIFT, KEY_LEFTCTRL, KEY_LEFTALT}
 )
 
 # Names for mock logging of keyboard/mouse EV_KEY events.
 _KEY_CODE_NAMES = {
     KEY_ESC: "KEY_ESC", KEY_BACKSPACE: "KEY_BACKSPACE", KEY_TAB: "KEY_TAB",
     KEY_ENTER: "KEY_ENTER", KEY_SPACE: "KEY_SPACE", KEY_LEFTSHIFT: "KEY_LEFTSHIFT",
-    KEY_LEFTCTRL: "KEY_LEFTCTRL",
+    KEY_LEFTCTRL: "KEY_LEFTCTRL", KEY_LEFTALT: "KEY_LEFTALT",
+    KEY_LEFTMETA: "KEY_LEFTMETA",
     KEY_UP: "KEY_UP", KEY_DOWN: "KEY_DOWN", KEY_LEFT: "KEY_LEFT",
     KEY_RIGHT: "KEY_RIGHT", KEY_HOME: "KEY_HOME", KEY_END: "KEY_END",
     KEY_MINUS: "KEY_MINUS", KEY_EQUAL: "KEY_EQUAL", KEY_LEFTBRACE: "KEY_LEFTBRACE",
@@ -3794,6 +4061,14 @@ class UInputMediaKeys:
         _emit_events(self.fd, [(EV_KEY, code, 0)])
 
 
+# Pause after UI_DEV_CREATE before the first emit. The X server/compositor
+# enumerates a new uinput device asynchronously; events sent before that lands
+# are silently dropped. 0.5s is comfortably past the observed race on SteamOS
+# (verified live: a Meta tap fired immediately after create never reached KWin;
+# the same tap after a settle opened the launcher every time).
+_UINPUT_SETTLE_S = 0.5
+
+
 class UInputMouse:
     """Virtual relative mouse: REL_X/REL_Y/REL_WHEEL + BTN_LEFT/RIGHT/MIDDLE."""
 
@@ -3824,6 +4099,9 @@ class UInputMouse:
             os.close(fd)
             raise
         self.fd = fd
+        # Settle before first emit — see UInputKeyboard (same enumeration race:
+        # the first click/move of a fresh session would be dropped).
+        time.sleep(_UINPUT_SETTLE_S)
 
     def emit(self, events):
         if self.fd is None:
@@ -3872,6 +4150,12 @@ class UInputKeyboard:
             os.close(fd)
             raise
         self.fd = fd
+        # Settle: the X server / compositor needs a beat to enumerate a fresh
+        # uinput device before it delivers events from it. The keyboard is
+        # created lazily on the FIRST key frame — without this, that first
+        # press (a typed char, or the Start-menu Meta tap, verified live on
+        # SteamOS) is silently dropped. One-time cost per session.
+        time.sleep(_UINPUT_SETTLE_S)
 
     def emit(self, events):
         if self.fd is None:
@@ -4043,10 +4327,15 @@ def keyboard_events(msg):
         return _type_events(text)
     if t == "k":
         key = msg.get("key")
-        if key not in SPECIAL_KEYS:
-            raise ValueError("unknown special key %r" % (key,))
-        code = SPECIAL_KEYS[key]
-        return [(EV_KEY, code, 1), (EV_KEY, code, 0)]
+        if key in SPECIAL_KEYS:
+            code = SPECIAL_KEYS[key]
+            return [(EV_KEY, code, 1), (EV_KEY, code, 0)]
+        if key in DESKTOP_CHORDS:
+            codes = DESKTOP_CHORDS[key]
+            # Press in order, release in reverse (modifiers wrap the base key).
+            return ([(EV_KEY, c, 1) for c in codes]
+                    + [(EV_KEY, c, 0) for c in reversed(codes)])
+        raise ValueError("unknown special key %r" % (key,))
     raise ValueError("unknown keyboard message type %r" % (t,))
 
 
@@ -4912,6 +5201,20 @@ class Handler(BaseHTTPRequestHandler):
                     self._send(404, {"error": "not found"}, started)
                 else:
                     self._send(200, info, started)
+            elif path == "/api/displays":
+                # Probe-and-appear: 404 unless this box can do the desktop->TV
+                # Game Mode handoff (SteamOS/Bazzite, 2+ outputs), so the app
+                # shows no Couch Mode control otherwise.
+                info = ({"available": True,
+                         "outputs": [{"name": "DP-1", "internal": False},
+                                     {"name": "eDP-1", "internal": True}],
+                         "game_outputs": ["DP-1"],
+                         "session": "desktop"} if self.mock
+                        else couchmode_info())
+                if info is None:
+                    self._send(404, {"error": "not found"}, started)
+                else:
+                    self._send(200, info, started)
             elif path == "/api/media":
                 # Probe-and-appear: 404 when no session bus / busctl so the app
                 # hides the Now Playing card; 200 with an empty list when idle.
@@ -5230,6 +5533,41 @@ class Handler(BaseHTTPRequestHandler):
                     self._send(200, screensaver_stop(), started)
                 else:
                     self._send(400, {"error": "op must be start|stop"}, started)
+                return
+
+            # POST /api/couch-mode: {"output":"DP-2","hdr":false} — fling the box
+            # into Game Mode on the TV. 404 unless the box can do the handoff.
+            if path == "/api/couch-mode":
+                if not (self.mock or couchmode_available()):
+                    self._send(404, {"error": "couch mode unavailable"}, started)
+                    return
+                try:
+                    req = json.loads(body.decode("utf-8")) if body else {}
+                    if not isinstance(req, dict):
+                        raise ValueError
+                except (ValueError, UnicodeDecodeError):
+                    self._send(400, {"error": "json body required"}, started)
+                    return
+                output = req.get("output") or ""
+                hdr = bool(req.get("hdr", False))
+                if self.mock:
+                    self._send(200, {"ok": True, "output": output, "hdr": hdr,
+                                     "session": "gamescope",
+                                     "steps": {"session": {"ok": True}}}, started)
+                    return
+                self._send(200, couchmode_start(output, hdr), started)
+                return
+
+            # POST /api/desktop-mode: leave Game Mode back to the Plasma desktop.
+            if path == "/api/desktop-mode":
+                if not (self.mock or couchmode_available()):
+                    self._send(404, {"error": "couch mode unavailable"}, started)
+                    return
+                if self.mock:
+                    self._send(200, {"ok": True, "session": "desktop",
+                                     "steps": {"session": {"ok": True}}}, started)
+                    return
+                self._send(200, desktop_mode(), started)
                 return
 
             # POST /api/power/sleep: arm a delayed suspend/poweroff.

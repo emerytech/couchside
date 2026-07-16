@@ -95,6 +95,36 @@ export type BoxCaps = {
    * probe" — only an explicit false skips the probe.
    */
   screensaver?: boolean;
+  /**
+   * Couch Mode: desktop->TV Game Mode handoff (SteamOS/Bazzite desktop with a
+   * TV wired in, 2+ outputs). Optional: absent on agents < 2.9, so undefined
+   * reads as "unknown, probe"; only an explicit false skips the probe.
+   */
+  couchmode?: boolean;
+  /**
+   * Desktop nav: a SteamOS/Bazzite box currently in the Plasma DESKTOP session.
+   * Gates the RemoteView desktop cluster (Start menu, pointer/trackpad, overview)
+   * — session-aware, so it flips off once the box is in Game Mode. Optional:
+   * absent on agents < 2.9, so undefined reads as "not a desktop box here".
+   */
+  desktop?: boolean;
+};
+
+/** One connected display, from GET /api/displays. */
+export type Display = {
+  name: string;
+  /** True for a built-in panel (eDP/LVDS/DSI); false = an external monitor/TV. */
+  internal: boolean;
+};
+
+/** GET /api/displays state (agent >= 2.9): the box's outputs for Couch Mode. */
+export type Displays = {
+  available: boolean;
+  outputs: Display[];
+  /** External output names to offer as the game display (default = first). */
+  game_outputs: string[];
+  /** Current session: 'gamescope' when already in Game Mode, else 'desktop'. */
+  session: 'gamescope' | 'desktop';
 };
 
 /** GET/POST /api/screensaver state (agent >= 2.8.4). */
@@ -440,7 +470,9 @@ export function capsEqual(a?: BoxCaps, b?: BoxCaps): boolean {
     a.tv === b.tv &&
     a.screen === b.screen &&
     a.power_schedule === b.power_schedule &&
-    a.screensaver === b.screensaver
+    a.screensaver === b.screensaver &&
+    a.couchmode === b.couchmode &&
+    a.desktop === b.desktop
   );
 }
 
@@ -909,6 +941,36 @@ export const api = {
       method: 'POST',
       body: { op, ...opts },
     });
+  },
+
+  /**
+   * Couch Mode displays. Probe-and-appear: null on 404 (agent < 2.9 or box
+   * can't do the handoff) so the control hides. caps.couchmode === false skips
+   * the request outright; undefined (older agent) still probes.
+   */
+  displays(
+    settings: ConnSettings,
+    caps: BoxCaps | undefined = cachedCaps(settings),
+  ): Promise<Displays | null> {
+    return probeGated(caps?.couchmode, () =>
+      probeOrNull(request<Displays>(settings, '/api/displays')));
+  },
+
+  /** Enter Couch Mode: fling Game Mode onto `output` (HDR optional). */
+  couchModeStart(
+    settings: ConnSettings,
+    output: string,
+    hdr = false,
+  ): Promise<{ ok: boolean }> {
+    return request(settings, '/api/couch-mode', {
+      method: 'POST',
+      body: { output, hdr },
+    });
+  },
+
+  /** Exit Couch Mode: return the box to its desktop session. */
+  desktopMode(settings: ConnSettings): Promise<{ ok: boolean }> {
+    return request(settings, '/api/desktop-mode', { method: 'POST' });
   },
 
   /** Arm a delayed suspend/poweroff. */

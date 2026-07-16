@@ -1,11 +1,13 @@
 import Ionicons from '@expo/vector-icons/Ionicons';
 import React, { useCallback, useState } from 'react';
-import { Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
+import { PanResponderInstance, Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
 
 import { usePoll } from '@/hooks/usePoll';
-import { api, hostKey, Tv, TvKey, TvOp } from '@/lib/api';
+import { useTrackpad } from '@/hooks/useTrackpad';
+import { api, hostKey, Status, Tv, TvKey, TvOp } from '@/lib/api';
 import { GamepadClient } from '@/lib/gamepad';
 import { hapticLight } from '@/lib/haptics';
+import { usePref } from '@/lib/prefs';
 import { Settings } from '@/lib/settings';
 import { mono, theme } from '@/lib/theme';
 
@@ -40,8 +42,20 @@ export function RemoteView({
   const sources = tv?.sources ?? [];
   const canBlank = tv?.screen_toggle === true;
 
+  // Desktop nav, self-polled and session-aware: the SteamOS/Bazzite desktop
+  // cluster (Start menu, trackpad, overview) appears only while the box is in
+  // the Plasma desktop, and the poll flips it off once it's flung to Game Mode.
+  const statusPoll = usePoll<Status>(() => api.status(settings), 8000, true, hostKey(settings));
+  const showDesktopNav = usePref('padDesktopNav');
+  const hasDesktop = statusPoll.data?.caps?.desktop === true && showDesktopNav;
+
   const [target, setTarget] = useState<'box' | 'tv'>('box');
   const nav = hasTvKeys ? target : 'box';
+
+  // Nav-circle input surface: the classic D-pad, or a relative-mouse trackpad
+  // (desktop only). Force back to the D-pad if the box leaves desktop mode.
+  const [surface, setSurface] = useState<'dpad' | 'track'>('dpad');
+  const trackpad = hasDesktop && surface === 'track';
 
   // ---- senders -------------------------------------------------------------
 
@@ -94,6 +108,44 @@ export function RemoteView({
     [settings],
   );
 
+  // ---- desktop nav senders (SteamOS/Bazzite Plasma, via the WS uinput) ------
+
+  const leftClick = useCallback(() => {
+    hapticLight();
+    client.sendMouseButton('l', 1);
+    setTimeout(() => client.sendMouseButton('l', 0), 40);
+  }, [client]);
+
+  const rightClick = useCallback(() => {
+    hapticLight();
+    client.sendMouseButton('r', 1);
+    setTimeout(() => client.sendMouseButton('r', 0), 40);
+  }, [client]);
+
+  const startMenu = useCallback(() => {
+    hapticLight();
+    client.sendDesktopKey('meta');
+  }, [client]);
+
+  const overview = useCallback(() => {
+    hapticLight();
+    client.sendDesktopKey('overview');
+  }, [client]);
+
+  const escKey = useCallback(() => {
+    hapticLight();
+    client.sendKey('esc');
+  }, [client]);
+
+  // The nav circle's trackpad responder. Created unconditionally (a hook); its
+  // panHandlers are only attached to the surface while `trackpad` is on.
+  const trackpadResponder = useTrackpad({
+    onMove: (dx, dy) => client.sendMouseMove(dx, dy),
+    onLeftClick: leftClick,
+    onRightClick: rightClick,
+    onScroll: (notches) => client.sendWheel(notches),
+  });
+
   // Nav cluster routing: BOX = virtual gamepad, TV = factory-remote serial keys.
   const navUp = () => (nav === 'tv' ? tvKey('up') : padTap('du'));
   const navDown = () => (nav === 'tv' ? tvKey('down') : padTap('dd'));
@@ -136,20 +188,48 @@ export function RemoteView({
         </View>
       )}
 
-      {/* Corner keys + D-pad */}
+      {/* Nav-circle surface toggle: D-pad vs trackpad (desktop boxes only) */}
+      {hasDesktop && (
+        <View style={styles.surfaceSeg}>
+          {(['dpad', 'track'] as const).map((s) => (
+            <Pressable
+              key={s}
+              onPress={() => {
+                hapticLight();
+                setSurface(s);
+              }}
+              style={[styles.seg, surface === s && styles.segActive]}>
+              <Ionicons
+                name={s === 'dpad' ? 'apps' : 'move'}
+                size={14}
+                color={surface === s ? theme.blue : theme.textDim}
+              />
+              <Text style={[styles.segText, surface === s && styles.segTextActive]}>
+                {s === 'dpad' ? 'D-PAD' : 'TRACKPAD'}
+              </Text>
+            </Pressable>
+          ))}
+        </View>
+      )}
+
+      {/* Corner keys + D-pad / trackpad */}
       <View style={styles.navBlock}>
         <View style={styles.cornerRow}>
           <CornerBtn icon="menu" label="MENU" onPress={navMenu} />
           <CornerBtn icon="settings-outline" label={nav === 'tv' ? 'SETTINGS' : 'VIEW'} onPress={navSettings} />
         </View>
 
-        <Dpad
-          onUp={navUp}
-          onDown={navDown}
-          onLeft={navLeft}
-          onRight={navRight}
-          onOk={navOk}
-        />
+        {trackpad ? (
+          <NavTrackpad responder={trackpadResponder} />
+        ) : (
+          <Dpad
+            onUp={navUp}
+            onDown={navDown}
+            onLeft={navLeft}
+            onRight={navRight}
+            onOk={navOk}
+          />
+        )}
 
         <View style={styles.cornerRow}>
           <CornerBtn icon="arrow-undo" label="BACK" onPress={navBack} />
@@ -160,6 +240,17 @@ export function RemoteView({
           />
         </View>
       </View>
+
+      {/* Desktop cluster: Plasma start menu, overview, esc, explicit clicks */}
+      {hasDesktop && (
+        <View style={styles.deskCluster}>
+          <DeskBtn icon="grid" label="START" onPress={startMenu} />
+          <DeskBtn icon="copy-outline" label="OVERVIEW" onPress={overview} />
+          <DeskBtn icon="close" label="ESC" onPress={escKey} />
+          <DeskBtn icon="ellipse-outline" label="L-CLICK" onPress={leftClick} />
+          <DeskBtn icon="ellipse" label="R-CLICK" onPress={rightClick} />
+        </View>
+      )}
 
       {/* Rockers + center stack (vol | mute/blank | brightness) */}
       <View style={styles.rockerRow}>
@@ -267,6 +358,40 @@ function Dpad({
   );
 }
 
+/**
+ * Trackpad face of the nav circle: same footprint as the D-pad, but the whole
+ * disc is a relative-mouse surface (drag=pointer, tap=click, two-finger tap=
+ * right-click, two-finger drag=scroll).
+ */
+function NavTrackpad({ responder }: { responder: PanResponderInstance }) {
+  const hints = usePref('padHints');
+  return (
+    <View style={[styles.dpad, styles.navTrack]} {...responder.panHandlers}>
+      <Ionicons name="move" size={28} color="rgba(11,18,32,0.35)" />
+      {hints && (
+        <Text style={styles.navTrackHint}>drag · tap = click{'\n'}2-finger: right / scroll</Text>
+      )}
+    </View>
+  );
+}
+
+function DeskBtn({
+  icon,
+  label,
+  onPress,
+}: {
+  icon: IoniconName;
+  label: string;
+  onPress: () => void;
+}) {
+  return (
+    <Pressable onPress={onPress} style={({ pressed }) => [styles.desk, pressed && styles.pressed]}>
+      <Ionicons name={icon} size={17} color={theme.text} />
+      <Text style={styles.deskText}>{label}</Text>
+    </Pressable>
+  );
+}
+
 function Rocker({
   label,
   onPlus,
@@ -330,7 +455,24 @@ const styles = StyleSheet.create({
     borderWidth: 1,
     borderColor: theme.cardBorder,
   },
-  seg: { flex: 1, paddingVertical: 9, borderRadius: 8, alignItems: 'center' },
+  surfaceSeg: {
+    flexDirection: 'row',
+    gap: 2,
+    padding: 2,
+    borderRadius: 10,
+    backgroundColor: theme.inset,
+    borderWidth: 1,
+    borderColor: theme.cardBorder,
+  },
+  seg: {
+    flex: 1,
+    flexDirection: 'row',
+    justifyContent: 'center',
+    gap: 6,
+    paddingVertical: 9,
+    borderRadius: 8,
+    alignItems: 'center',
+  },
   segActive: { backgroundColor: theme.card, borderWidth: 1, borderColor: theme.blue },
   segText: { color: theme.textDim, fontSize: 12, fontWeight: '700', fontFamily: mono },
   segTextActive: { color: theme.blue },
@@ -402,6 +544,41 @@ const styles = StyleSheet.create({
   },
   okPressed: { backgroundColor: '#cbd5e1' },
   okText: { color: '#0b1220', fontSize: 20, fontWeight: '800', fontFamily: mono },
+
+  // Trackpad face of the nav circle (same disc, different surface).
+  navTrack: {
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 8,
+  },
+  navTrackHint: {
+    color: 'rgba(11,18,32,0.45)',
+    fontSize: 11,
+    fontFamily: mono,
+    textAlign: 'center',
+    lineHeight: 16,
+  },
+
+  // Desktop cluster (Plasma desktop boxes only).
+  deskCluster: { flexDirection: 'row', flexWrap: 'wrap', justifyContent: 'center', gap: 8 },
+  desk: {
+    minWidth: 64,
+    alignItems: 'center',
+    gap: 3,
+    paddingVertical: 10,
+    paddingHorizontal: 10,
+    borderRadius: 12,
+    backgroundColor: theme.card,
+    borderWidth: 1,
+    borderColor: theme.cardBorder,
+  },
+  deskText: {
+    color: theme.textDim,
+    fontSize: 9,
+    fontWeight: '800',
+    letterSpacing: 0.8,
+    fontFamily: mono,
+  },
 
   rockerRow: { flexDirection: 'row', justifyContent: 'center', gap: 12 },
   rocker: {
