@@ -1096,13 +1096,15 @@ def _connected_outputs():
 
 def couchmode_available():
     """True when this box can do the desktop→TV Game Mode handoff: SteamOS/Bazzite,
-    the session tools present, and 2+ connected outputs (so there's a TV to fling
-    Game Mode onto, distinct from the built-in panel)."""
+    the session tools present, and at least one EXTERNAL output (a TV/monitor to
+    fling Game Mode onto). A desktop tower or mini-PC with a single wired display
+    counts — the handoff is desktop→Game Mode on that display. A bare handheld
+    (internal panel only, nothing plugged in) stays hidden."""
     if not _is_steamos_like():
         return False
     if not all(shutil.which(t) for t in _COUCHMODE_TOOLS):
         return False
-    return len(_connected_outputs()) >= 2
+    return any(not o["internal"] for o in _connected_outputs())
 
 
 def _couchmode_session():
