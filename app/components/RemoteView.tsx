@@ -161,6 +161,11 @@ export function RemoteView({
     <ScrollView
       style={styles.root}
       contentContainerStyle={styles.content}
+      // While the nav circle is a trackpad, the page must not scroll: the
+      // ScrollView was stealing the drag (page moved, pointer stuttered).
+      // The responder also refuses termination (useTrackpad), but disabling
+      // the scroll entirely is what makes the surface feel solid.
+      scrollEnabled={!trackpad}
       showsVerticalScrollIndicator={false}>
       {/* Nav target toggle — only meaningful with an RS-232 panel */}
       {hasTvKeys && (

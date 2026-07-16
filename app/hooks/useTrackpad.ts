@@ -61,6 +61,11 @@ export function useTrackpad(cbs: TrackpadCallbacks): PanResponderInstance {
     PanResponder.create({
       onStartShouldSetPanResponder: () => true,
       onMoveShouldSetPanResponder: () => true,
+      // Inside a ScrollView (the RemoteView nav circle) the scroll container
+      // asks to take over mid-drag — which scrolled the page and killed the
+      // pointer gesture. Refuse: once the trackpad owns the touch, it keeps it.
+      onPanResponderTerminationRequest: () => false,
+      onShouldBlockNativeResponder: () => true,
       onPanResponderGrant: (evt) => {
         const touches = evt.nativeEvent.touches.length || 1;
         st.current = {
