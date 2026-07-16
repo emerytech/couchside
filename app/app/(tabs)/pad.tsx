@@ -18,6 +18,7 @@ import {
   AppState,
   InputAccessoryView,
   Keyboard,
+  KeyboardAvoidingView,
   PanResponder,
   Platform,
   Pressable,
@@ -414,18 +415,24 @@ function KeyboardBar({ onText, onBackspace, onEnter, onSwipeMode }: KeyboardBarP
           </Pressable>
         )}
       </View>
-      {/* Floating dismiss, pinned to the TOP of the screen while typing. The
-          in-layout DONE gets covered by the raised keyboard and the iOS
-          InputAccessoryView Done bar stopped rendering under newer iOS SDKs
-          (build 30), which left the keyboard stuck open — this one cannot be
-          covered and depends on nothing keyboard-related. */}
+      {/* Floating dismiss while typing: rides just ABOVE the keyboard,
+          bottom-right (thumb range). KeyboardAvoidingView does the keyboard-
+          height math; on Android the window itself resizes, so no behavior
+          needed. Exists because the in-layout DONE gets covered by the raised
+          keyboard and the InputAccessoryView Done bar stopped rendering under
+          newer iOS SDKs (build 30), which left the keyboard stuck open. */}
       {open && (
-        <Pressable
-          onPress={dismiss}
-          hitSlop={10}
-          style={({ pressed }) => [styles.kbFloatDone, pressed && styles.btnPressed]}>
-          <Text style={styles.kbDoneText}>⌨ ✕ HIDE</Text>
-        </Pressable>
+        <KeyboardAvoidingView
+          behavior={Platform.OS === 'ios' ? 'position' : undefined}
+          pointerEvents="box-none"
+          style={styles.kbFloatWrap}>
+          <Pressable
+            onPress={dismiss}
+            hitSlop={10}
+            style={({ pressed }) => [styles.kbFloatDone, pressed && styles.btnPressed]}>
+            <Text style={styles.kbDoneText}>⌨ ✕ HIDE</Text>
+          </Pressable>
+        </KeyboardAvoidingView>
       )}
       <TextInput
         ref={inputRef}
@@ -1266,18 +1273,20 @@ const styles = StyleSheet.create({
     fontWeight: '800',
     letterSpacing: 1,
   },
-  // Floating keyboard dismiss: top-right of the screen, above everything, so
-  // it stays reachable no matter how tall the keyboard is.
-  kbFloatDone: {
+  // Floating keyboard dismiss: anchored bottom-right; the wrapper's
+  // KeyboardAvoidingView lifts it to sit just above the raised keyboard.
+  kbFloatWrap: {
     position: 'absolute',
-    top: 6,
-    right: 12,
+    right: 14,
+    bottom: 10,
     zIndex: 60,
     elevation: 6,
+  },
+  kbFloatDone: {
     backgroundColor: theme.blue,
     borderRadius: 999,
-    paddingVertical: 10,
-    paddingHorizontal: 16,
+    paddingVertical: 12,
+    paddingHorizontal: 18,
     shadowColor: '#000',
     shadowOpacity: 0.35,
     shadowRadius: 6,
