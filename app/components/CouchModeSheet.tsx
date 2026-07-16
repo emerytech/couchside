@@ -10,7 +10,7 @@
  */
 import Ionicons from '@expo/vector-icons/Ionicons';
 import React, { useCallback, useEffect, useState } from 'react';
-import { Modal, Pressable, StyleSheet, Switch, Text, View } from 'react-native';
+import { Modal, Pressable, StyleSheet, Text, View } from 'react-native';
 
 import { api, ConnSettings, Displays } from '@/lib/api';
 import { hapticError, hapticLight, hapticSuccess } from '@/lib/haptics';
@@ -32,7 +32,6 @@ export function CouchModeSheet({
   const inGameMode = displays?.session === 'gamescope';
   const outputs = displays?.game_outputs ?? [];
   const [output, setOutput] = useState<string>(outputs[0] ?? '');
-  const [hdr, setHdr] = useState(false);
   const [busy, setBusy] = useState(false);
 
   // Seed the picker from the box's current outputs when the sheet OPENS — not
@@ -50,7 +49,7 @@ export function CouchModeSheet({
     setBusy(true);
     hapticLight();
     try {
-      await api.couchModeStart(settings, output, hdr);
+      await api.couchModeStart(settings, output);
       hapticSuccess();
       onChanged();
       onClose();
@@ -59,7 +58,7 @@ export function CouchModeSheet({
     } finally {
       setBusy(false);
     }
-  }, [busy, output, hdr, settings, onChanged, onClose]);
+  }, [busy, output, settings, onChanged, onClose]);
 
   const toDesktop = useCallback(async () => {
     if (busy) return;
@@ -126,21 +125,6 @@ export function CouchModeSheet({
                 </>
               )}
 
-              <View style={styles.hdrRow}>
-                <View style={{ flex: 1 }}>
-                  <Text style={styles.hdrLabel}>HDR</Text>
-                  <Text style={styles.hdrSub}>Enable HDR on the TV (if supported).</Text>
-                </View>
-                <Switch
-                  value={hdr}
-                  onValueChange={(v) => {
-                    hapticLight();
-                    setHdr(v);
-                  }}
-                  trackColor={{ false: theme.inset, true: theme.blue }}
-                />
-              </View>
-
               <Pressable
                 disabled={busy || !output}
                 onPress={fling}
@@ -189,10 +173,6 @@ const styles = StyleSheet.create({
   pillText: { color: theme.textDim, fontSize: 14, fontWeight: '600', fontFamily: mono },
   pillTextOn: { color: theme.blue },
   pressed: { opacity: 0.7 },
-
-  hdrRow: { flexDirection: 'row', alignItems: 'center', marginTop: 8, gap: 12 },
-  hdrLabel: { color: theme.text, fontSize: 15, fontWeight: '600' },
-  hdrSub: { color: theme.textDim, fontSize: 11, marginTop: 2 },
 
   startBtn: {
     marginTop: 14,
