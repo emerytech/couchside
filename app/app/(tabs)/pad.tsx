@@ -402,9 +402,12 @@ function KeyboardBar({ onText, onBackspace, onEnter, onSwipeMode }: KeyboardBarP
             pressed && styles.btnPressed,
           ]}>
           {open && <View style={styles.kbDragHandle} pointerEvents="none" />}
+          {/* Closed: edge chevrons advertise the horizontal mode-switch swipe. */}
+          {!open && <Text style={styles.kbSwipeCue}>‹</Text>}
           <Text style={[styles.kbBarText, open && styles.kbBarTextOpen]}>
-            {open ? '⌨  type to send · swipe down or tap Done' : '⌨  KEYBOARD'}
+            {open ? '⌨  type to send · swipe down or tap Done' : '⌨  KEYBOARD  ·  swipe to switch mode'}
           </Text>
+          {!open && <Text style={styles.kbSwipeCue}>›</Text>}
         </Pressable>
         {open && (
           <Pressable
@@ -420,20 +423,25 @@ function KeyboardBar({ onText, onBackspace, onEnter, onSwipeMode }: KeyboardBarP
           height math; on Android the window itself resizes, so no behavior
           needed. Exists because the in-layout DONE gets covered by the raised
           keyboard and the InputAccessoryView Done bar stopped rendering under
-          newer iOS SDKs (build 30), which left the keyboard stuck open. */}
-      {open && (
-        <KeyboardAvoidingView
-          behavior={Platform.OS === 'ios' ? 'position' : undefined}
-          pointerEvents="box-none"
-          style={styles.kbFloatWrap}>
+          newer iOS SDKs (build 30), which left the keyboard stuck open.
+
+          The KAV stays MOUNTED permanently and only the pill is conditional:
+          mounting the KAV on open raced the keyboard's show event (from the
+          trackpad/remote layouts the keyboard won), it missed the frame change,
+          applied zero offset, and the pill rendered UNDER the keyboard. */}
+      <KeyboardAvoidingView
+        behavior={Platform.OS === 'ios' ? 'position' : undefined}
+        pointerEvents="box-none"
+        style={styles.kbFloatWrap}>
+        {open && (
           <Pressable
             onPress={dismiss}
             hitSlop={10}
             style={({ pressed }) => [styles.kbFloatDone, pressed && styles.btnPressed]}>
             <Text style={styles.kbDoneText}>⌨ ✕ HIDE</Text>
           </Pressable>
-        </KeyboardAvoidingView>
-      )}
+        )}
+      </KeyboardAvoidingView>
       <TextInput
         ref={inputRef}
         value={value}
@@ -1241,6 +1249,7 @@ const styles = StyleSheet.create({
     borderWidth: 1,
     borderRadius: 999,
     paddingVertical: 12,
+    flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'center',
   },
@@ -1291,6 +1300,14 @@ const styles = StyleSheet.create({
     shadowOpacity: 0.35,
     shadowRadius: 6,
     shadowOffset: { width: 0, height: 2 },
+  },
+  // Edge chevrons on the closed bar: the horizontal mode-switch swipe cue.
+  kbSwipeCue: {
+    color: theme.textFaint,
+    fontFamily: mono,
+    fontSize: 16,
+    fontWeight: '700',
+    paddingHorizontal: 14,
   },
   kbBarText: {
     color: theme.textDim,
