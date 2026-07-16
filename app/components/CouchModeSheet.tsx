@@ -34,6 +34,10 @@ export function CouchModeSheet({
 }) {
   const inGameMode = displays?.session === 'gamescope';
   const outputs = displays?.game_outputs ?? [];
+  // Show the picker only where the choice is actually honored (the agent
+  // reports whether the session reads $OUTPUT_CONNECTOR). false = advisory-only
+  // box (e.g. SteamOS): hide it. undefined = older agent: keep prior behavior.
+  const canPickOutput = outputs.length > 1 && displays?.output_forcing !== false;
   const [output, setOutput] = useState<string>(outputs[0] ?? '');
   const [busy, setBusy] = useState(false);
 
@@ -106,7 +110,7 @@ export function CouchModeSheet({
                 hand over. Tap Back to Desktop to return.
               </Text>
 
-              {outputs.length > 1 && (
+              {canPickOutput && (
                 <>
                   <Text style={styles.sub}>GAME DISPLAY</Text>
                   <View style={styles.pills}>

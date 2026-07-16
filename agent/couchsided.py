@@ -1123,6 +1123,20 @@ def _couchmode_session():
         return "desktop"
 
 
+def _output_forcing_supported():
+    """True when this box's gamescope session honors $OUTPUT_CONNECTOR (so the
+    app's display picker is AUTHORITATIVE, not advisory). Bazzite's
+    gamescope-session-plus reads it into --prefer-output; SteamOS's session
+    hardcodes its preference and ignores the env. Detected from the session
+    script itself rather than a distro name, so it tracks reality."""
+    try:
+        with open("/usr/share/gamescope-session-plus/"
+                  "gamescope-session-plus") as f:
+            return "OUTPUT_CONNECTOR" in f.read()
+    except OSError:
+        return False
+
+
 def couchmode_info():
     """Payload for GET /api/displays: the connected outputs, which are TV
     candidates (external) to offer as the game display, and the current session
@@ -1138,6 +1152,10 @@ def couchmode_info():
         # to the first external one in the app's picker.
         "game_outputs": [o["name"] for o in outs if not o["internal"]],
         "session": _couchmode_session(),
+        # Whether the picker's choice is actually honored (see helper). The app
+        # hides the picker when this is False — a dead control is worse than
+        # no control.
+        "output_forcing": _output_forcing_supported(),
     }
 
 
@@ -5273,7 +5291,8 @@ class Handler(BaseHTTPRequestHandler):
                          "outputs": [{"name": "DP-1", "internal": False},
                                      {"name": "eDP-1", "internal": True}],
                          "game_outputs": ["DP-1"],
-                         "session": "desktop"} if self.mock
+                         "session": "desktop",
+                         "output_forcing": True} if self.mock
                         else couchmode_info())
                 if info is None:
                     self._send(404, {"error": "not found"}, started)
