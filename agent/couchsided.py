@@ -643,7 +643,7 @@ def set_caps(mock):
     if mock:
         CAPS = {k: True for k in
                 ("gamepad", "steam", "media", "tv", "screen", "power_schedule",
-                 "screensaver")}
+                 "screensaver", "couchmode")}
         return
     CAPS = {
         "gamepad": _uinput_writable(),
@@ -653,6 +653,7 @@ def set_caps(mock):
         "screen": _SCREEN is not None,
         "power_schedule": safe(rtc_available),
         "screensaver": safe(screensaver_available),
+        "couchmode": safe(couchmode_available),
     }
 
 
@@ -1018,6 +1019,93 @@ def real_action(action_id):
         "stdout": r.stdout,
         "stderr": r.stderr,
         "duration_ms": int((time.monotonic() - start) * 1000),
+    }
+
+
+# ---------------------------------------------------------------------------
+# Couch Mode (/api/displays, /api/couch-mode, /api/desktop-mode).
+#
+# For a box run as a DESKTOP (Plasma) that also has a TV wired in: one tap flings
+# it into Game Mode on the TV. The desktop→couch handoff, phone-triggered.
+#
+# The reliable output mechanism (learned from a real multi-monitor setup): don't
+# fight gamescope's session args to inject --prefer-output — instead make the
+# chosen TV output PRIMARY first (kscreen-doctor), THEN switch to Game Mode, and
+# gamescope lands on the primary. Desktop Mode reverses the session.
+#
+# SteamOS/Bazzite only (shared tooling: gamescope, steamos-session-select,
+# kscreen-doctor, wpctl). Gated to boxes with 2+ connected outputs, so a
+# single-display box (a handheld with nothing plugged in, or a dedicated Game
+# Mode box) never shows the button. Outputs are read from DRM sysfs, which works
+# regardless of the current session (kscreen-doctor only answers inside Plasma).
+#
+# This section is the read-only half: enumerate outputs + report the capability.
+# The switch orchestration (audio move + set-primary + session switch, chained
+# with the existing TV power/HDMI-input control) is a separate step.
+# ---------------------------------------------------------------------------
+
+# DRM connector name prefixes that are a built-in panel, not a TV/monitor.
+_INTERNAL_OUTPUT_PREFIXES = ("eDP", "LVDS", "DSI")
+# The session tools Couch Mode drives; all must be present to offer it.
+_COUCHMODE_TOOLS = ("gamescope", "steamos-session-select", "kscreen-doctor", "wpctl")
+
+
+def _is_steamos_like():
+    """True on SteamOS or Bazzite — the only platforms Couch Mode targets."""
+    try:
+        rel = open("/etc/os-release").read().lower()
+    except OSError:
+        return False
+    return "steamos" in rel or "bazzite" in rel
+
+
+def _connected_outputs():
+    """Connected DRM outputs as [{name, internal}], newest-sorted by connector.
+
+    Read straight from /sys/class/drm/*/status so it works in ANY session
+    (Plasma, Game Mode, or the bare login state) — kscreen-doctor only answers
+    while a KWin session is up.
+    """
+    outs = []
+    for path in sorted(glob.glob("/sys/class/drm/card*-*")):
+        try:
+            if open(os.path.join(path, "status")).read().strip() != "connected":
+                continue
+        except OSError:
+            continue
+        # cardN-DP-2 -> DP-2 ; cardN-eDP-1 -> eDP-1
+        name = os.path.basename(path).split("-", 1)[1]
+        outs.append({
+            "name": name,
+            "internal": name.startswith(_INTERNAL_OUTPUT_PREFIXES),
+        })
+    return outs
+
+
+def couchmode_available():
+    """True when this box can do the desktop→TV Game Mode handoff: SteamOS/Bazzite,
+    the session tools present, and 2+ connected outputs (so there's a TV to fling
+    Game Mode onto, distinct from the built-in panel)."""
+    if not _is_steamos_like():
+        return False
+    if not all(shutil.which(t) for t in _COUCHMODE_TOOLS):
+        return False
+    return len(_connected_outputs()) >= 2
+
+
+def couchmode_info():
+    """Payload for GET /api/displays: the connected outputs and which are TV
+    candidates (external) to offer as the game display. None when unavailable, so
+    the route 404s and the app hides the Couch Mode control (probe-and-appear)."""
+    if not couchmode_available():
+        return None
+    outs = _connected_outputs()
+    return {
+        "available": True,
+        "outputs": outs,
+        # External (non-panel) outputs are the game-display candidates. Default
+        # to the first external one in the app's picker.
+        "game_outputs": [o["name"] for o in outs if not o["internal"]],
     }
 
 
@@ -4908,6 +4996,19 @@ class Handler(BaseHTTPRequestHandler):
                 # Probe-and-appear: 404 when no TV backend so the app shows no
                 # TV strip; a body only when a backend is live.
                 info = tv_info()
+                if info is None:
+                    self._send(404, {"error": "not found"}, started)
+                else:
+                    self._send(200, info, started)
+            elif path == "/api/displays":
+                # Probe-and-appear: 404 unless this box can do the desktop->TV
+                # Game Mode handoff (SteamOS/Bazzite, 2+ outputs), so the app
+                # shows no Couch Mode control otherwise.
+                info = ({"available": True,
+                         "outputs": [{"name": "DP-1", "internal": False},
+                                     {"name": "eDP-1", "internal": True}],
+                         "game_outputs": ["DP-1"]} if self.mock
+                        else couchmode_info())
                 if info is None:
                     self._send(404, {"error": "not found"}, started)
                 else:
