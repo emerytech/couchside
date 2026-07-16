@@ -1221,21 +1221,47 @@ def _internal_audio_sink():
     return None
 
 
+def _couch_run_first(cmds):
+    """Run candidate commands in order until one succeeds; return that result
+    (or the last failure). Skips commands whose binary is absent. The session
+    switchers differ per distro — see _session_to_game — so the switch is a
+    try-chain, not a single verb."""
+    result = {"ok": False, "exit_code": 127, "stdout": "",
+              "stderr": "no session-switch tool found"}
+    for cmd in cmds:
+        if not shutil.which(cmd[0]):
+            continue
+        result = _couch_run(cmd)
+        if result["ok"]:
+            return result
+    return result
+
+
 def _session_to_game():
-    """Transient switch to Game Mode. Prefer steamosctl (does NOT change the
-    boot default) over the deprecated steamos-session-select wrapper (which
-    would)."""
-    if shutil.which("steamosctl"):
-        return _couch_run(["steamosctl", "switch-to-game-mode"])
-    return _couch_run(["steamos-session-select", "gamescope"])
+    """Transient switch to Game Mode.
+
+    SteamOS: steamosctl (validated live; does NOT change the boot default).
+    Bazzite: ships a steamosctl WITHOUT the SessionManagement interface (the
+    call errors), so fall through to its steamos-session-select script
+    (validated live on a bazzite-deck box)."""
+    return _couch_run_first([
+        ["steamosctl", "switch-to-game-mode"],
+        ["steamos-session-select", "gamescope"],
+    ])
 
 
 def _session_to_desktop():
-    """Transient switch back to the Plasma X11 desktop."""
-    if shutil.which("steamosctl"):
-        return _couch_run(["steamosctl", "switch-to-desktop-mode",
-                           "plasmax11.desktop"])
-    return _couch_run(["steamos-session-select", "plasma"])
+    """Transient switch back to the desktop session.
+
+    SteamOS: steamosctl with the X11 session (validated live). Bazzite: its
+    steamos-session-select 'plasma' runs a ONESHOT desktop session — the boot
+    default stays Game Mode, which is exactly couch-mode semantics (also
+    validated live)."""
+    return _couch_run_first([
+        ["steamosctl", "switch-to-desktop-mode", "plasmax11.desktop"],
+        ["steamosctl", "switch-to-desktop-mode"],
+        ["steamos-session-select", "plasma"],
+    ])
 
 
 def couchmode_start(output, hdr=False):
