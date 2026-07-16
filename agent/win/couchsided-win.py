@@ -758,11 +758,13 @@ def set_caps(mock):
             return False
 
     if mock:
-        # screensaver stays False even in mock: it is a gamescope/Steam-shortcut
-        # feature the Windows agent does not implement (see the Linux agent).
+        # screensaver + couchmode stay False even in mock: both are
+        # gamescope/SteamOS features the Windows agent does not implement
+        # (see the Linux agent).
         CAPS = {k: True for k in
                 ("gamepad", "steam", "media", "tv", "screen", "power_schedule")}
         CAPS["screensaver"] = False
+        CAPS["couchmode"] = False
         return
     CAPS = {
         "gamepad": safe(vigem_available),
@@ -772,6 +774,8 @@ def set_caps(mock):
         "screen": _SCREEN is not None,
         "power_schedule": safe(wake_available),
         "screensaver": False,
+        # Desktop->TV Game Mode handoff is gamescope/SteamOS-only.
+        "couchmode": False,
     }
 
 
