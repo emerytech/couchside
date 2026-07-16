@@ -386,6 +386,19 @@ function KeyboardBar({ onText, onBackspace, onEnter }: KeyboardBarProps) {
           </Pressable>
         )}
       </View>
+      {/* Floating dismiss, pinned to the TOP of the screen while typing. The
+          in-layout DONE gets covered by the raised keyboard and the iOS
+          InputAccessoryView Done bar stopped rendering under newer iOS SDKs
+          (build 30), which left the keyboard stuck open — this one cannot be
+          covered and depends on nothing keyboard-related. */}
+      {open && (
+        <Pressable
+          onPress={dismiss}
+          hitSlop={10}
+          style={({ pressed }) => [styles.kbFloatDone, pressed && styles.btnPressed]}>
+          <Text style={styles.kbDoneText}>⌨ ✕ HIDE</Text>
+        </Pressable>
+      )}
       <TextInput
         ref={inputRef}
         value={value}
@@ -1209,6 +1222,23 @@ const styles = StyleSheet.create({
     fontSize: 13,
     fontWeight: '800',
     letterSpacing: 1,
+  },
+  // Floating keyboard dismiss: top-right of the screen, above everything, so
+  // it stays reachable no matter how tall the keyboard is.
+  kbFloatDone: {
+    position: 'absolute',
+    top: 6,
+    right: 12,
+    zIndex: 60,
+    elevation: 6,
+    backgroundColor: theme.blue,
+    borderRadius: 999,
+    paddingVertical: 10,
+    paddingHorizontal: 16,
+    shadowColor: '#000',
+    shadowOpacity: 0.35,
+    shadowRadius: 6,
+    shadowOffset: { width: 0, height: 2 },
   },
   kbBarText: {
     color: theme.textDim,

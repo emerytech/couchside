@@ -2,10 +2,12 @@
   "version": "0.0.1",
   "configurations": [
     {
-      "name": "couchside-static",
-      "runtimeExecutable": "python3",
-      "runtimeArgs": ["-m", "http.server", "8993", "-d", "/private/tmp/claude-501/-Users-temery-Developer-rescue-remote/fabee38d-fd9f-4dab-86b0-372e275ad4ed/scratchpad/site-preview"],
-      "port": 8993
+      "name": "couchside-app-web",
+      "runtimeExecutable": "npx",
+      "runtimeArgs": ["expo", "start", "--web", "--port", "8097"],
+      "cwd": "app",
+      "port": 8097,
+      "autoPort": false
     }
   ]
 }
