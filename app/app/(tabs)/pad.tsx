@@ -9,7 +9,7 @@
  */
 import { hapticSelection } from '@/lib/haptics';
 import { getKeepAwakeEnabled, useKeepAwakeEnabled } from '@/lib/keepAwake';
-import { usePref } from '@/lib/prefs';
+import { getPref, usePref } from '@/lib/prefs';
 import { activateKeepAwakeAsync, deactivateKeepAwake } from 'expo-keep-awake';
 import { useNavigation } from 'expo-router';
 import React, { useCallback, useEffect, useRef, useState } from 'react';
@@ -550,7 +550,16 @@ function PadScreen() {
   const { width, height } = useWindowDimensions();
   const landscape = width > height;
   const { settings, ready, update } = useSettings();
-  const mode: PadMode = settings.padMode ?? 'swipe';
+  // Input mode lives on the active BOX record; with no box paired,
+  // SettingsContext.update() is a silent no-op and the mode toggle looked
+  // functional but did nothing. Local fallback keeps it switchable (session-
+  // only) until a box exists — then the box's padMode takes over.
+  const [localMode, setLocalMode] = useState<PadMode>(getPref('defaultPadMode'));
+  // EMPTY_SETTINGS hardcodes padMode:'swipe', so key off "is a box paired"
+  // rather than ?? — otherwise the local fallback never engages.
+  const mode: PadMode = settings.host.trim().length > 0
+    ? settings.padMode ?? 'swipe'
+    : localMode;
   const [status, setStatus] = useState<GamepadStatus>('closed');
   const [dev, setDev] = useState<string | null>(null);
   // Non-null when the box is refusing input injection (locked / not the active
@@ -728,6 +737,7 @@ function PadScreen() {
     (m: PadMode) => {
       if (m !== mode) {
         haptic();
+        setLocalMode(m); // keeps the toggle live with no box paired
         update({ padMode: m }).catch(() => {});
       }
     },
