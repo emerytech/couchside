@@ -268,6 +268,9 @@ type KeyboardBarProps = {
   onText: (s: string) => void;
   onBackspace: () => void;
   onEnter: () => void;
+  /** Horizontal swipe across the (closed) bar: cycle the input mode.
+      +1 = swipe left (next mode), -1 = swipe right (previous). */
+  onSwipeMode?: (dir: 1 | -1) => void;
 };
 
 /**
@@ -282,9 +285,12 @@ type KeyboardBarProps = {
  * while the real keyboard is down (or vice-versa). `open` is mirrored into a ref
  * so callbacks always see the live value without stale closures.
  */
-function KeyboardBar({ onText, onBackspace, onEnter }: KeyboardBarProps) {
+function KeyboardBar({ onText, onBackspace, onEnter, onSwipeMode }: KeyboardBarProps) {
   const inputRef = useRef<TextInput>(null);
   const [open, setOpen] = useState(false);
+  // Live ref so the once-created swipe responder sees the current callback.
+  const swipeModeRef = useRef(onSwipeMode);
+  swipeModeRef.current = onSwipeMode;
   // Live mirror of `open` for use inside event callbacks/PanResponder, which
   // capture their closure once and would otherwise read a stale value.
   const openRef = useRef(false);
@@ -337,6 +343,26 @@ function KeyboardBar({ onText, onBackspace, onEnter }: KeyboardBarProps) {
     }),
   ).current;
 
+  // While CLOSED the bar doubles as a mode-switch rail: a horizontal swipe
+  // cycles the input mode (a Pressable tap still opens the keyboard — this
+  // responder only claims clearly-horizontal drags).
+  const modeSwipeResponder = useRef(
+    PanResponder.create({
+      // CAPTURE phase: the bar's Pressable child otherwise wins the touch and
+      // a horizontal swipe reads as a tap (opening the keyboard). Only clearly
+      // horizontal drags are captured, so plain taps still reach the Pressable.
+      onMoveShouldSetPanResponderCapture: (_e, g) =>
+        Math.abs(g.dx) > 14 && Math.abs(g.dx) > Math.abs(g.dy) * 1.5,
+      onPanResponderTerminationRequest: () => false,
+      onPanResponderRelease: (_e, g) => {
+        const fn = swipeModeRef.current;
+        if (fn && (Math.abs(g.dx) > 48 || Math.abs(g.vx) > 0.5)) {
+          fn(g.dx < 0 ? 1 : -1);
+        }
+      },
+    }),
+  ).current;
+
   const onChangeText = useCallback(
     (next: string) => {
       // New printable characters are whatever got appended past the sentinel.
@@ -363,7 +389,9 @@ function KeyboardBar({ onText, onBackspace, onEnter }: KeyboardBarProps) {
 
   return (
     <>
-      <View style={styles.kbBarRow} {...(open ? panResponder.panHandlers : {})}>
+      <View
+        style={styles.kbBarRow}
+        {...(open ? panResponder.panHandlers : modeSwipeResponder.panHandlers)}>
         <Pressable
           onPress={open ? dismiss : focus}
           style={({ pressed }) => [
@@ -673,6 +701,16 @@ function PadScreen() {
     [mode, update],
   );
 
+  // Horizontal swipe on the keyboard bar cycles PAD -> SWIPE -> TRACK -> REMOTE
+  // (wrapping), matching the segmented control's order.
+  const cycleMode = useCallback(
+    (dir: 1 | -1) => {
+      const i = MODES.findIndex((m) => m.key === mode);
+      setMode(MODES[(i + dir + MODES.length) % MODES.length].key);
+    },
+    [mode, setMode],
+  );
+
   // Swipe mode emits self-contained press+release pulses; releaseAll() on
   // blur/close still covers a pulse interrupted mid-flight.
   const dpadStep = useCallback(
@@ -729,7 +767,12 @@ function PadScreen() {
   const kbEnter = useCallback(() => client.sendKey('enter'), [client]);
 
   const keyboardBar = showKeyboardBar ? (
-    <KeyboardBar onText={kbText} onBackspace={kbBackspace} onEnter={kbEnter} />
+    <KeyboardBar
+      onText={kbText}
+      onBackspace={kbBackspace}
+      onEnter={kbEnter}
+      onSwipeMode={cycleMode}
+    />
   ) : null;
 
   return (

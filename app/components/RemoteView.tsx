@@ -1,6 +1,6 @@
 import Ionicons from '@expo/vector-icons/Ionicons';
 import React, { useCallback, useState } from 'react';
-import { PanResponderInstance, Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
+import { PanResponder, PanResponderInstance, Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
 
 import { usePoll } from '@/hooks/usePoll';
 import { useTrackpad } from '@/hooks/useTrackpad';
@@ -56,6 +56,9 @@ export function RemoteView({
   // (desktop only). Force back to the D-pad if the box leaves desktop mode.
   const [surface, setSurface] = useState<'dpad' | 'track'>('dpad');
   const trackpad = hasDesktop && surface === 'track';
+  // OK-button joystick armed (hold OK -> pointer). Locks page scrolling so the
+  // ScrollView can't fight the held gesture.
+  const [joyActive, setJoyActive] = useState(false);
 
   // ---- senders -------------------------------------------------------------
 
@@ -165,7 +168,11 @@ export function RemoteView({
       // ScrollView was stealing the drag (page moved, pointer stuttered).
       // The responder also refuses termination (useTrackpad), but disabling
       // the scroll entirely is what makes the surface feel solid.
-      scrollEnabled={!trackpad}
+      scrollEnabled={!trackpad && !joyActive}
+      // No rubber-band: the remote normally fits the screen, and the iOS
+      // overscroll bounce made every vertical swipe wiggle the whole view.
+      bounces={false}
+      overScrollMode="never"
       showsVerticalScrollIndicator={false}>
       {/* Nav target toggle — only meaningful with an RS-232 panel */}
       {hasTvKeys && (
@@ -233,6 +240,9 @@ export function RemoteView({
             onLeft={navLeft}
             onRight={navRight}
             onOk={navOk}
+            joyEnabled={hasDesktop}
+            onJoyMove={(dx, dy) => client.sendMouseMove(dx, dy)}
+            onJoyActive={setJoyActive}
           />
         )}
 
@@ -325,9 +335,31 @@ function CornerBtn({
   );
 }
 
+// ---- OK-button joystick (hold OK -> velocity-controlled mouse) --------------
+
+/** Hold this long on OK (without dragging) to arm the joystick. */
+const JOY_HOLD_MS = 280;
+/** Drag distance that arms the joystick immediately (clear pointing intent). */
+const JOY_DRAG_ARM_PX = 12;
+/** Finger offsets inside this radius move nothing (rest zone). */
+const JOY_DEADZONE_PX = 10;
+/** Send cadence for velocity frames. */
+const JOY_TICK_MS = 33;
+/** Pointer speed: px per tick at full deflection (scaled by sensitivity). */
+const JOY_MAX_PX_PER_TICK = 34;
+/** Offset (past deadzone) that counts as full deflection. */
+const JOY_FULL_DEFLECT_PX = 90;
+/** Releases quicker than this (that never armed) are an OK tap. */
+const JOY_TAP_MS = 350;
+
 /**
  * The circular D-pad: a light ring of four wedge buttons around a bright OK
  * disc, echoing a classic TV remote (light pad on dark chrome).
+ *
+ * On desktop-capable boxes the OK disc doubles as a JOYSTICK: hold it (or drag
+ * off it) and the disc arms — finger offset from where you pressed becomes
+ * cursor VELOCITY (deadzone + expo curve, like a laptop pointing stick). A
+ * quick tap is still OK. No mode switch needed for casual pointing.
  */
 function Dpad({
   onUp,
@@ -335,13 +367,114 @@ function Dpad({
   onLeft,
   onRight,
   onOk,
+  joyEnabled,
+  onJoyMove,
+  onJoyActive,
 }: {
   onUp: () => void;
   onDown: () => void;
   onLeft: () => void;
   onRight: () => void;
   onOk: () => void;
+  /** Arm the hold-to-point behavior (desktop boxes). */
+  joyEnabled: boolean;
+  /** Relative cursor move for one tick (already scaled). */
+  onJoyMove: (dx: number, dy: number) => void;
+  /** Joystick armed/released — the parent locks page scrolling while armed. */
+  onJoyActive: (active: boolean) => void;
 }) {
+  const sens = usePref('trackpadSensitivity');
+  const [joy, setJoy] = useState(false);
+
+  // All gesture state in refs: the responder is created once.
+  const st = React.useRef({
+    joy: false,
+    t0: 0,
+    offX: 0,
+    offY: 0,
+    holdTimer: null as ReturnType<typeof setTimeout> | null,
+    tick: null as ReturnType<typeof setInterval> | null,
+  });
+  const cb = React.useRef({ onOk, onJoyMove, onJoyActive, joyEnabled, sens });
+  cb.current = { onOk, onJoyMove, onJoyActive, joyEnabled, sens };
+
+  const arm = React.useCallback(() => {
+    const s = st.current;
+    if (s.joy) return;
+    s.joy = true;
+    setJoy(true);
+    hapticLight();
+    cb.current.onJoyActive(true);
+    s.tick = setInterval(() => {
+      const m = Math.hypot(s.offX, s.offY);
+      if (m <= JOY_DEADZONE_PX) return;
+      // Expo response: gentle near center, fast at full deflection.
+      const norm = Math.min((m - JOY_DEADZONE_PX) / JOY_FULL_DEFLECT_PX, 1);
+      const speed = Math.pow(norm, 1.6) * JOY_MAX_PX_PER_TICK * cb.current.sens;
+      cb.current.onJoyMove((s.offX / m) * speed, (s.offY / m) * speed);
+    }, JOY_TICK_MS);
+  }, []);
+
+  const disarm = React.useCallback(() => {
+    const s = st.current;
+    if (s.holdTimer) {
+      clearTimeout(s.holdTimer);
+      s.holdTimer = null;
+    }
+    if (s.tick) {
+      clearInterval(s.tick);
+      s.tick = null;
+    }
+    if (s.joy) {
+      s.joy = false;
+      setJoy(false);
+      cb.current.onJoyActive(false);
+    }
+  }, []);
+
+  // Never leak the tick loop (unmount mid-hold, box switch, tab change).
+  React.useEffect(() => disarm, [disarm]);
+
+  const okResponder = React.useRef(
+    PanResponder.create({
+      onStartShouldSetPanResponder: () => true,
+      onMoveShouldSetPanResponder: () => true,
+      // Inside a ScrollView: once the OK disc owns the touch, keep it — the
+      // same gesture theft that broke the trackpad face would break the hold.
+      onPanResponderTerminationRequest: () => false,
+      onShouldBlockNativeResponder: () => true,
+      onPanResponderGrant: () => {
+        const s = st.current;
+        s.t0 = Date.now();
+        s.offX = 0;
+        s.offY = 0;
+        if (cb.current.joyEnabled) {
+          s.holdTimer = setTimeout(arm, JOY_HOLD_MS);
+        }
+      },
+      onPanResponderMove: (_e, g) => {
+        const s = st.current;
+        s.offX = g.dx;
+        s.offY = g.dy;
+        if (
+          !s.joy &&
+          cb.current.joyEnabled &&
+          Math.hypot(g.dx, g.dy) > JOY_DRAG_ARM_PX
+        ) {
+          arm();
+        }
+      },
+      onPanResponderRelease: () => {
+        const s = st.current;
+        const wasJoy = s.joy;
+        const quick = Date.now() - s.t0 < JOY_TAP_MS;
+        disarm();
+        if (!wasJoy && quick) cb.current.onOk();
+      },
+      onPanResponderTerminate: () => disarm(),
+    }),
+  ).current;
+
   return (
     <View style={styles.dpad}>
       <Pressable onPress={onUp} style={({ pressed }) => [styles.wedge, styles.wedgeUp, pressed && styles.wedgePressed]}>
@@ -356,9 +489,15 @@ function Dpad({
       <Pressable onPress={onRight} style={({ pressed }) => [styles.wedge, styles.wedgeRight, pressed && styles.wedgePressed]}>
         <Ionicons name="chevron-forward" size={26} color="#0b1220" />
       </Pressable>
-      <Pressable onPress={onOk} style={({ pressed }) => [styles.ok, pressed && styles.okPressed]}>
-        <Text style={styles.okText}>OK</Text>
-      </Pressable>
+      <View
+        {...okResponder.panHandlers}
+        style={[styles.ok, joy && styles.okJoy]}>
+        {joy ? (
+          <Ionicons name="move" size={30} color="#f8fafc" />
+        ) : (
+          <Text style={styles.okText}>OK</Text>
+        )}
+      </View>
     </View>
   );
 }
@@ -549,6 +688,8 @@ const styles = StyleSheet.create({
   },
   okPressed: { backgroundColor: '#cbd5e1' },
   okText: { color: '#0b1220', fontSize: 20, fontWeight: '800', fontFamily: mono },
+  // OK disc while the hold-to-point joystick is armed.
+  okJoy: { backgroundColor: theme.blue, borderColor: theme.blue },
 
   // Trackpad face of the nav circle (same disc, different surface).
   navTrack: {
