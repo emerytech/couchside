@@ -18,7 +18,6 @@ import {
   AppState,
   InputAccessoryView,
   Keyboard,
-  KeyboardAvoidingView,
   PanResponder,
   Platform,
   Pressable,
@@ -320,6 +319,31 @@ function KeyboardBar({ onText, onBackspace, onEnter, onSwipeMode }: KeyboardBarP
     inputRef.current?.focus();
   }, [setOpenSynced]);
 
+  // Lift for the floating HIDE pill: measured, not framework-magic. The pill
+  // is absolutely positioned inside the SCREEN container, but the keyboard's
+  // frame is in WINDOW coordinates — and with SDK 57's edge-to-edge Android
+  // the window doesn't resize (the keyboard overlays), while iOS's
+  // KeyboardAvoidingView missed events when it mounted late. So: a zero-size
+  // anchor marks the container's bottom in window coords; on keyboard-show,
+  // lift = anchorY - keyboardTopY. Deterministic on both platforms.
+  const [kbLift, setKbLift] = useState(0);
+  const anchorRef = useRef<View>(null);
+  useEffect(() => {
+    const showEvent = Platform.OS === 'ios' ? 'keyboardWillShow' : 'keyboardDidShow';
+    const show = Keyboard.addListener(showEvent, (e) => {
+      const kbTop = e.endCoordinates?.screenY;
+      if (kbTop == null) return;
+      anchorRef.current?.measureInWindow((_x, y) => {
+        if (typeof y === 'number') setKbLift(Math.max(0, y - kbTop));
+      });
+    });
+    const hide = Keyboard.addListener('keyboardDidHide', () => setKbLift(0));
+    return () => {
+      show.remove();
+      hide.remove();
+    };
+  }, []);
+
   // Source of truth: whenever the OS reports the keyboard went down, mark the
   // bar closed. This catches every dismissal path (Done, swipe, the system
   // keyboard's own hide, app backgrounding) so state can't drift.
@@ -418,30 +442,24 @@ function KeyboardBar({ onText, onBackspace, onEnter, onSwipeMode }: KeyboardBarP
           </Pressable>
         )}
       </View>
+      {/* Zero-size anchor at the container's bottom edge — measured in window
+          coordinates to compute the pill's keyboard lift (see kbLift above). */}
+      <View ref={anchorRef} collapsable={false} style={styles.kbAnchor} />
       {/* Floating dismiss while typing: rides just ABOVE the keyboard,
-          bottom-right (thumb range). KeyboardAvoidingView does the keyboard-
-          height math; on Android the window itself resizes, so no behavior
-          needed. Exists because the in-layout DONE gets covered by the raised
-          keyboard and the InputAccessoryView Done bar stopped rendering under
-          newer iOS SDKs (build 30), which left the keyboard stuck open.
-
-          The KAV stays MOUNTED permanently and only the pill is conditional:
-          mounting the KAV on open raced the keyboard's show event (from the
-          trackpad/remote layouts the keyboard won), it missed the frame change,
-          applied zero offset, and the pill rendered UNDER the keyboard. */}
-      <KeyboardAvoidingView
-        behavior={Platform.OS === 'ios' ? 'position' : undefined}
-        pointerEvents="box-none"
-        style={styles.kbFloatWrap}>
-        {open && (
+          bottom-right (thumb range), lifted by the MEASURED keyboard overlap.
+          Exists because the in-layout DONE gets covered by the raised keyboard
+          and the InputAccessoryView Done bar stopped rendering under newer iOS
+          SDKs (build 30), which left the keyboard stuck open. */}
+      {open && (
+        <View pointerEvents="box-none" style={[styles.kbFloatWrap, { bottom: 10 + kbLift }]}>
           <Pressable
             onPress={dismiss}
             hitSlop={10}
             style={({ pressed }) => [styles.kbFloatDone, pressed && styles.btnPressed]}>
             <Text style={styles.kbDoneText}>⌨ ✕ HIDE</Text>
           </Pressable>
-        )}
-      </KeyboardAvoidingView>
+        </View>
+      )}
       <TextInput
         ref={inputRef}
         value={value}
@@ -1282,12 +1300,19 @@ const styles = StyleSheet.create({
     fontWeight: '800',
     letterSpacing: 1,
   },
-  // Floating keyboard dismiss: anchored bottom-right; the wrapper's
-  // KeyboardAvoidingView lifts it to sit just above the raised keyboard.
+  // Floating keyboard dismiss: anchored bottom-right; kbLift raises it just
+  // above the measured keyboard top.
+  // Bottom-edge marker for the keyboard-lift measurement.
+  kbAnchor: {
+    position: 'absolute',
+    bottom: 0,
+    right: 0,
+    width: 1,
+    height: 1,
+  },
   kbFloatWrap: {
     position: 'absolute',
     right: 14,
-    bottom: 10,
     zIndex: 60,
     elevation: 6,
   },
