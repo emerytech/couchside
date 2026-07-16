@@ -1093,10 +1093,22 @@ def couchmode_available():
     return len(_connected_outputs()) >= 2
 
 
+def _couchmode_session():
+    """'gamescope' when this box is currently in Game Mode, else 'desktop'.
+    Lets the app show 'Back to Desktop' vs the fling-to-TV picker."""
+    try:
+        r = subprocess.run(["pgrep", "-x", "gamescope"],
+                           capture_output=True, timeout=3)
+        return "gamescope" if r.returncode == 0 else "desktop"
+    except Exception:
+        return "desktop"
+
+
 def couchmode_info():
-    """Payload for GET /api/displays: the connected outputs and which are TV
-    candidates (external) to offer as the game display. None when unavailable, so
-    the route 404s and the app hides the Couch Mode control (probe-and-appear)."""
+    """Payload for GET /api/displays: the connected outputs, which are TV
+    candidates (external) to offer as the game display, and the current session
+    so the app shows enter-vs-exit. None when unavailable, so the route 404s and
+    the app hides the Couch Mode control (probe-and-appear)."""
     if not couchmode_available():
         return None
     outs = _connected_outputs()
@@ -1106,6 +1118,7 @@ def couchmode_info():
         # External (non-panel) outputs are the game-display candidates. Default
         # to the first external one in the app's picker.
         "game_outputs": [o["name"] for o in outs if not o["internal"]],
+        "session": _couchmode_session(),
     }
 
 
@@ -5007,7 +5020,8 @@ class Handler(BaseHTTPRequestHandler):
                 info = ({"available": True,
                          "outputs": [{"name": "DP-1", "internal": False},
                                      {"name": "eDP-1", "internal": True}],
-                         "game_outputs": ["DP-1"]} if self.mock
+                         "game_outputs": ["DP-1"],
+                         "session": "desktop"} if self.mock
                         else couchmode_info())
                 if info is None:
                     self._send(404, {"error": "not found"}, started)
