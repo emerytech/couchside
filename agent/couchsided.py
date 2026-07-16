@@ -643,7 +643,7 @@ def set_caps(mock):
     if mock:
         CAPS = {k: True for k in
                 ("gamepad", "steam", "media", "tv", "screen", "power_schedule",
-                 "screensaver", "couchmode")}
+                 "screensaver", "couchmode", "desktop")}
         return
     CAPS = {
         "gamepad": _uinput_writable(),
@@ -654,6 +654,7 @@ def set_caps(mock):
         "power_schedule": safe(rtc_available),
         "screensaver": safe(screensaver_available),
         "couchmode": safe(couchmode_available),
+        "desktop": safe(desktop_available),
     }
 
 
@@ -908,7 +909,11 @@ def real_status():
         "disks": read_disks(),
         "net": net_info_cached(),
         "agent_version": VERSION,
-        "caps": CAPS,
+        # CAPS is a boot-time snapshot, but "desktop" is SESSION-volatile (it
+        # flips with every Game Mode <-> desktop switch), so recompute it per
+        # request — a cheap pgrep — or the app's desktop cluster would freeze
+        # at whatever session the agent booted in.
+        "caps": dict(CAPS, desktop=desktop_available()),
         "history": _history_snapshot(),
     }
 
@@ -1132,6 +1137,15 @@ def couchmode_info():
         "game_outputs": [o["name"] for o in outs if not o["internal"]],
         "session": _couchmode_session(),
     }
+
+
+def desktop_available():
+    """True on a SteamOS/Bazzite box currently in the Plasma DESKTOP session —
+    gates the app's desktop-nav cluster (Start menu / pointer / overview), which
+    only makes sense in the desktop, not in Game Mode. Session-aware so the
+    buttons appear when you're on the desktop and hide once you fling to Game
+    Mode. The keys themselves ride the existing /ws/gamepad uinput keyboard."""
+    return _is_steamos_like() and _couchmode_session() == "desktop"
 
 
 def _couch_run(cmd, timeout=25, max_out=1500):
@@ -3713,10 +3727,12 @@ KEY_J, KEY_K, KEY_L, KEY_SEMICOLON = 36, 37, 38, 39
 KEY_APOSTROPHE, KEY_GRAVE, KEY_LEFTSHIFT, KEY_BACKSLASH = 40, 41, 42, 43
 KEY_Z, KEY_X, KEY_C, KEY_V, KEY_B, KEY_N, KEY_M = 44, 45, 46, 47, 48, 49, 50
 KEY_COMMA, KEY_DOT, KEY_SLASH = 51, 52, 53
+KEY_LEFTALT = 56
 KEY_SPACE = 57
 KEY_HOME, KEY_UP = 102, 103
 KEY_LEFT, KEY_RIGHT, KEY_END, KEY_DOWN = 105, 106, 107, 108
 KEY_MUTE, KEY_VOLUMEDOWN, KEY_VOLUMEUP = 113, 114, 115
+KEY_LEFTMETA = 125  # Super/Windows key — KDE opens the app launcher (Kickoff)
 
 # Volume up/down go through the media keys so the OS shows its volume OSD. Mute
 # is NOT here: gamescope does not bind KEY_MUTE, so real_soft toggles mute via
@@ -3782,7 +3798,7 @@ def _build_char_map():
 
 CHAR_KEYMAP = _build_char_map()
 
-# named special key -> keycode
+# named special key -> keycode (one press+release)
 SPECIAL_KEYS = {
     "backspace": KEY_BACKSPACE,
     "enter": KEY_ENTER,
@@ -3795,6 +3811,15 @@ SPECIAL_KEYS = {
     "right": KEY_RIGHT,
     "home": KEY_HOME,
     "end": KEY_END,
+    # Desktop nav (KDE Plasma): a bare Meta tap opens the app launcher (Kickoff),
+    # the SteamOS/Bazzite desktop "start menu".
+    "meta": KEY_LEFTMETA,
+}
+
+# named chord -> ordered keycodes, pressed in order then released in reverse.
+# Desktop (KDE Plasma) window/overview shortcut for the app's desktop cluster.
+DESKTOP_CHORDS = {
+    "overview": (KEY_LEFTMETA, KEY_W),  # KWin "Overview" effect (Plasma 6)
 }
 
 # All KEY_* codes the virtual keyboard may emit (declared at device create).
@@ -3803,14 +3828,16 @@ SPECIAL_KEYS = {
 KEYBOARD_CODES = sorted(
     {code for code, _shift in CHAR_KEYMAP.values()}
     | set(SPECIAL_KEYS.values())
-    | {KEY_LEFTSHIFT, KEY_LEFTCTRL}
+    | {c for codes in DESKTOP_CHORDS.values() for c in codes}
+    | {KEY_LEFTSHIFT, KEY_LEFTCTRL, KEY_LEFTALT}
 )
 
 # Names for mock logging of keyboard/mouse EV_KEY events.
 _KEY_CODE_NAMES = {
     KEY_ESC: "KEY_ESC", KEY_BACKSPACE: "KEY_BACKSPACE", KEY_TAB: "KEY_TAB",
     KEY_ENTER: "KEY_ENTER", KEY_SPACE: "KEY_SPACE", KEY_LEFTSHIFT: "KEY_LEFTSHIFT",
-    KEY_LEFTCTRL: "KEY_LEFTCTRL",
+    KEY_LEFTCTRL: "KEY_LEFTCTRL", KEY_LEFTALT: "KEY_LEFTALT",
+    KEY_LEFTMETA: "KEY_LEFTMETA",
     KEY_UP: "KEY_UP", KEY_DOWN: "KEY_DOWN", KEY_LEFT: "KEY_LEFT",
     KEY_RIGHT: "KEY_RIGHT", KEY_HOME: "KEY_HOME", KEY_END: "KEY_END",
     KEY_MINUS: "KEY_MINUS", KEY_EQUAL: "KEY_EQUAL", KEY_LEFTBRACE: "KEY_LEFTBRACE",
@@ -4034,6 +4061,14 @@ class UInputMediaKeys:
         _emit_events(self.fd, [(EV_KEY, code, 0)])
 
 
+# Pause after UI_DEV_CREATE before the first emit. The X server/compositor
+# enumerates a new uinput device asynchronously; events sent before that lands
+# are silently dropped. 0.5s is comfortably past the observed race on SteamOS
+# (verified live: a Meta tap fired immediately after create never reached KWin;
+# the same tap after a settle opened the launcher every time).
+_UINPUT_SETTLE_S = 0.5
+
+
 class UInputMouse:
     """Virtual relative mouse: REL_X/REL_Y/REL_WHEEL + BTN_LEFT/RIGHT/MIDDLE."""
 
@@ -4064,6 +4099,9 @@ class UInputMouse:
             os.close(fd)
             raise
         self.fd = fd
+        # Settle before first emit — see UInputKeyboard (same enumeration race:
+        # the first click/move of a fresh session would be dropped).
+        time.sleep(_UINPUT_SETTLE_S)
 
     def emit(self, events):
         if self.fd is None:
@@ -4112,6 +4150,12 @@ class UInputKeyboard:
             os.close(fd)
             raise
         self.fd = fd
+        # Settle: the X server / compositor needs a beat to enumerate a fresh
+        # uinput device before it delivers events from it. The keyboard is
+        # created lazily on the FIRST key frame — without this, that first
+        # press (a typed char, or the Start-menu Meta tap, verified live on
+        # SteamOS) is silently dropped. One-time cost per session.
+        time.sleep(_UINPUT_SETTLE_S)
 
     def emit(self, events):
         if self.fd is None:
@@ -4283,10 +4327,15 @@ def keyboard_events(msg):
         return _type_events(text)
     if t == "k":
         key = msg.get("key")
-        if key not in SPECIAL_KEYS:
-            raise ValueError("unknown special key %r" % (key,))
-        code = SPECIAL_KEYS[key]
-        return [(EV_KEY, code, 1), (EV_KEY, code, 0)]
+        if key in SPECIAL_KEYS:
+            code = SPECIAL_KEYS[key]
+            return [(EV_KEY, code, 1), (EV_KEY, code, 0)]
+        if key in DESKTOP_CHORDS:
+            codes = DESKTOP_CHORDS[key]
+            # Press in order, release in reverse (modifiers wrap the base key).
+            return ([(EV_KEY, c, 1) for c in codes]
+                    + [(EV_KEY, c, 0) for c in reversed(codes)])
+        raise ValueError("unknown special key %r" % (key,))
     raise ValueError("unknown keyboard message type %r" % (t,))
 
 

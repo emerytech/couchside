@@ -575,6 +575,12 @@ function SetupBody() {
   const swipeSensitivity = usePref('swipeSensitivity');
   const trackpadSensitivity = usePref('trackpadSensitivity');
   const naturalScroll = usePref('naturalScroll');
+  const padMouseRow = usePref('padMouseRow');
+  const padSteamRow = usePref('padSteamRow');
+  const padDesktopNav = usePref('padDesktopNav');
+  const padWinShortcuts = usePref('padWinShortcuts');
+  const padKeyboardBar = usePref('padKeyboardBar');
+  const padHints = usePref('padHints');
 
   const [restoring, setRestoring] = useState(false);
   const [buying, setBuying] = useState(false);
@@ -1099,6 +1105,65 @@ function SetupBody() {
                 value={naturalScroll}
                 onValueChange={(v) => {
                   void setPref('naturalScroll', v);
+                  hapticSelection();
+                }}
+              />
+            </View>
+
+            {/* Every optional Pad row/view can be hidden — declutter to taste. */}
+            <View style={styles.card}>
+              <CardHeader icon="game-controller-outline" label="PAD LAYOUT" />
+              <TogglePref
+                label="Mouse buttons"
+                sub="L / M / R click row under the trackpad."
+                value={padMouseRow}
+                onValueChange={(v) => {
+                  void setPref('padMouseRow', v);
+                  hapticSelection();
+                }}
+              />
+              <TogglePref
+                label="Steam buttons"
+                sub="STEAM and ⋯ (Quick Access) in the trackpad row."
+                value={padSteamRow}
+                onValueChange={(v) => {
+                  void setPref('padSteamRow', v);
+                  hapticSelection();
+                }}
+              />
+              <TogglePref
+                label="Desktop navigation"
+                sub="Start menu, Overview, and the D-pad↔trackpad toggle on SteamOS/Bazzite desktops."
+                value={padDesktopNav}
+                onValueChange={(v) => {
+                  void setPref('padDesktopNav', v);
+                  hapticSelection();
+                }}
+              />
+              <TogglePref
+                label="Windows shortcuts"
+                sub="WIN / ALT+TAB / LOCK / TASK row on Windows boxes."
+                value={padWinShortcuts}
+                onValueChange={(v) => {
+                  void setPref('padWinShortcuts', v);
+                  hapticSelection();
+                }}
+              />
+              <TogglePref
+                label="Keyboard bar"
+                sub="The KEYBOARD button at the bottom of the Pad tab."
+                value={padKeyboardBar}
+                onValueChange={(v) => {
+                  void setPref('padKeyboardBar', v);
+                  hapticSelection();
+                }}
+              />
+              <TogglePref
+                label="Gesture hints"
+                sub="The helper text on swipe and trackpad surfaces."
+                value={padHints}
+                onValueChange={(v) => {
+                  void setPref('padHints', v);
                   hapticSelection();
                 }}
               />

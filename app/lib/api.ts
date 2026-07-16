@@ -101,6 +101,13 @@ export type BoxCaps = {
    * reads as "unknown, probe"; only an explicit false skips the probe.
    */
   couchmode?: boolean;
+  /**
+   * Desktop nav: a SteamOS/Bazzite box currently in the Plasma DESKTOP session.
+   * Gates the RemoteView desktop cluster (Start menu, pointer/trackpad, overview)
+   * — session-aware, so it flips off once the box is in Game Mode. Optional:
+   * absent on agents < 2.9, so undefined reads as "not a desktop box here".
+   */
+  desktop?: boolean;
 };
 
 /** One connected display, from GET /api/displays. */
@@ -464,7 +471,8 @@ export function capsEqual(a?: BoxCaps, b?: BoxCaps): boolean {
     a.screen === b.screen &&
     a.power_schedule === b.power_schedule &&
     a.screensaver === b.screensaver &&
-    a.couchmode === b.couchmode
+    a.couchmode === b.couchmode &&
+    a.desktop === b.desktop
   );
 }
 

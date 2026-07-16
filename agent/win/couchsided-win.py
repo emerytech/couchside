@@ -758,13 +758,15 @@ def set_caps(mock):
             return False
 
     if mock:
-        # screensaver + couchmode stay False even in mock: both are
+        # screensaver + couchmode + desktop stay False even in mock: all are
         # gamescope/SteamOS features the Windows agent does not implement
-        # (see the Linux agent).
+        # (see the Linux agent). Windows has its own desktop shortcuts (the
+        # WIN/ALT-TAB cluster on a ViGEm box), not the Plasma desktop-nav cap.
         CAPS = {k: True for k in
                 ("gamepad", "steam", "media", "tv", "screen", "power_schedule")}
         CAPS["screensaver"] = False
         CAPS["couchmode"] = False
+        CAPS["desktop"] = False
         return
     CAPS = {
         "gamepad": safe(vigem_available),
@@ -774,8 +776,10 @@ def set_caps(mock):
         "screen": _SCREEN is not None,
         "power_schedule": safe(wake_available),
         "screensaver": False,
-        # Desktop->TV Game Mode handoff is gamescope/SteamOS-only.
+        # Desktop->TV Game Mode handoff is gamescope/SteamOS-only, and
+        # "desktop" (the Plasma desktop-nav cluster) is Linux-only too.
         "couchmode": False,
+        "desktop": False,
     }
 
 

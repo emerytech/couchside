@@ -34,7 +34,10 @@ import { Gated } from '@/components/Gated';
 import { RemoteView } from '@/components/RemoteView';
 import { TabScreen } from '@/components/TabScreen';
 import { useLockOrientation } from '@/hooks/useLockOrientation';
-import { ButtonKey, GamepadClient, GamepadStatus, StickKey, SystemChord, TriggerKey } from '@/lib/gamepad';
+import { usePoll } from '@/hooks/usePoll';
+import { useTrackpad } from '@/hooks/useTrackpad';
+import { api, hostKey, Status } from '@/lib/api';
+import { ButtonKey, DesktopKey, GamepadClient, GamepadStatus, StickKey, SystemChord, TriggerKey } from '@/lib/gamepad';
 import { PadMode } from '@/lib/settings';
 import { useSettings } from '@/lib/SettingsContext';
 import { mono, theme } from '@/lib/theme';
@@ -212,27 +215,16 @@ function SwipeSurface({ onStep, onSelect }: SwipeSurfaceProps) {
     }),
   ).current;
 
+  const hints = usePref('padHints');
   return (
     <View style={styles.swipeSurface} {...responder.panHandlers}>
-      <Text style={styles.swipeHint}>swipe to move · tap to select</Text>
+      {hints && <Text style={styles.swipeHint}>swipe to move · tap to select</Text>}
     </View>
   );
 }
 
 // ---------- Trackpad surface (relative mouse, protocol v2) ----------
 
-/** Movement under this (px) still counts as a tap/click. */
-const TP_TAP_SLOP = 8;
-/** Touches longer than this aren't taps. */
-const TP_TAP_MS = 350;
-/**
- * Light acceleration: pointer delta = raw * (BASE + GAIN * speed). Slow drags
- * track 1:1-ish for precision; fast flicks cover more screen.
- */
-const TP_BASE = 1.1;
-const TP_GAIN = 0.05;
-/** Screen px of two-finger drag per wheel notch. */
-const TP_SCROLL_STEP = 18;
 /** Pointer travel (px) per haptic "texture" tick while dragging. */
 const TP_HAPTIC_PX = 56;
 
@@ -244,100 +236,23 @@ type TrackpadProps = {
 };
 
 /**
- * Relative-mouse surface:
+ * Relative-mouse surface (gesture logic shared with the RemoteView nav circle
+ * via useTrackpad):
  *  - 1-finger drag  -> sendMouseMove (with a light acceleration curve)
  *  - 1-finger tap   -> left click
  *  - 2-finger tap   -> right click
  *  - 2-finger drag  -> vertical scroll (wheel)
  */
 function Trackpad({ onMove, onLeftClick, onRightClick, onScroll }: TrackpadProps) {
-  const cb = useRef({ onMove, onLeftClick, onRightClick, onScroll });
-  cb.current = { onMove, onLeftClick, onRightClick, onScroll };
-  // Pointer speed + scroll direction, in refs so the once-created responder
-  // reads live values.
-  const feel = useRef({ sens: 1, natural: false });
-  feel.current = {
-    sens: usePref('trackpadSensitivity'),
-    natural: usePref('naturalScroll'),
-  };
-
-  const st = useRef({
-    lastX: 0,
-    lastY: 0,
-    lastT: 0,
-    moved: false,
-    t0: 0,
-    maxTouches: 1,
-    scrollAccum: 0,
-    scrollLastY: 0,
-  });
-
-  const responder = useRef(
-    PanResponder.create({
-      onStartShouldSetPanResponder: () => true,
-      onMoveShouldSetPanResponder: () => true,
-      onPanResponderGrant: (evt) => {
-        const touches = evt.nativeEvent.touches.length || 1;
-        st.current = {
-          lastX: 0,
-          lastY: 0,
-          lastT: Date.now(),
-          moved: false,
-          t0: Date.now(),
-          maxTouches: touches,
-          scrollAccum: 0,
-          scrollLastY: 0,
-        };
-      },
-      onPanResponderMove: (evt, g) => {
-        const s = st.current;
-        const touches = evt.nativeEvent.touches.length;
-        if (touches > s.maxTouches) s.maxTouches = touches;
-        if (!s.moved && Math.hypot(g.dx, g.dy) > TP_TAP_SLOP) s.moved = true;
-
-        if (s.maxTouches >= 2) {
-          // Two-finger drag -> vertical scroll. g.dy is cumulative from grant.
-          const delta = g.dy - s.scrollLastY;
-          s.scrollAccum += delta;
-          while (Math.abs(s.scrollAccum) >= TP_SCROLL_STEP) {
-            const dir = s.scrollAccum > 0 ? 1 : -1;
-            s.scrollAccum -= dir * TP_SCROLL_STEP;
-            // Drag down (dy>0) scrolls content up -> wheel down (negative).
-            // "Natural" scrolling inverts that (content follows the fingers).
-            cb.current.onScroll(feel.current.natural ? dir : -dir);
-          }
-          s.scrollLastY = g.dy;
-          return;
-        }
-
-        // One-finger drag -> relative pointer move with light acceleration.
-        const now = Date.now();
-        const rawDx = g.dx - s.lastX;
-        const rawDy = g.dy - s.lastY;
-        const dt = Math.max(1, now - s.lastT);
-        const speed = Math.hypot(rawDx, rawDy) / dt; // px/ms
-        const gain = (TP_BASE + TP_GAIN * speed * 16) * feel.current.sens; // scale speed to ~per-frame
-        s.lastX = g.dx;
-        s.lastY = g.dy;
-        s.lastT = now;
-        cb.current.onMove(rawDx * gain, rawDy * gain);
-      },
-      onPanResponderRelease: () => {
-        const s = st.current;
-        const wasTap = !s.moved && Date.now() - s.t0 < TP_TAP_MS;
-        if (wasTap) {
-          if (s.maxTouches >= 2) cb.current.onRightClick();
-          else cb.current.onLeftClick();
-        }
-      },
-    }),
-  ).current;
-
+  const responder = useTrackpad({ onMove, onLeftClick, onRightClick, onScroll });
+  const hints = usePref('padHints');
   return (
     <View style={styles.trackpadSurface} {...responder.panHandlers}>
-      <Text style={styles.swipeHint}>
-        drag to move · tap = click · two-finger tap = right-click · two-finger drag = scroll
-      </Text>
+      {hints && (
+        <Text style={styles.swipeHint}>
+          drag to move · tap = click · two-finger tap = right-click · two-finger drag = scroll
+        </Text>
+      )}
     </View>
   );
 }
@@ -700,6 +615,24 @@ function PadScreen() {
     [client],
   );
 
+  // SteamOS/Bazzite Plasma-desktop nav (Start menu / Overview / Esc). Session-
+  // aware: caps.desktop flips with each Game Mode <-> desktop switch, so poll
+  // status here like RemoteView does rather than trusting the persisted caps.
+  const deskPoll = usePoll<Status>(() => api.status(settings), 8000, true, hostKey(settings));
+  const hasDesktop = deskPoll.data?.caps?.desktop === true;
+  const desk = useCallback(
+    (name: DesktopKey | 'esc') => () =>
+      name === 'esc' ? client.sendKey('esc') : client.sendDesktopKey(name),
+    [client],
+  );
+
+  // Pad-layout prefs: every optional row/view can be hidden in Setup.
+  const showMouseRow = usePref('padMouseRow');
+  const showSteamRow = usePref('padSteamRow');
+  const showDesktopNav = usePref('padDesktopNav');
+  const showWinShortcuts = usePref('padWinShortcuts');
+  const showKeyboardBar = usePref('padKeyboardBar');
+
   const trig = useCallback(
     (k: TriggerKey) => ({
       onDown: () => client.sendTrigger(k, 255),
@@ -782,9 +715,9 @@ function PadScreen() {
   const kbBackspace = useCallback(() => client.sendKey('backspace'), [client]);
   const kbEnter = useCallback(() => client.sendKey('enter'), [client]);
 
-  const keyboardBar = (
+  const keyboardBar = showKeyboardBar ? (
     <KeyboardBar onText={kbText} onBackspace={kbBackspace} onEnter={kbEnter} />
-  );
+  ) : null;
 
   return (
     <View
@@ -869,46 +802,67 @@ function PadScreen() {
             onRightClick={tpRight}
             onScroll={tpScroll}
           />
-          <View style={styles.swipeBtnRow}>
-            <PadButton
-              label="L"
-              onDown={() => client.sendMouseButton('l', 1)}
-              onUp={() => client.sendMouseButton('l', 0)}
-              style={styles.tpBtn}
-              fontSize={14}
-            />
-            <PadButton
-              label="M"
-              onDown={() => client.sendMouseButton('m', 1)}
-              onUp={() => client.sendMouseButton('m', 0)}
-              style={styles.tpBtn}
-              fontSize={14}
-            />
-            <PadButton
-              label="R"
-              onDown={() => client.sendMouseButton('r', 1)}
-              onUp={() => client.sendMouseButton('r', 0)}
-              style={styles.tpBtn}
-              fontSize={14}
-            />
-            <PadButton
-              label="STEAM"
-              {...btn('guide')}
-              style={[styles.tpBtn, styles.tpBtnWide, styles.guideBtn]}
-              color={theme.blue}
-              fontSize={11}
-            />
-            <PadButton
-              label="⋯"
-              onDown={qam}
-              onUp={NOOP}
-              style={[styles.tpBtn, styles.guideBtn]}
-              color={theme.blue}
-              fontSize={22}
-            />
-          </View>
+          {(showMouseRow || showSteamRow) && (
+            <View style={styles.swipeBtnRow}>
+              {showMouseRow && (
+                <>
+                  <PadButton
+                    label="L"
+                    onDown={() => client.sendMouseButton('l', 1)}
+                    onUp={() => client.sendMouseButton('l', 0)}
+                    style={styles.tpBtn}
+                    fontSize={14}
+                  />
+                  <PadButton
+                    label="M"
+                    onDown={() => client.sendMouseButton('m', 1)}
+                    onUp={() => client.sendMouseButton('m', 0)}
+                    style={styles.tpBtn}
+                    fontSize={14}
+                  />
+                  <PadButton
+                    label="R"
+                    onDown={() => client.sendMouseButton('r', 1)}
+                    onUp={() => client.sendMouseButton('r', 0)}
+                    style={styles.tpBtn}
+                    fontSize={14}
+                  />
+                </>
+              )}
+              {showSteamRow && (
+                <>
+                  <PadButton
+                    label="STEAM"
+                    {...btn('guide')}
+                    style={[styles.tpBtn, styles.tpBtnWide, styles.guideBtn]}
+                    color={theme.blue}
+                    fontSize={11}
+                  />
+                  <PadButton
+                    label="⋯"
+                    onDown={qam}
+                    onUp={NOOP}
+                    style={[styles.tpBtn, styles.guideBtn]}
+                    color={theme.blue}
+                    fontSize={22}
+                  />
+                </>
+              )}
+            </View>
+          )}
+          {/* Plasma desktop nav — SteamOS/Bazzite boxes on the desktop only. */}
+          {hasDesktop && showDesktopNav && (
+            <View style={styles.swipeBtnRow}>
+              <PadButton label="START" onDown={desk('meta')} onUp={NOOP}
+                style={[styles.tpBtn, styles.tpBtnWide]} fontSize={11} />
+              <PadButton label="OVERVIEW" onDown={desk('overview')} onUp={NOOP}
+                style={[styles.tpBtn, styles.tpBtnWide]} fontSize={11} />
+              <PadButton label="ESC" onDown={desk('esc')} onUp={NOOP}
+                style={styles.tpBtn} fontSize={11} />
+            </View>
+          )}
           {/* Windows desktop shortcuts — one-shot chords, ViGEm boxes only. */}
-          {isWindows && (
+          {isWindows && showWinShortcuts && (
             <View style={styles.swipeBtnRow}>
               <PadButton label="⊞ WIN" onDown={sys('win')} onUp={NOOP}
                 style={[styles.tpBtn, styles.tpBtnWide]} fontSize={12} />
@@ -949,7 +903,8 @@ function PadScreen() {
                 </View>
                 <View style={styles.dpadRow}>
                   <PadButton label="◀" {...btn('dl')} style={styles.dpadBtn} />
-                  <View style={styles.dpadCenter} />
+                  {/* Center OK = A: opens/activates the highlighted item. */}
+                  <PadButton label="OK" {...btn('a')} style={styles.dpadBtn} color={theme.green} fontSize={14} />
                   <PadButton label="▶" {...btn('dr')} style={styles.dpadBtn} />
                 </View>
                 <View style={styles.dpadRow}>
@@ -1053,7 +1008,8 @@ function PadScreen() {
               </View>
               <View style={styles.dpadRow}>
                 <PadButton label="◀" {...btn('dl')} style={styles.dpadBtn} />
-                <View style={styles.dpadCenter} />
+                {/* Center OK = A: opens/activates the highlighted item. */}
+                <PadButton label="OK" {...btn('a')} style={styles.dpadBtn} color={theme.green} fontSize={14} />
                 <PadButton label="▶" {...btn('dr')} style={styles.dpadBtn} />
               </View>
               <View style={styles.dpadRow}>
@@ -1388,14 +1344,6 @@ const styles = StyleSheet.create({
   dpadBtn: {
     width: 58,
     height: 58,
-  },
-  dpadCenter: {
-    width: 58,
-    height: 58,
-    borderRadius: 12,
-    backgroundColor: theme.inset,
-    borderColor: theme.cardBorder,
-    borderWidth: 1,
   },
   dpadSpacer: {
     width: 58,

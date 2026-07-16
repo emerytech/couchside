@@ -29,6 +29,19 @@ export type Prefs = {
   trackpadSensitivity: number;
   /** Invert two-finger scroll direction (macOS-style "natural" scrolling). */
   naturalScroll: boolean;
+  // ---- Pad layout: every optional button row/view can be hidden ----
+  /** L/M/R mouse-button row under the trackpad. */
+  padMouseRow: boolean;
+  /** STEAM + QAM (⋯) buttons in the trackpad button row. */
+  padSteamRow: boolean;
+  /** Desktop-nav cluster (Start/Overview/Esc…) + the D-pad↔trackpad toggle. */
+  padDesktopNav: boolean;
+  /** Windows shortcut row (WIN/ALT+TAB/LOCK/TASK) on ViGEm boxes. */
+  padWinShortcuts: boolean;
+  /** The KEYBOARD bar at the bottom of the Pad tab. */
+  padKeyboardBar: boolean;
+  /** Gesture hint text on the swipe/trackpad surfaces. */
+  padHints: boolean;
 };
 
 export const DEFAULTS: Prefs = {
@@ -39,6 +52,12 @@ export const DEFAULTS: Prefs = {
   swipeSensitivity: 1,
   trackpadSensitivity: 1,
   naturalScroll: false,
+  padMouseRow: true,
+  padSteamRow: true,
+  padDesktopNav: true,
+  padWinShortcuts: true,
+  padKeyboardBar: true,
+  padHints: true,
 };
 
 /** The choices each select-style pref offers (kept next to the store it feeds). */
@@ -91,6 +110,8 @@ function normalize(raw: unknown): Prefs {
   const o = (raw && typeof raw === 'object' ? raw : {}) as Record<string, unknown>;
   const num = (v: unknown, allowed: readonly number[], fallback: number): number =>
     typeof v === 'number' && allowed.includes(v) ? v : fallback;
+  const bool = (v: unknown, fallback: boolean): boolean =>
+    typeof v === 'boolean' ? v : fallback;
   const padMode: PadMode =
     o.defaultPadMode === 'gamepad' ||
     o.defaultPadMode === 'trackpad' ||
@@ -105,8 +126,13 @@ function normalize(raw: unknown): Prefs {
     journalLines: num(o.journalLines, JOURNAL_LINE_OPTIONS, DEFAULTS.journalLines),
     swipeSensitivity: num(o.swipeSensitivity, SENSITIVITY_OPTIONS, DEFAULTS.swipeSensitivity),
     trackpadSensitivity: num(o.trackpadSensitivity, SENSITIVITY_OPTIONS, DEFAULTS.trackpadSensitivity),
-    naturalScroll:
-      typeof o.naturalScroll === 'boolean' ? o.naturalScroll : DEFAULTS.naturalScroll,
+    naturalScroll: bool(o.naturalScroll, DEFAULTS.naturalScroll),
+    padMouseRow: bool(o.padMouseRow, DEFAULTS.padMouseRow),
+    padSteamRow: bool(o.padSteamRow, DEFAULTS.padSteamRow),
+    padDesktopNav: bool(o.padDesktopNav, DEFAULTS.padDesktopNav),
+    padWinShortcuts: bool(o.padWinShortcuts, DEFAULTS.padWinShortcuts),
+    padKeyboardBar: bool(o.padKeyboardBar, DEFAULTS.padKeyboardBar),
+    padHints: bool(o.padHints, DEFAULTS.padHints),
   };
 }
 
