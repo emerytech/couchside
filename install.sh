@@ -819,34 +819,82 @@ cat > "$CLI" <<'CLIEOF'
 set -u
 INSTALL_URL="https://couchside.tv/install.sh"
 RELEASE_API="https://api.github.com/repos/emerytech/couchside/releases/latest"
+# The AGENT version of the latest release (a signed release asset). This is the
+# right number to compare against — the release TAG is the APP version, a
+# separate numbering scheme, so tag-vs-agent looks mismatched. Same asset the
+# box-side update check (couchsided.py) uses.
+AGENT_VER_URL="https://github.com/emerytech/couchside/releases/latest/download/agent-version.txt"
 DIR="${HOME}/.local/opt/couchside"
 DAEMON="${DIR}/couchsided.py"
 
 case "${1:-help}" in
   update|upgrade)
-    yes=0
-    case "${2:-}" in -y|--yes) yes=1 ;; esac
+    yes=0; force=0
+    for a in "$@"; do
+      case "$a" in
+        -y|--yes) yes=1 ;;
+        -f|--force|--reinstall) force=1 ;;
+      esac
+    done
     installed="$(grep -m1 '^VERSION' "$DAEMON" 2>/dev/null | cut -d'"' -f2 || echo unknown)"
     echo "Couchside agent — installed ${installed}"
-    # Show the latest release's notes (from the GitHub release body) so you can
-    # see what is included BEFORE confirming. Best-effort: a failed fetch just
-    # skips the preview.
+
+    # Latest AGENT version, from the signed release asset (NOT the release tag,
+    # which is the app version). Best-effort: empty on a failed fetch.
+    latest="$(curl -fsSL -m 10 "$AGENT_VER_URL" 2>/dev/null | tr -d '[:space:]')"
+
+    # Release tag + notes for the human-readable preview (tab-separated so we can
+    # reassemble and splice in the agent version). Best-effort.
     info="$(curl -fsSL -m 10 -H 'Accept: application/vnd.github+json' "$RELEASE_API" 2>/dev/null \
       | python3 -c 'import json,sys
 try:
     d=json.load(sys.stdin)
     tag=d.get("tag_name") or "?"
     body=(d.get("body") or "").strip() or "(no release notes published)"
-    print("Latest release: "+tag+"\n\nChanges:\n"+body)
+    print(tag+"\t"+body)
 except Exception:
     sys.exit(1)' 2>/dev/null)"
-    if [ -n "$info" ]; then
+    tag="${info%%$'\t'*}"; body="${info#*$'\t'}"
+    [ -n "$tag" ] || tag="?"
+
+    # Decide whether a NEWER agent is actually published. Compare agent-to-agent
+    # as integer tuples (2.9.10 > 2.9.9). If we couldn't fetch the latest version,
+    # fall through and let the user decide (best-effort, as before).
+    available=1
+    if [ -n "$latest" ] && [ "$installed" != "unknown" ]; then
+      if python3 - "$installed" "$latest" <<'PY'
+import re, sys
+def t(s): return tuple(int(x) for x in re.findall(r'\d+', s))
+sys.exit(0 if t(sys.argv[2]) > t(sys.argv[1]) else 1)
+PY
+      then available=1; else available=0; fi
+    fi
+
+    verline="Latest release: ${tag}"
+    [ -n "$latest" ] && verline="${verline} (agent ${latest})"
+
+    # Already current (and not forced): say so plainly and stop. No misleading
+    # prompt, no needless reinstall.
+    if [ "$available" -eq 0 ] && [ "$force" -ne 1 ]; then
       echo
-      printf '%s\n' "$info"
+      echo "$verline"
+      echo "You're on the latest agent (${installed}). Nothing to update."
+      echo "Re-run with --force to reinstall the current version anyway."
+      exit 0
+    fi
+
+    # An update is available (or --force). Show the notes BEFORE confirming.
+    echo
+    echo "$verline"
+    if [ -n "$body" ]; then
       echo
+      echo "Changes:"
+      printf '%s\n' "$body"
     else
       echo "(could not fetch release notes; you can still proceed)"
     fi
+    echo
+
     if [ "$yes" -ne 1 ]; then
       printf 'Update now? [y/N] '
       # Read from the terminal. If there's no tty (piped / non-interactive),

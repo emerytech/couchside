@@ -4,7 +4,8 @@ import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
 import { hapticLight } from '@/lib/haptics';
 import { openWriteReview, subscribeReviewInvite } from '@/lib/review';
-import { mono, theme } from '@/lib/theme';
+import { mono, useThemedStyles } from '@/lib/theme';
+import type { Palette } from '@/lib/theme';
 
 const TOAST_MS = 8000;
 
@@ -52,6 +53,8 @@ export function ReviewToast() {
     setShown(false);
   }, []);
 
+  const styles = useThemedStyles(makeStyles);
+
   if (!shown) return null;
 
   return (
@@ -76,37 +79,37 @@ export function ReviewToast() {
   );
 }
 
-const styles = StyleSheet.create({
+const makeStyles = (t: Palette) => StyleSheet.create({
   wrap: { position: 'absolute', left: 0, right: 0, alignItems: 'center' },
   toast: {
     maxWidth: '92%',
-    backgroundColor: theme.card,
-    borderColor: theme.blue,
+    backgroundColor: t.card,
+    borderColor: t.blue,
     borderWidth: 1,
     borderRadius: 12,
     paddingVertical: 12,
     paddingHorizontal: 16,
   },
   title: {
-    color: theme.text,
+    color: t.text,
     fontFamily: mono,
     fontSize: 13,
     fontWeight: '800',
     textAlign: 'center',
   },
-  sub: { color: theme.textDim, fontSize: 11, marginTop: 3, textAlign: 'center' },
+  sub: { color: t.textDim, fontSize: 11, marginTop: 3, textAlign: 'center' },
   actions: { flexDirection: 'row', gap: 10, marginTop: 12 },
   btn: {
     flex: 1,
     paddingVertical: 9,
     borderRadius: 8,
     alignItems: 'center',
-    backgroundColor: theme.inset,
+    backgroundColor: t.inset,
     borderWidth: 1,
-    borderColor: theme.cardBorder,
+    borderColor: t.cardBorder,
   },
-  btnText: { color: theme.textDim, fontSize: 12, fontWeight: '800', letterSpacing: 1 },
-  btnPrimary: { backgroundColor: theme.blue, borderColor: theme.blue },
+  btnText: { color: t.textDim, fontSize: 12, fontWeight: '800', letterSpacing: 1 },
+  btnPrimary: { backgroundColor: t.blue, borderColor: t.blue },
   btnPrimaryText: { color: '#0b1220', fontSize: 12, fontWeight: '800', letterSpacing: 1 },
   pressed: { opacity: 0.7 },
 });

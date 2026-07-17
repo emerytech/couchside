@@ -3,7 +3,7 @@ import { StyleSheet, Text, View } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
 import { subscribeUnlocked } from '@/lib/EntitlementContext';
-import { mono, theme } from '@/lib/theme';
+import { mono, useThemedStyles, type Palette } from '@/lib/theme';
 
 /** Matches the launch-tab toast lifetime. */
 const UNLOCK_TOAST_MS = 1500;
@@ -22,6 +22,7 @@ const UNLOCK_TOAST_MS = 1500;
  */
 export function UnlockToast() {
   const insets = useSafeAreaInsets();
+  const styles = useThemedStyles(makeStyles);
   const [shown, setShown] = useState(false);
   const [early, setEarly] = useState(false);
 
@@ -51,13 +52,13 @@ export function UnlockToast() {
 
 // Box matches the launch-tab toast (lib theme, dark ops-console look); anchored
 // at the top since, unlike the in-tab toast, this floats above the tab bar too.
-const styles = StyleSheet.create({
+const makeStyles = (t: Palette) => StyleSheet.create({
   toast: {
     position: 'absolute',
     left: 24,
     right: 24,
-    backgroundColor: theme.inset,
-    borderColor: theme.cardBorder,
+    backgroundColor: t.inset,
+    borderColor: t.cardBorder,
     borderWidth: 1,
     borderRadius: 12,
     paddingVertical: 12,
@@ -71,6 +72,6 @@ const styles = StyleSheet.create({
     elevation: 12,
     zIndex: 1000,
   },
-  toastText: { color: theme.text, fontSize: 14, fontWeight: '600', fontFamily: mono },
-  earlyText: { color: theme.amber, fontSize: 12, fontWeight: '700', fontFamily: mono },
+  toastText: { color: t.text, fontSize: 14, fontWeight: '600', fontFamily: mono },
+  earlyText: { color: t.amber, fontSize: 12, fontWeight: '700', fontFamily: mono },
 });

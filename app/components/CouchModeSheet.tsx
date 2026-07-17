@@ -14,7 +14,7 @@ import { Modal, Pressable, StyleSheet, Text, View } from 'react-native';
 
 import { api, ConnSettings, Displays } from '@/lib/api';
 import { hapticError, hapticLight, hapticSuccess } from '@/lib/haptics';
-import { mono, theme } from '@/lib/theme';
+import { mono, Palette, useTheme, useThemedStyles } from '@/lib/theme';
 
 export function CouchModeSheet({
   visible,
@@ -32,6 +32,8 @@ export function CouchModeSheet({
   onChanged: (session: 'gamescope' | 'desktop') => void;
   onClose: () => void;
 }) {
+  const t = useTheme();
+  const styles = useThemedStyles(makeStyles);
   const inGameMode = displays?.session === 'gamescope';
   const outputs = displays?.game_outputs ?? [];
   // Show the picker only where the choice is actually honored (the agent
@@ -92,7 +94,7 @@ export function CouchModeSheet({
           {inGameMode ? (
             <>
               <View style={styles.armedRow}>
-                <Ionicons name="game-controller" size={18} color={theme.green} />
+                <Ionicons name="game-controller" size={18} color={t.green} />
                 <Text style={styles.armedText}>Gaming on the TV</Text>
               </View>
               <Pressable
@@ -150,21 +152,21 @@ export function CouchModeSheet({
   );
 }
 
-const styles = StyleSheet.create({
+const makeStyles = (t: Palette) => StyleSheet.create({
   backdrop: { flex: 1, backgroundColor: 'rgba(0,0,0,0.6)', justifyContent: 'flex-end' },
   sheet: {
-    backgroundColor: theme.card,
+    backgroundColor: t.card,
     borderTopLeftRadius: 18,
     borderTopRightRadius: 18,
-    borderColor: theme.cardBorder,
+    borderColor: t.cardBorder,
     borderWidth: 1,
     padding: 20,
     paddingBottom: 32,
     gap: 10,
   },
-  title: { color: theme.textFaint, fontSize: 11, fontWeight: '700', letterSpacing: 1.2, fontFamily: mono },
-  sub: { color: theme.textFaint, fontSize: 10, fontWeight: '700', letterSpacing: 1, fontFamily: mono, marginTop: 6 },
-  blurb: { color: theme.textDim, fontSize: 13, lineHeight: 19 },
+  title: { color: t.textFaint, fontSize: 11, fontWeight: '700', letterSpacing: 1.2, fontFamily: mono },
+  sub: { color: t.textFaint, fontSize: 10, fontWeight: '700', letterSpacing: 1, fontFamily: mono, marginTop: 6 },
+  blurb: { color: t.textDim, fontSize: 13, lineHeight: 19 },
 
   pills: { flexDirection: 'row', flexWrap: 'wrap', gap: 8, marginTop: 4 },
   pill: {
@@ -172,13 +174,13 @@ const styles = StyleSheet.create({
     paddingVertical: 8,
     paddingHorizontal: 14,
     borderRadius: 999,
-    backgroundColor: theme.inset,
-    borderColor: theme.cardBorder,
+    backgroundColor: t.inset,
+    borderColor: t.cardBorder,
     borderWidth: 1,
   },
-  pillOn: { borderColor: theme.blue, backgroundColor: 'rgba(80,150,255,0.12)' },
-  pillText: { color: theme.textDim, fontSize: 14, fontWeight: '600', fontFamily: mono },
-  pillTextOn: { color: theme.blue },
+  pillOn: { borderColor: t.blue, backgroundColor: 'rgba(80,150,255,0.12)' },
+  pillText: { color: t.textDim, fontSize: 14, fontWeight: '600', fontFamily: mono },
+  pillTextOn: { color: t.blue },
   pressed: { opacity: 0.7 },
 
   startBtn: {
@@ -189,18 +191,18 @@ const styles = StyleSheet.create({
     gap: 8,
     paddingVertical: 13,
     borderRadius: 12,
-    backgroundColor: theme.blue,
+    backgroundColor: t.blue,
   },
-  exitBtn: { backgroundColor: theme.green },
+  exitBtn: { backgroundColor: t.green },
   startText: { color: '#fff', fontSize: 15, fontWeight: '700' },
 
   armedRow: {
     flexDirection: 'row',
     alignItems: 'center',
     gap: 10,
-    backgroundColor: theme.inset,
+    backgroundColor: t.inset,
     borderRadius: 10,
     padding: 12,
   },
-  armedText: { color: theme.text, fontSize: 15 },
+  armedText: { color: t.text, fontSize: 15 },
 });

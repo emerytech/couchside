@@ -13,7 +13,7 @@ import { usePoll } from '@/hooks/usePoll';
 import { api, hostKey, Media, MediaOp, MediaPlayer, mediaArtSource } from '@/lib/api';
 import { hapticLight, hapticMedium } from '@/lib/haptics';
 import { useSettings } from '@/lib/SettingsContext';
-import { mono, numeric, theme } from '@/lib/theme';
+import { mono, numeric, useTheme, useThemedStyles, type Palette } from '@/lib/theme';
 
 function fmtTime(ms: number): string {
   const t = Math.max(0, Math.round(ms / 1000));
@@ -23,6 +23,8 @@ function fmtTime(ms: number): string {
 }
 
 export function NowPlayingCard() {
+  const t = useTheme();
+  const styles = useThemedStyles(makeStyles);
   const { settings, ready } = useSettings();
   const configured = !!settings.host && !!settings.token;
 
@@ -143,7 +145,7 @@ export function NowPlayingCard() {
             <ArtImage uri={artUri} />
           ) : (
             <View style={styles.artPlaceholder}>
-              <Ionicons name="musical-notes" size={22} color={theme.textFaint} />
+              <Ionicons name="musical-notes" size={22} color={t.textFaint} />
             </View>
           )}
         </View>
@@ -192,11 +194,13 @@ export function NowPlayingCard() {
 
 /** Split out so the art <Image> can fail-soft to a placeholder via onError. */
 function ArtImage({ uri }: { uri: string }) {
+  const t = useTheme();
+  const styles = useThemedStyles(makeStyles);
   const [failed, setFailed] = useState(false);
   if (failed) {
     return (
       <View style={styles.artPlaceholder}>
-        <Ionicons name="musical-notes" size={22} color={theme.textFaint} />
+        <Ionicons name="musical-notes" size={22} color={t.textFaint} />
       </View>
     );
   }
@@ -216,6 +220,8 @@ function TransportButton({
   disabled?: boolean;
   primary?: boolean;
 }) {
+  const t = useTheme();
+  const styles = useThemedStyles(makeStyles);
   return (
     <Pressable
       onPress={onPress}
@@ -229,23 +235,23 @@ function TransportButton({
       <Ionicons
         name={icon}
         size={primary ? 26 : 22}
-        color={disabled ? theme.textFaint : primary ? theme.bg : theme.text}
+        color={disabled ? t.textFaint : primary ? t.bg : t.text}
       />
     </Pressable>
   );
 }
 
-const styles = StyleSheet.create({
+const makeStyles = (t: Palette) => StyleSheet.create({
   card: {
-    backgroundColor: theme.card,
-    borderColor: theme.cardBorder,
+    backgroundColor: t.card,
+    borderColor: t.cardBorder,
     borderWidth: 1,
     borderRadius: 12,
     padding: 14,
     marginBottom: 10,
   },
   cardTitle: {
-    color: theme.textFaint,
+    color: t.textFaint,
     fontSize: 11,
     fontWeight: '700',
     letterSpacing: 1.2,
@@ -254,16 +260,16 @@ const styles = StyleSheet.create({
   },
   pills: { flexDirection: 'row', flexWrap: 'wrap', gap: 6, marginBottom: 10 },
   pill: {
-    borderColor: theme.cardBorder,
+    borderColor: t.cardBorder,
     borderWidth: 1,
     borderRadius: 999,
     paddingVertical: 4,
     paddingHorizontal: 10,
     maxWidth: 160,
   },
-  pillOn: { backgroundColor: theme.green, borderColor: theme.green },
-  pillText: { color: theme.textDim, fontSize: 11, fontFamily: mono },
-  pillTextOn: { color: theme.bg, fontWeight: '700' },
+  pillOn: { backgroundColor: t.green, borderColor: t.green },
+  pillText: { color: t.textDim, fontSize: 11, fontFamily: mono },
+  pillTextOn: { color: t.bg, fontWeight: '700' },
 
   row: { flexDirection: 'row', alignItems: 'center', gap: 12 },
   art: { width: 56, height: 56, borderRadius: 8, overflow: 'hidden' },
@@ -272,24 +278,24 @@ const styles = StyleSheet.create({
     width: 56,
     height: 56,
     borderRadius: 8,
-    backgroundColor: theme.inset,
+    backgroundColor: t.inset,
     alignItems: 'center',
     justifyContent: 'center',
   },
   meta: { flex: 1 },
-  trackTitle: { color: theme.text, fontSize: 15, fontWeight: '700' },
-  trackArtist: { color: theme.textDim, fontSize: 13, marginTop: 2 },
+  trackTitle: { color: t.text, fontSize: 15, fontWeight: '700' },
+  trackArtist: { color: t.textDim, fontSize: 13, marginTop: 2 },
 
   barTrack: {
     height: 6,
     borderRadius: 3,
-    backgroundColor: theme.inset,
+    backgroundColor: t.inset,
     overflow: 'hidden',
     marginTop: 14,
   },
-  barFill: { height: '100%', borderRadius: 3, backgroundColor: theme.green },
+  barFill: { height: '100%', borderRadius: 3, backgroundColor: t.green },
   times: { flexDirection: 'row', justifyContent: 'space-between', marginTop: 6 },
-  time: { color: theme.textDim, fontSize: 11, ...numeric },
+  time: { color: t.textDim, fontSize: 11, ...numeric },
 
   transport: {
     flexDirection: 'row',
@@ -304,9 +310,9 @@ const styles = StyleSheet.create({
     borderRadius: 999,
     alignItems: 'center',
     justifyContent: 'center',
-    backgroundColor: theme.inset,
+    backgroundColor: t.inset,
   },
-  tBtnPrimary: { backgroundColor: theme.green, width: 54, height: 54 },
+  tBtnPrimary: { backgroundColor: t.green, width: 54, height: 54 },
   tBtnPressed: { opacity: 0.7 },
   tBtnDisabled: { opacity: 0.4 },
 });

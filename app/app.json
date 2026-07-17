@@ -7,7 +7,7 @@
     "orientation": "default",
     "icon": "./assets/images/icon.png",
     "scheme": "couchside",
-    "userInterfaceStyle": "dark",
+    "userInterfaceStyle": "automatic",
     "ios": {
       "supportsTablet": true,
       "bundleIdentifier": "com.ets3d.rescueremote",

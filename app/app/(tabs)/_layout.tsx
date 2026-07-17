@@ -4,7 +4,7 @@ import { useEffect, useRef } from 'react';
 
 import { hapticSelection } from '@/lib/haptics';
 import { useBoxes } from '@/lib/SettingsContext';
-import { theme } from '@/lib/theme';
+import { useTheme } from '@/lib/theme';
 
 // Default screen = the swipe Remote (Pad). First-run (empty fleet) is redirected
 // to Setup below so the user pairs a box before landing on the remote.
@@ -13,6 +13,7 @@ export const unstable_settings = {
 };
 
 export default function TabLayout() {
+  const t = useTheme();
   const { boxes, activeBox, ready } = useBoxes();
   const segments = useSegments();
 
@@ -50,13 +51,13 @@ export default function TabLayout() {
       screenListeners={{ tabPress: () => hapticSelection() }}
       screenOptions={{
         headerShown: false,
-        tabBarActiveTintColor: theme.blue,
-        tabBarInactiveTintColor: theme.textFaint,
+        tabBarActiveTintColor: t.blue,
+        tabBarInactiveTintColor: t.textFaint,
         tabBarStyle: {
-          backgroundColor: theme.tabBar,
-          borderTopColor: theme.tabBarBorder,
+          backgroundColor: t.tabBar,
+          borderTopColor: t.tabBarBorder,
         },
-        sceneStyle: { backgroundColor: theme.bg },
+        sceneStyle: { backgroundColor: t.bg },
       }}>
       <Tabs.Screen
         name="index"

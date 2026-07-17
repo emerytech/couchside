@@ -12,7 +12,8 @@ import { hapticError, hapticLight, hapticSuccess } from '@/lib/haptics';
 import { getPref, usePref } from '@/lib/prefs';
 import { normalizeMac } from '@/lib/settings';
 import { useSettings } from '@/lib/SettingsContext';
-import { mono, theme } from '@/lib/theme';
+import { mono, useTheme, useThemedStyles } from '@/lib/theme';
+import type { Palette } from '@/lib/theme';
 import { sendWol, wolAvailable } from '@/lib/wol';
 
 type IoniconName = React.ComponentProps<typeof Ionicons>['name'];
@@ -56,6 +57,8 @@ function VolumeSlider({
   onStep: (dir: 1 | -1) => void;
   onDone: () => void;
 }) {
+  const t = useTheme();
+  const styles = useThemedStyles(makeStyles);
   const absolute = level != null;
   const [w, setW] = React.useState(0);
   const [frac, setFrac] = React.useState(absolute ? level / 100 : 0.5);
@@ -145,7 +148,7 @@ function VolumeSlider({
 
   return (
     <View style={styles.sliderRow}>
-      <Ionicons name="volume-low" size={18} color={theme.textDim} />
+      <Ionicons name="volume-low" size={18} color={t.textDim} />
       <View
         style={styles.sliderTrack}
         onLayout={(e) => setW(e.nativeEvent.layout.width)}
@@ -158,7 +161,7 @@ function VolumeSlider({
       {absolute ? (
         <Text style={styles.sliderPct}>{Math.round(frac * 100)}</Text>
       ) : (
-        <Ionicons name="volume-high" size={18} color={theme.textDim} />
+        <Ionicons name="volume-high" size={18} color={t.textDim} />
       )}
     </View>
   );
@@ -173,6 +176,8 @@ function VolumeSlider({
  * nothing to control.
  */
 export function RemotePowerBar() {
+  const t = useTheme();
+  const styles = useThemedStyles(makeStyles);
   const insets = useSafeAreaInsets();
   const { settings, ready, update } = useSettings();
   const configured = settings.host.trim().length > 0;
@@ -539,9 +544,9 @@ export function RemotePowerBar() {
           <Ionicons
             name={inGameMode ? 'game-controller' : 'tv-outline'}
             size={16}
-            color={inGameMode ? theme.green : theme.text}
+            color={inGameMode ? t.green : t.text}
           />
-          <Text style={[styles.couchLabel, inGameMode && { color: theme.green }]}>
+          <Text style={[styles.couchLabel, inGameMode && { color: t.green }]}>
             {inGameMode ? 'On TV' : 'Couch'}
           </Text>
         </Pressable>
@@ -554,8 +559,8 @@ export function RemotePowerBar() {
         }}
         hitSlop={8}
         style={({ pressed }) => [styles.trigger, pressed && styles.pressed]}>
-        <Ionicons name={triggerIcon} size={20} color={theme.text} />
-        <Ionicons name="chevron-down" size={14} color={theme.textDim} />
+        <Ionicons name={triggerIcon} size={20} color={t.text} />
+        <Ionicons name="chevron-down" size={14} color={t.textDim} />
       </Pressable>
 
       <Modal
@@ -574,8 +579,8 @@ export function RemotePowerBar() {
                     onWake();
                   }}
                   style={({ pressed }) => [styles.bigBtn, pressed && styles.pressed]}>
-                  <Ionicons name="power" size={22} color={theme.green} />
-                  <Text style={[styles.bigLabel, { color: theme.green }]}>
+                  <Ionicons name="power" size={22} color={t.green} />
+                  <Text style={[styles.bigLabel, { color: t.green }]}>
                     {waking ? 'Waking…' : 'Wake box'}
                   </Text>
                 </Pressable>
@@ -594,8 +599,8 @@ export function RemotePowerBar() {
                       wired === false && styles.disabled,
                       pressed && styles.pressed,
                     ]}>
-                    <Ionicons name="moon" size={22} color={theme.amber} />
-                    <Text style={[styles.bigLabel, { color: theme.amber }]}>
+                    <Ionicons name="moon" size={22} color={t.amber} />
+                    <Text style={[styles.bigLabel, { color: t.amber }]}>
                       {wired === false ? 'Suspend (needs Ethernet)' : 'Suspend'}
                     </Text>
                   </Pressable>
@@ -616,7 +621,7 @@ export function RemotePowerBar() {
                     setSaverOpen(true);
                   }}
                   style={({ pressed }) => [styles.bigBtn, pressed && styles.pressed]}>
-                  <Ionicons name="film-outline" size={22} color={theme.text} />
+                  <Ionicons name="film-outline" size={22} color={t.text} />
                   <Text style={styles.bigLabel}>
                     {saver?.running ? 'Screensaver · playing' : 'Screensaver'}
                   </Text>
@@ -631,7 +636,7 @@ export function RemotePowerBar() {
                     setSleepOpen(true);
                   }}
                   style={({ pressed }) => [styles.bigBtn, pressed && styles.pressed]}>
-                  <Ionicons name="timer-outline" size={22} color={theme.text} />
+                  <Ionicons name="timer-outline" size={22} color={t.text} />
                   <Text style={styles.bigLabel}>
                     {schedule.sleep
                       ? `${schedule.sleep.action === 'poweroff' ? 'Power off' : 'Suspend'} in ${Math.max(
@@ -649,15 +654,15 @@ export function RemotePowerBar() {
                     disabled={busy}
                     onPress={() => sendPower('power_on')}
                     style={({ pressed }) => [styles.tvBtn, pressed && styles.pressed]}>
-                    <Ionicons name="power" size={18} color={theme.green} />
-                    <Text style={[styles.tvBtnText, { color: theme.green }]}>TV On</Text>
+                    <Ionicons name="power" size={18} color={t.green} />
+                    <Text style={[styles.tvBtnText, { color: t.green }]}>TV On</Text>
                   </Pressable>
                   <Pressable
                     disabled={busy}
                     onPress={() => sendPower('power_off')}
                     style={({ pressed }) => [styles.tvBtn, pressed && styles.pressed]}>
-                    <Ionicons name="power-outline" size={18} color={theme.textDim} />
-                    <Text style={[styles.tvBtnText, { color: theme.textDim }]}>TV Off</Text>
+                    <Ionicons name="power-outline" size={18} color={t.textDim} />
+                    <Text style={[styles.tvBtnText, { color: t.textDim }]}>TV Off</Text>
                   </Pressable>
                 </View>
               )}
@@ -683,8 +688,8 @@ export function RemotePowerBar() {
                     disabled={busy}
                     onPress={onSwitchToBox}
                     style={({ pressed }) => [styles.sourceBtn, pressed && styles.pressed]}>
-                    <Ionicons name="tv" size={18} color={theme.green} />
-                    <Text style={[styles.sourceBtnText, { color: theme.green }]}>Switch to Box</Text>
+                    <Ionicons name="tv" size={18} color={t.green} />
+                    <Text style={[styles.sourceBtnText, { color: t.green }]}>Switch to Box</Text>
                   </Pressable>
                 )
               )}
@@ -694,8 +699,8 @@ export function RemotePowerBar() {
                   disabled={busy}
                   onPress={onBlankScreen}
                   style={({ pressed }) => [styles.sourceBtn, pressed && styles.pressed]}>
-                  <Ionicons name="eye-off-outline" size={18} color={theme.amber} />
-                  <Text style={[styles.sourceBtnText, { color: theme.amber }]}>Blank Screen</Text>
+                  <Ionicons name="eye-off-outline" size={18} color={t.amber} />
+                  <Text style={[styles.sourceBtnText, { color: t.amber }]}>Blank Screen</Text>
                 </Pressable>
               )}
 
@@ -734,7 +739,7 @@ export function RemotePowerBar() {
                       disabled={busy}
                       onPress={() => sendTv('volume_down')}
                       style={({ pressed }) => [styles.volBtn, pressed && styles.pressed]}>
-                      <Ionicons name="volume-low" size={24} color={theme.text} />
+                      <Ionicons name="volume-low" size={24} color={t.text} />
                     </Pressable>
                     <Pressable
                       disabled={busy}
@@ -753,14 +758,14 @@ export function RemotePowerBar() {
                       <Ionicons
                         name={muted ? 'volume-mute' : 'volume-medium'}
                         size={24}
-                        color={muted ? theme.red : theme.text}
+                        color={muted ? t.red : t.text}
                       />
                     </Pressable>
                     <Pressable
                       disabled={busy}
                       onPress={() => sendTv('volume_up')}
                       style={({ pressed }) => [styles.volBtn, pressed && styles.pressed]}>
-                      <Ionicons name="volume-high" size={24} color={theme.text} />
+                      <Ionicons name="volume-high" size={24} color={t.text} />
                     </Pressable>
                   </View>
                 </>
@@ -798,7 +803,7 @@ export function RemotePowerBar() {
   );
 }
 
-const styles = StyleSheet.create({
+const makeStyles = (t: Palette) => StyleSheet.create({
   couchBtn: {
     flexDirection: 'row',
     alignItems: 'center',
@@ -807,12 +812,12 @@ const styles = StyleSheet.create({
     paddingHorizontal: 12,
     borderRadius: 999,
     borderWidth: 1,
-    borderColor: theme.cardBorder,
-    backgroundColor: theme.card,
+    borderColor: t.cardBorder,
+    backgroundColor: t.card,
     marginRight: 8,
   },
-  couchBtnActive: { borderColor: theme.green, backgroundColor: 'rgba(52,211,153,0.10)' },
-  couchLabel: { color: theme.text, fontSize: 13, fontWeight: '700', fontFamily: mono },
+  couchBtnActive: { borderColor: t.green, backgroundColor: 'rgba(52,211,153,0.10)' },
+  couchLabel: { color: t.text, fontSize: 13, fontWeight: '700', fontFamily: mono },
   trigger: {
     flexDirection: 'row',
     alignItems: 'center',
@@ -821,8 +826,8 @@ const styles = StyleSheet.create({
     paddingHorizontal: 10,
     borderRadius: 999,
     borderWidth: 1,
-    borderColor: theme.cardBorder,
-    backgroundColor: theme.card,
+    borderColor: t.cardBorder,
+    backgroundColor: t.card,
   },
   pressed: { opacity: 0.6 },
   disabled: { opacity: 0.45 },
@@ -831,8 +836,8 @@ const styles = StyleSheet.create({
   card: {
     width: 260,
     maxWidth: '100%',
-    backgroundColor: theme.card,
-    borderColor: theme.cardBorder,
+    backgroundColor: t.card,
+    borderColor: t.cardBorder,
     borderWidth: 1,
     borderRadius: 14,
     padding: 8,
@@ -850,12 +855,12 @@ const styles = StyleSheet.create({
     height: 52,
     paddingHorizontal: 14,
     borderRadius: 10,
-    backgroundColor: theme.inset,
+    backgroundColor: t.inset,
   },
   bigLabel: { fontSize: 15, fontWeight: '800', fontFamily: mono, letterSpacing: 0.5 },
   suspendGroup: { gap: 6 },
   warnText: {
-    color: theme.amber,
+    color: t.amber,
     fontSize: 11,
     fontFamily: mono,
     lineHeight: 15,
@@ -870,7 +875,7 @@ const styles = StyleSheet.create({
     gap: 8,
     height: 48,
     borderRadius: 10,
-    backgroundColor: theme.inset,
+    backgroundColor: t.inset,
   },
   tvBtnText: { fontSize: 14, fontWeight: '800', fontFamily: mono, letterSpacing: 0.5 },
   volRow: { flexDirection: 'row', gap: 8 },
@@ -878,12 +883,12 @@ const styles = StyleSheet.create({
     flex: 1,
     height: 56,
     borderRadius: 10,
-    backgroundColor: theme.inset,
+    backgroundColor: t.inset,
     alignItems: 'center',
     justifyContent: 'center',
   },
-  volBtnMuted: { backgroundColor: theme.redDeep, borderWidth: 1, borderColor: theme.red },
-  volBtnActive: { borderWidth: 1, borderColor: theme.green },
+  volBtnMuted: { backgroundColor: t.redDeep, borderWidth: 1, borderColor: t.red },
+  volBtnActive: { borderWidth: 1, borderColor: t.green },
   sourceBtn: {
     flexDirection: 'row',
     alignItems: 'center',
@@ -891,12 +896,12 @@ const styles = StyleSheet.create({
     gap: 8,
     height: 48,
     borderRadius: 10,
-    backgroundColor: theme.inset,
+    backgroundColor: t.inset,
   },
   sourceBtnText: { fontSize: 14, fontWeight: '800', fontFamily: mono, letterSpacing: 0.5 },
   sourceSection: { gap: 6 },
   sourceHdr: {
-    color: theme.textFaint,
+    color: t.textFaint,
     fontSize: 11,
     fontWeight: '700',
     letterSpacing: 1.2,
@@ -908,17 +913,17 @@ const styles = StyleSheet.create({
     paddingVertical: 9,
     paddingHorizontal: 12,
     borderRadius: 8,
-    backgroundColor: theme.inset,
+    backgroundColor: t.inset,
     borderWidth: 1,
-    borderColor: theme.cardBorder,
+    borderColor: t.cardBorder,
   },
-  sourcePillText: { color: theme.text, fontSize: 12, fontWeight: '700', fontFamily: mono },
+  sourcePillText: { color: t.text, fontSize: 12, fontWeight: '700', fontFamily: mono },
   sliderRow: { flexDirection: 'row', alignItems: 'center', gap: 10, paddingHorizontal: 2 },
   sliderTrack: {
     flex: 1,
     height: 40,
     borderRadius: 20,
-    backgroundColor: theme.inset,
+    backgroundColor: t.inset,
     justifyContent: 'center',
   },
   sliderThumb: {
@@ -928,7 +933,7 @@ const styles = StyleSheet.create({
     marginLeft: -13,
     top: 7,
     borderRadius: 13,
-    backgroundColor: theme.text,
+    backgroundColor: t.text,
   },
   sliderFill: {
     position: 'absolute',
@@ -939,7 +944,7 @@ const styles = StyleSheet.create({
     backgroundColor: 'rgba(96,165,250,0.25)',
   },
   sliderPct: {
-    color: theme.text,
+    color: t.text,
     fontSize: 13,
     fontWeight: '700',
     fontFamily: mono,
@@ -951,10 +956,10 @@ const styles = StyleSheet.create({
     gap: 2,
     padding: 2,
     borderRadius: 10,
-    backgroundColor: theme.inset,
+    backgroundColor: t.inset,
   },
   seg: { flex: 1, paddingVertical: 8, borderRadius: 8, alignItems: 'center' },
-  segActive: { backgroundColor: theme.card },
-  segText: { color: theme.textDim, fontSize: 13, fontWeight: '700', fontFamily: mono },
-  segTextActive: { color: theme.text },
+  segActive: { backgroundColor: t.card },
+  segText: { color: t.textDim, fontSize: 13, fontWeight: '700', fontFamily: mono },
+  segTextActive: { color: t.text },
 });

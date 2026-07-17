@@ -6,7 +6,7 @@ import { Pressable, StyleSheet, Text, View } from 'react-native';
 import { isGenuinelyPurchased } from '@/lib/entitlement';
 import { useEntitlement } from '@/lib/EntitlementContext';
 import { hapticLight } from '@/lib/haptics';
-import { theme } from '@/lib/theme';
+import { useTheme, useThemedStyles, type Palette } from '@/lib/theme';
 import {
   dismissNudge,
   isNudgeDismissed,
@@ -29,6 +29,8 @@ export function TrialNudge() {
   const { entitlement, ready } = useEntitlement();
   const pathname = usePathname();
   const router = useRouter();
+  const t = useTheme();
+  const styles = useThemedStyles(makeStyles);
 
   const [threshold, setThreshold] = useState<NudgeThreshold | null>(null);
 
@@ -77,7 +79,7 @@ export function TrialNudge() {
 
   const { title, sub } = nudgeCopy(entitlement.trialDaysLeft);
   const urgent = entitlement.trialDaysLeft <= 1;
-  const accent = urgent ? theme.amber : theme.blue;
+  const accent = urgent ? t.amber : t.blue;
 
   return (
     <Pressable
@@ -92,13 +94,13 @@ export function TrialNudge() {
         onPress={onDismiss}
         hitSlop={10}
         style={({ pressed }) => [styles.close, pressed && styles.pressed]}>
-        <Ionicons name="close" size={16} color={theme.textDim} />
+        <Ionicons name="close" size={16} color={t.textDim} />
       </Pressable>
     </Pressable>
   );
 }
 
-const styles = StyleSheet.create({
+const makeStyles = (t: Palette) => StyleSheet.create({
   row: {
     flexDirection: 'row',
     alignItems: 'center',
@@ -107,13 +109,13 @@ const styles = StyleSheet.create({
     marginTop: 8,
     paddingVertical: 9,
     paddingHorizontal: 12,
-    backgroundColor: theme.card,
+    backgroundColor: t.card,
     borderWidth: 1,
     borderRadius: 10,
   },
   body: { flex: 1 },
   title: { fontSize: 13, fontWeight: '800' },
-  sub: { color: theme.textDim, fontSize: 11, marginTop: 1 },
+  sub: { color: t.textDim, fontSize: 11, marginTop: 1 },
   close: { padding: 2 },
   pressed: { opacity: 0.7 },
 });

@@ -16,11 +16,14 @@ import { usePoll } from '@/hooks/usePoll';
 import { api, hostKey, UpdateCheck } from '@/lib/api';
 import { hapticLight } from '@/lib/haptics';
 import { useSettings } from '@/lib/SettingsContext';
-import { mono, theme } from '@/lib/theme';
+import { mono, useTheme, useThemedStyles } from '@/lib/theme';
+import type { Palette } from '@/lib/theme';
 
 const POLL_MS = 30 * 60 * 1000; // twice an hour; the box caches for ~6h anyway
 
 export function AgentUpdateBanner() {
+  const t = useTheme();
+  const styles = useThemedStyles(makeStyles);
   const { settings } = useSettings();
   const configured = settings.host.trim().length > 0;
   const poll = usePoll<UpdateCheck | null>(
@@ -76,7 +79,7 @@ export function AgentUpdateBanner() {
   return (
     <View style={styles.card}>
       <View style={styles.header}>
-        <Ionicons name="arrow-up-circle" size={18} color={theme.blue} />
+        <Ionicons name="arrow-up-circle" size={18} color={t.blue} />
         <Text style={styles.title} numberOfLines={1}>
           Agent update available{check.latest ? ` — ${check.latest}` : ''}
         </Text>
@@ -87,7 +90,7 @@ export function AgentUpdateBanner() {
               hapticLight();
               setDismissed(check.latest);
             }}>
-            <Ionicons name="close" size={16} color={theme.textDim} />
+            <Ionicons name="close" size={16} color={t.textDim} />
           </Pressable>
         )}
       </View>
@@ -108,7 +111,7 @@ export function AgentUpdateBanner() {
             <Ionicons
               name={expanded ? 'chevron-up' : 'chevron-down'}
               size={14}
-              color={theme.blue}
+              color={t.blue}
             />
             <Text style={styles.notesToggleText}>What's new</Text>
           </Pressable>
@@ -138,10 +141,10 @@ export function AgentUpdateBanner() {
   );
 }
 
-const styles = StyleSheet.create({
+const makeStyles = (t: Palette) => StyleSheet.create({
   card: {
-    backgroundColor: theme.card,
-    borderColor: theme.blue,
+    backgroundColor: t.card,
+    borderColor: t.blue,
     borderWidth: 1,
     borderRadius: 12,
     padding: 14,
@@ -149,13 +152,13 @@ const styles = StyleSheet.create({
     gap: 8,
   },
   header: { flexDirection: 'row', alignItems: 'center', gap: 8 },
-  title: { color: theme.text, fontSize: 14, fontWeight: '700', flex: 1 },
-  sub: { color: theme.textDim, fontSize: 12, fontFamily: mono },
+  title: { color: t.text, fontSize: 14, fontWeight: '700', flex: 1 },
+  sub: { color: t.textDim, fontSize: 12, fontFamily: mono },
   notesToggle: { flexDirection: 'row', alignItems: 'center', gap: 5 },
-  notesToggleText: { color: theme.blue, fontSize: 13, fontWeight: '600' },
-  notes: { color: theme.textDim, fontSize: 12, lineHeight: 18, fontFamily: mono },
+  notesToggleText: { color: t.blue, fontSize: 13, fontWeight: '600' },
+  notes: { color: t.textDim, fontSize: 12, lineHeight: 18, fontFamily: mono },
   btn: {
-    backgroundColor: theme.blue,
+    backgroundColor: t.blue,
     borderRadius: 10,
     paddingVertical: 11,
     alignItems: 'center',
@@ -163,7 +166,7 @@ const styles = StyleSheet.create({
   },
   btnPressed: { opacity: 0.85 },
   btnText: { color: '#0b1220', fontSize: 14, fontWeight: '700' },
-  msg: { color: theme.text, fontSize: 13, lineHeight: 19 },
-  hint: { color: theme.textDim, fontSize: 12, lineHeight: 18 },
-  code: { fontFamily: mono, color: theme.text },
+  msg: { color: t.text, fontSize: 13, lineHeight: 19 },
+  hint: { color: t.textDim, fontSize: 12, lineHeight: 18 },
+  code: { fontFamily: mono, color: t.text },
 });

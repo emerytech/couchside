@@ -15,12 +15,14 @@ import { usePoll } from '@/hooks/usePoll';
 import { api, hostKey, screenFrameSource, ScreenInfo } from '@/lib/api';
 import { hapticLight } from '@/lib/haptics';
 import { useSettings } from '@/lib/SettingsContext';
-import { mono, theme } from '@/lib/theme';
+import { mono, useTheme, useThemedStyles, type Palette } from '@/lib/theme';
 
 const FRAME_INTERVAL_MS = 1000;
 const FULLSCREEN_INTERVAL_MS = 700;
 
 export function ScreenPreview() {
+  const t = useTheme();
+  const styles = useThemedStyles(makeStyles);
   const { settings, ready } = useSettings();
   const configured = !!settings.host && !!settings.token;
 
@@ -159,7 +161,7 @@ export function ScreenPreview() {
             <Ionicons
               name={active ? 'stop' : 'play'}
               size={12}
-              color={active ? theme.bg : theme.green}
+              color={active ? t.bg : t.green}
             />
             <Text style={[styles.pillText, active && styles.pillTextOn]}>
               {active ? 'STOP' : 'START PREVIEW'}
@@ -170,12 +172,12 @@ export function ScreenPreview() {
 
       {noSession ? (
         <View style={styles.stateBox}>
-          <Ionicons name="tv-outline" size={26} color={theme.textFaint} />
+          <Ionicons name="tv-outline" size={26} color={t.textFaint} />
           <Text style={styles.stateText}>no capturable session (greeter?)</Text>
         </View>
       ) : !active ? (
         <View style={styles.stateBox}>
-          <Ionicons name="eye-outline" size={26} color={theme.textFaint} />
+          <Ionicons name="eye-outline" size={26} color={t.textFaint} />
           <Text style={styles.stateText}>Preview is off. Tap START to see the screen.</Text>
         </View>
       ) : (
@@ -211,34 +213,34 @@ export function ScreenPreview() {
   );
 }
 
-const styles = StyleSheet.create({
+const makeStyles = (t: Palette) => StyleSheet.create({
   card: {
-    backgroundColor: theme.card,
-    borderColor: theme.cardBorder,
+    backgroundColor: t.card,
+    borderColor: t.cardBorder,
     borderWidth: 1,
     borderRadius: 12,
     padding: 14,
     marginBottom: 10,
   },
   header: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', marginBottom: 10 },
-  title: { color: theme.textFaint, fontSize: 11, fontWeight: '700', letterSpacing: 1.2, fontFamily: mono },
+  title: { color: t.textFaint, fontSize: 11, fontWeight: '700', letterSpacing: 1.2, fontFamily: mono },
   pill: {
     flexDirection: 'row',
     alignItems: 'center',
     gap: 5,
-    borderColor: theme.green,
+    borderColor: t.green,
     borderWidth: 1,
     borderRadius: 999,
     paddingVertical: 4,
     paddingHorizontal: 10,
   },
-  pillOn: { backgroundColor: theme.green },
-  pillText: { color: theme.green, fontSize: 11, fontWeight: '700', fontFamily: mono },
-  pillTextOn: { color: theme.bg },
+  pillOn: { backgroundColor: t.green },
+  pillText: { color: t.green, fontSize: 11, fontWeight: '700', fontFamily: mono },
+  pillTextOn: { color: t.bg },
   pressed: { opacity: 0.7 },
 
   stateBox: { alignItems: 'center', justifyContent: 'center', paddingVertical: 22, gap: 8 },
-  stateText: { color: theme.textDim, fontSize: 13, textAlign: 'center' },
+  stateText: { color: t.textDim, fontSize: 13, textAlign: 'center' },
 
   frameWrap: {
     borderRadius: 8,
@@ -257,10 +259,10 @@ const styles = StyleSheet.create({
     paddingVertical: 3,
     paddingHorizontal: 8,
   },
-  failText: { color: theme.amber, fontSize: 10, fontWeight: '700', fontFamily: mono },
+  failText: { color: t.amber, fontSize: 10, fontWeight: '700', fontFamily: mono },
 
   fsRoot: { flex: 1, backgroundColor: 'rgba(0,0,0,0.95)', alignItems: 'center', justifyContent: 'center' },
   fsImage: { width: '100%', height: '100%' },
   fsHint: { position: 'absolute', bottom: 30 },
-  fsHintText: { color: theme.textDim, fontSize: 12, fontFamily: mono },
+  fsHintText: { color: t.textDim, fontSize: 12, fontFamily: mono },
 });
