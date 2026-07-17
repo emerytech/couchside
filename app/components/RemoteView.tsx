@@ -56,9 +56,20 @@ export function RemoteView({
   // (desktop only). Force back to the D-pad if the box leaves desktop mode.
   const [surface, setSurface] = useState<'dpad' | 'track'>('dpad');
   const trackpad = hasDesktop && surface === 'track';
-  // OK-button joystick armed (hold OK -> pointer). Locks page scrolling so the
-  // ScrollView can't fight the held gesture.
   const [joyActive, setJoyActive] = useState(false);
+  // The nav circle is ELASTIC: it sizes to whatever vertical space is left
+  // after the fixed rows (which vary — TV keys, the desktop cluster). Measured
+  // from its own container so the whole remote always fits ONE screen with no
+  // scroll, on any phone and with any set of rows present.
+  const [circleSize, setCircleSize] = useState(200);
+  const onCircleLayout = React.useCallback(
+    (e: { nativeEvent: { layout: { width: number; height: number } } }) => {
+      const { width, height } = e.nativeEvent.layout;
+      const s = Math.max(132, Math.min(240, Math.floor(Math.min(width, height)) - 4));
+      setCircleSize((prev) => (Math.abs(prev - s) > 1 ? s : prev));
+    },
+    [],
+  );
 
   // ---- senders -------------------------------------------------------------
 
@@ -161,19 +172,9 @@ export function RemoteView({
   const navSettings = () => (nav === 'tv' ? tvKey('settings') : padTap('select'));
 
   return (
-    <ScrollView
-      style={styles.root}
-      contentContainerStyle={styles.content}
-      // While the nav circle is a trackpad, the page must not scroll: the
-      // ScrollView was stealing the drag (page moved, pointer stuttered).
-      // The responder also refuses termination (useTrackpad), but disabling
-      // the scroll entirely is what makes the surface feel solid.
-      scrollEnabled={!trackpad && !joyActive}
-      // No rubber-band: the remote normally fits the screen, and the iOS
-      // overscroll bounce made every vertical swipe wiggle the whole view.
-      bounces={false}
-      overScrollMode="never"
-      showsVerticalScrollIndicator={false}>
+    // Fixed, non-scrolling column: the elastic nav circle absorbs any leftover
+    // height so nothing ever scrolls or clips (see circleSize).
+    <View style={styles.root}>
       {/* Nav target toggle — only meaningful with an RS-232 panel */}
       {hasTvKeys && (
         <View style={styles.targetRow}>
@@ -224,30 +225,35 @@ export function RemoteView({
         </View>
       )}
 
-      {/* Corner keys + D-pad / trackpad */}
+      {/* Corner keys + D-pad / trackpad. navBlock flexes to fill leftover
+          height; circleArea (flex) centers the elastic circle between the two
+          corner rows and is what onCircleLayout measures. */}
       <View style={styles.navBlock}>
         <View style={styles.cornerRow}>
           <CornerBtn icon="menu" label="MENU" onPress={navMenu} />
           <CornerBtn icon="settings-outline" label={nav === 'tv' ? 'SETTINGS' : 'VIEW'} onPress={navSettings} />
         </View>
 
-        {trackpad ? (
-          <NavTrackpad responder={trackpadResponder} />
-        ) : (
-          <Dpad
-            onUp={navUp}
-            onDown={navDown}
-            onLeft={navLeft}
-            onRight={navRight}
-            onOk={navOk}
-            // Pointer works in BOTH sessions (Big Picture has a cursor too),
-            // so the joystick arms whenever OK drives the box — only the
-            // serial-TV target (nav === 'tv') has no pointer to move.
-            joyEnabled={nav === 'box'}
-            onJoyMove={(dx, dy) => client.sendMouseMove(dx, dy)}
-            onJoyActive={setJoyActive}
-          />
-        )}
+        <View style={styles.circleArea} onLayout={onCircleLayout}>
+          {trackpad ? (
+            <NavTrackpad size={circleSize} responder={trackpadResponder} />
+          ) : (
+            <Dpad
+              size={circleSize}
+              onUp={navUp}
+              onDown={navDown}
+              onLeft={navLeft}
+              onRight={navRight}
+              onOk={navOk}
+              // Pointer works in BOTH sessions (Big Picture has a cursor too),
+              // so the joystick arms whenever OK drives the box — only the
+              // serial-TV target (nav === 'tv') has no pointer to move.
+              joyEnabled={nav === 'box'}
+              onJoyMove={(dx, dy) => client.sendMouseMove(dx, dy)}
+              onJoyActive={setJoyActive}
+            />
+          )}
+        </View>
 
         <View style={styles.cornerRow}>
           <CornerBtn icon="arrow-undo" label="BACK" onPress={navBack} />
@@ -315,7 +321,7 @@ export function RemoteView({
           })}
         </View>
       )}
-    </ScrollView>
+    </View>
   );
 }
 
@@ -365,6 +371,7 @@ const JOY_TAP_MS = 350;
  * quick tap is still OK. No mode switch needed for casual pointing.
  */
 function Dpad({
+  size,
   onUp,
   onDown,
   onLeft,
@@ -379,6 +386,8 @@ function Dpad({
   onLeft: () => void;
   onRight: () => void;
   onOk: () => void;
+  /** Diameter of the circle (elastic, measured by the parent). */
+  size: number;
   /** Arm the hold-to-point behavior (desktop boxes). */
   joyEnabled: boolean;
   /** Relative cursor move for one tick (already scaled). */
@@ -388,6 +397,7 @@ function Dpad({
 }) {
   const sens = usePref('trackpadSensitivity');
   const [joy, setJoy] = useState(false);
+  const geo = dpadGeometry(size);
 
   // All gesture state in refs: the responder is created once.
   const st = React.useRef({
@@ -478,31 +488,53 @@ function Dpad({
     }),
   ).current;
 
+  const chevron = Math.round(size * 0.13);
   return (
-    <View style={styles.dpad}>
-      <Pressable onPress={onUp} style={({ pressed }) => [styles.wedge, styles.wedgeUp, pressed && styles.wedgePressed]}>
-        <Ionicons name="chevron-up" size={26} color="#0b1220" />
+    <View style={[styles.dpad, geo.disc]}>
+      <Pressable onPress={onUp} style={({ pressed }) => [styles.wedge, geo.wedge, geo.wedgeUp, pressed && styles.wedgePressed]}>
+        <Ionicons name="chevron-up" size={chevron} color="#0b1220" />
       </Pressable>
-      <Pressable onPress={onDown} style={({ pressed }) => [styles.wedge, styles.wedgeDown, pressed && styles.wedgePressed]}>
-        <Ionicons name="chevron-down" size={26} color="#0b1220" />
+      <Pressable onPress={onDown} style={({ pressed }) => [styles.wedge, geo.wedge, geo.wedgeDown, pressed && styles.wedgePressed]}>
+        <Ionicons name="chevron-down" size={chevron} color="#0b1220" />
       </Pressable>
-      <Pressable onPress={onLeft} style={({ pressed }) => [styles.wedge, styles.wedgeLeft, pressed && styles.wedgePressed]}>
-        <Ionicons name="chevron-back" size={26} color="#0b1220" />
+      <Pressable onPress={onLeft} style={({ pressed }) => [styles.wedge, geo.wedge, geo.wedgeLeft, pressed && styles.wedgePressed]}>
+        <Ionicons name="chevron-back" size={chevron} color="#0b1220" />
       </Pressable>
-      <Pressable onPress={onRight} style={({ pressed }) => [styles.wedge, styles.wedgeRight, pressed && styles.wedgePressed]}>
-        <Ionicons name="chevron-forward" size={26} color="#0b1220" />
+      <Pressable onPress={onRight} style={({ pressed }) => [styles.wedge, geo.wedge, geo.wedgeRight, pressed && styles.wedgePressed]}>
+        <Ionicons name="chevron-forward" size={chevron} color="#0b1220" />
       </Pressable>
-      <View
-        {...okResponder.panHandlers}
-        style={[styles.ok, joy && styles.okJoy]}>
+      <View {...okResponder.panHandlers} style={[styles.ok, geo.ok, joy && styles.okJoy]}>
         {joy ? (
-          <Ionicons name="move" size={30} color="#f8fafc" />
+          <Ionicons name="move" size={Math.round(size * 0.15)} color="#f8fafc" />
         ) : (
-          <Text style={styles.okText}>OK</Text>
+          <Text style={[styles.okText, { fontSize: Math.round(size * 0.1) }]}>OK</Text>
         )}
       </View>
     </View>
   );
+}
+
+/** Circle geometry derived from the elastic diameter: the disc, the four wedge
+ *  hit-areas around the rim, and the OK disc in the center. */
+function dpadGeometry(size: number) {
+  const wedge = Math.round(size * 0.34);
+  const ok = Math.round(size * 0.4);
+  const mid = (size - wedge) / 2;
+  return {
+    disc: { width: size, height: size, borderRadius: size / 2 },
+    wedge: { width: wedge, height: wedge, borderRadius: wedge / 2 },
+    wedgeUp: { top: 4, left: mid },
+    wedgeDown: { bottom: 4, left: mid },
+    wedgeLeft: { left: 4, top: mid },
+    wedgeRight: { right: 4, top: mid },
+    ok: {
+      width: ok,
+      height: ok,
+      borderRadius: ok / 2,
+      left: (size - ok) / 2,
+      top: (size - ok) / 2,
+    },
+  };
 }
 
 /**
@@ -510,12 +542,14 @@ function Dpad({
  * disc is a relative-mouse surface (drag=pointer, tap=click, two-finger tap=
  * right-click, two-finger drag=scroll).
  */
-function NavTrackpad({ responder }: { responder: PanResponderInstance }) {
+function NavTrackpad({ size, responder }: { size: number; responder: PanResponderInstance }) {
   const hints = usePref('padHints');
   return (
-    <View style={[styles.dpad, styles.navTrack]} {...responder.panHandlers}>
-      <Ionicons name="move" size={28} color="rgba(11,18,32,0.35)" />
-      {hints && (
+    <View
+      style={[styles.dpad, styles.navTrack, { width: size, height: size, borderRadius: size / 2 }]}
+      {...responder.panHandlers}>
+      <Ionicons name="move" size={Math.round(size * 0.14)} color="rgba(11,18,32,0.35)" />
+      {hints && size >= 150 && (
         <Text style={styles.navTrackHint}>drag · tap = click{'\n'}2-finger: right / scroll</Text>
       )}
     </View>
@@ -582,13 +616,10 @@ function MidBtn({
 
 // ---- styles ----------------------------------------------------------------
 
-const DPAD = 216;
-const WEDGE = 74;
-const OK = 88;
-
 const styles = StyleSheet.create({
-  root: { flex: 1 },
-  content: { paddingBottom: 16, gap: 14 },
+  // Fixed, non-scrolling column. gap spaces the rows; navBlock (flex:1) eats
+  // the leftover so the elastic circle fits without any scroll.
+  root: { flex: 1, gap: 10, paddingBottom: 6 },
   pressed: { opacity: 0.6 },
 
   targetRow: { flexDirection: 'row', alignItems: 'center', gap: 10 },
@@ -634,7 +665,8 @@ const styles = StyleSheet.create({
     justifyContent: 'center',
   },
 
-  navBlock: { gap: 6 },
+  navBlock: { flex: 1, gap: 6, minHeight: 190 },
+  circleArea: { flex: 1, alignItems: 'center', justifyContent: 'center' },
   cornerRow: { flexDirection: 'row', justifyContent: 'space-between', paddingHorizontal: 8 },
   corner: {
     minWidth: 92,
@@ -655,34 +687,19 @@ const styles = StyleSheet.create({
     fontFamily: mono,
   },
 
+  // Base disc styling; width/height/radius come from dpadGeometry(size).
   dpad: {
-    width: DPAD,
-    height: DPAD,
-    borderRadius: DPAD / 2,
     backgroundColor: '#e8edf6',
     alignSelf: 'center',
-    marginVertical: 4,
   },
   wedge: {
     position: 'absolute',
-    width: WEDGE,
-    height: WEDGE,
     alignItems: 'center',
     justifyContent: 'center',
-    borderRadius: WEDGE / 2,
   },
   wedgePressed: { backgroundColor: 'rgba(11,18,32,0.12)' },
-  wedgeUp: { top: 4, left: (DPAD - WEDGE) / 2 },
-  wedgeDown: { bottom: 4, left: (DPAD - WEDGE) / 2 },
-  wedgeLeft: { left: 4, top: (DPAD - WEDGE) / 2 },
-  wedgeRight: { right: 4, top: (DPAD - WEDGE) / 2 },
   ok: {
     position: 'absolute',
-    width: OK,
-    height: OK,
-    borderRadius: OK / 2,
-    left: (DPAD - OK) / 2,
-    top: (DPAD - OK) / 2,
     backgroundColor: '#f8fafc',
     borderWidth: 4,
     borderColor: '#0b1220',
@@ -690,7 +707,7 @@ const styles = StyleSheet.create({
     justifyContent: 'center',
   },
   okPressed: { backgroundColor: '#cbd5e1' },
-  okText: { color: '#0b1220', fontSize: 20, fontWeight: '800', fontFamily: mono },
+  okText: { color: '#0b1220', fontWeight: '800', fontFamily: mono },
   // OK disc while the hold-to-point joystick is armed.
   okJoy: { backgroundColor: theme.blue, borderColor: theme.blue },
 
