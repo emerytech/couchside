@@ -31,10 +31,17 @@ export type GamepadStatus =
   | 'connected'
   | 'error'
   | 'closed'
-  /** Another device took the controller (agent >= 2.9.1 sends code=replaced).
+  /** Another device took the controller (old agent 2.9.1 sends code=replaced).
       Deliberately NOT auto-reconnected — that caused two paired phones to kick
       each other in an endless war. The user takes back control explicitly. */
-  | 'replaced';
+  | 'replaced'
+  /** Connected but WAITING for the current holder to pass control (agent >=
+      2.9.2, our handoff pref = ask). Socket stays open; can force after a
+      timeout. `dev` carries the holder's name. */
+  | 'waiting'
+  /** We held control and it was passed/taken (agent >= 2.9.2). Socket stays
+      open; can request it back. `dev` carries the new holder's name. */
+  | 'released';
 
 export type ButtonKey =
   | 'a'
@@ -155,6 +162,16 @@ export class GamepadClient {
     | ((blocked: boolean, msg: string | null) => void)
     | null = null;
 
+  // Controller handoff (agent >= 2.9.2). When this phone HOLDS control and
+  // another asks for it, the agent sends control_request{name}; the UI prompts
+  // Pass/Keep. controlRequest holds the pending requester name (or null).
+  private controlRequest: string | null = null;
+  private controlReqListener: ((name: string | null) => void) | null = null;
+  /** Ask-to-pass vs grab-control, read from prefs at connect() time. */
+  private handoffAsk = true;
+  /** This device's label, sent so the holder's prompt can name the requester. */
+  private deviceName = 'A device';
+
   /** True between connect() and close(): reconnect on failure while set. */
   private active = false;
   private conn: Conn | null = null;
@@ -192,6 +209,41 @@ export class GamepadClient {
     if (fn) fn(this.status, this.dev);
   }
 
+  /** Register the (single) control-request listener; fires immediately. Gets
+   *  the requesting device's name while a handoff is pending, else null. */
+  onControlRequest(fn: ((name: string | null) => void) | null): void {
+    this.controlReqListener = fn;
+    if (fn) fn(this.controlRequest);
+  }
+
+  private setControlRequest(name: string | null): void {
+    if (this.controlRequest === name) return;
+    this.controlRequest = name;
+    if (this.controlReqListener) this.controlReqListener(name);
+  }
+
+  /** Holder taps "Pass control": hand off to the waiting device. */
+  grantControl(): void {
+    this.sendRaw({ t: 'grant' });
+    this.setControlRequest(null);
+  }
+
+  /** Holder taps "Keep control": refuse the pending request. */
+  denyControl(): void {
+    this.sendRaw({ t: 'deny' });
+    this.setControlRequest(null);
+  }
+
+  /** Waiter/released device asks the current holder to pass control. */
+  requestControl(): void {
+    this.sendRaw({ t: 'request' });
+  }
+
+  /** Waiter takes control when the holder never answered (post-timeout). */
+  forceControl(): void {
+    this.sendRaw({ t: 'force' });
+  }
+
   /**
    * Register the (single) input-blocked listener; fires immediately with the
    * current state. Fires with `true` when the server reports input injection
@@ -215,7 +267,9 @@ export class GamepadClient {
    * StrictMode double-invokes, and repeated focus events can't tear down a
    * healthy socket.
    */
-  connect(conn: Conn): void {
+  connect(conn: Conn, opts?: { handoffAsk?: boolean; deviceName?: string }): void {
+    if (opts?.handoffAsk != null) this.handoffAsk = opts.handoffAsk;
+    if (opts?.deviceName) this.deviceName = opts.deviceName;
     const same =
       this.conn != null &&
       this.conn.host === conn.host &&
@@ -455,7 +509,10 @@ export class GamepadClient {
       this.setStatus('error', null);
       return;
     }
-    const url = `ws://${target}:${port}/ws/gamepad?token=${encodeURIComponent(token)}`;
+    const url =
+      `ws://${target}:${port}/ws/gamepad?token=${encodeURIComponent(token)}` +
+      `&handoff=${this.handoffAsk ? 'ask' : 'takeover'}` +
+      `&name=${encodeURIComponent(this.deviceName)}`;
 
     let ws: WebSocket;
     try {
@@ -472,7 +529,10 @@ export class GamepadClient {
       // pending, so ignore events from a socket we have already superseded.
       // (Same guard in onerror/onclose below.)
       if (ws !== this.ws) return;
-      let msg: { t?: string; dev?: string; msg?: string; text?: string; code?: string };
+      let msg: {
+        t?: string; dev?: string; msg?: string; text?: string;
+        code?: string; name?: string; holder?: string; by?: string;
+      };
       try {
         msg = JSON.parse(String(ev.data));
       } catch {
@@ -480,6 +540,7 @@ export class GamepadClient {
       }
       if (msg.t === 'hello') {
         this.attempt = 0;
+        this.setControlRequest(null); // any pending prompt is moot now
         this.dev = typeof msg.dev === 'string' ? msg.dev : null;
         // Text capability: an explicit hello field wins; otherwise default by
         // device — old Windows agents (ViGEm) already type full unicode via
@@ -492,11 +553,29 @@ export class GamepadClient {
               : 'ascii';
         this.setStatus('connected', this.dev);
         this.startPing();
+      } else if (msg.t === 'waiting') {
+        // Agent >= 2.9.2: connected but a WAITER — another phone holds control
+        // and we asked to take over. Socket stays open; the UI shows a wait +
+        // force-after-timeout affordance. Do NOT reconnect.
+        this.dev = typeof msg.holder === 'string' ? msg.holder : null;
+        this.setStatus('waiting', this.dev);
+        this.startPing();
+      } else if (msg.t === 'control_request') {
+        // We HOLD control and another device wants it — prompt Pass/Keep.
+        this.setControlRequest(typeof msg.name === 'string' ? msg.name : 'A device');
+      } else if (msg.t === 'released') {
+        // We were the holder; control passed/taken away. Socket stays open so
+        // we can request it back without reconnecting.
+        this.dev = typeof msg.by === 'string' ? msg.by : null;
+        this.setControlRequest(null);
+        this.setStatus('released', this.dev);
+      } else if (msg.t === 'denied') {
+        // Our request to take control was refused — still a connected waiter.
+        this.setStatus('waiting', this.dev);
       } else if (msg.t === 'err') {
         if (msg.code === 'replaced') {
-          // Another device took the controller (agent >= 2.9.1). STOP
-          // reconnecting — auto-retry here is what made two phones kick each
-          // other in a war. The UI offers an explicit take-over (connect()).
+          // Old agent (2.9.1) forced-takeover path: it closes the socket. STOP
+          // reconnecting; the UI offers an explicit take-over (connect()).
           this.active = false;
           this.setStatus('replaced', null);
           return;
@@ -520,6 +599,7 @@ export class GamepadClient {
       if (ws !== this.ws) return;
       this.ws = null;
       this.stopPing();
+      this.setControlRequest(null);
       if (this.active) {
         this.setStatus('error', null);
         this.scheduleReconnect();

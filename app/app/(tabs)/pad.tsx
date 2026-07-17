@@ -511,7 +511,14 @@ const STATUS_COLOR: Record<GamepadStatus, string> = {
   error: theme.red,
   closed: theme.red,
   replaced: theme.amber,
+  waiting: theme.amber,
+  released: theme.amber,
 };
+
+/** This phone's label sent to the box so the holder's "wants control" prompt
+ *  can name it. A platform label (no native device-name dependency). */
+const DEVICE_LABEL =
+  Platform.OS === 'ios' ? 'iPhone' : Platform.OS === 'android' ? 'Android phone' : 'A device';
 
 function statusLabel(status: GamepadStatus, dev: string | null): string {
   switch (status) {
@@ -521,6 +528,10 @@ function statusLabel(status: GamepadStatus, dev: string | null): string {
       return 'connecting…';
     case 'replaced':
       return 'another device has control · tap to take over';
+    case 'waiting':
+      return dev ? `waiting for ${dev} to pass control` : 'waiting for control';
+    case 'released':
+      return dev ? `${dev} has control · tap to request` : 'tap to request control';
     default:
       return 'disconnected, tap to retry';
   }
@@ -568,6 +579,15 @@ function PadScreen() {
   // Non-null when the box is refusing input injection (locked / not the active
   // desktop / an elevated window has focus); the string is the hint to show.
   const [inputBlocked, setInputBlocked] = useState<string | null>(null);
+  // Controller handoff (agent >= 2.9.2). askToSwitch: when another phone joins
+  // a box we control, ask before passing (vs let it grab). controlReq: the
+  // requesting device's name while a Pass/Keep prompt is up. canForce: a waiter
+  // has waited long enough with no answer to force takeover.
+  const askToSwitch = usePref('askToSwitchControl');
+  const askToSwitchRef = useRef(askToSwitch);
+  askToSwitchRef.current = askToSwitch;
+  const [controlReq, setControlReq] = useState<string | null>(null);
+  const [canForce, setCanForce] = useState(false);
 
   const clientRef = useRef<GamepadClient | null>(null);
   if (clientRef.current == null) {
@@ -600,15 +620,21 @@ function PadScreen() {
     client.onStatus((s, d) => {
       setStatus(s);
       setDev(d);
+      if (s !== 'waiting') setCanForce(false);
     });
 
     client.onInputBlocked((blocked, msg) => {
       setInputBlocked(blocked ? (msg ?? 'Input paused — unlock the box.') : null);
     });
 
+    client.onControlRequest((name) => setControlReq(name));
+
     const connect = () => {
       focusedRef.current = true;
-      client.connect(settingsRef.current);
+      client.connect(settingsRef.current, {
+        handoffAsk: askToSwitchRef.current,
+        deviceName: DEVICE_LABEL,
+      });
       if (Platform.OS !== 'web') {
         // Honor the "keep screen awake on Pad" pref; if it was turned off while
         // focused, this re-connect path also releases a prior lock.
@@ -645,6 +671,7 @@ function PadScreen() {
       disconnect();
       client.onStatus(null);
       client.onInputBlocked(null);
+      client.onControlRequest(null);
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps -- connection
     // identity only; settingsRef carries the rest without re-running.
@@ -673,12 +700,27 @@ function PadScreen() {
     }
   }, [client, ready, settings.lastIp]);
 
+  // Waiting with no answer for 20s -> allow forcing control (the holder walked
+  // away or its app is backgrounded). Reset whenever we leave the waiting state.
+  useEffect(() => {
+    if (status !== 'waiting') return undefined;
+    const t = setTimeout(() => setCanForce(true), 20_000);
+    return () => clearTimeout(t);
+  }, [status]);
+
+  // The status pill's tap does the right thing per state: request/force control
+  // during a handoff, otherwise reconnect.
   const retry = useCallback(() => {
-    if (status !== 'connected') {
-      haptic();
-      client.connect(settings);
+    haptic();
+    if (status === 'released') {
+      client.requestControl();
+    } else if (status === 'waiting') {
+      if (canForce) client.forceControl();
+      else client.requestControl();
+    } else if (status !== 'connected') {
+      client.connect(settings, { handoffAsk: askToSwitch, deviceName: DEVICE_LABEL });
     }
-  }, [client, settings, status]);
+  }, [client, settings, status, canForce, askToSwitch]);
 
   const btn = useCallback(
     (k: ButtonKey) => ({
@@ -832,7 +874,9 @@ function PadScreen() {
         <Pressable onPress={retry} style={styles.pill} hitSlop={8}>
           <View style={[styles.pillDot, { backgroundColor: STATUS_COLOR[status] }]} />
           <Text style={styles.pillText} numberOfLines={1}>
-            {statusLabel(status, dev)}
+            {status === 'waiting' && canForce
+              ? 'no response · tap to take control'
+              : statusLabel(status, dev)}
           </Text>
         </Pressable>
         <View style={styles.modeToggle}>
@@ -856,6 +900,39 @@ function PadScreen() {
             {'⚠  '}
             {inputBlocked}
           </Text>
+        </View>
+      )}
+
+      {/* Handoff prompt: another phone wants control of this box. */}
+      {controlReq != null && (
+        <View style={styles.handoffBar}>
+          <Text style={styles.handoffText} numberOfLines={2}>
+            {controlReq} wants control
+          </Text>
+          <View style={styles.handoffBtns}>
+            <Pressable
+              onPress={() => {
+                haptic();
+                client.denyControl();
+                setControlReq(null);
+              }}
+              style={({ pressed }) => [styles.handoffBtn, pressed && styles.btnPressed]}>
+              <Text style={styles.handoffBtnText}>KEEP</Text>
+            </Pressable>
+            <Pressable
+              onPress={() => {
+                haptic();
+                client.grantControl();
+                setControlReq(null);
+              }}
+              style={({ pressed }) => [
+                styles.handoffBtn,
+                styles.handoffBtnPass,
+                pressed && styles.btnPressed,
+              ]}>
+              <Text style={[styles.handoffBtnText, styles.handoffBtnPassText]}>PASS</Text>
+            </Pressable>
+          </View>
         </View>
       )}
 
@@ -1383,6 +1460,38 @@ const styles = StyleSheet.create({
     paddingVertical: 8,
     paddingHorizontal: 12,
   },
+  handoffBar: {
+    marginTop: 8,
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    gap: 10,
+    backgroundColor: 'rgba(96,165,250,0.12)',
+    borderColor: theme.blue,
+    borderWidth: 1,
+    borderRadius: 10,
+    paddingVertical: 8,
+    paddingHorizontal: 12,
+  },
+  handoffText: { flex: 1, color: theme.text, fontSize: 13, fontWeight: '600' },
+  handoffBtns: { flexDirection: 'row', gap: 8 },
+  handoffBtn: {
+    paddingVertical: 8,
+    paddingHorizontal: 16,
+    borderRadius: 999,
+    borderWidth: 1,
+    borderColor: theme.cardBorder,
+    backgroundColor: theme.card,
+  },
+  handoffBtnPass: { backgroundColor: theme.blue, borderColor: theme.blue },
+  handoffBtnText: {
+    color: theme.textDim,
+    fontFamily: mono,
+    fontSize: 12,
+    fontWeight: '800',
+    letterSpacing: 1,
+  },
+  handoffBtnPassText: { color: '#0b1220' },
   inputBlockedText: {
     color: theme.amber,
     fontFamily: mono,
