@@ -4768,16 +4768,33 @@ def _wsend_op(entry, opcode, payload=b""):
 
 
 def _release_devices(entry):
-    """Destroy a session's virtual input devices (idempotent) but LEAVE its
-    socket open — used when demoting a holder that stays connected as a waiter."""
-    for slot in ("device", "mouse", "keyboard"):
-        dev = entry.get(slot)
-        if dev is not None:
+    """Demote a session that stays connected as a waiter: destroy its gamepad
+    (one pad per holder — the new holder brings its own) but KEEP the mouse and
+    keyboard. Their frames are gated on entry["held"] anyway, and keeping them
+    makes regaining control instant — re-creating them restarted the 0.5s
+    enumeration-settle window, so the first swipe after a pass-back stalled
+    ~500ms (measured). Mouse buttons are defensively released (a drag could be
+    mid-press at demote; keyboard frames always pair press+release, so keys
+    can never be left held)."""
+    dev = entry.get("device")
+    if dev is not None:
+        try:
+            dev.destroy()
+        except Exception:
+            pass
+        entry["device"] = None
+    mouse = entry.get("mouse")
+    if mouse is not None:
+        # Skip if the device is still inside its settle window: nothing can
+        # have been pressed through it yet, and emit() would block this (the
+        # granter's) thread for the remainder.
+        ready = getattr(mouse, "_ready_at", 0) <= time.monotonic()
+        if ready:
             try:
-                dev.destroy()
+                mouse.emit([(EV_KEY, code, 0)
+                            for code in MOUSE_BTN_CODES.values()])
             except Exception:
                 pass
-            entry[slot] = None
 
 
 def _make_holder(entry, mock):
@@ -5986,6 +6003,21 @@ class Handler(BaseHTTPRequestHandler):
         else:  # waiting: tell me, and prompt the holder
             _wsend_json(entry, {"t": "waiting", "holder": holder.get("name")})
             _wsend_json(holder, {"t": "control_request", "name": name})
+            # Pre-create mouse/keyboard NOW: the settle window burns while the
+            # holder decides (human seconds), so a grant hands over devices
+            # that are already past it — first input after a pass measured
+            # 524ms with create-at-grant, ~7ms with create-at-wait. Input
+            # stays gated on entry["held"]; a create failure just falls back
+            # to the lazy path on first use.
+            for slot, factory in (
+                    ("mouse", MockMouse if self.mock else UInputMouse),
+                    ("keyboard", MockKeyboard if self.mock else UInputKeyboard)):
+                if entry.get(slot) is None:
+                    try:
+                        entry[slot] = factory()
+                    except Exception as e:
+                        print("[gamepad] waiter %s pre-create failed: %s"
+                              % (slot, e), flush=True)
             print("[gamepad] %s waiting (holder %s)"
                   % (name, holder.get("name")), flush=True)
 
