@@ -1,4 +1,6 @@
 import Ionicons from '@expo/vector-icons/Ionicons';
+import Constants from 'expo-constants';
+import * as Linking from 'expo-linking';
 import { useLocalSearchParams, useRouter } from 'expo-router';
 import React, { useCallback, useEffect, useState } from 'react';
 import {
@@ -66,6 +68,21 @@ function pairingUrl(box: Box): string {
  * silently fails on native, which is exactly the "Could not render QR" bug.
  */
 const QR_SIZE = 232;
+
+// About-row app version. `expoConfig` is embedded in store builds, so it
+// reflects the installed binary: the marketing version plus the native build
+// number (iOS buildNumber / Android versionCode).
+const APP_VERSION = Constants.expoConfig?.version ?? '—';
+const APP_BUILD =
+  Platform.OS === 'ios'
+    ? Constants.expoConfig?.ios?.buildNumber ?? ''
+    : Constants.expoConfig?.android?.versionCode != null
+      ? String(Constants.expoConfig.android.versionCode)
+      : '';
+
+// couchside.tv setup guide — how to install the agent on a box. New users who
+// grabbed the app from a store land here with no idea a box-side agent exists.
+const SETUP_GUIDE_URL = 'https://couchside.tv/#how';
 
 function PairingQrModal({ box, onClose }: { box: Box | null; onClose: () => void }) {
   return (
@@ -1239,6 +1256,33 @@ function SetupBody() {
               <Ionicons name="open-outline" size={16} color={theme.textDim} />
             </Pressable>
 
+            {/* First-run lifeline: the app is useless without the box-side agent,
+                and a store download gives no hint one exists. Links to the
+                install/setup guide on couchside.tv. */}
+            <Pressable
+              onPress={() => {
+                hapticLight();
+                void Linking.openURL(SETUP_GUIDE_URL);
+              }}
+              style={({ pressed }) => [styles.rateRow, pressed && styles.pressed]}>
+              <Ionicons name="hardware-chip-outline" size={18} color={theme.blue} />
+              <View style={styles.rateBody}>
+                <Text style={styles.rateTitle}>Set up a box</Text>
+                <Text style={styles.rateSub}>
+                  Install the agent — instructions at couchside.tv.
+                </Text>
+              </View>
+              <Ionicons name="open-outline" size={16} color={theme.textDim} />
+            </Pressable>
+
+            <View style={styles.aboutRow}>
+              <Ionicons name="information-circle-outline" size={16} color={theme.textDim} />
+              <Text style={styles.aboutText}>
+                Couchside v{APP_VERSION}
+                {APP_BUILD ? ` (${Platform.OS === 'ios' ? 'build' : 'vc'} ${APP_BUILD})` : ''}
+              </Text>
+            </View>
+
             <Text style={styles.hint}>
               Each agent listens on http://&lt;host&gt;:&lt;port&gt;. All routes except
               /api/ping require the bearer token.
@@ -1488,6 +1532,14 @@ const styles = StyleSheet.create({
   rateBody: { flex: 1 },
   rateTitle: { color: theme.text, fontSize: 14, fontWeight: '700' },
   rateSub: { color: theme.textDim, fontSize: 11, marginTop: 2 },
+  aboutRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+    marginBottom: 4,
+    paddingHorizontal: 2,
+  },
+  aboutText: { color: theme.textDim, fontSize: 12 },
   unlockRow: {
     flexDirection: 'row',
     alignItems: 'center',
