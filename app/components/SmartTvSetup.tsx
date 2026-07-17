@@ -220,7 +220,7 @@ export function SmartTvSetup({ settings }: { settings: ConnSettings }) {
 
       <Text style={styles.hint}>
         {brand === 'roku'
-          ? 'No pairing needed — just make sure the Roku is on and on this network.'
+          ? 'No pairing needed — just make sure the Roku is on and on this network. If the D-pad does not respond after adding, enable control on the Roku: Settings → System → Advanced system settings → Control by mobile apps → Network access → Permissive.'
           : brand === 'androidtv'
             ? 'Your Android/Google TV must be on. After “Pair”, a 6-digit code appears on the TV — enter it here. The MAC is optional (Wake-on-LAN power-on).'
             : `Your ${meta.label} TV must be on. An accept prompt appears on the TV — say yes. The MAC is optional and lets the box wake the TV over the network.`}
