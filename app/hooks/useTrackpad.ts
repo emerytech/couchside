@@ -1,15 +1,21 @@
 /**
  * Relative-mouse trackpad gesture, as a reusable PanResponder.
  *
- *  - 1-finger drag  -> onMove(dx, dy) with a light acceleration curve
- *  - 1-finger tap   -> onLeftClick
- *  - 2-finger tap   -> onRightClick
- *  - 2-finger drag  -> onScroll(notches), honoring the naturalScroll pref
+ *  - 1-finger drag        -> onMove(dx, dy) with a light acceleration curve
+ *  - 1-finger tap         -> onLeftClick
+ *  - 2-finger tap         -> onRightClick
+ *  - 2-finger drag        -> onScroll(notches), honoring the naturalScroll pref
+ *  - double-tap + hold-drag -> onDragStart / onMove* / onDragEnd (marquee):
+ *      tap, then on the second touch keep the finger down and drag. The caller
+ *      holds the left button for the whole drag, so a desktop file manager
+ *      rubber-bands a selection — like click-drag-selecting files in a GUI.
+ *      A double-tap that does NOT drag is just a second onLeftClick.
  *
  * Pointer speed (trackpadSensitivity) and scroll direction (naturalScroll) are
  * read live from prefs so a single once-created responder always uses the
  * current values. Shared by the Pad tab's Trackpad surface and the RemoteView
- * nav circle's trackpad toggle. Haptics are the caller's concern (wrap onMove).
+ * nav circle's trackpad toggle. Haptics are the caller's concern (wrap onMove
+ * / onDragStart).
  */
 import { useRef } from 'react';
 import { PanResponder, PanResponderInstance } from 'react-native';
@@ -20,6 +26,12 @@ import { usePref } from '@/lib/prefs';
 const TP_TAP_SLOP = 8;
 /** Touches longer than this aren't taps. */
 const TP_TAP_MS = 350;
+/**
+ * Max gap between the first tap's release and the second touch's start for the
+ * pair to read as a double-tap (which, if the second touch then drags, arms a
+ * held-button marquee drag). Matches the platform double-tap feel.
+ */
+const TP_DOUBLE_TAP_MS = 300;
 /**
  * Light acceleration: pointer delta = raw * (BASE + GAIN * speed). Slow drags
  * track ~1:1 for precision; fast flicks cover more screen.
@@ -34,6 +46,10 @@ export type TrackpadCallbacks = {
   onLeftClick: () => void;
   onRightClick: () => void;
   onScroll: (notches: number) => void;
+  /** Left button pressed for a double-tap-drag marquee. Hold it until onDragEnd. */
+  onDragStart?: () => void;
+  /** Marquee drag finished (or interrupted) — release the left button. */
+  onDragEnd?: () => void;
 };
 
 export function useTrackpad(cbs: TrackpadCallbacks): PanResponderInstance {
@@ -55,6 +71,12 @@ export function useTrackpad(cbs: TrackpadCallbacks): PanResponderInstance {
     maxTouches: 1,
     scrollAccum: 0,
     scrollLastY: 0,
+    /** Wall-clock of the previous quick tap's release, for double-tap detection. */
+    lastTapEndT: 0,
+    /** This gesture began within the double-tap window (may become a marquee). */
+    armed: false,
+    /** Left button is currently held for a marquee drag. */
+    dragging: false,
   });
 
   return useRef(
@@ -68,15 +90,25 @@ export function useTrackpad(cbs: TrackpadCallbacks): PanResponderInstance {
       onShouldBlockNativeResponder: () => true,
       onPanResponderGrant: (evt) => {
         const touches = evt.nativeEvent.touches.length || 1;
+        const prev = st.current;
+        const now = Date.now();
+        // Arm a marquee if this single-finger touch lands within the double-tap
+        // window of the previous quick tap. The button is only actually held
+        // once the finger starts dragging (below), so a plain double-tap that
+        // never moves stays a second click.
+        const armed = touches === 1 && now - prev.lastTapEndT < TP_DOUBLE_TAP_MS;
         st.current = {
           lastX: 0,
           lastY: 0,
-          lastT: Date.now(),
+          lastT: now,
           moved: false,
-          t0: Date.now(),
+          t0: now,
           maxTouches: touches,
           scrollAccum: 0,
           scrollLastY: 0,
+          lastTapEndT: prev.lastTapEndT,
+          armed,
+          dragging: false,
         };
       },
       onPanResponderMove: (evt, g) => {
@@ -110,14 +142,46 @@ export function useTrackpad(cbs: TrackpadCallbacks): PanResponderInstance {
         s.lastX = g.dx;
         s.lastY = g.dy;
         s.lastT = now;
+        // Marquee: first real movement of an armed (double-tap) gesture presses
+        // and holds the left button, so the move that follows drags a selection.
+        if (s.armed && !s.dragging && s.moved) {
+          s.dragging = true;
+          cb.current.onDragStart?.();
+        }
         cb.current.onMove(rawDx * gain, rawDy * gain);
       },
       onPanResponderRelease: () => {
         const s = st.current;
-        const wasTap = !s.moved && Date.now() - s.t0 < TP_TAP_MS;
+        const now = Date.now();
+        if (s.dragging) {
+          // End the held-button marquee. Not a tap; don't chain another.
+          s.dragging = false;
+          s.lastTapEndT = 0;
+          cb.current.onDragEnd?.();
+          return;
+        }
+        const wasTap = !s.moved && now - s.t0 < TP_TAP_MS;
         if (wasTap) {
-          if (s.maxTouches >= 2) cb.current.onRightClick();
-          else cb.current.onLeftClick();
+          if (s.maxTouches >= 2) {
+            cb.current.onRightClick();
+            s.lastTapEndT = 0; // two-finger tap doesn't start a marquee
+          } else {
+            cb.current.onLeftClick();
+            // Record the tap so a quick follow-up touch+drag becomes a marquee.
+            s.lastTapEndT = now;
+          }
+        } else {
+          s.lastTapEndT = 0;
+        }
+      },
+      // A drag can be torn away (app backgrounded, navigation) mid-marquee —
+      // release the held button so it never sticks down on the box.
+      onPanResponderTerminate: () => {
+        const s = st.current;
+        if (s.dragging) {
+          s.dragging = false;
+          s.lastTapEndT = 0;
+          cb.current.onDragEnd?.();
         }
       },
     }),

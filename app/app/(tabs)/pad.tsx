@@ -233,24 +233,42 @@ type TrackpadProps = {
   onLeftClick: () => void;
   onRightClick: () => void;
   onScroll: (notches: number) => void;
+  onDragStart: () => void;
+  onDragEnd: () => void;
 };
 
 /**
  * Relative-mouse surface (gesture logic shared with the RemoteView nav circle
  * via useTrackpad):
- *  - 1-finger drag  -> sendMouseMove (with a light acceleration curve)
- *  - 1-finger tap   -> left click
- *  - 2-finger tap   -> right click
- *  - 2-finger drag  -> vertical scroll (wheel)
+ *  - 1-finger drag        -> sendMouseMove (with a light acceleration curve)
+ *  - 1-finger tap         -> left click
+ *  - 2-finger tap         -> right click
+ *  - 2-finger drag        -> vertical scroll (wheel)
+ *  - double-tap + drag    -> hold left button + drag = marquee select
  */
-function Trackpad({ onMove, onLeftClick, onRightClick, onScroll }: TrackpadProps) {
-  const responder = useTrackpad({ onMove, onLeftClick, onRightClick, onScroll });
+function Trackpad({
+  onMove,
+  onLeftClick,
+  onRightClick,
+  onScroll,
+  onDragStart,
+  onDragEnd,
+}: TrackpadProps) {
+  const responder = useTrackpad({
+    onMove,
+    onLeftClick,
+    onRightClick,
+    onScroll,
+    onDragStart,
+    onDragEnd,
+  });
   const hints = usePref('padHints');
   return (
     <View style={styles.trackpadSurface} {...responder.panHandlers}>
       {hints && (
         <Text style={styles.swipeHint}>
-          drag to move · tap = click · two-finger tap = right-click · two-finger drag = scroll
+          drag = move · tap = click · two-finger tap = right-click · two-finger
+          drag = scroll · double-tap-drag = select
         </Text>
       )}
     </View>
@@ -848,6 +866,15 @@ function PadScreen() {
     },
     [client],
   );
+  // Double-tap-drag marquee: hold the left button down for the whole drag so a
+  // file manager rubber-bands a multi-item selection.
+  const tpDragStart = useCallback(() => {
+    haptic();
+    client.sendMouseButton('l', 1);
+  }, [client]);
+  const tpDragEnd = useCallback(() => {
+    client.sendMouseButton('l', 0);
+  }, [client]);
 
   // Keyboard handlers (protocol v2 keyboard).
   const kbText = useCallback((s: string) => client.sendText(s), [client]);
@@ -980,6 +1007,8 @@ function PadScreen() {
             onLeftClick={tpLeft}
             onRightClick={tpRight}
             onScroll={tpScroll}
+            onDragStart={tpDragStart}
+            onDragEnd={tpDragEnd}
           />
           {(showMouseRow || showSteamRow) && (
             <View style={styles.swipeBtnRow}>

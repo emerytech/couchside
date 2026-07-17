@@ -158,6 +158,11 @@ export function RemoteView({
     onLeftClick: leftClick,
     onRightClick: rightClick,
     onScroll: (notches) => client.sendWheel(notches),
+    onDragStart: () => {
+      hapticLight();
+      client.sendMouseButton('l', 1);
+    },
+    onDragEnd: () => client.sendMouseButton('l', 0),
   });
 
   // Nav cluster routing: BOX = virtual gamepad, TV = factory-remote serial keys.
