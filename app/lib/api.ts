@@ -332,7 +332,13 @@ export type LaunchResult = {
  * and "cec" (HDMI-CEC) drive the TV; "soft" (agent >= 2.6) drives the box's own
  * audio sink and does volume/mute only, with no power.
  */
-export type TvBackend = 'panel' | 'cec' | 'soft';
+export type TvBackend =
+  | 'panel'
+  | 'cec'
+  | 'soft'
+  | 'webos'
+  | 'samsung'
+  | 'roku';
 
 /** TV-control probe result. The route 404s when no backend is available. */
 export type Tv = {
@@ -374,10 +380,17 @@ export type Tv = {
    */
   sources?: { id: string; label: string }[];
   /**
-   * Factory-remote key emulation over RS-232 (agent >= 2.7.0): arrows / ok /
-   * menu / home / back / settings via POST /api/tv/key/<k>. Panel only.
+   * Factory-remote / nav key emulation via POST /api/tv/key/<k> (agent >=
+   * 2.7.0 for the RS-232 panel; agent >= 2.9.7 also for the network smart-TV
+   * backends webOS/Samsung/Roku): arrows / ok / menu / home / back.
    */
   keys?: boolean;
+  /**
+   * Text entry into a focused on-TV field via POST /api/tv/text (agent >=
+   * 2.9.7). Set by the network smart-TV backends (webOS IME, Samsung
+   * SendInputString, Roku Lit_ keys); never by panel/CEC.
+   */
+  text?: boolean;
   /** Current box OS volume 0-100 (agent >= 2.7.0), or null when unreadable. */
   box_volume_level?: number | null;
   /**
@@ -407,6 +420,20 @@ export type VolumeTarget = 'box' | 'tv';
 
 /** The unified TV ops the agent accepts at POST /api/tv/<op>. */
 export type TvOp = 'power_on' | 'power_off' | 'volume_up' | 'volume_down' | 'mute';
+
+/**
+ * Result of a smart-TV pair/add call (webOS/Samsung pair, Roku add). `ok` is
+ * false with a human `error` when the TV rejected or was unreachable.
+ */
+export type TvPairResult = {
+  ok: boolean;
+  paired?: boolean;
+  added?: boolean;
+  backend?: TvBackend;
+  host?: string;
+  name?: string;
+  error?: string;
+};
 
 // ---------- Errors ----------
 
@@ -977,11 +1004,70 @@ export const api = {
     });
   },
 
-  /** Send one factory-remote key to the panel (RS-232 only; see Tv.keys). */
+  /** Send one factory-remote / nav key to the active backend (see Tv.keys). */
   tvKey(settings: ConnSettings, key: TvKey): Promise<ActionResult> {
     return request<ActionResult>(settings, `/api/tv/key/${key}`, {
       method: 'POST',
       timeoutMs: 12000,
+    });
+  },
+
+  /**
+   * Type text into a focused on-TV field (network smart-TV backends only; gated
+   * behind Tv.text). Routed to the active backend's text channel (webOS IME /
+   * Samsung SendInputString / Roku Lit_ keys).
+   */
+  tvText(settings: ConnSettings, text: string): Promise<ActionResult> {
+    return request<ActionResult>(settings, '/api/tv/text', {
+      method: 'POST',
+      timeoutMs: 12000,
+      body: { text },
+    });
+  },
+
+  /**
+   * Pair with an LG webOS TV. The TV shows an Accept prompt; the agent blocks
+   * until the user accepts (or ~60 s), then persists the granted key so later
+   * connects are silent. `mac` (optional) enables Wake-on-LAN power-on. The
+   * long timeout matches the on-TV accept wait.
+   */
+  tvPairWebos(
+    settings: ConnSettings,
+    host: string,
+    mac?: string,
+  ): Promise<TvPairResult> {
+    return request<TvPairResult>(settings, '/api/tv/webos/pair', {
+      method: 'POST',
+      timeoutMs: 70000,
+      body: mac ? { host, mac } : { host },
+    });
+  },
+
+  /**
+   * Pair with a Samsung Tizen TV. The TV shows an Allow prompt; on accept the
+   * agent persists the granted token. `mac` (optional) enables Wake-on-LAN.
+   */
+  tvPairSamsung(
+    settings: ConnSettings,
+    host: string,
+    mac?: string,
+  ): Promise<TvPairResult> {
+    return request<TvPairResult>(settings, '/api/tv/samsung/pair', {
+      method: 'POST',
+      timeoutMs: 70000,
+      body: mac ? { host, mac } : { host },
+    });
+  },
+
+  /**
+   * Register a Roku by host. Roku needs no pairing — the agent just verifies it
+   * answers ECP, captures its friendly name, and persists it.
+   */
+  tvAddRoku(settings: ConnSettings, host: string): Promise<TvPairResult> {
+    return request<TvPairResult>(settings, '/api/tv/roku/add', {
+      method: 'POST',
+      timeoutMs: 12000,
+      body: { host },
     });
   },
 
