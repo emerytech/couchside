@@ -41,7 +41,7 @@ except ImportError:  # pragma: no cover
     fcntl = None
 
 APP_NAME = "couchside-agent"
-VERSION = "2.9.5"
+VERSION = "2.9.6"
 UID = os.getuid()
 XDG_RUNTIME_DIR = "/run/user/%d" % UID
 
@@ -1423,6 +1423,38 @@ def _set_preferred_output(output):
                 "stderr": "envd write: %s" % e}
 
 
+# steamos-session-select / steamosctl return as soon as the switch is
+# TRIGGERED, before gamescope presents. Poll up to this long for the compositor
+# to actually come up, so couchmode_start reports success only when Game Mode is
+# really on the TV — not on a black screen. Generous: gamescope can take several
+# seconds on a cold switch (Steam re-launch + output modeset).
+COUCHMODE_PRESENT_TIMEOUT_S = 12
+
+
+def _await_gamescope(timeout_s):
+    """True once Game Mode's gamescope compositor has actually presented — its
+    process is running AND its wayland socket exists — else False at the deadline.
+
+    This is the readback that turns "the switch command exited 0" into "Game Mode
+    is really up." A gamescope that fails to initialize on the GPU (e.g. the
+    proprietary NVIDIA driver, or a bad output) never satisfies both, so the
+    caller reports failure instead of a false success onto a black TV. Both
+    probes are cheap and never raise; the poll is bounded by the deadline."""
+    deadline = time.monotonic() + timeout_s
+    while True:
+        try:
+            up = (_couchmode_session() == "gamescope"
+                  and any(s.startswith("gamescope-")
+                          for s in _wayland_display_sockets()))
+        except Exception:
+            up = False
+        if up:
+            return True
+        if time.monotonic() >= deadline:
+            return False
+        time.sleep(0.3)
+
+
 def couchmode_start(output, hdr=False):
     """Fling the box into Game Mode on the TV. Steps, all best-effort except the
     session switch: (0) TV power-on + input-to-box where the box can drive the
@@ -1447,8 +1479,20 @@ def couchmode_start(output, hdr=False):
     # (3) Enter Game Mode (the one step that must succeed).
     sw = _session_to_game()
     steps["session"] = sw
-    return {"ok": sw["ok"], "output": output, "hdr": bool(hdr),
-            "session": "gamescope" if sw["ok"] else _couchmode_session(),
+    # (4) READBACK: the switch command exits as soon as the switch is triggered,
+    # so confirm gamescope actually presented before reporting success —
+    # otherwise a compositor that fails to init on this GPU leaves a black TV
+    # under a success toast. Only meaningful when the switch command itself won.
+    presented = False
+    if sw["ok"]:
+        presented = _await_gamescope(COUCHMODE_PRESENT_TIMEOUT_S)
+        steps["gamescope_up"] = {
+            "ok": presented, "exit_code": 0 if presented else 1,
+            "stdout": "", "stderr": "" if presented else
+            "gamescope did not present within %ds" % COUCHMODE_PRESENT_TIMEOUT_S}
+    return {"ok": bool(sw["ok"] and presented), "output": output,
+            "hdr": bool(hdr),
+            "session": "gamescope" if presented else _couchmode_session(),
             "steps": steps}
 
 
@@ -3656,8 +3700,12 @@ SCREEN_CAPTURE_TIMEOUT_S = 8      # per-step ceiling (gamescopectl async write +
 SCREEN_MAX_BYTES = 12 * 1024 * 1024
 SCREEN_WIDTH = 960                # downscale target width
 SCREEN_LOCK = threading.Lock()    # single-flight: never stack captures
+SCREEN_MIN_STDDEV = 2.0           # grayscale 0-255: below this a frame is ~uniform
+                                  # (e.g. an all-black compositor readback) and is
+                                  # rejected as a failed capture, not served.
 _SCREEN = None                    # capability dict or None; set by set_screen
 _SCREEN_CACHE = {"ts": 0.0, "data": None, "mime": None}  # 500 ms frame cache
+_screen_black_logged_at = 0.0     # rate-limit the ~uniform-frame log line
 
 
 def _screen_downscaler():
@@ -3767,6 +3815,44 @@ def _grab_spectacle(env, outdir):
     return png if _png_complete(png) else None
 
 
+def _grayscale_stddev(raw):
+    """Population std-dev of an 8-bit grayscale byte buffer (0-255), or None when
+    empty. Pure stdlib — no numpy/PIL."""
+    n = len(raw)
+    if n == 0:
+        return None
+    mean = sum(raw) / n
+    return (sum((b - mean) ** 2 for b in raw) / n) ** 0.5
+
+
+def _frame_variance(src, env):
+    """Std-dev (0-255 grayscale) of a tiny downsample of `src` (a PNG), using
+    whatever image tool this box has (same family as _screen_downscaler). Returns
+    a float, or None when it can't be measured (no tool / tool error) — callers
+    MUST treat None as 'inconclusive', never as black, so a measurement gap can't
+    suppress a real frame. A 32x32 grayscale sample is enough to tell a black/
+    uniform readback from a real desktop and costs a few ms."""
+    if shutil.which("magick"):
+        argv = ["magick", src, "-resize", "32x32!", "-colorspace", "Gray",
+                "-depth", "8", "GRAY:-"]
+    elif shutil.which("convert"):
+        argv = ["convert", src, "-resize", "32x32!", "-colorspace", "Gray",
+                "-depth", "8", "GRAY:-"]
+    elif shutil.which("ffmpeg"):
+        argv = ["ffmpeg", "-y", "-loglevel", "error", "-i", src, "-vf",
+                "scale=32:32,format=gray", "-f", "rawvideo", "-"]
+    else:
+        return None
+    try:
+        r = subprocess.run(argv, env=env, timeout=SCREEN_CAPTURE_TIMEOUT_S,
+                           stdout=subprocess.PIPE, stderr=subprocess.DEVNULL)
+    except Exception:
+        return None
+    if r.returncode != 0 or not r.stdout:
+        return None
+    return _grayscale_stddev(r.stdout)
+
+
 def real_screen_frame():
     """Capture one frame -> (jpeg_bytes, "image/jpeg") or None. Single-flight +
     500 ms cache so any number of pollers cause at most ~2 captures/sec."""
@@ -3803,6 +3889,21 @@ def real_screen_frame():
                 if grabbed:
                     break
             if not grabbed:
+                return None
+            # Reject a near-uniform (e.g. all-black) capture BEFORE downscaling:
+            # on some GPUs the compositor readback "succeeds" but yields a black
+            # frame, which _png_complete (IEND-only) can't catch. Serving it
+            # shows a black preview; returning None makes the route 503 so the
+            # app keeps the card and retries. None from _frame_variance means
+            # "couldn't measure" -> never reject on that.
+            sd = _frame_variance(grabbed, env)
+            if sd is not None and sd < SCREEN_MIN_STDDEV:
+                global _screen_black_logged_at
+                now2 = time.monotonic()
+                if now2 - _screen_black_logged_at > 15:
+                    _screen_black_logged_at = now2
+                    print("[screen] rejecting ~uniform frame (stddev %.2f < %.1f)"
+                          % (sd, SCREEN_MIN_STDDEV), flush=True)
                 return None
             data = None
             try:
