@@ -109,7 +109,14 @@ export const BUTTON_KEYS: ButtonKey[] = [
   'dd',
 ];
 
-const PING_INTERVAL_MS = 20_000;
+/**
+ * Keepalive ping cadence. 5s (was 20s) doubles as a radio-wake trickle for
+ * SteamOS handhelds: their WiFi power-save lets the radio doze between sparse
+ * packets, adding 20–90ms of jitter to the first inputs after an idle gap
+ * (measured on a Legion Go — WS RTT p50 was LOWER under load than idle).
+ * ~30 bytes every 5s is free; the phone's radio is already up (screen on).
+ */
+const PING_INTERVAL_MS = 5_000;
 /** Per-stick send throttle: ~50 Hz. */
 const STICK_INTERVAL_MS = 20;
 /**
