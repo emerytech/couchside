@@ -42,6 +42,9 @@ export type Prefs = {
   padKeyboardBar: boolean;
   /** Gesture hint text on the swipe/trackpad surfaces. */
   padHints: boolean;
+  /** When another phone joins a box you're controlling, ask before handing
+      over (true) vs let it grab control immediately (false). Agent >= 2.9.2. */
+  askToSwitchControl: boolean;
 };
 
 export const DEFAULTS: Prefs = {
@@ -58,6 +61,7 @@ export const DEFAULTS: Prefs = {
   padWinShortcuts: true,
   padKeyboardBar: true,
   padHints: true,
+  askToSwitchControl: true,
 };
 
 /** The choices each select-style pref offers (kept next to the store it feeds). */
@@ -133,6 +137,7 @@ function normalize(raw: unknown): Prefs {
     padWinShortcuts: bool(o.padWinShortcuts, DEFAULTS.padWinShortcuts),
     padKeyboardBar: bool(o.padKeyboardBar, DEFAULTS.padKeyboardBar),
     padHints: bool(o.padHints, DEFAULTS.padHints),
+    askToSwitchControl: bool(o.askToSwitchControl, DEFAULTS.askToSwitchControl),
   };
 }
 

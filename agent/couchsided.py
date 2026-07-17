@@ -40,7 +40,7 @@ except ImportError:  # pragma: no cover
     fcntl = None
 
 APP_NAME = "couchside-agent"
-VERSION = "2.9.1"
+VERSION = "2.9.2"
 UID = os.getuid()
 XDG_RUNTIME_DIR = "/run/user/%d" % UID
 
@@ -4721,13 +4721,42 @@ def ws_send_json(conn, obj):
     ws_send(conn, WS_OP_TEXT, json.dumps(obj).encode("utf-8"))
 
 
-# Single active gamepad connection: a new valid connection replaces the old
-# one (old uinput device destroyed first, then its socket closed).
+# Controller sessions. Multiple phones may be CONNECTED at once, but only one
+# HOLDS the virtual input devices at a time. A joining phone either grabs
+# control (handoff=takeover, the default and the pre-2.9.2 behavior) or asks
+# the current holder to pass it (handoff=ask): the holder is prompted and taps
+# Pass/Keep, and a demoted phone can Request control back. If the holder never
+# answers, the waiter can Force after a client-side timeout. All state changes
+# happen under GAMEPAD_LOCK; each entry carries its own SEND lock ("slock")
+# because control frames (granted/released/…) are sent to a socket from a
+# DIFFERENT thread than the one running that session's recv loop, and two
+# threads writing one socket unsynchronised would interleave WS frames.
 GAMEPAD_LOCK = threading.Lock()
-GAMEPAD_ACTIVE = None  # {"conn": socket, "device": gamepad-or-None}
+GAMEPAD_HOLDER = None      # the entry that currently owns input devices, or None
+GAMEPAD_SESSIONS = []      # every live entry (holder + waiters)
 
 
-def _gamepad_teardown(entry):
+def _wsend_json(entry, obj):
+    """Send one JSON text frame to a session, serialised per-socket. Never raises."""
+    with entry["slock"]:
+        try:
+            ws_send_json(entry["conn"], obj)
+        except OSError:
+            pass
+
+
+def _wsend_op(entry, opcode, payload=b""):
+    """Send one raw WS frame to a session, serialised per-socket. Never raises."""
+    with entry["slock"]:
+        try:
+            ws_send(entry["conn"], opcode, payload)
+        except OSError:
+            pass
+
+
+def _release_devices(entry):
+    """Destroy a session's virtual input devices (idempotent) but LEAVE its
+    socket open — used when demoting a holder that stays connected as a waiter."""
     for slot in ("device", "mouse", "keyboard"):
         dev = entry.get(slot)
         if dev is not None:
@@ -4735,14 +4764,28 @@ def _gamepad_teardown(entry):
                 dev.destroy()
             except Exception:
                 pass
+            entry[slot] = None
+
+
+def _make_holder(entry, mock):
+    """Give `entry` the gamepad device and mark it holder, then send hello.
+    A session only ever receives hello on becoming the holder (waiters get
+    'waiting' instead), so hello IS the "you have control now" signal. Returns
+    False (and closes the session) if uinput fails. Mouse/keyboard stay lazy —
+    created on first use by this now-held session."""
     try:
-        entry["conn"].shutdown(socket.SHUT_RDWR)
-    except OSError:
-        pass
-    try:
-        entry["conn"].close()
-    except OSError:
-        pass
+        entry["device"] = MockGamepad() if mock else UInputGamepad()
+    except Exception as e:
+        print("[gamepad] device create failed: %s" % e, flush=True)
+        _wsend_json(entry, {"t": "err", "msg": "uinput unavailable: %s" % e})
+        _wsend_op(entry, WS_OP_CLOSE)
+        return False
+    entry["held"] = True
+    entry["requested"] = False
+    _wsend_json(entry, {"t": "hello", "dev": entry["device"].name,
+                        "text": _text_caps(mock)})
+    print("[gamepad] control -> %s" % entry["name"], flush=True)
+    return True
 
 
 # ---------------------------------------------------------------------------
@@ -5873,46 +5916,52 @@ class Handler(BaseHTTPRequestHandler):
                   % (e.__class__.__name__, e), flush=True)
 
     def _gamepad_session(self):
-        global GAMEPAD_ACTIVE
+        global GAMEPAD_HOLDER
         conn = self.connection
-        entry = {"conn": conn, "device": None, "mouse": None, "keyboard": None}
+        q = parse_qs(urlparse(self.path).query)
+        name = (q.get("name", [""])[0] or "A device")[:40]
+        # 'ask' = request control from the holder; anything else (incl. old
+        # clients that send no param) = grab it, the pre-2.9.2 behavior.
+        ask = q.get("handoff", ["takeover"])[0] == "ask"
+        entry = {"conn": conn, "device": None, "mouse": None, "keyboard": None,
+                 "name": name, "held": False, "requested": False,
+                 "slock": threading.Lock()}
 
-        # One active gamepad connection: replace (and tear down) the old one.
+        # ---- decide this session's initial role -------------------------------
+        demoted = None      # a holder we bumped (takeover): notify after unlock
         with GAMEPAD_LOCK:
-            old, GAMEPAD_ACTIVE = GAMEPAD_ACTIVE, entry
-        if old is not None:
-            print("[gamepad] replacing previous connection", flush=True)
-            # Tell the loser WHY before the socket dies. Without this the other
-            # phone treated the drop as a network blip and auto-reconnected,
-            # kicking THIS connection — two paired phones fought in a reconnect
-            # war forever. A client that sees code=replaced stops reconnecting
-            # and offers an explicit take-over instead.
-            try:
-                ws_send_json(old["conn"], {
-                    "t": "err", "code": "replaced",
-                    "msg": "another device took control"})
-            except OSError:
-                pass
-            _gamepad_teardown(old)
+            GAMEPAD_SESSIONS.append(entry)
+            holder = GAMEPAD_HOLDER
+            if holder is None:
+                GAMEPAD_HOLDER = entry
+                entry["held"] = True
+                role = "hold"
+            elif ask:
+                entry["requested"] = True
+                role = "wait"
+            else:  # takeover
+                holder["held"] = False
+                demoted = holder
+                GAMEPAD_HOLDER = entry
+                entry["held"] = True
+                role = "hold"
 
-        mine = True
-        try:
-            try:
-                device = MockGamepad() if self.mock else UInputGamepad()
-            except Exception as e:
-                print("[gamepad] device create failed: %s" % e, flush=True)
-                try:
-                    ws_send_json(conn, {"t": "err",
-                                        "msg": "uinput unavailable: %s" % e})
-                    ws_send(conn, WS_OP_CLOSE)
-                except OSError:
-                    pass
+        if demoted is not None:
+            _release_devices(demoted)
+            _wsend_json(demoted, {"t": "released", "by": name})
+        if role == "hold":
+            if not _make_holder(entry, self.mock):
+                # uinput failed; drop this session, promote a waiter if any.
+                self._gamepad_cleanup(entry)
                 return
-            entry["device"] = device
-            print("[gamepad] connected (%s)" % device.name, flush=True)
-            ws_send_json(conn, {"t": "hello", "dev": device.name,
-                                "text": _text_caps(self.mock)})
+        else:  # waiting: tell me, and prompt the holder
+            _wsend_json(entry, {"t": "waiting", "holder": holder.get("name")})
+            _wsend_json(holder, {"t": "control_request", "name": name})
+            print("[gamepad] %s waiting (holder %s)"
+                  % (name, holder.get("name")), flush=True)
 
+        # ---- recv loop --------------------------------------------------------
+        try:
             conn.settimeout(60.0)
             buf = bytearray()
             while True:
@@ -5920,50 +5969,61 @@ class Handler(BaseHTTPRequestHandler):
                     frame = ws_recv_frame(conn, buf)
                 except ValueError as e:
                     print("[gamepad] protocol violation: %s" % e, flush=True)
-                    try:
-                        ws_send(conn, WS_OP_CLOSE)
-                    except OSError:
-                        pass
+                    _wsend_op(entry, WS_OP_CLOSE)
                     return
                 if frame is None:  # EOF / timeout / socket error -> dead
                     return
                 opcode, payload = frame
                 try:
                     if opcode == WS_OP_CLOSE:
-                        ws_send(conn, WS_OP_CLOSE, payload[:2])
+                        _wsend_op(entry, WS_OP_CLOSE, payload[:2])
                         return
                     if opcode == WS_OP_PING:
-                        ws_send(conn, WS_OP_PONG, payload)
+                        _wsend_op(entry, WS_OP_PONG, payload)
                         continue
                     if opcode != WS_OP_TEXT:
                         continue  # ignore binary / stray pong
-                    if not self._gamepad_message(conn, entry, device, payload):
+                    if not self._gamepad_message(conn, entry, payload):
                         return
                 except OSError:
                     return
         finally:
+            self._gamepad_cleanup(entry)
+
+    def _gamepad_cleanup(self, entry):
+        """Remove a dead session; if it held control, promote a waiter (prefer
+        one that requested). Runs from the session's own thread on exit."""
+        global GAMEPAD_HOLDER
+        promote = None
+        with GAMEPAD_LOCK:
+            was_holder = GAMEPAD_HOLDER is entry
+            if entry in GAMEPAD_SESSIONS:
+                GAMEPAD_SESSIONS.remove(entry)
+            if was_holder:
+                GAMEPAD_HOLDER = None
+                waiters = [s for s in GAMEPAD_SESSIONS]
+                promote = next((s for s in waiters if s.get("requested")), None) \
+                    or (waiters[0] if waiters else None)
+                if promote is not None:
+                    GAMEPAD_HOLDER = promote
+            # Destroy OUR devices under nothing (destroy is idempotent); grab
+            # refs while we hold the lock so a concurrent promote can't race.
+            devices = [entry.get("device"), entry.get("mouse"),
+                       entry.get("keyboard")]
+        for dev in devices:
+            if dev is not None:
+                try:
+                    dev.destroy()
+                except Exception:
+                    pass
+        if promote is not None and not _make_holder(promote, self.mock):
+            # promotion failed (uinput gone): leave no holder.
             with GAMEPAD_LOCK:
-                mine = GAMEPAD_ACTIVE is entry
-                if mine:
-                    GAMEPAD_ACTIVE = None
-                # Always destroy ALL of OUR devices (destroy() is idempotent):
-                # if a replacer tore us down while our gamepad was still being
-                # created, it saw device=None and only closed the socket.
-                # Without this, that freshly created uinput device (and fd)
-                # would leak as a phantom pad until service restart. The lazily
-                # created mouse/keyboard are torn down here too.
-                devices = [entry.get("device"), entry.get("mouse"),
-                           entry.get("keyboard")]
-            for dev in devices:
-                if dev is not None:
-                    try:
-                        dev.destroy()
-                    except Exception:
-                        pass
-            if mine:
-                print("[gamepad] disconnected", flush=True)
-            # socket itself is closed by the http.server machinery
-            # (close_connection is set), or already closed by a replacer.
+                if GAMEPAD_HOLDER is promote:
+                    GAMEPAD_HOLDER = None
+        if was_holder:
+            print("[gamepad] holder %s disconnected" % entry.get("name"),
+                  flush=True)
 
     # Message-type prefixes routed to the mouse / keyboard virtual devices.
     _MOUSE_TYPES = frozenset(("m", "mb", "mw"))
@@ -5980,8 +6040,8 @@ class Handler(BaseHTTPRequestHandler):
         """
         text = msg.get("text")
         if not isinstance(text, str):
-            ws_send_json(conn, {"t": "err", "msg": "kt text must be a string"})
-            ws_send(conn, WS_OP_CLOSE)
+            _wsend_json(entry, {"t": "err", "msg": "kt text must be a string"})
+            _wsend_op(entry, WS_OP_CLOSE)
             return False
         if not text:
             return True
@@ -6014,24 +6074,82 @@ class Handler(BaseHTTPRequestHandler):
                 clipboard_paste(chunk, kbd, self.mock, entry)
         return True
 
-    def _gamepad_message(self, conn, entry, device, payload):
+    # Control frames (holder handoff) — handled regardless of hold state.
+    _CONTROL_TYPES = frozenset(("grant", "deny", "request", "force"))
+
+    def _handle_control(self, entry, t):
+        """Holder-handoff control frame. grant/deny come from the HOLDER;
+        request/force come from a WAITER. Returns True (session continues)."""
+        global GAMEPAD_HOLDER
+        demoted = None
+        promote = None
+        notify_holder = None
+        deny = None
+        with GAMEPAD_LOCK:
+            holder = GAMEPAD_HOLDER
+            if t in ("grant", "deny") and entry is not holder:
+                return True  # only the holder may grant/deny
+            if t == "grant":
+                target = next((s for s in GAMEPAD_SESSIONS
+                               if s.get("requested") and s is not entry), None)
+                if target is not None:
+                    entry["held"] = False
+                    demoted = entry
+                    target["held"] = True  # provisional; device made below
+                    GAMEPAD_HOLDER = target
+                    promote = target
+            elif t == "deny":
+                deny = next((s for s in GAMEPAD_SESSIONS
+                             if s.get("requested") and s is not entry), None)
+                if deny is not None:
+                    deny["requested"] = False
+            elif t == "request":
+                if holder is not None and entry is not holder:
+                    entry["requested"] = True
+                    notify_holder = holder
+            elif t == "force":
+                if holder is not None and entry is not holder:
+                    holder["held"] = False
+                    demoted = holder
+                    entry["held"] = True
+                    GAMEPAD_HOLDER = entry
+                    promote = entry
+        if demoted is not None:
+            _release_devices(demoted)
+            _wsend_json(demoted, {"t": "released",
+                                  "by": (promote or {}).get("name")})
+        if promote is not None:
+            _make_holder(promote, self.mock)
+        if notify_holder is not None:
+            _wsend_json(notify_holder, {"t": "control_request",
+                                        "name": entry.get("name")})
+        if deny is not None:
+            _wsend_json(deny, {"t": "denied"})
+        return True
+
+    def _gamepad_message(self, conn, entry, payload):
         """Handle one text frame. Returns False when the session must end.
 
-        Gamepad messages drive the always-present pad. Mouse (m/mb/mw) and
-        keyboard (kt/k) messages drive virtual devices created lazily on first
-        use and tracked in `entry` for teardown on disconnect.
+        Control frames run regardless of hold state; INPUT frames (pad/mouse/
+        keyboard) are dropped unless this session currently holds control, so a
+        connected-but-waiting phone can never move the pointer.
         """
         try:
             msg = json.loads(payload.decode("utf-8"))
             if not isinstance(msg, dict):
                 raise ValueError("message must be a JSON object")
         except (ValueError, UnicodeDecodeError):
-            ws_send_json(conn, {"t": "err", "msg": "invalid JSON message"})
-            ws_send(conn, WS_OP_CLOSE)
+            _wsend_json(entry, {"t": "err", "msg": "invalid JSON message"})
+            _wsend_op(entry, WS_OP_CLOSE)
             return False
         t = msg.get("t")
         if t == "ping":
-            ws_send_json(conn, {"t": "pong"})
+            _wsend_json(entry, {"t": "pong"})
+            return True
+        if t in self._CONTROL_TYPES:
+            return self._handle_control(entry, t)
+        # Input frames only from the holder; a waiter's input is ignored.
+        if not entry.get("held"):
             return True
         if t == "kt":
             # Text passthrough is handled here, BEFORE the decode table, so it
@@ -6047,38 +6165,37 @@ class Handler(BaseHTTPRequestHandler):
             decode, slot = keyboard_events, "keyboard"
             factory = MockKeyboard if self.mock else UInputKeyboard
         else:
-            decode, slot, factory = gamepad_events, None, None
+            decode, slot, factory = gamepad_events, "device", None
 
         try:
             events = decode(msg)
         except ValueError as e:
-            ws_send_json(conn, {"t": "err", "msg": str(e)})
-            ws_send(conn, WS_OP_CLOSE)
+            _wsend_json(entry, {"t": "err", "msg": str(e)})
+            _wsend_op(entry, WS_OP_CLOSE)
             return False
 
-        if slot is None:
-            target = device
-        else:
-            target = entry.get(slot)
-            if target is None:
-                try:
-                    target = factory()
-                except Exception as e:
-                    print("[gamepad] %s device create failed: %s"
-                          % (slot, e), flush=True)
-                    ws_send_json(conn, {"t": "err",
-                                        "msg": "%s unavailable: %s" % (slot, e)})
-                    ws_send(conn, WS_OP_CLOSE)
-                    return False
-                entry[slot] = target
-                print("[gamepad] %s device created (%s)"
-                      % (slot, target.name), flush=True)
+        target = entry.get(slot)
+        if target is None:
+            if factory is None:
+                return True  # gamepad device gone (mid-teardown): drop frame
+            try:
+                target = factory()
+            except Exception as e:
+                print("[gamepad] %s device create failed: %s"
+                      % (slot, e), flush=True)
+                _wsend_json(entry, {"t": "err",
+                                    "msg": "%s unavailable: %s" % (slot, e)})
+                _wsend_op(entry, WS_OP_CLOSE)
+                return False
+            entry[slot] = target
+            print("[gamepad] %s device created (%s)"
+                  % (slot, target.name), flush=True)
 
         try:
             target.emit(events)
         except OSError as e:
-            ws_send_json(conn, {"t": "err", "msg": "uinput write failed: %s" % e})
-            ws_send(conn, WS_OP_CLOSE)
+            _wsend_json(entry, {"t": "err", "msg": "uinput write failed: %s" % e})
+            _wsend_op(entry, WS_OP_CLOSE)
             return False
         return True
 

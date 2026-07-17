@@ -581,6 +581,7 @@ function SetupBody() {
   const padWinShortcuts = usePref('padWinShortcuts');
   const padKeyboardBar = usePref('padKeyboardBar');
   const padHints = usePref('padHints');
+  const askToSwitchControl = usePref('askToSwitchControl');
 
   const [restoring, setRestoring] = useState(false);
   const [buying, setBuying] = useState(false);
@@ -1164,6 +1165,15 @@ function SetupBody() {
                 value={padHints}
                 onValueChange={(v) => {
                   void setPref('padHints', v);
+                  hapticSelection();
+                }}
+              />
+              <TogglePref
+                label="Ask before switching control"
+                sub="When another phone joins a box you're controlling, it asks and you tap Pass — instead of taking over instantly. Needs agent 2.9.2+."
+                value={askToSwitchControl}
+                onValueChange={(v) => {
+                  void setPref('askToSwitchControl', v);
                   hapticSelection();
                 }}
               />
