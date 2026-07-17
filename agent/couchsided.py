@@ -40,7 +40,7 @@ except ImportError:  # pragma: no cover
     fcntl = None
 
 APP_NAME = "couchside-agent"
-VERSION = "2.9.3"
+VERSION = "2.9.4"
 UID = os.getuid()
 XDG_RUNTIME_DIR = "/run/user/%d" % UID
 
@@ -1742,6 +1742,15 @@ DL_COMMITTING = 4194304
 DL_ACTIVE_OP = (DL_UPDATE_RUNNING | DL_UPDATE_STARTED | DL_UPDATE_STOPPING
                 | DL_VALIDATING | DL_PREALLOCATING | DL_DOWNLOADING
                 | DL_STAGING | DL_COMMITTING)
+# Bits that mean bytes/work are ACTUALLY MOVING (transfer or install), as
+# opposed to the update-state-machine bits (UPDATE_RUNNING/STARTED/STOPPING)
+# which Steam also sets on QUEUED updates and leaves for days without moving a
+# byte. "Currently downloading" uses these + the downloading/ folder, so the
+# app stops showing idle queue entries as stuck live downloads.
+DL_TRANSFER = (DL_DOWNLOADING | DL_PREALLOCATING | DL_VALIDATING
+               | DL_STAGING | DL_COMMITTING)
+# Update-state-machine bits: set on queued/scheduled updates that aren't moving.
+DL_UPDATE_ANY = DL_UPDATE_RUNNING | DL_UPDATE_STARTED | DL_UPDATE_STOPPING
 
 
 def _steam_root():
@@ -1959,18 +1968,32 @@ def _acf_int(s):
 
 
 def _download_state(flags):
-    """Map StateFlags to a coarse, user-facing operation label."""
+    """Map StateFlags to a coarse, user-facing label for an ACTIVELY-moving app
+    (caller has already established a real transfer is in progress)."""
     if flags & (DL_DOWNLOADING | DL_PREALLOCATING):
         return "downloading"
     if flags & DL_VALIDATING:
         return "validating"
     if flags & (DL_STAGING | DL_COMMITTING):
         return "finalizing"
-    if flags & (DL_UPDATE_RUNNING | DL_UPDATE_STARTED | DL_UPDATE_STOPPING):
-        return "updating"
-    # Incomplete bytes with no active-op bit: paused and queued look identical
-    # in the appmanifest, so report the more useful "paused".
-    return "paused"
+    # An UPDATE_* bit but no transfer bit, yet the caller proved it's moving
+    # (present in the downloading/ folder): it IS downloading.
+    return "downloading"
+
+
+def _downloading_appids(steamapps):
+    """Appids Steam is ACTIVELY transferring right now: the digit-named subdirs
+    under steamapps/downloading/. This is ground truth for "moving now" — the
+    appmanifest StateFlags alone leave queued updates marked started/stopping
+    for days with zero bytes moving. Best-effort; never raises."""
+    ids = set()
+    try:
+        for name in os.listdir(os.path.join(steamapps, "downloading")):
+            if name.isdigit():
+                ids.add(name)
+    except OSError:
+        pass
+    return ids
 
 
 def steam_downloads():
@@ -1995,6 +2018,8 @@ def steam_downloads():
                 manifests = glob.glob(os.path.join(steamapps, "appmanifest_*.acf"))
             except Exception:
                 continue
+            # Ground truth for "moving now" in THIS library.
+            active_ids = _downloading_appids(steamapps)
             for mf in manifests:
                 try:
                     with open(mf, "r", encoding="utf-8", errors="replace") as f:
@@ -2015,22 +2040,42 @@ def steam_downloads():
                 if flags & DL_UNINSTALLING:
                     continue  # uninstall in progress, not a download
                 incomplete = total > 0 and done < total
-                if not (flags & DL_ACTIVE_OP) and not incomplete:
-                    # Fully installed, or a stale flags==6 pending-update entry
-                    # whose byte counters are equal: nothing is moving.
+                # ACTUALLY moving right now: a transfer/install bit is set, or
+                # Steam has a chunk dir open for it. NOT the update-* bits alone.
+                active = bool(flags & DL_TRANSFER) or appid in active_ids
+                # Queued: Steam has an update pending (update-* bit or unfinished
+                # bytes) but isn't transferring it — the "downloads for days"
+                # backlog. Reported as its own state so the app can dim/section
+                # it instead of showing a stuck live download.
+                pending = bool(flags & DL_UPDATE_ANY) or incomplete
+                if not active and not pending:
+                    continue  # fully installed, nothing to do
+                if not active and not incomplete:
+                    # Queued but every byte is already present (stale 100%
+                    # "updating" ghost, e.g. an update applied but the flag not
+                    # cleared): nothing left to download — drop it.
                     continue
                 percent = (
                     int(max(0, min(100, round(done * 100.0 / total)))) if total > 0 else 0
                 )
+                if active:
+                    state = _download_state(flags)
+                    if state == "downloading" and total > 0 and done >= total:
+                        state = "finalizing"  # bytes done, Steam is installing
+                else:
+                    state = "queued"
                 found[appid] = {
                     "appid": int(appid),
                     "name": name,
-                    "state": _download_state(flags),
+                    "state": state,
+                    "active": active,
                     "bytes_total": total,
                     "bytes_downloaded": done,
                     "percent": percent,
                 }
-        order = {"downloading": 0, "paused": 1}
+        order = {
+            "downloading": 0, "validating": 1, "finalizing": 2, "queued": 3,
+        }
         items = list(found.values())
         items.sort(key=lambda d: (order.get(d["state"], 2), d["name"].lower(), d["appid"]))
         return items
@@ -2158,18 +2203,22 @@ _MOCK_DL_PCT = 0
 
 
 def mock_downloads():
-    """--mock stand-in: one advancing download (0->100%, +7% per poll so the
-    progress bar visibly moves) and one paused entry. No real Steam needed."""
+    """--mock stand-in: one advancing ACTIVE download (0->100%, +7% per poll so
+    the bar visibly moves) plus two QUEUED updates (pending, not moving) — the
+    common real shape. No real Steam needed."""
     global _MOCK_DL_PCT
     _MOCK_DL_PCT = (_MOCK_DL_PCT + 7) % 101
     total = 42_000_000_000
     done = int(total * _MOCK_DL_PCT / 100)
     return [
         {"appid": 1091500, "name": "Cyberpunk 2077", "state": "downloading",
-         "bytes_total": total, "bytes_downloaded": done, "percent": _MOCK_DL_PCT},
-        {"appid": 570, "name": "Dota 2", "state": "paused",
-         "bytes_total": 18_000_000_000, "bytes_downloaded": 5_400_000_000,
-         "percent": 30},
+         "active": True, "bytes_total": total, "bytes_downloaded": done,
+         "percent": _MOCK_DL_PCT},
+        {"appid": 570, "name": "Dota 2", "state": "queued", "active": False,
+         "bytes_total": 18_000_000_000, "bytes_downloaded": 0, "percent": 0},
+        {"appid": 1245620, "name": "Elden Ring", "state": "queued",
+         "active": False, "bytes_total": 3_100_000_000, "bytes_downloaded": 0,
+         "percent": 0},
     ]
 
 
