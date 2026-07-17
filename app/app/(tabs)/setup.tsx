@@ -817,6 +817,20 @@ function SetupBody() {
               No boxes yet. Pair your first machine below: enter its host, port,
               and token, or scan a QR from the agent.
             </Text>
+            {/* The box needs the agent installed before it can be paired at
+                all — surface the setup guide right where a new user gets stuck. */}
+            <Pressable
+              onPress={() => {
+                hapticLight();
+                void Linking.openURL(SETUP_GUIDE_URL);
+              }}
+              style={({ pressed }) => [styles.emptyLink, pressed && styles.pressed]}>
+              <Ionicons name="hardware-chip-outline" size={15} color={theme.blue} />
+              <Text style={styles.emptyLinkText}>
+                Haven&apos;t installed the agent? Setup guide
+              </Text>
+              <Ionicons name="open-outline" size={13} color={theme.blue} />
+            </Pressable>
           </View>
         ) : (
           boxes.map((box) => {
@@ -1407,6 +1421,13 @@ const styles = StyleSheet.create({
     marginBottom: 12,
   },
   emptyText: { color: theme.textDim, fontSize: 13, lineHeight: 19 },
+  emptyLink: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+    marginTop: 12,
+  },
+  emptyLinkText: { color: theme.blue, fontSize: 13, fontWeight: '600' },
   boxCard: {
     backgroundColor: theme.card,
     borderColor: theme.cardBorder,
