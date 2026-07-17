@@ -31,6 +31,7 @@ import tempfile
 import termios
 import threading
 import time
+import urllib.error
 import urllib.request
 import zlib
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -3923,7 +3924,15 @@ def _roku_post(host, path, timeout=4):
         with urllib.request.urlopen(req, timeout=timeout) as r:
             r.read()
         return _webos_result(start, True, path)
-    except OSError as e:            # URLError / HTTPError are OSError subclasses
+    except urllib.error.HTTPError as e:
+        # A reachable Roku that refuses control (403) has its "Control by mobile
+        # apps" network access set below permissive. Flag it so the app can tell
+        # the user exactly what to change on the TV.
+        res = _webos_result(start, False, "HTTP %d: %s" % (e.code, e.reason))
+        if e.code == 403:
+            res["hint"] = "roku_control_disabled"
+        return res
+    except OSError as e:            # URLError etc. are OSError subclasses
         return _webos_result(start, False, "%s: %s" % (e.__class__.__name__, e))
 
 

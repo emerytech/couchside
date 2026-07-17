@@ -198,6 +198,10 @@ export type ActionResult = {
   duration_ms: number;
   /** New mute state, returned by the mute op (agent >= 2.6.5). */
   muted?: boolean | null;
+  /** Machine-readable hint the app maps to a specific message. Currently
+      "roku_control_disabled" — a reachable Roku that 403s control because its
+      "Control by mobile apps" network access isn't permissive. */
+  hint?: string;
 };
 
 export type Journal = {

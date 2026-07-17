@@ -1,6 +1,6 @@
 import Ionicons from '@expo/vector-icons/Ionicons';
 import React, { useCallback, useState } from 'react';
-import { PanResponder, PanResponderInstance, Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
+import { Alert, PanResponder, PanResponderInstance, Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
 
 import { usePoll } from '@/hooks/usePoll';
 import { useTrackpad } from '@/hooks/useTrackpad';
@@ -10,6 +10,10 @@ import { hapticLight } from '@/lib/haptics';
 import { usePref } from '@/lib/prefs';
 import { Settings } from '@/lib/settings';
 import { mono, useTheme, useThemedStyles, type Palette } from '@/lib/theme';
+
+// Shown once per app session: a Roku that 403s control needs its "Control by
+// mobile apps" network access made permissive (surfaced from tvKey below).
+let rokuHintShown = false;
 
 type IoniconName = React.ComponentProps<typeof Ionicons>['name'];
 
@@ -78,7 +82,21 @@ export function RemoteView({
   const tvKey = useCallback(
     (k: TvKey) => {
       hapticLight();
-      void api.tvKey(settings, k).catch(() => {});
+      api
+        .tvKey(settings, k)
+        .then((r) => {
+          // A reachable Roku that refuses control (403) means its "Control by
+          // mobile apps" network access isn't permissive. Tell the user how to
+          // fix it — once per session so a held D-pad doesn't spam alerts.
+          if (r && r.hint === 'roku_control_disabled' && !rokuHintShown) {
+            rokuHintShown = true;
+            Alert.alert(
+              'Roku is refusing control',
+              'This Roku is set to block control from apps. On the Roku, open Settings → System → Advanced system settings → Control by mobile apps → Network access and choose Permissive.',
+            );
+          }
+        })
+        .catch(() => {});
     },
     [settings],
   );
