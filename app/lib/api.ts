@@ -251,6 +251,29 @@ export function isActiveDownload(d: SteamDownload): boolean {
 
 export type Downloads = { downloads: SteamDownload[] };
 
+/**
+ * Box-side update check (agent >= 2.9.5), read over the LAN. The BOX contacts
+ * GitHub (it already does that to update itself) and caches the result; the app
+ * only ever talks to the box, so the app itself never leaves your network. See
+ * the agent's /api/update/check for the privacy rationale. Absent on older
+ * agents (404 -> null -> no banner).
+ */
+export type UpdateCheck = {
+  available: boolean;
+  installed: string;
+  latest: string | null;
+  tag: string | null;
+  notes: string | null;
+  checked_at: number;
+  /**
+   * True only if the box was opted in (on the box: `couchside allow-updates on`)
+   * to let the app trigger an update via applyUpdate(). Off by default, so the
+   * app shows a working [Update] button only where the owner enabled it.
+   */
+  apply_enabled?: boolean;
+  error?: string;
+};
+
 /** MPRIS transport op, POSTed as /api/media/<player>/<op>. */
 export type MediaOp = 'play' | 'pause' | 'play_pause' | 'next' | 'previous' | 'stop' | 'seek';
 
@@ -811,6 +834,26 @@ export const api = {
   ): Promise<Downloads | null> {
     return probeGated(caps?.steam, () =>
       probeOrNull(request<Downloads>(settings, '/api/downloads')));
+  },
+
+  /**
+   * Box-side agent update check (agent >= 2.9.5). The box does the GitHub read
+   * (cached); the app just reads the result over the LAN, so the app never
+   * touches the internet. 404 -> null on older agents (no banner shown).
+   */
+  updateCheck(settings: ConnSettings): Promise<UpdateCheck | null> {
+    return probeOrNull(request<UpdateCheck>(settings, '/api/update/check'));
+  },
+
+  /**
+   * Trigger a box-side agent update (agent >= 2.9.5, only when the box opted in
+   * — 403 otherwise). The box runs the SIGNATURE-VERIFIED installer detached and
+   * restarts, so the connection drops; poll ping/status for the new version.
+   */
+  applyUpdate(settings: ConnSettings): Promise<{ started: boolean; log?: string }> {
+    return request<{ started: boolean; log?: string }>(settings, '/api/update/apply', {
+      method: 'POST',
+    });
   },
 
   /**

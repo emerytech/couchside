@@ -17,6 +17,7 @@ import {
   View,
 } from 'react-native';
 
+import { AgentUpdateBanner } from '@/components/AgentUpdateBanner';
 import { Gated } from '@/components/Gated';
 import { LogsPanel } from '@/components/LogsPanel';
 import { QrView } from '@/components/QrView';
@@ -1214,6 +1215,7 @@ function SetupBody() {
 
         {tab === 'account' && (
           <>
+            <AgentUpdateBanner />
             <View style={styles.accountBadges}>
               <EarlyAdopterBadge />
               <EntitlementPill />
