@@ -285,6 +285,8 @@ if [ "$UNINSTALL" -eq 1 ]; then
     note "removed couchside.service"
     rm -rf "$INSTALL_DIR"
     note "removed $INSTALL_DIR (incl. the couchside-pair launcher script)"
+    rm -f "${HOME}/.local/bin/couchside"
+    note "removed the couchside command"
     rm -f "$PAIR_DESKTOP"
     note "removed $PAIR_DESKTOP"
     # Symmetric with install: pull the "Couchside — Pair Phone" tile out of every
@@ -720,6 +722,69 @@ fi
 PAIREOF
 chmod +x "$PAIR_SCRIPT"
 note "wrote $PAIR_SCRIPT"
+
+# ---------------------------------------------------------------------------
+# couchside CLI: a one-word manager on PATH so updating never needs the full
+# curl one-liner again. `couchside update` re-runs THIS installer, which pulls
+# the latest agent + Decky plugin, re-verifies, and restarts — an in-place
+# upgrade. ~/.local/bin is on PATH under systemd user sessions (SteamOS/Bazzite
+# included); if it isn't, we note it.
+CLI_DIR="${HOME}/.local/bin"
+CLI="${CLI_DIR}/couchside"
+say "Installing the couchside command ($CLI)"
+mkdir -p "$CLI_DIR"
+cat > "$CLI" <<'CLIEOF'
+#!/usr/bin/env bash
+# couchside — manage the Couchside agent on this box.
+set -u
+INSTALL_URL="https://couchside.tv/install.sh"
+DIR="${HOME}/.local/opt/couchside"
+DAEMON="${DIR}/couchsided.py"
+
+case "${1:-help}" in
+  update|upgrade)
+    echo "Updating Couchside from ${INSTALL_URL} …"
+    curl -fsSL "$INSTALL_URL" | bash
+    ;;
+  pair)
+    exec "${DIR}/couchside-pair"
+    ;;
+  version|-v|--version)
+    grep -m1 '^VERSION' "$DAEMON" 2>/dev/null | cut -d'"' -f2 || echo "unknown"
+    ;;
+  status)
+    systemctl --user status couchside.service 2>/dev/null \
+      || systemctl status couchside.service 2>/dev/null || true
+    ;;
+  help|-h|--help|"")
+    cat <<USAGE
+couchside — manage the Couchside agent on this box
+  couchside update    pull the latest agent + Decky plugin, then restart
+  couchside pair      show the pairing QR on this box's screen
+  couchside version   print the installed agent version
+  couchside status    show the agent service status
+USAGE
+    ;;
+  *)
+    echo "couchside: unknown command '${1}'  (try: couchside help)" >&2
+    exit 2
+    ;;
+esac
+CLIEOF
+chmod +x "$CLI"
+note "wrote $CLI"
+# Ensure ~/.local/bin is on PATH so `couchside` runs by name. Bazzite already
+# has it; SteamOS's `deck` user often doesn't — append to ~/.bashrc once so a
+# new terminal (or SSH) session picks it up. Idempotent.
+case ":$PATH:" in
+    *":$CLI_DIR:"*)
+        note "update anytime with:  couchside update" ;;
+    *)
+        if ! grep -qs '\.local/bin' "${HOME}/.bashrc" 2>/dev/null; then
+            printf '\n# Added by the Couchside installer: put ~/.local/bin on PATH\nexport PATH="$HOME/.local/bin:$PATH"\n' >> "${HOME}/.bashrc"
+        fi
+        note "added ~/.local/bin to PATH — open a new terminal (or: source ~/.bashrc), then:  couchside update" ;;
+esac
 
 say "Installing the Game-Mode launcher entry ($PAIR_DESKTOP)"
 mkdir -p "$(dirname "$PAIR_DESKTOP")"
