@@ -14,16 +14,34 @@
 #   --help         this text
 set -euo pipefail
 
-# Raw file sources (used when not running from a git checkout)
-DAEMON_URL="https://raw.githubusercontent.com/emerytech/couchside/main/agent/couchsided.py"
-UNIT_URL="https://raw.githubusercontent.com/emerytech/couchside/main/agent/couchside.service"
+# Partial-download guard: the ENTIRE installer runs inside this brace group, so
+# `curl … | bash` must have received the closing brace — i.e. the whole file —
+# before bash executes a single command. A connection dropped mid-download fails
+# to parse (no closing brace) and runs NOTHING, instead of executing a truncated,
+# half-configured install. The matching `}` is the last line of this file.
+{
+
+# Agent file sources (used when not running from a git checkout). These are the
+# maintainer-SIGNED release assets — NOT mutable `main` — so `couchside update`
+# fetches a pinned, authenticated agent. releases/latest resolves to the newest
+# published release; each carries these files + a SHA256SUMS signed with the
+# offline key (see scripts/release-agent.sh). install.sh verifies the signature
+# (against RELEASE_PUBKEY_PEM below) AND each file's hash before installing.
+AGENT_BASE="https://github.com/emerytech/couchside/releases/latest/download"
+DAEMON_URL="${AGENT_BASE}/couchsided.py"
+UNIT_URL="${AGENT_BASE}/couchside.service"
 # Pure-stdlib terminal QR renderer, so the installer can draw the pairing QR
 # without qrencode (immutable distros like Bazzite rarely ship it). Optional:
 # a failed fetch just falls back to printing the URL.
-QR_URL="https://raw.githubusercontent.com/emerytech/couchside/main/agent/qr.py"
+QR_URL="${AGENT_BASE}/qr.py"
 # Aerial-screensaver player script (agent's /api/screensaver launches it via a
 # Steam shortcut). Optional: a failed fetch just means the feature stays absent.
-SCREENSAVER_URL="https://raw.githubusercontent.com/emerytech/couchside/main/agent/couchside-screensaver.sh"
+SCREENSAVER_URL="${AGENT_BASE}/couchside-screensaver.sh"
+# Signature + checksums for the agent files above, published as sibling assets
+# in the SAME release. install.sh verifies the sig (authenticity) + hashes
+# (integrity) before installing any fetched agent file.
+AGENT_SUMS_URL="${AGENT_BASE}/SHA256SUMS"
+AGENT_SIG_URL="${AGENT_BASE}/SHA256SUMS.sig"
 # Built Decky Loader plugin, shipped as a tarball because the compiled frontend
 # (dist/) isn't checked into git, so raw source wouldn't give a working panel.
 PLUGIN_URL="https://github.com/emerytech/couchside-decky/releases/latest/download/Couchside.tar.gz"
@@ -357,14 +375,55 @@ else
     curl -fsSL "$QR_URL" -o "$WORK_DIR/qr.py" 2>/dev/null || true
     # Optional aerial-screensaver player, same policy.
     curl -fsSL "$SCREENSAVER_URL" -o "$WORK_DIR/couchside-screensaver.sh" 2>/dev/null || true
+
+    # --- Supply-chain gate (FAIL CLOSED): the fetched agent must be SIGNED by
+    # the maintainer's offline Ed25519 key AND match its SHA256SUMS before we
+    # install it. The signature proves authenticity even against a
+    # repo/CI/account compromise (the secret key is never in CI); the hashes
+    # catch corruption/transport tampering. Same gate the Decky panel uses below.
+    curl -fsSL "$AGENT_SUMS_URL" -o "$WORK_DIR/SHA256SUMS" \
+        || die "couldn't fetch the agent SHA256SUMS — refusing to install unverified."
+    if curl -fsSL "$AGENT_SIG_URL" -o "$WORK_DIR/SHA256SUMS.sig" 2>/dev/null \
+       && command -v openssl >/dev/null 2>&1; then
+        printf '%s\n' "$RELEASE_PUBKEY_PEM" > "$WORK_DIR/couchside-release.pub"
+        # openssl's own words distinguish a real bad signature ("Verification
+        # Failure" -> abort) from an openssl too old for Ed25519 -rawin (any
+        # other output -> fall back to checksum-only integrity).
+        sig_out="$(openssl pkeyutl -verify -pubin -inkey "$WORK_DIR/couchside-release.pub" \
+                    -rawin -in "$WORK_DIR/SHA256SUMS" \
+                    -sigfile "$WORK_DIR/SHA256SUMS.sig" 2>&1 || true)"
+        if printf '%s' "$sig_out" | grep -qi 'Verified Successfully'; then
+            note "agent signature: verified (maintainer offline key)."
+        elif printf '%s' "$sig_out" | grep -qi 'Verification Failure'; then
+            die "agent signature INVALID — refusing to install (possible tampering)."
+        else
+            note "can't verify agent signature (openssl lacks Ed25519); checksum only."
+        fi
+    else
+        note "no agent signature available; checksum only."
+    fi
+    # Hash every fetched file against SHA256SUMS. Build the check list from only
+    # the files that actually landed (the optional ones may not have), but the
+    # two REQUIRED files must be present + listed, else fail closed.
+    (
+        cd "$WORK_DIR" || exit 1
+        : > SUMS.check
+        while read -r h f; do
+            [ -n "$f" ] && [ -f "$f" ] && printf '%s  %s\n' "$h" "$f" >> SUMS.check
+        done < SHA256SUMS
+        grep -qF ' couchsided.py' SUMS.check && grep -qF ' couchside.service' SUMS.check || exit 1
+        if command -v sha256sum >/dev/null 2>&1; then
+            sha256sum -c SUMS.check >/dev/null 2>&1
+        elif command -v shasum >/dev/null 2>&1; then
+            shasum -a 256 -c SUMS.check >/dev/null 2>&1
+        else
+            exit 1
+        fi
+    ) || die "agent checksum verification FAILED (corrupt/tampered/missing) — refusing to install."
 fi
-# Integrity / sanity gate (FAIL CLOSED): never install code we just fetched
-# without first checking it parses. py_compile catches a truncated download or an
-# HTML error page served in place of the .py, so a half-written daemon can't be
-# installed and left crash-looping. This is a SANITY gate, not authentication.
-# TODO (stronger follow-up): pin DAEMON_URL/UNIT_URL to a tagged release and
-# verify a published SHA256SUMS (curl the sums + `sha256sum -c`) so a
-# compromised or MITM'd raw.githubusercontent.com response is rejected too.
+# Secondary sanity gate: even a correctly-signed file must actually parse (a
+# git-checkout install skips the crypto above, and this catches a bad local
+# tree too). py_compile also rejects a truncated read or an HTML error page.
 python3 -m py_compile "$WORK_DIR/couchsided.py" || die "downloaded couchsided.py does not compile, aborting."
 # The unit is not Python; sanity-check it's a non-empty [Service] file so a
 # failed/HTML fetch can't be installed as the systemd unit.
@@ -1167,3 +1226,5 @@ echo "To re-show the pairing QR later without a terminal: launch the"
 echo "'Couchside — Pair Phone' tile from your Steam library (Game Mode included"
 echo ", it opens in Steam's built-in browser). If the tile isn't there yet,"
 echo "restart Steam once, or add $PAIR_SCRIPT via Steam > Add a Non-Steam Game."
+
+} # end partial-download guard — see the matching `{` near the top
