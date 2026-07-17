@@ -26,7 +26,15 @@
  */
 import { Settings } from './settings';
 
-export type GamepadStatus = 'connecting' | 'connected' | 'error' | 'closed';
+export type GamepadStatus =
+  | 'connecting'
+  | 'connected'
+  | 'error'
+  | 'closed'
+  /** Another device took the controller (agent >= 2.9.1 sends code=replaced).
+      Deliberately NOT auto-reconnected — that caused two paired phones to kick
+      each other in an endless war. The user takes back control explicitly. */
+  | 'replaced';
 
 export type ButtonKey =
   | 'a'
@@ -464,7 +472,7 @@ export class GamepadClient {
       // pending, so ignore events from a socket we have already superseded.
       // (Same guard in onerror/onclose below.)
       if (ws !== this.ws) return;
-      let msg: { t?: string; dev?: string; msg?: string; text?: string };
+      let msg: { t?: string; dev?: string; msg?: string; text?: string; code?: string };
       try {
         msg = JSON.parse(String(ev.data));
       } catch {
@@ -485,7 +493,15 @@ export class GamepadClient {
         this.setStatus('connected', this.dev);
         this.startPing();
       } else if (msg.t === 'err') {
-        // Server reports the failure then closes; onclose handles reconnect.
+        if (msg.code === 'replaced') {
+          // Another device took the controller (agent >= 2.9.1). STOP
+          // reconnecting — auto-retry here is what made two phones kick each
+          // other in a war. The UI offers an explicit take-over (connect()).
+          this.active = false;
+          this.setStatus('replaced', null);
+          return;
+        }
+        // Other server failures close the socket; onclose handles reconnect.
         this.setStatus('error', null);
       } else if (msg.t === 'blocked') {
         this.setInputBlocked(true, typeof msg.msg === 'string' ? msg.msg : null);
@@ -507,7 +523,9 @@ export class GamepadClient {
       if (this.active) {
         this.setStatus('error', null);
         this.scheduleReconnect();
-      } else {
+      } else if (this.status !== 'replaced') {
+        // 'replaced' must survive the close that follows it — it carries the
+        // take-over affordance in the UI.
         this.setStatus('closed', null);
       }
     };

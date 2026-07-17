@@ -510,6 +510,7 @@ const STATUS_COLOR: Record<GamepadStatus, string> = {
   connecting: theme.amber,
   error: theme.red,
   closed: theme.red,
+  replaced: theme.amber,
 };
 
 function statusLabel(status: GamepadStatus, dev: string | null): string {
@@ -518,6 +519,8 @@ function statusLabel(status: GamepadStatus, dev: string | null): string {
       return dev ?? 'connected';
     case 'connecting':
       return 'connecting…';
+    case 'replaced':
+      return 'another device has control · tap to take over';
     default:
       return 'disconnected, tap to retry';
   }
