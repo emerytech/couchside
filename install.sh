@@ -856,7 +856,10 @@ except Exception:
       case "$ans" in y|Y|yes|YES) ;; *) echo "Cancelled."; exit 0 ;; esac
     fi
     echo "Updating from ${INSTALL_URL} ..."
-    curl -fsSL "$INSTALL_URL" | bash
+    # exec so THIS couchside process is replaced by the updater: the installer
+    # overwrites this very script, and a still-running bash would then read the
+    # new file's bytes at its old offset and error out. exec frees our file.
+    exec bash -c "curl -fsSL '$INSTALL_URL' | bash"
     ;;
   pair)
     exec "${DIR}/couchside-pair"
