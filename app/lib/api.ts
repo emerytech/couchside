@@ -561,24 +561,40 @@ async function attempt(
 ): Promise<Response> {
   const { method = 'GET', auth = true, timeoutMs = TIMEOUT_MS, body } = opts;
   const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), timeoutMs);
+  const abortTimer = setTimeout(() => controller.abort(), timeoutMs);
+  // Hard deadline INDEPENDENT of fetch + AbortController. On Android, a fetch
+  // whose DNS is stuck resolving a `.local` mDNS name can ignore
+  // controller.abort() and never settle its promise — which froze callers (the
+  // Fleet tab stuck forever at "probing…", and raceGet's Promise.any waiting on
+  // a hostname path that never rejects). This timer guarantees the JS promise
+  // always settles, so a stuck lookup degrades to a clean timeout + retry.
+  let hardTimer: ReturnType<typeof setTimeout> | undefined;
+  const hardDeadline = new Promise<never>((_, reject) => {
+    hardTimer = setTimeout(
+      () => reject(new ApiError('timeout', `Timed out after ${timeoutMs / 1000}s`)),
+      timeoutMs + 1000,
+    );
+  });
   try {
     const headers: Record<string, string> = {};
     if (auth) headers.Authorization = `Bearer ${settings.token}`;
     if (body !== undefined) headers['Content-Type'] = 'application/json';
-    return await fetch(`${baseUrl({ host, port: settings.port })}${path}`, {
+    const fetchPromise = fetch(`${baseUrl({ host, port: settings.port })}${path}`, {
       method,
       headers,
       body: body !== undefined ? JSON.stringify(body) : undefined,
       signal: controller.signal,
     });
+    return await Promise.race([fetchPromise, hardDeadline]);
   } catch (e: unknown) {
+    if (e instanceof ApiError) throw e; // hard-deadline timeout, already shaped
     if (e instanceof Error && e.name === 'AbortError') {
       throw new ApiError('timeout', `Timed out after ${timeoutMs / 1000}s`);
     }
     throw new ApiError('unreachable', 'Box unreachable: network error');
   } finally {
-    clearTimeout(timer);
+    clearTimeout(abortTimer);
+    if (hardTimer) clearTimeout(hardTimer);
   }
 }
 
