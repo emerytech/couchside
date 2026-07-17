@@ -338,7 +338,8 @@ export type TvBackend =
   | 'soft'
   | 'webos'
   | 'samsung'
-  | 'roku';
+  | 'roku'
+  | 'androidtv';
 
 /** TV-control probe result. The route 404s when no backend is available. */
 export type Tv = {
@@ -1068,6 +1069,40 @@ export const api = {
       method: 'POST',
       timeoutMs: 12000,
       body: { host },
+    });
+  },
+
+  /**
+   * Android TV / Google TV pairing, step 1: ask the agent to open the pairing
+   * socket. On success a 6-digit code appears on the TV, and the agent holds
+   * the socket open for the finish call. `code_shown: true` on success.
+   */
+  tvAndroidtvPairStart(
+    settings: ConnSettings,
+    host: string,
+  ): Promise<TvPairResult & { code_shown?: boolean }> {
+    return request<TvPairResult & { code_shown?: boolean }>(
+      settings, '/api/tv/androidtv/pair/start', {
+        method: 'POST',
+        timeoutMs: 20000,
+        body: { host },
+      });
+  },
+
+  /**
+   * Android TV / Google TV pairing, step 2: send the 6-digit code from the TV.
+   * The agent computes the secret on the held socket and persists the cert.
+   * `mac` (optional) enables Wake-on-LAN power-on.
+   */
+  tvAndroidtvPairFinish(
+    settings: ConnSettings,
+    code: string,
+    mac?: string,
+  ): Promise<TvPairResult> {
+    return request<TvPairResult>(settings, '/api/tv/androidtv/pair/finish', {
+      method: 'POST',
+      timeoutMs: 20000,
+      body: mac ? { code, mac } : { code },
     });
   },
 
