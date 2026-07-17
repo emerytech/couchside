@@ -129,7 +129,21 @@ const QAM_CHORD_HOLD_MS = 120;
  * so hold Guide alone briefly first.
  */
 const QAM_GUIDE_LEAD_MS = 60;
-const BACKOFF_MS = [1000, 2000, 4000];
+/**
+ * First retry is near-immediate: a WS drop is usually a WiFi blip or an agent
+ * restart, and a 150ms retry against the cached IP reconnects before the user
+ * notices. Later steps back off normally for a genuinely-down box.
+ */
+const BACKOFF_MS = [150, 1000, 2000, 4000];
+/**
+ * Abort a socket stuck in CONNECTING. React Native's WebSocket has no connect
+ * timeout of its own: dialing a stale cached IP (DHCP moved the box) emits no
+ * error until the OS gives up (30s+ of frozen "connecting…"). 4s comfortably
+ * covers the slow path that actually works — mDNS resolution was measured at
+ * ~1.6s on Android — while cutting dead-target hangs short so the reconnect
+ * alternation can try the other address.
+ */
+const CONNECT_TIMEOUT_MS = 4000;
 
 export type GamepadStatusListener = (status: GamepadStatus, dev: string | null) => void;
 
@@ -177,15 +191,20 @@ export class GamepadClient {
   private conn: Conn | null = null;
   private attempt = 0;
   /**
-   * When true, open() dials conn.lastIp instead of conn.host. Failed attempts
-   * alternate this so a box whose .local name has gone dark (SteamOS Game
-   * Mode mDNS) is reached via its cached IP on the next try. Sticky while the
-   * target stays the same, so a working fallback keeps being used.
+   * When true, open() dials the ALTERNATE address (the mDNS hostname) instead
+   * of the primary (the cached IP). The cached IP is primary because it was
+   * measured ~9ms to connect where Android mDNS resolution takes ~1.6s — with
+   * hostname-first, every reconnect stalled the remote for that long. Failed
+   * attempts alternate this so a box whose IP moved (DHCP) is still reached
+   * via its .local name on the next try. Sticky while the target stays the
+   * same, so a working path keeps being used.
    */
   private useFallback = false;
 
   private pingTimer: ReturnType<typeof setInterval> | null = null;
   private reconnectTimer: ReturnType<typeof setTimeout> | null = null;
+  /** Aborts a socket stuck in CONNECTING (see CONNECT_TIMEOUT_MS). */
+  private connectTimer: ReturnType<typeof setTimeout> | null = null;
 
   private stickLastSent: Record<StickKey, number> = { l: 0, r: 0 };
   private stickPending: Record<StickKey, { x: number; y: number } | null> = {
@@ -502,7 +521,12 @@ export class GamepadClient {
     // raised asynchronously, off the JS thread) and which crashes the whole app.
     const cleanHost = (host || '').trim();
     const cleanIp = (lastIp || '').trim();
-    const target = this.useFallback && cleanIp ? cleanIp : cleanHost || cleanIp;
+    // IP-first: the cached LAN IP connects in ~9ms where Android mDNS takes
+    // ~1.6s, so it is the primary; the hostname is the alternate for when the
+    // IP goes stale. With a single known address there is nothing to alternate.
+    const primary = cleanIp || cleanHost;
+    const alternate = cleanIp && cleanHost && cleanHost !== cleanIp ? cleanHost : '';
+    const target = this.useFallback && alternate ? alternate : primary;
     if (!target || !port) {
       // Nothing dialable yet (box not paired, no address). Stay quietly errored;
       // connect() re-runs when host/port/token change, so pairing recovers this.
@@ -523,6 +547,25 @@ export class GamepadClient {
       return;
     }
     this.ws = ws;
+
+    // Connect watchdog: a dead target (stale cached IP) leaves the socket in
+    // CONNECTING with no error for 30s+. Cut it short so scheduleReconnect can
+    // flip to the alternate address. Cleared on onopen / teardown.
+    this.clearConnectWatchdog();
+    this.connectTimer = setTimeout(() => {
+      this.connectTimer = null;
+      if (ws !== this.ws || ws.readyState !== 0 /* CONNECTING */) return;
+      this.teardownSocket(false);
+      if (this.active) {
+        this.setStatus('error', null);
+        this.scheduleReconnect();
+      }
+    }, CONNECT_TIMEOUT_MS);
+
+    ws.onopen = () => {
+      if (ws !== this.ws) return;
+      this.clearConnectWatchdog();
+    };
 
     ws.onmessage = (ev: WebSocketMessageEvent) => {
       // A reconnect can replace this.ws while this socket's callbacks are still
@@ -634,6 +677,13 @@ export class GamepadClient {
     }
   }
 
+  private clearConnectWatchdog(): void {
+    if (this.connectTimer != null) {
+      clearTimeout(this.connectTimer);
+      this.connectTimer = null;
+    }
+  }
+
   private startPing(): void {
     this.stopPing();
     this.pingTimer = setInterval(() => {
@@ -650,6 +700,7 @@ export class GamepadClient {
 
   private teardownSocket(sendClose: boolean): void {
     this.stopPing();
+    this.clearConnectWatchdog();
     for (const k of ['l', 'r'] as StickKey[]) {
       const timer = this.stickTimer[k];
       if (timer) {
