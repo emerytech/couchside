@@ -84,7 +84,7 @@ except ImportError:
 # Same app id the phone expects (AGENT_APPS in app/lib/api.ts); the Windows
 # agent versions independently of the Linux one.
 APP_NAME = "couchside-agent"
-VERSION = "0.3.3-win"
+VERSION = "0.3.4-win"
 
 _PROGRAMDATA = os.environ.get("ProgramData", r"C:\ProgramData")
 DEFAULT_CONFIG_PATH = os.path.join(_PROGRAMDATA, "Couchside", "config.json")
@@ -3340,6 +3340,32 @@ def _scale_stick(f):
     return max(-32768, min(32767, int(round(f * 32767))))
 
 
+# ONE persistent ViGEmBus target, reused by every gamepad connection. Only ever
+# one virtual pad is active (single-controller model), so a single target that
+# lives for the agent's lifetime is all that's needed — and it avoids the
+# per-connection alloc/add + remove/free churn that exhausted ViGEmBus (its
+# target_remove is async; ~100 rapid reconnects outran it -> vigem_target_add
+# failures -> 500s). The OS reclaims it on process exit.
+_VIGEM_TARGET = None
+_VIGEM_TARGET_LOCK = threading.Lock()
+
+
+def _vigem_shared_target(dll, client):
+    """Get (allocating once) the persistent shared ViGEm target."""
+    global _VIGEM_TARGET
+    with _VIGEM_TARGET_LOCK:
+        if _VIGEM_TARGET is None:
+            t = dll.vigem_target_x360_alloc()
+            if not t:
+                raise RuntimeError("vigem_target_x360_alloc failed")
+            err = dll.vigem_target_add(client, t)
+            if err != VIGEM_ERROR_NONE:
+                dll.vigem_target_free(t)
+                raise RuntimeError("vigem_target_add failed (0x%08X)" % err)
+            _VIGEM_TARGET = t
+        return _VIGEM_TARGET
+
+
 class ViGEmGamepad:
     """Virtual Xbox 360 pad backed by ViGEmBus. Holds the full XUSB report
     state; every protocol message mutates the state and pushes one update.
@@ -3360,14 +3386,19 @@ class ViGEmGamepad:
         self._lock = threading.Lock()
         self._dll, self._client = _load_vigem()
         self._report = _XUSB_REPORT()
-        self._target = self._dll.vigem_target_x360_alloc()
-        if not self._target:
-            raise RuntimeError("vigem_target_x360_alloc failed")
-        err = self._dll.vigem_target_add(self._client, self._target)
-        if err != VIGEM_ERROR_NONE:
-            self._dll.vigem_target_free(self._target)
-            self._target = None
-            raise RuntimeError("vigem_target_add failed (0x%08X)" % err)
+        # Reuse ONE persistent bus target across all connections (see
+        # _vigem_shared_target). Per-connection alloc/add + remove/free exhausted
+        # ViGEmBus under reconnect churn — target_remove is async, so ~100 rapid
+        # add/removes outran the bus and vigem_target_add started failing (500s).
+        # A persistent target sidesteps that; a session just resets its state.
+        self._target = _vigem_shared_target(self._dll, self._client)
+        self._dead = False
+        # Start neutral: release anything a prior session left held.
+        try:
+            self._dll.vigem_target_x360_update(
+                self._client, self._target, self._report)
+        except Exception:
+            pass
 
     def emit(self, events):
         """Apply normalized pad events and push the report.
@@ -3395,7 +3426,7 @@ class ViGEmGamepad:
                 else:
                     rep.sThumbRX, rep.sThumbRY = x, y
         with self._lock:
-            if self._target is None:
+            if self._dead:
                 raise OSError("gamepad device destroyed")
             err = self._dll.vigem_target_x360_update(
                 self._client, self._target, rep)
@@ -3403,15 +3434,17 @@ class ViGEmGamepad:
             raise OSError("vigem update failed (0x%08X)" % err)
 
     def destroy(self):
-        with self._lock:  # idempotent + safe against concurrent emit/destroy
-            target, self._target = self._target, None
-        if target:
+        # Persistent target: mark THIS handle dead (so a racing emit from the
+        # old session ends it, same as before) and release all inputs by
+        # pushing a neutral report — but do NOT remove/free the shared target;
+        # that churn is exactly what exhausted ViGEmBus. Idempotent.
+        with self._lock:
+            if self._dead:
+                return
+            self._dead = True
             try:
-                self._dll.vigem_target_remove(self._client, target)
-            except Exception:
-                pass
-            try:
-                self._dll.vigem_target_free(target)
+                self._dll.vigem_target_x360_update(
+                    self._client, self._target, _XUSB_REPORT())
             except Exception:
                 pass
 
