@@ -59,6 +59,14 @@ printf '%s\n' "$agent_ver" > "$tmp/agent-version.txt"
 files+=(agent-version.txt)
 echo "==> agent version: $agent_ver"
 
+# agent-version-win.txt: same idea for the Windows agent (separate 0.3.x-win
+# version track). The Windows agent's /api/update/check compares against this.
+win_ver="$(grep -m1 '^VERSION' "$agent/win/couchsided-win.py" | cut -d'"' -f2)"
+[ -n "$win_ver" ] || { echo "error: couldn't read Windows agent VERSION" >&2; exit 2; }
+printf '%s\n' "$win_ver" > "$tmp/agent-version-win.txt"
+files+=(agent-version-win.txt)
+echo "==> windows agent version: $win_ver"
+
 echo "==> generating SHA256SUMS over ${#files[@]} agent files"
 ( cd "$tmp" && { command -v sha256sum >/dev/null 2>&1 \
     && sha256sum "${files[@]}" \
