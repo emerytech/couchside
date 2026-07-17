@@ -26,7 +26,15 @@ import { Gated } from '@/components/Gated';
 import { TabScreen } from '@/components/TabScreen';
 import { useLockOrientation } from '@/hooks/useLockOrientation';
 import { usePoll } from '@/hooks/usePoll';
-import { api, Downloads, hostKey, ImageSource, Launcher, SteamDownload } from '@/lib/api';
+import {
+  api,
+  Downloads,
+  hostKey,
+  ImageSource,
+  isActiveDownload,
+  Launcher,
+  SteamDownload,
+} from '@/lib/api';
 import { hapticError, hapticLight, hapticMedium, hapticSuccess } from '@/lib/haptics';
 import { useSettings } from '@/lib/SettingsContext';
 import { mono, theme } from '@/lib/theme';
@@ -115,7 +123,7 @@ function LauncherTile({
         </View>
       )}
 
-      {download && (
+      {download && isActiveDownload(download) && (
         <View style={styles.tilePill}>
           <Ionicons
             name={download.state === 'paused' ? 'pause' : 'cloud-download'}
@@ -123,6 +131,12 @@ function LauncherTile({
             color={download.state === 'paused' ? theme.amber : theme.blue}
           />
           <Text style={styles.tilePillText}>{download.percent}%</Text>
+        </View>
+      )}
+      {download && !isActiveDownload(download) && (
+        <View style={[styles.tilePill, styles.tilePillQueued]}>
+          <Ionicons name="time-outline" size={11} color={theme.textDim} />
+          <Text style={[styles.tilePillText, { color: theme.textDim }]}>queued</Text>
         </View>
       )}
 
@@ -172,18 +186,67 @@ function DownloadRow({ d }: { d: SteamDownload }) {
   );
 }
 
-/** Active Steam downloads, shown above the launcher grid. Hidden when empty. */
+/** A queued (pending, not-moving) update — compact, dimmed, no fake progress. */
+function QueuedRow({ d }: { d: SteamDownload }) {
+  return (
+    <View style={styles.qRow}>
+      <Text style={styles.qName} numberOfLines={1}>
+        {d.name}
+      </Text>
+      {d.bytes_total > 0 && <Text style={styles.qSize}>{fmtGB(d.bytes_total)} GB</Text>}
+    </View>
+  );
+}
+
+/**
+ * Steam downloads above the launcher grid. Splits what's ACTUALLY transferring
+ * now (full progress rows) from Steam's queued/pending-update backlog (compact,
+ * collapsed by default) — the backlog otherwise reads as downloads stuck for
+ * days. Hidden when nothing is downloading or queued.
+ */
 function DownloadsSection({ downloads }: { downloads: SteamDownload[] }) {
+  const [showQueue, setShowQueue] = useState(false);
   if (downloads.length === 0) return null;
+  const active = downloads.filter(isActiveDownload);
+  const queued = downloads.filter((d) => !isActiveDownload(d));
   return (
     <View style={styles.dlCard}>
-      <View style={styles.dlHeader}>
-        <Ionicons name="cloud-download" size={14} color={theme.blue} />
-        <Text style={styles.dlHeaderText}>DOWNLOADS</Text>
-      </View>
-      {downloads.map((d) => (
-        <DownloadRow key={d.appid} d={d} />
-      ))}
+      {active.length > 0 && (
+        <>
+          <View style={styles.dlHeader}>
+            <Ionicons name="cloud-download" size={14} color={theme.blue} />
+            <Text style={styles.dlHeaderText}>DOWNLOADING</Text>
+          </View>
+          {active.map((d) => (
+            <DownloadRow key={d.appid} d={d} />
+          ))}
+        </>
+      )}
+      {queued.length > 0 && (
+        <>
+          <Pressable
+            onPress={() => {
+              hapticLight();
+              setShowQueue((v) => !v);
+            }}
+            style={({ pressed }) => [
+              styles.dlHeader,
+              active.length > 0 && styles.dlHeaderGap,
+              pressed && styles.pressed,
+            ]}>
+            <Ionicons name="time-outline" size={13} color={theme.textDim} />
+            <Text style={[styles.dlHeaderText, { color: theme.textDim }]}>
+              QUEUED · {queued.length}
+            </Text>
+            <Ionicons
+              name={showQueue ? 'chevron-up' : 'chevron-down'}
+              size={14}
+              color={theme.textDim}
+            />
+          </Pressable>
+          {showQueue && queued.map((d) => <QueuedRow key={d.appid} d={d} />)}
+        </>
+      )}
     </View>
   );
 }
@@ -352,10 +415,14 @@ function LaunchScreen() {
   const prevDl = useRef<Map<number, SteamDownload>>(new Map());
   const observedDl = useRef<Set<number>>(new Set());
   useEffect(() => {
-    setActive(downloads.length > 0);
+    // Poll fast only while something is genuinely transferring — a static queue
+    // of pending updates shouldn't hammer the box every 5s.
+    setActive(downloads.some(isActiveDownload));
     const curIds = new Set(downloads.map((d) => d.appid));
     for (const d of downloads) {
-      if (d.state === 'downloading' || d.state === 'paused') observedDl.current.add(d.appid);
+      // Only track truly-active downloads for the "finished" toast; a queued
+      // entry vanishing is a cancel/dequeue, not a completion.
+      if (isActiveDownload(d)) observedDl.current.add(d.appid);
     }
     for (const [appid, prev] of prevDl.current) {
       if (!curIds.has(appid) && observedDl.current.has(appid)) {
@@ -598,6 +665,12 @@ const styles = StyleSheet.create({
     gap: 12,
   },
   dlHeader: { flexDirection: 'row', alignItems: 'center', gap: 6 },
+  dlHeaderGap: {
+    marginTop: 4,
+    borderTopColor: theme.cardBorder,
+    borderTopWidth: 1,
+    paddingTop: 12,
+  },
   dlHeaderText: {
     color: theme.textDim,
     fontSize: 11,
@@ -605,6 +678,10 @@ const styles = StyleSheet.create({
     fontFamily: mono,
     letterSpacing: 1,
   },
+  // Queued (pending, not-moving) update rows: compact + dimmed.
+  qRow: { flexDirection: 'row', alignItems: 'center', gap: 8, paddingLeft: 19 },
+  qName: { color: theme.textDim, fontSize: 13, flex: 1, fontFamily: mono },
+  qSize: { color: theme.textFaint, fontSize: 11, fontFamily: mono },
   dlRow: { gap: 6 },
   dlTop: { flexDirection: 'row', alignItems: 'center' },
   dlName: { color: theme.text, fontSize: 14, fontWeight: '600', flex: 1, fontFamily: mono },
@@ -634,6 +711,7 @@ const styles = StyleSheet.create({
     paddingHorizontal: 7,
   },
   tilePillText: { color: theme.text, fontSize: 11, fontWeight: '700', fontFamily: mono },
+  tilePillQueued: { backgroundColor: 'rgba(0,0,0,0.55)' },
 
   tile: {
     borderRadius: 14,
