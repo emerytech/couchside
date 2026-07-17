@@ -12,7 +12,7 @@ import { getKeepAwakeEnabled, useKeepAwakeEnabled } from '@/lib/keepAwake';
 import { getPref, usePref } from '@/lib/prefs';
 import { activateKeepAwakeAsync, deactivateKeepAwake } from 'expo-keep-awake';
 import { useNavigation } from 'expo-router';
-import React, { useCallback, useEffect, useRef, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   Animated,
   AppState,
@@ -40,7 +40,8 @@ import { api, hostKey, Status } from '@/lib/api';
 import { ButtonKey, DesktopKey, GamepadClient, GamepadStatus, StickKey, SystemChord, TriggerKey } from '@/lib/gamepad';
 import { PadMode } from '@/lib/settings';
 import { useSettings } from '@/lib/SettingsContext';
-import { mono, theme } from '@/lib/theme';
+import { mono, useTheme, useThemedStyles } from '@/lib/theme';
+import type { Palette } from '@/lib/theme';
 
 const KEEP_AWAKE_TAG = 'rescue-remote-pad';
 
@@ -65,6 +66,7 @@ type PadButtonProps = {
 };
 
 function PadButton({ label, onDown, onUp, style, color, fontSize }: PadButtonProps) {
+  const styles = useThemedStyles(makeStyles);
   return (
     <Pressable
       onPressIn={() => {
@@ -139,6 +141,7 @@ function Stick({ onMove, onRelease }: StickProps) {
     }),
   ).current;
 
+  const styles = useThemedStyles(makeStyles);
   return (
     <View style={styles.stickPad} {...responder.panHandlers}>
       <View style={styles.stickCross} pointerEvents="none" />
@@ -216,6 +219,7 @@ function SwipeSurface({ onStep, onSelect }: SwipeSurfaceProps) {
   ).current;
 
   const hints = usePref('padHints');
+  const styles = useThemedStyles(makeStyles);
   return (
     <View style={styles.swipeSurface} {...responder.panHandlers}>
       {hints && <Text style={styles.swipeHint}>swipe to move · tap to select</Text>}
@@ -263,6 +267,7 @@ function Trackpad({
     onDragEnd,
   });
   const hints = usePref('padHints');
+  const styles = useThemedStyles(makeStyles);
   return (
     <View style={styles.trackpadSurface} {...responder.panHandlers}>
       {hints && (
@@ -430,6 +435,7 @@ function KeyboardBar({ onText, onBackspace, onEnter, onSwipeMode }: KeyboardBarP
     [onBackspace, onEnter],
   );
 
+  const styles = useThemedStyles(makeStyles);
   return (
     <>
       <View
@@ -523,16 +529,6 @@ function KeyboardBar({ onText, onBackspace, onEnter, onSwipeMode }: KeyboardBarP
 
 // ---------- Status pill ----------
 
-const STATUS_COLOR: Record<GamepadStatus, string> = {
-  connected: theme.green,
-  connecting: theme.amber,
-  error: theme.red,
-  closed: theme.red,
-  replaced: theme.amber,
-  waiting: theme.amber,
-  released: theme.amber,
-};
-
 /** This phone's label sent to the box so the holder's "wants control" prompt
  *  can name it. A platform label (no native device-name dependency). */
 const DEVICE_LABEL =
@@ -577,6 +573,20 @@ const MODES: { key: PadMode; label: string }[] = [
 ];
 
 function PadScreen() {
+  const t = useTheme();
+  const styles = useThemedStyles(makeStyles);
+  const STATUS_COLOR = useMemo<Record<GamepadStatus, string>>(
+    () => ({
+      connected: t.green,
+      connecting: t.amber,
+      error: t.red,
+      closed: t.red,
+      replaced: t.amber,
+      waiting: t.amber,
+      released: t.amber,
+    }),
+    [t],
+  );
   const insets = useSafeAreaInsets();
   const navigation = useNavigation();
   const { width, height } = useWindowDimensions();
@@ -977,14 +987,14 @@ function PadScreen() {
               label="‹ BACK"
               {...btn('b')}
               style={styles.swipeBtn}
-              color={theme.red}
+              color={t.red}
               fontSize={12}
             />
             <PadButton
               label="STEAM"
               {...btn('guide')}
               style={[styles.swipeBtn, styles.guideBtn]}
-              color={theme.blue}
+              color={t.blue}
               fontSize={12}
             />
             <PadButton
@@ -992,7 +1002,7 @@ function PadScreen() {
               onDown={qam}
               onUp={NOOP}
               style={[styles.swipeBtn, styles.guideBtn]}
-              color={theme.blue}
+              color={t.blue}
               fontSize={26}
             />
             <PadButton label="MENU" {...btn('start')} style={styles.swipeBtn} fontSize={12} />
@@ -1043,7 +1053,7 @@ function PadScreen() {
                     label="STEAM"
                     {...btn('guide')}
                     style={[styles.tpBtn, styles.tpBtnWide, styles.guideBtn]}
-                    color={theme.blue}
+                    color={t.blue}
                     fontSize={11}
                   />
                   <PadButton
@@ -1051,7 +1061,7 @@ function PadScreen() {
                     onDown={qam}
                     onUp={NOOP}
                     style={[styles.tpBtn, styles.guideBtn]}
-                    color={theme.blue}
+                    color={t.blue}
                     fontSize={22}
                   />
                 </>
@@ -1112,7 +1122,7 @@ function PadScreen() {
                 <View style={styles.dpadRow}>
                   <PadButton label="◀" {...btn('dl')} style={styles.dpadBtn} />
                   {/* Center OK = A: opens/activates the highlighted item. */}
-                  <PadButton label="OK" {...btn('a')} style={styles.dpadBtn} color={theme.green} fontSize={14} />
+                  <PadButton label="OK" {...btn('a')} style={styles.dpadBtn} color={t.green} fontSize={14} />
                   <PadButton label="▶" {...btn('dr')} style={styles.dpadBtn} />
                 </View>
                 <View style={styles.dpadRow}>
@@ -1131,7 +1141,7 @@ function PadScreen() {
                   label="STEAM"
                   {...btn('guide')}
                   style={[styles.menuBtn, styles.guideBtn]}
-                  color={theme.blue}
+                  color={t.blue}
                   fontSize={11}
                 />
                 <PadButton
@@ -1139,7 +1149,7 @@ function PadScreen() {
                   onDown={qam}
                   onUp={NOOP}
                   style={[styles.menuBtn, styles.qamBtn, styles.guideBtn]}
-                  color={theme.blue}
+                  color={t.blue}
                   fontSize={20}
                 />
                 <PadButton label="START" {...btn('start')} style={styles.menuBtn} fontSize={11} />
@@ -1155,17 +1165,17 @@ function PadScreen() {
               <View style={styles.abxy}>
                 <View style={styles.abxyRow}>
                   <View style={styles.faceSpacer} />
-                  <PadButton label="Y" {...btn('y')} style={styles.faceBtn} color={theme.amber} />
+                  <PadButton label="Y" {...btn('y')} style={styles.faceBtn} color={t.amber} />
                   <View style={styles.faceSpacer} />
                 </View>
                 <View style={styles.abxyRow}>
-                  <PadButton label="X" {...btn('x')} style={styles.faceBtn} color={theme.blue} />
+                  <PadButton label="X" {...btn('x')} style={styles.faceBtn} color={t.blue} />
                   <View style={styles.faceSpacer} />
-                  <PadButton label="B" {...btn('b')} style={styles.faceBtn} color={theme.red} />
+                  <PadButton label="B" {...btn('b')} style={styles.faceBtn} color={t.red} />
                 </View>
                 <View style={styles.abxyRow}>
                   <View style={styles.faceSpacer} />
-                  <PadButton label="A" {...btn('a')} style={styles.faceBtn} color={theme.green} />
+                  <PadButton label="A" {...btn('a')} style={styles.faceBtn} color={t.green} />
                   <View style={styles.faceSpacer} />
                 </View>
               </View>
@@ -1192,7 +1202,7 @@ function PadScreen() {
               label="STEAM"
               {...btn('guide')}
               style={[styles.menuBtn, styles.guideBtn]}
-              color={theme.blue}
+              color={t.blue}
               fontSize={11}
             />
             <PadButton
@@ -1200,7 +1210,7 @@ function PadScreen() {
               onDown={qam}
               onUp={NOOP}
               style={[styles.menuBtn, styles.qamBtn, styles.guideBtn]}
-              color={theme.blue}
+              color={t.blue}
               fontSize={20}
             />
             <PadButton label="START" {...btn('start')} style={styles.menuBtn} fontSize={11} />
@@ -1217,7 +1227,7 @@ function PadScreen() {
               <View style={styles.dpadRow}>
                 <PadButton label="◀" {...btn('dl')} style={styles.dpadBtn} />
                 {/* Center OK = A: opens/activates the highlighted item. */}
-                <PadButton label="OK" {...btn('a')} style={styles.dpadBtn} color={theme.green} fontSize={14} />
+                <PadButton label="OK" {...btn('a')} style={styles.dpadBtn} color={t.green} fontSize={14} />
                 <PadButton label="▶" {...btn('dr')} style={styles.dpadBtn} />
               </View>
               <View style={styles.dpadRow}>
@@ -1230,17 +1240,17 @@ function PadScreen() {
             <View style={styles.abxy}>
               <View style={styles.abxyRow}>
                 <View style={styles.faceSpacer} />
-                <PadButton label="Y" {...btn('y')} style={styles.faceBtn} color={theme.amber} />
+                <PadButton label="Y" {...btn('y')} style={styles.faceBtn} color={t.amber} />
                 <View style={styles.faceSpacer} />
               </View>
               <View style={styles.abxyRow}>
-                <PadButton label="X" {...btn('x')} style={styles.faceBtn} color={theme.blue} />
+                <PadButton label="X" {...btn('x')} style={styles.faceBtn} color={t.blue} />
                 <View style={styles.faceSpacer} />
-                <PadButton label="B" {...btn('b')} style={styles.faceBtn} color={theme.red} />
+                <PadButton label="B" {...btn('b')} style={styles.faceBtn} color={t.red} />
               </View>
               <View style={styles.abxyRow}>
                 <View style={styles.faceSpacer} />
-                <PadButton label="A" {...btn('a')} style={styles.faceBtn} color={theme.green} />
+                <PadButton label="A" {...btn('a')} style={styles.faceBtn} color={t.green} />
                 <View style={styles.faceSpacer} />
               </View>
             </View>
@@ -1264,28 +1274,28 @@ function PadScreen() {
   );
 }
 
-const styles = StyleSheet.create({
+const makeStyles = (t: Palette) => StyleSheet.create({
   screen: {
     flex: 1,
-    backgroundColor: theme.bg,
+    backgroundColor: t.bg,
     paddingHorizontal: 12,
     justifyContent: 'space-between',
   },
 
   btn: {
-    backgroundColor: theme.card,
-    borderColor: theme.cardBorder,
+    backgroundColor: t.card,
+    borderColor: t.cardBorder,
     borderWidth: 1,
     borderRadius: 12,
     alignItems: 'center',
     justifyContent: 'center',
   },
   btnPressed: {
-    backgroundColor: theme.inset,
-    borderColor: theme.blue,
+    backgroundColor: t.inset,
+    borderColor: t.blue,
   },
   btnText: {
-    color: theme.textDim,
+    color: t.textDim,
     fontFamily: mono,
     fontSize: 14,
     fontWeight: '700',
@@ -1300,8 +1310,8 @@ const styles = StyleSheet.create({
   },
   modeToggle: {
     flexDirection: 'row',
-    backgroundColor: theme.inset,
-    borderColor: theme.cardBorder,
+    backgroundColor: t.inset,
+    borderColor: t.cardBorder,
     borderWidth: 1,
     borderRadius: 999,
     padding: 3,
@@ -1313,23 +1323,23 @@ const styles = StyleSheet.create({
     borderRadius: 999,
   },
   modeSegActive: {
-    backgroundColor: theme.card,
+    backgroundColor: t.card,
   },
   modeSegText: {
-    color: theme.textFaint,
+    color: t.textFaint,
     fontFamily: mono,
     fontSize: 10,
     fontWeight: '700',
     letterSpacing: 1,
   },
   modeSegTextActive: {
-    color: theme.blue,
+    color: t.blue,
   },
 
   swipeSurface: {
     flex: 1,
-    backgroundColor: theme.card,
-    borderColor: theme.cardBorder,
+    backgroundColor: t.card,
+    borderColor: t.cardBorder,
     borderWidth: 1,
     borderRadius: 24,
     alignItems: 'center',
@@ -1338,8 +1348,8 @@ const styles = StyleSheet.create({
   },
   trackpadSurface: {
     flex: 1,
-    backgroundColor: theme.card,
-    borderColor: theme.cardBorder,
+    backgroundColor: t.card,
+    borderColor: t.cardBorder,
     borderWidth: 1,
     borderRadius: 24,
     alignItems: 'center',
@@ -1347,7 +1357,7 @@ const styles = StyleSheet.create({
     padding: 18,
   },
   swipeHint: {
-    color: theme.textFaint,
+    color: t.textFaint,
     fontFamily: mono,
     fontSize: 11,
     textAlign: 'center',
@@ -1381,8 +1391,8 @@ const styles = StyleSheet.create({
     gap: 8,
   },
   kbBar: {
-    backgroundColor: theme.card,
-    borderColor: theme.cardBorder,
+    backgroundColor: t.card,
+    borderColor: t.cardBorder,
     borderWidth: 1,
     borderRadius: 999,
     paddingVertical: 12,
@@ -1394,19 +1404,19 @@ const styles = StyleSheet.create({
     flex: 1,
   },
   kbBarOpen: {
-    borderColor: theme.blue,
-    backgroundColor: theme.inset,
+    borderColor: t.blue,
+    backgroundColor: t.inset,
   },
   kbDragHandle: {
     width: 36,
     height: 4,
     borderRadius: 2,
-    backgroundColor: theme.blue,
+    backgroundColor: t.blue,
     opacity: 0.5,
     marginBottom: 6,
   },
   kbDone: {
-    backgroundColor: theme.blue,
+    backgroundColor: t.blue,
     borderRadius: 999,
     paddingHorizontal: 20,
     alignItems: 'center',
@@ -1436,7 +1446,7 @@ const styles = StyleSheet.create({
     elevation: 6,
   },
   kbFloatDone: {
-    backgroundColor: theme.blue,
+    backgroundColor: t.blue,
     borderRadius: 999,
     paddingVertical: 12,
     paddingHorizontal: 18,
@@ -1447,14 +1457,14 @@ const styles = StyleSheet.create({
   },
   // Edge chevrons on the closed bar: the horizontal mode-switch swipe cue.
   kbSwipeCue: {
-    color: theme.textFaint,
+    color: t.textFaint,
     fontFamily: mono,
     fontSize: 16,
     fontWeight: '700',
     paddingHorizontal: 14,
   },
   kbBarText: {
-    color: theme.textDim,
+    color: t.textDim,
     fontFamily: mono,
     fontSize: 12,
     fontWeight: '700',
@@ -1466,12 +1476,12 @@ const styles = StyleSheet.create({
     justifyContent: 'space-between',
     paddingHorizontal: 12,
     paddingVertical: 8,
-    backgroundColor: theme.inset,
+    backgroundColor: t.inset,
     borderTopWidth: 1,
-    borderTopColor: theme.cardBorder,
+    borderTopColor: t.cardBorder,
   },
   kbAccessoryHint: {
-    color: theme.textDim,
+    color: t.textDim,
     fontFamily: mono,
     fontSize: 12,
     fontWeight: '700',
@@ -1483,7 +1493,7 @@ const styles = StyleSheet.create({
   inputBlockedBar: {
     marginTop: 8,
     backgroundColor: 'rgba(251, 191, 36, 0.12)',
-    borderColor: theme.amber,
+    borderColor: t.amber,
     borderWidth: 1,
     borderRadius: 10,
     paddingVertical: 8,
@@ -1496,25 +1506,25 @@ const styles = StyleSheet.create({
     justifyContent: 'space-between',
     gap: 10,
     backgroundColor: 'rgba(96,165,250,0.12)',
-    borderColor: theme.blue,
+    borderColor: t.blue,
     borderWidth: 1,
     borderRadius: 10,
     paddingVertical: 8,
     paddingHorizontal: 12,
   },
-  handoffText: { flex: 1, color: theme.text, fontSize: 13, fontWeight: '600' },
+  handoffText: { flex: 1, color: t.text, fontSize: 13, fontWeight: '600' },
   handoffBtns: { flexDirection: 'row', gap: 8 },
   handoffBtn: {
     paddingVertical: 8,
     paddingHorizontal: 16,
     borderRadius: 999,
     borderWidth: 1,
-    borderColor: theme.cardBorder,
-    backgroundColor: theme.card,
+    borderColor: t.cardBorder,
+    backgroundColor: t.card,
   },
-  handoffBtnPass: { backgroundColor: theme.blue, borderColor: theme.blue },
+  handoffBtnPass: { backgroundColor: t.blue, borderColor: t.blue },
   handoffBtnText: {
-    color: theme.textDim,
+    color: t.textDim,
     fontFamily: mono,
     fontSize: 12,
     fontWeight: '800',
@@ -1522,14 +1532,14 @@ const styles = StyleSheet.create({
   },
   handoffBtnPassText: { color: '#0b1220' },
   inputBlockedText: {
-    color: theme.amber,
+    color: t.amber,
     fontFamily: mono,
     fontSize: 12,
     fontWeight: '700',
     lineHeight: 16,
   },
   kbBarTextOpen: {
-    color: theme.blue,
+    color: t.blue,
   },
   hiddenInput: {
     // Invisible but FOCUSABLE. iOS won't let a fully transparent (alpha 0) or
@@ -1563,8 +1573,8 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     justifyContent: 'center',
     gap: 6,
-    backgroundColor: theme.inset,
-    borderColor: theme.cardBorder,
+    backgroundColor: t.inset,
+    borderColor: t.cardBorder,
     borderWidth: 1,
     borderRadius: 999,
     paddingVertical: 6,
@@ -1577,7 +1587,7 @@ const styles = StyleSheet.create({
     borderRadius: 4,
   },
   pillText: {
-    color: theme.textDim,
+    color: t.textDim,
     fontFamily: mono,
     fontSize: 10,
     flexShrink: 1,
@@ -1599,7 +1609,7 @@ const styles = StyleSheet.create({
     width: 48,
   },
   guideBtn: {
-    borderColor: theme.blue,
+    borderColor: t.blue,
   },
 
   clusterRow: {
@@ -1662,8 +1672,8 @@ const styles = StyleSheet.create({
     width: STICK_SIZE,
     height: STICK_SIZE,
     borderRadius: STICK_SIZE / 2,
-    backgroundColor: theme.inset,
-    borderColor: theme.cardBorder,
+    backgroundColor: t.inset,
+    borderColor: t.cardBorder,
     borderWidth: 1,
     alignItems: 'center',
     justifyContent: 'center',
@@ -1673,14 +1683,14 @@ const styles = StyleSheet.create({
     width: 10,
     height: 10,
     borderRadius: 5,
-    backgroundColor: theme.cardBorder,
+    backgroundColor: t.cardBorder,
   },
   stickNub: {
     width: NUB_SIZE,
     height: NUB_SIZE,
     borderRadius: NUB_SIZE / 2,
-    backgroundColor: theme.card,
-    borderColor: theme.blue,
+    backgroundColor: t.card,
+    borderColor: t.blue,
     borderWidth: 1,
   },
 

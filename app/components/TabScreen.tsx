@@ -10,9 +10,11 @@ import { StyleSheet, Text, View } from 'react-native';
 import { BoxSwitcher } from '@/components/BoxSwitcher';
 import { TrialNudge } from '@/components/TrialNudge';
 import { IS_BETA_BUILD } from '@/lib/entitlement';
-import { mono, theme } from '@/lib/theme';
+import { mono, useThemedStyles } from '@/lib/theme';
+import type { Palette } from '@/lib/theme';
 
 export function TabScreen({ children }: { children: React.ReactNode }) {
+  const styles = useThemedStyles(makeStyles);
   return (
     <View style={styles.root}>
       <BoxSwitcher />
@@ -29,8 +31,8 @@ export function TabScreen({ children }: { children: React.ReactNode }) {
   );
 }
 
-const styles = StyleSheet.create({
-  root: { flex: 1, backgroundColor: theme.bg },
+const makeStyles = (t: Palette) => StyleSheet.create({
+  root: { flex: 1, backgroundColor: t.bg },
   body: { flex: 1 },
   // Pinned above the tab bar, non-interactive so it never eats a touch.
   betaBadge: {
@@ -42,11 +44,11 @@ const styles = StyleSheet.create({
     borderRadius: 6,
     backgroundColor: 'rgba(0,0,0,0.55)',
     borderWidth: 1,
-    borderColor: theme.amber,
+    borderColor: t.amber,
     opacity: 0.9,
   },
   betaText: {
-    color: theme.amber,
+    color: t.amber,
     fontSize: 10,
     fontWeight: '800',
     fontFamily: mono,

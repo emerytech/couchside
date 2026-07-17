@@ -9,7 +9,7 @@ import { GamepadClient } from '@/lib/gamepad';
 import { hapticLight } from '@/lib/haptics';
 import { usePref } from '@/lib/prefs';
 import { Settings } from '@/lib/settings';
-import { mono, theme } from '@/lib/theme';
+import { mono, useTheme, useThemedStyles, type Palette } from '@/lib/theme';
 
 type IoniconName = React.ComponentProps<typeof Ionicons>['name'];
 
@@ -30,6 +30,8 @@ export function RemoteView({
   client: GamepadClient;
   settings: Settings;
 }) {
+  const t = useTheme();
+  const styles = useThemedStyles(makeStyles);
   // TV caps, self-polled: cheap, and the strip adapts if the backend changes.
   // Deliberately does NOT gate on tvPoll.error: usePoll keeps last-good data
   // through a transient failure, and dropping the caps there would silently
@@ -200,7 +202,7 @@ export function RemoteView({
           </View>
           {canBlank && (
             <Pressable onPress={blank} style={({ pressed }) => [styles.pwr, pressed && styles.pressed]}>
-              <Ionicons name="power" size={20} color={theme.red} />
+              <Ionicons name="power" size={20} color={t.red} />
             </Pressable>
           )}
         </View>
@@ -220,7 +222,7 @@ export function RemoteView({
               <Ionicons
                 name={s === 'dpad' ? 'apps' : 'move'}
                 size={14}
-                color={surface === s ? theme.blue : theme.textDim}
+                color={surface === s ? t.blue : t.textDim}
               />
               <Text style={[styles.segText, surface === s && styles.segTextActive]}>
                 {s === 'dpad' ? 'D-PAD' : 'TRACKPAD'}
@@ -289,9 +291,9 @@ export function RemoteView({
           onMinus={() => tvOp('volume_down')}
         />
         <View style={styles.midStack}>
-          <MidBtn icon="volume-mute" label="MUTE" color={theme.red} onPress={() => tvOp('mute')} />
-          <MidBtn icon="logo-steam" label="STEAM" color={theme.green} onPress={steam} />
-          <MidBtn icon="ellipsis-horizontal" label="QAM" color={theme.amber} onPress={qam} />
+          <MidBtn icon="volume-mute" label="MUTE" color={t.red} onPress={() => tvOp('mute')} />
+          <MidBtn icon="logo-steam" label="STEAM" color={t.green} onPress={steam} />
+          <MidBtn icon="ellipsis-horizontal" label="QAM" color={t.amber} onPress={qam} />
         </View>
         {hasTvKeys ? (
           <Rocker
@@ -318,7 +320,7 @@ export function RemoteView({
                   isBox && styles.sourcePillBox,
                   pressed && styles.pressed,
                 ]}>
-                <Text style={[styles.sourceText, isBox && { color: theme.green }]}>
+                <Text style={[styles.sourceText, isBox && { color: t.green }]}>
                   {isBox ? 'BOX' : s.label.toUpperCase()}
                 </Text>
               </Pressable>
@@ -341,9 +343,11 @@ function CornerBtn({
   label: string;
   onPress: () => void;
 }) {
+  const t = useTheme();
+  const styles = useThemedStyles(makeStyles);
   return (
     <Pressable onPress={onPress} style={({ pressed }) => [styles.corner, pressed && styles.pressed]}>
-      <Ionicons name={icon} size={17} color={theme.text} />
+      <Ionicons name={icon} size={17} color={t.text} />
       <Text style={styles.cornerText}>{label}</Text>
     </Pressable>
   );
@@ -400,6 +404,7 @@ function Dpad({
   /** Joystick armed/released — the parent locks page scrolling while armed. */
   onJoyActive: (active: boolean) => void;
 }) {
+  const styles = useThemedStyles(makeStyles);
   const sens = usePref('trackpadSensitivity');
   const [joy, setJoy] = useState(false);
   const geo = dpadGeometry(size);
@@ -548,6 +553,7 @@ function dpadGeometry(size: number) {
  * right-click, two-finger drag=scroll).
  */
 function NavTrackpad({ size, responder }: { size: number; responder: PanResponderInstance }) {
+  const styles = useThemedStyles(makeStyles);
   const hints = usePref('padHints');
   return (
     <View
@@ -570,9 +576,11 @@ function DeskBtn({
   label: string;
   onPress: () => void;
 }) {
+  const t = useTheme();
+  const styles = useThemedStyles(makeStyles);
   return (
     <Pressable onPress={onPress} style={({ pressed }) => [styles.desk, pressed && styles.pressed]}>
-      <Ionicons name={icon} size={17} color={theme.text} />
+      <Ionicons name={icon} size={17} color={t.text} />
       <Text style={styles.deskText}>{label}</Text>
     </Pressable>
   );
@@ -587,14 +595,16 @@ function Rocker({
   onPlus: () => void;
   onMinus: () => void;
 }) {
+  const t = useTheme();
+  const styles = useThemedStyles(makeStyles);
   return (
     <View style={styles.rocker}>
       <Pressable onPress={onPlus} style={({ pressed }) => [styles.rockerBtn, pressed && styles.pressed]}>
-        <Ionicons name="add" size={26} color={theme.text} />
+        <Ionicons name="add" size={26} color={t.text} />
       </Pressable>
       <Text style={styles.rockerLabel}>{label}</Text>
       <Pressable onPress={onMinus} style={({ pressed }) => [styles.rockerBtn, pressed && styles.pressed]}>
-        <Ionicons name="remove" size={26} color={theme.text} />
+        <Ionicons name="remove" size={26} color={t.text} />
       </Pressable>
     </View>
   );
@@ -611,6 +621,7 @@ function MidBtn({
   color: string;
   onPress: () => void;
 }) {
+  const styles = useThemedStyles(makeStyles);
   return (
     <Pressable onPress={onPress} style={({ pressed }) => [styles.mid, pressed && styles.pressed]}>
       <Ionicons name={icon} size={18} color={color} />
@@ -621,7 +632,7 @@ function MidBtn({
 
 // ---- styles ----------------------------------------------------------------
 
-const styles = StyleSheet.create({
+const makeStyles = (t: Palette) => StyleSheet.create({
   // Fixed, non-scrolling column. gap spaces the rows; navBlock (flex:1) eats
   // the leftover so the elastic circle fits without any scroll.
   root: { flex: 1, gap: 10, paddingBottom: 6 },
@@ -634,18 +645,18 @@ const styles = StyleSheet.create({
     gap: 2,
     padding: 2,
     borderRadius: 10,
-    backgroundColor: theme.inset,
+    backgroundColor: t.inset,
     borderWidth: 1,
-    borderColor: theme.cardBorder,
+    borderColor: t.cardBorder,
   },
   surfaceSeg: {
     flexDirection: 'row',
     gap: 2,
     padding: 2,
     borderRadius: 10,
-    backgroundColor: theme.inset,
+    backgroundColor: t.inset,
     borderWidth: 1,
-    borderColor: theme.cardBorder,
+    borderColor: t.cardBorder,
   },
   seg: {
     flex: 1,
@@ -656,14 +667,14 @@ const styles = StyleSheet.create({
     borderRadius: 8,
     alignItems: 'center',
   },
-  segActive: { backgroundColor: theme.card, borderWidth: 1, borderColor: theme.blue },
-  segText: { color: theme.textDim, fontSize: 12, fontWeight: '700', fontFamily: mono },
-  segTextActive: { color: theme.blue },
+  segActive: { backgroundColor: t.card, borderWidth: 1, borderColor: t.blue },
+  segText: { color: t.textDim, fontSize: 12, fontWeight: '700', fontFamily: mono },
+  segTextActive: { color: t.blue },
   pwr: {
     width: 44,
     height: 40,
     borderRadius: 10,
-    backgroundColor: theme.card,
+    backgroundColor: t.card,
     borderWidth: 1,
     borderColor: 'rgba(248,113,113,0.5)',
     alignItems: 'center',
@@ -680,12 +691,12 @@ const styles = StyleSheet.create({
     paddingVertical: 10,
     paddingHorizontal: 12,
     borderRadius: 12,
-    backgroundColor: theme.card,
+    backgroundColor: t.card,
     borderWidth: 1,
-    borderColor: theme.cardBorder,
+    borderColor: t.cardBorder,
   },
   cornerText: {
-    color: theme.textDim,
+    color: t.textDim,
     fontSize: 10,
     fontWeight: '800',
     letterSpacing: 1,
@@ -714,7 +725,7 @@ const styles = StyleSheet.create({
   okPressed: { backgroundColor: '#cbd5e1' },
   okText: { color: '#0b1220', fontWeight: '800', fontFamily: mono },
   // OK disc while the hold-to-point joystick is armed.
-  okJoy: { backgroundColor: theme.blue, borderColor: theme.blue },
+  okJoy: { backgroundColor: t.blue, borderColor: t.blue },
 
   // Trackpad face of the nav circle (same disc, different surface).
   navTrack: {
@@ -739,12 +750,12 @@ const styles = StyleSheet.create({
     paddingVertical: 10,
     paddingHorizontal: 10,
     borderRadius: 12,
-    backgroundColor: theme.card,
+    backgroundColor: t.card,
     borderWidth: 1,
-    borderColor: theme.cardBorder,
+    borderColor: t.cardBorder,
   },
   deskText: {
-    color: theme.textDim,
+    color: t.textDim,
     fontSize: 9,
     fontWeight: '800',
     letterSpacing: 0.8,
@@ -755,9 +766,9 @@ const styles = StyleSheet.create({
   rocker: {
     width: 84,
     borderRadius: 42,
-    backgroundColor: theme.card,
+    backgroundColor: t.card,
     borderWidth: 1,
-    borderColor: theme.cardBorder,
+    borderColor: t.cardBorder,
     alignItems: 'center',
     paddingVertical: 6,
   },
@@ -770,7 +781,7 @@ const styles = StyleSheet.create({
     justifyContent: 'center',
   },
   rockerLabel: {
-    color: theme.textDim,
+    color: t.textDim,
     fontSize: 13,
     fontWeight: '800',
     letterSpacing: 1,
@@ -786,9 +797,9 @@ const styles = StyleSheet.create({
     gap: 7,
     paddingVertical: 13,
     borderRadius: 12,
-    backgroundColor: theme.card,
+    backgroundColor: t.card,
     borderWidth: 1,
-    borderColor: theme.cardBorder,
+    borderColor: t.cardBorder,
   },
   midText: { fontSize: 11, fontWeight: '800', letterSpacing: 0.5, fontFamily: mono },
 
@@ -797,13 +808,13 @@ const styles = StyleSheet.create({
     paddingVertical: 10,
     paddingHorizontal: 14,
     borderRadius: 10,
-    backgroundColor: theme.card,
+    backgroundColor: t.card,
     borderWidth: 1,
-    borderColor: theme.cardBorder,
+    borderColor: t.cardBorder,
   },
   sourcePillBox: { borderColor: 'rgba(52,211,153,0.5)' },
   sourceText: {
-    color: theme.textDim,
+    color: t.textDim,
     fontSize: 11,
     fontWeight: '800',
     letterSpacing: 0.5,

@@ -9,7 +9,7 @@ import { Modal, Pressable, StyleSheet, Text, View } from 'react-native';
 
 import { api, ConnSettings, Screensaver } from '@/lib/api';
 import { hapticError, hapticLight, hapticSuccess } from '@/lib/haptics';
-import { mono, theme } from '@/lib/theme';
+import { mono, useThemedStyles, type Palette } from '@/lib/theme';
 
 /** Display labels for the agent's theme ids (order = display order). */
 const THEME_LABELS: Record<string, string> = {
@@ -103,6 +103,8 @@ export function ScreensaverSheet({
     }
   }, [busy, settings, onChanged]);
 
+  const styles = useThemedStyles(makeStyles);
+
   const themes = saver?.themes?.length ? saver.themes : Object.keys(THEME_LABELS);
 
   return (
@@ -166,20 +168,20 @@ export function ScreensaverSheet({
   );
 }
 
-const styles = StyleSheet.create({
+const makeStyles = (t: Palette) => StyleSheet.create({
   backdrop: { flex: 1, backgroundColor: 'rgba(0,0,0,0.6)', justifyContent: 'flex-end' },
   sheet: {
-    backgroundColor: theme.card,
+    backgroundColor: t.card,
     borderTopLeftRadius: 18,
     borderTopRightRadius: 18,
-    borderColor: theme.cardBorder,
+    borderColor: t.cardBorder,
     borderWidth: 1,
     padding: 20,
     paddingBottom: 32,
     gap: 10,
   },
-  title: { color: theme.textFaint, fontSize: 11, fontWeight: '700', letterSpacing: 1.2, fontFamily: mono },
-  sub: { color: theme.textFaint, fontSize: 10, fontWeight: '700', letterSpacing: 1, fontFamily: mono, marginTop: 6 },
+  title: { color: t.textFaint, fontSize: 11, fontWeight: '700', letterSpacing: 1.2, fontFamily: mono },
+  sub: { color: t.textFaint, fontSize: 10, fontWeight: '700', letterSpacing: 1, fontFamily: mono, marginTop: 6 },
 
   pills: { flexDirection: 'row', flexWrap: 'wrap', gap: 8, marginTop: 4 },
   pill: {
@@ -187,13 +189,13 @@ const styles = StyleSheet.create({
     paddingVertical: 8,
     paddingHorizontal: 14,
     borderRadius: 999,
-    backgroundColor: theme.inset,
-    borderColor: theme.cardBorder,
+    backgroundColor: t.inset,
+    borderColor: t.cardBorder,
     borderWidth: 1,
   },
-  pillOn: { borderColor: theme.blue, backgroundColor: 'rgba(80,150,255,0.12)' },
-  pillText: { color: theme.textDim, fontSize: 14, fontWeight: '600' },
-  pillTextOn: { color: theme.blue },
+  pillOn: { borderColor: t.blue, backgroundColor: 'rgba(80,150,255,0.12)' },
+  pillText: { color: t.textDim, fontSize: 14, fontWeight: '600' },
+  pillTextOn: { color: t.blue },
   pressed: { opacity: 0.7 },
 
   seg: { flexDirection: 'row', gap: 6, marginTop: 4 },
@@ -202,19 +204,19 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     paddingVertical: 8,
     borderRadius: 10,
-    borderColor: theme.cardBorder,
+    borderColor: t.cardBorder,
     borderWidth: 1,
   },
-  segOn: { backgroundColor: theme.inset, borderColor: theme.textDim },
-  segText: { color: theme.textDim, fontSize: 14, fontWeight: '600' },
-  segTextOn: { color: theme.text },
+  segOn: { backgroundColor: t.inset, borderColor: t.textDim },
+  segText: { color: t.textDim, fontSize: 14, fontWeight: '600' },
+  segTextOn: { color: t.text },
 
   startBtn: {
     marginTop: 12,
     alignItems: 'center',
     paddingVertical: 12,
     borderRadius: 12,
-    backgroundColor: theme.blue,
+    backgroundColor: t.blue,
   },
   startText: { color: '#fff', fontSize: 15, fontWeight: '700' },
 
@@ -222,17 +224,17 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'space-between',
-    backgroundColor: theme.inset,
+    backgroundColor: t.inset,
     borderRadius: 10,
     padding: 12,
   },
-  armedText: { color: theme.text, fontSize: 15 },
+  armedText: { color: t.text, fontSize: 15 },
   cancelBtn: {
-    borderColor: theme.red,
+    borderColor: t.red,
     borderWidth: 1,
     borderRadius: 999,
     paddingVertical: 5,
     paddingHorizontal: 12,
   },
-  cancelText: { color: theme.red, fontSize: 12, fontWeight: '700', fontFamily: mono },
+  cancelText: { color: t.red, fontSize: 12, fontWeight: '700', fontFamily: mono },
 });

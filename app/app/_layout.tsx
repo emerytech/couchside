@@ -1,5 +1,6 @@
-import { DarkTheme, Stack, ThemeProvider } from 'expo-router';
+import { DarkTheme, DefaultTheme, Stack, ThemeProvider } from 'expo-router';
 import { StatusBar } from 'expo-status-bar';
+import { useMemo } from 'react';
 import 'react-native-reanimated';
 
 import { ReviewPrompt } from '@/components/ReviewPrompt';
@@ -9,7 +10,7 @@ import { UnlockToast } from '@/components/UnlockToast';
 import { DeepLinkHandler } from '@/lib/DeepLink';
 import { EntitlementProvider } from '@/lib/EntitlementContext';
 import { SettingsProvider } from '@/lib/SettingsContext';
-import { theme } from '@/lib/theme';
+import { useResolvedScheme, useTheme } from '@/lib/theme';
 
 export { ErrorBoundary } from 'expo-router';
 
@@ -17,24 +18,29 @@ export const unstable_settings = {
   initialRouteName: '(tabs)',
 };
 
-const opsTheme = {
-  ...DarkTheme,
-  colors: {
-    ...DarkTheme.colors,
-    background: theme.bg,
-    card: theme.tabBar,
-    border: theme.tabBarBorder,
-    text: theme.text,
-    primary: theme.blue,
-  },
-};
-
 export default function RootLayout() {
+  const t = useTheme();
+  const scheme = useResolvedScheme();
+  const navTheme = useMemo(() => {
+    const base = scheme === 'light' ? DefaultTheme : DarkTheme;
+    return {
+      ...base,
+      colors: {
+        ...base.colors,
+        background: t.bg,
+        card: t.tabBar,
+        border: t.tabBarBorder,
+        text: t.text,
+        primary: t.blue,
+      },
+    };
+  }, [t, scheme]);
+
   return (
     <SettingsProvider>
       <EntitlementProvider>
-        <ThemeProvider value={opsTheme}>
-          <StatusBar style="light" />
+        <ThemeProvider value={navTheme}>
+          <StatusBar style={scheme === 'light' ? 'dark' : 'light'} />
           <DeepLinkHandler />
           <Stack>
             <Stack.Screen name="(tabs)" options={{ headerShown: false }} />

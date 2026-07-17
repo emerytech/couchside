@@ -11,7 +11,8 @@ import { api, Status } from '@/lib/api';
 import { usePref } from '@/lib/prefs';
 import { Box } from '@/lib/settings';
 import { useBoxes } from '@/lib/SettingsContext';
-import { mono, numeric, pctColor, tempColor, theme } from '@/lib/theme';
+import { mono, numeric, pctColor, tempColor, useTheme, useThemedStyles } from '@/lib/theme';
+import type { Palette } from '@/lib/theme';
 
 /** One box's latest fleet snapshot. */
 type FleetEntry = {
@@ -144,6 +145,8 @@ function Tile({ box, entry, active, onPress }: {
   active: boolean;
   onPress: () => void;
 }) {
+  const t = useTheme();
+  const styles = useThemedStyles(makeStyles);
   const s = entry?.status ?? null;
   const up = entry != null && entry.error == null && s != null;
   const memPct = s ? Math.round((s.mem.used_mb / s.mem.total_mb) * 100) : 0;
@@ -158,7 +161,7 @@ function Tile({ box, entry, active, onPress }: {
         pressed && styles.pressed,
       ]}>
       <View style={styles.tileHeader}>
-        <View style={[styles.dot, { backgroundColor: up ? theme.green : theme.red }]} />
+        <View style={[styles.dot, { backgroundColor: up ? t.green : t.red }]} />
         <Text style={styles.tileName} numberOfLines={1}>
           {s?.hostname ?? box.name}
         </Text>
@@ -173,24 +176,24 @@ function Tile({ box, entry, active, onPress }: {
           <View style={styles.metricsRow}>
             <View style={styles.metric}>
               <Text style={styles.metricLabel}>TEMP</Text>
-              <Text style={[styles.metricValue, { color: tempColor(s.cpu_temp_c) }]}>
+              <Text style={[styles.metricValue, { color: tempColor(s.cpu_temp_c, t) }]}>
                 {s.cpu_temp_c != null ? `${Math.round(s.cpu_temp_c)}°` : '—'}
               </Text>
             </View>
             <View style={styles.metric}>
               <Text style={styles.metricLabel}>LOAD</Text>
-              <Text style={[styles.metricValue, { color: theme.text }]}>
+              <Text style={[styles.metricValue, { color: t.text }]}>
                 {s.load[0].toFixed(2)}
               </Text>
             </View>
             <View style={styles.metric}>
               <Text style={styles.metricLabel}>MEM</Text>
-              <Text style={[styles.metricValue, { color: pctColor(memPct) }]}>{memPct}%</Text>
+              <Text style={[styles.metricValue, { color: pctColor(memPct, t) }]}>{memPct}%</Text>
             </View>
           </View>
           {/* Load trend, indented to align with the metrics row. */}
           <View style={styles.sparkWrap}>
-            <Sparkline values={s.history?.load} color={theme.blue} height={16} />
+            <Sparkline values={s.history?.load} color={t.blue} height={16} />
           </View>
         </>
       ) : (
@@ -217,6 +220,7 @@ function FleetScreen() {
   const { boxes, activeBoxId, switchBox } = useBoxes();
   const statusInterval = usePref('statusIntervalMs');
   const fleet = useFleetStatus(boxes, statusInterval);
+  const styles = useThemedStyles(makeStyles);
 
   return (
     <ScrollView
@@ -241,43 +245,43 @@ function FleetScreen() {
   );
 }
 
-const styles = StyleSheet.create({
+const makeStyles = (t: Palette) => StyleSheet.create({
   scroll: { flex: 1 },
   sectionTitle: {
-    color: theme.textFaint,
+    color: t.textFaint,
     fontFamily: mono,
     fontSize: 11,
     letterSpacing: 1.5,
     marginBottom: 10,
   },
   tile: {
-    backgroundColor: theme.card,
-    borderColor: theme.cardBorder,
+    backgroundColor: t.card,
+    borderColor: t.cardBorder,
     borderWidth: 1,
     borderRadius: 12,
     padding: 14,
     marginBottom: 10,
   },
-  tileActive: { borderColor: theme.blue },
-  tileDown: { borderColor: theme.redDeep },
+  tileActive: { borderColor: t.blue },
+  tileDown: { borderColor: t.redDeep },
   pressed: { opacity: 0.7 },
   tileHeader: { flexDirection: 'row', alignItems: 'center', gap: 8 },
   dot: { width: 9, height: 9, borderRadius: 5 },
   tileName: {
-    color: theme.text,
+    color: t.text,
     fontFamily: mono,
     fontSize: 16,
     fontWeight: '700',
     flexShrink: 1,
   },
   activeTag: {
-    color: theme.blue,
+    color: t.blue,
     fontFamily: mono,
     fontSize: 11,
     marginLeft: 'auto',
   },
   tileHost: {
-    color: theme.textFaint,
+    color: t.textFaint,
     fontFamily: mono,
     fontSize: 11,
     marginTop: 2,
@@ -287,14 +291,14 @@ const styles = StyleSheet.create({
   sparkWrap: { marginLeft: 17 },
   metric: {},
   metricLabel: {
-    color: theme.textFaint,
+    color: t.textFaint,
     fontFamily: mono,
     fontSize: 9,
     letterSpacing: 1,
   },
   metricValue: { ...numeric, fontSize: 18, fontWeight: '700', marginTop: 2 },
   downText: {
-    color: theme.red,
+    color: t.red,
     fontFamily: mono,
     fontSize: 11,
     marginTop: 10,

@@ -23,20 +23,25 @@ import {
   useBoxes,
   useBoxOnlineStatus,
 } from '@/lib/SettingsContext';
-import { mono, theme } from '@/lib/theme';
+import { mono, useTheme, useThemedStyles } from '@/lib/theme';
+import type { Palette } from '@/lib/theme';
 
 /** Reachability -> dot color. Unknown (not yet probed) is amber. */
-function dotColor(status: BoxReachability | undefined): string {
-  if (status === 'reachable') return theme.green;
-  if (status === 'offline') return theme.slate;
-  return theme.amber; // 'unknown' / not yet probed
+function dotColor(status: BoxReachability | undefined, t: Palette): string {
+  if (status === 'reachable') return t.green;
+  if (status === 'offline') return t.slate;
+  return t.amber; // 'unknown' / not yet probed
 }
 
 function Dot({ status }: { status: BoxReachability | undefined }) {
-  return <View style={[styles.dot, { backgroundColor: dotColor(status) }]} />;
+  const t = useTheme();
+  const styles = useThemedStyles(makeStyles);
+  return <View style={[styles.dot, { backgroundColor: dotColor(status, t) }]} />;
 }
 
 export function BoxSwitcher() {
+  const t = useTheme();
+  const styles = useThemedStyles(makeStyles);
   const insets = useSafeAreaInsets();
   const { boxes, activeBox, activeBoxId, switchBox } = useBoxes();
   const [open, setOpen] = useState(false);
@@ -83,7 +88,7 @@ export function BoxSwitcher() {
             <Ionicons
               name={open ? 'chevron-up' : 'chevron-down'}
               size={16}
-              color={theme.textDim}
+              color={t.textDim}
             />
           )}
         </Pressable>
@@ -124,7 +129,7 @@ export function BoxSwitcher() {
                       </Text>
                     </View>
                     {isActive && (
-                      <Ionicons name="checkmark" size={18} color={theme.blue} />
+                      <Ionicons name="checkmark" size={18} color={t.blue} />
                     )}
                   </Pressable>
                 );
@@ -136,7 +141,7 @@ export function BoxSwitcher() {
                   styles.addRow,
                   pressed && styles.rowPressed,
                 ]}>
-                <Ionicons name="add" size={18} color={theme.blue} />
+                <Ionicons name="add" size={18} color={t.blue} />
                 <Text style={styles.addText}>Add a box</Text>
               </Pressable>
             </Pressable>
@@ -147,13 +152,13 @@ export function BoxSwitcher() {
   );
 }
 
-const styles = StyleSheet.create({
+const makeStyles = (t: Palette) => StyleSheet.create({
   headerWrap: {
     paddingHorizontal: 14,
     paddingBottom: 8,
-    backgroundColor: theme.bg,
+    backgroundColor: t.bg,
     borderBottomWidth: 1,
-    borderBottomColor: theme.cardBorder,
+    borderBottomColor: t.cardBorder,
   },
   headerRow: {
     flexDirection: 'row',
@@ -166,8 +171,8 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     flexShrink: 1,
     gap: 8,
-    backgroundColor: theme.card,
-    borderColor: theme.cardBorder,
+    backgroundColor: t.card,
+    borderColor: t.cardBorder,
     borderWidth: 1,
     borderRadius: 999,
     paddingVertical: 8,
@@ -175,7 +180,7 @@ const styles = StyleSheet.create({
   },
   pressed: { opacity: 0.7 },
   pillLabel: {
-    color: theme.text,
+    color: t.text,
     fontFamily: mono,
     fontSize: 14,
     fontWeight: '700',
@@ -191,8 +196,8 @@ const styles = StyleSheet.create({
     paddingHorizontal: 14,
   },
   card: {
-    backgroundColor: theme.card,
-    borderColor: theme.cardBorder,
+    backgroundColor: t.card,
+    borderColor: t.cardBorder,
     borderWidth: 1,
     borderRadius: 14,
     paddingVertical: 6,
@@ -210,10 +215,10 @@ const styles = StyleSheet.create({
     paddingVertical: 12,
     paddingHorizontal: 14,
   },
-  rowPressed: { backgroundColor: theme.inset },
+  rowPressed: { backgroundColor: t.inset },
   rowBody: { flex: 1, minWidth: 0 },
-  rowName: { color: theme.text, fontSize: 15, fontWeight: '700', fontFamily: mono },
-  rowHost: { color: theme.textFaint, fontSize: 12, fontFamily: mono, marginTop: 2 },
+  rowName: { color: t.text, fontSize: 15, fontWeight: '700', fontFamily: mono },
+  rowHost: { color: t.textFaint, fontSize: 12, fontFamily: mono, marginTop: 2 },
   addRow: {
     flexDirection: 'row',
     alignItems: 'center',
@@ -221,8 +226,8 @@ const styles = StyleSheet.create({
     paddingVertical: 12,
     paddingHorizontal: 14,
     borderTopWidth: 1,
-    borderTopColor: theme.cardBorder,
+    borderTopColor: t.cardBorder,
     marginTop: 4,
   },
-  addText: { color: theme.blue, fontSize: 14, fontWeight: '700', fontFamily: mono },
+  addText: { color: t.blue, fontSize: 14, fontWeight: '700', fontFamily: mono },
 });

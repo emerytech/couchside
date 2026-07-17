@@ -5,7 +5,7 @@ import { usePoll } from '@/hooks/usePoll';
 import { api, hostKey, Journal, Unit, UnitScope } from '@/lib/api';
 import { usePref } from '@/lib/prefs';
 import { useSettings } from '@/lib/SettingsContext';
-import { mono, theme } from '@/lib/theme';
+import { mono, useTheme, useThemedStyles, type Palette } from '@/lib/theme';
 
 type PickerUnit = { unit: string; scope: UnitScope; short: string };
 
@@ -29,6 +29,8 @@ function toPicker(units: Unit[]): PickerUnit[] {
  * flex room, not wrap it in a ScrollView.
  */
 export function LogsPanel() {
+  const t = useTheme();
+  const styles = useThemedStyles(makeStyles);
   const { settings, ready } = useSettings();
 
   const [selected, setSelected] = useState(0);
@@ -91,8 +93,8 @@ export function LogsPanel() {
           <Switch
             value={auto}
             onValueChange={setAuto}
-            trackColor={{ false: theme.inset, true: theme.green }}
-            thumbColor={theme.text}
+            trackColor={{ false: t.inset, true: t.green }}
+            thumbColor={t.text}
           />
           <Pressable
             onPress={journal.refresh}
@@ -128,14 +130,14 @@ export function LogsPanel() {
   );
 }
 
-const styles = StyleSheet.create({
+const makeStyles = (t: Palette) => StyleSheet.create({
   root: { flex: 1, paddingHorizontal: 14, paddingTop: 14 },
   segments: {
     flexDirection: 'row',
-    backgroundColor: theme.inset,
+    backgroundColor: t.inset,
     borderRadius: 10,
     borderWidth: 1,
-    borderColor: theme.cardBorder,
+    borderColor: t.cardBorder,
     padding: 3,
     marginBottom: 10,
   },
@@ -145,33 +147,33 @@ const styles = StyleSheet.create({
     borderRadius: 8,
     alignItems: 'center',
   },
-  segmentActive: { backgroundColor: theme.card, borderWidth: 1, borderColor: theme.blue },
-  segmentText: { color: theme.textDim, fontSize: 12, fontFamily: mono },
-  segmentTextActive: { color: theme.blue, fontWeight: '700' },
+  segmentActive: { backgroundColor: t.card, borderWidth: 1, borderColor: t.blue },
+  segmentText: { color: t.textDim, fontSize: 12, fontFamily: mono },
+  segmentTextActive: { color: t.blue, fontWeight: '700' },
   toolbar: {
     flexDirection: 'row',
     alignItems: 'center',
     marginBottom: 8,
     gap: 8,
   },
-  unitLabel: { color: theme.text, fontSize: 12, fontFamily: mono, flex: 1 },
-  scopeLabel: { color: theme.textFaint },
+  unitLabel: { color: t.text, fontSize: 12, fontFamily: mono, flex: 1 },
+  scopeLabel: { color: t.textFaint },
   toolbarRight: { flexDirection: 'row', alignItems: 'center', gap: 8 },
-  autoLabel: { color: theme.textDim, fontSize: 12 },
+  autoLabel: { color: t.textDim, fontSize: 12 },
   refreshBtn: {
-    backgroundColor: theme.card,
-    borderColor: theme.cardBorder,
+    backgroundColor: t.card,
+    borderColor: t.cardBorder,
     borderWidth: 1,
     borderRadius: 8,
     paddingVertical: 10,
     paddingHorizontal: 14,
   },
-  refreshText: { color: theme.blue, fontSize: 12, fontWeight: '700', letterSpacing: 1 },
+  refreshText: { color: t.blue, fontSize: 12, fontWeight: '700', letterSpacing: 1 },
   pressed: { opacity: 0.7 },
   logBox: {
     flex: 1,
-    backgroundColor: theme.inset,
-    borderColor: theme.cardBorder,
+    backgroundColor: t.inset,
+    borderColor: t.cardBorder,
     borderWidth: 1,
     borderRadius: 12,
     paddingHorizontal: 10,
@@ -180,19 +182,19 @@ const styles = StyleSheet.create({
   },
   logList: { flex: 1 },
   line: {
-    color: theme.textDim,
+    color: t.textDim,
     fontSize: 11,
     fontFamily: mono,
     lineHeight: 16,
   },
   errStrip: {
-    backgroundColor: theme.redDeep,
-    borderColor: theme.red,
+    backgroundColor: t.redDeep,
+    borderColor: t.red,
     borderWidth: 1,
     borderRadius: 8,
     padding: 8,
     marginTop: 8,
   },
   errText: { color: '#fecaca', fontSize: 12, fontFamily: mono },
-  dim: { color: theme.textFaint, fontSize: 12, fontFamily: mono, paddingVertical: 12 },
+  dim: { color: t.textFaint, fontSize: 12, fontFamily: mono, paddingVertical: 12 },
 });

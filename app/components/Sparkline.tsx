@@ -1,8 +1,6 @@
 import React from 'react';
 import { StyleSheet, View } from 'react-native';
 
-import { theme } from '@/lib/theme';
-
 /**
  * Tiny bar sparkline for the Console/Fleet vitals cards. Plain Views — no SVG
  * dependency — one slim bar per sample, height scaled into [min,max]. Null

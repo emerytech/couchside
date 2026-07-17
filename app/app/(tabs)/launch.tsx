@@ -37,7 +37,7 @@ import {
 } from '@/lib/api';
 import { hapticError, hapticLight, hapticMedium, hapticSuccess } from '@/lib/haptics';
 import { useSettings } from '@/lib/SettingsContext';
-import { mono, theme } from '@/lib/theme';
+import { mono, useTheme, useThemedStyles, type Palette } from '@/lib/theme';
 
 /** Cross-platform confirm (Alert buttons are no-ops on web). */
 function confirmDelete(label: string, onConfirm: () => void) {
@@ -76,6 +76,8 @@ function LauncherTile({
   onDelete,
   download,
 }: TileProps) {
+  const t = useTheme();
+  const styles = useThemedStyles(makeStyles);
   const [imgFailed, setImgFailed] = useState(false);
   // A failed cover latches to the text card so <Image> doesn't error-loop; clear
   // the latch when the URL changes (e.g. the app healed to the box's cached IP)
@@ -106,7 +108,7 @@ function LauncherTile({
           <Ionicons
             name={launcher.kind === 'steam' ? 'game-controller' : 'rocket'}
             size={32}
-            color={theme.textFaint}
+            color={t.textFaint}
           />
           <Text style={styles.tileFallbackLabel} numberOfLines={3}>
             {launcher.label}
@@ -128,15 +130,15 @@ function LauncherTile({
           <Ionicons
             name={download.state === 'paused' ? 'pause' : 'cloud-download'}
             size={11}
-            color={download.state === 'paused' ? theme.amber : theme.blue}
+            color={download.state === 'paused' ? t.amber : t.blue}
           />
           <Text style={styles.tilePillText}>{download.percent}%</Text>
         </View>
       )}
       {download && !isActiveDownload(download) && (
         <View style={[styles.tilePill, styles.tilePillQueued]}>
-          <Ionicons name="time-outline" size={11} color={theme.textDim} />
-          <Text style={[styles.tilePillText, { color: theme.textDim }]}>queued</Text>
+          <Ionicons name="time-outline" size={11} color={t.textDim} />
+          <Text style={[styles.tilePillText, { color: t.textDim }]}>queued</Text>
         </View>
       )}
 
@@ -145,7 +147,7 @@ function LauncherTile({
           onPress={onDelete}
           hitSlop={10}
           style={({ pressed }) => [styles.tileDelete, pressed && styles.pressed]}>
-          <Ionicons name="trash" size={16} color={theme.red} />
+          <Ionicons name="trash" size={16} color={t.red} />
         </Pressable>
       )}
     </Pressable>
@@ -158,8 +160,10 @@ function fmtGB(bytes: number): string {
 }
 
 function DownloadRow({ d }: { d: SteamDownload }) {
+  const t = useTheme();
+  const styles = useThemedStyles(makeStyles);
   const paused = d.state === 'paused';
-  const fill = paused ? theme.amber : theme.blue;
+  const fill = paused ? t.amber : t.blue;
   const pct = Math.max(0, Math.min(100, d.percent));
   return (
     <View style={styles.dlRow}>
@@ -173,7 +177,7 @@ function DownloadRow({ d }: { d: SteamDownload }) {
         <View style={[styles.dlFill, { width: `${Math.max(2, pct)}%`, backgroundColor: fill }]} />
       </View>
       <View style={styles.dlMeta}>
-        <Text style={[styles.dlState, paused && { color: theme.amber }]}>
+        <Text style={[styles.dlState, paused && { color: t.amber }]}>
           {d.state.toUpperCase()}
         </Text>
         {d.bytes_total > 0 && (
@@ -188,6 +192,7 @@ function DownloadRow({ d }: { d: SteamDownload }) {
 
 /** A queued (pending, not-moving) update — compact, dimmed, no fake progress. */
 function QueuedRow({ d }: { d: SteamDownload }) {
+  const styles = useThemedStyles(makeStyles);
   return (
     <View style={styles.qRow}>
       <Text style={styles.qName} numberOfLines={1}>
@@ -205,6 +210,8 @@ function QueuedRow({ d }: { d: SteamDownload }) {
  * days. Hidden when nothing is downloading or queued.
  */
 function DownloadsSection({ downloads }: { downloads: SteamDownload[] }) {
+  const t = useTheme();
+  const styles = useThemedStyles(makeStyles);
   const [showQueue, setShowQueue] = useState(false);
   if (downloads.length === 0) return null;
   const active = downloads.filter(isActiveDownload);
@@ -214,7 +221,7 @@ function DownloadsSection({ downloads }: { downloads: SteamDownload[] }) {
       {active.length > 0 && (
         <>
           <View style={styles.dlHeader}>
-            <Ionicons name="cloud-download" size={14} color={theme.blue} />
+            <Ionicons name="cloud-download" size={14} color={t.blue} />
             <Text style={styles.dlHeaderText}>DOWNLOADING</Text>
           </View>
           {active.map((d) => (
@@ -234,14 +241,14 @@ function DownloadsSection({ downloads }: { downloads: SteamDownload[] }) {
               active.length > 0 && styles.dlHeaderGap,
               pressed && styles.pressed,
             ]}>
-            <Ionicons name="time-outline" size={13} color={theme.textDim} />
-            <Text style={[styles.dlHeaderText, { color: theme.textDim }]}>
+            <Ionicons name="time-outline" size={13} color={t.textDim} />
+            <Text style={[styles.dlHeaderText, { color: t.textDim }]}>
               QUEUED · {queued.length}
             </Text>
             <Ionicons
               name={showQueue ? 'chevron-up' : 'chevron-down'}
               size={14}
-              color={theme.textDim}
+              color={t.textDim}
             />
           </Pressable>
           {showQueue && queued.map((d) => <QueuedRow key={d.appid} d={d} />)}
@@ -260,6 +267,8 @@ type AddFormProps = {
 };
 
 function AddLauncherForm({ visible, onClose, onSubmit }: AddFormProps) {
+  const t = useTheme();
+  const styles = useThemedStyles(makeStyles);
   const [label, setLabel] = useState('');
   const [cmd, setCmd] = useState('');
   const [busy, setBusy] = useState(false);
@@ -312,7 +321,7 @@ function AddLauncherForm({ visible, onClose, onSubmit }: AddFormProps) {
             value={label}
             onChangeText={setLabel}
             placeholder="e.g. RetroArch"
-            placeholderTextColor={theme.textFaint}
+            placeholderTextColor={t.textFaint}
             style={styles.input}
             autoCapitalize="none"
             autoCorrect={false}
@@ -323,7 +332,7 @@ function AddLauncherForm({ visible, onClose, onSubmit }: AddFormProps) {
             value={cmd}
             onChangeText={setCmd}
             placeholder="e.g. flatpak run org.libretro.RetroArch"
-            placeholderTextColor={theme.textFaint}
+            placeholderTextColor={t.textFaint}
             style={styles.input}
             autoCapitalize="none"
             autoCorrect={false}
@@ -347,7 +356,7 @@ function AddLauncherForm({ visible, onClose, onSubmit }: AddFormProps) {
                 (pressed || busy) && styles.pressed,
               ]}>
               {busy ? (
-                <ActivityIndicator color={theme.bg} size="small" />
+                <ActivityIndicator color={t.bg} size="small" />
               ) : (
                 <Text style={[styles.formBtnText, styles.formBtnTextPrimary]}>Add</Text>
               )}
@@ -376,6 +385,8 @@ export default function LaunchTab() {
 const TOAST_MS = 1500;
 
 function LaunchScreen() {
+  const t = useTheme();
+  const styles = useThemedStyles(makeStyles);
   const { settings, ready } = useSettings();
   const { width } = useWindowDimensions();
   const [addOpen, setAddOpen] = useState(false);
@@ -522,7 +533,7 @@ function LaunchScreen() {
               setAddOpen(true);
             }}
             style={({ pressed }) => [styles.addBtn, pressed && styles.pressed]}>
-            <Ionicons name="add" size={18} color={theme.blue} />
+            <Ionicons name="add" size={18} color={t.blue} />
             <Text style={styles.addBtnText}>Add</Text>
           </Pressable>
         )}
@@ -535,7 +546,7 @@ function LaunchScreen() {
           <RefreshControl
             refreshing={refreshing}
             onRefresh={onRefresh}
-            tintColor={theme.textDim}
+            tintColor={t.textDim}
           />
         }>
         {/* Active Steam downloads (hidden when none / agent < 2.8) */}
@@ -544,7 +555,7 @@ function LaunchScreen() {
         {/* Fresh install: nothing paired yet, so nothing is "unreachable". */}
         {!configured && (
           <View style={styles.emptyCard}>
-            <Ionicons name="rocket" size={40} color={theme.textFaint} />
+            <Ionicons name="rocket" size={40} color={t.textFaint} />
             <Text style={styles.emptyTitle}>No box configured</Text>
             <Text style={styles.emptyText}>
               Open the Setup tab to pair with the Couchside agent on your media center or Steam
@@ -568,7 +579,7 @@ function LaunchScreen() {
         {/* Loading */}
         {configured && !list.data && list.error == null && (
           <View style={styles.center}>
-            <ActivityIndicator color={theme.textDim} />
+            <ActivityIndicator color={t.textDim} />
             <Text style={styles.dim}>loading launchers…</Text>
           </View>
         )}
@@ -576,7 +587,7 @@ function LaunchScreen() {
         {/* Empty state */}
         {list.data && launchers.length === 0 && (
           <View style={styles.emptyCard}>
-            <Ionicons name="rocket" size={40} color={theme.textFaint} />
+            <Ionicons name="rocket" size={40} color={t.textFaint} />
             <Text style={styles.emptyTitle}>No launchers yet</Text>
             <Text style={styles.emptyText}>
               Steam games are discovered automatically once you install them on the box. You can
@@ -585,7 +596,7 @@ function LaunchScreen() {
             <Pressable
               onPress={() => setAddOpen(true)}
               style={({ pressed }) => [styles.emptyAddBtn, pressed && styles.pressed]}>
-              <Ionicons name="add" size={18} color={theme.bg} />
+              <Ionicons name="add" size={18} color={t.bg} />
               <Text style={styles.emptyAddText}>Add a launcher</Text>
             </Pressable>
           </View>
@@ -628,8 +639,8 @@ function LaunchScreen() {
   );
 }
 
-const styles = StyleSheet.create({
-  screen: { flex: 1, backgroundColor: theme.bg },
+const makeStyles = (t: Palette) => StyleSheet.create({
+  screen: { flex: 1, backgroundColor: t.bg },
   header: {
     flexDirection: 'row',
     alignItems: 'center',
@@ -637,27 +648,27 @@ const styles = StyleSheet.create({
     paddingTop: 12,
     paddingBottom: 10,
   },
-  title: { color: theme.text, fontSize: 26, fontWeight: '700', fontFamily: mono, flex: 1 },
+  title: { color: t.text, fontSize: 26, fontWeight: '700', fontFamily: mono, flex: 1 },
   addBtn: {
     flexDirection: 'row',
     alignItems: 'center',
     gap: 4,
-    backgroundColor: theme.card,
-    borderColor: theme.cardBorder,
+    backgroundColor: t.card,
+    borderColor: t.cardBorder,
     borderWidth: 1,
     borderRadius: 999,
     paddingVertical: 7,
     paddingHorizontal: 14,
   },
-  addBtnText: { color: theme.blue, fontSize: 14, fontWeight: '700', fontFamily: mono },
+  addBtnText: { color: t.blue, fontSize: 14, fontWeight: '700', fontFamily: mono },
 
   list: { flex: 1 },
   row: { flexDirection: 'row' },
 
   // Downloads section
   dlCard: {
-    backgroundColor: theme.card,
-    borderColor: theme.cardBorder,
+    backgroundColor: t.card,
+    borderColor: t.cardBorder,
     borderWidth: 1,
     borderRadius: 14,
     padding: 14,
@@ -667,12 +678,12 @@ const styles = StyleSheet.create({
   dlHeader: { flexDirection: 'row', alignItems: 'center', gap: 6 },
   dlHeaderGap: {
     marginTop: 4,
-    borderTopColor: theme.cardBorder,
+    borderTopColor: t.cardBorder,
     borderTopWidth: 1,
     paddingTop: 12,
   },
   dlHeaderText: {
-    color: theme.textDim,
+    color: t.textDim,
     fontSize: 11,
     fontWeight: '700',
     fontFamily: mono,
@@ -680,22 +691,22 @@ const styles = StyleSheet.create({
   },
   // Queued (pending, not-moving) update rows: compact + dimmed.
   qRow: { flexDirection: 'row', alignItems: 'center', gap: 8, paddingLeft: 19 },
-  qName: { color: theme.textDim, fontSize: 13, flex: 1, fontFamily: mono },
-  qSize: { color: theme.textFaint, fontSize: 11, fontFamily: mono },
+  qName: { color: t.textDim, fontSize: 13, flex: 1, fontFamily: mono },
+  qSize: { color: t.textFaint, fontSize: 11, fontFamily: mono },
   dlRow: { gap: 6 },
   dlTop: { flexDirection: 'row', alignItems: 'center' },
-  dlName: { color: theme.text, fontSize: 14, fontWeight: '600', flex: 1, fontFamily: mono },
-  dlPct: { color: theme.text, fontSize: 13, fontWeight: '700', fontFamily: mono, marginLeft: 8 },
+  dlName: { color: t.text, fontSize: 14, fontWeight: '600', flex: 1, fontFamily: mono },
+  dlPct: { color: t.text, fontSize: 13, fontWeight: '700', fontFamily: mono, marginLeft: 8 },
   dlTrack: {
     height: 6,
     borderRadius: 3,
-    backgroundColor: theme.cardBorder,
+    backgroundColor: t.cardBorder,
     overflow: 'hidden',
   },
   dlFill: { height: '100%', borderRadius: 3 },
   dlMeta: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between' },
-  dlState: { color: theme.blue, fontSize: 10, fontWeight: '700', fontFamily: mono, letterSpacing: 0.8 },
-  dlBytes: { color: theme.textDim, fontSize: 11, fontFamily: mono },
+  dlState: { color: t.blue, fontSize: 10, fontWeight: '700', fontFamily: mono, letterSpacing: 0.8 },
+  dlBytes: { color: t.textDim, fontSize: 11, fontFamily: mono },
 
   // Per-tile download pill
   tilePill: {
@@ -710,17 +721,17 @@ const styles = StyleSheet.create({
     paddingVertical: 3,
     paddingHorizontal: 7,
   },
-  tilePillText: { color: theme.text, fontSize: 11, fontWeight: '700', fontFamily: mono },
+  tilePillText: { color: t.text, fontSize: 11, fontWeight: '700', fontFamily: mono },
   tilePillQueued: { backgroundColor: 'rgba(0,0,0,0.55)' },
 
   tile: {
     borderRadius: 14,
     overflow: 'hidden',
-    backgroundColor: theme.card,
-    borderColor: theme.cardBorder,
+    backgroundColor: t.card,
+    borderColor: t.cardBorder,
     borderWidth: 1,
   },
-  tilePressed: { opacity: 0.75, borderColor: theme.blue },
+  tilePressed: { opacity: 0.75, borderColor: t.blue },
   tileArt: { width: '100%', height: '100%' },
   tileFallback: {
     flex: 1,
@@ -730,7 +741,7 @@ const styles = StyleSheet.create({
     gap: 10,
   },
   tileFallbackLabel: {
-    color: theme.text,
+    color: t.text,
     fontSize: 14,
     fontWeight: '700',
     textAlign: 'center',
@@ -745,7 +756,7 @@ const styles = StyleSheet.create({
     paddingVertical: 6,
     paddingHorizontal: 8,
   },
-  tileLabel: { color: theme.text, fontSize: 12, fontWeight: '700', fontFamily: mono },
+  tileLabel: { color: t.text, fontSize: 12, fontWeight: '700', fontFamily: mono },
   tileDelete: {
     position: 'absolute',
     top: 6,
@@ -756,11 +767,11 @@ const styles = StyleSheet.create({
   },
 
   center: { alignItems: 'center', justifyContent: 'center', paddingVertical: 48, gap: 12 },
-  dim: { color: theme.textDim, fontSize: 13 },
+  dim: { color: t.textDim, fontSize: 13 },
 
   errBox: {
-    backgroundColor: theme.redDeep,
-    borderColor: theme.red,
+    backgroundColor: t.redDeep,
+    borderColor: t.red,
     borderWidth: 1,
     borderRadius: 12,
     padding: 14,
@@ -769,7 +780,7 @@ const styles = StyleSheet.create({
   },
   errText: { color: '#fecaca', fontSize: 13, marginBottom: 8, textAlign: 'center' },
   retryBtn: {
-    backgroundColor: theme.red,
+    backgroundColor: t.red,
     paddingVertical: 10,
     paddingHorizontal: 28,
     borderRadius: 8,
@@ -777,8 +788,8 @@ const styles = StyleSheet.create({
   retryText: { color: '#450a0a', fontWeight: '800', fontSize: 13, letterSpacing: 1 },
 
   emptyCard: {
-    backgroundColor: theme.card,
-    borderColor: theme.cardBorder,
+    backgroundColor: t.card,
+    borderColor: t.cardBorder,
     borderWidth: 1,
     borderRadius: 14,
     padding: 24,
@@ -786,19 +797,19 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     gap: 12,
   },
-  emptyTitle: { color: theme.text, fontSize: 18, fontWeight: '700' },
-  emptyText: { color: theme.textDim, fontSize: 13, lineHeight: 19, textAlign: 'center' },
+  emptyTitle: { color: t.text, fontSize: 18, fontWeight: '700' },
+  emptyText: { color: t.textDim, fontSize: 13, lineHeight: 19, textAlign: 'center' },
   emptyAddBtn: {
     flexDirection: 'row',
     alignItems: 'center',
     gap: 6,
-    backgroundColor: theme.blue,
+    backgroundColor: t.blue,
     borderRadius: 999,
     paddingVertical: 10,
     paddingHorizontal: 20,
     marginTop: 4,
   },
-  emptyAddText: { color: theme.bg, fontSize: 14, fontWeight: '800' },
+  emptyAddText: { color: t.bg, fontSize: 14, fontWeight: '800' },
 
   pressed: { opacity: 0.7 },
 
@@ -807,8 +818,8 @@ const styles = StyleSheet.create({
     bottom: 20,
     left: 24,
     right: 24,
-    backgroundColor: theme.inset,
-    borderColor: theme.cardBorder,
+    backgroundColor: t.inset,
+    borderColor: t.cardBorder,
     borderWidth: 1,
     borderRadius: 12,
     paddingVertical: 12,
@@ -820,7 +831,7 @@ const styles = StyleSheet.create({
     shadowOffset: { width: 0, height: 8 },
     elevation: 8,
   },
-  toastText: { color: theme.text, fontSize: 14, fontWeight: '600', fontFamily: mono },
+  toastText: { color: t.text, fontSize: 14, fontWeight: '600', fontFamily: mono },
 
   backdrop: {
     flex: 1,
@@ -829,15 +840,15 @@ const styles = StyleSheet.create({
     paddingHorizontal: 24,
   },
   formCard: {
-    backgroundColor: theme.card,
-    borderColor: theme.cardBorder,
+    backgroundColor: t.card,
+    borderColor: t.cardBorder,
     borderWidth: 1,
     borderRadius: 16,
     padding: 20,
   },
-  formTitle: { color: theme.text, fontSize: 18, fontWeight: '700', marginBottom: 14 },
+  formTitle: { color: t.text, fontSize: 18, fontWeight: '700', marginBottom: 14 },
   formLabel: {
-    color: theme.textFaint,
+    color: t.textFaint,
     fontSize: 11,
     fontWeight: '700',
     letterSpacing: 1,
@@ -845,18 +856,18 @@ const styles = StyleSheet.create({
     marginTop: 8,
   },
   input: {
-    backgroundColor: theme.inset,
-    borderColor: theme.cardBorder,
+    backgroundColor: t.inset,
+    borderColor: t.cardBorder,
     borderWidth: 1,
     borderRadius: 10,
     paddingVertical: 10,
     paddingHorizontal: 12,
-    color: theme.text,
+    color: t.text,
     fontFamily: mono,
     fontSize: 14,
   },
-  formHint: { color: theme.textFaint, fontSize: 11, marginTop: 4 },
-  formError: { color: theme.red, fontSize: 13, marginTop: 10 },
+  formHint: { color: t.textFaint, fontSize: 11, marginTop: 4 },
+  formError: { color: t.red, fontSize: 13, marginTop: 10 },
   formButtons: { flexDirection: 'row', gap: 12, marginTop: 18 },
   formBtn: {
     flex: 1,
@@ -864,11 +875,11 @@ const styles = StyleSheet.create({
     justifyContent: 'center',
     paddingVertical: 12,
     borderRadius: 10,
-    backgroundColor: theme.inset,
-    borderColor: theme.cardBorder,
+    backgroundColor: t.inset,
+    borderColor: t.cardBorder,
     borderWidth: 1,
   },
-  formBtnPrimary: { backgroundColor: theme.blue, borderColor: theme.blue },
-  formBtnText: { color: theme.text, fontSize: 14, fontWeight: '700' },
-  formBtnTextPrimary: { color: theme.bg, fontWeight: '800' },
+  formBtnPrimary: { backgroundColor: t.blue, borderColor: t.blue },
+  formBtnText: { color: t.text, fontSize: 14, fontWeight: '700' },
+  formBtnTextPrimary: { color: t.bg, fontWeight: '800' },
 });
