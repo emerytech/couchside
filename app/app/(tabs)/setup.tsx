@@ -41,7 +41,19 @@ import { buy, getProduct, restore } from '@/lib/purchase';
 import { Box, DEFAULT_PORT, normalizeMac } from '@/lib/settings';
 import { VolumeTarget } from '@/lib/api';
 import { useBoxes, useBoxOnlineStatus, BoxReachability } from '@/lib/SettingsContext';
-import { mono, useTheme, useThemedStyles, type Palette } from '@/lib/theme';
+import {
+  ACCENTS,
+  ACCENT_KEYS,
+  mono,
+  setAccent,
+  setThemeMode,
+  useAccent,
+  useResolvedScheme,
+  useTheme,
+  useThemedStyles,
+  useThemeMode,
+  type Palette,
+} from '@/lib/theme';
 
 /**
  * Build the pairing link for a box.
@@ -608,6 +620,9 @@ function SetupBody() {
   const status = useBoxOnlineStatus(boxes, { active: true, intervalMs: 10000 });
   const hapticsOn = useHapticsEnabled();
   const keepAwakeOn = useKeepAwakeEnabled();
+  const themeMode = useThemeMode();
+  const accent = useAccent();
+  const scheme = useResolvedScheme();
   const confirmSuspend = usePref('confirmSuspend');
   const defaultPadMode = usePref('defaultPadMode');
   const statusIntervalMs = usePref('statusIntervalMs');
@@ -1088,6 +1103,48 @@ function SetupBody() {
                   hapticSelection();
                 }}
               />
+            </View>
+
+            <View style={[styles.card, styles.cardGroup]}>
+              <CardHeader icon="color-palette-outline" label="APPEARANCE" />
+              <SegPref
+                label="Theme"
+                sub="Follow the system, or force light or dark."
+                options={[
+                  { value: 'system', label: 'System' },
+                  { value: 'light', label: 'Light' },
+                  { value: 'dark', label: 'Dark' },
+                ]}
+                value={themeMode}
+                onSelect={(v) => {
+                  void setThemeMode(v);
+                  hapticSelection();
+                }}
+              />
+              <View style={styles.prefCol}>
+                <View style={styles.prefBody}>
+                  <Text style={styles.prefLabel}>Accent</Text>
+                  <Text style={styles.prefSub}>The app&apos;s highlight color.</Text>
+                </View>
+                <View style={styles.accentRow}>
+                  {ACCENT_KEYS.map((k) => (
+                    <Pressable
+                      key={k}
+                      onPress={() => {
+                        void setAccent(k);
+                        hapticSelection();
+                      }}
+                      accessibilityRole="button"
+                      accessibilityLabel={ACCENTS[k].label}
+                      style={[
+                        styles.accentSwatch,
+                        { backgroundColor: ACCENTS[k][scheme] },
+                        accent === k && styles.accentSwatchActive,
+                      ]}
+                    />
+                  ))}
+                </View>
+              </View>
             </View>
 
             <View style={[styles.card, styles.cardGroup]}>
@@ -1656,6 +1713,15 @@ const makeStyles = (t: Palette) => StyleSheet.create({
   segActive: { backgroundColor: t.card },
   segText: { color: t.textDim, fontSize: 13, fontWeight: '700', fontFamily: mono },
   segTextActive: { color: t.text },
+  accentRow: { flexDirection: 'row', gap: 12, flexWrap: 'wrap' },
+  accentSwatch: {
+    width: 30,
+    height: 30,
+    borderRadius: 15,
+    borderWidth: 2,
+    borderColor: 'transparent',
+  },
+  accentSwatchActive: { borderColor: t.text },
   versionLabel: { color: t.textDim, fontSize: 13 },
   versionValue: { color: t.green, fontSize: 13, fontFamily: mono, fontWeight: '700' },
   hint: { color: t.textFaint, fontSize: 12, lineHeight: 17, fontFamily: mono },
