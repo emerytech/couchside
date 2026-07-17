@@ -40,7 +40,7 @@ except ImportError:  # pragma: no cover
     fcntl = None
 
 APP_NAME = "couchside-agent"
-VERSION = "2.9.0"
+VERSION = "2.9.1"
 UID = os.getuid()
 XDG_RUNTIME_DIR = "/run/user/%d" % UID
 
@@ -5882,6 +5882,17 @@ class Handler(BaseHTTPRequestHandler):
             old, GAMEPAD_ACTIVE = GAMEPAD_ACTIVE, entry
         if old is not None:
             print("[gamepad] replacing previous connection", flush=True)
+            # Tell the loser WHY before the socket dies. Without this the other
+            # phone treated the drop as a network blip and auto-reconnected,
+            # kicking THIS connection — two paired phones fought in a reconnect
+            # war forever. A client that sees code=replaced stops reconnecting
+            # and offers an explicit take-over instead.
+            try:
+                ws_send_json(old["conn"], {
+                    "t": "err", "code": "replaced",
+                    "msg": "another device took control"})
+            except OSError:
+                pass
             _gamepad_teardown(old)
 
         mine = True
