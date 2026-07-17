@@ -53,13 +53,43 @@ PLUGIN_URL="https://github.com/emerytech/couchside-decky/releases/latest/downloa
 # wasn't produced maliciously (out of scope here).
 PLUGIN_SUMS_URL="https://github.com/emerytech/couchside-decky/releases/latest/download/SHA256SUMS"
 PLUGIN_SIG_URL="https://github.com/emerytech/couchside-decky/releases/latest/download/SHA256SUMS.sig"
-# Ed25519 public key for verifying that SHA256SUMS was signed by the maintainer.
-# The matching SECRET key is held OFFLINE (never in CI), so a compromised
-# repo/CI/account cannot forge a signature. This half is public — safe to embed.
+# Ed25519 public keys for verifying that SHA256SUMS was signed by the maintainer.
+# The matching SECRET keys are held OFFLINE (never in CI), so a compromised
+# repo/CI/account cannot forge a signature. These halves are public — safe to
+# embed. A signature from EITHER key is accepted: the BACKUP is a cold rollover
+# key, so if the primary is ever lost or compromised the maintainer can sign
+# with the backup WITHOUT locking out already-installed boxes.
 # Signed with: openssl pkeyutl -sign -rawin (see scripts/sign-release.sh).
 RELEASE_PUBKEY_PEM='-----BEGIN PUBLIC KEY-----
 MCowBQYDK2VwAyEA+9aBnheHC7N3J9JNfkP2PoBf89SCkBxmqlZ/2lrcwGA=
 -----END PUBLIC KEY-----'
+RELEASE_PUBKEY_PEM_BACKUP='-----BEGIN PUBLIC KEY-----
+MCowBQYDK2VwAyEAtW4oYkhFGiWZ8nM8u3ldwecPekFQHdabdTI807VoUmE=
+-----END PUBLIC KEY-----'
+
+# Verify SHA256SUMS file ($1) against its detached signature ($2) using EITHER
+# release key. Prints nothing; returns:
+#   0 = a good signature from one of the keys (authentic)
+#   1 = present but BOTH keys rejected it (tampering) — caller must abort
+#   2 = openssl can't do Ed25519 -rawin (too old) — caller falls back to hashes
+verify_release_sig() {
+    command -v openssl >/dev/null 2>&1 || return 2
+    local sums="$1" sig="$2" pub out tmpd saw_fail=0
+    tmpd="$(mktemp -d)"
+    for pub in "$RELEASE_PUBKEY_PEM" "$RELEASE_PUBKEY_PEM_BACKUP"; do
+        [ -n "$pub" ] || continue
+        printf '%s\n' "$pub" > "$tmpd/k.pub"
+        out="$(openssl pkeyutl -verify -pubin -inkey "$tmpd/k.pub" -rawin \
+                -in "$sums" -sigfile "$sig" 2>&1 || true)"
+        if printf '%s' "$out" | grep -qi 'Verified Successfully'; then
+            rm -rf "$tmpd"; return 0
+        elif printf '%s' "$out" | grep -qi 'Verification Failure'; then
+            saw_fail=1
+        fi
+    done
+    rm -rf "$tmpd"
+    [ "$saw_fail" -eq 1 ] && return 1 || return 2
+}
 
 PORT_DEFAULT=8787
 INSTALL_DIR="${HOME}/.local/opt/couchside"
@@ -383,22 +413,13 @@ else
     # catch corruption/transport tampering. Same gate the Decky panel uses below.
     curl -fsSL "$AGENT_SUMS_URL" -o "$WORK_DIR/SHA256SUMS" \
         || die "couldn't fetch the agent SHA256SUMS — refusing to install unverified."
-    if curl -fsSL "$AGENT_SIG_URL" -o "$WORK_DIR/SHA256SUMS.sig" 2>/dev/null \
-       && command -v openssl >/dev/null 2>&1; then
-        printf '%s\n' "$RELEASE_PUBKEY_PEM" > "$WORK_DIR/couchside-release.pub"
-        # openssl's own words distinguish a real bad signature ("Verification
-        # Failure" -> abort) from an openssl too old for Ed25519 -rawin (any
-        # other output -> fall back to checksum-only integrity).
-        sig_out="$(openssl pkeyutl -verify -pubin -inkey "$WORK_DIR/couchside-release.pub" \
-                    -rawin -in "$WORK_DIR/SHA256SUMS" \
-                    -sigfile "$WORK_DIR/SHA256SUMS.sig" 2>&1 || true)"
-        if printf '%s' "$sig_out" | grep -qi 'Verified Successfully'; then
-            note "agent signature: verified (maintainer offline key)."
-        elif printf '%s' "$sig_out" | grep -qi 'Verification Failure'; then
-            die "agent signature INVALID — refusing to install (possible tampering)."
-        else
-            note "can't verify agent signature (openssl lacks Ed25519); checksum only."
-        fi
+    if curl -fsSL "$AGENT_SIG_URL" -o "$WORK_DIR/SHA256SUMS.sig" 2>/dev/null; then
+        verify_release_sig "$WORK_DIR/SHA256SUMS" "$WORK_DIR/SHA256SUMS.sig"
+        case "$?" in
+            0) note "agent signature: verified (maintainer offline key)." ;;
+            1) die "agent signature INVALID — refusing to install (possible tampering)." ;;
+            *) note "can't verify agent signature (openssl lacks Ed25519); checksum only." ;;
+        esac
     else
         note "no agent signature available; checksum only."
     fi
@@ -797,12 +818,44 @@ cat > "$CLI" <<'CLIEOF'
 # couchside — manage the Couchside agent on this box.
 set -u
 INSTALL_URL="https://couchside.tv/install.sh"
+RELEASE_API="https://api.github.com/repos/emerytech/couchside/releases/latest"
 DIR="${HOME}/.local/opt/couchside"
 DAEMON="${DIR}/couchsided.py"
 
 case "${1:-help}" in
   update|upgrade)
-    echo "Updating Couchside from ${INSTALL_URL} …"
+    yes=0
+    case "${2:-}" in -y|--yes) yes=1 ;; esac
+    installed="$(grep -m1 '^VERSION' "$DAEMON" 2>/dev/null | cut -d'"' -f2 || echo unknown)"
+    echo "Couchside agent — installed ${installed}"
+    # Show the latest release's notes (from the GitHub release body) so you can
+    # see what is included BEFORE confirming. Best-effort: a failed fetch just
+    # skips the preview.
+    info="$(curl -fsSL -m 10 -H 'Accept: application/vnd.github+json' "$RELEASE_API" 2>/dev/null \
+      | python3 -c 'import json,sys
+try:
+    d=json.load(sys.stdin)
+    tag=d.get("tag_name") or "?"
+    body=(d.get("body") or "").strip() or "(no release notes published)"
+    print("Latest release: "+tag+"\n\nChanges:\n"+body)
+except Exception:
+    sys.exit(1)' 2>/dev/null)"
+    if [ -n "$info" ]; then
+      echo
+      printf '%s\n' "$info"
+      echo
+    else
+      echo "(could not fetch release notes; you can still proceed)"
+    fi
+    if [ "$yes" -ne 1 ]; then
+      printf 'Update now? [y/N] '
+      # Read from the terminal. If there's no tty (piped / non-interactive),
+      # DON'T block on stdin — default to cancel; use `couchside update -y`.
+      ans=""
+      read -r ans </dev/tty 2>/dev/null || { echo; echo "No terminal for the prompt — re-run as: couchside update -y"; exit 0; }
+      case "$ans" in y|Y|yes|YES) ;; *) echo "Cancelled."; exit 0 ;; esac
+    fi
+    echo "Updating from ${INSTALL_URL} ..."
     curl -fsSL "$INSTALL_URL" | bash
     ;;
   pair)
@@ -818,10 +871,11 @@ case "${1:-help}" in
   help|-h|--help|"")
     cat <<USAGE
 couchside — manage the Couchside agent on this box
-  couchside update    pull the latest agent + Decky plugin, then restart
-  couchside pair      show the pairing QR on this box's screen
-  couchside version   print the installed agent version
-  couchside status    show the agent service status
+  couchside update       show the release notes, then update on confirm
+  couchside update -y    update without the prompt
+  couchside pair         show the pairing QR on this box's screen
+  couchside version      print the installed agent version
+  couchside status       show the agent service status
 USAGE
     ;;
   *)
@@ -1067,23 +1121,15 @@ if [ "$NO_DECKY" -eq 0 ] && [ -d "$DECKY_PLUGINS" ]; then
             note "couldn't download SHA256SUMS for the panel; refusing to install unverified (skipping)."
             return 1
         }
-        # (1) Authenticity: verify SHA256SUMS.sig against the embedded public key.
-        # openssl's own words distinguish a real bad signature ("Verification
-        # Failure" -> abort) from an openssl that can't do Ed25519 -rawin (any
-        # other output -> fall back to checksum-only).
+        # (1) Authenticity: verify SHA256SUMS.sig against EITHER embedded key.
         if curl -fsSL "$PLUGIN_SIG_URL" -o "${decky_tmp}/SHA256SUMS.sig" 2>/dev/null; then
-            printf '%s\n' "$RELEASE_PUBKEY_PEM" > "${decky_tmp}/couchside-release.pub"
-            sig_out="$(openssl pkeyutl -verify -pubin -inkey "${decky_tmp}/couchside-release.pub" \
-                        -rawin -in "${decky_tmp}/SHA256SUMS" \
-                        -sigfile "${decky_tmp}/SHA256SUMS.sig" 2>&1 || true)"
-            if printf '%s' "$sig_out" | grep -qi 'Verified Successfully'; then
-                note "release signature: verified (maintainer offline key)."
-            elif printf '%s' "$sig_out" | grep -qi 'Verification Failure'; then
-                note "release signature INVALID — refusing to install the panel (skipping)."
-                return 1
-            else
-                note "can't verify release signature (openssl lacks Ed25519); checksum only."
-            fi
+            verify_release_sig "${decky_tmp}/SHA256SUMS" "${decky_tmp}/SHA256SUMS.sig"
+            case "$?" in
+                0) note "release signature: verified (maintainer offline key)." ;;
+                1) note "release signature INVALID — refusing to install the panel (skipping)."
+                   return 1 ;;
+                *) note "can't verify release signature (openssl lacks Ed25519); checksum only." ;;
+            esac
         else
             note "no release signature found (older/unsigned release); checksum only."
         fi
