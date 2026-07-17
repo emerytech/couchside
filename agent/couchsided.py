@@ -34,7 +34,7 @@ import time
 import urllib.request
 import zlib
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
-from urllib.parse import urlparse, parse_qs, unquote
+from urllib.parse import urlparse, parse_qs, quote, unquote
 
 try:
     import fcntl  # POSIX only; uinput needs it (Linux), absent on Windows
@@ -42,7 +42,7 @@ except ImportError:  # pragma: no cover
     fcntl = None
 
 APP_NAME = "couchside-agent"
-VERSION = "2.9.8"
+VERSION = "2.9.9"
 UID = os.getuid()
 XDG_RUNTIME_DIR = "/run/user/%d" % UID
 
@@ -173,6 +173,7 @@ CONFIG_PORT = None  # optional "port" from config.json
 CONFIG_PANEL = None  # optional {"device","baud"} RS-232 panel-control config
 CONFIG_WEBOS = None  # optional {"host","mac","client_key"} LG webOS TV config
 CONFIG_SAMSUNG = None  # optional {"host","mac","token"} Samsung Tizen TV config
+CONFIG_ROKU = None  # optional {"host","name"} Roku (ECP) TV config
 # When true, the app may trigger a box-side agent update via POST
 # /api/update/apply. OFF BY DEFAULT: enabling it lets any holder of the bearer
 # token cause a (signature-verified) install + restart, so it is opt-in and can
@@ -387,14 +388,32 @@ def _parse_config(raw):
                 raise ConfigError("samsung.mac must be a string")
             samsung["mac"] = mac
 
-    return units, actions, order, port, launchers, panel, webos, samsung
+    # Optional Roku TV (ECP over HTTP). host is an IP/hostname; the optional
+    # name is a friendly label captured when the device was added. No pairing.
+    roku = None
+    roku_raw = raw.get("roku")
+    if roku_raw is not None:
+        if not isinstance(roku_raw, dict):
+            raise ConfigError("roku must be an object")
+        host = roku_raw.get("host")
+        if not isinstance(host, str) or not host:
+            raise ConfigError("roku.host must be a non-empty string")
+        roku = {"host": host}
+        name = roku_raw.get("name")
+        if name is not None:
+            if not isinstance(name, str):
+                raise ConfigError("roku.name must be a string")
+            roku["name"] = name
+
+    return (units, actions, order, port, launchers, panel, webos, samsung,
+            roku)
 
 
 def load_config(path):
     """Load config.json into the module globals; fall back to defaults."""
     global WATCHLIST, WATCHLIST_NAMES, ACTIONS, ACTION_ORDER, CONFIG_PORT
     global LAUNCHERS, CONFIG_PATH, CONFIG_PANEL, CONFIG_WEBOS, CONFIG_SAMSUNG
-    global ALLOW_APP_UPDATE
+    global CONFIG_ROKU, ALLOW_APP_UPDATE
     CONFIG_PATH = path  # remembered so launcher POST/DELETE can rewrite it
     try:
         with open(path) as f:
@@ -403,8 +422,8 @@ def load_config(path):
         # it must be honored even if _parse_config later rejects some other field.
         if isinstance(raw, dict):
             ALLOW_APP_UPDATE = bool(raw.get("allow_app_update", False))
-        (units, actions, order, port, launchers, panel, webos,
-         samsung) = _parse_config(raw)
+        (units, actions, order, port, launchers, panel, webos, samsung,
+         roku) = _parse_config(raw)
     except FileNotFoundError:
         print("warning: config %s not found, using built-in generic defaults"
               % path, file=sys.stderr, flush=True)
@@ -422,6 +441,7 @@ def load_config(path):
     CONFIG_PANEL = panel
     CONFIG_WEBOS = webos
     CONFIG_SAMSUNG = samsung
+    CONFIG_ROKU = roku
     print("config loaded from %s: %d units, %d actions, %d launchers"
           % (path, len(WATCHLIST), len(ACTIONS), len(LAUNCHERS)), flush=True)
 
@@ -3836,6 +3856,130 @@ def _samsung_save(host, token, mac=None):
         CONFIG_SAMSUNG = cfg
 
 
+# ---- Roku backend (ECP over plain HTTP) -----------------------------------
+# Roku devices expose the External Control Protocol (ECP) as an unauthenticated
+# HTTP service on port 8060 — no pairing, no token, no WebSocket. Key presses
+# are POST /keypress/<KEY>; power on/off are ECP keys too (Roku TVs stay
+# reachable in standby, so unlike webOS/Samsung there is no Wake-on-LAN).
+# Stateless: each op is a one-shot POST, so there is no session or lock.
+# Config-driven; a reachable host is enough (nothing to pair).
+ROKU_PORT = 8060
+
+# Unified TV op -> ECP key. Roku TVs wake over the network, so power_on is the
+# PowerOn key (not Wake-on-LAN); mute (VolumeMute) self-toggles.
+_ROKU_OP_KEY = {
+    "power_off": "PowerOff", "power_on": "PowerOn",
+    "volume_up": "VolumeUp", "volume_down": "VolumeDown", "mute": "VolumeMute",
+}
+
+# Factory-remote key (shared vocabulary) -> ECP key. Roku has no distinct
+# pause/stop (Play toggles) and no menu (Info is the "*" options key).
+_ROKU_KEYS = {
+    "up": "Up", "down": "Down", "left": "Left", "right": "Right", "ok": "Select",
+    "menu": "Info", "home": "Home", "back": "Back", "exit": "Home", "info": "Info",
+    "play": "Play", "pause": "Play", "stop": "Play", "rewind": "Rev",
+    "fast_forward": "Fwd",
+}
+
+
+def _roku_tag(xml, tag):
+    """Extract <tag>...</tag> text from a Roku ECP XML blob, or None."""
+    open_t, close_t = "<%s>" % tag, "</%s>" % tag
+    a = xml.find(open_t)
+    if a < 0:
+        return None
+    a += len(open_t)
+    b = xml.find(close_t, a)
+    return xml[a:b].strip() if b > a else None
+
+
+def _roku_post(host, path, timeout=4):
+    """POST an empty body to a Roku ECP path. ActionResult-shaped."""
+    start = time.monotonic()
+    url = "http://%s:%d/%s" % (host, ROKU_PORT, path)
+    try:
+        req = urllib.request.Request(url, data=b"", method="POST")
+        with urllib.request.urlopen(req, timeout=timeout) as r:
+            r.read()
+        return _webos_result(start, True, path)
+    except OSError as e:            # URLError / HTTPError are OSError subclasses
+        return _webos_result(start, False, "%s: %s" % (e.__class__.__name__, e))
+
+
+ROKU_MOCK = False
+
+
+def set_roku(mock):
+    """Prepare the Roku backend. Nothing to open (stateless HTTP)."""
+    global ROKU_MOCK
+    ROKU_MOCK = mock
+
+
+def roku_available():
+    """True in --mock, or when config named a Roku host (no pairing needed)."""
+    if ROKU_MOCK:
+        return True
+    return bool(CONFIG_ROKU and CONFIG_ROKU.get("host"))
+
+
+def real_roku(op):
+    """Dispatch a unified TV op to an ECP keypress (power on/off included)."""
+    key = _ROKU_OP_KEY.get(op)
+    if key is None:
+        return _webos_result(time.monotonic(), False, "unsupported op %s" % op)
+    return _roku_post(CONFIG_ROKU["host"], "keypress/" + key)
+
+
+def real_roku_key(k):
+    """Send one factory-remote key (PANEL_KEYS vocabulary) as an ECP keypress."""
+    key = _ROKU_KEYS.get(k)
+    if key is None:
+        return _webos_result(time.monotonic(), False, "unknown key %s" % k)
+    return _roku_post(CONFIG_ROKU["host"], "keypress/" + key)
+
+
+def real_roku_text(text):
+    """Type text via ECP Lit_ keypresses, one character at a time."""
+    host = CONFIG_ROKU["host"]
+    for ch in text:
+        r = _roku_post(host, "keypress/Lit_" + quote(ch, safe=""))
+        if not r["ok"]:
+            return r
+    return _webos_result(time.monotonic(), True, "text (%d chars)" % len(text))
+
+
+def mock_roku(op):
+    """--mock stand-in: log the op, touch no network, succeed."""
+    time.sleep(0.02)
+    print("[roku] %s" % op, flush=True)
+    return {"ok": True, "exit_code": 0, "stdout": "[mock roku] %s\n" % op,
+            "stderr": "", "duration_ms": 20}
+
+
+def roku_add(host, timeout=4):
+    """Verify a Roku answers ECP at <host> and return its friendly name (Roku
+    needs no pairing). Raises IOError when it does not respond."""
+    url = "http://%s:%d/query/device-info" % (host, ROKU_PORT)
+    try:
+        with urllib.request.urlopen(url, timeout=timeout) as r:
+            xml = r.read().decode(errors="ignore")
+    except OSError as e:
+        raise IOError("Roku not reachable at %s: %s" % (host, e))
+    return (_roku_tag(xml, "user-device-name")
+            or _roku_tag(xml, "friendly-device-name")
+            or _roku_tag(xml, "default-device-name")
+            or _roku_tag(xml, "model-name") or host)
+
+
+def _roku_save(host, name):
+    """Persist the Roku config to CONFIG_PATH atomically and update CONFIG_ROKU."""
+    cfg = {"host": host, "name": name}
+    global CONFIG_ROKU
+    with CONFIG_LOCK:
+        _config_set_field("roku", cfg)
+        CONFIG_ROKU = cfg
+
+
 # ---- unified dispatch -----------------------------------------------------
 # CEC has no discrete power-off; its standby command IS the off state.
 _TV_TO_CEC = {"power_on": "power_on", "power_off": "standby",
@@ -3855,6 +3999,7 @@ def set_tv(mock):
     set_panel(mock)
     set_webos(mock)
     set_samsung(mock)
+    set_roku(mock)
     set_soft(mock)
 
 
@@ -3869,6 +4014,8 @@ def _tv_hw_backend():
         return "webos"
     if samsung_available():
         return "samsung"
+    if roku_available():
+        return "roku"
     if cec_available():
         return "cec"
     return None
@@ -3892,6 +4039,10 @@ def tv_info():
     elif hw == "samsung":
         backend, adapter = "samsung", ("Samsung Tizen (%s)" % CONFIG_SAMSUNG["host"]
                                        if CONFIG_SAMSUNG else "Samsung Tizen")
+    elif hw == "roku":
+        backend, adapter = "roku", ("Roku (%s)" % (CONFIG_ROKU.get("name")
+                                    or CONFIG_ROKU["host"]) if CONFIG_ROKU
+                                    else "Roku")
     elif hw == "cec":
         cec = cec_current()
         backend, adapter = "cec", (cec["adapter"] if cec else "CEC")
@@ -3920,10 +4071,13 @@ def tv_info():
         # Factory-remote key emulation (arrows/ok/menu/home/back/settings): the
         # RS-232 panel drives the OSD, a paired webOS TV drives its pointer/nav.
         # Either lights up the app's Remote view D-pad cluster.
-        "keys": panel_available() or webos_available() or samsung_available(),
-        # Text entry into a focused on-TV field. webOS (IME) and Samsung
-        # (SendInputString) support it; the panel and CEC have no text channel.
-        "text": webos_available() or samsung_available(),
+        "keys": (panel_available() or webos_available()
+                 or samsung_available() or roku_available()),
+        # Text entry into a focused on-TV field. webOS (IME), Samsung
+        # (SendInputString) and Roku (Lit_ keypresses) support it; the panel
+        # and CEC have no text channel.
+        "text": (webos_available() or samsung_available()
+                 or roku_available()),
         # Box mute state, so the app shows the right mute indicator on connect.
         "muted": _soft_muted() if box_vol else None,
         # Current levels (0-100 or null) so the app's volume slider can show and
@@ -3944,6 +4098,8 @@ def _send_tv_hw(op, mock):
         return mock_webos(op) if mock else real_webos(op)
     if b == "samsung":
         return mock_samsung(op) if mock else real_samsung(op)
+    if b == "roku":
+        return mock_roku(op) if mock else real_roku(op)
     if b == "cec":
         cec_op = _TV_TO_CEC[op]
         return mock_cec(cec_op) if mock else real_cec(cec_op)
@@ -6492,6 +6648,9 @@ class Handler(BaseHTTPRequestHandler):
                 elif backend == "samsung" and k in _SAMSUNG_KEYS:
                     result = (mock_samsung("key %s" % k) if self.mock
                               else real_samsung_key(k))
+                elif backend == "roku" and k in _ROKU_KEYS:
+                    result = (mock_roku("key %s" % k) if self.mock
+                              else real_roku_key(k))
                 elif backend == "panel" and k in PANEL_KEYS:
                     result = ({"ok": True, "exit_code": 0,
                                "stdout": "[mock panel] key %s" % k,
@@ -6507,7 +6666,12 @@ class Handler(BaseHTTPRequestHandler):
             # IME). Body {"text": "..."}; webOS-only (tv_info.text gates it).
             if path == "/api/tv/text":
                 backend = _tv_hw_backend()
-                if backend not in ("webos", "samsung"):
+                _TEXT_FNS = {
+                    "webos": (mock_webos, real_webos_text),
+                    "samsung": (mock_samsung, real_samsung_text),
+                    "roku": (mock_roku, real_roku_text),
+                }
+                if backend not in _TEXT_FNS:
                     self._send(404, {"error": "no text backend"}, started)
                     return
                 try:
@@ -6518,13 +6682,8 @@ class Handler(BaseHTTPRequestHandler):
                 except (ValueError, TypeError, KeyError, UnicodeDecodeError):
                     self._send(400, {"error": "text must be a string"}, started)
                     return
-                if self.mock:
-                    result = mock_webos("text") if backend == "webos" \
-                        else mock_samsung("text")
-                elif backend == "webos":
-                    result = real_webos_text(text)
-                else:
-                    result = real_samsung_text(text)
+                mock_fn, real_fn = _TEXT_FNS[backend]
+                result = mock_fn("text") if self.mock else real_fn(text)
                 self._send(200, result, started)
                 return
 
@@ -6604,6 +6763,42 @@ class Handler(BaseHTTPRequestHandler):
                 set_caps(False)
                 self._send(200, {"ok": True, "paired": True,
                                  "backend": "samsung", "host": host}, started)
+                return
+
+            # POST /api/tv/roku/add: register a Roku by host. Body {"host":
+            # "<ip>"}. Roku needs no pairing — we just verify it answers ECP,
+            # capture its friendly name, and persist. Returns the name.
+            if path == "/api/tv/roku/add":
+                try:
+                    req = json.loads(body.decode("utf-8")) if body else {}
+                    host = req["host"]
+                    if not isinstance(host, str) or not host:
+                        raise ValueError("host required")
+                except (ValueError, TypeError, KeyError, UnicodeDecodeError):
+                    self._send(400, {"error": "host (string) required"}, started)
+                    return
+                if self.mock:
+                    self._send(200, {"ok": True, "added": True, "backend": "roku",
+                                     "host": host, "name": "Mock Roku"}, started)
+                    return
+                try:
+                    name = roku_add(host)
+                except (IOError, OSError) as e:
+                    self._send(502, {"ok": False,
+                                     "error": "not a reachable Roku: %s" % e},
+                               started)
+                    return
+                try:
+                    _roku_save(host, name)
+                except OSError as e:
+                    self._send(500, {"ok": False,
+                                     "error": "could not persist config: %s" % e},
+                               started)
+                    return
+                set_roku(False)
+                set_caps(False)
+                self._send(200, {"ok": True, "added": True, "backend": "roku",
+                                 "host": host, "name": name}, started)
                 return
 
             # POST /api/tv/source/<id>: switch the display input (panel only).
