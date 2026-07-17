@@ -50,6 +50,15 @@ tmp="$(mktemp -d)"
 trap 'rm -rf "$tmp"' EXIT
 for f in "${files[@]}"; do cp "$agent/$f" "$tmp/$f"; done
 
+# agent-version.txt: the agent VERSION string, so the box-side update check
+# (/api/update/check) can compare cheaply without downloading the whole daemon.
+# Signed alongside everything else (it's covered by SHA256SUMS below).
+agent_ver="$(grep -m1 '^VERSION' "$agent/couchsided.py" | cut -d'"' -f2)"
+[ -n "$agent_ver" ] || { echo "error: couldn't read agent VERSION" >&2; exit 2; }
+printf '%s\n' "$agent_ver" > "$tmp/agent-version.txt"
+files+=(agent-version.txt)
+echo "==> agent version: $agent_ver"
+
 echo "==> generating SHA256SUMS over ${#files[@]} agent files"
 ( cd "$tmp" && { command -v sha256sum >/dev/null 2>&1 \
     && sha256sum "${files[@]}" \
@@ -77,9 +86,10 @@ if ! gh release view "$tag" --repo "$REPO" >/dev/null 2>&1; then
 fi
 
 echo "==> uploading signed agent assets to $tag"
-gh release upload "$tag" --repo "$REPO" --clobber \
-    "$tmp/couchsided.py" "$tmp/couchside.service" "$tmp/qr.py" \
-    "$tmp/couchside-screensaver.sh" "$tmp/SHA256SUMS" "$tmp/SHA256SUMS.sig"
+uploads=()
+for f in "${files[@]}"; do uploads+=("$tmp/$f"); done
+uploads+=("$tmp/SHA256SUMS" "$tmp/SHA256SUMS.sig")
+gh release upload "$tag" --repo "$REPO" --clobber "${uploads[@]}"
 
 echo "OK: signed agent published to $REPO $tag"
 echo "    install.sh fetches these from releases/latest/download/ and verifies the sig."

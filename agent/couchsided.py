@@ -30,6 +30,7 @@ import tempfile
 import termios
 import threading
 import time
+import urllib.request
 import zlib
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import urlparse, parse_qs, unquote
@@ -40,7 +41,7 @@ except ImportError:  # pragma: no cover
     fcntl = None
 
 APP_NAME = "couchside-agent"
-VERSION = "2.9.4"
+VERSION = "2.9.5"
 UID = os.getuid()
 XDG_RUNTIME_DIR = "/run/user/%d" % UID
 
@@ -169,6 +170,13 @@ ACTIONS = dict(DEFAULT_ACTIONS)
 ACTION_ORDER = list(DEFAULT_ACTION_ORDER)
 CONFIG_PORT = None  # optional "port" from config.json
 CONFIG_PANEL = None  # optional {"device","baud"} RS-232 panel-control config
+# When true, the app may trigger a box-side agent update via POST
+# /api/update/apply. OFF BY DEFAULT: enabling it lets any holder of the bearer
+# token cause a (signature-verified) install + restart, so it is opt-in and can
+# only be turned on ON THE BOX (`couchside allow-updates on`, or config.json),
+# never by the app itself. The app just reads the state and shows/hides its
+# Update button accordingly.
+ALLOW_APP_UPDATE = False
 LAUNCHERS = []  # list of {"id","label","cmd":[...]}, custom launchers only
 CONFIG_PATH = DEFAULT_CONFIG_PATH  # remembered by load_config() for rewrites
 CONFIG_LOCK = threading.Lock()  # serializes launcher config rewrites
@@ -336,11 +344,15 @@ def _parse_config(raw):
 def load_config(path):
     """Load config.json into the module globals; fall back to defaults."""
     global WATCHLIST, WATCHLIST_NAMES, ACTIONS, ACTION_ORDER, CONFIG_PORT
-    global LAUNCHERS, CONFIG_PATH, CONFIG_PANEL
+    global LAUNCHERS, CONFIG_PATH, CONFIG_PANEL, ALLOW_APP_UPDATE
     CONFIG_PATH = path  # remembered so launcher POST/DELETE can rewrite it
     try:
         with open(path) as f:
             raw = json.load(f)
+        # Read the app-update flag FIRST, independent of the rest of the config:
+        # it must be honored even if _parse_config later rejects some other field.
+        if isinstance(raw, dict):
+            ALLOW_APP_UPDATE = bool(raw.get("allow_app_update", False))
         units, actions, order, port, launchers, panel = _parse_config(raw)
     except FileNotFoundError:
         print("warning: config %s not found, using built-in generic defaults"
@@ -656,6 +668,102 @@ def set_caps(mock):
         "couchmode": safe(couchmode_available),
         "desktop": safe(desktop_available),
     }
+
+
+# ---------------------------------------------------------------------------
+# Update check (/api/update/check).
+#
+# PRIVACY: this is the ONLY thing that reaches the public internet on the app's
+# behalf, and it lives on the BOX — which already talks to GitHub to fetch its
+# own updates — NOT in the phone app. The app reads the result over the LAN, so
+# the app itself never leaves your network. GitHub sees the box's IP (a read of
+# a public repo); nothing about the user is sent to us. The check runs only when
+# asked (the app polls this route) and is CACHED, so GitHub is contacted at most
+# once every few hours. It compares the installed agent version to the newest
+# SIGNED release (the same assets install.sh verifies), so nothing here can be
+# spoofed into recommending a malicious build.
+# ---------------------------------------------------------------------------
+_UPDATE_LATEST_VER_URL = \
+    "https://github.com/emerytech/couchside/releases/latest/download/agent-version.txt"
+_UPDATE_RELEASE_API = "https://api.github.com/repos/emerytech/couchside/releases/latest"
+_UPDATE_TTL_S = 6 * 3600
+_update_cache = {"at": 0.0, "data": None}
+_update_lock = threading.Lock()
+
+
+def _http_text(url, timeout=8):
+    """GET a small text/JSON body from GitHub. GitHub requires a User-Agent."""
+    req = urllib.request.Request(url, headers={
+        "User-Agent": "couchside-agent/%s" % VERSION,
+        "Accept": "application/vnd.github+json",
+    })
+    with urllib.request.urlopen(req, timeout=timeout) as r:
+        return r.read(1_000_000).decode("utf-8", "replace")
+
+
+def _ver_tuple(s):
+    out = []
+    for p in (s or "").strip().split("."):
+        digits = "".join(ch for ch in p if ch.isdigit())
+        out.append(int(digits) if digits else 0)
+    return tuple(out) or (0,)
+
+
+def update_check(force=False):
+    """Whether a newer SIGNED agent release exists. Cached (6h) so the app can
+    poll cheaply — the box contacts GitHub only on a cache miss. Never raises;
+    a network failure returns available:false with an error string."""
+    now = time.monotonic()
+    with _update_lock:
+        c = _update_cache
+        if not force and c["data"] is not None and now - c["at"] < _UPDATE_TTL_S:
+            return c["data"]
+    installed = VERSION
+    try:
+        latest = _http_text(_UPDATE_LATEST_VER_URL).strip().split()[0]
+        meta = json.loads(_http_text(_UPDATE_RELEASE_API))
+        data = {
+            "available": _ver_tuple(latest) > _ver_tuple(installed),
+            "installed": installed,
+            "latest": latest,
+            "tag": meta.get("tag_name") or None,
+            "notes": (meta.get("body") or "").strip() or None,
+            "checked_at": int(time.time()),
+        }
+    except Exception as e:
+        data = {"available": False, "installed": installed, "latest": None,
+                "tag": None, "notes": None, "error": str(e)[:200],
+                "checked_at": int(time.time())}
+    with _update_lock:
+        _update_cache["at"] = now
+        _update_cache["data"] = data
+    return data
+
+
+def mock_update_check():
+    return {"available": True, "installed": VERSION, "latest": "2.9.9",
+            "tag": "v2.8.9",
+            "notes": "## Mock update 2.9.9\n- A shiny new thing\n- A small fix",
+            "checked_at": int(time.time())}
+
+
+def update_apply():
+    """Spawn a DETACHED box-side update (the signed installer) so it survives
+    this agent's own restart, and return immediately. The caller MUST have
+    verified ALLOW_APP_UPDATE first. The installer verifies the release
+    signature before installing, so a triggered update can only ever install an
+    authentic release — never arbitrary code."""
+    log = "/tmp/couchside-update.log"
+    # start_new_session detaches the child into its own session/process group:
+    # when the installer restarts couchside.service and kills this agent, the
+    # update keeps running to completion.
+    subprocess.Popen(
+        ["bash", "-c",
+         "curl -fsSL 'https://couchside.tv/install.sh' | bash > %s 2>&1" % log],
+        stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL, start_new_session=True)
+    print("[update] app-triggered update started (log: %s)" % log, flush=True)
+    return {"started": True, "log": log}
 
 
 # ---------------------------------------------------------------------------
@@ -5410,6 +5518,17 @@ class Handler(BaseHTTPRequestHandler):
                 # 404 -> the app hides the section (probe-and-appear via 404->null).
                 downloads = mock_downloads() if self.mock else steam_downloads()
                 self._send(200, {"downloads": downloads}, started)
+            elif path == "/api/update/check":
+                # Box-side update check (agent >= 2.9.5). The app reads this over
+                # the LAN so the app never touches the internet; the box (already
+                # internet-facing for updates) does the cached GitHub read. Old
+                # agents 404 -> the app shows no banner (probe-and-appear).
+                force = parse_qs(parsed.query).get("force", ["0"])[0] == "1"
+                data = mock_update_check() if self.mock else update_check(force=force)
+                # apply_enabled is read live (not from the cache) so the app
+                # reflects the box-side toggle without waiting out the TTL.
+                data = dict(data, apply_enabled=bool(ALLOW_APP_UPDATE))
+                self._send(200, data, started)
             elif path.startswith("/api/steam/") and path.endswith("/cover"):
                 appid = path[len("/api/steam/"):-len("/cover")]
                 self._handle_steam_cover(appid, started)
@@ -5598,6 +5717,23 @@ class Handler(BaseHTTPRequestHandler):
                     return
                 result = (mock_action(action_id) if self.mock
                           else real_action(action_id))
+                self._send(200, result, started)
+                return
+
+            # POST /api/update/apply: app-triggered box-side update. Gated by
+            # ALLOW_APP_UPDATE (off by default, box-side opt-in only): 403 when
+            # disabled so the capability doesn't exist for boxes that didn't
+            # opt in. The installer verifies the release signature, so even an
+            # authorized trigger can only install an authentic release.
+            if path == "/api/update/apply":
+                if not ALLOW_APP_UPDATE:
+                    self._send(403, {"ok": False, "error":
+                                     "app updates are disabled on this box "
+                                     "(enable with: couchside allow-updates on)"},
+                               started)
+                    return
+                result = ({"started": True, "log": "/tmp/couchside-update.log"}
+                          if self.mock else update_apply())
                 self._send(200, result, started)
                 return
 
