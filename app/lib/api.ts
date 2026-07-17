@@ -228,15 +228,26 @@ export type SteamDownloadState =
   | 'finalizing'
   | 'updating';
 
-/** One Steam app with an active download/update/validation operation. */
+/** One Steam app with a download/update/validation operation. */
 export type SteamDownload = {
   appid: number;
   name: string;
   state: SteamDownloadState;
+  /**
+   * True when bytes/install work are ACTUALLY moving right now (agent >= 2.9.4),
+   * vs a queued/pending update Steam hasn't started. Absent on older agents —
+   * treat undefined as active so their behavior is unchanged.
+   */
+  active?: boolean;
   bytes_total: number;
   bytes_downloaded: number;
   percent: number;
 };
+
+/** True when this entry is genuinely transferring/installing (not just queued). */
+export function isActiveDownload(d: SteamDownload): boolean {
+  return d.active !== false && d.state !== 'queued';
+}
 
 export type Downloads = { downloads: SteamDownload[] };
 
