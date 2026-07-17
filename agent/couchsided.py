@@ -42,7 +42,7 @@ except ImportError:  # pragma: no cover
     fcntl = None
 
 APP_NAME = "couchside-agent"
-VERSION = "2.9.9"
+VERSION = "2.9.10"
 UID = os.getuid()
 XDG_RUNTIME_DIR = "/run/user/%d" % UID
 
@@ -174,6 +174,7 @@ CONFIG_PANEL = None  # optional {"device","baud"} RS-232 panel-control config
 CONFIG_WEBOS = None  # optional {"host","mac","client_key"} LG webOS TV config
 CONFIG_SAMSUNG = None  # optional {"host","mac","token"} Samsung Tizen TV config
 CONFIG_ROKU = None  # optional {"host","name"} Roku (ECP) TV config
+CONFIG_ANDROIDTV = None  # optional {"host","cert","key","name","mac"} Android TV config
 # When true, the app may trigger a box-side agent update via POST
 # /api/update/apply. OFF BY DEFAULT: enabling it lets any holder of the bearer
 # token cause a (signature-verified) install + restart, so it is opt-in and can
@@ -405,15 +406,34 @@ def _parse_config(raw):
                 raise ConfigError("roku.name must be a string")
             roku["name"] = name
 
+    # Optional Android TV / Google TV (Remote v2). host + the paired client
+    # cert/key (PEM strings, written back by the pairing endpoint); optional
+    # name label and mac (for Wake-on-LAN power-on).
+    androidtv = None
+    atv_raw = raw.get("androidtv")
+    if atv_raw is not None:
+        if not isinstance(atv_raw, dict):
+            raise ConfigError("androidtv must be an object")
+        host = atv_raw.get("host")
+        if not isinstance(host, str) or not host:
+            raise ConfigError("androidtv.host must be a non-empty string")
+        androidtv = {"host": host}
+        for field in ("cert", "key", "name", "mac"):
+            val = atv_raw.get(field)
+            if val is not None:
+                if not isinstance(val, str):
+                    raise ConfigError("androidtv.%s must be a string" % field)
+                androidtv[field] = val
+
     return (units, actions, order, port, launchers, panel, webos, samsung,
-            roku)
+            roku, androidtv)
 
 
 def load_config(path):
     """Load config.json into the module globals; fall back to defaults."""
     global WATCHLIST, WATCHLIST_NAMES, ACTIONS, ACTION_ORDER, CONFIG_PORT
     global LAUNCHERS, CONFIG_PATH, CONFIG_PANEL, CONFIG_WEBOS, CONFIG_SAMSUNG
-    global CONFIG_ROKU, ALLOW_APP_UPDATE
+    global CONFIG_ROKU, CONFIG_ANDROIDTV, ALLOW_APP_UPDATE
     CONFIG_PATH = path  # remembered so launcher POST/DELETE can rewrite it
     try:
         with open(path) as f:
@@ -423,7 +443,7 @@ def load_config(path):
         if isinstance(raw, dict):
             ALLOW_APP_UPDATE = bool(raw.get("allow_app_update", False))
         (units, actions, order, port, launchers, panel, webos, samsung,
-         roku) = _parse_config(raw)
+         roku, androidtv) = _parse_config(raw)
     except FileNotFoundError:
         print("warning: config %s not found, using built-in generic defaults"
               % path, file=sys.stderr, flush=True)
@@ -442,6 +462,7 @@ def load_config(path):
     CONFIG_WEBOS = webos
     CONFIG_SAMSUNG = samsung
     CONFIG_ROKU = roku
+    CONFIG_ANDROIDTV = androidtv
     print("config loaded from %s: %d units, %d actions, %d launchers"
           % (path, len(WATCHLIST), len(ACTIONS), len(LAUNCHERS)), flush=True)
 
@@ -3980,6 +4001,431 @@ def _roku_save(host, name):
         CONFIG_ROKU = cfg
 
 
+# ---- Android TV / Google TV backend (Remote v2, protobuf over TLS) --------
+# Android TV Remote v2: length-prefixed protobuf over TLS on two ports — 6467
+# (pairing) and 6466 (remote). The client authenticates with a self-signed TLS
+# cert; pairing binds that cert to the TV via a 6-digit code shown on screen.
+# Kept pure-stdlib: the cert is minted by shelling out to `openssl` (stdlib ssl
+# can't create X.509), and the protobuf messages are hand-rolled (a varint +
+# field-walker codec, no library). androidtvremote2 was the protocol oracle.
+#
+# Two things here are unlike the other network backends:
+#  * Pairing is TWO-STEP over ONE held socket — the code arrives mid-session, so
+#    pair_start opens + handshakes the pairing socket (TV shows the code) and
+#    pair_finish computes the secret on the SAME socket. The socket is parked in
+#    ANDROIDTV_PAIR between the two HTTP calls.
+#  * The remote channel must answer periodic pings or the TV drops it, so it
+#    runs a persistent connection with a background keepalive reader thread
+#    (reconnect-per-key would add a ~1s handshake to every D-pad press).
+ANDROIDTV_PAIR_PORT = 6467
+ANDROIDTV_REMOTE_PORT = 6466
+_ATV_FEATURES = 622                 # feature bitmask echoed in the remote config
+
+# Unified TV op -> Android keycode. power_on has no in-band form (a TV that is
+# off has dropped its network stack) — it is Wake-on-LAN when a mac is known,
+# else a best-effort POWER key. mute (KEYCODE_MUTE) self-toggles.
+_ATV_OP_KEY = {"power_off": 26, "volume_up": 24, "volume_down": 25, "mute": 91}
+# Factory-remote key (shared vocabulary) -> Android keycode.
+_ATV_KEYS = {
+    "up": 19, "down": 20, "left": 21, "right": 22, "ok": 23, "menu": 82,
+    "home": 3, "back": 4, "exit": 4, "play": 126, "pause": 127, "stop": 86,
+    "rewind": 89, "fast_forward": 90,
+}
+
+
+# -- protobuf wire codec (namespaced) --
+def _atv_varint(n):
+    out = bytearray()
+    while True:
+        b = n & 0x7F
+        n >>= 7
+        out.append(b | 0x80 if n else b)
+        if not n:
+            return bytes(out)
+
+
+def _atv_read_varint(buf, pos):
+    shift = result = 0
+    while True:
+        b = buf[pos]
+        pos += 1
+        result |= (b & 0x7F) << shift
+        if not b & 0x80:
+            return result, pos
+        shift += 7
+
+
+def _atv_tag(field, wt):
+    return _atv_varint((field << 3) | wt)
+
+
+def _atv_fv(field, val):
+    return _atv_tag(field, 0) + _atv_varint(val)          # varint field
+
+
+def _atv_fb(field, data):
+    return _atv_tag(field, 2) + _atv_varint(len(data)) + data  # length-delimited
+
+
+def _atv_fs(field, s):
+    return _atv_fb(field, s.encode())
+
+
+def _atv_fm(field, data):
+    return _atv_fb(field, data)                            # embedded message
+
+
+def _atv_parse(buf):
+    """protobuf bytes -> {field_number: [values]} (varint->int, len-delim->bytes)."""
+    pos, fields = 0, {}
+    while pos < len(buf):
+        tag, pos = _atv_read_varint(buf, pos)
+        f, wt = tag >> 3, tag & 7
+        if wt == 0:
+            v, pos = _atv_read_varint(buf, pos)
+        elif wt == 2:
+            ln, pos = _atv_read_varint(buf, pos)
+            v = buf[pos:pos + ln]
+            pos += ln
+        elif wt == 1:
+            v = buf[pos:pos + 8]
+            pos += 8
+        elif wt == 5:
+            v = buf[pos:pos + 4]
+            pos += 4
+        else:
+            raise ValueError("bad wire type %d" % wt)
+        fields.setdefault(f, []).append(v)
+    return fields
+
+
+def _atv_outer(inner_field, inner):
+    """OuterMessage: protocol_version(1)=2, status(2)=200, <inner>."""
+    return _atv_fv(1, 2) + _atv_fv(2, 200) + _atv_fm(inner_field, inner)
+
+
+# -- framing (varint length prefix) --
+def _atv_send(sock, msg):
+    sock.sendall(_atv_varint(len(msg)) + msg)
+
+
+def _atv_recv(sock):
+    lenbuf = b""
+    while True:
+        b = sock.recv(1)
+        if not b:
+            raise IOError("androidtv connection closed")
+        lenbuf += b
+        if not b[0] & 0x80:
+            break
+    ln, _ = _atv_read_varint(lenbuf, 0)
+    data = b""
+    while len(data) < ln:
+        chunk = sock.recv(ln - len(data))
+        if not chunk:
+            raise IOError("androidtv closed mid-message")
+        data += chunk
+    return data
+
+
+# -- cert (openssl CLI) + TLS --
+def _atv_generate_cert():
+    """Mint a self-signed client cert via openssl. Returns (cert_pem, key_pem,
+    cert_path, key_path). stdlib ssl cannot create X.509, hence the shell-out —
+    in-character with the agent's other tool shell-outs (cec-ctl, wpctl, ...)."""
+    d = tempfile.mkdtemp(prefix="couchside-atv-")
+    cp, kp = os.path.join(d, "cert.pem"), os.path.join(d, "key.pem")
+    subprocess.run(
+        ["openssl", "req", "-x509", "-newkey", "rsa:2048", "-keyout", kp,
+         "-out", cp, "-days", "3650", "-nodes", "-subj", "/CN=couchside",
+         "-addext", "subjectAltName=DNS:couchside",
+         "-addext", "basicConstraints=CA:TRUE,pathlen:0"],
+        check=True, capture_output=True)
+    os.chmod(kp, 0o600)
+    with open(cp) as f:
+        cert_pem = f.read()
+    with open(kp) as f:
+        key_pem = f.read()
+    return cert_pem, key_pem, cp, kp
+
+
+def _atv_write_cert(cert_pem, key_pem):
+    """Write PEM strings to a fresh temp dir; return (cert_path, key_path).
+    ssl.load_cert_chain needs file paths, so config-stored PEM is materialized."""
+    d = tempfile.mkdtemp(prefix="couchside-atv-")
+    cp, kp = os.path.join(d, "cert.pem"), os.path.join(d, "key.pem")
+    with open(cp, "w") as f:
+        f.write(cert_pem)
+    with open(kp, "w") as f:
+        f.write(key_pem)
+    os.chmod(kp, 0o600)
+    return cp, kp
+
+
+def _atv_modulus_pem(path):
+    r = subprocess.run(["openssl", "x509", "-in", path, "-noout", "-modulus"],
+                       check=True, capture_output=True, text=True)
+    return r.stdout.strip().split("Modulus=")[1]
+
+
+def _atv_modulus_der(der):
+    r = subprocess.run(["openssl", "x509", "-inform", "DER", "-noout", "-modulus"],
+                       input=der, capture_output=True)
+    return r.stdout.decode().strip().split("Modulus=")[1]
+
+
+def _atv_tls(host, port, cert_path, key_path, timeout=15):
+    ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
+    ctx.check_hostname = False
+    ctx.verify_mode = ssl.CERT_NONE               # TV serves a self-signed cert
+    ctx.load_cert_chain(certfile=cert_path, keyfile=key_path)
+    raw = socket.create_connection((host, port), timeout=timeout)
+    s = ctx.wrap_socket(raw)
+    s.settimeout(timeout)
+    return s
+
+
+# -- pairing (two-step, one held socket) --
+ANDROIDTV_PAIR = None            # {sock, client_mod, server_mod, cert, key, host, expires}
+ANDROIDTV_PAIR_LOCK = threading.Lock()
+
+
+def androidtv_pair_start(host):
+    """Open the pairing socket and handshake up to the point the TV shows its
+    6-digit code. Parks the session in ANDROIDTV_PAIR for androidtv_pair_finish.
+    Reuses the config cert if one exists (re-pair), else mints a fresh one."""
+    global ANDROIDTV_PAIR
+    with ANDROIDTV_PAIR_LOCK:
+        if ANDROIDTV_PAIR:
+            try:
+                ANDROIDTV_PAIR["sock"].close()
+            except Exception:
+                pass
+            ANDROIDTV_PAIR = None
+        if CONFIG_ANDROIDTV and CONFIG_ANDROIDTV.get("cert"):
+            cert_pem, key_pem = CONFIG_ANDROIDTV["cert"], CONFIG_ANDROIDTV["key"]
+            cp, kp = _atv_write_cert(cert_pem, key_pem)
+        else:
+            cert_pem, key_pem, cp, kp = _atv_generate_cert()
+        s = _atv_tls(host, ANDROIDTV_PAIR_PORT, cp, kp)
+        server_mod = _atv_modulus_der(s.getpeercert(True))
+        client_mod = _atv_modulus_pem(cp)
+        enc = _atv_fv(1, 3) + _atv_fv(2, 6)       # encoding: HEX, 6 symbols
+        _atv_send(s, _atv_outer(10, _atv_fs(1, "atvremote") + _atv_fs(2, "Couchside")))
+        if 11 not in _atv_parse(_atv_recv(s)):
+            raise IOError("no pairing_request_ack")
+        _atv_send(s, _atv_outer(20, _atv_fm(1, enc) + _atv_fv(3, 1)))
+        if 20 not in _atv_parse(_atv_recv(s)):
+            raise IOError("no options")
+        _atv_send(s, _atv_outer(30, _atv_fm(1, enc) + _atv_fv(2, 1)))
+        if 31 not in _atv_parse(_atv_recv(s)):
+            raise IOError("no configuration_ack")
+        ANDROIDTV_PAIR = {"sock": s, "client_mod": client_mod,
+                          "server_mod": server_mod, "cert": cert_pem,
+                          "key": key_pem, "host": host,
+                          "expires": time.monotonic() + 300}
+
+
+def androidtv_pair_finish(code):
+    """Complete pairing with the 6-hex-digit code from the TV. Returns
+    (cert_pem, key_pem, host) for the caller to persist. Raises on a bad code."""
+    global ANDROIDTV_PAIR
+    with ANDROIDTV_PAIR_LOCK:
+        p = ANDROIDTV_PAIR
+        if not p or time.monotonic() > p["expires"]:
+            ANDROIDTV_PAIR = None
+            raise IOError("no active pairing session (call pair/start first)")
+        code = (code or "").strip()
+        if len(code) != 6:
+            raise IOError("code must be 6 hex digits")
+        try:
+            bytes.fromhex(code)
+        except ValueError:
+            raise IOError("code must be hexadecimal")
+        h = hashlib.sha256()
+        h.update(bytes.fromhex(p["client_mod"]))
+        h.update(bytes.fromhex("010001"))        # exponent 65537, 0-prefixed
+        h.update(bytes.fromhex(p["server_mod"]))
+        h.update(bytes.fromhex("010001"))
+        h.update(bytes.fromhex(code[2:]))
+        secret = h.digest()
+        if secret[0] != int(code[0:2], 16):
+            raise IOError("wrong pairing code")
+        s = p["sock"]
+        _atv_send(s, _atv_outer(40, _atv_fb(1, secret)))
+        if 41 not in _atv_parse(_atv_recv(s)):
+            raise IOError("pairing rejected by the TV")
+        try:
+            s.close()
+        except Exception:
+            pass
+        ANDROIDTV_PAIR = None
+        return p["cert"], p["key"], p["host"]
+
+
+def _androidtv_save(host, cert_pem, key_pem, name=None, mac=None):
+    """Persist the paired Android TV config atomically and update CONFIG_ANDROIDTV."""
+    cfg = {"host": host, "cert": cert_pem, "key": key_pem}
+    if name:
+        cfg["name"] = name
+    if mac:
+        cfg["mac"] = mac
+    global CONFIG_ANDROIDTV
+    with CONFIG_LOCK:
+        _config_set_field("androidtv", cfg)
+        CONFIG_ANDROIDTV = cfg
+
+
+# -- persistent remote session (keepalive) --
+class _AndroidTVRemote:
+    """One remote-channel connection with a background keepalive reader. Sends
+    are serialized under `lock`; the reader thread only reads (and answers pings
+    under the same lock). Reconnects lazily on the next send after a drop."""
+
+    def __init__(self):
+        self.sock = None
+        self.lock = threading.Lock()
+        self._active = None       # the socket the reader is bound to
+
+    def _handshake(self, s):
+        deadline = time.monotonic() + 12
+        while time.monotonic() < deadline:
+            f = _atv_parse(_atv_recv(s))
+            if 1 in f:            # remote_configure -> reply with our device_info
+                dev = (_atv_fv(3, 1) + _atv_fs(4, "1") + _atv_fs(5, "atvremote")
+                       + _atv_fs(6, "1.0.0"))
+                _atv_send(s, _atv_fm(1, _atv_fv(1, _ATV_FEATURES) + _atv_fm(2, dev)))
+            elif 2 in f:          # remote_set_active
+                _atv_send(s, _atv_fm(2, _atv_fv(1, _ATV_FEATURES)))
+            elif 8 in f:          # ping during handshake
+                v = _atv_parse(f[8][0]).get(1, [1])[0]
+                _atv_send(s, _atv_fm(9, _atv_fv(1, v)))
+            elif 40 in f:         # remote_start -> ready
+                return
+        raise IOError("androidtv remote handshake timed out")
+
+    def _reader_loop(self, s):
+        while self._active is s:
+            try:
+                f = _atv_parse(_atv_recv(s))
+            except Exception:
+                break
+            if 8 in f:            # remote_ping_request -> remote_ping_response
+                v = _atv_parse(f[8][0]).get(1, [1])[0]
+                try:
+                    with self.lock:
+                        if self.sock is s:
+                            _atv_send(s, _atv_fm(9, _atv_fv(1, v)))
+                except Exception:
+                    break
+        with self.lock:
+            if self.sock is s:
+                self.sock = None
+                self._active = None
+
+    def _ensure(self):
+        """Caller holds self.lock. Connect + handshake + start reader if needed."""
+        if self.sock is not None:
+            return
+        cp, kp = _atv_write_cert(CONFIG_ANDROIDTV["cert"], CONFIG_ANDROIDTV["key"])
+        s = _atv_tls(CONFIG_ANDROIDTV["host"], ANDROIDTV_REMOTE_PORT, cp, kp)
+        self._handshake(s)
+        self.sock = s
+        self._active = s
+        threading.Thread(target=self._reader_loop, args=(s,), daemon=True).start()
+
+    def send_key(self, code):
+        with self.lock:
+            for attempt in (1, 2):
+                try:
+                    self._ensure()
+                    # remote_key_inject(10){key_code(1), direction(2)=SHORT(3)}
+                    _atv_send(self.sock, _atv_fm(10, _atv_fv(1, code) + _atv_fv(2, 3)))
+                    return
+                except (IOError, OSError, ssl.SSLError, ValueError):
+                    self._close_locked()
+                    if attempt == 2:
+                        raise
+
+    def _close_locked(self):
+        self._active = None
+        if self.sock is not None:
+            try:
+                self.sock.close()
+            except Exception:
+                pass
+            self.sock = None
+
+    def close(self):
+        with self.lock:
+            self._close_locked()
+
+
+ANDROIDTV = None                 # active _AndroidTVRemote, or None
+ANDROIDTV_LOCK = threading.Lock()
+_ANDROIDTV_MOCK = False
+
+
+def set_androidtv(mock):
+    """Prepare the Android TV backend. Available in --mock, or when config has a
+    paired cert+host. The remote connection is opened lazily on first use."""
+    global ANDROIDTV, _ANDROIDTV_MOCK
+    _ANDROIDTV_MOCK = mock
+    if ANDROIDTV is not None:
+        ANDROIDTV.close()
+    ANDROIDTV = None
+
+
+def androidtv_available():
+    if _ANDROIDTV_MOCK:
+        return True
+    return bool(CONFIG_ANDROIDTV and CONFIG_ANDROIDTV.get("cert")
+                and CONFIG_ANDROIDTV.get("host"))
+
+
+def _androidtv_do(fn):
+    """Run fn(remote) under the lock with one reconnect retry. ActionResult."""
+    global ANDROIDTV
+    start = time.monotonic()
+    with ANDROIDTV_LOCK:
+        if ANDROIDTV is None:
+            ANDROIDTV = _AndroidTVRemote()
+        try:
+            return _webos_result(start, True, fn(ANDROIDTV) or "ok")
+        except (IOError, OSError, ssl.SSLError, ValueError, KeyError) as e:
+            return _webos_result(start, False, "%s: %s" % (e.__class__.__name__, e))
+
+
+def real_androidtv(op):
+    """Dispatch a unified TV op. power_on is Wake-on-LAN (or best-effort POWER);
+    the rest are keycodes."""
+    if op == "power_on":
+        mac = (CONFIG_ANDROIDTV or {}).get("mac")
+        if mac:
+            return _wol_send(mac)
+        return _androidtv_do(lambda r: (r.send_key(26), "power (best-effort)")[1])
+    code = _ATV_OP_KEY.get(op)
+    if code is None:
+        return _webos_result(time.monotonic(), False, "unsupported op %s" % op)
+    return _androidtv_do(lambda r: (r.send_key(code), op)[1])
+
+
+def real_androidtv_key(k):
+    """Send one factory-remote key (shared vocabulary) as an Android keycode."""
+    code = _ATV_KEYS.get(k)
+    if code is None:
+        return _webos_result(time.monotonic(), False, "unknown key %s" % k)
+    return _androidtv_do(lambda r: (r.send_key(code), "key %s" % k)[1])
+
+
+def mock_androidtv(op):
+    """--mock stand-in: log the op, open no socket, succeed."""
+    time.sleep(0.05)
+    print("[androidtv] %s" % op, flush=True)
+    return {"ok": True, "exit_code": 0, "stdout": "[mock androidtv] %s\n" % op,
+            "stderr": "", "duration_ms": 50}
+
+
 # ---- unified dispatch -----------------------------------------------------
 # CEC has no discrete power-off; its standby command IS the off state.
 _TV_TO_CEC = {"power_on": "power_on", "power_off": "standby",
@@ -4000,6 +4446,7 @@ def set_tv(mock):
     set_webos(mock)
     set_samsung(mock)
     set_roku(mock)
+    set_androidtv(mock)
     set_soft(mock)
 
 
@@ -4014,6 +4461,8 @@ def _tv_hw_backend():
         return "webos"
     if samsung_available():
         return "samsung"
+    if androidtv_available():
+        return "androidtv"
     if roku_available():
         return "roku"
     if cec_available():
@@ -4043,6 +4492,11 @@ def tv_info():
         backend, adapter = "roku", ("Roku (%s)" % (CONFIG_ROKU.get("name")
                                     or CONFIG_ROKU["host"]) if CONFIG_ROKU
                                     else "Roku")
+    elif hw == "androidtv":
+        backend, adapter = "androidtv", ("Android TV (%s)"
+                                         % (CONFIG_ANDROIDTV.get("name")
+                                            or CONFIG_ANDROIDTV["host"])
+                                         if CONFIG_ANDROIDTV else "Android TV")
     elif hw == "cec":
         cec = cec_current()
         backend, adapter = "cec", (cec["adapter"] if cec else "CEC")
@@ -4072,7 +4526,8 @@ def tv_info():
         # RS-232 panel drives the OSD, a paired webOS TV drives its pointer/nav.
         # Either lights up the app's Remote view D-pad cluster.
         "keys": (panel_available() or webos_available()
-                 or samsung_available() or roku_available()),
+                 or samsung_available() or roku_available()
+                 or androidtv_available()),
         # Text entry into a focused on-TV field. webOS (IME), Samsung
         # (SendInputString) and Roku (Lit_ keypresses) support it; the panel
         # and CEC have no text channel.
@@ -4100,6 +4555,8 @@ def _send_tv_hw(op, mock):
         return mock_samsung(op) if mock else real_samsung(op)
     if b == "roku":
         return mock_roku(op) if mock else real_roku(op)
+    if b == "androidtv":
+        return mock_androidtv(op) if mock else real_androidtv(op)
     if b == "cec":
         cec_op = _TV_TO_CEC[op]
         return mock_cec(cec_op) if mock else real_cec(cec_op)
@@ -6651,6 +7108,9 @@ class Handler(BaseHTTPRequestHandler):
                 elif backend == "roku" and k in _ROKU_KEYS:
                     result = (mock_roku("key %s" % k) if self.mock
                               else real_roku_key(k))
+                elif backend == "androidtv" and k in _ATV_KEYS:
+                    result = (mock_androidtv("key %s" % k) if self.mock
+                              else real_androidtv_key(k))
                 elif backend == "panel" and k in PANEL_KEYS:
                     result = ({"ok": True, "exit_code": 0,
                                "stdout": "[mock panel] key %s" % k,
@@ -6799,6 +7259,70 @@ class Handler(BaseHTTPRequestHandler):
                 set_caps(False)
                 self._send(200, {"ok": True, "added": True, "backend": "roku",
                                  "host": host, "name": name}, started)
+                return
+
+            # POST /api/tv/androidtv/pair/start: begin Android TV pairing. Body
+            # {"host": "<ip>"}. Opens the pairing socket and makes the TV show a
+            # 6-digit code; the socket is held for pair/finish. ~15 s.
+            if path == "/api/tv/androidtv/pair/start":
+                try:
+                    req = json.loads(body.decode("utf-8")) if body else {}
+                    host = req["host"]
+                    if not isinstance(host, str) or not host:
+                        raise ValueError("host required")
+                except (ValueError, TypeError, KeyError, UnicodeDecodeError):
+                    self._send(400, {"error": "host (string) required"}, started)
+                    return
+                if self.mock:
+                    self._send(200, {"ok": True, "code_shown": True,
+                                     "backend": "androidtv", "host": host}, started)
+                    return
+                try:
+                    androidtv_pair_start(host)
+                except (IOError, OSError, ssl.SSLError) as e:
+                    self._send(502, {"ok": False,
+                                     "error": "could not start pairing: %s" % e},
+                               started)
+                    return
+                self._send(200, {"ok": True, "code_shown": True,
+                                 "backend": "androidtv", "host": host}, started)
+                return
+
+            # POST /api/tv/androidtv/pair/finish: complete Android TV pairing.
+            # Body {"code": "<6 hex digits from the TV>", "mac": "<optional>"}.
+            if path == "/api/tv/androidtv/pair/finish":
+                try:
+                    req = json.loads(body.decode("utf-8")) if body else {}
+                    code = req["code"]
+                    if not isinstance(code, str):
+                        raise ValueError("code required")
+                    mac = req.get("mac")
+                    if mac is not None and not isinstance(mac, str):
+                        raise ValueError("mac must be a string")
+                except (ValueError, TypeError, KeyError, UnicodeDecodeError):
+                    self._send(400, {"error": "code (string) required"}, started)
+                    return
+                if self.mock:
+                    self._send(200, {"ok": True, "paired": True,
+                                     "backend": "androidtv"}, started)
+                    return
+                try:
+                    cert_pem, key_pem, host = androidtv_pair_finish(code)
+                except (IOError, OSError, ssl.SSLError) as e:
+                    self._send(400, {"ok": False, "error": "pairing failed: %s" % e},
+                               started)
+                    return
+                try:
+                    _androidtv_save(host, cert_pem, key_pem, mac=mac)
+                except OSError as e:
+                    self._send(500, {"ok": False,
+                                     "error": "could not persist config: %s" % e},
+                               started)
+                    return
+                set_androidtv(False)
+                set_caps(False)
+                self._send(200, {"ok": True, "paired": True,
+                                 "backend": "androidtv", "host": host}, started)
                 return
 
             # POST /api/tv/source/<id>: switch the display input (panel only).

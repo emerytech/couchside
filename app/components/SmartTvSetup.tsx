@@ -14,21 +14,23 @@ import { api, ConnSettings, hostKey, Tv, TvPairResult } from '@/lib/api';
 import { normalizeMac } from '@/lib/settings';
 import { useTheme, useThemedStyles, type Palette } from '@/lib/theme';
 
-type Brand = 'webos' | 'samsung' | 'roku';
+type Brand = 'webos' | 'samsung' | 'roku' | 'androidtv';
 
 const BRANDS: { id: Brand; label: string; needsMac: boolean; verb: string }[] = [
-  { id: 'webos', label: 'LG webOS', needsMac: true, verb: 'Pair' },
+  { id: 'webos', label: 'LG', needsMac: true, verb: 'Pair' },
   { id: 'samsung', label: 'Samsung', needsMac: true, verb: 'Pair' },
   { id: 'roku', label: 'Roku', needsMac: false, verb: 'Add' },
+  { id: 'androidtv', label: 'Google TV', needsMac: true, verb: 'Pair' },
 ];
 
-const NETWORK_BACKENDS = ['webos', 'samsung', 'roku'];
+const NETWORK_BACKENDS = ['webos', 'samsung', 'roku', 'androidtv'];
 
 /**
- * Pair a networked smart TV (LG webOS / Samsung Tizen / Roku) to the box so the
- * Pad tab's D-pad + text entry drive it. webOS/Samsung show an accept prompt on
- * the TV and persist a key/token; Roku needs no pairing. The box's agent owns
- * the connection — the phone only kicks off pairing over the LAN.
+ * Pair a networked smart TV (LG webOS / Samsung Tizen / Roku / Android-Google TV)
+ * to the box so the Pad tab's D-pad drives it. webOS/Samsung show an accept
+ * prompt on the TV; Roku needs no pairing; Android/Google TV is two-step (a
+ * 6-digit code appears on the TV, entered here). The box's agent owns the
+ * connection — the phone only kicks off pairing over the LAN.
  */
 export function SmartTvSetup({ settings }: { settings: ConnSettings }) {
   const t = useTheme();
@@ -36,6 +38,8 @@ export function SmartTvSetup({ settings }: { settings: ConnSettings }) {
   const [brand, setBrand] = useState<Brand>('webos');
   const [host, setHost] = useState('');
   const [mac, setMac] = useState('');
+  const [code, setCode] = useState('');
+  const [awaitingCode, setAwaitingCode] = useState(false); // androidtv step 2
   const [busy, setBusy] = useState(false);
   const [msg, setMsg] = useState<{ ok: boolean; text: string } | null>(null);
 
@@ -46,6 +50,17 @@ export function SmartTvSetup({ settings }: { settings: ConnSettings }) {
       : null;
   const meta = BRANDS.find((b) => b.id === brand)!;
 
+  const connected = useCallback(
+    (r: TvPairResult) => {
+      setMsg({ ok: true, text: r.name ? `Connected: ${r.name}` : `Connected to ${meta.label}.` });
+      setHost('');
+      setMac('');
+      setCode('');
+      setAwaitingCode(false);
+    },
+    [meta],
+  );
+
   const submit = useCallback(async () => {
     const h = host.trim();
     if (!h) {
@@ -53,41 +68,62 @@ export function SmartTvSetup({ settings }: { settings: ConnSettings }) {
       return;
     }
     setBusy(true);
-    setMsg({
-      ok: true,
-      text:
-        brand === 'roku'
-          ? 'Contacting the Roku…'
-          : 'Waiting for you to accept the prompt on the TV…',
-    });
+    const m = meta.needsMac && mac.trim() ? normalizeMac(mac.trim()) ?? undefined : undefined;
     try {
-      const m = meta.needsMac && mac.trim() ? normalizeMac(mac.trim()) ?? undefined : undefined;
+      if (brand === 'androidtv') {
+        // Step 1: open the pairing socket -> TV shows a 6-digit code.
+        setMsg({ ok: true, text: 'Opening pairing on the TV…' });
+        const r = await api.tvAndroidtvPairStart(settings, h);
+        if (r.ok && r.code_shown) {
+          setAwaitingCode(true);
+          setMsg({ ok: true, text: 'Enter the 6-digit code now showing on the TV.' });
+        } else {
+          setMsg({ ok: false, text: r.error ?? 'Could not start pairing.' });
+        }
+        return;
+      }
+      setMsg({
+        ok: true,
+        text: brand === 'roku' ? 'Contacting the Roku…' : 'Waiting for you to accept on the TV…',
+      });
       let r: TvPairResult;
       if (brand === 'webos') r = await api.tvPairWebos(settings, h, m);
       else if (brand === 'samsung') r = await api.tvPairSamsung(settings, h, m);
       else r = await api.tvAddRoku(settings, h);
-      if (r.ok) {
-        setMsg({
-          ok: true,
-          text: r.name ? `Connected: ${r.name}` : `Connected to ${meta.label}.`,
-        });
-        setHost('');
-        setMac('');
-      } else {
-        setMsg({ ok: false, text: r.error ?? 'Could not connect to the TV.' });
-      }
+      if (r.ok) connected(r);
+      else setMsg({ ok: false, text: r.error ?? 'Could not connect to the TV.' });
     } catch {
       setMsg({ ok: false, text: 'Could not reach the box or TV. Check the IP and try again.' });
     } finally {
       setBusy(false);
     }
-  }, [brand, host, mac, meta, settings]);
+  }, [brand, host, mac, meta, settings, connected]);
+
+  const finishAndroidtv = useCallback(async () => {
+    const c = code.trim();
+    if (c.length !== 6) {
+      setMsg({ ok: false, text: 'Enter the 6-digit code from the TV.' });
+      return;
+    }
+    setBusy(true);
+    setMsg({ ok: true, text: 'Pairing…' });
+    try {
+      const m = mac.trim() ? normalizeMac(mac.trim()) ?? undefined : undefined;
+      const r = await api.tvAndroidtvPairFinish(settings, c, m);
+      if (r.ok) connected(r);
+      else setMsg({ ok: false, text: r.error ?? 'Pairing failed — check the code and retry.' });
+    } catch {
+      setMsg({ ok: false, text: 'Could not reach the box. Try again.' });
+    } finally {
+      setBusy(false);
+    }
+  }, [code, mac, settings, connected]);
 
   return (
     <View style={styles.card}>
       <Text style={styles.title}>Smart TV remote</Text>
       <Text style={styles.sub}>
-        Control a networked TV — LG webOS, Samsung, or Roku — from the Pad tab. The
+        Control a networked TV — LG webOS, Samsung, Roku, or Google TV — from the Pad tab. The
         D-pad and on-screen keyboard light up once it’s connected.
       </Text>
 
@@ -105,6 +141,8 @@ export function SmartTvSetup({ settings }: { settings: ConnSettings }) {
             onPress={() => {
               setBrand(b.id);
               setMsg(null);
+              setAwaitingCode(false);
+              setCode('');
             }}
             style={[styles.seg, brand === b.id && styles.segOn]}>
             <Text style={[styles.segText, brand === b.id && styles.segTextOn]}>{b.label}</Text>
@@ -112,39 +150,69 @@ export function SmartTvSetup({ settings }: { settings: ConnSettings }) {
         ))}
       </View>
 
-      <TextInput
-        value={host}
-        onChangeText={setHost}
-        placeholder="TV IP address (e.g. 192.168.1.50)"
-        placeholderTextColor={t.textFaint}
-        autoCapitalize="none"
-        autoCorrect={false}
-        keyboardType="numbers-and-punctuation"
-        editable={!busy}
-        style={styles.input}
-      />
-      {meta.needsMac ? (
-        <TextInput
-          value={mac}
-          onChangeText={setMac}
-          placeholder="MAC for power-on (optional)"
-          placeholderTextColor={t.textFaint}
-          autoCapitalize="none"
-          autoCorrect={false}
-          editable={!busy}
-          style={styles.input}
-        />
-      ) : null}
-
-      <Pressable onPress={submit} disabled={busy} style={[styles.button, busy && styles.buttonBusy]}>
-        {busy ? (
-          <ActivityIndicator color={t.bg} />
-        ) : (
-          <Text style={styles.buttonText}>
-            {meta.verb} {meta.label}
-          </Text>
-        )}
-      </Pressable>
+      {awaitingCode ? (
+        <>
+          <TextInput
+            value={code}
+            onChangeText={(v) => setCode(v.replace(/[^0-9A-Fa-f]/g, '').slice(0, 6))}
+            placeholder="6-digit code from the TV"
+            placeholderTextColor={t.textFaint}
+            autoCapitalize="characters"
+            autoCorrect={false}
+            keyboardType="visible-password"
+            editable={!busy}
+            style={styles.input}
+          />
+          <Pressable
+            onPress={finishAndroidtv}
+            disabled={busy}
+            style={[styles.button, busy && styles.buttonBusy]}>
+            {busy ? (
+              <ActivityIndicator color={t.bg} />
+            ) : (
+              <Text style={styles.buttonText}>Finish pairing</Text>
+            )}
+          </Pressable>
+        </>
+      ) : (
+        <>
+          <TextInput
+            value={host}
+            onChangeText={setHost}
+            placeholder="TV IP address (e.g. 192.168.1.50)"
+            placeholderTextColor={t.textFaint}
+            autoCapitalize="none"
+            autoCorrect={false}
+            keyboardType="numbers-and-punctuation"
+            editable={!busy}
+            style={styles.input}
+          />
+          {meta.needsMac ? (
+            <TextInput
+              value={mac}
+              onChangeText={setMac}
+              placeholder="MAC for power-on (optional)"
+              placeholderTextColor={t.textFaint}
+              autoCapitalize="none"
+              autoCorrect={false}
+              editable={!busy}
+              style={styles.input}
+            />
+          ) : null}
+          <Pressable
+            onPress={submit}
+            disabled={busy}
+            style={[styles.button, busy && styles.buttonBusy]}>
+            {busy ? (
+              <ActivityIndicator color={t.bg} />
+            ) : (
+              <Text style={styles.buttonText}>
+                {meta.verb} {meta.label}
+              </Text>
+            )}
+          </Pressable>
+        </>
+      )}
 
       {msg ? (
         <Text style={[styles.msg, { color: msg.ok ? t.textDim : t.red }]}>{msg.text}</Text>
@@ -153,7 +221,9 @@ export function SmartTvSetup({ settings }: { settings: ConnSettings }) {
       <Text style={styles.hint}>
         {brand === 'roku'
           ? 'No pairing needed — just make sure the Roku is on and on this network.'
-          : `Your ${meta.label} TV must be on. An accept prompt appears on the TV — say yes. The MAC is optional and lets the box wake the TV over the network.`}
+          : brand === 'androidtv'
+            ? 'Your Android/Google TV must be on. After “Pair”, a 6-digit code appears on the TV — enter it here. The MAC is optional (Wake-on-LAN power-on).'
+            : `Your ${meta.label} TV must be on. An accept prompt appears on the TV — say yes. The MAC is optional and lets the box wake the TV over the network.`}
       </Text>
     </View>
   );
