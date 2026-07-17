@@ -585,6 +585,59 @@ async function attempt(
 const PROBE_TIMEOUT_MS = 2500;
 
 /**
+ * Head start given to the cached-IP path before the hostname attempt joins the
+ * race (see raceGet). Android mDNS resolution was measured at ~1.6s, the
+ * probe + request on a live cached IP at ~40ms — so when the IP is good the
+ * hostname fetch never even starts.
+ */
+const GET_RACE_STAGGER_MS = 250;
+
+/**
+ * Happy-Eyeballs for idempotent GETs: race the cached IP (identity-probed
+ * first, so the bearer token still never goes to an unproven address) against
+ * the configured hostname, staggered so the fast path usually wins alone.
+ * Safe only for GETs — a double-send of a POST could run an action twice.
+ * Returns the first success; if both fail, throws the hostname path's error
+ * (it matches what the single-attempt flow would have reported).
+ */
+async function raceGet(
+  settings: ConnSettings,
+  path: string,
+  opts: { method?: 'GET' | 'POST' | 'DELETE'; auth?: boolean; timeoutMs?: number; body?: unknown },
+  fallbackIp: string,
+): Promise<{ res: Response; usedHost: string }> {
+  let settled = false;
+  const ipPath = (async () => {
+    if (!(await probeTarget(fallbackIp, settings))) {
+      throw new ApiError('unreachable', 'cached IP did not answer as this box');
+    }
+    const res = await attempt(fallbackIp, settings, path, opts);
+    return { res, usedHost: fallbackIp };
+  })();
+  const hostPath = (async () => {
+    await new Promise((r) => setTimeout(r, GET_RACE_STAGGER_MS));
+    if (settled) {
+      // The IP already won; don't fire a redundant fetch.
+      throw new ApiError('unreachable', 'cached IP path won');
+    }
+    const res = await attempt(settings.host, settings, path, opts);
+    return { res, usedHost: settings.host };
+  })();
+  // Swallow the loser's eventual rejection so it can't surface as unhandled.
+  ipPath.catch(() => {});
+  hostPath.catch(() => {});
+  try {
+    const winner = await Promise.any([ipPath, hostPath]);
+    settled = true;
+    return winner;
+  } catch {
+    settled = true;
+    // Both paths failed. Re-throw the hostname error for a familiar message.
+    return await hostPath;
+  }
+}
+
+/**
  * Unauthenticated identity probe: does `host` answer /api/ping AS this box
  * (see pingMatchesBox)? Never sends the bearer token. False on any failure.
  */
@@ -622,24 +675,17 @@ async function request<T>(
 
   let res: Response;
   let usedHost = settings.host;
-  if (method === 'GET' || !fallback) {
-    try {
-      res = await attempt(settings.host, settings, path, opts);
-    } catch (e: unknown) {
-      // Only idempotent GETs may re-send after a transport failure. React
-      // Native's fetch reports "connection lost after the request was
-      // delivered" identically to "never connected", so a re-sent POST could
-      // run an action (reboot!) twice.
-      const retriable =
-        e instanceof ApiError && (e.kind === 'unreachable' || e.kind === 'timeout');
-      if (retriable && fallback && method === 'GET' && (await probeTarget(fallback, settings))) {
-        usedHost = fallback;
-        res = await attempt(fallback, settings, path, opts);
-        usedHost = fallback;
-      } else {
-        throw e;
-      }
-    }
+  if (method === 'GET' && fallback) {
+    // Idempotent + a cached IP known: race both addresses (IP-first, see
+    // raceGet). Double-delivery is harmless for a GET, and this removes the
+    // ~1.6s mDNS resolution from every status poll / list fetch.
+    ({ res, usedHost } = await raceGet(settings, path, opts, fallback));
+  } else if (method === 'GET' || !fallback) {
+    // Single known address (or non-GET without a fallback): one plain attempt.
+    // No retry here: React Native's fetch reports "connection lost after the
+    // request was delivered" identically to "never connected", so a re-sent
+    // POST could run an action (reboot!) twice.
+    res = await attempt(settings.host, settings, path, opts);
   } else {
     // Non-idempotent (POST/DELETE): pick the working target FIRST with cheap
     // ping probes, then send the request EXACTLY ONCE, never retried.

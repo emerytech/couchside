@@ -40,7 +40,7 @@ except ImportError:  # pragma: no cover
     fcntl = None
 
 APP_NAME = "couchside-agent"
-VERSION = "2.9.2"
+VERSION = "2.9.3"
 UID = os.getuid()
 XDG_RUNTIME_DIR = "/run/user/%d" % UID
 
@@ -4148,6 +4148,12 @@ class UInputMediaKeys:
 # are silently dropped. 0.5s is comfortably past the observed race on SteamOS
 # (verified live: a Meta tap fired immediately after create never reached KWin;
 # the same tap after a settle opened the launcher every time).
+#
+# The wait is a DEADLINE, not an inline sleep: __init__ stamps ready-at and
+# emit() sleeps only the remainder. Devices are pre-created at hello
+# (_make_holder), so the window has normally elapsed by the first real gesture
+# and the wait is zero — measured 508ms first-frame stall -> ~7ms. A frame that
+# does arrive early still waits out the remainder, preserving the guarantee.
 _UINPUT_SETTLE_S = 0.5
 
 
@@ -4181,13 +4187,17 @@ class UInputMouse:
             os.close(fd)
             raise
         self.fd = fd
-        # Settle before first emit — see UInputKeyboard (same enumeration race:
-        # the first click/move of a fresh session would be dropped).
-        time.sleep(_UINPUT_SETTLE_S)
+        # Settle deadline before first emit — see UInputKeyboard (same
+        # enumeration race: the first click/move of a fresh session would be
+        # dropped). emit() waits out whatever remains of this window.
+        self._ready_at = time.monotonic() + _UINPUT_SETTLE_S
 
     def emit(self, events):
         if self.fd is None:
             return
+        wait = self._ready_at - time.monotonic()
+        if wait > 0:
+            time.sleep(wait)
         _emit_events(self.fd, events)
 
     def destroy(self):
@@ -4232,16 +4242,19 @@ class UInputKeyboard:
             os.close(fd)
             raise
         self.fd = fd
-        # Settle: the X server / compositor needs a beat to enumerate a fresh
-        # uinput device before it delivers events from it. The keyboard is
-        # created lazily on the FIRST key frame — without this, that first
-        # press (a typed char, or the Start-menu Meta tap, verified live on
-        # SteamOS) is silently dropped. One-time cost per session.
-        time.sleep(_UINPUT_SETTLE_S)
+        # Settle deadline: the X server / compositor needs a beat to enumerate
+        # a fresh uinput device before it delivers events from it — without
+        # the wait, the first press (a typed char, or the Start-menu Meta tap,
+        # verified live on SteamOS) is silently dropped. Stamped here, waited
+        # out in emit(); pre-created at hello so the wait is normally zero.
+        self._ready_at = time.monotonic() + _UINPUT_SETTLE_S
 
     def emit(self, events):
         if self.fd is None:
             return
+        wait = self._ready_at - time.monotonic()
+        if wait > 0:
+            time.sleep(wait)
         _emit_events(self.fd, events)
 
     def destroy(self):
@@ -4755,24 +4768,49 @@ def _wsend_op(entry, opcode, payload=b""):
 
 
 def _release_devices(entry):
-    """Destroy a session's virtual input devices (idempotent) but LEAVE its
-    socket open — used when demoting a holder that stays connected as a waiter."""
-    for slot in ("device", "mouse", "keyboard"):
-        dev = entry.get(slot)
-        if dev is not None:
+    """Demote a session that stays connected as a waiter: destroy its gamepad
+    (one pad per holder — the new holder brings its own) but KEEP the mouse and
+    keyboard. Their frames are gated on entry["held"] anyway, and keeping them
+    makes regaining control instant — re-creating them restarted the 0.5s
+    enumeration-settle window, so the first swipe after a pass-back stalled
+    ~500ms (measured). Mouse buttons are defensively released (a drag could be
+    mid-press at demote; keyboard frames always pair press+release, so keys
+    can never be left held)."""
+    dev = entry.get("device")
+    if dev is not None:
+        try:
+            dev.destroy()
+        except Exception:
+            pass
+        entry["device"] = None
+    mouse = entry.get("mouse")
+    if mouse is not None:
+        # Skip if the device is still inside its settle window: nothing can
+        # have been pressed through it yet, and emit() would block this (the
+        # granter's) thread for the remainder.
+        ready = getattr(mouse, "_ready_at", 0) <= time.monotonic()
+        if ready:
             try:
-                dev.destroy()
+                mouse.emit([(EV_KEY, code, 0)
+                            for code in MOUSE_BTN_CODES.values()])
             except Exception:
                 pass
-            entry[slot] = None
 
 
 def _make_holder(entry, mock):
     """Give `entry` the gamepad device and mark it holder, then send hello.
     A session only ever receives hello on becoming the holder (waiters get
     'waiting' instead), so hello IS the "you have control now" signal. Returns
-    False (and closes the session) if uinput fails. Mouse/keyboard stay lazy —
-    created on first use by this now-held session."""
+    False (and closes the session) if uinput fails.
+
+    Mouse/keyboard are pre-created here too: instantiation is a few ioctls
+    (the enumeration settle is a deadline waited out in emit(), not a sleep in
+    __init__), so by the time a human makes their first gesture the settle
+    window has elapsed and the frame emits immediately. Previously they were
+    created lazily on first use, which stalled the recv loop ~0.5s on the
+    first swipe / keypress of EVERY session (measured 508/525ms). A create
+    failure here is non-fatal — the slot stays None and the lazy path in
+    _handle_frame retries on first use, reporting the error to the client."""
     try:
         entry["device"] = MockGamepad() if mock else UInputGamepad()
     except Exception as e:
@@ -4784,6 +4822,14 @@ def _make_holder(entry, mock):
     entry["requested"] = False
     _wsend_json(entry, {"t": "hello", "dev": entry["device"].name,
                         "text": _text_caps(mock)})
+    for slot, factory in (("mouse", MockMouse if mock else UInputMouse),
+                          ("keyboard", MockKeyboard if mock else UInputKeyboard)):
+        if entry.get(slot) is None:
+            try:
+                entry[slot] = factory()
+            except Exception as e:
+                print("[gamepad] %s pre-create failed (lazy path will retry):"
+                      " %s" % (slot, e), flush=True)
     print("[gamepad] control -> %s" % entry["name"], flush=True)
     return True
 
@@ -5957,6 +6003,21 @@ class Handler(BaseHTTPRequestHandler):
         else:  # waiting: tell me, and prompt the holder
             _wsend_json(entry, {"t": "waiting", "holder": holder.get("name")})
             _wsend_json(holder, {"t": "control_request", "name": name})
+            # Pre-create mouse/keyboard NOW: the settle window burns while the
+            # holder decides (human seconds), so a grant hands over devices
+            # that are already past it — first input after a pass measured
+            # 524ms with create-at-grant, ~7ms with create-at-wait. Input
+            # stays gated on entry["held"]; a create failure just falls back
+            # to the lazy path on first use.
+            for slot, factory in (
+                    ("mouse", MockMouse if self.mock else UInputMouse),
+                    ("keyboard", MockKeyboard if self.mock else UInputKeyboard)):
+                if entry.get(slot) is None:
+                    try:
+                        entry[slot] = factory()
+                    except Exception as e:
+                        print("[gamepad] waiter %s pre-create failed: %s"
+                              % (slot, e), flush=True)
             print("[gamepad] %s waiting (holder %s)"
                   % (name, holder.get("name")), flush=True)
 
