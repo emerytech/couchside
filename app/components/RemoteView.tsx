@@ -240,7 +240,10 @@ export function RemoteView({
             onLeft={navLeft}
             onRight={navRight}
             onOk={navOk}
-            joyEnabled={hasDesktop}
+            // Pointer works in BOTH sessions (Big Picture has a cursor too),
+            // so the joystick arms whenever OK drives the box — only the
+            // serial-TV target (nav === 'tv') has no pointer to move.
+            joyEnabled={nav === 'box'}
             onJoyMove={(dx, dy) => client.sendMouseMove(dx, dy)}
             onJoyActive={setJoyActive}
           />

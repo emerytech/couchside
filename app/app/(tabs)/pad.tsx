@@ -9,7 +9,7 @@
  */
 import { hapticSelection } from '@/lib/haptics';
 import { getKeepAwakeEnabled, useKeepAwakeEnabled } from '@/lib/keepAwake';
-import { usePref } from '@/lib/prefs';
+import { getPref, usePref } from '@/lib/prefs';
 import { activateKeepAwakeAsync, deactivateKeepAwake } from 'expo-keep-awake';
 import { useNavigation } from 'expo-router';
 import React, { useCallback, useEffect, useRef, useState } from 'react';
@@ -18,7 +18,6 @@ import {
   AppState,
   InputAccessoryView,
   Keyboard,
-  KeyboardAvoidingView,
   PanResponder,
   Platform,
   Pressable,
@@ -320,6 +319,31 @@ function KeyboardBar({ onText, onBackspace, onEnter, onSwipeMode }: KeyboardBarP
     inputRef.current?.focus();
   }, [setOpenSynced]);
 
+  // Lift for the floating HIDE pill: measured, not framework-magic. The pill
+  // is absolutely positioned inside the SCREEN container, but the keyboard's
+  // frame is in WINDOW coordinates — and with SDK 57's edge-to-edge Android
+  // the window doesn't resize (the keyboard overlays), while iOS's
+  // KeyboardAvoidingView missed events when it mounted late. So: a zero-size
+  // anchor marks the container's bottom in window coords; on keyboard-show,
+  // lift = anchorY - keyboardTopY. Deterministic on both platforms.
+  const [kbLift, setKbLift] = useState(0);
+  const anchorRef = useRef<View>(null);
+  useEffect(() => {
+    const showEvent = Platform.OS === 'ios' ? 'keyboardWillShow' : 'keyboardDidShow';
+    const show = Keyboard.addListener(showEvent, (e) => {
+      const kbTop = e.endCoordinates?.screenY;
+      if (kbTop == null) return;
+      anchorRef.current?.measureInWindow((_x, y) => {
+        if (typeof y === 'number') setKbLift(Math.max(0, y - kbTop));
+      });
+    });
+    const hide = Keyboard.addListener('keyboardDidHide', () => setKbLift(0));
+    return () => {
+      show.remove();
+      hide.remove();
+    };
+  }, []);
+
   // Source of truth: whenever the OS reports the keyboard went down, mark the
   // bar closed. This catches every dismissal path (Done, swipe, the system
   // keyboard's own hide, app backgrounding) so state can't drift.
@@ -402,9 +426,12 @@ function KeyboardBar({ onText, onBackspace, onEnter, onSwipeMode }: KeyboardBarP
             pressed && styles.btnPressed,
           ]}>
           {open && <View style={styles.kbDragHandle} pointerEvents="none" />}
+          {/* Closed: edge chevrons advertise the horizontal mode-switch swipe. */}
+          {!open && <Text style={styles.kbSwipeCue}>‹</Text>}
           <Text style={[styles.kbBarText, open && styles.kbBarTextOpen]}>
-            {open ? '⌨  type to send · swipe down or tap Done' : '⌨  KEYBOARD'}
+            {open ? '⌨  type to send · swipe down or tap Done' : '⌨  KEYBOARD  ·  swipe to switch mode'}
           </Text>
+          {!open && <Text style={styles.kbSwipeCue}>›</Text>}
         </Pressable>
         {open && (
           <Pressable
@@ -415,24 +442,23 @@ function KeyboardBar({ onText, onBackspace, onEnter, onSwipeMode }: KeyboardBarP
           </Pressable>
         )}
       </View>
+      {/* Zero-size anchor at the container's bottom edge — measured in window
+          coordinates to compute the pill's keyboard lift (see kbLift above). */}
+      <View ref={anchorRef} collapsable={false} style={styles.kbAnchor} />
       {/* Floating dismiss while typing: rides just ABOVE the keyboard,
-          bottom-right (thumb range). KeyboardAvoidingView does the keyboard-
-          height math; on Android the window itself resizes, so no behavior
-          needed. Exists because the in-layout DONE gets covered by the raised
-          keyboard and the InputAccessoryView Done bar stopped rendering under
-          newer iOS SDKs (build 30), which left the keyboard stuck open. */}
+          bottom-right (thumb range), lifted by the MEASURED keyboard overlap.
+          Exists because the in-layout DONE gets covered by the raised keyboard
+          and the InputAccessoryView Done bar stopped rendering under newer iOS
+          SDKs (build 30), which left the keyboard stuck open. */}
       {open && (
-        <KeyboardAvoidingView
-          behavior={Platform.OS === 'ios' ? 'position' : undefined}
-          pointerEvents="box-none"
-          style={styles.kbFloatWrap}>
+        <View pointerEvents="box-none" style={[styles.kbFloatWrap, { bottom: 10 + kbLift }]}>
           <Pressable
             onPress={dismiss}
             hitSlop={10}
             style={({ pressed }) => [styles.kbFloatDone, pressed && styles.btnPressed]}>
             <Text style={styles.kbDoneText}>⌨ ✕ HIDE</Text>
           </Pressable>
-        </KeyboardAvoidingView>
+        </View>
       )}
       <TextInput
         ref={inputRef}
@@ -524,7 +550,16 @@ function PadScreen() {
   const { width, height } = useWindowDimensions();
   const landscape = width > height;
   const { settings, ready, update } = useSettings();
-  const mode: PadMode = settings.padMode ?? 'swipe';
+  // Input mode lives on the active BOX record; with no box paired,
+  // SettingsContext.update() is a silent no-op and the mode toggle looked
+  // functional but did nothing. Local fallback keeps it switchable (session-
+  // only) until a box exists — then the box's padMode takes over.
+  const [localMode, setLocalMode] = useState<PadMode>(getPref('defaultPadMode'));
+  // EMPTY_SETTINGS hardcodes padMode:'swipe', so key off "is a box paired"
+  // rather than ?? — otherwise the local fallback never engages.
+  const mode: PadMode = settings.host.trim().length > 0
+    ? settings.padMode ?? 'swipe'
+    : localMode;
   const [status, setStatus] = useState<GamepadStatus>('closed');
   const [dev, setDev] = useState<string | null>(null);
   // Non-null when the box is refusing input injection (locked / not the active
@@ -702,6 +737,7 @@ function PadScreen() {
     (m: PadMode) => {
       if (m !== mode) {
         haptic();
+        setLocalMode(m); // keeps the toggle live with no box paired
         update({ padMode: m }).catch(() => {});
       }
     },
@@ -1241,6 +1277,7 @@ const styles = StyleSheet.create({
     borderWidth: 1,
     borderRadius: 999,
     paddingVertical: 12,
+    flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'center',
   },
@@ -1273,12 +1310,19 @@ const styles = StyleSheet.create({
     fontWeight: '800',
     letterSpacing: 1,
   },
-  // Floating keyboard dismiss: anchored bottom-right; the wrapper's
-  // KeyboardAvoidingView lifts it to sit just above the raised keyboard.
+  // Floating keyboard dismiss: anchored bottom-right; kbLift raises it just
+  // above the measured keyboard top.
+  // Bottom-edge marker for the keyboard-lift measurement.
+  kbAnchor: {
+    position: 'absolute',
+    bottom: 0,
+    right: 0,
+    width: 1,
+    height: 1,
+  },
   kbFloatWrap: {
     position: 'absolute',
     right: 14,
-    bottom: 10,
     zIndex: 60,
     elevation: 6,
   },
@@ -1291,6 +1335,14 @@ const styles = StyleSheet.create({
     shadowOpacity: 0.35,
     shadowRadius: 6,
     shadowOffset: { width: 0, height: 2 },
+  },
+  // Edge chevrons on the closed bar: the horizontal mode-switch swipe cue.
+  kbSwipeCue: {
+    color: theme.textFaint,
+    fontFamily: mono,
+    fontSize: 16,
+    fontWeight: '700',
+    paddingHorizontal: 14,
   },
   kbBarText: {
     color: theme.textDim,
