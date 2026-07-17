@@ -12,9 +12,11 @@ import { api, hostKey, humanizeUptime, Status, Unit } from '@/lib/api';
 import { usePref } from '@/lib/prefs';
 import { noteBoxReachable } from '@/lib/review';
 import { useSettings } from '@/lib/SettingsContext';
-import { mono, numeric, pctColor, tempColor, theme } from '@/lib/theme';
+import { mono, numeric, pctColor, tempColor, useTheme, useThemedStyles } from '@/lib/theme';
+import type { Palette } from '@/lib/theme';
 
 function Bar({ pct, color }: { pct: number; color: string }) {
+  const styles = useThemedStyles(makeStyles);
   return (
     <View style={styles.barTrack}>
       <View
@@ -28,6 +30,7 @@ function Bar({ pct, color }: { pct: number; color: string }) {
 }
 
 function Card({ title, children }: { title: string; children: React.ReactNode }) {
+  const styles = useThemedStyles(makeStyles);
   return (
     <View style={styles.card}>
       <Text style={styles.cardTitle}>{title}</Text>
@@ -36,14 +39,16 @@ function Card({ title, children }: { title: string; children: React.ReactNode })
   );
 }
 
-function unitColor(active: string): string {
-  if (active === 'active') return theme.green;
-  if (active === 'failed') return theme.red;
-  return theme.amber;
+function unitColor(active: string, t: Palette): string {
+  if (active === 'active') return t.green;
+  if (active === 'failed') return t.red;
+  return t.amber;
 }
 
 function UnitChip({ unit }: { unit: Unit }) {
-  const color = unitColor(unit.active);
+  const t = useTheme();
+  const styles = useThemedStyles(makeStyles);
+  const color = unitColor(unit.active, t);
   return (
     <View style={[styles.chip, { borderColor: color }]}>
       <View style={[styles.chipDot, { backgroundColor: color }]} />
@@ -79,6 +84,8 @@ export default function ConsoleTab() {
 }
 
 function ConsoleScreen() {
+  const t = useTheme();
+  const styles = useThemedStyles(makeStyles);
   const { settings, ready } = useSettings();
 
   // No host yet (fresh install): don't poll, and show the pairing hint
@@ -116,7 +123,7 @@ function ConsoleScreen() {
           <View
             style={[
               styles.dot,
-              { backgroundColor: reachable ? theme.green : theme.red },
+              { backgroundColor: reachable ? t.green : t.red },
             ]}
           />
           <Text style={styles.hostname}>
@@ -166,15 +173,15 @@ function ConsoleScreen() {
             <View style={styles.row}>
               <View style={styles.half}>
                 <Card title="CPU TEMP">
-                  <Text style={[styles.bigMetric, { color: tempColor(s.cpu_temp_c) }]}>
+                  <Text style={[styles.bigMetric, { color: tempColor(s.cpu_temp_c, t) }]}>
                     {s.cpu_temp_c != null ? `${s.cpu_temp_c.toFixed(1)}°C` : '—'}
                   </Text>
-                  <Sparkline values={s.history?.temp} color={tempColor(s.cpu_temp_c)} />
+                  <Sparkline values={s.history?.temp} color={tempColor(s.cpu_temp_c, t)} />
                 </Card>
               </View>
               <View style={styles.half}>
                 <Card title="UPTIME">
-                  <Text style={[styles.bigMetric, { color: theme.text }]}>
+                  <Text style={[styles.bigMetric, { color: t.text }]}>
                     {humanizeUptime(s.uptime_s)}
                   </Text>
                 </Card>
@@ -189,7 +196,7 @@ function ConsoleScreen() {
                   </Text>
                 ))}
               </View>
-              <Sparkline values={s.history?.load} color={theme.blue} />
+              <Sparkline values={s.history?.load} color={t.blue} />
             </Card>
 
             <Card title="MEMORY">
@@ -197,12 +204,12 @@ function ConsoleScreen() {
                 <Text style={styles.barLabel}>
                   {(s.mem.used_mb / 1024).toFixed(1)} / {(s.mem.total_mb / 1024).toFixed(1)} GB
                 </Text>
-                <Text style={[styles.barLabel, { color: pctColor(memPct) }]}>{memPct}%</Text>
+                <Text style={[styles.barLabel, { color: pctColor(memPct, t) }]}>{memPct}%</Text>
               </View>
-              <Bar pct={memPct} color={pctColor(memPct)} />
+              <Bar pct={memPct} color={pctColor(memPct, t)} />
               {/* Fixed 0-100 scale: a memory sparkline that auto-scales would
                   make a 2% wiggle look like a cliff. */}
-              <Sparkline values={s.history?.mem_pct} color={pctColor(memPct)} min={0} max={100} />
+              <Sparkline values={s.history?.mem_pct} color={pctColor(memPct, t)} min={0} max={100} />
             </Card>
 
             <Card title="DISKS">
@@ -213,10 +220,10 @@ function ConsoleScreen() {
                     <Text style={styles.barLabel}>
                       {d.used_gb.toFixed(1)} / {d.total_gb.toFixed(1)} GB
                       {'   '}
-                      <Text style={{ color: pctColor(d.pct) }}>{d.pct}%</Text>
+                      <Text style={{ color: pctColor(d.pct, t) }}>{d.pct}%</Text>
                     </Text>
                   </View>
-                  <Bar pct={d.pct} color={pctColor(d.pct)} />
+                  <Bar pct={d.pct} color={pctColor(d.pct, t)} />
                 </View>
               ))}
             </Card>
@@ -253,8 +260,8 @@ function ConsoleScreen() {
   );
 }
 
-const styles = StyleSheet.create({
-  screen: { flex: 1, backgroundColor: theme.bg },
+const makeStyles = (t: Palette) => StyleSheet.create({
+  screen: { flex: 1, backgroundColor: t.bg },
   scroll: { flex: 1 },
   header: {
     flexDirection: 'row',
@@ -263,21 +270,21 @@ const styles = StyleSheet.create({
     gap: 10,
   },
   dot: { width: 14, height: 14, borderRadius: 7 },
-  hostname: { color: theme.text, fontSize: 26, fontWeight: '700', fontFamily: mono },
-  headerSub: { color: theme.textDim, fontSize: 13, marginLeft: 'auto' },
+  hostname: { color: t.text, fontSize: 26, fontWeight: '700', fontFamily: mono },
+  headerSub: { color: t.textDim, fontSize: 13, marginLeft: 'auto' },
   emptyCard: {
-    backgroundColor: theme.card,
-    borderColor: theme.cardBorder,
+    backgroundColor: t.card,
+    borderColor: t.cardBorder,
     borderWidth: 1,
     borderRadius: 12,
     padding: 16,
     marginBottom: 12,
   },
-  emptyTitle: { color: theme.text, fontSize: 16, fontWeight: '700', marginBottom: 6 },
-  emptyText: { color: theme.textDim, fontSize: 13, lineHeight: 19 },
+  emptyTitle: { color: t.text, fontSize: 16, fontWeight: '700', marginBottom: 6 },
+  emptyText: { color: t.textDim, fontSize: 13, lineHeight: 19 },
   banner: {
-    backgroundColor: theme.redDeep,
-    borderColor: theme.red,
+    backgroundColor: t.redDeep,
+    borderColor: t.red,
     borderWidth: 1,
     borderRadius: 12,
     padding: 16,
@@ -294,7 +301,7 @@ const styles = StyleSheet.create({
   bannerDetail: { color: '#fecaca', fontSize: 13, ...numeric },
   retryBtn: {
     marginTop: 12,
-    backgroundColor: theme.red,
+    backgroundColor: t.red,
     paddingVertical: 12,
     paddingHorizontal: 36,
     borderRadius: 8,
@@ -304,15 +311,15 @@ const styles = StyleSheet.create({
   row: { flexDirection: 'row', gap: 10 },
   half: { flex: 1 },
   card: {
-    backgroundColor: theme.card,
-    borderColor: theme.cardBorder,
+    backgroundColor: t.card,
+    borderColor: t.cardBorder,
     borderWidth: 1,
     borderRadius: 12,
     padding: 14,
     marginBottom: 10,
   },
   cardTitle: {
-    color: theme.textFaint,
+    color: t.textFaint,
     fontSize: 11,
     fontWeight: '700',
     letterSpacing: 1.2,
@@ -321,7 +328,7 @@ const styles = StyleSheet.create({
   bigMetric: { fontSize: 28, fontWeight: '700', ...numeric },
   loadRow: { flexDirection: 'row', justifyContent: 'space-between' },
   loadVal: {
-    color: theme.text,
+    color: t.text,
     fontSize: 22,
     fontWeight: '600',
     flex: 1,
@@ -329,16 +336,16 @@ const styles = StyleSheet.create({
     ...numeric,
   },
   barLabelRow: { flexDirection: 'row', justifyContent: 'space-between', marginBottom: 6 },
-  barLabel: { color: theme.textDim, fontSize: 12, ...numeric },
+  barLabel: { color: t.textDim, fontSize: 12, ...numeric },
   barTrack: {
     height: 10,
     borderRadius: 5,
-    backgroundColor: theme.inset,
+    backgroundColor: t.inset,
     overflow: 'hidden',
   },
   barFill: { height: '100%', borderRadius: 5 },
   diskRow: { marginBottom: 12 },
-  diskMount: { color: theme.text, fontSize: 13, fontWeight: '600', fontFamily: mono },
+  diskMount: { color: t.text, fontSize: 13, fontWeight: '600', fontFamily: mono },
   chips: { gap: 8 },
   chip: {
     flexDirection: 'row',
@@ -348,11 +355,11 @@ const styles = StyleSheet.create({
     borderRadius: 8,
     paddingVertical: 10,
     paddingHorizontal: 12,
-    backgroundColor: theme.inset,
+    backgroundColor: t.inset,
   },
   chipDot: { width: 8, height: 8, borderRadius: 4 },
-  chipName: { color: theme.text, fontSize: 13, fontFamily: mono, flexShrink: 1 },
+  chipName: { color: t.text, fontSize: 13, fontFamily: mono, flexShrink: 1 },
   chipState: { fontSize: 12, marginLeft: 'auto', ...numeric },
-  unitErr: { color: theme.textDim, fontSize: 13 },
-  unitHint: { color: theme.textFaint, fontFamily: mono, fontSize: 10, marginTop: 10 },
+  unitErr: { color: t.textDim, fontSize: 13 },
+  unitHint: { color: t.textFaint, fontFamily: mono, fontSize: 10, marginTop: 10 },
 });

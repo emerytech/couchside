@@ -5,7 +5,8 @@ import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { recordPurchaseDate } from '@/lib/entitlement';
 import { useEntitlement } from '@/lib/EntitlementContext';
 import { buy, getProduct, restore } from '@/lib/purchase';
-import { mono, theme } from '@/lib/theme';
+import { mono, useThemedStyles } from '@/lib/theme';
+import type { Palette } from '@/lib/theme';
 
 const FALLBACK_PRICE = '$4.99';
 
@@ -17,6 +18,7 @@ const FALLBACK_PRICE = '$4.99';
 export default function Paywall() {
   const insets = useSafeAreaInsets();
   const { recordPurchase } = useEntitlement();
+  const styles = useThemedStyles(makeStyles);
 
   const [price, setPrice] = useState<string | null>(null);
   const [busy, setBusy] = useState<'buy' | 'restore' | null>(null);
@@ -113,10 +115,10 @@ export default function Paywall() {
   );
 }
 
-const styles = StyleSheet.create({
+const makeStyles = (t: Palette) => StyleSheet.create({
   screen: {
     flex: 1,
-    backgroundColor: theme.bg,
+    backgroundColor: t.bg,
     paddingHorizontal: 28,
     justifyContent: 'space-between',
   },
@@ -125,20 +127,20 @@ const styles = StyleSheet.create({
     borderRadius: 22,
     overflow: 'hidden',
     borderWidth: 1,
-    borderColor: theme.cardBorder,
+    borderColor: t.cardBorder,
     marginBottom: 18,
   },
   mark: { width: 88, height: 88 },
   appName: {
-    color: theme.text,
+    color: t.text,
     fontSize: 24,
     fontWeight: '800',
     fontFamily: mono,
     marginBottom: 6,
   },
-  title: { color: theme.amber, fontSize: 15, fontWeight: '700', marginBottom: 12 },
+  title: { color: t.amber, fontSize: 15, fontWeight: '700', marginBottom: 12 },
   blurb: {
-    color: theme.textDim,
+    color: t.textDim,
     fontSize: 13,
     lineHeight: 19,
     textAlign: 'center',
@@ -146,7 +148,7 @@ const styles = StyleSheet.create({
   },
   buyBtn: {
     alignSelf: 'stretch',
-    backgroundColor: theme.blue,
+    backgroundColor: t.blue,
     borderRadius: 10,
     paddingVertical: 15,
     alignItems: 'center',
@@ -155,16 +157,16 @@ const styles = StyleSheet.create({
   buyBtnText: { color: '#0b1220', fontSize: 14, fontWeight: '800', letterSpacing: 1 },
   restoreBtn: {
     alignSelf: 'stretch',
-    backgroundColor: theme.inset,
-    borderColor: theme.cardBorder,
+    backgroundColor: t.inset,
+    borderColor: t.cardBorder,
     borderWidth: 1,
     borderRadius: 10,
     paddingVertical: 13,
     alignItems: 'center',
   },
-  restoreBtnText: { color: theme.textDim, fontSize: 13, fontWeight: '700', letterSpacing: 1 },
+  restoreBtnText: { color: t.textDim, fontSize: 13, fontWeight: '700', letterSpacing: 1 },
   error: {
-    color: theme.red,
+    color: t.red,
     fontSize: 12,
     fontFamily: mono,
     textAlign: 'center',

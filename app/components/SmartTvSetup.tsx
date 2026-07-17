@@ -12,7 +12,7 @@ import {
 import { usePoll } from '@/hooks/usePoll';
 import { api, ConnSettings, hostKey, Tv, TvPairResult } from '@/lib/api';
 import { normalizeMac } from '@/lib/settings';
-import { theme } from '@/lib/theme';
+import { useTheme, useThemedStyles, type Palette } from '@/lib/theme';
 
 type Brand = 'webos' | 'samsung' | 'roku';
 
@@ -31,6 +31,8 @@ const NETWORK_BACKENDS = ['webos', 'samsung', 'roku'];
  * the connection — the phone only kicks off pairing over the LAN.
  */
 export function SmartTvSetup({ settings }: { settings: ConnSettings }) {
+  const t = useTheme();
+  const styles = useThemedStyles(makeStyles);
   const [brand, setBrand] = useState<Brand>('webos');
   const [host, setHost] = useState('');
   const [mac, setMac] = useState('');
@@ -91,7 +93,7 @@ export function SmartTvSetup({ settings }: { settings: ConnSettings }) {
 
       {active ? (
         <View style={styles.activeRow}>
-          <Ionicons name="tv" size={16} color={theme.green} />
+          <Ionicons name="tv" size={16} color={t.green} />
           <Text style={styles.activeText}>Connected: {active.adapter}</Text>
         </View>
       ) : null}
@@ -114,7 +116,7 @@ export function SmartTvSetup({ settings }: { settings: ConnSettings }) {
         value={host}
         onChangeText={setHost}
         placeholder="TV IP address (e.g. 192.168.1.50)"
-        placeholderTextColor={theme.textFaint}
+        placeholderTextColor={t.textFaint}
         autoCapitalize="none"
         autoCorrect={false}
         keyboardType="numbers-and-punctuation"
@@ -126,7 +128,7 @@ export function SmartTvSetup({ settings }: { settings: ConnSettings }) {
           value={mac}
           onChangeText={setMac}
           placeholder="MAC for power-on (optional)"
-          placeholderTextColor={theme.textFaint}
+          placeholderTextColor={t.textFaint}
           autoCapitalize="none"
           autoCorrect={false}
           editable={!busy}
@@ -136,7 +138,7 @@ export function SmartTvSetup({ settings }: { settings: ConnSettings }) {
 
       <Pressable onPress={submit} disabled={busy} style={[styles.button, busy && styles.buttonBusy]}>
         {busy ? (
-          <ActivityIndicator color={theme.bg} />
+          <ActivityIndicator color={t.bg} />
         ) : (
           <Text style={styles.buttonText}>
             {meta.verb} {meta.label}
@@ -145,7 +147,7 @@ export function SmartTvSetup({ settings }: { settings: ConnSettings }) {
       </Pressable>
 
       {msg ? (
-        <Text style={[styles.msg, { color: msg.ok ? theme.textDim : theme.red }]}>{msg.text}</Text>
+        <Text style={[styles.msg, { color: msg.ok ? t.textDim : t.red }]}>{msg.text}</Text>
       ) : null}
 
       <Text style={styles.hint}>
@@ -157,50 +159,50 @@ export function SmartTvSetup({ settings }: { settings: ConnSettings }) {
   );
 }
 
-const styles = StyleSheet.create({
+const makeStyles = (t: Palette) => StyleSheet.create({
   card: {
-    backgroundColor: theme.card,
-    borderColor: theme.cardBorder,
+    backgroundColor: t.card,
+    borderColor: t.cardBorder,
     borderWidth: StyleSheet.hairlineWidth,
     borderRadius: 14,
     padding: 16,
     gap: 10,
   },
-  title: { color: theme.text, fontSize: 16, fontWeight: '700' },
-  sub: { color: theme.textDim, fontSize: 13, lineHeight: 18 },
+  title: { color: t.text, fontSize: 16, fontWeight: '700' },
+  sub: { color: t.textDim, fontSize: 13, lineHeight: 18 },
   activeRow: {
     flexDirection: 'row',
     alignItems: 'center',
     gap: 8,
-    backgroundColor: theme.inset,
+    backgroundColor: t.inset,
     borderRadius: 10,
     paddingVertical: 8,
     paddingHorizontal: 12,
   },
-  activeText: { color: theme.text, fontSize: 13, fontWeight: '600', flexShrink: 1 },
+  activeText: { color: t.text, fontSize: 13, fontWeight: '600', flexShrink: 1 },
   segment: {
     flexDirection: 'row',
-    backgroundColor: theme.inset,
+    backgroundColor: t.inset,
     borderRadius: 10,
     padding: 3,
     gap: 3,
   },
   seg: { flex: 1, paddingVertical: 9, borderRadius: 8, alignItems: 'center' },
-  segOn: { backgroundColor: theme.blue },
-  segText: { color: theme.textDim, fontSize: 13, fontWeight: '600' },
-  segTextOn: { color: theme.bg },
+  segOn: { backgroundColor: t.blue },
+  segText: { color: t.textDim, fontSize: 13, fontWeight: '600' },
+  segTextOn: { color: t.bg },
   input: {
-    backgroundColor: theme.inset,
-    borderColor: theme.cardBorder,
+    backgroundColor: t.inset,
+    borderColor: t.cardBorder,
     borderWidth: StyleSheet.hairlineWidth,
     borderRadius: 10,
     paddingHorizontal: 12,
     paddingVertical: 11,
-    color: theme.text,
+    color: t.text,
     fontSize: 14,
   },
   button: {
-    backgroundColor: theme.green,
+    backgroundColor: t.green,
     borderRadius: 10,
     paddingVertical: 12,
     alignItems: 'center',
@@ -208,7 +210,7 @@ const styles = StyleSheet.create({
     minHeight: 44,
   },
   buttonBusy: { opacity: 0.7 },
-  buttonText: { color: theme.bg, fontSize: 15, fontWeight: '700' },
+  buttonText: { color: t.bg, fontSize: 15, fontWeight: '700' },
   msg: { fontSize: 13, lineHeight: 18 },
-  hint: { color: theme.textFaint, fontSize: 12, lineHeight: 16 },
+  hint: { color: t.textFaint, fontSize: 12, lineHeight: 16 },
 });

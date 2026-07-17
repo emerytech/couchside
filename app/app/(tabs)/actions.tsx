@@ -1,4 +1,4 @@
-import React, { useCallback, useState } from 'react';
+import React, { useCallback, useMemo, useState } from 'react';
 import {
   Alert,
   Platform,
@@ -16,15 +16,9 @@ import { usePoll } from '@/hooks/usePoll';
 import { ActionInfo, ActionResult, api, Danger, hostKey } from '@/lib/api';
 import { hapticError, hapticHeavy, hapticLight, hapticSuccess } from '@/lib/haptics';
 import { useSettings } from '@/lib/SettingsContext';
-import { mono, numeric, theme } from '@/lib/theme';
+import { mono, numeric, useTheme, useThemedStyles, type Palette } from '@/lib/theme';
 
 const DANGER_ORDER: Danger[] = ['low', 'medium', 'high'];
-
-const DANGER_COLOR: Record<Danger, string> = {
-  low: theme.slate,
-  medium: theme.amber,
-  high: theme.red,
-};
 
 /** Confirm helper that also works on web (Alert buttons are no-ops on web). */
 function confirm(title: string, message: string, onConfirm: () => void) {
@@ -58,8 +52,15 @@ export default function ActionsTab() {
 }
 
 function ActionsScreen() {
+  const t = useTheme();
+  const styles = useThemedStyles(makeStyles);
   const { settings, ready } = useSettings();
   const [run, setRun] = useState<RunRecord | null>(null);
+
+  const DANGER_COLOR = useMemo<Record<Danger, string>>(
+    () => ({ low: t.slate, medium: t.amber, high: t.red }),
+    [t],
+  );
 
   // No host yet (fresh install): don't poll, and show the pairing hint instead
   // of a red "Box unreachable" banner retrying every 2s against http://:8787.
@@ -188,7 +189,7 @@ function ActionsScreen() {
               <Text
                 style={[
                   styles.resultExit,
-                  { color: run.result.ok ? theme.green : theme.red },
+                  { color: run.result.ok ? t.green : t.red },
                 ]}>
                 exit {run.result.exit_code} · {run.result.duration_ms}ms ·{' '}
                 {run.result.ok ? 'OK' : 'FAILED'}
@@ -198,7 +199,7 @@ function ActionsScreen() {
                   <Text style={styles.resultOut}>{run.result.stdout}</Text>
                 ) : null}
                 {run.result.stderr ? (
-                  <Text style={[styles.resultOut, { color: theme.red }]}>
+                  <Text style={[styles.resultOut, { color: t.red }]}>
                     {run.result.stderr}
                   </Text>
                 ) : null}
@@ -214,43 +215,43 @@ function ActionsScreen() {
   );
 }
 
-const styles = StyleSheet.create({
-  screen: { flex: 1, backgroundColor: theme.bg, paddingHorizontal: 14 },
-  title: { color: theme.text, fontSize: 26, fontWeight: '700', marginBottom: 12, fontFamily: mono },
+const makeStyles = (t: Palette) => StyleSheet.create({
+  screen: { flex: 1, backgroundColor: t.bg, paddingHorizontal: 14 },
+  title: { color: t.text, fontSize: 26, fontWeight: '700', marginBottom: 12, fontFamily: mono },
   list: { flex: 1 },
   group: { marginBottom: 16 },
   groupTitle: { fontSize: 11, fontWeight: '800', letterSpacing: 1.5, marginBottom: 8 },
   card: {
-    backgroundColor: theme.card,
-    borderColor: theme.cardBorder,
+    backgroundColor: t.card,
+    borderColor: t.cardBorder,
     borderWidth: 1,
     borderRadius: 12,
     padding: 14,
     marginBottom: 8,
   },
   cardHead: { flexDirection: 'row', alignItems: 'center', marginBottom: 4 },
-  cardLabel: { color: theme.text, fontSize: 16, fontWeight: '700', flex: 1 },
+  cardLabel: { color: t.text, fontSize: 16, fontWeight: '700', flex: 1 },
   badge: {
     borderRadius: 6,
     paddingHorizontal: 8,
     paddingVertical: 3,
   },
   badgeText: { color: '#0b1220', fontSize: 11, fontWeight: '800' },
-  cardDesc: { color: theme.textDim, fontSize: 13, lineHeight: 18 },
+  cardDesc: { color: t.textDim, fontSize: 13, lineHeight: 18 },
   pressed: { opacity: 0.7 },
   emptyCard: {
-    backgroundColor: theme.card,
-    borderColor: theme.cardBorder,
+    backgroundColor: t.card,
+    borderColor: t.cardBorder,
     borderWidth: 1,
     borderRadius: 12,
     padding: 16,
     marginBottom: 12,
   },
-  emptyTitle: { color: theme.text, fontSize: 16, fontWeight: '700', marginBottom: 6 },
-  emptyText: { color: theme.textDim, fontSize: 13, lineHeight: 19 },
+  emptyTitle: { color: t.text, fontSize: 16, fontWeight: '700', marginBottom: 6 },
+  emptyText: { color: t.textDim, fontSize: 13, lineHeight: 19 },
   errBox: {
-    backgroundColor: theme.redDeep,
-    borderColor: theme.red,
+    backgroundColor: t.redDeep,
+    borderColor: t.red,
     borderWidth: 1,
     borderRadius: 12,
     padding: 14,
@@ -259,17 +260,17 @@ const styles = StyleSheet.create({
   },
   errText: { color: '#fecaca', fontSize: 13, marginBottom: 8 },
   retryBtn: {
-    backgroundColor: theme.red,
+    backgroundColor: t.red,
     paddingVertical: 10,
     paddingHorizontal: 28,
     borderRadius: 8,
   },
   retryText: { color: '#450a0a', fontWeight: '800', fontSize: 13, letterSpacing: 1 },
-  dim: { color: theme.textDim, fontSize: 13 },
-  dimMono: { color: theme.textFaint, fontSize: 12, fontFamily: mono },
+  dim: { color: t.textDim, fontSize: 13 },
+  dimMono: { color: t.textFaint, fontSize: 12, fontFamily: mono },
   resultPanel: {
-    backgroundColor: theme.inset,
-    borderColor: theme.cardBorder,
+    backgroundColor: t.inset,
+    borderColor: t.cardBorder,
     borderWidth: 1,
     borderRadius: 12,
     padding: 12,
@@ -277,10 +278,10 @@ const styles = StyleSheet.create({
     maxHeight: 240,
   },
   resultHead: { flexDirection: 'row', alignItems: 'center', marginBottom: 4 },
-  resultTitle: { color: theme.text, fontSize: 14, fontWeight: '700', flex: 1 },
-  resultClose: { color: theme.textDim, fontSize: 16, padding: 4 },
+  resultTitle: { color: t.text, fontSize: 14, fontWeight: '700', flex: 1 },
+  resultClose: { color: t.textDim, fontSize: 16, padding: 4 },
   resultExit: { fontSize: 12, marginBottom: 6, ...numeric },
-  resultErr: { color: theme.red, fontSize: 13, fontFamily: mono },
+  resultErr: { color: t.red, fontSize: 13, fontFamily: mono },
   resultScroll: { maxHeight: 150 },
-  resultOut: { color: theme.textDim, fontSize: 12, fontFamily: mono, lineHeight: 17 },
+  resultOut: { color: t.textDim, fontSize: 12, fontFamily: mono, lineHeight: 17 },
 });

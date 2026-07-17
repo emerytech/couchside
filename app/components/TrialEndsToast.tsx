@@ -4,7 +4,8 @@ import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
 import { isGenuinelyPurchased } from '@/lib/entitlement';
 import { useEntitlement } from '@/lib/EntitlementContext';
-import { mono, theme } from '@/lib/theme';
+import { mono, useThemedStyles } from '@/lib/theme';
+import type { Palette } from '@/lib/theme';
 import { lastDayToastShown, markLastDayToastShown } from '@/lib/trialNudge';
 
 const TOAST_MS = 3200;
@@ -23,6 +24,7 @@ export function TrialEndsToast() {
   const insets = useSafeAreaInsets();
   const { entitlement, ready } = useEntitlement();
   const [shown, setShown] = useState(false);
+  const styles = useThemedStyles(makeStyles);
 
   // Exactly one day left. Not `state === 'trial'` (the store-unreachable
   // fail-open reports 'purchased' over a still-running clock), and not `<= 1`
@@ -60,23 +62,23 @@ export function TrialEndsToast() {
   );
 }
 
-const styles = StyleSheet.create({
+const makeStyles = (t: Palette) => StyleSheet.create({
   wrap: { position: 'absolute', left: 0, right: 0, alignItems: 'center' },
   toast: {
     maxWidth: '90%',
-    backgroundColor: theme.card,
-    borderColor: theme.amber,
+    backgroundColor: t.card,
+    borderColor: t.amber,
     borderWidth: 1,
     borderRadius: 12,
     paddingVertical: 10,
     paddingHorizontal: 16,
   },
   title: {
-    color: theme.amber,
+    color: t.amber,
     fontFamily: mono,
     fontSize: 13,
     fontWeight: '800',
     textAlign: 'center',
   },
-  sub: { color: theme.textDim, fontSize: 11, marginTop: 3, textAlign: 'center' },
+  sub: { color: t.textDim, fontSize: 11, marginTop: 3, textAlign: 'center' },
 });

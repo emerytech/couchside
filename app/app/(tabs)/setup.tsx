@@ -41,7 +41,7 @@ import { buy, getProduct, restore } from '@/lib/purchase';
 import { Box, DEFAULT_PORT, normalizeMac } from '@/lib/settings';
 import { VolumeTarget } from '@/lib/api';
 import { useBoxes, useBoxOnlineStatus, BoxReachability } from '@/lib/SettingsContext';
-import { mono, theme } from '@/lib/theme';
+import { mono, useTheme, useThemedStyles, type Palette } from '@/lib/theme';
 
 /**
  * Build the pairing link for a box.
@@ -87,6 +87,7 @@ const APP_BUILD =
 const SETUP_GUIDE_URL = 'https://couchside.tv/#how';
 
 function PairingQrModal({ box, onClose }: { box: Box | null; onClose: () => void }) {
+  const styles = useThemedStyles(makeStyles);
   return (
     <Modal
       visible={box != null}
@@ -134,14 +135,16 @@ function errDetail(e: unknown): string {
 }
 
 function StepRow({ label, step }: { label: string; step: StepState }) {
+  const t = useTheme();
+  const styles = useThemedStyles(makeStyles);
   const mark =
     step.state === 'ok' ? '✓' : step.state === 'fail' ? '✗' : step.state === 'running' ? '…' : '·';
   const color =
     step.state === 'ok'
-      ? theme.green
+      ? t.green
       : step.state === 'fail'
-        ? theme.red
-        : theme.textFaint;
+        ? t.red
+        : t.textFaint;
   return (
     <View style={styles.stepRow}>
       <Text style={[styles.stepMark, { color }]}>{mark}</Text>
@@ -157,6 +160,8 @@ function StepRow({ label, step }: { label: string; step: StepState }) {
 
 /** Subtle entitlement pill: trial countdown (amber) / unlocked (green). */
 function EntitlementPill() {
+  const t = useTheme();
+  const styles = useThemedStyles(makeStyles);
   const { entitlement, ready } = useEntitlement();
   if (!ready) return null;
   // A store-unreachable fail-open must not claim "Unlocked": report the real
@@ -168,10 +173,10 @@ function EntitlementPill() {
       ? `Trial: ${entitlement.trialDaysLeft} day${entitlement.trialDaysLeft === 1 ? '' : 's'} left`
       : 'Trial ended';
   const color = purchased
-    ? theme.green
+    ? t.green
     : entitlement.trialDaysLeft > 0
-      ? theme.amber
-      : theme.red;
+      ? t.amber
+      : t.red;
   return (
     <View style={[styles.pill, { borderColor: color }]}>
       <Text style={[styles.pillText, { color }]}>{label}</Text>
@@ -181,6 +186,7 @@ function EntitlementPill() {
 
 /** Subtle gold Early Adopter badge: purchased before the cutoff, local-only. */
 function EarlyAdopterBadge() {
+  const styles = useThemedStyles(makeStyles);
   const { entitlement, ready } = useEntitlement();
   if (!ready || !entitlement.isEarlyAdopter) return null;
   return (
@@ -190,10 +196,10 @@ function EarlyAdopterBadge() {
   );
 }
 
-function dotColor(status: BoxReachability | undefined): string {
-  if (status === 'reachable') return theme.green;
-  if (status === 'offline') return theme.slate;
-  return theme.amber;
+function dotColor(status: BoxReachability | undefined, t: Palette): string {
+  if (status === 'reachable') return t.green;
+  if (status === 'offline') return t.slate;
+  return t.amber;
 }
 
 /** Cross-platform confirm (Alert buttons are no-ops on web). */
@@ -239,6 +245,8 @@ function BoxEditPanel({
   /** True if the given host+port already belongs to a *different* box. */
   conflict: (host: string, port: number) => boolean;
 }) {
+  const t = useTheme();
+  const styles = useThemedStyles(makeStyles);
   const [name, setName] = useState(box.name);
   const [host, setHost] = useState(box.host);
   const [port, setPort] = useState(String(box.port));
@@ -336,7 +344,7 @@ function BoxEditPanel({
         value={name}
         onChangeText={setName}
         placeholder="box name"
-        placeholderTextColor={theme.textFaint}
+        placeholderTextColor={t.textFaint}
         autoCapitalize="none"
         autoCorrect={false}
       />
@@ -350,7 +358,7 @@ function BoxEditPanel({
           setError(null);
         }}
         placeholder="steamdeck.local · bazzite.local"
-        placeholderTextColor={theme.textFaint}
+        placeholderTextColor={t.textFaint}
         autoCapitalize="none"
         autoCorrect={false}
       />
@@ -364,7 +372,7 @@ function BoxEditPanel({
           setError(null);
         }}
         placeholder="8787"
-        placeholderTextColor={theme.textFaint}
+        placeholderTextColor={t.textFaint}
         keyboardType="number-pad"
       />
 
@@ -379,7 +387,7 @@ function BoxEditPanel({
         value={token}
         onChangeText={setToken}
         placeholder="bearer token"
-        placeholderTextColor={theme.textFaint}
+        placeholderTextColor={t.textFaint}
         secureTextEntry={!showToken}
         autoCapitalize="none"
         autoCorrect={false}
@@ -394,7 +402,7 @@ function BoxEditPanel({
           setError(null);
         }}
         placeholder="aa:bb:cc:dd:ee:ff · auto-learned when reachable"
-        placeholderTextColor={theme.textFaint}
+        placeholderTextColor={t.textFaint}
         autoCapitalize="none"
         autoCorrect={false}
       />
@@ -478,6 +486,8 @@ function TogglePref({
   value: boolean;
   onValueChange: (v: boolean) => void;
 }) {
+  const t = useTheme();
+  const styles = useThemedStyles(makeStyles);
   return (
     <View style={styles.prefRow}>
       <View style={styles.prefBody}>
@@ -487,9 +497,9 @@ function TogglePref({
       <Switch
         value={value}
         onValueChange={onValueChange}
-        trackColor={{ false: theme.inset, true: theme.blue }}
+        trackColor={{ false: t.inset, true: t.blue }}
         thumbColor="#f8fafc"
-        ios_backgroundColor={theme.inset}
+        ios_backgroundColor={t.inset}
       />
     </View>
   );
@@ -509,6 +519,7 @@ function SegPref<T extends string | number>({
   value: T;
   onSelect: (v: T) => void;
 }) {
+  const styles = useThemedStyles(makeStyles);
   return (
     <View style={styles.prefCol}>
       <View style={styles.prefBody}>
@@ -543,6 +554,8 @@ const SETUP_TABS: { key: SetupTab; label: string; icon: IoniconName }[] = [
 ];
 
 function CategoryTabs({ tab, onTab }: { tab: SetupTab; onTab: (t: SetupTab) => void }) {
+  const pal = useTheme();
+  const styles = useThemedStyles(makeStyles);
   return (
     <View style={styles.tabBar}>
       {SETUP_TABS.map((t) => {
@@ -555,7 +568,7 @@ function CategoryTabs({ tab, onTab }: { tab: SetupTab; onTab: (t: SetupTab) => v
               onTab(t.key);
             }}
             style={[styles.tabItem, active && styles.tabItemActive]}>
-            <Ionicons name={t.icon} size={15} color={active ? theme.text : theme.textFaint} />
+            <Ionicons name={t.icon} size={15} color={active ? pal.text : pal.textFaint} />
             <Text style={[styles.tabLabel, active && styles.tabLabelActive]} numberOfLines={1}>
               {t.label}
             </Text>
@@ -568,15 +581,19 @@ function CategoryTabs({ tab, onTab }: { tab: SetupTab; onTab: (t: SetupTab) => v
 
 /** A small section header inside a card: icon + uppercase label. */
 function CardHeader({ icon, label }: { icon: IoniconName; label: string }) {
+  const t = useTheme();
+  const styles = useThemedStyles(makeStyles);
   return (
     <View style={styles.cardHeader}>
-      <Ionicons name={icon} size={14} color={theme.textDim} />
+      <Ionicons name={icon} size={14} color={t.textDim} />
       <Text style={styles.cardHeaderText}>{label}</Text>
     </View>
   );
 }
 
 function SetupBody() {
+  const t = useTheme();
+  const styles = useThemedStyles(makeStyles);
   const { entitlement, recordPurchase } = useEntitlement();
   const {
     boxes,
@@ -783,7 +800,7 @@ function SetupBody() {
             setTab('account');
           }}
           style={({ pressed }) => [styles.unlockRow, pressed && styles.pressed]}>
-          <Ionicons name="lock-open-outline" size={18} color={theme.blue} />
+          <Ionicons name="lock-open-outline" size={18} color={t.blue} />
           <View style={styles.unlockRowBody}>
             <Text style={styles.unlockRowTitle}>Unlock Couchside — {price ?? '$4.99'}</Text>
             <Text style={styles.unlockRowSub}>
@@ -794,7 +811,7 @@ function SetupBody() {
                 : 'Trial ended · one-time purchase, no subscription'}
             </Text>
           </View>
-          <Ionicons name="chevron-forward" size={18} color={theme.textDim} />
+          <Ionicons name="chevron-forward" size={18} color={t.textDim} />
         </Pressable>
       )}
       {/* Logs hosts its own FlatList and must not live inside a ScrollView.
@@ -831,11 +848,11 @@ function SetupBody() {
                 void Linking.openURL(SETUP_GUIDE_URL);
               }}
               style={({ pressed }) => [styles.emptyLink, pressed && styles.pressed]}>
-              <Ionicons name="hardware-chip-outline" size={15} color={theme.blue} />
+              <Ionicons name="hardware-chip-outline" size={15} color={t.blue} />
               <Text style={styles.emptyLinkText}>
                 Haven&apos;t installed the agent? Setup guide
               </Text>
-              <Ionicons name="open-outline" size={13} color={theme.blue} />
+              <Ionicons name="open-outline" size={13} color={t.blue} />
             </Pressable>
           </View>
         ) : (
@@ -847,7 +864,7 @@ function SetupBody() {
                 <Pressable
                   onPress={() => setEditingId(isEditing ? null : box.id)}
                   style={styles.boxMain}>
-                  <View style={[styles.boxDot, { backgroundColor: dotColor(status[box.id]) }]} />
+                  <View style={[styles.boxDot, { backgroundColor: dotColor(status[box.id], t) }]} />
                   <View style={styles.boxBody}>
                     <Text style={styles.boxName} numberOfLines={1}>
                       {box.name}
@@ -889,14 +906,14 @@ function SetupBody() {
                         }}
                         hitSlop={8}
                         style={styles.iconBtn}>
-                        <Text style={[styles.iconBtnText, { color: theme.blue }]}>SET ACTIVE</Text>
+                        <Text style={[styles.iconBtnText, { color: t.blue }]}>SET ACTIVE</Text>
                       </Pressable>
                     )}
                     <Pressable
                       onPress={() => setQrBox(box)}
                       hitSlop={8}
                       style={styles.iconBtn}>
-                      <Text style={[styles.iconBtnText, { color: theme.textDim }]}>SHOW QR</Text>
+                      <Text style={[styles.iconBtnText, { color: t.textDim }]}>SHOW QR</Text>
                     </Pressable>
                     <Pressable
                       onPress={() => setEditingId(box.id)}
@@ -908,7 +925,7 @@ function SetupBody() {
                       onPress={() => confirmRemove(box.name, () => void removeBox(box.id))}
                       hitSlop={8}
                       style={styles.iconBtn}>
-                      <Text style={[styles.iconBtnText, { color: theme.red }]}>REMOVE</Text>
+                      <Text style={[styles.iconBtnText, { color: t.red }]}>REMOVE</Text>
                     </Pressable>
                   </View>
                 )}
@@ -926,7 +943,7 @@ function SetupBody() {
             value={name}
             onChangeText={setName}
             placeholder="Media center · Steam Deck"
-            placeholderTextColor={theme.textFaint}
+            placeholderTextColor={t.textFaint}
             autoCapitalize="none"
             autoCorrect={false}
             editable={ready}
@@ -938,7 +955,7 @@ function SetupBody() {
             value={host}
             onChangeText={setHost}
             placeholder="steamdeck.local · bazzite.local"
-            placeholderTextColor={theme.textFaint}
+            placeholderTextColor={t.textFaint}
             autoCapitalize="none"
             autoCorrect={false}
             editable={ready}
@@ -950,7 +967,7 @@ function SetupBody() {
             value={port}
             onChangeText={setPort}
             placeholder="8787"
-            placeholderTextColor={theme.textFaint}
+            placeholderTextColor={t.textFaint}
             keyboardType="number-pad"
             editable={ready}
           />
@@ -961,7 +978,7 @@ function SetupBody() {
             value={token}
             onChangeText={setToken}
             placeholder="bearer token"
-            placeholderTextColor={theme.textFaint}
+            placeholderTextColor={t.textFaint}
             secureTextEntry
             autoCapitalize="none"
             autoCorrect={false}
@@ -1027,9 +1044,9 @@ function SetupBody() {
                     void setHapticsEnabled(v);
                     if (v) hapticSelection();
                   }}
-                  trackColor={{ false: theme.inset, true: theme.blue }}
+                  trackColor={{ false: t.inset, true: t.blue }}
                   thumbColor="#f8fafc"
-                  ios_backgroundColor={theme.inset}
+                  ios_backgroundColor={t.inset}
                 />
               </View>
               <TogglePref
@@ -1089,9 +1106,9 @@ function SetupBody() {
                     void setKeepAwakeEnabled(v);
                     hapticSelection();
                   }}
-                  trackColor={{ false: theme.inset, true: theme.blue }}
+                  trackColor={{ false: t.inset, true: t.blue }}
                   thumbColor="#f8fafc"
-                  ios_backgroundColor={theme.inset}
+                  ios_backgroundColor={t.inset}
                 />
               </View>
               <SegPref
@@ -1246,7 +1263,7 @@ function SetupBody() {
                 </Text>
               </Pressable>
               {restoreMsg != null && (
-                <Text style={[styles.restoreMsg, { color: restoreMsg.ok ? theme.green : theme.red }]}>
+                <Text style={[styles.restoreMsg, { color: restoreMsg.ok ? t.green : t.red }]}>
                   {restoreMsg.text}
                 </Text>
               )}
@@ -1267,14 +1284,14 @@ function SetupBody() {
                 void openWriteReview();
               }}
               style={({ pressed }) => [styles.rateRow, pressed && styles.pressed]}>
-              <Ionicons name="star-outline" size={18} color={theme.amber} />
+              <Ionicons name="star-outline" size={18} color={t.amber} />
               <View style={styles.rateBody}>
                 <Text style={styles.rateTitle}>Rate Couchside</Text>
                 <Text style={styles.rateSub}>
                   A quick review helps other people find it.
                 </Text>
               </View>
-              <Ionicons name="open-outline" size={16} color={theme.textDim} />
+              <Ionicons name="open-outline" size={16} color={t.textDim} />
             </Pressable>
 
             {/* First-run lifeline: the app is useless without the box-side agent,
@@ -1286,18 +1303,18 @@ function SetupBody() {
                 void Linking.openURL(SETUP_GUIDE_URL);
               }}
               style={({ pressed }) => [styles.rateRow, pressed && styles.pressed]}>
-              <Ionicons name="hardware-chip-outline" size={18} color={theme.blue} />
+              <Ionicons name="hardware-chip-outline" size={18} color={t.blue} />
               <View style={styles.rateBody}>
                 <Text style={styles.rateTitle}>Set up a box</Text>
                 <Text style={styles.rateSub}>
                   Install the agent — instructions at couchside.tv.
                 </Text>
               </View>
-              <Ionicons name="open-outline" size={16} color={theme.textDim} />
+              <Ionicons name="open-outline" size={16} color={t.textDim} />
             </Pressable>
 
             <View style={styles.aboutRow}>
-              <Ionicons name="information-circle-outline" size={16} color={theme.textDim} />
+              <Ionicons name="information-circle-outline" size={16} color={t.textDim} />
               <Text style={styles.aboutText}>
                 Couchside v{APP_VERSION}
                 {APP_BUILD ? ` (${Platform.OS === 'ios' ? 'build' : 'vc'} ${APP_BUILD})` : ''}
@@ -1316,11 +1333,11 @@ function SetupBody() {
   );
 }
 
-const styles = StyleSheet.create({
-  screen: { flex: 1, backgroundColor: theme.bg },
+const makeStyles = (t: Palette) => StyleSheet.create({
+  screen: { flex: 1, backgroundColor: t.bg },
   // Collapse the ScrollView while the Logs tab (its own FlatList) is showing.
   hidden: { display: 'none' },
-  title: { color: theme.text, fontSize: 26, fontWeight: '700', fontFamily: mono },
+  title: { color: t.text, fontSize: 26, fontWeight: '700', fontFamily: mono },
   titleRow: {
     flexDirection: 'row',
     alignItems: 'center',
@@ -1333,26 +1350,26 @@ const styles = StyleSheet.create({
     borderRadius: 999,
     paddingVertical: 4,
     paddingHorizontal: 10,
-    backgroundColor: theme.inset,
+    backgroundColor: t.inset,
   },
   pillText: { fontSize: 11, fontWeight: '700', letterSpacing: 0.5, fontFamily: mono },
   earlyBadge: {
     borderWidth: 1,
-    borderColor: theme.amber,
+    borderColor: t.amber,
     borderRadius: 999,
     paddingVertical: 4,
     paddingHorizontal: 10,
     backgroundColor: 'rgba(251,191,36,0.12)',
   },
   earlyBadgeText: {
-    color: theme.amber,
+    color: t.amber,
     fontSize: 10,
     fontWeight: '800',
     letterSpacing: 0.6,
     fontFamily: mono,
   },
   sectionLabel: {
-    color: theme.textFaint,
+    color: t.textFaint,
     fontSize: 11,
     fontWeight: '700',
     letterSpacing: 1.2,
@@ -1362,18 +1379,18 @@ const styles = StyleSheet.create({
     paddingHorizontal: 14,
     paddingTop: 8,
     paddingBottom: 10,
-    borderBottomColor: theme.cardBorder,
+    borderBottomColor: t.cardBorder,
     borderBottomWidth: 1,
-    backgroundColor: theme.bg,
+    backgroundColor: t.bg,
   },
   tabBar: {
     flexDirection: 'row',
     gap: 4,
     padding: 4,
     borderRadius: 12,
-    backgroundColor: theme.inset,
+    backgroundColor: t.inset,
     borderWidth: 1,
-    borderColor: theme.cardBorder,
+    borderColor: t.cardBorder,
   },
   tabItem: {
     flex: 1,
@@ -1385,18 +1402,18 @@ const styles = StyleSheet.create({
     borderRadius: 9,
   },
   tabItemActive: {
-    backgroundColor: theme.card,
+    backgroundColor: t.card,
     borderWidth: 1,
-    borderColor: theme.cardBorder,
+    borderColor: t.cardBorder,
   },
   tabLabel: {
-    color: theme.textFaint,
+    color: t.textFaint,
     fontSize: 12,
     fontWeight: '700',
     letterSpacing: 0.3,
     fontFamily: mono,
   },
-  tabLabelActive: { color: theme.text },
+  tabLabelActive: { color: t.text },
   cardHeader: {
     flexDirection: 'row',
     alignItems: 'center',
@@ -1404,7 +1421,7 @@ const styles = StyleSheet.create({
     marginBottom: 12,
   },
   cardHeaderText: {
-    color: theme.textDim,
+    color: t.textDim,
     fontSize: 11,
     fontWeight: '800',
     letterSpacing: 1.2,
@@ -1420,24 +1437,24 @@ const styles = StyleSheet.create({
     minHeight: 26,
   },
   card: {
-    backgroundColor: theme.card,
-    borderColor: theme.cardBorder,
+    backgroundColor: t.card,
+    borderColor: t.cardBorder,
     borderWidth: 1,
     borderRadius: 12,
     padding: 14,
     marginBottom: 12,
   },
-  emptyText: { color: theme.textDim, fontSize: 13, lineHeight: 19 },
+  emptyText: { color: t.textDim, fontSize: 13, lineHeight: 19 },
   emptyLink: {
     flexDirection: 'row',
     alignItems: 'center',
     gap: 6,
     marginTop: 12,
   },
-  emptyLinkText: { color: theme.blue, fontSize: 13, fontWeight: '600' },
+  emptyLinkText: { color: t.blue, fontSize: 13, fontWeight: '600' },
   boxCard: {
-    backgroundColor: theme.card,
-    borderColor: theme.cardBorder,
+    backgroundColor: t.card,
+    borderColor: t.cardBorder,
     borderWidth: 1,
     borderRadius: 12,
     paddingVertical: 12,
@@ -1447,11 +1464,11 @@ const styles = StyleSheet.create({
   boxMain: { flexDirection: 'row', alignItems: 'center', gap: 12 },
   boxDot: { width: 10, height: 10, borderRadius: 5 },
   boxBody: { flex: 1, minWidth: 0 },
-  boxName: { color: theme.text, fontSize: 15, fontWeight: '700', fontFamily: mono },
-  activeTag: { color: theme.blue, fontSize: 12, fontWeight: '700' },
-  boxHost: { color: theme.textFaint, fontSize: 12, fontFamily: mono, marginTop: 2 },
+  boxName: { color: t.text, fontSize: 15, fontWeight: '700', fontFamily: mono },
+  activeTag: { color: t.blue, fontSize: 12, fontWeight: '700' },
+  boxHost: { color: t.textFaint, fontSize: 12, fontFamily: mono, marginTop: 2 },
   chevron: {
-    color: theme.textFaint,
+    color: t.textFaint,
     fontSize: 12,
     fontWeight: '800',
     letterSpacing: 1,
@@ -1459,14 +1476,14 @@ const styles = StyleSheet.create({
   },
   editPanel: {
     marginTop: 12,
-    borderTopColor: theme.cardBorder,
+    borderTopColor: t.cardBorder,
     borderTopWidth: 1,
     paddingTop: 14,
   },
   editSteps: { marginTop: 14 },
   smartTvWrap: { marginTop: 14 },
   editError: {
-    color: theme.red,
+    color: t.red,
     fontSize: 12,
     fontFamily: mono,
     marginTop: 10,
@@ -1479,7 +1496,7 @@ const styles = StyleSheet.create({
     marginTop: 16,
   },
   editLastIp: {
-    color: theme.textFaint,
+    color: t.textFaint,
     fontSize: 11,
     fontFamily: mono,
     marginRight: 'auto',
@@ -1491,7 +1508,7 @@ const styles = StyleSheet.create({
     marginBottom: 6,
   },
   tokenToggle: {
-    color: theme.blue,
+    color: t.blue,
     fontSize: 11,
     fontWeight: '800',
     letterSpacing: 1,
@@ -1507,25 +1524,25 @@ const styles = StyleSheet.create({
   },
   iconBtn: { paddingVertical: 2 },
   iconBtnText: {
-    color: theme.textDim,
+    color: t.textDim,
     fontSize: 11,
     fontWeight: '800',
     letterSpacing: 1,
     fontFamily: mono,
   },
   fieldLabel: {
-    color: theme.textFaint,
+    color: t.textFaint,
     fontSize: 11,
     fontWeight: '700',
     letterSpacing: 1.2,
     marginBottom: 6,
   },
   input: {
-    backgroundColor: theme.inset,
-    borderColor: theme.cardBorder,
+    backgroundColor: t.inset,
+    borderColor: t.cardBorder,
     borderWidth: 1,
     borderRadius: 8,
-    color: theme.text,
+    color: t.text,
     fontSize: 15,
     fontFamily: mono,
     paddingVertical: 12,
@@ -1539,9 +1556,9 @@ const styles = StyleSheet.create({
     paddingVertical: 14,
     alignItems: 'center',
   },
-  btnTest: { backgroundColor: theme.inset, borderColor: theme.blue, borderWidth: 1 },
-  btnTestText: { color: theme.blue, fontWeight: '800', fontSize: 13, letterSpacing: 1 },
-  btnSave: { backgroundColor: theme.blue },
+  btnTest: { backgroundColor: t.inset, borderColor: t.blue, borderWidth: 1 },
+  btnTestText: { color: t.blue, fontWeight: '800', fontSize: 13, letterSpacing: 1 },
+  btnSave: { backgroundColor: t.blue },
   btnSaveText: { color: '#0b1220', fontWeight: '800', fontSize: 13, letterSpacing: 1 },
   rateRow: {
     flexDirection: 'row',
@@ -1553,14 +1570,14 @@ const styles = StyleSheet.create({
     marginBottom: 16,
     paddingVertical: 12,
     paddingHorizontal: 14,
-    backgroundColor: theme.card,
-    borderColor: theme.cardBorder,
+    backgroundColor: t.card,
+    borderColor: t.cardBorder,
     borderWidth: 1,
     borderRadius: 12,
   },
   rateBody: { flex: 1 },
-  rateTitle: { color: theme.text, fontSize: 14, fontWeight: '700' },
-  rateSub: { color: theme.textDim, fontSize: 11, marginTop: 2 },
+  rateTitle: { color: t.text, fontSize: 14, fontWeight: '700' },
+  rateSub: { color: t.textDim, fontSize: 11, marginTop: 2 },
   aboutRow: {
     flexDirection: 'row',
     alignItems: 'center',
@@ -1568,7 +1585,7 @@ const styles = StyleSheet.create({
     marginBottom: 4,
     paddingHorizontal: 2,
   },
-  aboutText: { color: theme.textDim, fontSize: 12 },
+  aboutText: { color: t.textDim, fontSize: 12 },
   unlockRow: {
     flexDirection: 'row',
     alignItems: 'center',
@@ -1577,16 +1594,16 @@ const styles = StyleSheet.create({
     marginTop: 10,
     paddingVertical: 12,
     paddingHorizontal: 14,
-    backgroundColor: theme.card,
-    borderColor: theme.blue,
+    backgroundColor: t.card,
+    borderColor: t.blue,
     borderWidth: 1,
     borderRadius: 12,
   },
   unlockRowBody: { flex: 1 },
-  unlockRowTitle: { color: theme.text, fontSize: 14, fontWeight: '800' },
-  unlockRowSub: { color: theme.textDim, fontSize: 11, marginTop: 2 },
+  unlockRowTitle: { color: t.text, fontSize: 14, fontWeight: '800' },
+  unlockRowSub: { color: t.textDim, fontSize: 11, marginTop: 2 },
   btnBuy: {
-    backgroundColor: theme.blue,
+    backgroundColor: t.blue,
     borderRadius: 8,
     paddingVertical: 14,
     alignItems: 'center',
@@ -1594,26 +1611,26 @@ const styles = StyleSheet.create({
   },
   btnBuyText: { color: '#0b1220', fontWeight: '800', fontSize: 13, letterSpacing: 1 },
   btnRestore: {
-    backgroundColor: theme.inset,
-    borderColor: theme.cardBorder,
+    backgroundColor: t.inset,
+    borderColor: t.cardBorder,
     borderWidth: 1,
     borderRadius: 8,
     paddingVertical: 14,
     alignItems: 'center',
   },
-  btnRestoreText: { color: theme.textDim, fontWeight: '800', fontSize: 13, letterSpacing: 1 },
+  btnRestoreText: { color: t.textDim, fontWeight: '800', fontSize: 13, letterSpacing: 1 },
   restoreMsg: { fontSize: 12, fontFamily: mono, marginTop: 10 },
-  purchaseHint: { color: theme.textFaint, fontSize: 11, marginTop: 10 },
+  purchaseHint: { color: t.textFaint, fontSize: 11, marginTop: 10 },
   pressed: { opacity: 0.7 },
   stepRow: { flexDirection: 'row', alignItems: 'flex-start', marginBottom: 10, gap: 10 },
   stepMark: { fontSize: 18, fontWeight: '800', width: 22, textAlign: 'center' },
   stepBody: { flex: 1 },
-  stepLabel: { color: theme.text, fontSize: 13, fontFamily: mono },
+  stepLabel: { color: t.text, fontSize: 13, fontFamily: mono },
   stepDetail: { fontSize: 12, fontFamily: mono, marginTop: 3 },
   versionRow: {
     flexDirection: 'row',
     justifyContent: 'space-between',
-    borderTopColor: theme.cardBorder,
+    borderTopColor: t.cardBorder,
     borderTopWidth: 1,
     paddingTop: 10,
     marginTop: 2,
@@ -1626,22 +1643,22 @@ const styles = StyleSheet.create({
   },
   prefBody: { flex: 1, minWidth: 0 },
   prefCol: { gap: 10 },
-  prefLabel: { color: theme.text, fontSize: 15, fontWeight: '600', fontFamily: mono },
-  prefSub: { color: theme.textFaint, fontSize: 12, marginTop: 3 },
+  prefLabel: { color: t.text, fontSize: 15, fontWeight: '600', fontFamily: mono },
+  prefSub: { color: t.textFaint, fontSize: 12, marginTop: 3 },
   segRow: {
     flexDirection: 'row',
     gap: 2,
     padding: 2,
     borderRadius: 10,
-    backgroundColor: theme.inset,
+    backgroundColor: t.inset,
   },
   seg: { flex: 1, paddingVertical: 10, borderRadius: 8, alignItems: 'center' },
-  segActive: { backgroundColor: theme.card },
-  segText: { color: theme.textDim, fontSize: 13, fontWeight: '700', fontFamily: mono },
-  segTextActive: { color: theme.text },
-  versionLabel: { color: theme.textDim, fontSize: 13 },
-  versionValue: { color: theme.green, fontSize: 13, fontFamily: mono, fontWeight: '700' },
-  hint: { color: theme.textFaint, fontSize: 12, lineHeight: 17, fontFamily: mono },
+  segActive: { backgroundColor: t.card },
+  segText: { color: t.textDim, fontSize: 13, fontWeight: '700', fontFamily: mono },
+  segTextActive: { color: t.text },
+  versionLabel: { color: t.textDim, fontSize: 13 },
+  versionValue: { color: t.green, fontSize: 13, fontFamily: mono, fontWeight: '700' },
+  hint: { color: t.textFaint, fontSize: 12, lineHeight: 17, fontFamily: mono },
 
   // ---- Pairing QR modal ----
   qrBackdrop: {
@@ -1654,15 +1671,15 @@ const styles = StyleSheet.create({
   qrSheet: {
     width: '100%',
     maxWidth: 360,
-    backgroundColor: theme.card,
-    borderColor: theme.cardBorder,
+    backgroundColor: t.card,
+    borderColor: t.cardBorder,
     borderWidth: 1,
     borderRadius: 16,
     padding: 20,
     alignItems: 'center',
   },
   qrTitle: {
-    color: theme.text,
+    color: t.text,
     fontSize: 16,
     fontWeight: '700',
     fontFamily: mono,
@@ -1677,7 +1694,7 @@ const styles = StyleSheet.create({
     justifyContent: 'center',
   },
   qrCaption: {
-    color: theme.textDim,
+    color: t.textDim,
     fontSize: 13,
     fontFamily: mono,
     marginTop: 14,
@@ -1689,12 +1706,12 @@ const styles = StyleSheet.create({
     alignSelf: 'stretch',
   },
   qrFallbackText: {
-    color: theme.textFaint,
+    color: t.textFaint,
     fontSize: 11,
     fontFamily: mono,
   },
   qrFallbackToken: {
-    color: theme.textFaint,
+    color: t.textFaint,
     fontSize: 11,
     fontFamily: mono,
     marginTop: 2,
@@ -1702,8 +1719,8 @@ const styles = StyleSheet.create({
   },
   qrClose: {
     marginTop: 18,
-    backgroundColor: theme.inset,
-    borderColor: theme.cardBorder,
+    backgroundColor: t.inset,
+    borderColor: t.cardBorder,
     borderWidth: 1,
     borderRadius: 8,
     paddingVertical: 12,
@@ -1711,7 +1728,7 @@ const styles = StyleSheet.create({
     alignItems: 'center',
   },
   qrCloseText: {
-    color: theme.textDim,
+    color: t.textDim,
     fontWeight: '800',
     fontSize: 13,
     letterSpacing: 1,

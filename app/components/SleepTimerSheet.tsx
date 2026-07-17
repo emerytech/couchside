@@ -10,7 +10,8 @@ import { Modal, Pressable, StyleSheet, Text, View } from 'react-native';
 
 import { api, ConnSettings, PowerSchedule } from '@/lib/api';
 import { hapticError, hapticLight, hapticWarning } from '@/lib/haptics';
-import { mono, numeric, theme } from '@/lib/theme';
+import { mono, numeric, useTheme, useThemedStyles } from '@/lib/theme';
+import type { Palette } from '@/lib/theme';
 
 const PRESETS_MIN = [15, 30, 45, 60, 90, 120];
 
@@ -39,6 +40,8 @@ export function SleepTimerSheet({
   onChanged: () => void;
   onClose: () => void;
 }) {
+  const t = useTheme();
+  const styles = useThemedStyles(makeStyles);
   const [action, setAction] = useState<'suspend' | 'poweroff'>('suspend');
   const [busy, setBusy] = useState(false);
 
@@ -145,7 +148,7 @@ export function SleepTimerSheet({
                       style={[
                         styles.segText,
                         action === a && styles.segTextOn,
-                        a === 'poweroff' && action === a && { color: theme.red },
+                        a === 'poweroff' && action === a && { color: t.red },
                       ]}>
                       {a === 'suspend' ? 'Suspend' : 'Power off'}
                     </Text>
@@ -198,19 +201,19 @@ export function SleepTimerSheet({
   );
 }
 
-const styles = StyleSheet.create({
+const makeStyles = (t: Palette) => StyleSheet.create({
   backdrop: { flex: 1, backgroundColor: 'rgba(0,0,0,0.6)', justifyContent: 'flex-end' },
   sheet: {
-    backgroundColor: theme.card,
+    backgroundColor: t.card,
     borderTopLeftRadius: 18,
     borderTopRightRadius: 18,
-    borderColor: theme.cardBorder,
+    borderColor: t.cardBorder,
     borderWidth: 1,
     padding: 20,
     paddingBottom: 32,
     gap: 10,
   },
-  title: { color: theme.textFaint, fontSize: 11, fontWeight: '700', letterSpacing: 1.2, fontFamily: mono },
+  title: { color: t.textFaint, fontSize: 11, fontWeight: '700', letterSpacing: 1.2, fontFamily: mono },
 
   seg: { flexDirection: 'row', gap: 6, marginTop: 4 },
   segBtn: {
@@ -218,12 +221,12 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     paddingVertical: 8,
     borderRadius: 10,
-    borderColor: theme.cardBorder,
+    borderColor: t.cardBorder,
     borderWidth: 1,
   },
-  segOn: { backgroundColor: theme.inset, borderColor: theme.textDim },
-  segText: { color: theme.textDim, fontSize: 14, fontWeight: '600' },
-  segTextOn: { color: theme.text },
+  segOn: { backgroundColor: t.inset, borderColor: t.textDim },
+  segText: { color: t.textDim, fontSize: 14, fontWeight: '600' },
+  segTextOn: { color: t.text },
 
   pills: { flexDirection: 'row', flexWrap: 'wrap', gap: 8, marginTop: 4 },
   pill: {
@@ -232,29 +235,29 @@ const styles = StyleSheet.create({
     paddingVertical: 10,
     paddingHorizontal: 14,
     borderRadius: 999,
-    backgroundColor: theme.inset,
-    borderColor: theme.cardBorder,
+    backgroundColor: t.inset,
+    borderColor: t.cardBorder,
     borderWidth: 1,
   },
-  pillText: { color: theme.text, fontSize: 15, fontWeight: '700', ...numeric },
+  pillText: { color: t.text, fontSize: 15, fontWeight: '700', ...numeric },
   pressed: { opacity: 0.7 },
 
   armedRow: {
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'space-between',
-    backgroundColor: theme.inset,
+    backgroundColor: t.inset,
     borderRadius: 10,
     padding: 12,
   },
-  armedText: { color: theme.text, fontSize: 15 },
-  armedCount: { color: theme.amber, fontWeight: '700', ...numeric },
+  armedText: { color: t.text, fontSize: 15 },
+  armedCount: { color: t.amber, fontWeight: '700', ...numeric },
   cancelBtn: {
-    borderColor: theme.red,
+    borderColor: t.red,
     borderWidth: 1,
     borderRadius: 999,
     paddingVertical: 5,
     paddingHorizontal: 12,
   },
-  cancelText: { color: theme.red, fontSize: 12, fontWeight: '700', fontFamily: mono },
+  cancelText: { color: t.red, fontSize: 12, fontWeight: '700', fontFamily: mono },
 });
