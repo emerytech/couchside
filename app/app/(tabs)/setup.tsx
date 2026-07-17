@@ -21,6 +21,7 @@ import { AgentUpdateBanner } from '@/components/AgentUpdateBanner';
 import { Gated } from '@/components/Gated';
 import { LogsPanel } from '@/components/LogsPanel';
 import { QrView } from '@/components/QrView';
+import { SmartTvSetup } from '@/components/SmartTvSetup';
 import { TabScreen } from '@/components/TabScreen';
 import { useLockOrientation } from '@/hooks/useLockOrientation';
 import { api, ApiError } from '@/lib/api';
@@ -439,6 +440,10 @@ function BoxEditPanel({
           <StepRow label="2 · /api/status (Bearer token)" step={authStep} />
         </View>
       )}
+
+      <View style={styles.smartTvWrap}>
+        <SmartTvSetup settings={box} />
+      </View>
 
       <View style={styles.editFooter}>
         {box.lastIp != null && (
@@ -1459,6 +1464,7 @@ const styles = StyleSheet.create({
     paddingTop: 14,
   },
   editSteps: { marginTop: 14 },
+  smartTvWrap: { marginTop: 14 },
   editError: {
     color: theme.red,
     fontSize: 12,
