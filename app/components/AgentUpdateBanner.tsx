@@ -104,10 +104,10 @@ export function AgentUpdateBanner() {
           {checking
             ? 'Checking…'
             : status == null
-              ? 'Agent updates'
+              ? 'Service updates'
               : status.available
-                ? `Update available — agent ${status.latest}`
-                : `Up to date — agent ${status.installed}`}
+                ? `Update available — service ${status.latest}`
+                : `Up to date — service ${status.installed}`}
         </Text>
         <Pressable
           onPress={() => {
@@ -129,7 +129,7 @@ export function AgentUpdateBanner() {
       <View style={styles.header}>
         <Ionicons name="arrow-up-circle" size={18} color={t.blue} />
         <Text style={styles.title} numberOfLines={1}>
-          Agent update available{check.latest ? ` — ${check.latest}` : ''}
+          Box update available{check.latest ? ` — ${check.latest}` : ''}
         </Text>
         {!applying && (
           <Pressable

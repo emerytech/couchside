@@ -147,8 +147,8 @@ function ActionsScreen() {
           <View style={styles.emptyCard}>
             <Text style={styles.emptyTitle}>No box configured</Text>
             <Text style={styles.emptyText}>
-              Open the Setup tab to pair with the Couchside agent on your media center or Steam
-              machine.
+              Open the Setup tab to pair with the Couchside service on your media center,
+              Steam machine, or PC — then add your TV for one remote that drives both.
             </Text>
           </View>
         )}

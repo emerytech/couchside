@@ -101,7 +101,7 @@ export function SmartTvSetup({ settings }: { settings: ConnSettings }) {
         ok: false,
         text:
           e instanceof ApiError && e.kind === 'http' && e.status === 404
-            ? 'This box’s agent is too old to scan — update it, or enter the IP below.'
+            ? 'This box’s Couchside service is too old to scan — update it, or enter the IP below.'
             : 'Scan failed — enter the IP below.',
       });
     } finally {
@@ -184,8 +184,9 @@ export function SmartTvSetup({ settings }: { settings: ConnSettings }) {
     <View style={styles.card}>
       <Text style={styles.title}>Smart TV remote</Text>
       <Text style={styles.sub}>
-        Control a networked TV — LG webOS, Samsung, Roku, or Google TV — from the Pad tab. The
-        D-pad and on-screen keyboard light up once it’s connected.
+        Control a networked TV — LG webOS, Samsung, Roku, Google TV, or Hisense — from the Pad
+        tab. The D-pad, SOURCE key, volume, power, and on-screen keyboard all light up once it’s
+        connected, and your phone’s volume buttons drive the TV too.
       </Text>
 
       {active ? (
