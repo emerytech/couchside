@@ -43,7 +43,7 @@ except ImportError:  # pragma: no cover
     fcntl = None
 
 APP_NAME = "couchside-agent"
-VERSION = "2.9.11"
+VERSION = "2.9.12"
 UID = os.getuid()
 XDG_RUNTIME_DIR = "/run/user/%d" % UID
 
@@ -3497,6 +3497,9 @@ def set_webos(mock):
     if WEBOS is not None:
         WEBOS.close()
     WEBOS = None
+    # (Re)arm the on-TV text-focus watcher for the new config (no-op in --mock
+    # or when unpaired). Retires any prior watcher via the generation bump.
+    start_webos_ime_watch()
 
 
 def webos_available():
@@ -3608,6 +3611,103 @@ def mock_webos(op):
     print("[webos] %s" % op, flush=True)
     return {"ok": True, "exit_code": 0, "stdout": "[mock webos] %s\n" % op,
             "stderr": "", "duration_ms": 50}
+
+
+# ---- webOS on-TV text-focus push (feeds the app's auto-keyboard) -----------
+# LG's mobile remote learns when a TV text field is focused by SUBSCRIBING to
+# ssap://com.webos.service.ime/registerRemoteKeyboard: the TV pushes a frame
+# whenever input focus opens or closes (payload.currentWidget.focus). We mirror
+# that here on a DEDICATED SSAP socket (the request/response session is
+# serialised + dropped when idle, so it can't host a long-lived subscription)
+# and relay each transition to the connected phones over the gamepad socket as
+# {"t":"input_focus","open":bool,"value":str}. The app then pops its text sheet
+# so the user types on the phone. Best-effort: any socket error just reconnects
+# with backoff, and it advertises via the tv_info `text_focus_push` cap so the
+# app only auto-pops where this actually fires (webOS today).
+_WEBOS_IME_URI = "ssap://com.webos.service.ime/registerRemoteKeyboard"
+# Longer than the request/response default: a focused-field subscription idles
+# for minutes between transitions (webOS WS pings keep the socket warm).
+_WEBOS_IME_TIMEOUT = 30
+# Monotonic generation: bumped by every set_webos() so a re-pair (or teardown)
+# retires any running watcher without needing to reach into its blocked recv.
+_WEBOS_IME_GEN = 0
+
+
+def _webos_ime_text(cw):
+    """Best-effort current field text from a registerRemoteKeyboard widget.
+    webOS rarely echoes existing content on this channel, so this is usually
+    "" — the app treats the sheet as empty then, which is correct."""
+    for k in ("focusText", "text", "value", "inputText"):
+        v = cw.get(k)
+        if isinstance(v, str):
+            return v
+    return ""
+
+
+def start_webos_ime_watch():
+    """(Re)start the IME focus watcher. Bumping the generation stops any prior
+    watcher; a new daemon thread starts only for a real, paired webOS TV (never
+    in --mock, which has no socket). Call after any set_webos()."""
+    global _WEBOS_IME_GEN
+    _WEBOS_IME_GEN += 1
+    if _WEBOS_MOCK or not webos_available():
+        return
+    gen = _WEBOS_IME_GEN
+    threading.Thread(target=_webos_ime_watch, args=(gen,), daemon=True,
+                     name="webos-ime").start()
+
+
+def _webos_ime_watch(gen):
+    """Hold one registerRemoteKeyboard subscription open and broadcast focus
+    transitions to the phones. Runs until its generation is superseded; any
+    error reconnects with capped backoff. Never raises out of the thread."""
+    backoff = 2
+    logged = False                            # log an outage once, not per retry
+    while gen == _WEBOS_IME_GEN:
+        sess = None
+        try:
+            sess = _WebOSSession(CONFIG_WEBOS["host"])
+            sess.ws.sock.settimeout(_WEBOS_IME_TIMEOUT)
+            sess.register(CONFIG_WEBOS.get("client_key"))
+            sub_id = sess._send({"type": "subscribe", "uri": _WEBOS_IME_URI})
+            backoff = 2                       # a clean connect resets backoff
+            logged = False
+            last_open = None
+            while gen == _WEBOS_IME_GEN:
+                try:
+                    msg = json.loads(sess.ws.recv_text())
+                except socket.timeout:
+                    continue                  # idle field; keep the socket open
+                if msg.get("id") != sub_id:
+                    continue                  # register echo / unrelated frame
+                if msg.get("type") == "error":
+                    raise IOError(msg.get("error", "ime subscription error"))
+                cw = (msg.get("payload") or {}).get("currentWidget")
+                if not isinstance(cw, dict) or "focus" not in cw:
+                    continue
+                open_ = bool(cw.get("focus"))
+                if open_ == last_open:
+                    continue                  # de-dupe repeated same-state pushes
+                last_open = open_
+                if gen != _WEBOS_IME_GEN:
+                    break
+                if open_:
+                    _gamepad_broadcast({"t": "input_focus", "open": True,
+                                        "value": _webos_ime_text(cw)})
+                else:
+                    _gamepad_broadcast({"t": "input_focus", "open": False})
+        except (IOError, OSError, ValueError, KeyError) as e:
+            if not logged:
+                print("[webos-ime] subscription paused (%s: %s); retrying"
+                      % (e.__class__.__name__, e), flush=True)
+                logged = True
+        finally:
+            if sess is not None:
+                sess.close()
+        if gen != _WEBOS_IME_GEN:
+            break
+        time.sleep(backoff)                   # TV asleep / network blip
+        backoff = min(backoff * 2, 30)
 
 
 def webos_pair(host, timeout=60):
@@ -4721,6 +4821,11 @@ def tv_info():
         # and CEC have no text channel.
         "text": (webos_available() or samsung_available()
                  or roku_available()),
+        # Backend PUSHES a focus signal when an on-TV text field opens/closes,
+        # so the app can auto-raise its keyboard (see the t:input_focus frame on
+        # /ws/gamepad). webOS-only today (registerRemoteKeyboard subscription);
+        # every other backend keeps the manual text button, so this stays false.
+        "text_focus_push": webos_available(),
         # Box mute state, so the app shows the right mute indicator on connect.
         "muted": _soft_muted() if box_vol else None,
         # Current levels (0-100 or null) so the app's volume slider can show and
@@ -6409,6 +6514,18 @@ def _wsend_op(entry, opcode, payload=b""):
             ws_send(entry["conn"], opcode, payload)
         except OSError:
             pass
+
+
+def _gamepad_broadcast(obj):
+    """Send one JSON frame to every live gamepad session (holder + waiters).
+    Snapshots the list under the lock, then sends outside it (each _wsend_json
+    takes only that socket's slock), so socket I/O never blocks GAMEPAD_LOCK.
+    Best-effort: a dead socket is skipped. Used for out-of-band pushes such as
+    the webOS on-TV text-focus signal (t:input_focus)."""
+    with GAMEPAD_LOCK:
+        entries = list(GAMEPAD_SESSIONS)
+    for entry in entries:
+        _wsend_json(entry, obj)
 
 
 def _release_devices(entry):
