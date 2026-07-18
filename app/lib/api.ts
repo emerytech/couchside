@@ -343,7 +343,8 @@ export type TvBackend =
   | 'webos'
   | 'samsung'
   | 'roku'
-  | 'androidtv';
+  | 'androidtv'
+  | 'vidaa';
 
 /** TV-control probe result. The route 404s when no backend is available. */
 export type Tv = {
@@ -1073,6 +1074,18 @@ export const api = {
       method: 'POST',
       timeoutMs: 12000,
       body: { host },
+    });
+  },
+
+  /**
+   * Register a Hisense VIDAA TV by host. No pairing — the agent verifies its
+   * MQTT broker answers, then persists. `mac` (optional) enables Wake-on-LAN.
+   */
+  tvAddVidaa(settings: ConnSettings, host: string, mac?: string): Promise<TvPairResult> {
+    return request<TvPairResult>(settings, '/api/tv/vidaa/add', {
+      method: 'POST',
+      timeoutMs: 12000,
+      body: mac ? { host, mac } : { host },
     });
   },
 

@@ -3,6 +3,7 @@ import React, { useCallback, useState } from 'react';
 import {
   ActivityIndicator,
   Pressable,
+  ScrollView,
   StyleSheet,
   Text,
   TextInput,
@@ -14,16 +15,17 @@ import { api, ConnSettings, hostKey, Tv, TvPairResult } from '@/lib/api';
 import { normalizeMac } from '@/lib/settings';
 import { useTheme, useThemedStyles, type Palette } from '@/lib/theme';
 
-type Brand = 'webos' | 'samsung' | 'roku' | 'androidtv';
+type Brand = 'webos' | 'samsung' | 'roku' | 'androidtv' | 'vidaa';
 
 const BRANDS: { id: Brand; label: string; needsMac: boolean; verb: string }[] = [
   { id: 'webos', label: 'LG', needsMac: true, verb: 'Pair' },
   { id: 'samsung', label: 'Samsung', needsMac: true, verb: 'Pair' },
   { id: 'roku', label: 'Roku', needsMac: false, verb: 'Add' },
   { id: 'androidtv', label: 'Google TV', needsMac: true, verb: 'Pair' },
+  { id: 'vidaa', label: 'Hisense', needsMac: true, verb: 'Add' },
 ];
 
-const NETWORK_BACKENDS = ['webos', 'samsung', 'roku', 'androidtv'];
+const NETWORK_BACKENDS = ['webos', 'samsung', 'roku', 'androidtv', 'vidaa'];
 
 /**
  * Pair a networked smart TV (LG webOS / Samsung Tizen / Roku / Android-Google TV)
@@ -84,11 +86,15 @@ export function SmartTvSetup({ settings }: { settings: ConnSettings }) {
       }
       setMsg({
         ok: true,
-        text: brand === 'roku' ? 'Contacting the Roku…' : 'Waiting for you to accept on the TV…',
+        text:
+          brand === 'roku' || brand === 'vidaa'
+            ? 'Contacting the TV…'
+            : 'Waiting for you to accept on the TV…',
       });
       let r: TvPairResult;
       if (brand === 'webos') r = await api.tvPairWebos(settings, h, m);
       else if (brand === 'samsung') r = await api.tvPairSamsung(settings, h, m);
+      else if (brand === 'vidaa') r = await api.tvAddVidaa(settings, h, m);
       else r = await api.tvAddRoku(settings, h);
       if (r.ok) connected(r);
       else setMsg({ ok: false, text: r.error ?? 'Could not connect to the TV.' });
@@ -134,7 +140,10 @@ export function SmartTvSetup({ settings }: { settings: ConnSettings }) {
         </View>
       ) : null}
 
-      <View style={styles.segment}>
+      <ScrollView
+        horizontal
+        showsHorizontalScrollIndicator={false}
+        contentContainerStyle={styles.segment}>
         {BRANDS.map((b) => (
           <Pressable
             key={b.id}
@@ -148,7 +157,7 @@ export function SmartTvSetup({ settings }: { settings: ConnSettings }) {
             <Text style={[styles.segText, brand === b.id && styles.segTextOn]}>{b.label}</Text>
           </Pressable>
         ))}
-      </View>
+      </ScrollView>
 
       {awaitingCode ? (
         <>
@@ -221,6 +230,8 @@ export function SmartTvSetup({ settings }: { settings: ConnSettings }) {
       <Text style={styles.hint}>
         {brand === 'roku'
           ? 'No pairing needed — just make sure the Roku is on and on this network. If the D-pad does not respond after adding, enable control on the Roku: Settings → System → Advanced system settings → Control by mobile apps → Network access → Permissive.'
+          : brand === 'vidaa'
+            ? 'No pairing needed — just make sure the TV is on and on this network. The MAC is optional (Wake-on-LAN power-on).'
           : brand === 'androidtv'
             ? 'Your Android/Google TV must be on. After “Pair”, a 6-digit code appears on the TV — enter it here. The MAC is optional (Wake-on-LAN power-on).'
             : `Your ${meta.label} TV must be on. An accept prompt appears on the TV — say yes. The MAC is optional and lets the box wake the TV over the network.`}
@@ -257,7 +268,7 @@ const makeStyles = (t: Palette) => StyleSheet.create({
     padding: 3,
     gap: 3,
   },
-  seg: { flex: 1, paddingVertical: 9, borderRadius: 8, alignItems: 'center' },
+  seg: { paddingVertical: 9, paddingHorizontal: 16, borderRadius: 8, alignItems: 'center' },
   segOn: { backgroundColor: t.blue },
   segText: { color: t.textDim, fontSize: 13, fontWeight: '600' },
   segTextOn: { color: t.bg },
