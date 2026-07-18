@@ -346,6 +346,16 @@ export type TvBackend =
   | 'androidtv'
   | 'vidaa';
 
+/**
+ * A TV the box found on the LAN (GET /api/tv/discover, agent >= 2.9.12). `brand`
+ * is one of the pairable network backends; `host` feeds the existing pair flow.
+ */
+export type DiscoveredTv = {
+  brand: 'webos' | 'samsung' | 'roku' | 'androidtv';
+  name: string;
+  host: string;
+};
+
 /** TV-control probe result. The route 404s when no backend is available. */
 export type Tv = {
   available: boolean;
@@ -1104,6 +1114,17 @@ export const api = {
         timeoutMs: 20000,
         body: { host },
       });
+  },
+
+  /**
+   * Scan the LAN (from the box) for pairable TVs (agent >= 2.9.12). The box runs
+   * a ~3s mDNS + SSDP sweep, so give it a generous budget. Always resolves (an
+   * empty list means none found); a 404 means the agent predates discovery.
+   */
+  tvDiscover(settings: ConnSettings): Promise<{ tvs: DiscoveredTv[] }> {
+    return request<{ tvs: DiscoveredTv[] }>(settings, '/api/tv/discover', {
+      timeoutMs: 8000,
+    });
   },
 
   /**

@@ -20,6 +20,7 @@ import hmac
 import json
 import os
 import random
+import re
 import select
 import shutil
 import socket
@@ -4650,6 +4651,264 @@ def _vidaa_save(host, name=None, mac=None):
         CONFIG_VIDAA = cfg
 
 
+# ---- LAN TV discovery (mDNS + SSDP sweep) ---------------------------------
+# GET /api/tv/discover runs a short multicast sweep FROM THE BOX and returns the
+# TVs it can reach, so the app can offer a "scan" picker instead of making the
+# user type an IP. The box is the right scanner: it is the machine that will
+# actually control the TV (so anything found is guaranteed box-reachable), and
+# it runs real multicast where phone mDNS is flaky. Pure stdlib, in character
+# with the other hand-rolled protocols here.
+#   Android/Google TV: mDNS PTR _androidtvremote2._tcp  (THE pairing service)
+#   Samsung Tizen:     mDNS PTR _samsungmsf._tcp
+#   Roku:              SSDP ST roku:ecp   (name via /query/device-info)
+#   LG webOS:          SSDP, LG-identified responses  (friendlyName from UPnP)
+# VIDAA has no standard discovery, so it is never listed (manual add stays).
+_MDNS_ADDR = ("224.0.0.251", 5353)
+_SSDP_ADDR = ("239.255.255.250", 1900)
+
+
+def _mdns_query_pkt(service):
+    pkt = struct.pack("!HHHHHH", 0, 0, 1, 0, 0, 0)  # 1 question, PTR/IN below
+    for label in service.split("."):
+        pkt += bytes([len(label)]) + label.encode()
+    return pkt + b"\x00" + struct.pack("!HH", 12, 1)
+
+
+def _dns_name(buf, pos):
+    """Parse a (possibly compression-pointer) DNS name; return (name, next_pos)."""
+    labels, jumped, nxt = [], False, pos
+    for _ in range(128):
+        ln = buf[pos]
+        if ln == 0:
+            pos += 1
+            if not jumped:
+                nxt = pos
+            break
+        if ln & 0xC0 == 0xC0:
+            ptr = ((ln & 0x3F) << 8) | buf[pos + 1]
+            if not jumped:
+                nxt = pos + 2
+            pos, jumped = ptr, True
+            continue
+        pos += 1
+        labels.append(buf[pos:pos + ln].decode("utf-8", "replace"))
+        pos += ln
+    return ".".join(labels), nxt
+
+
+def _parse_mdns(buf):
+    """One mDNS packet -> (ptr_targets[], srv{name:(host,port)}, a{name:ip})."""
+    ptr, srv, a = [], {}, {}
+    try:
+        qd, an, ns, ar = struct.unpack("!HHHH", buf[4:12])
+        pos = 12
+        for _ in range(qd):
+            _, pos = _dns_name(buf, pos)
+            pos += 4
+        for _ in range(an + ns + ar):
+            name, pos = _dns_name(buf, pos)
+            rtype, _cls, _ttl, rdlen = struct.unpack("!HHIH", buf[pos:pos + 10])
+            pos += 10
+            if rtype == 12:                        # PTR
+                tgt, _ = _dns_name(buf, pos)
+                ptr.append(tgt)
+            elif rtype == 33:                      # SRV -> host + port
+                port = struct.unpack("!H", buf[pos + 4:pos + 6])[0]
+                host, _ = _dns_name(buf, pos + 6)
+                srv[name] = (host, port)
+            elif rtype == 1 and rdlen == 4:        # A -> IPv4
+                a[name] = ".".join(str(x) for x in buf[pos:pos + 4])
+            pos += rdlen
+    except Exception:
+        pass                                       # a malformed packet is skipped
+    return ptr, srv, a
+
+
+def _mdns_discover(service, timeout=2.5):
+    """Return [{name, host}] for a mDNS service PTR (e.g. _androidtvremote2._tcp
+    .local). Best-effort; empty on any failure."""
+    s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+    try:
+        s.setsockopt(socket.IPPROTO_IP, socket.IP_MULTICAST_TTL, 2)
+    except OSError:
+        pass
+    s.settimeout(0.5)
+    inst, srv_all, a_all = set(), {}, {}
+    try:
+        s.sendto(_mdns_query_pkt(service), _MDNS_ADDR)
+        deadline = time.monotonic() + timeout
+        while time.monotonic() < deadline:
+            try:
+                data, _ = s.recvfrom(4096)
+            except socket.timeout:
+                continue
+            except OSError:
+                break
+            ptr, srv, a = _parse_mdns(data)
+            srv_all.update(srv)
+            a_all.update(a)
+            for n in ptr:
+                if n.endswith(service):
+                    inst.add(n)
+            for n in srv:
+                if n.endswith(service):
+                    inst.add(n)
+    finally:
+        s.close()
+    out = []
+    for name in inst:
+        host, _port = srv_all.get(name, (None, None))
+        ip = a_all.get(host) if host else None
+        if not ip and len(a_all) == 1:             # single host seen: use it
+            ip = next(iter(a_all.values()))
+        if not ip:
+            continue
+        label = name[: -len(service) - 1].rstrip(".") or name
+        out.append({"name": label, "host": ip})
+    return out
+
+
+def _ssdp_search(st, timeout=2.5):
+    """M-SEARCH for <st>; return response header dicts (with _ip). Best-effort."""
+    msg = ("M-SEARCH * HTTP/1.1\r\nHOST: 239.255.255.250:1900\r\n"
+           'MAN: "ssdp:discover"\r\nMX: 1\r\nST: %s\r\n\r\n' % st).encode()
+    s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+    s.settimeout(0.5)
+    res = []
+    try:
+        s.sendto(msg, _SSDP_ADDR)
+        deadline = time.monotonic() + timeout
+        while time.monotonic() < deadline:
+            try:
+                data, addr = s.recvfrom(2048)
+            except socket.timeout:
+                continue
+            except OSError:
+                break
+            h = {"_ip": addr[0]}
+            for line in data.decode("utf-8", "replace").split("\r\n")[1:]:
+                if ":" in line:
+                    k, v = line.split(":", 1)
+                    h[k.strip().lower()] = v.strip()
+            res.append(h)
+    finally:
+        s.close()
+    return res
+
+
+def _discover_http(url, timeout=2.0):
+    try:
+        import urllib.request
+        with urllib.request.urlopen(url, timeout=timeout) as r:
+            return r.read().decode("utf-8", "replace")
+    except Exception:
+        return ""
+
+
+def _roku_name(ip):
+    xml = _discover_http("http://%s:8060/query/device-info" % ip)
+    for tag in ("user-device-name", "friendly-device-name", "default-device-name"):
+        m = re.search(r"<%s>(.*?)</%s>" % (tag, tag), xml)
+        if m and m.group(1).strip():
+            return m.group(1).strip()
+    return "Roku"
+
+
+def _discover_androidtv():
+    # _androidtvremote2._tcp is the pairing service (what we control); its
+    # instance name is usually the friendly TV name. _googlecast._tcp is queried
+    # only to fill in a blank/generic name (some firmwares report one there).
+    tvs = _mdns_discover("_androidtvremote2._tcp.local")
+    cast = {c["host"]: c["name"]
+            for c in _mdns_discover("_googlecast._tcp.local", timeout=1.5)
+            if c.get("name")}
+    out = []
+    for t in tvs:
+        name = t["name"]
+        if (not name or name == t["host"]) and cast.get(t["host"]):
+            name = cast[t["host"]]
+        out.append({"brand": "androidtv", "name": name or "Android TV",
+                    "host": t["host"]})
+    return out
+
+
+def _discover_samsung():
+    return [{"brand": "samsung", "name": t["name"], "host": t["host"]}
+            for t in _mdns_discover("_samsungmsf._tcp.local")]
+
+
+def _discover_roku():
+    out, seen = [], set()
+    for r in _ssdp_search("roku:ecp"):
+        ip = r.get("_ip")
+        if ip and ip not in seen:
+            seen.add(ip)
+            out.append({"brand": "roku", "name": _roku_name(ip), "host": ip})
+    return out
+
+
+def _discover_webos():
+    """LG webOS via SSDP: filter ssdp:all to LG-identified responses and pull the
+    friendlyName from the UPnP device description."""
+    out, seen = [], set()
+    for r in _ssdp_search("ssdp:all", timeout=2.5):
+        ip = r.get("_ip")
+        blob = (r.get("server", "") + r.get("usn", "") + r.get("location", "")).lower()
+        if not ip or ip in seen or not re.search(r"\blg\b|webos|lge", blob):
+            continue
+        seen.add(ip)
+        name = ""
+        loc = r.get("location", "")
+        if loc:
+            m = re.search(r"<friendlyName>(.*?)</friendlyName>", _discover_http(loc))
+            if m:
+                name = m.group(1).strip()
+        out.append({"brand": "webos", "name": name or "LG webOS", "host": ip})
+    return out
+
+
+def tv_discover(mock, timeout=2.6):
+    """Sweep the LAN for controllable TVs (see the module note). Returns a list
+    of {brand, name, host}, deduped by host (a pairing backend wins over a bare
+    UPnP echo of the same set). Each method runs in its own thread so the whole
+    sweep is ~one timeout, not the sum."""
+    if mock:
+        return [
+            {"brand": "androidtv", "name": "Living Room TV (mock)", "host": "10.0.0.51"},
+            {"brand": "webos", "name": "Bedroom LG (mock)", "host": "10.0.0.52"},
+            {"brand": "roku", "name": "Office Roku (mock)", "host": "10.0.0.53"},
+        ]
+    results, lock = [], threading.Lock()
+
+    def run(fn):
+        try:
+            found = fn()
+        except Exception:
+            found = []
+        with lock:
+            results.extend(found)
+
+    threads = [threading.Thread(target=run, args=(fn,), daemon=True) for fn in
+               (_discover_androidtv, _discover_samsung, _discover_roku, _discover_webos)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join(timeout + 2.5)
+    # Dedup by host; brand priority = pairing backends over passive echoes.
+    order = {"androidtv": 0, "webos": 1, "samsung": 2, "roku": 3}
+    best = {}
+    for tv in results:
+        host = tv.get("host")
+        if not host:
+            continue
+        cur = best.get(host)
+        if cur is None or order.get(tv["brand"], 9) < order.get(cur["brand"], 9):
+            best[host] = tv
+    return sorted(best.values(), key=lambda t: (order.get(t["brand"], 9), t["name"]))
+
+
 # ---- unified dispatch -----------------------------------------------------
 # CEC has no discrete power-off; its standby command IS the off state.
 _TV_TO_CEC = {"power_on": "power_on", "power_off": "standby",
@@ -7075,6 +7334,11 @@ class Handler(BaseHTTPRequestHandler):
                     self._send(404, {"error": "not found"}, started)
                 else:
                     self._send(200, info, started)
+            elif path == "/api/tv/discover":
+                # LAN scan (mDNS + SSDP, ~3s) so the app can offer a "scan for
+                # TVs" picker instead of a manual IP. Always 200 (possibly an
+                # empty list) — it is an action, not a probe-and-appear cap.
+                self._send(200, {"tvs": tv_discover(self.mock)}, started)
             elif path == "/api/displays":
                 # Probe-and-appear: 404 unless this box can do the desktop->TV
                 # Game Mode handoff (SteamOS/Bazzite, 2+ outputs), so the app
