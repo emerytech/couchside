@@ -11,9 +11,27 @@ import {
 } from 'react-native';
 
 import { usePoll } from '@/hooks/usePoll';
-import { api, ConnSettings, hostKey, Tv, TvPairResult } from '@/lib/api';
+import { api, ApiError, ConnSettings, DiscoveredTv, hostKey, Tv, TvPairResult } from '@/lib/api';
 import { normalizeMac } from '@/lib/settings';
 import { useTheme, useThemedStyles, type Palette } from '@/lib/theme';
+
+/**
+ * A pairing error the user can act on. The box's own reason (e.g. a 500
+ * "could not persist config: Permission denied") is surfaced verbatim instead
+ * of a blanket "could not reach the box" — a server-side failure that masquer-
+ * ades as a network error is what turned a config-permission bug into a long
+ * hunt. Network/timeout kinds keep the friendly fallback (accurate for those).
+ */
+function pairErr(e: unknown, fallback: string): string {
+  if (e instanceof ApiError) {
+    // http = the box answered with an error status; show what it said.
+    if (e.kind === 'http') return `${fallback} — box says: ${e.message}`;
+    // unreachable / timeout / unauthorized: the friendly fallback fits, but
+    // name the kind so it's still diagnosable.
+    return `${fallback} (${e.kind})`;
+  }
+  return fallback;
+}
 
 type Brand = 'webos' | 'samsung' | 'roku' | 'androidtv' | 'vidaa';
 
@@ -44,6 +62,8 @@ export function SmartTvSetup({ settings }: { settings: ConnSettings }) {
   const [awaitingCode, setAwaitingCode] = useState(false); // androidtv step 2
   const [busy, setBusy] = useState(false);
   const [msg, setMsg] = useState<{ ok: boolean; text: string } | null>(null);
+  const [scanning, setScanning] = useState(false);
+  const [found, setFound] = useState<DiscoveredTv[] | null>(null);
 
   const tvPoll = usePoll<Tv>(() => api.tv(settings), 15000, true, hostKey(settings));
   const active =
@@ -59,9 +79,44 @@ export function SmartTvSetup({ settings }: { settings: ConnSettings }) {
       setMac('');
       setCode('');
       setAwaitingCode(false);
+      setFound(null);
     },
     [meta],
   );
+
+  // "Scan for TVs": the box sweeps the LAN (mDNS + SSDP) and returns pairable
+  // TVs, so the user taps one instead of typing an IP. A 404 = agent too old.
+  const scan = useCallback(async () => {
+    setScanning(true);
+    setMsg(null);
+    try {
+      const r = await api.tvDiscover(settings);
+      setFound(r.tvs);
+      if (r.tvs.length === 0) {
+        setMsg({ ok: false, text: 'No TVs found on the network — enter the IP below.' });
+      }
+    } catch (e: unknown) {
+      setFound([]);
+      setMsg({
+        ok: false,
+        text:
+          e instanceof ApiError && e.kind === 'http' && e.status === 404
+            ? 'This box’s agent is too old to scan — update it, or enter the IP below.'
+            : 'Scan failed — enter the IP below.',
+      });
+    } finally {
+      setScanning(false);
+    }
+  }, [settings]);
+
+  // Tap a discovered TV: prefill its brand + IP, then the normal pair flow runs.
+  const pick = useCallback((tv: DiscoveredTv) => {
+    setBrand(tv.brand);
+    setHost(tv.host);
+    setAwaitingCode(false);
+    setCode('');
+    setMsg({ ok: true, text: `${tv.name} — tap ${BRANDS.find((b) => b.id === tv.brand)?.verb ?? 'Pair'} below.` });
+  }, []);
 
   const submit = useCallback(async () => {
     const h = host.trim();
@@ -98,8 +153,8 @@ export function SmartTvSetup({ settings }: { settings: ConnSettings }) {
       else r = await api.tvAddRoku(settings, h);
       if (r.ok) connected(r);
       else setMsg({ ok: false, text: r.error ?? 'Could not connect to the TV.' });
-    } catch {
-      setMsg({ ok: false, text: 'Could not reach the box or TV. Check the IP and try again.' });
+    } catch (e: unknown) {
+      setMsg({ ok: false, text: pairErr(e, 'Could not reach the box or TV. Check the IP and try again.') });
     } finally {
       setBusy(false);
     }
@@ -118,8 +173,8 @@ export function SmartTvSetup({ settings }: { settings: ConnSettings }) {
       const r = await api.tvAndroidtvPairFinish(settings, c, m);
       if (r.ok) connected(r);
       else setMsg({ ok: false, text: r.error ?? 'Pairing failed — check the code and retry.' });
-    } catch {
-      setMsg({ ok: false, text: 'Could not reach the box. Try again.' });
+    } catch (e: unknown) {
+      setMsg({ ok: false, text: pairErr(e, 'Could not reach the box. Try again.') });
     } finally {
       setBusy(false);
     }
@@ -185,6 +240,35 @@ export function SmartTvSetup({ settings }: { settings: ConnSettings }) {
         </>
       ) : (
         <>
+          <Pressable
+            onPress={scan}
+            disabled={scanning || busy}
+            style={[styles.scanBtn, (scanning || busy) && styles.buttonBusy]}>
+            {scanning ? (
+              <ActivityIndicator color={t.blue} />
+            ) : (
+              <>
+                <Ionicons name="wifi" size={16} color={t.blue} />
+                <Text style={styles.scanBtnText}>Scan for TVs</Text>
+              </>
+            )}
+          </Pressable>
+          {found && found.length > 0 ? (
+            <View style={styles.foundList}>
+              {found.map((tv) => (
+                <Pressable key={tv.host} onPress={() => pick(tv)} style={styles.foundRow}>
+                  <Ionicons name="tv-outline" size={18} color={t.text} />
+                  <View style={styles.foundText}>
+                    <Text style={styles.foundName} numberOfLines={1}>{tv.name}</Text>
+                    <Text style={styles.foundMeta}>
+                      {(BRANDS.find((b) => b.id === tv.brand)?.label ?? tv.brand)} · {tv.host}
+                    </Text>
+                  </View>
+                  <Ionicons name="chevron-forward" size={16} color={t.textDim} />
+                </Pressable>
+              ))}
+            </View>
+          ) : null}
           <TextInput
             value={host}
             onChangeText={setHost}
@@ -292,6 +376,34 @@ const makeStyles = (t: Palette) => StyleSheet.create({
   },
   buttonBusy: { opacity: 0.7 },
   buttonText: { color: t.bg, fontSize: 15, fontWeight: '700' },
+  scanBtn: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 8,
+    borderRadius: 10,
+    paddingVertical: 11,
+    minHeight: 44,
+    backgroundColor: t.inset,
+    borderWidth: 1,
+    borderColor: t.cardBorder,
+  },
+  scanBtnText: { color: t.blue, fontSize: 14, fontWeight: '700' },
+  foundList: { gap: 6 },
+  foundRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 12,
+    paddingVertical: 10,
+    paddingHorizontal: 12,
+    borderRadius: 10,
+    backgroundColor: t.card,
+    borderWidth: 1,
+    borderColor: t.cardBorder,
+  },
+  foundText: { flex: 1 },
+  foundName: { color: t.text, fontSize: 14, fontWeight: '700' },
+  foundMeta: { color: t.textDim, fontSize: 12, marginTop: 1 },
   msg: { fontSize: 13, lineHeight: 18 },
   hint: { color: t.textFaint, fontSize: 12, lineHeight: 16 },
 });

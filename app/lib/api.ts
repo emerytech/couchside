@@ -346,6 +346,16 @@ export type TvBackend =
   | 'androidtv'
   | 'vidaa';
 
+/**
+ * A TV the box found on the LAN (GET /api/tv/discover, agent >= 2.9.12). `brand`
+ * is one of the pairable network backends; `host` feeds the existing pair flow.
+ */
+export type DiscoveredTv = {
+  brand: 'webos' | 'samsung' | 'roku' | 'androidtv';
+  name: string;
+  host: string;
+};
+
 /** TV-control probe result. The route 404s when no backend is available. */
 export type Tv = {
   available: boolean;
@@ -392,11 +402,25 @@ export type Tv = {
    */
   keys?: boolean;
   /**
+   * A `source` key (POST /api/tv/key/source) opens the TV's input picker (agent
+   * >= 2.9.12). Set by Android/Google TV (KEYCODE_TV_INPUT) and Samsung
+   * (KEY_SOURCE); the RS-232 panel uses its explicit `sources` list instead.
+   */
+  source_key?: boolean;
+  /**
    * Text entry into a focused on-TV field via POST /api/tv/text (agent >=
    * 2.9.7). Set by the network smart-TV backends (webOS IME, Samsung
    * SendInputString, Roku Lit_ keys); never by panel/CEC.
    */
   text?: boolean;
+  /**
+   * Backend PUSHES a focus signal (agent >= 2.9.12) when an on-TV text field
+   * opens/closes, delivered as a {t:'input_focus'} frame on /ws/gamepad. Only
+   * webOS reports it today (registerRemoteKeyboard); when set, the app auto-
+   * raises its text sheet on focus and dismisses it on blur. Absent on every
+   * other backend, which keep the manual text button unchanged.
+   */
+  text_focus_push?: boolean;
   /** Current box OS volume 0-100 (agent >= 2.7.0), or null when unreadable. */
   box_volume_level?: number | null;
   /**
@@ -418,6 +442,7 @@ export type TvKey =
   | 'home'
   | 'back'
   | 'settings'
+  | 'source'
   | 'bright_up'
   | 'bright_down';
 
@@ -808,6 +833,60 @@ async function request<T>(
   }
 }
 
+// ---------- PIN pairing (unauthenticated box enrollment) ----------
+
+export type PairStartResult = { ok: boolean; ttl?: number; error?: string };
+export type PairFinishResult = { ok: boolean; token?: string; port?: number; error?: string };
+
+/**
+ * Hit a box directly by ip:port with NO bearer token — the PIN-pairing routes
+ * are the box's only unauthenticated POSTs (the phone has no token yet). Reads
+ * the JSON body for both 200 and the 4xx error cases.
+ */
+async function unauthPost<T>(
+  ip: string,
+  port: number,
+  path: string,
+  body: unknown,
+  timeoutMs: number,
+): Promise<T> {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
+  try {
+    const res = await fetch(`http://${ip}:${port}${path}`, {
+      method: 'POST',
+      headers: body !== undefined ? { 'Content-Type': 'application/json' } : {},
+      body: body !== undefined ? JSON.stringify(body) : undefined,
+      signal: controller.signal,
+    });
+    return (await res.json()) as T;
+  } catch (e: unknown) {
+    if (e instanceof Error && e.name === 'AbortError') {
+      throw new ApiError('timeout', `Timed out after ${timeoutMs / 1000}s`);
+    }
+    throw new ApiError('unreachable', 'Box unreachable: network error');
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+/**
+ * Start PIN pairing: the box mints a PIN and displays it on ITS OWN screen.
+ * Returns the TTL; the PIN is never sent over the network. Agent >= 2.9.12.
+ */
+export function pairStart(ip: string, port: number): Promise<PairStartResult> {
+  return unauthPost<PairStartResult>(ip, port, '/api/pair/start', undefined, 8000);
+}
+
+/**
+ * Finish PIN pairing: submit the PIN shown on the box. On success returns the
+ * box token (to store) and its port; on a wrong/expired/locked PIN, `ok:false`
+ * with a reason.
+ */
+export function pairFinish(ip: string, port: number, pin: string): Promise<PairFinishResult> {
+  return unauthPost<PairFinishResult>(ip, port, '/api/pair/finish', { pin }, 8000);
+}
+
 export const api = {
   /** Unauthenticated reachability probe. */
   ping(settings: ConnSettings): Promise<Ping> {
@@ -874,8 +953,13 @@ export const api = {
    * (cached); the app just reads the result over the LAN, so the app never
    * touches the internet. 404 -> null on older agents (no banner shown).
    */
-  updateCheck(settings: ConnSettings): Promise<UpdateCheck | null> {
-    return probeOrNull(request<UpdateCheck>(settings, '/api/update/check'));
+  updateCheck(
+    settings: ConnSettings,
+    opts: { force?: boolean } = {},
+  ): Promise<UpdateCheck | null> {
+    // force=1 bypasses the box's ~6h cache for a manual "Check for updates" tap.
+    const q = opts.force ? '?force=1' : '';
+    return probeOrNull(request<UpdateCheck>(settings, `/api/update/check${q}`));
   },
 
   /**
@@ -1104,6 +1188,17 @@ export const api = {
         timeoutMs: 20000,
         body: { host },
       });
+  },
+
+  /**
+   * Scan the LAN (from the box) for pairable TVs (agent >= 2.9.12). The box runs
+   * a ~3s mDNS + SSDP sweep, so give it a generous budget. Always resolves (an
+   * empty list means none found); a 404 means the agent predates discovery.
+   */
+  tvDiscover(settings: ConnSettings): Promise<{ tvs: DiscoveredTv[] }> {
+    return request<{ tvs: DiscoveredTv[] }>(settings, '/api/tv/discover', {
+      timeoutMs: 8000,
+    });
   },
 
   /**

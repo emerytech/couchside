@@ -20,6 +20,7 @@ import hmac
 import json
 import os
 import random
+import re
 import select
 import shutil
 import socket
@@ -43,7 +44,7 @@ except ImportError:  # pragma: no cover
     fcntl = None
 
 APP_NAME = "couchside-agent"
-VERSION = "2.9.11"
+VERSION = "2.9.12"
 UID = os.getuid()
 XDG_RUNTIME_DIR = "/run/user/%d" % UID
 
@@ -196,6 +197,13 @@ ALLOW_APP_UPDATE = False
 ALLOW_APP_LAUNCHERS = False
 LAUNCHERS = []  # list of {"id","label","cmd":[...]}, custom launchers only
 CONFIG_PATH = DEFAULT_CONFIG_PATH  # remembered by load_config() for rewrites
+# False when the config DIRECTORY isn't writable by the agent's user (a
+# root-owned dir under a non-root agent — a common ownership drift). Config
+# writes go via a temp file in that dir + os.replace, so an unwritable dir makes
+# every save (TV pairing, launcher edits) fail with a 500. Checked once at
+# startup (check_config_writable) and surfaced in /api/status so the failure is
+# never silent.
+CONFIG_WRITABLE = True
 CONFIG_LOCK = threading.Lock()  # serializes launcher config rewrites
 
 
@@ -498,6 +506,27 @@ def load_config(path):
     CONFIG_VIDAA = vidaa
     print("config loaded from %s: %d units, %d actions, %d launchers"
           % (path, len(WATCHLIST), len(ACTIONS), len(LAUNCHERS)), flush=True)
+
+
+def check_config_writable():
+    """Verify the agent can persist config, and warn loudly if not.
+
+    Config writes go through a temp file in the config's DIRECTORY + os.replace
+    (see _config_set_field), so the DIR — not just the file — must be writable by
+    the agent's user. A root-owned config dir under a non-root agent (an install
+    ownership drift) makes every save — TV pairing, launcher edits — fail with a
+    500 the app used to render as a vague error. Surfaced in /api/status
+    (config_writable) so the condition is visible instead of silent. Call in
+    main() after load_config."""
+    global CONFIG_WRITABLE
+    directory = os.path.dirname(CONFIG_PATH) or "."
+    # W_OK to create the temp file, X_OK to os.replace into the dir.
+    CONFIG_WRITABLE = os.access(directory, os.W_OK | os.X_OK)
+    if not CONFIG_WRITABLE:
+        print("WARNING: config dir %s is NOT writable by uid %d — TV pairing and "
+              "launcher changes will fail to save. chown the config dir to the "
+              "agent's user." % (directory, os.getuid()), file=sys.stderr,
+              flush=True)
 
 
 def _inject_session_actions():
@@ -1149,6 +1178,9 @@ def real_status():
         # request — a cheap pgrep — or the app's desktop cluster would freeze
         # at whatever session the agent booted in.
         "caps": dict(CAPS, desktop=desktop_available()),
+        # False when the config dir isn't writable by the agent user, so the app
+        # can warn that TV pairing / launcher edits won't persist (agent >= 2.9.12).
+        "config_writable": CONFIG_WRITABLE,
         "history": _history_snapshot(),
     }
 
@@ -1844,6 +1876,7 @@ def mock_status():
                 "wired": True, "wol_armed": True},
         "agent_version": VERSION,
         "caps": CAPS,
+        "config_writable": True,
         "history": _history_snapshot(),
     }
 
@@ -3509,6 +3542,9 @@ def set_webos(mock):
     if WEBOS is not None:
         WEBOS.close()
     WEBOS = None
+    # (Re)arm the on-TV text-focus watcher for the new config (no-op in --mock
+    # or when unpaired). Retires any prior watcher via the generation bump.
+    start_webos_ime_watch()
 
 
 def webos_available():
@@ -3620,6 +3656,103 @@ def mock_webos(op):
     print("[webos] %s" % op, flush=True)
     return {"ok": True, "exit_code": 0, "stdout": "[mock webos] %s\n" % op,
             "stderr": "", "duration_ms": 50}
+
+
+# ---- webOS on-TV text-focus push (feeds the app's auto-keyboard) -----------
+# LG's mobile remote learns when a TV text field is focused by SUBSCRIBING to
+# ssap://com.webos.service.ime/registerRemoteKeyboard: the TV pushes a frame
+# whenever input focus opens or closes (payload.currentWidget.focus). We mirror
+# that here on a DEDICATED SSAP socket (the request/response session is
+# serialised + dropped when idle, so it can't host a long-lived subscription)
+# and relay each transition to the connected phones over the gamepad socket as
+# {"t":"input_focus","open":bool,"value":str}. The app then pops its text sheet
+# so the user types on the phone. Best-effort: any socket error just reconnects
+# with backoff, and it advertises via the tv_info `text_focus_push` cap so the
+# app only auto-pops where this actually fires (webOS today).
+_WEBOS_IME_URI = "ssap://com.webos.service.ime/registerRemoteKeyboard"
+# Longer than the request/response default: a focused-field subscription idles
+# for minutes between transitions (webOS WS pings keep the socket warm).
+_WEBOS_IME_TIMEOUT = 30
+# Monotonic generation: bumped by every set_webos() so a re-pair (or teardown)
+# retires any running watcher without needing to reach into its blocked recv.
+_WEBOS_IME_GEN = 0
+
+
+def _webos_ime_text(cw):
+    """Best-effort current field text from a registerRemoteKeyboard widget.
+    webOS rarely echoes existing content on this channel, so this is usually
+    "" — the app treats the sheet as empty then, which is correct."""
+    for k in ("focusText", "text", "value", "inputText"):
+        v = cw.get(k)
+        if isinstance(v, str):
+            return v
+    return ""
+
+
+def start_webos_ime_watch():
+    """(Re)start the IME focus watcher. Bumping the generation stops any prior
+    watcher; a new daemon thread starts only for a real, paired webOS TV (never
+    in --mock, which has no socket). Call after any set_webos()."""
+    global _WEBOS_IME_GEN
+    _WEBOS_IME_GEN += 1
+    if _WEBOS_MOCK or not webos_available():
+        return
+    gen = _WEBOS_IME_GEN
+    threading.Thread(target=_webos_ime_watch, args=(gen,), daemon=True,
+                     name="webos-ime").start()
+
+
+def _webos_ime_watch(gen):
+    """Hold one registerRemoteKeyboard subscription open and broadcast focus
+    transitions to the phones. Runs until its generation is superseded; any
+    error reconnects with capped backoff. Never raises out of the thread."""
+    backoff = 2
+    logged = False                            # log an outage once, not per retry
+    while gen == _WEBOS_IME_GEN:
+        sess = None
+        try:
+            sess = _WebOSSession(CONFIG_WEBOS["host"])
+            sess.ws.sock.settimeout(_WEBOS_IME_TIMEOUT)
+            sess.register(CONFIG_WEBOS.get("client_key"))
+            sub_id = sess._send({"type": "subscribe", "uri": _WEBOS_IME_URI})
+            backoff = 2                       # a clean connect resets backoff
+            logged = False
+            last_open = None
+            while gen == _WEBOS_IME_GEN:
+                try:
+                    msg = json.loads(sess.ws.recv_text())
+                except socket.timeout:
+                    continue                  # idle field; keep the socket open
+                if msg.get("id") != sub_id:
+                    continue                  # register echo / unrelated frame
+                if msg.get("type") == "error":
+                    raise IOError(msg.get("error", "ime subscription error"))
+                cw = (msg.get("payload") or {}).get("currentWidget")
+                if not isinstance(cw, dict) or "focus" not in cw:
+                    continue
+                open_ = bool(cw.get("focus"))
+                if open_ == last_open:
+                    continue                  # de-dupe repeated same-state pushes
+                last_open = open_
+                if gen != _WEBOS_IME_GEN:
+                    break
+                if open_:
+                    _gamepad_broadcast({"t": "input_focus", "open": True,
+                                        "value": _webos_ime_text(cw)})
+                else:
+                    _gamepad_broadcast({"t": "input_focus", "open": False})
+        except (IOError, OSError, ValueError, KeyError) as e:
+            if not logged:
+                print("[webos-ime] subscription paused (%s: %s); retrying"
+                      % (e.__class__.__name__, e), flush=True)
+                logged = True
+        finally:
+            if sess is not None:
+                sess.close()
+        if gen != _WEBOS_IME_GEN:
+            break
+        time.sleep(backoff)                   # TV asleep / network blip
+        backoff = min(backoff * 2, 30)
 
 
 def webos_pair(host, timeout=60):
@@ -3755,6 +3888,7 @@ _SAMSUNG_KEYS = {
     "ok": "KEY_ENTER", "menu": "KEY_MENU", "home": "KEY_HOME", "back": "KEY_RETURN",
     "exit": "KEY_EXIT", "info": "KEY_INFO", "play": "KEY_PLAY", "pause": "KEY_PAUSE",
     "stop": "KEY_STOP", "rewind": "KEY_REWIND", "fast_forward": "KEY_FF",
+    "source": "KEY_SOURCE",   # opens the Tizen source/input menu
 }
 
 
@@ -4071,6 +4205,7 @@ _ATV_KEYS = {
     "up": 19, "down": 20, "left": 21, "right": 22, "ok": 23, "menu": 82,
     "home": 3, "back": 4, "exit": 4, "play": 126, "pause": 127, "stop": 86,
     "rewind": 89, "fast_forward": 90,
+    "source": 178,   # KEYCODE_TV_INPUT — opens the input picker on Google TV
 }
 
 
@@ -4618,6 +4753,264 @@ def _vidaa_save(host, name=None, mac=None):
         CONFIG_VIDAA = cfg
 
 
+# ---- LAN TV discovery (mDNS + SSDP sweep) ---------------------------------
+# GET /api/tv/discover runs a short multicast sweep FROM THE BOX and returns the
+# TVs it can reach, so the app can offer a "scan" picker instead of making the
+# user type an IP. The box is the right scanner: it is the machine that will
+# actually control the TV (so anything found is guaranteed box-reachable), and
+# it runs real multicast where phone mDNS is flaky. Pure stdlib, in character
+# with the other hand-rolled protocols here.
+#   Android/Google TV: mDNS PTR _androidtvremote2._tcp  (THE pairing service)
+#   Samsung Tizen:     mDNS PTR _samsungmsf._tcp
+#   Roku:              SSDP ST roku:ecp   (name via /query/device-info)
+#   LG webOS:          SSDP, LG-identified responses  (friendlyName from UPnP)
+# VIDAA has no standard discovery, so it is never listed (manual add stays).
+_MDNS_ADDR = ("224.0.0.251", 5353)
+_SSDP_ADDR = ("239.255.255.250", 1900)
+
+
+def _mdns_query_pkt(service):
+    pkt = struct.pack("!HHHHHH", 0, 0, 1, 0, 0, 0)  # 1 question, PTR/IN below
+    for label in service.split("."):
+        pkt += bytes([len(label)]) + label.encode()
+    return pkt + b"\x00" + struct.pack("!HH", 12, 1)
+
+
+def _dns_name(buf, pos):
+    """Parse a (possibly compression-pointer) DNS name; return (name, next_pos)."""
+    labels, jumped, nxt = [], False, pos
+    for _ in range(128):
+        ln = buf[pos]
+        if ln == 0:
+            pos += 1
+            if not jumped:
+                nxt = pos
+            break
+        if ln & 0xC0 == 0xC0:
+            ptr = ((ln & 0x3F) << 8) | buf[pos + 1]
+            if not jumped:
+                nxt = pos + 2
+            pos, jumped = ptr, True
+            continue
+        pos += 1
+        labels.append(buf[pos:pos + ln].decode("utf-8", "replace"))
+        pos += ln
+    return ".".join(labels), nxt
+
+
+def _parse_mdns(buf):
+    """One mDNS packet -> (ptr_targets[], srv{name:(host,port)}, a{name:ip})."""
+    ptr, srv, a = [], {}, {}
+    try:
+        qd, an, ns, ar = struct.unpack("!HHHH", buf[4:12])
+        pos = 12
+        for _ in range(qd):
+            _, pos = _dns_name(buf, pos)
+            pos += 4
+        for _ in range(an + ns + ar):
+            name, pos = _dns_name(buf, pos)
+            rtype, _cls, _ttl, rdlen = struct.unpack("!HHIH", buf[pos:pos + 10])
+            pos += 10
+            if rtype == 12:                        # PTR
+                tgt, _ = _dns_name(buf, pos)
+                ptr.append(tgt)
+            elif rtype == 33:                      # SRV -> host + port
+                port = struct.unpack("!H", buf[pos + 4:pos + 6])[0]
+                host, _ = _dns_name(buf, pos + 6)
+                srv[name] = (host, port)
+            elif rtype == 1 and rdlen == 4:        # A -> IPv4
+                a[name] = ".".join(str(x) for x in buf[pos:pos + 4])
+            pos += rdlen
+    except Exception:
+        pass                                       # a malformed packet is skipped
+    return ptr, srv, a
+
+
+def _mdns_discover(service, timeout=2.5):
+    """Return [{name, host}] for a mDNS service PTR (e.g. _androidtvremote2._tcp
+    .local). Best-effort; empty on any failure."""
+    s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+    try:
+        s.setsockopt(socket.IPPROTO_IP, socket.IP_MULTICAST_TTL, 2)
+    except OSError:
+        pass
+    s.settimeout(0.5)
+    inst, srv_all, a_all = set(), {}, {}
+    try:
+        s.sendto(_mdns_query_pkt(service), _MDNS_ADDR)
+        deadline = time.monotonic() + timeout
+        while time.monotonic() < deadline:
+            try:
+                data, _ = s.recvfrom(4096)
+            except socket.timeout:
+                continue
+            except OSError:
+                break
+            ptr, srv, a = _parse_mdns(data)
+            srv_all.update(srv)
+            a_all.update(a)
+            for n in ptr:
+                if n.endswith(service):
+                    inst.add(n)
+            for n in srv:
+                if n.endswith(service):
+                    inst.add(n)
+    finally:
+        s.close()
+    out = []
+    for name in inst:
+        host, _port = srv_all.get(name, (None, None))
+        ip = a_all.get(host) if host else None
+        if not ip and len(a_all) == 1:             # single host seen: use it
+            ip = next(iter(a_all.values()))
+        if not ip:
+            continue
+        label = name[: -len(service) - 1].rstrip(".") or name
+        out.append({"name": label, "host": ip})
+    return out
+
+
+def _ssdp_search(st, timeout=2.5):
+    """M-SEARCH for <st>; return response header dicts (with _ip). Best-effort."""
+    msg = ("M-SEARCH * HTTP/1.1\r\nHOST: 239.255.255.250:1900\r\n"
+           'MAN: "ssdp:discover"\r\nMX: 1\r\nST: %s\r\n\r\n' % st).encode()
+    s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+    s.settimeout(0.5)
+    res = []
+    try:
+        s.sendto(msg, _SSDP_ADDR)
+        deadline = time.monotonic() + timeout
+        while time.monotonic() < deadline:
+            try:
+                data, addr = s.recvfrom(2048)
+            except socket.timeout:
+                continue
+            except OSError:
+                break
+            h = {"_ip": addr[0]}
+            for line in data.decode("utf-8", "replace").split("\r\n")[1:]:
+                if ":" in line:
+                    k, v = line.split(":", 1)
+                    h[k.strip().lower()] = v.strip()
+            res.append(h)
+    finally:
+        s.close()
+    return res
+
+
+def _discover_http(url, timeout=2.0):
+    try:
+        import urllib.request
+        with urllib.request.urlopen(url, timeout=timeout) as r:
+            return r.read().decode("utf-8", "replace")
+    except Exception:
+        return ""
+
+
+def _roku_name(ip):
+    xml = _discover_http("http://%s:8060/query/device-info" % ip)
+    for tag in ("user-device-name", "friendly-device-name", "default-device-name"):
+        m = re.search(r"<%s>(.*?)</%s>" % (tag, tag), xml)
+        if m and m.group(1).strip():
+            return m.group(1).strip()
+    return "Roku"
+
+
+def _discover_androidtv():
+    # _androidtvremote2._tcp is the pairing service (what we control); its
+    # instance name is usually the friendly TV name. _googlecast._tcp is queried
+    # only to fill in a blank/generic name (some firmwares report one there).
+    tvs = _mdns_discover("_androidtvremote2._tcp.local")
+    cast = {c["host"]: c["name"]
+            for c in _mdns_discover("_googlecast._tcp.local", timeout=1.5)
+            if c.get("name")}
+    out = []
+    for t in tvs:
+        name = t["name"]
+        if (not name or name == t["host"]) and cast.get(t["host"]):
+            name = cast[t["host"]]
+        out.append({"brand": "androidtv", "name": name or "Android TV",
+                    "host": t["host"]})
+    return out
+
+
+def _discover_samsung():
+    return [{"brand": "samsung", "name": t["name"], "host": t["host"]}
+            for t in _mdns_discover("_samsungmsf._tcp.local")]
+
+
+def _discover_roku():
+    out, seen = [], set()
+    for r in _ssdp_search("roku:ecp"):
+        ip = r.get("_ip")
+        if ip and ip not in seen:
+            seen.add(ip)
+            out.append({"brand": "roku", "name": _roku_name(ip), "host": ip})
+    return out
+
+
+def _discover_webos():
+    """LG webOS via SSDP: filter ssdp:all to LG-identified responses and pull the
+    friendlyName from the UPnP device description."""
+    out, seen = [], set()
+    for r in _ssdp_search("ssdp:all", timeout=2.5):
+        ip = r.get("_ip")
+        blob = (r.get("server", "") + r.get("usn", "") + r.get("location", "")).lower()
+        if not ip or ip in seen or not re.search(r"\blg\b|webos|lge", blob):
+            continue
+        seen.add(ip)
+        name = ""
+        loc = r.get("location", "")
+        if loc:
+            m = re.search(r"<friendlyName>(.*?)</friendlyName>", _discover_http(loc))
+            if m:
+                name = m.group(1).strip()
+        out.append({"brand": "webos", "name": name or "LG webOS", "host": ip})
+    return out
+
+
+def tv_discover(mock, timeout=2.6):
+    """Sweep the LAN for controllable TVs (see the module note). Returns a list
+    of {brand, name, host}, deduped by host (a pairing backend wins over a bare
+    UPnP echo of the same set). Each method runs in its own thread so the whole
+    sweep is ~one timeout, not the sum."""
+    if mock:
+        return [
+            {"brand": "androidtv", "name": "Living Room TV (mock)", "host": "10.0.0.51"},
+            {"brand": "webos", "name": "Bedroom LG (mock)", "host": "10.0.0.52"},
+            {"brand": "roku", "name": "Office Roku (mock)", "host": "10.0.0.53"},
+        ]
+    results, lock = [], threading.Lock()
+
+    def run(fn):
+        try:
+            found = fn()
+        except Exception:
+            found = []
+        with lock:
+            results.extend(found)
+
+    threads = [threading.Thread(target=run, args=(fn,), daemon=True) for fn in
+               (_discover_androidtv, _discover_samsung, _discover_roku, _discover_webos)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join(timeout + 2.5)
+    # Dedup by host; brand priority = pairing backends over passive echoes.
+    order = {"androidtv": 0, "webos": 1, "samsung": 2, "roku": 3}
+    best = {}
+    for tv in results:
+        host = tv.get("host")
+        if not host:
+            continue
+        cur = best.get(host)
+        if cur is None or order.get(tv["brand"], 9) < order.get(cur["brand"], 9):
+            best[host] = tv
+    return sorted(best.values(), key=lambda t: (order.get(t["brand"], 9), t["name"]))
+
+
 # ---- unified dispatch -----------------------------------------------------
 # CEC has no discrete power-off; its standby command IS the off state.
 _TV_TO_CEC = {"power_on": "power_on", "power_off": "standby",
@@ -4728,11 +5121,21 @@ def tv_info():
         "keys": (panel_available() or webos_available()
                  or samsung_available() or roku_available()
                  or androidtv_available() or vidaa_available()),
+        # A "source" key opens the TV's input picker (agent >= 2.9.12). Android/
+        # Google TV (KEYCODE_TV_INPUT) and Samsung (KEY_SOURCE) have one; webOS/
+        # Roku don't (no single input-menu key), and the RS-232 panel uses its
+        # own explicit source list (source_box / sources) instead.
+        "source_key": androidtv_available() or samsung_available(),
         # Text entry into a focused on-TV field. webOS (IME), Samsung
         # (SendInputString) and Roku (Lit_ keypresses) support it; the panel
         # and CEC have no text channel.
         "text": (webos_available() or samsung_available()
                  or roku_available()),
+        # Backend PUSHES a focus signal when an on-TV text field opens/closes,
+        # so the app can auto-raise its keyboard (see the t:input_focus frame on
+        # /ws/gamepad). webOS-only today (registerRemoteKeyboard subscription);
+        # every other backend keeps the manual text button, so this stays false.
+        "text_focus_push": webos_available(),
         # Box mute state, so the app shows the right mute indicator on connect.
         "muted": _soft_muted() if box_vol else None,
         # Current levels (0-100 or null) so the app's volume slider can show and
@@ -6423,6 +6826,18 @@ def _wsend_op(entry, opcode, payload=b""):
             pass
 
 
+def _gamepad_broadcast(obj):
+    """Send one JSON frame to every live gamepad session (holder + waiters).
+    Snapshots the list under the lock, then sends outside it (each _wsend_json
+    takes only that socket's slock), so socket I/O never blocks GAMEPAD_LOCK.
+    Best-effort: a dead socket is skipped. Used for out-of-band pushes such as
+    the webOS on-TV text-focus signal (t:input_focus)."""
+    with GAMEPAD_LOCK:
+        entries = list(GAMEPAD_SESSIONS)
+    for entry in entries:
+        _wsend_json(entry, obj)
+
+
 def _release_devices(entry):
     """Demote a session that stays connected as a waiter: destroy its gamepad
     (one pad per holder — the new holder brings its own) but KEEP the mouse and
@@ -6721,6 +7136,165 @@ def build_pair_url(token, port):
     return url
 
 
+# ---- PIN pairing (app-initiated box enrollment) ---------------------------
+# A phone that discovered this box on the LAN (see the UDP responder) can enroll
+# WITHOUT already having the token, via a PIN shown on the BOX'S OWN screen —
+# physical-presence proof, exactly like Android-TV pairing:
+#   POST /api/pair/start  (unauth): mint a 6-digit PIN, display it on the box
+#     (Steam's browser -> the loopback /pair page), return the TTL.
+#   POST /api/pair/finish (unauth): trade the correct PIN for the box token.
+# The PIN is rendered ONLY on the loopback /pair page, so it never crosses the
+# network — you must be able to SEE the box's screen. Brute force is blocked by
+# a short TTL + a small attempt cap + a single live session, and repeated
+# /start is debounced so a LAN peer can't spam the on-screen popup.
+PAIR_PIN_TTL = 120           # seconds a displayed PIN stays valid
+PAIR_PIN_MAX_ATTEMPTS = 5    # wrong PINs before the session is burned
+PAIR_PIN_START_DEBOUNCE = 3  # min seconds between /start (anti on-screen spam)
+PAIR_PIN_LOCK = threading.Lock()
+# {"pin": "123456", "expires": mono, "attempts": int, "started": mono} or None
+PAIR_PIN = None
+
+
+def pair_pin_start():
+    """Mint a fresh PIN + session (replacing any prior one) and return
+    (pin, ttl). Debounced: within PAIR_PIN_START_DEBOUNCE of the last start the
+    LIVE pin is returned unchanged, so a double-tap / retry doesn't reroll the
+    number already on screen. Caller displays it on the box."""
+    global PAIR_PIN
+    with PAIR_PIN_LOCK:
+        now = time.monotonic()
+        s = PAIR_PIN
+        if s and now <= s["expires"] and now - s["started"] < PAIR_PIN_START_DEBOUNCE:
+            return s["pin"], int(s["expires"] - now)
+        pin = "%06d" % (int.from_bytes(os.urandom(3), "big") % 1000000)
+        PAIR_PIN = {"pin": pin, "expires": now + PAIR_PIN_TTL,
+                    "attempts": 0, "started": now}
+        return pin, PAIR_PIN_TTL
+
+
+def pair_pin_active():
+    """The current PIN if a session is live (for /pair to render on-screen),
+    else None."""
+    with PAIR_PIN_LOCK:
+        if PAIR_PIN and time.monotonic() <= PAIR_PIN["expires"]:
+            return PAIR_PIN["pin"]
+        return None
+
+
+def pair_pin_check(pin):
+    """Validate a submitted PIN. True (and burns the session) on match; raises
+    ValueError with a user-facing reason on no-session / expired / locked /
+    wrong. A wrong guess counts toward the attempt cap."""
+    global PAIR_PIN
+    with PAIR_PIN_LOCK:
+        s = PAIR_PIN
+        if not s or time.monotonic() > s["expires"]:
+            PAIR_PIN = None
+            raise ValueError("no active pairing — start it again from the app")
+        if s["attempts"] >= PAIR_PIN_MAX_ATTEMPTS:
+            PAIR_PIN = None
+            raise ValueError("too many wrong PINs — start again")
+        if (pin or "").strip() != s["pin"]:
+            s["attempts"] += 1
+            raise ValueError("wrong PIN")
+        PAIR_PIN = None                       # consume on success
+        return True
+
+
+def pair_show_on_box(port):
+    """Open the loopback /pair page on the BOX'S own screen so the PIN is
+    visible there. Game Mode -> Steam's built-in browser (steam://openurl);
+    desktop -> xdg-open. Best-effort, detached, never blocks the request."""
+    url = "http://localhost:%d/pair" % port
+    gamescope = _couchmode_session() == "gamescope"
+
+    def go():
+        try:
+            if gamescope:
+                subprocess.run(["steam", "-ifrunning", "steam://openurl/" + url],
+                               timeout=10)
+            elif shutil.which("xdg-open"):
+                subprocess.run(["xdg-open", url], timeout=10)
+            elif shutil.which("steam"):
+                subprocess.run(["steam", "-ifrunning", "steam://openurl/" + url],
+                               timeout=10)
+        except Exception:
+            pass
+    threading.Thread(target=go, daemon=True).start()
+
+
+def render_pin_page(pin):
+    """Full-screen dark page showing the pairing PIN, spaced for reading off a
+    TV. A JS poll of /api/pair/status clears the PIN to a neutral 'done' once the
+    session ends (paired or expired), and leaves it untouched on any fetch error
+    — so the agent restarting never shows a browser error, and a successful pair
+    never flashes the token QR. Built with a placeholder replace (not
+    %-formatting) because the CSS contains a literal '%' (height:100%)."""
+    return (
+        "<!doctype html><html><head><meta charset=utf-8>"
+        "<meta name=viewport content='width=device-width,initial-scale=1'>"
+        "<title>Couchside pairing</title><style>"
+        "html,body{margin:0;height:100%;background:#0b1220;color:#e5e7eb;"
+        "font-family:system-ui,sans-serif;display:flex;flex-direction:column;"
+        "align-items:center;justify-content:center;text-align:center}"
+        ".t{font-size:5vh;color:#93c5fd;letter-spacing:.1em;font-weight:600}"
+        ".pin{font-size:22vh;font-weight:800;letter-spacing:.15em;margin:2vh 0;"
+        "font-variant-numeric:tabular-nums;color:#fff}"
+        ".s{font-size:3.2vh;color:#94a3b8;max-width:80vw}"
+        "</style></head><body>"
+        "<div class=t>ENTER THIS PIN IN THE APP</div>"
+        "<div class=pin>__PIN__</div>"
+        "<div class=s>Couchside · this code is shown only on this screen</div>"
+        "<script>var done=false;setInterval(function(){"
+        "fetch('/api/pair/status').then(function(r){return r.json()})"
+        ".then(function(d){if(d&&d.active===false&&!done){done=true;"
+        "document.body.innerHTML="
+        "'<div class=t>PAIRED</div><div class=s>Press B (Back) to close.</div>'"
+        # Steam's browser can't be closed programmatically (neither a page-side
+        # window.close()/steam:// nav nor an agent steam:// CLI dismisses it), so
+        # we land on a clean PAIRED screen and tell the user how to close it.
+        "}}).catch(function(){})},3000)</script>"
+        "</body></html>".replace("__PIN__", " ".join(pin)))
+
+
+# ---- LAN discovery responder (lets the app find this box) ------------------
+# The app broadcasts COUCHSIDE_DISCOVER_MAGIC to this UDP port; the box replies
+# with its identity + HTTP port so the app can list it in a "scan for boxes"
+# picker (then PIN-pair, above). Bound on the SAME number as the HTTP port
+# (UDP vs TCP, no clash). Reveals existence + hostname + version only — no
+# token, no control. UDP broadcast is used deliberately: it is far more reliable
+# than mDNS multicast RX on Android (no MulticastLock dance).
+COUCHSIDE_DISCOVER_MAGIC = b"COUCHSIDE_DISCOVER?"
+
+
+def _udp_discovery_responder(port):
+    """Answer LAN discovery probes on UDP <port>. Best-effort daemon; a bind
+    failure just disables discovery (the app can still add a box by IP)."""
+    try:
+        s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        s.bind(("0.0.0.0", port))
+    except OSError as e:
+        print("[discover] responder disabled: %s" % e, flush=True)
+        return
+    print("[discover] UDP responder on :%d" % port, flush=True)
+    while True:
+        try:
+            data, addr = s.recvfrom(256)
+        except OSError:
+            continue
+        if not data.startswith(COUCHSIDE_DISCOVER_MAGIC):
+            continue
+        short = socket.gethostname().split(".")[0] or "couchside"
+        reply = json.dumps({"couchside": True, "name": short,
+                            "host": short + ".local", "port": port,
+                            "version": VERSION}).encode()
+        try:
+            s.sendto(reply, addr)
+        except OSError:
+            pass
+
+
 def render_pair_page(token, port):
     """Self-contained dark HTML page rendering the pairing QR offline.
 
@@ -6961,8 +7535,23 @@ class Handler(BaseHTTPRequestHandler):
                 if not self._is_loopback() or not self._host_header_is_local():
                     self._send(403, {"error": "forbidden"}, started)
                     return
-                html = render_pair_page(self._current_token(), self.port)
+                # While a PIN-pairing session is live, this page IS the physical-
+                # presence proof: show the big PIN (loopback-only, so only someone
+                # at the box sees it). Otherwise the usual token QR.
+                pin = pair_pin_active()
+                html = (render_pin_page(pin) if pin
+                        else render_pair_page(self._current_token(), self.port))
                 self._send_html(200, html, started)
+                return
+
+            if path == "/api/pair/status":
+                # Loopback-only: the on-screen /pair PIN page polls this to learn
+                # when its session ended (paired/expired), so it can clear itself
+                # without a blind reload. Reveals only a boolean, no secret.
+                if not self._is_loopback():
+                    self._send(403, {"error": "forbidden"}, started)
+                    return
+                self._send(200, {"active": pair_pin_active() is not None}, started)
                 return
 
             if path == "/api/ping":
@@ -7043,6 +7632,11 @@ class Handler(BaseHTTPRequestHandler):
                     self._send(404, {"error": "not found"}, started)
                 else:
                     self._send(200, info, started)
+            elif path == "/api/tv/discover":
+                # LAN scan (mDNS + SSDP, ~3s) so the app can offer a "scan for
+                # TVs" picker instead of a manual IP. Always 200 (possibly an
+                # empty list) — it is an action, not a probe-and-appear cap.
+                self._send(200, {"tvs": tv_discover(self.mock)}, started)
             elif path == "/api/displays":
                 # Probe-and-appear: 404 unless this box can do the desktop->TV
                 # Game Mode handoff (SteamOS/Bazzite, 2+ outputs), so the app
@@ -7195,6 +7789,36 @@ class Handler(BaseHTTPRequestHandler):
                     return
                 self._read_body()
                 self._send(404, {"error": "not found"}, started)
+                return
+
+            # UNAUTHENTICATED PIN pairing (the only unauthenticated POSTs): a
+            # phone that discovered this box enrolls via a PIN shown on the box's
+            # own screen. Bounded: /start is debounced + displays the PIN
+            # locally; /finish is TTL + attempt-capped and only returns the token
+            # for the correct PIN. Handled here, before the bearer-token gate.
+            if path in ("/api/pair/start", "/api/pair/finish"):
+                if self._body_too_large():
+                    self.close_connection = True
+                    self._send(413, {"error": "request body too large"}, started)
+                    return
+                pair_body = self._read_body()
+                if path == "/api/pair/start":
+                    _pin, ttl = pair_pin_start()
+                    pair_show_on_box(self.port)   # pop the PIN on the box screen
+                    self._send(200, {"ok": True, "ttl": ttl}, started)
+                    return
+                try:
+                    req = json.loads(pair_body.decode("utf-8")) if pair_body else {}
+                    submitted = req.get("pin")
+                except (ValueError, UnicodeDecodeError):
+                    submitted = None
+                try:
+                    pair_pin_check(submitted)
+                except ValueError as e:
+                    self._send(403, {"ok": False, "error": str(e)}, started)
+                    return
+                self._send(200, {"ok": True, "token": self._current_token(),
+                                 "port": self.port}, started)
                 return
 
             # Authorize BEFORE reading the body: an unauthenticated client must
@@ -8285,6 +8909,8 @@ def main():
     args = p.parse_args()
 
     load_config(args.config)
+    if not args.mock:
+        check_config_writable()  # warn loudly if pairings/launchers can't persist
     _inject_session_actions()
     _inject_suspend_action(args.mock)
     set_tv(args.mock)
@@ -8304,6 +8930,8 @@ def main():
 
     server = BoundedThreadingHTTPServer((args.host, port), Handler)
     server.daemon_threads = True
+    threading.Thread(target=_udp_discovery_responder, args=(port,),
+                     daemon=True, name="discover").start()
     mode = "mock" if args.mock else "real"
     print("%s %s listening on %s:%d (%s mode)" % (
         APP_NAME, VERSION, args.host, port, mode), flush=True)

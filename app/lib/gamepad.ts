@@ -183,6 +183,15 @@ export class GamepadClient {
     | ((blocked: boolean, msg: string | null) => void)
     | null = null;
 
+  // On-TV text-focus push (agent >= 2.9.12, webOS). The backend sends
+  // input_focus{open,value} when a text field on the TV gains/loses focus, so
+  // the app can auto-raise its keyboard. This is a transient EVENT, not a
+  // persisted state — the listener fires only on receipt (no replay on
+  // subscribe), so a freshly mounted view never re-pops a stale keyboard.
+  private inputFocusListener:
+    | ((open: boolean, value: string) => void)
+    | null = null;
+
   // Controller handoff (agent >= 2.9.2). When this phone HOLDS control and
   // another asks for it, the agent sends control_request{name}; the UI prompts
   // Pass/Keep. controlRequest holds the pending requester name (or null).
@@ -281,6 +290,20 @@ export class GamepadClient {
   ): void {
     this.blockedListener = fn;
     if (fn) fn(this.inputBlocked, this.blockedMsg);
+  }
+
+  /**
+   * Register the (single) on-TV text-focus listener. Unlike the state
+   * listeners above it does NOT fire immediately: input_focus is an event, so
+   * replaying a stale value on subscribe could pop the keyboard for a field the
+   * user already left. Fires with (open, value) on each pushed transition.
+   */
+  onInputFocus(fn: ((open: boolean, value: string) => void) | null): void {
+    this.inputFocusListener = fn;
+  }
+
+  private emitInputFocus(open: boolean, value: string): void {
+    if (this.inputFocusListener) this.inputFocusListener(open, value);
   }
 
   getStatus(): GamepadStatus {
@@ -582,6 +605,7 @@ export class GamepadClient {
       let msg: {
         t?: string; dev?: string; msg?: string; text?: string;
         code?: string; name?: string; holder?: string; by?: string;
+        open?: boolean; value?: string;
       };
       try {
         msg = JSON.parse(String(ev.data));
@@ -636,6 +660,13 @@ export class GamepadClient {
         this.setInputBlocked(true, typeof msg.msg === 'string' ? msg.msg : null);
       } else if (msg.t === 'resumed') {
         this.setInputBlocked(false, null);
+      } else if (msg.t === 'input_focus') {
+        // A text field on the TV opened/closed (webOS). Relay to the view so it
+        // can raise/dismiss the phone keyboard; value carries any current text.
+        this.emitInputFocus(
+          msg.open === true,
+          typeof msg.value === 'string' ? msg.value : '',
+        );
       }
       // {"t":"pong"} needs no handling.
     };

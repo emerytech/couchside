@@ -1,5 +1,5 @@
 import Ionicons from '@expo/vector-icons/Ionicons';
-import React, { useCallback, useState } from 'react';
+import React, { useCallback, useEffect, useRef, useState } from 'react';
 import {
   Alert,
   Modal,
@@ -57,19 +57,61 @@ export function RemoteView({
   const tv = tvPoll.data?.available ? tvPoll.data : null;
   const hasTvKeys = tv?.keys === true;
   const hasTvText = tv?.text === true;
+  const hasSourceKey = tv?.source_key === true;
   const sources = tv?.sources ?? [];
   const canBlank = tv?.screen_toggle === true;
+  // Backend pushes an on-TV focus signal (webOS): we auto-raise the text sheet
+  // on focus and dismiss it on blur. Held in a ref too so the (once-registered)
+  // focus listener always sees the current cap without re-subscribing.
+  const canFocusPush = tv?.text_focus_push === true;
+  const focusPushRef = useRef(canFocusPush);
+  focusPushRef.current = canFocusPush;
 
   // On-TV text entry (webOS IME / Samsung / Roku Lit_ keys). Opens a small
   // modal; sends the whole string to /api/tv/text.
   const [textOpen, setTextOpen] = useState(false);
   const [textVal, setTextVal] = useState('');
+  // Who opened the sheet: a manual keypad tap vs an auto focus-push. Only a
+  // focus-push-opened sheet is auto-dismissed on focus-close, so we never yank
+  // a sheet the user opened themselves.
+  const textSrc = useRef<'manual' | 'focus' | null>(null);
+  const closeText = useCallback(() => {
+    setTextOpen(false);
+    setTextVal('');
+    textSrc.current = null;
+  }, []);
+  const openTextManual = useCallback(() => {
+    textSrc.current = 'manual';
+    setTextOpen(true);
+  }, []);
   const sendText = useCallback(() => {
     const s = textVal;
     setTextOpen(false);
     setTextVal('');
+    textSrc.current = null;
     if (s) void api.tvText(settings, s).catch(() => {});
   }, [textVal, settings]);
+
+  // Auto-keyboard: when the box advertises text_focus_push (webOS) and pushes a
+  // focus-open, raise the sheet with any current field text (the sheet's
+  // autoFocus TextInput pops the phone keyboard); on focus-close, dismiss it —
+  // but only if focus-push opened it, so a manually opened sheet stays put.
+  useEffect(() => {
+    client.onInputFocus((open, value) => {
+      if (open) {
+        if (!focusPushRef.current) return;
+        if (textSrc.current === 'manual') return; // don't clobber a manual sheet
+        textSrc.current = 'focus';
+        setTextVal(value);
+        setTextOpen(true);
+      } else if (textSrc.current === 'focus') {
+        setTextOpen(false);
+        setTextVal('');
+        textSrc.current = null;
+      }
+    });
+    return () => client.onInputFocus(null);
+  }, [client]);
 
   // Desktop nav, self-polled and session-aware: the SteamOS/Bazzite desktop
   // cluster (Start menu, trackpad, overview) appears only while the box is in
@@ -80,6 +122,14 @@ export function RemoteView({
 
   const [target, setTarget] = useState<'box' | 'tv'>('box');
   const nav = hasTvKeys ? target : 'box';
+
+  // MUTE button color reflects the reported mute state (tv.muted, refreshed by
+  // the poll), toggled optimistically on press for instant feedback. It used to
+  // be hardcoded red, so it always looked muted even when it wasn't.
+  const [muted, setMuted] = useState(false);
+  useEffect(() => {
+    if (typeof tv?.muted === 'boolean') setMuted(tv.muted);
+  }, [tv?.muted]);
 
   // Nav-circle input surface: the classic D-pad, or a relative-mouse trackpad
   // (desktop only). Force back to the D-pad if the box leaves desktop mode.
@@ -241,13 +291,20 @@ export function RemoteView({
               </Pressable>
             ))}
           </View>
+          {hasSourceKey && target === 'tv' && (
+            <Pressable
+              onPress={() => tvKey('source')}
+              style={({ pressed }) => [styles.iconBtn, pressed && styles.pressed]}>
+              <Ionicons name="swap-horizontal" size={20} color={t.blue} />
+            </Pressable>
+          )}
           {hasTvText && target === 'tv' && (
             <Pressable
               onPress={() => {
                 hapticLight();
-                setTextOpen(true);
+                openTextManual();
               }}
-              style={({ pressed }) => [styles.pwr, pressed && styles.pressed]}>
+              style={({ pressed }) => [styles.iconBtn, pressed && styles.pressed]}>
               <Ionicons name="keypad" size={20} color={t.blue} />
             </Pressable>
           )}
@@ -342,7 +399,15 @@ export function RemoteView({
           onMinus={() => tvOp('volume_down')}
         />
         <View style={styles.midStack}>
-          <MidBtn icon="volume-mute" label="MUTE" color={t.red} onPress={() => tvOp('mute')} />
+          <MidBtn
+            icon={muted ? 'volume-mute' : 'volume-high'}
+            label="MUTE"
+            color={muted ? t.red : t.text}
+            onPress={() => {
+              setMuted((m) => !m);
+              tvOp('mute');
+            }}
+          />
           <MidBtn icon="logo-steam" label="STEAM" color={t.green} onPress={steam} />
           <MidBtn icon="ellipsis-horizontal" label="QAM" color={t.amber} onPress={qam} />
         </View>
@@ -385,8 +450,8 @@ export function RemoteView({
         visible={textOpen}
         transparent
         animationType="fade"
-        onRequestClose={() => setTextOpen(false)}>
-        <Pressable style={styles.textBackdrop} onPress={() => setTextOpen(false)}>
+        onRequestClose={closeText}>
+        <Pressable style={styles.textBackdrop} onPress={closeText}>
           <Pressable style={styles.textSheet} onPress={() => {}}>
             <Text style={styles.textTitle}>Send text to the TV</Text>
             <TextInput
@@ -402,7 +467,7 @@ export function RemoteView({
               style={styles.textInput}
             />
             <View style={styles.textBtnRow}>
-              <Pressable onPress={() => setTextOpen(false)} style={styles.textBtn}>
+              <Pressable onPress={closeText} style={styles.textBtn}>
                 <Text style={styles.textBtnCancel}>CANCEL</Text>
               </Pressable>
               <Pressable onPress={sendText} style={[styles.textBtn, styles.textBtnSendBg]}>
@@ -761,6 +826,19 @@ const makeStyles = (t: Palette) => StyleSheet.create({
     backgroundColor: t.card,
     borderWidth: 1,
     borderColor: 'rgba(248,113,113,0.5)',
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  // Neutral sibling of `pwr` for non-power icon buttons (SOURCE, keypad) — same
+  // footprint, plain card border instead of the power button's red one so they
+  // don't read as "danger".
+  iconBtn: {
+    width: 44,
+    height: 40,
+    borderRadius: 10,
+    backgroundColor: t.card,
+    borderWidth: 1,
+    borderColor: t.cardBorder,
     alignItems: 'center',
     justifyContent: 'center',
   },

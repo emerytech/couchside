@@ -45,6 +45,11 @@ export type Prefs = {
   /** When another phone joins a box you're controlling, ask before handing
       over (true) vs let it grab control immediately (false). Agent >= 2.9.2. */
   askToSwitchControl: boolean;
+  /** Let the phone's hardware Vol +/- buttons drive the box/TV volume while the
+      Remote screen is open. Default ON for Android; OFF for iOS, where the OS
+      volume HUD can't be suppressed and repurposing the buttons is App-Review
+      risky (opt-in, experimental). */
+  volumeButtons: boolean;
 };
 
 export const DEFAULTS: Prefs = {
@@ -62,6 +67,9 @@ export const DEFAULTS: Prefs = {
   padKeyboardBar: true,
   padHints: true,
   askToSwitchControl: true,
+  // Android intercepts the keycode cleanly (no HUD); iOS can't, so it stays off
+  // until the user opts in.
+  volumeButtons: Platform.OS === 'android',
 };
 
 /** The choices each select-style pref offers (kept next to the store it feeds). */
@@ -138,6 +146,7 @@ function normalize(raw: unknown): Prefs {
     padKeyboardBar: bool(o.padKeyboardBar, DEFAULTS.padKeyboardBar),
     padHints: bool(o.padHints, DEFAULTS.padHints),
     askToSwitchControl: bool(o.askToSwitchControl, DEFAULTS.askToSwitchControl),
+    volumeButtons: bool(o.volumeButtons, DEFAULTS.volumeButtons),
   };
 }
 

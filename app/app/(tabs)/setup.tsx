@@ -21,6 +21,7 @@ import { AgentUpdateBanner } from '@/components/AgentUpdateBanner';
 import { Gated } from '@/components/Gated';
 import { LogsPanel } from '@/components/LogsPanel';
 import { QrView } from '@/components/QrView';
+import { BoxScanPair } from '@/components/BoxScanPair';
 import { SmartTvSetup } from '@/components/SmartTvSetup';
 import { TabScreen } from '@/components/TabScreen';
 import { useLockOrientation } from '@/hooks/useLockOrientation';
@@ -637,6 +638,7 @@ function SetupBody() {
   const padKeyboardBar = usePref('padKeyboardBar');
   const padHints = usePref('padHints');
   const askToSwitchControl = usePref('askToSwitchControl');
+  const volumeButtons = usePref('volumeButtons');
 
   const [restoring, setRestoring] = useState(false);
   const [buying, setBuying] = useState(false);
@@ -705,6 +707,9 @@ function SetupBody() {
   const [agentVersion, setAgentVersion] = useState<string | null>(null);
   const [testing, setTesting] = useState(false);
   const [saved, setSaved] = useState(false);
+  // Scan + PIN is the primary way to add a box; the manual host/port/token card
+  // is a collapsed "advanced" fallback (headless / cross-subnet / non-Linux).
+  const [showManual, setShowManual] = useState(false);
 
   const draftConn = useCallback(() => {
     const p = parseInt(port, 10);
@@ -951,6 +956,20 @@ function SetupBody() {
 
         {/* ---- Add / pair ---- */}
         <Text style={[styles.sectionLabel, { marginTop: 18 }]}>ADD / PAIR A BOX</Text>
+        {/* Scan the LAN + PIN-pair (no IP/token typing) is the primary method.
+            Hidden on builds without the UDP native module — the manual card then
+            carries the whole flow. */}
+        <View style={styles.card}>
+          <BoxScanPair />
+        </View>
+        {/* Manual host/port/token: collapsed fallback for headless / cross-subnet
+            / non-Linux boxes that scanning can't reach. */}
+        <Pressable onPress={() => setShowManual((v) => !v)} style={styles.advancedToggle}>
+          <Text style={styles.advancedToggleText}>Add by IP (advanced)</Text>
+          <Ionicons name={showManual ? 'chevron-up' : 'chevron-down'} size={16} color={t.textDim} />
+        </Pressable>
+        {showManual ? (
+        <>
         <View style={styles.card}>
           <Text style={styles.fieldLabel}>NAME (optional)</Text>
           <TextInput
@@ -1037,6 +1056,8 @@ function SetupBody() {
             </View>
           )}
         </View>
+        </>
+        ) : null}
           </>
         )}
 
@@ -1170,7 +1191,7 @@ function SetupBody() {
               </View>
               <SegPref
                 label="Default input mode"
-                sub="What a newly paired box starts on."
+                sub="The view the Pad tab opens on. Applies to the active box now, and seeds newly paired boxes."
                 options={[
                   { value: 'gamepad', label: 'Pad' },
                   { value: 'swipe', label: 'Swipe' },
@@ -1180,6 +1201,10 @@ function SetupBody() {
                 value={defaultPadMode}
                 onSelect={(v) => {
                   void setPref('defaultPadMode', v);
+                  // The Pad tab reads the ACTIVE box's per-box padMode once a box
+                  // is paired, so the pref alone changes nothing for existing
+                  // boxes. Write it through so the setting takes effect live.
+                  if (activeBoxId) void updateBox(activeBoxId, { padMode: v });
                   hapticSelection();
                 }}
               />
@@ -1285,6 +1310,19 @@ function SetupBody() {
                 value={askToSwitchControl}
                 onValueChange={(v) => {
                   void setPref('askToSwitchControl', v);
+                  hapticSelection();
+                }}
+              />
+              <TogglePref
+                label="Hardware volume buttons"
+                sub={
+                  Platform.OS === 'ios'
+                    ? "The phone's Vol +/- control the box/TV volume on any Pad tab surface. Experimental on iOS: the phone's volume overlay still shows and it only works with the app in front."
+                    : "The phone's Vol +/- control the box/TV volume (box or TV, per box) on any Pad tab surface."
+                }
+                value={volumeButtons}
+                onValueChange={(v) => {
+                  void setPref('volumeButtons', v);
                   hapticSelection();
                 }}
               />
@@ -1432,6 +1470,15 @@ const makeStyles = (t: Palette) => StyleSheet.create({
     letterSpacing: 1.2,
     marginBottom: 8,
   },
+  advancedToggle: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    paddingVertical: 12,
+    paddingHorizontal: 4,
+    marginTop: 4,
+  },
+  advancedToggleText: { color: t.textDim, fontSize: 13, fontWeight: '700' },
   header: {
     paddingHorizontal: 14,
     paddingTop: 8,

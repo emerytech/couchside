@@ -44,3 +44,7 @@ yarn-error.*
 asc-key.p8
 credentials.json
 credentials/
+
+# local build artifacts
+*.apk
+build-*.apk

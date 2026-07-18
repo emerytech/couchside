@@ -7,7 +7,7 @@
  * The Pad tab is the one screen that allows landscape (see useLockOrientation);
  * in landscape the gamepad controls spread out like a real controller.
  */
-import { hapticSelection } from '@/lib/haptics';
+import { hapticLight, hapticSelection } from '@/lib/haptics';
 import { getKeepAwakeEnabled, useKeepAwakeEnabled } from '@/lib/keepAwake';
 import { getPref, usePref } from '@/lib/prefs';
 import { activateKeepAwakeAsync, deactivateKeepAwake } from 'expo-keep-awake';
@@ -36,6 +36,7 @@ import { TabScreen } from '@/components/TabScreen';
 import { useLockOrientation } from '@/hooks/useLockOrientation';
 import { usePoll } from '@/hooks/usePoll';
 import { useTrackpad } from '@/hooks/useTrackpad';
+import { useVolumeButtons } from '@/hooks/useVolumeButtons';
 import { api, hostKey, Status } from '@/lib/api';
 import { ButtonKey, DesktopKey, GamepadClient, GamepadStatus, StickKey, SystemChord, TriggerKey } from '@/lib/gamepad';
 import { PadMode } from '@/lib/settings';
@@ -614,6 +615,25 @@ function PadScreen() {
   const askToSwitch = usePref('askToSwitchControl');
   const askToSwitchRef = useRef(askToSwitch);
   askToSwitchRef.current = askToSwitch;
+
+  // Hardware volume buttons -> box/TV volume across EVERY input mode (Pad,
+  // Swipe, Track, Remote), mounted here on the always-present Pad screen rather
+  // than inside RemoteView. Active while the user opted in and a box is
+  // connected; the connection lifecycle is tied to tab focus, so leaving the
+  // Pad tab restores the phone's own volume. Honors settings.volumeTarget.
+  const volumeButtons = usePref('volumeButtons');
+  const sendVol = useCallback(
+    (op: 'volume_up' | 'volume_down') => {
+      hapticLight();
+      void api.tvSend(settings, op, settings.volumeTarget ?? 'box').catch(() => {});
+    },
+    [settings],
+  );
+  useVolumeButtons({
+    enabled: volumeButtons && status === 'connected',
+    onUp: () => sendVol('volume_up'),
+    onDown: () => sendVol('volume_down'),
+  });
   const [controlReq, setControlReq] = useState<string | null>(null);
   const [canForce, setCanForce] = useState(false);
 
