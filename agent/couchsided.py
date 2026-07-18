@@ -6835,9 +6835,9 @@ def render_pin_page(pin):
         ".then(function(d){if(d&&d.active===false&&!done){done=true;"
         "document.body.innerHTML="
         "'<div class=t>DONE</div><div class=s>Returning to Steam\\u2026</div>';"
-        // Session ended: leave the browser after a beat by pulling Steam back to
-        // its Game Mode home. steam://open/bigpicture is handled by Steam's own
-        // browser; desktop browsers just ignore it and keep the DONE screen.
+        # Session ended: leave the browser after a beat by pulling Steam back to
+        # its Game Mode home. steam://open/bigpicture is handled by Steam's own
+        # browser; desktop browsers just ignore it and keep the DONE screen.
         "setTimeout(function(){location.href='steam://open/bigpicture'},8000)"
         "}}).catch(function(){})},3000)</script>"
         "</body></html>".replace("__PIN__", " ".join(pin)))
