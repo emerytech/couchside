@@ -1,9 +1,7 @@
-New in 2.9.3
+New in 2.9.4
 
-• Add a box by scanning your network — no IP typing. The box shows a PIN on its screen to confirm.
-• Scan for smart TVs instead of typing their IP.
-• Phone volume buttons control box/TV volume on every Pad screen.
-• New SOURCE button for TV inputs.
-• Keyboard opens automatically for text fields on webOS TVs.
-• Check for agent updates from Settings.
-• Fixes: TV pairing, Wake-on-LAN, and the mute button state.
+• Box scanning now works on iPhone — find and pair boxes with no IP typing.
+• A powered-on box can wake a sleeping one, so wake works from any phone.
+• "Set up a box" now opens the install instructions directly.
+• Clearer action labels: see what each button interrupts, not a "danger" level.
+• The About screen now shows the real installed version.
