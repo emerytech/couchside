@@ -974,6 +974,22 @@ export const api = {
   },
 
   /**
+   * Ask THIS (awake) box to broadcast a Wake-on-LAN magic packet for `mac`,
+   * waking a different, sleeping box on the same LAN (agent >= 2.9.13).
+   *
+   * Needed because iOS blocks UDP for apps outright — broadcast AND unicast —
+   * so the phone's own magic packet never leaves the device. An awake box does
+   * it instead. 404s on older agents; callers fall back to the phone's own
+   * broadcast (which does work on Android).
+   */
+  wolRelay(settings: ConnSettings, mac: string): Promise<ActionResult> {
+    return request<ActionResult>(settings, '/api/wol', {
+      method: 'POST',
+      body: { mac },
+    });
+  },
+
+  /**
    * Image source for a Steam game's library cover art (agent >= 2.7.1). The
    * agent serves the art from the box's OWN local Steam cache, so the phone
    * never contacts Steam or any CDN — the app stays LAN-only (see PRIVACY.md).

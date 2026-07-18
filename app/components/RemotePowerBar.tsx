@@ -11,7 +11,7 @@ import { api, capsEqual, Displays, hostKey, PowerSchedule, Screensaver, Status, 
 import { hapticError, hapticLight, hapticSuccess } from '@/lib/haptics';
 import { getPref, usePref } from '@/lib/prefs';
 import { normalizeMac } from '@/lib/settings';
-import { useSettings } from '@/lib/SettingsContext';
+import { useBoxes, useSettings } from '@/lib/SettingsContext';
 import { mono, useTheme, useThemedStyles } from '@/lib/theme';
 import type { Palette } from '@/lib/theme';
 import { sendWol, wolAvailable } from '@/lib/wol';
@@ -180,6 +180,9 @@ export function RemotePowerBar() {
   const styles = useThemedStyles(makeStyles);
   const insets = useSafeAreaInsets();
   const { settings, ready, update } = useSettings();
+  // Other boxes in the fleet are potential Wake-on-LAN relays: iOS blocks UDP
+  // for apps, so an awake box must broadcast the magic packet for a sleeping one.
+  const { boxes, activeBoxId } = useBoxes();
   const configured = settings.host.trim().length > 0;
   const [open, setOpen] = React.useState(false);
   const [sliderOpen, setSliderOpen] = React.useState(false);
@@ -460,23 +463,53 @@ export function RemotePowerBar() {
     hapticLight();
     setWaking(true);
     void (async () => {
-      try {
-        const ok = await sendWol(mac, { ip: settings.lastIp });
-        if (ok) {
-          hapticSuccess();
-          status.refresh();
-        } else {
-          hapticError();
-          Alert.alert('Wake failed', 'No magic packet could be sent on this network.');
+      let ok = false;
+      let phoneErr: string | null = null;
+
+      // 1) Relay through any OTHER box that's awake (agent >= 2.9.13). This is
+      //    the only path that works on iOS, where the OS blocks UDP for apps
+      //    entirely so the phone's own magic packet never leaves the device.
+      //    Asleep / older / unreachable boxes just fail and we try the next.
+      for (const b of boxes) {
+        if (b.id === activeBoxId) continue;
+        try {
+          const r = await api.wolRelay(
+            { host: b.host, port: b.port, token: b.token, lastIp: b.lastIp },
+            mac,
+          );
+          if (r?.ok) {
+            ok = true;
+            break;
+          }
+        } catch {
+          // that box can't relay — try the next one
         }
-      } catch (e: unknown) {
-        hapticError();
-        Alert.alert('Wake failed', e instanceof Error ? e.message : String(e));
-      } finally {
-        setWaking(false);
       }
+
+      // 2) Fall back to broadcasting from the phone (works on Android).
+      if (!ok && wolAvailable) {
+        try {
+          ok = await sendWol(mac, { ip: settings.lastIp });
+        } catch (e: unknown) {
+          phoneErr = e instanceof Error ? e.message : String(e);
+        }
+      }
+
+      if (ok) {
+        hapticSuccess();
+        status.refresh();
+      } else {
+        hapticError();
+        Alert.alert(
+          'Wake failed',
+          phoneErr ??
+            'No magic packet could be sent. Keep another box awake to wake this one — ' +
+              'iOS blocks phones from broadcasting wake packets directly.',
+        );
+      }
+      setWaking(false);
     })();
-  }, [settings.mac, settings.lastIp, status]);
+  }, [settings.mac, settings.lastIp, status, boxes, activeBoxId]);
 
   if (!ready || !configured) return null;
 
@@ -495,7 +528,9 @@ export function RemotePowerBar() {
   const canSourceBox = reachable && tv?.source_box === true;
   const canBlankScreen = reachable && tv?.screen_toggle === true;
   const canSuspend = reachable && hasSuspend;
-  const canWake = !reachable && !!settings.mac && wolAvailable;
+  // Wake works either from the phone's own broadcast (Android) or by relaying
+  // through another box in the fleet — the only route on iOS, which blocks UDP.
+  const canWake = !reachable && !!settings.mac && (wolAvailable || boxes.length > 1);
   const hasSaver = reachable && saver?.available === true;
   const hasCouch = reachable && displays?.available === true;
 

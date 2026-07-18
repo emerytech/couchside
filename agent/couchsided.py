@@ -44,7 +44,7 @@ except ImportError:  # pragma: no cover
     fcntl = None
 
 APP_NAME = "couchside-agent"
-VERSION = "2.9.12"
+VERSION = "2.9.13"
 UID = os.getuid()
 XDG_RUNTIME_DIR = "/run/user/%d" % UID
 
@@ -7861,6 +7861,23 @@ class Handler(BaseHTTPRequestHandler):
                     return
                 result = ({"started": True, "log": "/tmp/couchside-update.log"}
                           if self.mock else update_apply())
+                self._send(200, result, started)
+                return
+
+            # POST /api/wol {"mac": "..."}: broadcast a Wake-on-LAN magic packet
+            # from THIS box, on behalf of a phone that cannot send one itself.
+            # iOS blocks UDP for apps entirely (broadcast AND unicast), so the
+            # phone's own magic packet never leaves the device; an already-awake
+            # box on the same LAN relays it to wake a sleeping sibling. Reveals
+            # nothing and needs the bearer token like any other control call.
+            if path == "/api/wol":
+                mac = body.get("mac") if isinstance(body, dict) else None
+                if not isinstance(mac, str) or not mac.strip():
+                    self._send(400, {"ok": False, "error": "mac required"}, started)
+                    return
+                result = ({"ok": True, "exit_code": 0, "stdout": "[mock] wol\n",
+                           "stderr": "", "duration_ms": 1}
+                          if self.mock else _wol_send(mac.strip()))
                 self._send(200, result, started)
                 return
 
