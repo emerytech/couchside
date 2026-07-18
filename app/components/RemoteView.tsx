@@ -1,5 +1,5 @@
 import Ionicons from '@expo/vector-icons/Ionicons';
-import React, { useCallback, useState } from 'react';
+import React, { useCallback, useEffect, useRef, useState } from 'react';
 import {
   Alert,
   Modal,
@@ -60,17 +60,58 @@ export function RemoteView({
   const hasSourceKey = tv?.source_key === true;
   const sources = tv?.sources ?? [];
   const canBlank = tv?.screen_toggle === true;
+  // Backend pushes an on-TV focus signal (webOS): we auto-raise the text sheet
+  // on focus and dismiss it on blur. Held in a ref too so the (once-registered)
+  // focus listener always sees the current cap without re-subscribing.
+  const canFocusPush = tv?.text_focus_push === true;
+  const focusPushRef = useRef(canFocusPush);
+  focusPushRef.current = canFocusPush;
 
   // On-TV text entry (webOS IME / Samsung / Roku Lit_ keys). Opens a small
   // modal; sends the whole string to /api/tv/text.
   const [textOpen, setTextOpen] = useState(false);
   const [textVal, setTextVal] = useState('');
+  // Who opened the sheet: a manual keypad tap vs an auto focus-push. Only a
+  // focus-push-opened sheet is auto-dismissed on focus-close, so we never yank
+  // a sheet the user opened themselves.
+  const textSrc = useRef<'manual' | 'focus' | null>(null);
+  const closeText = useCallback(() => {
+    setTextOpen(false);
+    setTextVal('');
+    textSrc.current = null;
+  }, []);
+  const openTextManual = useCallback(() => {
+    textSrc.current = 'manual';
+    setTextOpen(true);
+  }, []);
   const sendText = useCallback(() => {
     const s = textVal;
     setTextOpen(false);
     setTextVal('');
+    textSrc.current = null;
     if (s) void api.tvText(settings, s).catch(() => {});
   }, [textVal, settings]);
+
+  // Auto-keyboard: when the box advertises text_focus_push (webOS) and pushes a
+  // focus-open, raise the sheet with any current field text (the sheet's
+  // autoFocus TextInput pops the phone keyboard); on focus-close, dismiss it —
+  // but only if focus-push opened it, so a manually opened sheet stays put.
+  useEffect(() => {
+    client.onInputFocus((open, value) => {
+      if (open) {
+        if (!focusPushRef.current) return;
+        if (textSrc.current === 'manual') return; // don't clobber a manual sheet
+        textSrc.current = 'focus';
+        setTextVal(value);
+        setTextOpen(true);
+      } else if (textSrc.current === 'focus') {
+        setTextOpen(false);
+        setTextVal('');
+        textSrc.current = null;
+      }
+    });
+    return () => client.onInputFocus(null);
+  }, [client]);
 
   // Desktop nav, self-polled and session-aware: the SteamOS/Bazzite desktop
   // cluster (Start menu, trackpad, overview) appears only while the box is in
@@ -253,7 +294,7 @@ export function RemoteView({
             <Pressable
               onPress={() => {
                 hapticLight();
-                setTextOpen(true);
+                openTextManual();
               }}
               style={({ pressed }) => [styles.pwr, pressed && styles.pressed]}>
               <Ionicons name="keypad" size={20} color={t.blue} />
@@ -393,8 +434,8 @@ export function RemoteView({
         visible={textOpen}
         transparent
         animationType="fade"
-        onRequestClose={() => setTextOpen(false)}>
-        <Pressable style={styles.textBackdrop} onPress={() => setTextOpen(false)}>
+        onRequestClose={closeText}>
+        <Pressable style={styles.textBackdrop} onPress={closeText}>
           <Pressable style={styles.textSheet} onPress={() => {}}>
             <Text style={styles.textTitle}>Send text to the TV</Text>
             <TextInput
@@ -410,7 +451,7 @@ export function RemoteView({
               style={styles.textInput}
             />
             <View style={styles.textBtnRow}>
-              <Pressable onPress={() => setTextOpen(false)} style={styles.textBtn}>
+              <Pressable onPress={closeText} style={styles.textBtn}>
                 <Text style={styles.textBtnCancel}>CANCEL</Text>
               </Pressable>
               <Pressable onPress={sendText} style={[styles.textBtn, styles.textBtnSendBg]}>

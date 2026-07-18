@@ -413,6 +413,14 @@ export type Tv = {
    * SendInputString, Roku Lit_ keys); never by panel/CEC.
    */
   text?: boolean;
+  /**
+   * Backend PUSHES a focus signal (agent >= 2.9.12) when an on-TV text field
+   * opens/closes, delivered as a {t:'input_focus'} frame on /ws/gamepad. Only
+   * webOS reports it today (registerRemoteKeyboard); when set, the app auto-
+   * raises its text sheet on focus and dismisses it on blur. Absent on every
+   * other backend, which keep the manual text button unchanged.
+   */
+  text_focus_push?: boolean;
   /** Current box OS volume 0-100 (agent >= 2.7.0), or null when unreadable. */
   box_volume_level?: number | null;
   /**
