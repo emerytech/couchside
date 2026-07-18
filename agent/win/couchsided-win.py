@@ -85,7 +85,7 @@ except ImportError:
 # Same app id the phone expects (AGENT_APPS in app/lib/api.ts); the Windows
 # agent versions independently of the Linux one.
 APP_NAME = "couchside-agent"
-VERSION = "0.3.6-win"
+VERSION = "0.3.7-win"
 
 _PROGRAMDATA = os.environ.get("ProgramData", r"C:\ProgramData")
 DEFAULT_CONFIG_PATH = os.path.join(_PROGRAMDATA, "Couchside", "config.json")
@@ -1849,6 +1849,16 @@ if IS_WINDOWS:
     _user32.SendInput.argtypes = [wintypes.UINT, ctypes.POINTER(_INPUT), ctypes.c_int]
     _user32.SendInput.restype = wintypes.UINT
 
+    # WTS session-state API, for input-reachability detection (see
+    # _session_is_active). argtypes pinned so the byref pointers aren't truncated
+    # to c_int on 64-bit Windows (same hazard as SendInput above).
+    _wtsapi32 = ctypes.WinDLL("wtsapi32", use_last_error=True)
+    _wtsapi32.WTSQuerySessionInformationW.argtypes = [
+        wintypes.HANDLE, wintypes.DWORD, ctypes.c_int,
+        ctypes.POINTER(ctypes.c_void_p), ctypes.POINTER(wintypes.DWORD)]
+    _wtsapi32.WTSQuerySessionInformationW.restype = wintypes.BOOL
+    _wtsapi32.WTSFreeMemory.argtypes = [ctypes.c_void_p]
+
     def _send_inputs(inputs):
         """SendInput a list of _INPUT; raises OSError when Windows swallows
         them (secure desktop / UIPI / wrong session), so callers can report
@@ -1903,6 +1913,58 @@ if IS_WINDOWS:
         inp.u.mi.mouseData = data
         inp.u.mi.dwFlags = flags
         return inp
+
+
+# Input reachability. SendInput does NOT raise when the agent's session is
+# DISCONNECTED (you closed/switched away from the RDP or console session it
+# launched in): it "succeeds" and the events are silently dropped, so the cursor
+# just freezes with no error for _send_inputs to catch — the classic "trackpad
+# moves for a bit then quits". Detect that proactively so the WS handler raises
+# the same non-fatal "Input paused" hint (and auto-resumes) instead of a mystery
+# stall. The lock/secure desktop already surfaces via SendInput's OSError; a
+# focused elevated window (UIPI) is a separate, unavoidable non-elevated limit.
+_INPUT_REACH_CACHE = {"t": -1.0e9, "ok": True}
+
+
+def _session_is_active():
+    """True when THIS agent's session is the connected/active one (WTSConnectState
+    == WTSActive). False when it is Disconnected/idle, i.e. input injected here
+    goes to a session nobody is looking at. Fails OPEN on any error so the check
+    can never itself block working input."""
+    if not IS_WINDOWS:
+        return True
+    buf = ctypes.c_void_p()
+    n = wintypes.DWORD()
+    try:
+        # WTS_CURRENT_SERVER_HANDLE=None, WTS_CURRENT_SESSION=-1, WTSConnectState=8.
+        if not _wtsapi32.WTSQuerySessionInformationW(
+                None, 0xFFFFFFFF, 8, ctypes.byref(buf), ctypes.byref(n)) \
+                or not buf.value:
+            return True
+        state = ctypes.cast(buf, ctypes.POINTER(ctypes.c_int)).contents.value
+        return state == 0  # WTS_CONNECTSTATE_CLASS.WTSActive
+    except Exception:
+        return True
+    finally:
+        if buf.value:
+            try:
+                _wtsapi32.WTSFreeMemory(buf)
+            except Exception:
+                pass
+
+
+def _input_reachable():
+    """Cached (~0.5s) wrapper around _session_is_active so a stream of mouse
+    frames doesn't hammer the WTS API. True on non-Windows and on any doubt."""
+    if not IS_WINDOWS:
+        return True
+    now = time.monotonic()
+    if now - _INPUT_REACH_CACHE["t"] < 0.5:
+        return _INPUT_REACH_CACHE["ok"]
+    ok = _session_is_active()
+    _INPUT_REACH_CACHE["t"] = now
+    _INPUT_REACH_CACHE["ok"] = ok
+    return ok
 
 
 # ---------------------------------------------------------------------------
@@ -5243,6 +5305,17 @@ class Handler(BaseHTTPRequestHandler):
             entry[slot] = target
             print("[gamepad] %s device created (%s)"
                   % (slot, target.name), flush=True)
+
+        # Silent-drop guard for SendInput-based input (mouse/keyboard): a
+        # disconnected/switched-away session accepts the injection and drops it
+        # with no error, so the cursor freezes unexplained. Surface it as the
+        # same non-fatal "Input paused" state; it resumes on the next successful
+        # emit once the session is active again. The ViGEm gamepad is a driver
+        # device and works regardless of session, so it is NOT gated here.
+        if slot in ("mouse", "keyboard") and not self.mock and not _input_reachable():
+            self._note_input_error(entry, slot,
+                OSError("agent session not active (disconnected or switched away)"))
+            return True
 
         try:
             target.emit(events)
