@@ -43,7 +43,7 @@ except ImportError:  # pragma: no cover
     fcntl = None
 
 APP_NAME = "couchside-agent"
-VERSION = "2.9.11"
+VERSION = "2.9.12"
 UID = os.getuid()
 XDG_RUNTIME_DIR = "/run/user/%d" % UID
 
@@ -186,6 +186,13 @@ CONFIG_VIDAA = None  # optional {"host","name","mac"} Hisense VIDAA (MQTT) confi
 ALLOW_APP_UPDATE = False
 LAUNCHERS = []  # list of {"id","label","cmd":[...]}, custom launchers only
 CONFIG_PATH = DEFAULT_CONFIG_PATH  # remembered by load_config() for rewrites
+# False when the config DIRECTORY isn't writable by the agent's user (a
+# root-owned dir under a non-root agent — a common ownership drift). Config
+# writes go via a temp file in that dir + os.replace, so an unwritable dir makes
+# every save (TV pairing, launcher edits) fail with a 500. Checked once at
+# startup (check_config_writable) and surfaced in /api/status so the failure is
+# never silent.
+CONFIG_WRITABLE = True
 CONFIG_LOCK = threading.Lock()  # serializes launcher config rewrites
 
 
@@ -486,6 +493,27 @@ def load_config(path):
     CONFIG_VIDAA = vidaa
     print("config loaded from %s: %d units, %d actions, %d launchers"
           % (path, len(WATCHLIST), len(ACTIONS), len(LAUNCHERS)), flush=True)
+
+
+def check_config_writable():
+    """Verify the agent can persist config, and warn loudly if not.
+
+    Config writes go through a temp file in the config's DIRECTORY + os.replace
+    (see _config_set_field), so the DIR — not just the file — must be writable by
+    the agent's user. A root-owned config dir under a non-root agent (an install
+    ownership drift) makes every save — TV pairing, launcher edits — fail with a
+    500 the app used to render as a vague error. Surfaced in /api/status
+    (config_writable) so the condition is visible instead of silent. Call in
+    main() after load_config."""
+    global CONFIG_WRITABLE
+    directory = os.path.dirname(CONFIG_PATH) or "."
+    # W_OK to create the temp file, X_OK to os.replace into the dir.
+    CONFIG_WRITABLE = os.access(directory, os.W_OK | os.X_OK)
+    if not CONFIG_WRITABLE:
+        print("WARNING: config dir %s is NOT writable by uid %d — TV pairing and "
+              "launcher changes will fail to save. chown the config dir to the "
+              "agent's user." % (directory, os.getuid()), file=sys.stderr,
+              flush=True)
 
 
 def _inject_session_actions():
@@ -1137,6 +1165,9 @@ def real_status():
         # request — a cheap pgrep — or the app's desktop cluster would freeze
         # at whatever session the agent booted in.
         "caps": dict(CAPS, desktop=desktop_available()),
+        # False when the config dir isn't writable by the agent user, so the app
+        # can warn that TV pairing / launcher edits won't persist (agent >= 2.9.12).
+        "config_writable": CONFIG_WRITABLE,
         "history": _history_snapshot(),
     }
 
@@ -1832,6 +1863,7 @@ def mock_status():
                 "wired": True, "wol_armed": True},
         "agent_version": VERSION,
         "caps": CAPS,
+        "config_writable": True,
         "history": _history_snapshot(),
     }
 
@@ -8259,6 +8291,8 @@ def main():
     args = p.parse_args()
 
     load_config(args.config)
+    if not args.mock:
+        check_config_writable()  # warn loudly if pairings/launchers can't persist
     _inject_session_actions()
     _inject_suspend_action(args.mock)
     set_tv(args.mock)

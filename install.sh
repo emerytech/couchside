@@ -95,7 +95,14 @@ PORT_DEFAULT=8787
 INSTALL_DIR="${HOME}/.local/opt/couchside"
 ETC_DIR="/etc/couchside"
 TOKEN_FILE="${ETC_DIR}/token"
-CONFIG_FILE="${ETC_DIR}/config.json"
+# Agent-MUTATED state (TV pairings, launcher edits) lives in a user-owned state
+# dir, NOT the root-owned ETC_DIR. The agent runs as the desktop user and writes
+# config atomically (temp file in the dir + os.replace), so the dir must be
+# user-writable — but ETC_DIR must stay root-owned to protect the sudo-granted
+# couchside-journal wrapper (a user-writable ETC_DIR = replace the wrapper = root
+# code via the sudoers grant). Splitting them keeps both invariants.
+STATE_DIR="/var/lib/couchside"
+CONFIG_FILE="${STATE_DIR}/config.json"
 # Fixed-argument, root-owned wrapper for system-journal reads. The sudoers rule
 # grants ONLY this script (no wildcards); it validates its inputs and calls
 # journalctl with a locked-down option set, so --file/--directory can't be
@@ -358,6 +365,10 @@ if [ "$UNINSTALL" -eq 1 ]; then
         if ask_yn "Remove $ETC_DIR (pairing token + config; phones will need re-pairing)?"; then
             sudo rm -rf "$ETC_DIR"
             note "removed $ETC_DIR"
+            # The agent-mutated config (TV pairings) lives in STATE_DIR now —
+            # remove it alongside, so a purge doesn't leave stale pairings.
+            sudo rm -rf "$STATE_DIR" 2>/dev/null || true
+            note "removed $STATE_DIR"
         else
             note "kept $ETC_DIR"
         fi
@@ -509,6 +520,23 @@ sudo chmod 600 "$TOKEN_FILE"
 sudo chown "$USER_NAME" "$TOKEN_FILE"
 
 # ---------------------------------------------------------------------------
+# (e0) State dir for the agent-mutated config (user-owned; see STATE_DIR note).
+# Older installs kept config.json inside the root-owned $ETC_DIR, where the
+# non-root agent couldn't write it (every TV pairing / launcher edit 500'd).
+# Create the user-owned state dir and migrate any legacy config into it.
+# ---------------------------------------------------------------------------
+sudo mkdir -p "$STATE_DIR"
+sudo chown "$USER_NAME" "$STATE_DIR"
+sudo chmod 700 "$STATE_DIR"
+LEGACY_CONFIG="${ETC_DIR}/config.json"
+if sudo test -s "$LEGACY_CONFIG" && ! sudo test -s "$CONFIG_FILE"; then
+    note "migrating config $LEGACY_CONFIG -> $CONFIG_FILE (pairings preserved)"
+    sudo mv "$LEGACY_CONFIG" "$CONFIG_FILE"
+    sudo chown "$USER_NAME" "$CONFIG_FILE"
+    sudo chmod 600 "$CONFIG_FILE"
+fi
+
+# ---------------------------------------------------------------------------
 # (e) Initial config.json (only if absent)
 # ---------------------------------------------------------------------------
 if sudo test -s "$CONFIG_FILE"; then
@@ -569,7 +597,9 @@ order += ["reboot", "poweroff"]
 
 print(json.dumps({"units": units, "actions": actions, "action_order": order}, indent=2))
 PYEOF
-    sudo install -m 0644 -o root -g root "$WORK_DIR/config.json" "$CONFIG_FILE"
+    # User-owned so the agent (running as the desktop user) can rewrite it on
+    # every TV pairing / launcher edit. 0600 — it holds TV client certs/keys.
+    sudo install -m 0600 -o "$USER_NAME" "$WORK_DIR/config.json" "$CONFIG_FILE"
 fi
 
 # ---------------------------------------------------------------------------
@@ -726,8 +756,16 @@ say "Installing systemd unit $UNIT_DST"
 DAEMON_PATH="$INSTALL_DIR/couchsided.py"
 sed -e "s|/home/__USER__/.local/opt/couchside/couchsided.py|__EXEC__|g" \
     -e "s|__EXEC__|$DAEMON_PATH|g" \
+    -e "s|__CONFIG__|$CONFIG_FILE|g" \
     -e "s|__USER__|$USER_NAME|g" -e "s|__UID__|$USER_UID|g" \
     "$WORK_DIR/couchside.service" > "$WORK_DIR/couchside.service.rendered"
+# Heal an older template whose ExecStart predates the user-owned config path:
+# without --config the agent would read the default /etc path where config no
+# longer lives (it moved to STATE_DIR), so append it.
+if ! grep -q -- '--config' "$WORK_DIR/couchside.service.rendered"; then
+    sed -i "s|^\(ExecStart=.*couchsided\.py\)[[:space:]]*\$|\1 --config $CONFIG_FILE|" \
+        "$WORK_DIR/couchside.service.rendered"
+fi
 sudo install -m 0644 -o root -g root "$WORK_DIR/couchside.service.rendered" "$UNIT_DST"
 sudo systemctl daemon-reload
 sudo systemctl enable couchside.service
@@ -765,7 +803,7 @@ cat > "$PAIR_SCRIPT" <<'PAIREOF'
 # The /pair page is served LOCALHOST-ONLY by the agent, so it must be opened
 # here on the box (never over the network). Reads PORT from the agent config.
 set -u
-CONFIG_FILE="/etc/couchside/config.json"
+CONFIG_FILE="/var/lib/couchside/config.json"
 PORT_DEFAULT=8787
 PORT="$(python3 - "$CONFIG_FILE" "$PORT_DEFAULT" <<'PYEOF' 2>/dev/null || echo "$PORT_DEFAULT"
 import json, sys
@@ -923,13 +961,15 @@ PY
     # Opt-in: let the phone app trigger an update (POST /api/update/apply).
     # OFF by default. Must be set HERE on the box (not by the app), so the
     # capability only exists when you consciously enable it. Edits config.json
-    # (root-owned) + restarts the agent.
+    # (user-owned state dir) + restarts the agent — no sudo: the desktop user
+    # owns the state dir, and a sudo write would re-root the file the agent must
+    # itself be able to rewrite.
     case "${2:-}" in
       on|off)
         val="false"; [ "$2" = "on" ] && val="true"
-        sudo python3 - "$val" <<'PY' || { echo "failed to update config" >&2; exit 1; }
+        python3 - "$val" <<'PY' || { echo "failed to update config" >&2; exit 1; }
 import json, os, sys
-p = "/etc/couchside/config.json"
+p = "/var/lib/couchside/config.json"
 val = sys.argv[1] == "true"
 try:
     with open(p) as f: d = json.load(f)
@@ -947,7 +987,7 @@ PY
         echo "App-triggered updates: ${2}"
         ;;
       ""|status)
-        grep -q '"allow_app_update"[[:space:]]*:[[:space:]]*true' /etc/couchside/config.json 2>/dev/null \
+        grep -q '"allow_app_update"[[:space:]]*:[[:space:]]*true' /var/lib/couchside/config.json 2>/dev/null \
           && echo "App-triggered updates: on" || echo "App-triggered updates: off"
         ;;
       *) echo "usage: couchside allow-updates on|off" >&2; exit 2 ;;

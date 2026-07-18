@@ -1,6 +1,7 @@
 ; Couchside box agent: systemd unit TEMPLATE.
-; install.sh substitutes __USER__, __UID__ and __EXEC__ (the resolved daemon
-; path) with the invoking desktop user's real values and installs the result to
+; install.sh substitutes __USER__, __UID__, __EXEC__ (the resolved daemon path)
+; and __CONFIG__ (the user-owned state config path) with the invoking desktop
+; user's real values and installs the result to
 ; /etc/systemd/system/couchside.service. Do NOT hardcode /home here: the home
 ; can live at /var/home (Bazzite/ostree), be a systemd-homed image, or an LDAP
 ; path — install.sh injects the real install dir so the unit works anywhere.
@@ -16,7 +17,7 @@ User=__USER__
 ; with the udev rule the installer writes for /dev/uinput.
 SupplementaryGroups=input
 Environment=XDG_RUNTIME_DIR=/run/user/__UID__
-ExecStart=/usr/bin/python3 __EXEC__
+ExecStart=/usr/bin/python3 __EXEC__ --config __CONFIG__
 Restart=always
 RestartSec=3
 
