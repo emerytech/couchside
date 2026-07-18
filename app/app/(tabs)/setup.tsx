@@ -21,6 +21,7 @@ import { AgentUpdateBanner } from '@/components/AgentUpdateBanner';
 import { Gated } from '@/components/Gated';
 import { LogsPanel } from '@/components/LogsPanel';
 import { QrView } from '@/components/QrView';
+import { BoxScanPair } from '@/components/BoxScanPair';
 import { SmartTvSetup } from '@/components/SmartTvSetup';
 import { TabScreen } from '@/components/TabScreen';
 import { useLockOrientation } from '@/hooks/useLockOrientation';
@@ -951,6 +952,11 @@ function SetupBody() {
 
         {/* ---- Add / pair ---- */}
         <Text style={[styles.sectionLabel, { marginTop: 18 }]}>ADD / PAIR A BOX</Text>
+        {/* Scan the LAN + PIN-pair (no IP/token typing). Hidden on builds without
+            the UDP native module. The manual card below stays as the fallback. */}
+        <View style={styles.card}>
+          <BoxScanPair />
+        </View>
         <View style={styles.card}>
           <Text style={styles.fieldLabel}>NAME (optional)</Text>
           <TextInput
