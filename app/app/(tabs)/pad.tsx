@@ -975,7 +975,7 @@ function PadScreen() {
 
       {mode === 'remote' ? (
         <>
-          <RemoteView client={client} settings={settings} />
+          <RemoteView client={client} settings={settings} connected={status === 'connected'} />
           {keyboardBar}
         </>
       ) : mode === 'swipe' ? (

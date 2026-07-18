@@ -637,6 +637,7 @@ function SetupBody() {
   const padKeyboardBar = usePref('padKeyboardBar');
   const padHints = usePref('padHints');
   const askToSwitchControl = usePref('askToSwitchControl');
+  const volumeButtons = usePref('volumeButtons');
 
   const [restoring, setRestoring] = useState(false);
   const [buying, setBuying] = useState(false);
@@ -1285,6 +1286,19 @@ function SetupBody() {
                 value={askToSwitchControl}
                 onValueChange={(v) => {
                   void setPref('askToSwitchControl', v);
+                  hapticSelection();
+                }}
+              />
+              <TogglePref
+                label="Hardware volume buttons"
+                sub={
+                  Platform.OS === 'ios'
+                    ? "The phone's Vol +/- control the box/TV volume while the Remote is open. Experimental on iOS: the phone's volume overlay still shows and it only works with the app in front."
+                    : "The phone's Vol +/- control the box/TV volume (box or TV, per box) while the Remote is open."
+                }
+                value={volumeButtons}
+                onValueChange={(v) => {
+                  void setPref('volumeButtons', v);
                   hapticSelection();
                 }}
               />
