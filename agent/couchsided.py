@@ -6830,10 +6830,15 @@ def render_pin_page(pin):
         "<div class=t>ENTER THIS PIN IN THE APP</div>"
         "<div class=pin>__PIN__</div>"
         "<div class=s>Couchside · this code is shown only on this screen</div>"
-        "<script>setInterval(function(){"
+        "<script>var done=false;setInterval(function(){"
         "fetch('/api/pair/status').then(function(r){return r.json()})"
-        ".then(function(d){if(d&&d.active===false){document.body.innerHTML="
-        "'<div class=t>DONE</div><div class=s>This code is no longer active.</div>'"
+        ".then(function(d){if(d&&d.active===false&&!done){done=true;"
+        "document.body.innerHTML="
+        "'<div class=t>DONE</div><div class=s>Returning to Steam\\u2026</div>';"
+        // Session ended: leave the browser after a beat by pulling Steam back to
+        // its Game Mode home. steam://open/bigpicture is handled by Steam's own
+        // browser; desktop browsers just ignore it and keep the DONE screen.
+        "setTimeout(function(){location.href='steam://open/bigpicture'},8000)"
         "}}).catch(function(){})},3000)</script>"
         "</body></html>".replace("__PIN__", " ".join(pin)))
 
