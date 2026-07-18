@@ -213,6 +213,13 @@ CONFIG_ROKU = None  # optional {"host","name"}: Roku (ECP) TV, no pairing needed
 # /api/update/apply. OFF BY DEFAULT: opt-in only on the box (config.json), never
 # by the app itself. See the Linux agent for the full rationale.
 ALLOW_APP_UPDATE = False
+# When true, the app may CREATE custom launchers over the network. OFF BY DEFAULT:
+# a launcher argv is run verbatim as the desktop user (real_launch -> Popen), so
+# remote creation is arbitrary user-level command exec for any bearer-token holder.
+# Opt-in only on the box (`couchside allow-launchers on` / config.json). Triggering
+# owner-defined launchers stays allowed; only remote CREATE is gated. See the Linux
+# agent for the full rationale.
+ALLOW_APP_LAUNCHERS = False
 LAUNCHERS = []
 CONFIG_PATH = DEFAULT_CONFIG_PATH
 CONFIG_LOCK = threading.Lock()
@@ -419,13 +426,14 @@ def load_config(path):
     """Load config.json into the module globals; fall back to defaults."""
     global WATCHLIST, WATCHLIST_NAMES, ACTIONS, ACTION_ORDER, CONFIG_PORT
     global LAUNCHERS, CONFIG_PATH, CONFIG_PANEL, CONFIG_CEC_BRIDGE, ALLOW_APP_UPDATE
-    global CONFIG_ROKU
+    global CONFIG_ROKU, ALLOW_APP_LAUNCHERS
     CONFIG_PATH = path  # remembered so launcher POST/DELETE can rewrite it
     try:
         with open(path, encoding="utf-8-sig") as f:
             raw = json.load(f)
         if isinstance(raw, dict):
             ALLOW_APP_UPDATE = bool(raw.get("allow_app_update", False))
+            ALLOW_APP_LAUNCHERS = bool(raw.get("allow_app_launchers", False))
         units, actions, order, port, launchers, panel, cec_bridge, roku = \
             _parse_config(raw)
     except FileNotFoundError:
@@ -4451,7 +4459,9 @@ class Handler(BaseHTTPRequestHandler):
                 ]
                 self._send(200, {"actions": actions}, started)
             elif path == "/api/launchers":
-                self._send(200, {"launchers": list_launchers()}, started)
+                self._send(200, {"launchers": list_launchers(),
+                                 "create_enabled": bool(ALLOW_APP_LAUNCHERS)},
+                           started)
             elif path == "/api/downloads":
                 # Always 200 (list may be empty). Old agents lack this route and
                 # 404 -> the app hides the section (probe-and-appear).
@@ -4608,7 +4618,17 @@ class Handler(BaseHTTPRequestHandler):
                 self._send(200, result, started)
                 return
 
+            # POST /api/launchers: add a custom launcher. Gated by
+            # ALLOW_APP_LAUNCHERS (off by default): remote CREATE runs an
+            # arbitrary argv as the desktop user, so mint-over-network is a
+            # box-side opt-in. Triggering owner-defined launchers stays open.
             if path == "/api/launchers":
+                if not ALLOW_APP_LAUNCHERS:
+                    self._send(403, {"ok": False, "error":
+                                     "creating launchers from the app is disabled "
+                                     "on this box (enable with: couchside "
+                                     "allow-launchers on)"}, started)
+                    return
                 self._handle_add_launcher(body, started)
                 return
 

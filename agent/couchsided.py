@@ -184,6 +184,16 @@ CONFIG_VIDAA = None  # optional {"host","name","mac"} Hisense VIDAA (MQTT) confi
 # never by the app itself. The app just reads the state and shows/hides its
 # Update button accordingly.
 ALLOW_APP_UPDATE = False
+# When true, the app may CREATE custom launchers over the network (POST
+# /api/launchers with an arbitrary argv). OFF BY DEFAULT: a launcher argv is
+# executed verbatim as the desktop user (real_launch -> Popen(argv)), so remote
+# creation lets any bearer-token holder run an arbitrary command (e.g. an argv
+# whose argv[0] is a shell). That is user-level, not root, and the same token can
+# already synthesize keystrokes over /ws/gamepad — but it is a silent, persistent
+# primitive that contradicts the "bounded token" model, so minting new launchers
+# is a box-side opt-in (`couchside allow-launchers on`, or config.json). TRIGGERING
+# launchers the box owner already defined stays allowed; only remote CREATE is gated.
+ALLOW_APP_LAUNCHERS = False
 LAUNCHERS = []  # list of {"id","label","cmd":[...]}, custom launchers only
 CONFIG_PATH = DEFAULT_CONFIG_PATH  # remembered by load_config() for rewrites
 CONFIG_LOCK = threading.Lock()  # serializes launcher config rewrites
@@ -454,14 +464,16 @@ def load_config(path):
     global WATCHLIST, WATCHLIST_NAMES, ACTIONS, ACTION_ORDER, CONFIG_PORT
     global LAUNCHERS, CONFIG_PATH, CONFIG_PANEL, CONFIG_WEBOS, CONFIG_SAMSUNG
     global CONFIG_ROKU, CONFIG_ANDROIDTV, CONFIG_VIDAA, ALLOW_APP_UPDATE
+    global ALLOW_APP_LAUNCHERS
     CONFIG_PATH = path  # remembered so launcher POST/DELETE can rewrite it
     try:
         with open(path) as f:
             raw = json.load(f)
-        # Read the app-update flag FIRST, independent of the rest of the config:
-        # it must be honored even if _parse_config later rejects some other field.
+        # Read the opt-in flags FIRST, independent of the rest of the config: they
+        # must be honored even if _parse_config later rejects some other field.
         if isinstance(raw, dict):
             ALLOW_APP_UPDATE = bool(raw.get("allow_app_update", False))
+            ALLOW_APP_LAUNCHERS = bool(raw.get("allow_app_launchers", False))
         (units, actions, order, port, launchers, panel, webos, samsung,
          roku, androidtv, vidaa) = _parse_config(raw)
     except FileNotFoundError:
@@ -6999,7 +7011,11 @@ class Handler(BaseHTTPRequestHandler):
                 ]
                 self._send(200, {"actions": actions}, started)
             elif path == "/api/launchers":
-                self._send(200, {"launchers": list_launchers()}, started)
+                # create_enabled mirrors ALLOW_APP_LAUNCHERS so the app can
+                # show/hide its "add launcher" control (like update apply_enabled).
+                self._send(200, {"launchers": list_launchers(),
+                                 "create_enabled": bool(ALLOW_APP_LAUNCHERS)},
+                           started)
             elif path == "/api/downloads":
                 # Always 200 (list may be empty). Old agents lack this route and
                 # 404 -> the app hides the section (probe-and-appear via 404->null).
@@ -7224,8 +7240,18 @@ class Handler(BaseHTTPRequestHandler):
                 self._send(200, result, started)
                 return
 
-            # POST /api/launchers: add a custom launcher from a JSON body.
+            # POST /api/launchers: add a custom launcher from a JSON body. Gated
+            # by ALLOW_APP_LAUNCHERS (off by default, box-side opt-in only): a
+            # launcher argv is run verbatim as the desktop user, so remote CREATE
+            # is arbitrary user-level command exec. 403 when disabled so a bare
+            # token can only trigger owner-defined launchers, never mint new ones.
             if path == "/api/launchers":
+                if not ALLOW_APP_LAUNCHERS:
+                    self._send(403, {"ok": False, "error":
+                                     "creating launchers from the app is disabled "
+                                     "on this box (enable with: couchside "
+                                     "allow-launchers on)"}, started)
+                    return
                 self._handle_add_launcher(body, started)
                 return
 
