@@ -50,6 +50,15 @@ tmp="$(mktemp -d)"
 trap 'rm -rf "$tmp"' EXIT
 for f in "${files[@]}"; do cp "$agent/$f" "$tmp/$f"; done
 
+# Windows agent files, flattened into the same signed set so install.ps1 can
+# fetch a PINNED, MAINTAINER-SIGNED agent from the release instead of raw main.
+# (Live on couchside.tv/install.ps1's download base = releases/latest/download.)
+for wf in couchsided-win.py couchside-tray.pyw; do
+    [ -f "$agent/win/$wf" ] || { echo "error: missing agent/win/$wf" >&2; exit 2; }
+    cp "$agent/win/$wf" "$tmp/$wf"
+    files+=("$wf")
+done
+
 # agent-version.txt: the agent VERSION string, so the box-side update check
 # (/api/update/check) can compare cheaply without downloading the whole daemon.
 # Signed alongside everything else (it's covered by SHA256SUMS below).

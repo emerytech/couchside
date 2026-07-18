@@ -52,6 +52,17 @@ $ErrorActionPreference = 'Stop'
 $SelfUrl    = 'https://couchside.tv/install.ps1'
 $Repo       = 'emerytech/couchside'
 $RawBase    = "https://raw.githubusercontent.com/$Repo/$Ref/agent"
+# Default: fetch a PINNED, MAINTAINER-SIGNED agent from the latest GitHub release
+# (Ed25519-signed SHA256SUMS), NOT mutable main. `-Ref <branch>` opts into the old
+# raw-main download for development, which is unverified (a printed warning says so).
+$ReleaseBase = "https://github.com/$Repo/releases/latest/download"
+$UseRelease  = -not $PSBoundParameters.ContainsKey('Ref')
+# Ed25519 public keys the release SHA256SUMS is signed with (primary + rollover
+# backup); kept byte-identical to install.sh's RELEASE_PUBKEY_PEM.
+$ReleasePubKeys = @(
+    "-----BEGIN PUBLIC KEY-----`nMCowBQYDK2VwAyEA+9aBnheHC7N3J9JNfkP2PoBf89SCkBxmqlZ/2lrcwGA=`n-----END PUBLIC KEY-----",
+    "-----BEGIN PUBLIC KEY-----`nMCowBQYDK2VwAyEAtW4oYkhFGiWZ8nM8u3ldwecPekFQHdabdTI807VoUmE=`n-----END PUBLIC KEY-----"
+)
 $TaskName   = 'Couchside Agent'
 $InstallDir = Join-Path $env:LOCALAPPDATA 'Couchside\agent'
 $DataDir    = Join-Path $env:ProgramData 'Couchside'
@@ -256,13 +267,74 @@ else {
         if ($localQr) { Copy-Item $localQr (Join-Path $InstallDir 'qr.py') -Force }
         if ($localTray) { Copy-Item $localTray (Join-Path $InstallDir 'couchside-tray.pyw') -Force }
         Write-Host 'Installed agent from local checkout.'
+    } elseif ($UseRelease) {
+        Write-Host 'Downloading signed agent from the latest release ...'
+        $tmp = (New-Item -ItemType Directory -Force -Path (Join-Path $env:TEMP ("couchside-dl-" + [guid]::NewGuid().ToString('N')))).FullName
+        try {
+            $required = @('couchsided-win.py','qr.py')
+            $optional = @('couchside-tray.pyw')
+            foreach ($a in ($required + $optional)) {
+                try { Invoke-WebRequest -UseBasicParsing "$ReleaseBase/$a" -OutFile (Join-Path $tmp $a) }
+                catch { if ($required -contains $a) { throw "Could not download $a from the release: $_" } }
+            }
+            Invoke-WebRequest -UseBasicParsing "$ReleaseBase/SHA256SUMS" -OutFile (Join-Path $tmp 'SHA256SUMS')
+            $sigPath = Join-Path $tmp 'SHA256SUMS.sig'
+            $haveSig = $true
+            try { Invoke-WebRequest -UseBasicParsing "$ReleaseBase/SHA256SUMS.sig" -OutFile $sigPath } catch { $haveSig = $false }
+
+            # (1) AUTHENTICITY: verify the Ed25519 signature over SHA256SUMS when an
+            # openssl that supports it is on PATH. Present-but-invalid => abort. No
+            # openssl => fall back to checksum-only (integrity, not authenticity),
+            # mirroring install.sh's verify_release_sig contract.
+            $sigResult = 'unavailable'
+            $openssl = Get-Command openssl -ErrorAction SilentlyContinue
+            if ($haveSig -and $openssl) {
+                foreach ($pem in $ReleasePubKeys) {
+                    $pub = Join-Path $tmp 'relpub.pem'
+                    Set-Content -Path $pub -Value $pem -Encoding ascii
+                    & $openssl.Source pkeyutl -verify -pubin -inkey $pub -rawin -in (Join-Path $tmp 'SHA256SUMS') -sigfile $sigPath *> $null
+                    if ($LASTEXITCODE -eq 0) { $sigResult = 'ok'; break }
+                    $sigResult = 'bad'
+                }
+            }
+            if ($sigResult -eq 'bad') {
+                throw 'Release signature INVALID — refusing to install (possible tampering).'
+            } elseif ($sigResult -eq 'ok') {
+                Write-Host 'Release signature: verified (maintainer offline key).'
+            } else {
+                Write-Warning 'Cannot verify the release signature (openssl not found or no .sig); using checksum-only integrity. Install openssl for full authenticity verification.'
+            }
+
+            # (2) INTEGRITY: every required file must match its SHA256SUMS entry.
+            $sums = @{}
+            foreach ($line in (Get-Content (Join-Path $tmp 'SHA256SUMS'))) {
+                if ($line -match '^([0-9a-fA-F]{64})\s+\*?(.+)$') { $sums[$matches[2].Trim()] = $matches[1].ToLower() }
+            }
+            foreach ($a in $required) {
+                if (-not $sums.ContainsKey($a)) { throw "SHA256SUMS has no entry for $a — refusing to install." }
+                $got = (Get-FileHash (Join-Path $tmp $a) -Algorithm SHA256).Hash.ToLower()
+                if ($got -ne $sums[$a]) { throw "$a checksum mismatch — refusing to install (corrupt or tampered)." }
+            }
+
+            # Verified -> place the files.
+            Copy-Item (Join-Path $tmp 'couchsided-win.py') (Join-Path $InstallDir 'couchsided-win.py') -Force
+            Copy-Item (Join-Path $tmp 'qr.py')             (Join-Path $InstallDir 'qr.py') -Force
+            $trayDl = Join-Path $tmp 'couchside-tray.pyw'
+            $trayOk = (Test-Path $trayDl) -and $sums.ContainsKey('couchside-tray.pyw')
+            if ($trayOk) { $trayOk = ((Get-FileHash $trayDl -Algorithm SHA256).Hash.ToLower() -eq $sums['couchside-tray.pyw']) }
+            if ($trayOk) { Copy-Item $trayDl (Join-Path $InstallDir 'couchside-tray.pyw') -Force }
+            & $pyPath -m py_compile (Join-Path $InstallDir 'couchsided-win.py')
+            if ($LASTEXITCODE -ne 0) { throw 'Downloaded agent failed to compile — aborting.' }
+        } finally {
+            Remove-Item $tmp -Recurse -Force -ErrorAction SilentlyContinue
+        }
     } else {
+        # Dev override: -Ref <branch> fetches raw, UNVERIFIED source from that ref.
+        Write-Warning "Fetching UNVERIFIED agent from raw '$Ref' (no signature or checksum). Omit -Ref for a signed release install."
         Write-Host "Downloading agent from $RawBase ..."
         Invoke-WebRequest -UseBasicParsing "$RawBase/win/couchsided-win.py" -OutFile (Join-Path $InstallDir 'couchsided-win.py')
         Invoke-WebRequest -UseBasicParsing "$RawBase/qr.py"                 -OutFile (Join-Path $InstallDir 'qr.py')
-        # Tray widget is optional; don't fail the install if it can't be fetched.
         try { Invoke-WebRequest -UseBasicParsing "$RawBase/win/couchside-tray.pyw" -OutFile (Join-Path $InstallDir 'couchside-tray.pyw') } catch {}
-        # Sanity-check the download compiles before we wire it to a logon task.
         & $pyPath -m py_compile (Join-Path $InstallDir 'couchsided-win.py')
         if ($LASTEXITCODE -ne 0) { throw 'Downloaded agent failed to compile — aborting.' }
     }
