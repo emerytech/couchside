@@ -378,7 +378,22 @@ fi
 # (b) Get the agent files: local checkout, or fetch from GitHub
 # ---------------------------------------------------------------------------
 WORK_DIR="$(mktemp -d)"
-trap 'rm -rf "$WORK_DIR"' EXIT
+_cs_cleanup() {
+    rm -rf "$WORK_DIR"
+    # Fail-safe against a stranded Decky box. On a Decky install we DISABLE the
+    # standalone couchside.service for the plugin to own (see the service block),
+    # then re-arm it later via the plugin or the h3 poll. If we reach this trap
+    # with DECKY_OWNS_AGENT set but the service still not running — which includes
+    # an install ABORTED by `set -e` between those two points — enable it now so
+    # setup never ends with a box that has no agent to pair against. On the normal
+    # path the service is already active here (plugin or h3 armed it) so this is a
+    # no-op; the plugin's on-load takeover reconciles the version later regardless.
+    if [ "${DECKY_OWNS_AGENT:-0}" -eq 1 ] \
+        && ! systemctl is-active --quiet couchside.service 2>/dev/null; then
+        sudo systemctl enable --now couchside.service >/dev/null 2>&1 || true
+    fi
+}
+trap _cs_cleanup EXIT
 
 SCRIPT_DIR=""
 if [ -n "${BASH_SOURCE[0]:-}" ] && [ -f "${BASH_SOURCE[0]:-}" ]; then
@@ -730,9 +745,22 @@ sed -e "s|/home/__USER__/.local/opt/couchside/couchsided.py|__EXEC__|g" \
     "$WORK_DIR/couchside.service" > "$WORK_DIR/couchside.service.rendered"
 sudo install -m 0644 -o root -g root "$WORK_DIR/couchside.service.rendered" "$UNIT_DST"
 sudo systemctl daemon-reload
-sudo systemctl enable couchside.service
-# restart (not `enable --now`) so re-installs replace the running process too
-sudo systemctl restart couchside.service
+# Decky co-existence: when Decky Loader is present, the Couchside Decky plugin
+# owns the agent — it installs its own (no-downgrade) bundle to the SAME run
+# location and activates the service. Leave the standalone service DORMANT here
+# so the two installs don't fight over the file + port; the plugin block below
+# (or the plugin itself) activates it. Without Decky, this service is the sole
+# supervisor and is enabled + started normally.
+if [ "$NO_DECKY" -eq 0 ] && [ -d "$DECKY_PLUGINS" ]; then
+    DECKY_OWNS_AGENT=1
+    sudo systemctl disable --now couchside.service 2>/dev/null || true
+    note "Decky Loader detected → standalone couchside.service left DORMANT (the Couchside plugin manages the agent)."
+else
+    DECKY_OWNS_AGENT=0
+    sudo systemctl enable couchside.service
+    # restart (not `enable --now`) so re-installs replace the running process too
+    sudo systemctl restart couchside.service
+fi
 
 # ---------------------------------------------------------------------------
 # (h) Firewall (Bazzite/Fedora ships firewalld; SteamOS generally has none)
@@ -902,6 +930,13 @@ PY
       ans=""
       read -r ans </dev/tty 2>/dev/null || { echo; echo "No terminal for the prompt — re-run as: couchside update -y"; exit 0; }
       case "$ans" in y|Y|yes|YES) ;; *) echo "Cancelled."; exit 0 ;; esac
+    fi
+    # On a Decky box the Couchside plugin owns the agent; the installer is
+    # Decky-aware (it refreshes the plugin and leaves the standalone service
+    # dormant for the plugin to run), so `couchside update` still does the right
+    # thing — it just updates the plugin rather than the standalone service.
+    if [ -d "$HOME/homebrew/plugins" ]; then
+      echo "Decky Loader detected — updating the Couchside plugin (it owns the agent on this box)."
     fi
     echo "Updating from ${INSTALL_URL} ..."
     # exec so THIS couchside process is replaced by the updater: the installer
@@ -1252,6 +1287,28 @@ if [ "$NO_DECKY" -eq 0 ] && [ -d "$DECKY_PLUGINS" ]; then
         note "couldn't install the panel (skipping); the agent still works."
     fi
     rm -rf "$decky_tmp"
+fi
+
+# ---------------------------------------------------------------------------
+# (h3) Decky hand-off safety net
+# ---------------------------------------------------------------------------
+# With Decky present we left couchside.service DORMANT for the plugin to own.
+# A current plugin activates the service from its on-load install hook (async,
+# after plugin_loader restarts above). Give it a moment; if the service is still
+# not up (an older plugin without the take-over step), enable it ourselves so the
+# box is never left without a running agent.
+if [ "${DECKY_OWNS_AGENT:-0}" -eq 1 ]; then
+    _armed=0
+    for _ in $(seq 1 20); do
+        if systemctl is-active --quiet couchside.service; then _armed=1; break; fi
+        sleep 1
+    done
+    if [ "$_armed" -eq 0 ]; then
+        sudo systemctl enable --now couchside.service
+        note "the Couchside plugin didn't activate the agent — enabled couchside.service as a fallback (update the plugin in Decky for it to take over)."
+    else
+        note "the Couchside plugin is running the agent."
+    fi
 fi
 
 # ---------------------------------------------------------------------------
