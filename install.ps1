@@ -27,9 +27,9 @@
 #   6. registers a Scheduled Task that starts the agent at logon, in the
 #      interactive desktop session, NON-elevated (virtual input can't reach
 #      the desktop from a session-0 service; unprivileged mirrors the Linux
-#      agent's least-privilege model — its LAN-facing action/launcher API
+#      agent's least-privilege model - its LAN-facing action/launcher API
 #      must never run as admin)
-#   7. installs a taskbar tray widget (Startup shortcut) — a Decky-style panel
+#   7. installs a taskbar tray widget (Startup shortcut) - a Decky-style panel
 #      to start/stop/restart the agent, show the pairing QR, and toggle
 #      start-at-logon (Python installs only; the prebuilt-exe path has no
 #      interpreter for the .pyw GUI)
@@ -298,7 +298,7 @@ else {
                 }
             }
             if ($sigResult -eq 'bad') {
-                throw 'Release signature INVALID — refusing to install (possible tampering).'
+                throw 'Release signature INVALID - refusing to install (possible tampering).'
             } elseif ($sigResult -eq 'ok') {
                 Write-Host 'Release signature: verified (maintainer offline key).'
             } else {
@@ -311,9 +311,9 @@ else {
                 if ($line -match '^([0-9a-fA-F]{64})\s+\*?(.+)$') { $sums[$matches[2].Trim()] = $matches[1].ToLower() }
             }
             foreach ($a in $required) {
-                if (-not $sums.ContainsKey($a)) { throw "SHA256SUMS has no entry for $a — refusing to install." }
+                if (-not $sums.ContainsKey($a)) { throw "SHA256SUMS has no entry for $a - refusing to install." }
                 $got = (Get-FileHash (Join-Path $tmp $a) -Algorithm SHA256).Hash.ToLower()
-                if ($got -ne $sums[$a]) { throw "$a checksum mismatch — refusing to install (corrupt or tampered)." }
+                if ($got -ne $sums[$a]) { throw "$a checksum mismatch - refusing to install (corrupt or tampered)." }
             }
 
             # Verified -> place the files.
@@ -324,7 +324,7 @@ else {
             if ($trayOk) { $trayOk = ((Get-FileHash $trayDl -Algorithm SHA256).Hash.ToLower() -eq $sums['couchside-tray.pyw']) }
             if ($trayOk) { Copy-Item $trayDl (Join-Path $InstallDir 'couchside-tray.pyw') -Force }
             & $pyPath -m py_compile (Join-Path $InstallDir 'couchsided-win.py')
-            if ($LASTEXITCODE -ne 0) { throw 'Downloaded agent failed to compile — aborting.' }
+            if ($LASTEXITCODE -ne 0) { throw 'Downloaded agent failed to compile - aborting.' }
         } finally {
             Remove-Item $tmp -Recurse -Force -ErrorAction SilentlyContinue
         }
@@ -336,7 +336,7 @@ else {
         Invoke-WebRequest -UseBasicParsing "$RawBase/qr.py"                 -OutFile (Join-Path $InstallDir 'qr.py')
         try { Invoke-WebRequest -UseBasicParsing "$RawBase/win/couchside-tray.pyw" -OutFile (Join-Path $InstallDir 'couchside-tray.pyw') } catch {}
         & $pyPath -m py_compile (Join-Path $InstallDir 'couchsided-win.py')
-        if ($LASTEXITCODE -ne 0) { throw 'Downloaded agent failed to compile — aborting.' }
+        if ($LASTEXITCODE -ne 0) { throw 'Downloaded agent failed to compile - aborting.' }
     }
 }
 
@@ -400,7 +400,7 @@ if tgz:
     # been uninstalled every Guide press dead-ends in that dialog. Point the
     # Game Bar URI schemes at a no-op (systray.exe exits instantly) so Windows
     # opens nothing instead. Written to HKCU of the installing user, which is
-    # the agent's target user ($env:USERNAME — same identity the scheduled task
+    # the agent's target user ($env:USERNAME - same identity the scheduled task
     # below runs as); no effect on other accounts, reversible on --uninstall,
     # no reboot. Steam Big Picture still intercepts Guide first while it is
     # running, so this only changes the "nothing else handled Guide" case.
@@ -489,7 +489,7 @@ if (-not $KeepHibernate) {
 # --- 6. firewall: open for the profile(s) this box is actually on ------------
 # Windows often misclassifies a home LAN as "Public"; a Private-only rule then
 # silently blocks the phone (the #1 pairing failure). So open Private always,
-# and add Public/Domain only when the active network is that category — a truly
+# and add Public/Domain only when the active network is that category - a truly
 # private box stays tight, a misclassified one still pairs.
 if (-not $NoFirewall) {
     Remove-NetFirewallRule -DisplayName $FwRule -ErrorAction SilentlyContinue
@@ -539,7 +539,7 @@ Write-Host "Scheduled task '$TaskName' registered and started."
 # The tray is a .pyw GUI (needs Python + tkinter); the prebuilt-exe path has no
 # interpreter to run it, so it is skipped there. Runs windowless under
 # pythonw.exe, in the interactive user session (a Startup shortcut, like any
-# tray app) — never elevated.
+# tray app) - never elevated.
 $trayPy = Join-Path $InstallDir 'couchside-tray.pyw'
 if ($usePython -and (Test-Path $trayPy)) {
     # Prefer pythonw.exe (no console flash); fall back to whatever we resolved.
