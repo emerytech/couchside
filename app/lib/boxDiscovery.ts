@@ -15,9 +15,13 @@ import { DEFAULT_PORT } from './settings';
 
 // Native module; require in a try/catch so a build predating the dependency
 // disables scanning instead of crashing at startup (see scanAvailable).
+// react-native-udp does `module.exports = UdpSockets` AND `export default`, so
+// depending on interop `.default` may be undefined and the module itself is the
+// dgram object — accept either (a bare `.default` silently disabled this).
 let dgram: typeof import('react-native-udp').default | null = null;
 try {
-  dgram = require('react-native-udp').default;
+  const udp = require('react-native-udp');
+  dgram = (udp && (udp.default ?? udp)) || null;
 } catch {
   dgram = null;
 }
