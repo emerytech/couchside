@@ -378,7 +378,22 @@ fi
 # (b) Get the agent files: local checkout, or fetch from GitHub
 # ---------------------------------------------------------------------------
 WORK_DIR="$(mktemp -d)"
-trap 'rm -rf "$WORK_DIR"' EXIT
+_cs_cleanup() {
+    rm -rf "$WORK_DIR"
+    # Fail-safe against a stranded Decky box. On a Decky install we DISABLE the
+    # standalone couchside.service for the plugin to own (see the service block),
+    # then re-arm it later via the plugin or the h3 poll. If we reach this trap
+    # with DECKY_OWNS_AGENT set but the service still not running — which includes
+    # an install ABORTED by `set -e` between those two points — enable it now so
+    # setup never ends with a box that has no agent to pair against. On the normal
+    # path the service is already active here (plugin or h3 armed it) so this is a
+    # no-op; the plugin's on-load takeover reconciles the version later regardless.
+    if [ "${DECKY_OWNS_AGENT:-0}" -eq 1 ] \
+        && ! systemctl is-active --quiet couchside.service 2>/dev/null; then
+        sudo systemctl enable --now couchside.service >/dev/null 2>&1 || true
+    fi
+}
+trap _cs_cleanup EXIT
 
 SCRIPT_DIR=""
 if [ -n "${BASH_SOURCE[0]:-}" ] && [ -f "${BASH_SOURCE[0]:-}" ]; then
