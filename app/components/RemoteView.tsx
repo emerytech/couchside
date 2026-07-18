@@ -15,7 +15,6 @@ import {
 
 import { usePoll } from '@/hooks/usePoll';
 import { useTrackpad } from '@/hooks/useTrackpad';
-import { useVolumeButtons } from '@/hooks/useVolumeButtons';
 import { api, hostKey, Status, Tv, TvKey, TvOp } from '@/lib/api';
 import { GamepadClient } from '@/lib/gamepad';
 import { hapticLight } from '@/lib/haptics';
@@ -42,13 +41,9 @@ type IoniconName = React.ComponentProps<typeof Ionicons>['name'];
 export function RemoteView({
   client,
   settings,
-  connected,
 }: {
   client: GamepadClient;
   settings: Settings;
-  /** Box is live (gamepad socket connected). Gates the hardware-volume-button
-      hijack so the phone's Vol +/- only steals focus while a box is reachable. */
-  connected: boolean;
 }) {
   const t = useTheme();
   const styles = useThemedStyles(makeStyles);
@@ -156,16 +151,6 @@ export function RemoteView({
     },
     [settings],
   );
-
-  // Hardware volume buttons -> the SAME tvOp the on-screen VOL rocker uses, so
-  // they honor settings.volumeTarget (box vs TV). Active only while the user
-  // opted in AND a box is connected; otherwise the phone's buttons are its own.
-  const volumeButtons = usePref('volumeButtons');
-  useVolumeButtons({
-    enabled: volumeButtons && connected,
-    onUp: () => tvOp('volume_up'),
-    onDown: () => tvOp('volume_down'),
-  });
 
   const blank = useCallback(() => {
     hapticLight();
