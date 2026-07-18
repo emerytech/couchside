@@ -39,6 +39,21 @@ export function AgentUpdateBanner() {
   const [applying, setApplying] = useState(false);
   const [msg, setMsg] = useState<string | null>(null);
   const applyingRef = useRef(false);
+  // Manual "Check for updates": undefined = not checked yet, else the forced
+  // result (which overrides the polled one so the row/banner reflect it).
+  const [checking, setChecking] = useState(false);
+  const [forced, setForced] = useState<UpdateCheck | null | undefined>(undefined);
+
+  const checkNow = useCallback(async () => {
+    setChecking(true);
+    try {
+      const r = await api.updateCheck(settings, { force: true });
+      setForced(r);
+      poll.refresh();
+    } finally {
+      setChecking(false);
+    }
+  }, [settings, poll]);
 
   const apply = useCallback(async () => {
     if (applyingRef.current || !check?.latest) return;
@@ -73,8 +88,37 @@ export function AgentUpdateBanner() {
     }
   }, [check?.latest, poll, settings]);
 
-  if (!check || !check.available) return null;
-  if (dismissed && dismissed === check.latest) return null;
+  // A forced manual check overrides the polled result.
+  const result = forced !== undefined ? forced : check;
+
+  // No update (or dismissed): a compact "Check for updates" row instead of the
+  // full banner, so the manual check is always available and can report "up to
+  // date" rather than the banner just vanishing.
+  if (!result?.available || (dismissed && dismissed === result.latest)) {
+    if (!configured) return null;
+    return (
+      <View style={styles.checkRow}>
+        <Text style={styles.checkStatus} numberOfLines={1}>
+          {checking
+            ? 'Checking…'
+            : result == null
+              ? 'Agent updates'
+              : `Up to date — agent ${result.installed}`}
+        </Text>
+        <Pressable
+          onPress={() => {
+            hapticLight();
+            void checkNow();
+          }}
+          disabled={checking}
+          hitSlop={8}
+          style={styles.checkBtn}>
+          <Ionicons name="refresh" size={14} color={t.blue} />
+          <Text style={styles.checkBtnText}>Check for updates</Text>
+        </Pressable>
+      </View>
+    );
+  }
 
   return (
     <View style={styles.card}>
@@ -151,6 +195,22 @@ const makeStyles = (t: Palette) => StyleSheet.create({
     marginBottom: 14,
     gap: 8,
   },
+  checkRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    gap: 10,
+    paddingVertical: 10,
+    paddingHorizontal: 12,
+    marginBottom: 14,
+    borderRadius: 12,
+    backgroundColor: t.card,
+    borderColor: t.cardBorder,
+    borderWidth: 1,
+  },
+  checkStatus: { color: t.textDim, fontSize: 13, flex: 1 },
+  checkBtn: { flexDirection: 'row', alignItems: 'center', gap: 5 },
+  checkBtnText: { color: t.blue, fontSize: 13, fontWeight: '700' },
   header: { flexDirection: 'row', alignItems: 'center', gap: 8 },
   title: { color: t.text, fontSize: 14, fontWeight: '700', flex: 1 },
   sub: { color: t.textDim, fontSize: 12, fontFamily: mono },

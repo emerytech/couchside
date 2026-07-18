@@ -874,8 +874,13 @@ export const api = {
    * (cached); the app just reads the result over the LAN, so the app never
    * touches the internet. 404 -> null on older agents (no banner shown).
    */
-  updateCheck(settings: ConnSettings): Promise<UpdateCheck | null> {
-    return probeOrNull(request<UpdateCheck>(settings, '/api/update/check'));
+  updateCheck(
+    settings: ConnSettings,
+    opts: { force?: boolean } = {},
+  ): Promise<UpdateCheck | null> {
+    // force=1 bypasses the box's ~6h cache for a manual "Check for updates" tap.
+    const q = opts.force ? '?force=1' : '';
+    return probeOrNull(request<UpdateCheck>(settings, `/api/update/check${q}`));
   },
 
   /**
