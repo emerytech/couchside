@@ -123,6 +123,14 @@ export function RemoteView({
   const [target, setTarget] = useState<'box' | 'tv'>('box');
   const nav = hasTvKeys ? target : 'box';
 
+  // MUTE button color reflects the reported mute state (tv.muted, refreshed by
+  // the poll), toggled optimistically on press for instant feedback. It used to
+  // be hardcoded red, so it always looked muted even when it wasn't.
+  const [muted, setMuted] = useState(false);
+  useEffect(() => {
+    if (typeof tv?.muted === 'boolean') setMuted(tv.muted);
+  }, [tv?.muted]);
+
   // Nav-circle input surface: the classic D-pad, or a relative-mouse trackpad
   // (desktop only). Force back to the D-pad if the box leaves desktop mode.
   const [surface, setSurface] = useState<'dpad' | 'track'>('dpad');
@@ -286,7 +294,7 @@ export function RemoteView({
           {hasSourceKey && target === 'tv' && (
             <Pressable
               onPress={() => tvKey('source')}
-              style={({ pressed }) => [styles.pwr, pressed && styles.pressed]}>
+              style={({ pressed }) => [styles.iconBtn, pressed && styles.pressed]}>
               <Ionicons name="swap-horizontal" size={20} color={t.blue} />
             </Pressable>
           )}
@@ -296,7 +304,7 @@ export function RemoteView({
                 hapticLight();
                 openTextManual();
               }}
-              style={({ pressed }) => [styles.pwr, pressed && styles.pressed]}>
+              style={({ pressed }) => [styles.iconBtn, pressed && styles.pressed]}>
               <Ionicons name="keypad" size={20} color={t.blue} />
             </Pressable>
           )}
@@ -391,7 +399,15 @@ export function RemoteView({
           onMinus={() => tvOp('volume_down')}
         />
         <View style={styles.midStack}>
-          <MidBtn icon="volume-mute" label="MUTE" color={t.red} onPress={() => tvOp('mute')} />
+          <MidBtn
+            icon={muted ? 'volume-mute' : 'volume-high'}
+            label="MUTE"
+            color={muted ? t.red : t.text}
+            onPress={() => {
+              setMuted((m) => !m);
+              tvOp('mute');
+            }}
+          />
           <MidBtn icon="logo-steam" label="STEAM" color={t.green} onPress={steam} />
           <MidBtn icon="ellipsis-horizontal" label="QAM" color={t.amber} onPress={qam} />
         </View>
@@ -810,6 +826,19 @@ const makeStyles = (t: Palette) => StyleSheet.create({
     backgroundColor: t.card,
     borderWidth: 1,
     borderColor: 'rgba(248,113,113,0.5)',
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  // Neutral sibling of `pwr` for non-power icon buttons (SOURCE, keypad) — same
+  // footprint, plain card border instead of the power button's red one so they
+  // don't read as "danger".
+  iconBtn: {
+    width: 44,
+    height: 40,
+    borderRadius: 10,
+    backgroundColor: t.card,
+    borderWidth: 1,
+    borderColor: t.cardBorder,
     alignItems: 'center',
     justifyContent: 'center',
   },
