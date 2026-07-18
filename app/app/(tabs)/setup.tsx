@@ -109,7 +109,7 @@ const APP_BUILD =
 
 // couchside.tv setup guide — how to install the agent on a box. New users who
 // grabbed the app from a store land here with no idea a box-side agent exists.
-const SETUP_GUIDE_URL = 'https://couchside.tv/#how';
+const SETUP_GUIDE_URL = 'https://couchside.tv/#install';
 
 function PairingQrModal({ box, onClose }: { box: Box | null; onClose: () => void }) {
   const styles = useThemedStyles(makeStyles);
