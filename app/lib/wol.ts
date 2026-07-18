@@ -13,9 +13,13 @@ import { Buffer } from 'buffer';
 // react-native-udp is a native module. Requiring it in a try/catch means a
 // build that predates the dependency disables wake instead of crashing at
 // startup; wolAvailable reports which case we are in.
+// The lib does `module.exports = UdpSockets` AND `export default`, so depending
+// on interop `.default` can be undefined and the module itself is the dgram
+// object — accept either. (A bare `.default` left wolAvailable always false.)
 let dgram: typeof import('react-native-udp').default | null = null;
 try {
-  dgram = require('react-native-udp').default;
+  const udp = require('react-native-udp');
+  dgram = (udp && (udp.default ?? udp)) || null;
 } catch {
   dgram = null;
 }
