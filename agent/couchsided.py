@@ -43,7 +43,7 @@ except ImportError:  # pragma: no cover
     fcntl = None
 
 APP_NAME = "couchside-agent"
-VERSION = "2.9.10"
+VERSION = "2.9.11"
 UID = os.getuid()
 XDG_RUNTIME_DIR = "/run/user/%d" % UID
 
@@ -176,6 +176,7 @@ CONFIG_WEBOS = None  # optional {"host","mac","client_key"} LG webOS TV config
 CONFIG_SAMSUNG = None  # optional {"host","mac","token"} Samsung Tizen TV config
 CONFIG_ROKU = None  # optional {"host","name"} Roku (ECP) TV config
 CONFIG_ANDROIDTV = None  # optional {"host","cert","key","name","mac"} Android TV config
+CONFIG_VIDAA = None  # optional {"host","name","mac"} Hisense VIDAA (MQTT) config
 # When true, the app may trigger a box-side agent update via POST
 # /api/update/apply. OFF BY DEFAULT: enabling it lets any holder of the bearer
 # token cause a (signature-verified) install + restart, so it is opt-in and can
@@ -426,15 +427,33 @@ def _parse_config(raw):
                     raise ConfigError("androidtv.%s must be a string" % field)
                 androidtv[field] = val
 
+    # Optional Hisense VIDAA TV (MQTT on 36669). host + optional name/mac; no
+    # pairing (default broker creds).
+    vidaa = None
+    vidaa_raw = raw.get("vidaa")
+    if vidaa_raw is not None:
+        if not isinstance(vidaa_raw, dict):
+            raise ConfigError("vidaa must be an object")
+        host = vidaa_raw.get("host")
+        if not isinstance(host, str) or not host:
+            raise ConfigError("vidaa.host must be a non-empty string")
+        vidaa = {"host": host}
+        for field in ("name", "mac"):
+            val = vidaa_raw.get(field)
+            if val is not None:
+                if not isinstance(val, str):
+                    raise ConfigError("vidaa.%s must be a string" % field)
+                vidaa[field] = val
+
     return (units, actions, order, port, launchers, panel, webos, samsung,
-            roku, androidtv)
+            roku, androidtv, vidaa)
 
 
 def load_config(path):
     """Load config.json into the module globals; fall back to defaults."""
     global WATCHLIST, WATCHLIST_NAMES, ACTIONS, ACTION_ORDER, CONFIG_PORT
     global LAUNCHERS, CONFIG_PATH, CONFIG_PANEL, CONFIG_WEBOS, CONFIG_SAMSUNG
-    global CONFIG_ROKU, CONFIG_ANDROIDTV, ALLOW_APP_UPDATE
+    global CONFIG_ROKU, CONFIG_ANDROIDTV, CONFIG_VIDAA, ALLOW_APP_UPDATE
     CONFIG_PATH = path  # remembered so launcher POST/DELETE can rewrite it
     try:
         with open(path) as f:
@@ -444,7 +463,7 @@ def load_config(path):
         if isinstance(raw, dict):
             ALLOW_APP_UPDATE = bool(raw.get("allow_app_update", False))
         (units, actions, order, port, launchers, panel, webos, samsung,
-         roku, androidtv) = _parse_config(raw)
+         roku, androidtv, vidaa) = _parse_config(raw)
     except FileNotFoundError:
         print("warning: config %s not found, using built-in generic defaults"
               % path, file=sys.stderr, flush=True)
@@ -464,6 +483,7 @@ def load_config(path):
     CONFIG_SAMSUNG = samsung
     CONFIG_ROKU = roku
     CONFIG_ANDROIDTV = androidtv
+    CONFIG_VIDAA = vidaa
     print("config loaded from %s: %d units, %d actions, %d launchers"
           % (path, len(WATCHLIST), len(ACTIONS), len(LAUNCHERS)), flush=True)
 
@@ -4435,6 +4455,157 @@ def mock_androidtv(op):
             "stderr": "", "duration_ms": 50}
 
 
+# ---- VIDAA backend (Hisense TVs, MQTT over TLS) ---------------------------
+# Hisense VIDAA TVs run an MQTT broker on port 36669 (the RemoteNOW app
+# protocol). Keys are published to a sendkey topic. Kept pure-stdlib: a minimal
+# hand-rolled MQTT 3.1.1 client (CONNECT + PUBLISH over TLS), no library. The
+# default broker credentials work on most sets; a few newer models need a
+# 4-digit authorize step which is not handled here. hisensetv was the oracle.
+#
+# Stateless like Roku: each key is a one-shot connect + publish + close (MQTT
+# QoS-0 publish is fire-and-forget), so there is no session or keepalive thread.
+VIDAA_PORT = 36669
+_VIDAA_USER = "hisenseservice"
+_VIDAA_PASS = "multimqttservice"
+_VIDAA_DEVICE = "AA:BB:CC:DD:EE:FF$normal"      # arbitrary client-topic id
+
+# Unified TV op -> VIDAA key. power_on = WoL/best-effort; KEY_MUTE self-toggles.
+_VIDAA_OP_KEY = {"power_off": "KEY_POWER", "volume_up": "KEY_VOLUMEUP",
+                 "volume_down": "KEY_VOLUMEDOWN", "mute": "KEY_MUTE"}
+# Factory-remote key (shared vocabulary) -> VIDAA key (note back -> KEY_RETURNS).
+_VIDAA_KEYS = {
+    "up": "KEY_UP", "down": "KEY_DOWN", "left": "KEY_LEFT", "right": "KEY_RIGHT",
+    "ok": "KEY_OK", "menu": "KEY_MENU", "home": "KEY_HOME", "back": "KEY_RETURNS",
+    "exit": "KEY_EXIT", "play": "KEY_PLAY", "pause": "KEY_PAUSE", "stop": "KEY_STOP",
+}
+
+
+def _mqtt_str(s):
+    b = s.encode()
+    return struct.pack("!H", len(b)) + b
+
+
+def _mqtt_rlen(n):
+    """MQTT remaining-length varint (7 bits + continuation)."""
+    out = bytearray()
+    while True:
+        b = n % 128
+        n //= 128
+        if n:
+            b |= 0x80
+        out.append(b)
+        if not n:
+            return bytes(out)
+
+
+def _vidaa_connect(host, timeout=6):
+    """Open a TLS MQTT connection to the VIDAA broker and CONNECT with the
+    default credentials. Returns the ssl socket; raises on refusal."""
+    ctx = ssl._create_unverified_context()
+    raw = socket.create_connection((host, VIDAA_PORT), timeout=timeout)
+    s = ctx.wrap_socket(raw)
+    s.settimeout(timeout)
+    cid = "couchside-%06x" % (int(time.monotonic() * 1000) & 0xFFFFFF)
+    vh = _mqtt_str("MQTT") + bytes([0x04, 0xC2]) + struct.pack("!H", 60)
+    body = vh + _mqtt_str(cid) + _mqtt_str(_VIDAA_USER) + _mqtt_str(_VIDAA_PASS)
+    s.sendall(bytes([0x10]) + _mqtt_rlen(len(body)) + body)
+    if s.recv(1)[0] != 0x20:                    # CONNACK type
+        raise IOError("unexpected MQTT response")
+    data = s.recv(s.recv(1)[0])
+    if len(data) < 2 or data[1] != 0:
+        raise IOError("MQTT connect refused (rc=%s)"
+                      % (data[1] if len(data) > 1 else "?"))
+    return s
+
+
+def _vidaa_send_key(host, keyname):
+    """Connect, publish one sendkey, close. ActionResult-shaped."""
+    start = time.monotonic()
+    try:
+        s = _vidaa_connect(host)
+        try:
+            body = (_mqtt_str("/remoteapp/tv/remote_service/%s/actions/sendkey"
+                              % _VIDAA_DEVICE) + keyname.encode())
+            s.sendall(bytes([0x30]) + _mqtt_rlen(len(body)) + body)
+        finally:
+            try:
+                s.close()
+            except Exception:
+                pass
+        return _webos_result(start, True, keyname)
+    except (IOError, OSError, ssl.SSLError) as e:
+        return _webos_result(start, False, "%s: %s" % (e.__class__.__name__, e))
+
+
+VIDAA_MOCK = False
+
+
+def set_vidaa(mock):
+    """Prepare the VIDAA backend. Nothing to open (stateless)."""
+    global VIDAA_MOCK
+    VIDAA_MOCK = mock
+
+
+def vidaa_available():
+    """True in --mock, or when config named a VIDAA host (no pairing)."""
+    if VIDAA_MOCK:
+        return True
+    return bool(CONFIG_VIDAA and CONFIG_VIDAA.get("host"))
+
+
+def real_vidaa(op):
+    """Dispatch a unified TV op. power_on is WoL (or best-effort POWER)."""
+    if op == "power_on":
+        mac = (CONFIG_VIDAA or {}).get("mac")
+        if mac:
+            return _wol_send(mac)
+        return _vidaa_send_key(CONFIG_VIDAA["host"], "KEY_POWER")
+    key = _VIDAA_OP_KEY.get(op)
+    if key is None:
+        return _webos_result(time.monotonic(), False, "unsupported op %s" % op)
+    return _vidaa_send_key(CONFIG_VIDAA["host"], key)
+
+
+def real_vidaa_key(k):
+    """Send one factory-remote key (shared vocabulary) as a VIDAA key."""
+    key = _VIDAA_KEYS.get(k)
+    if key is None:
+        return _webos_result(time.monotonic(), False, "unknown key %s" % k)
+    return _vidaa_send_key(CONFIG_VIDAA["host"], key)
+
+
+def mock_vidaa(op):
+    """--mock stand-in: log the op, open no socket, succeed."""
+    time.sleep(0.03)
+    print("[vidaa] %s" % op, flush=True)
+    return {"ok": True, "exit_code": 0, "stdout": "[mock vidaa] %s\n" % op,
+            "stderr": "", "duration_ms": 30}
+
+
+def vidaa_add(host):
+    """Verify a VIDAA TV answers the MQTT broker at <host> (no pairing). Returns
+    the host as its label. Raises IOError when the broker refuses/unreachable."""
+    s = _vidaa_connect(host)
+    try:
+        s.close()
+    except Exception:
+        pass
+    return host
+
+
+def _vidaa_save(host, name=None, mac=None):
+    """Persist the VIDAA config to CONFIG_PATH atomically and update CONFIG_VIDAA."""
+    cfg = {"host": host}
+    if name:
+        cfg["name"] = name
+    if mac:
+        cfg["mac"] = mac
+    global CONFIG_VIDAA
+    with CONFIG_LOCK:
+        _config_set_field("vidaa", cfg)
+        CONFIG_VIDAA = cfg
+
+
 # ---- unified dispatch -----------------------------------------------------
 # CEC has no discrete power-off; its standby command IS the off state.
 _TV_TO_CEC = {"power_on": "power_on", "power_off": "standby",
@@ -4456,6 +4627,7 @@ def set_tv(mock):
     set_samsung(mock)
     set_roku(mock)
     set_androidtv(mock)
+    set_vidaa(mock)
     set_soft(mock)
 
 
@@ -4474,6 +4646,8 @@ def _tv_hw_backend():
         return "androidtv"
     if roku_available():
         return "roku"
+    if vidaa_available():
+        return "vidaa"
     if cec_available():
         return "cec"
     return None
@@ -4506,6 +4680,11 @@ def tv_info():
                                          % (CONFIG_ANDROIDTV.get("name")
                                             or CONFIG_ANDROIDTV["host"])
                                          if CONFIG_ANDROIDTV else "Android TV")
+    elif hw == "vidaa":
+        backend, adapter = "vidaa", ("Hisense VIDAA (%s)"
+                                     % (CONFIG_VIDAA.get("name")
+                                        or CONFIG_VIDAA["host"])
+                                     if CONFIG_VIDAA else "Hisense VIDAA")
     elif hw == "cec":
         cec = cec_current()
         backend, adapter = "cec", (cec["adapter"] if cec else "CEC")
@@ -4536,7 +4715,7 @@ def tv_info():
         # Either lights up the app's Remote view D-pad cluster.
         "keys": (panel_available() or webos_available()
                  or samsung_available() or roku_available()
-                 or androidtv_available()),
+                 or androidtv_available() or vidaa_available()),
         # Text entry into a focused on-TV field. webOS (IME), Samsung
         # (SendInputString) and Roku (Lit_ keypresses) support it; the panel
         # and CEC have no text channel.
@@ -4566,6 +4745,8 @@ def _send_tv_hw(op, mock):
         return mock_roku(op) if mock else real_roku(op)
     if b == "androidtv":
         return mock_androidtv(op) if mock else real_androidtv(op)
+    if b == "vidaa":
+        return mock_vidaa(op) if mock else real_vidaa(op)
     if b == "cec":
         cec_op = _TV_TO_CEC[op]
         return mock_cec(cec_op) if mock else real_cec(cec_op)
@@ -7120,6 +7301,9 @@ class Handler(BaseHTTPRequestHandler):
                 elif backend == "androidtv" and k in _ATV_KEYS:
                     result = (mock_androidtv("key %s" % k) if self.mock
                               else real_androidtv_key(k))
+                elif backend == "vidaa" and k in _VIDAA_KEYS:
+                    result = (mock_vidaa("key %s" % k) if self.mock
+                              else real_vidaa_key(k))
                 elif backend == "panel" and k in PANEL_KEYS:
                     result = ({"ok": True, "exit_code": 0,
                                "stdout": "[mock panel] key %s" % k,
@@ -7332,6 +7516,45 @@ class Handler(BaseHTTPRequestHandler):
                 set_caps(False)
                 self._send(200, {"ok": True, "paired": True,
                                  "backend": "androidtv", "host": host}, started)
+                return
+
+            # POST /api/tv/vidaa/add: register a Hisense VIDAA TV by host. Body
+            # {"host": "<ip>"}. No pairing — verify the MQTT broker answers, then
+            # persist. Optional "mac" for Wake-on-LAN power-on.
+            if path == "/api/tv/vidaa/add":
+                try:
+                    req = json.loads(body.decode("utf-8")) if body else {}
+                    host = req["host"]
+                    if not isinstance(host, str) or not host:
+                        raise ValueError("host required")
+                    mac = req.get("mac")
+                    if mac is not None and not isinstance(mac, str):
+                        raise ValueError("mac must be a string")
+                except (ValueError, TypeError, KeyError, UnicodeDecodeError):
+                    self._send(400, {"error": "host (string) required"}, started)
+                    return
+                if self.mock:
+                    self._send(200, {"ok": True, "added": True, "backend": "vidaa",
+                                     "host": host}, started)
+                    return
+                try:
+                    vidaa_add(host)
+                except (IOError, OSError, ssl.SSLError) as e:
+                    self._send(502, {"ok": False,
+                                     "error": "not a reachable VIDAA TV: %s" % e},
+                               started)
+                    return
+                try:
+                    _vidaa_save(host, host, mac)
+                except OSError as e:
+                    self._send(500, {"ok": False,
+                                     "error": "could not persist config: %s" % e},
+                               started)
+                    return
+                set_vidaa(False)
+                set_caps(False)
+                self._send(200, {"ok": True, "added": True, "backend": "vidaa",
+                                 "host": host}, started)
                 return
 
             # POST /api/tv/source/<id>: switch the display input (panel only).
