@@ -6810,13 +6810,14 @@ def pair_show_on_box(port):
 
 def render_pin_page(pin):
     """Full-screen dark page showing the pairing PIN, spaced for reading off a
-    TV. Auto-refreshes so it clears when the session ends (paired or expired).
-    Built with a placeholder replace (not %-formatting) because the CSS contains
-    a literal '%' (height:100%)."""
+    TV. A JS poll of /api/pair/status clears the PIN to a neutral 'done' once the
+    session ends (paired or expired), and leaves it untouched on any fetch error
+    — so the agent restarting never shows a browser error, and a successful pair
+    never flashes the token QR. Built with a placeholder replace (not
+    %-formatting) because the CSS contains a literal '%' (height:100%)."""
     return (
         "<!doctype html><html><head><meta charset=utf-8>"
         "<meta name=viewport content='width=device-width,initial-scale=1'>"
-        "<meta http-equiv=refresh content=8>"
         "<title>Couchside pairing</title><style>"
         "html,body{margin:0;height:100%;background:#0b1220;color:#e5e7eb;"
         "font-family:system-ui,sans-serif;display:flex;flex-direction:column;"
@@ -6829,6 +6830,11 @@ def render_pin_page(pin):
         "<div class=t>ENTER THIS PIN IN THE APP</div>"
         "<div class=pin>__PIN__</div>"
         "<div class=s>Couchside · this code is shown only on this screen</div>"
+        "<script>setInterval(function(){"
+        "fetch('/api/pair/status').then(function(r){return r.json()})"
+        ".then(function(d){if(d&&d.active===false){document.body.innerHTML="
+        "'<div class=t>DONE</div><div class=s>This code is no longer active.</div>'"
+        "}}).catch(function(){})},3000)</script>"
         "</body></html>".replace("__PIN__", " ".join(pin)))
 
 
@@ -7117,6 +7123,16 @@ class Handler(BaseHTTPRequestHandler):
                 html = (render_pin_page(pin) if pin
                         else render_pair_page(self._current_token(), self.port))
                 self._send_html(200, html, started)
+                return
+
+            if path == "/api/pair/status":
+                # Loopback-only: the on-screen /pair PIN page polls this to learn
+                # when its session ended (paired/expired), so it can clear itself
+                # without a blind reload. Reveals only a boolean, no secret.
+                if not self._is_loopback():
+                    self._send(403, {"error": "forbidden"}, started)
+                    return
+                self._send(200, {"active": pair_pin_active() is not None}, started)
                 return
 
             if path == "/api/ping":
