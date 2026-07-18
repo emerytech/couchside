@@ -988,12 +988,48 @@ PY
       *) echo "usage: couchside allow-updates on|off" >&2; exit 2 ;;
     esac
     ;;
+  allow-launchers)
+    # Opt-in: let the phone app CREATE custom launchers (POST /api/launchers).
+    # OFF by default. A launcher's argv is run verbatim as the desktop user, so
+    # remote creation is arbitrary user-level command exec for any token holder.
+    # Must be set HERE on the box, not by the app. Triggering launchers you
+    # already defined is unaffected; this only gates minting new ones remotely.
+    case "${2:-}" in
+      on|off)
+        val="false"; [ "$2" = "on" ] && val="true"
+        sudo python3 - "$val" <<'PY' || { echo "failed to update config" >&2; exit 1; }
+import json, os, sys
+p = "/etc/couchside/config.json"
+val = sys.argv[1] == "true"
+try:
+    with open(p) as f: d = json.load(f)
+    if not isinstance(d, dict): d = {}
+except Exception:
+    d = {}
+d["allow_app_launchers"] = val
+os.makedirs(os.path.dirname(p), exist_ok=True)
+tmp = p + ".tmp"
+with open(tmp, "w") as f: json.dump(d, f, indent=2)
+os.replace(tmp, p)
+PY
+        sudo systemctl restart couchside 2>/dev/null \
+          || systemctl --user restart couchside 2>/dev/null || true
+        echo "App-created launchers: ${2}"
+        ;;
+      ""|status)
+        grep -q '"allow_app_launchers"[[:space:]]*:[[:space:]]*true' /etc/couchside/config.json 2>/dev/null \
+          && echo "App-created launchers: on" || echo "App-created launchers: off"
+        ;;
+      *) echo "usage: couchside allow-launchers on|off" >&2; exit 2 ;;
+    esac
+    ;;
   help|-h|--help|"")
     cat <<USAGE
 couchside — manage the Couchside agent on this box
   couchside update          show the release notes, then update on confirm
   couchside update -y       update without the prompt
   couchside allow-updates on|off   let (or stop) the phone app trigger updates
+  couchside allow-launchers on|off let (or stop) the phone app create launchers
   couchside pair            show the pairing QR on this box's screen
   couchside version         print the installed agent version
   couchside status          show the agent service status
