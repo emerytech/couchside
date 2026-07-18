@@ -818,6 +818,60 @@ async function request<T>(
   }
 }
 
+// ---------- PIN pairing (unauthenticated box enrollment) ----------
+
+export type PairStartResult = { ok: boolean; ttl?: number; error?: string };
+export type PairFinishResult = { ok: boolean; token?: string; port?: number; error?: string };
+
+/**
+ * Hit a box directly by ip:port with NO bearer token — the PIN-pairing routes
+ * are the box's only unauthenticated POSTs (the phone has no token yet). Reads
+ * the JSON body for both 200 and the 4xx error cases.
+ */
+async function unauthPost<T>(
+  ip: string,
+  port: number,
+  path: string,
+  body: unknown,
+  timeoutMs: number,
+): Promise<T> {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
+  try {
+    const res = await fetch(`http://${ip}:${port}${path}`, {
+      method: 'POST',
+      headers: body !== undefined ? { 'Content-Type': 'application/json' } : {},
+      body: body !== undefined ? JSON.stringify(body) : undefined,
+      signal: controller.signal,
+    });
+    return (await res.json()) as T;
+  } catch (e: unknown) {
+    if (e instanceof Error && e.name === 'AbortError') {
+      throw new ApiError('timeout', `Timed out after ${timeoutMs / 1000}s`);
+    }
+    throw new ApiError('unreachable', 'Box unreachable: network error');
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+/**
+ * Start PIN pairing: the box mints a PIN and displays it on ITS OWN screen.
+ * Returns the TTL; the PIN is never sent over the network. Agent >= 2.9.12.
+ */
+export function pairStart(ip: string, port: number): Promise<PairStartResult> {
+  return unauthPost<PairStartResult>(ip, port, '/api/pair/start', undefined, 8000);
+}
+
+/**
+ * Finish PIN pairing: submit the PIN shown on the box. On success returns the
+ * box token (to store) and its port; on a wrong/expired/locked PIN, `ok:false`
+ * with a reason.
+ */
+export function pairFinish(ip: string, port: number, pin: string): Promise<PairFinishResult> {
+  return unauthPost<PairFinishResult>(ip, port, '/api/pair/finish', { pin }, 8000);
+}
+
 export const api = {
   /** Unauthenticated reachability probe. */
   ping(settings: ConnSettings): Promise<Ping> {

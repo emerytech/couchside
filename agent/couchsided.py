@@ -7012,6 +7012,165 @@ def build_pair_url(token, port):
     return url
 
 
+# ---- PIN pairing (app-initiated box enrollment) ---------------------------
+# A phone that discovered this box on the LAN (see the UDP responder) can enroll
+# WITHOUT already having the token, via a PIN shown on the BOX'S OWN screen —
+# physical-presence proof, exactly like Android-TV pairing:
+#   POST /api/pair/start  (unauth): mint a 6-digit PIN, display it on the box
+#     (Steam's browser -> the loopback /pair page), return the TTL.
+#   POST /api/pair/finish (unauth): trade the correct PIN for the box token.
+# The PIN is rendered ONLY on the loopback /pair page, so it never crosses the
+# network — you must be able to SEE the box's screen. Brute force is blocked by
+# a short TTL + a small attempt cap + a single live session, and repeated
+# /start is debounced so a LAN peer can't spam the on-screen popup.
+PAIR_PIN_TTL = 120           # seconds a displayed PIN stays valid
+PAIR_PIN_MAX_ATTEMPTS = 5    # wrong PINs before the session is burned
+PAIR_PIN_START_DEBOUNCE = 3  # min seconds between /start (anti on-screen spam)
+PAIR_PIN_LOCK = threading.Lock()
+# {"pin": "123456", "expires": mono, "attempts": int, "started": mono} or None
+PAIR_PIN = None
+
+
+def pair_pin_start():
+    """Mint a fresh PIN + session (replacing any prior one) and return
+    (pin, ttl). Debounced: within PAIR_PIN_START_DEBOUNCE of the last start the
+    LIVE pin is returned unchanged, so a double-tap / retry doesn't reroll the
+    number already on screen. Caller displays it on the box."""
+    global PAIR_PIN
+    with PAIR_PIN_LOCK:
+        now = time.monotonic()
+        s = PAIR_PIN
+        if s and now <= s["expires"] and now - s["started"] < PAIR_PIN_START_DEBOUNCE:
+            return s["pin"], int(s["expires"] - now)
+        pin = "%06d" % (int.from_bytes(os.urandom(3), "big") % 1000000)
+        PAIR_PIN = {"pin": pin, "expires": now + PAIR_PIN_TTL,
+                    "attempts": 0, "started": now}
+        return pin, PAIR_PIN_TTL
+
+
+def pair_pin_active():
+    """The current PIN if a session is live (for /pair to render on-screen),
+    else None."""
+    with PAIR_PIN_LOCK:
+        if PAIR_PIN and time.monotonic() <= PAIR_PIN["expires"]:
+            return PAIR_PIN["pin"]
+        return None
+
+
+def pair_pin_check(pin):
+    """Validate a submitted PIN. True (and burns the session) on match; raises
+    ValueError with a user-facing reason on no-session / expired / locked /
+    wrong. A wrong guess counts toward the attempt cap."""
+    global PAIR_PIN
+    with PAIR_PIN_LOCK:
+        s = PAIR_PIN
+        if not s or time.monotonic() > s["expires"]:
+            PAIR_PIN = None
+            raise ValueError("no active pairing — start it again from the app")
+        if s["attempts"] >= PAIR_PIN_MAX_ATTEMPTS:
+            PAIR_PIN = None
+            raise ValueError("too many wrong PINs — start again")
+        if (pin or "").strip() != s["pin"]:
+            s["attempts"] += 1
+            raise ValueError("wrong PIN")
+        PAIR_PIN = None                       # consume on success
+        return True
+
+
+def pair_show_on_box(port):
+    """Open the loopback /pair page on the BOX'S own screen so the PIN is
+    visible there. Game Mode -> Steam's built-in browser (steam://openurl);
+    desktop -> xdg-open. Best-effort, detached, never blocks the request."""
+    url = "http://localhost:%d/pair" % port
+    gamescope = _couchmode_session() == "gamescope"
+
+    def go():
+        try:
+            if gamescope:
+                subprocess.run(["steam", "-ifrunning", "steam://openurl/" + url],
+                               timeout=10)
+            elif shutil.which("xdg-open"):
+                subprocess.run(["xdg-open", url], timeout=10)
+            elif shutil.which("steam"):
+                subprocess.run(["steam", "-ifrunning", "steam://openurl/" + url],
+                               timeout=10)
+        except Exception:
+            pass
+    threading.Thread(target=go, daemon=True).start()
+
+
+def render_pin_page(pin):
+    """Full-screen dark page showing the pairing PIN, spaced for reading off a
+    TV. A JS poll of /api/pair/status clears the PIN to a neutral 'done' once the
+    session ends (paired or expired), and leaves it untouched on any fetch error
+    — so the agent restarting never shows a browser error, and a successful pair
+    never flashes the token QR. Built with a placeholder replace (not
+    %-formatting) because the CSS contains a literal '%' (height:100%)."""
+    return (
+        "<!doctype html><html><head><meta charset=utf-8>"
+        "<meta name=viewport content='width=device-width,initial-scale=1'>"
+        "<title>Couchside pairing</title><style>"
+        "html,body{margin:0;height:100%;background:#0b1220;color:#e5e7eb;"
+        "font-family:system-ui,sans-serif;display:flex;flex-direction:column;"
+        "align-items:center;justify-content:center;text-align:center}"
+        ".t{font-size:5vh;color:#93c5fd;letter-spacing:.1em;font-weight:600}"
+        ".pin{font-size:22vh;font-weight:800;letter-spacing:.15em;margin:2vh 0;"
+        "font-variant-numeric:tabular-nums;color:#fff}"
+        ".s{font-size:3.2vh;color:#94a3b8;max-width:80vw}"
+        "</style></head><body>"
+        "<div class=t>ENTER THIS PIN IN THE APP</div>"
+        "<div class=pin>__PIN__</div>"
+        "<div class=s>Couchside · this code is shown only on this screen</div>"
+        "<script>var done=false;setInterval(function(){"
+        "fetch('/api/pair/status').then(function(r){return r.json()})"
+        ".then(function(d){if(d&&d.active===false&&!done){done=true;"
+        "document.body.innerHTML="
+        "'<div class=t>PAIRED</div><div class=s>Press B (Back) to close.</div>'"
+        # Steam's browser can't be closed programmatically (neither a page-side
+        # window.close()/steam:// nav nor an agent steam:// CLI dismisses it), so
+        # we land on a clean PAIRED screen and tell the user how to close it.
+        "}}).catch(function(){})},3000)</script>"
+        "</body></html>".replace("__PIN__", " ".join(pin)))
+
+
+# ---- LAN discovery responder (lets the app find this box) ------------------
+# The app broadcasts COUCHSIDE_DISCOVER_MAGIC to this UDP port; the box replies
+# with its identity + HTTP port so the app can list it in a "scan for boxes"
+# picker (then PIN-pair, above). Bound on the SAME number as the HTTP port
+# (UDP vs TCP, no clash). Reveals existence + hostname + version only — no
+# token, no control. UDP broadcast is used deliberately: it is far more reliable
+# than mDNS multicast RX on Android (no MulticastLock dance).
+COUCHSIDE_DISCOVER_MAGIC = b"COUCHSIDE_DISCOVER?"
+
+
+def _udp_discovery_responder(port):
+    """Answer LAN discovery probes on UDP <port>. Best-effort daemon; a bind
+    failure just disables discovery (the app can still add a box by IP)."""
+    try:
+        s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        s.bind(("0.0.0.0", port))
+    except OSError as e:
+        print("[discover] responder disabled: %s" % e, flush=True)
+        return
+    print("[discover] UDP responder on :%d" % port, flush=True)
+    while True:
+        try:
+            data, addr = s.recvfrom(256)
+        except OSError:
+            continue
+        if not data.startswith(COUCHSIDE_DISCOVER_MAGIC):
+            continue
+        short = socket.gethostname().split(".")[0] or "couchside"
+        reply = json.dumps({"couchside": True, "name": short,
+                            "host": short + ".local", "port": port,
+                            "version": VERSION}).encode()
+        try:
+            s.sendto(reply, addr)
+        except OSError:
+            pass
+
+
 def render_pair_page(token, port):
     """Self-contained dark HTML page rendering the pairing QR offline.
 
@@ -7252,8 +7411,23 @@ class Handler(BaseHTTPRequestHandler):
                 if not self._is_loopback() or not self._host_header_is_local():
                     self._send(403, {"error": "forbidden"}, started)
                     return
-                html = render_pair_page(self._current_token(), self.port)
+                # While a PIN-pairing session is live, this page IS the physical-
+                # presence proof: show the big PIN (loopback-only, so only someone
+                # at the box sees it). Otherwise the usual token QR.
+                pin = pair_pin_active()
+                html = (render_pin_page(pin) if pin
+                        else render_pair_page(self._current_token(), self.port))
                 self._send_html(200, html, started)
+                return
+
+            if path == "/api/pair/status":
+                # Loopback-only: the on-screen /pair PIN page polls this to learn
+                # when its session ended (paired/expired), so it can clear itself
+                # without a blind reload. Reveals only a boolean, no secret.
+                if not self._is_loopback():
+                    self._send(403, {"error": "forbidden"}, started)
+                    return
+                self._send(200, {"active": pair_pin_active() is not None}, started)
                 return
 
             if path == "/api/ping":
@@ -7491,6 +7665,36 @@ class Handler(BaseHTTPRequestHandler):
                     return
                 self._read_body()
                 self._send(404, {"error": "not found"}, started)
+                return
+
+            # UNAUTHENTICATED PIN pairing (the only unauthenticated POSTs): a
+            # phone that discovered this box enrolls via a PIN shown on the box's
+            # own screen. Bounded: /start is debounced + displays the PIN
+            # locally; /finish is TTL + attempt-capped and only returns the token
+            # for the correct PIN. Handled here, before the bearer-token gate.
+            if path in ("/api/pair/start", "/api/pair/finish"):
+                if self._body_too_large():
+                    self.close_connection = True
+                    self._send(413, {"error": "request body too large"}, started)
+                    return
+                pair_body = self._read_body()
+                if path == "/api/pair/start":
+                    _pin, ttl = pair_pin_start()
+                    pair_show_on_box(self.port)   # pop the PIN on the box screen
+                    self._send(200, {"ok": True, "ttl": ttl}, started)
+                    return
+                try:
+                    req = json.loads(pair_body.decode("utf-8")) if pair_body else {}
+                    submitted = req.get("pin")
+                except (ValueError, UnicodeDecodeError):
+                    submitted = None
+                try:
+                    pair_pin_check(submitted)
+                except ValueError as e:
+                    self._send(403, {"ok": False, "error": str(e)}, started)
+                    return
+                self._send(200, {"ok": True, "token": self._current_token(),
+                                 "port": self.port}, started)
                 return
 
             # Authorize BEFORE reading the body: an unauthenticated client must
@@ -8602,6 +8806,8 @@ def main():
 
     server = BoundedThreadingHTTPServer((args.host, port), Handler)
     server.daemon_threads = True
+    threading.Thread(target=_udp_discovery_responder, args=(port,),
+                     daemon=True, name="discover").start()
     mode = "mock" if args.mock else "real"
     print("%s %s listening on %s:%d (%s mode)" % (
         APP_NAME, VERSION, args.host, port, mode), flush=True)
