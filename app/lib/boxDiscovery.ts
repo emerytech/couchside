@@ -10,6 +10,7 @@
  * is reliable. Mirrors lib/wol.ts's use of the same native module.
  */
 import { Buffer } from 'buffer';
+import * as Network from 'expo-network';
 
 import { DEFAULT_PORT } from './settings';
 
@@ -60,14 +61,34 @@ function broadcastTargets(ip?: string): string[] {
  * replies for `timeoutMs`. Resolves the deduped list (by IP). Throws only when
  * the native UDP module is missing; a bind/send failure resolves an empty list.
  */
-export function scanForBoxes(
+/**
+ * The device's own LAN IPv4, so a scan can derive the /24 DIRECTED broadcast.
+ * iOS silently drops the global 255.255.255.255 broadcast, so with only the
+ * global target a scan finds nothing on iOS (Android is permissive). Best-effort
+ * — resolves undefined if expo-network can't read a usable address.
+ */
+async function selfIp(): Promise<string | undefined> {
+  try {
+    const ip = await Network.getIpAddressAsync();
+    return typeof ip === 'string' && /^\d+\.\d+\.\d+\.\d+$/.test(ip) && ip !== '0.0.0.0'
+      ? ip
+      : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+export async function scanForBoxes(
   opts: { ip?: string; port?: number; timeoutMs?: number } = {},
 ): Promise<FoundBox[]> {
   if (!dgram) throw new Error('Box discovery needs a fresh native build of the app');
   const port = opts.port ?? DEFAULT_PORT;
   const timeoutMs = opts.timeoutMs ?? 2500;
   const probe = Buffer.from(PROBE);
-  const targets = broadcastTargets(opts.ip);
+  // Prefer a directed /24 broadcast (caller-supplied IP, else the phone's own)
+  // so iOS — which drops the global broadcast — still reaches boxes on the LAN.
+  // broadcastTargets keeps 255.255.255.255 too, for Android.
+  const targets = broadcastTargets(opts.ip ?? (await selfIp()));
 
   return new Promise<FoundBox[]>((resolve) => {
     const socket = dgram!.createSocket({ type: 'udp4' });
