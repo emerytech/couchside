@@ -1,0 +1,9 @@
+New in 2.9.3
+
+• Add a box by scanning your network — no IP typing. The box shows a PIN on its screen to confirm.
+• Scan for smart TVs instead of typing their IP.
+• Phone volume buttons control box/TV volume on every Pad screen.
+• New SOURCE button for TV inputs.
+• Keyboard opens automatically for text fields on webOS TVs.
+• Check for agent updates from Settings.
+• Fixes: TV pairing, Wake-on-LAN, and the mute button state.
