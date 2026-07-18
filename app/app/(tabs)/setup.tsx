@@ -314,7 +314,7 @@ function BoxEditPanel({
     setAuthStep({ state: 'running' });
     try {
       const st = await api.status(s);
-      setAuthStep({ state: 'ok', detail: `${st.hostname} · agent v${st.agent_version}` });
+      setAuthStep({ state: 'ok', detail: `${st.hostname} · service v${st.agent_version}` });
     } catch (e: unknown) {
       setAuthStep({ state: 'fail', detail: errDetail(e) });
     }
@@ -754,7 +754,7 @@ function SetupBody() {
         const st = await api.status(s);
         setAuthStep({
           state: 'ok',
-          detail: `${st.hostname} · agent v${st.agent_version}`,
+          detail: `${st.hostname} · service v${st.agent_version}`,
         });
         setAgentVersion(st.agent_version);
       } catch (e: unknown) {
@@ -869,8 +869,8 @@ function SetupBody() {
         {boxes.length === 0 ? (
           <View style={styles.card}>
             <Text style={styles.emptyText}>
-              No boxes yet. Pair your first machine below: enter its host, port,
-              and token, or scan a QR from the agent.
+              No boxes yet. Tap Scan for boxes below — your box shows a PIN on its
+              own screen and you type it here. No IP or token needed.
             </Text>
             {/* The box needs the agent installed before it can be paired at
                 all — surface the setup guide right where a new user gets stuck. */}
@@ -882,7 +882,7 @@ function SetupBody() {
               style={({ pressed }) => [styles.emptyLink, pressed && styles.pressed]}>
               <Ionicons name="hardware-chip-outline" size={15} color={t.blue} />
               <Text style={styles.emptyLinkText}>
-                Haven&apos;t installed the agent? Setup guide
+                Haven&apos;t installed the Couchside service? Setup guide
               </Text>
               <Ionicons name="open-outline" size={13} color={t.blue} />
             </Pressable>
@@ -1063,7 +1063,7 @@ function SetupBody() {
           <StepRow label="2 · /api/status (Bearer token)" step={authStep} />
           {agentVersion != null && (
             <View style={styles.versionRow}>
-              <Text style={styles.versionLabel}>agent version</Text>
+              <Text style={styles.versionLabel}>service version</Text>
               <Text style={styles.versionValue}>{agentVersion}</Text>
             </View>
           )}
@@ -1318,7 +1318,7 @@ function SetupBody() {
               />
               <TogglePref
                 label="Ask before switching control"
-                sub="When another phone joins a box you're controlling, it asks and you tap Pass — instead of taking over instantly. Needs agent 2.9.2+."
+                sub="When another phone joins a box you're controlling, it asks and you tap Pass — instead of taking over instantly. Needs the Couchside service 2.9.2 or newer."
                 value={askToSwitchControl}
                 onValueChange={(v) => {
                   void setPref('askToSwitchControl', v);
@@ -1414,7 +1414,7 @@ function SetupBody() {
               <View style={styles.rateBody}>
                 <Text style={styles.rateTitle}>Set up a box</Text>
                 <Text style={styles.rateSub}>
-                  Install the agent — instructions at couchside.tv.
+                  Install the Couchside service — instructions at couchside.tv.
                 </Text>
               </View>
               <Ionicons name="open-outline" size={16} color={t.textDim} />
@@ -1429,7 +1429,7 @@ function SetupBody() {
             </View>
 
             <Text style={styles.hint}>
-              Each agent listens on http://&lt;host&gt;:&lt;port&gt;. All routes except
+              Each box&apos;s Couchside service listens on http://&lt;host&gt;:&lt;port&gt;. All routes except
               /api/ping require the bearer token.
             </Text>
           </>
