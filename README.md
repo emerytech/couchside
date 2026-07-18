@@ -43,7 +43,7 @@ The gamepad UI on the phone and the Steam sidebar responding on the TV, at the s
 Couchside can also drive a **networked smart TV directly** — no HDMI-CEC and no serial cable. Add one under **Setup → Boxes → Smart TV remote**; the D-pad and on-screen keyboard on the Pad tab light up once it's connected.
 
 - **LG webOS** — enter the TV's IP, then accept the pairing prompt that appears on the TV (once). An optional MAC address enables Wake-on-LAN power-on.
-- **Samsung (Tizen)** — enter the IP, then approve the "Allow" prompt on the TV. Optional MAC for Wake-on-LAN.
+- **Samsung (Tizen)** _(beta — not yet validated on real hardware)_ — enter the IP, then approve the "Allow" prompt on the TV. Optional MAC for Wake-on-LAN.
 - **Roku** — enter the IP; no pairing. **If the D-pad doesn't respond after adding, the Roku is blocking app control:** on the Roku, set _Settings → System → Advanced system settings → Control by mobile apps → Network access_ to **Permissive**.
 - **Android / Google TV** — enter the IP, then type the 6-digit code the TV shows. Optional MAC for Wake-on-LAN.
 
