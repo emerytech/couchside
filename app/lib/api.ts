@@ -356,6 +356,36 @@ export type DiscoveredTv = {
   host: string;
 };
 
+/**
+ * One physical controller the box can see. Emulated pads (the box's own virtual
+ * gamepad, Steam Input's) are filtered out agent-side and never appear here.
+ * `uniq` is the pad's own MAC and is stable across Bluetooth reconnects, so it
+ * is the identity used to pin the trigger to one controller; `readable` is false
+ * when the agent can see the pad but lacks permission to read its events.
+ */
+export type GuideController = {
+  uniq: string;
+  phys: string;
+  name: string;
+  readable: boolean;
+};
+
+/**
+ * Guide-hold trigger state (GET /api/guide-hold, agent >= 2.9.14). The route
+ * 404s when the box can't do the Couch Mode handoff or can't read evdev.
+ */
+export type GuideHold = {
+  available: boolean;
+  enabled: boolean;
+  hold_ms: number;
+  /** Empty = any real controller; otherwise the pinned pad's MAC. */
+  uniq: string;
+  /** True when a pinned pad is set AND currently connected. */
+  uniq_present: boolean;
+  session: 'gamescope' | 'desktop';
+  controllers: GuideController[];
+};
+
 /** TV-control probe result. The route 404s when no backend is available. */
 export type Tv = {
   available: boolean;
@@ -1340,6 +1370,23 @@ export const api = {
   /** Exit Couch Mode: return the box to its desktop session. */
   desktopMode(settings: ConnSettings): Promise<{ ok: boolean }> {
     return request(settings, '/api/desktop-mode', { method: 'POST' });
+  },
+
+  /**
+   * Guide-hold trigger settings, or null when the box can't do it (older agent,
+   * no Couch Mode handoff, or an agent that can't read /dev/input). null means
+   * "hide the row" — the same probe-and-appear shape as the screensaver.
+   */
+  guideHold(settings: ConnSettings): Promise<GuideHold | null> {
+    return probeOrNull(request<GuideHold>(settings, '/api/guide-hold'));
+  },
+
+  /** Patch the guide-hold settings. Omitted fields keep their current value. */
+  guideHoldSet(
+    settings: ConnSettings,
+    patch: { enabled?: boolean; hold_ms?: number; uniq?: string },
+  ): Promise<GuideHold & { ok: boolean }> {
+    return request(settings, '/api/guide-hold', { method: 'POST', body: patch });
   },
 
   /** Arm a delayed suspend/poweroff. */

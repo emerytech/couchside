@@ -44,7 +44,7 @@ except ImportError:  # pragma: no cover
     fcntl = None
 
 APP_NAME = "couchside-agent"
-VERSION = "2.9.13"
+VERSION = "2.9.14"
 UID = os.getuid()
 XDG_RUNTIME_DIR = "/run/user/%d" % UID
 
@@ -73,7 +73,12 @@ DEFAULT_PORT = 8787
 #     {"id": "custom:<slug>",                       # id (generated on POST)
 #      "label": "...",                              # required non-empty string
 #      "cmd": ["argv0", "arg1", ...]}               # required non-empty argv
-#   ]
+#   ],
+#   "guide": {                                      # optional; guide-hold trigger
+#     "enabled": false,                             # default false (opt-in)
+#     "hold_ms": 1200,                              # 600..5000, default 1200
+#     "uniq": ""                                    # optional; pin to ONE pad (MAC)
+#   }
 # }
 #
 # The journal allowlist is exactly the configured unit names. On a missing or
@@ -178,6 +183,14 @@ CONFIG_SAMSUNG = None  # optional {"host","mac","token"} Samsung Tizen TV config
 CONFIG_ROKU = None  # optional {"host","name"} Roku (ECP) TV config
 CONFIG_ANDROIDTV = None  # optional {"host","cert","key","name","mac"} Android TV config
 CONFIG_VIDAA = None  # optional {"host","name","mac"} Hisense VIDAA (MQTT) config
+# Guide-button hold -> Couch Mode. OFF BY DEFAULT: a false positive yanks the
+# user out of their desktop session mid-work. "uniq" optionally pins the trigger
+# to ONE pad, keyed on the evdev U: Uniq field (the pad's OWN MAC) because BT
+# pads RE-ENUMERATE — the /dev/input/eventN number and the uhid sysfs path both
+# change across reconnects, Uniq does not. Empty uniq = any REAL pad.
+GUIDE_MIN_HOLD_MS, GUIDE_MAX_HOLD_MS = 600, 5000
+GUIDE_DEFAULTS = {"enabled": False, "hold_ms": 1200, "uniq": ""}
+CONFIG_GUIDE = dict(GUIDE_DEFAULTS)
 # When true, the app may trigger a box-side agent update via POST
 # /api/update/apply. OFF BY DEFAULT: enabling it lets any holder of the bearer
 # token cause a (signature-verified) install + restart, so it is opt-in and can
@@ -463,8 +476,35 @@ def _parse_config(raw):
                     raise ConfigError("vidaa.%s must be a string" % field)
                 vidaa[field] = val
 
+    # Optional guide-button hold trigger. Validated HERE rather than in the
+    # early opt-in read above so that a config the agent cannot parse leaves the
+    # trigger at its default — which is OFF. That is the fail-safe direction:
+    # the early-read pattern would preserve "on" across an unparseable config.
+    guide = dict(GUIDE_DEFAULTS)
+    guide_raw = raw.get("guide")
+    if guide_raw is not None:
+        if not isinstance(guide_raw, dict):
+            raise ConfigError("guide must be an object")
+        if "enabled" in guide_raw:
+            if not isinstance(guide_raw["enabled"], bool):
+                raise ConfigError("guide.enabled must be a boolean")
+            guide["enabled"] = guide_raw["enabled"]
+        if "hold_ms" in guide_raw:
+            ms = guide_raw["hold_ms"]
+            # bool is a subclass of int; reject it explicitly.
+            if isinstance(ms, bool) or not isinstance(ms, int):
+                raise ConfigError("guide.hold_ms must be an integer")
+            if not GUIDE_MIN_HOLD_MS <= ms <= GUIDE_MAX_HOLD_MS:
+                raise ConfigError("guide.hold_ms must be %d..%d"
+                                  % (GUIDE_MIN_HOLD_MS, GUIDE_MAX_HOLD_MS))
+            guide["hold_ms"] = ms
+        if "uniq" in guide_raw:
+            if not isinstance(guide_raw["uniq"], str):
+                raise ConfigError("guide.uniq must be a string")
+            guide["uniq"] = guide_raw["uniq"].strip()
+
     return (units, actions, order, port, launchers, panel, webos, samsung,
-            roku, androidtv, vidaa)
+            roku, androidtv, vidaa, guide)
 
 
 def load_config(path):
@@ -472,7 +512,7 @@ def load_config(path):
     global WATCHLIST, WATCHLIST_NAMES, ACTIONS, ACTION_ORDER, CONFIG_PORT
     global LAUNCHERS, CONFIG_PATH, CONFIG_PANEL, CONFIG_WEBOS, CONFIG_SAMSUNG
     global CONFIG_ROKU, CONFIG_ANDROIDTV, CONFIG_VIDAA, ALLOW_APP_UPDATE
-    global ALLOW_APP_LAUNCHERS
+    global ALLOW_APP_LAUNCHERS, CONFIG_GUIDE
     CONFIG_PATH = path  # remembered so launcher POST/DELETE can rewrite it
     try:
         with open(path) as f:
@@ -483,7 +523,7 @@ def load_config(path):
             ALLOW_APP_UPDATE = bool(raw.get("allow_app_update", False))
             ALLOW_APP_LAUNCHERS = bool(raw.get("allow_app_launchers", False))
         (units, actions, order, port, launchers, panel, webos, samsung,
-         roku, androidtv, vidaa) = _parse_config(raw)
+         roku, androidtv, vidaa, guide) = _parse_config(raw)
     except FileNotFoundError:
         print("warning: config %s not found, using built-in generic defaults"
               % path, file=sys.stderr, flush=True)
@@ -504,6 +544,7 @@ def load_config(path):
     CONFIG_ROKU = roku
     CONFIG_ANDROIDTV = androidtv
     CONFIG_VIDAA = vidaa
+    CONFIG_GUIDE = guide
     print("config loaded from %s: %d units, %d actions, %d launchers"
           % (path, len(WATCHLIST), len(ACTIONS), len(LAUNCHERS)), flush=True)
 
@@ -1390,6 +1431,28 @@ def _couchmode_session():
         return "desktop"
 
 
+def _couchmode_session_strict():
+    """'gamescope' | 'desktop' | None. Same probe as _couchmode_session but
+    UNKNOWN on error instead of assuming 'desktop'.
+
+    _couchmode_session() fails open to 'desktop' because the app only needs a
+    button label. The controller trigger cannot afford that: a pgrep timeout
+    while the box is IN Game Mode would otherwise re-run
+    steamos-session-select gamescope and can restart the session under a running
+    game — and GUIDE is held constantly in Game Mode, where it is Steam's own
+    QAM gesture. For the trigger, unknown must mean 'do nothing'."""
+    try:
+        r = subprocess.run(["pgrep", "-x", "gamescope(-wl)?"],
+                           capture_output=True, timeout=3)
+    except Exception:
+        return None
+    if r.returncode == 0:
+        return "gamescope"
+    if r.returncode == 1:
+        return "desktop"
+    return None          # pgrep itself failed (>=2): unknown
+
+
 def _output_forcing_supported():
     """True when this box's gamescope session honors $OUTPUT_CONNECTOR (so the
     app's display picker is AUTHORITATIVE, not advisory). Bazzite's
@@ -1622,6 +1685,48 @@ def desktop_mode():
     return {"ok": sw["ok"],
             "session": "desktop" if sw["ok"] else _couchmode_session(),
             "steps": steps}
+
+
+# Serialized session switching. couchmode_start() tears down a login session and
+# _set_preferred_output() rewrites a file non-atomically; the HTTP server is
+# threaded (BoundedThreadingHTTPServer) and the guide watcher adds a second,
+# non-HTTP caller. HTTP callers BLOCK — behaviour identical to today, just
+# serialized, so no new status code and no app change. The watcher never blocks:
+# it takes the lock non-blocking and honours a cooldown, so a controller press
+# during an in-flight switch is dropped rather than queued behind it.
+COUCH_LOCK = threading.Lock()
+_COUCH_LAST_SWITCH = 0.0
+
+
+def couchmode_enter(output="", hdr=False):
+    """Serialized couchmode_start() for HTTP callers. Blocks."""
+    global _COUCH_LAST_SWITCH
+    with COUCH_LOCK:
+        _COUCH_LAST_SWITCH = time.monotonic()
+        return couchmode_start(output, hdr)
+
+
+def couchmode_exit():
+    """Serialized desktop_mode() for HTTP callers. Blocks."""
+    global _COUCH_LAST_SWITCH
+    with COUCH_LOCK:
+        _COUCH_LAST_SWITCH = time.monotonic()
+        return desktop_mode()
+
+
+def couchmode_try_enter(output="", cooldown=0.0):
+    """Non-blocking couchmode_start() for the controller watcher. Returns None
+    when a switch is already in flight or one landed within `cooldown`."""
+    global _COUCH_LAST_SWITCH
+    if not COUCH_LOCK.acquire(False):
+        return None
+    try:
+        if cooldown and time.monotonic() - _COUCH_LAST_SWITCH < cooldown:
+            return None
+        _COUCH_LAST_SWITCH = time.monotonic()
+        return couchmode_start(output, False)
+    finally:
+        COUCH_LOCK.release()
 
 
 # ---------------------------------------------------------------------------
@@ -6697,6 +6802,428 @@ def clipboard_paste(text, kbd, mock, entry):
 
 
 # ---------------------------------------------------------------------------
+# Controller trigger: GUIDE-button hold -> Couch Mode (opt-in).
+#
+# Holding GUIDE (BTN_MODE) for ~1.2s on a REAL pad, while the box is in the
+# DESKTOP session, flings it into Game Mode. Off by default. ONE-DIRECTIONAL: a
+# hold in Game Mode does nothing (there GUIDE is Steam's own QAM gesture).
+#
+# Why a HOLD and not a tap: a guide TAP is already claimed by Steam — it opens
+# Big Picture inside the desktop session. Verified on hardware: the steam pid is
+# unchanged across a tap, no gamescope process appears, and steamos-session-select
+# is never invoked. Big Picture renders the same couch UI as Game Mode, so this
+# is easy to mistake for a session switch; it is not one. Steam keeps the tap,
+# we take the hold, and they never collide.
+#
+# We NEVER EVIOCGRAB: Steam reads these same nodes and an exclusive grab would
+# steal the user's controller. Read-only, so every event still reaches Steam.
+#
+# Why this and not controller-wake: reading /dev/input/event* needs only group
+# `input`, which couchside.service already grants (SupplementaryGroups=input).
+# Arming a wake source means writing /sys/.../power/wakeup, which needs root and
+# an installer change that Decky-installed boxes never run.
+#
+# REAL vs EMULATED — the single most important rule here. The naive test "reject
+# Sysfs under /devices/virtual/" is WRONG: Bluetooth pads route through uhid,
+# which is itself virtual, e.g.
+#   S: Sysfs=/devices/virtual/misc/uhid/0005:045E:0B22.000B/input/input963
+# The correct discriminator is "P: Phys non-empty OR U: Uniq non-empty".
+# Measured on hardware:
+#   real BT Xbox pad     Phys=ac:f2:3c:8b:64:fe   Uniq=44:16:22:1f:74:5d
+#   real wired pad       Phys=usb-0000:c3:00.4-1/input0   Uniq=(empty)
+#   Steam Input phantom  (28de:11ff)  Phys=(empty)  Uniq=(empty)
+#   OUR OWN uinput pad   (045e:028e)  Phys=(empty)  Uniq=(empty)
+# The agent creates its own "Microsoft X-Box 360 pad" on EVERY phone WebSocket
+# connect (UInputGamepad, above). This exclusion is STRUCTURAL, not heuristic:
+# the legacy uinput_user_dev descriptor (_UINPUT_USER_DEV) has no phys/uniq field
+# and this file defines no UI_SET_PHYS/UI_SET_UNIQ ioctl, so our pad can never
+# present one. If the filter ever matched it, connecting the phone app would tear
+# down the user's desktop session. Do NOT replace this with a name or VID/PID
+# check: GAMEPAD_DEV_NAME is byte-identical to a real Xbox 360 pad.
+# ---------------------------------------------------------------------------
+
+_PROC_INPUT_DEVICES = "/proc/bus/input/devices"
+_DEV_INPUT = "/dev/input"
+BTN_MODE = BTN_CODES["guide"]        # 316 / 0x13C
+_GUIDE_EV_SIZE = struct.calcsize(_INPUT_EVENT)   # 24 on 64-bit
+_GUIDE_TICK = 0.25                   # select() ceiling: bounds disarm latency
+_GUIDE_RESCAN_S = 3.0                # hotplug reconciliation cadence
+_GUIDE_STALE_HOLD_S = 8.0            # a press with no release this long is junk
+_GUIDE_SETTLE_S = 5.0                # post-fire quiet period
+_GUIDE_COOLDOWN_S = 30.0             # min spacing of controller-fired switches
+_GUIDE_LOCK = threading.Lock()       # _GUIDE_GEN += 1 is not atomic
+_GUIDE_GEN = 0
+_GUIDE_MOCK = False
+
+
+def _parse_input_devices(text):
+    """Parse /proc/bus/input/devices into
+    [{"name","phys","uniq","handlers":[...],"keybits":[...]}]. Tolerant of
+    unknown lines. partition(':') is used so a Phys like
+    usb-0000:c3:00.4-1/input0 survives."""
+    recs, cur = [], None
+    for line in text.splitlines():
+        if not line.strip():
+            cur = None
+            continue
+        tag, _, val = line.partition(":")
+        val = val.strip()
+        if tag == "I":
+            cur = {"name": "", "phys": "", "uniq": "", "handlers": [],
+                   "keybits": []}
+            recs.append(cur)
+        elif cur is None:
+            continue
+        elif tag == "N" and val.startswith("Name="):
+            cur["name"] = val[5:].strip().strip('"')
+        elif tag == "P" and val.startswith("Phys="):
+            cur["phys"] = val[5:].strip()
+        elif tag == "U" and val.startswith("Uniq="):
+            cur["uniq"] = val[5:].strip()
+        elif tag == "H" and val.startswith("Handlers="):
+            cur["handlers"] = val[9:].split()
+        elif tag == "B" and val.startswith("KEY="):
+            cur["keybits"] = val[4:].split()
+    return recs
+
+
+def _declares_key(rec, code):
+    """True when the device's EV_KEY bitmask advertises <code>.
+
+    /proc prints the bitmask as space-separated 64-bit hex words, MOST
+    significant word FIRST, so word 0 of the bit space is the LAST field. A
+    device with no 'B: KEY=' line declares no keys at all.
+
+    This is what separates a controller from its own sibling nodes: a USB
+    DualSense registers TWO js devices sharing one Uniq — the pad, and a
+    'Motion Sensors' node that declares no keys. Without this test the pad shows
+    up twice in the app's controller list. It also drops wheels and flight
+    panels, which are joysticks with no guide button."""
+    words = rec.get("keybits") or []
+    idx, bit = divmod(code, 64)
+    if idx >= len(words):
+        return False
+    try:
+        return bool(int(words[len(words) - 1 - idx], 16) >> bit & 1)
+    except ValueError:
+        return False
+
+
+def list_real_pads():
+    """Physical game controllers present right now. Two filters, both required:
+      * a js* handler -> a joystick, not a keyboard/mouse/lid switch. NOTE the
+        token is "js2", not "js" — match with startswith. (Comparing for
+        equality against "js" matches nothing and was a real bug in the
+        prototype.)
+      * Phys or Uniq non-empty -> REAL, not uinput/Steam-Input emulated.
+    Returns [{"event","name","phys","uniq"}]; [] on any read error, since an
+    unreadable /proc must degrade to "no pads" rather than raise. Because of the
+    js* filter this never holds an fd on a keyboard: no keylogging surface."""
+    try:
+        with open(_PROC_INPUT_DEVICES, "r", errors="replace") as f:
+            text = f.read()
+    except OSError:
+        return []
+    pads = []
+    for rec in _parse_input_devices(text):
+        h = rec["handlers"]
+        if not any(t.startswith("js") for t in h):
+            continue
+        if not (rec["phys"] or rec["uniq"]):
+            continue                       # emulated; see the block comment
+        if not _declares_key(rec, BTN_MODE):
+            continue                       # sibling sensor node / wheel / panel
+        ev = next((t for t in h if t.startswith("event")), None)
+        if not ev:
+            continue
+        pads.append({"event": ev, "name": rec["name"],
+                     "phys": rec["phys"], "uniq": rec["uniq"]})
+    return pads
+
+
+def _guide_pad_matches(pad, uniq):
+    """uniq == "" means "any real pad". Otherwise an exact case-insensitive
+    match on the pad's own MAC — stable across BT re-enumeration, whereas Phys
+    is the HOST adapter's MAC and is identical for every BT pad, so it cannot
+    serve as an identity."""
+    return True if not uniq else pad["uniq"].lower() == uniq.lower()
+
+
+def guide_hold_available():
+    """Can this box watch for the hold? Requires the Couch Mode handoff plus
+    readable evdev. Answers "capable", NOT "enabled". Never raises."""
+    try:
+        return (couchmode_available()
+                and os.access(_PROC_INPUT_DEVICES, os.R_OK)
+                and os.access(_DEV_INPUT, os.R_OK | os.X_OK))
+    except Exception:
+        return False
+
+
+def _guide_hold_s():
+    try:
+        ms = int(CONFIG_GUIDE.get("hold_ms", GUIDE_DEFAULTS["hold_ms"]))
+    except (TypeError, ValueError):
+        ms = GUIDE_DEFAULTS["hold_ms"]
+    return max(GUIDE_MIN_HOLD_MS, min(GUIDE_MAX_HOLD_MS, ms)) / 1000.0
+
+
+def guide_hold_info():
+    """Body for GET /api/guide-hold. `readable` distinguishes "no controller
+    connected" from "the agent can't READ your controller" — the likely support
+    case, an agent user missing from group input."""
+    uniq = (CONFIG_GUIDE.get("uniq") or "").strip()
+    pads = list_real_pads()
+    return {"available": True,
+            "enabled": bool(CONFIG_GUIDE.get("enabled")),
+            "hold_ms": int(_guide_hold_s() * 1000),
+            "uniq": uniq,
+            "uniq_present": bool(uniq) and any(
+                p["uniq"].lower() == uniq.lower() for p in pads),
+            "session": _couchmode_session(),
+            "controllers": [
+                {"uniq": p["uniq"], "phys": p["phys"], "name": p["name"],
+                 "readable": os.access(os.path.join(_DEV_INPUT, p["event"]),
+                                       os.R_OK)}
+                for p in pads]}
+
+
+def _guide_save(enabled, hold_ms, uniq):
+    """Persist the guide settings and update CONFIG_GUIDE."""
+    global CONFIG_GUIDE
+    cfg = {"enabled": bool(enabled), "hold_ms": int(hold_ms),
+           "uniq": (uniq or "").strip()}
+    with CONFIG_LOCK:
+        _config_set_field("guide", cfg)
+        CONFIG_GUIDE = cfg
+
+
+def set_guide(mock):
+    """Arm/disarm the watcher from the current CONFIG_GUIDE. Idempotent — call
+    from main() (AFTER load_config) and from the settings route."""
+    global _GUIDE_MOCK
+    _GUIDE_MOCK = bool(mock)
+    start_guide_watch()
+
+
+def start_guide_watch():
+    """(Re)start the watcher. Bumping the generation retires any prior thread —
+    it notices within _GUIDE_TICK, closes its fds in finally, and exits — and a
+    new daemon thread starts only when the setting is on and the box is capable.
+    The lock matters: `+= 1` is not atomic, so two concurrent POSTs could
+    otherwise lose an increment and leave two live watchers both firing."""
+    global _GUIDE_GEN
+    with _GUIDE_LOCK:
+        _GUIDE_GEN += 1
+        gen = _GUIDE_GEN
+    if _GUIDE_MOCK or not CONFIG_GUIDE.get("enabled"):
+        return
+    if not guide_hold_available():
+        print("[guide] hold trigger is on but unavailable on this box",
+              flush=True)
+        return
+    threading.Thread(target=_guide_watch, args=(gen,), daemon=True,
+                     name="guide-hold").start()
+    print("[guide] armed (%dms, %s)"
+          % (int(_guide_hold_s() * 1000),
+             ("pad %s" % CONFIG_GUIDE["uniq"]) if CONFIG_GUIDE.get("uniq")
+             else "any real pad"), flush=True)
+
+
+def _guide_drop(state, fd):
+    """Close and forget one pad. Dropping the fd drops its in-flight press with
+    it, so a pad that vanishes mid-hold can never fire later."""
+    state.pop(fd, None)
+    try:
+        os.close(fd)
+    except OSError:
+        pass
+
+
+def _guide_rescan(state, failed):
+    """Reconcile the open fds with the real-pad list, in place. Rebuilt BY PATH
+    every few seconds rather than opened once, because BT pads re-enumerate onto
+    a different eventN under a different uhid path. Unreadable nodes are skipped
+    — a mixed box may have one pad we cannot open.
+
+    `failed` is the set of nodes we have already warned about. Without it the
+    warning repeats on EVERY rescan: a Legion Go S's built-in pad is mode 000
+    (readable by nobody), so an unfiltered log spams the journal forever at the
+    rescan cadence. Entries are forgotten once the node goes away, so a genuinely
+    new failure still gets one line."""
+    uniq = (CONFIG_GUIDE.get("uniq") or "").strip()
+    want = {p["event"]: p for p in list_real_pads()
+            if _guide_pad_matches(p, uniq)}
+    for fd in list(state):
+        if state[fd]["event"] not in want:
+            _guide_drop(state, fd)          # unplugged, or no longer a match
+    failed &= set(want)                     # forget nodes that have vanished
+    have = {state[fd]["event"] for fd in state}
+    for ev, pad in want.items():
+        if ev in have:
+            continue
+        try:
+            # O_RDONLY, and NEVER EVIOCGRAB: Steam reads these same nodes.
+            fd = os.open(os.path.join(_DEV_INPUT, ev),
+                         os.O_RDONLY | os.O_NONBLOCK)
+        except OSError as e:
+            if ev not in failed:
+                failed.add(ev)
+                print("[guide] cannot open %s (%s)" % (ev, e), flush=True)
+            continue
+        failed.discard(ev)
+        state[fd] = {"event": ev, "uniq": pad["uniq"], "name": pad["name"],
+                     "down_at": None}
+        print("[guide] watching %s (%s, uniq=%s)"
+              % (ev, pad["name"] or "?", pad["uniq"] or "-"), flush=True)
+
+
+def _guide_read(state, fd, now):
+    """Drain <fd>, tracking BTN_MODE press/release. False when the node is gone.
+    value 2 is autorepeat and is IGNORED, so a repeat cannot restart or extend
+    the clock."""
+    st = state.get(fd)
+    if st is None:
+        return False
+    while True:
+        try:
+            chunk = os.read(fd, _GUIDE_EV_SIZE * 64)
+        except BlockingIOError:
+            return True
+        except OSError:
+            return False                    # ENODEV: pad vanished mid-read
+        if not chunk:
+            return False
+        for off in range(0, len(chunk) - _GUIDE_EV_SIZE + 1, _GUIDE_EV_SIZE):
+            _s, _us, etype, code, value = struct.unpack_from(
+                _INPUT_EVENT, chunk, off)
+            if etype != EV_KEY or code != BTN_MODE:
+                continue
+            if value == 1:
+                st["down_at"] = now         # press
+            elif value == 0:
+                st["down_at"] = None        # release CANCELS a pending hold
+        if len(chunk) < _GUIDE_EV_SIZE * 64:
+            return True                     # short read: nothing more queued
+
+
+def _guide_due(state, now):
+    """True when some pad's hold has matured. Also expires junk presses (a lost
+    release on a still-open fd). Clears EVERY pad's press when it fires, so two
+    pads held at once produce exactly one switch."""
+    hold = _guide_hold_s()
+    due = False
+    for st in state.values():
+        if st["down_at"] is None:
+            continue
+        elapsed = now - st["down_at"]
+        if elapsed > _GUIDE_STALE_HOLD_S:
+            st["down_at"] = None            # stuck key / lost release
+        elif elapsed >= hold:
+            due = True
+    if due:
+        for st in state.values():
+            st["down_at"] = None
+    return due
+
+
+def _guide_fire():
+    """A qualifying hold completed. EVERY guard lives here, because this path
+    bypasses the HTTP layer entirely — no bearer token, no route-level 404.
+    Returns True if a switch was attempted."""
+    try:
+        if not couchmode_available():
+            return False
+        # STRICT: unknown must NOT read as desktop. Firing while actually in Game
+        # Mode could restart the session under a running game, and GUIDE is held
+        # constantly there (it is Steam's own QAM gesture).
+        if _couchmode_session_strict() != "desktop":
+            return False
+        print("[guide] hold in desktop session -> couch mode", flush=True)
+        # No output pin: same as the app's default; gamescope picks its external
+        # via the hardcoded -O '*',eDP-1. On a multi-external box the phone's
+        # picker stays authoritative and this trigger is not.
+        r = couchmode_try_enter("", cooldown=_GUIDE_COOLDOWN_S)
+        if r is None:
+            return False                    # switch in flight, or cooling down
+        if not r.get("ok"):
+            print("[guide] couch mode not entered: %s"
+                  % ((r.get("steps", {}).get("session", {}) or {}).get("stderr")
+                     or "unknown"), flush=True)
+        return True
+    except Exception as e:                  # this thread must never die
+        print("[guide] fire failed: %s: %s" % (e.__class__.__name__, e),
+              flush=True)
+        return True
+
+
+def _guide_watch(gen):
+    """Watch every matching real pad for a guide hold. Runs until its generation
+    is superseded; any error closes everything and rebuilds with capped backoff.
+    Never raises out of the thread.
+
+    select() is deliberately NOT wrapped: a bad fd raises out to the outer
+    handler, which closes the whole set and rebuilds. Swallowing it here would
+    busy-spin at 100% CPU on a dead-but-still-listed node."""
+    backoff = 2
+    logged = False
+    while gen == _GUIDE_GEN:
+        state = {}                # fd -> {"event","uniq","name","down_at"}
+        failed = set()            # nodes already warned about (log-once)
+        fired = False
+        try:
+            next_scan = 0.0
+            while gen == _GUIDE_GEN:
+                now = time.monotonic()
+                if now >= next_scan:
+                    _guide_rescan(state, failed)
+                    next_scan = now + _GUIDE_RESCAN_S
+                    backoff, logged = 2, False
+                if not state:
+                    time.sleep(_GUIDE_TICK)     # no pad connected: cheap idle
+                    continue
+                # Wake exactly when the oldest hold matures, else on the tick, so
+                # fire latency is ~0ms past the threshold rather than up to a tick.
+                wait = _GUIDE_TICK
+                downs = [s["down_at"] for s in state.values()
+                         if s["down_at"] is not None]
+                if downs:
+                    wait = max(0.0, min(_GUIDE_TICK,
+                                        min(downs) + _guide_hold_s() - now))
+                r, _, _ = select.select(list(state), [], [], wait)
+                now = time.monotonic()
+                for fd in r:
+                    if not _guide_read(state, fd, now):
+                        _guide_drop(state, fd)
+                        next_scan = 0.0         # force an immediate resync
+                if _guide_due(state, time.monotonic()) and _guide_fire():
+                    fired = True
+                    break
+        except (IOError, OSError, ValueError) as e:
+            if not logged:
+                print("[guide] watch paused (%s: %s); retrying"
+                      % (e.__class__.__name__, e), flush=True)
+                logged = True
+        finally:
+            for fd in list(state):
+                _guide_drop(state, fd)
+        if gen != _GUIDE_GEN:
+            break
+        if fired:
+            # Let the session switch land, then rebuild from scratch. Reopening
+            # the nodes DISCARDS anything the kernel queued during the teardown
+            # (each open of an evdev node gets its own empty client buffer), so
+            # stale events cannot read as a fresh press. That is the debounce —
+            # no timestamp state needed. A user still holding GUIDE at reopen
+            # must release and re-press, because we never saw the DOWN.
+            time.sleep(_GUIDE_SETTLE_S)
+            backoff = 2
+        else:
+            time.sleep(backoff)
+            backoff = min(backoff * 2, 30)
+
+
+# ---------------------------------------------------------------------------
 # Minimal RFC6455 WebSocket support (server side, no fragmentation)
 # ---------------------------------------------------------------------------
 
@@ -7710,6 +8237,22 @@ class Handler(BaseHTTPRequestHandler):
                     self._send(200, info, started)
                 else:
                     self._send(404, {"error": "screensaver not installed"}, started)
+            elif path == "/api/guide-hold":
+                # Probe-and-appear like /api/screensaver: 404 when the box can't
+                # do the handoff or can't read evdev, so the app hides the row.
+                # Older apps that never ask are unaffected.
+                if self.mock:
+                    self._send(200, {
+                        "available": True, "enabled": False, "hold_ms": 1200,
+                        "uniq": "", "uniq_present": False, "session": "desktop",
+                        "controllers": [
+                            {"uniq": "44:16:22:1f:74:5d", "phys": "ac:f2:3c:8b:64:fe",
+                             "name": "Xbox Wireless Controller", "readable": True}],
+                    }, started)
+                elif guide_hold_available():
+                    self._send(200, guide_hold_info(), started)
+                else:
+                    self._send(404, {"error": "guide hold unavailable"}, started)
             else:
                 self._send(404, {"error": "not found"}, started)
         except BrokenPipeError:
@@ -8325,7 +8868,7 @@ class Handler(BaseHTTPRequestHandler):
                                      "session": "gamescope",
                                      "steps": {"session": {"ok": True}}}, started)
                     return
-                self._send(200, couchmode_start(output, hdr), started)
+                self._send(200, couchmode_enter(output, hdr), started)
                 return
 
             # POST /api/desktop-mode: leave Game Mode back to the Plasma desktop.
@@ -8337,7 +8880,56 @@ class Handler(BaseHTTPRequestHandler):
                     self._send(200, {"ok": True, "session": "desktop",
                                      "steps": {"session": {"ok": True}}}, started)
                     return
-                self._send(200, desktop_mode(), started)
+                self._send(200, couchmode_exit(), started)
+                return
+
+            # POST /api/guide-hold: opt into (or out of) the controller trigger.
+            # Partial patch — omitted keys keep their current value. No box-only
+            # gate: this is a user preference, not a security capability, and a
+            # bearer-token holder can already switch sessions via /api/couch-mode.
+            if path == "/api/guide-hold":
+                if not (self.mock or guide_hold_available()):
+                    self._send(404, {"error": "guide hold unavailable"}, started)
+                    return
+                try:
+                    req = json.loads(body.decode("utf-8")) if body else {}
+                    if not isinstance(req, dict):
+                        raise ValueError
+                except (ValueError, UnicodeDecodeError):
+                    self._send(400, {"error": "json body required"}, started)
+                    return
+                cur = dict(CONFIG_GUIDE)
+                enabled = req.get("enabled", cur.get("enabled"))
+                hold_ms = req.get("hold_ms", cur.get("hold_ms"))
+                uniq = req.get("uniq", cur.get("uniq"))
+                if not isinstance(enabled, bool):
+                    self._send(400, {"error": "enabled must be a boolean"}, started)
+                    return
+                if isinstance(hold_ms, bool) or not isinstance(hold_ms, int):
+                    self._send(400, {"error": "hold_ms must be an integer"}, started)
+                    return
+                if not GUIDE_MIN_HOLD_MS <= hold_ms <= GUIDE_MAX_HOLD_MS:
+                    self._send(400, {"error": "hold_ms must be %d..%d"
+                                     % (GUIDE_MIN_HOLD_MS, GUIDE_MAX_HOLD_MS)},
+                               started)
+                    return
+                if not isinstance(uniq, str):
+                    self._send(400, {"error": "uniq must be a string"}, started)
+                    return
+                if self.mock:
+                    self._send(200, {"ok": True, "enabled": enabled,
+                                     "hold_ms": hold_ms, "uniq": uniq.strip()},
+                               started)
+                    return
+                try:
+                    _guide_save(enabled, hold_ms, uniq)
+                except Exception as e:
+                    self._send(500, {"error": "could not save: %s" % e}, started)
+                    return
+                set_guide(False)     # re-arm (or retire) the watcher in place
+                info = guide_hold_info()
+                info["ok"] = True
+                self._send(200, info, started)
                 return
 
             # POST /api/power/sleep: arm a delayed suspend/poweroff.
@@ -8935,6 +9527,7 @@ def main():
     set_screen(args.mock)
     set_power_schedule(args.mock)
     set_screensaver(args.mock)
+    set_guide(args.mock)  # arms the guide-hold watcher when opted in
     set_caps(args.mock)  # after the detectors above; snapshots CAPS
     port = args.port if args.port is not None else (CONFIG_PORT or DEFAULT_PORT)
 

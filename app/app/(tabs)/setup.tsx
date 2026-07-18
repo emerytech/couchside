@@ -23,6 +23,7 @@ import { Gated } from '@/components/Gated';
 import { LogsPanel } from '@/components/LogsPanel';
 import { QrView } from '@/components/QrView';
 import { BoxScanPair } from '@/components/BoxScanPair';
+import { GuideHoldSetup } from '@/components/GuideHoldSetup';
 import { SmartTvSetup } from '@/components/SmartTvSetup';
 import { TabScreen } from '@/components/TabScreen';
 import { useLockOrientation } from '@/hooks/useLockOrientation';
@@ -478,6 +479,10 @@ function BoxEditPanel({
         <SmartTvSetup settings={box} />
       </View>
 
+      <View style={styles.guideHoldWrap}>
+        <GuideHoldSetup settings={box} />
+      </View>
+
       <View style={styles.editFooter}>
         {box.lastIp != null && (
           <Text style={styles.editLastIp}>last seen at {box.lastIp}</Text>
@@ -500,7 +505,7 @@ export default function SetupScreen() {
 }
 
 /** A labeled on/off row for the Preferences card. */
-function TogglePref({
+export function TogglePref({
   label,
   sub,
   value,
@@ -531,7 +536,7 @@ function TogglePref({
 }
 
 /** A labeled segmented picker for the Preferences card. */
-function SegPref<T extends string | number>({
+export function SegPref<T extends string | number>({
   label,
   sub,
   options,
@@ -1598,6 +1603,7 @@ const makeStyles = (t: Palette) => StyleSheet.create({
   },
   editSteps: { marginTop: 14 },
   smartTvWrap: { marginTop: 14 },
+  guideHoldWrap: { marginTop: 14 },
   editError: {
     color: t.red,
     fontSize: 12,

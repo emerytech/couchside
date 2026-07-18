@@ -33,6 +33,15 @@ jobs:
             agent/qr.py
           echo "py_compile OK"
 
+      # The guide-hold trigger fires a SESSION SWITCH, which tears down the
+      # user's desktop and any unsaved work. Its two dangerous failure modes —
+      # firing on a tap, and matching the agent's OWN emulated pad (created on
+      # every phone connect) — are invisible to the --mock smoke test below and
+      # otherwise need real hardware plus a controller to catch. Pure stdlib, no
+      # pytest, runs in well under a second.
+      - name: Unit tests (guide-hold trigger)
+        run: python3 tests/test_guide_hold.py
+
   smoke:
     runs-on: ubuntu-latest
     needs: compile
@@ -97,5 +106,23 @@ jobs:
           echo "GET /api/status (token) -> $AUTH_CODE"
           [ "$AUTH_CODE" = "200" ] || { echo "expected /api/status 200 with token, got $AUTH_CODE" >&2; exit 1; }
           python3 -c "import json,sys; json.load(open('$BODY')); print('authed body is valid JSON')"
+
+          # The guide-hold route must be served and authed like any other. In
+          # --mock it answers 200 with a synthetic controller list; on a real box
+          # it 404s when the handoff or evdev is unavailable, which is how the
+          # app decides whether to show the row at all.
+          GBODY="$RUNNER_TEMP/guide.json"
+          GUIDE_CODE=$(curl -s -o "$GBODY" -w '%{http_code}' \
+            -H "Authorization: Bearer $TOKEN" "http://127.0.0.1:$PORT/api/guide-hold")
+          echo "GET /api/guide-hold (token) -> $GUIDE_CODE"
+          [ "$GUIDE_CODE" = "200" ] || { echo "expected /api/guide-hold 200 in mock, got $GUIDE_CODE" >&2; exit 1; }
+          python3 - "$GBODY" <<'PY'
+          import json, sys
+          d = json.load(open(sys.argv[1]))
+          # Must ship OFF by default: a false trigger destroys unsaved desktop work.
+          assert d["enabled"] is False, "guide-hold must default to disabled"
+          assert isinstance(d["controllers"], list), "controllers must be a list"
+          print("guide-hold body OK (enabled=%s)" % d["enabled"])
+          PY
 
           echo "smoke OK"

@@ -217,7 +217,15 @@ function normalizeCaps(raw: unknown): BoxCaps | undefined {
   // screensaver arrived later (agent 2.8.4): optional, so caps persisted from
   // a 2.8.2/2.8.3 box still round-trip. undefined = unknown -> the app probes.
   const screensaver = bool('screensaver');
-  return { gamepad, steam, media, tv, screen, power_schedule, screensaver };
+  // couchmode/desktop are declared on BoxCaps but were being dropped here, so
+  // they never survived a persist/reload and the app re-probed every launch.
+  // Optional like screensaver: absent stays undefined = unknown, never false.
+  const couchmode = bool('couchmode');
+  const desktop = bool('desktop');
+  return {
+    gamepad, steam, media, tv, screen, power_schedule,
+    screensaver, couchmode, desktop,
+  };
 }
 
 /** Coerce an arbitrary parsed value into a valid Box, or null if unusable. */
