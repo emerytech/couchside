@@ -6858,8 +6858,9 @@ _GUIDE_MOCK = False
 
 def _parse_input_devices(text):
     """Parse /proc/bus/input/devices into
-    [{"name","phys","uniq","handlers":[...]}]. Tolerant of unknown lines.
-    partition(':') is used so a Phys like usb-0000:c3:00.4-1/input0 survives."""
+    [{"name","phys","uniq","handlers":[...],"keybits":[...]}]. Tolerant of
+    unknown lines. partition(':') is used so a Phys like
+    usb-0000:c3:00.4-1/input0 survives."""
     recs, cur = [], None
     for line in text.splitlines():
         if not line.strip():
@@ -6868,7 +6869,8 @@ def _parse_input_devices(text):
         tag, _, val = line.partition(":")
         val = val.strip()
         if tag == "I":
-            cur = {"name": "", "phys": "", "uniq": "", "handlers": []}
+            cur = {"name": "", "phys": "", "uniq": "", "handlers": [],
+                   "keybits": []}
             recs.append(cur)
         elif cur is None:
             continue
@@ -6880,7 +6882,31 @@ def _parse_input_devices(text):
             cur["uniq"] = val[5:].strip()
         elif tag == "H" and val.startswith("Handlers="):
             cur["handlers"] = val[9:].split()
+        elif tag == "B" and val.startswith("KEY="):
+            cur["keybits"] = val[4:].split()
     return recs
+
+
+def _declares_key(rec, code):
+    """True when the device's EV_KEY bitmask advertises <code>.
+
+    /proc prints the bitmask as space-separated 64-bit hex words, MOST
+    significant word FIRST, so word 0 of the bit space is the LAST field. A
+    device with no 'B: KEY=' line declares no keys at all.
+
+    This is what separates a controller from its own sibling nodes: a USB
+    DualSense registers TWO js devices sharing one Uniq — the pad, and a
+    'Motion Sensors' node that declares no keys. Without this test the pad shows
+    up twice in the app's controller list. It also drops wheels and flight
+    panels, which are joysticks with no guide button."""
+    words = rec.get("keybits") or []
+    idx, bit = divmod(code, 64)
+    if idx >= len(words):
+        return False
+    try:
+        return bool(int(words[len(words) - 1 - idx], 16) >> bit & 1)
+    except ValueError:
+        return False
 
 
 def list_real_pads():
@@ -6905,6 +6931,8 @@ def list_real_pads():
             continue
         if not (rec["phys"] or rec["uniq"]):
             continue                       # emulated; see the block comment
+        if not _declares_key(rec, BTN_MODE):
+            continue                       # sibling sensor node / wheel / panel
         ev = next((t for t in h if t.startswith("event")), None)
         if not ev:
             continue

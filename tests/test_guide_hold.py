@@ -63,6 +63,7 @@ S: Sysfs=/devices/pci0000:00/0000:c3:00.4/usb3/3-1/3-1:1.1/input/input12
 U: Uniq=
 H: Handlers=event2 js0
 B: EV=20000b
+B: KEY=7cdb000000000000 0 0 0 0
 
 I: Bus=0003 Vendor=28de Product=11ff Version=0001
 N: Name="Microsoft X-Box 360 pad 0"
@@ -71,6 +72,7 @@ S: Sysfs=/devices/virtual/input/input958
 U: Uniq=
 H: Handlers=event17 js1
 B: EV=20000b
+B: KEY=7cdb000000000000 0 0 0 0
 
 I: Bus=0005 Vendor=045e Product=0b22 Version=0522
 N: Name="Xbox Wireless Controller"
@@ -79,6 +81,24 @@ S: Sysfs=/devices/virtual/misc/uhid/0005:045E:0B22.000A/input/input962
 U: Uniq=44:16:22:1f:74:5d
 H: Handlers=sysrq kbd event20 js2
 B: EV=30001b
+B: KEY=7fff000000000000 1000000000000 8000000000 e080ffdf01cfffff fffffffffffffffe
+
+I: Bus=0003 Vendor=054c Product=0ce6 Version=8111
+N: Name="Sony Interactive Entertainment DualSense Wireless Controller"
+P: Phys=
+S: Sysfs=/devices/pci0000:00/0000:c3:00.3/usb5/5-2/5-2:1.0/0003:054C:0CE6.000D/input/input980
+U: Uniq=14:3a:9a:1b:e9:01
+H: Handlers=event24 js4
+B: EV=20000b
+B: KEY=7fdb000000000000 0 0 0 0
+
+I: Bus=0003 Vendor=054c Product=0ce6 Version=8111
+N: Name="Sony Interactive Entertainment DualSense Wireless Controller Motion Sensors"
+P: Phys=
+S: Sysfs=/devices/pci0000:00/0000:c3:00.3/usb5/5-2/5-2:1.0/0003:054C:0CE6.000D/input/input981
+U: Uniq=14:3a:9a:1b:e9:01
+H: Handlers=event25 js5
+B: EV=9
 
 I: Bus=0019 Vendor=0000 Product=0005 Version=0000
 N: Name="Lid Switch"
@@ -93,13 +113,22 @@ B: EV=21
 def test_pad_discrimination():
     print("real vs emulated pad discrimination")
     recs = cs._parse_input_devices(REAL_DUMP)
-    check("parses all 4 records", len(recs), 4)
+    check("parses all 6 records", len(recs), 6)
 
-    def accepted(r):
-        return (any(t.startswith("js") for t in r["handlers"])
-                and bool(r["phys"] or r["uniq"]))
-
-    names = [r["name"] for r in recs if accepted(r)]
+    # Drive the REAL list_real_pads() by pointing it at a fixture file, rather
+    # than reimplementing its filter here — a local copy of the logic passes
+    # even when the shipped filter has changed underneath it.
+    import tempfile
+    fd, path = tempfile.mkstemp()
+    with os.fdopen(fd, "w") as f:
+        f.write(REAL_DUMP)
+    orig = cs._PROC_INPUT_DEVICES
+    try:
+        cs._PROC_INPUT_DEVICES = path
+        names = [p["name"] for p in cs.list_real_pads()]
+    finally:
+        cs._PROC_INPUT_DEVICES = orig
+        os.unlink(path)
     check("real wired pad accepted (Phys set, Uniq EMPTY)",
           "Legion Go S" in names, True)
     check("real Bluetooth pad accepted (under /devices/virtual via uhid)",
@@ -108,15 +137,52 @@ def test_pad_discrimination():
     check("emulated pad REJECTED (no Phys, no Uniq)",
           "Microsoft X-Box 360 pad 0" in names, False)
     check("non-joystick (Lid Switch) rejected", "Lid Switch" in names, False)
+    # A USB DualSense registers TWO js devices sharing one Uniq. Only the pad
+    # declares BTN_MODE; the Motion Sensors node declares no keys at all. Without
+    # the key-bitmask test the same controller is listed twice in the app.
+    check("DualSense pad accepted (empty Phys, Uniq set)",
+          "Sony Interactive Entertainment DualSense Wireless Controller" in names,
+          True)
+    check("DualSense Motion Sensors sibling REJECTED",
+          any("Motion Sensors" in n for n in names), False)
+    check("exactly 3 real pads accepted", len(names), 3)
 
-    lg = next(r for r in recs if r["name"] == "Legion Go S")
+
+def test_declares_key():
+    print("BTN_MODE capability filter")
+    recs = {r["name"]: r for r in cs._parse_input_devices(REAL_DUMP)}
+    # /proc prints 64-bit words most-significant FIRST, so bit 316 lives in the
+    # first of five words (316 // 64 == 4 -> index 4 from the end).
+    check("Xbox pad declares BTN_MODE",
+          cs._declares_key(recs["Xbox Wireless Controller"], cs.BTN_MODE), True)
+    check("DualSense declares BTN_MODE",
+          cs._declares_key(
+              recs["Sony Interactive Entertainment DualSense Wireless Controller"],
+              cs.BTN_MODE), True)
+    check("Motion Sensors (no KEY line) declares nothing",
+          cs._declares_key(
+              recs["Sony Interactive Entertainment DualSense Wireless Controller "
+                   "Motion Sensors"], cs.BTN_MODE), False)
+    check("Lid Switch does not declare BTN_MODE",
+          cs._declares_key(recs["Lid Switch"], cs.BTN_MODE), False)
+    # A device whose bitmask is too short must not index out of range.
+    check("short bitmask is handled, not crashed",
+          cs._declares_key({"keybits": ["7fff000000000000"]}, cs.BTN_MODE), False)
+    check("garbage bitmask is handled, not crashed",
+          cs._declares_key({"keybits": ["zz", "0", "0", "0", "0"]}, cs.BTN_MODE),
+          False)
+
+    lg = recs["Legion Go S"]
     check("Phys containing colons survives parsing",
           lg["phys"], "usb-0000:c3:00.4-1/input0")
-    xb = next(r for r in recs if r["name"] == "Xbox Wireless Controller")
+    xb = recs["Xbox Wireless Controller"]
     check("Uniq (pad MAC, stable across BT reconnect) parsed",
           xb["uniq"], "44:16:22:1f:74:5d")
     check("js token matched by prefix, not equality ('js2' not 'js')",
           any(t.startswith("js") for t in xb["handlers"]), True)
+    ds = recs["Sony Interactive Entertainment DualSense Wireless Controller"]
+    check("DualSense over USB has EMPTY Phys (Phys-only rule would reject it)",
+          ds["phys"], "")
 
 
 def test_favourite_filter():
@@ -210,7 +276,8 @@ def test_config_defaults():
 
 
 if __name__ == "__main__":
-    for fn in (test_pad_discrimination, test_favourite_filter, test_hold_timing,
+    for fn in (test_pad_discrimination, test_declares_key,
+               test_favourite_filter, test_hold_timing,
                test_event_decoding, test_config_defaults):
         fn()
     print()
