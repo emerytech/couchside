@@ -84,16 +84,21 @@ function pairingUrl(box: Box): string {
  */
 const QR_SIZE = 232;
 
-// About-row app version. `expoConfig` is embedded in store builds, so it
-// reflects the installed binary: the marketing version plus the native build
-// number (iOS buildNumber / Android versionCode).
-const APP_VERSION = Constants.expoConfig?.version ?? '—';
+// About-row app version. Read the NATIVE values — CFBundleShortVersionString /
+// CFBundleVersion on iOS, versionName / versionCode on Android — because
+// `expoConfig` is baked from app.json when the JS bundle is built and can lag
+// the actual binary: a TestFlight build 46 install reported "build 45", which
+// sent us chasing a phantom install problem. expoConfig is only a fallback
+// (e.g. Expo Go, where the native values are the host app's).
+const APP_VERSION =
+  Constants.nativeApplicationVersion ?? Constants.expoConfig?.version ?? '—';
 const APP_BUILD =
-  Platform.OS === 'ios'
+  Constants.nativeBuildVersion ??
+  (Platform.OS === 'ios'
     ? Constants.expoConfig?.ios?.buildNumber ?? ''
     : Constants.expoConfig?.android?.versionCode != null
       ? String(Constants.expoConfig.android.versionCode)
-      : '';
+      : '');
 
 // couchside.tv setup guide — how to install the agent on a box. New users who
 // grabbed the app from a store land here with no idea a box-side agent exists.
