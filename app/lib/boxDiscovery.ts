@@ -67,7 +67,7 @@ function broadcastTargets(ip?: string): string[] {
  * global target a scan finds nothing on iOS (Android is permissive). Best-effort
  * — resolves undefined if expo-network can't read a usable address.
  */
-async function selfIp(): Promise<string | undefined> {
+export async function selfIp(): Promise<string | undefined> {
   try {
     const ip = await Network.getIpAddressAsync();
     return typeof ip === 'string' && /^\d+\.\d+\.\d+\.\d+$/.test(ip) && ip !== '0.0.0.0'
@@ -78,17 +78,35 @@ async function selfIp(): Promise<string | undefined> {
   }
 }
 
+/**
+ * Every host address in `ip`'s /24 (x.y.z.1 … x.y.z.254). iOS drops UDP
+ * broadcast — BOTH the global 255.255.255.255 AND the subnet-directed x.y.z.255
+ * — so a broadcast-only scan finds nothing there even on the right subnet.
+ * Unicasting the probe to each host is the reliable LAN sweep on iOS (the same
+ * path add-by-IP uses); 254 tiny datagrams is cheap. Empty if `ip` is unusable.
+ */
+function sweepTargets(ip?: string): string[] {
+  if (!ip) return [];
+  const m = /^(\d+)\.(\d+)\.(\d+)\.\d+$/.exec(ip);
+  if (!m) return [];
+  const base = `${m[1]}.${m[2]}.${m[3]}.`;
+  const out: string[] = [];
+  for (let h = 1; h <= 254; h++) out.push(base + h);
+  return out;
+}
+
 export async function scanForBoxes(
   opts: { ip?: string; port?: number; timeoutMs?: number } = {},
 ): Promise<FoundBox[]> {
   if (!dgram) throw new Error('Box discovery needs a fresh native build of the app');
   const port = opts.port ?? DEFAULT_PORT;
-  const timeoutMs = opts.timeoutMs ?? 2500;
+  const timeoutMs = opts.timeoutMs ?? 3000;
   const probe = Buffer.from(PROBE);
-  // Prefer a directed /24 broadcast (caller-supplied IP, else the phone's own)
-  // so iOS — which drops the global broadcast — still reaches boxes on the LAN.
-  // broadcastTargets keeps 255.255.255.255 too, for Android.
-  const targets = broadcastTargets(opts.ip ?? (await selfIp()));
+  const myIp = opts.ip ?? (await selfIp());
+  // iOS drops UDP broadcast (global AND directed), so a broadcast-only scan
+  // finds nothing there. Unicast-sweep the phone's /24 (reliable on iOS), and
+  // keep the broadcasts for Android where they're one fast packet.
+  const targets = [...broadcastTargets(myIp), ...sweepTargets(myIp)];
 
   return new Promise<FoundBox[]>((resolve) => {
     const socket = dgram!.createSocket({ type: 'udp4' });
