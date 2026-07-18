@@ -11,9 +11,27 @@ import {
 } from 'react-native';
 
 import { usePoll } from '@/hooks/usePoll';
-import { api, ConnSettings, hostKey, Tv, TvPairResult } from '@/lib/api';
+import { api, ApiError, ConnSettings, hostKey, Tv, TvPairResult } from '@/lib/api';
 import { normalizeMac } from '@/lib/settings';
 import { useTheme, useThemedStyles, type Palette } from '@/lib/theme';
+
+/**
+ * A pairing error the user can act on. The box's own reason (e.g. a 500
+ * "could not persist config: Permission denied") is surfaced verbatim instead
+ * of a blanket "could not reach the box" — a server-side failure that masquer-
+ * ades as a network error is what turned a config-permission bug into a long
+ * hunt. Network/timeout kinds keep the friendly fallback (accurate for those).
+ */
+function pairErr(e: unknown, fallback: string): string {
+  if (e instanceof ApiError) {
+    // http = the box answered with an error status; show what it said.
+    if (e.kind === 'http') return `${fallback} — box says: ${e.message}`;
+    // unreachable / timeout / unauthorized: the friendly fallback fits, but
+    // name the kind so it's still diagnosable.
+    return `${fallback} (${e.kind})`;
+  }
+  return fallback;
+}
 
 type Brand = 'webos' | 'samsung' | 'roku' | 'androidtv' | 'vidaa';
 
@@ -98,8 +116,8 @@ export function SmartTvSetup({ settings }: { settings: ConnSettings }) {
       else r = await api.tvAddRoku(settings, h);
       if (r.ok) connected(r);
       else setMsg({ ok: false, text: r.error ?? 'Could not connect to the TV.' });
-    } catch {
-      setMsg({ ok: false, text: 'Could not reach the box or TV. Check the IP and try again.' });
+    } catch (e: unknown) {
+      setMsg({ ok: false, text: pairErr(e, 'Could not reach the box or TV. Check the IP and try again.') });
     } finally {
       setBusy(false);
     }
@@ -118,8 +136,8 @@ export function SmartTvSetup({ settings }: { settings: ConnSettings }) {
       const r = await api.tvAndroidtvPairFinish(settings, c, m);
       if (r.ok) connected(r);
       else setMsg({ ok: false, text: r.error ?? 'Pairing failed — check the code and retry.' });
-    } catch {
-      setMsg({ ok: false, text: 'Could not reach the box. Try again.' });
+    } catch (e: unknown) {
+      setMsg({ ok: false, text: pairErr(e, 'Could not reach the box. Try again.') });
     } finally {
       setBusy(false);
     }
