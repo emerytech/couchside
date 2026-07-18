@@ -57,6 +57,7 @@ export function RemoteView({
   const tv = tvPoll.data?.available ? tvPoll.data : null;
   const hasTvKeys = tv?.keys === true;
   const hasTvText = tv?.text === true;
+  const hasSourceKey = tv?.source_key === true;
   const sources = tv?.sources ?? [];
   const canBlank = tv?.screen_toggle === true;
 
@@ -241,6 +242,13 @@ export function RemoteView({
               </Pressable>
             ))}
           </View>
+          {hasSourceKey && target === 'tv' && (
+            <Pressable
+              onPress={() => tvKey('source')}
+              style={({ pressed }) => [styles.pwr, pressed && styles.pressed]}>
+              <Ionicons name="swap-horizontal" size={20} color={t.blue} />
+            </Pressable>
+          )}
           {hasTvText && target === 'tv' && (
             <Pressable
               onPress={() => {
