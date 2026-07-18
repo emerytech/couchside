@@ -1,4 +1,5 @@
 import Ionicons from '@expo/vector-icons/Ionicons';
+import * as Application from 'expo-application';
 import Constants from 'expo-constants';
 import * as Linking from 'expo-linking';
 import { useLocalSearchParams, useRouter } from 'expo-router';
@@ -90,10 +91,16 @@ const QR_SIZE = 232;
 // the actual binary: a TestFlight build 46 install reported "build 45", which
 // sent us chasing a phantom install problem. expoConfig is only a fallback
 // (e.g. Expo Go, where the native values are the host app's).
+//
+// These come from expo-application. `Constants.nativeBuildVersion` does NOT
+// exist in SDK 57 — expo-constants only carries a deprecation note pointing
+// here — and reading it off Constants silently yields undefined (it typechecks
+// only because those manifest types have a `Record<string, any>` index
+// signature), which would quietly reinstate the very bug this fixes.
 const APP_VERSION =
-  Constants.nativeApplicationVersion ?? Constants.expoConfig?.version ?? '—';
+  Application.nativeApplicationVersion ?? Constants.expoConfig?.version ?? '—';
 const APP_BUILD =
-  Constants.nativeBuildVersion ??
+  Application.nativeBuildVersion ??
   (Platform.OS === 'ios'
     ? Constants.expoConfig?.ios?.buildNumber ?? ''
     : Constants.expoConfig?.android?.versionCode != null
