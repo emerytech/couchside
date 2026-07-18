@@ -38,6 +38,17 @@ The gamepad UI on the phone and the Steam sidebar responding on the TV, at the s
 - **QR pairing:** the installer prints a QR code; scan it with the phone camera and the app opens with host, port, and token prefilled.
 - **Volume, mute, and box power.** A control next to the device picker adjusts the box's own OS volume and mute (a real drag-to-set 0–100 slider on SteamOS/Bazzite). On an HDMI-CEC or RS-232 setup you can switch it to drive the TV/panel instead — and on an RS-232 panel, also switch the display's input source, blank the screen without cutting power to an OPS box, and pass factory-remote keys. The same control suspends the box and, once it is offline, wakes it back up with a Wake-on-LAN magic packet.
 
+## Control your TV
+
+Couchside can also drive a **networked smart TV directly** — no HDMI-CEC and no serial cable. Add one under **Setup → Boxes → Smart TV remote**; the D-pad and on-screen keyboard on the Pad tab light up once it's connected.
+
+- **LG webOS** — enter the TV's IP, then accept the pairing prompt that appears on the TV (once). An optional MAC address enables Wake-on-LAN power-on.
+- **Samsung (Tizen)** _(beta — not yet validated on real hardware)_ — enter the IP, then approve the "Allow" prompt on the TV. Optional MAC for Wake-on-LAN.
+- **Roku** — enter the IP; no pairing. **If the D-pad doesn't respond after adding, the Roku is blocking app control:** on the Roku, set _Settings → System → Advanced system settings → Control by mobile apps → Network access_ to **Permissive**.
+- **Android / Google TV** — enter the IP, then type the 6-digit code the TV shows. Optional MAC for Wake-on-LAN.
+
+These network backends run on the Linux agent. The Windows agent supports **Roku** (from `0.3.6-win`); LG/Samsung/Google TV are Linux-only for now. TV control also works **through the box** when it has an HDMI-CEC link or an RS-232 serial panel (power, volume, input source, on-screen remote) — see the volume/power control above.
+
 ## Requirements
 
 - A **SteamOS, Bazzite, or other systemd-based Linux** machine on your home network (HTPC, Steam Deck in desktop/docked use, mini PC…). The agent is pure Python 3 stdlib: no pip, and it works on immutable/ostree systems.
