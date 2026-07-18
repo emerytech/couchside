@@ -3755,6 +3755,7 @@ _SAMSUNG_KEYS = {
     "ok": "KEY_ENTER", "menu": "KEY_MENU", "home": "KEY_HOME", "back": "KEY_RETURN",
     "exit": "KEY_EXIT", "info": "KEY_INFO", "play": "KEY_PLAY", "pause": "KEY_PAUSE",
     "stop": "KEY_STOP", "rewind": "KEY_REWIND", "fast_forward": "KEY_FF",
+    "source": "KEY_SOURCE",   # opens the Tizen source/input menu
 }
 
 
@@ -4071,6 +4072,7 @@ _ATV_KEYS = {
     "up": 19, "down": 20, "left": 21, "right": 22, "ok": 23, "menu": 82,
     "home": 3, "back": 4, "exit": 4, "play": 126, "pause": 127, "stop": 86,
     "rewind": 89, "fast_forward": 90,
+    "source": 178,   # KEYCODE_TV_INPUT — opens the input picker on Google TV
 }
 
 
@@ -4728,6 +4730,11 @@ def tv_info():
         "keys": (panel_available() or webos_available()
                  or samsung_available() or roku_available()
                  or androidtv_available() or vidaa_available()),
+        # A "source" key opens the TV's input picker (agent >= 2.9.12). Android/
+        # Google TV (KEYCODE_TV_INPUT) and Samsung (KEY_SOURCE) have one; webOS/
+        # Roku don't (no single input-menu key), and the RS-232 panel uses its
+        # own explicit source list (source_box / sources) instead.
+        "source_key": androidtv_available() or samsung_available(),
         # Text entry into a focused on-TV field. webOS (IME), Samsung
         # (SendInputString) and Roku (Lit_ keypresses) support it; the panel
         # and CEC have no text channel.

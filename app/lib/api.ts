@@ -392,6 +392,12 @@ export type Tv = {
    */
   keys?: boolean;
   /**
+   * A `source` key (POST /api/tv/key/source) opens the TV's input picker (agent
+   * >= 2.9.12). Set by Android/Google TV (KEYCODE_TV_INPUT) and Samsung
+   * (KEY_SOURCE); the RS-232 panel uses its explicit `sources` list instead.
+   */
+  source_key?: boolean;
+  /**
    * Text entry into a focused on-TV field via POST /api/tv/text (agent >=
    * 2.9.7). Set by the network smart-TV backends (webOS IME, Samsung
    * SendInputString, Roku Lit_ keys); never by panel/CEC.
@@ -418,6 +424,7 @@ export type TvKey =
   | 'home'
   | 'back'
   | 'settings'
+  | 'source'
   | 'bright_up'
   | 'bright_down';
 
