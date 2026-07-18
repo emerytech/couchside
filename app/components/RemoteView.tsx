@@ -1,6 +1,17 @@
 import Ionicons from '@expo/vector-icons/Ionicons';
 import React, { useCallback, useState } from 'react';
-import { Alert, PanResponder, PanResponderInstance, Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
+import {
+  Alert,
+  Modal,
+  PanResponder,
+  PanResponderInstance,
+  Pressable,
+  ScrollView,
+  StyleSheet,
+  Text,
+  TextInput,
+  View,
+} from 'react-native';
 
 import { usePoll } from '@/hooks/usePoll';
 import { useTrackpad } from '@/hooks/useTrackpad';
@@ -45,8 +56,20 @@ export function RemoteView({
   const tvPoll = usePoll<Tv>(() => api.tv(settings), 15000, true, hostKey(settings));
   const tv = tvPoll.data?.available ? tvPoll.data : null;
   const hasTvKeys = tv?.keys === true;
+  const hasTvText = tv?.text === true;
   const sources = tv?.sources ?? [];
   const canBlank = tv?.screen_toggle === true;
+
+  // On-TV text entry (webOS IME / Samsung / Roku Lit_ keys). Opens a small
+  // modal; sends the whole string to /api/tv/text.
+  const [textOpen, setTextOpen] = useState(false);
+  const [textVal, setTextVal] = useState('');
+  const sendText = useCallback(() => {
+    const s = textVal;
+    setTextOpen(false);
+    setTextVal('');
+    if (s) void api.tvText(settings, s).catch(() => {});
+  }, [textVal, settings]);
 
   // Desktop nav, self-polled and session-aware: the SteamOS/Bazzite desktop
   // cluster (Start menu, trackpad, overview) appears only while the box is in
@@ -218,6 +241,16 @@ export function RemoteView({
               </Pressable>
             ))}
           </View>
+          {hasTvText && target === 'tv' && (
+            <Pressable
+              onPress={() => {
+                hapticLight();
+                setTextOpen(true);
+              }}
+              style={({ pressed }) => [styles.pwr, pressed && styles.pressed]}>
+              <Ionicons name="keypad" size={20} color={t.blue} />
+            </Pressable>
+          )}
           {canBlank && (
             <Pressable onPress={blank} style={({ pressed }) => [styles.pwr, pressed && styles.pressed]}>
               <Ionicons name="power" size={20} color={t.red} />
@@ -346,6 +379,39 @@ export function RemoteView({
           })}
         </View>
       )}
+
+      {/* On-TV text entry (webOS / Samsung / Roku). Gated by tv.text. */}
+      <Modal
+        visible={textOpen}
+        transparent
+        animationType="fade"
+        onRequestClose={() => setTextOpen(false)}>
+        <Pressable style={styles.textBackdrop} onPress={() => setTextOpen(false)}>
+          <Pressable style={styles.textSheet} onPress={() => {}}>
+            <Text style={styles.textTitle}>Send text to the TV</Text>
+            <TextInput
+              value={textVal}
+              onChangeText={setTextVal}
+              placeholder="Type here…"
+              placeholderTextColor={t.textFaint}
+              autoFocus
+              autoCapitalize="none"
+              autoCorrect={false}
+              returnKeyType="send"
+              onSubmitEditing={sendText}
+              style={styles.textInput}
+            />
+            <View style={styles.textBtnRow}>
+              <Pressable onPress={() => setTextOpen(false)} style={styles.textBtn}>
+                <Text style={styles.textBtnCancel}>CANCEL</Text>
+              </Pressable>
+              <Pressable onPress={sendText} style={[styles.textBtn, styles.textBtnSendBg]}>
+                <Text style={styles.textBtnSend}>SEND</Text>
+              </Pressable>
+            </View>
+          </Pressable>
+        </Pressable>
+      </Modal>
     </View>
   );
 }
@@ -838,4 +904,40 @@ const makeStyles = (t: Palette) => StyleSheet.create({
     letterSpacing: 0.5,
     fontFamily: mono,
   },
+  textBackdrop: {
+    flex: 1,
+    backgroundColor: '#000a',
+    justifyContent: 'center',
+    padding: 24,
+  },
+  textSheet: {
+    backgroundColor: t.card,
+    borderColor: t.cardBorder,
+    borderWidth: StyleSheet.hairlineWidth,
+    borderRadius: 14,
+    padding: 16,
+    gap: 12,
+  },
+  textTitle: { color: t.text, fontSize: 15, fontWeight: '700' },
+  textInput: {
+    backgroundColor: t.inset,
+    borderColor: t.cardBorder,
+    borderWidth: StyleSheet.hairlineWidth,
+    borderRadius: 10,
+    paddingHorizontal: 12,
+    paddingVertical: 11,
+    color: t.text,
+    fontSize: 16,
+  },
+  textBtnRow: { flexDirection: 'row', gap: 10 },
+  textBtn: {
+    flex: 1,
+    borderRadius: 10,
+    paddingVertical: 11,
+    alignItems: 'center',
+    backgroundColor: t.inset,
+  },
+  textBtnSendBg: { backgroundColor: t.blue },
+  textBtnCancel: { color: t.textDim, fontWeight: '700', fontSize: 13 },
+  textBtnSend: { color: t.bg, fontWeight: '800', fontSize: 13 },
 });
