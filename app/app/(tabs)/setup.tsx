@@ -1191,7 +1191,7 @@ function SetupBody() {
               </View>
               <SegPref
                 label="Default input mode"
-                sub="What a newly paired box starts on."
+                sub="The view the Pad tab opens on. Applies to the active box now, and seeds newly paired boxes."
                 options={[
                   { value: 'gamepad', label: 'Pad' },
                   { value: 'swipe', label: 'Swipe' },
@@ -1201,6 +1201,10 @@ function SetupBody() {
                 value={defaultPadMode}
                 onSelect={(v) => {
                   void setPref('defaultPadMode', v);
+                  // The Pad tab reads the ACTIVE box's per-box padMode once a box
+                  // is paired, so the pref alone changes nothing for existing
+                  // boxes. Write it through so the setting takes effect live.
+                  if (activeBoxId) void updateBox(activeBoxId, { padMode: v });
                   hapticSelection();
                 }}
               />
@@ -1313,8 +1317,8 @@ function SetupBody() {
                 label="Hardware volume buttons"
                 sub={
                   Platform.OS === 'ios'
-                    ? "The phone's Vol +/- control the box/TV volume while the Remote is open. Experimental on iOS: the phone's volume overlay still shows and it only works with the app in front."
-                    : "The phone's Vol +/- control the box/TV volume (box or TV, per box) while the Remote is open."
+                    ? "The phone's Vol +/- control the box/TV volume on any Pad tab surface. Experimental on iOS: the phone's volume overlay still shows and it only works with the app in front."
+                    : "The phone's Vol +/- control the box/TV volume (box or TV, per box) on any Pad tab surface."
                 }
                 value={volumeButtons}
                 onValueChange={(v) => {
