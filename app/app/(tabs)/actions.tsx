@@ -20,6 +20,22 @@ import { mono, numeric, useTheme, useThemedStyles, type Palette } from '@/lib/th
 
 const DANGER_ORDER: Danger[] = ['low', 'medium', 'high'];
 
+// The agent's action contract keeps low/medium/high (custom actions set it too,
+// and 'high' still gates the extra confirm), but showing it as "DANGER" badly
+// overstates what these do: Switch to Desktop isn't dangerous, it just changes
+// what's on the TV. Label by IMPACT — what the user actually loses by tapping —
+// and let colour carry the severity instead of the word "danger".
+const GROUP_TITLE: Record<Danger, string> = {
+  low: 'ROUTINE',
+  medium: 'CHANGES WHAT’S ON SCREEN',
+  high: 'ENDS YOUR SESSION',
+};
+const BADGE_TEXT: Record<Danger, string> = {
+  low: 'routine',
+  medium: 'interrupts',
+  high: 'ends session',
+};
+
 /** Confirm helper that also works on web (Alert buttons are no-ops on web). */
 function confirm(title: string, message: string, onConfirm: () => void) {
   if (Platform.OS === 'web') {
@@ -99,8 +115,10 @@ function ActionsScreen() {
       hapticLight();
       confirm(action.label, `${action.description}\n\nRun this action?`, () => {
         if (action.danger === 'high') {
-          confirm('Are you sure?', `Really run "${action.label}"? This is a HIGH danger action.`, () =>
-            execute(action),
+          confirm(
+            'Are you sure?',
+            `"${action.label}" ends your session on the box — anything running there stops.`,
+            () => execute(action),
           );
         } else {
           execute(action);
@@ -150,7 +168,7 @@ function ActionsScreen() {
         {groups.map((g) => (
           <View key={g.danger} style={styles.group}>
             <Text style={[styles.groupTitle, { color: DANGER_COLOR[g.danger] }]}>
-              {g.danger.toUpperCase()} DANGER
+              {GROUP_TITLE[g.danger]}
             </Text>
             {g.items.map((a) => (
               <Pressable
@@ -160,7 +178,7 @@ function ActionsScreen() {
                 <View style={styles.cardHead}>
                   <Text style={styles.cardLabel}>{a.label}</Text>
                   <View style={[styles.badge, { backgroundColor: DANGER_COLOR[a.danger] }]}>
-                    <Text style={styles.badgeText}>{a.danger}</Text>
+                    <Text style={styles.badgeText}>{BADGE_TEXT[a.danger]}</Text>
                   </View>
                 </View>
                 <Text style={styles.cardDesc}>{a.description}</Text>
