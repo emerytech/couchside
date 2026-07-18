@@ -12,7 +12,7 @@ import React, { useCallback, useState } from 'react';
 import { ActivityIndicator, Pressable, StyleSheet, Text, TextInput, View } from 'react-native';
 
 import { pairFinish, pairStart } from '@/lib/api';
-import { FoundBox, scanAvailable, scanForBoxes } from '@/lib/boxDiscovery';
+import { FoundBox, scanAvailable, scanForBoxes, selfIp } from '@/lib/boxDiscovery';
 import { hapticSelection } from '@/lib/haptics';
 import { useBoxes } from '@/lib/SettingsContext';
 import { useTheme, useThemedStyles, type Palette } from '@/lib/theme';
@@ -36,10 +36,18 @@ export function BoxScanPair() {
     setMsg(null);
     setPhase({ k: 'scanning' });
     try {
-      const boxes = await scanForBoxes({ timeoutMs: 2500 });
+      const boxes = await scanForBoxes({ timeoutMs: 3000 });
       setPhase({ k: 'list', boxes });
       if (boxes.length === 0) {
-        setMsg({ ok: false, text: 'No boxes found — check the same Wi-Fi, or add one by IP below.' });
+        // Show which subnet was swept — if this isn't the boxes' subnet (e.g. a
+        // VPN skewed the phone's IP), that's why nothing was found.
+        const ip = await selfIp();
+        setMsg({
+          ok: false,
+          text: ip
+            ? `No boxes found (scanned ${ip}/24). Check the same Wi-Fi, turn off any VPN, or add one by IP below.`
+            : 'No boxes found — check the same Wi-Fi, or add one by IP below.',
+        });
       }
     } catch {
       setPhase({ k: 'idle' });
