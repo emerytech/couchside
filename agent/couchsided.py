@@ -6834,11 +6834,10 @@ def render_pin_page(pin):
         "fetch('/api/pair/status').then(function(r){return r.json()})"
         ".then(function(d){if(d&&d.active===false&&!done){done=true;"
         "document.body.innerHTML="
-        "'<div class=t>DONE</div><div class=s>Returning to Steam\\u2026</div>';"
-        # Session ended: leave the browser after a beat by pulling Steam back to
-        # its Game Mode home. steam://open/bigpicture is handled by Steam's own
-        # browser; desktop browsers just ignore it and keep the DONE screen.
-        "setTimeout(function(){location.href='steam://open/bigpicture'},8000)"
+        "'<div class=t>PAIRED</div><div class=s>Press B (Back) to close.</div>'"
+        # Steam's browser can't be closed programmatically (neither a page-side
+        # window.close()/steam:// nav nor an agent steam:// CLI dismisses it), so
+        # we land on a clean PAIRED screen and tell the user how to close it.
         "}}).catch(function(){})},3000)</script>"
         "</body></html>".replace("__PIN__", " ".join(pin)))
 
