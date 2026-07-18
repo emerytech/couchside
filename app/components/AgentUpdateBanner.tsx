@@ -88,22 +88,26 @@ export function AgentUpdateBanner() {
     }
   }, [check?.latest, poll, settings]);
 
-  // A forced manual check overrides the polled result.
-  const result = forced !== undefined ? forced : check;
+  // A forced manual check overrides the polled result — used for the row's
+  // status text. The banner below keys off `check` (kept current by the
+  // poll.refresh() in checkNow, since a forced check also warms the box cache).
+  const status = forced !== undefined ? forced : check;
 
   // No update (or dismissed): a compact "Check for updates" row instead of the
   // full banner, so the manual check is always available and can report "up to
   // date" rather than the banner just vanishing.
-  if (!result?.available || (dismissed && dismissed === result.latest)) {
+  if (!check?.available || (dismissed && dismissed === check.latest)) {
     if (!configured) return null;
     return (
       <View style={styles.checkRow}>
         <Text style={styles.checkStatus} numberOfLines={1}>
           {checking
             ? 'Checking…'
-            : result == null
+            : status == null
               ? 'Agent updates'
-              : `Up to date — agent ${result.installed}`}
+              : status.available
+                ? `Update available — agent ${status.latest}`
+                : `Up to date — agent ${status.installed}`}
         </Text>
         <Pressable
           onPress={() => {
