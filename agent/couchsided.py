@@ -44,7 +44,7 @@ except ImportError:  # pragma: no cover
     fcntl = None
 
 APP_NAME = "couchside-agent"
-VERSION = "2.9.19"
+VERSION = "2.9.20"
 UID = os.getuid()
 XDG_RUNTIME_DIR = "/run/user/%d" % UID
 
@@ -1059,9 +1059,23 @@ def update_apply():
 #   - theme/tier are written to the script's conf before each start.
 # ---------------------------------------------------------------------------
 
+# The installed player's basename IS the Steam tile name: Steam titles a
+# non-Steam shortcut from the file basename (steam://addnonsteamgame). Named
+# "Couchside Screensaver" so the Game Mode tile reads that, not the old ugly
+# "couchside-screensaver.sh". The repo/release-asset name stays
+# couchside-screensaver.sh; install.sh/plugin install it under the display name.
 SCREENSAVER_SCRIPT = os.path.expanduser(
+    "~/.local/opt/couchside/Couchside Screensaver")
+# Legacy pre-2.9.20 install path; kept so _ss_appid can still find an
+# already-registered old tile and reuse it instead of stacking a duplicate.
+SCREENSAVER_SCRIPT_LEGACY = os.path.expanduser(
     "~/.local/opt/couchside/couchside-screensaver.sh")
 SCREENSAVER_CONF = os.path.expanduser("~/.config/couchside/screensaver.conf")
+# Branded Steam grid art dropped next to the shortcut appid so the tile shows a
+# real capsule, not the filename-on-gradient placeholder. Shipped beside the
+# agent (release asset + plugin bundle). {n} formats the appid.
+SCREENSAVER_GRID_ART = os.path.expanduser(
+    "~/.local/opt/couchside/steam-grid")
 SCREENSAVER_PIDFILE = os.path.expanduser("~/.cache/couchside/screensaver.pid")
 SCREENSAVER_THEMES = ("all", "landscapes", "cities", "space", "underwater")
 SCREENSAVER_TIERS = ("1080-H264", "1080-SDR", "1080-HDR", "4K-SDR", "4K-HDR")
@@ -1137,8 +1151,11 @@ def _ss_validate(theme, tier):
 
 
 def _ss_appid():
-    """The registered shortcut's appid from shortcuts.vdf, or None. Matched by
-    exe path so a rename of the tile doesn't break the lookup."""
+    """The registered shortcut's appid from shortcuts.vdf, or None. Anchored on
+    the Exe PATH so a tile rename can't break the lookup. Tries the current
+    basename first, then the pre-2.9.20 'couchside-screensaver.sh' basename, so
+    a box that already registered the old tile REUSES it instead of getting a
+    duplicate on upgrade."""
     for p in glob.glob(os.path.expanduser(
             "~/.steam/steam/userdata/*/config/shortcuts.vdf")):
         try:
@@ -1146,14 +1163,23 @@ def _ss_appid():
                 data = f.read()
         except OSError:
             continue
-        i = data.find(b"couchside-screensaver.sh")
+        # "couchside/Couchside" hits the Exe path and survives the space being
+        # stored literally OR percent-encoded (%20) — the token ends before the
+        # space. It never collides with the lowercase "couchside/couchside-pair"
+        # pairing tile.
+        i = data.find(b"couchside/Couchside")
+        if i < 0:
+            i = data.find(b"couchside-screensaver.sh")   # legacy fallback
         if i < 0:
             continue
         # The appid field precedes the exe/appname block of the same entry.
+        # b"\x02appid\x00" is 7 bytes; the LE int32 begins at j+7. (The old
+        # j+8 read one byte late and returned a bogus appid, so the agent's own
+        # fresh registration -> rungameid never actually launched anything.)
         seg = data[max(0, i - 300):i]
         j = seg.rfind(b"\x02appid\x00")
-        if j >= 0 and j + 12 <= len(seg):
-            return struct.unpack("<I", seg[j + 8:j + 12])[0]
+        if j >= 0 and j + 11 <= len(seg):
+            return struct.unpack("<I", seg[j + 7:j + 11])[0]
     return None
 
 
@@ -1180,6 +1206,37 @@ def screensaver_info():
             "theme": theme, "tier": tier,
             "themes": list(SCREENSAVER_THEMES),
             "tiers": list(SCREENSAVER_TIERS)}
+
+
+def _ss_install_grid_art(appid):
+    """Copy the branded Steam capsule art into every account's grid/ folder,
+    keyed by the shortcut appid, so the Game Mode tile shows a real Couchside
+    capsule instead of Steam's filename-on-gradient placeholder.
+
+    Steam grid naming for a non-Steam shortcut appid:
+      <appid>p.png     portrait  (the Game Mode library tile)
+      <appid>.png      landscape (the header capsule)
+      <appid>_logo.png logo overlay (transparent)
+    Best-effort and idempotent: missing art or an unwritable folder is logged
+    and ignored — art is never allowed to block the screensaver launch."""
+    art = {
+        "portrait":  "%dp.png" % appid,
+        "landscape": "%d.png" % appid,
+        "logo":      "%d_logo.png" % appid,
+    }
+    srcs = {k: os.path.join(SCREENSAVER_GRID_ART, "screensaver-%s.png" % k)
+            for k in art}
+    if not all(os.path.isfile(p) for p in srcs.values()):
+        return
+    for cfg in glob.glob(os.path.expanduser(
+            "~/.steam/steam/userdata/*/config")):
+        grid = os.path.join(cfg, "grid")
+        try:
+            os.makedirs(grid, exist_ok=True)
+            for k, dstname in art.items():
+                shutil.copyfile(srcs[k], os.path.join(grid, dstname))
+        except OSError as e:
+            print("[screensaver] grid art copy skipped (%s)" % e, flush=True)
 
 
 def screensaver_start(theme, tier):
@@ -1215,6 +1272,10 @@ def screensaver_start(theme, tier):
                 print("[screensaver] registration did not appear in shortcuts.vdf",
                       flush=True)
                 return
+            # Fresh tile: drop the branded capsule so it shows real art, not the
+            # filename-on-gradient placeholder. Best-effort; a missing art dir or
+            # unwritable grid folder never blocks the launch.
+            _ss_install_grid_art(aid)
         _ss_fire(_ss_gameid(aid))
         if fresh:
             # A shortcut's very first rungameid only opens its page.
