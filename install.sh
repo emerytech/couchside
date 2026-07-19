@@ -665,6 +665,14 @@ $USER_NAME ALL=(root) NOPASSWD: /usr/bin/systemctl restart sddm
 $USER_NAME ALL=(root) NOPASSWD: /usr/bin/systemctl reboot
 $USER_NAME ALL=(root) NOPASSWD: /usr/bin/systemctl poweroff
 $USER_NAME ALL=(root) NOPASSWD: /usr/bin/systemctl suspend
+# Decky Loader's plugin_loader.service dies whenever Steam's CEF restarts and
+# exits cleanly, so systemd never revives it — the Decky panel silently
+# vanishes until reboot. This fixed-argument grant lets the app's "Restart
+# Decky" action recover it. Granted even when Decky isn't installed yet: the
+# agent only OFFERS the action when the unit file exists, and a restart of a
+# nonexistent unit is a no-op — while a box that gains Decky later would
+# otherwise need install.sh re-run before the recovery action could appear.
+$USER_NAME ALL=(root) NOPASSWD: /usr/bin/systemctl restart plugin_loader
 # System-journal reads go through a fixed-argument, root-owned wrapper that
 # validates the unit + line count and calls journalctl with a locked-down
 # option set. Granting the wrapper (never journalctl itself) is the only way to
