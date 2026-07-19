@@ -69,6 +69,18 @@ for art in screensaver-portrait.png screensaver-landscape.png screensaver-logo.p
     files+=("$art")
 done
 
+# The installers themselves, signed. This makes CANONICAL install.sh/install.ps1
+# (repo root) the single source of truth: couchside.tv no longer hand-copies
+# them — its build fetches these signed assets, verifies the sig, and serves the
+# result (see ets3d scripts/sync-installer.mjs), so the served installer can
+# never silently drift from canonical. The RUNTIME path is unchanged (a static
+# file is still served + piped to bash); only its provenance is now verified.
+for inst in install.sh install.ps1; do
+    [ -f "$root/$inst" ] || { echo "error: missing $inst" >&2; exit 2; }
+    cp "$root/$inst" "$tmp/$inst"
+    files+=("$inst")
+done
+
 # agent-version.txt: the agent VERSION string, so the box-side update check
 # (/api/update/check) can compare cheaply without downloading the whole daemon.
 # Signed alongside everything else (it's covered by SHA256SUMS below).
