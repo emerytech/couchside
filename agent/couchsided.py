@@ -44,7 +44,7 @@ except ImportError:  # pragma: no cover
     fcntl = None
 
 APP_NAME = "couchside-agent"
-VERSION = "2.9.23"
+VERSION = "2.9.24"
 UID = os.getuid()
 XDG_RUNTIME_DIR = "/run/user/%d" % UID
 
@@ -8041,6 +8041,14 @@ def ws_send_json(conn, obj):
 GAMEPAD_LOCK = threading.Lock()
 GAMEPAD_HOLDER = None      # the entry that currently owns input devices, or None
 GAMEPAD_SESSIONS = []      # every live entry (holder + waiters)
+# Idle-reap: drop a gamepad session that has sent us NOTHING for this long. The
+# app pings every ~5s, so real silence this long means app->box is dead (a
+# Game-Mode Wi-Fi blip during a Couch Mode switch leaves the socket half-dead —
+# the phone keeps sending but nothing arrives, so the trackpad freezes). Reaping
+# fast + closing cleanly is the ONLY reliable app->box-death signal (a box->app
+# heartbeat can't detect it — it flows regardless and would just mask a dead
+# outbound). Was 60s; 12s is >2x the ping so a healthy client never false-reaps.
+GAMEPAD_IDLE_TIMEOUT_S = 12.0
 
 
 def _wsend_json(entry, obj):
@@ -9961,7 +9969,7 @@ class Handler(BaseHTTPRequestHandler):
 
         # ---- recv loop --------------------------------------------------------
         try:
-            conn.settimeout(60.0)
+            conn.settimeout(GAMEPAD_IDLE_TIMEOUT_S)
             buf = bytearray()
             while True:
                 try:
@@ -9970,7 +9978,11 @@ class Handler(BaseHTTPRequestHandler):
                     print("[gamepad] protocol violation: %s" % e, flush=True)
                     _wsend_op(entry, WS_OP_CLOSE)
                     return
-                if frame is None:  # EOF / timeout / socket error -> dead
+                if frame is None:  # EOF / idle timeout / socket error -> dead
+                    # Tell the app cleanly (best-effort — a no-op on an already-
+                    # dead socket) so an idle-reaped, half-dead session reconnects
+                    # promptly instead of waiting out the app's own watchdog.
+                    _wsend_op(entry, WS_OP_CLOSE)
                     return
                 opcode, payload = frame
                 try:
