@@ -218,6 +218,10 @@ export class GamepadClient {
   private useFallback = false;
 
   private pingTimer: ReturnType<typeof setInterval> | null = null;
+  /** Timestamp of the last frame RECEIVED on the current socket — the liveness
+   *  signal the ping watchdog checks. Any inbound frame counts (pong, hello,
+   *  waiting…): each one proves the pipe is genuinely two-way. */
+  private lastInbound = 0;
   private reconnectTimer: ReturnType<typeof setTimeout> | null = null;
   /** Aborts a socket stuck in CONNECTING (see CONNECT_TIMEOUT_MS). */
   private connectTimer: ReturnType<typeof setTimeout> | null = null;
@@ -602,6 +606,7 @@ export class GamepadClient {
       // pending, so ignore events from a socket we have already superseded.
       // (Same guard in onerror/onclose below.)
       if (ws !== this.ws) return;
+      this.lastInbound = Date.now();
       let msg: {
         t?: string; dev?: string; msg?: string; text?: string;
         code?: string; name?: string; holder?: string; by?: string;
@@ -724,7 +729,26 @@ export class GamepadClient {
 
   private startPing(): void {
     this.stopPing();
+    this.lastInbound = Date.now();
     this.pingTimer = setInterval(() => {
+      // Pong watchdog. A session-switch or Wi-Fi blip on the box can leave
+      // this TCP half-dead: iOS keeps buffering our sends without erroring, so
+      // pings AND input frames vanish silently while the socket still reports
+      // OPEN — the user swipes a live-looking trackpad that moves nothing, and
+      // the server reaps the mute session at its own 60s timeout. (Observed in
+      // the field; HTTP kept working because every request is a fresh
+      // connection.) The server answers every ping with a pong, so a healthy
+      // pipe always has an inbound frame within one interval. Silence for
+      // ~2.5 intervals means the pipe is gone: tear down and reconnect NOW
+      // instead of waiting minutes for the OS to notice.
+      if (Date.now() - this.lastInbound > PING_INTERVAL_MS * 2.5) {
+        this.teardownSocket(false);
+        if (this.active) {
+          this.setStatus('error', null);
+          this.scheduleReconnect();
+        }
+        return;
+      }
       this.sendRaw({ t: 'ping' });
     }, PING_INTERVAL_MS);
   }
