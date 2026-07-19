@@ -44,7 +44,7 @@ except ImportError:  # pragma: no cover
     fcntl = None
 
 APP_NAME = "couchside-agent"
-VERSION = "2.9.21"
+VERSION = "2.9.22"
 UID = os.getuid()
 XDG_RUNTIME_DIR = "/run/user/%d" % UID
 
@@ -8541,6 +8541,17 @@ class Handler(BaseHTTPRequestHandler):
 
             if path == "/api/status":
                 data = mock_status() if self.mock else real_status()
+                # The LAN IP the phone actually reached us on. The app caches it
+                # as the box's fallback address and REFRESHES it every poll, so a
+                # box added by hostname gets a working fallback and a box whose
+                # DHCP lease drifts stays reachable when mDNS (.local) breaks —
+                # e.g. right after an agent restart, when Game Mode WiFi
+                # power-save has dropped the multicast mDNS needs. Same value as
+                # /api/ping's "ip"; here it rides the poll the app already makes.
+                try:
+                    data["ip"] = self.connection.getsockname()[0]
+                except OSError:
+                    pass
                 self._send(200, data, started)
             elif path == "/api/units":
                 units = mock_units() if self.mock else real_units()
