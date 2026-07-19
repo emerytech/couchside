@@ -44,7 +44,7 @@ except ImportError:  # pragma: no cover
     fcntl = None
 
 APP_NAME = "couchside-agent"
-VERSION = "2.9.14"
+VERSION = "2.9.15"
 UID = os.getuid()
 XDG_RUNTIME_DIR = "/run/user/%d" % UID
 
@@ -1403,16 +1403,24 @@ def _connected_outputs():
 
 
 def couchmode_available():
-    """True when this box can do the desktop→TV Game Mode handoff: SteamOS/Bazzite,
-    the session tools present, and at least one EXTERNAL output (a TV/monitor to
-    fling Game Mode onto). A desktop tower or mini-PC with a single wired display
-    counts — the handoff is desktop→Game Mode on that display. A bare handheld
-    (internal panel only, nothing plugged in) stays hidden."""
+    """True when this box can switch desktop↔Game Mode: SteamOS/Bazzite, the
+    session tools present, and ANY connected display to land Game Mode on.
+
+    An external TV/monitor gives the full handoff (display pin, TV wake, audio
+    routing). An INTERNAL-ONLY box — an undocked Steam Deck / Legion Go — now
+    also qualifies: there the Couch button is simply the desktop↔Game Mode
+    switch on the handheld's own screen, every TV-shaped step in
+    couchmode_start() reports skipped, and the app's display picker hides
+    because game_outputs is empty. This gate also feeds guide_hold_available(),
+    so relaxing it is what lets the guide-button hold work undocked.
+
+    Headless (no display at all) stays hidden: gamescope with nothing to render
+    on is a box you can no longer reach."""
     if not _is_steamos_like():
         return False
     if not all(shutil.which(t) for t in _COUCHMODE_TOOLS):
         return False
-    return any(not o["internal"] for o in _connected_outputs())
+    return bool(_connected_outputs())
 
 
 def _couchmode_session():
@@ -1479,7 +1487,9 @@ def couchmode_info():
         "available": True,
         "outputs": outs,
         # External (non-panel) outputs are the game-display candidates. Default
-        # to the first external one in the app's picker.
+        # to the first external one in the app's picker. EMPTY on an
+        # internal-only handheld — the app then hides the picker and the switch
+        # lands on the built-in panel (output="", pinning skipped).
         "game_outputs": [o["name"] for o in outs if not o["internal"]],
         "session": _couchmode_session(),
         # Whether the picker's choice is actually honored (see helper). The app
