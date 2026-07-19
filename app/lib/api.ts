@@ -365,9 +365,9 @@ export type HostSession = {
   /** Steam is listening on the Remote Play port — the box can host. */
   listening: boolean;
   active: boolean;
-  /** IPv4 of the device streaming from this box, when named. */
-  peer?: string;
-  /** Unix seconds the session started. */
+  /** The client platform Steam reported (e.g. "macOS"), when the log named it. */
+  client?: string;
+  /** Unix seconds the session started (from the log's own timestamp). */
   since?: number;
 };
 

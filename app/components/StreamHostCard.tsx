@@ -50,7 +50,7 @@ export function StreamHostCard() {
       <View style={styles.row}>
         <Ionicons name="tv-outline" size={16} color={t.green} />
         <Text style={styles.peer} numberOfLines={1}>
-          {h.peer ?? 'a device on your network'}
+          {h.client ?? 'a device on your network'}
         </Text>
       </View>
       <Text style={styles.hint}>
