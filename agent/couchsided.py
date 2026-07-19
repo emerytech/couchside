@@ -44,7 +44,7 @@ except ImportError:  # pragma: no cover
     fcntl = None
 
 APP_NAME = "couchside-agent"
-VERSION = "2.9.15"
+VERSION = "2.9.16"
 UID = os.getuid()
 XDG_RUNTIME_DIR = "/run/user/%d" % UID
 
@@ -7419,13 +7419,23 @@ def _make_holder(entry, mock):
     first swipe / keypress of EVERY session (measured 508/525ms). A create
     failure here is non-fatal — the slot stays None and the lazy path in
     _handle_frame retries on first use, reporting the error to the client."""
-    try:
-        entry["device"] = MockGamepad() if mock else UInputGamepad()
-    except Exception as e:
-        print("[gamepad] device create failed: %s" % e, flush=True)
-        _wsend_json(entry, {"t": "err", "msg": "uinput unavailable: %s" % e})
-        _wsend_op(entry, WS_OP_CLOSE)
-        return False
+    # REUSE the session's existing pad on re-promotion. A session that passes
+    # control away keeps its device (nothing destroys it at demotion — only
+    # disconnect does), so a Pass/take-back ping-pong used to hit this line
+    # again and OVERWRITE the ref: the old pad object was orphaned with its fd
+    # open, leaving a phantom "Microsoft X-Box 360 pad N" alive until the agent
+    # exited (three were found on a box after one afternoon). Each orphan is
+    # also a controller Steam re-enumerates — enough churn corrupted a real
+    # box's desktop controller config. Reuse fixes the leak AND means a handoff
+    # ping-pong presents ONE stable controller to Steam instead of a parade.
+    if entry.get("device") is None:
+        try:
+            entry["device"] = MockGamepad() if mock else UInputGamepad()
+        except Exception as e:
+            print("[gamepad] device create failed: %s" % e, flush=True)
+            _wsend_json(entry, {"t": "err", "msg": "uinput unavailable: %s" % e})
+            _wsend_op(entry, WS_OP_CLOSE)
+            return False
     entry["held"] = True
     entry["requested"] = False
     _wsend_json(entry, {"t": "hello", "dev": entry["device"].name,

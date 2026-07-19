@@ -42,6 +42,13 @@ jobs:
       - name: Unit tests (guide-hold trigger)
         run: python3 tests/test_guide_hold.py
 
+      # Gamepad handoff lifecycle: a re-promoted session must REUSE its virtual
+      # pad. The old always-create path orphaned a pad per Pass/take-back cycle
+      # (fd left open -> phantom controller until the agent exits), and the
+      # resulting churn corrupted a real box's Steam desktop controller config.
+      - name: Unit tests (gamepad handoff)
+        run: python3 tests/test_gamepad_handoff.py
+
   smoke:
     runs-on: ubuntu-latest
     needs: compile
