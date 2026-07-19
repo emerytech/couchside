@@ -44,7 +44,7 @@ except ImportError:  # pragma: no cover
     fcntl = None
 
 APP_NAME = "couchside-agent"
-VERSION = "2.9.18"
+VERSION = "2.9.19"
 UID = os.getuid()
 XDG_RUNTIME_DIR = "/run/user/%d" % UID
 
@@ -1719,7 +1719,12 @@ def _set_preferred_output(output):
     accept it only if it exactly matches a CONNECTED DRM connector name.
     Returns a step dict."""
     if not output:
-        return {"skipped": True}
+        return {"skipped": True, "reason": "no external display selected"}
+    if not _output_forcing_supported():
+        # SteamOS hardcodes its output; the drop-in would be written but ignored.
+        # Honest skip-with-reason so the ceremony never fakes a green node.
+        return {"skipped": True,
+                "reason": "this session picks its own output (SteamOS)"}
     if output not in {o["name"] for o in _connected_outputs()}:
         return {"ok": False, "exit_code": 1, "stdout": "",
                 "stderr": "unknown output %r" % (output,)}
@@ -1816,6 +1821,257 @@ def couchmode_try_enter(output="", cooldown=0.0):
         return couchmode_start(output, False)
     finally:
         COUCH_LOCK.release()
+
+
+# ---------------------------------------------------------------------------
+# Couch Mode ceremony: the desktop->TV switch as a VISIBLE, staged job the phone
+# polls (GET /api/couch-mode/status). The switch runs on a daemon thread that
+# holds COUCH_LOCK for its whole duration (serialized with enter/exit/try_enter
+# — one session switch at a time) and mutates the job dict under a SEPARATE fast
+# lock, so a status poll never blocks on the in-flight switch. Monotonic `id`
+# supersedes an older ceremony. Fixes two lies the old fire-and-forget path told:
+#   (a) "Ready" only meant a subprocess exited 0 — nothing verified gamescope
+#       actually came up. We now poll for it.
+#   (b) audio silently "skipped" when the just-woken TV's HDMI sink hadn't
+#       enumerated yet, landing you in Game Mode with sound on the wrong device.
+#       We retry after the session is up and report an honest failure.
+COUCHMODE_MOCK = False           # set by set_couchmode(mock) from main()
+_COUCH_JOB_LOCK = threading.Lock()
+_COUCH_JOB = {"id": 0, "state": "idle", "output": "", "hdr": False,
+              "session": None, "started_at": 0.0, "stages": []}
+
+# Display order == execution order. Audio is LAST (not the roadmap's listed
+# order) because bug (b) needs the TV's HDMI sink, which only exists AFTER the
+# session is up. fatal=True fails the whole ceremony; only the switch is fatal.
+_COUCH_STAGE_TEMPLATE = (
+    {"key": "tv_power_on", "label": "TV power",  "fatal": False},
+    {"key": "tv_input",    "label": "TV input",  "fatal": False},
+    {"key": "output",      "label": "Display",   "fatal": False},
+    {"key": "session",     "label": "Game Mode", "fatal": True},
+    {"key": "audio",       "label": "Audio",     "fatal": False},
+)
+SESSION_VERIFY_TIMEOUT_S = 12.0     # bug (a): wait for gamescope to actually appear
+SESSION_VERIFY_INTERVAL_S = 0.5
+AUDIO_SINK_RETRIES = 6             # bug (b): ~3s settle after the TV wakes
+AUDIO_SINK_DELAY_S = 0.5
+
+
+def set_couchmode(mock):
+    global COUCHMODE_MOCK
+    COUCHMODE_MOCK = bool(mock)
+
+
+def _couch_do_tv_power():
+    r = tv_send("power_on", False)
+    return r if r is not None else {"skipped": True,
+                                    "reason": "no TV control backend"}
+
+
+def _couch_do_tv_input():
+    r = tv_send("source_box", False)
+    return r if r is not None else {"skipped": True,
+                                    "reason": "no TV control backend"}
+
+
+def _couch_verify_gamescope():
+    """Bug (a): confirm Game Mode ACTUALLY came up. _session_to_game() only tells
+    us the switch subprocess exited 0. The agent (a system service) survives the
+    desktop teardown, so it keeps answering pgrep after the switch."""
+    deadline = time.monotonic() + SESSION_VERIFY_TIMEOUT_S
+    while time.monotonic() < deadline:
+        if _couchmode_session() == "gamescope":
+            return True
+        time.sleep(SESSION_VERIFY_INTERVAL_S)
+    return _couchmode_session() == "gamescope"
+
+
+def _couch_do_audio(has_external):
+    """Bug (b): route audio to the TV's HDMI sink AFTER the session is up, with a
+    settle. Honest: no external display -> skipped (built-in is correct); external
+    present but its HDMI sink never enumerates -> failed non-fatal (the 'TV just
+    woke' case that used to masquerade as skipped)."""
+    if not has_external:
+        return {"state": "skipped",
+                "reason": "no external display; audio stays on the box"}
+    sink = None
+    for _ in range(AUDIO_SINK_RETRIES):
+        sink = _tv_audio_sink()
+        if sink:
+            break
+        time.sleep(AUDIO_SINK_DELAY_S)
+    if not sink:
+        return {"state": "failed",
+                "reason": "the TV's HDMI audio sink never appeared — "
+                          "sound may still be on the box"}
+    r = _couch_run(["pactl", "set-default-sink", sink])
+    if r["ok"]:
+        return {"state": "ok"}
+    return {"state": "failed",
+            "reason": (r["stderr"] or "").strip()[:120]
+                      or "pactl could not switch the default sink"}
+
+
+def _step_state_reason(r):
+    """(state, reason) from a subprocess/skip dict (tv_send / _set_preferred_output)."""
+    if r is None or r.get("skipped"):
+        return "skipped", (r or {}).get("reason")
+    if r.get("ok"):
+        return "ok", None
+    return "failed", (r.get("stderr") or "").strip()[:120] or None
+
+
+def _couch_stage_locked(job_id, key, state, reason=None):
+    if _COUCH_JOB["id"] != job_id:          # superseded by a newer ceremony
+        return
+    for s in _COUCH_JOB["stages"]:
+        if s["key"] == key:
+            s["state"] = state
+            if reason:
+                s["reason"] = reason
+            elif state in ("running", "pending"):
+                s.pop("reason", None)
+            return
+
+
+def _couch_stage(job_id, key, state, reason=None):
+    with _COUCH_JOB_LOCK:
+        _couch_stage_locked(job_id, key, state, reason)
+
+
+def _legacy_steps_locked():
+    """Rebuild the old couchmode_start `steps` dict so an OLD app reading
+    {ok, steps} off the POST response is unaffected."""
+    out = {}
+    for s in _COUCH_JOB["stages"]:
+        st = s["state"]
+        if st == "ok":
+            out[s["key"]] = {"ok": True}
+        elif st == "skipped":
+            out[s["key"]] = {"skipped": True, "reason": s.get("reason")}
+        elif st == "failed":
+            out[s["key"]] = {"ok": False, "stderr": s.get("reason", "")}
+        else:
+            out[s["key"]] = {"pending": True}
+    return out
+
+
+def _couch_job_snapshot_locked():
+    ok = _COUCH_JOB["state"] == "done"
+    return {
+        "id": _COUCH_JOB["id"],
+        "state": _COUCH_JOB["state"],          # idle|running|done|failed
+        "output": _COUCH_JOB["output"],
+        "hdr": _COUCH_JOB["hdr"],
+        "session": _COUCH_JOB["session"],      # verified session at terminal
+        "started_at": _COUCH_JOB["started_at"],
+        "stages": [dict(s) for s in _COUCH_JOB["stages"]],   # FULL array, copy
+        # backward-compat for old apps reading the synchronous shape:
+        "ok": ok,
+        "steps": _legacy_steps_locked(),
+    }
+
+
+def couchmode_job_info():
+    with _COUCH_JOB_LOCK:
+        return _couch_job_snapshot_locked()
+
+
+def _couch_finalize(job_id):
+    with _COUCH_JOB_LOCK:
+        if _COUCH_JOB["id"] != job_id:
+            return
+        session_stage = next(s for s in _COUCH_JOB["stages"]
+                             if s["key"] == "session")
+        up = session_stage["state"] == "ok"
+        _COUCH_JOB["state"] = "done" if up else "failed"
+        _COUCH_JOB["session"] = "gamescope" if up else _couchmode_session()
+
+
+def _couch_mock_worker(job_id):
+    """--mock: a believable ceremony that ANIMATES (~0.6s/stage, all green),
+    driving the REAL job dict so the app's poll/render path is exercised."""
+    for key in ("tv_power_on", "tv_input", "output", "session", "audio"):
+        _couch_stage(job_id, key, "running")
+        time.sleep(0.6)
+        _couch_stage(job_id, key, "ok")
+    _couch_finalize(job_id)
+
+
+def _couch_ceremony_worker(job_id, output, hdr):
+    """Staged switch. Holds COUCH_LOCK for the whole switch; writes each stage
+    under the fast _COUCH_JOB_LOCK so status polls never block on it."""
+    global _COUCH_LAST_SWITCH
+    try:
+        with COUCH_LOCK:
+            _COUCH_LAST_SWITCH = time.monotonic()
+            if COUCHMODE_MOCK:
+                _couch_mock_worker(job_id)
+                return
+            has_external = any(not o["internal"] for o in _connected_outputs())
+
+            _couch_stage(job_id, "tv_power_on", "running")
+            st, why = _step_state_reason(_couch_do_tv_power())
+            _couch_stage(job_id, "tv_power_on", st, why)
+
+            _couch_stage(job_id, "tv_input", "running")
+            st, why = _step_state_reason(_couch_do_tv_input())
+            _couch_stage(job_id, "tv_input", st, why)
+
+            _couch_stage(job_id, "output", "running")
+            st, why = _step_state_reason(_set_preferred_output(output))
+            _couch_stage(job_id, "output", st, why)
+
+            # (bug a) switch, then VERIFY gamescope actually came up.
+            _couch_stage(job_id, "session", "running")
+            sw = _session_to_game()
+            if not sw["ok"]:
+                _couch_stage(job_id, "session", "failed",
+                             (sw["stderr"] or "").strip()[:120]
+                             or "session switch tool failed")
+            elif _couch_verify_gamescope():
+                _couch_stage(job_id, "session", "ok")
+            else:
+                _couch_stage(job_id, "session", "failed",
+                             "switch reported success but Game Mode did not "
+                             "come up in %ds" % int(SESSION_VERIFY_TIMEOUT_S))
+
+            # (bug b) audio LAST, retried, honest skipped-vs-failed.
+            _couch_stage(job_id, "audio", "running")
+            a = _couch_do_audio(has_external)
+            _couch_stage(job_id, "audio", a["state"], a.get("reason"))
+
+            _couch_finalize(job_id)
+    except Exception as e:                  # a worker thread must never escape
+        with _COUCH_JOB_LOCK:
+            if _COUCH_JOB["id"] == job_id:
+                _couch_stage_locked(job_id, "session", "failed",
+                                    "ceremony crashed: %s" % e.__class__.__name__)
+                _COUCH_JOB["state"] = "failed"
+                _COUCH_JOB["session"] = _couchmode_session()
+        print("[couch] ceremony %d crashed: %s" % (job_id, e), flush=True)
+
+
+def couch_ceremony_start(output="", hdr=False):
+    """Kick the staged ceremony as a background job; return the initial snapshot
+    (state=running, stages pending) IMMEDIATELY. If one is already running, return
+    THAT job's snapshot — a double-tap or a second phone tapping Fling joins the
+    existing ceremony instead of stacking a second switch."""
+    with _COUCH_JOB_LOCK:
+        if _COUCH_JOB["state"] == "running":
+            return _couch_job_snapshot_locked()
+        _COUCH_JOB["id"] += 1
+        job_id = _COUCH_JOB["id"]
+        _COUCH_JOB.update(
+            state="running", output=output or "", hdr=bool(hdr),
+            session=None, started_at=time.time(),
+            stages=[{"key": s["key"], "label": s["label"],
+                     "fatal": s["fatal"], "state": "pending"}
+                    for s in _COUCH_STAGE_TEMPLATE])
+        snap = _couch_job_snapshot_locked()
+    threading.Thread(target=_couch_ceremony_worker,
+                     args=(job_id, output or "", bool(hdr)),
+                     daemon=True, name="couch-ceremony").start()
+    return snap
 
 
 # ---------------------------------------------------------------------------
@@ -8278,6 +8534,15 @@ class Handler(BaseHTTPRequestHandler):
                     self._send(404, {"error": "not found"}, started)
                 else:
                     self._send(200, info, started)
+            elif path == "/api/couch-mode/status":
+                # Full ceremony job every poll (never a delta) so a phone joining
+                # mid-run catches up for free. Gated like the Couch Mode control
+                # itself, so an OLD agent 404s here and the app degrades to the
+                # synchronous path. Idle sentinel (id 0) before any run.
+                if not (self.mock or couchmode_available()):
+                    self._send(404, {"error": "couch mode unavailable"}, started)
+                else:
+                    self._send(200, couchmode_job_info(), started)
             elif path == "/api/media":
                 # Probe-and-appear: 404 when no session bus / busctl so the app
                 # hides the Now Playing card; 200 with an empty list when idle.
@@ -8962,12 +9227,12 @@ class Handler(BaseHTTPRequestHandler):
                     return
                 output = req.get("output") or ""
                 hdr = bool(req.get("hdr", False))
-                if self.mock:
-                    self._send(200, {"ok": True, "output": output, "hdr": hdr,
-                                     "session": "gamescope",
-                                     "steps": {"session": {"ok": True}}}, started)
-                    return
-                self._send(200, couchmode_enter(output, hdr), started)
+                # Kick the staged ceremony and return the initial job snapshot
+                # immediately; the app polls GET /api/couch-mode/status. The
+                # snapshot also carries {ok, steps}, so an OLD app reading the old
+                # synchronous shape is unaffected. --mock is honored inside the
+                # engine (COUCHMODE_MOCK), animating a believable ceremony.
+                self._send(200, couch_ceremony_start(output, hdr), started)
                 return
 
             # POST /api/desktop-mode: leave Game Mode back to the Plasma desktop.
@@ -9628,6 +9893,7 @@ def main():
     set_power_schedule(args.mock)
     set_screensaver(args.mock)
     set_guide(args.mock)  # arms the guide-hold watcher when opted in
+    set_couchmode(args.mock)  # ceremony engine honors --mock
     set_caps(args.mock)  # after the detectors above; snapshots CAPS
     port = args.port if args.port is not None else (CONFIG_PORT or DEFAULT_PORT)
 
