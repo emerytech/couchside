@@ -659,7 +659,8 @@ export function capsEqual(a?: BoxCaps, b?: BoxCaps): boolean {
     a.power_schedule === b.power_schedule &&
     a.screensaver === b.screensaver &&
     a.couchmode === b.couchmode &&
-    a.desktop === b.desktop
+    a.desktop === b.desktop &&
+    a.steamlink === b.steamlink
   );
 }
 
