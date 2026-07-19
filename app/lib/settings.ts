@@ -222,9 +222,13 @@ function normalizeCaps(raw: unknown): BoxCaps | undefined {
   // Optional like screensaver: absent stays undefined = unknown, never false.
   const couchmode = bool('couchmode');
   const desktop = bool('desktop');
+  // steamlink arrived with agent 2.9.23 and had the SAME drop bug — add it here
+  // (and to capsEqual) or the "Stream from PC" cap never persists. Optional:
+  // absent stays undefined = unknown, so the app probes.
+  const steamlink = bool('steamlink');
   return {
     gamepad, steam, media, tv, screen, power_schedule,
-    screensaver, couchmode, desktop,
+    screensaver, couchmode, desktop, steamlink,
   };
 }
 
