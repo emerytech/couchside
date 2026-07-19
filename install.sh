@@ -109,7 +109,14 @@ CONFIG_FILE="${STATE_DIR}/config.json"
 # injected to read arbitrary files as root. Lives in the root-owned ETC_DIR so
 # the desktop user can execute but never modify it.
 JOURNAL_WRAPPER="${ETC_DIR}/couchside-journal"
-SUDOERS_FILE="/etc/sudoers.d/couchside"
+# zz- prefix is LOAD-BEARING: sudoers.d files apply in lexical order and
+# sudoers is last-match-wins, so a distro/user "wheel" file ("(ALL) ALL",
+# password required) sorting AFTER ours silently shadowed every NOPASSWD grant
+# on a real box for three days — the rules were visible in `sudo -l` and dead
+# in practice. zz- sorts after any conventional file name, making our
+# fixed-argument grants the last (winning) match for exactly their commands.
+SUDOERS_FILE="/etc/sudoers.d/zz-couchside"
+SUDOERS_FILE_LEGACY="/etc/sudoers.d/couchside"
 UNIT_DST="/etc/systemd/system/couchside.service"
 
 # Decky Loader's plugin directory (root-owned). The optional Game Mode panel is
@@ -373,9 +380,9 @@ if [ "$UNINSTALL" -eq 1 ]; then
             note "kept $ETC_DIR"
         fi
     fi
-    if sudo test -e "$SUDOERS_FILE"; then
+    if sudo test -e "$SUDOERS_FILE" || sudo test -e "$SUDOERS_FILE_LEGACY"; then
         if ask_yn "Remove sudoers rule $SUDOERS_FILE?"; then
-            sudo rm -f "$SUDOERS_FILE"
+            sudo rm -f "$SUDOERS_FILE" "$SUDOERS_FILE_LEGACY"
             note "removed $SUDOERS_FILE"
         else
             note "kept $SUDOERS_FILE"
@@ -685,6 +692,9 @@ SUDOERS
     echo "------------------------------------------------------------------"
     sudo visudo -cf "$WORK_DIR/couchside-sudoers"
     sudo install -m 0440 -o root -g root "$WORK_DIR/couchside-sudoers" "$SUDOERS_FILE"
+    # Retire the pre-rename file: leaving it costs nothing functionally (the
+    # zz- copy wins), but two files with overlapping rules is a debugging trap.
+    sudo rm -f "$SUDOERS_FILE_LEGACY"
 fi
 
 # ---------------------------------------------------------------------------

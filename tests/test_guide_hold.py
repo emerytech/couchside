@@ -275,10 +275,34 @@ def test_config_defaults():
             check("rejects bad config %r" % (bad,), type(e).__name__, "ConfigError")
 
 
+def test_sudo_last_match():
+    """The NOPASSWD probe must honor sudoers' last-match-wins semantics.
+
+    Field failure: a `wheel` sudoers.d file ("(ALL) ALL", password) sorted
+    after ours and shadowed every NOPASSWD grant — visible in `sudo -l`, dead
+    in practice. The probe must judge the LAST matching rule, not any rule.
+    """
+    print("sudo last-match evaluation")
+    f = cs._nopasswd_last_match
+    grant = "    (root) NOPASSWD: /usr/bin/systemctl reboot"
+    wheel = "    (ALL) ALL"
+    check("grant then shadowing (ALL) ALL -> DENIED (the field bug)",
+          f(grant + "\n" + wheel, "systemctl reboot"), False)
+    check("(ALL) ALL then grant -> allowed (zz- ordering)",
+          f(wheel + "\n" + grant, "systemctl reboot"), True)
+    check("NOPASSWD: ALL as last match -> allowed",
+          f(grant + "\n    (ALL) NOPASSWD: ALL", "systemctl reboot"), True)
+    check("no matching rule -> denied", f("    (root) NOPASSWD: /usr/bin/foo",
+                                          "systemctl reboot"), False)
+    check("non-rule lines ignored",
+          f("Defaults!visudo env_keep\n" + grant, "systemctl reboot"), True)
+
+
 if __name__ == "__main__":
     for fn in (test_pad_discrimination, test_declares_key,
                test_favourite_filter, test_hold_timing,
-               test_event_decoding, test_config_defaults):
+               test_event_decoding, test_config_defaults,
+               test_sudo_last_match):
         fn()
     print()
     if FAILURES:
