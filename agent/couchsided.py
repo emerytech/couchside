@@ -44,7 +44,7 @@ except ImportError:  # pragma: no cover
     fcntl = None
 
 APP_NAME = "couchside-agent"
-VERSION = "2.9.17"
+VERSION = "2.9.18"
 UID = os.getuid()
 XDG_RUNTIME_DIR = "/run/user/%d" % UID
 
@@ -600,23 +600,46 @@ def _inject_session_actions():
                 ACTION_ORDER.append(aid)
 
 
-def _sudo_nopasswd_allows(needle):
-    """True when sudoers permits the command WITHOUT a password.
+def _nopasswd_last_match(rules_text, needle):
+    """Pure last-match-wins evaluation of `sudo -l` rule output.
 
-    `sudo -n -l <cmd>` is NOT a sufficient probe: it exits 0 when ANY rule
-    allows the command — including a wheel-style "(ALL) ALL" rule that still
-    prompts. That false positive shipped a Restart Decky button that appeared
-    on a box and then failed with "sudo: a password is required" (field
-    screenshot, 2026-07-19). Parse the actual rule list instead and require a
-    NOPASSWD rule that names the command. False on any failure: a missing
-    grant must HIDE the action, never offer a dead one."""
+    Two field failures taught this function its shape, one per naive version:
+      * `sudo -n -l <cmd>` exit-code probing: exits 0 for ANY allowing rule,
+        including wheel's password-requiring "(ALL) ALL". Shipped a Restart
+        Decky button that appeared and then failed "a password is required".
+      * "any NOPASSWD line names the command": sudoers is LAST-match-wins, and
+        sudoers.d files load in lexical order — a box's `wheel` file
+        ("(ALL) ALL", password) sorted after our `couchside` file and silently
+        shadowed EVERY NOPASSWD grant for three days. The rules were all
+        visible in `sudo -l`; only the ordering made them dead. (This is also
+        why the installers now write `zz-couchside`: it must sort LAST.)
+
+    So: walk the rule lines in order, track the LAST rule that matches the
+    command — a rule naming it, or an ALL rule which matches everything — and
+    answer whether THAT rule is NOPASSWD."""
+    allowed = None
+    for line in rules_text.splitlines():
+        line = line.strip()
+        if not line.startswith("("):
+            continue                      # not a rule line (Defaults, headers)
+        body = line.split(")", 1)[1].strip() if ")" in line else line
+        matches_all = (body == "ALL" or body == "NOPASSWD: ALL"
+                       or body.endswith(": ALL"))
+        if matches_all or needle in line:
+            allowed = "NOPASSWD" in line
+    return bool(allowed)
+
+
+def _sudo_nopasswd_allows(needle):
+    """True when sudoers ACTUALLY permits the command without a password —
+    last-match evaluated (see _nopasswd_last_match). False on any failure: a
+    missing grant must HIDE an action, never offer a dead one."""
     try:
         r = subprocess.run(["sudo", "-n", "-l"], capture_output=True,
                            timeout=4, text=True)
         if r.returncode != 0:
             return False
-        return any("NOPASSWD" in line and needle in line
-                   for line in r.stdout.splitlines())
+        return _nopasswd_last_match(r.stdout, needle)
     except Exception:
         return False
 
