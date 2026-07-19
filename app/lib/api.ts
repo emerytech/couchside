@@ -115,6 +115,13 @@ export type BoxCaps = {
    * "unknown, probe" — only an explicit false skips the probe.
    */
   steamlink?: boolean;
+  /**
+   * Gaming card: this box has Steam, so a "what's running now" card (GPU/game/
+   * output/controllers/session) is worth showing. Gates the Console-tab card.
+   * Optional: absent on agents < 2.9.25, so undefined reads as "unknown, probe"
+   * — only an explicit false skips the probe.
+   */
+  gaming?: boolean;
 };
 
 /** One connected display, from GET /api/displays. */
@@ -315,6 +322,30 @@ export type StreamHost = {
   games: StreamGame[];
 };
 export type SteamLink = { available: boolean; hosts: StreamHost[] };
+
+/**
+ * Live gaming card payload (agent >= 2.9.25). EVERY field is independently
+ * optional — the agent omits what it cannot read, so a box with no discrete GPU
+ * (Intel i915) has no `gpu` key at all. `session` is the only field always
+ * present. Cover art for `game.appid` via steamCoverSource (box cache, LAN-only).
+ */
+export type Gaming = {
+  gpu?: {
+    name: string;
+    temp_c?: number;
+    vram_used_mb?: number;
+    vram_total_mb?: number;
+  };
+  game?: { appid: number; label?: string };
+  output?: { name: string; internal: boolean };
+  controllers?: {
+    uniq: string;
+    name: string;
+    battery_pct?: number;
+    battery_status?: string;
+  }[];
+  session: string;
+};
 
 /**
  * Box-side update check (agent >= 2.9.5), read over the LAN. The BOX contacts
@@ -660,7 +691,8 @@ export function capsEqual(a?: BoxCaps, b?: BoxCaps): boolean {
     a.screensaver === b.screensaver &&
     a.couchmode === b.couchmode &&
     a.desktop === b.desktop &&
-    a.steamlink === b.steamlink
+    a.steamlink === b.steamlink &&
+    a.gaming === b.gaming
   );
 }
 
@@ -1052,6 +1084,21 @@ export const api = {
   ): Promise<SteamLink | null> {
     return probeGated(caps?.steamlink, () =>
       probeOrNull(request<SteamLink>(settings, '/api/steamlink')));
+  },
+
+  /**
+   * Live "what's running now" gaming card (agent >= 2.9.25). Probe-and-appear:
+   * null on a 404 (older agent, or a box with no Steam) so the card hides. Every
+   * payload field is independently optional — a box with no discrete GPU (Intel)
+   * omits `gpu` entirely; render only what resolved. Cover art for `game.appid`
+   * comes from the box's own cache via steamCoverSource (LAN-only).
+   */
+  gaming(
+    settings: ConnSettings,
+    caps: BoxCaps | undefined = cachedCaps(settings),
+  ): Promise<Gaming | null> {
+    return probeGated(caps?.gaming, () =>
+      probeOrNull(request<Gaming>(settings, '/api/gaming')));
   },
 
   /**

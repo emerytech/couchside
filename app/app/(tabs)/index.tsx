@@ -2,6 +2,7 @@ import React, { useEffect } from 'react';
 import { Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
 
 import { Gated } from '@/components/Gated';
+import { GamingCard } from '@/components/GamingCard';
 import { NowPlayingCard } from '@/components/NowPlayingCard';
 import { ScreenPreview } from '@/components/ScreenPreview';
 import { Sparkline } from '@/components/Sparkline';
@@ -167,6 +168,9 @@ function ConsoleScreen() {
 
         {/* Now Playing (MPRIS) — probe-and-appear; hidden when no media backend */}
         <NowPlayingCard />
+
+        {/* Gaming card (probe-and-appear; hidden when the box has no Steam) */}
+        <GamingCard />
 
         {s && (
           <>

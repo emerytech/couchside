@@ -63,6 +63,14 @@ jobs:
       - name: Unit tests (steam link / remote play)
         run: python3 tests/test_steamlink.py
 
+      # Gaming card (/api/gaming): the card* glob trap (a cardN-DP-1 connector
+      # dir must not be read as a GPU), the reaper AppId matcher incl. the
+      # [oom_reaper] reject, the empty-power_supply desktop case + the uniq (never
+      # phys) battery join, and per-field probe-and-appear. Drives the real
+      # functions against sysfs/proc fixtures via the module-constant roots.
+      - name: Unit tests (gaming card)
+        run: python3 tests/test_gaming_card.py
+
   smoke:
     runs-on: ubuntu-latest
     needs: compile

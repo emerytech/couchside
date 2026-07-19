@@ -44,7 +44,7 @@ except ImportError:  # pragma: no cover
     fcntl = None
 
 APP_NAME = "couchside-agent"
-VERSION = "2.9.24"
+VERSION = "2.9.25"
 UID = os.getuid()
 XDG_RUNTIME_DIR = "/run/user/%d" % UID
 
@@ -931,7 +931,7 @@ def set_caps(mock):
     if mock:
         CAPS = {k: True for k in
                 ("gamepad", "steam", "media", "tv", "screen", "power_schedule",
-                 "screensaver", "couchmode", "desktop", "steamlink")}
+                 "screensaver", "couchmode", "desktop", "steamlink", "gaming")}
         return
     CAPS = {
         "gamepad": _uinput_writable(),
@@ -944,6 +944,7 @@ def set_caps(mock):
         "couchmode": safe(couchmode_available),
         "desktop": safe(desktop_available),
         "steamlink": safe(steamlink_available),
+        "gaming": safe(gaming_available),
     }
 
 
@@ -7932,6 +7933,261 @@ def _guide_watch(gen):
 
 
 # ---------------------------------------------------------------------------
+# Gaming card (GET /api/gaming). A live "what's running right now" panel:
+# discrete-GPU temp/VRAM, the running Steam game (+ cover via the existing cover
+# route), the active display output, connected controllers with battery, and the
+# session (Game Mode vs desktop). EVERY field is independently optional — the
+# only boxes reachable to test on are Intel i915 with NO hwmon under the DRM
+# device, so the GPU block simply does not appear rather than blanking the card.
+# The amdgpu sysfs paths follow the documented layout but are UNVERIFIED on
+# hardware (no AMD box on the LAN), and degrade to "no GPU block" on anything
+# that is not amdgpu (Intel exposes no device hwmon; NVIDIA would need NVML).
+# ---------------------------------------------------------------------------
+
+_GAMING_TTL = 2.0
+_GAMING_CACHE = {"val": None, "at": 0.0}
+_GAMING_LOCK = threading.Lock()
+# Sysfs roots, as module constants so tests can point them at fixtures (the same
+# pattern as _PROC_INPUT_DEVICES for the pad list).
+_DRM_DIR = "/sys/class/drm"
+_POWER_SUPPLY_DIR = "/sys/class/power_supply"
+
+
+def _read_int(path):
+    """int from a one-line sysfs file, or None (never raises)."""
+    try:
+        with open(path) as f:
+            return int(f.read().strip())
+    except (OSError, ValueError):
+        return None
+
+
+def gaming_available():
+    """Boot-time caps hint: a box with Steam can have a gaming session worth
+    showing. GET /api/gaming is the live authority (per-field probe-and-appear).
+    Never raises."""
+    try:
+        return _steam_root() is not None
+    except Exception:
+        return False
+
+
+def _gpu_sensors():
+    """Discrete-GPU temp + VRAM from amdgpu sysfs, or {} when absent. Intel i915
+    exposes no DRM-device hwmon; NVIDIA needs NVML — both degrade here to "no GPU
+    block", never to a CPU number mislabelled as GPU. Every field independently
+    optional. Read-only, best-effort; never raises."""
+    try:
+        drm = _DRM_DIR
+        # Real cards only: cardN. The connector dirs (cardN-DP-1) ALSO match a
+        # bare card* glob AND carry a `device` symlink (to the DRM card, not the
+        # PCI GPU), so mem_info_*/hwmon are not under them — re.fullmatch(card\d+)
+        # is the documented fix for that trap.
+        cards = [b for b in os.listdir(drm) if re.fullmatch(r"card\d+", b)]
+    except OSError:
+        return {}
+    for card in sorted(cards):
+        dev = os.path.join(drm, card, "device")
+        hw_name, temp_path = None, None
+        # hwmon index is not stable across boxes: match on the name file, never a
+        # hardcoded hwmonN (as read_cpu_temp_c does).
+        for nf in sorted(glob.glob(os.path.join(dev, "hwmon", "hwmon*", "name"))):
+            try:
+                with open(nf) as f:
+                    nm = f.read().strip()
+            except OSError:
+                continue
+            if nm == "amdgpu":
+                hw_name = nm
+                cand = os.path.join(os.path.dirname(nf), "temp1_input")
+                temp_path = cand if os.path.exists(cand) else None
+                break
+        if hw_name is None:
+            continue  # Intel/NVIDIA/virtual card: no amdgpu hwmon here
+        gpu = {"name": hw_name}
+        if temp_path:
+            milli = _read_int(temp_path)
+            if milli is not None:
+                gpu["temp_c"] = round(milli / 1000.0, 1)
+        # VRAM is documented as BYTES but was not observable this session. Sanity-
+        # gate the magnitude before trusting the unit — a total under ~64 MB is
+        # almost certainly not bytes, so drop it rather than report a lie.
+        total = _read_int(os.path.join(dev, "mem_info_vram_total"))
+        used = _read_int(os.path.join(dev, "mem_info_vram_used"))
+        if total is not None and total > (64 << 20):
+            gpu["vram_total_mb"] = total >> 20
+            if used is not None:
+                gpu["vram_used_mb"] = used >> 20
+        return gpu
+    return {}
+
+
+_REAPER_APPID_RE = re.compile(r"\bAppId=(\d+)")
+
+
+def _appid_from_cmdline(cmdline):
+    """Steam AppId from a /proc/<pid>/cmdline blob (NUL-separated tokens), or
+    None. Requires the real Steam launch wrapper — a `reaper` executable token
+    AND a steamapps/ path (the game binary) — so a stray "AppId=" elsewhere does
+    not register. Rejects a bracketed argv[0] ([oom_reaper] and other kernel
+    threads; those also have an empty cmdline, but guard explicitly). Never
+    raises."""
+    try:
+        args = [a for a in cmdline.split("\x00") if a]
+        if not args or args[0].startswith("["):
+            return None
+        if not any(os.path.basename(a) == "reaper" for a in args):
+            return None
+        joined = " ".join(args)
+        if "steamapps" not in joined:
+            return None
+        m = _REAPER_APPID_RE.search(joined)
+        return m.group(1) if m else None
+    except Exception:
+        return None
+
+
+def _running_game():
+    """{"appid": int[, "label": str]} for the Steam game running now, or None.
+    Scans /proc/*/cmdline for the reaper wrapper; label from the appinfo cache
+    (LAN-only, same source the Steam Link list uses). Best-effort; never raises."""
+    try:
+        for entry in glob.glob("/proc/[0-9]*/cmdline"):
+            try:
+                with open(entry, "r", errors="replace") as f:
+                    cmd = f.read()
+            except OSError:
+                continue
+            appid = _appid_from_cmdline(cmd)
+            if appid:
+                game = {"appid": int(appid)}
+                name = _steam_appinfo_names().get(int(appid))
+                if name:
+                    game["label"] = name
+                return game
+    except Exception:
+        pass
+    return None
+
+
+def _norm_mac(s):
+    """A MAC-ish string lowercased with all separators stripped, for fuzzy joins
+    across the many power_supply naming schemes."""
+    return re.sub(r"[^0-9a-f]", "", (s or "").lower())
+
+
+def _pad_battery(uniq):
+    """{"battery_pct": int[, "battery_status": str]} joined to a pad's uniq via
+    /sys/class/power_supply, or {} when there is no match. An EMPTY power_supply
+    directory is the normal mains-desktop case, NOT an error. Pad-battery naming
+    varies (hid-<MAC>-battery, sony_controller_battery_<MAC>, …) so join fuzzily:
+    the pad MAC (separators stripped) appearing in the supply's own name or its
+    uevent. Read-only, best-effort; never raises."""
+    key = _norm_mac(uniq)
+    if not key:
+        return {}
+    try:
+        supplies = os.listdir(_POWER_SUPPLY_DIR)
+    except OSError:
+        return {}
+    for name in supplies:
+        base = os.path.join(_POWER_SUPPLY_DIR, name)
+        if key not in _norm_mac(name):
+            try:
+                with open(os.path.join(base, "uevent")) as f:
+                    uev = f.read()
+            except OSError:
+                uev = ""
+            if key not in _norm_mac(uev):
+                continue
+        out = {}
+        pct = _read_int(os.path.join(base, "capacity"))
+        if pct is not None:
+            out["battery_pct"] = max(0, min(100, pct))
+        try:
+            with open(os.path.join(base, "status")) as f:
+                st = f.read().strip()
+            if st:
+                out["battery_status"] = st
+        except OSError:
+            pass
+        if out:
+            return out
+    return {}
+
+
+def _gaming_controllers():
+    """Real pads (deduped — one device can present several nodes) with a best-
+    effort battery join. Keyed on uniq, NEVER phys (phys is the shared host-
+    adapter MAC, identical for every BT pad)."""
+    seen, out = set(), []
+    for p in list_real_pads():
+        u = p.get("uniq") or ""
+        dedupe = u.lower() or (p.get("phys") or "").lower() or p.get("event", "")
+        if dedupe in seen:
+            continue
+        seen.add(dedupe)
+        ctrl = {"uniq": u, "name": p.get("name", "")}
+        ctrl.update(_pad_battery(u))
+        out.append(ctrl)
+    return out
+
+
+def _active_output():
+    """The display the game is on: the first external connected output, else the
+    first internal, else None. From _connected_outputs (works in any session)."""
+    outs = _connected_outputs()
+    if not outs:
+        return None
+    ext = [o for o in outs if not o["internal"]]
+    return (ext or outs)[0]
+
+
+def _gaming_payload():
+    """The /api/gaming body — every field independently optional; omit anything
+    that could not be read rather than emit a null the app must special-case.
+    TTL-memoized so the app's ~5s poll does not re-scan sysfs/proc each time."""
+    now = time.monotonic()
+    with _GAMING_LOCK:
+        c = _GAMING_CACHE
+        if c["val"] is not None and now - c["at"] <= _GAMING_TTL:
+            return c["val"]
+    payload = {"session": _couchmode_session()}
+    gpu = _gpu_sensors()
+    if gpu:
+        payload["gpu"] = gpu
+    game = _running_game()
+    if game:
+        payload["game"] = game
+    output = _active_output()
+    if output:
+        payload["output"] = output
+    ctrls = _gaming_controllers()
+    if ctrls:
+        payload["controllers"] = ctrls
+    with _GAMING_LOCK:
+        _GAMING_CACHE["val"] = payload
+        _GAMING_CACHE["at"] = now
+    return payload
+
+
+def mock_gaming():
+    """A full payload for --mock so the app's render path is exercised without
+    hardware: GPU block populated (as an AMD box would), a running game, an
+    external output, a pad with battery, Game Mode."""
+    return {
+        "gpu": {"name": "amdgpu", "temp_c": 61.0,
+                "vram_used_mb": 3300, "vram_total_mb": 8192},
+        "game": {"appid": 1091500, "label": "Cyberpunk 2077"},
+        "output": {"name": "DP-1", "internal": False},
+        "controllers": [{"uniq": "dc:2c:26:aa:bb:cc",
+                         "name": "Xbox Wireless Controller",
+                         "battery_pct": 62, "battery_status": "Discharging"}],
+        "session": "gamescope",
+    }
+
+
+# ---------------------------------------------------------------------------
 # Minimal RFC6455 WebSocket support (server side, no fragmentation)
 # ---------------------------------------------------------------------------
 
@@ -8993,6 +9249,16 @@ class Handler(BaseHTTPRequestHandler):
                     self._send(200, info, started)
                 else:
                     self._send(404, {"error": "no streamable hosts"}, started)
+            elif path == "/api/gaming":
+                # Live "what's running now" card. Probe-and-appear: 404 when this
+                # box has no Steam (nothing to report) so old/non-gaming boxes
+                # hide the card. The payload is per-field optional — a box with no
+                # discrete GPU (Intel i915) simply omits the "gpu" key.
+                if not self.mock and _steam_root() is None:
+                    self._send(404, {"error": "no gaming context"}, started)
+                else:
+                    data = mock_gaming() if self.mock else _gaming_payload()
+                    self._send(200, data, started)
             elif path == "/api/guide-hold":
                 # Probe-and-appear like /api/screensaver: 404 when the box can't
                 # do the handoff or can't read evdev, so the app hides the row.
