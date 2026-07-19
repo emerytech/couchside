@@ -165,6 +165,21 @@ SUSPEND_ACTION = {
     "detached": True,
 }
 
+# Decky Loader's plugin_loader.service dies whenever Steam's CEF context goes
+# away (a Steam restart, a session switch) and exits CLEANLY, so systemd never
+# auto-restarts it — the Decky panel just silently vanishes from the Quick
+# Access Menu until the next reboot. Observed in the field within hours of it
+# mattering. This action lets the phone fix it. Injected only when the unit
+# exists AND the sudoers grant is present (see _inject_decky_action).
+DECKY_RESTART_ACTION = {
+    "label": "Restart Decky",
+    "description": "Restart Decky Loader when its menu has vanished from Quick Access",
+    "danger": "low",
+    "cmd": ["sudo", "systemctl", "restart", "plugin_loader"],
+    "user_env": False,
+    "detached": False,
+}
+
 # Custom launcher limits (see the SECURITY NOTE in the launcher routes).
 MAX_LAUNCHERS = 100        # cap on total custom launchers
 MAX_CMD_ARGS = 64          # cap on argv count per launcher
@@ -611,6 +626,41 @@ def _inject_suspend_action(mock):
     ACTIONS["suspend"] = dict(SUSPEND_ACTION)
     if "suspend" not in ACTION_ORDER:
         ACTION_ORDER.append("suspend")
+
+
+def _can_sudo_decky_restart():
+    """True when sudoers permits `systemctl restart plugin_loader` without a
+    password. Same probe pattern as _can_sudo_suspend: `sudo -n -l` lists the
+    permission without running anything. False on any failure, so a box whose
+    installer predates the grant omits the action instead of offering a dead
+    one."""
+    try:
+        r = subprocess.run(["sudo", "-n", "-l", "/usr/bin/systemctl",
+                            "restart", "plugin_loader"],
+                           capture_output=True, timeout=4)
+        return r.returncode == 0
+    except Exception:
+        return False
+
+
+def _inject_decky_action(mock):
+    """Add the Restart Decky action on boxes that have Decky Loader installed
+    AND the sudoers grant to restart it. Both gates matter: without the unit
+    the action is meaningless, and without the grant it would just fail — a
+    dead button costs more trust than a missing one. In --mock it is always
+    added so the app's Actions tab can be developed off-box. Called after
+    load_config; idempotent; a config-defined action of the same id wins."""
+    global ACTIONS, ACTION_ORDER
+    if "restart-decky" in ACTIONS:
+        return
+    if not mock:
+        if not os.path.exists("/etc/systemd/system/plugin_loader.service"):
+            return
+        if not _can_sudo_decky_restart():
+            return
+    ACTIONS["restart-decky"] = dict(DECKY_RESTART_ACTION)
+    if "restart-decky" not in ACTION_ORDER:
+        ACTION_ORDER.append("restart-decky")
 
 # ---------------------------------------------------------------------------
 # Real-mode data collection (Linux; each helper degrades gracefully)
@@ -9542,6 +9592,7 @@ def main():
         check_config_writable()  # warn loudly if pairings/launchers can't persist
     _inject_session_actions()
     _inject_suspend_action(args.mock)
+    _inject_decky_action(args.mock)
     set_tv(args.mock)
     set_mpris(args.mock)
     set_screen(args.mock)
