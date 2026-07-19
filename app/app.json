@@ -17,7 +17,7 @@
         "NSAppTransportSecurity": {
           "NSAllowsLocalNetworking": true
         },
-        "NSLocalNetworkUsageDescription": "Couchside connects to the Couchside agent on your media center or Steam machine over your local network.",
+        "NSLocalNetworkUsageDescription": "Couchside connects to the Couchside service on your media center or Steam machine over your local network.",
         "NSBonjourServices": [
           "_http._tcp"
         ]
