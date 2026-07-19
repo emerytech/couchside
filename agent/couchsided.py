@@ -44,7 +44,7 @@ except ImportError:  # pragma: no cover
     fcntl = None
 
 APP_NAME = "couchside-agent"
-VERSION = "2.9.20"
+VERSION = "2.9.21"
 UID = os.getuid()
 XDG_RUNTIME_DIR = "/run/user/%d" % UID
 
@@ -1095,10 +1095,24 @@ def set_screensaver(mock):
     SS_MOCK = mock
 
 
+def _ss_script():
+    """The installed player path, new display name preferred, legacy fallback.
+    So a box whose agent updated to 2.9.20+ before its install.sh re-laid the
+    renamed player keeps the screensaver working (via the old file) instead of
+    the button vanishing — the tile just keeps its old name until install.sh
+    catches up."""
+    if os.path.isfile(SCREENSAVER_SCRIPT):
+        return SCREENSAVER_SCRIPT
+    if os.path.isfile(SCREENSAVER_SCRIPT_LEGACY):
+        return SCREENSAVER_SCRIPT_LEGACY
+    return SCREENSAVER_SCRIPT
+
+
 def screensaver_available():
-    """Script deployed + the Steam-launch toolchain present. Boot-time hint
-    (rides caps); GET /api/screensaver is the live authority."""
-    return (os.path.isfile(SCREENSAVER_SCRIPT)
+    """Script deployed (new or legacy path) + the Steam-launch toolchain
+    present. Boot-time hint (rides caps); GET /api/screensaver is the live
+    authority."""
+    return (os.path.isfile(_ss_script())
             and shutil.which("ffplay") is not None
             and shutil.which("steam") is not None
             and shutil.which("steamos-add-to-steam") is not None)
@@ -1261,7 +1275,7 @@ def screensaver_start(theme, tier):
         fresh = aid is None
         if fresh:
             subprocess.run(
-                ["steamos-add-to-steam", SCREENSAVER_SCRIPT],
+                ["steamos-add-to-steam", _ss_script()],
                 env=_user_env(), timeout=30,
                 stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
             deadline = time.monotonic() + SS_REGISTER_WAIT_S
