@@ -1,3 +1,4 @@
-New in 2.9.9
+New in 2.9.10
 
-• Stream from PC: play games from another Steam PC or Steam Deck on your network, right on the box. Open the Launch tab, pick the machine, and tap a game — nothing extra to install.
+• Gaming card on the Console tab: see what's running right now — the game with its cover art, your controllers and their battery, the active display, and whether the box is in Game Mode.
+• When another device is streaming from your box, the Console tab now shows that too.
