@@ -1,7 +1,4 @@
-New in 2.9.4
+New in 2.9.8
 
-• Box scanning now works on iPhone — find and pair boxes with no IP typing.
-• A powered-on box can wake a sleeping one, so wake works from any phone.
-• "Set up a box" now opens the install instructions directly.
-• Clearer action labels: see what each button interrupts, not a "danger" level.
-• The About screen now shows the real installed version.
+• More reliable reconnect: after you update a box from the app, it comes back on its own instead of showing "offline" until you reopen the app.
+• Boxes you added by name now keep a working backup address, so they stay reachable when Wi-Fi gets flaky.
