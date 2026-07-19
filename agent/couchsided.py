@@ -44,7 +44,7 @@ except ImportError:  # pragma: no cover
     fcntl = None
 
 APP_NAME = "couchside-agent"
-VERSION = "2.9.22"
+VERSION = "2.9.23"
 UID = os.getuid()
 XDG_RUNTIME_DIR = "/run/user/%d" % UID
 
@@ -931,7 +931,7 @@ def set_caps(mock):
     if mock:
         CAPS = {k: True for k in
                 ("gamepad", "steam", "media", "tv", "screen", "power_schedule",
-                 "screensaver", "couchmode", "desktop")}
+                 "screensaver", "couchmode", "desktop", "steamlink")}
         return
     CAPS = {
         "gamepad": _uinput_writable(),
@@ -943,6 +943,7 @@ def set_caps(mock):
         "screensaver": safe(screensaver_available),
         "couchmode": safe(couchmode_available),
         "desktop": safe(desktop_available),
+        "steamlink": safe(steamlink_available),
     }
 
 
@@ -2752,6 +2753,279 @@ def discover_steam_games():
         return []
 
 
+# ---------------------------------------------------------------------------
+# Steam Remote Play — in-home streaming (/api/steamlink).
+#
+# The box's Steam client can stream games FROM another Steam machine on the LAN
+# (your gaming PC or another Deck) — the Steam client IS the streaming client,
+# so there is nothing to install. Steam caches every host it has streamed from,
+# and the appids that host offers, in config/remoteclients.vdf. We surface those
+# as one-tap "stream this game" tiles: launching steam://rungameid/<appid> for a
+# game that is NOT installed locally but that an online host offers makes Steam
+# stream it (verified on real hardware: a single rungameid brought up the
+# streaming_client, no install manifest). If the host is offline the launch is a
+# no-op on the box, so this is safe to fire optimistically.
+#
+# Names come from Steam's own appinfo.vdf cache (LAN-only, never a CDN — matches
+# the cover-art policy), so host-only games that were never installed still show
+# their real title. Cover art rides the existing /api/steam/<appid>/cover, which
+# 404s for uncached art; the app falls back to the title.
+# ---------------------------------------------------------------------------
+
+# appinfo.vdf name cache: parsing the (multi-MB) blob on every /api/steamlink
+# poll is wasteful, and it changes rarely. Cache the full {appid:int -> name}
+# map keyed by the file's mtime+size so a Steam metadata refresh invalidates it.
+_APPINFO_CACHE = {"key": None, "names": {}}
+_APPINFO_LOCK = threading.Lock()
+_APPINFO_MAGIC_V29 = 0x07564429
+_APPINFO_MAGIC_V28 = 0x07564428
+
+
+def _appinfo_path():
+    root = _steam_root()
+    if root is None:
+        return None
+    p = os.path.join(root, "appcache", "appinfo.vdf")
+    return p if os.path.isfile(p) else None
+
+
+def _parse_appinfo_names(data):
+    """{appid:int -> name:str} from an appinfo.vdf blob (v28 inline-key or v29
+    string-table). Defensive: a malformed app entry is skipped, never raised;
+    a wholly unparseable blob yields {}. Only common->name is extracted."""
+    names = {}
+    try:
+        magic = struct.unpack_from("<I", data, 0)[0]
+    except struct.error:
+        return names
+    if magic not in (_APPINFO_MAGIC_V29, _APPINFO_MAGIC_V28):
+        return names
+    v29 = magic == _APPINFO_MAGIC_V29
+    # string table (v29 only): keys in the KV blob are int32 indices into it.
+    name_idx = None
+    if v29:
+        try:
+            st_off = struct.unpack_from("<q", data, 8)[0]
+            count = struct.unpack_from("<I", data, st_off)[0]
+            strings, p = [], st_off + 4
+            for _ in range(count):
+                e = data.index(b"\x00", p)
+                strings.append(data[p:e])
+                p = e + 1
+            name_idx = strings.index(b"name")
+        except (struct.error, ValueError, IndexError):
+            return names
+        section = 16
+    else:
+        section = 12
+    # Within an app entry the KV blob begins after the fixed header fields:
+    # infoState(4) lastUpdated(4) picsToken(8) sha1(20) changeNumber(4)
+    # + v29's second (binary-vdf) sha1(20).
+    kv_off = 4 + 4 + 8 + 20 + 4 + (20 if v29 else 0)
+    n = len(data)
+    p = section
+    while p + 8 <= n:
+        try:
+            appid = struct.unpack_from("<I", data, p)[0]
+            if appid == 0:
+                break
+            size = struct.unpack_from("<I", data, p + 4)[0]
+            blob_start = p + 8
+            blob_end = blob_start + size
+            p = blob_end
+            names_val = _appinfo_find_name(data, blob_start + kv_off,
+                                           min(blob_end, n), name_idx, v29)
+            if names_val:
+                names[appid] = names_val
+        except (struct.error, ValueError, IndexError):
+            break
+    return names
+
+
+def _appinfo_find_name(data, start, end, name_idx, v29):
+    """The first string field named "name" in one app's KV blob, or None. Keys
+    are int32 string-table indices (v29) or inline NUL-terminated (v28)."""
+    p = start
+    depth = 0
+    try:
+        while p < end:
+            t = data[p]
+            p += 1
+            if t == 0x08:            # end of map
+                depth -= 1
+                if depth < 0:
+                    return None
+                continue
+            if v29:
+                key = struct.unpack_from("<I", data, p)[0]
+                p += 4
+            else:
+                e = data.index(b"\x00", p)
+                key = data[p:e]
+                p = e + 1
+            if t == 0x00:            # nested map
+                depth += 1
+                continue
+            if t == 0x01:            # string value
+                e = data.index(b"\x00", p)
+                val = data[p:e]
+                p = e + 1
+                if (name_idx is not None and key == name_idx) or \
+                        (name_idx is None and key == b"name"):
+                    return val.decode("utf-8", "replace")
+                continue
+            if t == 0x02:            # int32
+                p += 4
+                continue
+            if t == 0x07:            # int64
+                p += 8
+                continue
+            return None              # unknown type: stop this app safely
+    except (IndexError, struct.error):
+        return None
+    return None
+
+
+def _steam_appinfo_names():
+    """{appid:int -> name}, cached by appinfo.vdf mtime+size. {} on any error."""
+    path = _appinfo_path()
+    if path is None:
+        return {}
+    try:
+        st = os.stat(path)
+        key = (st.st_mtime, st.st_size)
+    except OSError:
+        return {}
+    with _APPINFO_LOCK:
+        if _APPINFO_CACHE["key"] == key:
+            return _APPINFO_CACHE["names"]
+    try:
+        with open(path, "rb") as f:
+            names = _parse_appinfo_names(f.read())
+    except OSError:
+        return {}
+    with _APPINFO_LOCK:
+        _APPINFO_CACHE["key"] = key
+        _APPINFO_CACHE["names"] = names
+    return names
+
+
+def _remoteclients_path():
+    root = _steam_root()
+    if root is None:
+        return None
+    p = os.path.join(root, "config", "remoteclients.vdf")
+    return p if os.path.isfile(p) else None
+
+
+def _vdf_line_val(line):
+    """The VALUE of a `"key"  "value"` text-VDF line (the last quoted token), or
+    None. Used for remoteclients.vdf, which has no nesting we care about."""
+    parts = line.split('"')
+    if len(parts) >= 4:
+        return parts[-2]
+    if len(parts) == 3:              # a lone `"token"` (e.g. the "apps" key)
+        return parts[1]
+    return None
+
+
+def _parse_remoteclients(text):
+    """[{host, last, apps:[appid_str,...]}] from a remoteclients.vdf blob. Text
+    line-scan (pure-stdlib agent, no VDF parser). Best-effort; [] on trouble."""
+    hosts = []
+    cur = None
+    in_apps = False
+    for raw in text.splitlines():
+        s = raw.strip()
+        if s.startswith('"hostname"'):
+            cur = {"host": _vdf_line_val(s) or "", "last": 0, "apps": []}
+            hosts.append(cur)
+            in_apps = False
+        elif cur is not None and s.startswith('"lastupdated"'):
+            try:
+                cur["last"] = int(_vdf_line_val(s) or "0")
+            except (TypeError, ValueError):
+                pass
+        elif s == '"apps"':
+            in_apps = True
+        elif in_apps:
+            if s.startswith("}"):
+                in_apps = False
+            elif cur is not None:
+                v = _vdf_line_val(s)
+                if v and v.isdigit():
+                    cur["apps"].append(v)
+    return hosts
+
+
+def discover_stream_games():
+    """Streamable host games as launcher dicts, most-recent host per appid.
+    Each -> {"id":"stream:<appid>","label":<name>,"kind":"stream",
+    "appid":<int>,"host":<hostname>}. Tools/runtimes skipped. Read-only,
+    best-effort: any failure yields []."""
+    try:
+        path = _remoteclients_path()
+        if path is None:
+            return []
+        with open(path, "r", encoding="utf-8", errors="replace") as f:
+            hosts = _parse_remoteclients(f.read())
+        names = _steam_appinfo_names()
+        best = {}  # appid(str) -> (last_seen, host)
+        for h in hosts:
+            for a in h["apps"]:
+                prev = best.get(a)
+                if prev is None or h["last"] > prev[0]:
+                    best[a] = (h["last"], h["host"])
+        out = []
+        for a, (last, host) in best.items():
+            name = names.get(int(a), "")
+            if _is_steam_tool(a, name):
+                continue
+            out.append({
+                "id": "stream:%s" % a,
+                "label": name or ("App %s" % a),
+                "kind": "stream",
+                "appid": int(a),
+                "host": host,
+                "last": last,
+            })
+        out.sort(key=lambda l: (l["label"].lower(), l["appid"]))
+        return out
+    except Exception:
+        return []
+
+
+def _streamable_appids():
+    """Set of appid strings currently offered by any known host — the allowlist
+    the launch route validates against so only a real streamable game fires."""
+    return {str(g["appid"]) for g in discover_stream_games()}
+
+
+def steamlink_available():
+    """Steam present AND at least one host offers at least one streamable game.
+    Boot-time hint (rides caps); GET /api/steamlink is the live authority."""
+    return (_steam_root() is not None
+            and shutil.which("steam") is not None
+            and bool(discover_stream_games()))
+
+
+def steamlink_info():
+    """{available, hosts:[{host, last, games:[{appid,label}]}]} grouped by host,
+    newest host first. games are de-duped to their most-recent host, so a title
+    appears once even if several machines offer it."""
+    games = discover_stream_games()
+    by_host = {}
+    for g in games:
+        by_host.setdefault(g["host"], {"host": g["host"], "last": g["last"],
+                                       "games": []})
+        by_host[g["host"]]["games"].append(
+            {"appid": g["appid"], "label": g["label"]})
+    hosts = sorted(by_host.values(), key=lambda h: h["last"], reverse=True)
+    for h in hosts:
+        h["games"].sort(key=lambda g: g["label"].lower())
+    return {"available": bool(games), "hosts": hosts}
+
+
 def _acf_int(s):
     """Parse an ACF numeric string to int; 0 on missing/garbage (never raises)."""
     try:
@@ -2927,8 +3201,12 @@ def _launcher_argv(launcher_id):
     well-formed but not present (e.g. steam:<appid> for a game that isn't
     installed) resolves to None so the route returns 404 "unknown launcher".
 
-    steam:<appid>  -> ["steam", "steam://rungameid/<appid>"]
-    custom:<slug>  -> that launcher's stored cmd argv from config
+    steam:<appid>   -> ["steam", "steam://rungameid/<appid>"] (installed game)
+    stream:<appid>  -> ["steam", "steam://rungameid/<appid>"] (Remote Play from
+                       a host — same URL, but the appid is validated against the
+                       streamable set instead of the on-disk manifest, since a
+                       host game is by definition NOT installed locally)
+    custom:<slug>   -> that launcher's stored cmd argv from config
     """
     if launcher_id.startswith("steam:"):
         appid = launcher_id[len("steam:"):]
@@ -2939,6 +3217,16 @@ def _launcher_argv(launcher_id):
         # Validate the SPECIFIC appmanifest_<appid>.acf rather than globbing +
         # parsing every manifest on each launch.
         if _steam_game_installed(appid):
+            return ["steam", "steam://rungameid/%s" % appid]
+        return None
+    if launcher_id.startswith("stream:"):
+        appid = launcher_id[len("stream:"):]
+        if not appid.isdigit():
+            return None
+        # A host-streamable game is NOT installed locally, so gate on the
+        # remoteclients allowlist instead. Steam streams it iff a host that
+        # offers it is online; if not, the rungameid is a harmless no-op.
+        if appid in _streamable_appids():
             return ["steam", "steam://rungameid/%s" % appid]
         return None
     if _valid_launcher_id(launcher_id):
@@ -8687,6 +8975,16 @@ class Handler(BaseHTTPRequestHandler):
                     self._send(200, info, started)
                 else:
                     self._send(404, {"error": "screensaver not installed"}, started)
+            elif path == "/api/steamlink":
+                # Steam Remote Play (in-home streaming) host list. Probe-and-
+                # appear: 404 when no host has ever been streamed from (nothing
+                # to offer) so the app hides the "Stream from PC" surface. Launch
+                # is the existing POST /api/launchers/stream:<appid>.
+                info = steamlink_info()
+                if info["available"]:
+                    self._send(200, info, started)
+                else:
+                    self._send(404, {"error": "no streamable hosts"}, started)
             elif path == "/api/guide-hold":
                 # Probe-and-appear like /api/screensaver: 404 when the box can't
                 # do the handoff or can't read evdev, so the app hides the row.

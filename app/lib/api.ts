@@ -108,6 +108,13 @@ export type BoxCaps = {
    * absent on agents < 2.9, so undefined reads as "not a desktop box here".
    */
   desktop?: boolean;
+  /**
+   * Steam Remote Play (in-home streaming): the box has streamed from at least
+   * one host, so there are games to offer. Gates the Launch tab's "Stream from
+   * PC" section. Optional: absent on agents < 2.9.23, so undefined reads as
+   * "unknown, probe" — only an explicit false skips the probe.
+   */
+  steamlink?: boolean;
 };
 
 /** One connected display, from GET /api/displays. */
@@ -292,6 +299,22 @@ export function isActiveDownload(d: SteamDownload): boolean {
 }
 
 export type Downloads = { downloads: SteamDownload[] };
+
+/**
+ * Steam Remote Play (in-home streaming), agent >= 2.9.23. A host is another
+ * Steam machine on the LAN (your gaming PC / another Deck) the box has streamed
+ * from; `games` are the titles it offers. Launch one with
+ * `api.launch(settings, `stream:${appid}`)` — Steam streams it natively, no
+ * Steam Link app to install. Probe-and-appear: 404 -> null hides the surface.
+ */
+export type StreamGame = { appid: number; label: string };
+export type StreamHost = {
+  host: string;
+  /** Unix seconds the box last saw this host (newest first in the list). */
+  last: number;
+  games: StreamGame[];
+};
+export type SteamLink = { available: boolean; hosts: StreamHost[] };
 
 /**
  * Box-side update check (agent >= 2.9.5), read over the LAN. The BOX contacts
@@ -1014,6 +1037,20 @@ export const api = {
   ): Promise<Downloads | null> {
     return probeGated(caps?.steam, () =>
       probeOrNull(request<Downloads>(settings, '/api/downloads')));
+  },
+
+  /**
+   * Steam Remote Play host + game list (agent >= 2.9.23). Probe-and-appear:
+   * null on a 404 (older agent, or the box has never streamed from a host) so
+   * the Launch tab hides the "Stream from PC" section. Launch a game with
+   * launch(settings, `stream:${appid}`).
+   */
+  steamlink(
+    settings: ConnSettings,
+    caps: BoxCaps | undefined = cachedCaps(settings),
+  ): Promise<SteamLink | null> {
+    return probeGated(caps?.steamlink, () =>
+      probeOrNull(request<SteamLink>(settings, '/api/steamlink')));
   },
 
   /**
