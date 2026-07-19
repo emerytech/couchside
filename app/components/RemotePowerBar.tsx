@@ -10,7 +10,7 @@ import { usePoll } from '@/hooks/usePoll';
 import { api, capsEqual, Displays, hostKey, PowerSchedule, Screensaver, Status, Tv, TvOp, VolumeTarget } from '@/lib/api';
 import { hapticError, hapticLight, hapticSuccess } from '@/lib/haptics';
 import { getPref, usePref } from '@/lib/prefs';
-import { normalizeMac } from '@/lib/settings';
+import { normalizeMac, isValidLanIp } from '@/lib/settings';
 import { useBoxes, useSettings } from '@/lib/SettingsContext';
 import { mono, useTheme, useThemedStyles } from '@/lib/theme';
 import type { Palette } from '@/lib/theme';
@@ -209,6 +209,16 @@ export function RemotePowerBar() {
     const mac = normalizeMac(s?.net?.mac);
     if (mac && mac !== settings.mac) void update({ mac });
   }, [s?.net?.mac, settings.mac, update]);
+
+  // Learn + REFRESH the box's LAN IP from status (agent >= 2.9.22). lastIp is
+  // otherwise written only at pairing, so a box added by hostname never got one
+  // and a box whose DHCP lease drifted kept a stale one — leaving raceGet's
+  // cached-IP fallback unable to engage when mDNS (.local) breaks, e.g. right
+  // after an agent restart. Refreshing every poll keeps the fallback live.
+  React.useEffect(() => {
+    const ip = s?.ip;
+    if (ip && isValidLanIp(ip) && ip !== settings.lastIp) void update({ lastIp: ip });
+  }, [s?.ip, settings.lastIp, update]);
 
   // Learn + persist the box's capability summary from status (agent >= 2.8.2),
   // so the tab bar can hide gaming tabs on a server box immediately on next

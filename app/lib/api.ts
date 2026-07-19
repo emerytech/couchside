@@ -198,6 +198,10 @@ export type Status = {
   disks: DiskInfo[];
   /** Network facts for the power/Wake-on-LAN path (agent >= 2.6). */
   net?: NetInfo;
+  /** The LAN IP the phone reached the box on (agent >= 2.9.22). The app learns
+      it into the box's lastIp every poll, so the cached-IP fallback stays fresh
+      and works for boxes added by hostname. */
+  ip?: string;
   agent_version: string;
   /** Optional-feature summary (agent >= 2.8.2); undefined on older agents. See BoxCaps. */
   caps?: BoxCaps;
