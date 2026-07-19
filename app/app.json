@@ -3,7 +3,7 @@
     "name": "Couchside",
     "slug": "rescue-remote",
     "owner": "ets3d-llc",
-    "version": "2.9.5",
+    "version": "2.9.6",
     "orientation": "default",
     "icon": "./assets/images/icon.png",
     "scheme": "couchside",
@@ -11,7 +11,7 @@
     "ios": {
       "supportsTablet": true,
       "bundleIdentifier": "com.ets3d.rescueremote",
-      "buildNumber": "55",
+      "buildNumber": "56",
       "infoPlist": {
         "ITSAppUsesNonExemptEncryption": false,
         "NSAppTransportSecurity": {
@@ -32,7 +32,7 @@
         "monochromeImage": "./assets/images/android-icon-monochrome.png"
       },
       "predictiveBackGestureEnabled": false,
-      "versionCode": 39
+      "versionCode": 40
     },
     "web": {
       "bundler": "metro",
