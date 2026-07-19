@@ -44,7 +44,7 @@ except ImportError:  # pragma: no cover
     fcntl = None
 
 APP_NAME = "couchside-agent"
-VERSION = "2.9.25"
+VERSION = "2.9.26"
 UID = os.getuid()
 XDG_RUNTIME_DIR = "/run/user/%d" % UID
 
@@ -931,7 +931,8 @@ def set_caps(mock):
     if mock:
         CAPS = {k: True for k in
                 ("gamepad", "steam", "media", "tv", "screen", "power_schedule",
-                 "screensaver", "couchmode", "desktop", "steamlink", "gaming")}
+                 "screensaver", "couchmode", "desktop", "steamlink", "gaming",
+                 "streamhost")}
         return
     CAPS = {
         "gamepad": _uinput_writable(),
@@ -945,6 +946,7 @@ def set_caps(mock):
         "desktop": safe(desktop_available),
         "steamlink": safe(steamlink_available),
         "gaming": safe(gaming_available),
+        "streamhost": safe(streamhost_available),
     }
 
 
@@ -8188,6 +8190,135 @@ def mock_gaming():
 
 
 # ---------------------------------------------------------------------------
+# Stream host detection (GET /api/stream-host) — CouchOS roadmap phase 4a.
+#
+# DETECT ONLY: is a Steam Remote Play session being served BY this box right now?
+# No session/display manipulation whatsoever (that is 4b/4c, and 4c is gated on a
+# hardware test). This is the opposite direction from the shipped `steamlink`
+# CLIENT feature ("Stream FROM PC"), so it gets its own caps key and endpoint.
+#
+# Signal choice, grounded on hardware rather than the original plan's log tailer:
+#   * TCP 27036 LISTEN (owned by steam) = the host is up. VERIFIED live. This
+#     doubles as the wedged-Steam test.
+#   * A CONNECTED UDP peer on the streaming ports = a session is actually
+#     running, and it names the peer. Verified to be CLEAN while idle (the only
+#     connected UDP socket on an idle box is DHCP 68<->67).
+# The plan specified tailing streaming_log.txt instead. Three findings on real
+# hardware argued against it: (a) the log has NO stream-stop line at all, forcing
+# a deadline hack; (b) its would-be liveness lines are swamped by 9,915
+# "Adding/Removing process for gameID" entries that fire with no stream running,
+# which would pin a session permanently active; (c) an ESTABLISHED TCP peer on
+# 27036 is NOT a session — the router holds one on an idle box. The UDP-peer
+# probe has both edges, names the peer, and needs no deadline. If a live host
+# session shows it does not fire, the log tailer is the documented fallback.
+# ---------------------------------------------------------------------------
+
+# Steam Remote Play transport ports. 27036 is also the discovery/control port
+# (hence the router chatter); the video transport rides this range over UDP.
+_STREAM_PORTS = frozenset(range(27031, 27037))
+_STREAM_LISTEN_PORT = 27036
+_PROC_NET_TCP = ("/proc/net/tcp", "/proc/net/tcp6")
+_PROC_NET_UDP = ("/proc/net/udp", "/proc/net/udp6")
+_TCP_LISTEN = "0A"
+# When the peer first appeared, so the card can show a duration. Reset on idle.
+_STREAM_STATE = {"active": False, "since": 0}
+
+
+def _hex_ip(h):
+    """Dotted IPv4 from a /proc/net little-endian hex address, or None for IPv6
+    / anything unparseable (we only name IPv4 LAN peers). '3C01010A' -> 10.1.1.60."""
+    try:
+        if len(h) != 8:
+            return None          # IPv6 (32 chars) — not named, still counted
+        b = bytes.fromhex(h)
+        return "%d.%d.%d.%d" % (b[3], b[2], b[1], b[0])
+    except ValueError:
+        return None
+
+
+def _proc_net_rows(paths):
+    """Yield (local_port, rem_hex_ip, rem_port, state) from /proc/net/{tcp,udp}.
+    Pure parsing — no `ss`/`netstat` subprocess. Never raises."""
+    for path in paths:
+        try:
+            with open(path) as f:
+                lines = f.read().splitlines()[1:]     # drop the header
+        except OSError:
+            continue
+        for line in lines:
+            parts = line.split()
+            if len(parts) < 4:
+                continue
+            try:
+                lh, lp = parts[1].rsplit(":", 1)
+                rh, rp = parts[2].rsplit(":", 1)
+                yield (int(lp, 16), rh, int(rp, 16), parts[3])
+            except (ValueError, IndexError):
+                continue
+
+
+def _stream_listening():
+    """True when Steam is listening on the Remote Play control port — i.e. this
+    box can host. Also the wedged-Steam test. Never raises."""
+    for lport, _rh, _rp, st in _proc_net_rows(_PROC_NET_TCP):
+        if lport == _STREAM_LISTEN_PORT and st == _TCP_LISTEN:
+            return True
+    return False
+
+
+def _stream_peer():
+    """The IPv4 of a peer currently streaming FROM this box, or None.
+
+    A CONNECTED UDP socket on the transport range means a live session: an idle
+    box has none (verified). Zero / loopback remotes are skipped — an
+    unconnected listener has rem 0.0.0.0:0. Never raises."""
+    for lport, rh, rp, _st in _proc_net_rows(_PROC_NET_UDP):
+        if lport not in _STREAM_PORTS or rp == 0:
+            continue
+        ip = _hex_ip(rh)
+        if ip is None:
+            return "peer"        # IPv6 peer: real session, just not named
+        if ip.startswith("127.") or ip == "0.0.0.0":
+            continue
+        return ip
+    return None
+
+
+def streamhost_available():
+    """Boot-time caps hint: this box has Steam, so it could host a session. The
+    endpoint is the live authority. Never raises."""
+    try:
+        return _steam_root() is not None
+    except Exception:
+        return False
+
+
+def stream_host_info():
+    """Body for GET /api/stream-host. `active` means a peer is streaming from
+    this box right now; the app shows the card only then."""
+    listening = _stream_listening()
+    peer = _stream_peer()
+    active = peer is not None
+    now = int(time.time())
+    if active and not _STREAM_STATE["active"]:
+        _STREAM_STATE["since"] = now          # rising edge
+    if not active:
+        _STREAM_STATE["since"] = 0
+    _STREAM_STATE["active"] = active
+    info = {"available": True, "listening": listening, "active": active}
+    if active:
+        info["peer"] = peer
+        if _STREAM_STATE["since"]:
+            info["since"] = _STREAM_STATE["since"]
+    return info
+
+
+def mock_stream_host():
+    return {"available": True, "listening": True, "active": True,
+            "peer": "10.1.1.42", "since": int(time.time()) - 725}
+
+
+# ---------------------------------------------------------------------------
 # Minimal RFC6455 WebSocket support (server side, no fragmentation)
 # ---------------------------------------------------------------------------
 
@@ -9259,6 +9390,16 @@ class Handler(BaseHTTPRequestHandler):
                 else:
                     data = mock_gaming() if self.mock else _gaming_payload()
                     self._send(200, data, started)
+            elif path == "/api/stream-host":
+                # Steam Remote Play with this box as the HOST (phase 4a, detect
+                # only — no session/display manipulation). Probe-and-appear: 404
+                # without Steam. The app shows its card only while `active`.
+                # Distinct from /api/steamlink, which is the CLIENT direction.
+                if not self.mock and _steam_root() is None:
+                    self._send(404, {"error": "no steam"}, started)
+                else:
+                    info = mock_stream_host() if self.mock else stream_host_info()
+                    self._send(200, info, started)
             elif path == "/api/guide-hold":
                 # Probe-and-appear like /api/screensaver: 404 when the box can't
                 # do the handoff or can't read evdev, so the app hides the row.
