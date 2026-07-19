@@ -5,6 +5,7 @@ import { Gated } from '@/components/Gated';
 import { GamingCard } from '@/components/GamingCard';
 import { NowPlayingCard } from '@/components/NowPlayingCard';
 import { ScreenPreview } from '@/components/ScreenPreview';
+import { StreamHostCard } from '@/components/StreamHostCard';
 import { Sparkline } from '@/components/Sparkline';
 import { TabScreen } from '@/components/TabScreen';
 import { useLockOrientation } from '@/hooks/useLockOrientation';
@@ -168,6 +169,9 @@ function ConsoleScreen() {
 
         {/* Now Playing (MPRIS) — probe-and-appear; hidden when no media backend */}
         <NowPlayingCard />
+
+        {/* Serving a Remote Play session (hidden unless one is live) */}
+        <StreamHostCard />
 
         {/* Gaming card (probe-and-appear; hidden when the box has no Steam) */}
         <GamingCard />

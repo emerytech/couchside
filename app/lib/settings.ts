@@ -229,9 +229,11 @@ function normalizeCaps(raw: unknown): BoxCaps | undefined {
   // gaming arrived with agent 2.9.25 — same optional-cap drop trap; add it here
   // AND to capsEqual or the cap never persists and the card re-probes on launch.
   const gaming = bool('gaming');
+  // streamhost arrived with agent 2.9.26 — same optional-cap drop trap.
+  const streamhost = bool('streamhost');
   return {
     gamepad, steam, media, tv, screen, power_schedule,
-    screensaver, couchmode, desktop, steamlink, gaming,
+    screensaver, couchmode, desktop, steamlink, gaming, streamhost,
   };
 }
 

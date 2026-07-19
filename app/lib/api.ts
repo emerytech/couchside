@@ -122,6 +122,13 @@ export type BoxCaps = {
    * — only an explicit false skips the probe.
    */
   gaming?: boolean;
+  /**
+   * Stream host (Steam Remote Play served BY this box). Gates the Console-tab
+   * "Streaming to" card. Distinct from `steamlink`, which is the CLIENT
+   * direction ("Stream from PC"). Optional: absent on agents < 2.9.26, so
+   * undefined reads as "unknown, probe" — only an explicit false skips it.
+   */
+  streamhost?: boolean;
 };
 
 /** One connected display, from GET /api/displays. */
@@ -345,6 +352,23 @@ export type Gaming = {
     battery_status?: string;
   }[];
   session: string;
+};
+
+/**
+ * Steam Remote Play served BY this box (agent >= 2.9.26, phase 4a detect-only).
+ * `active` means a peer is streaming from the box right now; the card renders
+ * only then. Probe-and-appear: 404 -> null. The OPPOSITE direction from
+ * SteamLink ("Stream from PC").
+ */
+export type HostSession = {
+  available: boolean;
+  /** Steam is listening on the Remote Play port — the box can host. */
+  listening: boolean;
+  active: boolean;
+  /** IPv4 of the device streaming from this box, when named. */
+  peer?: string;
+  /** Unix seconds the session started. */
+  since?: number;
 };
 
 /**
@@ -692,7 +716,8 @@ export function capsEqual(a?: BoxCaps, b?: BoxCaps): boolean {
     a.couchmode === b.couchmode &&
     a.desktop === b.desktop &&
     a.steamlink === b.steamlink &&
-    a.gaming === b.gaming
+    a.gaming === b.gaming &&
+    a.streamhost === b.streamhost
   );
 }
 
@@ -1099,6 +1124,19 @@ export const api = {
   ): Promise<Gaming | null> {
     return probeGated(caps?.gaming, () =>
       probeOrNull(request<Gaming>(settings, '/api/gaming')));
+  },
+
+  /**
+   * Is a Steam Remote Play session being served BY this box (agent >= 2.9.26)?
+   * Detect-only — nothing here changes the box's session or display.
+   * Probe-and-appear: null on a 404 (older agent / no Steam) so the card hides.
+   */
+  streamHost(
+    settings: ConnSettings,
+    caps: BoxCaps | undefined = cachedCaps(settings),
+  ): Promise<HostSession | null> {
+    return probeGated(caps?.streamhost, () =>
+      probeOrNull(request<HostSession>(settings, '/api/stream-host')));
   },
 
   /**
