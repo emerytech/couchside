@@ -37,6 +37,16 @@ QR_URL="${AGENT_BASE}/qr.py"
 # Aerial-screensaver player script (agent's /api/screensaver launches it via a
 # Steam shortcut). Optional: a failed fetch just means the feature stays absent.
 SCREENSAVER_URL="${AGENT_BASE}/couchside-screensaver.sh"
+# Branded Steam grid art for the screensaver tile (real capsule, not the
+# filename-on-gradient placeholder). Optional: a failed fetch just means the
+# tile falls back to Steam's placeholder. Basenames match agent/steam-grid/.
+SCREENSAVER_ART_PORTRAIT_URL="${AGENT_BASE}/screensaver-portrait.png"
+SCREENSAVER_ART_LANDSCAPE_URL="${AGENT_BASE}/screensaver-landscape.png"
+SCREENSAVER_ART_LOGO_URL="${AGENT_BASE}/screensaver-logo.png"
+# The installed player's basename IS the Steam tile name (Steam titles a
+# non-Steam shortcut from the basename). Display name + legacy name.
+SCREENSAVER_DEST_NAME="Couchside Screensaver"
+SCREENSAVER_DEST_LEGACY="couchside-screensaver.sh"
 # Signature + checksums for the agent files above, published as sibling assets
 # in the SAME release. install.sh verifies the sig (authenticity) + hashes
 # (integrity) before installing any fetched agent file.
@@ -147,26 +157,35 @@ usage() {
     cat <<'USAGE'
 Couchside box agent installer. Run ON the box as your desktop user.
 
-Usage: install.sh [--no-sudoers] [--no-decky] [--uninstall] [--help]
+Usage: install.sh [--no-sudoers] [--no-decky] [--screensaver] [--no-screensaver] [--uninstall] [--help]
 
-  (no flags)     install/upgrade the agent (idempotent, safe to re-run)
-  --no-sudoers   skip installing /etc/sudoers.d/couchside (high-danger
-                 actions and system journal reads will fail without it)
-  --no-decky     skip the Decky Loader Game Mode panel even if Decky is found
-  --uninstall    remove the agent (asks before deleting the token/sudoers)
-  --help         this text
+  (no flags)        install/upgrade the agent (idempotent, safe to re-run)
+  --no-sudoers      skip installing /etc/sudoers.d/couchside (high-danger
+                    actions and system journal reads will fail without it)
+  --no-decky        skip the Decky Loader Game Mode panel even if Decky is found
+  --screensaver     install the Couchside screensaver add-on without asking
+  --no-screensaver  skip the Couchside screensaver add-on
+  --uninstall       remove the agent (asks before deleting the token/sudoers)
+  --help            this text
+
+The screensaver add-on (Apple-TV-style aerials as a Game Mode tile) is asked
+about interactively; set COUCHSIDE_SCREENSAVER=1/0 (or the flags above) to
+answer non-interactively. Piped installs (curl | bash) default to installing it.
 USAGE
 }
 
 for arg in "$@"; do
     case "$arg" in
-        --no-sudoers) NO_SUDOERS=1 ;;
-        --no-decky)   NO_DECKY=1 ;;
-        --uninstall)  UNINSTALL=1 ;;
-        --help|-h)    usage; exit 0 ;;
+        --no-sudoers)     NO_SUDOERS=1 ;;
+        --no-decky)       NO_DECKY=1 ;;
+        --screensaver)    COUCHSIDE_SCREENSAVER=1 ;;
+        --no-screensaver) COUCHSIDE_SCREENSAVER=0 ;;
+        --uninstall)      UNINSTALL=1 ;;
+        --help|-h)        usage; exit 0 ;;
         *) echo "error: unknown flag: $arg" >&2; usage >&2; exit 2 ;;
     esac
 done
+# WANT_SCREENSAVER is resolved below, once ask_yn is defined (see the gate).
 
 say()  { echo "==> $*"; }
 note() { echo "    $*"; }
@@ -413,6 +432,20 @@ _cs_cleanup() {
 }
 trap _cs_cleanup EXIT
 
+# Screensaver add-on gate (ask_yn is defined by now). Default YES for
+# non-interactive/piped installs so an unattended re-run never silently drops it
+# from a box that had it; ASK on a real terminal; explicit via --screensaver /
+# --no-screensaver / COUCHSIDE_SCREENSAVER.
+WANT_SCREENSAVER=1
+case "${COUCHSIDE_SCREENSAVER:-ask}" in
+    1|yes|true|YES|TRUE)  WANT_SCREENSAVER=1 ;;
+    0|no|false|NO|FALSE)  WANT_SCREENSAVER=0 ;;
+    *) if [ -r /dev/tty ]; then
+           ask_yn "Install the Couchside screensaver add-on (Apple-TV-style aerials in Game Mode)?" \
+               && WANT_SCREENSAVER=1 || WANT_SCREENSAVER=0
+       fi ;;
+esac
+
 SCRIPT_DIR=""
 if [ -n "${BASH_SOURCE[0]:-}" ] && [ -f "${BASH_SOURCE[0]:-}" ]; then
     SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -424,9 +457,17 @@ if [ -n "$SCRIPT_DIR" ] && [ -f "$SCRIPT_DIR/agent/couchsided.py" ]; then
     cp "$SCRIPT_DIR/agent/couchside.service" "$WORK_DIR/couchside.service"
     # Optional QR helper: present in a checkout, harmless if not.
     [ -f "$SCRIPT_DIR/agent/qr.py" ] && cp "$SCRIPT_DIR/agent/qr.py" "$WORK_DIR/qr.py"
-    # Optional aerial-screensaver player (the agent's /api/screensaver drives it).
-    [ -f "$SCRIPT_DIR/agent/couchside-screensaver.sh" ] && \
-        cp "$SCRIPT_DIR/agent/couchside-screensaver.sh" "$WORK_DIR/couchside-screensaver.sh"
+    # Optional aerial-screensaver player + branded tile art (agent's
+    # /api/screensaver drives it), only when the add-on is wanted.
+    if [ "$WANT_SCREENSAVER" = 1 ]; then
+        [ -f "$SCRIPT_DIR/agent/couchside-screensaver.sh" ] && \
+            cp "$SCRIPT_DIR/agent/couchside-screensaver.sh" "$WORK_DIR/couchside-screensaver.sh"
+        for art in portrait landscape logo; do
+            [ -f "$SCRIPT_DIR/agent/steam-grid/screensaver-$art.png" ] && \
+                cp "$SCRIPT_DIR/agent/steam-grid/screensaver-$art.png" \
+                   "$WORK_DIR/screensaver-$art.png"
+        done
+    fi
 else
     command -v curl >/dev/null 2>&1 || die "curl not found (needed to fetch the agent files)."
     say "Fetching agent files from GitHub"
@@ -436,8 +477,15 @@ else
     curl -fsSL "$UNIT_URL" -o "$WORK_DIR/couchside.service"
     # Optional: don't abort the install if only the QR helper fails to fetch.
     curl -fsSL "$QR_URL" -o "$WORK_DIR/qr.py" 2>/dev/null || true
-    # Optional aerial-screensaver player, same policy.
-    curl -fsSL "$SCREENSAVER_URL" -o "$WORK_DIR/couchside-screensaver.sh" 2>/dev/null || true
+    # Optional aerial-screensaver player + branded tile art, same policy, only
+    # when the add-on is wanted. The art is plain PNG (no code) so it isn't
+    # gated by the signature check below; the player IS (bash -n at install).
+    if [ "$WANT_SCREENSAVER" = 1 ]; then
+        curl -fsSL "$SCREENSAVER_URL" -o "$WORK_DIR/couchside-screensaver.sh" 2>/dev/null || true
+        curl -fsSL "$SCREENSAVER_ART_PORTRAIT_URL"  -o "$WORK_DIR/screensaver-portrait.png"  2>/dev/null || true
+        curl -fsSL "$SCREENSAVER_ART_LANDSCAPE_URL" -o "$WORK_DIR/screensaver-landscape.png" 2>/dev/null || true
+        curl -fsSL "$SCREENSAVER_ART_LOGO_URL"      -o "$WORK_DIR/screensaver-logo.png"      2>/dev/null || true
+    fi
 
     # --- Supply-chain gate (FAIL CLOSED): the fetched agent must be SIGNED by
     # the maintainer's offline Ed25519 key AND match its SHA256SUMS before we
@@ -491,12 +539,21 @@ fi
 say "Installing daemon to $INSTALL_DIR"
 mkdir -p "$INSTALL_DIR"
 install -m 0755 "$WORK_DIR/couchsided.py" "$INSTALL_DIR/couchsided.py"
-# The aerial-screensaver player is optional: install only if it fetched and
-# parses (bash -n), so a failed/HTML fetch can't land as an executable script.
-if [ -f "$WORK_DIR/couchside-screensaver.sh" ] \
+# The aerial-screensaver player is optional: install only if wanted AND it
+# fetched and parses (bash -n), so a failed/HTML fetch can't land as an
+# executable script. Installed UNDER THE DISPLAY NAME "Couchside Screensaver" —
+# Steam titles the Game Mode tile from this basename. The branded capsule art
+# (plain PNGs) rides alongside for the agent to drop into Steam's grid folder.
+if [ "$WANT_SCREENSAVER" = 1 ] \
+   && [ -f "$WORK_DIR/couchside-screensaver.sh" ] \
    && bash -n "$WORK_DIR/couchside-screensaver.sh" 2>/dev/null \
    && head -1 "$WORK_DIR/couchside-screensaver.sh" | grep -q '^#!'; then
-    install -m 0755 "$WORK_DIR/couchside-screensaver.sh" "$INSTALL_DIR/couchside-screensaver.sh"
+    install -m 0755 "$WORK_DIR/couchside-screensaver.sh" "$INSTALL_DIR/$SCREENSAVER_DEST_NAME"
+    mkdir -p "$INSTALL_DIR/steam-grid"
+    for art in portrait landscape logo; do
+        [ -f "$WORK_DIR/screensaver-$art.png" ] && \
+            install -m 0644 "$WORK_DIR/screensaver-$art.png" "$INSTALL_DIR/steam-grid/screensaver-$art.png"
+    done
 fi
 # The QR helper is optional: install it only if it fetched and compiles, so the
 # terminal pairing QR works without qrencode. Its absence just prints the URL.
@@ -1303,6 +1360,138 @@ PYVDF
 
 say "Registering the 'Couchside — Pair Phone' tile in Steam (Game Mode)"
 register_steam_shortcut || note "shortcut registration failed. Add $PAIR_SCRIPT via Steam > Add a Non-Steam Game"
+
+# One-time migration: pre-2.9.20 boxes registered the screensaver tile as the
+# ugly "couchside-screensaver.sh". Remove that legacy tile so the box doesn't
+# show TWO tiles after the rename, and delete the old player file — but ONLY
+# once the tile is confirmed gone, so we never leave a dead tile pointing at a
+# deleted file. Coupled via the migrator's exit code. Never touches the pair
+# tile or its backup.
+migrate_legacy_screensaver_tile() {
+    local steamroot=""
+    for d in "$HOME/.local/share/Steam" "$HOME/.steam/steam" \
+             "$HOME/.var/app/com.valvesoftware.Steam/data/Steam"; do
+        [ -d "$d/userdata" ] && { steamroot="$(cd "$d" && pwd -P)"; break; }
+    done
+    # No Steam at all: nothing can reference the old file — safe to delete it.
+    [ -z "$steamroot" ] && return 0
+    # Steam running: it rewrites shortcuts.vdf on exit and would clobber our
+    # edit. Keep BOTH the old tile and old file; the agent's dual-match keeps
+    # the old tile working until the next Steam-closed install cleans it up.
+    if pgrep -x steam >/dev/null 2>&1; then
+        note "Steam is running; the old screensaver tile will be cleaned on the"
+        note "next install with Steam closed. (The new tile still works now.)"
+        return 1
+    fi
+    STEAMROOT="$steamroot" python3 - <<'PYVDF'
+# Remove ONLY the legacy "couchside-screensaver.sh" tile. Exit 0 iff every
+# account is clean (removed or never had it) so bash may delete the old file;
+# exit 1 if any account couldn't be cleaned (keep the old file as a fallback).
+import os, struct
+
+LEGACY = "couchside-screensaver.sh"
+STEAMROOT = os.environ["STEAMROOT"]
+
+
+def parse_map(buf, pos):
+    out = {}
+    while True:
+        t = buf[pos]; pos += 1
+        if t == 0x08:
+            return out, pos
+        end = buf.index(b"\x00", pos)
+        key = buf[pos:end].decode("utf-8", "replace"); pos = end + 1
+        if t == 0x00:
+            val, pos = parse_map(buf, pos)
+        elif t == 0x01:
+            end = buf.index(b"\x00", pos)
+            val = buf[pos:end].decode("utf-8", "replace"); pos = end + 1
+        elif t == 0x02:
+            val = struct.unpack_from("<i", buf, pos)[0]; pos += 4
+        else:
+            raise ValueError("unknown VDF field type 0x%02x" % t)
+        out[key] = val
+
+
+def ser_map(m):
+    out = bytearray()
+    for k, v in m.items():
+        kb = k.encode("utf-8")
+        if isinstance(v, dict):
+            out += b"\x00" + kb + b"\x00" + ser_map(v)
+        elif isinstance(v, int):
+            out += b"\x02" + kb + b"\x00" + struct.pack("<i", v)
+        else:
+            out += b"\x01" + kb + b"\x00" + str(v).encode("utf-8") + b"\x00"
+    out += b"\x08"
+    return bytes(out)
+
+
+def is_legacy(entry):
+    if not isinstance(entry, dict):
+        return False
+    name = entry.get("AppName", entry.get("appname", ""))
+    if isinstance(name, str) and name.strip() == LEGACY:
+        return True
+    # Belt-and-suspenders: also match by the old exe basename in case a rename
+    # left the AppName intact but the exe changed.
+    exe = entry.get("Exe", entry.get("exe", ""))
+    return isinstance(exe, str) and LEGACY in exe
+
+
+udir = os.path.join(STEAMROOT, "userdata")
+if not os.path.isdir(udir):
+    raise SystemExit(0)
+
+all_clean = True
+for acct in sorted(os.listdir(udir)):
+    if not acct.isdigit() or acct == "0":
+        continue
+    path = os.path.join(udir, acct, "config", "shortcuts.vdf")
+    if not os.path.exists(path):
+        continue
+    with open(path, "rb") as f:
+        buf = f.read()
+    try:
+        root, _ = parse_map(buf, 0)
+    except Exception as e:
+        print("    ! %s: could not parse (%s)" % (path, e))
+        all_clean = False
+        continue
+    # Edit only if we can reproduce the file byte-for-byte (proves our
+    # serializer round-trips this file) — otherwise leave it untouched.
+    if not (isinstance(root.get("shortcuts"), dict) and ser_map(root) == buf):
+        # No legacy tile present -> nothing to do, still "clean". Otherwise we
+        # can't safely edit -> not clean.
+        sc = root.get("shortcuts", {})
+        if isinstance(sc, dict) and any(is_legacy(v) for v in sc.values()):
+            print("    ! %s: can't reproduce; leaving legacy tile in place" % path)
+            all_clean = False
+        continue
+    shortcuts = root["shortcuts"]
+    legacy = [k for k, v in shortcuts.items() if is_legacy(v)]
+    if not legacy:
+        continue
+    for k in legacy:
+        del shortcuts[k]
+    kept = [shortcuts[k] for k in sorted(shortcuts, key=lambda x: int(x)
+                                         if x.isdigit() else 1 << 30)]
+    root["shortcuts"] = {str(i): v for i, v in enumerate(kept)}
+    tmp = path + ".couchside-tmp"
+    with open(tmp, "wb") as f:
+        f.write(ser_map(root))
+    os.replace(tmp, path)
+    print("    - account %s: removed the legacy screensaver tile" % acct)
+
+raise SystemExit(0 if all_clean else 1)
+PYVDF
+}
+
+if migrate_legacy_screensaver_tile; then
+    rm -f "$INSTALL_DIR/$SCREENSAVER_DEST_LEGACY"
+else
+    note "legacy screensaver tile cleanup skipped"
+fi
 
 # ---------------------------------------------------------------------------
 # (h2) Optional: Decky Loader Game Mode panel

@@ -59,6 +59,16 @@ for wf in couchsided-win.py couchside-tray.pyw; do
     files+=("$wf")
 done
 
+# Branded Steam capsule art for the screensaver tile. Published under their
+# basenames (screensaver-portrait/landscape/logo.png) so install.sh + the Decky
+# sync fetch them from releases/latest/download. Signed alongside everything
+# else (covered by SHA256SUMS); install.sh treats them as optional plain PNGs.
+for art in screensaver-portrait.png screensaver-landscape.png screensaver-logo.png; do
+    [ -f "$agent/steam-grid/$art" ] || { echo "error: missing agent/steam-grid/$art" >&2; exit 2; }
+    cp "$agent/steam-grid/$art" "$tmp/$art"
+    files+=("$art")
+done
+
 # agent-version.txt: the agent VERSION string, so the box-side update check
 # (/api/update/check) can compare cheaply without downloading the whole daemon.
 # Signed alongside everything else (it's covered by SHA256SUMS below).

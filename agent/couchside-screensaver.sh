@@ -8,6 +8,11 @@
 # Playlist: Apple's public aerial catalog (entries.json inside resources.tar).
 # Cached for 7 days; refreshed best-effort. 1080p H264 tier: every box decodes
 # it, streams light. No key, no account.
+#
+# Playback is DOUBLE-BUFFERED: each clip is fetched to disk in full, and the
+# NEXT clip downloads while the current one plays, so clips cut over with a
+# brief flicker instead of seconds of black while ffplay re-buffers a stream.
+# At most two clips sit on disk at once.
 set -u
 # Steam launches non-Steam shortcuts inside its runtime: LD_LIBRARY_PATH /
 # LD_PRELOAD point at Steam's bundled libs, which breaks OS binaries (curl,
@@ -25,12 +30,25 @@ if [ -f "$PIDFILE" ] && kill -0 "$(cat "$PIDFILE" 2>/dev/null)" 2>/dev/null; the
     exit 0
 fi
 echo "$$" > "$PIDFILE"
+
+# Per-run scratch for the downloaded clips (two at a time). Isolated per run so
+# a crashed previous run can't leave us playing its half-written file.
+PLAYDIR="$(mktemp -d "$CACHE_DIR/play.XXXXXX")"
+
 # Steam's reaper owns our process group, so a stopper can't signal the pgid —
-# it kills THIS pid (the pidfile), and we forward to the current ffplay child.
-CUR=""
-stop() { [ -n "$CUR" ] && kill "$CUR" 2>/dev/null; rm -f "$PIDFILE"; exit 0; }
+# it kills THIS pid (the pidfile), and we forward to the current ffplay child
+# AND the in-flight download, then clear the scratch dir.
+CUR=""      # current ffplay pid
+DL=""       # current background download pid
+stop() {
+    [ -n "$CUR" ] && kill "$CUR" 2>/dev/null
+    [ -n "$DL" ]  && kill "$DL"  2>/dev/null
+    rm -rf "$PLAYDIR"
+    rm -f "$PIDFILE"
+    exit 0
+}
 trap stop TERM INT
-trap 'rm -f "$PIDFILE"' EXIT
+trap 'rm -rf "$PLAYDIR"; rm -f "$PIDFILE"' EXIT
 
 fresh() {
     [ -f "$CATALOG" ] || return 1
@@ -65,6 +83,22 @@ TIER="1080-H264"
 THEME="all"
 # shellcheck disable=SC1090
 [ -f "$CONF" ] && . "$CONF"
+
+# ffplay flags. -noborder/-alwaysontop are no-ops under -fs+gamescope but keep
+# the window clean on a plain desktop. -window_title names the X11 window (NOT
+# the Steam tile — that comes from the shortcut basename). The idle cursor is
+# hidden by gamescope, which is the only compositor this ever runs under.
+FF=(ffplay -fs -an -noborder -alwaysontop -loglevel quiet -autoexit
+    -window_title "Couchside Screensaver")
+
+# Fetch $1 to $2 in the BACKGROUND; sets DL to the download pid. Only ever fed
+# URLs from urls() below, which hard-whitelists https://*.apple.com — never a
+# client- or catalog-controlled address.
+prefetch() {
+    ( curl -fsSL -m 120 -o "$2" "$1" 2>/dev/null \
+      || curl -fsSLk -m 120 -o "$2" "$1" 2>/dev/null ) &
+    DL=$!
+}
 
 # Shuffled URL list, one per line. Re-shuffled each full pass.
 urls() {
@@ -103,15 +137,42 @@ print("\n".join(u))
 PY
 }
 
+A="$PLAYDIR/a.mp4"
+B="$PLAYDIR/b.mp4"
 while :; do
-    while IFS= read -r url; do
-        ffplay -fs -an -loglevel quiet -autoexit "$url" &
+    mapfile -t list < <(urls)
+    n=${#list[@]}
+    # No playable URLs (network down, catalog odd) — wait and retry the pass
+    # rather than spin or die.
+    [ "$n" -eq 0 ] && { sleep 2; continue; }
+
+    # Prime slot A: download the first clip fully before the first frame, so we
+    # never open the window on a black buffering screen.
+    prefetch "${list[0]}" "$A"
+    wait "$DL" 2>/dev/null
+    DL=""
+
+    for ((i = 0; i < n; i++)); do
+        [ -s "$A" ] || continue        # this clip failed to download; skip it
+        # Start fetching the NEXT clip while this one plays (double-buffer).
+        nxt=$(( (i + 1) % n ))
+        prefetch "${list[$nxt]}" "$B"
+
+        "${FF[@]}" "$A" &
         CUR=$!
         wait "$CUR"
         rc=$?
         CUR=""
-        # 0 = video finished, play the next; anything else = ffplay was killed
-        # (Steam's Stop, our stop(), or a decode failure) — exit cleanly.
-        [ "$rc" -eq 0 ] || exit 0
-    done < <(urls)
+        # 0 = clip finished, advance; anything else = ffplay was killed (Steam's
+        # Stop, our stop(), or a decode failure) — exit cleanly.
+        if [ "$rc" -ne 0 ]; then
+            [ -n "$DL" ] && kill "$DL" 2>/dev/null
+            exit 0
+        fi
+
+        wait "$DL" 2>/dev/null          # make sure B finished downloading
+        DL=""
+        rm -f "$A"
+        mv -f "$B" "$A"                 # B becomes the next A
+    done
 done
