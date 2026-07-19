@@ -7,6 +7,8 @@
  * The Pad tab is the one screen that allows landscape (see useLockOrientation);
  * in landscape the gamepad controls spread out like a real controller.
  */
+import Ionicons from '@expo/vector-icons/Ionicons';
+
 import { hapticLight, hapticSelection } from '@/lib/haptics';
 import { getKeepAwakeEnabled, useKeepAwakeEnabled } from '@/lib/keepAwake';
 import { getPref, usePref } from '@/lib/prefs';
@@ -1290,6 +1292,41 @@ function PadScreen() {
           {keyboardBar}
         </>
       )}
+
+      {/* Another phone holds input for this box: every gesture on the surfaces
+          below is silently dropped by the agent, and the pill alone proved too
+          subtle to notice (a user debugged a "dead trackpad" for an hour while
+          waiting). Cover the surface with an explicit takeover card. The
+          overlay swallows touches by design — the input it blocks was going
+          nowhere anyway. */}
+      {/* NOT in remote mode: that surface drives the TV over HTTP, which works
+          regardless of who holds the box's gamepad — covering it would block a
+          living control. The pill still shows the handoff state there. */}
+      {mode !== 'remote' && (status === 'waiting' || status === 'released') && (
+        <View style={styles.waitOverlay} pointerEvents="auto">
+          <View style={styles.waitCard}>
+            <Ionicons name="phone-portrait-outline" size={28} color={t.amber} />
+            <Text style={styles.waitTitle}>
+              {dev ? `${dev} has control` : 'Another phone has control'}
+            </Text>
+            <Text style={styles.waitSub}>
+              Your input is paused while the other phone drives this box.
+            </Text>
+            <Pressable
+              onPress={retry}
+              style={({ pressed }) => [styles.waitBtn, pressed && styles.btnPressed]}>
+              <Text style={styles.waitBtnText}>
+                {status === 'waiting' && canForce ? 'TAKE CONTROL' : 'REQUEST CONTROL'}
+              </Text>
+            </Pressable>
+            {status === 'waiting' && !canForce && (
+              <Text style={styles.waitHint}>
+                They&apos;ll get a Pass / Keep prompt.
+              </Text>
+            )}
+          </View>
+        </View>
+      )}
     </View>
   );
 }
@@ -1300,6 +1337,60 @@ const makeStyles = (t: Palette) => StyleSheet.create({
     backgroundColor: t.bg,
     paddingHorizontal: 12,
     justifyContent: 'space-between',
+  },
+
+  // "Another phone has control" takeover. Covers the input surfaces (which are
+  // functionally dead in this state) but NOT the header row, so the mode
+  // toggle and pill stay reachable above it.
+  waitOverlay: {
+    position: 'absolute',
+    left: 0,
+    right: 0,
+    top: 64,
+    bottom: 0,
+    alignItems: 'center',
+    justifyContent: 'center',
+    backgroundColor: t.bg + 'E6',
+  },
+  waitCard: {
+    alignItems: 'center',
+    backgroundColor: t.card,
+    borderColor: t.cardBorder,
+    borderWidth: 1,
+    borderRadius: 16,
+    paddingVertical: 22,
+    paddingHorizontal: 26,
+    maxWidth: 320,
+    gap: 8,
+  },
+  waitTitle: {
+    color: t.text,
+    fontSize: 17,
+    fontWeight: '700',
+    textAlign: 'center',
+  },
+  waitSub: {
+    color: t.textDim,
+    fontSize: 13,
+    textAlign: 'center',
+  },
+  waitBtn: {
+    marginTop: 8,
+    backgroundColor: t.blue,
+    borderRadius: 10,
+    paddingVertical: 10,
+    paddingHorizontal: 22,
+  },
+  waitBtnText: {
+    color: '#08101f',
+    fontSize: 13,
+    fontWeight: '800',
+    letterSpacing: 1,
+  },
+  waitHint: {
+    color: t.textFaint,
+    fontSize: 11,
+    textAlign: 'center',
   },
 
   btn: {
