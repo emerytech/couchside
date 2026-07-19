@@ -44,7 +44,7 @@ except ImportError:  # pragma: no cover
     fcntl = None
 
 APP_NAME = "couchside-agent"
-VERSION = "2.9.26"
+VERSION = "2.9.27"
 UID = os.getuid()
 XDG_RUNTIME_DIR = "/run/user/%d" % UID
 
@@ -8213,31 +8213,93 @@ def mock_gaming():
 # session shows it does not fire, the log tailer is the documented fallback.
 # ---------------------------------------------------------------------------
 
-# Steam Remote Play transport ports. 27036 is also the discovery/control port
-# (hence the router chatter); the video transport rides this range over UDP.
-_STREAM_PORTS = frozenset(range(27031, 27037))
+# Steam's Remote Play control port. LISTEN here (owned by steam) means the host
+# is up; it doubles as the wedged-Steam test. Verified live.
 _STREAM_LISTEN_PORT = 27036
 _PROC_NET_TCP = ("/proc/net/tcp", "/proc/net/tcp6")
-_PROC_NET_UDP = ("/proc/net/udp", "/proc/net/udp6")
 _TCP_LISTEN = "0A"
-# When the peer first appeared, so the card can show a duration. Reset on idle.
-_STREAM_STATE = {"active": False, "since": 0}
+
+# Session edges, read off streaming_log.txt. BOTH edges exist — captured from a
+# real macOS Remote Play session served by a live box:
+#   [2026-07-19 17:50:17][75.044] >>> Starting desktop stream
+#   [2026-07-19 17:50:18][75.533] >>> Client video decoder set to macOS Metal ...
+#   [2026-07-19 17:51:04][122.09] >>> Stopped desktop stream
+# (An earlier draft of this feature keyed on a connected UDP peer in 27031-27036
+# instead; that signal DID NOT FIRE during that real session, so it silently
+# missed it. Log markers are the ground truth.)
+_STREAM_START_MARK = ">>> Starting desktop stream"
+_STREAM_STOP_MARK = ">>> Stopped desktop stream"
+_STREAM_CLIENT_MARK = ">>> Client video decoder set to "
+# A session left "started" with no stop line (Steam killed mid-stream) must not
+# stick forever; `listening` also cross-checks, this is the backstop.
+_STREAM_MAX_S = 12 * 3600
+_STREAM_LOCK = threading.Lock()
+_STREAM_STATE = {"active": False, "since": 0, "client": None, "pos": 0}
 
 
-def _hex_ip(h):
-    """Dotted IPv4 from a /proc/net little-endian hex address, or None for IPv6
-    / anything unparseable (we only name IPv4 LAN peers). '3C01010A' -> 10.1.1.60."""
+def _stream_log_path():
+    """<steam_root>/logs/streaming_log.txt, or None. Built through _steam_root()
+    (never a hardcoded ~/.steam/steam), mirroring _remoteclients_path()."""
+    root = _steam_root()
+    if root is None:
+        return None
+    p = os.path.join(root, "logs", "streaming_log.txt")
+    return p if os.path.isfile(p) else None
+
+
+def _stream_line_epoch(line):
+    """Unix seconds from a '[YYYY-MM-DD HH:MM:SS]...' log prefix, else None."""
     try:
-        if len(h) != 8:
-            return None          # IPv6 (32 chars) — not named, still counted
-        b = bytes.fromhex(h)
-        return "%d.%d.%d.%d" % (b[3], b[2], b[1], b[0])
-    except ValueError:
+        if not line.startswith("[") or len(line) < 21:
+            return None
+        return int(time.mktime(time.strptime(line[1:20], "%Y-%m-%d %H:%M:%S")))
+    except (ValueError, OverflowError):
         return None
 
 
+def _stream_scan_log():
+    """Advance a byte cursor over streaming_log.txt and fold the session markers
+    into _STREAM_STATE. Handles ROTATION (file shrank -> restart at 0). The first
+    scan reads the whole file so the current state is established from the last
+    marker; afterwards only the new tail is read. Never raises."""
+    path = _stream_log_path()
+    if path is None:
+        return
+    try:
+        size = os.path.getsize(path)
+    except OSError:
+        return
+    with _STREAM_LOCK:
+        pos = _STREAM_STATE["pos"]
+        if size < pos:          # rotated / truncated
+            pos = 0
+        if size == pos:
+            return              # nothing new
+        try:
+            with open(path, "r", errors="replace") as f:
+                f.seek(pos)
+                chunk = f.read()
+                newpos = f.tell()
+        except OSError:
+            return
+        for line in chunk.splitlines():
+            if _STREAM_START_MARK in line:
+                _STREAM_STATE["active"] = True
+                _STREAM_STATE["since"] = _stream_line_epoch(line) or int(time.time())
+                _STREAM_STATE["client"] = None
+            elif _STREAM_STOP_MARK in line:
+                _STREAM_STATE["active"] = False
+                _STREAM_STATE["since"] = 0
+                _STREAM_STATE["client"] = None
+            elif _STREAM_CLIENT_MARK in line:
+                # "... set to macOS Metal hardware decoding" -> "macOS"
+                rest = line.split(_STREAM_CLIENT_MARK, 1)[1].strip()
+                _STREAM_STATE["client"] = rest.split()[0] if rest else None
+        _STREAM_STATE["pos"] = newpos
+
+
 def _proc_net_rows(paths):
-    """Yield (local_port, rem_hex_ip, rem_port, state) from /proc/net/{tcp,udp}.
+    """Yield (local_port, rem_hex_ip, rem_port, state) from /proc/net/tcp{,6}.
     Pure parsing — no `ss`/`netstat` subprocess. Never raises."""
     for path in paths:
         try:
@@ -8250,7 +8312,7 @@ def _proc_net_rows(paths):
             if len(parts) < 4:
                 continue
             try:
-                lh, lp = parts[1].rsplit(":", 1)
+                lp = parts[1].rsplit(":", 1)[1]
                 rh, rp = parts[2].rsplit(":", 1)
                 yield (int(lp, 16), rh, int(rp, 16), parts[3])
             except (ValueError, IndexError):
@@ -8259,33 +8321,15 @@ def _proc_net_rows(paths):
 
 def _stream_listening():
     """True when Steam is listening on the Remote Play control port — i.e. this
-    box can host. Also the wedged-Steam test. Never raises."""
+    box can host, and Steam is not wedged. Never raises."""
     for lport, _rh, _rp, st in _proc_net_rows(_PROC_NET_TCP):
         if lport == _STREAM_LISTEN_PORT and st == _TCP_LISTEN:
             return True
     return False
 
 
-def _stream_peer():
-    """The IPv4 of a peer currently streaming FROM this box, or None.
-
-    A CONNECTED UDP socket on the transport range means a live session: an idle
-    box has none (verified). Zero / loopback remotes are skipped — an
-    unconnected listener has rem 0.0.0.0:0. Never raises."""
-    for lport, rh, rp, _st in _proc_net_rows(_PROC_NET_UDP):
-        if lport not in _STREAM_PORTS or rp == 0:
-            continue
-        ip = _hex_ip(rh)
-        if ip is None:
-            return "peer"        # IPv6 peer: real session, just not named
-        if ip.startswith("127.") or ip == "0.0.0.0":
-            continue
-        return ip
-    return None
-
-
 def streamhost_available():
-    """Boot-time caps hint: this box has Steam, so it could host a session. The
+    """Boot-time caps hint: Steam is present, so this box could host. The
     endpoint is the live authority. Never raises."""
     try:
         return _steam_root() is not None
@@ -8294,28 +8338,39 @@ def streamhost_available():
 
 
 def stream_host_info():
-    """Body for GET /api/stream-host. `active` means a peer is streaming from
-    this box right now; the app shows the card only then."""
+    """Body for GET /api/stream-host. `active` = a Remote Play session is being
+    served BY this box right now; the app shows its card only then.
+
+    Only the log markers decide. An ESTABLISHED TCP peer on 27036 is NOT a
+    session (an idle box has one from the router, plus one per Steam client on
+    the LAN), and `listening` is context only — Steam drops that listener around
+    a session, so gating on it would hide a live stream."""
+    _stream_scan_log()
     listening = _stream_listening()
-    peer = _stream_peer()
-    active = peer is not None
-    now = int(time.time())
-    if active and not _STREAM_STATE["active"]:
-        _STREAM_STATE["since"] = now          # rising edge
-    if not active:
-        _STREAM_STATE["since"] = 0
-    _STREAM_STATE["active"] = active
+    with _STREAM_LOCK:
+        active = bool(_STREAM_STATE["active"])
+        since = _STREAM_STATE["since"]
+        client = _STREAM_STATE["client"]
+    if active and since and int(time.time()) - since > _STREAM_MAX_S:
+        active = False                      # stale "started" with no stop line
+    # NOTE: `active` is deliberately NOT gated on `listening`. Verified on real
+    # hardware: Steam drops its 0.0.0.0:27036 TCP listener around a streaming
+    # session (present before, gone after) while the client stays connected — so
+    # gating on it would SUPPRESS a genuinely live session. The log's explicit
+    # stop marker plus _STREAM_MAX_S are what clear a session; `listening` is
+    # reported for context only.
     info = {"available": True, "listening": listening, "active": active}
     if active:
-        info["peer"] = peer
-        if _STREAM_STATE["since"]:
-            info["since"] = _STREAM_STATE["since"]
+        if client:
+            info["client"] = client
+        if since:
+            info["since"] = since
     return info
 
 
 def mock_stream_host():
     return {"available": True, "listening": True, "active": True,
-            "peer": "10.1.1.42", "since": int(time.time()) - 725}
+            "client": "macOS", "since": int(time.time()) - 725}
 
 
 # ---------------------------------------------------------------------------
