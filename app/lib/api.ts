@@ -131,6 +131,40 @@ export type Displays = {
   output_forcing?: boolean;
 };
 
+/** One stage of the Couch Mode ceremony (GET /api/couch-mode/status, agent
+    >= 2.9.19). */
+export type CeremonyStage = {
+  key: 'tv_power_on' | 'tv_input' | 'output' | 'session' | 'audio';
+  label: string;
+  state: 'pending' | 'running' | 'ok' | 'skipped' | 'failed';
+  /** Why it was skipped/failed (SteamOS ignores the picker; the TV's HDMI sink
+      never woke; no TV backend…). */
+  reason?: string;
+  /** Only the session switch is fatal. A non-fatal `failed` (e.g. audio) is a
+      warning the UI renders amber, not red — Game Mode still came up. */
+  fatal?: boolean;
+};
+
+/** The Couch Mode ceremony job. Full array every poll, so a phone joining
+    mid-run catches up for free. */
+export type CeremonyStatus = {
+  id: number;
+  state: 'idle' | 'running' | 'done' | 'failed';
+  output?: string;
+  hdr?: boolean;
+  /** The VERIFIED session at a terminal state (not a fake-green assumption). */
+  session?: 'gamescope' | 'desktop' | null;
+  started_at?: number;
+  stages: CeremonyStage[];
+  // A new agent's POST response also carries legacy {ok, steps}; the new app
+  // ignores them and drives the UI from `stages`.
+};
+
+/** POST /api/couch-mode returns the initial ceremony job (agent >= 2.9.19) OR
+    the old synchronous {ok, ...} (older agent). The sheet feature-detects on
+    the presence of a `stages` array. */
+export type CouchModeStartResult = CeremonyStatus | { ok: boolean };
+
 /** GET/POST /api/screensaver state (agent >= 2.8.4). */
 export type Screensaver = {
   available: boolean;
@@ -1360,11 +1394,19 @@ export const api = {
     settings: ConnSettings,
     output: string,
     hdr = false,
-  ): Promise<{ ok: boolean }> {
+  ): Promise<CouchModeStartResult> {
     return request(settings, '/api/couch-mode', {
       method: 'POST',
       body: { output, hdr },
     });
+  },
+
+  /** Couch Mode ceremony status. Probe-and-appear: null on 404 (older agent, or
+      the box can't do the handoff) so the sheet degrades to the synchronous
+      path and never polls a route that isn't there. */
+  couchModeStatus(settings: ConnSettings): Promise<CeremonyStatus | null> {
+    return probeOrNull(
+      request<CeremonyStatus>(settings, '/api/couch-mode/status'));
   },
 
   /** Exit Couch Mode: return the box to its desktop session. */
