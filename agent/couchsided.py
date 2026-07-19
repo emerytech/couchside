@@ -44,7 +44,7 @@ except ImportError:  # pragma: no cover
     fcntl = None
 
 APP_NAME = "couchside-agent"
-VERSION = "2.9.16"
+VERSION = "2.9.17"
 UID = os.getuid()
 XDG_RUNTIME_DIR = "/run/user/%d" % UID
 
@@ -600,17 +600,32 @@ def _inject_session_actions():
                 ACTION_ORDER.append(aid)
 
 
-def _can_sudo_suspend():
-    """True when the sudoers rule lets the agent run `systemctl suspend` without
-    a password. Probes with `sudo -n -l`, which lists the permission and never
-    runs the command. False on any failure, so a box whose installer predates
-    the suspend rule simply omits the action instead of offering a dead one."""
+def _sudo_nopasswd_allows(needle):
+    """True when sudoers permits the command WITHOUT a password.
+
+    `sudo -n -l <cmd>` is NOT a sufficient probe: it exits 0 when ANY rule
+    allows the command — including a wheel-style "(ALL) ALL" rule that still
+    prompts. That false positive shipped a Restart Decky button that appeared
+    on a box and then failed with "sudo: a password is required" (field
+    screenshot, 2026-07-19). Parse the actual rule list instead and require a
+    NOPASSWD rule that names the command. False on any failure: a missing
+    grant must HIDE the action, never offer a dead one."""
     try:
-        r = subprocess.run(["sudo", "-n", "-l", "/usr/bin/systemctl", "suspend"],
-                           capture_output=True, timeout=4)
-        return r.returncode == 0
+        r = subprocess.run(["sudo", "-n", "-l"], capture_output=True,
+                           timeout=4, text=True)
+        if r.returncode != 0:
+            return False
+        return any("NOPASSWD" in line and needle in line
+                   for line in r.stdout.splitlines())
     except Exception:
         return False
+
+
+def _can_sudo_suspend():
+    """True when sudoers lets the agent run `systemctl suspend` with no
+    password — via the NOPASSWD-parsing probe (see _sudo_nopasswd_allows for
+    why exit-code probing is wrong)."""
+    return _sudo_nopasswd_allows("systemctl suspend")
 
 
 def _inject_suspend_action(mock):
@@ -629,18 +644,9 @@ def _inject_suspend_action(mock):
 
 
 def _can_sudo_decky_restart():
-    """True when sudoers permits `systemctl restart plugin_loader` without a
-    password. Same probe pattern as _can_sudo_suspend: `sudo -n -l` lists the
-    permission without running anything. False on any failure, so a box whose
-    installer predates the grant omits the action instead of offering a dead
-    one."""
-    try:
-        r = subprocess.run(["sudo", "-n", "-l", "/usr/bin/systemctl",
-                            "restart", "plugin_loader"],
-                           capture_output=True, timeout=4)
-        return r.returncode == 0
-    except Exception:
-        return False
+    """True when sudoers permits `systemctl restart plugin_loader` with no
+    password — via the NOPASSWD-parsing probe (see _sudo_nopasswd_allows)."""
+    return _sudo_nopasswd_allows("systemctl restart plugin_loader")
 
 
 def _inject_decky_action(mock):
