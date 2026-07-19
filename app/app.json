@@ -11,7 +11,7 @@
     "ios": {
       "supportsTablet": true,
       "bundleIdentifier": "com.ets3d.rescueremote",
-      "buildNumber": "54",
+      "buildNumber": "55",
       "infoPlist": {
         "ITSAppUsesNonExemptEncryption": false,
         "NSAppTransportSecurity": {
@@ -32,7 +32,7 @@
         "monochromeImage": "./assets/images/android-icon-monochrome.png"
       },
       "predictiveBackGestureEnabled": false,
-      "versionCode": 38
+      "versionCode": 39
     },
     "web": {
       "bundler": "metro",
