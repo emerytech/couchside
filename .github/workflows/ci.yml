@@ -49,6 +49,13 @@ jobs:
       - name: Unit tests (gamepad handoff)
         run: python3 tests/test_gamepad_handoff.py
 
+      # Couch Mode ceremony: the staged desktop->TV switch. Its whole reason for
+      # existing is to stop two lies (a fake-green "Ready" that didn't verify
+      # Game Mode came up, and audio that silently "skipped" onto the wrong
+      # device). These drive the real worker with env I/O stubbed.
+      - name: Unit tests (couch ceremony)
+        run: python3 tests/test_couch_ceremony.py
+
   smoke:
     runs-on: ubuntu-latest
     needs: compile
