@@ -2,6 +2,7 @@ import Ionicons from '@expo/vector-icons/Ionicons';
 import { router, Tabs, useSegments } from 'expo-router';
 import { useEffect, useRef } from 'react';
 
+import { useCapsSync } from '@/hooks/useCapsSync';
 import { hapticSelection } from '@/lib/haptics';
 import { useBoxes } from '@/lib/SettingsContext';
 import { useTheme } from '@/lib/theme';
@@ -16,6 +17,10 @@ export default function TabLayout() {
   const t = useTheme();
   const { boxes, activeBox, ready } = useBoxes();
   const segments = useSegments();
+  // Always-mounted caps safety net: heals a stale persisted caps snapshot
+  // (e.g. couchmode:false cached before the box became capable) no matter
+  // which tab the user lives on. See hooks/useCapsSync.ts for the field bug.
+  useCapsSync();
 
   // A "server box" (headless: no virtual gamepad, no Steam) reports these false
   // in /api/status caps, so its gaming tabs are hidden. Undefined caps (unknown,
