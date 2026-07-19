@@ -34,6 +34,7 @@ import {
   isActiveDownload,
   Launcher,
   SteamDownload,
+  SteamLink,
 } from '@/lib/api';
 import { hapticError, hapticLight, hapticMedium, hapticSuccess } from '@/lib/haptics';
 import { useSettings } from '@/lib/SettingsContext';
@@ -258,6 +259,74 @@ function DownloadsSection({ downloads }: { downloads: SteamDownload[] }) {
   );
 }
 
+/**
+ * Steam Remote Play — "Stream from PC". Games another Steam machine on the LAN
+ * offers to stream (grouped by host, freshest host expanded). Tapping a game
+ * fires steam://rungameid on the box, which streams it natively — no Steam Link
+ * app to install. Probe-and-appear: the parent renders this only when the box
+ * reports at least one host. Covers aren't shown (host-only games have no local
+ * capsule), so it's a compact list rather than the cover grid below.
+ */
+function SteamLinkSection({
+  data,
+  onStream,
+}: {
+  data: SteamLink;
+  onStream: (appid: number, label: string) => void;
+}) {
+  const t = useTheme();
+  const styles = useThemedStyles(makeStyles);
+  // Expand the most-recently-seen host by default; the rest start collapsed.
+  const [expanded, setExpanded] = useState<Record<string, boolean>>(() =>
+    data.hosts.length ? { [data.hosts[0].host]: true } : {},
+  );
+  if (data.hosts.length === 0) return null;
+  return (
+    <View style={styles.dlCard}>
+      <View style={styles.dlHeader}>
+        <Ionicons name="tv-outline" size={14} color={t.blue} />
+        <Text style={styles.dlHeaderText}>STREAM FROM PC</Text>
+      </View>
+      <Text style={styles.slHint}>
+        Play a game from another Steam PC on your network. Make sure it&rsquo;s powered on and
+        running Steam.
+      </Text>
+      {data.hosts.map((h, i) => {
+        const open = !!expanded[h.host];
+        return (
+          <View key={h.host} style={i > 0 ? styles.dlHeaderGap : undefined}>
+            <Pressable
+              onPress={() => {
+                hapticLight();
+                setExpanded((e) => ({ ...e, [h.host]: !e[h.host] }));
+              }}
+              style={({ pressed }) => [styles.slHostHeader, pressed && styles.pressed]}>
+              <Ionicons name="desktop-outline" size={14} color={t.textDim} />
+              <Text style={styles.slHostName} numberOfLines={1}>
+                {h.host}
+              </Text>
+              <Text style={styles.slHostCount}>{h.games.length}</Text>
+              <Ionicons name={open ? 'chevron-up' : 'chevron-down'} size={14} color={t.textDim} />
+            </Pressable>
+            {open &&
+              h.games.map((g) => (
+                <Pressable
+                  key={g.appid}
+                  onPress={() => onStream(g.appid, g.label)}
+                  style={({ pressed }) => [styles.slGameRow, pressed && styles.pressed]}>
+                  <Ionicons name="play-circle" size={16} color={t.blue} />
+                  <Text style={styles.slGameName} numberOfLines={1}>
+                    {g.label}
+                  </Text>
+                </Pressable>
+              ))}
+          </View>
+        );
+      })}
+    </View>
+  );
+}
+
 // ---------- Add-launcher form ----------
 
 type AddFormProps = {
@@ -419,6 +488,11 @@ function LaunchScreen() {
   const dl = usePoll<Downloads | null>(
     () => api.downloads(settings), active ? 5000 : 20000, ready && configured, boxKey);
   const downloads = useMemo(() => dl.data?.downloads ?? [], [dl.data]);
+
+  // ---- Steam Remote Play "Stream from PC" (probe-and-appear; 404 -> null) ----
+  const sl = usePoll<SteamLink | null>(
+    () => api.steamlink(settings), 30000, ready && configured, boxKey);
+  const steamlink = sl.data;
   const dlByAppid = useMemo(() => new Map(downloads.map((d) => [d.appid, d])), [downloads]);
 
   // Completion: an appid seen downloading/paused this session that then vanishes
@@ -474,6 +548,29 @@ function LaunchScreen() {
       } catch (e: unknown) {
         hapticError();
         showToast(e instanceof Error ? e.message : 'Launch failed');
+      }
+    },
+    [settings, showToast],
+  );
+
+  const streamLaunch = useCallback(
+    async (appid: number, label: string) => {
+      hapticMedium();
+      try {
+        // Launch reuses the launcher route; the agent's stream:<appid> id fires
+        // steam://rungameid, which Steam turns into a Remote Play stream when
+        // the game isn't installed locally but an online host offers it.
+        const res = await api.launch(settings, `stream:${appid}`);
+        if (res.ok) {
+          hapticSuccess();
+          showToast(`Streaming ${label}…`);
+        } else {
+          hapticError();
+          showToast(res.error ? `Failed: ${res.error}` : `Failed to stream ${label}`);
+        }
+      } catch (e: unknown) {
+        hapticError();
+        showToast(e instanceof Error ? e.message : 'Stream failed');
       }
     },
     [settings, showToast],
@@ -551,6 +648,11 @@ function LaunchScreen() {
         }>
         {/* Active Steam downloads (hidden when none / agent < 2.8) */}
         <DownloadsSection downloads={downloads} />
+
+        {/* Stream from PC (hidden when no host / agent < 2.9.23) */}
+        {steamlink?.available && (
+          <SteamLinkSection data={steamlink} onStream={streamLaunch} />
+        )}
 
         {/* Fresh install: nothing paired yet, so nothing is "unreachable". */}
         {!configured && (
@@ -693,6 +795,22 @@ const makeStyles = (t: Palette) => StyleSheet.create({
   qRow: { flexDirection: 'row', alignItems: 'center', gap: 8, paddingLeft: 19 },
   qName: { color: t.textDim, fontSize: 13, flex: 1, fontFamily: mono },
   qSize: { color: t.textFaint, fontSize: 11, fontFamily: mono },
+  // Steam Remote Play "Stream from PC"
+  slHint: { color: t.textFaint, fontSize: 12, lineHeight: 17, marginTop: -4 },
+  slHostHeader: { flexDirection: 'row', alignItems: 'center', gap: 8, paddingVertical: 6 },
+  slHostName: { color: t.text, fontSize: 14, fontWeight: '700', fontFamily: mono, flex: 1 },
+  slHostCount: { color: t.textDim, fontSize: 12, fontFamily: mono },
+  slGameRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 10,
+    paddingVertical: 9,
+    paddingLeft: 20,
+    borderTopColor: t.cardBorder,
+    borderTopWidth: StyleSheet.hairlineWidth,
+  },
+  slGameName: { color: t.text, fontSize: 14, fontFamily: mono, flex: 1 },
+
   dlRow: { gap: 6 },
   dlTop: { flexDirection: 'row', alignItems: 'center' },
   dlName: { color: t.text, fontSize: 14, fontWeight: '600', flex: 1, fontFamily: mono },
