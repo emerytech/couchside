@@ -222,6 +222,12 @@ export class GamepadClient {
    *  signal the ping watchdog checks. Any inbound frame counts (pong, hello,
    *  waiting…): each one proves the pipe is genuinely two-way. */
   private lastInbound = 0;
+  /** Wall-clock of the last INPUT frame we sent (mouse/button/key/stick — not a
+   *  ping). Lets the watchdog react faster while the user is actively driving:
+   *  a half-dead socket mid-drag (a Game-Mode Wi-Fi blip during a Couch Mode
+   *  switch) should reconnect in ~one ping interval, not the full idle window,
+   *  so the trackpad doesn't freeze for 12s. */
+  private lastInputAt = 0;
   private reconnectTimer: ReturnType<typeof setTimeout> | null = null;
   /** Aborts a socket stuck in CONNECTING (see CONNECT_TIMEOUT_MS). */
   private connectTimer: ReturnType<typeof setTimeout> | null = null;
@@ -741,7 +747,15 @@ export class GamepadClient {
       // pipe always has an inbound frame within one interval. Silence for
       // ~2.5 intervals means the pipe is gone: tear down and reconnect NOW
       // instead of waiting minutes for the OS to notice.
-      if (Date.now() - this.lastInbound > PING_INTERVAL_MS * 2.5) {
+      // While the user is ACTIVELY driving (input sent within the last
+      // interval), tighten that to ~1.4 intervals: a healthy socket still pongs
+      // every interval, so >1.4 stale is genuinely dead — a frozen trackpad that
+      // recovers in ~7s beats one frozen for ~13s. This is the Couch-Mode-switch
+      // case: the mode change blips Wi-Fi, the socket half-dies mid-drag, and the
+      // old 2.5-interval window left the pointer dead for 12s.
+      const activelyDriving = Date.now() - this.lastInputAt < PING_INTERVAL_MS;
+      const deadline = PING_INTERVAL_MS * (activelyDriving ? 1.4 : 2.5);
+      if (Date.now() - this.lastInbound > deadline) {
         this.teardownSocket(false);
         if (this.active) {
           this.setStatus('error', null);
@@ -794,6 +808,9 @@ export class GamepadClient {
   private sendRaw(obj: object): void {
     const ws = this.ws;
     if (!ws || ws.readyState !== 1 /* OPEN */) return;
+    // Note real input (anything but our own keepalive ping) so the watchdog can
+    // tighten its dead-socket deadline while the user is actively driving.
+    if ((obj as { t?: string }).t !== 'ping') this.lastInputAt = Date.now();
     try {
       ws.send(JSON.stringify(obj));
     } catch {
