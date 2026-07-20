@@ -44,7 +44,7 @@ except ImportError:  # pragma: no cover
     fcntl = None
 
 APP_NAME = "couchside-agent"
-VERSION = "2.9.28"
+VERSION = "2.9.29"
 UID = os.getuid()
 XDG_RUNTIME_DIR = "/run/user/%d" % UID
 
@@ -8325,6 +8325,7 @@ def mock_gaming():
 # is up; it doubles as the wedged-Steam test. Verified live.
 _STREAM_LISTEN_PORT = 27036
 _PROC_NET_TCP = ("/proc/net/tcp", "/proc/net/tcp6")
+_PROC_NET_UDP = ("/proc/net/udp", "/proc/net/udp6")
 _TCP_LISTEN = "0A"
 
 # Session edges, read off streaming_log.txt. BOTH edges exist — captured from a
@@ -8338,9 +8339,14 @@ _TCP_LISTEN = "0A"
 _STREAM_START_MARK = ">>> Starting desktop stream"
 _STREAM_STOP_MARK = ">>> Stopped desktop stream"
 _STREAM_CLIENT_MARK = ">>> Client video decoder set to "
-# A session left "started" with no stop line (Steam killed mid-stream) must not
-# stick forever; `listening` also cross-checks, this is the backstop.
+# Absolute backstop for a session left "started" with no stop line. It is NOT
+# the real recovery path — 12h is far too coarse for that; _stream_data_bound()
+# catches a dirty end within one poll. This only bounds the pathological case
+# where the data port somehow stays bound forever.
 _STREAM_MAX_S = 12 * 3600
+# The Remote Play DATA port. Bound for the life of a session and released when
+# it ends, cleanly or not — see _stream_data_bound().
+_STREAM_DATA_PORT = 27031
 _STREAM_LOCK = threading.Lock()
 _STREAM_STATE = {"active": False, "since": 0, "client": None, "pos": 0}
 
@@ -8436,6 +8442,35 @@ def _stream_listening():
     return False
 
 
+def _stream_data_bound():
+    """True while Steam holds the Remote Play DATA socket open (udp/27031).
+
+    THE RECOVERY SIGNAL for a session that ended dirty. Steam writes
+    ">>> Stopped desktop stream" only on a GRACEFUL stop — a stream host that
+    crashes or gets replaced never writes one, so the session stayed "active"
+    until _STREAM_MAX_S (12 HOURS) expired. Observed in the wild: a card still
+    claiming a live macOS stream 27 minutes after the client disconnected.
+
+    Measured on hardware in BOTH states, which is the bar this detector failed
+    to clear the first time around:
+        streaming live   udp6 :27031 present  (even with the log idle 41s)
+        session dead     27031 absent entirely, while Steam kept running and
+                         kept its 27037 discovery listener plus three LAN peers
+
+    It binds BEFORE the start marker is written ("Streaming initialized and
+    listening on port 27031" precedes ">>> Starting desktop stream" by ~4s), so
+    cross-checking it cannot suppress a session that is merely starting up.
+
+    Rejected alternative: log mtime staleness. Measured 41s of silence DURING a
+    healthy stream, so any threshold tight enough to be useful would hide live
+    sessions. Note the port binds on udp6 in practice — check both families.
+    Never raises."""
+    for lport, _rh, _rp, _st in _proc_net_rows(_PROC_NET_UDP):
+        if lport == _STREAM_DATA_PORT:
+            return True
+    return False
+
+
 def streamhost_available():
     """Boot-time caps hint: Steam is present, so this box could host. The
     endpoint is the live authority. Never raises."""
@@ -8449,10 +8484,12 @@ def stream_host_info():
     """Body for GET /api/stream-host. `active` = a Remote Play session is being
     served BY this box right now; the app shows its card only then.
 
-    Only the log markers decide. An ESTABLISHED TCP peer on 27036 is NOT a
-    session (an idle box has one from the router, plus one per Steam client on
-    the LAN), and `listening` is context only — Steam drops that listener around
-    a session, so gating on it would hide a live stream."""
+    The log markers open a session; the log marker OR a released data port
+    closes it. An ESTABLISHED TCP peer on 27036/27037 is NOT a session (an idle
+    box has one from the router, plus one per Steam client on the LAN — a
+    client's connection outlives its stream by design), and `listening` is
+    context only: Steam drops that listener around a session, so gating on it
+    would hide a live stream."""
     _stream_scan_log()
     listening = _stream_listening()
     with _STREAM_LOCK:
@@ -8461,6 +8498,18 @@ def stream_host_info():
         client = _STREAM_STATE["client"]
     if active and since and int(time.time()) - since > _STREAM_MAX_S:
         active = False                      # stale "started" with no stop line
+    if active and not _stream_data_bound():
+        # Dirty end: the host process died or was replaced without ever writing
+        # a stop marker, so the log alone would keep this session "live" for
+        # hours. Clear the shared state too, not just the local flag, so `client`
+        # and `since` stop being reported. The byte cursor is deliberately left
+        # alone — resetting it would re-read the whole log on the next poll.
+        active = False
+        with _STREAM_LOCK:
+            if _STREAM_STATE["active"]:
+                _STREAM_STATE["active"] = False
+                _STREAM_STATE["since"] = 0
+                _STREAM_STATE["client"] = None
     # NOTE: `active` is deliberately NOT gated on `listening`. Verified on real
     # hardware: Steam drops its 0.0.0.0:27036 TCP listener around a streaming
     # session (present before, gone after) while the client stays connected — so
