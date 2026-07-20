@@ -6,40 +6,16 @@ import { GamingCard } from '@/components/GamingCard';
 import { NowPlayingCard } from '@/components/NowPlayingCard';
 import { ScreenPreview } from '@/components/ScreenPreview';
 import { StreamHostCard } from '@/components/StreamHostCard';
-import { Sparkline } from '@/components/Sparkline';
 import { TabScreen } from '@/components/TabScreen';
 import { useLockOrientation } from '@/hooks/useLockOrientation';
 import { usePoll } from '@/hooks/usePoll';
 import { api, hostKey, humanizeUptime, Status, Unit } from '@/lib/api';
 import { usePref } from '@/lib/prefs';
+import { useSkinKit, VitalsContext, vitality } from '@/lib/skin';
 import { noteBoxReachable } from '@/lib/review';
 import { useSettings } from '@/lib/SettingsContext';
 import { mono, numeric, pctColor, tempColor, useTheme, useThemedStyles } from '@/lib/theme';
 import type { Palette } from '@/lib/theme';
-
-function Bar({ pct, color }: { pct: number; color: string }) {
-  const styles = useThemedStyles(makeStyles);
-  return (
-    <View style={styles.barTrack}>
-      <View
-        style={[
-          styles.barFill,
-          { width: `${Math.min(100, Math.max(0, pct))}%`, backgroundColor: color },
-        ]}
-      />
-    </View>
-  );
-}
-
-function Card({ title, children }: { title: string; children: React.ReactNode }) {
-  const styles = useThemedStyles(makeStyles);
-  return (
-    <View style={styles.card}>
-      <Text style={styles.cardTitle}>{title}</Text>
-      {children}
-    </View>
-  );
-}
 
 function unitColor(active: string, t: Palette): string {
   if (active === 'active') return t.green;
@@ -88,6 +64,7 @@ export default function ConsoleTab() {
 function ConsoleScreen() {
   const t = useTheme();
   const styles = useThemedStyles(makeStyles);
+  const { Screen, Card, Bar, Dot, Spark, BigMetric } = useSkinKit();
   const { settings, ready } = useSettings();
 
   // No host yet (fresh install): don't poll, and show the pairing hint
@@ -111,7 +88,15 @@ function ConsoleScreen() {
     if (reachable) void noteBoxReachable();
   }, [reachable]);
 
+  // How hard the box is working, 0..1. Skins use this to set the RATE of their
+  // idle motion -- a busy box breathes faster. Never a colour input.
+  const vitals = React.useMemo(
+    () => ({ v: vitality(s?.load?.[0], s?.cpu_temp_c), alive: reachable }),
+    [s?.load, s?.cpu_temp_c, reachable],
+  );
+
   return (
+    <VitalsContext.Provider value={vitals}>
     <View style={styles.screen}>
       <ScrollView
         style={styles.scroll}
@@ -120,14 +105,10 @@ function ConsoleScreen() {
           paddingBottom: 32,
           paddingHorizontal: 14,
         }}>
+        <Screen>
         {/* Status header */}
         <View style={styles.header}>
-          <View
-            style={[
-              styles.dot,
-              { backgroundColor: reachable ? t.green : t.red },
-            ]}
-          />
+          <Dot color={reachable ? t.green : t.red} size={14} live={reachable} />
           <Text style={styles.hostname}>
             {s?.hostname ?? (configured ? settings.host : 'Couchside')}
           </Text>
@@ -180,23 +161,24 @@ function ConsoleScreen() {
           <>
             <View style={styles.row}>
               <View style={styles.half}>
-                <Card title="CPU TEMP">
-                  <Text style={[styles.bigMetric, { color: tempColor(s.cpu_temp_c, t) }]}>
-                    {s.cpu_temp_c != null ? `${s.cpu_temp_c.toFixed(1)}°C` : '—'}
-                  </Text>
-                  <Sparkline values={s.history?.temp} color={tempColor(s.cpu_temp_c, t)} />
+                <Card title="CPU TEMP" index={0}>
+                  <BigMetric
+                    value={s.cpu_temp_c != null ? `${s.cpu_temp_c.toFixed(1)}°C` : '—'}
+                    numeric={s.cpu_temp_c}
+                    color={tempColor(s.cpu_temp_c, t)}
+                  />
+                  <Spark values={s.history?.temp} color={tempColor(s.cpu_temp_c, t)} />
                 </Card>
               </View>
               <View style={styles.half}>
-                <Card title="UPTIME">
-                  <Text style={[styles.bigMetric, { color: t.text }]}>
-                    {humanizeUptime(s.uptime_s)}
-                  </Text>
+                <Card title="UPTIME" index={1}>
+                  {/* Not numeric: "1d 2h 7m" must never be interpolated. */}
+                  <BigMetric value={humanizeUptime(s.uptime_s)} numeric={null} color={t.text} />
                 </Card>
               </View>
             </View>
 
-            <Card title="LOAD 1m / 5m / 15m">
+            <Card title="LOAD 1m / 5m / 15m" index={2}>
               <View style={styles.loadRow}>
                 {s.load.map((l, i) => (
                   <Text key={i} style={styles.loadVal}>
@@ -204,10 +186,10 @@ function ConsoleScreen() {
                   </Text>
                 ))}
               </View>
-              <Sparkline values={s.history?.load} color={t.blue} />
+              <Spark values={s.history?.load} color={t.blue} />
             </Card>
 
-            <Card title="MEMORY">
+            <Card title="MEMORY" index={3}>
               <View style={styles.barLabelRow}>
                 <Text style={styles.barLabel}>
                   {(s.mem.used_mb / 1024).toFixed(1)} / {(s.mem.total_mb / 1024).toFixed(1)} GB
@@ -217,10 +199,10 @@ function ConsoleScreen() {
               <Bar pct={memPct} color={pctColor(memPct, t)} />
               {/* Fixed 0-100 scale: a memory sparkline that auto-scales would
                   make a 2% wiggle look like a cliff. */}
-              <Sparkline values={s.history?.mem_pct} color={pctColor(memPct, t)} min={0} max={100} />
+              <Spark values={s.history?.mem_pct} color={pctColor(memPct, t)} min={0} max={100} />
             </Card>
 
-            <Card title="DISKS">
+            <Card title="DISKS" index={4}>
               {s.disks.map((d) => (
                 <View key={d.mount} style={styles.diskRow}>
                   <View style={styles.barLabelRow}>
@@ -243,7 +225,7 @@ function ConsoleScreen() {
 
         {/* Units */}
         {configured && (
-          <Card title="UNITS">
+          <Card title="UNITS" index={5}>
             {units.error != null && !units.data ? (
               <Text style={styles.unitErr}>{units.error.message}</Text>
             ) : units.data ? (
@@ -263,8 +245,10 @@ function ConsoleScreen() {
             </Text>
           </Card>
         )}
+        </Screen>
       </ScrollView>
     </View>
+    </VitalsContext.Provider>
   );
 }
 

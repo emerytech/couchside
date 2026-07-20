@@ -12,6 +12,7 @@ import { Image, LayoutChangeEvent, Pressable, StyleSheet, Text, View } from 'rea
 import { usePoll } from '@/hooks/usePoll';
 import { api, hostKey, Media, MediaOp, MediaPlayer, mediaArtSource } from '@/lib/api';
 import { hapticLight, hapticMedium } from '@/lib/haptics';
+import { useSkinKit } from '@/lib/skin';
 import { useSettings } from '@/lib/SettingsContext';
 import { mono, numeric, useTheme, useThemedStyles, type Palette } from '@/lib/theme';
 
@@ -25,6 +26,7 @@ function fmtTime(ms: number): string {
 export function NowPlayingCard() {
   const t = useTheme();
   const styles = useThemedStyles(makeStyles);
+  const { Card } = useSkinKit();
   const { settings, ready } = useSettings();
   const configured = !!settings.host && !!settings.token;
 
@@ -115,8 +117,7 @@ export function NowPlayingCard() {
   const playing = active.status === 'Playing';
 
   return (
-    <View style={styles.card}>
-      <Text style={styles.cardTitle}>NOW PLAYING</Text>
+    <Card title="NOW PLAYING" index={0}>
 
       {players.length > 1 && (
         <View style={styles.pills}>
@@ -188,7 +189,7 @@ export function NowPlayingCard() {
           onPress={() => send('next')}
         />
       </View>
-    </View>
+    </Card>
   );
 }
 

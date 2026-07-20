@@ -16,6 +16,7 @@ import { StyleSheet, Text, View } from 'react-native';
 
 import { usePoll } from '@/hooks/usePoll';
 import { api, hostKey, HostSession } from '@/lib/api';
+import { useSkinKit } from '@/lib/skin';
 import { useSettings } from '@/lib/SettingsContext';
 import { mono, useTheme, useThemedStyles, type Palette } from '@/lib/theme';
 
@@ -30,6 +31,7 @@ function fmtElapsed(sinceEpoch: number): string {
 export function StreamHostCard() {
   const t = useTheme();
   const styles = useThemedStyles(makeStyles);
+  const { Card } = useSkinKit();
   const { settings, ready } = useSettings();
   const configured = !!settings.host && !!settings.token;
 
@@ -41,7 +43,9 @@ export function StreamHostCard() {
   if (!h?.active) return null;
 
   return (
-    <View style={styles.card}>
+    // tone="live": this box is actively serving a session, and the skin's live
+    // treatment (green frame) is what carried that meaning before.
+    <Card tone="live" accentColor={t.green}>
       <View style={styles.header}>
         <View style={styles.dot} />
         <Text style={styles.title}>STREAMING TO</Text>
@@ -56,7 +60,7 @@ export function StreamHostCard() {
       <Text style={styles.hint}>
         This box is hosting a Steam Remote Play session.
       </Text>
-    </View>
+    </Card>
   );
 }
 
