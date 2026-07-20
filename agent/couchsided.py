@@ -44,7 +44,7 @@ except ImportError:  # pragma: no cover
     fcntl = None
 
 APP_NAME = "couchside-agent"
-VERSION = "2.9.29"
+VERSION = "2.9.30"
 UID = os.getuid()
 XDG_RUNTIME_DIR = "/run/user/%d" % UID
 
@@ -178,6 +178,29 @@ DECKY_RESTART_ACTION = {
     "cmd": ["sudo", "systemctl", "restart", "plugin_loader"],
     "user_env": False,
     "detached": False,
+}
+
+# Pairing a controller is the one job you cannot do WITH a controller, and
+# Steam buries the Bluetooth page several clicks into Settings — which is a real
+# problem on a couch with no keyboard. steam:// deep-links straight to it.
+#
+# VERIFIED ON HARDWARE via a screen capture of the box: firing
+# steam://open/settings/bluetooth in Game Mode lands directly on the Bluetooth
+# panel, sidebar highlighted, scan already running. Worth recording HOW that was
+# established, because the obvious check lies: this URL is NOT a string literal
+# anywhere in Steam's JS bundle (the handler builds the route from the panel
+# name), so grepping the bundle finds nothing and proves nothing. An earlier
+# pass grepped, found no match, and wrongly concluded no Bluetooth deep link
+# existed. Test the URL, don't grep for it.
+BLUETOOTH_PAIRING_ACTION = {
+    "label": "Pair a controller",
+    "description": "Open Steam's Bluetooth pairing screen on the TV",
+    # Navigates the TV away from whatever is on it — the app renders medium as
+    # "CHANGES WHAT'S ON SCREEN", which is exactly what this does.
+    "danger": "medium",
+    "cmd": ["steam", "steam://open/settings/bluetooth"],
+    "user_env": True,        # needs DISPLAY / XDG_RUNTIME_DIR to reach the session
+    "detached": True,        # the url handler hands off to the running client
 }
 
 # Custom launcher limits (see the SECURITY NOTE in the launcher routes).
@@ -690,6 +713,26 @@ def _inject_decky_action(mock):
     ACTIONS["restart-decky"] = dict(DECKY_RESTART_ACTION)
     if "restart-decky" not in ACTION_ORDER:
         ACTION_ORDER.append("restart-decky")
+
+
+def _inject_bluetooth_action(mock):
+    """Add the Bluetooth pairing action on boxes that actually have Steam.
+
+    Gated on Steam being installed, since the whole action is a steam:// URL —
+    on a non-Steam box it would be a button that silently does nothing, and a
+    dead button costs more trust than a missing one (same reasoning as the Decky
+    gate above). No sudo and no unit to check: the URL runs as the desktop user
+    through the already-running client. In --mock it is always added so the
+    Actions tab can be developed off-box. Called after load_config; idempotent;
+    a config-defined action of the same id wins."""
+    global ACTIONS, ACTION_ORDER
+    if "pair-controller" in ACTIONS:
+        return
+    if not mock and _steam_root() is None:
+        return
+    ACTIONS["pair-controller"] = dict(BLUETOOTH_PAIRING_ACTION)
+    if "pair-controller" not in ACTION_ORDER:
+        ACTION_ORDER.append("pair-controller")
 
 # ---------------------------------------------------------------------------
 # Real-mode data collection (Linux; each helper degrades gracefully)
@@ -10904,6 +10947,7 @@ def main():
     _inject_session_actions()
     _inject_suspend_action(args.mock)
     _inject_decky_action(args.mock)
+    _inject_bluetooth_action(args.mock)
     set_tv(args.mock)
     set_mpris(args.mock)
     set_screen(args.mock)
