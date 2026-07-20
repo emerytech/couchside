@@ -26,6 +26,7 @@ Pure stdlib, no pytest — same style as the other agent tests.
 import importlib.util
 import os
 import tempfile
+import time
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 AGENT = os.path.join(HERE, "..", "agent", "couchsided.py")
@@ -46,17 +47,39 @@ def check(cond, label):
 
 # Verbatim off the live box: the noise that dominates the log, then a real
 # session's start / client / stop lines.
+#
+# THE TIMESTAMPS ARE ANCHORED TO NOW, NOT HARDCODED, AND MUST STAY THAT WAY.
+# stream_host_info() drops a session once it is older than _STREAM_MAX_S (12h),
+# so a fixture dated with a literal wall-clock date is a TIME BOMB: it passes
+# until real time drifts 12h past that date, then every "-> active" assertion
+# in this file fails at once, on every branch, with no code change. That is
+# exactly what happened -- fixtures dated 2026-07-19 17:50:17 turned CI red at
+# 2026-07-20 05:50 UTC and cost a debugging session on an unrelated PR.
+# `_stream_line_epoch` parses with time.mktime(), i.e. LOCAL time, so these are
+# built with time.localtime() to match.
+#
+# Offsets preserve the spacing of the real captured log: noise runs ~77s before
+# the session, the client line lands 1s after the start, the stop 47s after it.
+_BASE = int(time.time()) - 60           # session started a minute ago
+
+
+def _stamp(offset, uptime):
+    """A '[YYYY-MM-DD HH:MM:SS][uptime]' log prefix `offset` seconds off _BASE."""
+    when = time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(_BASE + offset))
+    return "[%s][%s]" % (when, uptime)
+
+
 NOISE = (
-    "[2026-07-19 17:49:00][60.100000] Adding process 68515 for gameID 1868140\n"
-    "[2026-07-19 17:49:01][61.100000] Removing process 68515 for gameID 1868140\n"
-    "[2026-07-19 17:49:02][62.100000] Game Recording - game stopped [gameid=1868140]\n"
+    _stamp(-77, "60.100000") + " Adding process 68515 for gameID 1868140\n"
+    + _stamp(-76, "61.100000") + " Removing process 68515 for gameID 1868140\n"
+    + _stamp(-75, "62.100000") + " Game Recording - game stopped [gameid=1868140]\n"
 )
-START = "[2026-07-19 17:50:17][75.044840] >>> Starting desktop stream\n"
-CLIENT = ("[2026-07-19 17:50:18][75.533834] >>> Client video decoder set to "
+START = _stamp(0, "75.044840") + " >>> Starting desktop stream\n"
+CLIENT = (_stamp(1, "75.533834") + " >>> Client video decoder set to "
           "macOS Metal hardware decoding\n")
-MIDDLE = ("[2026-07-19 17:50:18][75.506495] >>> Capture resolution set to 1920x1080\n"
-          "[2026-07-19 17:51:04][122.042206] Encoding complete\n")
-STOP = "[2026-07-19 17:51:04][122.094521] >>> Stopped desktop stream\n"
+MIDDLE = (_stamp(1, "75.506495") + " >>> Capture resolution set to 1920x1080\n"
+          + _stamp(47, "122.042206") + " Encoding complete\n")
+STOP = _stamp(47, "122.094521") + " >>> Stopped desktop stream\n"
 
 TCP_LISTENING = (
     "  sl  local_address rem_address   st tx_queue rx_queue tr tm->when retrnsmt\n"
