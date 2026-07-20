@@ -129,6 +129,121 @@ B: KEY=7fff000000000000 1000000000000 8000000000 e080ffdf01cfffff ffffffffffffff
 """
 
 
+# --- Steam Input phantom accounting ------------------------------------------
+# Every block below is verbatim off a live Bazzite box (2026-07-19). A 2025
+# Steam Controller NEVER presents a gamepad node: it pairs through the Puck
+# dongle, which publishes only lizard-mode mouse/keyboard nodes, and Steam
+# republishes the pad itself phys-less under 28de:11ff. list_real_pads cannot
+# see that by design (our own uinput pad is phys-less too), so the card counts
+# phantoms and subtracts the pads it already knows about.
+
+
+def _phantom(n):
+    """One Steam Input phantom. KEY word 0 bit 60 is BTN_MODE — real bits, so
+    _declares_key does actual work here rather than being fixture theatre."""
+    return ('I: Bus=0003 Vendor=28de Product=11ff Version=0001\n'
+            'N: Name="Microsoft X-Box 360 pad %d"\n'
+            'P: Phys=\n'
+            'S: Sysfs=/devices/virtual/input/input%d\n'
+            'U: Uniq=\n'
+            'H: Handlers=event%d js%d\n'
+            'B: PROP=0\n'
+            'B: EV=20000b\n'
+            'B: KEY=7cdb000000000000 0 0 0 0\n'
+            'B: ABS=3003f\n'
+            'B: FF=10000 0\n' % (n, 331 + n, 15 + n, n))
+
+
+STEAM_PUCK = """\
+I: Bus=0003 Vendor=28de Product=1304 Version=0111
+N: Name="Valve Software Steam Controller Puck Mouse"
+P: Phys=usb-0000:00:14.0-2/input2
+U: Uniq=FXB99616032A7
+H: Handlers=mouse0 event4
+B: PROP=0
+B: EV=17
+B: KEY=30000 0 0 0 0
+"""
+
+
+def _ctrls_for(blocks, own=0):
+    """_gaming_controllers() over a fixtured /proc + a fixtured count of pads
+    the agent itself has open. Empty power_supply = the mains-desktop case."""
+    proc = tempfile.NamedTemporaryFile("w", suffix=".txt", delete=False)
+    proc.write("\n".join(blocks))
+    proc.close()
+    o_proc, o_ps, o_sess = (cs._PROC_INPUT_DEVICES, cs._POWER_SUPPLY_DIR,
+                            cs.GAMEPAD_SESSIONS)
+    cs._PROC_INPUT_DEVICES = proc.name
+    cs._POWER_SUPPLY_DIR = tempfile.mkdtemp()
+    # A waiter sits in GAMEPAD_SESSIONS with device None and must NOT count.
+    cs.GAMEPAD_SESSIONS = ([{"device": object()} for _ in range(own)]
+                           + [{"device": None}])
+    try:
+        return cs._gaming_controllers()
+    finally:
+        cs._PROC_INPUT_DEVICES, cs._POWER_SUPPLY_DIR = o_proc, o_ps
+        cs.GAMEPAD_SESSIONS = o_sess
+        os.unlink(proc.name)
+
+
+def test_steam_input_phantoms():
+    print("Steam Input phantom accounting")
+
+    c = _ctrls_for([STEAM_PUCK, _phantom(0)])
+    check(len(c) == 1, "Steam Controller (phantom only) is listed at all")
+    check(c and c[0]["name"] == "Steam Controller",
+          "named from the Puck dongle, not the phantom's Xbox name")
+    check(c and "battery_pct" not in c[0],
+          "no battery invented for it (publishes no power_supply node)")
+
+    # THE REGRESSION THIS EXISTS FOR: Steam wraps the agent's own pad too, so a
+    # connected phone must not read as a second controller.
+    c = _ctrls_for([STEAM_PUCK, _phantom(0), _phantom(1)], own=1)
+    check(len(c) == 1, "phone's own pad subtracted — still ONE controller")
+
+    c = _ctrls_for([STEAM_PUCK, _phantom(0)], own=1)
+    check(len(c) == 0, "phone connected, no real controller -> none listed")
+
+    # A real pad Steam has wrapped: seen twice, counted once, named honestly.
+    c = _ctrls_for([XBOX_PAD, _phantom(0)])
+    check(len(c) == 1, "real pad + its own phantom counted once")
+    check(c and c[0]["name"] == "Xbox Wireless Controller",
+          "real pad keeps its real name")
+
+    c = _ctrls_for([STEAM_PUCK, XBOX_PAD, _phantom(0), _phantom(1)])
+    check(len(c) == 2, "real pad + Steam Controller = two")
+    check(sorted(x["name"] for x in c)
+          == ["Steam Controller", "Xbox Wireless Controller"],
+          "one named row each")
+    check(len(set(x["uniq"] for x in c)) == 2,
+          "uniqs distinct (the app keys its list on uniq)")
+
+    c = _ctrls_for([XBOX_PAD])
+    check(len(c) == 1, "Steam not running (no phantoms) -> real pad still shown")
+
+    c = _ctrls_for([_phantom(0)])
+    check(c and c[0]["name"] == "Controller",
+          "no Puck -> generic name, not a guessed Steam Controller")
+
+    c = _ctrls_for([STEAM_PUCK])
+    check(len(c) == 0, "Puck present but controller off -> nothing listed")
+
+
+def test_own_pad_count():
+    print("own-pad count")
+    o_sess = cs.GAMEPAD_SESSIONS
+    try:
+        cs.GAMEPAD_SESSIONS = []
+        check(cs._own_pad_count() == 0, "no sessions -> 0")
+        cs.GAMEPAD_SESSIONS = [{"device": None}, {"device": None}]
+        check(cs._own_pad_count() == 0, "waiters hold no device -> 0")
+        cs.GAMEPAD_SESSIONS = [{"device": object()}, {"device": None}]
+        check(cs._own_pad_count() == 1, "only the holder's pad counts")
+    finally:
+        cs.GAMEPAD_SESSIONS = o_sess
+
+
 def test_controllers_and_battery():
     print("controller battery join")
     proc = tempfile.NamedTemporaryFile("w", suffix=".txt", delete=False)
@@ -218,6 +333,8 @@ if __name__ == "__main__":
     test_gpu_sensors()
     test_vram_sanity()
     test_controllers_and_battery()
+    test_steam_input_phantoms()
+    test_own_pad_count()
     test_active_output()
     test_payload_omits_absent_fields()
     print()
