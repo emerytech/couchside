@@ -1,5 +1,6 @@
-New in 2.9.12
+New in 2.9.13
 
-• Console and Fleet got a redesign. Cards now glow with the reading they carry — a hot CPU burns amber, a cool one sits green — and the dashboard breathes faster when your box is working hard.
-• "Stream from PC" now shows which machines are actually on. Offline PCs are dimmed with the reason, so picking a game won't surprise you with a huge install instead of a stream. You can hide them entirely in Setup › Prefs.
-• Fixed the screen preview sticking on "capturing…".
+• Scan for TVs now actually finds them. It was missing TVs that don't answer the old way — including LG sets and Google TV.
+• Pairing tells you what a device is. Point it at something it can't pair with and it says so, instead of showing a cryptic error.
+• LG commercial and signage displays are now supported — power, input and mute, no pairing needed.
+• Paired more than one TV? Pick which one the remote drives, in Setup.
