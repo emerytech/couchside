@@ -333,6 +333,19 @@ export type StreamHost = {
   /** Unix seconds the box last saw this host (newest first in the list). */
   last: number;
   games: StreamGame[];
+  /**
+   * Whether the host looks reachable right now (agent >= 2.9.32). Absent on
+   * older agents — treat undefined as "unknown", NOT offline, so they render
+   * exactly as before. Deliberately conservative: ambiguity resolves to false,
+   * so a false here is advisory (dim + explain), never a reason to disable the
+   * row. Streaming from an off host is what makes Steam fall back to "play
+   * locally" and offer a multi-GB install, which reads as a Couchside bug.
+   */
+  online?: boolean;
+  /** Short, already user-facing explanation of `online` ("no response in 66m"). */
+  reason?: string;
+  /** Unix seconds Steam itself last saw the host; 0 when it never has. */
+  last_seen?: number;
 };
 export type SteamLink = { available: boolean; hosts: StreamHost[] };
 

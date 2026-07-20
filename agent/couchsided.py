@@ -2965,6 +2965,145 @@ def _remoteclients_path():
     return p if os.path.isfile(p) else None
 
 
+# --- stream-host liveness ---------------------------------------------------
+#
+# remoteclients.vdf lists every host this box has EVER streamed from and says
+# nothing about which are on now. Picking a game from a host that is off makes
+# Steam fall back to "play locally" and offer a multi-GB INSTALL, which reads as
+# a Couchside bug when it is really "that PC is off".
+#
+# The signal is Steam's own logs/remote_connections.txt. Steam already receives
+# the LAN discovery beacons and writes them down with the client id, so the
+# agent never has to touch the network -- no probing, no port scan, no mDNS.
+#
+# MEASURED on two boxes (2026-07-20) before choosing the rule:
+#   * Beacon recency ALONE is not usable. Beacons are bursty: median gap 9s but
+#     p99 2725s, and 5.4% of gaps within an active stretch exceed 15 minutes.
+#     Any tight freshness window flickers a present host to "offline".
+#   * The lifecycle lines ("Client <id> (<host>) connected|disconnected") are a
+#     STATE, and that state matched every host whose truth was independently
+#     known: two live boxes read `connected` (1m, 6m), while the asleep Steam
+#     Deck from the original report read `disconnected` 12h, and a machine gone
+#     for a month read `disconnected` 28d.
+#   * IP-derived evidence was rejected: a beacon's address field is sometimes
+#     the client id rather than an IP, ARP reads FAILED for hosts that are live
+#     over a relay, and the "peer" holding a connection is frequently the
+#     ROUTER (the same trap already documented for stream-host detection).
+#
+# A host that loses power abruptly may never log `disconnected` -- the same
+# missing-stop-marker shape as streaming_log.txt. So `connected` is paired with
+# a staleness cap, and `last_seen` is always reported so the app can say "last
+# seen 12h ago" instead of asserting something it cannot know.
+_REMOTE_LOG_MAX_BYTES = 4 * 1024 * 1024   # tail cap: this log reaches MBs
+STREAM_HOST_STALE_S = 2 * 3600            # `connected` older than this = unknown
+_RX_REMOTE_LIFECYCLE = re.compile(
+    r"^\[(\d{4}-\d\d-\d\d \d\d:\d\d:\d\d)\].*?"
+    r"Client (\d+) \(([^)]*)\) (connected|disconnected)")
+_RX_REMOTE_BEACON = re.compile(
+    r"^\[(\d{4}-\d\d-\d\d \d\d:\d\d:\d\d)\].*?"
+    r"broadcast message from client (\d+) \(([^)]*)\)")
+
+
+def _remote_log_path():
+    root = _steam_root()
+    if root is None:
+        return None
+    p = os.path.join(root, "logs", "remote_connections.txt")
+    return p if os.path.isfile(p) else None
+
+
+def _remote_log_epoch(stamp):
+    """Unix seconds from a 'YYYY-MM-DD HH:MM:SS' log stamp, else None. Steam
+    writes local time, so this parses as local time (mktime), matching
+    _stream_line_epoch."""
+    try:
+        return int(time.mktime(time.strptime(stamp, "%Y-%m-%d %H:%M:%S")))
+    except (ValueError, OverflowError):
+        return None
+
+
+def remote_client_liveness():
+    """{client_id: {"state": "connected"|"disconnected"|None, "state_at": int,
+    "last_seen": int, "host": str}} from Steam's remote-connections log.
+
+    Reads only the TAIL: the log runs to megabytes and only the newest events
+    matter. Never raises -- a box with no log simply yields {}."""
+    path = _remote_log_path()
+    if path is None:
+        return {}
+    try:
+        size = os.path.getsize(path)
+        with open(path, "r", encoding="utf-8", errors="replace") as f:
+            if size > _REMOTE_LOG_MAX_BYTES:
+                f.seek(size - _REMOTE_LOG_MAX_BYTES)
+                f.readline()             # discard the partial first line
+            lines = f.readlines()
+    except OSError:
+        return {}
+
+    out = {}
+
+    def touch(cid, host, when):
+        e = out.setdefault(cid, {"state": None, "state_at": 0, "last_seen": 0,
+                                 "host": host})
+        if when > e["last_seen"]:
+            e["last_seen"] = when
+        # Newest hostname wins: a box keeps its id across a rename.
+        if host and when >= e.get("_host_at", 0):
+            e["host"], e["_host_at"] = host, when
+        return e
+
+    for line in lines:
+        m = _RX_REMOTE_LIFECYCLE.match(line)
+        if m:
+            when = _remote_log_epoch(m.group(1))
+            if when is None:
+                continue
+            e = touch(m.group(2), m.group(3), when)
+            if when >= e["state_at"]:
+                e["state"], e["state_at"] = m.group(4), when
+            continue
+        m = _RX_REMOTE_BEACON.match(line)
+        if m:
+            when = _remote_log_epoch(m.group(1))
+            if when is not None:
+                touch(m.group(2), m.group(3), when)
+    for e in out.values():
+        e.pop("_host_at", None)
+    return out
+
+
+def stream_host_online(entry, now=None):
+    """(online: bool, reason: str) for one remote_client_liveness() entry.
+
+    `online` is deliberately conservative. Dimming a host that is actually up
+    costs the user one tap; calling a host up when it is not is what makes
+    Steam offer a multi-gigabyte install, so ambiguity resolves to offline."""
+    now = int(time.time()) if now is None else now
+    if not entry:
+        return False, "never seen on this network"
+    age = max(0, now - int(entry.get("last_seen") or 0))
+    if entry.get("state") == "connected":
+        if now - int(entry.get("state_at") or 0) <= STREAM_HOST_STALE_S:
+            return True, "connected"
+        return False, "no response in %s" % _short_ago(age)
+    if entry.get("state") == "disconnected":
+        return False, "offline (last seen %s ago)" % _short_ago(age)
+    return False, "last seen %s ago" % _short_ago(age)
+
+
+def _short_ago(seconds):
+    """Compact age for a user-facing reason string: 45s / 12m / 3h / 5d."""
+    s = max(0, int(seconds))
+    if s < 90:
+        return "%ds" % s
+    if s < 5400:
+        return "%dm" % (s // 60)
+    if s < 172800:
+        return "%dh" % (s // 3600)
+    return "%dd" % (s // 86400)
+
+
 def _vdf_line_val(line):
     """The VALUE of a `"key"  "value"` text-VDF line (the last quoted token), or
     None. Used for remoteclients.vdf, which has no nesting we care about."""
@@ -2977,16 +3116,29 @@ def _vdf_line_val(line):
 
 
 def _parse_remoteclients(text):
-    """[{host, last, apps:[appid_str,...]}] from a remoteclients.vdf blob. Text
-    line-scan (pure-stdlib agent, no VDF parser). Best-effort; [] on trouble."""
+    """[{host, cid, last, apps:[appid_str,...]}] from a remoteclients.vdf blob.
+    Text line-scan (pure-stdlib agent, no VDF parser). Best-effort; [] on trouble.
+
+    `cid` is the 64-bit Steam client id -- the map KEY each host block hangs
+    off, which earlier revisions read past. It matters because it is the same
+    id Steam writes in logs/remote_connections.txt, so host liveness can be
+    joined on an exact id instead of a hostname string (a box can be renamed
+    while keeping its id -- observed: bazzite -> lenovodesktop)."""
     hosts = []
     cur = None
     in_apps = False
+    pending_cid = None
     for raw in text.splitlines():
         s = raw.strip()
+        # A bare quoted run of digits at block level is a client id key.
+        if (not in_apps and len(s) > 2 and s[0] == '"' and s[-1] == '"'
+                and s[1:-1].isdigit()):
+            pending_cid = s[1:-1]
         if s.startswith('"hostname"'):
-            cur = {"host": _vdf_line_val(s) or "", "last": 0, "apps": []}
+            cur = {"host": _vdf_line_val(s) or "", "cid": pending_cid or "",
+                   "last": 0, "apps": []}
             hosts.append(cur)
+            pending_cid = None
             in_apps = False
         elif cur is not None and s.startswith('"lastupdated"'):
             try:
@@ -3022,9 +3174,9 @@ def discover_stream_games():
             for a in h["apps"]:
                 prev = best.get(a)
                 if prev is None or h["last"] > prev[0]:
-                    best[a] = (h["last"], h["host"])
+                    best[a] = (h["last"], h["host"], h.get("cid", ""))
         out = []
-        for a, (last, host) in best.items():
+        for a, (last, host, cid) in best.items():
             name = names.get(int(a), "")
             if _is_steam_tool(a, name):
                 continue
@@ -3034,6 +3186,7 @@ def discover_stream_games():
                 "kind": "stream",
                 "appid": int(a),
                 "host": host,
+                "cid": cid,
                 "last": last,
             })
         out.sort(key=lambda l: (l["label"].lower(), l["appid"]))
@@ -3064,12 +3217,23 @@ def steamlink_info():
     by_host = {}
     for g in games:
         by_host.setdefault(g["host"], {"host": g["host"], "last": g["last"],
-                                       "games": []})
+                                       "cid": g.get("cid", ""), "games": []})
         by_host[g["host"]]["games"].append(
             {"appid": g["appid"], "label": g["label"]})
     hosts = sorted(by_host.values(), key=lambda h: h["last"], reverse=True)
+
+    # Liveness, joined on the Steam client id (never the hostname -- a box can
+    # be renamed and keep its id). Read once for all hosts, not per host.
+    live = remote_client_liveness()
+    now = int(time.time())
     for h in hosts:
         h["games"].sort(key=lambda g: g["label"].lower())
+        entry = live.get(h.get("cid") or "")
+        online, reason = stream_host_online(entry, now)
+        h["online"] = online
+        h["reason"] = reason
+        h["last_seen"] = int(entry.get("last_seen") or 0) if entry else 0
+        h.pop("cid", None)               # internal join key, not app-facing
     return {"available": bool(games), "hosts": hosts}
 
 
@@ -8698,6 +8862,38 @@ def mock_stream_host():
             "client": "macOS", "since": int(time.time()) - 725}
 
 
+def mock_steamlink():
+    """Stream hosts in EVERY liveness state at once.
+
+    /api/steamlink previously had no mock branch, so under --mock it ran the
+    real detector against the dev machine's filesystem, found no Steam, and
+    404'd -- while set_caps(mock) advertised steamlink: True. The offline-host
+    UI was therefore impossible to exercise in the web harness, which is
+    exactly the surface it needed testing on.
+
+    Covers all four states the app must render: online, cleanly offline, a host
+    that stopped responding without ever disconnecting, and one never seen."""
+    now = int(time.time())
+    return {"available": True, "hosts": [
+        {"host": "emery-pc", "last": now - 900, "online": True,
+         "reason": "connected", "last_seen": now - 42,
+         "games": [{"appid": 3164500, "label": "Schedule I"},
+                   {"appid": 1174180, "label": "Red Dead Redemption 2"},
+                   {"appid": 271590, "label": "Grand Theft Auto V"}]},
+        {"host": "taylor-steamdeck", "last": now - 44536, "online": False,
+         "reason": "offline (last seen 12h ago)", "last_seen": now - 44536,
+         "games": [{"appid": 33230, "label": "Assassin's Creed II"},
+                   {"appid": 220, "label": "Half-Life 2"}]},
+        {"host": "steamdeck", "last": now - 7893, "online": False,
+         "reason": "no response in 2h", "last_seen": now - 7893,
+         "games": [{"appid": 1086940, "label": "Baldur's Gate 3"}]},
+        {"host": "DESKTOP-MAGJDDS", "last": now - 2420082, "online": False,
+         "reason": "never seen on this network", "last_seen": 0,
+         "games": [{"appid": 228980, "label": "Steamworks Common Redistributables"},
+                   {"appid": 3041230, "label": "Silksong"}]},
+    ]}
+
+
 # ---------------------------------------------------------------------------
 # Minimal RFC6455 WebSocket support (server side, no fragmentation)
 # ---------------------------------------------------------------------------
@@ -9765,7 +9961,7 @@ class Handler(BaseHTTPRequestHandler):
                 # appear: 404 when no host has ever been streamed from (nothing
                 # to offer) so the app hides the "Stream from PC" surface. Launch
                 # is the existing POST /api/launchers/stream:<appid>.
-                info = steamlink_info()
+                info = mock_steamlink() if self.mock else steamlink_info()
                 if info["available"]:
                     self._send(200, info, started)
                 else:
