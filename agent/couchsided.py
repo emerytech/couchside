@@ -44,7 +44,7 @@ except ImportError:  # pragma: no cover
     fcntl = None
 
 APP_NAME = "couchside-agent"
-VERSION = "2.9.30"
+VERSION = "2.9.31"
 UID = os.getuid()
 XDG_RUNTIME_DIR = "/run/user/%d" % UID
 
@@ -975,7 +975,7 @@ def set_caps(mock):
         CAPS = {k: True for k in
                 ("gamepad", "steam", "media", "tv", "screen", "power_schedule",
                  "screensaver", "couchmode", "desktop", "steamlink", "gaming",
-                 "streamhost")}
+                 "streamhost", "steammenus")}
         return
     CAPS = {
         "gamepad": _uinput_writable(),
@@ -990,6 +990,7 @@ def set_caps(mock):
         "steamlink": safe(steamlink_available),
         "gaming": safe(gaming_available),
         "streamhost": safe(streamhost_available),
+        "steammenus": safe(steammenus_available),
     }
 
 
@@ -8514,6 +8515,98 @@ def _stream_data_bound():
     return False
 
 
+# ---------------------------------------------------------------------------
+# Steam settings deep links (/api/steam/menus)
+# ---------------------------------------------------------------------------
+#
+# steam://open/settings/<panel> jumps straight to one page of Steam's settings.
+# That is useful from a couch, where the alternative is walking a controller
+# through a menu — and impossible when the thing being configured IS the
+# controller.
+#
+# EVERY slug below was confirmed ON HARDWARE by firing it at a real box and
+# screen-capturing the result. That is not belt-and-braces. This list CANNOT be
+# derived by reading Steam's JS bundle: the handler builds the route from the
+# panel name, so the slugs appear nowhere in it. Grepping finds a few unrelated
+# legacy URLs and misses every entry here — including "bluetooth", which is
+# proven to work. An earlier pass grepped, found nothing, and wrongly concluded
+# no Bluetooth deep link existed.
+#
+# An unknown slug is NOT an error: Steam silently opens Settings on its DEFAULT
+# page. So a wrong entry would present as a working button that goes somewhere
+# else — worse than a missing one. Hence measured, never guessed.
+#
+# Verified ABSENT (Steam fell back to the default page) — do NOT re-add one of
+# these without capturing the screen first: internet, ingame, notifications,
+# notification, alerts, in-game, overlay, gameoverlay, ingameoverlay, interface,
+# broadcast, remoteplay, remote-play, remoteplaysettings, account, voice, music,
+# compatibility, developer, wifi, connectivity, steamnetwork, general,
+# steamcloud, streaming, recording. Several of those panels DO exist in Steam's UI (Notifications,
+# In Game, Remote Play are all visible in the sidebar) — their slugs are simply
+# something else and have not been found yet.
+#
+# "system" is deliberately absent for a different reason: it IS the default
+# page, so it is indistinguishable from an invalid slug by screen capture. It
+# almost certainly works; it is omitted rather than shipped on an assumption.
+STEAM_MENUS = (
+    ("home", "Home"),
+    ("library", "Library"),
+    ("store", "Store"),
+    ("downloads", "Downloads"),
+    ("storage", "Storage"),
+    ("gamerecording", "Game Recording"),
+    ("network", "Internet"),
+    ("display", "Display"),
+    ("audio", "Audio"),
+    ("power", "Power"),
+    ("controller", "Controller"),
+    ("bluetooth", "Bluetooth"),
+    ("keyboard", "Keyboard"),
+    ("customization", "Customization"),
+    ("accessibility", "Accessibility"),
+    ("friends", "Friends & Chat"),
+    ("family", "Family"),
+    ("cloud", "Cloud"),
+    ("security", "Security"),
+)
+_STEAM_MENU_IDS = frozenset(m[0] for m in STEAM_MENUS)
+
+
+def steammenus_available():
+    """Boot-time caps hint: these are steam:// URLs and are meaningless without
+    Steam. GET /api/steam/menus is the live authority. Never raises."""
+    try:
+        return _steam_root() is not None
+    except Exception:
+        return False
+
+
+def steam_menus_payload():
+    """The menu list, in the order the app should render it — most-reached-for
+    first rather than Steam's own sidebar order."""
+    return {"menus": [{"id": i, "label": label} for i, label in STEAM_MENUS]}
+
+
+def open_steam_menu(menu_id):
+    """Open one settings panel on the box's screen. True when dispatched.
+
+    SECURITY: menu_id is checked against a FROZEN allowlist and never reaches a
+    shell — the argv is handed to the steam binary directly. Anything not on the
+    list is refused rather than forwarded, so a caller cannot steer the box to
+    an arbitrary steam:// URL (steam:// can install games and run programs).
+    Detached like the equivalent Action: the url handler hands off to the
+    already-running client and exits."""
+    if menu_id not in _STEAM_MENU_IDS:
+        return False
+    subprocess.Popen(
+        ["steam", "steam://open/settings/%s" % menu_id],
+        env=_user_env(),
+        stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+        stdin=subprocess.DEVNULL, start_new_session=True,
+    )
+    return True
+
+
 def streamhost_available():
     """Boot-time caps hint: Steam is present, so this box could host. The
     endpoint is the live authority. Never raises."""
@@ -9627,6 +9720,14 @@ class Handler(BaseHTTPRequestHandler):
                     self._send(200, info, started)
                 else:
                     self._send(404, {"error": "screensaver not installed"}, started)
+            elif path == "/api/steam/menus":
+                # Steam settings deep links. Probe-and-appear: 404 without
+                # Steam, so an older agent or a non-Steam box simply never
+                # shows the surface. Static list, no scan, no cache needed.
+                if steammenus_available() or self.mock:
+                    self._send(200, steam_menus_payload(), started)
+                else:
+                    self._send(404, {"error": "unavailable"}, started)
             elif path == "/api/steamlink":
                 # Steam Remote Play (in-home streaming) host list. Probe-and-
                 # appear: 404 when no host has ever been streamed from (nothing
@@ -9798,6 +9899,34 @@ class Handler(BaseHTTPRequestHandler):
                 self._send(413, {"error": "request body too large"}, started)
                 return
             body = self._read_body()
+
+            # POST /api/steam/menus {"id": "<panel>"}: open one Steam settings
+            # page on the box's screen. 404 on an id that is not on the frozen
+            # allowlist — Steam would silently open its DEFAULT page for an
+            # unknown slug, so forwarding one would look like success while
+            # landing somewhere else entirely.
+            if path == "/api/steam/menus":
+                # _read_body() hands back BYTES, not a parsed object — decode
+                # like every other POST route here.
+                try:
+                    req = json.loads(body.decode("utf-8")) if body else {}
+                    if not isinstance(req, dict):
+                        raise ValueError("body must be a JSON object")
+                except (ValueError, TypeError, UnicodeDecodeError):
+                    self._send(400, {"error": "body must be a JSON object"},
+                               started)
+                    return
+                menu_id = req.get("id")
+                if not isinstance(menu_id, str) or menu_id not in _STEAM_MENU_IDS:
+                    self._send(404, {"error": "unknown menu"}, started)
+                    return
+                if self.mock:
+                    self._send(200, {"ok": True, "id": menu_id}, started)
+                    return
+                ok = open_steam_menu(menu_id)
+                self._send(200 if ok else 500,
+                           {"ok": ok, "id": menu_id}, started)
+                return
 
             prefix = "/api/actions/"
             if path.startswith(prefix):
