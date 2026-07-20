@@ -1130,7 +1130,9 @@ export const api = {
   openSteamMenu(settings: ConnSettings, id: string): Promise<{ ok: boolean }> {
     return request<{ ok: boolean }>(settings, '/api/steam/menus', {
       method: 'POST',
-      body: JSON.stringify({ id }),
+      // request() stringifies this itself — passing a string here double-
+      // encodes it and the agent rejects the body as 'not a JSON object'.
+      body: { id },
     });
   },
 
