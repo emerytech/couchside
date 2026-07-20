@@ -6,10 +6,16 @@ Run: python3 tests/test_stream_host.py
 Drives the REAL detection functions against fixtures whose lines are copied
 VERBATIM from a live box, including a genuine macOS Remote Play session it
 served. The traps encoded here are all real and all cost something once:
-  * BOTH session edges exist in streaming_log.txt (">>> Starting/Stopped desktop
-    stream"). An earlier draft keyed on a connected UDP peer in 27031-27036
-    instead — that signal did NOT fire during the real session and silently
-    missed it, which is why detection is log-driven now.
+  * Both session edges exist in streaming_log.txt (">>> Starting/Stopped desktop
+    stream") — but ONLY on a graceful stop. An earlier draft keyed on a
+    connected UDP peer in 27031-27036 instead; that signal did NOT fire during
+    the real session and silently missed it, which is why detection is
+    log-driven. A later revision then claimed both edges ALWAYS exist, which is
+    false: a stream host that crashes or is replaced never writes its stop line,
+    and the card advertised a dead macOS session for 27 minutes. Hence the
+    data-port cross-check (udp/27031), measured in BOTH states this time.
+  * Log mtime staleness is NOT a liveness signal: measured 41 seconds of silence
+    during a healthy stream, so any useful threshold would hide live sessions.
   * "Adding/Removing process for gameID" dominates the log (9,915 lines on the
     live box) and fires with NO stream running — it must never read as activity.
   * An ESTABLISHED TCP peer on 27036 is NOT a session: an idle box has one from
@@ -61,9 +67,27 @@ TCP_NO_STEAM = (
     "  sl  local_address rem_address   st tx_queue rx_queue tr tm->when retrnsmt\n"
     "   1: 00000000:0016 00000000:0000 0A 00000000:00000000 00:00000000 00000000\n")
 
+# The Remote Play DATA socket, 27031 = 0x6997. Bound for the life of a session
+# and released when it ends — cleanly or not — which is the only signal that
+# recovers from a stream host that died without writing its stop marker. It
+# binds on udp6 in practice, so the fixture uses a v6 local address.
+UDP_STREAMING = (
+    "  sl  local_address rem_address   st tx_queue rx_queue tr tm->when retrnsmt\n"
+    " 512: 00000000000000000000000000000000:6997"
+    " 00000000000000000000000000000000:0000 07 00000000:00000000 00:00000000\n")
+# What a box with Steam running but NO live session shows: the 27036 discovery
+# socket only. Measured on hardware — 27031 was absent entirely.
+UDP_IDLE = (
+    "  sl  local_address rem_address   st tx_queue rx_queue tr tm->when retrnsmt\n"
+    " 511: 00000000:699C 00000000:0000 07 00000000:00000000 00:00000000\n")
 
-def _setup(log_text, tcp_text=TCP_LISTENING):
-    """Point the agent at a fixture log + /proc/net/tcp, with fresh state."""
+
+def _setup(log_text, tcp_text=TCP_LISTENING, udp_text=UDP_STREAMING):
+    """Point the agent at a fixture log + /proc/net/{tcp,udp}, with fresh state.
+
+    udp defaults to the data port BOUND — "a session really is running" — so the
+    marker tests below exercise the markers rather than tripping the cross-check.
+    """
     d = tempfile.mkdtemp()
     log = os.path.join(d, "streaming_log.txt")
     with open(log, "w") as f:
@@ -71,8 +95,12 @@ def _setup(log_text, tcp_text=TCP_LISTENING):
     tcp = os.path.join(d, "tcp")
     with open(tcp, "w") as f:
         f.write(tcp_text)
+    udp = os.path.join(d, "udp")
+    with open(udp, "w") as f:
+        f.write(udp_text)
     cs._stream_log_path = lambda: log
     cs._PROC_NET_TCP = (tcp,)
+    cs._PROC_NET_UDP = (udp,)
     cs._STREAM_STATE.update(active=False, since=0, client=None, pos=0)
     return log
 
@@ -92,7 +120,8 @@ def test_timestamp_parse():
 
 def test_session_edges():
     print("session start/stop edges")
-    o_path, o_tcp = cs._stream_log_path, cs._PROC_NET_TCP
+    o_path, o_tcp, o_udp = (cs._stream_log_path, cs._PROC_NET_TCP,
+                            cs._PROC_NET_UDP)
     try:
         log = _setup(NOISE)
         info = cs.stream_host_info()
@@ -111,11 +140,13 @@ def test_session_edges():
         check("client" not in info and "since" not in info, "session fields cleared")
     finally:
         cs._stream_log_path, cs._PROC_NET_TCP = o_path, o_tcp
+        cs._PROC_NET_UDP = o_udp
 
 
 def test_noise_never_activates():
     print("the 9,915-line noise trap")
-    o_path, o_tcp = cs._stream_log_path, cs._PROC_NET_TCP
+    o_path, o_tcp, o_udp = (cs._stream_log_path, cs._PROC_NET_TCP,
+                            cs._PROC_NET_UDP)
     try:
         log = _setup(START + STOP)          # settled: a finished session
         cs.stream_host_info()
@@ -124,11 +155,13 @@ def test_noise_never_activates():
               "Adding/Removing/Game Recording never re-activates a session")
     finally:
         cs._stream_log_path, cs._PROC_NET_TCP = o_path, o_tcp
+        cs._PROC_NET_UDP = o_udp
 
 
 def test_rotation():
     print("log rotation")
-    o_path, o_tcp = cs._stream_log_path, cs._PROC_NET_TCP
+    o_path, o_tcp, o_udp = (cs._stream_log_path, cs._PROC_NET_TCP,
+                            cs._PROC_NET_UDP)
     try:
         log = _setup(NOISE * 30 + START + CLIENT)
         check(cs.stream_host_info()["active"] is True, "active before rotation")
@@ -143,11 +176,13 @@ def test_rotation():
         check(info["active"] is False, "post-rotation content re-read correctly")
     finally:
         cs._stream_log_path, cs._PROC_NET_TCP = o_path, o_tcp
+        cs._PROC_NET_UDP = o_udp
 
 
 def test_listening_crosscheck():
     print("listening cross-check + router trap")
-    o_path, o_tcp = cs._stream_log_path, cs._PROC_NET_TCP
+    o_path, o_tcp, o_udp = (cs._stream_log_path, cs._PROC_NET_TCP,
+                            cs._PROC_NET_UDP)
     try:
         # Steam drops its 27036 listener AROUND a session (verified live: present
         # before the stream, gone after) — so a live session must still read as
@@ -168,20 +203,87 @@ def test_listening_crosscheck():
               "router's ESTABLISHED 27036 conn is not a session")
     finally:
         cs._stream_log_path, cs._PROC_NET_TCP = o_path, o_tcp
+        cs._PROC_NET_UDP = o_udp
+
+
+def test_dirty_end_recovery():
+    print("dirty end (host died, no stop marker)")
+    o_path, o_tcp, o_udp = (cs._stream_log_path, cs._PROC_NET_TCP,
+                            cs._PROC_NET_UDP)
+    try:
+        # A session that started and is genuinely live: markers say go, data
+        # port bound. This is the state that must NOT regress.
+        log = _setup(START + CLIENT)
+        info = cs.stream_host_info()
+        check(info["active"] is True, "live session stays active while 27031 is bound")
+        check(info.get("client") == "macOS", "client still reported")
+
+        # THE BUG: the host dies. No stop line is ever written — the log simply
+        # stops growing — but the data port is released.
+        with open(os.path.join(os.path.dirname(log), "udp"), "w") as f:
+            f.write(UDP_IDLE)
+        info = cs.stream_host_info()
+        check(info["active"] is False,
+              "data port released -> session cleared with NO stop marker")
+        check("client" not in info and "since" not in info,
+              "stale client/since not reported after a dirty end")
+        check(cs._STREAM_STATE["active"] is False,
+              "shared state cleared, not just the returned flag")
+        check(cs._STREAM_STATE["pos"] > 0,
+              "byte cursor preserved (no full re-read of the log next poll)")
+
+        # And it stays cleared across polls rather than flapping.
+        check(cs.stream_host_info()["active"] is False, "still inactive next poll")
+
+        # A brand-new session after the dirty end is detected normally.
+        with open(os.path.join(os.path.dirname(log), "udp"), "w") as f:
+            f.write(UDP_STREAMING)
+        _append(log, START + CLIENT)
+        check(cs.stream_host_info()["active"] is True,
+              "a fresh session after a dirty end still activates")
+    finally:
+        cs._stream_log_path, cs._PROC_NET_TCP = o_path, o_tcp
+        cs._PROC_NET_UDP = o_udp
+
+
+def test_data_port_does_not_suppress_start():
+    print("data port never suppresses a real session")
+    o_path, o_tcp, o_udp = (cs._stream_log_path, cs._PROC_NET_TCP,
+                            cs._PROC_NET_UDP)
+    try:
+        # Steam binds 27031 ~4s BEFORE writing ">>> Starting desktop stream"
+        # ("Streaming initialized and listening on port 27031" precedes it), so
+        # the cross-check can never race a session that is merely starting.
+        _setup(START + CLIENT, udp_text=UDP_STREAMING)
+        check(cs.stream_host_info()["active"] is True,
+              "port bound + start marker -> active")
+
+        # Unreadable /proc must not silently kill a live session... it does clear
+        # it, which is the SAFE direction (a hidden card, not a lying one).
+        _setup(START + CLIENT)
+        cs._PROC_NET_UDP = ("/nonexistent/udp",)
+        check(cs.stream_host_info()["active"] is False,
+              "unreadable /proc/net/udp fails closed, not open")
+    finally:
+        cs._stream_log_path, cs._PROC_NET_TCP = o_path, o_tcp
+        cs._PROC_NET_UDP = o_udp
 
 
 def test_missing_log():
     print("degrades safely")
-    o_path, o_tcp = cs._stream_log_path, cs._PROC_NET_TCP
+    o_path, o_tcp, o_udp = (cs._stream_log_path, cs._PROC_NET_TCP,
+                            cs._PROC_NET_UDP)
     try:
         cs._stream_log_path = lambda: None
         cs._PROC_NET_TCP = ("/nonexistent/tcp",)
+        cs._PROC_NET_UDP = ("/nonexistent/udp",)
         cs._STREAM_STATE.update(active=False, since=0, client=None, pos=0)
         info = cs.stream_host_info()
         check(info["active"] is False and info["listening"] is False,
               "no log + no /proc -> inactive, no raise")
     finally:
         cs._stream_log_path, cs._PROC_NET_TCP = o_path, o_tcp
+        cs._PROC_NET_UDP = o_udp
 
 
 if __name__ == "__main__":
@@ -190,6 +292,8 @@ if __name__ == "__main__":
     test_noise_never_activates()
     test_rotation()
     test_listening_crosscheck()
+    test_dirty_end_recovery()
+    test_data_port_does_not_suppress_start()
     test_missing_log()
     print()
     if _fail:
