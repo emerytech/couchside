@@ -1,6 +1,4 @@
-New in 2.9.13
+New in 2.9.14
 
-• Scan for TVs now actually finds them. It was missing TVs that don't answer the old way — including LG sets and Google TV.
-• Pairing tells you what a device is. Point it at something it can't pair with and it says so, instead of showing a cryptic error.
-• LG commercial and signage displays are now supported — power, input and mute, no pairing needed.
-• Paired more than one TV? Pick which one the remote drives, in Setup.
+• TV navigation is snappier. D-pad presses take a more direct path to the box, so controlling a TV feels closer to instant.
+• Sending text to a TV now tells you when there's nowhere for it to go. If no text field is focused on the TV, the app says so instead of silently doing nothing — and points you at the search box that makes it work.
