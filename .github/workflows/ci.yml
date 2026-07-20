@@ -81,6 +81,15 @@ jobs:
       - name: Unit tests (stream host)
         run: python3 tests/test_stream_host.py
 
+      # Injected actions: buttons the agent offers only when the box can really
+      # perform them ("a dead button costs more trust than a missing one"), so
+      # every gate is asserted in BOTH directions. Covers the Bluetooth pairing
+      # deep link, whose URL is NOT a literal in Steam's JS bundle — grepping
+      # for it proves nothing, which is how an earlier pass wrongly concluded no
+      # such deep link existed. Also pins idempotency and config-wins.
+      - name: Unit tests (injected actions)
+        run: python3 tests/test_actions_inject.py
+
   smoke:
     runs-on: ubuntu-latest
     needs: compile
