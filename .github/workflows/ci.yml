@@ -81,6 +81,17 @@ jobs:
       - name: Unit tests (stream host)
         run: python3 tests/test_stream_host.py
 
+      # Screen capture backend selection. couchside.service and the Steam
+      # session race at boot: measured on a real box, the agent came up 34
+      # seconds BEFORE the gamescope socket existed, cached "desktop/spectacle"
+      # for its whole uptime, and fired a KDE screenshot tool at a gamescope
+      # session -- every frame 503 until someone restarted the service. These
+      # drive the socket set CHANGING after startup, which is the only shape
+      # that catches it; a test that merely checks a correct startup passes
+      # against the bug.
+      - name: Unit tests (screen capture)
+        run: python3 tests/test_screen_capture.py
+
       # Injected actions: buttons the agent offers only when the box can really
       # perform them ("a dead button costs more trust than a missing one"), so
       # every gate is asserted in BOTH directions. Covers the Bluetooth pairing
