@@ -95,6 +95,12 @@ jobs:
       - name: Unit tests (config load)
         run: python3 tests/test_config_load.py
 
+      # Windows agent's ported TV identify + SSDP discovery (Phase 1). Pure
+      # stdlib sockets/TLS, so couchsided-win.py imports and these run on Linux
+      # CI. Same LG-commercial-vs-consumer ordering trap as the Linux test.
+      - name: Unit tests (win tv identify)
+        run: python3 tests/test_win_tv_identify.py
+
       # Gaming card (/api/gaming): the card* glob trap (a cardN-DP-1 connector
       # dir must not be read as a GPU), the reaper AppId matcher incl. the
       # [oom_reaper] reject, the empty-power_supply desktop case + the uniq (never

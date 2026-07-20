@@ -41,7 +41,9 @@ import json
 import os
 import random
 import shutil
+import re
 import socket
+import ssl
 import struct
 import subprocess
 import sys
@@ -2593,6 +2595,188 @@ def _roku_save(host, name):
         CONFIG_ROKU = cfg
 
 
+# ---------------------------------------------------------------------------
+# Smart-TV: device identify + SSDP discovery (Phase 1, ported from the Linux
+# agent). Pure stdlib sockets/TLS -- no Win32. mDNS discovery is Phase 2, so
+# discovery here is SSDP-only (finds webOS + Roku); Samsung/Google-TV/Hisense
+# are still addable by typed IP via identify_tv.
+# ---------------------------------------------------------------------------
+WEBOS_PORT = 3001
+SAMSUNG_PORT = 8002
+VIDAA_PORT = 36669
+ANDROIDTV_REMOTE_PORT = 6466
+LG_COMMERCIAL_PORT = 9761
+_SSDP_ADDR = ("239.255.255.250", 1900)
+
+
+def _port_open(host, port, timeout=1.5):
+    """True if a TCP connect succeeds. An OPEN port is weak evidence on its own
+    -- see identify_tv, where a commercial LG panel opens 3001 and then never
+    completes a TLS handshake."""
+    try:
+        s = socket.create_connection((host, port), timeout=timeout)
+        s.close()
+        return True
+    except OSError:
+        return False
+
+
+def _tls_completes(host, port, timeout=4.0):
+    """True if a TLS handshake actually COMPLETES (self-signed is fine). This is
+    what separates a consumer webOS TV from an LG commercial panel: the panel
+    accepts TCP on 3001 and then never handshakes."""
+    try:
+        ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
+        ctx.check_hostname = False
+        ctx.verify_mode = ssl.CERT_NONE
+        raw = socket.create_connection((host, port), timeout=timeout)
+        raw.settimeout(timeout)
+        with ctx.wrap_socket(raw, server_hostname=host):
+            return True
+    except Exception:
+        return False
+
+
+def _discover_http(url, timeout=2.0):
+    try:
+        with urllib.request.urlopen(url, timeout=timeout) as r:
+            return r.read().decode("utf-8", "replace")
+    except Exception:
+        return ""
+
+
+def identify_tv(host):
+    """What KIND of device is at this address?
+    {"brand": <id or None>, "label": str, "supported": bool, "reason": str}
+
+    Turns a wrong target into an explanation instead of a raw socket error.
+    Ordered most-specific first; the LG commercial check MUST precede the
+    consumer webOS check because both open 3001."""
+    host = (host or "").strip()
+    if not host:
+        return {"brand": None, "label": "", "supported": False,
+                "reason": "no address given"}
+
+    if _port_open(host, ROKU_PORT):
+        xml = _discover_http("http://%s:%d/query/device-info" % (host, ROKU_PORT))
+        m = re.search(r"<friendly-device-name>(.*?)</friendly-device-name>", xml)
+        if m or "<device-info>" in xml:
+            return {"brand": "roku", "label": (m.group(1).strip() if m else "Roku"),
+                    "supported": True, "reason": "Roku ECP"}
+
+    if _port_open(host, SAMSUNG_PORT):
+        return {"brand": "samsung", "label": "Samsung", "supported": True,
+                "reason": "Samsung Tizen remote port"}
+
+    if _port_open(host, LG_COMMERCIAL_PORT):
+        return {"brand": "lg_commercial", "label": "LG commercial display",
+                "supported": False,
+                "reason": "This is an LG commercial/signage display, not a "
+                          "consumer webOS TV. It does not support webOS "
+                          "pairing."}
+
+    if _port_open(host, WEBOS_PORT):
+        if _tls_completes(host, WEBOS_PORT):
+            return {"brand": "webos", "label": "LG webOS", "supported": True,
+                    "reason": "webOS SSAP"}
+        return {"brand": None, "label": "unknown device", "supported": False,
+                "reason": "Port %d is open but it is not answering as a webOS "
+                          "TV (the secure handshake times out). This is usually "
+                          "a commercial display or another device entirely."
+                          % WEBOS_PORT}
+
+    if _port_open(host, ANDROIDTV_REMOTE_PORT):
+        return {"brand": "androidtv", "label": "Google TV", "supported": True,
+                "reason": "Android TV remote port"}
+
+    if _port_open(host, VIDAA_PORT):
+        return {"brand": "vidaa", "label": "Hisense", "supported": True,
+                "reason": "VIDAA MQTT port"}
+
+    return {"brand": None, "label": "", "supported": False,
+            "reason": "Nothing answered at that address. Check the IP, and "
+                      "make sure the TV is powered on -- a TV in standby "
+                      "cannot be identified."}
+
+
+def _ssdp_search(st, timeout=2.5):
+    """M-SEARCH for <st>; return response header dicts (with _ip). Best-effort."""
+    msg = ("M-SEARCH * HTTP/1.1\r\nHOST: 239.255.255.250:1900\r\n"
+           'MAN: "ssdp:discover"\r\nMX: 1\r\nST: %s\r\n\r\n' % st).encode()
+    s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+    s.settimeout(0.5)
+    res = []
+    try:
+        s.sendto(msg, _SSDP_ADDR)
+        deadline = time.monotonic() + timeout
+        while time.monotonic() < deadline:
+            try:
+                data, addr = s.recvfrom(2048)
+            except socket.timeout:
+                continue
+            except OSError:
+                break
+            h = {"_ip": addr[0]}
+            for line in data.decode("utf-8", "replace").split("\r\n")[1:]:
+                if ":" in line:
+                    k, v = line.split(":", 1)
+                    h[k.strip().lower()] = v.strip()
+            res.append(h)
+    finally:
+        s.close()
+    return res
+
+
+def _discover_webos_ssdp():
+    """LG webOS via SSDP only (Phase 1: no mDNS). Filter ssdp:all to LG-
+    identified responses and pull friendlyName from the UPnP description."""
+    out, seen = [], set()
+    for r in _ssdp_search("ssdp:all", timeout=2.5):
+        ip = r.get("_ip")
+        blob = (r.get("server", "") + r.get("usn", "") + r.get("location", "")).lower()
+        if not ip or ip in seen or not re.search(r"\blg\b|webos|lge", blob):
+            continue
+        seen.add(ip)
+        name = ""
+        loc = r.get("location", "")
+        if loc:
+            m = re.search(r"<friendlyName>(.*?)</friendlyName>", _discover_http(loc))
+            if m:
+                name = m.group(1).strip()
+        out.append({"brand": "webos", "name": name or "LG webOS", "host": ip})
+    return out
+
+
+def _discover_roku_ssdp():
+    out, seen = [], set()
+    for r in _ssdp_search("roku:ecp"):
+        ip = r.get("_ip")
+        if not ip or ip in seen:
+            continue
+        seen.add(ip)
+        try:
+            name = roku_add(ip)
+        except Exception:
+            name = "Roku"
+        out.append({"brand": "roku", "name": name, "host": ip})
+    return out
+
+
+def tv_discover(mock, timeout=2.6):
+    """Sweep the LAN for controllable TVs (SSDP only on Windows, Phase 1).
+    Finds webOS + Roku; other brands are addable by typed IP via identify_tv."""
+    if mock:
+        return [{"brand": "webos", "name": "Living Room LG (mock)", "host": "10.0.0.51"},
+                {"brand": "roku", "name": "Bedroom Roku (mock)", "host": "10.0.0.52"}]
+    out, seen = [], set()
+    for tv in _discover_webos_ssdp() + _discover_roku_ssdp():
+        if tv["host"] not in seen:
+            seen.add(tv["host"])
+            out.append(tv)
+    return out
+
+
 def set_tv(mock):
     """Probe every TV backend at startup (call after load_config)."""
     set_panel(mock)
@@ -4545,6 +4729,10 @@ class Handler(BaseHTTPRequestHandler):
                     self._send(404, {"error": "not found"}, started)
                 else:
                     self._send(200, info, started)
+            elif path == "/api/tv/discover":
+                # LAN scan (SSDP only on Windows Phase 1). Always 200 (possibly
+                # an empty list) -- an action, not a probe-and-appear cap.
+                self._send(200, {"tvs": tv_discover(self.mock)}, started)
             elif path == "/api/media":
                 # Probe-and-appear: 404 when SMTC is unavailable so the app
                 # hides the Now Playing card; 200 with an empty list when idle.
@@ -4829,6 +5017,40 @@ class Handler(BaseHTTPRequestHandler):
             # POST /api/tv/roku/add: register a Roku by host. Body {"host":
             # "<ip>"}. Roku needs no pairing — verify it answers ECP, capture its
             # friendly name, and persist. Returns the name.
+            if path == "/api/tv/identify":
+                # What kind of device is at this address? Lets the app pick the
+                # pairing flow and turn a wrong target into a sentence instead
+                # of a raw TLS error.
+                try:
+                    req = json.loads(body.decode("utf-8")) if body else {}
+                    host = req["host"]
+                    if not isinstance(host, str) or not host:
+                        raise ValueError("host required")
+                except (ValueError, TypeError, KeyError, UnicodeDecodeError):
+                    self._send(400, {"error": "host (string) required"}, started)
+                    return
+                if self.mock:
+                    if host.endswith(".178"):
+                        self._send(200, {"brand": "lg_commercial",
+                                         "label": "LG commercial display",
+                                         "supported": False,
+                                         "reason": "This is an LG commercial/"
+                                         "signage display, not a consumer webOS "
+                                         "TV. It does not support webOS pairing."},
+                                   started)
+                    elif host.endswith(".199"):
+                        self._send(200, {"brand": None, "label": "",
+                                         "supported": False,
+                                         "reason": "Nothing answered at that "
+                                         "address. Check the IP, and make sure "
+                                         "the TV is powered on."}, started)
+                    else:
+                        self._send(200, {"brand": "webos", "label": "LG webOS",
+                                         "supported": True,
+                                         "reason": "webOS SSAP"}, started)
+                    return
+                self._send(200, identify_tv(host), started)
+                return
             if path == "/api/tv/roku/add":
                 try:
                     req = json.loads(body.decode("utf-8")) if body else {}
