@@ -6440,34 +6440,61 @@ def _screen_downscaler():
 
 
 def set_screen(mock):
-    """Detect a capture path at startup: gamescopectl when a gamescope socket
-    exists, else spectacle for a KDE desktop. Requires a downscaler for real
-    frames (a raw 4K PNG is too big to stream)."""
+    """Cache the STATIC half of the capture capability at startup: the
+    downscaler and which capture binaries exist. Requires a downscaler for real
+    frames (a raw 4K PNG is too big to stream).
+
+    The session-dependent half (which compositor is up, hence which backend can
+    actually grab a frame) is deliberately NOT decided here -- see
+    _screen_live(). Binaries do not come and go at runtime; compositors do."""
     global _SCREEN
     if mock:
         _SCREEN = {"session": "mock", "backends": ["mock"], "dscale": None}
         return
     dbuild, _ = _screen_downscaler()
     if dbuild is None:
-        _SCREEN = None
+        _SCREEN = None                  # no downscaler: this box can never capture
         return
+    if not (shutil.which("gamescopectl") or shutil.which("spectacle")):
+        _SCREEN = None                  # no capture tool at all
+        return
+    _SCREEN = {"dscale": dbuild,
+               "has_gamescopectl": bool(shutil.which("gamescopectl")),
+               "has_spectacle": bool(shutil.which("spectacle"))}
+
+
+def _screen_live():
+    """Resolve the CURRENT session and usable backends, or None if nothing can
+    capture right now. Cheap (one listdir); callers are rate-limited anyway.
+
+    WHY THIS IS RE-EVALUATED PER CALL AND NOT CACHED AT STARTUP: couchside.service
+    and the Steam session race at boot. Measured on a real box -- agent up at
+    09:34:26, gamescope-0 socket created at 09:35 -- the agent decided "desktop /
+    spectacle", then spent the whole uptime firing a KDE screenshot tool at a
+    gamescope session. spectacle wrote no file, so every /api/screen/frame
+    returned 503 "capture failed" until the service happened to be restarted.
+    It presented as "screen capture works sometimes", because whether it works
+    depended purely on which of the two won the boot race."""
+    if _SCREEN is None or _SCREEN.get("dscale") is None:
+        return _SCREEN                  # None, or the mock dict, unchanged
     gs = [s for s in _wayland_display_sockets() if s.startswith("gamescope-")]
     backends = []
-    if shutil.which("gamescopectl") and gs:
+    # gamescopectl only works against a live gamescope socket; order matters,
+    # the session's own grabber goes first.
+    if _SCREEN["has_gamescopectl"] and gs:
         backends.append("gamescopectl")
-    if shutil.which("spectacle"):
+    if _SCREEN["has_spectacle"]:
         backends.append("spectacle")
     if not backends:
-        _SCREEN = None
-        return
-    _SCREEN = {"session": "gamescope" if gs else "desktop", "backends": backends,
-               "dscale": dbuild, "gs_socket": gs[0] if gs else None}
+        return None
+    return {"session": "gamescope" if gs else "desktop", "backends": backends,
+            "dscale": _SCREEN["dscale"], "gs_socket": gs[0] if gs else None}
 
 
-def _screen_env():
+def _screen_env(live=None):
     env = _user_env()
-    if _SCREEN and _SCREEN.get("gs_socket"):
-        env["WAYLAND_DISPLAY"] = _SCREEN["gs_socket"]
+    if live and live.get("gs_socket"):
+        env["WAYLAND_DISPLAY"] = live["gs_socket"]
     else:
         socks = _wayland_display_sockets()
         if len(socks) == 1:
@@ -6532,7 +6559,8 @@ def _grab_spectacle(env, outdir):
 def real_screen_frame():
     """Capture one frame -> (jpeg_bytes, "image/jpeg") or None. Single-flight +
     500 ms cache so any number of pollers cause at most ~2 captures/sec."""
-    if _SCREEN is None:
+    live = _screen_live()
+    if live is None:
         return None
     now = time.monotonic()
     if _SCREEN_CACHE["data"] is not None and now - _SCREEN_CACHE["ts"] < SCREEN_MIN_INTERVAL_S:
@@ -6547,7 +6575,7 @@ def real_screen_frame():
         now = time.monotonic()
         if _SCREEN_CACHE["data"] is not None and now - _SCREEN_CACHE["ts"] < SCREEN_MIN_INTERVAL_S:
             return (_SCREEN_CACHE["data"], _SCREEN_CACHE["mime"])
-        env = _screen_env()
+        env = _screen_env(live)
         outdir = os.path.join(XDG_RUNTIME_DIR, "couchside-screen")
         try:
             os.makedirs(outdir, mode=0o700, exist_ok=True)
@@ -6557,7 +6585,7 @@ def real_screen_frame():
         jpg = os.path.join(outdir, "frame.jpg")
         try:
             grabbed = None
-            for backend in _SCREEN["backends"]:
+            for backend in live["backends"]:
                 if backend == "gamescopectl":
                     grabbed = _grab_gamescopectl(env, outdir)
                 elif backend == "spectacle":
@@ -6568,7 +6596,7 @@ def real_screen_frame():
                 return None
             data = None
             try:
-                subprocess.run(_SCREEN["dscale"](grabbed, jpg), env=env,
+                subprocess.run(live["dscale"](grabbed, jpg), env=env,
                                timeout=SCREEN_CAPTURE_TIMEOUT_S,
                                stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
                 with open(jpg, "rb") as f:
@@ -6592,11 +6620,15 @@ def real_screen_frame():
 
 
 def screen_info():
-    """{available, session, backends, formats} or None when no capture path."""
-    if _SCREEN is None:
+    """{available, session, backends, formats} or None when no capture path.
+
+    Reports the LIVE session, so the card reflects what would actually be
+    grabbed right now rather than whatever was true when the agent booted."""
+    live = _screen_live()
+    if live is None:
         return None
-    return {"available": True, "session": _SCREEN["session"],
-            "backends": _SCREEN["backends"], "formats": ["image/jpeg"]}
+    return {"available": True, "session": live["session"],
+            "backends": live["backends"], "formats": ["image/jpeg"]}
 
 
 def _encode_png(w, h, rows):
@@ -11105,8 +11137,11 @@ def main():
     print("tv: %s" % ("%s (%s)" % (info["backend"], info["adapter"])
                       if info else "unavailable"), flush=True)
     print("mpris: %s" % ("available" if BUSCTL else "unavailable"), flush=True)
-    print("screen: %s" % (("%s (%s)" % (_SCREEN["session"], ",".join(_SCREEN["backends"])))
-                          if _SCREEN else "unavailable"), flush=True)
+    # Report the LIVE view: the startup dict now holds only static capability,
+    # and the banner should say what would actually be captured right now.
+    _scr = _screen_live()
+    print("screen: %s" % (("%s (%s)" % (_scr["session"], ",".join(_scr["backends"])))
+                          if _scr else "unavailable"), flush=True)
     print("caps: %s" % (",".join(sorted(k for k, v in CAPS.items() if v)) or "none"),
           flush=True)
     try:
