@@ -9,12 +9,21 @@ import {
   View,
 } from 'react-native';
 
+import { Ionicons } from '@expo/vector-icons';
+
 import { Gated } from '@/components/Gated';
+import { SteamMenusPanel } from '@/components/SteamMenusPanel';
 import { TabScreen } from '@/components/TabScreen';
 import { useLockOrientation } from '@/hooks/useLockOrientation';
 import { usePoll } from '@/hooks/usePoll';
-import { ActionInfo, ActionResult, api, Danger, hostKey } from '@/lib/api';
-import { hapticError, hapticHeavy, hapticLight, hapticSuccess } from '@/lib/haptics';
+import { ActionInfo, ActionResult, api, Danger, hostKey, SteamMenus } from '@/lib/api';
+import {
+  hapticError,
+  hapticHeavy,
+  hapticLight,
+  hapticSelection,
+  hapticSuccess,
+} from '@/lib/haptics';
 import { useSettings } from '@/lib/SettingsContext';
 import { mono, numeric, useTheme, useThemedStyles, type Palette } from '@/lib/theme';
 
@@ -56,6 +65,41 @@ type RunRecord = {
   running: boolean;
 };
 
+type IoniconName = React.ComponentProps<typeof Ionicons>['name'];
+
+/** Sub-tabs across the top of Actions, mirroring the Setup screen's strip. */
+type SubTab = 'actions' | 'steam';
+const SUB_TABS: { key: SubTab; label: string; icon: IoniconName }[] = [
+  { key: 'actions', label: 'Actions', icon: 'flash-outline' },
+  { key: 'steam', label: 'Steam', icon: 'settings-outline' },
+];
+
+function SubTabs({ tab, onTab }: { tab: SubTab; onTab: (t: SubTab) => void }) {
+  const pal = useTheme();
+  const styles = useThemedStyles(makeStyles);
+  return (
+    <View style={styles.subTabBar}>
+      {SUB_TABS.map((t) => {
+        const active = t.key === tab;
+        return (
+          <Pressable
+            key={t.key}
+            onPress={() => {
+              hapticSelection();
+              onTab(t.key);
+            }}
+            style={[styles.subTabItem, active && styles.subTabItemActive]}>
+            <Ionicons name={t.icon} size={15} color={active ? pal.text : pal.textFaint} />
+            <Text style={[styles.subTabLabel, active && styles.subTabLabelActive]}>
+              {t.label}
+            </Text>
+          </Pressable>
+        );
+      })}
+    </View>
+  );
+}
+
 export default function ActionsTab() {
   useLockOrientation('portrait');
   return (
@@ -88,6 +132,28 @@ function ActionsScreen() {
     ready && configured,
     hostKey(settings), // clear the previous box's actions on switch
   );
+
+  // Steam settings deep links (agent >= 2.9.31). Static list, so poll rarely —
+  // probe-and-appear leaves data null on an older agent and the section hides.
+  // Sub-tab, mirroring the Setup screen's category strip. The strip is only
+  // rendered when the box actually offers Steam menus — see hasSteamMenus.
+  // Steam is the default: the danger-grouped Actions are rare, deliberate
+  // operations, while the Steam shortcuts are the everyday reason to open this
+  // tab. Falls back to 'actions' automatically when the box offers no menus.
+  const [sub, setSub] = useState<SubTab>('steam');
+
+  const steamMenus = usePoll<SteamMenus | null>(
+    () => api.steamMenus(settings),
+    300000,
+    ready && configured,
+    hostKey(settings),
+  );
+
+  const hasSteamMenus = !!steamMenus.data?.menus?.length;
+  // If the Steam sub-tab disappears while it is selected (box swapped for one
+  // without Steam, agent downgraded), fall back rather than render a blank
+  // screen. Never trust `sub` alone.
+  const activeSub: SubTab = hasSteamMenus ? sub : 'actions';
 
   const execute = useCallback(
     async (action: ActionInfo) => {
@@ -165,7 +231,12 @@ function ActionsScreen() {
         {configured && !actions.data && actions.error == null && (
           <Text style={styles.dim}>loading…</Text>
         )}
-        {groups.map((g) => (
+        {hasSteamMenus && <SubTabs tab={activeSub} onTab={setSub} />}
+        {activeSub === 'steam' ? (
+          <SteamMenusPanel menus={steamMenus.data!.menus} />
+        ) : null}
+        {activeSub === 'actions' &&
+          groups.map((g) => (
           <View key={g.danger} style={styles.group}>
             <Text style={[styles.groupTitle, { color: DANGER_COLOR[g.danger] }]}>
               {GROUP_TITLE[g.danger]}
@@ -184,8 +255,8 @@ function ActionsScreen() {
                 <Text style={styles.cardDesc}>{a.description}</Text>
               </Pressable>
             ))}
-          </View>
-        ))}
+            </View>
+          ))}
       </ScrollView>
 
       {/* Result panel */}
@@ -235,6 +306,38 @@ function ActionsScreen() {
 
 const makeStyles = (t: Palette) => StyleSheet.create({
   screen: { flex: 1, backgroundColor: t.bg, paddingHorizontal: 14 },
+  subTabBar: {
+    flexDirection: 'row',
+    gap: 4,
+    padding: 4,
+    borderRadius: 12,
+    backgroundColor: t.inset,
+    borderWidth: 1,
+    borderColor: t.cardBorder,
+    marginBottom: 14,
+  },
+  subTabItem: {
+    flex: 1,
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 6,
+    paddingVertical: 9,
+    borderRadius: 9,
+  },
+  subTabItemActive: {
+    backgroundColor: t.card,
+    borderWidth: 1,
+    borderColor: t.cardBorder,
+  },
+  subTabLabel: {
+    color: t.textFaint,
+    fontSize: 12,
+    fontWeight: '700',
+    letterSpacing: 0.3,
+    fontFamily: mono,
+  },
+  subTabLabelActive: { color: t.text },
   title: { color: t.text, fontSize: 26, fontWeight: '700', marginBottom: 12, fontFamily: mono },
   list: { flex: 1 },
   group: { marginBottom: 16 },
