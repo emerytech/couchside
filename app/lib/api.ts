@@ -977,6 +977,10 @@ async function request<T>(
     auth?: boolean;
     timeoutMs?: number;
     body?: unknown;
+    // Skip the probe-first dance and send ONE attempt straight to the
+    // poll-proven host. For rapid, recoverable POSTs (TV nav keys) only —
+    // see the branch below.
+    fastPath?: boolean;
   } = {},
 ): Promise<T> {
   // Cached-IP fallback: keeps the app working when mDNS breaks (SteamOS Game
@@ -990,7 +994,18 @@ async function request<T>(
 
   let res: Response;
   let usedHost = settings.host;
-  if (method === 'GET' && fallback) {
+  if (opts.fastPath) {
+    // TV nav keys: the normal POST path pings the box to pick a target BEFORE
+    // sending, because a POST can't be safely retried. That doubles the
+    // round-trips on every D-pad press, which is why TV control felt sluggish
+    // next to box control (a single WebSocket frame). A nav key is different
+    // from a reboot: it is a single send to the host the poll already proved
+    // reachable, and if that host went stale in the gap since the last poll the
+    // worst case is one dropped press, recovered by the next one. So skip the
+    // probe and send straight there.
+    usedHost = resolveEffectiveHost(settings);
+    res = await attempt(usedHost, settings, path, opts);
+  } else if (method === 'GET' && fallback) {
     // Idempotent + a cached IP known: race both addresses (IP-first, see
     // raceGet). Double-delivery is harmless for a GET, and this removes the
     // ~1.6s mDNS resolution from every status poll / list fetch.
@@ -1406,6 +1421,10 @@ export const api = {
     return request<ActionResult>(settings, `/api/tv/key/${key}`, {
       method: 'POST',
       timeoutMs: 12000,
+      // Nav keys are rapid and recoverable, so skip the probe round-trip that
+      // the normal POST path does before every send (that overhead is what made
+      // TV control feel sluggish next to box control). See request().
+      fastPath: true,
     });
   },
 
