@@ -1,4 +1,6 @@
-New in 2.9.10
+New in 2.9.11
 
-• Gaming card on the Console tab: see what's running right now — the game with its cover art, your controllers and their battery, the active display, and whether the box is in Game Mode.
-• When another device is streaming from your box, the Console tab now shows that too.
+• Steam settings shortcuts: the Actions tab now has a Steam sub-tab that jumps straight to any Steam settings page on your box — Bluetooth, Controller, Display, Storage and more.
+• Pair a controller from the couch. Bluetooth gets its own button, because pairing is the one thing you can't do with the controller you're trying to pair.
+• Your Steam Controller now shows up on the gaming card.
+• Fixed a "streaming to" card that could keep showing a session long after it ended.
