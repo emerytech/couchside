@@ -116,6 +116,12 @@ export type BoxCaps = {
    */
   steamlink?: boolean;
   /**
+   * Steam settings deep links (agent >= 2.9.31). Every slug the box offers was
+   * confirmed on hardware — an unknown slug is NOT an error in Steam, it just
+   * opens the default page, so the agent ships an allowlist rather than guesses.
+   */
+  steammenus?: boolean;
+  /**
    * Gaming card: this box has Steam, so a "what's running now" card (GPU/game/
    * output/controllers/session) is worth showing. Gates the Console-tab card.
    * Optional: absent on agents < 2.9.25, so undefined reads as "unknown, probe"
@@ -336,6 +342,10 @@ export type SteamLink = { available: boolean; hosts: StreamHost[] };
  * (Intel i915) has no `gpu` key at all. `session` is the only field always
  * present. Cover art for `game.appid` via steamCoverSource (box cache, LAN-only).
  */
+/** One Steam settings panel the box can jump to (agent >= 2.9.31). */
+export type SteamMenu = { id: string; label: string };
+export type SteamMenus = { menus: SteamMenu[] };
+
 export type Gaming = {
   gpu?: {
     name: string;
@@ -717,7 +727,8 @@ export function capsEqual(a?: BoxCaps, b?: BoxCaps): boolean {
     a.desktop === b.desktop &&
     a.steamlink === b.steamlink &&
     a.gaming === b.gaming &&
-    a.streamhost === b.streamhost
+    a.streamhost === b.streamhost &&
+    a.steammenus === b.steammenus
   );
 }
 
@@ -1103,6 +1114,26 @@ export const api = {
    * the Launch tab hides the "Stream from PC" section. Launch a game with
    * launch(settings, `stream:${appid}`).
    */
+  /**
+   * Steam's settings panels, as deep links (agent >= 2.9.31). Probe-and-appear:
+   * null on a 404 (older agent, or a box with no Steam) so the section hides.
+   */
+  steamMenus(
+    settings: ConnSettings,
+    caps: BoxCaps | undefined = cachedCaps(settings),
+  ): Promise<SteamMenus | null> {
+    return probeGated(caps?.steammenus, () =>
+      probeOrNull(request<SteamMenus>(settings, '/api/steam/menus')));
+  },
+
+  /** Open one Steam settings panel on the box's own screen. */
+  openSteamMenu(settings: ConnSettings, id: string): Promise<{ ok: boolean }> {
+    return request<{ ok: boolean }>(settings, '/api/steam/menus', {
+      method: 'POST',
+      body: JSON.stringify({ id }),
+    });
+  },
+
   steamlink(
     settings: ConnSettings,
     caps: BoxCaps | undefined = cachedCaps(settings),

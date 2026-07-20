@@ -231,9 +231,13 @@ function normalizeCaps(raw: unknown): BoxCaps | undefined {
   const gaming = bool('gaming');
   // streamhost arrived with agent 2.9.26 — same optional-cap drop trap.
   const streamhost = bool('streamhost');
+  // steammenus arrived with agent 2.9.31 — same optional-cap drop trap as every
+  // key above it: omit it here and the cap never persists, so the app re-probes
+  // /api/steam/menus on every launch.
+  const steammenus = bool('steammenus');
   return {
     gamepad, steam, media, tv, screen, power_schedule,
-    screensaver, couchmode, desktop, steamlink, gaming, streamhost,
+    screensaver, couchmode, desktop, steamlink, gaming, streamhost, steammenus,
   };
 }
 
