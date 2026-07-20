@@ -9265,6 +9265,30 @@ def mock_stream_host():
             "client": "macOS", "since": int(time.time()) - 725}
 
 
+def mock_tv():
+    """A box with TWO paired TVs, so the app's TV picker is reachable in the
+    web harness.
+
+    /api/tv had no mock branch, so under --mock it ran the real tv_info()
+    against the dev machine, found no backend and 404'd. That made the
+    multi-TV picker -- which only renders at 2+ backends -- impossible to
+    exercise anywhere except a box with two TVs physically paired, which is
+    exactly the state that is hardest to arrange and easiest to ship broken."""
+    return {
+        "available": True,
+        "backend": "webos",
+        "adapter": "LG webOS (10.7.0.205)",
+        "backends": ["webos", "androidtv"],
+        "tv_active": "webos",
+        "ops": ["power_on", "power_off", "volume_up", "volume_down", "mute"],
+        "box_volume": True, "tv_volume": True, "tv_power": True,
+        "source_box": False, "sources": [], "screen_toggle": False,
+        "keys": True, "source_key": False, "text": True,
+        "text_focus_push": True, "muted": False,
+        "box_volume_level": 70, "tv_volume_level": None,
+    }
+
+
 def mock_steamlink():
     """Stream hosts in EVERY liveness state at once.
 
@@ -10259,7 +10283,7 @@ class Handler(BaseHTTPRequestHandler):
             elif path == "/api/tv":
                 # Probe-and-appear: 404 when no TV backend so the app shows no
                 # TV strip; a body only when a backend is live.
-                info = tv_info()
+                info = mock_tv() if self.mock else tv_info()
                 if info is None:
                     self._send(404, {"error": "not found"}, started)
                 else:

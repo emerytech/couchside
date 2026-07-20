@@ -66,6 +66,23 @@ function pairableBrand(b: TvIdentifyResult['brand']): Brand | null {
 }
 
 /**
+ * Display names for the TV-picker roster. It spans more than BRANDS: the box's
+ * non-pairable backends (RS-232 panel, HDMI-CEC) are choosable TVs too. An id
+ * a future agent adds falls through to the raw id rather than rendering blank.
+ */
+const BACKEND_LABELS: Record<string, string> = {
+  webos: 'LG',
+  samsung: 'Samsung',
+  roku: 'Roku',
+  androidtv: 'Google TV',
+  vidaa: 'Hisense',
+  panel: 'RS-232 panel',
+  cec: 'CEC',
+};
+
+const backendLabel = (id: string): string => BACKEND_LABELS[id] ?? id;
+
+/**
  * Pair a networked smart TV (LG webOS / Samsung Tizen / Roku / Android-Google TV)
  * to the box so the Pad tab's D-pad drives it. webOS/Samsung show an accept
  * prompt on the TV; Roku needs no pairing; Android/Google TV is two-step (a
@@ -94,6 +111,13 @@ export function SmartTvSetup({ settings }: { settings: ConnSettings }) {
   // escape: identify can be wrong, and a TV in standby cannot be identified at
   // all, which would otherwise make an off TV impossible to set up.
   const [blocked, setBlocked] = useState<{ host: string; commercial: boolean } | null>(null);
+  const [switching, setSwitching] = useState(false);
+  // Discovery reports each TV's brand and pick() applies it, so for the common
+  // path the brand is already answered and the chip row is clutter. It collapses
+  // to a summary once something is known; `brandOpen` is the "Change" escape
+  // hatch, still needed for a TV that is off (unidentifiable) or a typed-in IP.
+  const [brandKnown, setBrandKnown] = useState(false);
+  const [brandOpen, setBrandOpen] = useState(false);
 
   const tvPoll = usePoll<Tv>(() => api.tv(settings), 15000, true, hostKey(settings));
   const active =
@@ -101,6 +125,9 @@ export function SmartTvSetup({ settings }: { settings: ConnSettings }) {
       ? tvPoll.data
       : null;
   const meta = BRANDS.find((b) => b.id === brand)!;
+  // Absent on agents predating the picker, so `?? []` keeps those boxes on the
+  // exact pre-picker rendering: one backend, no roster, nothing to choose.
+  const backends = tvPoll.data?.backends ?? [];
 
   // Feedback for a SETTLED outcome fires here rather than at each of the ten
   // setMsg call sites, so no future branch can forget it. In-flight narration
@@ -134,6 +161,41 @@ export function SmartTvSetup({ settings }: { settings: ConnSettings }) {
     [tvPoll],
   );
 
+  // Point the remote at one of several paired TVs. Before this the box resolved
+  // a TV by a fixed priority chain, so a second pairing succeeded and then drove
+  // nothing at all -- this switch is what makes the extra TV reachable.
+  const chooseBackend = useCallback(
+    async (id: string) => {
+      if (switching) return;
+      setSwitching(true);
+      setMsg({ ok: true, text: `Switching to ${backendLabel(id)}…` });
+      try {
+        const r = await api.tvSetActive(settings, id);
+        // The reply's `backend` is what RESOLVED, not what was asked for: a
+        // chosen TV whose config vanished falls back, and reporting the request
+        // as fact is exactly the lie the original priority-chain bug told.
+        const now = r.backend ?? id;
+        setMsg(
+          now === id
+            ? { ok: true, done: true, text: `Remote now drives ${backendLabel(id)}.` }
+            : {
+                ok: false,
+                done: true,
+                text: `${backendLabel(id)} is not available — still driving ${backendLabel(now)}.`,
+              },
+        );
+      } catch (e: unknown) {
+        setMsg({ ok: false, done: true, text: pairErr(e, `Could not switch to ${backendLabel(id)}.`) });
+      } finally {
+        setSwitching(false);
+        // Re-read regardless of outcome: the picker highlights the RESOLVED
+        // backend, so a rejected choice must not leave the row looking switched.
+        tvPoll.refresh();
+      }
+    },
+    [settings, switching, tvPoll],
+  );
+
   // "Scan for TVs": the box sweeps the LAN (mDNS + SSDP) and returns pairable
   // TVs, so the user taps one instead of typing an IP. A 404 = agent too old.
   const scan = useCallback(async () => {
@@ -163,6 +225,8 @@ export function SmartTvSetup({ settings }: { settings: ConnSettings }) {
   // Tap a discovered TV: prefill its brand + IP, then the normal pair flow runs.
   const pick = useCallback((tv: DiscoveredTv) => {
     setBrand(tv.brand);
+    setBrandKnown(true);
+    setBrandOpen(false);
     setHost(tv.host);
     setAwaitingCode(false);
     setCode('');
@@ -319,6 +383,38 @@ export function SmartTvSetup({ settings }: { settings: ConnSettings }) {
     }
   }, [code, mac, settings, connected]);
 
+  // Rendered in BOTH flow branches: a chip press is also the only way out of
+  // Android TV's step 2 (it clears awaitingCode), so hiding the selector during
+  // code entry would strand a user who picked the wrong brand.
+  const brandSelector =
+    brandKnown && !brandOpen ? (
+      <Pressable onPress={() => setBrandOpen(true)} style={styles.brandSummary}>
+        <Text style={styles.brandSummaryText}>TV type: {meta.label}</Text>
+        <Text style={styles.brandChange}>Change</Text>
+      </Pressable>
+    ) : (
+      <ScrollView
+        horizontal
+        showsHorizontalScrollIndicator={false}
+        contentContainerStyle={styles.segment}>
+        {BRANDS.map((b) => (
+          <Pressable
+            key={b.id}
+            onPress={() => {
+              setBrand(b.id);
+              setBrandKnown(true);
+              setBrandOpen(false);
+              setMsg(null);
+              setAwaitingCode(false);
+              setCode('');
+            }}
+            style={[styles.seg, brand === b.id && styles.segOn]}>
+            <Text style={[styles.segText, brand === b.id && styles.segTextOn]}>{b.label}</Text>
+          </Pressable>
+        ))}
+      </ScrollView>
+    );
+
   return (
     <View style={styles.card}>
       <Text style={styles.title}>Smart TV remote</Text>
@@ -335,31 +431,40 @@ export function SmartTvSetup({ settings }: { settings: ConnSettings }) {
         </View>
       ) : null}
 
-      <ScrollView
-        horizontal
-        showsHorizontalScrollIndicator={false}
-        contentContainerStyle={styles.segment}>
-        {BRANDS.map((b) => (
-          <Pressable
-            key={b.id}
-            onPress={() => {
-              setBrand(b.id);
-              setMsg(null);
-              setAwaitingCode(false);
-              setCode('');
-              // `blocked` deliberately survives a brand change: switching brand
-              // is how the user forces a device identify rejected, so clearing
-              // it here would take away the "pair anyway" button at the exact
-              // moment they reached for it.
-            }}
-            style={[styles.seg, brand === b.id && styles.segOn]}>
-            <Text style={[styles.segText, brand === b.id && styles.segTextOn]}>{b.label}</Text>
-          </Pressable>
-        ))}
-      </ScrollView>
+      {/* Only worth a row when there is an actual choice. One backend (or an
+          agent too old to report the roster) renders nothing here — a picker
+          over a single TV is noise. Selection tracks the RESOLVED backend, so a
+          fallback shows as itself rather than as whatever was last tapped. */}
+      {backends.length > 1 ? (
+        <View style={styles.pickerBlock}>
+          <Text style={styles.pickerLabel}>Remote drives</Text>
+          <ScrollView
+            horizontal
+            showsHorizontalScrollIndicator={false}
+            contentContainerStyle={styles.segment}>
+            {backends.map((b) => (
+              <Pressable
+                key={b}
+                onPress={() => chooseBackend(b)}
+                disabled={switching}
+                style={[
+                  styles.seg,
+                  tvPoll.data?.backend === b && styles.segOn,
+                  switching && styles.buttonBusy,
+                ]}>
+                <Text
+                  style={[styles.segText, tvPoll.data?.backend === b && styles.segTextOn]}>
+                  {backendLabel(b)}
+                </Text>
+              </Pressable>
+            ))}
+          </ScrollView>
+        </View>
+      ) : null}
 
       {awaitingCode ? (
         <>
+          {brandSelector}
           <TextInput
             value={code}
             onChangeText={(v) => setCode(v.replace(/[^0-9A-Fa-f]/g, '').slice(0, 6))}
@@ -428,6 +533,11 @@ export function SmartTvSetup({ settings }: { settings: ConnSettings }) {
             editable={!busy}
             style={styles.input}
           />
+          {/* Demoted below Scan and the IP field: discovery already answers this
+              for any TV that is on, so leading with it asked the user a question
+              the app had. It stays reachable for a TV that is off (nothing to
+              identify) and for a hand-typed IP. */}
+          {brandSelector}
           {meta.needsMac ? (
             <TextInput
               value={mac}
@@ -535,6 +645,21 @@ const makeStyles = (t: Palette) => StyleSheet.create({
     paddingHorizontal: 12,
   },
   activeText: { color: t.text, fontSize: 13, fontWeight: '600', flexShrink: 1 },
+  pickerBlock: { gap: 6 },
+  pickerLabel: { color: t.textDim, fontSize: 12, fontWeight: '700' },
+  brandSummary: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    gap: 8,
+    backgroundColor: t.inset,
+    borderRadius: 10,
+    paddingVertical: 10,
+    paddingHorizontal: 12,
+    minHeight: 44,
+  },
+  brandSummaryText: { color: t.text, fontSize: 13, fontWeight: '600', flexShrink: 1 },
+  brandChange: { color: t.blue, fontSize: 13, fontWeight: '700' },
   segment: {
     flexDirection: 'row',
     backgroundColor: t.inset,
