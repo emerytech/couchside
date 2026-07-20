@@ -3,13 +3,13 @@ import React from 'react';
 import { AppState, AppStateStatus, Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
 
 import { Gated } from '@/components/Gated';
-import { Sparkline } from '@/components/Sparkline';
 import { TabScreen } from '@/components/TabScreen';
 import { useFocusEffect } from 'expo-router';
 import { useLockOrientation } from '@/hooks/useLockOrientation';
 import { api, Status } from '@/lib/api';
 import { usePref } from '@/lib/prefs';
 import { Box } from '@/lib/settings';
+import { useSkinKit, VitalsContext, vitality } from '@/lib/skin';
 import { useBoxes } from '@/lib/SettingsContext';
 import { mono, numeric, pctColor, tempColor, useTheme, useThemedStyles } from '@/lib/theme';
 import type { Palette } from '@/lib/theme';
@@ -139,69 +139,78 @@ function fmtLastSeen(ts: number | null): string {
   return `${Math.floor(m / 60)}h ${m % 60}m ago`;
 }
 
-function Tile({ box, entry, active, onPress }: {
+function Tile({ box, entry, active, index, onPress }: {
   box: Box;
   entry: FleetEntry | undefined;
   active: boolean;
+  index: number;
   onPress: () => void;
 }) {
   const t = useTheme();
   const styles = useThemedStyles(makeStyles);
+  const { Card, Dot, Spark } = useSkinKit();
   const s = entry?.status ?? null;
   const up = entry != null && entry.error == null && s != null;
   const memPct = s ? Math.round((s.mem.used_mb / s.mem.total_mb) * 100) : 0;
 
-  return (
-    <Pressable
-      onPress={onPress}
-      style={({ pressed }) => [
-        styles.tile,
-        active && styles.tileActive,
-        !up && entry != null && styles.tileDown,
-        pressed && styles.pressed,
-      ]}>
-      <View style={styles.tileHeader}>
-        <View style={[styles.dot, { backgroundColor: up ? t.green : t.red }]} />
-        <Text style={styles.tileName} numberOfLines={1}>
-          {s?.hostname ?? box.name}
-        </Text>
-        {active && <Text style={styles.activeTag}>active</Text>}
-      </View>
-      <Text style={styles.tileHost} numberOfLines={1}>
-        {box.host}:{box.port}
-      </Text>
+  // Each tile carries its OWN vitals: one box idling next to one under load
+  // should visibly differ. A box that is down is not alive, whatever it last
+  // reported.
+  const vitals = React.useMemo(
+    () => ({ v: up ? vitality(s?.load?.[0], s?.cpu_temp_c) : 0, alive: up }),
+    [up, s?.load, s?.cpu_temp_c],
+  );
 
-      {up && s ? (
-        <>
-          <View style={styles.metricsRow}>
-            <View style={styles.metric}>
-              <Text style={styles.metricLabel}>TEMP</Text>
-              <Text style={[styles.metricValue, { color: tempColor(s.cpu_temp_c, t) }]}>
-                {s.cpu_temp_c != null ? `${Math.round(s.cpu_temp_c)}°` : '—'}
-              </Text>
-            </View>
-            <View style={styles.metric}>
-              <Text style={styles.metricLabel}>LOAD</Text>
-              <Text style={[styles.metricValue, { color: t.text }]}>
-                {s.load[0].toFixed(2)}
-              </Text>
-            </View>
-            <View style={styles.metric}>
-              <Text style={styles.metricLabel}>MEM</Text>
-              <Text style={[styles.metricValue, { color: pctColor(memPct, t) }]}>{memPct}%</Text>
-            </View>
-          </View>
-          {/* Load trend, indented to align with the metrics row. */}
-          <View style={styles.sparkWrap}>
-            <Sparkline values={s.history?.load} color={t.blue} height={16} />
-          </View>
-        </>
-      ) : (
-        <Text style={styles.downText}>
-          {entry == null ? 'probing…' : `DOWN · last seen ${fmtLastSeen(entry.lastSuccess)}`}
+  return (
+    <VitalsContext.Provider value={vitals}>
+      <Card
+        onPress={onPress}
+        selected={active}
+        index={index}
+        tone={!up && entry != null ? 'down' : 'default'}>
+        <View style={styles.tileHeader}>
+          <Dot color={up ? t.green : t.red} size={9} live={up} />
+          <Text style={styles.tileName} numberOfLines={1}>
+            {s?.hostname ?? box.name}
+          </Text>
+          {active && <Text style={styles.activeTag}>active</Text>}
+        </View>
+        <Text style={styles.tileHost} numberOfLines={1}>
+          {box.host}:{box.port}
         </Text>
-      )}
-    </Pressable>
+
+        {up && s ? (
+          <>
+            <View style={styles.metricsRow}>
+              <View style={styles.metric}>
+                <Text style={styles.metricLabel}>TEMP</Text>
+                <Text style={[styles.metricValue, { color: tempColor(s.cpu_temp_c, t) }]}>
+                  {s.cpu_temp_c != null ? `${Math.round(s.cpu_temp_c)}°` : '—'}
+                </Text>
+              </View>
+              <View style={styles.metric}>
+                <Text style={styles.metricLabel}>LOAD</Text>
+                <Text style={[styles.metricValue, { color: t.text }]}>
+                  {s.load[0].toFixed(2)}
+                </Text>
+              </View>
+              <View style={styles.metric}>
+                <Text style={styles.metricLabel}>MEM</Text>
+                <Text style={[styles.metricValue, { color: pctColor(memPct, t) }]}>{memPct}%</Text>
+              </View>
+            </View>
+            {/* Load trend, indented to align with the metrics row. */}
+            <View style={styles.sparkWrap}>
+              <Spark values={s.history?.load} color={t.blue} height={16} />
+            </View>
+          </>
+        ) : (
+          <Text style={styles.downText}>
+            {entry == null ? 'probing…' : `DOWN · last seen ${fmtLastSeen(entry.lastSuccess)}`}
+          </Text>
+        )}
+      </Card>
+    </VitalsContext.Provider>
   );
 }
 
@@ -221,26 +230,30 @@ function FleetScreen() {
   const statusInterval = usePref('statusIntervalMs');
   const fleet = useFleetStatus(boxes, statusInterval);
   const styles = useThemedStyles(makeStyles);
+  const { Screen, SectionTitle } = useSkinKit();
 
   return (
     <ScrollView
       style={styles.scroll}
       contentContainerStyle={{ paddingTop: 12, paddingBottom: 32, paddingHorizontal: 14 }}>
-      <Text style={styles.sectionTitle}>YOUR FLEET</Text>
-      {boxes.map((box) => (
-        <Tile
-          key={box.id}
-          box={box}
-          entry={fleet[box.id]}
-          active={box.id === activeBoxId}
-          onPress={() => {
-            switchBox(box.id);
-            // Land on the box's Console; a box whose gaming tabs are hidden
-            // still always has Console.
-            router.replace('/(tabs)');
-          }}
-        />
-      ))}
+      <Screen>
+        <SectionTitle>YOUR FLEET</SectionTitle>
+        {boxes.map((box, i) => (
+          <Tile
+            key={box.id}
+            box={box}
+            entry={fleet[box.id]}
+            active={box.id === activeBoxId}
+            index={i}
+            onPress={() => {
+              switchBox(box.id);
+              // Land on the box's Console; a box whose gaming tabs are hidden
+              // still always has Console.
+              router.replace('/(tabs)');
+            }}
+          />
+        ))}
+      </Screen>
     </ScrollView>
   );
 }

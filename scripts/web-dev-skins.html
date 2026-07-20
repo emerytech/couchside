@@ -1,0 +1,135 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>Couchside — skin comparison</title>
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<style>
+  :root { color-scheme: dark; }
+  body {
+    margin: 0; padding: 28px 22px 60px;
+    background: #0b1220; color: #e5ecf8;
+    font: 15px/1.5 ui-monospace, Menlo, monospace;
+  }
+  h1 { font-size: 17px; letter-spacing: 2px; margin: 0 0 4px; }
+  p  { color: #8b97ad; margin: 0 0 22px; max-width: 640px; font-size: 13px; }
+  .grid { display: grid; gap: 14px; max-width: 640px; }
+  .row {
+    border: 1px solid #1e2942; border-radius: 12px;
+    background: #141c2e; padding: 14px 16px;
+  }
+  .name { font-weight: 700; font-size: 15px; margin-bottom: 3px; }
+  .desc { color: #8b97ad; font-size: 12px; margin-bottom: 11px; }
+  a {
+    display: inline-block; margin: 0 7px 7px 0; padding: 7px 12px;
+    border: 1px solid #2b3a5c; border-radius: 8px;
+    color: #60a5fa; text-decoration: none; font-size: 12px;
+  }
+  a:hover { background: #0e1526; }
+  a.alt { color: #8b97ad; }
+  .note { color: #5b6780; font-size: 11px; margin-top: 26px; max-width: 640px; }
+  code { color: #fbbf24; }
+  .health {
+    max-width: 640px; margin: 0 0 20px; padding: 9px 12px;
+    border-radius: 8px; font-size: 12px; border: 1px solid #1e2942; color: #8b97ad;
+  }
+  .health.ok   { border-color: #14532d; color: #34d399; }
+  .health.bad  { border-color: #7f1d1d; color: #f87171; }
+</style>
+
+<h1>COUCHSIDE — SKIN COMPARISON</h1>
+<div id="health" class="health">checking the mock agent…</div>
+<p>
+  This page pairs your browser with the mock agent, then hands off to the app.
+  Open a direction, then use the Console and Fleet tabs. Motion matters here —
+  the cards breathe, and that is the whole point — so give each one a few
+  seconds rather than judging the first frame.
+</p>
+
+<div class="grid" id="grid"></div>
+
+<p class="note">
+  <b>Reduced motion:</b> the “still” links force the same code path a
+  reduced-motion user gets — everything settled, no animation. Useful for
+  judging layout, useless for judging feel.<br><br>
+  <b>Not yet converted:</b> the Now&nbsp;Playing, Streaming&nbsp;To and Gaming
+  cards are separate components that don’t use the skin seam yet, so they still
+  look stock in every direction. They get converted once you pick one.
+</p>
+
+<script>
+  // Pair this browser with the running mock agent. Same origin, so the proxy
+  // forwards /api and no CORS is involved.
+  var PORT = location.port || '8099';
+  // The mock agent mints a fresh token per web-dev.sh run. This page is written
+  // with the token of the run that created it; ?token=... overrides it so a
+  // restarted harness doesn't mean editing this file.
+  var TOKEN = new URLSearchParams(location.search).get('token') || 'web-dev-11912';
+
+  localStorage.setItem('couchpilot.boxes.v1', JSON.stringify({
+    boxes: [{
+      id: 'web-dev', name: 'mock box', host: '127.0.0.1',
+      port: Number(PORT), token: TOKEN, padMode: 'trackpad'
+    }],
+    activeBoxId: 'web-dev'
+  }));
+
+  // Fail loudly rather than handing off to an app that will just say
+  // "No box configured" with no explanation.
+  (function () {
+    var el = document.getElementById('health');
+    fetch('/api/status', { headers: { Authorization: 'Bearer ' + TOKEN } })
+      .then(function (r) {
+        if (r.ok) {
+          el.className = 'health ok';
+          el.textContent = 'mock agent OK on port ' + PORT + ' — paired, token ' + TOKEN;
+        } else {
+          el.className = 'health bad';
+          el.textContent =
+            'mock agent answered ' + r.status + '. The token is probably stale (this page has ' +
+            TOKEN + '). Re-run scripts/web-dev.sh, then open this page with ?token=THE_NEW_TOKEN.';
+        }
+      })
+      .catch(function () {
+        el.className = 'health bad';
+        el.textContent =
+          'no mock agent on port ' + PORT + '. Start it with: scripts/web-dev.sh ' + PORT;
+      });
+  })();
+
+  var SKINS = [
+    ['hud',     'HUD / Terminal Deck',
+     'Corner brackets, title notches, scanlines, backdrop grid, reticle dots. Structure carries it — reads cyberpunk even with colour removed.'],
+    ['reactor', 'Reactor / Neon Core',
+     'Severity-driven glow, pulsing core dots, a highlight sweeping the bars, slow diagonal hum. The loudest one.'],
+    ['vitals',  'Vitals / Life Support',
+     'Quiet and biological. Breathing tied to real load, count-up numbers, easing bars. Looks almost like Classic frozen — you have to watch it.'],
+    ['classic', 'Classic (control)',
+     'Today’s shipped look, unchanged. Here so you can A/B against it.']
+  ];
+
+  function setTheme(mode) {
+    localStorage.setItem('couchside.theme.v1', JSON.stringify({ mode: mode, accent: 'blue' }));
+  }
+
+  var grid = document.getElementById('grid');
+  SKINS.forEach(function (s) {
+    var key = s[0], name = s[1], desc = s[2];
+    var el = document.createElement('div');
+    el.className = 'row';
+    el.innerHTML =
+      '<div class="name">' + name + '</div><div class="desc">' + desc + '</div>';
+
+    [['Console', '/?skin=' + key, 'dark'],
+     ['Fleet', '/fleet?skin=' + key, 'dark'],
+     ['Console · light', '/?skin=' + key, 'light'],
+     ['Console · still', '/?skin=' + key + '&motion=off', 'dark']]
+    .forEach(function (l, i) {
+      var a = document.createElement('a');
+      a.textContent = l[0];
+      if (i >= 2) a.className = 'alt';
+      a.href = l[1];
+      a.addEventListener('click', function () { setTheme(l[2]); });
+      el.appendChild(a);
+    });
+    grid.appendChild(el);
+  });
+</script>

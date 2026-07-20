@@ -13,6 +13,7 @@ import { Image, StyleSheet, Text, View } from 'react-native';
 
 import { usePoll } from '@/hooks/usePoll';
 import { api, Gaming, hostKey } from '@/lib/api';
+import { useSkinKit } from '@/lib/skin';
 import { useSettings } from '@/lib/SettingsContext';
 import { mono, pctColor, tempColor, useTheme, useThemedStyles, type Palette } from '@/lib/theme';
 
@@ -55,6 +56,7 @@ function GameCover({ appid, label }: { appid: number; label?: string }) {
 export function GamingCard() {
   const t = useTheme();
   const styles = useThemedStyles(makeStyles);
+  const { Card, Bar } = useSkinKit();
   const { settings, ready } = useSettings();
   const configured = !!settings.host && !!settings.token;
 
@@ -79,7 +81,7 @@ export function GamingCard() {
   const inGameMode = g.session === 'gamescope';
 
   return (
-    <View style={styles.card}>
+    <Card index={2}>
       <View style={styles.header}>
         <Text style={styles.cardTitle}>GAMING</Text>
         <View style={[styles.sessionPill, inGameMode && styles.sessionPillOn]}>
@@ -114,14 +116,7 @@ export function GamingCard() {
                 </Text>
                 <Text style={[styles.dim, { color: pctColor(vramPct, t) }]}>{vramPct}%</Text>
               </View>
-              <View style={styles.barTrack}>
-                <View
-                  style={[
-                    styles.barFill,
-                    { width: `${Math.min(100, vramPct)}%`, backgroundColor: pctColor(vramPct, t) },
-                  ]}
-                />
-              </View>
+              <Bar pct={vramPct} color={pctColor(vramPct, t)} height={6} />
             </>
           )}
         </View>
@@ -153,7 +148,7 @@ export function GamingCard() {
           )}
         </View>
       ))}
-    </View>
+    </Card>
   );
 }
 
