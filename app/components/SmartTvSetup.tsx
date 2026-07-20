@@ -1,5 +1,5 @@
 import Ionicons from '@expo/vector-icons/Ionicons';
-import React, { useCallback, useState } from 'react';
+import React, { useCallback, useEffect, useState } from 'react';
 import {
   ActivityIndicator,
   Pressable,
@@ -12,6 +12,7 @@ import {
 
 import { usePoll } from '@/hooks/usePoll';
 import { api, ApiError, ConnSettings, DiscoveredTv, hostKey, Tv, TvPairResult } from '@/lib/api';
+import { hapticError, hapticSuccess } from '@/lib/haptics';
 import { normalizeMac } from '@/lib/settings';
 import { useTheme, useThemedStyles, type Palette } from '@/lib/theme';
 
@@ -61,7 +62,11 @@ export function SmartTvSetup({ settings }: { settings: ConnSettings }) {
   const [code, setCode] = useState('');
   const [awaitingCode, setAwaitingCode] = useState(false); // androidtv step 2
   const [busy, setBusy] = useState(false);
-  const [msg, setMsg] = useState<{ ok: boolean; text: string } | null>(null);
+  // `done` separates a SETTLED outcome (success/failure -- gets colour, an icon
+  // and a haptic) from in-flight narration like "Waiting for you to accept on
+  // the TV…", which should stay quiet grey. Without that split every message
+  // rendered the same dim grey as the static hint copy below it.
+  const [msg, setMsg] = useState<{ ok: boolean; text: string; done?: boolean } | null>(null);
   const [scanning, setScanning] = useState(false);
   const [found, setFound] = useState<DiscoveredTv[] | null>(null);
 
@@ -72,16 +77,32 @@ export function SmartTvSetup({ settings }: { settings: ConnSettings }) {
       : null;
   const meta = BRANDS.find((b) => b.id === brand)!;
 
+  // Feedback for a SETTLED outcome fires here rather than at each of the ten
+  // setMsg call sites, so no future branch can forget it. In-flight narration
+  // (msg.done falsy) stays silent -- buzzing on "Waiting for you to accept on
+  // the TV…" would be noise, not signal.
+  useEffect(() => {
+    if (!msg?.done) return;
+    if (msg.ok) hapticSuccess();
+    else hapticError();
+  }, [msg]);
+
   const connected = useCallback(
     (r: TvPairResult) => {
-      setMsg({ ok: true, text: r.name ? `Connected: ${r.name}` : `Connected to ${meta.label}.` });
+      setMsg({ ok: true, done: true, text: r.name ? `Connected: ${r.name}` : `Connected to ${meta.label}.` });
       setHost('');
       setMac('');
       setCode('');
       setAwaitingCode(false);
       setFound(null);
+      // Pull the TV state NOW instead of waiting out the 15s poll. That poll
+      // drives the persistent "Connected: <adapter>" row at the top of the
+      // card, which is the durable confirmation -- the transient message
+      // scrolls away, and a card that still looks unpaired for another 14
+      // seconds is why a successful pairing read as no feedback at all.
+      tvPoll.refresh();
     },
-    [meta],
+    [meta, tvPoll],
   );
 
   // "Scan for TVs": the box sweeps the LAN (mDNS + SSDP) and returns pairable
@@ -93,12 +114,13 @@ export function SmartTvSetup({ settings }: { settings: ConnSettings }) {
       const r = await api.tvDiscover(settings);
       setFound(r.tvs);
       if (r.tvs.length === 0) {
-        setMsg({ ok: false, text: 'No TVs found on the network — enter the IP below.' });
+        setMsg({ ok: false, done: true, text: 'No TVs found on the network — enter the IP below.' });
       }
     } catch (e: unknown) {
       setFound([]);
       setMsg({
         ok: false,
+        done: true,
         text:
           e instanceof ApiError && e.kind === 'http' && e.status === 404
             ? 'This box’s Couchside service is too old to scan — update it, or enter the IP below.'
@@ -121,7 +143,7 @@ export function SmartTvSetup({ settings }: { settings: ConnSettings }) {
   const submit = useCallback(async () => {
     const h = host.trim();
     if (!h) {
-      setMsg({ ok: false, text: 'Enter the TV’s IP address.' });
+      setMsg({ ok: false, done: true, text: 'Enter the TV’s IP address.' });
       return;
     }
     setBusy(true);
@@ -135,7 +157,7 @@ export function SmartTvSetup({ settings }: { settings: ConnSettings }) {
           setAwaitingCode(true);
           setMsg({ ok: true, text: 'Enter the 6-digit code now showing on the TV.' });
         } else {
-          setMsg({ ok: false, text: r.error ?? 'Could not start pairing.' });
+          setMsg({ ok: false, done: true, text: r.error ?? 'Could not start pairing.' });
         }
         return;
       }
@@ -152,9 +174,9 @@ export function SmartTvSetup({ settings }: { settings: ConnSettings }) {
       else if (brand === 'vidaa') r = await api.tvAddVidaa(settings, h, m);
       else r = await api.tvAddRoku(settings, h);
       if (r.ok) connected(r);
-      else setMsg({ ok: false, text: r.error ?? 'Could not connect to the TV.' });
+      else setMsg({ ok: false, done: true, text: r.error ?? 'Could not connect to the TV.' });
     } catch (e: unknown) {
-      setMsg({ ok: false, text: pairErr(e, 'Could not reach the box or TV. Check the IP and try again.') });
+      setMsg({ ok: false, done: true, text: pairErr(e, 'Could not reach the box or TV. Check the IP and try again.') });
     } finally {
       setBusy(false);
     }
@@ -163,7 +185,7 @@ export function SmartTvSetup({ settings }: { settings: ConnSettings }) {
   const finishAndroidtv = useCallback(async () => {
     const c = code.trim();
     if (c.length !== 6) {
-      setMsg({ ok: false, text: 'Enter the 6-digit code from the TV.' });
+      setMsg({ ok: false, done: true, text: 'Enter the 6-digit code from the TV.' });
       return;
     }
     setBusy(true);
@@ -172,9 +194,9 @@ export function SmartTvSetup({ settings }: { settings: ConnSettings }) {
       const m = mac.trim() ? normalizeMac(mac.trim()) ?? undefined : undefined;
       const r = await api.tvAndroidtvPairFinish(settings, c, m);
       if (r.ok) connected(r);
-      else setMsg({ ok: false, text: r.error ?? 'Pairing failed — check the code and retry.' });
+      else setMsg({ ok: false, done: true, text: r.error ?? 'Pairing failed — check the code and retry.' });
     } catch (e: unknown) {
-      setMsg({ ok: false, text: pairErr(e, 'Could not reach the box. Try again.') });
+      setMsg({ ok: false, done: true, text: pairErr(e, 'Could not reach the box. Try again.') });
     } finally {
       setBusy(false);
     }
@@ -308,8 +330,32 @@ export function SmartTvSetup({ settings }: { settings: ConnSettings }) {
         </>
       )}
 
+      {/* Success used to render in t.textDim -- the same grey as the static
+          hint copy directly below it, so "Connected to LG." read as one more
+          instruction and a real pairing looked like nothing had happened
+          (reported from the field: "it didn't let me know it paired at all; I
+          had to go to the Pad tab and test it"). Only failure was styled as a
+          signal. A settled outcome now gets colour and an icon; the in-flight
+          "waiting for you to accept" step stays quiet grey, because that one
+          IS just narration. */}
       {msg ? (
-        <Text style={[styles.msg, { color: msg.ok ? t.textDim : t.red }]}>{msg.text}</Text>
+        <View style={styles.msgRow}>
+          {msg.done ? (
+            <Ionicons
+              name={msg.ok ? 'checkmark-circle' : 'alert-circle'}
+              size={16}
+              color={msg.ok ? t.green : t.red}
+            />
+          ) : null}
+          <Text
+            style={[
+              styles.msg,
+              { color: !msg.done ? t.textDim : msg.ok ? t.green : t.red },
+              msg.done && styles.msgDone,
+            ]}>
+            {msg.text}
+          </Text>
+        </View>
       ) : null}
 
       <Text style={styles.hint}>
@@ -405,6 +451,8 @@ const makeStyles = (t: Palette) => StyleSheet.create({
   foundText: { flex: 1 },
   foundName: { color: t.text, fontSize: 14, fontWeight: '700' },
   foundMeta: { color: t.textDim, fontSize: 12, marginTop: 1 },
-  msg: { fontSize: 13, lineHeight: 18 },
+  msgRow: { flexDirection: 'row', alignItems: 'flex-start', gap: 6, marginTop: 2 },
+  msg: { fontSize: 13, lineHeight: 18, flex: 1 },
+  msgDone: { fontSize: 14, fontWeight: '600', lineHeight: 19 },
   hint: { color: t.textFaint, fontSize: 12, lineHeight: 16 },
 });
