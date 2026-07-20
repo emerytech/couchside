@@ -608,6 +608,22 @@ export type Tv = {
    * other backend, which keep the manual text button unchanged.
    */
   text_focus_push?: boolean;
+  /**
+   * Every backend this box can actually drive (agent >= 2.9.13), which the app
+   * lists as a TV picker. Older agents resolved exactly one backend by a fixed
+   * priority chain and sent no roster — that chain is why pairing a second TV
+   * reported success and then drove nothing. Kept as plain strings so a backend
+   * added agent-side later renders (by id) instead of being mistyped.
+   */
+  backends?: string[];
+  /**
+   * The user's stored choice, or null meaning "fall back to the priority
+   * chain" (agent >= 2.9.13). NOT the same as `backend`: the agent re-validates
+   * the choice against live availability every call, so a chosen TV whose
+   * config vanished falls back. `backend` is the one actually driving — show
+   * that one as the truth.
+   */
+  tv_active?: string | null;
   /** Current box OS volume 0-100 (agent >= 2.7.0), or null when unreadable. */
   box_volume_level?: number | null;
   /**
@@ -1299,6 +1315,26 @@ export const api = {
    */
   tv(settings: ConnSettings): Promise<Tv> {
     return request<Tv>(settings, '/api/tv');
+  },
+
+  /**
+   * Choose WHICH paired TV drives the remote (agent >= 2.9.13); `null` clears
+   * the choice and restores the priority chain. The agent rejects a backend the
+   * box cannot drive with a 400 ("backend not available on this box") rather
+   * than storing an unusable choice, so the ApiError message is worth showing.
+   * The reply's `backend` is the RESOLVED one and can differ from the requested
+   * `tv_active` — a chosen TV whose config vanished falls back.
+   */
+  tvSetActive(
+    settings: ConnSettings,
+    backend: string | null,
+  ): Promise<{ ok: boolean; tv_active?: string | null; backend?: TvBackend; backends?: string[] }> {
+    return request<{ ok: boolean; tv_active?: string | null; backend?: TvBackend; backends?: string[] }>(
+      settings, '/api/tv/active', {
+        method: 'POST',
+        timeoutMs: 12000,
+        body: { backend },
+      });
   },
 
   /**

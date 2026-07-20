@@ -224,6 +224,12 @@ CONFIG_VIDAA = None  # optional {"host","name","mac"} Hisense VIDAA (MQTT) confi
 # optional {"host","name"} LG COMMERCIAL/signage panel (TCP 9761, no pairing).
 # Distinct from CONFIG_WEBOS: these panels do not speak consumer webOS at all.
 CONFIG_LGCOM = None
+# The brand the user explicitly chose to drive, or None to fall back to the
+# priority chain in _tv_hw_backend(). Without this a second paired TV was
+# UNREACHABLE: the chain returns exactly one backend, so pairing e.g. a Google
+# TV on a box that already had an LG reported success and then did nothing,
+# because webos outranks androidtv and kept winning silently.
+CONFIG_TV_ACTIVE = None
 # Guide-button hold -> Couch Mode. OFF BY DEFAULT: a false positive yanks the
 # user out of their desktop session mid-work. "uniq" optionally pins the trigger
 # to ONE pad, keyed on the evdev U: Uniq field (the pad's OWN MAC) because BT
@@ -572,7 +578,7 @@ def load_config(path):
     global WATCHLIST, WATCHLIST_NAMES, ACTIONS, ACTION_ORDER, CONFIG_PORT
     global LAUNCHERS, CONFIG_PATH, CONFIG_PANEL, CONFIG_WEBOS, CONFIG_SAMSUNG
     global CONFIG_ROKU, CONFIG_ANDROIDTV, CONFIG_VIDAA, ALLOW_APP_UPDATE
-    global CONFIG_LGCOM
+    global CONFIG_LGCOM, CONFIG_TV_ACTIVE
     global ALLOW_APP_LAUNCHERS, CONFIG_GUIDE
     CONFIG_PATH = path  # remembered so launcher POST/DELETE can rewrite it
     try:
@@ -606,6 +612,8 @@ def load_config(path):
     CONFIG_ANDROIDTV = androidtv
     CONFIG_VIDAA = vidaa
     CONFIG_LGCOM = lgcom
+    active = raw.get("tv_active")
+    CONFIG_TV_ACTIVE = active if isinstance(active, str) and active else None
     CONFIG_GUIDE = guide
     print("config loaded from %s: %d units, %d actions, %d launchers"
           % (path, len(WATCHLIST), len(ACTIONS), len(LAUNCHERS)), flush=True)
@@ -4850,6 +4858,7 @@ def _webos_save(host, client_key, mac=None):
                 pass
             raise
         CONFIG_WEBOS = cfg
+    set_tv_active("webos")
 
 
 # ---- shared helpers for the network TV backends ---------------------------
@@ -4874,6 +4883,20 @@ def _wol_send(mac):
         return _webos_result(start, True, "wol -> %s" % mac)
     except (ValueError, OSError) as e:
         return _webos_result(start, False, "wol failed: %s" % e)
+
+
+def set_tv_active(brand):
+    """Persist which paired TV the box should drive. None clears the choice and
+    restores the priority chain.
+
+    Called on every successful pair as well as from the picker: pairing a TV is
+    an unambiguous statement that you want to use it, and without this a second
+    paired TV stayed silently unreachable behind a higher-priority brand."""
+    global CONFIG_TV_ACTIVE
+    with CONFIG_LOCK:
+        _config_set_field("tv_active", brand)
+        CONFIG_TV_ACTIVE = brand
+    return brand
 
 
 def _config_set_field(field, value):
@@ -5090,6 +5113,7 @@ def _samsung_save(host, token, mac=None):
     with CONFIG_LOCK:
         _config_set_field("samsung", cfg)
         CONFIG_SAMSUNG = cfg
+    set_tv_active("samsung")
 
 
 # ---- Roku backend (ECP over plain HTTP) -----------------------------------
@@ -5222,6 +5246,7 @@ def _roku_save(host, name):
     with CONFIG_LOCK:
         _config_set_field("roku", cfg)
         CONFIG_ROKU = cfg
+    set_tv_active("roku")
 
 
 # ---- Android TV / Google TV backend (Remote v2, protobuf over TLS) --------
@@ -5498,6 +5523,7 @@ def _androidtv_save(host, cert_pem, key_pem, name=None, mac=None):
     with CONFIG_LOCK:
         _config_set_field("androidtv", cfg)
         CONFIG_ANDROIDTV = cfg
+    set_tv_active("androidtv")
 
 
 # -- persistent remote session (keepalive) --
@@ -5799,6 +5825,7 @@ def _vidaa_save(host, name=None, mac=None):
     with CONFIG_LOCK:
         _config_set_field("vidaa", cfg)
         CONFIG_VIDAA = cfg
+    set_tv_active("vidaa")
 
 
 # ---- LAN TV discovery (mDNS + SSDP sweep) ---------------------------------
@@ -6385,11 +6412,46 @@ def set_tv(mock):
     set_soft(mock)
 
 
+def _probe_ok(fn):
+    """True if an availability probe says yes. Probes touch config, sockets and
+    serial ports, so any of them can raise; a backend that errors is simply not
+    available. (set_caps has its own local `safe` for the same reason -- this is
+    the module-level equivalent, needed because _tv_hw_backend runs per request.)"""
+    try:
+        return bool(fn())
+    except Exception:
+        return False
+
+
+# brand -> availability probe, in the order the chain falls back through.
+def _tv_backend_probes():
+    return [("panel", panel_available), ("webos", webos_available),
+            ("samsung", samsung_available), ("androidtv", androidtv_available),
+            ("roku", roku_available), ("vidaa", vidaa_available),
+            ("lgcom", lgcom_available), ("cec", cec_available)]
+
+
+def tv_backends_available():
+    """Every controllable backend on this box, newest-choice first. The app
+    lists these so the user can pick WHICH paired TV to drive."""
+    return [name for name, probe in _tv_backend_probes() if _probe_ok(probe)]
+
+
 def _tv_hw_backend():
-    """The external TV backend for power (and TV volume, when chosen): the serial
+    """The external TV backend for power (and TV volume, when chosen).
+
+    An explicit user choice (config `tv_active`) wins, so a box with several
+    paired TVs drives the one the user picked. It is validated against live
+    availability every call rather than trusted: a chosen TV whose config was
+    removed must fall back instead of leaving the box with no working remote.
+
+    With no choice recorded, the historical priority chain applies: the serial
     panel first (it can power on from standby), then a paired webOS TV (explicit
-    config + a strict superset of CEC), then CEC. None when none exist. Kept
-    separate from box volume, which the soft backend handles."""
+    config + a strict superset of CEC), then CEC."""
+    if CONFIG_TV_ACTIVE:
+        for name, probe in _tv_backend_probes():
+            if name == CONFIG_TV_ACTIVE and _probe_ok(probe):
+                return name
     if panel_available():
         return "panel"
     if webos_available():
@@ -6418,6 +6480,10 @@ def tv_info():
     box_vol = soft_available()
     if hw is None and not box_vol:
         return None
+    # The roster the app's TV picker lists, plus what is actually driving now.
+    # `active` is the RESOLVED backend, not the stored preference: a chosen TV
+    # whose config vanished falls back, and the UI must show what is true.
+    backends = tv_backends_available()
     if hw == "panel":
         backend, adapter = "panel", "Newline RS-232 (%s @ %d)" % (
             PANEL["device"], PANEL["baud"])
@@ -6453,6 +6519,11 @@ def tv_info():
         "available": True,
         "backend": backend,
         "adapter": adapter,
+        # Every controllable backend on this box, and the user's stored choice.
+        # The app lists `backends` as a TV picker; older apps ignore both fields
+        # and keep seeing exactly the single `backend` they always did.
+        "backends": backends,
+        "tv_active": CONFIG_TV_ACTIVE,
         "ops": list(TV_OPS),
         "box_volume": box_vol,
         "tv_volume": hw is not None,
@@ -9194,6 +9265,30 @@ def mock_stream_host():
             "client": "macOS", "since": int(time.time()) - 725}
 
 
+def mock_tv():
+    """A box with TWO paired TVs, so the app's TV picker is reachable in the
+    web harness.
+
+    /api/tv had no mock branch, so under --mock it ran the real tv_info()
+    against the dev machine, found no backend and 404'd. That made the
+    multi-TV picker -- which only renders at 2+ backends -- impossible to
+    exercise anywhere except a box with two TVs physically paired, which is
+    exactly the state that is hardest to arrange and easiest to ship broken."""
+    return {
+        "available": True,
+        "backend": "webos",
+        "adapter": "LG webOS (10.7.0.205)",
+        "backends": ["webos", "androidtv"],
+        "tv_active": "webos",
+        "ops": ["power_on", "power_off", "volume_up", "volume_down", "mute"],
+        "box_volume": True, "tv_volume": True, "tv_power": True,
+        "source_box": False, "sources": [], "screen_toggle": False,
+        "keys": True, "source_key": False, "text": True,
+        "text_focus_push": True, "muted": False,
+        "box_volume_level": 70, "tv_volume_level": None,
+    }
+
+
 def mock_steamlink():
     """Stream hosts in EVERY liveness state at once.
 
@@ -10188,7 +10283,7 @@ class Handler(BaseHTTPRequestHandler):
             elif path == "/api/tv":
                 # Probe-and-appear: 404 when no TV backend so the app shows no
                 # TV strip; a body only when a backend is live.
-                info = tv_info()
+                info = mock_tv() if self.mock else tv_info()
                 if info is None:
                     self._send(404, {"error": "not found"}, started)
                 else:
@@ -10705,6 +10800,41 @@ class Handler(BaseHTTPRequestHandler):
                 self._send(200, {"ok": True, "backend": "lgcom", "host": host,
                                  "status": st}, started)
                 return
+            if path == "/api/tv/active":
+                # Pick WHICH paired TV drives the remote. The priority chain
+                # alone made a second paired TV unreachable, so this is the
+                # switch that makes multiple TVs actually usable.
+                try:
+                    req = json.loads(body.decode("utf-8")) if body else {}
+                    brand = req.get("backend")
+                    if brand is not None and not isinstance(brand, str):
+                        raise ValueError("backend must be a string or null")
+                except (ValueError, TypeError, UnicodeDecodeError):
+                    self._send(400, {"error": "backend (string or null) required"},
+                               started)
+                    return
+                if self.mock:
+                    self._send(200, {"ok": True, "tv_active": brand,
+                                     "backend": brand or "webos",
+                                     "backends": ["webos", "androidtv"]}, started)
+                    return
+                # Reject a brand this box cannot actually drive: silently
+                # storing an unusable choice is how the original bug felt.
+                avail = tv_backends_available()
+                if brand is not None and brand not in avail:
+                    self._send(400, {"error": "backend not available on this box",
+                                     "backends": avail}, started)
+                    return
+                try:
+                    set_tv_active(brand)
+                except Exception as e:
+                    self._send(500, {"error": "could not persist config: %s" % e},
+                               started)
+                    return
+                self._send(200, {"ok": True, "tv_active": CONFIG_TV_ACTIVE,
+                                 "backend": _tv_hw_backend(),
+                                 "backends": avail}, started)
+                return
             if path == "/api/tv/identify":
                 # What kind of device is at this address? Lets the app pick the
                 # pairing flow itself, and turn a wrong target into a sentence
@@ -10742,6 +10872,9 @@ class Handler(BaseHTTPRequestHandler):
                                          "reason": "webOS SSAP"}, started)
                     return
                 self._send(200, identify_tv(host), started)
+                self._send(200, {"ok": True, "tv_active": CONFIG_TV_ACTIVE,
+                                 "backend": _tv_hw_backend(),
+                                 "backends": avail}, started)
                 return
             if path == "/api/tv/webos/pair":
                 try:
