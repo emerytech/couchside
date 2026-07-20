@@ -90,6 +90,16 @@ jobs:
       - name: Unit tests (injected actions)
         run: python3 tests/test_actions_inject.py
 
+      # Steam settings deep links (/api/steam/menus). The slug list CANNOT be
+      # derived from Steam's JS bundle (routes are built from the panel name, so
+      # no slug is a literal in it) and a WRONG slug is silently non-fatal —
+      # Steam just opens its default page — so a bad entry ships as a button
+      # that works and goes somewhere else. Every slug was confirmed by screen-
+      # capturing a real box; this gate pins that the ones measured ABSENT stay
+      # absent, and that the id never reaches a shell.
+      - name: Unit tests (steam settings menus)
+        run: python3 tests/test_steam_menus.py
+
   smoke:
     runs-on: ubuntu-latest
     needs: compile
