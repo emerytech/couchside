@@ -17,7 +17,7 @@ import { usePoll } from '@/hooks/usePoll';
 import { useTrackpad } from '@/hooks/useTrackpad';
 import { api, hostKey, Status, Tv, TvKey, TvOp } from '@/lib/api';
 import { GamepadClient } from '@/lib/gamepad';
-import { hapticLight } from '@/lib/haptics';
+import { hapticLight, hapticWarning } from '@/lib/haptics';
 import { usePref } from '@/lib/prefs';
 import { Settings } from '@/lib/settings';
 import { mono, useTheme, useThemedStyles, type Palette } from '@/lib/theme';
@@ -71,6 +71,16 @@ export function RemoteView({
   // modal; sends the whole string to /api/tv/text.
   const [textOpen, setTextOpen] = useState(false);
   const [textVal, setTextVal] = useState('');
+  // Live focus state of the TV's own text field, from the same input_focus
+  // signal that auto-raises this sheet (webOS only). Kept in a ref too so the
+  // send callback reads the CURRENT value without being recreated. On backends
+  // that don't push focus (Samsung/Roku) this stays false and is never gated
+  // on -- see sendText.
+  const [fieldFocused, setFieldFocused] = useState(false);
+  const fieldFocusedRef = useRef(false);
+  // Set true when a send was refused because nothing was focused, so the tip
+  // escalates from a gentle nudge to a real warning.
+  const [noFocusHint, setNoFocusHint] = useState(false);
   // Who opened the sheet: a manual keypad tap vs an auto focus-push. Only a
   // focus-push-opened sheet is auto-dismissed on focus-close, so we never yank
   // a sheet the user opened themselves.
@@ -78,16 +88,32 @@ export function RemoteView({
   const closeText = useCallback(() => {
     setTextOpen(false);
     setTextVal('');
+    setNoFocusHint(false);
     textSrc.current = null;
   }, []);
   const openTextManual = useCallback(() => {
     textSrc.current = 'manual';
+    setNoFocusHint(false);
     setTextOpen(true);
   }, []);
   const sendText = useCallback(() => {
     const s = textVal;
+    // On webOS we know the live focus state (the input_focus signal that also
+    // auto-raises this sheet). With NO field focused, insertText is a silent
+    // no-op: the TV accepts the request and it lands nowhere, and the agent
+    // still returns ok:true because webOS reports no failure -- which is
+    // exactly why typing into an unfocused screen looked like nothing happened.
+    // So don't send into the void; hold the sheet and point at a field.
+    // Backends without focus-push (Samsung/Roku) can't know, so they always
+    // send optimistically.
+    if (focusPushRef.current && !fieldFocusedRef.current) {
+      hapticWarning();
+      setNoFocusHint(true);
+      return;
+    }
     setTextOpen(false);
     setTextVal('');
+    setNoFocusHint(false);
     textSrc.current = null;
     if (s) void api.tvText(settings, s).catch(() => {});
   }, [textVal, settings]);
@@ -98,6 +124,12 @@ export function RemoteView({
   // but only if focus-push opened it, so a manually opened sheet stays put.
   useEffect(() => {
     client.onInputFocus((open, value) => {
+      // Track focus FIRST, before any of the auto-raise early-returns, so
+      // sendText's void-guard always sees the truth even when the sheet was
+      // opened manually (which skips the auto-raise below).
+      fieldFocusedRef.current = open;
+      setFieldFocused(open);
+      if (open) setNoFocusHint(false); // a field appeared: the warning is moot
       if (open) {
         if (!focusPushRef.current) return;
         if (textSrc.current === 'manual') return; // don't clobber a manual sheet
@@ -454,6 +486,16 @@ export function RemoteView({
         <Pressable style={styles.textBackdrop} onPress={closeText}>
           <Pressable style={styles.textSheet} onPress={() => {}}>
             <Text style={styles.textTitle}>Send text to the TV</Text>
+            {/* webOS tells us whether a field is focused on the TV. When none
+                is, nudge toward the smooth path (focusing a field auto-opens
+                this keyboard); escalate to a warning once a send was refused. */}
+            {canFocusPush && !fieldFocused ? (
+              <Text style={noFocusHint ? styles.textHintWarn : styles.textHint}>
+                {noFocusHint
+                  ? 'No text field is focused on the TV. Open a search or text box there first — this keyboard pops up on its own when one is focused.'
+                  : 'Tip: focus a search or text box on the TV and this keyboard opens automatically.'}
+              </Text>
+            ) : null}
             <TextInput
               value={textVal}
               onChangeText={setTextVal}
@@ -997,6 +1039,8 @@ const makeStyles = (t: Palette) => StyleSheet.create({
     gap: 12,
   },
   textTitle: { color: t.text, fontSize: 15, fontWeight: '700' },
+  textHint: { color: t.textDim, fontSize: 12, lineHeight: 17 },
+  textHintWarn: { color: t.amber, fontSize: 12, lineHeight: 17, fontWeight: '600' },
   textInput: {
     backgroundColor: t.inset,
     borderColor: t.cardBorder,
