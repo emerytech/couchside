@@ -1,6 +1,6 @@
-New in 2.9.11
+New in 2.9.12
 
-• Steam settings shortcuts: the Actions tab now has a Steam sub-tab that jumps straight to any Steam settings page on your box — Bluetooth, Controller, Display, Storage and more.
-• Pair a controller from the couch. Bluetooth gets its own button, because pairing is the one thing you can't do with the controller you're trying to pair.
-• Your Steam Controller now shows up on the gaming card.
-• Fixed a "streaming to" card that could keep showing a session long after it ended.
+• The Console and Fleet tabs got a redesign. Cards now glow with the reading they carry — a hot CPU burns amber, a cool one sits green — and the dashboard breathes faster when your box is working hard.
+• "Stream from PC" now shows which machines are actually on. Offline PCs are dimmed with the reason, so picking a game no longer surprises you with a multi-gigabyte install instead of a stream.
+• New setting: hide offline stream hosts entirely (Setup › Prefs).
+• Fixed the screen preview getting stuck on "capturing…" when the box started up before Steam did.
