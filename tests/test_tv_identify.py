@@ -150,12 +150,27 @@ def test_nothing_there():
     check(r["brand"] is None and not r["supported"], "empty address is handled")
 
 
+def test_every_backend_is_offerable():
+    print("the roster and the chain agree")
+    # _tv_hw_backend() falls back through a chain, and _tv_backend_probes()
+    # supplies BOTH that chain and the roster the app's picker lists. A backend
+    # present in one and missing from the other can be added successfully and
+    # then be invisible and unreachable -- which is what happened to `lgcom`
+    # when two branches that touched different functions merged cleanly.
+    names = [n for n, _ in cs._tv_backend_probes()]
+    for expected in ("panel", "webos", "samsung", "androidtv", "roku", "vidaa",
+                     "lgcom", "cec"):
+        check(expected in names, "%s is offerable in the picker roster" % expected)
+    check(len(names) == len(set(names)), "no duplicate backends in the roster")
+
+
 if __name__ == "__main__":
     test_commercial_vs_consumer_lg()
     test_open_3001_alone_is_not_webos()
     test_commercial_wins_over_consumer_order()
     test_other_brands()
     test_nothing_there()
+    test_every_backend_is_offerable()
     print()
     if _fail:
         print("FAILED: %d" % len(_fail))
