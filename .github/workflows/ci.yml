@@ -74,6 +74,16 @@ jobs:
       - name: Unit tests (stream host liveness)
         run: python3 tests/test_stream_online.py
 
+      # TV identification. A user aimed pairing at an LG COMMERCIAL signage
+      # panel the scan had offered, and got "_ssl.c:1063: The handshake
+      # operation timed out" -- a raw socket error that says nothing about the
+      # real problem. Measured: the panel opens 3001 in 6ms and never
+      # handshakes, while opening 9761; a consumer set completes TLSv1.3 and
+      # refuses 9761. So an open port is NOT an identification, and the
+      # commercial check must precede the consumer one because both open 3001.
+      - name: Unit tests (tv identify)
+        run: python3 tests/test_tv_identify.py
+
       # Gaming card (/api/gaming): the card* glob trap (a cardN-DP-1 connector
       # dir must not be read as a GPU), the reaper AppId matcher incl. the
       # [oom_reaper] reject, the empty-power_supply desktop case + the uniq (never

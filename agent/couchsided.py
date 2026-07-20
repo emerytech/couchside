@@ -6067,6 +6067,107 @@ def _discover_webos():
     return out
 
 
+# LG COMMERCIAL / signage control port. Commercial panels expose LG's
+# documented RS-232 command set over TCP here; consumer sets do not open it.
+LG_COMMERCIAL_PORT = 9761
+
+
+def _port_open(host, port, timeout=1.5):
+    """True if a TCP connect succeeds. An OPEN port is weak evidence on its own
+    -- see identify_tv, where a commercial LG panel opens 3001 and then never
+    completes a TLS handshake."""
+    try:
+        s = socket.create_connection((host, port), timeout=timeout)
+        s.close()
+        return True
+    except OSError:
+        return False
+
+
+def _tls_completes(host, port, timeout=4.0):
+    """True if a TLS handshake actually COMPLETES (self-signed is fine).
+
+    This is the check that separates a consumer webOS TV from an LG commercial
+    panel, and it cannot be replaced by a port check. Measured on real hardware:
+    the panel accepts TCP on 3001 in 6ms and then never handshakes, so the
+    pairing attempt died with "_ssl.c:1063: The handshake operation timed out"
+    -- an error that told the user nothing about the actual problem, which was
+    that they had aimed Couchside at the wrong device entirely."""
+    try:
+        ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
+        ctx.check_hostname = False
+        ctx.verify_mode = ssl.CERT_NONE
+        raw = socket.create_connection((host, port), timeout=timeout)
+        raw.settimeout(timeout)
+        with ctx.wrap_socket(raw, server_hostname=host):
+            return True
+    except Exception:
+        return False
+
+
+def identify_tv(host):
+    """What KIND of device is at this address?
+
+    {"brand": <id or None>, "label": str, "supported": bool, "reason": str}
+
+    Exists so a wrong target produces an explanation instead of a raw socket
+    error. Ordered most-specific first: the HTTP APIs answer with a real device
+    name, and the LG commercial check must precede the consumer webOS check
+    because both open 3001.
+
+    A handful of connects to ONE address the user typed -- not a sweep."""
+    host = (host or "").strip()
+    if not host:
+        return {"brand": None, "label": "", "supported": False,
+                "reason": "no address given"}
+
+    # Roku: unauthenticated ECP, names itself.
+    if _port_open(host, ROKU_PORT):
+        xml = _discover_http("http://%s:%d/query/device-info" % (host, ROKU_PORT))
+        m = re.search(r"<friendly-device-name>(.*?)</friendly-device-name>", xml)
+        if m or "<device-info>" in xml:
+            return {"brand": "roku", "label": (m.group(1).strip() if m else "Roku"),
+                    "supported": True, "reason": "Roku ECP"}
+
+    # Samsung Tizen: the v2 API returns a device block.
+    if _port_open(host, SAMSUNG_PORT):
+        return {"brand": "samsung", "label": "Samsung", "supported": True,
+                "reason": "Samsung Tizen remote port"}
+
+    # LG COMMERCIAL before consumer: a signage panel also opens 3001, but its
+    # 3001 never completes TLS. 9761 is the tell and it is unambiguous.
+    if _port_open(host, LG_COMMERCIAL_PORT):
+        return {"brand": "lg_commercial", "label": "LG commercial display",
+                "supported": False,
+                "reason": "This is an LG commercial/signage display, not a "
+                          "consumer webOS TV. It does not support webOS "
+                          "pairing."}
+
+    # Consumer webOS: TCP alone is not enough, the handshake must complete.
+    if _port_open(host, WEBOS_PORT):
+        if _tls_completes(host, WEBOS_PORT):
+            return {"brand": "webos", "label": "LG webOS", "supported": True,
+                    "reason": "webOS SSAP"}
+        return {"brand": None, "label": "unknown device", "supported": False,
+                "reason": "Port %d is open but it is not answering as a webOS "
+                          "TV (the secure handshake times out). This is usually "
+                          "a commercial display or another device entirely."
+                          % WEBOS_PORT}
+
+    if _port_open(host, ANDROIDTV_REMOTE_PORT):
+        return {"brand": "androidtv", "label": "Google TV", "supported": True,
+                "reason": "Android TV remote port"}
+
+    if _port_open(host, VIDAA_PORT):
+        return {"brand": "vidaa", "label": "Hisense", "supported": True,
+                "reason": "VIDAA MQTT port"}
+
+    return {"brand": None, "label": "", "supported": False,
+            "reason": "Nothing answered at that address. Check the IP, and "
+                      "make sure the TV is powered on -- a TV in standby "
+                      "cannot be identified."}
+
+
 def tv_discover(mock, timeout=2.6):
     """Sweep the LAN for controllable TVs (see the module note). Returns a list
     of {brand, name, host}, deduped by host (a pairing backend wins over a bare
@@ -10403,6 +10504,25 @@ class Handler(BaseHTTPRequestHandler):
             # "<ip>", "mac": "<optional, for Wake-on-LAN power-on>"}. Blocks up
             # to ~60s while the TV shows an Accept prompt; on success the granted
             # client_key is persisted to config so later starts are silent.
+            if path == "/api/tv/identify":
+                # What kind of device is at this address? Lets the app pick the
+                # pairing flow itself, and turn a wrong target into a sentence
+                # instead of a raw TLS error.
+                try:
+                    req = json.loads(body.decode("utf-8")) if body else {}
+                    host = req["host"]
+                    if not isinstance(host, str) or not host:
+                        raise ValueError("host required")
+                except (ValueError, TypeError, KeyError, UnicodeDecodeError):
+                    self._send(400, {"error": "host (string) required"}, started)
+                    return
+                if self.mock:
+                    self._send(200, {"brand": "webos", "label": "LG webOS",
+                                     "supported": True, "reason": "webOS SSAP"},
+                               started)
+                    return
+                self._send(200, identify_tv(host), started)
+                return
             if path == "/api/tv/webos/pair":
                 try:
                     req = json.loads(body.decode("utf-8")) if body else {}
