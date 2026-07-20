@@ -221,6 +221,9 @@ CONFIG_SAMSUNG = None  # optional {"host","mac","token"} Samsung Tizen TV config
 CONFIG_ROKU = None  # optional {"host","name"} Roku (ECP) TV config
 CONFIG_ANDROIDTV = None  # optional {"host","cert","key","name","mac"} Android TV config
 CONFIG_VIDAA = None  # optional {"host","name","mac"} Hisense VIDAA (MQTT) config
+# optional {"host","name"} LG COMMERCIAL/signage panel (TCP 9761, no pairing).
+# Distinct from CONFIG_WEBOS: these panels do not speak consumer webOS at all.
+CONFIG_LGCOM = None
 # Guide-button hold -> Couch Mode. OFF BY DEFAULT: a false positive yanks the
 # user out of their desktop session mid-work. "uniq" optionally pins the trigger
 # to ONE pad, keyed on the evdev U: Uniq field (the pad's OWN MAC) because BT
@@ -496,6 +499,25 @@ def _parse_config(raw):
                     raise ConfigError("androidtv.%s must be a string" % field)
                 androidtv[field] = val
 
+    # Optional LG COMMERCIAL/signage panel (TCP 9761). host + optional name.
+    # No pairing and no credentials: the control port is unauthenticated, which
+    # is why this is a separate backend from consumer webOS rather than a mode
+    # of it.
+    lgcom = None
+    lgcom_raw = raw.get("lg_commercial")
+    if lgcom_raw is not None:
+        if not isinstance(lgcom_raw, dict):
+            raise ConfigError("lg_commercial must be an object")
+        host = lgcom_raw.get("host")
+        if not isinstance(host, str) or not host:
+            raise ConfigError("lg_commercial.host must be a non-empty string")
+        lgcom = {"host": host}
+        nm = lgcom_raw.get("name")
+        if nm is not None:
+            if not isinstance(nm, str):
+                raise ConfigError("lg_commercial.name must be a string")
+            lgcom["name"] = nm
+
     # Optional Hisense VIDAA TV (MQTT on 36669). host + optional name/mac; no
     # pairing (default broker creds).
     vidaa = None
@@ -542,7 +564,7 @@ def _parse_config(raw):
             guide["uniq"] = guide_raw["uniq"].strip()
 
     return (units, actions, order, port, launchers, panel, webos, samsung,
-            roku, androidtv, vidaa, guide)
+            roku, androidtv, vidaa, lgcom, guide)
 
 
 def load_config(path):
@@ -550,6 +572,7 @@ def load_config(path):
     global WATCHLIST, WATCHLIST_NAMES, ACTIONS, ACTION_ORDER, CONFIG_PORT
     global LAUNCHERS, CONFIG_PATH, CONFIG_PANEL, CONFIG_WEBOS, CONFIG_SAMSUNG
     global CONFIG_ROKU, CONFIG_ANDROIDTV, CONFIG_VIDAA, ALLOW_APP_UPDATE
+    global CONFIG_LGCOM
     global ALLOW_APP_LAUNCHERS, CONFIG_GUIDE
     CONFIG_PATH = path  # remembered so launcher POST/DELETE can rewrite it
     try:
@@ -561,7 +584,7 @@ def load_config(path):
             ALLOW_APP_UPDATE = bool(raw.get("allow_app_update", False))
             ALLOW_APP_LAUNCHERS = bool(raw.get("allow_app_launchers", False))
         (units, actions, order, port, launchers, panel, webos, samsung,
-         roku, androidtv, vidaa, guide) = _parse_config(raw)
+         roku, androidtv, vidaa, lgcom, guide) = _parse_config(raw)
     except FileNotFoundError:
         print("warning: config %s not found, using built-in generic defaults"
               % path, file=sys.stderr, flush=True)
@@ -582,6 +605,7 @@ def load_config(path):
     CONFIG_ROKU = roku
     CONFIG_ANDROIDTV = androidtv
     CONFIG_VIDAA = vidaa
+    CONFIG_LGCOM = lgcom
     CONFIG_GUIDE = guide
     print("config loaded from %s: %d units, %d actions, %d launchers"
           % (path, len(WATCHLIST), len(ACTIONS), len(LAUNCHERS)), flush=True)
@@ -6168,6 +6192,134 @@ def identify_tv(host):
                       "cannot be identified."}
 
 
+# ---- LG commercial / signage backend (TCP 9761) ---------------------------
+# LG's COMMERCIAL panels (the signage line -- an "S" model like UR640S) speak
+# LG's documented RS-232 command set over plain TCP on 9761. No pairing, no TLS,
+# no accept prompt: considerably simpler than consumer webOS, which these panels
+# do NOT support at all (see identify_tv -- they open 3001 and never handshake).
+#
+# Wire format is ASCII:   <c1><c2> <setid> <data>\r
+#            reply:       <c2> <setid> OK<data>x     (NG<data>x on refusal)
+# A data byte of ff is a STATUS READ, not a write.
+#
+# MEASURED on a real panel, set + read-back + restore for each:
+#   ka power    01 = on
+#   xb input    91 (round-tripped 91 -> 90 -> 91, verified each step)
+#   ke mute     00 = muted, 01 = unmuted (INVERTED vs what you would guess)
+#   kf volume   ACKs the write and then always reads back 00 -- audio is inert
+#               on that panel, so volume is deliberately NOT exposed. A control
+#               that silently does nothing costs more trust than a missing one.
+#   mg backlight -> NG (unsupported); dn/fy/fz -> no reply at all.
+LGCOM_PORT = 9761
+LGCOM_SETID = "01"
+_LGCOM_TIMEOUT = 4.0
+LGCOM_MOCK = False
+
+# op -> (command, data). Only ops proven to round-trip on hardware.
+_LGCOM_OPS = {
+    "power_off": ("ka", "00"),
+    "power_on": ("ka", "01"),   # works over the network: the panel keeps its
+                                # NIC alive in standby, unlike a consumer TV
+                                # which needs Wake-on-LAN.
+}
+
+
+def lgcom_available():
+    """True in --mock, or when config named an LG commercial host (no pairing)."""
+    if LGCOM_MOCK:
+        return True
+    return bool(CONFIG_LGCOM and CONFIG_LGCOM.get("host"))
+
+
+def _lgcom_cmd(host, cmd, data, timeout=_LGCOM_TIMEOUT):
+    """One command; the reply string, or None. Never raises."""
+    try:
+        s = socket.create_connection((host, LGCOM_PORT), timeout=timeout)
+    except OSError:
+        return None
+    try:
+        s.settimeout(timeout)
+        s.sendall(("%s %s %s\r" % (cmd, LGCOM_SETID, data)).encode("ascii"))
+        return s.recv(256).decode("ascii", "replace").strip()
+    except OSError:
+        return None
+    finally:
+        try:
+            s.close()
+        except OSError:
+            pass
+
+
+def _lgcom_ok(reply):
+    """The panel answers OK<data>x on success and NG<data>x on refusal."""
+    return bool(reply) and "OK" in reply
+
+
+def _lgcom_value(reply):
+    """The two data chars out of '<c> 01 OK91x', or None."""
+    if not _lgcom_ok(reply):
+        return None
+    i = reply.index("OK") + 2
+    v = reply[i:i + 2]
+    return v if len(v) == 2 else None
+
+
+def lgcom_input(host, code):
+    """Switch input. `code` is LG's input byte (90 = HDMI1, 91 = HDMI2, ...)."""
+    return _lgcom_ok(_lgcom_cmd(host, "xb", code))
+
+
+def lgcom_mute(host, on):
+    """Mute. NOTE the inversion: ke 00 mutes, ke 01 unmutes."""
+    return _lgcom_ok(_lgcom_cmd(host, "ke", "00" if on else "01"))
+
+
+def lgcom_muted(host):
+    """True/False/None. Inverted, as above."""
+    v = _lgcom_value(_lgcom_cmd(host, "ke", "ff"))
+    return None if v is None else (v == "00")
+
+
+def lgcom_status(host):
+    """{power, input, muted} -- whichever the panel answers. Never raises."""
+    out = {}
+    v = _lgcom_value(_lgcom_cmd(host, "ka", "ff"))
+    if v is not None:
+        out["power"] = (v == "01")
+    v = _lgcom_value(_lgcom_cmd(host, "xb", "ff"))
+    if v is not None:
+        out["input"] = v
+    m = lgcom_muted(host)
+    if m is not None:
+        out["muted"] = m
+    return out
+
+
+def real_lgcom(op):
+    """Run a TV op against the panel. Mirrors the other backends' return shape."""
+    start = time.monotonic()
+
+    def done(ok, stdout="", stderr=""):
+        return {"ok": ok, "exit_code": 0 if ok else -1, "stdout": stdout,
+                "stderr": stderr,
+                "duration_ms": int((time.monotonic() - start) * 1000)}
+
+    if LGCOM_MOCK:
+        return done(True, "[mock lgcom] %s" % op)
+    host = (CONFIG_LGCOM or {}).get("host")
+    if not host:
+        return done(False, stderr="no LG commercial display configured")
+    if op == "mute":
+        cur = lgcom_muted(host)
+        return done(lgcom_mute(host, not cur) if cur is not None
+                    else lgcom_mute(host, True))
+    pair = _LGCOM_OPS.get(op)
+    if pair is None:
+        # Volume is intentionally absent: it ACKs and never takes effect.
+        return done(False, stderr="op not supported on an LG commercial display")
+    return done(_lgcom_ok(_lgcom_cmd(host, pair[0], pair[1])))
+
+
 def tv_discover(mock, timeout=2.6):
     """Sweep the LAN for controllable TVs (see the module note). Returns a list
     of {brand, name, host}, deduped by host (a pairing backend wins over a bare
@@ -6250,6 +6402,8 @@ def _tv_hw_backend():
         return "roku"
     if vidaa_available():
         return "vidaa"
+    if lgcom_available():
+        return "lgcom"
     if cec_available():
         return "cec"
     return None
@@ -6267,6 +6421,9 @@ def tv_info():
     if hw == "panel":
         backend, adapter = "panel", "Newline RS-232 (%s @ %d)" % (
             PANEL["device"], PANEL["baud"])
+    elif hw == "lgcom":
+        backend, adapter = "lgcom", ("LG commercial (%s)" % CONFIG_LGCOM["host"]
+                                     if CONFIG_LGCOM else "LG commercial")
     elif hw == "webos":
         backend, adapter = "webos", ("LG webOS (%s)" % CONFIG_WEBOS["host"]
                                      if CONFIG_WEBOS else "LG webOS")
@@ -6349,6 +6506,8 @@ def _send_tv_hw(op, mock):
     b = _tv_hw_backend()
     if b == "panel":
         return mock_panel(op) if mock else real_panel(op)
+    if b == "lgcom":
+        return real_lgcom(op)
     if b == "webos":
         return mock_webos(op) if mock else real_webos(op)
     if b == "samsung":
@@ -10504,6 +10663,48 @@ class Handler(BaseHTTPRequestHandler):
             # "<ip>", "mac": "<optional, for Wake-on-LAN power-on>"}. Blocks up
             # to ~60s while the TV shows an Accept prompt; on success the granted
             # client_key is persisted to config so later starts are silent.
+            if path == "/api/tv/lgcommercial/add":
+                # An LG commercial panel needs no pairing: the 9761 control port
+                # is unauthenticated. So this just records the host after
+                # confirming something actually answers there -- storing a host
+                # that never responds is how a dead remote gets shipped.
+                try:
+                    req = json.loads(body.decode("utf-8")) if body else {}
+                    host = req["host"]
+                    if not isinstance(host, str) or not host:
+                        raise ValueError("host required")
+                    name = req.get("name")
+                    if name is not None and not isinstance(name, str):
+                        raise ValueError("name must be a string")
+                except (ValueError, TypeError, KeyError, UnicodeDecodeError):
+                    self._send(400, {"error": "host (string) required"}, started)
+                    return
+                if self.mock:
+                    self._send(200, {"ok": True, "backend": "lgcom",
+                                     "host": host}, started)
+                    return
+                st = lgcom_status(host)
+                if not st:
+                    self._send(502, {"ok": False, "error":
+                                     "No LG commercial display answered on "
+                                     "port %d at that address." % LGCOM_PORT},
+                               started)
+                    return
+                try:
+                    cfg = {"host": host}
+                    if name:
+                        cfg["name"] = name
+                    global CONFIG_LGCOM
+                    with CONFIG_LOCK:
+                        _config_set_field("lg_commercial", cfg)
+                        CONFIG_LGCOM = cfg
+                except Exception as e:
+                    self._send(500, {"error": "could not persist config: %s" % e},
+                               started)
+                    return
+                self._send(200, {"ok": True, "backend": "lgcom", "host": host,
+                                 "status": st}, started)
+                return
             if path == "/api/tv/identify":
                 # What kind of device is at this address? Lets the app pick the
                 # pairing flow itself, and turn a wrong target into a sentence

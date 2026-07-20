@@ -84,6 +84,17 @@ jobs:
       - name: Unit tests (tv identify)
         run: python3 tests/test_tv_identify.py
 
+      # Config load. _parse_config() returns a POSITIONAL tuple that
+      # load_config() unpacks, so a new optional section must be threaded
+      # through both ends -- miss either and the agent crash-loops on startup
+      # with a NameError. That shipped to a real box and was missed by
+      # py_compile (syntax only), by importing the module (load_config is never
+      # reached), and by starting with an EMPTY config (invalid input takes the
+      # defaults path and returns BEFORE the unpack). Only a config with real
+      # content exercises it.
+      - name: Unit tests (config load)
+        run: python3 tests/test_config_load.py
+
       # Gaming card (/api/gaming): the card* glob trap (a cardN-DP-1 connector
       # dir must not be read as a GPU), the reaper AppId matcher incl. the
       # [oom_reaper] reject, the empty-power_supply desktop case + the uniq (never
