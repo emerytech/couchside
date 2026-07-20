@@ -5850,15 +5850,61 @@ def _parse_mdns(buf):
     return ptr, srv, a
 
 
-def _mdns_discover(service, timeout=2.5):
-    """Return [{name, host}] for a mDNS service PTR (e.g. _androidtvremote2._tcp
-    .local). Best-effort; empty on any failure."""
+def _mdns_socket():
+    """A socket that can actually HEAR mDNS answers: bound to 5353 and joined to
+    the group, sharing the port with whatever else is running (avahi).
+
+    WHY THIS MATTERS -- measured, because the obvious fix does not work. A
+    compliant responder sends its answer to the MULTICAST group, not back to the
+    querier's ephemeral port. Querying from an ephemeral port therefore only
+    ever finds devices that happen to answer unicast anyway. On a real network
+    that silently split the results: Chromecast replied and was found, while an
+    Android/Google TV advertising the very service we asked for
+    (_androidtvremote2._tcp, "Conference Room") and an LG webOS TV were both
+    invisible -- so "Scan for TVs" returned neither of the user's real TVs.
+
+    Setting the QU (unicast-response) bit instead was tried FIRST and changed
+    nothing: 0 replies with the bit set, 2 replies once bound to the group. Do
+    not "simplify" this back to a QU bit.
+
+    Returns (socket, joined). joined=False means the bind/join failed and the
+    caller is falling back to the old ephemeral behaviour -- degraded, but the
+    scan still finds unicast-answering devices instead of raising."""
     s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
     s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+    # SO_REUSEPORT so this coexists with avahi/systemd-resolved already on 5353.
+    # Multicast datagrams are delivered to EVERY socket joined to the group, so
+    # sharing the port does not steal avahi's traffic.
+    try:
+        s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEPORT, 1)
+    except (AttributeError, OSError):
+        pass
+    joined = False
+    try:
+        s.bind(("", _MDNS_ADDR[1]))
+        mreq = struct.pack("4sl", socket.inet_aton(_MDNS_ADDR[0]), socket.INADDR_ANY)
+        s.setsockopt(socket.IPPROTO_IP, socket.IP_ADD_MEMBERSHIP, mreq)
+        joined = True
+    except OSError:
+        # Port unavailable (no SO_REUSEPORT, or a strict responder holds it):
+        # fall back to an unbound socket rather than losing discovery entirely.
+        try:
+            s.close()
+        except OSError:
+            pass
+        s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
     try:
         s.setsockopt(socket.IPPROTO_IP, socket.IP_MULTICAST_TTL, 2)
     except OSError:
         pass
+    return s, joined
+
+
+def _mdns_discover(service, timeout=2.5):
+    """Return [{name, host}] for a mDNS service PTR (e.g. _androidtvremote2._tcp
+    .local). Best-effort; empty on any failure."""
+    s, _joined = _mdns_socket()
     s.settimeout(0.5)
     inst, srv_all, a_all = set(), {}, {}
     try:
@@ -5866,7 +5912,9 @@ def _mdns_discover(service, timeout=2.5):
         deadline = time.monotonic() + timeout
         while time.monotonic() < deadline:
             try:
-                data, _ = s.recvfrom(4096)
+                # Bound to 5353 we now see every responder's traffic, not just
+                # replies to our own question, so allow for full-size records.
+                data, _ = s.recvfrom(9000)
             except socket.timeout:
                 continue
             except OSError:
@@ -5874,11 +5922,13 @@ def _mdns_discover(service, timeout=2.5):
             ptr, srv, a = _parse_mdns(data)
             srv_all.update(srv)
             a_all.update(a)
-            for n in ptr:
-                if n.endswith(service):
-                    inst.add(n)
-            for n in srv:
-                if n.endswith(service):
+            # `endswith` alone also matches the SERVICE name itself, which is
+            # a record we now receive (bound to 5353 we see service-level PTRs,
+            # not just answers to our own question). That leaked
+            # "_androidtvremote2._tcp.local" into the results as if it were a
+            # TV. Require a real instance label underneath it.
+            for n in list(ptr) + list(srv):
+                if n != service and n.endswith("." + service):
                     inst.add(n)
     finally:
         s.close()
@@ -5891,7 +5941,10 @@ def _mdns_discover(service, timeout=2.5):
         if not ip:
             continue
         label = name[: -len(service) - 1].rstrip(".") or name
-        out.append({"name": label, "host": ip})
+        # `target` is the SRV target hostname (e.g. LGwebOSTV.local). Callers
+        # need it to identify the DEVICE: an instance label is a user-chosen
+        # room name ("Conference Room Display") and cannot be matched on.
+        out.append({"name": label, "host": ip, "target": host or ""})
     return out
 
 
@@ -5992,6 +6045,25 @@ def _discover_webos():
             if m:
                 name = m.group(1).strip()
         out.append({"brand": "webos", "name": name or "LG webOS", "host": ip})
+
+    # SSDP alone misses real TVs. Measured on a live network: an 85" consumer
+    # webOS set answered no SSDP search at all, so "Scan for TVs" returned only
+    # a commercial signage panel -- the app then pre-filled that wrong target
+    # and pairing failed with an opaque TLS timeout, because a signage panel
+    # accepts TCP on 3001 without ever completing a handshake.
+    #
+    # Modern LG sets advertise AirPlay over mDNS, where that same TV showed up
+    # immediately as "Conference Room Display" (LGwebOSTV.local). Its mDNS
+    # hostname is the reliable tell -- the AirPlay instance name is a
+    # user-chosen room label, and plenty of non-LG devices serve _airplay._tcp.
+    for t in _mdns_discover("_airplay._tcp.local", timeout=2.0):
+        ip, host = t.get("host"), (t.get("target") or "")
+        if not ip or ip in seen:
+            continue
+        if not re.search(r"lgwebostv|webos", host.lower()):
+            continue
+        seen.add(ip)
+        out.append({"brand": "webos", "name": t.get("name") or "LG webOS", "host": ip})
     return out
 
 
