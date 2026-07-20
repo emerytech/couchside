@@ -50,6 +50,11 @@ export type Prefs = {
       volume HUD can't be suppressed and repurposing the buttons is App-Review
       risky (opt-in, experimental). */
   volumeButtons: boolean;
+  /** Drop hosts the box reports as offline from the Launch tab's "Stream from
+      PC" list entirely, rather than dimming them. Off by default: the online
+      check is conservative and does call a live host offline, so the row stays
+      visible and tappable unless you ask for it gone. Agent >= 2.9.32. */
+  hideOfflineStreamHosts: boolean;
 };
 
 export const DEFAULTS: Prefs = {
@@ -70,6 +75,7 @@ export const DEFAULTS: Prefs = {
   // Android intercepts the keycode cleanly (no HUD); iOS can't, so it stays off
   // until the user opts in.
   volumeButtons: Platform.OS === 'android',
+  hideOfflineStreamHosts: false,
 };
 
 /** The choices each select-style pref offers (kept next to the store it feeds). */
@@ -147,6 +153,7 @@ function normalize(raw: unknown): Prefs {
     padHints: bool(o.padHints, DEFAULTS.padHints),
     askToSwitchControl: bool(o.askToSwitchControl, DEFAULTS.askToSwitchControl),
     volumeButtons: bool(o.volumeButtons, DEFAULTS.volumeButtons),
+    hideOfflineStreamHosts: bool(o.hideOfflineStreamHosts, DEFAULTS.hideOfflineStreamHosts),
   };
 }
 

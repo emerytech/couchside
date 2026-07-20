@@ -63,6 +63,17 @@ jobs:
       - name: Unit tests (steam link / remote play)
         run: python3 tests/test_steamlink.py
 
+      # Stream-host liveness (the `online` field). remoteclients.vdf lists every
+      # host ever streamed from and says nothing about which are ON, so picking a
+      # game from a sleeping PC makes Steam offer a multi-GB install instead.
+      # Detection joins on the 64-bit Steam CLIENT ID (a box keeps it across a
+      # rename) and reads a STATE out of Steam's own remote-connections log --
+      # beacon recency alone was measured unusable (median gap 9s but p99 2725s).
+      # Fixtures are relative to now; a dated fixture plus an age cap is a time
+      # bomb, which this repo has already paid for once.
+      - name: Unit tests (stream host liveness)
+        run: python3 tests/test_stream_online.py
+
       # Gaming card (/api/gaming): the card* glob trap (a cardN-DP-1 connector
       # dir must not be read as a GPU), the reaper AppId matcher incl. the
       # [oom_reaper] reject, the empty-power_supply desktop case + the uniq (never

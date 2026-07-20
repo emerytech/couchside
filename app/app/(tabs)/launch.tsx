@@ -37,6 +37,7 @@ import {
   SteamLink,
 } from '@/lib/api';
 import { hapticError, hapticLight, hapticMedium, hapticSuccess } from '@/lib/haptics';
+import { usePref } from '@/lib/prefs';
 import { useSettings } from '@/lib/SettingsContext';
 import { mono, useTheme, useThemedStyles, type Palette } from '@/lib/theme';
 
@@ -266,6 +267,13 @@ function DownloadsSection({ downloads }: { downloads: SteamDownload[] }) {
  * app to install. Probe-and-appear: the parent renders this only when the box
  * reports at least one host. Covers aren't shown (host-only games have no local
  * capsule), so it's a compact list rather than the cover grid below.
+ *
+ * Hosts the box reports as OFF are demoted, not removed: picking a game from an
+ * asleep PC makes Steam quietly fall back to "play locally" and offer a
+ * multi-GB install (measured: Assassin's Creed II, 6 GB, from a sleeping Deck),
+ * which reads as a Couchside bug rather than "that PC is off". The agent's
+ * check is deliberately conservative, so a dimmed host stays tappable — the
+ * user may well know better than we do.
  */
 function SteamLinkSection({
   data,
@@ -276,53 +284,91 @@ function SteamLinkSection({
 }) {
   const t = useTheme();
   const styles = useThemedStyles(makeStyles);
-  // Expand the most-recently-seen host by default; the rest start collapsed.
-  const [expanded, setExpanded] = useState<Record<string, boolean>>(() =>
-    data.hosts.length ? { [data.hosts[0].host]: true } : {},
-  );
+  const hideOffline = usePref('hideOfflineStreamHosts');
+  // Expand the freshest host by default, preferring one that's actually up.
+  // `online` is absent on agents older than 2.9.32, and undefined !== false, so
+  // those fall through to hosts[0] — exactly the old behaviour.
+  const [expanded, setExpanded] = useState<Record<string, boolean>>(() => {
+    const first = data.hosts.find((h) => h.online !== false) ?? data.hosts[0];
+    return first ? { [first.host]: true } : {};
+  });
   if (data.hosts.length === 0) return null;
+  const hosts = hideOffline ? data.hosts.filter((h) => h.online !== false) : data.hosts;
   return (
     <View style={styles.dlCard}>
       <View style={styles.dlHeader}>
         <Ionicons name="tv-outline" size={14} color={t.blue} />
         <Text style={styles.dlHeaderText}>STREAM FROM PC</Text>
       </View>
-      <Text style={styles.slHint}>
-        Play a game from another Steam PC on your network. Make sure it&rsquo;s powered on and
-        running Steam.
-      </Text>
-      {data.hosts.map((h, i) => {
-        const open = !!expanded[h.host];
-        return (
-          <View key={h.host} style={i > 0 ? styles.dlHeaderGap : undefined}>
-            <Pressable
-              onPress={() => {
-                hapticLight();
-                setExpanded((e) => ({ ...e, [h.host]: !e[h.host] }));
-              }}
-              style={({ pressed }) => [styles.slHostHeader, pressed && styles.pressed]}>
-              <Ionicons name="desktop-outline" size={14} color={t.textDim} />
-              <Text style={styles.slHostName} numberOfLines={1}>
-                {h.host}
-              </Text>
-              <Text style={styles.slHostCount}>{h.games.length}</Text>
-              <Ionicons name={open ? 'chevron-up' : 'chevron-down'} size={14} color={t.textDim} />
-            </Pressable>
-            {open &&
-              h.games.map((g) => (
+      {hosts.length === 0 ? (
+        // Every host was filtered out by the pref. Say so — a card that just
+        // vanished looks like the feature broke.
+        <Text style={styles.slHint}>
+          {data.hosts.length} offline {data.hosts.length === 1 ? 'host is' : 'hosts are'} hidden by
+          your &ldquo;Hide offline stream hosts&rdquo; setting.
+        </Text>
+      ) : (
+        <>
+          <Text style={styles.slHint}>
+            Play a game from another Steam PC on your network. Make sure it&rsquo;s powered on and
+            running Steam.
+          </Text>
+          {hosts.map((h, i) => {
+            const open = !!expanded[h.host];
+            const off = h.online === false;
+            return (
+              <View key={h.host} style={i > 0 ? styles.dlHeaderGap : undefined}>
                 <Pressable
-                  key={g.appid}
-                  onPress={() => onStream(g.appid, g.label)}
-                  style={({ pressed }) => [styles.slGameRow, pressed && styles.pressed]}>
-                  <Ionicons name="play-circle" size={16} color={t.blue} />
-                  <Text style={styles.slGameName} numberOfLines={1}>
-                    {g.label}
+                  onPress={() => {
+                    hapticLight();
+                    setExpanded((e) => ({ ...e, [h.host]: !e[h.host] }));
+                  }}
+                  style={({ pressed }) => [styles.slHostHeader, pressed && styles.pressed]}>
+                  <Ionicons
+                    name="desktop-outline"
+                    size={14}
+                    color={off ? t.textFaint : t.textDim}
+                  />
+                  <View style={styles.slHostBody}>
+                    <Text style={[styles.slHostName, off && styles.slDimText]} numberOfLines={1}>
+                      {h.host}
+                    </Text>
+                    {off && h.reason ? (
+                      // The agent writes this already user-facing ("no response
+                      // in 66m") — never reword or prefix it here.
+                      <Text style={styles.slHostReason} numberOfLines={1}>
+                        {h.reason}
+                      </Text>
+                    ) : null}
+                  </View>
+                  <Text style={[styles.slHostCount, off && styles.slFaintText]}>
+                    {h.games.length}
                   </Text>
+                  <Ionicons
+                    name={open ? 'chevron-up' : 'chevron-down'}
+                    size={14}
+                    color={off ? t.textFaint : t.textDim}
+                  />
                 </Pressable>
-              ))}
-          </View>
-        );
-      })}
+                {open &&
+                  h.games.map((g) => (
+                    <Pressable
+                      key={g.appid}
+                      onPress={() => onStream(g.appid, g.label)}
+                      style={({ pressed }) => [styles.slGameRow, pressed && styles.pressed]}>
+                      <Ionicons name="play-circle" size={16} color={off ? t.textDim : t.blue} />
+                      <Text
+                        style={[styles.slGameName, off && styles.slDimText]}
+                        numberOfLines={1}>
+                        {g.label}
+                      </Text>
+                    </Pressable>
+                  ))}
+              </View>
+            );
+          })}
+        </>
+      )}
     </View>
   );
 }
@@ -798,8 +844,14 @@ const makeStyles = (t: Palette) => StyleSheet.create({
   // Steam Remote Play "Stream from PC"
   slHint: { color: t.textFaint, fontSize: 12, lineHeight: 17, marginTop: -4 },
   slHostHeader: { flexDirection: 'row', alignItems: 'center', gap: 8, paddingVertical: 6 },
-  slHostName: { color: t.text, fontSize: 14, fontWeight: '700', fontFamily: mono, flex: 1 },
+  slHostBody: { flex: 1 },
+  slHostName: { color: t.text, fontSize: 14, fontWeight: '700', fontFamily: mono },
   slHostCount: { color: t.textDim, fontSize: 12, fontFamily: mono },
+  slHostReason: { color: t.textFaint, fontSize: 11, fontFamily: mono, marginTop: 2 },
+  // Offline hosts are demoted a step, like QueuedRow — no opacity wrapper, so
+  // the row still reads as tappable (it is: the check is advisory only).
+  slDimText: { color: t.textDim },
+  slFaintText: { color: t.textFaint },
   slGameRow: {
     flexDirection: 'row',
     alignItems: 'center',

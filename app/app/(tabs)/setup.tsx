@@ -656,6 +656,7 @@ function SetupBody() {
   const padHints = usePref('padHints');
   const askToSwitchControl = usePref('askToSwitchControl');
   const volumeButtons = usePref('volumeButtons');
+  const hideOfflineStreamHosts = usePref('hideOfflineStreamHosts');
 
   const [restoring, setRestoring] = useState(false);
   const [buying, setBuying] = useState(false);
@@ -1340,6 +1341,21 @@ function SetupBody() {
                 value={volumeButtons}
                 onValueChange={(v) => {
                   void setPref('volumeButtons', v);
+                  hapticSelection();
+                }}
+              />
+            </View>
+
+            {/* The box's offline check is conservative and will sometimes call a
+                live PC offline, so dimming is the default and hiding is opt-in. */}
+            <View style={styles.card}>
+              <CardHeader icon="tv-outline" label="STREAM FROM PC" />
+              <TogglePref
+                label="Hide offline stream hosts"
+                sub="Offline PCs are dimmed with the reason shown, and stay tappable. Turn this on to drop them from the Launch tab's stream list entirely."
+                value={hideOfflineStreamHosts}
+                onValueChange={(v) => {
+                  void setPref('hideOfflineStreamHosts', v);
                   hapticSelection();
                 }}
               />
