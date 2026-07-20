@@ -10718,9 +10718,28 @@ class Handler(BaseHTTPRequestHandler):
                     self._send(400, {"error": "host (string) required"}, started)
                     return
                 if self.mock:
-                    self._send(200, {"brand": "webos", "label": "LG webOS",
-                                     "supported": True, "reason": "webOS SSAP"},
-                               started)
+                    # Vary by address so the harness can drive BOTH outcomes.
+                    # A mock that only ever returns "supported" leaves the
+                    # unsupported path -- the whole reason identify exists --
+                    # untestable outside real hardware.
+                    if host.endswith(".178"):
+                        self._send(200, {
+                            "brand": "lg_commercial",
+                            "label": "LG commercial display", "supported": False,
+                            "reason": "This is an LG commercial/signage display, "
+                                      "not a consumer webOS TV. It does not "
+                                      "support webOS pairing."}, started)
+                    elif host.endswith(".199"):
+                        self._send(200, {
+                            "brand": None, "label": "", "supported": False,
+                            "reason": "Nothing answered at that address. Check "
+                                      "the IP, and make sure the TV is powered "
+                                      "on -- a TV in standby cannot be "
+                                      "identified."}, started)
+                    else:
+                        self._send(200, {"brand": "webos", "label": "LG webOS",
+                                         "supported": True,
+                                         "reason": "webOS SSAP"}, started)
                     return
                 self._send(200, identify_tv(host), started)
                 return

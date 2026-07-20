@@ -483,7 +483,10 @@ export type TvBackend =
   | 'samsung'
   | 'roku'
   | 'androidtv'
-  | 'vidaa';
+  | 'vidaa'
+  // LG's signage line over plain TCP 9761 (no pairing, no TLS). Distinct from
+  // "webos": these panels do not speak consumer webOS at all.
+  | 'lgcom';
 
 /**
  * A TV the box found on the LAN (GET /api/tv/discover, agent >= 2.9.12). `brand`
@@ -493,6 +496,21 @@ export type DiscoveredTv = {
   brand: 'webos' | 'samsung' | 'roku' | 'androidtv';
   name: string;
   host: string;
+};
+
+/**
+ * What the box found at one address (POST /api/tv/identify, agent >= 2.9.32).
+ * `brand` widens past the pairable backends because the point is to name the
+ * devices we do NOT support: an LG commercial/signage panel opens the same
+ * port 3001 as a consumer webOS TV and then never completes TLS, which is how
+ * "pair" on one produced a raw `_ssl.c: handshake operation timed out`.
+ * `reason` is already user-facing prose — render it verbatim.
+ */
+export type TvIdentifyResult = {
+  brand: 'webos' | 'samsung' | 'roku' | 'androidtv' | 'vidaa' | 'lg_commercial' | null;
+  label: string;
+  supported: boolean;
+  reason: string;
 };
 
 /**
@@ -1451,6 +1469,40 @@ export const api = {
   tvDiscover(settings: ConnSettings): Promise<{ tvs: DiscoveredTv[] }> {
     return request<{ tvs: DiscoveredTv[] }>(settings, '/api/tv/discover', {
       timeoutMs: 8000,
+    });
+  },
+
+  /**
+   * Ask the box what kind of device is at `host` (agent >= 2.9.32), so the app
+   * can pick the pairing flow instead of making the user guess — and so a wrong
+   * target lands as a sentence rather than a raw socket error. The box makes
+   * several sequential TCP connects to that one address, each with its own
+   * timeout, so this needs far more than the 4 s default. A 404 means the agent
+   * predates identify: callers MUST fall back to pairing with the selected
+   * brand, since most boxes in the field are older.
+   */
+  tvIdentify(settings: ConnSettings, host: string): Promise<TvIdentifyResult> {
+    return request<TvIdentifyResult>(settings, '/api/tv/identify', {
+      method: 'POST',
+      timeoutMs: 15000,
+      body: { host },
+    });
+  },
+
+  /**
+   * Register an LG commercial/signage panel by host (agent >= 2.9.32). Its 9761
+   * control port is unauthenticated, so there is no pairing and no on-TV accept
+   * prompt — the agent just confirms something answers there before persisting.
+   */
+  tvAddLgCommercial(
+    settings: ConnSettings,
+    host: string,
+    name?: string,
+  ): Promise<TvPairResult> {
+    return request<TvPairResult>(settings, '/api/tv/lgcommercial/add', {
+      method: 'POST',
+      timeoutMs: 12000,
+      body: name ? { host, name } : { host },
     });
   },
 
