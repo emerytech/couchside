@@ -11,7 +11,16 @@ import {
 } from 'react-native';
 
 import { usePoll } from '@/hooks/usePoll';
-import { api, ApiError, ConnSettings, DiscoveredTv, hostKey, Tv, TvPairResult } from '@/lib/api';
+import {
+  api,
+  ApiError,
+  ConnSettings,
+  DiscoveredTv,
+  hostKey,
+  Tv,
+  TvIdentifyResult,
+  TvPairResult,
+} from '@/lib/api';
 import { hapticError, hapticSuccess } from '@/lib/haptics';
 import { normalizeMac } from '@/lib/settings';
 import { useTheme, useThemedStyles, type Palette } from '@/lib/theme';
@@ -44,7 +53,17 @@ const BRANDS: { id: Brand; label: string; needsMac: boolean; verb: string }[] = 
   { id: 'vidaa', label: 'Hisense', needsMac: true, verb: 'Add' },
 ];
 
-const NETWORK_BACKENDS = ['webos', 'samsung', 'roku', 'androidtv', 'vidaa'];
+const NETWORK_BACKENDS = ['webos', 'samsung', 'roku', 'androidtv', 'vidaa', 'lgcom'];
+
+/**
+ * identify's `brand` names devices we cannot pair too ("lg_commercial", null),
+ * so it is not assignable to Brand. Anything outside BRANDS falls back to the
+ * user's selection rather than pairing with a backend this build has no flow
+ * for.
+ */
+function pairableBrand(b: TvIdentifyResult['brand']): Brand | null {
+  return BRANDS.some((x) => x.id === b) ? (b as Brand) : null;
+}
 
 /**
  * Pair a networked smart TV (LG webOS / Samsung Tizen / Roku / Android-Google TV)
@@ -69,6 +88,12 @@ export function SmartTvSetup({ settings }: { settings: ConnSettings }) {
   const [msg, setMsg] = useState<{ ok: boolean; text: string; done?: boolean } | null>(null);
   const [scanning, setScanning] = useState(false);
   const [found, setFound] = useState<DiscoveredTv[] | null>(null);
+  // Set when identify settled on "do not pair with this". `commercial` splits
+  // the one blocked device we CAN still drive (an LG signage panel, over plain
+  // TCP 9761) from the ones we cannot. Either way the user keeps a force-pair
+  // escape: identify can be wrong, and a TV in standby cannot be identified at
+  // all, which would otherwise make an off TV impossible to set up.
+  const [blocked, setBlocked] = useState<{ host: string; commercial: boolean } | null>(null);
 
   const tvPoll = usePoll<Tv>(() => api.tv(settings), 15000, true, hostKey(settings));
   const active =
@@ -87,14 +112,18 @@ export function SmartTvSetup({ settings }: { settings: ConnSettings }) {
     else hapticError();
   }, [msg]);
 
+  // `label` is passed in rather than read off `meta`: identify can switch the
+  // brand in the same tick it pairs, and this closure would still be holding
+  // the label the user had selected before.
   const connected = useCallback(
-    (r: TvPairResult) => {
-      setMsg({ ok: true, done: true, text: r.name ? `Connected: ${r.name}` : `Connected to ${meta.label}.` });
+    (r: TvPairResult, label: string) => {
+      setMsg({ ok: true, done: true, text: r.name ? `Connected: ${r.name}` : `Connected to ${label}.` });
       setHost('');
       setMac('');
       setCode('');
       setAwaitingCode(false);
       setFound(null);
+      setBlocked(null);
       // Pull the TV state NOW instead of waiting out the 15s poll. That poll
       // drives the persistent "Connected: <adapter>" row at the top of the
       // card, which is the durable confirmation -- the transient message
@@ -102,7 +131,7 @@ export function SmartTvSetup({ settings }: { settings: ConnSettings }) {
       // seconds is why a successful pairing read as no feedback at all.
       tvPoll.refresh();
     },
-    [meta, tvPoll],
+    [tvPoll],
   );
 
   // "Scan for TVs": the box sweeps the LAN (mDNS + SSDP) and returns pairable
@@ -137,19 +166,18 @@ export function SmartTvSetup({ settings }: { settings: ConnSettings }) {
     setHost(tv.host);
     setAwaitingCode(false);
     setCode('');
+    setBlocked(null);
     setMsg({ ok: true, text: `${tv.name} — tap ${BRANDS.find((b) => b.id === tv.brand)?.verb ?? 'Pair'} below.` });
   }, []);
 
-  const submit = useCallback(async () => {
-    const h = host.trim();
-    if (!h) {
-      setMsg({ ok: false, done: true, text: 'Enter the TV’s IP address.' });
-      return;
-    }
-    setBusy(true);
-    const m = meta.needsMac && mac.trim() ? normalizeMac(mac.trim()) ?? undefined : undefined;
-    try {
-      if (brand === 'androidtv') {
+  // The pairing itself, with the brand passed in: identify may have chosen a
+  // different one than the selector shows, and setBrand does not land in time
+  // for this call. Assumes busy/error handling from its caller.
+  const runPair = useCallback(
+    async (b: Brand, h: string) => {
+      const bm = BRANDS.find((x) => x.id === b)!;
+      const m = bm.needsMac && mac.trim() ? normalizeMac(mac.trim()) ?? undefined : undefined;
+      if (b === 'androidtv') {
         // Step 1: open the pairing socket -> TV shows a 6-digit code.
         setMsg({ ok: true, text: 'Opening pairing on the TV…' });
         const r = await api.tvAndroidtvPairStart(settings, h);
@@ -164,23 +192,112 @@ export function SmartTvSetup({ settings }: { settings: ConnSettings }) {
       setMsg({
         ok: true,
         text:
-          brand === 'roku' || brand === 'vidaa'
+          b === 'roku' || b === 'vidaa'
             ? 'Contacting the TV…'
             : 'Waiting for you to accept on the TV…',
       });
       let r: TvPairResult;
-      if (brand === 'webos') r = await api.tvPairWebos(settings, h, m);
-      else if (brand === 'samsung') r = await api.tvPairSamsung(settings, h, m);
-      else if (brand === 'vidaa') r = await api.tvAddVidaa(settings, h, m);
+      if (b === 'webos') r = await api.tvPairWebos(settings, h, m);
+      else if (b === 'samsung') r = await api.tvPairSamsung(settings, h, m);
+      else if (b === 'vidaa') r = await api.tvAddVidaa(settings, h, m);
       else r = await api.tvAddRoku(settings, h);
-      if (r.ok) connected(r);
+      if (r.ok) connected(r, bm.label);
       else setMsg({ ok: false, done: true, text: r.error ?? 'Could not connect to the TV.' });
+    },
+    [mac, settings, connected],
+  );
+
+  /**
+   * Identify first, then act. A user who picked an LG signage panel out of our
+   * OWN scan used to get `HTTP 502: pairing failed: _ssl.c:1063: The handshake
+   * operation timed out` — nothing in that names the actual problem, and there
+   * was no way forward. Asking the box what is at the address turns that into
+   * an explanation plus, for the signage case, a path that works.
+   */
+  const submit = useCallback(async () => {
+    const h = host.trim();
+    if (!h) {
+      setMsg({ ok: false, done: true, text: 'Enter the TV’s IP address.' });
+      return;
+    }
+    setBusy(true);
+    setBlocked(null);
+    try {
+      let id: TvIdentifyResult | null = null;
+      try {
+        setMsg({ ok: true, text: 'Identifying…' });
+        id = await api.tvIdentify(settings, h);
+      } catch (e: unknown) {
+        // Most boxes in the field predate identify and 404 this route. That
+        // MUST degrade to exactly the old behaviour (pair with the selected
+        // brand) -- refusing to pair because a probe is missing would break
+        // setup on every un-updated box. Any other error is a real failure and
+        // rethrows into the handler below.
+        if (!(e instanceof ApiError && e.kind === 'http' && e.status === 404)) throw e;
+      }
+
+      if (id && id.brand === 'lg_commercial') {
+        // Do NOT attempt webOS here: this is the exact device whose port 3001
+        // accepts a connection and then never completes TLS.
+        setBlocked({ host: h, commercial: true });
+        setMsg({ ok: false, done: true, text: id.reason });
+        return;
+      }
+      if (id && !id.supported) {
+        // Settled failure. Falling through would only re-produce the raw socket
+        // error identify exists to replace.
+        setBlocked({ host: h, commercial: false });
+        setMsg({ ok: false, done: true, text: id.reason });
+        return;
+      }
+
+      // The user should not have to have picked the right brand.
+      const chosen = (id && pairableBrand(id.brand)) || brand;
+      if (chosen !== brand) setBrand(chosen);
+      await runPair(chosen, h);
     } catch (e: unknown) {
       setMsg({ ok: false, done: true, text: pairErr(e, 'Could not reach the box or TV. Check the IP and try again.') });
     } finally {
       setBusy(false);
     }
-  }, [brand, host, mac, meta, settings, connected]);
+  }, [brand, host, settings, runPair]);
+
+  // The escape hatch: pair with the brand the user selected, skipping identify
+  // entirely. Reachable after identify blocked the address -- it can be wrong,
+  // and a TV that is OFF cannot be identified at all, so "nothing answered"
+  // must not be the end of the road.
+  const pairAnyway = useCallback(async () => {
+    const h = host.trim();
+    if (!h) return;
+    setBusy(true);
+    setBlocked(null);
+    try {
+      await runPair(brand, h);
+    } catch (e: unknown) {
+      setMsg({ ok: false, done: true, text: pairErr(e, 'Could not reach the box or TV. Check the IP and try again.') });
+    } finally {
+      setBusy(false);
+    }
+  }, [brand, host, runPair]);
+
+  // Record an LG commercial/signage panel. No pairing and no accept prompt --
+  // its 9761 control port is unauthenticated -- so this is a one-tap path out
+  // of what used to be a dead end.
+  const addCommercial = useCallback(async () => {
+    const h = blocked?.host ?? host.trim();
+    if (!h) return;
+    setBusy(true);
+    setMsg({ ok: true, text: 'Contacting the display…' });
+    try {
+      const r = await api.tvAddLgCommercial(settings, h);
+      if (r.ok) connected(r, 'LG commercial display');
+      else setMsg({ ok: false, done: true, text: r.error ?? 'Could not connect to the display.' });
+    } catch (e: unknown) {
+      setMsg({ ok: false, done: true, text: pairErr(e, 'Could not reach the box or display. Check the IP and try again.') });
+    } finally {
+      setBusy(false);
+    }
+  }, [blocked, host, settings, connected]);
 
   const finishAndroidtv = useCallback(async () => {
     const c = code.trim();
@@ -193,7 +310,7 @@ export function SmartTvSetup({ settings }: { settings: ConnSettings }) {
     try {
       const m = mac.trim() ? normalizeMac(mac.trim()) ?? undefined : undefined;
       const r = await api.tvAndroidtvPairFinish(settings, c, m);
-      if (r.ok) connected(r);
+      if (r.ok) connected(r, 'Google TV');
       else setMsg({ ok: false, done: true, text: r.error ?? 'Pairing failed — check the code and retry.' });
     } catch (e: unknown) {
       setMsg({ ok: false, done: true, text: pairErr(e, 'Could not reach the box. Try again.') });
@@ -230,6 +347,10 @@ export function SmartTvSetup({ settings }: { settings: ConnSettings }) {
               setMsg(null);
               setAwaitingCode(false);
               setCode('');
+              // `blocked` deliberately survives a brand change: switching brand
+              // is how the user forces a device identify rejected, so clearing
+              // it here would take away the "pair anyway" button at the exact
+              // moment they reached for it.
             }}
             style={[styles.seg, brand === b.id && styles.segOn]}>
             <Text style={[styles.segText, brand === b.id && styles.segTextOn]}>{b.label}</Text>
@@ -294,7 +415,11 @@ export function SmartTvSetup({ settings }: { settings: ConnSettings }) {
           ) : null}
           <TextInput
             value={host}
-            onChangeText={setHost}
+            onChangeText={(v) => {
+              setHost(v);
+              // The block belongs to the address that was identified.
+              setBlocked(null);
+            }}
             placeholder="TV IP address (e.g. 192.168.1.50)"
             placeholderTextColor={t.textFaint}
             autoCapitalize="none"
@@ -327,6 +452,24 @@ export function SmartTvSetup({ settings }: { settings: ConnSettings }) {
               </Text>
             )}
           </Pressable>
+          {blocked?.commercial ? (
+            <Pressable
+              onPress={addCommercial}
+              disabled={busy}
+              style={[styles.button, busy && styles.buttonBusy]}>
+              <Text style={styles.buttonText}>Add as LG commercial display</Text>
+            </Pressable>
+          ) : null}
+          {blocked ? (
+            <Pressable
+              onPress={pairAnyway}
+              disabled={busy}
+              style={[styles.altBtn, busy && styles.buttonBusy]}>
+              <Text style={styles.altBtnText}>
+                {meta.verb} as {meta.label} anyway
+              </Text>
+            </Pressable>
+          ) : null}
         </>
       )}
 
@@ -436,6 +579,17 @@ const makeStyles = (t: Palette) => StyleSheet.create({
     borderColor: t.cardBorder,
   },
   scanBtnText: { color: t.blue, fontSize: 14, fontWeight: '700' },
+  altBtn: {
+    alignItems: 'center',
+    justifyContent: 'center',
+    borderRadius: 10,
+    paddingVertical: 11,
+    minHeight: 44,
+    backgroundColor: t.inset,
+    borderWidth: 1,
+    borderColor: t.cardBorder,
+  },
+  altBtnText: { color: t.textDim, fontSize: 14, fontWeight: '600' },
   foundList: { gap: 6 },
   foundRow: {
     flexDirection: 'row',
