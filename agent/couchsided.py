@@ -44,7 +44,7 @@ except ImportError:  # pragma: no cover
     fcntl = None
 
 APP_NAME = "couchside-agent"
-VERSION = "2.9.27"
+VERSION = "2.9.28"
 UID = os.getuid()
 XDG_RUNTIME_DIR = "/run/user/%d" % UID
 
@@ -7569,8 +7569,8 @@ _GUIDE_MOCK = False
 
 def _parse_input_devices(text):
     """Parse /proc/bus/input/devices into
-    [{"name","phys","uniq","handlers":[...],"keybits":[...]}]. Tolerant of
-    unknown lines. partition(':') is used so a Phys like
+    [{"name","phys","uniq","vendor","product","handlers":[...],"keybits":[...]}].
+    Tolerant of unknown lines. partition(':') is used so a Phys like
     usb-0000:c3:00.4-1/input0 survives."""
     recs, cur = [], None
     for line in text.splitlines():
@@ -7581,8 +7581,19 @@ def _parse_input_devices(text):
         val = val.strip()
         if tag == "I":
             cur = {"name": "", "phys": "", "uniq": "", "handlers": [],
-                   "keybits": []}
+                   "keybits": [], "vendor": "", "product": ""}
             recs.append(cur)
+            # "Bus=0003 Vendor=28de Product=11ff Version=0001". VID:PID is the
+            # only thing that separates a Steam Input phantom from the pad it
+            # republishes — both are phys-less and both are named after a real
+            # Xbox pad. Lowercased: /proc prints hex lowercase, but don't rely
+            # on it. Missing/garbled fields stay "" and simply never match.
+            for tok in val.split():
+                k, _, v = tok.partition("=")
+                if k == "Vendor":
+                    cur["vendor"] = v.strip().lower()
+                elif k == "Product":
+                    cur["product"] = v.strip().lower()
         elif cur is None:
             continue
         elif tag == "N" and val.startswith("Name="):
@@ -8118,10 +8129,90 @@ def _pad_battery(uniq):
     return {}
 
 
+# Steam Input republishes every controller it manages as its own virtual pad
+# under this VID:PID. The Puck is the wireless dongle the 2025 Steam Controller
+# pairs through; its presence is what lets us name an otherwise anonymous
+# phantom. Both measured on a live box, 2026-07-19.
+_STEAM_INPUT_ID = ("28de", "11ff")
+_STEAM_PUCK_ID = ("28de", "1304")
+
+
+def _read_input_devices():
+    """Parsed /proc/bus/input/devices, [] on any read error."""
+    try:
+        with open(_PROC_INPUT_DEVICES, "r", errors="replace") as f:
+            return _parse_input_devices(f.read())
+    except OSError:
+        return []
+
+
+def _is_pad(rec):
+    """A joystick node with a guide button — same shape test list_real_pads
+    applies, minus its phys/uniq requirement."""
+    return (any(t.startswith("js") for t in rec.get("handlers", []))
+            and _declares_key(rec, BTN_MODE))
+
+
+def _steam_input_pads(recs):
+    """Pads Steam Input is currently republishing (VID:PID 28de:11ff).
+
+    MEASURED ON HARDWARE, all three cases producing exactly one phantom each:
+    a real pad carrying a Phys, a phys-less pad, and the agent's OWN uinput
+    pad. So this count is (real pads) + (agent pads) + (pads only Steam can
+    see) — never a subset. That is what makes the subtraction below sound."""
+    return [r for r in recs
+            if (r.get("vendor"), r.get("product")) == _STEAM_INPUT_ID
+            and _is_pad(r)]
+
+
+def _own_pad_count():
+    """Virtual gamepads the agent itself has open right now.
+
+    Counts entries whose device slot is filled, NOT len(GAMEPAD_SESSIONS) —
+    waiters sit in that list with device None, and an entry is appended before
+    any device is created. Normally 0 or 1 (only the holder owns a pad); it can
+    briefly read 2 during a handoff, between promoting the new holder and
+    releasing the old one, since both run outside GAMEPAD_LOCK. A transient
+    over-count only hides a controller for one 2s poll, which is why this is
+    allowed to race rather than take a heavier lock."""
+    try:
+        with GAMEPAD_LOCK:
+            return sum(1 for s in GAMEPAD_SESSIONS
+                       if s.get("device") is not None)
+    except Exception:
+        return 0
+
+
 def _gaming_controllers():
-    """Real pads (deduped — one device can present several nodes) with a best-
-    effort battery join. Keyed on uniq, NEVER phys (phys is the shared host-
-    adapter MAC, identical for every BT pad)."""
+    """Controllers the user could actually play with, deduped, with a best-
+    effort battery join.
+
+    TWO sources, because neither sees every pad on its own:
+
+      * REAL pads (list_real_pads) — carry a Phys or Uniq, so they have honest
+        names and can be battery-joined.
+      * Steam Input phantoms — a Steam Controller NEVER exposes a gamepad node
+        of its own. The Puck presents only lizard-mode mouse/keyboard nodes;
+        Steam consumes the HID and republishes it phys-less. Those phantoms are
+        invisible to list_real_pads BY DESIGN: our own uinput pad is phys-less
+        too, and a filter that matched it would tear down the user's desktop
+        session every time a phone connected.
+
+    Steam wraps everything it manages, so whatever is left after subtracting
+    the pads we can already see and the pads we created ourselves is exactly
+    what list_real_pads cannot reach:
+
+        total = max(len(real), phantoms - our_pads)
+
+    max() rather than plain subtraction so real pads still show when Steam is
+    not running at all and there are no phantoms. Verified against a live box
+    in every state that was reachable:
+
+        idle, Steam Controller on   real 0  phantom 1  ours 0  -> 1
+        phone gamepad connected     real 0  phantom 2  ours 1  -> 1  (not 2)
+        + a pad carrying a Phys     real 1  phantom 2  ours 0  -> 2
+        Steam not running           real 1  phantom 0  ours 0  -> 1
+    """
     seen, out = set(), []
     for p in list_real_pads():
         u = p.get("uniq") or ""
@@ -8132,6 +8223,23 @@ def _gaming_controllers():
         ctrl = {"uniq": u, "name": p.get("name", "")}
         ctrl.update(_pad_battery(u))
         out.append(ctrl)
+
+    recs = _read_input_devices()
+    hidden = max(0, len(_steam_input_pads(recs)) - _own_pad_count() - len(out))
+    if hidden:
+        # The phantom is anonymous ("Microsoft X-Box 360 pad 0") and carries no
+        # Uniq, so there is nothing real to name or battery-join it by. Name it
+        # from the dongle when that is present. No battery either way: the 2025
+        # controller publishes NO power_supply node (its charge is readable only
+        # over HID, in userspace), so there is nothing for _pad_battery to find.
+        label = ("Steam Controller"
+                 if any((r.get("vendor"), r.get("product")) == _STEAM_PUCK_ID
+                        for r in recs)
+                 else "Controller")
+        for i in range(hidden):
+            # Synthetic uniq: the app keys its controller list on uniq, so two
+            # hidden pads must not collide on "".
+            out.append({"uniq": "steam-input-%d" % i, "name": label})
     return out
 
 
@@ -8567,15 +8675,17 @@ def _make_holder(entry, mock):
     first swipe / keypress of EVERY session (measured 508/525ms). A create
     failure here is non-fatal — the slot stays None and the lazy path in
     _handle_frame retries on first use, reporting the error to the client."""
-    # REUSE the session's existing pad on re-promotion. A session that passes
-    # control away keeps its device (nothing destroys it at demotion — only
-    # disconnect does), so a Pass/take-back ping-pong used to hit this line
-    # again and OVERWRITE the ref: the old pad object was orphaned with its fd
-    # open, leaving a phantom "Microsoft X-Box 360 pad N" alive until the agent
-    # exited (three were found on a box after one afternoon). Each orphan is
-    # also a controller Steam re-enumerates — enough churn corrupted a real
-    # box's desktop controller config. Reuse fixes the leak AND means a handoff
-    # ping-pong presents ONE stable controller to Steam instead of a parade.
+    # REUSE the session's existing pad on re-promotion, when one survived.
+    # (_release_devices DOES destroy the pad at demotion, so usually none has —
+    # an earlier version of this comment claimed otherwise.) The guard is what
+    # stops a re-promotion from OVERWRITING a live ref: that orphaned the old
+    # pad object with its fd still open, leaving a phantom "Microsoft X-Box 360
+    # pad N" alive until the agent exited (three were found on a box after one
+    # afternoon). Each orphan is also a controller Steam re-enumerates — enough
+    # churn corrupted a real box's desktop controller config, and each one now
+    # also inflates _own_pad_count and so hides a real controller from the
+    # gaming card. Reuse keeps a handoff ping-pong presenting ONE stable
+    # controller to Steam instead of a parade.
     if entry.get("device") is None:
         try:
             entry["device"] = MockGamepad() if mock else UInputGamepad()
