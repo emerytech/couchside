@@ -1,0 +1,70 @@
+{
+  "_comment": [
+    "CANONICAL wire vocabulary for the phone <-> agent protocol. THE authority.",
+    "",
+    "Three independent implementations speak this: the Linux agent",
+    "(agent/couchsided.py), the Windows agent (agent/win/couchsided-win.py), and",
+    "the app (app/lib/gamepad.ts). Adding a key to one and forgetting another is",
+    "the single most repeated defect in this repo -- the lg_commercial config",
+    "section that crash-looped a live box, and the smart-TV backends that existed",
+    "on Linux for weeks before Windows, were both this shape.",
+    "",
+    "tests/test_protocol_parity.py holds all three against this file, in BOTH",
+    "directions: nothing here goes unimplemented, and nothing is accepted that",
+    "isn't here. Change this file FIRST, watch it fail, then implement.",
+    "",
+    "`platforms` is load-bearing. Some vocabulary is deliberately platform-scoped",
+    "-- KDE desktop actions are meaningless on Windows, and Windows system chords",
+    "are meaningless on SteamOS. Those entries declare their platforms, and the",
+    "test asserts they are ABSENT elsewhere. That absence is a designed decision,",
+    "not an omission, and asserting it stops a half-port from looking finished."
+  ],
+
+  "buttons": {
+    "_doc": "{'t':'b','k':<key>,'v':0|1}. Virtual Xbox 360 pad. Required on BOTH agents. NOTE: the d-pad keys are a LATCHED ABS hat on Linux, not edge-triggered -- one missing v:0 pins the axis forever (see tests/test_dpad_latch.py).",
+    "platforms": ["linux", "windows"],
+    "keys": ["a", "b", "x", "y", "lb", "rb", "l3", "r3", "start", "select", "guide", "dl", "dr", "du", "dd"]
+  },
+
+  "triggers": {
+    "_doc": "{'t':'t','k':<key>,'v':0..255}. Analog shoulder triggers.",
+    "platforms": ["linux", "windows"],
+    "keys": ["lt", "rt"]
+  },
+
+  "sticks": {
+    "_doc": "{'t':'s','k':<key>,'x':<n>,'y':<n>}. Analog sticks.",
+    "platforms": ["linux", "windows"],
+    "keys": ["l", "r"]
+  },
+
+  "mouseButtons": {
+    "_doc": "{'t':'mb','k':<key>,'v':0|1}. Relative-mouse buttons (protocol v2).",
+    "platforms": ["linux", "windows"],
+    "keys": ["l", "m", "r"]
+  },
+
+  "specialKeys": {
+    "_doc": "{'t':'k','k':<key>} named non-character keys. Required on BOTH agents.",
+    "platforms": ["linux", "windows"],
+    "keys": ["backspace", "down", "end", "enter", "esc", "home", "left", "right", "space", "tab", "up"]
+  },
+
+  "desktopKeys": {
+    "_doc": "SteamOS/Bazzite (KDE Plasma) desktop actions on the {t:'k'} channel: 'meta' taps Super (Kickoff), 'overview' fires the KWin overview chord. LINUX ONLY by design -- the app gates them on caps.desktop and an agent that doesn't know the name drops the frame.",
+    "platforms": ["linux"],
+    "keys": ["meta", "overview"]
+  },
+
+  "chords": {
+    "_doc": "One-shot Windows desktop system shortcuts the agent expands into a key sequence. WINDOWS ONLY by design. Ctrl+Alt+Del is deliberately absent: it is the Secure Attention Sequence and SendInput cannot generate it.",
+    "platforms": ["windows"],
+    "keys": ["win", "alt-tab", "lock", "taskmgr"]
+  },
+
+  "frameTypes": {
+    "_doc": "Top-level {'t':...} discriminators the gamepad WebSocket accepts.",
+    "platforms": ["linux", "windows"],
+    "keys": ["b", "t", "s", "m", "mb", "mw", "k", "kt", "ping", "grant", "deny", "request", "force"]
+  }
+}
