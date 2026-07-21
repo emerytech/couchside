@@ -22,6 +22,7 @@ import {
   Keyboard,
   PanResponder,
   Platform,
+  ScrollView,
   Pressable,
   StyleSheet,
   Text,
@@ -33,10 +34,12 @@ import {
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
 import { Gated } from '@/components/Gated';
+import { SteamMenusPanel } from '@/components/SteamMenusPanel';
 import { RemoteView } from '@/components/RemoteView';
 import { TabScreen } from '@/components/TabScreen';
 import { useLockOrientation } from '@/hooks/useLockOrientation';
 import { usePoll } from '@/hooks/usePoll';
+import type { SteamMenus } from '@/lib/api';
 import { useTrackpad } from '@/hooks/useTrackpad';
 import { useVolumeButtons } from '@/hooks/useVolumeButtons';
 import { api, hostKey, Status } from '@/lib/api';
@@ -596,6 +599,10 @@ const MODES: { key: PadMode; label: string }[] = [
   { key: 'swipe', label: 'SWIPE' },
   { key: 'trackpad', label: 'TRACK' },
   { key: 'remote', label: 'REMOTE' },
+  // Sits AFTER remote on purpose: it is one swipe further from the surface you
+  // reach for most. Conditional -- see `modes` below; a box without Steam menus
+  // never sees this segment, because an empty panel is worse than no segment.
+  { key: 'menus', label: 'STEAM' },
 ];
 
 function PadScreen() {
@@ -820,6 +827,23 @@ function PadScreen() {
   // aware: caps.desktop flips with each Game Mode <-> desktop switch, so poll
   // status here like RemoteView does rather than trusting the persisted caps.
   const deskPoll = usePoll<Status>(() => api.status(settings), 8000, true, hostKey(settings));
+  // Steam settings shortcuts (agent >= 2.9.31). api.steamMenus is already
+  // capability-gated, so an older box resolves null and the mode disappears.
+  // Slow poll: this list is static for the life of a Steam install.
+  const menusPoll = usePoll<SteamMenus | null>(
+    () => api.steamMenus(settings),
+    60000,
+    true,
+    hostKey(settings),
+  );
+  const steamMenus = menusPoll.data?.menus ?? [];
+  const hasSteamMenus = steamMenus.length > 0;
+  // The segments this box actually has. Mode cycling walks THIS list, not
+  // MODES, so a swipe can never land on a segment that isn't rendered.
+  const modes = useMemo(
+    () => MODES.filter((m) => m.key !== 'menus' || hasSteamMenus),
+    [hasSteamMenus],
+  );
   const hasDesktop = deskPoll.data?.caps?.desktop === true;
   const desk = useCallback(
     (name: DesktopKey | 'esc') => () =>
@@ -866,11 +890,25 @@ function PadScreen() {
   // (wrapping), matching the segmented control's order.
   const cycleMode = useCallback(
     (dir: 1 | -1) => {
-      const i = MODES.findIndex((m) => m.key === mode);
-      setMode(MODES[(i + dir + MODES.length) % MODES.length].key);
+      const i = modes.findIndex((m) => m.key === mode);
+      const from = i < 0 ? 0 : i;
+      setMode(modes[(from + dir + modes.length) % modes.length].key);
     },
-    [mode, setMode],
+    [mode, setMode, modes],
   );
+
+  // Bounce off a mode this box can't serve -- the persisted padMode may say
+  // 'menus' from another box, or the capability may have gone away.
+  //
+  // Gate on `loading`, NOT on `data !== undefined`: usePoll initialises data to
+  // NULL, so an undefined-check is true on the very first render and bounced
+  // straight off 'menus' before the fetch had a chance to land. A box whose
+  // saved mode IS 'menus' then never opened on it. `loading` is documented as
+  // "true while the very first request is in flight", which is exactly the
+  // "don't judge yet" signal this needs.
+  useEffect(() => {
+    if (mode === 'menus' && !menusPoll.loading && !hasSteamMenus) setMode('remote');
+  }, [mode, hasSteamMenus, menusPoll.loading, setMode]);
 
   // Swipe mode drives the d-pad as an EXPLICIT hold, not a fire-and-forget
   // pulse.
@@ -1015,12 +1053,13 @@ function PadScreen() {
           </Text>
         </Pressable>
         <View style={styles.modeToggle}>
-          {MODES.map((m) => (
+          {modes.map((m) => (
             <Pressable
               key={m.key}
               onPress={() => setMode(m.key)}
               style={[styles.modeSeg, mode === m.key && styles.modeSegActive]}>
               <Text
+                numberOfLines={1}
                 style={[styles.modeSegText, mode === m.key && styles.modeSegTextActive]}>
                 {m.label}
               </Text>
@@ -1071,7 +1110,18 @@ function PadScreen() {
         </View>
       )}
 
-      {mode === 'remote' ? (
+      {mode === 'menus' ? (
+        // MUST scroll: TabScreen's body is a plain View, and this list is ~16
+        // chips across five sections -- taller than the pane on a phone. The
+        // Actions tab gets scrolling from its own ScrollView; Pad has none, so
+        // without this the bottom sections are unreachable.
+        <ScrollView
+          style={styles.menusScroll}
+          contentContainerStyle={styles.menusContent}
+          showsVerticalScrollIndicator={false}>
+          <SteamMenusPanel menus={steamMenus} />
+        </ScrollView>
+      ) : mode === 'remote' ? (
         <>
           <RemoteView client={client} settings={settings} />
           {keyboardBar}
@@ -1408,6 +1458,9 @@ function PadScreen() {
 }
 
 const makeStyles = (t: Palette) => StyleSheet.create({
+  // Steam-menus mode scrolls on its own; TabScreen's body does not.
+  menusScroll: { flex: 1 },
+  menusContent: { paddingBottom: 16 },
   screen: {
     flex: 1,
     backgroundColor: t.bg,
@@ -1503,11 +1556,16 @@ const makeStyles = (t: Palette) => StyleSheet.create({
     borderRadius: 999,
     padding: 3,
     gap: 2,
+    // A fifth segment (STEAM) overflowed the row on narrow screens and the
+    // label was clipped off the right edge. Let the group and its segments
+    // shrink instead of running off.
+    flexShrink: 1,
   },
   modeSeg: {
     paddingVertical: 5,
-    paddingHorizontal: 12,
+    paddingHorizontal: 9,
     borderRadius: 999,
+    flexShrink: 1,
   },
   modeSegActive: {
     backgroundColor: t.card,
@@ -1517,7 +1575,7 @@ const makeStyles = (t: Palette) => StyleSheet.create({
     fontFamily: mono,
     fontSize: 10,
     fontWeight: '700',
-    letterSpacing: 1,
+    letterSpacing: 0.5,
   },
   modeSegTextActive: {
     color: t.blue,

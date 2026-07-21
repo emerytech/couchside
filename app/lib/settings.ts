@@ -9,8 +9,13 @@ import type { BoxCaps } from './api';
  *  - swipe:    Apple-TV-style d-pad swipe surface
  *  - trackpad: relative mouse + scroll surface (protocol v2)
  *  - remote:   traditional TV-remote layout (D-pad/OK, TV keys, Steam/QAM)
+ *  - menus:    Steam settings shortcuts, one swipe past the remote
+ *
+ * `menus` is CONDITIONAL: it only exists when the box actually reports Steam
+ * menus (agent >= 2.9.31). Pad filters it out otherwise rather than offering a
+ * mode that would open an empty panel.
  */
-export type PadMode = 'gamepad' | 'swipe' | 'trackpad' | 'remote';
+export type PadMode = 'gamepad' | 'swipe' | 'trackpad' | 'remote' | 'menus';
 
 /**
  * A single paired box (Bazzite media center, Steam Deck, ...). The app manages
@@ -192,6 +197,9 @@ function normalizePadMode(v: unknown): PadMode {
   if (v === 'gamepad') return 'gamepad';
   if (v === 'trackpad') return 'trackpad';
   if (v === 'remote') return 'remote';
+  // A box persisted on 'menus' that later loses the capability is bounced back
+  // by the Pad screen; accepting it here keeps the round-trip lossless.
+  if (v === 'menus') return 'menus';
   return 'swipe';
 }
 
