@@ -11,7 +11,7 @@
     "ios": {
       "supportsTablet": true,
       "bundleIdentifier": "com.ets3d.rescueremote",
-      "buildNumber": "70",
+      "buildNumber": "69",
       "infoPlist": {
         "ITSAppUsesNonExemptEncryption": false,
         "NSAppTransportSecurity": {
