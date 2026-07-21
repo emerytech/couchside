@@ -32,7 +32,7 @@
         "monochromeImage": "./assets/images/android-icon-monochrome.png"
       },
       "predictiveBackGestureEnabled": false,
-      "versionCode": 52
+      "versionCode": 51
     },
     "web": {
       "bundler": "metro",
