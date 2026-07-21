@@ -95,7 +95,13 @@ export function CouchModeSheet({
   }, [job?.state, job?.session, onChanged]);
 
   const fling = useCallback(async () => {
-    if (busy || !output) return;
+    // NOT `|| !output`. The same gate lived here AND on the button's disabled
+    // prop; removing only the prop produced a button that looked pressable and
+    // silently did nothing, which is worse than a disabled one. An empty output
+    // is valid: the agent skips the pin step ("no external display selected")
+    // and switches anyway, which is the whole point on an undocked handheld
+    // where game_outputs is [] by design.
+    if (busy) return;
     setBusy(true);
     hapticLight();
     try {
@@ -186,13 +192,23 @@ export function CouchModeSheet({
                 </>
               )}
 
+              {/* NOT gated on `output`. game_outputs deliberately EXCLUDES
+                  internal displays, so an undocked handheld reports [] -- and
+                  since canPickOutput is also false there, no picker is shown
+                  either, leaving a permanently dead button. Measured on a Steam
+                  Deck OLED undocked: outputs [eDP-1 internal], game_outputs [],
+                  output_forcing false, caps.couchmode TRUE.
+
+                  The agent never required an output. couchmode_start("") is
+                  supported and simply skips the pin step ("no external display
+                  selected"), and couchmode_available() was relaxed to any
+                  connected display precisely so undocked handhelds could fling
+                  -- the app was just never updated to match. The output is a
+                  PREFERENCE for multi-display boxes, not a precondition. */}
               <Pressable
-                disabled={busy || !output}
+                disabled={busy}
                 onPress={fling}
-                style={({ pressed }) => [
-                  styles.startBtn,
-                  (pressed || busy || !output) && styles.pressed,
-                ]}>
+                style={({ pressed }) => [styles.startBtn, (pressed || busy) && styles.pressed]}>
                 <Ionicons name="tv-outline" size={18} color="#fff" />
                 <Text style={styles.startText}>{busy ? 'Switching…' : 'Fling to TV'}</Text>
               </Pressable>
