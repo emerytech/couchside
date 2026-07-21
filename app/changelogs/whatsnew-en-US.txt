@@ -1,6 +1,4 @@
-New in 2.9.16
+New in 2.9.17
 
-• Couch Mode now works on a handheld with no TV attached — the Fling button was dead whenever no external display was connected.
-• Suspend no longer requires Ethernet. It was greyed out on Wi-Fi, including on Steam Deck; wake it with its power button.
-• Steam settings are one swipe past the remote, in Game Mode.
-• Connection status now reads in full, and the mode tabs spread evenly.
+• Touch animations. Preferences can now draw a ring wherever you tap, and a trail of dots while a finger moves, so a screen recording or a support screen-share shows what was actually pressed. Both are off by default.
+• Clearer wording on the unlock screen.
