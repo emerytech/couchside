@@ -14,11 +14,16 @@ Entry fields: `priority` (P0 blocker → P3 nice) · `risk` · `affects` · `dep
 - Two Preferences toggles, both default OFF, drawing touch feedback over the whole UI so
   screen recordings of Couchside are legible for the store listing, support screen-shares
   and demos. iOS has no system-wide "Show taps" and no recorder can draw into another app,
-  so the app draws its own. Branch `feat/tap-indicators`. Pure JS, no new dependency.
-- **Not Complete because the drag trail is unverified.** "Show taps" is proven in the web
-  harness in both states with a coordinate control; "Trace drags" cannot be exercised on
-  web at all (`touchMove` measured 0 across 171 mouse-driven move events — RNW emits mouse
-  events, not touch events). Move to ✅ only after a device build shows the trail drawing.
+  so the app draws its own. Pure JS, no new dependency. **Shipped in 2.9.17** (#179).
+- **Shipped but NOT Complete — the drag trail is still unverified.** "Show taps" is proven
+  in the web harness in both states with a coordinate control; "Trace drags" cannot be
+  exercised on web at all (`touchMove` measured 0 across 171 mouse-driven move events — RNW
+  emits mouse events, not touch events). Being live on Play is not evidence it works. Move
+  to ✅ only after a device shows the trail drawing.
+- **How to verify without a rebuild:** the `__touchTrace` counters are in the shipped
+  bundle on purpose. Turn both prefs on, drag, read `globalThis.__touchTrace` — `touchMove`
+  and `marks` must both climb. If `touchMove` stays 0 on a real device, the `onTouchMove`
+  fix is wrong and the trail needs a different attachment point.
 - The camera PiP from the `feat/demo-mode` prototype is explicitly **not** coming with it:
   it needs `expo-camera`, the CI gate blocks that from `main`, and the shipping app carries
   no mention of native camera use.
@@ -60,6 +65,14 @@ Entry fields: `priority` (P0 blocker → P3 nice) · `risk` · `affects` · `dep
 ---
 
 ## ✅ Completed
+
+### 2026-07-21 — Release 2.9.17 (app 2.9.17 / agent 2.9.36 unchanged)
+Play **vc53 LIVE**; iOS **build 71 submitted for review** (App Store live was still 2.9.9 at
+release time). Carries touch animations (#179) and the unlock copy pass (#180). 2.9.16's
+queued review submission was cancelled so 2.9.17 could carry everything in one submission —
+its version record was **renamed**, not replaced, because App Store allows only one editable
+version at a time. Builds were confirmed VALID *before* cancelling, so the unqueued window
+was ~1 minute.
 
 ### 2026-07-20 — Release 2.9.12 (app 2.9.12 / agent 2.9.32)
 Play vc49 / iOS build 65. Carries the redesign, host-online, the screen-capture
