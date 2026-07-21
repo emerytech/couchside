@@ -1,7 +1,7 @@
 import * as Linking from 'expo-linking';
-import { useRouter } from 'expo-router';
 import { useCallback, useEffect, useRef } from 'react';
 
+import { navigateAfterPair } from './postPair';
 import { DEFAULT_PORT } from './settings';
 import { useBoxes } from './SettingsContext';
 
@@ -55,8 +55,11 @@ function parseQuery(url: string): Record<string, string> {
  * tab is focused never mounts Setup's effect, and `couchside://setup` parses
  * `setup` as the URL host (not a route), so the params don't always reach the
  * screen. Here we read `queryParams` straight off the URL, add/update the box
- * (addBox dedupes by host+port), and jump to Setup with `?paired=1` so it can
- * flash its confirmation banner.
+ * (addBox dedupes by host+port), and jump to the Pad -- the swipe Remote -- so a
+ * QR scan lands on the thing the user paired the box to use. See lib/postPair.ts.
+ *
+ * (This used to claim it jumped to Setup with `?paired=1` to flash a confirmation
+ * banner. Setup has no `paired` param and never did; the comment was drift.)
  *
  * Uses Linking.addEventListener (fires on EVERY inbound URL, even an identical
  * re-scan) plus getInitialURL for the cold-start launch URL. A link that lands
@@ -65,7 +68,6 @@ function parseQuery(url: string): Record<string, string> {
  */
 export function DeepLinkHandler() {
   const { addBox, ready } = useBoxes();
-  const router = useRouter();
 
   const readyRef = useRef(ready);
   readyRef.current = ready;
@@ -91,10 +93,14 @@ export function DeepLinkHandler() {
         Number.isFinite(portRaw) && portRaw > 0 && portRaw <= 65535 ? portRaw : DEFAULT_PORT;
       const ip = q.ip || undefined;
 
-      void addBox({ host, port, token, lastIp: ip });
-      router.navigate('/setup');
+      // Navigate only once the box is actually stored and active, so the Pad
+      // opens against the box that was just paired rather than the previous one.
+      void addBox({ host, port, token, lastIp: ip }).then(navigateAfterPair, () => {
+        // addBox failed (storage write) — stay put rather than opening a remote
+        // for a box that was never saved.
+      });
     },
-    [addBox, router],
+    [addBox],
   );
 
   useEffect(() => {

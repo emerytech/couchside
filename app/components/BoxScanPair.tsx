@@ -14,6 +14,7 @@ import { ActivityIndicator, Pressable, StyleSheet, Text, TextInput, View } from 
 import { pairFinish, pairStart } from '@/lib/api';
 import { FoundBox, scanAvailable, scanForBoxes, selfIp } from '@/lib/boxDiscovery';
 import { hapticSelection } from '@/lib/haptics';
+import { navigateAfterPair } from '@/lib/postPair';
 import { useBoxes } from '@/lib/SettingsContext';
 import { useTheme, useThemedStyles, type Palette } from '@/lib/theme';
 
@@ -88,10 +89,17 @@ export function BoxScanPair() {
     try {
       const r = await pairFinish(box.ip, box.port, code);
       if (r.ok && r.token) {
-        await addBox({ host: box.host, port: r.port ?? box.port, token: r.token, lastIp: box.ip });
+        const added = await addBox({
+          host: box.host,
+          port: r.port ?? box.port,
+          token: r.token,
+          lastIp: box.ip,
+        });
         setPhase({ k: 'idle' });
         setPin('');
         setMsg({ ok: true, text: `Paired ${box.name}.` });
+        // Straight to the remote — see lib/postPair.ts.
+        navigateAfterPair(added);
       } else {
         setPhase({ k: 'pin', box });
         setMsg({ ok: false, text: r.error ?? 'Pairing failed — check the PIN and retry.' });
