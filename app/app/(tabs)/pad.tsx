@@ -838,13 +838,25 @@ function PadScreen() {
   );
   const steamMenus = menusPoll.data?.menus ?? [];
   const hasSteamMenus = steamMenus.length > 0;
+  // Declared BEFORE `modes` because the Steam segment depends on it.
+  const hasDesktop = deskPoll.data?.caps?.desktop === true;
+  // These shortcuts are steam:// deep links that Steam only acts on in GAME
+  // MODE; on the Plasma desktop they do nothing useful. desktop_available() is
+  // recomputed per /api/status request precisely because it flips on every
+  // session switch, so this tracks a live Couch Mode handoff rather than
+  // whatever session the agent booted in.
+  //
+  // `=== true` matters: only HIDE when we positively know it is the desktop.
+  // Before the first poll lands, and on a box that isn't SteamOS-like, the flag
+  // is false and the segment stays -- "never hide a tab on a guess", the same
+  // rule the tab layout uses for caps-gated tabs.
+  const inGameMode = !hasDesktop;
   // The segments this box actually has. Mode cycling walks THIS list, not
   // MODES, so a swipe can never land on a segment that isn't rendered.
   const modes = useMemo(
-    () => MODES.filter((m) => m.key !== 'menus' || hasSteamMenus),
-    [hasSteamMenus],
+    () => MODES.filter((m) => m.key !== 'menus' || (hasSteamMenus && inGameMode)),
+    [hasSteamMenus, inGameMode],
   );
-  const hasDesktop = deskPoll.data?.caps?.desktop === true;
   const desk = useCallback(
     (name: DesktopKey | 'esc') => () =>
       name === 'esc' ? client.sendKey('esc') : client.sendDesktopKey(name),
@@ -907,8 +919,15 @@ function PadScreen() {
   // "true while the very first request is in flight", which is exactly the
   // "don't judge yet" signal this needs.
   useEffect(() => {
-    if (mode === 'menus' && !menusPoll.loading && !hasSteamMenus) setMode('remote');
-  }, [mode, hasSteamMenus, menusPoll.loading, setMode]);
+    if (mode !== 'menus') return;
+    // Fling the box to the desktop while sitting on this tab and it must let go
+    // immediately -- that is a live session switch, not a stale capability.
+    if (!inGameMode) {
+      setMode('remote');
+      return;
+    }
+    if (!menusPoll.loading && !hasSteamMenus) setMode('remote');
+  }, [mode, hasSteamMenus, inGameMode, menusPoll.loading, setMode]);
 
   // Swipe mode drives the d-pad as an EXPLICIT hold, not a fire-and-forget
   // pulse.
