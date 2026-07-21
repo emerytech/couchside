@@ -49,6 +49,16 @@ jobs:
       - name: Unit tests (gamepad handoff)
         run: python3 tests/test_gamepad_handoff.py
 
+      # The d-pad is a LATCHED absolute axis (DPAD_MAP -> ABS_HAT0X/Y), not an
+      # edge-triggered key, and nothing re-zeroes it: no stuck-button watchdog,
+      # and the 12s idle reap never fires while the app pings every 5s. ONE
+      # missing release therefore pins the axis and Steam auto-repeats it
+      # forever -- the "swipe sticks and keeps going that direction" bug.
+      # _release_devices() destroyed a demoted pad without zeroing it, while
+      # carefully zeroing the mouse two lines below.
+      - name: Unit tests (dpad latch)
+        run: python3 tests/test_dpad_latch.py
+
       # Couch Mode ceremony: the staged desktop->TV switch. Its whole reason for
       # existing is to stop two lies (a fake-green "Ready" that didn't verify
       # Game Mode came up, and audio that silently "skipped" onto the wrong

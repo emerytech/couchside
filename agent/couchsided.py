@@ -9495,6 +9495,16 @@ def _release_devices(entry):
     can never be left held)."""
     dev = entry.get("device")
     if dev is not None:
+        # Zero the pad BEFORE destroying it, for the same reason the mouse is
+        # zeroed below — that reasoning just never got applied to the pad. The
+        # d-pad is a LATCHED absolute axis (DPAD_MAP -> ABS_HAT0X/Y), so a
+        # demote mid-swipe tears the device down with a direction still
+        # asserted. Unlike the keyboard, nothing here pairs press with release.
+        try:
+            dev.emit([(EV_ABS, ABS_HAT0X, 0), (EV_ABS, ABS_HAT0Y, 0)]
+                     + [(EV_KEY, code, 0) for code in BTN_CODES.values()])
+        except Exception:
+            pass
         try:
             dev.destroy()
         except Exception:

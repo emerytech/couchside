@@ -20,6 +20,7 @@ import {
 
 import { AgentUpdateBanner } from '@/components/AgentUpdateBanner';
 import { Gated } from '@/components/Gated';
+import { InputTracePanel } from '@/components/InputTracePanel';
 import { LogsPanel } from '@/components/LogsPanel';
 import { QrView } from '@/components/QrView';
 import { BoxScanPair } from '@/components/BoxScanPair';
@@ -1364,6 +1365,8 @@ function SetupBody() {
                 }}
               />
             </View>
+
+            <InputTracePanel />
           </>
         )}
 
