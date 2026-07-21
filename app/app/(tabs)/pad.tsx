@@ -1043,29 +1043,27 @@ function PadScreen() {
         { paddingTop: 10, paddingBottom: Math.max(insets.bottom, 10) },
       ]}>
       {/* Header: status pill + input-mode toggle (all modes) */}
-      <View style={styles.headerRow}>
-        <Pressable onPress={retry} style={styles.pill} hitSlop={8}>
-          <View style={[styles.pillDot, { backgroundColor: STATUS_COLOR[status] }]} />
-          <Text style={styles.pillText} numberOfLines={1}>
-            {status === 'waiting' && canForce
-              ? 'no response · tap to take control'
-              : statusLabel(status, dev)}
-          </Text>
-        </Pressable>
-        <View style={styles.modeToggle}>
-          {modes.map((m) => (
-            <Pressable
-              key={m.key}
-              onPress={() => setMode(m.key)}
-              style={[styles.modeSeg, mode === m.key && styles.modeSegActive]}>
-              <Text
-                numberOfLines={1}
-                style={[styles.modeSegText, mode === m.key && styles.modeSegTextActive]}>
-                {m.label}
-              </Text>
-            </Pressable>
-          ))}
-        </View>
+      <Pressable onPress={retry} style={styles.pill} hitSlop={8}>
+        <View style={[styles.pillDot, { backgroundColor: STATUS_COLOR[status] }]} />
+        <Text style={styles.pillText} numberOfLines={1}>
+          {status === 'waiting' && canForce
+            ? 'no response · tap to take control'
+            : statusLabel(status, dev)}
+        </Text>
+      </Pressable>
+      <View style={styles.modeToggle}>
+        {modes.map((m) => (
+          <Pressable
+            key={m.key}
+            onPress={() => setMode(m.key)}
+            style={[styles.modeSeg, mode === m.key && styles.modeSegActive]}>
+            <Text
+              numberOfLines={1}
+              style={[styles.modeSegText, mode === m.key && styles.modeSegTextActive]}>
+              {m.label}
+            </Text>
+          </Pressable>
+        ))}
       </View>
 
       {inputBlocked != null && status === 'connected' && (
@@ -1542,14 +1540,14 @@ const makeStyles = (t: Palette) => StyleSheet.create({
     letterSpacing: 1,
   },
 
-  headerRow: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 8,
-    marginBottom: 10,
-  },
+  // The status pill and the mode toggle used to SHARE one row. With five
+  // segments that squeezed the pill to "connecti..." and cramped the tabs at
+  // the same time. They are stacked now, each spanning the full width, which
+  // makes the status readable and lets the segments spread evenly.
+
   modeToggle: {
     flexDirection: 'row',
+    marginBottom: 10,
     backgroundColor: t.inset,
     borderColor: t.cardBorder,
     borderWidth: 1,
@@ -1562,10 +1560,13 @@ const makeStyles = (t: Palette) => StyleSheet.create({
     flexShrink: 1,
   },
   modeSeg: {
-    paddingVertical: 5,
-    paddingHorizontal: 9,
+    // Full width now, so each segment takes an equal share instead of being
+    // sized by its label -- even spacing and a bigger tap target.
+    flex: 1,
+    alignItems: 'center',
+    paddingVertical: 6,
+    paddingHorizontal: 4,
     borderRadius: 999,
-    flexShrink: 1,
   },
   modeSegActive: {
     backgroundColor: t.card,
@@ -1813,7 +1814,6 @@ const makeStyles = (t: Palette) => StyleSheet.create({
     height: 48,
   },
   pill: {
-    flex: 1,
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'center',
@@ -1822,6 +1822,7 @@ const makeStyles = (t: Palette) => StyleSheet.create({
     borderColor: t.cardBorder,
     borderWidth: 1,
     borderRadius: 999,
+    marginBottom: 8,
     paddingVertical: 6,
     paddingHorizontal: 10,
     minWidth: 0,
