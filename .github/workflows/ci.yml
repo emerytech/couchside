@@ -95,6 +95,18 @@ jobs:
       - name: Unit tests (config load)
         run: python3 tests/test_config_load.py
 
+      # Config SAVES must land beside the config, not in the process CWD. The
+      # temp-file dir came from `dirname(CONFIG_PATH) or "."`, and mkstemp
+      # returns an ABSOLUTE path -- so "." followed the CWD, which for a systemd
+      # service is "/". A relative --config therefore wrote to the root
+      # filesystem; on SteamOS that is read-only, and pairing a TV on a Steam
+      # Deck died with "[Errno 30] Read-only file system:
+      # '/.couchside-config-il0oed3c'". Reproducing it needs no read-only mount:
+      # the defect is following the CWD at all. Covers BOTH agents -- Windows
+      # shipped the identical block, where the stray CWD is System32.
+      - name: Unit tests (config write)
+        run: python3 tests/test_config_write.py
+
       # Gaming card (/api/gaming): the card* glob trap (a cardN-DP-1 connector
       # dir must not be read as a GPU), the reaper AppId matcher incl. the
       # [oom_reaper] reject, the empty-power_supply desktop case + the uniq (never
