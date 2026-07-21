@@ -7,6 +7,7 @@ import { ReviewPrompt } from '@/components/ReviewPrompt';
 import { ReviewToast } from '@/components/ReviewToast';
 import { TrialEndsToast } from '@/components/TrialEndsToast';
 import { UnlockToast } from '@/components/UnlockToast';
+import { TapCapture } from '@/components/TouchIndicatorLayer';
 import { DeepLinkHandler } from '@/lib/DeepLink';
 import { EntitlementProvider } from '@/lib/EntitlementContext';
 import { SettingsProvider } from '@/lib/SettingsContext';
@@ -42,6 +43,13 @@ export default function RootLayout() {
         <ThemeProvider value={navTheme}>
           <StatusBar style={scheme === 'light' ? 'dark' : 'light'} />
           <DeepLinkHandler />
+          {/* Touch indicators wrap the whole tree because they read the responder
+              system in the CAPTURE phase -- an ancestor, not a sibling overlay.
+              Rendered unconditionally and gated internally on the pref: if the
+              wrapper came and went with the toggle, the navigator would remount
+              and drop the screen you were about to record. Observe-only; it must
+              never become the responder. */}
+          <TapCapture>
           <Stack>
             <Stack.Screen name="(tabs)" options={{ headerShown: false }} />
           </Stack>
@@ -53,6 +61,7 @@ export default function RootLayout() {
           <ReviewPrompt />
           {/* The fallback invite ReviewPrompt falls back to when the OS sheet can't run. */}
           <ReviewToast />
+        </TapCapture>
         </ThemeProvider>
       </EntitlementProvider>
     </SettingsProvider>

@@ -33,3 +33,8 @@ app/asc-key.p8
 docs/memory/KNOWN_ISSUES.md
 docs/memory/DECISIONS.md
 docs/BUILD_LOG.md
+
+# One-off build/spec prompts dropped at the repo root. Public repo, and an
+# untracked file at the root is exactly how an unrelated copy change got swept
+# into a feature commit once already.
+*-build-prompt.md

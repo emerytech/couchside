@@ -659,6 +659,8 @@ function SetupBody() {
   const askToSwitchControl = usePref('askToSwitchControl');
   const volumeButtons = usePref('volumeButtons');
   const hideOfflineStreamHosts = usePref('hideOfflineStreamHosts');
+  const showTaps = usePref('showTaps');
+  const traceDrags = usePref('traceDrags');
 
   const [restoring, setRestoring] = useState(false);
   const [buying, setBuying] = useState(false);
@@ -1365,6 +1367,35 @@ function SetupBody() {
                 }}
               />
             </View>
+
+            {/* Named for WHAT IT DOES, not for one use case. Recording is the
+                motivating example, but these also make the swipe and trackpad
+                surfaces legible live -- neither gives any visual feedback on its
+                own -- and help on a support screen-share. Calling the card
+                "SCREEN RECORDING" would hide it from anyone looking for the
+                other two. */}
+            <View style={styles.card}>
+              <CardHeader icon="hand-left-outline" label="TOUCH ANIMATIONS" />
+              <TogglePref
+                label="Show taps"
+                sub="Draws a ring wherever you tap, so a screen recording shows what was pressed. iOS can't do this system-wide, so the app draws its own."
+                value={showTaps}
+                onValueChange={(v) => {
+                  void setPref('showTaps', v);
+                  hapticSelection();
+                }}
+              />
+              <TogglePref
+                label="Trace drags"
+                sub="Leaves a trail of dots while a finger moves, which makes swipe and trackpad gestures readable on video. Needs Show taps."
+                value={traceDrags}
+                onValueChange={(v) => {
+                  void setPref('traceDrags', v);
+                  hapticSelection();
+                }}
+              />
+            </View>
+
 
             <InputTracePanel />
           </>
