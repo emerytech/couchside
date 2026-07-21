@@ -179,6 +179,8 @@ def _ts_union(name):
     return set(re.findall(r"'([^']+)'", m.group(1)))
 
 
+CAP_GROUPS = ("capabilities", "linuxOnlyCapabilities")
+
 APP_UNIONS = {
     "buttons": "ButtonKey",
     "triggers": "TriggerKey",
@@ -200,6 +202,104 @@ def test_app_matches_spec():
               % (ts, gname, sorted(want - got) or "none", sorted(got - want) or "none"))
 
 
+# ---- capabilities: the five-edit-site rule, checked ------------------------
+#
+# A capability key needs FIVE edits: the agent's CAPS dict + its mock tuple, and
+# the app's BoxCaps + normalizeCaps + capsEqual. Missing the app ones is SILENT
+# -- the cap never persists, so the app re-probes on every launch forever. That
+# is exactly how `steammenus` and the TV sections drifted.
+#
+# Read from the agents' REAL runtime dicts (set_caps is called and CAPS is read),
+# not from source text. An earlier regex pass over the same data produced two
+# false findings purely from a truncated match window.
+
+def _agent_caps(mod):
+    """The cap NAMES this agent declares, from BOTH of its two sites.
+
+    set_caps(mock) has two code paths: the mock branch builds CAPS from a fixed
+    name tuple, the real branch from a dict of detector calls. Those are two of
+    the five edit sites, and a cap added to one but not the other is exactly the
+    drift being hunted -- an earlier version of this test read only the mock
+    path and did NOT catch a cap injected into the real dict. Union both, and
+    _agent_caps_disagree() reports the pair falling out of step."""
+    names = set()
+    for mock in (True, False):
+        try:
+            mod.set_caps(mock)
+            names |= set(mod.CAPS)
+        except Exception:
+            pass
+    mod.set_caps(True)          # leave the module in a deterministic state
+    return names
+
+
+def _agent_caps_disagree(mod):
+    """Cap names present in one set_caps() branch but not the other."""
+    sets = {}
+    for mock in (True, False):
+        try:
+            mod.set_caps(mock)
+            sets[mock] = set(mod.CAPS)
+        except Exception:
+            sets[mock] = set()
+    mod.set_caps(True)
+    return sorted(sets[True] ^ sets[False])
+
+
+def _app_caps_sites():
+    """The app's three caps edit sites, as sets. Full function bodies, never a
+    fixed window -- truncation is what produced the earlier false finding."""
+    api = open(os.path.join(ROOT, "app", "lib", "api.ts")).read()
+    st = open(os.path.join(ROOT, "app", "lib", "settings.ts")).read()
+    m = re.search(r"export type BoxCaps = \{(.*?)\n\};", api, re.S)
+    box = set(re.findall(r"^\s{2}([a-z_]+)\??:", m.group(1), re.M)) if m else set()
+    i = api.find("capsEqual")
+    equal = set(re.findall(r"a\.([a-z_]+) === b\.", api[i:i + 2000])) if i >= 0 else set()
+    j = st.find("normalizeCaps")
+    k = st.find("\n}", j)
+    norm = set(re.findall(r"bool\('([a-z_]+)'\)", st[j:k])) if j >= 0 else set()
+    return {"BoxCaps": box, "normalizeCaps": norm, "capsEqual": equal}
+
+
+def test_capabilities():
+    print("capabilities: every declared cap exists on its platforms")
+    for gname in CAP_GROUPS:
+        keys, platforms = group(gname)
+        for plat, mod in AGENTS.items():
+            have = _agent_caps(mod)
+            if plat in platforms:
+                missing = [k for k in keys if k not in have]
+                check(not missing, "%s: %s present (missing: %s)"
+                      % (plat, gname, missing or "none"))
+            else:
+                leaked = [k for k in keys if k in have]
+                check(not leaked, "%s: %s correctly absent (leaked: %s)"
+                      % (plat, gname, leaked or "none"))
+    # No agent may declare a cap the spec has never heard of.
+    declared = set(group("capabilities")[0]) | set(group("linuxOnlyCapabilities")[0])
+    for plat, mod in AGENTS.items():
+        extra = sorted(_agent_caps(mod) - declared)
+        check(not extra, "%s: no undeclared caps (extra: %s)" % (plat, extra or "none"))
+        # The agent's own two sites must agree with each other.
+        skew = _agent_caps_disagree(mod)
+        check(not skew, "%s: mock and real CAPS declare the same keys (differ: %s)"
+              % (plat, skew or "none"))
+
+
+def test_app_knows_every_capability():
+    """All THREE app sites must carry every cap any agent can send. This is the
+    silent one: BoxCaps and capsEqual can agree while normalizeCaps quietly drops
+    a key, and the only symptom is a cap that never persists."""
+    print("capabilities: all three app edit sites carry every cap")
+    declared = set(group("capabilities")[0]) | set(group("linuxOnlyCapabilities")[0])
+    for site, have in _app_caps_sites().items():
+        check(have, "app: %s parsed something at all" % site)
+        missing = sorted(declared - have)
+        extra = sorted(have - declared)
+        check(not missing, "app: %s has every cap (missing: %s)" % (site, missing or "none"))
+        check(not extra, "app: %s has no unknown caps (extra: %s)" % (site, extra or "none"))
+
+
 def test_spec_is_well_formed():
     """CONTROL. A spec with an empty group would make the checks above vacuous."""
     print("control: the spec itself is non-empty and platform-tagged")
@@ -217,6 +317,8 @@ if __name__ == "__main__":
     test_special_keys_both_agents()
     test_platform_scoped_keys()
     test_app_matches_spec()
+    test_capabilities()
+    test_app_knows_every_capability()
     print()
     if _fail:
         print("FAILED: %d" % len(_fail))
