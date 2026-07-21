@@ -81,8 +81,8 @@ export default function Paywall() {
         <Text style={styles.appName}>Couchside</Text>
         <Text style={styles.title}>7-day trial ended</Text>
         <Text style={styles.blurb}>
-          Unlock Couchside forever with a one-time purchase. No subscription, no account, no
-          tracking.
+          If Couchside has earned a spot in your setup, one purchase unlocks it permanently and
+          supports the work. No subscription, no account, no tracking.
         </Text>
 
         <Pressable
