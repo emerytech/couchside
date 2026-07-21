@@ -66,6 +66,16 @@ jobs:
       - name: Unit tests (couch ceremony)
         run: python3 tests/test_couch_ceremony.py
 
+      # The desktop switch must honour the box's CONFIGURED session. SteamOS
+      # ships both, and steamos-session-select maps the bare "plasma" arg to the
+      # X11 one -- so passing it silently downgraded a Wayland-configured box to
+      # X11 on every Couch Mode return. Measured on a real Deck: default was
+      # plasma.desktop (Wayland), session ended up x11. Degrading CLOSED is the
+      # load-bearing part: an unreadable or unlisted name must fall back to the
+      # X11 pair that shipped before, so a box we cannot read is unchanged.
+      - name: Unit tests (desktop session)
+        run: python3 tests/test_desktop_session.py
+
       # Two places the agent reported success it had not verified.
       # couchmode_start() returned ok because the switch SUBPROCESS exited 0 --
       # but steamos-session-select returns as soon as the switch is TRIGGERED, so
