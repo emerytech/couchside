@@ -211,6 +211,14 @@ CONFIG_PORT = None
 CONFIG_PANEL = None
 CONFIG_CEC_BRIDGE = None  # optional {"host","port","token"}: forward TV ops to a Pi
 CONFIG_ROKU = None  # optional {"host","name"}: Roku (ECP) TV, no pairing needed
+CONFIG_WEBOS = None  # optional {"host","client_key","mac"}: LG webOS TV (SSAP/TLS)
+CONFIG_SAMSUNG = None  # optional {"host","token","mac"}: Samsung Tizen TV (WSS)
+CONFIG_VIDAA = None  # optional {"host","name","mac"}: Hisense VIDAA TV (MQTT)
+CONFIG_LGCOM = None  # optional {"host","name"}: LG COMMERCIAL/signage panel (TCP 9761)
+# The brand the user explicitly chose to drive, or None to fall back to the
+# priority chain. Without it a second paired TV is unreachable (the chain
+# returns exactly one backend).
+CONFIG_TV_ACTIVE = None
 # When true, the app may trigger a box-side agent update via POST
 # /api/update/apply. OFF BY DEFAULT: opt-in only on the box (config.json), never
 # by the app itself. See the Linux agent for the full rationale.
@@ -421,7 +429,80 @@ def _parse_config(raw):
                 raise ConfigError("roku.name must be a string")
             roku["name"] = rname
 
-    return units, actions, order, port, launchers, panel, cec_bridge, roku
+    # Optional LG webOS TV (SSAP over TLS). client_key is written back by the
+    # pairing endpoint for silent reconnects; mac enables Wake-on-LAN.
+    webos = None
+    webos_raw = raw.get("webos")
+    if webos_raw is not None:
+        if not isinstance(webos_raw, dict):
+            raise ConfigError("webos must be an object")
+        whost = webos_raw.get("host")
+        if not isinstance(whost, str) or not whost:
+            raise ConfigError("webos.host must be a non-empty string")
+        webos = {"host": whost}
+        for field in ("client_key", "mac"):
+            val = webos_raw.get(field)
+            if val is not None:
+                if not isinstance(val, str):
+                    raise ConfigError("webos.%s must be a string" % field)
+                webos[field] = val
+
+    # Optional Samsung Tizen TV (WSS remote). token is written back by pairing.
+    samsung = None
+    samsung_raw = raw.get("samsung")
+    if samsung_raw is not None:
+        if not isinstance(samsung_raw, dict):
+            raise ConfigError("samsung must be an object")
+        shost = samsung_raw.get("host")
+        if not isinstance(shost, str) or not shost:
+            raise ConfigError("samsung.host must be a non-empty string")
+        samsung = {"host": shost}
+        for field in ("token", "mac"):
+            val = samsung_raw.get(field)
+            if val is not None:
+                if not isinstance(val, str):
+                    raise ConfigError("samsung.%s must be a string" % field)
+                samsung[field] = val
+
+    # Optional Hisense VIDAA TV (MQTT). No pairing.
+    vidaa = None
+    vidaa_raw = raw.get("vidaa")
+    if vidaa_raw is not None:
+        if not isinstance(vidaa_raw, dict):
+            raise ConfigError("vidaa must be an object")
+        vhost = vidaa_raw.get("host")
+        if not isinstance(vhost, str) or not vhost:
+            raise ConfigError("vidaa.host must be a non-empty string")
+        vidaa = {"host": vhost}
+        for field in ("name", "mac"):
+            val = vidaa_raw.get(field)
+            if val is not None:
+                if not isinstance(val, str):
+                    raise ConfigError("vidaa.%s must be a string" % field)
+                vidaa[field] = val
+
+    # Optional LG COMMERCIAL/signage panel (TCP 9761). No pairing.
+    lgcom = None
+    lgcom_raw = raw.get("lg_commercial")
+    if lgcom_raw is not None:
+        if not isinstance(lgcom_raw, dict):
+            raise ConfigError("lg_commercial must be an object")
+        lhost = lgcom_raw.get("host")
+        if not isinstance(lhost, str) or not lhost:
+            raise ConfigError("lg_commercial.host must be a non-empty string")
+        lgcom = {"host": lhost}
+        lname = lgcom_raw.get("name")
+        if lname is not None:
+            if not isinstance(lname, str):
+                raise ConfigError("lg_commercial.name must be a string")
+            lgcom["name"] = lname
+
+    # The user's explicit TV choice (a brand id), or None for the priority chain.
+    active = raw.get("tv_active")
+    tv_active = active if isinstance(active, str) and active else None
+
+    return (units, actions, order, port, launchers, panel, cec_bridge, roku,
+            webos, samsung, vidaa, lgcom, tv_active)
 
 
 def load_config(path):
@@ -429,6 +510,7 @@ def load_config(path):
     global WATCHLIST, WATCHLIST_NAMES, ACTIONS, ACTION_ORDER, CONFIG_PORT
     global LAUNCHERS, CONFIG_PATH, CONFIG_PANEL, CONFIG_CEC_BRIDGE, ALLOW_APP_UPDATE
     global CONFIG_ROKU, ALLOW_APP_LAUNCHERS
+    global CONFIG_WEBOS, CONFIG_SAMSUNG, CONFIG_VIDAA, CONFIG_LGCOM, CONFIG_TV_ACTIVE
     CONFIG_PATH = path  # remembered so launcher POST/DELETE can rewrite it
     try:
         with open(path, encoding="utf-8-sig") as f:
@@ -436,8 +518,8 @@ def load_config(path):
         if isinstance(raw, dict):
             ALLOW_APP_UPDATE = bool(raw.get("allow_app_update", False))
             ALLOW_APP_LAUNCHERS = bool(raw.get("allow_app_launchers", False))
-        units, actions, order, port, launchers, panel, cec_bridge, roku = \
-            _parse_config(raw)
+        (units, actions, order, port, launchers, panel, cec_bridge, roku,
+         webos, samsung, vidaa, lgcom, tv_active) = _parse_config(raw)
     except FileNotFoundError:
         print("warning: config %s not found, using built-in generic defaults"
               % path, file=sys.stderr, flush=True)
@@ -455,6 +537,11 @@ def load_config(path):
     CONFIG_PANEL = panel
     CONFIG_CEC_BRIDGE = cec_bridge
     CONFIG_ROKU = roku
+    CONFIG_WEBOS = webos
+    CONFIG_SAMSUNG = samsung
+    CONFIG_VIDAA = vidaa
+    CONFIG_LGCOM = lgcom
+    CONFIG_TV_ACTIVE = tv_active
     print("config loaded from %s: %d units, %d actions, %d launchers"
           % (path, len(WATCHLIST), len(ACTIONS), len(LAUNCHERS)), flush=True)
 

@@ -101,6 +101,12 @@ jobs:
       - name: Unit tests (win tv identify)
         run: python3 tests/test_win_tv_identify.py
 
+      # Windows agent config load: the new TV sections must thread through
+      # _parse_config's positional return AND load_config's unpack, or the agent
+      # crash-loops on startup with a NameError (invisible to py_compile).
+      - name: Unit tests (win config load)
+        run: python3 tests/test_win_config_load.py
+
       # Gaming card (/api/gaming): the card* glob trap (a cardN-DP-1 connector
       # dir must not be read as a GPU), the reaper AppId matcher incl. the
       # [oom_reaper] reject, the empty-power_supply desktop case + the uniq (never
