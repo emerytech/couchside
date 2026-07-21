@@ -85,7 +85,7 @@ except ImportError:
 # Same app id the phone expects (AGENT_APPS in app/lib/api.ts); the Windows
 # agent versions independently of the Linux one.
 APP_NAME = "couchside-agent"
-VERSION = "0.3.7-win"
+VERSION = "0.3.8-win"
 
 _PROGRAMDATA = os.environ.get("ProgramData", r"C:\ProgramData")
 DEFAULT_CONFIG_PATH = os.path.join(_PROGRAMDATA, "Couchside", "config.json")
@@ -427,7 +427,11 @@ def load_config(path):
     global WATCHLIST, WATCHLIST_NAMES, ACTIONS, ACTION_ORDER, CONFIG_PORT
     global LAUNCHERS, CONFIG_PATH, CONFIG_PANEL, CONFIG_CEC_BRIDGE, ALLOW_APP_UPDATE
     global CONFIG_ROKU, ALLOW_APP_LAUNCHERS
-    CONFIG_PATH = path  # remembered so launcher POST/DELETE can rewrite it
+    # ABSOLUTE on purpose: every rewrite derives the temp-file directory from
+    # os.path.dirname(CONFIG_PATH), and a relative path has no directory part.
+    # That fell through to the process CWD -- for a service, System32. See
+    # _write_config_atomic.
+    CONFIG_PATH = os.path.abspath(path)  # remembered so launcher POST/DELETE can rewrite it
     try:
         with open(path, encoding="utf-8-sig") as f:
             raw = json.load(f)
@@ -1673,43 +1677,46 @@ def _write_config_launchers(new_launchers):
             {"id": l["id"], "label": l["label"], "cmd": list(l["cmd"])}
             for l in new_launchers
         ]
-        directory = os.path.dirname(CONFIG_PATH) or "."
-        # Create the config dir if it's missing: on Windows the agent may run
-        # with a literal --token and no pre-existing %ProgramData%\Couchside,
-        # and the first launcher POST would otherwise 500 on a FileNotFoundError.
-        os.makedirs(directory, exist_ok=True)
-        fd, tmp = tempfile.mkstemp(prefix=".couchside-config-", dir=directory)
-        try:
-            with os.fdopen(fd, "w", encoding="utf-8") as f:
-                json.dump(raw, f, indent=2)
-                f.write("\n")
-                f.flush()
-                os.fsync(f.fileno())
-            os.replace(tmp, CONFIG_PATH)
-        except Exception:
-            try:
-                os.unlink(tmp)
-            except OSError:
-                pass
-            raise
+        _write_config_atomic(raw)
         global LAUNCHERS
         LAUNCHERS = new_launchers
 
 
-def _config_set_field(field, value):
-    """Read config.json, set one top-level field, and write it back atomically
-    (temp file + os.replace). The CALLER must hold CONFIG_LOCK. Raises on I/O
-    failure. Used to persist a Roku add without disturbing other config."""
-    try:
-        with open(CONFIG_PATH, "r", encoding="utf-8-sig") as f:
-            raw = json.load(f)
-    except (OSError, ValueError):
-        raw = None
-    if not isinstance(raw, dict):
-        raw = {}
-    raw[field] = value
+def _write_config_atomic(raw):
+    """Persist <raw> to CONFIG_PATH via temp file + os.replace. THE writer.
+
+    Every config save funnels here. It used to be copy-pasted blocks that each
+    carried the same trap:
+
+        directory = os.path.dirname(CONFIG_PATH) or "."
+
+    `or "."` looks harmless. It is not: tempfile.mkstemp returns an ABSOLUTE
+    path, so "." resolves against the process CWD -- for a service, System32. A
+    CONFIG_PATH with no directory part therefore wrote its temp file there
+    instead of beside the config. The Linux agent shipped the same defect and it
+    bit a real user: pairing a TV on a Steam Deck (CWD "/", read-only root)
+    failed with "[Errno 30] Read-only file system: '/.couchside-config-il0oed3c'"
+    -- an errno naming a temp file nobody had heard of. load_config now abspath's
+    CONFIG_PATH; the check below turns a genuinely unwritable dir into a message
+    that says what to fix.
+
+    Raises ConfigError (a ValueError) on an unwritable dir, which the pairing and
+    launcher routes already handle -- so no caller gets an unhandled traceback."""
     directory = os.path.dirname(CONFIG_PATH) or "."
-    os.makedirs(directory, exist_ok=True)
+    # Create the config dir if it's missing: on Windows the agent may run with a
+    # literal --token and no pre-existing %ProgramData%\Couchside, and the first
+    # launcher POST would otherwise 500 on a FileNotFoundError.
+    try:
+        os.makedirs(directory, exist_ok=True)
+    except OSError as e:
+        raise ConfigError("cannot create config dir %s (%s), so %s cannot be "
+                          "saved" % (directory, e, CONFIG_PATH))
+    if not os.access(directory, os.W_OK | os.X_OK):
+        raise ConfigError(
+            "config dir %s is not writable, so %s cannot be saved (read-only "
+            "location, or owned by another user). Reinstall, or grant the "
+            "agent's account write access to that directory."
+            % (directory, CONFIG_PATH))
     fd, tmp = tempfile.mkstemp(prefix=".couchside-config-", dir=directory)
     try:
         with os.fdopen(fd, "w", encoding="utf-8") as f:
@@ -1724,6 +1731,21 @@ def _config_set_field(field, value):
         except OSError:
             pass
         raise
+
+
+def _config_set_field(field, value):
+    """Read config.json, set one top-level field, and write it back atomically
+    (temp file + os.replace). The CALLER must hold CONFIG_LOCK. Raises on I/O
+    failure. Used to persist a Roku add without disturbing other config."""
+    try:
+        with open(CONFIG_PATH, "r", encoding="utf-8-sig") as f:
+            raw = json.load(f)
+    except (OSError, ValueError):
+        raw = None
+    if not isinstance(raw, dict):
+        raw = {}
+    raw[field] = value
+    _write_config_atomic(raw)
 
 
 def add_launcher(label, cmd):

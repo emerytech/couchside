@@ -44,7 +44,7 @@ except ImportError:  # pragma: no cover
     fcntl = None
 
 APP_NAME = "couchside-agent"
-VERSION = "2.9.33"
+VERSION = "2.9.34"
 UID = os.getuid()
 XDG_RUNTIME_DIR = "/run/user/%d" % UID
 
@@ -580,7 +580,11 @@ def load_config(path):
     global CONFIG_ROKU, CONFIG_ANDROIDTV, CONFIG_VIDAA, ALLOW_APP_UPDATE
     global CONFIG_LGCOM, CONFIG_TV_ACTIVE
     global ALLOW_APP_LAUNCHERS, CONFIG_GUIDE
-    CONFIG_PATH = path  # remembered so launcher POST/DELETE can rewrite it
+    # ABSOLUTE on purpose: every rewrite derives the temp-file directory from
+    # os.path.dirname(CONFIG_PATH), and a relative path has no directory part.
+    # That fell through to the process CWD, which under systemd is "/" — see
+    # _write_config_atomic for the read-only-root failure that caused.
+    CONFIG_PATH = os.path.abspath(path)  # remembered so launcher POST/DELETE can rewrite it
     try:
         with open(path) as f:
             raw = json.load(f)
@@ -638,6 +642,57 @@ def check_config_writable():
               "launcher changes will fail to save. chown the config dir to the "
               "agent's user." % (directory, os.getuid()), file=sys.stderr,
               flush=True)
+
+
+def _write_config_atomic(raw):
+    """Persist <raw> to CONFIG_PATH via temp file + os.replace. THE writer.
+
+    Every config save funnels here — launchers, TV pairings, _config_set_field.
+    It used to be three copy-pasted blocks that each carried the same trap:
+
+        directory = os.path.dirname(CONFIG_PATH) or "."
+
+    `or "."` looks like a harmless fallback. It is not: tempfile.mkstemp returns
+    an ABSOLUTE path, so "." resolves against the process CWD, and a systemd
+    service's CWD is "/". A CONFIG_PATH with no directory part therefore tried to
+    write the temp file to the ROOT filesystem. On SteamOS root is read-only, so
+    pairing a TV on a Steam Deck failed with
+
+        [Errno 30] Read-only file system: '/.couchside-config-il0oed3c'
+
+    — an errno on a temp name that named neither the config nor the real problem,
+    and that no user could act on. load_config now abspath's CONFIG_PATH so the
+    directory is always real; the check below turns the remaining case (a dir
+    that genuinely isn't writable — root-owned config under a non-root agent, or
+    a read-only mount) into a message that says what to fix.
+
+    Raises ConfigError (a ValueError) on an unwritable dir. Deliberate: the
+    pairing routes catch Exception and render it as a 500, and the launcher route
+    catches ConfigError, so no caller is left with an unhandled traceback. MUST
+    be called with CONFIG_LOCK held by the callers that mutate shared state."""
+    directory = os.path.dirname(CONFIG_PATH) or "."
+    # W_OK to create the temp file, X_OK to os.replace into the dir. Checked here
+    # and not only at startup because a remount or chown can land mid-run.
+    if not os.access(directory, os.W_OK | os.X_OK):
+        raise ConfigError(
+            "config dir %s is not writable by uid %d, so %s cannot be saved "
+            "(read-only filesystem, or the dir is owned by another user). "
+            "Reinstall or chown the config dir to the agent's user."
+            % (directory, os.getuid(), CONFIG_PATH))
+    fd, tmp = tempfile.mkstemp(prefix=".couchside-config-", dir=directory)
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as f:
+            json.dump(raw, f, indent=2)
+            f.write("\n")
+            f.flush()
+            os.fsync(f.fileno())
+        os.replace(tmp, CONFIG_PATH)
+    except Exception:
+        try:
+            os.unlink(tmp)
+        except OSError:
+            pass
+        raise
 
 
 def _inject_session_actions():
@@ -3613,21 +3668,7 @@ def _write_config_launchers_locked(new_launchers):
         {"id": l["id"], "label": l["label"], "cmd": list(l["cmd"])}
         for l in new_launchers
     ]
-    directory = os.path.dirname(CONFIG_PATH) or "."
-    fd, tmp = tempfile.mkstemp(prefix=".couchside-config-", dir=directory)
-    try:
-        with os.fdopen(fd, "w", encoding="utf-8") as f:
-            json.dump(raw, f, indent=2)
-            f.write("\n")
-            f.flush()
-            os.fsync(f.fileno())
-        os.replace(tmp, CONFIG_PATH)
-    except Exception:
-        try:
-            os.unlink(tmp)
-        except OSError:
-            pass
-        raise
+    _write_config_atomic(raw)
     # Only mutate the in-memory list once the write succeeded.
     global LAUNCHERS
     LAUNCHERS = new_launchers
@@ -4842,21 +4883,7 @@ def _webos_save(host, client_key, mac=None):
         if not isinstance(raw, dict):
             raw = {"units": [{"name": n, "scope": s} for n, s in WATCHLIST]}
         raw["webos"] = cfg
-        directory = os.path.dirname(CONFIG_PATH) or "."
-        fd, tmp = tempfile.mkstemp(prefix=".couchside-config-", dir=directory)
-        try:
-            with os.fdopen(fd, "w", encoding="utf-8") as f:
-                json.dump(raw, f, indent=2)
-                f.write("\n")
-                f.flush()
-                os.fsync(f.fileno())
-            os.replace(tmp, CONFIG_PATH)
-        except Exception:
-            try:
-                os.unlink(tmp)
-            except OSError:
-                pass
-            raise
+        _write_config_atomic(raw)
         CONFIG_WEBOS = cfg
     set_tv_active("webos")
 
@@ -4911,21 +4938,7 @@ def _config_set_field(field, value):
     if not isinstance(raw, dict):
         raw = {"units": [{"name": n, "scope": s} for n, s in WATCHLIST]}
     raw[field] = value
-    directory = os.path.dirname(CONFIG_PATH) or "."
-    fd, tmp = tempfile.mkstemp(prefix=".couchside-config-", dir=directory)
-    try:
-        with os.fdopen(fd, "w", encoding="utf-8") as f:
-            json.dump(raw, f, indent=2)
-            f.write("\n")
-            f.flush()
-            os.fsync(f.fileno())
-        os.replace(tmp, CONFIG_PATH)
-    except Exception:
-        try:
-            os.unlink(tmp)
-        except OSError:
-            pass
-        raise
+    _write_config_atomic(raw)
 
 
 # ---- Samsung backend (Tizen Smart TVs, WS remote over the stdlib WebSocket) -
