@@ -207,6 +207,20 @@ jobs:
       - name: Unit tests (steam settings menus)
         run: python3 tests/test_steam_menus.py
 
+      # Makes branch feat/demo-mode UNMERGEABLE. Demo mode (tap indicators + a
+      # rear-camera PiP, for recording promo video) is a developer tool shipped as
+      # an ad-hoc, bundle-id-forked build that never touches TestFlight. Its own
+      # isolation test lives on that branch -- which is useless as a merge guard,
+      # because merging the branch merges its approval. So the guard lives HERE.
+      # The trap it catches: on that branch the expo-camera CONFIG PLUGIN is
+      # conditional but the DEPENDENCY is not, and autolinking keys off
+      # package.json -- measured, 24 modules with expo-camera in node_modules but
+      # absent from package.json, and it does not link. Declare it and it does. A
+      # merge would therefore compile camera code into the shipping binary with no
+      # purpose string. Red CI beats finding that out at upload.
+      - name: Unit tests (no camera in the shipping app)
+        run: python3 tests/test_no_camera_in_shipping_app.py
+
   smoke:
     runs-on: ubuntu-latest
     needs: compile
