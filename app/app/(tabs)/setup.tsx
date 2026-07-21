@@ -847,13 +847,15 @@ function SetupBody() {
           style={({ pressed }) => [styles.unlockRow, pressed && styles.pressed]}>
           <Ionicons name="lock-open-outline" size={18} color={t.blue} />
           <View style={styles.unlockRowBody}>
-            <Text style={styles.unlockRowTitle}>Unlock Couchside — {price ?? '$4.99'}</Text>
+            <Text style={styles.unlockRowTitle}>
+              Enjoying Couchside? Unlock for {price ?? '$4.99'}
+            </Text>
             <Text style={styles.unlockRowSub}>
               {entitlement.trialDaysLeft > 0
                 ? `Trial: ${entitlement.trialDaysLeft} day${
                     entitlement.trialDaysLeft === 1 ? '' : 's'
-                  } left · one-time purchase, no subscription`
-                : 'Trial ended · one-time purchase, no subscription'}
+                  } left · one-time purchase, no subscription · supports the work`
+                : 'Trial ended · one-time purchase, no subscription · supports the work'}
             </Text>
           </View>
           <Ionicons name="chevron-forward" size={18} color={t.textDim} />
