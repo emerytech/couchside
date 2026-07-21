@@ -44,7 +44,7 @@ except ImportError:  # pragma: no cover
     fcntl = None
 
 APP_NAME = "couchside-agent"
-VERSION = "2.9.35"
+VERSION = "2.9.36"
 UID = os.getuid()
 XDG_RUNTIME_DIR = "/run/user/%d" % UID
 
@@ -133,9 +133,15 @@ SESSION_ACTIONS = {
         "label": "Switch to Desktop",
         "description": "Leave Game Mode for the SteamOS desktop",
         "danger": "medium",
-        # "plasma" = one-time switch to the desktop (doesn't change the default
-        # login mode, so the box still boots into Game Mode). NB: session-select
-        # has no "desktop" arg: valid targets are plasma*/gamescope.
+        # One-time switch to the desktop: the default login mode is untouched,
+        # so the box still boots into Game Mode. NB: session-select has no
+        # "desktop" arg -- valid targets are plasma*/gamescope.
+        #
+        # The arg is REWRITTEN at injection time to match the box's configured
+        # default session (see _inject_session_actions). Bare "plasma" is
+        # SteamOS's legacy alias for the X11 session, so leaving it here would
+        # force X11 onto a Wayland-configured box. This value is the fallback
+        # for boxes whose default cannot be read.
         "cmd": ["steamos-session-select", "plasma"],
         "user_env": True,
         "detached": True,
@@ -703,9 +709,17 @@ def _inject_session_actions():
     global ACTIONS, ACTION_ORDER
     if not shutil.which("steamos-session-select"):
         return
+    # Point "Switch to Desktop" at the session this box is CONFIGURED for. The
+    # static spec says "plasma", which SteamOS maps to the X11 session -- on a
+    # Wayland-configured box that silently changes the user's desktop. Resolved
+    # once here, from a frozen allowlist, so the stored argv stays a fixed list.
+    _, select_arg = _default_desktop_session()
     for aid, spec in SESSION_ACTIONS.items():
         if aid not in ACTIONS:
-            ACTIONS[aid] = dict(spec)
+            spec = dict(spec)
+            if aid == "switch-desktop":
+                spec["cmd"] = ["steamos-session-select", select_arg]
+            ACTIONS[aid] = spec
             if aid not in ACTION_ORDER:
                 ACTION_ORDER.append(aid)
 
@@ -1897,17 +1911,58 @@ def _session_to_game():
     ])
 
 
-def _session_to_desktop():
-    """Transient switch back to the desktop session.
 
-    SteamOS: steamosctl with the X11 session (validated live). Bazzite: its
-    steamos-session-select 'plasma' runs a ONESHOT desktop session — the boot
-    default stays Game Mode, which is exactly couch-mode semantics (also
-    validated live)."""
+# SteamOS ships BOTH desktop sessions and steamos-session-select maps the bare
+# "plasma" arg to the X11 one:
+#     plasma)         steamosctl switch-to-desktop-mode plasmax11.desktop
+#     plasma-wayland) steamosctl switch-to-desktop-mode plasma.desktop
+# So passing "plasma" silently OVERRIDES a box configured for Wayland. Measured
+# on a real Deck (SteamOS 20260701.2): the configured default was
+# plasma.desktop (Wayland) and our switch landed it in an x11 session. The user
+# noticed their desktop had changed and had no idea we did it.
+#
+# FROZEN ALLOWLIST. The session name is read from the system, not a client, but
+# it still only ever SELECTS one of these known values -- never interpolated.
+# Anything unrecognised falls back to the previously-validated X11 path, so a
+# box we can't read stays exactly as it behaved before.
+_DESKTOP_SESSIONS = {
+    "plasma.desktop": "plasma-wayland",
+    "plasmax11.desktop": "plasma",
+}
+_DEFAULT_DESKTOP_FALLBACK = "plasmax11.desktop"
+
+
+def _default_desktop_session():
+    """The desktop session this box is CONFIGURED to use, as a
+    (session_file, session_select_arg) pair from the frozen table above.
+
+    Degrades closed: any read failure, or a name not on the allowlist, returns
+    the X11 pair that shipped before -- never a guess, never a raw value."""
+    try:
+        r = subprocess.run(["steamosctl", "get-default-desktop-session"],
+                           capture_output=True, text=True, timeout=5)
+        name = (r.stdout or "").strip()
+    except Exception:
+        name = ""
+    if name not in _DESKTOP_SESSIONS:
+        name = _DEFAULT_DESKTOP_FALLBACK
+    return name, _DESKTOP_SESSIONS[name]
+
+
+def _session_to_desktop():
+    """Transient switch back to the desktop session, honouring the box's OWN
+    configured default rather than forcing one.
+
+    This used to hardcode plasmax11.desktop. That silently downgraded a
+    Wayland-configured box to X11 every time Couch Mode came back to the
+    desktop (see _default_desktop_session). It stays a ONESHOT switch either
+    way: the boot default is untouched, so the box still returns to Game Mode,
+    which is exactly couch-mode semantics."""
+    session, select_arg = _default_desktop_session()
     return _couch_run_first([
-        ["steamosctl", "switch-to-desktop-mode", "plasmax11.desktop"],
+        ["steamosctl", "switch-to-desktop-mode", session],
         ["steamosctl", "switch-to-desktop-mode"],
-        ["steamos-session-select", "plasma"],
+        ["steamos-session-select", select_arg],
     ])
 
 
