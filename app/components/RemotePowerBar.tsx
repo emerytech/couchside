@@ -634,27 +634,34 @@ export function RemotePowerBar() {
               {canSuspend && (
                 <View style={styles.suspendGroup}>
                   <Pressable
-                    disabled={wired === false}
                     onPress={() => {
                       setOpen(false);
                       onSuspend();
                     }}
-                    style={({ pressed }) => [
-                      styles.bigBtn,
-                      wired === false && styles.disabled,
-                      pressed && styles.pressed,
-                    ]}>
+                    style={({ pressed }) => [styles.bigBtn, pressed && styles.pressed]}>
                     <Ionicons name="moon" size={22} color={t.amber} />
-                    <Text style={[styles.bigLabel, { color: t.amber }]}>
-                      {wired === false ? 'Suspend (needs Ethernet)' : 'Suspend'}
-                    </Text>
+                    <Text style={[styles.bigLabel, { color: t.amber }]}>Suspend</Text>
                   </Pressable>
-                  {wired !== false && wolArmed === false && (
+                  {/* Suspending and WAKING are separate capabilities, and only
+                      the second one needs Ethernet. This button used to be
+                      DISABLED on WiFi and labelled "Suspend (needs Ethernet)",
+                      which took the feature away from the machine it matters
+                      most on: a Steam Deck is WiFi-only undocked, and its whole
+                      signature move is power-button suspend/resume -- no
+                      Wake-on-LAN involved. Suspending works fine over WiFi. Say
+                      how you'll wake it instead of blocking it. */}
+                  {wired === false ? (
+                    <Text style={styles.warnText}>
+                      Wake-on-LAN needs Ethernet, so the Wake button won&apos;t reach this
+                      box. Press its power button to wake it — it resumes where you left
+                      off.
+                    </Text>
+                  ) : wolArmed === false ? (
                     <Text style={styles.warnText}>
                       Wake-on-LAN is not armed on this box. It will sleep, but the
                       Wake button may not bring it back.
                     </Text>
-                  )}
+                  ) : null}
                 </View>
               )}
 
