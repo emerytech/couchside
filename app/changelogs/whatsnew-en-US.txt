@@ -1,5 +1,6 @@
 New in 2.9.16
 
-• Steam settings are one swipe past the remote. Jump to Controller, Display, Audio, Storage and more without leaving the Pad. Shown only in Game Mode, where those shortcuts work.
-• Connection status now has its own row, so it reads in full instead of being cut off, and the mode tabs spread evenly.
-• Couch Mode no longer reports success when Game Mode didn't come up, and the screen preview no longer shows a black frame as if it were real.
+• Couch Mode now works on a handheld with no TV attached — the Fling button was dead whenever no external display was connected.
+• Suspend no longer requires Ethernet. It was greyed out on Wi-Fi, including on Steam Deck; wake it with its power button.
+• Steam settings are one swipe past the remote, in Game Mode.
+• Connection status now reads in full, and the mode tabs spread evenly.
