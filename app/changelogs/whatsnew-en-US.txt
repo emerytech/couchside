@@ -1,4 +1,5 @@
-New in 2.9.14
+New in 2.9.15
 
-• TV navigation is snappier. D-pad presses take a more direct path to the box, so controlling a TV feels closer to instant.
-• Sending text to a TV now tells you when there's nowhere for it to go. If no text field is focused on the TV, the app says so instead of silently doing nothing — and points you at the search box that makes it work.
+• Fixed a swipe that could stick and keep scrolling one direction. The remote now releases the d-pad explicitly whenever your finger leaves the screen, including when another gesture interrupts it.
+• Pairing a box takes you straight to the remote instead of leaving you on Setup.
+• New pad input trace under Setup › Prefs. If a swipe ever sticks, tap Capture and screenshot it — it records whether each release reached your box.
