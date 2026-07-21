@@ -9,7 +9,19 @@ Entry fields: `priority` (P0 blocker → P3 nice) · `risk` · `affects` · `dep
 
 ## 🔨 In Progress
 
-_(nothing currently mid-flight)_
+### Touch animations (tap rings + drag trails)
+- **priority:** P3 · **risk:** low · **affects:** app only · **depends_on:** none
+- Two Preferences toggles, both default OFF, drawing touch feedback over the whole UI so
+  screen recordings of Couchside are legible for the store listing, support screen-shares
+  and demos. iOS has no system-wide "Show taps" and no recorder can draw into another app,
+  so the app draws its own. Branch `feat/tap-indicators`. Pure JS, no new dependency.
+- **Not Complete because the drag trail is unverified.** "Show taps" is proven in the web
+  harness in both states with a coordinate control; "Trace drags" cannot be exercised on
+  web at all (`touchMove` measured 0 across 171 mouse-driven move events — RNW emits mouse
+  events, not touch events). Move to ✅ only after a device build shows the trail drawing.
+- The camera PiP from the `feat/demo-mode` prototype is explicitly **not** coming with it:
+  it needs `expo-camera`, the CI gate blocks that from `main`, and the shipping app carries
+  no mention of native camera use.
 
 ---
 

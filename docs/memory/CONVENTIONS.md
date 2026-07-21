@@ -235,6 +235,33 @@ so a box switch clears stale data in the same render instead of painting the pre
 (`app/lib/api.ts:694-697`). Render-time consumers that mutate refs from `data` must check `dataKey`
 first — the reason is documented at `app/hooks/usePoll.ts:15-23`.
 
+### Overlays that watch touches: observe, never steal
+
+`TapCapture` (`app/components/TouchIndicatorLayer.tsx`) is the pattern for any layer that
+wants to see touches without consuming them. Three rules, all load-bearing:
+
+1. It is an **ancestor** of what it draws over, not a sibling overlay — it reads the
+   responder system in the **capture** phase.
+2. Every responder handler **returns `false`**. This app's gesture surfaces (`useTrackpad`,
+   the swipe d-pad, the mode-switch bar) all set `onPanResponderTerminationRequest: () =>
+   false` and will not yield; a gesture stolen mid-swipe is exactly what leaves the agent's
+   LATCHED d-pad axis asserted (`tests/test_dpad_latch.py`).
+3. The host `View` renders **unconditionally**, gated internally on its pref. A wrapper that
+   appears and disappears with a toggle remounts the whole navigator.
+
+**Responder handlers are not touch handlers, and the difference is a real bug.** Responder
+*negotiation* is not re-run for an ancestor once a child owns the gesture and refuses to
+give it up, so `onMoveShouldSetResponderCapture` fires far less than a reading of the
+renderer source suggests — it produced nothing on device while taps worked. For continuous
+tracking during a drag, use the raw bubbling `onTouchMove`, which is dispatched
+independently of negotiation. Note the web harness **cannot** tell these apart: RNW emits
+mouse events, so `onTouchMove` never fires there at all.
+
+Counter-based instrumentation (`globalThis.__touchTrace`) is kept in the component
+deliberately. It is what distinguishes "the handler never fired" from "it fired and rendered
+at `NaN`" — two failures that look identical on screen. `add()` also rejects non-finite
+coordinates explicitly for the same reason.
+
 ---
 
 ## 4. Git / PRs

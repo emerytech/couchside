@@ -55,6 +55,18 @@ export type Prefs = {
       check is conservative and does call a live host offline, so the row stays
       visible and tappable unless you ask for it gone. Agent >= 2.9.32. */
   hideOfflineStreamHosts: boolean;
+  // ---- Touch indicators: making a screen recording of this app legible ----
+  /** Draw a ring wherever a finger lands. iOS exposes NO public API for
+      system-wide touch events -- no equivalent of Android's "Show taps", and no
+      screen recorder can draw touches from another app -- so the only process
+      that can show what was pressed is this one. Off by default; the whole
+      feature is inert until asked for. */
+  showTaps: boolean;
+  /** Also leave a trail of dots while a finger moves, which is what makes the
+      swipe remote and the trackpad readable on video. Requires showTaps. Off by
+      default: it emits a mark every 45ms, which is pure noise outside a
+      recording. */
+  traceDrags: boolean;
 };
 
 export const DEFAULTS: Prefs = {
@@ -76,6 +88,8 @@ export const DEFAULTS: Prefs = {
   // until the user opts in.
   volumeButtons: Platform.OS === 'android',
   hideOfflineStreamHosts: false,
+  showTaps: false,
+  traceDrags: false,
 };
 
 /** The choices each select-style pref offers (kept next to the store it feeds). */
@@ -154,6 +168,8 @@ function normalize(raw: unknown): Prefs {
     askToSwitchControl: bool(o.askToSwitchControl, DEFAULTS.askToSwitchControl),
     volumeButtons: bool(o.volumeButtons, DEFAULTS.volumeButtons),
     hideOfflineStreamHosts: bool(o.hideOfflineStreamHosts, DEFAULTS.hideOfflineStreamHosts),
+    showTaps: bool(o.showTaps, DEFAULTS.showTaps),
+    traceDrags: bool(o.traceDrags, DEFAULTS.traceDrags),
   };
 }
 
