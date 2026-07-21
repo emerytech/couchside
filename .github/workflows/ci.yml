@@ -105,6 +105,18 @@ jobs:
       - name: Unit tests (config load)
         run: python3 tests/test_config_load.py
 
+      # Three-way protocol parity. The Linux agent, the Windows agent and the
+      # app each carry their own copy of the wire vocabulary, and "added to one
+      # end, not the other" is this repo's most repeated defect -- a config
+      # section that reached _parse_config but not load_config's unpack
+      # crash-looped a live box, and the smart-TV backends existed on Linux for
+      # weeks before Windows. protocol/protocol.json is the authority; this
+      # drives both agents' REAL decoders (their internal tables legitimately
+      # differ -- uinput vs ViGEm) and reads the app's literal TS unions, in
+      # BOTH directions.
+      - name: Unit tests (protocol parity)
+        run: python3 tests/test_protocol_parity.py
+
       # Config SAVES must land beside the config, not in the process CWD. The
       # temp-file dir came from `dirname(CONFIG_PATH) or "."`, and mkstemp
       # returns an ABSOLUTE path -- so "." followed the CWD, which for a systemd
