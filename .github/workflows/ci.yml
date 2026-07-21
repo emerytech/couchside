@@ -106,6 +106,14 @@ jobs:
       # shipped the identical block, where the stray CWD is System32.
       - name: Unit tests (config write)
         run: python3 tests/test_config_write.py
+      # Decky detection. install.sh gated co-existence on `[ -d ~/homebrew/plugins ]`,
+      # but Decky's OWN uninstaller removes the unit and services/PluginLoader and
+      # LEAVES that directory behind -- so a box that had uninstalled Decky still
+      # tested as having it, left couchside.service DORMANT, and handed the agent
+      # to a plugin that could never load. Net result: no running agent. The test
+      # extracts the real function from install.sh so it fails on drift.
+      - name: Unit tests (decky detection)
+        run: bash tests/test_decky_detect.sh
 
       # Gaming card (/api/gaming): the card* glob trap (a cardN-DP-1 connector
       # dir must not be read as a GPU), the reaper AppId matcher incl. the

@@ -133,6 +133,19 @@ UNIT_DST="/etc/systemd/system/couchside.service"
 # installed here when Decky is present, and removed from here on --uninstall.
 DECKY_PLUGINS="${HOME}/homebrew/plugins"
 DECKY_PLUGIN_DIR="${DECKY_PLUGINS}/Couchside"
+# What actually proves Decky Loader is INSTALLED. Its own uninstaller removes
+# the unit and homebrew/services/PluginLoader but LEAVES homebrew/plugins behind
+# (see decky-loader dist/uninstall.sh), so `[ -d "$DECKY_PLUGINS" ]` reports a
+# box that has uninstalled Decky as still having it. That is not cosmetic: the
+# co-existence branch then leaves couchside.service DORMANT and hands the agent
+# to a plugin that can never load, so the box ends up with no running agent at
+# all. The agent gates the same decision on the unit file for this reason.
+DECKY_UNIT="/etc/systemd/system/plugin_loader.service"
+DECKY_LOADER="${HOME}/homebrew/services/PluginLoader"
+
+decky_installed() {
+    [ -f "$DECKY_UNIT" ] || [ -e "$DECKY_LOADER" ]
+}
 
 # Pairing-QR launcher: a script that opens http://localhost:PORT/pair full-screen
 # on the box's own display, plus a .desktop entry to add it to Steam (Game Mode).
@@ -864,7 +877,7 @@ sudo systemctl daemon-reload
 # so the two installs don't fight over the file + port; the plugin block below
 # (or the plugin itself) activates it. Without Decky, this service is the sole
 # supervisor and is enabled + started normally.
-if [ "$NO_DECKY" -eq 0 ] && [ -d "$DECKY_PLUGINS" ]; then
+if [ "$NO_DECKY" -eq 0 ] && decky_installed; then
     DECKY_OWNS_AGENT=1
     sudo systemctl disable --now couchside.service 2>/dev/null || true
     note "Decky Loader detected → standalone couchside.service left DORMANT (the Couchside plugin manages the agent)."
@@ -1502,7 +1515,7 @@ fi
 # the install: the whole thing runs inside an `if` condition (set -e is
 # suspended there) and any failure just prints a note and moves on. --no-decky
 # skips it entirely.
-if [ "$NO_DECKY" -eq 0 ] && [ -d "$DECKY_PLUGINS" ]; then
+if [ "$NO_DECKY" -eq 0 ] && decky_installed; then
     say "Decky Loader detected: installing the Couchside Game Mode panel"
     decky_tmp="$(mktemp -d)"
     # Decky's plugin dir is root-owned (same as a store install), so place the
@@ -1556,6 +1569,11 @@ if [ "$NO_DECKY" -eq 0 ] && [ -d "$DECKY_PLUGINS" ]; then
         }
         return 0
     }
+    # The gate above is now "Decky is installed" (unit / loader binary), which no
+    # longer implies the plugins DIR exists — it did back when the gate was
+    # `[ -d "$DECKY_PLUGINS" ]`. tar -C would fail on a Decky install that has
+    # never had a plugin. Root-owned to match a store install.
+    sudo mkdir -p "$DECKY_PLUGINS"
     if decky_verify_ok \
         && sudo rm -rf "$DECKY_PLUGIN_DIR" \
         && sudo tar -xzf "${decky_tmp}/Couchside.tar.gz" -C "$DECKY_PLUGINS"; then
@@ -1565,7 +1583,23 @@ if [ "$NO_DECKY" -eq 0 ] && [ -d "$DECKY_PLUGINS" ]; then
         # from the menu). Store installs are root-owned; match that.
         sudo chown -R root:root "$DECKY_PLUGIN_DIR" 2>/dev/null || true
         sudo systemctl restart plugin_loader.service 2>/dev/null || true
-        note "panel installed. Open the Decky menu in Game Mode to see it."
+        # VERIFY, don't assume. The restart status used to be discarded
+        # (`|| true`) and the success note printed unconditionally, so a box
+        # whose loader would not start was still told the panel was ready and
+        # to "open the Decky menu" — advice that could never work. That is
+        # exactly the state a user hit. Poll briefly: `systemctl restart`
+        # returns once the job is done, but a loader that starts and then dies
+        # should be reported as down, not up.
+        _decky_up=0
+        for _ in 1 2 3; do
+            if systemctl is-active --quiet plugin_loader.service; then _decky_up=1; break; fi
+            sleep 1
+        done
+        if [ "$_decky_up" -eq 1 ]; then
+            note "panel installed. Open the Decky menu in Game Mode to see it."
+        else
+            note "panel files installed, but plugin_loader.service is NOT running — the panel will not appear until it is. Recover with: sudo systemctl restart plugin_loader   (diagnose with: systemctl status plugin_loader)"
+        fi
     else
         note "couldn't install the panel (skipping); the agent still works."
     fi
