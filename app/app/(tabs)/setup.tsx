@@ -39,6 +39,7 @@ import {
   useHapticsEnabled,
 } from '@/lib/haptics';
 import { setKeepAwakeEnabled, useKeepAwakeEnabled } from '@/lib/keepAwake';
+import { navigateAfterPair } from '@/lib/postPair';
 import { setPref, usePref } from '@/lib/prefs';
 import { buy, getProduct, restore } from '@/lib/purchase';
 import { Box, DEFAULT_PORT, normalizeMac } from '@/lib/settings';
@@ -774,7 +775,7 @@ function SetupBody() {
   const save = useCallback(async () => {
     const conn = draftConn();
     if (!conn.host) return;
-    await addBox({
+    const added = await addBox({
       host: conn.host,
       port: conn.port,
       token: conn.token,
@@ -791,6 +792,9 @@ function SetupBody() {
     hapticSuccess();
     setSaved(true);
     setTimeout(() => setSaved(false), 2000);
+    // Straight to the remote — see lib/postPair.ts. The "Saved" flag above is
+    // still set so the confirmation is there if the user comes back to Setup.
+    navigateAfterPair(added);
   }, [addBox, draftConn, name]);
 
   // QR / deep-link pairing is handled entirely by the root <DeepLinkHandler/>
