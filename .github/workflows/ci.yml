@@ -66,6 +66,18 @@ jobs:
       - name: Unit tests (couch ceremony)
         run: python3 tests/test_couch_ceremony.py
 
+      # Two places the agent reported success it had not verified.
+      # couchmode_start() returned ok because the switch SUBPROCESS exited 0 --
+      # but steamos-session-select returns as soon as the switch is TRIGGERED, so
+      # a compositor that never came up produced a green result on a black TV, on
+      # both the HTTP and guide-hold paths. And real_screen_frame() served
+      # whatever came back: _png_complete only proves an IEND chunk exists, and
+      # an all-black readback is a well-formed PNG. The inconclusive case is
+      # asserted too -- a frame that CANNOT be measured must still be served, or
+      # every box without magick/ffmpeg would lose its preview.
+      - name: Unit tests (verified success)
+        run: python3 tests/test_verified_success.py
+
       # Steam Remote Play discovery: parse remoteclients.vdf (streamable host
       # games) + the v29 appinfo.vdf name cache (a synthetic fixture locks the
       # binary parser), the most-recent-host de-dupe, the tool filter, and the

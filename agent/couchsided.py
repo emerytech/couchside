@@ -44,7 +44,7 @@ except ImportError:  # pragma: no cover
     fcntl = None
 
 APP_NAME = "couchside-agent"
-VERSION = "2.9.34"
+VERSION = "2.9.35"
 UID = os.getuid()
 XDG_RUNTIME_DIR = "/run/user/%d" % UID
 
@@ -1973,8 +1973,30 @@ def couchmode_start(output, hdr=False):
     # (3) Enter Game Mode (the one step that must succeed).
     sw = _session_to_game()
     steps["session"] = sw
-    return {"ok": sw["ok"], "output": output, "hdr": bool(hdr),
-            "session": "gamescope" if sw["ok"] else _couchmode_session(),
+    # (4) READBACK. steamos-session-select returns as soon as the switch is
+    # TRIGGERED, so sw["ok"] only means "the subprocess exited 0" -- it does not
+    # mean Game Mode came up. A compositor that fails to initialise on this GPU
+    # (proprietary NVIDIA, a bad output) previously reported success onto a black
+    # TV. Both live callers were affected: couchmode_enter (HTTP) and
+    # couchmode_try_enter (the guide-hold controller trigger).
+    #
+    # Reuses _couch_verify_gamescope() -- the staged ceremony already solved this
+    # exact problem for its own path, and a second private poller would be two
+    # implementations of one rule. NOTE this makes the call block up to
+    # SESSION_VERIFY_TIMEOUT_S; both callers already hold COUCH_LOCK for the
+    # whole switch, and blocking there is what stops a re-trigger mid-switch.
+    presented = False
+    if sw["ok"]:
+        presented = _couch_verify_gamescope()
+        steps["gamescope_up"] = {
+            "ok": presented, "exit_code": 0 if presented else 1, "stdout": "",
+            "stderr": "" if presented else
+            "switch reported success but Game Mode did not appear within %gs"
+            % SESSION_VERIFY_TIMEOUT_S}
+    return {"ok": bool(sw["ok"] and presented), "output": output,
+            "hdr": bool(hdr),
+            # Report the session we actually observed, never the one we hoped for.
+            "session": "gamescope" if presented else _couchmode_session(),
             "steps": steps}
 
 
@@ -7000,6 +7022,13 @@ SCREEN_WIDTH = 960                # downscale target width
 SCREEN_LOCK = threading.Lock()    # single-flight: never stack captures
 _SCREEN = None                    # capability dict or None; set by set_screen
 _SCREEN_CACHE = {"ts": 0.0, "data": None, "mime": None}  # 500 ms frame cache
+# Grayscale 0-255. Below this a frame is ~uniform (an all-black compositor
+# readback) and is rejected as a failed capture rather than served. _png_complete
+# only proves the PNG has an IEND chunk -- a perfectly well-formed all-black
+# frame passes it, and the app then shows a black preview that looks identical
+# to a working one.
+SCREEN_MIN_STDDEV = 2.0
+_screen_black_logged_at = 0.0     # rate-limit the ~uniform-frame log line
 
 
 def _screen_downscaler():
@@ -7136,6 +7165,67 @@ def _grab_spectacle(env, outdir):
     return png if _png_complete(png) else None
 
 
+def _grayscale_stddev(raw):
+    """Population std-dev of an 8-bit grayscale byte buffer (0-255), or None when
+    empty. Pure stdlib -- this agent ships with no third-party dependency and
+    must stay installable on an immutable SteamOS/Bazzite rootfs."""
+    n = len(raw)
+    if n == 0:
+        return None
+    mean = sum(raw) / n
+    return (sum((b - mean) ** 2 for b in raw) / n) ** 0.5
+
+
+def _frame_variance(src, env):
+    """Std-dev (0-255 grayscale) of a 32x32 sample of `src` (a PNG), using
+    whatever image tool this box has -- the same family _screen_downscaler picks
+    from, so it adds no new dependency.
+
+    Returns None when it CANNOT be measured (no tool, tool error). Callers MUST
+    treat None as "inconclusive" and never as black: a measurement gap must not
+    be able to suppress a real frame. 32x32 is plenty to separate a black
+    readback from a real desktop, and it is one short-lived subprocess on a path
+    that already runs a downscale per capture (and is capped at ~2/sec by the
+    500ms cache)."""
+    if shutil.which("magick"):
+        argv = ["magick", src, "-resize", "32x32!", "-colorspace", "Gray",
+                "-depth", "8", "GRAY:-"]
+    elif shutil.which("convert"):
+        argv = ["convert", src, "-resize", "32x32!", "-colorspace", "Gray",
+                "-depth", "8", "GRAY:-"]
+    elif shutil.which("ffmpeg"):
+        argv = ["ffmpeg", "-y", "-loglevel", "error", "-i", src, "-vf",
+                "scale=32:32,format=gray", "-f", "rawvideo", "-"]
+    else:
+        return None
+    try:
+        r = subprocess.run(argv, env=env, timeout=SCREEN_CAPTURE_TIMEOUT_S,
+                           stdout=subprocess.PIPE, stderr=subprocess.DEVNULL)
+    except Exception:
+        return None
+    if r.returncode != 0 or not r.stdout:
+        return None
+    return _grayscale_stddev(r.stdout)
+
+
+def _reject_uniform_frame(grabbed, env):
+    """True when this capture is ~uniform (black) and must not be served.
+
+    Rejecting makes the route 503, so the app keeps the SCREEN card and retries,
+    instead of rendering a black image that is indistinguishable from a working
+    preview of a dark scene."""
+    sd = _frame_variance(grabbed, env)
+    if sd is None or sd >= SCREEN_MIN_STDDEV:
+        return False
+    global _screen_black_logged_at
+    now = time.monotonic()
+    if now - _screen_black_logged_at > 15:
+        _screen_black_logged_at = now
+        print("[screen] rejecting ~uniform frame (stddev %.2f < %.1f)"
+              % (sd, SCREEN_MIN_STDDEV), flush=True)
+    return True
+
+
 def real_screen_frame():
     """Capture one frame -> (jpeg_bytes, "image/jpeg") or None. Single-flight +
     500 ms cache so any number of pollers cause at most ~2 captures/sec."""
@@ -7173,6 +7263,11 @@ def real_screen_frame():
                 if grabbed:
                     break
             if not grabbed:
+                return None
+            # Checked BEFORE the downscale so a rejected frame costs nothing
+            # further. _png_complete() above only proves the file has an IEND
+            # chunk; an all-black readback is a perfectly well-formed PNG.
+            if _reject_uniform_frame(grabbed, env):
                 return None
             data = None
             try:
