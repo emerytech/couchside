@@ -117,6 +117,53 @@ export const BUTTON_KEYS: ButtonKey[] = [
  * ~30 bytes every 5s is free; the phone's radio is already up (screen on).
  */
 const PING_INTERVAL_MS = 5_000;
+
+// ---------- d-pad input trace (diagnostic) ---------------------------------
+/**
+ * Rolling record of every BUTTON frame this app tried to send, and whether it
+ * actually left the socket.
+ *
+ * Exists because the "swipe sticks and keeps going" bug is intermittent and
+ * therefore not reproducible on demand. The agent's d-pad is a LATCHED
+ * absolute axis, so ONE lost `v:0` pins it forever — and sendRaw() has two
+ * paths that drop a frame with no error at all (socket not OPEN, and a throw
+ * mid-send). Without this, a stuck episode leaves zero evidence.
+ *
+ * Reading a captured trace after an episode:
+ *   last entry is `v:1`            -> the release was never even ATTEMPTED,
+ *                                     i.e. the JS thread stalled and the timer
+ *                                     never ran. (Look for a time gap.)
+ *   last entry is `v:0 sent`       -> the client sent the release and it died
+ *                                     downstream (wire or agent).
+ *   last entry is `v:0 drop:...`   -> the release was attempted while the
+ *                                     socket was not OPEN, and vanished here.
+ *
+ * MODULE level on purpose: a GamepadClient is recreated on reconnect, so
+ * instance state would be wiped by the very disconnect worth investigating.
+ */
+export type InputTraceEntry = { at: number; k: string; v: number; how: string };
+const TRACE_MAX = 60;
+const inputTrace: InputTraceEntry[] = [];
+
+function wsStateName(ws: { readyState?: number } | null | undefined): string {
+  if (!ws) return 'none';
+  return ['connecting', 'open', 'closing', 'closed'][ws.readyState ?? 3] ?? 'unknown';
+}
+
+function traceButton(k: string | undefined, v: number | undefined, how: string): void {
+  if (!k) return;
+  inputTrace.push({ at: Date.now(), k, v: v ?? -1, how });
+  if (inputTrace.length > TRACE_MAX) inputTrace.shift();
+}
+
+/** Newest last. Copy, so callers can't mutate the buffer. */
+export function getInputTrace(): InputTraceEntry[] {
+  return inputTrace.slice();
+}
+
+export function clearInputTrace(): void {
+  inputTrace.length = 0;
+}
 /** Per-stick send throttle: ~50 Hz. */
 const STICK_INTERVAL_MS = 20;
 /**
@@ -807,14 +854,23 @@ export class GamepadClient {
 
   private sendRaw(obj: object): void {
     const ws = this.ws;
-    if (!ws || ws.readyState !== 1 /* OPEN */) return;
+    const f = obj as { t?: string; k?: string; v?: number };
+    if (!ws || ws.readyState !== 1 /* OPEN */) {
+      // SILENT DROP #1: the socket is not OPEN. A d-pad release lost here pins
+      // the agent's latched hat axis forever, with nothing anywhere recording
+      // that it happened. Trace it.
+      if (f.t === 'b') traceButton(f.k, f.v, 'drop:' + wsStateName(ws));
+      return;
+    }
     // Note real input (anything but our own keepalive ping) so the watchdog can
     // tighten its dead-socket deadline while the user is actively driving.
-    if ((obj as { t?: string }).t !== 'ping') this.lastInputAt = Date.now();
+    if (f.t !== 'ping') this.lastInputAt = Date.now();
     try {
       ws.send(JSON.stringify(obj));
+      if (f.t === 'b') traceButton(f.k, f.v, 'sent');
     } catch {
-      // socket died mid-send; onclose will handle it
+      // SILENT DROP #2: socket died mid-send; onclose will handle it.
+      if (f.t === 'b') traceButton(f.k, f.v, 'throw');
     }
   }
 
