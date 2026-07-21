@@ -44,7 +44,7 @@ except ImportError:  # pragma: no cover
     fcntl = None
 
 APP_NAME = "couchside-agent"
-VERSION = "2.9.36"
+VERSION = "2.9.37"
 UID = os.getuid()
 XDG_RUNTIME_DIR = "/run/user/%d" % UID
 
@@ -1872,14 +1872,70 @@ def _tv_audio_sink():
     return None
 
 
-def _internal_audio_sink():
-    """Node name of the built-in speaker/analog sink (for restoring on return)."""
-    for s in _pactl_sinks():
-        low = s["name"].lower()
-        if not s["hdmi"] and ("speaker" in low or "analog" in low
-                              or "pci" in low):
-            return s["name"]
-    return None
+def _current_default_sink():
+    """The node name pactl currently reports as the default sink, or None when
+    pactl is missing/errors. Read BEFORE any set-default-sink so the user's own
+    choice can be put back verbatim."""
+    if not shutil.which("pactl"):
+        return None
+    r = _couch_run(["pactl", "get-default-sink"], timeout=8)
+    if not r["ok"]:
+        return None
+    name = (r["stdout"] or "").strip()
+    return name or None
+
+
+# The default sink as it was BEFORE Couchside moved audio to the TV, so leaving
+# Couch Mode restores exactly what the user had.
+#
+# This used to be guessed on the way back out: _internal_audio_sink() matched a
+# sink whose name contained "speaker"/"analog"/"pci" and made that the default.
+# That is not a restore, it is a substitution, and it cost a user their audio --
+# reported from the field as the box's default device being changed out from
+# under them, with sound gone from the TV until they fixed it by hand. Anyone
+# whose default was a USB DAC, a Bluetooth speaker or any virtual sink got the
+# same treatment.
+#
+# In memory rather than on disk deliberately: this is ephemeral state belonging
+# to one Couch Mode session, and config.json is the user's file, not a scratch
+# pad. The cost is that an agent restart mid-session forgets it -- in which case
+# the restore SKIPS instead of guessing. Doing nothing is always recoverable;
+# moving a user's audio somewhere they did not choose is what caused this bug.
+_PRIOR_DEFAULT_SINK = None
+_PRIOR_SINK_LOCK = threading.Lock()
+
+
+def _remember_default_sink():
+    """Record the current default sink before Couchside changes it. First writer
+    wins: entering Couch Mode twice must not overwrite the ORIGINAL value with
+    the TV sink we ourselves set."""
+    global _PRIOR_DEFAULT_SINK
+    with _PRIOR_SINK_LOCK:
+        if _PRIOR_DEFAULT_SINK is not None:
+            return
+        _PRIOR_DEFAULT_SINK = _current_default_sink()
+
+
+def _restore_default_sink():
+    """Put the default sink back to what it was before Couch Mode.
+
+    Degrades closed, three ways. Nothing remembered (agent restarted, or the box
+    never entered Couch Mode through us) -> skipped. The remembered sink no
+    longer exists -> skipped, because a stale name would either fail or, worse,
+    match something else. Already the default -> skipped as a no-op."""
+    global _PRIOR_DEFAULT_SINK
+    with _PRIOR_SINK_LOCK:
+        want = _PRIOR_DEFAULT_SINK
+        _PRIOR_DEFAULT_SINK = None
+    if not want:
+        return {"skipped": True,
+                "reason": "no prior audio device recorded; leaving audio alone"}
+    if want not in [s["name"] for s in _pactl_sinks()]:
+        return {"skipped": True,
+                "reason": "the previous audio device is gone; leaving audio alone"}
+    if _current_default_sink() == want:
+        return {"skipped": True, "reason": "already the default"}
+    return _couch_run(["pactl", "set-default-sink", want])
 
 
 def _couch_run_first(cmds):
@@ -2019,10 +2075,13 @@ def couchmode_start(output, hdr=False):
     steps["tv_power_on"] = pwr if pwr is not None else {"skipped": True}
     src = tv_send("source_box", False)
     steps["tv_input"] = src if src is not None else {"skipped": True}
-    # (1) Route audio to the TV.
+    # (1) Route audio to the TV, remembering where it was so exit can undo it.
     sink = _tv_audio_sink()
-    steps["audio"] = (_couch_run(["pactl", "set-default-sink", sink])
-                      if sink else {"skipped": True})
+    if sink:
+        _remember_default_sink()
+        steps["audio"] = _couch_run(["pactl", "set-default-sink", sink])
+    else:
+        steps["audio"] = {"skipped": True}
     # (2) Honor the display picker where the platform allows it.
     steps["output"] = _set_preferred_output(output)
     # (3) Enter Game Mode (the one step that must succeed).
@@ -2056,13 +2115,13 @@ def couchmode_start(output, hdr=False):
 
 
 def desktop_mode():
-    """Return from Game Mode to the Plasma desktop and route audio back to the
-    built-in speaker."""
+    """Return from Game Mode to the Plasma desktop and put the audio device back
+    to whatever it was before Couch Mode moved it.
+
+    Restores, never substitutes: if we did not record a prior device, audio is
+    left exactly where it is. See _restore_default_sink."""
     sw = _session_to_desktop()
-    steps = {"session": sw}
-    sink = _internal_audio_sink()
-    steps["audio"] = (_couch_run(["pactl", "set-default-sink", sink])
-                      if sink else {"skipped": True})
+    steps = {"session": sw, "audio": _restore_default_sink()}
     return {"ok": sw["ok"],
             "session": "desktop" if sw["ok"] else _couchmode_session(),
             "steps": steps}
@@ -2190,6 +2249,7 @@ def _couch_do_audio(has_external):
         return {"state": "failed",
                 "reason": "the TV's HDMI audio sink never appeared — "
                           "sound may still be on the box"}
+    _remember_default_sink()  # capture BEFORE the change, so exit can undo it
     r = _couch_run(["pactl", "set-default-sink", sink])
     if r["ok"]:
         return {"state": "ok"}
