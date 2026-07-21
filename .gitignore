@@ -15,3 +15,21 @@ app/play-service-account.json
 *service-account*.json
 app/asc-key.p8
 *.p8
+
+# --- AI build-method working files (local only) -------------------------------
+# This repo is PUBLIC. The constitution and the technical memory files
+# (ARCHITECTURE / CONVENTIONS / DEPENDENCIES) ARE tracked: they help anyone
+# reading a source-available project, and ARCHITECTURE.md carries file:line refs
+# that drift, so it needs version history.
+#
+# These three stay local to the maintainer's machine:
+#   docs/memory/KNOWN_ISSUES.md  a numbered registry of where this is soft. The
+#                                agent runs as the user's desktop account and can
+#                                reboot their machine; publishing a weakness map
+#                                for a LAN-exposed daemon is not a good trade.
+#   docs/memory/DECISIONS.md     internal rationale, candid about what was wrong.
+#   docs/BUILD_LOG.md            per-session journal, same.
+# CLAUDE.md section 2 marks them LOCAL so a fresh clone knows they exist.
+docs/memory/KNOWN_ISSUES.md
+docs/memory/DECISIONS.md
+docs/BUILD_LOG.md
