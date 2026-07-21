@@ -169,6 +169,8 @@ type DpadKey = 'du' | 'dd' | 'dl' | 'dr';
 
 type SwipeSurfaceProps = {
   onStep: (k: DpadKey) => void;
+  /** Gesture ended (lifted OR terminated) — release whatever is still held. */
+  onStepEnd: () => void;
   onSelect: () => void;
 };
 
@@ -177,9 +179,9 @@ type SwipeSurfaceProps = {
  * the dominant axis (a long swipe = several steps, like scrolling a menu);
  * a quick tap is A/select.
  */
-function SwipeSurface({ onStep, onSelect }: SwipeSurfaceProps) {
-  const cb = useRef({ onStep, onSelect });
-  cb.current = { onStep, onSelect };
+function SwipeSurface({ onStep, onStepEnd, onSelect }: SwipeSurfaceProps) {
+  const cb = useRef({ onStep, onStepEnd, onSelect });
+  cb.current = { onStep, onStepEnd, onSelect };
   const track = useRef({ consumedX: 0, consumedY: 0, moved: false, t0: 0 });
   // Sensitivity read into a ref so the once-created responder sees live changes.
   // Higher sensitivity = smaller step = more steps per swipe.
@@ -198,6 +200,7 @@ function SwipeSurface({ onStep, onSelect }: SwipeSurfaceProps) {
         const t = track.current;
         if (!t.moved && Math.hypot(g.dx, g.dy) > TAP_SLOP) t.moved = true;
         const step = SWIPE_STEP / sensRef.current;
+        let stepped = false;
         // Emit steps until the un-consumed travel is under one step on both axes.
         for (;;) {
           const availX = g.dx - t.consumedX;
@@ -205,6 +208,7 @@ function SwipeSurface({ onStep, onSelect }: SwipeSurfaceProps) {
           const ax = Math.abs(availX);
           const ay = Math.abs(availY);
           if (ax < step && ay < step) break;
+          stepped = true;
           if (ax >= ay) {
             t.consumedX += Math.sign(availX) * step;
             cb.current.onStep(availX > 0 ? 'dr' : 'dl');
@@ -213,11 +217,30 @@ function SwipeSurface({ onStep, onSelect }: SwipeSurfaceProps) {
             cb.current.onStep(availY > 0 ? 'dd' : 'du');
           }
         }
+        // ONE haptic per move event, never one per step. This loop is unbounded
+        // — a fast swipe emits a burst — and on iOS each selectionAsync() hops
+        // to the main queue with a fresh feedback generator, so a per-step tick
+        // floods it. The trackpad surface already rate-limits this way
+        // (tpHapticAcc). Cheap, and it removes the best-motivated suspect for
+        // the JS stall that swallowed d-pad releases.
+        if (stepped) haptic();
       },
+      // Release AND terminate both end the gesture. Only Release fired before,
+      // so an iOS gesture stolen mid-swipe (screen-edge back, a parent
+      // responder) left the d-pad asserted with nothing to let it go — and the
+      // agent latches that axis until something explicitly zeroes it.
       onPanResponderRelease: () => {
         const t = track.current;
+        cb.current.onStepEnd();
         if (!t.moved && Date.now() - t.t0 < TAP_MS) cb.current.onSelect();
       },
+      onPanResponderTerminate: () => {
+        cb.current.onStepEnd();
+      },
+      // Keep the touch: both sibling surfaces already refuse termination
+      // (useTrackpad, the stick). Without this the surface can lose a gesture
+      // it is mid-way through emitting.
+      onPanResponderTerminationRequest: () => false,
     }),
   ).current;
 
@@ -849,13 +872,66 @@ function PadScreen() {
     [mode, setMode],
   );
 
-  // Swipe mode emits self-contained press+release pulses; releaseAll() on
-  // blur/close still covers a pulse interrupted mid-flight.
+  // Swipe mode drives the d-pad as an EXPLICIT hold, not a fire-and-forget
+  // pulse.
+  //
+  // Why this is a state machine and not `press; setTimeout(release, 50)`:
+  // the agent's d-pad is a LATCHED ABSOLUTE AXIS (ABS_HAT0X/Y), not an
+  // edge-triggered key — see DPAD_MAP in agent/couchsided.py. Nothing on either
+  // side ever re-zeroes it: there is no stuck-button watchdog, and the 12s idle
+  // reap cannot fire while the app is pinging every 5s. So exactly ONE missing
+  // `v:0` pins the axis and Steam auto-repeats it forever, which is the "swipe
+  // sticks and keeps going that direction" bug.
+  //
+  // The old emitter lost that release in two ways. (1) Steps are DISTANCE-gated
+  // but the release was TIME-gated at a fixed 50ms, so any finger faster than
+  // ~1 px/ms re-pressed before the release fired — the hat was already held
+  // continuously for the whole gesture, which is why the feature appeared to
+  // work at all. (2) Every outstanding release lived in a setTimeout, so a
+  // stalled JS thread simply never sent it. Measured on a real iPhone: the
+  // session was reaped after ~12s of silence, meaning the app missed two
+  // consecutive 5s pings — the same stall that swallowed the release.
+  //
+  // Now: assert once, re-arm while stepping, and ALWAYS release on gesture end
+  // (see SwipeSurface's onPanResponderRelease/Terminate). Switching axis
+  // releases the previous key first, because a stale axis is exactly what a
+  // perpendicular swipe cannot clear.
+  const dpadHeld = useRef<{ key: DpadKey | null; timer: ReturnType<typeof setTimeout> | null }>({
+    key: null,
+    timer: null,
+  });
+  const dpadRelease = useCallback(() => {
+    const h = dpadHeld.current;
+    if (h.timer) {
+      clearTimeout(h.timer);
+      h.timer = null;
+    }
+    if (h.key) {
+      client.sendButton(h.key, 0);
+      h.key = null;
+    }
+  }, [client]);
   const dpadStep = useCallback(
     (k: DpadKey) => {
-      haptic();
-      client.sendButton(k, 1);
-      setTimeout(() => client.sendButton(k, 0), 50);
+      const h = dpadHeld.current;
+      if (h.timer) clearTimeout(h.timer);
+      if (h.key !== k) {
+        // Release the old direction before asserting the new one, so a
+        // direction change can never leave the previous axis latched.
+        if (h.key) client.sendButton(h.key, 0);
+        client.sendButton(k, 1);
+        h.key = k;
+      }
+      // Safety net only: the authoritative release is the gesture-end handler.
+      // Kept so a terminated gesture that somehow skips both handlers still
+      // lets go, rather than latching for good.
+      h.timer = setTimeout(() => {
+        h.timer = null;
+        if (h.key) {
+          client.sendButton(h.key, 0);
+          h.key = null;
+        }
+      }, 250);
     },
     [client],
   );
@@ -1003,7 +1079,7 @@ function PadScreen() {
       ) : mode === 'swipe' ? (
         <>
           {/* Apple-TV-remote style: big swipe/tap surface + three big buttons */}
-          <SwipeSurface onStep={dpadStep} onSelect={selectTap} />
+          <SwipeSurface onStep={dpadStep} onStepEnd={dpadRelease} onSelect={selectTap} />
           <View style={styles.swipeBtnRow}>
             <PadButton
               label="‹ BACK"
