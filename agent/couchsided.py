@@ -994,13 +994,66 @@ def read_mem():
                     info[parts[0].rstrip(":")] = int(parts[1])  # kB
         total_mb = info.get("MemTotal", 0) // 1024
         avail_mb = info.get("MemAvailable", 0) // 1024
-        return {
+        out = {
             "total_mb": total_mb,
             "used_mb": total_mb - avail_mb,
             "available_mb": avail_mb,
         }
+        # Swap in use. On SteamOS/Bazzite handhelds this is where a big game
+        # starts paying for itself in stutter, and it is invisible in a
+        # used/total bar.
+        sw_total = info.get("SwapTotal", 0) // 1024
+        if sw_total:
+            out["swap_total_mb"] = sw_total
+            out["swap_used_mb"] = sw_total - (info.get("SwapFree", 0) // 1024)
+        pressure = read_mem_pressure()
+        if pressure:
+            out["pressure"] = pressure
+        return out
     except Exception:
         return {"total_mb": 0, "used_mb": 0, "available_mb": 0}
+
+
+def read_mem_pressure():
+    """Linux PSI memory pressure as {"some10","some60","full10","full60"}, or {}.
+
+    WHY THIS AND NOT JUST used/total: a used-percentage says how much memory is
+    SPOKEN FOR, not whether anything is hurting. A handheld with a big page
+    cache can read "26% used" while a game stutters, and can read "90% used"
+    while everything is fine. PSI measures the thing you actually feel -- the
+    share of time work was STALLED waiting on memory.
+
+      some = at least one task stalled
+      full = EVERY task stalled (the machine is effectively frozen)
+
+    avg10/avg60 are percentages the kernel already averages over 10s and 60s, so
+    nothing needs sampling here.
+
+    MEASURED on a Legion Go S: /proc/pressure/memory exists and reads
+    "some avg10=0.00 ... total=366363677" when idle -- zeros now, but a live
+    cumulative counter. Absent on kernels built without CONFIG_PSI, which is why
+    this returns {} rather than zeros: "no pressure" and "cannot tell" must not
+    look the same.
+    """
+    try:
+        with open("/proc/pressure/memory") as f:
+            raw = f.read()
+    except OSError:
+        return {}
+    out = {}
+    for line in raw.splitlines():
+        parts = line.split()
+        if not parts or parts[0] not in ("some", "full"):
+            continue
+        kind = parts[0]
+        for field in parts[1:]:
+            key, _, value = field.partition("=")
+            if key in ("avg10", "avg60"):
+                try:
+                    out["%s%s" % (kind, key[3:])] = round(float(value), 2)
+                except ValueError:
+                    pass
+    return out
 
 
 # Filesystems worth showing, in the order they should appear. "/home" is here
@@ -3007,7 +3060,13 @@ def mock_status():
     base = 55.0 + 4.5 * math.sin(now / 97.0)
     temp = round(base + random.uniform(-0.8, 0.8), 1)
     load1 = round(random.uniform(0.2, 1.4), 2)
-    mem = {"total_mb": 15803, "used_mb": 6212, "available_mb": 9591}
+    # Non-zero swap and pressure on purpose: the app hides both when they are
+    # quiet, so a mock that reports zeros would render a row nobody can see and
+    # prove nothing.
+    mem = {"total_mb": 15803, "used_mb": 6212, "available_mb": 9591,
+           "swap_total_mb": 8192, "swap_used_mb": 1433,
+           "pressure": {"some10": 4.2, "some60": 2.8,
+                        "full10": 0.9, "full60": 0.3}}
     # Feed the same history ring as real mode so sparklines are exercisable in
     # --mock (rate-limited exactly the same way).
     _record_history(int(now), temp, load1, mem)

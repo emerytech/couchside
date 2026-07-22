@@ -228,7 +228,21 @@ export type Status = {
   uptime_s: number;
   load: [number, number, number];
   cpu_temp_c: number | null;
-  mem: { total_mb: number; used_mb: number; available_mb: number };
+  mem: {
+    total_mb: number;
+    used_mb: number;
+    available_mb: number;
+    /** Swap in use (agent >= 2.9.43); absent when the box has no swap. */
+    swap_total_mb?: number;
+    swap_used_mb?: number;
+    /** Linux PSI memory pressure (agent >= 2.9.43): the share of time work was
+     *  STALLED waiting on memory, which is what you actually feel — a used
+     *  percentage says how much is spoken for, not whether anything hurts.
+     *  `some` = at least one task stalled, `full` = everything stalled.
+     *  ABSENT (not zero) on kernels without CONFIG_PSI: "no pressure" and
+     *  "cannot tell" must not render the same. */
+    pressure?: { some10?: number; some60?: number; full10?: number; full60?: number };
+  };
   disks: DiskInfo[];
   /** Network facts for the power/Wake-on-LAN path (agent >= 2.6). */
   net?: NetInfo;

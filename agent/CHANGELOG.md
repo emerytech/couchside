@@ -25,6 +25,10 @@ cannot actually use, so a nearly-full drive could read several points low.
 
 Game drives appear too — a Steam Deck's SD card was invisible before.
 
+Memory now shows swap in use and, when the box is actually struggling, how much
+time it spends stalled waiting on memory — the thing you feel as stutter, which
+a used-percentage does not tell you.
+
 Handhelds also show current power draw and the machine's power profile — and
 while charging, how long until the battery is full.
 
