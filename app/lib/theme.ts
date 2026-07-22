@@ -134,6 +134,15 @@ export function pctColor(pct: number, t: Palette = dark): string {
   return t.red;
 }
 
+/** Battery charge -> colour. INVERTED relative to pctColor: a disk at 95% is in
+ *  trouble, a battery at 95% is fine. Reusing pctColor here would paint a full
+ *  battery red. */
+export function batteryColor(pct: number, t: Palette = dark): string {
+  if (pct <= 15) return t.red;
+  if (pct <= 30) return t.amber;
+  return t.green;
+}
+
 // ---------------------------------------------------------------------------
 // Persisted theme preferences (self-contained external store; mirrors the
 // prefs.ts / haptics.ts pattern so a segmented control reads/writes live).

@@ -243,9 +243,13 @@ function normalizeCaps(raw: unknown): BoxCaps | undefined {
   // key above it: omit it here and the cap never persists, so the app re-probes
   // /api/steam/menus on every launch.
   const steammenus = bool('steammenus');
+  // boxbattery arrived with agent 2.9.40 — same optional-cap drop trap. A box
+  // with no battery reports false, which is a real answer, not "unknown".
+  const boxbattery = bool('boxbattery');
   return {
     gamepad, steam, media, tv, screen, power_schedule,
     screensaver, couchmode, desktop, steamlink, gaming, streamhost, steammenus,
+    boxbattery,
   };
 }
 

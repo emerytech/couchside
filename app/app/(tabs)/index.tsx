@@ -14,7 +14,7 @@ import { usePref } from '@/lib/prefs';
 import { useSkinKit, VitalsContext, vitality } from '@/lib/skin';
 import { noteBoxReachable } from '@/lib/review';
 import { useSettings } from '@/lib/SettingsContext';
-import { mono, numeric, pctColor, tempColor, useTheme, useThemedStyles } from '@/lib/theme';
+import { batteryColor, mono, numeric, pctColor, tempColor, useTheme, useThemedStyles } from '@/lib/theme';
 import type { Palette } from '@/lib/theme';
 
 function unitColor(active: string, t: Palette): string {
@@ -217,6 +217,27 @@ function ConsoleScreen() {
                 </View>
               ))}
             </Card>
+
+            {/* Probe-and-appear: the agent OMITS `battery` on a mains desktop
+                and on agents older than 2.9.40, so presence of the key is the
+                whole gate -- no cap check, no placeholder, no "0%" on a machine
+                that has no pack. */}
+            {s.battery && (
+              <Card title="BATTERY" index={5}>
+                <View style={styles.barLabelRow}>
+                  <Text style={styles.barLabel}>
+                    {s.battery.on_ac ? 'On AC' : 'On battery'}
+                    {s.battery.minutes != null
+                      ? `   ${Math.floor(s.battery.minutes / 60)}h ${s.battery.minutes % 60}m left`
+                      : ''}
+                  </Text>
+                  <Text style={[styles.barLabel, { color: batteryColor(s.battery.pct, t) }]}>
+                    {s.battery.pct}%
+                  </Text>
+                </View>
+                <Bar pct={s.battery.pct} color={batteryColor(s.battery.pct, t)} />
+              </Card>
+            )}
           </>
         )}
 
