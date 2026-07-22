@@ -128,7 +128,14 @@ echo "    signature self-verified OK"
 # Failing loud is the point. A release-notes script that silently publishes
 # something stale and exits 0 has happened in this repo before; a missing
 # section must stop the release, not fall back to boilerplate.
-ver="${tag#v}"
+#
+# Keyed on the AGENT version, NOT on the tag. The tag is an APP version
+# (v2.9.19, v2.9.20 ...) because agent assets ride the app's GitHub release, but
+# these notes describe the AGENT, which moves on its own track (2.9.41 here).
+# Using ${tag#v} would look up an app version in an agent changelog and exit 2
+# every time -- the guard would catch it, but only after a release was already
+# half cut.
+ver="$agent_ver"
 notes_file="$tmp/notes.md"
 # Leading/trailing blank lines are dropped in the same pass -- `sed -i` differs
 # between BSD and GNU and this script runs on both.
@@ -144,7 +151,7 @@ awk -v v="$ver" '
 ' "$root/agent/CHANGELOG.md" > "$notes_file"
 
 if [ ! -s "$notes_file" ]; then
-    echo "error: agent/CHANGELOG.md has no '## $ver' section." >&2
+    echo "error: agent/CHANGELOG.md has no '## $ver' section (agent VERSION)." >&2
     echo "       Add one describing what changed for the person holding the phone," >&2
     echo "       then re-run. Refusing to publish boilerplate release notes." >&2
     exit 2
