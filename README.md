@@ -16,7 +16,7 @@ Real footage — a phone driving Steam Big Picture on the TV over the LAN, nothi
 | --- | --- |
 | ![Typing into the Steam search box on the TV from the phone's keyboard bar](docs/media/couchside-keyboard.gif) | ![Steam Big Picture and the Quick Access Menu, controlled from the phone](docs/media/couchside-bigpicture.gif) |
 
-The full install — one command, scan the QR, drive the box — is on the site: [couchside.tv](https://couchside.tv/#how) (terminal sped up, nothing else).
+The full install — one command, scan the QR, drive the box — is on the site: [couchside.tv](https://couchside.tv/#how) (terminal sped up, nothing else). Every release since launch is written up at [couchside.tv/updates](https://couchside.tv/updates/).
 
 The gamepad UI on the phone and the Steam sidebar responding on the TV, at the same time:
 
@@ -39,6 +39,11 @@ The gamepad UI on the phone and the Steam sidebar responding on the TV, at the s
 - **Multi-box Fleet:** pair as many machines as you like and switch between them from the Fleet tab — each remembers its own input mode and volume target.
 - **Couch Mode:** hand a desktop session off to the TV and into Steam Game Mode from the phone, then back again.
 - **Media keys and now-playing:** MPRIS transport control (play/pause/next/previous) with the current track surfaced in the app.
+- **Stream from PC:** games another gaming PC offers over Steam Remote Play show up as tiles you can launch from the couch — they don't have to be installed on the box you're sitting in front of. A host that's switched off dims and says so (and can be hidden entirely), because a wrong "online" is exactly what makes Steam offer a multi-gigabyte install when you meant to stream.
+- **What's running now:** a live card on Console for the game actually playing on the box, and a companion card for when the box is *serving* a stream to something else. Both read the machine's own state instead of asking you to remember what you started.
+- **Steam's settings, one tap deep:** nineteen hardware-verified deep links into Steam's own settings panels — controller, display, audio, Wi-Fi and more — one swipe past the Remote on the Pad. Game Mode only, because that's the only place they do anything.
+- **Hold the guide button to come to the couch:** a controller can start Couch Mode by itself, without picking up the phone.
+- **Type and paste:** the keyboard bar has a **PASTE** button that sends your phone's clipboard straight to the box, and when the box raises its own on-screen keyboard your phone raises yours to match, so you can just start typing.
 - **Steam download progress**, **live screen preview**, and an **aerial screensaver** you can start from the couch.
 - **Controller handoff:** when a second phone joins a box you're already driving, it asks and you tap Pass — instead of silently stealing input.
 - **Stay current from the couch:** the app can ask the box whether a newer signed release exists and — if you opted in at the box — install it, verifying the maintainer signature first.
@@ -47,13 +52,14 @@ The gamepad UI on the phone and the Steam sidebar responding on the TV, at the s
 
 ## Control your TV
 
-Couchside can also drive a **networked smart TV directly** — no HDMI-CEC and no serial cable. Add one under **Setup → Boxes → Smart TV remote**: tap **Scan for TVs** and Couchside finds the sets on your network, so you don't have to hunt for an IP (you can still type one). Once it's connected the Pad tab lights up with the D-pad, **power, volume, the input/SOURCE key**, and an on-screen keyboard — and your phone's own **volume buttons** drive the TV too.
+Couchside can also drive a **networked smart TV directly** — no HDMI-CEC and no serial cable. Add one under **Setup → Boxes → Smart TV remote**: tap **Scan for TVs** and Couchside finds the sets on your network, so you don't have to hunt for an IP (you can still type one). Couchside identifies what is actually at an address *before* you try to pair with it, so aiming at the wrong device explains itself instead of just failing — and with more than one set on the network you choose which one the Pad drives, rather than getting whichever brand happens to rank highest. Once it's connected the Pad tab lights up with the D-pad, **power, volume, the input/SOURCE key**, and an on-screen keyboard — and your phone's own **volume buttons** drive the TV too.
 
 - **LG webOS** — enter the TV's IP, then accept the pairing prompt that appears on the TV (once). An optional MAC address enables Wake-on-LAN power-on.
 - **Samsung (Tizen)** _(beta — not yet validated on real hardware)_ — enter the IP, then approve the "Allow" prompt on the TV. Optional MAC for Wake-on-LAN.
 - **Roku** — enter the IP; no pairing. **If the D-pad doesn't respond after adding, the Roku is blocking app control:** on the Roku, set _Settings → System → Advanced system settings → Control by mobile apps → Network access_ to **Permissive**.
 - **Android / Google TV** — enter the IP, then type the 6-digit code the TV shows. Optional MAC for Wake-on-LAN.
 - **Hisense (VIDAA)** — enter the IP, then approve the pairing code the TV displays. Note that Hisense sets running **Google TV** pair as Android / Google TV above, not as VIDAA.
+- **LG commercial / signage panels** — the boardroom-and-hotel LG sets speak their own control protocol on a different port from consumer webOS, and are supported separately. No pairing prompt.
 
 These network backends run on the Linux service. The Windows service supports **Roku** (from `0.3.6-win`); LG / Samsung / Google TV / Hisense are Linux-only for now. TV control also works **through the box** when it has an HDMI-CEC link or an RS-232 serial panel (power, volume, input source, on-screen remote) — see the volume/power control above.
 
@@ -93,7 +99,7 @@ Free 7-day trial with every feature unlocked, then a one-time unlock ($4.99 summ
 Couchside is deliberately small and boring about security:
 
 - **Bearer token auth.** Every API route except the reachability ping requires `Authorization: Bearer <token>`; the gamepad WebSocket authenticates before the handshake completes. Comparisons are constant-time (`hmac.compare_digest`). The token file is `chmod 600`; on the phone it lives in the iOS Keychain / Android Keystore.
-- **Scoped sudo, nothing more.** The installer writes a `visudo`-validated sudoers rule granting the service user passwordless sudo for exactly five things: `systemctl restart sddm`, `systemctl reboot`, `systemctl poweroff`, `systemctl suspend`, and `journalctl`. Nothing else. The **privileged** actions are a fixed table; there is no route that runs an arbitrary command **as root**.
+- **Scoped sudo, nothing more.** The installer writes a `visudo`-validated sudoers rule granting the service user passwordless sudo for exactly six fixed-argument commands: `systemctl restart sddm`, `systemctl reboot`, `systemctl poweroff`, `systemctl suspend`, `systemctl restart plugin_loader` (so the app can revive Decky Loader's panel, which dies whenever Steam's CEF restarts and never comes back on its own), and a root-owned journal wrapper. Nothing else. Note the last one carefully: the grant is for the **wrapper**, never for `journalctl` itself. The wrapper validates the unit and the line count and calls `journalctl` with a locked-down option set, because *any* wildcard rule on `journalctl` would also permit `--file` / `--directory` — turning "read the journal" into arbitrary file reads as root. The **privileged** actions are a fixed table; there is no route that runs an arbitrary command **as root**.
 - **Launchers run as you, and creating them remotely is opt-in.** Beyond the fixed privileged actions, the app can *trigger* launchers — auto-discovered Steam games plus any custom commands the box owner defined. A launcher's command runs as the **desktop user, never root**. Because a custom launcher is an arbitrary command, *creating* one over the network is **off by default**: run `couchside allow-launchers on` to enable it, otherwise a bearer token can only trigger launchers you set up on the box, not mint new ones. (The same token can already synthesize keystrokes through the virtual gamepad, so treat the token as user-level trust on a machine you control — which is why it stays on your LAN.)
 - **Journal access is allowlisted.** Only units on the configured watchlist can be read, with line counts clamped server-side, so a leaked token can't be used to trawl the whole system journal.
 - **LAN-only by design.** The API is plain HTTP on port 8787 and is meant to stay on your local network. The firewall rule opens the port locally; **do not port-forward it**. There is no relay, no cloud endpoint, and the app never talks to anything except your service.
