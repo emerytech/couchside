@@ -1366,8 +1366,22 @@ export const api = {
    */
   steamCoverSource(settings: ConnSettings, appid: number): ImageSource {
     const host = resolveEffectiveHost(settings);
+    // The token goes in BOTH the header and the query, on purpose.
+    //
+    // MEASURED, not assumed: React Native's <Image> accepts source.headers, and
+    // on Android they are DROPPED before the request leaves the phone.
+    // Instrumenting the agent showed every cover request arriving as
+    // `auth_header='' len=0  ua='okhttp/4.9.2'`, so cover art was blank on every
+    // Android device while iOS was fine.
+    //
+    // The header stays because it is the better mechanism where it works. The
+    // query is the fallback the image loader cannot strip. The agent's access
+    // log already replaces any query string with "?<redacted>", so the token
+    // does not reach the journal. Needs agent >= 2.9.43 for the query form;
+    // older agents still honour the header, so iOS is unaffected either way.
+    const qs = `?token=${encodeURIComponent(settings.token)}`;
     return {
-      uri: `${baseUrl({ host, port: settings.port })}/api/steam/${appid}/cover`,
+      uri: `${baseUrl({ host, port: settings.port })}/api/steam/${appid}/cover${qs}`,
       headers: { Authorization: `Bearer ${settings.token}` },
     };
   },

@@ -27,6 +27,10 @@ Game drives appear too — a Steam Deck's SD card was invisible before.
 
 Handhelds also show current power draw and the machine's power profile.
 
+Game cover art now appears on Android. It never has — the phone was quietly
+dropping the credential on image requests, so every tile fell back to a plain
+card.
+
 While the box updates itself, the app now shows what it is actually doing, and
 the box's own screen shows an update page so you are not staring at a frozen TV.
 

@@ -11132,6 +11132,34 @@ class Handler(BaseHTTPRequestHandler):
         supplied = auth[len("Bearer "):].strip()
         return hmac.compare_digest(supplied, self.token)
 
+    def _authorized_image(self, parsed):
+        """Auth for IMAGE responses only, which additionally accept ?token=.
+
+        WHY THIS EXISTS, measured rather than assumed: React Native's <Image>
+        takes source.headers, and on Android those headers are DROPPED before
+        the request leaves the phone. Instrumenting the agent showed every cover
+        request arriving as `auth_header='' len=0  ua='okhttp/4.9.2'` -- so the
+        header path cannot work there and cover art was blank on every Android
+        device.
+
+        The bearer header is still preferred and tried first. The query fallback
+        is deliberately scoped to image GETs -- it is NOT a general auth bypass,
+        and no state-changing route may ever use it.
+
+        Safe to log: the access logger already replaces any query string with
+        "?<redacted>", so the token never reaches the journal. Same
+        constant-time comparison as the header path. Precedent: /ws/gamepad has
+        always authenticated with ?token= for the same reason (a WebSocket
+        handshake cannot carry a custom header from RN either).
+        """
+        if self._authorized():
+            return True
+        try:
+            supplied = (parse_qs(parsed.query).get("token") or [""])[0]
+        except Exception:
+            return False
+        return bool(supplied) and hmac.compare_digest(supplied, self.token)
+
     # -- verbs ---------------------------------------------------------------
 
     def do_OPTIONS(self):
@@ -11209,6 +11237,19 @@ class Handler(BaseHTTPRequestHandler):
                 self._send(404, {"error": "not found"}, started)
                 return
 
+            if path.startswith("/api/steam/") and path.endswith("/cover"):
+                # Handled BEFORE the shared auth gate because it accepts an
+                # additional ?token= form -- see _authorized_image for why
+                # (Android's image loader drops source.headers). It is still
+                # AUTHENTICATED, just by a check that tolerates that: an
+                # unauthorised request gets the same 401 as everything else.
+                if not self._authorized_image(parsed):
+                    self._send(401, {"error": "unauthorized"}, started)
+                    return
+                appid = path[len("/api/steam/"):-len("/cover")]
+                self._handle_steam_cover(appid, started)
+                return
+
             if not self._authorized():
                 self._send(401, {"error": "unauthorized"}, started)
                 return
@@ -11271,9 +11312,6 @@ class Handler(BaseHTTPRequestHandler):
                 # reflects the box-side toggle without waiting out the TTL.
                 data = dict(data, apply_enabled=bool(ALLOW_APP_UPDATE))
                 self._send(200, data, started)
-            elif path.startswith("/api/steam/") and path.endswith("/cover"):
-                appid = path[len("/api/steam/"):-len("/cover")]
-                self._handle_steam_cover(appid, started)
             elif path == "/api/tv":
                 # Probe-and-appear: 404 when no TV backend so the app shows no
                 # TV strip; a body only when a backend is live.
