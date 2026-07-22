@@ -1,7 +1,7 @@
-New in 2.9.18
+New in 2.9.19
 
-• Pick which tab the app opens on, in Preferences.
-• The trackpad is now called Mouse, its buttons say LEFT / MID / RIGHT, and it always has an Esc key.
-• Hide the "Stream from PC" section, or the TV volume target, if you don't use them.
-• Cover art no longer repeats the game's name.
-• Fixed black-on-black text in the power menu, and drag trails that drew specks instead of a line.
+• Fixed the connection dropping while the phone sat idle.
+• Paste from your phone into a text box on the box, with a new PASTE button.
+• When the box opens its on-screen keyboard, your phone's keyboard opens too.
+• The Steam tab can now be swiped out of like every other one.
+• Quieter Actions list, and Couch Mode no longer narrates every step.
