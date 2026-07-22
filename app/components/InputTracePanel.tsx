@@ -17,9 +17,9 @@
 import React, { useCallback, useState } from 'react';
 import { Pressable, StyleSheet, Text, View } from 'react-native';
 
-import { clearInputTrace, getInputTrace, type InputTraceEntry } from '@/lib/gamepad';
+import { clearInputTrace, getInputTrace, getWsTrace, type InputTraceEntry } from '@/lib/gamepad';
 import { hapticSelection } from '@/lib/haptics';
-import { useTheme, useThemedStyles, type Palette } from '@/lib/theme';
+import { mono, useTheme, useThemedStyles, type Palette } from '@/lib/theme';
 
 const DPAD = new Set(['du', 'dd', 'dl', 'dr']);
 
@@ -41,10 +41,12 @@ export function InputTracePanel() {
   const t = useTheme();
   const styles = useThemedStyles(makeStyles);
   const [rows, setRows] = useState<InputTraceEntry[] | null>(null);
+  const [ws, setWs] = useState<ReturnType<typeof getWsTrace> | null>(null);
 
   const refresh = useCallback(() => {
     hapticSelection();
     setRows(getInputTrace());
+    setWs(getWsTrace());
   }, []);
   const clear = useCallback(() => {
     hapticSelection();
@@ -75,6 +77,38 @@ export function InputTracePanel() {
           <Text style={styles.btnGhostText}>CLEAR</Text>
         </Pressable>
       </View>
+
+      {ws != null && (
+        <View style={styles.wsBox}>
+          <Text style={styles.wsTitle}>KEEPALIVE</Text>
+          {/* The agent reaps a socket after 12s of silence, so a ping that
+              never leaves this phone drops the connection while it sits idle.
+              These three counters say WHICH of the two causes it is, which
+              reading the code cannot settle. */}
+          <Text style={styles.wsLine}>
+            timer fires {ws.timerFires} · sent {ws.pingsSent} · not-open{' '}
+            {ws.pingsDroppedNotOpen} · threw {ws.pingsThrew}
+          </Text>
+          <Text style={styles.wsLine}>
+            teardowns {ws.watchdogTeardowns} · socket {ws.lastSocketState}
+          </Text>
+          <Text style={styles.wsLine}>
+            last ping {ws.pingAgeMs < 0 ? 'never' : `${Math.round(ws.pingAgeMs / 1000)}s ago`} ·
+            last inbound{' '}
+            {ws.inboundAgeMs < 0 ? 'never' : `${Math.round(ws.inboundAgeMs / 1000)}s ago`}
+          </Text>
+          {ws.lastError ? <Text style={styles.wsLine}>error: {ws.lastError}</Text> : null}
+          <Text style={styles.wsVerdict}>
+            {ws.timerFires === 0
+              ? 'Ping timer never ran — the keepalive was never started.'
+              : ws.pingsSent === 0
+                ? 'Timer runs but no ping ever left the socket.'
+                : ws.pingsDroppedNotOpen > 0 || ws.pingsThrew > 0
+                  ? 'Pings are being dropped — see not-open / threw above.'
+                  : 'Pings are leaving normally.'}
+          </Text>
+        </View>
+      )}
 
       {rows == null ? null : rows.length === 0 ? (
         <Text style={styles.empty}>No frames recorded yet.</Text>
@@ -123,6 +157,23 @@ const makeStyles = (t: Palette) =>
     btnGhost: { backgroundColor: t.inset, borderWidth: 1, borderColor: t.cardBorder },
     btnGhostText: { color: t.textDim, fontSize: 13, fontWeight: '700', letterSpacing: 0.5 },
     empty: { color: t.textFaint, fontSize: 12, fontStyle: 'italic' },
+    wsBox: {
+      marginTop: 10,
+      padding: 10,
+      borderRadius: 10,
+      borderWidth: 1,
+      borderColor: t.cardBorder,
+      backgroundColor: t.bg,
+      gap: 3,
+    },
+    wsTitle: {
+      color: t.textDim,
+      fontSize: 10,
+      fontWeight: '800',
+      letterSpacing: 1,
+    },
+    wsLine: { color: t.text, fontSize: 11, fontFamily: mono },
+    wsVerdict: { color: t.amber, fontSize: 11, marginTop: 4 },
     verdict: { fontSize: 12, fontWeight: '700', lineHeight: 17 },
     log: {
       backgroundColor: t.inset,
