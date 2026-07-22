@@ -14,9 +14,26 @@ import { Platform } from 'react-native';
 
 import { PadMode } from './settings';
 
+/** Tabs the app can open on. Values are the expo-router route names ('index' is
+ *  Console). Setup is deliberately not offered: nobody wants to land there, and
+ *  first-run already forces it when no box is paired. */
+export const LANDING_TABS = ['index', 'actions', 'pad', 'launch'] as const;
+export type LandingTab = (typeof LANDING_TABS)[number];
+
 export type Prefs = {
   /** Ask before suspending the box (the Suspend button in the header). */
   confirmSuspend: boolean;
+  /** Which tab the app opens on.
+   *
+   *  Defaults to 'index' (Console) because that is what the app has ALWAYS
+   *  actually done, whatever the layout claimed. `unstable_settings.
+   *  initialRouteName = 'pad'` sits in app/(tabs)/_layout.tsx under a comment
+   *  saying "Default screen = the swipe Remote (Pad)", but the index route wins
+   *  on cold start and Console is what opens — verified in the harness, where
+   *  loading "/" leaves Console as the active tab. Changing the default here
+   *  would move every existing user's landing screen, so it stays on the
+   *  observed behaviour and the choice becomes theirs. */
+  landingTab: LandingTab;
   /** Input mode a newly paired box starts on. */
   defaultPadMode: PadMode;
   /** How often the console/header polls the box for vitals (ms). */
@@ -71,6 +88,7 @@ export type Prefs = {
 
 export const DEFAULTS: Prefs = {
   confirmSuspend: true,
+  landingTab: 'index',
   defaultPadMode: 'swipe',
   statusIntervalMs: 5000,
   journalLines: 100,
@@ -150,9 +168,13 @@ function normalize(raw: unknown): Prefs {
     o.defaultPadMode === 'remote'
       ? o.defaultPadMode
       : 'swipe';
+  const landingTab: LandingTab = LANDING_TABS.includes(o.landingTab as LandingTab)
+    ? (o.landingTab as LandingTab)
+    : DEFAULTS.landingTab;
   return {
     confirmSuspend:
       typeof o.confirmSuspend === 'boolean' ? o.confirmSuspend : DEFAULTS.confirmSuspend,
+    landingTab,
     defaultPadMode: padMode,
     statusIntervalMs: num(o.statusIntervalMs, STATUS_INTERVAL_OPTIONS, DEFAULTS.statusIntervalMs),
     journalLines: num(o.journalLines, JOURNAL_LINE_OPTIONS, DEFAULTS.journalLines),

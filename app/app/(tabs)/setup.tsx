@@ -645,6 +645,7 @@ function SetupBody() {
   const scheme = useResolvedScheme();
   const confirmSuspend = usePref('confirmSuspend');
   const defaultPadMode = usePref('defaultPadMode');
+  const landingTab = usePref('landingTab');
   const statusIntervalMs = usePref('statusIntervalMs');
   const journalLines = usePref('journalLines');
   const swipeSensitivity = usePref('swipeSensitivity');
@@ -1216,6 +1217,21 @@ function SetupBody() {
                   ios_backgroundColor={t.inset}
                 />
               </View>
+              <SegPref
+                label="Open on"
+                sub="The tab the app starts on. Pairing wins on first run — with no box paired you still land on Setup."
+                options={[
+                  { value: 'index', label: 'Console' },
+                  { value: 'actions', label: 'Actions' },
+                  { value: 'pad', label: 'Pad' },
+                  { value: 'launch', label: 'Launch' },
+                ]}
+                value={landingTab}
+                onSelect={(v) => {
+                  void setPref('landingTab', v);
+                  hapticSelection();
+                }}
+              />
               <SegPref
                 label="Default input mode"
                 sub="The view the Pad tab opens on. Applies to the active box now, and seeds newly paired boxes."
