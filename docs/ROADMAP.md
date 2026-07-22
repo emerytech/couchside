@@ -44,6 +44,39 @@ Entry fields: `priority` (P0 blocker → P3 nice) · `risk` · `affects` · `dep
 - **Value is narrower than it looks:** the shipped Bluetooth button already reaches Steam's
   own pairing UI, which handles agents and PINs correctly.
 
+### Close the running game from the Launch tab
+- **priority:** P2 · **risk:** medium · **affects:** agent + app · **depends_on:** none
+- A card at the top of Launch showing what is running now, how long it has been running, and
+  a red button to close it. Today you can start a game from the phone but not stop one, which
+  is the half that matters when the TV is black.
+- **Half of it already exists:** `_running_game()` (`agent/couchsided.py:9149`) scans
+  `/proc/*/cmdline` for Steam's reaper wrapper and returns `{"appid", "label"}`. Runtime comes
+  from field 22 (`starttime`) of `/proc/<pid>/stat` against `/proc/uptime` — no new source.
+- **THE ALLOWLIST DESIGN, do not deviate:** the stop route takes **NO client input at all** —
+  no pid, no appid, no name. `POST /api/game/stop` with an empty body, and the AGENT
+  re-resolves the target itself via `_running_game()` at the moment of the call. A client that
+  cannot name a process cannot be steered into killing one. Passing a pid or appid "to be
+  explicit" would invert that and is exactly what §3 forbids.
+- `SIGTERM` to the reaper, never `SIGKILL` first, never a shell string. Degrade closed:
+  nothing running is a 404, not a best-effort sweep.
+- **Unverified:** whether SIGTERM to the reaper closes a game cleanly or whether Steam
+  restarts it / leaves a zombie, and whether the reaper is the right target at all versus the
+  game binary. Needs a game actually running on a box.
+
+### Show the box IP and live network throughput on Console
+- **priority:** P3 · **risk:** low · **affects:** agent + app · **depends_on:** none
+- **The IP is already in the payload.** `/api/status` carries `ip` (the address the phone
+  reached the box on, agent >= 2.9.22) and the app's `Status` type already declares it — the
+  Console tab simply never renders it. That half is app-only, no agent release needed.
+- Throughput is the real work: `/proc/net/dev` exposes cumulative byte counters, so a RATE
+  needs two samples and a delta. The agent has to hold the previous sample and its timestamp;
+  one read can only ever report totals, never speed.
+- Choose the interface the way `net_info_cached()` already does rather than inventing a second
+  rule, or the two cards will disagree about which NIC the box is on.
+- **Unverified:** what the counters do across suspend/resume or a NIC reset. A counter that
+  resets produces a large negative delta — clamp at zero and show nothing rather than
+  rendering a nonsense spike.
+
 ### Fill in missing Launch tile cover art from the box
 - **priority:** P2 · **risk:** low · **affects:** agent + app · **depends_on:** none
 - **MEASURED on a Legion Go S, 2026-07-22:** its `appcache/librarycache` holds 1118 entries —
