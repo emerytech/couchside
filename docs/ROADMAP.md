@@ -44,6 +44,28 @@ Entry fields: `priority` (P0 blocker → P3 nice) · `risk` · `affects` · `dep
 - **Value is narrower than it looks:** the shipped Bluetooth button already reaches Steam's
   own pairing UI, which handles agents and PINs correctly.
 
+### Fill in missing Launch tile cover art from the box
+- **priority:** P2 · **risk:** low · **affects:** agent + app · **depends_on:** none
+- **MEASURED on a Legion Go S, 2026-07-22:** its `appcache/librarycache` holds 1118 entries —
+  **826** games have `header.jpg` but only **386** have `library_600x900.jpg`. `_steam_cover_path()`
+  looks for `library_600x900.jpg` and nothing else, so roughly **440 installed games render the
+  blank text-card fallback while their artwork is already on disk.**
+- Entirely local: no CDN, no scraping, no new network egress. The existing
+  `/api/steam/<appid>/cover` route already serves from the box; this widens which local files
+  it will serve, in a fixed preference order.
+- Candidate sources beyond the current two: `library_600x900_2x.jpg`, `header.jpg`,
+  `library_hero.jpg`, and user/SteamGridDB art under `userdata/<uid>/config/grid/`. **No `grid/`
+  folder existed on the Legion Go S**, so custom-art support is speculative — do not claim it
+  works until a box with one is measured.
+- **Aspect is the real design problem, not the lookup.** Tiles are 600x900 portrait; `header.jpg`
+  is 460x215 landscape. Centre-cropping a header into a portrait tile often looks worse than the
+  clean fallback card. So the agent should ADD a field saying which KIND of art it found
+  (portrait / header / none) and let the app lay each out properly — never rename or remove an
+  existing field.
+- Allowlist note: appid stays digits-only validated and the resolved path must still be verified
+  to sit inside the cache root. Widening the FILENAME set is fine; widening to a glob or a
+  client-supplied filename is not.
+
 ### Landscape "laptop mode" — mini QWERTY + trackpad
 - **priority:** P2 · **risk:** low · **affects:** app only · **depends_on:** none
 - Rotating the phone to landscape shows a full soft QWERTY plus a trackpad on one screen,
@@ -57,6 +79,9 @@ Entry fields: `priority` (P0 blocker → P3 nice) · `risk` · `affects` · `dep
   decide whether rotating should also imply no-pad.
 - Both halves already exist as portrait components (`Trackpad`, the keyboard bar) — the work
   is the landscape layout and the key set, not new input plumbing.
+- **Owner requirement: gate it behind a preference toggle.** Rotation must not silently change
+  the interface for people who rotate by accident or who read in bed; the pref is what makes
+  the gesture opt-in.
 - **Unverified:** whether the existing surfaces survive a landscape re-layout at all; no
   screen has ever been rendered rotated.
 
