@@ -174,6 +174,12 @@ function ConsoleScreen() {
                 <Card title="UPTIME" index={1}>
                   {/* Not numeric: "1d 2h 7m" must never be interpolated. */}
                   <BigMetric value={humanizeUptime(s.uptime_s)} numeric={null} color={t.text} />
+                  {/* The address the phone actually reached the box on, straight
+                      from the socket (agent >= 2.9.22). Worth showing because it
+                      is what you need when mDNS breaks and the box has to be
+                      re-added by IP — the exact moment the app is hardest to
+                      use. Rides the poll that is already happening. */}
+                  {s.ip ? <Text style={styles.ipLine}>{s.ip}</Text> : null}
                 </Card>
               </View>
             </View>
@@ -340,6 +346,16 @@ const makeStyles = (t: Palette) => StyleSheet.create({
   },
   bigMetric: { fontSize: 28, fontWeight: '700', ...numeric },
   loadRow: { flexDirection: 'row', justifyContent: 'space-between' },
+  // Deliberately quiet: the IP is reference information you go looking for,
+  // not a vital you watch. Sized so it never competes with the uptime metric
+  // above it.
+  ipLine: {
+    color: t.textFaint,
+    fontSize: 11,
+    textAlign: 'center',
+    marginTop: 2,
+    ...numeric,
+  },
   loadVal: {
     color: t.text,
     fontSize: 22,
