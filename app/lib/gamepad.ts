@@ -156,6 +156,56 @@ function traceButton(k: string | undefined, v: number | undefined, how: string):
   if (inputTrace.length > TRACE_MAX) inputTrace.shift();
 }
 
+/**
+ * Keepalive instrumentation.
+ *
+ * The agent reaps any gamepad socket that receives NOTHING for 12s
+ * (GAMEPAD_IDLE_TIMEOUT_S), which is safe only if this client's 5s ping is
+ * actually arriving. Measured on a live box: sessions survived 22-25s while the
+ * user was touching the screen (input frames feed the same timer) and then died
+ * at exactly 12.1s once idle — while HTTP polling kept succeeding throughout. A
+ * synthetic client on the box pinging every 5s survived 40s, and the same client
+ * with pings disabled died at 12.1s. So the agent is fine and this side's ping
+ * is not landing.
+ *
+ * What that leaves is two candidates these counters separate, which reading the
+ * code cannot: the interval stops firing, or the send is swallowed. sendRaw has
+ * two silent-drop paths (socket not OPEN, and send() throwing) that were traced
+ * ONLY for button frames — a dropped ping went completely unrecorded.
+ *
+ * Module level, like inputTrace above: the client is recreated on reconnect, so
+ * instance state would be wiped by the very disconnect worth investigating.
+ */
+export const wsTrace = {
+  /** Interval callback entered. If this stops climbing, the timer died. */
+  timerFires: 0,
+  /** ws.send() returned without throwing. */
+  pingsSent: 0,
+  /** Socket was not OPEN at send time (silent drop #1). */
+  pingsDroppedNotOpen: 0,
+  /** send() threw (silent drop #2). */
+  pingsThrew: 0,
+  /** Watchdog decided the pipe was dead and tore down. */
+  watchdogTeardowns: 0,
+  lastPingAt: 0,
+  lastInboundAt: 0,
+  lastSocketState: 'none',
+  lastError: '' as string,
+};
+if (typeof globalThis !== 'undefined') {
+  (globalThis as Record<string, unknown>).__wsTrace = wsTrace;
+}
+
+/** Snapshot for the on-device panel — a device build has no JS console. */
+export function getWsTrace(): typeof wsTrace & { inboundAgeMs: number; pingAgeMs: number } {
+  const now = Date.now();
+  return {
+    ...wsTrace,
+    inboundAgeMs: wsTrace.lastInboundAt ? now - wsTrace.lastInboundAt : -1,
+    pingAgeMs: wsTrace.lastPingAt ? now - wsTrace.lastPingAt : -1,
+  };
+}
+
 /** Newest last. Copy, so callers can't mutate the buffer. */
 export function getInputTrace(): InputTraceEntry[] {
   return inputTrace.slice();
@@ -800,9 +850,14 @@ export class GamepadClient {
       // recovers in ~7s beats one frozen for ~13s. This is the Couch-Mode-switch
       // case: the mode change blips Wi-Fi, the socket half-dies mid-drag, and the
       // old 2.5-interval window left the pointer dead for 12s.
+      // Counted BEFORE any early return, so "the interval stopped firing" and
+      // "the interval fires but the send is swallowed" are distinguishable.
+      wsTrace.timerFires += 1;
+      wsTrace.lastInboundAt = this.lastInbound;
       const activelyDriving = Date.now() - this.lastInputAt < PING_INTERVAL_MS;
       const deadline = PING_INTERVAL_MS * (activelyDriving ? 1.4 : 2.5);
       if (Date.now() - this.lastInbound > deadline) {
+        wsTrace.watchdogTeardowns += 1;
         this.teardownSocket(false);
         if (this.active) {
           this.setStatus('error', null);
@@ -860,6 +915,12 @@ export class GamepadClient {
       // the agent's latched hat axis forever, with nothing anywhere recording
       // that it happened. Trace it.
       if (f.t === 'b') traceButton(f.k, f.v, 'drop:' + wsStateName(ws));
+      // A dropped PING was previously invisible here, and a ping that never
+      // leaves is exactly what the agent reaps the socket for.
+      if (f.t === 'ping') {
+        wsTrace.pingsDroppedNotOpen += 1;
+        wsTrace.lastSocketState = wsStateName(ws);
+      }
       return;
     }
     // Note real input (anything but our own keepalive ping) so the watchdog can
@@ -868,9 +929,18 @@ export class GamepadClient {
     try {
       ws.send(JSON.stringify(obj));
       if (f.t === 'b') traceButton(f.k, f.v, 'sent');
-    } catch {
+      if (f.t === 'ping') {
+        wsTrace.pingsSent += 1;
+        wsTrace.lastPingAt = Date.now();
+        wsTrace.lastSocketState = 'open';
+      }
+    } catch (e) {
       // SILENT DROP #2: socket died mid-send; onclose will handle it.
       if (f.t === 'b') traceButton(f.k, f.v, 'throw');
+      if (f.t === 'ping') {
+        wsTrace.pingsThrew += 1;
+        wsTrace.lastError = e instanceof Error ? e.message : String(e);
+      }
     }
   }
 
