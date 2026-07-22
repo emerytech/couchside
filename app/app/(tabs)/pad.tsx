@@ -31,6 +31,7 @@ import {
   View,
   ViewStyle,
 } from 'react-native';
+import * as Clipboard from 'expo-clipboard';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
 import { Gated } from '@/components/Gated';
@@ -487,6 +488,32 @@ function KeyboardBar({ onText, onBackspace, onEnter, onSwipeMode }: KeyboardBarP
     [onText, onBackspace],
   );
 
+  /**
+   * Paste the phone's clipboard into the box.
+   *
+   * Deliberately routed through onChangeText rather than sending the text
+   * directly: that path already diffs against what is on screen (see
+   * textDelta), so a paste behaves exactly like typing the same characters and
+   * the compose field stays in sync with the box. Sending straight past it
+   * would leave the field and the box disagreeing, and the next keystroke would
+   * then diff against the wrong text.
+   *
+   * This exists because iOS's own paste menu needs a long-press on a field, and
+   * on a TV remote you are usually pasting a password or a URL you have no
+   * intention of retyping — one button beats a long-press hunt.
+   */
+  const pasteFromClipboard = useCallback(async () => {
+    try {
+      const text = await Clipboard.getStringAsync();
+      if (!text) return;
+      haptic();
+      onChangeText(valueRef.current + text);
+    } catch {
+      // Clipboard unavailable (permission, web without a secure context):
+      // silently do nothing rather than break the keyboard bar.
+    }
+  }, [onChangeText]);
+
   const onKeyPress = useCallback(
     (e: { nativeEvent: { key: string } }) => {
       const key = e.nativeEvent.key;
@@ -526,12 +553,22 @@ function KeyboardBar({ onText, onBackspace, onEnter, onSwipeMode }: KeyboardBarP
           {!open && <Text style={styles.kbSwipeCue}>›</Text>}
         </Pressable>
         {open && (
-          <Pressable
-            onPress={dismiss}
-            hitSlop={8}
-            style={({ pressed }) => [styles.kbDone, pressed && styles.btnPressed]}>
-            <Text style={styles.kbDoneText}>DONE</Text>
-          </Pressable>
+          <>
+            {/* Android has no InputAccessoryView, so PASTE has to live here too
+                or half the users never get it. */}
+            <Pressable
+              onPress={pasteFromClipboard}
+              hitSlop={8}
+              style={({ pressed }) => [styles.kbDone, pressed && styles.btnPressed]}>
+              <Text style={styles.kbDoneText}>PASTE</Text>
+            </Pressable>
+            <Pressable
+              onPress={dismiss}
+              hitSlop={8}
+              style={({ pressed }) => [styles.kbDone, pressed && styles.btnPressed]}>
+              <Text style={styles.kbDoneText}>DONE</Text>
+            </Pressable>
+          </>
         )}
       </View>
       {/* Zero-size anchor at the container's bottom edge — measured in window
@@ -590,6 +627,16 @@ function KeyboardBar({ onText, onBackspace, onEnter, onSwipeMode }: KeyboardBarP
         <InputAccessoryView nativeID={KB_ACCESSORY_ID}>
           <View style={styles.kbAccessory}>
             <Text style={styles.kbAccessoryHint}>⌨  type to send</Text>
+            <Pressable
+              onPress={pasteFromClipboard}
+              hitSlop={10}
+              style={({ pressed }) => [
+                styles.kbDone,
+                styles.kbAccessoryDone,
+                pressed && styles.btnPressed,
+              ]}>
+              <Text style={styles.kbDoneText}>PASTE</Text>
+            </Pressable>
             <Pressable
               onPress={dismiss}
               hitSlop={10}
