@@ -68,6 +68,50 @@ Entry fields: `priority` (P0 blocker → P3 nice) · `risk` · `affects` · `dep
 - **Value is narrower than it looks:** the shipped Bluetooth button already reaches Steam's
   own pairing UI, which handles agents and PINs correctly.
 
+### Search button: open Steam's global search + raise the phone keyboard
+- **priority:** P2 · **risk:** low · **affects:** agent + app · **depends_on:** none
+- A search icon in the app focuses Steam's global search on the box AND raises the phone's own
+  keyboard, so you type a game name on the phone instead of thumbing a d-pad across a letter
+  grid. Owner request, 2026-07-22.
+- **MECHANISM PROVEN end to end on a Legion Go S in Game Mode, 2026-07-22**, driven from the
+  app on a real phone and observed through `/api/screen/frame`:
+  1. `UP`, `UP`, then `LEFT` x8 focuses the global search field (it goes bright/white; every
+     earlier frame had it dim). Overshooting LEFT is safe — LEFT at the leftmost item is a
+     no-op, and 8 exceeds the number of top-bar items.
+  2. Typing lands in it and filters LIVE: "dota" gave ALL 15 / LIBRARY 1, with DOTA 2 marked
+     IN LIBRARY. Rides the existing `{"t":"kt"}` text channel; no new route needed.
+  3. `ESC` closes it (verified against a live search with text in it; an F13 control produced a
+     byte-identical frame, so the effect is specifically ESC).
+- **NO DEEP LINK EXISTS — do not go looking again.** Measured against a bogus-URL control:
+  `steam://open/search` and `steam://open/bigpicture` do nothing; `steam://open/settings/search`
+  opens **Settings** (unknown slug falls back to the default page); `steam://store/search` opens
+  the **Store**, not library search.
+- **THE DESIGN DETAIL THAT MATTERS: Steam's own OSK does NOT open on this path.** Steam takes
+  the keys directly, so the agent's osk watcher never fires. The app must raise its OWN keyboard
+  when the button is tapped rather than wait for the `{"t":"osk"}` push — which is exactly the
+  behaviour requested, but it will not happen for free.
+- **Known fragility:** the key sequence assumes focus starts in the library grid. From a game
+  page or another tab the same sequence lands somewhere else. Worth an explicit "known
+  limitation" rather than pretending it is universal, and worth re-checking after Steam UI
+  updates — this is UI-shape-dependent, not an API.
+- Bottom bar also showed **Y = CLEAR** while search was focused, if a clear affordance is wanted.
+
+### Hide-keyboard should also dismiss the box's keyboard/search
+- **priority:** P3 · **risk:** medium · **affects:** app only
+- Pressing the app's HIDE button should close the box's search too. Owner request, 2026-07-22.
+- **PROVEN:** `ESC` closes an open search on the box — tested against a live search with text
+  typed, with an F13 control that produced a byte-identical frame. `sendKey('esc')` is already
+  exposed, so this is app-only: no new route, no new client id, no agent release.
+- **THE RISK THAT DECIDES THE DESIGN, and it is confirmed, not theoretical:** ESC is
+  *back-navigation*, not "dismiss keyboard". In the same session ESC walked Store → Settings →
+  Library, and closing the search also landed on Steam **Home** rather than staying put. Firing
+  it on every HIDE tap would therefore move the user when nothing was open, or open a pause
+  menu inside a game.
+- So gate it: only send ESC when the app knows it opened the box's search (i.e. the user
+  pressed the search button this session and has not dismissed it another way). An app-side
+  flag is enough; the agent's osk watcher cannot help here because Steam's OSK never opens on
+  this path.
+
 ### Close the running game from the Launch tab
 - **priority:** P2 · **risk:** medium · **affects:** agent + app · **depends_on:** none
 - A card at the top of Launch showing what is running now, how long it has been running, and
