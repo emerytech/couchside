@@ -68,93 +68,6 @@ Entry fields: `priority` (P0 blocker → P3 nice) · `risk` · `affects` · `dep
 - **Value is narrower than it looks:** the shipped Bluetooth button already reaches Steam's
   own pairing UI, which handles agents and PINs correctly.
 
-### Search button: open Steam's global search + raise the phone keyboard
-- **priority:** P2 · **risk:** low · **affects:** agent + app · **depends_on:** none
-- A search icon in the app focuses Steam's global search on the box AND raises the phone's own
-  keyboard, so you type a game name on the phone instead of thumbing a d-pad across a letter
-  grid. Owner request, 2026-07-22.
-- **MECHANISM PROVEN end to end on a Legion Go S in Game Mode, 2026-07-22**, driven from the
-  app on a real phone and observed through `/api/screen/frame`:
-  1. `UP`, `UP`, then `LEFT` x8 focuses the global search field (it goes bright/white; every
-     earlier frame had it dim). Overshooting LEFT is safe — LEFT at the leftmost item is a
-     no-op, and 8 exceeds the number of top-bar items.
-  2. Typing lands in it and filters LIVE: "dota" gave ALL 15 / LIBRARY 1, with DOTA 2 marked
-     IN LIBRARY. Rides the existing `{"t":"kt"}` text channel; no new route needed.
-  3. `ESC` closes it (verified against a live search with text in it; an F13 control produced a
-     byte-identical frame, so the effect is specifically ESC).
-- **NO DEEP LINK EXISTS — do not go looking again.** Measured against a bogus-URL control:
-  `steam://open/search` and `steam://open/bigpicture` do nothing; `steam://open/settings/search`
-  opens **Settings** (unknown slug falls back to the default page); `steam://store/search` opens
-  the **Store**, not library search.
-- **THE DESIGN DETAIL THAT MATTERS: Steam's own OSK does NOT open on this path.** Steam takes
-  the keys directly, so the agent's osk watcher never fires. The app must raise its OWN keyboard
-  when the button is tapped rather than wait for the `{"t":"osk"}` push — which is exactly the
-  behaviour requested, but it will not happen for free.
-- **Known fragility:** the key sequence assumes focus starts in the library grid. From a game
-  page or another tab the same sequence lands somewhere else. Worth an explicit "known
-  limitation" rather than pretending it is universal, and worth re-checking after Steam UI
-  updates — this is UI-shape-dependent, not an API.
-- Bottom bar also showed **Y = CLEAR** while search was focused, if a clear affordance is wanted.
-
-### Hide-keyboard should also dismiss the box's keyboard/search
-- **priority:** P3 · **risk:** medium · **affects:** app only
-- Pressing the app's HIDE button should close the box's search too. Owner request, 2026-07-22.
-- **PROVEN:** `ESC` closes an open search on the box — tested against a live search with text
-  typed, with an F13 control that produced a byte-identical frame. `sendKey('esc')` is already
-  exposed, so this is app-only: no new route, no new client id, no agent release.
-- **THE RISK THAT DECIDES THE DESIGN, and it is confirmed, not theoretical:** ESC is
-  *back-navigation*, not "dismiss keyboard". In the same session ESC walked Store → Settings →
-  Library, and closing the search also landed on Steam **Home** rather than staying put. Firing
-  it on every HIDE tap would therefore move the user when nothing was open, or open a pause
-  menu inside a game.
-- So gate it: only send ESC when the app knows it opened the box's search (i.e. the user
-  pressed the search button this session and has not dismissed it another way). An app-side
-  flag is enough; the agent's osk watcher cannot help here because Steam's OSK never opens on
-  this path.
-
-### Close the running game from the Launch tab
-- **priority:** P2 · **risk:** medium · **affects:** agent + app · **depends_on:** none
-- A card at the top of Launch showing what is running now, how long it has been running, and
-  a red button to close it. Today you can start a game from the phone but not stop one, which
-  is the half that matters when the TV is black.
-- **Half of it already exists:** `_running_game()` (`agent/couchsided.py:9149`) scans
-  `/proc/*/cmdline` for Steam's reaper wrapper and returns `{"appid", "label"}`. Runtime comes
-  from field 22 (`starttime`) of `/proc/<pid>/stat` against `/proc/uptime` — no new source.
-- **THE ALLOWLIST DESIGN, do not deviate:** the stop route takes **NO client input at all** —
-  no pid, no appid, no name. `POST /api/game/stop` with an empty body, and the AGENT
-  re-resolves the target itself via `_running_game()` at the moment of the call. A client that
-  cannot name a process cannot be steered into killing one. Passing a pid or appid "to be
-  explicit" would invert that and is exactly what §3 forbids.
-- `SIGTERM` to the reaper, never `SIGKILL` first, never a shell string. Degrade closed:
-  nothing running is a 404, not a best-effort sweep.
-- **Unverified:** whether SIGTERM to the reaper closes a game cleanly or whether Steam
-  restarts it / leaves a zombie, and whether the reaper is the right target at all versus the
-  game binary. Needs a game actually running on a box.
-
-### Scan cannot find a box on a different subnet
-- **priority:** P2 · **risk:** low · **affects:** app · **depends_on:** none
-- **HIT LIVE 2026-07-22 on real hardware, twice.** An iPad on `10.7.1.170/24` and a Razr on
-  `10.7.1.224/24` both reported "No boxes found" while the box sat on **`10.7.0.64`** — a
-  different /24. Routing between them worked fine (`/api/ping` returned 200 from the phone),
-  and `steamdeck.local` resolved to the right address. The only thing that failed was the
-  sweep, because it only covers the device's OWN /24.
-- This is not exotic. Mesh routers, guest VLANs and any router handing out a second subnet
-  produce it, and the user experience is "the app cannot see my box" with no hint that the
-  network is the reason.
-- The app already handles it correctly once you know: the error names the scanned range and
-  points at Add-by-IP, and QR pairing from an already-paired phone transfers host+port+token
-  without typing. So this is discoverability, not brokenness.
-- Options, roughly in order of cost: (a) say WHY in the empty state — "your box is on a
-  different network than this device" is more useful than "not found"; (b) also sweep the
-  subnet of any box already in the fleet, since a second device usually has one; (c) offer the
-  QR path more prominently when a scan finds nothing.
-- **Do NOT widen the sweep blindly.** Scanning arbitrary ranges from a phone is slow, looks
-  like a port scan to a router, and the owner has asked to be consulted before any network
-  sweep. Option (a) costs nothing and probably solves most of it.
-- **Unverified:** whether iOS `.local` resolution works reliably in-app across subnets. On this
-  network mDNS resolved from a Mac, but the iOS Local Network permission is a separate gate and
-  was not tested in the denied state.
-
 ### More Console sensors (battery health, CPU governor, GPU power)
 - **priority:** P3 · **risk:** low · **affects:** agent + app · **depends_on:** none
 - All read-only sysfs, no new capability, no client input. **PROBED on a Legion Go S,
@@ -178,41 +91,18 @@ Entry fields: `priority` (P0 blocker → P3 nice) · `risk` · `affects` · `dep
 - **Unverified:** none of these have been read on a DISCRETE-GPU box or a desktop; the
   hwmon paths in particular vary by driver.
 
-### Show the box IP and live network throughput on Console
+### Live network throughput on Console
 - **priority:** P3 · **risk:** low · **affects:** agent + app · **depends_on:** none
-- **The IP is already in the payload.** `/api/status` carries `ip` (the address the phone
-  reached the box on, agent >= 2.9.22) and the app's `Status` type already declares it — the
-  Console tab simply never renders it. That half is app-only, no agent release needed.
-- Throughput is the real work: `/proc/net/dev` exposes cumulative byte counters, so a RATE
-  needs two samples and a delta. The agent has to hold the previous sample and its timestamp;
-  one read can only ever report totals, never speed.
-- Choose the interface the way `net_info_cached()` already does rather than inventing a second
-  rule, or the two cards will disagree about which NIC the box is on.
+- The box IP half of this SHIPPED in 2.9.21 — Console renders `status.ip` under uptime.
+  Throughput is what remains.
+- `/proc/net/dev` exposes cumulative byte counters, so a RATE needs two samples and a delta:
+  the agent has to hold the previous sample and its timestamp. One read can only ever report
+  totals, never speed.
+- Choose the interface the way `net_info_cached()` already does, or the two cards will disagree
+  about which NIC the box is on.
 - **Unverified:** what the counters do across suspend/resume or a NIC reset. A counter that
-  resets produces a large negative delta — clamp at zero and show nothing rather than
-  rendering a nonsense spike.
-
-### Fill in missing Launch tile cover art from the box
-- **priority:** P2 · **risk:** low · **affects:** agent + app · **depends_on:** none
-- **MEASURED on a Legion Go S, 2026-07-22:** its `appcache/librarycache` holds 1118 entries —
-  **826** games have `header.jpg` but only **386** have `library_600x900.jpg`. `_steam_cover_path()`
-  looks for `library_600x900.jpg` and nothing else, so roughly **440 installed games render the
-  blank text-card fallback while their artwork is already on disk.**
-- Entirely local: no CDN, no scraping, no new network egress. The existing
-  `/api/steam/<appid>/cover` route already serves from the box; this widens which local files
-  it will serve, in a fixed preference order.
-- Candidate sources beyond the current two: `library_600x900_2x.jpg`, `header.jpg`,
-  `library_hero.jpg`, and user/SteamGridDB art under `userdata/<uid>/config/grid/`. **No `grid/`
-  folder existed on the Legion Go S**, so custom-art support is speculative — do not claim it
-  works until a box with one is measured.
-- **Aspect is the real design problem, not the lookup.** Tiles are 600x900 portrait; `header.jpg`
-  is 460x215 landscape. Centre-cropping a header into a portrait tile often looks worse than the
-  clean fallback card. So the agent should ADD a field saying which KIND of art it found
-  (portrait / header / none) and let the app lay each out properly — never rename or remove an
-  existing field.
-- Allowlist note: appid stays digits-only validated and the resolved path must still be verified
-  to sit inside the cache root. Widening the FILENAME set is fine; widening to a glob or a
-  client-supplied filename is not.
+  resets produces a large negative delta — clamp at zero and show nothing rather than a
+  nonsense spike.
 
 ### Make Preferences findable (filter + collapse + re-split PAD LAYOUT)
 - **priority:** P2 · **risk:** low · **affects:** app only · **depends_on:** none
@@ -316,6 +206,29 @@ recommendation was wrong, not merely superseded.
 ---
 
 ## ✅ Completed
+
+### 2026-07-22 — Release 2.9.21 (app 2.9.21 / agent 2.9.43)
+Play **vc 55 LIVE**; App Store **2.9.21 submitted for review** (build 75, first store
+submission since 2.9.17); TestFlight **public link submitted for Beta App Review**; Decky
+**v0.2.40** bundling the agent, signed.
+
+Shipped in this release, each verified on hardware rather than in the harness:
+- **Android cover art** — had NEVER worked. RN's `<Image>` `source.headers` are dropped by
+  Android's loader; instrumenting the agent showed every request arriving as
+  `auth_header='' ua='okhttp/4.9.2'`. The cover route now also accepts `?token=`, scoped to
+  image GETs only and proven not to be a general bypass.
+- **Steam search button** — no deep link exists (four candidates ruled out against a control);
+  it anchors the UI with `steam://open/games` then walks focus with arrows. LEFT/RIGHT/OFF pref.
+- **Close the running game** — `POST /api/game/stop` takes NO argument by design; the agent
+  re-resolves the target itself. NOT yet verified against a real running game.
+- **Launch search + collapsible Stream from PC.**
+- **Disk percent** — was dividing by total blocks including root-reserved, so /home read 91%
+  where df said 97%. Now matches df. Game drives (SD cards) appear, via Steam's own library list.
+- **Battery** — draw, ACPI power profile, and time-to-full while charging.
+- **Memory pressure (PSI) and swap**; **GPU shared memory** (a 512 MB APU carve-out was being
+  reported as the whole GPU).
+- **Update progress** in the app and on the box's own screen.
+- **Scan failure now explains itself** — it only covers the device's own /24.
 
 ### 2026-07-21 — Release 2.9.17 (app 2.9.17 / agent 2.9.36 unchanged)
 Play **vc53 LIVE**; iOS **build 71 submitted for review** (App Store live was still 2.9.9 at
