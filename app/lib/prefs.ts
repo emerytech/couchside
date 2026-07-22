@@ -58,6 +58,15 @@ export type Prefs = {
    *  a gamepad screen with no gamepad would be a lie. */
   keyboardMode: boolean;
   /** Input mode a newly paired box starts on. */
+  /** Where the Steam search button sits on the keyboard bar, or 'off' to hide
+   *  it entirely.
+   *
+   *  Defaults to LEFT: the bar's right end is where the thumb rests and where
+   *  PASTE/HIDE appear once the bar opens, so a search button there is easy to
+   *  hit by accident. Handedness varies, so side is a preference rather than a
+   *  decision — and 'off' exists because a control you never use is still a
+   *  control you can fat-finger. */
+  searchButtonSide: 'left' | 'right' | 'off';
   defaultPadMode: PadMode;
   /** How often the console/header polls the box for vitals (ms). */
   statusIntervalMs: number;
@@ -132,6 +141,7 @@ export const DEFAULTS: Prefs = {
   landingTab: 'index',
   autoKeyboard: true,
   keyboardMode: false,
+  searchButtonSide: 'left',
   defaultPadMode: 'swipe',
   statusIntervalMs: 5000,
   journalLines: 100,
@@ -213,10 +223,15 @@ function normalize(raw: unknown): Prefs {
     o.defaultPadMode === 'remote'
       ? o.defaultPadMode
       : 'swipe';
+  const searchSide: 'left' | 'right' | 'off' =
+    o.searchButtonSide === 'right' || o.searchButtonSide === 'off'
+      ? o.searchButtonSide
+      : 'left';
   const landingTab: LandingTab = LANDING_TABS.includes(o.landingTab as LandingTab)
     ? (o.landingTab as LandingTab)
     : DEFAULTS.landingTab;
   return {
+    searchButtonSide: searchSide,
     confirmSuspend:
       typeof o.confirmSuspend === 'boolean' ? o.confirmSuspend : DEFAULTS.confirmSuspend,
     landingTab,

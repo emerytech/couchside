@@ -660,6 +660,7 @@ function SetupBody() {
   const padHints = usePref('padHints');
   const askToSwitchControl = usePref('askToSwitchControl');
   const keyboardMode = usePref('keyboardMode');
+  const searchButtonSide = usePref('searchButtonSide');
   const volumeButtons = usePref('volumeButtons');
   const hideOfflineStreamHosts = usePref('hideOfflineStreamHosts');
   const hideStreamFromPc = usePref('hideStreamFromPc');
@@ -1348,6 +1349,20 @@ function SetupBody() {
                 value={padHints}
                 onValueChange={(v) => {
                   void setPref('padHints', v);
+                  hapticSelection();
+                }}
+              />
+              <SegPref
+                label="Steam search button"
+                sub="Opens Steam's search on the box and brings up your keyboard. Left by default — the right end of the bar is where your thumb rests, so it's easier to hit by accident there."
+                options={[
+                  { value: 'left', label: 'LEFT' },
+                  { value: 'right', label: 'RIGHT' },
+                  { value: 'off', label: 'OFF' },
+                ]}
+                value={searchButtonSide}
+                onSelect={(v) => {
+                  void setPref('searchButtonSide', v);
                   hapticSelection();
                 }}
               />
