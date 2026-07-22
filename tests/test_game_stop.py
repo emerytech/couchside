@@ -37,26 +37,48 @@ def check(name, got, want):
 
 
 class Killed:
-    """Capture what would have been signalled, instead of signalling."""
+    """Capture what would have been signalled, instead of signalling.
 
-    def __init__(self, game, exc=None):
-        self.sent = []
-        self._game, self._exc = game, exc
-        self._old_kill, self._old_running = os.kill, cs._running_game
+    `exits` decides what _running_game() reports AFTER the signal: True means
+    the game went away (the success path), False means it survived. That
+    distinction is the whole point -- the shipped bug reported success purely
+    because os.kill did not raise.
+    """
+
+    def __init__(self, game, exc=None, exits=True, pgid=4242):
+        self.sent = []          # ("kill"|"killpg", target, signal)
+        self._game, self._exc, self._exits, self._pgid = game, exc, exits, pgid
+        self._signalled = False
+        self._old = (os.kill, getattr(os, "killpg", None), os.getpgid,
+                     cs._running_game, cs._GAME_STOP_GRACE_S)
 
     def __enter__(self):
         outer = self
 
         def fake_kill(pid, sig):
-            outer.sent.append((pid, sig))
+            outer.sent.append(("kill", pid, sig))
+            outer._signalled = True
             if outer._exc:
                 raise outer._exc
-        os.kill = fake_kill
-        cs._running_game = lambda: outer._game
+
+        def fake_killpg(pgid, sig):
+            outer.sent.append(("killpg", pgid, sig))
+            outer._signalled = True
+            if outer._exc:
+                raise outer._exc
+
+        def fake_getpgid(pid):
+            return os.getpid() if pid == 0 else outer._pgid
+
+        os.kill, os.killpg, os.getpgid = fake_kill, fake_killpg, fake_getpgid
+        cs._running_game = lambda: (
+            None if (outer._signalled and outer._exits) else outer._game)
+        cs._GAME_STOP_GRACE_S = 1.0      # keep the suite fast
         return self
 
     def __exit__(self, *a):
-        os.kill, cs._running_game = self._old_kill, self._old_running
+        (os.kill, os.killpg, os.getpgid,
+         cs._running_game, cs._GAME_STOP_GRACE_S) = self._old
 
 
 def test_takes_no_argument():
@@ -66,16 +88,53 @@ def test_takes_no_argument():
     check("zero parameters", cs.stop_running_game.__code__.co_argcount, 0)
 
 
-def test_sends_sigterm_to_the_resolved_pid():
-    """SIGTERM, never SIGKILL: Steam's reaper forwards it so the game saves."""
-    print("test_sends_sigterm_to_the_resolved_pid")
+def test_signals_the_process_GROUP_not_just_the_pid():
+    """THE bug that shipped. Signalling the reaper pid alone did nothing --
+    reaper is Steam's supervisor and the game is its CHILD, so SIGTERM to the
+    wrapper never reaches what the user is looking at. MEASURED on hardware:
+    the route returned 200 and the game kept running."""
+    print("test_signals_the_process_GROUP_not_just_the_pid")
     game = {"appid": 570, "label": "Dota 2", "pid": 4242}
-    with Killed(game) as k:
+    with Killed(game, pgid=4242) as k:
         res = cs.stop_running_game()
         check("stopped", res.get("stopped"), True)
         check("one signal", len(k.sent), 1)
-        check("to the resolved pid", k.sent[0][0], 4242)
-        check("SIGTERM not SIGKILL", k.sent[0][1], signal.SIGTERM)
+        check("signalled the GROUP", k.sent[0][0], "killpg")
+        check("the game's group", k.sent[0][1], 4242)
+        check("SIGTERM not SIGKILL", k.sent[0][2], signal.SIGTERM)
+
+
+def test_survivor_reports_failure_not_success():
+    """THE other half of the bug. It reported success because os.kill did not
+    raise -- which only means the signal was DELIVERED. A game that is still
+    there afterwards must be reported as still there."""
+    print("test_survivor_reports_failure_not_success")
+    game = {"appid": 570, "label": "Dota 2", "pid": 4242}
+    with Killed(game, exits=False):
+        res = cs.stop_running_game()
+        check("not stopped", res.get("stopped"), False)
+        check("says why", res.get("reason"), "still running after SIGTERM")
+
+
+def test_never_signals_our_own_group():
+    """A pgid equal to this process's own group would take the AGENT down with
+    the game. Fall back to the single pid rather than signalling ourselves."""
+    print("test_never_signals_our_own_group")
+    game = {"appid": 570, "label": "Dota 2", "pid": 4242}
+    with Killed(game, pgid=os.getpid()) as k:
+        cs.stop_running_game()
+        check("used kill, not killpg", k.sent[0][0], "kill")
+
+
+def test_never_signals_pgid_0_or_1():
+    """pgid 0 means 'every process in our group' and 1 is init. Both would be
+    catastrophic; neither is ever the right target."""
+    print("test_never_signals_pgid_0_or_1")
+    for bad in (0, 1):
+        game = {"appid": 570, "pid": 4242}
+        with Killed(game, pgid=bad) as k:
+            cs.stop_running_game()
+            check("pgid %d -> single pid" % bad, k.sent[0][0], "kill")
 
 
 def test_nothing_running_signals_nothing():
@@ -158,7 +217,10 @@ def test_uptime_parses_a_comm_containing_spaces_and_parens():
 
 if __name__ == "__main__":
     for fn in (test_takes_no_argument,
-               test_sends_sigterm_to_the_resolved_pid,
+               test_signals_the_process_GROUP_not_just_the_pid,
+               test_survivor_reports_failure_not_success,
+               test_never_signals_our_own_group,
+               test_never_signals_pgid_0_or_1,
                test_nothing_running_signals_nothing,
                test_game_without_a_pid_signals_nothing,
                test_already_exited_reads_as_success,

@@ -61,6 +61,73 @@ function humanizeRun(secs: number): string {
   return `${Math.floor(m / 60)}h ${m % 60}m`;
 }
 
+/**
+ * Compact "what's playing" card for the Launch tab.
+ *
+ * Deliberately NOT the full GamingCard: GPU temperature and VRAM belong on
+ * Console, where you went to look at vitals. Here the only questions are what
+ * is running, how long it has been, and how to stop it -- so it renders nothing
+ * else, and nothing at all when no game is running.
+ *
+ * Polls independently of the Console card. They are on different tabs and never
+ * mounted together, so this costs one request on whichever tab you are looking
+ * at rather than two.
+ */
+export function NowPlayingCard() {
+  const t = useTheme();
+  const styles = useThemedStyles(makeStyles);
+  const { settings, ready } = useSettings();
+  const configured = !!settings.host && !!settings.token;
+  const [stopping, setStopping] = useState(false);
+  const poll = usePoll<Gaming | null>(
+    () => api.gaming(settings), 5000, ready && configured, hostKey(settings));
+  const g = poll.data;
+  if (!g?.game) return null;
+  const game = g.game;
+
+  return (
+    <View style={styles.nowCard}>
+      <View style={styles.nowHeader}>
+        <Ionicons name="play-circle" size={14} color={t.green} />
+        <Text style={styles.nowHeaderText}>PLAYING NOW</Text>
+        {game.running_s != null && (
+          <Text style={styles.nowTime}>{humanizeRun(game.running_s)}</Text>
+        )}
+      </View>
+      <Text style={styles.nowTitle} numberOfLines={2}>
+        {game.label ?? `App ${game.appid}`}
+      </Text>
+      <Pressable
+        onPress={() => {
+          hapticLight();
+          Alert.alert(
+            'Close this game?',
+            `${game.label ?? 'The running game'} will be asked to quit. Unsaved progress may be lost.`,
+            [
+              { text: 'Cancel', style: 'cancel' },
+              {
+                text: 'Close game',
+                style: 'destructive',
+                onPress: () => {
+                  setStopping(true);
+                  void api.stopGame(settings).finally(() => {
+                    setStopping(false);
+                    poll.refresh();
+                  });
+                },
+              },
+            ],
+          );
+        }}
+        disabled={stopping}
+        style={({ pressed }) => [styles.stopBtn, pressed && { opacity: 0.7 }]}>
+        <Ionicons name="stop-circle-outline" size={15} color={t.red} />
+        <Text style={styles.stopText}>{stopping ? 'CLOSING…' : 'CLOSE GAME'}</Text>
+      </Pressable>
+    </View>
+  );
+}
+
 export function GamingCard() {
   const t = useTheme();
   const styles = useThemedStyles(makeStyles);
@@ -282,6 +349,19 @@ const makeStyles = (t: Palette) =>
     // Destructive, so it reads as one: red text on a red hairline rather than a
   // filled button. It sits inside a card of read-only vitals and must not look
   // like just another row.
+  nowCard: {
+    backgroundColor: t.card,
+    borderColor: t.cardBorder,
+    borderWidth: 1,
+    borderRadius: 12,
+    padding: 14,
+    marginBottom: 12,
+    gap: 8,
+  },
+  nowHeader: { flexDirection: 'row', alignItems: 'center', gap: 6 },
+  nowHeaderText: { color: t.textDim, fontSize: 11, letterSpacing: 1, fontFamily: mono },
+  nowTime: { color: t.textDim, fontSize: 11, marginLeft: 'auto', fontFamily: mono },
+  nowTitle: { color: t.text, fontSize: 16, fontWeight: '700' },
   stopBtn: {
     flexDirection: 'row',
     alignItems: 'center',

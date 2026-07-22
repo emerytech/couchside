@@ -18,6 +18,11 @@ the same thing regardless of what actually changed.
 Write for the person holding the phone, not for the commit log. They are
 deciding whether to press "Update now" on a machine across the room.
 
+## 2.9.44
+
+Closing a game from the phone now actually closes it. The button reported
+success without stopping anything.
+
 ## 2.9.43
 
 Storage now reports how full a drive really is. It was dividing by space you

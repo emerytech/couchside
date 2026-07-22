@@ -45,7 +45,7 @@ except ImportError:  # pragma: no cover
     fcntl = None
 
 APP_NAME = "couchside-agent"
-VERSION = "2.9.43"
+VERSION = "2.9.44"
 UID = os.getuid()
 XDG_RUNTIME_DIR = "/run/user/%d" % UID
 
@@ -9551,6 +9551,12 @@ def _appid_from_cmdline(cmdline):
         return None
 
 
+# How long to wait for a game to actually exit after SIGTERM before reporting
+# that it did not. Long enough for a save-on-quit, short enough that the phone
+# is not left spinning: a game that has not gone in this window is not going.
+_GAME_STOP_GRACE_S = 6.0
+
+
 def stop_running_game():
     """Ask the game running right now to close. {"stopped": bool, ...}.
 
@@ -9572,8 +9578,26 @@ def stop_running_game():
     if not game or not game.get("pid"):
         return {"stopped": False, "reason": "nothing running"}
     pid = game["pid"]
+
+    # Signal the process GROUP, not just the pid.
+    #
+    # MEASURED FAILURE, 2026-07-22: signalling the reaper pid alone returned
+    # success and the game kept running. `reaper` is Steam's supervisor wrapper;
+    # the game is its CHILD, so SIGTERM to the wrapper does not reach the thing
+    # the user is looking at. The group is the launch job -- game plus its
+    # helpers -- which is exactly the unit "close this game" means.
+    #
+    # Guarded: a pgid of 0 or 1, or OUR OWN group, would mean signalling
+    # everything including this agent. Refuse rather than risk it.
     try:
-        os.kill(pid, signal.SIGTERM)
+        pgid = os.getpgid(pid)
+    except OSError:
+        pgid = None
+    try:
+        if pgid and pgid > 1 and pgid != os.getpgid(0):
+            os.killpg(pgid, signal.SIGTERM)
+        else:
+            os.kill(pid, signal.SIGTERM)
     except ProcessLookupError:
         # It exited between resolving and signalling. That is the outcome the
         # caller wanted, so report it as such rather than as an error.
@@ -9582,7 +9606,18 @@ def stop_running_game():
         return {"stopped": False, "reason": "not permitted"}
     except OSError as e:
         return {"stopped": False, "reason": e.__class__.__name__}
-    return {"stopped": True, "game": game}
+
+    # VERIFY, do not assume. The previous version reported success because
+    # os.kill did not raise -- which only means the signal was delivered, not
+    # that anything closed. That is how a button that does nothing reported 200.
+    # Games take a moment to save and exit, so give it a grace period.
+    deadline = time.monotonic() + _GAME_STOP_GRACE_S
+    while time.monotonic() < deadline:
+        time.sleep(0.4)
+        if _running_game() is None:
+            return {"stopped": True, "game": game}
+    return {"stopped": False, "game": game,
+            "reason": "still running after SIGTERM"}
 
 
 def _proc_uptime_s(pid):
