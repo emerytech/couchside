@@ -256,6 +256,11 @@ export type Status = {
         never label it "discharge" without checking. Absent when the gauge
         reports nothing — a box drawing 0 W does not exist. */
     watts?: number;
+    /** Minutes until the battery is FULL, while charging (agent >= 2.9.43).
+        Deliberately separate from `minutes`, which means "runtime left on
+        battery" — folding them together would make an older app report
+        "42m left" while the box is plugged in and filling up. */
+    minutes_to_full?: number;
     /** ACPI platform profile, verbatim (agent >= 2.9.43). NOT guaranteed to be
         one of the usual low-power/balanced/performance values: a Legion Go S
         reported "custom" because Steam's TDP control set one. Render whatever

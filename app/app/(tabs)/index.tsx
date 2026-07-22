@@ -50,6 +50,13 @@ function fmtLastSeen(ts: number | null): string {
   return `${Math.floor(m / 60)}h ${m % 60}m ago`;
 }
 
+/** "1h 24m" / "40m" — minutes only under an hour, so a short charge does not
+ *  read as "0h 40m". */
+function fmtDuration(mins: number): string {
+  if (mins < 60) return `${mins}m`;
+  return `${Math.floor(mins / 60)}h ${mins % 60}m`;
+}
+
 export default function ConsoleTab() {
   useLockOrientation('portrait');
   return (
@@ -232,10 +239,19 @@ function ConsoleScreen() {
               <Card title="BATTERY" index={5}>
                 <View style={styles.barLabelRow}>
                   <Text style={styles.barLabel}>
-                    {s.battery.on_ac ? 'On AC' : 'On battery'}
-                    {s.battery.minutes != null
-                      ? `   ${Math.floor(s.battery.minutes / 60)}h ${s.battery.minutes % 60}m left`
-                      : ''}
+                    {s.battery.status === 'Charging'
+                      ? 'Charging'
+                      : s.battery.on_ac
+                        ? 'On AC'
+                        : 'On battery'}
+                    {/* Two different clocks, never both: time-to-full while
+                        charging, runtime-left while discharging. The agent
+                        keeps them as separate fields for exactly that reason. */}
+                    {s.battery.minutes_to_full != null
+                      ? `   ${fmtDuration(s.battery.minutes_to_full)} to full`
+                      : s.battery.minutes != null
+                        ? `   ${fmtDuration(s.battery.minutes)} left`
+                        : ''}
                   </Text>
                   <Text style={[styles.barLabel, { color: batteryColor(s.battery.pct, t) }]}>
                     {s.battery.pct}%

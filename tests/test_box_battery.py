@@ -250,6 +250,43 @@ POWER_SUPPLY_CAPACITY=42
         s.close()
 
 
+def test_time_to_full_while_charging():
+    """VERBATIM off a Legion Go S while actually plugged in, 2026-07-22:
+    ENERGY_NOW 34530000, ENERGY_FULL 55500000, POWER_NOW 30197000
+    -> (55500000-34530000)*60/30197000 = 41 minutes."""
+    print("test_time_to_full_while_charging")
+    charging = (BAT0.replace("POWER_SUPPLY_STATUS=Discharging",
+                             "POWER_SUPPLY_STATUS=Charging")
+                    .replace("POWER_SUPPLY_ENERGY_NOW=32350000",
+                             "POWER_SUPPLY_ENERGY_NOW=34530000")
+                    .replace("POWER_SUPPLY_POWER_NOW=22543000",
+                             "POWER_SUPPLY_POWER_NOW=30197000"))
+    s = Supplies({"BAT0": charging, "ACAD": ACAD_ONLINE})
+    try:
+        got = cs.read_box_battery()
+        check("minutes_to_full", got.get("minutes_to_full"), 41)
+        check("and NOT the discharge clock", "minutes" in got, False)
+    finally:
+        s.close()
+
+
+def test_full_on_the_charger_reports_no_time_to_full():
+    """A topped-up battery still on the charger trickles. 'time to full' of
+    hours would be nonsense, so report nothing."""
+    print("test_full_on_the_charger_reports_no_time_to_full")
+    full = (BAT0.replace("POWER_SUPPLY_STATUS=Discharging",
+                         "POWER_SUPPLY_STATUS=Charging")
+                .replace("POWER_SUPPLY_ENERGY_NOW=32350000",
+                         "POWER_SUPPLY_ENERGY_NOW=55500000")
+                .replace("POWER_SUPPLY_POWER_NOW=22543000",
+                         "POWER_SUPPLY_POWER_NOW=120000"))
+    s = Supplies({"BAT0": full, "ACAD": ACAD_ONLINE})
+    try:
+        check("no bogus estimate", "minutes_to_full" in cs.read_box_battery(), False)
+    finally:
+        s.close()
+
+
 def test_charging_reports_no_time_left():
     """On AC, POWER_NOW is the CHARGE rate. Dividing by it would produce a
     confident, entirely wrong 'time remaining' -- so there must be none."""
@@ -306,6 +343,8 @@ if __name__ == "__main__":
                test_mains_desktop_degrades_closed,
                test_no_power_supply_dir_at_all,
                test_charge_based_gauge,
+               test_time_to_full_while_charging,
+               test_full_on_the_charger_reports_no_time_to_full,
                test_charging_reports_no_time_left,
                test_empty_bay_is_not_a_battery,
                test_garbage_capacity_rejected):

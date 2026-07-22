@@ -3028,6 +3028,8 @@ def mock_status():
         ],
         # Mock is a HANDHELD so the battery row is exercisable in the web
         # harness -- a mains desktop would render nothing and prove nothing.
+        # Mock is DISCHARGING by default; flip status/on_ac and swap
+        # minutes for minutes_to_full to exercise the charging layout.
         "battery": {"pct": 58, "status": "Discharging", "on_ac": False,
                     "minutes": 251, "watts": 7.7, "profile": "balanced"},
         "net": {"iface": "eth0", "mac": "de:ad:be:ef:00:01",
@@ -9651,6 +9653,32 @@ def read_box_battery():
     profile = read_power_profile()
     if profile:
         out["profile"] = profile
+
+    # Time to FULL while charging. Separate field, NOT folded into `minutes`:
+    # that one means "runtime left on battery" to every app already shipped, and
+    # reusing it here would make a 2.9.40-era app cheerfully report "42m left"
+    # while the box is plugged in and filling up.
+    #
+    # MEASURED live on a Legion Go S while charging, 2026-07-22:
+    #   ENERGY_NOW 34530000, ENERGY_FULL 55500000, POWER_NOW 30197000
+    #   -> (55500000-34530000)/30197000 h = 41.7 min
+    if out["status"] == "Charging":
+        for now_k, full_k, rate_k in (
+                ("POWER_SUPPLY_ENERGY_NOW", "POWER_SUPPLY_ENERGY_FULL",
+                 "POWER_SUPPLY_POWER_NOW"),
+                ("POWER_SUPPLY_CHARGE_NOW", "POWER_SUPPLY_CHARGE_FULL",
+                 "POWER_SUPPLY_CURRENT_NOW")):
+            try:
+                now, full, rate = (int(batt[now_k]), int(batt[full_k]),
+                                   int(batt[rate_k]))
+            except (KeyError, ValueError):
+                continue
+            # A full battery still on the charger reports a trickle rate; a
+            # "time to full" of hours would be nonsense, so only report while
+            # there is a real gap left to close.
+            if rate > 0 and full > now:
+                out["minutes_to_full"] = int((full - now) * 60 // rate)
+            break
 
     # Runtime left, when the gauge reports a draw. ENERGY_* is microwatt-hours
     # against POWER_NOW microwatts; CHARGE_* is microamp-hours against

@@ -25,7 +25,8 @@ cannot actually use, so a nearly-full drive could read several points low.
 
 Game drives appear too — a Steam Deck's SD card was invisible before.
 
-Handhelds also show current power draw and the machine's power profile.
+Handhelds also show current power draw and the machine's power profile — and
+while charging, how long until the battery is full.
 
 You can close the running game from your phone. The Gaming card shows what is
 playing and how long it has been on, with a button to quit it.
