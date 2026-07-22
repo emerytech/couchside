@@ -285,6 +285,7 @@ function SteamLinkSection({
   const t = useTheme();
   const styles = useThemedStyles(makeStyles);
   const hideOffline = usePref('hideOfflineStreamHosts');
+  const hideSection = usePref('hideStreamFromPc');
   // Expand the freshest host by default, preferring one that's actually up.
   // `online` is absent on agents older than 2.9.32, and undefined !== false, so
   // those fall through to hosts[0] — exactly the old behaviour.
@@ -292,6 +293,10 @@ function SteamLinkSection({
     const first = data.hosts.find((h) => h.online !== false) ?? data.hosts[0];
     return first ? { [first.host]: true } : {};
   });
+  // Turned off outright in Preferences. Checked AFTER the hooks above so the
+  // hook order never changes between renders, and before the empty-host check
+  // so the reason for an absent card is the pref, not the data.
+  if (hideSection) return null;
   if (data.hosts.length === 0) return null;
   const hosts = hideOffline ? data.hosts.filter((h) => h.online !== false) : data.hosts;
   return (

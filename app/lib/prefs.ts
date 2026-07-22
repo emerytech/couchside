@@ -72,6 +72,24 @@ export type Prefs = {
       check is conservative and does call a live host offline, so the row stays
       visible and tappable unless you ask for it gone. Agent >= 2.9.32. */
   hideOfflineStreamHosts: boolean;
+  /** Drop the Launch tab's "Stream from PC" section entirely.
+   *
+   *  Distinct from hideOfflineStreamHosts, which only filters rows: this hides
+   *  the whole card. Asked for by a user running SteamOS on their main PC with
+   *  Remote Play disabled -- every host listed was one they would never stream
+   *  from, and there was no way to make the section go away. The agent cannot
+   *  currently tell "Remote Play is off" from "no host is online", so this stays
+   *  a manual switch rather than an auto-hide; guessing wrong here removes a
+   *  working feature. */
+  hideStreamFromPc: boolean;
+  /** Drop the TV side of the Box/TV volume switch.
+   *
+   *  On a setup where the box's own volume already reaches the speakers -- CEC
+   *  forwarding, an AVR, a soundbar over ARC -- the TV target adjusts the TV's
+   *  internal speakers, which may be muted or unused. Reported by a user whose
+   *  TV outputs to a soundbar: "Box" was right and "TV" moved a volume nothing
+   *  was playing through. */
+  hideTvVolume: boolean;
   // ---- Touch indicators: making a screen recording of this app legible ----
   /** Draw a ring wherever a finger lands. iOS exposes NO public API for
       system-wide touch events -- no equivalent of Android's "Show taps", and no
@@ -106,6 +124,8 @@ export const DEFAULTS: Prefs = {
   // until the user opts in.
   volumeButtons: Platform.OS === 'android',
   hideOfflineStreamHosts: false,
+  hideStreamFromPc: false,
+  hideTvVolume: false,
   showTaps: false,
   traceDrags: false,
 };
@@ -190,6 +210,8 @@ function normalize(raw: unknown): Prefs {
     askToSwitchControl: bool(o.askToSwitchControl, DEFAULTS.askToSwitchControl),
     volumeButtons: bool(o.volumeButtons, DEFAULTS.volumeButtons),
     hideOfflineStreamHosts: bool(o.hideOfflineStreamHosts, DEFAULTS.hideOfflineStreamHosts),
+    hideStreamFromPc: bool(o.hideStreamFromPc, DEFAULTS.hideStreamFromPc),
+    hideTvVolume: bool(o.hideTvVolume, DEFAULTS.hideTvVolume),
     showTaps: bool(o.showTaps, DEFAULTS.showTaps),
     traceDrags: bool(o.traceDrags, DEFAULTS.traceDrags),
   };
