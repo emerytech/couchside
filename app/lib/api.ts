@@ -251,6 +251,16 @@ export type Status = {
     status: string;
     on_ac?: boolean;
     minutes?: number;
+    /** Instantaneous power flow in watts (agent >= 2.9.43). The SIGN is
+        `status`, not the number: while charging this is the CHARGE rate, so
+        never label it "discharge" without checking. Absent when the gauge
+        reports nothing — a box drawing 0 W does not exist. */
+    watts?: number;
+    /** ACPI platform profile, verbatim (agent >= 2.9.43). NOT guaranteed to be
+        one of the usual low-power/balanced/performance values: a Legion Go S
+        reported "custom" because Steam's TDP control set one. Render whatever
+        arrives; do not switch on a fixed set. */
+    profile?: string;
   };
 };
 

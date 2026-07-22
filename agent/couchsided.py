@@ -44,7 +44,7 @@ except ImportError:  # pragma: no cover
     fcntl = None
 
 APP_NAME = "couchside-agent"
-VERSION = "2.9.42"
+VERSION = "2.9.43"
 UID = os.getuid()
 XDG_RUNTIME_DIR = "/run/user/%d" % UID
 
@@ -1202,10 +1202,38 @@ def osk_arm(mock=False):
     print("[osk] watching %s" % _OSK_LOG, flush=True)
 
 
+def _steam_library_mounts():
+    """Filesystems that hold Steam libraries, as mount-ish paths.
+
+    Why this exists: _DISK_MOUNTS is a fixed list, so a Deck's SD card or a
+    second games drive never appeared -- MEASURED on a Legion Go S, a 1.4 TB
+    card at /run/media/deck/SD1T5 was invisible while a 5 GB OS partition was
+    shown. Games are the whole reason storage matters on these boxes.
+
+    Deriving this from Steam's OWN library list rather than globbing /run/media
+    or /mnt keeps it principled: it shows exactly the drives games live on, and
+    reuses machinery that is already read-only and already allowlist-safe. A box
+    with no Steam simply gets nothing extra.
+
+    Never raises; returns [] on any problem.
+    """
+    out = []
+    try:
+        root = _steam_root()
+        if root is None:
+            return []
+        for steamapps in _steam_libraries_cached(root):
+            # steamapps dir -> the library root that contains it.
+            out.append(os.path.dirname(steamapps) or steamapps)
+    except Exception:
+        return []
+    return out
+
+
 def read_disks():
     disks = []
     seen_devices = set()
-    for mount in _DISK_MOUNTS:
+    for mount in list(_DISK_MOUNTS) + _steam_library_mounts():
         try:
             # Same filesystem reached by two paths (the common case where /home
             # is not split out) must not be listed twice.
@@ -1235,7 +1263,19 @@ def read_disks():
             total_gb = du.total / (1024 ** 3)
             used_gb = du.used / (1024 ** 3)
             free_gb = du.free / (1024 ** 3)
-            pct = int(round(du.used * 100.0 / du.total)) if du.total else 0
+            # Percent full against what the user can ACTUALLY use, i.e.
+            # used/(used+free), not used/total. `total` counts root-reserved
+            # blocks an unprivileged user can never touch, so dividing by it
+            # under-reports fullness -- MEASURED on a Legion Go S, /home showed
+            # 91% when df said 96%, because 92 GB of it is reserved. A storage
+            # warning that reads low exactly when the disk is nearly full is
+            # worse than none. (shutil's `free` is already f_bavail.)
+            usable = du.used + du.free
+            # Round UP, like df does. This number drives a warning colour, and
+            # for "how full am I" the conservative direction is the honest one:
+            # 96.2% should read 97, not 96.
+            pct = -(-du.used * 100 // usable) if usable else 0
+            pct = int(min(100, max(0, pct)))
             disks.append({
                 "mount": mount,
                 "total_gb": round(total_gb, 1),
@@ -2898,8 +2938,8 @@ def mock_status():
         ],
         # Mock is a HANDHELD so the battery row is exercisable in the web
         # harness -- a mains desktop would render nothing and prove nothing.
-        "battery": {"pct": 58, "status": "Discharging",
-                    "on_ac": False, "minutes": 251},
+        "battery": {"pct": 58, "status": "Discharging", "on_ac": False,
+                    "minutes": 251, "watts": 7.7, "profile": "balanced"},
         "net": {"iface": "eth0", "mac": "de:ad:be:ef:00:01",
                 "wired": True, "wol_armed": True},
         "agent_version": VERSION,
@@ -9433,6 +9473,28 @@ def read_box_battery():
     if on_ac is not None:
         out["on_ac"] = on_ac
 
+    # Instantaneous power flow in watts. The SIGN is the status, not the number:
+    # while charging this same counter is the CHARGE rate, so it is labelled by
+    # `status` rather than presented as "discharge". Some gauges report
+    # microwatts directly (POWER_NOW); others only amps x volts.
+    watts = None
+    try:
+        watts = int(batt["POWER_SUPPLY_POWER_NOW"]) / 1e6
+    except (KeyError, ValueError):
+        try:
+            watts = (int(batt["POWER_SUPPLY_CURRENT_NOW"])
+                     * int(batt["POWER_SUPPLY_VOLTAGE_NOW"])) / 1e12
+        except (KeyError, ValueError):
+            watts = None
+    # A zero or negative reading is a gauge that is not measuring, not a box
+    # drawing no power. Report nothing rather than a confident 0.0 W.
+    if watts is not None and watts > 0:
+        out["watts"] = round(watts, 1)
+
+    profile = read_power_profile()
+    if profile:
+        out["profile"] = profile
+
     # Runtime left, when the gauge reports a draw. ENERGY_* is microwatt-hours
     # against POWER_NOW microwatts; CHARGE_* is microamp-hours against
     # CURRENT_NOW microamps. Both divide to hours. Only meaningful while
@@ -9449,6 +9511,31 @@ def read_box_battery():
                 out["minutes"] = int(now * 60 // rate)
                 break
     return out
+
+
+_PLATFORM_PROFILE = "/sys/firmware/acpi/platform_profile"
+
+
+def read_power_profile():
+    """The machine's ACPI platform profile (low-power / balanced / performance),
+    or None when the machine has no such control.
+
+    MEASURED on a Legion Go S, 2026-07-22: the file read "custom" while
+    platform_profile_choices listed "low-power balanced performance" -- Steam's
+    own TDP control had set a profile outside the advertised set. So the current
+    value is reported VERBATIM and is NOT validated against the choices list; a
+    reader that insisted on a known value would have shown nothing on the exact
+    hardware this was written for.
+
+    READ-ONLY. Writing this file would change how the machine performs and is a
+    deliberately separate decision -- it is not exposed here.
+    """
+    try:
+        with open(_PLATFORM_PROFILE) as f:
+            value = f.read().strip()
+    except OSError:
+        return None
+    return value or None
 
 
 def box_battery_available():

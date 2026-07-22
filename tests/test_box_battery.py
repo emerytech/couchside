@@ -120,6 +120,81 @@ def test_real_handheld():
         s.close()
 
 
+def test_watts_from_power_now():
+    """Instantaneous draw. VERBATIM off the Legion Go S: POWER_SUPPLY_POWER_NOW
+    7708000 uW -> 7.7 W."""
+    print("test_watts_from_power_now")
+    s = Supplies({"BAT0": BAT0.replace("POWER_SUPPLY_POWER_NOW=22543000",
+                                       "POWER_SUPPLY_POWER_NOW=7708000")})
+    try:
+        check("watts", cs.read_box_battery().get("watts"), 7.7)
+    finally:
+        s.close()
+
+
+def test_watts_from_current_times_voltage():
+    """Gauges without POWER_NOW still report amps and volts."""
+    print("test_watts_from_current_times_voltage")
+    s = Supplies({"BAT1": """POWER_SUPPLY_NAME=BAT1
+POWER_SUPPLY_TYPE=Battery
+POWER_SUPPLY_STATUS=Discharging
+POWER_SUPPLY_PRESENT=1
+POWER_SUPPLY_CAPACITY=50
+POWER_SUPPLY_CURRENT_NOW=1000000
+POWER_SUPPLY_VOLTAGE_NOW=12000000
+"""})
+    try:
+        check("1A x 12V = 12.0 W", cs.read_box_battery().get("watts"), 12.0)
+    finally:
+        s.close()
+
+
+def test_zero_draw_is_omitted_not_reported():
+    """A gauge reading 0 is not measuring; it is not a box using no power.
+    Reporting a confident 0.0 W would be a lie."""
+    print("test_zero_draw_is_omitted_not_reported")
+    s = Supplies({"BAT0": BAT0.replace("POWER_SUPPLY_POWER_NOW=22543000",
+                                       "POWER_SUPPLY_POWER_NOW=0")})
+    try:
+        check("no watts key", "watts" in cs.read_box_battery(), False)
+    finally:
+        s.close()
+
+
+def test_profile_reported_verbatim_even_when_not_a_listed_choice():
+    """THE hardware trap. The Legion Go S reported "custom" while
+    platform_profile_choices listed "low-power balanced performance" -- Steam's
+    TDP control had set something outside the advertised set. A reader that
+    validated against the choices would show nothing on that exact box."""
+    print("test_profile_reported_verbatim_even_when_not_a_listed_choice")
+    import tempfile
+    d = tempfile.mkdtemp(prefix="pp-")
+    path = os.path.join(d, "platform_profile")
+    old = cs._PLATFORM_PROFILE
+    cs._PLATFORM_PROFILE = path
+    try:
+        for written, want in (("custom", "custom"),
+                              ("balanced\n", "balanced"),
+                              ("low-power", "low-power")):
+            with open(path, "w") as f:
+                f.write(written)
+            check("%r -> %r" % (written, want), cs.read_power_profile(), want)
+    finally:
+        cs._PLATFORM_PROFILE = old
+        shutil.rmtree(d, ignore_errors=True)
+
+
+def test_missing_platform_profile_is_none():
+    """Desktops and older kernels have no such file."""
+    print("test_missing_platform_profile_is_none")
+    old = cs._PLATFORM_PROFILE
+    cs._PLATFORM_PROFILE = "/nonexistent/acpi/platform_profile"
+    try:
+        check("None", cs.read_power_profile(), None)
+    finally:
+        cs._PLATFORM_PROFILE = old
+
+
 def test_duplicate_type_key():
     """THE fixture trap: POWER_SUPPLY_TYPE really is repeated on this hardware."""
     print("test_duplicate_type_key")
@@ -222,6 +297,11 @@ POWER_SUPPLY_CAPACITY=%s
 
 if __name__ == "__main__":
     for fn in (test_real_handheld,
+               test_watts_from_power_now,
+               test_watts_from_current_times_voltage,
+               test_zero_draw_is_omitted_not_reported,
+               test_profile_reported_verbatim_even_when_not_a_listed_choice,
+               test_missing_platform_profile_is_none,
                test_duplicate_type_key,
                test_mains_desktop_degrades_closed,
                test_no_power_supply_dir_at_all,

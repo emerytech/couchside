@@ -242,6 +242,25 @@ function ConsoleScreen() {
                   </Text>
                 </View>
                 <Bar pct={s.battery.pct} color={batteryColor(s.battery.pct, t)} />
+                {/* Draw and power profile, each independently optional so a box
+                    that reports only one still shows it. The watts figure is
+                    labelled by STATUS -- the same counter is the charge rate
+                    when plugged in, so calling it "draw" while charging would
+                    be wrong. */}
+                {(s.battery.watts != null || s.battery.profile) && (
+                  <Text style={styles.ipLine}>
+                    {[
+                      s.battery.watts != null
+                        ? `${s.battery.watts.toFixed(1)}W ${
+                            s.battery.status === 'Charging' ? 'in' : 'draw'
+                          }`
+                        : null,
+                      s.battery.profile,
+                    ]
+                      .filter(Boolean)
+                      .join('  ·  ')}
+                  </Text>
+                )}
               </Card>
             )}
           </>

@@ -18,6 +18,15 @@ the same thing regardless of what actually changed.
 Write for the person holding the phone, not for the commit log. They are
 deciding whether to press "Update now" on a machine across the room.
 
+## 2.9.43
+
+Storage now reports how full a drive really is. It was dividing by space you
+cannot actually use, so a nearly-full drive could read several points low.
+
+Game drives appear too — a Steam Deck's SD card was invisible before.
+
+Handhelds also show current power draw and the machine's power profile.
+
 ## 2.9.42
 
 Adds the box-side half of the app's new Steam search button.
