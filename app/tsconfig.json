@@ -2,6 +2,12 @@
   "extends": "expo/tsconfig.base",
   "compilerOptions": {
     "strict": true,
+    // __tests__ runs under `node --experimental-strip-types`, which requires the
+    // explicit .ts extension on its imports. Enabling it here (legal because
+    // this project only ever type-CHECKS -- Metro does the emitting) keeps the
+    // test inside the same strict typecheck as the app rather than excluded
+    // from it.
+    "allowImportingTsExtensions": true,
     "paths": {
       "@/*": [
         "./*"

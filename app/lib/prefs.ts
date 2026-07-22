@@ -72,6 +72,13 @@ export type Prefs = {
    *  and reopens in one tap, which a hidden one cannot. Persisted, because a
    *  section you fold away should stay folded. */
   streamCollapsed: boolean;
+  /** Remove the Steam downloads card from the Launch tab. Off by default: a
+   *  transfer in flight is the most useful thing that tab can tell you. On for
+   *  people who never queue from the couch and want the games grid to start at
+   *  the top. Hiding the card does not touch the downloads -- Steam keeps
+   *  going. Named `hide` to match hideStreamFromPc / hideTvVolume; a mixed
+   *  polarity is how a toggle ends up wired backwards. */
+  hideDownloads: boolean;
   defaultPadMode: PadMode;
   /** How often the console/header polls the box for vitals (ms). */
   statusIntervalMs: number;
@@ -148,6 +155,7 @@ export const DEFAULTS: Prefs = {
   keyboardMode: false,
   searchButtonSide: 'left',
   streamCollapsed: false,
+  hideDownloads: false,
   defaultPadMode: 'swipe',
   statusIntervalMs: 5000,
   journalLines: 100,
@@ -230,6 +238,7 @@ function normalize(raw: unknown): Prefs {
       ? o.defaultPadMode
       : 'swipe';
   const streamCollapsed = bool(o.streamCollapsed, DEFAULTS.streamCollapsed);
+  const hideDownloads = bool(o.hideDownloads, DEFAULTS.hideDownloads);
   const searchSide: 'left' | 'right' | 'off' =
     o.searchButtonSide === 'right' || o.searchButtonSide === 'off'
       ? o.searchButtonSide
@@ -240,6 +249,7 @@ function normalize(raw: unknown): Prefs {
   return {
     searchButtonSide: searchSide,
     streamCollapsed,
+    hideDownloads,
     confirmSuspend:
       typeof o.confirmSuspend === 'boolean' ? o.confirmSuspend : DEFAULTS.confirmSuspend,
     landingTab,

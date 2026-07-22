@@ -260,6 +260,17 @@ jobs:
       - name: Unit tests (no camera in the shipping app)
         run: python3 tests/test_no_camera_in_shipping_app.py
 
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+      # The ONLY automated check the drag-stroke geometry can have. React Native
+      # Web emits mouse events, never touch events, so onTouchMove never fires
+      # in the web harness and the trail path cannot be driven there at all --
+      # which is how a version that drew nothing on a real iPhone passed every
+      # pre-ship check. Node runs the .ts directly via type stripping; no build.
+      - name: Unit tests (touch drag stroke geometry)
+        run: node --experimental-strip-types app/__tests__/touch-trail.ts
+
   smoke:
     runs-on: ubuntu-latest
     needs: compile
