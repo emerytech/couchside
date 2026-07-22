@@ -12,6 +12,12 @@ the same thing regardless of what actually changed.
 Write for the person holding the phone, not for the commit log. They are
 deciding whether to press "Update now" on a machine across the room.
 
+## 2.9.41
+
+Games missing their poster art now show the banner artwork the box already has,
+instead of a blank card. Nothing is downloaded — it was on your machine the
+whole time.
+
 ## 2.9.40
 
 Handhelds now report their own battery. The Console tab shows charge, whether

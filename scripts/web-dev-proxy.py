@@ -18,17 +18,28 @@ Not proxied: /ws/gamepad. WebSocket upgrade needs real tunnelling, and the Pad
 surfaces are native-gesture territory that a desktop browser cannot exercise
 faithfully anyway. Verify those on a device.
 
-Usage: web-dev-proxy.py <dist_dir> <listen_port> <agent_host:agent_port>
+Usage: web-dev-proxy.py <dist_dir> <listen_port> <agent_host:agent_port> [token]
 """
 import http.client
 import os
 import sys
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
-if len(sys.argv) != 4:
+if len(sys.argv) not in (4, 5):
     raise SystemExit(__doc__.strip().splitlines()[-1])
 
 DIST, PORT, AGENT = sys.argv[1], int(sys.argv[2]), sys.argv[3]
+# DEV-ONLY token used to backfill Authorization on requests that structurally
+# cannot carry it. React Native's <Image> takes source.headers on NATIVE only;
+# on web it becomes a plain <img>, which cannot send a bearer token. So every
+# token-gated image -- Steam cover art, the screen preview -- 401'd in the
+# harness and silently rendered its fallback. That made a whole class of UI
+# unverifiable here while looking merely "empty".
+#
+# Backfill ONLY: a request that already carries Authorization is passed through
+# untouched, so the auth-rejection path stays testable. Loopback-only, dev-only,
+# and never shipped to a box.
+DEV_TOKEN = sys.argv[4] if len(sys.argv) > 4 else ""
 AGENT_HOST, AGENT_PORT = AGENT.rsplit(":", 1)[0], int(AGENT.rsplit(":", 1)[1])
 PROXY_PREFIXES = ("/api", "/pair")
 
@@ -54,6 +65,8 @@ class Handler(BaseHTTPRequestHandler):
         # Drop hop-by-hop headers; keep Authorization so the token still works.
         hdrs = {k: v for k, v in self.headers.items()
                 if k.lower() not in ("host", "connection", "accept-encoding")}
+        if DEV_TOKEN and not any(k.lower() == "authorization" for k in hdrs):
+            hdrs["Authorization"] = "Bearer " + DEV_TOKEN
         try:
             conn.request(method, self.path, body=body, headers=hdrs)
             r = conn.getresponse()

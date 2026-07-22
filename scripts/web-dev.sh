@@ -53,7 +53,7 @@ for _ in $(seq 1 30); do
 done
 
 echo "==> serving on http://127.0.0.1:$PORT"
-python3 "$ROOT/scripts/web-dev-proxy.py" "$DIST" "$PORT" "127.0.0.1:$AGENT_PORT" &
+python3 "$ROOT/scripts/web-dev-proxy.py" "$DIST" "$PORT" "127.0.0.1:$AGENT_PORT" "$TOKEN" &
 PROXY_PID=$!
 
 cat <<EOF

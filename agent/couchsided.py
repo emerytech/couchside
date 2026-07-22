@@ -44,7 +44,7 @@ except ImportError:  # pragma: no cover
     fcntl = None
 
 APP_NAME = "couchside-agent"
-VERSION = "2.9.40"
+VERSION = "2.9.41"
 UID = os.getuid()
 XDG_RUNTIME_DIR = "/run/user/%d" % UID
 
@@ -3244,11 +3244,21 @@ def discover_steam_games():
                 if _is_steam_tool(appid, name):
                     continue
                 games.setdefault(appid, name)  # de-dupe by appid
-        launchers = [
-            {"id": "steam:%s" % appid, "label": name,
-             "kind": "steam", "appid": int(appid)}
-            for appid, name in games.items()
-        ]
+        # "art" says which SHAPE of cover the box has for this game, so the app
+        # can lay the tile out before the image loads instead of reflowing when
+        # it arrives: "portrait" (600x900 capsule), "header" (460x215 banner) or
+        # absent (no local art -- the app's text card).
+        # ADDITIVE: older apps ignore the key and behave exactly as before.
+        # Costs a few stat() calls per installed game on a list that is already
+        # walking every appmanifest off the same disk.
+        launchers = []
+        for appid, name in games.items():
+            entry = {"id": "steam:%s" % appid, "label": name,
+                     "kind": "steam", "appid": int(appid)}
+            _, art = _steam_cover(appid)
+            if art:
+                entry["art"] = art
+            launchers.append(entry)
         launchers.sort(key=lambda l: (l["label"].lower(), l["appid"]))
         return launchers
     except Exception:
@@ -3822,8 +3832,100 @@ def steam_downloads():
 STEAM_COVER_CACHE = ("appcache", "librarycache")
 
 
+# Cover art FILENAMES, in preference order, as (name, kind). Layout is handled
+# separately below because Steam has three of them on disk at once.
+#
+# MEASURED on a Legion Go S, 2026-07-22, by decoding the actual JPEG headers
+# rather than trusting the names:
+#     library_600x900.jpg  300x450   portrait
+#     library_capsule.jpg  300x450   portrait   <-- the NEWER capsule name
+#     header.jpg           460x215   header
+#     library_header.jpg   460x215   header
+#
+# The KIND travels with the path because the shapes are not interchangeable.
+# Centre-cropping a 460x215 banner into a 2:3 tile slices the middle out of the
+# artwork and reads as a bug, so the app is told which it got instead of
+# guessing from pixels.
+_STEAM_ART_CANDIDATES = (
+    ("library_600x900.jpg", "portrait"),
+    ("library_capsule.jpg", "portrait"),
+    ("library_600x900_2x.jpg", "portrait"),
+    ("header.jpg", "header"),
+    ("library_header.jpg", "header"),
+)
+
+# How many hash-named subdirectories to look through per game. Bounded so a
+# weird cache directory can never turn one cover lookup into an unbounded walk.
+_STEAM_ART_MAX_SUBDIRS = 40
+
+
+def _steam_cover(appid):
+    """(path, kind) for a Steam appid's best local art, or (None, None).
+
+    kind is "portrait" (2:3 capsule) or "header" (460x215 banner).
+
+    THREE on-disk layouts exist and all three are live on current hardware:
+      flat     <cache>/<appid>_library_600x900.jpg      (pre-2023)
+      nested   <cache>/<appid>/library_600x900.jpg
+      hashed   <cache>/<appid>/<sha1>/library_600x900.jpg   (current Steam)
+
+    The hashed layout is why this was worth fixing: MEASURED on a Legion Go S,
+    30 of 80 installed games -- The Witcher 3, GTA V, RimWorld, Stray -- had NO
+    art under either older layout and rendered the blank text card, while their
+    real capsule sat one directory deeper the whole time.
+
+    The subdirectory names are content hashes, so they cannot be predicted and
+    have to be enumerated. That enumeration is the ONLY dynamic part: the
+    filename is still a literal from the table above, appid is still digits-only,
+    and the resolved path is re-checked to be inside the cache root. No client
+    input reaches the pattern.
+
+    Read-only, best-effort; never raises.
+    """
+    if not (isinstance(appid, str) and appid.isdigit()):
+        return None, None
+    root = _steam_root()
+    if root is None:
+        return None, None
+    cache = os.path.join(root, *STEAM_COVER_CACHE)
+    try:
+        cache_real = os.path.realpath(cache)
+    except OSError:
+        return None, None
+
+    try:
+        subdirs = sorted(os.listdir(os.path.join(cache, appid)))[:_STEAM_ART_MAX_SUBDIRS]
+    except OSError:
+        subdirs = []
+
+    def usable(path):
+        # Belt and braces (CLAUDE.md 3.5): appid is digits-only and the filename
+        # is a literal, so this cannot fire today. It is here because widening
+        # the table is exactly how that stops being true.
+        try:
+            if not os.path.realpath(path).startswith(cache_real + os.sep):
+                return False
+            return os.path.isfile(path)
+        except OSError:
+            return False
+
+    # Every portrait candidate is tried across all layouts before any header, so
+    # a game with a nested capsule is never demoted to a banner.
+    for name, kind in _STEAM_ART_CANDIDATES:
+        for candidate in ([os.path.join(cache, appid, name),
+                           os.path.join(cache, "%s_%s" % (appid, name))]
+                          + [os.path.join(cache, appid, d, name) for d in subdirs]):
+            if usable(candidate):
+                return candidate, kind
+    return None, None
+
+
 def _steam_cover_path(appid):
     """Local path to the 600x900 library cover for a Steam appid, or None.
+
+    Kept as the PORTRAIT-ONLY lookup. _steam_cover() is the one that also finds
+    header art; this stays narrow because callers that specifically want a
+    600x900 capsule should not silently receive a banner.
 
     Looks in <root>/appcache/librarycache/ for both known layouts:
       new (2023+):  <appid>/library_600x900.jpg
@@ -3848,6 +3950,49 @@ def _steam_cover_path(appid):
         except OSError:
             continue
     return None
+
+
+# Mock Steam games, so the web harness can exercise every tile shape. Without
+# these the harness Launch tab has no Steam entries at all and the header-art
+# branch is unverifiable -- which is how a layout bug ships.
+MOCK_STEAM_GAMES = [
+    (1091500, "Cyberpunk 2077", "portrait"),
+    (292030, "The Witcher 3: Wild Hunt", "portrait"),
+    (620, "Portal 2", "header"),
+    (570, "Dota 2", "header"),
+    (440, "Team Fortress 2", None),
+]
+
+
+def _png(width, height, rgb):
+    """A minimal solid-colour PNG. Mock only -- real covers are files on disk.
+
+    Hand-rolled because the agent is stdlib-only; zlib and struct are enough.
+    """
+    import struct
+    import zlib
+    raw = b"".join(b"\x00" + bytes(rgb) * width for _ in range(height))
+
+    def chunk(tag, data):
+        c = tag + data
+        return struct.pack(">I", len(data)) + c + struct.pack(">I", zlib.crc32(c))
+
+    return (b"\x89PNG\r\n\x1a\n"
+            + chunk(b"IHDR", struct.pack(">IIBBBBB", width, height, 8, 2, 0, 0, 0))
+            + chunk(b"IDAT", zlib.compress(raw, 6))
+            + chunk(b"IEND", b""))
+
+
+def mock_launchers():
+    """Custom launchers plus fake Steam games carrying every art kind."""
+    out = [{"id": l["id"], "label": l["label"], "kind": "custom"} for l in LAUNCHERS]
+    for appid, label, art in MOCK_STEAM_GAMES:
+        e = {"id": "steam:%d" % appid, "label": label,
+             "kind": "steam", "appid": appid}
+        if art:
+            e["art"] = art
+        out.append(e)
+    return out
 
 
 def list_launchers():
@@ -8801,10 +8946,46 @@ def guide_hold_info():
                 p["uniq"].lower() == uniq.lower() for p in pads),
             "session": _couchmode_session(),
             "controllers": [
-                {"uniq": p["uniq"], "phys": p["phys"], "name": p["name"],
-                 "readable": os.access(os.path.join(_DEV_INPUT, p["event"]),
-                                       os.R_OK)}
+                dict({"uniq": p["uniq"], "phys": p["phys"], "name": p["name"],
+                      "readable": os.access(os.path.join(_DEV_INPUT, p["event"]),
+                                            os.R_OK)},
+                     **_unreadable_reason(p["event"]))
                 for p in pads]}
+
+
+def _unreadable_reason(event):
+    """{"reason": "masked"|"permission"} for a node we cannot read, else {}.
+
+    MEASURED on a Lenovo Legion Go S, 2026-07-22, and the reason this exists:
+
+        $ ls -l /dev/input/event2        # the built-in pad
+        c---------+ 1 root root
+        $ getfacl /dev/input/event2
+        user:deck:rw-   #effective:---
+        mask::---
+
+    The ACL entry granting the user IS present and intact. What nullifies it is
+    the file mode being 000: when a POSIX ACL exists, the group bits ARE the
+    mask, so mode 000 collapses the mask and every named-user entry becomes
+    ineffective. `inputplumber` and Steam's input rules mask a source device on
+    purpose and present a composite in its place.
+
+    That matters because the app told users to re-run install.sh, which adds
+    udev rules and group membership -- NEITHER of which can override a zeroed
+    mask. The advice was unfollowable. "masked" means the platform did this
+    deliberately; "permission" is the genuinely install-fixable case (a normal
+    mode like 0660 that this user simply is not in the group for).
+
+    Best-effort; an unstattable node reports nothing rather than guessing.
+    """
+    path = os.path.join(_DEV_INPUT, event)
+    try:
+        if os.access(path, os.R_OK):
+            return {}
+        mode = os.stat(path).st_mode & 0o777
+    except OSError:
+        return {}
+    return {"reason": "masked" if mode == 0 else "permission"}
 
 
 def _guide_save(enabled, hold_ms, uniq):
@@ -10828,7 +11009,8 @@ class Handler(BaseHTTPRequestHandler):
             elif path == "/api/launchers":
                 # create_enabled mirrors ALLOW_APP_LAUNCHERS so the app can
                 # show/hide its "add launcher" control (like update apply_enabled).
-                self._send(200, {"launchers": list_launchers(),
+                self._send(200, {"launchers": (mock_launchers() if self.mock
+                                               else list_launchers()),
                                  "create_enabled": bool(ALLOW_APP_LAUNCHERS)},
                            started)
             elif path == "/api/downloads":
@@ -11036,7 +11218,20 @@ class Handler(BaseHTTPRequestHandler):
         so the app stays LAN-only. 404 when the appid is malformed, the game
         isn't installed, or Steam hasn't cached its portrait art yet (the app
         then shows its text-card fallback)."""
-        cover = _steam_cover_path(appid)
+        if self.mock:
+            # Mock: a solid-colour placeholder at the REAL aspect of each shape,
+            # so the harness shows the actual layout difference rather than two
+            # identically-shaped squares that prove nothing.
+            for aid, _label, art in MOCK_STEAM_GAMES:
+                if str(aid) == appid and art:
+                    body = (_png(60, 90, (40, 70, 130)) if art == "portrait"
+                            else _png(92, 43, (130, 60, 40)))
+                    self._send_bytes(200, body, "image/png", started,
+                                     extra_headers={"X-Couchside-Art": art})
+                    return
+            self._send(404, {"error": "no cover"}, started)
+            return
+        cover, kind = _steam_cover(appid)
         if cover is None:
             self._send(404, {"error": "no cover"}, started)
             return
@@ -11047,8 +11242,12 @@ class Handler(BaseHTTPRequestHandler):
             self._send(404, {"error": "no cover"}, started)
             return
         # Art is keyed by appid and effectively immutable; let the phone cache it.
+        # X-Couchside-Art tells the app the SHAPE it just received so it can lay
+        # a 460x215 banner out differently from a 600x900 capsule. A header is
+        # ADDITIVE -- an older app ignores it and renders exactly as before.
         self._send_bytes(200, body, "image/jpeg", started,
-                         extra_headers={"Cache-Control": "public, max-age=604800"})
+                         extra_headers={"Cache-Control": "public, max-age=604800",
+                                        "X-Couchside-Art": kind})
 
     def _body_too_large(self):
         """True iff the declared Content-Length exceeds MAX_BODY_BYTES.

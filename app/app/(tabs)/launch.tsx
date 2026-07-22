@@ -91,13 +91,37 @@ function LauncherTile({
   // Narrowed to a local so the <Image> branch sees a defined source (not the
   // `ImageSource | undefined` prop): shown only for Steam tiles that haven't errored.
   const art = imgFailed ? undefined : coverSource;
+  // The box tells us which shape it has BEFORE the image loads, so the tile is
+  // laid out correctly from the first frame instead of reflowing when the
+  // bytes arrive. Absent (older agent, or no local art) falls through to the
+  // existing behaviour.
+  const isHeader = launcher.art === 'header';
   const height = Math.round(width * 1.5); // 600x900 aspect
 
   return (
     <Pressable
       onPress={onLaunch}
       style={({ pressed }) => [styles.tile, { width, height }, pressed && styles.tilePressed]}>
-      {art ? (
+      {art && isHeader ? (
+        /* HEADER art is a 460x215 banner, not a 600x900 capsule. Centre-cropping
+           one into a tall tile slices the middle out of the artwork and reads as
+           a bug -- worse than the clean fallback card. So it gets its own layout:
+           the banner sits at its true aspect across the top, and the title goes
+           underneath where there is now room for it. */
+        <View style={styles.tileHeaderWrap}>
+          <Image
+            source={art}
+            style={styles.tileHeaderArt}
+            resizeMode="cover"
+            onError={() => setImgFailed(true)}
+          />
+          <View style={styles.tileHeaderLabelWrap}>
+            <Text style={styles.tileHeaderLabel} numberOfLines={3}>
+              {launcher.label}
+            </Text>
+          </View>
+        </View>
+      ) : art ? (
         <Image
           source={art}
           style={styles.tileArt}
@@ -914,6 +938,31 @@ const makeStyles = (t: Palette) => StyleSheet.create({
   tileFallbackLabel: {
     color: t.text,
     fontSize: 14,
+    fontWeight: '700',
+    textAlign: 'center',
+    fontFamily: mono,
+  },
+  // Header-art layout: banner at its true 460x215 aspect across the top, title
+  // in the space below. Deliberately NOT flex:1 on the image -- stretching a
+  // banner to fill a 2:3 tile is the distortion this whole branch exists to
+  // avoid.
+  tileHeaderWrap: {
+    flex: 1,
+    backgroundColor: t.card,
+  },
+  tileHeaderArt: {
+    width: '100%',
+    aspectRatio: 460 / 215,
+  },
+  tileHeaderLabelWrap: {
+    flex: 1,
+    justifyContent: 'center',
+    paddingHorizontal: 10,
+    paddingVertical: 8,
+  },
+  tileHeaderLabel: {
+    color: t.text,
+    fontSize: 13,
     fontWeight: '700',
     textAlign: 'center',
     fontFamily: mono,

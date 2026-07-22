@@ -119,7 +119,9 @@ export function GuideHoldSetup({ settings }: { settings: ConnSettings }) {
                     <Text style={styles.padName}>{c.name || 'Controller'}</Text>
                     <Text style={styles.padMeta}>
                       {!c.readable
-                        ? "the box can't read this controller — re-run install.sh"
+                        ? c.reason === 'masked'
+                          ? 'reserved by Steam — cannot be used here'
+                          : "the box can't read this controller — re-run install.sh"
                         : pinnable
                           ? c.uniq
                           : 'wired — cannot be pinned'}
@@ -138,10 +140,23 @@ export function GuideHoldSetup({ settings }: { settings: ConnSettings }) {
             )}
           </View>
 
+          {/* Two different causes, two different answers. A MASKED node was
+              hidden on purpose by Steam / InputPlumber, which presents its own
+              composite device instead; re-running install.sh cannot undo that,
+              and telling people to try was sending them to do something that
+              could not work. Only the plain-permission case is install-fixable.
+              See KI-026 for the getfacl evidence. */}
           {unreadable.length > 0 && (
             <Text style={styles.padWarn}>
-              The box can see {unreadable.length === 1 ? 'a controller' : 'some controllers'} it
-              is not allowed to read. Re-running the install script usually fixes this.
+              {unreadable.every((c) => c.reason === 'masked')
+                ? `Steam has reserved ${
+                    unreadable.length === 1 ? 'this controller' : 'these controllers'
+                  } for its own input handling, so the box cannot watch the guide button on ${
+                    unreadable.length === 1 ? 'it' : 'them'
+                  }. This is normal on handhelds — use another controller, or trigger Couch Mode from the app.`
+                : `The box can see ${
+                    unreadable.length === 1 ? 'a controller' : 'some controllers'
+                  } it is not allowed to read. Re-running the install script usually fixes this.`}
             </Text>
           )}
         </>
