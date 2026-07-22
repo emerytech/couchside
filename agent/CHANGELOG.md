@@ -18,6 +18,10 @@ the same thing regardless of what actually changed.
 Write for the person holding the phone, not for the commit log. They are
 deciding whether to press "Update now" on a machine across the room.
 
+## 2.9.42
+
+Adds the box-side half of the app's new Steam search button.
+
 ## 2.9.41
 
 Poster art now appears for games that were showing a blank card. Recent Steam

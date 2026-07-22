@@ -169,6 +169,15 @@ const TAP_SLOP = 12;
 /** Touches longer than this aren't taps. */
 const TAP_MS = 450;
 
+// Steam needs a moment to finish drawing the anchored screen before it will
+// accept focus movement. MEASURED: 1200ms worked 3/3 starting from a
+// deliberately wrong screen (Settings > Audio), giving 3.2s tap-to-search; 3000
+// also worked but made it 5.0s, which is a long time to stare at a button.
+// 1500 keeps the proven value's margin without the extra second.
+// The failure mode if this is ever too short is visible, not silent: the walk
+// lands early and opens Steam's sidebar menu instead of search.
+const STEAM_ANCHOR_SETTLE_MS = 1500;
+
 type DpadKey = 'du' | 'dd' | 'dl' | 'dr';
 
 // Keyboard-mode equivalent for the swipe surface. Arrow keys were measured
@@ -368,6 +377,16 @@ type KeyboardBarProps = {
   /** Horizontal swipe across the (closed) bar: cycle the input mode.
       +1 = swipe left (next mode), -1 = swipe right (previous). */
   onSwipeMode?: (dir: 1 | -1) => void;
+  /** Tap the search button: anchor Steam, walk focus to its global search, and
+      raise this keyboard. Absent on boxes that cannot do it, which hides the
+      button entirely rather than offering a control that does nothing. */
+  onSearch?: () => void;
+  /** Called when the bar is dismissed. `typed` is true when the user actually
+      entered something, which the caller needs: closing the box's search after
+      a real query would throw away the results you just asked for. Deliberately
+      NOT "always send Esc" either — Esc is back-navigation on Steam, so firing
+      it when nothing is open moves the user. The caller decides. */
+  onDismiss?: (typed: boolean) => void;
 };
 
 /**
@@ -382,7 +401,8 @@ type KeyboardBarProps = {
  * while the real keyboard is down (or vice-versa). `open` is mirrored into a ref
  * so callbacks always see the live value without stale closures.
  */
-function KeyboardBar({ autoOpenSignal, onText, onBackspace, onEnter, onSwipeMode }: KeyboardBarProps) {
+function KeyboardBar({ autoOpenSignal, onText, onBackspace, onEnter, onSwipeMode,
+                       onSearch, onDismiss }: KeyboardBarProps) {
   const inputRef = useRef<TextInput>(null);
   const [open, setOpen] = useState(false);
   // Live ref so the once-created swipe responder sees the current callback.
@@ -413,8 +433,11 @@ function KeyboardBar({ autoOpenSignal, onText, onBackspace, onEnter, onSwipeMode
     Keyboard.dismiss();
     inputRef.current?.blur();
     setOpenSynced(false);
+    // Read BEFORE clearing — the caller keys off whether a query was entered.
+    const typed = valueRef.current.length > 0;
     setValue('');
-  }, [setOpenSynced]);
+    onDismiss?.(typed);
+  }, [setOpenSynced, onDismiss]);
 
   const focus = useCallback(() => {
     haptic();
@@ -566,12 +589,35 @@ function KeyboardBar({ autoOpenSignal, onText, onBackspace, onEnter, onSwipeMode
     [onBackspace, onEnter],
   );
 
+  const t = useTheme();
   const styles = useThemedStyles(makeStyles);
+  const searchSide = usePref('searchButtonSide');
+  const searchBtn = (
+    <Pressable
+      onPress={onSearch}
+      hitSlop={8}
+      accessibilityLabel="Search Steam"
+      style={({ pressed }) => [
+        styles.kbSearchBtn,
+        searchSide === 'left' ? styles.kbSearchBtnLeft : styles.kbSearchBtnRight,
+        pressed && styles.btnPressed,
+      ]}>
+      <Ionicons name="search" size={17} color={t.blue} />
+    </Pressable>
+  );
   return (
     <>
       <View
         style={styles.kbBarRow}
         {...(open ? panResponder.panHandlers : modeSwipeResponder.panHandlers)}>
+        {/* Search: anchors Steam, walks focus to its global search field, and
+            raises this keyboard, so you type a game name on the phone instead
+            of picking letters off a grid with a d-pad. Only on the CLOSED bar,
+            because that is where you are when you decide to look for a game.
+            Side is a preference: the bar's right end is where the thumb rests
+            and where PASTE/HIDE appear when open, so search there is easy to
+            hit by accident -- but handedness varies, so it is not our call. */}
+        {!open && onSearch && searchSide === 'left' && searchBtn}
         <Pressable
           onPress={open ? dismiss : focus}
           style={({ pressed }) => [
@@ -588,6 +634,7 @@ function KeyboardBar({ autoOpenSignal, onText, onBackspace, onEnter, onSwipeMode
           </Text>
           {!open && <Text style={styles.kbSwipeCue}>›</Text>}
         </Pressable>
+        {!open && onSearch && searchSide === 'right' && searchBtn}
         {open && (
           <>
             {/* Android has no InputAccessoryView, so PASTE has to live here too
@@ -666,6 +713,24 @@ function KeyboardBar({ autoOpenSignal, onText, onBackspace, onEnter, onSwipeMode
         caretHidden={!open}
         inputAccessoryViewID={Platform.OS === 'ios' ? KB_ACCESSORY_ID : undefined}
       />
+      {/* Clear the field. Pinned INSIDE the compose field's right edge; the
+          field carries a matching paddingRight so text can never run underneath
+          it. That padding is the whole point -- an overlay without it is how
+          the HIDE button ended up invisible under this same field (#206), and
+          repeating that here would be careless. Only while there is something
+          to clear. */}
+      {open && value.length > 0 && (
+        <Pressable
+          onPress={() => {
+            setValue('');
+            inputRef.current?.focus();
+          }}
+          hitSlop={10}
+          accessibilityLabel="Clear text"
+          style={[styles.kbClearBtn, { bottom: 10 + kbLift }]}>
+          <Ionicons name="close-circle" size={19} color={pal.textFaint} />
+        </Pressable>
+      )}
       {/* Done bar pinned to the top of the iOS keyboard — always reachable,
           unlike the in-layout bar which the raised keyboard covers. */}
       {Platform.OS === 'ios' && (
@@ -1197,6 +1262,64 @@ function PadScreen() {
     },
     [client, keyboardMode],
   );
+  // Steam global search. Three steps, and the ORDER matters:
+  //   1. anchor the Steam UI to a known screen -- MEASURED, the identical key
+  //      walk from the wrong screen opens Steam's sidebar menu instead;
+  //   2. walk focus to the search field with arrows;
+  //   3. raise this phone's keyboard. Step 3 cannot wait for the box's
+  //      {"t":"osk"} push: Steam takes these keys directly and never opens its
+  //      own on-screen keyboard on this path.
+  // searchOpen is what makes the HIDE button safe to wire to Esc -- see below.
+  const searchOpen = useRef(false);
+  // Gated on the box actually having Steam (the same signal that decides
+  // whether the STEAM tab exists) AND on being connected, so the button never
+  // appears where it cannot work. steamGoto also resolves false on an older
+  // agent, which stops the arrow walk rather than firing keys blindly.
+  // An agent older than 2.9.42 has no /api/steam/goto, so the button would sit
+  // there doing nothing. There is no cheap way to know up front — the Pad screen
+  // carries no agent_version, and a 404 from a MISSING route is
+  // indistinguishable from a 404 refusing an id — so the button learns from its
+  // own first attempt and then hides for the session. One dead tap, not a
+  // permanently dead control.
+  const [searchUnsupported, setSearchUnsupported] = useState(false);
+  const canSearch =
+    hasSteamMenus && inGameMode && status === 'connected' && !searchUnsupported;
+  const steamSearch = useCallback(() => {
+    haptic();
+    void (async () => {
+      const anchored = await api.steamGoto(settings, 'home');
+      if (!anchored) {
+        // Older agent. Do NOT fire the arrows blindly — without the anchor they
+        // land on whatever is focused and open Steam's sidebar menu.
+        setSearchUnsupported(true);
+        return;
+      }
+      // Let Steam settle on the anchored screen before walking focus.
+      await new Promise((r) => setTimeout(r, STEAM_ANCHOR_SETTLE_MS));
+      await client.focusSteamSearch();
+      searchOpen.current = true;
+      setOskSignal((n) => n + 1);   // raise the phone keyboard
+    })();
+  }, [client, settings]);
+
+  // Only send Esc if WE opened the search. Esc on Steam is back-navigation, not
+  // "dismiss keyboard" -- measured walking Store -> Settings -> Library -- so
+  // firing it on every keyboard dismissal would move the user somewhere, or
+  // open a pause menu inside a game.
+  const closeSteamSearch = useCallback(
+    (typed: boolean) => {
+      if (!searchOpen.current) return;
+      searchOpen.current = false;
+      // If a query was actually entered, LEAVE the search up. Closing it would
+      // discard the results the search was for -- you put the keyboard away to
+      // look at what you found, not to throw it away. An empty field means
+      // nothing is lost, so tidy up after the accidental open.
+      if (typed) return;
+      client.sendKey('esc');
+    },
+    [client],
+  );
+
   const selectTap = useCallback(() => {
     haptic();
     if (keyboardMode) {
@@ -1262,6 +1385,8 @@ function PadScreen() {
       onEnter={kbEnter}
       onSwipeMode={cycleMode}
       autoOpenSignal={oskSignal}
+      onSearch={canSearch ? steamSearch : undefined}
+      onDismiss={closeSteamSearch}
     />
   ) : null;
 
@@ -1933,6 +2058,19 @@ const makeStyles = (t: Palette) => StyleSheet.create({
     alignItems: 'center',
     justifyContent: 'center',
   },
+  // Matches the bar's height so the row stays level; square so the glyph is
+  // centred rather than drifting toward one edge.
+  kbSearchBtnLeft: { marginRight: 6, marginLeft: 0 },
+  kbSearchBtnRight: { marginLeft: 6, marginRight: 0 },
+  kbSearchBtn: {
+    width: 44,
+    alignItems: 'center',
+    justifyContent: 'center',
+    borderRadius: 10,
+    borderWidth: 1,
+    borderColor: t.cardBorder,
+    backgroundColor: t.card,
+  },
   kbDoneText: {
     color: '#0b1220',
     fontFamily: mono,
@@ -2066,10 +2204,26 @@ const makeStyles = (t: Palette) => StyleSheet.create({
     borderWidth: 1,
     borderRadius: 12,
     paddingVertical: 10,
-    paddingHorizontal: 12,
+    paddingLeft: 12,
+    // Room for the clear button. WITHOUT this the text runs underneath it --
+    // the same overlap class of bug as #206, where an opaque sibling swallowed
+    // the HIDE control. Keep in step with kbClearBtn's right + width.
+    paddingRight: 38,
     color: t.text,
     fontSize: 15,
     fontFamily: mono,
+  },
+  // Sits inside the compose field's right edge, vertically centred against its
+  // ~40px height. Higher zIndex than the field so the tap reaches it.
+  kbClearBtn: {
+    position: 'absolute',
+    right: 20,
+    height: 40,
+    width: 26,
+    alignItems: 'center',
+    justifyContent: 'center',
+    zIndex: 62,
+    elevation: 8,
   },
   hiddenInput: {
     // Invisible but FOCUSABLE. iOS won't let a fully transparent (alpha 0) or
