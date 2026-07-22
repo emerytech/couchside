@@ -262,6 +262,18 @@ function q(v: number): number {
   return Math.round(clamp(v, -1, 1) * 1000) / 1000;
 }
 
+// Steam search focus walk. Counts are deliberately generous: an arrow at the
+// edge of Steam's top bar is a no-op, so overshooting is free while
+// undershooting lands on the wrong control. Both 3 and 5 UP presses were
+// measured reaching the same place.
+const SEARCH_UP_PRESSES = 4;
+const SEARCH_LEFT_PRESSES = 10;
+// Steam drops keys sent faster than its UI settles. 120ms was the interval that
+// worked on hardware; the whole walk is then well under two seconds.
+const SEARCH_KEY_GAP_MS = 120;
+
+const sleep = (ms: number) => new Promise<void>((r) => setTimeout(r, ms));
+
 export class GamepadClient {
   private ws: WebSocket | null = null;
   private status: GamepadStatus = 'closed';
@@ -642,6 +654,35 @@ export class GamepadClient {
   /** A single special key press+release (backspace, enter, arrows, …). */
   sendKey(key: SpecialKey): void {
     this.sendRaw({ t: 'k', key });
+  }
+
+  /**
+   * Walk Steam's focus to its global search field, then resolve.
+   *
+   * MEASURED on a Legion Go S in Game Mode, 2026-07-22, driven from a real
+   * phone and watched through /api/screen/frame:
+   *   - From Steam Home, UP then LEFT reaches the search field; typing lands in
+   *     it and filters live ("dota" -> ALL 15 / LIBRARY 1, DOTA 2 in library).
+   *   - OVERSHOOT IS SAFE and is why the counts are generous: an arrow at the
+   *     edge of the bar is a no-op, so pressing more than needed costs nothing
+   *     while pressing too few silently lands on the wrong control.
+   *   - The caller must anchor the UI first (api.steamGoto). The identical
+   *     sequence fired from the wrong screen opens Steam's SIDEBAR MENU instead
+   *     of search — observed, not theorised.
+   *
+   * Steam's own on-screen keyboard does NOT open on this path; it takes the
+   * keys directly. So the agent's {"t":"osk"} watcher never fires here and the
+   * caller has to raise the phone's keyboard itself.
+   */
+  async focusSteamSearch(): Promise<void> {
+    for (let i = 0; i < SEARCH_UP_PRESSES; i++) {
+      this.sendKey('up');
+      await sleep(SEARCH_KEY_GAP_MS);
+    }
+    for (let i = 0; i < SEARCH_LEFT_PRESSES; i++) {
+      this.sendKey('left');
+      await sleep(SEARCH_KEY_GAP_MS);
+    }
   }
 
   /**

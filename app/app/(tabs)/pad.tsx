@@ -169,6 +169,15 @@ const TAP_SLOP = 12;
 /** Touches longer than this aren't taps. */
 const TAP_MS = 450;
 
+// Steam needs a moment to finish drawing the anchored screen before it will
+// accept focus movement. MEASURED: 1200ms worked 3/3 starting from a
+// deliberately wrong screen (Settings > Audio), giving 3.2s tap-to-search; 3000
+// also worked but made it 5.0s, which is a long time to stare at a button.
+// 1500 keeps the proven value's margin without the extra second.
+// The failure mode if this is ever too short is visible, not silent: the walk
+// lands early and opens Steam's sidebar menu instead of search.
+const STEAM_ANCHOR_SETTLE_MS = 1500;
+
 type DpadKey = 'du' | 'dd' | 'dl' | 'dr';
 
 // Keyboard-mode equivalent for the swipe surface. Arrow keys were measured
@@ -368,6 +377,15 @@ type KeyboardBarProps = {
   /** Horizontal swipe across the (closed) bar: cycle the input mode.
       +1 = swipe left (next mode), -1 = swipe right (previous). */
   onSwipeMode?: (dir: 1 | -1) => void;
+  /** Tap the search button: anchor Steam, walk focus to its global search, and
+      raise this keyboard. Absent on boxes that cannot do it, which hides the
+      button entirely rather than offering a control that does nothing. */
+  onSearch?: () => void;
+  /** Called when the bar is dismissed, so the caller can close whatever it
+      opened on the box. Deliberately NOT "always send Esc": Esc is
+      back-navigation on Steam, so firing it when nothing is open moves the
+      user. The caller decides. */
+  onDismiss?: () => void;
 };
 
 /**
@@ -382,7 +400,8 @@ type KeyboardBarProps = {
  * while the real keyboard is down (or vice-versa). `open` is mirrored into a ref
  * so callbacks always see the live value without stale closures.
  */
-function KeyboardBar({ autoOpenSignal, onText, onBackspace, onEnter, onSwipeMode }: KeyboardBarProps) {
+function KeyboardBar({ autoOpenSignal, onText, onBackspace, onEnter, onSwipeMode,
+                       onSearch, onDismiss }: KeyboardBarProps) {
   const inputRef = useRef<TextInput>(null);
   const [open, setOpen] = useState(false);
   // Live ref so the once-created swipe responder sees the current callback.
@@ -414,7 +433,8 @@ function KeyboardBar({ autoOpenSignal, onText, onBackspace, onEnter, onSwipeMode
     inputRef.current?.blur();
     setOpenSynced(false);
     setValue('');
-  }, [setOpenSynced]);
+    onDismiss?.();
+  }, [setOpenSynced, onDismiss]);
 
   const focus = useCallback(() => {
     haptic();
@@ -566,6 +586,7 @@ function KeyboardBar({ autoOpenSignal, onText, onBackspace, onEnter, onSwipeMode
     [onBackspace, onEnter],
   );
 
+  const t = useTheme();
   const styles = useThemedStyles(makeStyles);
   return (
     <>
@@ -588,6 +609,21 @@ function KeyboardBar({ autoOpenSignal, onText, onBackspace, onEnter, onSwipeMode
           </Text>
           {!open && <Text style={styles.kbSwipeCue}>›</Text>}
         </Pressable>
+        {/* Search: anchors Steam, walks focus to its global search field, and
+            raises this keyboard, so you type a game name on the phone instead
+            of picking letters off a grid with a d-pad. Only rendered when the
+            box can actually do it -- a search button that silently does nothing
+            is worse than no button. Sits on the CLOSED bar because that is
+            where you are when you decide to look for a game. */}
+        {!open && onSearch && (
+          <Pressable
+            onPress={onSearch}
+            hitSlop={8}
+            accessibilityLabel="Search Steam"
+            style={({ pressed }) => [styles.kbSearchBtn, pressed && styles.btnPressed]}>
+            <Ionicons name="search" size={17} color={t.blue} />
+          </Pressable>
+        )}
         {open && (
           <>
             {/* Android has no InputAccessoryView, so PASTE has to live here too
@@ -1197,6 +1233,43 @@ function PadScreen() {
     },
     [client, keyboardMode],
   );
+  // Steam global search. Three steps, and the ORDER matters:
+  //   1. anchor the Steam UI to a known screen -- MEASURED, the identical key
+  //      walk from the wrong screen opens Steam's sidebar menu instead;
+  //   2. walk focus to the search field with arrows;
+  //   3. raise this phone's keyboard. Step 3 cannot wait for the box's
+  //      {"t":"osk"} push: Steam takes these keys directly and never opens its
+  //      own on-screen keyboard on this path.
+  // searchOpen is what makes the HIDE button safe to wire to Esc -- see below.
+  const searchOpen = useRef(false);
+  // Gated on the box actually having Steam (the same signal that decides
+  // whether the STEAM tab exists) AND on being connected, so the button never
+  // appears where it cannot work. steamGoto also resolves false on an older
+  // agent, which stops the arrow walk rather than firing keys blindly.
+  const canSearch = hasSteamMenus && inGameMode && status === 'connected';
+  const steamSearch = useCallback(() => {
+    haptic();
+    void (async () => {
+      const anchored = await api.steamGoto(settings, 'home');
+      if (!anchored) return;   // older agent: don't fire arrows blindly
+      // Let Steam settle on the anchored screen before walking focus.
+      await new Promise((r) => setTimeout(r, STEAM_ANCHOR_SETTLE_MS));
+      await client.focusSteamSearch();
+      searchOpen.current = true;
+      setOskSignal((n) => n + 1);   // raise the phone keyboard
+    })();
+  }, [client, settings]);
+
+  // Only send Esc if WE opened the search. Esc on Steam is back-navigation, not
+  // "dismiss keyboard" -- measured walking Store -> Settings -> Library -- so
+  // firing it on every keyboard dismissal would move the user somewhere, or
+  // open a pause menu inside a game.
+  const closeSteamSearch = useCallback(() => {
+    if (!searchOpen.current) return;
+    searchOpen.current = false;
+    client.sendKey('esc');
+  }, [client]);
+
   const selectTap = useCallback(() => {
     haptic();
     if (keyboardMode) {
@@ -1262,6 +1335,8 @@ function PadScreen() {
       onEnter={kbEnter}
       onSwipeMode={cycleMode}
       autoOpenSignal={oskSignal}
+      onSearch={canSearch ? steamSearch : undefined}
+      onDismiss={closeSteamSearch}
     />
   ) : null;
 
@@ -1932,6 +2007,18 @@ const makeStyles = (t: Palette) => StyleSheet.create({
     paddingHorizontal: 20,
     alignItems: 'center',
     justifyContent: 'center',
+  },
+  // Matches the bar's height so the row stays level; square so the glyph is
+  // centred rather than drifting toward one edge.
+  kbSearchBtn: {
+    width: 44,
+    alignItems: 'center',
+    justifyContent: 'center',
+    borderRadius: 10,
+    borderWidth: 1,
+    borderColor: t.cardBorder,
+    backgroundColor: t.card,
+    marginLeft: 6,
   },
   kbDoneText: {
     color: '#0b1220',

@@ -44,7 +44,7 @@ except ImportError:  # pragma: no cover
     fcntl = None
 
 APP_NAME = "couchside-agent"
-VERSION = "2.9.41"
+VERSION = "2.9.42"
 UID = os.getuid()
 XDG_RUNTIME_DIR = "/run/user/%d" % UID
 
@@ -9936,6 +9936,47 @@ def open_steam_menu(menu_id):
     return True
 
 
+# Non-settings steam:// destinations the app may ask for, as a FROZEN map of
+# id -> the exact URL. Separate from STEAM_MENUS because those are all
+# steam://open/settings/<slug>; these are whole-UI destinations.
+#
+# MEASURED on a Legion Go S in Game Mode, 2026-07-22: firing this from
+# Settings > Audio lands on Steam HOME, so it genuinely navigates rather than
+# being a no-op that only appeared to work because Steam was already there.
+# That determinism is the entire point of it -- the app's search button walks a
+# fixed key path afterwards, and a key path is only reliable from a known
+# starting screen.
+STEAM_PLACES = {
+    "home": "steam://open/games",
+}
+
+
+def steam_goto(place_id):
+    """Navigate the Steam UI to one allowlisted destination. True when dispatched.
+
+    SECURITY: place_id indexes a FROZEN dict and never reaches a shell -- the
+    URL is chosen here, not by the caller, and an unknown id is refused rather
+    than forwarded. steam:// can install games and run programs, so a caller
+    must never be able to steer this to an arbitrary URL.
+    """
+    # Type-check BEFORE the lookup: an unhashable id (a list, a dict) raises
+    # TypeError from dict.get, and this must degrade closed rather than throw.
+    # The route already rejects non-strings, but a helper that can be called
+    # from anywhere should not depend on its caller for that.
+    if not isinstance(place_id, str):
+        return False
+    url = STEAM_PLACES.get(place_id)
+    if url is None:
+        return False
+    subprocess.Popen(
+        ["steam", url],
+        env=_user_env(),
+        stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+        stdin=subprocess.DEVNULL, start_new_session=True,
+    )
+    return True
+
+
 def streamhost_available():
     """Boot-time caps hint: Steam is present, so this box could host. The
     endpoint is the live authority. Never raises."""
@@ -11350,6 +11391,32 @@ class Handler(BaseHTTPRequestHandler):
             # allowlist — Steam would silently open its DEFAULT page for an
             # unknown slug, so forwarding one would look like success while
             # landing somewhere else entirely.
+            if path == "/api/steam/goto":
+                # Navigate the Steam UI to one allowlisted destination. Exists so
+                # the app's search button has a KNOWN starting screen before it
+                # walks a fixed key path -- MEASURED, a blind key sequence from
+                # the wrong screen opens the sidebar menu instead of search.
+                try:
+                    req = json.loads(body.decode("utf-8")) if body else {}
+                    if not isinstance(req, dict):
+                        raise ValueError("body must be a JSON object")
+                except (ValueError, TypeError, UnicodeDecodeError):
+                    self._send(400, {"error": "body must be a JSON object"},
+                               started)
+                    return
+                place = req.get("id")
+                # Looked up, never interpolated: an unknown id is a 404, not a
+                # pass-through to an arbitrary steam:// URL.
+                if not isinstance(place, str) or place not in STEAM_PLACES:
+                    self._send(404, {"error": "unknown place"}, started)
+                    return
+                if self.mock:
+                    self._send(200, {"ok": True, "id": place}, started)
+                    return
+                ok = steam_goto(place)
+                self._send(200 if ok else 500,
+                           {"ok": bool(ok), "id": place}, started)
+                return
             if path == "/api/steam/menus":
                 # _read_body() hands back BYTES, not a parsed object — decode
                 # like every other POST route here.

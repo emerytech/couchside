@@ -1231,6 +1231,26 @@ export const api = {
     });
   },
 
+  /**
+   * Navigate the Steam UI to a known destination (agent >= 2.9.42).
+   *
+   * Exists so the search button has a KNOWN starting screen before it walks a
+   * fixed key path. MEASURED on a Legion Go S: the same key path fired from the
+   * wrong screen opens Steam's sidebar menu instead of search, so anchoring is
+   * not optional polish — it is what makes the feature work twice in a row.
+   *
+   * Resolves false on an older agent (404) rather than throwing, so the caller
+   * can skip the key walk instead of blindly sending arrows.
+   */
+  steamGoto(settings: ConnSettings, id: 'home'): Promise<boolean> {
+    return request<{ ok: boolean }>(settings, '/api/steam/goto', {
+      method: 'POST',
+      body: { id },
+    })
+      .then((r) => !!r?.ok)
+      .catch(() => false);
+  },
+
   steamlink(
     settings: ConnSettings,
     caps: BoxCaps | undefined = cachedCaps(settings),
