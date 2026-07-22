@@ -50,6 +50,13 @@ function fmtLastSeen(ts: number | null): string {
   return `${Math.floor(m / 60)}h ${m % 60}m ago`;
 }
 
+/** "1h 24m" / "40m" — minutes only under an hour, so a short charge does not
+ *  read as "0h 40m". */
+function fmtDuration(mins: number): string {
+  if (mins < 60) return `${mins}m`;
+  return `${Math.floor(mins / 60)}h ${mins % 60}m`;
+}
+
 export default function ConsoleTab() {
   useLockOrientation('portrait');
   return (
@@ -80,6 +87,11 @@ function ConsoleScreen() {
 
   const s = status.data;
   const reachable = configured && status.error == null && s != null;
+  // Show the 60s average, not the 10s: a momentary spike while a game loads is
+  // normal and not worth a number that jumps every poll. Only surfaced once it
+  // is above a floor, so an idle box stays quiet.
+  const memPressure =
+    s?.mem.pressure?.some60 != null && s.mem.pressure.some60 >= 1 ? s.mem.pressure.some60 : null;
   const memPct = s ? Math.round((s.mem.used_mb / s.mem.total_mb) * 100) : 0;
 
   // The app did its job: a paired box answered. Counted at most once per launch
@@ -206,6 +218,24 @@ function ConsoleScreen() {
               {/* Fixed 0-100 scale: a memory sparkline that auto-scales would
                   make a 2% wiggle look like a cliff. */}
               <Spark values={s.history?.mem_pct} color={pctColor(memPct, t)} min={0} max={100} />
+              {/* Swap and stall pressure, each shown ONLY when it is saying
+                  something. Zero pressure on an idle box is the normal state and
+                  printing "0.0%" every second would train you to ignore the row
+                  that matters. PSI is absent entirely on kernels without
+                  CONFIG_PSI, which is why undefined and 0 are treated
+                  differently here. */}
+              {(memPressure != null || (s.mem.swap_used_mb ?? 0) > 0) && (
+                <Text style={styles.ipLine}>
+                  {[
+                    memPressure != null ? `stalled ${memPressure.toFixed(1)}%` : null,
+                    (s.mem.swap_used_mb ?? 0) > 0
+                      ? `swap ${(s.mem.swap_used_mb! / 1024).toFixed(1)}G`
+                      : null,
+                  ]
+                    .filter(Boolean)
+                    .join('  ·  ')}
+                </Text>
+              )}
             </Card>
 
             <Card title="DISKS" index={4}>
@@ -232,16 +262,44 @@ function ConsoleScreen() {
               <Card title="BATTERY" index={5}>
                 <View style={styles.barLabelRow}>
                   <Text style={styles.barLabel}>
-                    {s.battery.on_ac ? 'On AC' : 'On battery'}
-                    {s.battery.minutes != null
-                      ? `   ${Math.floor(s.battery.minutes / 60)}h ${s.battery.minutes % 60}m left`
-                      : ''}
+                    {s.battery.status === 'Charging'
+                      ? 'Charging'
+                      : s.battery.on_ac
+                        ? 'On AC'
+                        : 'On battery'}
+                    {/* Two different clocks, never both: time-to-full while
+                        charging, runtime-left while discharging. The agent
+                        keeps them as separate fields for exactly that reason. */}
+                    {s.battery.minutes_to_full != null
+                      ? `   ${fmtDuration(s.battery.minutes_to_full)} to full`
+                      : s.battery.minutes != null
+                        ? `   ${fmtDuration(s.battery.minutes)} left`
+                        : ''}
                   </Text>
                   <Text style={[styles.barLabel, { color: batteryColor(s.battery.pct, t) }]}>
                     {s.battery.pct}%
                   </Text>
                 </View>
                 <Bar pct={s.battery.pct} color={batteryColor(s.battery.pct, t)} />
+                {/* Draw and power profile, each independently optional so a box
+                    that reports only one still shows it. The watts figure is
+                    labelled by STATUS -- the same counter is the charge rate
+                    when plugged in, so calling it "draw" while charging would
+                    be wrong. */}
+                {(s.battery.watts != null || s.battery.profile) && (
+                  <Text style={styles.ipLine}>
+                    {[
+                      s.battery.watts != null
+                        ? `${s.battery.watts.toFixed(1)}W ${
+                            s.battery.status === 'Charging' ? 'in' : 'draw'
+                          }`
+                        : null,
+                      s.battery.profile,
+                    ]
+                      .filter(Boolean)
+                      .join('  ·  ')}
+                  </Text>
+                )}
               </Card>
             )}
           </>

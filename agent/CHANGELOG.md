@@ -18,6 +18,34 @@ the same thing regardless of what actually changed.
 Write for the person holding the phone, not for the commit log. They are
 deciding whether to press "Update now" on a machine across the room.
 
+## 2.9.43
+
+Storage now reports how full a drive really is. It was dividing by space you
+cannot actually use, so a nearly-full drive could read several points low.
+
+Game drives appear too — a Steam Deck's SD card was invisible before.
+
+The GPU no longer looks like it has half a gigabyte. Handhelds share memory
+with the system, and only the small dedicated slice was being reported — it now
+shows the whole pool, plus how busy the GPU actually is.
+
+Memory now shows swap in use and, when the box is actually struggling, how much
+time it spends stalled waiting on memory — the thing you feel as stutter, which
+a used-percentage does not tell you.
+
+Handhelds also show current power draw and the machine's power profile — and
+while charging, how long until the battery is full.
+
+You can close the running game from your phone. The Gaming card shows what is
+playing and how long it has been on, with a button to quit it.
+
+Game cover art now appears on Android. It never has — the phone was quietly
+dropping the credential on image requests, so every tile fell back to a plain
+card.
+
+While the box updates itself, the app now shows what it is actually doing, and
+the box's own screen shows an update page so you are not staring at a frozen TV.
+
 ## 2.9.42
 
 Adds the box-side half of the app's new Steam search button.

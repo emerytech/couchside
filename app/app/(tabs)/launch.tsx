@@ -36,8 +36,8 @@ import {
   SteamDownload,
   SteamLink,
 } from '@/lib/api';
-import { hapticError, hapticLight, hapticMedium, hapticSuccess } from '@/lib/haptics';
-import { usePref } from '@/lib/prefs';
+import { hapticError, hapticLight, hapticMedium, hapticSelection, hapticSuccess } from '@/lib/haptics';
+import { setPref, usePref } from '@/lib/prefs';
 import { useSettings } from '@/lib/SettingsContext';
 import { mono, useTheme, useThemedStyles, type Palette } from '@/lib/theme';
 
@@ -306,6 +306,7 @@ function SteamLinkSection({
   const styles = useThemedStyles(makeStyles);
   const hideOffline = usePref('hideOfflineStreamHosts');
   const hideSection = usePref('hideStreamFromPc');
+  const collapsed = usePref('streamCollapsed');
   // Expand the freshest host by default, preferring one that's actually up.
   // `online` is absent on agents older than 2.9.32, and undefined !== false, so
   // those fall through to hosts[0] — exactly the old behaviour.
@@ -321,11 +322,30 @@ function SteamLinkSection({
   const hosts = hideOffline ? data.hosts.filter((h) => h.online !== false) : data.hosts;
   return (
     <View style={styles.dlCard}>
-      <View style={styles.dlHeader}>
+      {/* The whole card folds to its header. Collapsing is NOT hiding: a folded
+          card still says the feature exists and reopens in one tap, where a
+          hidden one leaves you wondering where it went. The host count stays
+          visible while folded so it is still worth something closed. */}
+      <Pressable
+        onPress={() => {
+          hapticSelection();
+          void setPref('streamCollapsed', !collapsed);
+        }}
+        style={styles.dlHeader}>
         <Ionicons name="tv-outline" size={14} color={t.blue} />
         <Text style={styles.dlHeaderText}>STREAM FROM PC</Text>
-      </View>
-      {hosts.length === 0 ? (
+        <View style={styles.streamHeaderRight}>
+          {collapsed && hosts.length > 0 && (
+            <Text style={styles.streamCount}>{hosts.length}</Text>
+          )}
+          <Ionicons
+            name={collapsed ? 'chevron-down' : 'chevron-up'}
+            size={15}
+            color={t.textDim}
+          />
+        </View>
+      </Pressable>
+      {collapsed ? null : hosts.length === 0 ? (
         // Every host was filtered out by the pref. Say so — a card that just
         // vanished looks like the feature broke.
         <Text style={styles.slHint}>
@@ -680,7 +700,18 @@ function LaunchScreen() {
     setTimeout(() => setRefreshing(false), 600);
   }, [list]);
 
-  const launchers = list.data?.launchers ?? [];
+  const allLaunchers = list.data?.launchers ?? [];
+  // Filter by name. With 70+ games the grid is a long scroll and finding one by
+  // eye is the slowest thing on this screen. Case- and space-insensitive so
+  // "deadcells" finds "Dead Cells", which is how people actually type on a
+  // phone. Client-side on a list the app already has -- no round trip, and it
+  // stays responsive on a box that is busy installing something.
+  const [query, setQuery] = useState('');
+  const launchers = useMemo(() => {
+    const q = query.trim().toLowerCase().replace(/\s+/g, '');
+    if (!q) return allLaunchers;
+    return allLaunchers.filter((l) => l.label.toLowerCase().replace(/\s+/g, '').includes(q));
+  }, [allLaunchers, query]);
   const rows = useMemo(() => {
     const out: Launcher[][] = [];
     for (let i = 0; i < launchers.length; i += COLS) {
@@ -775,6 +806,41 @@ function LaunchScreen() {
           </View>
         )}
 
+        {/* Filter. Only once there is enough to be worth filtering -- a search
+            box above four tiles is clutter, above seventy it is the fastest
+            control on the screen. Counts the UNFILTERED list so it does not
+            vanish as soon as a query narrows things down. */}
+        {allLaunchers.length >= 8 && (
+          <View style={styles.searchWrap}>
+            <Ionicons name="search" size={15} color={t.textDim} />
+            <TextInput
+              value={query}
+              onChangeText={setQuery}
+              placeholder={`Search ${allLaunchers.length} games`}
+              placeholderTextColor={t.textFaint}
+              style={styles.searchInput}
+              autoCapitalize="none"
+              autoCorrect={false}
+              returnKeyType="search"
+              clearButtonMode="never"
+            />
+            {query.length > 0 && (
+              <Pressable
+                onPress={() => setQuery('')}
+                hitSlop={10}
+                accessibilityLabel="Clear search">
+                <Ionicons name="close-circle" size={17} color={t.textDim} />
+              </Pressable>
+            )}
+          </View>
+        )}
+
+        {/* Nothing matched. Say so rather than showing an empty screen that
+            reads as "the box has no games". */}
+        {query.trim().length > 0 && launchers.length === 0 && (
+          <Text style={styles.noMatch}>No game matches &ldquo;{query.trim()}&rdquo;.</Text>
+        )}
+
         {/* Grid */}
         {rows.map((row, ri) => (
           <View key={ri} style={[styles.row, { gap: GAP, marginBottom: GAP }]}>
@@ -849,6 +915,22 @@ const makeStyles = (t: Palette) => StyleSheet.create({
     gap: 12,
   },
   dlHeader: { flexDirection: 'row', alignItems: 'center', gap: 6 },
+  searchWrap: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+    backgroundColor: t.card,
+    borderColor: t.cardBorder,
+    borderWidth: 1,
+    borderRadius: 10,
+    paddingHorizontal: 12,
+    paddingVertical: 9,
+    marginBottom: 12,
+  },
+  searchInput: { flex: 1, color: t.text, fontSize: 15, padding: 0 },
+  noMatch: { color: t.textDim, fontSize: 13, textAlign: 'center', marginBottom: 14 },
+  streamHeaderRight: { marginLeft: 'auto', flexDirection: 'row', alignItems: 'center', gap: 6 },
+  streamCount: { color: t.textDim, fontSize: 12, fontFamily: mono },
   dlHeaderGap: {
     marginTop: 4,
     borderTopColor: t.cardBorder,

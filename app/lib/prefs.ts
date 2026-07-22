@@ -67,6 +67,11 @@ export type Prefs = {
    *  decision — and 'off' exists because a control you never use is still a
    *  control you can fat-finger. */
   searchButtonSide: 'left' | 'right' | 'off';
+  /** Collapse the "Stream from PC" card on the Launch tab to just its header.
+   *  Distinct from hiding it: a collapsed card still says the feature is there
+   *  and reopens in one tap, which a hidden one cannot. Persisted, because a
+   *  section you fold away should stay folded. */
+  streamCollapsed: boolean;
   defaultPadMode: PadMode;
   /** How often the console/header polls the box for vitals (ms). */
   statusIntervalMs: number;
@@ -142,6 +147,7 @@ export const DEFAULTS: Prefs = {
   autoKeyboard: true,
   keyboardMode: false,
   searchButtonSide: 'left',
+  streamCollapsed: false,
   defaultPadMode: 'swipe',
   statusIntervalMs: 5000,
   journalLines: 100,
@@ -223,6 +229,7 @@ function normalize(raw: unknown): Prefs {
     o.defaultPadMode === 'remote'
       ? o.defaultPadMode
       : 'swipe';
+  const streamCollapsed = bool(o.streamCollapsed, DEFAULTS.streamCollapsed);
   const searchSide: 'left' | 'right' | 'off' =
     o.searchButtonSide === 'right' || o.searchButtonSide === 'off'
       ? o.searchButtonSide
@@ -232,6 +239,7 @@ function normalize(raw: unknown): Prefs {
     : DEFAULTS.landingTab;
   return {
     searchButtonSide: searchSide,
+    streamCollapsed,
     confirmSuspend:
       typeof o.confirmSuspend === 'boolean' ? o.confirmSuspend : DEFAULTS.confirmSuspend,
     landingTab,

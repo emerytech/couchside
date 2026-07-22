@@ -23,6 +23,7 @@ import random
 import re
 import select
 import shutil
+import signal
 import socket
 import ssl
 import struct
@@ -44,7 +45,7 @@ except ImportError:  # pragma: no cover
     fcntl = None
 
 APP_NAME = "couchside-agent"
-VERSION = "2.9.42"
+VERSION = "2.9.43"
 UID = os.getuid()
 XDG_RUNTIME_DIR = "/run/user/%d" % UID
 
@@ -993,13 +994,66 @@ def read_mem():
                     info[parts[0].rstrip(":")] = int(parts[1])  # kB
         total_mb = info.get("MemTotal", 0) // 1024
         avail_mb = info.get("MemAvailable", 0) // 1024
-        return {
+        out = {
             "total_mb": total_mb,
             "used_mb": total_mb - avail_mb,
             "available_mb": avail_mb,
         }
+        # Swap in use. On SteamOS/Bazzite handhelds this is where a big game
+        # starts paying for itself in stutter, and it is invisible in a
+        # used/total bar.
+        sw_total = info.get("SwapTotal", 0) // 1024
+        if sw_total:
+            out["swap_total_mb"] = sw_total
+            out["swap_used_mb"] = sw_total - (info.get("SwapFree", 0) // 1024)
+        pressure = read_mem_pressure()
+        if pressure:
+            out["pressure"] = pressure
+        return out
     except Exception:
         return {"total_mb": 0, "used_mb": 0, "available_mb": 0}
+
+
+def read_mem_pressure():
+    """Linux PSI memory pressure as {"some10","some60","full10","full60"}, or {}.
+
+    WHY THIS AND NOT JUST used/total: a used-percentage says how much memory is
+    SPOKEN FOR, not whether anything is hurting. A handheld with a big page
+    cache can read "26% used" while a game stutters, and can read "90% used"
+    while everything is fine. PSI measures the thing you actually feel -- the
+    share of time work was STALLED waiting on memory.
+
+      some = at least one task stalled
+      full = EVERY task stalled (the machine is effectively frozen)
+
+    avg10/avg60 are percentages the kernel already averages over 10s and 60s, so
+    nothing needs sampling here.
+
+    MEASURED on a Legion Go S: /proc/pressure/memory exists and reads
+    "some avg10=0.00 ... total=366363677" when idle -- zeros now, but a live
+    cumulative counter. Absent on kernels built without CONFIG_PSI, which is why
+    this returns {} rather than zeros: "no pressure" and "cannot tell" must not
+    look the same.
+    """
+    try:
+        with open("/proc/pressure/memory") as f:
+            raw = f.read()
+    except OSError:
+        return {}
+    out = {}
+    for line in raw.splitlines():
+        parts = line.split()
+        if not parts or parts[0] not in ("some", "full"):
+            continue
+        kind = parts[0]
+        for field in parts[1:]:
+            key, _, value = field.partition("=")
+            if key in ("avg10", "avg60"):
+                try:
+                    out["%s%s" % (kind, key[3:])] = round(float(value), 2)
+                except ValueError:
+                    pass
+    return out
 
 
 # Filesystems worth showing, in the order they should appear. "/home" is here
@@ -1202,10 +1256,38 @@ def osk_arm(mock=False):
     print("[osk] watching %s" % _OSK_LOG, flush=True)
 
 
+def _steam_library_mounts():
+    """Filesystems that hold Steam libraries, as mount-ish paths.
+
+    Why this exists: _DISK_MOUNTS is a fixed list, so a Deck's SD card or a
+    second games drive never appeared -- MEASURED on a Legion Go S, a 1.4 TB
+    card at /run/media/deck/SD1T5 was invisible while a 5 GB OS partition was
+    shown. Games are the whole reason storage matters on these boxes.
+
+    Deriving this from Steam's OWN library list rather than globbing /run/media
+    or /mnt keeps it principled: it shows exactly the drives games live on, and
+    reuses machinery that is already read-only and already allowlist-safe. A box
+    with no Steam simply gets nothing extra.
+
+    Never raises; returns [] on any problem.
+    """
+    out = []
+    try:
+        root = _steam_root()
+        if root is None:
+            return []
+        for steamapps in _steam_libraries_cached(root):
+            # steamapps dir -> the library root that contains it.
+            out.append(os.path.dirname(steamapps) or steamapps)
+    except Exception:
+        return []
+    return out
+
+
 def read_disks():
     disks = []
     seen_devices = set()
-    for mount in _DISK_MOUNTS:
+    for mount in list(_DISK_MOUNTS) + _steam_library_mounts():
         try:
             # Same filesystem reached by two paths (the common case where /home
             # is not split out) must not be listed twice.
@@ -1235,7 +1317,19 @@ def read_disks():
             total_gb = du.total / (1024 ** 3)
             used_gb = du.used / (1024 ** 3)
             free_gb = du.free / (1024 ** 3)
-            pct = int(round(du.used * 100.0 / du.total)) if du.total else 0
+            # Percent full against what the user can ACTUALLY use, i.e.
+            # used/(used+free), not used/total. `total` counts root-reserved
+            # blocks an unprivileged user can never touch, so dividing by it
+            # under-reports fullness -- MEASURED on a Legion Go S, /home showed
+            # 91% when df said 96%, because 92 GB of it is reserved. A storage
+            # warning that reads low exactly when the disk is nearly full is
+            # worse than none. (shutil's `free` is already f_bavail.)
+            usable = du.used + du.free
+            # Round UP, like df does. This number drives a warning colour, and
+            # for "how full am I" the conservative direction is the honest one:
+            # 96.2% should read 97, not 96.
+            pct = -(-du.used * 100 // usable) if usable else 0
+            pct = int(min(100, max(0, pct)))
             disks.append({
                 "mount": mount,
                 "total_gb": round(total_gb, 1),
@@ -1393,13 +1487,102 @@ def mock_update_check():
             "checked_at": int(time.time())}
 
 
+UPDATE_LOG = "/tmp/couchside-update.log"
+
+
+def read_update_log(limit=40):
+    """Last `limit` lines of the installer transcript, or [] when absent.
+
+    The installer already wrote this file; nothing ever read it, so the app sat
+    on a canned "this can take a minute" while the box knew exactly which step
+    it was on. The PATH IS A CONSTANT -- no client input selects a file.
+    Read-only, best-effort, never raises.
+    """
+    try:
+        with open(UPDATE_LOG, "r", errors="replace") as f:
+            lines = f.read().splitlines()
+    except OSError:
+        return []
+    out = [ln.rstrip() for ln in lines if ln.strip()]
+    return out[-limit:]
+
+
+def render_update_page():
+    """The progress page shown on the BOX'S OWN screen during an update.
+
+    Deliberately SELF-CONTAINED and served once, because the agent restarts
+    partway through an update and anything it would have to serve mid-flight
+    disappears with it. The page is already loaded in Steam's browser by then,
+    so its script keeps running across the restart and polls /api/ping -- the
+    one deliberately pre-auth endpoint -- until the version changes.
+
+    No external assets: Steam's browser may have no network route while the box
+    is mid-update, and a spinner that 404s is worse than no spinner.
+    """
+    return """<!doctype html><html><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Couchside is updating</title>
+<style>
+ html,body{margin:0;height:100%;background:#0b1220;color:#e8eaed;
+   font-family:system-ui,-apple-system,sans-serif;display:flex;
+   align-items:center;justify-content:center}
+ .w{text-align:center;padding:2rem}
+ h1{font-size:2.2rem;margin:0 0 .6rem;font-weight:600}
+ p{font-size:1.15rem;color:#93a1b5;margin:.3rem 0}
+ .dots span{opacity:.25;animation:b 1.2s infinite}
+ .dots span:nth-child(2){animation-delay:.2s}
+ .dots span:nth-child(3){animation-delay:.4s}
+ @keyframes b{0%,100%{opacity:.25}50%{opacity:1}}
+ .ok{color:#5ad18f}
+</style></head><body><div class="w">
+<h1 id="t">Updating Couchside</h1>
+<p id="s">Keep the box powered on. This takes about a minute.</p>
+<p class="dots" id="d"><span>&#9679;</span><span>&#9679;</span><span>&#9679;</span></p>
+</div><script>
+var was=null, misses=0;
+function tick(){
+  fetch('/api/ping',{cache:'no-store'}).then(function(r){return r.json()}).then(function(j){
+    if(was===null){ was=j.version; }
+    else if(j.version!==was){
+      document.getElementById('t').textContent='Updated';
+      document.getElementById('t').className='ok';
+      document.getElementById('s').textContent='Now running '+j.version+'.';
+      document.getElementById('d').style.display='none';
+      return;                                  /* stop polling */
+    }
+    misses=0;
+    setTimeout(tick,2000);
+  }).catch(function(){
+    /* The agent restarts mid-update, so a failed poll is EXPECTED, not an
+       error. Only say something after it has been gone a while. */
+    misses++;
+    if(misses>8){ document.getElementById('s').textContent=
+      'Restarting the service\u2026'; }
+    setTimeout(tick,2000);
+  });
+}
+tick();
+</script></body></html>"""
+
+
+def update_show_on_box(port):
+    """Put the progress page on the box's own screen. Same mechanism as the
+    pairing PIN page, which is already shipped and proven: Steam's built-in
+    browser in Game Mode, xdg-open on the desktop. Best-effort and detached --
+    an update must never fail because a browser would not open."""
+    try:
+        pair_show_on_box_url("http://localhost:%d/update" % port)
+    except Exception:
+        pass
+
+
 def update_apply():
     """Spawn a DETACHED box-side update (the signed installer) so it survives
     this agent's own restart, and return immediately. The caller MUST have
     verified ALLOW_APP_UPDATE first. The installer verifies the release
     signature before installing, so a triggered update can only ever install an
     authentic release — never arbitrary code."""
-    log = "/tmp/couchside-update.log"
+    log = UPDATE_LOG
     # start_new_session detaches the child into its own session/process group:
     # when the installer restarts couchside.service and kills this agent, the
     # update keeps running to completion.
@@ -2877,7 +3060,13 @@ def mock_status():
     base = 55.0 + 4.5 * math.sin(now / 97.0)
     temp = round(base + random.uniform(-0.8, 0.8), 1)
     load1 = round(random.uniform(0.2, 1.4), 2)
-    mem = {"total_mb": 15803, "used_mb": 6212, "available_mb": 9591}
+    # Non-zero swap and pressure on purpose: the app hides both when they are
+    # quiet, so a mock that reports zeros would render a row nobody can see and
+    # prove nothing.
+    mem = {"total_mb": 15803, "used_mb": 6212, "available_mb": 9591,
+           "swap_total_mb": 8192, "swap_used_mb": 1433,
+           "pressure": {"some10": 4.2, "some60": 2.8,
+                        "full10": 0.9, "full60": 0.3}}
     # Feed the same history ring as real mode so sparklines are exercisable in
     # --mock (rate-limited exactly the same way).
     _record_history(int(now), temp, load1, mem)
@@ -2898,8 +3087,10 @@ def mock_status():
         ],
         # Mock is a HANDHELD so the battery row is exercisable in the web
         # harness -- a mains desktop would render nothing and prove nothing.
-        "battery": {"pct": 58, "status": "Discharging",
-                    "on_ac": False, "minutes": 251},
+        # Mock is DISCHARGING by default; flip status/on_ac and swap
+        # minutes for minutes_to_full to exercise the charging layout.
+        "battery": {"pct": 58, "status": "Discharging", "on_ac": False,
+                    "minutes": 251, "watts": 7.7, "profile": "balanced"},
         "net": {"iface": "eth0", "mac": "de:ad:be:ef:00:01",
                 "wired": True, "wol_armed": True},
         "agent_version": VERSION,
@@ -9300,15 +9491,37 @@ def _gpu_sensors():
             milli = _read_int(temp_path)
             if milli is not None:
                 gpu["temp_c"] = round(milli / 1000.0, 1)
-        # VRAM is documented as BYTES but was not observable this session. Sanity-
-        # gate the magnitude before trusting the unit — a total under ~64 MB is
-        # almost certainly not bytes, so drop it rather than report a lie.
+        # VRAM is in BYTES. Sanity-gate the magnitude before trusting the unit --
+        # a total under ~64 MB is almost certainly not bytes, so drop it rather
+        # than report a lie.
         total = _read_int(os.path.join(dev, "mem_info_vram_total"))
         used = _read_int(os.path.join(dev, "mem_info_vram_used"))
         if total is not None and total > (64 << 20):
             gpu["vram_total_mb"] = total >> 20
             if used is not None:
                 gpu["vram_used_mb"] = used >> 20
+
+        # GTT: system memory the GPU may use. On an APU this is the number that
+        # matters and VRAM alone is actively misleading -- MEASURED on a Legion
+        # Go S, mem_info_vram_total is a 512 MB BIOS carve-out sitting at 89%
+        # used, while mem_info_gtt_total is 15.3 GB barely touched. Reporting
+        # only VRAM made a 32 GB handheld look like a full 0.5 GB graphics card.
+        #
+        # Both are reported rather than summed: they are different pools with
+        # different performance, and adding them would invent a number the
+        # hardware does not have. The app decides how to present it.
+        gtt_total = _read_int(os.path.join(dev, "mem_info_gtt_total"))
+        gtt_used = _read_int(os.path.join(dev, "mem_info_gtt_used"))
+        if gtt_total is not None and gtt_total > (64 << 20):
+            gpu["gtt_total_mb"] = gtt_total >> 20
+            if gtt_used is not None:
+                gpu["gtt_used_mb"] = gtt_used >> 20
+
+        # How hard the GPU is actually working. A VRAM bar says what is
+        # allocated, not whether anything is happening.
+        busy = _read_int(os.path.join(dev, "gpu_busy_percent"))
+        if busy is not None and 0 <= busy <= 100:
+            gpu["busy_pct"] = busy
         return gpu
     return {}
 
@@ -9338,6 +9551,63 @@ def _appid_from_cmdline(cmdline):
         return None
 
 
+def stop_running_game():
+    """Ask the game running right now to close. {"stopped": bool, ...}.
+
+    THE SECURITY SHAPE, and it is the whole design: this takes NO ARGUMENT. The
+    caller cannot name a pid, an appid, or anything else -- the agent
+    re-resolves the target itself, here, at the moment of the call. A client that
+    cannot name a process cannot be steered into killing one. Accepting a pid
+    "to be explicit" would turn this into a remote kill-anything primitive,
+    which is exactly what CLAUDE.md 3.1 forbids.
+
+    SIGTERM only, and never SIGKILL: Steam's reaper forwards it so the game
+    saves and exits the way it would from its own menu. A hard kill risks
+    losing progress, and the user can always hold the power button.
+
+    Degrades closed: nothing running is a plain "not stopped", never a
+    best-effort sweep of anything that looks game-shaped.
+    """
+    game = _running_game()
+    if not game or not game.get("pid"):
+        return {"stopped": False, "reason": "nothing running"}
+    pid = game["pid"]
+    try:
+        os.kill(pid, signal.SIGTERM)
+    except ProcessLookupError:
+        # It exited between resolving and signalling. That is the outcome the
+        # caller wanted, so report it as such rather than as an error.
+        return {"stopped": True, "game": game, "note": "already exited"}
+    except PermissionError:
+        return {"stopped": False, "reason": "not permitted"}
+    except OSError as e:
+        return {"stopped": False, "reason": e.__class__.__name__}
+    return {"stopped": True, "game": game}
+
+
+def _proc_uptime_s(pid):
+    """Seconds a pid has been running, or None.
+
+    Field 22 of /proc/<pid>/stat is the process start time in clock ticks since
+    BOOT, so it is compared against /proc/uptime rather than wall time -- a
+    clock change must not make a game look like it started tomorrow. The comm
+    field can contain spaces and parentheses, so the fields are taken from after
+    the LAST ')' rather than by splitting the whole line.
+    """
+    try:
+        with open("/proc/%d/stat" % pid) as f:
+            raw = f.read()
+        fields = raw[raw.rindex(")") + 2:].split()
+        start_ticks = int(fields[19])          # field 22, 1-based, after comm
+        hz = os.sysconf("SC_CLK_TCK") or 100
+        with open("/proc/uptime") as f:
+            up = float(f.read().split()[0])
+        secs = int(up - (start_ticks / float(hz)))
+        return secs if secs >= 0 else None
+    except (OSError, ValueError, IndexError, ZeroDivisionError):
+        return None
+
+
 def _running_game():
     """{"appid": int[, "label": str]} for the Steam game running now, or None.
     Scans /proc/*/cmdline for the reaper wrapper; label from the appinfo cache
@@ -9355,6 +9625,16 @@ def _running_game():
                 name = _steam_appinfo_names().get(int(appid))
                 if name:
                     game["label"] = name
+                # The pid the appid was found on, plus how long it has been up.
+                # Both are additive; existing callers ignore them.
+                try:
+                    pid = int(entry.split("/")[2])
+                    game["pid"] = pid
+                    secs = _proc_uptime_s(pid)
+                    if secs is not None:
+                        game["running_s"] = secs
+                except (IndexError, ValueError):
+                    pass
                 return game
     except Exception:
         pass
@@ -9433,6 +9713,54 @@ def read_box_battery():
     if on_ac is not None:
         out["on_ac"] = on_ac
 
+    # Instantaneous power flow in watts. The SIGN is the status, not the number:
+    # while charging this same counter is the CHARGE rate, so it is labelled by
+    # `status` rather than presented as "discharge". Some gauges report
+    # microwatts directly (POWER_NOW); others only amps x volts.
+    watts = None
+    try:
+        watts = int(batt["POWER_SUPPLY_POWER_NOW"]) / 1e6
+    except (KeyError, ValueError):
+        try:
+            watts = (int(batt["POWER_SUPPLY_CURRENT_NOW"])
+                     * int(batt["POWER_SUPPLY_VOLTAGE_NOW"])) / 1e12
+        except (KeyError, ValueError):
+            watts = None
+    # A zero or negative reading is a gauge that is not measuring, not a box
+    # drawing no power. Report nothing rather than a confident 0.0 W.
+    if watts is not None and watts > 0:
+        out["watts"] = round(watts, 1)
+
+    profile = read_power_profile()
+    if profile:
+        out["profile"] = profile
+
+    # Time to FULL while charging. Separate field, NOT folded into `minutes`:
+    # that one means "runtime left on battery" to every app already shipped, and
+    # reusing it here would make a 2.9.40-era app cheerfully report "42m left"
+    # while the box is plugged in and filling up.
+    #
+    # MEASURED live on a Legion Go S while charging, 2026-07-22:
+    #   ENERGY_NOW 34530000, ENERGY_FULL 55500000, POWER_NOW 30197000
+    #   -> (55500000-34530000)/30197000 h = 41.7 min
+    if out["status"] == "Charging":
+        for now_k, full_k, rate_k in (
+                ("POWER_SUPPLY_ENERGY_NOW", "POWER_SUPPLY_ENERGY_FULL",
+                 "POWER_SUPPLY_POWER_NOW"),
+                ("POWER_SUPPLY_CHARGE_NOW", "POWER_SUPPLY_CHARGE_FULL",
+                 "POWER_SUPPLY_CURRENT_NOW")):
+            try:
+                now, full, rate = (int(batt[now_k]), int(batt[full_k]),
+                                   int(batt[rate_k]))
+            except (KeyError, ValueError):
+                continue
+            # A full battery still on the charger reports a trickle rate; a
+            # "time to full" of hours would be nonsense, so only report while
+            # there is a real gap left to close.
+            if rate > 0 and full > now:
+                out["minutes_to_full"] = int((full - now) * 60 // rate)
+            break
+
     # Runtime left, when the gauge reports a draw. ENERGY_* is microwatt-hours
     # against POWER_NOW microwatts; CHARGE_* is microamp-hours against
     # CURRENT_NOW microamps. Both divide to hours. Only meaningful while
@@ -9449,6 +9777,31 @@ def read_box_battery():
                 out["minutes"] = int(now * 60 // rate)
                 break
     return out
+
+
+_PLATFORM_PROFILE = "/sys/firmware/acpi/platform_profile"
+
+
+def read_power_profile():
+    """The machine's ACPI platform profile (low-power / balanced / performance),
+    or None when the machine has no such control.
+
+    MEASURED on a Legion Go S, 2026-07-22: the file read "custom" while
+    platform_profile_choices listed "low-power balanced performance" -- Steam's
+    own TDP control had set a profile outside the advertised set. So the current
+    value is reported VERBATIM and is NOT validated against the choices list; a
+    reader that insisted on a known value would have shown nothing on the exact
+    hardware this was written for.
+
+    READ-ONLY. Writing this file would change how the machine performs and is a
+    deliberately separate decision -- it is not exposed here.
+    """
+    try:
+        with open(_PLATFORM_PROFILE) as f:
+            value = f.read().strip()
+    except OSError:
+        return None
+    return value or None
 
 
 def box_battery_available():
@@ -9660,7 +10013,10 @@ def mock_gaming():
     external output, a pad with battery, Game Mode."""
     return {
         "gpu": {"name": "amdgpu", "temp_c": 61.0,
-                "vram_used_mb": 3300, "vram_total_mb": 8192},
+                "vram_used_mb": 3300, "vram_total_mb": 8192,
+                # Mock a DISCRETE card: gtt smaller than vram, so the app takes
+                # the non-shared branch. A handheld APU is the other shape.
+                "gtt_used_mb": 210, "gtt_total_mb": 4096, "busy_pct": 63},
         "game": {"appid": 1091500, "label": "Cyberpunk 2077"},
         "output": {"name": "DP-1", "internal": False},
         "controllers": [{"uniq": "dc:2c:26:aa:bb:cc",
@@ -10640,9 +10996,17 @@ def pair_pin_check(pin):
 
 def pair_show_on_box(port):
     """Open the loopback /pair page on the BOX'S own screen so the PIN is
-    visible there. Game Mode -> Steam's built-in browser (steam://openurl);
-    desktop -> xdg-open. Best-effort, detached, never blocks the request."""
-    url = "http://localhost:%d/pair" % port
+    visible there."""
+    pair_show_on_box_url("http://localhost:%d/pair" % port)
+
+
+def pair_show_on_box_url(url):
+    """Open a LOOPBACK url on the box's own screen. Game Mode -> Steam's
+    built-in browser (steam://openurl); desktop -> xdg-open. Best-effort,
+    detached, never blocks the request.
+
+    Shared by the pairing PIN page and the update progress page. Callers pass a
+    url this module built; nothing here comes from a client."""
     gamescope = _couchmode_session() == "gamescope"
 
     def go():
@@ -10948,6 +11312,34 @@ class Handler(BaseHTTPRequestHandler):
         supplied = auth[len("Bearer "):].strip()
         return hmac.compare_digest(supplied, self.token)
 
+    def _authorized_image(self, parsed):
+        """Auth for IMAGE responses only, which additionally accept ?token=.
+
+        WHY THIS EXISTS, measured rather than assumed: React Native's <Image>
+        takes source.headers, and on Android those headers are DROPPED before
+        the request leaves the phone. Instrumenting the agent showed every cover
+        request arriving as `auth_header='' len=0  ua='okhttp/4.9.2'` -- so the
+        header path cannot work there and cover art was blank on every Android
+        device.
+
+        The bearer header is still preferred and tried first. The query fallback
+        is deliberately scoped to image GETs -- it is NOT a general auth bypass,
+        and no state-changing route may ever use it.
+
+        Safe to log: the access logger already replaces any query string with
+        "?<redacted>", so the token never reaches the journal. Same
+        constant-time comparison as the header path. Precedent: /ws/gamepad has
+        always authenticated with ?token= for the same reason (a WebSocket
+        handshake cannot carry a custom header from RN either).
+        """
+        if self._authorized():
+            return True
+        try:
+            supplied = (parse_qs(parsed.query).get("token") or [""])[0]
+        except Exception:
+            return False
+        return bool(supplied) and hmac.compare_digest(supplied, self.token)
+
     # -- verbs ---------------------------------------------------------------
 
     def do_OPTIONS(self):
@@ -10979,6 +11371,16 @@ class Handler(BaseHTTPRequestHandler):
                 html = (render_pin_page(pin) if pin
                         else render_pair_page(self._current_token(), self.port))
                 self._send_html(200, html, started)
+                return
+
+            if path == "/update":
+                # LOCALHOST-ONLY, same two gates as /pair. This page is meant for
+                # the screen physically attached to the box; nothing on the LAN
+                # has any business rendering it.
+                if not self._is_loopback() or not self._host_header_is_local():
+                    self._send(403, {"error": "forbidden"}, started)
+                    return
+                self._send_html(200, render_update_page(), started)
                 return
 
             if path == "/api/pair/status":
@@ -11013,6 +11415,19 @@ class Handler(BaseHTTPRequestHandler):
 
             if not path.startswith("/api/"):
                 self._send(404, {"error": "not found"}, started)
+                return
+
+            if path.startswith("/api/steam/") and path.endswith("/cover"):
+                # Handled BEFORE the shared auth gate because it accepts an
+                # additional ?token= form -- see _authorized_image for why
+                # (Android's image loader drops source.headers). It is still
+                # AUTHENTICATED, just by a check that tolerates that: an
+                # unauthorised request gets the same 401 as everything else.
+                if not self._authorized_image(parsed):
+                    self._send(401, {"error": "unauthorized"}, started)
+                    return
+                appid = path[len("/api/steam/"):-len("/cover")]
+                self._handle_steam_cover(appid, started)
                 return
 
             if not self._authorized():
@@ -11059,6 +11474,13 @@ class Handler(BaseHTTPRequestHandler):
                 # 404 -> the app hides the section (probe-and-appear via 404->null).
                 downloads = mock_downloads() if self.mock else steam_downloads()
                 self._send(200, {"downloads": downloads}, started)
+            elif path == "/api/update/log":
+                # The installer transcript, so the app can show what the box is
+                # actually doing instead of a canned "this can take a minute".
+                # MUST live AFTER the auth gate: the log carries hostnames and
+                # paths, and /api/ping is the only deliberately pre-auth route.
+                # Reads a CONSTANT path -- no client input selects a file.
+                self._send(200, {"lines": read_update_log()}, started)
             elif path == "/api/update/check":
                 # Box-side update check (agent >= 2.9.5). The app reads this over
                 # the LAN so the app never touches the internet; the box (already
@@ -11070,9 +11492,6 @@ class Handler(BaseHTTPRequestHandler):
                 # reflects the box-side toggle without waiting out the TTL.
                 data = dict(data, apply_enabled=bool(ALLOW_APP_UPDATE))
                 self._send(200, data, started)
-            elif path.startswith("/api/steam/") and path.endswith("/cover"):
-                appid = path[len("/api/steam/"):-len("/cover")]
-                self._handle_steam_cover(appid, started)
             elif path == "/api/tv":
                 # Probe-and-appear: 404 when no TV backend so the app shows no
                 # TV strip; a body only when a backend is live.
@@ -11391,6 +11810,19 @@ class Handler(BaseHTTPRequestHandler):
             # allowlist — Steam would silently open its DEFAULT page for an
             # unknown slug, so forwarding one would look like success while
             # landing somewhere else entirely.
+            if path == "/api/game/stop":
+                # Deliberately takes NO BODY. The agent resolves what is running
+                # itself; a client that cannot name a process cannot be steered
+                # into killing one. Any body sent is ignored rather than parsed.
+                if self.mock:
+                    self._send(200, {"stopped": True,
+                                     "game": {"appid": 1091500,
+                                              "label": "Cyberpunk 2077"}}, started)
+                    return
+                res = stop_running_game()
+                self._send(200 if res.get("stopped") else 409, res, started)
+                return
+
             if path == "/api/steam/goto":
                 # Navigate the Steam UI to one allowlisted destination. Exists so
                 # the app's search button has a KNOWN starting screen before it
@@ -11463,7 +11895,13 @@ class Handler(BaseHTTPRequestHandler):
                                      "(enable with: couchside allow-updates on)"},
                                started)
                     return
-                result = ({"started": True, "log": "/tmp/couchside-update.log"}
+                if not self.mock:
+                    # Put the progress page on the box's own screen FIRST, so it
+                    # is loaded in the browser before this agent restarts out
+                    # from under it. Best-effort: an update must never fail
+                    # because a browser would not open.
+                    update_show_on_box(self.port)
+                result = ({"started": True, "log": UPDATE_LOG}
                           if self.mock else update_apply())
                 self._send(200, result, started)
                 return

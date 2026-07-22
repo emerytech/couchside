@@ -32,6 +32,7 @@ sys.modules["couchsided"] = cs
 _spec.loader.exec_module(cs)
 
 FAILURES = []
+MB = 1024 ** 2
 GB = 1024 ** 3
 
 
@@ -44,10 +45,13 @@ def check(name, got, want):
 
 
 class _Usage:
-    def __init__(self, total, used):
+    def __init__(self, total, used, free=None):
         self.total = total
         self.used = used
-        self.free = total - used
+        # free defaults to "everything not used", but REAL filesystems reserve
+        # blocks an unprivileged user can never touch, so free < total - used.
+        # That gap is the whole subject of test_percent_excludes_reserved.
+        self.free = total - used if free is None else free
 
 
 class _Statvfs:
@@ -76,8 +80,10 @@ def _run(layout):
     def fake_usage(path):
         if path not in layout:
             raise OSError("no such mount: %s" % path)
-        total, used, _dev, _ro = layout[path]
-        return _Usage(total, used)
+        entry = layout[path]
+        total, used, _dev, _ro = entry[:4]
+        free = entry[4] if len(entry) > 4 else None
+        return _Usage(total, used, free)
 
     real = (os.stat, os.statvfs, shutil.disk_usage)
     os.stat, os.statvfs, shutil.disk_usage = fake_stat, fake_statvfs, fake_usage
@@ -98,6 +104,78 @@ def test_steamos_shape():
     check("and it is /home, not /", disks[0]["mount"] if disks else None, "/home")
     check("size is the real one", disks[0]["total_gb"] if disks else None, 512.0)
     check("not the alarming 69%", disks[0]["pct"] if disks else None, 20)
+
+
+def test_percent_excludes_reserved():
+    """Percent full must be used/(used+free), NOT used/total.
+
+    VERBATIM from a Legion Go S, 2026-07-22: /home is 1812 GB with 1653.8 GB
+    used and only 66.1 GB available -- 92 GB is root-reserved. Dividing by total
+    reported 91% while df said 97%. A storage warning that reads LOW exactly
+    when the disk is nearly full is worse than no warning, which is why this is
+    asserted rather than left to the obvious-looking arithmetic.
+    """
+    print("test_percent_excludes_reserved")
+    disks = _run({
+        "/home": (1812 * GB, 1654 * GB, 2, False, 66 * GB),
+    })
+    got = {d["mount"]: d["pct"] for d in disks}
+    check("/home is 97%, not 91%", got.get("/home"), 97)
+
+
+def test_percent_rounds_up_like_df():
+    """df rounds up; so do we. This number drives a warning colour and the
+    conservative direction is the honest one for 'how full am I'."""
+    print("test_percent_rounds_up_like_df")
+    disks = _run({
+        # 80.4% by exact arithmetic -> must present as 81, not 80.
+        "/": (5 * GB, 3500 * MB, 1, False, 850 * MB),
+    })
+    check("80.4% presents as 81", disks[0]["pct"], 81)
+
+
+def test_percent_never_exceeds_100():
+    """A full filesystem must not render 101% on a bar clamped to 100."""
+    print("test_percent_never_exceeds_100")
+    disks = _run({"/": (5 * GB, 5 * GB, 1, False, 0)})
+    check("clamped", disks[0]["pct"], 100)
+
+
+def test_steam_library_drive_is_included():
+    """A Deck's SD card holds the games and was invisible: _DISK_MOUNTS is a
+    fixed list. Library drives come from Steam's OWN library list rather than
+    globbing /run/media, so a box with no Steam gets nothing extra."""
+    print("test_steam_library_drive_is_included")
+    old_root, old_libs = cs._steam_root, cs._steam_libraries_cached
+    cs._steam_root = lambda: "/home/deck/.steam/steam"
+    cs._steam_libraries_cached = lambda root: [
+        "/home/deck/.steam/steam/steamapps",
+        "/run/media/deck/SD1T5/steamapps",
+    ]
+    try:
+        disks = _run({
+            "/home": (512 * GB, 100 * GB, 2, False),
+            "/home/deck/.steam/steam": (512 * GB, 100 * GB, 2, False),   # same dev as /home
+            "/run/media/deck/SD1T5": (1400 * GB, 10 * GB, 9, False),
+        })
+        mounts = [d["mount"] for d in disks]
+        check("SD card listed", "/run/media/deck/SD1T5" in mounts, True)
+        check("library on the same device as /home is not duplicated",
+              mounts.count("/home"), 1)
+        check("no duplicate device entries", len(mounts), len(set(mounts)))
+    finally:
+        cs._steam_root, cs._steam_libraries_cached = old_root, old_libs
+
+
+def test_no_steam_adds_nothing():
+    """A box without Steam must not gain phantom drives."""
+    print("test_no_steam_adds_nothing")
+    old_root = cs._steam_root
+    cs._steam_root = lambda: None
+    try:
+        check("no library mounts", cs._steam_library_mounts(), [])
+    finally:
+        cs._steam_root = old_root
 
 
 def test_read_only_root_is_hidden():
@@ -150,6 +228,11 @@ def test_missing_mount_is_not_fatal():
 
 if __name__ == "__main__":
     for fn in (test_steamos_shape,
+               test_percent_excludes_reserved,
+               test_percent_rounds_up_like_df,
+               test_percent_never_exceeds_100,
+               test_steam_library_drive_is_included,
+               test_no_steam_adds_nothing,
                test_read_only_root_is_hidden,
                test_same_device_reported_once,
                test_distinct_devices_all_reported,

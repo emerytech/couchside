@@ -228,7 +228,21 @@ export type Status = {
   uptime_s: number;
   load: [number, number, number];
   cpu_temp_c: number | null;
-  mem: { total_mb: number; used_mb: number; available_mb: number };
+  mem: {
+    total_mb: number;
+    used_mb: number;
+    available_mb: number;
+    /** Swap in use (agent >= 2.9.43); absent when the box has no swap. */
+    swap_total_mb?: number;
+    swap_used_mb?: number;
+    /** Linux PSI memory pressure (agent >= 2.9.43): the share of time work was
+     *  STALLED waiting on memory, which is what you actually feel — a used
+     *  percentage says how much is spoken for, not whether anything hurts.
+     *  `some` = at least one task stalled, `full` = everything stalled.
+     *  ABSENT (not zero) on kernels without CONFIG_PSI: "no pressure" and
+     *  "cannot tell" must not render the same. */
+    pressure?: { some10?: number; some60?: number; full10?: number; full60?: number };
+  };
   disks: DiskInfo[];
   /** Network facts for the power/Wake-on-LAN path (agent >= 2.6). */
   net?: NetInfo;
@@ -251,6 +265,21 @@ export type Status = {
     status: string;
     on_ac?: boolean;
     minutes?: number;
+    /** Instantaneous power flow in watts (agent >= 2.9.43). The SIGN is
+        `status`, not the number: while charging this is the CHARGE rate, so
+        never label it "discharge" without checking. Absent when the gauge
+        reports nothing — a box drawing 0 W does not exist. */
+    watts?: number;
+    /** Minutes until the battery is FULL, while charging (agent >= 2.9.43).
+        Deliberately separate from `minutes`, which means "runtime left on
+        battery" — folding them together would make an older app report
+        "42m left" while the box is plugged in and filling up. */
+    minutes_to_full?: number;
+    /** ACPI platform profile, verbatim (agent >= 2.9.43). NOT guaranteed to be
+        one of the usual low-power/balanced/performance values: a Legion Go S
+        reported "custom" because Steam's TDP control set one. Render whatever
+        arrives; do not switch on a fixed set. */
+    profile?: string;
   };
 };
 
@@ -389,8 +418,25 @@ export type Gaming = {
     temp_c?: number;
     vram_used_mb?: number;
     vram_total_mb?: number;
+    /** System memory the GPU may use (agent >= 2.9.43). On an APU this is the
+     *  number that matters: a Legion Go S carves out 512 MB of "VRAM" that sits
+     *  at 89% while 15.3 GB of GTT is barely touched, so VRAM alone made a 32 GB
+     *  handheld look like a full 0.5 GB graphics card. */
+    gtt_used_mb?: number;
+    gtt_total_mb?: number;
+    /** How hard the GPU is actually working, 0-100 (agent >= 2.9.43). A memory
+     *  bar says what is allocated, not whether anything is happening. */
+    busy_pct?: number;
   };
-  game?: { appid: number; label?: string };
+  game?: {
+    appid: number;
+    label?: string;
+    /** Seconds the game has been running (agent >= 2.9.43). From the process
+        start time in /proc, compared against uptime rather than wall time, so a
+        clock change cannot make it look like the game started tomorrow. */
+    running_s?: number;
+    pid?: number;
+  };
   output?: { name: string; internal: boolean };
   controllers?: {
     uniq: string;
@@ -1242,6 +1288,36 @@ export const api = {
    * Resolves false on an older agent (404) rather than throwing, so the caller
    * can skip the key walk instead of blindly sending arrows.
    */
+  /**
+   * Tail of the box-side installer transcript (agent >= 2.9.43).
+   *
+   * The installer has always written this file; nothing read it, so the app sat
+   * on a canned "this can take a minute" while the box knew exactly which step
+   * it was on. Resolves [] on an older agent (404) or while the box is
+   * restarting mid-update — both are expected, not errors.
+   */
+  updateLog(settings: ConnSettings): Promise<string[]> {
+    return request<{ lines: string[] }>(settings, '/api/update/log')
+      .then((r) => (Array.isArray(r?.lines) ? r.lines : []))
+      .catch(() => []);
+  },
+
+  /**
+   * Ask the running game to close (agent >= 2.9.43).
+   *
+   * Sends NO body on purpose: the agent resolves what is running itself. The
+   * app cannot name a process, which is what stops this from being a remote
+   * kill-anything primitive. Do not "helpfully" start passing the appid.
+   *
+   * Resolves false on 409 (nothing running) or on an older agent, so the caller
+   * can just refresh rather than treat it as an error.
+   */
+  stopGame(settings: ConnSettings): Promise<boolean> {
+    return request<{ stopped: boolean }>(settings, '/api/game/stop', { method: 'POST' })
+      .then((r) => !!r?.stopped)
+      .catch(() => false);
+  },
+
   steamGoto(settings: ConnSettings, id: 'home'): Promise<boolean> {
     return request<{ ok: boolean }>(settings, '/api/steam/goto', {
       method: 'POST',
@@ -1342,8 +1418,22 @@ export const api = {
    */
   steamCoverSource(settings: ConnSettings, appid: number): ImageSource {
     const host = resolveEffectiveHost(settings);
+    // The token goes in BOTH the header and the query, on purpose.
+    //
+    // MEASURED, not assumed: React Native's <Image> accepts source.headers, and
+    // on Android they are DROPPED before the request leaves the phone.
+    // Instrumenting the agent showed every cover request arriving as
+    // `auth_header='' len=0  ua='okhttp/4.9.2'`, so cover art was blank on every
+    // Android device while iOS was fine.
+    //
+    // The header stays because it is the better mechanism where it works. The
+    // query is the fallback the image loader cannot strip. The agent's access
+    // log already replaces any query string with "?<redacted>", so the token
+    // does not reach the journal. Needs agent >= 2.9.43 for the query form;
+    // older agents still honour the header, so iOS is unaffected either way.
+    const qs = `?token=${encodeURIComponent(settings.token)}`;
     return {
-      uri: `${baseUrl({ host, port: settings.port })}/api/steam/${appid}/cover`,
+      uri: `${baseUrl({ host, port: settings.port })}/api/steam/${appid}/cover${qs}`,
       headers: { Authorization: `Bearer ${settings.token}` },
     };
   },

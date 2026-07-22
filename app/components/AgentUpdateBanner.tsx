@@ -21,6 +21,27 @@ import type { Palette } from '@/lib/theme';
 
 const POLL_MS = 30 * 60 * 1000; // twice an hour; the box caches for ~6h anyway
 
+/**
+ * Pick the most recent line worth showing from the installer transcript.
+ *
+ * This is raw shell output, so most of it is noise a person on a couch cannot
+ * act on — curl progress meters, blank lines, `+ set -x` traces. Showing the
+ * literal last line would usually show garbage. install.sh marks its real steps
+ * with "==>", so prefer those and fall back to the last plain line only when
+ * there are none yet.
+ */
+function lastMeaningful(lines: string[]): string | null {
+  const clean = lines
+    .map((l) => l.replace(/\u001b\[[0-9;]*m/g, '').trim())
+    .filter((l) => l.length > 0 && !/^\++\s/.test(l) && !/^\s*\d+\s+\d+/.test(l));
+  const steps = clean.filter((l) => l.startsWith('==>'));
+  const pick = steps.length ? steps[steps.length - 1] : clean[clean.length - 1];
+  if (!pick) return null;
+  const text = pick.replace(/^==>\s*/, '');
+  // Long paths and URLs blow out a one-line status; keep it glanceable.
+  return text.length > 68 ? text.slice(0, 67) + '…' : text;
+}
+
 export function AgentUpdateBanner() {
   const t = useTheme();
   const styles = useThemedStyles(makeStyles);
@@ -37,6 +58,7 @@ export function AgentUpdateBanner() {
   const [expanded, setExpanded] = useState(false);
   const [dismissed, setDismissed] = useState<string | null>(null);
   const [applying, setApplying] = useState(false);
+  const [step, setStep] = useState<string | null>(null);
   const [msg, setMsg] = useState<string | null>(null);
   const applyingRef = useRef(false);
   // Manual "Check for updates": undefined = not checked yet, else the forced
@@ -67,10 +89,23 @@ export function AgentUpdateBanner() {
       let done = false;
       for (let i = 0; i < 40 && !done; i++) {
         await new Promise((r) => setTimeout(r, 3000));
+        // Show what the box is ACTUALLY doing. The installer writes a
+        // transcript the app never read, so this used to be a canned message
+        // for the whole minute. Best-effort: updateLog resolves [] while the
+        // agent is restarting, and an empty result must not clear a line we
+        // already showed.
+        try {
+          const lines = await api.updateLog(settings);
+          const last = lastMeaningful(lines);
+          if (last) setStep(last);
+        } catch {
+          // ignore — the progress line is a nicety, never a blocker
+        }
         try {
           const p = await api.ping(settings);
           if (p.version === target) {
             setMsg(`Updated to ${target}. `);
+            setStep(null);
             poll.refresh();
             done = true;
           }
@@ -84,6 +119,7 @@ export function AgentUpdateBanner() {
       setMsg(`Couldn't start the update (${detail}). You can run \`couchside update\` on the box.`);
     } finally {
       setApplying(false);
+      setStep(null);
       applyingRef.current = false;
     }
   }, [check?.latest, poll, settings]);
@@ -168,7 +204,13 @@ export function AgentUpdateBanner() {
       ) : null}
 
       {msg ? (
-        <Text style={styles.msg}>{msg}</Text>
+        <>
+          <Text style={styles.msg}>{msg}</Text>
+          {/* What the box is actually doing right now, straight from the
+              installer. Rendered UNDER the headline rather than replacing it,
+              so the reassuring sentence stays put while the detail changes. */}
+          {step ? <Text style={styles.step}>{step}</Text> : null}
+        </>
       ) : check.apply_enabled ? (
         <Pressable
           onPress={() => {
@@ -231,6 +273,9 @@ const makeStyles = (t: Palette) => StyleSheet.create({
   btnPressed: { opacity: 0.85 },
   btnText: { color: '#0b1220', fontSize: 14, fontWeight: '700' },
   msg: { color: t.text, fontSize: 13, lineHeight: 19 },
+  // Quieter and monospaced: this is machine output, and it should read as
+  // detail under the headline rather than competing with it.
+  step: { color: t.textDim, fontSize: 11, lineHeight: 16, fontFamily: mono, marginTop: 3 },
   hint: { color: t.textDim, fontSize: 12, lineHeight: 18 },
   code: { fontFamily: mono, color: t.text },
 });
