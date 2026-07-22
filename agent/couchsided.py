@@ -10085,7 +10085,17 @@ def _make_holder(entry, mock):
     # also inflates _own_pad_count and so hides a real controller from the
     # gaming card. Reuse keeps a handoff ping-pong presenting ONE stable
     # controller to Steam instead of a parade.
-    if entry.get("device") is None:
+    #
+    # KEYBOARD-ONLY sessions (?nopad=1) never get a pad at all. The point is not
+    # to save a few ioctls: creating one makes Steam announce "controller
+    # connected", and disconnecting announces it again — so a phone that
+    # foregrounds and backgrounds spams the TV with notifications, and a game
+    # already running sees a SECOND controller that can steal player 1. A client
+    # that only sends arrows/enter/esc has no use for the pad, so it asks not to
+    # have one. Mouse and keyboard are still created below; only the pad is
+    # skipped, and gamepad frames from such a session are dropped in
+    # _handle_frame rather than lazily creating one behind our back.
+    if not entry.get("nopad") and entry.get("device") is None:
         try:
             entry["device"] = MockGamepad() if mock else UInputGamepad()
         except Exception as e:
@@ -10095,7 +10105,8 @@ def _make_holder(entry, mock):
             return False
     entry["held"] = True
     entry["requested"] = False
-    _wsend_json(entry, {"t": "hello", "dev": entry["device"].name,
+    dev = entry["device"].name if entry.get("device") is not None else "keyboard only"
+    _wsend_json(entry, {"t": "hello", "dev": dev,
                         "text": _text_caps(mock)})
     for slot, factory in (("mouse", MockMouse if mock else UInputMouse),
                           ("keyboard", MockKeyboard if mock else UInputKeyboard)):
@@ -12061,9 +12072,13 @@ class Handler(BaseHTTPRequestHandler):
         # 'ask' = request control from the holder; anything else (incl. old
         # clients that send no param) = grab it, the pre-2.9.2 behavior.
         ask = q.get("handoff", ["takeover"])[0] == "ask"
+        # Keyboard-only client: do not create a virtual pad for this session.
+        # Opt-IN so every existing client keeps its pad; an old app sends no
+        # param and is unaffected. See _make_holder for why it matters.
+        nopad = q.get("nopad", ["0"])[0] == "1"
         entry = {"conn": conn, "device": None, "mouse": None, "keyboard": None,
                  "name": name, "held": False, "requested": False,
-                 "slock": threading.Lock()}
+                 "nopad": nopad, "slock": threading.Lock()}
 
         # ---- decide this session's initial role -------------------------------
         demoted = None      # a holder we bumped (takeover): notify after unlock
@@ -12334,7 +12349,14 @@ class Handler(BaseHTTPRequestHandler):
         target = entry.get(slot)
         if target is None:
             if factory is None:
-                return True  # gamepad device gone (mid-teardown): drop frame
+                # Gamepad frame with no pad. Two ways to get here and BOTH must
+                # drop rather than create: mid-teardown (the pad is gone), and a
+                # keyboard-only session (?nopad=1) that never had one. There is
+                # deliberately no lazy factory for the pad, so a nopad session
+                # cannot be tricked into materialising a controller by sending a
+                # button frame — which would put back the exact Steam
+                # "controller connected" spam it asked to avoid.
+                return True
             try:
                 target = factory()
             except Exception as e:

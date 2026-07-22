@@ -17,6 +17,12 @@
 #   * iOS Local Network permission, and the no-UDP behaviour
 #   * app backgrounding (iPhone Mirroring suspends WS sends)
 #   * safe-area insets, status bar, keyboard avoidance
+#   * ROW OVERFLOW. A <Text> inside a flexDirection:'row' gets CSS
+#     flex-shrink:1 for free on web, so it always wraps; on NATIVE it does not
+#     shrink unless you say flex:1, and a long label shoves its siblings off the
+#     edge. Measured 2026-07-22: the setup-guide link overflowed on Android and
+#     the harness reported ZERO overflow for the same code, before and after the
+#     fix. Row layout has to be checked on a device.
 #   * the purchase flow (expo-iap is a no-op on web by design)
 # A web build that looks perfect says nothing about any of the above.
 set -euo pipefail

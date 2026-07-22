@@ -659,6 +659,7 @@ function SetupBody() {
   const padKeyboardBar = usePref('padKeyboardBar');
   const padHints = usePref('padHints');
   const askToSwitchControl = usePref('askToSwitchControl');
+  const keyboardMode = usePref('keyboardMode');
   const volumeButtons = usePref('volumeButtons');
   const hideOfflineStreamHosts = usePref('hideOfflineStreamHosts');
   const hideStreamFromPc = usePref('hideStreamFromPc');
@@ -899,11 +900,11 @@ function SetupBody() {
                 void Linking.openURL(SETUP_GUIDE_URL);
               }}
               style={({ pressed }) => [styles.emptyLink, pressed && styles.pressed]}>
-              <Ionicons name="hardware-chip-outline" size={15} color={t.blue} />
+              <Ionicons name="hardware-chip-outline" size={15} color={t.blue} style={styles.emptyLinkIcon} />
               <Text style={styles.emptyLinkText}>
                 Haven&apos;t installed the Couchside service? Setup guide
               </Text>
-              <Ionicons name="open-outline" size={13} color={t.blue} />
+              <Ionicons name="open-outline" size={13} color={t.blue} style={styles.emptyLinkIcon} />
             </Pressable>
           </View>
         ) : (
@@ -1351,6 +1352,15 @@ function SetupBody() {
                 }}
               />
               <TogglePref
+                label="Send keys instead of a controller"
+                sub="Steam navigates the same from arrow keys, and the box stops announcing a controller every time you connect — so a game already running can't lose player one to your phone. Swipe and Remote send keys; the Pad screen is hidden. Steam and QAM buttons need a controller, so they're not available. Needs the Couchside service 2.9.39 or newer."
+                value={keyboardMode}
+                onValueChange={(v) => {
+                  void setPref('keyboardMode', v);
+                  hapticSelection();
+                }}
+              />
+              <TogglePref
                 label="Ask before switching control"
                 sub="When another phone joins a box you're controlling, it asks and you tap Pass — instead of taking over instantly. Needs the Couchside service 2.9.2 or newer."
                 value={askToSwitchControl}
@@ -1670,11 +1680,25 @@ const makeStyles = (t: Palette) => StyleSheet.create({
   emptyText: { color: t.textDim, fontSize: 13, lineHeight: 19 },
   emptyLink: {
     flexDirection: 'row',
-    alignItems: 'center',
+    // flex-start, not center: once the label wraps to two lines, centred icons
+    // float in the middle of the block instead of sitting on the first line.
+    alignItems: 'flex-start',
     gap: 6,
     marginTop: 12,
   },
-  emptyLinkText: { color: t.blue, fontSize: 13, fontWeight: '600' },
+  // flex:1 is load-bearing. Without it the Text takes its INTRINSIC width, so a
+  // label wider than the row pushes the trailing ↗ off the edge rather than
+  // wrapping. It fit on iOS and overflowed on Android, which is exactly the
+  // shape of bug that a single-platform check misses.
+  // Aligns the glyphs with the first line of a wrapped label.
+  emptyLinkIcon: { marginTop: 2 },
+  emptyLinkText: {
+    color: t.blue,
+    fontSize: 13,
+    fontWeight: '600',
+    flex: 1,
+    lineHeight: 18,
+  },
   boxCard: {
     backgroundColor: t.card,
     borderColor: t.cardBorder,
