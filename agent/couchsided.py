@@ -44,7 +44,7 @@ except ImportError:  # pragma: no cover
     fcntl = None
 
 APP_NAME = "couchside-agent"
-VERSION = "2.9.37"
+VERSION = "2.9.38"
 UID = os.getuid()
 XDG_RUNTIME_DIR = "/run/user/%d" % UID
 
@@ -1093,6 +1093,113 @@ def usb_wake_devices():
             "writable": os.access(wake_path, os.W_OK),
         })
     return out
+
+
+# ---------------------------------------------------------------------------
+# On-screen-keyboard detection
+#
+# When Steam raises its own keyboard on the TV, the phone should raise ITS
+# keyboard too, so you can type (or paste) instead of thumb-picking letters on
+# a grid with a d-pad.
+#
+# There is no general way to learn that a text field took focus on the box:
+# Wayland exposes no such thing, and gamescope has no client API for it. But
+# "Steam's on-screen keyboard opened" is a different and much narrower question,
+# and Steam writes it in plain text to its own UI log. Reading a Steam log for a
+# signal is established practice here — stream_host_online() already parses
+# Steam's remote-connection log the same way.
+#
+# MEASURED on a live Bazzite box in Game Mode, 2026-07-21:
+#   - Opening the keyboard emits exactly TWO identical lines, every time, across
+#     ten observed events. Hence the dedupe window below.
+#   - NEGATIVE CONTROL: navigating the library, opening a game page and moving
+#     between tabs produced "Trying to change focus to already selected tab",
+#     "updating PluginView", store page loads -- and ZERO keyboard markers. The
+#     signal is specific to the keyboard, not to focus in general.
+#   - Twenty minutes of an idle box produced zero markers.
+#   - Write latency is sub-second: detection timestamps matched Steam's own
+#     stamp within the 1s resolution of the test, twice landing in the same
+#     second. Steam does not buffer this log.
+#
+# This is an UNDOCUMENTED log line and Valve can rename it in any update, so it
+# degrades closed at every step: no log file, no marker, or a renamed marker all
+# mean the feature silently never fires. Nothing else depends on it.
+_OSK_LOG = os.path.expanduser("~/.steam/steam/logs/webhelper_js.txt")
+_OSK_MARKER = "giving focus to keyboard"
+_OSK_POLL_S = 0.25
+# Two lines per open, same second. Anything inside this window is one event.
+_OSK_DEDUPE_S = 1.5
+_OSK_GEN = 0
+_OSK_LOCK = threading.Lock()
+
+
+def osk_available():
+    """True when this box has the Steam UI log to watch. Never raises."""
+    try:
+        return os.path.isfile(_OSK_LOG)
+    except OSError:
+        return False
+
+
+def _osk_notify():
+    """Tell the CURRENT holder its box just raised a keyboard.
+
+    Only the holder: a waiter cannot type, so popping its keyboard would be a
+    lie. Best-effort — _wsend_json never raises."""
+    with GAMEPAD_LOCK:
+        holder = GAMEPAD_HOLDER
+    if holder is not None:
+        _wsend_json(holder, {"t": "osk"})
+
+
+def _osk_watch(gen):
+    """Tail the Steam UI log and fire _osk_notify on each keyboard-open.
+
+    Starts at END of file, so an agent restart never replays a keyboard that
+    opened an hour ago. Handles truncation/rotation by resetting the offset."""
+    try:
+        pos = os.path.getsize(_OSK_LOG)
+    except OSError:
+        return
+    last = 0.0
+    while True:
+        with _OSK_LOCK:
+            if gen != _OSK_GEN:
+                return  # superseded by a newer watcher
+        time.sleep(_OSK_POLL_S)
+        try:
+            size = os.path.getsize(_OSK_LOG)
+            if size < pos:      # rotated or truncated
+                pos = 0
+            if size == pos:
+                continue
+            with open(_OSK_LOG, "r", encoding="utf-8", errors="replace") as f:
+                f.seek(pos)
+                chunk = f.read()
+                pos = f.tell()
+        except OSError:
+            continue            # log vanished mid-read: try again next tick
+        if _OSK_MARKER not in chunk:
+            continue
+        now = time.monotonic()
+        if now - last < _OSK_DEDUPE_S:
+            continue            # the second line of the same open
+        last = now
+        _osk_notify()
+
+
+def osk_arm(mock=False):
+    """(Re)start the OSK watcher. Generation-guarded like the guide watcher, so
+    a restart cannot leave two live watchers both firing."""
+    global _OSK_GEN
+    with _OSK_LOCK:
+        _OSK_GEN += 1
+        gen = _OSK_GEN
+    if mock or not osk_available():
+        return
+    threading.Thread(target=_osk_watch, args=(gen,), daemon=True,
+                     name="osk-watch").start()
+    print("[osk] watching %s" % _OSK_LOG, flush=True)
 
 
 def read_disks():
@@ -12223,6 +12330,7 @@ def main():
     set_power_schedule(args.mock)
     set_screensaver(args.mock)
     set_guide(args.mock)  # arms the guide-hold watcher when opted in
+    osk_arm(args.mock)  # tails Steam's UI log; silent no-op without it
     set_couchmode(args.mock)  # ceremony engine honors --mock
     set_caps(args.mock)  # after the detectors above; snapshots CAPS
     port = args.port if args.port is not None else (CONFIG_PORT or DEFAULT_PORT)

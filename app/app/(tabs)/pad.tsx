@@ -347,6 +347,10 @@ if (typeof globalThis !== 'undefined') {
 const KB_ACCESSORY_ID = 'couchside-kb-accessory';
 
 type KeyboardBarProps = {
+  /** Bumped when the BOX raised its own keyboard; each increment focuses this
+      bar's field so the phone keyboard comes up too. A counter rather than a
+      boolean so two opens in a row both register. */
+  autoOpenSignal?: number;
   onText: (s: string) => void;
   onBackspace: () => void;
   onEnter: () => void;
@@ -367,7 +371,7 @@ type KeyboardBarProps = {
  * while the real keyboard is down (or vice-versa). `open` is mirrored into a ref
  * so callbacks always see the live value without stale closures.
  */
-function KeyboardBar({ onText, onBackspace, onEnter, onSwipeMode }: KeyboardBarProps) {
+function KeyboardBar({ autoOpenSignal, onText, onBackspace, onEnter, onSwipeMode }: KeyboardBarProps) {
   const inputRef = useRef<TextInput>(null);
   const [open, setOpen] = useState(false);
   // Live ref so the once-created swipe responder sees the current callback.
@@ -405,6 +409,22 @@ function KeyboardBar({ onText, onBackspace, onEnter, onSwipeMode }: KeyboardBarP
     // keyboard. The input is always mounted, so the ref is ready here.
     inputRef.current?.focus();
   }, [setOpenSynced]);
+
+  // The BOX raised its keyboard, so raise ours. Skips the first render: the
+  // signal starts at 0 and only a real event increments it, otherwise every
+  // mount would pop the keyboard unprompted.
+  //
+  // NOTE this is the one focus() path NOT inside a touch handler, which iOS can
+  // legitimately refuse (see the comment above). Refusal is a no-op — the bar
+  // simply stays closed — but it is the reason this needs a device check rather
+  // than a harness one.
+  const lastAutoOpen = useRef(autoOpenSignal ?? 0);
+  useEffect(() => {
+    const sig = autoOpenSignal ?? 0;
+    if (sig === lastAutoOpen.current) return;
+    lastAutoOpen.current = sig;
+    if (sig > 0 && !openRef.current) focus();
+  }, [autoOpenSignal, focus]);
 
   // Lift for the floating HIDE pill: measured, not framework-magic. The pill
   // is absolutely positioned inside the SCREEN container, but the keyboard's
@@ -809,6 +829,13 @@ function PadScreen() {
 
     client.onControlRequest((name) => setControlReq(name));
 
+    // Box raised its keyboard -> raise ours, unless the user turned it off.
+    // Read through the ref so flipping the pref takes effect without
+    // re-subscribing (and without tearing down the socket).
+    client.onOsk(() => {
+      if (autoKeyboardRef.current) setOskSignal((n) => n + 1);
+    });
+
     const connect = () => {
       focusedRef.current = true;
       client.connect(settingsRef.current, {
@@ -852,6 +879,7 @@ function PadScreen() {
       client.onStatus(null);
       client.onInputBlocked(null);
       client.onControlRequest(null);
+      client.onOsk(null);
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps -- connection
     // identity only; settingsRef carries the rest without re-running.
@@ -969,6 +997,13 @@ function PadScreen() {
   const showDesktopNav = usePref('padDesktopNav');
   const showWinShortcuts = usePref('padWinShortcuts');
   const showKeyboardBar = usePref('padKeyboardBar');
+  // Auto-raise the phone keyboard when the box raises its own. The counter is
+  // what KeyboardBar watches; the ref lets the (memoised) socket callback read
+  // the current pref without re-subscribing.
+  const autoKeyboard = usePref('autoKeyboard');
+  const autoKeyboardRef = useRef(autoKeyboard);
+  autoKeyboardRef.current = autoKeyboard;
+  const [oskSignal, setOskSignal] = useState(0);
 
   const trig = useCallback(
     (k: TriggerKey) => ({
@@ -1152,6 +1187,7 @@ function PadScreen() {
       onBackspace={kbBackspace}
       onEnter={kbEnter}
       onSwipeMode={cycleMode}
+      autoOpenSignal={oskSignal}
     />
   ) : null;
 
