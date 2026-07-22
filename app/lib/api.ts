@@ -304,6 +304,12 @@ export type Launcher = {
   kind: 'steam' | 'custom';
   /** Steam appid, present for kind "steam": used for library cover art. */
   appid?: number;
+  /** Which SHAPE of cover art the box has locally (agent >= 2.9.41).
+   *  "portrait" = a 600x900 capsule that fills a tile; "header" = a 460x215
+   *  banner that does NOT and needs its own layout. Absent means no local art
+   *  (or an older agent), which renders the text card either way — so an old
+   *  agent behaves exactly as it does today. */
+  art?: 'portrait' | 'header';
 };
 
 /** State of an in-progress Steam operation. Unknown values render as 'updating'. */
@@ -543,6 +549,14 @@ export type GuideController = {
   phys: string;
   name: string;
   readable: boolean;
+  /** Why the pad is unreadable (agent >= 2.9.41); absent when readable, and
+   *  absent on older agents.
+   *  - "masked": the node's mode is 000 — Steam / InputPlumber hid it on
+   *    purpose and presents its own composite device. Re-running install.sh
+   *    CANNOT fix this, so the app must not suggest it.
+   *  - "permission": an ordinary mode this user lacks; that one is
+   *    install-fixable. */
+  reason?: 'masked' | 'permission';
 };
 
 /**
