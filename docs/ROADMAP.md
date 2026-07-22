@@ -44,6 +44,22 @@ Entry fields: `priority` (P0 blocker → P3 nice) · `risk` · `affects` · `dep
 - **Value is narrower than it looks:** the shipped Bluetooth button already reaches Steam's
   own pairing UI, which handles agents and PINs correctly.
 
+### Landscape "laptop mode" — mini QWERTY + trackpad
+- **priority:** P2 · **risk:** low · **affects:** app only · **depends_on:** none
+- Rotating the phone to landscape shows a full soft QWERTY plus a trackpad on one screen,
+  laid out like a laptop, for driving the box's DESKTOP. Portrait is unchanged.
+- Landscape is free real estate: `app.json` is `"orientation": "default"` and no screen
+  uses landscape for anything today, so the rotation is an unused gesture rather than a
+  new control to find.
+- **Distinct from keyboard mode** (arrows/enter/esc instead of a virtual gamepad, agent
+  asked for `?nopad=1`). That one is about NOT creating a controller in Game Mode. This one
+  is about typing and pointing at a desktop. They can ship independently; a later pass can
+  decide whether rotating should also imply no-pad.
+- Both halves already exist as portrait components (`Trackpad`, the keyboard bar) — the work
+  is the landscape layout and the key set, not new input plumbing.
+- **Unverified:** whether the existing surfaces survive a landscape re-layout at all; no
+  screen has ever been rendered rotated.
+
 ### Find the missing Steam settings slugs
 - **priority:** P3 · **risk:** none · **affects:** agent only
 - Notifications, In Game and Remote Play are visible in Steam's sidebar but their slugs are

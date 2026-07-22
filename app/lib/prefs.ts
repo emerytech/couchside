@@ -42,6 +42,21 @@ export type Prefs = {
    *  it only fires at the exact moment a keyboard is already wanted. Agent
    *  >= 2.9.38; older agents never send the frame and this stays inert. */
   autoKeyboard: boolean;
+  /** Drive the swipe/remote surfaces with KEYBOARD keys instead of a virtual
+   *  gamepad.
+   *
+   *  Steam navigates identically from arrow keys, but the pad has a cost the
+   *  keyboard does not: the agent creates a virtual controller on connect, so
+   *  the PC announces "controller connected" every time the app foregrounds,
+   *  and a game already running sees a SECOND controller that can steal player
+   *  one. In keyboard mode the agent is asked not to create a pad at all.
+   *
+   *  Off by default — the pad is what the app has always sent, and the d-pad
+   *  path is better tested. Needs agent >= 2.9.39; older agents ignore the
+   *  request and keep creating a pad, so the app still works, just without the
+   *  benefit. The dedicated PAD screen always sends gamepad frames regardless:
+   *  a gamepad screen with no gamepad would be a lie. */
+  keyboardMode: boolean;
   /** Input mode a newly paired box starts on. */
   defaultPadMode: PadMode;
   /** How often the console/header polls the box for vitals (ms). */
@@ -116,6 +131,7 @@ export const DEFAULTS: Prefs = {
   confirmSuspend: true,
   landingTab: 'index',
   autoKeyboard: true,
+  keyboardMode: false,
   defaultPadMode: 'swipe',
   statusIntervalMs: 5000,
   journalLines: 100,
@@ -205,6 +221,7 @@ function normalize(raw: unknown): Prefs {
       typeof o.confirmSuspend === 'boolean' ? o.confirmSuspend : DEFAULTS.confirmSuspend,
     landingTab,
     autoKeyboard: bool(o.autoKeyboard, DEFAULTS.autoKeyboard),
+    keyboardMode: bool(o.keyboardMode, DEFAULTS.keyboardMode),
     defaultPadMode: padMode,
     statusIntervalMs: num(o.statusIntervalMs, STATUS_INTERVAL_OPTIONS, DEFAULTS.statusIntervalMs),
     journalLines: num(o.journalLines, JOURNAL_LINE_OPTIONS, DEFAULTS.journalLines),

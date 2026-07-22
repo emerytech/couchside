@@ -659,6 +659,7 @@ function SetupBody() {
   const padKeyboardBar = usePref('padKeyboardBar');
   const padHints = usePref('padHints');
   const askToSwitchControl = usePref('askToSwitchControl');
+  const keyboardMode = usePref('keyboardMode');
   const volumeButtons = usePref('volumeButtons');
   const hideOfflineStreamHosts = usePref('hideOfflineStreamHosts');
   const hideStreamFromPc = usePref('hideStreamFromPc');
@@ -1347,6 +1348,15 @@ function SetupBody() {
                 value={padHints}
                 onValueChange={(v) => {
                   void setPref('padHints', v);
+                  hapticSelection();
+                }}
+              />
+              <TogglePref
+                label="Send keys instead of a controller"
+                sub="Steam navigates the same from arrow keys, and the box stops announcing a controller every time you connect — so a game already running can't lose player one to your phone. Swipe and Remote send keys; the Pad screen is hidden. Steam and QAM buttons need a controller, so they're not available. Needs the Couchside service 2.9.39 or newer."
+                value={keyboardMode}
+                onValueChange={(v) => {
+                  void setPref('keyboardMode', v);
                   hapticSelection();
                 }}
               />

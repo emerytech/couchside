@@ -298,6 +298,11 @@ export class GamepadClient {
   private oskListener: (() => void) | null = null;
   /** Ask-to-pass vs grab-control, read from prefs at connect() time. */
   private handoffAsk = true;
+  /** Ask the agent NOT to create a virtual gamepad for this session (agent
+   *  >= 2.9.39). Set when the user has chosen keyboard mode: without it the
+   *  agent creates a pad on connect and Steam announces a controller every
+   *  time the app foregrounds. Older agents ignore the param. */
+  private noPad = false;
   /** This device's label, sent so the holder's prompt can name the requester. */
   private deviceName = 'A device';
 
@@ -436,8 +441,15 @@ export class GamepadClient {
    * StrictMode double-invokes, and repeated focus events can't tear down a
    * healthy socket.
    */
-  connect(conn: Conn, opts?: { handoffAsk?: boolean; deviceName?: string }): void {
+  connect(conn: Conn, opts?: { handoffAsk?: boolean; deviceName?: string; noPad?: boolean }): void {
     if (opts?.handoffAsk != null) this.handoffAsk = opts.handoffAsk;
+    if (opts?.noPad != null && opts.noPad !== this.noPad) {
+      // The flag is read at HANDSHAKE time, so a change only takes effect on a
+      // new socket. Drop the current one so toggling the pref applies now
+      // rather than at the next accidental reconnect.
+      this.noPad = opts.noPad;
+      this.teardownSocket(false);
+    }
     if (opts?.deviceName) this.deviceName = opts.deviceName;
     const same =
       this.conn != null &&
@@ -686,7 +698,8 @@ export class GamepadClient {
     const url =
       `ws://${target}:${port}/ws/gamepad?token=${encodeURIComponent(token)}` +
       `&handoff=${this.handoffAsk ? 'ask' : 'takeover'}` +
-      `&name=${encodeURIComponent(this.deviceName)}`;
+      `&name=${encodeURIComponent(this.deviceName)}` +
+      (this.noPad ? '&nopad=1' : '');
 
     let ws: WebSocket;
     try {

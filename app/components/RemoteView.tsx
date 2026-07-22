@@ -16,7 +16,7 @@ import {
 import { usePoll } from '@/hooks/usePoll';
 import { useTrackpad } from '@/hooks/useTrackpad';
 import { api, hostKey, Status, Tv, TvKey, TvOp } from '@/lib/api';
-import { GamepadClient } from '@/lib/gamepad';
+import { GamepadClient, SpecialKey } from '@/lib/gamepad';
 import { hapticLight, hapticWarning } from '@/lib/haptics';
 import { usePref } from '@/lib/prefs';
 import { Settings } from '@/lib/settings';
@@ -38,6 +38,21 @@ type IoniconName = React.ComponentProps<typeof Ionicons>['name'];
  * menu/home/back/settings/brightness). Without RS-232 only BOX exists and the
  * TV-specific clusters stay hidden — CEC/soft setups keep a clean remote.
  */
+// Gamepad button -> keyboard key, for keyboard mode. Only the entries proven
+// to drive Steam Game Mode are here; a button with no entry is HIDDEN by the
+// caller, never sent as a no-op key.
+const KEYBOARD_EQUIV: Partial<Record<
+  'du' | 'dd' | 'dl' | 'dr' | 'a' | 'b' | 'start' | 'select',
+  SpecialKey
+>> = {
+  du: 'up',
+  dd: 'down',
+  dl: 'left',
+  dr: 'right',
+  a: 'enter',
+  b: 'esc',
+};
+
 export function RemoteView({
   client,
   settings,
@@ -206,13 +221,28 @@ export function RemoteView({
     [settings],
   );
 
+  // Keyboard mode: no virtual pad exists to press, so the same taps go out as
+  // arrow keys. MEASURED on a Bazzite box in Game Mode -- three DOWN taps moved
+  // the selection two rows and stopped at the end of the list, one UP moved it
+  // back, and a Ctrl+9 control moved nothing. Keys are TAPS, not holds, so the
+  // latched-axis bookkeeping the pad needs has no equivalent here.
+  //
+  // start/select are deliberately absent from the map: Steam Game Mode exposes
+  // no keyboard equivalent for them, so they are hidden rather than sent as a
+  // key that does nothing. See PAD_KEY_ONLY below.
+  const keyboardMode = usePref('keyboardMode');
   const padTap = useCallback(
     (k: 'du' | 'dd' | 'dl' | 'dr' | 'a' | 'b' | 'start' | 'select') => {
       hapticLight();
+      if (keyboardMode) {
+        const key = KEYBOARD_EQUIV[k];
+        if (key) client.sendKey(key);
+        return;
+      }
       client.sendButton(k, 1);
       setTimeout(() => client.sendButton(k, 0), 50);
     },
-    [client],
+    [client, keyboardMode],
   );
 
   const steam = useCallback(() => {
@@ -297,6 +327,11 @@ export function RemoteView({
   const navRight = () => (nav === 'tv' ? tvKey('right') : padTap('dr'));
   const navOk = () => (nav === 'tv' ? tvKey('ok') : padTap('a'));
   const navBack = () => (nav === 'tv' ? tvKey('back') : padTap('b'));
+  // In keyboard mode these three have no equivalent, so they go out as silent
+  // no-ops: padTap drops a button with no KEYBOARD_EQUIV, and the agent drops a
+  // gamepad frame on a session that asked for no pad. They stay in the layout
+  // because the nav circle is a fixed geometry -- removing spokes would deform
+  // it -- and because they DO work whenever the target is a TV.
   const navMenu = () => (nav === 'tv' ? tvKey('menu') : padTap('start'));
   const navHome = () => (nav === 'tv' ? tvKey('home') : steam());
   const navSettings = () => (nav === 'tv' ? tvKey('settings') : padTap('select'));
@@ -440,8 +475,17 @@ export function RemoteView({
               tvOp('mute');
             }}
           />
-          <MidBtn icon="logo-steam" label="STEAM" color={t.green} onPress={steam} />
-          <MidBtn icon="ellipsis-horizontal" label="QAM" color={t.amber} onPress={qam} />
+          {/* Both ride the gamepad Guide button, which does not exist in
+              keyboard mode. Ctrl+1 / Ctrl+2 looked like Steam-menu and QAM
+              bindings in one on-box trial and then failed to reproduce from
+              the same state, so nothing replaces them -- a button that works
+              intermittently is worse than a button that is not there. */}
+          {!keyboardMode && (
+            <>
+              <MidBtn icon="logo-steam" label="STEAM" color={t.green} onPress={steam} />
+              <MidBtn icon="ellipsis-horizontal" label="QAM" color={t.amber} onPress={qam} />
+            </>
+          )}
         </View>
         {hasTvKeys ? (
           <Rocker

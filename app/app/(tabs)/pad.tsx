@@ -44,7 +44,7 @@ import type { SteamMenus } from '@/lib/api';
 import { useTrackpad } from '@/hooks/useTrackpad';
 import { useVolumeButtons } from '@/hooks/useVolumeButtons';
 import { api, hostKey, Status } from '@/lib/api';
-import { ButtonKey, DesktopKey, GamepadClient, GamepadStatus, StickKey, SystemChord, TriggerKey } from '@/lib/gamepad';
+import { ButtonKey, DesktopKey, GamepadClient, GamepadStatus, SpecialKey, StickKey, SystemChord, TriggerKey } from '@/lib/gamepad';
 import { PadMode } from '@/lib/settings';
 import { useSettings } from '@/lib/SettingsContext';
 import { mono, useTheme, useThemedStyles } from '@/lib/theme';
@@ -170,6 +170,17 @@ const TAP_SLOP = 12;
 const TAP_MS = 450;
 
 type DpadKey = 'du' | 'dd' | 'dl' | 'dr';
+
+// Keyboard-mode equivalent for the swipe surface. Arrow keys were measured
+// driving Steam Game Mode on a Bazzite box (three DOWN taps moved the selection
+// two rows and stopped at the list end; one UP moved it back; a Ctrl+9 control
+// moved nothing).
+const SWIPE_KEY: Record<DpadKey, SpecialKey> = {
+  du: 'up',
+  dd: 'down',
+  dl: 'left',
+  dr: 'right',
+};
 
 type SwipeSurfaceProps = {
   onStep: (k: DpadKey) => void;
@@ -749,12 +760,20 @@ function PadScreen() {
   // SettingsContext.update() is a silent no-op and the mode toggle looked
   // functional but did nothing. Local fallback keeps it switchable (session-
   // only) until a box exists — then the box's padMode takes over.
+  // Keyboard instead of a virtual gamepad. Steam navigates identically from
+  // arrow keys, and the pad has a cost the keyboard does not -- see the pref's
+  // doc comment in lib/prefs.ts. Read here rather than inside the surfaces so
+  // ONE value drives both the send path and which segments exist.
+  const keyboardMode = usePref('keyboardMode');
   const [localMode, setLocalMode] = useState<PadMode>(getPref('defaultPadMode'));
   // EMPTY_SETTINGS hardcodes padMode:'swipe', so key off "is a box paired"
   // rather than ?? — otherwise the local fallback never engages.
-  const mode: PadMode = settings.host.trim().length > 0
+  const rawMode: PadMode = settings.host.trim().length > 0
     ? settings.padMode ?? 'swipe'
     : localMode;
+  // In keyboard mode the agent is asked NOT to create a pad, so the PAD screen
+  // has nothing to drive. Fall back rather than render sticks that go nowhere.
+  const mode: PadMode = keyboardMode && rawMode === 'gamepad' ? 'swipe' : rawMode;
   const [status, setStatus] = useState<GamepadStatus>('closed');
   const [dev, setDev] = useState<string | null>(null);
   // Non-null when the box is refusing input injection (locked / not the active
@@ -767,6 +786,10 @@ function PadScreen() {
   const askToSwitch = usePref('askToSwitchControl');
   const askToSwitchRef = useRef(askToSwitch);
   askToSwitchRef.current = askToSwitch;
+  // The no-pad decision is made at HANDSHAKE time, so the live value has to be
+  // reachable from the focus effect's connect(), not just from render.
+  const keyboardModeRef = useRef(keyboardMode);
+  keyboardModeRef.current = keyboardMode;
 
   // Hardware volume buttons -> box/TV volume across EVERY input mode (Pad,
   // Swipe, Track, Remote), mounted here on the always-present Pad screen rather
@@ -841,6 +864,7 @@ function PadScreen() {
       client.connect(settingsRef.current, {
         handoffAsk: askToSwitchRef.current,
         deviceName: DEVICE_LABEL,
+        noPad: keyboardModeRef.current,
       });
       if (Platform.OS !== 'web') {
         // Honor the "keep screen awake on Pad" pref; if it was turned off while
@@ -898,6 +922,23 @@ function PadScreen() {
     }
   }, [keepAwakeOn]);
 
+  // Toggling keyboard mode has to RE-HANDSHAKE: whether the agent creates a
+  // virtual pad is decided once, from the connect URL. Without this, turning the
+  // mode on would leave the already-created pad alive until the next reconnect,
+  // and the box would keep reporting a controller the app claims it did not make.
+  // connect() itself notices the changed flag and tears the socket down; this
+  // effect only has to call it.
+  useEffect(() => {
+    if (!ready) return;
+    const st = client.getStatus();
+    if (st !== 'connected' && st !== 'connecting') return;
+    client.connect(settingsRef.current, {
+      handoffAsk: askToSwitchRef.current,
+      deviceName: DEVICE_LABEL,
+      noPad: keyboardMode,
+    });
+  }, [client, ready, keyboardMode]);
+
   // A freshly-learned lastIp should reach the client's stored conn so future
   // reconnects can use it. connect() with an unchanged host/port/token just
   // refreshes the stored conn: it never drops a live socket.
@@ -926,7 +967,11 @@ function PadScreen() {
       if (canForce) client.forceControl();
       else client.requestControl();
     } else if (status !== 'connected') {
-      client.connect(settings, { handoffAsk: askToSwitch, deviceName: DEVICE_LABEL });
+      client.connect(settings, {
+        handoffAsk: askToSwitch,
+        deviceName: DEVICE_LABEL,
+        noPad: keyboardMode,
+      });
     }
   }, [client, settings, status, canForce, askToSwitch]);
 
@@ -982,8 +1027,11 @@ function PadScreen() {
   // The segments this box actually has. Mode cycling walks THIS list, not
   // MODES, so a swipe can never land on a segment that isn't rendered.
   const modes = useMemo(
-    () => MODES.filter((m) => m.key !== 'menus' || (hasSteamMenus && inGameMode)),
-    [hasSteamMenus, inGameMode],
+    () => MODES.filter(
+      (m) => (m.key !== 'menus' || (hasSteamMenus && inGameMode))
+        && (m.key !== 'gamepad' || !keyboardMode),
+    ),
+    [hasSteamMenus, inGameMode, keyboardMode],
   );
   const desk = useCallback(
     (name: DesktopKey | 'esc') => () =>
@@ -1093,6 +1141,7 @@ function PadScreen() {
     timer: null,
   });
   const dpadRelease = useCallback(() => {
+    if (keyboardMode) return;   // nothing was ever held down
     const h = dpadHeld.current;
     if (h.timer) {
       clearTimeout(h.timer);
@@ -1102,9 +1151,16 @@ function PadScreen() {
       client.sendButton(h.key, 0);
       h.key = null;
     }
-  }, [client]);
+  }, [client, keyboardMode]);
   const dpadStep = useCallback(
     (k: DpadKey) => {
+      // Keyboard mode: one arrow-key TAP per step. Steam moves one row per tap,
+      // so there is nothing to latch and nothing to release -- which also
+      // removes this surface's whole class of stuck-direction bugs.
+      if (keyboardMode) {
+        client.sendKey(SWIPE_KEY[k]);
+        return;
+      }
       const h = dpadHeld.current;
       if (h.timer) clearTimeout(h.timer);
       if (h.key !== k) {
@@ -1125,13 +1181,17 @@ function PadScreen() {
         }
       }, 250);
     },
-    [client],
+    [client, keyboardMode],
   );
   const selectTap = useCallback(() => {
     haptic();
+    if (keyboardMode) {
+      client.sendKey('enter');
+      return;
+    }
     client.sendButton('a', 1);
     setTimeout(() => client.sendButton('a', 0), 50);
-  }, [client]);
+  }, [client, keyboardMode]);
 
   // Trackpad handlers (protocol v2 mouse).
   // Drags emit a subtle "texture" tick per TP_HAPTIC_PX of pointer travel,
@@ -1294,27 +1354,37 @@ function PadScreen() {
           <View style={styles.swipeBtnRow}>
             <PadButton
               label="‹ BACK"
-              {...btn('b')}
+              {...(keyboardMode
+                ? { onDown: () => client.sendKey('esc'), onUp: NOOP }
+                : btn('b'))}
               style={styles.swipeBtn}
               color={t.red}
               fontSize={12}
             />
-            <PadButton
-              label="STEAM"
-              {...btn('guide')}
-              style={[styles.swipeBtn, styles.guideBtn]}
-              color={t.blue}
-              fontSize={12}
-            />
-            <PadButton
-              label="⋯"
-              onDown={qam}
-              onUp={NOOP}
-              style={[styles.swipeBtn, styles.guideBtn]}
-              color={t.blue}
-              fontSize={26}
-            />
-            <PadButton label="MENU" {...btn('start')} style={styles.swipeBtn} fontSize={12} />
+            {/* STEAM, QAM and MENU all ride gamepad buttons. Steam Game Mode
+                exposes no keyboard equivalent for any of them -- Ctrl+1/Ctrl+2
+                fired once on the box and then failed to reproduce -- so in
+                keyboard mode they are removed rather than left to do nothing. */}
+            {!keyboardMode && (
+              <>
+                <PadButton
+                  label="STEAM"
+                  {...btn('guide')}
+                  style={[styles.swipeBtn, styles.guideBtn]}
+                  color={t.blue}
+                  fontSize={12}
+                />
+                <PadButton
+                  label="⋯"
+                  onDown={qam}
+                  onUp={NOOP}
+                  style={[styles.swipeBtn, styles.guideBtn]}
+                  color={t.blue}
+                  fontSize={26}
+                />
+                <PadButton label="MENU" {...btn('start')} style={styles.swipeBtn} fontSize={12} />
+              </>
+            )}
           </View>
           {keyboardBar}
         </>
