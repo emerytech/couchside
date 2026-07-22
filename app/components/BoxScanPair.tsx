@@ -40,14 +40,28 @@ export function BoxScanPair() {
       const boxes = await scanForBoxes({ timeoutMs: 3000 });
       setPhase({ k: 'list', boxes });
       if (boxes.length === 0) {
-        // Show which subnet was swept — if this isn't the boxes' subnet (e.g. a
-        // VPN skewed the phone's IP), that's why nothing was found.
+        // Say WHY, not just WHAT. The scan can only sweep this device's own
+        // /24, so a box on a different subnet is invisible to it however
+        // healthy the network is.
+        //
+        // HIT LIVE 2026-07-22 on two devices: an iPad on 10.7.1.170/24 and a
+        // phone on 10.7.1.224/24 both reported "not found" while the box sat on
+        // 10.7.0.64 — routing between them worked fine and mDNS resolved. The
+        // old copy named the swept range but never said a different range was
+        // even possible, so it read as "your network is broken" when nothing
+        // was. Mesh routers and guest VLANs make this ordinary, not exotic.
         const ip = await selfIp();
+        const subnet = ip ? ip.replace(/\.\d+$/, '.x') : null;
         setMsg({
           ok: false,
-          text: ip
-            ? `No boxes found (scanned ${ip}/24). Check the same Wi-Fi, turn off any VPN, or add one by IP below.`
-            : 'No boxes found — check the same Wi-Fi, or add one by IP below.',
+          text: subnet
+            ? `No boxes found on ${subnet} — scanning only covers this device's own network. ` +
+              `If your box is on a different one (a guest network, or a second band on a mesh ` +
+              `router) it won't show up here. Pair from an already-paired phone with Show QR, ` +
+              `or add it by IP below.`
+            : "No boxes found. Scanning only covers this device's own network — if your box is " +
+              'on a different one, pair with Show QR from an already-paired phone, or add it by ' +
+              'IP below.',
         });
       }
     } catch {
