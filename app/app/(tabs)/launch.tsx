@@ -40,6 +40,7 @@ import { hapticError, hapticLight, hapticMedium, hapticSelection, hapticSuccess 
 import { setPref, usePref } from '@/lib/prefs';
 import { useSettings } from '@/lib/SettingsContext';
 import { mono, useTheme, useThemedStyles, type Palette } from '@/lib/theme';
+import { NowPlayingCard } from '@/components/GamingCard';
 
 /** Cross-platform confirm (Alert buttons are no-ops on web). */
 function confirmDelete(label: string, onConfirm: () => void) {
@@ -748,6 +749,12 @@ function LaunchScreen() {
             tintColor={t.textDim}
           />
         }>
+        {/* What's playing, ABOVE downloads: if a game is running it is the most
+            urgent thing on this screen, and the reason you opened the tab was
+            probably to do something about it. Also stays on the Console tab --
+            seeing what is running belongs in both places. */}
+        <NowPlayingCard />
+
         {/* Active Steam downloads (hidden when none / agent < 2.8) */}
         <DownloadsSection downloads={downloads} />
 
