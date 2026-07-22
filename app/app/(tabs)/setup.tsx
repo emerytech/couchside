@@ -646,6 +646,7 @@ function SetupBody() {
   const confirmSuspend = usePref('confirmSuspend');
   const defaultPadMode = usePref('defaultPadMode');
   const landingTab = usePref('landingTab');
+  const autoKeyboard = usePref('autoKeyboard');
   const statusIntervalMs = usePref('statusIntervalMs');
   const journalLines = usePref('journalLines');
   const swipeSensitivity = usePref('swipeSensitivity');
@@ -1355,6 +1356,15 @@ function SetupBody() {
                 value={askToSwitchControl}
                 onValueChange={(v) => {
                   void setPref('askToSwitchControl', v);
+                  hapticSelection();
+                }}
+              />
+              <TogglePref
+                label="Open keyboard with the box"
+                sub="When the box raises its own on-screen keyboard, raise this phone's too — so you can type or paste instead of picking letters with a d-pad. Needs a recent Couchside service."
+                value={autoKeyboard}
+                onValueChange={(v) => {
+                  void setPref('autoKeyboard', v);
                   hapticSelection();
                 }}
               />

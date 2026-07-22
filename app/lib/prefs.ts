@@ -34,6 +34,14 @@ export type Prefs = {
    *  would move every existing user's landing screen, so it stays on the
    *  observed behaviour and the choice becomes theirs. */
   landingTab: LandingTab;
+  /** Raise the phone's keyboard when the BOX raises its own.
+   *
+   *  Steam's on-screen keyboard is a letter grid you drive with a d-pad. When
+   *  it opens, you almost always want to type on the phone instead — so the
+   *  agent reports the event and the app focuses its compose field. Default ON:
+   *  it only fires at the exact moment a keyboard is already wanted. Agent
+   *  >= 2.9.38; older agents never send the frame and this stays inert. */
+  autoKeyboard: boolean;
   /** Input mode a newly paired box starts on. */
   defaultPadMode: PadMode;
   /** How often the console/header polls the box for vitals (ms). */
@@ -107,6 +115,7 @@ export type Prefs = {
 export const DEFAULTS: Prefs = {
   confirmSuspend: true,
   landingTab: 'index',
+  autoKeyboard: true,
   defaultPadMode: 'swipe',
   statusIntervalMs: 5000,
   journalLines: 100,
@@ -195,6 +204,7 @@ function normalize(raw: unknown): Prefs {
     confirmSuspend:
       typeof o.confirmSuspend === 'boolean' ? o.confirmSuspend : DEFAULTS.confirmSuspend,
     landingTab,
+    autoKeyboard: bool(o.autoKeyboard, DEFAULTS.autoKeyboard),
     defaultPadMode: padMode,
     statusIntervalMs: num(o.statusIntervalMs, STATUS_INTERVAL_OPTIONS, DEFAULTS.statusIntervalMs),
     journalLines: num(o.journalLines, JOURNAL_LINE_OPTIONS, DEFAULTS.journalLines),

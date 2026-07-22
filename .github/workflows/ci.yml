@@ -94,6 +94,17 @@ jobs:
       - name: Unit tests (usb wake)
         run: python3 tests/test_usb_wake.py
 
+      # On-screen-keyboard detection: when Steam raises its keyboard on the TV,
+      # the phone raises its own. There is no general text-field-focus signal on
+      # this platform, so the agent reads Steam's own UI log -- the same trick
+      # stream_host_online() uses. Measured on a live Bazzite box: each open
+      # emits exactly TWO lines (hence dedupe), and the NEGATIVE CONTROL matters
+      # most -- navigating the library/tabs/store produced zero markers, which is
+      # what makes the signal keyboard-specific rather than focus-in-general.
+      # The marker is undocumented, so every path degrades closed.
+      - name: Unit tests (osk watch)
+        run: python3 tests/test_osk_watch.py
+
       # The desktop switch must honour the box's CONFIGURED session. SteamOS
       # ships both, and steamos-session-select maps the bare "plasma" arg to the
       # X11 one -- so passing it silently downgraded a Wayland-configured box to

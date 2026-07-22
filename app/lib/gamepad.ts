@@ -294,6 +294,8 @@ export class GamepadClient {
   // Pass/Keep. controlRequest holds the pending requester name (or null).
   private controlRequest: string | null = null;
   private controlReqListener: ((name: string | null) => void) | null = null;
+  /** Fires when the BOX raised its on-screen keyboard (agent >= 2.9.38). */
+  private oskListener: (() => void) | null = null;
   /** Ask-to-pass vs grab-control, read from prefs at connect() time. */
   private handoffAsk = true;
   /** This device's label, sent so the holder's prompt can name the requester. */
@@ -362,6 +364,17 @@ export class GamepadClient {
     if (this.controlRequest === name) return;
     this.controlRequest = name;
     if (this.controlReqListener) this.controlReqListener(name);
+  }
+
+  /**
+   * Register the on-screen-keyboard listener (agent >= 2.9.38).
+   *
+   * Fires when the BOX raised its own keyboard, so the phone can raise its
+   * keyboard and let you type or paste instead of thumb-picking letters on a
+   * grid. An older agent simply never sends the frame, so this stays inert.
+   */
+  onOsk(fn: (() => void) | null): void {
+    this.oskListener = fn;
   }
 
   /** Holder taps "Pass control": hand off to the waiting device. */
@@ -761,6 +774,10 @@ export class GamepadClient {
         this.dev = typeof msg.holder === 'string' ? msg.holder : null;
         this.setStatus('waiting', this.dev);
         this.startPing();
+      } else if (msg.t === 'osk') {
+        // The box raised its keyboard. Purely advisory — nothing breaks if the
+        // app ignores it, and an older agent never sends it.
+        if (this.oskListener) this.oskListener();
       } else if (msg.t === 'control_request') {
         // We HOLD control and another device wants it — prompt Pass/Keep.
         this.setControlRequest(typeof msg.name === 'string' ? msg.name : 'A device');
