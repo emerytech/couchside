@@ -1,7 +1,8 @@
-New in 2.9.19
+New in 2.9.20
 
-• Fixed the connection dropping while the phone sat idle.
-• Paste from your phone into a text box on the box, with a new PASTE button.
-• When the box opens its on-screen keyboard, your phone's keyboard opens too.
-• The Steam tab can now be swiped out of like every other one.
-• Quieter Actions list, and Couch Mode no longer narrates every step.
+• Games showing a blank card now show their poster art — it was already on your box.
+• Handhelds report their own battery, with time remaining.
+• Fixed the hide-keyboard button being covered by the text field.
+• Fixed the setup guide link running off the edge on Android.
+• New option: send keys instead of creating a virtual controller, so a running game keeps player one.
+• Your box's IP now shows under uptime.
