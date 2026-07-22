@@ -3,8 +3,14 @@
 The text under each version heading becomes that GitHub release's body, which
 is what the app shows as **"What's new"** on the *Box update available* card.
 
-`scripts/release-agent.sh` extracts the section matching the tag it is given and
-**refuses to publish** if there is no matching section. That is deliberate:
+`scripts/release-agent.sh` extracts the section matching the AGENT version in
+`couchsided.py` — not the tag, which is an app version — and **refuses to
+publish** if there is no matching section.
+
+Only the newest section is published. Boxes routinely skip several agent
+versions between updates (2.9.38 straight to 2.9.41 here), so when a release
+bundles more than one version, the top section must describe **everything a
+user is getting**, not just the last change. That is deliberate:
 before this file existed, the script wrote one hardcoded sentence — and only
 when it had to *create* a release — so every agent release for months told users
 the same thing regardless of what actually changed.
@@ -14,9 +20,16 @@ deciding whether to press "Update now" on a machine across the room.
 
 ## 2.9.41
 
-Games missing their poster art now show the banner artwork the box already has,
-instead of a blank card. Nothing is downloaded — it was on your machine the
-whole time.
+Poster art now appears for games that were showing a blank card. Recent Steam
+files its artwork somewhere the box was not looking, so it was on your machine
+the whole time — nothing is downloaded.
+
+Handhelds report their own battery: charge, whether you are on AC, and how long
+is left.
+
+New "Send keys instead of a controller" option in the app. Steam navigates the
+same way, but the box stops announcing a controller every time you connect — so
+a game already running cannot lose player one to your phone.
 
 ## 2.9.40
 
