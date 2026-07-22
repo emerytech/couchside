@@ -559,10 +559,14 @@ function PrefFilterable({
   sub?: string;
   children: React.ReactNode;
 }) {
+  const styles = useThemedStyles(makeStyles);
   const { q, hit } = useContext(PrefFilterCtx);
   if (!prefMatches(q, label, sub)) return null;
   hit();
-  return <>{children}</>;
+  // Fragment when not filtering, so the normal layout is untouched; a spacing
+  // host when filtering, because a fragment cannot carry a margin.
+  if (!q) return <>{children}</>;
+  return <View style={styles.prefHit}>{children}</View>;
 }
 
 export function TogglePref({
@@ -582,7 +586,7 @@ export function TogglePref({
   if (!prefMatches(q, label, sub)) return null;
   hit();
   return (
-    <View style={styles.prefRow}>
+    <View style={[styles.prefRow, q ? styles.prefHit : null]}>
       <View style={styles.prefBody}>
         <Text style={styles.prefLabel}>{label}</Text>
         <Text style={styles.prefSub}>{sub}</Text>
@@ -617,7 +621,7 @@ export function SegPref<T extends string | number>({
   if (!prefMatches(q, label, sub)) return null;
   hit();
   return (
-    <View style={styles.prefCol}>
+    <View style={[styles.prefCol, q ? styles.prefHit : null]}>
       <View style={styles.prefBody}>
         <Text style={styles.prefLabel}>{label}</Text>
         <Text style={styles.prefSub}>{sub}</Text>
@@ -1851,7 +1855,15 @@ const makeStyles = (t: Palette) => StyleSheet.create({
   // padding or bottom margin, so a card with zero surviving rows takes ZERO
   // height instead of leaving an empty panel. Keeps the gap so adjacent hits
   // from different sections don't collide.
-  prefFlat: { gap: 16 },
+  prefFlat: {},
+  // Spacing while filtering belongs to the visible ROW, not to the card that
+  // contains it. A container `gap` only separates siblings INSIDE one card, so
+  // two hits from different groups rendered flush against each other -- seen on
+  // "taps", which matches Haptic feedback in GENERAL and Show taps in TOUCH
+  // ANIMATIONS. Putting it on the row also means a card whose every row was
+  // filtered out still contributes exactly zero height, which a marginBottom on
+  // the card itself would not.
+  prefHit: { marginBottom: 16 },
   prefEmpty: {
     flexDirection: 'row',
     alignItems: 'center',
