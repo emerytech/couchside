@@ -27,6 +27,9 @@ Game drives appear too — a Steam Deck's SD card was invisible before.
 
 Handhelds also show current power draw and the machine's power profile.
 
+While the box updates itself, the app now shows what it is actually doing, and
+the box's own screen shows an update page so you are not staring at a frozen TV.
+
 ## 2.9.42
 
 Adds the box-side half of the app's new Steam search button.

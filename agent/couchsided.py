@@ -1433,13 +1433,102 @@ def mock_update_check():
             "checked_at": int(time.time())}
 
 
+UPDATE_LOG = "/tmp/couchside-update.log"
+
+
+def read_update_log(limit=40):
+    """Last `limit` lines of the installer transcript, or [] when absent.
+
+    The installer already wrote this file; nothing ever read it, so the app sat
+    on a canned "this can take a minute" while the box knew exactly which step
+    it was on. The PATH IS A CONSTANT -- no client input selects a file.
+    Read-only, best-effort, never raises.
+    """
+    try:
+        with open(UPDATE_LOG, "r", errors="replace") as f:
+            lines = f.read().splitlines()
+    except OSError:
+        return []
+    out = [ln.rstrip() for ln in lines if ln.strip()]
+    return out[-limit:]
+
+
+def render_update_page():
+    """The progress page shown on the BOX'S OWN screen during an update.
+
+    Deliberately SELF-CONTAINED and served once, because the agent restarts
+    partway through an update and anything it would have to serve mid-flight
+    disappears with it. The page is already loaded in Steam's browser by then,
+    so its script keeps running across the restart and polls /api/ping -- the
+    one deliberately pre-auth endpoint -- until the version changes.
+
+    No external assets: Steam's browser may have no network route while the box
+    is mid-update, and a spinner that 404s is worse than no spinner.
+    """
+    return """<!doctype html><html><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Couchside is updating</title>
+<style>
+ html,body{margin:0;height:100%;background:#0b1220;color:#e8eaed;
+   font-family:system-ui,-apple-system,sans-serif;display:flex;
+   align-items:center;justify-content:center}
+ .w{text-align:center;padding:2rem}
+ h1{font-size:2.2rem;margin:0 0 .6rem;font-weight:600}
+ p{font-size:1.15rem;color:#93a1b5;margin:.3rem 0}
+ .dots span{opacity:.25;animation:b 1.2s infinite}
+ .dots span:nth-child(2){animation-delay:.2s}
+ .dots span:nth-child(3){animation-delay:.4s}
+ @keyframes b{0%,100%{opacity:.25}50%{opacity:1}}
+ .ok{color:#5ad18f}
+</style></head><body><div class="w">
+<h1 id="t">Updating Couchside</h1>
+<p id="s">Keep the box powered on. This takes about a minute.</p>
+<p class="dots" id="d"><span>&#9679;</span><span>&#9679;</span><span>&#9679;</span></p>
+</div><script>
+var was=null, misses=0;
+function tick(){
+  fetch('/api/ping',{cache:'no-store'}).then(function(r){return r.json()}).then(function(j){
+    if(was===null){ was=j.version; }
+    else if(j.version!==was){
+      document.getElementById('t').textContent='Updated';
+      document.getElementById('t').className='ok';
+      document.getElementById('s').textContent='Now running '+j.version+'.';
+      document.getElementById('d').style.display='none';
+      return;                                  /* stop polling */
+    }
+    misses=0;
+    setTimeout(tick,2000);
+  }).catch(function(){
+    /* The agent restarts mid-update, so a failed poll is EXPECTED, not an
+       error. Only say something after it has been gone a while. */
+    misses++;
+    if(misses>8){ document.getElementById('s').textContent=
+      'Restarting the service\u2026'; }
+    setTimeout(tick,2000);
+  });
+}
+tick();
+</script></body></html>"""
+
+
+def update_show_on_box(port):
+    """Put the progress page on the box's own screen. Same mechanism as the
+    pairing PIN page, which is already shipped and proven: Steam's built-in
+    browser in Game Mode, xdg-open on the desktop. Best-effort and detached --
+    an update must never fail because a browser would not open."""
+    try:
+        pair_show_on_box_url("http://localhost:%d/update" % port)
+    except Exception:
+        pass
+
+
 def update_apply():
     """Spawn a DETACHED box-side update (the signed installer) so it survives
     this agent's own restart, and return immediately. The caller MUST have
     verified ALLOW_APP_UPDATE first. The installer verifies the release
     signature before installing, so a triggered update can only ever install an
     authentic release — never arbitrary code."""
-    log = "/tmp/couchside-update.log"
+    log = UPDATE_LOG
     # start_new_session detaches the child into its own session/process group:
     # when the installer restarts couchside.service and kills this agent, the
     # update keeps running to completion.
@@ -10727,9 +10816,17 @@ def pair_pin_check(pin):
 
 def pair_show_on_box(port):
     """Open the loopback /pair page on the BOX'S own screen so the PIN is
-    visible there. Game Mode -> Steam's built-in browser (steam://openurl);
-    desktop -> xdg-open. Best-effort, detached, never blocks the request."""
-    url = "http://localhost:%d/pair" % port
+    visible there."""
+    pair_show_on_box_url("http://localhost:%d/pair" % port)
+
+
+def pair_show_on_box_url(url):
+    """Open a LOOPBACK url on the box's own screen. Game Mode -> Steam's
+    built-in browser (steam://openurl); desktop -> xdg-open. Best-effort,
+    detached, never blocks the request.
+
+    Shared by the pairing PIN page and the update progress page. Callers pass a
+    url this module built; nothing here comes from a client."""
     gamescope = _couchmode_session() == "gamescope"
 
     def go():
@@ -11068,6 +11165,16 @@ class Handler(BaseHTTPRequestHandler):
                 self._send_html(200, html, started)
                 return
 
+            if path == "/update":
+                # LOCALHOST-ONLY, same two gates as /pair. This page is meant for
+                # the screen physically attached to the box; nothing on the LAN
+                # has any business rendering it.
+                if not self._is_loopback() or not self._host_header_is_local():
+                    self._send(403, {"error": "forbidden"}, started)
+                    return
+                self._send_html(200, render_update_page(), started)
+                return
+
             if path == "/api/pair/status":
                 # Loopback-only: the on-screen /pair PIN page polls this to learn
                 # when its session ended (paired/expired), so it can clear itself
@@ -11146,6 +11253,13 @@ class Handler(BaseHTTPRequestHandler):
                 # 404 -> the app hides the section (probe-and-appear via 404->null).
                 downloads = mock_downloads() if self.mock else steam_downloads()
                 self._send(200, {"downloads": downloads}, started)
+            elif path == "/api/update/log":
+                # The installer transcript, so the app can show what the box is
+                # actually doing instead of a canned "this can take a minute".
+                # MUST live AFTER the auth gate: the log carries hostnames and
+                # paths, and /api/ping is the only deliberately pre-auth route.
+                # Reads a CONSTANT path -- no client input selects a file.
+                self._send(200, {"lines": read_update_log()}, started)
             elif path == "/api/update/check":
                 # Box-side update check (agent >= 2.9.5). The app reads this over
                 # the LAN so the app never touches the internet; the box (already
@@ -11550,7 +11664,13 @@ class Handler(BaseHTTPRequestHandler):
                                      "(enable with: couchside allow-updates on)"},
                                started)
                     return
-                result = ({"started": True, "log": "/tmp/couchside-update.log"}
+                if not self.mock:
+                    # Put the progress page on the box's own screen FIRST, so it
+                    # is loaded in the browser before this agent restarts out
+                    # from under it. Best-effort: an update must never fail
+                    # because a browser would not open.
+                    update_show_on_box(self.port)
+                result = ({"started": True, "log": UPDATE_LOG}
                           if self.mock else update_apply())
                 self._send(200, result, started)
                 return

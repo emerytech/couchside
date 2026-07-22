@@ -1252,6 +1252,20 @@ export const api = {
    * Resolves false on an older agent (404) rather than throwing, so the caller
    * can skip the key walk instead of blindly sending arrows.
    */
+  /**
+   * Tail of the box-side installer transcript (agent >= 2.9.43).
+   *
+   * The installer has always written this file; nothing read it, so the app sat
+   * on a canned "this can take a minute" while the box knew exactly which step
+   * it was on. Resolves [] on an older agent (404) or while the box is
+   * restarting mid-update — both are expected, not errors.
+   */
+  updateLog(settings: ConnSettings): Promise<string[]> {
+    return request<{ lines: string[] }>(settings, '/api/update/log')
+      .then((r) => (Array.isArray(r?.lines) ? r.lines : []))
+      .catch(() => []);
+  },
+
   steamGoto(settings: ConnSettings, id: 'home'): Promise<boolean> {
     return request<{ ok: boolean }>(settings, '/api/steam/goto', {
       method: 'POST',
