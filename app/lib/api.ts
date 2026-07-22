@@ -400,7 +400,15 @@ export type Gaming = {
     vram_used_mb?: number;
     vram_total_mb?: number;
   };
-  game?: { appid: number; label?: string };
+  game?: {
+    appid: number;
+    label?: string;
+    /** Seconds the game has been running (agent >= 2.9.43). From the process
+        start time in /proc, compared against uptime rather than wall time, so a
+        clock change cannot make it look like the game started tomorrow. */
+    running_s?: number;
+    pid?: number;
+  };
   output?: { name: string; internal: boolean };
   controllers?: {
     uniq: string;
@@ -1264,6 +1272,22 @@ export const api = {
     return request<{ lines: string[] }>(settings, '/api/update/log')
       .then((r) => (Array.isArray(r?.lines) ? r.lines : []))
       .catch(() => []);
+  },
+
+  /**
+   * Ask the running game to close (agent >= 2.9.43).
+   *
+   * Sends NO body on purpose: the agent resolves what is running itself. The
+   * app cannot name a process, which is what stops this from being a remote
+   * kill-anything primitive. Do not "helpfully" start passing the appid.
+   *
+   * Resolves false on 409 (nothing running) or on an older agent, so the caller
+   * can just refresh rather than treat it as an error.
+   */
+  stopGame(settings: ConnSettings): Promise<boolean> {
+    return request<{ stopped: boolean }>(settings, '/api/game/stop', { method: 'POST' })
+      .then((r) => !!r?.stopped)
+      .catch(() => false);
   },
 
   steamGoto(settings: ConnSettings, id: 'home'): Promise<boolean> {

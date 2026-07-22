@@ -23,6 +23,7 @@ import random
 import re
 import select
 import shutil
+import signal
 import socket
 import ssl
 import struct
@@ -9467,6 +9468,63 @@ def _appid_from_cmdline(cmdline):
         return None
 
 
+def stop_running_game():
+    """Ask the game running right now to close. {"stopped": bool, ...}.
+
+    THE SECURITY SHAPE, and it is the whole design: this takes NO ARGUMENT. The
+    caller cannot name a pid, an appid, or anything else -- the agent
+    re-resolves the target itself, here, at the moment of the call. A client that
+    cannot name a process cannot be steered into killing one. Accepting a pid
+    "to be explicit" would turn this into a remote kill-anything primitive,
+    which is exactly what CLAUDE.md 3.1 forbids.
+
+    SIGTERM only, and never SIGKILL: Steam's reaper forwards it so the game
+    saves and exits the way it would from its own menu. A hard kill risks
+    losing progress, and the user can always hold the power button.
+
+    Degrades closed: nothing running is a plain "not stopped", never a
+    best-effort sweep of anything that looks game-shaped.
+    """
+    game = _running_game()
+    if not game or not game.get("pid"):
+        return {"stopped": False, "reason": "nothing running"}
+    pid = game["pid"]
+    try:
+        os.kill(pid, signal.SIGTERM)
+    except ProcessLookupError:
+        # It exited between resolving and signalling. That is the outcome the
+        # caller wanted, so report it as such rather than as an error.
+        return {"stopped": True, "game": game, "note": "already exited"}
+    except PermissionError:
+        return {"stopped": False, "reason": "not permitted"}
+    except OSError as e:
+        return {"stopped": False, "reason": e.__class__.__name__}
+    return {"stopped": True, "game": game}
+
+
+def _proc_uptime_s(pid):
+    """Seconds a pid has been running, or None.
+
+    Field 22 of /proc/<pid>/stat is the process start time in clock ticks since
+    BOOT, so it is compared against /proc/uptime rather than wall time -- a
+    clock change must not make a game look like it started tomorrow. The comm
+    field can contain spaces and parentheses, so the fields are taken from after
+    the LAST ')' rather than by splitting the whole line.
+    """
+    try:
+        with open("/proc/%d/stat" % pid) as f:
+            raw = f.read()
+        fields = raw[raw.rindex(")") + 2:].split()
+        start_ticks = int(fields[19])          # field 22, 1-based, after comm
+        hz = os.sysconf("SC_CLK_TCK") or 100
+        with open("/proc/uptime") as f:
+            up = float(f.read().split()[0])
+        secs = int(up - (start_ticks / float(hz)))
+        return secs if secs >= 0 else None
+    except (OSError, ValueError, IndexError, ZeroDivisionError):
+        return None
+
+
 def _running_game():
     """{"appid": int[, "label": str]} for the Steam game running now, or None.
     Scans /proc/*/cmdline for the reaper wrapper; label from the appinfo cache
@@ -9484,6 +9542,16 @@ def _running_game():
                 name = _steam_appinfo_names().get(int(appid))
                 if name:
                     game["label"] = name
+                # The pid the appid was found on, plus how long it has been up.
+                # Both are additive; existing callers ignore them.
+                try:
+                    pid = int(entry.split("/")[2])
+                    game["pid"] = pid
+                    secs = _proc_uptime_s(pid)
+                    if secs is not None:
+                        game["running_s"] = secs
+                except (IndexError, ValueError):
+                    pass
                 return game
     except Exception:
         pass
@@ -11630,6 +11698,19 @@ class Handler(BaseHTTPRequestHandler):
             # allowlist — Steam would silently open its DEFAULT page for an
             # unknown slug, so forwarding one would look like success while
             # landing somewhere else entirely.
+            if path == "/api/game/stop":
+                # Deliberately takes NO BODY. The agent resolves what is running
+                # itself; a client that cannot name a process cannot be steered
+                # into killing one. Any body sent is ignored rather than parsed.
+                if self.mock:
+                    self._send(200, {"stopped": True,
+                                     "game": {"appid": 1091500,
+                                              "label": "Cyberpunk 2077"}}, started)
+                    return
+                res = stop_running_game()
+                self._send(200 if res.get("stopped") else 409, res, started)
+                return
+
             if path == "/api/steam/goto":
                 # Navigate the Steam UI to one allowlisted destination. Exists so
                 # the app's search button has a KNOWN starting screen before it
