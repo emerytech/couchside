@@ -131,6 +131,29 @@ Entry fields: `priority` (P0 blocker → P3 nice) · `risk` · `affects` · `dep
   restarts it / leaves a zombie, and whether the reaper is the right target at all versus the
   game binary. Needs a game actually running on a box.
 
+### More Console sensors (battery health, CPU governor, GPU power)
+- **priority:** P3 · **risk:** low · **affects:** agent + app · **depends_on:** none
+- All read-only sysfs, no new capability, no client input. **PROBED on a Legion Go S,
+  2026-07-22** — every value below was actually read off that box, not assumed available.
+- **Battery health** — `energy_full` 55500000 vs `energy_full_design` 55500000 = **100%**,
+  `cycle_count` **54**. Answers "is my battery dying", which nothing else in the app can, and
+  it is two file reads. Highest value of the set.
+- **CPU governor + current frequency** — `scaling_governor` = `powersave`,
+  `scaling_cur_freq` = 2160 MHz. On a handheld this explains "why is it slow" more often than
+  temperature does.
+- **GPU power draw** — `hwmon/power1_average` = **5.07 W**. Next to the box battery draw it
+  shows where the watts are going. Note `power1_cap` was NOT present on this box, so a
+  TDP-limit readout cannot be assumed.
+- **GPU clock** — `hwmon/freq1_input` = 800 MHz. Cheap, but the least informative of the set
+  on its own.
+- **Fan RPM** — **NOT available here**: no `fan1_input` under any hwmon. Probe-and-appear only,
+  and do not promise it in copy until a box is found that has one.
+- Every one of these is absent on some hardware, so each is independently optional and must
+  degrade to "not shown" rather than to zero — the same rule that made PSI return `{}` instead
+  of `0.00`.
+- **Unverified:** none of these have been read on a DISCRETE-GPU box or a desktop; the
+  hwmon paths in particular vary by driver.
+
 ### Show the box IP and live network throughput on Console
 - **priority:** P3 · **risk:** low · **affects:** agent + app · **depends_on:** none
 - **The IP is already in the payload.** `/api/status` carries `ip` (the address the phone
