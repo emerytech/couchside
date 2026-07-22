@@ -74,6 +74,14 @@ jobs:
       - name: Unit tests (audio sink restore)
         run: python3 tests/test_audio_sink_restore.py
 
+      # Which filesystems the dashboard reports. A Deck owner was shown
+      # "3.5 / 5.0 GB, 69%" because read_disks() only looked at "/" -- which on
+      # SteamOS is a small READ-ONLY rootfs -- and never mentioned /home. Asserts
+      # both directions of the read-only rule, and that one filesystem reached by
+      # two paths is one row rather than two identical ones.
+      - name: Unit tests (disk mounts)
+        run: python3 tests/test_disk_mounts.py
+
       # The desktop switch must honour the box's CONFIGURED session. SteamOS
       # ships both, and steamos-session-select maps the bare "plasma" arg to the
       # X11 one -- so passing it silently downgraded a Wayland-configured box to

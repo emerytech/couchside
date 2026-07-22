@@ -1002,16 +1002,44 @@ def read_mem():
         return {"total_mb": 0, "used_mb": 0, "available_mb": 0}
 
 
+# Filesystems worth showing, in the order they should appear. "/home" is here
+# because on SteamOS the user's storage IS /home and "/" is a small read-only
+# rootfs -- reporting only "/" showed a Steam Deck owner "3.5 / 5.0 GB, 69%" on a
+# machine with far more space, which reads as a nearly-full disk and is not even
+# a filesystem they can write to.
+_DISK_MOUNTS = ("/", "/home", "/var")
+
+
 def read_disks():
     disks = []
-    for mount in ("/", "/var"):
+    seen_devices = set()
+    for mount in _DISK_MOUNTS:
         try:
+            # Same filesystem reached by two paths (the common case where /home
+            # is not split out) must not be listed twice.
+            try:
+                dev = os.stat(mount).st_dev
+            except OSError:
+                continue
+            if dev in seen_devices:
+                continue
+
+            # Read-only roots are not the user's storage and nothing they do can
+            # change the number, so showing one is pure alarm. This is what hides
+            # the immutable rootfs on SteamOS and Fedora Atomic derivatives.
+            try:
+                if os.statvfs(mount).f_flag & os.ST_RDONLY:
+                    continue
+            except (OSError, AttributeError):
+                pass  # unreadable -> fall through to the size check
+
             du = shutil.disk_usage(mount)
             # Skip synthetic mounts with no real capacity (e.g. the composefs
             # read-only / on Bazzite/Fedora Atomic reports a tiny total that is
             # always "100% used": meaningless and alarming on the dashboard).
             if du.total < 1024 ** 3:
                 continue
+            seen_devices.add(dev)
             total_gb = du.total / (1024 ** 3)
             used_gb = du.used / (1024 ** 3)
             free_gb = du.free / (1024 ** 3)
