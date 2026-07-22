@@ -702,6 +702,25 @@ export class GamepadClient {
     ws.onopen = () => {
       if (ws !== this.ws) return;
       this.clearConnectWatchdog();
+      // Start the keepalive HERE, on the socket opening, not on a server
+      // message.
+      //
+      // It used to start only from onmessage, on 'hello' or 'waiting'. That is
+      // one message away from never starting at all: onmessage returns early
+      // when `ws !== this.ws`, so a reconnect that replaces the socket while
+      // the previous one's callbacks are still pending can swallow the very
+      // frame the timer depended on. The socket then sits open and silent, the
+      // agent reaps it after GAMEPAD_IDLE_TIMEOUT_S (12s), the client
+      // reconnects, and it can happen again — which is exactly the measured
+      // behaviour: sessions dying at 12.1s while idle, but living 22-25s while
+      // input frames were flowing and feeding the same timer.
+      //
+      // Pinging before 'hello' is safe by construction: the agent answers ping
+      // BEFORE its holder gate (couchsided.py, `if t == "ping"` precedes
+      // `if not entry.get("held")`), so a waiter or a not-yet-promoted session
+      // is ponged just the same. startPing() is idempotent — it stops any
+      // existing timer first — so the later hello/waiting calls are harmless.
+      this.startPing();
     };
 
     ws.onmessage = (ev: WebSocketMessageEvent) => {
@@ -865,7 +884,19 @@ export class GamepadClient {
         }
         return;
       }
+      // A ping that does not leave means this socket is already dead, whatever
+      // readyState claims. Reconnect NOW rather than sitting through the
+      // watchdog deadline: the agent reaps at 12s, so waiting out 12.5s of
+      // silence guarantees the drop we are trying to avoid.
+      const before = wsTrace.pingsSent;
       this.sendRaw({ t: 'ping' });
+      if (wsTrace.pingsSent === before) {
+        this.teardownSocket(false);
+        if (this.active) {
+          this.setStatus('error', null);
+          this.scheduleReconnect();
+        }
+      }
     }, PING_INTERVAL_MS);
   }
 
