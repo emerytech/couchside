@@ -82,6 +82,18 @@ jobs:
       - name: Unit tests (disk mounts)
         run: python3 tests/test_disk_mounts.py
 
+      # USB wake sources (/api/usb-wake), read-only. Two field reports are
+      # encoded here: arming only the ROOT HUBS misses controllers (their signal
+      # arrives through a dongle further down the tree), and arming EVERY device
+      # with a writable wakeup file causes spurious wakes (a controller powering
+      # itself off is a disconnect, which the kernel counts as a wake — one
+      # reporter's machine woke 15 minutes after he slept it). Fixtures are
+      # verbatim off a live Bazzite box, Xbox dongle included, and one test
+      # exists purely to keep the `transient` heuristic's known counterexample
+      # visible rather than rediscovered by a user.
+      - name: Unit tests (usb wake)
+        run: python3 tests/test_usb_wake.py
+
       # The desktop switch must honour the box's CONFIGURED session. SteamOS
       # ships both, and steamos-session-select maps the bare "plasma" arg to the
       # X11 one -- so passing it silently downgraded a Wayland-configured box to
