@@ -226,6 +226,23 @@ literal hexes legitimately survive because they are not theme-relative: ink on a
 button (`#0b1220`, `app/components/Paywall.tsx:157`) and the physically black-on-white QR code
 (`app/components/QrView.tsx:58,72`).
 
+### Every text style declares a `color`
+
+A `Text` style that omits `color` renders **black** on native — React Native has no CSS
+inheritance. On a dark sheet that is invisible, and it is not hypothetical: it shipped in
+2.9.17 as "black text even in dark mode", where `bigLabel` in `RemotePowerBar` had no colour
+and only the call sites that happened to pass one inline (`t.green`, `t.amber`) were legible.
+Screensaver and Sleep timer were not.
+
+Put `color: t.text` in the style itself and let call sites override inline for semantic
+colour. "Every current usage passes a colour inline" is not safety — it is one new usage away
+from invisible text.
+
+**The web harness cannot be trusted to catch this.** On web, colour resolves through the CSS
+cascade; on native it does not. Verify contrast in the harness by measuring
+`getComputedStyle().color` against the resolved background, and note that a style with no
+colour resolves to `rgb(0, 0, 0)` there too — that is the control.
+
 ### Hooks
 
 `usePoll(fn, intervalMs, enabled, resetKey)` (`app/hooks/usePoll.ts`) is the standard data path:

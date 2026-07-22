@@ -909,7 +909,17 @@ const makeStyles = (t: Palette) => StyleSheet.create({
     borderRadius: 10,
     backgroundColor: t.inset,
   },
-  bigLabel: { fontSize: 15, fontWeight: '800', fontFamily: mono, letterSpacing: 0.5 },
+  // color is REQUIRED here, not optional polish. A Text style with no color
+  // falls back to the platform default (black), which is invisible on this
+  // sheet — that shipped as the "black text even in dark mode" report. Call
+  // sites that want a semantic colour still override inline.
+  bigLabel: {
+    color: t.text,
+    fontSize: 15,
+    fontWeight: '800',
+    fontFamily: mono,
+    letterSpacing: 0.5,
+  },
   suspendGroup: { gap: 6 },
   warnText: {
     color: t.amber,
@@ -929,7 +939,15 @@ const makeStyles = (t: Palette) => StyleSheet.create({
     borderRadius: 10,
     backgroundColor: t.inset,
   },
-  tvBtnText: { fontSize: 14, fontWeight: '800', fontFamily: mono, letterSpacing: 0.5 },
+  // Every call site currently passes a colour inline, so this was not visibly
+  // broken — but the same black-on-black trap is one new usage away.
+  tvBtnText: {
+    color: t.text,
+    fontSize: 14,
+    fontWeight: '800',
+    fontFamily: mono,
+    letterSpacing: 0.5,
+  },
   volRow: { flexDirection: 'row', gap: 8 },
   volBtn: {
     flex: 1,
@@ -950,7 +968,14 @@ const makeStyles = (t: Palette) => StyleSheet.create({
     borderRadius: 10,
     backgroundColor: t.inset,
   },
-  sourceBtnText: { fontSize: 14, fontWeight: '800', fontFamily: mono, letterSpacing: 0.5 },
+  // Same reasoning as tvBtnText: covered today, one usage away from invisible.
+  sourceBtnText: {
+    color: t.text,
+    fontSize: 14,
+    fontWeight: '800',
+    fontFamily: mono,
+    letterSpacing: 0.5,
+  },
   sourceSection: { gap: 6 },
   sourceHdr: {
     color: t.textFaint,
