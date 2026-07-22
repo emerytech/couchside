@@ -591,8 +591,14 @@ export function RemotePowerBar() {
             size={16}
             color={inGameMode ? t.green : t.text}
           />
+          {/* Both labels name the CURRENT SESSION, and say it in the words the
+              rest of the system uses. The old pair mixed the two things a label
+              can mean: "On TV" was a state, "Couch" was an action, on one
+              button — which is why it read as arbitrary. State is the honest
+              choice here because pressing does not swap anything, it opens the
+              Couch Mode sheet, and the sheet owns the action. */}
           <Text style={[styles.couchLabel, inGameMode && { color: t.green }]}>
-            {inGameMode ? 'On TV' : 'Couch'}
+            {inGameMode ? 'Game Mode' : 'Desktop Mode'}
           </Text>
         </Pressable>
       )}

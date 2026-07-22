@@ -597,7 +597,9 @@ export default function PadTab() {
 const MODES: { key: PadMode; label: string }[] = [
   { key: 'gamepad', label: 'PAD' },
   { key: 'swipe', label: 'SWIPE' },
-  { key: 'trackpad', label: 'TRACK' },
+  // "MOUSE", not "TRACK": the surface IS a mouse — drag moves the pointer, tap
+  // clicks. "Track" named the mechanism and left people guessing at the effect.
+  { key: 'trackpad', label: 'MOUSE' },
   { key: 'remote', label: 'REMOTE' },
   // Sits AFTER remote on purpose: it is one swipe further from the surface you
   // reach for most. Conditional -- see `modes` below; a box without Steam menus
@@ -1189,27 +1191,45 @@ function PadScreen() {
             <View style={styles.swipeBtnRow}>
               {showMouseRow && (
                 <>
+                  {/* Spelled out rather than L/M/R. Reported as unclear, and
+                      Ionicons has no honest left/middle/right-click glyph — a
+                      vague icon would trade one guessing game for another. */}
                   <PadButton
-                    label="L"
+                    label="LEFT"
                     onDown={() => client.sendMouseButton('l', 1)}
                     onUp={() => client.sendMouseButton('l', 0)}
                     style={styles.tpBtn}
-                    fontSize={14}
+                    fontSize={11}
                   />
                   <PadButton
-                    label="M"
+                    label="MID"
                     onDown={() => client.sendMouseButton('m', 1)}
                     onUp={() => client.sendMouseButton('m', 0)}
                     style={styles.tpBtn}
-                    fontSize={14}
+                    fontSize={11}
                   />
                   <PadButton
-                    label="R"
+                    label="RIGHT"
                     onDown={() => client.sendMouseButton('r', 1)}
                     onUp={() => client.sendMouseButton('r', 0)}
                     style={styles.tpBtn}
-                    fontSize={14}
+                    fontSize={11}
                   />
+                  {/* Esc ONLY when the desktop-nav row below isn't providing
+                      one. That row is gated on hasDesktop && showDesktopNav, so
+                      in Game Mode this screen had no way out at all — but
+                      showing it unconditionally puts two identical ESC keys on
+                      screen, which is the same duplication complaint this pass
+                      exists to fix. */}
+                  {!(hasDesktop && showDesktopNav) && (
+                    <PadButton
+                      label="ESC"
+                      onDown={desk('esc')}
+                      onUp={NOOP}
+                      style={styles.tpBtn}
+                      fontSize={11}
+                    />
+                  )}
                 </>
               )}
               {showSteamRow && (
