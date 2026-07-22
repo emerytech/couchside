@@ -131,6 +131,30 @@ Entry fields: `priority` (P0 blocker → P3 nice) · `risk` · `affects` · `dep
   restarts it / leaves a zombie, and whether the reaper is the right target at all versus the
   game binary. Needs a game actually running on a box.
 
+### Scan cannot find a box on a different subnet
+- **priority:** P2 · **risk:** low · **affects:** app · **depends_on:** none
+- **HIT LIVE 2026-07-22 on real hardware, twice.** An iPad on `10.7.1.170/24` and a Razr on
+  `10.7.1.224/24` both reported "No boxes found" while the box sat on **`10.7.0.64`** — a
+  different /24. Routing between them worked fine (`/api/ping` returned 200 from the phone),
+  and `steamdeck.local` resolved to the right address. The only thing that failed was the
+  sweep, because it only covers the device's OWN /24.
+- This is not exotic. Mesh routers, guest VLANs and any router handing out a second subnet
+  produce it, and the user experience is "the app cannot see my box" with no hint that the
+  network is the reason.
+- The app already handles it correctly once you know: the error names the scanned range and
+  points at Add-by-IP, and QR pairing from an already-paired phone transfers host+port+token
+  without typing. So this is discoverability, not brokenness.
+- Options, roughly in order of cost: (a) say WHY in the empty state — "your box is on a
+  different network than this device" is more useful than "not found"; (b) also sweep the
+  subnet of any box already in the fleet, since a second device usually has one; (c) offer the
+  QR path more prominently when a scan finds nothing.
+- **Do NOT widen the sweep blindly.** Scanning arbitrary ranges from a phone is slow, looks
+  like a port scan to a router, and the owner has asked to be consulted before any network
+  sweep. Option (a) costs nothing and probably solves most of it.
+- **Unverified:** whether iOS `.local` resolution works reliably in-app across subnets. On this
+  network mDNS resolved from a Mac, but the iOS Local Network permission is a separate gate and
+  was not tested in the denied state.
+
 ### More Console sensors (battery health, CPU governor, GPU power)
 - **priority:** P3 · **risk:** low · **affects:** agent + app · **depends_on:** none
 - All read-only sysfs, no new capability, no client input. **PROBED on a Legion Go S,
