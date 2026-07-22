@@ -42,13 +42,14 @@ import {
 } from 'react-native';
 
 import { usePref } from '@/lib/prefs';
-import { segmentBox, trailPoints } from '@/lib/touchTrail';
+import { segmentBox, strokeRuns } from '@/lib/touchTrail';
 import { useResolvedScheme, useTheme } from '@/lib/theme';
 
 type MarkInput =
   | { kind: 'tap'; x: number; y: number }
-  /** One straight run of the stroke, from (x,y) to (x2,y2). */
-  | { kind: 'seg'; x: number; y: number; x2: number; y2: number };
+  /** One straight run of the stroke, from (x,y) to (x2,y2). `order` is its
+   *  index within the batch emitted by a single move event -- see Seg. */
+  | { kind: 'seg'; x: number; y: number; x2: number; y2: number; order: number };
 /** Split from MarkInput because `Omit<Union, 'id'>` collapses a union to its
  *  shared keys — which silently dropped x2/y2 from what the emitter accepted. */
 type MarkSpec = MarkInput & { id: number };
@@ -69,6 +70,13 @@ const TAP_MS = 520;
  * shrinking is what opened the gaps.
  */
 const TRAIL_MS = 700;
+/** Offset between runs emitted in the same frame, so a batch fades as a
+ *  gradient instead of a block. Small enough that it never reads as lag. */
+const TRAIL_STAGGER_MS = 45;
+/** Glow blur radius, in px. Subtle on purpose: the stroke has to stay legible
+ *  over game art and through video compression, and a wide halo just turns the
+ *  line into a smudge. */
+const GLOW_RADIUS = 9;
 /** Hard cap on live marks so a long drag can't grow the tree without bound.
  *  At 20px per run this is ~960px of visible stroke. */
 const MAX_MARKS = 48;
@@ -166,10 +174,17 @@ function Seg({
     Animated.timing(p, {
       toValue: 1,
       duration: TRAIL_MS,
+      // One move event can emit up to TRAIL_MAX_PER_EVENT runs in the SAME
+      // frame. Without a stagger they fade in lockstep, so a fast drag renders
+      // as ~120px blocks of uniform opacity with hard edges between them --
+      // measured on a real Razr at 3x zoom, and it read as stacked rectangles
+      // rather than a stroke. Offsetting each run inside its batch turns those
+      // steps back into a gradient.
+      delay: mark.order * TRAIL_STAGGER_MS,
       easing: Easing.out(Easing.quad),
       useNativeDriver: true,
     }).start(() => done.current());
-  }, [p]);
+  }, [p, mark.order]);
 
   const box = segmentBox(mark.x, mark.y, mark.x2, mark.y2);
   // Holds full strength for the first two thirds, then goes. The older end of
@@ -190,6 +205,11 @@ function Seg({
         width: box.width,
         height: box.height,
         backgroundColor: color,
+        // The glow. boxShadow (not the deprecated shadow* props) is the one
+        // form RN renders on BOTH platforms, and it costs no extra node -- the
+        // alternative, a second wider translucent View per run, would double an
+        // already 48-node tree on the latency-critical trackpad path.
+        boxShadow: `0px 0px ${GLOW_RADIUS}px ${color}`,
         opacity,
         transform: [{ rotate: `${box.angle}rad` }],
       }}
@@ -273,17 +293,13 @@ export function TapCapture({
       const { pageX, pageY } = e.nativeEvent;
       if (!Number.isFinite(pageX) || !Number.isFinite(pageY)) return;
 
-      // Chain a run of stroke between each consecutive pair, starting from
-      // where the last run ended. `joins` false means trailPoints decided the
-      // gap was a discontinuity (finger lifted and re-placed, or events
-      // dropped) — draw nothing across it rather than a line the finger never
-      // travelled, and resume the chain from the new point.
-      const { points, next, joins } = trailPoints(lastTrailPt.current, pageX, pageY);
-      let from = joins ? lastTrailPt.current : null;
-      for (const pt of points) {
-        if (from) push({ kind: 'seg', x: from.x, y: from.y, x2: pt.x, y2: pt.y });
-        from = pt;
-      }
+      // strokeRuns owns the chaining, INCLUDING closing the run to the finger
+      // when the per-event cap bites. That closing step was missing while this
+      // was a loop inline here, and a fast flick left a permanent hole in the
+      // stroke. It is pure and tested now precisely because untested glue is
+      // where it hid.
+      const { runs, next } = strokeRuns(lastTrailPt.current, pageX, pageY);
+      runs.forEach((r, i) => push({ kind: 'seg', ...r, order: i }));
       lastTrailPt.current = next;
     },
     [on, trail, push],

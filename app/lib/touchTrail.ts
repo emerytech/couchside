@@ -117,3 +117,49 @@ export function segmentBox(x1: number, y1: number, x2: number, y2: number) {
     angle: Math.atan2(y2 - y1, x2 - x1),
   };
 }
+
+// Re-exported onto globalThis for the web harness and dev builds. These were
+// documented in this file's header from the moment it was created but the
+// assignments were lost when the functions moved out of the component -- so the
+// docs promised a hook that did not exist. Cheap, and the only way to poke the
+// geometry from a running app.
+if (typeof globalThis !== 'undefined') {
+  const g = globalThis as Record<string, unknown>;
+  g.__touchTrailPoints = trailPoints;
+  g.__touchSegmentBox = segmentBox;
+  g.__touchStrokeRuns = strokeRuns;
+}
+
+/** One run of stroke to draw, from (x,y) to (x2,y2). */
+export type Run = { x: number; y: number; x2: number; y2: number };
+
+/**
+ * Every run of stroke a single move event should draw.
+ *
+ * THIS IS THE GLUE THE BUG LIVED IN. It used to be a loop inline in
+ * TouchIndicatorLayer's onTouchMove, chaining segments between consecutive
+ * points -- and it silently dropped the span between the last point laid and
+ * `next`. That only diverge when the per-event cap bites, where trailPoints
+ * deliberately returns the FINGER as `next` so the stroke stays under the
+ * thumb. So a fast flick left an undrawn hole, the next event resumed from the
+ * finger, and the hole stayed there for good. The stroke broke hardest exactly
+ * when it was moving fastest.
+ *
+ * The geometry either side of it was tested; this was not, because it was glue
+ * inside a component. Pulling it out is the fix for the class, not just the bug.
+ */
+export function strokeRuns(last: Pt | null, x: number, y: number): { runs: Run[]; next: Pt } {
+  const { points, next, joins } = trailPoints(last, x, y);
+  const runs: Run[] = [];
+  let from = joins ? last : null;
+  for (const pt of points) {
+    if (from) runs.push({ x: from.x, y: from.y, x2: pt.x, y2: pt.y });
+    from = pt;
+  }
+  // Close the chain to the finger. The equality check keeps the normal case --
+  // where `next` IS the last point laid -- from emitting a zero-length run.
+  if (from && (from.x !== next.x || from.y !== next.y)) {
+    runs.push({ x: from.x, y: from.y, x2: next.x, y2: next.y });
+  }
+  return { runs, next };
+}

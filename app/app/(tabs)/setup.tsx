@@ -4,7 +4,7 @@ import * as Application from 'expo-application';
 import Constants from 'expo-constants';
 import * as Linking from 'expo-linking';
 import { useLocalSearchParams, useRouter } from 'expo-router';
-import React, { useCallback, useEffect, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   Alert,
   KeyboardAvoidingView,
@@ -518,7 +518,18 @@ export default function SetupScreen() {
  * appears in several descriptions but only one label, and someone typing it
  * almost certainly means the description.
  */
-const PrefFilterCtx = createContext<string>('');
+/**
+ * The live query, plus a way for a row to say "I matched".
+ *
+ * The counter exists because rows self-hide: nothing upstream can otherwise
+ * tell an empty result from a rendering failure, and a query that matches
+ * nothing used to leave the whole tab blank. The alternative -- a flat registry
+ * of every pref's text, consulted to decide the same thing -- is the exact
+ * duplication that let the three hand-rolled rows drift out of the filter in
+ * the first place. A row that renders counts itself, so it cannot drift.
+ */
+type PrefFilter = { q: string; hit: () => void };
+const PrefFilterCtx = createContext<PrefFilter>({ q: '', hit: () => {} });
 
 function prefMatches(q: string, label: string, sub?: string): boolean {
   if (!q) return true;
@@ -548,8 +559,9 @@ function PrefFilterable({
   sub?: string;
   children: React.ReactNode;
 }) {
-  const q = useContext(PrefFilterCtx);
+  const { q, hit } = useContext(PrefFilterCtx);
   if (!prefMatches(q, label, sub)) return null;
+  hit();
   return <>{children}</>;
 }
 
@@ -566,8 +578,9 @@ export function TogglePref({
 }) {
   const t = useTheme();
   const styles = useThemedStyles(makeStyles);
-  const q = useContext(PrefFilterCtx);
+  const { q, hit } = useContext(PrefFilterCtx);
   if (!prefMatches(q, label, sub)) return null;
+  hit();
   return (
     <View style={styles.prefRow}>
       <View style={styles.prefBody}>
@@ -600,8 +613,9 @@ export function SegPref<T extends string | number>({
   onSelect: (v: T) => void;
 }) {
   const styles = useThemedStyles(makeStyles);
-  const q = useContext(PrefFilterCtx);
+  const { q, hit } = useContext(PrefFilterCtx);
   if (!prefMatches(q, label, sub)) return null;
+  hit();
   return (
     <View style={styles.prefCol}>
       <View style={styles.prefBody}>
@@ -662,13 +676,29 @@ function CategoryTabs({ tab, onTab }: { tab: SetupTab; onTab: (t: SetupTab) => v
 }
 
 /** A small section header inside a card: icon + uppercase label. */
+/**
+ * Shown when a query matches nothing. Without it the body went completely
+ * blank -- indistinguishable from the tab failing to render, and with no hint
+ * that the text you typed is the reason.
+ */
+function PrefNoMatches({ query }: { query: string }) {
+  const t = useTheme();
+  const styles = useThemedStyles(makeStyles);
+  return (
+    <View style={styles.prefEmpty}>
+      <Ionicons name="search-outline" size={18} color={t.textFaint} />
+      <Text style={styles.prefEmptyText}>No settings match “{query}”.</Text>
+    </View>
+  );
+}
+
 function CardHeader({ icon, label }: { icon: IoniconName; label: string }) {
   const t = useTheme();
   const styles = useThemedStyles(makeStyles);
   // While a query is active the group headers go away: search results read as
   // one flat list, and a header left stranded above zero matching rows is
   // noise that makes the results look emptier than they are.
-  const q = useContext(PrefFilterCtx);
+  const { q } = useContext(PrefFilterCtx);
   if (q) return null;
   return (
     <View style={styles.cardHeader}>
@@ -687,8 +717,26 @@ function SetupBody() {
   // bordered box, and the cards that DO have a hit chop the survivors into
   // separate panels. Either way the results look emptier and more scattered
   // than they are. Flat, the hits read as one list.
-  const prefCardStyle = prefQuery ? styles.prefFlat : styles.card;
-  const prefCardGroupStyle = prefQuery
+  // TRIMMED, everywhere. A query of only spaces used to be truthy here and
+  // in the provider, so it flattened every card and hid every header while
+  // prefMatches -- which strips whitespace -- went on matching everything.
+  const prefFiltering = prefQuery.trim().length > 0;
+  // Counted during render, read after commit. A ref rather than state because
+  // incrementing state from a child's render body is a loop; the effect below
+  // is the only thing that turns the count into UI, and setState bails when the
+  // value is unchanged so it settles in one extra pass.
+  const prefHits = useRef(0);
+  prefHits.current = 0;
+  const [prefNoMatch, setPrefNoMatch] = useState(false);
+  const prefFilter = useMemo(
+    () => ({ q: prefQuery.trim(), hit: () => { prefHits.current += 1; } }),
+    [prefQuery],
+  );
+  useEffect(() => {
+    setPrefNoMatch(prefFiltering && prefHits.current === 0);
+  });
+  const prefCardStyle = prefFiltering ? styles.prefFlat : styles.card;
+  const prefCardGroupStyle = prefFiltering
     ? styles.prefFlat
     : [styles.card, styles.cardGroup];
   const { entitlement, recordPurchase } = useEntitlement();
@@ -1161,7 +1209,7 @@ function SetupBody() {
         )}
 
         {tab === 'prefs' && (
-          <PrefFilterCtx.Provider value={prefQuery}>
+          <PrefFilterCtx.Provider value={prefFilter}>
             {/* Find-as-you-type. ~25 controls across six groups is past the
                 point where scanning works, and half of them live in one card.
                 Filtering beats reorganising here: it costs no navigation layer
@@ -1580,6 +1628,7 @@ function SetupBody() {
                 }}
               />
             </View>
+            {prefNoMatch && <PrefNoMatches query={prefQuery.trim()} />}
           </PrefFilterCtx.Provider>
         )}
 
@@ -1803,6 +1852,14 @@ const makeStyles = (t: Palette) => StyleSheet.create({
   // height instead of leaving an empty panel. Keeps the gap so adjacent hits
   // from different sections don't collide.
   prefFlat: { gap: 16 },
+  prefEmpty: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+    paddingVertical: 24,
+    paddingHorizontal: 4,
+  },
+  prefEmptyText: { color: t.textDim, fontSize: 13, flex: 1, minWidth: 0 },
   accountBadges: {
     flexDirection: 'row',
     alignItems: 'center',
