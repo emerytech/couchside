@@ -44,6 +44,61 @@ Entry fields: `priority` (P0 blocker → P3 nice) · `risk` · `affects` · `dep
 - **Value is narrower than it looks:** the shipped Bluetooth button already reaches Steam's
   own pairing UI, which handles agents and PINs correctly.
 
+### Close the running game from the Launch tab
+- **priority:** P2 · **risk:** medium · **affects:** agent + app · **depends_on:** none
+- A card at the top of Launch showing what is running now, how long it has been running, and
+  a red button to close it. Today you can start a game from the phone but not stop one, which
+  is the half that matters when the TV is black.
+- **Half of it already exists:** `_running_game()` (`agent/couchsided.py:9149`) scans
+  `/proc/*/cmdline` for Steam's reaper wrapper and returns `{"appid", "label"}`. Runtime comes
+  from field 22 (`starttime`) of `/proc/<pid>/stat` against `/proc/uptime` — no new source.
+- **THE ALLOWLIST DESIGN, do not deviate:** the stop route takes **NO client input at all** —
+  no pid, no appid, no name. `POST /api/game/stop` with an empty body, and the AGENT
+  re-resolves the target itself via `_running_game()` at the moment of the call. A client that
+  cannot name a process cannot be steered into killing one. Passing a pid or appid "to be
+  explicit" would invert that and is exactly what §3 forbids.
+- `SIGTERM` to the reaper, never `SIGKILL` first, never a shell string. Degrade closed:
+  nothing running is a 404, not a best-effort sweep.
+- **Unverified:** whether SIGTERM to the reaper closes a game cleanly or whether Steam
+  restarts it / leaves a zombie, and whether the reaper is the right target at all versus the
+  game binary. Needs a game actually running on a box.
+
+### Show the box IP and live network throughput on Console
+- **priority:** P3 · **risk:** low · **affects:** agent + app · **depends_on:** none
+- **The IP is already in the payload.** `/api/status` carries `ip` (the address the phone
+  reached the box on, agent >= 2.9.22) and the app's `Status` type already declares it — the
+  Console tab simply never renders it. That half is app-only, no agent release needed.
+- Throughput is the real work: `/proc/net/dev` exposes cumulative byte counters, so a RATE
+  needs two samples and a delta. The agent has to hold the previous sample and its timestamp;
+  one read can only ever report totals, never speed.
+- Choose the interface the way `net_info_cached()` already does rather than inventing a second
+  rule, or the two cards will disagree about which NIC the box is on.
+- **Unverified:** what the counters do across suspend/resume or a NIC reset. A counter that
+  resets produces a large negative delta — clamp at zero and show nothing rather than
+  rendering a nonsense spike.
+
+### Fill in missing Launch tile cover art from the box
+- **priority:** P2 · **risk:** low · **affects:** agent + app · **depends_on:** none
+- **MEASURED on a Legion Go S, 2026-07-22:** its `appcache/librarycache` holds 1118 entries —
+  **826** games have `header.jpg` but only **386** have `library_600x900.jpg`. `_steam_cover_path()`
+  looks for `library_600x900.jpg` and nothing else, so roughly **440 installed games render the
+  blank text-card fallback while their artwork is already on disk.**
+- Entirely local: no CDN, no scraping, no new network egress. The existing
+  `/api/steam/<appid>/cover` route already serves from the box; this widens which local files
+  it will serve, in a fixed preference order.
+- Candidate sources beyond the current two: `library_600x900_2x.jpg`, `header.jpg`,
+  `library_hero.jpg`, and user/SteamGridDB art under `userdata/<uid>/config/grid/`. **No `grid/`
+  folder existed on the Legion Go S**, so custom-art support is speculative — do not claim it
+  works until a box with one is measured.
+- **Aspect is the real design problem, not the lookup.** Tiles are 600x900 portrait; `header.jpg`
+  is 460x215 landscape. Centre-cropping a header into a portrait tile often looks worse than the
+  clean fallback card. So the agent should ADD a field saying which KIND of art it found
+  (portrait / header / none) and let the app lay each out properly — never rename or remove an
+  existing field.
+- Allowlist note: appid stays digits-only validated and the resolved path must still be verified
+  to sit inside the cache root. Widening the FILENAME set is fine; widening to a glob or a
+  client-supplied filename is not.
+
 ### Landscape "laptop mode" — mini QWERTY + trackpad
 - **priority:** P2 · **risk:** low · **affects:** app only · **depends_on:** none
 - Rotating the phone to landscape shows a full soft QWERTY plus a trackpad on one screen,
@@ -57,6 +112,9 @@ Entry fields: `priority` (P0 blocker → P3 nice) · `risk` · `affects` · `dep
   decide whether rotating should also imply no-pad.
 - Both halves already exist as portrait components (`Trackpad`, the keyboard bar) — the work
   is the landscape layout and the key set, not new input plumbing.
+- **Owner requirement: gate it behind a preference toggle.** Rotation must not silently change
+  the interface for people who rotate by accident or who read in bed; the pref is what makes
+  the gesture opt-in.
 - **Unverified:** whether the existing surfaces survive a landscape re-layout at all; no
   screen has ever been rendered rotated.
 
