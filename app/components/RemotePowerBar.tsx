@@ -312,12 +312,19 @@ export function RemotePowerBar() {
   const [busy, setBusy] = React.useState(false);
   const [waking, setWaking] = React.useState(false);
 
+  // Where volume actually goes. Declared HERE, above the senders, because
+  // hiding the TV target has to bind at the SEND sites too — hiding the segment
+  // alone would strand anyone whose stored target was already 'tv': volume would
+  // keep going to the TV with no control left on screen to change it.
+  const hideTvVol = usePref('hideTvVolume');
+  const volumeTarget: VolumeTarget = hideTvVol ? 'box' : settings.volumeTarget ?? 'box';
+
   const sendTv = React.useCallback(
     async (op: TvOp) => {
       hapticLight();
       setBusy(true);
       try {
-        await api.tvSend(settings, op, settings.volumeTarget ?? 'box');
+        await api.tvSend(settings, op, volumeTarget);
         // Volume keys can clear the mute flag (dropping to 0 sets it), so
         // re-read state now rather than waiting out the poll tick.
         refreshTv();
@@ -368,7 +375,7 @@ export function RemotePowerBar() {
   const stepVolume = React.useCallback(
     (dir: 1 | -1) => {
       void api
-        .tvSend(settings, dir > 0 ? 'volume_up' : 'volume_down', settings.volumeTarget ?? 'box')
+        .tvSend(settings, dir > 0 ? 'volume_up' : 'volume_down', volumeTarget)
         .catch(() => {
           // Fire-and-forget, but don't fail totally silently: buzz at most once
           // every ~1.5s so a drag against an offline box gives some feedback.
@@ -434,7 +441,7 @@ export function RemotePowerBar() {
     hapticLight();
     setBusy(true);
     try {
-      await api.tvSend(settings, 'mute', settings.volumeTarget ?? 'box');
+      await api.tvSend(settings, 'mute', volumeTarget);
       // Re-read the mute state immediately so the button reflects it in ~100ms
       // instead of on the next poll tick.
       refreshTv();
@@ -530,7 +537,6 @@ export function RemotePowerBar() {
   const tvVol = tv?.tv_volume ?? tv?.available === true;
   const hasVolume = reachable && (boxVol || tvVol);
   const canToggleVolume = boxVol && tvVol;
-  const volumeTarget: VolumeTarget = settings.volumeTarget ?? 'box';
   const hasTvPower = reachable && tv?.tv_power === true;
   // RS-232-only capabilities (panel backend). Gated so CEC/soft boxes never
   // show these buttons — they keep the standard power/volume UI.
@@ -764,7 +770,7 @@ export function RemotePowerBar() {
 
               {hasVolume && (
                 <>
-                  {canToggleVolume && (
+                  {canToggleVolume && !hideTvVol && (
                     <View style={styles.segRow}>
                       <Pressable
                         onPress={() => void update({ volumeTarget: 'box' })}

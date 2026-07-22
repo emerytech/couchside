@@ -660,6 +660,8 @@ function SetupBody() {
   const askToSwitchControl = usePref('askToSwitchControl');
   const volumeButtons = usePref('volumeButtons');
   const hideOfflineStreamHosts = usePref('hideOfflineStreamHosts');
+  const hideStreamFromPc = usePref('hideStreamFromPc');
+  const hideTvVolume = usePref('hideTvVolume');
   const showTaps = usePref('showTaps');
   const traceDrags = usePref('traceDrags');
 
@@ -1369,6 +1371,15 @@ function SetupBody() {
                   hapticSelection();
                 }}
               />
+              <TogglePref
+                label="Hide the TV volume target"
+                sub="Drops the Box/TV switch and always sends volume to the box. For setups where the box's own volume already drives the speakers — CEC forwarding, a soundbar or an AVR — and the TV target moves a level nothing plays through."
+                value={hideTvVolume}
+                onValueChange={(v) => {
+                  void setPref('hideTvVolume', v);
+                  hapticSelection();
+                }}
+              />
             </View>
 
             {/* The box's offline check is conservative and will sometimes call a
@@ -1381,6 +1392,15 @@ function SetupBody() {
                 value={hideOfflineStreamHosts}
                 onValueChange={(v) => {
                   void setPref('hideOfflineStreamHosts', v);
+                  hapticSelection();
+                }}
+              />
+              <TogglePref
+                label="Hide this section"
+                sub="Removes Stream from PC from the Launch tab. For setups where you'd never stream a game off another machine."
+                value={hideStreamFromPc}
+                onValueChange={(v) => {
+                  void setPref('hideStreamFromPc', v);
                   hapticSelection();
                 }}
               />
