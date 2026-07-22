@@ -349,3 +349,20 @@ ancestor.
 **What the harness cannot cover — verify on a device:** Pad/trackpad and gamepad (no WS
 proxying; mouse != touch), iOS Local Network permission, the no-UDP behaviour, app
 backgrounding, safe-area insets, and the purchase flow (`expo-iap` is a no-op on web).
+
+## Capability keys need SIX edit sites, not five
+
+`CLAUDE.md` §4 says five (agent CAPS dict + mock tuple; app BoxCaps + normalizeCaps +
+capsEqual). There is a sixth, and it is the one that fails CI: **`protocol/protocol.json`**.
+
+`tests/test_protocol_parity.py` drives both agents' real `set_caps()` and asserts no agent
+declares a cap the spec has never heard of. Miss it and you get:
+
+    FAIL  linux: no undeclared caps (extra: ['boxbattery'])
+
+Which group matters. `capabilities` is linux+windows — putting a Linux-only key there makes
+the WINDOWS agent fail for a missing key instead. Anything reading sysfs, `/proc`, or a Steam
+path that only exists on Linux goes in `linuxOnlyCapabilities`.
+
+Observed adding `boxbattery` (agent 2.9.40): the parity test caught the wiring half-done after
+the two agent sites were written and before any app site was.
