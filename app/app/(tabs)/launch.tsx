@@ -91,7 +91,6 @@ function LauncherTile({
   // Narrowed to a local so the <Image> branch sees a defined source (not the
   // `ImageSource | undefined` prop): shown only for Steam tiles that haven't errored.
   const art = imgFailed ? undefined : coverSource;
-  const showArt = art != null;
   const height = Math.round(width * 1.5); // 600x900 aspect
 
   return (
@@ -118,14 +117,11 @@ function LauncherTile({
         </View>
       )}
 
-      {/* Label overlay for art tiles keeps the name legible. */}
-      {showArt && (
-        <View style={styles.tileLabelOverlay}>
-          <Text style={styles.tileLabel} numberOfLines={1}>
-            {launcher.label}
-          </Text>
-        </View>
-      )}
+      {/* No label over art on purpose: the poster already says which game it is,
+          and a caption under every cover was reported as noise. The NO-ART path
+          keeps its label (see tileFallback above) — a tile showing only a
+          generic controller icon has nothing else to identify it, which is the
+          case that makes this conditional rather than a deletion. */}
 
       {download && isActiveDownload(download) && (
         <View style={styles.tilePill}>
@@ -922,16 +918,6 @@ const makeStyles = (t: Palette) => StyleSheet.create({
     textAlign: 'center',
     fontFamily: mono,
   },
-  tileLabelOverlay: {
-    position: 'absolute',
-    left: 0,
-    right: 0,
-    bottom: 0,
-    backgroundColor: 'rgba(11,18,32,0.82)',
-    paddingVertical: 6,
-    paddingHorizontal: 8,
-  },
-  tileLabel: { color: t.text, fontSize: 12, fontWeight: '700', fontFamily: mono },
   tileDelete: {
     position: 'absolute',
     top: 6,
