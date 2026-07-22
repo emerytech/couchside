@@ -385,6 +385,11 @@ function KeyboardBar({ autoOpenSignal, onText, onBackspace, onEnter, onSwipeMode
     setOpen(v);
   }, []);
   const [value, setValue] = useState('');
+  // Measured height of the compose field, so the HIDE pill can sit clear of it.
+  // MEASURED rather than a constant: the field grows with the OS text-size
+  // setting, and a hardcoded 40 would re-bury the pill for anyone using large
+  // text — which is exactly the bug this fixes, just for fewer people.
+  const [composeH, setComposeH] = useState(40);
   const pal = useTheme();
   // Live mirror: onChangeText/onKeyPress are memoised, and a stale `value` in
   // their closure would diff against the wrong text and send garbage.
@@ -598,9 +603,17 @@ function KeyboardBar({ autoOpenSignal, onText, onBackspace, onEnter, onSwipeMode
           bottom-right (thumb range), lifted by the MEASURED keyboard overlap.
           Exists because the in-layout DONE gets covered by the raised keyboard
           and the InputAccessoryView Done bar stopped rendering under newer iOS
-          SDKs (build 30), which left the keyboard stuck open. */}
+          SDKs (build 30), which left the keyboard stuck open.
+
+          Sits ABOVE the compose field, not level with it. #195 gave the field
+          the SAME `bottom: 10 + kbLift` as this pill, and the field is
+          full-width, opaque (t.card) and one zIndex higher (61 vs 60) — so it
+          painted straight over the pill, and iOS testers reported the HIDE
+          button "missing". It was never missing; it was underneath. */}
       {open && (
-        <View pointerEvents="box-none" style={[styles.kbFloatWrap, { bottom: 10 + kbLift }]}>
+        <View
+          pointerEvents="box-none"
+          style={[styles.kbFloatWrap, { bottom: 10 + kbLift + composeH + 8 }]}>
           <Pressable
             onPress={dismiss}
             hitSlop={10}
@@ -630,6 +643,7 @@ function KeyboardBar({ autoOpenSignal, onText, onBackspace, onEnter, onSwipeMode
           setValue('');
         }}
         style={open ? [styles.kbCompose, { bottom: 10 + kbLift }] : styles.hiddenInput}
+        onLayout={(e) => setComposeH(e.nativeEvent.layout.height)}
         placeholder={open ? 'type or paste — sent as you go' : undefined}
         placeholderTextColor={pal.textFaint}
         autoCapitalize="none"
