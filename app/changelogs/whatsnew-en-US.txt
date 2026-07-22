@@ -1,8 +1,9 @@
-New in 2.9.20
+New in 2.9.21
 
-• Games showing a blank card now show their poster art — it was already on your box.
-• Handhelds report their own battery, with time remaining.
-• Fixed the hide-keyboard button being covered by the text field.
-• Fixed the setup guide link running off the edge on Android.
-• New option: send keys instead of creating a virtual controller, so a running game keeps player one.
-• Your box's IP now shows under uptime.
+• Game cover art now shows on Android — it never did before.
+• Search your games on the Launch tab, and fold away Stream from PC.
+• Close the running game from your phone.
+• New Steam search button: opens search on the box and brings up your keyboard.
+• Storage now reports how full drives really are, and shows game drives like SD cards.
+• Handhelds show battery draw, power profile, and time until full.
+• Watch what your box is doing while it updates.
