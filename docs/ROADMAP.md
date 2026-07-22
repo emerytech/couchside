@@ -190,25 +190,33 @@ Entry fields: `priority` (P0 blocker → P3 nice) · `risk` · `affects` · `dep
   to sit inside the cache root. Widening the FILENAME set is fine; widening to a glob or a
   client-supplied filename is not.
 
-### Split Preferences into category sub-tabs
-- **priority:** P3 · **risk:** low · **affects:** app only · **depends_on:** none
-- Prefs is one long scroll. **COUNTED 2026-07-22: 27 rows across 6 cards** (GENERAL 4,
-  APPEARANCE 2, INPUT & PAD 6, PAD LAYOUT 11, STREAM FROM PC 2, TOUCH ANIMATIONS 2), all
-  rendering unconditionally — no caps or Platform gating — so the count is the same on every
-  device.
-- **Reuse the existing sub-tab control**, the one Setup already uses for Boxes / Prefs / Logs /
-  Account. A second tab pattern in the same screen would be worse than the scroll.
-- Proposed 4 categories: **General** (haptics, confirm-before-suspend, vitals refresh, journal
-  lines, open-on, theme, accent) · **Input** (everything changing what the app SENDS) ·
-  **What's shown** (every hide/show row) · **Touch animations**.
-  Note "Open on" moves out of INPUT & PAD — it is an app-startup setting and its current
-  placement is the anomaly.
-- **Unverified:** whether FIVE sub-tabs fit the existing tab bar at 375pt. `tabItem` is flex:1
-  with a 15px icon + 6px gap + 12px mono label; four fit today, five is untested. That is the
-  only reason the proposal stops at four — measure in the harness before going wider, or drop
-  the icons on the nested row.
-- Also undecided: whether the sub-tab selection should persist across launches. The parent
-  control does NOT persist, so matching it means "no".
+### Make Preferences findable (filter + collapse + re-split PAD LAYOUT)
+- **priority:** P2 · **risk:** low · **affects:** app only · **depends_on:** none
+- **COUNTED on main 2026-07-22: ~25-28 controls, and PAD LAYOUT holds 12 of them.** The
+  problem is the DISTRIBUTION, not the total:
+  PAD LAYOUT 12 · INPUT & PAD 5 · GENERAL 3 · TOUCH ANIMATIONS 2 · STREAM FROM PC 2 ·
+  APPEARANCE 1.
+- **PAD LAYOUT is doing two unrelated jobs**, which is why scanning it fails:
+  - *what appears on screen* — Mouse buttons, Steam buttons, Desktop navigation, Windows
+    shortcuts, Keyboard bar, Gesture hints
+  - *how input behaves* — Steam search button, Send keys instead of a controller, Ask before
+    switching control, Open keyboard with the box, Hardware volume buttons, Hide the TV volume
+    target
+  Splitting along that seam is most of the win on its own.
+- **Plan:** (1) a filter box at the top, same pattern as the Launch grid search so it is
+  consistent rather than novel — typing "keyboard" should surface the four matching rows;
+  (2) collapsible sections with the state remembered, same mechanism as the Stream from PC
+  card; (3) the PAD LAYOUT split above.
+
+**SUPERSEDES the earlier "category sub-tabs" proposal in this file — do not build that.**
+Sub-tabs add a navigation layer and HIDE options behind a tab the user has to guess, which is
+worse for discovery, not better. The earlier entry also flagged that five tabs was untested at
+375pt; filter + collapse avoids that risk entirely and costs less. Recorded because the old
+recommendation was wrong, not merely superseded.
+
+- **Unverified:** whether a filter over ~25 rows actually feels better than scrolling them.
+  Worth building behind the existing web harness and pressing, rather than assuming — the
+  harness CAN exercise this one, unlike row-overflow or cover art.
 
 ### Landscape "laptop mode" — mini QWERTY + trackpad
 - **priority:** P2 · **risk:** low · **affects:** app only · **depends_on:** none
