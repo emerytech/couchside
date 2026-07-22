@@ -309,7 +309,36 @@ function Trackpad({
   );
 }
 
-// ---------- Keyboard bar (off-screen TextInput -> protocol v2 keys) ----------
+// ---------- Keyboard bar (visible compose field -> protocol v2 keys) ----------
+
+/**
+ * What to send the box when the compose field goes from `prev` to `next`.
+ *
+ * The field used to be invisible and was wiped to '' on every change, which
+ * streamed keystrokes fine but made PASTE impossible: iOS will not offer a
+ * paste menu for a field you cannot long-press, and anything pasted would have
+ * been erased on the next render anyway.
+ *
+ * Keeping the text on screen means the field can now differ from the box in any
+ * way — mid-string edits, autocorrect replacements, a paste dropped into the
+ * middle. Rather than special-case those, diff on the common prefix: erase back
+ * to where the two agree, then type the rest. That is correct for every edit,
+ * including the ordinary ones (a typed character is 0 backspaces + 1 char; a
+ * paste is 0 backspaces + the whole chunk).
+ *
+ * Pure and exported so the risky half is testable with synthetic input — the
+ * drag-trail bug shipped because its geometry could only be exercised on a
+ * device. `__textDelta` exposes it for the harness.
+ */
+export function textDelta(prev: string, next: string): { backspaces: number; insert: string } {
+  let c = 0;
+  const max = Math.min(prev.length, next.length);
+  while (c < max && prev[c] === next[c]) c += 1;
+  return { backspaces: prev.length - c, insert: next.slice(c) };
+}
+if (typeof globalThis !== 'undefined') {
+  (globalThis as Record<string, unknown>).__textDelta = textDelta;
+}
 
 // iOS accessory bar id: rides on TOP of the system keyboard so a Done button is
 // always visible while typing (the in-layout bar below is hidden behind the
@@ -351,6 +380,11 @@ function KeyboardBar({ onText, onBackspace, onEnter, onSwipeMode }: KeyboardBarP
     setOpen(v);
   }, []);
   const [value, setValue] = useState('');
+  const pal = useTheme();
+  // Live mirror: onChangeText/onKeyPress are memoised, and a stale `value` in
+  // their closure would diff against the wrong text and send garbage.
+  const valueRef = useRef(value);
+  valueRef.current = value;
 
   // Belt-and-suspenders dismiss: hide the OS keyboard AND blur our input, so it
   // works no matter which one is actually holding focus.
@@ -442,21 +476,26 @@ function KeyboardBar({ onText, onBackspace, onEnter, onSwipeMode }: KeyboardBarP
 
   const onChangeText = useCallback(
     (next: string) => {
-      // New printable characters are whatever got appended past the sentinel.
-      if (next.length > 0) {
-        onText(next);
-      }
-      // Reset so the field never grows; keeps each keystroke atomic.
-      setValue('');
+      // The field KEEPS its text now, so what changed has to be worked out
+      // rather than assumed to be an append — see textDelta. This is what makes
+      // paste work: a pasted chunk is just a large insert.
+      const { backspaces, insert } = textDelta(valueRef.current, next);
+      for (let i = 0; i < backspaces; i += 1) onBackspace();
+      if (insert.length > 0) onText(insert);
+      setValue(next);
     },
-    [onText],
+    [onText, onBackspace],
   );
 
   const onKeyPress = useCallback(
     (e: { nativeEvent: { key: string } }) => {
       const key = e.nativeEvent.key;
+      // Backspace on an EMPTY field can't show up as a diff, but it is how you
+      // delete text that is already on the box rather than in this field, so it
+      // still has to be forwarded. A non-empty field is left to onChangeText,
+      // or the deletion would be sent twice.
       if (key === 'Backspace') {
-        onBackspace();
+        if (valueRef.current.length === 0) onBackspace();
       } else if (key === 'Enter') {
         onEnter();
       }
@@ -513,6 +552,16 @@ function KeyboardBar({ onText, onBackspace, onEnter, onSwipeMode }: KeyboardBarP
           </Pressable>
         </View>
       )}
+      {/* ONE input, restyled — not two.
+          Closed it is the off-screen sliver it always was (iOS will not make a
+          zero-size or fully transparent view first responder, which is why it
+          cannot simply be unmounted). Open it becomes a real, touchable field
+          above the keyboard, which is the entire point: iOS only offers Paste
+          on a field you can long-press.
+
+          Rendering a second visible input instead would not work — focus would
+          stay on the hidden one that raised the keyboard, and the visible one
+          would sit there inert. */}
       <TextInput
         ref={inputRef}
         value={value}
@@ -523,14 +572,16 @@ function KeyboardBar({ onText, onBackspace, onEnter, onSwipeMode }: KeyboardBarP
           setOpenSynced(false);
           setValue('');
         }}
-        style={styles.hiddenInput}
+        style={open ? [styles.kbCompose, { bottom: 10 + kbLift }] : styles.hiddenInput}
+        placeholder={open ? 'type or paste — sent as you go' : undefined}
+        placeholderTextColor={pal.textFaint}
         autoCapitalize="none"
         autoCorrect={false}
         autoComplete="off"
         spellCheck={false}
         blurOnSubmit={false}
         keyboardAppearance="dark"
-        caretHidden
+        caretHidden={!open}
         inputAccessoryViewID={Platform.OS === 'ios' ? KB_ACCESSORY_ID : undefined}
       />
       {/* Done bar pinned to the top of the iOS keyboard — always reachable,
@@ -1825,6 +1876,25 @@ const makeStyles = (t: Palette) => StyleSheet.create({
   },
   kbBarTextOpen: {
     color: t.blue,
+  },
+  // The same input as hiddenInput, wearing its visible clothes. Sits above the
+  // raised keyboard (its `bottom` is set inline from the measured lift) so it is
+  // long-pressable — which is what makes iOS offer Paste at all.
+  kbCompose: {
+    position: 'absolute',
+    left: 14,
+    right: 14,
+    zIndex: 61,
+    elevation: 7,
+    backgroundColor: t.card,
+    borderColor: t.blue,
+    borderWidth: 1,
+    borderRadius: 12,
+    paddingVertical: 10,
+    paddingHorizontal: 12,
+    color: t.text,
+    fontSize: 15,
+    fontFamily: mono,
   },
   hiddenInput: {
     // Invisible but FOCUSABLE. iOS won't let a fully transparent (alpha 0) or
