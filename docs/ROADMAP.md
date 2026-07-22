@@ -56,6 +56,20 @@ Entry fields: `priority` (P0 blocker → P3 nice) · `risk` · `affects` · `dep
   **both** states (idle tutorial and the reload-into-PIN handoff), plus a re-run on an
   already-paired box that must pop nothing.
 
+### Note mode — jot a clue on the phone while the game runs
+- **priority:** P2 · **risk:** low · **affects:** app only · **depends_on:** the drag stroke (shipped)
+- **Full spec: `docs/memory/project_note-mode.md`.** Read it first.
+- A toggle in the Pad's swipe menu switches the surface into note mode, so you can write down
+  a clue without leaving the game. The toggle is itself hideable via a Pref. Leaving note mode
+  CLEARS the note from view but does not delete it; clearing on exit is a separate preference.
+- Cheap because `app/lib/touchTrail.ts` + `TouchIndicatorLayer` already turn touch coordinates
+  into contiguous glowing runs of line — note mode is that with the fade removed.
+- **Open questions, deliberately not assumed:** where the ink persists (memory / prefs blob /
+  its own key), whether it survives an app restart, whether it is per-box, and what bounds it
+  (48 Views is fine for a fading trail, 2000 is not for a drawing).
+- **Cannot be verified in the web harness** — RN Web emits mouse events, never touch events.
+  Device only, via `adb shell input swipe` + `screencap` mid-gesture.
+
 ### In-app Bluetooth pairing
 - **priority:** P2 · **risk:** medium · **affects:** agent + app · **depends_on:** none
 - Agent drives `bluetoothctl`; app renders discovered devices and pairs on tap. Removes the

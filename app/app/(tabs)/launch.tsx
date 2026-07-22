@@ -230,13 +230,17 @@ function QueuedRow({ d }: { d: SteamDownload }) {
  * Steam downloads above the launcher grid. Splits what's ACTUALLY transferring
  * now (full progress rows) from Steam's queued/pending-update backlog (compact,
  * collapsed by default) — the backlog otherwise reads as downloads stuck for
- * days. Hidden when nothing is downloading or queued.
+ * days. Hidden when nothing is downloading or queued, or when the user has
+ * turned the card off in Prefs.
  */
 function DownloadsSection({ downloads }: { downloads: SteamDownload[] }) {
   const t = useTheme();
   const styles = useThemedStyles(makeStyles);
+  const hidden = usePref('hideDownloads');
   const [showQueue, setShowQueue] = useState(false);
-  if (downloads.length === 0) return null;
+  // Gate inside the component, not at the call site: the hooks above must run
+  // unconditionally, and any future second call site inherits the pref for free.
+  if (hidden || downloads.length === 0) return null;
   const active = downloads.filter(isActiveDownload);
   const queued = downloads.filter((d) => !isActiveDownload(d));
   return (

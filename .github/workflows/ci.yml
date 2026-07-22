@@ -260,6 +260,31 @@ jobs:
       - name: Unit tests (no camera in the shipping app)
         run: python3 tests/test_no_camera_in_shipping_app.py
 
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: app/package-lock.json
+      # The ONLY automated check the drag-stroke geometry can have. React Native
+      # Web emits mouse events, never touch events, so onTouchMove never fires
+      # in the web harness and the trail path cannot be driven there at all --
+      # which is how a version that drew nothing on a real iPhone passed every
+      # pre-ship check. Node runs the .ts directly via type stripping; no build.
+      - name: Unit tests (touch drag stroke geometry)
+        run: node --experimental-strip-types app/__tests__/touch-trail.ts
+
+      # KI-002: the app had NO automated signal of any kind. Every escaped bug
+      # this project has paid for lately was in app/ -- a tap shipped broken to
+      # TestFlight, a link that overflowed only on Android, a button occluded
+      # only on a handheld -- while CI ran 25 Python steps for the agent and
+      # zero for the app. A typecheck is not a test, but it is the cheapest
+      # thing that fails on a push that does not compile, which is currently
+      # nobody's job but the author's memory.
+      - name: Install app deps
+        run: npm ci --prefix app --no-audit --no-fund
+      - name: Typecheck the app
+        run: npx --prefix app tsc --noEmit -p app
+
   smoke:
     runs-on: ubuntu-latest
     needs: compile

@@ -1,6 +1,6 @@
 /**
  * Visible touch indicators: a ring wherever a finger lands, and optionally a
- * trail of dots while it drags.
+ * stroke following the finger while it drags.
  *
  * iOS exposes NO public API for system-wide touch events. There is no equivalent
  * of Android's "Show taps", and no screen recorder — built-in, third-party, or a
@@ -42,90 +42,46 @@ import {
 } from 'react-native';
 
 import { usePref } from '@/lib/prefs';
+import { segmentBox, strokeRuns } from '@/lib/touchTrail';
 import { useResolvedScheme, useTheme } from '@/lib/theme';
 
-type MarkKind = 'tap' | 'trail';
-type MarkSpec = { id: number; x: number; y: number; kind: MarkKind };
+type MarkInput =
+  | { kind: 'tap'; x: number; y: number }
+  /** One straight run of the stroke, from (x,y) to (x2,y2). `order` is its
+   *  index within the batch emitted by a single move event -- see Seg. */
+  | { kind: 'seg'; x: number; y: number; x2: number; y2: number; order: number };
+/** Split from MarkInput because `Omit<Union, 'id'>` collapses a union to its
+ *  shared keys — which silently dropped x2/y2 from what the emitter accepted. */
+type MarkSpec = MarkInput & { id: number };
 
 const TAP_SIZE = 76;
-const TRAIL_SIZE = 26;
 const TAP_MS = 520;
-const TRAIL_MS = 320;
 /**
- * Trail dots are spaced by DISTANCE, not by time.
+ * Stroke thickness, and how long a run of it stays on screen.
  *
- * The first shipped version throttled to one dot per 45ms. Measured off a
- * device recording (2.9.17, iPhone, Track surface), that produced tight clumps
- * of 3-4 dots spanning ~40-60px separated by 200-400px of nothing — specks, not
- * a stroke, which fails the one job the feature has.
+ * This used to draw a DOT every TRAIL_STEP_PX, each shrinking as it faded. At
+ * 20px spacing with 26px dots that should have overlapped into a line -- but
+ * every dot started shrinking the moment it appeared, so by the time the finger
+ * was a few steps further on the earlier ones had pulled apart into beads. On
+ * video it read as a dotted trail, which is not what a drag looks like.
  *
- * Two things caused it and a time throttle can fix neither: 45ms of travel is
- * hundreds of pixels during a real trackpad scrub, and iOS delivers touch-moves
- * COALESCED in bursts, so events arrive clumped and then not at all. Lowering
- * the interval cannot invent samples the OS never sent. Interpolating along the
- * segment between the previous point and the new one does, and it is
- * indifferent to how bursty the event stream is.
+ * Segments fix it structurally rather than by tuning: consecutive runs ABUT, so
+ * there is no spacing to pull apart. They also carry no scale animation --
+ * shrinking is what opened the gaps.
  */
-const TRAIL_STEP_PX = 20;
-/**
- * Cap dots emitted per event so one coalesced jump cannot spawn a whole stroke
- * in a single frame — this runs on the trackpad path, which is latency-critical.
- */
-const TRAIL_MAX_PER_EVENT = 6;
-/**
- * Past this, treat the gap as a DISCONTINUITY (finger lifted and re-placed, or a
- * dropped event) and drop a single dot instead of drawing a line the finger
- * never travelled. A phantom stroke across the screen is worse than a gap.
- */
-const TRAIL_JUMP_PX = 320;
+const TRAIL_MS = 700;
+/** Offset between runs emitted in the same frame, so a batch fades as a
+ *  gradient instead of a block. Small enough that it never reads as lag. */
+const TRAIL_STAGGER_MS = 45;
+/** Glow blur radius, in px. Subtle on purpose: the stroke has to stay legible
+ *  over game art and through video compression, and a wide halo just turns the
+ *  line into a smudge. */
+const GLOW_RADIUS = 9;
 /** Hard cap on live marks so a long drag can't grow the tree without bound.
- *  At 20px spacing this is ~960px of visible stroke. */
+ *  At 20px per run this is ~960px of visible stroke. */
 const MAX_MARKS = 48;
 
 let nextMarkId = 0;
-
-type Pt = { x: number; y: number };
-
-/**
- * Where to lay trail dots for one move event, given where the last one landed.
- *
- * Pure on purpose. The trail path cannot be exercised on web at all — RNW emits
- * mouse events, not touch events — so the previous version's bug survived every
- * check that was run before it shipped. Keeping the geometry in a pure function
- * means the risky half is testable with synthetic input on any platform;
- * `__touchTrailPoints` exposes it for exactly that.
- *
- * Returns the dots to draw and the point to carry forward. `next` is the LAST
- * DOT LAID, not the event coordinate — carrying the event coordinate forward
- * would silently swallow the leftover sub-step distance and let spacing drift.
- */
-export function trailPoints(last: Pt | null, x: number, y: number): { points: Pt[]; next: Pt } {
-  if (!last) return { points: [{ x, y }], next: { x, y } };
-  const dx = x - last.x;
-  const dy = y - last.y;
-  const dist = Math.hypot(dx, dy);
-  if (dist < TRAIL_STEP_PX) return { points: [], next: last };
-  // Discontinuity: finger lifted and re-placed, or events were dropped. Draw
-  // where it IS rather than a line it never travelled.
-  if (dist > TRAIL_JUMP_PX) return { points: [{ x, y }], next: { x, y } };
-  const want = Math.floor(dist / TRAIL_STEP_PX);
-  const steps = Math.min(want, TRAIL_MAX_PER_EVENT);
-  const points: Pt[] = [];
-  for (let i = 1; i <= steps; i += 1) {
-    const t = (i * TRAIL_STEP_PX) / dist;
-    points.push({ x: last.x + dx * t, y: last.y + dy * t });
-  }
-  // When the per-event cap bites, resume from the FINGER, not from the last dot
-  // drawn. Resuming from the dot makes the shortfall accumulate: every event
-  // falls further behind until the gap trips the discontinuity guard and the
-  // trail visibly snaps. Accepting one gap keeps the stroke under the finger.
-  if (want > steps) return { points, next: { x, y } };
-  const done = (steps * TRAIL_STEP_PX) / dist;
-  return { points, next: { x: last.x + dx * done, y: last.y + dy * done } };
-}
-if (typeof globalThis !== 'undefined') {
-  (globalThis as Record<string, unknown>).__touchTrailPoints = trailPoints;
-}
 
 /**
  * Instrumentation for the drag-trail bug (see the note on onTouchMove below).
@@ -152,7 +108,7 @@ function Mark({
   fill,
   onDone,
 }: {
-  mark: MarkSpec;
+  mark: Extract<MarkSpec, { kind: 'tap' }>;
   ring: string;
   fill: string;
   onDone: () => void;
@@ -166,19 +122,13 @@ function Mark({
   useEffect(() => {
     Animated.timing(p, {
       toValue: 1,
-      duration: mark.kind === 'tap' ? TAP_MS : TRAIL_MS,
+      duration: TAP_MS,
       easing: Easing.out(Easing.quad),
       useNativeDriver: true,
     }).start(() => done.current());
-  }, [p, mark.kind]);
+  }, [p]);
 
-  const size = mark.kind === 'tap' ? TAP_SIZE : TRAIL_SIZE;
-  const scale = p.interpolate({
-    inputRange: [0, 1],
-    // A tap blooms outward; a trail dot just shrinks slightly as it fades, so a
-    // drag reads as a line of shrinking beads rather than a row of explosions.
-    outputRange: mark.kind === 'tap' ? [0.35, 1] : [1, 0.7],
-  });
+  const scale = p.interpolate({ inputRange: [0, 1], outputRange: [0.35, 1] });
   const opacity = p.interpolate({
     inputRange: [0, 0.15, 1],
     outputRange: [0.55, 0.95, 0],
@@ -190,18 +140,79 @@ function Mark({
       style={[
         styles.mark,
         {
-          left: mark.x - size / 2,
-          top: mark.y - size / 2,
-          width: size,
-          height: size,
-          borderRadius: size / 2,
-          borderWidth: mark.kind === 'tap' ? 3 : 2,
+          left: mark.x - TAP_SIZE / 2,
+          top: mark.y - TAP_SIZE / 2,
+          width: TAP_SIZE,
+          height: TAP_SIZE,
+          borderRadius: TAP_SIZE / 2,
+          borderWidth: 3,
           borderColor: ring,
           backgroundColor: fill,
           opacity,
           transform: [{ scale }],
         },
       ]}
+    />
+  );
+}
+
+/** One run of the drag stroke. Fades in place — NO scale, see STROKE_W. */
+function Seg({
+  mark,
+  color,
+  onDone,
+}: {
+  mark: Extract<MarkSpec, { kind: 'seg' }>;
+  color: string;
+  onDone: () => void;
+}) {
+  const p = useRef(new Animated.Value(0)).current;
+  const done = useRef(onDone);
+  done.current = onDone;
+
+  useEffect(() => {
+    Animated.timing(p, {
+      toValue: 1,
+      duration: TRAIL_MS,
+      // One move event can emit up to TRAIL_MAX_PER_EVENT runs in the SAME
+      // frame. Without a stagger they fade in lockstep, so a fast drag renders
+      // as ~120px blocks of uniform opacity with hard edges between them --
+      // measured on a real Razr at 3x zoom, and it read as stacked rectangles
+      // rather than a stroke. Offsetting each run inside its batch turns those
+      // steps back into a gradient.
+      delay: mark.order * TRAIL_STAGGER_MS,
+      easing: Easing.out(Easing.quad),
+      useNativeDriver: true,
+    }).start(() => done.current());
+  }, [p, mark.order]);
+
+  const box = segmentBox(mark.x, mark.y, mark.x2, mark.y2);
+  // Holds full strength for the first two thirds, then goes. The older end of
+  // the stroke fading first is what makes it read as a direction of travel; a
+  // linear fade from the first frame just makes the whole line dim.
+  const opacity = p.interpolate({
+    inputRange: [0, 0.65, 1],
+    outputRange: [0.9, 0.85, 0],
+  });
+
+  return (
+    <Animated.View
+      pointerEvents="none"
+      style={{
+        position: 'absolute',
+        left: box.left,
+        top: box.top,
+        width: box.width,
+        height: box.height,
+        backgroundColor: color,
+        // The glow. boxShadow (not the deprecated shadow* props) is the one
+        // form RN renders on BOTH platforms, and it costs no extra node -- the
+        // alternative, a second wider translucent View per run, would double an
+        // already 48-node tree on the latency-critical trackpad path.
+        boxShadow: `0px 0px ${GLOW_RADIUS}px ${color}`,
+        opacity,
+        transform: [{ rotate: `${box.angle}rad` }],
+      }}
     />
   );
 }
@@ -224,25 +235,29 @@ export function TapCapture({
    *  previous one ended. */
   const lastTrailPt = useRef<{ x: number; y: number } | null>(null);
 
-  const add = useCallback((pageX: number, pageY: number, kind: MarkKind) => {
+  const push = useCallback((spec: MarkInput) => {
+    touchTrace.marks += 1;
+    setMarks((prev) => {
+      const next = prev.concat({ ...spec, id: nextMarkId++ });
+      return next.length > MAX_MARKS ? next.slice(next.length - MAX_MARKS) : next;
+    });
+  }, []);
+
+  const add = useCallback((pageX: number, pageY: number) => {
     // Guard NaN/undefined explicitly: a mark at NaN renders nothing and would
     // look identical to "the handler never fired", which is exactly the
     // ambiguity that made this bug hard to place.
     if (!Number.isFinite(pageX) || !Number.isFinite(pageY)) return;
-    touchTrace.marks += 1;
     touchTrace.lastPageX = pageX;
     touchTrace.lastPageY = pageY;
-    setMarks((prev) => {
-      const next = prev.concat({ id: nextMarkId++, x: pageX, y: pageY, kind });
-      return next.length > MAX_MARKS ? next.slice(next.length - MAX_MARKS) : next;
-    });
-  }, []);
+    push({ kind: 'tap', x: pageX, y: pageY });
+  }, [push]);
 
   const onStartCapture = useCallback(
     (e: GestureResponderEvent) => {
       touchTrace.startCapture += 1;
       lastTrailPt.current = null; // new gesture: never interpolate from the old one
-      if (on) add(e.nativeEvent.pageX, e.nativeEvent.pageY, 'tap');
+      if (on) add(e.nativeEvent.pageX, e.nativeEvent.pageY);
       return false; // observe only — the child still becomes the responder
     },
     [on, add],
@@ -278,11 +293,16 @@ export function TapCapture({
       const { pageX, pageY } = e.nativeEvent;
       if (!Number.isFinite(pageX) || !Number.isFinite(pageY)) return;
 
-      const { points, next } = trailPoints(lastTrailPt.current, pageX, pageY);
+      // strokeRuns owns the chaining, INCLUDING closing the run to the finger
+      // when the per-event cap bites. That closing step was missing while this
+      // was a loop inline here, and a fast flick left a permanent hole in the
+      // stroke. It is pure and tested now precisely because untested glue is
+      // where it hid.
+      const { runs, next } = strokeRuns(lastTrailPt.current, pageX, pageY);
+      runs.forEach((r, i) => push({ kind: 'seg', ...r, order: i }));
       lastTrailPt.current = next;
-      for (const p of points) add(p.x, p.y, 'trail');
     },
-    [on, trail, add],
+    [on, trail, push],
   );
 
   const onTouchEnd = useCallback(() => {
@@ -314,15 +334,19 @@ export function TapCapture({
       {children}
       {marks.length > 0 ? (
         <View style={StyleSheet.absoluteFill} pointerEvents="none">
-          {marks.map((m) => (
-            <Mark
-              key={m.id}
-              mark={m}
-              ring={t.accent}
-              fill={fill}
-              onDone={() => remove(m.id)}
-            />
-          ))}
+          {marks.map((m) =>
+            m.kind === 'tap' ? (
+              <Mark
+                key={m.id}
+                mark={m}
+                ring={t.accent}
+                fill={fill}
+                onDone={() => remove(m.id)}
+              />
+            ) : (
+              <Seg key={m.id} mark={m} color={t.accent} onDone={() => remove(m.id)} />
+            ),
+          )}
         </View>
       ) : null}
     </View>

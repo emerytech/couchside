@@ -1,9 +1,10 @@
+import { createContext, useContext } from 'react';
 import Ionicons from '@expo/vector-icons/Ionicons';
 import * as Application from 'expo-application';
 import Constants from 'expo-constants';
 import * as Linking from 'expo-linking';
 import { useLocalSearchParams, useRouter } from 'expo-router';
-import React, { useCallback, useEffect, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   Alert,
   KeyboardAvoidingView,
@@ -20,7 +21,6 @@ import {
 
 import { AgentUpdateBanner } from '@/components/AgentUpdateBanner';
 import { Gated } from '@/components/Gated';
-import { InputTracePanel } from '@/components/InputTracePanel';
 import { LogsPanel } from '@/components/LogsPanel';
 import { QrView } from '@/components/QrView';
 import { BoxScanPair } from '@/components/BoxScanPair';
@@ -507,6 +507,68 @@ export default function SetupScreen() {
 }
 
 /** A labeled on/off row for the Preferences card. */
+/**
+ * Prefs filtering.
+ *
+ * Lives in a context so a row does not have to be told about it: there are ~25
+ * of them and threading a `query` prop through every one is the kind of
+ * mechanical edit that silently misses two.
+ *
+ * A row matches on its label OR its sub-text. Sub-text matters -- "controller"
+ * appears in several descriptions but only one label, and someone typing it
+ * almost certainly means the description.
+ */
+/**
+ * The live query, plus a way for a row to say "I matched".
+ *
+ * The counter exists because rows self-hide: nothing upstream can otherwise
+ * tell an empty result from a rendering failure, and a query that matches
+ * nothing used to leave the whole tab blank. The alternative -- a flat registry
+ * of every pref's text, consulted to decide the same thing -- is the exact
+ * duplication that let the three hand-rolled rows drift out of the filter in
+ * the first place. A row that renders counts itself, so it cannot drift.
+ */
+type PrefFilter = { q: string; hit: () => void };
+const PrefFilterCtx = createContext<PrefFilter>({ q: '', hit: () => {} });
+
+function prefMatches(q: string, label: string, sub?: string): boolean {
+  if (!q) return true;
+  const n = (x: string) => x.toLowerCase().replace(/\s+/g, '');
+  const needle = n(q);
+  return n(label).includes(needle) || (!!sub && n(sub).includes(needle));
+}
+
+/**
+ * Filter wrapper for a row that CANNOT be a TogglePref.
+ *
+ * Three rows own their control -- haptics buzzes on enable, accent is a swatch
+ * strip, keep-awake drives a native lock -- so they stay hand-rolled. Without
+ * this they matched EVERY query, because the filter only ever saw TogglePref
+ * and SegPref: searching "keyboard" returned Haptic feedback, Accent and Keep
+ * screen awake alongside the real hits, which reads as a broken search.
+ *
+ * `label` and `sub` must repeat the row's own visible text. That duplication is
+ * the cost of not restructuring three working controls.
+ */
+function PrefFilterable({
+  label,
+  sub,
+  children,
+}: {
+  label: string;
+  sub?: string;
+  children: React.ReactNode;
+}) {
+  const styles = useThemedStyles(makeStyles);
+  const { q, hit } = useContext(PrefFilterCtx);
+  if (!prefMatches(q, label, sub)) return null;
+  hit();
+  // Fragment when not filtering, so the normal layout is untouched; a spacing
+  // host when filtering, because a fragment cannot carry a margin.
+  if (!q) return <>{children}</>;
+  return <View style={styles.prefHit}>{children}</View>;
+}
+
 export function TogglePref({
   label,
   sub,
@@ -520,8 +582,11 @@ export function TogglePref({
 }) {
   const t = useTheme();
   const styles = useThemedStyles(makeStyles);
+  const { q, hit } = useContext(PrefFilterCtx);
+  if (!prefMatches(q, label, sub)) return null;
+  hit();
   return (
-    <View style={styles.prefRow}>
+    <View style={[styles.prefRow, q ? styles.prefHit : null]}>
       <View style={styles.prefBody}>
         <Text style={styles.prefLabel}>{label}</Text>
         <Text style={styles.prefSub}>{sub}</Text>
@@ -552,8 +617,11 @@ export function SegPref<T extends string | number>({
   onSelect: (v: T) => void;
 }) {
   const styles = useThemedStyles(makeStyles);
+  const { q, hit } = useContext(PrefFilterCtx);
+  if (!prefMatches(q, label, sub)) return null;
+  hit();
   return (
-    <View style={styles.prefCol}>
+    <View style={[styles.prefCol, q ? styles.prefHit : null]}>
       <View style={styles.prefBody}>
         <Text style={styles.prefLabel}>{label}</Text>
         <Text style={styles.prefSub}>{sub}</Text>
@@ -612,9 +680,30 @@ function CategoryTabs({ tab, onTab }: { tab: SetupTab; onTab: (t: SetupTab) => v
 }
 
 /** A small section header inside a card: icon + uppercase label. */
+/**
+ * Shown when a query matches nothing. Without it the body went completely
+ * blank -- indistinguishable from the tab failing to render, and with no hint
+ * that the text you typed is the reason.
+ */
+function PrefNoMatches({ query }: { query: string }) {
+  const t = useTheme();
+  const styles = useThemedStyles(makeStyles);
+  return (
+    <View style={styles.prefEmpty}>
+      <Ionicons name="search-outline" size={18} color={t.textFaint} />
+      <Text style={styles.prefEmptyText}>No settings match “{query}”.</Text>
+    </View>
+  );
+}
+
 function CardHeader({ icon, label }: { icon: IoniconName; label: string }) {
   const t = useTheme();
   const styles = useThemedStyles(makeStyles);
+  // While a query is active the group headers go away: search results read as
+  // one flat list, and a header left stranded above zero matching rows is
+  // noise that makes the results look emptier than they are.
+  const { q } = useContext(PrefFilterCtx);
+  if (q) return null;
   return (
     <View style={styles.cardHeader}>
       <Ionicons name={icon} size={14} color={t.textDim} />
@@ -624,8 +713,36 @@ function CardHeader({ icon, label }: { icon: IoniconName; label: string }) {
 }
 
 function SetupBody() {
+  const [prefQuery, setPrefQuery] = useState('');
   const t = useTheme();
   const styles = useThemedStyles(makeStyles);
+  // While a query is active the card chrome dissolves. Two things go wrong
+  // without it: a card whose every row was filtered out still draws as an empty
+  // bordered box, and the cards that DO have a hit chop the survivors into
+  // separate panels. Either way the results look emptier and more scattered
+  // than they are. Flat, the hits read as one list.
+  // TRIMMED, everywhere. A query of only spaces used to be truthy here and
+  // in the provider, so it flattened every card and hid every header while
+  // prefMatches -- which strips whitespace -- went on matching everything.
+  const prefFiltering = prefQuery.trim().length > 0;
+  // Counted during render, read after commit. A ref rather than state because
+  // incrementing state from a child's render body is a loop; the effect below
+  // is the only thing that turns the count into UI, and setState bails when the
+  // value is unchanged so it settles in one extra pass.
+  const prefHits = useRef(0);
+  prefHits.current = 0;
+  const [prefNoMatch, setPrefNoMatch] = useState(false);
+  const prefFilter = useMemo(
+    () => ({ q: prefQuery.trim(), hit: () => { prefHits.current += 1; } }),
+    [prefQuery],
+  );
+  useEffect(() => {
+    setPrefNoMatch(prefFiltering && prefHits.current === 0);
+  });
+  const prefCardStyle = prefFiltering ? styles.prefFlat : styles.card;
+  const prefCardGroupStyle = prefFiltering
+    ? styles.prefFlat
+    : [styles.card, styles.cardGroup];
   const { entitlement, recordPurchase } = useEntitlement();
   const {
     boxes,
@@ -663,6 +780,7 @@ function SetupBody() {
   const searchButtonSide = usePref('searchButtonSide');
   const volumeButtons = usePref('volumeButtons');
   const hideOfflineStreamHosts = usePref('hideOfflineStreamHosts');
+  const hideDownloads = usePref('hideDownloads');
   const hideStreamFromPc = usePref('hideStreamFromPc');
   const hideTvVolume = usePref('hideTvVolume');
   const showTaps = usePref('showTaps');
@@ -1095,9 +1213,37 @@ function SetupBody() {
         )}
 
         {tab === 'prefs' && (
-          <>
-            <View style={[styles.card, styles.cardGroup]}>
+          <PrefFilterCtx.Provider value={prefFilter}>
+            {/* Find-as-you-type. ~25 controls across six groups is past the
+                point where scanning works, and half of them live in one card.
+                Filtering beats reorganising here: it costs no navigation layer
+                and hides nothing behind a tab you have to guess. */}
+            <View style={styles.prefSearchWrap}>
+              <Ionicons name="search" size={15} color={t.textDim} />
+              <TextInput
+                value={prefQuery}
+                onChangeText={setPrefQuery}
+                placeholder="Search settings"
+                placeholderTextColor={t.textFaint}
+                style={styles.prefSearchInput}
+                autoCapitalize="none"
+                autoCorrect={false}
+                returnKeyType="search"
+              />
+              {prefQuery.length > 0 && (
+                <Pressable
+                  onPress={() => setPrefQuery('')}
+                  hitSlop={10}
+                  accessibilityLabel="Clear settings search">
+                  <Ionicons name="close-circle" size={17} color={t.textDim} />
+                </Pressable>
+              )}
+            </View>
+            <View style={prefCardGroupStyle}>
               <CardHeader icon="options-outline" label="GENERAL" />
+              <PrefFilterable
+                label="Haptic feedback"
+                sub="Vibration on taps, buttons, swipes, and actions.">
               <View style={styles.prefRow}>
                 <View style={styles.prefBody}>
                   <Text style={styles.prefLabel}>Haptic feedback</Text>
@@ -1118,6 +1264,16 @@ function SetupBody() {
                   ios_backgroundColor={t.inset}
                 />
               </View>
+              </PrefFilterable>
+              <TogglePref
+                label="Hide the downloads card"
+                sub="Removes the Steam downloads panel from the top of the Launch tab. Downloads keep running — this only hides the card."
+                value={hideDownloads}
+                onValueChange={(v) => {
+                  void setPref('hideDownloads', v);
+                  hapticSelection();
+                }}
+              />
               <TogglePref
                 label="Confirm before suspend"
                 sub="Ask before putting the box to sleep."
@@ -1159,7 +1315,7 @@ function SetupBody() {
               />
             </View>
 
-            <View style={[styles.card, styles.cardGroup]}>
+            <View style={prefCardGroupStyle}>
               <CardHeader icon="color-palette-outline" label="APPEARANCE" />
               <SegPref
                 label="Theme"
@@ -1175,6 +1331,9 @@ function SetupBody() {
                   hapticSelection();
                 }}
               />
+              <PrefFilterable
+                label="Accent"
+                sub="The app&apos;s highlight color.">
               <View style={styles.prefCol}>
                 <View style={styles.prefBody}>
                   <Text style={styles.prefLabel}>Accent</Text>
@@ -1199,10 +1358,14 @@ function SetupBody() {
                   ))}
                 </View>
               </View>
+              </PrefFilterable>
             </View>
 
-            <View style={[styles.card, styles.cardGroup]}>
+            <View style={prefCardGroupStyle}>
               <CardHeader icon="game-controller-outline" label="INPUT & PAD" />
+              <PrefFilterable
+                label="Keep screen awake on Pad"
+                sub="Hold the display on while the controller is open. Off saves battery.">
               <View style={styles.prefRow}>
                 <View style={styles.prefBody}>
                   <Text style={styles.prefLabel}>Keep screen awake on Pad</Text>
@@ -1222,6 +1385,7 @@ function SetupBody() {
                   ios_backgroundColor={t.inset}
                 />
               </View>
+              </PrefFilterable>
               <SegPref
                 label="Open on"
                 sub="The tab the app starts on. Pairing wins on first run — with no box paired you still land on Setup."
@@ -1296,7 +1460,7 @@ function SetupBody() {
             </View>
 
             {/* Every optional Pad row/view can be hidden — declutter to taste. */}
-            <View style={styles.card}>
+            <View style={prefCardStyle}>
               <CardHeader icon="game-controller-outline" label="PAD LAYOUT" />
               <TogglePref
                 label="Mouse buttons"
@@ -1419,7 +1583,7 @@ function SetupBody() {
 
             {/* The box's offline check is conservative and will sometimes call a
                 live PC offline, so dimming is the default and hiding is opt-in. */}
-            <View style={styles.card}>
+            <View style={prefCardStyle}>
               <CardHeader icon="tv-outline" label="STREAM FROM PC" />
               <TogglePref
                 label="Hide offline stream hosts"
@@ -1447,7 +1611,7 @@ function SetupBody() {
                 own -- and help on a support screen-share. Calling the card
                 "SCREEN RECORDING" would hide it from anyone looking for the
                 other two. */}
-            <View style={styles.card}>
+            <View style={prefCardStyle}>
               <CardHeader icon="hand-left-outline" label="TOUCH ANIMATIONS" />
               <TogglePref
                 label="Show taps"
@@ -1460,7 +1624,7 @@ function SetupBody() {
               />
               <TogglePref
                 label="Trace drags"
-                sub="Leaves a trail of dots while a finger moves, which makes swipe and trackpad gestures readable on video. Needs Show taps."
+                sub="Draws a line along the path a finger travels, which makes swipe and trackpad gestures readable on video. Needs Show taps."
                 value={traceDrags}
                 onValueChange={(v) => {
                   void setPref('traceDrags', v);
@@ -1468,10 +1632,8 @@ function SetupBody() {
                 }}
               />
             </View>
-
-
-            <InputTracePanel />
-          </>
+            {prefNoMatch && <PrefNoMatches query={prefQuery.trim()} />}
+          </PrefFilterCtx.Provider>
         )}
 
         {tab === 'account' && (
@@ -1668,6 +1830,19 @@ const makeStyles = (t: Palette) => StyleSheet.create({
     gap: 7,
     marginBottom: 12,
   },
+  prefSearchWrap: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+    backgroundColor: t.card,
+    borderColor: t.cardBorder,
+    borderWidth: 1,
+    borderRadius: 10,
+    paddingHorizontal: 12,
+    paddingVertical: 9,
+    marginBottom: 10,
+  },
+  prefSearchInput: { flex: 1, color: t.text, fontSize: 15, padding: 0 },
   cardHeaderText: {
     color: t.textDim,
     fontSize: 11,
@@ -1676,6 +1851,27 @@ const makeStyles = (t: Palette) => StyleSheet.create({
     fontFamily: mono,
   },
   cardGroup: { gap: 16 },
+  // The card wrapper while a search query is active: no border, background,
+  // padding or bottom margin, so a card with zero surviving rows takes ZERO
+  // height instead of leaving an empty panel. Keeps the gap so adjacent hits
+  // from different sections don't collide.
+  prefFlat: {},
+  // Spacing while filtering belongs to the visible ROW, not to the card that
+  // contains it. A container `gap` only separates siblings INSIDE one card, so
+  // two hits from different groups rendered flush against each other -- seen on
+  // "taps", which matches Haptic feedback in GENERAL and Show taps in TOUCH
+  // ANIMATIONS. Putting it on the row also means a card whose every row was
+  // filtered out still contributes exactly zero height, which a marginBottom on
+  // the card itself would not.
+  prefHit: { marginBottom: 16 },
+  prefEmpty: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+    paddingVertical: 24,
+    paddingHorizontal: 4,
+  },
+  prefEmptyText: { color: t.textDim, fontSize: 13, flex: 1, minWidth: 0 },
   accountBadges: {
     flexDirection: 'row',
     alignItems: 'center',
