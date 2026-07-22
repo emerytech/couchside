@@ -1,4 +1,7 @@
-New in 2.9.17
+New in 2.9.18
 
-• Touch animations. Preferences can now draw a ring wherever you tap, and a trail of dots while a finger moves, so a screen recording or a support screen-share shows what was actually pressed. Both are off by default.
-• Clearer wording on the unlock screen.
+• Pick which tab the app opens on, in Preferences.
+• The trackpad is now called Mouse, its buttons say LEFT / MID / RIGHT, and it always has an Esc key.
+• Hide the "Stream from PC" section, or the TV volume target, if you don't use them.
+• Cover art no longer repeats the game's name.
+• Fixed black-on-black text in the power menu, and drag trails that drew specks instead of a line.
