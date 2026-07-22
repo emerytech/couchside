@@ -66,6 +66,14 @@ jobs:
       - name: Unit tests (couch ceremony)
         run: python3 tests/test_couch_ceremony.py
 
+      # Leaving Couch Mode used to GUESS its way back, picking whichever sink had
+      # "speaker"/"analog"/"pci" in its name and making that the system default.
+      # That is a substitution, not a restore, and it cost a user their audio.
+      # These pin the rule: put audio back exactly where it was, or leave it
+      # alone -- never pick a device the user did not choose.
+      - name: Unit tests (audio sink restore)
+        run: python3 tests/test_audio_sink_restore.py
+
       # The desktop switch must honour the box's CONFIGURED session. SteamOS
       # ships both, and steamos-session-select maps the bare "plasma" arg to the
       # X11 one -- so passing it silently downgraded a Wayland-configured box to
