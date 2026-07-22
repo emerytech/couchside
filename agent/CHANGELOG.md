@@ -25,6 +25,10 @@ cannot actually use, so a nearly-full drive could read several points low.
 
 Game drives appear too — a Steam Deck's SD card was invisible before.
 
+The GPU no longer looks like it has half a gigabyte. Handhelds share memory
+with the system, and only the small dedicated slice was being reported — it now
+shows the whole pool, plus how busy the GPU actually is.
+
 Memory now shows swap in use and, when the box is actually struggling, how much
 time it spends stalled waiting on memory — the thing you feel as stutter, which
 a used-percentage does not tell you.

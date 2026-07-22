@@ -418,6 +418,15 @@ export type Gaming = {
     temp_c?: number;
     vram_used_mb?: number;
     vram_total_mb?: number;
+    /** System memory the GPU may use (agent >= 2.9.43). On an APU this is the
+     *  number that matters: a Legion Go S carves out 512 MB of "VRAM" that sits
+     *  at 89% while 15.3 GB of GTT is barely touched, so VRAM alone made a 32 GB
+     *  handheld look like a full 0.5 GB graphics card. */
+    gtt_used_mb?: number;
+    gtt_total_mb?: number;
+    /** How hard the GPU is actually working, 0-100 (agent >= 2.9.43). A memory
+     *  bar says what is allocated, not whether anything is happening. */
+    busy_pct?: number;
   };
   game?: {
     appid: number;

@@ -9491,15 +9491,37 @@ def _gpu_sensors():
             milli = _read_int(temp_path)
             if milli is not None:
                 gpu["temp_c"] = round(milli / 1000.0, 1)
-        # VRAM is documented as BYTES but was not observable this session. Sanity-
-        # gate the magnitude before trusting the unit — a total under ~64 MB is
-        # almost certainly not bytes, so drop it rather than report a lie.
+        # VRAM is in BYTES. Sanity-gate the magnitude before trusting the unit --
+        # a total under ~64 MB is almost certainly not bytes, so drop it rather
+        # than report a lie.
         total = _read_int(os.path.join(dev, "mem_info_vram_total"))
         used = _read_int(os.path.join(dev, "mem_info_vram_used"))
         if total is not None and total > (64 << 20):
             gpu["vram_total_mb"] = total >> 20
             if used is not None:
                 gpu["vram_used_mb"] = used >> 20
+
+        # GTT: system memory the GPU may use. On an APU this is the number that
+        # matters and VRAM alone is actively misleading -- MEASURED on a Legion
+        # Go S, mem_info_vram_total is a 512 MB BIOS carve-out sitting at 89%
+        # used, while mem_info_gtt_total is 15.3 GB barely touched. Reporting
+        # only VRAM made a 32 GB handheld look like a full 0.5 GB graphics card.
+        #
+        # Both are reported rather than summed: they are different pools with
+        # different performance, and adding them would invent a number the
+        # hardware does not have. The app decides how to present it.
+        gtt_total = _read_int(os.path.join(dev, "mem_info_gtt_total"))
+        gtt_used = _read_int(os.path.join(dev, "mem_info_gtt_used"))
+        if gtt_total is not None and gtt_total > (64 << 20):
+            gpu["gtt_total_mb"] = gtt_total >> 20
+            if gtt_used is not None:
+                gpu["gtt_used_mb"] = gtt_used >> 20
+
+        # How hard the GPU is actually working. A VRAM bar says what is
+        # allocated, not whether anything is happening.
+        busy = _read_int(os.path.join(dev, "gpu_busy_percent"))
+        if busy is not None and 0 <= busy <= 100:
+            gpu["busy_pct"] = busy
         return gpu
     return {}
 
@@ -9991,7 +10013,10 @@ def mock_gaming():
     external output, a pad with battery, Game Mode."""
     return {
         "gpu": {"name": "amdgpu", "temp_c": 61.0,
-                "vram_used_mb": 3300, "vram_total_mb": 8192},
+                "vram_used_mb": 3300, "vram_total_mb": 8192,
+                # Mock a DISCRETE card: gtt smaller than vram, so the app takes
+                # the non-shared branch. A handheld APU is the other shape.
+                "gtt_used_mb": 210, "gtt_total_mb": 4096, "busy_pct": 63},
         "game": {"appid": 1091500, "label": "Cyberpunk 2077"},
         "output": {"name": "DP-1", "internal": False},
         "controllers": [{"uniq": "dc:2c:26:aa:bb:cc",

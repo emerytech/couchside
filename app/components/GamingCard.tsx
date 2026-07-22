@@ -83,9 +83,25 @@ export function GamingCard() {
   if (!g) return null;
 
   const gpu = g.gpu;
+  // SHARED-MEMORY GPUs (every handheld APU) carve out a token amount of "VRAM"
+  // and do the real work in GTT, which is system RAM. MEASURED on a Legion Go S:
+  // 512 MB VRAM sitting at 89% next to 15.3 GB of GTT barely touched. Showing
+  // the VRAM bar alone told the owner his GPU had 0.5 GB and was nearly full.
+  //
+  // When GTT dwarfs VRAM the two pools are the same physical memory, so adding
+  // them describes something real: total graphics footprint. On a discrete card
+  // they are genuinely separate and VRAM is the honest number, so the sum is
+  // NOT applied there.
+  const shared = gpu?.gtt_total_mb != null && gpu.gtt_total_mb > (gpu.vram_total_mb ?? 0);
+  const memUsed = shared
+    ? (gpu?.vram_used_mb ?? 0) + (gpu?.gtt_used_mb ?? 0)
+    : gpu?.vram_used_mb;
+  const memTotal = shared
+    ? (gpu?.vram_total_mb ?? 0) + (gpu?.gtt_total_mb ?? 0)
+    : gpu?.vram_total_mb;
   const vramPct =
-    gpu?.vram_used_mb != null && gpu?.vram_total_mb
-      ? Math.round((gpu.vram_used_mb / gpu.vram_total_mb) * 100)
+    memUsed != null && memTotal
+      ? Math.round((memUsed / memTotal) * 100)
       : null;
   const inGameMode = g.session === 'gamescope';
 
@@ -156,17 +172,21 @@ export function GamingCard() {
         <View style={styles.block}>
           <View style={styles.lineRow}>
             <Text style={styles.lineLabel}>GPU</Text>
+            {gpu.busy_pct != null && (
+              <Text style={styles.dim}>{gpu.busy_pct}% busy</Text>
+            )}
             {gpu.temp_c != null && (
               <Text style={[styles.lineVal, { color: tempColor(gpu.temp_c, t) }]}>
                 {gpu.temp_c.toFixed(1)}°C
               </Text>
             )}
           </View>
-          {vramPct != null && gpu.vram_total_mb != null && (
+          {vramPct != null && memTotal != null && (
             <>
               <View style={styles.barLabelRow}>
                 <Text style={styles.dim}>
-                  {(gpu.vram_used_mb! / 1024).toFixed(1)} / {(gpu.vram_total_mb / 1024).toFixed(1)} GB
+                  {(memUsed! / 1024).toFixed(1)} / {(memTotal / 1024).toFixed(1)} GB
+                  {shared ? ' shared' : ''}
                 </Text>
                 <Text style={[styles.dim, { color: pctColor(vramPct, t) }]}>{vramPct}%</Text>
               </View>
