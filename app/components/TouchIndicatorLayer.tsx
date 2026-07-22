@@ -51,13 +51,81 @@ const TAP_SIZE = 76;
 const TRAIL_SIZE = 26;
 const TAP_MS = 520;
 const TRAIL_MS = 320;
-/** Minimum gap between trail dots while a finger drags. Caps the React churn a
- *  fast scrub on the trackpad/swipe surface can cause to ~22 elements/sec. */
-const TRAIL_INTERVAL_MS = 45;
-/** Hard cap on live marks so a long drag can't grow the tree without bound. */
-const MAX_MARKS = 32;
+/**
+ * Trail dots are spaced by DISTANCE, not by time.
+ *
+ * The first shipped version throttled to one dot per 45ms. Measured off a
+ * device recording (2.9.17, iPhone, Track surface), that produced tight clumps
+ * of 3-4 dots spanning ~40-60px separated by 200-400px of nothing — specks, not
+ * a stroke, which fails the one job the feature has.
+ *
+ * Two things caused it and a time throttle can fix neither: 45ms of travel is
+ * hundreds of pixels during a real trackpad scrub, and iOS delivers touch-moves
+ * COALESCED in bursts, so events arrive clumped and then not at all. Lowering
+ * the interval cannot invent samples the OS never sent. Interpolating along the
+ * segment between the previous point and the new one does, and it is
+ * indifferent to how bursty the event stream is.
+ */
+const TRAIL_STEP_PX = 20;
+/**
+ * Cap dots emitted per event so one coalesced jump cannot spawn a whole stroke
+ * in a single frame — this runs on the trackpad path, which is latency-critical.
+ */
+const TRAIL_MAX_PER_EVENT = 6;
+/**
+ * Past this, treat the gap as a DISCONTINUITY (finger lifted and re-placed, or a
+ * dropped event) and drop a single dot instead of drawing a line the finger
+ * never travelled. A phantom stroke across the screen is worse than a gap.
+ */
+const TRAIL_JUMP_PX = 320;
+/** Hard cap on live marks so a long drag can't grow the tree without bound.
+ *  At 20px spacing this is ~960px of visible stroke. */
+const MAX_MARKS = 48;
 
 let nextMarkId = 0;
+
+type Pt = { x: number; y: number };
+
+/**
+ * Where to lay trail dots for one move event, given where the last one landed.
+ *
+ * Pure on purpose. The trail path cannot be exercised on web at all — RNW emits
+ * mouse events, not touch events — so the previous version's bug survived every
+ * check that was run before it shipped. Keeping the geometry in a pure function
+ * means the risky half is testable with synthetic input on any platform;
+ * `__touchTrailPoints` exposes it for exactly that.
+ *
+ * Returns the dots to draw and the point to carry forward. `next` is the LAST
+ * DOT LAID, not the event coordinate — carrying the event coordinate forward
+ * would silently swallow the leftover sub-step distance and let spacing drift.
+ */
+export function trailPoints(last: Pt | null, x: number, y: number): { points: Pt[]; next: Pt } {
+  if (!last) return { points: [{ x, y }], next: { x, y } };
+  const dx = x - last.x;
+  const dy = y - last.y;
+  const dist = Math.hypot(dx, dy);
+  if (dist < TRAIL_STEP_PX) return { points: [], next: last };
+  // Discontinuity: finger lifted and re-placed, or events were dropped. Draw
+  // where it IS rather than a line it never travelled.
+  if (dist > TRAIL_JUMP_PX) return { points: [{ x, y }], next: { x, y } };
+  const want = Math.floor(dist / TRAIL_STEP_PX);
+  const steps = Math.min(want, TRAIL_MAX_PER_EVENT);
+  const points: Pt[] = [];
+  for (let i = 1; i <= steps; i += 1) {
+    const t = (i * TRAIL_STEP_PX) / dist;
+    points.push({ x: last.x + dx * t, y: last.y + dy * t });
+  }
+  // When the per-event cap bites, resume from the FINGER, not from the last dot
+  // drawn. Resuming from the dot makes the shortfall accumulate: every event
+  // falls further behind until the gap trips the discontinuity guard and the
+  // trail visibly snaps. Accepting one gap keeps the stroke under the finger.
+  if (want > steps) return { points, next: { x, y } };
+  const done = (steps * TRAIL_STEP_PX) / dist;
+  return { points, next: { x: last.x + dx * done, y: last.y + dy * done } };
+}
+if (typeof globalThis !== 'undefined') {
+  (globalThis as Record<string, unknown>).__touchTrailPoints = trailPoints;
+}
 
 /**
  * Instrumentation for the drag-trail bug (see the note on onTouchMove below).
@@ -151,7 +219,10 @@ export function TapCapture({
   const t = useTheme();
   const scheme = useResolvedScheme();
   const [marks, setMarks] = useState<MarkSpec[]>([]);
-  const lastTrailAt = useRef(0);
+  /** Last point a trail dot was laid at, or null between gestures. Nulling it on
+   *  touch-down is what stops a new drag from drawing a line back to where the
+   *  previous one ended. */
+  const lastTrailPt = useRef<{ x: number; y: number } | null>(null);
 
   const add = useCallback((pageX: number, pageY: number, kind: MarkKind) => {
     // Guard NaN/undefined explicitly: a mark at NaN renders nothing and would
@@ -170,6 +241,7 @@ export function TapCapture({
   const onStartCapture = useCallback(
     (e: GestureResponderEvent) => {
       touchTrace.startCapture += 1;
+      lastTrailPt.current = null; // new gesture: never interpolate from the old one
       if (on) add(e.nativeEvent.pageX, e.nativeEvent.pageY, 'tap');
       return false; // observe only — the child still becomes the responder
     },
@@ -203,13 +275,19 @@ export function TapCapture({
     (e: GestureResponderEvent) => {
       touchTrace.touchMove += 1;
       if (!on || !trail) return;
-      const now = Date.now();
-      if (now - lastTrailAt.current < TRAIL_INTERVAL_MS) return;
-      lastTrailAt.current = now;
-      add(e.nativeEvent.pageX, e.nativeEvent.pageY, 'trail');
+      const { pageX, pageY } = e.nativeEvent;
+      if (!Number.isFinite(pageX) || !Number.isFinite(pageY)) return;
+
+      const { points, next } = trailPoints(lastTrailPt.current, pageX, pageY);
+      lastTrailPt.current = next;
+      for (const p of points) add(p.x, p.y, 'trail');
     },
     [on, trail, add],
   );
+
+  const onTouchEnd = useCallback(() => {
+    lastTrailPt.current = null;
+  }, []);
 
   const remove = useCallback((id: number) => {
     setMarks((prev) => prev.filter((m) => m.id !== id));
@@ -230,6 +308,8 @@ export function TapCapture({
       onStartShouldSetResponderCapture={onStartCapture}
       onMoveShouldSetResponderCapture={onMoveCapture}
       onTouchMove={onTouchMove}
+      onTouchEnd={onTouchEnd}
+      onTouchCancel={onTouchEnd}
     >
       {children}
       {marks.length > 0 ? (
