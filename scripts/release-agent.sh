@@ -117,11 +117,50 @@ if ! "$ossl" pkeyutl -verify -pubin -inkey "$tmp/pub.pem" -rawin \
 fi
 echo "    signature self-verified OK"
 
-# Ensure a release exists for the tag (create from the tag if not).
+# Release notes = the matching section of agent/CHANGELOG.md.
+#
+# This used to be ONE hardcoded sentence, written only when the release had to
+# be CREATED. So every agent release carried identical "What's new" text, and
+# the in-app update card told users the same thing for months. The app is a
+# faithful pipe — it renders the GitHub release body — so the lie originated
+# exactly here.
+#
+# Failing loud is the point. A release-notes script that silently publishes
+# something stale and exits 0 has happened in this repo before; a missing
+# section must stop the release, not fall back to boilerplate.
+ver="${tag#v}"
+notes_file="$tmp/notes.md"
+# Leading/trailing blank lines are dropped in the same pass -- `sed -i` differs
+# between BSD and GNU and this script runs on both.
+awk -v v="$ver" '
+    $0 == "## " v      { grab = 1; next }
+    grab && /^## /     { exit }
+    grab               { buf[n++] = $0 }
+    END {
+        first = 0; while (first < n && buf[first] ~ /^[[:space:]]*$/) first++
+        last = n - 1; while (last >= first && buf[last] ~ /^[[:space:]]*$/) last--
+        for (i = first; i <= last; i++) print buf[i]
+    }
+' "$root/agent/CHANGELOG.md" > "$notes_file"
+
+if [ ! -s "$notes_file" ]; then
+    echo "error: agent/CHANGELOG.md has no '## $ver' section." >&2
+    echo "       Add one describing what changed for the person holding the phone," >&2
+    echo "       then re-run. Refusing to publish boilerplate release notes." >&2
+    exit 2
+fi
+echo "==> release notes for $ver:"
+sed 's/^/    | /' "$notes_file"
+
+# Ensure a release exists for the tag (create from the tag if not), then set the
+# body UNCONDITIONALLY — re-running after an agent bump must refresh the notes,
+# which the create-only path never did.
 if ! gh release view "$tag" --repo "$REPO" >/dev/null 2>&1; then
     echo "==> creating release $tag"
-    gh release create "$tag" --repo "$REPO" --title "$tag" \
-        --notes "Signed agent assets for install.sh / \`couchside update\`."
+    gh release create "$tag" --repo "$REPO" --title "$tag" --notes-file "$notes_file"
+else
+    echo "==> updating release notes on $tag"
+    gh release edit "$tag" --repo "$REPO" --notes-file "$notes_file"
 fi
 
 echo "==> uploading signed agent assets to $tag"
@@ -129,6 +168,21 @@ uploads=()
 for f in "${files[@]}"; do uploads+=("$tmp/$f"); done
 uploads+=("$tmp/SHA256SUMS" "$tmp/SHA256SUMS.sig")
 gh release upload "$tag" --repo "$REPO" --clobber "${uploads[@]}"
+
+# Read the notes BACK from GitHub. `gh release edit` exiting 0 is not evidence
+# that the body changed — this repo has already shipped a release whose notes
+# script reported success and published stale text. The app renders whatever is
+# actually on the release, so verify what is actually on the release.
+echo "==> verifying published notes"
+published="$(gh release view "$tag" --repo "$REPO" --json body --jq .body)"
+if [ "$(printf '%s' "$published" | tr -d '[:space:]')" \
+     != "$(tr -d '[:space:]' < "$notes_file")" ]; then
+    echo "error: published notes do not match agent/CHANGELOG.md '## $ver'." >&2
+    echo "--- on the release ---" >&2
+    printf '%s\n' "$published" >&2
+    exit 1
+fi
+echo "    published notes match the changelog"
 
 echo "OK: signed agent published to $REPO $tag"
 echo "    install.sh fetches these from releases/latest/download/ and verifies the sig."
