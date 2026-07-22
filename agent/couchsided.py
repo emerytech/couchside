@@ -1010,6 +1010,91 @@ def read_mem():
 _DISK_MOUNTS = ("/", "/home", "/var")
 
 
+# Sysfs root for USB wake, as a module constant so tests can point it at
+# fixtures (same pattern as _DRM_DIR / _PROC_INPUT_DEVICES).
+_USB_DEVICES_DIR = "/sys/bus/usb/devices"
+# A USB *interface* node is "<device>:<config>.<iface>" (e.g. 1-2:1.0). Only
+# DEVICES own power/wakeup; interfaces never do. Measured on a live Bazzite box:
+# every ":" node had no wakeup file at all, so listing them is pure noise.
+_USB_IFACE_RE = re.compile(r":")
+_USB_ROOT_HUB_RE = re.compile(r"^usb\d+$")
+
+
+def _usb_read(path):
+    """First line of a sysfs file, or None. Never raises."""
+    try:
+        with open(path, "r", encoding="utf-8", errors="replace") as f:
+            return f.readline().strip()
+    except OSError:
+        return None
+
+
+def usb_wake_devices():
+    """Every USB device that can be a wake source, and whether it is armed.
+
+    READ-ONLY. Arming needs root and is deliberately not done here — this exists
+    so the app can show what a box could wake from BEFORE anyone changes system
+    state, and so a user can see why their controller does not wake it.
+
+    Why per-device rather than the root hubs everyone starts with: a field report
+    on a DIY SteamOS box had keyboard and mouse waking the machine while
+    controllers did not, because only the root hubs were armed and a controller's
+    signal arrives through a dongle further down the tree.
+
+    `transient` is the load-bearing field. The same reporter then armed every
+    device with a writable wakeup file and hit the opposite problem: a controller
+    powering itself off after 15 minutes is a DISCONNECT, the kernel counts that
+    as a bus state change, and the machine woke straight back up. Arming a device
+    that goes away is how you get spurious wakes; arming the dongle it hangs off
+    does not have that failure mode, because the dongle never leaves. Hubs and
+    root hubs stay put, so they are marked persistent.
+
+    Never raises: returns [] when the sysfs root is unreadable, and omits any
+    device whose attributes cannot be read rather than guessing at them."""
+    out = []
+    try:
+        names = sorted(os.listdir(_USB_DEVICES_DIR))
+    except OSError:
+        return []
+    for name in names:
+        if _USB_IFACE_RE.search(name):
+            continue  # interface node: never owns power/wakeup
+        base = os.path.join(_USB_DEVICES_DIR, name)
+        wake_path = os.path.join(base, "power", "wakeup")
+        state = _usb_read(wake_path)
+        if state not in ("enabled", "disabled"):
+            # No wakeup file (or an unreadable one) means this device cannot be a
+            # wake source. Omitting it beats reporting a control that does
+            # nothing — a dead button costs more trust than a missing one.
+            continue
+        cls = _usb_read(os.path.join(base, "bDeviceClass")) or ""
+        is_root = bool(_USB_ROOT_HUB_RE.match(name))
+        is_hub = cls == "09" or is_root
+        out.append({
+            "id": name,
+            "vendor": _usb_read(os.path.join(base, "idVendor")) or "",
+            "product_id": _usb_read(os.path.join(base, "idProduct")) or "",
+            "name": (_usb_read(os.path.join(base, "product"))
+                     or _usb_read(os.path.join(base, "manufacturer")) or ""),
+            "wake": state,
+            "armed": state == "enabled",
+            "root_hub": is_root,
+            "hub": is_hub,
+            # HEURISTIC, and a deliberately weak one: "not a hub". A hub is
+            # certainly persistent; a leaf device only MIGHT power itself off.
+            # Measured counterexample on a live box: the Xbox wireless dongle
+            # (045e:02e6) is a leaf and reports transient, yet it never leaves —
+            # it is exactly the device you would want armed. Sysfs exposes
+            # nothing that distinguishes "dongle that stays" from "controller
+            # that sleeps", so this is a hint for the UI to phrase a warning
+            # around, NOT a fact to gate on. Do not make arming decisions from
+            # it without asking the user.
+            "transient": not is_hub,
+            "writable": os.access(wake_path, os.W_OK),
+        })
+    return out
+
+
 def read_disks():
     disks = []
     seen_devices = set()
@@ -10554,6 +10639,27 @@ class Handler(BaseHTTPRequestHandler):
                 # TVs" picker instead of a manual IP. Always 200 (possibly an
                 # empty list) — it is an action, not a probe-and-appear cap.
                 self._send(200, {"tvs": tv_discover(self.mock)}, started)
+            elif path == "/api/usb-wake":
+                # READ-ONLY inventory of possible wake sources. Probe-and-appear:
+                # 404 when the box exposes none (no sysfs, or nothing armable),
+                # so a box that cannot do this shows no control at all.
+                #
+                # Arming is NOT done here and never will be from this route: it
+                # writes /sys/.../power/wakeup, which needs root. That stays a
+                # deliberate, documented, opt-in step.
+                devs = ([{"id": "1-2", "vendor": "28de", "product_id": "1304",
+                          "name": "Steam Controller Puck", "wake": "disabled",
+                          "armed": False, "root_hub": False, "hub": False,
+                          "transient": True, "writable": True},
+                         {"id": "usb1", "vendor": "1d6b", "product_id": "0002",
+                          "name": "xHCI Host Controller", "wake": "disabled",
+                          "armed": False, "root_hub": True, "hub": True,
+                          "transient": False, "writable": True}]
+                        if self.mock else usb_wake_devices())
+                if not devs:
+                    self._send(404, {"error": "not found"}, started)
+                else:
+                    self._send(200, {"devices": devs}, started)
             elif path == "/api/displays":
                 # Probe-and-appear: 404 unless this box can do the desktop->TV
                 # Game Mode handoff (SteamOS/Bazzite, 2+ outputs), so the app
