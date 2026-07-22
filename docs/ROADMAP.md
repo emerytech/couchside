@@ -68,6 +68,47 @@ Entry fields: `priority` (P0 blocker → P3 nice) · `risk` · `affects` · `dep
 - **Value is narrower than it looks:** the shipped Bluetooth button already reaches Steam's
   own pairing UI, which handles agents and PINs correctly.
 
+### Search button: open Steam's global search + raise the phone keyboard
+- **priority:** P2 · **risk:** medium · **affects:** agent + app · **depends_on:** none
+- A search icon in the app opens Steam's global search on the box AND raises the phone's own
+  keyboard, so you type a game name on the phone instead of thumbing a d-pad across a letter
+  grid. Owner request, 2026-07-22.
+- **Most of it already exists.** The phone-keyboard half is the `{"t":"osk"}` push (agent
+  2.9.38) plus the compose field on the Pad screen; typing already rides `{"t":"kt"}`. The app
+  can also just focus its own field on tap, without waiting for the box to signal.
+- **THE ONE UNKNOWN, and it is the whole feature: how to OPEN Steam's global search from the
+  agent.** Do not guess at this — Ctrl+1/Ctrl+2 looked like the Steam-menu/QAM chord and then
+  failed 0/5 (see KI-024).
+- **MEASURED 2026-07-22 on a Legion Go S, with a bogus-URL control:**
+  - `steam://open/search` — no effect.
+  - `steam://open/bigpicture` — no effect (already in Game Mode).
+  - `steam://open/settings/search` — opens **Settings**, because an unknown settings slug
+    falls back to the default page. Not search.
+  - `steam://store/search` — opens the **Steam Store**, not the library's global search.
+  - Control (`steam://open/thisdoesnotexist`) — no effect, so "the screen changed" was not a
+    generic artifact.
+  - **Conclusion: no deep link found yet.** Next candidates worth measuring: the magnifier
+    control's own focus path, a gamepad button on the library screen, or a keyboard shortcut.
+    The search state IS reachable — it was observed live (search bar focused + Steam's OSK up),
+    just not yet reproducibly *triggered*.
+
+### Hide-keyboard should also dismiss the box's keyboard/search
+- **priority:** P3 · **risk:** medium · **affects:** app (+ agent only if a new signal is needed)
+- Today the keyboard link is one-way: the box raising its OSK raises the phone's. Pressing the
+  app's HIDE button should close the box's keyboard/search too. Owner request, 2026-07-22.
+- Likely mechanism is `sendKey('esc')`, which the app already exposes — no new route, no new
+  client id.
+- **MEASURED:** Esc is reliable BACK-navigation on the box (Store → Settings → Library), and an
+  F13 control changed nothing, so the effect is real and specific. **NOT measured:** whether Esc
+  closes Steam's OSK specifically — the box had navigated away from the keyboard state before
+  that probe ran, so the premise was stale. Re-test with the OSK actually up.
+- **The risk that decides the design:** Esc is back-navigation, not "dismiss keyboard". Firing
+  it when no keyboard is open would back the user out of whatever screen they were on, or open
+  a pause menu inside a game. So gate it on knowing the box's keyboard is up — reuse the osk
+  signal that already raised the phone's keyboard, rather than sending Esc on every HIDE tap.
+- Note the agent's osk watcher detects OPEN only. Either track "we were raised by an osk push"
+  app-side, or add a close signal; prefer the app-side flag, since it needs no agent release.
+
 ### Close the running game from the Launch tab
 - **priority:** P2 · **risk:** medium · **affects:** agent + app · **depends_on:** none
 - A card at the top of Launch showing what is running now, how long it has been running, and
