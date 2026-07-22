@@ -191,11 +191,21 @@ function ActionsScreen() {
                 style={({ pressed }) => [styles.card, pressed && styles.pressed]}>
                 <View style={styles.cardHead}>
                   <Text style={styles.cardLabel}>{a.label}</Text>
-                  <View style={[styles.badge, { backgroundColor: DANGER_COLOR[a.danger] }]}>
-                    <Text style={styles.badgeText}>{BADGE_TEXT[a.danger]}</Text>
-                  </View>
+                  {/* Only the destructive one keeps a badge. "routine" under a
+                      ROUTINE header and "interrupts" under CHANGES WHAT'S ON
+                      SCREEN said the same thing twice on every single row —
+                      that repetition was the reported noise. Ending your
+                      session is worth repeating; the other two are not. */}
+                  {a.danger === 'high' && (
+                    <View style={[styles.badge, { backgroundColor: DANGER_COLOR[a.danger] }]}>
+                      <Text style={styles.badgeText}>{BADGE_TEXT[a.danger]}</Text>
+                    </View>
+                  )}
                 </View>
-                <Text style={styles.cardDesc}>{a.description}</Text>
+                {/* The description is NOT lost — confirm() already shows it in
+                    full before anything runs, which is where the detail belongs.
+                    On the row it mostly restated the label ("Switch to Desktop"
+                    / "Leave Game Mode for the SteamOS desktop"). */}
               </Pressable>
             ))}
             </View>
@@ -269,7 +279,6 @@ const makeStyles = (t: Palette) => StyleSheet.create({
     paddingVertical: 3,
   },
   badgeText: { color: '#0b1220', fontSize: 11, fontWeight: '800' },
-  cardDesc: { color: t.textDim, fontSize: 13, lineHeight: 18 },
   pressed: { opacity: 0.7 },
   emptyCard: {
     backgroundColor: t.card,

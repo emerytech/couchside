@@ -1185,12 +1185,20 @@ function PadScreen() {
         // chips across five sections -- taller than the pane on a phone. The
         // Actions tab gets scrolling from its own ScrollView; Pad has none, so
         // without this the bottom sections are unreachable.
-        <ScrollView
-          style={styles.menusScroll}
-          contentContainerStyle={styles.menusContent}
-          showsVerticalScrollIndicator={false}>
-          <SteamMenusPanel menus={steamMenus} />
-        </ScrollView>
+        <>
+          <ScrollView
+            style={styles.menusScroll}
+            contentContainerStyle={styles.menusContent}
+            showsVerticalScrollIndicator={false}>
+            <SteamMenusPanel menus={steamMenus} />
+          </ScrollView>
+          {/* The mode-switch swipe lives on this bar, so a segment that omits it
+              is a segment you cannot swipe out of — Steam was the only one, and
+              it stranded people until they found the tab row. It sits BELOW the
+              ScrollView, so vertical scrolling of the menus and the bar's
+              horizontal swipe never contend. */}
+          {keyboardBar}
+        </>
       ) : mode === 'remote' ? (
         <>
           <RemoteView client={client} settings={settings} />

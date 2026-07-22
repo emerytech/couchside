@@ -274,14 +274,38 @@ function CeremonyView({
     (s) => s.state === 'failed' && !s.fatal);
   const fatalStage = job.stages.find((s) => s.state === 'failed' && s.fatal);
 
+  // Show the per-stage breakdown ONLY when something went wrong.
+  //
+  // Reported as too much information for what is, when it works, a mode switch:
+  // five rows of internals for "put this on the TV". So the happy path is now a
+  // spinner, then a checkmark.
+  //
+  // The staged VERIFICATION underneath is untouched, and the rows come straight
+  // back the moment a stage fails or soft-fails. That is not a compromise, it is
+  // the point: this ceremony exists because "Ready" once meant "a subprocess
+  // exited 0" and cheerfully reported success onto a black TV. Hiding detail
+  // that nobody needs is fine; hiding it when the thing actually broke would
+  // rebuild the original bug in the UI layer.
+  const showStages = failed || softFail;
+
   return (
     <>
-      <View style={styles.stageList}>
-        {job.stages.map((s) => <StageRow key={s.key} stage={s} t={t} styles={styles} />)}
-      </View>
+      {showStages && (
+        <View style={styles.stageList}>
+          {job.stages.map((s) => <StageRow key={s.key} stage={s} t={t} styles={styles} />)}
+        </View>
+      )}
 
       {running && (
-        <Text style={styles.summaryRunning}>Flinging to the TV…</Text>
+        <View style={styles.simpleState}>
+          <ActivityIndicator size="large" color={t.blue} />
+          <Text style={styles.summaryRunning}>Flinging to the TV…</Text>
+        </View>
+      )}
+      {job.state === 'done' && !softFail && (
+        <View style={styles.simpleState}>
+          <Ionicons name="checkmark-circle" size={44} color={t.green} />
+        </View>
       )}
       {job.state === 'done' && !softFail && (
         <Text style={[styles.summary, { color: t.green }]}>On the TV.</Text>
@@ -386,6 +410,7 @@ const makeStyles = (t: Palette) => StyleSheet.create({
   stageReason: { color: t.textDim, fontSize: 12, marginTop: 2, lineHeight: 16 },
   summary: { fontSize: 14, fontWeight: '600', marginTop: 10 },
   summaryRunning: { color: t.textDim, fontSize: 14, marginTop: 10 },
+  simpleState: { alignItems: 'center', justifyContent: 'center', paddingVertical: 18, gap: 10 },
   ceremonyBtns: { flexDirection: 'row', gap: 10, marginTop: 6 },
   ceremonyBtn: { flex: 1, marginTop: 8 },
   ceremonyBtnSecondary: { backgroundColor: t.inset },
