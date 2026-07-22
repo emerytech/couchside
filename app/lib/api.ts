@@ -122,6 +122,13 @@ export type BoxCaps = {
    */
   steammenus?: boolean;
   /**
+   * The BOX's own battery (agent >= 2.9.40) — a handheld or laptop, not a
+   * controller. Linux-only: it reads /sys/class/power_supply.
+   * Optional, so undefined reads as "unknown, probe" and only an explicit false
+   * means "this machine runs on mains".
+   */
+  boxbattery?: boolean;
+  /**
    * Gaming card: this box has Steam, so a "what's running now" card (GPU/game/
    * output/controllers/session) is worth showing. Gates the Console-tab card.
    * Optional: absent on agents < 2.9.25, so undefined reads as "unknown, probe"
@@ -234,6 +241,17 @@ export type Status = {
   caps?: BoxCaps;
   /** Recent-vitals ring for sparklines (agent >= 2.8.3); undefined on older agents. */
   history?: StatusHistory;
+  /** The BOX's own battery (agent >= 2.9.40). ABSENT on a mains desktop and on
+      older agents alike — the agent omits the key entirely rather than sending
+      zeroes, so "no battery card" needs no separate flag. `minutes` is present
+      only while discharging: on AC the same counter measures the CHARGE rate,
+      and reporting it as time-remaining would be confidently wrong. */
+  battery?: {
+    pct: number;
+    status: string;
+    on_ac?: boolean;
+    minutes?: number;
+  };
 };
 
 export type UnitScope = 'system' | 'user';
@@ -775,7 +793,8 @@ export function capsEqual(a?: BoxCaps, b?: BoxCaps): boolean {
     a.steamlink === b.steamlink &&
     a.gaming === b.gaming &&
     a.streamhost === b.streamhost &&
-    a.steammenus === b.steammenus
+    a.steammenus === b.steammenus &&
+    a.boxbattery === b.boxbattery
   );
 }
 

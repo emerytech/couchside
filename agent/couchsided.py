@@ -44,7 +44,7 @@ except ImportError:  # pragma: no cover
     fcntl = None
 
 APP_NAME = "couchside-agent"
-VERSION = "2.9.38"
+VERSION = "2.9.40"
 UID = os.getuid()
 XDG_RUNTIME_DIR = "/run/user/%d" % UID
 
@@ -1296,7 +1296,7 @@ def set_caps(mock):
         CAPS = {k: True for k in
                 ("gamepad", "steam", "media", "tv", "screen", "power_schedule",
                  "screensaver", "couchmode", "desktop", "steamlink", "gaming",
-                 "streamhost", "steammenus")}
+                 "streamhost", "steammenus", "boxbattery")}
         return
     CAPS = {
         "gamepad": _uinput_writable(),
@@ -1312,6 +1312,7 @@ def set_caps(mock):
         "gaming": safe(gaming_available),
         "streamhost": safe(streamhost_available),
         "steammenus": safe(steammenus_available),
+        "boxbattery": safe(box_battery_available),
     }
 
 
@@ -1725,6 +1726,7 @@ def real_status():
     load = read_load()
     temp = read_cpu_temp_c()
     mem = read_mem()
+    battery = read_box_battery()
     now = int(time.time())
     _record_history(now, temp, load[0] if load else None, mem)
     return {
@@ -1735,6 +1737,11 @@ def real_status():
         "cpu_temp_c": temp,
         "mem": mem,
         "disks": read_disks(),
+        # The machine's OWN battery, on handhelds and laptops. ADDITIVE and
+        # OMITTED entirely on a mains desktop, so old apps are unaffected and
+        # new ones can treat "absent" as "this box has no battery" rather than
+        # having to distinguish that from 0%.
+        **({"battery": battery} if battery else {}),
         "net": net_info_cached(),
         "agent_version": VERSION,
         # CAPS is a boot-time snapshot, but "desktop" is SESSION-volatile (it
@@ -2889,6 +2896,10 @@ def mock_status():
             {"mount": "/var", "total_gb": 465.1, "used_gb": 198.2,
              "free_gb": 266.9, "pct": 43},
         ],
+        # Mock is a HANDHELD so the battery row is exercisable in the web
+        # harness -- a mains desktop would render nothing and prove nothing.
+        "battery": {"pct": 58, "status": "Discharging",
+                    "on_ac": False, "minutes": 251},
         "net": {"iface": "eth0", "mac": "de:ad:be:ef:00:01",
                 "wired": True, "wol_armed": True},
         "agent_version": VERSION,
@@ -9167,6 +9178,101 @@ def _running_game():
     except Exception:
         pass
     return None
+
+
+# ---------------------------------------------------------------------------
+# Box battery (handhelds: Steam Deck, Legion Go / Go S, ROG Ally, laptops).
+#
+# Distinct from _pad_battery(), which reports a CONTROLLER's charge by joining
+# its MAC to a supply node. This is the machine's OWN battery, and until now the
+# agent never read it at all -- so a handheld running Couchside showed no battery
+# anywhere, despite the kernel exposing it.
+#
+# MEASURED VERBATIM on a Lenovo Legion Go S (Bazzite), 2026-07-22. Two things in
+# that real uevent drive the parser and are not obvious from documentation:
+#   * POWER_SUPPLY_TYPE appears TWICE in the same file. Last-wins is fine here
+#     (both say Battery) but a parser that assumed one occurrence per key would
+#     be relying on luck.
+#   * It is an ENERGY-based gauge (ENERGY_NOW/ENERGY_FULL, microwatt-hours), not
+#     a CHARGE-based one. Both exist in the wild, so both are read.
+# A mains-only desktop has no Battery node at all; that is the normal case and
+# returns {} rather than zeroes, so the cap degrades closed.
+
+def _uevent(path):
+    """Parse a power_supply uevent into a dict. Never raises; {} on any error."""
+    out = {}
+    try:
+        with open(path) as f:
+            for line in f:
+                k, _, v = line.strip().partition("=")
+                if k:
+                    out[k] = v
+    except OSError:
+        return {}
+    return out
+
+
+def read_box_battery():
+    """{"pct", "status", "on_ac"[, "minutes"]} for the machine's own battery, or
+    {} when this machine has none.
+
+    Read-only, best-effort, never raises. An unreadable or malformed node yields
+    {} -- "unavailable" -- never a fabricated percentage.
+    """
+    try:
+        names = os.listdir(_POWER_SUPPLY_DIR)
+    except OSError:
+        return {}
+
+    batt, on_ac = None, None
+    for name in sorted(names):
+        u = _uevent(os.path.join(_POWER_SUPPLY_DIR, name, "uevent"))
+        kind = u.get("POWER_SUPPLY_TYPE")
+        if kind == "Battery" and batt is None:
+            # PRESENT=0 means a bay with no pack in it -- not this machine's
+            # battery, and reporting 0% for it would be a lie.
+            if u.get("POWER_SUPPLY_PRESENT") == "0":
+                continue
+            batt = u
+        elif kind == "Mains" and u.get("POWER_SUPPLY_ONLINE") in ("0", "1"):
+            # Any online mains supply counts as plugged in.
+            on_ac = on_ac or u["POWER_SUPPLY_ONLINE"] == "1"
+
+    if batt is None:
+        return {}
+
+    try:
+        pct = int(batt["POWER_SUPPLY_CAPACITY"])
+    except (KeyError, ValueError):
+        return {}
+    if not 0 <= pct <= 100:
+        return {}
+
+    out = {"pct": pct, "status": batt.get("POWER_SUPPLY_STATUS", "Unknown")}
+    if on_ac is not None:
+        out["on_ac"] = on_ac
+
+    # Runtime left, when the gauge reports a draw. ENERGY_* is microwatt-hours
+    # against POWER_NOW microwatts; CHARGE_* is microamp-hours against
+    # CURRENT_NOW microamps. Both divide to hours. Only meaningful while
+    # discharging -- on AC, POWER_NOW is the CHARGE rate, and dividing by it
+    # would report a confident, entirely wrong "time left".
+    if out["status"] == "Discharging":
+        for now_k, rate_k in (("POWER_SUPPLY_ENERGY_NOW", "POWER_SUPPLY_POWER_NOW"),
+                              ("POWER_SUPPLY_CHARGE_NOW", "POWER_SUPPLY_CURRENT_NOW")):
+            try:
+                now, rate = int(batt[now_k]), int(batt[rate_k])
+            except (KeyError, ValueError):
+                continue
+            if now > 0 and rate > 0:
+                out["minutes"] = int(now * 60 // rate)
+                break
+    return out
+
+
+def box_battery_available():
+    """True when this machine has a readable battery."""
+    return bool(read_box_battery())
 
 
 def _norm_mac(s):
