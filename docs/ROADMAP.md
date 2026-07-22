@@ -70,6 +70,52 @@ Entry fields: `priority` (P0 blocker → P3 nice) · `risk` · `affects` · `dep
 - **Cannot be verified in the web harness** — RN Web emits mouse events, never touch events.
   Device only, via `adb shell input swipe` + `screencap` mid-gesture.
 
+### One-button "update everything" from the phone
+- **priority:** P1 · **risk:** MEDIUM — allowlist-sensitive · **affects:** agent + app · **depends_on:** the sudo/NOPASSWD problem below
+- **Requested by likwidtek (Discord, 2026-07-22):** actions to update Bazzite (`ujust update`),
+  Couchside, Decky + plugins, Steam, flatpaks — "all from your phone, one button".
+- **The allowlist shape is the whole design.** Each updater is its OWN explicit entry in the
+  agent's frozen action table with a FIXED argv list. "Update everything" is then a fixed
+  SEQUENCE of those entries — never a loop over names the client supplies, and never a
+  generic "run updater X" route. Today `DEFAULT_ACTIONS` has exactly three ids
+  (restart-session, reboot, poweroff); this would be the largest widening the table has ever
+  had, so each entry gets the §6 treatment: happy path, auth failure, non-allowlisted id
+  refused with nothing run.
+- **The real blocker is privilege, not plumbing.** `rpm-ostree` / `ujust update` need root,
+  and the agent runs as the desktop user. This hits the SAME wall that already breaks the
+  in-app agent update on a stock Deck (`sudo: a password is required`). Solve that first or
+  the button exists and fails.
+- **Atomic OS caveat, owner's own point:** on Bazzite an update is staged and needs a reboot,
+  and layered packages are re-applied. The UI must report "staged, reboot to apply" rather
+  than "done" — reporting success for something that has not happened yet is the exact
+  failure this project keeps paying for.
+- Flatpak (`flatpak update`) is per-user and needs no root — cheapest first slice, and the one
+  that proves the pattern end to end.
+
+### Decky self-heal (update / reinstall from the phone)
+- **priority:** P2 · **risk:** low · **affects:** agent · **depends_on:** none
+- **Requested by likwidtek (Discord, 2026-07-22):** "a solution to decky crashing and needing
+  to be updated — an action to update or reinstall decky to keep it from crashing."
+- **Partly exists:** `restart-decky` is already an INJECTED action, gated on the unit existing
+  AND the NOPASSWD grant being present (`_inject_decky_action`). What does not exist is
+  update-or-reinstall.
+- Directly related to **KI-004** (Decky Loader vanishes on every Steam CEF restart; worked
+  around, not fixed). Worth reading that before designing — a reinstall button that papers
+  over a known root cause is worse than fixing the cause.
+
+### Two-way clipboard (box <-> phone)
+- **priority:** P2 · **risk:** low · **affects:** agent + app · **depends_on:** none
+- **Requested by likwidtek (Discord, 2026-07-22).** **Half of this does NOT exist**, contrary
+  to what was said in that thread: the agent only ever WRITES the box clipboard, as part of
+  delivering non-ASCII text (`clipboard_paste`, agent ~8908). `wl-paste` appears solely as a
+  read-back check that `wl-copy` landed, plus restoring what was there. There is no
+  `/api/clipboard` route and no clipboard call in `app/lib/api.ts`.
+- So: phone -> box TEXT ENTRY works. **Copy on the box, paste on the phone does not exist.**
+  Neither does "put this on the box's clipboard without typing it somewhere".
+- A read route returns whatever the user last copied on their desktop — passwords included —
+  to any LAN peer holding the token. It needs the same deliberate treatment as `/pair`, not a
+  casual GET.
+
 ### In-app Bluetooth pairing
 - **priority:** P2 · **risk:** medium · **affects:** agent + app · **depends_on:** none
 - Agent drives `bluetoothctl`; app renders discovered devices and pairs on tap. Removes the
