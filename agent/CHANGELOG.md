@@ -18,6 +18,19 @@ the same thing regardless of what actually changed.
 Write for the person holding the phone, not for the commit log. They are
 deciding whether to press "Update now" on a machine across the room.
 
+## 2.9.48
+
+The first-pairing screen now helps you get the app, and it opens reliably from
+Desktop Mode.
+
+- **The pairing screen shows App Store and Google Play QR codes** — if you don't
+  have Couchside on your phone yet, scan one to install it, then scan the big
+  code to pair. No hunting through a store.
+- **The guide now actually opens after a Desktop-Mode install.** On SteamOS's
+  KDE desktop it was silently failing to launch a browser, so nothing appeared;
+  it now opens a real browser full-screen (Firefox, Chrome, Chromium, Brave, or
+  Edge — whichever you have).
+
 ## 2.9.47
 
 Update your whole box from the couch, plus a friendlier first pairing.
