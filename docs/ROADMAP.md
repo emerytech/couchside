@@ -238,6 +238,74 @@ recommendation was wrong, not merely superseded.
 - **Unverified:** whether the existing surfaces survive a landscape re-layout at all; no
   screen has ever been rendered rotated.
 
+### App Store listing revamp + fresh screenshots
+- **priority:** P1 · **risk:** medium (public listing; App Review 2.3.1 + licensing) · **affects:**
+  store metadata + assets only · **depends_on:** build-target decision
+- **Recon + plan done 2026-07-23.** Live listing (id 6786884115, v2.9.21) fetched for real: copy +
+  screenshots are **build-65 / 2.9.12-era** and show none of the reactor skin, TV control, gaming/
+  battery cards, Fleet, or PIN pairing. Also found a **live licensing violation** ("The whole
+  project — app and agent — is open source" — app is source-available, not open source).
+- Full plan (shot-list, copy draft, Apple 2026 spec, iOS-Simulator capture method, open decisions)
+  in `docs/memory/project_appstore-revamp.md`.
+- **Gating decisions before generating:** (1) does the copy cross the TV-marketing lockstep line
+  now; (2) shoot against live 2.9.21 vs cut a fresh release off main first; (3) stage a real box for
+  the Launch cover-art hero. Nothing published without maintainer go-ahead (public content).
+
+### Auto-drop the phone's pad while a real game runs (opt-in input-mode switch)
+- **priority:** P2 · **risk:** medium (churn if debounce is wrong) · **affects:** app only ·
+  **depends_on:** none
+- **What:** an opt-in pref that flips the phone into keyboard mode (`n` / `?nopad=1`,
+  "Send keys instead of a controller") automatically when a Steam game launches, and restores
+  the prior mode when the game exits. Off by default.
+- **The whole point: stop stealing controller 1 from the game.** When the phone connects mid-
+  session, Couchside's uinput pad appears and can grab the Player-1 slot, bumping the real
+  controller the player is actually holding. That is the core bug this fixes — the phone should
+  never displace the game's real pad. Secondary wins fall out of the same move: no Steam Input
+  double-wrap of our pad (`28de:11ff`), and no pad create/destroy churn (which has corrupted
+  Steam's desktop config before). Dropping the pad for the duration of the game removes all of
+  it; the phone returns to a pad for menu/couch nav after the game exits. Grew out of the "does
+  Couchside interfere with a gaming session" thread.
+- **Where it lives — APP, not agent.** `n` is a per-client app pref applied at WS handshake;
+  the agent only obeys per-connection (create a pad or not). The app already polls
+  `/api/gaming` (backed by `_running_game()`, a `/proc/*/cmdline` reaper scan returning
+  `{appid, label, running_s}`), and toggling `n` already forces the pad re-handshake. So: watch
+  the game-running edge, flip `n`, re-handshake. **Zero agent change, zero new allowlist
+  surface.** Agent-side auto would be worse — it would override the mode the client asked for.
+- **Traps that ARE the work (not the wiring):**
+  - Re-handshake = a brief input gap + churn risk. Debounce on `running_s`, edge-trigger ONCE
+    per transition, never level-set every poll — a flickery detector would thrash the pad.
+  - Detector is a reaper scan: stable *during* a game, but has a launch window (reaper not up
+    yet) and a 2s cache. Edge-detect transitions.
+  - Auto must not clobber the user's manual toggle: restore the manual baseline on game-exit,
+    don't overwrite the stored pref.
+  - Blanket "any game" is probably wrong for pad-driven titles; v1 = global opt-in, a later
+    pass can make it per-game remembered.
+- **Unverified:** detector not yet observed firing AND not-firing on a real launch/exit; the
+  re-handshake input gap is unmeasured. The web harness can't exercise this (needs a real Steam
+  game on a box) — verify on the AMD Zephyrus G14 testbed once Bazzite is on it.
+
+### Measure Couchside's perf impact on a live gaming session (validation task)
+- **priority:** P2 · **risk:** none (measurement, ships nothing) · **affects:** validation only ·
+  **depends_on:** none
+- **Why:** the "does the agent hurt gaming performance" question is currently answered entirely
+  from architecture — NOTHING is measured. No fixture, no frametime capture, no control run.
+  This task produces the missing numbers before any claim gets made (house evidence rule: test
+  the thing, don't reason about it).
+- **Conditions to compare (same scene, same run length):**
+  - baseline — `couchside.service` stopped
+  - agent running, no phone connected (idle listener)
+  - phone connected, NOT streaming screen (input WS only)
+  - phone actively streaming `/api/screen/frame` during play (suspected the real cost: GPU
+    readback + encode competing with the game for the GPU)
+- **Method:** run a game with mangohud (or gamescope frame stats) on the AMD Zephyrus G14
+  testbed once Bazzite is on it. Report **1% lows + the frametime graph**, not average FPS.
+  Include a control run whose number you already know, per the house "control in every
+  measurement" rule.
+- **If a cost shows, mitigations to evaluate:** `nice`/`SCHED_IDLE` the capture-encode path;
+  don't hold a gamescope grab when no viewer is attached; guarantee the virtual pad is torn
+  down when the controller role is released (overlaps the auto-drop-pad feature above).
+- **Output:** the numbers, plus a KNOWN_ISSUES entry only if a real regression is found.
+
 ### Find the missing Steam settings slugs
 - **priority:** P3 · **risk:** none · **affects:** agent only
 - Notifications, In Game and Remote Play are visible in Steam's sidebar but their slugs are
