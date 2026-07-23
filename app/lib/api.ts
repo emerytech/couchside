@@ -472,6 +472,18 @@ export type HostSession = {
  * agents (404 -> null -> no banner).
  */
 /** GET/POST /api/update/flatpak (agent >= 2.9.46). */
+/** GET /api/update/os (agent >= 2.9.47). */
+export type OsStatus = {
+  /** "rpm-ostree" | "steamos" — which atomic updater the box has. */
+  kind: string | null;
+  /** Opted in via `couchside allow-system-updates on`. */
+  elevated: boolean;
+  /** Booted OS version. */
+  current: string | null;
+  /** An update is downloaded and applies on the NEXT reboot. */
+  staged: boolean;
+};
+
 export type FlatpakStatus = {
   available: boolean;
   count: number;
@@ -1427,6 +1439,34 @@ export const api = {
   /** Tail of the flatpak update transcript. [] on older agents / no run yet. */
   flatpakLog(settings: ConnSettings): Promise<string[]> {
     return request<{ lines: string[] }>(settings, '/api/update/flatpak/log')
+      .then((r) => (Array.isArray(r?.lines) ? r.lines : []))
+      .catch(() => []);
+  },
+
+  /**
+   * Atomic OS state (agent >= 2.9.47). Null on a non-atomic box or older agent
+   * (404). An atomic update STAGES for the next boot; `staged` tells the app to
+   * prompt a reboot rather than offer another update.
+   */
+  osStatus(settings: ConnSettings): Promise<OsStatus | null> {
+    return probeOrNull(request<OsStatus>(settings, '/api/update/os'));
+  },
+
+  /**
+   * Stage an OS update (agent >= 2.9.47). Requires the opt-in — there is no
+   * unprivileged fallback for an OS image, so the box returns needs_optin when
+   * ungranted. Detached on the box; poll osStatus() for staged:true. No body.
+   */
+  osUpdate(
+    settings: ConnSettings,
+  ): Promise<{ started: boolean; needs_optin?: boolean; error?: string }> {
+    return request<{ started: boolean; needs_optin?: boolean; error?: string }>(
+      settings, '/api/update/os', { method: 'POST' });
+  },
+
+  /** Tail of the OS update transcript. [] on older agents / no run yet. */
+  osLog(settings: ConnSettings): Promise<string[]> {
+    return request<{ lines: string[] }>(settings, '/api/update/os/log')
       .then((r) => (Array.isArray(r?.lines) ? r.lines : []))
       .catch(() => []);
   },

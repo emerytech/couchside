@@ -21,6 +21,7 @@ import {
 
 import { AgentUpdateBanner } from '@/components/AgentUpdateBanner';
 import { FlatpakUpdatesCard } from '@/components/FlatpakUpdatesCard';
+import { OsUpdateCard } from '@/components/OsUpdateCard';
 import { Gated } from '@/components/Gated';
 import { LogsPanel } from '@/components/LogsPanel';
 import { QrView } from '@/components/QrView';
@@ -1643,6 +1644,7 @@ function SetupBody() {
             {/* Directly under the agent banner: both are "what on this box
                 is out of date", agent first because it gates everything else. */}
             <FlatpakUpdatesCard />
+            <OsUpdateCard />
             <View style={styles.accountBadges}>
               <EarlyAdopterBadge />
               <EntitlementPill />
