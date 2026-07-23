@@ -12,7 +12,7 @@
  * We import only the pure exports; the component itself pulls in react-native and
  * expo-application, so this file must NOT touch those.
  */
-import { cmpVersion, decideAppUpdate } from '../lib/appUpdate.ts';
+import { cmpVersion, decideAppUpdate, parseItunesLookup } from '../lib/appUpdate.ts';
 
 let bad = 0;
 function eq(name: string, got: unknown, want: unknown) {
@@ -63,6 +63,19 @@ eq('non-numeric build on android -> unknown',
 eq('unknown platform -> unknown', decideAppUpdate(M, 'web', '2.9.17', '1'), { state: 'unknown' });
 eq('manifest missing the url -> unknown (no dead store link)',
    decideAppUpdate({ ios: { version: '2.9.21' } }, 'ios', '2.9.17', '75'), { state: 'unknown' });
+
+console.log('parseItunesLookup (App Store path)');
+// A real-shaped Apple response -> the iOS manifest fields.
+eq('extracts version + store url',
+   parseItunesLookup({ resultCount: 1, results: [{ version: '2.9.21', trackViewUrl: 'https://apps.apple.com/app/id6786884115' }] }),
+   { version: '2.9.21', url: 'https://apps.apple.com/app/id6786884115' });
+// Degrade closed on Apple's "not found" (resultCount 0) and malformed shapes,
+// so a lookup miss never becomes a false 'update' downstream.
+eq('empty results -> null', parseItunesLookup({ resultCount: 0, results: [] }), null);
+eq('missing url -> null', parseItunesLookup({ results: [{ version: '2.9.21' }] }), null);
+eq('missing version -> null', parseItunesLookup({ results: [{ trackViewUrl: 'x' }] }), null);
+eq('null json -> null', parseItunesLookup(null), null);
+eq('garbage -> null', parseItunesLookup('nope'), null);
 
 console.log(bad ? `\n${bad} FAILED` : '\nall good');
 process.exit(bad ? 1 : 0);

@@ -783,6 +783,7 @@ function SetupBody() {
   const volumeButtons = usePref('volumeButtons');
   const hideOfflineStreamHosts = usePref('hideOfflineStreamHosts');
   const hideDownloads = usePref('hideDownloads');
+  const appUpdateReminder = usePref('appUpdateReminder');
   const hideStreamFromPc = usePref('hideStreamFromPc');
   const hideTvVolume = usePref('hideTvVolume');
   const showTaps = usePref('showTaps');
@@ -1273,6 +1274,15 @@ function SetupBody() {
                 value={hideDownloads}
                 onValueChange={(v) => {
                   void setPref('hideDownloads', v);
+                  hapticSelection();
+                }}
+              />
+              <TogglePref
+                label="App update reminders"
+                sub="Occasionally remind me to check for a new app version. The check itself is always manual — this only controls the reminder."
+                value={appUpdateReminder}
+                onValueChange={(v) => {
+                  void setPref('appUpdateReminder', v);
                   hapticSelection();
                 }}
               />

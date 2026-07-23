@@ -10,6 +10,7 @@ export type Manifest = {
 };
 
 export type Result =
+  | { state: 'idle' }
   | { state: 'checking' }
   | { state: 'current' }
   | { state: 'update'; latest: string; url: string }
@@ -59,4 +60,17 @@ export function decideAppUpdate(
     return latestVc > curVc ? { state: 'update', latest: shown, url } : { state: 'current' };
   }
   return { state: 'unknown' };
+}
+
+/**
+ * Normalize Apple's itunes.apple.com/lookup response into the iOS manifest
+ * shape. Pure + tested because it is the one new bit of parsing on the App
+ * Store path; returns null on anything missing so the caller degrades to
+ * 'unknown' rather than a false result.
+ */
+export function parseItunesLookup(json: unknown): { version: string; url: string } | null {
+  const d = json as { results?: { version?: string; trackViewUrl?: string }[] } | null;
+  const r = d?.results?.[0];
+  if (!r || typeof r.version !== 'string' || typeof r.trackViewUrl !== 'string') return null;
+  return { version: r.version, url: r.trackViewUrl };
 }
