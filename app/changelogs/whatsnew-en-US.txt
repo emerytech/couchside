@@ -1,9 +1,8 @@
-New in 2.9.21
+New in 2.9.22
 
-• Game cover art now shows on Android — it never did before.
-• Search your games on the Launch tab, and fold away Stream from PC.
-• Close the running game from your phone.
-• New Steam search button: opens search on the box and brings up your keyboard.
-• Storage now reports how full drives really are, and shows game drives like SD cards.
-• Handhelds show battery draw, power profile, and time until full.
-• Watch what your box is doing while it updates.
+• Update your box from your phone — Flatpak apps and the OS (SteamOS/Bazzite), together or one at a time. Turn it on once at the box.
+• A fresh install now walks you through pairing on the box's own screen.
+• Search your Preferences by typing.
+• Check for an app update in Setup › Account — it asks your store directly, sends nothing about you.
+• Closing the running game from your phone now actually works.
+• Swipe traces draw a clean glowing line.

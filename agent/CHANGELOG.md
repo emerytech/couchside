@@ -20,10 +20,19 @@ deciding whether to press "Update now" on a machine across the room.
 
 ## 2.9.47
 
-Update your box's operating system from the phone too, on SteamOS and Bazzite.
-Same one-time opt-in as app updates (`couchside allow-system-updates on`). An
-OS update is staged and applies on the next reboot — the app tells you that
-plainly rather than pretending it finished.
+Update your whole box from the couch, plus a friendlier first pairing.
+
+- **Update your Flatpak apps and your operating system from the phone** (SteamOS
+  and Bazzite), together or one at a time. Since system updates need root, it's
+  a one-time opt-in you turn on at the box — `couchside allow-system-updates on`
+  — which spells out exactly what it grants. An OS update is staged and applies
+  on the next reboot; the app says so plainly instead of pretending it finished.
+- **A fresh install now shows a short guide right on the box's screen** — open
+  the app, scan, tap this box — that turns into the pairing PIN the moment you
+  start. And a device on your network can no longer pop that pairing screen onto
+  your TV over and over.
+- **Closing the running game from your phone actually closes it now** — the
+  button used to report success while the game kept running.
 
 ## 2.9.46
 
