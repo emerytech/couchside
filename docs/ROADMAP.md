@@ -9,27 +9,6 @@ Entry fields: `priority` (P0 blocker → P3 nice) · `risk` · `affects` · `dep
 
 ## 🔨 In Progress
 
-### Touch animations (tap rings + drag trails)
-- **priority:** P3 · **risk:** low · **affects:** app only · **depends_on:** none
-- Two Preferences toggles, both default OFF, drawing touch feedback over the whole UI so
-  screen recordings of Couchside are legible for the store listing, support screen-shares
-  and demos. iOS has no system-wide "Show taps" and no recorder can draw into another app,
-  so the app draws its own. Pure JS, no new dependency. **Shipped in 2.9.17** (#179).
-- **Shipped but NOT Complete — the drag trail is still unverified.** "Show taps" is proven
-  in the web harness in both states with a coordinate control; "Trace drags" cannot be
-  exercised on web at all (`touchMove` measured 0 across 171 mouse-driven move events — RNW
-  emits mouse events, not touch events). Being live on Play is not evidence it works. Move
-  to ✅ only after a device shows the trail drawing.
-- **How to verify without a rebuild:** the `__touchTrace` counters are in the shipped
-  bundle on purpose. Turn both prefs on, drag, read `globalThis.__touchTrace` — `touchMove`
-  and `marks` must both climb. If `touchMove` stays 0 on a real device, the `onTouchMove`
-  fix is wrong and the trail needs a different attachment point.
-- The camera PiP from the `feat/demo-mode` prototype is explicitly **not** coming with it:
-  it needs `expo-camera`, the CI gate blocks that from `main`, and the shipping app carries
-  no mention of native camera use.
-
----
-
 ## 📋 Planned
 
 ### On-box pairing tutorial (auto-plays after install)
@@ -166,7 +145,9 @@ Entry fields: `priority` (P0 blocker → P3 nice) · `risk` · `affects` · `dep
 
 ### Make Preferences findable (filter + collapse + re-split PAD LAYOUT)
 - **priority:** P2 · **risk:** low · **affects:** app only · **depends_on:** none
-- **COUNTED on main 2026-07-22: ~25-28 controls, and PAD LAYOUT holds 12 of them.** The
+- **FILTER SHIPPED in #224 (2026-07-22).** Find-as-you-type over label+sub, card chrome
+  dissolves under a query, empty-state on no match. Remaining: the collapse/fold of whole
+  sections, and re-splitting the overloaded PAD LAYOUT card. See [[shipped-2.9.21]] follow-ons.- **COUNTED on main 2026-07-22: ~25-28 controls, and PAD LAYOUT holds 12 of them.** The
   problem is the DISTRIBUTION, not the total:
   PAD LAYOUT 12 · INPUT & PAD 5 · GENERAL 3 · TOUCH ANIMATIONS 2 · STREAM FROM PC 2 ·
   APPEARANCE 1.
@@ -266,6 +247,17 @@ recommendation was wrong, not merely superseded.
 ---
 
 ## ✅ Completed
+
+### 2026-07-22 — Drag trail is a real stroke, verified on a device (#224)
+The 2.9.17 "Trace drags" pref drew a fading DOT every 20px; each shrank on appearance, so a
+fast drag pulled apart into beads. #224 replaced it with abutting rotated-View segments
+(square ends, length == true distance — no gap to bead), added a `boxShadow` glow, and
+staggered the per-batch fade. **Driven on a physical Razr 2023** with `adb shell input swipe`
++ `screencap` mid-gesture — the exact device check this item was blocked on. Stroke confirmed
+continuous at 3x; glow confirmed rendering on Android on rotated Views. Geometry extracted to
+`app/lib/touchTrail.ts`, tested in CI (mutation-checked). Also fixed an 80px undrawn hole on
+capped fast flicks, found by driving it on hardware. Tap-ring "Show taps" was already proven.
+
 
 ### 2026-07-22 — Release 2.9.21 (app 2.9.21 / agent 2.9.43)
 Play **vc 55 LIVE**; App Store **2.9.21 submitted for review** (build 75, first store
