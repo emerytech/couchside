@@ -226,6 +226,16 @@ jobs:
       - name: Unit tests (flatpak update)
         run: python3 tests/test_flatpak_update.py
 
+      # The OS-update slice: same security shape as flatpak (no client id, frozen
+      # argv, wrapper-gated grant) plus the atomic-update HONESTY — os_status
+      # reads the STAGED state back so the app says "reboot to apply", never
+      # reports a staged image as done. Mutation-relevant: the installer wrapper
+      # validates its mode to check|apply and never forwards argv. Live
+      # counterpart proven on Bazzite: read-only check + a no-op apply ran as
+      # root via the wrapper, staged nothing, and GET reported the real version.
+      - name: Unit tests (OS update)
+        run: python3 tests/test_os_update.py
+
       # Stream-host detection (/api/stream-host, phase 4a — detect only). The
       # fixtures are verbatim /proc/net lines off a live box, so they encode the
       # real trap: an ESTABLISHED TCP peer on 27036 is the ROUTER, not a session,

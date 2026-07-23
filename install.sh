@@ -125,6 +125,8 @@ JOURNAL_WRAPPER="${ETC_DIR}/couchside-journal"
 # the root-owned ETC_DIR so the desktop user can execute but never modify it —
 # modifiable would mean root-code injection via the grant.
 FLATPAK_UPDATE_WRAPPER="${ETC_DIR}/couchside-flatpak-update"
+# Same idea for the atomic OS updater (rpm-ostree / steamos-update).
+OS_UPDATE_WRAPPER="${ETC_DIR}/couchside-os-update"
 # Opt-in sudoers grant for the flatpak (and, later, OS) update wrappers. A
 # SEPARATE file from SUDOERS_FILE so the opt-in is one file to add/remove and the
 # always-on core grants are never touched. zz-couchside-updates sorts after
@@ -406,7 +408,7 @@ if [ "$UNINSTALL" -eq 1 ]; then
     sudo rm -f /etc/systemd/network/50-couchside-wol.link
     note "removed the Wake-on-LAN .link file"
     # Drop the journal wrapper explicitly so a KEPT $ETC_DIR doesn't retain it.
-    sudo rm -f "$JOURNAL_WRAPPER" "$FLATPAK_UPDATE_WRAPPER"
+    sudo rm -f "$JOURNAL_WRAPPER" "$FLATPAK_UPDATE_WRAPPER" "$OS_UPDATE_WRAPPER"
     sudo rm -f /etc/udev/rules.d/99-couchside-uinput.rules \
                /etc/udev/rules.d/99-couchside-rtc.rules \
                /etc/modules-load.d/couchside-uinput.conf
@@ -817,6 +819,39 @@ FPWRAP
         "$WORK_DIR/couchside-flatpak-update" "$FLATPAK_UPDATE_WRAPPER"
 fi
 
+# Atomic-OS update wrapper (inert until the owner opts in), same rules as the
+# flatpak one: fixed, root-owned, its mode validated to check|apply and never
+# forwarded, so the grant on it can't reach another rpm-ostree/steamos-update
+# subcommand (rpm-ostree can layer packages, override, rebase).
+if command -v rpm-ostree >/dev/null 2>&1 || command -v steamos-update >/dev/null 2>&1; then
+    say "Installing the OS update wrapper ($OS_UPDATE_WRAPPER)"
+    note "Inert until you run: couchside allow-system-updates on"
+    cat > "$WORK_DIR/couchside-os-update" <<'OSWRAP'
+#!/usr/bin/env bash
+# couchside-os-update [check|apply]: update the atomic OS image, as root.
+# `apply` STAGES a new deployment for the NEXT BOOT — it does not reboot. The
+# mode is validated to exactly check|apply and NEVER forwarded, so the sudoers
+# grant on this script cannot be steered into another rpm-ostree/steamos-update
+# subcommand. Root bypasses the polkit check that denies the sessionless agent.
+set -euo pipefail
+mode="${1:-apply}"
+case "$mode" in
+    check) rpm=(upgrade --check); steamos=(check) ;;
+    apply) rpm=(upgrade);         steamos=() ;;
+    *) echo "couchside-os-update: mode must be check or apply" >&2; exit 2 ;;
+esac
+if command -v rpm-ostree >/dev/null 2>&1; then
+    exec rpm-ostree "${rpm[@]}"
+elif command -v steamos-update >/dev/null 2>&1; then
+    exec steamos-update "${steamos[@]}"
+else
+    echo "couchside-os-update: no supported OS updater" >&2; exit 3
+fi
+OSWRAP
+    sudo install -m 0755 -o root -g root \
+        "$WORK_DIR/couchside-os-update" "$OS_UPDATE_WRAPPER"
+fi
+
 # ---------------------------------------------------------------------------
 # (f2) Virtual-gamepad device access (/dev/uinput)
 # ---------------------------------------------------------------------------
@@ -1173,15 +1208,19 @@ PY
     # itself. The grant names exact root-owned wrapper paths, never the package
     # managers, so a token holder can trigger these updates and nothing else.
     WRAP="/etc/couchside/couchside-flatpak-update"
+    OSWRAP="/etc/couchside/couchside-os-update"
     UPD_SUDOERS="/etc/sudoers.d/zz-couchside-updates"
     case "${2:-}" in
       on)
-        [ -x "$WRAP" ] || { echo "error: $WRAP not installed — re-run install.sh first (needs flatpak present)" >&2; exit 1; }
+        # At least one wrapper must exist (flatpak and/or OS, depending on
+        # what this box has). Grant only the ones present.
+        [ -x "$WRAP" ] || [ -x "$OSWRAP" ] || { echo "error: no update wrapper installed — re-run install.sh first" >&2; exit 1; }
         echo "This grants the Couchside agent (and so anyone holding this box's"
-        echo "pairing token) the ability to run SYSTEM package updates as root,"
-        echo "via fixed root-owned scripts that accept no arguments:"
+        echo "pairing token) the ability to run SYSTEM updates as root, via fixed"
+        echo "root-owned scripts that accept no arbitrary arguments:"
         echo
-        echo "    $WRAP"
+        [ -x "$WRAP" ]   && echo "    $WRAP   (flatpak apps)"
+        [ -x "$OSWRAP" ] && echo "    $OSWRAP   (OS image, staged for next boot)"
         echo
         echo "It cannot install new software or run arbitrary commands — only"
         echo "update what is already installed, from already-trusted sources."
@@ -1196,7 +1235,8 @@ PY
 # couchside OPT-IN (couchside allow-system-updates): let the agent run exactly
 # these fixed, root-owned, zero-argument update wrappers without a password.
 # Remove with: couchside allow-system-updates off
-$(id -un) ALL=(root) NOPASSWD: $WRAP
+$([ -x "$WRAP" ]   && echo "$(id -un) ALL=(root) NOPASSWD: $WRAP")
+$([ -x "$OSWRAP" ] && echo "$(id -un) ALL=(root) NOPASSWD: $OSWRAP")
 GRANT
         sudo visudo -cf "$tmpf" || { rm -f "$tmpf"; echo "sudoers validation failed — nothing installed" >&2; exit 1; }
         sudo install -m 0440 -o root -g root "$tmpf" "$UPD_SUDOERS"

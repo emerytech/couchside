@@ -45,7 +45,7 @@ except ImportError:  # pragma: no cover
     fcntl = None
 
 APP_NAME = "couchside-agent"
-VERSION = "2.9.46"
+VERSION = "2.9.47"
 UID = os.getuid()
 XDG_RUNTIME_DIR = "/run/user/%d" % UID
 
@@ -1728,6 +1728,148 @@ def flatpak_update():
     print("[update] flatpak update started (elevated=%s, log: %s)"
           % (elevated, FLATPAK_UPDATE_LOG), flush=True)
     return {"started": True, "elevated": elevated, "log": FLATPAK_UPDATE_LOG}
+
+
+# ---------------------------------------------------------------------------
+# OS updates (/api/update/os) — the second update-hub target.
+#
+# Atomic distros only (SteamOS, Bazzite): the box IMAGE is updated as a unit,
+# staged for the next boot. Same STRICT ALLOWLIST shape as the flatpak slice —
+# no client-supplied identifier, the argv is a frozen list chosen HERE — and the
+# same opt-in elevation (a root-owned wrapper granted by
+# `couchside allow-system-updates on`), because the underlying `rpm-ostree
+# upgrade --check` is denied to the sessionless agent by polkit exactly like a
+# system flatpak (MEASURED 2026-07-22: "AutomaticUpdateTrigger not allowed for
+# user"). Root, via the wrapper, bypasses it.
+#
+# THE HONESTY THAT MATTERS: an atomic OS update STAGES a new deployment for the
+# next boot; it does not apply live. os_status() reads that staged state back
+# (rpm-ostree status --json, read-only, no root) so the app can say "staged —
+# reboot to apply" and never "done" for something that has not happened. This is
+# exactly the failure mode CLAUDE.md §11.4 is about.
+# ---------------------------------------------------------------------------
+
+OS_UPDATE_WRAPPER = "/etc/couchside/couchside-os-update"
+OS_UPDATE_LOG = "/tmp/couchside-os-update.log"
+
+
+def os_updater_kind():
+    """Which atomic OS updater this box has, or None. Chooses the SAME way the
+    wrapper does (which rpm-ostree / steamos-update), so the app never offers an
+    OS-update button on a box the wrapper couldn't serve."""
+    if shutil.which("rpm-ostree"):
+        return "rpm-ostree"
+    if shutil.which("steamos-update"):
+        return "steamos"
+    return None
+
+
+def os_can_elevate():
+    """True when the owner opted in and sudoers permits the OS update wrapper
+    with no password. Degrade-closed (see flatpak_can_elevate)."""
+    return _sudo_nopasswd_allows("couchside-os-update")
+
+
+def _rpm_ostree_status():
+    """Parsed `rpm-ostree status --json`, or {} on any failure. Read-only, no
+    root — so the app can always show current version + staged state even
+    without the update grant."""
+    try:
+        r = subprocess.run(["rpm-ostree", "status", "--json"],
+                           capture_output=True, text=True, timeout=15)
+        if r.returncode != 0:
+            return {}
+        return json.loads(r.stdout)
+    except Exception:
+        return {}
+
+
+def os_status():
+    """Read-only OS deployment state for GET /api/update/os. Never needs the
+    grant. `staged` True means an update is already downloaded and will apply on
+    the next reboot — the app must then say 'reboot to apply', not offer another
+    update."""
+    kind = os_updater_kind()
+    out = {"kind": kind, "elevated": os_can_elevate(),
+           "current": None, "staged": False}
+    if kind == "rpm-ostree":
+        d = _rpm_ostree_status()
+        booted = None
+        staged = False
+        for dep in d.get("deployments", []):
+            if dep.get("booted"):
+                booted = dep.get("version") or dep.get("checksum")
+            if dep.get("staged"):
+                staged = True
+        out["current"] = booted
+        out["staged"] = staged
+    elif kind == "steamos":
+        # steamos-update has no cheap read-only "what's staged" like rpm-ostree's
+        # json; report only what is free. A steamos update applies on reboot the
+        # same way, so `staged` is surfaced by the app's post-run message rather
+        # than probed here.
+        try:
+            with open("/etc/os-release") as f:
+                for ln in f:
+                    if ln.startswith("BUILD_ID="):
+                        out["current"] = ln.split("=", 1)[1].strip().strip('"')
+                        break
+        except OSError:
+            pass
+    return out
+
+
+def read_os_update_log(limit=80):
+    """Last `limit` non-blank lines of the OS-update transcript, or []. CONSTANT
+    path; no client input selects a file. Never raises."""
+    try:
+        with open(OS_UPDATE_LOG, "r", errors="replace") as f:
+            lines = f.read().splitlines()
+    except OSError:
+        return []
+    return [ln.rstrip() for ln in lines if ln.strip()][-limit:]
+
+
+def os_update_apply():
+    """Fire a DETACHED OS update (stage) via the root wrapper, writing to
+    OS_UPDATE_LOG. Requires the opt-in grant — with no elevation an atomic OS
+    update cannot run at all, so unlike flatpak there is no --user fallback: we
+    report needs_optin instead of pretending.
+
+    Detached + log-file for the same reasons as flatpak_update (minutes-long,
+    pipe-deadlock). The argv is [sudo, -n, <wrapper>, apply] — the wrapper self-
+    validates the mode, and the client supplies neither the mode nor anything
+    else."""
+    if os_updater_kind() is None:
+        return {"started": False, "error": "no atomic OS updater on this box"}
+    if not os_can_elevate():
+        return {"started": False, "needs_optin": True,
+                "error": "system updates are not enabled on this box "
+                         "(couchside allow-system-updates on)"}
+    try:
+        logf = open(OS_UPDATE_LOG, "w")
+    except OSError as e:
+        return {"started": False, "error": "cannot open log: %s" % e}
+    try:
+        proc = subprocess.Popen(
+            ["sudo", "-n", OS_UPDATE_WRAPPER, "apply"], env=None,
+            stdout=logf, stderr=subprocess.STDOUT, stdin=subprocess.DEVNULL,
+            start_new_session=True)
+    except OSError as e:
+        logf.close()
+        return {"started": False, "error": str(e)}
+    finally:
+        try:
+            logf.close()
+        except OSError:
+            pass
+    time.sleep(0.4)
+    rc = proc.poll()
+    if rc is not None and rc != 0:
+        return {"started": False, "exit_code": rc,
+                "log": OS_UPDATE_LOG, "lines": read_os_update_log()}
+    print("[update] OS update started (log: %s)" % OS_UPDATE_LOG, flush=True)
+    return {"started": True, "log": OS_UPDATE_LOG}
 
 
 # ---------------------------------------------------------------------------
@@ -11786,6 +11928,23 @@ class Handler(BaseHTTPRequestHandler):
                                             "[mock] Changes complete."]
                                            if self.mock else read_flatpak_log())},
                            started)
+            elif path == "/api/update/os":
+                # Read-only OS deployment state. 404 on a non-atomic box so the
+                # OS-update card never appears where it can't work. No client
+                # input; a fixed read-only status runs.
+                if self.mock:
+                    self._send(200, {"kind": "rpm-ostree", "elevated": True,
+                                     "current": "43.20260420", "staged": False},
+                               started)
+                elif os_updater_kind() is None:
+                    self._send(404, {"kind": None}, started)
+                else:
+                    self._send(200, os_status(), started)
+            elif path == "/api/update/os/log":
+                self._send(200, {"lines": (["[mock] Staging deployment…",
+                                            "[mock] Staged. Reboot to apply."]
+                                           if self.mock else read_os_update_log())},
+                           started)
             elif path == "/api/update/check":
                 # Box-side update check (agent >= 2.9.5). The app reads this over
                 # the LAN so the app never touches the internet; the box (already
@@ -12230,6 +12389,22 @@ class Handler(BaseHTTPRequestHandler):
                 result = ({"started": True, "elevated": True,
                            "log": FLATPAK_UPDATE_LOG}
                           if self.mock else flatpak_update())
+                self._send(200, result, started)
+                return
+
+            # POST /api/update/os: STAGE an atomic OS update. Requires the opt-in
+            # grant (no --user fallback exists for an OS image). 404 on a non-
+            # atomic box. Token-authed like the flatpak update. Fixed argv, no
+            # client input. The result stages for next boot — the app reads
+            # /api/update/os back to learn it must prompt a reboot.
+            if path == "/api/update/os":
+                if not self.mock and os_updater_kind() is None:
+                    self._send(404, {"ok": False, "kind": None,
+                                     "error": "no atomic OS updater on this box"},
+                               started)
+                    return
+                result = ({"started": True, "log": OS_UPDATE_LOG}
+                          if self.mock else os_update_apply())
                 self._send(200, result, started)
                 return
 
