@@ -303,6 +303,14 @@ jobs:
       - name: Unit tests (touch drag stroke geometry)
         run: node --experimental-strip-types app/__tests__/touch-trail.ts
 
+      # The mobile-app update decision (couchside.tv/app-version.json vs the
+      # running build). Pure logic — iOS marketing-version compare, Android
+      # versionCode compare, degrade-closed on anything missing. The component
+      # needs a device; this is the risk (component-wise version compare, the
+      # 2.9.9 < 2.9.21 trap, never a false "update available").
+      - name: Unit tests (app update check)
+        run: node --experimental-strip-types app/__tests__/app-update.ts
+
       # KI-002: the app had NO automated signal of any kind. Every escaped bug
       # this project has paid for lately was in app/ -- a tap shipped broken to
       # TestFlight, a link that overflowed only on Android, a button occluded

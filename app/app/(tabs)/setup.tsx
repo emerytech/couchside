@@ -20,6 +20,7 @@ import {
 } from 'react-native';
 
 import { AgentUpdateBanner } from '@/components/AgentUpdateBanner';
+import { AppUpdateRow } from '@/components/AppUpdateRow';
 import { SystemUpdatesCard } from '@/components/SystemUpdatesCard';
 import { Gated } from '@/components/Gated';
 import { LogsPanel } from '@/components/LogsPanel';
@@ -1640,7 +1641,9 @@ function SetupBody() {
         {tab === 'account' && (
           <>
             <AgentUpdateBanner />
-            {/* One compact card for box software (Flatpak + OS). */}
+            {/* Phone-app update check (direct, anonymous) sits with the
+                agent check; then the box-software card. */}
+            <AppUpdateRow />
             <SystemUpdatesCard />
             <View style={styles.accountBadges}>
               <EarlyAdopterBadge />
