@@ -107,6 +107,30 @@ Entry fields: `priority` (P0 blocker → P3 nice) · `risk` · `affects` · `dep
 - **Value is narrower than it looks:** the shipped Bluetooth button already reaches Steam's
   own pairing UI, which handles agents and PINs correctly.
 
+### "Now streaming" card + stop-stream, for games streamed from a PC
+- **priority:** P2 · **risk:** low · **affects:** agent + app · **depends_on:** none
+- **Reported by owner 2026-07-22.** A LOCAL running game shows a "now playing" card with the
+  red **Close Game** button (NowPlayingCard, agent `stop_running_game`). A game **streamed**
+  from the main gaming PC (Steam Remote Play / in-home streaming) shows **nothing** in those
+  spots.
+- **Why:** `_running_game()` (agent ~9923) scans `/proc/*/cmdline` for the Steam **reaper**
+  wrapper of a game running ON THE BOX. A streamed game runs on the **host PC**; the box only
+  runs Steam's **streaming client**, so there is no local reaper process to find — the card
+  and Close button never appear.
+- **The action is DIFFERENT, do not reuse Close Game.** `stop_running_game` kills a local
+  process group; the streamed game is on the host and can't be killed from the box that way.
+  The right action is **stop/disconnect the stream** (leave the streaming client), which the
+  box CAN do locally. Label it "Stop streaming", not "Close Game".
+- **Detection:** the box already knows about streaming — `steamlink` / `streamhost` caps,
+  `stream_host_online()`, and the `streaming_log.txt` start/stop markers (see [[steam-detection-traps]]
+  and **KI-005**). A "streaming now" signal wants the same cross-checks that KI-005 is about
+  (a dirty-ended session can advertise live for up to 12h) — reuse them, don't re-derive.
+- **App:** the compact NowPlayingCard gains a streaming variant — "Streaming <game> from
+  <host>" + a Stop-streaming button — shown above Downloads in Launch and on Console, same
+  slots as the local card.
+- **Verify on hardware** (a real Remote Play session from the PC to the box); the harness
+  can't produce a stream.
+
 ### "Check for app update" in Setup > Account
 - **priority:** P3 · **risk:** low · **affects:** app + website · **depends_on:** none
 - **Requested by owner 2026-07-22.** Next to the existing agent-update banner in

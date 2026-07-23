@@ -34,11 +34,15 @@ function Row({
   label,
   value,
   step,
+  onUpdate,
+  canUpdate,
 }: {
   icon: string;
   label: string;
   value: string;
   step: Step;
+  onUpdate?: () => void;
+  canUpdate?: boolean;
 }) {
   const t = useTheme();
   const styles = useThemedStyles(makeStyles);
@@ -56,7 +60,15 @@ function Row({
       <Text style={styles.rowValue} numberOfLines={1}>
         {value}
       </Text>
-      {statusIcon ? <Ionicons name={statusIcon} size={15} color={statusColor} /> : null}
+      {statusIcon ? (
+        <Ionicons name={statusIcon} size={15} color={statusColor} />
+      ) : canUpdate && onUpdate ? (
+        // Per-row update: do just this one, without touching the other. Small
+        // and quiet so "Update everything" below stays the primary action.
+        <Pressable onPress={onUpdate} hitSlop={8} style={styles.rowBtn}>
+          <Text style={styles.rowBtnText}>Update</Text>
+        </Pressable>
+      ) : null}
     </View>
   );
 }
@@ -103,54 +115,64 @@ export function SystemUpdatesCard() {
     [],
   );
 
-  const run = useCallback(async () => {
-    if (runningRef.current) return;
-    runningRef.current = true;
-    setRunning(true);
-    setMsg(null);
-    setFpStep('idle');
-    setOsStep('idle');
-
-    // 1) Flatpak (live).
-    if (hasFp && (fp.data?.count ?? 0) > 0) {
-      setFpStep('running');
-      try {
-        const r = await api.flatpakUpdate(settings);
-        const done = r.started
-          ? await drain(async () => ((await api.flatpakStatus(settings))?.count ?? -1) === 0)
-          : false;
-        setFpStep(done ? 'done' : 'skipped');
-      } catch {
-        setFpStep('skipped');
-      }
-      fp.refresh();
-    } else {
-      setFpStep(hasFp ? 'done' : 'skipped');
+  // One flatpak run, self-contained so it can be fired on its own (tap the Apps
+  // row) OR as step 1 of "everything".
+  const runFlatpak = useCallback(async () => {
+    setFpStep('running');
+    try {
+      const r = await api.flatpakUpdate(settings);
+      const done = r.started
+        ? await drain(async () => ((await api.flatpakStatus(settings))?.count ?? -1) === 0)
+        : false;
+      setFpStep(done ? 'done' : 'skipped');
+    } catch {
+      setFpStep('skipped');
     }
+    fp.refresh();
+  }, [drain, fp, settings]);
 
-    // 2) OS (staged for reboot — LAST).
-    if (hasOs) {
-      setOsStep('running');
-      try {
-        const r = await api.osUpdate(settings);
-        if (r.started) {
-          const staged = await drain(async () => (await api.osStatus(settings))?.staged === true);
-          setOsStep(staged ? 'staged' : 'done');
-        } else {
-          setOsStep('skipped');
-          if (r.needs_optin) setMsg('OS updates are not enabled on this box.');
-        }
-      } catch {
+  // One OS run — stages for a reboot, so nothing may follow it in a sequence.
+  const runOs = useCallback(async () => {
+    setOsStep('running');
+    try {
+      const r = await api.osUpdate(settings);
+      if (r.started) {
+        const staged = await drain(async () => (await api.osStatus(settings))?.staged === true);
+        setOsStep(staged ? 'staged' : 'done');
+      } else {
         setOsStep('skipped');
+        if (r.needs_optin) setMsg('OS updates are not enabled on this box.');
       }
-      os.refresh();
-    } else {
+    } catch {
       setOsStep('skipped');
     }
+    os.refresh();
+  }, [drain, os, settings]);
 
-    setRunning(false);
-    runningRef.current = false;
-  }, [drain, fp, os, hasFp, hasOs, settings]);
+  // `which`: 'flatpak' | 'os' | 'all'. A row taps its own target; the button
+  // runs everything (flatpak first — live — then OS, which stages for a reboot).
+  const run = useCallback(
+    async (which: 'flatpak' | 'os' | 'all') => {
+      if (runningRef.current) return;
+      runningRef.current = true;
+      setRunning(true);
+      setMsg(null);
+      if (which !== 'os') setFpStep('idle');
+      if (which !== 'flatpak') setOsStep('idle');
+
+      if ((which === 'flatpak' || which === 'all') && hasFp) {
+        if ((fp.data?.count ?? 0) > 0) await runFlatpak();
+        else setFpStep('done');
+      }
+      if ((which === 'os' || which === 'all') && hasOs) {
+        await runOs();
+      }
+
+      setRunning(false);
+      runningRef.current = false;
+    },
+    [fp.data?.count, hasFp, hasOs, runFlatpak, runOs],
+  );
 
   const reboot = useCallback(() => {
     Alert.alert('Reboot the box?', 'This applies the staged OS update. Any unsaved work will be lost.', [
@@ -193,6 +215,11 @@ export function SystemUpdatesCard() {
           label="Apps"
           value={count > 0 ? `${count} update${count === 1 ? '' : 's'}` : 'up to date'}
           step={fpStep}
+          canUpdate={!running && elevated && count > 0}
+          onUpdate={() => {
+            hapticLight();
+            void run('flatpak');
+          }}
         />
       )}
       {hasOs && (
@@ -201,6 +228,11 @@ export function SystemUpdatesCard() {
           label={osName}
           value={osStaged ? 'staged · reboot to apply' : (os.data?.current ?? 'up to date')}
           step={osStep}
+          canUpdate={!running && elevated && !osStaged}
+          onUpdate={() => {
+            hapticLight();
+            void run('os');
+          }}
         />
       )}
 
@@ -217,7 +249,7 @@ export function SystemUpdatesCard() {
         <Pressable
           onPress={() => {
             hapticLight();
-            void run();
+            void run('all');
           }}
           disabled={running || !elevated}
           style={({ pressed }) => [
@@ -252,6 +284,8 @@ const makeStyles = (t: Palette) => StyleSheet.create({
   row: { flexDirection: 'row', alignItems: 'center', gap: 8 },
   rowLabel: { color: t.textDim, fontSize: 12, width: 64 },
   rowValue: { color: t.text, fontSize: 12, fontFamily: mono, flex: 1 },
+  rowBtn: { paddingHorizontal: 8, paddingVertical: 3, borderRadius: 6, backgroundColor: t.inset },
+  rowBtnText: { color: t.blue, fontSize: 11, fontWeight: '700' },
   msg: { color: t.textDim, fontSize: 12, lineHeight: 17 },
   btn: {
     backgroundColor: t.blue,
