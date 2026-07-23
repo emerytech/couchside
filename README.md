@@ -99,11 +99,35 @@ Free 7-day trial with every feature unlocked, then a one-time unlock ($4.99 summ
 Couchside is deliberately small and boring about security:
 
 - **Bearer token auth.** Every API route except the reachability ping requires `Authorization: Bearer <token>`; the gamepad WebSocket authenticates before the handshake completes. Comparisons are constant-time (`hmac.compare_digest`). The token file is `chmod 600`; on the phone it lives in the iOS Keychain / Android Keystore.
-- **Scoped sudo, nothing more.** The installer writes a `visudo`-validated sudoers rule granting the service user passwordless sudo for exactly six fixed-argument commands: `systemctl restart sddm`, `systemctl reboot`, `systemctl poweroff`, `systemctl suspend`, `systemctl restart plugin_loader` (so the app can revive Decky Loader's panel, which dies whenever Steam's CEF restarts and never comes back on its own), and a root-owned journal wrapper. Nothing else. Note the last one carefully: the grant is for the **wrapper**, never for `journalctl` itself. The wrapper validates the unit and the line count and calls `journalctl` with a locked-down option set, because *any* wildcard rule on `journalctl` would also permit `--file` / `--directory` — turning "read the journal" into arbitrary file reads as root. The **privileged** actions are a fixed table; there is no route that runs an arbitrary command **as root**.
+- **Scoped sudo, nothing more.** The installer writes a `visudo`-validated sudoers rule granting the service user passwordless sudo for exactly six fixed-argument commands: `systemctl restart sddm`, `systemctl reboot`, `systemctl poweroff`, `systemctl suspend`, `systemctl restart plugin_loader` (so the app can revive Decky Loader's panel, which dies whenever Steam's CEF restarts and never comes back on its own), and a root-owned journal wrapper. Nothing else. Note the last one carefully: the grant is for the **wrapper**, never for `journalctl` itself. The wrapper validates the unit and the line count and calls `journalctl` with a locked-down option set, because *any* wildcard rule on `journalctl` would also permit `--file` / `--directory` — turning "read the journal" into arbitrary file reads as root. The **privileged** actions are a fixed table; there is no route that runs an arbitrary command **as root**. Updating Flatpak apps or the OS from the app is an explicit **opt-in** (`couchside allow-system-updates on`, see the command table below) that adds a *separate* sudoers file granting **one fixed root-owned wrapper each** — never `flatpak` or `rpm-ostree` themselves, whose subcommands (install, run, override, rebase) would be arbitrary root. Off by default.
 - **Launchers run as you, and creating them remotely is opt-in.** Beyond the fixed privileged actions, the app can *trigger* launchers — auto-discovered Steam games plus any custom commands the box owner defined. A launcher's command runs as the **desktop user, never root**. Because a custom launcher is an arbitrary command, *creating* one over the network is **off by default**: run `couchside allow-launchers on` to enable it, otherwise a bearer token can only trigger launchers you set up on the box, not mint new ones. (The same token can already synthesize keystrokes through the virtual gamepad, so treat the token as user-level trust on a machine you control — which is why it stays on your LAN.)
 - **Journal access is allowlisted.** Only units on the configured watchlist can be read, with line counts clamped server-side, so a leaked token can't be used to trawl the whole system journal.
 - **LAN-only by design.** The API is plain HTTP on port 8787 and is meant to stay on your local network. The firewall rule opens the port locally; **do not port-forward it**. There is no relay, no cloud endpoint, and the app never talks to anything except your service.
 - No client-addressable file routes. The service serves image bytes on two routes only: the album-art image a running media player advertises (realpath-allowlisted, image-sniffed, 2 MiB cap; client passes a player id, never a path) and an on-demand screen-preview frame captured to a tmpfs file that's deleted right after (rate-clamped, off by default in the app). Subprocesses run with `shell=False`, errors return brief JSON, never tracebacks.
+
+## The `couchside` command — enabling extra features
+
+The installer adds a `couchside` command to manage the box. Most of it is
+everyday (`couchside update`, `couchside status`, `couchside pair`), but three
+subcommands are **opt-ins that are OFF by default** — they widen what a paired
+phone is allowed to do, so you turn them on **only on the box**, never from the
+app. Each prints exactly what it grants before it does anything.
+
+| Command | What it lets the app do | Privilege it grants |
+|---|---|---|
+| `couchside allow-updates on` | Trigger a **Couchside agent** update from the app | none new — runs the signed installer the box already trusts |
+| `couchside allow-system-updates on` | Update your box's **Flatpak apps and OS** (SteamOS/Bazzite) from the app | passwordless sudo for **one fixed command each** — a root-owned wrapper that runs `flatpak update --system` / stages an `rpm-ostree`/`steamos-update`, and accepts no other arguments. Never a grant on `flatpak`/`rpm-ostree` themselves. |
+| `couchside allow-launchers on` | **Create** custom launchers from the app (not just trigger ones you defined) | none new — a launcher runs as your desktop user, never root |
+
+Turn any of them off again with `... off`, or check state with `... status`.
+An OS update **stages for the next boot** — the app shows "reboot to apply"
+rather than pretending it finished. Nothing here can install new software or run
+an arbitrary command as root: each grant is on a single fixed wrapper, validated
+with `visudo`, and sorted last (`zz-couchside-updates`) so a distro's `wheel`
+rule can't shadow it.
+
+Full detail on why the grants are shaped this way is in the **Security model**
+section above.
 
 ## Uninstall
 
