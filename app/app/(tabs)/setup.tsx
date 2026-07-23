@@ -20,6 +20,7 @@ import {
 } from 'react-native';
 
 import { AgentUpdateBanner } from '@/components/AgentUpdateBanner';
+import { FlatpakUpdatesCard } from '@/components/FlatpakUpdatesCard';
 import { Gated } from '@/components/Gated';
 import { LogsPanel } from '@/components/LogsPanel';
 import { QrView } from '@/components/QrView';
@@ -1639,6 +1640,9 @@ function SetupBody() {
         {tab === 'account' && (
           <>
             <AgentUpdateBanner />
+            {/* Directly under the agent banner: both are "what on this box
+                is out of date", agent first because it gates everything else. */}
+            <FlatpakUpdatesCard />
             <View style={styles.accountBadges}>
               <EarlyAdopterBadge />
               <EntitlementPill />
