@@ -124,10 +124,14 @@ at mid-glow, not a dark trough.
    iOS build 76 / vc 59 (autoIncrement ran = EAS builds happened), floors were vc≥56 / iOS≥76.
    Everything previously listed as "on main unreleased" (update hub, app-update check, Prefs
    filter, drag trail, pairing tutorial) is IN 2.9.22. App Store live is still 2.9.21 (iTunes
-   lookup, 07-23), so build 76 is TestFlight and/or App Review — **open sub-question: has build
-   76 been submitted to App Store review?** If not, the revamp (screenshots + copy) should ride
-   the 2.9.22 submission. Post-tag commits are agent-only (2.9.48/2.9.49) → main's app code ==
-   the 2.9.22 app, so the Simulator batch can build straight from main.
+   lookup, 07-23). **RESOLVED via BUILD_LOG:** iOS build 76 is **already in App Store review**
+   (AFTER_APPROVAL, auto-release on approval); Android vc59 is in Play production. So the revamp
+   does NOT ride the 2.9.22 submission — it lands as a **metadata/media update** (new screenshots
+   + description), either edited onto 2.9.22 before it clears review or as the next version's
+   metadata. Post-tag commits are agent-only (2.9.48/2.9.49) → main's app code == the 2.9.22 app,
+   so the Simulator batch can build straight from main today. NOTE: the main session already
+   tracks "Store listing screenshots/media — not started" as a 2.9.22 follow-up; this plan is that
+   work.
 3. **Real box for the Launch (+ optional Now-Playing) hero.** `--mock` Steam covers are flat
    solid-color placeholders and look bad; the Launch hero wants a real box with a real Steam library.
    MPRIS Now-Playing has no mock at all. Stage a LAN box or drop those shots.
