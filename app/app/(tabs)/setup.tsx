@@ -20,6 +20,7 @@ import {
 } from 'react-native';
 
 import { AgentUpdateBanner } from '@/components/AgentUpdateBanner';
+import { AppUpdateRow } from '@/components/AppUpdateRow';
 import { SystemUpdatesCard } from '@/components/SystemUpdatesCard';
 import { Gated } from '@/components/Gated';
 import { LogsPanel } from '@/components/LogsPanel';
@@ -782,6 +783,7 @@ function SetupBody() {
   const volumeButtons = usePref('volumeButtons');
   const hideOfflineStreamHosts = usePref('hideOfflineStreamHosts');
   const hideDownloads = usePref('hideDownloads');
+  const appUpdateReminder = usePref('appUpdateReminder');
   const hideStreamFromPc = usePref('hideStreamFromPc');
   const hideTvVolume = usePref('hideTvVolume');
   const showTaps = usePref('showTaps');
@@ -1276,6 +1278,15 @@ function SetupBody() {
                 }}
               />
               <TogglePref
+                label="App update reminders"
+                sub="Occasionally remind me to check for a new app version. The check itself is always manual — this only controls the reminder."
+                value={appUpdateReminder}
+                onValueChange={(v) => {
+                  void setPref('appUpdateReminder', v);
+                  hapticSelection();
+                }}
+              />
+              <TogglePref
                 label="Confirm before suspend"
                 sub="Ask before putting the box to sleep."
                 value={confirmSuspend}
@@ -1640,7 +1651,9 @@ function SetupBody() {
         {tab === 'account' && (
           <>
             <AgentUpdateBanner />
-            {/* One compact card for box software (Flatpak + OS). */}
+            {/* Phone-app update check (direct, anonymous) sits with the
+                agent check; then the box-software card. */}
+            <AppUpdateRow />
             <SystemUpdatesCard />
             <View style={styles.accountBadges}>
               <EarlyAdopterBadge />

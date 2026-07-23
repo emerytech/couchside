@@ -5,6 +5,7 @@ import 'react-native-reanimated';
 
 import { ReviewPrompt } from '@/components/ReviewPrompt';
 import { ReviewToast } from '@/components/ReviewToast';
+import { AppUpdateReminderToast } from '@/components/AppUpdateReminderToast';
 import { TrialEndsToast } from '@/components/TrialEndsToast';
 import { UnlockToast } from '@/components/UnlockToast';
 import { TapCapture } from '@/components/TouchIndicatorLayer';
@@ -61,6 +62,9 @@ export default function RootLayout() {
           <ReviewPrompt />
           {/* The fallback invite ReviewPrompt falls back to when the OS sheet can't run. */}
           <ReviewToast />
+          {/* Rare nudge that the MANUAL app-update check exists (Setup > Account);
+              off via the pref or its own "Don't show again". */}
+          <AppUpdateReminderToast />
         </TapCapture>
         </ThemeProvider>
       </EntitlementProvider>

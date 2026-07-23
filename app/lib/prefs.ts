@@ -79,6 +79,10 @@ export type Prefs = {
    *  going. Named `hide` to match hideStreamFromPc / hideTvVolume; a mixed
    *  polarity is how a toggle ends up wired backwards. */
   hideDownloads: boolean;
+  /** Show the occasional "check for an app update" reminder toast. On by
+   *  default; the toast itself carries a "Don't show again" that flips this
+   *  off. The update CHECK is always manual — this only governs the nudge. */
+  appUpdateReminder: boolean;
   defaultPadMode: PadMode;
   /** How often the console/header polls the box for vitals (ms). */
   statusIntervalMs: number;
@@ -156,6 +160,7 @@ export const DEFAULTS: Prefs = {
   searchButtonSide: 'left',
   streamCollapsed: false,
   hideDownloads: false,
+  appUpdateReminder: true,
   defaultPadMode: 'swipe',
   statusIntervalMs: 5000,
   journalLines: 100,
@@ -239,6 +244,7 @@ function normalize(raw: unknown): Prefs {
       : 'swipe';
   const streamCollapsed = bool(o.streamCollapsed, DEFAULTS.streamCollapsed);
   const hideDownloads = bool(o.hideDownloads, DEFAULTS.hideDownloads);
+  const appUpdateReminder = bool(o.appUpdateReminder, DEFAULTS.appUpdateReminder);
   const searchSide: 'left' | 'right' | 'off' =
     o.searchButtonSide === 'right' || o.searchButtonSide === 'off'
       ? o.searchButtonSide
@@ -250,6 +256,7 @@ function normalize(raw: unknown): Prefs {
     searchButtonSide: searchSide,
     streamCollapsed,
     hideDownloads,
+    appUpdateReminder,
     confirmSuspend:
       typeof o.confirmSuspend === 'boolean' ? o.confirmSuspend : DEFAULTS.confirmSuspend,
     landingTab,
