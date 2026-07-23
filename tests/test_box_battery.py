@@ -85,6 +85,27 @@ POWER_SUPPLY_TYPE=USB
 POWER_SUPPLY_ONLINE=0
 """
 
+# A wireless PERIPHERAL -- gamepad / mouse / headset -- ALSO shows up here as
+# TYPE=Battery. The kernel's HID battery driver marks it POWER_SUPPLY_SCOPE=Device,
+# which is the field that separates it from the machine's own pack. This is the
+# case a DESKTOP tester hit (TestFlight 2026-07-23): a non-laptop PC with a paired
+# controller at 15% reported "On battery 15%" for the box itself.
+#
+# Representative of the hid-input battery format (the discriminating line is
+# POWER_SUPPLY_SCOPE=Device); the NAME leads with a digit on purpose, so it sorts
+# BEFORE "BAT0" -- proving the SCOPE filter, not sort-order luck, is what keeps a
+# handheld reading its own pack when a controller is paired.
+HID_CONTROLLER = """DEVTYPE=power_supply
+POWER_SUPPLY_NAME=0005:054C:0CE6.0009-battery
+POWER_SUPPLY_TYPE=Battery
+POWER_SUPPLY_SCOPE=Device
+POWER_SUPPLY_PRESENT=1
+POWER_SUPPLY_STATUS=Discharging
+POWER_SUPPLY_CAPACITY=15
+POWER_SUPPLY_CAPACITY_LEVEL=Normal
+POWER_SUPPLY_MODEL_NAME=Wireless Controller
+"""
+
 
 class Supplies:
     """A fake /sys/class/power_supply the REAL reader walks."""
@@ -332,6 +353,48 @@ POWER_SUPPLY_CAPACITY=%s
             s.close()
 
 
+def test_desktop_with_paired_controller_is_not_on_battery():
+    """THE reported bug: a mains DESKTOP with a wireless controller paired showed
+    "On battery 15%". The controller is TYPE=Battery but SCOPE=Device -- a
+    peripheral, not the machine's pack. The box has no battery of its own, so the
+    reading (and the whole card) must be absent, not the controller's 15%."""
+    print("test_desktop_with_paired_controller_is_not_on_battery")
+    s = Supplies({"0005:054C:0CE6.0009-battery": HID_CONTROLLER, "ACAD": ACAD_ONLINE})
+    try:
+        check("no box battery reported", cs.read_box_battery(), {})
+        check("cap is false on a desktop", cs.box_battery_available(), False)
+    finally:
+        s.close()
+
+
+def test_device_scope_alone_degrades_closed():
+    """A box whose ONLY battery-typed node is a peripheral has no own battery."""
+    print("test_device_scope_alone_degrades_closed")
+    s = Supplies({"0005:054C:0CE6.0009-battery": HID_CONTROLLER})
+    try:
+        check("device-scope peripheral ignored", cs.read_box_battery(), {})
+    finally:
+        s.close()
+
+
+def test_handheld_with_paired_controller_reads_its_own_pack():
+    """Control -- must NOT regress the hardware-verified handheld. With a paired
+    controller (SCOPE=Device, named to sort BEFORE BAT0) AND the real BAT0
+    (System, no SCOPE line) both present, the reader returns the machine's 58%,
+    never the controller's 15%. The old code took the first Battery node in sort
+    order, so the digit-leading controller name would have won."""
+    print("test_handheld_with_paired_controller_reads_its_own_pack")
+    s = Supplies({"0005:054C:0CE6.0009-battery": HID_CONTROLLER,
+                  "BAT0": BAT0, "ACAD": ACAD_OFFLINE})
+    try:
+        got = cs.read_box_battery()
+        check("its own pack, not the controller", got.get("pct"), 58)
+        check("its own status", got.get("status"), "Discharging")
+        check("cap is true on a handheld", cs.box_battery_available(), True)
+    finally:
+        s.close()
+
+
 if __name__ == "__main__":
     for fn in (test_real_handheld,
                test_watts_from_power_now,
@@ -347,7 +410,10 @@ if __name__ == "__main__":
                test_full_on_the_charger_reports_no_time_to_full,
                test_charging_reports_no_time_left,
                test_empty_bay_is_not_a_battery,
-               test_garbage_capacity_rejected):
+               test_garbage_capacity_rejected,
+               test_desktop_with_paired_controller_is_not_on_battery,
+               test_device_scope_alone_degrades_closed,
+               test_handheld_with_paired_controller_reads_its_own_pack):
         fn()
     if FAILURES:
         print("\n%d FAILED: %s" % (len(FAILURES), ", ".join(FAILURES)))

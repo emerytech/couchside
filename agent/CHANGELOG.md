@@ -18,6 +18,13 @@ the same thing regardless of what actually changed.
 Write for the person holding the phone, not for the commit log. They are
 deciding whether to press "Update now" on a machine across the room.
 
+## 2.9.49
+
+Desktop PCs no longer show a phantom battery. If you had a wireless controller
+paired, its charge could appear as the machine's own battery — a desktop
+reading "On battery 15%" when it has no battery at all. The box now only reports
+its own pack, never a controller, mouse, or headset.
+
 ## 2.9.48
 
 The first-pairing screen now helps you get the app, and it opens reliably from

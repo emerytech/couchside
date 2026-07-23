@@ -45,7 +45,7 @@ except ImportError:  # pragma: no cover
     fcntl = None
 
 APP_NAME = "couchside-agent"
-VERSION = "2.9.48"
+VERSION = "2.9.49"
 UID = os.getuid()
 XDG_RUNTIME_DIR = "/run/user/%d" % UID
 
@@ -10002,6 +10002,26 @@ def read_box_battery():
         u = _uevent(os.path.join(_POWER_SUPPLY_DIR, name, "uevent"))
         kind = u.get("POWER_SUPPLY_TYPE")
         if kind == "Battery" and batt is None:
+            # A PERIPHERAL's battery -- a wireless controller, mouse, keyboard, or
+            # headset -- also appears here as TYPE=Battery. The kernel's HID
+            # battery driver marks those POWER_SUPPLY_SCOPE=Device; the machine's
+            # OWN pack is System, and every handheld/laptop measured (the Legion
+            # Go S BAT0 above) emits NO SCOPE line at all -- default System. A
+            # mains DESKTOP with a paired gamepad at 15% would otherwise report
+            # "On battery 15%" for the box (a real TestFlight bug, 2026-07-23).
+            # Skipping Device scope also fixes a latent mis-pick on handhelds: a
+            # MAC-named controller node can sort BEFORE BAT0 and be taken first
+            # (hence `continue`, not `break` -- a peripheral must never suppress
+            # the real pack). Degrade closed -- Device is never the machine's own
+            # battery. This mirrors UPower. Verified against kernel source
+            # (adversarial pass 2026-07-23): no in-tree main-battery driver (ACPI
+            # battery.c, sbs-battery, axp20x, bq27xxx, macsmc) emits a SCOPE line,
+            # so System/no-scope packs are always kept. Do NOT gate on a name
+            # allowlist like ^BAT instead: it would wrongly drop macsmc-battery
+            # (Apple Silicon / Asahi) and sbs-* (Chromebooks), breaking the
+            # "any systemd machine" promise. Scope is the principled signal.
+            if u.get("POWER_SUPPLY_SCOPE") == "Device":
+                continue
             # PRESENT=0 means a bay with no pack in it -- not this machine's
             # battery, and reporting 0% for it would be a lie.
             if u.get("POWER_SUPPLY_PRESENT") == "0":
