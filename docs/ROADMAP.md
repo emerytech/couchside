@@ -200,6 +200,31 @@ Entry fields: `priority` (P0 blocker → P3 nice) · `risk` · `affects` · `dep
   resets produces a large negative delta — clamp at zero and show nothing rather than a
   nonsense spike.
 
+### Downloads that show "0.0 / 0.0 GB · 0%" read as broken (Launch tab)
+- **priority:** P2 · **risk:** low · **affects:** app only · **depends_on:** none
+- From Discord, 2026-07-22 (likwidtek, on published **app 2.9.21**): *"the downloading section
+  in launch still is broken."* Screenshot showed an active **Path of Exile 2** at
+  **`0% · DOWNLOADING · 0.0 / 0.0 GB`**, **TRON RUN/r** at `100% · FINALIZING · 0.0 / 0.0 GB`,
+  and several queued items at `0.0 GB` mixed with real sizes (1.3 GB, 1.2 GB).
+- **This is a DISPLAY-honesty bug, not a data bug — the agent is telling the truth.** Sizes come
+  from `steam_downloads()` reading Steam's own `.acf` `BytesToDownload` / `BytesDownloaded`
+  (`agent/couchsided.py:3972`). `0.0 / 0.0 GB` means Steam wrote `BytesToDownload = 0`, which is
+  **legitimately true** for a FINALIZING item (100% down, nothing left to fetch), for a
+  content-only patch, and transiently for an item Steam hasn't finished fetching the manifest
+  for yet. The agent faithfully reports it. So the row is Steam-accurate but reads as broken.
+- **Not fixed-but-unpublished — verified.** The only post-2.9.21 download-related commit
+  (agent 2.9.43, #216) is the **app self-update** progress banner, NOT Steam game downloads. No
+  commit since 2.9.21 touches Steam download sizes. If left alone it stays looking broken.
+- **The fix is app-side, in `app/app/(tabs)/launch.tsx`:** when a row is `active` (or `queued`)
+  and `bytes_total === 0`, render **"calculating…" / "starting…"** instead of `0.0 / 0.0 GB · 0%`.
+  A FINALIZING row should lean on its `state` label, not a 0-byte size. Do **not** "fix" this in
+  the agent by faking a non-zero total — the data is correct; only the presentation lies.
+- **Verify in the harness** against a mock payload with `{active:true, bytes_total:0, percent:0}`
+  and a `{state:"finalizing", bytes_total:0}` row — press nothing, just assert neither renders
+  "0.0 / 0.0 GB · 0%". A live repro needs a box with a real download queued (all were asleep
+  2026-07-22). **Also confirm the tester's AGENT version** — sizes are agent-side, and a very old
+  agent could report `0` more often than a current one.
+
 ### Make Preferences findable (filter + collapse + re-split PAD LAYOUT)
 - **priority:** P2 · **risk:** low · **affects:** app only · **depends_on:** none
 - **FILTER SHIPPED in #224 (2026-07-22).** Find-as-you-type over label+sub, card chrome
