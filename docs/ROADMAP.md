@@ -225,6 +225,33 @@ Entry fields: `priority` (P0 blocker → P3 nice) · `risk` · `affects` · `dep
   2026-07-22). **Also confirm the tester's AGENT version** — sizes are agent-side, and a very old
   agent could report `0` more often than a current one.
 
+### The Google-TV "source" key is a dead button (honesty fix, then a real switch)
+- **priority:** P2 · **risk:** low · **affects:** agent + app · **depends_on:** none · **KI-031**
+- From the same living-room session (2026-07-22, likwidtek): *"I've never been able to get the
+  input switcher to work."* Correct — and it's a defect, not his TV alone.
+- **MEASURED live, twice, on the bedroom Hisense Google TV (10.1.1.98)** through the Legion Go's
+  agent (10.1.1.195): `POST /api/tv/key/source` returned **`ok:true` both times and the TV did
+  nothing** — it did not open an input picker. Control: `HOME` (keycode 3) on the same channel
+  worked (photo confirmed the Home screen), so the link is fine; it is specifically the source
+  key the TV ignores. The key sends `KEYCODE_TV_INPUT` (178) — Google TV moved input selection
+  out of the old overlay 178 triggered, so it is a no-op on Google-TV sets (classic Android TV
+  like Shield/Sony often still honour it).
+- **The dishonesty is two-layered.** (1) `tv_info()` advertises
+  `"source_key": androidtv_available() or samsung_available()` (`agent/couchsided.py:7270`)
+  **unconditionally** for every Android TV, and the comment claims it "opens the TV's input
+  picker." (2) The keypress returns a bare `ok` because the androidtv remote ACKs a *delivered*
+  keycode — ACK means "key sent," not "input switched." So the app shows a button that silently
+  does nothing and reports success. This is the §11 "verify the tool did what it claims" trap and
+  the "control that looks like it works and doesn't" class this project treats as zero-tolerance.
+- **Stage 1 — make it honest (ships now, no new hardware).** Stop advertising `source_key` for
+  androidtv when it can't be verified (gate or label it "may not work on Google TV"), and stop
+  returning a bare `ok` for a key the TV may have dropped.
+- **Stage 2 — a real Google-TV input switch (follow-up, needs a Google-TV box).** Inputs on
+  Google TV are launchable components, and the androidtv protocol can **launch apps by package**,
+  not just send keycodes — so launching the TV's "Inputs"/source app may open the picker where
+  178 fails. **UNVERIFIED.** Do NOT claim 178 is dead on ALL Android TV; it is measured dead on
+  this Hisense Google TV and unreliable on Google TV as a class.
+
 ### Make Preferences findable (filter + collapse + re-split PAD LAYOUT)
 - **priority:** P2 · **risk:** low · **affects:** app only · **depends_on:** none
 - **FILTER SHIPPED in #224 (2026-07-22).** Find-as-you-type over label+sub, card chrome
