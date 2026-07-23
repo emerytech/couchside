@@ -152,6 +152,41 @@ Entry fields: `priority` (P0 blocker → P3 nice) · `risk` · `affects` · `dep
   open measurement — queued for the next time `lenovodesktop` (or any desktop box) is awake;
   all boxes were asleep when this was captured 2026-07-22.
 
+### "About this box" — a system-spec sheet you can copy or screenshot
+- **priority:** P2 · **risk:** low · **affects:** agent + app · **depends_on:** none
+- From Discord, 2026-07-22 (likwidtek): *"getting a full system spec from couchside would be
+  nice"* — a way to see and share your build. Placement per the owner: a button at the **very
+  bottom of Console** that opens a **sheet** (not inline — it must not eat Console real estate),
+  showing this box's specific hardware, with **Copy** and screenshot-friendly layout for
+  pasting your build into a Discord/Reddit thread.
+- **The privacy call, which is the whole reason this looked hard.** The owner's instinct in the
+  thread was that a spec feature fights the "no data sharing, period" premise and would need an
+  opt-in program. **It does not — for THIS feature.** A local read of your own box plus a
+  **user-initiated** copy/screenshot is not Couchside sharing anything: the agent phones nothing
+  home, the user pastes it manually. No telemetry, no consent flow, on-brand. The opt-in program
+  is only needed for the **separate** thing mentioned in the same threads — an aggregated
+  **compatibility list built from user feedback**, which IS Couchside collecting specs centrally.
+  Keep the two apart: this viewer ships freely; a submit-my-specs-to-a-list feature is its own
+  later entry and is the one that needs explicit per-submission consent.
+- **What `/api/status` already carries** (so the sheet is mostly assembly): hostname, RAM total
+  (`mem`), disks, GPU name+temp (`gpu`), CPU temp, net, `agent_version`, and the `caps` block.
+- **What a real spec sheet still needs** — all read-only, no client input, no allowlist surface:
+  CPU **model name + core count** (`/proc/cpuinfo`), a proper **GPU model** string (not just the
+  `amdgpu` driver name), distro **PRETTY_NAME** + **kernel** (`/etc/os-release` + `uname`), and
+  the board/product identity from **DMI** (`/sys/class/dmi/id/product_name`, `sys_vendor`,
+  `board_name`). **Read ONLY those DMI fields — never `product_uuid` or `product_serial`, which
+  are root-only identifying values; reading them would be the opposite of the privacy promise.**
+  CPU-model and GPU-name overlap the "More Console sensors" entry above — this sheet is their
+  natural consumer, so build that probe once and feed both.
+- **Copy uses the PHONE's own clipboard** (`expo-clipboard` `setStringAsync`) — local and
+  trivial. Do **not** conflate it with the two-way box↔phone clipboard entry the owner captured
+  separately; this feature has no dependency on that route.
+- New agent surface is one read-only route (e.g. `/api/hwinfo`) or additive `status`/`caps`
+  fields — additive-only per §4, each field degrades to "not shown" on hardware that lacks it.
+- **Unverified:** DMI strings have not been read on these boxes; on a handheld `product_name`
+  is often a marketing name (e.g. "Jupiter" for a Steam Deck) and on a self-built desktop it is
+  the motherboard model, not a whole-PC name — so label it "board/model," never "PC model."
+
 ### Live network throughput on Console
 - **priority:** P3 · **risk:** low · **affects:** agent + app · **depends_on:** none
 - The box IP half of this SHIPPED in 2.9.21 — Console renders `status.ip` under uptime.
