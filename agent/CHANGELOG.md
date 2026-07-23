@@ -18,6 +18,20 @@ the same thing regardless of what actually changed.
 Write for the person holding the phone, not for the commit log. They are
 deciding whether to press "Update now" on a machine across the room.
 
+## 2.9.50
+
+Two fixes for updating the box from your phone.
+
+- **The box's update screen now tells you if an update didn't finish**, instead
+  of spinning forever. If it stalls, it says the box is still on the old version
+  and how to retry.
+- **App-triggered updates now finish on more boxes.** On a box installed as a
+  system service, an update could quietly stop after downloading the new agent —
+  leaving the old one running — because it had no way to restart the service
+  without a password. It now restarts cleanly. On an existing box, re-run the
+  installer once (in a terminal) to enable this; after that, phone updates finish
+  on their own.
+
 ## 2.9.49
 
 Desktop PCs no longer show a phantom battery. If you had a wireless controller

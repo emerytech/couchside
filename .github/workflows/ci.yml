@@ -215,6 +215,25 @@ jobs:
       - name: Unit tests (pairing page)
         run: python3 tests/test_pair_page.py
 
+      # The on-box UPDATE progress page. It polls /api/ping across the agent's
+      # own restart and must express THREE outcomes, not one: version changed
+      # (updated), unreachable a while (restarting), and reachable-but-unchanged
+      # for a long time (STALLED — the installer died before restarting, so the
+      # old agent keeps answering). The stall branch is the fix for a real box
+      # that span forever; this pins all three so a refactor cannot drop them.
+      - name: Unit tests (update page)
+        run: python3 tests/test_update_page.py
+
+      # The app-triggered-update sudo grant + detached fast-path (§3). A phone
+      # update on a system-service box stalled because the detached installer
+      # could not restart the service without a password. The fix adds ONE
+      # NOPASSWD grant — so its SHAPE is pinned here: exactly-argument (fixed unit
+      # + --no-block, no wildcard that could restart any unit), and the fast-path
+      # is gated (existing install, not Decky) and exits BEFORE the general-root
+      # setup it cannot do. A grant in the sudo path is where §3 bites hardest.
+      - name: Unit tests (update grant)
+        run: python3 tests/test_update_grant.py
+
       # The flatpak slice of the update hub. Asserts the SECURITY SHAPE (§3):
       # the update functions take zero client-reachable arguments, the elevated
       # argv is exactly the fixed root-owned wrapper (never raw flatpak, whose

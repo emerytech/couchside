@@ -595,6 +595,45 @@ if [ -f "$WORK_DIR/qr.py" ] && python3 -m py_compile "$WORK_DIR/qr.py" 2>/dev/nu
 fi
 
 # ---------------------------------------------------------------------------
+# (c2) Detached update fast-path — restart without a password, or finish clean
+# ---------------------------------------------------------------------------
+# Everything from here down needs GENERAL root (mkdir /etc/couchside, install
+# wrappers, write sudoers, install the unit). The phone's app-triggered update
+# runs this installer DETACHED (no controlling terminal), so it can neither type
+# a sudo password nor, on a box whose 'deck'/user has a password set, get root at
+# all -- and `set -e` then aborts right here, BEFORE the service restart, leaving
+# the freshly-downloaded agent on disk but the OLD one still running. That is the
+# stall a real Legion Go S hit (2026-07-23).
+#
+# On an EXISTING install only the agent BINARY normally changes, and it is
+# already replaced above (signature-verified). So when we have no way to run the
+# privileged setup, don't barrel into a sudo we can't answer: reload the new
+# binary by restarting the service via the exactly-argument NOPASSWD grant, and
+# finish. Decky boxes are excluded (the plugin owns the service).
+CAN_PRIVILEGE=0
+if sudo -n true 2>/dev/null; then
+    CAN_PRIVILEGE=1                       # passwordless sudo (e.g. a fresh Deck)
+elif { true < /dev/tty; } 2>/dev/null; then
+    CAN_PRIVILEGE=1                       # a terminal we can prompt on
+fi
+if [ "$CAN_PRIVILEGE" -eq 0 ] && [ -s "$TOKEN_FILE" ] && [ -f "$UNIT_DST" ] \
+   && { [ "$NO_DECKY" -eq 1 ] || ! decky_installed; }; then
+    if sudo -n systemctl restart --no-block couchside.service 2>/dev/null; then
+        say "Updated the agent and restarted couchside.service (no password needed)."
+        note "Quick update: agent binary only. If the service file or sudo grants"
+        note "also changed, re-run this installer from a terminal to apply those."
+        exit 0
+    fi
+    # No restart grant yet (installed before this build). The new agent is on
+    # disk; the running one is stale and we can't reload it without a password.
+    note "The agent was downloaded, but reloading it needs a password this"
+    note "detached update doesn't have. Run this once in a terminal on the box:"
+    note "  curl -fsSL https://couchside.tv/install.sh | bash"
+    note "After that, updates from the phone finish on their own."
+    exit 0
+fi
+
+# ---------------------------------------------------------------------------
 # (d) Token: /etc/couchside/token (sudo from here on)
 # ---------------------------------------------------------------------------
 say "Setting up $ETC_DIR (sudo may prompt for your password)"
@@ -774,6 +813,18 @@ $USER_NAME ALL=(root) NOPASSWD: /usr/bin/systemctl suspend
 # nonexistent unit is a no-op — while a box that gains Decky later would
 # otherwise need install.sh re-run before the recovery action could appear.
 $USER_NAME ALL=(root) NOPASSWD: /usr/bin/systemctl restart plugin_loader
+# App-triggered updates: the phone can fire the signed installer to update the
+# box. On a system-service install that update must RESTART couchside.service to
+# load the new agent, but it runs DETACHED with no terminal to type a sudo
+# password into -- so without this it downloads the new agent and never reloads
+# it (the box keeps running the old version, its update screen spins forever).
+# This grant is EXACTLY-argument (fixed unit, fixed --no-block) and adds NO
+# privilege: couchside.service already runs $USER_NAME's OWN code as $USER_NAME,
+# so restarting it only reloads code the user already fully controls -- never
+# anything as root. --no-block is load-bearing: the detached updater lives inside
+# this very unit's cgroup, so a blocking restart would SIGTERM the updater
+# mid-wait; --no-block enqueues the job and returns before the stop begins.
+$USER_NAME ALL=(root) NOPASSWD: /usr/bin/systemctl restart --no-block couchside.service
 # System-journal reads go through a fixed-argument, root-owned wrapper that
 # validates the unit + line count and calls journalctl with a locked-down
 # option set. Granting the wrapper (never journalctl itself) is the only way to
