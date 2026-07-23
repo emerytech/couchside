@@ -471,6 +471,32 @@ export type HostSession = {
  * the agent's /api/update/check for the privacy rationale. Absent on older
  * agents (404 -> null -> no banner).
  */
+/** GET/POST /api/update/flatpak (agent >= 2.9.46). */
+/** GET /api/update/os (agent >= 2.9.47). */
+export type OsStatus = {
+  /** "rpm-ostree" | "steamos" — which atomic updater the box has. */
+  kind: string | null;
+  /** Opted in via `couchside allow-system-updates on`. */
+  elevated: boolean;
+  /** Booted OS version. */
+  current: string | null;
+  /** An update is downloaded and applies on the NEXT reboot. */
+  staged: boolean;
+};
+
+export type FlatpakStatus = {
+  available: boolean;
+  count: number;
+  /** "app-id\tversion" lines from the box's remote-ls. */
+  updates: string[];
+  /**
+   * Whether SYSTEM flatpaks can be updated — i.e. the box owner ran
+   * `couchside allow-system-updates on`. False means only --user apps update,
+   * and the card should point at the opt-in instead of pretending.
+   */
+  elevated: boolean;
+};
+
 export type UpdateCheck = {
   available: boolean;
   installed: string;
@@ -1386,6 +1412,63 @@ export const api = {
     return request<{ started: boolean; log?: string }>(settings, '/api/update/apply', {
       method: 'POST',
     });
+  },
+
+  /**
+   * Pending flatpak updates on the box (agent >= 2.9.46). Null on older agents
+   * or boxes without flatpak (404) — probe-and-appear, the card just hides.
+   */
+  flatpakStatus(settings: ConnSettings): Promise<FlatpakStatus | null> {
+    return probeOrNull(request<FlatpakStatus>(settings, '/api/update/flatpak'));
+  },
+
+  /**
+   * Fire the box-side flatpak update (agent >= 2.9.46). Detached on the box; the
+   * response says only that it STARTED (plus whether it ran elevated). Progress
+   * comes from flatpakLog(); completion from flatpakStatus() count going to 0.
+   * Sends NO body: the agent runs one frozen command — the app cannot name a
+   * package or a scope, which is what keeps the token from being a root shell.
+   */
+  flatpakUpdate(
+    settings: ConnSettings,
+  ): Promise<{ started: boolean; elevated?: boolean; error?: string }> {
+    return request<{ started: boolean; elevated?: boolean; error?: string }>(
+      settings, '/api/update/flatpak', { method: 'POST' });
+  },
+
+  /** Tail of the flatpak update transcript. [] on older agents / no run yet. */
+  flatpakLog(settings: ConnSettings): Promise<string[]> {
+    return request<{ lines: string[] }>(settings, '/api/update/flatpak/log')
+      .then((r) => (Array.isArray(r?.lines) ? r.lines : []))
+      .catch(() => []);
+  },
+
+  /**
+   * Atomic OS state (agent >= 2.9.47). Null on a non-atomic box or older agent
+   * (404). An atomic update STAGES for the next boot; `staged` tells the app to
+   * prompt a reboot rather than offer another update.
+   */
+  osStatus(settings: ConnSettings): Promise<OsStatus | null> {
+    return probeOrNull(request<OsStatus>(settings, '/api/update/os'));
+  },
+
+  /**
+   * Stage an OS update (agent >= 2.9.47). Requires the opt-in — there is no
+   * unprivileged fallback for an OS image, so the box returns needs_optin when
+   * ungranted. Detached on the box; poll osStatus() for staged:true. No body.
+   */
+  osUpdate(
+    settings: ConnSettings,
+  ): Promise<{ started: boolean; needs_optin?: boolean; error?: string }> {
+    return request<{ started: boolean; needs_optin?: boolean; error?: string }>(
+      settings, '/api/update/os', { method: 'POST' });
+  },
+
+  /** Tail of the OS update transcript. [] on older agents / no run yet. */
+  osLog(settings: ConnSettings): Promise<string[]> {
+    return request<{ lines: string[] }>(settings, '/api/update/os/log')
+      .then((r) => (Array.isArray(r?.lines) ? r.lines : []))
+      .catch(() => []);
   },
 
   /**

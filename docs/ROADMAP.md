@@ -107,6 +107,52 @@ Entry fields: `priority` (P0 blocker → P3 nice) · `risk` · `affects` · `dep
 - **Value is narrower than it looks:** the shipped Bluetooth button already reaches Steam's
   own pairing UI, which handles agents and PINs correctly.
 
+### "Now streaming" card + stop-stream, for games streamed from a PC
+- **priority:** P2 · **risk:** low · **affects:** agent + app · **depends_on:** none
+- **Reported by owner 2026-07-22.** A LOCAL running game shows a "now playing" card with the
+  red **Close Game** button (NowPlayingCard, agent `stop_running_game`). A game **streamed**
+  from the main gaming PC (Steam Remote Play / in-home streaming) shows **nothing** in those
+  spots.
+- **Why:** `_running_game()` (agent ~9923) scans `/proc/*/cmdline` for the Steam **reaper**
+  wrapper of a game running ON THE BOX. A streamed game runs on the **host PC**; the box only
+  runs Steam's **streaming client**, so there is no local reaper process to find — the card
+  and Close button never appear.
+- **The action is DIFFERENT, do not reuse Close Game.** `stop_running_game` kills a local
+  process group; the streamed game is on the host and can't be killed from the box that way.
+  The right action is **stop/disconnect the stream** (leave the streaming client), which the
+  box CAN do locally. Label it "Stop streaming", not "Close Game".
+- **Detection:** the box already knows about streaming — `steamlink` / `streamhost` caps,
+  `stream_host_online()`, and the `streaming_log.txt` start/stop markers (see [[steam-detection-traps]]
+  and **KI-005**). A "streaming now" signal wants the same cross-checks that KI-005 is about
+  (a dirty-ended session can advertise live for up to 12h) — reuse them, don't re-derive.
+- **App:** the compact NowPlayingCard gains a streaming variant — "Streaming <game> from
+  <host>" + a Stop-streaming button — shown above Downloads in Launch and on Console, same
+  slots as the local card.
+- **Verify on hardware** (a real Remote Play session from the PC to the box); the harness
+  can't produce a stream.
+
+### "Check for app update" in Setup > Account
+- **priority:** P3 · **risk:** low · **affects:** app + website · **depends_on:** none
+- **Requested by owner 2026-07-22.** Next to the existing agent-update banner in
+  Setup > Account, a control that tells the user whether a newer MOBILE CLIENT exists and
+  links to the store listing. Today only the box agent has an update check; the app can't
+  tell you it's stale.
+- **No agent involvement.** Simplest cross-platform source: a tiny signed-ish JSON on
+  couchside.tv (e.g. `app-version.json` = `{"ios":"2.9.21","android_vc":55,"min_ios":...}`),
+  written by the release process which already knows these numbers. App fetches it, compares
+  to `expo-application` nativeApplicationVersion / nativeBuildVersion, shows
+  "Update available" + a deep link to the App Store / Play listing.
+  - iOS alternative: `https://itunes.apple.com/lookup?bundleId=...` returns the live App
+    Store version with no infra, but it is Apple-hosted and only covers iOS. Play has no
+    public version endpoint, so the couchside.tv JSON is the portable answer and keeps both
+    platforms on one code path.
+- **Privacy:** the check is an anonymous GET of a public version file — no box, no token, no
+  user data — matching the agent-update check's privacy stance. Keep it that way; never
+  send anything identifying.
+- **Traps:** `Constants.nativeBuildVersion` typechecks but does not exist — use
+  `expo-application` ([[expo-sdk57-api-traps]]). Read the store version BACK / test the
+  compare in both directions (newer AND same) before trusting the banner.
+
 ### More Console sensors (battery health, CPU governor, GPU power)
 - **priority:** P3 · **risk:** low · **affects:** agent + app · **depends_on:** none
 - All read-only sysfs, no new capability, no client input. **PROBED on a Legion Go S,

@@ -20,6 +20,7 @@ import {
 } from 'react-native';
 
 import { AgentUpdateBanner } from '@/components/AgentUpdateBanner';
+import { SystemUpdatesCard } from '@/components/SystemUpdatesCard';
 import { Gated } from '@/components/Gated';
 import { LogsPanel } from '@/components/LogsPanel';
 import { QrView } from '@/components/QrView';
@@ -1639,6 +1640,8 @@ function SetupBody() {
         {tab === 'account' && (
           <>
             <AgentUpdateBanner />
+            {/* One compact card for box software (Flatpak + OS). */}
+            <SystemUpdatesCard />
             <View style={styles.accountBadges}>
               <EarlyAdopterBadge />
               <EntitlementPill />

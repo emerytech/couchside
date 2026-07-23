@@ -18,6 +18,22 @@ the same thing regardless of what actually changed.
 Write for the person holding the phone, not for the commit log. They are
 deciding whether to press "Update now" on a machine across the room.
 
+## 2.9.47
+
+Update your box's operating system from the phone too, on SteamOS and Bazzite.
+Same one-time opt-in as app updates (`couchside allow-system-updates on`). An
+OS update is staged and applies on the next reboot — the app tells you that
+plainly rather than pretending it finished.
+
+## 2.9.46
+
+Update your box's Flatpak apps from the phone. If your apps are system-wide
+(most are), run `couchside allow-system-updates on` on the box once — it
+explains exactly what it grants — and the app can then update them for you.
+Without it, only your per-user apps update.
+
+Everything in 2.9.45 below is also new if you're coming from older:
+
 ## 2.9.45
 
 Fresh installs now show a short animated guide on the box's own screen —
