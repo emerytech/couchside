@@ -609,15 +609,22 @@ fi
 # already replaced above (signature-verified). So when we have no way to run the
 # privileged setup, don't barrel into a sudo we can't answer: reload the new
 # binary by restarting the service via the exactly-argument NOPASSWD grant, and
-# finish. Decky boxes are excluded (the plugin owns the service).
+# finish.
+#
+# Gate on couchside.service being ACTIVE -- i.e. it IS the live system agent, so
+# restarting it reloads the binary we just replaced. That holds even when Decky
+# is ALSO installed (the reported Legion Go S ran couchside.service active AND had
+# Decky) -- so DON'T gate on "Decky absent", which wrongly skipped exactly that
+# box. A pure Decky setup leaves couchside.service INACTIVE (the plugin runs its
+# own copy), so is-active is false there and the fast-path correctly stands down.
 CAN_PRIVILEGE=0
 if sudo -n true 2>/dev/null; then
     CAN_PRIVILEGE=1                       # passwordless sudo (e.g. a fresh Deck)
 elif { true < /dev/tty; } 2>/dev/null; then
     CAN_PRIVILEGE=1                       # a terminal we can prompt on
 fi
-if [ "$CAN_PRIVILEGE" -eq 0 ] && [ -s "$TOKEN_FILE" ] && [ -f "$UNIT_DST" ] \
-   && { [ "$NO_DECKY" -eq 1 ] || ! decky_installed; }; then
+if [ "$CAN_PRIVILEGE" -eq 0 ] && [ -s "$TOKEN_FILE" ] \
+   && systemctl is-active --quiet couchside.service 2>/dev/null; then
     if sudo -n systemctl restart --no-block couchside.service 2>/dev/null; then
         say "Updated the agent and restarted couchside.service (no password needed)."
         note "Quick update: agent binary only. If the service file or sudo grants"

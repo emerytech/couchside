@@ -85,12 +85,15 @@ def test_restart_is_no_block():
 def test_fastpath_is_gated_and_short_circuits_before_root_setup():
     print("test_fastpath_is_gated_and_short_circuits_before_root_setup")
     # Gated: only when we cannot get root (CAN_PRIVILEGE=0), on an existing
-    # install (token present + unit present), and NOT on a Decky box.
+    # install (token present), and only when couchside.service is the LIVE system
+    # agent (is-active) -- so restarting it reloads the new binary. Gating on
+    # is-active (NOT "Decky absent") is deliberate: the reported box ran
+    # couchside.service active WITH Decky installed, and a "! decky_installed"
+    # gate wrongly skipped it. A pure/dormant Decky setup is inactive -> skipped.
     check("CAN_PRIVILEGE gate present", "CAN_PRIVILEGE" in SRC, True)
     check("requires an existing token", '[ -s "$TOKEN_FILE" ]' in SRC, True)
-    check("requires the unit present", '[ -f "$UNIT_DST" ]' in SRC, True)
-    check("excludes Decky boxes", "decky_installed" in SRC
-          and "NO_DECKY" in SRC, True)
+    check("gated on couchside.service being active",
+          "systemctl is-active --quiet couchside.service" in SRC, True)
     # It must short-circuit (exit 0) BEFORE the first general-root command,
     # `sudo mkdir -p "$ETC_DIR"`. Otherwise `set -e` aborts there exactly as the
     # bug did. Assert ordering by source position.
