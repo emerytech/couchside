@@ -107,7 +107,7 @@ Entry fields: `priority` (P0 blocker → P3 nice) · `risk` · `affects` · `dep
 - **Value is narrower than it looks:** the shipped Bluetooth button already reaches Steam's
   own pairing UI, which handles agents and PINs correctly.
 
-### More Console sensors (battery health, CPU governor, GPU power)
+### More Console sensors (battery health, CPU governor, GPU + desktop power)
 - **priority:** P3 · **risk:** low · **affects:** agent + app · **depends_on:** none
 - All read-only sysfs, no new capability, no client input. **PROBED on a Legion Go S,
   2026-07-22** — every value below was actually read off that box, not assumed available.
@@ -119,7 +119,27 @@ Entry fields: `priority` (P0 blocker → P3 nice) · `risk` · `affects` · `dep
   temperature does.
 - **GPU power draw** — `hwmon/power1_average` = **5.07 W**. Next to the box battery draw it
   shows where the watts are going. Note `power1_cap` was NOT present on this box, so a
-  TDP-limit readout cannot be assumed.
+  TDP-limit readout cannot be assumed. This is the safe half of power draw: `power1_average`
+  is normally world-readable (`0444`), so the non-root agent can read it.
+- **Desktop power draw — the complement to `read_box_battery`'s `watts` on machines with no
+  battery.** A desktop's battery node is absent, so today Console shows no watts at all on one.
+  **The trap, do not fall in it:** there is NO whole-system / wall-power sensor on a normal
+  desktop (that needs a PMBus PSU or an external smart plug). What sysfs gives is *component*
+  power — GPU (`power1_average`, above) plus **CPU package via RAPL**
+  (`/sys/class/powercap/intel-rapl:*/energy_uj`, a cumulative µJ counter → live watts by the
+  same two-sample-delta trick as the network-throughput item below, and genuine session
+  **watt-hours** if wanted, since the counter IS energy). Their sum is **not** system draw
+  (misses RAM/drives/board/fans + PSU loss, tens of watts), so it must be labelled
+  **"CPU + GPU package power," never "system power draw"** — calling it system power is the
+  §11 confident-wrong-claim trap.
+- **The one blocker to measure before building the CPU half:** since the PLATYPUS attack
+  (2020) `energy_uj` is root-only `0400` on most distros, and the agent runs as the desktop
+  *user*. If it can't read the counter, the CPU half needs a udev rule or a sudoers grant —
+  which fights the §3 allowlist minimalism — so the GPU-only readout may be all that's cheaply
+  possible. **Probe on a desktop first:** `stat -c '%a %U' .../intel-rapl:0/energy_uj` + whether
+  a non-root `cat` succeeds. That single fact decides the design. (NVIDIA GPUs also lack a
+  hwmon power node — they need an `nvidia-smi` subprocess — and per the NVIDIA-support note
+  there is no NVIDIA box to test on yet.)
 - **GPU clock** — `hwmon/freq1_input` = 800 MHz. Cheap, but the least informative of the set
   on its own.
 - **Fan RPM** — **NOT available here**: no `fan1_input` under any hwmon. Probe-and-appear only,
@@ -128,7 +148,9 @@ Entry fields: `priority` (P0 blocker → P3 nice) · `risk` · `affects` · `dep
   degrade to "not shown" rather than to zero — the same rule that made PSI return `{}` instead
   of `0.00`.
 - **Unverified:** none of these have been read on a DISCRETE-GPU box or a desktop; the
-  hwmon paths in particular vary by driver.
+  hwmon paths in particular vary by driver. The desktop RAPL perms probe above is the specific
+  open measurement — queued for the next time `lenovodesktop` (or any desktop box) is awake;
+  all boxes were asleep when this was captured 2026-07-22.
 
 ### Live network throughput on Console
 - **priority:** P3 · **risk:** low · **affects:** agent + app · **depends_on:** none
