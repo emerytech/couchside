@@ -1075,15 +1075,74 @@ PYEOF
 )"
 URL="http://localhost:${PORT}/pair"
 echo "Opening ${URL} full-screen…"
+
+# Pull the pairing window in front of the terminal the install ran in. When the
+# installer launches this script detached on a fresh desktop box, KDE's KWin
+# applies focus-stealing prevention and drops the new full-screen browser to the
+# BOTTOM of the stack -- behind (even below) the Konsole that's still focused.
+# On Wayland a client cannot reorder itself; only the compositor can, so we ask
+# KWin over its scripting DBus to raise our own page. Runs in the background
+# alongside the browser, retrying while it cold-starts. Best-effort and
+# KDE-only: no KWin (Game Mode, another WM, or an SSH install with no display)
+# means every step below no-ops and the browser is left exactly as it was.
+_raise_pair_window_bg() {
+    local qd
+    qd="$(command -v qdbus || command -v qdbus6 || command -v qdbus-qt6 || true)"
+    [ -n "$qd" ] || return 0
+    "$qd" org.kde.KWin /Scripting >/dev/null 2>&1 || return 0   # no KWin session
+
+    local js
+    js="$(mktemp)" || return 0
+    # Match our own page by title (every /pair page's <title> carries
+    # "Couchside"), never by browser name -- so we never yank an unrelated
+    # browser window the user happens to have open. min->unmin forces a restack
+    # even where keepAbove alone won't; keepAbove + activeWindow then hold it.
+    cat > "$js" <<'KWINJS'
+var W = (typeof workspace.windowList === "function")
+        ? workspace.windowList() : (workspace.stackingOrder || []);
+for (var i = 0; i < (W ? W.length : 0); i++) {
+    var w = W[i];
+    if (!w || !w.normalWindow) continue;
+    if (((w.caption || "") + "").toLowerCase().indexOf("couchside") === -1) continue;
+    w.minimized = true;
+    w.minimized = false;
+    w.keepAbove = true;
+    if ("activeWindow" in workspace) { workspace.activeWindow = w; }
+    else { workspace.activeClient = w; }
+}
+KWINJS
+    # The browser cold-starts and its title lands a moment later, so retry for
+    # ~18s until the window exists to be raised. Each pass loads, runs, and
+    # unloads a uniquely-named script so nothing accumulates in KWin.
+    local k id
+    for k in 1 2 3 4 5 6 7 8 9 10 11 12; do
+        sleep 1.5
+        id="$("$qd" org.kde.KWin /Scripting org.kde.kwin.Scripting.loadScript \
+              "$js" "couchsidepair$k" 2>/dev/null)"
+        [ -n "$id" ] || continue
+        "$qd" org.kde.KWin "/Scripting/Script${id}" org.kde.kwin.Script.run \
+              >/dev/null 2>&1
+        sleep 0.4
+        "$qd" org.kde.KWin /Scripting org.kde.kwin.Scripting.unloadScript \
+              "couchsidepair$k" >/dev/null 2>&1
+    done
+    rm -f "$js"
+}
+
 # Game Mode (gamescope session): there's no desktop browser, but Steam's own
 # built-in browser renders the page: steam://openurl works from a non-Steam
 # shortcut tile. This is what makes the "Pair Phone" tile work on stock
-# SteamOS with no Chrome/Chromium installed.
+# SteamOS with no Chrome/Chromium installed. Steam's overlay owns the screen
+# here, so no window-raising is needed (or possible) -- skip straight to it.
 if [ "${XDG_CURRENT_DESKTOP:-}" = "gamescope" ] \
    || pgrep -x gamescope-session >/dev/null 2>&1 \
    || pgrep -x gamescope >/dev/null 2>&1; then
     exec steam -ifrunning "steam://openurl/${URL}"
 fi
+
+# Desktop mode: raise our window once it maps (background), then launch the
+# browser. The raiser outlives this shell's exec into the browser.
+_raise_pair_window_bg &
 
 # Desktop mode: open a real browser DIRECTLY, full-screen. We deliberately do
 # NOT lean on xdg-open here — on SteamOS/KDE it routes through kfmclient, which

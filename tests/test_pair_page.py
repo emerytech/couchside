@@ -98,25 +98,25 @@ def test_idle_page_has_the_tutorial():
     check("inline svg present", "<svg" in html and "</svg>" in html, True)
 
 
-def test_idle_page_has_store_qr_codes():
-    """A fresh installer without the app needs to install it first. The page
-    carries an App Store and a Google Play QR — the exact store URLs, on their
-    own canvases, drawn by the same offline generator as the pairing QR."""
-    print("test_idle_page_has_store_qr_codes")
+def test_idle_page_has_store_qr_code():
+    """A fresh installer without the app needs to install it first. Rather than
+    make them aim a camera at the right one of two store codes, the page carries
+    ONE code to couchside.tv, whose hero holds both store badges — the phone
+    then picks its own store. Drawn by the same offline generator as the
+    pairing QR."""
+    print("test_idle_page_has_store_qr_code")
     html = cs.render_pair_page("a" * 64, 8787)
-    check("App Store QR canvas present", 'id="qr-ios"' in html, True)
-    check("Google Play QR canvas present", 'id="qr-play"' in html, True)
-    check("App Store URL encoded",
-          "https://apps.apple.com/app/id6786884115" in html, True)
-    check("Google Play URL encoded",
-          "https://play.google.com/store/apps/details?id=com.ets3d.rescueremote"
-          in html, True)
-    check("store labels present",
+    check("store QR canvas present", 'id="qr-get"' in html, True)
+    check("store URL points at couchside.tv/#get",
+          "https://couchside.tv/#get" in html, True)
+    check("store label names both stores",
           "App Store" in html and "Google Play" in html, True)
-    # All three QRs go through one generator — assert the store canvases are
-    # actually wired into a draw call, not just empty elements.
-    check("store canvases are drawn",
-          "drawQR('qr-ios'" in html and "drawQR('qr-play'" in html, True)
+    # The store canvas goes through the same generator as the pairing QR —
+    # assert it is actually wired into a draw call, not just an empty element.
+    check("store canvas is drawn", "drawQR('qr-get'" in html, True)
+    # The old two-code layout is gone: no stray per-store canvases left behind.
+    check("no legacy store canvases",
+          'id="qr-ios"' not in html and 'id="qr-play"' not in html, True)
 
 
 def test_idle_page_hands_off():
@@ -235,7 +235,7 @@ if __name__ == "__main__":
     for fn in (test_loopback_gate,
                test_host_header_gate,
                test_idle_page_has_the_tutorial,
-               test_idle_page_has_store_qr_codes,
+               test_idle_page_has_store_qr_code,
                test_idle_page_hands_off,
                test_live_pin_page_is_the_pin_not_the_tutorial,
                test_pin_start_is_debounced_and_marks_fresh,
