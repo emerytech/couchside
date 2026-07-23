@@ -107,6 +107,28 @@ Entry fields: `priority` (P0 blocker → P3 nice) · `risk` · `affects` · `dep
 - **Value is narrower than it looks:** the shipped Bluetooth button already reaches Steam's
   own pairing UI, which handles agents and PINs correctly.
 
+### "Check for app update" in Setup > Account
+- **priority:** P3 · **risk:** low · **affects:** app + website · **depends_on:** none
+- **Requested by owner 2026-07-22.** Next to the existing agent-update banner in
+  Setup > Account, a control that tells the user whether a newer MOBILE CLIENT exists and
+  links to the store listing. Today only the box agent has an update check; the app can't
+  tell you it's stale.
+- **No agent involvement.** Simplest cross-platform source: a tiny signed-ish JSON on
+  couchside.tv (e.g. `app-version.json` = `{"ios":"2.9.21","android_vc":55,"min_ios":...}`),
+  written by the release process which already knows these numbers. App fetches it, compares
+  to `expo-application` nativeApplicationVersion / nativeBuildVersion, shows
+  "Update available" + a deep link to the App Store / Play listing.
+  - iOS alternative: `https://itunes.apple.com/lookup?bundleId=...` returns the live App
+    Store version with no infra, but it is Apple-hosted and only covers iOS. Play has no
+    public version endpoint, so the couchside.tv JSON is the portable answer and keeps both
+    platforms on one code path.
+- **Privacy:** the check is an anonymous GET of a public version file — no box, no token, no
+  user data — matching the agent-update check's privacy stance. Keep it that way; never
+  send anything identifying.
+- **Traps:** `Constants.nativeBuildVersion` typechecks but does not exist — use
+  `expo-application` ([[expo-sdk57-api-traps]]). Read the store version BACK / test the
+  compare in both directions (newer AND same) before trusting the banner.
+
 ### More Console sensors (battery health, CPU governor, GPU power)
 - **priority:** P3 · **risk:** low · **affects:** agent + app · **depends_on:** none
 - All read-only sysfs, no new capability, no client input. **PROBED on a Legion Go S,

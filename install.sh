@@ -119,6 +119,18 @@ CONFIG_FILE="${STATE_DIR}/config.json"
 # injected to read arbitrary files as root. Lives in the root-owned ETC_DIR so
 # the desktop user can execute but never modify it.
 JOURNAL_WRAPPER="${ETC_DIR}/couchside-journal"
+# Fixed-argument, root-owned wrapper that updates SYSTEM flatpaks. Installed
+# ALWAYS (it is inert on its own); it only does anything once the OPT-IN grant
+# exists (`couchside allow-system-updates on`, sudoers file below). Root-owned in
+# the root-owned ETC_DIR so the desktop user can execute but never modify it —
+# modifiable would mean root-code injection via the grant.
+FLATPAK_UPDATE_WRAPPER="${ETC_DIR}/couchside-flatpak-update"
+# Opt-in sudoers grant for the flatpak (and, later, OS) update wrappers. A
+# SEPARATE file from SUDOERS_FILE so the opt-in is one file to add/remove and the
+# always-on core grants are never touched. zz-couchside-updates sorts after
+# zz-couchside; both are ours and grant disjoint commands, so order is moot
+# between them (see the zz- note below for why it must beat foreign files).
+UPDATES_SUDOERS_FILE="/etc/sudoers.d/zz-couchside-updates"
 # zz- prefix is LOAD-BEARING: sudoers.d files apply in lexical order and
 # sudoers is last-match-wins, so a distro/user "wheel" file ("(ALL) ALL",
 # password required) sorting AFTER ours silently shadowed every NOPASSWD grant
@@ -394,7 +406,7 @@ if [ "$UNINSTALL" -eq 1 ]; then
     sudo rm -f /etc/systemd/network/50-couchside-wol.link
     note "removed the Wake-on-LAN .link file"
     # Drop the journal wrapper explicitly so a KEPT $ETC_DIR doesn't retain it.
-    sudo rm -f "$JOURNAL_WRAPPER"
+    sudo rm -f "$JOURNAL_WRAPPER" "$FLATPAK_UPDATE_WRAPPER"
     sudo rm -f /etc/udev/rules.d/99-couchside-uinput.rules \
                /etc/udev/rules.d/99-couchside-rtc.rules \
                /etc/modules-load.d/couchside-uinput.conf
@@ -421,6 +433,7 @@ if [ "$UNINSTALL" -eq 1 ]; then
         if ask_yn "Remove sudoers rule $SUDOERS_FILE?"; then
             sudo rm -f "$SUDOERS_FILE" "$SUDOERS_FILE_LEGACY"
             note "removed $SUDOERS_FILE"
+            sudo rm -f "$UPDATES_SUDOERS_FILE"
         else
             note "kept $SUDOERS_FILE"
         fi
@@ -777,6 +790,34 @@ SUDOERS
 fi
 
 # ---------------------------------------------------------------------------
+# (f1b) Flatpak update wrapper (inert until the owner opts in)
+# ---------------------------------------------------------------------------
+# Installed ALWAYS, even with --no-sudoers: it is just a script and does nothing
+# on its own. It becomes usable only when `couchside allow-system-updates on`
+# adds the NOPASSWD grant naming EXACTLY this path (never `flatpak` itself), so a
+# grant holder can run this one fixed update and no other flatpak operation.
+if command -v flatpak >/dev/null 2>&1; then
+    say "Installing the flatpak update wrapper ($FLATPAK_UPDATE_WRAPPER)"
+    note "Inert until you run: couchside allow-system-updates on"
+    cat > "$WORK_DIR/couchside-flatpak-update" <<'FPWRAP'
+#!/usr/bin/env bash
+# couchside-flatpak-update: update SYSTEM flatpaks, as root, with a FIXED command
+# and NO accepted arguments. The Couchside opt-in sudoers grant names ONLY this
+# script, so a grant holder can run this exact update and nothing else — never
+# `flatpak install`, `run`, `override`, or a remote-add. Ignoring "$@" is
+# load-bearing: it is what keeps the grant airtight (a wrapper that forwarded
+# args would let the grant run any flatpak subcommand as root).
+#
+# Root bypasses the flatpak system-helper polkit check that denies the agent's
+# own (sessionless) user — MEASURED on a real box 2026-07-22.
+set -euo pipefail
+exec flatpak update --system -y --noninteractive
+FPWRAP
+    sudo install -m 0755 -o root -g root \
+        "$WORK_DIR/couchside-flatpak-update" "$FLATPAK_UPDATE_WRAPPER"
+fi
+
+# ---------------------------------------------------------------------------
 # (f2) Virtual-gamepad device access (/dev/uinput)
 # ---------------------------------------------------------------------------
 # The gamepad needs the daemon to write /dev/uinput. On seat-based desktops
@@ -1125,6 +1166,55 @@ PY
       *) echo "usage: couchside allow-updates on|off" >&2; exit 2 ;;
     esac
     ;;
+  allow-system-updates)
+    # OPT-IN, root-touching: grant the agent passwordless sudo for the FIXED
+    # update wrapper(s), so the phone app can update system flatpaks. OFF by
+    # default. Must be run HERE on the box — the app can never enable this
+    # itself. The grant names exact root-owned wrapper paths, never the package
+    # managers, so a token holder can trigger these updates and nothing else.
+    WRAP="/etc/couchside/couchside-flatpak-update"
+    UPD_SUDOERS="/etc/sudoers.d/zz-couchside-updates"
+    case "${2:-}" in
+      on)
+        [ -x "$WRAP" ] || { echo "error: $WRAP not installed — re-run install.sh first (needs flatpak present)" >&2; exit 1; }
+        echo "This grants the Couchside agent (and so anyone holding this box's"
+        echo "pairing token) the ability to run SYSTEM package updates as root,"
+        echo "via fixed root-owned scripts that accept no arguments:"
+        echo
+        echo "    $WRAP"
+        echo
+        echo "It cannot install new software or run arbitrary commands — only"
+        echo "update what is already installed, from already-trusted sources."
+        echo "Turn it off anytime:  couchside allow-system-updates off"
+        echo
+        printf 'Enable? [y/N] '
+        ans=""
+        read -r ans </dev/tty 2>/dev/null || { echo; echo "No terminal for the prompt — rerun from an interactive shell."; exit 1; }
+        case "$ans" in y|Y|yes|YES) ;; *) echo "Cancelled."; exit 0 ;; esac
+        tmpf="$(mktemp)"
+        cat > "$tmpf" <<GRANT
+# couchside OPT-IN (couchside allow-system-updates): let the agent run exactly
+# these fixed, root-owned, zero-argument update wrappers without a password.
+# Remove with: couchside allow-system-updates off
+$(id -un) ALL=(root) NOPASSWD: $WRAP
+GRANT
+        sudo visudo -cf "$tmpf" || { rm -f "$tmpf"; echo "sudoers validation failed — nothing installed" >&2; exit 1; }
+        sudo install -m 0440 -o root -g root "$tmpf" "$UPD_SUDOERS"
+        rm -f "$tmpf"
+        echo "System updates from the app: on"
+        ;;
+      off)
+        sudo rm -f "$UPD_SUDOERS"
+        echo "System updates from the app: off"
+        ;;
+      ""|status)
+        sudo test -e "$UPD_SUDOERS" 2>/dev/null \
+          && echo "System updates from the app: on" \
+          || echo "System updates from the app: off"
+        ;;
+      *) echo "usage: couchside allow-system-updates on|off" >&2; exit 2 ;;
+    esac
+    ;;
   allow-launchers)
     # Opt-in: let the phone app CREATE custom launchers (POST /api/launchers).
     # OFF by default. A launcher's argv is run verbatim as the desktop user, so
@@ -1166,6 +1256,7 @@ couchside — manage the Couchside agent on this box
   couchside update          show the release notes, then update on confirm
   couchside update -y       update without the prompt
   couchside allow-updates on|off   let (or stop) the phone app trigger updates
+  couchside allow-system-updates on|off   let the app run system package updates (root, via fixed wrappers)
   couchside allow-launchers on|off let (or stop) the phone app create launchers
   couchside pair            show the pairing QR on this box's screen
   couchside version         print the installed agent version

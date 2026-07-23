@@ -45,7 +45,7 @@ except ImportError:  # pragma: no cover
     fcntl = None
 
 APP_NAME = "couchside-agent"
-VERSION = "2.9.45"
+VERSION = "2.9.46"
 UID = os.getuid()
 XDG_RUNTIME_DIR = "/run/user/%d" % UID
 
@@ -1593,6 +1593,141 @@ def update_apply():
         stderr=subprocess.DEVNULL, start_new_session=True)
     print("[update] app-triggered update started (log: %s)" % log, flush=True)
     return {"started": True, "log": log}
+
+
+# ---------------------------------------------------------------------------
+# Flatpak updates (/api/update/flatpak) — the first "update hub" target.
+#
+# STRICT ALLOWLIST (CLAUDE.md §3): there is NO client-supplied identifier here.
+# The route path is a fixed literal and the argv is a frozen list built in this
+# module; the client only chooses to fire the ONE thing this endpoint runs. It
+# is looked up by the route, never interpolated — the same principle as the
+# action allowlist, tightened to "no selector at all".
+#
+# flatpak update is PER-USER and needs no root, so unlike the OS updater to come
+# it carries no sudo grant and no wrapper. It is token-authed like the reboot /
+# poweroff / suspend actions (not behind ALLOW_APP_UPDATE): it can only move
+# already-installed apps to newer versions from their already-trusted remotes —
+# strictly less destructive than the reboot button, which is token-only too.
+# ---------------------------------------------------------------------------
+
+FLATPAK_UPDATE_LOG = "/tmp/couchside-flatpak-update.log"
+# The root-owned wrapper that `couchside allow-system-updates on` grants NOPASSWD.
+# MEASURED 2026-07-22 on a real box: the agent is a SYSTEM service with no active
+# login session, so a plain `flatpak update` of SYSTEM installs is denied by
+# polkit ("Flatpak system operation Deploy not allowed for user"). Running the
+# update as root via this fixed wrapper bypasses that — root needs no polkit. The
+# grant is on THIS PATH, never on `flatpak` itself, so a token holder can only
+# run this one fixed update, never arbitrary flatpak subcommands (install / run /
+# override / remote-add). Same airtight shape as the journal wrapper.
+FLATPAK_UPDATE_WRAPPER = "/etc/couchside/couchside-flatpak-update"
+# The no-root fallback when the wrapper grant is absent: update only the USER's
+# own --user installs, which never need root. On a box whose flatpaks are all
+# system-installed this updates nothing (honest — the app then prompts to enable
+# system updates). Frozen argv; NEVER interpolate a client value into it.
+_FLATPAK_USER_UPDATE_CMD = ["flatpak", "update", "--user", "-y",
+                            "--noninteractive"]
+_FLATPAK_LIST_UPDATES_CMD = ["flatpak", "remote-ls", "--updates",
+                             "--columns=application,version"]
+
+
+def flatpak_available():
+    """True when flatpak is installed. The update endpoints 404 otherwise, so
+    the capability simply does not exist on a box without flatpak
+    (probe-and-appear)."""
+    return shutil.which("flatpak") is not None
+
+
+def flatpak_can_elevate():
+    """True when the box owner has opted in (`couchside allow-system-updates on`)
+    and sudoers therefore permits the fixed flatpak-update wrapper with no
+    password. Degrade-closed via _sudo_nopasswd_allows: a missing grant means the
+    app updates only --user flatpaks and prompts to enable system updates —
+    never a dead 'system update' that silently fails."""
+    return _sudo_nopasswd_allows("couchside-flatpak-update")
+
+
+def read_flatpak_log(limit=60):
+    """Last `limit` non-blank lines of the flatpak-update transcript, or [].
+    The PATH IS A CONSTANT — no client input selects a file. Never raises."""
+    try:
+        with open(FLATPAK_UPDATE_LOG, "r", errors="replace") as f:
+            lines = f.read().splitlines()
+    except OSError:
+        return []
+    return [ln.rstrip() for ln in lines if ln.strip()][-limit:]
+
+
+def flatpak_pending_updates():
+    """Names+versions of flatpaks with an update available, or [] on any error.
+    Read-only (remote-ls), and degrade-closed: a probe failure reports 'nothing
+    to do', never a false 'updates waiting'."""
+    try:
+        r = subprocess.run(_FLATPAK_LIST_UPDATES_CMD, capture_output=True,
+                           text=True, timeout=30, env=_user_env())
+        if r.returncode != 0:
+            return []
+        out = []
+        for ln in r.stdout.splitlines():
+            ln = ln.strip()
+            if ln and not ln.lower().startswith("application"):
+                out.append(ln)
+        return out
+    except Exception:
+        return []
+
+
+def flatpak_update():
+    """Fire a DETACHED flatpak update writing to FLATPAK_UPDATE_LOG, returning
+    immediately.
+
+    Uses the root wrapper (`sudo -n` the fixed script) when the owner has opted
+    in, else falls back to a no-root `--user` update. The argv is one of two
+    FROZEN lists chosen HERE; nothing from a client reaches it.
+
+    Detached, not a blocking action, because a real update downloads for minutes
+    — far past real_action's 15s ceiling. Output goes to a LOG FILE, never an
+    unread PIPE: a piped detached child deadlocks once the buffer fills, which
+    reboot/poweroff never hit because they exit instantly but a long update
+    would. A short poll catches an instant failure so we never report a false
+    'started'."""
+    elevated = flatpak_can_elevate()
+    if elevated:
+        # Root wrapper (system installs). Fixed path, no args — the grant is on
+        # this exact path, so this cannot be steered into another flatpak op.
+        cmd = ["sudo", "-n", FLATPAK_UPDATE_WRAPPER]
+        env = None
+    else:
+        cmd = list(_FLATPAK_USER_UPDATE_CMD)
+        env = _user_env()
+    try:
+        logf = open(FLATPAK_UPDATE_LOG, "w")
+    except OSError as e:
+        return {"started": False, "error": "cannot open log: %s" % e}
+    try:
+        proc = subprocess.Popen(
+            cmd, env=env,
+            stdout=logf, stderr=subprocess.STDOUT, stdin=subprocess.DEVNULL,
+            start_new_session=True)
+    except OSError as e:
+        logf.close()
+        return {"started": False, "error": str(e)}
+    finally:
+        # The child holds its own fd to the log; this process no longer needs it.
+        try:
+            logf.close()
+        except OSError:
+            pass
+    # ~400ms: an elevation/permission failure with --noninteractive dies at once,
+    # and surfacing that beats a false 'started'.
+    time.sleep(0.4)
+    rc = proc.poll()
+    if rc is not None and rc != 0:
+        return {"started": False, "elevated": elevated, "exit_code": rc,
+                "log": FLATPAK_UPDATE_LOG, "lines": read_flatpak_log()}
+    print("[update] flatpak update started (elevated=%s, log: %s)"
+          % (elevated, FLATPAK_UPDATE_LOG), flush=True)
+    return {"started": True, "elevated": elevated, "log": FLATPAK_UPDATE_LOG}
 
 
 # ---------------------------------------------------------------------------
@@ -11626,6 +11761,31 @@ class Handler(BaseHTTPRequestHandler):
                 # paths, and /api/ping is the only deliberately pre-auth route.
                 # Reads a CONSTANT path -- no client input selects a file.
                 self._send(200, {"lines": read_update_log()}, started)
+            elif path == "/api/update/flatpak":
+                # Read-only: which flatpaks have an update waiting. 404 when
+                # flatpak is absent so the capability doesn't exist on a box
+                # without it (probe-and-appear). No client input selects
+                # anything -- a fixed remote-ls runs.
+                if not self.mock and not flatpak_available():
+                    self._send(404, {"available": False}, started)
+                else:
+                    pending = (["org.mozilla.firefox 149.0",
+                                "org.freedesktop.Platform 24.08"] if self.mock
+                               else flatpak_pending_updates())
+                    # elevated tells the app whether SYSTEM flatpaks can be
+                    # updated (owner opted in) or only --user ones — so it can
+                    # prompt "enable system updates on your box" when False.
+                    elevated = True if self.mock else flatpak_can_elevate()
+                    self._send(200, {"available": True, "count": len(pending),
+                                     "updates": pending, "elevated": elevated},
+                               started)
+            elif path == "/api/update/flatpak/log":
+                # Progress transcript of a running/last flatpak update. CONSTANT
+                # path, behind the auth gate like /api/update/log above.
+                self._send(200, {"lines": (["[mock] Updating org.mozilla.firefox",
+                                            "[mock] Changes complete."]
+                                           if self.mock else read_flatpak_log())},
+                           started)
             elif path == "/api/update/check":
                 # Box-side update check (agent >= 2.9.5). The app reads this over
                 # the LAN so the app never touches the internet; the box (already
@@ -12052,6 +12212,24 @@ class Handler(BaseHTTPRequestHandler):
                     update_show_on_box(self.port)
                 result = ({"started": True, "log": UPDATE_LOG}
                           if self.mock else update_apply())
+                self._send(200, result, started)
+                return
+
+            # POST /api/update/flatpak: fire a detached `flatpak update`. Token-
+            # authed like the reboot/poweroff actions (NOT behind
+            # ALLOW_APP_UPDATE): it can only move already-installed apps to newer
+            # versions from their trusted remotes — strictly less destructive
+            # than the reboot button. 404 when flatpak is absent so the
+            # capability doesn't exist there. Fixed argv, no client input.
+            if path == "/api/update/flatpak":
+                if not self.mock and not flatpak_available():
+                    self._send(404, {"ok": False, "available": False,
+                                     "error": "flatpak is not installed on this box"},
+                               started)
+                    return
+                result = ({"started": True, "elevated": True,
+                           "log": FLATPAK_UPDATE_LOG}
+                          if self.mock else flatpak_update())
                 self._send(200, result, started)
                 return
 
