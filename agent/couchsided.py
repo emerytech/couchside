@@ -45,7 +45,7 @@ except ImportError:  # pragma: no cover
     fcntl = None
 
 APP_NAME = "couchside-agent"
-VERSION = "2.9.51"
+VERSION = "2.9.52"
 UID = os.getuid()
 XDG_RUNTIME_DIR = "/run/user/%d" % UID
 
@@ -11501,12 +11501,13 @@ def render_pair_page(token, port):
     url_js = json.dumps(pair_url)          # safe JS string literal
     url_html = (pair_url.replace("&", "&amp;").replace("<", "&lt;")
                         .replace(">", "&gt;"))  # safe HTML text
-    # Store links for the "get the app first" QR codes. A fresh installer who
-    # does not have Couchside yet scans one of these to install; the big QR
-    # above is for someone who already has it. Both are static, public URLs.
-    ios_js = json.dumps("https://apps.apple.com/app/id6786884115")
-    play_js = json.dumps(
-        "https://play.google.com/store/apps/details?id=com.ets3d.rescueremote")
+    # One "get the app first" QR for a fresh installer who doesn't have
+    # Couchside yet. It points at couchside.tv, whose hero already carries BOTH
+    # store badges, so the phone picks its own store instead of the box making
+    # someone aim a camera at the right one of two codes. A single small canvas
+    # also leaves the one-screen layout roomier. The big QR above stays the
+    # pairing deep link for someone who already has the app.
+    get_js = json.dumps("https://couchside.tv/#get")
     return (
         "<!doctype html><html lang=\"en\"><head>"
         "<meta charset=\"utf-8\">"
@@ -11537,10 +11538,11 @@ def render_pair_page(token, port):
         "justify-content:center;}"
         ".step b{font-size:min(3vmin,20px);font-weight:600;color:#e8ecf3;}"
         ".step span{display:block;color:#9aa4b2;font-size:min(2.4vmin,15px);margin-top:.3vmin;}"
-        # The two store QR codes under step 1 (App Store + Google Play). Small
-        # white cards -- a phone reads them up close, so they can be compact and
-        # still fit the one-screen budget. image-rendering:pixelated keeps the
-        # modules crisp when CSS scales the canvas.
+        # The single store QR under step 1 (a couchside.tv link carrying both
+        # store badges). A small white card -- a phone reads it up close, so it
+        # can be compact and still fit the one-screen budget. image-rendering:
+        # pixelated keeps the modules crisp when CSS scales the canvas. .stores
+        # stays a flex row so a second card could return without a reflow.
         ".stores{display:flex;gap:min(2.6vmin,18px);margin-top:1.2vmin;}"
         ".store{display:flex;flex-direction:column;align-items:center;gap:.5vmin;}"
         ".sqr{background:#fff;border-radius:9px;padding:min(1.1vmin,7px);line-height:0;}"
@@ -11601,14 +11603,12 @@ def render_pair_page(token, port):
         "<div class=\"steps\">"
         "<div class=\"step\"><div class=\"num\">1</div><div>"
         "<b>Get Couchside on your phone</b>"
-        "<span>Don&rsquo;t have it? Scan a store code to install &mdash; free.</span>"
+        "<span>Don&rsquo;t have it? Scan to install on iOS or Android "
+        "&mdash; free.</span>"
         "<div class=\"stores\">"
         "<div class=\"store\">"
-        "<div class=\"sqr\"><canvas id=\"qr-ios\" width=\"104\" height=\"104\"></canvas></div>"
-        "<div class=\"slabel\">App Store</div></div>"
-        "<div class=\"store\">"
-        "<div class=\"sqr\"><canvas id=\"qr-play\" width=\"104\" height=\"104\"></canvas></div>"
-        "<div class=\"slabel\">Google Play</div></div>"
+        "<div class=\"sqr\"><canvas id=\"qr-get\" width=\"104\" height=\"104\"></canvas></div>"
+        "<div class=\"slabel\">App Store &amp; Google Play</div></div>"
         "</div></div></div>"
         "<div class=\"step\"><div class=\"num\">2</div><div>"
         "<b>Setup tab &rarr; Scan for boxes</b>"
@@ -11628,8 +11628,7 @@ def render_pair_page(token, port):
         "<script>\n" + PAIR_QR_JS + "\n"
         "(function(){\n"
         "  var url = " + url_js + ";\n"
-        "  var iosUrl = " + ios_js + ";\n"
-        "  var playUrl = " + play_js + ";\n"
+        "  var getUrl = " + get_js + ";\n"
         "  function drawQR(id, text, box, minpx){\n"
         "    var canvas = document.getElementById(id);\n"
         "    if (!canvas) return;\n"
@@ -11646,8 +11645,7 @@ def render_pair_page(token, port):
         "  }\n"
         "  try {\n"
         "    drawQR('qr', url, 300, 4);\n"
-        "    drawQR('qr-ios', iosUrl, 108, 2);\n"
-        "    drawQR('qr-play', playUrl, 108, 2);\n"
+        "    drawQR('qr-get', getUrl, 108, 2);\n"
         "  } catch (e) {\n"
         "    document.getElementById('err').textContent = 'Could not render QR: ' + e;\n"
         "  }\n"

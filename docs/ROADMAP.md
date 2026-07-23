@@ -294,6 +294,24 @@ recommendation was wrong, not merely superseded.
 
 ## ✅ Completed
 
+### 2026-07-23 — Pairing popup: raise it in front + one store QR, not two (agent 2.9.52)
+Two fixes to the on-box pairing tutorial, both VERIFIED LIVE on a real Bazzite box (Plasma
+**Wayland**, desktop mode), screenshot before/after. **Popup was behind the terminal:** on a fresh
+desktop install `couchside-pair` is launched detached (`setsid`), so KWin's focus-stealing
+prevention drops the new full-screen browser to the BOTTOM of the stack — behind (even below) the
+Konsole the install ran in. On Wayland a client cannot reorder itself; only the compositor can.
+`couchside-pair` now runs a background KWin-scripting raiser (`qdbus org.kde.KWin /Scripting`,
+`loadScript`/`run`/`unloadScript`) that finds our own page by title ("Couchside" in every `/pair`
+`<title>`, never by browser name, so an unrelated browser is never yanked) and pulls it to the
+front, retrying ~18s while the browser cold-starts. Best-effort + KDE-only: no KWin (Game Mode →
+`steam://openurl`, another WM, or SSH-no-display) and every step no-ops. **MEASURED:** `keepAbove`
+alone does NOT reliably raise a full-screen window here; `minimized=true→false` (un-minimize forces
+a restack) + `keepAbove` + `activeWindow` does — the raiser uses all three. **Two store QRs → one:**
+step 1 now carries a single QR to `https://couchside.tv/#get` (whose hero already holds both store
+badges) instead of separate App Store + Google Play codes — the phone picks its own store, one less
+code to aim a camera at, roomier one-screen layout. New-page render proven on the box's own browser
+at 4K. `tests/test_pair_page.py` updated. See [[pairing-tutorial-on-box]].
+
 ### 2026-07-23 — Pairing page: store QR codes + reliable desktop-mode open (agent 2.9.48)
 Two follow-ups to the on-box pairing tutorial. **Store QR codes on `/pair`:** a fresh installer
 standing at the box can now scan an App Store or Google Play code to DOWNLOAD the app, not just
