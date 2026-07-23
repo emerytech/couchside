@@ -206,6 +206,15 @@ jobs:
       - name: Unit tests (gaming card)
         run: python3 tests/test_gaming_card.py
 
+      # The on-box pairing page: both loopback gates (peer IP + Host header,
+      # anti-DNS-rebinding — a box's token must never leave its own screen), the
+      # idle tutorial + its reload-into-PIN handoff, the PIN state machine
+      # (attempt cap / expiry / single-use, previously untested — KI-020), and
+      # the KI-019 box-pop throttle. The renders + handoff were also proven on a
+      # real box's CEF; this guards the logic a refactor could quietly break.
+      - name: Unit tests (pairing page)
+        run: python3 tests/test_pair_page.py
+
       # Stream-host detection (/api/stream-host, phase 4a — detect only). The
       # fixtures are verbatim /proc/net lines off a live box, so they encode the
       # real trap: an ESTABLISHED TCP peer on 27036 is the ROUTER, not a session,

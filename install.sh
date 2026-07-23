@@ -165,12 +165,14 @@ OLD_INSTALLS=(
 NO_SUDOERS=0
 UNINSTALL=0
 NO_DECKY=0
+NO_OPEN=0
+FRESH_TOKEN=0   # flipped to 1 only on a truly fresh token mint (see below)
 
 usage() {
     cat <<'USAGE'
 Couchside box agent installer. Run ON the box as your desktop user.
 
-Usage: install.sh [--no-sudoers] [--no-decky] [--screensaver] [--no-screensaver] [--uninstall] [--help]
+Usage: install.sh [--no-sudoers] [--no-decky] [--screensaver] [--no-screensaver] [--no-open] [--uninstall] [--help]
 
   (no flags)        install/upgrade the agent (idempotent, safe to re-run)
   --no-sudoers      skip installing /etc/sudoers.d/couchside (high-danger
@@ -178,6 +180,8 @@ Usage: install.sh [--no-sudoers] [--no-decky] [--screensaver] [--no-screensaver]
   --no-decky        skip the Decky Loader Game Mode panel even if Decky is found
   --screensaver     install the Couchside screensaver add-on without asking
   --no-screensaver  skip the Couchside screensaver add-on
+  --no-open         don't auto-open the on-screen pairing tutorial on a fresh
+                    install (it only ever opens on a first install anyway)
   --uninstall       remove the agent (asks before deleting the token/sudoers)
   --help            this text
 
@@ -193,6 +197,7 @@ for arg in "$@"; do
         --no-decky)       NO_DECKY=1 ;;
         --screensaver)    COUCHSIDE_SCREENSAVER=1 ;;
         --no-screensaver) COUCHSIDE_SCREENSAVER=0 ;;
+        --no-open)        NO_OPEN=1 ;;
         --uninstall)      UNINSTALL=1 ;;
         --help|-h)        usage; exit 0 ;;
         *) echo "error: unknown flag: $arg" >&2; usage >&2; exit 2 ;;
@@ -601,6 +606,10 @@ elif [ -n "$MIGRATED_TOKEN" ]; then
     sudo cp "$MIGRATED_TOKEN" "$TOKEN_FILE"
 else
     note "generating new pairing token"
+    # FRESH install (no prior token, nothing migrated) — this is the ONE case
+    # the pairing tutorial auto-opens for. The two branches above keep their
+    # token, so re-runs and upgrades leave FRESH_TOKEN at 0 and stay silent.
+    FRESH_TOKEN=1
     if command -v openssl >/dev/null 2>&1; then
         openssl rand -hex 24 | sudo tee "$TOKEN_FILE" > /dev/null
     else
@@ -1728,9 +1737,25 @@ else
 fi
 
 echo
-echo "To re-show the pairing QR later without a terminal: launch the"
-echo "'Couchside — Pair Phone' tile from your Steam library (Game Mode included"
-echo ", it opens in Steam's built-in browser). If the tile isn't there yet,"
-echo "restart Steam once, or add $PAIR_SCRIPT via Steam > Add a Non-Steam Game."
+echo "On your phone: install Couchside (App Store / Google Play), open it, go to"
+echo "the Setup tab and tap Scan for boxes — or point your camera at the link"
+echo "above. A 6-digit PIN will appear on this box's screen; type it in to pair."
+echo
+echo "To re-show this later without a terminal: launch the 'Couchside — Pair"
+echo "Phone' tile from your Steam library (Game Mode included, it opens in Steam's"
+echo "built-in browser). If the tile isn't there yet, restart Steam once, or add"
+echo "$PAIR_SCRIPT via Steam > Add a Non-Steam Game."
+
+# FRESH INSTALL ONLY: put the animated pairing tutorial on the box's own screen,
+# so a stranger standing at a finished terminal isn't left guessing what to do
+# next. Best-effort and DETACHED — never block the install, never fail it. The
+# launcher itself picks the right surface (Game Mode -> Steam's browser; desktop
+# -> a browser; else it just prints the URL), and an SSH install with no DISPLAY
+# simply no-ops while the terminal QR above still stands. Only on a fresh token
+# (FRESH_TOKEN) and only unless the caller passed --no-open.
+if [ "$FRESH_TOKEN" = "1" ] && [ "$NO_OPEN" != "1" ] && [ -x "$PAIR_SCRIPT" ]; then
+    ( setsid "$PAIR_SCRIPT" >/dev/null 2>&1 & ) 2>/dev/null || true
+    note "opened the pairing tutorial on this box's screen (--no-open to skip)"
+fi
 
 } # end partial-download guard — see the matching `{` near the top

@@ -45,7 +45,7 @@ except ImportError:  # pragma: no cover
     fcntl = None
 
 APP_NAME = "couchside-agent"
-VERSION = "2.9.44"
+VERSION = "2.9.45"
 UID = os.getuid()
 XDG_RUNTIME_DIR = "/run/user/%d" % UID
 
@@ -10985,19 +10985,26 @@ PAIR_PIN = None
 
 def pair_pin_start():
     """Mint a fresh PIN + session (replacing any prior one) and return
-    (pin, ttl). Debounced: within PAIR_PIN_START_DEBOUNCE of the last start the
-    LIVE pin is returned unchanged, so a double-tap / retry doesn't reroll the
-    number already on screen. Caller displays it on the box."""
+    (pin, ttl, fresh). Debounced: within PAIR_PIN_START_DEBOUNCE of the last
+    start the LIVE pin is returned unchanged, so a double-tap / retry doesn't
+    reroll the number already on screen. Caller displays it on the box.
+
+    `fresh` is True only when a NEW PIN was minted, False when the debounce
+    branch returned the existing one. The caller pops the box screen ONLY on a
+    fresh mint (KI-019): without that, a repeat /start inside the debounce
+    window returns the same PIN but still throws another full-screen page onto
+    the TV — which is exactly the nuisance the debounce comment claims to
+    prevent."""
     global PAIR_PIN
     with PAIR_PIN_LOCK:
         now = time.monotonic()
         s = PAIR_PIN
         if s and now <= s["expires"] and now - s["started"] < PAIR_PIN_START_DEBOUNCE:
-            return s["pin"], int(s["expires"] - now)
+            return s["pin"], int(s["expires"] - now), False
         pin = "%06d" % (int.from_bytes(os.urandom(3), "big") % 1000000)
         PAIR_PIN = {"pin": pin, "expires": now + PAIR_PIN_TTL,
                     "attempts": 0, "started": now}
-        return pin, PAIR_PIN_TTL
+        return pin, PAIR_PIN_TTL, True
 
 
 def pair_pin_active():
@@ -11029,9 +11036,25 @@ def pair_pin_check(pin):
         return True
 
 
+_BOX_POP_LOCK = threading.Lock()
+_BOX_POP_AT = [0.0]                 # monotonic time of the last box-screen pop
+_BOX_POP_COOLDOWN = 5.0            # seconds; hard floor between pops
+
+
 def pair_show_on_box(port):
     """Open the loopback /pair page on the BOX'S own screen so the PIN is
-    visible there."""
+    visible there.
+
+    Rate-limited (KI-019, defence in depth): the caller already gates this on a
+    FRESH pin mint, so legitimate double-taps don't re-pop. This cooldown is the
+    backstop — even a stream of genuinely-fresh sessions (a LAN client looping
+    /start past the debounce) cannot throw the page onto the TV more than once
+    per _BOX_POP_COOLDOWN. The normal flow (user pairs once) never touches it."""
+    now = time.monotonic()
+    with _BOX_POP_LOCK:
+        if now - _BOX_POP_AT[0] < _BOX_POP_COOLDOWN:
+            return
+        _BOX_POP_AT[0] = now
     pair_show_on_box_url("http://localhost:%d/pair" % port)
 
 
@@ -11153,21 +11176,94 @@ def render_pair_page(token, port):
         "font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;}"
         "body{display:flex;flex-direction:column;align-items:center;"
         "justify-content:center;text-align:center;padding:4vmin;box-sizing:border-box;}"
-        "h1{font-size:min(6vmin,42px);font-weight:650;margin:0 0 3vmin;letter-spacing:.2px;}"
-        ".sub{color:#9aa4b2;font-size:min(3vmin,20px);margin:0 0 4vmin;max-width:36ch;}"
-        ".card{background:#fff;border-radius:24px;padding:min(5vmin,40px);"
+        "h1{font-size:min(5vmin,38px);font-weight:650;margin:0 0 .8vmin;letter-spacing:.2px;}"
+        ".sub{color:#9aa4b2;font-size:min(2.7vmin,18px);margin:0 0 2.4vmin;max-width:46ch;}"
+        # The stage is one row: [phone + steps] on the left, QR on the right. It
+        # must fit ONE screen with no scroll -- a TV read from the couch can't.
+        # Sized to sit in a row at ~960px wide (Steam's CEF render width, MEASURED
+        # on the box 2026-07-22 -- an earlier looser layout looked fine in Chrome
+        # at 1280 but WRAPPED the QR below the fold on the actual box). Still wraps
+        # to a column on a genuinely narrow display as a last resort.
+        ".stage{display:flex;flex-wrap:wrap;align-items:center;justify-content:center;"
+        "gap:min(5vmin,44px);max-width:1000px;}"
+        ".left{display:flex;align-items:center;gap:min(3vmin,22px);}"
+        ".steps{display:flex;flex-direction:column;gap:min(2.6vmin,20px);"
+        "text-align:left;max-width:30ch;}"
+        ".step{display:flex;align-items:center;gap:min(2.2vmin,15px);}"
+        ".num{flex:0 0 auto;width:min(5vmin,38px);height:min(5vmin,38px);"
+        "border-radius:50%;background:#1c2430;color:#7dd3fc;font-weight:700;"
+        "font-size:min(2.8vmin,20px);display:flex;align-items:center;"
+        "justify-content:center;}"
+        ".step b{font-size:min(3vmin,20px);font-weight:600;color:#e8ecf3;}"
+        ".step span{display:block;color:#9aa4b2;font-size:min(2.4vmin,15px);margin-top:.3vmin;}"
+        # The QR keeps its white card exactly as before -- do not restyle it, the
+        # camera has to read it.
+        ".card{background:#fff;border-radius:20px;padding:min(3.4vmin,28px);"
         "box-shadow:0 12px 40px rgba(0,0,0,.5);}"
-        "#qr{display:block;image-rendering:pixelated;width:min(70vmin,560px);"
-        "height:min(70vmin,560px);}"
-        ".url{margin-top:4vmin;color:#5a6472;font-size:min(2.2vmin,14px);"
-        "word-break:break-all;max-width:80ch;font-family:ui-monospace,SFMono-Regular,Menlo,monospace;}"
+        "#qr{display:block;image-rendering:pixelated;width:min(42vmin,300px);"
+        "height:min(42vmin,300px);}"
+        ".cap{color:#9aa4b2;font-size:min(2.2vmin,14px);margin-top:1.4vmin;}"
+        ".url{margin-top:2vmin;color:#5a6472;font-size:min(1.9vmin,12px);"
+        "word-break:break-all;max-width:70ch;font-family:ui-monospace,SFMono-Regular,Menlo,monospace;}"
         ".err{color:#ff6b6b;margin-top:3vmin;font-size:min(3vmin,18px);}"
+        # The animated phone mock. Three scenes cross-fade on a 9s loop, 3s each,
+        # driven ONLY by @keyframes -- no JS. Proven to render + cycle on Steam's
+        # CEF browser (SteamOS + Bazzite, 2026-07-22). Each scene group holds full
+        # opacity for its third of the cycle and is invisible otherwise; the 4%
+        # ramps overlap slightly so it reads as a cross-fade, not a hard cut.
+        ".phone{flex:0 0 auto;width:min(18vmin,96px);}"
+        ".scene{opacity:0;animation:cs 9s infinite;}"
+        ".scene.b{animation-delay:3s;}.scene.c{animation-delay:6s;}"
+        "@keyframes cs{0%{opacity:0}4%{opacity:1}29%{opacity:1}33%{opacity:0}100%{opacity:0}}"
+        "@media (max-width:820px){.steps{max-width:80vw}.stage{gap:4vmin}}"
         "</style></head><body>"
-        "<h1>Scan to pair Couchside</h1>"
-        "<div class=\"sub\">Point your phone&rsquo;s <b>camera</b> at this code "
-        "&mdash; it opens the Couchside app and pairs your box automatically. "
-        "The app itself has no scanner; use the camera.</div>"
-        "<div class=\"card\"><canvas id=\"qr\" width=\"560\" height=\"560\"></canvas></div>"
+        "<h1>Pair your phone</h1>"
+        "<div class=\"sub\">Get the Couchside app, then follow these three steps "
+        "&mdash; or point your phone&rsquo;s camera at the code to skip ahead.</div>"
+        "<div class=\"stage\">"
+        "<div class=\"left\">"
+        "<svg class=\"phone\" viewBox=\"0 0 120 240\" xmlns=\"http://www.w3.org/2000/svg\" "
+        "aria-hidden=\"true\">"
+        "<rect x=\"4\" y=\"4\" width=\"112\" height=\"232\" rx=\"20\" fill=\"#0b1220\" "
+        "stroke=\"#2b3648\" stroke-width=\"3\"/>"
+        "<rect x=\"12\" y=\"20\" width=\"96\" height=\"200\" rx=\"8\" fill=\"#0f1826\"/>"
+        # Scene A: the app icon, "open Couchside".
+        "<g class=\"scene a\"><rect x=\"38\" y=\"78\" width=\"44\" height=\"44\" rx=\"11\" "
+        "fill=\"#38bdf8\"/><rect x=\"46\" y=\"96\" width=\"28\" height=\"14\" rx=\"4\" "
+        "fill=\"#0b1220\"/><rect x=\"44\" y=\"92\" width=\"6\" height=\"10\" fill=\"#0b1220\"/>"
+        "<rect x=\"70\" y=\"92\" width=\"6\" height=\"10\" fill=\"#0b1220\"/>"
+        "<rect x=\"40\" y=\"134\" width=\"40\" height=\"6\" rx=\"3\" fill=\"#334155\"/></g>"
+        # Scene B: a scan list with one row highlighted, "Setup -> Scan, tap it".
+        "<g class=\"scene b\"><rect x=\"22\" y=\"70\" width=\"76\" height=\"22\" rx=\"6\" "
+        "fill=\"#38bdf8\"/><rect x=\"29\" y=\"78\" width=\"40\" height=\"6\" rx=\"3\" "
+        "fill=\"#0b1220\"/><rect x=\"22\" y=\"100\" width=\"76\" height=\"16\" rx=\"5\" "
+        "fill=\"#1c2430\"/><rect x=\"22\" y=\"124\" width=\"76\" height=\"16\" rx=\"5\" "
+        "fill=\"#1c2430\"/></g>"
+        # Scene C: the six-digit PIN appearing, "a PIN shows here".
+        "<g class=\"scene c\"><rect x=\"24\" y=\"96\" width=\"10\" height=\"18\" rx=\"2\" "
+        "fill=\"#7dd3fc\"/><rect x=\"38\" y=\"96\" width=\"10\" height=\"18\" rx=\"2\" "
+        "fill=\"#7dd3fc\"/><rect x=\"52\" y=\"96\" width=\"10\" height=\"18\" rx=\"2\" "
+        "fill=\"#7dd3fc\"/><rect x=\"66\" y=\"96\" width=\"10\" height=\"18\" rx=\"2\" "
+        "fill=\"#7dd3fc\"/><rect x=\"80\" y=\"96\" width=\"10\" height=\"18\" rx=\"2\" "
+        "fill=\"#7dd3fc\"/><rect x=\"94\" y=\"96\" width=\"6\" height=\"18\" rx=\"2\" "
+        "fill=\"#7dd3fc\"/></g></svg>"
+        "<div class=\"steps\">"
+        "<div class=\"step\"><div class=\"num\">1</div><div>"
+        "<b>Open Couchside on your phone</b>"
+        "<span>Free on the App Store &amp; Google Play.</span></div></div>"
+        "<div class=\"step\"><div class=\"num\">2</div><div>"
+        "<b>Setup tab &rarr; Scan for boxes</b>"
+        "<span>Then tap this box in the list.</span></div></div>"
+        "<div class=\"step\"><div class=\"num\">3</div><div>"
+        "<b>A 6-digit PIN appears here</b>"
+        "<span>Type it into the app to finish.</span></div></div>"
+        "</div>"          # .steps
+        "</div>"          # .left
+        "<div>"
+        "<div class=\"card\"><canvas id=\"qr\" width=\"300\" height=\"300\"></canvas></div>"
+        "<div class=\"cap\">Or scan with your camera</div>"
+        "</div>"
+        "</div>"          # .stage
         "<div class=\"url\">" + url_html + "</div>"
         "<div id=\"err\" class=\"err\"></div>"
         "<script>\n" + PAIR_QR_JS + "\n"
@@ -11178,7 +11274,7 @@ def render_pair_page(token, port):
         "    var n = qr.getModuleCount();\n"
         "    var quiet = 4, total = n + quiet*2;\n"
         "    var canvas = document.getElementById('qr');\n"
-        "    var px = Math.max(4, Math.floor(560/total));\n"
+        "    var px = Math.max(4, Math.floor(300/total));\n"
         "    var size = total*px; canvas.width = size; canvas.height = size;\n"
         "    var ctx = canvas.getContext('2d');\n"
         "    ctx.fillStyle = '#ffffff'; ctx.fillRect(0,0,size,size);\n"
@@ -11188,6 +11284,20 @@ def render_pair_page(token, port):
         "  } catch (e) {\n"
         "    document.getElementById('err').textContent = 'Could not render QR: ' + e;\n"
         "  }\n"
+        # THE HANDOFF. Poll /api/pair/status on the same 3000ms cadence as
+        # render_pin_page. The instant a pairing starts (active===true) reload;
+        # the route then serves render_pin_page because pair_pin_active() is now
+        # truthy, so this idle tutorial becomes the big PIN it was teaching about.
+        # Errors are swallowed and the page left alone, verbatim from
+        # render_pin_page -- an agent restart must never paint a browser error on
+        # the TV. Only ONE reload ever fires (the guard), so a slow reload can't
+        # stack.
+        "  var gone=false;\n"
+        "  setInterval(function(){\n"
+        "    fetch('/api/pair/status').then(function(r){return r.json()})\n"
+        "    .then(function(d){if(d&&d.active===true&&!gone){gone=true;\n"
+        "      location.reload();}}).catch(function(){});\n"
+        "  },3000);\n"
         "})();\n"
         "</script></body></html>"
     )
@@ -11807,8 +11917,12 @@ class Handler(BaseHTTPRequestHandler):
                     return
                 pair_body = self._read_body()
                 if path == "/api/pair/start":
-                    _pin, ttl = pair_pin_start()
-                    pair_show_on_box(self.port)   # pop the PIN on the box screen
+                    _pin, ttl, fresh = pair_pin_start()
+                    # Pop the PIN on the box screen ONLY on a fresh mint (KI-019).
+                    # A repeat /start inside the debounce window returns the same
+                    # PIN and must NOT re-throw the page onto the user's TV.
+                    if fresh:
+                        pair_show_on_box(self.port)
                     self._send(200, {"ok": True, "ttl": ttl}, started)
                     return
                 try:
