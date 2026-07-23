@@ -18,6 +18,15 @@ the same thing regardless of what actually changed.
 Write for the person holding the phone, not for the commit log. They are
 deciding whether to press "Update now" on a machine across the room.
 
+## 2.9.45
+
+Fresh installs now show a short animated guide on the box's own screen —
+open the app, Scan, tap this box — that turns into the pairing PIN the moment
+you start. No more staring at a finished terminal wondering what to do next.
+
+Also closes a small nuisance: a device on your network could pop the pairing
+screen onto your TV on repeat. It can't anymore.
+
 ## 2.9.44
 
 Closing a game from the phone now actually closes it. The button reported
