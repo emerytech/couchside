@@ -88,7 +88,7 @@ def test_host_header_gate():
 def test_idle_page_has_the_tutorial():
     print("test_idle_page_has_the_tutorial")
     html = cs.render_pair_page("a" * 64, 8787)
-    check("step 1 present", "Open Couchside on your phone" in html, True)
+    check("step 1 present", "Get Couchside on your phone" in html, True)
     check("step 2 present", "Scan for boxes" in html, True)
     check("step 3 present", "6-digit PIN appears here" in html, True)
     # The QR must survive — the Steam tile's documented job is re-showing it.
@@ -96,6 +96,27 @@ def test_idle_page_has_the_tutorial():
     # CSS animation, not JS — the phone mock cross-fades on @keyframes.
     check("keyframe animation present", "@keyframes cs" in html, True)
     check("inline svg present", "<svg" in html and "</svg>" in html, True)
+
+
+def test_idle_page_has_store_qr_codes():
+    """A fresh installer without the app needs to install it first. The page
+    carries an App Store and a Google Play QR — the exact store URLs, on their
+    own canvases, drawn by the same offline generator as the pairing QR."""
+    print("test_idle_page_has_store_qr_codes")
+    html = cs.render_pair_page("a" * 64, 8787)
+    check("App Store QR canvas present", 'id="qr-ios"' in html, True)
+    check("Google Play QR canvas present", 'id="qr-play"' in html, True)
+    check("App Store URL encoded",
+          "https://apps.apple.com/app/id6786884115" in html, True)
+    check("Google Play URL encoded",
+          "https://play.google.com/store/apps/details?id=com.ets3d.rescueremote"
+          in html, True)
+    check("store labels present",
+          "App Store" in html and "Google Play" in html, True)
+    # All three QRs go through one generator — assert the store canvases are
+    # actually wired into a draw call, not just empty elements.
+    check("store canvases are drawn",
+          "drawQR('qr-ios'" in html and "drawQR('qr-play'" in html, True)
 
 
 def test_idle_page_hands_off():
@@ -116,7 +137,7 @@ def test_live_pin_page_is_the_pin_not_the_tutorial():
     pin_html = cs.render_pin_page("123456")
     check("shows the PIN prompt", "ENTER THIS PIN IN THE APP" in pin_html, True)
     check("no tutorial steps on the PIN page",
-          "Open Couchside on your phone" not in pin_html, True)
+          "Get Couchside on your phone" not in pin_html, True)
     check("no QR on the PIN page", "qrcode(0)" not in pin_html, True)
 
 
@@ -214,6 +235,7 @@ if __name__ == "__main__":
     for fn in (test_loopback_gate,
                test_host_header_gate,
                test_idle_page_has_the_tutorial,
+               test_idle_page_has_store_qr_codes,
                test_idle_page_hands_off,
                test_live_pin_page_is_the_pin_not_the_tutorial,
                test_pin_start_is_debounced_and_marks_fresh,

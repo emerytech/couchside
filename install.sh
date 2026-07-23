@@ -1026,18 +1026,39 @@ if [ "${XDG_CURRENT_DESKTOP:-}" = "gamescope" ] \
    || pgrep -x gamescope >/dev/null 2>&1; then
     exec steam -ifrunning "steam://openurl/${URL}"
 fi
-if command -v flatpak >/dev/null 2>&1 && flatpak info com.google.Chrome >/dev/null 2>&1; then
-    exec flatpak run com.google.Chrome --app="$URL" --start-fullscreen
-elif command -v flatpak >/dev/null 2>&1 && flatpak info org.chromium.Chromium >/dev/null 2>&1; then
-    exec flatpak run org.chromium.Chromium --app="$URL" --start-fullscreen
-elif command -v xdg-open >/dev/null 2>&1; then
-    exec xdg-open "$URL"
-elif command -v steam >/dev/null 2>&1; then
-    exec steam -ifrunning "steam://openurl/${URL}"
-else
-    echo "No browser launcher found. Open this URL on the box:"
-    echo "  $URL"
+
+# Desktop mode: open a real browser DIRECTLY, full-screen. We deliberately do
+# NOT lean on xdg-open here — on SteamOS/KDE it routes through kfmclient, which
+# is not installed, so it fails silently and the pairing page never appears.
+# Each browser gets its own full-screen flag: Chrome/Chromium/Brave/Edge take
+# --app + --start-fullscreen; Firefox takes --kiosk. Flatpak first (SteamOS
+# ships Flatpak and that's where its browsers live), then native binaries.
+if command -v flatpak >/dev/null 2>&1; then
+    if   flatpak info com.google.Chrome      >/dev/null 2>&1; then exec flatpak run com.google.Chrome      --app="$URL" --start-fullscreen
+    elif flatpak info org.chromium.Chromium  >/dev/null 2>&1; then exec flatpak run org.chromium.Chromium  --app="$URL" --start-fullscreen
+    elif flatpak info com.brave.Browser      >/dev/null 2>&1; then exec flatpak run com.brave.Browser      --app="$URL" --start-fullscreen
+    elif flatpak info com.microsoft.Edge     >/dev/null 2>&1; then exec flatpak run com.microsoft.Edge     --app="$URL" --start-fullscreen
+    elif flatpak info org.mozilla.firefox    >/dev/null 2>&1; then exec flatpak run org.mozilla.firefox    --kiosk "$URL"
+    fi
 fi
+for b in google-chrome-stable google-chrome chromium chromium-browser brave-browser microsoft-edge; do
+    if command -v "$b" >/dev/null 2>&1; then exec "$b" --app="$URL" --start-fullscreen; fi
+done
+if command -v firefox >/dev/null 2>&1; then exec firefox --kiosk "$URL"; fi
+
+# No fullscreen-capable browser found. A plain window beats nothing — but pick a
+# working opener: kde-open5 / gio, then xdg-open LAST (it's the one that breaks
+# on KDE). Steam's built-in browser is the final fallback.
+for opener in kde-open5 gio xdg-open; do
+    if command -v "$opener" >/dev/null 2>&1; then
+        if [ "$opener" = "gio" ]; then exec gio open "$URL"; else exec "$opener" "$URL"; fi
+    fi
+done
+if command -v steam >/dev/null 2>&1; then
+    exec steam -ifrunning "steam://openurl/${URL}"
+fi
+echo "No browser launcher found. Open this URL on the box:"
+echo "  $URL"
 PAIREOF
 chmod +x "$PAIR_SCRIPT"
 note "wrote $PAIR_SCRIPT"

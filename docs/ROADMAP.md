@@ -294,6 +294,22 @@ recommendation was wrong, not merely superseded.
 
 ## ✅ Completed
 
+### 2026-07-23 — Pairing page: store QR codes + reliable desktop-mode open (agent 2.9.48)
+Two follow-ups to the on-box pairing tutorial. **Store QR codes on `/pair`:** a fresh installer
+standing at the box can now scan an App Store or Google Play code to DOWNLOAD the app, not just
+pair — two compact QRs under step 1, drawn by the same offline `PAIR_QR_JS` canvas generator (no
+new asset, no network, static public URLs). Encoding of both store URLs proven through the real
+generator (iOS 29 modules, Play 37 — the longer Play URL still fits). **Desktop-mode open fixed:**
+`couchside-pair`'s desktop chain fell to `xdg-open`, which on SteamOS/KDE routes through
+`kfmclient` (not shipped) and fails silently — MEASURED LIVE on a Deck OLED in Desktop Mode
+2026-07-23. The chain now launches a real browser DIRECTLY with its own full-screen flag
+(Chrome/Chromium/Brave/Edge `--app --start-fullscreen`, Firefox `--kiosk`), Flatpak first then
+native, and only falls to kde-open5/gio (xdg-open LAST) then Steam CEF. **Rejected** auto-switching
+to Game Mode (owner floated it): a session switch tears down the desktop + install terminal.
+**NOT a bug:** the auto-open staying quiet on `couchside update` — it's `FRESH_TOKEN`-gated by
+design. Owner's live check still owed: on-box CEF render of the store QRs + a real-phone scan.
+See [[pairing-tutorial-on-box]].
+
 ### 2026-07-22 — Drag trail is a real stroke, verified on a device (#224)
 The 2.9.17 "Trace drags" pref drew a fading DOT every 20px; each shrank on appearance, so a
 fast drag pulled apart into beads. #224 replaced it with abutting rotated-View segments
