@@ -18,6 +18,19 @@ the same thing regardless of what actually changed.
 Write for the person holding the phone, not for the commit log. They are
 deciding whether to press "Update now" on a machine across the room.
 
+## 2.9.52
+
+A smoother first pairing on the box's own screen.
+
+- **The pairing screen now comes up in front.** On a desktop (non–Game Mode)
+  install it could open *behind* the terminal window, leaving you staring at the
+  install log instead of the QR. It now raises itself to the front so the code
+  and the 6-digit PIN are right there.
+- **One code to get the app, not two.** The "get Couchside on your phone" step
+  shows a single QR that opens the download page for both the App Store and
+  Google Play — scan it and pick your store on the phone, instead of aiming the
+  camera at the right one of two codes.
+
 ## 2.9.51
 
 Updating the box from your phone now finishes on its own — and tells you if it

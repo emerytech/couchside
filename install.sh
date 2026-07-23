@@ -1093,17 +1093,23 @@ _raise_pair_window_bg() {
 
     local js
     js="$(mktemp)" || return 0
-    # Match our own page by title (every /pair page's <title> carries
-    # "Couchside"), never by browser name -- so we never yank an unrelated
-    # browser window the user happens to have open. min->unmin forces a restack
-    # even where keepAbove alone won't; keepAbove + activeWindow then hold it.
+    # Match our OWN pairing page by its window title -- never by browser name, so
+    # an unrelated browser window the user has open is left alone. min->unmin
+    # forces a restack even where keepAbove alone won't; keepAbove + activeWindow
+    # then hold it in front. Works across KWin versions (Plasma 6 windowList /
+    # activeWindow, Plasma 5 clientList / activeClient -- the Steam Deck desktop).
     cat > "$js" <<'KWINJS'
-var W = (typeof workspace.windowList === "function")
-        ? workspace.windowList() : (workspace.stackingOrder || []);
+var W = (typeof workspace.windowList === "function") ? workspace.windowList()
+      : (typeof workspace.clientList === "function") ? workspace.clientList()
+      : (workspace.stackingOrder || []);
 for (var i = 0; i < (W ? W.length : 0); i++) {
     var w = W[i];
     if (!w || !w.normalWindow) continue;
-    if (((w.caption || "") + "").toLowerCase().indexOf("couchside") === -1) continue;
+    // Both states of our page carry BOTH tokens -- "Pair Couchside" (idle
+    // tutorial) and "Couchside pairing" (live PIN). Requiring both avoids
+    // grabbing an unrelated tab that merely has couchside.tv or the repo open.
+    var cap = ((w.caption || "") + "").toLowerCase();
+    if (cap.indexOf("couchside") === -1 || cap.indexOf("pair") === -1) continue;
     w.minimized = true;
     w.minimized = false;
     w.keepAbove = true;

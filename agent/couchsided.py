@@ -11538,10 +11538,11 @@ def render_pair_page(token, port):
         "justify-content:center;}"
         ".step b{font-size:min(3vmin,20px);font-weight:600;color:#e8ecf3;}"
         ".step span{display:block;color:#9aa4b2;font-size:min(2.4vmin,15px);margin-top:.3vmin;}"
-        # The two store QR codes under step 1 (App Store + Google Play). Small
-        # white cards -- a phone reads them up close, so they can be compact and
-        # still fit the one-screen budget. image-rendering:pixelated keeps the
-        # modules crisp when CSS scales the canvas.
+        # The single store QR under step 1 (a couchside.tv link carrying both
+        # store badges). A small white card -- a phone reads it up close, so it
+        # can be compact and still fit the one-screen budget. image-rendering:
+        # pixelated keeps the modules crisp when CSS scales the canvas. .stores
+        # stays a flex row so a second card could return without a reflow.
         ".stores{display:flex;gap:min(2.6vmin,18px);margin-top:1.2vmin;}"
         ".store{display:flex;flex-direction:column;align-items:center;gap:.5vmin;}"
         ".sqr{background:#fff;border-radius:9px;padding:min(1.1vmin,7px);line-height:0;}"
