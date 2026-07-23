@@ -26,6 +26,7 @@ Requires `cryptography` (already used by the ASC tooling) — no google SDK.
 import argparse
 import json
 import os
+import subprocess
 import sys
 import time
 import urllib.error
@@ -135,6 +136,22 @@ def main() -> None:
         {"track": a.track, "releases": releases})
     api(token, "POST", f"/edits/{edit_id}:commit")
     print(f"OK: release notes set for versionCode {a.version_code} on '{a.track}' and committed.")
+
+    # Keep couchside.tv/app-version.json (the Android update-check source) in step
+    # with this release. Best-effort and non-fatal: the notes are already
+    # committed, so a missing ets3d checkout or a deploy hiccup must WARN, never
+    # unwind the release. Skipped for non-production tracks (only the live
+    # listing feeds the in-app check).
+    if a.track == "production":
+        pub = os.path.join(REPO_ROOT, "scripts", "publish-app-version.py")
+        try:
+            print("==> updating couchside.tv/app-version.json for the Android update check")
+            subprocess.run([sys.executable, pub, "--version-code", str(a.version_code)],
+                           check=True)
+        except Exception as e:  # noqa: BLE001 - best-effort, must not fail the release
+            print(f"WARNING: could not update app-version.json ({e}). Run manually:\n"
+                  f"         scripts/publish-app-version.py --version-code {a.version_code}",
+                  file=sys.stderr)
 
 
 if __name__ == "__main__":
