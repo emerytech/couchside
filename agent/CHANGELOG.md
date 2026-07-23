@@ -18,6 +18,18 @@ the same thing regardless of what actually changed.
 Write for the person holding the phone, not for the commit log. They are
 deciding whether to press "Update now" on a machine across the room.
 
+## 2.9.51
+
+Updating the box from your phone now finishes on its own — and tells you if it
+doesn't.
+
+- **The box's update screen shows when an update didn't finish**, instead of
+  spinning forever. It says the box is still on the old version and how to retry.
+- **App-triggered updates now restart the service cleanly** on boxes installed as
+  a system service — including boxes that also have Decky installed, which the
+  first version of this fix missed. On an existing box, re-run the installer once
+  (in a terminal) to enable it; after that, phone updates finish on their own.
+
 ## 2.9.50
 
 Two fixes for updating the box from your phone.
