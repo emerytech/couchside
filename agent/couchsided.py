@@ -45,7 +45,7 @@ except ImportError:  # pragma: no cover
     fcntl = None
 
 APP_NAME = "couchside-agent"
-VERSION = "2.9.49"
+VERSION = "2.9.50"
 UID = os.getuid()
 XDG_RUNTIME_DIR = "/run/user/%d" % UID
 
@@ -1538,26 +1538,64 @@ def render_update_page():
 <h1 id="t">Updating Couchside</h1>
 <p id="s">Keep the box powered on. This takes about a minute.</p>
 <p class="dots" id="d"><span>&#9679;</span><span>&#9679;</span><span>&#9679;</span></p>
+<p id="hint" style="display:none;font-size:.95rem;color:#6b7a90;margin-top:1.4rem"></p>
 </div><script>
-var was=null, misses=0;
+/* Poll /api/ping (the one pre-auth endpoint) until the version CHANGES.
+   Three outcomes, not one:
+     - version changes            -> Updated (success).
+     - unreachable for a while     -> the service is restarting (expected).
+     - reachable, SAME version,    -> the update STALLED. The installer copies
+       for a long time                the new file first, then restarts; if it
+                                       dies in between (e.g. it needed a sudo
+                                       password it could not get in the detached
+                                       run), the OLD agent keeps answering the
+                                       same version forever. Without this branch
+                                       the page spins forever for that case,
+                                       telling the user it was still working
+                                       when it was not.
+   A genuine restart shows up as MISSES (unreachable), which reset the stall
+   clock -- so `same` only climbs while the old agent stays healthy, which is
+   exactly the stalled case. */
+var was=null, misses=0, same=0;
+var STALL=90;   /* ~3 min of reachable + unchanged version -> call it stalled */
+function stalled(){
+  document.getElementById('t').textContent='Update didn\u2019t finish';
+  document.getElementById('t').style.color='#f0b232';
+  document.getElementById('s').textContent='The box is still running '+was+'.';
+  document.getElementById('d').style.display='none';
+  var h=document.getElementById('hint');
+  h.style.display='block';
+  h.innerHTML='Try Update again from the app. If it keeps stopping here, open a '
+    +'terminal on the box and run:<br><br>'
+    +'<code style="color:#9fb3cc">curl -fsSL https://couchside.tv/install.sh | bash</code>';
+}
 function tick(){
   fetch('/api/ping',{cache:'no-store'}).then(function(r){return r.json()}).then(function(j){
+    misses=0;
     if(was===null){ was=j.version; }
     else if(j.version!==was){
       document.getElementById('t').textContent='Updated';
       document.getElementById('t').className='ok';
       document.getElementById('s').textContent='Now running '+j.version+'.';
       document.getElementById('d').style.display='none';
-      return;                                  /* stop polling */
+      document.getElementById('hint').style.display='none';
+      return;                                  /* stop polling: success */
+    } else {
+      /* reachable, same version: normal for the download/install phase */
+      same++;
+      if(same===20){ document.getElementById('s').textContent=
+        'Still working\u2026 downloading and installing.'; }
+      if(same>=STALL){ stalled(); return; }    /* stop polling: stalled */
     }
-    misses=0;
     setTimeout(tick,2000);
   }).catch(function(){
     /* The agent restarts mid-update, so a failed poll is EXPECTED, not an
-       error. Only say something after it has been gone a while. */
-    misses++;
+       error. A restart also means we are NOT stalled -- reset that clock. */
+    misses++; same=0;
     if(misses>8){ document.getElementById('s').textContent=
       'Restarting the service\u2026'; }
+    if(misses>150){ document.getElementById('s').textContent=
+      'Taking longer than usual. If the screen stays here, reboot the box.'; }
     setTimeout(tick,2000);
   });
 }
