@@ -1126,10 +1126,12 @@ function PadScreen() {
   const showKeyboardBar = usePref('padKeyboardBar');
   const trackpadLarge = usePref('padTrackpadLarge');
   const padLargeToggle = usePref('padLargeToggle');
-  // Large-pad mode is meaningful only on the trackpad surface: it collapses the
-  // pill + mode tabs + button/keyboard rows so the pad fills the pane for
-  // edge-to-edge scrolling. A floating chip restores the chrome.
-  const largePad = trackpadLarge && mode === 'trackpad';
+  // Large-pad mode applies to the two big drag surfaces (trackpad + swipe): it
+  // collapses the pill + mode tabs + button/keyboard rows so the surface fills
+  // the pane. A floating chip restores the chrome. Not meaningful for the
+  // menus/remote/gamepad modes, which have no full-pane drag surface.
+  const largePad =
+    trackpadLarge && (mode === 'trackpad' || mode === 'swipe');
   // Auto-raise the phone keyboard when the box raises its own. The counter is
   // what KeyboardBar watches; the ref lets the (memoised) socket callback read
   // the current pref without re-subscribing.
@@ -1396,6 +1398,30 @@ function PadScreen() {
     />
   ) : null;
 
+  // One corner chip toggles large mode in a single tap, shared by the trackpad
+  // and swipe surfaces. In large mode it ALWAYS shows (the CONTRACT/exit
+  // affordance — the pill + tabs are hidden, so it is the only way back); in
+  // normal mode it shows the EXPAND affordance only when padLargeToggle is on.
+  // Rendered INSIDE each surface's wrapper (styles.tpWrap) so it sits on the
+  // pad's own corner in both modes rather than over the header.
+  const padToggleChip =
+    trackpadLarge || padLargeToggle ? (
+      <Pressable
+        onPress={() => {
+          setPref('padTrackpadLarge', !trackpadLarge);
+          hapticSelection();
+        }}
+        style={styles.tpToggleChip}
+        hitSlop={12}
+        accessibilityLabel={trackpadLarge ? 'Exit large pad' : 'Enlarge pad'}>
+        <Ionicons
+          name={trackpadLarge ? 'contract-outline' : 'expand-outline'}
+          size={16}
+          color={t.text}
+        />
+      </Pressable>
+    ) : null;
+
   return (
     <View
       style={[
@@ -1500,7 +1526,11 @@ function PadScreen() {
       ) : mode === 'swipe' ? (
         <>
           {/* Apple-TV-remote style: big swipe/tap surface + three big buttons */}
-          <SwipeSurface onStep={dpadStep} onStepEnd={dpadRelease} onSelect={selectTap} />
+          <View style={styles.tpWrap}>
+            <SwipeSurface onStep={dpadStep} onStepEnd={dpadRelease} onSelect={selectTap} />
+            {padToggleChip}
+          </View>
+          {!largePad && (
           <View style={styles.swipeBtnRow}>
             <PadButton
               label="‹ BACK"
@@ -1536,7 +1566,8 @@ function PadScreen() {
               </>
             )}
           </View>
-          {keyboardBar}
+          )}
+          {!largePad && keyboardBar}
         </>
       ) : mode === 'trackpad' ? (
         <>
@@ -1550,28 +1581,7 @@ function PadScreen() {
               onDragStart={tpDragStart}
               onDragEnd={tpDragEnd}
             />
-            {/* One corner chip toggles large mode in a single tap. In large mode
-                it ALWAYS shows (the CONTRACT/exit affordance — the pill + tabs
-                are hidden, so it's the only way back). In normal mode it shows
-                the EXPAND affordance only when padLargeToggle is on. It lives
-                inside this surface wrapper, so it sits on the pad's own corner
-                in both modes rather than over the header. */}
-            {(trackpadLarge || padLargeToggle) && (
-              <Pressable
-                onPress={() => {
-                  setPref('padTrackpadLarge', !trackpadLarge);
-                  hapticSelection();
-                }}
-                style={styles.tpToggleChip}
-                hitSlop={12}
-                accessibilityLabel={trackpadLarge ? 'Exit large trackpad' : 'Enlarge trackpad'}>
-                <Ionicons
-                  name={trackpadLarge ? 'contract-outline' : 'expand-outline'}
-                  size={16}
-                  color={t.text}
-                />
-              </Pressable>
-            )}
+            {padToggleChip}
           </View>
           {!largePad && (showMouseRow || showSteamRow) && (
             <View style={styles.swipeBtnRow}>

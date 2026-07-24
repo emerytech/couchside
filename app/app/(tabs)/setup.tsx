@@ -1532,7 +1532,7 @@ function SetupBody() {
               />
               <TogglePref
                 label="Large trackpad"
-                sub="Hide the status bar, mode tabs, and button rows on the MOUSE surface for edge-to-edge scrolling. A corner chip brings them back."
+                sub="Hide the status bar, mode tabs, and button rows on the MOUSE and SWIPE surfaces for edge-to-edge use. A corner chip brings them back."
                 value={padTrackpadLarge}
                 onValueChange={(v) => {
                   void setPref('padTrackpadLarge', v);
@@ -1541,7 +1541,7 @@ function SetupBody() {
               />
               <TogglePref
                 label="Large-pad corner button"
-                sub="Show a one-tap chip in the corner of the MOUSE surface to enter large mode. The exit chip always shows in large mode."
+                sub="Show a one-tap chip in the corner of the MOUSE and SWIPE surfaces to enter large mode. The exit chip always shows in large mode."
                 value={padLargeToggle}
                 onValueChange={(v) => {
                   void setPref('padLargeToggle', v);
