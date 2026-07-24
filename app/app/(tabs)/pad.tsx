@@ -854,6 +854,10 @@ function PadScreen() {
   // has nothing to drive. Fall back rather than render sticks that go nowhere.
   const mode: PadMode = keyboardMode && rawMode === 'gamepad' ? 'swipe' : rawMode;
   const [status, setStatus] = useState<GamepadStatus>('closed');
+  // True when status is 'connected' but the socket has gone silent (half-dead):
+  // polled from the client, it turns the pill amber + tap-to-retry live BEFORE
+  // the pong watchdog acts, instead of showing a green pill over a dead pipe.
+  const [stale, setStale] = useState(false);
   const [dev, setDev] = useState<string | null>(null);
   // Non-null when the box is refusing input injection (locked / not the active
   // desktop / an elevated window has focus); the string is the hint to show.
@@ -1043,8 +1047,22 @@ function PadScreen() {
     return () => clearTimeout(t);
   }, [status]);
 
+  // Poll the client's liveness while it believes it's connected: a socket can be
+  // OPEN yet silently dropping frames, so the pill must not just trust the
+  // latched 'connected'. One check per second is plenty against a 5s ping. Off
+  // whenever we're not connected (the status itself already tells the truth then).
+  useEffect(() => {
+    if (status !== 'connected') {
+      setStale(false);
+      return;
+    }
+    setStale(client.isStale());
+    const id = setInterval(() => setStale(client.isStale()), 1000);
+    return () => clearInterval(id);
+  }, [status, client]);
+
   // The status pill's tap does the right thing per state: request/force control
-  // during a handoff, otherwise reconnect.
+  // during a handoff, reconnect a stale socket, otherwise reconnect.
   const retry = useCallback(() => {
     haptic();
     if (status === 'released') {
@@ -1058,8 +1076,12 @@ function PadScreen() {
         deviceName: DEVICE_LABEL,
         noPad: keyboardMode,
       });
+    } else if (stale) {
+      // Connected on paper but the socket has gone silent: force a fresh one.
+      // connect() would no-op here (its guard sees the still-OPEN socket).
+      client.reconnect();
     }
-  }, [client, settings, status, canForce, askToSwitch]);
+  }, [client, settings, status, stale, canForce, askToSwitch, keyboardMode]);
 
   const btn = useCallback(
     (k: ButtonKey) => ({
@@ -1440,11 +1462,18 @@ function PadScreen() {
       {!largePad && (
         <>
           <Pressable onPress={retry} style={styles.pill} hitSlop={8}>
-            <View style={[styles.pillDot, { backgroundColor: STATUS_COLOR[status] }]} />
+            <View
+              style={[
+                styles.pillDot,
+                { backgroundColor: stale ? t.amber : STATUS_COLOR[status] },
+              ]}
+            />
             <Text style={styles.pillText} numberOfLines={1}>
-              {status === 'waiting' && canForce
-                ? 'no response · tap to take control'
-                : statusLabel(status, dev)}
+              {stale
+                ? 'no response · tap to retry'
+                : status === 'waiting' && canForce
+                  ? 'no response · tap to take control'
+                  : statusLabel(status, dev)}
             </Text>
           </Pressable>
           <View style={styles.modeToggle}>

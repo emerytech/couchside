@@ -150,6 +150,43 @@ test('normal background→foreground still reconnects (close then connect)', () 
   c.close();
 });
 
+test('isStale(): false on a fresh connection, true once the socket goes silent', () => {
+  const c = freshClient();
+  c.connect(CONN);
+  MockWebSocket.instances[0].openAndHello(); // lastInbound = NOW
+  assert.equal(c.isStale(), false, 'a fresh connection is not stale');
+  NOW += 5_000 * 1.3 + 1; // past 1.3 ping intervals with no inbound frame
+  assert.equal(c.isStale(), true, 'a silent OPEN socket reads stale');
+  c.close();
+});
+
+test('isStale(): false whenever not connected', () => {
+  const c = freshClient();
+  assert.equal(c.isStale(), false, 'never connected');
+  c.connect(CONN);
+  MockWebSocket.instances[0].openAndHello();
+  c.close();
+  assert.equal(c.isStale(), false, 'after close');
+});
+
+test('reconnect(): forces a fresh socket even while still OPEN (pill tap-to-retry)', () => {
+  const c = freshClient();
+  c.connect(CONN);
+  MockWebSocket.instances[0].openAndHello();
+  // Still OPEN and only mildly stale (1.4 intervals): connect()/ensureLive would
+  // no-op, but an explicit user tap must rebuild the socket.
+  NOW += 5_000 * 1.4;
+  c.reconnect();
+  assert.equal(MockWebSocket.instances.length, 2, 'reconnect() opens a fresh socket');
+  c.close();
+});
+
+test('reconnect(): no-op when not active', () => {
+  const c = freshClient();
+  c.reconnect();
+  assert.equal(MockWebSocket.instances.length, 0);
+});
+
 // restore the clock so a leaked reference can't confuse other files
 process.on('exit', () => {
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
