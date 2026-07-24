@@ -22,10 +22,13 @@ import { PanResponder, PanResponderInstance } from 'react-native';
 
 import { usePref } from '@/lib/prefs';
 
-/** Movement under this (px) still counts as a tap/click. */
-const TP_TAP_SLOP = 8;
-/** Touches longer than this aren't taps. */
-const TP_TAP_MS = 350;
+import {
+  classifyRelease,
+  TP_SCROLL_STEP,
+  TP_TAP_SLOP,
+  TP_TWO_FINGER_SLOP,
+} from './trackpadGesture';
+
 /**
  * Max gap between the first tap's release and the second touch's start for the
  * pair to read as a double-tap (which, if the second touch then drags, arms a
@@ -38,8 +41,6 @@ const TP_DOUBLE_TAP_MS = 300;
  */
 const TP_BASE = 1.1;
 const TP_GAIN = 0.05;
-/** Screen px of two-finger drag per wheel notch. */
-const TP_SCROLL_STEP = 18;
 
 export type TrackpadCallbacks = {
   onMove: (dx: number, dy: number) => void;
@@ -67,6 +68,7 @@ export function useTrackpad(cbs: TrackpadCallbacks): PanResponderInstance {
     lastY: 0,
     lastT: 0,
     moved: false,
+    scrolled: false,
     t0: 0,
     maxTouches: 1,
     scrollAccum: 0,
@@ -102,6 +104,7 @@ export function useTrackpad(cbs: TrackpadCallbacks): PanResponderInstance {
           lastY: 0,
           lastT: now,
           moved: false,
+          scrolled: false,
           t0: now,
           maxTouches: touches,
           scrollAccum: 0,
@@ -111,6 +114,15 @@ export function useTrackpad(cbs: TrackpadCallbacks): PanResponderInstance {
           dragging: false,
         };
       },
+      // Fires on EVERY touch start, movement or not — so a motionless two-finger
+      // tap (which emits no move event) still records maxTouches = 2 and reads as
+      // a right-click. Sampling touches only in onPanResponderMove missed that:
+      // the second finger seldom lands in the same frame as the first, so a still
+      // two-finger tap stayed at 1 and misfired as a left-click.
+      onPanResponderStart: (_evt, g) => {
+        const s = st.current;
+        if (g.numberActiveTouches > s.maxTouches) s.maxTouches = g.numberActiveTouches;
+      },
       onPanResponderMove: (evt, g) => {
         const s = st.current;
         const touches = evt.nativeEvent.touches.length;
@@ -118,6 +130,12 @@ export function useTrackpad(cbs: TrackpadCallbacks): PanResponderInstance {
         if (!s.moved && Math.hypot(g.dx, g.dy) > TP_TAP_SLOP) s.moved = true;
 
         if (s.maxTouches >= 2) {
+          // Any real two-finger travel is a scroll, not a right-click tap —
+          // latched at a tighter slop than the notch step so even a short stroke
+          // that never emits a notch still suppresses the click on release.
+          if (!s.scrolled && Math.hypot(g.dx, g.dy) > TP_TWO_FINGER_SLOP) {
+            s.scrolled = true;
+          }
           // Two-finger drag -> vertical scroll. g.dy is cumulative from grant.
           const delta = g.dy - s.scrollLastY;
           s.scrollAccum += delta;
@@ -160,16 +178,19 @@ export function useTrackpad(cbs: TrackpadCallbacks): PanResponderInstance {
           cb.current.onDragEnd?.();
           return;
         }
-        const wasTap = !s.moved && now - s.t0 < TP_TAP_MS;
-        if (wasTap) {
-          if (s.maxTouches >= 2) {
-            cb.current.onRightClick();
-            s.lastTapEndT = 0; // two-finger tap doesn't start a marquee
-          } else {
-            cb.current.onLeftClick();
-            // Record the tap so a quick follow-up touch+drag becomes a marquee.
-            s.lastTapEndT = now;
-          }
+        const action = classifyRelease({
+          maxTouches: s.maxTouches,
+          moved: s.moved,
+          scrolled: s.scrolled,
+          elapsedMs: now - s.t0,
+        });
+        if (action === 'right-click') {
+          cb.current.onRightClick();
+          s.lastTapEndT = 0; // two-finger tap doesn't start a marquee
+        } else if (action === 'left-click') {
+          cb.current.onLeftClick();
+          // Record the tap so a quick follow-up touch+drag becomes a marquee.
+          s.lastTapEndT = now;
         } else {
           s.lastTapEndT = 0;
         }
