@@ -1,8 +1,6 @@
-New in 2.9.22
+New in 2.9.23
 
-• Update your box from your phone — Flatpak apps and the OS (SteamOS/Bazzite), together or one at a time. Turn it on once at the box.
-• A fresh install now walks you through pairing on the box's own screen.
-• Search your Preferences by typing.
-• Check for an app update in Setup › Account — it asks your store directly, sends nothing about you.
-• Closing the running game from your phone now actually works.
-• Swipe traces draw a clean glowing line.
+• Bigger trackpad — a one-tap corner button expands the Mouse and Swipe surfaces for easier scrolling.
+• Steadier connection — if the app was backgrounded and the pointer stopped responding, it now reconnects on its own instead of a force-quit.
+• Honest status — the connection dot turns amber the moment input stops getting through; tap to reconnect.
+• Reliable right-click — two-finger tap registers every time; two-finger scrolling no longer fires stray clicks.
