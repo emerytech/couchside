@@ -777,6 +777,7 @@ function SetupBody() {
   const padWinShortcuts = usePref('padWinShortcuts');
   const padKeyboardBar = usePref('padKeyboardBar');
   const padHints = usePref('padHints');
+  const padTrackpadLarge = usePref('padTrackpadLarge');
   const askToSwitchControl = usePref('askToSwitchControl');
   const keyboardMode = usePref('keyboardMode');
   const searchButtonSide = usePref('searchButtonSide');
@@ -1525,6 +1526,15 @@ function SetupBody() {
                 value={padHints}
                 onValueChange={(v) => {
                   void setPref('padHints', v);
+                  hapticSelection();
+                }}
+              />
+              <TogglePref
+                label="Large trackpad"
+                sub="Hide the status bar, mode tabs, and button rows on the MOUSE surface for edge-to-edge scrolling. A corner chip brings them back."
+                value={padTrackpadLarge}
+                onValueChange={(v) => {
+                  void setPref('padTrackpadLarge', v);
                   hapticSelection();
                 }}
               />

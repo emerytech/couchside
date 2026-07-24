@@ -11,7 +11,7 @@ import Ionicons from '@expo/vector-icons/Ionicons';
 
 import { hapticLight, hapticSelection } from '@/lib/haptics';
 import { getKeepAwakeEnabled, useKeepAwakeEnabled } from '@/lib/keepAwake';
-import { getPref, usePref } from '@/lib/prefs';
+import { getPref, setPref, usePref } from '@/lib/prefs';
 import { activateKeepAwakeAsync, deactivateKeepAwake } from 'expo-keep-awake';
 import { useNavigation } from 'expo-router';
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
@@ -1124,6 +1124,11 @@ function PadScreen() {
   const showDesktopNav = usePref('padDesktopNav');
   const showWinShortcuts = usePref('padWinShortcuts');
   const showKeyboardBar = usePref('padKeyboardBar');
+  const trackpadLarge = usePref('padTrackpadLarge');
+  // Large-pad mode is meaningful only on the trackpad surface: it collapses the
+  // pill + mode tabs + button/keyboard rows so the pad fills the pane for
+  // edge-to-edge scrolling. A floating chip restores the chrome.
+  const largePad = trackpadLarge && mode === 'trackpad';
   // Auto-raise the phone keyboard when the box raises its own. The counter is
   // what KeyboardBar watches; the ref lets the (memoised) socket callback read
   // the current pref without re-subscribing.
@@ -1396,29 +1401,34 @@ function PadScreen() {
         styles.screen,
         { paddingTop: 10, paddingBottom: Math.max(insets.bottom, 10) },
       ]}>
-      {/* Header: status pill + input-mode toggle (all modes) */}
-      <Pressable onPress={retry} style={styles.pill} hitSlop={8}>
-        <View style={[styles.pillDot, { backgroundColor: STATUS_COLOR[status] }]} />
-        <Text style={styles.pillText} numberOfLines={1}>
-          {status === 'waiting' && canForce
-            ? 'no response · tap to take control'
-            : statusLabel(status, dev)}
-        </Text>
-      </Pressable>
-      <View style={styles.modeToggle}>
-        {modes.map((m) => (
-          <Pressable
-            key={m.key}
-            onPress={() => setMode(m.key)}
-            style={[styles.modeSeg, mode === m.key && styles.modeSegActive]}>
-            <Text
-              numberOfLines={1}
-              style={[styles.modeSegText, mode === m.key && styles.modeSegTextActive]}>
-              {m.label}
+      {/* Header: status pill + input-mode toggle (all modes). Hidden in
+          large-pad mode; the floating chip below brings it back. */}
+      {!largePad && (
+        <>
+          <Pressable onPress={retry} style={styles.pill} hitSlop={8}>
+            <View style={[styles.pillDot, { backgroundColor: STATUS_COLOR[status] }]} />
+            <Text style={styles.pillText} numberOfLines={1}>
+              {status === 'waiting' && canForce
+                ? 'no response · tap to take control'
+                : statusLabel(status, dev)}
             </Text>
           </Pressable>
-        ))}
-      </View>
+          <View style={styles.modeToggle}>
+            {modes.map((m) => (
+              <Pressable
+                key={m.key}
+                onPress={() => setMode(m.key)}
+                style={[styles.modeSeg, mode === m.key && styles.modeSegActive]}>
+                <Text
+                  numberOfLines={1}
+                  style={[styles.modeSegText, mode === m.key && styles.modeSegTextActive]}>
+                  {m.label}
+                </Text>
+              </Pressable>
+            ))}
+          </View>
+        </>
+      )}
 
       {inputBlocked != null && status === 'connected' && (
         <View style={styles.inputBlockedBar}>
@@ -1538,7 +1548,22 @@ function PadScreen() {
             onDragStart={tpDragStart}
             onDragEnd={tpDragEnd}
           />
-          {(showMouseRow || showSteamRow) && (
+          {/* Large-pad escape hatch: the pill + mode tabs are hidden in this
+              mode, so this floating chip is the only way back to the normal
+              layout. Rendered only while large-pad is active. */}
+          {largePad && (
+            <Pressable
+              onPress={() => {
+                setPref('padTrackpadLarge', false);
+                hapticSelection();
+              }}
+              style={styles.exitLargeChip}
+              hitSlop={12}
+              accessibilityLabel="Exit large trackpad">
+              <Ionicons name="contract-outline" size={16} color={t.text} />
+            </Pressable>
+          )}
+          {!largePad && (showMouseRow || showSteamRow) && (
             <View style={styles.swipeBtnRow}>
               {showMouseRow && (
                 <>
@@ -1605,7 +1630,7 @@ function PadScreen() {
             </View>
           )}
           {/* Plasma desktop nav — SteamOS/Bazzite boxes on the desktop only. */}
-          {hasDesktop && showDesktopNav && (
+          {!largePad && hasDesktop && showDesktopNav && (
             <View style={styles.swipeBtnRow}>
               <PadButton label="START" onDown={desk('meta')} onUp={NOOP}
                 style={[styles.tpBtn, styles.tpBtnWide]} fontSize={11} />
@@ -1616,7 +1641,7 @@ function PadScreen() {
             </View>
           )}
           {/* Windows desktop shortcuts — one-shot chords, ViGEm boxes only. */}
-          {isWindows && showWinShortcuts && (
+          {!largePad && isWindows && showWinShortcuts && (
             <View style={styles.swipeBtnRow}>
               <PadButton label="⊞ WIN" onDown={sys('win')} onUp={NOOP}
                 style={[styles.tpBtn, styles.tpBtnWide]} fontSize={12} />
@@ -1628,7 +1653,7 @@ function PadScreen() {
                 style={styles.tpBtn} fontSize={11} />
             </View>
           )}
-          {keyboardBar}
+          {!largePad && keyboardBar}
         </>
       ) : landscape ? (
         // ---------- Landscape gamepad: real-controller spread ----------
@@ -1854,6 +1879,23 @@ const makeStyles = (t: Palette) => StyleSheet.create({
     backgroundColor: t.bg,
     paddingHorizontal: 12,
     justifyContent: 'space-between',
+  },
+
+  // Floating "exit large trackpad" chip — top-right, overlays the pad corner.
+  // The only way out of large-pad mode (pill + mode tabs are hidden there).
+  exitLargeChip: {
+    position: 'absolute',
+    top: 6,
+    right: 6,
+    width: 34,
+    height: 34,
+    alignItems: 'center',
+    justifyContent: 'center',
+    backgroundColor: t.inset,
+    borderColor: t.cardBorder,
+    borderWidth: 1,
+    borderRadius: 999,
+    zIndex: 10,
   },
 
   // "Another phone has control" takeover. Covers the input surfaces (which are
