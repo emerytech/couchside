@@ -187,6 +187,61 @@ test('reconnect(): no-op when not active', () => {
   assert.equal(MockWebSocket.instances.length, 0);
 });
 
+// --- foreground-freeze recovery (the "green pill, dead mouse" field case) -----
+// A foreground JS freeze leaves the socket OPEN but silent: no AppState event
+// fires (no background transition), the ping timer + pong watchdog are frozen,
+// and the box now keepalives the TCP so onclose never fires. The user's gesture
+// is the only signal left. These lock the two recovery paths that gesture drives.
+
+test('input-driven recovery: a swipe on a stale OPEN socket rebuilds it', () => {
+  const c = freshClient();
+  c.connect(CONN);
+  MockWebSocket.instances[0].openAndHello(); // connected, lastInbound = NOW
+  NOW += 5_000 * 2.5 + 1; // silent past the watchdog window (frozen, socket still OPEN)
+  c.sendMouseMove(5, 5); // the user swipes
+  assert.equal(
+    MockWebSocket.instances.length,
+    2,
+    'a swipe on a stale-but-OPEN socket must rebuild, not vanish into the void',
+  );
+  c.close();
+});
+
+test('input-driven recovery: a swipe on a FRESH socket just sends (control)', () => {
+  const c = freshClient();
+  c.connect(CONN);
+  const ws0 = MockWebSocket.instances[0];
+  ws0.openAndHello(); // lastInbound = NOW (fresh)
+  c.sendMouseMove(5, 5);
+  assert.equal(MockWebSocket.instances.length, 1, 'a live socket is never rebuilt by input');
+  assert.ok(
+    ws0.sent.some((m) => m.includes('"t":"m"')),
+    'the move frame was actually sent on the live socket',
+  );
+  c.close();
+});
+
+test('freshness guard: connect() rebuilds an OPEN-but-stale zombie (tab-focus path)', () => {
+  const c = freshClient();
+  c.connect(CONN);
+  MockWebSocket.instances[0].openAndHello();
+  // The tab-focus listener calls connect() WITHOUT ensureLive(). Pre-fix it saw
+  // readyState OPEN and no-oped, stranding the zombie. Post-fix, staleness rebuilds.
+  NOW += 5_000 * 2.5 + 1;
+  c.connect(CONN);
+  assert.equal(MockWebSocket.instances.length, 2, 'connect() rebuilds a stale OPEN socket');
+  c.close();
+});
+
+test('freshness guard: connect() still no-ops over a FRESH OPEN socket (control)', () => {
+  const c = freshClient();
+  c.connect(CONN);
+  MockWebSocket.instances[0].openAndHello();
+  c.connect(CONN); // same conn, socket fresh — must not churn
+  assert.equal(MockWebSocket.instances.length, 1, 'a fresh connected socket is not rebuilt');
+  c.close();
+});
+
 // restore the clock so a leaked reference can't confuse other files
 process.on('exit', () => {
   // eslint-disable-next-line @typescript-eslint/no-explicit-any

@@ -9,6 +9,21 @@ Entry fields: `priority` (P0 blocker → P3 nice) · `risk` · `affects` · `dep
 
 ## 🔨 In Progress
 
+### Trackpad WS liveness on iOS: box keepalive + foreground-freeze recovery
+`priority: P1` · `risk: med (input path)` · `affects: agent, win-agent, app/lib/gamepad.ts` ·
+`depends_on: —`
+- Two failure modes behind "trackpad dead after couch-mode switch" (field-diagnosed on
+  iOS→Bazzite, see BUILD_LOG 2026-07-24). NOT the compositor.
+- **Idle churn** — DONE + VERIFIED on box (agent 2.9.53 / win 0.3.9-win): box drives a WS PING
+  every 4s so the phone OS auto-PONGs below the frozen JS timer; holder survives idle instead of
+  being reaped at 12s.
+- **Foreground freeze (green pill, dead mouse)** — app fix written + control-verified (app 2.9.24,
+  `gamepad.ts` input-driven recovery + `connect()` freshness guard; Node lifecycle harness 15/15).
+  **Blocked on:** real-device (TestFlight) confirmation — the simulator can't reproduce an iOS
+  foreground JS freeze. Move to ✅ Completed only after on-device verification.
+- Notes: if on-device shows the input path still can't recover, fall back to an agent-side two-tier
+  reap (reap a socket that OS-PONGs but sends zero app-level frames for ~20-25s).
+
 ## 📋 Planned
 
 ### On-box pairing tutorial (auto-plays after install)
