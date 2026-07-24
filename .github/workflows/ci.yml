@@ -445,6 +445,6 @@ jobs:
       # leaks the 5s ping setInterval and would otherwise keep the run alive until
       # the job times out. Force-exit makes a failure exit promptly (and report)
       # instead of hanging. Passing runs close every client and exit on their own.
-      - name: Gamepad client lifecycle tests
-        run: node --experimental-strip-types --test --test-force-exit lib/__tests__/*.test.ts
+      - name: Input-path unit tests (gamepad lifecycle + trackpad gestures)
+        run: node --experimental-strip-types --test --test-force-exit lib/__tests__/*.test.ts hooks/__tests__/*.test.ts
         working-directory: app
