@@ -111,6 +111,10 @@ export type Prefs = {
    *  surface fills the pane for edge-to-edge scrolling. Trackpad mode only;
    *  a floating chip restores the chrome. */
   padTrackpadLarge: boolean;
+  /** Show the corner chip on the trackpad that toggles large mode in one tap.
+   *  Off hides the ENTER chip (large mode still shows the EXIT chip so you're
+   *  never stranded); the Setup toggle always works. */
+  padLargeToggle: boolean;
   /** When another phone joins a box you're controlling, ask before handing
       over (true) vs let it grab control immediately (false). Agent >= 2.9.2. */
   askToSwitchControl: boolean;
@@ -178,6 +182,7 @@ export const DEFAULTS: Prefs = {
   padKeyboardBar: true,
   padHints: true,
   padTrackpadLarge: false,
+  padLargeToggle: true,
   askToSwitchControl: true,
   // Android intercepts the keycode cleanly (no HUD); iOS can't, so it stays off
   // until the user opts in.
@@ -280,6 +285,7 @@ function normalize(raw: unknown): Prefs {
     padKeyboardBar: bool(o.padKeyboardBar, DEFAULTS.padKeyboardBar),
     padHints: bool(o.padHints, DEFAULTS.padHints),
     padTrackpadLarge: bool(o.padTrackpadLarge, DEFAULTS.padTrackpadLarge),
+    padLargeToggle: bool(o.padLargeToggle, DEFAULTS.padLargeToggle),
     askToSwitchControl: bool(o.askToSwitchControl, DEFAULTS.askToSwitchControl),
     volumeButtons: bool(o.volumeButtons, DEFAULTS.volumeButtons),
     hideOfflineStreamHosts: bool(o.hideOfflineStreamHosts, DEFAULTS.hideOfflineStreamHosts),

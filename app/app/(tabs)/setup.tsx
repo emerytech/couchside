@@ -778,6 +778,7 @@ function SetupBody() {
   const padKeyboardBar = usePref('padKeyboardBar');
   const padHints = usePref('padHints');
   const padTrackpadLarge = usePref('padTrackpadLarge');
+  const padLargeToggle = usePref('padLargeToggle');
   const askToSwitchControl = usePref('askToSwitchControl');
   const keyboardMode = usePref('keyboardMode');
   const searchButtonSide = usePref('searchButtonSide');
@@ -1535,6 +1536,15 @@ function SetupBody() {
                 value={padTrackpadLarge}
                 onValueChange={(v) => {
                   void setPref('padTrackpadLarge', v);
+                  hapticSelection();
+                }}
+              />
+              <TogglePref
+                label="Large-pad corner button"
+                sub="Show a one-tap chip in the corner of the MOUSE surface to enter large mode. The exit chip always shows in large mode."
+                value={padLargeToggle}
+                onValueChange={(v) => {
+                  void setPref('padLargeToggle', v);
                   hapticSelection();
                 }}
               />

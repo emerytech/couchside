@@ -1125,6 +1125,7 @@ function PadScreen() {
   const showWinShortcuts = usePref('padWinShortcuts');
   const showKeyboardBar = usePref('padKeyboardBar');
   const trackpadLarge = usePref('padTrackpadLarge');
+  const padLargeToggle = usePref('padLargeToggle');
   // Large-pad mode is meaningful only on the trackpad surface: it collapses the
   // pill + mode tabs + button/keyboard rows so the pad fills the pane for
   // edge-to-edge scrolling. A floating chip restores the chrome.
@@ -1540,29 +1541,38 @@ function PadScreen() {
       ) : mode === 'trackpad' ? (
         <>
           {/* Relative-mouse surface + a mouse-button row + keyboard */}
-          <Trackpad
-            onMove={tpMove}
-            onLeftClick={tpLeft}
-            onRightClick={tpRight}
-            onScroll={tpScroll}
-            onDragStart={tpDragStart}
-            onDragEnd={tpDragEnd}
-          />
-          {/* Large-pad escape hatch: the pill + mode tabs are hidden in this
-              mode, so this floating chip is the only way back to the normal
-              layout. Rendered only while large-pad is active. */}
-          {largePad && (
-            <Pressable
-              onPress={() => {
-                setPref('padTrackpadLarge', false);
-                hapticSelection();
-              }}
-              style={styles.exitLargeChip}
-              hitSlop={12}
-              accessibilityLabel="Exit large trackpad">
-              <Ionicons name="contract-outline" size={16} color={t.text} />
-            </Pressable>
-          )}
+          <View style={styles.tpWrap}>
+            <Trackpad
+              onMove={tpMove}
+              onLeftClick={tpLeft}
+              onRightClick={tpRight}
+              onScroll={tpScroll}
+              onDragStart={tpDragStart}
+              onDragEnd={tpDragEnd}
+            />
+            {/* One corner chip toggles large mode in a single tap. In large mode
+                it ALWAYS shows (the CONTRACT/exit affordance — the pill + tabs
+                are hidden, so it's the only way back). In normal mode it shows
+                the EXPAND affordance only when padLargeToggle is on. It lives
+                inside this surface wrapper, so it sits on the pad's own corner
+                in both modes rather than over the header. */}
+            {(trackpadLarge || padLargeToggle) && (
+              <Pressable
+                onPress={() => {
+                  setPref('padTrackpadLarge', !trackpadLarge);
+                  hapticSelection();
+                }}
+                style={styles.tpToggleChip}
+                hitSlop={12}
+                accessibilityLabel={trackpadLarge ? 'Exit large trackpad' : 'Enlarge trackpad'}>
+                <Ionicons
+                  name={trackpadLarge ? 'contract-outline' : 'expand-outline'}
+                  size={16}
+                  color={t.text}
+                />
+              </Pressable>
+            )}
+          </View>
           {!largePad && (showMouseRow || showSteamRow) && (
             <View style={styles.swipeBtnRow}>
               {showMouseRow && (
@@ -1881,12 +1891,18 @@ const makeStyles = (t: Palette) => StyleSheet.create({
     justifyContent: 'space-between',
   },
 
-  // Floating "exit large trackpad" chip — top-right, overlays the pad corner.
-  // The only way out of large-pad mode (pill + mode tabs are hidden there).
-  exitLargeChip: {
+  // The trackpad surface wrapper: holds the pad + its corner toggle chip so the
+  // chip anchors to the pad's own corner (not the screen header) in both normal
+  // and large modes. flex:1 so the pad still fills the leftover space.
+  tpWrap: {
+    flex: 1,
+    position: 'relative',
+  },
+  // Corner chip that toggles large-pad mode (expand <-> contract) in one tap.
+  tpToggleChip: {
     position: 'absolute',
-    top: 6,
-    right: 6,
+    top: 8,
+    right: 8,
     width: 34,
     height: 34,
     alignItems: 'center',
