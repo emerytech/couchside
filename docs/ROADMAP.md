@@ -9,42 +9,7 @@ Entry fields: `priority` (P0 blocker → P3 nice) · `risk` · `affects` · `dep
 
 ## 🔨 In Progress
 
-### Large trackpad toggle — edge-to-edge scrolling surface
-- **priority:** P2 · **risk:** low · **affects:** app only · **depends_on:** none
-- Tester ask (likwidtek): the trackpad is cramped for "mindless scrolling." A
-  `padTrackpadLarge` pref (Setup → PAD LAYOUT) collapses the status pill, mode tabs,
-  button rows, and keyboard bar in MOUSE/trackpad mode so the pad fills the pane; a
-  floating corner chip is the escape hatch (the only affordance left once the mode
-  tabs hide). **Not** OS-fullscreen — the bottom tab bar stays (hiding it is a
-  navigator-level change, follow-up only if asked).
-- **PR #239.** Verified in the web harness (collapse + exit chip both pressed, not
-  just rendered); tsc clean. Awaiting merge — mark Complete once merged.
-
 ## 📋 Planned
-
-### Trackpad reliability — "green pill but dead" zombie + gesture misfires
-- **priority:** P1 · **risk:** MED (safety-critical input path, CLAUDE.md §4) · **affects:** app only · **depends_on:** none
-- From the tester triage (items A + B; C shipped as PR #239). Root-caused in code —
-  see BUILD_LOG 2026-07-23 and the workflow findings; do not re-derive.
-- **A — WS zombie (the force-quit bug).** The connection pill is a *latched* self-report
-  with no liveness input, so a half-dead socket stays green forever; `connect()`'s
-  idempotent guard early-returns whenever it *thinks* it is connected, stranding a client
-  whose socket was nulled + ping stopped and never reconnects (mouse **and** paste dead
-  until force-quit). The existing foreground-reconnect (`pad.tsx:968`) no-ops for the same
-  reason. Fix: require a live socket in the guard (`ws && ws.readyState===1`) at
-  `lib/gamepad.ts:~474`; add `wake()/ensureLive()` on AppState `active` that reconnects
-  unconditionally + probes immediately (don't wait ~12s for the watchdog); drive the pill
-  color off `lastInbound`/`readyState`, which also re-enables tap-to-retry. **Needs §4
-  device-lifecycle tests.** Highest-impact of the three.
-- **B — gesture misfires.** Two-finger tap (right-click) uses `maxTouches` sampled only
-  during *move*, so a motionless two-finger tap stays count 1 → left-click; and a sub-8px
-  two-finger stroke leaks a right-click because `moved` (8px net) is decoupled from the
-  scroll notch (18px). Fix in `hooks/useTrackpad.ts`: track live count via
-  `onPanResponderStart`/`gestureState.numberActiveTouches`; latch an explicit `scrolled`
-  flag and gate the right-click on `!scrolled`. One file covers Pad + RemoteView.
-- Recommended split: **A solo** (risk isolation + lifecycle tests), **B** on its own.
-
-
 
 ### On-box pairing tutorial (auto-plays after install)
 - **priority:** P1 · **risk:** low · **affects:** agent + installer · **depends_on:** none
@@ -396,6 +361,28 @@ recommendation was wrong, not merely superseded.
 ---
 
 ## ✅ Completed
+
+### 2026-07-24 — Trackpad tester-feedback triage: large-pad, WS zombie, pill, gestures (app)
+Root-caused via a 4-agent workflow; shipped as four PRs, all merged to main.
+- **Large-pad mode + one-tap corner toggle (#239).** `padTrackpadLarge` collapses the
+  pill + mode tabs + button rows + keyboard bar so the drag surface fills the pane, on
+  BOTH the MOUSE and SWIPE surfaces; a bidirectional corner chip (expand/contract, gated
+  by `padLargeToggle`) toggles it in one tap. Not OS-fullscreen — the tab bar stays.
+- **WS "green pill but dead" zombie (#240).** `connect()`'s guard now requires a live
+  socket (`wsAlive`); new `ensureLive()` reconnects on foreground when the socket isn't
+  provably live. Ends the "force-quit to recover" bug (`teardownSocket(false)` left status
+  latched 'connected' over a null socket).
+- **Pill tells the truth (#241).** `isStale()` + a 1s poll turn the pill amber
+  ("no response · tap to retry") over a half-dead socket; the tap force-`reconnect()`s.
+- **Gesture misfires (#242).** `onPanResponderStart` fixes the flaky two-finger right-click
+  (a motionless tap now records 2 touches); a `scrolled` flag stops a short two-finger
+  stroke leaking a click. Decision logic extracted to a pure module.
+- **New capability:** the app's input path now has JS unit tests (19), run in CI via Node's
+  `--experimental-strip-types --test` — first JS tests in the app, **no new dependency**.
+  Control-verified (each bug test fails without its fix). Convention in CONVENTIONS.md.
+- **Verified:** 19/19 unit tests + tsc + web-harness mount checks. Touch gestures (RN-Web
+  is mouse-only) and the connected-WS path (harness proxy can't route `/ws/gamepad`) can't
+  run in the harness — those are the pure-module + mock-WebSocket tests, by design.
 
 ### 2026-07-23 — Pairing popup: raise it in front + one store QR, not two (agent 2.9.52)
 Two fixes to the on-box pairing tutorial, both VERIFIED LIVE on a real Bazzite box (Plasma
