@@ -24,7 +24,7 @@
  *   The hello `text` field advertises how much of a typed string the agent can
  *   deliver; sendText() strips non-typeable chars when it is not "unicode".
  */
-import { Settings } from './settings';
+import type { Settings } from './settings';
 
 export type GamepadStatus =
   | 'connecting'
@@ -471,9 +471,22 @@ export class GamepadClient {
     // Always take the latest conn (a refreshed lastIp must be visible to
     // future reconnects), but never tear down a healthy socket for it.
     this.conn = conn;
+    // A latched 'connected'/'connecting' status is NOT proof of a usable socket.
+    // teardownSocket(false) nulls this.ws WITHOUT resetting status (the noPad
+    // branch above does exactly this), and a missed/coalesced background event
+    // can leave status stuck 'connected' over a socket that has since closed.
+    // If we no-op on status alone we strand a zombie: null socket, ping stopped,
+    // nothing scheduled to reconnect, every input frame silently dropped, and
+    // only a force-quit recovers. So only no-op when the socket is genuinely
+    // still CONNECTING or OPEN; otherwise fall through to open() and rebuild it.
+    const wsAlive =
+      this.ws != null &&
+      (this.ws.readyState === 0 /* CONNECTING */ ||
+        this.ws.readyState === 1); /* OPEN */
     if (
       same &&
       this.active &&
+      wsAlive &&
       (this.status === 'connected' || this.status === 'connecting')
     ) {
       return;
@@ -493,6 +506,34 @@ export class GamepadClient {
     this.releaseAll();
     this.teardownSocket(true);
     this.setStatus('closed', null);
+  }
+
+  /**
+   * Force a live socket when the app returns to the foreground. The AppState
+   * handler also calls connect(), but connect() is idempotent and (correctly)
+   * will not rebuild a socket that is CONNECTING or OPEN. A socket can be OPEN
+   * yet half-dead — iOS keeps buffering our sends without erroring after a
+   * Wi-Fi blip or a backgrounded suspend, so every frame vanishes while
+   * readyState still says OPEN. The pong watchdog only catches that after
+   * ~2.5 idle intervals, and only while it is still running (a backgrounded
+   * app freezes the timer). So on foreground: if the socket is not provably
+   * live — null, not OPEN, or silent longer than the watchdog deadline —
+   * reconnect NOW instead of waiting the watchdog out (or forever). A socket
+   * still CONNECTING is left alone: a just-fired connect() is mid-dial, not
+   * dead, and tearing it down here would double-open.
+   */
+  ensureLive(): void {
+    if (!this.active) return;
+    const ws = this.ws;
+    const live =
+      ws != null &&
+      (ws.readyState === 0 /* CONNECTING — mid-dial, leave it */ ||
+        (ws.readyState === 1 /* OPEN */ &&
+          Date.now() - this.lastInbound < PING_INTERVAL_MS * 2.5));
+    if (live) return;
+    this.attempt = 0;
+    this.clearReconnect();
+    this.open(); // tears the stale socket down + sets status 'connecting'
   }
 
   sendButton(k: ButtonKey, v: 0 | 1): void {

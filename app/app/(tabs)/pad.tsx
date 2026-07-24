@@ -966,8 +966,15 @@ function PadScreen() {
     const offFocus = navigation.addListener('focus', connect);
     const offBlur = navigation.addListener('blur', disconnect);
     const appSub = AppState.addEventListener('change', (state) => {
-      if (state === 'active') connect();
-      else disconnect();
+      if (state === 'active') {
+        connect();
+        // connect() refreshes settings and rebuilds a null/closed socket, but a
+        // socket left OPEN-but-half-dead (a backgrounded suspend or Wi-Fi blip)
+        // still looks connected to it. ensureLive() forces a reconnect for that
+        // case, so foregrounding always restores input instead of needing a
+        // force-quit — the exact "green pill, dead mouse" the field hit.
+        client.ensureLive();
+      } else disconnect();
     });
 
     // Baseline: connect on mount. Focus/blur listeners above refine this when
