@@ -11,7 +11,7 @@ import Ionicons from '@expo/vector-icons/Ionicons';
 
 import { hapticLight, hapticSelection } from '@/lib/haptics';
 import { getKeepAwakeEnabled, useKeepAwakeEnabled } from '@/lib/keepAwake';
-import { getPref, usePref } from '@/lib/prefs';
+import { getPref, setPref, usePref } from '@/lib/prefs';
 import { activateKeepAwakeAsync, deactivateKeepAwake } from 'expo-keep-awake';
 import { useNavigation } from 'expo-router';
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
@@ -1124,6 +1124,14 @@ function PadScreen() {
   const showDesktopNav = usePref('padDesktopNav');
   const showWinShortcuts = usePref('padWinShortcuts');
   const showKeyboardBar = usePref('padKeyboardBar');
+  const trackpadLarge = usePref('padTrackpadLarge');
+  const padLargeToggle = usePref('padLargeToggle');
+  // Large-pad mode applies to the two big drag surfaces (trackpad + swipe): it
+  // collapses the pill + mode tabs + button/keyboard rows so the surface fills
+  // the pane. A floating chip restores the chrome. Not meaningful for the
+  // menus/remote/gamepad modes, which have no full-pane drag surface.
+  const largePad =
+    trackpadLarge && (mode === 'trackpad' || mode === 'swipe');
   // Auto-raise the phone keyboard when the box raises its own. The counter is
   // what KeyboardBar watches; the ref lets the (memoised) socket callback read
   // the current pref without re-subscribing.
@@ -1390,35 +1398,64 @@ function PadScreen() {
     />
   ) : null;
 
+  // One corner chip toggles large mode in a single tap, shared by the trackpad
+  // and swipe surfaces. In large mode it ALWAYS shows (the CONTRACT/exit
+  // affordance — the pill + tabs are hidden, so it is the only way back); in
+  // normal mode it shows the EXPAND affordance only when padLargeToggle is on.
+  // Rendered INSIDE each surface's wrapper (styles.tpWrap) so it sits on the
+  // pad's own corner in both modes rather than over the header.
+  const padToggleChip =
+    trackpadLarge || padLargeToggle ? (
+      <Pressable
+        onPress={() => {
+          setPref('padTrackpadLarge', !trackpadLarge);
+          hapticSelection();
+        }}
+        style={styles.tpToggleChip}
+        hitSlop={12}
+        accessibilityLabel={trackpadLarge ? 'Exit large pad' : 'Enlarge pad'}>
+        <Ionicons
+          name={trackpadLarge ? 'contract-outline' : 'expand-outline'}
+          size={16}
+          color={t.text}
+        />
+      </Pressable>
+    ) : null;
+
   return (
     <View
       style={[
         styles.screen,
         { paddingTop: 10, paddingBottom: Math.max(insets.bottom, 10) },
       ]}>
-      {/* Header: status pill + input-mode toggle (all modes) */}
-      <Pressable onPress={retry} style={styles.pill} hitSlop={8}>
-        <View style={[styles.pillDot, { backgroundColor: STATUS_COLOR[status] }]} />
-        <Text style={styles.pillText} numberOfLines={1}>
-          {status === 'waiting' && canForce
-            ? 'no response · tap to take control'
-            : statusLabel(status, dev)}
-        </Text>
-      </Pressable>
-      <View style={styles.modeToggle}>
-        {modes.map((m) => (
-          <Pressable
-            key={m.key}
-            onPress={() => setMode(m.key)}
-            style={[styles.modeSeg, mode === m.key && styles.modeSegActive]}>
-            <Text
-              numberOfLines={1}
-              style={[styles.modeSegText, mode === m.key && styles.modeSegTextActive]}>
-              {m.label}
+      {/* Header: status pill + input-mode toggle (all modes). Hidden in
+          large-pad mode; the floating chip below brings it back. */}
+      {!largePad && (
+        <>
+          <Pressable onPress={retry} style={styles.pill} hitSlop={8}>
+            <View style={[styles.pillDot, { backgroundColor: STATUS_COLOR[status] }]} />
+            <Text style={styles.pillText} numberOfLines={1}>
+              {status === 'waiting' && canForce
+                ? 'no response · tap to take control'
+                : statusLabel(status, dev)}
             </Text>
           </Pressable>
-        ))}
-      </View>
+          <View style={styles.modeToggle}>
+            {modes.map((m) => (
+              <Pressable
+                key={m.key}
+                onPress={() => setMode(m.key)}
+                style={[styles.modeSeg, mode === m.key && styles.modeSegActive]}>
+                <Text
+                  numberOfLines={1}
+                  style={[styles.modeSegText, mode === m.key && styles.modeSegTextActive]}>
+                  {m.label}
+                </Text>
+              </Pressable>
+            ))}
+          </View>
+        </>
+      )}
 
       {inputBlocked != null && status === 'connected' && (
         <View style={styles.inputBlockedBar}>
@@ -1489,7 +1526,11 @@ function PadScreen() {
       ) : mode === 'swipe' ? (
         <>
           {/* Apple-TV-remote style: big swipe/tap surface + three big buttons */}
-          <SwipeSurface onStep={dpadStep} onStepEnd={dpadRelease} onSelect={selectTap} />
+          <View style={styles.tpWrap}>
+            <SwipeSurface onStep={dpadStep} onStepEnd={dpadRelease} onSelect={selectTap} />
+            {padToggleChip}
+          </View>
+          {!largePad && (
           <View style={styles.swipeBtnRow}>
             <PadButton
               label="‹ BACK"
@@ -1525,20 +1566,24 @@ function PadScreen() {
               </>
             )}
           </View>
-          {keyboardBar}
+          )}
+          {!largePad && keyboardBar}
         </>
       ) : mode === 'trackpad' ? (
         <>
           {/* Relative-mouse surface + a mouse-button row + keyboard */}
-          <Trackpad
-            onMove={tpMove}
-            onLeftClick={tpLeft}
-            onRightClick={tpRight}
-            onScroll={tpScroll}
-            onDragStart={tpDragStart}
-            onDragEnd={tpDragEnd}
-          />
-          {(showMouseRow || showSteamRow) && (
+          <View style={styles.tpWrap}>
+            <Trackpad
+              onMove={tpMove}
+              onLeftClick={tpLeft}
+              onRightClick={tpRight}
+              onScroll={tpScroll}
+              onDragStart={tpDragStart}
+              onDragEnd={tpDragEnd}
+            />
+            {padToggleChip}
+          </View>
+          {!largePad && (showMouseRow || showSteamRow) && (
             <View style={styles.swipeBtnRow}>
               {showMouseRow && (
                 <>
@@ -1605,7 +1650,7 @@ function PadScreen() {
             </View>
           )}
           {/* Plasma desktop nav — SteamOS/Bazzite boxes on the desktop only. */}
-          {hasDesktop && showDesktopNav && (
+          {!largePad && hasDesktop && showDesktopNav && (
             <View style={styles.swipeBtnRow}>
               <PadButton label="START" onDown={desk('meta')} onUp={NOOP}
                 style={[styles.tpBtn, styles.tpBtnWide]} fontSize={11} />
@@ -1616,7 +1661,7 @@ function PadScreen() {
             </View>
           )}
           {/* Windows desktop shortcuts — one-shot chords, ViGEm boxes only. */}
-          {isWindows && showWinShortcuts && (
+          {!largePad && isWindows && showWinShortcuts && (
             <View style={styles.swipeBtnRow}>
               <PadButton label="⊞ WIN" onDown={sys('win')} onUp={NOOP}
                 style={[styles.tpBtn, styles.tpBtnWide]} fontSize={12} />
@@ -1628,7 +1673,7 @@ function PadScreen() {
                 style={styles.tpBtn} fontSize={11} />
             </View>
           )}
-          {keyboardBar}
+          {!largePad && keyboardBar}
         </>
       ) : landscape ? (
         // ---------- Landscape gamepad: real-controller spread ----------
@@ -1854,6 +1899,29 @@ const makeStyles = (t: Palette) => StyleSheet.create({
     backgroundColor: t.bg,
     paddingHorizontal: 12,
     justifyContent: 'space-between',
+  },
+
+  // The trackpad surface wrapper: holds the pad + its corner toggle chip so the
+  // chip anchors to the pad's own corner (not the screen header) in both normal
+  // and large modes. flex:1 so the pad still fills the leftover space.
+  tpWrap: {
+    flex: 1,
+    position: 'relative',
+  },
+  // Corner chip that toggles large-pad mode (expand <-> contract) in one tap.
+  tpToggleChip: {
+    position: 'absolute',
+    top: 8,
+    right: 8,
+    width: 34,
+    height: 34,
+    alignItems: 'center',
+    justifyContent: 'center',
+    backgroundColor: t.inset,
+    borderColor: t.cardBorder,
+    borderWidth: 1,
+    borderRadius: 999,
+    zIndex: 10,
   },
 
   // "Another phone has control" takeover. Covers the input surfaces (which are
