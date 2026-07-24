@@ -174,6 +174,26 @@ This is the strongest convention in the repo; a new test file without one is inc
 ```
 (`.github/workflows/ci.yml:36-43`; see also `:45-50`, `:66-72`, `:74-82`, `:93-101`)
 
+### App-side lifecycle tests (TypeScript, no bundler, no new dependency)
+
+The safety-critical WS input path (`app/lib/gamepad.ts`, CLAUDE.md §4) has real unit
+tests despite the app having **no jest/vitest**. The trick: keep the module
+**runtime-import-free** (`gamepad.ts` imports only `import type { Settings }` — erased —
+and touches only a global `WebSocket` + `Date`/timers), so a test can load it standalone
+and run on **Node's built-ins**:
+
+```
+node --experimental-strip-types --test app/lib/__tests__/*.test.ts   # Node >= 22.6
+```
+
+`app/lib/__tests__/gamepad.lifecycle.test.ts` installs a mock `WebSocket` on `globalThis`
++ a controllable `Date.now`, then drives `GamepadClient` through connect → hello → teardown
+→ reconnect / `ensureLive`. It is **control-verified**: the "ZOMBIE FIX" case FAILS if the
+`connect()` guard's `wsAlive` requirement is removed (§11 — see it fire AND not fire). CI job
+`app-input` runs it with **no `npm install`** (the module needs no node_modules). Adding a
+bundler-dependent test would have meant a whole toolchain; this needs none. If you make the
+tested module import a real dependency, this standalone path breaks — keep it import-free.
+
 CI is two jobs: `compile` (`py_compile` on all three entrypoints, then the unit tests) and `smoke`
 (boots the agent `--mock` on a spare port and proves auth: `/api/ping` 200, `/api/status` 401
 without a token, 200 with one) — `.github/workflows/ci.yml:103-186`.

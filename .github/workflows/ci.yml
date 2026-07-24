@@ -426,3 +426,21 @@ jobs:
           PY
 
           echo "smoke OK"
+
+  # App-side WebSocket input-path lifecycle (CLAUDE.md §4 — the most bug-prone
+  # code in the project). lib/gamepad.ts is runtime-import-free (only a global
+  # WebSocket + Date/timers), so the lifecycle test runs standalone on Node's
+  # built-in type stripping + test runner: no npm install, no Metro, no bundler.
+  # Guards the "green pill, dead mouse, force-quit to recover" zombie —
+  # connect()/ensureLive() must never leave a torn-down socket behind over a
+  # stale 'connected' status.
+  app-input:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+      - name: Gamepad client lifecycle tests
+        run: node --experimental-strip-types --test lib/__tests__/*.test.ts
+        working-directory: app
