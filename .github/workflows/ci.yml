@@ -441,6 +441,10 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: "22"
+      # --test-force-exit: a FAILING test throws before its client.close(), which
+      # leaks the 5s ping setInterval and would otherwise keep the run alive until
+      # the job times out. Force-exit makes a failure exit promptly (and report)
+      # instead of hanging. Passing runs close every client and exit on their own.
       - name: Gamepad client lifecycle tests
-        run: node --experimental-strip-types --test lib/__tests__/*.test.ts
+        run: node --experimental-strip-types --test --test-force-exit lib/__tests__/*.test.ts
         working-directory: app

@@ -536,6 +536,38 @@ export class GamepadClient {
     this.open(); // tears the stale socket down + sets status 'connecting'
   }
 
+  /**
+   * We believe we're 'connected', but no inbound frame (pong or server message)
+   * has arrived for longer than ~1.3 ping intervals — a pong was missed, so the
+   * pipe is probably half-dead even though readyState still says OPEN. Lets the
+   * UI degrade the status pill from green to amber ("no response") BEFORE the
+   * pong watchdog gives up (1.4–2.5 intervals), instead of showing a live-green
+   * pill over a dead socket. The 1.3× floor stays above one whole interval so a
+   * healthy socket between pongs is never flagged. Read on a poll — the client
+   * does not push a frame for this.
+   */
+  isStale(): boolean {
+    return (
+      this.status === 'connected' &&
+      this.ws != null &&
+      Date.now() - this.lastInbound > PING_INTERVAL_MS * 1.3
+    );
+  }
+
+  /**
+   * Force a fresh socket now — the status pill's tap-to-retry when a 'connected'
+   * socket has gone stale. Unlike ensureLive() (conservative, auto-fired on
+   * foreground) this does not second-guess: an explicit user tap means rebuild,
+   * even inside the watchdog's grace window. connect() alone can't do this — its
+   * guard sees the still-OPEN socket and no-ops.
+   */
+  reconnect(): void {
+    if (!this.active) return;
+    this.attempt = 0;
+    this.clearReconnect();
+    this.open();
+  }
+
   sendButton(k: ButtonKey, v: 0 | 1): void {
     this.sendRaw({ t: 'b', k, v });
   }
