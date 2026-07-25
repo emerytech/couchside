@@ -246,10 +246,15 @@ function normalizeCaps(raw: unknown): BoxCaps | undefined {
   // boxbattery arrived with agent 2.9.40 — same optional-cap drop trap. A box
   // with no battery reports false, which is a real answer, not "unknown".
   const boxbattery = bool('boxbattery');
+  // launchers arrived with the Windows agent 0.4.0-win (multi-launcher: Epic/
+  // GOG/Xbox) — same optional-cap drop trap: omit it here (and from capsEqual)
+  // and the cap never persists, so the Launch tab re-decides from `steam` every
+  // launch. undefined stays undefined = "fall back to steam".
+  const launchers = bool('launchers');
   return {
     gamepad, steam, media, tv, screen, power_schedule,
     screensaver, couchmode, desktop, steamlink, gaming, streamhost, steammenus,
-    boxbattery,
+    boxbattery, launchers,
   };
 }
 

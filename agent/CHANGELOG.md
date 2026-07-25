@@ -18,6 +18,24 @@ the same thing regardless of what actually changed.
 Write for the person holding the phone, not for the commit log. They are
 deciding whether to press "Update now" on a machine across the room.
 
+## 2.9.53
+
+The trackpad stays alive — and on Windows, your whole game library shows up.
+
+- **No more dead mouse after the phone sits idle.** If the app was in the
+  background (or the phone locked, or you switched to Desktop mode), the
+  connection could go quiet and the box would quietly drop it — you'd come back
+  to a green "connected" dot and a trackpad that moved nothing, and the only fix
+  was force-quitting the app. The box now keeps the link awake itself, and your
+  first swipe rebuilds the connection if it did die. Pointer, keyboard, and
+  controller all recover on their own.
+- **Windows: Epic, GOG, and Xbox / Game Pass games now appear** next to your
+  Steam library, in the same cover grid — tap one and it starts on the TV. The
+  Launch tab also shows up on a PC that has no Steam installed at all.
+- **Windows: a double-click installer.** `CouchsideSetup.exe` sets the service
+  up without pasting anything into PowerShell. Grab it from
+  <https://couchside.tv/windows>.
+
 ## 2.9.52
 
 A smoother first pairing on the box's own screen.

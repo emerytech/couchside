@@ -387,7 +387,7 @@ function BoxEditPanel({
           setHost(t);
           setError(null);
         }}
-        placeholder="steamdeck.local · bazzite.local"
+        placeholder="steamdeck.local · gaming-pc · 10.0.0.5"
         placeholderTextColor={t.textFaint}
         autoCapitalize="none"
         autoCorrect={false}
@@ -1132,7 +1132,7 @@ function SetupBody() {
             style={styles.input}
             value={name}
             onChangeText={setName}
-            placeholder="Media center · Steam Deck"
+            placeholder="Media center · Steam Deck · gaming PC"
             placeholderTextColor={t.textFaint}
             autoCapitalize="none"
             autoCorrect={false}
@@ -1144,7 +1144,7 @@ function SetupBody() {
             style={styles.input}
             value={host}
             onChangeText={setHost}
-            placeholder="steamdeck.local · bazzite.local"
+            placeholder="steamdeck.local · gaming-pc · 10.0.0.5"
             placeholderTextColor={t.textFaint}
             autoCapitalize="none"
             autoCorrect={false}
