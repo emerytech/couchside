@@ -117,6 +117,83 @@ def test_env_targets_live_socket():
         restore()
 
 
+def test_dead_socket_file_is_not_a_live_compositor():
+    """A LEFTOVER socket FILE must never be mistaken for a running compositor.
+
+    THE BUG, measured on a Bazzite box (agent 2.9.55): leaving Game Mode leaves
+    /run/user/1000/gamescope-0 behind in tmpfs with nothing listening. Presence
+    was treated as proof, so _screen_live() reported "gamescope" on a Plasma
+    desktop AND _screen_env() pinned WAYLAND_DISPLAY to the corpse -- which broke
+    the spectacle FALLBACK too ("Authorization required"). Result: 10/10 requests
+    503 after ~8.7s each, permanently, until reboot.
+
+    Drives the REAL _wayland_display_sockets() against REAL AF_UNIX files (the
+    other tests here stub that function, so they cannot see this bug), and
+    asserts the resulting ENV -- not just the session string. A fix that only
+    corrects the session decision still leaves the env pointing at the dead
+    socket, which is the half that broke the fallback.
+    """
+    print("a leftover socket file is not a live compositor")
+    import fcntl as _fcntl
+    import tempfile
+    tmp = tempfile.mkdtemp(prefix="couchsock_")
+    real_dir, real_env = cs.XDG_RUNTIME_DIR, dict(os.environ)
+    held_fd = None
+    try:
+        cs.XDG_RUNTIME_DIR = tmp
+
+        # Reproduce the real layout: a wayland display is <sock> + <sock>.lock,
+        # and a RUNNING compositor holds an exclusive flock on the lock file.
+        # Verified against a live Bazzite box: wayland-0.lock was held while
+        # kwin_wayland ran, gamescope-0.lock was NOT while gamescope was gone.
+        for n in ("gamescope-0", "wayland-0"):
+            open(os.path.join(tmp, n), "w").close()          # the socket file
+            open(os.path.join(tmp, n + ".lock"), "w").close()  # its lock
+        # LIVE: hold wayland-0's lock the way a compositor does.
+        held_fd = os.open(os.path.join(tmp, "wayland-0.lock"), os.O_RDWR)
+        _fcntl.flock(held_fd, _fcntl.LOCK_EX | _fcntl.LOCK_NB)
+        # DEAD: gamescope-0.lock is left unlocked -- the Game Mode corpse.
+
+        socks = cs._wayland_display_sockets()
+        check("gamescope-0" not in socks, "dead gamescope-0 filtered out")
+        check("wayland-0" in socks, "live wayland-0 still reported")
+
+        # CONTROL for the flaw that a connect()-based probe had: probing must be
+        # REPEATABLE. A connect() probe consumed the listen backlog, so the
+        # SECOND call reported the live compositor as dead. flock does not.
+        again = cs._wayland_display_sockets()
+        check(again == socks, "repeated probe gives the same answer (no side effects)")
+
+        # The env half: it must NOT pin the corpse. Before the fix this returned
+        # WAYLAND_DISPLAY=gamescope-0 and poisoned the spectacle fallback, which
+        # is why fixing only the session decision would not have been enough.
+        os.environ.pop("WAYLAND_DISPLAY", None)
+        env = cs._screen_env(None)
+        check(env.get("WAYLAND_DISPLAY") != "gamescope-0",
+              "env NOT pinned to the dead socket")
+        check(env.get("WAYLAND_DISPLAY") == "wayland-0",
+              "env pinned to the one LIVE socket")
+    finally:
+        cs.XDG_RUNTIME_DIR = real_dir
+        os.environ.clear()
+        os.environ.update(real_env)
+        if held_fd is not None:
+            try:
+                os.close(held_fd)
+            except OSError:
+                pass
+        for n in ("gamescope-0", "wayland-0"):
+            for p in (os.path.join(tmp, n), os.path.join(tmp, n + ".lock")):
+                try:
+                    os.unlink(p)
+                except OSError:
+                    pass
+        try:
+            os.rmdir(tmp)
+        except OSError:
+            pass
+
+
 def test_probe_and_appear_preserved():
     print("probe-and-appear: a box that cannot capture stays hidden")
     # No downscaler at all -> the card must never appear, however many
@@ -157,6 +234,7 @@ if __name__ == "__main__":
     test_session_appearing_after_startup()
     test_session_disappearing()
     test_env_targets_live_socket()
+    test_dead_socket_file_is_not_a_live_compositor()
     test_probe_and_appear_preserved()
     test_no_tools()
     print()
