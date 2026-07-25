@@ -2,6 +2,7 @@ import React, { useEffect } from 'react';
 import { Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
 
 import { Gated } from '@/components/Gated';
+import { FileDropCard } from '@/components/FileDropCard';
 import { GamingCard } from '@/components/GamingCard';
 import { NowPlayingCard } from '@/components/NowPlayingCard';
 import { ScreenPreview } from '@/components/ScreenPreview';
@@ -168,6 +169,9 @@ function ConsoleScreen() {
 
         {/* Gaming card (probe-and-appear; hidden when the box has no Steam) */}
         <GamingCard />
+
+        {/* Send a file to the box (probe-and-appear; agent >= 2.9.54) */}
+        <FileDropCard />
 
         {s && (
           <>

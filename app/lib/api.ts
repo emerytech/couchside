@@ -150,6 +150,13 @@ export type BoxCaps = {
    * `steam` for the tab decision — never hides on a guess.
    */
   launchers?: boolean;
+  /**
+   * Phone->box file drop (POST /api/upload, agent >= 2.9.54). Gates the
+   * Console-tab "Send a file to your box" card. Optional: absent on older
+   * agents, so undefined reads as "unknown, probe" — only an explicit false
+   * (drop dir not writable) hides the card.
+   */
+  file_upload?: boolean;
 };
 
 /** One connected display, from GET /api/displays. */
@@ -889,8 +896,51 @@ export function capsEqual(a?: BoxCaps, b?: BoxCaps): boolean {
     a.streamhost === b.streamhost &&
     a.steammenus === b.steammenus &&
     a.boxbattery === b.boxbattery &&
-    a.launchers === b.launchers
+    a.launchers === b.launchers &&
+    a.file_upload === b.file_upload
   );
+}
+
+/** Result of a successful POST /api/upload (agent >= 2.9.54). */
+export type UploadResult = { ok: boolean; name: string; bytes: number; path: string };
+
+/**
+ * Upload a local file to the box's drop dir (POST /api/upload, agent >= 2.9.54).
+ *
+ * Streams the file straight from disk via expo-file-system's upload task — the
+ * bytes never pass through JS memory, so a multi-GB game is fine — and reports
+ * progress as a 0..1 fraction. `name` is sent as a query param; the agent
+ * REJECTS anything that isn't a bare, contained filename, so pass a basename.
+ *
+ * expo-file-system is imported lazily so this native-only module never has to
+ * load in the web dev harness that drives the rest of the app.
+ */
+export async function uploadFile(
+  settings: ConnSettings,
+  fileUri: string,
+  name: string,
+  onProgress?: (fraction: number) => void,
+): Promise<UploadResult> {
+  const { File, UploadType } = await import('expo-file-system');
+  const host = resolveEffectiveHost(settings);
+  const url = `${baseUrl({ host, port: settings.port })}/api/upload?name=${encodeURIComponent(name)}`;
+  const task = new File(fileUri).createUploadTask(url, {
+    httpMethod: 'POST',
+    uploadType: UploadType.BINARY_CONTENT,
+    headers: { Authorization: `Bearer ${settings.token}` },
+    onProgress: ({ bytesSent, totalBytes }: { bytesSent: number; totalBytes: number }) => {
+      if (onProgress && totalBytes > 0) onProgress(bytesSent / totalBytes);
+    },
+  });
+  const res = await task.uploadAsync();
+  if (!res || res.status < 200 || res.status >= 300) {
+    throw new ApiError('http', `Upload failed (HTTP ${res?.status ?? '?'})`, res?.status);
+  }
+  try {
+    return JSON.parse(res.body) as UploadResult;
+  } catch {
+    return { ok: true, name, bytes: 0, path: '' };
+  }
 }
 
 const B64_ALPHABET = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/';
@@ -1224,6 +1274,8 @@ export function pairFinish(ip: string, port: number, pin: string): Promise<PairF
 }
 
 export const api = {
+  /** Stream a local file to the box's drop dir (POST /api/upload, agent >= 2.9.54). */
+  uploadFile,
   /** Unauthenticated reachability probe. */
   ping(settings: ConnSettings): Promise<Ping> {
     return request<Ping>(settings, '/api/ping', { auth: false });

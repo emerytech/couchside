@@ -377,6 +377,20 @@ recommendation was wrong, not merely superseded.
 
 ## ✅ Completed
 
+### 2026-07-24 — Phone→box file drop (agent 2.9.54 + app FileDropCard)
+Send any file from the phone to the box. Agent gains a Bearer-gated `POST /api/upload?name=`
+that STREAMS the request body to `~/Downloads/Couchside` in 1 MiB chunks (before the 8 MiB
+in-memory body cap, so GB games/videos work), filename rejected-not-sanitised + realpath
+contained to the drop root, atomic `.part`→rename. New `file_upload` capability (all 5 sites).
+App: `lib/api.ts uploadFile()` (SDK-57 `File.createUploadTask` binary streaming, lazy-imported),
+`FileDropCard` on the Console tab (probe-and-appear on the cap), deps `expo-document-picker` +
+`expo-file-system`. Tested: `tests/test_upload.py` (happy / auth-fail / traversal+subdir+empty
+reject / cap wired) + tsc clean. **Versioned 2.9.54 to stack on top of the un-merged gamepad
+keepalive 2.9.53 (`866e3df`, currently deployed to the box) — NOT merged/deployed here.** NOT
+yet exercised device→box end-to-end. On `feat/file-drop`; pick up in the session that owns the
+gamepad 2.9.53: merge that first, rebase this on top (expect a one-line VERSION conflict → 2.9.54),
+run the full agent suite, deploy, then drive FileDropCard on a device.
+
 ### 2026-07-24 — Trackpad tester-feedback triage: large-pad, WS zombie, pill, gestures (app)
 Root-caused via a 4-agent workflow; shipped as four PRs, all merged to main.
 - **Large-pad mode + one-tap corner toggle (#239).** `padTrackpadLarge` collapses the

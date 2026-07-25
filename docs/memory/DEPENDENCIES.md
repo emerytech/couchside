@@ -23,6 +23,13 @@ prebuilt `ios/` directory checked in.
 | `react` / `react-dom` | `19.2.3` | React 19. `react-dom` is only reachable on the web target. |
 | `react-native` | `0.86.0` | The runtime. New Architecture era. |
 
+### File drop (Console tab, agent >= 2.9.54)
+
+| Package | Version | Why |
+|---|---|---|
+| `expo-document-picker` | `~57.0.1` | Native file picker behind the "Send a file to your box" card (`FileDropCard`). `copyToCacheDirectory` so the picked file is a real file:// uri the uploader can stream. |
+| `expo-file-system` | `~57.0.1` | Streams the picked file to `POST /api/upload` via the SDK-57 `new File(uri).createUploadTask(..., { uploadType: UploadType.BINARY_CONTENT })` API — bytes never enter JS memory, so multi-GB games upload with live progress. **Lazy-imported** inside `lib/api.ts uploadFile()` so the web dev harness never has to load the native module. |
+
 ### Navigation / router
 
 | Package | Version | Why |
