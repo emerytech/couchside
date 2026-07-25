@@ -45,7 +45,7 @@ except ImportError:  # pragma: no cover
     fcntl = None
 
 APP_NAME = "couchside-agent"
-VERSION = "2.9.52"
+VERSION = "2.9.53"
 UID = os.getuid()
 XDG_RUNTIME_DIR = "/run/user/%d" % UID
 
@@ -10928,14 +10928,26 @@ def ws_send_json(conn, obj):
 GAMEPAD_LOCK = threading.Lock()
 GAMEPAD_HOLDER = None      # the entry that currently owns input devices, or None
 GAMEPAD_SESSIONS = []      # every live entry (holder + waiters)
-# Idle-reap: drop a gamepad session that has sent us NOTHING for this long. The
-# app pings every ~5s, so real silence this long means app->box is dead (a
-# Game-Mode Wi-Fi blip during a Couch Mode switch leaves the socket half-dead —
-# the phone keeps sending but nothing arrives, so the trackpad freezes). Reaping
-# fast + closing cleanly is the ONLY reliable app->box-death signal (a box->app
-# heartbeat can't detect it — it flows regardless and would just mask a dead
-# outbound). Was 60s; 12s is >2x the ping so a healthy client never false-reaps.
+# Idle-reap: drop a gamepad session that has sent us NOTHING for this long. On a
+# healthy client this never fires: the box drives its OWN keepalive now (a WS
+# PING every GAMEPAD_PING_INTERVAL_S, see _gamepad_keepalive_loop), and even a
+# fully idle phone's OS auto-answers with a PONG, so the only way to go silent
+# this long is a genuinely dead app->box path.
+#
+# CORRECTION to what this comment used to say ("a box->app heartbeat can't detect
+# a dead outbound -- it flows regardless"): true of a one-way push, FALSE of a WS
+# PING, whose PONG travels phone->box -- a dead outbound never delivers it, so the
+# reap still fires. That distinction is the whole fix. Field-diagnosed on
+# iOS->Bazzite (2026-07-24): the app's own {"t":"ping"} rides a JS setInterval
+# that iOS FREEZES whenever the app idles, so the phone sat on a live socket
+# sending nothing and got reaped at 12s -- dead trackpad, "controller
+# disconnected", then a reconnect that muted again (endless churn only a
+# force-quit cleared). The OS-level auto-PONG rides no JS timer, so it lands
+# anyway. Was 60s; 12s is >2x the app ping and 3x the box ping.
 GAMEPAD_IDLE_TIMEOUT_S = 12.0
+# Box-driven keepalive interval. Kept well under the reap window above (3 PINGs
+# per window) so a single dropped PONG can't trip a false reap.
+GAMEPAD_PING_INTERVAL_S = 4.0
 
 
 def _wsend_json(entry, obj):
@@ -10966,6 +10978,33 @@ def _gamepad_broadcast(obj):
         entries = list(GAMEPAD_SESSIONS)
     for entry in entries:
         _wsend_json(entry, obj)
+
+
+def _gamepad_keepalive_tick():
+    """Send one WS PING to every live session (holder + waiters). The phone's OS
+    answers with a PONG at the network layer -- below the app's JS runtime -- and
+    that inbound frame resets the recv loop's idle clock. This is what keeps an
+    iOS client alive while its own JS keepalive timer is frozen (see
+    GAMEPAD_IDLE_TIMEOUT_S). Snapshots the session list under the lock, then sends
+    OUTSIDE it (each _wsend_op takes only that socket's slock), so socket I/O
+    never blocks GAMEPAD_LOCK -- same discipline as _gamepad_broadcast. A dead
+    socket is skipped (_wsend_op never raises); the idle-reap, not this, closes
+    it. Split out from the loop so a test can drive one tick deterministically."""
+    with GAMEPAD_LOCK:
+        entries = list(GAMEPAD_SESSIONS)
+    for entry in entries:
+        _wsend_op(entry, WS_OP_PING)
+
+
+def _gamepad_keepalive_loop():
+    """Forever: PING every live session every GAMEPAD_PING_INTERVAL_S. Daemon
+    thread started in main(); never raises, so it can never take the agent down."""
+    while True:
+        time.sleep(GAMEPAD_PING_INTERVAL_S)
+        try:
+            _gamepad_keepalive_tick()
+        except Exception:  # a keepalive must never die on a transient send error
+            pass
 
 
 def _release_devices(entry):
@@ -13768,6 +13807,10 @@ def main():
     server.daemon_threads = True
     threading.Thread(target=_udp_discovery_responder, args=(port,),
                      daemon=True, name="discover").start()
+    # Box-driven gamepad keepalive: PING idle sockets so their OS auto-PONG keeps
+    # the session alive even while the app's own JS keepalive timer is frozen (iOS).
+    threading.Thread(target=_gamepad_keepalive_loop,
+                     daemon=True, name="gp-keepalive").start()
     mode = "mock" if args.mock else "real"
     print("%s %s listening on %s:%d (%s mode)" % (
         APP_NAME, VERSION, args.host, port, mode), flush=True)

@@ -85,7 +85,7 @@ except ImportError:
 # Same app id the phone expects (AGENT_APPS in app/lib/api.ts); the Windows
 # agent versions independently of the Linux one.
 APP_NAME = "couchside-agent"
-VERSION = "0.3.8-win"
+VERSION = "0.3.9-win"
 
 _PROGRAMDATA = os.environ.get("ProgramData", r"C:\ProgramData")
 DEFAULT_CONFIG_PATH = os.path.join(_PROGRAMDATA, "Couchside", "config.json")
@@ -4171,6 +4171,37 @@ def _wsend_op(entry, opcode, payload=b""):
             pass
 
 
+# Box-driven keepalive. Parity with the Linux agent's _gamepad_keepalive_loop:
+# the app's own {"t":"ping"} rides a JS setInterval iOS freezes when the app
+# idles, so the box PINGs each session and the phone OS auto-PONGs below the JS
+# layer, resetting the recv loop's idle clock. The Windows recv loop's idle
+# window is a roomier 60s (vs Linux 12s), so this is defence-in-depth here rather
+# than the acute fix it is on Linux. 4s keeps many pings inside that window.
+GAMEPAD_PING_INTERVAL_S = 4.0
+
+
+def _gamepad_keepalive_tick():
+    """PING every live session; the phone OS auto-PONG keeps the socket's idle
+    clock fresh independent of the app's (freezable) JS keepalive. Snapshots the
+    list under the lock, sends outside it. Never raises (each _wsend_op is
+    self-contained). Split out so a test can drive one tick deterministically."""
+    with GAMEPAD_LOCK:
+        entries = list(GAMEPAD_SESSIONS)
+    for entry in entries:
+        _wsend_op(entry, WS_OP_PING)
+
+
+def _gamepad_keepalive_loop():
+    """Forever: PING every live session every GAMEPAD_PING_INTERVAL_S. Daemon
+    thread started in main(); guarded so it can never take the agent down."""
+    while True:
+        time.sleep(GAMEPAD_PING_INTERVAL_S)
+        try:
+            _gamepad_keepalive_tick()
+        except Exception:  # a keepalive must never die on a transient send error
+            pass
+
+
 def _release_devices(entry):
     """Demote a session that stays connected as a waiter: destroy its gamepad
     (one pad per holder — the new holder brings its own) but KEEP the mouse and
@@ -5454,6 +5485,10 @@ def main():
 
     server = QuietThreadingHTTPServer((args.host, port), Handler)
     server.daemon_threads = True
+    # Box-driven gamepad keepalive: PING idle sockets so their OS auto-PONG keeps
+    # the session alive even while the app's own JS keepalive timer is frozen (iOS).
+    threading.Thread(target=_gamepad_keepalive_loop,
+                     daemon=True, name="gp-keepalive").start()
     mode = "mock" if args.mock else "real"
     print("%s %s listening on %s:%d (%s mode)" % (
         APP_NAME, VERSION, args.host, port, mode), flush=True)

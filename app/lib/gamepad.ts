@@ -479,10 +479,19 @@ export class GamepadClient {
     // nothing scheduled to reconnect, every input frame silently dropped, and
     // only a force-quit recovers. So only no-op when the socket is genuinely
     // still CONNECTING or OPEN; otherwise fall through to open() and rebuild it.
+    // A socket that merely reads OPEN is not proof of a usable pipe: the box now
+    // keepalives the TCP (its WS PING draws an OS-level auto-PONG that rides no
+    // JS timer), so a socket orphaned by a foreground JS freeze stays OPEN yet
+    // silent. Treat OPEN as alive only while it is also FRESH — an inbound frame
+    // within the watchdog window — so the tab-focus listener, which fires
+    // connect() WITHOUT ensureLive(), can't no-op over a stale zombie. A
+    // CONNECTING socket is mid-dial and always left alone. Same liveness test as
+    // ensureLive() so the two never disagree.
     const wsAlive =
       this.ws != null &&
-      (this.ws.readyState === 0 /* CONNECTING */ ||
-        this.ws.readyState === 1); /* OPEN */
+      (this.ws.readyState === 0 /* CONNECTING — mid-dial, leave it */ ||
+        (this.ws.readyState === 1 /* OPEN */ &&
+          Date.now() - this.lastInbound < PING_INTERVAL_MS * 2.5));
     if (
       same &&
       this.active &&
@@ -1097,6 +1106,26 @@ export class GamepadClient {
         wsTrace.lastSocketState = wsStateName(ws);
       }
       return;
+    }
+    // Input-driven zombie recovery. The user's gesture is the one liveness
+    // signal that survives an iOS JS freeze: a FOREGROUND stall leaves the ping
+    // timer AND the pong watchdog frozen, and — now that the box keepalives the
+    // TCP — the socket never closes, so onclose/ensureLive never fire either
+    // (AppState 'active' only catches a real background→foreground transition,
+    // not a foreground stall). So when asked to send INPUT on a 'connected'
+    // socket that has heard nothing back for longer than the watchdog window,
+    // rebuild NOW instead of swiping into the void. This is the field case:
+    // green pill, dead mouse, recoverable only by force-quit. Pings are exempt
+    // (they must never trigger a rebuild), and a rebuilt/CONNECTING socket has
+    // status !== 'connected', so this fires at most once per freeze — the very
+    // next frame after the user resumes — not once per frame.
+    if (
+      f.t !== 'ping' &&
+      this.status === 'connected' &&
+      Date.now() - this.lastInbound > PING_INTERVAL_MS * 2.5
+    ) {
+      this.reconnect();
+      return; // can't land on a dead socket; the rebuilt one carries the next frame
     }
     // Note real input (anything but our own keepalive ping) so the watchdog can
     // tighten its dead-socket deadline while the user is actively driving.
