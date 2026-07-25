@@ -45,7 +45,7 @@ except ImportError:  # pragma: no cover
     fcntl = None
 
 APP_NAME = "couchside-agent"
-VERSION = "2.9.55"
+VERSION = "2.9.56"
 UID = os.getuid()
 XDG_RUNTIME_DIR = "/run/user/%d" % UID
 
@@ -8089,7 +8089,7 @@ SCREEN_LOCK = threading.Lock()    # single-flight: never stack captures
 _SCREEN = None                    # capability dict or None; set by set_screen
 _SCREEN_CACHE = {"ts": 0.0, "data": None, "mime": None}  # 500 ms frame cache
 # Grayscale 0-255. Below this a frame is ~uniform (an all-black compositor
-# readback) and is rejected as a failed capture rather than served. _png_complete
+# readback) and is rejected as a failed capture rather than served. _image_complete
 # only proves the PNG has an IEND chunk -- a perfectly well-formed all-black
 # frame passes it, and the app then shows a black preview that looks identical
 # to a working one.
@@ -8101,12 +8101,20 @@ def _screen_downscaler():
     """(argv-builder, name) for a PNG->JPEG downscaler, or (None, None). Prefers
     ImageMagick, then ffmpeg — both ship on gaming boxes; keeps the agent off PIL
     (absent on stock SteamOS)."""
+    # The jpeg:size hint is computed PER CALL (it depends on the source format,
+    # which differs by backend: spectacle gives JPEG, gamescopectl PNG) and must
+    # precede the read to have any effect. -thumbnail over -resize for the same
+    # reason as the variance probe: cheaper, and strips metadata.
     if shutil.which("magick"):
-        return (lambda src, dst: ["magick", src, "-resize", "%dx" % SCREEN_WIDTH,
-                                  "-quality", "80", dst], "magick")
+        return (lambda src, dst: (["magick"]
+                                  + _magick_size_hint(src, SCREEN_WIDTH, SCREEN_WIDTH)
+                                  + [src, "-thumbnail", "%dx" % SCREEN_WIDTH,
+                                     "-quality", "80", dst]), "magick")
     if shutil.which("convert"):
-        return (lambda src, dst: ["convert", src, "-resize", "%dx" % SCREEN_WIDTH,
-                                  "-quality", "80", dst], "convert")
+        return (lambda src, dst: (["convert"]
+                                  + _magick_size_hint(src, SCREEN_WIDTH, SCREEN_WIDTH)
+                                  + [src, "-thumbnail", "%dx" % SCREEN_WIDTH,
+                                     "-quality", "80", dst]), "convert")
     if shutil.which("ffmpeg"):
         return (lambda src, dst: ["ffmpeg", "-y", "-loglevel", "error", "-i", src,
                                   "-vf", "scale=%d:-1" % SCREEN_WIDTH, "-q:v", "6", dst],
@@ -8178,17 +8186,27 @@ def _screen_env(live=None):
     return env
 
 
-def _png_complete(path):
-    """True when a PNG is fully written: >=100 bytes and ends in the IEND chunk.
-    gamescopectl writes async, so the file appears before it is complete."""
+def _image_complete(path):
+    """True when a captured image is FULLY written: >=100 bytes and carrying its
+    format's end marker -- PNG's IEND chunk or JPEG's EOI (FFD9).
+
+    Format-aware on purpose. gamescopectl writes PNG asynchronously (the file
+    appears before it is complete, which is why this check exists at all) and
+    offers no format choice, while spectacle is pointed at JPEG for the speed
+    win. Checking only one format would silently reject every frame from the
+    other backend -- for gamescopectl that would mean Game Mode capture failing
+    everywhere, so the two markers are both handled rather than swapped."""
     try:
         if os.path.getsize(path) < 100:
             return False
         with open(path, "rb") as f:
             f.seek(-8, os.SEEK_END)
-            return f.read(8) == b"IEND\xaeB`\x82"
+            tail = f.read(8)
     except OSError:
         return False
+    if tail == b"IEND\xaeB`\x82":          # PNG
+        return True
+    return tail.endswith(b"\xff\xd9")      # JPEG EOI
 
 
 def _grab_gamescopectl(env, outdir):
@@ -8199,36 +8217,70 @@ def _grab_gamescopectl(env, outdir):
     except OSError:
         pass
     try:
-        subprocess.run(["gamescopectl", "screenshot", png], env=env,
-                       timeout=SCREEN_CAPTURE_TIMEOUT_S,
-                       stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        r = subprocess.run(["gamescopectl", "screenshot", png], env=env,
+                           timeout=SCREEN_CAPTURE_TIMEOUT_S,
+                           stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
     except Exception:
+        return None
+    # Fail FAST when the tool already gave up. gamescopectl exits non-zero in
+    # ~0.00s with "Failed to open GAMESCOPE_WAYLAND_DISPLAY" when the session is
+    # gone, but this used to poll the full SCREEN_CAPTURE_TIMEOUT_S anyway,
+    # waiting for a file the tool had already declined to write. That single
+    # ignored return code is what turned a fast fallback into 8 dead seconds on
+    # EVERY frame request (measured: 8.0s here + 0.67s spectacle = the 8.7s the
+    # app saw). The poll below exists for the ASYNC-WRITE case — a successful
+    # gamescopectl whose PNG lands a moment later — not for a failed one.
+    if r.returncode != 0:
         return None
     deadline = time.monotonic() + SCREEN_CAPTURE_TIMEOUT_S
     while time.monotonic() < deadline:
         if os.path.exists(png):
             s1 = os.path.getsize(png)
             time.sleep(0.1)
-            if s1 == os.path.getsize(png) and _png_complete(png):
+            if s1 == os.path.getsize(png) and _image_complete(png):
                 return png
         time.sleep(0.1)
     return None
 
 
 def _grab_spectacle(env, outdir):
-    """`spectacle -b -n -o <png>` (background, no notify) for a KDE desktop."""
-    png = os.path.join(outdir, "frame.png")
+    """`spectacle -b -n -o <jpg>` (background, no notify) for a KDE desktop.
+
+    Writes JPEG, not PNG, and the extension is what tells spectacle which. On a
+    3840x2160 panel that is worth ~0.4s of the frame budget on its own (measured
+    1.10-1.21s to PNG vs 0.66-0.85s to JPEG), and it also hands the downscale a
+    JPEG source, which unlocks the DCT-scaled decode in _magick_size_hint().
+    The capture is a lossy preview either way -- nothing downstream wants the
+    lossless 4MB intermediate. gamescopectl still writes PNG (it offers no
+    choice), hence the format-agnostic _image_complete()."""
+    jpg = os.path.join(outdir, "grab.jpg")
     try:
-        os.unlink(png)
+        os.unlink(jpg)
     except OSError:
         pass
     try:
-        subprocess.run(["spectacle", "-b", "-n", "-o", png], env=env,
+        subprocess.run(["spectacle", "-b", "-n", "-o", jpg], env=env,
                        timeout=SCREEN_CAPTURE_TIMEOUT_S,
                        stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
     except Exception:
         return None
-    return png if _png_complete(png) else None
+    return jpg if _image_complete(jpg) else None
+
+
+def _magick_size_hint(src, w, h):
+    """`-define jpeg:size=WxH` args for an ImageMagick read, when `src` is a JPEG.
+
+    Tells libjpeg to decode DCT-scaled straight to roughly the size we want
+    instead of unpacking the full 3840x2160 and resizing afterwards. Measured on
+    a 4K frame: the downscale stage drops 0.191s -> 0.031s and the 32x32 variance
+    probe 0.191s -> 0.023s. Decode DOMINATES this pipeline (decode-to-null floor
+    0.194s), which is also why lowering SCREEN_WIDTH or JPEG quality saved no
+    measurable time -- those shrink the OUTPUT, not the work.
+
+    Returns [] for a PNG source (the hint is JPEG-only), so gamescopectl's PNG
+    path is unaffected."""
+    return (["-define", "jpeg:size=%dx%d" % (w, h)]
+            if src.lower().endswith((".jpg", ".jpeg")) else [])
 
 
 def _grayscale_stddev(raw):
@@ -8253,12 +8305,17 @@ def _frame_variance(src, env):
     readback from a real desktop, and it is one short-lived subprocess on a path
     that already runs a downscale per capture (and is capped at ~2/sec by the
     500ms cache)."""
+    # -thumbnail, not -resize: it downsamples cheaply and strips metadata, and on
+    # a 4K frame that alone was 0.580s -> 0.195s. With the JPEG size hint in
+    # front of the read it drops to ~0.023s. Sampling quality is irrelevant here
+    # -- this only has to tell a black readback from a real desktop.
+    hint = _magick_size_hint(src, 32, 32)
     if shutil.which("magick"):
-        argv = ["magick", src, "-resize", "32x32!", "-colorspace", "Gray",
-                "-depth", "8", "GRAY:-"]
+        argv = (["magick"] + hint + [src, "-thumbnail", "32x32!",
+                "-colorspace", "Gray", "-depth", "8", "GRAY:-"])
     elif shutil.which("convert"):
-        argv = ["convert", src, "-resize", "32x32!", "-colorspace", "Gray",
-                "-depth", "8", "GRAY:-"]
+        argv = (["convert"] + hint + [src, "-thumbnail", "32x32!",
+                "-colorspace", "Gray", "-depth", "8", "GRAY:-"])
     elif shutil.which("ffmpeg"):
         argv = ["ffmpeg", "-y", "-loglevel", "error", "-i", src, "-vf",
                 "scale=32:32,format=gray", "-f", "rawvideo", "-"]
@@ -8331,7 +8388,7 @@ def real_screen_frame():
             if not grabbed:
                 return None
             # Checked BEFORE the downscale so a rejected frame costs nothing
-            # further. _png_complete() above only proves the file has an IEND
+            # further. _image_complete() above only proves the file has an end marker
             # chunk; an all-black readback is a perfectly well-formed PNG.
             if _reject_uniform_frame(grabbed, env):
                 return None
@@ -8350,8 +8407,11 @@ def real_screen_frame():
             return (data, "image/jpeg")
         finally:
             # Always clean tmpfs, even when the grab itself failed (no partial
-            # frame.png left behind on a box that never captures successfully).
-            for p in (png, jpg):
+            # frame left behind on a box that never captures successfully).
+            # grab.jpg is spectacle's RAW capture (distinct from the frame.jpg
+            # the downscaler writes) and must be swept too, or a 4K JPEG per
+            # capture accumulates in the runtime dir.
+            for p in (png, jpg, os.path.join(outdir, "grab.jpg")):
                 try:
                     os.unlink(p)
                 except OSError:
@@ -9179,19 +9239,85 @@ _CTRL_V_EVENTS = [
 ]
 
 
+def _socket_is_live(path):
+    """True when a compositor is actually RUNNING behind this wayland socket.
+
+    A compositor's socket file OUTLIVES the compositor: exiting Game Mode leaves
+    /run/user/<uid>/gamescope-0 behind in tmpfs indefinitely. Presence therefore
+    proves nothing, and every caller that treated it as proof mis-routed to a
+    dead session (see _wayland_display_sockets).
+
+    Checks the companion `<socket>.lock`, which is how wayland compositors mark
+    a display as taken: the compositor holds an exclusive flock on it for its
+    whole life. If WE can take that lock, nobody is home and the socket is a
+    corpse. The lock is released immediately; we never hold it.
+
+    DO NOT "simplify" this to a connect() probe. That was tried first and is
+    actively harmful: connecting consumes a slot in the listen backlog without
+    accepting, so repeated probes against a live compositor that is slow to
+    accept can make it look REFUSED -- i.e. the check would declare a healthy
+    session dead. It was caught by a test that connected twice against
+    listen(1). flock touches nothing the compositor is waiting on.
+
+    Degrades toward "assume live": no lock file (a compositor that does not use
+    one), an unreadable lock, or any unexpected error returns True, so a probe
+    failure can only ever cost us the old behaviour and never hides a working
+    session."""
+    if fcntl is None:                       # non-POSIX: no flock to consult
+        return True
+    lock = path + ".lock"
+    try:
+        fd = os.open(lock, os.O_RDWR)
+    except OSError:
+        return True                         # no/unreadable lock file -> can't tell
+    try:
+        try:
+            fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except OSError:
+            return True                     # held by the running compositor
+        # We took it, so no compositor holds this display. Release immediately.
+        try:
+            fcntl.flock(fd, fcntl.LOCK_UN)
+        except OSError:
+            pass
+        return False
+    finally:
+        try:
+            os.close(fd)
+        except OSError:
+            pass
+
+
 def _wayland_display_sockets():
-    """Names of wayland DISPLAY sockets in XDG_RUNTIME_DIR. Recognizes the
+    """Names of LIVE wayland DISPLAY sockets in XDG_RUNTIME_DIR. Recognizes the
     standard wayland-<N> and gamescope's gamescope-<N> (Bazzite / Steam Deck
     Game Mode names its compositor socket gamescope-0, NOT wayland-0), while
-    excluding lock files and gamescope's -ei / -stats side sockets. Never raises."""
+    excluding lock files and gamescope's -ei / -stats side sockets. Never raises.
+
+    LIVENESS IS CHECKED HERE, at the source, because presence is not aliveness
+    and both callers were burned by the difference. Measured on a Bazzite box
+    after leaving Game Mode: gamescope-0 still on disk with no gamescope process
+    and nothing listening, which made
+      - _screen_live()  report session "gamescope" on a Plasma desktop, so every
+        capture fired gamescopectl at a dead compositor, and
+      - _screen_env()   pin WAYLAND_DISPLAY=gamescope-0, which then broke the
+        spectacle FALLBACK too ("Authorization required").
+    The result was 10/10 requests returning 503 after ~8.7s each — a total,
+    permanent failure until reboot, not the intermittent one it looked like.
+    Filtering dead sockets here fixes both callers at once; fixing only the
+    session decision would leave the env pinned to a corpse."""
     out = []
     try:
         for e in os.listdir(XDG_RUNTIME_DIR):
             if e.endswith(".lock"):
                 continue
             if e.startswith("wayland-") and e[len("wayland-"):].isdigit():
-                out.append(e)
+                pass
             elif e.startswith("gamescope-") and e[len("gamescope-"):].isdigit():
+                pass
+            else:
+                continue
+            if _socket_is_live(os.path.join(XDG_RUNTIME_DIR, e)):
                 out.append(e)
     except OSError:
         pass
