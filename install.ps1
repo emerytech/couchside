@@ -131,8 +131,30 @@ if (-not (Test-Admin)) {
 function Stop-AgentTask {
     # Stop-ScheduledTask kills a running instance; Unregister does NOT, so an
     # upgrade must stop first or copying over the running files/exe conflicts.
+    #
+    # But Stop-ScheduledTask only ends an instance the TASK still tracks, and a
+    # logon-launched agent routinely outlives that: measured on a real box, the
+    # task read "Ready" while couchside-agent.exe was very much alive. Nothing
+    # was stopped, the .exe stayed locked, and the upgrade died on
+    # "Copy-Item ... because it is being used by another process" -- which Inno
+    # then reported as a successful install. So also stop the process by name,
+    # and WAIT for the handle to drop (process exit is asynchronous, and copying
+    # a millisecond too early fails exactly the same way).
     Stop-ScheduledTask -TaskName $TaskName -ErrorAction SilentlyContinue
-    Start-Sleep -Milliseconds 500
+    Get-Process -Name 'couchside-agent' -ErrorAction SilentlyContinue |
+        Stop-Process -Force -ErrorAction SilentlyContinue
+    $exe = Join-Path $InstallDir 'couchside-agent.exe'
+    if (Test-Path $exe) {
+        foreach ($i in 1..20) {           # up to ~5s, then let the copy report
+            try {
+                $fs = [IO.File]::Open($exe, 'Open', 'ReadWrite', 'None')
+                $fs.Close()
+                break
+            } catch { Start-Sleep -Milliseconds 250 }
+        }
+    } else {
+        Start-Sleep -Milliseconds 500
+    }
 }
 
 function Uninstall-Couchside {
