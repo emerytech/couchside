@@ -45,7 +45,7 @@ except ImportError:  # pragma: no cover
     fcntl = None
 
 APP_NAME = "couchside-agent"
-VERSION = "2.9.54"
+VERSION = "2.9.55"
 UID = os.getuid()
 XDG_RUNTIME_DIR = "/run/user/%d" % UID
 
@@ -1420,6 +1420,63 @@ def _drop_dir():
             or os.path.join(os.path.expanduser("~"), "Downloads", "Couchside"))
     os.makedirs(base, exist_ok=True)
     return os.path.realpath(base)
+
+
+def drop_dir_reveal():
+    """Open the drop dir in the box's file manager (POST /api/upload/reveal).
+
+    A file that lands invisibly is a file the user has to go hunting for, so the
+    app offers a "Show on box" tap after a successful drop.
+
+    DESKTOP ONLY, deliberately. In Game Mode there is no file manager to raise —
+    gamescope shows only what Steam surfaces, so a spawned Dolphin window would
+    either do nothing visible or land behind the session. Reports an honest
+    skip-with-reason there rather than claiming success (a dead button costs more
+    trust than a missing one).
+
+    SECURITY: takes NO client input. The path is this module's own `_drop_dir()`
+    constant and the program comes from the frozen list below, so a caller can
+    only ever ask for "the drop dir" — there is nothing to point somewhere else.
+
+    Names the file manager instead of delegating to xdg-open. MEASURED on a live
+    Bazzite box: `xdg-mime query default inode/directory` returned
+    `de.leopoldluley.Clapgrep.desktop` — a text-search app — so xdg-open opened a
+    grep tool over the folder and then HUNG until the timeout (exit 124). Any
+    installed app can claim inode/directory, so asking the desktop to guess is
+    how "Show on box" silently does the wrong thing. xdg-open stays only as a
+    last resort when no known manager exists."""
+    if not desktop_available():
+        return {"opened": False,
+                "reason": "the box is in Game Mode; switch to the desktop first"}
+    path = _drop_dir()
+    # Frozen preference order: KDE first (SteamOS/Bazzite ship Plasma), then the
+    # common GTK managers. Chosen by the agent; never by the client.
+    cmd = None
+    for prog in ("dolphin", "nautilus", "nemo", "thunar", "pcmanfm"):
+        if shutil.which(prog):
+            cmd = [prog, path]
+            break
+    if cmd is None:
+        if not shutil.which("xdg-open"):
+            return {"opened": False, "reason": "no file manager on this box"}
+        cmd = ["xdg-open", path]
+    # Popen, not run(): a file manager runs for as long as its window is open, so
+    # waiting on it would pin a thread for that whole time (and xdg-open can hang
+    # outright, as measured above). Detached so it outlives this request.
+    #
+    # _session_env(), not _user_env(): a GUI app needs DISPLAY / WAYLAND_DISPLAY,
+    # and _user_env() sets only XDG_RUNTIME_DIR. Measured on the box — with the
+    # bare user env dolphin started and exited immediately (a <defunct> child and
+    # no window); the session env is what the launcher path already uses.
+    try:
+        subprocess.Popen(cmd, env=_session_env(), stdin=subprocess.DEVNULL,
+                         stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                         start_new_session=True)
+    except Exception as e:
+        return {"opened": False,
+                "reason": "could not start %s on the box" % cmd[0],
+                "detail": e.__class__.__name__}
+    return {"opened": True, "path": path, "with": cmd[0]}
 
 
 # ---------------------------------------------------------------------------
@@ -12501,6 +12558,16 @@ class Handler(BaseHTTPRequestHandler):
                 self._send(413, {"error": "request body too large"}, started)
                 return
             body = self._read_body()
+
+            # POST /api/upload/reveal — open the drop dir in the box's file
+            # manager after a drop. Takes NO body and NO parameters: the path is
+            # the agent's own _drop_dir(), so there is nothing a client can point
+            # elsewhere. Always 200 with {opened: bool} — Game Mode reports an
+            # honest opened:false + reason rather than a fake success.
+            if path == "/api/upload/reveal":
+                self._send(200, (({"opened": True, "path": "/home/deck/Downloads/Couchside"})
+                                 if self.mock else drop_dir_reveal()), started)
+                return
 
             # POST /api/steam/menus {"id": "<panel>"}: open one Steam settings
             # page on the box's screen. 404 on an id that is not on the frozen

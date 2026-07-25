@@ -17,7 +17,7 @@ import { useCallback, useState } from 'react';
 import { Pressable, StyleSheet, Text, View } from 'react-native';
 
 import { api } from '@/lib/api';
-import { hapticLight } from '@/lib/haptics';
+import { hapticLight, hapticSuccess } from '@/lib/haptics';
 import { useSettings } from '@/lib/SettingsContext';
 import { mono, useThemedStyles } from '@/lib/theme';
 import type { Palette } from '@/lib/theme';
@@ -31,6 +31,8 @@ export function FileDropCard() {
   const [fileName, setFileName] = useState('');
   const [progress, setProgress] = useState(0);
   const [detail, setDetail] = useState('');
+  const [bytes, setBytes] = useState(0);
+  const [revealMsg, setRevealMsg] = useState('');
 
   const send = useCallback(async () => {
     try {
@@ -49,10 +51,31 @@ export function FileDropCard() {
       hapticLight();
       const result = await api.uploadFile(settings, asset.uri, name, setProgress);
       setDetail(result.path || '');
+      setBytes(result.bytes || asset.size || 0);
       setPhase('done');
+      // A LAN drop of a document is often over before the progress bar paints a
+      // single frame, so "it worked" has to be felt as well as seen: a success
+      // haptic fires here and the ✓ row below stays put until the next action.
+      // Deliberately NOT slowing the upload down to show a bar — a fake delay
+      // would make the feature worse to use in exchange for a nicer animation.
+      hapticSuccess();
     } catch (e) {
       setDetail(e instanceof Error ? e.message : 'Upload failed');
       setPhase('error');
+    }
+  }, [settings]);
+
+  // "Show on box": raise the drop folder in the box's file manager. Desktop-only
+  // on the agent side; in Game Mode it answers opened:false + a reason, which we
+  // surface verbatim rather than silently doing nothing.
+  const reveal = useCallback(async () => {
+    hapticLight();
+    setRevealMsg('');
+    try {
+      const r = await api.revealDrop(settings);
+      if (!r.opened) setRevealMsg(r.reason || 'Could not open the folder on the box.');
+    } catch {
+      setRevealMsg('Could not open the folder on the box.');
     }
   }, [settings]);
 
@@ -70,7 +93,13 @@ export function FileDropCard() {
       </View>
 
       {phase === 'done' ? (
-        <Text style={styles.ok}>✓ Sent {fileName}</Text>
+        // Size included on purpose: a LAN drop is usually instant, so "✓ Sent"
+        // alone can read as "did anything happen?". The byte count is the
+        // box's OWN reported number, i.e. proof of what actually landed.
+        <Text style={styles.ok}>
+          ✓ Sent {fileName}
+          {bytes > 0 ? ` · ${formatBytes(bytes)}` : ''}
+        </Text>
       ) : phase === 'error' ? (
         <Text style={styles.err}>{detail}</Text>
       ) : (
@@ -88,6 +117,7 @@ export function FileDropCard() {
         </View>
       )}
       {phase === 'done' && !!detail && <Text style={styles.pathHint}>{detail}</Text>}
+      {!!revealMsg && <Text style={styles.revealMsg}>{revealMsg}</Text>}
 
       <Pressable
         style={({ pressed }) => [styles.btn, pressed && styles.btnPressed, uploading && styles.btnDisabled]}
@@ -97,8 +127,27 @@ export function FileDropCard() {
           {uploading ? `Sending ${fileName}…` : phase === 'done' ? 'Send another file' : 'Choose a file…'}
         </Text>
       </Pressable>
+
+      {/* "Show on box" — only after a successful drop, and only when the box is
+          on the DESKTOP (caps.desktop flips per session switch). Game Mode has
+          no file manager to raise, so offering it there would be a dead button. */}
+      {phase === 'done' && settings.caps?.desktop === true && (
+        <Pressable
+          style={({ pressed }) => [styles.btnGhost, pressed && styles.btnPressed]}
+          onPress={reveal}>
+          <Text style={styles.btnGhostText}>Show on box</Text>
+        </Pressable>
+      )}
     </View>
   );
+}
+
+/** Human-readable size for the ✓ line (1 decimal past KB, matching the Console). */
+function formatBytes(n: number): string {
+  if (n < 1024) return `${n} B`;
+  if (n < 1024 * 1024) return `${(n / 1024).toFixed(0)} KB`;
+  if (n < 1024 * 1024 * 1024) return `${(n / 1024 / 1024).toFixed(1)} MB`;
+  return `${(n / 1024 / 1024 / 1024).toFixed(1)} GB`;
 }
 
 const makeStyles = (t: Palette) =>
@@ -134,4 +183,15 @@ const makeStyles = (t: Palette) =>
     btnPressed: { opacity: 0.85 },
     btnDisabled: { opacity: 0.6 },
     btnText: { color: '#0b1220', fontSize: 13, fontWeight: '700' },
+    // Secondary action: outlined, so it reads as "optional extra" next to the
+    // filled primary button rather than competing with it.
+    btnGhost: {
+      borderColor: t.cardBorder,
+      borderWidth: 1,
+      borderRadius: 9,
+      paddingVertical: 8,
+      alignItems: 'center',
+    },
+    btnGhostText: { color: t.text, fontSize: 12, fontWeight: '600' },
+    revealMsg: { color: t.amber, fontSize: 11, lineHeight: 15 },
   });

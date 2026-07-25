@@ -17,6 +17,7 @@ plus the capability wiring on the agent side (file_upload in mock + real CAPS).
 Pure stdlib, no pytest — same style as the other agent tests.
 """
 import http.client
+import json
 import importlib.util
 import os
 import tempfile
@@ -130,11 +131,44 @@ def test_capability_wired():
     check("file_upload" in cs.CAPS, "real caps compute file_upload")
 
 
+def test_reveal_requires_auth_and_gates_on_desktop():
+    """POST /api/upload/reveal — "Show on box" after a drop.
+
+    Three properties matter: it is bearer-gated like every other state-changing
+    route; it takes NO client input (so there is nothing to point at another
+    directory); and it degrades HONESTLY in Game Mode (opened:false + a reason)
+    instead of claiming it raised a file manager that isn't there.
+    """
+    print("reveal: auth-gated, no client input, honest Game-Mode skip")
+    srv, port, drop, _ = _server()
+    real_desktop = cs.desktop_available
+    try:
+        status, _ = _post(port, "/api/upload/reveal", b"", token=None)
+        check(status == 401, "no bearer -> 401")
+
+        # Game Mode (or any non-desktop box): must NOT claim success.
+        cs.desktop_available = lambda: False
+        status, data = _post(port, "/api/upload/reveal", b"")
+        body = json.loads(data.decode("utf-8"))
+        check(status == 200, "authed -> 200")
+        check(body.get("opened") is False, "Game Mode -> opened:false")
+        check(bool(body.get("reason")), "Game Mode -> says why")
+
+        # The function is the whole surface: it accepts no arguments at all, so a
+        # client cannot steer WHICH directory is opened.
+        check(cs.drop_dir_reveal.__code__.co_argcount == 0,
+              "reveal takes no client-supplied arguments")
+    finally:
+        cs.desktop_available = real_desktop
+        srv.shutdown()
+
+
 if __name__ == "__main__":
     test_happy_path()
     test_auth_failure()
     test_reject_bad_names()
     test_capability_wired()
+    test_reveal_requires_auth_and_gates_on_desktop()
     if _fail:
         print("\n%d check(s) failed" % len(_fail))
         raise SystemExit(1)
