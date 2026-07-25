@@ -904,6 +904,10 @@ export function capsEqual(a?: BoxCaps, b?: BoxCaps): boolean {
 /** Result of a successful POST /api/upload (agent >= 2.9.54). */
 export type UploadResult = { ok: boolean; name: string; bytes: number; path: string };
 
+/** Result of POST /api/upload/reveal (agent >= 2.9.55). `opened` is false with a
+ *  human-readable `reason` when the box can't raise a file manager (Game Mode). */
+export type RevealResult = { opened: boolean; path?: string; reason?: string };
+
 /**
  * Upload a local file to the box's drop dir (POST /api/upload, agent >= 2.9.54).
  *
@@ -1979,6 +1983,17 @@ export const api = {
   /** Exit Couch Mode: return the box to its desktop session. */
   desktopMode(settings: ConnSettings): Promise<{ ok: boolean }> {
     return request(settings, '/api/desktop-mode', { method: 'POST' });
+  },
+
+  /**
+   * Open the box's drop dir in its file manager after a file drop
+   * (agent >= 2.9.55). Desktop-only on the box side: in Game Mode it answers
+   * 200 with {opened:false, reason} rather than pretending, so the caller can
+   * show the reason instead of a lie. Takes no arguments — the agent opens its
+   * OWN drop dir, nothing client-supplied.
+   */
+  revealDrop(settings: ConnSettings): Promise<RevealResult> {
+    return request(settings, '/api/upload/reveal', { method: 'POST' });
   },
 
   /**
