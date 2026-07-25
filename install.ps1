@@ -44,7 +44,7 @@ param(
     [switch]$KeepHibernate,  # skip `powercfg /hibernate off`
     [string]$Ref = 'main',   # git ref to download the agent from
     [switch]$FromInstaller   # set by CouchsideSetup.exe: the elevated relaunch must
-                             # WAIT (so Inno's waituntilterminated tracks the real
+                             # WAIT (so the installer's Exec() tracks the real
                              # install) and must NOT keep a -NoExit window open
 )
 
@@ -114,10 +114,12 @@ if (-not (Test-Admin)) {
             # -Wait blocks the outer process so the caller sees the install finish
             # rather than the async RunAs handoff returning instantly; -PassThru
             # lets us mirror the child's exit code outward.
-            # NOTE: Inno's [Run] with waituntilterminated does NOT inspect exit
-            # codes, so today this code is only observable to a caller that reads
-            # it -- the wizard still reports success either way. Surfacing a failed
-            # install in the wizard needs a [Code] Exec() that checks ResultCode.
+            # This exit code is LOAD-BEARING as of couchside-windows 896d4be:
+            # CouchsideSetup.exe runs this script from Inno's PrepareToInstall and
+            # aborts the wizard (exit code 7, error on screen, nothing installed)
+            # when it is non-zero. Before that it ran from a [Run] entry, which
+            # never inspects exit codes -- a failed install still showed "Setup
+            # completed successfully". So do not swallow a failure here.
             $child = Start-Process powershell -Verb RunAs -ArgumentList $a -Wait -PassThru
             exit $child.ExitCode
         }
