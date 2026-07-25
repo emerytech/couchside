@@ -18,6 +18,27 @@ the same thing regardless of what actually changed.
 Write for the person holding the phone, not for the commit log. They are
 deciding whether to press "Update now" on a machine across the room.
 
+## 2.9.56
+
+Send files to the box from your phone — and the screen preview works again.
+
+- **Send a file to your box.** A new card on the Console tab: pick anything on
+  your phone — a ROM, a save, a PDF, a photo — and it lands in
+  `~/Downloads/Couchside` on the box. Big files are fine; they stream straight
+  across rather than being held in memory. On the desktop, **Show on box** opens
+  that folder on the TV so you can get at what you just sent.
+- **The screen preview is fixed.** If you had ever switched between Game Mode
+  and the desktop, the preview would quietly stop updating — a stale picture, or
+  nothing at all, taking about nine seconds to give up each time. It was aiming
+  at the session you had left, which sticks around after it ends. The box now
+  checks whether that session is genuinely still running, so the preview follows
+  you between Game Mode and the desktop.
+- **Preview frames arrive about 2.4x faster** — roughly two seconds down to
+  under one — so the Screen card feels far less sluggish.
+- Coming from before 2.9.53, you also get: the trackpad no longer goes dead
+  after the phone sits idle, and on Windows your Epic, GOG and Xbox / Game Pass
+  games appear next to Steam.
+
 ## 2.9.53
 
 The trackpad stays alive — and on Windows, your whole game library shows up.
