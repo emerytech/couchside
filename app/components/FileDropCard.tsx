@@ -13,7 +13,7 @@
  */
 import Ionicons from '@expo/vector-icons/Ionicons';
 import * as DocumentPicker from 'expo-document-picker';
-import { useCallback, useState } from 'react';
+import { useCallback, useEffect, useState } from 'react';
 import { Pressable, StyleSheet, Text, View } from 'react-native';
 
 import { api } from '@/lib/api';
@@ -24,6 +24,11 @@ import type { Palette } from '@/lib/theme';
 
 type Phase = 'idle' | 'uploading' | 'done' | 'error';
 
+/** How long the "✓ Sent …" confirmation stays before the card resets itself.
+ *  Long enough to read it and still tap "Show on box"; short enough that the
+ *  card isn't still naming a file you sent ten minutes ago. */
+const DONE_LINGER_MS = 12_000;
+
 export function FileDropCard() {
   const { settings } = useSettings();
   const styles = useThemedStyles(makeStyles);
@@ -33,6 +38,24 @@ export function FileDropCard() {
   const [detail, setDetail] = useState('');
   const [bytes, setBytes] = useState(0);
   const [revealMsg, setRevealMsg] = useState('');
+
+  // The ✓ line used to sit there with the filename until the next upload, so the
+  // card kept advertising a file you sent minutes ago. Clear back to the neutral
+  // prompt after a beat — long enough to read the confirmation and still tap
+  // "Show on box", short enough that the card doesn't become a stale receipt.
+  // Only the SUCCESS state auto-clears: an error has to stay until it's read.
+  useEffect(() => {
+    if (phase !== 'done') return undefined;
+    const id = setTimeout(() => {
+      setPhase('idle');
+      setFileName('');
+      setBytes(0);
+      setDetail('');
+      setRevealMsg('');
+      setProgress(0);
+    }, DONE_LINGER_MS);
+    return () => clearTimeout(id);
+  }, [phase]);
 
   const send = useCallback(async () => {
     try {
