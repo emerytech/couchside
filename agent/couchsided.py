@@ -45,7 +45,7 @@ except ImportError:  # pragma: no cover
     fcntl = None
 
 APP_NAME = "couchside-agent"
-VERSION = "2.9.53"
+VERSION = "2.9.54"
 UID = os.getuid()
 XDG_RUNTIME_DIR = "/run/user/%d" % UID
 
@@ -1390,7 +1390,7 @@ def set_caps(mock):
         CAPS = {k: True for k in
                 ("gamepad", "steam", "media", "tv", "screen", "power_schedule",
                  "screensaver", "couchmode", "desktop", "steamlink", "gaming",
-                 "streamhost", "steammenus", "boxbattery")}
+                 "streamhost", "steammenus", "boxbattery", "file_upload")}
         return
     CAPS = {
         "gamepad": _uinput_writable(),
@@ -1407,7 +1407,19 @@ def set_caps(mock):
         "streamhost": safe(streamhost_available),
         "steammenus": safe(steammenus_available),
         "boxbattery": safe(box_battery_available),
+        "file_upload": safe(lambda: os.access(_drop_dir(), os.W_OK)),
     }
+
+
+def _drop_dir():
+    """Directory where phone->box file uploads land (POST /api/upload). Default
+    ~/Downloads/Couchside, overridable with COUCHSIDE_DROP_DIR; created on demand.
+    Returned realpath'd — it is the containment root every upload path is verified
+    against, so it must be absolute and symlink-resolved."""
+    base = (os.environ.get("COUCHSIDE_DROP_DIR", "").strip()
+            or os.path.join(os.path.expanduser("~"), "Downloads", "Couchside"))
+    os.makedirs(base, exist_ok=True)
+    return os.path.realpath(base)
 
 
 # ---------------------------------------------------------------------------
@@ -11727,6 +11739,12 @@ class Handler(BaseHTTPRequestHandler):
     # only bodies this agent accepts (tiny launcher/volume/power JSON).
     MAX_BODY_BYTES = 8 * 1024 * 1024
 
+    # Cap on a phone->box file upload (/api/upload). Uploads are streamed to disk
+    # in chunks (NOT read into memory, NOT gated by MAX_BODY_BYTES), so this only
+    # bounds how much disk one request can consume. 8 GiB covers game/video files
+    # while stopping a single request from filling the drive.
+    MAX_UPLOAD_BYTES = 8 * 1024 * 1024 * 1024
+
     # set by main()
     token = ""
     token_file = None   # path to re-read the current token for /pair
@@ -12334,6 +12352,80 @@ class Handler(BaseHTTPRequestHandler):
             n = self.MAX_BODY_BYTES
         return self.rfile.read(n)
 
+    def _handle_upload(self, parsed, started):
+        """Stream a phone->box file upload to the drop dir. Bearer-gated by the
+        caller. The filename must be a bare, contained name (rejected, not
+        sanitised, otherwise); the destination is realpath-verified to stay inside
+        the drop root; the body is copied in 1 MiB chunks under a hard size cap.
+        Any error path that has not fully consumed the body closes the connection
+        so an undrained upload can't desync the keep-alive stream."""
+        qs = parse_qs(parsed.query)
+        name = (qs.get("name", [""])[0] or "").strip()
+        # Reject rather than sanitise (§3.6): a valid drop name has no path
+        # separators, no traversal, no NUL, and equals its own basename.
+        if (not name or name in (".", "..") or "/" in name or "\\" in name
+                or "\x00" in name or name != os.path.basename(name)):
+            self.close_connection = True
+            self._send(400, {"error": "invalid filename"}, started)
+            return
+        root = _drop_dir()
+        dest = os.path.realpath(os.path.join(root, name))
+        # Containment (§3.5): the resolved path must stay under the drop root.
+        if dest != root and not dest.startswith(root + os.sep):
+            self.close_connection = True
+            self._send(400, {"error": "invalid filename"}, started)
+            return
+        try:
+            length = int(self.headers.get("Content-Length") or 0)
+        except ValueError:
+            length = -1
+        if length <= 0:
+            self.close_connection = True
+            self._send(411, {"error": "length required"}, started)
+            return
+        if length > self.MAX_UPLOAD_BYTES:
+            self.close_connection = True
+            self._send(413, {"error": "file too large"}, started)
+            return
+        tmp = dest + ".part"
+        written = 0
+        try:
+            with open(tmp, "wb") as f:
+                remaining = length
+                while remaining > 0:
+                    chunk = self.rfile.read(min(1024 * 1024, remaining))
+                    if not chunk:
+                        break
+                    f.write(chunk)
+                    remaining -= len(chunk)
+                    written += len(chunk)
+        except OSError:
+            self._unlink_quiet(tmp)
+            self._send(500, {"error": "write failed"}, started)
+            return
+        if written != length:
+            # Short read: client hung up mid-upload. Drop the partial and close
+            # the now-desynced keep-alive connection.
+            self._unlink_quiet(tmp)
+            self.close_connection = True
+            self._send(400, {"error": "incomplete upload"}, started)
+            return
+        try:
+            os.replace(tmp, dest)  # atomic swap into place once fully received
+        except OSError:
+            self._unlink_quiet(tmp)
+            self._send(500, {"error": "write failed"}, started)
+            return
+        self._send(200, {"ok": True, "name": name, "bytes": written,
+                         "path": dest}, started)
+
+    @staticmethod
+    def _unlink_quiet(path):
+        try:
+            os.unlink(path)
+        except OSError:
+            pass
+
     def do_POST(self):
         started = time.monotonic()
         try:
@@ -12391,6 +12483,16 @@ class Handler(BaseHTTPRequestHandler):
             if not self._authorized():
                 self.close_connection = True
                 self._send(401, {"error": "unauthorized"}, started)
+                return
+
+            # POST /api/upload?name=<filename> — a phone->box file drop. Handled
+            # HERE, before the generic 8 MiB memory cap and _read_body: uploads
+            # are large (games, videos) so the body is STREAMED to disk in chunks
+            # rather than read into memory. The filename is rejected (not cleaned)
+            # unless it is a bare, contained name, and the resolved destination is
+            # verified to stay inside the drop root (§3.5/§3.6).
+            if path == "/api/upload":
+                self._handle_upload(parsed, started)
                 return
 
             # Authorized: now enforce the size cap, then read the body.

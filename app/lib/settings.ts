@@ -251,10 +251,14 @@ function normalizeCaps(raw: unknown): BoxCaps | undefined {
   // and the cap never persists, so the Launch tab re-decides from `steam` every
   // launch. undefined stays undefined = "fall back to steam".
   const launchers = bool('launchers');
+  // file_upload arrived with agent 2.9.54 — same optional-cap drop trap: omit it
+  // here (and from capsEqual) and the cap never persists, so the "Send a file"
+  // card re-probes every launch.
+  const file_upload = bool('file_upload');
   return {
     gamepad, steam, media, tv, screen, power_schedule,
     screensaver, couchmode, desktop, steamlink, gaming, streamhost, steammenus,
-    boxbattery, launchers,
+    boxbattery, launchers, file_upload,
   };
 }
 
