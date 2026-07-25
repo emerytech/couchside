@@ -142,6 +142,14 @@ export type BoxCaps = {
    * undefined reads as "unknown, probe" — only an explicit false skips it.
    */
   streamhost?: boolean;
+  /**
+   * Any game launcher the box can drive — Steam, Epic, GOG Galaxy, or a custom
+   * launcher (Windows agent >= 0.4.0-win). Gates the Launch tab in place of
+   * `steam` alone, so an Epic/GOG/Game Pass box shows its games too. Optional:
+   * absent on older agents and every Linux agent, so undefined falls back to
+   * `steam` for the tab decision — never hides on a guess.
+   */
+  launchers?: boolean;
 };
 
 /** One connected display, from GET /api/displays. */
@@ -880,7 +888,8 @@ export function capsEqual(a?: BoxCaps, b?: BoxCaps): boolean {
     a.gaming === b.gaming &&
     a.streamhost === b.streamhost &&
     a.steammenus === b.steammenus &&
-    a.boxbattery === b.boxbattery
+    a.boxbattery === b.boxbattery &&
+    a.launchers === b.launchers
   );
 }
 

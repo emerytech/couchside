@@ -32,7 +32,13 @@ export default function TabLayout() {
   // or agent < 2.8.2) leaves both visible — never hide a tab on a guess.
   const caps = activeBox?.caps;
   const hidePad = caps?.gamepad === false;
-  const hideLaunch = caps?.steam === false;
+  // `launchers` (Windows agent >= 0.4.0-win) means "any launcher present"
+  // (Steam/Epic/GOG/custom), so an Epic/GOG/Game Pass box shows the Launch tab
+  // even without Steam. Older agents (and every Linux agent) don't send it, so
+  // fall back to the `steam` cap — never hide the tab on a guess.
+  const hideLaunch =
+    caps?.launchers === false ||
+    (caps?.launchers === undefined && caps?.steam === false);
 
   // On true first run (persisted fleet loaded, but empty) send the user to
   // Setup to pair. Otherwise honour the landing-tab preference.

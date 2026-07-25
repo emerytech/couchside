@@ -42,7 +42,10 @@ param(
     [switch]$NoFirewall,
     [switch]$NoGamepad,      # skip the ViGEmBus virtual-controller install
     [switch]$KeepHibernate,  # skip `powercfg /hibernate off`
-    [string]$Ref = 'main'    # git ref to download the agent from
+    [string]$Ref = 'main',   # git ref to download the agent from
+    [switch]$FromInstaller   # set by CouchsideSetup.exe: the elevated relaunch must
+                             # WAIT (so Inno's waituntilterminated tracks the real
+                             # install) and must NOT keep a -NoExit window open
 )
 
 $ErrorActionPreference = 'Stop'
@@ -89,17 +92,37 @@ if (-not (Test-Admin)) {
     if ($NoFirewall)     { $fwd += '-NoFirewall' }
     if ($NoGamepad)      { $fwd += '-NoGamepad' }
     if ($KeepHibernate)  { $fwd += '-KeepHibernate' }
+    if ($FromInstaller)  { $fwd += '-FromInstaller' }
     $fwd += "-Port $Port"; $fwd += "-Ref $Ref"
+    # A human running this directly wants -NoExit so the elevated window stays up to
+    # read. The Inno installer wants the opposite: no leftover window, AND the outer
+    # (non-elevated) process must block on the elevated child so waituntilterminated
+    # sees real completion instead of the async RunAs handoff returning instantly.
+    $base = @('-NoProfile','-ExecutionPolicy','Bypass')
+    if (-not $FromInstaller) { $base += '-NoExit' }
     if ($PSCommandPath) {
         # Run from a file: relaunch that same file elevated.
-        $a = @('-NoProfile','-ExecutionPolicy','Bypass','-NoExit','-File',"`"$PSCommandPath`"") + $fwd
+        $a = $base + @('-File',"`"$PSCommandPath`"") + $fwd
     } else {
         # Piped from the web: re-fetch and run in the elevated window, carrying
         # the resolved params through a scriptblock so options aren't lost.
         $inner = "& ([scriptblock]::Create((irm $SelfUrl))) $($fwd -join ' ')"
-        $a = @('-NoProfile','-ExecutionPolicy','Bypass','-NoExit','-Command',$inner)
+        $a = $base + @('-Command',$inner)
     }
-    try { Start-Process powershell -Verb RunAs -ArgumentList $a }
+    try {
+        if ($FromInstaller) {
+            # -Wait blocks the outer process so the caller sees the install finish
+            # rather than the async RunAs handoff returning instantly; -PassThru
+            # lets us mirror the child's exit code outward.
+            # NOTE: Inno's [Run] with waituntilterminated does NOT inspect exit
+            # codes, so today this code is only observable to a caller that reads
+            # it -- the wizard still reports success either way. Surfacing a failed
+            # install in the wizard needs a [Code] Exec() that checks ResultCode.
+            $child = Start-Process powershell -Verb RunAs -ArgumentList $a -Wait -PassThru
+            exit $child.ExitCode
+        }
+        Start-Process powershell -Verb RunAs -ArgumentList $a
+    }
     catch { throw 'Elevation was declined. Re-run from an elevated PowerShell (Run as administrator).' }
     return
 }

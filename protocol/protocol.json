@@ -183,5 +183,14 @@
       "steammenus",
       "streamhost"
     ]
+  },
+  "windowsOnlyCapabilities": {
+    "_doc": "Windows-only TODAY. `launchers` means 'this box can drive at least one game launcher' (Steam, Epic, GOG Galaxy, or a configured custom launcher) and exists because the Windows agent discovers non-Steam stores, so a PC with only Epic/GOG/Game Pass still has a Launch tab worth showing -- the older `steam` cap alone would hide it. Portable in principle and simply NOT ported to Linux yet, so it is recorded here as a decision rather than rediscovered as a surprise. The app treats a MISSING cap as unknown (not false) and falls back to `steam` for the tab decision, so a Linux box is unaffected.",
+    "platforms": [
+      "windows"
+    ],
+    "keys": [
+      "launchers"
+    ]
   }
 }

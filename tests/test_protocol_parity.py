@@ -179,7 +179,7 @@ def _ts_union(name):
     return set(re.findall(r"'([^']+)'", m.group(1)))
 
 
-CAP_GROUPS = ("capabilities", "linuxOnlyCapabilities")
+CAP_GROUPS = ("capabilities", "linuxOnlyCapabilities", "windowsOnlyCapabilities")
 
 APP_UNIONS = {
     "buttons": "ButtonKey",
@@ -276,7 +276,8 @@ def test_capabilities():
                 check(not leaked, "%s: %s correctly absent (leaked: %s)"
                       % (plat, gname, leaked or "none"))
     # No agent may declare a cap the spec has never heard of.
-    declared = set(group("capabilities")[0]) | set(group("linuxOnlyCapabilities")[0])
+    declared = (set(group("capabilities")[0]) | set(group("linuxOnlyCapabilities")[0])
+                | set(group("windowsOnlyCapabilities")[0]))
     for plat, mod in AGENTS.items():
         extra = sorted(_agent_caps(mod) - declared)
         check(not extra, "%s: no undeclared caps (extra: %s)" % (plat, extra or "none"))
@@ -291,7 +292,8 @@ def test_app_knows_every_capability():
     silent one: BoxCaps and capsEqual can agree while normalizeCaps quietly drops
     a key, and the only symptom is a cap that never persists."""
     print("capabilities: all three app edit sites carry every cap")
-    declared = set(group("capabilities")[0]) | set(group("linuxOnlyCapabilities")[0])
+    declared = (set(group("capabilities")[0]) | set(group("linuxOnlyCapabilities")[0])
+                | set(group("windowsOnlyCapabilities")[0]))
     for site, have in _app_caps_sites().items():
         check(have, "app: %s parsed something at all" % site)
         missing = sorted(declared - have)

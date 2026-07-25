@@ -85,7 +85,7 @@ except ImportError:
 # Same app id the phone expects (AGENT_APPS in app/lib/api.ts); the Windows
 # agent versions independently of the Linux one.
 APP_NAME = "couchside-agent"
-VERSION = "0.3.9-win"
+VERSION = "0.4.0-win"
 
 _PROGRAMDATA = os.environ.get("ProgramData", r"C:\ProgramData")
 DEFAULT_CONFIG_PATH = os.path.join(_PROGRAMDATA, "Couchside", "config.json")
@@ -887,7 +887,8 @@ def set_caps(mock):
         # (see the Linux agent). Windows has its own desktop shortcuts (the
         # WIN/ALT-TAB cluster on a ViGEm box), not the Plasma desktop-nav cap.
         CAPS = {k: True for k in
-                ("gamepad", "steam", "media", "tv", "screen", "power_schedule")}
+                ("gamepad", "steam", "media", "tv", "screen", "power_schedule",
+                 "launchers")}
         CAPS["screensaver"] = False
         CAPS["couchmode"] = False
         CAPS["desktop"] = False
@@ -895,6 +896,7 @@ def set_caps(mock):
     CAPS = {
         "gamepad": safe(vigem_available),
         "steam": _steam_root() is not None,
+        "launchers": safe(_any_launcher_source),
         "media": safe(smtc_available),
         "tv": safe(lambda: _tv_hw_backend() is not None or soft_available()),
         "screen": _SCREEN is not None,
@@ -1554,20 +1556,332 @@ def steam_downloads():
         return []
 
 
+# ---------------------------------------------------------------------------
+# Non-Steam game launchers (Epic, GOG Galaxy, Xbox / Game Pass).
+#
+# Same allowlist-by-lookup contract as Steam (CLAUDE.md §3): a client sends an
+# opaque launcher id; the agent RE-DISCOVERS the installed games (read-only),
+# matches the id against that fresh set, and rebuilds the launch argv from the
+# MATCHED RECORD's fields. The client string is never interpolated into a
+# command or URI — an unknown id yields None (the route 404s) and nothing runs.
+# Every discovery is best-effort and degrades closed: any error -> [].
+#
+# id schemes:  epic:<AppName>   gog:<numericGameId>   xbox:<AUMID>
+# Auto-discovered ids are not custom launchers, so they cannot be created or
+# deleted over the network (see _valid_launcher_id and the DELETE guard).
+# ---------------------------------------------------------------------------
+
+_AUTO_LAUNCHER_KINDS = frozenset({"steam", "epic", "gog", "xbox"})
+_ALNUM = frozenset("abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789")
+_AUMID_CHARS = _ALNUM | frozenset("._-")
+
+
+def _alnum_ok(s):
+    """True if s is a non-empty run of ASCII letters/digits. Validates the Epic
+    id components before they are embedded in the launch URI, so nothing but
+    [A-Za-z0-9] can reach it (no ':', '/', '?', '&', spaces, quoting)."""
+    return bool(s) and all(c in _ALNUM for c in s)
+
+
+def _aumid_ok(s):
+    """True if s looks like a UWP AUMID: <PackageFamilyName>!<AppId>, each side a
+    non-empty run of [A-Za-z0-9._-] with exactly one '!'. Embedded in the
+    shell:AppsFolder path handed to explorer, so keep it strict."""
+    if s.count("!") != 1:
+        return False
+    left, right = s.split("!", 1)
+    return (bool(left) and bool(right)
+            and all(c in _AUMID_CHARS for c in left)
+            and all(c in _AUMID_CHARS for c in right))
+
+
+def _explorer_exe():
+    """Full path to explorer.exe, or None. explorer is the argv[0] that fires a
+    registered protocol URI (Epic) or a shell:AppsFolder app (Xbox) without a
+    shell — it hands the single argument to the registered handler."""
+    win = os.environ.get("WINDIR") or r"C:\Windows"
+    exe = os.path.join(win, "explorer.exe")
+    return exe if os.path.isfile(exe) else None
+
+
+# ---- Epic Games -----------------------------------------------------------
+def _epic_manifests_dir():
+    pd = os.environ.get("PROGRAMDATA") or r"C:\ProgramData"
+    return os.path.join(pd, "Epic", "EpicGamesLauncher", "Data", "Manifests")
+
+
+def _epic_games_from_manifests(manifests):
+    """Pure transform: a list of parsed *.item dicts -> launcher records. Keeps
+    the launchable, installed GAMES (not the engine or marketplace plugins)
+    whose URI components are strictly alphanumeric. Deterministic order."""
+    out = {}
+    for m in manifests:
+        if not isinstance(m, dict):
+            continue
+        app = m.get("AppName")
+        ns = m.get("CatalogNamespace")
+        cid = m.get("CatalogItemId")
+        disp = m.get("DisplayName") or app
+        if not (app and ns and cid and disp):
+            continue
+        # These three are interpolated into the launch URI -> require strict
+        # alphanumeric. A game with an unexpected id shape is dropped, not
+        # sanitised (CLAUDE.md §3.6): it simply won't appear.
+        if not (_alnum_ok(app) and _alnum_ok(ns) and _alnum_ok(cid)):
+            continue
+        # Epic tags each app with categories; keep only games (drops "engines",
+        # "plugins", "software"). If the tag is absent, don't guess it out.
+        cats = m.get("AppCategories")
+        if isinstance(cats, list) and cats:
+            if not any(isinstance(c, str) and c.lower() == "games" for c in cats):
+                continue
+        out[app] = {"id": "epic:%s" % app, "label": disp, "kind": "epic",
+                    "namespace": ns, "catalog_item_id": cid, "app_name": app}
+    res = list(out.values())
+    res.sort(key=lambda l: (l["label"].lower(), l["id"]))
+    return res
+
+
+def discover_epic_games():
+    """Installed Epic games as launcher dicts, sorted by name. Read-only,
+    best-effort: any error yields []."""
+    if not IS_WINDOWS:
+        return []
+    try:
+        manifests = []
+        for it in glob.glob(os.path.join(_epic_manifests_dir(), "*.item")):
+            try:
+                with open(it, "r", encoding="utf-8", errors="replace") as f:
+                    manifests.append(json.load(f))
+            except (OSError, ValueError):
+                continue
+            except Exception:
+                continue
+        return _epic_games_from_manifests(manifests)
+    except Exception:
+        return []
+
+
+# ---- GOG Galaxy -----------------------------------------------------------
+def _reg_str(key, name):
+    """QueryValueEx as a stripped str, or None (never raises)."""
+    try:
+        val, _t = winreg.QueryValueEx(key, name)
+    except OSError:
+        return None
+    except Exception:
+        return None
+    if val is None:
+        return None
+    s = str(val).strip()
+    return s or None
+
+
+def _gog_client_exe():
+    """Path to GalaxyClient.exe from the registry, or None."""
+    if not IS_WINDOWS:
+        return None
+    for sub in (r"SOFTWARE\WOW6432Node\GOG.com\GalaxyClient\paths",
+                r"SOFTWARE\GOG.com\GalaxyClient\paths"):
+        try:
+            with winreg.OpenKey(winreg.HKEY_LOCAL_MACHINE, sub) as k:
+                d = _reg_str(k, "client")
+        except OSError:
+            continue
+        except Exception:
+            continue
+        if d:
+            exe = os.path.join(d, "GalaxyClient.exe")
+            if os.path.isfile(exe):
+                return exe
+    return None
+
+
+def _gog_games_from_rows(rows):
+    """Pure transform: raw registry rows [{gameID,gameName,path}] -> launcher
+    records. Keeps rows with a numeric id and a name. Deterministic order."""
+    out = {}
+    for r in rows:
+        gid = (r.get("gameID") or "").strip()
+        name = (r.get("gameName") or "").strip()
+        path = (r.get("path") or "").strip()
+        if not (gid.isdigit() and name):
+            continue
+        out[gid] = {"id": "gog:%s" % gid, "label": name, "kind": "gog",
+                    "game_id": gid, "path": path}
+    res = list(out.values())
+    res.sort(key=lambda l: (l["label"].lower(), l["id"]))
+    return res
+
+
+def _gog_registry_rows():
+    r"""Read HKLM\...\GOG.com\Games\<id> subkeys into raw dict rows. Windows
+    only; never raises."""
+    rows = []
+    for base in (r"SOFTWARE\WOW6432Node\GOG.com\Games",
+                 r"SOFTWARE\GOG.com\Games"):
+        try:
+            root = winreg.OpenKey(winreg.HKEY_LOCAL_MACHINE, base)
+        except OSError:
+            continue
+        except Exception:
+            continue
+        with root:
+            i = 0
+            while True:
+                try:
+                    sub = winreg.EnumKey(root, i)
+                except OSError:
+                    break
+                i += 1
+                try:
+                    with winreg.OpenKey(root, sub) as gk:
+                        rows.append({
+                            "gameID": _reg_str(gk, "gameID") or sub,
+                            "gameName": _reg_str(gk, "gameName"),
+                            "path": _reg_str(gk, "path"),
+                        })
+                except OSError:
+                    continue
+                except Exception:
+                    continue
+        if rows:
+            break
+    return rows
+
+
+def discover_gog_games():
+    """Installed GOG Galaxy games as launcher dicts. Read-only, best-effort."""
+    if not IS_WINDOWS:
+        return []
+    try:
+        return _gog_games_from_rows(_gog_registry_rows())
+    except Exception:
+        return []
+
+
+# ---- Xbox / Game Pass -----------------------------------------------------
+# UWP games are found via Get-AppxPackage: a package is a GAME (not a random
+# Store app) when a MicrosoftGame.config sits in its InstallLocation. The AUMID
+# = "<PackageFamilyName>!<Application Id>"; launch is explorer shell:AppsFolder.
+_XBOX_TIMEOUT = 8
+_XBOX_TTL = 60.0
+_XBOX_CACHE = {"at": 0.0, "val": None}
+_XBOX_LOCK = threading.Lock()
+
+_XBOX_PS = r"""
+$ErrorActionPreference='SilentlyContinue'
+$out = New-Object System.Collections.ArrayList
+foreach ($p in Get-AppxPackage) {
+  if (-not $p.InstallLocation) { continue }
+  if (-not (Test-Path (Join-Path $p.InstallLocation 'MicrosoftGame.config'))) { continue }
+  $man = Get-AppxPackageManifest $p
+  $app = $man.Package.Applications.Application
+  if ($app -is [array]) { $app = $app[0] }
+  $id = $app.Id
+  if (-not $id) { continue }
+  $dn = $man.Package.Properties.DisplayName
+  if (-not $dn -or $dn -like 'ms-resource:*') { $dn = $p.Name }
+  [void]$out.Add([pscustomobject]@{ aumid = "$($p.PackageFamilyName)!$id"; name = "$dn" })
+}
+$out | ConvertTo-Json -Compress
+"""
+
+
+def _xbox_games_from_json(text):
+    """Pure transform: the Get-AppxPackage JSON blob -> launcher records. Accepts
+    either a single object or an array (ConvertTo-Json collapses one item).
+    Drops anything without a well-formed AUMID. Deterministic order."""
+    try:
+        data = json.loads(text)
+    except (ValueError, TypeError):
+        return []
+    if isinstance(data, dict):
+        data = [data]
+    if not isinstance(data, list):
+        return []
+    out = {}
+    for e in data:
+        if not isinstance(e, dict):
+            continue
+        aumid = (e.get("aumid") or "").strip()
+        name = (e.get("name") or "").strip()
+        if not _aumid_ok(aumid):
+            continue
+        out[aumid] = {"id": "xbox:%s" % aumid, "label": name or aumid,
+                      "kind": "xbox", "aumid": aumid}
+    res = list(out.values())
+    res.sort(key=lambda l: (l["label"].lower(), l["id"]))
+    return res
+
+
+def discover_xbox_games():
+    """Installed Xbox / Game Pass games as launcher dicts. Read-only,
+    best-effort. Cached for _XBOX_TTL because it shells out to PowerShell."""
+    if not IS_WINDOWS:
+        return []
+    now = time.monotonic()
+    with _XBOX_LOCK:
+        if _XBOX_CACHE["val"] is not None and now - _XBOX_CACHE["at"] < _XBOX_TTL:
+            return _XBOX_CACHE["val"]
+    try:
+        out = _run_powershell(_XBOX_PS, _XBOX_TIMEOUT)
+        games = _xbox_games_from_json(out) if out else []
+    except Exception:
+        games = []
+    with _XBOX_LOCK:
+        _XBOX_CACHE["at"] = time.monotonic()
+        _XBOX_CACHE["val"] = games
+    return games
+
+
+def _any_launcher_source():
+    """True if the box has any launcher the app can drive, via CHEAP checks only
+    (no game enumeration, no PowerShell): a configured custom launcher, a Steam
+    or GOG client install, or an Epic manifests dir holding >=1 installed game.
+    Backs the `launchers` capability so the Launch tab appears on Epic/GOG boxes,
+    not only Steam ones. Xbox-only boxes (Game Pass with no other launcher) are
+    intentionally NOT detected here — enumerating them needs the PowerShell
+    bridge, and blocking startup on it would hurt reachability; they surface once
+    any other launcher exists (or on the next restart). Never raises."""
+    try:
+        if LAUNCHERS:
+            return True
+        if _steam_root() is not None:
+            return True
+        if _gog_client_exe() is not None:
+            return True
+        if glob.glob(os.path.join(_epic_manifests_dir(), "*.item")):
+            return True
+    except Exception:
+        return False
+    return False
+
+
 def list_launchers():
-    """All launchers: configured custom launchers first, then Steam games."""
+    """All launchers: configured custom launchers first, then auto-discovered
+    games from each store (Steam, Epic, GOG, Xbox)."""
     customs = [
         {"id": l["id"], "label": l["label"], "kind": "custom"}
         for l in LAUNCHERS
     ]
-    return customs + discover_steam_games()
+    return (customs + discover_steam_games() + discover_epic_games()
+            + discover_gog_games() + discover_xbox_games())
 
 
 def _launcher_argv(launcher_id):
-    """Resolve a KNOWN launcher id to its argv, or None if unknown.
+    r"""Resolve a KNOWN launcher id to its argv, or None if unknown.
 
-    steam:<appid>  -> [steam.exe, "steam://rungameid/<appid>"]
-    custom:<slug>  -> that launcher's stored cmd argv from config
+    Every store branch RE-DISCOVERS (read-only) and matches launcher_id against
+    that fresh set, then rebuilds the argv from the matched RECORD — the client
+    string is never interpolated into the command. An id absent from discovery
+    yields None, the route 404s, and nothing runs.
+
+    steam:<appid> -> [steam.exe, "steam://rungameid/<appid>"]
+    epic:<name>   -> [explorer.exe, "com.epicgames.launcher://apps/<ns>:<cid>:<name>?action=launch"]
+    gog:<id>      -> [GalaxyClient.exe, "/command=runGame", "/gameId=<id>", "/path=<dir>"]
+    xbox:<aumid>  -> [explorer.exe, "shell:AppsFolder\<aumid>"]
+    custom:<slug> -> that launcher's stored cmd argv from config
     """
     if launcher_id.startswith("steam:"):
         appid = launcher_id[len("steam:"):]
@@ -1580,6 +1894,44 @@ def _launcher_argv(launcher_id):
         for game in discover_steam_games():
             if game["id"] == launcher_id:
                 return [exe, "steam://rungameid/%s" % appid]
+        return None
+    if launcher_id.startswith("epic:"):
+        # Cheap shape pre-check; the real gate is membership in discovery below.
+        if not _alnum_ok(launcher_id[len("epic:"):]):
+            return None
+        exe = _explorer_exe()
+        if exe is None:
+            return None
+        for game in discover_epic_games():
+            if game["id"] == launcher_id:
+                uri = ("com.epicgames.launcher://apps/%s:%s:%s?action=launch"
+                       % (game["namespace"], game["catalog_item_id"],
+                          game["app_name"]))
+                return [exe, uri]
+        return None
+    if launcher_id.startswith("gog:"):
+        gid = launcher_id[len("gog:"):]
+        if not gid.isdigit():
+            return None
+        exe = _gog_client_exe()
+        if exe is None:
+            return None
+        for game in discover_gog_games():
+            if game["id"] == launcher_id:
+                argv = [exe, "/command=runGame", "/gameId=%s" % game["game_id"]]
+                if game.get("path"):
+                    argv.append("/path=%s" % game["path"])
+                return argv
+        return None
+    if launcher_id.startswith("xbox:"):
+        if not _aumid_ok(launcher_id[len("xbox:"):]):
+            return None
+        exe = _explorer_exe()
+        if exe is None:
+            return None
+        for game in discover_xbox_games():
+            if game["id"] == launcher_id:
+                return [exe, "shell:AppsFolder\\%s" % game["aumid"]]
         return None
     if _valid_launcher_id(launcher_id):
         for l in LAUNCHERS:
@@ -5006,7 +5358,8 @@ class Handler(BaseHTTPRequestHandler):
             lprefix = "/api/launchers/"
             if path.startswith(lprefix):
                 launcher_id = unquote(path[len(lprefix):])
-                if launcher_id.startswith("steam:"):
+                if launcher_id.split(":", 1)[0] in _AUTO_LAUNCHER_KINDS:
+                    # steam/epic/gog/xbox are auto-discovered, not stored config.
                     self._send(400, {"error": "not deletable"}, started)
                     return
                 if not _valid_launcher_id(launcher_id):

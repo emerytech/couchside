@@ -318,6 +318,14 @@ jobs:
       - name: Unit tests (no camera in the shipping app)
         run: python3 tests/test_no_camera_in_shipping_app.py
 
+      # Windows non-Steam launchers (Epic / GOG / Xbox). These take a client id,
+      # so the load-bearing gate is allowlist-by-lookup: the id is matched in a
+      # fresh read-only discovery and the argv is REBUILT from the record, never
+      # interpolated. Pins the reject path (unknown/malformed id -> None, nothing
+      # runs) and that the `launchers` capability is wired at all five edit sites.
+      - name: Unit tests (Windows game launchers)
+        run: python3 tests/test_win_launchers.py
+
       - uses: actions/setup-node@v4
         with:
           node-version: "22"
