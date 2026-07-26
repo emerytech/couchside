@@ -401,6 +401,53 @@ recommendation was wrong, not merely superseded.
   equivalent, gdm-variant behaviour, and every row of the flavor table (derived from what each
   desktop ships, not from running the agent). CachyOS is a separate, un-researched target.
 
+### macOS agent (beta) — Macs as a supported box
+- **priority:** P2 · **risk:** MEDIUM — new OS surface, TCC unknowns · **affects:** new agent
+  variant + installer + release pipeline + couchside.tv · **depends_on:** none (dev Mac = test box)
+- **Ship as an explicit beta: works-for-some, no guarantee.** Positioning is
+  **console/dashboard/remote — NOT controller** (see the gamepad ceiling below); the beta page
+  must say so up front.
+- **The playbook is the Windows port.** Third variant file `agent/mac/couchsided-mac.py`,
+  skeleton copied from `agent/win/couchsided-win.py` (~6.2k lines, already restructured for
+  non-Linux: caps subset + `False` for platform features, same allowlist tables, same auth/WS
+  core). The app is capability-adaptive and every Phase-1 cap reuses an EXISTING key, so
+  **zero app edits and no five-edit-site work** — Windows already ships
+  `couchmode/desktop/screensaver: False` and the app hides them.
+- **Phase 1 (core beta):** pair/status/discovery (HTTP sweep, unchanged) · trackpad + keyboard
+  via `ctypes` on CoreGraphics (`CGEventCreateMouseEvent`/`CGEventPost` — same trick as the win
+  agent's ctypes `SendInput`) · `steam` cap (library VDF under
+  `~/Library/Application Support/Steam`, launch via `open steam://rungameid/...` argv) · screen
+  frame via `screencapture -x -t jpg` (subprocess argv, ships with macOS) · power: sleep
+  (`pmset sleepnow`), restart/shutdown via System Events AppleScript (no sudo) ·
+  `boxbattery` (`pmset -g batt` parse) · `file_upload` (drop-dir code ports as-is) · launchd
+  LaunchAgent + `install-mac.sh` through the same Ed25519 signing flow. Temp/`power_schedule`
+  need root — omit until a sudoers.d slice (macOS has `/etc/sudoers.d`, same zz-couchside
+  pattern).
+- **Phase 2 (parity extras):** media keys (HID `NSSystemDefined` events) · Roku ECP TV backend
+  (pure HTTP, OS-agnostic) · `launchers` (Epic/GOG exist on macOS) · Big Picture / steammenus
+  (`steam://` deep links) · in-app agent-update mac branch · `release-agent.sh` mac asset +
+  `agent-version-mac.txt` · couchside.tv `/mac` page.
+- **Hard ceiling — virtual gamepad is OFF, likely forever:** macOS has no uinput/ViGEm
+  equivalent; foohid kext is dead on modern macOS; DriverKit HID needs an Apple-approved
+  entitlement + notarized app bundle (not happening for a stdlib Python script); Karabiner's
+  dext does keyboard/pointer only. Ship `gamepad: False`.
+- **Known friction, beta-acceptable:** (1) TCC — Accessibility (input inject) + Screen
+  Recording (`screencapture`) grants attributed to `python3` under launchd; one prompt each,
+  may need re-grant after a CLT update; needs one good doc page. (2) `/usr/bin/python3` is a
+  shim until Command Line Tools is installed — installer detects and walks the user through
+  the CLT dialog; do NOT bundle Python (notarization hell). (3) Macs sleep aggressively and
+  iOS cannot send UDP, so no WoL from the phone — doc "Wake for network access". (4) media
+  metadata needs the private MediaRemote framework, locked down since macOS 15.4 — `media`
+  ships `False` or keys-only. (5) No CEC on Macs — TV is network backends only, same as
+  Windows.
+- **Unverified (assessment was read-from-source + platform knowledge, nothing executed):**
+  CGEvent injection from a launchd agent + the exact TCC prompt flow; `steam://` launch
+  behaviour on macOS Steam (fire the URL, don't grep — house rule); `screencapture` latency as
+  a frame source; System Events restart without prompts. All live-testable same-day on the dev
+  MacBook Pro M2 before any code is committed.
+- **Estimate:** Phase 1 in a few focused sessions; the win port took 0.3.x→0.4.3 to reach
+  parity, but it also invented the non-Linux skeleton this port inherits.
+
 ---
 
 ## 💡 Backlog
