@@ -31,6 +31,7 @@ A minimal geometric couch (backrest, two cushions, two arms) with a green
 | `svg/lockup-stacked.svg` | Badge above wordmark. |
 | `png/icon-1024.png`, `icon-512.png` | Raster app icon / store listing. |
 | `png/favicon-{16,32,48,64}.png`, `apple-touch-icon-180.png`, `favicon.ico` | Web favicons. |
+| `couchside.ico` | Windows app icon (16-256). Stamped into `couchside-agent.exe` and `CouchsideSetup.exe`. |
 | `png/og-image-1200x630.png` | Social / Open Graph share card. |
 | `png/github-social-1280x640.png` | GitHub repo social preview (Settings → Social preview). |
 | `png/wordmark-2tone-transparent.png` | Wordmark for slide decks / overlays. |
