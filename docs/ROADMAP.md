@@ -9,20 +9,34 @@ Entry fields: `priority` (P0 blocker → P3 nice) · `risk` · `affects` · `dep
 
 ## 🔨 In Progress
 
-### Trackpad WS liveness on iOS: box keepalive + foreground-freeze recovery
-`priority: P1` · `risk: med (input path)` · `affects: agent, win-agent, app/lib/gamepad.ts` ·
-`depends_on: —`
-- Two failure modes behind "trackpad dead after couch-mode switch" (field-diagnosed on
-  iOS→Bazzite, see BUILD_LOG 2026-07-24). NOT the compositor.
-- **Idle churn** — DONE + VERIFIED on box (agent 2.9.53 / win 0.3.9-win): box drives a WS PING
-  every 4s so the phone OS auto-PONGs below the frozen JS timer; holder survives idle instead of
-  being reaped at 12s.
-- **Foreground freeze (green pill, dead mouse)** — app fix written + control-verified (app 2.9.24,
-  `gamepad.ts` input-driven recovery + `connect()` freshness guard; Node lifecycle harness 15/15).
-  **Blocked on:** real-device (TestFlight) confirmation — the simulator can't reproduce an iOS
-  foreground JS freeze. Move to ✅ Completed only after on-device verification.
-- Notes: if on-device shows the input path still can't recover, fall back to an agent-side two-tier
-  reap (reap a socket that OS-PONGs but sends zero app-level frames for ~20-25s).
+### Trackpad WS liveness on iOS: the couch-switch half (#245)
+`priority: P1` · `risk: med (input path)` · `affects: app/lib/gamepad.ts` · `depends_on: —`
+- **Idle churn: DONE, shipped** in agent 2.9.53 (box-driven WS PING; the phone's OS
+  auto-PONG feeds the idle timer below the frozen JS timer). Live-verified.
+- **Couch-switch half: STILL OPEN.** Trackpad dies after a Desktop switch, pill stays
+  green, only a force-quit recovers. Ruled OUT by measurement: the compositor
+  (libinput enumerates the pad fine) and a stale uinput device (agent 2.9.54
+  recreated it — node changed both directions — and the cursor stayed dead).
+  A fresh SOCKET fixes it, so it is socket/holder-layer.
+- Three hypotheses remain and need different fixes: (a) the recovery condition never
+  becomes true, (b) sendRaw is never reached, (c) recovery fires and the rebuilt
+  socket is mute too. Evidence leans (c) — the box's mouse event node kept changing
+  during an episode, i.e. reconnects were happening while the cursor was dead.
+- **Instrumentation shipped** (#260, app 2.9.28): on-Pad diagnostics panel
+  (long-press the pill — must NOT be in Setup, since leaving the Pad closes the
+  socket) + inputSends / inputDropped / recoveries / opens counters.
+- **NEXT:** capture one reading during a real episode; that picks the fix.
+
+### Remote desktop "screenshot + tap"
+`priority: P2` · `risk: med` · `affects: agent, app` · `depends_on: #245 learnings`
+- MEASURED ceiling ~1.2 fps now / ~1.4 fps optimized (~0.41s of every frame is
+  spectacle's Qt startup). **True VNC is off the table** on this architecture;
+  what is achievable is tap-to-click on a slow-refreshing frame.
+- Absolute pointer PROVEN pixel-exact on Plasma Wayland (screenshot-diff, with a
+  relative-mouse control). Declare BTN_TOUCH to suppress a phantom /dev/input/js0.
+- **Unproven: gamescope.** Also needs zoom or a two-stage crosshair — a 44pt finger
+  is ~289 logical px on a 4K desktop vs a ~100x30 px button — and frame-age gating
+  so a stale frame can't produce a confident wrong click.
 
 ## 📋 Planned
 
