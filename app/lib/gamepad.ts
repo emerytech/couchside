@@ -191,6 +191,28 @@ export const wsTrace = {
   lastInboundAt: 0,
   lastSocketState: 'none',
   lastError: '' as string,
+
+  // --- the counters that tell the "green pill, dead mouse" cases apart -------
+  // After a Couch-Mode switch the trackpad can die while the pill stays green,
+  // and READING the code cannot say which of three things is happening. Each
+  // counter isolates one; they are only meaningful read together:
+  //
+  //   inputSends climbing while the cursor is dead -> frames ARE leaving the
+  //              phone, so the fault is downstream (mute socket / the box).
+  //   inputSends flat while the user swipes        -> sendRaw is never reached:
+  //              the touch path is frozen, not the socket.
+  //   recoveries climbing but nothing improves     -> the input-driven recovery
+  //              fires and the REBUILT socket is mute too.
+  //   recoveries flat while inbound is stale       -> the recovery CONDITION is
+  //              wrong (e.g. status is not 'connected' when we assume it is).
+  /** Input (non-ping) frames handed to ws.send() without throwing. */
+  inputSends: 0,
+  /** Input frames dropped because the socket was not OPEN. */
+  inputDropped: 0,
+  /** Times the input-driven zombie recovery rebuilt the socket. */
+  recoveries: 0,
+  /** Times open() dialed a socket — a reconnect of any origin. */
+  opens: 0,
 };
 if (typeof globalThis !== 'undefined') {
   (globalThis as Record<string, unknown>).__wsTrace = wsTrace;
@@ -445,6 +467,44 @@ export class GamepadClient {
 
   getStatus(): GamepadStatus {
     return this.status;
+  }
+
+  /**
+   * Live snapshot of THIS client's socket state, for the on-Pad diagnostics
+   * panel.
+   *
+   * Separate from getWsTrace() on purpose: the module-level trace stamps
+   * `lastInboundAt` from inside the ping interval, so when that interval is the
+   * thing that froze, the trace's own idea of "last inbound" freezes with it.
+   * These fields are read straight off the instance at call time, so they stay
+   * true even when every timer is dead — which is exactly the state worth
+   * inspecting.
+   */
+  getDiagnostics(): {
+    status: GamepadStatus;
+    active: boolean;
+    socket: string;
+    inboundAgeMs: number;
+    inputAgeMs: number;
+    pingTimerArmed: boolean;
+    reconnectPending: boolean;
+    staleByWatchdog: boolean;
+  } {
+    const now = Date.now();
+    const inboundAge = this.lastInbound ? now - this.lastInbound : -1;
+    return {
+      status: this.status,
+      active: this.active,
+      socket: wsStateName(this.ws),
+      inboundAgeMs: inboundAge,
+      inputAgeMs: this.lastInputAt ? now - this.lastInputAt : -1,
+      pingTimerArmed: this.pingTimer != null,
+      reconnectPending: this.reconnectTimer != null,
+      // The exact predicate the input-driven recovery gates on, so the panel
+      // shows whether that recovery COULD fire instead of leaving us to guess.
+      staleByWatchdog:
+        this.status === 'connected' && inboundAge > PING_INTERVAL_MS * 2.5,
+    };
   }
 
   /**
@@ -793,6 +853,7 @@ export class GamepadClient {
 
   private open(): void {
     if (!this.conn) return;
+    wsTrace.opens += 1;
     this.teardownSocket(false);
     this.setStatus('connecting', null);
 
@@ -1104,6 +1165,9 @@ export class GamepadClient {
       if (f.t === 'ping') {
         wsTrace.pingsDroppedNotOpen += 1;
         wsTrace.lastSocketState = wsStateName(ws);
+      } else {
+        wsTrace.inputDropped += 1;
+        wsTrace.lastSocketState = wsStateName(ws);
       }
       return;
     }
@@ -1124,6 +1188,7 @@ export class GamepadClient {
       this.status === 'connected' &&
       Date.now() - this.lastInbound > PING_INTERVAL_MS * 2.5
     ) {
+      wsTrace.recoveries += 1;
       this.reconnect();
       return; // can't land on a dead socket; the rebuilt one carries the next frame
     }
@@ -1132,6 +1197,7 @@ export class GamepadClient {
     if (f.t !== 'ping') this.lastInputAt = Date.now();
     try {
       ws.send(JSON.stringify(obj));
+      if (f.t !== 'ping') wsTrace.inputSends += 1;
       if (f.t === 'b') traceButton(f.k, f.v, 'sent');
       if (f.t === 'ping') {
         wsTrace.pingsSent += 1;
