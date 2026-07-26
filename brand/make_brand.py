@@ -188,6 +188,29 @@ def badge(size, radius_frac=0.219):
     return base
 
 
+def tray_badge(size, radius_frac=0.219):
+    """The badge as the WINDOWS TRAY icon draws it: white couch on a GREEN
+    rounded square, and NO status dot.
+
+    Deliberately different from badge() (navy + green dot, which is the web
+    favicon and the store icon). The Windows agent's tray icon is generated at
+    runtime by make_icon() in agent/win/couchside-tray.pyw -- a green badge with
+    a plain white couch -- and the app/exe icon is meant to MATCH what a Windows
+    user already has sitting in their notification area, not the web mark.
+    dot_rgb=None because the tray icon has no dot; passing GREEN would hide it
+    against the badge anyway, but omitting it is honest about the intent."""
+    base = Image.new("RGBA", (size, size), (0, 0, 0, 0))
+    mask = Image.new("L", (size * SS, size * SS), 0)
+    ImageDraw.Draw(mask).rounded_rectangle(
+        [0, 0, size * SS, size * SS], radius=int(size * SS * radius_frac), fill=255
+    )
+    fill = Image.new("RGBA", (size, size), _rgb(GREEN) + (255,))
+    fill.putalpha(mask.resize((size, size), Image.LANCZOS))
+    base.alpha_composite(fill)
+    base.alpha_composite(render_art(size, _rgb(WHITE)))
+    return base
+
+
 def font(px):
     return ImageFont.truetype(FONT_PATH, px)
 
@@ -275,10 +298,14 @@ def write_rasters():
 
     # couchside.ico — the WINDOWS app icon, stamped into couchside-agent.exe by
     # agent/win/build.ps1 and into CouchsideSetup.exe by installer/couchside.iss.
-    # Separate from favicon.ico because Windows wants sizes the web never asks
-    # for: 256 for Explorer's large views and high-DPI Apps & features, 24 for
-    # the small-icon list views.
-    ico.save(os.path.join(HERE, "couchside.ico"),
+    # Separate from favicon.ico for two reasons: Windows wants sizes the web
+    # never asks for (256 for Explorer's large views and high-DPI Apps &
+    # features, 24 for small-icon lists), AND it uses the TRAY look -- green
+    # badge, white couch, no dot -- so the exe/Explorer/Apps-&-features icon
+    # matches the tray icon a Windows user already has in their notification
+    # area. See tray_badge().
+    tray_ico = tray_badge(256)
+    tray_ico.save(os.path.join(HERE, "couchside.ico"),
              sizes=[(16, 16), (24, 24), (32, 32), (48, 48),
                     (64, 64), (128, 128), (256, 256)])
     print("ico  couchside.ico")
