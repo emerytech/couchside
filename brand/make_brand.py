@@ -273,6 +273,16 @@ def write_rasters():
              sizes=[(16, 16), (32, 32), (48, 48), (64, 64)])
     print("ico  favicon.ico")
 
+    # couchside.ico — the WINDOWS app icon, stamped into couchside-agent.exe by
+    # agent/win/build.ps1 and into CouchsideSetup.exe by installer/couchside.iss.
+    # Separate from favicon.ico because Windows wants sizes the web never asks
+    # for: 256 for Explorer's large views and high-DPI Apps & features, 24 for
+    # the small-icon list views.
+    ico.save(os.path.join(HERE, "couchside.ico"),
+             sizes=[(16, 16), (24, 24), (32, 32), (48, 48),
+                    (64, 64), (128, 128), (256, 256)])
+    print("ico  couchside.ico")
+
 
 def write_tokens():
     tokens = {

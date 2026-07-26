@@ -81,6 +81,19 @@ if ($NoGamepad) {
     throw 'ViGEmClient.dll missing (see message above)'
 }
 if (-not $NoGamepad) { $piArgs += @('--add-binary', "$dll;.") }
+
+# Brand icon. Without it PyInstaller stamps its own default, which is what the
+# user sees in Explorer, Task Manager, and — because the installer points
+# UninstallDisplayIcon at this exe — the Apps & features list. Look for the icon
+# the same two ways qr.py is resolved above: next to this script (the
+# couchside-windows repo, where the sync drops it at the root) or in brand\ two
+# levels up (the monorepo, agent\win -> brand). Optional: a checkout without it
+# still builds.
+$ico = @(
+    (Join-Path $here 'couchside.ico'),
+    (Join-Path (Split-Path (Split-Path $here -Parent) -Parent) 'brand\couchside.ico')
+) | Where-Object { Test-Path $_ } | Select-Object -First 1
+if ($ico) { $piArgs += @('--icon', $ico) } else { Write-Host 'No couchside.ico found - building with the default PyInstaller icon.' }
 $piArgs += (Join-Path $here 'couchsided-win.py')
 
 python -m PyInstaller @piArgs
