@@ -12,6 +12,12 @@ import * as SecureStore from 'expo-secure-store';
 import { useSyncExternalStore } from 'react';
 import { Platform } from 'react-native';
 
+import {
+  MEDIA_HOLD_SKIP_SECS,
+  MEDIA_SKIP_SECS,
+  type MediaHoldSkipSec,
+  type MediaSkipSec,
+} from './mediaSeek';
 import { PadMode } from './settings';
 
 /** Tabs the app can open on. Values are the expo-router route names ('index' is
@@ -158,6 +164,22 @@ export type Prefs = {
       default: it emits a mark every 45ms, which is pure noise outside a
       recording. */
   traceDrags: boolean;
+  /** How far the now-playing card's skip buttons jump on a TAP, in seconds.
+   *
+   *  Requested on r/SteamOS as "fast forwards media or goes back like 10+
+   *  seconds". 10s is the podcast/video convention and the default; 30s suits
+   *  people who mostly skip ad breaks and intros. */
+  mediaSkipSec: MediaSkipSec;
+  /** Whether HOLDING a skip button jumps by mediaHoldSkipSec instead.
+   *
+   *  On by default, but switchable: a hold-to-do-something-bigger gesture is
+   *  invisible until discovered, and on a control you press repeatedly it can
+   *  fire by accident when someone rests a thumb. Off makes the buttons
+   *  strictly one-amount. */
+  mediaHoldSkip: boolean;
+  /** How far a HELD skip button jumps, in seconds. Ignored when mediaHoldSkip
+   *  is off. */
+  mediaHoldSkipSec: MediaHoldSkipSec;
 };
 
 export const DEFAULTS: Prefs = {
@@ -192,6 +214,9 @@ export const DEFAULTS: Prefs = {
   hideTvVolume: false,
   showTaps: false,
   traceDrags: false,
+  mediaSkipSec: 10,
+  mediaHoldSkip: true,
+  mediaHoldSkipSec: 30,
 };
 
 /** The choices each select-style pref offers (kept next to the store it feeds). */
@@ -293,6 +318,16 @@ function normalize(raw: unknown): Prefs {
     hideTvVolume: bool(o.hideTvVolume, DEFAULTS.hideTvVolume),
     showTaps: bool(o.showTaps, DEFAULTS.showTaps),
     traceDrags: bool(o.traceDrags, DEFAULTS.traceDrags),
+    // Validated against the offered sets, not clamped: these become a
+    // position_ms the agent is asked to seek to, so a corrupted blob must fall
+    // back to a known-good amount rather than invent one.
+    mediaSkipSec: num(o.mediaSkipSec, MEDIA_SKIP_SECS, DEFAULTS.mediaSkipSec) as MediaSkipSec,
+    mediaHoldSkip: bool(o.mediaHoldSkip, DEFAULTS.mediaHoldSkip),
+    mediaHoldSkipSec: num(
+      o.mediaHoldSkipSec,
+      MEDIA_HOLD_SKIP_SECS,
+      DEFAULTS.mediaHoldSkipSec,
+    ) as MediaHoldSkipSec,
   };
 }
 

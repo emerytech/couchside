@@ -10,8 +10,10 @@ import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { Image, LayoutChangeEvent, Pressable, StyleSheet, Text, View } from 'react-native';
 
 import { usePoll } from '@/hooks/usePoll';
+import { MEDIA_HOLD_MS, nextSeekPosition } from '@/lib/mediaSeek';
+import { usePref } from '@/lib/prefs';
 import { api, hostKey, Media, MediaOp, MediaPlayer, mediaArtSource } from '@/lib/api';
-import { hapticLight, hapticMedium } from '@/lib/haptics';
+import { hapticHeavy, hapticLight, hapticMedium } from '@/lib/haptics';
 import { useSkinKit } from '@/lib/skin';
 import { useSettings } from '@/lib/SettingsContext';
 import { mono, numeric, useTheme, useThemedStyles, type Palette } from '@/lib/theme';
@@ -28,6 +30,9 @@ export function NowPlayingCard() {
   const styles = useThemedStyles(makeStyles);
   const { Card } = useSkinKit();
   const { settings, ready } = useSettings();
+  const skipSec = usePref('mediaSkipSec');
+  const holdEnabled = usePref('mediaHoldSkip');
+  const holdSkipSec = usePref('mediaHoldSkipSec');
   const configured = !!settings.host && !!settings.token;
 
   const poll = usePoll<Media | null>(
@@ -110,6 +115,44 @@ export function NowPlayingCard() {
     [active, barWidth, send],
   );
 
+  /**
+   * Jump by a relative offset. Requested on r/SteamOS: "a button that fast
+   * forwards media or goes back like 10+ seconds".
+   *
+   * The scrub bar above can already reach any position, but only via a precise
+   * tap on a thin target — which is the wrong instrument from a couch, and the
+   * wrong one for "what did they just say". This is that gesture.
+   *
+   * Uses displayedMs, not active.position_ms: displayedMs interpolates playback
+   * since the last poll, so "back 10s" means 10s from where the track actually
+   * is, not from a reading up to a poll-interval stale. Off by that interval
+   * otherwise, which on a 5s poll is a visibly wrong jump.
+   *
+   * Note this is gated ONLY on can_seek, unlike the bar, which also requires
+   * length_ms > 0. The bar needs a known length to map a tap fraction to a
+   * position; a relative offset does not. Live streams and players that report
+   * no duration can still skip. The agent clamps to the track length itself
+   * when it knows one, and falls back to a relative MPRIS Seek when the player
+   * rejects SetPosition.
+   */
+  const seekBy = useCallback(
+    (deltaMs: number, long = false) => {
+      if (!active || !active.can_seek) return;
+      // A hold is a bigger, blind jump, so it gets a heavier confirmation than
+      // the tap's — you should be able to feel which one you got without
+      // watching the timecode.
+      if (long) hapticHeavy();
+      send('seek', {
+        position_ms: nextSeekPosition({
+          currentMs: displayedMs,
+          deltaMs,
+          lengthMs: active.length_ms,
+        }),
+      });
+    },
+    [active, displayedMs, send],
+  );
+
   if (!active) return null;
 
   const pct =
@@ -175,17 +218,44 @@ export function NowPlayingCard() {
         <TransportButton
           icon="play-skip-back"
           disabled={!active.can_go_previous}
+          accessibilityLabel="Previous track"
           onPress={() => send('previous')}
+        />
+        <TransportButton
+          icon="play-back"
+          label={String(skipSec)}
+          disabled={!active.can_seek}
+          accessibilityLabel={`Back ${skipSec} seconds`}
+          accessibilityHint={
+            holdEnabled ? `Hold to go back ${holdSkipSec} seconds` : undefined
+          }
+          onPress={() => seekBy(-skipSec * 1000)}
+          onLongPress={holdEnabled ? () => seekBy(-holdSkipSec * 1000, true) : undefined}
+          delayLongPress={MEDIA_HOLD_MS}
         />
         <TransportButton
           icon={playing ? 'pause' : 'play'}
           primary
           disabled={playing ? !active.can_pause : !active.can_play}
+          accessibilityLabel={playing ? 'Pause' : 'Play'}
           onPress={() => send('play_pause')}
+        />
+        <TransportButton
+          icon="play-forward"
+          label={String(skipSec)}
+          disabled={!active.can_seek}
+          accessibilityLabel={`Forward ${skipSec} seconds`}
+          accessibilityHint={
+            holdEnabled ? `Hold to jump forward ${holdSkipSec} seconds` : undefined
+          }
+          onPress={() => seekBy(skipSec * 1000)}
+          onLongPress={holdEnabled ? () => seekBy(holdSkipSec * 1000, true) : undefined}
+          delayLongPress={MEDIA_HOLD_MS}
         />
         <TransportButton
           icon="play-skip-forward"
           disabled={!active.can_go_next}
+          accessibilityLabel="Next track"
           onPress={() => send('next')}
         />
       </View>
@@ -210,34 +280,50 @@ function ArtImage({ uri }: { uri: string }) {
   );
 }
 
+
 function TransportButton({
   icon,
   onPress,
   disabled,
   primary,
+  label,
+  accessibilityLabel,
+  accessibilityHint,
+  onLongPress,
+  delayLongPress,
 }: {
   icon: keyof typeof Ionicons.glyphMap;
   onPress: () => void;
   disabled?: boolean;
   primary?: boolean;
+  onLongPress?: () => void;
+  delayLongPress?: number;
+  accessibilityHint?: string;
+  /** Small digits over the glyph — "10" on the skip buttons, so the amount is
+   * stated rather than left to a bare ⏪/⏩ the user has to guess at. */
+  label?: string;
+  accessibilityLabel?: string;
 }) {
   const t = useTheme();
   const styles = useThemedStyles(makeStyles);
+  const color = disabled ? t.textFaint : primary ? t.bg : t.text;
   return (
     <Pressable
       onPress={onPress}
+      onLongPress={onLongPress}
+      delayLongPress={delayLongPress}
       disabled={disabled}
+      accessibilityRole="button"
+      accessibilityLabel={accessibilityLabel}
+      accessibilityHint={accessibilityHint}
       style={({ pressed }) => [
         styles.tBtn,
         primary && styles.tBtnPrimary,
         pressed && styles.tBtnPressed,
         disabled && styles.tBtnDisabled,
       ]}>
-      <Ionicons
-        name={icon}
-        size={primary ? 26 : 22}
-        color={disabled ? t.textFaint : primary ? t.bg : t.text}
-      />
+      <Ionicons name={icon} size={primary ? 26 : 22} color={color} />
+      {!!label && <Text style={[styles.tBtnLabel, { color }]}>{label}</Text>}
     </Pressable>
   );
 }
@@ -298,6 +384,13 @@ const makeStyles = (t: Palette) => StyleSheet.create({
   times: { flexDirection: 'row', justifyContent: 'space-between', marginTop: 6 },
   time: { color: t.textDim, fontSize: 11, ...numeric },
 
+  tBtnLabel: {
+    // Digits sit tight under the glyph inside the same round button, so the
+    // control reads as one unit rather than an icon with a caption.
+    fontSize: 9,
+    fontWeight: '700',
+    marginTop: -2,
+  },
   transport: {
     flexDirection: 'row',
     alignItems: 'center',
