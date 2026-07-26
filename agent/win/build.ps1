@@ -61,9 +61,15 @@ if ($NoGamepad) {
     Write-Host '  Without it the built agent reports caps.gamepad=false and the'
     Write-Host '  phone app hides the Pad tab entirely (see issue #255).'
     Write-Host ''
-    Write-Host '  Get it from the ViGEm client release and drop it in:'
-    Write-Host '    https://github.com/nefarius/ViGEmClient/releases'
-    Write-Host "    -> $dll"
+    Write-Host '  There is NO prebuilt download. Verified 2026-07-25: the'
+    Write-Host '  ViGEmClient GitHub releases are SOURCE ONLY (no assets), and both'
+    Write-Host '  NuGet packages ship MANAGED .NET assemblies, which ctypes cannot'
+    Write-Host '  load. Build the native DLL from source:'
+    Write-Host '    git clone --depth 1 https://github.com/nefarius/ViGEmClient.git'
+    Write-Host '    msbuild src\ViGEmClient.vcxproj /p:Configuration=Release_DLL /p:Platform=x64'
+    Write-Host '    (config is Release_DLL, NOT Release -- plain Release does not exist)'
+    Write-Host '    -> bin\release\x64\ViGEmClient.dll'
+    Write-Host "  Then copy it to:  $dll"
     Write-Host ''
     Write-Host '  To build a deliberately gamepad-less agent anyway, pass -NoGamepad.'
     throw 'ViGEmClient.dll missing (see message above)'
@@ -78,9 +84,28 @@ if ($LASTEXITCODE -ne 0) { throw "PyInstaller failed with exit code $LASTEXITCOD
 # can succeed while dropping a binary it could not resolve.
 $exe = Join-Path $here 'dist\couchside-agent.exe'
 if (-not (Test-Path $exe)) { throw "build reported success but $exe does not exist" }
-if ((-not $NoGamepad) -and -not (Select-String -Path $exe -Pattern 'ViGEmClient\.dll' -Encoding Byte -Quiet -ErrorAction SilentlyContinue)) {
-    Write-Host 'WARNING: could not confirm ViGEmClient.dll inside the exe.' -ForegroundColor Yellow
-    Write-Host '         Run the agent and check that /api/status reports caps.gamepad=true.'
+# Byte scan, NOT Select-String: `-Encoding Byte` is a Get-Content parameter and
+# Select-String REJECTS it on Windows PowerShell 5.1 ("does not belong to the
+# set"), so this check threw instead of verifying on its first real run.
+if (-not $NoGamepad) {
+    $needle = [System.Text.Encoding]::ASCII.GetBytes('ViGEmClient.dll')
+    $hay = [System.IO.File]::ReadAllBytes($exe)
+    $found = $false
+    $last = $hay.Length - $needle.Length
+    for ($i = 0; $i -le $last -and -not $found; $i++) {
+        if ($hay[$i] -ne $needle[0]) { continue }
+        $ok = $true
+        for ($j = 1; $j -lt $needle.Length; $j++) {
+            if ($hay[$i + $j] -ne $needle[$j]) { $ok = $false; break }
+        }
+        if ($ok) { $found = $true }
+    }
+    if ($found) {
+        Write-Host 'Verified: ViGEmClient.dll is bundled inside the exe.' -ForegroundColor Green
+    } else {
+        Write-Host 'WARNING: could not confirm ViGEmClient.dll inside the exe.' -ForegroundColor Yellow
+        Write-Host '         Run the agent and check /api/status reports caps.gamepad=true.'
+    }
 }
 
 Write-Host ''
