@@ -85,11 +85,93 @@ except ImportError:
 # Same app id the phone expects (AGENT_APPS in app/lib/api.ts); the Windows
 # agent versions independently of the Linux one.
 APP_NAME = "couchside-agent"
-VERSION = "0.4.2-win"
+VERSION = "0.4.3-win"
 
 _PROGRAMDATA = os.environ.get("ProgramData", r"C:\ProgramData")
 DEFAULT_CONFIG_PATH = os.path.join(_PROGRAMDATA, "Couchside", "config.json")
 DEFAULT_TOKEN_PATH = os.path.join(_PROGRAMDATA, "Couchside", "token")
+
+# --- agent log file ----------------------------------------------------------
+# The agent is launched by a scheduled task running pythonw.exe, which is
+# GUI-subsystem and has NO console: every print() in this file goes to a handle
+# that discards it. /api/journal only reads the Windows Event Log for watched
+# SERVICES, and the agent is not a service -- so the agent's own diagnostics
+# were unrecoverable on Windows. That is not a cosmetic gap: the one line that
+# explains a stuck input session ("[gamepad] ... input blocked") could not be
+# read back from a user's machine at all.
+#
+# So tee stdout/stderr into a rotating file the app can fetch. Size-capped and
+# rotated once, because this runs forever on someone else's PC and must not
+# grow without bound.
+AGENT_LOG_PATH = os.path.join(
+    os.environ.get("LOCALAPPDATA") or os.path.join(_PROGRAMDATA, "Couchside"),
+    "Couchside", "logs", "agent.log")
+AGENT_LOG_MAX_BYTES = 1 << 20      # 1 MiB, then rotate to .1 (2 MiB on disk max)
+
+
+class _Tee:
+    """Write-through to the original stream AND the log file.
+
+    Keeps the original stream so a console run (python.exe, or --mock in a
+    terminal) still prints normally. Never raises: a logging failure must not
+    take down an input path, so every write is best-effort."""
+
+    def __init__(self, stream, path):
+        self._s = stream
+        self._path = path
+        self._lock = threading.Lock()
+
+    def write(self, text):
+        try:
+            if self._s is not None:
+                self._s.write(text)
+        except Exception:
+            pass
+        try:
+            with self._lock:
+                self._rotate_if_needed()
+                with open(self._path, "a", encoding="utf-8", errors="replace") as f:
+                    f.write(text)
+        except Exception:
+            pass
+        return len(text)
+
+    def flush(self):
+        try:
+            if self._s is not None:
+                self._s.flush()
+        except Exception:
+            pass
+
+    def isatty(self):
+        try:
+            return bool(self._s and self._s.isatty())
+        except Exception:
+            return False
+
+    def _rotate_if_needed(self):
+        try:
+            if os.path.getsize(self._path) < AGENT_LOG_MAX_BYTES:
+                return
+        except OSError:
+            return
+        try:
+            os.replace(self._path, self._path + ".1")
+        except OSError:
+            pass
+
+
+def start_agent_log():
+    """Tee stdout/stderr to AGENT_LOG_PATH. Best-effort; returns the path or
+    None. Called first thing in main() so even startup failures are captured."""
+    try:
+        os.makedirs(os.path.dirname(AGENT_LOG_PATH), exist_ok=True)
+        sys.stdout = _Tee(sys.stdout, AGENT_LOG_PATH)
+        sys.stderr = _Tee(sys.stderr, AGENT_LOG_PATH)
+        return AGENT_LOG_PATH
+    except Exception:
+        return None
+
 DEFAULT_PORT = 8787
 
 # Flags for spawning children without popping console windows, and for
@@ -139,6 +221,11 @@ DEFAULT_UNITS = [
     # (service name, scope). Audiosrv = Windows Audio: the service an HTPC
     # actually cares about; add Steam/Sunshine etc. via config.json.
     ("Audiosrv", "system"),
+    # The agent's OWN log, served from the tee'd file rather than the Event Log
+    # (the agent is not a service, so it has no Event Log provider). Listed here
+    # so it passes the WATCHLIST_NAMES allowlist in the journal route and shows
+    # up in the app's Logs picker with no app-side change.
+    ("couchside-agent", "user"),
 ]
 
 DEFAULT_ACTIONS = {
@@ -448,6 +535,14 @@ def load_config(path):
         print("warning: invalid config %s (%s), using built-in generic defaults"
               % (path, e), file=sys.stderr, flush=True)
         return
+    # The agent's OWN log is always available, whatever the config says. A
+    # config.json that lists its own units REPLACES the defaults, which would
+    # otherwise make the agent's log un-fetchable on exactly the machines whose
+    # owner customised the watchlist -- and the journal route rejects any unit
+    # not on this allowlist (400), so it has to be a member, not a special case
+    # bypassing the check.
+    if not any(name == AGENT_LOG_UNIT for name, _s in units):
+        units = list(units) + [(AGENT_LOG_UNIT, "user")]
     WATCHLIST = units
     WATCHLIST_NAMES = {name for name, _scope in WATCHLIST}
     ACTIONS = actions
@@ -1079,8 +1174,28 @@ def _xpath_escape(value):
     return value.replace("'", "&apos;")
 
 
+AGENT_LOG_UNIT = "couchside-agent"   # reserved journal unit -> our own log file
+
+
+def _agent_log_lines(lines):
+    """Tail of the agent's own log file (see start_agent_log). Reads the rotated
+    .1 first so a tail that spans a rotation is still contiguous. Never raises;
+    an unreadable log returns a single explanatory line rather than an error, so
+    the Logs panel shows something actionable instead of failing."""
+    out = []
+    for path in (AGENT_LOG_PATH + ".1", AGENT_LOG_PATH):
+        try:
+            with open(path, "r", encoding="utf-8", errors="replace") as f:
+                out.extend(f.read().splitlines())
+        except OSError:
+            continue
+    if not out:
+        return ["(no agent log yet at %s)" % AGENT_LOG_PATH]
+    return out[-lines:]
+
+
 def real_journal(unit, scope, lines):
-    """Event-log lines for a watched unit.
+    """Event-log lines for a watched unit, or the agent's own log.
 
     Provider-name query against System then Application: services log under
     their own provider name when they log at all. Falls back to Service
@@ -1089,6 +1204,8 @@ def real_journal(unit, scope, lines):
     and matches either, keeping started/stopped/crashed visible for services
     like Audiosrv ("Windows Audio") that never log under their own provider.
     """
+    if unit == AGENT_LOG_UNIT:
+        return _agent_log_lines(lines)
     safe = _xpath_escape(unit)
     for log in ("System", "Application"):
         out = _wevtutil_query(
@@ -5992,6 +6109,11 @@ class QuietThreadingHTTPServer(ThreadingHTTPServer):
 
 
 def main():
+    # FIRST: start the log tee, so even a startup crash lands somewhere readable.
+    # Under pythonw.exe (how the scheduled task runs us) there is no console and
+    # every print() would otherwise be discarded.
+    _log = start_agent_log()
+
     p = argparse.ArgumentParser(description="Couchside box agent (Windows)")
     p.add_argument("--port", type=int, default=None,
                    help="listen port (overrides config; default %d)" % DEFAULT_PORT)
