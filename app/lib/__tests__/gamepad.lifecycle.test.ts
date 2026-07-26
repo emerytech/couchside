@@ -242,6 +242,65 @@ test('freshness guard: connect() still no-ops over a FRESH OPEN socket (control)
   c.close();
 });
 
+// --- diagnostics counters ----------------------------------------------------
+// The on-Pad panel is only useful if these counters actually discriminate. A
+// counter that never moves would quietly send the next investigation down the
+// wrong path, so each is asserted to move in ITS case and not in the others.
+
+test('diagnostics: inputSends counts frames that really left the socket', async () => {
+  const { getWsTrace } = await import('../gamepad.ts');
+  const c = freshClient();
+  c.connect(CONN);
+  MockWebSocket.instances[0].openAndHello();
+  const before = getWsTrace().inputSends;
+  c.sendMouseMove(3, 4);
+  assert.equal(getWsTrace().inputSends, before + 1, 'a sent move increments inputSends');
+  c.close();
+});
+
+test('diagnostics: a drop on a dead socket counts as inputDropped, not inputSends', async () => {
+  const { getWsTrace } = await import('../gamepad.ts');
+  const c = freshClient();
+  c.connect(CONN);
+  const ws0 = MockWebSocket.instances[0];
+  ws0.openAndHello();
+  ws0.readyState = 3; // CLOSED under us, no onclose (the suspended-app case)
+  const sends = getWsTrace().inputSends;
+  const drops = getWsTrace().inputDropped;
+  c.sendMouseButton('l', 1);
+  assert.equal(getWsTrace().inputSends, sends, 'a dropped frame must NOT count as sent');
+  assert.equal(getWsTrace().inputDropped, drops + 1, 'it counts as dropped');
+  c.close();
+});
+
+test('diagnostics: getDiagnostics reports the recovery predicate honestly', () => {
+  const c = freshClient();
+  c.connect(CONN);
+  MockWebSocket.instances[0].openAndHello();
+  assert.equal(c.getDiagnostics().staleByWatchdog, false, 'fresh socket is not stale');
+  assert.equal(c.getDiagnostics().status, 'connected');
+  assert.equal(c.getDiagnostics().socket, 'open');
+  // Past the watchdog window the panel must say the recovery is ARMED — that is
+  // exactly what "why didn't it fire?" needs answered during an episode.
+  NOW += 5_000 * 2.5 + 1;
+  assert.equal(c.getDiagnostics().staleByWatchdog, true, 'silent socket reads stale');
+  assert.ok(c.getDiagnostics().inboundAgeMs > 12_500, 'inbound age reflects the silence');
+  c.close();
+});
+
+test('diagnostics: recoveries counts the input-driven rebuild', async () => {
+  const { getWsTrace } = await import('../gamepad.ts');
+  const c = freshClient();
+  c.connect(CONN);
+  MockWebSocket.instances[0].openAndHello();
+  const before = getWsTrace().recoveries;
+  NOW += 5_000 * 2.5 + 1;      // stale
+  c.sendMouseMove(5, 5);       // the swipe that should rebuild
+  assert.equal(getWsTrace().recoveries, before + 1, 'the rebuild is counted');
+  assert.equal(MockWebSocket.instances.length, 2, 'and it really did reconnect');
+  c.close();
+});
+
 // restore the clock so a leaked reference can't confuse other files
 process.on('exit', () => {
   // eslint-disable-next-line @typescript-eslint/no-explicit-any

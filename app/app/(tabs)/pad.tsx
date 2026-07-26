@@ -37,6 +37,7 @@ import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { Gated } from '@/components/Gated';
 import { SteamMenusPanel } from '@/components/SteamMenusPanel';
 import { RemoteView } from '@/components/RemoteView';
+import { PadDiagnostics } from '@/components/PadDiagnostics';
 import { TabScreen } from '@/components/TabScreen';
 import { useLockOrientation } from '@/hooks/useLockOrientation';
 import { usePoll } from '@/hooks/usePoll';
@@ -893,6 +894,10 @@ function PadScreen() {
     onDown: () => sendVol('volume_down'),
   });
   const [controlReq, setControlReq] = useState<string | null>(null);
+  // WS diagnostics sheet (long-press the status pill). Lives here so it renders
+  // OVER the Pad without unmounting it -- see PadDiagnostics for why that
+  // matters (leaving the tab tears down the socket being investigated).
+  const [diagOpen, setDiagOpen] = useState(false);
   const [canForce, setCanForce] = useState(false);
 
   const clientRef = useRef<GamepadClient | null>(null);
@@ -1461,7 +1466,19 @@ function PadScreen() {
           large-pad mode; the floating chip below brings it back. */}
       {!largePad && (
         <>
-          <Pressable onPress={retry} style={styles.pill} hitSlop={8}>
+          <Pressable
+            onPress={retry}
+            // Long-press opens the WS diagnostics. Deliberately hidden behind a
+            // long-press on the PILL: the panel has to be reachable WITHOUT
+            // leaving the Pad tab, because blurring the tab closes the socket
+            // and destroys the stuck state worth reading.
+            onLongPress={() => {
+              hapticLight();
+              setDiagOpen(true);
+            }}
+            delayLongPress={700}
+            style={styles.pill}
+            hitSlop={8}>
             <View
               style={[
                 styles.pillDot,
@@ -1922,6 +1939,14 @@ function PadScreen() {
           </View>
         </View>
       )}
+
+      {/* Renders OVER the pad, never instead of it: the pad screen must stay
+          mounted or its socket closes and the state being diagnosed is gone. */}
+      <PadDiagnostics
+        visible={diagOpen}
+        onClose={() => setDiagOpen(false)}
+        client={client}
+      />
     </View>
   );
 }
