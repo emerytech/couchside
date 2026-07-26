@@ -111,6 +111,33 @@ Entry fields: `priority` (P0 blocker → P3 nice) · `risk` · `affects` · `dep
   around, not fixed). Worth reading that before designing — a reinstall button that papers
   over a known root cause is worse than fixing the cause.
 
+### Media seek buttons (-10s / +10s) on the now-playing card
+- **priority:** P2 · **risk:** low · **affects:** app only · **depends_on:** none
+- **Requested by u/Most-Bet2021 (r/SteamOS, 2026-07-26):** "a button that fast forwards media
+  or goes back like 10+ seconds".
+- **The agent side already exists in full — this is an app-only change.** Verified by reading
+  the source, not grepping for absence: `POST /api/media/<player>/seek` with
+  `{"position_ms": int}` is live (agent ~13034), `"seek"` is already in `MPRIS_OPS`
+  (agent 7672), and `_mpris_seek` (agent 7888) prefers `SetPosition` with the current trackid
+  and falls back to a relative `Seek` delta for players that reject it. The GET snapshot
+  already returns `position_ms`, `length_ms` and `can_seek` (agent 7850-7853), which is
+  everything the app needs to compute an offset. The app's `MediaOp` union already includes
+  `'seek'` (api.ts:517).
+- **So the work is:** two buttons in the transport row of `NowPlayingCard.tsx`, reusing the
+  `send('seek', { position_ms })` path the scrub bar already uses (NowPlayingCard.tsx:105-108).
+  Clamp to `[0, length_ms]`, gate on `can_seek` exactly as the bar does.
+- **Why it is worth doing even though the scrub bar exists:** the bar needs a precise tap on a
+  thin target from the couch. Discrete ±10s is the "what did they just say" / "skip the intro"
+  gesture, and it is the one the request actually named.
+- **No allowlist, capability, or endpoint work.** Nothing new reaches D-Bus: the op is still
+  looked up in the closed `MPRIS_OPS` table and the player name is re-validated against a
+  fresh `ListNames` before use.
+- **Unverified:** whether a seek actually lands on the players people use in Game Mode. On
+  bazzite.local `playerctl` is NOT installed (only `mpris-proxy`, which is BlueZ's AVRCP
+  bridge, not a player) — the agent shells `busctl` instead, which IS present. Needs a live
+  test with Chrome/Firefox/Plex/Kodi flatpaks actually playing, and `can_seek` observed both
+  true and false.
+
 ### Two-way clipboard (box <-> phone)
 - **priority:** P2 · **risk:** low · **affects:** agent + app · **depends_on:** none
 - **Requested by likwidtek (Discord, 2026-07-22).** **Half of this does NOT exist**, contrary
