@@ -10,7 +10,13 @@
 import Ionicons from '@expo/vector-icons/Ionicons';
 
 import { hapticLight, hapticSelection } from '@/lib/haptics';
-import { getKeepAwakeEnabled, useKeepAwakeEnabled } from '@/lib/keepAwake';
+import {
+  getKeepAwakeEnabled,
+  getKeepAwakeTimeoutMin,
+  shouldHoldWakeLock,
+  useKeepAwakeEnabled,
+  useKeepAwakeTimeoutMin,
+} from '@/lib/keepAwake';
 import { getPref, setPref, usePref } from '@/lib/prefs';
 import { activateKeepAwakeAsync, deactivateKeepAwake } from 'expo-keep-awake';
 import { useNavigation } from 'expo-router';
@@ -45,13 +51,25 @@ import type { SteamMenus } from '@/lib/api';
 import { useTrackpad } from '@/hooks/useTrackpad';
 import { useVolumeButtons } from '@/hooks/useVolumeButtons';
 import { api, hostKey, Status } from '@/lib/api';
-import { ButtonKey, DesktopKey, GamepadClient, GamepadStatus, SpecialKey, StickKey, SystemChord, TriggerKey } from '@/lib/gamepad';
+import { ButtonKey, DesktopKey, GamepadClient, GamepadStatus, getWsTrace, SpecialKey, StickKey, SystemChord, TriggerKey } from '@/lib/gamepad';
 import { PadMode } from '@/lib/settings';
 import { useSettings } from '@/lib/SettingsContext';
 import { mono, useTheme, useThemedStyles } from '@/lib/theme';
 import type { Palette } from '@/lib/theme';
 
 const KEEP_AWAKE_TAG = 'rescue-remote-pad';
+
+/**
+ * How often the wake-lock timer re-checks for activity.
+ *
+ * Activity is read from wsTrace.inputSends rather than hooked into the touch
+ * handlers ON PURPOSE: the input path is the most timing-sensitive code in the
+ * app, and a counter that already increments on every outbound frame gives the
+ * same signal for free. Polling a number costs nothing; adding work per touch
+ * move does not. 10s only bounds how late the release can be — the shortest
+ * selectable timeout is 5 minutes.
+ */
+const WAKE_POLL_MS = 10_000;
 
 // All Pad haptics (swipe steps, taps, buttons, sticks, mode switch) route
 // through the app-wide gated emitter so the Settings toggle governs them.
@@ -917,6 +935,40 @@ function PadScreen() {
   // below can (de)acquire the wake lock when the pref loads or is toggled.
   const focusedRef = useRef(false);
   const keepAwakeOn = useKeepAwakeEnabled();
+  const keepAwakeTimeout = useKeepAwakeTimeoutMin();
+
+  // Wake-lock state. wakeHeldRef mirrors what we last told expo-keep-awake so
+  // the poll is a no-op in the steady state instead of re-issuing a native call
+  // every 10s. lastSendsRef is the previous inputSends reading; a change in it
+  // is what "activity" means here.
+  const lastActivityRef = useRef(Date.now());
+  const lastSendsRef = useRef(0);
+  const wakeHeldRef = useRef(false);
+
+  const noteActivity = useCallback(() => {
+    lastActivityRef.current = Date.now();
+  }, []);
+
+  /** Acquire/release the lock, but only on an actual edge. */
+  const applyWakeLock = useCallback((hold: boolean) => {
+    if (Platform.OS === 'web') return;
+    if (hold === wakeHeldRef.current) return;
+    wakeHeldRef.current = hold;
+    if (hold) activateKeepAwakeAsync(KEEP_AWAKE_TAG).catch(() => {});
+    else deactivateKeepAwake(KEEP_AWAKE_TAG).catch(() => {});
+  }, []);
+
+  /** Ask the shared (tested) predicate what the lock should be, then apply it. */
+  const evaluateWakeLock = useCallback(() => {
+    applyWakeLock(
+      shouldHoldWakeLock({
+        enabled: getKeepAwakeEnabled(),
+        timeoutMin: getKeepAwakeTimeoutMin(),
+        focused: focusedRef.current,
+        msSinceActivity: Date.now() - lastActivityRef.current,
+      }),
+    );
+  }, [applyWakeLock]);
 
   // Manage the connection off the screen's mount lifecycle (reliable on web
   // and native) rather than useFocusEffect, whose callback-body timing is
@@ -954,22 +1006,17 @@ function PadScreen() {
         deviceName: DEVICE_LABEL,
         noPad: keyboardModeRef.current,
       });
-      if (Platform.OS !== 'web') {
-        // Honor the "keep screen awake on Pad" pref; if it was turned off while
-        // focused, this re-connect path also releases a prior lock.
-        if (getKeepAwakeEnabled()) {
-          activateKeepAwakeAsync(KEEP_AWAKE_TAG).catch(() => {});
-        } else {
-          deactivateKeepAwake(KEEP_AWAKE_TAG).catch(() => {});
-        }
-      }
+      // Arriving on the Pad IS activity: start the inactivity clock now, so a
+      // stale timestamp from a previous visit can't release the lock instantly.
+      noteActivity();
+      evaluateWakeLock();
     };
     const disconnect = () => {
       focusedRef.current = false;
       client.close();
-      if (Platform.OS !== 'web') {
-        deactivateKeepAwake(KEEP_AWAKE_TAG).catch(() => {});
-      }
+      // evaluateWakeLock would also release (focused=false), but call it
+      // directly: leaving the Pad must never depend on the poll running.
+      applyWakeLock(false);
     };
 
     const offFocus = navigation.addListener('focus', connect);
@@ -1004,18 +1051,32 @@ function PadScreen() {
     // identity only; settingsRef carries the rest without re-running.
   }, [client, ready, settings.host, settings.port, settings.token, navigation]);
 
-  // Re-apply the wake lock when the keep-awake pref loads or is toggled. The
-  // pref loads asynchronously, so on a cold start straight onto the Pad tab the
-  // first connect() can read the default (on) before a user's "off" resolves;
-  // this corrects the lock once the real value arrives (and on later toggles).
+  // Drive the wake lock, and run the inactivity timer that releases it.
+  //
+  // Re-runs when either pref loads or changes. Both load asynchronously, so on
+  // a cold start straight onto the Pad the first connect() can read the
+  // defaults before the user's stored values resolve; this corrects the lock
+  // once the real values arrive (and on every later change).
   useEffect(() => {
-    if (Platform.OS === 'web') return;
-    if (focusedRef.current && keepAwakeOn) {
-      activateKeepAwakeAsync(KEEP_AWAKE_TAG).catch(() => {});
-    } else {
-      deactivateKeepAwake(KEEP_AWAKE_TAG).catch(() => {});
-    }
-  }, [keepAwakeOn]);
+    if (Platform.OS === 'web') return undefined;
+    // Changing the pref is itself an interaction — don't let a countdown that
+    // started before the user opened Settings expire the moment they return.
+    noteActivity();
+    lastSendsRef.current = getWsTrace().inputSends;
+    evaluateWakeLock();
+    // "Always" needs no timer, and neither does a disabled pref: in both cases
+    // the answer can only change when a pref does, which re-runs this effect.
+    if (!keepAwakeOn || keepAwakeTimeout <= 0) return undefined;
+    const id = setInterval(() => {
+      const sends = getWsTrace().inputSends;
+      if (sends !== lastSendsRef.current) {
+        lastSendsRef.current = sends;
+        noteActivity();
+      }
+      evaluateWakeLock();
+    }, WAKE_POLL_MS);
+    return () => clearInterval(id);
+  }, [keepAwakeOn, keepAwakeTimeout, noteActivity, evaluateWakeLock, applyWakeLock]);
 
   // Toggling keyboard mode has to RE-HANDSHAKE: whether the agent creates a
   // virtual pad is decided once, from the connect URL. Without this, turning the

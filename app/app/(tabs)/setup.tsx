@@ -41,7 +41,13 @@ import {
   setHapticsEnabled,
   useHapticsEnabled,
 } from '@/lib/haptics';
-import { setKeepAwakeEnabled, useKeepAwakeEnabled } from '@/lib/keepAwake';
+import {
+  setKeepAwakeEnabled,
+  setKeepAwakeTimeoutMin,
+  useKeepAwakeEnabled,
+  useKeepAwakeTimeoutMin,
+  type KeepAwakeTimeoutMin,
+} from '@/lib/keepAwake';
 import { navigateAfterPair } from '@/lib/postPair';
 import { setPref, usePref } from '@/lib/prefs';
 import { buy, getProduct, restore } from '@/lib/purchase';
@@ -759,6 +765,7 @@ function SetupBody() {
   const status = useBoxOnlineStatus(boxes, { active: true, intervalMs: 10000 });
   const hapticsOn = useHapticsEnabled();
   const keepAwakeOn = useKeepAwakeEnabled();
+  const keepAwakeTimeout = useKeepAwakeTimeoutMin();
   const themeMode = useThemeMode();
   const accent = useAccent();
   const scheme = useResolvedScheme();
@@ -1400,6 +1407,24 @@ function SetupBody() {
                 />
               </View>
               </PrefFilterable>
+              {keepAwakeOn && (
+                <SegPref
+                  label="Let the screen sleep after"
+                  sub="Inactivity timer: it only counts down while you're not touching the Pad, and any input resets it — so it won't fire mid-session. Leaving your phone sitting on the Pad tab with the display held on will drain the battery; a timeout caps that. 'Always' never lets the screen sleep."
+                  options={[
+                    { value: 5, label: '5m' },
+                    { value: 10, label: '10m' },
+                    { value: 30, label: '30m' },
+                    { value: 60, label: '1h' },
+                    { value: 0, label: 'Always' },
+                  ]}
+                  value={keepAwakeTimeout}
+                  onSelect={(v) => {
+                    void setKeepAwakeTimeoutMin(v as KeepAwakeTimeoutMin);
+                    hapticSelection();
+                  }}
+                />
+              )}
               <SegPref
                 label="Open on"
                 sub="The tab the app starts on. Pairing wins on first run — with no box paired you still land on Setup."
