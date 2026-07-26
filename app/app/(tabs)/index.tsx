@@ -170,9 +170,6 @@ function ConsoleScreen() {
         {/* Gaming card (probe-and-appear; hidden when the box has no Steam) */}
         <GamingCard />
 
-        {/* Send a file to the box (probe-and-appear; agent >= 2.9.54) */}
-        <FileDropCard />
-
         {s && (
           <>
             <View style={styles.row}>
@@ -334,6 +331,12 @@ function ConsoleScreen() {
             </Text>
           </Card>
         )}
+
+        {/* Send a file to the box (probe-and-appear; agent >= 2.9.54).
+            LAST on purpose: sending a file is a deliberate errand you go
+            looking for, not something you monitor, so it does not earn space
+            above the vitals you opened this tab to read. */}
+        <FileDropCard />
         </Screen>
       </ScrollView>
     </View>

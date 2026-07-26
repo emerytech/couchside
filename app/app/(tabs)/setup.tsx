@@ -49,6 +49,12 @@ import {
   type KeepAwakeTimeoutMin,
 } from '@/lib/keepAwake';
 import { navigateAfterPair } from '@/lib/postPair';
+import {
+  MEDIA_HOLD_SKIP_SECS,
+  MEDIA_SKIP_SECS,
+  type MediaHoldSkipSec,
+  type MediaSkipSec,
+} from '@/lib/mediaSeek';
 import { setPref, usePref } from '@/lib/prefs';
 import { buy, getProduct, restore } from '@/lib/purchase';
 import { Box, DEFAULT_PORT, normalizeMac } from '@/lib/settings';
@@ -766,6 +772,9 @@ function SetupBody() {
   const hapticsOn = useHapticsEnabled();
   const keepAwakeOn = useKeepAwakeEnabled();
   const keepAwakeTimeout = useKeepAwakeTimeoutMin();
+  const mediaSkipSec = usePref('mediaSkipSec');
+  const mediaHoldSkip = usePref('mediaHoldSkip');
+  const mediaHoldSkipSec = usePref('mediaHoldSkipSec');
   const themeMode = useThemeMode();
   const accent = useAccent();
   const scheme = useResolvedScheme();
@@ -1380,6 +1389,41 @@ function SetupBody() {
                 </View>
               </View>
               </PrefFilterable>
+            </View>
+
+            <View style={prefCardGroupStyle}>
+              <CardHeader icon="musical-notes-outline" label="MEDIA" />
+              <SegPref
+                label="Skip by"
+                sub="How far the skip buttons on the Now Playing card jump when you tap them."
+                options={MEDIA_SKIP_SECS.map((n) => ({ value: n, label: `${n}s` }))}
+                value={mediaSkipSec}
+                onSelect={(v) => {
+                  void setPref('mediaSkipSec', v as MediaSkipSec);
+                  hapticSelection();
+                }}
+              />
+              <TogglePref
+                label="Hold to skip further"
+                sub="Holding a skip button jumps by a larger amount instead. Off makes the buttons a single amount, so a resting thumb can't trigger a big jump."
+                value={mediaHoldSkip}
+                onValueChange={(v) => {
+                  void setPref('mediaHoldSkip', v);
+                  hapticSelection();
+                }}
+              />
+              {mediaHoldSkip && (
+                <SegPref
+                  label="Hold skips by"
+                  sub="How far a held skip button jumps."
+                  options={MEDIA_HOLD_SKIP_SECS.map((n) => ({ value: n, label: `${n}s` }))}
+                  value={mediaHoldSkipSec}
+                  onSelect={(v) => {
+                    void setPref('mediaHoldSkipSec', v as MediaHoldSkipSec);
+                    hapticSelection();
+                  }}
+                />
+              )}
             </View>
 
             <View style={prefCardGroupStyle}>
