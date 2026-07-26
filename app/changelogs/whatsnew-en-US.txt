@@ -1,5 +1,5 @@
 New in 2.9.29
 
-• Skip buttons on Now Playing — tap to jump back or forward 10 seconds, hold for 30. Both amounts are adjustable in Settings, and the hold can be turned off.
-• Screen-awake timeout — the Pad can now let your phone sleep after 5, 10, 30 or 60 minutes with no input, instead of holding the display on the whole time.
-• Send a file moved to the bottom of the Console tab, so your box's vitals come first.
+• Skip 10 or 30 seconds — new arrows on Now Playing jump back or forward 10 seconds; hold one for 30. Change either amount in Settings, or switch the hold off.
+• Kinder to your battery — the Pad no longer holds your screen on indefinitely. Let it sleep after 5, 10, 30 or 60 idle minutes, or keep it always on.
+• Vitals first — the file-sending card moved to the bottom of the Console tab.
