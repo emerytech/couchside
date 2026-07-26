@@ -397,45 +397,38 @@ if (-not $NoGamepad) {
         Install-WingetPackage 'ViGEm.ViGEmBus' 'ViGEmBus (virtual gamepad driver)' | Out-Null
     }
     $dllDest = Join-Path $InstallDir 'ViGEmClient.dll'
-    if (-not (Test-Path $dllDest) -and $usePython -and $pyPath) {
-        # Fetch the official ViGEmClient.dll bundled in the vgamepad PyPI sdist
-        # (redistributable). Best-effort: gamepad is the only thing affected.
+    if (-not (Test-Path $dllDest)) {
+        # Fetch the official redistributable ViGEmClient.dll out of the vgamepad
+        # PyPI sdist (it ships prebuilt x64/x86 copies of Nefarius' client).
+        #
+        # PURE POWERSHELL, and deliberately NOT gated on $usePython. This used to
+        # read `if (... -and $usePython -and $pyPath)` and shell out to a Python
+        # snippet -- so an install that used the bundled .exe (which needs no
+        # Python, and therefore has none) silently skipped the DLL entirely. The
+        # ViGEmBus DRIVER still got installed by winget above, which made the box
+        # look correctly set up while vigem_available() -- a DLL-load check --
+        # returned false, caps.gamepad went false, and the app hid the Pad tab.
+        # That is issue #255: reported as "the Pad tab is missing" on a .exe
+        # install whose ViGEmBus.sys was present and fine.
+        #
+        # tar.exe is present on Windows 10 1803+ (bsdtar in System32).
+        # Best-effort throughout: the gamepad is the only thing affected, so a
+        # failure here must never abort an otherwise good install.
         try {
-            # extractall(filter='data') AND warning suppression keep this
-            # snippet SILENT on stderr: any native stderr write would become a
-            # terminating NativeCommandError under $ErrorActionPreference=Stop.
-            $fetch = @'
-import glob, os, shutil, subprocess, sys, tarfile, warnings
-warnings.filterwarnings("ignore")
-tmp = os.path.join(os.environ["TEMP"], "couchside-vigem")
-os.makedirs(tmp, exist_ok=True)
-subprocess.run([sys.executable, "-m", "pip", "download", "vgamepad", "--no-deps", "-d", tmp],
-               capture_output=True)
-tgz = glob.glob(os.path.join(tmp, "vgamepad-*.tar.gz"))
-if tgz:
-    try:
-        with tarfile.open(tgz[0]) as t: t.extractall(os.path.join(tmp, "src"), filter="data")
-    except TypeError:
-        with tarfile.open(tgz[0]) as t: t.extractall(os.path.join(tmp, "src"))
-    hit = glob.glob(os.path.join(tmp, "src", "**", "x64", "ViGEmClient.dll"), recursive=True)
-    if hit: shutil.copy(hit[0], sys.argv[1])
-'@
-            $tmpPy = Join-Path $env:TEMP 'couchside-fetchdll.py'
-            [IO.File]::WriteAllText($tmpPy, $fetch)
-            # Use the CONSOLE python.exe, not pythonw.exe: pythonw is
-            # GUI-subsystem and PowerShell won't block on it, so the Test-Path
-            # check below would race the still-running pip download.
-            $pyExe = $pyPath
-            if ($pyPath -like '*pythonw.exe') {
-                $sib = Join-Path (Split-Path $pyPath) 'python.exe'
-                if (Test-Path $sib) { $pyExe = $sib }
+            $tmp = Join-Path $env:TEMP 'couchside-vigem'
+            New-Item -ItemType Directory -Force -Path $tmp | Out-Null
+            $meta = Invoke-RestMethod -Uri 'https://pypi.org/pypi/vgamepad/json' -TimeoutSec 20
+            $sdist = ($meta.urls | Where-Object { $_.packagetype -eq 'sdist' } |
+                      Select-Object -First 1).url
+            if ($sdist) {
+                $tgz = Join-Path $tmp 'vgamepad.tar.gz'
+                Invoke-WebRequest -Uri $sdist -OutFile $tgz -TimeoutSec 60 -UseBasicParsing
+                & tar.exe -xzf $tgz -C $tmp 2>$null
+                $hit = Get-ChildItem $tmp -Recurse -Filter 'ViGEmClient.dll' -ErrorAction SilentlyContinue |
+                       Where-Object { $_.FullName -match '\\x64\\' } | Select-Object -First 1
+                if ($hit) { Copy-Item $hit.FullName $dllDest -Force }
             }
-            # EAP=Continue for the call so a stray native stderr line can't
-            # abort the fetch (belt-and-suspenders with the silent snippet).
-            $eap = $ErrorActionPreference; $ErrorActionPreference = 'Continue'
-            & $pyExe $tmpPy $dllDest 2>$null | Out-Null
-            $ErrorActionPreference = $eap
-            Remove-Item $tmpPy -Force -ErrorAction SilentlyContinue
+            Remove-Item $tmp -Recurse -Force -ErrorAction SilentlyContinue
         } catch { }
     }
     if (Test-Path $dllDest) { Write-Host 'Virtual gamepad ready (ViGEmBus + client DLL).' }
