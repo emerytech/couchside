@@ -35,6 +35,15 @@ Send files to the box from your phone — and the screen preview works again.
   you between Game Mode and the desktop.
 - **Preview frames arrive about 2.4x faster** — roughly two seconds down to
   under one — so the Screen card feels far less sluggish.
+- **Windows: pairing from the app works.** Tapping your PC in "Scan for boxes"
+  used to fail with *unauthorized* — the PC had no way to show you a PIN, so the
+  only ways in were the QR page or typing the token by hand. Now it shows a
+  six-digit PIN on the PC's own screen, same as a Steam Deck.
+- **Windows: a fix for the missing Pad tab.** Some `.exe` installs shipped
+  without the driver file the virtual controller needs, so the box reported no
+  gamepad support and the app hid the Pad tab entirely. Builds can no longer be
+  made that way. If your Pad tab is missing, reinstall with the current
+  `CouchsideSetup.exe`.
 - Coming from before 2.9.53, you also get: the trackpad no longer goes dead
   after the phone sits idle, and on Windows your Epic, GOG and Xbox / Game Pass
   games appear next to Steam.
