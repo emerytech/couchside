@@ -12,6 +12,7 @@ import * as SecureStore from 'expo-secure-store';
 import { useSyncExternalStore } from 'react';
 import { Platform } from 'react-native';
 
+import { TV_STEPS, TV_STEP_DEFAULT, type TvStepPx } from './tvNav';
 import {
   MEDIA_HOLD_SKIP_SECS,
   MEDIA_SKIP_SECS,
@@ -180,6 +181,13 @@ export type Prefs = {
   /** How far a HELD skip button jumps, in seconds. Ignored when mediaHoldSkip
    *  is off. */
   mediaHoldSkipSec: MediaHoldSkipSec;
+  /** How far one TV-mode swipe step moves the pointer, in box pixels.
+   *
+   *  A preference rather than a constant because "one tile" is not a fixed
+   *  distance: it depends on the service's grid density and the screen it is
+   *  drawn on. Too small and a row takes many swipes; too large and it skips
+   *  tiles. */
+  tvStepPx: TvStepPx;
 };
 
 export const DEFAULTS: Prefs = {
@@ -217,6 +225,7 @@ export const DEFAULTS: Prefs = {
   mediaSkipSec: 10,
   mediaHoldSkip: true,
   mediaHoldSkipSec: 30,
+  tvStepPx: TV_STEP_DEFAULT,
 };
 
 /** The choices each select-style pref offers (kept next to the store it feeds). */
@@ -328,6 +337,7 @@ function normalize(raw: unknown): Prefs {
       MEDIA_HOLD_SKIP_SECS,
       DEFAULTS.mediaHoldSkipSec,
     ) as MediaHoldSkipSec,
+    tvStepPx: num(o.tvStepPx, TV_STEPS, DEFAULTS.tvStepPx) as TvStepPx,
   };
 }
 

@@ -49,6 +49,7 @@ import {
   type KeepAwakeTimeoutMin,
 } from '@/lib/keepAwake';
 import { navigateAfterPair } from '@/lib/postPair';
+import { TV_STEPS, type TvStepPx } from '@/lib/tvNav';
 import {
   MEDIA_HOLD_SKIP_SECS,
   MEDIA_SKIP_SECS,
@@ -775,6 +776,7 @@ function SetupBody() {
   const mediaSkipSec = usePref('mediaSkipSec');
   const mediaHoldSkip = usePref('mediaHoldSkip');
   const mediaHoldSkipSec = usePref('mediaHoldSkipSec');
+  const tvStepPx = usePref('tvStepPx');
   const themeMode = useThemeMode();
   const accent = useAccent();
   const scheme = useResolvedScheme();
@@ -1469,6 +1471,19 @@ function SetupBody() {
                   }}
                 />
               )}
+              <SegPref
+                label="TV mode step size"
+                sub="How far one swipe step moves the pointer in TV mode. TV mode drives the cursor in tile-sized jumps for streaming apps, where arrow keys only scroll the page. Bigger steps cross a row faster; smaller ones land on dense grids more reliably."
+                options={TV_STEPS.map((n) => ({
+                  value: n,
+                  label: n === 160 ? 'Small' : n === 260 ? 'Medium' : 'Large',
+                }))}
+                value={tvStepPx}
+                onSelect={(v) => {
+                  void setPref('tvStepPx', v as TvStepPx);
+                  hapticSelection();
+                }}
+              />
               <SegPref
                 label="Open on"
                 sub="The tab the app starts on. Pairing wins on first run — with no box paired you still land on Setup."

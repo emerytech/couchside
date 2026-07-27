@@ -131,6 +131,28 @@ Entry fields: `priority` (P0 blocker → P3 nice) · `risk` · `affects` · `dep
 - The agent's own tiles are filtered out, and proven unlaunchable rather than merely
   unlisted.
 
+### TV pad mode — swipe drives the cursor in tile-sized jumps
+- **priority:** P1 · **risk:** low · **affects:** app only · **depends_on:** none
+- **SHIPPED 2026-07-26.** Kept as the record of why it exists.
+- **The problem, measured:** on SteamOS the streaming services people actually watch are
+  web pages. Arrow keys do NOT navigate them — Chromium has no spatial navigation by
+  default, its `--enable-spatial-navigation` flag is documented to break on any page
+  calling `Element.focus()` (Netflix does), and Firefox removed the feature entirely.
+  Verified on the box: uinput arrow keys moved Steam's own selection (0 px idle vs
+  155,515 px, selection moved exactly two tiles) but a browser tile grid only scrolls.
+- Every shipping Linux TV product converged on driving a CURSOR instead of a focus ring —
+  KDE's purpose-built Aura browser ships `navMode: "vMouse"`. This mode does that, but in
+  tile-sized jumps with a haptic per step, so it FEELS like a d-pad while being a pointer.
+  It therefore works on every service, including the ones with no TV UI at all.
+- **App-only.** Reuses `SwipeSurface` verbatim — same discrete stepping, same haptic
+  rate-limit, same gesture-termination safety — and only changes what a step SENDS.
+  Nothing is held between steps, so there is no latched axis to release.
+- Step size is a preference (Small/Medium/Large = 160/260/380 px) because "one tile" is
+  not a fixed distance: it depends on the service's grid density and the screen.
+- **Still unproven:** that uinput pointer motion reaches a browser under gamescope.
+  Keyboard is verified; the mouse test was inconclusive (injected moves produced no pixel
+  change on a static profile picker). Worth a live check with this mode on a real phone.
+
 ### Packaged media shortcuts, installable from the phone
 - **priority:** P2 · **risk:** medium · **affects:** agent + app · **depends_on:** shortcut
   launching (shipped 2026-07-26)
@@ -170,10 +192,14 @@ Entry fields: `priority` (P0 blocker → P3 nice) · `risk` · `affects` · `dep
 - Leaning Chrome for adoption-friendliness; needs a decision, not a coin flip.
 
 #### Hard constraints already measured
-- **shortcuts.vdf must be written with Steam DOWN.** Steam rewrites it from memory on
-  exit, so an edit made while it runs is silently clobbered. Verified: `steam -shutdown`,
-  wait for the process to go, edit, let gamescope-session respawn it. A helper that
-  forgets this will appear to work and then quietly undo itself.
+- **File-level edits to shortcuts.vdf DO NOT STICK — not even with Steam down.**
+  CORRECTED 2026-07-26 after testing: a prune (32 -> 27 entries) and a separate
+  LaunchOptions edit were both applied with Steam shut down, verified on disk, and both
+  were REVERTED after Steam restarted — the deleted tiles came back and the added flag
+  was gone. Steam holds an authoritative copy (cloud sync is the likely mechanism) and
+  rewrites the file from it. So any shortcut management must go through Steam's own
+  mechanism (`steamos-add-to-steam`), and REMOVAL may not be reachable from the agent at
+  all — it may have to be a "do this in Steam's UI" instruction.
 - Cover art is a separate artifact: `~/.steam/steam/userdata/<id>/config/grid/<appid>p.png`.
   A pack without art produces the grey placeholder tile, which is exactly what made the
   duplicates look wrong at a glance.
