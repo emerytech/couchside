@@ -11,6 +11,7 @@ import { AppState, AppStateStatus } from 'react-native';
 
 import { pingMatchesBox } from './api';
 import { getPref } from './prefs';
+import { isAllowedPairHost } from './pairLink';
 import {
   Box,
   BoxesState,
@@ -35,6 +36,15 @@ export type AddBoxInput = {
   padMode?: Box['padMode'];
   /** Fallback IP (e.g. from the pairing QR's &ip= param). */
   lastIp?: string;
+  /**
+   * The user personally typed this host into the manual add form. ONLY that
+   * form may set it. Every other producer of a host string is a machine
+   * (a QR decode, a deep link, a discovery response) and machine input must
+   * pass the pairing-host allowlist — see the gate in addBox. The manual form
+   * is exempt because the user typing `mybox.fritz.box` into a form IS the
+   * authority on their own network, and there is no attacker in that loop.
+   */
+  userTypedHost?: boolean;
 };
 
 type BoxesContextValue = {
@@ -116,6 +126,14 @@ export function SettingsProvider({ children }: { children: React.ReactNode }) {
     async (input: AddBoxInput): Promise<Box> => {
       const cur = current.current;
       const host = input.host.trim();
+      // CHOKE POINT (CLAUDE.md §3): every machine-supplied host must pass the
+      // pairing allowlist HERE, not only in the callers that remembered. The
+      // QR scanner and DeepLink validate upstream (this is their second
+      // check); discovery responses arrive UNVALIDATED from an unauthenticated
+      // UDP/HTTP reply, and any future caller starts closed by default.
+      if (!input.userTypedHost && !isAllowedPairHost(host)) {
+        throw new Error('host refused: not a LAN address or local name');
+      }
       const port =
         typeof input.port === 'number' && Number.isFinite(input.port)
           ? input.port

@@ -58,7 +58,15 @@
           }
         }
       ],
-      "expo-iap"
+      "expo-iap",
+      [
+        "expo-camera",
+        {
+          "cameraPermission": "Couchside uses the camera only to read the pairing code shown on your box's screen.",
+          "microphonePermission": false,
+          "recordAudioAndroid": false
+        }
+      ]
     ],
     "experiments": {
       "typedRoutes": true

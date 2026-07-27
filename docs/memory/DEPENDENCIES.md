@@ -27,6 +27,7 @@ prebuilt `ios/` directory checked in.
 
 | Package | Version | Why |
 |---|---|---|
+| `expo-camera` | `~57.0.3` | `CameraView` + `useCameraPermissions` behind the in-app QR pairing scanner (`BoxScanQr`). QR-only (`barcodeTypes: ['qr']`). Registered as an `app.json` plugin with `recordAudioAndroid: false` + `microphonePermission: false` — the plugin's DEFAULTS add RECORD_AUDIO / an iOS mic string to a scanner that records nothing (verified stripped via `expo config --type introspect`). `require()`d lazily so a JS bundle on a binary without the native module hides the feature instead of crashing. Pulls `barcode-detector` (web-only transitive). |
 | `expo-document-picker` | `~57.0.1` | Native file picker behind the "Send a file to your box" card (`FileDropCard`). `copyToCacheDirectory` so the picked file is a real file:// uri the uploader can stream. |
 | `expo-file-system` | `~57.0.1` | Streams the picked file to `POST /api/upload` via the SDK-57 `new File(uri).createUploadTask(..., { uploadType: UploadType.BINARY_CONTENT })` API — bytes never enter JS memory, so multi-GB games upload with live progress. **Lazy-imported** inside `lib/api.ts uploadFile()` so the web dev harness never has to load the native module. |
 

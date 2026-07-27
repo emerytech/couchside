@@ -1,48 +1,10 @@
 import * as Linking from 'expo-linking';
 import { useCallback, useEffect, useRef } from 'react';
 
+import { DEEPLINK_FORMS, parsePairLink } from './pairLink';
 import { navigateAfterPair } from './postPair';
 import { DEFAULT_PORT } from './settings';
 import { useBoxes } from './SettingsContext';
-
-/**
- * Parse a URL's query string, decoding each value EXACTLY ONCE.
- *
- * Deliberately not expo-linking's Linking.parse: in expo-linking 57 that runs
- * decodeURIComponent on values URLSearchParams has already decoded: a double
- * decode that mangles (or, on an invalid %-escape, throws away) any param
- * value containing '%'. A hand-entered token with a '%' would silently fail to
- * pair. This single-decodes, tolerates a missing '=', strips a fragment, and
- * never throws (a bad escape falls back to the raw substring).
- */
-function parseQuery(url: string): Record<string, string> {
-  const qStart = url.indexOf('?');
-  if (qStart < 0) return {};
-  let qs = url.slice(qStart + 1);
-  const hash = qs.indexOf('#');
-  if (hash >= 0) qs = qs.slice(0, hash);
-  const out: Record<string, string> = {};
-  for (const pair of qs.split('&')) {
-    if (!pair) continue;
-    const eq = pair.indexOf('=');
-    const rawKey = eq < 0 ? pair : pair.slice(0, eq);
-    const rawVal = eq < 0 ? '' : pair.slice(eq + 1);
-    let key = rawKey;
-    let val = rawVal;
-    try {
-      key = decodeURIComponent(rawKey);
-    } catch {
-      /* keep raw key */
-    }
-    try {
-      val = decodeURIComponent(rawVal);
-    } catch {
-      /* keep raw value */
-    }
-    out[key] = val;
-  }
-  return out;
-}
 
 /**
  * Root-level pairing deep-link handler.
@@ -76,11 +38,15 @@ export function DeepLinkHandler() {
   const apply = useCallback(
     (url: string | null | undefined) => {
       if (!url) return;
-      const q = parseQuery(url);
-      const host = (q.host ?? '').trim();
-      const token = q.token ?? '';
-      // Only a link that carries BOTH host and token is a pairing link.
-      if (!host || !token) return;
+      // ONE VALIDATOR, both callers (lib/pairLink.ts): until 2026-07-27 this
+      // handler accepted ANY host — `couchside://setup?host=evil.com&token=x`
+      // added a public box to the fleet, and the app then sent the token there
+      // and polled it forever. parsePairLink enforces the LAN allowlist, the
+      // origin binding, and reject-rather-than-sanitise; a refused link is a
+      // silent no-op here exactly as an incomplete one always was (there is no
+      // UI surface on a cold-start URL to explain into).
+      const parsed = parsePairLink(url, { forms: DEEPLINK_FORMS, defaultPort: DEFAULT_PORT });
+      if (!parsed.ok) return;
 
       // Arrived before the fleet loaded, apply it once ready (see effect below).
       if (!readyRef.current) {
@@ -88,10 +54,7 @@ export function DeepLinkHandler() {
         return;
       }
 
-      const portRaw = q.port ? parseInt(q.port, 10) : NaN;
-      const port =
-        Number.isFinite(portRaw) && portRaw > 0 && portRaw <= 65535 ? portRaw : DEFAULT_PORT;
-      const ip = q.ip || undefined;
+      const { host, port, token, ip } = parsed.link;
 
       // Navigate only once the box is actually stored and active, so the Pad
       // opens against the box that was just paired rather than the previous one.

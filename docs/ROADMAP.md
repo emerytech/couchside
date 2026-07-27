@@ -588,6 +588,24 @@ recommendation was wrong, not merely superseded.
 
 ## ✅ Completed
 
+### In-app QR pairing scanner (Netflix-style) — SHIPPED 2026-07-27
+- **priority:** P1 · **risk:** med (new bearer-token ingress) · **affects:** app only
+- Full-bleed camera in a modal off Setup > ADD/PAIR: corner-bracket reticle, translucent
+  bottom card, back chevron — the Netflix look the owner asked for, minus Netflix's
+  auto-apply trust model (their QR resolves to their infrastructure; ours hands over a
+  bearer-token destination).
+- **One validator, both callers** (`lib/pairLink.ts`, 26 bare-Node tests): byte-exact
+  origin binding, LAN-only host allowlist (private IPv4 via lib/lanIp.ts, single
+  non-address labels, `.local`), duplicate-param + octal-octet + hex-literal rejection
+  (`0x08080808` getaddrinfo's to 8.8.8.8 — measured), reject-rather-than-sanitise.
+  DeepLink.tsx now routes through it too (closes KI-034: it accepted ANY host before).
+  `addBox` gained a choke-point gate; only the hand-typed form is exempt.
+- Token-change collisions confirm before overwriting (a hostile QR for a box you own
+  would otherwise silently swap your working credential); success haptic fires AFTER the
+  gate, not on decode.
+- **Requires a new native build** (expo-camera). Camera path untestable in the harness;
+  everything else verified there by pressing the controls.
+
 ### 2026-07-24 — Phone→box file drop (agent 2.9.54 + app FileDropCard)
 Send any file from the phone to the box. Agent gains a Bearer-gated `POST /api/upload?name=`
 that STREAMS the request body to `~/Downloads/Couchside` in 1 MiB chunks (before the 8 MiB
