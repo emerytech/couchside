@@ -45,7 +45,7 @@ except ImportError:  # pragma: no cover
     fcntl = None
 
 APP_NAME = "couchside-agent"
-VERSION = "2.9.59"
+VERSION = "2.9.60"
 UID = os.getuid()
 XDG_RUNTIME_DIR = "/run/user/%d" % UID
 
@@ -1391,7 +1391,7 @@ def set_caps(mock):
                 ("gamepad", "steam", "media", "tv", "screen", "power_schedule",
                  "screensaver", "couchmode", "desktop", "steamlink", "gaming",
                  "streamhost", "steammenus", "boxbattery", "file_upload",
-                 "session_default")}
+                 "session_default", "display_info")}
         return
     CAPS = {
         "gamepad": _uinput_writable(),
@@ -1410,6 +1410,7 @@ def set_caps(mock):
         "steammenus": safe(steammenus_available),
         "boxbattery": safe(box_battery_available),
         "file_upload": safe(lambda: os.access(_drop_dir(), os.W_OK)),
+        "display_info": safe(display_info_available),
     }
 
 
@@ -2334,6 +2335,8 @@ def real_status():
     temp = read_cpu_temp_c()
     mem = read_mem()
     battery = read_box_battery()
+    display = display_info()
+    audio = audio_info()
     now = int(time.time())
     _record_history(now, temp, load[0] if load else None, mem)
     return {
@@ -2349,6 +2352,14 @@ def real_status():
         # new ones can treat "absent" as "this box has no battery" rather than
         # having to distinguish that from 0%.
         **({"battery": battery} if battery else {}),
+        # The panel the box is driving, and the default audio OUT/IN devices.
+        # Same shape of contract as `battery`: ADDITIVE, and OMITTED ENTIRELY
+        # when nothing could be read, so absence means "unavailable" and never
+        # has to be told apart from a null. Every field inside them is likewise
+        # independently optional -- see the module note above display_info() for
+        # what each name is allowed to claim.
+        **({"display": display} if display else {}),
+        **({"audio": audio} if audio else {}),
         "net": net_info_cached(),
         "agent_version": VERSION,
         # CAPS is a boot-time snapshot, but "desktop" is SESSION-volatile (it
@@ -3688,6 +3699,12 @@ def mock_status():
         # minutes for minutes_to_full to exercise the charging layout.
         "battery": {"pct": 58, "status": "Discharging", "on_ac": False,
                     "minutes": 251, "watts": 7.7, "profile": "balanced"},
+        # Mock drives a 4K HDR VRR TV so every display row is renderable, and a
+        # sink/source pair that are DIFFERENT devices with a long description --
+        # see mock_display_info() / mock_audio_info() for why those specific
+        # values.
+        "display": mock_display_info(),
+        "audio": mock_audio_info(),
         "net": {"iface": "eth0", "mac": "de:ad:be:ef:00:01",
                 "wired": True, "wol_armed": True},
         "agent_version": VERSION,
@@ -10965,6 +10982,1060 @@ def mock_gaming():
 
 
 # ---------------------------------------------------------------------------
+# Display + audio facts (additive blocks on GET /api/status: "display", "audio")
+#
+# What the Console tab shows: the panel the box is actually driving (resolution,
+# refresh, HDR, VRR, who made it, which connector) and the default audio OUT and
+# IN devices.
+#
+# HONESTY IS THE FEATURE HERE. Almost every source below answers "what can this
+# display do", and only two of them answer "what is it doing right now". Those
+# are different questions and this module never lets one masquerade as the
+# other, because the failure mode is a phone confidently reporting 60 Hz on a
+# box running at 120:
+#
+#   current_*    ONLY from a live compositor that told us its output mode.
+#   preferred_*  the display's own preferred timing, from EDID. A CAPABILITY.
+#   supported_*  lists of what the panel/compositor will accept. CAPABILITIES.
+#   *_supported  capability.   *_active  state. Never derived from each other
+#                except in the one direction that is a fact rather than a guess
+#                (a panel that cannot do HDR is certainly not doing HDR).
+#
+# MEASURED 2026-07-27 on the Bazzite box (Lenovo TIO24Gen3T on DP-1), IN GAME
+# MODE. Every claim below is from that capture unless marked otherwise:
+#
+#  * /sys/class/drm/card1-DP-1/modes lists "1920x1080" five times and carries NO
+#    refresh rate at all. It is the mode LIST, not the current mode -- hence
+#    `supported_modes`.
+#  * /sys/kernel/debug/dri/1/state is EACCES as the desktop user. Not used; we
+#    do not sudo for a readout.
+#  * kscreen-doctor EXISTS (/usr/bin/kscreen-doctor) and SIGABRTs with rc=134
+#    and ZERO bytes of stdout in Game Mode -- no KDE session to talk to. A crash
+#    must read as "unavailable", never as "this box has no displays", so the
+#    parser requires non-empty PARSED output and ignores the exit code.
+#  * `gamescopectl` with no arguments prints a gamescope_control info block
+#    (connector, make, model, ValidRefreshRates). Its subcommands and convar
+#    reads return "Command not found." -- convars are NOT readable, so HDR/VRR
+#    state does not come from there. NOTE also that `gamescopectl <convar>
+#    <value>` is a live WRITE surface; this module only ever runs the bare
+#    binary with no arguments.
+#  * gamescope publishes its real state as X11 root-window atoms on its PRIMARY
+#    XWayland (GAMESCOPE_XWAYLAND_SERVER_ID == 0; on server 1 every atom reads
+#    not-found, verified both ways). Read with a ~90-line stdlib X11 client
+#    below rather than xprop/xrandr, which are not guaranteed on stock SteamOS.
+#  * THE HDR TRAP: GAMESCOPE_DISPLAY_HDR_ENABLED read 1 on this box while
+#    GAMESCOPE_DISPLAY_SUPPORTS_HDR read 0, on an SDR panel whose EDID has no
+#    HDR block. In gamescope's source that atom is only ever READ by the
+#    compositor -- it is Steam's "turn HDR on if available" REQUEST, not state.
+#    Sourcing "HDR: On" from it would put HDR On on the Console tab of a machine
+#    driving an 8-bit SDR monitor. The state atom is GAMESCOPE_HDR_OUTPUT_FEEDBACK
+#    and it is written only inside gamescope's output-mode-change handler, so on
+#    this box it does not exist at all. Absent is NOT off.
+#
+# NOT VERIFIED, and deliberately recorded as such:
+#  * The kscreen-doctor path was only ever observed CRASHING. Its JSON shape here
+#    comes from libkscreen's schema, not from a capture; the parser is written to
+#    reject anything it does not fully recognise.
+#  * A gamescope box whose render size differs from its scanout mode (a Deck
+#    rendering 1280x800 into a 4K TV) is untested. current_width/height come from
+#    the X screen size of XWayland server 0, which gamescope sets from
+#    g_nOutputWidth/Height (the OUTPUT size) -- source says scanout, no hardware
+#    proved it.
+#  * vrr_supported has never been observed True, on any panel we could reach.
+#
+# Naming note: the couch-mode switch already has a client-supplied WRITE flag
+# called `hdr` (POST /api/couch-mode). These read-back fields are deliberately
+# `hdr_supported` / `hdr_active` so nobody confuses a request with a reading.
+# ---------------------------------------------------------------------------
+
+# Both blocks ride /api/status, which every app screen and every Fleet row polls
+# at ~5s -- and usePoll retries a FAILING poll every 2s. An uncached probe would
+# put gamescopectl + two wpctl forks (and, off Game Mode, a core-dumping
+# kscreen-doctor) on that path. TTL-memoized like _gaming_payload, but longer:
+# which monitor is plugged in changes on a human timescale, not a poll timescale.
+# The cache is overwritten with whatever the last probe produced, including a
+# degraded one -- a failure must never be papered over with the previous answer.
+_DISPLAY_TTL = 15.0
+_DISPLAY_CACHE = {"val": None, "at": 0.0}
+_AUDIO_CACHE = {"val": None, "at": 0.0}
+_DISPLAY_LOCK = threading.Lock()
+
+# Module constants so tests can point them at fixtures (same pattern as _DRM_DIR).
+_X11_UNIX_DIR = "/tmp/.X11-unix"
+_KSCREEN_TIMEOUT_S = 4
+_GAMESCOPECTL_TIMEOUT_S = 4
+_WPCTL_TIMEOUT_S = 4
+# kscreen-doctor does not fail, it ABORTS -- rc=134, "the monitored command
+# dumped core". Retrying that every TTL on a box sitting at a login screen would
+# hand systemd-coredump a new core dump four times a minute forever, so a failed
+# probe is remembered. This is a stale NEGATIVE (we report nothing for a while),
+# which degrades closed; it can never turn into a stale positive.
+_KSCREEN_BACKOFF_S = 120.0
+_KSCREEN_FAILED_AT = {"t": 0.0}
+
+
+# --- EDID ------------------------------------------------------------------
+#
+# EDID is the display describing ITSELF. It is burned into the monitor and is
+# byte-identical whether the box is driving it at 1920x1080@60, at 640x480, or
+# has it blanked -- confirmed indirectly on the box, where /sys EDID and
+# gamescope's cached ~/.config/gamescope/edid.bin from an earlier boot hash the
+# same. So it answers "what display is this / what can it do" and NEVER "what
+# mode is being driven right now".
+#
+# CONTROL for the parser (CLAUDE.md §11.3): on the measured box `gamescopectl`
+# independently reported Make "Lenovo Group Limited" / Model "TIO24Gen3T" for the
+# same connector, and the manufacturer word 0x30ae must decode to the Lenovo PNP
+# id "LEN". The fixture test asserts both.
+
+_EDID_HEADER = b"\x00\xff\xff\xff\xff\xff\xff\x00"
+_EDID_TAG_SERIAL = 0xFF
+_EDID_TAG_NAME = 0xFC
+_EDID_TAG_RANGE = 0xFD
+
+
+def _edid_text(block):
+    """ASCII payload of a 0xFC/0xFF/0xFE descriptor: bytes 5..17, terminated by
+    0x0A, space-padded. A non-printable byte makes the whole descriptor unusable
+    -- reject, never sanitise (§3.6): garbage here becomes a monitor name on
+    somebody's phone."""
+    raw = block[5:18]
+    nl = raw.find(b"\x0a")
+    if nl >= 0:
+        raw = raw[:nl]
+    try:
+        text = raw.decode("ascii")
+    except UnicodeDecodeError:
+        return None
+    text = text.rstrip(" ")
+    if not text or any(ord(c) < 0x20 or ord(c) > 0x7E for c in text):
+        return None
+    return text
+
+
+def _edid_manufacturer(word):
+    """3-letter PNP id from the big-endian 16-bit manufacturer field. Five bits
+    per letter, 1='A'. Bit 15 is reserved-zero, so a set bit means this is not a
+    manufacturer field -- return None rather than a plausible string."""
+    if word & 0x8000:
+        return None
+    letters = []
+    for shift in (10, 5, 0):
+        v = (word >> shift) & 0x1F
+        if not 1 <= v <= 26:
+            return None
+        letters.append(chr(ord("A") + v - 1))
+    return "".join(letters)
+
+
+def _edid_detailed_timing(block):
+    """Parse an 18-byte DETAILED TIMING descriptor -> dict, or None.
+
+    Refresh is COMPUTED, not read: EDID stores a pixel clock and blanking, so
+    Hz = pixel_clock / (htotal * vtotal). On the measured fixture that is
+    148500 kHz / (2200 * 1125) = 60.000 Hz, which agrees with gamescopectl's
+    ValidRefreshRates: 60."""
+    pixclk_10khz = block[0] | (block[1] << 8)
+    if pixclk_10khz == 0:
+        return None                       # 0 here means "not a detailed timing"
+    h_active = block[2] | ((block[4] & 0xF0) << 4)
+    h_blank = block[3] | ((block[4] & 0x0F) << 8)
+    v_active = block[5] | ((block[7] & 0xF0) << 4)
+    v_blank = block[6] | ((block[7] & 0x0F) << 8)
+    h_total = h_active + h_blank
+    v_total = v_active + v_blank
+    if h_active <= 0 or v_active <= 0 or h_total <= 0 or v_total <= 0:
+        return None
+    return {
+        "width": h_active,
+        "height": v_active,
+        "pixel_clock_khz": pixclk_10khz * 10,
+        "interlaced": bool(block[17] & 0x80),
+        "refresh_hz": round(pixclk_10khz * 10000 / float(h_total * v_total), 3),
+    }
+
+
+def _cta_data_blocks(ext):
+    """Yield (tag, extended_tag_or_None, payload) for each CTA-861 data block in
+    a 128-byte extension block. Bails out silently on any malformed length -- a
+    truncated block must not be able to produce a confident answer."""
+    if len(ext) < 128 or ext[0] != 0x02:
+        return
+    dtd_off = ext[2]
+    if dtd_off < 4 or dtd_off > 127:      # 0 = no DTDs and no data blocks
+        return
+    i = 4
+    while i < dtd_off:
+        header = ext[i]
+        tag = header >> 5
+        length = header & 0x1F
+        if length == 0 or i + 1 + length > dtd_off:
+            return
+        payload = ext[i + 1:i + 1 + length]
+        yield (tag, payload[0] if (tag == 7 and payload) else None, payload)
+        i += 1 + length
+
+
+def _edid_capabilities(blob):
+    """CAPABILITY flags from the CTA-861 extension blocks.
+
+    EVERY KEY HERE IS A CAPABILITY, NOT A STATE. hdr_supported True means the
+    panel says it CAN do HDR and says nothing about whether HDR is on. Returns {}
+    when there is no extension block to read -- "we saw no claim" is not the same
+    as "the display cannot", so callers must distinguish absent from False.
+
+    Two bugs lived here until a second real fixture (a Hisense 4K HDR TV) was
+    added as a positive control, because against the SDR Lenovo panel both
+    branches were only ever observed NOT firing: the colorimetry bitmap is
+    payload[1] (payload[2] is the metadata profile), and the HDMI Forum OUI is
+    stored LSB-first, so bytes d8 5d c4 are 0xC45DD8 and not 0x00D85D."""
+    n_ext = blob[126] if len(blob) >= 127 else 0
+    caps = {}
+    seen_cta = False
+    for k in range(n_ext):
+        ext = blob[128 * (k + 1):128 * (k + 2)]
+        if len(ext) < 128 or ext[0] != 0x02:
+            continue
+        seen_cta = True
+        for tag, ext_tag, payload in _cta_data_blocks(ext):
+            if tag == 7 and ext_tag == 0x06:            # HDR Static Metadata
+                eotf = payload[1] if len(payload) > 1 else 0
+                caps["hdr_supported"] = bool(eotf & 0x06)   # ST2084 / HLG bits
+            elif tag == 3 and len(payload) >= 3:        # Vendor Specific
+                oui = payload[0] | (payload[1] << 8) | (payload[2] << 16)
+                if oui == 0x00001A and len(payload) >= 8:   # AMD FreeSync range
+                    caps["vrr_min_hz"] = payload[6]
+                    caps["vrr_max_hz"] = payload[7]
+                    caps["vrr_supported"] = True
+                elif oui == 0xC45DD8 and len(payload) >= 10:  # HDMI Forum VSDB
+                    vmin = payload[8] & 0x3F
+                    vmax = ((payload[8] & 0xC0) << 2) | payload[9]
+                    if vmin and vmax:
+                        caps["vrr_min_hz"] = vmin
+                        caps["vrr_max_hz"] = vmax
+                        caps["vrr_supported"] = True
+    if seen_cta:
+        caps.setdefault("hdr_supported", False)
+        caps.setdefault("vrr_supported", False)
+    return caps
+
+
+def _parse_edid(blob):
+    """Parse EDID BYTES -> dict, or None if this is not a usable EDID. Requires
+    the 8-byte magic header AND a valid base-block checksum; a bad checksum is a
+    REJECT, not a warning."""
+    if not blob or len(blob) < 128:
+        return None
+    blob = bytes(blob)
+    if blob[:8] != _EDID_HEADER:
+        return None
+    if sum(blob[:128]) & 0xFF:
+        return None                       # base block checksum is 0 mod 256
+    out = {}
+    mfr = _edid_manufacturer((blob[8] << 8) | blob[9])
+    if mfr:
+        out["manufacturer"] = mfr
+    serial_num = blob[12] | (blob[13] << 8) | (blob[14] << 16) | (blob[15] << 24)
+    if serial_num:
+        out["serial_number"] = serial_num
+    week, year = blob[16], blob[17]
+    if year:
+        out["year"] = 1990 + year
+        if 1 <= week <= 54:
+            out["week"] = week
+    out["edid_version"] = "%d.%d" % (blob[18], blob[19])
+    # The four 18-byte descriptors. The first detailed timing is the PREFERRED
+    # one (EDID 1.3+ requires that); the rest are a mix of timings and 0x00 00 00
+    # <tag> display descriptors.
+    for off in (54, 72, 90, 108):
+        block = blob[off:off + 18]
+        if len(block) < 18:
+            break
+        if block[0] or block[1]:
+            timing = _edid_detailed_timing(block)
+            if timing and "preferred" not in out:
+                out["preferred"] = timing
+            continue
+        tag = block[3]
+        if tag == _EDID_TAG_NAME:
+            name = _edid_text(block)
+            if name:
+                out["name"] = name
+        elif tag == _EDID_TAG_SERIAL:
+            text = _edid_text(block)
+            if text:
+                out["serial"] = text
+        elif tag == _EDID_TAG_RANGE and block[5] and block[6]:
+            # The panel's supported vertical refresh RANGE. Capability again.
+            out["vrefresh_min_hz"] = block[5]
+            out["vrefresh_max_hz"] = block[6]
+    out.update(_edid_capabilities(blob))
+    return out
+
+
+def _edid_summary(blob):
+    """The wire fields one connector's EDID contributes, or {} when unusable.
+
+    Nothing here is called `refresh` or `resolution` unqualified, because EDID
+    cannot answer those questions -- see the module note."""
+    e = _parse_edid(blob)
+    if e is None:
+        return {}
+    out = {}
+    if "name" in e:
+        out["monitor_name"] = e["name"]
+    if "manufacturer" in e:
+        out["monitor_vendor"] = e["manufacturer"]
+    if "serial" in e:
+        out["monitor_serial"] = e["serial"]
+    elif "serial_number" in e:
+        out["monitor_serial"] = str(e["serial_number"])
+    if "year" in e:
+        out["monitor_year"] = e["year"]
+    p = e.get("preferred")
+    if p:
+        out["preferred_width"] = p["width"]
+        out["preferred_height"] = p["height"]
+        out["preferred_refresh_hz"] = round(p["refresh_hz"], 1)
+    for k in ("hdr_supported", "vrr_supported", "vrr_min_hz", "vrr_max_hz",
+              "vrefresh_min_hz", "vrefresh_max_hz"):
+        if k in e:
+            out[k] = e[k]
+    return out
+
+
+# --- DRM sysfs: the headless floor -----------------------------------------
+
+
+def _drm_connector_dir(name):
+    """Path of the flat DRM connector directory for `name` ("DP-1" ->
+    /sys/class/drm/card1-DP-1), or None. Matched with an anchored regex rather
+    than a glob so a connector name can never behave like a pattern."""
+    want = re.compile(r"card\d+-" + re.escape(name) + r"$")
+    try:
+        for entry in sorted(os.listdir(_DRM_DIR)):
+            if want.match(entry):
+                return os.path.join(_DRM_DIR, entry)
+    except OSError:
+        return None
+    return None
+
+
+def _drm_text(path):
+    """Stripped contents of a one-line sysfs file, or None (never raises)."""
+    try:
+        with open(path) as f:
+            return f.read().strip()
+    except OSError:
+        return None
+
+
+_DRM_MODE_RE = re.compile(r"^\d{2,5}x\d{2,5}i?$")
+
+
+def _drm_modes(path):
+    """The connector's mode LIST from sysfs, deduped in order, or [].
+
+    THIS IS NOT THE CURRENT MODE and it carries no refresh rate whatsoever: the
+    measured DP-1 lists "1920x1080" four times and "1920x1080i" twice. It ships
+    as `supported_modes` for that reason."""
+    raw = _drm_text(os.path.join(path, "modes"))
+    if not raw:
+        return []
+    seen, out = set(), []
+    for line in raw.splitlines():
+        m = line.strip()
+        if not _DRM_MODE_RE.match(m) or m in seen:
+            continue
+        seen.add(m)
+        out.append(m)
+        if len(out) >= 24:                # a TV can list dozens; cap the payload
+            break
+    return out
+
+
+def _drm_display_facts(name):
+    """Everything one connector can be asked for with no session at all:
+    connected/enabled, the EDID identity + capabilities, and the mode list."""
+    path = _drm_connector_dir(name)
+    if path is None:
+        return {}
+    facts = {}
+    status = _drm_text(os.path.join(path, "status"))
+    if status in ("connected", "disconnected"):
+        facts["connected"] = status == "connected"
+    enabled = _drm_text(os.path.join(path, "enabled"))
+    if enabled in ("enabled", "disabled"):
+        facts["enabled"] = enabled == "enabled"
+    try:
+        with open(os.path.join(path, "edid"), "rb") as f:
+            blob = f.read(2048)           # base block + up to 15 extensions
+    except OSError:
+        blob = b""
+    facts.update(_edid_summary(blob))
+    modes = _drm_modes(path)
+    if modes:
+        facts["supported_modes"] = modes
+    return facts
+
+
+# --- gamescope: the only source of CURRENT mode in Game Mode ----------------
+
+
+class _X11Client:
+    """Read-only X11 client: connect to a display socket and read CARD32 root
+    properties. Pure stdlib (socket + struct), ~90 lines, because xprop and
+    xrandr are not guaranteed present on stock SteamOS and the agent may not add
+    a dependency to read a number.
+
+    Constructing it connects and performs the setup handshake, so it RAISES on
+    anything unexpected; every call site wraps it. Always .close() it."""
+
+    _CONNECT_TIMEOUT_S = 2.0
+
+    def __init__(self, display_num):
+        self.s = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+        self.s.settimeout(self._CONNECT_TIMEOUT_S)
+        self.s.connect(os.path.join(_X11_UNIX_DIR, "X%d" % display_num))
+        name, data = self._xauth(display_num)
+        req = struct.pack("<BxHHHH2x", 0x6C, 11, 0, len(name), len(data))
+        req += name + b"\x00" * self._pad(len(name))
+        req += data + b"\x00" * self._pad(len(data))
+        self.s.sendall(req)
+        head = self._recv(8)
+        success, _, _, _, extra = struct.unpack("<BBHHH", head)
+        body = self._recv(extra * 4)
+        if success != 1:
+            raise OSError("X11 setup refused")
+        # Fixed part of the setup reply is 32 bytes, then the padded vendor
+        # string, then nformats * 8 bytes of FORMAT, then the first SCREEN.
+        (_rel, _rbase, _rmask, _motion, vlen, _maxreq,
+         _nscreens, nformats) = struct.unpack_from("<IIIIHHBB", body, 0)
+        off = 32 + vlen + self._pad(vlen) + nformats * 8
+        # SCREEN: root, default_colormap, white, black, input_masks (5 CARD32),
+        # then width_in_pixels / height_in_pixels as CARD16. The X screen size of
+        # gamescope's server 0 IS its output size, which is where the current
+        # resolution comes from -- no xrandr needed.
+        (self.root, _cmap, _white, _black, _masks,
+         self.width, self.height) = struct.unpack_from("<IIIIIHH", body, off)
+
+    @staticmethod
+    def _pad(n):
+        return (4 - (n % 4)) % 4
+
+    def _recv(self, n):
+        buf = b""
+        while len(buf) < n:
+            chunk = self.s.recv(n - len(buf))
+            if not chunk:
+                raise OSError("short read")
+            buf += chunk
+        return buf
+
+    @staticmethod
+    def _xauth(display_num):
+        """(name, data) for this display from the Xauthority file, or empty. The
+        gamescope XWayland accepted an unauthenticated connection on the measured
+        box; this is here so an authenticated one still works."""
+        path = os.environ.get("XAUTHORITY") or os.path.expanduser("~/.Xauthority")
+        try:
+            with open(path, "rb") as f:
+                raw = f.read()
+        except OSError:
+            return (b"", b"")
+        def field(buf, at):
+            """(bytes, next_offset) for one big-endian length-prefixed field."""
+            (ln,) = struct.unpack_from(">H", buf, at)
+            return buf[at + 2:at + 2 + ln], at + 2 + ln
+
+        i = 0
+        try:
+            while i + 2 <= len(raw):
+                i += 2                                     # family (CARD16)
+                _addr, i = field(raw, i)
+                number, i = field(raw, i)
+                name, i = field(raw, i)
+                data, i = field(raw, i)
+                if number.decode("ascii", "replace") == str(display_num):
+                    return (name, data)
+        except (struct.error, IndexError):
+            return (b"", b"")
+        return (b"", b"")
+
+    def _intern_atom(self, name):
+        """Atom id for an EXISTING atom (only-if-exists=1), or None."""
+        raw = name.encode("ascii")
+        pad = self._pad(len(raw))
+        self.s.sendall(struct.pack("<BBHHxx", 16, 1, 2 + (len(raw) + pad) // 4,
+                                   len(raw)) + raw + b"\x00" * pad)
+        head = self._recv(32)             # reply and error are both 32 bytes
+        if head[0] != 1:
+            return None
+        (atom,) = struct.unpack_from("<I", head, 8)
+        return atom or None
+
+    def read_cardinal(self, name):
+        """First CARD32 of a 32-bit root-window property, or None when the atom
+        does not exist / the property is unset / it is not 32-bit. Absent is
+        never coerced to 0 -- for HDR and VRR that difference is the whole
+        point."""
+        atom = self._intern_atom(name)
+        if atom is None:
+            return None
+        self.s.sendall(struct.pack("<BBHIIIII", 20, 0, 6, self.root, atom,
+                                   0, 0, 1024))
+        head = self._recv(32)
+        if head[0] != 1:
+            return None
+        fmt = head[1]
+        (rlen,) = struct.unpack_from("<I", head, 4)
+        (ptype, _after, nitems) = struct.unpack_from("<III", head, 8)
+        body = self._recv(rlen * 4)
+        if ptype == 0 or fmt != 32 or nitems < 1:
+            return None
+        (val,) = struct.unpack_from("<I", body, 0)
+        return val
+
+    def close(self):
+        try:
+            self.s.close()
+        except OSError:
+            pass
+
+
+def _gamescope_x11():
+    """gamescope's PRIMARY XWayland as an _X11Client, or None.
+
+    gamescope runs --xwayland-count 2 and publishes the display atoms ONLY on
+    server 0; on server 1 every atom reads not-found (verified both ways). So do
+    not hardcode :0 -- open each socket, ask it for GAMESCOPE_XWAYLAND_SERVER_ID
+    and require 0. A Plasma XWayland has no such atom and is therefore skipped,
+    which is also what keeps this from reading a desktop session's numbers."""
+    try:
+        entries = sorted(os.listdir(_X11_UNIX_DIR))
+    except OSError:
+        return None
+    for entry in entries:
+        if not (entry.startswith("X") and entry[1:].isdigit()):
+            continue
+        client = None
+        try:
+            client = _X11Client(int(entry[1:]))
+            if client.read_cardinal("GAMESCOPE_XWAYLAND_SERVER_ID") == 0:
+                return client
+        except Exception:
+            pass
+        if client is not None:
+            client.close()
+    return None
+
+
+_GAMESCOPECTL_FIELD_RE = re.compile(r"^\s*-\s*([A-Za-z][A-Za-z ]*):\s*(\S.*?)\s*$")
+
+
+def _gamescopectl_display_info(gs_socket):
+    """The `gamescopectl` (no arguments) gamescope_control block, as a dict.
+
+    VERBATIM from the box:
+        gamescope_control info:
+          - Connector Name: DP-1
+          - Display Make: Lenovo Group Limited
+          - Display Model: TIO24Gen3T
+          - Display Flags: 0x0
+          - ValidRefreshRates: 60
+
+    ValidRefreshRates is the list of rates the compositor will ACCEPT, not the
+    one it is driving -- it ships as `supported_refresh_hz`. Display Flags is
+    likewise pure capability (gamescope-control.xml names the bits
+    internal_display / supports_hdr / supports_vrr), and the X11 atoms answer
+    capability more directly, so the flags are read past rather than decoded.
+
+    Run with the bare binary and NO arguments: `gamescopectl <convar> <value>` is
+    a live write surface."""
+    if not shutil.which("gamescopectl"):
+        return {}
+    env = _user_env()
+    env["WAYLAND_DISPLAY"] = gs_socket
+    try:
+        r = subprocess.run(["gamescopectl"], capture_output=True,
+                           timeout=_GAMESCOPECTL_TIMEOUT_S, env=env)
+    except Exception:
+        return {}
+    if r.returncode != 0:
+        return {}
+    text = (r.stdout or b"").decode("utf-8", "replace")
+    fields = {}
+    for line in text.splitlines():
+        m = _GAMESCOPECTL_FIELD_RE.match(line)
+        if m:
+            fields[m.group(1).strip()] = m.group(2)
+    out = {}
+    conn = fields.get("Connector Name")
+    if conn and re.match(r"^[A-Za-z]+(-[A-Za-z0-9]+)*$", conn):
+        out["connector"] = conn
+    make = fields.get("Display Make")
+    if make:
+        out["monitor_make"] = make[:64]
+    model = fields.get("Display Model")
+    if model:
+        out["monitor_model"] = model[:64]
+    rates = []
+    for tok in re.split(r"[,\s]+", fields.get("ValidRefreshRates", "")):
+        try:
+            hz = int(tok)
+        except ValueError:
+            continue
+        if 10 <= hz <= 1000 and hz not in rates:
+            rates.append(hz)
+    if rates:
+        out["supported_refresh_hz"] = sorted(rates)
+    return out
+
+
+def _gamescope_display_facts(gs_socket):
+    """Live display facts from a running gamescope. {} when it will not answer.
+
+    STATE comes from the atoms; CAPABILITY from the atoms and gamescopectl. Each
+    field is set only when its own read succeeded, so a half-answering compositor
+    yields half a block rather than a block with invented halves."""
+    facts = {}
+    client = _gamescope_x11()
+    if client is not None:
+        try:
+            if client.width and client.height:
+                facts["current_width"] = client.width
+                facts["current_height"] = client.height
+            hz = client.read_cardinal("GAMESCOPE_DISPLAY_REFRESH_RATE_FEEDBACK")
+            if hz is not None and 10 <= hz <= 1000:
+                facts["current_refresh_hz"] = float(hz)
+            vrr = client.read_cardinal("GAMESCOPE_VRR_FEEDBACK")
+            if vrr is not None:
+                facts["vrr_active"] = bool(vrr)
+            vrr_cap = client.read_cardinal("GAMESCOPE_VRR_CAPABLE")
+            if vrr_cap is not None:
+                facts["vrr_supported"] = bool(vrr_cap)
+            hdr_cap = client.read_cardinal("GAMESCOPE_DISPLAY_SUPPORTS_HDR")
+            if hdr_cap is not None:
+                facts["hdr_supported"] = bool(hdr_cap)
+            # ONLY this atom. GAMESCOPE_DISPLAY_HDR_ENABLED is Steam's request
+            # and read 1 on an SDR panel -- see the module note. Absent here
+            # means unknown, and unknown means the key is simply not sent.
+            hdr_on = client.read_cardinal("GAMESCOPE_HDR_OUTPUT_FEEDBACK")
+            if hdr_on is not None:
+                facts["hdr_active"] = bool(hdr_on)
+        except Exception:
+            pass
+        finally:
+            client.close()
+    facts.update(_gamescopectl_display_info(gs_socket))
+    return facts
+
+
+# --- kscreen-doctor: the desktop (Plasma) path ------------------------------
+
+
+def _kscreen_mode(output):
+    """current_* fields for one kscreen-doctor output object, or {}.
+
+    The current mode is the entry in `modes` whose id equals `currentModeId`;
+    anything else in that list is a mode the panel merely offers. Refresh is
+    range-checked, and a value over 1000 is read as mHz -- libkscreen has
+    reported both units and an unrecognised number is dropped, not guessed."""
+    cur = output.get("currentModeId")
+    modes = output.get("modes")
+    if cur is None or not isinstance(modes, list):
+        return {}
+    for m in modes:
+        if not isinstance(m, dict) or str(m.get("id")) != str(cur):
+            continue
+        out = {}
+        size = m.get("size")
+        if isinstance(size, dict):
+            w, h = size.get("width"), size.get("height")
+            if (isinstance(w, int) and isinstance(h, int)
+                    and not isinstance(w, bool) and not isinstance(h, bool)
+                    and w > 0 and h > 0):
+                out["current_width"] = w
+                out["current_height"] = h
+        hz = m.get("refreshRate")
+        if isinstance(hz, (int, float)) and not isinstance(hz, bool):
+            hz = float(hz)
+            if hz > 1000.0:
+                hz = hz / 1000.0
+            if 10.0 <= hz <= 1000.0:
+                out["current_refresh_hz"] = round(hz, 2)
+        return out
+    return {}
+
+
+def _kscreen_display_facts(connector):
+    """Live display facts from a Plasma session via `kscreen-doctor --json`, or {}.
+
+    THE EXIT CODE IS NOT CONSULTED, deliberately. MEASURED in Game Mode: the
+    binary exists and SIGABRTs (rc=134, "the monitored command dumped core") with
+    ZERO bytes on stdout and zero on stderr. `_couch_run` reports that faithfully,
+    but a crash and "this box has no displays" would look identical to any caller
+    that trusted a status code, so the gate is non-empty output that PARSES into
+    an outputs list. Everything else degrades to {}.
+
+    UNVERIFIED: the success path. kscreen-doctor was never observed answering --
+    the owner's box was in Game Mode throughout. The shape below is libkscreen's
+    documented JSON, and the parser rejects anything it does not recognise."""
+    if not shutil.which("kscreen-doctor"):
+        return {}
+    now = time.monotonic()
+    last = _KSCREEN_FAILED_AT["t"]
+    if last and now - last < _KSCREEN_BACKOFF_S:
+        return {}
+    r = _couch_run(["kscreen-doctor", "--json"],
+                   timeout=_KSCREEN_TIMEOUT_S, max_out=None)
+    data = None
+    text = (r.get("stdout") or "").strip()
+    if text:
+        try:
+            data = json.loads(text)
+        except ValueError:
+            data = None
+    outputs = data.get("outputs") if isinstance(data, dict) else None
+    if not isinstance(outputs, list) or not outputs:
+        _KSCREEN_FAILED_AT["t"] = now
+        return {}
+    _KSCREEN_FAILED_AT["t"] = 0.0
+    outputs = [o for o in outputs if isinstance(o, dict)]
+    match = None
+    for o in outputs:
+        if o.get("name") == connector:
+            match = o
+            break
+    if match is None:
+        for o in outputs:
+            if o.get("enabled") and o.get("connected"):
+                match = o
+                break
+    if match is None:
+        return {}
+    facts = {}
+    if isinstance(match.get("connected"), bool):
+        facts["connected"] = match["connected"]
+    if isinstance(match.get("enabled"), bool):
+        facts["enabled"] = match["enabled"]
+    facts.update(_kscreen_mode(match))
+    return facts
+
+
+# --- audio: default sink (OUT) and default source (IN) ----------------------
+
+
+_WPCTL_PROP_RE = re.compile(
+    r'^[\s*|│├└-]*(node\.name|node\.description)\s*=\s*"?(.*?)"?\s*$')
+
+
+def _wpctl_default_node(token):
+    """{name, description} for @DEFAULT_AUDIO_SINK@ / @DEFAULT_AUDIO_SOURCE@, or
+    None. `wpctl inspect` is used rather than parsing the `wpctl status` tree:
+    the tree marks defaults with a bare '*' in a box-drawing table, while inspect
+    hands back the node's own properties. VERBATIM from the box:
+
+        * node.description = "Built-in Audio Analog Stereo"
+        * node.name = "alsa_output.pci-0000_00_1f.3.analog-stereo"
+
+    `token` is one of two literals chosen HERE; no client input reaches this argv.
+    Missing wpctl, no pipewire, or no default device all return None, which makes
+    the field absent -- never an empty string the app would render as a device."""
+    wp = shutil.which("wpctl")
+    if wp is None:
+        return None
+    try:
+        r = subprocess.run([wp, "inspect", token], capture_output=True,
+                           timeout=_WPCTL_TIMEOUT_S, env=_user_env())
+    except Exception:
+        return None
+    if r.returncode != 0:
+        return None
+    out = {}
+    for line in (r.stdout or b"").decode("utf-8", "replace").splitlines():
+        m = _WPCTL_PROP_RE.match(line)
+        if not m:
+            continue
+        key, val = m.group(1), m.group(2).strip()
+        if not val:
+            continue
+        out.setdefault("name" if key == "node.name" else "description",
+                       val[:128])
+    return out or None
+
+
+def _audio_info_uncached():
+    """{output, input, output_name, input_name} or None.
+
+    `output`/`input` are what a human reads (node.description); the raw node
+    names ride along as additive extras for bug reports. When a node has no
+    description its NAME is used rather than dropping the device -- the name is
+    still a true identity, and an unnamed default device is worse than an ugly
+    one. Nothing is invented: a device we could not read at all is simply absent.
+    """
+    out = {}
+    for token, label in (("@DEFAULT_AUDIO_SINK@", "output"),
+                         ("@DEFAULT_AUDIO_SOURCE@", "input")):
+        node = _wpctl_default_node(token)
+        if not node:
+            continue
+        text = node.get("description") or node.get("name")
+        if text:
+            out[label] = text
+        if node.get("name"):
+            out[label + "_name"] = node["name"]
+    return out or None
+
+
+def audio_info():
+    """The default audio OUT and IN devices, TTL-memoized. None when neither
+    could be read, so the key is omitted rather than sent empty.
+
+    Both directions on purpose, and they are frequently DIFFERENT devices: on the
+    measured box the default sink was the built-in analog output while the
+    default source was the monitor's USB microphone."""
+    now = time.monotonic()
+    with _DISPLAY_LOCK:
+        c = _AUDIO_CACHE
+        if c["at"] and now - c["at"] <= _DISPLAY_TTL:
+            return c["val"]
+    try:
+        val = _audio_info_uncached()
+    except Exception:
+        val = None                        # a readout may never break /api/status
+    with _DISPLAY_LOCK:
+        _AUDIO_CACHE["val"] = val
+        _AUDIO_CACHE["at"] = now
+    return val
+
+
+# --- composition ------------------------------------------------------------
+#
+# The probes above each return FLAT internal facts (current_*, preferred_*,
+# hdr_supported, ...). _display_wire() turns whatever survived into the one wire
+# shape, which is deliberately NESTED so a reader cannot mistake a capability for
+# a state: `mode` is what is being scanned out, `preferred_mode` is what the
+# panel would like, `hdr.supported` vs `hdr.enabled`, `vrr.supported` vs
+# `vrr.active`. Nothing back-fills across that line. On most boxes the two are
+# equal, which is exactly why conflating them looks right everywhere except the
+# box where it is wrong.
+
+
+def _mode_obj(facts, prefix):
+    """{width, height, refresh_hz?} from `<prefix>_width/_height/_refresh_hz`, or
+    None. Requires BOTH dimensions: a mode with no size is not a mode, and the
+    app's DisplayMode type says so too. Refresh rides along only when read."""
+    w, h = facts.get(prefix + "_width"), facts.get(prefix + "_height")
+    if not isinstance(w, int) or not isinstance(h, int) or w <= 0 or h <= 0:
+        return None
+    mode = {"width": w, "height": h}
+    hz = facts.get(prefix + "_refresh_hz")
+    if isinstance(hz, (int, float)):
+        mode["refresh_hz"] = round(float(hz), 2)
+    return mode
+
+
+def _display_wire(facts, name, mode_source):
+    """Flat probe facts -> the /api/display-info `display` object."""
+    out = {"connector": name,
+           "internal": name.startswith(_INTERNAL_OUTPUT_PREFIXES)}
+    for src, dst in (("connected", "connected"), ("enabled", "enabled"),
+                     ("monitor_name", "monitor"), ("monitor_serial", "serial"),
+                     ("monitor_year", "year"),
+                     ("supported_modes", "supported_modes"),
+                     ("supported_refresh_hz", "refresh_rates_hz")):
+        if src in facts:
+            out[dst] = facts[src]
+    # `make` is the human-readable manufacturer when a compositor handed one over
+    # ("Lenovo Group Limited"); EDID itself only carries the 3-letter PNP id
+    # ("LEN"), which is a poor label but a true one, so it is the fallback rather
+    # than an omission.
+    make = facts.get("monitor_make") or facts.get("monitor_vendor")
+    if make:
+        out["make"] = make
+    mode = _mode_obj(facts, "current")
+    if mode:
+        out["mode"] = mode
+        # Extra, additive: WHICH probe produced `mode`, so a bug report says
+        # where the number came from instead of guessing. Omitted rather than
+        # sent as null if a caller ever composes a mode without one.
+        if mode_source:
+            out["mode_source"] = mode_source
+    preferred = _mode_obj(facts, "preferred")
+    if preferred:
+        out["preferred_mode"] = preferred
+    hdr, vrr = {}, {}
+    if "hdr_supported" in facts:
+        hdr["supported"] = facts["hdr_supported"]
+    if "hdr_active" in facts:
+        hdr["enabled"] = facts["hdr_active"]
+    if "vrr_supported" in facts:
+        vrr["supported"] = facts["vrr_supported"]
+    if "vrr_active" in facts:
+        vrr["active"] = facts["vrr_active"]
+    for key in ("vrr_min_hz", "vrr_max_hz"):
+        if key in facts:
+            vrr[key[4:]] = facts[key]          # vrr_min_hz -> min_hz
+    if hdr:
+        out["hdr"] = hdr
+    if vrr:
+        out["vrr"] = vrr
+    return out
+
+
+def _infer_inactive(facts):
+    """The ONE inference this module makes, in place.
+
+    A panel that MEASURABLY cannot do HDR is certainly not displaying HDR, so an
+    explicit `hdr_supported: False` settles `hdr_active: False` (same for VRR).
+    It fires only on an explicit False -- an ABSENT capability stays absent, so
+    "we could not tell" never turns into "off". That asymmetry is the whole
+    reason the gamescope probe refuses to read GAMESCOPE_DISPLAY_HDR_ENABLED:
+    the honest answer to "is HDR on" is usually silence."""
+    for cap, state in (("hdr_supported", "hdr_active"),
+                       ("vrr_supported", "vrr_active")):
+        if state not in facts and facts.get(cap) is False:
+            facts[state] = False
+    return facts
+
+
+def _display_info_uncached():
+    """Assemble one display's facts from whichever probes answered. None when
+    there is no display to describe at all."""
+    # Which session is live decides who can be asked for the CURRENT mode. The
+    # gamescope socket is liveness-filtered by _wayland_display_sockets(), which
+    # flocks the companion .lock file -- a leftover socket FILE outlives Game
+    # Mode and reading it as a live compositor already cost this project a
+    # release (2.9.56). Note that helper leans toward "assume live", so nothing
+    # here is gated on the socket: every field still requires its OWN probe to
+    # have succeeded.
+    gs = [s for s in _wayland_display_sockets() if s.startswith("gamescope-")]
+    live, mode_source = {}, None
+    if gs:
+        live, mode_source = _gamescope_display_facts(gs[0]), "gamescope"
+    # gamescope names the connector it is driving; trust that over our own guess,
+    # so on a multi-display box the EDID we read belongs to the panel whose
+    # refresh rate we are about to report.
+    active = _active_output()
+    name = live.pop("connector", None) or (active or {}).get("name")
+    if not name:
+        return None
+    if not gs:
+        live, mode_source = _kscreen_display_facts(name), "kscreen"
+
+    facts = _drm_display_facts(name)
+    # gamescopectl's Display Model backs up the EDID name; it never overrides it,
+    # because the EDID 0xFC descriptor is the source the card labels the monitor.
+    model = live.pop("monitor_model", None)
+    if model:
+        facts.setdefault("monitor_name", model)
+    facts.update(live)
+
+    return _display_wire(_infer_inactive(facts), name, mode_source)
+
+
+def display_info():
+    """The /api/status "display" block, TTL-memoized. None on a headless box."""
+    now = time.monotonic()
+    with _DISPLAY_LOCK:
+        c = _DISPLAY_CACHE
+        if c["at"] and now - c["at"] <= _DISPLAY_TTL:
+            return c["val"]
+    try:
+        val = _display_info_uncached()
+    except Exception:
+        val = None                        # a readout may never break /api/status
+    with _DISPLAY_LOCK:
+        _DISPLAY_CACHE["val"] = val
+        _DISPLAY_CACHE["at"] = now
+    return val
+
+
+def display_info_available():
+    """Boot-time caps hint for `display_info`: this box has something to report.
+    display_info() / audio_info() remain the live authority (per-field
+    probe-and-appear), so this only tells an old-app-new-agent pair whether the
+    card is worth showing at all. Never raises; False on anything unexpected."""
+    try:
+        if shutil.which("wpctl"):
+            return True
+        return _drm_connector_dir_any()
+    except Exception:
+        return False
+
+
+def _drm_connector_dir_any():
+    """True when _DRM_DIR holds at least one flat connector directory."""
+    want = re.compile(r"card\d+-\S+$")
+    try:
+        return any(want.match(e) for e in os.listdir(_DRM_DIR))
+    except OSError:
+        return False
+
+
+def display_payload():
+    """The GET /api/display-info body. `available` is False (rather than a 404)
+    when nothing could be read, so the app can tell "this agent is too old" from
+    "this box had nothing to say"."""
+    display = display_info()
+    audio = audio_info()
+    out = {"available": bool(display or audio)}
+    if display:
+        out["display"] = display
+    if audio:
+        out["audio"] = audio
+    return out
+
+
+def mock_display_info():
+    """--mock display block, so the Console card is exercisable with no hardware.
+
+    Deliberately NOT the measured Lenovo panel. The current mode (120 Hz) differs
+    from the preferred mode (60 Hz) so a card that conflates the capability with
+    the state is visibly WRONG in the harness rather than accidentally right, and
+    hdr.enabled / vrr.active are opposite so both state rows render."""
+    return {
+        "connector": "HDMI-A-1",
+        "internal": False,
+        "connected": True,
+        "enabled": True,
+        "monitor": "OLED65C9PUA",
+        "make": "LG Electronics",
+        "serial": "912NTVGCM123",
+        "year": 2019,
+        "mode": {"width": 3840, "height": 2160, "refresh_hz": 120.0},
+        "mode_source": "gamescope",
+        "preferred_mode": {"width": 3840, "height": 2160, "refresh_hz": 60.0},
+        "refresh_rates_hz": [60, 100, 120],
+        "supported_modes": ["3840x2160", "2560x1440", "1920x1080", "1280x720"],
+        "hdr": {"supported": True, "enabled": True},
+        "vrr": {"supported": True, "active": False, "min_hz": 48,
+                "max_hz": 120},
+    }
+
+
+def mock_audio_info():
+    """--mock audio block. Output and input are DIFFERENT devices (as they were
+    on the real box), and the input description is the 52-character string
+    measured there: a label/value row is exactly where a long value shoves its
+    siblings off a phone screen, and a mock with two short identical strings
+    would prove nothing about that."""
+    return {
+        "output": "LG TV SSCR2 Digital Stereo (HDMI)",
+        "output_name": "alsa_output.pci-0000_00_1f.3.hdmi-stereo",
+        "input": "Thinkcentre TIO24Gen3Touch for USB-audio Analog Stereo",
+        "input_name": "alsa_input.usb-Lenovo_Thinkcentre_TIO24Gen3Touch_for_"
+                      "USB-audio_000000000000-00.analog-stereo",
+    }
+
+
+def mock_display_payload():
+    return {"available": True, "display": mock_display_info(),
+            "audio": mock_audio_info()}
+
+
+# ---------------------------------------------------------------------------
 # Stream host detection (GET /api/stream-host) — CouchOS roadmap phase 4a.
 #
 # DETECT ONLY: is a Steam Remote Play session being served BY this box right now?
@@ -12703,6 +13774,21 @@ class Handler(BaseHTTPRequestHandler):
                     self._send(404, {"error": "not found"}, started)
                 else:
                     self._send(200, {"devices": devs}, started)
+            elif path == "/api/display-info":
+                # READ-ONLY description of the panel this box is driving plus the
+                # default audio devices. Distinct from /api/displays below, which
+                # is the Couch Mode output PICKER: this one answers on boxes that
+                # cannot do the handoff at all, and changes nothing.
+                #
+                # Always 200 with `available` rather than a 404, so the app can
+                # tell "this agent is too old" (404 -> route absent) from "this
+                # box had nothing readable to say" (available: false). The same
+                # payload also rides /api/status as the `display` / `audio` keys,
+                # from the same TTL-memoized probe -- one contract, one cost.
+                # Every field inside is independently optional; see the module
+                # note above display_info() for what each name may claim.
+                data = mock_display_payload() if self.mock else display_payload()
+                self._send(200, data, started)
             elif path == "/api/displays":
                 # Probe-and-appear: 404 unless this box can do the desktop->TV
                 # Game Mode handoff (SteamOS/Bazzite, 2+ outputs), so the app

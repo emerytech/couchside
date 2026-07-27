@@ -236,6 +236,20 @@ jobs:
       - name: Unit tests (gaming card)
         run: python3 tests/test_gaming_card.py
 
+      # Display + audio readout. This feature is almost entirely probes, and
+      # almost every source on a Linux box answers "what CAN this display do"
+      # while the Console tab claims to show "what IS it doing" — so the tests
+      # that matter are the ones proving a capability never ships as a state:
+      # EDID's preferred timing and gamescopectl's ValidRefreshRates never
+      # become the current mode, and /sys/.../modes (a LIST, with no refresh
+      # rate in it at all) never does either. Plus the two measured lies:
+      # kscreen-doctor SIGABRTs with rc=134 and zero output, which must read as
+      # "unavailable" and not as "no displays"; and GAMESCOPE_DISPLAY_HDR_ENABLED
+      # reads 1 on a box whose panel reports no HDR, because it is Steam's
+      # REQUEST rather than state. Fixtures are verbatim hardware captures.
+      - name: Unit tests (display + audio readout)
+        run: python3 tests/test_display_audio.py
+
       # The on-box pairing page: both loopback gates (peer IP + Host header,
       # anti-DNS-rebinding — a box's token must never leave its own screen), the
       # idle tutorial + its reload-into-PIN handoff, the PIN state machine

@@ -161,6 +161,14 @@ export type BoxCaps = {
    *  SteamOS's steamosctl, or an sddm drop-in on Bazzite — absent when neither
    *  is usable, so the setting never appears on a box that cannot honour it. */
   session_default?: boolean;
+  /**
+   * Display + audio readout (agent >= 2.9.59): mode, panel identity, HDR/VRR,
+   * default sink and source. Gates the Console-tab "DISPLAY & AUDIO" card.
+   * Linux-only — every source behind it is DRM sysfs, a Wayland compositor, or
+   * WirePlumber. Optional: absent on older agents and on Windows, so undefined
+   * reads as "unknown, probe" and only an explicit false skips the request.
+   */
+  display_info?: boolean;
 };
 
 /** One connected display, from GET /api/displays. */
@@ -182,6 +190,78 @@ export type Displays = {
       hardcodes its preference: no). false hides the picker — a dead control is
       worse than none. undefined (older agent) keeps the picker visible. */
   output_forcing?: boolean;
+};
+
+/**
+ * One display mode. `refresh_hz` is absent whenever the agent could read the
+ * SIZE but not the rate — the two come from different sources on the box, so
+ * they are independently optional rather than one object that is all-or-nothing.
+ */
+export type DisplayMode = {
+  width: number;
+  height: number;
+  refresh_hz?: number;
+};
+
+/**
+ * GET /api/display-info (agent >= 2.9.59): what the box is actually driving —
+ * mode, panel identity, HDR/VRR, and the default audio devices.
+ *
+ * EVERY FIELD IS INDEPENDENTLY OPTIONAL, and that is the whole contract. There
+ * is no single source on a Linux box that answers all of this: the current mode
+ * comes from the compositor (Game Mode only), the panel name and preferred mode
+ * come from EDID in sysfs (any session), and the audio devices come from
+ * WirePlumber. The agent OMITS what it could not read rather than guessing, so
+ * an absent key means "couldn't tell", never "no" — the UI must render it as a
+ * dash, never as a value. Degrading closed is the point (CLAUDE.md §3.7).
+ *
+ * The distinction that matters most: `mode` is what is being scanned out RIGHT
+ * NOW; `preferred_mode` is what the panel's EDID says it would LIKE, which is a
+ * capability and identical whether the box is driving it or is blanked. They
+ * are separate keys — never back-fill one from the other — because on most
+ * boxes they happen to be equal, so conflating them looks correct everywhere
+ * except the box where it is wrong.
+ */
+export type DisplayInfo = {
+  /** False when nothing at all could be read; the card hides. */
+  available: boolean;
+  display?: {
+    /** DRM connector, e.g. "DP-1" / "HDMI-A-1". */
+    connector?: string;
+    /** DRM status: true = a panel is plugged in and awake. */
+    connected?: boolean;
+    /** True for a built-in panel (eDP/LVDS/DSI); false = external monitor/TV. */
+    internal?: boolean;
+    /** EDID product name (0xFC descriptor), e.g. "TIO24Gen3T". */
+    monitor?: string;
+    /** EDID manufacturer, e.g. "Lenovo Group Limited". Shown only when there
+        is no `monitor` — together they are far too long for one row. */
+    make?: string;
+    /** The mode being scanned out now. Compositor-sourced; absent on any box
+        where the agent could not ask one (no session, desktop path unread). */
+    mode?: DisplayMode;
+    /** The panel's preferred mode from EDID. A CAPABILITY — the card labels it
+        "preferred" and never prints it as the current mode. */
+    preferred_mode?: DisplayMode;
+    /** Rates the compositor reports as valid for this panel. A SUPPORTED list,
+        not the current rate: a 60-only panel reports [60] whether it is lit or
+        dark. Labelled "supported" wherever it is shown. */
+    refresh_rates_hz?: number[];
+    /** `supported` from EDID/compositor capability; `enabled` is the live
+        state and is absent when the box exposes no honest read of it — which
+        is the normal case in Game Mode. Absent `enabled` must render as
+        "supported", never as "off". */
+    hdr?: { supported?: boolean; enabled?: boolean };
+    /** Same split as `hdr`: capability vs. live state, each optional. */
+    vrr?: { supported?: boolean; active?: boolean };
+  };
+  audio?: {
+    /** Default sink description ("Built-in Audio Analog Stereo"). */
+    output?: string;
+    /** Default source description. Frequently a DIFFERENT device from the
+        sink, so the two are separate fields and both are shown. */
+    input?: string;
+  };
 };
 
 /** One stage of the Couch Mode ceremony (GET /api/couch-mode/status, agent
@@ -917,7 +997,8 @@ export function capsEqual(a?: BoxCaps, b?: BoxCaps): boolean {
     a.boxbattery === b.boxbattery &&
     a.launchers === b.launchers &&
     a.file_upload === b.file_upload &&
-    a.session_default === b.session_default
+    a.session_default === b.session_default &&
+    a.display_info === b.display_info
   );
 }
 
@@ -2014,6 +2095,23 @@ export const api = {
   ): Promise<Displays | null> {
     return probeGated(caps?.couchmode, () =>
       probeOrNull(request<Displays>(settings, '/api/displays')));
+  },
+
+  /**
+   * Display + audio readout for the Console card (agent >= 2.9.59). Distinct
+   * from `displays()` above, which is the Couch Mode output PICKER: this one is
+   * a read-only description of the panel currently attached, and it answers on
+   * boxes that can't do the handoff at all.
+   *
+   * Probe-and-appear: null on a 404 (older agent) so the card hides, and every
+   * field inside the payload is independently optional — see DisplayInfo.
+   */
+  displayInfo(
+    settings: ConnSettings,
+    caps: BoxCaps | undefined = cachedCaps(settings),
+  ): Promise<DisplayInfo | null> {
+    return probeGated(caps?.display_info, () =>
+      probeOrNull(request<DisplayInfo>(settings, '/api/display-info')));
   },
 
   /** Enter Couch Mode: fling Game Mode onto `output` (HDR optional). */
