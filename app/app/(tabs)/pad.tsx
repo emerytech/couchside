@@ -649,10 +649,23 @@ function KeyboardBar({ autoOpenSignal, onText, onBackspace, onEnter, onSwipeMode
           {!open && <Text style={styles.kbSwipeCue}>›</Text>}
         </Pressable>
         {!open && onSearch && searchSide === 'right' && searchBtn}
-        {open && (
+        {open && Platform.OS !== 'ios' && (
           <>
-            {/* Android has no InputAccessoryView, so PASTE has to live here too
-                or half the users never get it. */}
+            {/* ANDROID ONLY. Android has no InputAccessoryView, so PASTE has to
+                live here or half the users never get it.
+                
+                On iOS these are DUPLICATES of the InputAccessoryView below, and
+                rendering them here actively hurt: this row sits in normal
+                layout flow with no keyboard lift, so the raised keyboard covered
+                it — reported from a device as "the keyboard covers up the paste
+                button and something else I can't see". The user saw two pills
+                sliced in half at the bottom of the screen and had no way to
+                reach them, while the working PASTE/DONE sat on the accessory bar
+                they could not see past the keyboard.
+                
+                iOS keeps its accessory (pinned to the keyboard's top edge, which
+                is the whole reason it exists); Android keeps this row. Neither
+                platform now renders a control it cannot reach. */}
             <Pressable
               onPress={pasteFromClipboard}
               hitSlop={8}
