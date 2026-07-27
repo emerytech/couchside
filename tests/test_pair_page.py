@@ -101,14 +101,23 @@ def test_idle_page_has_the_tutorial():
 def test_idle_page_has_store_qr_code():
     """A fresh installer without the app needs to install it first. Rather than
     make them aim a camera at the right one of two store codes, the page carries
-    ONE code to couchside.tv, whose hero holds both store badges — the phone
-    then picks its own store. Drawn by the same offline generator as the
-    pairing QR."""
+    ONE code carrying both stores — the phone then picks its own. Drawn by the
+    same offline generator as the pairing QR.
+
+    The target is the DEDICATED /get/ page (agent >= 2.9.61), not the old
+    couchside.tv/#get anchor into the marketing home page. That anchor dropped a
+    brand-new user into nav, pitch, footer and the agent installer while they
+    stood in front of a TV holding a phone; /get/ is the two store links and
+    nothing else. Asserted as an exact string BOTH ways, because the failure
+    that matters is silently drifting back to a page with somewhere to wander
+    off to."""
     print("test_idle_page_has_store_qr_code")
     html = cs.render_pair_page("a" * 64, 8787)
     check("store QR canvas present", 'id="qr-get"' in html, True)
-    check("store URL points at couchside.tv/#get",
-          "https://couchside.tv/#get" in html, True)
+    check("store URL is the dedicated /get/ page",
+          "https://couchside.tv/get/" in html, True)
+    check("...and NOT the old marketing-page anchor",
+          "https://couchside.tv/#get" in html, False)
     check("store label names both stores",
           "App Store" in html and "Google Play" in html, True)
     # The store canvas goes through the same generator as the pairing QR —
