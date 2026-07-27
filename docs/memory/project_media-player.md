@@ -29,6 +29,47 @@ That is the feature. The URL bar is the mechanism, not the point.
 
 ---
 
+## 1b. Reconciled against the actual inspiration (read 2026-07-27)
+
+The first draft of this spec was written from four screenshots the owner pasted. The Mac App
+Store listing for **[Friendly Streaming Browser](https://apps.apple.com/us/app/friendly-streaming-browser/id553245401?mt=12)**
+was then read directly. Recording the diff, because two items changed the plan.
+
+**Confirmed from the screenshots:** channel grid, custom URL entry, per-channel edit
+(name/URL/icon), "My Streaming" = recently viewed, Discover = a genuine catalog.
+
+**Missed, and it changed a priority:**
+- **Cross-platform search** — *"Search across multiple streaming platforms in one go. Plus,
+  explore top-rated movies and TV series by genre and IMDb ratings."* This spec had filed
+  Discover as a P4 nice-to-have. Wrong. Search across services is what makes a hub beat six
+  tiles, and it is the one capability that is **better** on a phone than on a TV, because you
+  type on a phone. Promoted to Phase 5.
+- **Visual controls** (brightness / saturation / contrast) — reads like desktop fluff, is
+  actually a standing TV complaint, and is one injected CSS filter once CDP exists. Added to
+  Phase 4.
+- **Local video player** with its own codec list — a separate feature (files already on the
+  box). Backlog at most; not part of this project.
+
+**DELIBERATELY NOT COPIED — do not let these creep back in:**
+- **Picture-in-Picture** and **window transparency.** These are Friendly's headline features
+  because its premise is *multitasking on a Mac you are sitting at* — watch in a corner while
+  you work. On a TV there is one screen, ten feet away, and nobody is multitasking. Copying
+  these would be cargo-culting the inspiration instead of the insight.
+- **Bundled VPN.** Not our business, and it would drag a network-level component into a
+  LAN-only product whose whole security story is "no cloud, no accounts".
+
+**OPEN DECISION, not a freebie: the YouTube ad blocker.** Friendly ships one ("Luna"). It is
+technically easy in a browser we drive over CDP. It is also squarely against YouTube's terms,
+and it changes how this app can be described in two app stores. **Do not implement it silently
+as part of another phase** — it needs an explicit yes from the owner, recorded in DECISIONS.
+
+**Business datapoint:** Friendly is free with optional tips ($1.99 / $4.99 / $9.99). Worth
+knowing when pricing this against a paid unlock.
+
+**The part that is ours:** Friendly is single-machine — it assumes a keyboard within reach.
+Phone-as-navigation-layer is not in that product, because it does not have the problem. The
+inspiration supplies the *shape*; the differentiator is bigger than the first draft claimed.
+
 ## 2. Shape: this is the SCREENSAVER pattern, second instance
 
 The owner's instinct ("custom program, registered as a non-Steam app") is not just correct,
@@ -255,9 +296,17 @@ normalizeCaps + capsEqual), with a test asserting all five.
   + tests: happy path, auth failure, non-allowlisted `service_id` refused and nothing runs.
 - **Phase 3 — app.** Watch tab (cap-gated), channel grid, deep links, share-sheet intake on
   both platforms. Exercised in the web harness by **pressing** the controls.
-- **Phase 4 — transport.** Play/pause/seek and now-playing read from the `<video>` element via
-  CDP; `NowPlayingCard` integration; the −10s/+10s ask.
-- **Phase 5 — hub UI + library.** The player's own TV page with a real focus model; recents /
+- **Phase 4 — transport + picture.** Play/pause/seek and now-playing read from the `<video>`
+  element via CDP; the −10s/+10s ask. Plus **visual controls** (brightness / contrast /
+  saturation) — one injected CSS `filter` on the video element, near-free once CDP is wired,
+  and a real TV complaint ("this show is too dark") rather than a desktop toy.
+- **Phase 5 — cross-service search.** *Promoted out of "later" after reading the real product
+  (§1b).* Search once on the phone, see which service has it, jump straight in. This is the
+  feature that makes a hub worth more than six tiles, and it is the one thing that is genuinely
+  **better** on a phone than on a TV, because you type on a phone. App-side, so the agent stays
+  stdlib. A bundled metadata API key is extractable — plan for that rather than pretending
+  otherwise.
+- **Phase 6 — hub UI + library.** The player's own TV page with a real focus model; recents /
   saved stored phone-side (no new box state, and `shortcuts.vdf` cannot hold it anyway).
 
 ---

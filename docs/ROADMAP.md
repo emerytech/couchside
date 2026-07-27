@@ -93,6 +93,16 @@ Entry fields: `priority` (P0 blocker → P3 nice) · `risk` · `affects` · `dep
   Igalia Cog (MIT, no Widevine), Aura browser (GPL, cannot ingest), ValvePython/vdf + BoilR
   (MIT, the `shortcuts.vdf` and cover-art references). All of them put the catalog on the box;
   none makes the phone the navigation layer. Details in the spec's §6b.
+- **Reconciled against the real product 2026-07-27** (the Mac App Store listing was read, not
+  just the owner's screenshots — see the spec's §1b). Two changes: **cross-service search is
+  promoted** out of "later" to its own phase, because it is what makes a hub beat six tiles and
+  it is genuinely better on a phone than on a TV (you type on a phone); and **visual controls**
+  (brightness/contrast/saturation) join Phase 4, being one injected CSS filter once CDP exists.
+  **Explicitly NOT copied:** Picture-in-Picture and window transparency (they exist because
+  Friendly's premise is multitasking on a Mac you are sitting at — irrelevant ten feet from a
+  TV) and the bundled VPN. **Open decision, needs an explicit yes:** the YouTube ad blocker —
+  easy over CDP, against YouTube's terms, and it changes how the app can be described in two
+  stores. Not to be slipped in as part of another phase.
 - **Next:** Phase 1, the tile itself.
 
 ### On-box pairing tutorial (auto-plays after install)
