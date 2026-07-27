@@ -111,6 +111,26 @@ Entry fields: `priority` (P0 blocker → P3 nice) · `risk` · `affects` · `dep
   around, not fixed). Worth reading that before designing — a reinstall button that papers
   over a known root cause is worse than fixing the cause.
 
+### Launch non-Steam shortcuts from the phone (Netflix, Hulu, EmuDeck, …)
+- **priority:** P1 · **risk:** low · **affects:** agent + app · **depends_on:** none
+- **SHIPPED 2026-07-26** — kept here as the record of what it fixed.
+- On SteamOS/Bazzite, `shortcuts.vdf` is how EVERYTHING that is not a Steam game
+  reaches the TV: Bazzite's own `ujust get-media-app` registers Netflix/Hulu/Disney+/
+  Max/Prime Video there, EmuDeck registers its launchers there, and this agent
+  registers its own pairing and screensaver tiles there.
+- **MEASURED on the maintainer's Bazzite box:** `/api/launchers` returned **5** entries
+  (all installed Steam games) while `shortcuts.vdf` held **32**. Every streaming service
+  on the machine was unlaunchable from the phone. After the change: **36 launchers,
+  5 steam + 31 shortcut**, and a live `POST /api/launchers/shortcut:<appid>` put Netflix
+  on the TV.
+- **Allowlist shape:** `shortcut:<appid>` must be all digits AND still present in
+  shortcuts.vdf; argv is rebuilt as `["steam", "steam://rungameid/<gameid>"]` from the
+  agent's own constants plus the validated integer, using the non-Steam encoding
+  `(appid << 32) | 0x02000000`. The shortcut's stored Exe — an arbitrary path Steam
+  holds — is NEVER executed directly; Steam runs it, exactly as pressing the tile would.
+- The agent's own tiles are filtered out, and proven unlaunchable rather than merely
+  unlisted.
+
 ### Media seek buttons (-10s / +10s) on the now-playing card
 - **priority:** P2 · **risk:** low · **affects:** app only · **depends_on:** none
 - **Requested by u/Most-Bet2021 (r/SteamOS, 2026-07-26):** "a button that fast forwards media

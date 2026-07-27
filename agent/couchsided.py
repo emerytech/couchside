@@ -3787,6 +3787,117 @@ def _is_steam_tool(appid, name):
     return False
 
 
+# ---------------------------------------------------------------------------
+# Non-Steam shortcuts (shortcuts.vdf)
+#
+# On SteamOS/Bazzite this is how EVERYTHING that is not a Steam game reaches the
+# TV: Bazzite's own `ujust get-media-app` registers Netflix, Hulu, Disney+, Max,
+# Prime Video and friends here, EmuDeck registers its launchers here, and this
+# agent registers its own pairing and screensaver tiles here. Until this existed
+# the app listed only installed Steam games — MEASURED on the maintainer's box
+# 2026-07-26: 5 Steam games listed, while shortcuts.vdf held 32 entries the
+# phone could not launch, including every streaming service on the machine.
+#
+# Read-only and best-effort. The parse is anchored on the same b"\x02appid\x00"
+# field _ss_appid() already uses; this walks every occurrence instead of one.
+# ---------------------------------------------------------------------------
+
+MAX_SHORTCUTS = 200        # cap enumeration; a corrupt vdf can't spin the agent
+# Our OWN tiles are filtered out of the launcher list: the pairing tile and the
+# screensaver have dedicated UI, and offering them as generic launchers would
+# invite someone to "launch" the pairing screen over whatever is playing.
+_SHORTCUT_SELF_EXE = ("couchside-pair", "couchside-screensaver", "Couchside")
+
+
+def _shortcut_entries():
+    """[(appid:int, name:str)] for every non-Steam shortcut, or [] on any error.
+
+    Best-effort by design (degrade closed): a missing, truncated or unreadable
+    shortcuts.vdf yields an empty list, which makes the shortcuts simply not
+    appear rather than breaking the whole launcher route.
+    """
+    out = []
+    seen = set()
+    try:
+        paths = sorted(glob.glob(os.path.expanduser(
+            "~/.steam/steam/userdata/*/config/shortcuts.vdf")))
+    except Exception:
+        return []
+    for p in paths:
+        try:
+            with open(p, "rb") as f:
+                data = f.read()
+        except OSError:
+            continue
+        pos = 0
+        while len(out) < MAX_SHORTCUTS:
+            i = data.find(b"\x02appid\x00", pos)
+            if i < 0:
+                break
+            pos = i + 7
+            if pos + 4 > len(data):
+                break
+            try:
+                appid = struct.unpack("<I", data[pos:pos + 4])[0]
+            except struct.error:
+                break
+            if appid == 0 or appid in seen:
+                continue
+            # AppName and Exe both follow the appid within the same entry; cap
+            # the window so a truncated record can't borrow the next one's name.
+            tail = data[pos:pos + 600]
+            name = _vdf_str(tail, b"appname")
+            exe = _vdf_str(tail, b"exe")
+            if not name:
+                continue
+            if any(s in exe for s in _SHORTCUT_SELF_EXE):
+                continue
+            seen.add(appid)
+            out.append((appid, name))
+    return out
+
+
+def _shortcut_appids():
+    """The set of appids currently registered as non-Steam shortcuts."""
+    return {a for a, _ in _shortcut_entries()}
+
+
+def _vdf_str(buf, key):
+    """Value of a binary-VDF string field (\\x01<key>\\x00<value>\\x00), or "".
+
+    Case-insensitive on the key because Steam has written both "AppName" and
+    "appname" over the years. Never raises.
+    """
+    try:
+        low = buf.lower()
+        i = low.find(b"\x01" + key + b"\x00")
+        if i < 0:
+            return ""
+        start = i + 1 + len(key) + 1
+        end = buf.find(b"\x00", start)
+        if end < 0:
+            return ""
+        return buf[start:end].decode("utf-8", "replace").strip().strip('"')
+    except Exception:
+        return ""
+
+
+def discover_steam_shortcuts():
+    """Non-Steam shortcuts as Launcher dicts, sorted by label.
+
+    kind="shortcut" is deliberately NOT "custom": custom launchers come from
+    this agent's own config and the app offers a delete control for them, which
+    would do nothing here — these live in Steam's file, not ours.
+    """
+    try:
+        return sorted(
+            ({"id": "shortcut:%d" % appid, "label": name, "kind": "shortcut"}
+             for appid, name in _shortcut_entries()),
+            key=lambda e: e["label"].lower())
+    except Exception:
+        return []
+
+
 def discover_steam_games():
     """Return auto-discovered Steam games as Launcher dicts, sorted by name.
 
@@ -4538,6 +4649,16 @@ MOCK_STEAM_GAMES = [
     (440, "Team Fortress 2", None),
 ]
 
+# Non-Steam shortcuts for --mock. Names match what Bazzite's `ujust
+# get-media-app` actually registers, so the harness shows the real thing.
+MOCK_SHORTCUTS = [
+    (3266446485, "Netflix"),
+    (2282431590, "Hulu"),
+    (2190596466, "Disney+"),
+    (3486690682, "Max"),
+    (3168132873, "YouTube"),
+]
+
 
 def _png(width, height, rgb):
     """A minimal solid-colour PNG. Mock only -- real covers are files on disk.
@@ -4567,16 +4688,26 @@ def mock_launchers():
         if art:
             e["art"] = art
         out.append(e)
+    # Non-Steam shortcuts, so the web harness renders the streaming tiles that
+    # dominate a real SteamOS box (these are the actual names Bazzite's
+    # `ujust get-media-app` registers).
+    for appid, label in MOCK_SHORTCUTS:
+        out.append({"id": "shortcut:%d" % appid, "label": label,
+                    "kind": "shortcut"})
     return out
 
 
 def list_launchers():
-    """All launchers: configured custom launchers first, then Steam games."""
+    """All launchers: custom, then Steam games, then non-Steam shortcuts.
+
+    Shortcuts go LAST so the ordering every existing user already knows is
+    untouched — a box with no shortcuts returns exactly what it did before.
+    """
     customs = [
         {"id": l["id"], "label": l["label"], "kind": "custom"}
         for l in LAUNCHERS
     ]
-    return customs + discover_steam_games()
+    return customs + discover_steam_games() + discover_steam_shortcuts()
 
 
 def _launcher_argv(launcher_id):
@@ -4614,6 +4745,19 @@ def _launcher_argv(launcher_id):
         # offers it is online; if not, the rungameid is a harmless no-op.
         if appid in _streamable_appids():
             return ["steam", "steam://rungameid/%s" % appid]
+        return None
+    if launcher_id.startswith("shortcut:"):
+        appid = launcher_id[len("shortcut:"):]
+        if not appid.isdigit():
+            return None
+        # Re-read shortcuts.vdf and require the appid to still be registered.
+        # The client's id NEVER reaches the command line: it selects a record,
+        # and the argv below is rebuilt from the agent's own constant plus the
+        # integer we just validated. The shortcut's Exe -- an arbitrary path
+        # Steam stores -- is deliberately never executed directly; Steam runs
+        # it, exactly as it would if you picked the tile with a controller.
+        if int(appid) in _shortcut_appids():
+            return ["steam", "steam://rungameid/%d" % _ss_gameid(int(appid))]
         return None
     if _valid_launcher_id(launcher_id):
         for l in LAUNCHERS:
