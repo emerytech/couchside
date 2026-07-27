@@ -147,6 +147,11 @@ UNIT_DST="/etc/systemd/system/couchside.service"
 # installed here when Decky is present, and removed from here on --uninstall.
 DECKY_PLUGINS="${HOME}/homebrew/plugins"
 DECKY_PLUGIN_DIR="${DECKY_PLUGINS}/Couchside"
+# Checksum of the plugin tarball we last installed. Lets an update skip the
+# rm/extract/restart when the panel is already this exact build — restarting
+# plugin_loader restarts DECKY ITSELF, reloading every OTHER plugin the user
+# has, so it must not happen for no reason (KI-037).
+DECKY_STAMP="/etc/couchside/decky-plugin.sha256"
 # What actually proves Decky Loader is INSTALLED. Its own uninstaller removes
 # the unit and homebrew/services/PluginLoader but LEAVES homebrew/plugins behind
 # (see decky-loader dist/uninstall.sh), so `[ -d "$DECKY_PLUGINS" ]` reports a
@@ -416,6 +421,7 @@ if [ "$UNINSTALL" -eq 1 ]; then
     note "removed the udev/modules-load drop-ins"
     if [ "$NO_DECKY" -eq 0 ] && sudo test -d "$DECKY_PLUGIN_DIR"; then
         sudo rm -rf "$DECKY_PLUGIN_DIR"
+        sudo rm -f "$DECKY_STAMP"
         sudo systemctl restart plugin_loader.service 2>/dev/null || true
         note "removed the Decky Loader Game Mode panel"
     fi
@@ -1865,7 +1871,51 @@ if [ "$NO_DECKY" -eq 0 ] && decky_installed; then
     # `[ -d "$DECKY_PLUGINS" ]`. tar -C would fail on a Decky install that has
     # never had a plugin. Root-owned to match a store install.
     sudo mkdir -p "$DECKY_PLUGINS"
-    if decky_verify_ok \
+
+    # SKIP THE WHOLE THING WHEN OUR PLUGIN IS ALREADY THIS EXACT BUILD (KI-037).
+    #
+    # Restarting plugin_loader.service restarts DECKY LOADER, which reloads every
+    # OTHER plugin the user has — SteamGridDB, ProtonDB, LSFG-VK, whatever. This
+    # block used to rm/extract/restart unconditionally, so every agent update
+    # (including the one the phone's "update the box" button fires) yanked and
+    # reloaded third-party software we do not own and were not asked about.
+    #
+    # It surfaced as a support report: a user saw an unrelated plugin at 27 GiB
+    # "right after updating your app". The leak was not ours, but our restart
+    # reset every plugin's memory to zero and re-seeded it, which made another
+    # plugin's growth look like it began at our update. The correlation was real;
+    # the causation was not. Restarting a third-party service needs a reason, and
+    # "an unrelated update ran" is not one.
+    #
+    # The stamp is the VERIFIED TARBALL's checksum rather than a version string:
+    # it needs no parsing, and it also catches a republished same-version build.
+    # Guarded on the plugin dir still existing, so a user who deleted the plugin
+    # gets it back even when the stamp matches.
+    decky_stamp_of() {
+        # The hash line for our tarball, as already verified above.
+        awk '$2 == "Couchside.tar.gz" || $2 == "*Couchside.tar.gz" {print $1}' \
+            "${decky_tmp}/SHA256SUMS" 2>/dev/null | head -1
+    }
+    decky_up_to_date() {
+        local want have
+        want="$(decky_stamp_of)"
+        [ -n "$want" ] || return 1
+        have="$(sudo cat "$DECKY_STAMP" 2>/dev/null)" || return 1
+        [ "$want" = "$have" ] || return 1
+        # Stamp matches but the plugin is gone (user removed it) -> reinstall.
+        sudo test -d "$DECKY_PLUGIN_DIR" || return 1
+        return 0
+    }
+
+    # Verification runs ONCE (it downloads), and its result gates BOTH branches.
+    # Never fall back to "the tarball file exists" — an unverified tarball must
+    # never be extracted, which is the whole point of the gate above.
+    decky_ok=0
+    decky_verify_ok && decky_ok=1
+
+    if [ "$decky_ok" -eq 1 ] && decky_up_to_date; then
+        note "panel already up to date; leaving Decky Loader alone (not restarting other plugins)."
+    elif [ "$decky_ok" -eq 1 ] \
         && sudo rm -rf "$DECKY_PLUGIN_DIR" \
         && sudo tar -xzf "${decky_tmp}/Couchside.tar.gz" -C "$DECKY_PLUGINS"; then
         # Force root ownership: a release archive built in CI can carry the
@@ -1873,6 +1923,12 @@ if [ "$NO_DECKY" -eq 0 ] && decky_installed; then
         # skips a plugin it doesn't see as root-owned (no error, just missing
         # from the menu). Store installs are root-owned; match that.
         sudo chown -R root:root "$DECKY_PLUGIN_DIR" 2>/dev/null || true
+        # Record WHAT we installed, so the next run can skip all of this (and
+        # skip restarting everyone else's plugins). Written only after the
+        # extract succeeded — a stamp for a build that is not actually on disk
+        # would suppress a needed reinstall. Best-effort: a failed stamp write
+        # costs an unnecessary restart next time, never a missed update.
+        decky_stamp_of | sudo tee "$DECKY_STAMP" >/dev/null 2>&1 || true
         sudo systemctl restart plugin_loader.service 2>/dev/null || true
         # VERIFY, don't assume. The restart status used to be discarded
         # (`|| true`) and the success note printed unconditionally, so a box

@@ -228,6 +228,15 @@ jobs:
       - name: Unit tests (decky detection)
         run: bash tests/test_decky_detect.sh
 
+      # Restarting plugin_loader restarts DECKY ITSELF, reloading every OTHER
+      # plugin the user has. install.sh used to do that on every agent update,
+      # even when our panel was byte-identical (KI-037) — which is how an
+      # unrelated plugin's memory growth came to look like our update caused it.
+      # Both directions are asserted: an always-skip guard would silently stop
+      # shipping plugin updates, which is worse than the bug it fixes.
+      - name: Unit tests (decky restart guard)
+        run: bash tests/test_decky_restart_guard.sh
+
       # Gaming card (/api/gaming): the card* glob trap (a cardN-DP-1 connector
       # dir must not be read as a GPU), the reaper AppId matcher incl. the
       # [oom_reaper] reject, the empty-power_supply desktop case + the uniq (never
