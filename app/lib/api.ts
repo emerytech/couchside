@@ -1904,6 +1904,32 @@ export const api = {
       probeOrNull(request<Media>(settings, '/api/media', { timeoutMs: 8000 })));
   },
 
+  /**
+   * Which session the box boots into (agent >= 2.9.58).
+   *
+   * null on 404 (older agent) so the card hides; a 200 can still carry
+   * available:false when the box has no usable backend — no SteamOS D-Bus
+   * interface AND no sudoers grant — which the card also treats as "hide".
+   */
+  sessionDefault(
+    settings: ConnSettings,
+    caps: BoxCaps | undefined = cachedCaps(settings),
+  ): Promise<SessionDefault | null> {
+    return probeGated(caps?.session_default, () =>
+      probeOrNull(request<SessionDefault>(settings, '/api/session/default')));
+  },
+
+  /** Set the boot session. The mode is one of a closed set the agent re-checks. */
+  setSessionDefault(
+    settings: ConnSettings,
+    mode: SessionDefaultMode,
+  ): Promise<ActionResult> {
+    return request<ActionResult>(settings, '/api/session/default', {
+      method: 'POST',
+      body: { mode },
+    });
+  },
+
   /** One transport op on a player; `seek` carries { position_ms }. */
   mediaOp(
     settings: ConnSettings,
