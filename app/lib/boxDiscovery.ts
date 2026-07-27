@@ -113,13 +113,56 @@ async function pingHost(ip: string, port: number, timeoutMs: number): Promise<Fo
 }
 
 /**
+ * One-shot-per-IP reporter for `onFound`. Dedupe lives HERE, not in callers.
+ *
+ * Two duplicate sources, both real:
+ *  1. udpProbe sends the same probe to the DIRECTED broadcast AND to
+ *     255.255.255.255 (see broadcastTargets + the send loop below). A box on
+ *     this /24 receives both datagrams and answers TWICE. The Map keyed by IP
+ *     silently swallowed that; reporting per datagram without a guard would
+ *     double-fire for every same-subnet box — the common case, not an edge one.
+ *  2. The HTTP sweep and the UDP probe can both see the same box, arriving down
+ *     two independent code paths.
+ * Every caller would have to reimplement exactly this to avoid rendering one box
+ * twice, so it belongs next to the merge policy it mirrors (scanForBoxes).
+ *
+ * It also swallows anything the callback throws: onFound runs INSIDE a sweep
+ * worker, so a throwing callback would reject the Promise.all and destroy the
+ * whole scan — including results already in hand.
+ */
+function makeReporter(
+  onFound?: (box: FoundBox) => void,
+  signal?: { aborted: boolean },
+): (box: FoundBox) => void {
+  if (!onFound) return () => {};
+  const seen = new Set<string>();
+  return (box) => {
+    if (signal?.aborted) return; // torn down: never call back
+    if (seen.has(box.ip)) return; // first sighting wins
+    seen.add(box.ip);
+    try {
+      onFound(box);
+    } catch {
+      // A caller's render error must not abort discovery.
+    }
+  };
+}
+
+/**
  * HTTP-sweep every host in `base`'s /24 for the agent's /api/ping, `conc` at a
  * time. Dead IPs just time out; live agents answer in milliseconds.
+ *
+ * `report` fires from the worker the INSTANT a host answers. Without it the
+ * caller waits for the whole sweep to drain (254 IPs / 64 workers x 1500 ms
+ * per-host timeout), so a box that answered in ~1 ms is withheld for seconds
+ * with the answer already in hand.
  */
 async function httpSweep(
   base: string,
   port: number,
   perHostTimeoutMs: number,
+  report: (box: FoundBox) => void,
+  signal?: { aborted: boolean },
 ): Promise<FoundBox[]> {
   const ips: string[] = [];
   for (let h = 1; h <= 254; h++) ips.push(base + h);
@@ -128,10 +171,17 @@ async function httpSweep(
   let next = 0;
   const worker = async () => {
     for (;;) {
+      // Checked here, not only before the await: abort() is synchronous, so a
+      // worker suspended in pingHost resumes, sees it, and exits — every worker
+      // is gone within one per-host timeout instead of running all 254 probes.
+      if (signal?.aborted) return;
       const i = next++;
       if (i >= ips.length) return;
       const box = await pingHost(ips[i], port, perHostTimeoutMs);
-      if (box) found.push(box);
+      if (box) {
+        found.push(box);
+        report(box);
+      }
     }
   };
   await Promise.all(Array.from({ length: Math.min(CONC, ips.length) }, worker));
@@ -142,7 +192,12 @@ async function httpSweep(
  * UDP probe: broadcast (directed + global) and collect replies for `timeoutMs`.
  * Resolves an empty list on any failure — the HTTP sweep is the reliable path.
  */
-function udpProbe(myIp: string | undefined, port: number, timeoutMs: number): Promise<FoundBox[]> {
+function udpProbe(
+  myIp: string | undefined,
+  port: number,
+  timeoutMs: number,
+  report: (box: FoundBox) => void,
+): Promise<FoundBox[]> {
   if (!dgram) return Promise.resolve([]);
   const probe = Buffer.from(PROBE);
   const targets = broadcastTargets(myIp);
@@ -177,13 +232,18 @@ function udpProbe(myIp: string | undefined, port: number, timeoutMs: number): Pr
       try {
         const d = JSON.parse(msg.toString());
         if (d && d.couchside) {
-          found.set(rinfo.address, {
+          const box: FoundBox = {
             name: typeof d.name === 'string' ? d.name : rinfo.address,
             host: typeof d.host === 'string' ? d.host : rinfo.address,
             ip: rinfo.address,
             port: typeof d.port === 'number' ? d.port : port,
             version: typeof d.version === 'string' ? d.version : '',
-          });
+          };
+          found.set(rinfo.address, box);
+          // Same drain fix as the HTTP sweep: replies land in milliseconds but
+          // were held until the timer fired. The reporter dedupes the
+          // directed+global double reply.
+          report(box);
         }
       } catch {
         // not our reply; ignore
@@ -216,22 +276,46 @@ function udpProbe(myIp: string | undefined, port: number, timeoutMs: number): Pr
   });
 }
 
+/** Options for {@link scanForBoxes}. The first three are the pre-existing ones,
+ *  unchanged, so `scanForBoxes({ timeoutMs: 3000 })` keeps working verbatim. */
+export type ScanOpts = {
+  ip?: string;
+  port?: number;
+  timeoutMs?: number;
+  /**
+   * Fired ONCE per distinct box, the instant it answers — mid-sweep, seconds
+   * before the returned promise resolves. The resolved array still contains
+   * every box, so a caller may use either or both. Treat the resolved array as
+   * authoritative on completion and reconcile by `ip`: onFound carries the
+   * FIRST sighting, the array carries the HTTP one (see the merge below).
+   */
+  onFound?: (box: FoundBox) => void;
+  /**
+   * Abort an in-flight scan (component unmount, screen blur). Stops dispatching
+   * new probes and silences `onFound`; the promise still resolves with whatever
+   * was found, so a caller must ALSO guard its own `.then`.
+   */
+  signal?: AbortSignal;
+};
+
 /**
  * Discover Couchside boxes on the LAN. Runs the HTTP sweep and the UDP probe
  * together and merges by IP (HTTP wins, since it proves the agent answered).
  * Throws only when no usable local IP could be determined AND UDP is absent.
  */
-export async function scanForBoxes(
-  opts: { ip?: string; port?: number; timeoutMs?: number } = {},
-): Promise<FoundBox[]> {
+export async function scanForBoxes(opts: ScanOpts = {}): Promise<FoundBox[]> {
   const port = opts.port ?? DEFAULT_PORT;
   const timeoutMs = opts.timeoutMs ?? 3000;
   const myIp = opts.ip ?? (await selfIp());
+  if (opts.signal?.aborted) return []; // torn down while selfIp() was in flight
   const base = subnetBase(myIp);
+  // ONE reporter shared by both probes: a box seen by UDP and by HTTP is a
+  // single sighting to the caller.
+  const report = makeReporter(opts.onFound, opts.signal);
 
   const [sweep, udp] = await Promise.all([
-    base ? httpSweep(base, port, 1500) : Promise.resolve([]),
-    udpProbe(myIp, port, Math.min(timeoutMs, 2500)),
+    base ? httpSweep(base, port, 1500, report, opts.signal) : Promise.resolve([]),
+    udpProbe(myIp, port, Math.min(timeoutMs, 2500), report),
   ]);
 
   const found = new Map<string, FoundBox>();
