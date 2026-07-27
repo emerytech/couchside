@@ -63,6 +63,79 @@ class FakeRun:
         return r
 
 
+
+def test_autologin_session_must_exist():
+    """The stranding bug, 2026-07-27 — and why this is the most important test
+    in this file.
+
+    "Boots into: Desktop" wrote an autologin session that did not exist on the
+    box. `_default_desktop_session()` asks `steamosctl get-default-desktop-
+    session`; on Bazzite that D-Bus interface is absent, so the read returned
+    empty and we fell back to the hardcoded "plasmax11.desktop" — a SteamOS
+    name. SDDM's own log, from the failing boot:
+
+        Unable to find autologin session entry "plasmax11.desktop"
+        Autologin failed!
+
+    The box came up at the GREETER. The owner logged in by hand, SDDM used its
+    [Last] session (gamescope), and the setting looked like it had done nothing
+    while actually having broken autologin. On a box whose agent is a systemd
+    --user service, no login means NO AGENT — so the phone could not reach the
+    box to undo it. Stranding a box at a password prompt is precisely the
+    failure this product exists to prevent.
+
+    FIXTURES ARE VERBATIM listings from the two real distros (CLAUDE.md §6):
+    Bazzite captured off bazzite.local, SteamOS being the x11-name image. The
+    same code must be right on BOTH — that is the whole point.
+    """
+    print("test_autologin_session_must_exist")
+    saved_inst = cs._installed_session_files
+    saved_cfg = cs._default_desktop_session
+    try:
+        BAZZITE = {"gamescope-session.desktop", "gamescope-session-steam.desktop",
+                   "plasma.desktop", "plasma-steamos-wayland-oneshot.desktop",
+                   "plasma-steamos-oneshot.desktop"}
+        STEAMOS = {"gamescope-session.desktop", "plasma.desktop",
+                   "plasmax11.desktop"}
+
+        def setup(installed, configured):
+            cs._installed_session_files = lambda: set(installed)
+            cs._default_desktop_session = lambda: (configured, "plasma")
+
+        # THE BUG: Bazzite, with the unreadable steamosctl driving the bad
+        # fallback. Must NOT return the missing name.
+        setup(BAZZITE, "plasmax11.desktop")
+        pick = cs._desktop_session_for_autologin()
+        check("bazzite never picks the missing plasmax11", pick != "plasmax11.desktop", True)
+        check("bazzite picks a session that EXISTS", pick in BAZZITE, True)
+
+        # CONTROL, the other distro: SteamOS genuinely HAS plasmax11, so the
+        # fix must not have broken it by blanket-avoiding that name.
+        setup(STEAMOS, "plasmax11.desktop")
+        check("steamos still honours its own configured x11 session",
+              cs._desktop_session_for_autologin(), "plasmax11.desktop")
+
+        # A Wayland-configured box is honoured on both, not downgraded.
+        for label, inst in (("bazzite", BAZZITE), ("steamos", STEAMOS)):
+            setup(inst, "plasma.desktop")
+            check("%s honours a Wayland-configured desktop" % label,
+                  cs._desktop_session_for_autologin(), "plasma.desktop")
+
+        # REFUSE rather than strand: nothing installed, or only Game Mode.
+        setup(set(), "plasmax11.desktop")
+        check("cannot enumerate -> refuse", cs._desktop_session_for_autologin(), None)
+        setup({"gamescope-session.desktop"}, "plasmax11.desktop")
+        check("no desktop session at all -> refuse", cs._desktop_session_for_autologin(), None)
+
+        # The write itself is guarded, so no future caller can route around it.
+        cs._installed_session_files = lambda: BAZZITE
+        check("_sddm_write refuses a session that is not installed",
+              cs._sddm_write("plasmax11.desktop"), False)
+    finally:
+        cs._installed_session_files = saved_inst
+        cs._default_desktop_session = saved_cfg
+
+
 def main():
     real_run = cs.subprocess.run
     real_sudo = cs._sudo_nopasswd_allows
@@ -106,6 +179,8 @@ def main():
     cs.subprocess.run = FakeRun(stderr="Error: UnknownInterface", rc=0)
     cs._sudo_nopasswd_allows = lambda needle: False
     check("set() reports failure", cs.session_default_set("game")["ok"], False)
+
+    test_autologin_session_must_exist()
 
     print("the sddm drop-in body")
     # We must NEVER edit the box's own steamos.conf; we write our own file.
