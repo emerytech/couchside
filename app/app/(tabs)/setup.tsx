@@ -26,6 +26,8 @@ import { Gated } from '@/components/Gated';
 import { LogsPanel } from '@/components/LogsPanel';
 import { QrView } from '@/components/QrView';
 import { BoxScanPair } from '@/components/BoxScanPair';
+import { BoxScanQr } from '@/components/BoxScanQr';
+import { buildPairLink } from '@/lib/pairLink';
 import { GuideHoldSetup } from '@/components/GuideHoldSetup';
 import { SmartTvSetup } from '@/components/SmartTvSetup';
 import { TabScreen } from '@/components/TabScreen';
@@ -75,24 +77,6 @@ import {
   type Palette,
 } from '@/lib/theme';
 
-/**
- * Build the pairing link for a box.
- *
- * HTTPS (not couchside://) because Android camera apps won't open custom
- * schemes from a QR; every scanner opens https. The couchside.tv/pair page
- * relaunches the app via the scheme (or offers install links). Params ride
- * the #FRAGMENT so the token never leaves the browser. Fragments aren't
- * sent to the server or its logs.
- */
-function pairingUrl(box: Box): string {
-  let q =
-    `host=${encodeURIComponent(box.host)}` +
-    `&port=${encodeURIComponent(String(box.port))}` +
-    `&token=${encodeURIComponent(box.token)}`;
-  // Pass the cached fallback IP along so the next device starts resilient too.
-  if (box.lastIp) q += `&ip=${encodeURIComponent(box.lastIp)}`;
-  return `https://couchside.tv/pair#${q}`;
-}
 
 /**
  * Modal that renders a box's pairing deep link as a scannable QR on a white
@@ -131,6 +115,11 @@ const SETUP_GUIDE_URL = 'https://couchside.tv/#install';
 
 function PairingQrModal({ box, onClose }: { box: Box | null; onClose: () => void }) {
   const styles = useThemedStyles(makeStyles);
+  // The shared writer refuses a box whose link the shared reader would refuse
+  // (a host outside the LAN allowlist, a malformed port/token). Rendering a QR
+  // this same app's scanner rejects would be worse than not rendering one, so
+  // such a box gets the copy-by-hand fallback plus one line of why.
+  const url = box ? buildPairLink(box) : null;
   return (
     <Modal
       visible={box != null}
@@ -141,10 +130,16 @@ function PairingQrModal({ box, onClose }: { box: Box | null; onClose: () => void
         {/* Stop taps on the sheet itself from closing the modal. */}
         <Pressable style={styles.qrSheet} onPress={() => {}}>
           <Text style={styles.qrTitle}>{box?.name ?? 'Pair box'}</Text>
-          <View style={styles.qrCard}>
-            {box && <QrView value={pairingUrl(box)} size={QR_SIZE} />}
-          </View>
-          <Text style={styles.qrCaption}>Scan with another device to pair it</Text>
+          {url != null && (
+            <View style={styles.qrCard}>
+              <QrView value={url} size={QR_SIZE} />
+            </View>
+          )}
+          <Text style={styles.qrCaption}>
+            {url != null
+              ? 'Scan with another device to pair it'
+              : "This box's address can't be encoded as a scannable code — enter these details by hand on the other device instead."}
+          </Text>
           {box && (
             <View style={styles.qrFallback}>
               <Text style={styles.qrFallbackText} selectable>
@@ -931,6 +926,8 @@ function SetupBody() {
       port: conn.port,
       token: conn.token,
       name: name.trim() || undefined,
+      // The one hand-typed path — see AddBoxInput.userTypedHost.
+      userTypedHost: true,
     });
     // Clear the add form after a successful add/pair.
     setName('');
@@ -1136,6 +1133,7 @@ function SetupBody() {
             carries the whole flow. */}
         <View style={styles.card}>
           <BoxScanPair />
+          <BoxScanQr />
         </View>
         {/* Manual host/port/token: collapsed fallback for headless / cross-subnet
             / non-Linux boxes that scanning can't reach. */}

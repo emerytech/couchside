@@ -1,42 +1,50 @@
 #!/usr/bin/env python3
-"""The shipping app must never gain camera capability. This blocks demo mode.
+"""The shipping app's camera is QR-pairing only and MIC-LESS. Demo mode stays unmergeable.
 
-WHAT THIS IS FOR
-----------------
-Branch `feat/demo-mode` (commit 976d7a2, "wip: demo-mode build for promo recording --
-NOT for merge") adds a developer-only recording aid: a tap-indicator overlay plus a
-rear-camera picture-in-picture. It is built as an ad-hoc, bundle-id-forked
-(`com.ets3d.rescueremote.demo`) build that never goes near TestFlight or the App Store.
+HISTORY — the invariant this file guards CHANGED, on purpose, once
+------------------------------------------------------------------
+Until 2026-07-27 this test enforced "the shipping app must never gain camera
+capability", written when branch `feat/demo-mode` (rear-camera PiP for promo
+recording, deliberately unmergeable) was the only thing that could bring a
+camera in. On 2026-07-27 the owner explicitly asked for an in-app QR pairing
+scanner (couchside PR #292), so `expo-camera` is now a LEGITIMATE shipping
+dependency and this test failing on that PR was the system working: the
+capability arrived by decision, not by accident, and the decision is recorded
+here.
 
-That branch is DELIBERATELY UNMERGEABLE. This test is the mechanism.
+WHAT IS STILL BANNED, AND WHY
+-----------------------------
+1. THE MICROPHONE. The scanner reads frames; it records nothing. expo-camera's
+   config plugin DEFAULTS to adding android.permission.RECORD_AUDIO and offers
+   an iOS mic string — a QR scanner that asks for the mic is both a store-review
+   smell and a lie against couchside.tv/privacy ("no image or video is
+   recorded"). So the plugin entry must pin `recordAudioAndroid: false` and
+   `microphonePermission: false`, and no mic purpose string may appear.
+   (Verified 2026-07-27 via `expo config --type introspect`: with those options
+   the manifest carries CAMERA but not RECORD_AUDIO, and the plist has no
+   NSMicrophoneUsageDescription.)
+2. THE DEMO-MODE FORK MACHINERY. `feat/demo-mode` is still deliberately
+   unmergeable, and the guard against it still has to live HERE on main —
+   a guard that lives on the branch merges its own approval. Its tells:
+   app.config.* (the bundle-id fork mechanism), the `.demo` bundle id, a
+   `demo` EAS profile, EXPO_PUBLIC_DEMO_BUILD, DemoCameraPip.tsx, and
+   react-native-vision-camera.
 
-WHY A TEST RATHER THAN A CONVENTION
------------------------------------
-The branch carries its own isolation test, and that is exactly the problem: a guard
-that lives on the branch disappears at the moment it would matter, because merging the
-branch merges the guard's own approval. The guard has to live HERE, on main, where a
-merge makes CI go red instead of quietly shipping a camera-linked binary.
-
-THE ACTUAL TRAP THIS CATCHES
-----------------------------
-On that branch the expo-camera CONFIG PLUGIN is conditional (added by app.config.js only
-when EXPO_PUBLIC_DEMO_BUILD=1), but the `expo-camera` DEPENDENCY in app/package.json is
-NOT. Expo autolinking keys off package.json, not off config plugins -- measured on this
-repo: with expo-camera present in node_modules but absent from main's package.json,
-`npx expo-modules-autolinking resolve -p ios --json` returns 24 modules and does not
-include it. Declare it in package.json and it links.
-
-So a merge would compile camera native code into the SHIPPING binary while
-NSCameraUsageDescription stayed absent -- precisely the state Apple's purpose-string
-checks exist to flag, and precisely what the owner said he does not want.
+THE AUTOLINKING TRAP, still true and still the reason this checks package.json
+------------------------------------------------------------------------------
+Expo autolinking keys off package.json, not off config plugins — measured on
+this repo. So a camera dependency in ANY dependency section links native code
+into the shipping binary regardless of plugins. That is why expo-camera's
+package.json entry must be paired with its properly-pinned plugin entry: the
+dependency without the plugin ships camera code with no purpose string
+(Apple flags exactly this), and the plugin without the pins re-grows the mic.
 
 IF THIS TEST FAILS
 ------------------
-You are probably mid-merge of demo mode. Do not "fix" it by adding a camera usage string.
-Back the merge out. Demo mode is built from its own branch with
-`eas build --profile demo -p ios --local`; see docs/DEMO_MODE.md on that branch.
-
-Pure stdlib, like every other test here.
+Mic findings: do not "fix" by adding a mic string — the scanner records
+nothing; restore the plugin pins. Demo findings: you are probably mid-merge of
+demo mode; back it out (it builds from its own branch, see docs/DEMO_MODE.md
+there). Pure stdlib, like every other test here.
 """
 import json
 import sys
@@ -45,13 +53,11 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parent.parent
 APP = ROOT / "app"
 
-# The dependency that started this. Kept narrow ON PURPOSE: a guard that also blocks
-# unrelated future work (expo-image-picker for an avatar, say) is a guard someone deletes
-# in frustration. This blocks the camera-preview path specifically.
-BANNED_DEPS = ("expo-camera", "react-native-vision-camera")
-
-# Purpose strings that must never appear in the shipping Info.plist.
-BANNED_PLIST_KEYS = ("NSCameraUsageDescription", "NSMicrophoneUsageDescription")
+# The one camera dependency the shipping app may declare, and the plugin option
+# pins that keep it mic-less. vision-camera remains banned outright (it is the
+# demo branch's tell, and nothing in the product needs it).
+ALLOWED_CAMERA_DEP = "expo-camera"
+BANNED_DEPS = ("react-native-vision-camera",)
 
 failures = []
 
@@ -61,13 +67,11 @@ def check(cond: bool, msg: str) -> None:
         failures.append(msg)
 
 
-# ------------------------------------------------------ package.json (the real trap)
+# ------------------------------------------------------ package.json (autolinking)
 
 pkg = json.loads((APP / "package.json").read_text())
-# All three sections, not just `dependencies`. Measured: moving expo-camera to
-# devDependencies does NOT stop the leak (autolinking still resolves 25 modules and
-# still links it), and optionalDependencies links it too while silently disabling the
-# demo camera. Every section that lands the package in node_modules is a leak path.
+# All three sections: measured, devDependencies and optionalDependencies both
+# still land the package in node_modules and autolinking still links it.
 declared = (
     set(pkg.get("dependencies", {}))
     | set(pkg.get("devDependencies", {}))
@@ -77,10 +81,8 @@ declared = (
 for dep in BANNED_DEPS:
     check(
         dep not in declared,
-        f"app/package.json declares `{dep}`. Expo autolinking keys off package.json, so "
-        f"this links camera native code into the SHIPPING binary even if no config "
-        f"plugin adds a usage string. This is the demo-mode merge trap -- back the merge "
-        f"out rather than adding a purpose string.",
+        f"app/package.json declares `{dep}`. That package is the demo branch's camera; "
+        f"the shipping scanner uses expo-camera. Back the merge out.",
     )
 
 # --------------------------------------------------- app.config.js (the fork mechanism)
@@ -98,21 +100,50 @@ for name in ("app.config.js", "app.config.ts", "app.config.mjs", "app.config.cjs
 app_json = json.loads((APP / "app.json").read_text())
 expo = app_json["expo"]
 
-plugins = [p[0] if isinstance(p, list) else p for p in expo.get("plugins", [])]
+raw_plugins = expo.get("plugins", [])
+plugin_names = [p[0] if isinstance(p, list) else p for p in raw_plugins]
+
 for dep in BANNED_DEPS:
     check(
-        dep not in plugins,
-        f"app.json lists the `{dep}` config plugin, which writes a camera purpose string "
-        f"into the shipping Info.plist.",
+        dep not in plugin_names,
+        f"app.json lists the `{dep}` config plugin — the demo branch's camera path.",
+    )
+
+# expo-camera: dependency and plugin must arrive TOGETHER, with the mic pinned off.
+has_dep = ALLOWED_CAMERA_DEP in declared
+has_plugin = ALLOWED_CAMERA_DEP in plugin_names
+check(
+    has_dep == has_plugin,
+    "expo-camera dependency and its config plugin must be added/removed together: the "
+    "dependency alone links camera code with no purpose string (autolinking keys off "
+    "package.json), and the plugin alone is a purpose string for code that isn't there.",
+)
+if has_plugin:
+    entry = next(p for p in raw_plugins if isinstance(p, list) and p[0] == ALLOWED_CAMERA_DEP)
+    opts = entry[1] if len(entry) > 1 and isinstance(entry[1], dict) else {}
+    check(
+        opts.get("recordAudioAndroid") is False,
+        "expo-camera plugin must pin `recordAudioAndroid: false` — the plugin DEFAULT "
+        "adds android.permission.RECORD_AUDIO to a scanner that records nothing.",
+    )
+    check(
+        opts.get("microphonePermission") is False,
+        "expo-camera plugin must pin `microphonePermission: false` — no mic purpose "
+        "string may ship; the scanner reads frames and records nothing.",
+    )
+    check(
+        bool(opts.get("cameraPermission")),
+        "expo-camera plugin must set an explicit cameraPermission string — the default "
+        "boilerplate ('Allow $(PRODUCT_NAME) to access your camera') explains nothing "
+        "and App Review flags vague purpose strings.",
     )
 
 info_plist = expo.get("ios", {}).get("infoPlist", {})
-for key in BANNED_PLIST_KEYS:
-    check(
-        key not in info_plist,
-        f"app.json's ios.infoPlist sets {key}. The shipping app does not use the camera "
-        f"or the microphone and must not ask for them.",
-    )
+check(
+    "NSMicrophoneUsageDescription" not in info_plist,
+    "app.json's ios.infoPlist sets NSMicrophoneUsageDescription. The shipping app must "
+    "never ask for the microphone.",
+)
 
 bundle_id = expo["ios"]["bundleIdentifier"]
 check(
@@ -148,13 +179,13 @@ check(
 # ------------------------------------------------------------------------- verdict
 
 if failures:
-    print("FAIL: the shipping app is gaining camera capability\n")
+    print("FAIL: shipping-app camera/mic policy violated\n")
     for f in failures:
         print(f"  * {f}\n")
     print(
-        "Demo mode is deliberately unmergeable. Build it from feat/demo-mode with\n"
-        "`eas build --profile demo -p ios --local` instead of merging it to main."
+        "The shipping camera is QR-pairing only and mic-less; demo mode builds from\n"
+        "feat/demo-mode with `eas build --profile demo -p ios --local`, never a merge."
     )
     sys.exit(1)
 
-print("ok: shipping app declares no camera dependency, plugin, or purpose string")
+print("ok: camera is pairing-only and mic-less; no demo-mode machinery on main")
