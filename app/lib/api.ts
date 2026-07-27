@@ -157,6 +157,10 @@ export type BoxCaps = {
    * (drop dir not writable) hides the card.
    */
   file_upload?: boolean;
+  /** Box can set which session it BOOTS into (agent >= 2.9.58). Two backends:
+   *  SteamOS's steamosctl, or an sddm drop-in on Bazzite — absent when neither
+   *  is usable, so the setting never appears on a box that cannot honour it. */
+  session_default?: boolean;
 };
 
 /** One connected display, from GET /api/displays. */
@@ -904,9 +908,20 @@ export function capsEqual(a?: BoxCaps, b?: BoxCaps): boolean {
     a.steammenus === b.steammenus &&
     a.boxbattery === b.boxbattery &&
     a.launchers === b.launchers &&
-    a.file_upload === b.file_upload
+    a.file_upload === b.file_upload &&
+    a.session_default === b.session_default
   );
 }
+
+/** Which session the box boots into. "last" is a Couchside mode, not an OS one:
+ *  SDDM records the last session but the autologin override defeats it, so the
+ *  agent points the override at whatever is running. */
+export type SessionDefaultMode = 'game' | 'desktop' | 'last';
+export type SessionDefault = {
+  available: boolean;
+  backend: 'steamosctl' | 'sddm' | null;
+  mode: 'game' | 'desktop' | 'unknown';
+};
 
 /** Result of a successful POST /api/upload (agent >= 2.9.54). */
 export type UploadResult = { ok: boolean; name: string; bytes: number; path: string };

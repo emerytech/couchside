@@ -150,6 +150,13 @@ jobs:
       - name: Unit tests (non-Steam shortcut launchers)
         run: python3 tests/test_steam_shortcuts.py
 
+      # The boot-session default. The probe MUST parse steamosctl's output, not
+      # its exit status: on Bazzite it prints a D-Bus UnknownInterface error and
+      # exits 0, so an exit-code probe would claim the backend works on every
+      # Bazzite box. The first test is that exact lie.
+      - name: Unit tests (boot session default)
+        run: python3 tests/test_session_default.py
+
       # Stream-host liveness (the `online` field). remoteclients.vdf lists every
       # host ever streamed from and says nothing about which are ON, so picking a
       # game from a sleeping PC makes Steam offer a multi-GB install instead.

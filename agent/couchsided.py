@@ -1390,7 +1390,8 @@ def set_caps(mock):
         CAPS = {k: True for k in
                 ("gamepad", "steam", "media", "tv", "screen", "power_schedule",
                  "screensaver", "couchmode", "desktop", "steamlink", "gaming",
-                 "streamhost", "steammenus", "boxbattery", "file_upload")}
+                 "streamhost", "steammenus", "boxbattery", "file_upload",
+                 "session_default")}
         return
     CAPS = {
         "gamepad": _uinput_writable(),
@@ -1401,6 +1402,7 @@ def set_caps(mock):
         "power_schedule": safe(rtc_available),
         "screensaver": safe(screensaver_available),
         "couchmode": safe(couchmode_available),
+        "session_default": safe(session_default_available),
         "desktop": safe(desktop_available),
         "steamlink": safe(steamlink_available),
         "gaming": safe(gaming_available),
@@ -2780,6 +2782,179 @@ _DESKTOP_SESSIONS = {
     "plasmax11.desktop": "plasma",
 }
 _DEFAULT_DESKTOP_FALLBACK = "plasmax11.desktop"
+
+
+# ---------------------------------------------------------------------------
+# Boot session default — "which mode does this box come up in?"
+#
+# The session-switch ACTIONS above are one-shot: they move you now and leave the
+# boot default alone (see SESSION_ACTIONS). This is the persistent counterpart.
+#
+# TWO BACKENDS, because the obvious one does not work everywhere:
+#
+#   steamosctl  — SteamOS's own utility. MEASURED on Bazzite 2026-07-27: the
+#                 binary ships, but the call fails with
+#                 "org.freedesktop.DBus.Error.UnknownInterface ...
+#                 SessionManagement1" AND STILL EXITS 0. So the probe reads the
+#                 OUTPUT, never the exit status — an exit-code probe would
+#                 report this backend working on every Bazzite box and then
+#                 silently do nothing.
+#
+#   sddm        — the drop-in that actually decides it on Bazzite:
+#                 /etc/sddm.conf.d/steamos.conf carries
+#                 "[Autologin] Session=gamescope-session.desktop". We never edit
+#                 that file; we write our OWN later-sorting drop-in, so removing
+#                 ours restores the box's original behaviour exactly.
+#
+# Root-owned either way, so the sddm backend is gated on a real NOPASSWD grant
+# (last-match evaluated — see _sudo_nopasswd_allows for why exit codes lie
+# there too). No grant, no capability: the setting never appears rather than
+# appearing and failing.
+# ---------------------------------------------------------------------------
+
+# Closed set. A client selects one of these; it never reaches a command line.
+SESSION_DEFAULT_MODES = ("game", "desktop", "last")
+SDDM_DROPIN = "/etc/sddm.conf.d/zz-couchside-session.conf"
+GAMESCOPE_SESSION_FILE = "gamescope-session.desktop"
+SDDM_STATE = "/var/lib/sddm/state.conf"
+
+
+def _steamosctl_session_ok():
+    """True only when steamosctl's session interface ANSWERS.
+
+    Deliberately parses output instead of trusting the exit status: on Bazzite
+    `steamosctl get-default-login-mode` prints a D-Bus UnknownInterface error
+    and exits 0."""
+    try:
+        r = subprocess.run(["steamosctl", "get-default-login-mode"],
+                           capture_output=True, text=True, timeout=5)
+    except Exception:
+        return False
+    out = ((r.stdout or "") + " " + (r.stderr or "")).strip().lower()
+    if not out or "error" in out or "unknowninterface" in out:
+        return False
+    return out.split()[0] in ("game", "desktop")
+
+
+def _sddm_session_ok():
+    """True when sudoers really lets us write our own sddm drop-in."""
+    return _sudo_nopasswd_allows(SDDM_DROPIN)
+
+
+def session_default_backend():
+    """"steamosctl" | "sddm" | None. steamosctl first: on a real Deck it is the
+    supported path and keeps Valve's own state consistent."""
+    if _steamosctl_session_ok():
+        return "steamosctl"
+    if _sddm_session_ok():
+        return "sddm"
+    return None
+
+
+def session_default_available():
+    return session_default_backend() is not None
+
+
+def _sddm_current_session_file():
+    """The session file SDDM will actually use, best-effort.
+
+    Reads OUR drop-in first (it sorts last, so it wins), then falls back to
+    SDDM's recorded last session. Returns "" when neither is readable —
+    degrading to "unknown" rather than claiming a mode we did not verify."""
+    for path in (SDDM_DROPIN, SDDM_STATE):
+        try:
+            with open(path, "r", encoding="utf-8", errors="replace") as f:
+                for line in f:
+                    line = line.strip()
+                    if line.lower().startswith("session="):
+                        return os.path.basename(line.split("=", 1)[1].strip())
+        except OSError:
+            continue
+    return ""
+
+
+def session_default_get():
+    """{"available", "backend", "mode"} — mode is game|desktop|unknown."""
+    backend = session_default_backend()
+    if backend is None:
+        return {"available": False, "backend": None, "mode": "unknown"}
+    if backend == "steamosctl":
+        try:
+            r = subprocess.run(["steamosctl", "get-default-login-mode"],
+                               capture_output=True, text=True, timeout=5)
+            m = (r.stdout or "").strip().lower()
+        except Exception:
+            m = ""
+        return {"available": True, "backend": backend,
+                "mode": m if m in ("game", "desktop") else "unknown"}
+    name = _sddm_current_session_file()
+    if name == GAMESCOPE_SESSION_FILE:
+        mode = "game"
+    elif name in _DESKTOP_SESSIONS:
+        mode = "desktop"
+    else:
+        mode = "unknown"
+    return {"available": True, "backend": backend, "mode": mode}
+
+
+def _sddm_write(session_file):
+    """Write our drop-in via a sudo tee whose PATH IS FIXED IN THE SUDOERS RULE.
+
+    session_file is chosen by the agent from a frozen table — never client
+    input — and the whole file body is composed here."""
+    body = ("# Written by Couchside. Delete this file to restore the box's\n"
+            "# original boot behaviour; nothing else was modified.\n"
+            "[Autologin]\n"
+            "Session=%s\n" % session_file)
+    try:
+        r = subprocess.run(["sudo", "-n", "tee", SDDM_DROPIN],
+                           input=body, capture_output=True, text=True, timeout=8)
+        return r.returncode == 0
+    except Exception:
+        return False
+
+
+def session_default_set(mode):
+    """Set the boot default. Returns an ActionResult-shaped dict.
+
+    `mode` MUST already be one of SESSION_DEFAULT_MODES — the route checks
+    membership before calling, and nothing here interpolates it."""
+    start = time.monotonic()
+
+    def done(ok, err=""):
+        return {"ok": bool(ok), "exit_code": 0 if ok else 1, "stdout": "",
+                "stderr": err,
+                "duration_ms": int((time.monotonic() - start) * 1000)}
+
+    backend = session_default_backend()
+    if backend is None:
+        return done(False, "no session backend on this box")
+
+    if mode == "last":
+        # SDDM already records the last session; what defeats it is the
+        # Autologin override. So "last" means: point the override at whatever
+        # is running NOW, and keep doing so as the session changes.
+        current = _sddm_current_session_file() or GAMESCOPE_SESSION_FILE
+        target = current if current in _DESKTOP_SESSIONS else GAMESCOPE_SESSION_FILE
+    elif mode == "game":
+        target = GAMESCOPE_SESSION_FILE
+    else:
+        target, _ = _default_desktop_session()
+
+    if backend == "steamosctl":
+        arg = "game" if target == GAMESCOPE_SESSION_FILE else "desktop"
+        try:
+            r = subprocess.run(["steamosctl", "set-default-login-mode", arg],
+                               capture_output=True, text=True, timeout=8)
+        except Exception as e:
+            return done(False, str(e)[:120])
+        out = ((r.stdout or "") + " " + (r.stderr or "")).lower()
+        # Same exit-0 lie as the getter: verify by reading it back.
+        if "error" in out:
+            return done(False, out.strip()[:160])
+        return done(session_default_get().get("mode") == arg)
+
+    return done(_sddm_write(target))
 
 
 def _default_desktop_session():
@@ -4677,6 +4852,22 @@ def _png(width, height, rgb):
             + chunk(b"IHDR", struct.pack(">IIBBBBB", width, height, 8, 2, 0, 0, 0))
             + chunk(b"IDAT", zlib.compress(raw, 6))
             + chunk(b"IEND", b""))
+
+
+_MOCK_SESSION = {"mode": "game"}
+
+
+def mock_session_default():
+    return {"available": True, "backend": "sddm", "mode": _MOCK_SESSION["mode"]}
+
+
+def mock_session_default_set(mode):
+    if mode == "last":
+        mode = _MOCK_SESSION["mode"]
+    _MOCK_SESSION["mode"] = mode
+    print("[mock] boot session default -> %s" % mode, flush=True)
+    return {"ok": True, "exit_code": 0, "stdout": "", "stderr": "",
+            "duration_ms": 4}
 
 
 def mock_launchers():
@@ -12363,6 +12554,12 @@ class Handler(BaseHTTPRequestHandler):
                                                else list_launchers()),
                                  "create_enabled": bool(ALLOW_APP_LAUNCHERS)},
                            started)
+            elif path == "/api/session/default":
+                # Read-only. Always 200 with available=false rather than 404 so
+                # the app can tell "old agent" (404) from "this box has no
+                # backend" (200 + false).
+                self._send(200, (mock_session_default() if self.mock
+                                 else session_default_get()), started)
             elif path == "/api/downloads":
                 # Always 200 (list may be empty). Old agents lack this route and
                 # 404 -> the app hides the section (probe-and-appear via 404->null).
@@ -13499,6 +13696,32 @@ class Handler(BaseHTTPRequestHandler):
                 if result is None:
                     self._send(404, {"error": "unknown player"}, started)
                     return
+                self._send(200, result, started)
+                return
+
+            # POST /api/session/default: {"mode":"game"|"desktop"|"last"}.
+            # The mode is MEMBERSHIP-CHECKED against a frozen tuple and then
+            # only ever compared, never interpolated: the session file written
+            # comes from the agent's own table.
+            if path == "/api/session/default":
+                try:
+                    req = json.loads(body.decode("utf-8")) if body else {}
+                    if not isinstance(req, dict):
+                        raise ValueError("body must be a JSON object")
+                    mode = req.get("mode")
+                except (ValueError, UnicodeDecodeError):
+                    self._send(400, {"ok": False, "error": "bad body"}, started)
+                    return
+                if mode not in SESSION_DEFAULT_MODES:
+                    self._send(400, {"ok": False,
+                                     "error": "unknown mode"}, started)
+                    return
+                if not self.mock and not session_default_available():
+                    self._send(404, {"ok": False,
+                                     "error": "no session backend"}, started)
+                    return
+                result = (mock_session_default_set(mode) if self.mock
+                          else session_default_set(mode))
                 self._send(200, result, started)
                 return
 
