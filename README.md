@@ -79,6 +79,8 @@ curl -fsSL https://couchside.tv/install.sh | bash
 
 The installer copies the service to `~/.local/opt/couchside/`, generates a token at `/etc/couchside/token`, installs a scoped sudoers rule, enables `couchside.service`, opens `8787/tcp` in the local firewall, and finishes by printing a pairing QR code.
 
+Running **Bazzite**? The same steps are in the official [Bazzite documentation](https://docs.bazzite.gg/Advanced/couchside/). On **Windows**, download [`CouchsideSetup.exe`](https://couchside.tv/windows) instead and double-click it.
+
 ## Get the app
 
 - **Android → [Google Play](https://play.google.com/store/apps/details?id=com.ets3d.rescueremote)** — available now.
