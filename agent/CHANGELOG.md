@@ -18,6 +18,20 @@ the same thing regardless of what actually changed.
 Write for the person holding the phone, not for the commit log. They are
 deciding whether to press "Update now" on a machine across the room.
 
+## 2.9.60
+
+Your box now tells the app more about itself, and box-software updates finish cleanly.
+
+- **What it's actually sending the TV.** The box reports its live resolution and
+  refresh rate, plus HDR and VRR state, the monitor's own name, and which speaker
+  is playing — the new Display / Audio panel on the Console tab, once your app
+  updates to match. It reads the real signal, not what the box was asked for, so
+  it won't tell you HDR is on when the panel is showing SDR.
+- **Updating box software no longer hangs.** Updating your flatpaks from the phone
+  used to sit on "Updating…" when an app couldn't be updated (an end-of-life
+  runtime, say) — now the box reports when the update itself finishes, so the
+  card completes and an OS update behind it isn't left waiting.
+
 ## 2.9.58
 
 Choose which mode your box starts in.
