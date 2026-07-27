@@ -1,5 +1,7 @@
-New in 2.9.29
+New in 2.9.30
 
-• Skip 10 or 30 seconds — new arrows on Now Playing jump back or forward 10 seconds; hold one for 30. Change either amount in Settings, or switch the hold off.
-• Kinder to your battery — the Pad no longer holds your screen on indefinitely. Let it sleep after 5, 10, 30 or 60 idle minutes, or keep it always on.
-• Vitals first — the file-sending card moved to the bottom of the Console tab.
+• Scan to pair — point your phone's camera at the code on your box's screen, right inside the app. Setup → Scan a pairing code. No browser detour, no typing.
+• Choose how your box starts up — a new Boots into card on the Actions tab: Game Mode, Desktop, or whichever you used last. The switches below it only change what's on screen now; this is the setting that decides power-on.
+• Launch Netflix, Hulu and the rest — non-Steam shortcuts on your box now appear in Launch, so the phone can start them.
+• One flick, one step — swiping the remote past a short menu no longer sails through it.
+• TV mode is off by default now, and labelled the rough beta it is. Turn it on in Settings if you want it.
