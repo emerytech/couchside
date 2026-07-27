@@ -18,6 +18,20 @@ the same thing regardless of what actually changed.
 Write for the person holding the phone, not for the commit log. They are
 deciding whether to press "Update now" on a machine across the room.
 
+## 2.9.63
+
+Boot-session settings now work on more kinds of box.
+
+- **"Boots into" reaches custom Steam machines.** It previously only worked on
+  boxes using SDDM — which covers Bazzite and SteamOS, and nothing else. The box
+  now identifies its own login manager, so machines built on **greetd** (common
+  on Arch/CachyOS gamescope builds and ChimeraOS) can set their boot session
+  too. Boxes running GDM or LightDM are correctly recognised as not-yet-supported
+  rather than silently doing nothing.
+- On greetd, your existing configuration is preserved and a backup is saved next
+  to it; if anything about the file cannot be changed safely, the box declines
+  to touch it rather than risk your boot.
+
 ## 2.9.62
 
 Fixes "Boots into: Desktop" on Bazzite.

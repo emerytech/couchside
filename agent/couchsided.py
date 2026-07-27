@@ -45,7 +45,7 @@ except ImportError:  # pragma: no cover
     fcntl = None
 
 APP_NAME = "couchside-agent"
-VERSION = "2.9.62"
+VERSION = "2.9.63"
 UID = os.getuid()
 XDG_RUNTIME_DIR = "/run/user/%d" % UID
 
@@ -2929,14 +2929,251 @@ def _sddm_session_ok():
     return _sudo_nopasswd_allows(SDDM_DROPIN)
 
 
+# ---------------------------------------------------------------------------
+# Which display manager does this box actually run?
+#
+# WHY THIS EXISTS. Couchside's boot-session feature was SDDM-only, which covers
+# Bazzite and SteamOS and nothing else. The custom-built Steam machines people
+# actually assemble — Arch/CachyOS with gamescope, ChimeraOS, Nobara, a plain
+# distro running Big Picture — frequently use greetd, GDM or LightDM instead,
+# and on those the feature simply never appeared.
+#
+# There is a canonical, distro-agnostic answer and systemd maintains it for us:
+# /etc/systemd/system/display-manager.service is a SYMLINK to the unit of the
+# display manager that is actually enabled. Verified on a real Bazzite box
+# 2026-07-27:
+#
+#     readlink -f /etc/systemd/system/display-manager.service
+#     -> /usr/lib/systemd/system/sddm.service
+#
+# That beats guessing from /etc/os-release (a user can install any DM on any
+# distro) and beats probing for config files (several can exist while only one
+# DM is enabled). No binary to run, no D-Bus interface to be missing — just a
+# readlink, which also means it cannot hang.
+#
+# DEGRADE CLOSED (§3.7): an unreadable link, or a DM we do not have a writer
+# for, returns None and the capability stays absent. KI-038 is the standing
+# reminder of what the alternative costs — writing a boot config we cannot
+# vouch for stranded a box at a password prompt with no agent running.
+# ---------------------------------------------------------------------------
+
+DISPLAY_MANAGER_UNIT = "/etc/systemd/system/display-manager.service"
+
+# Display managers we can READ or WRITE a boot session for. The value is the
+# short name used throughout; extending this set means adding a real writer,
+# never a pattern match.
+_KNOWN_DMS = ("sddm", "greetd", "gdm", "lightdm")
+
+
+def detect_display_manager():
+    """Short name of the enabled display manager ("sddm"/"greetd"/...), or None.
+
+    None means "we could not tell", which is different from "there is none" —
+    both are handled the same way (no capability), because acting on a box whose
+    boot path we cannot identify is exactly how KI-038 happened.
+    """
+    try:
+        target = os.path.realpath(DISPLAY_MANAGER_UNIT)
+    except OSError:
+        return None
+    if not target or not os.path.basename(target).endswith(".service"):
+        return None
+    unit = os.path.basename(target)[: -len(".service")].lower()
+    # gdm ships as gdm.service on some distros and gdm3.service on Debian-likes.
+    if unit.startswith("gdm"):
+        return "gdm"
+    return unit if unit in _KNOWN_DMS else None
+
+
+# ---------------------------------------------------------------------------
+# greetd backend — the common DIY / custom-Steam-machine display manager.
+#
+# greetd differs from SDDM in two ways that shape everything below.
+#
+# 1. IT TAKES A COMMAND, NOT A SESSION NAME. `[initial_session] command = "..."`
+#    is the autologin lever ("takes the place of the default session on the very
+#    first start"; the greeter returns afterwards). So we derive the command
+#    from the Exec= line of the SAME .desktop file the SDDM path resolves, which
+#    means the KI-038 "must actually exist" guarantee carries over for free.
+#    MEASURED on a real box 2026-07-27:
+#      plasma.desktop            Exec=/usr/libexec/plasma-dbus-run-session-if-needed /usr/bin/startplasma-wayland
+#      gamescope-session.desktop Exec=gamescope-session-plus steam
+#
+# 2. THERE IS NO DROP-IN DIRECTORY. SDDM lets us own a separate zz- file and
+#    never touch the distro's; greetd has ONE config.toml holding the user's
+#    whole setup. So we rewrite exactly the [initial_session] table and copy
+#    every other byte through unchanged, and we keep a one-time backup so the
+#    box is recoverable by hand. Anything we cannot parse confidently, we refuse
+#    to write at all — mangling the file that decides whether a box boots is the
+#    KI-038 failure mode with a bigger blast radius.
+#
+# NOT VERIFIED ON HARDWARE. No greetd box was reachable while this was written;
+# it is built against greetd's documented config format and unit-tested against
+# realistic fixtures. Treat the first live greetd report as the real test.
+# ---------------------------------------------------------------------------
+
+GREETD_CONFIG = "/etc/greetd/config.toml"
+GREETD_BACKUP = "/etc/greetd/config.toml.couchside-backup"
+
+
+def _agent_user():
+    """The account this agent runs as — the one greetd should autologin.
+
+    The agent runs AS the desktop user (systemd user service, or a system unit
+    with User=), so our own uid is the right answer and needs no guessing. pwd
+    is stdlib. Returns "" if the uid has no passwd entry, which refuses the
+    write rather than autologging in as somebody unexpected."""
+    try:
+        import pwd
+        return pwd.getpwuid(UID).pw_name or ""
+    except Exception:
+        return ""
+
+
+def _session_exec_command(session_file):
+    """The Exec= command out of an installed session .desktop, or "".
+
+    greetd runs a command, so this is the bridge from "which session" to "what
+    to run". Returns "" if the file is missing or has no Exec — the caller then
+    refuses, rather than writing a boot command that does nothing."""
+    for d in _SESSION_DIRS:
+        path = os.path.join(d, session_file)
+        try:
+            with open(path, "r", encoding="utf-8", errors="replace") as f:
+                for line in f:
+                    if line.startswith("Exec="):
+                        cmd = line[len("Exec="):].strip()
+                        # Strip the freedesktop field codes (%U, %f, ...): they
+                        # are placeholders a launcher substitutes, and greetd
+                        # would run them literally.
+                        cmd = re.sub(r"\s*%[a-zA-Z]", "", cmd).strip()
+                        return cmd
+        except OSError:
+            continue
+    return ""
+
+
+def _greetd_session_ok():
+    """True when greetd is the enabled DM AND we may write its config."""
+    return (detect_display_manager() == "greetd"
+            and _sudo_nopasswd_allows(GREETD_CONFIG))
+
+
+def _greetd_current_command():
+    """The command in [initial_session], or "" if absent/unreadable."""
+    try:
+        with open(GREETD_CONFIG, "r", encoding="utf-8", errors="replace") as f:
+            lines = f.read().splitlines()
+    except OSError:
+        return ""
+    in_initial = False
+    for line in lines:
+        st = line.strip()
+        if st.startswith("["):
+            in_initial = st.replace(" ", "") == "[initial_session]"
+            continue
+        if in_initial and st.startswith("command"):
+            _, _, val = st.partition("=")
+            return val.strip().strip('"').strip("'")
+    return ""
+
+
+def _greetd_compose(existing, command, user):
+    """The new config.toml text: every other section byte-identical, with
+    [initial_session] replaced (or appended when absent).
+
+    Returns None if `existing` looks like something we should not rewrite —
+    refusing beats mangling the file that decides whether the box boots."""
+    if command.count('"') or "\n" in command or "\n" in user or not user:
+        return None  # cannot quote safely; refuse
+    out, i, replaced = [], 0, False
+    lines = existing.splitlines()
+    while i < len(lines):
+        st = lines[i].strip()
+        if st.replace(" ", "") == "[initial_session]":
+            # Skip the old table entirely, up to the next section header.
+            i += 1
+            while i < len(lines) and not lines[i].strip().startswith("["):
+                i += 1
+            if replaced:
+                return None  # two [initial_session] tables: not ours to fix
+            out.extend(["[initial_session]",
+                        '# Set by Couchside (boot session). Original config saved',
+                        '# alongside as config.toml.couchside-backup.',
+                        'command = "%s"' % command,
+                        'user = "%s"' % user,
+                        ""])
+            replaced = True
+            continue
+        out.append(lines[i])
+        i += 1
+    if not replaced:
+        out.extend(["", "[initial_session]",
+                    '# Added by Couchside (boot session). Original config saved',
+                    '# alongside as config.toml.couchside-backup.',
+                    'command = "%s"' % command,
+                    'user = "%s"' % user])
+    return "\n".join(out).rstrip() + "\n"
+
+
+def _greetd_write(session_file):
+    """Point greetd's autologin at `session_file`. True on success.
+
+    Refuses unless the session is installed AND has a runnable Exec — the same
+    verify-before-write rule KI-038 forced on the SDDM path."""
+    installed = _installed_session_files()
+    if installed and session_file not in installed:
+        print("[session] refusing greetd write for missing session %r"
+              % (session_file,), flush=True)
+        return False
+    command = _session_exec_command(session_file)
+    if not command:
+        print("[session] refusing greetd write: no Exec in %r" % (session_file,),
+              flush=True)
+        return False
+    user = _agent_user()
+    if not user:
+        return False
+    try:
+        with open(GREETD_CONFIG, "r", encoding="utf-8", errors="replace") as f:
+            existing = f.read()
+    except OSError:
+        return False
+    body = _greetd_compose(existing, command, user)
+    if body is None:
+        print("[session] refusing greetd write: config not safely rewritable",
+              flush=True)
+        return False
+    try:
+        # One-time backup, so "delete our block / restore this file" is real
+        # advice. cp -n never clobbers an existing backup.
+        subprocess.run(["sudo", "-n", "cp", "-n", GREETD_CONFIG, GREETD_BACKUP],
+                       capture_output=True, text=True, timeout=8)
+        r = subprocess.run(["sudo", "-n", "tee", GREETD_CONFIG],
+                           input=body, capture_output=True, text=True, timeout=8)
+        return r.returncode == 0
+    except Exception:
+        return False
+
+
 def session_default_backend():
     """"steamosctl" | "sddm" | None. steamosctl first: on a real Deck it is the
     supported path and keeps Valve's own state consistent."""
     if _steamosctl_session_ok():
         return "steamosctl"
-    if _sddm_session_ok():
-        return "sddm"
-    return None
+    # Pick the backend that matches the DM this box ACTUALLY runs, rather than
+    # whichever config we happen to have a grant for. A box can carry a leftover
+    # sddm.conf while booting through greetd; writing the one nobody reads is a
+    # silent no-op, which is how "I set it and nothing happened" bugs are made.
+    dm = detect_display_manager()
+    if dm == "greetd":
+        return "greetd" if _greetd_session_ok() else None
+    if dm == "sddm" or dm is None:
+        # dm is None on a box we cannot identify; SDDM stays the fallback there
+        # because it is what shipped and its writer refuses on its own if the
+        # grant or the session file is missing.
+        return "sddm" if _sddm_session_ok() else None
+    return None  # gdm / lightdm: detected, but no writer yet — honest absence
 
 
 def session_default_available():
@@ -2966,6 +3203,13 @@ def session_default_get():
     backend = session_default_backend()
     if backend is None:
         return {"available": False, "backend": None, "mode": "unknown"}
+    if backend == "greetd":
+        if _greetd_write(target):
+            return done(True)
+        return done(False, "could not set greetd's boot session "
+                           "(session not installed, no Exec, or config not "
+                           "safely rewritable)")
+
     if backend == "steamosctl":
         try:
             r = subprocess.run(["steamosctl", "get-default-login-mode"],
