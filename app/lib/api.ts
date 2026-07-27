@@ -345,7 +345,14 @@ export type Journal = {
 export type Launcher = {
   id: string;
   label: string;
-  kind: 'steam' | 'custom';
+  /** "shortcut" = a non-Steam shortcut from Steam's shortcuts.vdf (agent
+   *  >= 2.9.57). On SteamOS that is how Netflix/Hulu/Disney+/EmuDeck and the
+   *  rest reach the TV. It is deliberately not "custom": custom launchers come
+   *  from the agent's own config and offer a delete control, which would do
+   *  nothing for a shortcut that lives in Steam's file. An older app build
+   *  receiving this value degrades cleanly — it renders the generic rocket
+   *  tile and offers no delete, which is exactly right. */
+  kind: 'steam' | 'custom' | 'shortcut';
   /** Steam appid, present for kind "steam": used for library cover art. */
   appid?: number;
   /** Which SHAPE of cover art the box has locally (agent >= 2.9.41).

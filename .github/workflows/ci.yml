@@ -143,6 +143,13 @@ jobs:
       - name: Unit tests (steam link / remote play)
         run: python3 tests/test_steamlink.py
 
+      # Non-Steam shortcuts are how EVERYTHING that is not a Steam game reaches
+      # the TV on SteamOS/Bazzite. This id ends in a subprocess call, so the
+      # rejection cases (non-numeric, unregistered, injection shapes) are the
+      # point of the suite, not a bonus.
+      - name: Unit tests (non-Steam shortcut launchers)
+        run: python3 tests/test_steam_shortcuts.py
+
       # Stream-host liveness (the `online` field). remoteclients.vdf lists every
       # host ever streamed from and says nothing about which are ON, so picking a
       # game from a sleeping PC makes Steam offer a multi-GB install instead.
