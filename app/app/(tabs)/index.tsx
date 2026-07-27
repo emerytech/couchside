@@ -2,6 +2,7 @@ import React, { useEffect } from 'react';
 import { Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
 
 import { Gated } from '@/components/Gated';
+import { DisplayAudioCard } from '@/components/DisplayAudioCard';
 import { FileDropCard } from '@/components/FileDropCard';
 import { GamingCard } from '@/components/GamingCard';
 import { NowPlayingCard } from '@/components/NowPlayingCard';
@@ -305,6 +306,14 @@ function ConsoleScreen() {
             )}
           </>
         )}
+
+        {/* What the box is driving: mode, panel, HDR/VRR, default audio in/out
+            (probe-and-appear; agent >= 2.9.59).
+            HERE, directly above the preview, on purpose: the two are one
+            region — the specs of the screen, then the picture on it. Below the
+            vitals you opened this tab to read, above UNITS, which is reference
+            config rather than something you watch. */}
+        <DisplayAudioCard />
 
         {/* Live screen preview (probe-and-appear; hidden when no capture path) */}
         <ScreenPreview />

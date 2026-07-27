@@ -172,12 +172,13 @@
     ]
   },
   "linuxOnlyCapabilities": {
-    "_doc": "Linux-only TODAY. gaming reads sysfs and streamhost reads /proc/net, so they are inherently Linux. steamlink and steammenus are portable in principle and simply are NOT ported -- recorded here so the Windows gap is visible as a decision rather than rediscovered as a surprise. The app treats a MISSING cap as unknown (not false), so a Windows box just doesn't offer these.",
+    "_doc": "Linux-only TODAY. gaming reads sysfs and streamhost reads /proc/net, and display_info reads DRM sysfs + a Wayland compositor + WirePlumber, so they are inherently Linux. steamlink and steammenus are portable in principle and simply are NOT ported -- recorded here so the Windows gap is visible as a decision rather than rediscovered as a surprise. The app treats a MISSING cap as unknown (not false), so a Windows box just doesn't offer these.",
     "platforms": [
       "linux"
     ],
     "keys": [
       "boxbattery",
+      "display_info",
       "file_upload",
       "gaming",
       "steamlink",

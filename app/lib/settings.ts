@@ -256,10 +256,14 @@ function normalizeCaps(raw: unknown): BoxCaps | undefined {
   // here (and from capsEqual) and the cap never persists, so the "Send a file"
   // card re-probes every launch.
   const file_upload = bool('file_upload');
+  // display_info arrived with agent 2.9.59 — same optional-cap drop trap: omit
+  // it here (and from capsEqual) and the cap never persists, so the Console
+  // "DISPLAY & AUDIO" card re-probes /api/display-info on every launch.
+  const display_info = bool('display_info');
   return {
     gamepad, steam, media, tv, screen, power_schedule,
     screensaver, couchmode, desktop, steamlink, gaming, streamhost, steammenus,
-    boxbattery, launchers, file_upload, session_default,
+    boxbattery, launchers, file_upload, session_default, display_info,
   };
 }
 
