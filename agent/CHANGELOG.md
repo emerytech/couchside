@@ -18,6 +18,17 @@ the same thing regardless of what actually changed.
 Write for the person holding the phone, not for the commit log. They are
 deciding whether to press "Update now" on a machine across the room.
 
+## 2.9.58
+
+Choose which mode your box starts in.
+
+- **Boots into: Game Mode, Desktop, or Last used.** A new card at the top of the
+  Actions tab. The switches below it have always been one-shot — they change
+  what is on screen now and the box still comes back up however it was set. This
+  is the setting that actually decides that.
+- Works on Bazzite as well as SteamOS. They do it in completely different ways
+  under the hood, so boxes that can't do it simply don't show the card.
+
 ## 2.9.57
 
 Your streaming apps now show up in the phone's Launch tab.
