@@ -131,6 +131,62 @@ Entry fields: `priority` (P0 blocker → P3 nice) · `risk` · `affects` · `dep
 - The agent's own tiles are filtered out, and proven unlaunchable rather than merely
   unlisted.
 
+### Packaged media shortcuts, installable from the phone
+- **priority:** P2 · **risk:** medium · **affects:** agent + app · **depends_on:** shortcut
+  launching (shipped 2026-07-26)
+- **Requested by owner 2026-07-26:** "these media shortcuts also need to be packagable and
+  option to download with couchside agent so users can have quick configured media
+  shortcuts on their own boxes."
+- Goal: a fresh box gets Netflix/Hulu/Disney+/Max/Prime/YouTube tiles — with cover art —
+  without the owner hand-running `ujust get-media-app` six times or knowing what
+  shortcuts.vdf is.
+
+#### THE OPEN QUESTION: adopt vs install (decide before writing code)
+- **A canned pack that blindly installs its own tiles WILL collide with what the user
+  already has, and the collision is worse than it sounds.** MEASURED on the maintainer's
+  box 2026-07-26: it already had Netflix/Hulu/Disney+/Prime/Max as Chrome `--app=`
+  shortcuts, logged in (`NetflixId`/`SecureNetflixId` persistent to 2027, `_hulu_session`,
+  23 Disney+ cookies). Running Bazzite's own `ujust get-media-app` added a SECOND set
+  backed by StreamingServiceLauncher, which keeps a separate cookie jar at
+  `~/.config/streaming-service-launcher/sessionData`. The new tiles were empty, so the
+  owner hit **"it makes me login every time"** — and the duplicates had no cover art
+  either, because grid art is keyed by appid (`grid/<appid>p.png`) and the new appids had
+  none.
+- So the default must be **ADOPT, NOT INSTALL**: enumerate shortcuts.vdf first, match
+  known services by URL/exe, offer to launch what exists, and only create a tile where the
+  service is genuinely absent. "Install everything" should be an explicit, per-service
+  choice, never the default.
+- Corollary: whatever creates a tile must also be able to REMOVE it, or we hand users the
+  same mess we just cleaned up by hand.
+
+#### Backend choice (also unresolved)
+- **Chrome `--app=<url>`** — what the owner's working tiles use. Shares the Chrome flatpak
+  profile, so a login done anywhere carries over; Widevine already present (CDM
+  4.10.3050.0 on that box). Downside: no TV-tuned UA/zoom.
+- **StreamingServiceLauncher** (castlabs Widevine Electron, what Bazzite ships) — purpose
+  built, per-service UA and zoom, but a SEPARATE profile from the user's browser, and its
+  tracker has open Netflix "unsupported browser" breakage **specifically on Bazzite**
+  (aarron-lee/StreamingServiceLauncher#8).
+- Leaning Chrome for adoption-friendliness; needs a decision, not a coin flip.
+
+#### Hard constraints already measured
+- **shortcuts.vdf must be written with Steam DOWN.** Steam rewrites it from memory on
+  exit, so an edit made while it runs is silently clobbered. Verified: `steam -shutdown`,
+  wait for the process to go, edit, let gamescope-session respawn it. A helper that
+  forgets this will appear to work and then quietly undo itself.
+- Cover art is a separate artifact: `~/.steam/steam/userdata/<id>/config/grid/<appid>p.png`.
+  A pack without art produces the grey placeholder tile, which is exactly what made the
+  duplicates look wrong at a glance.
+- **ALLOWLIST — the service table must be FROZEN IN AGENT SOURCE.** A route that accepts a
+  client-supplied URL and registers it as a Steam shortcut is an arbitrary-navigation
+  primitive: it would let any LAN peer holding the token make the box open anything, with
+  a tile that persists across reboots. The client may select `service_id` from a closed
+  table only; the URL, exe and argv come from the agent. This is the same rule as
+  LAUNCHERS/ACTIONS and is the single thing most likely to be got wrong here.
+- Creating/removing tiles is state-changing, so it needs the bearer token, a capability
+  key (all five edit sites), and tests proving a non-allowlisted service_id registers
+  nothing.
+
 ### Media seek buttons (-10s / +10s) on the now-playing card
 - **priority:** P2 · **risk:** low · **affects:** app only · **depends_on:** none
 - **Requested by u/Most-Bet2021 (r/SteamOS, 2026-07-26):** "a button that fast forwards media
