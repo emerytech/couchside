@@ -18,6 +18,21 @@ the same thing regardless of what actually changed.
 Write for the person holding the phone, not for the commit log. They are
 deciding whether to press "Update now" on a machine across the room.
 
+## 2.9.62
+
+Fixes "Boots into: Desktop" on Bazzite.
+
+- **Setting your box to boot into Desktop could leave it at the login screen.**
+  It pointed the automatic login at a desktop session name that exists on
+  SteamOS but not on Bazzite, so the box stopped at the password prompt instead
+  and then came up in Game Mode anyway. If your box also runs the Couchside
+  service under your own login, it would not have started until you signed in —
+  so the phone lost the box. The box now checks which desktop sessions are
+  actually installed and uses one of those, and refuses to change the setting at
+  all if it cannot find one, rather than leaving you locked out.
+- If you hit this, the setting is repaired automatically the next time you set
+  it; no need to touch the box.
+
 ## 2.9.61
 
 Small fixes to the pairing screen and to updating.

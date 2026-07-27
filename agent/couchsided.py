@@ -45,7 +45,7 @@ except ImportError:  # pragma: no cover
     fcntl = None
 
 APP_NAME = "couchside-agent"
-VERSION = "2.9.61"
+VERSION = "2.9.62"
 UID = os.getuid()
 XDG_RUNTIME_DIR = "/run/user/%d" % UID
 
@@ -2832,6 +2832,45 @@ _DESKTOP_SESSIONS = {
 }
 _DEFAULT_DESKTOP_FALLBACK = "plasmax11.desktop"
 
+# Where a display manager looks for session files. SDDM's Autologin Session=
+# must name a file that EXISTS in one of these, or autologin fails outright.
+_SESSION_DIRS = ("/usr/share/wayland-sessions", "/usr/share/xsessions")
+
+
+def _installed_session_files():
+    """Every .desktop session name actually present on this box.
+
+    WHY THIS EXISTS — a real stranding, 2026-07-27. `_default_desktop_session()`
+    asks `steamosctl get-default-desktop-session`; on Bazzite that D-Bus
+    interface does not exist, so the read returns empty and we fell back to
+    _DEFAULT_DESKTOP_FALLBACK = "plasmax11.desktop". That is a SteamOS name.
+    Bazzite ships plasma.desktop (Wayland) and plasma-steamos-oneshot.desktop
+    (X11) and has NO plasmax11.desktop — so "Boots into: Desktop" wrote an
+    autologin session that does not exist. SDDM said so in its own log:
+
+        Unable to find autologin session entry "plasmax11.desktop"
+        Autologin failed!
+
+    ...and the box came up at the GREETER instead. The user then logged in by
+    hand and SDDM used its [Last] session, which was gamescope — so the setting
+    appeared to do nothing while actually breaking autologin. Worse, on a box
+    whose agent is a systemd --user service, no login means NO AGENT, so the
+    phone cannot even reach the box to undo it. Stranding a box at a password
+    prompt is the exact failure this product exists to prevent.
+
+    The lesson: "degrade closed" has to mean degrading to something VERIFIED to
+    work, not to a hardcoded name that happens to be right on one distro. So we
+    now look at what is actually installed rather than assuming."""
+    names = set()
+    for d in _SESSION_DIRS:
+        try:
+            for fn in os.listdir(d):
+                if fn.endswith(".desktop"):
+                    names.add(fn)
+        except OSError:
+            continue  # directory absent on this box; not an error
+    return names
+
 
 # ---------------------------------------------------------------------------
 # Boot session default — "which mode does this box come up in?"
@@ -2950,7 +2989,19 @@ def _sddm_write(session_file):
     """Write our drop-in via a sudo tee whose PATH IS FIXED IN THE SUDOERS RULE.
 
     session_file is chosen by the agent from a frozen table — never client
-    input — and the whole file body is composed here."""
+    input — and the whole file body is composed here.
+
+    REFUSES to write a session that is not installed. An autologin entry naming
+    a missing session does not degrade gracefully: SDDM logs "Unable to find
+    autologin session entry" and drops the box at the greeter, stranding a box
+    whose agent is a user service. Measured 2026-07-27 — this guard is the
+    reason that cannot happen again, and it sits HERE, at the single write, so
+    no future caller can route around it."""
+    installed = _installed_session_files()
+    if installed and session_file not in installed:
+        print("[session] refusing to write autologin for missing session %r"
+              % (session_file,), flush=True)
+        return False
     body = ("# Written by Couchside. Delete this file to restore the box's\n"
             "# original boot behaviour; nothing else was modified.\n"
             "[Autologin]\n"
@@ -2988,7 +3039,13 @@ def session_default_set(mode):
     elif mode == "game":
         target = GAMESCOPE_SESSION_FILE
     else:
-        target, _ = _default_desktop_session()
+        # Desktop: the session must EXIST or autologin fails and the box lands
+        # at the greeter with no agent (see _installed_session_files). Refusing
+        # is strictly better than writing a name we cannot vouch for -- the user
+        # keeps a working box and gets told why.
+        target = _desktop_session_for_autologin()
+        if not target:
+            return done(False, "no desktop session installed on this box")
 
     if backend == "steamosctl":
         arg = "game" if target == GAMESCOPE_SESSION_FILE else "desktop"
@@ -3011,7 +3068,12 @@ def _default_desktop_session():
     (session_file, session_select_arg) pair from the frozen table above.
 
     Degrades closed: any read failure, or a name not on the allowlist, returns
-    the X11 pair that shipped before -- never a guess, never a raw value."""
+    the X11 pair that shipped before -- never a guess, never a raw value.
+
+    NOTE: this answers "which desktop does the box PREFER", and its fallback is
+    fine for the one-shot switch it serves (steamos-session-select validates its
+    own argument and a bad switch is transient). It is NOT safe for writing a
+    PERSISTENT autologin entry -- see _desktop_session_for_autologin()."""
     try:
         r = subprocess.run(["steamosctl", "get-default-desktop-session"],
                            capture_output=True, text=True, timeout=5)
@@ -3021,6 +3083,56 @@ def _default_desktop_session():
     if name not in _DESKTOP_SESSIONS:
         name = _DEFAULT_DESKTOP_FALLBACK
     return name, _DESKTOP_SESSIONS[name]
+
+
+# Desktop sessions we will point autologin at, best first. SteamOS and Bazzite
+# ship DIFFERENT names, which is the whole reason this list exists rather than a
+# constant: SteamOS has plasmax11.desktop, Bazzite has plasma.desktop plus the
+# plasma-steamos-*-oneshot pair. Each entry is checked against what is actually
+# installed (_installed_session_files) before it can be written.
+#
+# Wayland plasma.desktop is preferred over X11 because it is what a modern
+# Bazzite/SteamOS desktop actually runs; the X11 names follow as fallbacks for
+# older images. The oneshot variants come LAST -- they exist to bounce back to
+# Game Mode, so autologging into one every boot would be surprising.
+_AUTOLOGIN_DESKTOP_PREFERENCE = (
+    "plasma.desktop",
+    "plasmax11.desktop",
+    "plasma-steamos-oneshot.desktop",
+    "plasma-steamos-wayland-oneshot.desktop",
+)
+
+
+def _desktop_session_for_autologin():
+    """A desktop session file that EXISTS on this box, or None.
+
+    None means "do not write" — refusing is the safe answer here. An autologin
+    entry naming a missing session does not fail quietly: SDDM abandons
+    autologin and drops the box at the greeter, which on a box whose agent is a
+    user service means the agent never starts and the phone loses the box
+    entirely (measured 2026-07-27, see _installed_session_files).
+
+    Preference order: whatever the box itself reports as its configured desktop
+    (so we honour a Wayland box rather than downgrading it), then
+    _AUTOLOGIN_DESKTOP_PREFERENCE, then — since both lists are SteamOS/Bazzite
+    specific — any other installed plasma session, so a distro we have not seen
+    still works. Every candidate must be an installed file; nothing is assumed.
+    """
+    installed = _installed_session_files()
+    if not installed:
+        return None  # cannot enumerate; refuse rather than guess
+
+    configured, _ = _default_desktop_session()
+    for cand in (configured,) + _AUTOLOGIN_DESKTOP_PREFERENCE:
+        if cand in installed:
+            return cand
+    # Unknown distro: take an installed plasma session rather than fail, but
+    # still only ever a file we have SEEN, and never the gamescope session
+    # (that is Game Mode, the opposite of what was asked for).
+    for name in sorted(installed):
+        if name.startswith("plasma") and name != GAMESCOPE_SESSION_FILE:
+            return name
+    return None
 
 
 def _session_to_desktop():
