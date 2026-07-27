@@ -465,10 +465,14 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: "22"
-      # --test-force-exit: a FAILING test throws before its client.close(), which
-      # leaks the 5s ping setInterval and would otherwise keep the run alive until
-      # the job times out. Force-exit makes a failure exit promptly (and report)
-      # instead of hanging. Passing runs close every client and exit on their own.
+      # --test-timeout, NOT --test-force-exit. Force-exit was here because a
+      # FAILING test throws before its client.close(), leaking the 5s ping
+      # setInterval and hanging the job. It fixed that but SILENTLY TRUNCATED THE
+      # RUN: measured 2026-07-26, three consecutive invocations reported 56, 51
+      # and 48 tests against 60 without the flag. Force-exit races the reporter,
+      # so CI could skip a failing test and still go green — on the input path,
+      # of all places. A per-test timeout kills a hang just as dead while letting
+      # every test actually run.
       - name: Input-path unit tests (gamepad lifecycle + trackpad gestures)
-        run: node --experimental-strip-types --test --test-force-exit lib/__tests__/*.test.ts hooks/__tests__/*.test.ts
+        run: node --experimental-strip-types --test --test-timeout=60000 lib/__tests__/*.test.ts hooks/__tests__/*.test.ts
         working-directory: app
