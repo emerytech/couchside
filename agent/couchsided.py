@@ -45,7 +45,7 @@ except ImportError:  # pragma: no cover
     fcntl = None
 
 APP_NAME = "couchside-agent"
-VERSION = "2.9.60"
+VERSION = "2.9.61"
 UID = os.getuid()
 XDG_RUNTIME_DIR = "/run/user/%d" % UID
 
@@ -13180,12 +13180,20 @@ def render_pair_page(token, port):
     url_html = (pair_url.replace("&", "&amp;").replace("<", "&lt;")
                         .replace(">", "&gt;"))  # safe HTML text
     # One "get the app first" QR for a fresh installer who doesn't have
-    # Couchside yet. It points at couchside.tv, whose hero already carries BOTH
-    # store badges, so the phone picks its own store instead of the box making
-    # someone aim a camera at the right one of two codes. A single small canvas
-    # also leaves the one-screen layout roomier. The big QR above stays the
-    # pairing deep link for someone who already has the app.
-    get_js = json.dumps("https://couchside.tv/#get")
+    # Couchside yet. ONE code carrying BOTH stores, so the phone picks its own
+    # instead of the box making someone aim a camera at the right one of two
+    # codes. A single small canvas also leaves the one-screen layout roomier.
+    # The big QR above stays the pairing deep link for someone who has the app.
+    #
+    # /get/ is a DEDICATED page: the two store links and nothing else. It used
+    # to point at couchside.tv/#get, which is an anchor into the marketing home
+    # page — nav, pitch, footer, the agent installer, somewhere to wander off
+    # to. That is the wrong page for the only person who ever sees this code:
+    # someone standing in front of a TV, phone in hand, who has already decided.
+    # Keep this in sync with STORE_CODE in app/lib/pairLink.ts, which gives this
+    # exact string the friendly "that's the install code" answer when it is
+    # scanned into the app's pairing scanner by mistake.
+    get_js = json.dumps("https://couchside.tv/get/")
     return (
         "<!doctype html><html lang=\"en\"><head>"
         "<meta charset=\"utf-8\">"

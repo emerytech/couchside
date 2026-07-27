@@ -84,9 +84,18 @@ export const DEEPLINK_FORMS: readonly PairLinkForm[] = Object.freeze([
  * The OTHER QR on the box's pairing screen: an install/store link, drawn right
  * next to the pairing code. Catching it is the single most likely honest
  * mistake, so it gets its own reason rather than "not a Couchside code".
- * Exact string from the agent (`json.dumps("https://couchside.tv/#get")`).
+ *
+ * BOTH forms are listed because a box updates on its own schedule: agents
+ * before 2.9.61 encode the old marketing-page anchor, newer ones encode the
+ * dedicated /get/ page. A phone on the current app will meet both for as long
+ * as un-updated boxes exist, and the friendly answer should not depend on which
+ * one it happens to be looking at. Exact strings from the agent's
+ * `json.dumps(...)` — keep in sync with couchsided.py's `get_js`.
  */
-const STORE_CODE = 'https://couchside.tv/#get';
+const STORE_CODES: readonly string[] = Object.freeze([
+  'https://couchside.tv/get/',
+  'https://couchside.tv/#get',
+]);
 
 /** Hostname suffixes a pairing link may carry. Frozen; explicit entries only. */
 const HOST_SUFFIXES: readonly string[] = Object.freeze(['.local']);
@@ -262,7 +271,7 @@ export function parsePairLink(
   const text = raw.trim();
   if (!text) return rej('empty');
   if (text.length > MAX_RAW_LEN) return rej('too-long');
-  if (text === STORE_CODE) return rej('store-code');
+  if (STORE_CODES.includes(text)) return rej('store-code');
 
   let params: Record<string, string> | null | undefined;
   for (const form of opts.forms) {

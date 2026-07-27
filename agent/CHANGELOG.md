@@ -18,6 +18,19 @@ the same thing regardless of what actually changed.
 Write for the person holding the phone, not for the commit log. They are
 deciding whether to press "Update now" on a machine across the room.
 
+## 2.9.61
+
+Small fixes to the pairing screen and to updating.
+
+- **The "get the app" code now opens a page with just the two store links** —
+  App Store and Google Play, nothing else. It used to drop you on the middle of
+  the website, which is a lot to wade through when you are stood in front of the
+  TV holding a phone.
+- **Updating no longer restarts your other Decky plugins.** Every update used to
+  reload Decky Loader whether or not the Couchside panel had actually changed,
+  which restarted everything else you have installed alongside it. Now it only
+  happens when the panel is genuinely new.
+
 ## 2.9.60
 
 Your box now tells the app more about itself, and box-software updates finish cleanly.
