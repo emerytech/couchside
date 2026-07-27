@@ -1543,29 +1543,39 @@ function PadScreen() {
       </Pressable>
     ) : null;
 
-  // Top-LEFT so it never collides with the expand chip on the right. Flips what
-  // a swipe step SENDS — arrow keys (Steam's own UI) vs pointer jumps (browser
-  // streaming apps, where arrows only scroll). Deliberately on the surface
-  // rather than in the mode row: it is a property of the swipe, not a separate
-  // input device, and the row was already full at phone width.
+  // An ON/OFF toggle for TV navigation, top-LEFT so it never collides with the
+  // expand chip on the right.
+  //
+  // It reads "TV" in BOTH states — lit when on, dim when off — and never names
+  // the other mode. An earlier version labelled the off state "STEAM", which
+  // read as though the STEAM tab had been demoted into a chip. The tab is a
+  // destination; this is a modifier on the swipe you are already using.
+  //
+  // Deliberately not a tab: TV is a property of the swipe (what a step SENDS —
+  // arrow keys for Steam's own UI, pointer jumps for browser streaming apps),
+  // not a separate input device, and the mode row was already full at phone
+  // width once the STEAM tab appears.
   const tvToggleChip = (
     <Pressable
       onPress={() => {
         setMode(tvNav ? 'swipe' : 'tvnav');
       }}
-      style={styles.tvToggleChip}
+      style={[styles.tvToggleChip, tvNav && styles.tvToggleChipOn]}
       hitSlop={12}
-      accessibilityRole="button"
-      accessibilityLabel={tvNav ? 'Switch to Steam navigation' : 'Switch to TV navigation'}
+      accessibilityRole="switch"
+      accessibilityState={{ checked: tvNav }}
+      accessibilityLabel="TV navigation"
       accessibilityHint={
         tvNav
-          ? 'Swipe will send arrow keys, for Steam'
-          : 'Swipe will move the pointer, for streaming apps'
+          ? 'On. Swipe moves the pointer, for streaming apps. Tap to send arrow keys instead.'
+          : 'Off. Swipe sends arrow keys, for Steam. Tap to move the pointer instead.'
       }>
-      <Ionicons name={tvNav ? 'tv' : 'logo-steam'} size={15} color={tvNav ? t.blue : t.textDim} />
-      <Text style={[styles.tvToggleText, tvNav && { color: t.blue }]}>
-        {tvNav ? 'TV' : 'STEAM'}
-      </Text>
+      <Ionicons
+        name={tvNav ? 'tv' : 'tv-outline'}
+        size={15}
+        color={tvNav ? t.blue : t.textFaint}
+      />
+      <Text style={[styles.tvToggleText, tvNav && styles.tvToggleTextOn]}>TV</Text>
     </Pressable>
   );
 
@@ -2106,8 +2116,15 @@ const makeStyles = (t: Palette) => StyleSheet.create({
     borderRadius: 999,
     zIndex: 10,
   },
+  tvToggleChipOn: {
+    borderColor: t.blue,
+    backgroundColor: t.inset,
+  },
+  tvToggleTextOn: {
+    color: t.blue,
+  },
   tvToggleText: {
-    color: t.textDim,
+    color: t.textFaint,
     fontSize: 11,
     fontWeight: '700',
     letterSpacing: 0.5,
