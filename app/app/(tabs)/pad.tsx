@@ -18,6 +18,7 @@ import {
   useKeepAwakeTimeoutMin,
 } from '@/lib/keepAwake';
 import { getPref, setPref, usePref } from '@/lib/prefs';
+import { planSteps, type StepState } from '@/lib/swipeSteps';
 import { tvStepDelta } from '@/lib/tvNav';
 import { activateKeepAwakeAsync, deactivateKeepAwake } from 'expo-keep-awake';
 import { useNavigation } from 'expo-router';
@@ -183,7 +184,6 @@ function Stick({ onMove, onRelease }: StickProps) {
 // ---------- Swipe surface (Apple TV remote style) ----------
 
 /** Pixels of travel per emitted d-pad step. */
-const SWIPE_STEP = 56;
 /** Movement under this is still a tap. */
 const TAP_SLOP = 12;
 /** Touches longer than this aren't taps. */
@@ -219,14 +219,16 @@ type SwipeSurfaceProps = {
 };
 
 /**
- * Trackpad-like surface: dragging emits one d-pad step per SWIPE_STEP px along
- * the dominant axis (a long swipe = several steps, like scrolling a menu);
- * a quick tap is A/select.
+ * Trackpad-like surface: dragging emits d-pad steps along the dominant axis.
+ * The FIRST step comes quickly and repeats need much more travel, so a flick
+ * moves one item while a deliberate drag scrolls (see lib/swipeSteps.ts — a
+ * flat threshold sent 3-4 presses per flick and overshot Steam's sidebar).
+ * A quick tap is A/select.
  */
 function SwipeSurface({ onStep, onStepEnd, onSelect }: SwipeSurfaceProps) {
   const cb = useRef({ onStep, onStepEnd, onSelect });
   cb.current = { onStep, onStepEnd, onSelect };
-  const track = useRef({ consumedX: 0, consumedY: 0, moved: false, t0: 0 });
+  const track = useRef({ consumedX: 0, consumedY: 0, stepped: false, moved: false, t0: 0 });
   // Sensitivity read into a ref so the once-created responder sees live changes.
   // Higher sensitivity = smaller step = more steps per swipe.
   const sens = usePref('swipeSensitivity');
@@ -238,29 +240,21 @@ function SwipeSurface({ onStep, onStepEnd, onSelect }: SwipeSurfaceProps) {
       onStartShouldSetPanResponder: () => true,
       onMoveShouldSetPanResponder: () => true,
       onPanResponderGrant: () => {
-        track.current = { consumedX: 0, consumedY: 0, moved: false, t0: Date.now() };
+        track.current = { consumedX: 0, consumedY: 0, stepped: false, moved: false, t0: Date.now() };
       },
       onPanResponderMove: (_evt, g) => {
         const t = track.current;
         if (!t.moved && Math.hypot(g.dx, g.dy) > TAP_SLOP) t.moved = true;
-        const step = SWIPE_STEP / sensRef.current;
-        let stepped = false;
-        // Emit steps until the un-consumed travel is under one step on both axes.
-        for (;;) {
-          const availX = g.dx - t.consumedX;
-          const availY = g.dy - t.consumedY;
-          const ax = Math.abs(availX);
-          const ay = Math.abs(availY);
-          if (ax < step && ay < step) break;
-          stepped = true;
-          if (ax >= ay) {
-            t.consumedX += Math.sign(availX) * step;
-            cb.current.onStep(availX > 0 ? 'dr' : 'dl');
-          } else {
-            t.consumedY += Math.sign(availY) * step;
-            cb.current.onStep(availY > 0 ? 'dd' : 'du');
-          }
-        }
+        // First step is cheap, repeats are expensive — so a flick moves ONE
+        // item and a deliberate drag still scrolls. See lib/swipeSteps.ts for
+        // why (a flat 56px rule sent 3-4 presses per flick and overshot Steam's
+        // sidebar). The planner is pure and unit-tested; this just applies it.
+        const plan = planSteps(g.dx, g.dy, t as StepState, sensRef.current);
+        t.consumedX = plan.next.consumedX;
+        t.consumedY = plan.next.consumedY;
+        t.stepped = plan.next.stepped;
+        const stepped = plan.dirs.length > 0;
+        for (const d of plan.dirs) cb.current.onStep(d);
         // ONE haptic per move event, never one per step. This loop is unbounded
         // — a fast swipe emits a burst — and on iOS each selectionAsync() hops
         // to the main queue with a fresh feedback generator, so a per-step tick
