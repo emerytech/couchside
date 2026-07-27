@@ -15,7 +15,7 @@ import type { BoxCaps } from './api';
  * menus (agent >= 2.9.31). Pad filters it out otherwise rather than offering a
  * mode that would open an empty panel.
  */
-export type PadMode = 'gamepad' | 'swipe' | 'trackpad' | 'remote' | 'menus';
+export type PadMode = 'gamepad' | 'swipe' | 'trackpad' | 'remote' | 'menus' | 'tvnav';
 
 /**
  * A single paired box (Bazzite media center, Steam Deck, ...). The app manages
@@ -200,6 +200,10 @@ function normalizePadMode(v: unknown): PadMode {
   // A box persisted on 'menus' that later loses the capability is bounced back
   // by the Pad screen; accepting it here keeps the round-trip lossless.
   if (v === 'menus') return 'menus';
+  // TV mode: swipe drives the POINTER in tile-sized jumps, for browser-based
+  // streaming apps where arrow keys only scroll. Accepted here so a box saved
+  // on it round-trips losslessly, same as 'menus'.
+  if (v === 'tvnav') return 'tvnav';
   return 'swipe';
 }
 

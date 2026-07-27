@@ -18,6 +18,7 @@ import {
   useKeepAwakeTimeoutMin,
 } from '@/lib/keepAwake';
 import { getPref, setPref, usePref } from '@/lib/prefs';
+import { tvStepDelta } from '@/lib/tvNav';
 import { activateKeepAwakeAsync, deactivateKeepAwake } from 'expo-keep-awake';
 import { useNavigation } from 'expo-router';
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
@@ -827,6 +828,11 @@ const MODES: { key: PadMode; label: string }[] = [
   // "MOUSE", not "TRACK": the surface IS a mouse — drag moves the pointer, tap
   // clicks. "Track" named the mechanism and left people guessing at the effect.
   { key: 'trackpad', label: 'MOUSE' },
+  // Same swipe gesture as SWIPE, but each step nudges the POINTER instead of
+  // sending an arrow key — for browser-based streaming apps, where arrow keys
+  // only scroll the page. Sits next to MOUSE because it IS the mouse, driven
+  // in tile-sized jumps.
+  { key: 'tvnav', label: 'TV' },
   { key: 'remote', label: 'REMOTE' },
   // Sits AFTER remote on purpose: it is one swipe further from the surface you
   // reach for most. Conditional -- see `modes` below; a box without Steam menus
@@ -1423,6 +1429,26 @@ function PadScreen() {
     [client],
   );
 
+  // ---- TV mode: swipe steps drive the POINTER, tap clicks ----
+  // Reuses SwipeSurface verbatim (same discrete stepping, same haptic
+  // rate-limit, same gesture-termination safety) and only changes what a step
+  // SENDS. Nothing is held between steps, so unlike the d-pad path there is no
+  // latched axis to release — onStepEnd is a no-op by design, not by omission.
+  const tvStep = useCallback(
+    (k: DpadKey) => {
+      const { dx, dy } = tvStepDelta(k, getPref('tvStepPx'));
+      client.sendMouseMove(dx, dy);
+    },
+    [client],
+  );
+  const tvClick = useCallback(() => {
+    haptic();
+    // Same press/release shape the trackpad tap uses: the 40ms gap is what
+    // makes the click register — a same-tick down+up was not reliably seen.
+    client.sendMouseButton('l', 1);
+    setTimeout(() => client.sendMouseButton('l', 0), 40);
+  }, [client]);
+
   const selectTap = useCallback(() => {
     haptic();
     if (keyboardMode) {
@@ -1635,6 +1661,14 @@ function PadScreen() {
       ) : mode === 'remote' ? (
         <>
           <RemoteView client={client} settings={settings} />
+          {keyboardBar}
+        </>
+      ) : mode === 'tvnav' ? (
+        <>
+          <View style={styles.tpWrap}>
+            <SwipeSurface onStep={tvStep} onStepEnd={NOOP} onSelect={tvClick} />
+            {padToggleChip}
+          </View>
           {keyboardBar}
         </>
       ) : mode === 'swipe' ? (
