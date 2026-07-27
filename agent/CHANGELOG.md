@@ -18,6 +18,22 @@ the same thing regardless of what actually changed.
 Write for the person holding the phone, not for the commit log. They are
 deciding whether to press "Update now" on a machine across the room.
 
+## 2.9.57
+
+Your streaming apps now show up in the phone's Launch tab.
+
+- **Netflix, Hulu, Disney+, Prime Video, Max — and anything else you have added
+  to Steam yourself.** Until now the Launch tab only listed games you had
+  installed through Steam, which on a SteamOS or Bazzite box leaves out almost
+  everything you actually watch. Streaming services, EmuDeck's launchers, a
+  browser shortcut, Waydroid — all of those are "non-Steam shortcuts", and the
+  phone could not see any of them. On the box this was tested on, that was 5
+  things listed out of 36 that were really there.
+- Tap one and it opens on the TV exactly as it would if you had picked the tile
+  with a controller — same app, same window, so you stay signed in.
+- Nothing to set up. If you have no shortcuts, the Launch tab looks exactly as
+  it did before.
+
 ## 2.9.56
 
 Send files to the box from your phone — and the screen preview works again.
