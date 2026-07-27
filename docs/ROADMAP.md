@@ -159,9 +159,20 @@ Entry fields: `priority` (P0 blocker → P3 nice) · `risk` · `affects` · `dep
   Nothing is held between steps, so there is no latched axis to release.
 - Step size is a preference (Small/Medium/Large = 160/260/380 px) because "one tile" is
   not a fixed distance: it depends on the service's grid density and the screen.
-- **Still unproven:** that uinput pointer motion reaches a browser under gamescope.
-  Keyboard is verified; the mouse test was inconclusive (injected moves produced no pixel
-  change on a static profile picker). Worth a live check with this mode on a real phone.
+- **The open question got answered, and the answer was no.** Tested from the couch
+  2026-07-26: "it just moves the mouse cursor a bit and you can see the cursor." So uinput
+  pointer motion DOES reach the browser under gamescope — the thing this entry listed as
+  unproven is now proven — but the premise the mode was built on does not hold. The claim
+  above ("it FEELS like a d-pad while being a pointer") assumed the jump would land ON
+  something. A d-pad moves a focus ring the app draws; this moves a visible cursor, and a
+  browser tile grid has no focus model for a jump to land on, so nothing highlights and the
+  step size is just a distance. Hiding the cursor would be worse, not better: with no focus
+  ring, the cursor is the only feedback there is. Bigger steps overshoot different things.
+- **Demoted to opt-in 2026-07-26 (`tvNavEnabled`, default OFF)** rather than removed. It is
+  still the right shape on any surface that DOES draw focus, and the machinery is shared
+  with SWIPE so it costs nothing to keep. Labelled UNPOLISHED in Preferences, in the copy,
+  so nobody turns it on expecting a TV remote. Do not promote it back to default-on without
+  a focused-window capability to snap against — that is the missing piece, not step tuning.
 
 ### Packaged media shortcuts, installable from the phone
 - **priority:** P2 · **risk:** medium · **affects:** agent + app · **depends_on:** shortcut

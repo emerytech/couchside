@@ -188,6 +188,19 @@ export type Prefs = {
    *  drawn on. Too small and a row takes many swipes; too large and it skips
    *  tiles. */
   tvStepPx: TvStepPx;
+  /** Show the TV-navigation toggle on the swipe surface.
+   *
+   *  OFF by default, and deliberately so. TV nav drives the POINTER in jumps,
+   *  and the premise was that this would feel like a d-pad. It does not: a
+   *  d-pad moves a focus ring the app draws, whereas a cursor is just a cursor,
+   *  and Netflix's web UI has no focus model for the jumps to land on. Reported
+   *  from the couch as "it just moves the mouse cursor a bit and you can see the
+   *  cursor" — which is an accurate description of what it is.
+   *
+   *  Kept because it is still useful on surfaces that DO have a focus model,
+   *  and because hiding the cursor would be worse (with no focus ring, the
+   *  cursor is the only feedback there is). Opt-in rather than removed. */
+  tvNavEnabled: boolean;
 };
 
 export const DEFAULTS: Prefs = {
@@ -226,6 +239,7 @@ export const DEFAULTS: Prefs = {
   mediaHoldSkip: true,
   mediaHoldSkipSec: 30,
   tvStepPx: TV_STEP_DEFAULT,
+  tvNavEnabled: false,
 };
 
 /** The choices each select-style pref offers (kept next to the store it feeds). */
@@ -338,6 +352,7 @@ function normalize(raw: unknown): Prefs {
       DEFAULTS.mediaHoldSkipSec,
     ) as MediaHoldSkipSec,
     tvStepPx: num(o.tvStepPx, TV_STEPS, DEFAULTS.tvStepPx) as TvStepPx,
+    tvNavEnabled: bool(o.tvNavEnabled, DEFAULTS.tvNavEnabled),
   };
 }
 
