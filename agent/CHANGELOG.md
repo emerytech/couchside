@@ -20,17 +20,26 @@ deciding whether to press "Update now" on a machine across the room.
 
 ## 2.9.63
 
-Boot-session settings now work on more kinds of box.
+A boot-session fix for Bazzite, and early groundwork for other kinds of box.
 
-- **"Boots into" reaches custom Steam machines.** It previously only worked on
-  boxes using SDDM — which covers Bazzite and SteamOS, and nothing else. The box
-  now identifies its own login manager, so machines built on **greetd** (common
-  on Arch/CachyOS gamescope builds and ChimeraOS) can set their boot session
-  too. Boxes running GDM or LightDM are correctly recognised as not-yet-supported
-  rather than silently doing nothing.
-- On greetd, your existing configuration is preserved and a backup is saved next
-  to it; if anything about the file cannot be changed safely, the box declines
-  to touch it rather than risk your boot.
+- **Fixed: "Boots into → Desktop" could leave a Bazzite box at the login
+  screen.** It pointed the automatic login at a desktop session that exists on
+  SteamOS but not on Bazzite, so the box stopped at the password prompt and then
+  came up in Game Mode anyway — and if your Couchside service runs under your own
+  login, it would not start until you signed in, so the phone lost the box. The
+  box now uses a desktop session it has confirmed is installed, and refuses to
+  change the setting at all if it cannot find one. **This is the part of this
+  release that is tested and working.**
+- **Groundwork, ALPHA — boxes that do not use SDDM.** The box can now identify
+  which login manager it runs, and there is early support for setting the boot
+  session on **greetd** (common on Arch/CachyOS gamescope builds and ChimeraOS).
+  **This has not been tested on a real greetd machine yet** — it is written
+  ahead of proper support rather than proven, so treat it as experimental and
+  expect it may not work. GDM and LightDM are recognised but not supported at
+  all yet; on those the setting simply will not appear.
+- If greetd support does run, your existing configuration is preserved and a
+  backup is saved beside it, and anything that cannot be changed safely is left
+  alone rather than risking your boot.
 
 ## 2.9.62
 
