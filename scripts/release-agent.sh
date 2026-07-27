@@ -37,6 +37,26 @@ for f in "${files[@]}"; do
     [ -f "$agent/$f" ] || { echo "error: missing agent/$f" >&2; exit 2; }
 done
 
+# ---- Say what this run will DO before doing any of it. The <tag> argument is
+# the APP release the assets ride on; the AGENT version lives inside the files.
+# That mismatch reads as "releasing 2.9.29" when it means "publishing agent
+# 2.9.58 onto release v2.9.29", and it confused a real release — so the script
+# now states both, shows what the tag currently serves, and asks.
+agent_ver_preview="$(grep -m1 '^VERSION' "$agent/couchsided.py" | cut -d'"' -f2)"
+win_ver_preview="$(grep -m1 '^VERSION' "$agent/win/couchsided-win.py" | cut -d'"' -f2)"
+published="$(curl -fsSL --max-time 10 "https://github.com/$REPO/releases/download/$tag/agent-version.txt" 2>/dev/null | head -1 || true)"
+echo "==> this will publish agent $agent_ver_preview (windows $win_ver_preview) onto release $tag"
+echo "==> release $tag currently serves agent: ${published:-<none/unreadable>}"
+if [ "${published:-}" = "$agent_ver_preview" ]; then
+    echo "==> NOTE: that is the SAME version — this run would republish identical-version assets."
+fi
+# Prompt only when interactive; automation (non-TTY) proceeds, same as before.
+if [ -t 0 ]; then
+    printf '==> continue? [y/N] '
+    read -r _ans
+    case "$_ans" in y|Y|yes|YES) ;; *) echo "aborted (nothing uploaded)"; exit 1 ;; esac
+fi
+
 # Pick an openssl that supports Ed25519 one-shot signing (-rawin).
 ossl="openssl"
 if ! "$ossl" pkeyutl -help 2>&1 | grep -q -- '-rawin'; then
