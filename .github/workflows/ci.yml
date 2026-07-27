@@ -157,6 +157,13 @@ jobs:
       - name: Unit tests (boot session default)
         run: python3 tests/test_session_default.py
 
+      # Flatpak update completion (KI-036). "Done" must be the update PROCESS
+      # finishing, not `remote-ls` count reaching zero — an EOL runtime pins the
+      # count above zero forever, which stranded the card on "Updating…" and
+      # blocked the OS step behind it. Device-confirmed 2026-07-27.
+      - name: Unit tests (flatpak update completion)
+        run: python3 tests/test_flatpak_completion.py
+
       # Stream-host liveness (the `online` field). remoteclients.vdf lists every
       # host ever streamed from and says nothing about which are ON, so picking a
       # game from a sleeping PC makes Steam offer a multi-GB install instead.

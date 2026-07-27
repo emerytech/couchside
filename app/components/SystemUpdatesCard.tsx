@@ -21,6 +21,7 @@ import { Alert, Pressable, StyleSheet, Text, View } from 'react-native';
 
 import { usePoll } from '@/hooks/usePoll';
 import { api, FlatpakStatus, hostKey, OsStatus } from '@/lib/api';
+import { isFlatpakUpdateComplete } from '@/lib/flatpakUpdate';
 import { hapticLight } from '@/lib/haptics';
 import { useSettings } from '@/lib/SettingsContext';
 import { mono, useTheme, useThemedStyles } from '@/lib/theme';
@@ -121,10 +122,22 @@ export function SystemUpdatesCard() {
     setFpStep('running');
     try {
       const r = await api.flatpakUpdate(settings);
-      const done = r.started
-        ? await drain(async () => ((await api.flatpakStatus(settings))?.count ?? -1) === 0)
-        : false;
-      setFpStep(done ? 'done' : 'skipped');
+      if (r.started) {
+        // Wait for the box's update PROCESS to finish, polled via `running`
+        // (agent >= 2.9.59) — NOT `count === 0`. An end-of-life runtime that
+        // `flatpak update` can't apply pins the count above zero forever, so
+        // count===0 was unreachable: the drain ran its full 10 minutes, a
+        // successful update showed as "skipped", and in "update everything" the
+        // OS step was blocked behind that dead wait (KI-036). Old agents don't
+        // send `running`, so fall back to the historical count===0 there.
+        await drain(async () => isFlatpakUpdateComplete(await api.flatpakStatus(settings)));
+        // It launched and we waited it out. A count that remains is an
+        // un-updatable app (e.g. an EOL runtime) — honest to leave shown, not a
+        // failure. Only an update that never STARTED is "skipped".
+        setFpStep('done');
+      } else {
+        setFpStep('skipped');
+      }
     } catch {
       setFpStep('skipped');
     }
