@@ -9,6 +9,7 @@ import {
   View,
 } from 'react-native';
 
+import { BootSessionCard } from '@/components/BootSessionCard';
 import { Gated } from '@/components/Gated';
 import { TabScreen } from '@/components/TabScreen';
 import { useLockOrientation } from '@/hooks/useLockOrientation';
@@ -179,6 +180,9 @@ function ActionsScreen() {
         {configured && !actions.data && actions.error == null && (
           <Text style={styles.dim}>loading…</Text>
         )}
+        {/* Persistent boot preference, directly above the ONE-SHOT session
+            switches below it — that adjacency is the point (see the card). */}
+        {configured && <BootSessionCard />}
         {groups.map((g) => (
           <View key={g.danger} style={styles.group}>
             <Text style={[styles.groupTitle, { color: DANGER_COLOR[g.danger] }]}>
