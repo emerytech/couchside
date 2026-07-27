@@ -828,11 +828,6 @@ const MODES: { key: PadMode; label: string }[] = [
   // "MOUSE", not "TRACK": the surface IS a mouse — drag moves the pointer, tap
   // clicks. "Track" named the mechanism and left people guessing at the effect.
   { key: 'trackpad', label: 'MOUSE' },
-  // Same swipe gesture as SWIPE, but each step nudges the POINTER instead of
-  // sending an arrow key — for browser-based streaming apps, where arrow keys
-  // only scroll the page. Sits next to MOUSE because it IS the mouse, driven
-  // in tile-sized jumps.
-  { key: 'tvnav', label: 'TV' },
   { key: 'remote', label: 'REMOTE' },
   // Sits AFTER remote on purpose: it is one swipe further from the surface you
   // reach for most. Conditional -- see `modes` below; a box without Steam menus
@@ -1231,8 +1226,13 @@ function PadScreen() {
   // collapses the pill + mode tabs + button/keyboard rows so the surface fills
   // the pane. A floating chip restores the chrome. Not meaningful for the
   // menus/remote/gamepad modes, which have no full-pane drag surface.
+  // 'tvnav' is not a tab — it is SWIPE with the steps rerouted to the pointer,
+  // toggled by a chip on the surface. So the segmented control (and the
+  // large-pad rule) treat it AS swipe; only the step handler differs.
+  const tabMode: PadMode = mode === 'tvnav' ? 'swipe' : mode;
+  const tvNav = mode === 'tvnav';
   const largePad =
-    trackpadLarge && (mode === 'trackpad' || mode === 'swipe');
+    trackpadLarge && (mode === 'trackpad' || mode === 'swipe' || tvNav);
   // Auto-raise the phone keyboard when the box raises its own. The counter is
   // what KeyboardBar watches; the ref lets the (memoised) socket callback read
   // the current pref without re-subscribing.
@@ -1273,11 +1273,11 @@ function PadScreen() {
   // (wrapping), matching the segmented control's order.
   const cycleMode = useCallback(
     (dir: 1 | -1) => {
-      const i = modes.findIndex((m) => m.key === mode);
+      const i = modes.findIndex((m) => m.key === tabMode);
       const from = i < 0 ? 0 : i;
       setMode(modes[(from + dir + modes.length) % modes.length].key);
     },
-    [mode, setMode, modes],
+    [tabMode, setMode, modes],
   );
 
   // Bounce off a mode this box can't serve -- the persisted padMode may say
@@ -1543,6 +1543,32 @@ function PadScreen() {
       </Pressable>
     ) : null;
 
+  // Top-LEFT so it never collides with the expand chip on the right. Flips what
+  // a swipe step SENDS — arrow keys (Steam's own UI) vs pointer jumps (browser
+  // streaming apps, where arrows only scroll). Deliberately on the surface
+  // rather than in the mode row: it is a property of the swipe, not a separate
+  // input device, and the row was already full at phone width.
+  const tvToggleChip = (
+    <Pressable
+      onPress={() => {
+        setMode(tvNav ? 'swipe' : 'tvnav');
+      }}
+      style={styles.tvToggleChip}
+      hitSlop={12}
+      accessibilityRole="button"
+      accessibilityLabel={tvNav ? 'Switch to Steam navigation' : 'Switch to TV navigation'}
+      accessibilityHint={
+        tvNav
+          ? 'Swipe will send arrow keys, for Steam'
+          : 'Swipe will move the pointer, for streaming apps'
+      }>
+      <Ionicons name={tvNav ? 'tv' : 'logo-steam'} size={15} color={tvNav ? t.blue : t.textDim} />
+      <Text style={[styles.tvToggleText, tvNav && { color: t.blue }]}>
+        {tvNav ? 'TV' : 'STEAM'}
+      </Text>
+    </Pressable>
+  );
+
   return (
     <View
       style={[
@@ -1585,10 +1611,10 @@ function PadScreen() {
               <Pressable
                 key={m.key}
                 onPress={() => setMode(m.key)}
-                style={[styles.modeSeg, mode === m.key && styles.modeSegActive]}>
+                style={[styles.modeSeg, tabMode === m.key && styles.modeSegActive]}>
                 <Text
                   numberOfLines={1}
-                  style={[styles.modeSegText, mode === m.key && styles.modeSegTextActive]}>
+                  style={[styles.modeSegText, tabMode === m.key && styles.modeSegTextActive]}>
                   {m.label}
                 </Text>
               </Pressable>
@@ -1663,19 +1689,19 @@ function PadScreen() {
           <RemoteView client={client} settings={settings} />
           {keyboardBar}
         </>
-      ) : mode === 'tvnav' ? (
+      ) : mode === 'swipe' || tvNav ? (
         <>
+          {/* Apple-TV-remote style: big swipe/tap surface + three big buttons.
+              The SAME surface serves both: in TV nav a step moves the pointer
+              and a tap clicks; otherwise a step is an arrow key and a tap is
+              select. */}
           <View style={styles.tpWrap}>
-            <SwipeSurface onStep={tvStep} onStepEnd={NOOP} onSelect={tvClick} />
-            {padToggleChip}
-          </View>
-          {keyboardBar}
-        </>
-      ) : mode === 'swipe' ? (
-        <>
-          {/* Apple-TV-remote style: big swipe/tap surface + three big buttons */}
-          <View style={styles.tpWrap}>
-            <SwipeSurface onStep={dpadStep} onStepEnd={dpadRelease} onSelect={selectTap} />
+            <SwipeSurface
+              onStep={tvNav ? tvStep : dpadStep}
+              onStepEnd={tvNav ? NOOP : dpadRelease}
+              onSelect={tvNav ? tvClick : selectTap}
+            />
+            {tvToggleChip}
             {padToggleChip}
           </View>
           {!largePad && (
@@ -2065,6 +2091,28 @@ const makeStyles = (t: Palette) => StyleSheet.create({
     position: 'relative',
   },
   // Corner chip that toggles large-pad mode (expand <-> contract) in one tap.
+  tvToggleChip: {
+    position: 'absolute',
+    top: 8,
+    left: 8,
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 5,
+    paddingHorizontal: 10,
+    height: 34,
+    backgroundColor: t.inset,
+    borderColor: t.cardBorder,
+    borderWidth: 1,
+    borderRadius: 999,
+    zIndex: 10,
+  },
+  tvToggleText: {
+    color: t.textDim,
+    fontSize: 11,
+    fontWeight: '700',
+    letterSpacing: 0.5,
+    fontFamily: mono,
+  },
   tpToggleChip: {
     position: 'absolute',
     top: 8,
