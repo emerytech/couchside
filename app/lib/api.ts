@@ -2,6 +2,7 @@
  * Typed client for the Couchside agent API (contract v1).
  * Base URL: http://<host>:<port>  (default port 8787)
  */
+import { isDeclaredTooLarge, isUsableBodySize } from './responseCap';
 import { Settings } from './settings';
 
 /** The subset of Settings the API client actually needs. */
@@ -1094,9 +1095,14 @@ export async function mediaArtSource(
   try {
     const res = await fetch(url, { headers: { Authorization: `Bearer ${settings.token}` } });
     if (!res.ok) return null;
+    // Refuse an oversized body BEFORE reading it — the only point where refusing
+    // actually avoids buffering the bytes (KI-035).
+    if (isDeclaredTooLarge(res.headers.get('Content-Length'))) return null;
     const type = res.headers.get('Content-Type') || 'image/jpeg';
     const buf = await res.arrayBuffer();
-    if (buf.byteLength === 0) return null;
+    // Backstop for a missing or dishonest Content-Length: stop here rather than
+    // base64-amplifying it ~1.33x and handing a giant string to <Image>.
+    if (!isUsableBodySize(buf.byteLength)) return null;
     return `data:${type};base64,${base64FromArrayBuffer(buf)}`;
   } catch {
     return null;
@@ -1116,9 +1122,12 @@ export async function screenFrameSource(settings: ConnSettings): Promise<string 
   try {
     const res = await fetch(url, { headers: { Authorization: `Bearer ${settings.token}` } });
     if (!res.ok) return null;
+    // Same cap as album art, and it matters more here: the preview POLLS, so an
+    // oversized frame gets a fresh chance at the phone's memory every tick.
+    if (isDeclaredTooLarge(res.headers.get('Content-Length'))) return null;
     const type = res.headers.get('Content-Type') || 'image/jpeg';
     const buf = await res.arrayBuffer();
-    if (buf.byteLength === 0) return null;
+    if (!isUsableBodySize(buf.byteLength)) return null;
     return `data:${type};base64,${base64FromArrayBuffer(buf)}`;
   } catch {
     return null;
