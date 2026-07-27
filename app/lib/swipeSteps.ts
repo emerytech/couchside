@@ -29,6 +29,33 @@ export const SWIPE_FIRST_PX = 56;
  * three.
  */
 export const SWIPE_REPEAT_PX = 160;
+/**
+ * ADDITIONAL travel before each step after the first, VERTICALLY.
+ *
+ * WHY VERTICAL IS DIFFERENT (reported from the couch 2026-07-27): "swiping down
+ * in the Steam menu skips every other button", while horizontal tile navigation
+ * was confirmed working. Same code, same thresholds — so the difference is the
+ * gesture, not the rule. A thumb swiping DOWN travels much further than the same
+ * intent swiping ACROSS: the screen is taller than it is wide and the thumb arcs
+ * away from the joint. With one shared 160px repeat, a one-item-intent vertical
+ * flick sailed past 56+160=216px and emitted two steps, while an equivalent
+ * horizontal flick stayed under it and emitted one.
+ *
+ * MEASURED against the same planner, one continuous flick:
+ *
+ *     flick    live 2.9.29   2.9.30 (shared 160)   this (vertical 300)
+ *     180px         3                1                     1
+ *     220px         3                2                     1
+ *     320px         5                2                     1
+ *     400px         7                3                     2
+ *
+ * 300 is chosen so the second vertical step needs 56+300=356px — past any
+ * flick, still reachable by a deliberate drag down the pad, which is how you
+ * scroll a long library. HORIZONTAL IS DELIBERATELY UNCHANGED at 160: the tile
+ * navigation that value produced was confirmed good on hardware, and this file
+ * must not put that at risk to fix the other axis.
+ */
+export const SWIPE_REPEAT_Y_PX = 300;
 
 export type StepDir = 'du' | 'dd' | 'dl' | 'dr';
 
@@ -64,7 +91,8 @@ export function planSteps(
 ): StepPlan {
   const sens = sensitivity > 0 ? sensitivity : 1;
   const first = SWIPE_FIRST_PX / sens;
-  const repeat = SWIPE_REPEAT_PX / sens;
+  const repeatX = SWIPE_REPEAT_PX / sens;
+  const repeatY = SWIPE_REPEAT_Y_PX / sens;
 
   let { consumedX, consumedY, stepped } = state;
   const dirs: StepDir[] = [];
@@ -76,13 +104,24 @@ export function planSteps(
     const availY = dy - consumedY;
     const ax = Math.abs(availX);
     const ay = Math.abs(availY);
-    const need = stepped ? repeat : first;
-    if (ax < need && ay < need) break;
-    if (ax >= ay) {
-      consumedX += Math.sign(availX) * need;
+    // Per-axis thresholds: a repeat costs more vertically (see
+    // SWIPE_REPEAT_Y_PX). The FIRST step is identical on both axes, so a flick
+    // in any direction still moves one item at the same distance.
+    const needX = stepped ? repeatX : first;
+    const needY = stepped ? repeatY : first;
+    const canX = ax >= needX;
+    const canY = ay >= needY;
+    if (!canX && !canY) break;
+    // Dominant axis still wins — but only among axes that have actually earned
+    // a step. Previously one shared threshold meant the dominant axis always
+    // qualified; with different thresholds an axis can lead in raw travel while
+    // still being short of its own bar, and stepping it then would be the
+    // overshoot this whole module exists to prevent.
+    if (canX && (!canY || ax >= ay)) {
+      consumedX += Math.sign(availX) * needX;
       dirs.push(availX > 0 ? 'dr' : 'dl');
     } else {
-      consumedY += Math.sign(availY) * need;
+      consumedY += Math.sign(availY) * needY;
       dirs.push(availY > 0 ? 'dd' : 'du');
     }
     stepped = true;

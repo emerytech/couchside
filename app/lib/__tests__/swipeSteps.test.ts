@@ -19,6 +19,7 @@ import assert from 'node:assert/strict';
 import {
   SWIPE_FIRST_PX,
   SWIPE_REPEAT_PX,
+  SWIPE_REPEAT_Y_PX,
   planSteps,
   type StepState,
 } from '../swipeSteps.ts';
@@ -113,4 +114,66 @@ test('reversing mid-gesture steps back the other way', () => {
   const dirs = gesture([[220, 0], [0, 0], [-220, 0]]);
   assert.equal(dirs.includes('dr'), true);
   assert.equal(dirs.includes('dl'), true);
+});
+
+// ---------------------------------------------------------- vertical axis ---
+// Reported from the couch 2026-07-27: swiping DOWN in the Steam menu skipped
+// every other button, while horizontal tile navigation was confirmed GOOD. A
+// vertical gesture travels further for the same intent, so one shared repeat
+// threshold double-stepped it. The rule below fixes vertical WITHOUT touching
+// horizontal — and these tests are what make that a provable claim.
+
+test('THE BUG: a vertical menu flick emits exactly one step', () => {
+  // ~320px down, the band that produced two steps under the shared threshold.
+  const dirs = gesture([[0, 60], [0, 150], [0, 250], [0, 320]]);
+  assert.deepEqual(dirs, ['dd'], `vertical flick sent ${dirs.length}: ${dirs}`);
+});
+
+test('CONTROL: horizontal stepping is byte-for-byte unchanged', () => {
+  // These are the exact expectations from before the vertical fix. If a change
+  // to the vertical rule ever perturbs the horizontal axis, this fails.
+  assert.deepEqual(gesture([[40, 0], [90, 0], [150, 0], [200, 0]]), ['dr']);
+  assert.deepEqual(planSteps(SWIPE_FIRST_PX, 0, fresh()).dirs, ['dr']);
+  assert.deepEqual(planSteps(SWIPE_FIRST_PX - 1, 0, fresh()).dirs, []);
+  assert.equal(planSteps(SWIPE_FIRST_PX + SWIPE_REPEAT_PX - 1, 0, fresh()).dirs.length, 1);
+  assert.equal(planSteps(SWIPE_FIRST_PX + SWIPE_REPEAT_PX, 0, fresh()).dirs.length, 2);
+  const long = gesture([[100, 0], [250, 0], [400, 0], [560, 0]]);
+  assert.equal(long.length >= 3, true, `long horizontal drag sent ${long.length}`);
+});
+
+test('the first step costs the same on both axes', () => {
+  // A flick in ANY direction moves one item at the same distance; only the
+  // REPEAT differs. Both directions of each axis.
+  assert.deepEqual(planSteps(0, SWIPE_FIRST_PX, fresh()).dirs, ['dd']);
+  assert.deepEqual(planSteps(0, -SWIPE_FIRST_PX, fresh()).dirs, ['du']);
+  assert.deepEqual(planSteps(0, SWIPE_FIRST_PX - 1, fresh()).dirs, []);
+  assert.deepEqual(planSteps(0, -(SWIPE_FIRST_PX - 1), fresh()).dirs, []);
+});
+
+test('a vertical repeat needs its own, larger threshold', () => {
+  // One pixel short of first+repeatY: still one step.
+  assert.equal(planSteps(0, SWIPE_FIRST_PX + SWIPE_REPEAT_Y_PX - 1, fresh()).dirs.length, 1);
+  // Exactly at it: the second step lands.
+  assert.equal(planSteps(0, SWIPE_FIRST_PX + SWIPE_REPEAT_Y_PX, fresh()).dirs.length, 2);
+  // ...and it is strictly harder than a horizontal repeat, in both directions.
+  assert.equal(SWIPE_REPEAT_Y_PX > SWIPE_REPEAT_PX, true);
+  assert.equal(planSteps(0, -(SWIPE_FIRST_PX + SWIPE_REPEAT_Y_PX), fresh()).dirs.length, 2);
+});
+
+test('a deliberate long drag down still scrolls several', () => {
+  // The escape hatch: scrolling a long library must remain possible.
+  const dirs = gesture([[0, 200], [0, 500], [0, 800], [0, 1100]]);
+  assert.equal(dirs.length >= 3, true, `long vertical drag sent only ${dirs.length}`);
+  assert.equal(new Set(dirs).size, 1, 'a straight drag must not change axis');
+  assert.equal(dirs[0], 'dd');
+});
+
+test('an axis that has not earned its step does not steal one', () => {
+  // Y leads in raw travel but is short of its own bar, while X has cleared its
+  // own. Stepping Y here would be the overshoot this module exists to prevent.
+  let st = fresh();
+  const warm = planSteps(0, SWIPE_FIRST_PX, st); // spend the cheap first step
+  st = warm.next;
+  const p = planSteps(SWIPE_REPEAT_PX + 10, SWIPE_FIRST_PX + SWIPE_REPEAT_Y_PX - 50, st);
+  assert.equal(p.dirs.every((d) => d === 'dr' || d === 'dl'), true, `stepped Y early: ${p.dirs}`);
 });
