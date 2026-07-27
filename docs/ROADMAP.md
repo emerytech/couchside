@@ -40,6 +40,41 @@ Entry fields: `priority` (P0 blocker → P3 nice) · `risk` · `affects` · `dep
 
 ## 📋 Planned
 
+### Couchside Player — a media-player tile, phone-driven (Friendly-style)
+- **priority:** P1 · **risk:** medium · **affects:** new box program + agent + app ·
+  **depends_on:** none
+- **Full spec: `docs/memory/project_media-player.md`.** Read it first — the measured Phase 0
+  results, the allowlist tiers and the screensaver-pattern lessons are all there.
+- **Requested by owner 2026-07-27**, with the shape called explicitly: a custom Linux program
+  registered as a non-Steam app, "to make sure we are not just patching something quickly
+  together". That instinct matches the pattern the repo already ships for
+  `Couchside Screensaver` (`agent/couchsided.py:2028`).
+- **Why it is worth building, in one line:** TV pad mode already proved a website will never
+  draw a focus ring for us. Friendly's real trick is that the *app* is the navigation layer
+  and the browser is only a video surface — the phone sends a deep link and the box opens at
+  the title, so the tile grid is never navigated at all.
+- **Shape:** a `Couchside` tile (python3 stdlib) that spawns Chrome as a child and drives it
+  over CDP — real `<video>` state, real seek, its own hub page with a focus model we control.
+  Not a browser engine: Widevine decides that, and Electron/castlabs has open Netflix
+  breakage on Bazzite while Chrome plays these services on the owner's box today.
+- **Phase 0 spike PASSED on hardware 2026-07-27** (bazzite 10.1.1.60, agent 2.9.60):
+  CDP reachable through the flatpak sandbox (`Chrome/150.0.7871.186`); Widevine
+  **GRANTED**, `HW_SECURE_ALL` **DENIED** so the **720p L3 ceiling is confirmed, not assumed**;
+  a control Widevine stream **played with CDP attached** (`currentTime 1.224/60`);
+  `navigator.webdriver` false and no browser-wall on max/netflix/hulu.
+- **Two traps banked:** `--ozone-platform=wayland` is REQUIRED when spawning from a
+  non-graphical parent (else `Missing X server or $DISPLAY` and Chrome dies before binding the
+  debug port); and Chrome's DevTools HTTP endpoint ignores `Connection: close`, so reading to
+  EOF times out *after* the body arrived and reads as "CDP unreachable".
+- **ALLOWLIST — three tiers, only two ship on by default.** (1) frozen service table, client
+  sends `service_id` only; (2) deep links where the *path* is checked against that service's
+  own regex and the host is never client-supplied; (3) a free URL bar behind a box-side flag
+  that ships OFF. CDP is an RCE primitive — random loopback port, never proxied through a LAN
+  route, and the phone sends op ids that the player maps to CDP calls it constructs itself.
+- **Next:** Phase 1, the tile — and first prove it surfaces under gamescope when Steam launches
+  it, plus whether Steam's reaper can kill a flatpak Chrome child (there is no system Chromium
+  on the box to fall back to).
+
 ### On-box pairing tutorial (auto-plays after install)
 - **priority:** P1 · **risk:** low · **affects:** agent + installer · **depends_on:** none
 - **Full spec: `docs/memory/project_pairing-tutorial.md`.** Read it first — the mechanisms and
