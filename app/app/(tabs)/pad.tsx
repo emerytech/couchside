@@ -931,6 +931,7 @@ function PadScreen() {
   const focusedRef = useRef(false);
   const keepAwakeOn = useKeepAwakeEnabled();
   const keepAwakeTimeout = useKeepAwakeTimeoutMin();
+  const tvNavEnabled = usePref('tvNavEnabled');
 
   // Wake-lock state. wakeHeldRef mirrors what we last told expo-keep-awake so
   // the poll is a no-op in the steady state instead of re-issuing a native call
@@ -1224,7 +1225,10 @@ function PadScreen() {
   // toggled by a chip on the surface. So the segmented control (and the
   // large-pad rule) treat it AS swipe; only the step handler differs.
   const tabMode: PadMode = mode === 'tvnav' ? 'swipe' : mode;
-  const tvNav = mode === 'tvnav';
+  // Gated on the opt-in: a box persisted on 'tvnav' while the pref is off
+  // falls back to plain swipe rather than being stuck in a mode whose
+  // toggle is no longer rendered.
+  const tvNav = mode === 'tvnav' && tvNavEnabled;
   const largePad =
     trackpadLarge && (mode === 'trackpad' || mode === 'swipe' || tvNav);
   // Auto-raise the phone keyboard when the box raises its own. The counter is
@@ -1549,7 +1553,7 @@ function PadScreen() {
   // arrow keys for Steam's own UI, pointer jumps for browser streaming apps),
   // not a separate input device, and the mode row was already full at phone
   // width once the STEAM tab appears.
-  const tvToggleChip = (
+  const tvToggleChip = !tvNavEnabled ? null : (
     <Pressable
       onPress={() => {
         setMode(tvNav ? 'swipe' : 'tvnav');

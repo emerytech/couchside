@@ -777,6 +777,7 @@ function SetupBody() {
   const mediaHoldSkip = usePref('mediaHoldSkip');
   const mediaHoldSkipSec = usePref('mediaHoldSkipSec');
   const tvStepPx = usePref('tvStepPx');
+  const tvNavEnabled = usePref('tvNavEnabled');
   const themeMode = useThemeMode();
   const accent = useAccent();
   const scheme = useResolvedScheme();
@@ -1471,9 +1472,19 @@ function SetupBody() {
                   }}
                 />
               )}
+              <TogglePref
+                label="TV navigation (beta)"
+                sub="UNPOLISHED — off by default. Adds a TV toggle to the swipe pad that moves the pointer in jumps instead of sending arrow keys. It does NOT feel like a TV remote: a d-pad moves a focus ring the app draws, while this moves a visible mouse cursor, and streaming sites have no focus model for it to land on. Useful on surfaces that do; rough everywhere else."
+                value={tvNavEnabled}
+                onValueChange={(v) => {
+                  void setPref('tvNavEnabled', v);
+                  hapticSelection();
+                }}
+              />
+              {tvNavEnabled && (
               <SegPref
                 label="TV mode step size"
-                sub="How far one swipe step moves the pointer in TV mode. TV mode drives the cursor in tile-sized jumps for streaming apps, where arrow keys only scroll the page. Bigger steps cross a row faster; smaller ones land on dense grids more reliably."
+                sub="How far one swipe step moves the pointer in TV mode. Bigger steps cross a row faster; smaller ones land on dense grids more reliably. No size makes it snap to tiles — nothing is reading the layout, so this is a distance, not a target."
                 options={TV_STEPS.map((n) => ({
                   value: n,
                   label: n === 160 ? 'Small' : n === 260 ? 'Medium' : 'Large',
@@ -1484,6 +1495,7 @@ function SetupBody() {
                   hapticSelection();
                 }}
               />
+              )}
               <SegPref
                 label="Open on"
                 sub="The tab the app starts on. Pairing wins on first run — with no box paired you still land on Setup."
