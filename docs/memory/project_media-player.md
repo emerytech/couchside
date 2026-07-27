@@ -58,10 +58,14 @@ was then read directly. Recording the diff, because two items changed the plan.
 - **Bundled VPN.** Not our business, and it would drag a network-level component into a
   LAN-only product whose whole security story is "no cloud, no accounts".
 
-**OPEN DECISION, not a freebie: the YouTube ad blocker.** Friendly ships one ("Luna"). It is
-technically easy in a browser we drive over CDP. It is also squarely against YouTube's terms,
-and it changes how this app can be described in two app stores. **Do not implement it silently
-as part of another phase** — it needs an explicit yes from the owner, recorded in DECISIONS.
+**DECIDED NO — the ad blocker (owner, 2026-07-27).** Friendly ships one ("Luna"). Couchside
+will **not**, in any form: not for YouTube, not as an optional toggle, not as a user-supplied
+filter list. It is against YouTube's terms and it would change how a paid app can be described
+in two app stores, in exchange for something users can already get with an extension in their
+own browser. Recorded in `DECISIONS.md`.
+
+This is written as a refusal precisely because CDP makes it trivial — **injection capability is
+not a licence to inject.** Anyone extending the player should read that line twice.
 
 **Business datapoint:** Friendly is free with optional tips ($1.99 / $4.99 / $9.99). Worth
 knowing when pricing this against a paid unlock.

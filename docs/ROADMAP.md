@@ -100,9 +100,10 @@ Entry fields: `priority` (P0 blocker → P3 nice) · `risk` · `affects` · `dep
   (brightness/contrast/saturation) join Phase 4, being one injected CSS filter once CDP exists.
   **Explicitly NOT copied:** Picture-in-Picture and window transparency (they exist because
   Friendly's premise is multitasking on a Mac you are sitting at — irrelevant ten feet from a
-  TV) and the bundled VPN. **Open decision, needs an explicit yes:** the YouTube ad blocker —
-  easy over CDP, against YouTube's terms, and it changes how the app can be described in two
-  stores. Not to be slipped in as part of another phase.
+  TV) and the bundled VPN. **The ad blocker is DECIDED — NO** (owner, 2026-07-27, see
+  `DECISIONS.md`): not for YouTube, not as a toggle, not as a user-supplied list. Written down
+  as a refusal precisely because CDP makes it trivial — injection capability is not a licence
+  to inject.
 - **Next:** Phase 1, the tile itself.
 
 ### On-box pairing tutorial (auto-plays after install)
