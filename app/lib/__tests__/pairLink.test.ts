@@ -252,7 +252,16 @@ test('a bad ip= is DROPPED, not fatal — it is only a fallback route', () => {
 });
 
 test('the OTHER QR on the box screen gets its own reason, not a generic one', () => {
+  // BOTH forms: agents before 2.9.61 encode the marketing-page anchor, newer
+  // ones the dedicated /get/ page, and a phone meets both while un-updated
+  // boxes exist. The helpful answer must not depend on which one it sees.
+  assert.equal(why(scan('https://couchside.tv/get/')), 'store-code');
   assert.equal(why(scan('https://couchside.tv/#get')), 'store-code');
+  // CONTROL: a near-miss is NOT silently folded into the friendly reason —
+  // these are exact strings, not a prefix match on the domain.
+  assert.equal(why(scan('https://couchside.tv/get')), 'not-pair-link');
+  assert.equal(why(scan('https://couchside.tv/getx/')), 'not-pair-link');
+  assert.equal(why(scan('https://couchside.tv/')), 'not-pair-link');
 });
 
 test('BOTH STATES: real-world non-Couchside QRs are refused without throwing', () => {
