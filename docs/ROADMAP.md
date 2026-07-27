@@ -144,16 +144,6 @@ Entry fields: `priority` (P0 blocker → P3 nice) · `risk` · `affects` · `dep
   KDE's purpose-built Aura browser ships `navMode: "vMouse"`. This mode does that, but in
   tile-sized jumps with a haptic per step, so it FEELS like a d-pad while being a pointer.
   It therefore works on every service, including the ones with no TV UI at all.
-- **Not a tab.** Revised 2026-07-26 on owner feedback: it is a chip in the surface's top-left
-  corner that flips what a swipe step SENDS (arrow keys for Steam vs pointer jumps for
-  browser apps). The mode row was already full at phone width, and TV is a property of the
-  swipe rather than a separate input device — the segmented control still reads SWIPE.
-- **Auto-switching was investigated and is NOT possible today.** `/api/gaming` reports only
-  session and output — no running app for a Steam-launched shortcut (measured with Netflix
-  up). `/api/media` shows ZERO MPRIS players while Netflix is open but idle; a player only
-  appears once something plays, which is exactly when tile navigation is no longer needed.
-  There is no focused-window endpoint. Auto-switch would need a NEW agent capability
-  reporting the focused window under gamescope.
 - **App-only.** Reuses `SwipeSurface` verbatim — same discrete stepping, same haptic
   rate-limit, same gesture-termination safety — and only changes what a step SENDS.
   Nothing is held between steps, so there is no latched axis to release.
