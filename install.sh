@@ -809,6 +809,13 @@ JWRAP
 # couchside: allow the Couchside agent (running as $USER_NAME, no TTY) to run
 # exactly the privileged commands it needs, without a password.
 $USER_NAME ALL=(root) NOPASSWD: /usr/bin/systemctl restart sddm
+# Boot session default (game / desktop / last). The PATH IS FIXED IN THE RULE,
+# so this grants writing exactly one file and nothing else -- not tee in
+# general. The agent composes the whole body from its own frozen table; the
+# phone only ever selects a mode from a closed set. Our own drop-in sorts after
+# the distro's steamos.conf, so removing this one file restores the box's
+# original boot behaviour exactly, with nothing of theirs edited.
+$USER_NAME ALL=(root) NOPASSWD: /usr/bin/tee /etc/sddm.conf.d/zz-couchside-session.conf
 $USER_NAME ALL=(root) NOPASSWD: /usr/bin/systemctl reboot
 $USER_NAME ALL=(root) NOPASSWD: /usr/bin/systemctl poweroff
 $USER_NAME ALL=(root) NOPASSWD: /usr/bin/systemctl suspend

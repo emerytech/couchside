@@ -238,6 +238,10 @@ function normalizeCaps(raw: unknown): BoxCaps | undefined {
   // (and to capsEqual) or the "Stream from PC" cap never persists. Optional:
   // absent stays undefined = unknown, so the app probes.
   const steamlink = bool('steamlink');
+  // session_default arrived with agent 2.9.58 (choose the boot session).
+  // Optional like the rest: absent stays undefined = unknown, so the app
+  // probes rather than assuming a box cannot do it.
+  const session_default = bool('session_default');
   // gaming arrived with agent 2.9.25 — same optional-cap drop trap; add it here
   // AND to capsEqual or the cap never persists and the card re-probes on launch.
   const gaming = bool('gaming');
@@ -262,7 +266,7 @@ function normalizeCaps(raw: unknown): BoxCaps | undefined {
   return {
     gamepad, steam, media, tv, screen, power_schedule,
     screensaver, couchmode, desktop, steamlink, gaming, streamhost, steammenus,
-    boxbattery, launchers, file_upload,
+    boxbattery, launchers, file_upload, session_default,
   };
 }
 
