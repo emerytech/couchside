@@ -88,8 +88,15 @@ client for the WebOS TV backend at `agent/couchsided.py:5930`.
   from a website.
 - One branded tile instead of six half-broken ones, which largely dissolves the adopt-vs-install
   collision problem in the "Packaged media shortcuts" entry.
-- Steam's Close Game works, and the app's existing `NowPlayingCard` + `stop_running_game`
-  (`agent/couchsided.py:10460`) already handle a running Steam app. Free.
+- Steam's own reaper cleans up correctly — **measured**, see Phase 0b/Q7.
+
+**CORRECTION (Phase 0b, 2026-07-27):** an earlier draft of this spec claimed the app's existing
+`NowPlayingCard` + `stop_running_game` (`agent/couchsided.py:10460`) would handle the tile "for
+free". **That is wrong.** With the tile running under gamescope, `/api/status` carried no
+running-game field — consistent with the ROADMAP's prior measurement that `/api/gaming` reports
+"no running app for a Steam-launched shortcut". A non-Steam shortcut is invisible to the
+agent's running-game detection, so the player must report its own state and ship its own stop
+control. Budget for that in Phase 2 rather than assuming it is free.
 
 ---
 
@@ -136,6 +143,55 @@ would have been ours and not a service's anti-automation.
   plausible — **not yet observed**.
 
 ---
+
+## 4b. Phase 0b — Game Mode, the two questions desktop mode could not answer
+
+Same box, flipped to Game Mode with the product's own path (`POST /api/couch-mode`,
+`{"output":"DP-1"}`) and returned afterwards with `POST /api/desktop-mode`.
+
+| Question | Result |
+|---|---|
+| **Q6** Does a wrapper tile — Steam launches it, it spawns Chrome as a child — surface under gamescope? | **YES, proven by screen capture.** Widevine content playing fullscreen `1920x1080`, `document.visibilityState: visible`, our own page's banner drawn over it, read live over CDP at `t=52.2/60` |
+| **Q7** Does Steam's process-group kill reap a **flatpak** Chrome child, or orphan it on the TV? | **Reaps it cleanly.** After `SIGTERM` to the reaper's pgid: 0 `/app/bin/chrome` processes, 0 `flatpak ps` instances, 0 wrapper, CDP port closed |
+
+Mechanics confirmed on the way through: `steamos-add-to-steam` registered the tile and the
+appid appeared in `shortcuts.vdf` within seconds; Steam launched it through
+`reaper SteamLaunch AppId=<appid> --`; CDP stayed reachable on loopback from outside the tile.
+
+### THE BACKEND TRAP — the single most important Phase 0b finding
+
+**The ozone backend cannot be hardcoded. It is the exact inverse between the two sessions.**
+
+| Session | What Steam/the parent provides | Correct flag |
+|---|---|---|
+| Game Mode (gamescope) | `DISPLAY=:1`, **`WAYLAND_DISPLAY` unset** | `--ozone-platform=x11` |
+| Plasma desktop, spawned from a non-graphical parent (systemd user service, ssh) | `WAYLAND_DISPLAY=wayland-0`, no usable xauth cookie | `--ozone-platform=wayland` |
+
+Get it wrong in either direction and Chrome exits **rc=1 before binding the debug port** —
+`Failed to connect to Wayland display: No such file or directory` in Game Mode, or
+`Missing X server or $DISPLAY` on the desktop. Both were hit for real. The player must select
+per launch:
+
+```sh
+if [ -n "${WAYLAND_DISPLAY:-}" ]; then OZONE="--ozone-platform=wayland"
+elif [ -n "${DISPLAY:-}" ];         then OZONE="--ozone-platform=x11"
+else                                     OZONE=""; fi
+```
+
+### A landmine Phase 1 must not step on
+
+`_ss_appid()` (`agent/couchsided.py:2145`) anchors its `shortcuts.vdf` lookup on the literal
+`b"couchside/Couchside"`. A player tile installed at `~/.local/opt/couchside/Couchside Player`
+**would also match that prefix**, and whichever entry appeared first in the file would win —
+silently breaking the shipped screensaver's launch. The Phase 0b tile was deliberately put at
+`~/.local/opt/couchside-player/` to avoid this. Phase 1 must either keep a distinct directory
+or tighten the screensaver's anchor first.
+
+### Side effect to clean up
+
+The probe registered a real non-Steam shortcut named **"Couchside Player"** (appid
+`4251224299`) in the maintainer's Steam library. Removal is a Steam-UI action — consistent with
+the known "file-level `shortcuts.vdf` edits do not stick" constraint.
 
 ## 5. Security design
 
@@ -206,16 +262,31 @@ normalizeCaps + capsEqual), with a test asserting all five.
 
 ---
 
+## 6b. Prior art — what exists, and what is actually reusable
+
+Surveyed 2026-07-27. Licence matters here: the agent/installer/protocol are MIT, so MIT and
+MIT-or-Apache are ingestible; GPL is not.
+
+| Project | Licence | Verdict |
+|---|---|---|
+| [StreamingServiceLauncher](https://github.com/aarron-lee/StreamingServiceLauncher) | **MIT** | The closest existing thing, and the one already installed on the maintainer's box. Electron + castlabs, its own cookie jar, `services.json` table, and a `steamos-install-streaming-app` helper. **Take the ideas, not the engine:** the services table and the Steam-install helper are the reusable parts; its separate profile is exactly the "logs me in every time" bug we are trying to avoid |
+| [castlabs/electron-releases](https://github.com/castlabs/electron-releases) | **MIT** repo, but production Widevine needs their **EVS** signing service | The only legitimate Widevine-in-Electron path. Repo licence is not the constraint — VMP signing is. Reinforces "don't ship an Electron browser" |
+| [ElectronPlayer](https://github.com/oscartbeaumont/ElectronPlayer) | MIT, **ARCHIVED Oct 2024** | Independent confirmation of the thesis. Netflix/Hulu/Prime in Electron with Widevine; the maintainer ended up pinning a June-2019 Electron per-OS and warned it would stop working. Exactly the treadmill we avoid by driving the user's own Chrome |
+| [Igalia Cog](https://github.com/Igalia/cog) | **MIT** | WPE WebKit app container, the set-top-box shape done properly, with a `cogctl` D-Bus control surface. **No documented Widevine/EME support**, which is disqualifying — but it is the reference for what a clean control surface looks like |
+| [KDE Aura browser](https://invent.kde.org/plasma/aura-browser) / Plasma Bigscreen | **GPL-3.0** | Cannot ingest. Still the best evidence for the design: a purpose-built TV browser that also concluded a cursor beats a focus ring on the open web |
+| [ValvePython/vdf](https://github.com/ValvePython/vdf) | **MIT** | Binary `shortcuts.vdf` read **and write**. Cannot be a dependency (agent is stdlib-only) but it is the reference implementation for the format the agent already parses by hand |
+| [BoilR](https://github.com/PhilipK/BoilR) | **MIT or Apache-2.0** | Bulk non-Steam shortcut import + SteamGridDB art. The prior art for the cover-art half of Phase 1 |
+
+**Nothing found does what we are building.** Every project above puts the catalog *on the box*
+and drives it with a remote. None makes the phone the navigation layer, and none exposes a
+control surface a second device can drive. The reusable material is: SSL's services table
+shape, BoilR/vdf's grasp of `shortcuts.vdf`, and Cog's control-surface design.
+
 ## 7. NOT verified — the live list
 
-1. **Does the tile surface under gamescope?** The screensaver precedent says Steam-launched
-   things do, and the existing Chrome `--app=` tiles work in Game Mode. But the player is a
-   *wrapper* that spawns Chrome as a child, and that exact arrangement is untested. The box
-   was in Plasma desktop for Phase 0; Game Mode was never entered.
-2. **The flatpak reaper problem.** `flatpak run` reparents through the portal into a separate
-   cgroup, so Steam's process-group kill may leave an orphan Chrome on the TV after Close
-   Game. There is no system Chromium on the box to fall back to, so the player must track and
-   kill the flatpak instance explicitly. Untested.
+1. ~~Does the tile surface under gamescope?~~ **ANSWERED Phase 0b: yes, screen-capture proven.**
+2. ~~The flatpak reaper problem.~~ **ANSWERED Phase 0b: Steam's process-group kill reaps the
+   flatpak child cleanly — 0 orphans.**
 3. **Profile choice.** A dedicated `--user-data-dir` avoids colliding with the user's desktop
    Chrome — a collision makes `--app=` open a tab in the existing instance and silently ignore
    our debugging port — but costs one-time logins. With phone keyboard + clipboard paste

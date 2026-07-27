@@ -71,9 +71,29 @@ Entry fields: `priority` (P0 blocker → P3 nice) · `risk` · `affects` · `dep
   own regex and the host is never client-supplied; (3) a free URL bar behind a box-side flag
   that ships OFF. CDP is an RCE primitive — random loopback port, never proxied through a LAN
   route, and the phone sends op ids that the player maps to CDP calls it constructs itself.
-- **Next:** Phase 1, the tile — and first prove it surfaces under gamescope when Steam launches
-  it, plus whether Steam's reaper can kill a flatpak Chrome child (there is no system Chromium
-  on the box to fall back to).
+- **Phase 0b ALSO PASSED, in Game Mode, same day.** A wrapper tile that Steam launches and
+  which spawns Chrome as a child **does** surface under gamescope — **screen-capture proven**,
+  Widevine playing fullscreen 1920x1080 with our own page's banner over it. And Steam's
+  process-group kill **reaps the flatpak Chrome cleanly**: 0 chrome processes, 0 flatpak
+  instances, 0 wrapper, CDP port closed.
+- **THE BACKEND TRAP (the finding that would have sunk Phase 1):** the Chrome ozone backend is
+  the exact inverse between sessions and cannot be hardcoded. Game Mode gives `DISPLAY=:1` with
+  **no** `WAYLAND_DISPLAY` (needs `--ozone-platform=x11`); the desktop, spawned from a
+  non-graphical parent, gives Wayland with no xauth (needs `--ozone-platform=wayland`). Wrong
+  either way and Chrome exits rc=1 before binding the debug port. Both were hit for real.
+- **CORRECTED:** the tile is **NOT** picked up by the agent's running-game detection, so
+  `NowPlayingCard` / `stop_running_game` do **not** come for free — matches the ROADMAP's own
+  prior "no running app for a Steam-launched shortcut" measurement. The player reports its own
+  state and ships its own stop. Budget it in Phase 2.
+- **LANDMINE:** `_ss_appid()` anchors on the literal `couchside/Couchside`, which a tile at
+  `~/.local/opt/couchside/Couchside Player` would also match — silently breaking the
+  screensaver's launch. Keep a distinct directory or tighten that anchor first.
+- **Prior art surveyed, nothing does this:** StreamingServiceLauncher (MIT), ElectronPlayer
+  (MIT but archived — its maintainer hit exactly the Electron+Widevine treadmill we avoid),
+  Igalia Cog (MIT, no Widevine), Aura browser (GPL, cannot ingest), ValvePython/vdf + BoilR
+  (MIT, the `shortcuts.vdf` and cover-art references). All of them put the catalog on the box;
+  none makes the phone the navigation layer. Details in the spec's §6b.
+- **Next:** Phase 1, the tile itself.
 
 ### On-box pairing tutorial (auto-plays after install)
 - **priority:** P1 · **risk:** low · **affects:** agent + installer · **depends_on:** none
