@@ -45,7 +45,7 @@ except ImportError:  # pragma: no cover
     fcntl = None
 
 APP_NAME = "couchside-agent"
-VERSION = "2.9.58"
+VERSION = "2.9.59"
 UID = os.getuid()
 XDG_RUNTIME_DIR = "/run/user/%d" % UID
 
@@ -1730,6 +1730,20 @@ FLATPAK_UPDATE_LOG = "/tmp/couchside-flatpak-update.log"
 # run this one fixed update, never arbitrary flatpak subcommands (install / run /
 # override / remote-add). Same airtight shape as the journal wrapper.
 FLATPAK_UPDATE_WRAPPER = "/etc/couchside/couchside-flatpak-update"
+# Handle to the detached flatpak-update child, so a later status GET can report
+# whether the update is still RUNNING — the honest completion signal.
+#
+# WHY (KI-036, device-confirmed 2026-07-27): the app used to infer "done" from
+# `flatpak remote-ls --updates` reaching zero. That list counts runtimes
+# `flatpak update` will NOT apply — an end-of-life runtime (measured:
+# org.freedesktop.Platform 23.08) shows as "update available" while the update
+# says "Nothing to do" and cannot cross the EOL major boundary. So the count is
+# pinned above zero, "done" is UNREACHABLE, and the app spun ten minutes then —
+# on an "update everything" press — blocked the OS update behind that dead wait.
+# Whether OUR child is still alive IS reachable and correct. We hold the Popen
+# object (the child stays our direct child even with start_new_session), so
+# poll() is authoritative and reaps the zombie on completion.
+_FLATPAK_PROC = None
 # The no-root fallback when the wrapper grant is absent: update only the USER's
 # own --user installs, which never need root. On a box whose flatpaks are all
 # system-installed this updates nothing (honest — the app then prompts to enable
@@ -1834,9 +1848,33 @@ def flatpak_update():
     if rc is not None and rc != 0:
         return {"started": False, "elevated": elevated, "exit_code": rc,
                 "log": FLATPAK_UPDATE_LOG, "lines": read_flatpak_log()}
+    # Keep the handle so flatpak_running() can report completion. Stored only on
+    # a clean start; a same-tick failure above returns without touching it.
+    global _FLATPAK_PROC
+    _FLATPAK_PROC = proc
     print("[update] flatpak update started (elevated=%s, log: %s)"
           % (elevated, FLATPAK_UPDATE_LOG), flush=True)
     return {"started": True, "elevated": elevated, "log": FLATPAK_UPDATE_LOG}
+
+
+def flatpak_running():
+    """True while the flatpak update this agent launched is still executing.
+
+    This is the completion signal the app polls — NOT `count == 0`, which an
+    un-updatable EOL runtime can pin above zero forever (KI-036). poll() on the
+    Popen we hold is authoritative and reaps the child on exit.
+
+    Degrade-closed toward DONE: if we never launched one (None), or the agent
+    restarted and lost the handle, or poll() raises, we report False. A false
+    'still running' would strand the card on "Updating…"; a false 'done' at
+    worst shows a stale pending count the next status refresh corrects."""
+    proc = _FLATPAK_PROC
+    if proc is None:
+        return False
+    try:
+        return proc.poll() is None
+    except Exception:
+        return False
 
 
 # ---------------------------------------------------------------------------
@@ -12587,8 +12625,14 @@ class Handler(BaseHTTPRequestHandler):
                     # updated (owner opted in) or only --user ones — so it can
                     # prompt "enable system updates on your box" when False.
                     elevated = True if self.mock else flatpak_can_elevate()
+                    # running: is our update child still executing? The app polls
+                    # THIS for completion, not count==0 (KI-036: an EOL runtime
+                    # pins count above zero, so count==0 is unreachable). Mock is
+                    # never mid-update, so False.
+                    running = False if self.mock else flatpak_running()
                     self._send(200, {"available": True, "count": len(pending),
-                                     "updates": pending, "elevated": elevated},
+                                     "updates": pending, "elevated": elevated,
+                                     "running": running},
                                started)
             elif path == "/api/update/flatpak/log":
                 # Progress transcript of a running/last flatpak update. CONSTANT

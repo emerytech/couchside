@@ -521,6 +521,14 @@ export type FlatpakStatus = {
    * and the card should point at the opt-in instead of pretending.
    */
   elevated: boolean;
+  /**
+   * Whether the box's flatpak-update process is still running (agent >= 2.9.59).
+   * This is the completion signal to poll — NOT `count === 0`. An end-of-life
+   * runtime that `flatpak update` cannot apply keeps `count` above zero forever
+   * (KI-036), so waiting for zero hangs; waiting for `running` to go false does
+   * not. Absent on older agents — callers must fall back to `count === 0` then.
+   */
+  running?: boolean;
 };
 
 export type UpdateCheck = {
