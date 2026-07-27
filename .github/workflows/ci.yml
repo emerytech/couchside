@@ -329,6 +329,21 @@ jobs:
       - name: Unit tests (screen capture)
         run: python3 tests/test_screen_capture.py
 
+      # Couchside Player tile. Three things, each of which has a measured bug
+      # behind it: the service allowlist (the conf the tile reads is written
+      # from a client request, so an id that is not a case arm must launch
+      # NOTHING); the display backend, which is the INVERSE between Game Mode
+      # (DISPLAY=:1, no WAYLAND_DISPLAY) and a desktop spawned from a
+      # non-graphical parent, and is asserted in both directions because one
+      # direction is not a measurement; and the _ss_appid anchor collision --
+      # the screensaver finds its own shortcut by searching shortcuts.vdf for
+      # "couchside/Couchside", which a player installed one directory over
+      # would also match, silently breaking the screensaver on any box with
+      # both. That one carries a positive control so "found nothing" cannot
+      # pass for "parser works".
+      - name: Unit tests (player tile)
+        run: python3 tests/test_player_tile.py
+
       # Injected actions: buttons the agent offers only when the box can really
       # perform them ("a dead button costs more trust than a missing one"), so
       # every gate is asserted in BOTH directions. Covers the Bluetooth pairing

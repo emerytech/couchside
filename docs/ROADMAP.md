@@ -104,7 +104,16 @@ Entry fields: `priority` (P0 blocker → P3 nice) · `risk` · `affects` · `dep
   `DECISIONS.md`): not for YouTube, not as a toggle, not as a user-supplied list. Written down
   as a refusal precisely because CDP makes it trivial — injection capability is not a licence
   to inject.
-- **Next:** Phase 1, the tile itself.
+- **Phase 1 SHIPPED on the branch 2026-07-27** — `agent/couchside-player.sh`, branded grid art,
+  and `tests/test_player_tile.py` (20 checks in CI). **Live-verified in Game Mode:** registered
+  via `steamos-add-to-steam` (appid 3442312991), launched by `steam://rungameid`, auto-picked
+  `--ozone-platform=x11` from the session, Hulu fullscreen and chromeless (screen-captured),
+  CDP live on loopback; `SIGTERM` to the pidfile pid left 0 chrome / 0 flatpak / 0 tile and
+  cleaned both runtime files. Deep-link patterns ship **empty except `max`** — the only shape
+  actually observed — so an unverified guess can never become a live link.
+- **Next:** Phase 2, agent integration — `player` cap at all five edit sites, routes to open by
+  `service_id` / close / report state, and the player's own state reporting (which does NOT
+  come free; see the correction above).
 
 ### On-box pairing tutorial (auto-plays after install)
 - **priority:** P1 · **risk:** low · **affects:** agent + installer · **depends_on:** none

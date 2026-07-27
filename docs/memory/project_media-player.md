@@ -293,9 +293,16 @@ normalizeCaps + capsEqual), with a test asserting all five.
 ## 6. Phases
 
 - **Phase 0 — spike. DONE 2026-07-27.** Results in §4. Design is viable.
-- **Phase 1 — the tile.** `Couchside` program: launches Chrome, pidfile, conf,
-  `steamos-add-to-steam` registration, grid art, legacy-path resolver. Cloned from the
-  screensaver routine. Proves it surfaces under gamescope when Steam launches it.
+- **Phase 1 — the tile. DONE 2026-07-27.** `agent/couchside-player.sh` + branded grid art +
+  `tests/test_player_tile.py` (20 checks, wired into CI, two mutation-checked).
+  **Verified live in Game Mode on bazzite 10.1.1.60:** `steamos-add-to-steam` registered it
+  (appid `3442312991`), 3 grid-art files installed, `steam://rungameid` launched it, the tile
+  auto-selected `--ozone-platform=x11` from `DISPLAY=:1` with `WAYLAND_DISPLAY` unset, Hulu
+  came up **fullscreen and chromeless** (screen-captured), CDP listened on `127.0.0.1:38977`
+  and reported the page. `SIGTERM` to the pidfile pid then left **0 chrome, 0 flatpak
+  instances, 0 tile processes**, with both runtime files removed.
+  Browser resolution on the real box returned `flatpak com.google.Chrome`, and
+  `--print-url evilcorp` exited 1.
 - **Phase 2 — agent integration.** `player` cap + routes (open by `service_id`, close, state)
   + tests: happy path, auth failure, non-allowlisted `service_id` refused and nothing runs.
 - **Phase 3 — app.** Watch tab (cap-gated), channel grid, deep links, share-sheet intake on
