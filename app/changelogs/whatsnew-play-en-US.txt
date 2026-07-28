@@ -1,7 +1,6 @@
-New in 2.9.30
+New in 2.9.31
 
-• Scan to pair — point your camera at the code on your box's screen, right in the app (Setup → Scan a pairing code).
-• Choose how your box starts up — a new Boots into card on Actions: Game Mode, Desktop, or last used.
-• Launch Netflix, Hulu and more — non-Steam shortcuts now show up in Launch.
-• One flick, one step — the remote no longer sails past short menus.
-• TV mode is off by default now, and labelled the rough beta it is.
+• Setting up your first box is guided now — Setup walks you through it, finds your box on its own, and puts a PIN on your TV. No addresses, no tokens.
+• New Display / Audio panel on Console: live resolution and refresh rate, whether HDR and VRR are really on, and which speaker is playing.
+• Box software updates no longer hang on "Updating…".
+• Optional: the Couchside Player puts Netflix and more on the TV. Early.

@@ -1,7 +1,7 @@
-New in 2.9.30
+New in 2.9.31
 
-• Scan to pair — point your phone's camera at the code on your box's screen, right inside the app. Setup → Scan a pairing code. No browser detour, no typing.
-• Choose how your box starts up — a new Boots into card on the Actions tab: Game Mode, Desktop, or whichever you used last. The switches below it only change what's on screen now; this is the setting that decides power-on.
-• Launch Netflix, Hulu and the rest — non-Steam shortcuts on your box now appear in Launch, so the phone can start them.
-• One flick, one step — swiping the remote past a short menu no longer sails through it.
-• TV mode is off by default now, and labelled the rough beta it is. Turn it on in Settings if you want it.
+• Setting up your first box is now guided — the Setup tab walks you through installing the service, then finds your box on its own and puts a PIN on your TV. No typing addresses, no hunting for a token.
+• See what your box is sending the TV — a new Display / Audio panel on Console shows live resolution and refresh rate, whether HDR and variable refresh are really on, your monitor's name, and which speaker is playing.
+• Updating box software no longer hangs on "Updating…" when an app can't be updated, and an OS update queued behind it now runs.
+• iPhone: the Paste button no longer hides behind the keyboard.
+• Optional new add-on: the Couchside Player puts Netflix, YouTube, Max and more on the TV, driven from your phone. It's early — install it from your box if you want to try it.
