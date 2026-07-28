@@ -18,6 +18,28 @@ the same thing regardless of what actually changed.
 Write for the person holding the phone, not for the commit log. They are
 deciding whether to press "Update now" on a machine across the room.
 
+## 2.9.64
+
+The Couchside Player arrives — an optional, experimental add-on.
+
+- **Streaming services, driven from your phone.** Install the Couchside Player
+  add-on and a new tile appears in Game Mode that opens Netflix, YouTube, Max,
+  Hulu, Disney+ and the rest on the TV. Pick a service from the phone, send it a
+  link, or search a title without typing on the TV — the box opens that
+  service's own results. Play, pause, skip and mute all work from the phone
+  while it plays.
+- **A home screen on the TV.** The tile has its own picker with a proper
+  highlight you can move with the swipe pad, for when the phone is not the thing
+  in your hand.
+- **It is EARLY.** Expect rough edges. Streaming sites still need the trackpad
+  rather than the d-pad — they do not let a remote move a highlight, which is a
+  limitation of those sites rather than something we can change from outside.
+  Switching services can also leave the TV showing the previous screen; stop and
+  pick again if that happens.
+- **Entirely opt-in.** Re-run the installer and say yes, or pass `--player`.
+  A box that never asks for it is unchanged, and the app hides the whole feature
+  on any box without it.
+
 ## 2.9.63
 
 A boot-session fix for Bazzite, and early groundwork for other kinds of box.
@@ -58,22 +80,7 @@ Fixes "Boots into: Desktop" on Bazzite.
 
 ## 2.9.61
 
-The Couchside Player arrives, plus small fixes to the pairing screen and to
-updating.
-
-- **Streaming services, driven from your phone.** A new Couchside Player tile
-  appears in Game Mode and opens Netflix, YouTube, Max, Hulu, Disney+ and the
-  rest on the TV. Pick a service from the phone, paste or share a link straight
-  to it, or search a title without typing on the TV — the box opens that
-  service's own results. Playing, pausing, skipping and muting all work from
-  the phone while it plays.
-- **A home screen on the TV.** The tile has its own picker with a proper
-  highlight you can move with the swipe pad, for when the phone is not the thing
-  in your hand. Streaming sites themselves still need the trackpad: they do not
-  let a remote move a highlight, which is a limitation of those sites and not
-  something we can change from outside.
-- The player only appears on a box that has a browser able to play protected
-  video. Boxes without one carry on exactly as before.
+Small fixes to the pairing screen and to updating.
 
 - **The "get the app" code now opens a page with just the two store links** —
   App Store and Google Play, nothing else. It used to drop you on the middle of
