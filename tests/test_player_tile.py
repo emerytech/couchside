@@ -228,5 +228,76 @@ rc, out = tile("--print-browser", env={"PATH": tempfile.mkdtemp()})
 check("no Widevine-capable browser -> unavailable, non-zero exit",
       rc != 0 and out == "unavailable", "rc=%s out=%r" % (rc, out))
 
+# ---------------------------------------------------------------------------
+# NOTE: this file's check() is check(NAME, COND, detail) — the other two
+# player suites are check(COND, LABEL, detail). Getting it backwards here
+# puts the label in the cond slot, where a non-empty string is always
+# truthy, so every check PASSES unconditionally. That happened once.
+print("\nsearch — free text, so structure is rejected and the rest is encoded")
+# ---------------------------------------------------------------------------
+rc, out = tile("--list-searchable")
+searchable = out.split()
+check("some services are searchable", rc == 0 and bool(searchable), out)
+# Searchable must be a SUBSET of the services the box can open: a service you
+# can search but not open would be a dead end.
+rc, all_out = tile("--list-services")
+check("every searchable service is also an openable one",
+      set(searchable) <= set(all_out.split()), searchable)
+
+rc, url = tile("--print-search", "youtube", "The Bear")
+check("a plain query builds the service's own search url",
+      rc == 0 and url.startswith("https://www.youtube.com/results?search_query=")
+      and url.endswith("The%20Bear"), url)
+
+# UTF-8 must survive. An earlier encoder rejected every non-ASCII title (the
+# [:print:] class excludes bytes >= 0x80 under LC_ALL=C), and the one after it
+# sign-extended them into %FFFFFFFFFFFFFFC3. Both are caught by round-tripping.
+import urllib.parse
+for text in ("Amelie", "Am\u00e9lie", "\u5343\u3068\u5343\u5c0b",
+             "rick & morty", "a+b", "100% cotton"):
+    rc, url = tile("--print-search", "youtube", text)
+    if rc != 0:
+        check("search accepts %r" % text, False, "refused")
+        continue
+    decoded = urllib.parse.unquote(url.split("search_query=", 1)[1])
+    check("%r round-trips through the encoder" % text, decoded == text, decoded)
+
+# Structure must be refused, not cleaned up.
+# No NUL case: it cannot traverse argv at all (execve rejects it), which is
+# also why it can never reach the tile in production — the agent passes the
+# query as an argv element, never through a shell.
+bad_queries = ["", "   ", "a" * 81, "a\nb", "a\tb", "a\x7fb", "a\x1bb"]
+refused_q = []
+for q in bad_queries:
+    rc, out = tile("--print-search", "youtube", q)
+    if rc == 0:
+        refused_q.append((q, out))
+check("empty / over-long / control-byte queries are refused",
+      not refused_q, refused_q)
+
+# Nothing a query contains may change the URL's STRUCTURE.
+structural = []
+for q in ("a&b=c", "x#frag", "../../etc/passwd", "a?b", "a/b",
+          "\" onmouseover=1", "javascript:alert(1)"):
+    rc, url = tile("--print-search", "youtube", q)
+    if rc != 0:
+        continue
+    value = url.split("search_query=", 1)[1]
+    if any(ch in value for ch in "&#?/:\"'<>"):
+        structural.append((q, url))
+check("no query can inject a second parameter, a fragment, or a path",
+      not structural, structural)
+
+# A service with no VERIFIED search url cannot be searched at all.
+unsearchable = []
+for svc in set(all_out.split()) - set(searchable):
+    rc, out = tile("--print-search", svc, "anything")
+    if rc == 0:
+        unsearchable.append((svc, out))
+check("services without a verified search url refuse every query",
+      not unsearchable, unsearchable)
+rc, out = tile("--print-search", "evilcorp", "x")
+check("an unknown service cannot be searched either", rc != 0, out)
+
 print("\n%d checks failed" % len(_fail))
 raise SystemExit(1 if _fail else 0)

@@ -2339,7 +2339,7 @@ PL_FIRST_LAUNCH_GAP_S = 4
 PL_RESTART_WAIT_S = 6
 
 PL_MOCK = False
-_PL_MOCK = {"running": False, "service": "netflix", "path": ""}
+_PL_MOCK = {"running": False, "service": "netflix", "path": "", "query": ""}
 _PL_LOCK = threading.Lock()     # one start/stop mutation at a time
 # Cached at startup by set_player(): the service ids the tile allows, and
 # whether it found a Widevine-capable browser. Both come FROM the tile.
@@ -2351,6 +2351,10 @@ _PLAYER_BROWSER = None
 # from the thing that enforces it. Shipped as a separate field so the existing
 # `services` list keeps its shape (CLAUDE.md §4: add fields, never change one).
 _PLAYER_SERVICE_URLS = {}
+# Services with a VERIFIED search URL. A subset of _PLAYER_SERVICES: a service
+# the box can open is not necessarily one it can search, and offering a search
+# that lands nowhere is worse than not offering it.
+_PLAYER_SEARCHABLE = ()
 
 
 def _pl_ask(*args, timeout=15):
@@ -2372,6 +2376,7 @@ def set_player(mock):
     box do it'. Degrades closed: no tile, or a tile that reports no
     Widevine-capable browser, means the capability is simply absent."""
     global PL_MOCK, _PLAYER_SERVICES, _PLAYER_BROWSER, _PLAYER_SERVICE_URLS
+    global _PLAYER_SEARCHABLE
     PL_MOCK = mock
     if mock:
         _PLAYER_SERVICES = ("netflix", "youtube", "max", "hulu", "disneyplus",
@@ -2380,11 +2385,13 @@ def set_player(mock):
                             "spotify")
         _PLAYER_SERVICE_URLS = {s: "https://%s.example/" % s
                                 for s in _PLAYER_SERVICES}
+        _PLAYER_SEARCHABLE = ("youtube", "netflix", "twitch", "crunchyroll")
         _PLAYER_BROWSER = "mock"
         return
     if not os.path.isfile(PLAYER_TILE):
         _PLAYER_SERVICES, _PLAYER_BROWSER = (), None
         _PLAYER_SERVICE_URLS = {}
+        _PLAYER_SEARCHABLE = ()
         return
     listing = _pl_ask("--list-services")
     _PLAYER_SERVICES = tuple(listing.split()) if listing else ()
@@ -2397,6 +2404,8 @@ def set_player(mock):
         if u:
             urls[svc] = u
     _PLAYER_SERVICE_URLS = urls
+    listing = _pl_ask("--list-searchable")
+    _PLAYER_SEARCHABLE = tuple(listing.split()) if listing else ()
 
 
 def player_available():
@@ -2423,9 +2432,9 @@ def _pl_running():
 
 
 def _pl_conf_read():
-    """(service, path) currently written for the tile. Missing/partial conf is
-    not an error — the tile has its own default."""
-    service, path = "", ""
+    """(service, path, query) currently written for the tile. Missing/partial
+    conf is not an error — the tile has its own default."""
+    service, path, query = "", "", ""
     try:
         with open(PLAYER_CONF) as f:
             for line in f:
@@ -2434,16 +2443,23 @@ def _pl_conf_read():
                     service = line[len("service="):]
                 elif line.startswith("path="):
                     path = line[len("path="):]
+                elif line.startswith("query="):
+                    query = line[len("query="):]
     except OSError:
         pass
-    return service, path
+    return service, path, query
 
 
-def _pl_conf_write(service, path):
+def _pl_conf_write(service, path, query=""):
+    """A deep-link path and a search query are mutually exclusive — the tile
+    treats a query as "open this service's search results", and writing both
+    would leave which one wins to reading order."""
     os.makedirs(os.path.dirname(PLAYER_CONF), exist_ok=True)
     with open(PLAYER_CONF, "w") as f:
         f.write("service=%s\n" % service)
-        if path:
+        if query:
+            f.write("query=%s\n" % query)
+        elif path:
             f.write("path=%s\n" % path)
 
 
@@ -2460,6 +2476,24 @@ def _pl_validate(service, path):
     if PL_MOCK:
         return "https://example.invalid/%s%s" % (service, path or "")
     return _pl_ask("--print-url", service, path or "")
+
+
+def _pl_validate_search(service, query):
+    """Ask the TILE whether this search is allowed, and what URL it means.
+    Returns the URL, or None if refused.
+
+    Same principle as _pl_validate: the tile owns the search table and the
+    encoder, so there is one implementation and the validator is the code that
+    runs. The query is free text — the tile rejects it on structure (empty,
+    over-length, control bytes) and percent-encodes the rest, so it can only
+    ever land in a query-string VALUE and never change the URL's shape."""
+    if not isinstance(service, str) or service not in _PLAYER_SEARCHABLE:
+        return None
+    if not isinstance(query, str) or not query.strip():
+        return None
+    if PL_MOCK:
+        return "https://example.invalid/%s?q=%s" % (service, len(query))
+    return _pl_ask("--print-search", service, query)
 
 
 def _pl_appid():
@@ -2526,17 +2560,20 @@ def player_info():
         # sends — the harness showed no transport at all until this matched.
         return {"available": True, "running": _PL_MOCK["running"],
                 "service": _PL_MOCK["service"], "path": _PL_MOCK["path"],
+                "query": _PL_MOCK.get("query", ""),
                 "services": list(_PLAYER_SERVICES),
                 "service_urls": dict(_PLAYER_SERVICE_URLS),
+                "searchable": list(_PLAYER_SEARCHABLE),
                 "playback": player_playback(),
                 "seek_secs": list(PLAYER_SEEK_SECS),
                 "picture_steps": {k: list(v)
                                   for k, v in PLAYER_PICTURE.items()}}
-    service, path = _pl_conf_read()
+    service, path, query = _pl_conf_read()
     return {"available": player_available(), "running": _pl_running(),
-            "service": service, "path": path,
+            "service": service, "path": path, "query": query,
             "services": list(_PLAYER_SERVICES),
             "service_urls": dict(_PLAYER_SERVICE_URLS),
+            "searchable": list(_PLAYER_SEARCHABLE),
             # Added field, never a shape change: null when nothing is playing
             # or the browser can't be reached, so an old app ignores it and a
             # new one hides the transport rather than showing a dead scrubber.
@@ -2545,24 +2582,35 @@ def player_info():
             "picture_steps": {k: list(v) for k, v in PLAYER_PICTURE.items()}}
 
 
-def player_open(service, path=""):
+def player_open(service, path="", query=""):
     """Point the tile at an allowlisted service and launch it through Steam.
 
-    Raises ValueError when the service/path is refused — the caller turns that
-    into a 404, and NOTHING is written or launched. Registration and the
+    With `query`, the tile opens that service's OWN search results instead —
+    which is the whole of "search from the phone": nobody types a title on a TV
+    with a d-pad. A query and a deep-link path are mutually exclusive.
+
+    Raises ValueError when the service/path/query is refused — the caller turns
+    that into a 404, and NOTHING is written or launched. Registration and the
     fresh-registration double-fire run in a background thread so the POST
     returns immediately; the app watches `running` flip via GET."""
-    url = _pl_validate(service, path)
-    if url is None:
-        raise ValueError("unknown service or path not allowed")
+    if query:
+        url = _pl_validate_search(service, query)
+        if url is None:
+            raise ValueError("service not searchable, or query rejected")
+        path = ""
+    else:
+        url = _pl_validate(service, path)
+        if url is None:
+            raise ValueError("unknown service or path not allowed")
     if PL_MOCK:
-        _PL_MOCK.update(running=True, service=service, path=path or "")
+        _PL_MOCK.update(running=True, service=service, path=path or "",
+                        query=query or "")
         return {"ok": True, "running": True, "url": url}
     if not player_available():
         raise RuntimeError("player not installed on this box")
 
     with _PL_LOCK:
-        _pl_conf_write(service, path or "")
+        _pl_conf_write(service, path or "", query or "")
         # The tile is single-instance and reads its conf at START, so switching
         # services while it is up MUST stop it first — otherwise the rungameid
         # below is a no-op and the request silently does nothing.
@@ -2960,11 +3008,13 @@ def player_transport(op, secs=None, knob=None, value=None):
 
 def _pl_picture_write(values):
     """Persist picture values alongside service/path, preserving both."""
-    service, path = _pl_conf_read()
+    service, path, query = _pl_conf_read()
     os.makedirs(os.path.dirname(PLAYER_CONF), exist_ok=True)
     with open(PLAYER_CONF, "w") as f:
         f.write("service=%s\n" % service)
-        if path:
+        if query:
+            f.write("query=%s\n" % query)
+        elif path:
             f.write("path=%s\n" % path)
         for knob in sorted(PLAYER_PICTURE):
             f.write("%s=%s\n" % (knob, values[knob]))
@@ -15590,7 +15640,9 @@ class Handler(BaseHTTPRequestHandler):
                     return
                 if op == "open":
                     try:
-                        r = player_open(req.get("service"), req.get("path", ""))
+                        r = player_open(req.get("service"),
+                                        req.get("path", ""),
+                                        req.get("query", ""))
                     except ValueError:
                         # Deliberately does NOT echo the rejected value back.
                         self._send(404, {"error": "unknown service"}, started)

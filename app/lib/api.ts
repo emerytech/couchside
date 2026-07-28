@@ -210,6 +210,14 @@ export type PlayerState = {
   seek_secs?: number[];
   /** {knob -> allowed steps}. Same rule: the box is the authority. */
   picture_steps?: Record<string, number[]>;
+  /**
+   * Services with a VERIFIED search URL — a subset of `services`. Searching
+   * opens that service's own results page on the box, so nobody types a title
+   * on a TV. Absent on agents before search shipped.
+   */
+  searchable?: string[];
+  /** Query the tile is currently showing results for, '' otherwise. */
+  query?: string;
 };
 
 export type PlayerPlayback = {
@@ -2175,6 +2183,9 @@ export const api = {
       knob?: string;
       /** Must be one of PlayerState.picture_steps[knob]. */
       value?: number;
+      /** Free text. The box rejects it on structure and percent-encodes the
+       *  rest; only services in PlayerState.searchable accept it. */
+      query?: string;
     } = {},
   ): Promise<{ ok: boolean; running?: boolean; starting?: boolean; service?: string }> {
     return request(settings, '/api/player', {

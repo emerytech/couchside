@@ -119,6 +119,7 @@ export function WatchPanel() {
   const [busy, setBusy] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [link, setLink] = useState('');
+  const [query, setQuery] = useState('');
 
   const configured = settings.host.trim().length > 0;
 
@@ -135,16 +136,26 @@ export function WatchPanel() {
 
   const state = player.data;
   const services = state?.services ?? [];
+  // Which services can be searched is the BOX's answer, not a guess here:
+  // a verified search URL exists for some services and not others.
+  const searchable = state?.searchable ?? [];
 
   const open = useCallback(
-    async (service: string, path = '') => {
+    async (service: string, path = '', query = '') => {
       hapticLight();
       setBusy(service);
       setError(null);
       try {
-        await api.playerOp(settings, 'open', path ? { service, path } : { service });
+        // A query and a deep-link path are mutually exclusive, same as on the
+        // box — sending both would leave the winner to the agent's read order.
+        await api.playerOp(
+          settings,
+          'open',
+          query ? { service, query } : path ? { service, path } : { service },
+        );
         hapticSuccess();
         setLink('');
+        setQuery('');
         player.refresh();
       } catch (e) {
         hapticError();
@@ -383,6 +394,48 @@ export function WatchPanel() {
 
       {error ? <Text style={styles.error}>{error}</Text> : null}
 
+      {/* SEARCH. There is no metadata service behind this and no API key: you
+          type on the phone, pick a service, and the box opens that service's
+          own search results. It exists because typing a title on a TV with a
+          d-pad is miserable. Only services with a VERIFIED search URL are
+          offered — the box says which. */}
+      {searchable.length > 0 && (
+        <>
+          <Text style={styles.section}>SEARCH ON THE BOX</Text>
+          <TextInput
+            value={query}
+            onChangeText={setQuery}
+            placeholder="Title to search for"
+            placeholderTextColor={t.textFaint}
+            autoCorrect={false}
+            returnKeyType="search"
+            maxLength={80}
+            style={styles.input}
+            testID="watch-search-input"
+          />
+          {query.trim() ? (
+            <View style={styles.grid} testID="watch-search-targets">
+              {searchable.map((id) => (
+                <Pressable
+                  key={id}
+                  onPress={() => open(id, '', query.trim())}
+                  disabled={busy !== null}
+                  testID={`watch-search-${id}`}
+                  style={({ pressed }) => [
+                    styles.searchBtn,
+                    pressed && styles.pressed,
+                  ]}
+                >
+                  <Text style={styles.searchBtnText}>
+                    {busy === id ? 'Opening…' : `Search ${label(id)}`}
+                  </Text>
+                </Pressable>
+              ))}
+            </View>
+          ) : null}
+        </>
+      )}
+
       <Text style={styles.section}>SEND A LINK</Text>
       <View style={styles.linkRow}>
         <TextInput
@@ -552,6 +605,17 @@ const makeStyles = (t: Palette) =>
     sendBtnOff: { backgroundColor: t.inset },
     sendText: { color: '#0b1220', fontWeight: '700', fontSize: 14 },
     sendTextOff: { color: t.textFaint },
+    searchBtn: {
+      flexGrow: 1,
+      minWidth: '46%',
+      alignItems: 'center',
+      paddingVertical: 12,
+      borderRadius: 10,
+      backgroundColor: t.inset,
+      borderWidth: StyleSheet.hairlineWidth,
+      borderColor: t.cardBorder,
+    },
+    searchBtnText: { color: t.text, fontSize: 13, fontWeight: '600' },
     hint: { color: t.amber, fontSize: 12 },
     hintOk: { color: t.green, fontSize: 12 },
     error: { color: t.red, fontSize: 13 },

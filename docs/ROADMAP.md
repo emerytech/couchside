@@ -158,6 +158,23 @@ Entry fields: `priority` (P0 blocker → P3 nice) · `risk` · `affects` · `dep
 - **Probe note:** YouTube's home page is autoplay-gated (`duration: 0`, ops return ok while
   `playing` stays false) and Pluto TV's landing page has no `<video>` until a channel is picked.
   Twitch's front page autoplays; use it.
+- **Phase 5 SHIPPED 2026-07-27 as ON-BOX SEARCH ONLY** (owner decision: no metadata source, no
+  API key, no cloud). The phone sends text; the box opens that service's own search results, so
+  nobody types a title on a TV. The "LAN-only, no accounts" promise is untouched. TMDB-style
+  "who has this title" was declined — bundled key is extractable, a couchside.tv proxy makes
+  search depend on a server, bring-your-own-key ships unused.
+- **The query is free text, so it gets deep-link-tier care.** The tile owns the table and the
+  encoder: structure is REJECTED (empty, whitespace-only, >80 bytes, control bytes), the rest is
+  percent-encoded byte-wise. Round-trip tested: `Amélie`, `千と千尋`, `rick & morty`, `a+b`,
+  `100% cotton` all decode back exactly, and `& # ? / " '` cannot survive unencoded.
+- **Two silent encoder bugs caught by that test:** `[:print:]` rejects every byte ≥ 0x80 under
+  `LC_ALL=C` (so no non-English title could be searched), and `printf "'$c"` sign-extends those
+  bytes (`Amélie` → `%FFFFFFFFFFFFFFC3`). Neither is visible by eyeballing a URL.
+- **Only VERIFIED search URLs ship** — youtube/netflix/twitch/crunchyroll; everything else
+  refuses a query. Live in Game Mode: YouTube and Twitch titled `"the bear - …"`, Crunchyroll
+  **41 query hits in the page text** (a generic title was not accepted as proof). **Netflix
+  redirects to `/login` when signed out** — normal Netflix behaviour for any of its URLs, not a
+  bad search URL; re-check on a signed-in profile.
 - **Real fix banked meanwhile:** switching services while the tile ran relaunched Chrome against
   a profile the dying instance still owned, so `flatpak run` deferred to it and the new
   debugging port never bound. The tile now waits for `SingletonLock` to clear.

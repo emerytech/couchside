@@ -418,12 +418,37 @@ this reason.
   DEFERRED to it and the new `--remote-debugging-port` never bound — two debug ports live, the
   transport reading a stale one. The tile now waits for the profile's `SingletonLock` to clear
   (bounded, then proceeds anyway; refusing to start is worse than racing).
-- **Phase 5 — cross-service search.** *Promoted out of "later" after reading the real product
-  (§1b).* Search once on the phone, see which service has it, jump straight in. This is the
-  feature that makes a hub worth more than six tiles, and it is the one thing that is genuinely
-  **better** on a phone than on a TV, because you type on a phone. App-side, so the agent stays
-  stdlib. A bundled metadata API key is extractable — plan for that rather than pretending
-  otherwise.
+- **Phase 5 — search. DONE 2026-07-27, shipped as ON-BOX search only.**
+  Owner decision: **no metadata source, no API key, no cloud.** The phone sends text, the box
+  opens that service's OWN search results. Nothing leaves the LAN except the browser's own
+  request to the service, which it would make anyway, and the "LAN-only, no accounts" promise is
+  untouched. The trade is that you pick the service rather than being told who has a title —
+  TMDB-style availability was considered and declined (bundled key is extractable; a
+  couchside.tv proxy makes search depend on a server being up; bring-your-own-key ships unused).
+
+  **What it actually buys:** nobody types a title on a TV with a d-pad. That was always the
+  worst part.
+
+  **The query is free text, so it gets the same care as the deep-link tier.** The tile owns the
+  search table and the encoder: structure is REJECTED (empty, whitespace-only, >80 bytes,
+  control bytes) and everything else is percent-encoded byte-wise, so it can only ever land in a
+  query-string VALUE. Verified by round-trip: `Amélie`, `千と千尋`, `rick & morty`, `a+b`,
+  `100% cotton` all decode back exactly. `&`, `#`, `?`, `/`, quotes cannot survive unencoded, so
+  no query can add a parameter, a fragment or a path.
+
+  **Two encoder bugs found by testing, both silent:** rejecting anything outside `[:print:]`
+  refused every non-ASCII title (that class excludes bytes ≥ 0x80 under `LC_ALL=C`), and
+  `printf "'$c"` SIGN-EXTENDS bytes ≥ 0x80, so `Amélie` encoded as `%FFFFFFFFFFFFFFC3`. Both are
+  caught by the round-trip test rather than by eyeballing a URL.
+
+  **Only VERIFIED search URLs ship** (`youtube`, `netflix`, `twitch`, `crunchyroll`); every other
+  service refuses a query, same degrade-closed rule as the deep-link patterns. Verified live in
+  Game Mode: YouTube (`title: "the bear - YouTube"`), Twitch (`title: "the bear - Twitch"`),
+  Crunchyroll (**41 occurrences of the query in the page text** — a generic title was not
+  accepted as proof). **Netflix redirects to `/login` on a logged-out profile**, which is what
+  Netflix does for any netflix.com URL when signed out, not a wrong search URL; it stays, and
+  wants a re-check on a signed-in profile.
+
 - **Phase 6 — hub UI + library.** The player's own TV page with a real focus model; recents /
   saved stored phone-side (no new box state, and `shortcuts.vdf` cannot hold it anyway).
 

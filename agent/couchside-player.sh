@@ -79,6 +79,75 @@ service_path_re() {
     esac
 }
 
+# Per-service SEARCH prefix: the query, percent-encoded, is appended to this.
+#
+# This is what "search from the phone" actually is — the box opens the
+# service's OWN search results, so nobody types a title on a TV with a d-pad.
+# There is no metadata service behind it and no API key: the phone sends text,
+# the box searches the service the user picked. Nothing leaves the LAN except
+# the browser's own request to the service, which it would make anyway.
+#
+# DEGRADE CLOSED, same rule as the deep-link patterns: a service with no entry
+# here simply cannot be searched, and the app hides the option for it. Only
+# shapes VERIFIED against the live service belong here — a guessed search URL
+# is a dead end that looks like a broken feature.
+service_search() {
+    case "$1" in
+        youtube)     echo "https://www.youtube.com/results?search_query=" ;;
+        netflix)     echo "https://www.netflix.com/search?q=" ;;
+        twitch)      echo "https://www.twitch.tv/search?term=" ;;
+        crunchyroll) echo "https://www.crunchyroll.com/search?q=" ;;
+        *) return 1 ;;
+    esac
+}
+
+# Percent-encode a search query for use as a query-string VALUE.
+#
+# Structurally-bad input is REJECTED (control characters, over-length) rather
+# than cleaned up. What is left is then encoded losslessly: every byte outside
+# RFC3986's unreserved set becomes %XX, so accented titles survive as UTF-8 and
+# nothing can terminate the value early or add a second parameter. Encoding is
+# transport, not sanitising — the rule that matters is that no input reaches the
+# URL in a form that could change its STRUCTURE, and after this none can.
+encode_query() {
+    # LC_ALL=C for the whole function so ${#raw} and ${raw:i:1} count BYTES.
+    # Without it a UTF-8 title is walked per character and printf emits only the
+    # first byte of each, producing mojibake. Byte-wise is also what makes the
+    # accent case work at all: each byte becomes its own %XX and the service
+    # reassembles the UTF-8.
+    local LC_ALL=C raw="$1" out="" i c
+    [ ${#raw} -ge 1 ] && [ ${#raw} -le 80 ] || return 1
+    # Reject CONTROL bytes only. An earlier version rejected anything outside
+    # [:print:], which under this same C locale excludes every byte >= 0x80 —
+    # so "Amélie" was refused outright and no non-English title could be
+    # searched. Structure is what must be rejected, not non-ASCII.
+    case "$raw" in
+        *[$'\001'-$'\037']* | *$'\177'*) return 1 ;;
+    esac
+    # At least one non-space character. The agent rejects a blank query too, but
+    # the tile is the enforcement point and must not depend on a caller's check:
+    # "   " otherwise became search_query=%20%20%20, an empty search that looks
+    # like the feature failed.
+    case "$raw" in
+        *[![:space:]]*) : ;;
+        *) return 1 ;;
+    esac
+    local n
+    for (( i = 0; i < ${#raw}; i++ )); do
+        c="${raw:i:1}"
+        case "$c" in
+            [A-Za-z0-9.~_-]) out="$out$c" ;;
+            *)
+                # & 0xFF because printf "'$c" SIGN-EXTENDS any byte >= 0x80:
+                # "Amélie" came out as %FFFFFFFFFFFFFFC3 instead of %C3.
+                n=$(printf '%d' "'$c")
+                out="$out$(printf '%%%02X' $(( n & 0xFF )))"
+                ;;
+        esac
+    done
+    printf '%s' "$out"
+}
+
 log() { printf '[player] %s\n' "$*" >> "$LOG" 2>/dev/null; }
 
 mkdir -p "$CACHE_DIR"
@@ -157,11 +226,29 @@ pick_port() {
 read_conf() {
     SERVICE=""
     DEEP_PATH=""
+    QUERY=""
     [ -f "$CONF" ] || return 0
-    # Parse strictly: only these two keys, only from `key=value` lines. Anything
+    # Parse strictly: only these keys, only from `key=value` lines. Anything
     # else in the file is ignored rather than interpreted.
     SERVICE=$(sed -n 's/^service=\(.*\)$/\1/p' "$CONF" | tail -1)
     DEEP_PATH=$(sed -n 's/^path=\(.*\)$/\1/p' "$CONF" | tail -1)
+    QUERY=$(sed -n 's/^query=\(.*\)$/\1/p' "$CONF" | tail -1)
+}
+
+# Build a SEARCH url: frozen prefix from the table + the encoded query.
+# The host and the parameter name are ours; only the value varies, and after
+# encode_query it cannot contain a '&', a '#', or anything else structural.
+build_search_url() {
+    local svc="$1" raw="$2" prefix encoded
+    prefix="$(service_search "$svc")" || {
+        log "refused: service '$svc' has no verified search url"
+        return 1
+    }
+    encoded="$(encode_query "$raw")" || {
+        log "refused: query rejected (empty, too long, or non-printable)"
+        return 1
+    }
+    printf '%s%s' "$prefix" "$encoded"
 }
 
 # Build the URL to open. This is the ONE place client-influenced data becomes a
@@ -202,6 +289,12 @@ build_url() {
 case "${1:-}" in
     --print-ozone) pick_ozone; exit 0 ;;
     --print-url)   build_url "${2:-}" "${3:-}" || exit 1; exit 0 ;;
+    --print-search) build_search_url "${2:-}" "${3:-}" || exit 1; exit 0 ;;
+    --list-searchable)
+        for s in youtube netflix twitch crunchyroll; do
+            service_search "$s" >/dev/null 2>&1 && echo "$s"
+        done
+        exit 0 ;;
     --print-browser)
         if resolve_browser; then echo "$BROWSER_KIND $BROWSER_BIN"; exit 0; fi
         echo "unavailable"; exit 1 ;;
@@ -224,11 +317,18 @@ echo "$$" > "$PIDFILE"
 
 read_conf
 SERVICE="${SERVICE:-netflix}"
-URL="$(build_url "$SERVICE" "$DEEP_PATH")" || {
+# A query in the conf means "open this service's search results"; it wins over
+# a deep-link path, and the two are never combined.
+if [ -n "${QUERY:-}" ]; then
+    URL="$(build_search_url "$SERVICE" "$QUERY")" || URL=""
+else
+    URL="$(build_url "$SERVICE" "$DEEP_PATH")" || URL=""
+fi
+if [ -z "$URL" ]; then
     log "nothing to open; exiting without launching a browser"
     rm -f "$PIDFILE"
     exit 2
-}
+fi
 
 if ! resolve_browser; then
     log "no Widevine-capable browser found; refusing to launch (degrade closed)"
