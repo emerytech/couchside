@@ -1472,8 +1472,8 @@ function SetupBody() {
                 />
               )}
               <TogglePref
-                label="Watch (streaming services)"
-                sub="Adds a WATCH section to the Launch tab for starting Netflix, YouTube, Max and the rest on the box. Only appears on a box that actually has the Couchside Player installed — turning this on cannot add it to a box that hasn't. Turn it off to keep a gaming-only box gaming-only."
+                label="Watch (streaming services) — experimental"
+                sub="EARLY — expect rough edges. Adds a WATCH section to the Launch tab for starting Netflix, YouTube, Max and the rest on the box. Only appears on a box that actually has the Couchside Player add-on installed — turning this on cannot add it to a box that hasn't. Streaming sites still need the trackpad rather than the d-pad: they do not let a remote move a highlight. Turn it off to keep a gaming-only box gaming-only."
                 value={watchEnabled}
                 onValueChange={(v) => {
                   void setPref('watchEnabled', v);

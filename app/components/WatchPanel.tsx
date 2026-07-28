@@ -406,6 +406,11 @@ export function WatchPanel() {
 
       {error ? <Text style={styles.error}>{error}</Text> : null}
 
+      <Text style={styles.beta} testID="watch-beta">
+        EXPERIMENTAL — expect rough edges. Streaming sites need the trackpad,
+        not the d-pad.
+      </Text>
+
       {/* The box's own screen. Useful when the phone is not the thing in your
           hand — someone opening the tile from the Steam library with a
           controller gets a grid with a focus ring instead of whatever service
@@ -577,6 +582,7 @@ const makeStyles = (t: Palette) =>
     emptyTitle: { color: t.text, fontSize: 17, fontWeight: '700' },
     emptyBody: { color: t.textDim, fontSize: 14, textAlign: 'center', lineHeight: 20 },
     idle: { color: t.textDim, fontSize: 14 },
+    beta: { color: t.amber, fontSize: 11, lineHeight: 15 },
     section: {
       color: t.textFaint,
       fontSize: 11,

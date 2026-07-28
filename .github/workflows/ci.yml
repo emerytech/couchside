@@ -365,6 +365,14 @@ jobs:
       - name: Unit tests (player transport)
         run: python3 tests/test_player_transport.py
 
+      # The installer's decision about the Couchside Player add-on, run against
+      # the REAL gate lines lifted out of install.sh rather than a copy. The
+      # policy is preserve-never-opt-in: an experimental add-on must not arrive
+      # on every piped `curl | bash`, and an unattended update must not rip it
+      # off a box that chose it. Both directions are asserted.
+      - name: Installer add-on policy (player)
+        run: bash tests/test_installer_player.sh install.sh
+
       # Injected actions: buttons the agent offers only when the box can really
       # perform them ("a dead button costs more trust than a missing one"), so
       # every gate is asserted in BOTH directions. Covers the Bluetooth pairing

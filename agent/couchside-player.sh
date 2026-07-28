@@ -194,6 +194,7 @@ html,body{margin:0;height:100%;background:#0b1220;color:#e5ecf8;
 h1{font-size:2.2vw;letter-spacing:.4em;margin:5vh 0 1vh;text-align:center;
   color:#e5ecf8;font-weight:800}
 p.sub{text-align:center;color:#8b97ad;margin:0 0 5vh;font-size:1.2vw}
+span.beta{color:#fbbf24;font-size:.95vw;letter-spacing:.08em}
 .grid{display:grid;grid-template-columns:repeat(5,1fr);gap:1.6vw;
   padding:0 6vw}
 a.tile{display:flex;align-items:center;justify-content:center;gap:.8vw;height:11vh;
@@ -208,7 +209,7 @@ a.tile:focus{outline:none;border-color:#34d399;background:#0e1526;
    this way instead of shipping logo files with the app. */
 img.ico{width:2.6vw;height:2.6vw;object-fit:contain;border-radius:.4vw;flex:none}
 </style></head><body>
-<h1>COUCHSIDE</h1><p class=sub>Pick a service &middot; or drive it from your phone</p>
+<h1>COUCHSIDE</h1><p class=sub>Pick a service &middot; or drive it from your phone<br><span class=beta>experimental &mdash; expect rough edges</span></p>
 <div class=grid id=g>
 HTMLHEAD
         local svc url host icon
