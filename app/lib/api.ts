@@ -218,6 +218,14 @@ export type PlayerState = {
   searchable?: string[];
   /** Query the tile is currently showing results for, '' otherwise. */
   query?: string;
+  /**
+   * {service -> extra hosts it is reachable on}, for LINK MATCHING only.
+   * Measured: play.max.com redirects to play.hbomax.com and shared Max links
+   * use the latter, so matching only the canonical host rejected the one
+   * service whose deep-link pattern is verified. Never used to decide what may
+   * be opened — the box still re-validates.
+   */
+  service_hosts?: Record<string, string[]>;
 };
 
 export type PlayerPlayback = {

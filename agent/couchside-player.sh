@@ -125,6 +125,24 @@ service_label() {
     esac
 }
 
+# Extra hosts a service is reachable on, for LINK MATCHING only — never for
+# opening, which always uses service_url() above.
+#
+# MEASURED on a live signed-in box 2026-07-27: opening https://play.max.com/
+# lands on play.hbomax.com, and a link shared from the app is
+# play.hbomax.com/video/watch/<uuid> (which is exactly the shape in the owner's
+# original screenshots). Matching only the canonical host meant a pasted Max
+# link — the one service whose deep-link pattern is verified — was rejected as
+# "not a link this box knows". Aliases fix that without widening what can be
+# OPENED: the host still has to be one of ours, and the path still has to clear
+# that service's pattern.
+service_hosts() {
+    case "$1" in
+        max) echo "play.max.com play.hbomax.com" ;;
+        *) return 1 ;;
+    esac
+}
+
 # ---------------------------------------------------------------------------
 # The hub page: the tile's own screen, written from the frozen table.
 #
@@ -387,6 +405,7 @@ case "${1:-}" in
     --print-url)   build_url "${2:-}" "${3:-}" || exit 1; exit 0 ;;
     --print-search) build_search_url "${2:-}" "${3:-}" || exit 1; exit 0 ;;
     --print-hub)   write_hub && printf 'file://%s\n' "$HUB_FILE"; exit $? ;;
+    --print-hosts) service_hosts "${2:-}" || exit 1; exit 0 ;;
     --list-searchable)
         for s in youtube netflix twitch crunchyroll; do
             service_search "$s" >/dev/null 2>&1 && echo "$s"

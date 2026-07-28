@@ -73,6 +73,7 @@ function progressPct(p: PlayerPlayback): number {
 export function splitLink(
   url: string,
   serviceUrls: Record<string, string> | undefined,
+  serviceHosts?: Record<string, string[]>,
 ): { service: string; path: string } | null {
   if (!serviceUrls) return null;
   let parsed: URL;
@@ -89,7 +90,12 @@ export function splitLink(
     } catch {
       continue;
     }
-    if (homeHost !== parsed.host) continue;
+    // Alias hosts come from the BOX (service_hosts). Measured: play.max.com
+    // redirects to play.hbomax.com and a shared Max link uses the latter, so
+    // matching only the canonical host rejected the one service whose
+    // deep-link pattern is actually verified.
+    const aliases = serviceHosts?.[service] ?? [];
+    if (homeHost !== parsed.host && !aliases.includes(parsed.host)) continue;
     // Query and fragment are dropped: no service the box ships has a pattern
     // that includes them, so keeping them would only produce a link the box
     // refuses, which reads to the user as "the app is broken".
@@ -191,8 +197,11 @@ export function WatchPanel() {
   }, [settings, player]);
 
   const parsedLink = useMemo(
-    () => (link.trim() ? splitLink(link, state?.service_urls) : null),
-    [link, state?.service_urls],
+    () =>
+      link.trim()
+        ? splitLink(link, state?.service_urls, state?.service_hosts)
+        : null,
+    [link, state?.service_urls, state?.service_hosts],
   );
 
   const playback = state?.playback ?? null;

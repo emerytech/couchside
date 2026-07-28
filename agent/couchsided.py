@@ -2355,6 +2355,11 @@ _PLAYER_SERVICE_URLS = {}
 # the box can open is not necessarily one it can search, and offering a search
 # that lands nowhere is worse than not offering it.
 _PLAYER_SEARCHABLE = ()
+# {service: [host, ...]} for LINK MATCHING only. Measured: play.max.com
+# redirects to play.hbomax.com, and shared Max links use the latter — matching
+# only the canonical host rejected the one service whose deep-link pattern is
+# verified. Never used to decide what may be OPENED.
+_PLAYER_SERVICE_HOSTS = {}
 
 
 def _pl_ask(*args, timeout=15):
@@ -2376,7 +2381,7 @@ def set_player(mock):
     box do it'. Degrades closed: no tile, or a tile that reports no
     Widevine-capable browser, means the capability is simply absent."""
     global PL_MOCK, _PLAYER_SERVICES, _PLAYER_BROWSER, _PLAYER_SERVICE_URLS
-    global _PLAYER_SEARCHABLE
+    global _PLAYER_SEARCHABLE, _PLAYER_SERVICE_HOSTS
     PL_MOCK = mock
     if mock:
         _PLAYER_SERVICES = ("netflix", "youtube", "max", "hulu", "disneyplus",
@@ -2386,12 +2391,14 @@ def set_player(mock):
         _PLAYER_SERVICE_URLS = {s: "https://%s.example/" % s
                                 for s in _PLAYER_SERVICES}
         _PLAYER_SEARCHABLE = ("youtube", "netflix", "twitch", "crunchyroll")
+        _PLAYER_SERVICE_HOSTS = {"max": ["play.max.com", "play.hbomax.com"]}
         _PLAYER_BROWSER = "mock"
         return
     if not os.path.isfile(PLAYER_TILE):
         _PLAYER_SERVICES, _PLAYER_BROWSER = (), None
         _PLAYER_SERVICE_URLS = {}
         _PLAYER_SEARCHABLE = ()
+        _PLAYER_SERVICE_HOSTS = {}
         return
     listing = _pl_ask("--list-services")
     _PLAYER_SERVICES = tuple(listing.split()) if listing else ()
@@ -2406,6 +2413,12 @@ def set_player(mock):
     _PLAYER_SERVICE_URLS = urls
     listing = _pl_ask("--list-searchable")
     _PLAYER_SEARCHABLE = tuple(listing.split()) if listing else ()
+    hosts = {}
+    for svc in _PLAYER_SERVICES:
+        extra = _pl_ask("--print-hosts", svc)
+        if extra:
+            hosts[svc] = extra.split()
+    _PLAYER_SERVICE_HOSTS = hosts
 
 
 def player_available():
@@ -2566,6 +2579,7 @@ def player_info():
                 "services": list(_PLAYER_SERVICES),
                 "service_urls": dict(_PLAYER_SERVICE_URLS),
                 "searchable": list(_PLAYER_SEARCHABLE),
+                "service_hosts": {k: list(v) for k, v in _PLAYER_SERVICE_HOSTS.items()},
                 "playback": player_playback(),
                 "seek_secs": list(PLAYER_SEEK_SECS),
                 "picture_steps": {k: list(v)
@@ -2576,6 +2590,7 @@ def player_info():
             "services": list(_PLAYER_SERVICES),
             "service_urls": dict(_PLAYER_SERVICE_URLS),
             "searchable": list(_PLAYER_SEARCHABLE),
+            "service_hosts": {k: list(v) for k, v in _PLAYER_SERVICE_HOSTS.items()},
             # Added field, never a shape change: null when nothing is playing
             # or the browser can't be reached, so an old app ignores it and a
             # new one hides the transport rather than showing a dead scrubber.

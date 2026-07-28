@@ -299,5 +299,13 @@ check("services without a verified search url refuse every query",
 rc, out = tile("--print-search", "evilcorp", "x")
 check("an unknown service cannot be searched either", rc != 0, out)
 
+# Alias hosts: measured on a live box, play.max.com redirects to
+# play.hbomax.com and shared Max links use the latter, so matching only the
+# canonical host rejected the ONE service whose deep-link pattern is verified.
+rc, hosts = tile("--print-hosts", "max")
+check("max declares its alias host", rc == 0 and "play.hbomax.com" in hosts, hosts)
+rc, out = tile("--print-hosts", "netflix")
+check("a service with no aliases says so rather than inventing one", rc != 0, out)
+
 print("\n%d checks failed" % len(_fail))
 raise SystemExit(1 if _fail else 0)
