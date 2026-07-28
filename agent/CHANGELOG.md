@@ -20,7 +20,22 @@ deciding whether to press "Update now" on a machine across the room.
 
 ## 2.9.61
 
-Small fixes to the pairing screen and to updating.
+The Couchside Player arrives, plus small fixes to the pairing screen and to
+updating.
+
+- **Streaming services, driven from your phone.** A new Couchside Player tile
+  appears in Game Mode and opens Netflix, YouTube, Max, Hulu, Disney+ and the
+  rest on the TV. Pick a service from the phone, paste or share a link straight
+  to it, or search a title without typing on the TV — the box opens that
+  service's own results. Playing, pausing, skipping and picture brightness all
+  work from the phone while it plays.
+- **A home screen on the TV.** The tile has its own picker with a proper
+  highlight you can move with the swipe pad, for when the phone is not the thing
+  in your hand. Streaming sites themselves still need the trackpad: they do not
+  let a remote move a highlight, which is a limitation of those sites and not
+  something we can change from outside.
+- The player only appears on a box that has a browser able to play protected
+  video. Boxes without one carry on exactly as before.
 
 - **The "get the app" code now opens a page with just the two store links** —
   App Store and Google Play, nothing else. It used to drop you on the middle of
