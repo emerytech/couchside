@@ -27,8 +27,8 @@ updating.
   appears in Game Mode and opens Netflix, YouTube, Max, Hulu, Disney+ and the
   rest on the TV. Pick a service from the phone, paste or share a link straight
   to it, or search a title without typing on the TV — the box opens that
-  service's own results. Playing, pausing, skipping and picture brightness all
-  work from the phone while it plays.
+  service's own results. Playing, pausing, skipping and muting all work from
+  the phone while it plays.
 - **A home screen on the TV.** The tile has its own picker with a proper
   highlight you can move with the swipe pad, for when the phone is not the thing
   in your hand. Streaming sites themselves still need the trackpad: they do not

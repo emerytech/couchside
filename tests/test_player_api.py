@@ -180,7 +180,7 @@ try:
     # They were added to the real branch only, and the harness rendered no
     # transport at all until the mock matched — a narrower mock is how a UI gets
     # built against a payload the box never sends.
-    for field in ("services", "service_urls", "seek_secs", "picture_steps"):
+    for field in ("services", "service_urls", "seek_secs"):
         check(field in info, "GET carries `%s`" % field, sorted(info))
     check("playback" in info, "GET carries `playback` (may be null)", sorted(info))
     cs.PL_MOCK = True

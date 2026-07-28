@@ -2581,9 +2581,7 @@ def player_info():
                 "searchable": list(_PLAYER_SEARCHABLE),
                 "service_hosts": {k: list(v) for k, v in _PLAYER_SERVICE_HOSTS.items()},
                 "playback": player_playback(),
-                "seek_secs": list(PLAYER_SEEK_SECS),
-                "picture_steps": {k: list(v)
-                                  for k, v in PLAYER_PICTURE.items()}}
+                "seek_secs": list(PLAYER_SEEK_SECS)}
     service, path, query = _pl_conf_read()
     return {"available": player_available(), "running": _pl_running(),
             "service": service, "path": path, "query": query,
@@ -2595,8 +2593,7 @@ def player_info():
             # or the browser can't be reached, so an old app ignores it and a
             # new one hides the transport rather than showing a dead scrubber.
             "playback": player_playback(),
-            "seek_secs": list(PLAYER_SEEK_SECS),
-            "picture_steps": {k: list(v) for k, v in PLAYER_PICTURE.items()}}
+            "seek_secs": list(PLAYER_SEEK_SECS)}
 
 
 def _pl_relaunch(appid, was_running):
@@ -2680,7 +2677,7 @@ def player_open(service, path="", query=""):
 
 
 # ---------------------------------------------------------------------------
-# Player transport over CDP (play/pause/seek/picture).
+# Player transport over CDP (play/pause/seek).
 #
 # The tile spawns Chrome with a randomised loopback debugging port and records
 # it; this talks to that port. It is what makes the player a REMOTE rather than
@@ -2709,12 +2706,6 @@ def player_open(service, path="", query=""):
 PLAYER_CDP_TIMEOUT = 6.0
 # Offsets the skip buttons may ask for. Requested by u/Most-Bet2021 (r/SteamOS).
 PLAYER_SEEK_SECS = (-90, -30, -10, 10, 30, 90)
-# Picture adjustments. Frozen per knob; index 2 is the neutral 1.0 in each.
-PLAYER_PICTURE = {
-    "brightness": (0.7, 0.85, 1.0, 1.15, 1.3, 1.5),
-    "contrast":   (0.7, 0.85, 1.0, 1.15, 1.3, 1.5),
-    "saturate":   (0.0, 0.5, 1.0, 1.25, 1.5, 2.0),
-}
 
 # Picks the video to act on: a playing one if there is one, else the longest.
 # A streaming page routinely has several (trailers, previews, ads), and "the
@@ -2932,64 +2923,22 @@ def _pl_cdp_run(expression):
             cdp.close()
 
 
-def _pl_picture_read():
-    """Current picture values from the conf, falling back to neutral. Anything
-    stored that is not still an allowed step is discarded, not clamped."""
-    values = {}
-    stored = {}
-    try:
-        with open(PLAYER_CONF) as f:
-            for line in f:
-                line = line.strip()
-                for knob in PLAYER_PICTURE:
-                    if line.startswith(knob + "="):
-                        stored[knob] = line[len(knob) + 1:]
-    except OSError:
-        pass
-    for knob, steps in PLAYER_PICTURE.items():
-        values[knob] = steps[2]     # neutral
-        try:
-            wanted = float(stored.get(knob, ""))
-        except ValueError:
-            continue
-        for step in steps:
-            if step == wanted:
-                values[knob] = step
-                break
-    return values
-
-
-def _pl_picture_js(values):
-    """Build the filter script. Every number here came out of PLAYER_PICTURE by
-    identity, so the script can only contain one of a fixed set of literals."""
-    return (
-        "(function(){%s if (!v) return false;"
-        " v.style.setProperty('filter',"
-        " 'brightness(%s) contrast(%s) saturate(%s)', 'important');"
-        " return true;})()"
-        % (_PL_JS_PICK, values["brightness"], values["contrast"],
-           values["saturate"]))
-
-
 def player_playback():
     """Live <video> state, or None when there is nothing to report."""
     if PL_MOCK:
         if not _PL_MOCK["running"]:
             return None
         return {"playing": True, "position": 431.2, "duration": 3120.0,
-                "muted": False, "title": "Mock title",
-                "picture": _PL_MOCK.get("picture", {k: v[2] for k, v
-                                                    in PLAYER_PICTURE.items()})}
+                "muted": False, "title": "Mock title"}
     if not _pl_running():
         return None
     state = _pl_cdp_run(PLAYER_JS_STATE)
     if not isinstance(state, dict):
         return None
-    state["picture"] = _pl_picture_read()
     return state
 
 
-def player_transport(op, secs=None, knob=None, value=None):
+def player_transport(op, secs=None):
     """Run one allowlisted transport op. ValueError => 404, nothing runs."""
     if PL_MOCK:
         if op in PLAYER_JS_OPS:
@@ -2998,14 +2947,6 @@ def player_transport(op, secs=None, knob=None, value=None):
             if secs not in PLAYER_SEEK_SECS:
                 raise ValueError("seek offset not allowed")
             return {"ok": True, "op": "seek", "secs": secs}
-        if op == "picture":
-            steps = PLAYER_PICTURE.get(knob)
-            if steps is None or value not in steps:
-                raise ValueError("picture value not allowed")
-            _PL_MOCK.setdefault("picture", {k: v[2] for k, v
-                                            in PLAYER_PICTURE.items()})[knob] = \
-                steps[steps.index(value)]
-            return {"ok": True, "op": "picture", knob: value}
         raise ValueError("unknown transport op")
 
     if op in PLAYER_JS_OPS:
@@ -3014,16 +2955,6 @@ def player_transport(op, secs=None, knob=None, value=None):
         if secs not in PLAYER_SEEK_SECS:
             raise ValueError("seek offset not allowed")
         script = PLAYER_JS_SEEK[secs]           # pre-built per allowed offset
-    elif op == "picture":
-        steps = PLAYER_PICTURE.get(knob)
-        if steps is None or value not in steps:
-            raise ValueError("picture value not allowed")
-        values = _pl_picture_read()
-        # Take the number FROM the frozen tuple, not from the request: the
-        # client's bytes are used to find the index and then discarded.
-        values[knob] = steps[steps.index(value)]
-        _pl_picture_write(values)
-        script = _pl_picture_js(values)
     else:
         raise ValueError("unknown transport op")
 
@@ -3033,20 +2964,6 @@ def player_transport(op, secs=None, knob=None, value=None):
     if ok is None:
         raise RuntimeError("could not reach the player")
     return {"ok": bool(ok), "op": op}
-
-
-def _pl_picture_write(values):
-    """Persist picture values alongside service/path, preserving both."""
-    service, path, query = _pl_conf_read()
-    os.makedirs(os.path.dirname(PLAYER_CONF), exist_ok=True)
-    with open(PLAYER_CONF, "w") as f:
-        f.write("service=%s\n" % service)
-        if query:
-            f.write("query=%s\n" % query)
-        elif path:
-            f.write("path=%s\n" % path)
-        for knob in sorted(PLAYER_PICTURE):
-            f.write("%s=%s\n" % (knob, values[knob]))
 
 
 def player_hub():
@@ -15711,19 +15628,14 @@ class Handler(BaseHTTPRequestHandler):
                         self._send(409, {"error": str(e)}, started)
                 elif op == "close":
                     self._send(200, player_close(), started)
-                elif op in ("play", "pause", "playpause", "mute", "seek",
-                            "picture"):
+                elif op in ("play", "pause", "playpause", "mute", "seek"):
                     # Transport. The op id selects an agent-authored script by
-                    # dict lookup; `secs` and the picture value are checked for
-                    # membership in a frozen tuple and then the CONSTANT is
-                    # taken from that tuple, so nothing a client sent is ever
-                    # formatted into JS. A rejected value is a 404 and no
-                    # script runs.
+                    # dict lookup, and `secs` is checked for membership in a
+                    # frozen tuple before the CONSTANT is taken from that tuple,
+                    # so nothing a client sent is ever formatted into JS. A
+                    # rejected value is a 404 and no script runs.
                     try:
-                        r = player_transport(op,
-                                             secs=req.get("secs"),
-                                             knob=req.get("knob"),
-                                             value=req.get("value"))
+                        r = player_transport(op, secs=req.get("secs"))
                     except ValueError:
                         self._send(404, {"error": "not allowed"}, started)
                         return

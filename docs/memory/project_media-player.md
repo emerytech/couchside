@@ -348,7 +348,7 @@ normalizeCaps + capsEqual), with a test asserting all five.
   slice with a device build. The paste field covers the same need in the meantime.
   Deep-link ingestion in-app should use **`useLinkingURL()`**; `useURL()` is deprecated in
   Expo SDK 57 (checked against the versioned docs, per `app/AGENTS.md`).
-- **Phase 4 — transport + picture. DONE, LIVE-VERIFIED IN GAME MODE 2026-07-27.** Agent CDP
+- **Phase 4 — transport. DONE, LIVE-VERIFIED IN GAME MODE 2026-07-27.** Agent CDP
   client, ops (play/pause/playpause/mute/seek/picture), `playback` on `GET /api/player`, and the
   transport UI in `WatchPanel`. 81 unit checks, mutation-checked, UI exercised in the harness.
 
@@ -473,6 +473,31 @@ this reason.
 
   **`_pl_relaunch()` extracted** so `open`, `search` and `hub` share ONE launch path. Three
   copies of the fresh-registration double-fire would be three places for it to drift.
+
+### Picture controls: BUILT, THEN CUT 2026-07-27 — and why
+
+Brightness / contrast / saturation shipped in Phase 4 and were removed the same
+day, on the owner's call, after the reasoning was re-examined:
+
+1. **The premise was borrowed and inconsistent.** They came from Friendly, whose
+   picture controls exist for the SAME multitasking premise as Picture-in-Picture
+   and window transparency — dimming a video you half-watch while you work. This
+   spec explicitly rejected PiP and transparency for not transferring to a TV,
+   then accepted this one from the identical premise. Nobody asked for it; §1b's
+   claim that it answered "a standing TV complaint" was assertion, not evidence.
+2. **Wrong layer.** Every TV has brightness/contrast/backlight, and they act on
+   the panel and survive everything. A CSS `filter` is a lossy post-process on an
+   already-decoded frame: it cannot recover shadow detail, and it fights the
+   grade the film shipped with.
+3. **MEASURED: it did not survive navigation.** The filter is set on one
+   `<video>` element. Navigating within a service destroys that element:
+   `videos -> 0`, `filter survives -> (no video)` — while the conf still read
+   `brightness=1.5`, so the app went on highlighting 1.5 as active. It was a
+   control that misreported its own state, which is worse than no control.
+
+Keeping the note because the third point is the general lesson: any per-element
+CDP mutation is erased by the SPA's next navigation. Anything that must persist
+has to be re-applied on load, and nothing in the player does that today.
 
 ## 7b. Is the whole feature hidden on a box without the player? YES — verified
 

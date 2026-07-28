@@ -212,7 +212,7 @@ export function WatchPanel() {
   const fwd = offsets.filter((n) => n > 0).sort((a, b) => a - b)[0] ?? null;
 
   const transport = useCallback(
-    async (op: PlayerOp, opts: { secs?: number; knob?: string; value?: number } = {}) => {
+    async (op: PlayerOp, opts: { secs?: number } = {}) => {
       hapticLight();
       setBusy(op);
       setError(null);
@@ -365,38 +365,6 @@ export function WatchPanel() {
                 </Pressable>
               </View>
 
-              {/* Picture. The steps come from the box, so the app never offers
-                  a value the box would refuse. */}
-              {Object.entries(state.picture_steps ?? {}).map(([knob, steps]) => (
-                <View key={knob} style={styles.pictureRow}>
-                  {/* numberOfLines pins this to one line: "BRIGHTNESS" wrapped
-                      to "BRIGHTNES / S" in the harness and shoved the row
-                      taller than its neighbours. */}
-                  <Text style={styles.pictureLabel} numberOfLines={1}>
-                    {knob.toUpperCase()}
-                  </Text>
-                  {steps.map((step) => {
-                    const on = playback.picture?.[knob] === step;
-                    return (
-                      <Pressable
-                        key={step}
-                        onPress={() => transport('picture', { knob, value: step })}
-                        disabled={busy !== null}
-                        testID={`watch-picture-${knob}-${step}`}
-                        style={({ pressed }) => [
-                          styles.step,
-                          on && styles.stepOn,
-                          pressed && styles.pressed,
-                        ]}
-                      >
-                        <Text style={[styles.stepText, on && styles.stepTextOn]}>
-                          {step === 1 ? '·' : step}
-                        </Text>
-                      </Pressable>
-                    );
-                  })}
-                </View>
-              ))}
             </View>
           ) : null}
         </View>
@@ -616,24 +584,6 @@ const makeStyles = (t: Palette) =>
     tBtnMain: { backgroundColor: t.accent, borderColor: t.accent },
     tBtnText: { color: t.text, fontSize: 13, fontWeight: '600' },
     tBtnMainText: { color: '#0b1220', fontWeight: '700' },
-    pictureRow: { flexDirection: 'row', alignItems: 'center', gap: 5 },
-    pictureLabel: {
-      color: t.textFaint,
-      fontSize: 9,
-      fontWeight: '700',
-      letterSpacing: 0.3,
-      width: 62,
-    },
-    step: {
-      flex: 1,
-      alignItems: 'center',
-      paddingVertical: 6,
-      borderRadius: 7,
-      backgroundColor: t.inset,
-    },
-    stepOn: { backgroundColor: t.accent },
-    stepText: { color: t.textDim, fontSize: 11 },
-    stepTextOn: { color: '#0b1220', fontWeight: '700' },
     nowLabel: { color: t.green, fontSize: 10, fontWeight: '700', letterSpacing: 1.2 },
     nowService: { color: t.text, fontSize: 20, fontWeight: '700', marginTop: 2 },
     nowPath: { color: t.textFaint, fontSize: 12, marginTop: 2 },

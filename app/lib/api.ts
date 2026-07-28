@@ -208,8 +208,6 @@ export type PlayerState = {
   playback?: PlayerPlayback | null;
   /** Skip offsets this box allows. The app offers these, never its own. */
   seek_secs?: number[];
-  /** {knob -> allowed steps}. Same rule: the box is the authority. */
-  picture_steps?: Record<string, number[]>;
   /**
    * Services with a VERIFIED search URL — a subset of `services`. Searching
    * opens that service's own results page on the box, so nobody types a title
@@ -236,13 +234,12 @@ export type PlayerPlayback = {
   duration: number;
   muted: boolean;
   title: string;
-  picture: Record<string, number>;
 };
 
 /** Transport ops the box accepts. Anything else is refused with a 404. */
 export type PlayerOp =
   | 'open' | 'close' | 'hub'
-  | 'play' | 'pause' | 'playpause' | 'mute' | 'seek' | 'picture';
+  | 'play' | 'pause' | 'playpause' | 'mute' | 'seek';
 
 /** One connected display, from GET /api/displays. */
 export type Display = {
@@ -2188,9 +2185,6 @@ export const api = {
       path?: string;
       /** Must be one of PlayerState.seek_secs — the box refuses anything else. */
       secs?: number;
-      knob?: string;
-      /** Must be one of PlayerState.picture_steps[knob]. */
-      value?: number;
       /** Free text. The box rejects it on structure and percent-encodes the
        *  rest; only services in PlayerState.searchable accept it. */
       query?: string;
