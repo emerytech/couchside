@@ -170,7 +170,76 @@ export type BoxCaps = {
    * reads as "unknown, probe" and only an explicit false skips the request.
    */
   display_info?: boolean;
+  /**
+   * Couchside Player (agent >= 2.9.61): the streaming-service tile is deployed
+   * AND the box has a Widevine-capable browser. Gates the Watch tab. False is a
+   * real answer here, not a gap — a box with no Chrome reports false rather
+   * than offering a control that would open a black window. Optional: absent on
+   * older agents and on Windows, so undefined reads as "unknown, probe".
+   */
+  player?: boolean;
 };
+
+/**
+ * Couchside Player state, from GET /api/player.
+ *
+ * `services` and `service_urls` both come from the TILE on the box, never from
+ * a table in this app. That is deliberate: the tile is what enforces the
+ * allowlist, so a copy here would be the copy furthest from enforcement and the
+ * first to drift. `service_urls` exists so a pasted or shared link can be split
+ * into (service, path) using the box's own hosts.
+ */
+export type PlayerState = {
+  available: boolean;
+  running: boolean;
+  /** Service id the tile is pointed at ('' before anything has been opened). */
+  service: string;
+  /** Deep-link path, '' when the service was opened at its home page. */
+  path: string;
+  services: string[];
+  /** {service id -> home URL}. Absent on the first agents that shipped `player`. */
+  service_urls?: Record<string, string>;
+  /**
+   * Live <video> state, read over CDP. Null when nothing is playing or the
+   * browser can't be reached — degrade closed, so the transport hides rather
+   * than showing a dead scrubber. MPRIS is NOT the source here: measured, it
+   * reports zero players while a streaming site is open but idle.
+   */
+  playback?: PlayerPlayback | null;
+  /** Skip offsets this box allows. The app offers these, never its own. */
+  seek_secs?: number[];
+  /**
+   * Services with a VERIFIED search URL — a subset of `services`. Searching
+   * opens that service's own results page on the box, so nobody types a title
+   * on a TV. Absent on agents before search shipped.
+   */
+  searchable?: string[];
+  /** Query the tile is currently showing results for, '' otherwise. */
+  query?: string;
+  /**
+   * {service -> extra hosts it is reachable on}, for LINK MATCHING only.
+   * Measured: play.max.com redirects to play.hbomax.com and shared Max links
+   * use the latter, so matching only the canonical host rejected the one
+   * service whose deep-link pattern is verified. Never used to decide what may
+   * be opened — the box still re-validates.
+   */
+  service_hosts?: Record<string, string[]>;
+};
+
+export type PlayerPlayback = {
+  playing: boolean;
+  /** Seconds. */
+  position: number;
+  /** Seconds; 0 for a live stream or before metadata loads. */
+  duration: number;
+  muted: boolean;
+  title: string;
+};
+
+/** Transport ops the box accepts. Anything else is refused with a 404. */
+export type PlayerOp =
+  | 'open' | 'close' | 'hub'
+  | 'play' | 'pause' | 'playpause' | 'mute' | 'seek';
 
 /** One connected display, from GET /api/displays. */
 export type Display = {
@@ -999,7 +1068,8 @@ export function capsEqual(a?: BoxCaps, b?: BoxCaps): boolean {
     a.launchers === b.launchers &&
     a.file_upload === b.file_upload &&
     a.session_default === b.session_default &&
-    a.display_info === b.display_info
+    a.display_info === b.display_info &&
+    a.player === b.player
   );
 }
 
@@ -2079,6 +2149,51 @@ export const api = {
   ): Promise<Screensaver | null> {
     return probeGated(caps?.screensaver, () =>
       probeOrNull(request<Screensaver>(settings, '/api/screensaver')));
+  },
+
+  /**
+   * Couchside Player state (agent >= 2.9.61). Probe-and-appear: null on 404
+   * (older agent, tile not installed, or no Widevine-capable browser) so the
+   * Watch tab hides rather than offering a control that opens a black window.
+   * caps.player === false skips the request; undefined still probes.
+   *
+   * `running` is OBSERVED state, not "what we last asked for": Steam relaunches
+   * the registered tile by itself after a return to Game Mode (measured
+   * 2026-07-27), so it can be true with no request behind it. Always re-read;
+   * never assume the last op is still the truth.
+   */
+  player(
+    settings: ConnSettings,
+    caps: BoxCaps | undefined = cachedCaps(settings),
+  ): Promise<PlayerState | null> {
+    return probeGated(caps?.player, () =>
+      probeOrNull(request<PlayerState>(settings, '/api/player')));
+  },
+
+  /**
+   * Open an allowlisted service (optionally at a deep-link path) or stop the
+   * tile. The box is the authority on what is allowed: an unknown service or a
+   * path that fails that service's pattern comes back 404 having written
+   * nothing and launched nothing. The app does not pre-judge — it surfaces the
+   * refusal.
+   */
+  playerOp(
+    settings: ConnSettings,
+    op: PlayerOp,
+    opts: {
+      service?: string;
+      path?: string;
+      /** Must be one of PlayerState.seek_secs — the box refuses anything else. */
+      secs?: number;
+      /** Free text. The box rejects it on structure and percent-encodes the
+       *  rest; only services in PlayerState.searchable accept it. */
+      query?: string;
+    } = {},
+  ): Promise<{ ok: boolean; running?: boolean; starting?: boolean; service?: string }> {
+    return request(settings, '/api/player', {
+      method: 'POST',
+      body: { op, ...opts },
+    });
   },
 
   /** Start the screensaver (optionally switching theme/tier) or stop it. */

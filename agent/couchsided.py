@@ -45,7 +45,7 @@ except ImportError:  # pragma: no cover
     fcntl = None
 
 APP_NAME = "couchside-agent"
-VERSION = "2.9.63"
+VERSION = "2.9.64"
 UID = os.getuid()
 XDG_RUNTIME_DIR = "/run/user/%d" % UID
 
@@ -1391,7 +1391,7 @@ def set_caps(mock):
                 ("gamepad", "steam", "media", "tv", "screen", "power_schedule",
                  "screensaver", "couchmode", "desktop", "steamlink", "gaming",
                  "streamhost", "steammenus", "boxbattery", "file_upload",
-                 "session_default", "display_info")}
+                 "session_default", "display_info", "player")}
         return
     CAPS = {
         "gamepad": _uinput_writable(),
@@ -1411,6 +1411,7 @@ def set_caps(mock):
         "boxbattery": safe(box_battery_available),
         "file_upload": safe(lambda: os.access(_drop_dir(), os.W_OK)),
         "display_info": safe(display_info_available),
+        "player": safe(player_available),
     }
 
 
@@ -2288,6 +2289,720 @@ def screensaver_stop():
         os.kill(pid, 15)  # SIGTERM; the script forwards it to its ffplay child
     except (OSError, ValueError):
         pass  # not running = already stopped; stop is idempotent
+    return {"ok": True, "running": False}
+
+
+# ---------------------------------------------------------------------------
+# Couchside Player (/api/player) — the streaming-service tile.
+#
+# Same lifecycle as the screensaver above, for the same measured reason: it must
+# be launched THROUGH STEAM, because gamescope only surfaces what Steam focuses.
+# So this module registers the tile with steamos-add-to-steam, drops its grid
+# art, and fires steam://rungameid; the tile itself (agent/couchside-player.sh)
+# spawns the browser and holds the process Steam tracks.
+#
+# THE ALLOWLIST LIVES IN THE TILE, NOT HERE — deliberately. The tile owns the
+# frozen service table, and this module validates a request by ASKING it
+# (`--print-url <service> <path>`, rc != 0 means refused). That is a lookup, not
+# an interpolation, and it means there is exactly ONE copy of the table: the
+# validator is literally the code that will run. A second copy here would be a
+# copy that drifts, and a drifted allowlist is a hole.
+#
+# The subprocess call is an argv LIST into a path this module chose. Client
+# strings only ever appear as argv[2:], where the tile treats them as data (a
+# `case` statement, no eval). Nothing a client sends becomes a command.
+#
+# The tile is installed under ~/.local/opt/couchside-player/ rather than
+# ~/.local/opt/couchside/ because _ss_appid() anchors on the literal
+# b"couchside/Couchside" and would otherwise resolve the PLAYER's appid as the
+# screensaver's, silently breaking the screensaver's launch on any box with
+# both. tests/test_player_tile.py is the regression for that.
+# ---------------------------------------------------------------------------
+
+PLAYER_TILE = os.path.expanduser(
+    "~/.local/opt/couchside-player/Couchside Player")
+PLAYER_GRID_ART = os.path.expanduser("~/.local/opt/couchside-player")
+PLAYER_CONF = os.path.expanduser("~/.config/couchside/player.conf")
+PLAYER_PIDFILE = os.path.expanduser("~/.cache/couchside/player.pid")
+# The tile records the randomised loopback debugging port it gave Chrome here.
+# Read only; the agent never chooses it, and it is never exposed to a client.
+PLAYER_PORTFILE = os.path.expanduser("~/.cache/couchside/player.port")
+# Anchored on the install DIRECTORY, which is what keeps this lookup and the
+# screensaver's from colliding. Do not shorten it to "couchside/Couchside".
+PLAYER_VDF_ANCHOR = b"couchside-player/Couchside"
+PL_REGISTER_WAIT_S = 10
+PL_FIRST_LAUNCH_GAP_S = 4
+# How long to wait for a running tile to die before relaunching it at a new
+# service. The tile is single-instance: a rungameid fired while it is still up
+# is a no-op, so switching services MUST stop first or the request silently
+# does nothing.
+PL_RESTART_WAIT_S = 6
+
+PL_MOCK = False
+_PL_MOCK = {"running": False, "service": "netflix", "path": "", "query": ""}
+_PL_LOCK = threading.Lock()     # one start/stop mutation at a time
+# Cached at startup by set_player(): the service ids the tile allows, and
+# whether it found a Widevine-capable browser. Both come FROM the tile.
+_PLAYER_SERVICES = ()
+_PLAYER_BROWSER = None
+# {service_id: home url}, read from the tile at startup. The app needs the hosts
+# to turn a pasted/shared link into (service, path) — without this it would need
+# its own copy of the table, which would be a THIRD copy and the one furthest
+# from the thing that enforces it. Shipped as a separate field so the existing
+# `services` list keeps its shape (CLAUDE.md §4: add fields, never change one).
+_PLAYER_SERVICE_URLS = {}
+# Services with a VERIFIED search URL. A subset of _PLAYER_SERVICES: a service
+# the box can open is not necessarily one it can search, and offering a search
+# that lands nowhere is worse than not offering it.
+_PLAYER_SEARCHABLE = ()
+# {service: [host, ...]} for LINK MATCHING only. Measured: play.max.com
+# redirects to play.hbomax.com, and shared Max links use the latter — matching
+# only the canonical host rejected the one service whose deep-link pattern is
+# verified. Never used to decide what may be OPENED.
+_PLAYER_SERVICE_HOSTS = {}
+
+
+def _pl_ask(*args, timeout=15):
+    """Run one of the tile's read-only debug entry points and return its stdout,
+    or None if it refused / is missing. argv list, never a shell string."""
+    try:
+        p = subprocess.run(["bash", PLAYER_TILE, *args], timeout=timeout,
+                           stdout=subprocess.PIPE, stderr=subprocess.DEVNULL)
+    except (OSError, subprocess.SubprocessError):
+        return None
+    if p.returncode != 0:
+        return None
+    return p.stdout.decode("utf-8", "replace").strip()
+
+
+def set_player(mock):
+    """Startup probe. Caches the tile's service list and its browser verdict, so
+    per-request handling never has to spawn the tile just to answer 'can this
+    box do it'. Degrades closed: no tile, or a tile that reports no
+    Widevine-capable browser, means the capability is simply absent."""
+    global PL_MOCK, _PLAYER_SERVICES, _PLAYER_BROWSER, _PLAYER_SERVICE_URLS
+    global _PLAYER_SEARCHABLE, _PLAYER_SERVICE_HOSTS
+    PL_MOCK = mock
+    if mock:
+        _PLAYER_SERVICES = ("netflix", "youtube", "max", "hulu", "disneyplus",
+                            "primevideo", "appletv", "paramount", "peacock",
+                            "crunchyroll", "twitch", "plutotv", "plex",
+                            "spotify")
+        _PLAYER_SERVICE_URLS = {s: "https://%s.example/" % s
+                                for s in _PLAYER_SERVICES}
+        _PLAYER_SEARCHABLE = ("youtube", "netflix", "twitch", "crunchyroll")
+        _PLAYER_SERVICE_HOSTS = {"max": ["play.max.com", "play.hbomax.com"]}
+        _PLAYER_BROWSER = "mock"
+        return
+    if not os.path.isfile(PLAYER_TILE):
+        _PLAYER_SERVICES, _PLAYER_BROWSER = (), None
+        _PLAYER_SERVICE_URLS = {}
+        _PLAYER_SEARCHABLE = ()
+        _PLAYER_SERVICE_HOSTS = {}
+        return
+    listing = _pl_ask("--list-services")
+    _PLAYER_SERVICES = tuple(listing.split()) if listing else ()
+    _PLAYER_BROWSER = _pl_ask("--print-browser")
+    # One subprocess per service, once, at startup — the tile stays the only
+    # place a service id becomes a URL.
+    urls = {}
+    for svc in _PLAYER_SERVICES:
+        u = _pl_ask("--print-url", svc, "")
+        if u:
+            urls[svc] = u
+    _PLAYER_SERVICE_URLS = urls
+    listing = _pl_ask("--list-searchable")
+    _PLAYER_SEARCHABLE = tuple(listing.split()) if listing else ()
+    hosts = {}
+    for svc in _PLAYER_SERVICES:
+        extra = _pl_ask("--print-hosts", svc)
+        if extra:
+            hosts[svc] = extra.split()
+    _PLAYER_SERVICE_HOSTS = hosts
+
+
+def player_available():
+    """Tile deployed, a Widevine-capable browser found, and the Steam launch
+    toolchain present. Boot-time hint (rides caps); GET /api/player is the live
+    authority — same contract as the screensaver."""
+    if PL_MOCK:
+        return True
+    return (os.path.isfile(PLAYER_TILE)
+            and bool(_PLAYER_SERVICES)
+            and _PLAYER_BROWSER is not None
+            and shutil.which("steam") is not None
+            and shutil.which("steamos-add-to-steam") is not None)
+
+
+def _pl_running():
+    try:
+        with open(PLAYER_PIDFILE) as f:
+            pid = int(f.read().strip())
+        os.kill(pid, 0)
+        return True
+    except (OSError, ValueError):
+        return False
+
+
+def _pl_conf_read():
+    """(service, path, query) currently written for the tile. Missing/partial
+    conf is not an error — the tile has its own default."""
+    service, path, query = "", "", ""
+    try:
+        with open(PLAYER_CONF) as f:
+            for line in f:
+                line = line.strip()
+                if line.startswith("service="):
+                    service = line[len("service="):]
+                elif line.startswith("path="):
+                    path = line[len("path="):]
+                elif line.startswith("query="):
+                    query = line[len("query="):]
+    except OSError:
+        pass
+    return service, path, query
+
+
+def _pl_conf_write(service, path, query="", hub=False):
+    """A deep-link path and a search query are mutually exclusive — the tile
+    treats a query as "open this service's search results", and writing both
+    would leave which one wins to reading order."""
+    os.makedirs(os.path.dirname(PLAYER_CONF), exist_ok=True)
+    with open(PLAYER_CONF, "w") as f:
+        if hub:
+            f.write("hub=1\n")
+        f.write("service=%s\n" % service)
+        if query:
+            f.write("query=%s\n" % query)
+        elif path:
+            f.write("path=%s\n" % path)
+
+
+def _pl_validate(service, path):
+    """Ask the TILE whether this request is allowed, and what URL it means.
+    Returns the URL, or None if refused. This is the single enforcement point;
+    the agent deliberately keeps no second copy of the service table.
+
+    The cheap membership test first means a bad id costs no subprocess."""
+    if not isinstance(service, str) or service not in _PLAYER_SERVICES:
+        return None
+    if path and not isinstance(path, str):
+        return None
+    if PL_MOCK:
+        return "https://example.invalid/%s%s" % (service, path or "")
+    return _pl_ask("--print-url", service, path or "")
+
+
+def _pl_validate_search(service, query):
+    """Ask the TILE whether this search is allowed, and what URL it means.
+    Returns the URL, or None if refused.
+
+    Same principle as _pl_validate: the tile owns the search table and the
+    encoder, so there is one implementation and the validator is the code that
+    runs. The query is free text — the tile rejects it on structure (empty,
+    over-length, control bytes) and percent-encodes the rest, so it can only
+    ever land in a query-string VALUE and never change the URL's shape."""
+    if not isinstance(service, str) or service not in _PLAYER_SEARCHABLE:
+        return None
+    if not isinstance(query, str) or not query.strip():
+        return None
+    if PL_MOCK:
+        return "https://example.invalid/%s?q=%s" % (service, len(query))
+    return _pl_ask("--print-search", service, query)
+
+
+def _pl_appid():
+    """The registered tile's appid from shortcuts.vdf, or None. Same parse as
+    _ss_appid (including the +7 offset that was once wrong by a byte and made
+    fresh registrations launch nothing), anchored on the player's own directory
+    so the two tiles can coexist."""
+    for p in glob.glob(os.path.expanduser(
+            "~/.steam/steam/userdata/*/config/shortcuts.vdf")):
+        try:
+            with open(p, "rb") as f:
+                data = f.read()
+        except OSError:
+            continue
+        i = data.find(PLAYER_VDF_ANCHOR)
+        if i < 0:
+            continue
+        seg = data[max(0, i - 300):i]
+        j = seg.rfind(b"\x02appid\x00")
+        if j >= 0 and j + 11 <= len(seg):
+            return struct.unpack("<I", seg[j + 7:j + 11])[0]
+    return None
+
+
+def _pl_gameid(appid):
+    return (appid << 32) | 0x02000000
+
+
+def _pl_fire(gameid):
+    subprocess.Popen(
+        ["steam", "steam://rungameid/%d" % gameid],
+        env=_user_env(), start_new_session=True,
+        stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+
+
+def _pl_install_grid_art(appid):
+    """Branded capsule for the player tile, same naming and same best-effort
+    contract as _ss_install_grid_art: missing art never blocks a launch."""
+    art = {"portrait": "%dp.png" % appid,
+           "landscape": "%d.png" % appid,
+           "logo": "%d_logo.png" % appid}
+    srcs = {k: os.path.join(PLAYER_GRID_ART, "player-%s.png" % k) for k in art}
+    if not all(os.path.isfile(p) for p in srcs.values()):
+        return
+    for cfg in glob.glob(os.path.expanduser(
+            "~/.steam/steam/userdata/*/config")):
+        grid = os.path.join(cfg, "grid")
+        try:
+            os.makedirs(grid, exist_ok=True)
+            for k, name in art.items():
+                with open(srcs[k], "rb") as src, \
+                        open(os.path.join(grid, name), "wb") as dst:
+                    dst.write(src.read())
+        except OSError as e:
+            print("[player] grid art copy skipped (%s)" % e, flush=True)
+
+
+def player_info():
+    """Live state. `services` is the tile's own list, so the app never carries a
+    hardcoded copy either."""
+    if PL_MOCK:
+        # Same KEYS as the real branch below, always. A mock that returns a
+        # narrower shape is how a UI gets built against a payload the box never
+        # sends — the harness showed no transport at all until this matched.
+        return {"available": True, "running": _PL_MOCK["running"],
+                "service": _PL_MOCK["service"], "path": _PL_MOCK["path"],
+                "query": _PL_MOCK.get("query", ""),
+                "services": list(_PLAYER_SERVICES),
+                "service_urls": dict(_PLAYER_SERVICE_URLS),
+                "searchable": list(_PLAYER_SEARCHABLE),
+                "service_hosts": {k: list(v) for k, v in _PLAYER_SERVICE_HOSTS.items()},
+                "playback": player_playback(),
+                "seek_secs": list(PLAYER_SEEK_SECS)}
+    service, path, query = _pl_conf_read()
+    return {"available": player_available(), "running": _pl_running(),
+            "service": service, "path": path, "query": query,
+            "services": list(_PLAYER_SERVICES),
+            "service_urls": dict(_PLAYER_SERVICE_URLS),
+            "searchable": list(_PLAYER_SEARCHABLE),
+            "service_hosts": {k: list(v) for k, v in _PLAYER_SERVICE_HOSTS.items()},
+            # Added field, never a shape change: null when nothing is playing
+            # or the browser can't be reached, so an old app ignores it and a
+            # new one hides the transport rather than showing a dead scrubber.
+            "playback": player_playback(),
+            "seek_secs": list(PLAYER_SEEK_SECS)}
+
+
+def _pl_relaunch(appid, was_running):
+    """Register if needed, then fire the tile through Steam, in a background
+    thread so the POST returns immediately.
+
+    Extracted so `open`, `search` and `hub` share ONE launch path — three copies
+    of the fresh-registration double-fire is three places for it to drift."""
+
+    def launch():
+        aid = appid
+        fresh = aid is None
+        if was_running:
+            # The tile is single-instance; relaunching before the old one is
+            # gone makes the rungameid a silent no-op.
+            deadline = time.monotonic() + PL_RESTART_WAIT_S
+            while _pl_running() and time.monotonic() < deadline:
+                time.sleep(0.5)
+        if fresh:
+            subprocess.run(
+                ["steamos-add-to-steam", PLAYER_TILE],
+                env=_user_env(), timeout=30,
+                stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            deadline = time.monotonic() + PL_REGISTER_WAIT_S
+            while aid is None and time.monotonic() < deadline:
+                time.sleep(1)
+                aid = _pl_appid()
+            if aid is None:
+                print("[player] registration did not appear in shortcuts.vdf",
+                      flush=True)
+                return
+            _pl_install_grid_art(aid)
+        _pl_fire(_pl_gameid(aid))
+        if fresh:
+            # A shortcut's very first rungameid only opens its page.
+            time.sleep(PL_FIRST_LAUNCH_GAP_S)
+            _pl_fire(_pl_gameid(aid))
+
+    threading.Thread(target=launch, daemon=True).start()
+
+
+def player_open(service, path="", query=""):
+    """Point the tile at an allowlisted service and launch it through Steam.
+
+    With `query`, the tile opens that service's OWN search results instead —
+    which is the whole of "search from the phone": nobody types a title on a TV
+    with a d-pad. A query and a deep-link path are mutually exclusive.
+
+    Raises ValueError when the service/path/query is refused — the caller turns
+    that into a 404, and NOTHING is written or launched. Registration and the
+    fresh-registration double-fire run in a background thread so the POST
+    returns immediately; the app watches `running` flip via GET."""
+    if query:
+        url = _pl_validate_search(service, query)
+        if url is None:
+            raise ValueError("service not searchable, or query rejected")
+        path = ""
+    else:
+        url = _pl_validate(service, path)
+        if url is None:
+            raise ValueError("unknown service or path not allowed")
+    if PL_MOCK:
+        _PL_MOCK.update(running=True, service=service, path=path or "",
+                        query=query or "")
+        return {"ok": True, "running": True, "url": url}
+    if not player_available():
+        raise RuntimeError("player not installed on this box")
+
+    with _PL_LOCK:
+        _pl_conf_write(service, path or "", query or "")
+        # The tile is single-instance and reads its conf at START, so switching
+        # services while it is up MUST stop it first — otherwise the rungameid
+        # below is a no-op and the request silently does nothing.
+        was_running = _pl_running()
+        if was_running:
+            player_close()
+        appid = _pl_appid()
+
+    _pl_relaunch(appid, was_running)
+    return {"ok": True, "starting": True, "service": service}
+
+
+# ---------------------------------------------------------------------------
+# Player transport over CDP (play/pause/seek).
+#
+# The tile spawns Chrome with a randomised loopback debugging port and records
+# it; this talks to that port. It is what makes the player a REMOTE rather than
+# a launcher — MPRIS is not an option here, measured: /api/media reports ZERO
+# players while a streaming site is open but idle, and web video mostly never
+# registers at all. The <video> element is the only honest source.
+#
+# CDP IS AN ARBITRARY-CODE PRIMITIVE. Runtime.evaluate runs any JS, and
+# navigating to file:// plus a DOM read is local file exfiltration. So:
+#
+#   * every script below is a CONSTANT in this module, authored here;
+#   * a request selects WHICH constant runs by looking up an op id in a frozen
+#     dict — an id that is not a key is a 404 and nothing executes;
+#   * where an op needs a number, the number that reaches the script is taken
+#     FROM the frozen tuple by index, never from the request body. The client's
+#     bytes are used only to find the index and are then discarded, so the
+#     script can only ever contain one of a fixed set of literals;
+#   * the debugging port is never exposed or proxied through a LAN route.
+#
+# Connections are made per request and closed. A persistent socket would be
+# faster and is exactly the shape that has produced this project's worst bugs
+# (half-dead sockets in the input path); a fresh loopback connect costs
+# ~milliseconds and cannot go stale.
+# ---------------------------------------------------------------------------
+
+PLAYER_CDP_TIMEOUT = 6.0
+# Offsets the skip buttons may ask for. Requested by u/Most-Bet2021 (r/SteamOS).
+PLAYER_SEEK_SECS = (-90, -30, -10, 10, 30, 90)
+
+# Picks the video to act on: a playing one if there is one, else the longest.
+# A streaming page routinely has several (trailers, previews, ads), and "the
+# first video in the DOM" is reliably the wrong one.
+_PL_JS_PICK = """
+  var vs = Array.prototype.slice.call(document.querySelectorAll('video'));
+  var v = null, i;
+  for (i = 0; i < vs.length; i++) {
+    if (!vs[i].paused && !vs[i].ended) { v = vs[i]; break; }
+  }
+  if (!v) {
+    for (i = 0; i < vs.length; i++) {
+      if (!v || (vs[i].duration || 0) > (v.duration || 0)) v = vs[i];
+    }
+  }
+"""
+
+PLAYER_JS_STATE = (
+    "(function(){%s if (!v) return null;"
+    " return {playing: !v.paused && !v.ended,"
+    "         position: v.currentTime || 0,"
+    "         duration: isFinite(v.duration) ? v.duration : 0,"
+    "         muted: !!v.muted, title: document.title || ''};"
+    "})()" % _PL_JS_PICK)
+
+# op id -> agent-authored script. Frozen: an id that is not a key never runs.
+PLAYER_JS_OPS = {
+    "play":      "(function(){%s if (v) v.play(); return !!v;})()" % _PL_JS_PICK,
+    "pause":     "(function(){%s if (v) v.pause(); return !!v;})()" % _PL_JS_PICK,
+    "playpause": ("(function(){%s if (!v) return false;"
+                  " if (v.paused) { v.play(); } else { v.pause(); }"
+                  " return true;})()" % _PL_JS_PICK),
+    "mute":      ("(function(){%s if (!v) return false;"
+                  " v.muted = !v.muted; return true;})()" % _PL_JS_PICK),
+}
+
+# Seek scripts, pre-built ONE PER ALLOWED OFFSET at import time. The request
+# path only ever indexes this dict, so no request value is ever formatted into
+# a script.
+PLAYER_JS_SEEK = {
+    secs: ("(function(){%s if (!v) return false;"
+           " var d = isFinite(v.duration) ? v.duration : 0;"
+           " var t = (v.currentTime || 0) + (%d);"
+           " v.currentTime = Math.max(0, d ? Math.min(d - 0.5, t) : t);"
+           " return true;})()" % (_PL_JS_PICK, secs))
+    for secs in PLAYER_SEEK_SECS
+}
+
+
+def _pl_cdp_port():
+    try:
+        with open(PLAYER_PORTFILE) as f:
+            port = int(f.read().strip())
+        return port if 1 <= port <= 65535 else None
+    except (OSError, ValueError):
+        return None
+
+
+def _pl_http_get(port, path):
+    """GET one of Chrome's DevTools HTTP endpoints.
+
+    Chrome keeps the connection open even when the request says
+    `Connection: close`, so reading to EOF blocks until the socket timeout —
+    AFTER the whole body has already arrived, which reads as "CDP unreachable"
+    and cost a full debugging round during the Phase 0 spike. Read the headers,
+    then exactly Content-Length bytes."""
+    sock = socket.create_connection(("127.0.0.1", port), PLAYER_CDP_TIMEOUT)
+    try:
+        sock.settimeout(PLAYER_CDP_TIMEOUT)
+        sock.sendall(("GET %s HTTP/1.1\r\nHost: 127.0.0.1:%d\r\n\r\n"
+                      % (path, port)).encode())
+        data = b""
+        while b"\r\n\r\n" not in data:
+            chunk = sock.recv(65536)
+            if not chunk:
+                raise OSError("closed before headers")
+            data += chunk
+        head, _, body = data.partition(b"\r\n\r\n")
+        length = 0
+        for line in head.split(b"\r\n")[1:]:
+            if line.lower().startswith(b"content-length:"):
+                length = int(line.split(b":", 1)[1])
+        while len(body) < length:
+            chunk = sock.recv(65536)
+            if not chunk:
+                break
+            body += chunk
+        return json.loads(body)
+    finally:
+        sock.close()
+
+
+class _PlayerCDP:
+    """Minimal CDP client: one page target, one command, then closed.
+
+    Client frames MUST be masked (RFC6455); server frames are not. The agent
+    already hand-rolls the same shape for the WebOS TV backend."""
+
+    def __init__(self, port):
+        targets = _pl_http_get(port, "/json/list")
+        pages = [t for t in targets if t.get("type") == "page"
+                 and t.get("webSocketDebuggerUrl")]
+        # MEASURED on a real box: taking pages[0] blindly attached to
+        # about:blank while the service was playing in another target, so every
+        # read came back "no video" and the transport never appeared. /json/list
+        # order carries no meaning — pick a target that is actually on a page.
+        loaded = [t for t in pages
+                  if str(t.get("url", "")).startswith(("http://", "https://"))]
+        if not (loaded or pages):
+            raise OSError("no CDP page target")
+        url = (loaded or pages)[0]["webSocketDebuggerUrl"]
+        hostport, _, path = url[len("ws://"):].partition("/")
+        host, _, p = hostport.partition(":")
+        self.sock = socket.create_connection((host, int(p)),
+                                             PLAYER_CDP_TIMEOUT)
+        self.sock.settimeout(PLAYER_CDP_TIMEOUT)
+        key = base64.b64encode(os.urandom(16)).decode()
+        # No Origin header on purpose: Chrome rejects unknown Origins on the
+        # DevTools socket unless --remote-allow-origins is passed; omitting it
+        # entirely is accepted.
+        self.sock.sendall((
+            "GET /%s HTTP/1.1\r\nHost: %s\r\nUpgrade: websocket\r\n"
+            "Connection: Upgrade\r\nSec-WebSocket-Key: %s\r\n"
+            "Sec-WebSocket-Version: 13\r\n\r\n" % (path, hostport, key)
+        ).encode())
+        buf = b""
+        while b"\r\n\r\n" not in buf:
+            chunk = self.sock.recv(4096)
+            if not chunk:
+                raise OSError("closed during CDP handshake")
+            buf += chunk
+        if b" 101 " not in buf.split(b"\r\n")[0] + b" ":
+            raise OSError("CDP handshake refused")
+        self.buf = buf.partition(b"\r\n\r\n")[2]
+
+    def close(self):
+        try:
+            self.sock.close()
+        except OSError:
+            pass
+
+    def _need(self, n):
+        while len(self.buf) < n:
+            chunk = self.sock.recv(65536)
+            if not chunk:
+                raise OSError("CDP socket closed")
+            self.buf += chunk
+
+    def _frame(self):
+        while True:
+            self._need(2)
+            opcode = self.buf[0] & 0x0F
+            length = self.buf[1] & 0x7F
+            off = 2
+            if length == 126:
+                self._need(4)
+                length = struct.unpack(">H", self.buf[2:4])[0]
+                off = 4
+            elif length == 127:
+                self._need(10)
+                length = struct.unpack(">Q", self.buf[2:10])[0]
+                off = 10
+            self._need(off + length)
+            payload = self.buf[off:off + length]
+            self.buf = self.buf[off + length:]
+            if opcode == 0x1:
+                return payload
+            if opcode == 0x8:
+                raise OSError("CDP peer closed")
+
+    def evaluate(self, expression):
+        """Run ONE agent-authored script and return its value. `expression` is
+        always a constant from this module — never anything a client sent."""
+        payload = json.dumps({
+            "id": 1, "method": "Runtime.evaluate",
+            "params": {"expression": expression, "returnByValue": True},
+        }).encode()
+        mask = os.urandom(4)
+        n = len(payload)
+        header = bytes([0x81])
+        if n < 126:
+            header += bytes([0x80 | n])
+        elif n < 65536:
+            header += bytes([0x80 | 126]) + struct.pack(">H", n)
+        else:
+            header += bytes([0x80 | 127]) + struct.pack(">Q", n)
+        self.sock.sendall(header + mask
+                          + bytes(b ^ mask[i % 4] for i, b in enumerate(payload)))
+        deadline = time.monotonic() + PLAYER_CDP_TIMEOUT
+        while time.monotonic() < deadline:
+            msg = json.loads(self._frame())
+            if msg.get("id") == 1:      # everything else is an event
+                res = msg.get("result", {})
+                if "exceptionDetails" in res:
+                    raise OSError("CDP script raised")
+                return res.get("result", {}).get("value")
+        raise OSError("CDP timed out")
+
+
+def _pl_cdp_run(expression):
+    """Connect, run one agent-authored script, close. None on any failure —
+    degrade closed: an unreachable browser reports 'no playback', never a
+    guess."""
+    port = _pl_cdp_port()
+    if port is None:
+        return None
+    cdp = None
+    try:
+        cdp = _PlayerCDP(port)
+        return cdp.evaluate(expression)
+    except (OSError, ValueError, KeyError):
+        return None
+    finally:
+        if cdp is not None:
+            cdp.close()
+
+
+def player_playback():
+    """Live <video> state, or None when there is nothing to report."""
+    if PL_MOCK:
+        if not _PL_MOCK["running"]:
+            return None
+        return {"playing": True, "position": 431.2, "duration": 3120.0,
+                "muted": False, "title": "Mock title"}
+    if not _pl_running():
+        return None
+    state = _pl_cdp_run(PLAYER_JS_STATE)
+    if not isinstance(state, dict):
+        return None
+    return state
+
+
+def player_transport(op, secs=None):
+    """Run one allowlisted transport op. ValueError => 404, nothing runs."""
+    if PL_MOCK:
+        if op in PLAYER_JS_OPS:
+            return {"ok": True, "op": op}
+        if op == "seek":
+            if secs not in PLAYER_SEEK_SECS:
+                raise ValueError("seek offset not allowed")
+            return {"ok": True, "op": "seek", "secs": secs}
+        raise ValueError("unknown transport op")
+
+    if op in PLAYER_JS_OPS:
+        script = PLAYER_JS_OPS[op]              # lookup, never interpolation
+    elif op == "seek":
+        if secs not in PLAYER_SEEK_SECS:
+            raise ValueError("seek offset not allowed")
+        script = PLAYER_JS_SEEK[secs]           # pre-built per allowed offset
+    else:
+        raise ValueError("unknown transport op")
+
+    if not _pl_running():
+        raise RuntimeError("player is not running")
+    ok = _pl_cdp_run(script)
+    if ok is None:
+        raise RuntimeError("could not reach the player")
+    return {"ok": bool(ok), "op": op}
+
+
+def player_hub():
+    """Open the tile's OWN page — the service grid it writes from the frozen
+    table, with a focus ring a d-pad step can land on.
+
+    There is no client input in this path at all: the request carries an op and
+    nothing else, and the page is authored by the tile. It exists for the case
+    the phone does not cover — someone opening the tile from the Steam library
+    with a controller and no phone in hand."""
+    if PL_MOCK:
+        _PL_MOCK.update(running=True, service="", path="", query="")
+        return {"ok": True, "running": True, "hub": True}
+    if not player_available():
+        raise RuntimeError("player not installed on this box")
+    with _PL_LOCK:
+        service, _, _ = _pl_conf_read()
+        _pl_conf_write(service or "netflix", "", "", hub=True)
+        was_running = _pl_running()
+        if was_running:
+            player_close()
+        appid = _pl_appid()
+    _pl_relaunch(appid, was_running)
+    return {"ok": True, "starting": True, "hub": True}
+
+
+def player_close():
+    """Stop the tile. TERMs the PIDFILE pid, never the pgid — Steam's reaper
+    owns the process group (the screensaver learned this first). The tile's own
+    trap forwards it to the browser and clears its runtime files. Idempotent."""
+    if PL_MOCK:
+        _PL_MOCK["running"] = False
+        return {"ok": True, "running": False}
+    try:
+        with open(PLAYER_PIDFILE) as f:
+            pid = int(f.read().strip())
+        os.kill(pid, 15)
+    except (OSError, ValueError):
+        pass  # not running = already stopped
     return {"ok": True, "running": False}
 
 
@@ -14168,6 +14883,14 @@ class Handler(BaseHTTPRequestHandler):
                     self._send(404, {"error": "not found"}, started)
                 else:
                     self._send(200, info, started)
+            elif path == "/api/player":
+                # Probe-and-appear: 404 when the tile is not deployed or found
+                # no Widevine-capable browser, so the app hides the Watch tab
+                # rather than offering a control that would open a black window.
+                if not player_available():
+                    self._send(404, {"error": "player not installed"}, started)
+                else:
+                    self._send(200, player_info(), started)
             elif path == "/api/couch-mode/status":
                 # Full ceremony job every poll (never a delta) so a phone joining
                 # mid-run catches up for free. Gated like the Couch Mode control
@@ -15220,6 +15943,66 @@ class Handler(BaseHTTPRequestHandler):
                 return
 
             # POST /api/screensaver: {"op":"start","theme"?,"tier"?} | {"op":"stop"}
+            # POST /api/player: {"op":"open","service":"max","path":"/video/..."}
+            #                   {"op":"close"}
+            #
+            # `service` and `path` are the ONLY client-supplied values, and both
+            # are settled by _pl_validate() BEFORE anything is written or
+            # launched: the id must be one the tile listed, and the path must
+            # clear that service's own pattern inside the tile. A refusal is a
+            # 404 and leaves no conf written and no process started — never a
+            # pass-through, never a sanitised near-miss (CLAUDE.md §3).
+            if path == "/api/player":
+                if not player_available():
+                    self._send(404, {"error": "player not installed"}, started)
+                    return
+                try:
+                    req = json.loads(body.decode("utf-8")) if body else {}
+                    if not isinstance(req, dict):
+                        raise ValueError
+                    op = req.get("op")
+                except (ValueError, UnicodeDecodeError):
+                    self._send(400, {"error": "json body with op required"}, started)
+                    return
+                if op == "open":
+                    try:
+                        r = player_open(req.get("service"),
+                                        req.get("path", ""),
+                                        req.get("query", ""))
+                    except ValueError:
+                        # Deliberately does NOT echo the rejected value back.
+                        self._send(404, {"error": "unknown service"}, started)
+                        return
+                    except RuntimeError as e:
+                        self._send(409, {"error": str(e)}, started)
+                        return
+                    self._send(200, r, started)
+                elif op == "hub":
+                    try:
+                        self._send(200, player_hub(), started)
+                    except RuntimeError as e:
+                        self._send(409, {"error": str(e)}, started)
+                elif op == "close":
+                    self._send(200, player_close(), started)
+                elif op in ("play", "pause", "playpause", "mute", "seek"):
+                    # Transport. The op id selects an agent-authored script by
+                    # dict lookup, and `secs` is checked for membership in a
+                    # frozen tuple before the CONSTANT is taken from that tuple,
+                    # so nothing a client sent is ever formatted into JS. A
+                    # rejected value is a 404 and no script runs.
+                    try:
+                        r = player_transport(op, secs=req.get("secs"))
+                    except ValueError:
+                        self._send(404, {"error": "not allowed"}, started)
+                        return
+                    except RuntimeError as e:
+                        self._send(409, {"error": str(e)}, started)
+                        return
+                    self._send(200, r, started)
+                else:
+                    self._send(400, {"error": "unknown op"}, started)
+                return
+
             if path == "/api/screensaver":
                 if not (SS_MOCK or screensaver_available()):
                     self._send(404, {"error": "screensaver not installed"}, started)
@@ -15946,6 +16729,9 @@ def main():
     set_screen(args.mock)
     set_power_schedule(args.mock)
     set_screensaver(args.mock)
+    # Asks the player tile for its own service list and browser verdict, so no
+    # request path has to spawn it just to answer "can this box do it".
+    set_player(args.mock)
     set_guide(args.mock)  # arms the guide-hold watcher when opted in
     osk_arm(args.mock)  # tails Steam's UI log; silent no-op without it
     set_couchmode(args.mock)  # ceremony engine honors --mock

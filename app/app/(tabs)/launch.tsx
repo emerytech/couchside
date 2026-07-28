@@ -38,9 +38,10 @@ import {
 } from '@/lib/api';
 import { hapticError, hapticLight, hapticMedium, hapticSelection, hapticSuccess } from '@/lib/haptics';
 import { setPref, usePref } from '@/lib/prefs';
-import { useSettings } from '@/lib/SettingsContext';
+import { useBoxes, useSettings } from '@/lib/SettingsContext';
 import { mono, useTheme, useThemedStyles, type Palette } from '@/lib/theme';
 import { NowPlayingCard } from '@/components/GamingCard';
+import { WatchPanel } from '@/components/WatchPanel';
 
 /** Cross-platform confirm (Alert buttons are no-ops on web). */
 function confirmDelete(label: string, onConfirm: () => void) {
@@ -553,7 +554,20 @@ function LaunchScreen() {
   const t = useTheme();
   const styles = useThemedStyles(makeStyles);
   const { settings, ready } = useSettings();
+  const { activeBox } = useBoxes();
   const { width } = useWindowDimensions();
+  const [section, setSection] = useState<'games' | 'watch'>('games');
+  // TWO gates, and the order matters. The box cap says the machine CAN do it;
+  // the preference says the owner WANTS it offered. A gaming-only box may have
+  // Chrome and still never want streaming on the Launch tab, and turning the
+  // pref on can never conjure the segment onto a box with no player.
+  const watchEnabled = usePref('watchEnabled');
+  const showWatch = activeBox?.caps?.player === true && watchEnabled;
+  // DERIVED, not stored. If the pref is switched off (or the box is swapped for
+  // one with no player) while WATCH is showing, the segment row disappears —
+  // and a stored 'watch' would strand the user on a panel with no way back.
+  // Falling back at render time cannot get out of sync with the gate.
+  const activeSection = showWatch ? section : 'games';
   const [addOpen, setAddOpen] = useState(false);
   const [toast, setToast] = useState<string | null>(null);
   const [refreshing, setRefreshing] = useState(false);
@@ -743,6 +757,35 @@ function LaunchScreen() {
         )}
       </View>
 
+      {/* GAMES | WATCH. Only offered when the box actually has the player, and
+          on `=== true` rather than `!== false`: undefined means an agent with no
+          player routes at all, so the segment would lead to a dead panel. */}
+      {showWatch && (
+        <View style={styles.segRow}>
+          {(['games', 'watch'] as const).map((key) => (
+            <Pressable
+              key={key}
+              onPress={() => {
+                if (activeSection !== key) hapticSelection();
+                setSection(key);
+              }}
+              testID={`launch-seg-${key}`}
+              style={({ pressed }) => [
+                styles.seg,
+                activeSection === key && styles.segOn,
+                pressed && styles.pressed,
+              ]}>
+              <Text style={[styles.segText, activeSection === key && styles.segTextOn]}>
+                {key === 'games' ? 'GAMES' : 'WATCH'}
+              </Text>
+            </Pressable>
+          ))}
+        </View>
+      )}
+
+      {activeSection === 'watch' && <WatchPanel />}
+
+      {activeSection === 'games' && (
       <ScrollView
         style={styles.list}
         contentContainerStyle={{ paddingHorizontal: H_PAD, paddingBottom: 24 }}
@@ -876,6 +919,7 @@ function LaunchScreen() {
           </View>
         ))}
       </ScrollView>
+      )}
 
       {/* Toast */}
       {toast && (
@@ -1115,6 +1159,24 @@ const makeStyles = (t: Palette) => StyleSheet.create({
   emptyAddText: { color: t.bg, fontSize: 14, fontWeight: '800' },
 
   pressed: { opacity: 0.7 },
+  segRow: {
+    flexDirection: 'row',
+    gap: 8,
+    paddingHorizontal: 14, // matches H_PAD, which is component-local
+    paddingBottom: 10,
+  },
+  seg: {
+    flex: 1,
+    alignItems: 'center',
+    paddingVertical: 9,
+    borderRadius: 9,
+    backgroundColor: t.inset,
+    borderWidth: StyleSheet.hairlineWidth,
+    borderColor: t.cardBorder,
+  },
+  segOn: { backgroundColor: t.card, borderColor: t.accent },
+  segText: { color: t.textDim, fontSize: 12, fontWeight: '700', letterSpacing: 1 },
+  segTextOn: { color: t.text },
 
   toast: {
     position: 'absolute',

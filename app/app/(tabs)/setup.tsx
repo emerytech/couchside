@@ -774,6 +774,7 @@ function SetupBody() {
   const mediaHoldSkipSec = usePref('mediaHoldSkipSec');
   const tvStepPx = usePref('tvStepPx');
   const tvNavEnabled = usePref('tvNavEnabled');
+  const watchEnabled = usePref('watchEnabled');
   const themeMode = useThemeMode();
   const accent = useAccent();
   const scheme = useResolvedScheme();
@@ -1457,6 +1458,15 @@ function SetupBody() {
                   }}
                 />
               )}
+              <TogglePref
+                label="Watch (streaming services) — experimental"
+                sub="EARLY — expect rough edges. Adds a WATCH section to the Launch tab for starting Netflix, YouTube, Max and the rest on the box. Only appears on a box that actually has the Couchside Player add-on installed — turning this on cannot add it to a box that hasn't. Streaming sites still need the trackpad rather than the d-pad: they do not let a remote move a highlight. Turn it off to keep a gaming-only box gaming-only."
+                value={watchEnabled}
+                onValueChange={(v) => {
+                  void setPref('watchEnabled', v);
+                  hapticSelection();
+                }}
+              />
               <TogglePref
                 label="TV navigation (beta)"
                 sub="UNPOLISHED — off by default. Adds a TV toggle to the swipe pad that moves the pointer in jumps instead of sending arrow keys. It does NOT feel like a TV remote: a d-pad moves a focus ring the app draws, while this moves a visible mouse cursor, and streaming sites have no focus model for it to land on. Useful on surfaces that do; rough everywhere else."

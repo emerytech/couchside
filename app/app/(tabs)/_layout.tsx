@@ -131,6 +131,13 @@ export default function TabLayout() {
           href: hideLaunch ? null : undefined,
         }}
       />
+      {/* No Watch tab: it is a SEGMENT of Launch (components/WatchPanel).
+          Launch already means "start something on the TV", the bar was getting
+          crowded at six, and nesting is safe rather than hopeful — the agent's
+          player_available() requires steam + steamos-add-to-steam, so
+          `player: true` implies Steam is present and Launch is never hidden on a
+          box that has Watch. One door per thing, same as Steam menus moving into
+          a Pad segment. */}
       <Tabs.Screen
         name="setup"
         options={{

@@ -13,7 +13,7 @@
 #   scripts/release-agent.sh v2.8.6
 #
 # Uploads to the release: couchsided.py, couchside.service, qr.py,
-# couchside-screensaver.sh, SHA256SUMS, SHA256SUMS.sig.
+# couchside-screensaver.sh, couchside-player.sh, SHA256SUMS, SHA256SUMS.sig.
 set -euo pipefail
 
 REPO="emerytech/couchside"
@@ -30,9 +30,10 @@ root="$(cd "$here/.." && pwd)"
 agent="$root/agent"
 
 # The exact files install.sh fetches. couchsided.py + couchside.service are
-# REQUIRED; qr.py + couchside-screensaver.sh are optional at install time but
+# REQUIRED; qr.py + the two add-on scripts are optional at install time but
 # always shipped + signed here.
-files=(couchsided.py couchside.service qr.py couchside-screensaver.sh)
+files=(couchsided.py couchside.service qr.py couchside-screensaver.sh \
+       couchside-player.sh)
 for f in "${files[@]}"; do
     [ -f "$agent/$f" ] || { echo "error: missing agent/$f" >&2; exit 2; }
 done
@@ -83,7 +84,8 @@ done
 # basenames (screensaver-portrait/landscape/logo.png) so install.sh + the Decky
 # sync fetch them from releases/latest/download. Signed alongside everything
 # else (covered by SHA256SUMS); install.sh treats them as optional plain PNGs.
-for art in screensaver-portrait.png screensaver-landscape.png screensaver-logo.png; do
+for art in screensaver-portrait.png screensaver-landscape.png screensaver-logo.png \
+           player-portrait.png player-landscape.png player-logo.png; do
     [ -f "$agent/steam-grid/$art" ] || { echo "error: missing agent/steam-grid/$art" >&2; exit 2; }
     cp "$agent/steam-grid/$art" "$tmp/$art"
     files+=("$art")

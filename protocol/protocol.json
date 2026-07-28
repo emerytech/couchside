@@ -181,8 +181,9 @@
       "display_info",
       "file_upload",
       "gaming",
-      "steamlink",
+      "player",
       "session_default",
+      "steamlink",
       "steammenus",
       "streamhost"
     ]

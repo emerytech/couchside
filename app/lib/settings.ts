@@ -260,10 +260,15 @@ function normalizeCaps(raw: unknown): BoxCaps | undefined {
   // it here (and from capsEqual) and the cap never persists, so the Console
   // "DISPLAY & AUDIO" card re-probes /api/display-info on every launch.
   const display_info = bool('display_info');
+  // player arrived with agent 2.9.61 (the Couchside Player tile) — same
+  // optional-cap drop trap as every key above it: omit it here (and from
+  // capsEqual) and the cap never persists, so the Watch tab re-probes
+  // /api/player on every launch.
+  const player = bool('player');
   return {
     gamepad, steam, media, tv, screen, power_schedule,
     screensaver, couchmode, desktop, steamlink, gaming, streamhost, steammenus,
-    boxbattery, launchers, file_upload, session_default, display_info,
+    boxbattery, launchers, file_upload, session_default, display_info, player,
   };
 }
 

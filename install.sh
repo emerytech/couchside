@@ -45,6 +45,14 @@ SCREENSAVER_ART_LANDSCAPE_URL="${AGENT_BASE}/screensaver-landscape.png"
 SCREENSAVER_ART_LOGO_URL="${AGENT_BASE}/screensaver-logo.png"
 # The installed player's basename IS the Steam tile name (Steam titles a
 # non-Steam shortcut from the basename). Display name + legacy name.
+PLAYER_URL="${AGENT_BASE}/couchside-player.sh"
+PLAYER_ART_PORTRAIT_URL="${AGENT_BASE}/player-portrait.png"
+PLAYER_ART_LANDSCAPE_URL="${AGENT_BASE}/player-landscape.png"
+PLAYER_ART_LOGO_URL="${AGENT_BASE}/player-logo.png"
+# Steam titles a non-Steam shortcut from the file BASENAME, so this is the name
+# on the Game Mode tile.
+PLAYER_DEST_NAME="Couchside Player"
+
 SCREENSAVER_DEST_NAME="Couchside Screensaver"
 SCREENSAVER_DEST_LEGACY="couchside-screensaver.sh"
 # Signature + checksums for the agent files above, published as sibling assets
@@ -199,10 +207,17 @@ Usage: install.sh [--no-sudoers] [--no-decky] [--screensaver] [--no-screensaver]
   --no-decky        skip the Decky Loader Game Mode panel even if Decky is found
   --screensaver     install the Couchside screensaver add-on without asking
   --no-screensaver  skip the Couchside screensaver add-on
+  --player          install the Couchside Player add-on (EXPERIMENTAL)
+  --no-player       skip the Couchside Player add-on
   --no-open         don't auto-open the on-screen pairing tutorial on a fresh
                     install (it only ever opens on a first install anyway)
   --uninstall       remove the agent (asks before deleting the token/sudoers)
   --help            this text
+
+The Couchside Player add-on (EXPERIMENTAL: streaming services on the TV, driven
+from your phone) is asked about on a terminal and, when it cannot ask, is left
+exactly as it already is — never added silently. Set COUCHSIDE_PLAYER=1/0 (or
+the flags above) to decide up front.
 
 The screensaver add-on (Apple-TV-style aerials as a Game Mode tile) is asked
 about interactively; set COUCHSIDE_SCREENSAVER=1/0 (or the flags above) to
@@ -216,6 +231,8 @@ for arg in "$@"; do
         --no-decky)       NO_DECKY=1 ;;
         --screensaver)    COUCHSIDE_SCREENSAVER=1 ;;
         --no-screensaver) COUCHSIDE_SCREENSAVER=0 ;;
+        --player)         COUCHSIDE_PLAYER=1 ;;
+        --no-player)      COUCHSIDE_PLAYER=0 ;;
         --no-open)        NO_OPEN=1 ;;
         --uninstall)      UNINSTALL=1 ;;
         --help|-h)        usage; exit 0 ;;
@@ -485,6 +502,44 @@ case "${COUCHSIDE_SCREENSAVER:-ask}" in
        fi ;;
 esac
 
+# --- Couchside Player add-on (EXPERIMENTAL) --------------------------------
+# DELIBERATELY a different default policy from the screensaver above.
+#
+# The screensaver defaults to INSTALLED on a piped/non-interactive run. That is
+# right for a finished add-on, but this one is experimental and most installs
+# are `curl … | bash`, so the same default would silently opt in nearly
+# everybody. Equally, defaulting to OFF would rip it back off every box that
+# already chose it, on the next unattended update.
+#
+# So the rule is PRESERVE, never opt in silently: if the tile is already
+# installed, keep it; if it is not and we cannot ask, leave it alone. A real
+# terminal is asked. Explicit wins either way via --player / --no-player /
+# COUCHSIDE_PLAYER.
+PLAYER_INSTALL_DIR="${HOME}/.local/opt/couchside-player"
+if [ -f "$PLAYER_INSTALL_DIR/$PLAYER_DEST_NAME" ]; then
+    WANT_PLAYER=1        # already chosen on this box; an update must not drop it
+else
+    WANT_PLAYER=0
+fi
+case "${COUCHSIDE_PLAYER:-ask}" in
+    1|yes|true|YES|TRUE)  WANT_PLAYER=1 ;;
+    0|no|false|NO|FALSE)  WANT_PLAYER=0 ;;
+    *) if [ -r /dev/tty ]; then
+           echo
+           echo "  Couchside Player (EXPERIMENTAL add-on)"
+           echo "  Puts Netflix, YouTube, Max, Hulu, Disney+ and more on the TV as"
+           echo "  one Game Mode tile, driven from your phone: pick a service, send"
+           echo "  it a link, or search without typing on the TV. Needs a browser"
+           echo "  that can play protected video (Chrome); boxes without one are"
+           echo "  unaffected."
+           echo "  It is EARLY — expect rough edges while it is being finished, and"
+           echo "  streaming sites still need the trackpad rather than the d-pad."
+           echo "  You can add or remove it any time by re-running this installer."
+           ask_yn "Install the Couchside Player add-on?" \
+               && WANT_PLAYER=1 || WANT_PLAYER=0
+       fi ;;
+esac
+
 SCRIPT_DIR=""
 if [ -n "${BASH_SOURCE[0]:-}" ] && [ -f "${BASH_SOURCE[0]:-}" ]; then
     SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -496,6 +551,16 @@ if [ -n "$SCRIPT_DIR" ] && [ -f "$SCRIPT_DIR/agent/couchsided.py" ]; then
     cp "$SCRIPT_DIR/agent/couchside.service" "$WORK_DIR/couchside.service"
     # Optional QR helper: present in a checkout, harmless if not.
     [ -f "$SCRIPT_DIR/agent/qr.py" ] && cp "$SCRIPT_DIR/agent/qr.py" "$WORK_DIR/qr.py"
+    # Optional Couchside Player tile + its branded art, only when wanted.
+    if [ "$WANT_PLAYER" = 1 ]; then
+        [ -f "$SCRIPT_DIR/agent/couchside-player.sh" ] && \
+            cp "$SCRIPT_DIR/agent/couchside-player.sh" "$WORK_DIR/couchside-player.sh"
+        for art in portrait landscape logo; do
+            [ -f "$SCRIPT_DIR/agent/steam-grid/player-$art.png" ] && \
+                cp "$SCRIPT_DIR/agent/steam-grid/player-$art.png" \
+                   "$WORK_DIR/player-$art.png"
+        done
+    fi
     # Optional aerial-screensaver player + branded tile art (agent's
     # /api/screensaver drives it), only when the add-on is wanted.
     if [ "$WANT_SCREENSAVER" = 1 ]; then
@@ -516,6 +581,15 @@ else
     curl -fsSL "$UNIT_URL" -o "$WORK_DIR/couchside.service"
     # Optional: don't abort the install if only the QR helper fails to fetch.
     curl -fsSL "$QR_URL" -o "$WORK_DIR/qr.py" 2>/dev/null || true
+    # Optional Couchside Player tile + art, same policy. The tile is CODE, so it
+    # goes through the same signature + checksum gate as everything else below;
+    # the art is plain PNG.
+    if [ "$WANT_PLAYER" = 1 ]; then
+        curl -fsSL "$PLAYER_URL" -o "$WORK_DIR/couchside-player.sh" 2>/dev/null || true
+        curl -fsSL "$PLAYER_ART_PORTRAIT_URL"  -o "$WORK_DIR/player-portrait.png"  2>/dev/null || true
+        curl -fsSL "$PLAYER_ART_LANDSCAPE_URL" -o "$WORK_DIR/player-landscape.png" 2>/dev/null || true
+        curl -fsSL "$PLAYER_ART_LOGO_URL"      -o "$WORK_DIR/player-logo.png"      2>/dev/null || true
+    fi
     # Optional aerial-screensaver player + branded tile art, same policy, only
     # when the add-on is wanted. The art is plain PNG (no code) so it isn't
     # gated by the signature check below; the player IS (bash -n at install).
@@ -593,6 +667,30 @@ if [ "$WANT_SCREENSAVER" = 1 ] \
         [ -f "$WORK_DIR/screensaver-$art.png" ] && \
             install -m 0644 "$WORK_DIR/screensaver-$art.png" "$INSTALL_DIR/steam-grid/screensaver-$art.png"
     done
+fi
+# The Couchside Player tile is optional, and gated exactly like the screensaver:
+# installed only if wanted AND it fetched and parses (bash -n), so a failed or
+# HTML-error fetch can never land as an executable script. It goes in its OWN
+# directory, NOT alongside the screensaver: the agent finds the screensaver's
+# Steam shortcut by searching shortcuts.vdf for the literal "couchside/Couchside",
+# which a player tile one directory over would also match — silently breaking the
+# screensaver's launch on any box that had both.
+if [ "$WANT_PLAYER" = 1 ] \
+   && [ -f "$WORK_DIR/couchside-player.sh" ] \
+   && bash -n "$WORK_DIR/couchside-player.sh" 2>/dev/null \
+   && head -1 "$WORK_DIR/couchside-player.sh" | grep -q '^#!'; then
+    mkdir -p "$PLAYER_INSTALL_DIR"
+    install -m 0755 "$WORK_DIR/couchside-player.sh" "$PLAYER_INSTALL_DIR/$PLAYER_DEST_NAME"
+    for art in portrait landscape logo; do
+        [ -f "$WORK_DIR/player-$art.png" ] && \
+            install -m 0644 "$WORK_DIR/player-$art.png" "$PLAYER_INSTALL_DIR/player-$art.png"
+    done
+elif [ "$WANT_PLAYER" = 0 ] && [ -d "$PLAYER_INSTALL_DIR" ]; then
+    # Explicitly declined on a box that had it: take it back off, so
+    # --no-player actually removes rather than merely not-updating. The Steam
+    # shortcut itself must be removed in Steam's own UI — file-level edits to
+    # shortcuts.vdf do not stick.
+    rm -rf "$PLAYER_INSTALL_DIR"
 fi
 # The QR helper is optional: install it only if it fetched and compiles, so the
 # terminal pairing QR works without qrencode. Its absence just prints the URL.
