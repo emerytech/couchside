@@ -919,6 +919,18 @@ $USER_NAME ALL=(root) NOPASSWD: /usr/bin/systemctl restart sddm
 # phone only ever selects a mode from a closed set. Our own drop-in sorts after
 # the distro's steamos.conf, so removing this one file restores the box's
 # original boot behaviour exactly, with nothing of theirs edited.
+# Boot session default. TWO fixed paths, and the pair is deliberate.
+#
+# zzz- is the live one: SDDM reads /etc/sddm.conf.d/*.conf alphabetically and
+# the LAST file wins, and steamos-session-select (both SteamOS and Bazzite)
+# owns zz-steamos-autologin.conf -- so "zz-couchside" sorted BEFORE it and was
+# silently overridden every time that script ran, which is on every Couch Mode
+# switch. zzz- sorts after it and therefore actually applies.
+#
+# The old zz- path stays granted so an updating box can BLANK its stale file;
+# without the grant that orphaned [Autologin] stanza would linger forever.
+# Each grant is one exact path -- never a directory, never a glob.
+$USER_NAME ALL=(root) NOPASSWD: /usr/bin/tee /etc/sddm.conf.d/zzz-couchside-session.conf
 $USER_NAME ALL=(root) NOPASSWD: /usr/bin/tee /etc/sddm.conf.d/zz-couchside-session.conf
 $USER_NAME ALL=(root) NOPASSWD: /usr/bin/systemctl reboot
 $USER_NAME ALL=(root) NOPASSWD: /usr/bin/systemctl poweroff

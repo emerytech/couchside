@@ -3617,7 +3617,27 @@ def _installed_session_files():
 
 # Closed set. A client selects one of these; it never reaches a command line.
 SESSION_DEFAULT_MODES = ("game", "desktop", "last")
-SDDM_DROPIN = "/etc/sddm.conf.d/zz-couchside-session.conf"
+# Our SDDM autologin drop-in.
+#
+# THE NAME IS LOAD-BEARING, and it is why this is "zzz" and not "zz".
+# SDDM reads /etc/sddm.conf.d/*.conf in ALPHABETICAL order and the last file
+# wins. SteamOS and Bazzite both ship `steamos-session-select`, which writes its
+# own autologin drop-in at zz-steamos-autologin.conf -- and "zz-couchside"
+# sorts BEFORE "zz-steamos", so our setting was silently overridden by theirs.
+# Worse, that script runs on every Couch Mode switch and every switch-to-desktop
+# action, so it rewrote the winning file routinely and the user's "Boots into"
+# choice quietly stopped applying. MEASURED 2026-07-27 on a real box: our file
+# and theirs both present, theirs last, effective session theirs.
+#
+# We do NOT call steamos-session-select to set this instead: it ends with an
+# unconditional `systemctl restart sddm` (verified by running it), which kills
+# the user's current session. A preference about the NEXT boot must never log
+# somebody out of the session they are in.
+SDDM_DROPIN = "/etc/sddm.conf.d/zzz-couchside-session.conf"
+# The pre-2.9.64 name. Still written -- as an inert comment -- so a box that
+# updates does not keep an old [Autologin] stanza competing with the new file.
+# Kept as a constant rather than deleted so the migration is explicit.
+SDDM_DROPIN_LEGACY = "/etc/sddm.conf.d/zz-couchside-session.conf"
 GAMESCOPE_SESSION_FILE = "gamescope-session.desktop"
 SDDM_STATE = "/var/lib/sddm/state.conf"
 
@@ -3641,7 +3661,8 @@ def _steamosctl_session_ok():
 
 def _sddm_session_ok():
     """True when sudoers really lets us write our own sddm drop-in."""
-    return _sudo_nopasswd_allows(SDDM_DROPIN)
+    return (_sudo_nopasswd_allows(SDDM_DROPIN)
+            or _sudo_nopasswd_allows(SDDM_DROPIN_LEGACY))
 
 
 # ---------------------------------------------------------------------------
@@ -3901,7 +3922,7 @@ def _sddm_current_session_file():
     Reads OUR drop-in first (it sorts last, so it wins), then falls back to
     SDDM's recorded last session. Returns "" when neither is readable —
     degrading to "unknown" rather than claiming a mode we did not verify."""
-    for path in (SDDM_DROPIN, SDDM_STATE):
+    for path in (SDDM_DROPIN, SDDM_DROPIN_LEGACY, SDDM_STATE):
         try:
             with open(path, "r", encoding="utf-8", errors="replace") as f:
                 for line in f:
@@ -3968,9 +3989,33 @@ def _sddm_write(session_file):
     try:
         r = subprocess.run(["sudo", "-n", "tee", SDDM_DROPIN],
                            input=body, capture_output=True, text=True, timeout=8)
-        return r.returncode == 0
+        ok = r.returncode == 0
     except Exception:
         return False
+    if ok:
+        _sddm_neutralise_legacy()
+    return ok
+
+
+def _sddm_neutralise_legacy():
+    """Blank the pre-2.9.64 drop-in so it cannot compete with the new one.
+
+    Overwritten with a comment rather than deleted: the sudoers grant permits
+    `tee` at that exact path and nothing else, so writing is the only tool we
+    have there, and an empty file contributes no [Autologin] stanza. Silent and
+    best-effort -- a box whose grant predates this simply keeps a stale file
+    that now sorts BEFORE the new one and therefore loses, which is the
+    behaviour we want anyway."""
+    if not os.path.exists(SDDM_DROPIN_LEGACY):
+        return
+    body = ("# Superseded by zzz-couchside-session.conf (Couchside >= 2.9.64).\n"
+            "# Left blank deliberately: this name sorted BEFORE the display\n"
+            "# manager's own drop-in and so could never win. Safe to delete.\n")
+    try:
+        subprocess.run(["sudo", "-n", "tee", SDDM_DROPIN_LEGACY],
+                       input=body, capture_output=True, text=True, timeout=8)
+    except Exception:
+        pass
 
 
 def session_default_set(mode):

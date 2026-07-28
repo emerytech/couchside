@@ -136,6 +136,64 @@ def test_autologin_session_must_exist():
         cs._default_desktop_session = saved_cfg
 
 
+
+def test_dropin_outranks_the_platforms_own():
+    """Our drop-in must WIN against steamos-session-select's (2026-07-27).
+
+    SDDM reads /etc/sddm.conf.d/*.conf alphabetically and the LAST file wins.
+    Both SteamOS and Bazzite ship `steamos-session-select`, which writes its own
+    autologin drop-in at zz-steamos-autologin.conf. Our old name, zz-couchside-
+    session.conf, sorts BEFORE that ("c" < "s") — so the platform's file won and
+    the user's "Boots into" choice silently stopped applying. That script runs
+    on every Couch Mode switch and every switch-to-desktop action, so it rewrote
+    the winning file routinely. MEASURED on a real box: both files present,
+    theirs last, effective session theirs.
+
+    We do NOT call steamos-session-select instead: it ends with an unconditional
+    `systemctl restart sddm` (verified by running it), which kills the user's
+    current session. A preference about the NEXT boot must never log somebody
+    out of the one they are in.
+
+    This test is a sort comparison because that is literally the mechanism.
+    """
+    print("test_dropin_outranks_the_platforms_own")
+    ours = os.path.basename(cs.SDDM_DROPIN)
+    theirs = "zz-steamos-autologin.conf"
+    check("our drop-in sorts AFTER steamos-session-select's", ours > theirs, True)
+    # CONTROL: the old name genuinely lost — proving the test can fail, and
+    # documenting the bug rather than just asserting the fix.
+    legacy = os.path.basename(cs.SDDM_DROPIN_LEGACY)
+    check("...and the OLD name genuinely lost", legacy > theirs, False)
+    # Both still beat the distro's base config, which is what we always relied on.
+    for base in ("steamos.conf", "steamdeck.conf", "virtualkbd.conf"):
+        check("beats %s" % base, ours > base, True)
+    # The live path must not be the legacy path.
+    check("live path differs from legacy", cs.SDDM_DROPIN != cs.SDDM_DROPIN_LEGACY, True)
+    # Reading the current session must still consult the legacy file, so a box
+    # that has not re-run install.sh is reported correctly. Asserted by actually
+    # reading one, not by inspecting a docstring.
+    import tempfile
+    tmp = tempfile.mkdtemp()
+    live, legacy_p = os.path.join(tmp, "zzz.conf"), os.path.join(tmp, "zz.conf")
+    saved = (cs.SDDM_DROPIN, cs.SDDM_DROPIN_LEGACY, cs.SDDM_STATE)
+    try:
+        cs.SDDM_DROPIN, cs.SDDM_DROPIN_LEGACY = live, legacy_p
+        cs.SDDM_STATE = os.path.join(tmp, "missing.conf")
+        with open(legacy_p, "w") as f:
+            f.write("[Autologin]\nSession=plasma.desktop\n")
+        check("a legacy-only box still reports its session",
+              cs._sddm_current_session_file(), "plasma.desktop")
+        # ...and the live file WINS when both exist.
+        with open(live, "w") as f:
+            f.write("[Autologin]\nSession=gamescope-session.desktop\n")
+        check("the live drop-in wins over the legacy one",
+              cs._sddm_current_session_file(), "gamescope-session.desktop")
+    finally:
+        cs.SDDM_DROPIN, cs.SDDM_DROPIN_LEGACY, cs.SDDM_STATE = saved
+        import shutil
+        shutil.rmtree(tmp, ignore_errors=True)
+
+
 def main():
     real_run = cs.subprocess.run
     real_sudo = cs._sudo_nopasswd_allows
@@ -181,6 +239,7 @@ def main():
     check("set() reports failure", cs.session_default_set("game")["ok"], False)
 
     test_autologin_session_must_exist()
+    test_dropin_outranks_the_platforms_own()
 
     print("the sddm drop-in body")
     # We must NEVER edit the box's own steamos.conf; we write our own file.
