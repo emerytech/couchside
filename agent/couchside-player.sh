@@ -175,27 +175,46 @@ h1{font-size:2.2vw;letter-spacing:.4em;margin:5vh 0 1vh;text-align:center;
 p.sub{text-align:center;color:#8b97ad;margin:0 0 5vh;font-size:1.2vw}
 .grid{display:grid;grid-template-columns:repeat(5,1fr);gap:1.6vw;
   padding:0 6vw}
-a.tile{display:flex;align-items:center;justify-content:center;height:11vh;
+a.tile{display:flex;align-items:center;justify-content:center;gap:.8vw;height:11vh;
   background:#141c2e;border:2px solid #1e2942;border-radius:1vw;
   color:#e5ecf8;text-decoration:none;font-size:1.4vw;font-weight:600;
   transition:transform .08s ease}
 /* The focus ring is the whole point: it is what a d-pad step lands ON. */
 a.tile:focus{outline:none;border-color:#34d399;background:#0e1526;
   color:#34d399;transform:scale(1.06)}
+/* The service's OWN icon, fetched live by the browser from the service itself.
+   Nothing is bundled or redistributed — that is the whole reason it is done
+   this way instead of shipping logo files with the app. */
+img.ico{width:2.6vw;height:2.6vw;object-fit:contain;border-radius:.4vw;flex:none}
 </style></head><body>
 <h1>COUCHSIDE</h1><p class=sub>Pick a service &middot; or drive it from your phone</p>
 <div class=grid id=g>
 HTMLHEAD
-        local svc url
+        local svc url host
         for svc in $(bash "$0" --list-services 2>/dev/null); do
             url="$(service_url "$svc")" || continue
-            printf '<a class=tile href="%s">%s</a>\n' "$url" "$(service_label "$svc")"
+            host="${url#https://}"; host="${host%%/*}"
+            printf '<a class=tile href="%s"><img class=ico data-host="%s">%s</a>\n' \
+                "$url" "$host" "$(service_label "$svc")"
         done
         cat <<'HTMLTAIL'
 </div>
 <script>
 /* Arrow-key navigation with a real focus model. Five columns, matching the
    CSS grid. Native <a> handles Enter, so there is no click synthesis here. */
+/* Load each service's own icon, best effort. apple-touch-icon is the sharp one
+   but only some services expose it; favicon is the fallback; a tile whose icon
+   404s, is blocked, or is slow just drops the image and keeps its text label.
+   The hub must never depend on a third party being reachable. */
+[].slice.call(document.querySelectorAll('img.ico')).forEach(function (img) {
+  var host = img.getAttribute('data-host'), stage = 0;
+  img.onerror = function () {
+    stage++;
+    if (stage === 1) { img.src = 'https://' + host + '/favicon.ico'; return; }
+    img.remove();
+  };
+  img.src = 'https://' + host + '/apple-touch-icon.png';
+});
 var COLS = 5, tiles = [].slice.call(document.querySelectorAll('a.tile')), at = 0;
 function go(i){ at = Math.max(0, Math.min(tiles.length - 1, i)); tiles[at].focus(); }
 document.addEventListener('keydown', function (e) {

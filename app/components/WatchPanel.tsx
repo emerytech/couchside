@@ -40,6 +40,38 @@ const LABELS: Record<string, string> = {
   spotify: 'Spotify',
 };
 
+/**
+ * Brand accent per service — a COLOUR, deliberately not a logo.
+ *
+ * Bundling Netflix/Hulu/Disney+ logo artwork into an app shipped on two stores
+ * is a trademark question, and most of these companies' brand guidelines forbid
+ * third-party use that implies integration. Naming a service you are launching
+ * is ordinary nominative use; redistributing its artwork is not. So the tile
+ * carries a colour bar and the service's name as text, and no logo file ships.
+ *
+ * (The box's own hub page DOES show real icons — it fetches them live from the
+ * service, in the user's own browser, on their own machine. Nothing is bundled
+ * or redistributed there, which is what makes that different.)
+ *
+ * Display only, like LABELS: an unknown id gets the neutral accent.
+ */
+const ACCENTS: Record<string, string> = {
+  netflix: '#E50914',
+  youtube: '#FF0033',
+  max: '#7B4DFF',
+  hulu: '#1CE783',
+  disneyplus: '#1F80E0',
+  primevideo: '#00A8E1',
+  appletv: '#B9BFC9',
+  paramount: '#0064FF',
+  peacock: '#F5A623',
+  crunchyroll: '#F47521',
+  twitch: '#9146FF',
+  plutotv: '#FFE000',
+  plex: '#EBAF00',
+  spotify: '#1DB954',
+};
+
 function label(id: string): string {
   return LABELS[id] ?? id.charAt(0).toUpperCase() + id.slice(1);
 }
@@ -520,6 +552,12 @@ export function WatchPanel() {
                 pressed && styles.pressed,
               ]}
             >
+              <View
+                style={[
+                  styles.tileAccent,
+                  { backgroundColor: ACCENTS[id] ?? t.slate },
+                ]}
+              />
               <Text style={[styles.tileText, active && styles.tileTextActive]}>
                 {busy === id ? 'Opening…' : label(id)}
               </Text>
@@ -658,6 +696,12 @@ const makeStyles = (t: Palette) =>
       borderWidth: StyleSheet.hairlineWidth,
     },
     tileActive: { borderColor: t.green, backgroundColor: t.inset },
+    tileAccent: {
+      width: 26,
+      height: 4,
+      borderRadius: 2,
+      marginBottom: 8,
+    },
     tileText: { color: t.text, fontSize: 14, fontWeight: '600', textAlign: 'center' },
     tileTextActive: { color: t.green },
     pressed: { opacity: 0.7 },
