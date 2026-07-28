@@ -199,7 +199,34 @@ export type PlayerState = {
   services: string[];
   /** {service id -> home URL}. Absent on the first agents that shipped `player`. */
   service_urls?: Record<string, string>;
+  /**
+   * Live <video> state, read over CDP. Null when nothing is playing or the
+   * browser can't be reached — degrade closed, so the transport hides rather
+   * than showing a dead scrubber. MPRIS is NOT the source here: measured, it
+   * reports zero players while a streaming site is open but idle.
+   */
+  playback?: PlayerPlayback | null;
+  /** Skip offsets this box allows. The app offers these, never its own. */
+  seek_secs?: number[];
+  /** {knob -> allowed steps}. Same rule: the box is the authority. */
+  picture_steps?: Record<string, number[]>;
 };
+
+export type PlayerPlayback = {
+  playing: boolean;
+  /** Seconds. */
+  position: number;
+  /** Seconds; 0 for a live stream or before metadata loads. */
+  duration: number;
+  muted: boolean;
+  title: string;
+  picture: Record<string, number>;
+};
+
+/** Transport ops the box accepts. Anything else is refused with a 404. */
+export type PlayerOp =
+  | 'open' | 'close'
+  | 'play' | 'pause' | 'playpause' | 'mute' | 'seek' | 'picture';
 
 /** One connected display, from GET /api/displays. */
 export type Display = {
@@ -2139,8 +2166,16 @@ export const api = {
    */
   playerOp(
     settings: ConnSettings,
-    op: 'open' | 'close',
-    opts: { service?: string; path?: string } = {},
+    op: PlayerOp,
+    opts: {
+      service?: string;
+      path?: string;
+      /** Must be one of PlayerState.seek_secs — the box refuses anything else. */
+      secs?: number;
+      knob?: string;
+      /** Must be one of PlayerState.picture_steps[knob]. */
+      value?: number;
+    } = {},
   ): Promise<{ ok: boolean; running?: boolean; starting?: boolean; service?: string }> {
     return request(settings, '/api/player', {
       method: 'POST',

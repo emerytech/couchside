@@ -9,7 +9,7 @@ import {
 } from 'react-native';
 
 import { usePoll } from '@/hooks/usePoll';
-import { api, hostKey, PlayerState } from '@/lib/api';
+import { api, hostKey, PlayerOp, PlayerPlayback, PlayerState } from '@/lib/api';
 import { hapticError, hapticLight, hapticSuccess } from '@/lib/haptics';
 import { useSettings } from '@/lib/SettingsContext';
 import { useTheme, useThemedStyles, type Palette } from '@/lib/theme';
@@ -41,6 +41,23 @@ const LABELS: Record<string, string> = {
 
 function label(id: string): string {
   return LABELS[id] ?? id.charAt(0).toUpperCase() + id.slice(1);
+}
+
+/** h:mm:ss, dropping the hour when there isn't one. */
+function fmtTime(secs: number): string {
+  const s = Math.max(0, Math.floor(secs || 0));
+  const h = Math.floor(s / 3600);
+  const m = Math.floor((s % 3600) / 60);
+  const sec = s % 60;
+  const pad = (n: number) => String(n).padStart(2, '0');
+  return h > 0 ? `${h}:${pad(m)}:${pad(sec)}` : `${m}:${pad(sec)}`;
+}
+
+/** Progress as a percentage. A live stream reports duration 0 — show an empty
+ *  bar rather than dividing by zero and rendering NaN%. */
+function progressPct(p: PlayerPlayback): number {
+  if (!p.duration || p.duration <= 0) return 0;
+  return Math.max(0, Math.min(100, (p.position / p.duration) * 100));
 }
 
 /**
@@ -164,6 +181,31 @@ export function WatchPanel() {
     [link, state?.service_urls],
   );
 
+  const playback = state?.playback ?? null;
+  // Offsets come from the BOX (seek_secs), so the app can never offer a value
+  // the box would refuse. Smallest magnitude each way is what the buttons use.
+  const offsets = state?.seek_secs ?? [];
+  const back = offsets.filter((n) => n < 0).sort((a, b) => b - a)[0] ?? null;
+  const fwd = offsets.filter((n) => n > 0).sort((a, b) => a - b)[0] ?? null;
+
+  const transport = useCallback(
+    async (op: PlayerOp, opts: { secs?: number; knob?: string; value?: number } = {}) => {
+      hapticLight();
+      setBusy(op);
+      setError(null);
+      try {
+        await api.playerOp(settings, op, opts);
+        player.refresh();
+      } catch (e) {
+        hapticError();
+        setError(e instanceof Error ? e.message : 'That control was refused.');
+      } finally {
+        setBusy(null);
+      }
+    },
+    [settings, player],
+  );
+
   const sendLink = useCallback(() => {
     if (!parsedLink) return;
     open(parsedLink.service, parsedLink.path);
@@ -207,25 +249,133 @@ export function WatchPanel() {
     >
       {state.running ? (
         <View style={styles.nowCard} testID="watch-now-playing">
-          <View style={{ flex: 1 }}>
-            <Text style={styles.nowLabel}>ON THE TV</Text>
-            <Text style={styles.nowService}>{label(state.service)}</Text>
-            {state.path ? (
-              <Text style={styles.nowPath} numberOfLines={1}>
-                {state.path}
+          <View style={styles.nowTop}>
+            <View style={{ flex: 1 }}>
+              <Text style={styles.nowLabel}>ON THE TV</Text>
+              <Text style={styles.nowService}>{label(state.service)}</Text>
+              {playback?.title ? (
+                <Text style={styles.nowPath} numberOfLines={1}>
+                  {playback.title}
+                </Text>
+              ) : state.path ? (
+                <Text style={styles.nowPath} numberOfLines={1}>
+                  {state.path}
+                </Text>
+              ) : null}
+            </View>
+            <Pressable
+              onPress={stop}
+              disabled={busy !== null}
+              testID="watch-stop"
+              style={({ pressed }) => [styles.stopBtn, pressed && styles.pressed]}
+            >
+              <Text style={styles.stopText}>
+                {busy === '__stop__' ? 'Stopping…' : 'Stop'}
               </Text>
-            ) : null}
+            </Pressable>
           </View>
-          <Pressable
-            onPress={stop}
-            disabled={busy !== null}
-            testID="watch-stop"
-            style={({ pressed }) => [styles.stopBtn, pressed && styles.pressed]}
-          >
-            <Text style={styles.stopText}>
-              {busy === '__stop__' ? 'Stopping…' : 'Stop'}
-            </Text>
-          </Pressable>
+
+          {/* Transport appears only when the box reports a real <video>. A
+              service that is open but sitting on its home screen has nothing to
+              scrub, and a dead scrubber is worse than no scrubber. */}
+          {playback ? (
+            <View style={styles.transport} testID="watch-transport">
+              <View style={styles.scrubRow}>
+                <Text style={styles.time}>{fmtTime(playback.position)}</Text>
+                <View style={styles.track}>
+                  <View
+                    style={[
+                      styles.trackFill,
+                      { width: `${progressPct(playback)}%` },
+                    ]}
+                  />
+                </View>
+                <Text style={styles.time}>
+                  {playback.duration > 0 ? fmtTime(playback.duration) : 'LIVE'}
+                </Text>
+              </View>
+
+              <View style={styles.btnRow}>
+                {back != null && (
+                  <Pressable
+                    onPress={() => transport('seek', { secs: back })}
+                    disabled={busy !== null}
+                    testID="watch-seek-back"
+                    style={({ pressed }) => [styles.tBtn, pressed && styles.pressed]}
+                  >
+                    <Text style={styles.tBtnText}>{back}s</Text>
+                  </Pressable>
+                )}
+                <Pressable
+                  onPress={() => transport('playpause')}
+                  disabled={busy !== null}
+                  testID="watch-playpause"
+                  style={({ pressed }) => [
+                    styles.tBtn,
+                    styles.tBtnMain,
+                    pressed && styles.pressed,
+                  ]}
+                >
+                  <Text style={[styles.tBtnText, styles.tBtnMainText]}>
+                    {playback.playing ? 'Pause' : 'Play'}
+                  </Text>
+                </Pressable>
+                {fwd != null && (
+                  <Pressable
+                    onPress={() => transport('seek', { secs: fwd })}
+                    disabled={busy !== null}
+                    testID="watch-seek-fwd"
+                    style={({ pressed }) => [styles.tBtn, pressed && styles.pressed]}
+                  >
+                    <Text style={styles.tBtnText}>+{fwd}s</Text>
+                  </Pressable>
+                )}
+                <Pressable
+                  onPress={() => transport('mute')}
+                  disabled={busy !== null}
+                  testID="watch-mute"
+                  style={({ pressed }) => [styles.tBtn, pressed && styles.pressed]}
+                >
+                  <Text style={styles.tBtnText}>
+                    {playback.muted ? 'Unmute' : 'Mute'}
+                  </Text>
+                </Pressable>
+              </View>
+
+              {/* Picture. The steps come from the box, so the app never offers
+                  a value the box would refuse. */}
+              {Object.entries(state.picture_steps ?? {}).map(([knob, steps]) => (
+                <View key={knob} style={styles.pictureRow}>
+                  {/* numberOfLines pins this to one line: "BRIGHTNESS" wrapped
+                      to "BRIGHTNES / S" in the harness and shoved the row
+                      taller than its neighbours. */}
+                  <Text style={styles.pictureLabel} numberOfLines={1}>
+                    {knob.toUpperCase()}
+                  </Text>
+                  {steps.map((step) => {
+                    const on = playback.picture?.[knob] === step;
+                    return (
+                      <Pressable
+                        key={step}
+                        onPress={() => transport('picture', { knob, value: step })}
+                        disabled={busy !== null}
+                        testID={`watch-picture-${knob}-${step}`}
+                        style={({ pressed }) => [
+                          styles.step,
+                          on && styles.stepOn,
+                          pressed && styles.pressed,
+                        ]}
+                      >
+                        <Text style={[styles.stepText, on && styles.stepTextOn]}>
+                          {step === 1 ? '·' : step}
+                        </Text>
+                      </Pressable>
+                    );
+                  })}
+                </View>
+              ))}
+            </View>
+          ) : null}
         </View>
       ) : (
         <Text style={styles.idle}>Nothing playing. Pick a service.</Text>
@@ -316,8 +466,6 @@ const makeStyles = (t: Palette) =>
       marginTop: 8,
     },
     nowCard: {
-      flexDirection: 'row',
-      alignItems: 'center',
       gap: 12,
       backgroundColor: t.card,
       borderColor: t.cardBorder,
@@ -325,6 +473,54 @@ const makeStyles = (t: Palette) =>
       borderRadius: 12,
       padding: 14,
     },
+    nowTop: { flexDirection: 'row', alignItems: 'center', gap: 12 },
+    transport: {
+      gap: 10,
+      borderTopWidth: StyleSheet.hairlineWidth,
+      borderTopColor: t.cardBorder,
+      paddingTop: 12,
+    },
+    scrubRow: { flexDirection: 'row', alignItems: 'center', gap: 8 },
+    time: { color: t.textFaint, fontSize: 11, minWidth: 46 },
+    track: {
+      flex: 1,
+      height: 4,
+      borderRadius: 2,
+      backgroundColor: t.inset,
+      overflow: 'hidden',
+    },
+    trackFill: { height: 4, backgroundColor: t.accent },
+    btnRow: { flexDirection: 'row', gap: 8 },
+    tBtn: {
+      flex: 1,
+      alignItems: 'center',
+      paddingVertical: 11,
+      borderRadius: 10,
+      backgroundColor: t.inset,
+      borderWidth: StyleSheet.hairlineWidth,
+      borderColor: t.cardBorder,
+    },
+    tBtnMain: { backgroundColor: t.accent, borderColor: t.accent },
+    tBtnText: { color: t.text, fontSize: 13, fontWeight: '600' },
+    tBtnMainText: { color: '#0b1220', fontWeight: '700' },
+    pictureRow: { flexDirection: 'row', alignItems: 'center', gap: 5 },
+    pictureLabel: {
+      color: t.textFaint,
+      fontSize: 9,
+      fontWeight: '700',
+      letterSpacing: 0.3,
+      width: 62,
+    },
+    step: {
+      flex: 1,
+      alignItems: 'center',
+      paddingVertical: 6,
+      borderRadius: 7,
+      backgroundColor: t.inset,
+    },
+    stepOn: { backgroundColor: t.accent },
+    stepText: { color: t.textDim, fontSize: 11 },
+    stepTextOn: { color: '#0b1220', fontWeight: '700' },
     nowLabel: { color: t.green, fontSize: 10, fontWeight: '700', letterSpacing: 1.2 },
     nowService: { color: t.text, fontSize: 20, fontWeight: '700', marginTop: 2 },
     nowPath: { color: t.textFaint, fontSize: 12, marginTop: 2 },

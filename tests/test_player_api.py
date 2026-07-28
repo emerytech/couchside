@@ -52,7 +52,7 @@ TOKEN = "test-secret-token"
 
 def check(cond, label, detail=""):
     print((PASS if cond else FAIL) + "  " + label +
-          ("" if cond else "  <- %s" % detail))
+          ("" if cond else "  <- %s" % (detail,)))
     if not cond:
         _fail.append(label)
 
@@ -176,6 +176,21 @@ try:
           services)
     check("custom" not in services and "" not in services,
           "no catch-all service id is offered", services)
+    # The transport fields must be present in BOTH branches of player_info().
+    # They were added to the real branch only, and the harness rendered no
+    # transport at all until the mock matched — a narrower mock is how a UI gets
+    # built against a payload the box never sends.
+    for field in ("services", "service_urls", "seek_secs", "picture_steps"):
+        check(field in info, "GET carries `%s`" % field, sorted(info))
+    check("playback" in info, "GET carries `playback` (may be null)", sorted(info))
+    cs.PL_MOCK = True
+    try:
+        mock_keys = set(cs.player_info())
+    finally:
+        cs.PL_MOCK = False
+    check(mock_keys == set(info),
+          "mock and real player_info() return the SAME keys",
+          mock_keys.symmetric_difference(info))
 finally:
     srv.shutdown()
 

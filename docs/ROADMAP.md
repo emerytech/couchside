@@ -139,8 +139,22 @@ Entry fields: `priority` (P0 blocker → P3 nice) · `risk` · `affects` · `dep
   target + config plugin) and Android intent filters, which the web harness cannot exercise, so
   it would ship unverified. The paste field covers the need meanwhile. Note for that slice:
   `useURL()` is deprecated in Expo SDK 57; use `useLinkingURL()`.
-- **Next:** Phase 4, transport + picture — play/pause/seek and now-playing read from the
-  `<video>` element over CDP, the −10s/+10s ask, and brightness/contrast/saturation.
+- **Phase 4 BUILT but NOT live-verified 2026-07-27.** Agent CDP client + transport ops
+  (play/pause/playpause/mute/seek/picture), `playback` added to `GET /api/player`, transport UI
+  in the Watch panel. 81 unit checks, mutation-checked (replacing the frozen seek constant with
+  an interpolated one fails the suite), UI exercised in the harness by pressing.
+- **BLOCKING DEFECT:** on a real box the agent connects and `Runtime.evaluate` succeeds, but
+  evaluates in a context reporting `about:blank` with zero `<video>` elements, even though the
+  single CDP target is the service URL. So `playback` is always null live. Not connectivity,
+  not target selection, not the profile race. Likely fix: attach via `Target.attachToTarget`
+  and evaluate in that `sessionId`, or pass an explicit main-frame `contextId`. **Phase 4 is
+  not complete until this is fixed.**
+- **Real fix banked meanwhile:** switching services while the tile ran relaunched Chrome against
+  a profile the dying instance still owned, so `flatpak run` deferred to it and the new
+  debugging port never bound. The tile now waits for `SingletonLock` to clear.
+- **Also fixed:** `player_info()`'s mock branch returned a narrower shape than the real one, so
+  the harness rendered no transport at all. A test now asserts both branches return the SAME
+  keys — a narrow mock is how a UI gets built against a payload the box never sends.
 
 ### On-box pairing tutorial (auto-plays after install)
 - **priority:** P1 · **risk:** low · **affects:** agent + installer · **depends_on:** none

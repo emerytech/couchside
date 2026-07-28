@@ -354,6 +354,17 @@ jobs:
       - name: Unit tests (player API + caps)
         run: python3 tests/test_player_api.py
 
+      # Player transport over CDP. Runtime.evaluate runs arbitrary JS in a
+      # browser signed into the user's streaming accounts, so the whole design
+      # is lookup-only: an op id selects a script CONSTANT, and a numeric
+      # argument is taken out of a frozen tuple by index rather than formatted
+      # from the request. These replace _pl_cdp_run with a spy and assert that
+      # every script that would execute is one of those constants, and that a
+      # refused request leaves the spy untouched -- "returned 404" and
+      # "executed nothing" are separate observations.
+      - name: Unit tests (player transport)
+        run: python3 tests/test_player_transport.py
+
       # Injected actions: buttons the agent offers only when the box can really
       # perform them ("a dead button costs more trust than a missing one"), so
       # every gate is asserted in BOTH directions. Covers the Bluetooth pairing

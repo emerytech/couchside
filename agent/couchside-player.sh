@@ -236,6 +236,24 @@ if ! resolve_browser; then
     exit 3
 fi
 
+# Wait for a previous Chrome to release the profile before launching.
+#
+# MEASURED 2026-07-27, switching services on a live box: the agent stops the
+# tile and relaunches, but Chrome outlives the wrapper by a few seconds. A
+# second `flatpak run` against a --user-data-dir that is still owned DEFERS to
+# the running instance — it opens a window there and exits, so the new
+# --remote-debugging-port never binds. The visible symptom is the transport
+# reading about:blank forever while the service plays fine on the TV, which
+# looks like a CDP bug and is not one.
+#
+# The lock is a symlink Chrome removes on a clean exit; a stale one from a
+# crash is ignored after the timeout rather than blocking the launch, because
+# refusing to start is worse than racing.
+for _ in $(seq 1 20); do
+    [ -e "$PROFILE/SingletonLock" ] || break
+    sleep 0.5
+done
+
 OZONE="$(pick_ozone)"
 PORT="$(pick_port)"
 echo "$PORT" > "$PORTFILE"

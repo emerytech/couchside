@@ -2324,6 +2324,9 @@ PLAYER_TILE = os.path.expanduser(
 PLAYER_GRID_ART = os.path.expanduser("~/.local/opt/couchside-player")
 PLAYER_CONF = os.path.expanduser("~/.config/couchside/player.conf")
 PLAYER_PIDFILE = os.path.expanduser("~/.cache/couchside/player.pid")
+# The tile records the randomised loopback debugging port it gave Chrome here.
+# Read only; the agent never chooses it, and it is never exposed to a client.
+PLAYER_PORTFILE = os.path.expanduser("~/.cache/couchside/player.port")
 # Anchored on the install DIRECTORY, which is what keeps this lookup and the
 # screensaver's from colliding. Do not shorten it to "couchside/Couchside".
 PLAYER_VDF_ANCHOR = b"couchside-player/Couchside"
@@ -2518,15 +2521,28 @@ def player_info():
     """Live state. `services` is the tile's own list, so the app never carries a
     hardcoded copy either."""
     if PL_MOCK:
+        # Same KEYS as the real branch below, always. A mock that returns a
+        # narrower shape is how a UI gets built against a payload the box never
+        # sends — the harness showed no transport at all until this matched.
         return {"available": True, "running": _PL_MOCK["running"],
                 "service": _PL_MOCK["service"], "path": _PL_MOCK["path"],
                 "services": list(_PLAYER_SERVICES),
-                "service_urls": dict(_PLAYER_SERVICE_URLS)}
+                "service_urls": dict(_PLAYER_SERVICE_URLS),
+                "playback": player_playback(),
+                "seek_secs": list(PLAYER_SEEK_SECS),
+                "picture_steps": {k: list(v)
+                                  for k, v in PLAYER_PICTURE.items()}}
     service, path = _pl_conf_read()
     return {"available": player_available(), "running": _pl_running(),
             "service": service, "path": path,
             "services": list(_PLAYER_SERVICES),
-            "service_urls": dict(_PLAYER_SERVICE_URLS)}
+            "service_urls": dict(_PLAYER_SERVICE_URLS),
+            # Added field, never a shape change: null when nothing is playing
+            # or the browser can't be reached, so an old app ignores it and a
+            # new one hides the transport rather than showing a dead scrubber.
+            "playback": player_playback(),
+            "seek_secs": list(PLAYER_SEEK_SECS),
+            "picture_steps": {k: list(v) for k, v in PLAYER_PICTURE.items()}}
 
 
 def player_open(service, path=""):
@@ -2584,6 +2600,374 @@ def player_open(service, path=""):
 
     threading.Thread(target=launch, daemon=True).start()
     return {"ok": True, "starting": True, "service": service}
+
+
+# ---------------------------------------------------------------------------
+# Player transport over CDP (play/pause/seek/picture).
+#
+# The tile spawns Chrome with a randomised loopback debugging port and records
+# it; this talks to that port. It is what makes the player a REMOTE rather than
+# a launcher — MPRIS is not an option here, measured: /api/media reports ZERO
+# players while a streaming site is open but idle, and web video mostly never
+# registers at all. The <video> element is the only honest source.
+#
+# CDP IS AN ARBITRARY-CODE PRIMITIVE. Runtime.evaluate runs any JS, and
+# navigating to file:// plus a DOM read is local file exfiltration. So:
+#
+#   * every script below is a CONSTANT in this module, authored here;
+#   * a request selects WHICH constant runs by looking up an op id in a frozen
+#     dict — an id that is not a key is a 404 and nothing executes;
+#   * where an op needs a number, the number that reaches the script is taken
+#     FROM the frozen tuple by index, never from the request body. The client's
+#     bytes are used only to find the index and are then discarded, so the
+#     script can only ever contain one of a fixed set of literals;
+#   * the debugging port is never exposed or proxied through a LAN route.
+#
+# Connections are made per request and closed. A persistent socket would be
+# faster and is exactly the shape that has produced this project's worst bugs
+# (half-dead sockets in the input path); a fresh loopback connect costs
+# ~milliseconds and cannot go stale.
+# ---------------------------------------------------------------------------
+
+PLAYER_CDP_TIMEOUT = 6.0
+# Offsets the skip buttons may ask for. Requested by u/Most-Bet2021 (r/SteamOS).
+PLAYER_SEEK_SECS = (-90, -30, -10, 10, 30, 90)
+# Picture adjustments. Frozen per knob; index 2 is the neutral 1.0 in each.
+PLAYER_PICTURE = {
+    "brightness": (0.7, 0.85, 1.0, 1.15, 1.3, 1.5),
+    "contrast":   (0.7, 0.85, 1.0, 1.15, 1.3, 1.5),
+    "saturate":   (0.0, 0.5, 1.0, 1.25, 1.5, 2.0),
+}
+
+# Picks the video to act on: a playing one if there is one, else the longest.
+# A streaming page routinely has several (trailers, previews, ads), and "the
+# first video in the DOM" is reliably the wrong one.
+_PL_JS_PICK = """
+  var vs = Array.prototype.slice.call(document.querySelectorAll('video'));
+  var v = null, i;
+  for (i = 0; i < vs.length; i++) {
+    if (!vs[i].paused && !vs[i].ended) { v = vs[i]; break; }
+  }
+  if (!v) {
+    for (i = 0; i < vs.length; i++) {
+      if (!v || (vs[i].duration || 0) > (v.duration || 0)) v = vs[i];
+    }
+  }
+"""
+
+PLAYER_JS_STATE = (
+    "(function(){%s if (!v) return null;"
+    " return {playing: !v.paused && !v.ended,"
+    "         position: v.currentTime || 0,"
+    "         duration: isFinite(v.duration) ? v.duration : 0,"
+    "         muted: !!v.muted, title: document.title || ''};"
+    "})()" % _PL_JS_PICK)
+
+# op id -> agent-authored script. Frozen: an id that is not a key never runs.
+PLAYER_JS_OPS = {
+    "play":      "(function(){%s if (v) v.play(); return !!v;})()" % _PL_JS_PICK,
+    "pause":     "(function(){%s if (v) v.pause(); return !!v;})()" % _PL_JS_PICK,
+    "playpause": ("(function(){%s if (!v) return false;"
+                  " if (v.paused) { v.play(); } else { v.pause(); }"
+                  " return true;})()" % _PL_JS_PICK),
+    "mute":      ("(function(){%s if (!v) return false;"
+                  " v.muted = !v.muted; return true;})()" % _PL_JS_PICK),
+}
+
+# Seek scripts, pre-built ONE PER ALLOWED OFFSET at import time. The request
+# path only ever indexes this dict, so no request value is ever formatted into
+# a script.
+PLAYER_JS_SEEK = {
+    secs: ("(function(){%s if (!v) return false;"
+           " var d = isFinite(v.duration) ? v.duration : 0;"
+           " var t = (v.currentTime || 0) + (%d);"
+           " v.currentTime = Math.max(0, d ? Math.min(d - 0.5, t) : t);"
+           " return true;})()" % (_PL_JS_PICK, secs))
+    for secs in PLAYER_SEEK_SECS
+}
+
+
+def _pl_cdp_port():
+    try:
+        with open(PLAYER_PORTFILE) as f:
+            port = int(f.read().strip())
+        return port if 1 <= port <= 65535 else None
+    except (OSError, ValueError):
+        return None
+
+
+def _pl_http_get(port, path):
+    """GET one of Chrome's DevTools HTTP endpoints.
+
+    Chrome keeps the connection open even when the request says
+    `Connection: close`, so reading to EOF blocks until the socket timeout —
+    AFTER the whole body has already arrived, which reads as "CDP unreachable"
+    and cost a full debugging round during the Phase 0 spike. Read the headers,
+    then exactly Content-Length bytes."""
+    sock = socket.create_connection(("127.0.0.1", port), PLAYER_CDP_TIMEOUT)
+    try:
+        sock.settimeout(PLAYER_CDP_TIMEOUT)
+        sock.sendall(("GET %s HTTP/1.1\r\nHost: 127.0.0.1:%d\r\n\r\n"
+                      % (path, port)).encode())
+        data = b""
+        while b"\r\n\r\n" not in data:
+            chunk = sock.recv(65536)
+            if not chunk:
+                raise OSError("closed before headers")
+            data += chunk
+        head, _, body = data.partition(b"\r\n\r\n")
+        length = 0
+        for line in head.split(b"\r\n")[1:]:
+            if line.lower().startswith(b"content-length:"):
+                length = int(line.split(b":", 1)[1])
+        while len(body) < length:
+            chunk = sock.recv(65536)
+            if not chunk:
+                break
+            body += chunk
+        return json.loads(body)
+    finally:
+        sock.close()
+
+
+class _PlayerCDP:
+    """Minimal CDP client: one page target, one command, then closed.
+
+    Client frames MUST be masked (RFC6455); server frames are not. The agent
+    already hand-rolls the same shape for the WebOS TV backend."""
+
+    def __init__(self, port):
+        targets = _pl_http_get(port, "/json/list")
+        pages = [t for t in targets if t.get("type") == "page"
+                 and t.get("webSocketDebuggerUrl")]
+        # MEASURED on a real box: taking pages[0] blindly attached to
+        # about:blank while the service was playing in another target, so every
+        # read came back "no video" and the transport never appeared. /json/list
+        # order carries no meaning — pick a target that is actually on a page.
+        loaded = [t for t in pages
+                  if str(t.get("url", "")).startswith(("http://", "https://"))]
+        if not (loaded or pages):
+            raise OSError("no CDP page target")
+        url = (loaded or pages)[0]["webSocketDebuggerUrl"]
+        hostport, _, path = url[len("ws://"):].partition("/")
+        host, _, p = hostport.partition(":")
+        self.sock = socket.create_connection((host, int(p)),
+                                             PLAYER_CDP_TIMEOUT)
+        self.sock.settimeout(PLAYER_CDP_TIMEOUT)
+        key = base64.b64encode(os.urandom(16)).decode()
+        # No Origin header on purpose: Chrome rejects unknown Origins on the
+        # DevTools socket unless --remote-allow-origins is passed; omitting it
+        # entirely is accepted.
+        self.sock.sendall((
+            "GET /%s HTTP/1.1\r\nHost: %s\r\nUpgrade: websocket\r\n"
+            "Connection: Upgrade\r\nSec-WebSocket-Key: %s\r\n"
+            "Sec-WebSocket-Version: 13\r\n\r\n" % (path, hostport, key)
+        ).encode())
+        buf = b""
+        while b"\r\n\r\n" not in buf:
+            chunk = self.sock.recv(4096)
+            if not chunk:
+                raise OSError("closed during CDP handshake")
+            buf += chunk
+        if b" 101 " not in buf.split(b"\r\n")[0] + b" ":
+            raise OSError("CDP handshake refused")
+        self.buf = buf.partition(b"\r\n\r\n")[2]
+
+    def close(self):
+        try:
+            self.sock.close()
+        except OSError:
+            pass
+
+    def _need(self, n):
+        while len(self.buf) < n:
+            chunk = self.sock.recv(65536)
+            if not chunk:
+                raise OSError("CDP socket closed")
+            self.buf += chunk
+
+    def _frame(self):
+        while True:
+            self._need(2)
+            opcode = self.buf[0] & 0x0F
+            length = self.buf[1] & 0x7F
+            off = 2
+            if length == 126:
+                self._need(4)
+                length = struct.unpack(">H", self.buf[2:4])[0]
+                off = 4
+            elif length == 127:
+                self._need(10)
+                length = struct.unpack(">Q", self.buf[2:10])[0]
+                off = 10
+            self._need(off + length)
+            payload = self.buf[off:off + length]
+            self.buf = self.buf[off + length:]
+            if opcode == 0x1:
+                return payload
+            if opcode == 0x8:
+                raise OSError("CDP peer closed")
+
+    def evaluate(self, expression):
+        """Run ONE agent-authored script and return its value. `expression` is
+        always a constant from this module — never anything a client sent."""
+        payload = json.dumps({
+            "id": 1, "method": "Runtime.evaluate",
+            "params": {"expression": expression, "returnByValue": True},
+        }).encode()
+        mask = os.urandom(4)
+        n = len(payload)
+        header = bytes([0x81])
+        if n < 126:
+            header += bytes([0x80 | n])
+        elif n < 65536:
+            header += bytes([0x80 | 126]) + struct.pack(">H", n)
+        else:
+            header += bytes([0x80 | 127]) + struct.pack(">Q", n)
+        self.sock.sendall(header + mask
+                          + bytes(b ^ mask[i % 4] for i, b in enumerate(payload)))
+        deadline = time.monotonic() + PLAYER_CDP_TIMEOUT
+        while time.monotonic() < deadline:
+            msg = json.loads(self._frame())
+            if msg.get("id") == 1:      # everything else is an event
+                res = msg.get("result", {})
+                if "exceptionDetails" in res:
+                    raise OSError("CDP script raised")
+                return res.get("result", {}).get("value")
+        raise OSError("CDP timed out")
+
+
+def _pl_cdp_run(expression):
+    """Connect, run one agent-authored script, close. None on any failure —
+    degrade closed: an unreachable browser reports 'no playback', never a
+    guess."""
+    port = _pl_cdp_port()
+    if port is None:
+        return None
+    cdp = None
+    try:
+        cdp = _PlayerCDP(port)
+        return cdp.evaluate(expression)
+    except (OSError, ValueError, KeyError):
+        return None
+    finally:
+        if cdp is not None:
+            cdp.close()
+
+
+def _pl_picture_read():
+    """Current picture values from the conf, falling back to neutral. Anything
+    stored that is not still an allowed step is discarded, not clamped."""
+    values = {}
+    stored = {}
+    try:
+        with open(PLAYER_CONF) as f:
+            for line in f:
+                line = line.strip()
+                for knob in PLAYER_PICTURE:
+                    if line.startswith(knob + "="):
+                        stored[knob] = line[len(knob) + 1:]
+    except OSError:
+        pass
+    for knob, steps in PLAYER_PICTURE.items():
+        values[knob] = steps[2]     # neutral
+        try:
+            wanted = float(stored.get(knob, ""))
+        except ValueError:
+            continue
+        for step in steps:
+            if step == wanted:
+                values[knob] = step
+                break
+    return values
+
+
+def _pl_picture_js(values):
+    """Build the filter script. Every number here came out of PLAYER_PICTURE by
+    identity, so the script can only contain one of a fixed set of literals."""
+    return (
+        "(function(){%s if (!v) return false;"
+        " v.style.setProperty('filter',"
+        " 'brightness(%s) contrast(%s) saturate(%s)', 'important');"
+        " return true;})()"
+        % (_PL_JS_PICK, values["brightness"], values["contrast"],
+           values["saturate"]))
+
+
+def player_playback():
+    """Live <video> state, or None when there is nothing to report."""
+    if PL_MOCK:
+        if not _PL_MOCK["running"]:
+            return None
+        return {"playing": True, "position": 431.2, "duration": 3120.0,
+                "muted": False, "title": "Mock title",
+                "picture": _PL_MOCK.get("picture", {k: v[2] for k, v
+                                                    in PLAYER_PICTURE.items()})}
+    if not _pl_running():
+        return None
+    state = _pl_cdp_run(PLAYER_JS_STATE)
+    if not isinstance(state, dict):
+        return None
+    state["picture"] = _pl_picture_read()
+    return state
+
+
+def player_transport(op, secs=None, knob=None, value=None):
+    """Run one allowlisted transport op. ValueError => 404, nothing runs."""
+    if PL_MOCK:
+        if op in PLAYER_JS_OPS:
+            return {"ok": True, "op": op}
+        if op == "seek":
+            if secs not in PLAYER_SEEK_SECS:
+                raise ValueError("seek offset not allowed")
+            return {"ok": True, "op": "seek", "secs": secs}
+        if op == "picture":
+            steps = PLAYER_PICTURE.get(knob)
+            if steps is None or value not in steps:
+                raise ValueError("picture value not allowed")
+            _PL_MOCK.setdefault("picture", {k: v[2] for k, v
+                                            in PLAYER_PICTURE.items()})[knob] = \
+                steps[steps.index(value)]
+            return {"ok": True, "op": "picture", knob: value}
+        raise ValueError("unknown transport op")
+
+    if op in PLAYER_JS_OPS:
+        script = PLAYER_JS_OPS[op]              # lookup, never interpolation
+    elif op == "seek":
+        if secs not in PLAYER_SEEK_SECS:
+            raise ValueError("seek offset not allowed")
+        script = PLAYER_JS_SEEK[secs]           # pre-built per allowed offset
+    elif op == "picture":
+        steps = PLAYER_PICTURE.get(knob)
+        if steps is None or value not in steps:
+            raise ValueError("picture value not allowed")
+        values = _pl_picture_read()
+        # Take the number FROM the frozen tuple, not from the request: the
+        # client's bytes are used to find the index and then discarded.
+        values[knob] = steps[steps.index(value)]
+        _pl_picture_write(values)
+        script = _pl_picture_js(values)
+    else:
+        raise ValueError("unknown transport op")
+
+    if not _pl_running():
+        raise RuntimeError("player is not running")
+    ok = _pl_cdp_run(script)
+    if ok is None:
+        raise RuntimeError("could not reach the player")
+    return {"ok": bool(ok), "op": op}
+
+
+def _pl_picture_write(values):
+    """Persist picture values alongside service/path, preserving both."""
+    service, path = _pl_conf_read()
+    os.makedirs(os.path.dirname(PLAYER_CONF), exist_ok=True)
+    with open(PLAYER_CONF, "w") as f:
+        f.write("service=%s\n" % service)
+        if path:
+            f.write("path=%s\n" % path)
+        for knob in sorted(PLAYER_PICTURE):
+            f.write("%s=%s\n" % (knob, values[knob]))
 
 
 def player_close():
@@ -15217,8 +15601,28 @@ class Handler(BaseHTTPRequestHandler):
                     self._send(200, r, started)
                 elif op == "close":
                     self._send(200, player_close(), started)
+                elif op in ("play", "pause", "playpause", "mute", "seek",
+                            "picture"):
+                    # Transport. The op id selects an agent-authored script by
+                    # dict lookup; `secs` and the picture value are checked for
+                    # membership in a frozen tuple and then the CONSTANT is
+                    # taken from that tuple, so nothing a client sent is ever
+                    # formatted into JS. A rejected value is a 404 and no
+                    # script runs.
+                    try:
+                        r = player_transport(op,
+                                             secs=req.get("secs"),
+                                             knob=req.get("knob"),
+                                             value=req.get("value"))
+                    except ValueError:
+                        self._send(404, {"error": "not allowed"}, started)
+                        return
+                    except RuntimeError as e:
+                        self._send(409, {"error": str(e)}, started)
+                        return
+                    self._send(200, r, started)
                 else:
-                    self._send(400, {"error": "op must be open|close"}, started)
+                    self._send(400, {"error": "unknown op"}, started)
                 return
 
             if path == "/api/screensaver":

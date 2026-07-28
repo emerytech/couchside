@@ -348,10 +348,32 @@ normalizeCaps + capsEqual), with a test asserting all five.
   slice with a device build. The paste field covers the same need in the meantime.
   Deep-link ingestion in-app should use **`useLinkingURL()`**; `useURL()` is deprecated in
   Expo SDK 57 (checked against the versioned docs, per `app/AGENTS.md`).
-- **Phase 4 — transport + picture.** Play/pause/seek and now-playing read from the `<video>`
-  element via CDP; the −10s/+10s ask. Plus **visual controls** (brightness / contrast /
-  saturation) — one injected CSS `filter` on the video element, near-free once CDP is wired,
-  and a real TV complaint ("this show is too dark") rather than a desktop toy.
+- **Phase 4 — transport + picture. BUILT, NOT LIVE-VERIFIED.** Agent CDP client, ops
+  (play/pause/playpause/mute/seek/picture), `playback` on `GET /api/player`, and the transport
+  UI in `WatchPanel`. Unit-tested (81 checks) and mutation-checked; the UI was exercised in the
+  harness by pressing. **The live path is BLOCKED on the defect below — do not mark this phase
+  complete until it is fixed.**
+
+#### THE OPEN DEFECT: CDP evaluates in the wrong context
+Measured on bazzite 10.1.1.60, 2026-07-27. The agent reads the port file correctly, sees
+exactly one target (`[["page", "https://www.youtube.com/"]]`), connects, and
+`Runtime.evaluate` succeeds — but returns `location.href == "about:blank"` and
+`document.querySelectorAll('video').length == 0`, so `playback` is always null and no transport
+op can act. It is **not** a connectivity failure (values come back), **not** target selection
+(only one target exists and it is the service), and **not** the profile-lock race (fixed
+separately, see below — argv and `/json/list` now agree on one debug port and the right URL).
+
+Next things to try, cheapest first: attach with `Target.attachToTarget` + `sessionId` and
+evaluate in that session rather than the browser-level default context; or enumerate
+`Runtime.executionContextCreated` / `Page.getFrameTree` and pass an explicit `contextId` for the
+main frame. The current client sends `Runtime.evaluate` with no session and no context, which
+is the most likely cause.
+
+- **Fixed along the way (real, keep):** switching services while the tile ran relaunched Chrome
+  against a `--user-data-dir` the dying instance still owned, so the second `flatpak run`
+  DEFERRED to it and the new `--remote-debugging-port` never bound — two debug ports live, the
+  transport reading a stale one. The tile now waits for the profile's `SingletonLock` to clear
+  (bounded, then proceeds anyway; refusing to start is worse than racing).
 - **Phase 5 — cross-service search.** *Promoted out of "later" after reading the real product
   (§1b).* Search once on the phone, see which service has it, jump straight in. This is the
   feature that makes a hub worth more than six tiles, and it is the one thing that is genuinely

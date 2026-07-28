@@ -59,7 +59,7 @@ _fail = []
 
 def check(name, cond, detail=""):
     print("%s %s%s" % (PASS if cond else FAIL, name,
-                       "" if cond else "  <- %s" % detail))
+                       "" if cond else "  <- %s" % (detail,)))
     if not cond:
         _fail.append(name)
 
