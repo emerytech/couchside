@@ -143,18 +143,21 @@ Entry fields: `priority` (P0 blocker → P3 nice) · `risk` · `affects` · `dep
   (play/pause/playpause/mute/seek/picture), `playback` added to `GET /api/player`, transport UI
   in the Watch panel. 81 unit checks, mutation-checked (replacing the frozen seek constant with
   an interpolated one fails the suite), UI exercised in the harness by pressing.
-- **BLOCKING ISSUE — and the first diagnosis of it was WRONG.** It was recorded as "CDP
-  evaluates in the wrong context"; a debugging pass falsified that. **Chrome in that desktop
-  session does not navigate anywhere at all** — CDP was reporting the truth. Ruled out by
-  experiment: our client (the Phase-0 probe fails identically), `Runtime.enable`, target
-  selection, the profile (wiped), the tile and agent (plain `flatpak run` fails the same),
-  network/DNS (a loopback URL also lands on `about:blank`), and app-mode (a normal window fails
-  too). A screen capture shows a blank grey fullscreen window, and `Page.navigate` hangs without
-  committing. Same Chrome build that worked in Phase 0.
-- **The uncontrolled variable is the SESSION.** Phases 1–2 loaded pages fine in Game Mode; every
-  failing run is in a Plasma desktop session that has been through several couch-mode round
-  trips. **Next: re-run the Phase 4 live check in Game Mode**, then a session restart, before
-  touching any code. Full ledger in the spec's Phase 4 section.
+- **Phase 4 LIVE-VERIFIED in Game Mode 2026-07-27.** Against Twitch's autoplaying stream:
+  state read `{"playing": true, "position": 35.38, "title": "Twitch"}`; `pause` → playing
+  false; `play` → playing true; `seek +10` moved position `0 → 10` (delta exactly 10.0s);
+  `picture brightness=1.5` produced `brightness(1.5) contrast(1) saturate(1)` on the element.
+  Screen-captured. Both directions of play/pause observed.
+- **The blocker was the SESSION, and my first diagnosis of it was WRONG.** It was recorded as
+  "CDP evaluates in the wrong context"; a ten-experiment pass falsified that, and the Game Mode
+  re-run settled it. Chrome under that particular Plasma desktop session would not navigate
+  **anywhere** — ruled out: our client, `Runtime.enable`, target selection, the profile, the
+  tile/agent (plain `flatpak run` failed identically), network (a loopback URL also blanked),
+  and app-mode (a normal window failed too). Nothing in our code was wrong. **Consequence: the
+  desktop session is an unreliable place to test the player — do live checks in Game Mode.**
+- **Probe note:** YouTube's home page is autoplay-gated (`duration: 0`, ops return ok while
+  `playing` stays false) and Pluto TV's landing page has no `<video>` until a channel is picked.
+  Twitch's front page autoplays; use it.
 - **Real fix banked meanwhile:** switching services while the tile ran relaunched Chrome against
   a profile the dying instance still owned, so `flatpak run` deferred to it and the new
   debugging port never bound. The tile now waits for `SingletonLock` to clear.

@@ -348,11 +348,26 @@ normalizeCaps + capsEqual), with a test asserting all five.
   slice with a device build. The paste field covers the same need in the meantime.
   Deep-link ingestion in-app should use **`useLinkingURL()`**; `useURL()` is deprecated in
   Expo SDK 57 (checked against the versioned docs, per `app/AGENTS.md`).
-- **Phase 4 — transport + picture. BUILT, NOT LIVE-VERIFIED.** Agent CDP client, ops
-  (play/pause/playpause/mute/seek/picture), `playback` on `GET /api/player`, and the transport
-  UI in `WatchPanel`. Unit-tested (81 checks) and mutation-checked; the UI was exercised in the
-  harness by pressing. **The live path is BLOCKED on the defect below — do not mark this phase
-  complete until it is fixed.**
+- **Phase 4 — transport + picture. DONE, LIVE-VERIFIED IN GAME MODE 2026-07-27.** Agent CDP
+  client, ops (play/pause/playpause/mute/seek/picture), `playback` on `GET /api/player`, and the
+  transport UI in `WatchPanel`. 81 unit checks, mutation-checked, UI exercised in the harness.
+
+  **Live on bazzite 10.1.1.60, Game Mode, against Twitch's autoplaying stream:**
+
+  | Op | Observed |
+  |---|---|
+  | state read | `{"playing": true, "position": 35.38, "muted": true, "title": "Twitch"}` |
+  | `pause` | `playing: true → false` |
+  | `play` | `playing: false → true` |
+  | `seek +10` | position `0 → 10`, delta exactly 10.0s |
+  | `picture brightness=1.5` | element style `brightness(1.5) contrast(1) saturate(1)` |
+
+  Screen-captured with Twitch playing on the TV. Both directions of play/pause observed, which
+  is the bar — a transport verified only in the direction it was already in is not verified.
+
+  **YouTube's home page is a bad probe** (autoplay-gated preview, `duration: 0`): the op
+  executes and returns ok while `playing` stays false. Pluto TV's landing page has no `<video>`
+  at all until a channel is picked. Twitch's front page autoplays and is the probe to use.
 
 #### THE OPEN DEFECT — CORRECTED: it is not our code, it is Chrome not navigating
 
@@ -379,16 +394,24 @@ The ledger, each line an experiment that ruled something out:
 Chrome is the same build that worked in Phase 0 (`150.0.7871.186-1`), on the same box, in the
 same kind of desktop session. `Runtime.evaluate` answers instantly; navigation never commits.
 
-**The one variable not yet controlled is the session itself.** Phases 1 and 2 loaded pages fine
-in **Game Mode**; every failing run above is in a Plasma desktop session that has been through
-several couch-mode → desktop-mode round trips (and the desktop is the
-`plasma-steamos-wayland-oneshot` session, which is a temporary override, not the box's default).
+**RESOLVED — it was the session.** Same tile, same agent, same Chrome build, re-run in **Game
+Mode** minutes later: `document.URL` = `https://www.youtube.com/`, title `YouTube`, `videos: 1`,
+`bodyLen: 360625`, plus a `service_worker` target. Everything loads, and the transport works end
+to end (see the table in the Phase 4 entry). Nothing in our code was ever wrong.
 
-**Next step, in order:** (1) re-run the Phase 4 live check in Game Mode, where the same tile
-demonstrably loaded Hulu and Netflix — if it works there, this is session state and the
-transport is fine; (2) if it fails there too, restart the graphical session / reboot and retry;
-(3) only if it still fails is there anything to fix in our code, and the ledger above says there
-would not be. **Do not "fix" the CDP client on the strength of the original wrong diagnosis.**
+So Chrome under that particular **Plasma desktop session** would not navigate — not our code,
+not CDP, not the profile, not the network. That session had been through several couch-mode →
+desktop-mode round trips, and it is `plasma-steamos-wayland-oneshot`, a temporary override
+rather than the box's default. The root cause inside the session is unidentified, and since the
+product's target session is Game Mode it is not worth chasing further — but it is worth knowing,
+because **it makes the desktop session an unreliable place to test the player.** Do Phase-5+
+live checks in Game Mode.
+
+**The lasting lesson is the measurement, not the bug:** `/json/list`'s target URL keeps the
+requested address even when nothing committed, so it is not evidence that a page loaded. Reading
+only that produced a confident wrong diagnosis which survived a commit.
+`scripts/cdp-page-check.py` prints the target URL and `document.URL` side by side for exactly
+this reason.
 
 - **Fixed along the way (real, keep):** switching services while the tile ran relaunched Chrome
   against a `--user-data-dir` the dying instance still owned, so the second `flatpak run`
