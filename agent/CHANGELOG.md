@@ -40,6 +40,15 @@ The Couchside Player arrives — an optional, experimental add-on.
   A box that never asks for it is unchanged, and the app hides the whole feature
   on any box without it.
 
+Also in this release:
+
+- **"Boots into" no longer quietly reverts.** SteamOS and Bazzite both ship a
+  script that writes the same login setting Couchside was writing — and its file
+  took priority over ours, so anything that ran it (switching to Desktop from the
+  phone, or Couch Mode) put the setting back without telling you. Ours now takes
+  priority and survives. Setting it still never disturbs the session you are in;
+  it applies at the next boot.
+
 ## 2.9.63
 
 A boot-session fix for Bazzite, and early groundwork for other kinds of box.
