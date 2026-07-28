@@ -201,6 +201,15 @@ export type Prefs = {
    *  and because hiding the cursor would be worse (with no focus ring, the
    *  cursor is the only feedback there is). Opt-in rather than removed. */
   tvNavEnabled: boolean;
+  /** Show the WATCH segment on the Launch tab (streaming services on the box).
+   *
+   *  Default ON, unlike tvNavEnabled above: this one is finished, not a
+   *  half-useful experiment. The switch exists because plenty of boxes are
+   *  gaming-only — the owner may never want streaming on that machine — and a
+   *  capability being present is not the same as wanting it offered. The box
+   *  cap still gates it first: turning this on cannot make the segment appear
+   *  on a box that has no player. */
+  watchEnabled: boolean;
 };
 
 export const DEFAULTS: Prefs = {
@@ -240,6 +249,7 @@ export const DEFAULTS: Prefs = {
   mediaHoldSkipSec: 30,
   tvStepPx: TV_STEP_DEFAULT,
   tvNavEnabled: false,
+  watchEnabled: true,
 };
 
 /** The choices each select-style pref offers (kept next to the store it feeds). */
@@ -353,6 +363,7 @@ function normalize(raw: unknown): Prefs {
     ) as MediaHoldSkipSec,
     tvStepPx: num(o.tvStepPx, TV_STEPS, DEFAULTS.tvStepPx) as TvStepPx,
     tvNavEnabled: bool(o.tvNavEnabled, DEFAULTS.tvNavEnabled),
+    watchEnabled: bool(o.watchEnabled, DEFAULTS.watchEnabled),
   };
 }
 

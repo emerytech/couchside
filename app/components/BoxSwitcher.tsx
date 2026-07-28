@@ -144,6 +144,23 @@ export function BoxSwitcher() {
                 <Ionicons name="add" size={18} color={t.blue} />
                 <Text style={styles.addText}>Add a box</Text>
               </Pressable>
+
+              {/* Second door to the same screen "Add a box" already opens, named
+                  for the rest of what lives there (prefs, logs, account). This
+                  picker is already the fleet-management surface, so Setup
+                  belongs here — and with it reachable from a pill that sits on
+                  EVERY tab's header, the Setup tab itself becomes optional. */}
+              <Pressable
+                onPress={goToSetup}
+                style={({ pressed }) => [
+                  styles.addRow,
+                  pressed && styles.rowPressed,
+                ]}>
+                <Ionicons name="settings-sharp" size={17} color={t.textDim} />
+                <Text style={[styles.addText, { color: t.textDim }]}>
+                  Settings
+                </Text>
+              </Pressable>
             </Pressable>
           </View>
         </Pressable>

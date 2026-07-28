@@ -131,22 +131,13 @@ export default function TabLayout() {
           href: hideLaunch ? null : undefined,
         }}
       />
-      <Tabs.Screen
-        name="watch"
-        options={{
-          title: 'Watch',
-          tabBarIcon: ({ color }) => <Ionicons name="tv" size={24} color={color} />,
-          // OPT-IN, unlike the tabs above. They hide only on an explicit false,
-          // because "undefined" there means an older agent that simply doesn't
-          // report the cap while still having the feature. `player` is
-          // different: it only exists from agent 2.9.61, so undefined means the
-          // box has no player routes at all and the tab would lead to a dead
-          // screen. Showing it on `=== true` costs a one-poll delay on a fresh
-          // pair (caps persist after that) and never shows a tab that goes
-          // nowhere.
-          href: caps?.player === true ? undefined : null,
-        }}
-      />
+      {/* No Watch tab: it is a SEGMENT of Launch (components/WatchPanel).
+          Launch already means "start something on the TV", the bar was getting
+          crowded at six, and nesting is safe rather than hopeful — the agent's
+          player_available() requires steam + steamos-add-to-steam, so
+          `player: true` implies Steam is present and Launch is never hidden on a
+          box that has Watch. One door per thing, same as Steam menus moving into
+          a Pad segment. */}
       <Tabs.Screen
         name="setup"
         options={{

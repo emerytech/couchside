@@ -8,9 +8,6 @@ import {
   View,
 } from 'react-native';
 
-import { Gated } from '@/components/Gated';
-import { TabScreen } from '@/components/TabScreen';
-import { useLockOrientation } from '@/hooks/useLockOrientation';
 import { usePoll } from '@/hooks/usePoll';
 import { api, hostKey, PlayerState } from '@/lib/api';
 import { hapticError, hapticLight, hapticSuccess } from '@/lib/haptics';
@@ -84,18 +81,21 @@ export function splitLink(
   return null;
 }
 
-export default function WatchTab() {
-  useLockOrientation('portrait');
-  return (
-    <TabScreen>
-      <Gated>
-        <WatchScreen />
-      </Gated>
-    </TabScreen>
-  );
-}
-
-function WatchScreen() {
+/**
+ * The Watch surface, hosted as a SEGMENT of the Launch tab rather than a tab of
+ * its own.
+ *
+ * Why it lives under Launch: that tab already means "start something on the
+ * TV", which is exactly what picking a service is, and the tab bar was getting
+ * crowded. Safe to nest, and that is checkable rather than hopeful — the
+ * agent's player_available() requires `steam` and `steamos-add-to-steam`
+ * (couchsided.py), so `player: true` implies Steam is present, which means
+ * Launch is never hidden on a box where Watch exists. It cannot be stranded.
+ *
+ * Same reasoning as Steam menus moving out of Actions into a Pad segment: one
+ * door per thing. There is deliberately no /watch route.
+ */
+export function WatchPanel() {
   const t = useTheme();
   const styles = useThemedStyles(makeStyles);
   const { settings, ready } = useSettings();
