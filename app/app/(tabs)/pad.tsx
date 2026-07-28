@@ -49,7 +49,7 @@ import { PadDiagnostics } from '@/components/PadDiagnostics';
 import { TabScreen } from '@/components/TabScreen';
 import { useLockOrientation } from '@/hooks/useLockOrientation';
 import { usePoll } from '@/hooks/usePoll';
-import type { SteamMenus } from '@/lib/api';
+import type { PlayerState, SteamMenus } from '@/lib/api';
 import { useTrackpad } from '@/hooks/useTrackpad';
 import { useVolumeButtons } from '@/hooks/useVolumeButtons';
 import { api, hostKey, Status } from '@/lib/api';
@@ -1179,6 +1179,25 @@ function PadScreen() {
     true,
     hostKey(settings),
   );
+  // Is the Couchside Player on screen? A swipe has to send ARROW KEYS when it
+  // is, not a virtual gamepad: the player is a browser, and browsers ignore the
+  // Gamepad API entirely — measured, the hub's focus ring never moved for a
+  // d-pad and moved correctly for keys. api.player is capability-gated, so a box
+  // without the player resolves null and costs nothing. usePoll pauses while the
+  // screen is unfocused, so this does not run alongside the Watch panel's own.
+  const playerPoll = usePoll<PlayerState | null>(
+    () => api.player(settings),
+    10000,
+    true,
+    hostKey(settings),
+  );
+  const playerRunning = playerPoll.data?.running === true;
+  // Read through a ref inside the step callback: a swipe gesture holds one
+  // closure for its whole life, and a stale `false` there would send d-pad
+  // frames into a browser that ignores them.
+  const playerRunningRef = useRef(playerRunning);
+  playerRunningRef.current = playerRunning;
+
   const steamMenus = menusPoll.data?.menus ?? [];
   const hasSteamMenus = steamMenus.length > 0;
   // Declared BEFORE `modes` because the Steam segment depends on it.
@@ -1326,8 +1345,8 @@ function PadScreen() {
     key: null,
     timer: null,
   });
-  const dpadRelease = useCallback(() => {
-    if (keyboardMode) return;   // nothing was ever held down
+  // Let go of whatever the d-pad is holding, if anything.
+  const releaseHeldDpad = useCallback(() => {
     const h = dpadHeld.current;
     if (h.timer) {
       clearTimeout(h.timer);
@@ -1337,13 +1356,28 @@ function PadScreen() {
       client.sendButton(h.key, 0);
       h.key = null;
     }
-  }, [client, keyboardMode]);
+  }, [client]);
+  // DELIBERATELY not gated on the key-vs-gamepad choice any more. That choice
+  // can now flip MID-GESTURE — the player starting turns a swipe into arrow
+  // keys — and the old `if (keyboardMode) return` would strand a direction that
+  // was latched a moment earlier under the other choice. That is exactly this
+  // surface's stuck-direction failure, so the release is now unconditional:
+  // with nothing held it is a no-op, which costs nothing.
+  const dpadRelease = useCallback(() => {
+    releaseHeldDpad();
+  }, [releaseHeldDpad]);
   const dpadStep = useCallback(
     (k: DpadKey) => {
       // Keyboard mode: one arrow-key TAP per step. Steam moves one row per tap,
       // so there is nothing to latch and nothing to release -- which also
       // removes this surface's whole class of stuck-direction bugs.
-      if (keyboardMode) {
+      // Arrow keys when the target is the PLAYER, whatever the preference says:
+      // it is a browser, and browsers ignore the Gamepad API, so a d-pad moves
+      // nothing there. The preference still forces keys for Steam.
+      if (keyboardMode || playerRunningRef.current) {
+        // If the choice flipped while a direction was latched, let go first —
+        // otherwise the pad keeps holding it for the rest of the session.
+        releaseHeldDpad();
         client.sendKey(SWIPE_KEY[k]);
         return;
       }
@@ -1367,7 +1401,7 @@ function PadScreen() {
         }
       }, 250);
     },
-    [client, keyboardMode],
+    [client, keyboardMode, releaseHeldDpad],
   );
   // Steam global search. Three steps, and the ORDER matters:
   //   1. anchor the Steam UI to a known screen -- MEASURED, the identical key
