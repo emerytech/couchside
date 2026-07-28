@@ -143,12 +143,18 @@ Entry fields: `priority` (P0 blocker → P3 nice) · `risk` · `affects` · `dep
   (play/pause/playpause/mute/seek/picture), `playback` added to `GET /api/player`, transport UI
   in the Watch panel. 81 unit checks, mutation-checked (replacing the frozen seek constant with
   an interpolated one fails the suite), UI exercised in the harness by pressing.
-- **BLOCKING DEFECT:** on a real box the agent connects and `Runtime.evaluate` succeeds, but
-  evaluates in a context reporting `about:blank` with zero `<video>` elements, even though the
-  single CDP target is the service URL. So `playback` is always null live. Not connectivity,
-  not target selection, not the profile race. Likely fix: attach via `Target.attachToTarget`
-  and evaluate in that `sessionId`, or pass an explicit main-frame `contextId`. **Phase 4 is
-  not complete until this is fixed.**
+- **BLOCKING ISSUE — and the first diagnosis of it was WRONG.** It was recorded as "CDP
+  evaluates in the wrong context"; a debugging pass falsified that. **Chrome in that desktop
+  session does not navigate anywhere at all** — CDP was reporting the truth. Ruled out by
+  experiment: our client (the Phase-0 probe fails identically), `Runtime.enable`, target
+  selection, the profile (wiped), the tile and agent (plain `flatpak run` fails the same),
+  network/DNS (a loopback URL also lands on `about:blank`), and app-mode (a normal window fails
+  too). A screen capture shows a blank grey fullscreen window, and `Page.navigate` hangs without
+  committing. Same Chrome build that worked in Phase 0.
+- **The uncontrolled variable is the SESSION.** Phases 1–2 loaded pages fine in Game Mode; every
+  failing run is in a Plasma desktop session that has been through several couch-mode round
+  trips. **Next: re-run the Phase 4 live check in Game Mode**, then a session restart, before
+  touching any code. Full ledger in the spec's Phase 4 section.
 - **Real fix banked meanwhile:** switching services while the tile ran relaunched Chrome against
   a profile the dying instance still owned, so `flatpak run` deferred to it and the new
   debugging port never bound. The tile now waits for `SingletonLock` to clear.

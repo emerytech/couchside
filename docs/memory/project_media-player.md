@@ -354,20 +354,41 @@ normalizeCaps + capsEqual), with a test asserting all five.
   harness by pressing. **The live path is BLOCKED on the defect below — do not mark this phase
   complete until it is fixed.**
 
-#### THE OPEN DEFECT: CDP evaluates in the wrong context
-Measured on bazzite 10.1.1.60, 2026-07-27. The agent reads the port file correctly, sees
-exactly one target (`[["page", "https://www.youtube.com/"]]`), connects, and
-`Runtime.evaluate` succeeds — but returns `location.href == "about:blank"` and
-`document.querySelectorAll('video').length == 0`, so `playback` is always null and no transport
-op can act. It is **not** a connectivity failure (values come back), **not** target selection
-(only one target exists and it is the service), and **not** the profile-lock race (fixed
-separately, see below — argv and `/json/list` now agree on one debug port and the right URL).
+#### THE OPEN DEFECT — CORRECTED: it is not our code, it is Chrome not navigating
 
-Next things to try, cheapest first: attach with `Target.attachToTarget` + `sessionId` and
-evaluate in that session rather than the browser-level default context; or enumerate
-`Runtime.executionContextCreated` / `Page.getFrameTree` and pass an explicit `contextId` for the
-main frame. The current client sends `Runtime.evaluate` with no session and no context, which
-is the most likely cause.
+**The first diagnosis in this file was wrong** and is kept here as the correction. It read
+`document.URL == "about:blank"` while `/json/list` said the service URL, and concluded "CDP
+attaches to the wrong context". A debugging pass on 2026-07-27 falsified that. **Chrome in this
+desktop session does not navigate anywhere at all.** CDP was reporting the truth the whole time.
+
+The ledger, each line an experiment that ruled something out:
+
+| # | Experiment | Result | Rules out |
+|---|---|---|---|
+| 1 | Agent client, one target = service URL | `document.URL` = `about:blank` | — (the repro) |
+| 2 | Phase-0 probe client, same socket | identical | our client code |
+| 3 | With and without `Runtime.enable` | identical | missing-enable theories |
+| 4 | `Page.navigate` | **hangs** (never commits) | "already navigated" |
+| 5 | Screen capture via spectacle | **blank grey fullscreen window** | "CDP is lying" |
+| 6 | Wiped the throwaway profile | identical | profile corruption |
+| 7 | Plain `flatpak run`, no tile, no agent | identical | the tile and the agent |
+| 8 | `--app=http://127.0.0.1:8787/...` (no DNS) | `about:blank` | network / DNS |
+| 9 | NORMAL window instead of `--app=` | `about:blank` | app-mode |
+| 10 | `--enable-logging=stderr --v=1` | renderers spawn, no network/sandbox errors | an obvious crash |
+
+Chrome is the same build that worked in Phase 0 (`150.0.7871.186-1`), on the same box, in the
+same kind of desktop session. `Runtime.evaluate` answers instantly; navigation never commits.
+
+**The one variable not yet controlled is the session itself.** Phases 1 and 2 loaded pages fine
+in **Game Mode**; every failing run above is in a Plasma desktop session that has been through
+several couch-mode → desktop-mode round trips (and the desktop is the
+`plasma-steamos-wayland-oneshot` session, which is a temporary override, not the box's default).
+
+**Next step, in order:** (1) re-run the Phase 4 live check in Game Mode, where the same tile
+demonstrably loaded Hulu and Netflix — if it works there, this is session state and the
+transport is fine; (2) if it fails there too, restart the graphical session / reboot and retry;
+(3) only if it still fails is there anything to fix in our code, and the ledger above says there
+would not be. **Do not "fix" the CDP client on the strength of the original wrong diagnosis.**
 
 - **Fixed along the way (real, keep):** switching services while the tile ran relaunched Chrome
   against a `--user-data-dir` the dying instance still owned, so the second `flatpak run`
