@@ -335,8 +335,19 @@ normalizeCaps + capsEqual), with a test asserting all five.
   written and nothing launched; `POST open netflix` → 200 → tile up with Netflix on the TV
   (screen-captured); `POST close` → 200 and **15 Chrome processes → 0**, flatpak instances 0,
   tile 0, pidfile gone, `running` false.
-- **Phase 3 — app.** Watch tab (cap-gated), channel grid, deep links, share-sheet intake on
-  both platforms. Exercised in the web harness by **pressing** the controls.
+- **Phase 3 — app. DONE 2026-07-27, except share-sheet intake (see below).** Watch tab
+  (`app/app/(tabs)/watch.tsx`), cap-gated, service grid, now-playing + Stop, and a
+  paste-a-link field that splits a URL into (service, path) using the box's own hosts.
+  **Exercised in the web harness by pressing every control**, not by looking at it: tapping a
+  tile opened it and highlighted it; a bad link showed the hint and left Send disabled; a good
+  link read "Opens on Max at that title" and sent with the path; Stop cleared the strip and the
+  box reported `running=false`. No console errors; mobile width checked at 375px.
+  **Share-sheet intake is DEFERRED, not forgotten.** It needs an iOS share extension (a native
+  target + config plugin) and Android intent filters, neither of which the web harness can
+  exercise — so it would ship unverified, which this project's rules forbid. It wants its own
+  slice with a device build. The paste field covers the same need in the meantime.
+  Deep-link ingestion in-app should use **`useLinkingURL()`**; `useURL()` is deprecated in
+  Expo SDK 57 (checked against the versioned docs, per `app/AGENTS.md`).
 - **Phase 4 — transport + picture.** Play/pause/seek and now-playing read from the `<video>`
   element via CDP; the −10s/+10s ask. Plus **visual controls** (brightness / contrast /
   saturation) — one injected CSS `filter` on the video element, near-free once CDP is wired,

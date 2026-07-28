@@ -180,6 +180,27 @@ export type BoxCaps = {
   player?: boolean;
 };
 
+/**
+ * Couchside Player state, from GET /api/player.
+ *
+ * `services` and `service_urls` both come from the TILE on the box, never from
+ * a table in this app. That is deliberate: the tile is what enforces the
+ * allowlist, so a copy here would be the copy furthest from enforcement and the
+ * first to drift. `service_urls` exists so a pasted or shared link can be split
+ * into (service, path) using the box's own hosts.
+ */
+export type PlayerState = {
+  available: boolean;
+  running: boolean;
+  /** Service id the tile is pointed at ('' before anything has been opened). */
+  service: string;
+  /** Deep-link path, '' when the service was opened at its home page. */
+  path: string;
+  services: string[];
+  /** {service id -> home URL}. Absent on the first agents that shipped `player`. */
+  service_urls?: Record<string, string>;
+};
+
 /** One connected display, from GET /api/displays. */
 export type Display = {
   name: string;
@@ -2088,6 +2109,43 @@ export const api = {
   ): Promise<Screensaver | null> {
     return probeGated(caps?.screensaver, () =>
       probeOrNull(request<Screensaver>(settings, '/api/screensaver')));
+  },
+
+  /**
+   * Couchside Player state (agent >= 2.9.61). Probe-and-appear: null on 404
+   * (older agent, tile not installed, or no Widevine-capable browser) so the
+   * Watch tab hides rather than offering a control that opens a black window.
+   * caps.player === false skips the request; undefined still probes.
+   *
+   * `running` is OBSERVED state, not "what we last asked for": Steam relaunches
+   * the registered tile by itself after a return to Game Mode (measured
+   * 2026-07-27), so it can be true with no request behind it. Always re-read;
+   * never assume the last op is still the truth.
+   */
+  player(
+    settings: ConnSettings,
+    caps: BoxCaps | undefined = cachedCaps(settings),
+  ): Promise<PlayerState | null> {
+    return probeGated(caps?.player, () =>
+      probeOrNull(request<PlayerState>(settings, '/api/player')));
+  },
+
+  /**
+   * Open an allowlisted service (optionally at a deep-link path) or stop the
+   * tile. The box is the authority on what is allowed: an unknown service or a
+   * path that fails that service's pattern comes back 404 having written
+   * nothing and launched nothing. The app does not pre-judge — it surfaces the
+   * refusal.
+   */
+  playerOp(
+    settings: ConnSettings,
+    op: 'open' | 'close',
+    opts: { service?: string; path?: string } = {},
+  ): Promise<{ ok: boolean; running?: boolean; starting?: boolean; service?: string }> {
+    return request(settings, '/api/player', {
+      method: 'POST',
+      body: { op, ...opts },
+    });
   },
 
   /** Start the screensaver (optionally switching theme/tier) or stop it. */

@@ -8,6 +8,13 @@
       "cwd": "app",
       "port": 8097,
       "autoPort": false
+    },
+    {
+      "name": "couchside-web-harness",
+      "runtimeExecutable": "bash",
+      "runtimeArgs": ["scripts/web-dev.sh", "8199"],
+      "port": 8199,
+      "autoPort": false
     }
   ]
 }

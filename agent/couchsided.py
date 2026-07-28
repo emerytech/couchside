@@ -2342,6 +2342,12 @@ _PL_LOCK = threading.Lock()     # one start/stop mutation at a time
 # whether it found a Widevine-capable browser. Both come FROM the tile.
 _PLAYER_SERVICES = ()
 _PLAYER_BROWSER = None
+# {service_id: home url}, read from the tile at startup. The app needs the hosts
+# to turn a pasted/shared link into (service, path) — without this it would need
+# its own copy of the table, which would be a THIRD copy and the one furthest
+# from the thing that enforces it. Shipped as a separate field so the existing
+# `services` list keeps its shape (CLAUDE.md §4: add fields, never change one).
+_PLAYER_SERVICE_URLS = {}
 
 
 def _pl_ask(*args, timeout=15):
@@ -2362,21 +2368,32 @@ def set_player(mock):
     per-request handling never has to spawn the tile just to answer 'can this
     box do it'. Degrades closed: no tile, or a tile that reports no
     Widevine-capable browser, means the capability is simply absent."""
-    global PL_MOCK, _PLAYER_SERVICES, _PLAYER_BROWSER
+    global PL_MOCK, _PLAYER_SERVICES, _PLAYER_BROWSER, _PLAYER_SERVICE_URLS
     PL_MOCK = mock
     if mock:
         _PLAYER_SERVICES = ("netflix", "youtube", "max", "hulu", "disneyplus",
                             "primevideo", "appletv", "paramount", "peacock",
                             "crunchyroll", "twitch", "plutotv", "plex",
                             "spotify")
+        _PLAYER_SERVICE_URLS = {s: "https://%s.example/" % s
+                                for s in _PLAYER_SERVICES}
         _PLAYER_BROWSER = "mock"
         return
     if not os.path.isfile(PLAYER_TILE):
         _PLAYER_SERVICES, _PLAYER_BROWSER = (), None
+        _PLAYER_SERVICE_URLS = {}
         return
     listing = _pl_ask("--list-services")
     _PLAYER_SERVICES = tuple(listing.split()) if listing else ()
     _PLAYER_BROWSER = _pl_ask("--print-browser")
+    # One subprocess per service, once, at startup — the tile stays the only
+    # place a service id becomes a URL.
+    urls = {}
+    for svc in _PLAYER_SERVICES:
+        u = _pl_ask("--print-url", svc, "")
+        if u:
+            urls[svc] = u
+    _PLAYER_SERVICE_URLS = urls
 
 
 def player_available():
@@ -2503,11 +2520,13 @@ def player_info():
     if PL_MOCK:
         return {"available": True, "running": _PL_MOCK["running"],
                 "service": _PL_MOCK["service"], "path": _PL_MOCK["path"],
-                "services": list(_PLAYER_SERVICES)}
+                "services": list(_PLAYER_SERVICES),
+                "service_urls": dict(_PLAYER_SERVICE_URLS)}
     service, path = _pl_conf_read()
     return {"available": player_available(), "running": _pl_running(),
             "service": service, "path": path,
-            "services": list(_PLAYER_SERVICES)}
+            "services": list(_PLAYER_SERVICES),
+            "service_urls": dict(_PLAYER_SERVICE_URLS)}
 
 
 def player_open(service, path=""):

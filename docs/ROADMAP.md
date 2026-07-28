@@ -124,8 +124,23 @@ Entry fields: `priority` (P0 blocker → P3 nice) · `risk` · `affects` · `dep
   with a control (15 → 0). (2) **Steam relaunches the tile by itself** after a return to Game
   Mode, so `running` can be true with no API call behind it; the app must treat tile state as
   observed, not as what was last commanded.
-- **Next:** Phase 3, the app — Watch tab (cap-gated), channel grid, deep links, share-sheet
-  intake, exercised in the web harness by pressing the controls.
+- **Phase 3 SHIPPED on the branch 2026-07-27** — Watch tab (`app/app/(tabs)/watch.tsx`),
+  cap-gated on `player === true` (opt-in, unlike the other tabs: undefined means an agent with
+  no player routes at all, so the tab would lead nowhere). Service grid, now-playing + Stop,
+  and a paste-a-link field that splits a URL into (service, path) using the **box's** host
+  table — the app carries no copy of the service list, only a display-name map with a
+  title-cased fallback so a newer agent's services still render. `service_urls` was ADDED to
+  `/api/player` for this (new field; the existing `services` shape is untouched).
+  **Harness-verified by pressing every control:** tile tap opens and highlights; a bad link
+  shows the hint and leaves Send disabled; a good link reads "Opens on Max at that title" and
+  sends with the path; Stop clears the strip and the box reports `running=false`. No console
+  errors; 375px layout clean.
+- **Share-sheet intake DEFERRED to its own slice** — it needs an iOS share extension (native
+  target + config plugin) and Android intent filters, which the web harness cannot exercise, so
+  it would ship unverified. The paste field covers the need meanwhile. Note for that slice:
+  `useURL()` is deprecated in Expo SDK 57; use `useLinkingURL()`.
+- **Next:** Phase 4, transport + picture — play/pause/seek and now-playing read from the
+  `<video>` element over CDP, the −10s/+10s ask, and brightness/contrast/saturation.
 
 ### On-box pairing tutorial (auto-plays after install)
 - **priority:** P1 · **risk:** low · **affects:** agent + installer · **depends_on:** none
