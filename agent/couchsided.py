@@ -1391,7 +1391,7 @@ def set_caps(mock):
                 ("gamepad", "steam", "media", "tv", "screen", "power_schedule",
                  "screensaver", "couchmode", "desktop", "steamlink", "gaming",
                  "streamhost", "steammenus", "boxbattery", "file_upload",
-                 "session_default", "display_info")}
+                 "session_default", "display_info", "player")}
         return
     CAPS = {
         "gamepad": _uinput_writable(),
@@ -1411,6 +1411,7 @@ def set_caps(mock):
         "boxbattery": safe(box_battery_available),
         "file_upload": safe(lambda: os.access(_drop_dir(), os.W_OK)),
         "display_info": safe(display_info_available),
+        "player": safe(player_available),
     }
 
 
@@ -2288,6 +2289,297 @@ def screensaver_stop():
         os.kill(pid, 15)  # SIGTERM; the script forwards it to its ffplay child
     except (OSError, ValueError):
         pass  # not running = already stopped; stop is idempotent
+    return {"ok": True, "running": False}
+
+
+# ---------------------------------------------------------------------------
+# Couchside Player (/api/player) — the streaming-service tile.
+#
+# Same lifecycle as the screensaver above, for the same measured reason: it must
+# be launched THROUGH STEAM, because gamescope only surfaces what Steam focuses.
+# So this module registers the tile with steamos-add-to-steam, drops its grid
+# art, and fires steam://rungameid; the tile itself (agent/couchside-player.sh)
+# spawns the browser and holds the process Steam tracks.
+#
+# THE ALLOWLIST LIVES IN THE TILE, NOT HERE — deliberately. The tile owns the
+# frozen service table, and this module validates a request by ASKING it
+# (`--print-url <service> <path>`, rc != 0 means refused). That is a lookup, not
+# an interpolation, and it means there is exactly ONE copy of the table: the
+# validator is literally the code that will run. A second copy here would be a
+# copy that drifts, and a drifted allowlist is a hole.
+#
+# The subprocess call is an argv LIST into a path this module chose. Client
+# strings only ever appear as argv[2:], where the tile treats them as data (a
+# `case` statement, no eval). Nothing a client sends becomes a command.
+#
+# The tile is installed under ~/.local/opt/couchside-player/ rather than
+# ~/.local/opt/couchside/ because _ss_appid() anchors on the literal
+# b"couchside/Couchside" and would otherwise resolve the PLAYER's appid as the
+# screensaver's, silently breaking the screensaver's launch on any box with
+# both. tests/test_player_tile.py is the regression for that.
+# ---------------------------------------------------------------------------
+
+PLAYER_TILE = os.path.expanduser(
+    "~/.local/opt/couchside-player/Couchside Player")
+PLAYER_GRID_ART = os.path.expanduser("~/.local/opt/couchside-player")
+PLAYER_CONF = os.path.expanduser("~/.config/couchside/player.conf")
+PLAYER_PIDFILE = os.path.expanduser("~/.cache/couchside/player.pid")
+# Anchored on the install DIRECTORY, which is what keeps this lookup and the
+# screensaver's from colliding. Do not shorten it to "couchside/Couchside".
+PLAYER_VDF_ANCHOR = b"couchside-player/Couchside"
+PL_REGISTER_WAIT_S = 10
+PL_FIRST_LAUNCH_GAP_S = 4
+# How long to wait for a running tile to die before relaunching it at a new
+# service. The tile is single-instance: a rungameid fired while it is still up
+# is a no-op, so switching services MUST stop first or the request silently
+# does nothing.
+PL_RESTART_WAIT_S = 6
+
+PL_MOCK = False
+_PL_MOCK = {"running": False, "service": "netflix", "path": ""}
+_PL_LOCK = threading.Lock()     # one start/stop mutation at a time
+# Cached at startup by set_player(): the service ids the tile allows, and
+# whether it found a Widevine-capable browser. Both come FROM the tile.
+_PLAYER_SERVICES = ()
+_PLAYER_BROWSER = None
+
+
+def _pl_ask(*args, timeout=15):
+    """Run one of the tile's read-only debug entry points and return its stdout,
+    or None if it refused / is missing. argv list, never a shell string."""
+    try:
+        p = subprocess.run(["bash", PLAYER_TILE, *args], timeout=timeout,
+                           stdout=subprocess.PIPE, stderr=subprocess.DEVNULL)
+    except (OSError, subprocess.SubprocessError):
+        return None
+    if p.returncode != 0:
+        return None
+    return p.stdout.decode("utf-8", "replace").strip()
+
+
+def set_player(mock):
+    """Startup probe. Caches the tile's service list and its browser verdict, so
+    per-request handling never has to spawn the tile just to answer 'can this
+    box do it'. Degrades closed: no tile, or a tile that reports no
+    Widevine-capable browser, means the capability is simply absent."""
+    global PL_MOCK, _PLAYER_SERVICES, _PLAYER_BROWSER
+    PL_MOCK = mock
+    if mock:
+        _PLAYER_SERVICES = ("netflix", "youtube", "max", "hulu", "disneyplus",
+                            "primevideo", "appletv", "paramount", "peacock",
+                            "crunchyroll", "twitch", "plutotv", "plex",
+                            "spotify")
+        _PLAYER_BROWSER = "mock"
+        return
+    if not os.path.isfile(PLAYER_TILE):
+        _PLAYER_SERVICES, _PLAYER_BROWSER = (), None
+        return
+    listing = _pl_ask("--list-services")
+    _PLAYER_SERVICES = tuple(listing.split()) if listing else ()
+    _PLAYER_BROWSER = _pl_ask("--print-browser")
+
+
+def player_available():
+    """Tile deployed, a Widevine-capable browser found, and the Steam launch
+    toolchain present. Boot-time hint (rides caps); GET /api/player is the live
+    authority — same contract as the screensaver."""
+    if PL_MOCK:
+        return True
+    return (os.path.isfile(PLAYER_TILE)
+            and bool(_PLAYER_SERVICES)
+            and _PLAYER_BROWSER is not None
+            and shutil.which("steam") is not None
+            and shutil.which("steamos-add-to-steam") is not None)
+
+
+def _pl_running():
+    try:
+        with open(PLAYER_PIDFILE) as f:
+            pid = int(f.read().strip())
+        os.kill(pid, 0)
+        return True
+    except (OSError, ValueError):
+        return False
+
+
+def _pl_conf_read():
+    """(service, path) currently written for the tile. Missing/partial conf is
+    not an error — the tile has its own default."""
+    service, path = "", ""
+    try:
+        with open(PLAYER_CONF) as f:
+            for line in f:
+                line = line.strip()
+                if line.startswith("service="):
+                    service = line[len("service="):]
+                elif line.startswith("path="):
+                    path = line[len("path="):]
+    except OSError:
+        pass
+    return service, path
+
+
+def _pl_conf_write(service, path):
+    os.makedirs(os.path.dirname(PLAYER_CONF), exist_ok=True)
+    with open(PLAYER_CONF, "w") as f:
+        f.write("service=%s\n" % service)
+        if path:
+            f.write("path=%s\n" % path)
+
+
+def _pl_validate(service, path):
+    """Ask the TILE whether this request is allowed, and what URL it means.
+    Returns the URL, or None if refused. This is the single enforcement point;
+    the agent deliberately keeps no second copy of the service table.
+
+    The cheap membership test first means a bad id costs no subprocess."""
+    if not isinstance(service, str) or service not in _PLAYER_SERVICES:
+        return None
+    if path and not isinstance(path, str):
+        return None
+    if PL_MOCK:
+        return "https://example.invalid/%s%s" % (service, path or "")
+    return _pl_ask("--print-url", service, path or "")
+
+
+def _pl_appid():
+    """The registered tile's appid from shortcuts.vdf, or None. Same parse as
+    _ss_appid (including the +7 offset that was once wrong by a byte and made
+    fresh registrations launch nothing), anchored on the player's own directory
+    so the two tiles can coexist."""
+    for p in glob.glob(os.path.expanduser(
+            "~/.steam/steam/userdata/*/config/shortcuts.vdf")):
+        try:
+            with open(p, "rb") as f:
+                data = f.read()
+        except OSError:
+            continue
+        i = data.find(PLAYER_VDF_ANCHOR)
+        if i < 0:
+            continue
+        seg = data[max(0, i - 300):i]
+        j = seg.rfind(b"\x02appid\x00")
+        if j >= 0 and j + 11 <= len(seg):
+            return struct.unpack("<I", seg[j + 7:j + 11])[0]
+    return None
+
+
+def _pl_gameid(appid):
+    return (appid << 32) | 0x02000000
+
+
+def _pl_fire(gameid):
+    subprocess.Popen(
+        ["steam", "steam://rungameid/%d" % gameid],
+        env=_user_env(), start_new_session=True,
+        stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+
+
+def _pl_install_grid_art(appid):
+    """Branded capsule for the player tile, same naming and same best-effort
+    contract as _ss_install_grid_art: missing art never blocks a launch."""
+    art = {"portrait": "%dp.png" % appid,
+           "landscape": "%d.png" % appid,
+           "logo": "%d_logo.png" % appid}
+    srcs = {k: os.path.join(PLAYER_GRID_ART, "player-%s.png" % k) for k in art}
+    if not all(os.path.isfile(p) for p in srcs.values()):
+        return
+    for cfg in glob.glob(os.path.expanduser(
+            "~/.steam/steam/userdata/*/config")):
+        grid = os.path.join(cfg, "grid")
+        try:
+            os.makedirs(grid, exist_ok=True)
+            for k, name in art.items():
+                with open(srcs[k], "rb") as src, \
+                        open(os.path.join(grid, name), "wb") as dst:
+                    dst.write(src.read())
+        except OSError as e:
+            print("[player] grid art copy skipped (%s)" % e, flush=True)
+
+
+def player_info():
+    """Live state. `services` is the tile's own list, so the app never carries a
+    hardcoded copy either."""
+    if PL_MOCK:
+        return {"available": True, "running": _PL_MOCK["running"],
+                "service": _PL_MOCK["service"], "path": _PL_MOCK["path"],
+                "services": list(_PLAYER_SERVICES)}
+    service, path = _pl_conf_read()
+    return {"available": player_available(), "running": _pl_running(),
+            "service": service, "path": path,
+            "services": list(_PLAYER_SERVICES)}
+
+
+def player_open(service, path=""):
+    """Point the tile at an allowlisted service and launch it through Steam.
+
+    Raises ValueError when the service/path is refused — the caller turns that
+    into a 404, and NOTHING is written or launched. Registration and the
+    fresh-registration double-fire run in a background thread so the POST
+    returns immediately; the app watches `running` flip via GET."""
+    url = _pl_validate(service, path)
+    if url is None:
+        raise ValueError("unknown service or path not allowed")
+    if PL_MOCK:
+        _PL_MOCK.update(running=True, service=service, path=path or "")
+        return {"ok": True, "running": True, "url": url}
+    if not player_available():
+        raise RuntimeError("player not installed on this box")
+
+    with _PL_LOCK:
+        _pl_conf_write(service, path or "")
+        # The tile is single-instance and reads its conf at START, so switching
+        # services while it is up MUST stop it first — otherwise the rungameid
+        # below is a no-op and the request silently does nothing.
+        was_running = _pl_running()
+        if was_running:
+            player_close()
+        appid = _pl_appid()
+
+    def launch():
+        aid = appid
+        fresh = aid is None
+        if was_running:
+            deadline = time.monotonic() + PL_RESTART_WAIT_S
+            while _pl_running() and time.monotonic() < deadline:
+                time.sleep(0.5)
+        if fresh:
+            subprocess.run(
+                ["steamos-add-to-steam", PLAYER_TILE],
+                env=_user_env(), timeout=30,
+                stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            deadline = time.monotonic() + PL_REGISTER_WAIT_S
+            while aid is None and time.monotonic() < deadline:
+                time.sleep(1)
+                aid = _pl_appid()
+            if aid is None:
+                print("[player] registration did not appear in shortcuts.vdf",
+                      flush=True)
+                return
+            _pl_install_grid_art(aid)
+        _pl_fire(_pl_gameid(aid))
+        if fresh:
+            # A shortcut's very first rungameid only opens its page.
+            time.sleep(PL_FIRST_LAUNCH_GAP_S)
+            _pl_fire(_pl_gameid(aid))
+
+    threading.Thread(target=launch, daemon=True).start()
+    return {"ok": True, "starting": True, "service": service}
+
+
+def player_close():
+    """Stop the tile. TERMs the PIDFILE pid, never the pgid — Steam's reaper
+    owns the process group (the screensaver learned this first). The tile's own
+    trap forwards it to the browser and clears its runtime files. Idempotent."""
+    if PL_MOCK:
+        _PL_MOCK["running"] = False
+        return {"ok": True, "running": False}
+    try:
+        with open(PLAYER_PIDFILE) as f:
+            pid = int(f.read().strip())
+        os.kill(pid, 15)
+    except (OSError, ValueError):
+        pass  # not running = already stopped
     return {"ok": True, "running": False}
 
 
@@ -13812,6 +14104,14 @@ class Handler(BaseHTTPRequestHandler):
                     self._send(404, {"error": "not found"}, started)
                 else:
                     self._send(200, info, started)
+            elif path == "/api/player":
+                # Probe-and-appear: 404 when the tile is not deployed or found
+                # no Widevine-capable browser, so the app hides the Watch tab
+                # rather than offering a control that would open a black window.
+                if not player_available():
+                    self._send(404, {"error": "player not installed"}, started)
+                else:
+                    self._send(200, player_info(), started)
             elif path == "/api/couch-mode/status":
                 # Full ceremony job every poll (never a delta) so a phone joining
                 # mid-run catches up for free. Gated like the Couch Mode control
@@ -14864,6 +15164,44 @@ class Handler(BaseHTTPRequestHandler):
                 return
 
             # POST /api/screensaver: {"op":"start","theme"?,"tier"?} | {"op":"stop"}
+            # POST /api/player: {"op":"open","service":"max","path":"/video/..."}
+            #                   {"op":"close"}
+            #
+            # `service` and `path` are the ONLY client-supplied values, and both
+            # are settled by _pl_validate() BEFORE anything is written or
+            # launched: the id must be one the tile listed, and the path must
+            # clear that service's own pattern inside the tile. A refusal is a
+            # 404 and leaves no conf written and no process started — never a
+            # pass-through, never a sanitised near-miss (CLAUDE.md §3).
+            if path == "/api/player":
+                if not player_available():
+                    self._send(404, {"error": "player not installed"}, started)
+                    return
+                try:
+                    req = json.loads(body.decode("utf-8")) if body else {}
+                    if not isinstance(req, dict):
+                        raise ValueError
+                    op = req.get("op")
+                except (ValueError, UnicodeDecodeError):
+                    self._send(400, {"error": "json body with op required"}, started)
+                    return
+                if op == "open":
+                    try:
+                        r = player_open(req.get("service"), req.get("path", ""))
+                    except ValueError:
+                        # Deliberately does NOT echo the rejected value back.
+                        self._send(404, {"error": "unknown service"}, started)
+                        return
+                    except RuntimeError as e:
+                        self._send(409, {"error": str(e)}, started)
+                        return
+                    self._send(200, r, started)
+                elif op == "close":
+                    self._send(200, player_close(), started)
+                else:
+                    self._send(400, {"error": "op must be open|close"}, started)
+                return
+
             if path == "/api/screensaver":
                 if not (SS_MOCK or screensaver_available()):
                     self._send(404, {"error": "screensaver not installed"}, started)
@@ -15590,6 +15928,9 @@ def main():
     set_screen(args.mock)
     set_power_schedule(args.mock)
     set_screensaver(args.mock)
+    # Asks the player tile for its own service list and browser verdict, so no
+    # request path has to spawn it just to answer "can this box do it".
+    set_player(args.mock)
     set_guide(args.mock)  # arms the guide-hold watcher when opted in
     osk_arm(args.mock)  # tails Steam's UI log; silent no-op without it
     set_couchmode(args.mock)  # ceremony engine honors --mock

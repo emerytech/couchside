@@ -232,6 +232,26 @@ silently breaking the shipped screensaver's launch. The Phase 0b tile was delibe
 `~/.local/opt/couchside-player/` to avoid this. Phase 1 must either keep a distinct directory
 or tighten the screensaver's anchor first.
 
+### A measurement error worth keeping, from Phase 2
+
+Phases 0b and 1 both reported "0 Chrome processes" after a reap, measured with
+`grep -F "/app/bin/chrome"`. **That pattern never matches on this box** — the flatpak's real
+argv is `/app/extra/chrome`. The check could only ever return 0, so it was evidence of nothing.
+The conclusion happened to survive, because `flatpak ps` and the closed CDP port were
+independent signals that did hold. Phase 2 re-measured with the correct pattern and a built-in
+control: **15 → 0** across a close, which proves the pattern matches when Chrome IS running.
+
+The rule this is an instance of: a "zero" from a pattern you have never seen match a live
+process is not a measurement (CLAUDE.md §11 rules 2 and 3).
+
+### Steam relaunches the tile on its own
+
+Observed 2026-07-27: after the box returned to Game Mode, Steam launched the registered tile
+without anyone asking — `reaper SteamLaunch AppId=3442312991` parented by `steam -gamepadui`.
+So `running` can become true with no `POST /api/player` behind it, and the app must treat the
+tile's state as *observed*, never as *what we last commanded*. Not yet run down to a cause
+(Steam restoring the last-run app is the obvious candidate, unconfirmed).
+
 ### Side effect to clean up
 
 The probe registered a real non-Steam shortcut named **"Couchside Player"** (appid
@@ -303,8 +323,18 @@ normalizeCaps + capsEqual), with a test asserting all five.
   instances, 0 tile processes**, with both runtime files removed.
   Browser resolution on the real box returned `flatpak com.google.Chrome`, and
   `--print-url evilcorp` exited 1.
-- **Phase 2 — agent integration.** `player` cap + routes (open by `service_id`, close, state)
-  + tests: happy path, auth failure, non-allowlisted `service_id` refused and nothing runs.
+- **Phase 2 — agent integration. DONE 2026-07-27.** `player` cap at all five edit sites,
+  `GET /api/player` (probe-and-appear) and `POST /api/player` (`op: open|close`), plus
+  `tests/test_player_api.py` (44 checks, in CI).
+  **The allowlist deliberately lives in the TILE, not the agent** — `_pl_validate()` settles a
+  request by asking it (`--print-url <service> <path>`, non-zero means refused), so there is
+  exactly one copy of the table and the validator is literally the code that will run. A
+  second copy in the agent would be a copy that drifts.
+  **Verified live on bazzite 10.1.1.60:** `caps.player` true; `GET` returns the tile's own
+  service list; unauthenticated 401; unknown service and a bad `max` path both 404 with no conf
+  written and nothing launched; `POST open netflix` → 200 → tile up with Netflix on the TV
+  (screen-captured); `POST close` → 200 and **15 Chrome processes → 0**, flatpak instances 0,
+  tile 0, pidfile gone, `running` false.
 - **Phase 3 — app.** Watch tab (cap-gated), channel grid, deep links, share-sheet intake on
   both platforms. Exercised in the web harness by **pressing** the controls.
 - **Phase 4 — transport + picture.** Play/pause/seek and now-playing read from the `<video>`

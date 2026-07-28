@@ -170,6 +170,14 @@ export type BoxCaps = {
    * reads as "unknown, probe" and only an explicit false skips the request.
    */
   display_info?: boolean;
+  /**
+   * Couchside Player (agent >= 2.9.61): the streaming-service tile is deployed
+   * AND the box has a Widevine-capable browser. Gates the Watch tab. False is a
+   * real answer here, not a gap — a box with no Chrome reports false rather
+   * than offering a control that would open a black window. Optional: absent on
+   * older agents and on Windows, so undefined reads as "unknown, probe".
+   */
+  player?: boolean;
 };
 
 /** One connected display, from GET /api/displays. */
@@ -999,7 +1007,8 @@ export function capsEqual(a?: BoxCaps, b?: BoxCaps): boolean {
     a.launchers === b.launchers &&
     a.file_upload === b.file_upload &&
     a.session_default === b.session_default &&
-    a.display_info === b.display_info
+    a.display_info === b.display_info &&
+    a.player === b.player
   );
 }
 

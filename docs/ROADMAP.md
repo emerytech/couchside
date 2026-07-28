@@ -111,9 +111,21 @@ Entry fields: `priority` (P0 blocker → P3 nice) · `risk` · `affects` · `dep
   CDP live on loopback; `SIGTERM` to the pidfile pid left 0 chrome / 0 flatpak / 0 tile and
   cleaned both runtime files. Deep-link patterns ship **empty except `max`** — the only shape
   actually observed — so an unverified guess can never become a live link.
-- **Next:** Phase 2, agent integration — `player` cap at all five edit sites, routes to open by
-  `service_id` / close / report state, and the player's own state reporting (which does NOT
-  come free; see the correction above).
+- **Phase 2 SHIPPED on the branch 2026-07-27** — `player` cap at all five edit sites,
+  `GET /api/player` (probe-and-appear) + `POST /api/player` (`op: open|close`), and
+  `tests/test_player_api.py` (44 checks in CI, driving a real Handler with stub `steam` /
+  `steamos-add-to-steam` binaries that log, so "refused" and "nothing ran" are separate
+  observations). **The service table stays in the tile** — the agent validates by asking it, so
+  there is one copy and the validator is the code that runs. **Live-verified:** `caps.player`
+  true, unauth 401, unknown service and bad path both 404 with nothing written or launched,
+  `open netflix` → Netflix on the TV (screen-captured), `close` → 15 Chrome processes → 0.
+- **Two corrections banked.** (1) The "0 Chrome" checks in Phases 0b/1 used
+  `/app/bin/chrome`, which never matches — the real argv is `/app/extra/chrome`. Re-measured
+  with a control (15 → 0). (2) **Steam relaunches the tile by itself** after a return to Game
+  Mode, so `running` can be true with no API call behind it; the app must treat tile state as
+  observed, not as what was last commanded.
+- **Next:** Phase 3, the app — Watch tab (cap-gated), channel grid, deep links, share-sheet
+  intake, exercised in the web harness by pressing the controls.
 
 ### On-box pairing tutorial (auto-plays after install)
 - **priority:** P1 · **risk:** low · **affects:** agent + installer · **depends_on:** none

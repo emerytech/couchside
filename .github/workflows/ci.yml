@@ -344,6 +344,16 @@ jobs:
       - name: Unit tests (player tile)
         run: python3 tests/test_player_tile.py
 
+      # Player routes. Drives a real Handler on loopback with STUB steam /
+      # steamos-add-to-steam binaries that log every call, so "refused" and
+      # "nothing ran" are two separate observations -- a test that only checked
+      # the status code would pass against an agent that 404s the caller while
+      # still launching the tile. Also pins the `player` cap at all five edit
+      # sites; miss the app three and the cap never persists, so the tab
+      # re-probes forever.
+      - name: Unit tests (player API + caps)
+        run: python3 tests/test_player_api.py
+
       # Injected actions: buttons the agent offers only when the box can really
       # perform them ("a dead button costs more trust than a missing one"), so
       # every gate is asserted in BOTH directions. Covers the Bluetooth pairing
