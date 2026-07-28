@@ -27,6 +27,7 @@ import { LogsPanel } from '@/components/LogsPanel';
 import { QrView } from '@/components/QrView';
 import { BoxScanPair } from '@/components/BoxScanPair';
 import { BoxScanQr } from '@/components/BoxScanQr';
+import { SetupProgress, SETUP_GUIDE_URL } from '@/components/SetupProgress';
 import { buildPairLink } from '@/lib/pairLink';
 import { GuideHoldSetup } from '@/components/GuideHoldSetup';
 import { SmartTvSetup } from '@/components/SmartTvSetup';
@@ -109,9 +110,9 @@ const APP_BUILD =
       ? String(Constants.expoConfig.android.versionCode)
       : '');
 
-// couchside.tv setup guide — how to install the agent on a box. New users who
-// grabbed the app from a store land here with no idea a box-side agent exists.
-const SETUP_GUIDE_URL = 'https://couchside.tv/#install';
+// SETUP_GUIDE_URL now lives with the card that owns the "install the agent"
+// story (components/SetupProgress.tsx) and is imported above — one definition,
+// and importing it the other way round would make the two files a cycle.
 
 function PairingQrModal({ box, onClose }: { box: Box | null; onClose: () => void }) {
   const styles = useThemedStyles(makeStyles);
@@ -1028,26 +1029,12 @@ function SetupBody() {
             {/* ---- Fleet list ---- */}
             <Text style={styles.sectionLabel}>YOUR FLEET</Text>
         {boxes.length === 0 ? (
-          <View style={styles.card}>
-            <Text style={styles.emptyText}>
-              No boxes yet. Tap Scan for boxes below — your box shows a PIN on its
-              own screen and you type it here. No IP or token needed.
-            </Text>
-            {/* The box needs the agent installed before it can be paired at
-                all — surface the setup guide right where a new user gets stuck. */}
-            <Pressable
-              onPress={() => {
-                hapticLight();
-                void Linking.openURL(SETUP_GUIDE_URL);
-              }}
-              style={({ pressed }) => [styles.emptyLink, pressed && styles.pressed]}>
-              <Ionicons name="hardware-chip-outline" size={15} color={t.blue} style={styles.emptyLinkIcon} />
-              <Text style={styles.emptyLinkText}>
-                Haven&apos;t installed the Couchside service? Setup guide
-              </Text>
-              <Ionicons name="open-outline" size={13} color={t.blue} style={styles.emptyLinkIcon} />
-            </Pressable>
-          </View>
+          /* The empty state is the whole funnel: measured, ~9-15 strangers
+             downloaded the app in its first six days and ~0 paired a box. The
+             card sweeps the LAN by itself and flips to "found your box" while
+             the installer is still scrolling on their PC. It keeps the setup
+             guide link inside it as the escape hatch. */
+          <SetupProgress />
         ) : (
           boxes.map((box) => {
             const isActive = box.id === activeBoxId;
@@ -2028,28 +2015,9 @@ const makeStyles = (t: Palette) => StyleSheet.create({
     padding: 14,
     marginBottom: 12,
   },
-  emptyText: { color: t.textDim, fontSize: 13, lineHeight: 19 },
-  emptyLink: {
-    flexDirection: 'row',
-    // flex-start, not center: once the label wraps to two lines, centred icons
-    // float in the middle of the block instead of sitting on the first line.
-    alignItems: 'flex-start',
-    gap: 6,
-    marginTop: 12,
-  },
-  // flex:1 is load-bearing. Without it the Text takes its INTRINSIC width, so a
-  // label wider than the row pushes the trailing ↗ off the edge rather than
-  // wrapping. It fit on iOS and overflowed on Android, which is exactly the
-  // shape of bug that a single-platform check misses.
-  // Aligns the glyphs with the first line of a wrapped label.
-  emptyLinkIcon: { marginTop: 2 },
-  emptyLinkText: {
-    color: t.blue,
-    fontSize: 13,
-    fontWeight: '600',
-    flex: 1,
-    lineHeight: 18,
-  },
+  // emptyText / emptyLink* moved with the empty state they styled, into
+  // components/SetupProgress.tsx — including the two comments that record why
+  // alignItems is flex-start and why flex:1 on the label is load-bearing.
   boxCard: {
     backgroundColor: t.card,
     borderColor: t.cardBorder,

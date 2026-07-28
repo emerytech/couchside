@@ -157,6 +157,16 @@ jobs:
       - name: Unit tests (boot session default)
         run: python3 tests/test_session_default.py
 
+      # Display-manager detection + the greetd writer. Boot-session was
+      # SDDM-only, so it silently did not exist on the custom Steam machines
+      # people actually build (Arch/CachyOS + gamescope, ChimeraOS) which
+      # commonly run greetd. Detection reads systemd's own
+      # display-manager.service symlink. greetd has NO drop-in dir, so its
+      # writer rewrites the user's single config.toml — most of these tests
+      # assert it preserves every other section, or refuses.
+      - name: Unit tests (display manager + greetd)
+        run: python3 tests/test_display_manager.py
+
       # Flatpak update completion (KI-036). "Done" must be the update PROCESS
       # finishing, not `remote-ls` count reaching zero — an EOL runtime pins the
       # count above zero forever, which stranded the card on "Updating…" and
