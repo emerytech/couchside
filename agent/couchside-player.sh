@@ -143,6 +143,27 @@ service_hosts() {
     esac
 }
 
+# Icon URL for services whose icon is NOT at the conventional root path.
+# Checked, not guessed — each of these was fetched before being listed:
+#
+#   plex     root /favicon.ico 404s; the real ones live under /desktop/.
+#   peacock  root /favicon.ico does not respond at all; the only working URL is
+#            VERSION-PINNED (peacock-toolkit/53.2.1/...), so it WILL rot when
+#            they bump that toolkit. Listed anyway because rot is harmless here:
+#            a failed icon removes itself and the tile falls back to its text
+#            label, which is exactly what it does today with no entry at all.
+#
+# Crunchyroll is deliberately absent: it answers 403 to every icon request,
+# browser user-agent and referer included (Cloudflare bot protection), so there
+# is no URL to list. It keeps its text tile.
+service_icon() {
+    case "$1" in
+        plex)    echo "https://app.plex.tv/desktop/static/icon-iphone.png" ;;
+        peacock) echo "https://www.peacocktv.com/static/peacock-toolkit/53.2.1/peacock/favicons/favicon_32x32.png" ;;
+        *) return 1 ;;
+    esac
+}
+
 # ---------------------------------------------------------------------------
 # The hub page: the tile's own screen, written from the frozen table.
 #
@@ -190,12 +211,13 @@ img.ico{width:2.6vw;height:2.6vw;object-fit:contain;border-radius:.4vw;flex:none
 <h1>COUCHSIDE</h1><p class=sub>Pick a service &middot; or drive it from your phone</p>
 <div class=grid id=g>
 HTMLHEAD
-        local svc url host
+        local svc url host icon
         for svc in $(bash "$0" --list-services 2>/dev/null); do
             url="$(service_url "$svc")" || continue
             host="${url#https://}"; host="${host%%/*}"
-            printf '<a class=tile href="%s"><img class=ico data-host="%s">%s</a>\n' \
-                "$url" "$host" "$(service_label "$svc")"
+            icon="$(service_icon "$svc" 2>/dev/null || true)"
+            printf '<a class=tile href="%s"><img class=ico data-host="%s" data-icon="%s">%s</a>\n' \
+                "$url" "$host" "$icon" "$(service_label "$svc")"
         done
         cat <<'HTMLTAIL'
 </div>
@@ -207,13 +229,21 @@ HTMLHEAD
    404s, is blocked, or is slow just drops the image and keeps its text label.
    The hub must never depend on a third party being reachable. */
 [].slice.call(document.querySelectorAll('img.ico')).forEach(function (img) {
-  var host = img.getAttribute('data-host'), stage = 0;
+  var host = img.getAttribute('data-host');
+  var override = img.getAttribute('data-icon');
+  /* Chain: an explicit URL for the services whose icon is not at the root,
+     then apple-touch-icon (the sharp one), then favicon, then give up and let
+     the text label carry the tile. */
+  var chain = (override ? [override] : [])
+    .concat(['https://' + host + '/apple-touch-icon.png',
+             'https://' + host + '/favicon.ico']);
+  var at = 0;
   img.onerror = function () {
-    stage++;
-    if (stage === 1) { img.src = 'https://' + host + '/favicon.ico'; return; }
+    at++;
+    if (at < chain.length) { img.src = chain[at]; return; }
     img.remove();
   };
-  img.src = 'https://' + host + '/apple-touch-icon.png';
+  img.src = chain[0];
 });
 var COLS = 5, tiles = [].slice.call(document.querySelectorAll('a.tile')), at = 0;
 function go(i){ at = Math.max(0, Math.min(tiles.length - 1, i)); tiles[at].focus(); }
