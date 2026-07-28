@@ -101,6 +101,100 @@ service_search() {
     esac
 }
 
+# Display names for the hub page. NOT an allowlist and never treated as one —
+# service_url() is the gate; this only decides whether the TV reads "Disney+"
+# or "disneyplus". An id with no entry falls back to itself, so adding a service
+# can never make the hub render a blank tile.
+service_label() {
+    case "$1" in
+        netflix)     echo "Netflix" ;;
+        youtube)     echo "YouTube" ;;
+        max)         echo "Max" ;;
+        hulu)        echo "Hulu" ;;
+        disneyplus)  echo "Disney+" ;;
+        primevideo)  echo "Prime Video" ;;
+        appletv)     echo "Apple TV+" ;;
+        paramount)   echo "Paramount+" ;;
+        peacock)     echo "Peacock" ;;
+        crunchyroll) echo "Crunchyroll" ;;
+        twitch)      echo "Twitch" ;;
+        plutotv)     echo "Pluto TV" ;;
+        plex)        echo "Plex" ;;
+        spotify)     echo "Spotify" ;;
+        *) echo "$1" ;;
+    esac
+}
+
+# ---------------------------------------------------------------------------
+# The hub page: the tile's own screen, written from the frozen table.
+#
+# THIS IS THE ANSWER TO THE TV-PAD-MODE FAILURE. That mode was demoted to
+# opt-in because a browser tile grid has no focus model — a cursor jump lands on
+# nothing, so arrow keys accomplish nothing on a streaming site. Our own page
+# CAN draw a focus ring, so the phone's d-pad (uinput arrow keys) finally moves
+# a highlight instead of a stray pointer.
+#
+# It exists for the case the phone does not cover: someone opens the tile from
+# the Steam library with a controller in hand and no phone. Without it the tile
+# would open whatever service was last configured, which is a guess.
+#
+# Written as a file:// page inside the browser profile directory — the one place
+# guaranteed readable inside the flatpak sandbox — rather than served, because a
+# bash HTTP server would be a worse idea than any problem it solved. Every href
+# comes from service_url(); nothing a client sends reaches this file.
+# ---------------------------------------------------------------------------
+HUB_FILE="$PROFILE/hub.html"
+
+write_hub() {
+    mkdir -p "$PROFILE" 2>/dev/null || return 1
+    {
+        cat <<'HTMLHEAD'
+<!doctype html><html><head><meta charset=utf-8><title>Couchside</title><style>
+html,body{margin:0;height:100%;background:#0b1220;color:#e5ecf8;
+  font-family:system-ui,sans-serif;overflow:hidden}
+h1{font-size:2.2vw;letter-spacing:.4em;margin:5vh 0 1vh;text-align:center;
+  color:#e5ecf8;font-weight:800}
+p.sub{text-align:center;color:#8b97ad;margin:0 0 5vh;font-size:1.2vw}
+.grid{display:grid;grid-template-columns:repeat(5,1fr);gap:1.6vw;
+  padding:0 6vw}
+a.tile{display:flex;align-items:center;justify-content:center;height:11vh;
+  background:#141c2e;border:2px solid #1e2942;border-radius:1vw;
+  color:#e5ecf8;text-decoration:none;font-size:1.4vw;font-weight:600;
+  transition:transform .08s ease}
+/* The focus ring is the whole point: it is what a d-pad step lands ON. */
+a.tile:focus{outline:none;border-color:#34d399;background:#0e1526;
+  color:#34d399;transform:scale(1.06)}
+</style></head><body>
+<h1>COUCHSIDE</h1><p class=sub>Pick a service &middot; or drive it from your phone</p>
+<div class=grid id=g>
+HTMLHEAD
+        local svc url
+        for svc in $(bash "$0" --list-services 2>/dev/null); do
+            url="$(service_url "$svc")" || continue
+            printf '<a class=tile href="%s">%s</a>\n' "$url" "$(service_label "$svc")"
+        done
+        cat <<'HTMLTAIL'
+</div>
+<script>
+/* Arrow-key navigation with a real focus model. Five columns, matching the
+   CSS grid. Native <a> handles Enter, so there is no click synthesis here. */
+var COLS = 5, tiles = [].slice.call(document.querySelectorAll('a.tile')), at = 0;
+function go(i){ at = Math.max(0, Math.min(tiles.length - 1, i)); tiles[at].focus(); }
+document.addEventListener('keydown', function (e) {
+  var k = e.key;
+  if (k === 'ArrowRight') go(at + 1);
+  else if (k === 'ArrowLeft') go(at - 1);
+  else if (k === 'ArrowDown') go(at + COLS);
+  else if (k === 'ArrowUp') go(at - COLS);
+  else return;
+  e.preventDefault();
+});
+if (tiles.length) go(0);
+</script></body></html>
+HTMLTAIL
+    } > "$HUB_FILE"
+}
+
 # Percent-encode a search query for use as a query-string VALUE.
 #
 # Structurally-bad input is REJECTED (control characters, over-length) rather
@@ -227,9 +321,11 @@ read_conf() {
     SERVICE=""
     DEEP_PATH=""
     QUERY=""
+    HUB=""
     [ -f "$CONF" ] || return 0
     # Parse strictly: only these keys, only from `key=value` lines. Anything
     # else in the file is ignored rather than interpreted.
+    HUB=$(sed -n 's/^hub=\(.*\)$/\1/p' "$CONF" | tail -1)
     SERVICE=$(sed -n 's/^service=\(.*\)$/\1/p' "$CONF" | tail -1)
     DEEP_PATH=$(sed -n 's/^path=\(.*\)$/\1/p' "$CONF" | tail -1)
     QUERY=$(sed -n 's/^query=\(.*\)$/\1/p' "$CONF" | tail -1)
@@ -290,6 +386,7 @@ case "${1:-}" in
     --print-ozone) pick_ozone; exit 0 ;;
     --print-url)   build_url "${2:-}" "${3:-}" || exit 1; exit 0 ;;
     --print-search) build_search_url "${2:-}" "${3:-}" || exit 1; exit 0 ;;
+    --print-hub)   write_hub && printf 'file://%s\n' "$HUB_FILE"; exit $? ;;
     --list-searchable)
         for s in youtube netflix twitch crunchyroll; do
             service_search "$s" >/dev/null 2>&1 && echo "$s"
@@ -319,7 +416,11 @@ read_conf
 SERVICE="${SERVICE:-netflix}"
 # A query in the conf means "open this service's search results"; it wins over
 # a deep-link path, and the two are never combined.
-if [ -n "${QUERY:-}" ]; then
+if [ "${HUB:-}" = "1" ]; then
+    # The hub is the tile's own page, so there is nothing to validate: it is
+    # written here from the frozen table and lives inside the browser profile.
+    if write_hub; then URL="file://$HUB_FILE"; else URL=""; fi
+elif [ -n "${QUERY:-}" ]; then
     URL="$(build_search_url "$SERVICE" "$QUERY")" || URL=""
 else
     URL="$(build_url "$SERVICE" "$DEEP_PATH")" || URL=""

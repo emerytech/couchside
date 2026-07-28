@@ -449,8 +449,47 @@ this reason.
   Netflix does for any netflix.com URL when signed out, not a wrong search URL; it stays, and
   wants a re-check on a signed-in profile.
 
-- **Phase 6 — hub UI + library.** The player's own TV page with a real focus model; recents /
-  saved stored phone-side (no new box state, and `shortcuts.vdf` cannot hold it anyway).
+- **Phase 6 — hub UI + library. DONE 2026-07-27.**
+
+  **The hub page is the answer to the TV-pad-mode failure.** That mode was demoted to opt-in
+  because a browser tile grid has no focus model — a cursor jump lands on nothing. Our own page
+  draws a focus ring, so arrow keys finally move a highlight. Live in Game Mode: 14 tiles, the
+  first focused on load, and ArrowRight/Right/Down/Left walked the grid to `Apple TV+` with the
+  ring in brand green (`rgb(52, 211, 153)`), screen-captured off the TV.
+
+  It exists for the case the phone does not cover: opening the tile from the Steam library with
+  a controller and no phone. Written as a `file://` page inside the browser profile — the one
+  directory guaranteed readable in the flatpak sandbox — rather than served, because a bash HTTP
+  server would be a worse idea than the problem it solved. Every href comes from `service_url()`;
+  no client input reaches the file. `service_label()` gives display names ("Disney+", not
+  "disneyplus") and is explicitly NOT an allowlist — an unknown id falls back to itself so the
+  hub can never render a blank tile.
+
+  **Recents are phone-side** (`app/lib/watchRecents.ts`, SecureStore with a localStorage
+  fallback so the harness can exercise them). Not box state, deliberately: the box's own
+  persistence would be `shortcuts.vdf`, which Steam rewrites from an authoritative copy, and
+  history is per-person — two people sharing a box do not want each other's on the TV.
+  Harness-verified: opening Hulu made the row appear and persisted the entry.
+
+  **`_pl_relaunch()` extracted** so `open`, `search` and `hub` share ONE launch path. Three
+  copies of the fresh-registration double-fire would be three places for it to drift.
+
+## 7b. Is the whole feature hidden on a box without the player? YES — verified
+
+Asked directly by the owner, so it was measured rather than reasoned about:
+
+| Layer | Gate | How it is known |
+|---|---|---|
+| `player_available()` | tile file + service list + Widevine browser + steam + steamos-add-to-steam | test: cap is `false` when the tile is absent |
+| `caps.player` | that boolean on `/api/status` | test: all five edit sites |
+| `GET /api/player` | **404** | test: probe-and-appear |
+| Launch segment | `caps?.player === true && watchEnabled` | **harness, observed** |
+
+With the box forced to report `caps.player: false`, the persisted cap flipped to false and the
+**entire segment row disappeared — both buttons — along with every Watch element** (0 elements
+with a `watch-` testID). Launch reverts to the plain games list. Note the first sample was taken
+mid-render and still showed the row; the check had to be repeated after the next render, which
+is a reminder that a single sample of a React tree is not a measurement.
 
 ---
 

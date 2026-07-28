@@ -181,6 +181,23 @@ Entry fields: `priority` (P0 blocker → P3 nice) · `risk` · `affects` · `dep
 - **Also fixed:** `player_info()`'s mock branch returned a narrower shape than the real one, so
   the harness rendered no transport at all. A test now asserts both branches return the SAME
   keys — a narrow mock is how a UI gets built against a payload the box never sends.
+- **Phase 6 SHIPPED 2026-07-27 — the hub page closes the loop on TV pad mode.** That mode was
+  demoted to opt-in because a browser tile grid has no focus model for a d-pad step to land on.
+  The tile now writes its OWN page (a `file://` grid inside the browser profile, every href from
+  the frozen table, display names via a label map that is explicitly not an allowlist). Live in
+  Game Mode: 14 tiles, first focused on load, arrow keys walked the grid to `Apple TV+` with the
+  ring in brand green — screen-captured. It covers the case the phone does not: opening the tile
+  from the Steam library with a controller in hand.
+- **Recents are phone-side** (`app/lib/watchRecents.ts`), never box state — `shortcuts.vdf` is
+  rewritten by Steam, and history is per-person, not per-box. Harness-verified.
+- **Hidden end-to-end on a box without the player — measured, not assumed.** With the box forced
+  to report `caps.player: false`, the whole `GAMES | WATCH` row vanished along with every Watch
+  element, and Launch reverted to the plain games list. (`GET /api/player` 404s and the cap is
+  false when the tile is absent — both already covered by tests.) First sample was taken
+  mid-render and still showed the row; one sample of a React tree is not a measurement.
+- **PLAYER PROJECT COMPLETE — phases 0–6.** Remaining follow-ups are small and listed in the
+  spec: Netflix search on a signed-in profile, search URLs for the other ten services, and
+  share-sheet intake (deferred, needs a device build).
 
 ### On-box pairing tutorial (auto-plays after install)
 - **priority:** P1 · **risk:** low · **affects:** agent + installer · **depends_on:** none

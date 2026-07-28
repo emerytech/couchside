@@ -2450,12 +2450,14 @@ def _pl_conf_read():
     return service, path, query
 
 
-def _pl_conf_write(service, path, query=""):
+def _pl_conf_write(service, path, query="", hub=False):
     """A deep-link path and a search query are mutually exclusive — the tile
     treats a query as "open this service's search results", and writing both
     would leave which one wins to reading order."""
     os.makedirs(os.path.dirname(PLAYER_CONF), exist_ok=True)
     with open(PLAYER_CONF, "w") as f:
+        if hub:
+            f.write("hub=1\n")
         f.write("service=%s\n" % service)
         if query:
             f.write("query=%s\n" % query)
@@ -2582,6 +2584,45 @@ def player_info():
             "picture_steps": {k: list(v) for k, v in PLAYER_PICTURE.items()}}
 
 
+def _pl_relaunch(appid, was_running):
+    """Register if needed, then fire the tile through Steam, in a background
+    thread so the POST returns immediately.
+
+    Extracted so `open`, `search` and `hub` share ONE launch path — three copies
+    of the fresh-registration double-fire is three places for it to drift."""
+
+    def launch():
+        aid = appid
+        fresh = aid is None
+        if was_running:
+            # The tile is single-instance; relaunching before the old one is
+            # gone makes the rungameid a silent no-op.
+            deadline = time.monotonic() + PL_RESTART_WAIT_S
+            while _pl_running() and time.monotonic() < deadline:
+                time.sleep(0.5)
+        if fresh:
+            subprocess.run(
+                ["steamos-add-to-steam", PLAYER_TILE],
+                env=_user_env(), timeout=30,
+                stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            deadline = time.monotonic() + PL_REGISTER_WAIT_S
+            while aid is None and time.monotonic() < deadline:
+                time.sleep(1)
+                aid = _pl_appid()
+            if aid is None:
+                print("[player] registration did not appear in shortcuts.vdf",
+                      flush=True)
+                return
+            _pl_install_grid_art(aid)
+        _pl_fire(_pl_gameid(aid))
+        if fresh:
+            # A shortcut's very first rungameid only opens its page.
+            time.sleep(PL_FIRST_LAUNCH_GAP_S)
+            _pl_fire(_pl_gameid(aid))
+
+    threading.Thread(target=launch, daemon=True).start()
+
+
 def player_open(service, path="", query=""):
     """Point the tile at an allowlisted service and launch it through Steam.
 
@@ -2619,34 +2660,7 @@ def player_open(service, path="", query=""):
             player_close()
         appid = _pl_appid()
 
-    def launch():
-        aid = appid
-        fresh = aid is None
-        if was_running:
-            deadline = time.monotonic() + PL_RESTART_WAIT_S
-            while _pl_running() and time.monotonic() < deadline:
-                time.sleep(0.5)
-        if fresh:
-            subprocess.run(
-                ["steamos-add-to-steam", PLAYER_TILE],
-                env=_user_env(), timeout=30,
-                stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-            deadline = time.monotonic() + PL_REGISTER_WAIT_S
-            while aid is None and time.monotonic() < deadline:
-                time.sleep(1)
-                aid = _pl_appid()
-            if aid is None:
-                print("[player] registration did not appear in shortcuts.vdf",
-                      flush=True)
-                return
-            _pl_install_grid_art(aid)
-        _pl_fire(_pl_gameid(aid))
-        if fresh:
-            # A shortcut's very first rungameid only opens its page.
-            time.sleep(PL_FIRST_LAUNCH_GAP_S)
-            _pl_fire(_pl_gameid(aid))
-
-    threading.Thread(target=launch, daemon=True).start()
+    _pl_relaunch(appid, was_running)
     return {"ok": True, "starting": True, "service": service}
 
 
@@ -3018,6 +3032,30 @@ def _pl_picture_write(values):
             f.write("path=%s\n" % path)
         for knob in sorted(PLAYER_PICTURE):
             f.write("%s=%s\n" % (knob, values[knob]))
+
+
+def player_hub():
+    """Open the tile's OWN page — the service grid it writes from the frozen
+    table, with a focus ring a d-pad step can land on.
+
+    There is no client input in this path at all: the request carries an op and
+    nothing else, and the page is authored by the tile. It exists for the case
+    the phone does not cover — someone opening the tile from the Steam library
+    with a controller and no phone in hand."""
+    if PL_MOCK:
+        _PL_MOCK.update(running=True, service="", path="", query="")
+        return {"ok": True, "running": True, "hub": True}
+    if not player_available():
+        raise RuntimeError("player not installed on this box")
+    with _PL_LOCK:
+        service, _, _ = _pl_conf_read()
+        _pl_conf_write(service or "netflix", "", "", hub=True)
+        was_running = _pl_running()
+        if was_running:
+            player_close()
+        appid = _pl_appid()
+    _pl_relaunch(appid, was_running)
+    return {"ok": True, "starting": True, "hub": True}
 
 
 def player_close():
@@ -15651,6 +15689,11 @@ class Handler(BaseHTTPRequestHandler):
                         self._send(409, {"error": str(e)}, started)
                         return
                     self._send(200, r, started)
+                elif op == "hub":
+                    try:
+                        self._send(200, player_hub(), started)
+                    except RuntimeError as e:
+                        self._send(409, {"error": str(e)}, started)
                 elif op == "close":
                     self._send(200, player_close(), started)
                 elif op in ("play", "pause", "playpause", "mute", "seek",

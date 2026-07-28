@@ -233,7 +233,7 @@ export type PlayerPlayback = {
 
 /** Transport ops the box accepts. Anything else is refused with a 404. */
 export type PlayerOp =
-  | 'open' | 'close'
+  | 'open' | 'close' | 'hub'
   | 'play' | 'pause' | 'playpause' | 'mute' | 'seek' | 'picture';
 
 /** One connected display, from GET /api/displays. */

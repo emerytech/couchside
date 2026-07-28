@@ -12,6 +12,7 @@ import { usePoll } from '@/hooks/usePoll';
 import { api, hostKey, PlayerOp, PlayerPlayback, PlayerState } from '@/lib/api';
 import { hapticError, hapticLight, hapticSuccess } from '@/lib/haptics';
 import { useSettings } from '@/lib/SettingsContext';
+import { noteRecent, useWatchRecents } from '@/lib/watchRecents';
 import { useTheme, useThemedStyles, type Palette } from '@/lib/theme';
 
 /**
@@ -139,6 +140,7 @@ export function WatchPanel() {
   // Which services can be searched is the BOX's answer, not a guess here:
   // a verified search URL exists for some services and not others.
   const searchable = state?.searchable ?? [];
+  const recents = useWatchRecents();
 
   const open = useCallback(
     async (service: string, path = '', query = '') => {
@@ -154,6 +156,7 @@ export function WatchPanel() {
           query ? { service, query } : path ? { service, path } : { service },
         );
         hapticSuccess();
+        noteRecent({ service, query, path: query ? '' : path });
         setLink('');
         setQuery('');
         player.refresh();
@@ -394,6 +397,42 @@ export function WatchPanel() {
 
       {error ? <Text style={styles.error}>{error}</Text> : null}
 
+      {/* The box's own screen. Useful when the phone is not the thing in your
+          hand — someone opening the tile from the Steam library with a
+          controller gets a grid with a focus ring instead of whatever service
+          happened to be configured last. */}
+      <Pressable
+        onPress={() => transport('hub')}
+        disabled={busy !== null}
+        testID="watch-hub"
+        style={({ pressed }) => [styles.hubBtn, pressed && styles.pressed]}
+      >
+        <Text style={styles.hubBtnText}>
+          {busy === 'hub' ? 'Opening…' : 'Show the home screen on the TV'}
+        </Text>
+      </Pressable>
+
+      {recents.length > 0 && (
+        <>
+          <Text style={styles.section}>RECENT</Text>
+          <View style={styles.grid} testID="watch-recents">
+            {recents.map((r) => (
+              <Pressable
+                key={`${r.service}|${r.query}|${r.path}`}
+                onPress={() => open(r.service, r.path, r.query)}
+                disabled={busy !== null}
+                testID={`watch-recent-${r.service}`}
+                style={({ pressed }) => [styles.searchBtn, pressed && styles.pressed]}
+              >
+                <Text style={styles.searchBtnText} numberOfLines={1}>
+                  {r.query ? `${label(r.service)}: ${r.query}` : label(r.service)}
+                </Text>
+              </Pressable>
+            ))}
+          </View>
+        </>
+      )}
+
       {/* SEARCH. There is no metadata service behind this and no API key: you
           type on the phone, pick a service, and the box opens that service's
           own search results. It exists because typing a title on a TV with a
@@ -616,6 +655,15 @@ const makeStyles = (t: Palette) =>
       borderColor: t.cardBorder,
     },
     searchBtnText: { color: t.text, fontSize: 13, fontWeight: '600' },
+    hubBtn: {
+      alignItems: 'center',
+      paddingVertical: 12,
+      borderRadius: 10,
+      backgroundColor: t.inset,
+      borderWidth: StyleSheet.hairlineWidth,
+      borderColor: t.cardBorder,
+    },
+    hubBtnText: { color: t.textDim, fontSize: 13, fontWeight: '600' },
     hint: { color: t.amber, fontSize: 12 },
     hintOk: { color: t.green, fontSize: 12 },
     error: { color: t.red, fontSize: 13 },
