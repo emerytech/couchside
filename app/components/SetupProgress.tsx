@@ -50,7 +50,7 @@ import { hapticLight, hapticSelection, hapticSuccess } from '@/lib/haptics';
 import { navigateAfterPair } from '@/lib/postPair';
 import { useBoxes } from '@/lib/SettingsContext';
 import {
-  acceptsSighting,
+  maySweep,
   DIAGNOSE_AFTER_MS,
   formatCountdown,
   netVerdict,
@@ -62,6 +62,7 @@ import {
   type SetupEvent,
   type SetupPhase,
   type StepMark,
+  type SetupBox,
 } from '@/lib/setupPhase';
 import { useTheme, useThemedStyles, type Palette } from '@/lib/theme';
 
@@ -155,13 +156,10 @@ export function SetupProgress() {
       const cycle = async (g: number) => {
         const live = () => g === gen && mounted.current && appActive;
         if (!live()) return;
-        // Never sweep once the user has committed to a box. Same predicate the
-        // reducer uses to refuse a late sighting.
-        if (!acceptsSighting(phaseRef.current)) return;
-        /** Set the moment a box is in hand. Immune to the one-render lag on
-         *  phaseRef, which is why the "schedule another sweep?" test below reads
-         *  this and not the ref. */
-        let committed = false;
+        // Never sweep once the user has COMMITTED to a box (tapped Pair now).
+        // `found` is not commitment — more boxes may still be out there, and
+        // stopping there is what hid them.
+        if (!maySweep(phaseRef.current)) return;
 
         // 1. Is a sweep even meaningful from here? Answered from facts only —
         //    there is no API that reports iOS Local Network permission, so the
@@ -206,11 +204,14 @@ export function SetupProgress() {
             // seconds before the sweep drains.
             onFound: (b: FoundBox) => {
               if (!live()) return;
-              committed = true;
+              // Report it and KEEP SWEEPING. This used to abort the remaining
+              // ~250 probes on the first hit, on the reasoning that the card
+              // commits to one box — which is exactly the bug: whichever box
+              // answered first won, and a user with a PC and a Steam Deck was
+              // shown the PC with no hint the Deck existed. Sweep timing is not
+              // intent. The reducer now accumulates, so let the sweep finish
+              // and let the user choose.
               dispatch({ t: 'FOUND', box: b });
-              // The fleet is empty and this card commits to ONE box, so the
-              // remaining ~250 probes have nothing left to learn. Stop them.
-              ac?.abort();
             },
           });
           if (!live()) return;
@@ -218,20 +219,28 @@ export function SetupProgress() {
           // longer applies is identity in the reducer, so this cannot clobber a
           // PIN the user is already typing.
           if (boxes.length > 0) {
-            committed = true;
-            dispatch({ t: 'FOUND', box: boxes[0] });
-          } else if (!committed) {
+            // EVERY box, not boxes[0]. The resolved array is authoritative on
+            // completion, and onFound may have missed a late responder; the
+            // reducer dedupes by ip, so re-reporting one already seen is free.
+            // Sending only the first is how the card used to hide the rest.
+            for (const b of boxes) dispatch({ t: 'FOUND', box: b });
+          } else {
             dispatch({ t: 'SWEEP_EMPTY' });
           }
         } catch {
           if (!live()) return;
-          // A scan that threw found nothing. Never a stuck spinner.
-          if (!committed) dispatch({ t: 'SWEEP_EMPTY' });
+          // A scan that threw found nothing. Never a stuck spinner. SWEEP_EMPTY
+          // is identity unless the phase is `looking`, so this cannot wipe
+          // boxes already on screen from an earlier sweep.
+          dispatch({ t: 'SWEEP_EMPTY' });
         } finally {
           ac = null;
         }
 
-        if (!live() || committed) return;
+        // Keep sweeping even with boxes already found — another may appear.
+        // maySweep() (read from the phase, which the reducer owns) is the only
+        // thing that stops this, and it stops at `starting`: the user choosing.
+        if (!live() || !maySweep(phaseRef.current)) return;
         const next = sweepPolicy(Date.now() - startedAt);
         if (next.giveUp) {
           dispatch({ t: 'GIVE_UP' });
@@ -293,15 +302,18 @@ export function SetupProgress() {
   // catch branch (BoxScanPair's rule), and there is always a path back.
   // ---------------------------------------------------------------------
 
-  const startPair = useCallback(async () => {
+  // `pick` names the box when the user chose one from a multi-box list; a retry
+  // from `pin`/`failed` passes nothing and reuses the box already in flight.
+  const startPair = useCallback(async (pick?: SetupBox) => {
     const p = phaseRef.current;
     if (p.k !== 'found' && p.k !== 'pin' && p.k !== 'failed') return;
-    const box = p.box;
+    const box = pick ?? (p.k === 'found' ? p.boxes[0] : p.box);
+    if (!box) return;
     hapticSelection();
     ctl.current?.stop(); // stop sweeping the moment the user commits to a box
     setHint(null);
     setPin('');
-    dispatch({ t: 'START_PIN' });
+    dispatch({ t: 'START_PIN', box });
     try {
       const r = await pairStart(box.ip, box.port);
       if (!mounted.current) return;
@@ -548,33 +560,71 @@ export function SetupProgress() {
       {/* THE PAYOFF. Can fire while the installer is still scrolling. */}
       {phase.k === 'found' && (
         <View style={styles.foundWrap}>
-          <View style={styles.foundRow}>
-            <Ionicons name="checkmark-circle" size={20} color={t.green} />
-            <View style={styles.foundBody}>
-              <Text style={styles.foundName} numberOfLines={1}>
-                Found {phase.box.name}
-              </Text>
-              <Text style={styles.foundMeta} numberOfLines={1}>
-                {phase.box.ip} · service v{phase.box.version || '?'}
-              </Text>
-            </View>
-          </View>
-          <View style={styles.btnRow}>
-            <Pressable
-              onPress={searchAgain}
-              accessibilityRole="button"
-              accessibilityLabel="Not this box — search again"
-              style={({ pressed }) => [styles.btn, styles.btnGhost, pressed && styles.pressed]}>
-              <Text style={styles.btnGhostText}>NOT THIS ONE</Text>
-            </Pressable>
-            <Pressable
-              onPress={() => void startPair()}
-              accessibilityRole="button"
-              accessibilityLabel={`Pair with ${phase.box.name}`}
-              style={({ pressed }) => [styles.btn, styles.btnPrimary, pressed && styles.pressed]}>
-              <Text style={styles.btnPrimaryText}>PAIR NOW</Text>
-            </Pressable>
-          </View>
+          {/* ONE box: unchanged — the payoff moment this card was built around.
+              A name, a button, no decision. MORE than one: a short list, because
+              announcing "Found <name>" for whichever answered the sweep first is
+              a claim we cannot back. Which box answers first is timing, not
+              intent, and a user with a Deck and a PC was shown the PC. */}
+          {phase.boxes.length === 1 ? (
+            <>
+              <View style={styles.foundRow}>
+                <Ionicons name="checkmark-circle" size={20} color={t.green} />
+                <View style={styles.foundBody}>
+                  <Text style={styles.foundName} numberOfLines={1}>
+                    Found {phase.boxes[0].name}
+                  </Text>
+                  <Text style={styles.foundMeta} numberOfLines={1}>
+                    {phase.boxes[0].ip} · service v{phase.boxes[0].version || '?'}
+                  </Text>
+                </View>
+              </View>
+              <View style={styles.btnRow}>
+                <Pressable
+                  onPress={searchAgain}
+                  accessibilityRole="button"
+                  accessibilityLabel="Not this box — search again"
+                  style={({ pressed }) => [styles.btn, styles.btnGhost, pressed && styles.pressed]}>
+                  <Text style={styles.btnGhostText}>NOT THIS ONE</Text>
+                </Pressable>
+                <Pressable
+                  onPress={() => void startPair(phase.boxes[0])}
+                  accessibilityRole="button"
+                  accessibilityLabel={`Pair with ${phase.boxes[0].name}`}
+                  style={({ pressed }) => [styles.btn, styles.btnPrimary, pressed && styles.pressed]}>
+                  <Text style={styles.btnPrimaryText}>PAIR NOW</Text>
+                </Pressable>
+              </View>
+            </>
+          ) : (
+            <>
+              <View style={styles.foundRow}>
+                <Ionicons name="checkmark-circle" size={20} color={t.green} />
+                <View style={styles.foundBody}>
+                  <Text style={styles.foundName}>
+                    Found {phase.boxes.length} boxes
+                  </Text>
+                  <Text style={styles.foundMeta}>Pick the one you just set up.</Text>
+                </View>
+              </View>
+              {phase.boxes.map((b) => (
+                <Pressable
+                  key={b.ip}
+                  onPress={() => void startPair(b)}
+                  accessibilityRole="button"
+                  accessibilityLabel={`Pair with ${b.name} at ${b.ip}`}
+                  style={({ pressed }) => [styles.pickRow, pressed && styles.pressed]}>
+                  <Ionicons name="hardware-chip-outline" size={18} color={t.blue} />
+                  <View style={styles.foundBody}>
+                    <Text style={styles.pickName} numberOfLines={1}>{b.name}</Text>
+                    <Text style={styles.foundMeta} numberOfLines={1}>
+                      {b.ip} · service v{b.version || '?'}
+                    </Text>
+                  </View>
+                  <Ionicons name="chevron-forward" size={16} color={t.textFaint} />
+                </Pressable>
+              ))}
+            </>
+          )}
           <Text style={styles.foundHint}>
             The box will show a 6-digit PIN on its own screen. Nothing is sent until you type it.
           </Text>
@@ -807,5 +857,18 @@ const makeStyles = (t: Palette) =>
     // wrapping. It fit on iOS and overflowed on Android, which is exactly the
     // shape of bug that a single-platform check misses.
     emptyLinkText: { color: t.blue, fontSize: 13, fontWeight: '600', flex: 1, lineHeight: 18 },
+    pickRow: {
+      flexDirection: 'row',
+      alignItems: 'center',
+      gap: 10,
+      minHeight: 52,
+      paddingHorizontal: 12,
+      marginTop: 8,
+      borderRadius: 10,
+      borderWidth: 1,
+      borderColor: t.cardBorder,
+      backgroundColor: t.inset,
+    },
+    pickName: { color: t.text, fontSize: 14, fontWeight: '600' },
     pressed: { opacity: 0.7 },
   });
