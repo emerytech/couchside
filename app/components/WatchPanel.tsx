@@ -12,7 +12,7 @@ import { usePoll } from '@/hooks/usePoll';
 import { api, hostKey, PlayerOp, PlayerPlayback, PlayerState } from '@/lib/api';
 import { hapticError, hapticLight, hapticSuccess } from '@/lib/haptics';
 import { useSettings } from '@/lib/SettingsContext';
-import { noteRecent, useWatchRecents } from '@/lib/watchRecents';
+import { clearRecents, noteRecent, useWatchRecents } from '@/lib/watchRecents';
 import { useTheme, useThemedStyles, type Palette } from '@/lib/theme';
 
 /**
@@ -423,7 +423,19 @@ export function WatchPanel() {
 
       {recents.length > 0 && (
         <>
-          <Text style={styles.section}>RECENT</Text>
+          <View style={styles.sectionRow}>
+            <Text style={styles.section}>RECENT</Text>
+            <Pressable
+              onPress={() => {
+                hapticLight();
+                clearRecents();
+              }}
+              hitSlop={10}
+              testID="watch-recents-clear"
+            >
+              <Text style={styles.clearText}>Clear</Text>
+            </Pressable>
+          </View>
           <View style={styles.grid} testID="watch-recents">
             {recents.map((r) => (
               <Pressable
@@ -673,6 +685,12 @@ const makeStyles = (t: Palette) =>
       borderColor: t.cardBorder,
     },
     hubBtnText: { color: t.textDim, fontSize: 13, fontWeight: '600' },
+    sectionRow: {
+      flexDirection: 'row',
+      alignItems: 'center',
+      justifyContent: 'space-between',
+    },
+    clearText: { color: t.textDim, fontSize: 12, fontWeight: '600' },
     hint: { color: t.amber, fontSize: 12 },
     hintOk: { color: t.green, fontSize: 12 },
     error: { color: t.red, fontSize: 13 },
