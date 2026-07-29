@@ -96,10 +96,17 @@ if (-not (Test-Admin)) {
     $fwd += "-Port $Port"; $fwd += "-Ref $Ref"
     # A human running this directly wants -NoExit so the elevated window stays up to
     # read. The Inno installer wants the opposite: no leftover window, AND the outer
-    # (non-elevated) process must block on the elevated child so waituntilterminated
-    # sees real completion instead of the async RunAs handoff returning instantly.
+    # (non-elevated) process must block on the elevated child so its Exec() sees real
+    # completion instead of the async RunAs handoff returning instantly.
+    #
+    # -WindowStyle Hidden matters more than it looks: CouchsideSetup.exe runs THIS
+    # script hidden, but -Verb RunAs spawns a brand-new console that inherits none of
+    # that, so an install driven by the wizard still threw a full PowerShell window
+    # (and everything winget prints into it) across the user's screen for the whole
+    # install. The wizard already shows its own progress; the elevated half should be
+    # invisible. A human running install.ps1 by hand still gets the visible window.
     $base = @('-NoProfile','-ExecutionPolicy','Bypass')
-    if (-not $FromInstaller) { $base += '-NoExit' }
+    if ($FromInstaller) { $base += @('-WindowStyle','Hidden') } else { $base += '-NoExit' }
     if ($PSCommandPath) {
         # Run from a file: relaunch that same file elevated.
         $a = $base + @('-File',"`"$PSCommandPath`"") + $fwd
@@ -607,16 +614,26 @@ if ($usePython -and (Test-Path $trayPy)) {
 }
 
 # --- 8. pairing --------------------------------------------------------------
+# Same closing instructions as install.sh, in the same order: what got installed,
+# then GET THE APP -> Scan for boxes -> type the PIN. Someone who sets up a
+# Windows box and a Steam Deck must not be told two different stories, and the
+# old text named neither the app stores nor the PIN step the /pair page teaches.
+$hostShort = $env:COMPUTERNAME.ToLower()
 Write-Host ''
-Write-Host '=========================================================='
-Write-Host ' Couchside agent installed.'
-Write-Host ''
-Write-Host " Pair your phone: open  http://localhost:$Port/pair"
-Write-Host ' on THIS machine and scan the QR with the Couchside app'
-Write-Host ' (phone must be on the same Wi-Fi/LAN).'
+Write-Host '=================================================================='
+Write-Host " Couchside agent is running on $hostShort.local:$Port"
 Write-Host ''
 Write-Host " Token file: $TokenPath"
-Write-Host '=========================================================='
+Write-Host '=================================================================='
+Write-Host ''
+Write-Host 'On your phone: install Couchside (App Store / Google Play), open it, go to'
+Write-Host 'the Setup tab and tap Scan for boxes - or point your camera at the QR on'
+Write-Host 'the pairing page. A 6-digit PIN will appear on this screen; type it in to pair.'
+Write-Host ''
+Write-Host "To re-show this later: open  http://localhost:$Port/pair  on THIS machine,"
+Write-Host 'or use the Couchside tray icon.'
+# The pairing page carries the store QR for someone who does not have the app
+# yet, so open it on the box's own screen exactly like install.sh does.
 try { Start-Process "http://localhost:$Port/pair" -ErrorAction Stop } catch {
     Write-Host " (open the pairing page manually: http://localhost:$Port/pair)"
 }
