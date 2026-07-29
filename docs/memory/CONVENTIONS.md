@@ -318,6 +318,33 @@ coordinates explicitly for the same reason.
 
 ---
 
+### A green agent test run on macOS proves nothing about `/proc` parsing
+
+macOS has no `/proc/self/mountinfo`. Any agent code that reads it returns the
+"unreadable" branch on this Mac and falls back to the old path, so the new code
+is never exercised — the suite goes green while CI goes red.
+
+MEASURED 2026-07-29: keying disk dedupe on mountinfo instead of `st_dev` passed
+46/46 locally and failed CI from `4889b305` onward. The release shipped before
+anyone looked.
+
+Two rules:
+
+1. **Run `/proc`- or sysfs-parsing tests on a real Linux box**, not here:
+   `scp agent/couchsided.py tests/<test>.py` to `/tmp` on bazzite and run them
+   there. Behaviour verification on hardware is not the same as running the
+   SUITE on hardware — do both.
+2. **A fake must own every identity source the code consults.** The disk test
+   faked `os.stat` but could not fake `/proc`, so on Linux the real mount table
+   decided and the synthetic layout stopped being synthetic. When production
+   code gains a new source of truth, the fake gains a stub for it in the same
+   commit.
+
+### Check CI before releasing, not after
+
+CI is one `gh run list --branch <branch> --limit 1` away. This release went to
+both app stores with the branch red for six commits.
+
 ## 5. Releases
 
 - **Explicit version bumps**, never automatic: agent `VERSION` (`agent/couchsided.py:47`) and app
