@@ -3940,11 +3940,27 @@ def session_default_get():
     if backend is None:
         return {"available": False, "backend": None, "mode": "unknown"}
     if backend == "greetd":
-        if _greetd_write(target):
-            return done(True)
-        return done(False, "could not set greetd's boot session "
-                           "(session not installed, no Exec, or config not "
-                           "safely rewritable)")
+        # READ the configured boot command and map it back to a mode. This is
+        # the exact inverse of _greetd_write, which stores the session's Exec=.
+        #
+        # This branch previously held a paste of session_default_SET's body and
+        # called `_greetd_write(target)` — `target` is not defined here and is
+        # not a global, so GET /api/session/default raised NameError on every
+        # greetd box, i.e. exactly the machines greetd support was added for,
+        # and the BOOTS INTO card never loaded. A getter must never write.
+        cmd = _greetd_current_command()
+        if not cmd:
+            return {"available": True, "backend": backend, "mode": "unknown"}
+        game_cmd = _session_exec_command(GAMESCOPE_SESSION_FILE)
+        if game_cmd and cmd == game_cmd:
+            return {"available": True, "backend": backend, "mode": "game"}
+        for session_file in _DESKTOP_SESSIONS:
+            desk_cmd = _session_exec_command(session_file)
+            if desk_cmd and cmd == desk_cmd:
+                return {"available": True, "backend": backend, "mode": "desktop"}
+        # A hand-written command we do not recognise. Degrade closed (§3.7):
+        # "unknown" is honest; guessing "desktop" would mislabel a game box.
+        return {"available": True, "backend": backend, "mode": "unknown"}
 
     if backend == "steamosctl":
         try:

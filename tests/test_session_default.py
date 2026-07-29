@@ -194,6 +194,69 @@ def test_dropin_outranks_the_platforms_own():
         shutil.rmtree(tmp, ignore_errors=True)
 
 
+
+def test_greetd_get_reads_never_writes(tmp):
+    """The greetd GETTER must answer, and must not call the writer.
+
+    THE BUG (found 2026-07-28): session_default_get's greetd branch held a paste
+    of session_default_SET's body — `if _greetd_write(target): return done(True)`.
+    `target` is not defined in that scope and is not a global, so
+    GET /api/session/default raised NameError on EVERY greetd box: exactly the
+    machines greetd support was written for. The BOOTS INTO card never loaded.
+
+    Two things are pinned here: that the call returns at all (the NameError),
+    and that a READ never reaches the WRITE path.
+    """
+    sessions = os.path.join(tmp, "wayland-sessions")
+    os.makedirs(sessions, exist_ok=True)
+    with open(os.path.join(sessions, cs.GAMESCOPE_SESSION_FILE), "w") as f:
+        f.write("[Desktop Entry]\nExec=/usr/bin/gamescope-session %U\n")
+    with open(os.path.join(sessions, "plasma.desktop"), "w") as f:
+        f.write("[Desktop Entry]\nExec=/usr/bin/startplasma-wayland\n")
+
+    cfg = os.path.join(tmp, "greetd.toml")
+    real_dirs, real_cfg = cs._SESSION_DIRS, cs.GREETD_CONFIG
+    real_dm, real_write = cs.detect_display_manager, cs._greetd_write
+    real_sudo = cs._sudo_nopasswd_allows
+    wrote = []
+    try:
+        cs._SESSION_DIRS = (sessions,)
+        cs.GREETD_CONFIG = cfg
+        cs.detect_display_manager = lambda: "greetd"
+        cs._sudo_nopasswd_allows = lambda *a, **k: True
+        # A getter that calls this has failed, whatever it returns.
+        cs._greetd_write = lambda *a, **k: (wrote.append(a), True)[1]
+
+        def cfgfile(cmd):
+            with open(cfg, "w") as f:
+                f.write('[initial_session]\ncommand = "%s"\nuser = "deck"\n' % cmd)
+
+        cfgfile("/usr/bin/gamescope-session")
+        check("greetd get -> game", cs.session_default_get()["mode"], "game")
+        check("greetd get did not write (game)", wrote, [])
+
+        cfgfile("/usr/bin/startplasma-wayland")
+        check("greetd get -> desktop", cs.session_default_get()["mode"], "desktop")
+
+        # CONTROL: an unrecognised hand-written command degrades closed to
+        # "unknown" rather than guessing. Without this, a getter that always
+        # returned "desktop" would pass the test above.
+        cfgfile("/usr/local/bin/something-else")
+        check("greetd get -> unknown for a foreign command",
+              cs.session_default_get()["mode"], "unknown")
+
+        # CONTROL: an unreadable/absent config is "unknown", not a crash.
+        os.remove(cfg)
+        check("greetd get -> unknown with no config",
+              cs.session_default_get()["mode"], "unknown")
+
+        check("greetd get NEVER called the writer", wrote, [])
+    finally:
+        cs._SESSION_DIRS, cs.GREETD_CONFIG = real_dirs, real_cfg
+        cs.detect_display_manager, cs._greetd_write = real_dm, real_write
+        cs._sudo_nopasswd_allows = real_sudo
+
+
 def main():
     real_run = cs.subprocess.run
     real_sudo = cs._sudo_nopasswd_allows
@@ -297,6 +360,15 @@ def main():
         cs._sudo_nopasswd_allows = real_sudo
         import shutil
         shutil.rmtree(tmp, ignore_errors=True)
+
+    print()
+    print("greetd getter (reads, never writes)")
+    _tmp = tempfile.mkdtemp()
+    try:
+        test_greetd_get_reads_never_writes(_tmp)
+    finally:
+        import shutil
+        shutil.rmtree(_tmp, ignore_errors=True)
 
     print()
     if FAILURES:
