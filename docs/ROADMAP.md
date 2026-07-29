@@ -40,189 +40,6 @@ Entry fields: `priority` (P0 blocker → P3 nice) · `risk` · `affects` · `dep
 
 ## 📋 Planned
 
-### Couchside Player — a media-player tile, phone-driven (Friendly-style)
-- **priority:** P1 · **risk:** medium · **affects:** new box program + agent + app ·
-  **depends_on:** none
-- **Full spec: `docs/memory/project_media-player.md`.** Read it first — the measured Phase 0
-  results, the allowlist tiers and the screensaver-pattern lessons are all there.
-- **Requested by owner 2026-07-27**, with the shape called explicitly: a custom Linux program
-  registered as a non-Steam app, "to make sure we are not just patching something quickly
-  together". That instinct matches the pattern the repo already ships for
-  `Couchside Screensaver` (`agent/couchsided.py:2028`).
-- **Why it is worth building, in one line:** TV pad mode already proved a website will never
-  draw a focus ring for us. Friendly's real trick is that the *app* is the navigation layer
-  and the browser is only a video surface — the phone sends a deep link and the box opens at
-  the title, so the tile grid is never navigated at all.
-- **Shape:** a `Couchside` tile (python3 stdlib) that spawns Chrome as a child and drives it
-  over CDP — real `<video>` state, real seek, its own hub page with a focus model we control.
-  Not a browser engine: Widevine decides that, and Electron/castlabs has open Netflix
-  breakage on Bazzite while Chrome plays these services on the owner's box today.
-- **Phase 0 spike PASSED on hardware 2026-07-27** (bazzite 10.1.1.60, agent 2.9.60):
-  CDP reachable through the flatpak sandbox (`Chrome/150.0.7871.186`); Widevine
-  **GRANTED**, `HW_SECURE_ALL` **DENIED** so the **720p L3 ceiling is confirmed, not assumed**;
-  a control Widevine stream **played with CDP attached** (`currentTime 1.224/60`);
-  `navigator.webdriver` false and no browser-wall on max/netflix/hulu.
-- **Two traps banked:** `--ozone-platform=wayland` is REQUIRED when spawning from a
-  non-graphical parent (else `Missing X server or $DISPLAY` and Chrome dies before binding the
-  debug port); and Chrome's DevTools HTTP endpoint ignores `Connection: close`, so reading to
-  EOF times out *after* the body arrived and reads as "CDP unreachable".
-- **ALLOWLIST — three tiers, only two ship on by default.** (1) frozen service table, client
-  sends `service_id` only; (2) deep links where the *path* is checked against that service's
-  own regex and the host is never client-supplied; (3) a free URL bar behind a box-side flag
-  that ships OFF. CDP is an RCE primitive — random loopback port, never proxied through a LAN
-  route, and the phone sends op ids that the player maps to CDP calls it constructs itself.
-- **Phase 0b ALSO PASSED, in Game Mode, same day.** A wrapper tile that Steam launches and
-  which spawns Chrome as a child **does** surface under gamescope — **screen-capture proven**,
-  Widevine playing fullscreen 1920x1080 with our own page's banner over it. And Steam's
-  process-group kill **reaps the flatpak Chrome cleanly**: 0 chrome processes, 0 flatpak
-  instances, 0 wrapper, CDP port closed.
-- **THE BACKEND TRAP (the finding that would have sunk Phase 1):** the Chrome ozone backend is
-  the exact inverse between sessions and cannot be hardcoded. Game Mode gives `DISPLAY=:1` with
-  **no** `WAYLAND_DISPLAY` (needs `--ozone-platform=x11`); the desktop, spawned from a
-  non-graphical parent, gives Wayland with no xauth (needs `--ozone-platform=wayland`). Wrong
-  either way and Chrome exits rc=1 before binding the debug port. Both were hit for real.
-- **CORRECTED:** the tile is **NOT** picked up by the agent's running-game detection, so
-  `NowPlayingCard` / `stop_running_game` do **not** come for free — matches the ROADMAP's own
-  prior "no running app for a Steam-launched shortcut" measurement. The player reports its own
-  state and ships its own stop. Budget it in Phase 2.
-- **LANDMINE:** `_ss_appid()` anchors on the literal `couchside/Couchside`, which a tile at
-  `~/.local/opt/couchside/Couchside Player` would also match — silently breaking the
-  screensaver's launch. Keep a distinct directory or tighten that anchor first.
-- **Prior art surveyed, nothing does this:** StreamingServiceLauncher (MIT), ElectronPlayer
-  (MIT but archived — its maintainer hit exactly the Electron+Widevine treadmill we avoid),
-  Igalia Cog (MIT, no Widevine), Aura browser (GPL, cannot ingest), ValvePython/vdf + BoilR
-  (MIT, the `shortcuts.vdf` and cover-art references). All of them put the catalog on the box;
-  none makes the phone the navigation layer. Details in the spec's §6b.
-- **Reconciled against the real product 2026-07-27** (the Mac App Store listing was read, not
-  just the owner's screenshots — see the spec's §1b). Two changes: **cross-service search is
-  promoted** out of "later" to its own phase, because it is what makes a hub beat six tiles and
-  it is genuinely better on a phone than on a TV (you type on a phone); and **visual controls**
-  (brightness/contrast/saturation) join Phase 4, being one injected CSS filter once CDP exists.
-  **Explicitly NOT copied:** Picture-in-Picture and window transparency (they exist because
-  Friendly's premise is multitasking on a Mac you are sitting at — irrelevant ten feet from a
-  TV) and the bundled VPN. **The ad blocker is DECIDED — NO** (owner, 2026-07-27, see
-  `DECISIONS.md`): not for YouTube, not as a toggle, not as a user-supplied list. Written down
-  as a refusal precisely because CDP makes it trivial — injection capability is not a licence
-  to inject.
-- **Phase 1 SHIPPED on the branch 2026-07-27** — `agent/couchside-player.sh`, branded grid art,
-  and `tests/test_player_tile.py` (20 checks in CI). **Live-verified in Game Mode:** registered
-  via `steamos-add-to-steam` (appid 3442312991), launched by `steam://rungameid`, auto-picked
-  `--ozone-platform=x11` from the session, Hulu fullscreen and chromeless (screen-captured),
-  CDP live on loopback; `SIGTERM` to the pidfile pid left 0 chrome / 0 flatpak / 0 tile and
-  cleaned both runtime files. Deep-link patterns ship **empty except `max`** — the only shape
-  actually observed — so an unverified guess can never become a live link.
-- **Phase 2 SHIPPED on the branch 2026-07-27** — `player` cap at all five edit sites,
-  `GET /api/player` (probe-and-appear) + `POST /api/player` (`op: open|close`), and
-  `tests/test_player_api.py` (44 checks in CI, driving a real Handler with stub `steam` /
-  `steamos-add-to-steam` binaries that log, so "refused" and "nothing ran" are separate
-  observations). **The service table stays in the tile** — the agent validates by asking it, so
-  there is one copy and the validator is the code that runs. **Live-verified:** `caps.player`
-  true, unauth 401, unknown service and bad path both 404 with nothing written or launched,
-  `open netflix` → Netflix on the TV (screen-captured), `close` → 15 Chrome processes → 0.
-- **Two corrections banked.** (1) The "0 Chrome" checks in Phases 0b/1 used
-  `/app/bin/chrome`, which never matches — the real argv is `/app/extra/chrome`. Re-measured
-  with a control (15 → 0). (2) **Steam relaunches the tile by itself** after a return to Game
-  Mode, so `running` can be true with no API call behind it; the app must treat tile state as
-  observed, not as what was last commanded.
-- **Phase 3 SHIPPED on the branch 2026-07-27** — Watch tab (`app/app/(tabs)/watch.tsx`),
-  cap-gated on `player === true` (opt-in, unlike the other tabs: undefined means an agent with
-  no player routes at all, so the tab would lead nowhere). Service grid, now-playing + Stop,
-  and a paste-a-link field that splits a URL into (service, path) using the **box's** host
-  table — the app carries no copy of the service list, only a display-name map with a
-  title-cased fallback so a newer agent's services still render. `service_urls` was ADDED to
-  `/api/player` for this (new field; the existing `services` shape is untouched).
-  **Harness-verified by pressing every control:** tile tap opens and highlights; a bad link
-  shows the hint and leaves Send disabled; a good link reads "Opens on Max at that title" and
-  sends with the path; Stop clears the strip and the box reports `running=false`. No console
-  errors; 375px layout clean.
-- **Share-sheet intake DEFERRED to its own slice** — it needs an iOS share extension (native
-  target + config plugin) and Android intent filters, which the web harness cannot exercise, so
-  it would ship unverified. The paste field covers the need meanwhile. Note for that slice:
-  `useURL()` is deprecated in Expo SDK 57; use `useLinkingURL()`.
-- **Phase 4 BUILT but NOT live-verified 2026-07-27.** Agent CDP client + transport ops
-  (play/pause/playpause/mute/seek/picture), `playback` added to `GET /api/player`, transport UI
-  in the Watch panel. 81 unit checks, mutation-checked (replacing the frozen seek constant with
-  an interpolated one fails the suite), UI exercised in the harness by pressing.
-- **Phase 4 LIVE-VERIFIED in Game Mode 2026-07-27.** Against Twitch's autoplaying stream:
-  state read `{"playing": true, "position": 35.38, "title": "Twitch"}`; `pause` → playing
-  false; `play` → playing true; `seek +10` moved position `0 → 10` (delta exactly 10.0s);
-  `picture brightness=1.5` produced `brightness(1.5) contrast(1) saturate(1)` on the element.
-  Screen-captured. Both directions of play/pause observed.
-- **The blocker was the SESSION, and my first diagnosis of it was WRONG.** It was recorded as
-  "CDP evaluates in the wrong context"; a ten-experiment pass falsified that, and the Game Mode
-  re-run settled it. Chrome under that particular Plasma desktop session would not navigate
-  **anywhere** — ruled out: our client, `Runtime.enable`, target selection, the profile, the
-  tile/agent (plain `flatpak run` failed identically), network (a loopback URL also blanked),
-  and app-mode (a normal window failed too). Nothing in our code was wrong. **Consequence: the
-  desktop session is an unreliable place to test the player — do live checks in Game Mode.**
-- **Probe note:** YouTube's home page is autoplay-gated (`duration: 0`, ops return ok while
-  `playing` stays false) and Pluto TV's landing page has no `<video>` until a channel is picked.
-  Twitch's front page autoplays; use it.
-- **Phase 5 SHIPPED 2026-07-27 as ON-BOX SEARCH ONLY** (owner decision: no metadata source, no
-  API key, no cloud). The phone sends text; the box opens that service's own search results, so
-  nobody types a title on a TV. The "LAN-only, no accounts" promise is untouched. TMDB-style
-  "who has this title" was declined — bundled key is extractable, a couchside.tv proxy makes
-  search depend on a server, bring-your-own-key ships unused.
-- **The query is free text, so it gets deep-link-tier care.** The tile owns the table and the
-  encoder: structure is REJECTED (empty, whitespace-only, >80 bytes, control bytes), the rest is
-  percent-encoded byte-wise. Round-trip tested: `Amélie`, `千と千尋`, `rick & morty`, `a+b`,
-  `100% cotton` all decode back exactly, and `& # ? / " '` cannot survive unencoded.
-- **Two silent encoder bugs caught by that test:** `[:print:]` rejects every byte ≥ 0x80 under
-  `LC_ALL=C` (so no non-English title could be searched), and `printf "'$c"` sign-extends those
-  bytes (`Amélie` → `%FFFFFFFFFFFFFFC3`). Neither is visible by eyeballing a URL.
-- **Only VERIFIED search URLs ship** — youtube/netflix/twitch/crunchyroll; everything else
-  refuses a query. Live in Game Mode: YouTube and Twitch titled `"the bear - …"`, Crunchyroll
-  **41 query hits in the page text** (a generic title was not accepted as proof). **Netflix
-  redirects to `/login` when signed out** — normal Netflix behaviour for any of its URLs, not a
-  bad search URL; re-check on a signed-in profile.
-- **Real fix banked meanwhile:** switching services while the tile ran relaunched Chrome against
-  a profile the dying instance still owned, so `flatpak run` deferred to it and the new
-  debugging port never bound. The tile now waits for `SingletonLock` to clear.
-- **Also fixed:** `player_info()`'s mock branch returned a narrower shape than the real one, so
-  the harness rendered no transport at all. A test now asserts both branches return the SAME
-  keys — a narrow mock is how a UI gets built against a payload the box never sends.
-- **Phase 6 SHIPPED 2026-07-27 — the hub page closes the loop on TV pad mode.** That mode was
-  demoted to opt-in because a browser tile grid has no focus model for a d-pad step to land on.
-  The tile now writes its OWN page (a `file://` grid inside the browser profile, every href from
-  the frozen table, display names via a label map that is explicitly not an allowlist). Live in
-  Game Mode: 14 tiles, first focused on load, arrow keys walked the grid to `Apple TV+` with the
-  ring in brand green — screen-captured. It covers the case the phone does not: opening the tile
-  from the Steam library with a controller in hand.
-- **Recents are phone-side** (`app/lib/watchRecents.ts`), never box state — `shortcuts.vdf` is
-  rewritten by Steam, and history is per-person, not per-box. Harness-verified.
-- **Hidden end-to-end on a box without the player — measured, not assumed.** With the box forced
-  to report `caps.player: false`, the whole `GAMES | WATCH` row vanished along with every Watch
-  element, and Launch reverted to the plain games list. (`GET /api/player` 404s and the cap is
-  false when the tile is absent — both already covered by tests.) First sample was taken
-  mid-render and still showed the row; one sample of a React tree is not a measurement.
-- **PLAYER PROJECT COMPLETE — phases 0–6.** Remaining follow-ups are small and listed in the
-  spec: Netflix search on a signed-in profile, search URLs for the other ten services, and
-  share-sheet intake (deferred, needs a device build).
-
-### On-box pairing tutorial (auto-plays after install)
-- **priority:** P1 · **risk:** low · **affects:** agent + installer · **depends_on:** none
-- **Full spec: `docs/memory/project_pairing-tutorial.md`.** Read it first — the mechanisms and
-  the file:line anchors are already recorded, do not re-derive them.
-- The installer's last act on a **fresh** install is to open the box's own screen full-screen
-  with a short animated tutorial (open the app → Setup → Scan → tap this box), which then
-  swaps itself into the live 6-digit PIN the moment the phone starts pairing. Targets the
-  measured funnel gap: ~9–15 app downloads in the first six days after launch, ~0 boxes paired.
-- **Cheap because it is mostly assembly.** `/pair` already renders two states and is already
-  double-gated (loopback peer + Host header); `render_pin_page` already polls
-  `/api/pair/status`; `couchside-pair` already opens the page full-screen in Game Mode and on
-  desktop; `install.sh` already runs as the desktop user and already has a fresh-token signal
-  at `:602-609` to gate the auto-open so update runs stay quiet. **No new route, no new
-  network surface, no app release.**
-- Scope fixed with the owner: **box TV only**, **inline CSS/SVG animation — not a GIF** (the
-  repo's GIFs are 3.9–5.9 MB; the whole agent is 539 KB of stdlib Python), **PIN flow only**.
-  The QR is **kept** alongside the steps — the Steam tile's documented job is re-showing it.
-- **The one unproven thing:** whether Steam's built-in CEF browser renders CSS `@keyframes` and
-  inline `<svg>`. Probe that with a throwaway page before writing the real one. Everything else
-  in the design was read from source; this was not.
-- Verify on the real box via `/api/screen/frame` in **both** Game Mode and desktop, observing
-  **both** states (idle tutorial and the reload-into-PIN handoff), plus a re-run on an
-  already-paired box that must pop nothing.
-
 ### Note mode — jot a clue on the phone while the game runs
 - **priority:** P2 · **risk:** low · **affects:** app only · **depends_on:** the drag stroke (shipped)
 - **Full spec: `docs/memory/project_note-mode.md`.** Read it first.
@@ -378,28 +195,6 @@ Entry fields: `priority` (P0 blocker → P3 nice) · `risk` · `affects` · `dep
   slots as the local card.
 - **Verify on hardware** (a real Remote Play session from the PC to the box); the harness
   can't produce a stream.
-
-### "Check for app update" in Setup > Account
-- **priority:** P3 · **risk:** low · **affects:** app + website · **depends_on:** none
-- **Requested by owner 2026-07-22.** Next to the existing agent-update banner in
-  Setup > Account, a control that tells the user whether a newer MOBILE CLIENT exists and
-  links to the store listing. Today only the box agent has an update check; the app can't
-  tell you it's stale.
-- **No agent involvement.** Simplest cross-platform source: a tiny signed-ish JSON on
-  couchside.tv (e.g. `app-version.json` = `{"ios":"2.9.21","android_vc":55,"min_ios":...}`),
-  written by the release process which already knows these numbers. App fetches it, compares
-  to `expo-application` nativeApplicationVersion / nativeBuildVersion, shows
-  "Update available" + a deep link to the App Store / Play listing.
-  - iOS alternative: `https://itunes.apple.com/lookup?bundleId=...` returns the live App
-    Store version with no infra, but it is Apple-hosted and only covers iOS. Play has no
-    public version endpoint, so the couchside.tv JSON is the portable answer and keeps both
-    platforms on one code path.
-- **Privacy:** the check is an anonymous GET of a public version file — no box, no token, no
-  user data — matching the agent-update check's privacy stance. Keep it that way; never
-  send anything identifying.
-- **Traps:** `Constants.nativeBuildVersion` typechecks but does not exist — use
-  `expo-application` ([[expo-sdk57-api-traps]]). Read the store version BACK / test the
-  compare in both directions (newer AND same) before trusting the banner.
 
 ### More Console sensors (battery health, CPU governor, GPU power)
 - **priority:** P3 · **risk:** low · **affects:** agent + app · **depends_on:** none
@@ -643,6 +438,231 @@ recommendation was wrong, not merely superseded.
 ---
 
 ## ✅ Completed
+
+### Couchside Player — a media-player tile, phone-driven — SHIPPED 2026-07-28 (agent 2.9.64)
+- **priority:** P1 · **risk:** medium · **affects:** new box program + agent + app ·
+  **depends_on:** none
+- **Full spec: `docs/memory/project_media-player.md`.** Read it first — the measured Phase 0
+  results, the allowlist tiers and the screensaver-pattern lessons are all there.
+- **Requested by owner 2026-07-27**, with the shape called explicitly: a custom Linux program
+  registered as a non-Steam app, "to make sure we are not just patching something quickly
+  together". That instinct matches the pattern the repo already ships for
+  `Couchside Screensaver` (`agent/couchsided.py:2028`).
+- **Why it is worth building, in one line:** TV pad mode already proved a website will never
+  draw a focus ring for us. Friendly's real trick is that the *app* is the navigation layer
+  and the browser is only a video surface — the phone sends a deep link and the box opens at
+  the title, so the tile grid is never navigated at all.
+- **Shape:** a `Couchside` tile (python3 stdlib) that spawns Chrome as a child and drives it
+  over CDP — real `<video>` state, real seek, its own hub page with a focus model we control.
+  Not a browser engine: Widevine decides that, and Electron/castlabs has open Netflix
+  breakage on Bazzite while Chrome plays these services on the owner's box today.
+- **Phase 0 spike PASSED on hardware 2026-07-27** (bazzite 10.1.1.60, agent 2.9.60):
+  CDP reachable through the flatpak sandbox (`Chrome/150.0.7871.186`); Widevine
+  **GRANTED**, `HW_SECURE_ALL` **DENIED** so the **720p L3 ceiling is confirmed, not assumed**;
+  a control Widevine stream **played with CDP attached** (`currentTime 1.224/60`);
+  `navigator.webdriver` false and no browser-wall on max/netflix/hulu.
+- **Two traps banked:** `--ozone-platform=wayland` is REQUIRED when spawning from a
+  non-graphical parent (else `Missing X server or $DISPLAY` and Chrome dies before binding the
+  debug port); and Chrome's DevTools HTTP endpoint ignores `Connection: close`, so reading to
+  EOF times out *after* the body arrived and reads as "CDP unreachable".
+- **ALLOWLIST — three tiers, only two ship on by default.** (1) frozen service table, client
+  sends `service_id` only; (2) deep links where the *path* is checked against that service's
+  own regex and the host is never client-supplied; (3) a free URL bar behind a box-side flag
+  that ships OFF. CDP is an RCE primitive — random loopback port, never proxied through a LAN
+  route, and the phone sends op ids that the player maps to CDP calls it constructs itself.
+- **Phase 0b ALSO PASSED, in Game Mode, same day.** A wrapper tile that Steam launches and
+  which spawns Chrome as a child **does** surface under gamescope — **screen-capture proven**,
+  Widevine playing fullscreen 1920x1080 with our own page's banner over it. And Steam's
+  process-group kill **reaps the flatpak Chrome cleanly**: 0 chrome processes, 0 flatpak
+  instances, 0 wrapper, CDP port closed.
+- **THE BACKEND TRAP (the finding that would have sunk Phase 1):** the Chrome ozone backend is
+  the exact inverse between sessions and cannot be hardcoded. Game Mode gives `DISPLAY=:1` with
+  **no** `WAYLAND_DISPLAY` (needs `--ozone-platform=x11`); the desktop, spawned from a
+  non-graphical parent, gives Wayland with no xauth (needs `--ozone-platform=wayland`). Wrong
+  either way and Chrome exits rc=1 before binding the debug port. Both were hit for real.
+- **CORRECTED:** the tile is **NOT** picked up by the agent's running-game detection, so
+  `NowPlayingCard` / `stop_running_game` do **not** come for free — matches the ROADMAP's own
+  prior "no running app for a Steam-launched shortcut" measurement. The player reports its own
+  state and ships its own stop. Budget it in Phase 2.
+- **LANDMINE:** `_ss_appid()` anchors on the literal `couchside/Couchside`, which a tile at
+  `~/.local/opt/couchside/Couchside Player` would also match — silently breaking the
+  screensaver's launch. Keep a distinct directory or tighten that anchor first.
+- **Prior art surveyed, nothing does this:** StreamingServiceLauncher (MIT), ElectronPlayer
+  (MIT but archived — its maintainer hit exactly the Electron+Widevine treadmill we avoid),
+  Igalia Cog (MIT, no Widevine), Aura browser (GPL, cannot ingest), ValvePython/vdf + BoilR
+  (MIT, the `shortcuts.vdf` and cover-art references). All of them put the catalog on the box;
+  none makes the phone the navigation layer. Details in the spec's §6b.
+- **Reconciled against the real product 2026-07-27** (the Mac App Store listing was read, not
+  just the owner's screenshots — see the spec's §1b). Two changes: **cross-service search is
+  promoted** out of "later" to its own phase, because it is what makes a hub beat six tiles and
+  it is genuinely better on a phone than on a TV (you type on a phone); and **visual controls**
+  (brightness/contrast/saturation) join Phase 4, being one injected CSS filter once CDP exists.
+  **Explicitly NOT copied:** Picture-in-Picture and window transparency (they exist because
+  Friendly's premise is multitasking on a Mac you are sitting at — irrelevant ten feet from a
+  TV) and the bundled VPN. **The ad blocker is DECIDED — NO** (owner, 2026-07-27, see
+  `DECISIONS.md`): not for YouTube, not as a toggle, not as a user-supplied list. Written down
+  as a refusal precisely because CDP makes it trivial — injection capability is not a licence
+  to inject.
+- **Phase 1 SHIPPED on the branch 2026-07-27** — `agent/couchside-player.sh`, branded grid art,
+  and `tests/test_player_tile.py` (20 checks in CI). **Live-verified in Game Mode:** registered
+  via `steamos-add-to-steam` (appid 3442312991), launched by `steam://rungameid`, auto-picked
+  `--ozone-platform=x11` from the session, Hulu fullscreen and chromeless (screen-captured),
+  CDP live on loopback; `SIGTERM` to the pidfile pid left 0 chrome / 0 flatpak / 0 tile and
+  cleaned both runtime files. Deep-link patterns ship **empty except `max`** — the only shape
+  actually observed — so an unverified guess can never become a live link.
+- **Phase 2 SHIPPED on the branch 2026-07-27** — `player` cap at all five edit sites,
+  `GET /api/player` (probe-and-appear) + `POST /api/player` (`op: open|close`), and
+  `tests/test_player_api.py` (44 checks in CI, driving a real Handler with stub `steam` /
+  `steamos-add-to-steam` binaries that log, so "refused" and "nothing ran" are separate
+  observations). **The service table stays in the tile** — the agent validates by asking it, so
+  there is one copy and the validator is the code that runs. **Live-verified:** `caps.player`
+  true, unauth 401, unknown service and bad path both 404 with nothing written or launched,
+  `open netflix` → Netflix on the TV (screen-captured), `close` → 15 Chrome processes → 0.
+- **Two corrections banked.** (1) The "0 Chrome" checks in Phases 0b/1 used
+  `/app/bin/chrome`, which never matches — the real argv is `/app/extra/chrome`. Re-measured
+  with a control (15 → 0). (2) **Steam relaunches the tile by itself** after a return to Game
+  Mode, so `running` can be true with no API call behind it; the app must treat tile state as
+  observed, not as what was last commanded.
+- **Phase 3 SHIPPED on the branch 2026-07-27** — Watch tab (`app/app/(tabs)/watch.tsx`),
+  cap-gated on `player === true` (opt-in, unlike the other tabs: undefined means an agent with
+  no player routes at all, so the tab would lead nowhere). Service grid, now-playing + Stop,
+  and a paste-a-link field that splits a URL into (service, path) using the **box's** host
+  table — the app carries no copy of the service list, only a display-name map with a
+  title-cased fallback so a newer agent's services still render. `service_urls` was ADDED to
+  `/api/player` for this (new field; the existing `services` shape is untouched).
+  **Harness-verified by pressing every control:** tile tap opens and highlights; a bad link
+  shows the hint and leaves Send disabled; a good link reads "Opens on Max at that title" and
+  sends with the path; Stop clears the strip and the box reports `running=false`. No console
+  errors; 375px layout clean.
+- **Share-sheet intake DEFERRED to its own slice** — it needs an iOS share extension (native
+  target + config plugin) and Android intent filters, which the web harness cannot exercise, so
+  it would ship unverified. The paste field covers the need meanwhile. Note for that slice:
+  `useURL()` is deprecated in Expo SDK 57; use `useLinkingURL()`.
+- **Phase 4 BUILT but NOT live-verified 2026-07-27.** Agent CDP client + transport ops
+  (play/pause/playpause/mute/seek/picture), `playback` added to `GET /api/player`, transport UI
+  in the Watch panel. 81 unit checks, mutation-checked (replacing the frozen seek constant with
+  an interpolated one fails the suite), UI exercised in the harness by pressing.
+- **Phase 4 LIVE-VERIFIED in Game Mode 2026-07-27.** Against Twitch's autoplaying stream:
+  state read `{"playing": true, "position": 35.38, "title": "Twitch"}`; `pause` → playing
+  false; `play` → playing true; `seek +10` moved position `0 → 10` (delta exactly 10.0s);
+  `picture brightness=1.5` produced `brightness(1.5) contrast(1) saturate(1)` on the element.
+  Screen-captured. Both directions of play/pause observed.
+- **The blocker was the SESSION, and my first diagnosis of it was WRONG.** It was recorded as
+  "CDP evaluates in the wrong context"; a ten-experiment pass falsified that, and the Game Mode
+  re-run settled it. Chrome under that particular Plasma desktop session would not navigate
+  **anywhere** — ruled out: our client, `Runtime.enable`, target selection, the profile, the
+  tile/agent (plain `flatpak run` failed identically), network (a loopback URL also blanked),
+  and app-mode (a normal window failed too). Nothing in our code was wrong. **Consequence: the
+  desktop session is an unreliable place to test the player — do live checks in Game Mode.**
+- **Probe note:** YouTube's home page is autoplay-gated (`duration: 0`, ops return ok while
+  `playing` stays false) and Pluto TV's landing page has no `<video>` until a channel is picked.
+  Twitch's front page autoplays; use it.
+- **Phase 5 SHIPPED 2026-07-27 as ON-BOX SEARCH ONLY** (owner decision: no metadata source, no
+  API key, no cloud). The phone sends text; the box opens that service's own search results, so
+  nobody types a title on a TV. The "LAN-only, no accounts" promise is untouched. TMDB-style
+  "who has this title" was declined — bundled key is extractable, a couchside.tv proxy makes
+  search depend on a server, bring-your-own-key ships unused.
+- **The query is free text, so it gets deep-link-tier care.** The tile owns the table and the
+  encoder: structure is REJECTED (empty, whitespace-only, >80 bytes, control bytes), the rest is
+  percent-encoded byte-wise. Round-trip tested: `Amélie`, `千と千尋`, `rick & morty`, `a+b`,
+  `100% cotton` all decode back exactly, and `& # ? / " '` cannot survive unencoded.
+- **Two silent encoder bugs caught by that test:** `[:print:]` rejects every byte ≥ 0x80 under
+  `LC_ALL=C` (so no non-English title could be searched), and `printf "'$c"` sign-extends those
+  bytes (`Amélie` → `%FFFFFFFFFFFFFFC3`). Neither is visible by eyeballing a URL.
+- **Only VERIFIED search URLs ship** — youtube/netflix/twitch/crunchyroll; everything else
+  refuses a query. Live in Game Mode: YouTube and Twitch titled `"the bear - …"`, Crunchyroll
+  **41 query hits in the page text** (a generic title was not accepted as proof). **Netflix
+  redirects to `/login` when signed out** — normal Netflix behaviour for any of its URLs, not a
+  bad search URL; re-check on a signed-in profile.
+- **Real fix banked meanwhile:** switching services while the tile ran relaunched Chrome against
+  a profile the dying instance still owned, so `flatpak run` deferred to it and the new
+  debugging port never bound. The tile now waits for `SingletonLock` to clear.
+- **Also fixed:** `player_info()`'s mock branch returned a narrower shape than the real one, so
+  the harness rendered no transport at all. A test now asserts both branches return the SAME
+  keys — a narrow mock is how a UI gets built against a payload the box never sends.
+- **Phase 6 SHIPPED 2026-07-27 — the hub page closes the loop on TV pad mode.** That mode was
+  demoted to opt-in because a browser tile grid has no focus model for a d-pad step to land on.
+  The tile now writes its OWN page (a `file://` grid inside the browser profile, every href from
+  the frozen table, display names via a label map that is explicitly not an allowlist). Live in
+  Game Mode: 14 tiles, first focused on load, arrow keys walked the grid to `Apple TV+` with the
+  ring in brand green — screen-captured. It covers the case the phone does not: opening the tile
+  from the Steam library with a controller in hand.
+- **Recents are phone-side** (`app/lib/watchRecents.ts`), never box state — `shortcuts.vdf` is
+  rewritten by Steam, and history is per-person, not per-box. Harness-verified.
+- **Hidden end-to-end on a box without the player — measured, not assumed.** With the box forced
+  to report `caps.player: false`, the whole `GAMES | WATCH` row vanished along with every Watch
+  element, and Launch reverted to the plain games list. (`GET /api/player` 404s and the cap is
+  false when the tile is absent — both already covered by tests.) First sample was taken
+  mid-render and still showed the row; one sample of a React tree is not a measurement.
+- **PLAYER PROJECT COMPLETE — phases 0–6.** Remaining follow-ups are small and listed in the
+  spec: Netflix search on a signed-in profile, search URLs for the other ten services, and
+  share-sheet intake (deferred, needs a device build).
+
+- **SHIPPED 2026-07-28 in agent 2.9.64 (#309)**, explicitly as an early, opt-in add-on.
+  Installed only when asked for (`--player` or the installer prompt); a box that never asks
+  is unchanged and the app hides the feature entirely. Known rough edges shipped WITH it in
+  the release notes rather than discovered by users: streaming sites still need the trackpad
+  because they do not let a remote move a highlight, and switching services can leave the TV
+  on the previous screen.
+
+### On-box pairing tutorial (auto-plays after install) — SHIPPED
+- **priority:** P1 · **risk:** low · **affects:** agent + installer · **depends_on:** none
+- **Full spec: `docs/memory/project_pairing-tutorial.md`.** Read it first — the mechanisms and
+  the file:line anchors are already recorded, do not re-derive them.
+- The installer's last act on a **fresh** install is to open the box's own screen full-screen
+  with a short animated tutorial (open the app → Setup → Scan → tap this box), which then
+  swaps itself into the live 6-digit PIN the moment the phone starts pairing. Targets the
+  measured funnel gap: ~9–15 app downloads in the first six days after launch, ~0 boxes paired.
+- **Cheap because it is mostly assembly.** `/pair` already renders two states and is already
+  double-gated (loopback peer + Host header); `render_pin_page` already polls
+  `/api/pair/status`; `couchside-pair` already opens the page full-screen in Game Mode and on
+  desktop; `install.sh` already runs as the desktop user and already has a fresh-token signal
+  at `:602-609` to gate the auto-open so update runs stay quiet. **No new route, no new
+  network surface, no app release.**
+- Scope fixed with the owner: **box TV only**, **inline CSS/SVG animation — not a GIF** (the
+  repo's GIFs are 3.9–5.9 MB; the whole agent is 539 KB of stdlib Python), **PIN flow only**.
+  The QR is **kept** alongside the steps — the Steam tile's documented job is re-showing it.
+- **The one unproven thing:** whether Steam's built-in CEF browser renders CSS `@keyframes` and
+  inline `<svg>`. Probe that with a throwaway page before writing the real one. Everything else
+  in the design was read from source; this was not.
+- Verify on the real box via `/api/screen/frame` in **both** Game Mode and desktop, observing
+  **both** states (idle tutorial and the reload-into-PIN handoff), plus a re-run on an
+  already-paired box that must pop nothing.
+
+- **ALREADY BUILT** — discovered 2026-07-27 while planning it: the step strip with inline
+  CSS `@keyframes`, the `/api/pair/status` poll-and-reload handoff, and install.sh's
+  `FRESH_TOKEN` gate plus `--no-open` all exist, with `tests/test_pair_page.py` covering them.
+  The spec had gone stale against the code. Lesson worth keeping: check the source before
+  planning a build, not just the roadmap.
+
+### "Check for app update" in Setup > Account — SHIPPED
+- **priority:** P3 · **risk:** low · **affects:** app + website · **depends_on:** none
+- **Requested by owner 2026-07-22.** Next to the existing agent-update banner in
+  Setup > Account, a control that tells the user whether a newer MOBILE CLIENT exists and
+  links to the store listing. Today only the box agent has an update check; the app can't
+  tell you it's stale.
+- **No agent involvement.** Simplest cross-platform source: a tiny signed-ish JSON on
+  couchside.tv (e.g. `app-version.json` = `{"ios":"2.9.21","android_vc":55,"min_ios":...}`),
+  written by the release process which already knows these numbers. App fetches it, compares
+  to `expo-application` nativeApplicationVersion / nativeBuildVersion, shows
+  "Update available" + a deep link to the App Store / Play listing.
+  - iOS alternative: `https://itunes.apple.com/lookup?bundleId=...` returns the live App
+    Store version with no infra, but it is Apple-hosted and only covers iOS. Play has no
+    public version endpoint, so the couchside.tv JSON is the portable answer and keeps both
+    platforms on one code path.
+- **Privacy:** the check is an anonymous GET of a public version file — no box, no token, no
+  user data — matching the agent-update check's privacy stance. Keep it that way; never
+  send anything identifying.
+- **Traps:** `Constants.nativeBuildVersion` typechecks but does not exist — use
+  `expo-application` ([[expo-sdk57-api-traps]]). Read the store version BACK / test the
+  compare in both directions (newer AND same) before trusting the banner.
+
+- **SHIPPED** as `app/lib/appUpdate.ts` + `components/AppUpdateRow.tsx` — the
+  "App update available — 2.9.30" row in Setup > Account. Android reads
+  couchside.tv/app-version.json (Google has no public version API); iOS queries Apple's
+  lookup directly. Manual only, and the copy says so: nothing about the user or their box
+  is sent.
+
 
 ### App Store listing revamp + fresh screenshots — SHIPPED 2026-07-24 (app 2.9.23)
 - **priority:** P1 · **risk:** medium (public listing; App Review 2.3.1 + licensing) · **affects:**
