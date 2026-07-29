@@ -20,8 +20,15 @@ is a SYMLINK to var/home on Fedora Atomic derivatives and /var/home is its own
 subvolume, which is how the two paths diverge. The card read as ~928GB of
 storage on a 464GB disk.
 
-This is not an edge case: Bazzite and SteamOS both default to btrfs with this
-layout, so it was the default DISKS card on the project's two primary targets.
+This is not an edge case on Bazzite: it is the DEFAULT layout there, so it was
+the default DISKS card on every Bazzite box.
+
+SteamOS is NOT affected, and that was measured rather than assumed — on a Legion
+Go S (83N6) and a Deck OLED, /home and /var are separate ext4 PARTITIONS
+(259:8 and 259:7), so they were already distinct under st_dev and stay distinct
+now. An earlier draft of this file claimed "Bazzite and SteamOS both default to
+btrfs with this layout"; the hardware disproved it. Both layouts are pinned
+below so neither can regress.
 
 The fixture below is COPIED VERBATIM from /proc/self/mountinfo on that box
 (CLAUDE.md §6: fixtures for /proc parsing come from real hardware, not from
@@ -57,6 +64,20 @@ MOUNTINFO = """\
 52 79 0:34 /var /var rw,noatime shared:112 - btrfs /dev/nvme0n1p3 rw,seclabel,ssd,discard=async,space_cache=v2,subvolid=256,subvol=/var
 56 79 259:2 / /boot rw,relatime shared:116 - ext4 /dev/nvme0n1p2 rw,seclabel
 64 52 0:34 /home /var/home rw,noatime shared:124 - btrfs /dev/nvme0n1p3 rw,seclabel,ssd,discard=async,space_cache=v2,subvolid=257,subvol=/home
+"""
+
+
+# VERBATIM from a Legion Go S (DMI 83N6) running SteamOS, 10.1.1.195, 2026-07-28,
+# and byte-identical for /home and /var on a Deck OLED (Galileo) at 10.1.1.212.
+# The OTHER layout this agent must survive: here /home and /var are their own
+# ext4 PARTITIONS, not btrfs subvolumes of one filesystem, so they must stay
+# SEPARATE rows. This is the regression guard for "the Bazzite fix must not
+# merge anything on SteamOS" — measured live on both handhelds, where the SD
+# card kept its own row.
+MOUNTINFO_STEAMOS = """\
+29 2 0:26 / / rw,relatime shared:1 - btrfs /dev/nvme0n1p5 rw,ssd,discard=async,space_cache=v2,subvolid=5,subvol=/
+30 29 259:7 / /var rw,relatime shared:2 - ext4 /dev/nvme0n1p7 rw
+71 29 259:8 / /home rw,relatime shared:182 - ext4 /dev/nvme0n1p8 rw
 """
 
 
@@ -107,6 +128,35 @@ def main():
 
         print()
         print("degrade closed")
+    finally:
+        builtins.open = real_builtins_open
+        os.path.realpath = real_realpath
+
+    print()
+    print("SteamOS: separate partitions must NOT merge")
+    mi2 = os.path.join(tmp, "mountinfo_steamos")
+    with open(mi2, "w") as f:
+        f.write(MOUNTINFO_STEAMOS)
+
+    def steamos_open(path, *a, **kw):
+        if path == "/proc/self/mountinfo":
+            return real_builtins_open(mi2, *a, **kw)
+        return real_builtins_open(path, *a, **kw)
+
+    builtins.open = steamos_open
+    os.path.realpath = lambda p: p   # no /home symlink on SteamOS
+    try:
+        root = cs._mount_fs_key("/")
+        home = cs._mount_fs_key("/home")
+        var = cs._mount_fs_key("/var")
+        check("SteamOS / is the btrfs rootfs", root, "0:26")
+        check("SteamOS /home is its own partition", home, "259:8")
+        check("SteamOS /var is its own partition", var, "259:7")
+        # THE REGRESSION GUARD. Measured live on a Legion Go S and a Deck OLED:
+        # all three keys differ, so this fix is a no-op on SteamOS and an SD
+        # card (its own device) still gets its own row.
+        check("SteamOS /home and /var stay SEPARATE", home != var, True)
+        check("SteamOS keys all distinct", len({root, home, var}), 3)
     finally:
         builtins.open = real_builtins_open
         os.path.realpath = real_realpath

@@ -1316,10 +1316,12 @@ def _mount_fs_key(path):
     Degrades closed: None on any read failure, and the caller then falls back to
     st_dev rather than merging rows it cannot prove are the same.
 
-    VERIFIED on Bazzite hardware (both directions: /home and /var collapse, /
-    and /boot stay separate). NOT verified on SteamOS — no Deck was powered on
-    when this was written. The argument above says it is safe there; that is
-    reasoning, not a measurement, so check a Deck before the agent release.
+    VERIFIED on hardware, both distros, both directions. Bazzite (10.1.1.60):
+    /home and /var both key 0:34 and collapse to one row; composefs / (0:38) and
+    ext4 /boot (259:2) stay separate. SteamOS, on a Legion Go S (83N6) and a Deck
+    OLED: /home (259:8) and /var (259:7) are separate ext4 PARTITIONS, so all
+    keys differ, the output is byte-identical to the old st_dev behaviour, and
+    the SD card kept its own row. This fix is a no-op on SteamOS.
     """
     try:
         rp = os.path.realpath(path)
