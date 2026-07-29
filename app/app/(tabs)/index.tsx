@@ -385,13 +385,15 @@ const makeStyles = (t: Palette) => StyleSheet.create({
     alignItems: 'center',
   },
   bannerTitle: {
-    color: '#fff',
+    // Was '#fff', which is 1.45:1 on light's redDeep — the OFFLINE headline was
+    // very nearly invisible in light mode.
+    color: t.onRedDeep,
     fontSize: 20,
     fontWeight: '800',
     letterSpacing: 2,
     marginBottom: 6,
   },
-  bannerDetail: { color: '#fecaca', fontSize: 13, ...numeric },
+  bannerDetail: { color: t.onRedDeep, fontSize: 13, ...numeric },
   retryBtn: {
     marginTop: 12,
     backgroundColor: t.red,

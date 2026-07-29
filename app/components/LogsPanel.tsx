@@ -195,6 +195,6 @@ const makeStyles = (t: Palette) => StyleSheet.create({
     padding: 8,
     marginTop: 8,
   },
-  errText: { color: '#fecaca', fontSize: 12, fontFamily: mono },
+  errText: { color: t.onRedDeep, fontSize: 12, fontFamily: mono },
   dim: { color: t.textFaint, fontSize: 12, fontFamily: mono, paddingVertical: 12 },
 });

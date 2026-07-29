@@ -29,6 +29,14 @@ export type Palette = {
   amber: string;
   red: string;
   redDeep: string;
+  /**
+   * Text drawn ON `redDeep` — error banners, offline strips, the failed-action
+   * boxes. It exists because those call sites used to hardcode `'#fecaca'`,
+   * which IS light's `redDeep`: in light mode four error messages rendered at
+   * 1.00:1 against their own background, i.e. a pink rectangle with nothing
+   * visible in it. Always use this token on a redDeep surface; never a literal.
+   */
+  onRedDeep: string;
   blue: string;
   slate: string;
   tabBar: string;
@@ -44,12 +52,18 @@ const dark: Palette = {
   cardBorder: '#1e2942',
   inset: '#0e1526',
   text: '#e5ecf8',
-  textDim: '#8b97ad',
-  textFaint: '#5b6780',
+  // See the note on light.textFaint below: the faint tier was measured at
+  // 2.99:1 on `card` and every one of its ~109 uses is 10-12px, so none of them
+  // qualified for WCAG's 3:1 large-text allowance. Raising faint alone squeezed
+  // the faint/dim gap to 1.24 (two greys that read as one tier), so dim moves
+  // with it. Measured: dim 6.94:1 on card, faint 4.64:1 on card, gap 1.50.
+  textDim: '#9ca6b9',
+  textFaint: '#7986a0',
   green: '#34d399',
   amber: '#fbbf24',
   red: '#f87171',
   redDeep: '#7f1d1d',
+  onRedDeep: '#fecaca', // 6.93:1 on redDeep
   blue: '#60a5fa',
   slate: '#64748b',
   tabBar: '#0e1526',
@@ -65,11 +79,18 @@ const light: Palette = {
   inset: '#eef2f9',
   text: '#0b1220',
   textDim: '#4a5670',
-  textFaint: '#8b97ad',
+  // WAS #8b97ad: 2.95:1 on card and 2.77:1 on bg — below WCAG AA (4.5:1) and
+  // below even the 3:1 large-text floor, which nothing here could claim anyway
+  // since every textFaint site renders at 10-12px. This is the app's SMALLEST
+  // text carrying the LOWEST contrast: the pairing hint, the box IP, and every
+  // card title. Solved against `bg`, the harder of the two surfaces for a light
+  // theme. Measured: 4.92:1 on card, 4.62:1 on bg, still 1.50 clear of dim.
+  textFaint: '#63718c',
   green: '#059669',
   amber: '#b45309',
   red: '#dc2626',
   redDeep: '#fecaca',
+  onRedDeep: '#7f1d1d', // 6.93:1 on redDeep — the same pair, swapped
   blue: '#2563eb',
   slate: '#64748b',
   tabBar: '#ffffff',
