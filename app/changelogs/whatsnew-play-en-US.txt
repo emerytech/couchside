@@ -1,6 +1,7 @@
 New in 2.9.31
 
-• Setting up your first box is guided now — Setup walks you through it, finds your box on its own, and puts a PIN on your TV. No addresses, no tokens.
-• New Display / Audio panel on Console: live resolution and refresh rate, whether HDR and VRR are really on, and which speaker is playing.
+• Setup guides you through your first box, finds every box on your network, and puts a PIN on your TV. No addresses, no tokens.
+• New Display / Audio panel: live resolution, refresh rate, whether HDR and VRR are really on, and which speaker is playing.
+• Redeemed a promo code? Restore Purchases now finds it.
+• Easier to read: small text has more contrast, and error messages that were invisible in light mode now show.
 • Box software updates no longer hang on "Updating…".
-• Optional: the Couchside Player puts Netflix and more on the TV. Early.
