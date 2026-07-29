@@ -85,7 +85,7 @@ except ImportError:
 # Same app id the phone expects (AGENT_APPS in app/lib/api.ts); the Windows
 # agent versions independently of the Linux one.
 APP_NAME = "couchside-agent"
-VERSION = "0.4.3-win"
+VERSION = "0.4.4-win"
 
 _PROGRAMDATA = os.environ.get("ProgramData", r"C:\ProgramData")
 DEFAULT_CONFIG_PATH = os.path.join(_PROGRAMDATA, "Couchside", "config.json")
@@ -4915,23 +4915,86 @@ def render_pin_page(pin):
         "},3000);})();</script></body></html>")
 
 
+# ---- LAN discovery responder (lets the app find this box) ------------------
+# The app broadcasts COUCHSIDE_DISCOVER_MAGIC to this UDP port; the box replies
+# with its identity + HTTP port so the app can list it in "Scan for boxes" (then
+# PIN-pair, above). Bound on the SAME number as the HTTP port (UDP vs TCP, no
+# clash). Reveals existence + hostname + version only — no token, no control.
+#
+# The app's other probe, an HTTP sweep of the phone's /24 for /api/ping, already
+# finds this agent; this is the fast path, and the one that works on Android
+# where UDP broadcast beats mDNS multicast RX (no MulticastLock dance). Verbatim
+# behaviour from the Linux agent so one app build treats both boxes alike.
+COUCHSIDE_DISCOVER_MAGIC = b"COUCHSIDE_DISCOVER?"
+
+
+def _udp_discovery_responder(port):
+    """Answer LAN discovery probes on UDP <port>. Best-effort daemon; a bind
+    failure just disables discovery (the app can still find the box by the HTTP
+    sweep, or have one added by IP)."""
+    try:
+        s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        s.bind(("0.0.0.0", port))
+    except OSError as e:
+        print("[discover] responder disabled: %s" % e, flush=True)
+        return
+    print("[discover] UDP responder on :%d" % port, flush=True)
+    while True:
+        try:
+            data, addr = s.recvfrom(256)
+        except OSError:
+            continue
+        if not data.startswith(COUCHSIDE_DISCOVER_MAGIC):
+            continue
+        short = socket.gethostname().split(".")[0] or "couchside"
+        reply = json.dumps({"couchside": True, "name": short,
+                            "host": short + ".local", "port": port,
+                            "version": VERSION}).encode()
+        try:
+            s.sendto(reply, addr)
+        except OSError:
+            pass
+
+
+def _qr_matrix_js(text):
+    """(matrix_js, err_js): the QR for `text` as a JSON array of "0101" row
+    strings, ready to inline. Unlike the Linux agent (which ships a JS encoder
+    and encodes in the browser), this agent encodes SERVER-SIDE with qr.py and
+    the page only paints the modules — same offline guarantee, no duplicated
+    encoder. Never raises: a failure becomes the error string the page shows."""
+    if qrmod is None:
+        return "null", json.dumps("QR module missing (qr.py)")
+    try:
+        model = qrmod.build_qr(text)
+        n = model.get_module_count()
+        rows = ["".join("1" if model.is_dark(r, c) else "0"
+                        for c in range(n)) for r in range(n)]
+        return json.dumps(rows), "null"
+    except Exception as e:
+        return "null", json.dumps("QR encode failed: %s" % e)
+
+
 def render_pair_page(token, port):
-    """Self-contained dark HTML page painting the server-rendered QR matrix.
-    No external resources: works on a box with no internet."""
+    """Self-contained dark HTML page painting the server-rendered QR matrices.
+    No external resources: works on a box with no internet.
+
+    Deliberately the SAME page as the Linux agent's render_pair_page — same
+    three steps, same animated phone, same wording — because a user who sets up
+    a Windows box and a Steam Deck must not be taught two different flows. The
+    only intentional difference is the encoder (server-side here, see
+    _qr_matrix_js).
+
+    Two QRs, and the small one is the point of step 1: someone who does not
+    have Couchside yet cannot pair at all, and the big deep-link QR is useless
+    to them. It points at couchside.tv/#get, whose hero carries BOTH store
+    badges, so the phone picks its own store instead of the box making someone
+    aim a camera at the right one of two codes."""
     pair_url = build_pair_url(token, port)
     url_html = (pair_url.replace("&", "&amp;").replace("<", "&lt;")
                         .replace(">", "&gt;"))
-    if qrmod is None:
-        matrix_js, err_js = "null", json.dumps("QR module missing (qr.py)")
-    else:
-        try:
-            model = qrmod.build_qr(pair_url)
-            n = model.get_module_count()
-            rows = ["".join("1" if model.is_dark(r, c) else "0"
-                            for c in range(n)) for r in range(n)]
-            matrix_js, err_js = json.dumps(rows), "null"
-        except Exception as e:
-            matrix_js, err_js = "null", json.dumps("QR encode failed: %s" % e)
+    matrix_js, err_js = _qr_matrix_js(pair_url)
+    get_matrix_js, _get_err = _qr_matrix_js("https://couchside.tv/#get")
     return (
         "<!doctype html><html lang=\"en\"><head>"
         "<meta charset=\"utf-8\">"
@@ -4942,40 +5005,141 @@ def render_pair_page(token, port):
         "font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;}"
         "body{display:flex;flex-direction:column;align-items:center;"
         "justify-content:center;text-align:center;padding:4vmin;box-sizing:border-box;}"
-        "h1{font-size:min(6vmin,42px);font-weight:650;margin:0 0 3vmin;letter-spacing:.2px;}"
-        ".sub{color:#9aa4b2;font-size:min(3vmin,20px);margin:0 0 4vmin;max-width:36ch;}"
-        ".card{background:#fff;border-radius:24px;padding:min(5vmin,40px);"
+        "h1{font-size:min(5vmin,38px);font-weight:650;margin:0 0 .8vmin;letter-spacing:.2px;}"
+        ".sub{color:#9aa4b2;font-size:min(2.7vmin,18px);margin:0 0 2.4vmin;max-width:46ch;}"
+        # One row: [phone + steps] on the left, QR on the right, fitting ONE
+        # screen with no scroll — this page is read off a TV from the couch.
+        # Sizing mirrors the Linux page (measured there at ~960px render width);
+        # it still wraps to a column on a genuinely narrow display.
+        ".stage{display:flex;flex-wrap:wrap;align-items:center;justify-content:center;"
+        "gap:min(5vmin,44px);max-width:1000px;}"
+        ".left{display:flex;align-items:center;gap:min(3vmin,22px);}"
+        ".steps{display:flex;flex-direction:column;gap:min(2.6vmin,20px);"
+        "text-align:left;max-width:30ch;}"
+        ".step{display:flex;align-items:center;gap:min(2.2vmin,15px);}"
+        ".num{flex:0 0 auto;width:min(5vmin,38px);height:min(5vmin,38px);"
+        "border-radius:50%;background:#1c2430;color:#7dd3fc;font-weight:700;"
+        "font-size:min(2.8vmin,20px);display:flex;align-items:center;"
+        "justify-content:center;}"
+        ".step b{font-size:min(3vmin,20px);font-weight:600;color:#e8ecf3;}"
+        ".step span{display:block;color:#9aa4b2;font-size:min(2.4vmin,15px);margin-top:.3vmin;}"
+        # The store QR under step 1. Small on purpose: a phone reads it up close,
+        # so it can stay compact and leave the one-screen budget to the big code.
+        ".stores{display:flex;gap:min(2.6vmin,18px);margin-top:1.2vmin;}"
+        ".store{display:flex;flex-direction:column;align-items:center;gap:.5vmin;}"
+        ".sqr{background:#fff;border-radius:9px;padding:min(1.1vmin,7px);line-height:0;}"
+        ".sqr canvas{display:block;image-rendering:pixelated;"
+        "width:min(15vmin,104px);height:min(15vmin,104px);}"
+        ".slabel{color:#9aa4b2;font-size:min(2.1vmin,12px);font-weight:600;}"
+        ".card{background:#fff;border-radius:20px;padding:min(3.4vmin,28px);"
         "box-shadow:0 12px 40px rgba(0,0,0,.5);}"
-        "#qr{display:block;image-rendering:pixelated;width:min(70vmin,560px);"
-        "height:min(70vmin,560px);}"
-        ".url{margin-top:4vmin;color:#5a6472;font-size:min(2.2vmin,14px);"
-        "word-break:break-all;max-width:80ch;font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;}"
+        "#qr{display:block;image-rendering:pixelated;width:min(42vmin,300px);"
+        "height:min(42vmin,300px);}"
+        ".cap{color:#9aa4b2;font-size:min(2.2vmin,14px);margin-top:1.4vmin;}"
+        ".url{margin-top:2vmin;color:#5a6472;font-size:min(1.9vmin,12px);"
+        "word-break:break-all;max-width:70ch;font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;}"
         ".err{color:#ff6b6b;margin-top:3vmin;font-size:min(3vmin,18px);}"
+        # The animated phone mock: three scenes cross-fade on a 9s loop, 3s each,
+        # driven ONLY by @keyframes so there is no JS to fail.
+        ".phone{flex:0 0 auto;width:min(18vmin,96px);}"
+        ".scene{opacity:0;animation:cs 9s infinite;}"
+        ".scene.b{animation-delay:3s;}.scene.c{animation-delay:6s;}"
+        "@keyframes cs{0%{opacity:0}4%{opacity:1}29%{opacity:1}33%{opacity:0}100%{opacity:0}}"
+        "@media (max-width:820px){.steps{max-width:80vw}.stage{gap:4vmin}}"
         "</style></head><body>"
-        "<h1>Scan to pair Couchside</h1>"
-        "<div class=\"sub\">Point your phone&rsquo;s <b>camera</b> at this code "
-        "&mdash; it opens the Couchside app and pairs your box automatically. "
-        "The app itself has no scanner; use the camera.</div>"
-        "<div class=\"card\"><canvas id=\"qr\" width=\"560\" height=\"560\"></canvas></div>"
+        "<h1>Pair your phone</h1>"
+        "<div class=\"sub\">Get the Couchside app, then follow these three steps "
+        "&mdash; or point your phone&rsquo;s camera at the code to skip ahead.</div>"
+        "<div class=\"stage\">"
+        "<div class=\"left\">"
+        "<svg class=\"phone\" viewBox=\"0 0 120 240\" xmlns=\"http://www.w3.org/2000/svg\" "
+        "aria-hidden=\"true\">"
+        "<rect x=\"4\" y=\"4\" width=\"112\" height=\"232\" rx=\"20\" fill=\"#0b1220\" "
+        "stroke=\"#2b3648\" stroke-width=\"3\"/>"
+        "<rect x=\"12\" y=\"20\" width=\"96\" height=\"200\" rx=\"8\" fill=\"#0f1826\"/>"
+        # Scene A: the app icon, "open Couchside".
+        "<g class=\"scene a\"><rect x=\"38\" y=\"78\" width=\"44\" height=\"44\" rx=\"11\" "
+        "fill=\"#38bdf8\"/><rect x=\"46\" y=\"96\" width=\"28\" height=\"14\" rx=\"4\" "
+        "fill=\"#0b1220\"/><rect x=\"44\" y=\"92\" width=\"6\" height=\"10\" fill=\"#0b1220\"/>"
+        "<rect x=\"70\" y=\"92\" width=\"6\" height=\"10\" fill=\"#0b1220\"/>"
+        "<rect x=\"40\" y=\"134\" width=\"40\" height=\"6\" rx=\"3\" fill=\"#334155\"/></g>"
+        # Scene B: a scan list with one row highlighted, "Setup -> Scan, tap it".
+        "<g class=\"scene b\"><rect x=\"22\" y=\"70\" width=\"76\" height=\"22\" rx=\"6\" "
+        "fill=\"#38bdf8\"/><rect x=\"29\" y=\"78\" width=\"40\" height=\"6\" rx=\"3\" "
+        "fill=\"#0b1220\"/><rect x=\"22\" y=\"100\" width=\"76\" height=\"16\" rx=\"5\" "
+        "fill=\"#1c2430\"/><rect x=\"22\" y=\"124\" width=\"76\" height=\"16\" rx=\"5\" "
+        "fill=\"#1c2430\"/></g>"
+        # Scene C: the six-digit PIN appearing, "a PIN shows here".
+        "<g class=\"scene c\"><rect x=\"24\" y=\"96\" width=\"10\" height=\"18\" rx=\"2\" "
+        "fill=\"#7dd3fc\"/><rect x=\"38\" y=\"96\" width=\"10\" height=\"18\" rx=\"2\" "
+        "fill=\"#7dd3fc\"/><rect x=\"52\" y=\"96\" width=\"10\" height=\"18\" rx=\"2\" "
+        "fill=\"#7dd3fc\"/><rect x=\"66\" y=\"96\" width=\"10\" height=\"18\" rx=\"2\" "
+        "fill=\"#7dd3fc\"/><rect x=\"80\" y=\"96\" width=\"10\" height=\"18\" rx=\"2\" "
+        "fill=\"#7dd3fc\"/><rect x=\"94\" y=\"96\" width=\"6\" height=\"18\" rx=\"2\" "
+        "fill=\"#7dd3fc\"/></g></svg>"
+        "<div class=\"steps\">"
+        "<div class=\"step\"><div class=\"num\">1</div><div>"
+        "<b>Get Couchside on your phone</b>"
+        "<span>Don&rsquo;t have it? Scan to install on iOS or Android "
+        "&mdash; free.</span>"
+        "<div class=\"stores\">"
+        "<div class=\"store\">"
+        "<div class=\"sqr\"><canvas id=\"qr-get\" width=\"104\" height=\"104\"></canvas></div>"
+        "<div class=\"slabel\">App Store &amp; Google Play</div></div>"
+        "</div></div></div>"
+        "<div class=\"step\"><div class=\"num\">2</div><div>"
+        "<b>Setup tab &rarr; Scan for boxes</b>"
+        "<span>Then tap this box in the list.</span></div></div>"
+        "<div class=\"step\"><div class=\"num\">3</div><div>"
+        "<b>A 6-digit PIN appears here</b>"
+        "<span>Type it into the app to finish.</span></div></div>"
+        "</div>"          # .steps
+        "</div>"          # .left
+        "<div>"
+        "<div class=\"card\"><canvas id=\"qr\" width=\"300\" height=\"300\"></canvas></div>"
+        "<div class=\"cap\">Or scan with your camera</div>"
+        "</div>"
+        "</div>"          # .stage
         "<div class=\"url\">" + url_html + "</div>"
         "<div id=\"err\" class=\"err\"></div>"
         "<script>\n"
         "(function(){\n"
         "  var rows = " + matrix_js + ";\n"
         "  var err = " + err_js + ";\n"
+        "  var getRows = " + get_matrix_js + ";\n"
+        "  function paint(id, rows, box, minpx){\n"
+        "    var canvas = document.getElementById(id);\n"
+        "    if (!canvas || !rows) return;\n"
+        "    var n = rows.length, quiet = 4, total = n + quiet*2;\n"
+        "    var px = Math.max(minpx, Math.floor(box/total));\n"
+        "    var size = total*px; canvas.width = size; canvas.height = size;\n"
+        "    var ctx = canvas.getContext('2d');\n"
+        "    ctx.fillStyle = '#ffffff'; ctx.fillRect(0,0,size,size);\n"
+        "    ctx.fillStyle = '#000000';\n"
+        "    for (var r=0;r<n;r++){ for (var c=0;c<n;c++){ if (rows[r].charAt(c)==='1') {\n"
+        "      ctx.fillRect((c+quiet)*px,(r+quiet)*px,px,px); } } }\n"
+        "  }\n"
+        # Only the PAIRING QR's failure is worth a visible error: without it the
+        # camera shortcut is dead. A missing store QR degrades to the printed
+        # steps, so it fails silently rather than shouting on the user's TV.
         "  if (err || !rows) {\n"
         "    document.getElementById('err').textContent = err || 'no QR data';\n"
-        "    return;\n"
+        "  } else {\n"
+        "    paint('qr', rows, 300, 4);\n"
         "  }\n"
-        "  var n = rows.length, quiet = 4, total = n + quiet*2;\n"
-        "  var canvas = document.getElementById('qr');\n"
-        "  var px = Math.max(4, Math.floor(560/total));\n"
-        "  var size = total*px; canvas.width = size; canvas.height = size;\n"
-        "  var ctx = canvas.getContext('2d');\n"
-        "  ctx.fillStyle = '#ffffff'; ctx.fillRect(0,0,size,size);\n"
-        "  ctx.fillStyle = '#000000';\n"
-        "  for (var r=0;r<n;r++){ for (var c=0;c<n;c++){ if (rows[r].charAt(c)==='1') {\n"
-        "    ctx.fillRect((c+quiet)*px,(r+quiet)*px,px,px); } } }\n"
+        "  paint('qr-get', getRows, 108, 2);\n"
+        # THE HANDOFF, same cadence as render_pin_page: the instant a pairing
+        # starts (active===true) reload, and the /pair route then serves the big
+        # PIN page because pair_pin_active() is now truthy — this idle tutorial
+        # becomes the very thing step 3 was teaching. Errors are swallowed and
+        # the page left alone: an agent restart must never paint a browser error
+        # on the TV. One reload only (the guard), so a slow reload can't stack.
+        "  var gone=false;\n"
+        "  setInterval(function(){\n"
+        "    fetch('/api/pair/status').then(function(r){return r.json()})\n"
+        "    .then(function(d){if(d&&d.active===true&&!gone){gone=true;\n"
+        "      location.reload();}}).catch(function(){});\n"
+        "  },3000);\n"
         "})();\n"
         "</script></body></html>"
     )
@@ -6155,6 +6319,10 @@ def main():
     # the session alive even while the app's own JS keepalive timer is frozen (iOS).
     threading.Thread(target=_gamepad_keepalive_loop,
                      daemon=True, name="gp-keepalive").start()
+    # LAN discovery: answer the app's UDP probe so this box shows up in
+    # "Scan for boxes" as fast as a Linux box does.
+    threading.Thread(target=_udp_discovery_responder, args=(port,),
+                     daemon=True, name="discover").start()
     mode = "mock" if args.mock else "real"
     print("%s %s listening on %s:%d (%s mode)" % (
         APP_NAME, VERSION, args.host, port, mode), flush=True)
