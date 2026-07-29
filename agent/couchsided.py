@@ -1284,6 +1284,64 @@ def _steam_library_mounts():
     return out
 
 
+def _mount_fs_key(path):
+    """Identify the FILESYSTEM behind `path`, so two paths into one filesystem
+    dedupe to a single disk row. Returns "maj:min" or None when unreadable.
+
+    WHY NOT st_dev. btrfs hands every SUBVOLUME its own st_dev, so the obvious
+    key fails on exactly the two distros this project targets. MEASURED on a
+    real Bazzite box 2026-07-28:
+
+        /home  st_dev=49   498GB total, 322GB free
+        /var   st_dev=44   498GB total, 322GB free
+
+    Same filesystem (/dev/nvme0n1p3), two st_devs, so both were listed and the
+    DISKS card showed one 498GB disk twice — reading as ~1TB of storage that
+    does not exist. /home is a SYMLINK to var/home on Fedora Atomic derivatives,
+    and /var/home is its own subvolume, which is how the two paths diverge.
+
+    mountinfo's mount-id field is per-FILESYSTEM, not per-subvolume, so it
+    collapses them. Verified BOTH directions on hardware: /home and /var both
+    key to 0:34, while the composefs / keys to 0:38 and stays a separate row.
+
+    WHY THIS CANNOT BREAK A BOX WITH GENUINELY SEPARATE DISKS. mountinfo's
+    maj:min is the SUPERBLOCK device id: identical for every mount of one
+    filesystem, distinct across filesystems. So this key can only ever merge
+    paths that really are the same filesystem — which is exactly what the old
+    st_dev guard was trying to do and failed at on btrfs. It cannot merge two
+    distinct filesystems, so an SD card, an external drive or a separate /home
+    partition still gets its own row. A Steam Deck's / and /home are separate
+    partitions and therefore keep separate keys.
+
+    Degrades closed: None on any read failure, and the caller then falls back to
+    st_dev rather than merging rows it cannot prove are the same.
+
+    VERIFIED on Bazzite hardware (both directions: /home and /var collapse, /
+    and /boot stay separate). NOT verified on SteamOS — no Deck was powered on
+    when this was written. The argument above says it is safe there; that is
+    reasoning, not a measurement, so check a Deck before the agent release.
+    """
+    try:
+        rp = os.path.realpath(path)
+        best = None
+        with open("/proc/self/mountinfo", "r", encoding="utf-8",
+                  errors="replace") as f:
+            for line in f:
+                fields = line.split()
+                try:
+                    sep = fields.index("-")
+                except ValueError:
+                    continue
+                mount_id, mp = fields[2], fields[4]
+                # Longest matching mount point wins: /var/home must beat /var.
+                if rp == mp or rp.startswith(mp.rstrip("/") + "/"):
+                    if best is None or len(mp) > len(best[0]):
+                        best = (mp, mount_id)
+        return best[1] if best else None
+    except OSError:
+        return None
+
+
 def read_disks():
     disks = []
     seen_devices = set()
@@ -1291,10 +1349,14 @@ def read_disks():
         try:
             # Same filesystem reached by two paths (the common case where /home
             # is not split out) must not be listed twice.
-            try:
-                dev = os.stat(mount).st_dev
-            except OSError:
-                continue
+            # Prefer the filesystem's mount id; st_dev is only a fallback
+            # because btrfs gives each subvolume its own (see _mount_fs_key).
+            dev = _mount_fs_key(mount)
+            if dev is None:
+                try:
+                    dev = "st_dev:%d" % os.stat(mount).st_dev
+                except OSError:
+                    continue
             if dev in seen_devices:
                 continue
 
