@@ -164,6 +164,12 @@ jobs:
       - name: Unit tests (disk dedupe)
         run: python3 tests/test_disk_dedupe.py
 
+      # The session-switch action you are already in must not be listed:
+      # "Return to Game Mode" fired while in Game Mode rewrites the box's
+      # "Boots into" preference and can restart the session under a game.
+      - name: Unit tests (session action gate)
+        run: python3 tests/test_session_action_gate.py
+
       # Display-manager detection + the greetd writer. Boot-session was
       # SDDM-only, so it silently did not exist on the custom Steam machines
       # people actually build (Arch/CachyOS + gamescope, ChimeraOS) which

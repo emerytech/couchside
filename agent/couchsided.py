@@ -3366,6 +3366,51 @@ def _couchmode_session():
         return "desktop"
 
 
+# Which session-switch action is WRONG in each session. Listing the one you are
+# already in is not a harmless no-op:
+#
+#   return-gamemode runs `steamos-session-select gamescope`, which on SteamOS
+#   expands to `steamosctl set-default-login-mode game` + `switch-to-game-mode`
+#   (READ off a Legion Go S, 2026-07-28). Fired while already in Game Mode it
+#   silently rewrites the box's "Boots into" preference to game — the user never
+#   asked for that and the BOOTS INTO card above it goes stale — and re-running
+#   the switch "can restart the session under a running game", which is the
+#   hazard _couchmode_session_strict below was already written to avoid for the
+#   controller trigger.
+#
+#   switch-desktop is the mirror: offered while already on the desktop it is
+#   noise, though it is the milder of the two (it does not touch the default).
+#
+# The row is labelled danger "medium" and gets one confirm whose wording assumes
+# the opposite session ("Switch back from the desktop..."), so nothing in the UI
+# warns the user. Hiding it in the state where it can only do harm is the fix.
+_WRONG_ACTION_IN_SESSION = {
+    "gamescope": "return-gamemode",
+    "desktop": "switch-desktop",
+}
+
+
+def _session_actions_to_hide():
+    """Action ids to omit from /api/actions for the CURRENT session.
+
+    Uses the STRICT probe: an unknown session returns nothing to hide, so the
+    list stays exactly what it is today. This gate may only ever REMOVE an
+    action when the session is positively known — it must never be able to
+    strand a box with no way to switch sessions because a pgrep timed out.
+
+    LIST ONLY, DELIBERATELY: POST /api/action/return-gamemode still works. The
+    accidental tap is what is worth removing, not the capability — restarting a
+    WEDGED Game Mode session is a real recovery a user may want, and unsticking
+    a couch session is close to the product's whole premise. Blocking execution
+    would take that away to prevent a mistake the hidden row no longer invites.
+    """
+    session = _couchmode_session_strict()
+    if session is None:
+        return frozenset()
+    aid = _WRONG_ACTION_IN_SESSION.get(session)
+    return frozenset([aid]) if aid else frozenset()
+
+
 def _couchmode_session_strict():
     """'gamescope' | 'desktop' | None. Same probe as _couchmode_session but
     UNKNOWN on error instead of assuming 'desktop'.
@@ -14852,12 +14897,15 @@ class Handler(BaseHTTPRequestHandler):
             elif path == "/api/journal":
                 self._handle_journal(parsed, started)
             elif path == "/api/actions":
+                # Mock has no real session, so the harness keeps showing both.
+                hide = frozenset() if self.mock else _session_actions_to_hide()
                 actions = [
                     {"id": aid,
                      "label": ACTIONS[aid]["label"],
                      "description": ACTIONS[aid]["description"],
                      "danger": ACTIONS[aid]["danger"]}
                     for aid in ACTION_ORDER
+                    if aid not in hide
                 ]
                 self._send(200, {"actions": actions}, started)
             elif path == "/api/launchers":
