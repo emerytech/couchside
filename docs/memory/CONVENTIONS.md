@@ -92,6 +92,18 @@ _POWER_SUPPLY_DIR = "/sys/class/power_supply"
 New code that reads a path under `/sys`, `/proc`, or a cache dir **must** route through a
 module-level constant, or it cannot be tested without root and real hardware.
 
+### Display-manager paths derive from `_DM_CONF_DIRS` — never hardcode SDDM
+
+Since 2.9.66, anything touching the boot-session config or the restart-session rescue
+action goes through `detect_display_manager()` (the `display-manager.service` symlink)
+and the frozen `_DM_CONF_DIRS` table (`sddm`, `plasmalogin`) — conf dir, drop-in path
+(`_dm_dropin`), and restart unit all derive from the DETECTED manager. Hardcoding
+`/etc/sddm.conf.d` or `systemctl restart sddm` is the fail-open bug that shipped a dead
+"Boots into" card on CachyOS (2026-07-30, real hardware): a sudoers grant that
+`install.sh` wrote unconditionally was read as proof SDDM was in charge. The grant proves
+only itself; the symlink proves which manager runs. No detected manager (or no grant for
+the detected one) = no capability, no action — never a fallback to SDDM.
+
 ---
 
 ## 2. Tests (`tests/test_*.py`)

@@ -762,17 +762,24 @@ def _retarget_restart_session(mock):
     if not act or not _is_stock_restart_session_cmd(act.get("cmd")):
         return
     dm = detect_display_manager()
-    if dm and _sudo_nopasswd_allows("systemctl restart %s" % dm):
-        if act["cmd"][3] != dm:
+    # The REAL unit name, not the collapsed family: detect_display_manager
+    # folds gdm3.service into "gdm", but sudoers matches arguments exactly, so
+    # probing "restart gdm" against a gdm3 grant (substring-matched) and then
+    # running "restart gdm" would advertise a rescue button sudo refuses on
+    # every press. Probe and rewrite must use the same spelling the grant and
+    # the unit actually have.
+    unit = _display_manager_unit_name()
+    if dm and unit and _sudo_nopasswd_allows("systemctl restart %s" % unit):
+        if act["cmd"][3] != unit:
             # Copy before editing: ACTIONS shallow-copies DEFAULT_ACTIONS, so
             # editing `act` in place would silently rewrite the shipped spec.
             act = dict(act)
-            act["cmd"] = ["sudo", "systemctl", "restart", dm]
+            act["cmd"] = ["sudo", "systemctl", "restart", unit]
             act["description"] = ("Restart the display session (%s), fixes a "
-                                  "wedged/black screen" % dm)
+                                  "wedged/black screen" % unit)
             ACTIONS["restart-session"] = act
-            stale = {"%s.service" % k for k in _DM_CONF_DIRS if k != dm}
-            WATCHLIST = [(("%s.service" % dm) if n in stale else n, s)
+            stale = {"%s.service" % k for k in _DM_CONF_DIRS if k != unit}
+            WATCHLIST = [(("%s.service" % unit) if n in stale else n, s)
                          for n, s in WATCHLIST]
             WATCHLIST_NAMES = {name for name, _scope in WATCHLIST}
         return
@@ -3861,9 +3868,23 @@ def _dm_session_ok(dm):
     charge — so a plasmalogin box advertised backend "sddm" and wrote into
     /etc/sddm.conf.d, a directory that box does not even have (VERIFIED on
     CachyOS hardware 2026-07-30). The caller must pass the manager it actually
-    detected; this function never guesses one."""
+    detected; this function never guesses one.
+
+    Two more degrade-closed gates, each closing a specific dead-button hole:
+    * the conf dir must EXIST — `sudo tee` cannot create parent directories,
+      the grant names only the file, and vanilla Arch SDDM installs often ship
+      without /etc/sddm.conf.d until an admin creates it (the new install.sh
+      creates it, but a grant can outlive that);
+    * the classic main conf must NOT name a Session — the manager applies
+      /etc/<dm>.conf LAST, over every drop-in (see the layer constants below),
+      so on a hand-configured box our zzz- file can never win and a rendered
+      card would confirm settings that never take effect."""
     dropin = _dm_dropin(dm)
     if not dropin:
+        return False
+    if not os.path.isdir(_DM_CONF_DIRS[dm]):
+        return False
+    if _last_session_line(_DM_MAIN_CONFS.get(dm, "")):
         return False
     return (_sudo_nopasswd_allows(dropin)
             or _sudo_nopasswd_allows(_dm_dropin_legacy(dm)))
@@ -3924,6 +3945,30 @@ def detect_display_manager():
     if unit.startswith("gdm"):
         return "gdm"
     return unit if unit in _KNOWN_DMS else None
+
+
+def _display_manager_unit_name():
+    """The REAL unit name behind the symlink ("gdm3", "sddm", ...), or "".
+
+    detect_display_manager answers "which FAMILY" and deliberately collapses
+    gdm3 -> gdm; anything that builds a `systemctl restart <x>` argv or probes
+    sudoers for one must use this instead. Probing the collapsed name would
+    substring-match a gdm3 grant while the rewritten argv said "gdm" — which
+    sudo (exact-argument matching) then refuses: an advertised rescue button
+    that fails every press. Same read, same degrade-closed shape: unreadable
+    or non-.service means ""."""
+    try:
+        target = os.path.realpath(DISPLAY_MANAGER_UNIT)
+    except OSError:
+        return ""
+    base = os.path.basename(target or "")
+    if not base.endswith(".service"):
+        return ""
+    name = base[: -len(".service")].lower()
+    # The alias itself means the symlink was missing (realpath returns the
+    # unresolved path) — that is "no manager", not a unit called
+    # "display-manager".
+    return "" if name == "display-manager" else name
 
 
 # ---------------------------------------------------------------------------
@@ -4142,37 +4187,66 @@ def _last_session_line(path, found=""):
     return found
 
 
+# The other config layers each conf-dir manager merges, as module constants so
+# tests can repoint them at fixtures (CONVENTIONS §Naming). ORDER IS THE
+# BUG-PRONE PART: SDDM loads the sys conf.d, then /etc/<dm>.conf.d, and applies
+# the classic /etc/<dm>.conf LAST — the MAIN FILE OVERRIDES EVERY DROP-IN, the
+# reverse of the systemd convention. Verified in SDDM's own source
+# (ConfigReader's ConfigBase::load: "order of priority from least influence to
+# most influence ... m_path" — the main file is appended last) after v1 of this
+# reader shipped that order backwards and would have reported a hand-configured
+# /etc/sddm.conf box wrong. For plasmalogin, /etc/plasmalogin.conf.d last-wins
+# is confirmed by CachyOS's own tooling (os-session-select's zz- drop-in
+# overrides steam-deckify.conf, and the distro's comment in that file says so),
+# and the sys layer is the SDDM path: MEASURED on the CachyOS box 2026-07-30,
+# cachyos-kde-settings ships plasmalogin's greeter defaults at
+# /usr/lib/sddm/sddm.conf.d ([Autologin] Session=plasma there, overridden by
+# /etc). A missing layer simply reads empty.
+_DM_SYS_CONF_DIRS = {"sddm": "/usr/lib/sddm/sddm.conf.d",
+                     "plasmalogin": "/usr/lib/sddm/sddm.conf.d"}
+_DM_MAIN_CONFS = {"sddm": "/etc/sddm.conf", "plasmalogin": "/etc/plasmalogin.conf"}
+_DM_STATE_FILES = {"sddm": "/var/lib/sddm/state.conf",
+                   "plasmalogin": "/var/lib/plasmalogin/state.conf"}
+
+
 def _dm_current_session_file(dm):
     """The session file the display manager will autologin into, best-effort.
 
-    Reproduces the manager's own merge order: the main /etc/<dm>.conf, then
-    <confdir>/*.conf ALPHABETICALLY, and the LAST Session= wins — that ordering
-    is the whole reason our drop-in is zzz- (see _dm_dropin). Earlier versions
-    read only OUR drop-in and then /var/lib/sddm/state.conf; on a box where the
-    user had not yet set anything through Couchside the state file is root-only
-    (MEASURED on both Bazzite and CachyOS, 2026-07-30), so the card said
-    "unknown" while the distro's own zz-steamos-autologin.conf named the answer
-    in plain sight.
+    Reproduces the manager's own merge order (see the layer constants above):
+    sys conf.d, then /etc conf.d — each alphabetically, last Session= wins,
+    which is why our drop-in is zzz- — then the classic main conf, which
+    OVERRIDES all drop-ins. Earlier versions read only OUR drop-in and then
+    /var/lib/sddm/state.conf; on a box where the user had not yet set anything
+    through Couchside the state file is root-only (MEASURED on both Bazzite and
+    CachyOS, 2026-07-30), so the card said "unknown" while the distro's own
+    zz-steamos-autologin.conf named the answer in plain sight.
 
     Returns "" when nothing readable names a session — "unknown" beats a
     guess."""
     confdir = _DM_CONF_DIRS.get(dm)
     if not confdir:
         return ""
-    found = _last_session_line("/etc/%s.conf" % dm)
-    try:
-        names = sorted(fn for fn in os.listdir(confdir) if fn.endswith(".conf"))
-    except OSError:
-        names = []
-    for fn in names:
-        found = _last_session_line(os.path.join(confdir, fn), found)
+    found = ""
+    for d in (_DM_SYS_CONF_DIRS.get(dm), confdir):
+        if not d:
+            continue
+        try:
+            names = sorted(fn for fn in os.listdir(d) if fn.endswith(".conf"))
+        except OSError:
+            names = []
+        for fn in names:
+            found = _last_session_line(os.path.join(d, fn), found)
+    # The classic main conf is applied LAST by the manager itself, so it wins
+    # here too. When it names a Session, autologin through drop-ins is dead —
+    # _dm_session_ok refuses the whole capability in that case.
+    found = _last_session_line(_DM_MAIN_CONFS.get(dm, ""), found)
     if found:
         return found
     # Last resort: the manager's record of the LAST session. Autologin config
     # beats it when both exist (mirrored above by trying it only when no config
     # named a session), and it is root-only on every box measured so far — kept
     # because it costs nothing when it is readable.
-    return _last_session_line("/var/lib/%s/state.conf" % dm)
+    return _last_session_line(_DM_STATE_FILES.get(dm, ""))
 
 
 def session_default_get():
@@ -4239,6 +4313,15 @@ def _dm_write(dm, session_file):
     no future caller can route around it."""
     dropin = _dm_dropin(dm)
     if not dropin:
+        return False
+    # Backstop for the availability gate in _dm_session_ok: the classic main
+    # conf overrides every drop-in, so a write it would defeat must refuse
+    # rather than return ok and let the next GET "confirm" a setting that
+    # never applies.
+    if _last_session_line(_DM_MAIN_CONFS.get(dm, "")):
+        print("[session] refusing %s write: %s sets its own Session=, which "
+              "overrides every conf.d drop-in" % (dm, _DM_MAIN_CONFS.get(dm)),
+              flush=True)
         return False
     installed = _installed_session_files()
     if installed and session_file not in installed:

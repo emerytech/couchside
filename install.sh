@@ -827,6 +827,14 @@ case "$DM_NAME" in
     *)
         DM_NAME="" ;;
 esac
+# The drop-in dir must EXIST before the boot-session feature can work: the
+# sudoers grant names only the file, and `sudo tee` cannot create parent
+# directories. SteamOS/Bazzite/CachyOS ship the dir; vanilla Arch SDDM installs
+# often do not until an admin creates it. The agent refuses the capability when
+# the dir is missing, so creating it here is what arms the feature.
+if [ -n "$DM_NAME" ]; then
+    sudo install -d -m 0755 "/etc/${DM_NAME}.conf.d"
+fi
 
 # ---------------------------------------------------------------------------
 # (e) Initial config.json (only if absent)

@@ -292,7 +292,20 @@ def test_setter_dispatches_per_backend():
     real_detect = cs.detect_display_manager
     real_gwrite = cs._greetd_write
     real_inst = cs._installed_session_files
+    saved_layers = (cs._DM_CONF_DIRS, cs._DM_SYS_CONF_DIRS, cs._DM_MAIN_CONFS,
+                    cs._DM_STATE_FILES)
+    base = tempfile.mkdtemp()
     try:
+        # Hermetic conf dirs: availability now requires the dir to exist and
+        # the main conf to be silent.
+        dirs = {dm: os.path.join(base, dm + ".conf.d")
+                for dm in ("sddm", "plasmalogin")}
+        for d in dirs.values():
+            os.makedirs(d)
+        cs._DM_CONF_DIRS = dirs
+        cs._DM_SYS_CONF_DIRS = {}
+        cs._DM_MAIN_CONFS = {}
+        cs._DM_STATE_FILES = {}
         cs._sudo_nopasswd_allows = lambda needle: True
         cs._installed_session_files = lambda: {cs.GAMESCOPE_SESSION_FILE,
                                                "plasma.desktop"}
@@ -307,6 +320,13 @@ def test_setter_dispatches_per_backend():
               [cs.GAMESCOPE_SESSION_FILE])
         check("greetd set() reports ok", r["ok"], True)
 
+        # greetd + mode "last": no conf-dir manager to read, so the target
+        # falls back to Game Mode — through the greetd writer, never the tee.
+        gcalls[:] = []
+        r = cs.session_default_set("last")
+        check("greetd set('last') falls back to gamescope via the greetd writer",
+              gcalls, [cs.GAMESCOPE_SESSION_FILE])
+
         # plasmalogin: capture the tee argv end-to-end through set().
         cs.detect_display_manager = lambda: "plasmalogin"
         cs._greetd_write = lambda sf: (_ for _ in ()).throw(
@@ -320,6 +340,7 @@ def test_setter_dispatches_per_backend():
             r.returncode, r.stdout, r.stderr = 0, "", ""
             if argv[:3] == ["sudo", "-n", "tee"]:
                 teed.append(list(argv))
+                r.stdout = kw.get("input", "")
             elif argv[:1] == ["steamosctl"]:
                 r.stdout, r.stderr = "", "Error: UnknownInterface"
             return r
@@ -329,12 +350,40 @@ def test_setter_dispatches_per_backend():
         check("plasmalogin set() reports ok", r["ok"], True)
         check("plasmalogin set() tees into PLASMALOGIN's conf dir",
               teed, [["sudo", "-n", "tee", cs._dm_dropin("plasmalogin")]])
+
+        # mode "last" on a conf-dir box: the target is whatever the MERGED
+        # config says is running now — here the distro drop-in names the
+        # desktop session, so "last" must write plasma.desktop, not gamescope.
+        with open(os.path.join(dirs["plasmalogin"],
+                               "zz-steamos-autologin.conf"), "w") as f:
+            f.write("[Autologin]\nSession=plasma.desktop\n")
+        teed[:] = []
+        wrote = {}
+        def fake_run2(argv, **kw):
+            class R:
+                pass
+            r = R()
+            r.returncode, r.stdout, r.stderr = 0, "", ""
+            if argv[:3] == ["sudo", "-n", "tee"]:
+                wrote["argv"], wrote["body"] = list(argv), kw.get("input", "")
+            elif argv[:1] == ["steamosctl"]:
+                r.stdout, r.stderr = "", "Error: UnknownInterface"
+            return r
+        cs.subprocess.run = fake_run2
+        r = cs.session_default_set("last")
+        check("plasmalogin set('last') reports ok", r["ok"], True)
+        check("...and writes the session the merged config names",
+              "Session=plasma.desktop" in wrote.get("body", ""), True)
     finally:
         cs.subprocess.run = real_run
         cs._sudo_nopasswd_allows = real_sudo
         cs.detect_display_manager = real_detect
         cs._greetd_write = real_gwrite
         cs._installed_session_files = real_inst
+        (cs._DM_CONF_DIRS, cs._DM_SYS_CONF_DIRS, cs._DM_MAIN_CONFS,
+         cs._DM_STATE_FILES) = saved_layers
+        import shutil
+        shutil.rmtree(base, ignore_errors=True)
 
 
 def main():
@@ -358,6 +407,18 @@ def main():
 
     print("backend selection")
     real_detect = cs.detect_display_manager
+    # Hermetic conf-dir layout: _dm_session_ok requires the conf dir to EXIST
+    # and the classic main conf to be silent, so the real /etc must not leak in.
+    saved_layers = (cs._DM_CONF_DIRS, cs._DM_SYS_CONF_DIRS, cs._DM_MAIN_CONFS,
+                    cs._DM_STATE_FILES)
+    bdir = tempfile.mkdtemp()
+    sddm_dir, pl_dir = os.path.join(bdir, "sddm.conf.d"), os.path.join(bdir, "plasmalogin.conf.d")
+    os.makedirs(sddm_dir); os.makedirs(pl_dir)
+    cs._DM_CONF_DIRS = {"sddm": sddm_dir, "plasmalogin": pl_dir}
+    cs._DM_SYS_CONF_DIRS = {}
+    cs._DM_MAIN_CONFS = {"sddm": os.path.join(bdir, "sddm.conf"),
+                         "plasmalogin": os.path.join(bdir, "plasmalogin.conf")}
+    cs._DM_STATE_FILES = {}
     cs.subprocess.run = FakeRun(stdout="desktop\n", rc=0)
     cs._sudo_nopasswd_allows = lambda needle: True
     cs.detect_display_manager = lambda: "sddm"
@@ -390,6 +451,46 @@ def main():
     # Detected-but-unwritable managers are the same honest absence.
     cs.detect_display_manager = lambda: "gdm"
     check("gdm: detected, no writer -> None", cs.session_default_backend(), None)
+
+    # THE GRANT IS PER-PATH — a needle-blind stub cannot pin that. This is the
+    # real CachyOS box TODAY: the old installer wrote only the sddm-path tee
+    # grants, the new agent detects plasmalogin. An implementation that checks
+    # the SDDM path regardless of dm (the pre-fix shape, one refactor away)
+    # fails here and only here.
+    sddm_grants = {cs._dm_dropin("sddm"), cs._dm_dropin_legacy("sddm")}
+    cs._sudo_nopasswd_allows = lambda needle: needle in sddm_grants
+    cs.detect_display_manager = lambda: "plasmalogin"
+    check("CachyOS today: sddm-path grants only + plasmalogin detected -> None",
+          cs.session_default_backend(), None)
+    cs.detect_display_manager = lambda: "sddm"
+    check("...same grants on a real sddm box -> sddm (control)",
+          cs.session_default_backend(), "sddm")
+
+    # The conf dir must EXIST: the grant names one file and `sudo tee` cannot
+    # create parent directories — vanilla Arch SDDM ships without the dir.
+    cs._sudo_nopasswd_allows = lambda needle: True
+    cs.detect_display_manager = lambda: "plasmalogin"
+    import shutil as _sh
+    _sh.rmtree(pl_dir)
+    check("conf dir missing + full grants -> NO backend (tee cannot mkdir)",
+          cs.session_default_backend(), None)
+    os.makedirs(pl_dir)
+    check("...and it returns once the dir exists (control)",
+          cs.session_default_backend(), "plasmalogin")
+
+    # The classic main conf OVERRIDES every drop-in (SDDM applies it last), so
+    # a box hand-configured there can never honor our zzz- file: capability off.
+    cs.detect_display_manager = lambda: "sddm"
+    with open(cs._DM_MAIN_CONFS["sddm"], "w") as f:
+        f.write("[Autologin]\nSession=plasma.desktop\n")
+    check("main conf names a Session -> NO backend (drop-ins can never win)",
+          cs.session_default_backend(), None)
+    os.remove(cs._DM_MAIN_CONFS["sddm"])
+    check("...and returns once it is silent (control)",
+          cs.session_default_backend(), "sddm")
+
+    (cs._DM_CONF_DIRS, cs._DM_SYS_CONF_DIRS, cs._DM_MAIN_CONFS,
+     cs._DM_STATE_FILES) = saved_layers
     cs.detect_display_manager = real_detect
 
     print("the route's allowlist")
@@ -546,6 +647,55 @@ def main():
         import shutil
         for d in dirs:
             shutil.rmtree(d, ignore_errors=True)
+
+    print("merge order: sys conf.d < /etc conf.d < classic main conf; state last")
+    # SDDM applies the classic /etc/sddm.conf LAST — it OVERRIDES every
+    # drop-in, the reverse of the systemd convention (verified in SDDM's
+    # ConfigReader; v1 of this reader shipped the order backwards). The sys
+    # layer body is VERBATIM /usr/lib/sddm/sddm.conf.d/general.conf's
+    # [Autologin] group from the CachyOS box (note: bare "plasma", no
+    # .desktop — real distros do that).
+    lay = tempfile.mkdtemp()
+    sysd = os.path.join(lay, "sys.conf.d")
+    etcd = os.path.join(lay, "etc.conf.d")
+    os.makedirs(sysd)
+    os.makedirs(etcd)
+    main_conf = os.path.join(lay, "testdm.conf")
+    state_conf = os.path.join(lay, "state.conf")
+    saved_layers = (cs._DM_CONF_DIRS, cs._DM_SYS_CONF_DIRS, cs._DM_MAIN_CONFS,
+                    cs._DM_STATE_FILES)
+    try:
+        cs._DM_CONF_DIRS = dict(saved_layers[0], testdm=etcd)
+        cs._DM_SYS_CONF_DIRS = {"testdm": sysd}
+        cs._DM_MAIN_CONFS = {"testdm": main_conf}
+        cs._DM_STATE_FILES = {"testdm": state_conf}
+        with open(os.path.join(sysd, "general.conf"), "w") as f:
+            f.write("[Autologin]\nRelogin=false\nSession=plasma\n")
+        check("sys conf.d alone is read (lowest layer)",
+              cs._dm_current_session_file("testdm"), "plasma")
+        with open(os.path.join(etcd, "zz-steamos-autologin.conf"), "w") as f:
+            f.write("[Autologin]\nSession=gamescope-session.desktop\n")
+        check("/etc conf.d overrides the sys layer",
+              cs._dm_current_session_file("testdm"), "gamescope-session.desktop")
+        with open(main_conf, "w") as f:
+            f.write("[Autologin]\nSession=plasmax11.desktop\n")
+        check("the classic MAIN conf overrides every drop-in (SDDM applies it last)",
+              cs._dm_current_session_file("testdm"), "plasmax11.desktop")
+        # state.conf is a LAST resort: consulted only when no config names one.
+        with open(state_conf, "w") as f:
+            f.write("[Last]\nSession=/usr/share/wayland-sessions/plasma.desktop\n")
+        check("state.conf ignored while any config names a session",
+              cs._dm_current_session_file("testdm"), "plasmax11.desktop")
+        os.remove(main_conf)
+        os.remove(os.path.join(etcd, "zz-steamos-autologin.conf"))
+        os.remove(os.path.join(sysd, "general.conf"))
+        check("state.conf answers only when nothing else does",
+              cs._dm_current_session_file("testdm"), "plasma.desktop")
+    finally:
+        (cs._DM_CONF_DIRS, cs._DM_SYS_CONF_DIRS, cs._DM_MAIN_CONFS,
+         cs._DM_STATE_FILES) = saved_layers
+        import shutil
+        shutil.rmtree(lay, ignore_errors=True)
 
     print()
     print("greetd getter (reads, never writes)")
