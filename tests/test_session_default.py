@@ -275,115 +275,125 @@ def test_greetd_get_reads_never_writes(tmp):
         cs._sudo_nopasswd_allows = real_sudo
 
 
-def test_setter_dispatches_per_backend():
-    """set() must write through the backend that was DETECTED.
+def test_boot_preference_is_armed_only_while_the_box_is_off(tmp):
+    """THE KI-051 REBUILD. Setting a boot preference must not leave anything on
+    disk that can override a session switch while the box is running.
 
-    Two regressions pinned:
-      * greetd: the 2.9.65 getter fix MOVED the greetd dispatch out of the
-        setter instead of copying it, so a greetd box read fine and then every
-        set fell through to the SDDM writer — which the old unconditional
-        install.sh grant could even let SUCCEED, into a dir greetd never reads.
-      * plasmalogin: the write must aim at /etc/plasmalogin.conf.d, not the
-        hardcoded SDDM path (the 2026-07-30 CachyOS bug).
+    THE BUG, measured on the owner's CachyOS box and reproduced on Bazzite: a
+    one-shot switch IS a re-autologin — `steamos-session-select` writes the
+    distro's own zz-steamos-autologin.conf and ends the session — and our
+    drop-in sorts LAST so it won, sending the box straight back to Game Mode.
+    That defeated STEAM'S OWN "Switch to Desktop" too, so the owner reasonably
+    blamed his distro. Caught red-handed on his machine:
+
+        zz-steamos-autologin.conf  -> Session=plasma.desktop     (his request)
+        zzz-couchside-session.conf -> Session=gamescope-session.desktop (ours)
+        running session            -> gamescope
+
+    So the drop-in now exists only while the box is OFF: consumed (blanked) at
+    agent startup, armed from the stored preference at shutdown. These tests are
+    the guard on that lifecycle, and the FIRST one is the regression itself.
     """
-    print("test_setter_dispatches_per_backend")
-    real_run = cs.subprocess.run
-    real_sudo = cs._sudo_nopasswd_allows
-    real_detect = cs.detect_display_manager
-    real_gwrite = cs._greetd_write
-    real_inst = cs._installed_session_files
-    saved_layers = (cs._DM_CONF_DIRS, cs._DM_SYS_CONF_DIRS, cs._DM_MAIN_CONFS,
-                    cs._DM_STATE_FILES)
-    base = tempfile.mkdtemp()
+    print("test_boot_preference_is_armed_only_while_the_box_is_off")
+    real = (cs.subprocess.run, cs._sudo_nopasswd_allows, cs.detect_display_manager,
+            cs._greetd_write, cs._installed_session_files, cs.CONFIG_PATH,
+            cs._DM_CONF_DIRS, cs._DM_SYS_CONF_DIRS, cs._DM_MAIN_CONFS,
+            cs._DM_STATE_FILES)
     try:
-        # Hermetic conf dirs: availability now requires the dir to exist and
-        # the main conf to be silent.
-        dirs = {dm: os.path.join(base, dm + ".conf.d")
-                for dm in ("sddm", "plasmalogin")}
-        for d in dirs.values():
-            os.makedirs(d)
-        cs._DM_CONF_DIRS = dirs
-        cs._DM_SYS_CONF_DIRS = {}
-        cs._DM_MAIN_CONFS = {}
-        cs._DM_STATE_FILES = {}
+        confdir = os.path.join(tmp, "plasmalogin.conf.d")
+        os.makedirs(confdir, exist_ok=True)
+        cs._DM_CONF_DIRS = {"plasmalogin": confdir, "sddm": confdir}
+        cs._DM_SYS_CONF_DIRS, cs._DM_MAIN_CONFS, cs._DM_STATE_FILES = {}, {}, {}
+        cs.CONFIG_PATH = os.path.join(tmp, "config.json")
+        with open(cs.CONFIG_PATH, "w") as f:
+            f.write('{"units": []}')
         cs._sudo_nopasswd_allows = lambda needle: True
+        cs.detect_display_manager = lambda: "plasmalogin"
         cs._installed_session_files = lambda: {cs.GAMESCOPE_SESSION_FILE,
                                                "plasma.desktop"}
-        # steamosctl must keep failing so the DM path is chosen.
-        cs.subprocess.run = FakeRun(stderr="Error: UnknownInterface", rc=0)
+        dropin = cs._dm_dropin("plasmalogin")
 
-        cs.detect_display_manager = lambda: "greetd"
-        gcalls = []
-        cs._greetd_write = lambda sf: (gcalls.append(sf), True)[1]
-        r = cs.session_default_set("game")
-        check("greetd set() reaches the greetd writer", gcalls,
-              [cs.GAMESCOPE_SESSION_FILE])
-        check("greetd set() reports ok", r["ok"], True)
-
-        # greetd + mode "last": no conf-dir manager to read, so the target
-        # falls back to Game Mode — through the greetd writer, never the tee.
-        gcalls[:] = []
-        r = cs.session_default_set("last")
-        check("greetd set('last') falls back to gamescope via the greetd writer",
-              gcalls, [cs.GAMESCOPE_SESSION_FILE])
-
-        # plasmalogin: capture the tee argv end-to-end through set().
-        cs.detect_display_manager = lambda: "plasmalogin"
-        cs._greetd_write = lambda sf: (_ for _ in ()).throw(
-            AssertionError("greetd writer must not run for plasmalogin"))
-        teed = []
-
+        # Every sudo tee in this test writes the real file, so the assertions
+        # read what a display manager would actually merge.
         def fake_run(argv, **kw):
             class R:
                 pass
             r = R()
             r.returncode, r.stdout, r.stderr = 0, "", ""
             if argv[:3] == ["sudo", "-n", "tee"]:
-                teed.append(list(argv))
-                r.stdout = kw.get("input", "")
+                with open(argv[3], "w") as fh:
+                    fh.write(kw.get("input", ""))
             elif argv[:1] == ["steamosctl"]:
-                r.stdout, r.stderr = "", "Error: UnknownInterface"
+                r.stderr = "Error: UnknownInterface"
             return r
-
         cs.subprocess.run = fake_run
-        r = cs.session_default_set("game")
-        check("plasmalogin set() reports ok", r["ok"], True)
-        check("plasmalogin set() tees into PLASMALOGIN's conf dir",
-              teed, [["sudo", "-n", "tee", cs._dm_dropin("plasmalogin")]])
 
-        # mode "last" on a conf-dir box: the target is whatever the MERGED
-        # config says is running now — here the distro drop-in names the
-        # desktop session, so "last" must write plasma.desktop, not gamescope.
-        with open(os.path.join(dirs["plasmalogin"],
-                               "zz-steamos-autologin.conf"), "w") as f:
+        # The distro's own file, as steamos-session-select would leave it after
+        # the user pressed "Switch to Desktop". Sorts BEFORE ours.
+        with open(os.path.join(confdir, "zz-steamos-autologin.conf"), "w") as f:
             f.write("[Autologin]\nSession=plasma.desktop\n")
-        teed[:] = []
-        wrote = {}
-        def fake_run2(argv, **kw):
-            class R:
-                pass
-            r = R()
-            r.returncode, r.stdout, r.stderr = 0, "", ""
-            if argv[:3] == ["sudo", "-n", "tee"]:
-                wrote["argv"], wrote["body"] = list(argv), kw.get("input", "")
-            elif argv[:1] == ["steamosctl"]:
-                r.stdout, r.stderr = "", "Error: UnknownInterface"
-            return r
-        cs.subprocess.run = fake_run2
+
+        r = cs.session_default_set("game")
+        check("set('game') succeeds", r["ok"], True)
+        check("...and STORES the preference", cs.session_default_pref(), "game")
+        # THE REGRESSION GUARD. Before the rebuild this wrote
+        # Session=gamescope-session.desktop and the box could never leave Game
+        # Mode again — from Couchside, from Steam, from anywhere.
+        check("...but writes NO Session= while the box is running",
+              cs._last_session_line(dropin), "")
+        check("...so the distro's own switch still decides",
+              cs._dm_current_session_file("plasmalogin"), "plasma.desktop")
+
+        # Shutdown arms it, and only then.
+        cs.session_default_arm()
+        check("arm (shutdown) writes the preference",
+              cs._last_session_line(dropin), cs.GAMESCOPE_SESSION_FILE)
+        check("...and now OURS wins the merge, which is the point at boot",
+              cs._dm_current_session_file("plasmalogin"),
+              cs.GAMESCOPE_SESSION_FILE)
+
+        # Startup consumes it again.
+        cs.session_default_consume()
+        check("consume (startup) blanks it", cs._last_session_line(dropin), "")
+        check("...restoring the platform's own answer",
+              cs._dm_current_session_file("plasmalogin"), "plasma.desktop")
+
+        # "last" is the platform's own behaviour: we own nothing.
         r = cs.session_default_set("last")
-        check("plasmalogin set('last') reports ok", r["ok"], True)
-        check("...and writes the session the merged config names",
-              "Session=plasma.desktop" in wrote.get("body", ""), True)
+        check("set('last') succeeds", r["ok"], True)
+        cs.session_default_arm()
+        check("...and arming writes NOTHING for it",
+              cs._last_session_line(dropin), "")
+
+        # Desktop preference: same lifecycle, other target.
+        cs.session_default_set("desktop")
+        cs.session_default_arm()
+        check("arm writes an INSTALLED desktop session",
+              cs._last_session_line(dropin) in cs._installed_session_files(), True)
+
+        # The getter answers from the stored preference — the drop-in is blank
+        # while running, so reading it would say "unknown" on every box that
+        # ever set one.
+        cs.session_default_consume()
+        cs.session_default_set("game")
+        check("get reports the STORED preference, not the blank file",
+              cs.session_default_get()["mode"], "game")
+
+        # greetd has no drop-in dir and no competing platform switcher writing
+        # its config, so it still writes immediately.
+        cs.detect_display_manager = lambda: "greetd"
+        gcalls = []
+        cs._greetd_write = lambda sf: (gcalls.append(sf), True)[1]
+        cs._greetd_session_ok = lambda: True
+        r = cs.session_default_set("game")
+        check("greetd still writes at set() time", gcalls,
+              [cs.GAMESCOPE_SESSION_FILE])
+        check("greetd set() reports ok", r["ok"], True)
     finally:
-        cs.subprocess.run = real_run
-        cs._sudo_nopasswd_allows = real_sudo
-        cs.detect_display_manager = real_detect
-        cs._greetd_write = real_gwrite
-        cs._installed_session_files = real_inst
-        (cs._DM_CONF_DIRS, cs._DM_SYS_CONF_DIRS, cs._DM_MAIN_CONFS,
-         cs._DM_STATE_FILES) = saved_layers
-        import shutil
-        shutil.rmtree(base, ignore_errors=True)
+        (cs.subprocess.run, cs._sudo_nopasswd_allows, cs.detect_display_manager,
+         cs._greetd_write, cs._installed_session_files, cs.CONFIG_PATH,
+         cs._DM_CONF_DIRS, cs._DM_SYS_CONF_DIRS, cs._DM_MAIN_CONFS,
+         cs._DM_STATE_FILES) = real
 
 
 def main():
@@ -508,7 +518,12 @@ def main():
 
     test_autologin_session_must_exist()
     test_dropin_outranks_the_platforms_own()
-    test_setter_dispatches_per_backend()
+    _t = tempfile.mkdtemp()
+    try:
+        test_boot_preference_is_armed_only_while_the_box_is_off(_t)
+    finally:
+        import shutil
+        shutil.rmtree(_t, ignore_errors=True)
 
     print("the drop-in body (both conf-dir managers)")
     written = {}

@@ -18,6 +18,16 @@ User=__USER__
 SupplementaryGroups=input
 Environment=XDG_RUNTIME_DIR=/run/user/__UID__
 ExecStart=/usr/bin/python3 __EXEC__ --config __CONFIG__
+; Boot-session preference, ARMED only while the box is off (agent >= 2.9.67).
+; The "Boots into" setting is an autologin drop-in, and a drop-in that exists
+; while the box is running overrides the session switch the user just asked for
+; -- including Steam's own "Switch to Desktop", because every one-shot switch is
+; really a re-autologin. So the agent blanks the drop-in at startup and writes it
+; here, on the way down, when nothing can be switching. Runs as __USER__ with the
+; same fixed-path sudo grant the agent already holds; a failure is logged and
+; never blocks shutdown. NOTE this also fires on `systemctl restart`, which arms
+; for the moment between stop and start -- the new process disarms immediately.
+ExecStop=/usr/bin/python3 __EXEC__ --config __CONFIG__ --arm-boot-session
 Restart=always
 RestartSec=3
 
