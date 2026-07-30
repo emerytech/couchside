@@ -68,8 +68,14 @@ def session_dir(names):
 CACHYOS = ["gamescope-session.desktop", "plasma.desktop"]          # 10.1.1.235
 BAZZITE = ["gamescope-session.desktop", "gamescope-session-steam.desktop",
            "plasma.desktop", "plasma-steamos-wayland-oneshot.desktop",
-           "plasma-steamos-oneshot.desktop"]                       # 10.7.0.200
+           "plasma-steamos-oneshot.desktop"]                       # 10.1.1.60
 STEAMOS = ["gamescope-session.desktop", "plasma.desktop", "plasmax11.desktop"]
+# Bazzite publishes GNOME variants too, and they carry "bazzite" in os-release
+# so the OLD gate said yes to them. Plasma is absent; the desktop cluster must
+# NOT depend on it (see _desktop_session_installed).
+BAZZITE_GNOME = ["gamescope-session.desktop", "gamescope-session-steam.desktop",
+                 "gnome.desktop", "gnome-xorg.desktop"]
+GAME_ONLY = ["gamescope-session.desktop"]   # a dedicated Game Mode box
 
 
 def setup(sessions, tools=True, outputs=True, session="desktop"):
@@ -132,6 +138,24 @@ def main():
               cs.couchmode_available(), True)
 
         print()
+        print("the desktop cluster is DE-agnostic and has its OWN gate")
+        # It rides a different predicate than Couch Mode on purpose. Sharing
+        # couchmode's would have taken the trackpad toggle, the nav cluster and
+        # the file-drop reveal away from Bazzite's GNOME images, which the OLD
+        # distro-string gate happily allowed — a regression hidden inside a fix.
+        dirs.append(setup(BAZZITE_GNOME))
+        check("bazzite GNOME keeps the desktop cluster",
+              cs.desktop_available(), True)
+        check("...even though it has no Plasma session at all",
+              any(n.startswith("plasma") for n in cs._installed_session_files()),
+              False)
+        check("...and Couch Mode is a separate question there",
+              cs.couchmode_available(), False)
+        dirs.append(setup(GAME_ONLY))
+        check("a Game-Mode-only box has no desktop to drive",
+              cs.desktop_available(), False)
+
+        print()
         print("unreadable session dirs are UNKNOWN, not ABSENT")
         # _installed_session_files() returns an empty set both when a box has no
         # sessions and when the dirs cannot be read — the same ambiguity
@@ -146,6 +170,17 @@ def main():
         cs.shutil.which = lambda t: None
         check("...but cannot enumerate + no tools -> refused (control)",
               cs.couchmode_available(), False)
+        # The desktop cluster takes the OPPOSITE default, because it has no
+        # second gate: no session dirs at all is a headless box (HTPC, Proxmox
+        # guest, "any systemd machine"), where the whole cluster would be dead
+        # controls. Both stub states are checked so this cannot pass by
+        # accident of the tool lambda above.
+        cs._couchmode_session = lambda: "desktop"
+        check("headless (no session dirs) -> desktop cluster HIDDEN",
+              cs.desktop_available(), False)
+        cs.shutil.which = lambda t: "/usr/bin/" + t
+        check("...still hidden with every tool present (no second gate here)",
+              cs.desktop_available(), False)
 
         print()
         print("guide-hold rides the same gate")

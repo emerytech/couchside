@@ -3566,16 +3566,37 @@ def couchmode_info():
     }
 
 
-def desktop_available():
-    """True on a Couch-Mode-capable box currently in the DESKTOP session —
-    gates the app's desktop-nav cluster (Start menu / pointer / overview), which
-    only makes sense in the desktop, not in Game Mode. Session-aware so the
-    buttons appear when you're on the desktop and hide once you fling to Game
-    Mode. The keys themselves ride the existing /ws/gamepad uinput keyboard.
+def _desktop_session_installed():
+    """True when this box has a real desktop session to drive, any DE.
 
-    Shares couchmode's platform predicate rather than the old distro-name grep,
-    so the same box that can fling to the TV can also drive its desktop."""
-    return _couchmode_platform_ok() and _couchmode_session() == "desktop"
+    Deliberately NOT _couchmode_platform_ok() and NOT _DESKTOP_SESSIONS: that
+    table lists the PLASMA sessions the autologin writer may name, and Couch
+    Mode's predicate additionally demands a Game Mode target. Neither describes
+    what the desktop cluster needs, and gating on them cost real function — a
+    Bazzite GNOME image (gnome.desktop, no plasma*.desktop) would have lost the
+    trackpad surface toggle, the nav cluster and the file-drop "Show on box",
+    while `inGameMode = !hasDesktop` in the app flipped ON a Steam-menus
+    segment whose steam:// links do nothing outside Game Mode. The cluster
+    itself is DE-agnostic: Meta opens Activities as readily as the Plasma
+    launcher, and the pointer keys are uinput.
+
+    Degrades CLOSED, unlike the couchmode probe: an empty enumeration here
+    means a headless box (no session dirs at all — an HTPC, a Proxmox guest,
+    the "any systemd machine" the README sells), and there the cluster would be
+    a whole panel of dead controls. couchmode can afford the opposite default
+    because its four-tool requirement still gates; this has no second gate."""
+    return any(not name.startswith("gamescope-session")
+               for name in _installed_session_files())
+
+
+def desktop_available():
+    """True on a box with a desktop session, currently IN it — gates the app's
+    desktop-nav cluster (Start menu / pointer / overview) and the file-drop
+    reveal, which only make sense on the desktop, not in Game Mode.
+    Session-aware so the buttons appear when you're on the desktop and hide
+    once you fling to Game Mode. The keys themselves ride the existing
+    /ws/gamepad uinput keyboard."""
+    return _desktop_session_installed() and _couchmode_session() == "desktop"
 
 
 def _couch_run(cmd, timeout=25, max_out=1500):
