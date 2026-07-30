@@ -41,11 +41,19 @@ def check(name, got, want):
 
 
 def _sudoers_block():
-    """The couchside-sudoers heredoc body (the rules that become the file)."""
-    m = re.search(r'cat > "\$WORK_DIR/couchside-sudoers" <<SUDOERS\n(.*?)\nSUDOERS\n',
-                  SRC, re.S)
-    assert m, "could not find the couchside-sudoers heredoc"
-    return m.group(1)
+    """The couchside-sudoers heredoc bodies, concatenated in order.
+
+    Since 2.9.66 the file is assembled from several appends — the
+    display-manager grants are conditional on the manager DETECTED at install
+    time — and what lands in /etc/sudoers.d is the concatenation, so the shape
+    tests read that same union. (The conditional lines carry $DM_NAME, which is
+    allowlisted to sddm|plasmalogin before the heredoc runs; these tests treat
+    it as the literal text it is.)"""
+    parts = re.findall(
+        r'cat >>? "\$WORK_DIR/couchside-sudoers" <<SUDOERS\n(.*?)\nSUDOERS\n',
+        SRC, re.S)
+    assert parts, "could not find the couchside-sudoers heredocs"
+    return "\n".join(parts)
 
 
 def test_restart_grant_is_present_and_exact():

@@ -127,10 +127,15 @@ def test_autologin_session_must_exist():
         setup({"gamescope-session.desktop"}, "plasmax11.desktop")
         check("no desktop session at all -> refuse", cs._desktop_session_for_autologin(), None)
 
-        # The write itself is guarded, so no future caller can route around it.
+        # The write itself is guarded, so no future caller can route around it
+        # — on BOTH conf-dir managers.
         cs._installed_session_files = lambda: BAZZITE
-        check("_sddm_write refuses a session that is not installed",
-              cs._sddm_write("plasmax11.desktop"), False)
+        check("_dm_write(sddm) refuses a session that is not installed",
+              cs._dm_write("sddm", "plasmax11.desktop"), False)
+        check("_dm_write(plasmalogin) refuses it too",
+              cs._dm_write("plasmalogin", "plasmax11.desktop"), False)
+        check("_dm_write refuses an unknown manager outright",
+              cs._dm_write("ly", cs.GAMESCOPE_SESSION_FILE), False)
     finally:
         cs._installed_session_files = saved_inst
         cs._default_desktop_session = saved_cfg
@@ -157,39 +162,52 @@ def test_dropin_outranks_the_platforms_own():
     This test is a sort comparison because that is literally the mechanism.
     """
     print("test_dropin_outranks_the_platforms_own")
-    ours = os.path.basename(cs.SDDM_DROPIN)
     theirs = "zz-steamos-autologin.conf"
-    check("our drop-in sorts AFTER steamos-session-select's", ours > theirs, True)
-    # CONTROL: the old name genuinely lost — proving the test can fail, and
-    # documenting the bug rather than just asserting the fix.
-    legacy = os.path.basename(cs.SDDM_DROPIN_LEGACY)
-    check("...and the OLD name genuinely lost", legacy > theirs, False)
-    # Both still beat the distro's base config, which is what we always relied on.
-    for base in ("steamos.conf", "steamdeck.conf", "virtualkbd.conf"):
-        check("beats %s" % base, ours > base, True)
-    # The live path must not be the legacy path.
-    check("live path differs from legacy", cs.SDDM_DROPIN != cs.SDDM_DROPIN_LEGACY, True)
+    for dm in ("sddm", "plasmalogin"):
+        ours = os.path.basename(cs._dm_dropin(dm))
+        check("[%s] our drop-in sorts AFTER steamos-session-select's" % dm,
+              ours > theirs, True)
+        # CONTROL: the old name genuinely lost — proving the test can fail, and
+        # documenting the bug rather than just asserting the fix.
+        legacy = os.path.basename(cs._dm_dropin_legacy(dm))
+        check("[%s] ...and the OLD name genuinely lost" % dm,
+              legacy > theirs, False)
+        # Both still beat the distro's base config, which is what we always
+        # relied on ("cachyos.conf" and "steam-deckify.conf" are verbatim from
+        # the CachyOS plasmalogin box, 2026-07-30).
+        for base in ("steamos.conf", "steamdeck.conf", "virtualkbd.conf",
+                     "cachyos.conf", "steam-deckify.conf"):
+            check("[%s] beats %s" % (dm, base), ours > base, True)
+        # The live path must not be the legacy path.
+        check("[%s] live path differs from legacy" % dm,
+              cs._dm_dropin(dm) != cs._dm_dropin_legacy(dm), True)
+        # ...and both live inside the DETECTED manager's own conf dir.
+        check("[%s] drop-in lives in that manager's conf dir" % dm,
+              cs._dm_dropin(dm).startswith(cs._DM_CONF_DIRS[dm] + "/"), True)
+    check("an unknown manager has NO drop-in path", cs._dm_dropin("ly"), "")
     # Reading the current session must still consult the legacy file, so a box
     # that has not re-run install.sh is reported correctly. Asserted by actually
-    # reading one, not by inspecting a docstring.
+    # reading one, not by inspecting a docstring. The mechanism is now the same
+    # alphabetical last-wins scan the manager itself does, so the win is the
+    # SORT ORDER, exercised for real via a synthetic manager whose conf dir is
+    # a temp dir (name chosen so /etc/testdm.conf and /var/lib/testdm/ cannot
+    # exist on any box this test runs on).
     import tempfile
     tmp = tempfile.mkdtemp()
-    live, legacy_p = os.path.join(tmp, "zzz.conf"), os.path.join(tmp, "zz.conf")
-    saved = (cs.SDDM_DROPIN, cs.SDDM_DROPIN_LEGACY, cs.SDDM_STATE)
+    saved_dirs = cs._DM_CONF_DIRS
     try:
-        cs.SDDM_DROPIN, cs.SDDM_DROPIN_LEGACY = live, legacy_p
-        cs.SDDM_STATE = os.path.join(tmp, "missing.conf")
-        with open(legacy_p, "w") as f:
+        cs._DM_CONF_DIRS = dict(saved_dirs, testdm=tmp)
+        with open(os.path.join(tmp, "zz-couchside-session.conf"), "w") as f:
             f.write("[Autologin]\nSession=plasma.desktop\n")
         check("a legacy-only box still reports its session",
-              cs._sddm_current_session_file(), "plasma.desktop")
+              cs._dm_current_session_file("testdm"), "plasma.desktop")
         # ...and the live file WINS when both exist.
-        with open(live, "w") as f:
+        with open(os.path.join(tmp, "zzz-couchside-session.conf"), "w") as f:
             f.write("[Autologin]\nSession=gamescope-session.desktop\n")
         check("the live drop-in wins over the legacy one",
-              cs._sddm_current_session_file(), "gamescope-session.desktop")
+              cs._dm_current_session_file("testdm"), "gamescope-session.desktop")
     finally:
-        cs.SDDM_DROPIN, cs.SDDM_DROPIN_LEGACY, cs.SDDM_STATE = saved
+        cs._DM_CONF_DIRS = saved_dirs
         import shutil
         shutil.rmtree(tmp, ignore_errors=True)
 
@@ -257,6 +275,68 @@ def test_greetd_get_reads_never_writes(tmp):
         cs._sudo_nopasswd_allows = real_sudo
 
 
+def test_setter_dispatches_per_backend():
+    """set() must write through the backend that was DETECTED.
+
+    Two regressions pinned:
+      * greetd: the 2.9.65 getter fix MOVED the greetd dispatch out of the
+        setter instead of copying it, so a greetd box read fine and then every
+        set fell through to the SDDM writer — which the old unconditional
+        install.sh grant could even let SUCCEED, into a dir greetd never reads.
+      * plasmalogin: the write must aim at /etc/plasmalogin.conf.d, not the
+        hardcoded SDDM path (the 2026-07-30 CachyOS bug).
+    """
+    print("test_setter_dispatches_per_backend")
+    real_run = cs.subprocess.run
+    real_sudo = cs._sudo_nopasswd_allows
+    real_detect = cs.detect_display_manager
+    real_gwrite = cs._greetd_write
+    real_inst = cs._installed_session_files
+    try:
+        cs._sudo_nopasswd_allows = lambda needle: True
+        cs._installed_session_files = lambda: {cs.GAMESCOPE_SESSION_FILE,
+                                               "plasma.desktop"}
+        # steamosctl must keep failing so the DM path is chosen.
+        cs.subprocess.run = FakeRun(stderr="Error: UnknownInterface", rc=0)
+
+        cs.detect_display_manager = lambda: "greetd"
+        gcalls = []
+        cs._greetd_write = lambda sf: (gcalls.append(sf), True)[1]
+        r = cs.session_default_set("game")
+        check("greetd set() reaches the greetd writer", gcalls,
+              [cs.GAMESCOPE_SESSION_FILE])
+        check("greetd set() reports ok", r["ok"], True)
+
+        # plasmalogin: capture the tee argv end-to-end through set().
+        cs.detect_display_manager = lambda: "plasmalogin"
+        cs._greetd_write = lambda sf: (_ for _ in ()).throw(
+            AssertionError("greetd writer must not run for plasmalogin"))
+        teed = []
+
+        def fake_run(argv, **kw):
+            class R:
+                pass
+            r = R()
+            r.returncode, r.stdout, r.stderr = 0, "", ""
+            if argv[:3] == ["sudo", "-n", "tee"]:
+                teed.append(list(argv))
+            elif argv[:1] == ["steamosctl"]:
+                r.stdout, r.stderr = "", "Error: UnknownInterface"
+            return r
+
+        cs.subprocess.run = fake_run
+        r = cs.session_default_set("game")
+        check("plasmalogin set() reports ok", r["ok"], True)
+        check("plasmalogin set() tees into PLASMALOGIN's conf dir",
+              teed, [["sudo", "-n", "tee", cs._dm_dropin("plasmalogin")]])
+    finally:
+        cs.subprocess.run = real_run
+        cs._sudo_nopasswd_allows = real_sudo
+        cs.detect_display_manager = real_detect
+        cs._greetd_write = real_gwrite
+        cs._installed_session_files = real_inst
+
+
 def main():
     real_run = cs.subprocess.run
     real_sudo = cs._sudo_nopasswd_allows
@@ -277,16 +357,40 @@ def main():
     check("empty output is refused", cs._steamosctl_session_ok(), False)
 
     print("backend selection")
+    real_detect = cs.detect_display_manager
     cs.subprocess.run = FakeRun(stdout="desktop\n", rc=0)
     cs._sudo_nopasswd_allows = lambda needle: True
+    cs.detect_display_manager = lambda: "sddm"
     check("steamosctl wins when both are usable",
           cs.session_default_backend(), "steamosctl")
     cs.subprocess.run = FakeRun(stderr="Error: UnknownInterface", rc=0)
-    check("falls back to sddm on Bazzite", cs.session_default_backend(), "sddm")
+    check("Bazzite: detected sddm + grant -> sddm",
+          cs.session_default_backend(), "sddm")
+    cs.detect_display_manager = lambda: "plasmalogin"
+    check("CachyOS: detected plasmalogin + grant -> plasmalogin",
+          cs.session_default_backend(), "plasmalogin")
     cs._sudo_nopasswd_allows = lambda needle: False
     check("no grant -> NO backend (degrade closed)",
           cs.session_default_backend(), None)
     check("...so the capability is absent", cs.session_default_available(), False)
+
+    # THE 2026-07-30 BUG, pinned. install.sh wrote the SDDM tee grant
+    # UNCONDITIONALLY, and an unidentifiable display manager fell back to
+    # "sddm if the grant exists" — so a plasmalogin box (not yet in
+    # _KNOWN_DMS then) advertised {"available": true, "backend": "sddm"}
+    # and wrote into /etc/sddm.conf.d, which did not exist. VERIFIED on real
+    # CachyOS hardware. The grant being present must prove NOTHING when the
+    # manager is unknown.
+    cs._sudo_nopasswd_allows = lambda needle: True
+    cs.detect_display_manager = lambda: None
+    check("unidentifiable DM + sddm grant -> NO backend (fail closed)",
+          cs.session_default_backend(), None)
+    check("...capability absent, card never renders",
+          cs.session_default_available(), False)
+    # Detected-but-unwritable managers are the same honest absence.
+    cs.detect_display_manager = lambda: "gdm"
+    check("gdm: detected, no writer -> None", cs.session_default_backend(), None)
+    cs.detect_display_manager = real_detect
 
     print("the route's allowlist")
     # Membership is what the route checks; anything outside is a 400.
@@ -303,14 +407,9 @@ def main():
 
     test_autologin_session_must_exist()
     test_dropin_outranks_the_platforms_own()
+    test_setter_dispatches_per_backend()
 
-    print("the sddm drop-in body")
-    # We must NEVER edit the box's own steamos.conf; we write our own file.
-    check("drop-in sorts after the distro's own file",
-          os.path.basename(cs.SDDM_DROPIN) > "steamos.conf", True)
-    check("drop-in is a separate file from the distro's",
-          cs.SDDM_DROPIN.endswith("zz-couchside-session.conf"), True)
-
+    print("the drop-in body (both conf-dir managers)")
     written = {}
 
     def fake_tee(argv, **kw):
@@ -325,41 +424,128 @@ def main():
 
     cs.subprocess.run = fake_tee
     cs._sudo_nopasswd_allows = lambda needle: True
-    # force the sddm path
-    ok = cs._sddm_write(cs.GAMESCOPE_SESSION_FILE)
-    check("write returns ok", ok, True)
-    check("writes via sudo tee at the FIXED path",
-          written["argv"], ["sudo", "-n", "tee", cs.SDDM_DROPIN])
-    check("body sets the gamescope session",
-          "Session=%s" % cs.GAMESCOPE_SESSION_FILE in written["body"], True)
-    check("body says how to undo it",
-          "Delete this file" in written["body"], True)
+    for dm in ("sddm", "plasmalogin"):
+        written.clear()
+        ok = cs._dm_write(dm, cs.GAMESCOPE_SESSION_FILE)
+        check("[%s] write returns ok" % dm, ok, True)
+        check("[%s] writes via sudo tee at that manager's FIXED path" % dm,
+              written["argv"], ["sudo", "-n", "tee", cs._dm_dropin(dm)])
+        check("[%s] body sets the gamescope session" % dm,
+              "Session=%s" % cs.GAMESCOPE_SESSION_FILE in written["body"], True)
+        check("[%s] body says how to undo it" % dm,
+              "Delete this file" in written["body"], True)
 
-    print("reading the current mode")
-    tmp = tempfile.mkdtemp()
-    drop = os.path.join(tmp, "zz.conf")
-    with open(drop, "w") as f:
-        f.write("[Autologin]\nSession=gamescope-session.desktop\n")
-    old = cs.SDDM_DROPIN
-    cs.SDDM_DROPIN = drop
+    print("reading the current mode — VERBATIM fixtures from real hardware")
+    # Every file body below is byte-for-byte what the named box serves
+    # (CLAUDE.md §6: fixtures copied verbatim). Captured 2026-07-30.
+    CACHYOS_PLASMALOGIN = {
+        # ASUS G14, CachyOS deckify, 10.7.1.92 — /etc/plasmalogin.conf.d/
+        "cachyos.conf": (
+            "[General]\n"
+            "HaltCommand=/usr/bin/systemctl poweroff\n"
+            "RebootCommand=/usr/bin/systemctl reboot\n"
+            "\n"
+            "[Theme]\n"
+            "Current=breeze\n"
+            "\n"
+            "[Users]\n"
+            "MaximumUid=60000\n"
+            "MinimumUid=1000\n"),
+        "steam-deckify.conf": (
+            "[Autologin]\n"
+            "Relogin=true\n"
+            "# This is only for first boot as a file that overrides this gets"
+            " created once /usr/lib/os-session-select runs\n"
+            "Session=gamescope-session.desktop\n"
+            "User=deck\n"),
+        "zz-steamos-autologin.conf": (
+            "[Autologin]\n"
+            "Session=gamescope-session.desktop\n"),
+    }
+    BAZZITE_SDDM = {
+        # lenovodesktop, Bazzite, 10.7.0.200 — /etc/sddm.conf.d/
+        "steamos.conf": (
+            "[General]\n"
+            "DisplayServer=wayland\n"
+            "\n"
+            "[Autologin]\n"
+            "Relogin=true\n"
+            "Session=gamescope-session.desktop\n"
+            "User=bazzite\n"
+            "\n"
+            "[X11]\n"
+            "# Janky workaround for wayland sessions not stopping in sddm, kills\n"
+            "# all active sddm-helper sessions on teardown\n"
+            "DisplayStopCommand=/usr/bin/gamescope-wayland-teardown-workaround\n"),
+        "virtualkbd.conf": (
+            "[General]\n"
+            "InputMethod=qtvirtualkeyboard\n"),
+        "zzz-couchside-session.conf": (
+            "# Written by Couchside. Delete this file to restore the box's\n"
+            "# original boot behaviour; nothing else was modified.\n"
+            "[Autologin]\n"
+            "Session=plasma.desktop\n"),
+    }
+
+    def fixture_dir(files):
+        d = tempfile.mkdtemp()
+        for name, body in files.items():
+            with open(os.path.join(d, name), "w") as f:
+                f.write(body)
+        return d
+
+    saved_dirs = cs._DM_CONF_DIRS
+    dirs = []
     try:
-        check("reads game from our drop-in",
-              cs._sddm_current_session_file(), "gamescope-session.desktop")
-        with open(drop, "w") as f:
-            f.write("[Autologin]\nSession=/usr/share/wayland-sessions/plasma.desktop\n")
-        check("basenames a full path", cs._sddm_current_session_file(),
-              "plasma.desktop")
-        with open(drop, "w") as f:
-            f.write("[Autologin]\n")
-        cs.SDDM_STATE = os.path.join(tmp, "missing.conf")
+        # The plasmalogin box that exposed the bug: the distro's own drop-in
+        # names the answer, and the old reader (our-drop-in-or-sddm-state-file)
+        # reported "unknown" on it. Both states are observed: game as shipped,
+        # then desktop once OUR later-sorting file lands (§11.2).
+        d = fixture_dir(CACHYOS_PLASMALOGIN)
+        dirs.append(d)
+        cs._DM_CONF_DIRS = dict(saved_dirs, testdm=d)
+        check("CachyOS/plasmalogin fixture reads game (was: unknown)",
+              cs._dm_current_session_file("testdm"), "gamescope-session.desktop")
+        with open(os.path.join(d, "zzz-couchside-session.conf"), "w") as f:
+            f.write("[Autologin]\nSession=plasma.desktop\n")
+        check("...and OUR drop-in wins once written (alphabetical last-wins)",
+              cs._dm_current_session_file("testdm"), "plasma.desktop")
+
+        # The Bazzite regression control: a box where Couchside already set
+        # desktop must keep reading desktop, and without our file must read
+        # the distro's game default — fires AND not-fires.
+        d2 = fixture_dir(BAZZITE_SDDM)
+        dirs.append(d2)
+        cs._DM_CONF_DIRS = dict(saved_dirs, testdm=d2)
+        check("Bazzite fixture reads desktop (our zzz file present)",
+              cs._dm_current_session_file("testdm"), "plasma.desktop")
+        os.remove(os.path.join(d2, "zzz-couchside-session.conf"))
+        check("Bazzite without our file reads the distro's game default",
+              cs._dm_current_session_file("testdm"), "gamescope-session.desktop")
+
+        # Full-path values are basenamed; a dir with no Session= at all reads
+        # empty, never a guess.
+        d3 = fixture_dir({"zzz-couchside-session.conf":
+                          "[Autologin]\nSession=/usr/share/wayland-sessions/"
+                          "plasma.desktop\n"})
+        dirs.append(d3)
+        cs._DM_CONF_DIRS = dict(saved_dirs, testdm=d3)
+        check("basenames a full path",
+              cs._dm_current_session_file("testdm"), "plasma.desktop")
+        d4 = fixture_dir({"cachyos.conf": CACHYOS_PLASMALOGIN["cachyos.conf"]})
+        dirs.append(d4)
+        cs._DM_CONF_DIRS = dict(saved_dirs, testdm=d4)
         check("no Session anywhere -> empty, not a guess",
-              cs._sddm_current_session_file(), "")
+              cs._dm_current_session_file("testdm"), "")
+        check("unknown manager -> empty, not a guess",
+              cs._dm_current_session_file(None), "")
     finally:
-        cs.SDDM_DROPIN = old
+        cs._DM_CONF_DIRS = saved_dirs
         cs.subprocess.run = real_run
         cs._sudo_nopasswd_allows = real_sudo
         import shutil
-        shutil.rmtree(tmp, ignore_errors=True)
+        for d in dirs:
+            shutil.rmtree(d, ignore_errors=True)
 
     print()
     print("greetd getter (reads, never writes)")

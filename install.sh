@@ -803,42 +803,66 @@ if sudo test -s "$LEGACY_CONFIG" && ! sudo test -s "$CONFIG_FILE"; then
 fi
 
 # ---------------------------------------------------------------------------
+# (e0) Which display manager is actually ENABLED?
+#
+# systemd maintains the answer for us: display-manager.service is an alias
+# symlink to the enabled manager's unit — the same probe CachyOS's own
+# steamos-session-select uses. The old probe (`systemctl cat sddm.service`)
+# answered "is the sddm PACKAGE installed", which lies on a plasmalogin box
+# that still carries sddm on disk: the restart-session action then aimed
+# `systemctl restart sddm` at a manager that was not running, i.e. STARTED a
+# second display manager over the live session. VERIFIED on real CachyOS
+# hardware 2026-07-30 (enabled: plasmalogin.service, /etc/sddm.conf.d absent).
+#
+# The name is ALLOWLISTED before it goes anywhere near sudoers or config.json
+# (§ reject rather than sanitise): anything but the two conf-dir managers the
+# agent can drive collapses to "no manager", which skips the grants and the
+# action entirely — the agent degrades closed and the card/button never appear.
+# ---------------------------------------------------------------------------
+DM_UNIT="$(systemctl show -p Id --value display-manager 2>/dev/null || true)"
+DM_NAME="${DM_UNIT%.service}"
+case "$DM_NAME" in
+    sddm|plasmalogin)
+        note "display manager: $DM_NAME" ;;
+    *)
+        DM_NAME="" ;;
+esac
+
+# ---------------------------------------------------------------------------
 # (e) Initial config.json (only if absent)
 # ---------------------------------------------------------------------------
 if sudo test -s "$CONFIG_FILE"; then
     say "Config $CONFIG_FILE already exists, keeping it"
 else
     say "Generating initial $CONFIG_FILE"
-    HAVE_SDDM=0
-    if systemctl cat sddm.service >/dev/null 2>&1; then
-        HAVE_SDDM=1
-        note "found sddm.service, adding it to the watchlist + restart-session action"
+    if [ -n "$DM_NAME" ]; then
+        note "adding $DM_NAME.service to the watchlist + restart-session action"
     else
-        note "no sddm.service on this box, skipping session-restart action"
+        note "no supported display manager on this box, skipping the session-restart action"
     fi
     HAVE_KODI=0
     if command -v flatpak >/dev/null 2>&1 && flatpak info tv.kodi.Kodi >/dev/null 2>&1; then
         HAVE_KODI=1
         note "found Kodi flatpak, adding a stop-kodi action"
     fi
-    HAVE_SDDM="$HAVE_SDDM" HAVE_KODI="$HAVE_KODI" python3 - > "$WORK_DIR/config.json" <<'PYEOF'
+    DM_NAME="$DM_NAME" HAVE_KODI="$HAVE_KODI" python3 - > "$WORK_DIR/config.json" <<'PYEOF'
 import json, os
 
-have_sddm = os.environ.get("HAVE_SDDM") == "1"
+dm = os.environ.get("DM_NAME", "")
 have_kodi = os.environ.get("HAVE_KODI") == "1"
 
 units = []
-if have_sddm:
-    units.append({"name": "sddm.service", "scope": "system"})
+if dm:
+    units.append({"name": "%s.service" % dm, "scope": "system"})
 units.append({"name": "couchside.service", "scope": "system"})
 
 actions, order = {}, []
-if have_sddm:
+if dm:
     actions["restart-session"] = {
         "label": "Restart Session",
-        "description": "Restart the display session (sddm), fixes a wedged/black screen",
+        "description": "Restart the display session (%s), fixes a wedged/black screen" % dm,
         "danger": "high",
-        "cmd": ["sudo", "systemctl", "restart", "sddm"],
+        "cmd": ["sudo", "systemctl", "restart", dm],
         "user_env": False, "detached": False,
     }
     order.append("restart-session")
@@ -912,26 +936,45 @@ JWRAP
     cat > "$WORK_DIR/couchside-sudoers" <<SUDOERS
 # couchside: allow the Couchside agent (running as $USER_NAME, no TTY) to run
 # exactly the privileged commands it needs, without a password.
-$USER_NAME ALL=(root) NOPASSWD: /usr/bin/systemctl restart sddm
+SUDOERS
+    # Display-manager grants: written ONLY for the manager this box actually
+    # enables ($DM_NAME, allowlisted above). Through agent 2.9.65 the sddm
+    # grants were written unconditionally, and the agent treated their mere
+    # presence as proof SDDM was in charge — on a plasmalogin box it then
+    # advertised a working boot-session backend that wrote into a directory
+    # the box does not have. The grant now names the detected manager, and a
+    # box with no supported manager gets NO grant: the agent degrades closed
+    # and the card/button never render.
+    if [ -n "$DM_NAME" ]; then
+        cat >> "$WORK_DIR/couchside-sudoers" <<SUDOERS
+# Restart the enabled display manager ($DM_NAME) — the fix-a-black-screen
+# rescue action. Fixed unit, detected at install time, never client input.
+$USER_NAME ALL=(root) NOPASSWD: /usr/bin/systemctl restart $DM_NAME
 # Boot session default (game / desktop / last). The PATH IS FIXED IN THE RULE,
 # so this grants writing exactly one file and nothing else -- not tee in
 # general. The agent composes the whole body from its own frozen table; the
 # phone only ever selects a mode from a closed set. Our own drop-in sorts after
-# the distro's steamos.conf, so removing this one file restores the box's
+# the distro's own *.conf files, so removing this one file restores the box's
 # original boot behaviour exactly, with nothing of theirs edited.
-# Boot session default. TWO fixed paths, and the pair is deliberate.
 #
-# zzz- is the live one: SDDM reads /etc/sddm.conf.d/*.conf alphabetically and
-# the LAST file wins, and steamos-session-select (both SteamOS and Bazzite)
-# owns zz-steamos-autologin.conf -- so "zz-couchside" sorted BEFORE it and was
+# zzz- is load-bearing: SDDM and plasmalogin read <confdir>/*.conf
+# alphabetically and the LAST file wins, and steamos-session-select owns
+# zz-steamos-autologin.conf -- so "zz-couchside" sorted BEFORE it and was
 # silently overridden every time that script ran, which is on every Couch Mode
 # switch. zzz- sorts after it and therefore actually applies.
-#
-# The old zz- path stays granted so an updating box can BLANK its stale file;
-# without the grant that orphaned [Autologin] stanza would linger forever.
-# Each grant is one exact path -- never a directory, never a glob.
-$USER_NAME ALL=(root) NOPASSWD: /usr/bin/tee /etc/sddm.conf.d/zzz-couchside-session.conf
+$USER_NAME ALL=(root) NOPASSWD: /usr/bin/tee /etc/$DM_NAME.conf.d/zzz-couchside-session.conf
+SUDOERS
+    fi
+    if [ "$DM_NAME" = "sddm" ]; then
+        cat >> "$WORK_DIR/couchside-sudoers" <<SUDOERS
+# The old zz- path stays granted so an updating SDDM box can BLANK its stale
+# pre-2.9.64 file; without the grant that orphaned [Autologin] stanza would
+# linger forever. Each grant is one exact path -- never a directory, never a
+# glob. (Only SDDM boxes ever had the legacy file.)
 $USER_NAME ALL=(root) NOPASSWD: /usr/bin/tee /etc/sddm.conf.d/zz-couchside-session.conf
+SUDOERS
+    fi
+    cat >> "$WORK_DIR/couchside-sudoers" <<SUDOERS
 $USER_NAME ALL=(root) NOPASSWD: /usr/bin/systemctl reboot
 $USER_NAME ALL=(root) NOPASSWD: /usr/bin/systemctl poweroff
 $USER_NAME ALL=(root) NOPASSWD: /usr/bin/systemctl suspend
