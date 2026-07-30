@@ -388,6 +388,13 @@ recommendation was wrong, not merely superseded.
   neither firewalld nor ufw exists (this box has neither). Optional and arguably-never:
   a pacman OS-update path — rolling-release updates are a different risk profile than
   atomic ones, and hiding the button is honest.
+- **Couch Mode toggle hidden on CachyOS by one string check** (owner-reported
+  2026-07-30): `_is_steamos_like()` greps os-release for "steamos"/"bazzite" and gates
+  `couchmode_available()`, the `desktop` cap and guide-hold — while every real gate
+  passes on the box (all four `_COUCHMODE_TOOLS` at real paths, eDP-1 connected,
+  session-select verbs + no-prompt polkit verified live). Fix = capability probe with a
+  session-select sanity check, not a distro name. Same disease the 2.9.66
+  display-manager fix cured.
 
 ### macOS agent (beta) — Macs as a supported box
 - **priority:** P2 · **risk:** MEDIUM — new OS surface, TCC unknowns · **affects:** new agent
