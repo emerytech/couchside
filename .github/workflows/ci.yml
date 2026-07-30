@@ -180,6 +180,14 @@ jobs:
       - name: Unit tests (display manager + greetd)
         run: python3 tests/test_display_manager.py
 
+      # Who is OFFERED Couch Mode. The gate used to grep /etc/os-release for
+      # "steamos"/"bazzite", so a CachyOS deckify box with every tool, both
+      # sessions and a connected panel was refused by its NAME — hiding the
+      # toggle, the desktop cluster and the guide hold together. Now it probes
+      # the tools plus both switch targets; these pin both directions.
+      - name: Unit tests (couch mode gate)
+        run: python3 tests/test_couchmode_gate.py
+
       # Flatpak update completion (KI-036). "Done" must be the update PROCESS
       # finishing, not `remote-ls` count reaching zero — an EOL runtime pins the
       # count above zero forever, which stranded the card on "Updating…" and

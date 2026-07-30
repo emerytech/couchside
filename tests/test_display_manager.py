@@ -42,6 +42,12 @@ def link(target):
     if target: os.symlink(target, p)
     cs.DISPLAY_MANAGER_UNIT=p
 for unit,want in [("/usr/lib/systemd/system/sddm.service","sddm"),
+                  # VERBATIM from the CachyOS box (10.7.1.92, 2026-07-30):
+                  # readlink -f -> /usr/lib/systemd/system/plasmalogin.service.
+                  # plasmalogin not being detected here is the root of the
+                  # fail-open bug: the backend fell back to "sddm if the grant
+                  # exists", and install.sh wrote that grant unconditionally.
+                  ("/usr/lib/systemd/system/plasmalogin.service","plasmalogin"),
                   ("/usr/lib/systemd/system/greetd.service","greetd"),
                   ("/usr/lib/systemd/system/gdm.service","gdm"),
                   ("/lib/systemd/system/gdm3.service","gdm"),
@@ -50,6 +56,132 @@ for unit,want in [("/usr/lib/systemd/system/sddm.service","sddm"),
     os.makedirs(os.path.dirname(unit), exist_ok=True) if False else None
     link(unit); check("%-42s -> %s"%(os.path.basename(unit),want), cs.detect_display_manager(), want)
 link(None); check("no symlink at all -> None (refuse, don't guess)", cs.detect_display_manager(), None)
+
+print()
+print("per-manager paths derive from the DETECTED manager, never a hardcode")
+check("sddm drop-in dir", cs._dm_dropin("sddm"),
+      "/etc/sddm.conf.d/zzz-couchside-session.conf")
+check("plasmalogin drop-in dir", cs._dm_dropin("plasmalogin"),
+      "/etc/plasmalogin.conf.d/zzz-couchside-session.conf")
+check("unknown manager -> no path at all", cs._dm_dropin("ly"), "")
+
+print()
+print("restart-session retargets to the DETECTED manager (or disappears)")
+STOCK = {"label": "Restart Session",
+         "description": "Restart the display session (sddm), fixes a wedged/black screen",
+         "danger": "high", "cmd": ["sudo", "systemctl", "restart", "sddm"],
+         "user_env": False, "detached": False}
+real_detect, real_sudo = cs.detect_display_manager, cs._sudo_nopasswd_allows
+real_unit = cs._display_manager_unit_name
+def reset(detect, grant_units, unit=None):
+    cs.ACTIONS = {"restart-session": dict(STOCK, cmd=list(STOCK["cmd"]))}
+    cs.ACTION_ORDER = ["restart-session", "reboot"]
+    cs.WATCHLIST = [("sddm.service", "system"), ("couchside.service", "system")]
+    cs.WATCHLIST_NAMES = {n for n, _ in cs.WATCHLIST}
+    cs.detect_display_manager = lambda: detect
+    # The real unit name usually equals the family name; gdm3 is the exception
+    # the `unit` override exists for.
+    cs._display_manager_unit_name = lambda: (unit if unit is not None
+                                             else (detect or ""))
+    cs._sudo_nopasswd_allows = lambda needle: needle in grant_units
+try:
+    # The CachyOS shape: plasmalogin enabled, NEW installer grant present.
+    reset("plasmalogin", {"systemctl restart plasmalogin"})
+    cs._retarget_restart_session(False)
+    check("cmd now restarts plasmalogin",
+          cs.ACTIONS["restart-session"]["cmd"],
+          ["sudo", "systemctl", "restart", "plasmalogin"])
+    check("watchlist follows the manager",
+          ("plasmalogin.service", "system") in cs.WATCHLIST, True)
+    check("sddm.service left the watchlist",
+          ("sddm.service", "system") in cs.WATCHLIST, False)
+    check("description names the real manager",
+          "plasmalogin" in cs.ACTIONS["restart-session"]["description"], True)
+
+    # The CachyOS shape TODAY (old installer): plasmalogin enabled, only the
+    # stale sddm grant. Firing `systemctl restart sddm` there would START a
+    # second display manager over the live session — the button must vanish.
+    reset("plasmalogin", {"systemctl restart sddm"})
+    cs._retarget_restart_session(False)
+    check("stale sddm grant does NOT keep the button (fail closed)",
+          "restart-session" in cs.ACTIONS, False)
+    check("...and it leaves the action order",
+          "restart-session" in cs.ACTION_ORDER, False)
+
+    # Bazzite regression control: sddm detected, sddm grant -> untouched.
+    reset("sddm", {"systemctl restart sddm"})
+    cs._retarget_restart_session(False)
+    check("sddm box keeps the stock action verbatim",
+          cs.ACTIONS["restart-session"]["cmd"], STOCK["cmd"])
+    check("sddm box keeps its watchlist",
+          ("sddm.service", "system") in cs.WATCHLIST, True)
+
+    # Unidentifiable manager: no unit worth aiming a rescue action at.
+    reset(None, {"systemctl restart sddm"})
+    cs._retarget_restart_session(False)
+    check("unknown manager -> action removed", "restart-session" in cs.ACTIONS, False)
+
+    # An owner-customised command is not ours to second-guess.
+    reset("plasmalogin", {"systemctl restart plasmalogin"})
+    cs.ACTIONS["restart-session"]["cmd"] = ["sudo", "systemctl", "restart", "my-kiosk"]
+    cs._retarget_restart_session(False)
+    check("customised cmd untouched",
+          cs.ACTIONS["restart-session"]["cmd"],
+          ["sudo", "systemctl", "restart", "my-kiosk"])
+
+    # THE PLASMALOGIN STOCK SPELLING is stock too: a fresh new-installer box
+    # writes ["sudo","systemctl","restart","plasmalogin"] into config.json, and
+    # if that box later flips back to SDDM the action must retarget the other
+    # way, not be classed owner-customised.
+    reset("sddm", {"systemctl restart sddm"})
+    cs.ACTIONS["restart-session"]["cmd"] = ["sudo", "systemctl", "restart", "plasmalogin"]
+    cs._retarget_restart_session(False)
+    check("plasmalogin-stock cmd retargets BACK to sddm",
+          cs.ACTIONS["restart-session"]["cmd"], ["sudo", "systemctl", "restart", "sddm"])
+    reset(None, {"systemctl restart sddm", "systemctl restart plasmalogin"})
+    cs.ACTIONS["restart-session"]["cmd"] = ["sudo", "systemctl", "restart", "plasmalogin"]
+    cs._retarget_restart_session(False)
+    check("plasmalogin-stock cmd removed when no manager detected",
+          "restart-session" in cs.ACTIONS, False)
+
+    # gdm3: the FAMILY is "gdm" but the unit (and any real grant) says gdm3.
+    # Probe and argv must both use the real spelling — probing the collapsed
+    # name substring-matches a gdm3 grant and then aims sudo at "gdm", which
+    # exact-argument matching refuses: a rescue button that fails every press.
+    reset("gdm", {"systemctl restart gdm3"}, unit="gdm3")
+    cs._retarget_restart_session(False)
+    check("gdm3 box: argv uses the REAL unit",
+          cs.ACTIONS["restart-session"]["cmd"], ["sudo", "systemctl", "restart", "gdm3"])
+    check("gdm3 box: watchlist uses the real unit too",
+          ("gdm3.service", "system") in cs.WATCHLIST, True)
+    reset("gdm", {"systemctl restart gdm"}, unit="gdm3")
+    cs._retarget_restart_session(False)
+    check("grant naming only 'gdm' on a gdm3 box -> action removed (fail closed)",
+          "restart-session" in cs.ACTIONS, False)
+
+    # --mock keeps the stock action so the app stays exercisable off-box.
+    reset(None, set())
+    cs._retarget_restart_session(True)
+    check("mock keeps the action", "restart-session" in cs.ACTIONS, True)
+finally:
+    cs.detect_display_manager, cs._sudo_nopasswd_allows = real_detect, real_sudo
+    cs._display_manager_unit_name = real_unit
+
+print()
+print("_display_manager_unit_name: the real spelling, no family collapse")
+d2=tempfile.mkdtemp()
+def link2(target):
+    p=os.path.join(d2,"display-manager.service")
+    if os.path.lexists(p): os.remove(p)
+    if target: os.symlink(target, p)
+    cs.DISPLAY_MANAGER_UNIT=p
+link2("/lib/systemd/system/gdm3.service")
+check("gdm3 stays gdm3", cs._display_manager_unit_name(), "gdm3")
+check("...while the family collapses", cs.detect_display_manager(), "gdm")
+link2("/usr/lib/systemd/system/plasmalogin.service")
+check("plasmalogin unit", cs._display_manager_unit_name(), "plasmalogin")
+link2(None)
+check("no symlink -> empty, not 'display-manager'", cs._display_manager_unit_name(), "")
 
 print()
 print("greetd config rewrite PRESERVES everything else")

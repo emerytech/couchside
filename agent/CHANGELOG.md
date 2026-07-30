@@ -18,6 +18,32 @@ the same thing regardless of what actually changed.
 Write for the person holding the phone, not for the commit log. They are
 deciding whether to press "Update now" on a machine across the room.
 
+## 2.9.66
+
+Machines that aren't SteamOS or Bazzite get features they should have had all
+along, and one setting stops pretending to work.
+
+- **"Boots into" works on newer KDE login screens.** KDE is moving from SDDM to
+  plasmalogin, and CachyOS handheld images already ship it. On those boxes the
+  card appeared, said "unknown", and quietly did nothing — every change was
+  written to a folder the machine does not have. It now finds the login manager
+  your box actually runs and writes where that manager reads, so the setting
+  takes effect on the next boot.
+
+- **"Restart session" aims at the right service.** The fix-a-black-screen button
+  was hardcoded to SDDM. On a box running something else it either failed or,
+  worse, could have started a second login manager on top of your live session.
+
+- **Couch Mode, the desktop controls and the controller shortcut show up on more
+  machines.** They were offered based on the name in your box's OS file, so a
+  CachyOS or ChimeraOS machine carrying exactly the same session tooling as a
+  Steam Deck was refused for its name alone. Couchside now checks whether the
+  box can actually make the switch.
+
+- **A box whose login manager can't be identified hides the boot setting**
+  instead of showing one that silently does nothing. A missing control is
+  better than one that lies.
+
 ## 2.9.65
 
 Three fixes, all found by testing against real boxes rather than reading code.

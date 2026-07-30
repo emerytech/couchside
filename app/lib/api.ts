@@ -1079,7 +1079,12 @@ export function capsEqual(a?: BoxCaps, b?: BoxCaps): boolean {
 export type SessionDefaultMode = 'game' | 'desktop' | 'last';
 export type SessionDefault = {
   available: boolean;
-  backend: 'steamosctl' | 'sddm' | null;
+  /** What the agent detected: 'greetd' since 2.9.58 (custom Steam machines),
+   *  'plasmalogin' since 2.9.66 (KDE's SDDM successor — CachyOS deckify today,
+   *  Bazzite eventually). The card never branches on this, so an unknown
+   *  string from a NEWER agent must stay representable — hence the open
+   *  fallback arm. */
+  backend: 'steamosctl' | 'sddm' | 'plasmalogin' | 'greetd' | (string & {}) | null;
   mode: 'game' | 'desktop' | 'unknown';
 };
 

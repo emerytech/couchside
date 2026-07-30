@@ -373,7 +373,36 @@ recommendation was wrong, not merely superseded.
   a time), NVIDIA never as the first box.
 - **Unverified:** SELinux mode on Nobara, whether Steam-HTPC provides a `steamos-session-select`
   equivalent, gdm-variant behaviour, and every row of the flavor table (derived from what each
-  desktop ships, not from running the agent). CachyOS is a separate, un-researched target.
+  desktop ships, not from running the agent). CachyOS was researched separately on real
+  hardware 2026-07-30 — see `docs/memory/project_cachyos-support.md` and the CachyOS entry
+  below.
+
+### CachyOS: remaining installer pass
+- **priority:** P2 · **risk:** low · **affects:** installer only · **depends_on:** the
+  10.7.1.92 test box (temporary — owner will tear it down)
+- The hard part shipped with the display-manager detection fix (agent 2.9.66): caps,
+  Couch Mode's polkit-granted session switch, gamepad, steam, media, tv, screen and the
+  boot-session feature all verified on hardware — see
+  `docs/memory/project_cachyos-support.md`.
+- Remaining: recognise `ID_LIKE=arch`; pacman for any deps; skip the firewall step when
+  neither firewalld nor ufw exists (this box has neither). Optional and arguably-never:
+  a pacman OS-update path — rolling-release updates are a different risk profile than
+  atomic ones, and hiding the button is honest.
+- ~~Couch Mode toggle hidden on CachyOS by one string check~~ **FIXED 2026-07-30**
+  (same release): `_is_steamos_like()` grepped os-release for "steamos"/"bazzite" and
+  gated `couchmode_available()`, the `desktop` cap and guide-hold. Now
+  `_couchmode_platform_ok()` — the four tools plus both switch targets installed.
+  Live-proven on the box: real `/api/desktop-mode` landed it in Plasma, real
+  `/api/couch-mode` ceremony flung it back to Game Mode. Same disease the
+  display-manager fix cured, one function over.
+- **Pressing that newly visible button exposed KI-051** (see KNOWN_ISSUES): the
+  persistent "Boots into" drop-in defeats one-shot session switches — a one-shot
+  switch is a re-autologin, and our `zzz-` file sorts last by design — and
+  `couchmode_exit()` fake-greens because it trusts exit 0 instead of verifying like
+  the ceremony does. Proven both directions on the CachyOS box and REPRODUCED on the
+  living-room Bazzite box — it is the 2.9.64 `zzz-` rename's twin (that rename fixed
+  "Boots into" and created this), so the fleet splits by install age. **Fix before
+  releasing 2.9.66.**
 
 ### macOS agent (beta) — Macs as a supported box
 - **priority:** P2 · **risk:** MEDIUM — new OS surface, TCC unknowns · **affects:** new agent
@@ -438,6 +467,27 @@ recommendation was wrong, not merely superseded.
 ---
 
 ## ✅ Completed
+
+### Display-manager detection: plasmalogin + fail-closed session backend — agent 2.9.66 (PR pending)
+- **priority:** P1 (blocked the queued "Boots into" release on plasmalogin boxes) · **risk:**
+  medium · **affects:** agent + install.sh · **depends_on:** none
+- The agent proved "SDDM is in charge" by probing for a sudoers grant `install.sh` wrote
+  unconditionally — a plasmalogin box (CachyOS deckify today; Bazzite as KDE migrates)
+  advertised `{"available": true, "backend": "sddm", "mode": "unknown"}` and wrote into
+  `/etc/sddm.conf.d`, which does not exist there. Verified on real hardware (ASUS G14,
+  CachyOS, 10.7.1.92) before and after.
+- Backend now requires a DETECTED manager (display-manager.service symlink); the
+  dm-is-None → sddm-grant fallback is gone. plasmalogin joins `_KNOWN_DMS`; conf dir,
+  drop-in and restart unit derive from the frozen `_DM_CONF_DIRS` table. Mode read
+  reproduces the manager's own merge order (conf.d alphabetical, last `Session=` wins) —
+  fixes mode:"unknown" on boxes never configured through Couchside. greetd dispatch in
+  `session_default_set` RESTORED (lost in the 2.9.65 getter fix). `restart-session`
+  retargets to the detected manager at startup and is removed without a matching grant.
+  `install.sh` allowlists the detected manager (sddm|plasmalogin) before it touches
+  config.json or sudoers.
+- Both directions verified live: CachyOS (old grants) now fails closed end-to-end over
+  HTTP; Bazzite/SDDM unchanged (`backend "sddm", mode "desktop"`, stock action kept).
+  Fixtures in tests are verbatim from both boxes.
 
 ### Couchside Player — a media-player tile, phone-driven — SHIPPED 2026-07-28 (agent 2.9.64)
 - **priority:** P1 · **risk:** medium · **affects:** new box program + agent + app ·

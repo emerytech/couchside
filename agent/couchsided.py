@@ -45,7 +45,7 @@ except ImportError:  # pragma: no cover
     fcntl = None
 
 APP_NAME = "couchside-agent"
-VERSION = "2.9.65"
+VERSION = "2.9.66"
 UID = os.getuid()
 XDG_RUNTIME_DIR = "/run/user/%d" % UID
 
@@ -723,6 +723,69 @@ def _inject_session_actions():
             ACTIONS[aid] = spec
             if aid not in ACTION_ORDER:
                 ACTION_ORDER.append(aid)
+
+
+def _is_stock_restart_session_cmd(cmd):
+    """True for the installer/DEFAULT_ACTIONS shape of the restart-session
+    argv: `sudo systemctl restart <conf-dir manager>`. Every config through
+    agent 2.9.65 wrote the sddm spelling; newer installers write the detected
+    manager. Both are "stock" — anything else is owner-customised and never
+    touched. Membership in _DM_CONF_DIRS keeps this a frozen-set comparison,
+    not a pattern."""
+    return (isinstance(cmd, list) and len(cmd) == 4
+            and cmd[:3] == ["sudo", "systemctl", "restart"]
+            and cmd[3] in _DM_CONF_DIRS)
+
+
+def _retarget_restart_session(mock):
+    """Aim the restart-session action at the display manager ACTUALLY enabled.
+
+    The stock action hardcodes `systemctl restart sddm`. On a plasmalogin box
+    that unit either does not exist — the signature fix-a-black-screen button
+    fails — or, worse, the sddm PACKAGE is installed while plasmalogin is the
+    enabled manager, and the button would START a second display manager over
+    the live session. Detection reuses the same display-manager.service
+    symlink the boot-session feature reads (VERIFIED on CachyOS hardware
+    2026-07-30: plasmalogin.service enabled, no sddm unit anywhere).
+
+    Degrades closed (§3.7): when the manager cannot be identified, or sudoers
+    has no NOPASSWD grant for restarting the one that was detected, the stock
+    action is REMOVED — a dead rescue button on the screen people reach for
+    when the TV is black costs more trust than a missing one. Only the
+    untouched stock argv is ever rewritten or removed; an owner-customised
+    command is not ours to second-guess. Idempotent, called after
+    load_config."""
+    global WATCHLIST, WATCHLIST_NAMES
+    if mock:
+        return  # --mock keeps the stock action so the app is exercisable
+    act = ACTIONS.get("restart-session")
+    if not act or not _is_stock_restart_session_cmd(act.get("cmd")):
+        return
+    dm = detect_display_manager()
+    # The REAL unit name, not the collapsed family: detect_display_manager
+    # folds gdm3.service into "gdm", but sudoers matches arguments exactly, so
+    # probing "restart gdm" against a gdm3 grant (substring-matched) and then
+    # running "restart gdm" would advertise a rescue button sudo refuses on
+    # every press. Probe and rewrite must use the same spelling the grant and
+    # the unit actually have.
+    unit = _display_manager_unit_name()
+    if dm and unit and _sudo_nopasswd_allows("systemctl restart %s" % unit):
+        if act["cmd"][3] != unit:
+            # Copy before editing: ACTIONS shallow-copies DEFAULT_ACTIONS, so
+            # editing `act` in place would silently rewrite the shipped spec.
+            act = dict(act)
+            act["cmd"] = ["sudo", "systemctl", "restart", unit]
+            act["description"] = ("Restart the display session (%s), fixes a "
+                                  "wedged/black screen" % unit)
+            ACTIONS["restart-session"] = act
+            stale = {"%s.service" % k for k in _DM_CONF_DIRS if k != unit}
+            WATCHLIST = [(("%s.service" % unit) if n in stale else n, s)
+                         for n, s in WATCHLIST]
+            WATCHLIST_NAMES = {name for name, _scope in WATCHLIST}
+        return
+    ACTIONS.pop("restart-session", None)
+    if "restart-session" in ACTION_ORDER:
+        ACTION_ORDER.remove("restart-session")
 
 
 def _nopasswd_last_match(rules_text, needle):
@@ -3277,11 +3340,14 @@ def real_action(action_id):
 # gamescope session override we don't ship yet, so `output` is advisory and the
 # app's picker (shown only with 2+ externals) is best-effort there.
 #
-# SteamOS/Bazzite only (shared tooling: gamescope, steamos-session-select,
-# kscreen-doctor, wpctl). Gated to boxes with 2+ connected outputs, so a
-# single-display box (a handheld with nothing plugged in, or a dedicated Game
-# Mode box) never shows the button. Outputs are read from DRM sysfs, which works
-# regardless of the current session (kscreen-doctor only answers inside Plasma).
+# Offered on any box carrying the SteamOS-style session tooling (gamescope,
+# steamos-session-select, kscreen-doctor, wpctl) with both switch targets
+# installed — SteamOS, Bazzite, CachyOS deckify, ChimeraOS. See
+# _couchmode_platform_ok: the old gate grepped the distro NAME out of
+# /etc/os-release and hid the feature on capable boxes. Gated to boxes with at
+# least one connected output (an undocked handheld qualifies; headless does
+# not). Outputs are read from DRM sysfs, which works regardless of the current
+# session (kscreen-doctor only answers inside Plasma).
 #
 # The switch (couchmode_start / desktop_mode) runs entirely from the agent's own
 # service env: it's a SYSTEM service running as the desktop user with
@@ -3297,13 +3363,42 @@ _INTERNAL_OUTPUT_PREFIXES = ("eDP", "LVDS", "DSI")
 _COUCHMODE_TOOLS = ("gamescope", "steamos-session-select", "kscreen-doctor", "wpctl")
 
 
-def _is_steamos_like():
-    """True on SteamOS or Bazzite — the only platforms Couch Mode targets."""
-    try:
-        rel = open("/etc/os-release").read().lower()
-    except OSError:
+def _couchmode_platform_ok():
+    """True when this box actually HAS the session machinery Couch Mode drives.
+
+    This used to be `_is_steamos_like()` — a grep of /etc/os-release for the
+    strings "steamos" or "bazzite". That hid Couch Mode, the `desktop` cap and
+    the guide-button hold on every other box that ships Valve's session
+    tooling. MEASURED on a real CachyOS deckify box 2026-07-30 (ID=cachyos,
+    ID_LIKE=arch): all four _COUCHMODE_TOOLS present at real paths, eDP-1
+    connected, `steamos-session-select` accepting the gamescope/plasma verbs
+    through a polkit rule granted with no password prompt — a box fully able to
+    do the handoff, refused because of its name. ChimeraOS and any Arch box
+    running the deckify packaging are in the same position.
+
+    So the gate asks what the switch NEEDS instead of who made the distro:
+
+      1. the four tools (checked by the caller, unchanged), and
+      2. both switch TARGETS installed — `gamescope-session.desktop` to fling
+         to, and some known desktop session to come back to.
+
+    (2) is the KI-038 lesson applied to a gate rather than a write: it is not
+    enough that a *command* exists, the thing it switches to has to be really
+    installed, or the button lands you nowhere. It also answers the "bare Arch
+    box with gamescope but no session" case — though that box is already
+    excluded by needing `steamos-session-select`, which vanilla Arch has no
+    package for.
+
+    Session enumeration degrades the same way `_dm_write` does: a dir we cannot
+    read yields an empty set, which is "unknown", NOT "absent" — refusing there
+    would hide Couch Mode on a working box over an unreadable directory, and
+    the tool requirement is doing the real work anyway."""
+    installed = _installed_session_files()
+    if not installed:
+        return True  # cannot enumerate: fall back to the tool requirement
+    if GAMESCOPE_SESSION_FILE not in installed:
         return False
-    return "steamos" in rel or "bazzite" in rel
+    return any(name in installed for name in _DESKTOP_SESSIONS)
 
 
 def _connected_outputs():
@@ -3330,8 +3425,8 @@ def _connected_outputs():
 
 
 def couchmode_available():
-    """True when this box can switch desktop↔Game Mode: SteamOS/Bazzite, the
-    session tools present, and ANY connected display to land Game Mode on.
+    """True when this box can switch desktop↔Game Mode: the session tools and
+    both switch targets present, and ANY connected display to land Game Mode on.
 
     An external TV/monitor gives the full handoff (display pin, TV wake, audio
     routing). An INTERNAL-ONLY box — an undocked Steam Deck / Legion Go — now
@@ -3343,7 +3438,7 @@ def couchmode_available():
 
     Headless (no display at all) stays hidden: gamescope with nothing to render
     on is a box you can no longer reach."""
-    if not _is_steamos_like():
+    if not _couchmode_platform_ok():
         return False
     if not all(shutil.which(t) for t in _COUCHMODE_TOOLS):
         return False
@@ -3471,13 +3566,37 @@ def couchmode_info():
     }
 
 
+def _desktop_session_installed():
+    """True when this box has a real desktop session to drive, any DE.
+
+    Deliberately NOT _couchmode_platform_ok() and NOT _DESKTOP_SESSIONS: that
+    table lists the PLASMA sessions the autologin writer may name, and Couch
+    Mode's predicate additionally demands a Game Mode target. Neither describes
+    what the desktop cluster needs, and gating on them cost real function — a
+    Bazzite GNOME image (gnome.desktop, no plasma*.desktop) would have lost the
+    trackpad surface toggle, the nav cluster and the file-drop "Show on box",
+    while `inGameMode = !hasDesktop` in the app flipped ON a Steam-menus
+    segment whose steam:// links do nothing outside Game Mode. The cluster
+    itself is DE-agnostic: Meta opens Activities as readily as the Plasma
+    launcher, and the pointer keys are uinput.
+
+    Degrades CLOSED, unlike the couchmode probe: an empty enumeration here
+    means a headless box (no session dirs at all — an HTPC, a Proxmox guest,
+    the "any systemd machine" the README sells), and there the cluster would be
+    a whole panel of dead controls. couchmode can afford the opposite default
+    because its four-tool requirement still gates; this has no second gate."""
+    return any(not name.startswith("gamescope-session")
+               for name in _installed_session_files())
+
+
 def desktop_available():
-    """True on a SteamOS/Bazzite box currently in the Plasma DESKTOP session —
-    gates the app's desktop-nav cluster (Start menu / pointer / overview), which
-    only makes sense in the desktop, not in Game Mode. Session-aware so the
-    buttons appear when you're on the desktop and hide once you fling to Game
-    Mode. The keys themselves ride the existing /ws/gamepad uinput keyboard."""
-    return _is_steamos_like() and _couchmode_session() == "desktop"
+    """True on a box with a desktop session, currently IN it — gates the app's
+    desktop-nav cluster (Start menu / pointer / overview) and the file-drop
+    reveal, which only make sense on the desktop, not in Game Mode.
+    Session-aware so the buttons appear when you're on the desktop and hide
+    once you fling to Game Mode. The keys themselves ride the existing
+    /ws/gamepad uinput keyboard."""
+    return _desktop_session_installed() and _couchmode_session() == "desktop"
 
 
 def _couch_run(cmd, timeout=25, max_out=1500):
@@ -3726,29 +3845,57 @@ def _installed_session_files():
 
 # Closed set. A client selects one of these; it never reaches a command line.
 SESSION_DEFAULT_MODES = ("game", "desktop", "last")
-# Our SDDM autologin drop-in.
+
+# The conf-dir display managers we can write a boot session for: SDDM, and
+# plasmalogin — KDE's SDDM successor (CachyOS deckify ships it today; Bazzite
+# will follow as Plasma migrates). plasmalogin keeps SDDM's config scheme — a
+# drop-in dir whose *.conf files are read ALPHABETICALLY, last wins — so the
+# two share one reader and one writer. VERIFIED on a real CachyOS box
+# 2026-07-30: display-manager.service -> plasmalogin.service, /etc/sddm.conf.d
+# ABSENT, /etc/plasmalogin.conf.d holding the distro's own
+# zz-steamos-autologin.conf.
+#
+# A frozen dict, never a pattern (§3.3): extending it means adding a conf dir
+# we have VERIFIED that manager actually reads.
+_DM_CONF_DIRS = {
+    "sddm": "/etc/sddm.conf.d",
+    "plasmalogin": "/etc/plasmalogin.conf.d",
+}
+
+
+# Our autologin drop-in, inside the DETECTED manager's conf dir.
 #
 # THE NAME IS LOAD-BEARING, and it is why this is "zzz" and not "zz".
-# SDDM reads /etc/sddm.conf.d/*.conf in ALPHABETICAL order and the last file
-# wins. SteamOS and Bazzite both ship `steamos-session-select`, which writes its
-# own autologin drop-in at zz-steamos-autologin.conf -- and "zz-couchside"
-# sorts BEFORE "zz-steamos", so our setting was silently overridden by theirs.
-# Worse, that script runs on every Couch Mode switch and every switch-to-desktop
-# action, so it rewrote the winning file routinely and the user's "Boots into"
-# choice quietly stopped applying. MEASURED 2026-07-27 on a real box: our file
-# and theirs both present, theirs last, effective session theirs.
+# SDDM and plasmalogin read <confdir>/*.conf in ALPHABETICAL order and the last
+# file wins. SteamOS, Bazzite and CachyOS all ship `steamos-session-select`,
+# which writes its own autologin drop-in at zz-steamos-autologin.conf -- and
+# "zz-couchside" sorts BEFORE "zz-steamos", so our setting was silently
+# overridden by theirs. Worse, that script runs on every Couch Mode switch and
+# every switch-to-desktop action, so it rewrote the winning file routinely and
+# the user's "Boots into" choice quietly stopped applying. MEASURED 2026-07-27
+# on a real box: our file and theirs both present, theirs last, effective
+# session theirs.
 #
 # We do NOT call steamos-session-select to set this instead: it ends with an
-# unconditional `systemctl restart sddm` (verified by running it), which kills
-# the user's current session. A preference about the NEXT boot must never log
-# somebody out of the session they are in.
-SDDM_DROPIN = "/etc/sddm.conf.d/zzz-couchside-session.conf"
-# The pre-2.9.64 name. Still written -- as an inert comment -- so a box that
-# updates does not keep an old [Autologin] stanza competing with the new file.
-# Kept as a constant rather than deleted so the migration is explicit.
-SDDM_DROPIN_LEGACY = "/etc/sddm.conf.d/zz-couchside-session.conf"
+# unconditional restart of the display manager (verified by running it), which
+# kills the user's current session. A preference about the NEXT boot must never
+# log somebody out of the session they are in.
+def _dm_dropin(dm):
+    """OUR autologin drop-in path for `dm`, or "" for a DM with no conf dir."""
+    d = _DM_CONF_DIRS.get(dm)
+    return d + "/zzz-couchside-session.conf" if d else ""
+
+
+def _dm_dropin_legacy(dm):
+    """The pre-2.9.64 drop-in name. Still written -- as an inert comment -- so
+    a box that updates does not keep an old [Autologin] stanza competing with
+    the new file. Only SDDM boxes ever had one, but deriving it per-DM is
+    harmless: the neutraliser skips a file that does not exist."""
+    d = _DM_CONF_DIRS.get(dm)
+    return d + "/zz-couchside-session.conf" if d else ""
+
+
 GAMESCOPE_SESSION_FILE = "gamescope-session.desktop"
-SDDM_STATE = "/var/lib/sddm/state.conf"
 
 
 def _steamosctl_session_ok():
@@ -3768,10 +3915,35 @@ def _steamosctl_session_ok():
     return out.split()[0] in ("game", "desktop")
 
 
-def _sddm_session_ok():
-    """True when sudoers really lets us write our own sddm drop-in."""
-    return (_sudo_nopasswd_allows(SDDM_DROPIN)
-            or _sudo_nopasswd_allows(SDDM_DROPIN_LEGACY))
+def _dm_session_ok(dm):
+    """True when sudoers really lets us write the DETECTED manager's drop-in.
+
+    The grant is per-path, so it only proves anything about the manager whose
+    conf dir it names. install.sh (through agent 2.9.65) wrote the SDDM grant
+    UNCONDITIONALLY, and the old probe treated that grant as proof SDDM was in
+    charge — so a plasmalogin box advertised backend "sddm" and wrote into
+    /etc/sddm.conf.d, a directory that box does not even have (VERIFIED on
+    CachyOS hardware 2026-07-30). The caller must pass the manager it actually
+    detected; this function never guesses one.
+
+    Two more degrade-closed gates, each closing a specific dead-button hole:
+    * the conf dir must EXIST — `sudo tee` cannot create parent directories,
+      the grant names only the file, and vanilla Arch SDDM installs often ship
+      without /etc/sddm.conf.d until an admin creates it (the new install.sh
+      creates it, but a grant can outlive that);
+    * the classic main conf must NOT name a Session — the manager applies
+      /etc/<dm>.conf LAST, over every drop-in (see the layer constants below),
+      so on a hand-configured box our zzz- file can never win and a rendered
+      card would confirm settings that never take effect."""
+    dropin = _dm_dropin(dm)
+    if not dropin:
+        return False
+    if not os.path.isdir(_DM_CONF_DIRS[dm]):
+        return False
+    if _last_session_line(_DM_MAIN_CONFS.get(dm, "")):
+        return False
+    return (_sudo_nopasswd_allows(dropin)
+            or _sudo_nopasswd_allows(_dm_dropin_legacy(dm)))
 
 
 # ---------------------------------------------------------------------------
@@ -3806,8 +3978,9 @@ DISPLAY_MANAGER_UNIT = "/etc/systemd/system/display-manager.service"
 
 # Display managers we can READ or WRITE a boot session for. The value is the
 # short name used throughout; extending this set means adding a real writer,
-# never a pattern match.
-_KNOWN_DMS = ("sddm", "greetd", "gdm", "lightdm")
+# never a pattern match. plasmalogin is KDE's SDDM successor and shares the
+# SDDM writer via _DM_CONF_DIRS.
+_KNOWN_DMS = ("sddm", "plasmalogin", "greetd", "gdm", "lightdm")
 
 
 def detect_display_manager():
@@ -3828,6 +4001,30 @@ def detect_display_manager():
     if unit.startswith("gdm"):
         return "gdm"
     return unit if unit in _KNOWN_DMS else None
+
+
+def _display_manager_unit_name():
+    """The REAL unit name behind the symlink ("gdm3", "sddm", ...), or "".
+
+    detect_display_manager answers "which FAMILY" and deliberately collapses
+    gdm3 -> gdm; anything that builds a `systemctl restart <x>` argv or probes
+    sudoers for one must use this instead. Probing the collapsed name would
+    substring-match a gdm3 grant while the rewritten argv said "gdm" — which
+    sudo (exact-argument matching) then refuses: an advertised rescue button
+    that fails every press. Same read, same degrade-closed shape: unreadable
+    or non-.service means ""."""
+    try:
+        target = os.path.realpath(DISPLAY_MANAGER_UNIT)
+    except OSError:
+        return ""
+    base = os.path.basename(target or "")
+    if not base.endswith(".service"):
+        return ""
+    name = base[: -len(".service")].lower()
+    # The alias itself means the symlink was missing (realpath returns the
+    # unresolved path) — that is "no manager", not a unit called
+    # "display-manager".
+    return "" if name == "display-manager" else name
 
 
 # ---------------------------------------------------------------------------
@@ -4002,8 +4199,9 @@ def _greetd_write(session_file):
 
 
 def session_default_backend():
-    """"steamosctl" | "sddm" | None. steamosctl first: on a real Deck it is the
-    supported path and keeps Valve's own state consistent."""
+    """"steamosctl" | "sddm" | "plasmalogin" | "greetd" | None. steamosctl
+    first: on a real Deck it is the supported path and keeps Valve's own state
+    consistent."""
     if _steamosctl_session_ok():
         return "steamosctl"
     # Pick the backend that matches the DM this box ACTUALLY runs, rather than
@@ -4013,34 +4211,98 @@ def session_default_backend():
     dm = detect_display_manager()
     if dm == "greetd":
         return "greetd" if _greetd_session_ok() else None
-    if dm == "sddm" or dm is None:
-        # dm is None on a box we cannot identify; SDDM stays the fallback there
-        # because it is what shipped and its writer refuses on its own if the
-        # grant or the session file is missing.
-        return "sddm" if _sddm_session_ok() else None
-    return None  # gdm / lightdm: detected, but no writer yet — honest absence
+    if dm in _DM_CONF_DIRS:
+        return dm if _dm_session_ok(dm) else None
+    # dm is None (unreadable symlink, or a manager with no writer here —
+    # plasmalogin was exactly that until 2026-07-30). The old code fell back to
+    # "sddm, if the sudoers grant exists" — but install.sh wrote that grant
+    # unconditionally, so a plasmalogin box advertised a working sddm backend
+    # aimed at a directory that did not exist: the card rendered and every
+    # write was a silent no-op (VERIFIED on CachyOS hardware). A box whose
+    # boot path we cannot identify gets NO capability (§3.7); gdm/lightdm are
+    # detected but have no writer yet — the same honest absence.
+    return None
 
 
 def session_default_available():
     return session_default_backend() is not None
 
 
-def _sddm_current_session_file():
-    """The session file SDDM will actually use, best-effort.
+def _last_session_line(path, found=""):
+    """Last `Session=` value in `path` (same line-scan the old reader used —
+    the key only occurs under [Autologin] in practice), or `found` unchanged
+    when the file is unreadable or names none."""
+    try:
+        with open(path, "r", encoding="utf-8", errors="replace") as f:
+            for line in f:
+                line = line.strip()
+                if line.lower().startswith("session="):
+                    found = os.path.basename(line.split("=", 1)[1].strip())
+    except OSError:
+        pass
+    return found
 
-    Reads OUR drop-in first (it sorts last, so it wins), then falls back to
-    SDDM's recorded last session. Returns "" when neither is readable —
-    degrading to "unknown" rather than claiming a mode we did not verify."""
-    for path in (SDDM_DROPIN, SDDM_DROPIN_LEGACY, SDDM_STATE):
-        try:
-            with open(path, "r", encoding="utf-8", errors="replace") as f:
-                for line in f:
-                    line = line.strip()
-                    if line.lower().startswith("session="):
-                        return os.path.basename(line.split("=", 1)[1].strip())
-        except OSError:
+
+# The other config layers each conf-dir manager merges, as module constants so
+# tests can repoint them at fixtures (CONVENTIONS §Naming). ORDER IS THE
+# BUG-PRONE PART: SDDM loads the sys conf.d, then /etc/<dm>.conf.d, and applies
+# the classic /etc/<dm>.conf LAST — the MAIN FILE OVERRIDES EVERY DROP-IN, the
+# reverse of the systemd convention. Verified in SDDM's own source
+# (ConfigReader's ConfigBase::load: "order of priority from least influence to
+# most influence ... m_path" — the main file is appended last) after v1 of this
+# reader shipped that order backwards and would have reported a hand-configured
+# /etc/sddm.conf box wrong. For plasmalogin, /etc/plasmalogin.conf.d last-wins
+# is confirmed by CachyOS's own tooling (os-session-select's zz- drop-in
+# overrides steam-deckify.conf, and the distro's comment in that file says so),
+# and the sys layer is the SDDM path: MEASURED on the CachyOS box 2026-07-30,
+# cachyos-kde-settings ships plasmalogin's greeter defaults at
+# /usr/lib/sddm/sddm.conf.d ([Autologin] Session=plasma there, overridden by
+# /etc). A missing layer simply reads empty.
+_DM_SYS_CONF_DIRS = {"sddm": "/usr/lib/sddm/sddm.conf.d",
+                     "plasmalogin": "/usr/lib/sddm/sddm.conf.d"}
+_DM_MAIN_CONFS = {"sddm": "/etc/sddm.conf", "plasmalogin": "/etc/plasmalogin.conf"}
+_DM_STATE_FILES = {"sddm": "/var/lib/sddm/state.conf",
+                   "plasmalogin": "/var/lib/plasmalogin/state.conf"}
+
+
+def _dm_current_session_file(dm):
+    """The session file the display manager will autologin into, best-effort.
+
+    Reproduces the manager's own merge order (see the layer constants above):
+    sys conf.d, then /etc conf.d — each alphabetically, last Session= wins,
+    which is why our drop-in is zzz- — then the classic main conf, which
+    OVERRIDES all drop-ins. Earlier versions read only OUR drop-in and then
+    /var/lib/sddm/state.conf; on a box where the user had not yet set anything
+    through Couchside the state file is root-only (MEASURED on both Bazzite and
+    CachyOS, 2026-07-30), so the card said "unknown" while the distro's own
+    zz-steamos-autologin.conf named the answer in plain sight.
+
+    Returns "" when nothing readable names a session — "unknown" beats a
+    guess."""
+    confdir = _DM_CONF_DIRS.get(dm)
+    if not confdir:
+        return ""
+    found = ""
+    for d in (_DM_SYS_CONF_DIRS.get(dm), confdir):
+        if not d:
             continue
-    return ""
+        try:
+            names = sorted(fn for fn in os.listdir(d) if fn.endswith(".conf"))
+        except OSError:
+            names = []
+        for fn in names:
+            found = _last_session_line(os.path.join(d, fn), found)
+    # The classic main conf is applied LAST by the manager itself, so it wins
+    # here too. When it names a Session, autologin through drop-ins is dead —
+    # _dm_session_ok refuses the whole capability in that case.
+    found = _last_session_line(_DM_MAIN_CONFS.get(dm, ""), found)
+    if found:
+        return found
+    # Last resort: the manager's record of the LAST session. Autologin config
+    # beats it when both exist (mirrored above by trying it only when no config
+    # named a session), and it is root-only on every box measured so far — kept
+    # because it costs nothing when it is readable.
+    return _last_session_line(_DM_STATE_FILES.get(dm, ""))
 
 
 def session_default_get():
@@ -4080,7 +4342,8 @@ def session_default_get():
             m = ""
         return {"available": True, "backend": backend,
                 "mode": m if m in ("game", "desktop") else "unknown"}
-    name = _sddm_current_session_file()
+    # backend is "sddm" or "plasmalogin" here: same conf-dir scheme, same read.
+    name = _dm_current_session_file(backend)
     if name == GAMESCOPE_SESSION_FILE:
         mode = "game"
     elif name in _DESKTOP_SESSIONS:
@@ -4090,11 +4353,13 @@ def session_default_get():
     return {"available": True, "backend": backend, "mode": mode}
 
 
-def _sddm_write(session_file):
+def _dm_write(dm, session_file):
     """Write our drop-in via a sudo tee whose PATH IS FIXED IN THE SUDOERS RULE.
 
-    session_file is chosen by the agent from a frozen table — never client
-    input — and the whole file body is composed here.
+    `dm` is the DETECTED manager (a _DM_CONF_DIRS key — the caller dispatches on
+    it), so the tee path is one of two frozen strings; session_file is chosen by
+    the agent from a frozen table — never client input — and the whole file body
+    is composed here.
 
     REFUSES to write a session that is not installed. An autologin entry naming
     a missing session does not degrade gracefully: SDDM logs "Unable to find
@@ -4102,6 +4367,18 @@ def _sddm_write(session_file):
     whose agent is a user service. Measured 2026-07-27 — this guard is the
     reason that cannot happen again, and it sits HERE, at the single write, so
     no future caller can route around it."""
+    dropin = _dm_dropin(dm)
+    if not dropin:
+        return False
+    # Backstop for the availability gate in _dm_session_ok: the classic main
+    # conf overrides every drop-in, so a write it would defeat must refuse
+    # rather than return ok and let the next GET "confirm" a setting that
+    # never applies.
+    if _last_session_line(_DM_MAIN_CONFS.get(dm, "")):
+        print("[session] refusing %s write: %s sets its own Session=, which "
+              "overrides every conf.d drop-in" % (dm, _DM_MAIN_CONFS.get(dm)),
+              flush=True)
+        return False
     installed = _installed_session_files()
     if installed and session_file not in installed:
         print("[session] refusing to write autologin for missing session %r"
@@ -4112,17 +4389,17 @@ def _sddm_write(session_file):
             "[Autologin]\n"
             "Session=%s\n" % session_file)
     try:
-        r = subprocess.run(["sudo", "-n", "tee", SDDM_DROPIN],
+        r = subprocess.run(["sudo", "-n", "tee", dropin],
                            input=body, capture_output=True, text=True, timeout=8)
         ok = r.returncode == 0
     except Exception:
         return False
     if ok:
-        _sddm_neutralise_legacy()
+        _dm_neutralise_legacy(dm)
     return ok
 
 
-def _sddm_neutralise_legacy():
+def _dm_neutralise_legacy(dm):
     """Blank the pre-2.9.64 drop-in so it cannot compete with the new one.
 
     Overwritten with a comment rather than deleted: the sudoers grant permits
@@ -4130,14 +4407,16 @@ def _sddm_neutralise_legacy():
     have there, and an empty file contributes no [Autologin] stanza. Silent and
     best-effort -- a box whose grant predates this simply keeps a stale file
     that now sorts BEFORE the new one and therefore loses, which is the
-    behaviour we want anyway."""
-    if not os.path.exists(SDDM_DROPIN_LEGACY):
+    behaviour we want anyway. Only SDDM boxes ever had the legacy file, so on
+    plasmalogin the exists-check simply never fires."""
+    legacy = _dm_dropin_legacy(dm)
+    if not legacy or not os.path.exists(legacy):
         return
     body = ("# Superseded by zzz-couchside-session.conf (Couchside >= 2.9.64).\n"
             "# Left blank deliberately: this name sorted BEFORE the display\n"
             "# manager's own drop-in and so could never win. Safe to delete.\n")
     try:
-        subprocess.run(["sudo", "-n", "tee", SDDM_DROPIN_LEGACY],
+        subprocess.run(["sudo", "-n", "tee", legacy],
                        input=body, capture_output=True, text=True, timeout=8)
     except Exception:
         pass
@@ -4160,10 +4439,15 @@ def session_default_set(mode):
         return done(False, "no session backend on this box")
 
     if mode == "last":
-        # SDDM already records the last session; what defeats it is the
-        # Autologin override. So "last" means: point the override at whatever
-        # is running NOW, and keep doing so as the session changes.
-        current = _sddm_current_session_file() or GAMESCOPE_SESSION_FILE
+        # The display manager already records the last session; what defeats
+        # it is the Autologin override. So "last" means: point the override at
+        # whatever is running NOW, and keep doing so as the session changes.
+        # Read through the DETECTED manager's config (a steamosctl Deck still
+        # runs sddm underneath); a greetd/unidentifiable box reads "" and
+        # falls back to Game Mode, exactly as it did before.
+        dm = detect_display_manager()
+        current = (_dm_current_session_file(dm) if dm in _DM_CONF_DIRS else "") \
+            or GAMESCOPE_SESSION_FILE
         target = current if current in _DESKTOP_SESSIONS else GAMESCOPE_SESSION_FILE
     elif mode == "game":
         target = GAMESCOPE_SESSION_FILE
@@ -4189,7 +4473,17 @@ def session_default_set(mode):
             return done(False, out.strip()[:160])
         return done(session_default_get().get("mode") == arg)
 
-    return done(_sddm_write(target))
+    if backend == "greetd":
+        # RESTORED. The 2.9.65 getter fix MOVED this dispatch out of the setter
+        # instead of copying it, so a greetd box rendered the card, read the
+        # mode correctly, and then every set fell through to the SDDM writer —
+        # which the old unconditional install.sh grant could even let SUCCEED,
+        # into a conf dir greetd never reads.
+        return done(_greetd_write(target))
+
+    # backend is "sddm" or "plasmalogin": the shared drop-in writer, aimed at
+    # the conf dir of the manager that was actually detected.
+    return done(_dm_write(backend, target))
 
 
 def _default_desktop_session():
@@ -16893,6 +17187,7 @@ def main():
     load_config(args.config)
     if not args.mock:
         check_config_writable()  # warn loudly if pairings/launchers can't persist
+    _retarget_restart_session(args.mock)
     _inject_session_actions()
     _inject_suspend_action(args.mock)
     _inject_decky_action(args.mock)
