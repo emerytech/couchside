@@ -399,8 +399,10 @@ recommendation was wrong, not merely superseded.
   persistent "Boots into" drop-in defeats one-shot session switches — a one-shot
   switch is a re-autologin, and our `zzz-` file sorts last by design — and
   `couchmode_exit()` fake-greens because it trusts exit 0 instead of verifying like
-  the ceremony does. Proven both directions on hardware; Bazzite/SteamOS scope
-  unverified. Fix before the next release that touches this area.
+  the ceremony does. Proven both directions on the CachyOS box and REPRODUCED on the
+  living-room Bazzite box — it is the 2.9.64 `zzz-` rename's twin (that rename fixed
+  "Boots into" and created this), so the fleet splits by install age. **Fix before
+  releasing 2.9.66.**
 
 ### macOS agent (beta) — Macs as a supported box
 - **priority:** P2 · **risk:** MEDIUM — new OS surface, TCC unknowns · **affects:** new agent
