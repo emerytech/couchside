@@ -388,13 +388,19 @@ recommendation was wrong, not merely superseded.
   neither firewalld nor ufw exists (this box has neither). Optional and arguably-never:
   a pacman OS-update path — rolling-release updates are a different risk profile than
   atomic ones, and hiding the button is honest.
-- **Couch Mode toggle hidden on CachyOS by one string check** (owner-reported
-  2026-07-30): `_is_steamos_like()` greps os-release for "steamos"/"bazzite" and gates
-  `couchmode_available()`, the `desktop` cap and guide-hold — while every real gate
-  passes on the box (all four `_COUCHMODE_TOOLS` at real paths, eDP-1 connected,
-  session-select verbs + no-prompt polkit verified live). Fix = capability probe with a
-  session-select sanity check, not a distro name. Same disease the 2.9.66
-  display-manager fix cured.
+- ~~Couch Mode toggle hidden on CachyOS by one string check~~ **FIXED 2026-07-30**
+  (same release): `_is_steamos_like()` grepped os-release for "steamos"/"bazzite" and
+  gated `couchmode_available()`, the `desktop` cap and guide-hold. Now
+  `_couchmode_platform_ok()` — the four tools plus both switch targets installed.
+  Live-proven on the box: real `/api/desktop-mode` landed it in Plasma, real
+  `/api/couch-mode` ceremony flung it back to Game Mode. Same disease the
+  display-manager fix cured, one function over.
+- **Pressing that newly visible button exposed KI-051** (see KNOWN_ISSUES): the
+  persistent "Boots into" drop-in defeats one-shot session switches — a one-shot
+  switch is a re-autologin, and our `zzz-` file sorts last by design — and
+  `couchmode_exit()` fake-greens because it trusts exit 0 instead of verifying like
+  the ceremony does. Proven both directions on hardware; Bazzite/SteamOS scope
+  unverified. Fix before the next release that touches this area.
 
 ### macOS agent (beta) — Macs as a supported box
 - **priority:** P2 · **risk:** MEDIUM — new OS surface, TCC unknowns · **affects:** new agent

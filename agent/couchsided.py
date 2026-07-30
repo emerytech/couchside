@@ -3340,11 +3340,14 @@ def real_action(action_id):
 # gamescope session override we don't ship yet, so `output` is advisory and the
 # app's picker (shown only with 2+ externals) is best-effort there.
 #
-# SteamOS/Bazzite only (shared tooling: gamescope, steamos-session-select,
-# kscreen-doctor, wpctl). Gated to boxes with 2+ connected outputs, so a
-# single-display box (a handheld with nothing plugged in, or a dedicated Game
-# Mode box) never shows the button. Outputs are read from DRM sysfs, which works
-# regardless of the current session (kscreen-doctor only answers inside Plasma).
+# Offered on any box carrying the SteamOS-style session tooling (gamescope,
+# steamos-session-select, kscreen-doctor, wpctl) with both switch targets
+# installed — SteamOS, Bazzite, CachyOS deckify, ChimeraOS. See
+# _couchmode_platform_ok: the old gate grepped the distro NAME out of
+# /etc/os-release and hid the feature on capable boxes. Gated to boxes with at
+# least one connected output (an undocked handheld qualifies; headless does
+# not). Outputs are read from DRM sysfs, which works regardless of the current
+# session (kscreen-doctor only answers inside Plasma).
 #
 # The switch (couchmode_start / desktop_mode) runs entirely from the agent's own
 # service env: it's a SYSTEM service running as the desktop user with
@@ -3360,13 +3363,42 @@ _INTERNAL_OUTPUT_PREFIXES = ("eDP", "LVDS", "DSI")
 _COUCHMODE_TOOLS = ("gamescope", "steamos-session-select", "kscreen-doctor", "wpctl")
 
 
-def _is_steamos_like():
-    """True on SteamOS or Bazzite — the only platforms Couch Mode targets."""
-    try:
-        rel = open("/etc/os-release").read().lower()
-    except OSError:
+def _couchmode_platform_ok():
+    """True when this box actually HAS the session machinery Couch Mode drives.
+
+    This used to be `_is_steamos_like()` — a grep of /etc/os-release for the
+    strings "steamos" or "bazzite". That hid Couch Mode, the `desktop` cap and
+    the guide-button hold on every other box that ships Valve's session
+    tooling. MEASURED on a real CachyOS deckify box 2026-07-30 (ID=cachyos,
+    ID_LIKE=arch): all four _COUCHMODE_TOOLS present at real paths, eDP-1
+    connected, `steamos-session-select` accepting the gamescope/plasma verbs
+    through a polkit rule granted with no password prompt — a box fully able to
+    do the handoff, refused because of its name. ChimeraOS and any Arch box
+    running the deckify packaging are in the same position.
+
+    So the gate asks what the switch NEEDS instead of who made the distro:
+
+      1. the four tools (checked by the caller, unchanged), and
+      2. both switch TARGETS installed — `gamescope-session.desktop` to fling
+         to, and some known desktop session to come back to.
+
+    (2) is the KI-038 lesson applied to a gate rather than a write: it is not
+    enough that a *command* exists, the thing it switches to has to be really
+    installed, or the button lands you nowhere. It also answers the "bare Arch
+    box with gamescope but no session" case — though that box is already
+    excluded by needing `steamos-session-select`, which vanilla Arch has no
+    package for.
+
+    Session enumeration degrades the same way `_dm_write` does: a dir we cannot
+    read yields an empty set, which is "unknown", NOT "absent" — refusing there
+    would hide Couch Mode on a working box over an unreadable directory, and
+    the tool requirement is doing the real work anyway."""
+    installed = _installed_session_files()
+    if not installed:
+        return True  # cannot enumerate: fall back to the tool requirement
+    if GAMESCOPE_SESSION_FILE not in installed:
         return False
-    return "steamos" in rel or "bazzite" in rel
+    return any(name in installed for name in _DESKTOP_SESSIONS)
 
 
 def _connected_outputs():
@@ -3393,8 +3425,8 @@ def _connected_outputs():
 
 
 def couchmode_available():
-    """True when this box can switch desktop↔Game Mode: SteamOS/Bazzite, the
-    session tools present, and ANY connected display to land Game Mode on.
+    """True when this box can switch desktop↔Game Mode: the session tools and
+    both switch targets present, and ANY connected display to land Game Mode on.
 
     An external TV/monitor gives the full handoff (display pin, TV wake, audio
     routing). An INTERNAL-ONLY box — an undocked Steam Deck / Legion Go — now
@@ -3406,7 +3438,7 @@ def couchmode_available():
 
     Headless (no display at all) stays hidden: gamescope with nothing to render
     on is a box you can no longer reach."""
-    if not _is_steamos_like():
+    if not _couchmode_platform_ok():
         return False
     if not all(shutil.which(t) for t in _COUCHMODE_TOOLS):
         return False
@@ -3535,12 +3567,15 @@ def couchmode_info():
 
 
 def desktop_available():
-    """True on a SteamOS/Bazzite box currently in the Plasma DESKTOP session —
+    """True on a Couch-Mode-capable box currently in the DESKTOP session —
     gates the app's desktop-nav cluster (Start menu / pointer / overview), which
     only makes sense in the desktop, not in Game Mode. Session-aware so the
     buttons appear when you're on the desktop and hide once you fling to Game
-    Mode. The keys themselves ride the existing /ws/gamepad uinput keyboard."""
-    return _is_steamos_like() and _couchmode_session() == "desktop"
+    Mode. The keys themselves ride the existing /ws/gamepad uinput keyboard.
+
+    Shares couchmode's platform predicate rather than the old distro-name grep,
+    so the same box that can fling to the TV can also drive its desktop."""
+    return _couchmode_platform_ok() and _couchmode_session() == "desktop"
 
 
 def _couch_run(cmd, timeout=25, max_out=1500):
