@@ -175,7 +175,13 @@ function VolumeSlider({
  * Self-contained (own status poll + probes); renders nothing when there is
  * nothing to control.
  */
-export function RemotePowerBar() {
+/**
+ * `compact` is set by BoxSwitcher when the measured header row is too narrow to
+ * fit both this chip's label and the box name (see the note there). It drops the
+ * chip's words, never its icon — the name is the box's identity, and the icon
+ * already distinguishes Game Mode from Desktop Mode.
+ */
+export function RemotePowerBar({ compact = false }: { compact?: boolean }) {
   const t = useTheme();
   const styles = useThemedStyles(makeStyles);
   const insets = useSafeAreaInsets();
@@ -587,8 +593,13 @@ export function RemotePowerBar() {
             setCouchOpen(true);
           }}
           hitSlop={8}
+          accessibilityRole="button"
+          // The label is what disappears in compact mode, so the words have to
+          // survive here or the control becomes an unlabelled icon.
+          accessibilityLabel={inGameMode ? 'Game Mode' : 'Desktop Mode'}
           style={({ pressed }) => [
             styles.couchBtn,
+            compact && styles.couchBtnCompact,
             inGameMode && styles.couchBtnActive,
             pressed && styles.pressed,
           ]}>
@@ -603,9 +614,11 @@ export function RemotePowerBar() {
               button — which is why it read as arbitrary. State is the honest
               choice here because pressing does not swap anything, it opens the
               Couch Mode sheet, and the sheet owns the action. */}
-          <Text style={[styles.couchLabel, inGameMode && { color: t.green }]}>
-            {inGameMode ? 'Game Mode' : 'Desktop Mode'}
-          </Text>
+          {!compact && (
+            <Text style={[styles.couchLabel, inGameMode && { color: t.green }]}>
+              {inGameMode ? 'Game Mode' : 'Desktop Mode'}
+            </Text>
+          )}
         </Pressable>
       )}
 
@@ -881,6 +894,9 @@ const makeStyles = (t: Palette) => StyleSheet.create({
     marginRight: 8,
   },
   couchBtnActive: { borderColor: t.green, backgroundColor: 'rgba(52,211,153,0.10)' },
+  // Icon-only: drop the label's side padding so the chip becomes a round button
+  // rather than a wide pill with an icon floating in it.
+  couchBtnCompact: { paddingHorizontal: 10 },
   couchLabel: { color: t.text, fontSize: 13, fontWeight: '700', fontFamily: mono },
   trigger: {
     flexDirection: 'row',

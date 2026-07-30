@@ -12,6 +12,7 @@ import {
   Pressable,
   StyleSheet,
   Text,
+  useWindowDimensions,
   View,
 } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
@@ -71,6 +72,33 @@ export function BoxSwitcher() {
 
   const sortedBoxes = useMemo(() => boxes, [boxes]);
 
+  /**
+   * Measured width of the header row, and the threshold below which the Couch
+   * Mode chip drops to icon-only.
+   *
+   * WHY. With the chip's label showing, this row is overfull on a 375pt phone:
+   * the row is 347pt inner, the chip holds its full intrinsic width, and the
+   * name pill is squeezed to 52pt for text needing 67 — an EIGHT-character box
+   * name ellipsised to "mock …". Flex weighting was tried and rejected: it only
+   * bought the name 52->65pt while making the chip truncate too, i.e. two
+   * ellipsised labels instead of one. The name is the box's identity and the
+   * chip's icon (tv-outline vs game-controller) already carries its meaning, so
+   * below the threshold the chip keeps the icon and drops the words.
+   *
+   * The number: a 375pt-wide phone truncates (measured: 347pt row, name gets
+   * 52pt for text needing 67). A 402pt iPhone 17 does NOT — measured against a
+   * real box, "bazzite.local" AND "Game Mode" both render in full. 390 sits
+   * between them.
+   *
+   * Window width, not onLayout on the row: onLayout was tried first and never
+   * delivered a width under react-native-web, so the flag stayed false and the
+   * chip kept its label. useWindowDimensions is reactive on both web and native
+   * and also tracks iPad split-view resizes, which a one-shot layout pass would
+   * miss.
+   */
+  const { width: windowW } = useWindowDimensions();
+  const compactPowerBar = windowW < 390;
+
   return (
     <View style={[styles.headerWrap, { paddingTop: insets.top + 8 }]}>
       <View style={styles.headerRow}>
@@ -94,7 +122,7 @@ export function BoxSwitcher() {
         </Pressable>
 
         {/* Power + volume controls fill the otherwise-empty right of the row. */}
-        <RemotePowerBar />
+        <RemotePowerBar compact={compactPowerBar} />
       </View>
 
       {/* Dropdown sheet: a Modal so it floats above tab content without any

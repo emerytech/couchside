@@ -303,7 +303,7 @@ const makeStyles = (t: Palette) => StyleSheet.create({
     alignItems: 'center',
     marginBottom: 12,
   },
-  errText: { color: '#fecaca', fontSize: 13, marginBottom: 8 },
+  errText: { color: t.onRedDeep, fontSize: 13, marginBottom: 8 },
   retryBtn: {
     backgroundColor: t.red,
     paddingVertical: 10,

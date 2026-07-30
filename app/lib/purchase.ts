@@ -9,6 +9,7 @@
  * do not gate".
  */
 import { Platform } from 'react-native';
+import { shouldReconcileWithStore } from './restoreSync';
 
 /** The single non-consumable unlock product (App Store + Play Store). */
 export const UNLOCK_PRODUCT_ID = 'couchpilot_unlock';
@@ -57,6 +58,12 @@ type IapModule = {
   purchaseErrorListener: (cb: (error: { code?: string; message?: string }) => void) => {
     remove: () => void;
   };
+  /**
+   * iOS: force StoreKit to reconcile with the App Store, then refresh the local
+   * purchase list. Optional because it is absent on older expo-iap and is a
+   * no-op we tolerate missing (see restoreFromUserAction).
+   */
+  restorePurchases?: () => Promise<void>;
 };
 
 let mod: IapModule | null | undefined;
@@ -189,7 +196,66 @@ export async function buy(): Promise<BuyResult> {
   });
 }
 
-/** Query the store for an existing unlock (Restore Purchases). Never throws. */
+/**
+ * Restore, but FIRST force StoreKit to reconcile with the App Store.
+ *
+ * WHY THIS IS SEPARATE FROM restore(), and must stay separate: a tester redeemed
+ * an App Store promo code for the unlock, Apple confirmed it and it showed in
+ * his purchase history — and Restore Purchases still reported nothing. A code
+ * redeemed in the App Store app is redeemed OUT OF BAND; the device's local
+ * StoreKit entitlement cache does not know about it until it reconciles.
+ * getAvailablePurchases() reads that cache, so the app was honestly reporting an
+ * empty cache while the entitlement was real on Apple's side.
+ *
+ * We call expo-iap's `restorePurchases`, NOT `syncIOS` directly. Reading
+ * expo-iap 4.3.6's implementation, restorePurchases branches:
+ *   USING_ONSIDE_SDK -> nativeModule.restorePurchases()
+ *   otherwise        -> syncIOS()
+ * This build uses OpenIAP from CocoaPods, so the OnSide branch is the live one
+ * and calling syncIOS() directly would take the wrong path. restorePurchases is
+ * also already platform-guarded and already swallows its own errors.
+ *
+ * ONLY EVER CALL THIS FROM AN EXPLICIT USER TAP. The reconcile can prompt for an
+ * Apple ID password, and plain restore() is reached on EVERY APP LAUNCH via
+ * EntitlementContext -> revalidateWithStore. Wiring the sync into restore()
+ * itself would put a password prompt on every cold start — which is why the
+ * name of this function says user action out loud.
+ *
+ * Never throws, exactly like restore(): a failed sync falls through to the
+ * unchanged local read, so this can only ever find MORE than before.
+ */
+export async function restoreFromUserAction(): Promise<RestoreResult> {
+  const m = iap();
+  // Held in a local so TypeScript keeps the narrowing; the gate below only
+  // reports whether it is present, it cannot narrow the call site.
+  const reconcile = m?.restorePurchases;
+  // The gate itself lives in an import-free module so it is unit-testable on
+  // bare Node; see lib/restoreSync.ts and its tests.
+  const mayReconcile = shouldReconcileWithStore({
+    platform: Platform.OS,
+    userInitiated: true, // this entry point exists ONLY for the Restore button
+    hasApi: typeof reconcile === 'function',
+  });
+  if (m && reconcile && mayReconcile) {
+    // Requires a connection first; connect() is idempotent and restore() calls
+    // it again below.
+    if (await connect()) {
+      try {
+        await reconcile.call(m);
+      } catch {
+        // Deliberately swallowed. A sync that fails must leave restore() doing
+        // exactly what it did before, never turn a working restore into an error.
+      }
+    }
+  }
+  return restore();
+}
+
+/** Query the store for an existing unlock (Restore Purchases). Never throws.
+ *
+ *  Reads the LOCAL StoreKit/Play purchase cache. For a user-initiated Restore
+ *  use restoreFromUserAction(), which reconciles with Apple first — see there
+ *  for why that split exists and why it must not be collapsed. */
 export async function restore(): Promise<RestoreResult> {
   const m = iap();
   if (!m || !(await connect())) return { state: 'unavailable' };

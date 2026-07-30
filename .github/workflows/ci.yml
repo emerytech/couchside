@@ -157,6 +157,19 @@ jobs:
       - name: Unit tests (boot session default)
         run: python3 tests/test_session_default.py
 
+      # DISKS deduping. btrfs gives every subvolume its own st_dev, so the old
+      # guard listed /home and /var as two identical rows on Bazzite and
+      # SteamOS — the card read as double the real storage. Fixtures are
+      # verbatim /proc/self/mountinfo from a real box.
+      - name: Unit tests (disk dedupe)
+        run: python3 tests/test_disk_dedupe.py
+
+      # The session-switch action you are already in must not be listed:
+      # "Return to Game Mode" fired while in Game Mode rewrites the box's
+      # "Boots into" preference and can restart the session under a game.
+      - name: Unit tests (session action gate)
+        run: python3 tests/test_session_action_gate.py
+
       # Display-manager detection + the greetd writer. Boot-session was
       # SDDM-only, so it silently did not exist on the custom Steam machines
       # people actually build (Arch/CachyOS + gamescope, ChimeraOS) which

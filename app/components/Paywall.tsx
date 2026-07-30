@@ -4,7 +4,7 @@ import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
 import { recordPurchaseDate } from '@/lib/entitlement';
 import { useEntitlement } from '@/lib/EntitlementContext';
-import { buy, getProduct, restore } from '@/lib/purchase';
+import { buy, getProduct, restoreFromUserAction } from '@/lib/purchase';
 import { mono, useThemedStyles } from '@/lib/theme';
 import type { Palette } from '@/lib/theme';
 
@@ -54,12 +54,17 @@ export default function Paywall() {
   const onRestore = useCallback(async () => {
     setBusy('restore');
     setError(null);
-    const result = await restore();
+    const result = await restoreFromUserAction();
     if (result.state === 'purchased') {
       if (result.purchaseDateMs != null) await recordPurchaseDate(result.purchaseDateMs);
       await recordPurchase();
     } else if (result.state === 'none') {
-      setError('No previous purchase found for this account.');
+      // See the same message in setup.tsx: we cannot know the user has no
+      // purchase, only that this device's store cache has none.
+      setError(
+        "No purchase found on this Apple ID. If you redeemed a code, tap Unlock — " +
+          "you won't be charged again for something you already own.",
+      );
     } else if (result.state === 'unavailable') {
       setError('Store unavailable. Please try again later.');
     } else {

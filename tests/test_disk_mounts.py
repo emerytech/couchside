@@ -85,12 +85,38 @@ def _run(layout):
         free = entry[4] if len(entry) > 4 else None
         return _Usage(total, used, free)
 
-    real = (os.stat, os.statvfs, shutil.disk_usage)
+    def fake_fs_key(path):
+        """Stand in for the /proc/self/mountinfo lookup.
+
+        read_disks() now identifies a filesystem by mountinfo's maj:min rather
+        than st_dev, because btrfs gives every SUBVOLUME its own st_dev and that
+        made one filesystem render as two identical disk rows on Bazzite. That
+        lookup reads the REAL /proc, which a caller cannot override by stubbing
+        os.stat — so on a Linux runner this harness's synthetic two-device
+        layouts collapsed into whatever the runner's actual mounts are, and
+        `/` and `/home` (one filesystem on a GitHub runner) merged.
+
+        macOS has no /proc, so _mount_fs_key returned None there, read_disks
+        fell back to st_dev, and this suite passed locally while failing in CI.
+        That gap is the reason this stub exists rather than the tests simply
+        being adjusted: the fake mount table has to own BOTH identity sources or
+        it isn't a fake mount table.
+
+        Derived from the layout's device id so every scenario below keeps its
+        meaning — same id means same filesystem, different ids stay distinct.
+        """
+        if path not in layout:
+            return None
+        return "fake:%s" % (layout[path][2],)
+
+    real = (os.stat, os.statvfs, shutil.disk_usage, cs._mount_fs_key)
     os.stat, os.statvfs, shutil.disk_usage = fake_stat, fake_statvfs, fake_usage
+    cs._mount_fs_key = fake_fs_key
     try:
         return cs.read_disks()
     finally:
-        os.stat, os.statvfs, shutil.disk_usage = real
+        os.stat, os.statvfs, shutil.disk_usage = real[:3]
+        cs._mount_fs_key = real[3]
 
 
 def test_steamos_shape():

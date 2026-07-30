@@ -45,7 +45,7 @@ except ImportError:  # pragma: no cover
     fcntl = None
 
 APP_NAME = "couchside-agent"
-VERSION = "2.9.64"
+VERSION = "2.9.65"
 UID = os.getuid()
 XDG_RUNTIME_DIR = "/run/user/%d" % UID
 
@@ -1284,6 +1284,66 @@ def _steam_library_mounts():
     return out
 
 
+def _mount_fs_key(path):
+    """Identify the FILESYSTEM behind `path`, so two paths into one filesystem
+    dedupe to a single disk row. Returns "maj:min" or None when unreadable.
+
+    WHY NOT st_dev. btrfs hands every SUBVOLUME its own st_dev, so the obvious
+    key fails on exactly the two distros this project targets. MEASURED on a
+    real Bazzite box 2026-07-28:
+
+        /home  st_dev=49   498GB total, 322GB free
+        /var   st_dev=44   498GB total, 322GB free
+
+    Same filesystem (/dev/nvme0n1p3), two st_devs, so both were listed and the
+    DISKS card showed one 498GB disk twice — reading as ~1TB of storage that
+    does not exist. /home is a SYMLINK to var/home on Fedora Atomic derivatives,
+    and /var/home is its own subvolume, which is how the two paths diverge.
+
+    mountinfo's mount-id field is per-FILESYSTEM, not per-subvolume, so it
+    collapses them. Verified BOTH directions on hardware: /home and /var both
+    key to 0:34, while the composefs / keys to 0:38 and stays a separate row.
+
+    WHY THIS CANNOT BREAK A BOX WITH GENUINELY SEPARATE DISKS. mountinfo's
+    maj:min is the SUPERBLOCK device id: identical for every mount of one
+    filesystem, distinct across filesystems. So this key can only ever merge
+    paths that really are the same filesystem — which is exactly what the old
+    st_dev guard was trying to do and failed at on btrfs. It cannot merge two
+    distinct filesystems, so an SD card, an external drive or a separate /home
+    partition still gets its own row. A Steam Deck's / and /home are separate
+    partitions and therefore keep separate keys.
+
+    Degrades closed: None on any read failure, and the caller then falls back to
+    st_dev rather than merging rows it cannot prove are the same.
+
+    VERIFIED on hardware, both distros, both directions. Bazzite (10.1.1.60):
+    /home and /var both key 0:34 and collapse to one row; composefs / (0:38) and
+    ext4 /boot (259:2) stay separate. SteamOS, on a Legion Go S (83N6) and a Deck
+    OLED: /home (259:8) and /var (259:7) are separate ext4 PARTITIONS, so all
+    keys differ, the output is byte-identical to the old st_dev behaviour, and
+    the SD card kept its own row. This fix is a no-op on SteamOS.
+    """
+    try:
+        rp = os.path.realpath(path)
+        best = None
+        with open("/proc/self/mountinfo", "r", encoding="utf-8",
+                  errors="replace") as f:
+            for line in f:
+                fields = line.split()
+                try:
+                    sep = fields.index("-")
+                except ValueError:
+                    continue
+                mount_id, mp = fields[2], fields[4]
+                # Longest matching mount point wins: /var/home must beat /var.
+                if rp == mp or rp.startswith(mp.rstrip("/") + "/"):
+                    if best is None or len(mp) > len(best[0]):
+                        best = (mp, mount_id)
+        return best[1] if best else None
+    except OSError:
+        return None
+
+
 def read_disks():
     disks = []
     seen_devices = set()
@@ -1291,10 +1351,14 @@ def read_disks():
         try:
             # Same filesystem reached by two paths (the common case where /home
             # is not split out) must not be listed twice.
-            try:
-                dev = os.stat(mount).st_dev
-            except OSError:
-                continue
+            # Prefer the filesystem's mount id; st_dev is only a fallback
+            # because btrfs gives each subvolume its own (see _mount_fs_key).
+            dev = _mount_fs_key(mount)
+            if dev is None:
+                try:
+                    dev = "st_dev:%d" % os.stat(mount).st_dev
+                except OSError:
+                    continue
             if dev in seen_devices:
                 continue
 
@@ -3302,6 +3366,51 @@ def _couchmode_session():
         return "desktop"
 
 
+# Which session-switch action is WRONG in each session. Listing the one you are
+# already in is not a harmless no-op:
+#
+#   return-gamemode runs `steamos-session-select gamescope`, which on SteamOS
+#   expands to `steamosctl set-default-login-mode game` + `switch-to-game-mode`
+#   (READ off a Legion Go S, 2026-07-28). Fired while already in Game Mode it
+#   silently rewrites the box's "Boots into" preference to game — the user never
+#   asked for that and the BOOTS INTO card above it goes stale — and re-running
+#   the switch "can restart the session under a running game", which is the
+#   hazard _couchmode_session_strict below was already written to avoid for the
+#   controller trigger.
+#
+#   switch-desktop is the mirror: offered while already on the desktop it is
+#   noise, though it is the milder of the two (it does not touch the default).
+#
+# The row is labelled danger "medium" and gets one confirm whose wording assumes
+# the opposite session ("Switch back from the desktop..."), so nothing in the UI
+# warns the user. Hiding it in the state where it can only do harm is the fix.
+_WRONG_ACTION_IN_SESSION = {
+    "gamescope": "return-gamemode",
+    "desktop": "switch-desktop",
+}
+
+
+def _session_actions_to_hide():
+    """Action ids to omit from /api/actions for the CURRENT session.
+
+    Uses the STRICT probe: an unknown session returns nothing to hide, so the
+    list stays exactly what it is today. This gate may only ever REMOVE an
+    action when the session is positively known — it must never be able to
+    strand a box with no way to switch sessions because a pgrep timed out.
+
+    LIST ONLY, DELIBERATELY: POST /api/action/return-gamemode still works. The
+    accidental tap is what is worth removing, not the capability — restarting a
+    WEDGED Game Mode session is a real recovery a user may want, and unsticking
+    a couch session is close to the product's whole premise. Blocking execution
+    would take that away to prevent a mistake the hidden row no longer invites.
+    """
+    session = _couchmode_session_strict()
+    if session is None:
+        return frozenset()
+    aid = _WRONG_ACTION_IN_SESSION.get(session)
+    return frozenset([aid]) if aid else frozenset()
+
+
 def _couchmode_session_strict():
     """'gamescope' | 'desktop' | None. Same probe as _couchmode_session but
     UNKNOWN on error instead of assuming 'desktop'.
@@ -3940,11 +4049,27 @@ def session_default_get():
     if backend is None:
         return {"available": False, "backend": None, "mode": "unknown"}
     if backend == "greetd":
-        if _greetd_write(target):
-            return done(True)
-        return done(False, "could not set greetd's boot session "
-                           "(session not installed, no Exec, or config not "
-                           "safely rewritable)")
+        # READ the configured boot command and map it back to a mode. This is
+        # the exact inverse of _greetd_write, which stores the session's Exec=.
+        #
+        # This branch previously held a paste of session_default_SET's body and
+        # called `_greetd_write(target)` — `target` is not defined here and is
+        # not a global, so GET /api/session/default raised NameError on every
+        # greetd box, i.e. exactly the machines greetd support was added for,
+        # and the BOOTS INTO card never loaded. A getter must never write.
+        cmd = _greetd_current_command()
+        if not cmd:
+            return {"available": True, "backend": backend, "mode": "unknown"}
+        game_cmd = _session_exec_command(GAMESCOPE_SESSION_FILE)
+        if game_cmd and cmd == game_cmd:
+            return {"available": True, "backend": backend, "mode": "game"}
+        for session_file in _DESKTOP_SESSIONS:
+            desk_cmd = _session_exec_command(session_file)
+            if desk_cmd and cmd == desk_cmd:
+                return {"available": True, "backend": backend, "mode": "desktop"}
+        # A hand-written command we do not recognise. Degrade closed (§3.7):
+        # "unknown" is honest; guessing "desktop" would mislabel a game box.
+        return {"available": True, "backend": backend, "mode": "unknown"}
 
     if backend == "steamosctl":
         try:
@@ -14772,12 +14897,15 @@ class Handler(BaseHTTPRequestHandler):
             elif path == "/api/journal":
                 self._handle_journal(parsed, started)
             elif path == "/api/actions":
+                # Mock has no real session, so the harness keeps showing both.
+                hide = frozenset() if self.mock else _session_actions_to_hide()
                 actions = [
                     {"id": aid,
                      "label": ACTIONS[aid]["label"],
                      "description": ACTIONS[aid]["description"],
                      "danger": ACTIONS[aid]["danger"]}
                     for aid in ACTION_ORDER
+                    if aid not in hide
                 ]
                 self._send(200, {"actions": actions}, started)
             elif path == "/api/launchers":

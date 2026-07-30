@@ -198,7 +198,7 @@ const ALL_PHASES: SetupPhase[] = [
   { k: 'looking', since: 1000, sweeps: 2 },
   { k: 'stalled', since: 1000, sweeps: 40 },
   { k: 'nonet', verdict: { k: 'cellular' } },
-  { k: 'found', box: MODERN },
+  { k: 'found', boxes: [MODERN] },
   { k: 'unsupported', box: ANCIENT },
   { k: 'starting', box: MODERN },
   { k: 'pin', box: MODERN, expiresAt: 500_000 },
@@ -215,7 +215,7 @@ const ALL_EVENTS: SetupEvent[] = [
   { t: 'NO_NET', verdict: { k: 'offline' } },
   { t: 'GIVE_UP' },
   { t: 'KEEP_LOOKING', now: 3000 },
-  { t: 'START_PIN' },
+  { t: 'START_PIN', box: MODERN },
   { t: 'START_OK', ttl: 120, now: 4000 },
   { t: 'START_ERR', msg: 'boom' },
   { t: 'UNSUPPORTED' },
@@ -262,14 +262,18 @@ test('INVARIANT: no in-flight phase is a resting state — each is left by BOTH 
   }
   // CONTROL, the other direction: a RESTING phase legitimately ignores events
   // that do not apply to it, so "leaves on every event" is not the rule.
-  assert.equal(nextPhase({ k: 'found', box: MODERN }, { t: 'PAIR_OK' }).k, 'found');
+  assert.equal(nextPhase({ k: 'found', boxes: [MODERN] }, { t: 'PAIR_OK' }).k, 'found');
 });
 
 test('a late sighting cannot yank the screen out from under a typed PIN', () => {
   // The sweep is still draining when the user taps Pair now. Its stragglers
   // arrive seconds later.
+  // NOTE: `found` is deliberately NOT in this list. It is PRE-commitment — the
+  // user has not chosen a box yet, so a second box arriving must be ADDED, not
+  // discarded. Refusing sightings there was the latch-onto-one bug: the first
+  // box to answer ended the search and every other box on the LAN vanished.
+  // Commitment starts at `starting`, when a specific box has been tapped.
   const committed: SetupPhase[] = [
-    { k: 'found', box: MODERN },
     { k: 'starting', box: MODERN },
     { k: 'pin', box: MODERN, expiresAt: 500_000 },
     { k: 'pairing', box: MODERN, expiresAt: 500_000 },
@@ -310,8 +314,8 @@ test('the full happy path, end to end', () => {
   assert.equal(p, before, 'SWEEP_START while looking is identity');
 
   p = nextPhase(p, { t: 'FOUND', box: MODERN });
-  assert.deepEqual(p, { k: 'found', box: MODERN });
-  p = nextPhase(p, { t: 'START_PIN' });
+  assert.deepEqual(p, { k: 'found', boxes: [MODERN] });
+  p = nextPhase(p, { t: 'START_PIN', box: MODERN });
   assert.equal(p.k, 'starting');
   // The countdown comes from the RETURNED ttl. Inside the agent's 3s debounce
   // that is the live pairing's REMAINING seconds, not a fresh 120.
@@ -351,7 +355,7 @@ test('a start that failed offers a new PIN, not a dead text field', () => {
   // expiresAt 0 is what makes the card render "SHOW A NEW PIN" instead of PAIR.
   assert.equal(ttlRemaining((p as { expiresAt: number }).expiresAt, Date.now()), 0);
   // START_PIN from `failed` is the retry; it must go back through /pair/start.
-  assert.equal(nextPhase(p, { t: 'START_PIN' }).k, 'starting');
+  assert.equal(nextPhase(p, { t: 'START_PIN', box: MODERN }).k, 'starting');
 });
 
 test('an agent that answers 401 is routed away from the PIN input', () => {
@@ -359,7 +363,12 @@ test('an agent that answers 401 is routed away from the PIN input', () => {
   // RESOLVES the 401 body rather than throwing, so without this the card would
   // print the bare word "unauthorized" at the user.
   assert.equal(nextPhase({ k: 'starting', box: MODERN }, { t: 'UNSUPPORTED' }).k, 'unsupported');
-  assert.equal(nextPhase({ k: 'found', box: MODERN }, { t: 'UNSUPPORTED' }).k, 'unsupported');
+  // NOT from `found`. The event is only ever dispatched after pairStart returns
+  // 401, by which point a specific box was chosen and the phase is `starting`.
+  // Honouring it from `found` would mark a whole LIST unsupported because one
+  // box answered 401, discarding boxes the user can actually pair.
+  const many: SetupPhase = { k: 'found', boxes: [MODERN, box('2.9.60', { ip: '10.1.1.9' })] };
+  assert.deepEqual(nextPhase(many, { t: 'UNSUPPORTED' }), many);
   // CONTROL: it is not a global override — it cannot kill a live PIN entry.
   const pin: SetupPhase = { k: 'pin', box: MODERN, expiresAt: 1 };
   assert.deepEqual(nextPhase(pin, { t: 'UNSUPPORTED' }), pin);
@@ -380,9 +389,9 @@ test('give up, then keep looking, with a fresh clock', () => {
 
 test('BACK returns to the found box without losing it', () => {
   const pin: SetupPhase = { k: 'pin', box: MODERN, expiresAt: 5 };
-  assert.deepEqual(nextPhase(pin, { t: 'BACK' }), { k: 'found', box: MODERN });
+  assert.deepEqual(nextPhase(pin, { t: 'BACK' }), { k: 'found', boxes: [MODERN] });
   const failed: SetupPhase = { k: 'failed', box: MODERN, msg: 'wrong PIN', expiresAt: 5, shown: true };
-  assert.deepEqual(nextPhase(failed, { t: 'BACK' }), { k: 'found', box: MODERN });
+  assert.deepEqual(nextPhase(failed, { t: 'BACK' }), { k: 'found', boxes: [MODERN] });
   // CONTROL: BACK does not interrupt an in-flight request.
   const pairing: SetupPhase = { k: 'pairing', box: MODERN, expiresAt: 5 };
   assert.deepEqual(nextPhase(pairing, { t: 'BACK' }), pairing);
@@ -402,7 +411,7 @@ test('the card never marks a step done on a guess, and stops claiming to watch',
     'active',
     'todo',
   ]);
-  assert.deepEqual(stepMarks({ k: 'found', box: MODERN }), ['done', 'done', 'done', 'active']);
+  assert.deepEqual(stepMarks({ k: 'found', boxes: [MODERN] }), ['done', 'done', 'done', 'active']);
   assert.deepEqual(stepMarks({ k: 'paired', box: MODERN }), ['done', 'done', 'done', 'done']);
 
   // Step 3 is "watch this screen — it updates by itself". It may be marked
@@ -461,4 +470,42 @@ test('HIGH: "expired" is never claimed for a PIN that was never shown', () => {
   const live: SetupPhase = { k: 'pairing', box: MODERN, expiresAt: 500_000 };
   const after = nextPhase(live, { t: 'PAIR_ERR', msg: 'wrong PIN', dead: false });
   assert.equal(after.k === 'failed' && after.shown, true);
+});
+
+test('THE LATCH BUG: a second box is added, not discarded', () => {
+  // Reported from a device with two boxes on the LAN: the card announced
+  // "Found emery-pc" and offered to pair it, while a Steam Deck sat equally
+  // reachable and invisible. Which box answers the sweep first is timing, not
+  // intent, so committing to it is a claim the card cannot back.
+  const a = box('2.9.60', { ip: '10.1.1.197', name: 'emery-pc' });
+  const b = box('2.9.60', { ip: '10.1.1.212', name: 'taylor-steamdeck' });
+  let p = nextPhase({ k: 'looking', since: 0, sweeps: 1 }, { t: 'FOUND', box: a });
+  assert.equal(p.k, 'found');
+  assert.deepEqual(p.k === 'found' && p.boxes.map((x) => x.name), ['emery-pc']);
+  p = nextPhase(p, { t: 'FOUND', box: b });
+  assert.deepEqual(p.k === 'found' && p.boxes.map((x) => x.name),
+    ['emery-pc', 'taylor-steamdeck'], 'second box was discarded');
+
+  // Dedupe: the HTTP sweep and the UDP probe both report the same box, and
+  // listing one machine twice looks broken.
+  p = nextPhase(p, { t: 'FOUND', box: box('2.9.60', { ip: '10.1.1.197', name: 'emery-pc' }) });
+  assert.equal(p.k === 'found' && p.boxes.length, 2, 'same ip was added twice');
+
+  // CONTROL, the other direction: once the user COMMITS to one, later
+  // stragglers must not disturb the screen.
+  const committed = nextPhase(p, { t: 'START_PIN', box: a });
+  assert.equal(committed.k, 'starting');
+  assert.deepEqual(nextPhase(committed, { t: 'FOUND', box: b }), committed);
+});
+
+test('one too-old box does not hide boxes that CAN be paired', () => {
+  const good = box('2.9.60', { ip: '10.1.1.212' });
+  const old = box('2.9.1', { ip: '10.1.1.50' });
+  const found = nextPhase({ k: 'looking', since: 0, sweeps: 1 }, { t: 'FOUND', box: good });
+  const after = nextPhase(found, { t: 'FOUND', box: old });
+  assert.equal(after.k, 'found', 'an unsupported box replaced a usable list');
+  assert.equal(after.k === 'found' && after.boxes.length, 1);
+  // CONTROL: with nothing usable found, a too-old box IS reported as such.
+  const only = nextPhase({ k: 'looking', since: 0, sweeps: 1 }, { t: 'FOUND', box: old });
+  assert.equal(only.k, 'unsupported');
 });

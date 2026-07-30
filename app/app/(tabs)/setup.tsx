@@ -60,7 +60,7 @@ import {
   type MediaSkipSec,
 } from '@/lib/mediaSeek';
 import { setPref, usePref } from '@/lib/prefs';
-import { buy, getProduct, restore } from '@/lib/purchase';
+import { buy, getProduct, restoreFromUserAction } from '@/lib/purchase';
 import { Box, DEFAULT_PORT, normalizeMac } from '@/lib/settings';
 import { VolumeTarget } from '@/lib/api';
 import { useBoxes, useBoxOnlineStatus, BoxReachability } from '@/lib/SettingsContext';
@@ -847,13 +847,23 @@ function SetupBody() {
   const onRestore = useCallback(async () => {
     setRestoring(true);
     setRestoreMsg(null);
-    const result = await restore();
+    const result = await restoreFromUserAction();
     if (result.state === 'purchased') {
       if (result.purchaseDateMs != null) await recordPurchaseDate(result.purchaseDateMs);
       await recordPurchase();
       setRestoreMsg({ text: 'Purchase restored, unlocked.', ok: true });
     } else if (result.state === 'none') {
-      setRestoreMsg({ text: 'No previous purchase found for this account.', ok: false });
+      // Not "you have no purchase" — we cannot know that. A promo code redeemed
+      // in the App Store app can still be missing here if the reconcile failed,
+      // and telling a user who DOES own it that they do not is how a paying
+      // customer concludes the app is broken. Point at Unlock, which restores a
+      // non-consumable free ("You've already purchased this").
+      setRestoreMsg({
+        text:
+          "No purchase found on this Apple ID. If you redeemed a code, tap Unlock — " +
+          "you won't be charged again for something you already own.",
+        ok: false,
+      });
     } else if (result.state === 'unavailable') {
       setRestoreMsg({ text: 'Store unavailable, try again later.', ok: false });
     } else {

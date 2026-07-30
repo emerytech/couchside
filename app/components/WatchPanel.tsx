@@ -637,7 +637,8 @@ const makeStyles = (t: Palette) =>
       borderRadius: 10,
       backgroundColor: t.redDeep,
     },
-    stopText: { color: '#fff', fontWeight: '700', fontSize: 14 },
+    // '#fff' here was 1.45:1 on light's redDeep — an invisible Stop label.
+    stopText: { color: t.onRedDeep, fontWeight: '700', fontSize: 14 },
     linkRow: { flexDirection: 'row', gap: 8 },
     input: {
       flex: 1,

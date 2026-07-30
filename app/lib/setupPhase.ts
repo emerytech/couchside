@@ -205,8 +205,20 @@ export type SetupPhase =
   | { k: 'stalled'; since: number; sweeps: number }
   /** Not sweeping because sweeping cannot work from here. */
   | { k: 'nonet'; verdict: NetVerdict }
-  /** A box answered /api/ping while the fleet was empty. THE payoff moment. */
-  | { k: 'found'; box: SetupBox }
+  /** Boxes that answered /api/ping while the fleet was empty. THE payoff moment.
+   *
+   *  A LIST, not one box, and that is the point. The first version latched onto
+   *  whichever box answered the sweep first and announced "Found <name>" as if
+   *  it were THE box — but which one answers first is sweep timing, not intent.
+   *  Reported from a device with two boxes on the LAN: it locked onto the
+   *  Windows PC and offered to pair it, when the Steam Deck was equally there.
+   *  Claiming to have found "your box" when we cannot know which is yours is
+   *  the kind of confident-wrong-answer this card cannot afford.
+   *
+   *  Ordered by first sighting, so the single-box case — the one this whole
+   *  card is designed around — renders exactly as it did: one name, one button,
+   *  no decision to make. Only a second box turns it into a choice. */
+  | { k: 'found'; boxes: SetupBox[] }
   /** Agent too old (or non-conforming) for PIN pairing — route to QR/token. */
   | { k: 'unsupported'; box: SetupBox }
   /** POST /api/pair/start in flight. */
@@ -230,7 +242,9 @@ export type SetupEvent =
   | { t: 'NO_NET'; verdict: NetVerdict }
   | { t: 'GIVE_UP' }
   | { t: 'KEEP_LOOKING'; now: number }
-  | { t: 'START_PIN' }
+  /** `box` is required now that `found` can hold several: the reducer cannot
+   *  guess which one the user tapped. */
+  | { t: 'START_PIN'; box: SetupBox }
   | { t: 'START_OK'; ttl: number; now: number }
   | { t: 'START_ERR'; msg: string }
   /**
@@ -259,6 +273,19 @@ export const TRANSIENT: readonly SetupPhase['k'][] = ['looking', 'starting', 'pa
  *  has already committed to a box, and a straggler sighting from the sweep that
  *  was still draining must NOT yank the screen out from under them. */
 const SIGHTING_OK: readonly SetupPhase['k'][] = ['idle', 'looking', 'stalled', 'nonet'];
+/**
+ * Phases a NEW box sighting may still be added to. Same as SIGHTING_OK plus
+ * `found` — that addition is the whole fix for the latch-onto-one bug: without
+ * it, the first box to answer ended the search and every other box on the LAN
+ * was silently discarded.
+ *
+ * Deliberately NOT the same list as SIGHTING_OK, which still governs NO_NET and
+ * must NOT include `found`: losing the network verdict after boxes are on
+ * screen should not wipe them, and nothing past `found` (starting/pin/pairing)
+ * may be interrupted by a late sighting — that is the rule about never yanking
+ * the screen out from under a typed PIN.
+ */
+const FOUND_OK: readonly SetupPhase['k'][] = [...SIGHTING_OK, 'found'];
 
 /**
  * The whole state machine. Pure, total (never throws for any phase x event) and
@@ -280,11 +307,21 @@ export function nextPhase(p: SetupPhase, e: SetupEvent): SetupPhase {
     case 'SWEEP_EMPTY':
       return p.k === 'looking' ? { ...p, sweeps: p.sweeps + 1 } : p;
 
-    case 'FOUND':
-      if (!SIGHTING_OK.includes(p.k)) return p;
-      return supportsPinPairing(e.box.version)
-        ? { k: 'found', box: e.box }
-        : { k: 'unsupported', box: e.box };
+    case 'FOUND': {
+      if (!FOUND_OK.includes(p.k)) return p;
+      // An agent too old to show a PIN is routed away rather than added to the
+      // list — offering it a PIN input it would 404 on is worse than saying so.
+      if (!supportsPinPairing(e.box.version)) {
+        // ...unless we already have a pairable box: one unsupported box must
+        // not throw away a working choice the user can actually act on.
+        return p.k === 'found' ? p : { k: 'unsupported', box: e.box };
+      }
+      const seen = p.k === 'found' ? p.boxes : [];
+      // Dedupe by ip: the sweep and the UDP probe can both report the same box,
+      // and a phone listing one machine twice looks broken.
+      if (seen.some((b) => b.ip === e.box.ip)) return p;
+      return { k: 'found', boxes: [...seen, e.box] };
+    }
 
     case 'NO_NET':
       // Only while searching. A verdict arriving mid-pairing is not a reason to
@@ -302,8 +339,10 @@ export function nextPhase(p: SetupPhase, e: SetupEvent): SetupPhase {
 
     case 'START_PIN':
       // From `found` (first time), from `failed` or `pin` ("Show a new PIN").
+      // The box comes from the EVENT, not the phase: `found` can now hold
+      // several, and only the caller knows which one was tapped.
       if (p.k === 'found' || p.k === 'pin' || p.k === 'failed') {
-        return { k: 'starting', box: p.box };
+        return { k: 'starting', box: e.box };
       }
       return p;
 
@@ -326,7 +365,10 @@ export function nextPhase(p: SetupPhase, e: SetupEvent): SetupPhase {
         : p;
 
     case 'UNSUPPORTED':
-      return p.k === 'starting' || p.k === 'found' ? { k: 'unsupported', box: p.box } : p;
+      // Only from `starting`: by then a specific box was chosen. From `found`
+      // there may be several, and marking the whole list unsupported because
+      // one box is too old would throw away boxes the user CAN pair.
+      return p.k === 'starting' ? { k: 'unsupported', box: p.box } : p;
 
     case 'SUBMIT':
       if (p.k === 'pin' || p.k === 'failed') {
@@ -347,7 +389,7 @@ export function nextPhase(p: SetupPhase, e: SetupEvent): SetupPhase {
 
     case 'BACK':
       return p.k === 'pin' || p.k === 'failed' || p.k === 'unsupported'
-        ? { k: 'found', box: p.box }
+        ? { k: 'found', boxes: [p.box] }
         : p;
   }
 }
@@ -365,6 +407,19 @@ export function isSearching(p: SetupPhase): boolean {
  * what stops a straggler sighting — from the sweep that was still draining when
  * they tapped Pair now — from yanking the screen out from under a typed PIN.
  */
+/**
+ * May the sweep keep running from this phase?
+ *
+ * Differs from acceptsSighting by ONE phase, and that phase is the whole
+ * latch-onto-one fix: `found` may still sweep, because more boxes may be out
+ * there and the user has not chosen yet. Commitment starts when they tap Pair
+ * now (`starting`), and from there the sweep must stop — both to save the
+ * radio and so a straggler cannot disturb a PIN being typed.
+ */
+export function maySweep(p: SetupPhase): boolean {
+  return FOUND_OK.includes(p.k);
+}
+
 export function acceptsSighting(p: SetupPhase): boolean {
   return SIGHTING_OK.includes(p.k);
 }

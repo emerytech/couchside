@@ -318,6 +318,33 @@ coordinates explicitly for the same reason.
 
 ---
 
+### A green agent test run on macOS proves nothing about `/proc` parsing
+
+macOS has no `/proc/self/mountinfo`. Any agent code that reads it returns the
+"unreadable" branch on this Mac and falls back to the old path, so the new code
+is never exercised — the suite goes green while CI goes red.
+
+MEASURED 2026-07-29: keying disk dedupe on mountinfo instead of `st_dev` passed
+46/46 locally and failed CI from `4889b305` onward. The release shipped before
+anyone looked.
+
+Two rules:
+
+1. **Run `/proc`- or sysfs-parsing tests on a real Linux box**, not here:
+   `scp agent/couchsided.py tests/<test>.py` to `/tmp` on bazzite and run them
+   there. Behaviour verification on hardware is not the same as running the
+   SUITE on hardware — do both.
+2. **A fake must own every identity source the code consults.** The disk test
+   faked `os.stat` but could not fake `/proc`, so on Linux the real mount table
+   decided and the synthetic layout stopped being synthetic. When production
+   code gains a new source of truth, the fake gains a stub for it in the same
+   commit.
+
+### Check CI before releasing, not after
+
+CI is one `gh run list --branch <branch> --limit 1` away. This release went to
+both app stores with the branch red for six commits.
+
 ## 5. Releases
 
 - **Explicit version bumps**, never automatic: agent `VERSION` (`agent/couchsided.py:47`) and app
@@ -334,6 +361,48 @@ coordinates explicitly for the same reason.
   cannot forge a release (`scripts/release-agent.sh:11-12`, `scripts/sign-release.sh:8-10`).
 - `release-agent.sh` clobbers assets on an existing tag, so re-run it after every agent bump that
   ships under the same app-version tag.
+
+### Cloud builds cost money — use them only where they are required
+
+EAS cloud builds are metered and a session of per-merge builds ran up a **$100 bill**. There is a
+free path that costs nothing in correctness, because the constraint that decides it is already
+known and measured:
+
+> `eas build --local` on this Mac produces a binary that installs and runs fine on **TestFlight**,
+> but is **always rejected `INVALID_BINARY` at App Store review** (the host runs a beta macOS).
+
+So:
+
+| purpose | build where |
+|---|---|
+| TestFlight, Play internal, any iteration or device check | **local** — `eas build -p ios --local` |
+| App Store submission, Play production | **EAS cloud** — required, the local binary is rejected |
+
+Two rules that go with it:
+
+- **Batch.** One build per *release*, not per merge. Seven merged items are one build. If a build
+  is already running and more work lands, let it finish and fold the rest into the next one —
+  cancelling and re-cutting costs two builds instead of one.
+- **Never cut a build to "see if it works".** The web harness, `tsc`, the bare-Node suites and a
+  Release **simulator** build (`xcodebuild -sdk iphonesimulator`, free) answer almost every
+  question a cloud build would. A cloud build is for shipping, not for checking.
+
+### Keep the EAS archive small — `.easignore` lives at the GIT ROOT
+
+Builds failed outright with *"Project archive is too big. Maximum allowed size is 2.0 GB."* Cause:
+`.claude/worktrees/` holds git worktrees used for parallel work — inside the repo, each carrying
+its own `node_modules` and native build output, **8.4 GB** in total.
+
+Two traps, both hit for real:
+
+- It is excluded from git via `.git/info/exclude`, which is **local-only and which EAS does not
+  honour**. Being invisible to `git status` does not make it invisible to the uploader.
+- An `.easignore` inside `app/` **does not work**, even though `eas.json` lives there. EAS roots
+  its archive at the **git root**, so the ignore file must be at the git root too.
+
+Worktrees also accumulate: eleven of them reached ~27 GB, of which ~17 GB was regenerable
+`node_modules` / `ios` / `android`. Prune them with `git worktree remove` — **removing a worktree
+does not delete its branch**, so the work survives in git; commit anything uncommitted first.
 
 ---
 

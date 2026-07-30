@@ -18,6 +18,25 @@ the same thing regardless of what actually changed.
 Write for the person holding the phone, not for the commit log. They are
 deciding whether to press "Update now" on a machine across the room.
 
+## 2.9.65
+
+Three fixes, all found by testing against real boxes rather than reading code.
+
+- **"Return to Game Mode" no longer appears when you are already in Game Mode.**
+  Tapping it there did more than nothing: it quietly changed what your box boots
+  into, and it could restart the session out from under a running game. The
+  button is still there when you are on the desktop, which is when it makes
+  sense. If a Game Mode session ever wedges, the app can still restart it.
+
+- **Storage no longer shows the same drive twice.** On Bazzite the card listed
+  `/home` and `/var` as two separate disks with identical numbers, so a 464 GB
+  drive read as though you had nearly a terabyte. They are two names for one
+  filesystem, and now they count once. Steam Decks were never affected.
+
+- **Custom Steam machines can read their boot setting again.** On boxes that use
+  greetd instead of SDDM, asking the box which mode it starts in failed outright,
+  so the "Boots into" card never loaded. It answers now.
+
 ## 2.9.64
 
 The Couchside Player arrives — an optional, experimental add-on.
