@@ -60,6 +60,57 @@ def _run_couchmode(switch_ok, gamescope_up):
     return cs.couchmode_start("", False)
 
 
+def _run_desktop(switch_ok, landed):
+    """Drive the real desktop_mode() with only its environment stubbed."""
+    cs._session_to_desktop = lambda: ({"ok": True, "stderr": ""} if switch_ok
+                                      else {"ok": False, "stderr": "select failed"})
+    cs._couch_verify_desktop = lambda: landed
+    cs._couchmode_session = lambda: ("desktop" if landed else "gamescope")
+    cs._restore_default_sink = lambda: {"state": "skipped", "reason": "test"}
+    return cs.desktop_mode()
+
+
+def test_leaving_game_mode_is_verified_too():
+    """The LEAVING direction must not report a switch that did not happen.
+
+    Bug (a) was fixed only on the way IN. `steamos-session-select plasma` exits
+    0 once it has written the autologin file and asked the session to stop, so
+    ok=True said nothing about where the box landed — and when a Couchside boot
+    preference outranked that file (KI-051), the box came straight back to Game
+    Mode while the API answered {"ok": true, "session": "desktop"}. The owner
+    read that as his DISTRO being broken. Same three cases the entering path
+    has had since the ceremony was built.
+    """
+    print("test_leaving_game_mode_is_verified_too")
+    saved = (cs._session_to_desktop, cs._couch_verify_desktop,
+             cs._couchmode_session, cs._restore_default_sink)
+    try:
+        # THE FIELD BUG: switch accepted, box still in Game Mode.
+        j = _run_desktop(switch_ok=True, landed=False)
+        check(j["ok"] is False, "did not land -> ok is False (no fake green)")
+        check(j["session"] == "gamescope",
+              "...and it reports the session OBSERVED, not the one asked for")
+        step = j["steps"].get("desktop_up") or {}
+        check(step.get("ok") is False, "...with a desktop_up step explaining it")
+        check("boot preference" in (step.get("stderr") or ""),
+              "...naming the cause a user can act on")
+
+        # CONTROL: it really did land.
+        j = _run_desktop(switch_ok=True, landed=True)
+        check(j["ok"] is True, "landed -> ok is True")
+        check(j["session"] == "desktop", "...and reports the desktop")
+        check("desktop_up" not in j["steps"], "...with no failure step")
+
+        # The switch tool itself failed: no readback claim either way.
+        j = _run_desktop(switch_ok=False, landed=False)
+        check(j["ok"] is False, "tool failed -> ok is False")
+        check("desktop_up" not in j["steps"],
+              "...and no desktop_up step (nothing was triggered to verify)")
+    finally:
+        (cs._session_to_desktop, cs._couch_verify_desktop,
+         cs._couchmode_session, cs._restore_default_sink) = saved
+
+
 def test_switch_ok_but_gamescope_never_appears():
     print("the bug: switch exits 0, Game Mode never comes up")
     j = _run_couchmode(switch_ok=True, gamescope_up=False)
@@ -130,6 +181,7 @@ def test_stddev_math():
 
 
 if __name__ == "__main__":
+    test_leaving_game_mode_is_verified_too()
     test_switch_ok_but_gamescope_never_appears()
     test_switch_ok_and_gamescope_up()
     test_switch_tool_itself_failed()

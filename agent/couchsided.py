@@ -45,7 +45,7 @@ except ImportError:  # pragma: no cover
     fcntl = None
 
 APP_NAME = "couchside-agent"
-VERSION = "2.9.66"
+VERSION = "2.9.67"
 UID = os.getuid()
 XDG_RUNTIME_DIR = "/run/user/%d" % UID
 
@@ -3281,10 +3281,28 @@ def real_journal(unit, scope, lines):
     return r.stdout.splitlines()
 
 
+# Actions that take the box down, and are therefore the last chance to write
+# the boot preference. Ids only — the argv still comes from the frozen table.
+_POWER_DOWN_ACTIONS = ("reboot", "poweroff")
+
+
 def real_action(action_id):
     spec = ACTIONS[action_id]
     env = _user_env() if spec["user_env"] else None
     start = time.monotonic()
+    if action_id in _POWER_DOWN_ACTIONS:
+        # ARM HERE TOO, not only from the unit's ExecStop. The hook ships in
+        # agent/couchside.service, and the phone-triggered update never installs
+        # a new unit (see _arm_hook_installed) — so on an app-updated box this
+        # is the only thing that gets the preference written. It is also simply
+        # correct: the box is about to go down, which is precisely when arming
+        # is safe. Idempotent with ExecStop, which runs moments later on a box
+        # whose unit does carry the hook.
+        try:
+            session_default_arm()
+        except Exception as e:
+            print("[session] arm before %s failed: %s" % (action_id, str(e)[:120]),
+                  flush=True)
     if spec["detached"]:
         proc = subprocess.Popen(
             spec["cmd"], env=env,
@@ -3915,6 +3933,99 @@ def _steamosctl_session_ok():
     return out.split()[0] in ("game", "desktop")
 
 
+# ---------------------------------------------------------------------------
+# ARMED ONLY WHILE THE BOX IS OFF. This is the shape of the whole feature and
+# the reason it was rebuilt (KI-051).
+#
+# A one-shot session switch IS a re-autologin: `steamos-session-select` writes
+# the distro's own zz-steamos-autologin.conf and then ends the session, and the
+# display manager logs back in by merging <confdir>/*.conf alphabetically. Our
+# drop-in sorts LAST so the boot preference wins — which also means it wins
+# against the switch the user just asked for. MEASURED on the owner's CachyOS
+# box and reproduced on Bazzite: the distro's file said plasma.desktop, ours
+# said gamescope-session.desktop, and the box came back to Game Mode.
+#
+# The part that made it serious: this defeats STEAM'S OWN "Switch to Desktop"
+# too, not just ours. Setting a boot preference silently disabled the machine's
+# own session switching, and the owner reasonably blamed his distro.
+#
+# There is no non-disruptive platform API to set this on Bazzite/CachyOS —
+# steamosctl's interface is absent there, and session-select always restarts the
+# display manager, which would log the user out. So the drop-in stays, but its
+# LIFETIME changes: it exists only while the box is shut down.
+#
+#   agent start  -> CONSUME: blank our drop-in. The boot it was for has already
+#                   happened, so from here on nothing of ours can override a
+#                   switch, from Steam or anywhere else.
+#   agent stop   -> ARM: render it from the stored preference (systemd ExecStop,
+#                   so this runs on shutdown/reboot).
+#
+# The preference itself lives in config.json — the drop-in is a derived artifact
+# now, not the source of truth. "last" never arms at all: that is precisely the
+# platform's own behaviour, so the honest implementation is to write nothing.
+#
+# Unclean power-off never arms, and the box comes up in its last session. That
+# is the documented trade: an honest miss beats a preference that breaks the
+# machine's own controls for the whole session.
+# ---------------------------------------------------------------------------
+
+SESSION_DEFAULT_CONFIG_KEY = "session_default"
+# Body of a disarmed drop-in: present but contributing no [Autologin] stanza.
+# Blanked rather than deleted because the sudoers grant permits `tee` at exactly
+# this path and nothing else — writing is the only tool we have there.
+_DISARMED_DROPIN_BODY = (
+    "# Couchside boot preference — DISARMED while the box is running.\n"
+    "# It is written on shutdown and blanked at startup, so it can never\n"
+    "# override a session switch (including Steam's own). Deleting this file\n"
+    "# is always safe.\n")
+
+
+def session_default_pref():
+    """The stored boot preference: "game" | "desktop" | "last" | None.
+
+    None means the user never set one, which is different from "last" — we then
+    leave the box entirely alone rather than adopting a default on its behalf."""
+    try:
+        with open(CONFIG_PATH, "r", encoding="utf-8") as f:
+            raw = json.load(f)
+    except (OSError, ValueError):
+        return None
+    if not isinstance(raw, dict):
+        return None
+    val = raw.get(SESSION_DEFAULT_CONFIG_KEY)
+    return val if val in SESSION_DEFAULT_MODES else None
+
+
+SERVICE_UNIT_PATH = "/etc/systemd/system/couchside.service"
+_ARM_FLAG = "--arm-boot-session"
+
+
+def _arm_hook_installed():
+    """True when THIS box's unit carries the ExecStop that arms the preference.
+
+    The whole conf-dir feature now depends on that hook, and the hook ships in
+    agent/couchside.service — which the PHONE-TRIGGERED UPDATE never installs.
+    That path (install.sh's CAN_PRIVILEGE=0 fast path) replaces couchsided.py,
+    restarts the service and exits ~450 lines before the unit install, with no
+    daemon-reload, so a box updated from the app runs the new agent under the
+    OLD unit. Nothing would arm, ever, while the card kept reporting the stored
+    preference: a setting that silently does nothing, which is the exact class
+    of lie this feature was rewritten to stop.
+
+    So we ask the unit directly. Unreadable or missing -> False (degrade closed,
+    §3.7): the capability disappears rather than advertising a boot preference
+    the box cannot honour. Re-running the installer from a terminal fixes it,
+    and _inject_reboot_arm() below covers the phone-driven reboot meanwhile."""
+    try:
+        with open(SERVICE_UNIT_PATH, "r", encoding="utf-8", errors="replace") as f:
+            for line in f:
+                if line.startswith("ExecStop=") and _ARM_FLAG in line:
+                    return True
+    except OSError:
+        return False
+    return False
+
+
 def _dm_session_ok(dm):
     """True when sudoers really lets us write the DETECTED manager's drop-in.
 
@@ -3939,6 +4050,11 @@ def _dm_session_ok(dm):
     if not dropin:
         return False
     if not os.path.isdir(_DM_CONF_DIRS[dm]):
+        return False
+    # No arming hook means nothing can ever write the preference for the next
+    # boot — see _arm_hook_installed. Hide the setting instead of taking one we
+    # cannot apply.
+    if not _arm_hook_installed():
         return False
     if _last_session_line(_DM_MAIN_CONFS.get(dm, "")):
         return False
@@ -4342,7 +4458,18 @@ def session_default_get():
             m = ""
         return {"available": True, "backend": backend,
                 "mode": m if m in ("game", "desktop") else "unknown"}
-    # backend is "sddm" or "plasmalogin" here: same conf-dir scheme, same read.
+    # backend is "sddm" or "plasmalogin". The STORED PREFERENCE is the answer
+    # now, not the drop-in: our file is deliberately blank while the box runs
+    # (see the arm/consume block), so reading it would report "unknown" on
+    # every box that had ever set one. Falling back to the merged config keeps
+    # a box that upgraded mid-preference honest until the owner next sets it,
+    # and answers for a box configured outside Couchside.
+    pref = session_default_pref()
+    if pref in ("game", "desktop"):
+        return {"available": True, "backend": backend, "mode": pref}
+    # pref is "last" (our own mode, which the display manager cannot be asked
+    # about — the app highlights that from its own state) or unset. Either way
+    # the honest answer is what the box will actually come up as: its record.
     name = _dm_current_session_file(backend)
     if name == GAMESCOPE_SESSION_FILE:
         mode = "game"
@@ -4422,6 +4549,149 @@ def _dm_neutralise_legacy(dm):
         pass
 
 
+def _dm_disarm(dm):
+    """Blank our drop-in so it cannot influence the NEXT autologin. True when
+    the file ends up contributing nothing (including when it was never there).
+
+    Called at startup, and again after any switch we initiate, so a box that is
+    running always has our override out of the way."""
+    dropin = _dm_dropin(dm)
+    if not dropin:
+        return True
+    if not os.path.exists(dropin):
+        return True
+    if not _last_session_line(dropin):
+        return True  # already blank; don't spend a sudo call
+    try:
+        r = subprocess.run(["sudo", "-n", "tee", dropin],
+                           input=_DISARMED_DROPIN_BODY, capture_output=True,
+                           text=True, timeout=8)
+        return r.returncode == 0
+    except Exception:
+        return False
+
+
+def _migrate_dropin_into_config(dm):
+    """ADOPT a pre-2.9.67 drop-in as the stored preference, once.
+
+    Before 2.9.67 the setter wrote the drop-in and persisted NOTHING — the file
+    was the whole setting. Consuming it on first start of the new agent would
+    therefore delete the user's choice with no way to get it back: config has no
+    preference to arm from, so the box quietly reverts to last-session for good.
+
+    So before blanking, read what the file says and store it. Only runs when
+    there is no stored preference yet, so it can never overwrite a real choice,
+    and only accepts a session we recognise — an unreadable or foreign value is
+    left alone rather than guessed at."""
+    if session_default_pref() is not None:
+        return
+    name = _last_session_line(_dm_dropin(dm)) or _last_session_line(_dm_dropin_legacy(dm))
+    if not name:
+        return
+    if name == GAMESCOPE_SESSION_FILE:
+        mode = "game"
+    elif name in _DESKTOP_SESSIONS:
+        mode = "desktop"
+    else:
+        return
+    try:
+        with CONFIG_LOCK:
+            _config_set_field(SESSION_DEFAULT_CONFIG_KEY, mode)
+        print("[session] adopted the existing boot preference (%s) into config"
+              % mode, flush=True)
+    except Exception as e:
+        # Leave the drop-in ALONE if we could not save the preference — blanking
+        # it here would be the data loss this function exists to prevent.
+        print("[session] could not adopt the boot preference: %s" % str(e)[:120],
+              flush=True)
+        raise
+
+
+def session_default_consume(mock=False):
+    """Startup half of the arm/consume cycle: disarm the drop-in.
+
+    The agent only runs after the display manager has already autologged in, so
+    by the time this executes the preference has done its job for this boot.
+    Blanking it here is what guarantees that nothing of ours can defeat a
+    session switch for the rest of the box's uptime — the failure the owner hit
+    with Steam's own button.
+
+    Best-effort and silent on failure: a box with no grant simply keeps whatever
+    is on disk, which is the pre-2.9.67 behaviour, not something worse."""
+    if mock:
+        return
+    # Only for the managers we actually write drop-ins for. A steamosctl Deck
+    # keeps its preference in Valve's own state and a greetd box in its
+    # config.toml; blanking or arming anything here would fight the real owner
+    # of that setting.
+    if session_default_backend() not in _DM_CONF_DIRS:
+        return
+    dm = detect_display_manager()
+    if dm not in _DM_CONF_DIRS:
+        return
+    if not _arm_hook_installed():
+        # Say it ONCE, at startup, where support will find it. The capability is
+        # already hidden (see _dm_session_ok); this explains why, and what fixes
+        # it, without a per-request log line.
+        print("[session] %s has no %s ExecStop, so the boot preference cannot be "
+              "written for the next boot: the setting is hidden. Re-run the "
+              "installer from a terminal to restore it. (Rebooting FROM THE APP "
+              "still applies a preference already stored.)"
+              % (SERVICE_UNIT_PATH, _ARM_FLAG), flush=True)
+    try:
+        _migrate_dropin_into_config(dm)
+    except Exception:
+        return  # preference not saved -> do NOT blank the file that still holds it
+    if _dm_disarm(dm):
+        _dm_neutralise_legacy(dm)
+
+
+def session_default_arm():
+    """Shutdown half: render the drop-in from the stored preference.
+
+    Wired to the unit's ExecStop, so it runs on reboot/poweroff — while nothing
+    can be switching sessions — and the next boot honours the preference. "last"
+    and "unset" deliberately write NOTHING: the platform's own last-session
+    behaviour is exactly what they mean, and leaving the file blank is how we
+    stay out of its way.
+
+    Prints its outcome because ExecStop output is all the shutdown journal will
+    have if this ever misbehaves."""
+    pref = session_default_pref()
+    # DISPATCH ON THE BACKEND, not merely on the detected manager. A Steam Deck
+    # runs sddm underneath but its boot mode belongs to steamosctl, which
+    # session_default_set already drove; writing our later-sorting drop-in here
+    # too would override Valve's own autologin at every shutdown and silently
+    # undo a change the owner made in Steam's own settings. greetd likewise owns
+    # its config.toml and was written at set() time.
+    backend = session_default_backend()
+    if backend not in _DM_CONF_DIRS:
+        print("[session] arm: backend %r owns this setting; nothing to write"
+              % (backend,), flush=True)
+        return
+    dm = detect_display_manager()
+    if dm not in _DM_CONF_DIRS:
+        print("[session] arm: no writable display manager detected; nothing to do",
+              flush=True)
+        return
+    if pref in (None, "last"):
+        print("[session] arm: preference %r needs no drop-in (platform decides)"
+              % (pref,), flush=True)
+        _dm_disarm(dm)
+        return
+    if pref == "game":
+        target = GAMESCOPE_SESSION_FILE
+    else:
+        target = _desktop_session_for_autologin()
+        if not target:
+            print("[session] arm: no desktop session installed; refusing",
+                  flush=True)
+            return
+    ok = _dm_write(dm, target)
+    print("[session] arm: %s -> %s (%s)"
+          % (pref, target, "ok" if ok else "FAILED"), flush=True)
+
+
 def session_default_set(mode):
     """Set the boot default. Returns an ActionResult-shaped dict.
 
@@ -4439,16 +4709,13 @@ def session_default_set(mode):
         return done(False, "no session backend on this box")
 
     if mode == "last":
-        # The display manager already records the last session; what defeats
-        # it is the Autologin override. So "last" means: point the override at
-        # whatever is running NOW, and keep doing so as the session changes.
-        # Read through the DETECTED manager's config (a steamosctl Deck still
-        # runs sddm underneath); a greetd/unidentifiable box reads "" and
-        # falls back to Game Mode, exactly as it did before.
-        dm = detect_display_manager()
-        current = (_dm_current_session_file(dm) if dm in _DM_CONF_DIRS else "") \
-            or GAMESCOPE_SESSION_FILE
-        target = current if current in _DESKTOP_SESSIONS else GAMESCOPE_SESSION_FILE
+        # "last" IS the platform's own behaviour, so the implementation is to
+        # own nothing: store the preference, make sure our drop-in contributes
+        # nothing, and let the display manager's record decide. The old code
+        # pointed the override at the current session and kept re-pointing it,
+        # which is what made the override permanent — and permanent is what
+        # broke every one-shot switch (KI-051).
+        target = None
     elif mode == "game":
         target = GAMESCOPE_SESSION_FILE
     else:
@@ -4460,8 +4727,21 @@ def session_default_set(mode):
         if not target:
             return done(False, "no desktop session installed on this box")
 
+    # Persist the preference FIRST. It is the source of truth from 2.9.67 on —
+    # the drop-in is a derived artifact rendered at shutdown — so a set that
+    # cannot be stored has not happened, whatever the backend does next.
+    try:
+        with CONFIG_LOCK:
+            _config_set_field(SESSION_DEFAULT_CONFIG_KEY, mode)
+    except Exception as e:
+        return done(False, "could not save the setting: %s" % str(e)[:120])
+
     if backend == "steamosctl":
+        # SteamOS proper has a real API for this that costs nobody their
+        # session, so use it and skip the drop-in dance entirely.
         arg = "game" if target == GAMESCOPE_SESSION_FILE else "desktop"
+        if target is None:  # "last": nothing to tell steamosctl
+            return done(True)
         try:
             r = subprocess.run(["steamosctl", "set-default-login-mode", arg],
                                capture_output=True, text=True, timeout=8)
@@ -4474,16 +4754,20 @@ def session_default_set(mode):
         return done(session_default_get().get("mode") == arg)
 
     if backend == "greetd":
-        # RESTORED. The 2.9.65 getter fix MOVED this dispatch out of the setter
-        # instead of copying it, so a greetd box rendered the card, read the
-        # mode correctly, and then every set fell through to the SDDM writer —
-        # which the old unconditional install.sh grant could even let SUCCEED,
-        # into a conf dir greetd never reads.
-        return done(_greetd_write(target))
+        # greetd has no drop-in dir and no competing platform switcher writing
+        # its config, so the standing-override problem does not arise there:
+        # write it now, as before. ("last" leaves the existing config alone.)
+        # RESTORED in 2.9.66: the 2.9.65 getter fix MOVED this dispatch out of
+        # the setter instead of copying it, so every greetd set fell through to
+        # the SDDM writer.
+        return done(True if target is None else _greetd_write(target))
 
-    # backend is "sddm" or "plasmalogin": the shared drop-in writer, aimed at
-    # the conf dir of the manager that was actually detected.
-    return done(_dm_write(backend, target))
+    # backend is "sddm" or "plasmalogin". DO NOT write the drop-in here — that
+    # is the whole bug. Arming happens at shutdown (session_default_arm); while
+    # the box is up our file stays blank so the machine's own session switching
+    # keeps working. Verify we can actually disarm, so "saved" is not a claim
+    # about a file we failed to touch.
+    return done(_dm_disarm(backend))
 
 
 def _default_desktop_session():
@@ -4674,9 +4958,21 @@ def desktop_mode():
     Restores, never substitutes: if we did not record a prior device, audio is
     left exactly where it is. See _restore_default_sink."""
     sw = _session_to_desktop()
+    # READBACK, the mirror of the Game Mode path. Exit 0 means "the switch was
+    # triggered", not "the desktop came up" — see _couch_verify_desktop for the
+    # field failure that proves the difference.
+    landed = _couch_verify_desktop() if sw["ok"] else False
     steps = {"session": sw, "audio": _restore_default_sink()}
-    return {"ok": sw["ok"],
-            "session": "desktop" if sw["ok"] else _couchmode_session(),
+    if sw["ok"] and not landed:
+        steps["desktop_up"] = {
+            "ok": False, "exit_code": 1, "stdout": "",
+            "stderr": "the switch was accepted but the box was still in Game "
+                      "Mode %gs later. A Couchside boot preference set by an "
+                      "agent older than 2.9.67 can cause this; clearing it and "
+                      "retrying is the fix." % SESSION_VERIFY_TIMEOUT_S}
+    return {"ok": bool(sw["ok"] and landed),
+            # Report the session actually observed, never the one we hoped for.
+            "session": _couchmode_session(),
             "steps": steps}
 
 
@@ -4782,6 +5078,27 @@ def _couch_verify_gamescope():
             return True
         time.sleep(SESSION_VERIFY_INTERVAL_S)
     return _couchmode_session() == "gamescope"
+
+
+def _couch_verify_desktop():
+    """The mirror of _couch_verify_gamescope for the LEAVING direction.
+
+    Bug (a) was only ever fixed on the way IN. `steamos-session-select plasma`
+    exits 0 the moment it has written the distro's autologin file and asked the
+    session to stop, so `sw["ok"]` says nothing about where the box landed —
+    and when Couchside's own boot-preference drop-in outranked that file
+    (KI-051), the box came straight back to Game Mode while the API reported
+    {"ok": true, "session": "desktop"}. The owner saw that as his distro being
+    broken. A switch that did not happen must not report success.
+
+    Same shape as the gamescope side: the agent is a system service, so it
+    survives the teardown and can watch the box settle."""
+    deadline = time.monotonic() + SESSION_VERIFY_TIMEOUT_S
+    while time.monotonic() < deadline:
+        if _couchmode_session() == "desktop":
+            return True
+        time.sleep(SESSION_VERIFY_INTERVAL_S)
+    return _couchmode_session() == "desktop"
 
 
 def _couch_do_audio(has_external):
@@ -11889,11 +12206,19 @@ def gaming_available():
         return False
 
 
-def _gpu_sensors():
-    """Discrete-GPU temp + VRAM from amdgpu sysfs, or {} when absent. Intel i915
-    exposes no DRM-device hwmon; NVIDIA needs NVML — both degrade here to "no GPU
-    block", never to a CPU number mislabelled as GPU. Every field independently
-    optional. Read-only, best-effort; never raises."""
+def _gpu_sensors_all():
+    """EVERY amdgpu card's temp + memory, in DRM card order, or [].
+
+    Used to return the FIRST card only. MEASURED on a dual-GPU laptop (ASUS G14,
+    2026-07-30): card0 is the integrated Radeon 680M (512 MB carve-out, 19.6 GB
+    GTT) and card1 is the discrete RX 6800S (8176 MB) — so "first match" reported
+    the iGPU and hid the card actually rendering the game, with the iGPU's
+    carve-out shown as if it were the GPU's memory. Sorted card order is stable
+    and matches what the kernel enumerates, so the app can label them.
+
+    Intel i915 exposes no DRM-device hwmon; NVIDIA needs NVML — both degrade here
+    to "no GPU block", never to a CPU number mislabelled as GPU. Every field is
+    independently optional. Read-only, best-effort; never raises."""
     try:
         drm = _DRM_DIR
         # Real cards only: cardN. The connector dirs (cardN-DP-1) ALSO match a
@@ -11902,7 +12227,8 @@ def _gpu_sensors():
         # is the documented fix for that trap.
         cards = [b for b in os.listdir(drm) if re.fullmatch(r"card\d+", b)]
     except OSError:
-        return {}
+        return []
+    out = []
     for card in sorted(cards):
         dev = os.path.join(drm, card, "device")
         hw_name, temp_path = None, None
@@ -11921,7 +12247,9 @@ def _gpu_sensors():
                 break
         if hw_name is None:
             continue  # Intel/NVIDIA/virtual card: no amdgpu hwmon here
-        gpu = {"name": hw_name}
+        # `card` is the stable identity the app labels with; `name` stays the
+        # driver name it has always been, so nothing that read it breaks.
+        gpu = {"name": hw_name, "card": card}
         if temp_path:
             milli = _read_int(temp_path)
             if milli is not None:
@@ -11957,8 +12285,26 @@ def _gpu_sensors():
         busy = _read_int(os.path.join(dev, "gpu_busy_percent"))
         if busy is not None and 0 <= busy <= 100:
             gpu["busy_pct"] = busy
-        return gpu
-    return {}
+        out.append(gpu)
+    return out
+
+
+def _gpu_sensors():
+    """The PRIMARY GPU block, unchanged in shape for every client that reads it.
+
+    Kept because `gpu` is a shipped response field and old app versions read it
+    (never rename or remove — add). Callers wanting the whole set use
+    _gpu_sensors_all(); the payload carries both.
+
+    "Primary" is the DISCRETE card when one is present — the largest real VRAM
+    pool wins. On the dual-GPU laptop that flips the answer from the integrated
+    680M to the RX 6800S, which is the one a game is rendering on; on every
+    single-GPU box (all the handhelds and desktops here) there is nothing to
+    choose and the answer is what it always was."""
+    cards = _gpu_sensors_all()
+    if not cards:
+        return {}
+    return max(cards, key=lambda g: g.get("vram_total_mb") or 0)
 
 
 _REAPER_APPID_RE = re.compile(r"\bAppId=(\d+)")
@@ -12479,9 +12825,13 @@ def _gaming_payload():
         if c["val"] is not None and now - c["at"] <= _GAMING_TTL:
             return c["val"]
     payload = {"session": _couchmode_session()}
-    gpu = _gpu_sensors()
-    if gpu:
-        payload["gpu"] = gpu
+    gpus = _gpu_sensors_all()
+    if gpus:
+        # `gpus` is the whole set (agent >= 2.9.67); `gpu` stays the primary
+        # single block every shipped app reads. Additive — an old app ignores
+        # the array and renders exactly what it did before.
+        payload["gpus"] = gpus
+        payload["gpu"] = max(gpus, key=lambda g: g.get("vram_total_mb") or 0)
     game = _running_game()
     if game:
         payload["game"] = game
@@ -12502,11 +12852,23 @@ def mock_gaming():
     hardware: GPU block populated (as an AMD box would), a running game, an
     external output, a pad with battery, Game Mode."""
     return {
-        "gpu": {"name": "amdgpu", "temp_c": 61.0,
+        "gpu": {"name": "amdgpu", "card": "card1", "temp_c": 61.0,
                 "vram_used_mb": 3300, "vram_total_mb": 8192,
                 # Mock a DISCRETE card: gtt smaller than vram, so the app takes
                 # the non-shared branch. A handheld APU is the other shape.
                 "gtt_used_mb": 210, "gtt_total_mb": 4096, "busy_pct": 63},
+        # TWO cards, the dual-GPU laptop shape, so --mock exercises the
+        # multi-GPU render path (the single-card boxes here never would).
+        # `gpu` above is the discrete one, matching what the payload builder
+        # picks as primary.
+        "gpus": [
+            {"name": "amdgpu", "card": "card0", "temp_c": 47.0,
+             "vram_used_mb": 19, "vram_total_mb": 512,
+             "gtt_used_mb": 15, "gtt_total_mb": 19659, "busy_pct": 3},
+            {"name": "amdgpu", "card": "card1", "temp_c": 61.0,
+             "vram_used_mb": 3300, "vram_total_mb": 8192,
+             "gtt_used_mb": 210, "gtt_total_mb": 4096, "busy_pct": 63},
+        ],
         "game": {"appid": 1091500, "label": "Cyberpunk 2077"},
         "output": {"name": "DP-1", "internal": False},
         "controllers": [{"uniq": "dc:2c:26:aa:bb:cc",
@@ -16532,6 +16894,17 @@ class Handler(BaseHTTPRequestHandler):
                     self._send(200, {"ok": True, "session": "desktop",
                                      "steps": {"session": {"ok": True}}}, started)
                     return
+                # 200 EVEN WHEN THE SWITCH DID NOT LAND, deliberately. A 409 was
+                # tried here and reverted: the shipped app calls this with its
+                # 4s default timeout (TIMEOUT_MS in app/lib/api.ts) while the
+                # readback below can take up to SESSION_VERIFY_TIMEOUT_S, so the
+                # phone aborts before any status arrives — the 409 is
+                # unreachable, and worse, a SLOW BUT SUCCESSFUL switch starts
+                # reading as a failure. The honest signal the app can actually
+                # see is the `session` field, which the readback makes truthful,
+                # plus the session pill on the next poll a second or two later.
+                # Surfacing a real error at tap time needs this to become a
+                # polled job like the Couch Mode ceremony — an app change.
                 self._send(200, couchmode_exit(), started)
                 return
 
@@ -17180,14 +17553,29 @@ def main():
     p.add_argument("--token-file", default="/etc/couchside/token")
     p.add_argument("--token", default=None,
                    help="literal token (overrides --token-file; dev only)")
+    # Shutdown hook, wired to the unit's ExecStop. Renders the boot preference
+    # into the display manager's drop-in and exits — the ARM half of the cycle
+    # described above session_default_pref(). Runs while the box is going down,
+    # which is the only moment nothing can be switching sessions.
+    p.add_argument("--arm-boot-session", action="store_true",
+                   help="write the stored boot preference and exit (ExecStop hook)")
     p.add_argument("--mock", action="store_true",
                    help="serve fake data, never run real commands")
     args = p.parse_args()
 
     load_config(args.config)
+    if args.arm_boot_session:
+        # Nothing else runs: no server, no probes, no capability scan. Just
+        # write the drop-in and get out of the shutdown's way.
+        session_default_arm()
+        return 0
     if not args.mock:
         check_config_writable()  # warn loudly if pairings/launchers can't persist
     _retarget_restart_session(args.mock)
+    # CONSUME the boot preference: the display manager has already autologged in
+    # by the time we run, so blanking our drop-in here is what keeps it from
+    # overriding a later session switch — including Steam's own (KI-051).
+    session_default_consume(args.mock)
     _inject_session_actions()
     _inject_suspend_action(args.mock)
     _inject_decky_action(args.mock)

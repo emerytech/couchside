@@ -588,22 +588,34 @@ export type SteamLink = { available: boolean; hosts: StreamHost[] };
 export type SteamMenu = { id: string; label: string };
 export type SteamMenus = { menus: SteamMenu[] };
 
+/** One GPU as the box reports it (agent >= 2.9.43; `card` >= 2.9.67). */
+export type GpuInfo = {
+  name: string;
+  /** DRM card the reading came from, e.g. "card1" (agent >= 2.9.67). The only
+   *  stable way to tell two GPUs apart in the UI. */
+  card?: string;
+  temp_c?: number;
+  vram_used_mb?: number;
+  vram_total_mb?: number;
+  /** System memory the GPU may use (agent >= 2.9.43). On an APU this is the
+   *  number that matters: a Legion Go S carves out 512 MB of "VRAM" that sits
+   *  at 89% while 15.3 GB of GTT is barely touched, so VRAM alone made a 32 GB
+   *  handheld look like a full 0.5 GB graphics card. */
+  gtt_used_mb?: number;
+  gtt_total_mb?: number;
+  /** How hard the GPU is actually working, 0-100 (agent >= 2.9.43). A memory
+   *  bar says what is allocated, not whether anything is happening. */
+  busy_pct?: number;
+};
+
 export type Gaming = {
-  gpu?: {
-    name: string;
-    temp_c?: number;
-    vram_used_mb?: number;
-    vram_total_mb?: number;
-    /** System memory the GPU may use (agent >= 2.9.43). On an APU this is the
-     *  number that matters: a Legion Go S carves out 512 MB of "VRAM" that sits
-     *  at 89% while 15.3 GB of GTT is barely touched, so VRAM alone made a 32 GB
-     *  handheld look like a full 0.5 GB graphics card. */
-    gtt_used_mb?: number;
-    gtt_total_mb?: number;
-    /** How hard the GPU is actually working, 0-100 (agent >= 2.9.43). A memory
-     *  bar says what is allocated, not whether anything is happening. */
-    busy_pct?: number;
-  };
+  /** The primary GPU — the discrete card when a box has one. Unchanged field,
+   *  still sent by every agent, so older app code keeps working. */
+  gpu?: GpuInfo;
+  /** EVERY GPU the box can read, in DRM card order (agent >= 2.9.67). A
+   *  dual-GPU laptop reports its integrated and discrete cards separately;
+   *  before this, only the first was sent and it was usually the iGPU. */
+  gpus?: GpuInfo[];
   game?: {
     appid: number;
     label?: string;

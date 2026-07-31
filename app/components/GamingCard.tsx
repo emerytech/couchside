@@ -13,7 +13,7 @@ import { Alert, Image, Pressable, StyleSheet, Text, View } from 'react-native';
 import { hapticLight } from '@/lib/haptics';
 
 import { usePoll } from '@/hooks/usePoll';
-import { api, Gaming, hostKey } from '@/lib/api';
+import { api, Gaming, GpuInfo, hostKey } from '@/lib/api';
 import { useSkinKit } from '@/lib/skin';
 import { useSettings } from '@/lib/SettingsContext';
 import { mono, pctColor, tempColor, useTheme, useThemedStyles, type Palette } from '@/lib/theme';
@@ -128,6 +128,72 @@ export function NowPlayingCard() {
   );
 }
 
+/** One GPU's line: temperature, busy %, and a memory bar.
+ *
+ * Split out of GamingCard's body when boxes started reporting more than one
+ * card (agent >= 2.9.67) — the math below is per-GPU, and a laptop's integrated
+ * and discrete chips have completely different memory shapes. */
+function GpuBlock({
+  gpu,
+  label,
+  styles,
+  t,
+}: {
+  gpu: GpuInfo;
+  label: string;
+  styles: ReturnType<typeof makeStyles>;
+  t: Palette;
+}) {
+  // SHARED-MEMORY GPUs (every handheld APU) carve out a token amount of "VRAM"
+  // and do the real work in GTT, which is system RAM. MEASURED on a Legion Go S:
+  // 512 MB VRAM sitting at 89% next to 15.3 GB of GTT barely touched. Showing
+  // the VRAM bar alone told the owner his GPU had 0.5 GB and was nearly full.
+  //
+  // When GTT dwarfs VRAM the two pools are the same physical memory, so adding
+  // them describes something real: total graphics footprint. On a discrete card
+  // they are genuinely separate and VRAM is the honest number, so the sum is
+  // NOT applied there.
+  const shared = gpu.gtt_total_mb != null && gpu.gtt_total_mb > (gpu.vram_total_mb ?? 0);
+  const memUsed = shared
+    ? (gpu.vram_used_mb ?? 0) + (gpu.gtt_used_mb ?? 0)
+    : gpu.vram_used_mb;
+  const memTotal = shared
+    ? (gpu.vram_total_mb ?? 0) + (gpu.gtt_total_mb ?? 0)
+    : gpu.vram_total_mb;
+  const vramPct =
+    memUsed != null && memTotal ? Math.round((memUsed / memTotal) * 100) : null;
+  // Bar comes from the active skin, same as the parent card's — the block is
+  // decorated by whichever look is mounted, it never draws its own.
+  const { Bar } = useSkinKit();
+
+  return (
+    <View style={styles.block}>
+      <View style={styles.lineRow}>
+        <Text style={styles.lineLabel}>{label}</Text>
+        {gpu.busy_pct != null && <Text style={styles.dim}>{gpu.busy_pct}% busy</Text>}
+        {gpu.temp_c != null && (
+          <Text style={[styles.lineVal, { color: tempColor(gpu.temp_c, t) }]}>
+            {gpu.temp_c.toFixed(1)}°C
+          </Text>
+        )}
+      </View>
+      {vramPct != null && memTotal != null && (
+        <>
+          <View style={styles.barLabelRow}>
+            <Text style={styles.dim}>
+              {(memUsed! / 1024).toFixed(1)} / {(memTotal / 1024).toFixed(1)} GB
+              {shared ? ' shared' : ''}
+            </Text>
+            <Text style={[styles.dim, { color: pctColor(vramPct, t) }]}>{vramPct}%</Text>
+          </View>
+          <Bar pct={vramPct} color={pctColor(vramPct, t)} height={6} />
+        </>
+      )}
+    </View>
+  );
+}
+
+
 export function GamingCard() {
   const t = useTheme();
   const styles = useThemedStyles(makeStyles);
@@ -149,27 +215,15 @@ export function GamingCard() {
   // Probe-and-appear: hidden until the box reports a gaming payload.
   if (!g) return null;
 
-  const gpu = g.gpu;
+  // EVERY GPU the box reports, not just the primary. A dual-GPU laptop has an
+  // integrated and a discrete card with independent temperatures, and showing
+  // one of them unlabelled was actively misleading — MEASURED on an ASUS G14,
+  // where the card the agent used to pick was the integrated 680M while the
+  // game ran on the discrete RX 6800S. Falls back to the single `gpu` field so
+  // an older agent renders exactly as before.
+  const gpuList = g.gpus ?? (g.gpu ? [g.gpu] : []);
   // SHARED-MEMORY GPUs (every handheld APU) carve out a token amount of "VRAM"
   // and do the real work in GTT, which is system RAM. MEASURED on a Legion Go S:
-  // 512 MB VRAM sitting at 89% next to 15.3 GB of GTT barely touched. Showing
-  // the VRAM bar alone told the owner his GPU had 0.5 GB and was nearly full.
-  //
-  // When GTT dwarfs VRAM the two pools are the same physical memory, so adding
-  // them describes something real: total graphics footprint. On a discrete card
-  // they are genuinely separate and VRAM is the honest number, so the sum is
-  // NOT applied there.
-  const shared = gpu?.gtt_total_mb != null && gpu.gtt_total_mb > (gpu.vram_total_mb ?? 0);
-  const memUsed = shared
-    ? (gpu?.vram_used_mb ?? 0) + (gpu?.gtt_used_mb ?? 0)
-    : gpu?.vram_used_mb;
-  const memTotal = shared
-    ? (gpu?.vram_total_mb ?? 0) + (gpu?.gtt_total_mb ?? 0)
-    : gpu?.vram_total_mb;
-  const vramPct =
-    memUsed != null && memTotal
-      ? Math.round((memUsed / memTotal) * 100)
-      : null;
   const inGameMode = g.session === 'gamescope';
 
   return (
@@ -235,33 +289,17 @@ export function GamingCard() {
         </View>
       )}
 
-      {gpu && (
-        <View style={styles.block}>
-          <View style={styles.lineRow}>
-            <Text style={styles.lineLabel}>GPU</Text>
-            {gpu.busy_pct != null && (
-              <Text style={styles.dim}>{gpu.busy_pct}% busy</Text>
-            )}
-            {gpu.temp_c != null && (
-              <Text style={[styles.lineVal, { color: tempColor(gpu.temp_c, t) }]}>
-                {gpu.temp_c.toFixed(1)}°C
-              </Text>
-            )}
-          </View>
-          {vramPct != null && memTotal != null && (
-            <>
-              <View style={styles.barLabelRow}>
-                <Text style={styles.dim}>
-                  {(memUsed! / 1024).toFixed(1)} / {(memTotal / 1024).toFixed(1)} GB
-                  {shared ? ' shared' : ''}
-                </Text>
-                <Text style={[styles.dim, { color: pctColor(vramPct, t) }]}>{vramPct}%</Text>
-              </View>
-              <Bar pct={vramPct} color={pctColor(vramPct, t)} height={6} />
-            </>
-          )}
-        </View>
-      )}
+      {gpuList.map((card, i) => (
+        <GpuBlock
+          key={card.card ?? `gpu-${i}`}
+          gpu={card}
+          /* Only label when there is more than one — a single-GPU box (every
+             handheld and desktop here) should just say GPU, as it always has. */
+          label={gpuList.length > 1 ? `GPU ${card.card ?? i + 1}` : 'GPU'}
+          styles={styles}
+          t={t}
+        />
+      ))}
 
       {g.output && (
         <View style={styles.lineRow}>

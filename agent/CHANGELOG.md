@@ -18,6 +18,29 @@ the same thing regardless of what actually changed.
 Write for the person holding the phone, not for the commit log. They are
 deciding whether to press "Update now" on a machine across the room.
 
+## 2.9.67
+
+The "Boots into" setting was breaking your box's own session switching. It
+isn't any more.
+
+- **Switching to the desktop works again.** If you had ever set "Boots into",
+  Couchside left a file on the box telling it which session to start — and
+  because every switch to the desktop is really the box logging in again, that
+  file overruled the switch and sent you straight back to Game Mode. It broke
+  **Steam's own "Switch to Desktop" button** too, which made it look like your
+  distro was at fault. The setting now writes that file only while the box is
+  shutting down, so nothing of ours is in the way while you are using it.
+
+- **A switch that doesn't happen no longer says it worked.** Leaving Game Mode
+  reported success as soon as the box accepted the request, without checking
+  where you actually ended up. It waits and tells you the truth now.
+
+- **Every GPU is reported, not just the first one.** On a machine with two —
+  a laptop with an integrated chip and a discrete card — Couchside picked
+  whichever came first, which was usually the integrated one, and showed its
+  small memory carve-out as if it were your graphics card. Both now appear,
+  with their own temperature and memory.
+
 ## 2.9.66
 
 Machines that aren't SteamOS or Bazzite get features they should have had all
