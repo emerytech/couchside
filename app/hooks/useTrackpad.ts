@@ -42,6 +42,46 @@ const TP_DOUBLE_TAP_MS = 300;
 const TP_BASE = 1.1;
 const TP_GAIN = 0.05;
 
+/**
+ * Gesture-layer counters, module level like wsTrace in lib/gamepad.ts.
+ *
+ * WHY. During a live dead-cursor episode (owner's box, 2026-07-31) the WS
+ * diagnostics proved the socket was perfectly healthy — pings 115/115, inbound
+ * 3.0s fresh, zero drops — while `inputSends` sat frozen and "last input sent"
+ * read 4m26s DURING active swiping. So the frames were never handed to the
+ * client at all: the fault is above the socket, in this file. wsTrace cannot
+ * see that, because nothing ever reaches it.
+ *
+ * These separate the remaining candidates, which reading the code cannot:
+ *   grants flat while the user swipes   -> the responder never re-grants; the
+ *        surface is orphaned (a gesture was stolen/interrupted and never
+ *        released), so `st` keeps the PREVIOUS gesture's state forever.
+ *   grants climbing, moves flat         -> Grant fires but Move does not.
+ *   moves climbing, onMove flat         -> we are taking the two-finger SCROLL
+ *        branch on a one-finger drag: `maxTouches` is latched >= 2 and every
+ *        move returns early without ever calling onMove. THE leading suspect.
+ *   everything climbing                 -> the gesture layer is fine and the
+ *        fault moved back down to the client.
+ */
+export const tpTrace = {
+  /** onPanResponderGrant entered (a new gesture began). */
+  grants: 0,
+  /** onPanResponderMove entered (raw movement events). */
+  moves: 0,
+  /** cb.onMove actually called (pointer deltas handed to the caller). */
+  onMoveCalls: 0,
+  /** Moves that took the two-finger scroll branch and returned early. */
+  scrollBranch: 0,
+  /** Releases + terminates, so an orphaned (never-ended) gesture is visible. */
+  releases: 0,
+  terminates: 0,
+  /** `maxTouches` as of the last move — latched per gesture, reset on Grant. */
+  lastMaxTouches: 0,
+  /** Wall-clock of the last Grant / Move, for staleness at a glance. */
+  lastGrantAt: 0,
+  lastMoveAt: 0,
+};
+
 export type TrackpadCallbacks = {
   onMove: (dx: number, dy: number) => void;
   onLeftClick: () => void;
@@ -91,6 +131,8 @@ export function useTrackpad(cbs: TrackpadCallbacks): PanResponderInstance {
       onPanResponderTerminationRequest: () => false,
       onShouldBlockNativeResponder: () => true,
       onPanResponderGrant: (evt) => {
+        tpTrace.grants += 1;
+        tpTrace.lastGrantAt = Date.now();
         const touches = evt.nativeEvent.touches.length || 1;
         const prev = st.current;
         const now = Date.now();
@@ -125,6 +167,9 @@ export function useTrackpad(cbs: TrackpadCallbacks): PanResponderInstance {
       },
       onPanResponderMove: (evt, g) => {
         const s = st.current;
+        tpTrace.moves += 1;
+        tpTrace.lastMoveAt = Date.now();
+        tpTrace.lastMaxTouches = s.maxTouches;
         const touches = evt.nativeEvent.touches.length;
         if (touches > s.maxTouches) s.maxTouches = touches;
         if (!s.moved && Math.hypot(g.dx, g.dy) > TP_TAP_SLOP) s.moved = true;
@@ -147,6 +192,7 @@ export function useTrackpad(cbs: TrackpadCallbacks): PanResponderInstance {
             cb.current.onScroll(feel.current.natural ? dir : -dir);
           }
           s.scrollLastY = g.dy;
+          tpTrace.scrollBranch += 1;
           return;
         }
 
@@ -166,9 +212,11 @@ export function useTrackpad(cbs: TrackpadCallbacks): PanResponderInstance {
           s.dragging = true;
           cb.current.onDragStart?.();
         }
+        tpTrace.onMoveCalls += 1;
         cb.current.onMove(rawDx * gain, rawDy * gain);
       },
       onPanResponderRelease: () => {
+        tpTrace.releases += 1;
         const s = st.current;
         const now = Date.now();
         if (s.dragging) {
@@ -198,6 +246,7 @@ export function useTrackpad(cbs: TrackpadCallbacks): PanResponderInstance {
       // A drag can be torn away (app backgrounded, navigation) mid-marquee —
       // release the held button so it never sticks down on the box.
       onPanResponderTerminate: () => {
+        tpTrace.terminates += 1;
         const s = st.current;
         if (s.dragging) {
           s.dragging = false;
