@@ -156,8 +156,21 @@ async function firstLaunchMs(): Promise<number> {
   return now;
 }
 
-/** Record a completed unlock purchase (called after buy()/restore() succeed). */
+/** Record a completed unlock purchase (called after buy()/restore() succeed).
+
+    Read-before-write, for two reasons measured on the same device (iOS 27
+    beta, 2026-07-30): a keychain write is ~two securityd round-trips
+    (SecItemAdd -> duplicate -> SecItemUpdate), and on that beta the item can
+    get into a state where reads miss it while adds collide — so a caller loop
+    (the StoreKit re-delivery storm) turned this into ~100 keychain writes per
+    second. The storm is fixed at its source in purchase.ts; this guard makes
+    the write path idempotent regardless of caller behaviour. */
 export async function markPurchased(): Promise<void> {
+  try {
+    if ((await storageGet(PURCHASED_KEY)) === '1') return;
+  } catch {
+    // unreadable cache: fall through and write
+  }
   await storageSet(PURCHASED_KEY, '1');
 }
 
