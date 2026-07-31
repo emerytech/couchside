@@ -18,6 +18,12 @@ the same thing regardless of what actually changed.
 Write for the person holding the phone, not for the commit log. They are
 deciding whether to press "Update now" on a machine across the room.
 
+## 2.9.68
+
+- **The Console now shows which OS your box runs**, under the service version —
+  "Bazzite 43", "CachyOS rolling", "SteamOS 3.8.21". Handy when you have more
+  than one box, and the first thing worth knowing in a bug report.
+
 ## 2.9.67
 
 The "Boots into" setting was breaking your box's own session switching. It

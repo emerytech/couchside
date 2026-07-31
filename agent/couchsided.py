@@ -45,7 +45,7 @@ except ImportError:  # pragma: no cover
     fcntl = None
 
 APP_NAME = "couchside-agent"
-VERSION = "2.9.67"
+VERSION = "2.9.68"
 UID = os.getuid()
 XDG_RUNTIME_DIR = "/run/user/%d" % UID
 
@@ -916,6 +916,58 @@ def read_uptime_s():
             return int(float(f.read().split()[0]))
     except Exception:
         return 0
+
+
+# The distro identity file, as a module constant so tests can point it at
+# fixtures (same pattern as _DRM_DIR / _PROC_INPUT_DEVICES).
+_OS_RELEASE = "/etc/os-release"
+
+
+def read_os_release():
+    """{"name","version","build","kernel"} for the Console header, or {}.
+
+    Every field is independently optional and OMITTED when unreadable, so the
+    app can treat absence as "this box did not say" without telling it apart
+    from a null — the same contract as `battery` and `display`.
+
+    The fields differ by distro and that is the whole reason more than one is
+    sent rather than a single pre-formatted string. VERBATIM from the two boxes
+    here (2026-07-31):
+
+        Bazzite   PRETTY_NAME="Bazzite"  VERSION_ID=43
+                  BUILD_ID="Stable (F43.20260420)"
+        CachyOS   PRETTY_NAME="CachyOS"  BUILD_ID=rolling   (no VERSION_ID)
+
+    So a rolling distro has only BUILD_ID, a point release has both, and the
+    build string carries the part support actually needs. `kernel` is free from
+    uname and is the single most useful line in a bug report about a handheld.
+
+    Values may be quoted; strip both quote styles. Never raises."""
+    out = {}
+    vals = {}
+    try:
+        with open(_OS_RELEASE, "r", encoding="utf-8", errors="replace") as f:
+            for line in f:
+                key, sep, val = line.strip().partition("=")
+                if sep:
+                    vals[key] = val.strip().strip('"').strip("'")
+    except OSError:
+        vals = {}
+    name = vals.get("PRETTY_NAME") or vals.get("NAME")
+    if name:
+        out["name"] = name
+    # VERSION_ID is the point release; a rolling distro has only BUILD_ID.
+    version = vals.get("VERSION_ID") or vals.get("BUILD_ID")
+    if version:
+        out["version"] = version
+    build = vals.get("BUILD_ID")
+    if build and build != out.get("version"):
+        out["build"] = build
+    try:
+        out["kernel"] = os.uname().release
+    except Exception:
+        pass
+    return out
 
 
 # --- primary-interface network facts (for the app's Wake-on-LAN power path) --
@@ -3173,6 +3225,7 @@ def _history_snapshot():
 
 
 def real_status():
+    osrel = read_os_release()
     load = read_load()
     temp = read_cpu_temp_c()
     mem = read_mem()
@@ -3185,6 +3238,10 @@ def real_status():
         "hostname": socket.gethostname().split(".")[0],
         "time": now,
         "uptime_s": read_uptime_s(),
+        # Which OS the box runs. ADDITIVE and omitted entirely when
+        # /etc/os-release cannot be read, so an old app ignores it and a new one
+        # treats absence as "the box did not say".
+        **({"os": osrel} if osrel else {}),
         "load": load,
         "cpu_temp_c": temp,
         "mem": mem,
@@ -5559,6 +5616,11 @@ def mock_status():
         "audio": mock_audio_info(),
         "net": {"iface": "eth0", "mac": "de:ad:be:ef:00:01",
                 "wired": True, "wol_armed": True},
+        # A POINT-RELEASE distro (name + version + a separate build string) —
+        # the shape with the most fields, so the harness renders the busiest
+        # case. A rolling box sends only name + version.
+        "os": {"name": "Bazzite", "version": "43",
+               "build": "Stable (F43.20260420)", "kernel": "6.17.4-204.fc43.x86_64"},
         "agent_version": VERSION,
         "caps": CAPS,
         "config_writable": True,
