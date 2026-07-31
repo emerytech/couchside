@@ -188,6 +188,13 @@ jobs:
       - name: Unit tests (couch mode gate)
         run: python3 tests/test_couchmode_gate.py
 
+      # Which OS the Console header claims the box runs. The shape differs by
+      # distro and the reader must not assume one: a ROLLING release (CachyOS)
+      # has no VERSION_ID at all, a point release (Bazzite/SteamOS) has both.
+      # Fixtures are verbatim from real boxes.
+      - name: Unit tests (os-release reader)
+        run: python3 tests/test_os_release.py
+
       # Flatpak update completion (KI-036). "Done" must be the update PROCESS
       # finishing, not `remote-ls` count reaching zero — an EOL runtime pins the
       # count above zero forever, which stranded the card on "Updating…" and

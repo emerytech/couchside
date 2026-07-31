@@ -126,9 +126,23 @@ function ConsoleScreen() {
           <Text style={styles.hostname}>
             {s?.hostname ?? (configured ? settings.host : 'Couchside')}
           </Text>
-          <Text style={styles.headerSub}>
-            {reachable ? `service v${s?.agent_version}` : configured ? 'offline' : 'not set up'}
-          </Text>
+          <View style={styles.headerRight}>
+            <Text style={styles.headerSub}>
+              {reachable ? `service v${s?.agent_version}` : configured ? 'offline' : 'not set up'}
+            </Text>
+            {/* Which OS the box runs (agent >= 2.9.34). Absent on older agents
+                and on any box that could not read /etc/os-release, so it is
+                rendered only when the box actually said — never a placeholder.
+                `version` already falls back to BUILD_ID agent-side, so a
+                rolling distro reads "CachyOS rolling" and a point release
+                "Bazzite 43". numberOfLines guards a long PRETTY_NAME (Fedora
+                ships "Fedora Linux 43 (KDE Plasma)") from shoving the row. */}
+            {reachable && !!s?.os?.name && (
+              <Text style={styles.headerOs} numberOfLines={1}>
+                {[s.os.name, s.os.version].filter(Boolean).join(' ')}
+              </Text>
+            )}
+          </View>
         </View>
 
         {/* Fresh install: nothing paired yet, so nothing is "unreachable". */}
@@ -364,7 +378,11 @@ const makeStyles = (t: Palette) => StyleSheet.create({
   },
   dot: { width: 14, height: 14, borderRadius: 7 },
   hostname: { color: t.text, fontSize: 26, fontWeight: '700', fontFamily: mono },
-  headerSub: { color: t.textDim, fontSize: 13, marginLeft: 'auto' },
+  headerRight: { marginLeft: 'auto', alignItems: 'flex-end', flexShrink: 1 },
+  headerSub: { color: t.textDim, fontSize: 13 },
+  // Dimmer and smaller than the service line: useful when you need it, quiet
+  // when you do not.
+  headerOs: { color: t.textFaint, fontSize: 11, fontFamily: mono, marginTop: 1 },
   emptyCard: {
     backgroundColor: t.card,
     borderColor: t.cardBorder,

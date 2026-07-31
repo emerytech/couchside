@@ -420,6 +420,21 @@ export type Status = {
       and works for boxes added by hostname. */
   ip?: string;
   agent_version: string;
+  /** Which OS the box runs (agent >= 2.9.34). Absent on older agents and on any
+   *  box whose /etc/os-release could not be read — omission, never a null.
+   *  Shapes differ by distro: a rolling release (CachyOS) has no VERSION_ID and
+   *  reports `version` from BUILD_ID with no separate `build`; a point release
+   *  (Bazzite, SteamOS) sends both. */
+  os?: {
+    /** PRETTY_NAME, falling back to NAME. e.g. "Bazzite", "CachyOS". */
+    name?: string;
+    /** VERSION_ID, falling back to BUILD_ID. e.g. "43", "rolling", "3.8.21". */
+    version?: string;
+    /** BUILD_ID when it differs from `version`. e.g. "Stable (F43.20260420)". */
+    build?: string;
+    /** uname release — the single most useful line in a handheld bug report. */
+    kernel?: string;
+  };
   /** Optional-feature summary (agent >= 2.8.2); undefined on older agents. See BoxCaps. */
   caps?: BoxCaps;
   /** Recent-vitals ring for sparklines (agent >= 2.8.3); undefined on older agents. */
