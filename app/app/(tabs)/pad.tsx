@@ -1152,9 +1152,12 @@ function PadScreen() {
         noPad: keyboardMode,
       });
     } else if (stale) {
-      // Connected on paper but the socket has gone silent: force a fresh one.
-      // connect() would no-op here (its guard sees the still-OPEN socket).
-      client.reconnect();
+      // Connected on paper but the socket has gone silent. hardReset() rather
+      // than reconnect(): a plain socket rebuild demonstrably does NOT revive a
+      // dead cursor in the field, while switching boxes and back does — and the
+      // difference is the released buttons + cleared address-fallback that only
+      // the switch path performs. See GamepadClient.hardReset.
+      client.hardReset();
     }
   }, [client, settings, status, stale, canForce, askToSwitch, keyboardMode]);
 

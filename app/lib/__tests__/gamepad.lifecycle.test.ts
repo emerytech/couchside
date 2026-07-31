@@ -181,6 +181,36 @@ test('reconnect(): forces a fresh socket even while still OPEN (pill tap-to-retr
   c.close();
 });
 
+test('hardReset(): rebuilds the socket AND releases held buttons (the box-switch recovery)', () => {
+  const c = freshClient();
+  c.connect(CONN);
+  MockWebSocket.instances[0].openAndHello();
+  const ws0 = MockWebSocket.instances[0];
+  // Hold a mouse button, then lose the cursor. A stuck BTN_LEFT turns every
+  // move into a drag, which is one of the two things only the box-switch path
+  // (close -> releaseAll) clears; reconnect() leaves it held.
+  c.sendMouseButton('l', 1);
+  const sentBefore = ws0.sent.length;
+  c.hardReset();
+  assert.equal(MockWebSocket.instances.length, 2, 'hardReset opens a fresh socket');
+  // The release must go out on the OLD socket, before it is torn down —
+  // otherwise the agent keeps the button latched.
+  const released = ws0.sent
+    .slice(sentBefore)
+    .some((raw) => {
+      const m = JSON.parse(raw) as { t?: string; k?: string; v?: number };
+      return m.t === 'mb' && m.k === 'l' && m.v === 0;
+    });
+  assert.ok(released, 'hardReset releases the held mouse button on the way out');
+  c.close();
+});
+
+test('hardReset(): no-op when the client has no connection yet', () => {
+  const c = freshClient();
+  c.hardReset();
+  assert.equal(MockWebSocket.instances.length, 0, 'nothing to reset before a first connect');
+});
+
 test('reconnect(): no-op when not active', () => {
   const c = freshClient();
   c.reconnect();
