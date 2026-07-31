@@ -29,6 +29,7 @@ import { useCallback, useEffect, useState } from 'react';
 import { Modal, Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
 
 import { getWsTrace, type GamepadClient } from '@/lib/gamepad';
+import { tpTrace } from '@/hooks/useTrackpad';
 import { hapticLight } from '@/lib/haptics';
 import { mono, useThemedStyles } from '@/lib/theme';
 import type { Palette } from '@/lib/theme';
@@ -92,6 +93,32 @@ export function PadDiagnostics({ visible, onClose, client }: Props) {
     ['watchdogTeardowns', t.watchdogTeardowns],
   ];
 
+  // GESTURE LAYER — above the socket. The 2026-07-31 episode had a perfectly
+  // healthy WS (pings 115/115, inbound 3s fresh) while inputSends sat frozen
+  // during active swiping, which means the frames never reached the client at
+  // all. These say where they stopped. Read them together:
+  //   grants flat while swiping        -> the surface is orphaned, no new gesture
+  //   moves flat, grants climbing      -> Grant fires, Move does not
+  //   scrollBranch climbing on 1 finger-> maxTouches latched >= 2, every move
+  //                                       returns early and never calls onMove
+  //   onMoveCalls climbing             -> the gesture layer is fine
+  const g = tpTrace;
+  const gestures: [string, number | string, boolean?][] = [
+    ['grants', g.grants],
+    ['moves', g.moves],
+    ['onMoveCalls', g.onMoveCalls],
+    // A one-finger drag must never take the scroll branch; if this climbs while
+    // onMoveCalls does not, maxTouches is stuck.
+    ['scrollBranch', g.scrollBranch, g.moves > 0 && g.onMoveCalls === 0],
+    ['lastMaxTouches', g.lastMaxTouches, g.lastMaxTouches >= 2],
+    ['releases', g.releases],
+    ['terminates', g.terminates],
+    // Gestures that began and never ended: the orphaned-surface signature.
+    ['unclosed (grants-rel-term)', g.grants - g.releases - g.terminates,
+      g.grants - g.releases - g.terminates > 1],
+    ['last move', g.lastMoveAt ? age(Date.now() - g.lastMoveAt) : '—'],
+  ];
+
   return (
     <Modal visible transparent animationType="fade" onRequestClose={onClose}>
       <Pressable style={styles.backdrop} onPress={onClose}>
@@ -115,6 +142,14 @@ export function PadDiagnostics({ visible, onClose, client }: Props) {
 
             <Text style={styles.section}>COUNTERS</Text>
             {counters.map(([k, v, warn]) => (
+              <View key={k} style={styles.row}>
+                <Text style={styles.k}>{k}</Text>
+                <Text style={[styles.v, warn ? styles.warn : null]}>{String(v)}</Text>
+              </View>
+            ))}
+
+            <Text style={styles.section}>GESTURE (touch surface)</Text>
+            {gestures.map(([k, v, warn]) => (
               <View key={k} style={styles.row}>
                 <Text style={styles.k}>{k}</Text>
                 <Text style={[styles.v, warn ? styles.warn : null]}>{String(v)}</Text>
