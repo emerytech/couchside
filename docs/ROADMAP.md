@@ -377,17 +377,20 @@ recommendation was wrong, not merely superseded.
   hardware 2026-07-30 — see `docs/memory/project_cachyos-support.md` and the CachyOS entry
   below.
 
-### CachyOS: remaining installer pass
+### ~~CachyOS: remaining installer pass~~ — DONE 2026-07-31 (#318)
 - **priority:** P2 · **risk:** low · **affects:** installer only · **depends_on:** the
   10.7.1.92 test box (temporary — owner will tear it down)
 - The hard part shipped with the display-manager detection fix (agent 2.9.66): caps,
   Couch Mode's polkit-granted session switch, gamepad, steam, media, tv, screen and the
   boot-session feature all verified on hardware — see
   `docs/memory/project_cachyos-support.md`.
-- Remaining: recognise `ID_LIKE=arch`; pacman for any deps; skip the firewall step when
-  neither firewalld nor ufw exists (this box has neither). Optional and arguably-never:
-  a pacman OS-update path — rolling-release updates are a different risk profile than
-  atomic ones, and hiding the button is honest.
+- SHIPPED via #318: ufw branch (gated on ACTIVE, mirroring firewalld's running-only
+  rule), honest no-firewall message, package-manager-aware python3 hint chosen by
+  command presence (never distro name — the installer still reads os-release nowhere).
+  The pacman OS-update path is DELIBERATELY absent, now documented inline in
+  install.sh. Verified: CachyOS honest-skip + pacman hint live; Bazzite firewalld
+  branch full-run (its zone already allowed 1025-65535/tcp — why it always worked);
+  ufw branch textually pinned only, no ufw box exists here.
 - ~~Couch Mode toggle hidden on CachyOS by one string check~~ **FIXED 2026-07-30**
   (same release): `_is_steamos_like()` grepped os-release for "steamos"/"bazzite" and
   gated `couchmode_available()`, the `desktop` cap and guide-hold. Now
