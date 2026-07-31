@@ -573,10 +573,41 @@ this reason.
   is NOT offered; and the launch itself screen-captured off the TV, because it is only
   observable there.
 
-  **NOT yet verified, and both are cheap:** whether Chrome already inhibits idle under
-  gamescope on our boxes, and which of those six apps actually ship usable Actions in their
-  `.desktop` files. Neither could be checked when this was scoped — the CachyOS box was
-  offline and the Bazzite box was on the other subnet.
+  **MEASURED on bazzite 10.1.1.60, 2026-07-31** — the survey that was pending when this was
+  scoped. Numbers are from 232 real `.desktop` files in `/usr/share/applications` and
+  `/var/lib/flatpak/exports/share/applications`:
+
+  | fact | count | what it means for Phase 7 |
+  |---|---|---|
+  | files with `Exec` field codes | 46 / 232 (20%) | stripping is **mandatory**, not an edge case |
+  | files with an `Actions=` line | 11 / 232 (5%) | Actions are a **bonus, not the mechanism** |
+  | `~/.local/share/applications` exists, user-writable | yes | the §5b attack surface is real on a stock box |
+
+  **The media apps actually installed, verbatim:**
+
+  - `tv.kodi.Kodi.desktop` — **`Actions=Fullscreen;Standalone;`**, with
+    `[Desktop Action Fullscreen]` / `Name=Open in fullscreen`. This is the Phase 7 use case
+    confirmed on hardware.
+  - `tv.plex.PlexHTPC.desktop` — **no `Actions` line.**
+  - `com.moonlight_stream.Moonlight.desktop` — **no `Actions` line.**
+
+  **Two corrections to the scoping draft, from that data:**
+  1. Actions are *not* how most native apps reach TV mode — one of the three media apps on the
+     box has them. Phase 7 must launch plain `Exec` well first and treat an action as an
+     optional refinement, not build the feature around actions.
+  2. Every `Exec` here is a flatpak wrapper
+     (`/usr/bin/flatpak run --branch=stable --arch=x86_64 --command=kodi tv.kodi.Kodi`). Fine
+     for an argv list, but it means the parser must not assume `Exec[0]` is the app.
+
+  **Quoting is load-bearing.** A real line on that box:
+  `Exec=kde-geo-uri-handler --coordinate-template "https://www.google.com/maps/@<LAT>,<LON>,<Z>z" ... %u`
+  — quoted arguments containing commas and angle brackets. A naive `split()` mangles it; use
+  `shlex.split()` and fixture-test against this exact line.
+
+  **STILL NOT verified:** whether Chrome already inhibits idle under gamescope. That needs a
+  live playback session, which takes over the TV, so it was not run unasked. It also must
+  observe **both** states (§11.2) — idle firing without playback, and not firing with it —
+  or it proves nothing.
 
 ### Picture controls: BUILT, THEN CUT 2026-07-27 — and why
 
