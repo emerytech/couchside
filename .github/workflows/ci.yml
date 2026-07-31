@@ -404,6 +404,13 @@ jobs:
       - name: Installer add-on policy (player)
         run: bash tests/test_installer_player.sh install.sh
 
+      # Distro neutrality (the CachyOS/Arch pass). The installer's two
+      # distro-aware spots — firewall backend, python3 hint — must stay
+      # capability-probed, never distro-named, and a firewall is only touched
+      # when it is RUNNING. Pins are textual: what lands on boxes is this text.
+      - name: Installer distro-neutrality pins
+        run: bash tests/test_installer_distro.sh install.sh
+
       # Injected actions: buttons the agent offers only when the box can really
       # perform them ("a dead button costs more trust than a missing one"), so
       # every gate is asserted in BOTH directions. Covers the Bluetooth pairing

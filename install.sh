@@ -394,8 +394,19 @@ if [ "$(id -u)" -eq 0 ]; then
        bazzite, ...). The agent runs as that user and the script uses sudo
        only for the few steps that need it."
 fi
-command -v python3 >/dev/null 2>&1 || die "python3 not found. Couchside needs
-       python3 (preinstalled on SteamOS and Bazzite). Install it and re-run."
+# The ONLY dependency the installer needs the user to provide. Preinstalled on
+# SteamOS, Bazzite and CachyOS; the hint names the package manager THIS box
+# actually has rather than assuming a distro (detected by presence, which is
+# what decides whether the command will work — os-release names would not).
+if ! command -v python3 >/dev/null 2>&1; then
+    PYHINT="install python3 with your package manager and re-run"
+    if command -v pacman >/dev/null 2>&1; then PYHINT="sudo pacman -S python"
+    elif command -v dnf >/dev/null 2>&1; then PYHINT="sudo dnf install python3"
+    elif command -v apt-get >/dev/null 2>&1; then PYHINT="sudo apt install python3"
+    elif command -v zypper >/dev/null 2>&1; then PYHINT="sudo zypper install python3"
+    fi
+    die "python3 not found. Couchside needs python3. Fix: $PYHINT — then re-run."
+fi
 command -v systemctl >/dev/null 2>&1 || die "systemctl not found: Couchside requires a systemd distro."
 
 USER_NAME="$(id -un)"
@@ -1055,6 +1066,13 @@ fi
 # flatpak one: fixed, root-owned, its mode validated to check|apply and never
 # forwarded, so the grant on it can't reach another rpm-ostree/steamos-update
 # subcommand (rpm-ostree can layer packages, override, rebase).
+#
+# DELIBERATELY no pacman path here. Rolling-release full-upgrades are a
+# different risk profile than atomic image swaps (partial upgrades can leave an
+# Arch box unbootable, and there is no rollback), so on CachyOS/Arch the
+# app's OS-update button is honestly absent rather than dangerously present —
+# the agent's os_updater_kind() already degrades closed when neither
+# rpm-ostree nor steamos-update exists (verified live on CachyOS, 2026-07-30).
 if command -v rpm-ostree >/dev/null 2>&1 || command -v steamos-update >/dev/null 2>&1; then
     say "Installing the OS update wrapper ($OS_UPDATE_WRAPPER)"
     note "Inert until you run: couchside allow-system-updates on"
@@ -1212,13 +1230,25 @@ PORT="$(sudo cat "$CONFIG_FILE" 2>/dev/null | python3 -c 'import json,sys
 try: print(json.load(sys.stdin).get("port") or '"$PORT_DEFAULT"')
 except Exception: print('"$PORT_DEFAULT"')' 2>/dev/null || echo "$PORT_DEFAULT")"
 
+# Only a RUNNING firewall is touched — an installed-but-disabled one is the
+# owner's choice, and enabling or configuring it on their behalf is not this
+# installer's job. Same principle for both backends:
+#   firewalld — Bazzite/Fedora/Nobara. `--state` gates on it actually running.
+#   ufw       — the common Arch/Ubuntu choice. `ufw status` needs root and
+#               prints "Status: active" only when enabled.
+# CachyOS and SteamOS ship neither by default (MEASURED on the CachyOS box
+# 2026-07-30: no firewalld, no ufw), so the skip message names what was
+# checked instead of assuming everyone is SteamOS.
 if command -v firewall-cmd >/dev/null 2>&1 && sudo firewall-cmd --state >/dev/null 2>&1; then
     say "Opening ${PORT}/tcp in firewalld"
     sudo firewall-cmd --add-port="${PORT}/tcp" --permanent
     sudo firewall-cmd --reload
+elif command -v ufw >/dev/null 2>&1 && sudo ufw status 2>/dev/null | grep -q "^Status: active"; then
+    say "Opening ${PORT}/tcp in ufw"
+    sudo ufw allow "${PORT}/tcp"
 else
-    say "No running firewalld detected, skipping firewall step"
-    note "(SteamOS ships with no firewall enabled; nothing to open.)"
+    say "No running firewall (firewalld/ufw) detected, skipping firewall step"
+    note "(SteamOS, CachyOS and most Arch installs ship none; nothing to open.)"
 fi
 
 # ---------------------------------------------------------------------------
