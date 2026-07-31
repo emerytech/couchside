@@ -1580,6 +1580,19 @@ function PadScreen() {
           setPref('padTrackpadLarge', !trackpadLarge);
           hapticSelection();
         }}
+        // The SECOND door to the diagnostics panel, and in large-pad mode the
+        // only one: the header pill that carries the other long-press is inside
+        // `{!largePad && ...}`, so enlarging the pad -- the natural thing to do
+        // for trackpad use, and therefore the state you are in when the cursor
+        // dies -- removed every way to read the counters. Shrinking the pad to
+        // reach the pill is not an acceptable workaround: it is one more
+        // interaction with the touch layer whose state is the thing under
+        // investigation.
+        onLongPress={() => {
+          hapticLight();
+          setDiagOpen(true);
+        }}
+        delayLongPress={700}
         style={styles.tpToggleChip}
         hitSlop={12}
         accessibilityLabel={trackpadLarge ? 'Exit large pad' : 'Enlarge pad'}>
