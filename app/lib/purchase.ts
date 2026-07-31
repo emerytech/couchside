@@ -33,6 +33,10 @@ export type RestoreResult =
 type IapPurchase = {
   productId: string;
   purchaseState: 'pending' | 'purchased' | 'unknown';
+  // Transaction identity, when the platform provides one. Used ONLY to dedupe
+  // re-deliveries of the same transaction (see the listener); never required.
+  id?: string;
+  transactionId?: string;
   // Original transaction time (ms since epoch). Open IAP surfaces this as
   // `transactionDate`; some platforms also carry a StoreKit
   // `originalPurchaseDate`. Both optional: never depend on either existing.
@@ -88,6 +92,13 @@ function iap(): IapModule | null {
 
 let connectPromise: Promise<boolean> | null = null;
 let listenersAttached = false;
+// Transactions already granted this session, keyed by the best identity the
+// platform gives us. Module level: the listener survives provider remounts,
+// and StoreKit re-delivery of an unfinished transaction must never re-grant
+// (the 2026-07-30 CPU storm — see the listener). Bounded: one entry per real
+// transaction, and a session sees a handful at most.
+const grantedTxIds = new Set<string>();
+let finishFailureLogged = false;
 
 /**
  * Registered by EntitlementProvider; fired whenever the store reports a
@@ -139,7 +150,39 @@ async function connect(): Promise<boolean> {
               return;
             }
             // Non-consumable: acknowledge/finish so the store stops retrying.
-            m.finishTransaction({ purchase, isConsumable: false }).catch(() => {});
+            //
+            // THE STORM GUARD (2026-07-30, measured on the owner's iPhone,
+            // iOS 27 beta). When finishTransaction FAILS, StoreKit re-delivers
+            // the unfinished transaction to this listener immediately and
+            // forever. Ungated, every re-delivery granted again: a keychain
+            // write (~100/s measured), a fresh entitlement object, a full
+            // context re-render — 87% CPU sustained until iOS killed the app
+            // for CPU abuse, every ~30-120s, every launch. A pegged JS thread
+            // also stops pumping trackpad frames, which is what "the mouse
+            // dies until I restart the app" actually was.
+            //
+            // So: keep RETRYING the finish on every delivery (that is the only
+            // path to making StoreKit stop), but grant AT MOST ONCE per
+            // transaction identity — and log the finish failure instead of
+            // swallowing it, because a silent `.catch(() => {})` is how this
+            // ran undiagnosed on a shipped build.
+            const txId =
+              purchase.id ?? purchase.transactionId ??
+              (purchase.transactionDate != null ? String(purchase.transactionDate) : null);
+            m.finishTransaction({ purchase, isConsumable: false }).catch((e) => {
+              if (!finishFailureLogged) {
+                finishFailureLogged = true;
+                console.warn(
+                  '[iap] finishTransaction failed; StoreKit will re-deliver ' +
+                    'this transaction until it succeeds:',
+                  e instanceof Error ? e.message : e,
+                );
+              }
+            });
+            if (txId != null && grantedTxIds.has(txId)) {
+              return; // re-delivery of a transaction we already granted
+            }
+            if (txId != null) grantedTxIds.add(txId);
             onPurchased?.(purchaseDateOf(purchase));
             settleBuy({ ok: true });
           });
