@@ -1,7 +1,3 @@
-New in 2.9.31
+Fixes a bug where the app could stop responding — trackpad and buttons frozen — within a minute of opening, then quietly restart itself. It was a purchase-verification loop, most likely on iOS beta versions, and it could also drain battery. Restoring purchases is more reliable now.
 
-• Setup guides you through your first box, finds every box on your network, and puts a PIN on your TV. No addresses, no tokens.
-• New Display / Audio panel: live resolution, refresh rate, whether HDR and VRR are really on, and which speaker is playing.
-• Redeemed a promo code? Restore Purchases now finds it.
-• Easier to read: small text has more contrast, and error messages that were invisible in light mode now show.
-• Box software updates no longer hang on "Updating…".
+Also new: the Console shows every GPU in your box — dual-GPU machines show both cards, each with its own temperature, usage and memory.
