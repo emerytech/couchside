@@ -637,6 +637,48 @@ export class GamepadClient {
     this.open();
   }
 
+  /**
+   * The recovery the OWNER found by hand: switch to another box and back, which
+   * restores a dead cursor INSTANTLY where the plain retry above does not.
+   *
+   * That difference is the whole reason this exists. `reconnect()` calls
+   * `open()` and nothing else; switching boxes runs `close()` then
+   * `connect(otherConn)` then `connect(thisConn)`, which additionally
+   *
+   *   1. releaseAll()s the PAD state (buttons/triggers/sticks — note it does
+   *      NOT cover mouse buttons, so this method releases those explicitly: a
+   *      pointer button left down turns every move into a drag, which reads as
+   *      "the mouse does nothing"), and
+   *   2. clears `useFallback`, because connect() sees a DIFFERENT conn — so the
+   *      next dial goes back to the IP-first address instead of staying pinned
+   *      to whichever alternate a past failure selected. This is the candidate
+   *      that actually fits a MOUSE fault; the pad-release half does not.
+   *
+   * Neither is reachable from reconnect(), and both survive a socket rebuild —
+   * which is exactly the shape of a bug that a force-quit or a box-switch cures
+   * and a retry does not. So do the same thing the owner does, in one call,
+   * without inventing a placeholder box to bounce off.
+   *
+   * Deliberately NOT automatic: this is the tap-to-retry escalation, and it is
+   * still symptom treatment. The root cause is under investigation (KI-053) —
+   * whatever it turns out to be, having the known-good recovery one tap away
+   * beats making people navigate twice.
+   */
+  hardReset(): void {
+    const conn = this.conn;
+    if (conn == null) return;
+    this.releaseAll();
+    // releaseAll() is pad-only; a held pointer button would otherwise survive
+    // the reset and keep dragging on the far side.
+    for (const b of ['l', 'r', 'm'] as MouseButton[]) this.sendMouseButton(b, 0);
+    this.useFallback = false;
+    this.attempt = 0;
+    this.clearReconnect();
+    this.teardownSocket(true);
+    this.active = true;
+    this.open();
+  }
+
   sendButton(k: ButtonKey, v: 0 | 1): void {
     this.sendRaw({ t: 'b', k, v });
   }
@@ -1189,6 +1231,11 @@ export class GamepadClient {
       Date.now() - this.lastInbound > PING_INTERVAL_MS * 2.5
     ) {
       wsTrace.recoveries += 1;
+      // reconnect(), NOT hardReset(): this runs INSIDE sendRaw, and hardReset
+      // releases held inputs — which calls sendRaw again, once per key, each
+      // re-entering this very branch. Tried it; three lifecycle tests caught the
+      // recursion immediately. The heavier reset stays on the explicit user tap,
+      // where nothing is mid-send.
       this.reconnect();
       return; // can't land on a dead socket; the rebuilt one carries the next frame
     }
