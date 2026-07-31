@@ -1,10 +1,3 @@
-New in 2.9.31
+Fixes a bug where the app could stop responding — trackpad and buttons frozen — within a minute of opening, then quietly restart itself. It was a purchase-verification loop, most likely on iOS beta versions, and it could also drain battery. Restoring purchases is more reliable now.
 
-• Setting up your first box is now guided — the Setup tab walks you through installing the service, then finds every box on your network on its own and puts a PIN on your TV. No typing addresses, no hunting for a token.
-• See what your box is sending the TV — a new Display / Audio panel on Console shows live resolution and refresh rate, whether HDR and variable refresh are really on, your monitor's name, and which speaker is playing.
-• Redeemed a promo code? Restore Purchases now finds it. Codes redeemed in the App Store weren't being picked up, so the app could still say your trial had expired.
-• Easier to read — the small text throughout the app has been darkened for contrast, and error messages that were nearly invisible in light mode are now legible.
-• Your box's name no longer gets cut short in the header on smaller phones.
-• Updating box software no longer hangs on "Updating…" when an app can't be updated, and an OS update queued behind it now runs.
-• iPhone: the Paste button no longer hides behind the keyboard.
-• Optional new add-on: the Couchside Player puts Netflix, YouTube, Max and more on the TV, driven from your phone. It's early — install it from your box if you want to try it.
+Also new: the Console shows every GPU in your box — dual-GPU machines show both cards, each with its own temperature, usage and memory.
