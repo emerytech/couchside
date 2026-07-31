@@ -302,27 +302,75 @@ def test_active_output():
 
 # --- payload shape: per-field optional ---------------------------------------
 
+def test_payload_reports_every_gpu():
+    """Both cards reach the payload, and `gpu` is the DISCRETE one.
+
+    The old reader returned on the first amdgpu match. MEASURED on an ASUS G14:
+    card0 is the integrated Radeon 680M (512 MB carve-out, 19.6 GB GTT) and
+    card1 the discrete RX 6800S (8176 MB) — so it reported the iGPU and showed
+    its carve-out as the GPU's memory, while the game rendered on the card it
+    hid. `gpus` carries both; `gpu` stays for older apps and must name the card
+    a player cares about."""
+    print("payload reports every GPU")
+    o_all, o_game, o_out, o_ctrl, o_sess = (
+        cs._gpu_sensors_all, cs._running_game, cs._active_output,
+        cs._gaming_controllers, cs._couchmode_session)
+    cs._GAMING_CACHE["val"] = None
+    try:
+        cs._gpu_sensors_all = lambda: [
+            {"name": "amdgpu", "card": "card0", "temp_c": 55.0,
+             "vram_total_mb": 512, "gtt_total_mb": 19659},
+            {"name": "amdgpu", "card": "card1", "temp_c": 57.0,
+             "vram_total_mb": 8176},
+        ]
+        cs._running_game = lambda: None
+        cs._active_output = lambda: None
+        cs._gaming_controllers = lambda: []
+        cs._couchmode_session = lambda: "gamescope"
+        p = cs._gaming_payload()
+        check(len(p.get("gpus", [])) == 2, "both cards present in gpus[]")
+        check(p["gpu"]["card"] == "card1", "gpu = the DISCRETE card, not the first")
+        check(p["gpu"]["vram_total_mb"] == 8176, "...with the real VRAM figure")
+        # A single-GPU box is unchanged: gpu is that card, gpus has one entry.
+        cs._GAMING_CACHE["val"] = None
+        cs._gpu_sensors_all = lambda: [
+            {"name": "amdgpu", "card": "card0", "temp_c": 61.0, "vram_total_mb": 512}]
+        p = cs._gaming_payload()
+        check(p["gpu"]["card"] == "card0" and len(p["gpus"]) == 1,
+              "single-GPU box unchanged")
+    finally:
+        (cs._gpu_sensors_all, cs._running_game, cs._active_output,
+         cs._gaming_controllers, cs._couchmode_session) = (
+            o_all, o_game, o_out, o_ctrl, o_sess)
+        cs._GAMING_CACHE["val"] = None
+
+
 def test_payload_omits_absent_fields():
     print("payload per-field probe-and-appear")
     o_gpu, o_game, o_out, o_ctrl, o_sess = (
-        cs._gpu_sensors, cs._running_game, cs._active_output,
+        cs._gpu_sensors_all, cs._running_game, cs._active_output,
         cs._gaming_controllers, cs._couchmode_session)
     cs._GAMING_CACHE["val"] = None
     try:
         # An idle Intel box in desktop: no gpu, no game, no pad — but a session.
-        cs._gpu_sensors = lambda: {}
+        # Stubs _gpu_sensors_ALL: since 2.9.67 the payload builds from the whole
+        # card list and never calls _gpu_sensors, so stubbing the old name left
+        # this assertion inert — it passed while never reaching the code it
+        # names, and would have failed outright on the dual-GPU laptop.
+        cs._gpu_sensors_all = lambda: []
         cs._running_game = lambda: None
         cs._active_output = lambda: {"name": "DP-1", "internal": False}
         cs._gaming_controllers = lambda: []
         cs._couchmode_session = lambda: "desktop"
         p = cs._gaming_payload()
         check("gpu" not in p, "no gpu key when GPU absent (no blank block)")
+        check("gpus" not in p, "no gpus key either (never an empty array)")
         check("game" not in p, "no game key when nothing running")
         check("controllers" not in p, "no controllers key when no pad")
         check(p.get("output") == {"name": "DP-1", "internal": False}, "output present")
         check(p.get("session") == "desktop", "session always present")
     finally:
-        (cs._gpu_sensors, cs._running_game, cs._active_output,
+        (cs._gpu_sensors_all, cs._running_game, cs._active_output,
          cs._gaming_controllers, cs._couchmode_session) = (
             o_gpu, o_game, o_out, o_ctrl, o_sess)
         cs._GAMING_CACHE["val"] = None
@@ -331,6 +379,7 @@ def test_payload_omits_absent_fields():
 if __name__ == "__main__":
     test_appid_from_cmdline()
     test_gpu_sensors()
+    test_payload_reports_every_gpu()
     test_vram_sanity()
     test_controllers_and_battery()
     test_steam_input_phantoms()

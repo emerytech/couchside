@@ -298,7 +298,7 @@ def test_boot_preference_is_armed_only_while_the_box_is_off(tmp):
     real = (cs.subprocess.run, cs._sudo_nopasswd_allows, cs.detect_display_manager,
             cs._greetd_write, cs._installed_session_files, cs.CONFIG_PATH,
             cs._DM_CONF_DIRS, cs._DM_SYS_CONF_DIRS, cs._DM_MAIN_CONFS,
-            cs._DM_STATE_FILES)
+            cs._DM_STATE_FILES, cs._arm_hook_installed)
     try:
         confdir = os.path.join(tmp, "plasmalogin.conf.d")
         os.makedirs(confdir, exist_ok=True)
@@ -308,6 +308,7 @@ def test_boot_preference_is_armed_only_while_the_box_is_off(tmp):
         with open(cs.CONFIG_PATH, "w") as f:
             f.write('{"units": []}')
         cs._sudo_nopasswd_allows = lambda needle: True
+        cs._arm_hook_installed = lambda: True
         cs.detect_display_manager = lambda: "plasmalogin"
         cs._installed_session_files = lambda: {cs.GAMESCOPE_SESSION_FILE,
                                                "plasma.desktop"}
@@ -393,7 +394,7 @@ def test_boot_preference_is_armed_only_while_the_box_is_off(tmp):
         (cs.subprocess.run, cs._sudo_nopasswd_allows, cs.detect_display_manager,
          cs._greetd_write, cs._installed_session_files, cs.CONFIG_PATH,
          cs._DM_CONF_DIRS, cs._DM_SYS_CONF_DIRS, cs._DM_MAIN_CONFS,
-         cs._DM_STATE_FILES) = real
+         cs._DM_STATE_FILES, cs._arm_hook_installed) = real
 
 
 def main():
@@ -431,6 +432,12 @@ def main():
     cs._DM_STATE_FILES = {}
     cs.subprocess.run = FakeRun(stdout="desktop\n", rc=0)
     cs._sudo_nopasswd_allows = lambda needle: True
+    # The arming hook is a PRECONDITION from 2.9.67: without the ExecStop line
+    # in the unit nothing can write the preference for the next boot, so the
+    # capability must not be offered. Controlled explicitly here, and exercised
+    # both ways below.
+    real_hook = cs._arm_hook_installed
+    cs._arm_hook_installed = lambda: True
     cs.detect_display_manager = lambda: "sddm"
     check("steamosctl wins when both are usable",
           cs.session_default_backend(), "steamosctl")
@@ -499,9 +506,25 @@ def main():
     check("...and returns once it is silent (control)",
           cs.session_default_backend(), "sddm")
 
+    # THE DELIVERY GAP, pinned. install.sh's phone-update fast path replaces
+    # couchsided.py and exits ~450 lines before the unit install, with no
+    # daemon-reload — so an app-updated box runs the new agent under the OLD
+    # unit and NOTHING can arm the preference. Advertising it there would be a
+    # setting that silently does nothing, which is what this whole rewrite was
+    # for. Hide it instead.
+    cs.detect_display_manager = lambda: "sddm"
+    cs._arm_hook_installed = lambda: False
+    check("no ExecStop arming hook -> NO backend (the card hides)",
+          cs.session_default_backend(), None)
+    check("...capability absent", cs.session_default_available(), False)
+    cs._arm_hook_installed = lambda: True
+    check("...and present again once the unit carries it (control)",
+          cs.session_default_backend(), "sddm")
+
     (cs._DM_CONF_DIRS, cs._DM_SYS_CONF_DIRS, cs._DM_MAIN_CONFS,
      cs._DM_STATE_FILES) = saved_layers
     cs.detect_display_manager = real_detect
+    cs._arm_hook_installed = real_hook
 
     print("the route's allowlist")
     # Membership is what the route checks; anything outside is a 400.

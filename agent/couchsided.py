@@ -3281,10 +3281,28 @@ def real_journal(unit, scope, lines):
     return r.stdout.splitlines()
 
 
+# Actions that take the box down, and are therefore the last chance to write
+# the boot preference. Ids only — the argv still comes from the frozen table.
+_POWER_DOWN_ACTIONS = ("reboot", "poweroff")
+
+
 def real_action(action_id):
     spec = ACTIONS[action_id]
     env = _user_env() if spec["user_env"] else None
     start = time.monotonic()
+    if action_id in _POWER_DOWN_ACTIONS:
+        # ARM HERE TOO, not only from the unit's ExecStop. The hook ships in
+        # agent/couchside.service, and the phone-triggered update never installs
+        # a new unit (see _arm_hook_installed) — so on an app-updated box this
+        # is the only thing that gets the preference written. It is also simply
+        # correct: the box is about to go down, which is precisely when arming
+        # is safe. Idempotent with ExecStop, which runs moments later on a box
+        # whose unit does carry the hook.
+        try:
+            session_default_arm()
+        except Exception as e:
+            print("[session] arm before %s failed: %s" % (action_id, str(e)[:120]),
+                  flush=True)
     if spec["detached"]:
         proc = subprocess.Popen(
             spec["cmd"], env=env,
@@ -3978,6 +3996,36 @@ def session_default_pref():
     return val if val in SESSION_DEFAULT_MODES else None
 
 
+SERVICE_UNIT_PATH = "/etc/systemd/system/couchside.service"
+_ARM_FLAG = "--arm-boot-session"
+
+
+def _arm_hook_installed():
+    """True when THIS box's unit carries the ExecStop that arms the preference.
+
+    The whole conf-dir feature now depends on that hook, and the hook ships in
+    agent/couchside.service — which the PHONE-TRIGGERED UPDATE never installs.
+    That path (install.sh's CAN_PRIVILEGE=0 fast path) replaces couchsided.py,
+    restarts the service and exits ~450 lines before the unit install, with no
+    daemon-reload, so a box updated from the app runs the new agent under the
+    OLD unit. Nothing would arm, ever, while the card kept reporting the stored
+    preference: a setting that silently does nothing, which is the exact class
+    of lie this feature was rewritten to stop.
+
+    So we ask the unit directly. Unreadable or missing -> False (degrade closed,
+    §3.7): the capability disappears rather than advertising a boot preference
+    the box cannot honour. Re-running the installer from a terminal fixes it,
+    and _inject_reboot_arm() below covers the phone-driven reboot meanwhile."""
+    try:
+        with open(SERVICE_UNIT_PATH, "r", encoding="utf-8", errors="replace") as f:
+            for line in f:
+                if line.startswith("ExecStop=") and _ARM_FLAG in line:
+                    return True
+    except OSError:
+        return False
+    return False
+
+
 def _dm_session_ok(dm):
     """True when sudoers really lets us write the DETECTED manager's drop-in.
 
@@ -4002,6 +4050,11 @@ def _dm_session_ok(dm):
     if not dropin:
         return False
     if not os.path.isdir(_DM_CONF_DIRS[dm]):
+        return False
+    # No arming hook means nothing can ever write the preference for the next
+    # boot — see _arm_hook_installed. Hide the setting instead of taking one we
+    # cannot apply.
+    if not _arm_hook_installed():
         return False
     if _last_session_line(_DM_MAIN_CONFS.get(dm, "")):
         return False
@@ -4518,6 +4571,42 @@ def _dm_disarm(dm):
         return False
 
 
+def _migrate_dropin_into_config(dm):
+    """ADOPT a pre-2.9.67 drop-in as the stored preference, once.
+
+    Before 2.9.67 the setter wrote the drop-in and persisted NOTHING — the file
+    was the whole setting. Consuming it on first start of the new agent would
+    therefore delete the user's choice with no way to get it back: config has no
+    preference to arm from, so the box quietly reverts to last-session for good.
+
+    So before blanking, read what the file says and store it. Only runs when
+    there is no stored preference yet, so it can never overwrite a real choice,
+    and only accepts a session we recognise — an unreadable or foreign value is
+    left alone rather than guessed at."""
+    if session_default_pref() is not None:
+        return
+    name = _last_session_line(_dm_dropin(dm)) or _last_session_line(_dm_dropin_legacy(dm))
+    if not name:
+        return
+    if name == GAMESCOPE_SESSION_FILE:
+        mode = "game"
+    elif name in _DESKTOP_SESSIONS:
+        mode = "desktop"
+    else:
+        return
+    try:
+        with CONFIG_LOCK:
+            _config_set_field(SESSION_DEFAULT_CONFIG_KEY, mode)
+        print("[session] adopted the existing boot preference (%s) into config"
+              % mode, flush=True)
+    except Exception as e:
+        # Leave the drop-in ALONE if we could not save the preference — blanking
+        # it here would be the data loss this function exists to prevent.
+        print("[session] could not adopt the boot preference: %s" % str(e)[:120],
+              flush=True)
+        raise
+
+
 def session_default_consume(mock=False):
     """Startup half of the arm/consume cycle: disarm the drop-in.
 
@@ -4531,9 +4620,28 @@ def session_default_consume(mock=False):
     is on disk, which is the pre-2.9.67 behaviour, not something worse."""
     if mock:
         return
+    # Only for the managers we actually write drop-ins for. A steamosctl Deck
+    # keeps its preference in Valve's own state and a greetd box in its
+    # config.toml; blanking or arming anything here would fight the real owner
+    # of that setting.
+    if session_default_backend() not in _DM_CONF_DIRS:
+        return
     dm = detect_display_manager()
     if dm not in _DM_CONF_DIRS:
         return
+    if not _arm_hook_installed():
+        # Say it ONCE, at startup, where support will find it. The capability is
+        # already hidden (see _dm_session_ok); this explains why, and what fixes
+        # it, without a per-request log line.
+        print("[session] %s has no %s ExecStop, so the boot preference cannot be "
+              "written for the next boot: the setting is hidden. Re-run the "
+              "installer from a terminal to restore it. (Rebooting FROM THE APP "
+              "still applies a preference already stored.)"
+              % (SERVICE_UNIT_PATH, _ARM_FLAG), flush=True)
+    try:
+        _migrate_dropin_into_config(dm)
+    except Exception:
+        return  # preference not saved -> do NOT blank the file that still holds it
     if _dm_disarm(dm):
         _dm_neutralise_legacy(dm)
 
@@ -4550,6 +4658,17 @@ def session_default_arm():
     Prints its outcome because ExecStop output is all the shutdown journal will
     have if this ever misbehaves."""
     pref = session_default_pref()
+    # DISPATCH ON THE BACKEND, not merely on the detected manager. A Steam Deck
+    # runs sddm underneath but its boot mode belongs to steamosctl, which
+    # session_default_set already drove; writing our later-sorting drop-in here
+    # too would override Valve's own autologin at every shutdown and silently
+    # undo a change the owner made in Steam's own settings. greetd likewise owns
+    # its config.toml and was written at set() time.
+    backend = session_default_backend()
+    if backend not in _DM_CONF_DIRS:
+        print("[session] arm: backend %r owns this setting; nothing to write"
+              % (backend,), flush=True)
+        return
     dm = detect_display_manager()
     if dm not in _DM_CONF_DIRS:
         print("[session] arm: no writable display manager detected; nothing to do",
@@ -4847,10 +4966,10 @@ def desktop_mode():
     if sw["ok"] and not landed:
         steps["desktop_up"] = {
             "ok": False, "exit_code": 1, "stdout": "",
-            "stderr": "the switch was accepted but the box came back to Game "
-                      "Mode within %gs. A Couchside boot preference can cause "
-                      "this on older agents; clear it and try again."
-                      % SESSION_VERIFY_TIMEOUT_S}
+            "stderr": "the switch was accepted but the box was still in Game "
+                      "Mode %gs later. A Couchside boot preference set by an "
+                      "agent older than 2.9.67 can cause this; clearing it and "
+                      "retrying is the fix." % SESSION_VERIFY_TIMEOUT_S}
     return {"ok": bool(sw["ok"] and landed),
             # Report the session actually observed, never the one we hoped for.
             "session": _couchmode_session(),
@@ -16775,18 +16894,18 @@ class Handler(BaseHTTPRequestHandler):
                     self._send(200, {"ok": True, "session": "desktop",
                                      "steps": {"session": {"ok": True}}}, started)
                     return
-                res = couchmode_exit()
-                # 409 on a switch that did not land. The BODY has carried `ok`
-                # since forever, but no shipped app reads it: CouchModeSheet
-                # awaits the call and then fires hapticSuccess unconditionally,
-                # so a failed switch looked identical to a good one on every
-                # phone in the field. `request()` DOES throw on a non-2xx, which
-                # takes that component's catch branch — error haptic, sheet
-                # stays open, and it skips the optimistic local "you're on the
-                # desktop now" update. Same body, same fields; only the status
-                # changes, and every app version reads that as "it failed",
-                # which is the truth.
-                self._send(200 if res.get("ok") else 409, res, started)
+                # 200 EVEN WHEN THE SWITCH DID NOT LAND, deliberately. A 409 was
+                # tried here and reverted: the shipped app calls this with its
+                # 4s default timeout (TIMEOUT_MS in app/lib/api.ts) while the
+                # readback below can take up to SESSION_VERIFY_TIMEOUT_S, so the
+                # phone aborts before any status arrives — the 409 is
+                # unreachable, and worse, a SLOW BUT SUCCESSFUL switch starts
+                # reading as a failure. The honest signal the app can actually
+                # see is the `session` field, which the readback makes truthful,
+                # plus the session pill on the next poll a second or two later.
+                # Surfacing a real error at tap time needs this to become a
+                # polled job like the Couch Mode ceremony — an app change.
+                self._send(200, couchmode_exit(), started)
                 return
 
             # POST /api/guide-hold: opt into (or out of) the controller trigger.
