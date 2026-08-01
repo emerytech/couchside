@@ -319,6 +319,14 @@ export function RemotePowerBar({ compact = false }: { compact?: boolean }) {
   // wasted tap that sends a close the box treats as a no-op — unlike KI-047,
   // which advertised a session that did not exist and blocked the real action.
   const [bpOpened, setBpOpened] = React.useState(false);
+  // Live box identity for the in-flight guards below. A ref, NOT the closure's
+  // `settings`: the handler closes over the box it was rendered for, so
+  // comparing `sentTo === hostKey(settings)` inside the closure compares box A
+  // with box A and always passes — a guard that guards nothing. (Caught in
+  // self-review minutes after writing exactly that.) The ref is reassigned
+  // every render, so at resolution time it holds whichever box is active NOW.
+  const bpBoxRef = React.useRef('');
+  bpBoxRef.current = boxKey;
   // Our optimism is about ONE box: switching boxes must clear it, or the new
   // box's button would claim Big Picture is open because the PREVIOUS one was.
   // Declared here, above the early `return null` — putting it lower crashed
@@ -657,11 +665,22 @@ export function RemotePowerBar({ compact = false }: { compact?: boolean }) {
             // Tap does the OPPOSITE of what we last did, so the label on the
             // button is always the action the tap performs.
             const op = bpOpened ? 'close' : 'open';
+            // Capture WHICH box this command went to. The user can switch
+            // boxes while the POST is in flight; the [boxKey] reset effect
+            // then clears bpOpened, and without this check the resolved
+            // closure would set it right back — box B rendering "Exit Big
+            // Picture" for a command box A received. Same stale-completion
+            // ordering the suspend probe below guards with its `cancelled`
+            // flag; audited into existence, not caught by the harness (it
+            // needs two boxes and a mid-flight switch).
+            const sentTo = boxKey;
             try {
               const r = await api.bigPicture(settings, op);
-              // Only flip on a reported success: a failed open that flipped the
-              // label to "Exit" would strand the user one tap from nothing.
-              if (r?.ok !== false) setBpOpened(op === 'open');
+              // Only flip on a reported success, and only for the box the
+              // command was actually sent to.
+              if (r?.ok !== false && sentTo === bpBoxRef.current) {
+                setBpOpened(op === 'open');
+              }
             } catch {
               // Surfaced by the box going quiet, not by a toast: the switch
               // takes the screen over and a toast would land behind it.
@@ -676,9 +695,15 @@ export function RemotePowerBar({ compact = false }: { compact?: boolean }) {
             if (bpBusy) return;
             hapticLight();
             setBpBusy(true);
+            const sentTo = boxKey;
             try {
-              await api.bigPicture(settings, 'close');
-              setBpOpened(false);
+              const r = await api.bigPicture(settings, 'close');
+              // The same two guards as the tap path — the first version set
+              // false unconditionally here, violating the "flip only on a
+              // reported success" rule the tap path documents three lines up.
+              if (r?.ok !== false && sentTo === bpBoxRef.current) {
+                setBpOpened(false);
+              }
             } catch {
               /* same */
             } finally {
@@ -698,15 +723,19 @@ export function RemotePowerBar({ compact = false }: { compact?: boolean }) {
             color={t.text}
           />
           {!compact && (
-            // numberOfLines + the shrinkable style are NOT cosmetic here: this
-            // label grows ~45% when it flips to "Exit Big Picture", it lives in
-            // a flexDirection:'row', and on NATIVE a <Text> in a row does not
-            // shrink unless told to — a long label shoves its siblings (the box
-            // picker, the volume control) off the edge. The web harness gets
-            // flex-shrink:1 for free and so reports ZERO overflow either way,
-            // which is why this could not be caught where the rest of this
-            // feature was verified. Measured the hard way once already, on
-            // Android 2026-07-22.
+            // HOW THE LONGER LABEL IS ACTUALLY ABSORBED (audited 2026-08-01;
+            // an earlier comment here claimed these Text styles did it — they
+            // do not): on native, this pill has Yoga's default flexShrink:0,
+            // so it always takes its intrinsic width and the Text below is
+            // never width-constrained. The row survives because BoxSwitcher's
+            // BOX-NAME pill is the header's designated shrink absorber
+            // (flexShrink:1 + numberOfLines, a documented design decision that
+            // deliberately rejected flex-weighting the chips), and because
+            // compact mode drops this label entirely below 390pt. Cost when
+            // "Exit Big Picture" is showing: the box name ellipsizes harder on
+            // narrow-but-not-compact widths — the same accepted tradeoff as
+            // the "Game Mode" chip. numberOfLines stays as belt-and-braces for
+            // any future parent that DOES constrain width.
             <Text style={styles.couchLabel} numberOfLines={1}>
               {bpOpened ? 'Exit Big Picture' : 'Big Picture'}
             </Text>
@@ -1031,8 +1060,10 @@ const makeStyles = (t: Palette) => StyleSheet.create({
     fontSize: 13,
     fontWeight: '700',
     fontFamily: mono,
-    // Shrink rather than push siblings off the header on native. Shared with
-    // the Couch Mode button, which benefits from the same protection.
+    // Inert on native TODAY (the parent pill has flexShrink:0 and is never
+    // width-constrained — see the label comment above), kept so the text
+    // behaves if a future parent does constrain it. Do not read this as the
+    // overflow protection; the box-name pill's flexShrink is.
     flexShrink: 1,
   },
   trigger: {
