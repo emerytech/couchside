@@ -19,6 +19,7 @@ What matters here is the same thing that matters in the siblings:
 import importlib.util
 import json
 import os
+import platform
 import sys
 import threading
 import urllib.error
@@ -62,11 +63,57 @@ print()
 print("the OS line keeps name and version SEPARATE")
 # The app joins them; a name that already carried the version is the Nobara
 # bug (#331), so pin that macOS cannot regress into it.
+#
+# Driven from a FIXTURE, not the live command. CI is ubuntu, where sw_vers does
+# not exist, so the live read returns no version at all and `"" in "macOS"` is
+# True — this block failed in CI on its first run for that reason and for no
+# reason involving the agent. A skip would have been the other option and it
+# would have tested nothing; the fixture exercises the real parser everywhere.
+#
+# Verbatim from the Mac this slice was built and measured on (Mac15,6):
+#
+#   $ sw_vers
+#   ProductName:		macOS
+#   ProductVersion:		27.0
+#   BuildVersion:		26A5368g
+_SW_VERS = {"-productVersion": "27.0\n", "-buildVersion": "26A5368g\n"}
+_real_run = M._run
+
+
+def _fixture_run(argv, timeout=5):
+    if argv[:1] == ["/usr/bin/sw_vers"] and argv[1:2] and argv[1] in _SW_VERS:
+        return 0, _SW_VERS[argv[1]], ""
+    return -1, "", ""
+
+
+M._run = _fixture_run
 osi = M.read_os_info()
+M._run = _real_run
 check("name is bare", osi.get("name"), "macOS")
-check("version is separate", "version" in osi, True)
+check("version is parsed off ProductVersion", osi.get("version"), "27.0")
+check("build is its own field", osi.get("build"), "26A5368g")
 check("name does not contain the version",
       osi.get("version", "") in osi.get("name", ""), False)
+
+# The other state: sw_vers missing or failing. Absent is the honest answer —
+# a "version" of "" would render as a trailing space in the Console header.
+M._run = lambda argv, timeout=5: (-1, "", "")
+osi_none = M.read_os_info()
+M._run = _real_run
+check("no version key when sw_vers cannot be read", "version" in osi_none, False)
+check("no build key either", "build" in osi_none, False)
+check("name survives with no probe at all", osi_none.get("name"), "macOS")
+
+# And the live read, where there is one to do.
+if platform.system() == "Darwin":
+    live = M.read_os_info()
+    check("live sw_vers yields a version", bool(live.get("version")), True)
+    check("live name stays bare", live.get("name"), "macOS")
+    check("live name does not contain the version",
+          live.get("version", "") in live.get("name", ""), False)
+else:
+    print("  SKIP  live sw_vers read (not a Mac) — the fixture above covers the")
+    print("        parser; the live path is verified on hardware before release.")
 
 print()
 print("status carries the keys the app reads, and no nulls")
