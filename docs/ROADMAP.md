@@ -40,6 +40,27 @@ Entry fields: `priority` (P0 blocker → P3 nice) · `risk` · `affects` · `dep
 
 ## 📋 Planned
 
+### protocol.json has no home for a platform-only capability (KI-055)
+- **priority:** P2 · **risk:** low · **affects:** `protocol/protocol.json` +
+  `tests/test_protocol_parity.py` · **depends_on:** none
+- `protocol.json` models exactly two groups: `capabilities.keys` (every agent must declare)
+  and `linuxOnlyCapabilities.keys`. There is **no group for a Windows-only or macOS-only
+  cap**, so `launchers` (Windows, agent 0.4.1-win) is absent from the canonical list
+  entirely and `test_protocol_parity.py` gates it in **neither direction** — not required
+  of the other agents, not recorded as deliberately Windows-only either. Until 2026-08-01
+  `test_win_launchers.py` claimed the cap was "wired at all five edit sites", which read as
+  complete.
+- The same hole opens for macOS the moment that agent grows a mac-only capability. The
+  macOS agent is also still absent from the parity test's `AGENTS` map.
+- **Do:** add `windowsOnlyCapabilities` (and `macOnlyCapabilities`), put `launchers` in it,
+  and teach the parity test to assert every declared cap appears in **exactly one** group —
+  that last part is what makes it a guard rather than a list, because it catches the next
+  cap that belongs nowhere.
+- **Do NOT** solve it by moving `launchers` into `capabilities.keys`: that would demand the
+  Linux and macOS agents declare a cap they have no implementation for, which is the
+  "omitted reads as unknown" trap inverted.
+- Found by the 2026-08-01 polish sweep while correcting the five-vs-six edit-site count.
+
 ### The privileged helper — retire the sudoers surface
 - **priority:** P1 · **risk:** high (new root-side code) · **affects:** agent + install.sh +
   new helper binary · **depends_on:** none
