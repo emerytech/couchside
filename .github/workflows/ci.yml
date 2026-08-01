@@ -485,6 +485,79 @@ jobs:
       - name: Unit tests (Windows game launchers)
         run: python3 tests/test_win_launchers.py
 
+      # ---------------------------------------------------------------------
+      # The eight suites below were written, committed, and then never wired
+      # into CI — so they have never once gated a push. Found 2026-08-01 by
+      # diffing tests/test_*.py against this file. Three of them are the
+      # security-shaped suites CLAUDE.md §6 requires for a route that takes
+      # client input, which means the guard existed and was not guarding.
+      # If you add a tests/test_*.py, add its step here in the same commit.
+      # ---------------------------------------------------------------------
+
+      # POST /api/upload — the §6 checklist for a route taking a client-supplied
+      # name: happy path, auth failure, and traversal/subdir/empty rejection.
+      # Runs against a REAL loopback server because the route streams the body
+      # straight to disk ahead of the generic in-memory cap; a faked rfile would
+      # prove nothing about the containment path that actually ships.
+      - name: Unit tests (upload auth + path containment)
+        run: python3 tests/test_upload.py
+
+      # steam_goto() — `steam://` can install games and run programs, so the
+      # destination is looked up in a frozen dict and the URL chosen in the
+      # agent, never supplied by the caller. The refusal cases are the point of
+      # the file.
+      - name: Unit tests (steam goto is allowlisted)
+        run: python3 tests/test_steam_goto.py
+
+      # stop_running_game() — the security shape IS the feature: it takes NO
+      # argument, so a client that cannot name a process cannot be steered into
+      # killing one. The first assertion is the signature itself, because the
+      # refactor that "helpfully" adds a pid is what turns a close-my-game
+      # button into a remote kill-anything primitive, and it looks like a
+      # convenience at review time.
+      - name: Unit tests (game stop takes no client argument)
+        run: python3 tests/test_game_stop.py
+
+      # Big Picture — Couch Mode's degraded tier. Pins that the cap is EXCLUSIVE
+      # with couchmode (a Deck must never be offered the lesser tier), that a
+      # non-allowlisted op runs nothing (asserted on a spawn counter), and that
+      # closing with no Steam running is SUCCESS, not an error.
+      - name: Unit tests (big picture tier)
+        run: python3 tests/test_bigpicture.py
+
+      # The box's OWN battery. Fixtures verbatim from a Legion Go S: BAT0's
+      # uevent repeats POWER_SUPPLY_TYPE, so a one-occurrence-per-key parser
+      # passes by luck rather than design. Both ENERGY- and CHARGE-based gauges
+      # are exercised.
+      - name: Unit tests (box battery)
+        run: python3 tests/test_box_battery.py
+
+      # PSI memory pressure. A used-percentage says what is spoken for, not what
+      # is hurting — a handheld reads 26% while a game stutters. Fixtures only:
+      # inducing real memory stall on a live box risks OOM-killing Steam.
+      - name: Unit tests (memory pressure parsing)
+        run: python3 tests/test_mem_pressure.py
+
+      # Steam cover art. The resolver looked only for library_600x900.jpg and
+      # left 30 of 80 installed games showing a blank text card while the real
+      # capsule sat one directory deeper under a content-hash subdirectory.
+      - name: Unit tests (steam cover art)
+        run: python3 tests/test_steam_cover_art.py
+
+      # _unreadable_reason() — why a controller cannot be read. The app used to
+      # tell every affected user to re-run install.sh, which on a Legion Go S
+      # cannot work: a POSIX ACL grants the user, and mode 000 collapses the
+      # mask that would make the grant effective. Sending someone to do
+      # something that cannot work is worse than saying nothing.
+      - name: Unit tests (controller unreadable reason)
+        run: python3 tests/test_guide_unreadable_reason.py
+
+      # The guard for the class of bug above: a suite in tests/ that no workflow
+      # runs is now itself a CI failure, in both directions (orphaned file, and
+      # a step pointing at a file that no longer exists).
+      - name: Unit tests (every suite in tests/ actually runs in CI)
+        run: python3 tests/test_ci_wiring.py
+
       - uses: actions/setup-node@v7
         with:
           node-version: "22"
