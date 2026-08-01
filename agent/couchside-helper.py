@@ -69,8 +69,6 @@ _DM_MAIN_CONFS = {
     "plasmalogin": "/etc/plasmalogin.conf",
 }
 _DM_UNIT_LINK = "/etc/systemd/system/display-manager.service"
-_GREETD_CONFIG = "/etc/greetd/config.toml"
-_GREETD_BACKUP = "/etc/greetd/config.toml.couchside-bak"
 
 # Our drop-in sorts LAST on purpose: SDDM reads *.conf alphabetically and the
 # last Session= wins, and steamos-session-select owns zz-steamos-autologin.conf.
@@ -124,16 +122,19 @@ def detect_display_manager():
 # ------------------------------------------------------------- verb handlers
 #
 # Every handler returns (ok: bool, detail: str). They take either no argument or
-# ONE already-validated value from a closed set.
+# ONE already-validated value.
 
-_SESSION_MODES = ("game", "desktop", "last")
-
-# What each mode means as an autologin Session=. The VALUES are ours, built
-# here; the caller only ever picks a key from _SESSION_MODES.
-_SESSION_FILES = {
-    "game": "gamescope-session.desktop",
-    "desktop": "plasma.desktop",
-}
+# Where sessions live. The set of acceptable Session= values is DERIVED FROM
+# THESE DIRECTORIES at call time — a box-owned closed set, not a caller-owned
+# one. The caller names a basename; if it is not a file in one of these dirs,
+# the verb refuses. This is deliberate and load-bearing: a hardcoded
+# mode->file table here would re-create the 2026-07-27 stranding, where
+# "plasmax11.desktop" (a SteamOS name) was written on a Bazzite box that ships
+# no such session — SDDM logged "Autologin failed!" and the box came up at the
+# GREETER, with no agent and no way for the phone to undo it. The agent owns
+# the mode->file selection because its version is the one that learned that
+# lesson; the helper only verifies and writes.
+_SESSION_DIRS = ("/usr/share/wayland-sessions", "/usr/share/xsessions")
 
 
 def _run(argv, timeout=25):
@@ -166,41 +167,47 @@ def _write_root_file(path, body):
         return False, "write failed: %s" % e
 
 
-def verb_session_set_boot(mode):
-    """Point the display manager's autologin at game or desktop for the NEXT boot.
+def _session_installed(name):
+    """True when `name` is a session file that exists on THIS box.
 
-    'last' means: stop steering, remove our drop-in, let the platform decide.
-    """
+    The validation is by membership in a directory listing, never by cleaning
+    the input (CLAUDE.md §3.6): a basename containing a separator or a dot-dot
+    can never equal a listdir() entry, so traversal is structurally impossible
+    rather than filtered."""
+    if not isinstance(name, str) or not name.endswith(".desktop"):
+        return False
+    for d in _SESSION_DIRS:
+        try:
+            if name in os.listdir(d):
+                return True
+        except OSError:
+            continue
+    return False
+
+
+def verb_session_set_boot(session_file):
+    """Point the display manager's autologin at an INSTALLED session for the
+    next boot. The caller (the agent) picks which; we verify it exists and
+    build the file body ourselves — nothing from the caller lands in the file
+    except the verified basename."""
     dm = detect_display_manager()
     if dm is None:
         return False, "no supported display manager detected"
 
-    if mode == "last":
-        return verb_session_clear_boot()
-
-    session_file = _SESSION_FILES[mode]
-
     if dm == "greetd":
-        # KI-049: this path exists in the agent and has NEVER worked on any box,
-        # because install.sh never wrote a matching sudoers grant. Here it needs
-        # no grant at all.
-        try:
-            with open(_GREETD_CONFIG, "r", encoding="utf-8") as f:
-                cur = f.read()
-        except OSError as e:
-            return False, "greetd config unreadable: %s" % e
-        if not os.path.exists(_GREETD_BACKUP):
-            _write_root_file(_GREETD_BACKUP, cur)
-        # Replace only the command inside [initial_session]; everything else in
-        # the operator's config is left exactly as it was.
-        new, n = re.subn(
-            r'(?m)^(\s*command\s*=\s*)"[^"]*"',
-            lambda m: '%s"%s"' % (m.group(1), session_file),
-            cur, count=1)
-        if not n:
-            return False, "greetd config has no [initial_session] command"
-        ok, detail = _write_root_file(_GREETD_CONFIG, new)
-        return ok, ("greetd -> %s (%s)" % (session_file, detail))
+        # DELIBERATELY UNSUPPORTED for now (KI-049 stays open). The agent's own
+        # greetd writer validates the session's Exec and composes around the
+        # operator's config; duplicating a lesser version of that here would be
+        # a worse copy of code that has never run on any real box — there is no
+        # greetd machine on this LAN to verify against. Refusing is honest;
+        # Phase 2 owns it.
+        return False, "greetd: not yet supported by the helper"
+
+    if not _session_installed(session_file):
+        # The 2026-07-27 stranding rule: never write an autologin for a session
+        # this box does not have. SDDM fails the autologin and parks the box at
+        # the greeter — where there is no agent and no way back from the phone.
+        return False, "session %r is not installed on this box" % (session_file,)
 
     conf_dir = _DM_CONF_DIRS.get(dm)
     if not conf_dir:
@@ -240,15 +247,10 @@ def verb_session_clear_boot():
             pass
         except OSError as e:
             return False, "could not remove %s: %s" % (p, e)
-    if os.path.exists(_GREETD_BACKUP):
-        try:
-            with open(_GREETD_BACKUP, "r", encoding="utf-8") as f:
-                body = f.read()
-            _write_root_file(_GREETD_CONFIG, body)
-            os.unlink(_GREETD_BACKUP)
-            removed.append(_GREETD_CONFIG + " (restored)")
-        except OSError as e:
-            return False, "greetd restore failed: %s" % e
+    # greetd is DELIBERATELY not touched here. The helper never writes greetd
+    # (see verb_session_set_boot), and "restore a backup we did not make" could
+    # clobber operator edits made since the agent's own writer took it. Phase 2
+    # owns greetd end to end.
     return True, ("cleared: %s" % ", ".join(removed) if removed else "nothing to clear")
 
 
@@ -335,8 +337,20 @@ def _journal_arg(v):
     return v if isinstance(v, dict) else None
 
 
+def _session_file_arg(v):
+    """A session-file BASENAME. Shape only — existence is checked by the verb
+    against the box's own session dirs. A separator or a traversal component
+    can never match a listdir() entry, but reject the shape here too so the
+    refusal is visible at the boundary."""
+    if not isinstance(v, str) or not v.endswith(".desktop"):
+        return None
+    if "/" in v or "\\" in v or v.startswith("."):
+        return None
+    return v
+
+
 VERBS = {
-    "session.set-boot":   (verb_session_set_boot, _one_of(_SESSION_MODES)),
+    "session.set-boot":   (verb_session_set_boot, _session_file_arg),
     "session.clear-boot": (verb_session_clear_boot, None),
     "dm.restart":         (verb_dm_restart, None),
     "power":              (verb_power, _one_of(_POWER_ACTIONS)),
@@ -460,11 +474,20 @@ def main(argv=None):
         print("error: couchside-helper must run as root", file=sys.stderr)
         return 2
 
-    try:
-        gid = grp.getgrnam(user).gr_gid
-    except KeyError:
-        gid = pw.pw_gid
-    srv = _listen_socket(path, pw.pw_uid, gid)
+    # systemd socket activation: the socket unit owns the listening socket and
+    # hands it to us as fd 3 (LISTEN_FDS). Binding our own here would UNLINK
+    # systemd's socket out from under it and the two would fight over the path.
+    # The env check is the standard sd_listen_fds contract, pure stdlib.
+    srv = None
+    if os.environ.get("LISTEN_PID") == str(os.getpid()) and \
+            int(os.environ.get("LISTEN_FDS", "0") or 0) >= 1:
+        srv = socket.socket(fileno=3)
+    if srv is None:
+        try:
+            gid = grp.getgrnam(user).gr_gid
+        except KeyError:
+            gid = pw.pw_gid
+        srv = _listen_socket(path, pw.pw_uid, gid)
     while True:
         try:
             conn, _ = srv.accept()

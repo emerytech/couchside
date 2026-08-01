@@ -1,0 +1,31 @@
+; Couchside privileged helper: SERVICE unit TEMPLATE.
+; install.sh substitutes __USER__ and __HELPER__ (the resolved helper path) and
+; installs the result as /etc/systemd/system/couchside-helper.service.
+;
+; This is the ONLY root process in the product. Its entire surface is the
+; eight-verb table in couchside-helper.py — read that file's header before
+; touching this one. The agent stays User=__USER__; see
+; docs/memory/project_privileged-helper.md §6 for why running the agent as
+; root was rejected.
+[Unit]
+Description=Couchside privileged helper
+Requires=couchside-helper.socket
+After=couchside-helper.socket
+
+[Service]
+; Root on purpose, and locked down everywhere root is not needed:
+User=root
+ExecStart=/usr/bin/python3 __HELPER__ --user __USER__ --socket /run/couchside/helper.sock
+Restart=always
+RestartSec=2
+; Hardening. The helper writes /etc/<dm>.conf.d, /etc/greetd and /run, and
+; calls systemctl; everything else is closed off.
+NoNewPrivileges=yes
+ProtectHome=yes
+PrivateTmp=yes
+ProtectKernelModules=yes
+ProtectKernelTunables=yes
+RestrictSUIDSGID=yes
+
+[Install]
+WantedBy=multi-user.target

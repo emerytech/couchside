@@ -562,6 +562,13 @@ if [ -n "$SCRIPT_DIR" ] && [ -f "$SCRIPT_DIR/agent/couchsided.py" ]; then
     cp "$SCRIPT_DIR/agent/couchside.service" "$WORK_DIR/couchside.service"
     # Optional QR helper: present in a checkout, harmless if not.
     [ -f "$SCRIPT_DIR/agent/qr.py" ] && cp "$SCRIPT_DIR/agent/qr.py" "$WORK_DIR/qr.py"
+    # Privileged helper + its units. Optional as a SET: the (g2) block installs
+    # only when all three are present, and the agent falls back to sudo when
+    # the helper is absent — so a checkout that predates the helper installs
+    # exactly as before.
+    for f in couchside-helper.py couchside-helper.socket couchside-helper.service; do
+        [ -f "$SCRIPT_DIR/agent/$f" ] && cp "$SCRIPT_DIR/agent/$f" "$WORK_DIR/$f"
+    done
     # Optional Couchside Player tile + its branded art, only when wanted.
     if [ "$WANT_PLAYER" = 1 ]; then
         [ -f "$SCRIPT_DIR/agent/couchside-player.sh" ] && \
@@ -592,6 +599,21 @@ else
     curl -fsSL "$UNIT_URL" -o "$WORK_DIR/couchside.service"
     # Optional: don't abort the install if only the QR helper fails to fetch.
     curl -fsSL "$QR_URL" -o "$WORK_DIR/qr.py" 2>/dev/null || true
+    # Privileged helper + units — optional as a SET, and all-or-nothing: a
+    # release that predates the helper simply has no such assets, and (g2)
+    # skips. A PARTIAL fetch must not install (a socket unit pointing at a
+    # helper that failed to download would leave a dead root service), so if
+    # any of the three is missing, drop the set.
+    curl -fsSL "${AGENT_BASE}/couchside-helper.py" -o "$WORK_DIR/couchside-helper.py" 2>/dev/null || true
+    curl -fsSL "${AGENT_BASE}/couchside-helper.socket" -o "$WORK_DIR/couchside-helper.socket" 2>/dev/null || true
+    curl -fsSL "${AGENT_BASE}/couchside-helper.service" -o "$WORK_DIR/couchside-helper.service" 2>/dev/null || true
+    if [ ! -s "$WORK_DIR/couchside-helper.py" ] || \
+       [ ! -s "$WORK_DIR/couchside-helper.socket" ] || \
+       [ ! -s "$WORK_DIR/couchside-helper.service" ]; then
+        rm -f "$WORK_DIR/couchside-helper.py" \
+              "$WORK_DIR/couchside-helper.socket" \
+              "$WORK_DIR/couchside-helper.service"
+    fi
     # Optional Couchside Player tile + art, same policy. The tile is CODE, so it
     # goes through the same signature + checksum gate as everything else below;
     # the art is plain PNG.
@@ -646,6 +668,31 @@ else
             exit 1
         fi
     ) || die "agent checksum verification FAILED (corrupt/tampered/missing) — refusing to install."
+fi
+# The helper is ROOT CODE, so it gets a STRICTER rule than the other optional
+# files: present-but-not-listed in the signed SHA256SUMS means DROP IT, not
+# "install unverified". The general hash loop above only checks files that are
+# both landed and listed, which is right for art but would let a file injected
+# alongside an older release (whose signed sums predate the helper) through.
+# A fetch-mode install with no SHA256SUMS at all also drops it — a local
+# checkout (SIG skipped for everything) is the only unverified path, same as
+# the agent itself.
+if [ -f "$WORK_DIR/couchside-helper.py" ]; then
+    if [ ! -f "$WORK_DIR/SHA256SUMS" ] && [ -z "$SCRIPT_DIR" ]; then
+        note "helper present but no signed manifest; dropping it (agent keeps its sudo path)."
+        rm -f "$WORK_DIR"/couchside-helper.py "$WORK_DIR"/couchside-helper.socket \
+              "$WORK_DIR"/couchside-helper.service
+    elif [ -f "$WORK_DIR/SHA256SUMS" ] && \
+         ! grep -qF ' couchside-helper.py' "$WORK_DIR/SHA256SUMS"; then
+        note "helper not in the signed manifest; dropping it (agent keeps its sudo path)."
+        rm -f "$WORK_DIR"/couchside-helper.py "$WORK_DIR"/couchside-helper.socket \
+              "$WORK_DIR"/couchside-helper.service
+    fi
+fi
+# And root code must compile, same as the agent.
+if [ -f "$WORK_DIR/couchside-helper.py" ]; then
+    python3 -m py_compile "$WORK_DIR/couchside-helper.py" \
+        || die "downloaded couchside-helper.py does not compile, aborting."
 fi
 # Secondary sanity gate: even a correctly-signed file must actually parse (a
 # git-checkout install skips the crypto above, and this catches a bad local
@@ -1205,6 +1252,47 @@ if ! grep -q -- '--config' "$WORK_DIR/couchside.service.rendered"; then
         "$WORK_DIR/couchside.service.rendered"
 fi
 sudo install -m 0644 -o root -g root "$WORK_DIR/couchside.service.rendered" "$UNIT_DST"
+
+# ---------------------------------------------------------------------------
+# (g2) privileged helper — replaces the sudoers surface, one verb at a time
+# ---------------------------------------------------------------------------
+# The helper is the ONLY root process in the product: eight frozen verbs behind
+# a 0660 unix socket + SO_PEERCRED uid check (agent/couchside-helper.py has the
+# full rules). The agent DETECTS it and falls back to sudo when absent, so this
+# block is additive: nothing else in this installer changes behaviour because
+# of it, and the sudoers file keeps being written until the fallback is retired
+# (project_privileged-helper.md, phase 2). Fetched alongside the agent and
+# subject to the same signature verification upstream of here.
+if [ -f "$WORK_DIR/couchside-helper.py" ] && \
+   [ -f "$WORK_DIR/couchside-helper.socket" ] && \
+   [ -f "$WORK_DIR/couchside-helper.service" ]; then
+    say "Installing privileged helper (socket-gated, replaces sudo one verb at a time)"
+    # ROOT-OWNED PATH, deliberately NOT $INSTALL_DIR: the helper runs as root,
+    # and root code in a user-writable directory is a privilege escalation (the
+    # user swaps the file, the root service runs it). Same home as the other
+    # root-run wrappers. The service unit's ProtectHome=yes enforces this — a
+    # helper left in $HOME is unreadable to its own service, measured live.
+    HELPER_PATH="/usr/local/libexec/couchside-helper.py"
+    # ostree boxes ship no /usr/local/libexec; create it (root-owned) first.
+    sudo install -d -m 0755 -o root -g root /usr/local/libexec
+    sudo install -m 0755 -o root -g root "$WORK_DIR/couchside-helper.py" "$HELPER_PATH"
+    sed -e "s|__USER__|$USER_NAME|g" \
+        "$WORK_DIR/couchside-helper.socket" > "$WORK_DIR/couchside-helper.socket.rendered"
+    sed -e "s|__HELPER__|$HELPER_PATH|g" -e "s|__USER__|$USER_NAME|g" \
+        "$WORK_DIR/couchside-helper.service" > "$WORK_DIR/couchside-helper.service.rendered"
+    sudo install -m 0644 -o root -g root \
+        "$WORK_DIR/couchside-helper.socket.rendered" \
+        /etc/systemd/system/couchside-helper.socket
+    sudo install -m 0644 -o root -g root \
+        "$WORK_DIR/couchside-helper.service.rendered" \
+        /etc/systemd/system/couchside-helper.service
+    sudo systemctl daemon-reload
+    sudo systemctl enable --now couchside-helper.socket >/dev/null 2>&1 || true
+else
+    # A quick update fetched only the agent binary: no helper files, no change.
+    # The agent's sudo fallback keeps working exactly as before.
+    :
+fi
 sudo systemctl daemon-reload
 # Decky co-existence: when Decky Loader is present, the Couchside Decky plugin
 # owns the agent — it installs its own (no-downgrade) bundle to the SAME run

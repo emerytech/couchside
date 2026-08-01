@@ -9,6 +9,28 @@
 Description=Couchside box agent
 After=network-online.target
 Wants=network-online.target
+; KI-051 REGRESSION GUARD. The ExecStop below arms the boot preference, and on
+; a helper-equipped box that call goes over couchside-helper.socket — so the
+; socket must outlive this service's stop. After= on THIS unit gives exactly
+; that: we start after the socket, therefore we STOP BEFORE it (reverse order),
+; and the socket is still accepting while ExecStop runs. The edge must live on
+; this side; putting it on the socket unit instead created a shutdown ordering
+; CYCLE through sockets.target that made systemd DELETE this service's stop job
+; — ExecStop never ran and the preference was silently ignored (measured on
+; bazzite, 2026-07-31; the socket template's header has the full journal).
+; Ordering against a unit that does not exist is ignored, so this line is
+; harmless on a box that has no helper installed.
+;
+; BOTH units, deliberately. Reboot #2 (bazzite 2026-07-31) proved the socket
+; edge alone is not enough: the helper SERVICE stopped at the first instant of
+; shutdown, systemd refuses socket re-activation while shutting down, and the
+; ExecStop arm quietly succeeded via the SUDO FALLBACK instead — invisible
+; today, fatal in phase 3 when the sudoers file goes away. Ordering after the
+; service too keeps the helper process alive through our stop; it is running
+; at shutdown because our own startup disarm activates it at boot.
+; PHASE-2 PROOF DEBT: helper-served arm at shutdown (journal shows the helper
+; serving during the stop window) is NOT yet demonstrated on hardware.
+After=couchside-helper.socket couchside-helper.service
 
 [Service]
 User=__USER__

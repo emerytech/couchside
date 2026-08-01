@@ -194,6 +194,13 @@ jobs:
       - name: Unit tests (privileged helper socket auth — Linux only)
         run: python3 tests/test_helper_socket.py
 
+      # The agent-side shim: helper present -> used; absent -> the sudo path,
+      # unchanged; helper REFUSES -> final, never re-asked via sudo. That last
+      # one is the behaviour a lazy shim gets wrong, and it is what keeps a
+      # root-side refusal from becoming a bypass attempt.
+      - name: Unit tests (helper shim in the agent)
+        run: python3 tests/test_helper_shim.py
+
       # Who is OFFERED Couch Mode. The gate used to grep /etc/os-release for
       # "steamos"/"bazzite", so a CachyOS deckify box with every tool, both
       # sessions and a connected panel was refused by its NAME — hiding the
