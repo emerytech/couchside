@@ -64,16 +64,33 @@ threading.Thread(target=_serve, args=(6,), daemon=True).start()
 
 
 def call(req):
+    """Send one request, read one reply.
+
+    The send is allowed to fail with EPIPE and that is NOT a test failure: for
+    an unauthorized peer the helper answers and CLOSES WITHOUT READING THE
+    REQUEST, which is the behaviour we want (never parse untrusted input from a
+    caller we have already rejected). Whether our write lands before that close
+    is a race, so it flaked in CI while passing locally and on hardware. Ignore
+    the write error and still read the refusal — the reply is the assertion.
+    """
     s = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
     s.connect(path)
-    s.sendall(json.dumps(req).encode() + b"\n")
+    try:
+        s.sendall(json.dumps(req).encode() + b"\n")
+    except (BrokenPipeError, ConnectionResetError):
+        pass
     data = b""
     while b"\n" not in data:
-        chunk = s.recv(4096)
+        try:
+            chunk = s.recv(4096)
+        except (ConnectionResetError, OSError):
+            break
         if not chunk:
             break
         data += chunk
     s.close()
+    if not data:
+        raise AssertionError("helper closed without sending a reply")
     return json.loads(data.decode().split("\n")[0])
 
 
