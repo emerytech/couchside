@@ -7,7 +7,7 @@ import { CouchModeSheet } from '@/components/CouchModeSheet';
 import { ScreensaverSheet } from '@/components/ScreensaverSheet';
 import { SleepTimerSheet } from '@/components/SleepTimerSheet';
 import { usePoll } from '@/hooks/usePoll';
-import { api, capsEqual, Displays, hostKey, PowerSchedule, Screensaver, Status, Tv, TvOp, VolumeTarget } from '@/lib/api';
+import { api, Displays, hostKey, PowerSchedule, Screensaver, Status, Tv, TvOp, VolumeTarget } from '@/lib/api';
 import { hapticError, hapticLight, hapticSuccess } from '@/lib/haptics';
 import { getPref, usePref } from '@/lib/prefs';
 import { normalizeMac, isValidLanIp } from '@/lib/settings';
@@ -230,11 +230,30 @@ export function RemotePowerBar({ compact = false }: { compact?: boolean }) {
   // so the tab bar can hide gaming tabs on a server box immediately on next
   // launch. Value-equality gate (caps is a fresh object every poll) so it
   // writes storage once per real change, not once per poll.
-  React.useEffect(() => {
-    if (s?.caps && !capsEqual(s.caps, settings.caps)) {
-      void update({ caps: s.caps });
-    }
-  }, [s?.caps, settings.caps, update]);
+  // The caps learner USED TO LIVE HERE and has moved to useCapsSync (KI-054).
+  //
+  // Having two of them was a hang. This component polls status every 8s and
+  // useCapsSync polls it every 30s, so each held its own snapshot; whenever
+  // those two snapshots disagreed about a SESSION-VOLATILE cap -- `desktop`,
+  // which flips on every Game Mode <-> desktop switch -- each write set
+  // settings.caps to its own view, which made the OTHER learner's
+  // value-equality check false, and it wrote straight back from its stale
+  // snapshot. Neither had to refetch for that to continue, so the two ran a
+  // synchronous write loop at render speed until they happened to refetch and
+  // agree, which at a 30s cadence is a very long time.
+  //
+  // Measured against a mock whose `desktop` flipped on a timer:
+  //   [KI-054] capsEqual=false; diffs=desktop: box=false stored=true
+  //   [KI-054] capsEqual=false; diffs=desktop: box=true  stored=false
+  // -- one key, alternating, exactly the two writers fighting. On real
+  // hardware (bazzite, a live session switch) it produced "Maximum update
+  // depth exceeded" and pinned the JS thread for 8+ minutes: the app stopped
+  // polling the box 4 seconds after the switch and never recovered, which is
+  // the trackpad-dies-after-a-session-switch report (KI-053).
+  //
+  // ONE writer, always mounted, is the invariant. Do not re-add a second one
+  // here or anywhere else -- the fix is not "add a better guard", it is that
+  // two independent writers of the same persisted value cannot both be right.
 
   // TV/audio backend + mute state. Polled (not probed once per connect) so the
   // mute indicator self-heals when the box is muted out of band (controller,
