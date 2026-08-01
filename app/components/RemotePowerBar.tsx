@@ -304,6 +304,29 @@ export function RemotePowerBar({ compact = false }: { compact?: boolean }) {
   // which crashed the whole screen to an error boundary. Caught in the harness
   // against a real box before this ever reached a build.
   const [bpBusy, setBpBusy] = React.useState(false);
+  // What WE last told Big Picture to do — NOT a claim about the box's state.
+  // "is Big Picture on screen" is genuinely unprobeable (steamwebhelper carries
+  // the -gamepadui flag whether it is up or closed), so the agent reports no
+  // session for this tier and a real toggle would have to guess.
+  //
+  // This is the same OPTIMISTIC pattern sessionOverride uses below: it reflects
+  // our own last successful command, which we DO know. That earns a visible
+  // "Exit Big Picture" label instead of an invisible long-press — the first
+  // version shipped tap-to-open with the exit hidden behind a gesture nothing
+  // on screen mentioned, which is not a feature (owner feedback, 2026-08-01).
+  //
+  // If it is ever wrong (someone exits on the box itself), the cost is one
+  // wasted tap that sends a close the box treats as a no-op — unlike KI-047,
+  // which advertised a session that did not exist and blocked the real action.
+  const [bpOpened, setBpOpened] = React.useState(false);
+  // Our optimism is about ONE box: switching boxes must clear it, or the new
+  // box's button would claim Big Picture is open because the PREVIOUS one was.
+  // Declared here, above the early `return null` — putting it lower crashed
+  // the bar with React #310 once already, and I repeated the mistake writing
+  // this very effect. Every hook in this component belongs above that line.
+  React.useEffect(() => {
+    setBpOpened(false);
+  }, [boxKey]);
   // Optimistic session: the couch-mode POST response already says which
   // session the box is entering, and the box goes briefly unreachable during
   // the switch (Game Mode can drop .local resolution), so waiting on the poll
@@ -631,8 +654,14 @@ export function RemotePowerBar({ compact = false }: { compact?: boolean }) {
             if (bpBusy) return;
             hapticLight();
             setBpBusy(true);
+            // Tap does the OPPOSITE of what we last did, so the label on the
+            // button is always the action the tap performs.
+            const op = bpOpened ? 'close' : 'open';
             try {
-              await api.bigPicture(settings, 'open');
+              const r = await api.bigPicture(settings, op);
+              // Only flip on a reported success: a failed open that flipped the
+              // label to "Exit" would strand the user one tap from nothing.
+              if (r?.ok !== false) setBpOpened(op === 'open');
             } catch {
               // Surfaced by the box going quiet, not by a toast: the switch
               // takes the screen over and a toast would land behind it.
@@ -640,12 +669,16 @@ export function RemotePowerBar({ compact = false }: { compact?: boolean }) {
               setBpBusy(false);
             }
           }}
+          // Long-press still forces a close, for the case our optimism is
+          // wrong (someone exited on the box) and the label says "Big Picture"
+          // while Big Picture is actually up.
           onLongPress={async () => {
             if (bpBusy) return;
             hapticLight();
             setBpBusy(true);
             try {
               await api.bigPicture(settings, 'close');
+              setBpOpened(false);
             } catch {
               /* same */
             } finally {
@@ -655,10 +688,20 @@ export function RemotePowerBar({ compact = false }: { compact?: boolean }) {
           delayLongPress={600}
           hitSlop={8}
           accessibilityRole="button"
-          accessibilityLabel="Big Picture (long-press to exit)"
-          style={styles.couchBtn}>
-          <Ionicons name="tv-outline" size={16} color={t.text} />
-          {!compact && <Text style={styles.couchLabel}>Big Picture</Text>}
+          accessibilityLabel={
+            bpOpened ? 'Exit Big Picture' : 'Big Picture (long-press to exit)'
+          }
+          style={[styles.couchBtn, bpOpened && styles.couchBtnActive]}>
+          <Ionicons
+            name={bpOpened ? 'exit-outline' : 'tv-outline'}
+            size={16}
+            color={t.text}
+          />
+          {!compact && (
+            <Text style={styles.couchLabel}>
+              {bpOpened ? 'Exit Big Picture' : 'Big Picture'}
+            </Text>
+          )}
         </Pressable>
       )}
       {/* Couch Mode: fling this desktop box to the TV in Game Mode (or come
