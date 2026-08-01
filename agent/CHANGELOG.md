@@ -18,6 +18,19 @@ the same thing regardless of what actually changed.
 Write for the person holding the phone, not for the commit log. They are
 deciding whether to press "Update now" on a machine across the room.
 
+## 2.9.69
+
+- **Groundwork release: a safer way for Couchside to do its privileged work.**
+  A small root-side helper now ships alongside the agent and takes over the
+  boot-session steering that previously ran through sudo rules. You should
+  notice nothing — every feature behaves exactly as before — but under the
+  hood each privileged action is now a single named operation that is checked
+  and refused unless it is exactly right, and a box whose login manager
+  changes no longer needs the installer re-run to keep "Boots into" working.
+  The old path remains as a fallback, so updating is safe on every box.
+- Re-run the installer (or use the app's update button) to get the helper;
+  a quick agent-only update works too and simply keeps the previous behaviour.
+
 ## 2.9.68
 
 - **The Console now shows which OS your box runs**, under the service version —
