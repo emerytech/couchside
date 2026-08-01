@@ -574,10 +574,19 @@ export function RemotePowerBar({ compact = false }: { compact?: boolean }) {
   const canWake = !reachable && !!settings.mac && (wolAvailable || boxes.length > 1);
   const hasSaver = reachable && saver?.available === true;
   const hasCouch = reachable && displays?.available === true;
+  // Couch Mode's DEGRADED tier: a box with Steam but no gamescope session gets
+  // a Big Picture button instead of the session-switch sheet. The agent makes
+  // the two caps mutually exclusive, so this can never race hasCouch — but the
+  // && !hasCouch is kept anyway: if a future agent ever set both, showing two
+  // couch buttons is a worse failure than showing the better one.
+  const hasBigPicture =
+    reachable && settings.caps?.bigpicture === true && !hasCouch;
+  const [bpBusy, setBpBusy] = React.useState(false);
 
   // Nothing to control on this box right now. (Couch Mode counts: it renders
   // its own header button, so the bar must not bail when it's the only thing.)
   if (
+    !hasBigPicture &&
     !canSuspend &&
     !canWake &&
     !hasVolume &&
@@ -603,6 +612,49 @@ export function RemotePowerBar({ compact = false }: { compact?: boolean }) {
 
   return (
     <>
+      {/* Big Picture — the degraded couch tier on a box with no gamescope.
+          Deliberately NOT a toggle: the agent measured that "is Big Picture on
+          screen" cannot be probed (steamwebhelper carries the -gamepadui flag
+          either way), so a two-state control would have to guess. One tap
+          opens it; long-press leaves it. Labelled "Big Picture", never "Game
+          Mode" — it is a different thing and saying otherwise would be the
+          same dead-session lie KI-047 was. */}
+      {hasBigPicture && (
+        <Pressable
+          onPress={async () => {
+            if (bpBusy) return;
+            hapticLight();
+            setBpBusy(true);
+            try {
+              await api.bigPicture(settings, 'open');
+            } catch {
+              // Surfaced by the box going quiet, not by a toast: the switch
+              // takes the screen over and a toast would land behind it.
+            } finally {
+              setBpBusy(false);
+            }
+          }}
+          onLongPress={async () => {
+            if (bpBusy) return;
+            hapticLight();
+            setBpBusy(true);
+            try {
+              await api.bigPicture(settings, 'close');
+            } catch {
+              /* same */
+            } finally {
+              setBpBusy(false);
+            }
+          }}
+          delayLongPress={600}
+          hitSlop={8}
+          accessibilityRole="button"
+          accessibilityLabel="Big Picture (long-press to exit)"
+          style={styles.couchBtn}>
+          <Ionicons name="tv-outline" size={16} color={t.text} />
+          {!compact && <Text style={styles.couchLabel}>Big Picture</Text>}
+        </Pressable>
+      )}
       {/* Couch Mode: fling this desktop box to the TV in Game Mode (or come
           back). Fills the header's empty middle; only shows on capable boxes. */}
       {hasCouch && (

@@ -103,6 +103,13 @@ export type BoxCaps = {
    */
   couchmode?: boolean;
   /**
+   * Couch Mode's DEGRADED tier (agent >= 2.9.70): this box has Steam but no
+   * gamescope session, so the couch button opens Big Picture in the running
+   * desktop instead of switching sessions. EXCLUSIVE with `couchmode` — the
+   * agent never sets both, so the UI never has to choose.
+   */
+  bigpicture?: boolean;
+  /**
    * Desktop nav: a SteamOS/Bazzite box currently in the Plasma DESKTOP session.
    * Gates the RemoteView desktop cluster (Start menu, pointer/trackpad, overview)
    * — session-aware, so it flips off once the box is in Game Mode. Optional:
@@ -1086,6 +1093,7 @@ export function capsEqual(a?: BoxCaps, b?: BoxCaps): boolean {
     a.power_schedule === b.power_schedule &&
     a.screensaver === b.screensaver &&
     a.couchmode === b.couchmode &&
+    a.bigpicture === b.bigpicture &&
     a.desktop === b.desktop &&
     a.steamlink === b.steamlink &&
     a.gaming === b.gaming &&
@@ -2285,6 +2293,24 @@ export const api = {
   /** Couch Mode ceremony status. Probe-and-appear: null on 404 (older agent, or
       the box can't do the handoff) so the sheet degrades to the synchronous
       path and never polls a route that isn't there. */
+  /**
+   * Big Picture — Couch Mode's degraded tier (agent >= 2.9.70), for a box with
+   * Steam but no gamescope session. Its own endpoint rather than a couch-mode
+   * option because that one returns a staged JOB and this is one synchronous
+   * action; folding them would make one shape mean two things.
+   *
+   * NOTE there is deliberately no "is Big Picture showing" read: the agent
+   * measured that unprobeable (steamwebhelper carries the -gamepadui flag
+   * whether BPM is up or closed), so the UI offers both actions rather than
+   * rendering a toggle that would lie about the box's state.
+   */
+  bigPicture(settings: ConnSettings, op: 'open' | 'close'): Promise<ActionResult> {
+    return request(settings, '/api/big-picture', {
+      method: 'POST',
+      body: JSON.stringify({ op }),
+    });
+  },
+
   couchModeStatus(settings: ConnSettings): Promise<CeremonyStatus | null> {
     return probeOrNull(
       request<CeremonyStatus>(settings, '/api/couch-mode/status'));
