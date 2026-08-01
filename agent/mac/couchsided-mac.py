@@ -28,8 +28,17 @@ WHAT MACOS TAKES AWAY, and why the caps here are mostly False:
     Settings, and revoked on update. A cap must therefore report what we have
     been GRANTED, never merely what the OS supports — see _tcc_screen_ok().
 
-Pure python3 stdlib, like the other two. macOS ships python3 with the Command
-Line Tools; the tap declares it.
+STDLIB, AND WHEN THAT STOPS (decision recorded 2026-08-01, DECISIONS.md):
+pure stdlib for as long as the feature can be done that way — Homebrew removes
+the Linux reason for the rule (a formula guarantees its dependencies), but
+adding a dependency that buys nothing is still a cost on every install. At the
+first slice that genuinely cannot be done from stdlib — input synthesis
+(CGEvent), screen capture (ScreenCaptureKit), or system-wide now-playing
+(MediaRemote) — we add exactly ONE native helper, declared by the formula and
+spoken to over a local socket with a frozen verb table, the same shape as the
+Linux privileged helper. Privilege and linking are different limits: root
+unlocks `pmset schedule`, and nothing unlocks a private framework for stdlib
+Python.
 """
 import argparse
 import hmac
