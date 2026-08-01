@@ -4033,26 +4033,41 @@ def _installed_session_files():
 # The session-switch ACTIONS above are one-shot: they move you now and leave the
 # boot default alone (see SESSION_ACTIONS). This is the persistent counterpart.
 #
-# TWO BACKENDS, because the obvious one does not work everywhere:
+# FOUR BACKENDS, because the obvious one does not work everywhere:
 #
-#   steamosctl  — SteamOS's own utility. MEASURED on Bazzite 2026-07-27: the
-#                 binary ships, but the call fails with
-#                 "org.freedesktop.DBus.Error.UnknownInterface ...
-#                 SessionManagement1" AND STILL EXITS 0. So the probe reads the
-#                 OUTPUT, never the exit status — an exit-code probe would
-#                 report this backend working on every Bazzite box and then
-#                 silently do nothing.
+#   steamosctl   — SteamOS's own utility. MEASURED on Bazzite 2026-07-27: the
+#                  binary ships, but the call fails with
+#                  "org.freedesktop.DBus.Error.UnknownInterface ...
+#                  SessionManagement1" AND STILL EXITS 0. So the probe reads the
+#                  OUTPUT, never the exit status — an exit-code probe would
+#                  report this backend working on every Bazzite box and then
+#                  silently do nothing.
 #
-#   sddm        — the drop-in that actually decides it on Bazzite:
-#                 /etc/sddm.conf.d/steamos.conf carries
-#                 "[Autologin] Session=gamescope-session.desktop". We never edit
-#                 that file; we write our OWN later-sorting drop-in, so removing
-#                 ours restores the box's original behaviour exactly.
+#   sddm         — a conf-dir drop-in. On Bazzite /etc/sddm.conf.d/steamos.conf
+#                  carries "[Autologin] Session=gamescope-session.desktop". We
+#                  never edit that file; we write our OWN later-sorting drop-in,
+#                  so removing ours restores the box's original behaviour.
 #
-# Root-owned either way, so the sddm backend is gated on a real NOPASSWD grant
-# (last-match evaluated — see _sudo_nopasswd_allows for why exit codes lie
-# there too). No grant, no capability: the setting never appears rather than
-# appearing and failing.
+#   plasmalogin  — KDE's SDDM successor, shipping today on CachyOS deckify.
+#                  Identical config scheme, so it shares sddm's reader and
+#                  writer via _DM_CONF_DIRS — but it is a DIFFERENT conf dir and
+#                  a different unit to restart.
+#
+#   greetd       — gated on _greetd_session_ok(). Its own config format, so its
+#                  own setter dispatch.
+#
+# THE HEADER SAID "TWO" UNTIL 2026-08-01, and the missing pair is exactly the
+# bug this section shipped in 2.9.65: because sddm read as the only conf-dir
+# path, the availability probe treated an sddm sudoers grant — which install.sh
+# used to write unconditionally — as PROOF that sddm was the display manager. On
+# a plasmalogin box that advertised backend "sddm", showed the Boots-into card,
+# and wrote to a directory that did not exist. Detect the manager; never infer
+# it from a grant. (KDE is migrating, so Bazzite reaches plasmalogin too.)
+#
+# Root-owned either way, so the conf-dir backends are gated on a real NOPASSWD
+# grant for the DETECTED manager's path (last-match evaluated — see
+# _sudo_nopasswd_allows for why exit codes lie there too). No grant, no
+# capability: the setting never appears rather than appearing and failing.
 # ---------------------------------------------------------------------------
 
 # Closed set. A client selects one of these; it never reaches a command line.
@@ -15282,10 +15297,23 @@ def render_pin_page(pin):
         "fetch('/api/pair/status').then(function(r){return r.json()})"
         ".then(function(d){if(d&&d.active===false&&!done){done=true;"
         "document.body.innerHTML="
-        "'<div class=t>PAIRED</div><div class=s>Press B (Back) to close.</div>'"
+        "'<div class=t>PAIRED</div>"
+        "<div class=s>Press B (Back), or close this window.</div>'"
         # Steam's browser can't be closed programmatically (neither a page-side
         # window.close()/steam:// nav nor an agent steam:// CLI dismisses it), so
         # we land on a clean PAIRED screen and tell the user how to close it.
+        #
+        # BOTH contexts, because pair_show_on_box_url() branches: in gamescope it
+        # opens in Steam's browser (B = Back), but on ANY desktop session it goes
+        # through xdg-open into Firefox or Chrome, where there is no B button and
+        # "Press B (Back) to close." was simply nonsense — and it is the last
+        # sentence a brand-new user reads. That desktop path is what every
+        # CachyOS / Nobara / Pop!_OS box takes. The Windows agent already words
+        # it for a plain browser (agent/win/couchsided-win.py, render_pin_page).
+        #
+        # NO APOSTROPHES in this copy: it is a single-quoted JS string literal
+        # nested inside a double-quoted Python one, and an apostrophe would end
+        # the JS string and break the poll script that closes the page.
         "}}).catch(function(){})},3000)</script>"
         "</body></html>".replace("__PIN__", " ".join(pin)))
 

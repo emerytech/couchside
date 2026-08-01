@@ -74,9 +74,19 @@ import { useTheme, useThemedStyles, type Palette } from '@/lib/theme';
  */
 export const SETUP_GUIDE_URL = 'https://couchside.tv/#install';
 
-/** The four steps, in the order a new user actually performs them. */
+/** The four steps, in the order a new user actually performs them.
+ *
+ * Step 1 used to read "switch to Desktop Mode and open a terminal". That
+ * imperative presumes you are IN Game Mode, which is true on a Deck and false
+ * on every desktop Linux box — CachyOS, Nobara, Pop!_OS, plain systemd — all of
+ * which README.md sells to and which are already sitting at a desktop. It sent
+ * those users hunting for a toggle their machine does not have, on the first
+ * line of the first screen. ("Desktop Mode" itself is fine as a noun; the app
+ * uses it for any non-gamescope session in RemotePowerBar. It was the verb.)
+ *
+ * Text here is not load-bearing: stepMarks() keys off the array INDEX. */
 const STEPS = [
-  'On your PC, switch to Desktop Mode and open a terminal.',
+  'On your PC, open a terminal. (On a Steam Deck or in Game Mode, switch to Desktop Mode first.)',
   'Open couchside.tv and run the install command.',
   'Watch this screen — it updates by itself.',
   'A PIN appears on your TV. Type it here.',
