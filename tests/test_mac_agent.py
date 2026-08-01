@@ -144,6 +144,72 @@ check("non-/api path -> 404", code, 404)
 
 srv.shutdown()
 
+# --- power + media: the frozen tables and the refusals ---------------------
+
+print()
+print("power ops are a FROZEN table, looked up not interpolated")
+for bad in ("format_disk", "sleep; rm -rf /", "", None, "SLEEP", "reboot"):
+    r = M.power_op(bad)
+    check("power_op(%r) refused" % (bad,), r["ok"], False)
+check("the allowlist is exactly the two measured ops",
+      sorted(M._POWER_OPS), ["display_sleep", "sleep"])
+check("every argv is a LIST built from our own constants",
+      all(isinstance(v, list) and v[0] == M.PMSET for v in M._POWER_OPS.values()),
+      True)
+
+print()
+print("media: unknown player or op runs nothing")
+for pid, op in (("winamp", "play"), ("music", "rm -rf"), ("", ""),
+                ("music", "SEEK"), ("spotify", "eval")):
+    r = M.media_op(pid, op)
+    check("media_op(%r,%r) refused" % (pid, op), r["ok"], False)
+check("player table is frozen to what we can actually drive",
+      sorted(M._MEDIA_APPS), ["music", "spotify"])
+check("op table matches the Linux MPRIS verb set",
+      sorted(M._MEDIA_OPS),
+      ["next", "pause", "play", "play_pause", "previous", "stop"])
+
+print()
+print("the AppleScript cannot use a reserved variable name")
+# `st` is reserved in AppleScript: `set st to ...` is a PARSE ERROR (-2741),
+# so the read returns nothing and the card silently never appears. Measured on
+# macOS 27. Pin it so nobody reintroduces the short name.
+# Search the CODE, not the commentary. The agent documents both mistakes in
+# prose — once in a # comment and once in a docstring — and a naive grep
+# matched its own explanation twice while I narrowed this. ast strips both.
+import ast as _ast
+
+
+def _code_only(path):
+    """Source with comments AND docstrings removed."""
+    tree = _ast.parse(open(path).read())
+    for node in _ast.walk(tree):
+        if isinstance(node, (_ast.FunctionDef, _ast.AsyncFunctionDef,
+                             _ast.ClassDef, _ast.Module)):
+            body = getattr(node, "body", [])
+            if (body and isinstance(body[0], _ast.Expr)
+                    and isinstance(body[0].value, _ast.Constant)
+                    and isinstance(body[0].value.value, str)):
+                body.pop(0)
+    return _ast.unparse(tree)
+
+
+src = _code_only(os.path.join(ROOT, "agent", "mac", "couchsided-mac.py"))
+check("no `set st to` in the code", "set st to" in src, False)
+
+print()
+print("the running-app probe is pgrep, not System Events")
+# System Events' `exists process` was NON-DETERMINISTIC on macOS 27 — the same
+# call seconds apart on an unchanged running app returned true then false, so
+# caps.media disagreed with media_info(). pgrep is stable and needs no
+# Automation consent.
+check("probe does not shell out to System Events for liveness",
+      "exists process" in src, False)
+check("probe uses pgrep", "pgrep" in src, True)
+# And the docstrings would still hide a regression, so assert the behaviour too:
+check("_app_running is deterministic across repeats",
+      len({M._app_running("Finder") for _ in range(5)}), 1)
+
 print()
 if FAILURES:
     print("FAILED: %s" % ", ".join(FAILURES))

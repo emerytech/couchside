@@ -124,15 +124,25 @@ def set_caps(mock=False):
         # the Launch tab, which reads the library — later slice, but the cap
         # itself is true today and costs nothing to report.
         "steam": os.path.isdir("/Applications/Steam.app"),
-        # MediaRemote/now-playing: next slice, not measured yet.
-        "media": False,
+        # No MPRIS equivalent on macOS. MediaRemote is a PRIVATE framework and
+        # this agent is pure stdlib, so it cannot link it — that is a language
+        # limit, not a privilege one, and no amount of root changes it. What we
+        # CAN do with stdlib is talk to the players that publish an AppleScript
+        # dictionary (Music, Spotify) via osascript. So `media` means "a player
+        # we can actually drive is running", checked live, never "macOS has
+        # media somewhere".
+        "media": bool(_media_players()),
         # No TV backend on a Mac (no CEC, no RS-232 panel wiring).
         "tv": False,
         # Needs Screen Recording consent — see _tcc_screen_ok().
         "screen": _tcc_screen_ok(),
-        # pmset CAN schedule wake, but scheduling needs root and the flow is
-        # unmeasured; claiming it now would be the dead-control mistake.
-        "power_schedule": False,
+        # `pmset schedule` needs root — MEASURED: as the console user it
+        # answers "This operation must be run as root". The macOS installer is
+        # its own structure and may grant that (a LaunchDaemon or a narrow
+        # sudoers entry, same shape as the Linux agent's), so this reports what
+        # THIS process can actually do right now rather than what the platform
+        # could do with privileges it has not been given.
+        "power_schedule": _pmset_schedule_ok(),
         # Steam-shortcut screensaver is a gamescope-era Linux feature.
         "screensaver": False,
         # No gamescope session to switch into, and no Big Picture tier yet
@@ -142,6 +152,230 @@ def set_caps(mock=False):
         "couchmode": False,
         "desktop": False,
     }
+
+
+# --------------------------------------------------------------------------
+# Power. Everything here is a FIXED argv built from a frozen table — the client
+# picks a key, never a command. Sleeping the box is the one action a phone
+# genuinely needs from across the room, and it works unprivileged.
+# --------------------------------------------------------------------------
+
+PMSET = "/usr/bin/pmset"
+CAFFEINATE = "/usr/bin/caffeinate"
+
+# Frozen: op -> argv. Adding a power action means adding an entry, never
+# widening a pattern (CLAUDE.md §3.3).
+_POWER_OPS = {
+    "sleep": [PMSET, "sleepnow"],
+    "display_sleep": [PMSET, "displaysleepnow"],
+}
+
+# The keep-awake process, when we started one. macOS has no "disable sleep"
+# setting we should be writing; `caffeinate` holding an assertion is the
+# supported way, and it dies with us — which is the right failure mode for a
+# phone-driven toggle (agent restarts => the box can sleep again).
+_CAFFEINATE_PROC = None
+_CAFFEINATE_LOCK = threading.Lock()
+
+
+def _pmset_schedule_ok():
+    """Can we ACTUALLY schedule a wake — i.e. do we have root?
+
+    Asks pmset to list the schedule, which is readable, then checks euid: the
+    write path is what needs root and probing it for real would leave a
+    scheduled wake behind. Degrades closed.
+    """
+    if not os.path.isfile(PMSET):
+        return False
+    return os.geteuid() == 0
+
+
+def power_op(op):
+    """Run one allowlisted power action. ActionResult shape, like the siblings."""
+    start = time.monotonic()
+    argv = _POWER_OPS.get(op)          # looked up, never interpolated
+    if argv is None:
+        return {"ok": False, "exit_code": 1, "stdout": "",
+                "stderr": "unknown power op", "duration_ms": 0}
+    rc, out, err = _run(argv, timeout=10)
+    return {"ok": rc == 0, "exit_code": rc, "stdout": out.strip(),
+            "stderr": err.strip(),
+            "duration_ms": int((time.monotonic() - start) * 1000)}
+
+
+def keep_awake_state():
+    with _CAFFEINATE_LOCK:
+        p = _CAFFEINATE_PROC
+        return bool(p is not None and p.poll() is None)
+
+
+def keep_awake_set(on):
+    """Hold or release a caffeinate assertion. Idempotent both ways.
+
+    -d (display) and -i (idle) together are what "keep this box awake for the
+    couch" means; without -d the screen still blanks mid-film.
+    """
+    global _CAFFEINATE_PROC
+    start = time.monotonic()
+    with _CAFFEINATE_LOCK:
+        running = _CAFFEINATE_PROC is not None and _CAFFEINATE_PROC.poll() is None
+        try:
+            if on and not running:
+                _CAFFEINATE_PROC = subprocess.Popen(
+                    [CAFFEINATE, "-d", "-i"],
+                    stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            elif not on and running:
+                _CAFFEINATE_PROC.terminate()
+                try:
+                    _CAFFEINATE_PROC.wait(timeout=5)
+                except subprocess.SubprocessError:
+                    _CAFFEINATE_PROC.kill()
+                _CAFFEINATE_PROC = None
+        except (OSError, subprocess.SubprocessError) as e:
+            return {"ok": False, "exit_code": -1, "stdout": "",
+                    "stderr": "caffeinate: %s" % e,
+                    "duration_ms": int((time.monotonic() - start) * 1000)}
+        now = _CAFFEINATE_PROC is not None and _CAFFEINATE_PROC.poll() is None
+    return {"ok": now == bool(on), "exit_code": 0, "stdout": "on" if now else "off",
+            "stderr": "", "duration_ms": int((time.monotonic() - start) * 1000)}
+
+
+# --------------------------------------------------------------------------
+# Media. Per-app AppleScript, because macOS has no MPRIS and MediaRemote is a
+# private framework a stdlib agent cannot link.
+#
+# The payload matches the Linux agent's /api/media shape exactly
+# ({"available":true,"players":[...]}, each player with id/identity/status/
+# title/artist/album/position_ms/length_ms/can_*), so the app's Now Playing
+# card needs no macOS branch.
+# --------------------------------------------------------------------------
+
+OSASCRIPT = "/usr/bin/osascript"
+
+# Frozen table: player id -> (app name, bundle-ish label). Adding a player is
+# adding an entry. The app NAME is ours, never client input, and it is the only
+# thing interpolated into the AppleScript we run.
+_MEDIA_APPS = {
+    "music": ("Music", "Apple Music"),
+    "spotify": ("Spotify", "Spotify"),
+}
+
+# op -> the AppleScript verb. Same closed-set discipline as MPRIS_METHODS.
+_MEDIA_OPS = {
+    "play": "play", "pause": "pause", "play_pause": "playpause",
+    "next": "next track", "previous": "previous track", "stop": "stop",
+}
+
+
+def _app_running(app_name):
+    """Is this app running? Checked WITHOUT launching it — `tell application X`
+    would START the app, which is the opposite of a probe.
+
+    pgrep, NOT System Events. The first version asked System Events for
+    `exists process "Music"` and was NON-DETERMINISTIC on macOS 27: the same
+    call, seconds apart against an unchanged running Music, returned true then
+    false, so caps.media disagreed with media_info() and a transport op
+    reported "not running" for a player it had just listed. A flaky probe is
+    worse than a broken one — it ships as "the card sometimes appears".
+    pgrep needs no Automation consent, no AppleScript round trip, and gives the
+    same answer every time.
+    """
+    rc, out, _ = _run(["/usr/bin/pgrep", "-x", app_name], timeout=3)
+    return rc == 0 and bool(out.strip())
+
+
+def _media_players():
+    """Running players we can drive. Empty list is a real answer: no player,
+    no Now Playing card."""
+    return [pid for pid, (app, _label) in _MEDIA_APPS.items()
+            if _app_running(app)]
+
+
+def _media_player_info(pid):
+    app, label = _MEDIA_APPS[pid]
+    # ONE -e PER LINE, and NOT a variable called `st`.
+    #
+    # `st` is a reserved token in AppleScript — `set st to ...` fails with
+    # "Expected expression but found st" (-2741), which is a parse error, so
+    # the whole read returns nothing and the card silently never appears.
+    # Measured on macOS 27: renaming the variable is the entire fix, and the
+    # first diagnosis (embedded newlines being flattened) was WRONG — both the
+    # one-string and the -e-per-line forms failed identically until the rename.
+    # The -e-per-line form is kept anyway as the documented shape.
+    #
+    # Tab-separated so a title containing a comma cannot shift the fields.
+    lines = [
+        'tell application "%s"' % app,
+        'set pstate to (player state as text)',
+        'if pstate is "stopped" then return pstate',
+        'return pstate & tab & (name of current track) & tab & '
+        '(artist of current track) & tab & (album of current track) & tab & '
+        '((duration of current track) as text) & tab & '
+        '((player position) as text)',
+        'end tell',
+    ]
+    argv = [OSASCRIPT]
+    for ln in lines:
+        argv += ["-e", ln]
+    rc, out, _ = _run(argv, timeout=6)
+    if rc != 0:
+        # TCC Automation consent not granted, or the app refused. Degrade
+        # closed: no entry rather than a half-empty card.
+        return None
+    parts = out.strip().split("\t")
+    state = (parts[0] or "").strip().lower()
+    status = {"playing": "Playing", "paused": "Paused"}.get(state, "Stopped")
+    info = {"id": pid, "identity": label, "status": status,
+            "title": "", "artist": "", "album": "",
+            "position_ms": 0, "length_ms": 0,
+            "can_seek": False, "can_go_next": True, "can_go_previous": True,
+            "can_play": True, "can_pause": True}
+    if len(parts) >= 6:
+        info["title"] = parts[1].strip()
+        info["artist"] = parts[2].strip()
+        info["album"] = parts[3].strip()
+        try:
+            # Music reports seconds (float); Spotify reports ms for duration
+            # and seconds for position — normalise both to ms.
+            dur = float(parts[4])
+            info["length_ms"] = int(dur if pid == "spotify" else dur * 1000)
+            info["position_ms"] = int(float(parts[5]) * 1000)
+        except (ValueError, TypeError):
+            pass
+    return info
+
+
+def media_info():
+    """{"available":true,"players":[...]} or None when nothing can be driven —
+    None makes the route 404 and the app hides the card, same as Linux."""
+    pids = _media_players()
+    if not pids:
+        return None
+    players = [i for i in (_media_player_info(p) for p in pids) if i]
+    if not players:
+        return None
+    order = {"Playing": 0, "Paused": 1}
+    players.sort(key=lambda p: (order.get(p["status"], 2), p["identity"].lower()))
+    return {"available": True, "players": players}
+
+
+def media_op(pid, op):
+    """One allowlisted transport op on one allowlisted player."""
+    start = time.monotonic()
+    if pid not in _MEDIA_APPS or op not in _MEDIA_OPS:
+        return {"ok": False, "exit_code": 1, "stdout": "",
+                "stderr": "unknown player or op", "duration_ms": 0}
+    app, _ = _MEDIA_APPS[pid]
+    if not _app_running(app):
+        # Never LAUNCH a player to control it — `tell application` would.
+        return {"ok": False, "exit_code": 1, "stdout": "",
+                "stderr": "%s is not running" % app, "duration_ms": 0}
+    rc, out, err = _run(
+        [OSASCRIPT, "-e", 'tell application "%s" to %s' % (app, _MEDIA_OPS[op])],
+        timeout=6)
+    return {"ok": rc == 0, "exit_code": rc, "stdout": out.strip(),
+            "stderr": err.strip(),
+            "duration_ms": int((time.monotonic() - start) * 1000)}
 
 
 # --------------------------------------------------------------------------
@@ -346,6 +580,21 @@ class Handler(BaseHTTPRequestHandler):
                 self._send(200, real_status(), started)
                 return
 
+            if path == "/api/media":
+                # Probe-and-appear, same as Linux: 404 when nothing is
+                # drivable so the app hides the Now Playing card entirely.
+                info = media_info()
+                if info is None:
+                    self._send(404, {"error": "not found"}, started)
+                else:
+                    self._send(200, info, started)
+                return
+
+            if path == "/api/power/keep-awake":
+                self._send(200, {"available": True,
+                                 "on": keep_awake_state()}, started)
+                return
+
             # Everything else is genuinely not implemented on this platform
             # yet. 404 rather than a stub: the app's probe-and-appear pattern
             # reads 404 as "this box cannot", which is the truth.
@@ -358,15 +607,70 @@ class Handler(BaseHTTPRequestHandler):
 
     def do_POST(self):
         started = time.monotonic()
-        # No mutating routes in this slice. Answer honestly rather than
-        # pretending: 404 keeps the app's capability probing correct.
         try:
+            path = urlparse(self.path).path.rstrip("/") or "/"
             if not self._authorized():
                 self._send(401, {"error": "unauthorized"}, started)
                 return
+
+            length = int(self.headers.get("Content-Length") or 0)
+            body = self.rfile.read(length) if 0 < length <= 65536 else b""
+
+            # POST /api/power  {"op":"sleep"|"display_sleep"} — looked up
+            # against a frozen table, never interpolated.
+            if path == "/api/power":
+                try:
+                    req = json.loads(body.decode("utf-8")) if body else {}
+                    if not isinstance(req, dict):
+                        raise ValueError
+                except (ValueError, UnicodeDecodeError):
+                    self._send(400, {"error": "json body required"}, started)
+                    return
+                op = req.get("op")
+                if op not in _POWER_OPS:
+                    self._send(400, {"error": "op must be one of %s"
+                                     % "|".join(sorted(_POWER_OPS))}, started)
+                    return
+                self._send(200, power_op(op), started)
+                return
+
+            # POST /api/power/keep-awake  {"on":true|false}
+            if path == "/api/power/keep-awake":
+                try:
+                    req = json.loads(body.decode("utf-8")) if body else {}
+                    if not isinstance(req, dict):
+                        raise ValueError
+                except (ValueError, UnicodeDecodeError):
+                    self._send(400, {"error": "json body required"}, started)
+                    return
+                on = req.get("on")
+                if not isinstance(on, bool):
+                    self._send(400, {"error": "on must be a boolean"}, started)
+                    return
+                self._send(200, keep_awake_set(on), started)
+                return
+
+            # POST /api/media/<player>/<op> — the SAME route shape the Linux
+            # agent uses, so the app's transport buttons need no macOS branch.
+            mprefix = "/api/media/"
+            if path.startswith(mprefix):
+                parts = path[len(mprefix):].rsplit("/", 1)
+                if len(parts) != 2 or not parts[0] or not parts[1]:
+                    self._send(404, {"error": "not found"}, started)
+                    return
+                pid, op = parts[0], parts[1]
+                if pid not in _MEDIA_APPS or op not in _MEDIA_OPS:
+                    self._send(404, {"error": "unknown player or op"}, started)
+                    return
+                self._send(200, media_op(pid, op), started)
+                return
+
             self._send(404, {"error": "not implemented on macOS yet"}, started)
-        except Exception:
-            pass
+        except Exception as e:
+            try:
+                self._send(500, {"error": e.__class__.__name__}, started)
+            except Exception:
+                pass
 
 
 def main(argv=None):
