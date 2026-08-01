@@ -70,6 +70,29 @@ Entry fields: `priority` (P0 blocker → P3 nice) · `risk` · `affects` · `dep
   under gamescope (a TV that blanks mid-movie is a bug we have never tested for), and which of
   those apps ship usable Actions.
 
+### Couch Mode fallback: Big Picture on gamescope-less boxes
+- **priority:** P2 · **risk:** medium · **affects:** agent + app · **depends_on:** nothing
+  (measured feasible 2026-08-01)
+- **Owner ask:** "if gamescope isn't installed could the couchmode button just launch
+  Steam Big Picture mode?" On a desktop-only box (Nobara, generic distros) Big Picture IS
+  the couch experience, and it slots in as a degraded couchmode backend — the ceremony
+  keeps its TV stages (power, input, audio); only the session stage changes.
+- **MEASURED on Nobara hardware (nobara-xps, 2026-08-01), screen-captured both ways:**
+  `steam steam://open/bigpicture` with Steam running brought BPM up FULLSCREEN, and
+  `steam://close/bigpicture` returned cleanly to the desktop — the exit URL is real, not
+  folklore. Fired from a bare env with only XDG_RUNTIME_DIR set (IPC to the running
+  client; no display env needed warm).
+- **Unmeasured, owned by the build:** the COLD path (`steam -gamepadui` with Steam down)
+  — over ssh it dies on session env, and the agent's own launch path is the correct test
+  environment, not an ssh reconstruction. Multi-monitor placement also unmeasured (the
+  test box has one display); a monitor+TV desktop needs kscreen-doctor thought.
+- **Shape:** extend couchmode with a `bigpicture` backend (additive field, no shape
+  change; couchmode cap already exists so no five-site dance). App toggle labels
+  honestly — "Big Picture", not "Game Mode". Gate: steam root present AND no gamescope
+  session. Allowlist: fixed argv, zero new privileges, zero client input.
+- Both-directions rule applies to the build: the toggle must be proven to ENTER and
+  EXIT on hardware before it ships, cold and warm.
+
 ### Note mode — jot a clue on the phone while the game runs
 - **priority:** P2 · **risk:** low · **affects:** app only · **depends_on:** the drag stroke (shipped)
 - **Full spec: `docs/memory/project_note-mode.md`.** Read it first.
