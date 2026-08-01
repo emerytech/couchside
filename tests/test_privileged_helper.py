@@ -60,8 +60,13 @@ print("a KNOWN verb still refuses an argument outside its closed set")
 for verb, bad in (
         ("power", "halt"), ("power", "reboot; rm -rf /"), ("power", ""),
         ("power", None), ("power", ["reboot"]),
-        ("session.set-boot", "plasma.desktop"),  # a real file, still not a mode
+        # Mode words were v1's argument; the rework moved mode->file selection
+        # into the agent, so bare words must be REFUSED at the shape gate.
+        ("session.set-boot", "game"), ("session.set-boot", "desktop"),
         ("session.set-boot", "GAME"), ("session.set-boot", None),
+        ("session.set-boot", "../evil.desktop"),
+        ("session.set-boot", "a/b.desktop"),
+        ("session.set-boot", ".hidden.desktop"),
         ("unit.restart", "sshd"), ("unit.restart", "couchside.service"),
         ("unit.restart", "plugin_loader; id"),
 ):
@@ -157,7 +162,17 @@ try:
     H._DM_MAIN_CONFS["sddm"] = main_conf
     H._DM_CONF_DIRS["sddm"] = os.path.join(d, "sddm.conf.d")
     H.detect_display_manager = lambda: "sddm"
-    r = H.dispatch({"verb": "session.set-boot", "arg": "game"})
+    # A fake session dir stands in for /usr/share/wayland-sessions with the two
+    # files a real box carries. The validator is a listdir membership check, so
+    # this drives the REAL code path rather than stubbing it out.
+    sess_dir = os.path.join(d, "wayland-sessions")
+    os.makedirs(sess_dir)
+    for f_ in ("plasma.desktop", "gamescope-session.desktop"):
+        with open(os.path.join(sess_dir, f_), "w") as fh:
+            fh.write("[Desktop Entry]\n")
+    saved_sess = H._SESSION_DIRS
+    H._SESSION_DIRS = (sess_dir,)
+    r = H.dispatch({"verb": "session.set-boot", "arg": "gamescope-session.desktop"})
     check("refused when the main conf names a Session", r.get("ok"), False)
     check("...and no drop-in was written",
           os.path.exists(os.path.join(d, "sddm.conf.d", H._DROPIN_NAME)), False)
@@ -165,10 +180,15 @@ try:
     # With the main conf silent, the write is allowed and lands in the right file.
     with open(main_conf, "w") as f:
         f.write("[General]\n")
-    r = H.dispatch({"verb": "session.set-boot", "arg": "desktop"})
+    r = H.dispatch({"verb": "session.set-boot", "arg": "plasma.desktop"})
     check("allowed when the main conf is silent", r.get("ok"), True)
     body = open(os.path.join(d, "sddm.conf.d", H._DROPIN_NAME)).read()
     check("drop-in names the desktop session", "plasma.desktop" in body, True)
+    # The stranding rule survives the transport: a session the box does not
+    # have refuses even with the main conf silent.
+    r = H.dispatch({"verb": "session.set-boot", "arg": "plasmax11.desktop"})
+    check("a session missing from the box refuses (the stranding rule)",
+          r.get("ok"), False)
     check("drop-in is the zzz- name (sorts after zz-steamos-autologin)",
           H._DROPIN_NAME.startswith("zzz-"), True)
 
@@ -182,6 +202,7 @@ finally:
     H._DM_MAIN_CONFS.clear(); H._DM_MAIN_CONFS.update(saved_main)
     H._DM_CONF_DIRS.clear(); H._DM_CONF_DIRS.update(saved_dirs)
     H.detect_display_manager = saved_detect
+    H._SESSION_DIRS = saved_sess
 
 print()
 print("gdm3 vs gdm: the FAMILY is collapsed, the real unit name is not")
@@ -195,7 +216,7 @@ try:
           SPAWNS, [["/usr/bin/systemctl", "restart", "gdm3"]])
     # gdm is recognised but we do not write its autologin config.
     H.detect_display_manager_saved = H.detect_display_manager
-    r = H.dispatch({"verb": "session.set-boot", "arg": "game"})
+    r = H.dispatch({"verb": "session.set-boot", "arg": "gamescope-session.desktop"})
     check("set-boot refuses on gdm rather than guessing", r.get("ok"), False)
 finally:
     H._dm_unit_name = saved_unit
@@ -211,7 +232,7 @@ for verb, (handler, validate) in H.VERBS.items():
         continue
     for probe in ("/etc/shadow", "sh", "systemctl", "reboot ", " reboot"):
         if validate(probe) is not None and probe not in (
-                H._SESSION_MODES + H._POWER_ACTIONS + tuple(H._RESTARTABLE)):
+                H._POWER_ACTIONS + tuple(H._RESTARTABLE)):
             check("%s must not accept %r" % (verb, probe), probe, "rejected")
 print("  PASS  no closed-set verb accepts a path or a bare binary name")
 
