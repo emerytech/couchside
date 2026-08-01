@@ -1,0 +1,46 @@
+; Couchside privileged helper: SOCKET unit TEMPLATE.
+; install.sh substitutes __USER__ and installs the result as
+; /etc/systemd/system/couchside-helper.socket.
+;
+; The socket's filesystem permissions are the FIRST of the helper's two auth
+; layers: 0660, owned by the install user's group, so only that user (and root)
+; can even connect. The second layer is the SO_PEERCRED uid check inside the
+; helper, which refuses anything that is not exactly the install user. Both
+; fail closed.
+[Unit]
+Description=Couchside privileged helper socket
+
+; NO ordering edge against couchside.service HERE — the edge lives on the
+; SERVICE side (couchside.service: After=couchside-helper.socket), and getting
+; that wrong took out a real box's shutdown. The first version put
+; After=couchside.service on THIS unit, reasoning it would keep the socket
+; alive through the agent's ExecStop arm. Measured on hardware (bazzite,
+; 2026-07-31), it did the opposite twice over: After= orders STARTUP, so at
+; shutdown (reverse order) the socket stopped FIRST — and worse, the edge
+; closed a loop through sockets.target/basic.target and systemd broke the
+; cycle by DELETING couchside.service's stop job entirely:
+;
+;   Found ordering cycle: couchside.service/stop after
+;     couchside-helper.socket/stop after sockets.target/stop after
+;     basic.target/stop - after couchside.service
+;   Job couchside.service/stop deleted to break ordering cycle
+;
+; ExecStop never ran at all — no arm, no drop-in, the box booted last-session
+; with the preference silently ignored, and firewalld's and NetworkManager's
+; stop jobs were collateral. The service-side After= gives the correct stop
+; order (agent first, socket after) with no cycle, because sockets start early
+; and ordering in that direction is the natural one.
+
+[Socket]
+ListenStream=/run/couchside/helper.sock
+SocketUser=root
+SocketGroup=__USER__
+SocketMode=0660
+DirectoryMode=0755
+; One serving process, not one per connection (Accept=no is the default, but
+; the spec calls it out, so say it): a per-connection fork would multiply the
+; root surface for no gain.
+Accept=no
+
+[Install]
+WantedBy=sockets.target

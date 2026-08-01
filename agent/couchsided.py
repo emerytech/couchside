@@ -4537,6 +4537,49 @@ def session_default_get():
     return {"available": True, "backend": backend, "mode": mode}
 
 
+# --------------------------------------------------------- privileged helper
+#
+# The root-side companion (agent/couchside-helper.py) replaces the sudoers
+# surface verb by verb. DETECTED AND OPTIONAL, never assumed: quick updates
+# ship this file WITHOUT the installer, so a new agent must keep working on a
+# box that has no helper, possibly for months. The shape is always
+#   try the helper -> on "helper not present", fall back to sudo
+# and a helper that is PRESENT BUT REFUSES is a real answer, not a cue to
+# retry via sudo — retrying would turn every helper refusal into a second
+# attempt through the path the helper exists to retire.
+
+HELPER_SOCKET = "/run/couchside/helper.sock"
+
+
+def _helper_call(verb, arg=None, timeout=10):
+    """One verb over the helper socket. Returns the reply dict, or None when
+    the helper is NOT PRESENT (no socket / nothing listening) — the only case
+    the caller may treat as "use the sudo fallback"."""
+    if not os.path.exists(HELPER_SOCKET):
+        return None
+    try:
+        s = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+        s.settimeout(timeout)
+        s.connect(HELPER_SOCKET)
+        req = {"verb": verb}
+        if arg is not None:
+            req["arg"] = arg
+        s.sendall(json.dumps(req).encode("utf-8") + b"\n")
+        buf = b""
+        while b"\n" not in buf and len(buf) < 65536:
+            chunk = s.recv(4096)
+            if not chunk:
+                break
+            buf += chunk
+        s.close()
+        return json.loads(buf.split(b"\n", 1)[0].decode("utf-8"))
+    except (OSError, ValueError):
+        # Socket file present but dead/garbled: treat as not present. The sudo
+        # fallback still enforces every original constraint, so degrading to it
+        # never widens anything.
+        return None
+
+
 def _dm_write(dm, session_file):
     """Write our drop-in via a sudo tee whose PATH IS FIXED IN THE SUDOERS RULE.
 
@@ -4568,6 +4611,20 @@ def _dm_write(dm, session_file):
         print("[session] refusing to write autologin for missing session %r"
               % (session_file,), flush=True)
         return False
+    # HELPER FIRST (agent >= 2.9.69): every refusal above still applied — the
+    # guards live before the transport on purpose, so no future transport can
+    # route around them. A helper refusal is FINAL: it re-validated against the
+    # box's own session dirs as root and said no; retrying via sudo would just
+    # re-ask the question through the surface the helper exists to retire.
+    reply = _helper_call("session.set-boot", session_file)
+    if reply is not None:
+        ok = bool(reply.get("ok"))
+        if not ok:
+            print("[session] helper refused set-boot: %s"
+                  % reply.get("detail", reply.get("error", "")), flush=True)
+        if ok:
+            _dm_neutralise_legacy(dm)
+        return ok
     body = ("# Written by Couchside. Delete this file to restore the box's\n"
             "# original boot behaviour; nothing else was modified.\n"
             "[Autologin]\n"
@@ -4619,6 +4676,14 @@ def _dm_disarm(dm):
         return True
     if not _last_session_line(dropin):
         return True  # already blank; don't spend a sudo call
+    # HELPER FIRST. clear-boot REMOVES the file rather than blanking it — the
+    # sudo path blanks only because its grant is tee-at-one-path and deletion
+    # was never grantable. Removal is the better end state (the drop-in's own
+    # comment tells users "delete this file"), and both leave zero [Autologin]
+    # contribution, which is all disarm means.
+    reply = _helper_call("session.clear-boot")
+    if reply is not None:
+        return bool(reply.get("ok"))
     try:
         r = subprocess.run(["sudo", "-n", "tee", dropin],
                            input=_DISARMED_DROPIN_BODY, capture_output=True,
