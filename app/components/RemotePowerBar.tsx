@@ -304,6 +304,37 @@ export function RemotePowerBar({ compact = false }: { compact?: boolean }) {
   // which crashed the whole screen to an error boundary. Caught in the harness
   // against a real box before this ever reached a build.
   const [bpBusy, setBpBusy] = React.useState(false);
+  // What WE last told Big Picture to do — NOT a claim about the box's state.
+  // "is Big Picture on screen" is genuinely unprobeable (steamwebhelper carries
+  // the -gamepadui flag whether it is up or closed), so the agent reports no
+  // session for this tier and a real toggle would have to guess.
+  //
+  // This is the same OPTIMISTIC pattern sessionOverride uses below: it reflects
+  // our own last successful command, which we DO know. That earns a visible
+  // "Exit Big Picture" label instead of an invisible long-press — the first
+  // version shipped tap-to-open with the exit hidden behind a gesture nothing
+  // on screen mentioned, which is not a feature (owner feedback, 2026-08-01).
+  //
+  // If it is ever wrong (someone exits on the box itself), the cost is one
+  // wasted tap that sends a close the box treats as a no-op — unlike KI-047,
+  // which advertised a session that did not exist and blocked the real action.
+  const [bpOpened, setBpOpened] = React.useState(false);
+  // Live box identity for the in-flight guards below. A ref, NOT the closure's
+  // `settings`: the handler closes over the box it was rendered for, so
+  // comparing `sentTo === hostKey(settings)` inside the closure compares box A
+  // with box A and always passes — a guard that guards nothing. (Caught in
+  // self-review minutes after writing exactly that.) The ref is reassigned
+  // every render, so at resolution time it holds whichever box is active NOW.
+  const bpBoxRef = React.useRef('');
+  bpBoxRef.current = boxKey;
+  // Our optimism is about ONE box: switching boxes must clear it, or the new
+  // box's button would claim Big Picture is open because the PREVIOUS one was.
+  // Declared here, above the early `return null` — putting it lower crashed
+  // the bar with React #310 once already, and I repeated the mistake writing
+  // this very effect. Every hook in this component belongs above that line.
+  React.useEffect(() => {
+    setBpOpened(false);
+  }, [boxKey]);
   // Optimistic session: the couch-mode POST response already says which
   // session the box is entering, and the box goes briefly unreachable during
   // the switch (Game Mode can drop .local resolution), so waiting on the poll
@@ -631,8 +662,25 @@ export function RemotePowerBar({ compact = false }: { compact?: boolean }) {
             if (bpBusy) return;
             hapticLight();
             setBpBusy(true);
+            // Tap does the OPPOSITE of what we last did, so the label on the
+            // button is always the action the tap performs.
+            const op = bpOpened ? 'close' : 'open';
+            // Capture WHICH box this command went to. The user can switch
+            // boxes while the POST is in flight; the [boxKey] reset effect
+            // then clears bpOpened, and without this check the resolved
+            // closure would set it right back — box B rendering "Exit Big
+            // Picture" for a command box A received. Same stale-completion
+            // ordering the suspend probe below guards with its `cancelled`
+            // flag; audited into existence, not caught by the harness (it
+            // needs two boxes and a mid-flight switch).
+            const sentTo = boxKey;
             try {
-              await api.bigPicture(settings, 'open');
+              const r = await api.bigPicture(settings, op);
+              // Only flip on a reported success, and only for the box the
+              // command was actually sent to.
+              if (r?.ok !== false && sentTo === bpBoxRef.current) {
+                setBpOpened(op === 'open');
+              }
             } catch {
               // Surfaced by the box going quiet, not by a toast: the switch
               // takes the screen over and a toast would land behind it.
@@ -640,12 +688,22 @@ export function RemotePowerBar({ compact = false }: { compact?: boolean }) {
               setBpBusy(false);
             }
           }}
+          // Long-press still forces a close, for the case our optimism is
+          // wrong (someone exited on the box) and the label says "Big Picture"
+          // while Big Picture is actually up.
           onLongPress={async () => {
             if (bpBusy) return;
             hapticLight();
             setBpBusy(true);
+            const sentTo = boxKey;
             try {
-              await api.bigPicture(settings, 'close');
+              const r = await api.bigPicture(settings, 'close');
+              // The same two guards as the tap path — the first version set
+              // false unconditionally here, violating the "flip only on a
+              // reported success" rule the tap path documents three lines up.
+              if (r?.ok !== false && sentTo === bpBoxRef.current) {
+                setBpOpened(false);
+              }
             } catch {
               /* same */
             } finally {
@@ -655,10 +713,33 @@ export function RemotePowerBar({ compact = false }: { compact?: boolean }) {
           delayLongPress={600}
           hitSlop={8}
           accessibilityRole="button"
-          accessibilityLabel="Big Picture (long-press to exit)"
-          style={styles.couchBtn}>
-          <Ionicons name="tv-outline" size={16} color={t.text} />
-          {!compact && <Text style={styles.couchLabel}>Big Picture</Text>}
+          accessibilityLabel={
+            bpOpened ? 'Exit Big Picture' : 'Big Picture (long-press to exit)'
+          }
+          style={[styles.couchBtn, bpOpened && styles.couchBtnActive]}>
+          <Ionicons
+            name={bpOpened ? 'exit-outline' : 'tv-outline'}
+            size={16}
+            color={t.text}
+          />
+          {!compact && (
+            // HOW THE LONGER LABEL IS ACTUALLY ABSORBED (audited 2026-08-01;
+            // an earlier comment here claimed these Text styles did it — they
+            // do not): on native, this pill has Yoga's default flexShrink:0,
+            // so it always takes its intrinsic width and the Text below is
+            // never width-constrained. The row survives because BoxSwitcher's
+            // BOX-NAME pill is the header's designated shrink absorber
+            // (flexShrink:1 + numberOfLines, a documented design decision that
+            // deliberately rejected flex-weighting the chips), and because
+            // compact mode drops this label entirely below 390pt. Cost when
+            // "Exit Big Picture" is showing: the box name ellipsizes harder on
+            // narrow-but-not-compact widths — the same accepted tradeoff as
+            // the "Game Mode" chip. numberOfLines stays as belt-and-braces for
+            // any future parent that DOES constrain width.
+            <Text style={styles.couchLabel} numberOfLines={1}>
+              {bpOpened ? 'Exit Big Picture' : 'Big Picture'}
+            </Text>
+          )}
         </Pressable>
       )}
       {/* Couch Mode: fling this desktop box to the TV in Game Mode (or come
@@ -974,7 +1055,17 @@ const makeStyles = (t: Palette) => StyleSheet.create({
   // Icon-only: drop the label's side padding so the chip becomes a round button
   // rather than a wide pill with an icon floating in it.
   couchBtnCompact: { paddingHorizontal: 10 },
-  couchLabel: { color: t.text, fontSize: 13, fontWeight: '700', fontFamily: mono },
+  couchLabel: {
+    color: t.text,
+    fontSize: 13,
+    fontWeight: '700',
+    fontFamily: mono,
+    // Inert on native TODAY (the parent pill has flexShrink:0 and is never
+    // width-constrained — see the label comment above), kept so the text
+    // behaves if a future parent does constrain it. Do not read this as the
+    // overflow protection; the box-name pill's flexShrink is.
+    flexShrink: 1,
+  },
   trigger: {
     flexDirection: 'row',
     alignItems: 'center',
