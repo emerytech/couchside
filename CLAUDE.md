@@ -100,9 +100,11 @@ or find an issue. **Never let these go stale.**
   It installs onto machines we do not control.
 - **Never change existing API response shapes.** Add fields; never rename or remove. Old
   app versions in the wild must keep working against new agents (verify with the harness).
-- **A capability key requires all five edit sites** (agent CAPS dict + mock tuple; app
-  BoxCaps + normalizeCaps + capsEqual). Missing the app two is a silent bug: the cap never
-  persists and the app re-probes forever.
+- **A capability key requires all SIX edit sites** (agent CAPS dict + mock tuple; app
+  BoxCaps + normalizeCaps + capsEqual; and the canonical list in `protocol/protocol.json`,
+  which `tests/test_protocol_parity.py` enforces). Missing the app three is a silent bug:
+  the cap never persists and the app re-probes forever. This said FIVE until 2026-08-01,
+  when adding `bigpicture` failed parity on the sixth.
 - **No credentials in source.** The release signing key lives offline and never touches CI.
 - **Do not add CORS to the agent.** It is LAN-only and token-authed by design; dev browsers
   go through `scripts/web-dev-proxy.py` instead.
