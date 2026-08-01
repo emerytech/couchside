@@ -442,6 +442,21 @@ if [ "$UNINSTALL" -eq 1 ]; then
     note "removed the Wake-on-LAN .link file"
     # Drop the journal wrapper explicitly so a KEPT $ETC_DIR doesn't retain it.
     sudo rm -f "$JOURNAL_WRAPPER" "$FLATPAK_UPDATE_WRAPPER" "$OS_UPDATE_WRAPPER"
+    # The privileged helper (agent >= 2.9.69): the ONLY root process we
+    # install, so leaving any of it behind on uninstall is worse than leaving
+    # a wrapper — a root-run unit pointing at a binary we no longer maintain.
+    # Disable the units first (the socket owns /run/couchside), then remove
+    # binary + units together; absent files make every step a no-op, so this
+    # is safe on boxes that never had the helper.
+    sudo systemctl disable --now couchside-helper.socket couchside-helper.service 2>/dev/null || true
+    sudo rm -f /etc/systemd/system/couchside-helper.socket \
+               /etc/systemd/system/couchside-helper.service \
+               /usr/local/libexec/couchside-helper.py
+    sudo rm -rf /run/couchside
+    # The block above runs after the earlier daemon-reload, so reload again or
+    # systemd keeps ghost helper units until the next boot.
+    sudo systemctl daemon-reload
+    note "removed the privileged helper (binary, units, socket dir)"
     sudo rm -f /etc/udev/rules.d/99-couchside-uinput.rules \
                /etc/udev/rules.d/99-couchside-rtc.rules \
                /etc/modules-load.d/couchside-uinput.conf
