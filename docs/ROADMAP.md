@@ -40,6 +40,36 @@ Entry fields: `priority` (P0 blocker → P3 nice) · `risk` · `affects` · `dep
 
 ## 📋 Planned
 
+### The privileged helper — retire the sudoers surface
+- **priority:** P1 · **risk:** high (new root-side code) · **affects:** agent + install.sh +
+  new helper binary · **depends_on:** none
+- **Full spec: `docs/memory/project_privileged-helper.md`.** Read it first.
+- Eight verbs over a root-owned unix socket (`SO_PEERCRED` uid check, frozen verb table) replace
+  all eleven NOPASSWD rules. The agent stays `User=__USER__` — uinput, Wayland capture, PipeWire,
+  KWin DBus and launching Steam all need the user session bus, so running it as root is rejected
+  outright and the spec records why.
+- **Closes KI-049** (the greetd grants are never written by install.sh, so that path has never
+  worked on any box) and **KI-050**. Also ends the DM-name-in-the-grant problem: a box whose
+  display manager changes repairs itself instead of needing install.sh re-run.
+- **Two traps the spec calls out:** the `ExecStop=--arm-boot-session` hook will need the helper
+  at shutdown, so unit ordering must be explicit or KI-051 silently regresses; and because quick
+  updates ship the agent binary WITHOUT the installer, the helper must be detected and optional
+  with the sudo path kept for a full release cycle.
+
+### Couchside Player Phase 7 — native media apps via `.desktop` + Actions
+- **priority:** P2 · **risk:** medium · **affects:** tile + agent + app · **depends_on:**
+  Player Phases 0–6 (shipped)
+- **Full spec: `docs/memory/project_media-player.md` §1c, §5b, Phase 7.** Read those first.
+- Every service the Player reaches today is a web URL. Kodi, Plex HTPC, Jellyfin, Moonlight, VLC
+  and Spotify are installed natively on plenty of boxes and cannot be launched at all. XDG
+  Desktop **Actions** are the mechanism — and the thing that opens a native app in TV mode
+  rather than a desktop window.
+- Design taken from flex-launcher's entry syntax; its launch path (`sh -c` for every entry,
+  `.desktop` files included) is explicitly rejected. Curated ids, argv-split `Exec`, no globs.
+- Two cheap unknowns to measure first: whether Chrome already inhibits the box's idle timer
+  under gamescope (a TV that blanks mid-movie is a bug we have never tested for), and which of
+  those apps ship usable Actions.
+
 ### Note mode — jot a clue on the phone while the game runs
 - **priority:** P2 · **risk:** low · **affects:** app only · **depends_on:** the drag stroke (shipped)
 - **Full spec: `docs/memory/project_note-mode.md`.** Read it first.

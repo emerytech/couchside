@@ -74,6 +74,64 @@ knowing when pricing this against a paid unlock.
 Phone-as-navigation-layer is not in that product, because it does not have the problem. The
 inspiration supplies the *shape*; the differentiator is bigger than the first draft claimed.
 
+## 1c. Reconciled against flex-launcher (repo read in full, 2026-07-31)
+
+[complexlogic/flex-launcher](https://github.com/complexlogic/flex-launcher) — a controller-driven
+10-foot launcher, ~4k LOC of C plus SDL. The owner asked what it has that we should take. The
+repo was cloned and read (`src/platform/unix.c`, `src/launcher.c`, `docs/configuration.md`), not
+skimmed from its README.
+
+**Adopt**
+
+- **Desktop Actions.** Its entry syntax is `Entry1=Steam;icon.png;/usr/share/applications/steam.desktop;BigPicture`
+  — the trailing token names an **Action inside** the `.desktop` file rather than a command.
+  That indirection is exactly our lookup model, and it is the piece that turns "launch Kodi"
+  into "launch Kodi in TV mode". Becomes Phase 7.
+- **`InhibitOSScreensaver`.** Names a bug class we have not tested. See Phase 7.
+
+**Adapt**
+
+- **`Exec` field-code stripping.** A real XDG detail any `.desktop` consumer must handle, but
+  **do not port their implementation** — `strip_field_codes()` in `src/platform/unix.c` does an
+  overlapping `strcpy` (undefined behaviour) and drops the character before the `%`. Take the
+  requirement, write it against the spec, fixture-test it.
+- **`OnLaunch=Blank`.** A black frame while the app initialises. We have no launcher window,
+  but the tile can do the same thing.
+
+**Reject — and the reason matters more than the verdict**
+
+- **Its entire launch path.** Every entry, `.desktop` files included, ends at:
+
+  ```c
+  const char *args[] = { "sh", "-c", cmd, NULL };
+  execvp(file, (char* const*) args);
+  ```
+
+  That is correct for a program whose config file the user hand-writes on the machine in front
+  of them. It is fatal for a daemon reachable over the LAN behind one bearer token. **If Phase 7
+  ever parses an `Exec` line, it is argv-split and exec'd as a list — never handed to a shell.**
+- **`:fork`, `StartupCmd`, `QuitCmd`** — three separate "run this arbitrary string" features.
+- **`:shutdown` / `:restart` / `:sleep`** — we already have these behind fixed-argument grants,
+  which is strictly better than what they do.
+- **Per-entry icons and selected-icon overrides** — we already ship branded grid art.
+- **Its screensaver, clock widget, menu tree, `ControllerMappingsFile`** — the screensaver
+  shipped in 2.8.4, and the rest assume the UI lives on the box. Ours lives on the phone.
+
+## 5b. Security rules for Phase 7 (`.desktop` handling)
+
+Written down separately because this is the first time the Player would launch something that
+is not a URL.
+
+1. **The client never supplies a path, an `Exec` line, or a command** — only an `app_id` and an
+   optional `action_id`, both of which index a table the agent built.
+2. **Curated ids, not blanket discovery.** Offering every `.desktop` file found on the box is a
+   glob by another name, and the attack is concrete: anything that can drop a file into
+   `~/.local/share/applications` — a browser download, a flatpak, a game's installer — would
+   become code execution the moment a phone taps the tile. Adding an app is adding an entry.
+3. **`Exec` is argv-split, never shelled.** See §1c.
+4. **Degrade closed.** An unparseable `.desktop`, a missing `Exec`, or an action that is not in
+   the file ⇒ the entry is not offered. Never "offer it and hope".
+
 ## 2. Shape: this is the SCREENSAVER pattern, second instance
 
 The owner's instinct ("custom program, registered as a non-Steam app") is not just correct,
@@ -473,6 +531,83 @@ this reason.
 
   **`_pl_relaunch()` extracted** so `open`, `search` and `hub` share ONE launch path. Three
   copies of the fresh-registration double-fire would be three places for it to drift.
+
+- **Phase 7 — native media apps (`.desktop` + Actions). 📋 PLANNED, scoped 2026-07-31.**
+  See §1c for where the design came from and §5b for the security rules it must obey.
+
+  **The gap it closes:** every service the Player can reach today is a *web* service —
+  `_PLAYER_SERVICES` is populated from the tile and each entry is a URL. Kodi, Plex HTPC,
+  Jellyfin, Moonlight, VLC and Spotify are installed natively on plenty of boxes and the
+  Player cannot launch any of them. This is the single largest thing missing from "Couchside
+  media".
+
+  **The mechanism:** an XDG `.desktop` entry, optionally with a named **Action**. The agent
+  scans, builds the table, and mints the ids; the phone sends `{app_id, action_id}` and both
+  are looked up. Nothing the client sends is ever a path, an `Exec` line, or a command.
+
+  Shape, matching the existing `_pl_validate()` pattern:
+
+  - `_MEDIA_APPS = {id: {name, desktop_path, actions: {...}, icon}}`, built at startup by the
+    same probe-and-appear rule as the rest of the tile. Empty table ⇒ the capability is absent.
+  - Ids come from a **curated known-media list** (kodi, plex, plexhtpc, jellyfin, moonlight,
+    vlc, spotify), not from "everything discovered". Blanket discovery is a pattern, which
+    CLAUDE.md §3.3 forbids, and it has a concrete attack — see §5b.
+  - `Exec=` is read, field codes (`%f %F %u %U %i %c %k`) stripped per the XDG spec,
+    `shlex.split()`, run as an **argv list**. Never a shell string.
+  - Actions are the reason this is worth doing at all: `kodi.desktop` and friends expose their
+    TV/fullscreen mode as a named action, so the action is what gets a native app onto the TV
+    correctly instead of in a desktop window.
+
+  **Also adopted from flex-launcher, both small:**
+  - **Screensaver inhibit while playing.** Their `InhibitOSScreensaver` names a bug class we
+    have never checked: if the box's idle timer or DPMS fires mid-movie, the TV blanks during
+    playback. **Verify first** — Chrome may already inhibit under gamescope — and only add an
+    inhibit if the measurement says it does not. Both states must be observed (§11.2).
+  - **A blank frame while an app starts** (their `OnLaunch=Blank`). Chrome takes seconds to
+    come up and the TV currently shows the Steam UI and then a flash. Cosmetic, cheap.
+
+  **Tests this phase owes:** a non-allowlisted `app_id` and a non-allowlisted `action_id` each
+  refused with nothing launched; a `.desktop` fixture copied VERBATIM from a real box for each
+  app in the curated list; a field-code fixture proving `%U` is stripped and an argument
+  containing a legitimate `%` is not; a planted `~/.local/share/applications` entry proving it
+  is NOT offered; and the launch itself screen-captured off the TV, because it is only
+  observable there.
+
+  **MEASURED on bazzite 10.1.1.60, 2026-07-31** — the survey that was pending when this was
+  scoped. Numbers are from 232 real `.desktop` files in `/usr/share/applications` and
+  `/var/lib/flatpak/exports/share/applications`:
+
+  | fact | count | what it means for Phase 7 |
+  |---|---|---|
+  | files with `Exec` field codes | 46 / 232 (20%) | stripping is **mandatory**, not an edge case |
+  | files with an `Actions=` line | 11 / 232 (5%) | Actions are a **bonus, not the mechanism** |
+  | `~/.local/share/applications` exists, user-writable | yes | the §5b attack surface is real on a stock box |
+
+  **The media apps actually installed, verbatim:**
+
+  - `tv.kodi.Kodi.desktop` — **`Actions=Fullscreen;Standalone;`**, with
+    `[Desktop Action Fullscreen]` / `Name=Open in fullscreen`. This is the Phase 7 use case
+    confirmed on hardware.
+  - `tv.plex.PlexHTPC.desktop` — **no `Actions` line.**
+  - `com.moonlight_stream.Moonlight.desktop` — **no `Actions` line.**
+
+  **Two corrections to the scoping draft, from that data:**
+  1. Actions are *not* how most native apps reach TV mode — one of the three media apps on the
+     box has them. Phase 7 must launch plain `Exec` well first and treat an action as an
+     optional refinement, not build the feature around actions.
+  2. Every `Exec` here is a flatpak wrapper
+     (`/usr/bin/flatpak run --branch=stable --arch=x86_64 --command=kodi tv.kodi.Kodi`). Fine
+     for an argv list, but it means the parser must not assume `Exec[0]` is the app.
+
+  **Quoting is load-bearing.** A real line on that box:
+  `Exec=kde-geo-uri-handler --coordinate-template "https://www.google.com/maps/@<LAT>,<LON>,<Z>z" ... %u`
+  — quoted arguments containing commas and angle brackets. A naive `split()` mangles it; use
+  `shlex.split()` and fixture-test against this exact line.
+
+  **STILL NOT verified:** whether Chrome already inhibits idle under gamescope. That needs a
+  live playback session, which takes over the TV, so it was not run unasked. It also must
+  observe **both** states (§11.2) — idle firing without playback, and not firing with it —
+  or it proves nothing.
 
 ### Picture controls: BUILT, THEN CUT 2026-07-27 — and why
 
