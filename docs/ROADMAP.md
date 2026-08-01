@@ -407,6 +407,29 @@ recommendation was wrong, not merely superseded.
   hardware 2026-07-30 — see `docs/memory/project_cachyos-support.md` and the CachyOS entry
   below.
 
+### Pop!_OS support — requested by owner 2026-07-31
+- **priority:** P3 (after Nobara) · **risk:** medium · **affects:** installer + agent +
+  the non-AMD GPU work · **depends_on:** a Pop box or VM; the non-AMD GPU reader
+- Ubuntu/apt family, systemd, NOT immutable. Two Pop-specific realities shape the work:
+  - **COSMIC changes the display manager.** Pop 22.04 runs gdm (detected, not written —
+    same stance as Nobara's GNOME variant). Pop 24.04+ ships COSMIC with
+    **cosmic-greeter, a DM family the agent does not know** — today that fails CLOSED
+    (correct: "Boots into" simply hides). First-class support means either a
+    cosmic-greeter backend or an honest permanent "not on this DM".
+  - **This is THE NVIDIA distro** (System76 ships an NVIDIA ISO), so the GPU card being
+    silently absent on non-AMD boxes stops being an edge case and becomes the default
+    experience. Pop support is gated on that work more than on anything apt-specific.
+- **Already covered by tonight's shipped work, needs only verification:** the ufw
+  branch (Pop is Ubuntu-family; the `Status: active` gate shipped 2026-07-31), the
+  no-distro-branching installer (pinned by test), and the `os` reader (Pop has a normal
+  `VERSION_ID`, the easy shape).
+- Couch Mode: correctly hidden by the capability gate unless the user installs
+  gamescope-session; not a goal for this entry.
+- Same rule as Nobara: nothing gets claimed until the smoke set runs on a real box —
+  install, pair, pad, session-default state, `os` line. Garuda question (owner,
+  2026-07-31) answered the same way: expected-compatible-unverified is the strongest
+  claim any untested distro gets.
+
 ### ~~CachyOS: remaining installer pass~~ — DONE 2026-07-31 (#318)
 - **priority:** P2 · **risk:** low · **affects:** installer only · **depends_on:** the
   10.7.1.92 test box (temporary — owner will tear it down)
