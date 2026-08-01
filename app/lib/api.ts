@@ -165,9 +165,11 @@ export type BoxCaps = {
    * (drop dir not writable) hides the card.
    */
   file_upload?: boolean;
-  /** Box can set which session it BOOTS into (agent >= 2.9.58). Two backends:
-   *  SteamOS's steamosctl, or an sddm drop-in on Bazzite — absent when neither
-   *  is usable, so the setting never appears on a box that cannot honour it. */
+  /** Box can set which session it BOOTS into (agent >= 2.9.58). Four backends —
+   *  steamosctl, or a conf-dir drop-in for sddm or plasmalogin, or greetd; see
+   *  the `backend` union on SessionDefault below, which this comment used to
+   *  contradict. Absent when none is usable, so the setting never appears on a
+   *  box that cannot honour it. */
   session_default?: boolean;
   /**
    * Display + audio readout (agent >= 2.9.59): mode, panel identity, HDR/VRR,
