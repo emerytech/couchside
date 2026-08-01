@@ -18,6 +18,18 @@ the same thing regardless of what actually changed.
 Write for the person holding the phone, not for the commit log. They are
 deciding whether to press "Update now" on a machine across the room.
 
+## 2.9.70
+
+- **Big Picture on boxes that can't do Game Mode.** If your machine has Steam
+  but isn't a Steam Deck / Bazzite-style setup, the couch control now opens
+  **Steam Big Picture** on it instead of being missing entirely — tap to open,
+  long-press to come back to the desktop. Boxes that can do the real Game Mode
+  handoff are unaffected and keep it.
+- **The Console shows the right OS name on Nobara** (and any distro that bakes
+  its version into the name) — it was reading "Nobara Linux 43 … 43".
+- **Uninstalling now removes everything**, including the privileged helper
+  added in 2.9.69. Re-running the installer restores it.
+
 ## 2.9.69
 
 - **Groundwork release: a safer way for Couchside to do its privileged work.**
