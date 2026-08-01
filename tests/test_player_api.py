@@ -17,9 +17,12 @@ the tile (`--print-url`), so these tests drive the real tile through the real
 route — which is the point of that design: one copy of the table, and the
 validator is the code that will actually run.
 
-The cap check covers all five edit sites (agent CAPS dict + mock tuple; app
-BoxCaps + normalizeCaps + capsEqual). Miss the app three and the cap never
-persists, so the tab re-probes forever — the specific bug CLAUDE.md §4 names.
+The cap check here covers five of the SIX edit sites (agent CAPS dict + mock
+tuple; app BoxCaps + normalizeCaps + capsEqual). Miss the app three and the cap
+never persists, so the tab re-probes forever — the specific bug CLAUDE.md §4
+names. The sixth site is the canonical list in protocol/protocol.json, which is
+enforced by tests/test_protocol_parity.py rather than here; `player` is in
+linuxOnlyCapabilities.keys, so that gate is live for this cap.
 
 Pure stdlib, no pytest.
 """
@@ -290,7 +293,8 @@ finally:
     srv.shutdown()
 
 # ---------------------------------------------------------------------------
-print("\nthe `player` cap is wired at all five edit sites")
+print("\nthe `player` cap is wired at five of the six edit sites "
+      "(protocol.json is site 6, gated by test_protocol_parity.py)")
 # ---------------------------------------------------------------------------
 cs.set_player(True)
 cs.set_caps(True)

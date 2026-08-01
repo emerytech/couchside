@@ -178,28 +178,47 @@ Two details worth knowing:
   `false` (cached before a box *became* capable) stuck forever for a user who lived on the Pad
   tab — observed in the field.
 
-### 3c. Adding a capability key — FIVE sites, all mandatory
+### 3c. Adding a capability key — SIX sites, all mandatory
 
 Miss any one and the cap silently never persists, so the app re-probes on every launch. This
-has been shipped-and-fixed five separate times (`screensaver`, `couchmode`/`desktop`,
-`steamlink`, `gaming`, `streamhost`, `steammenus` — the comments in `normalizeCaps` are a
-scar log).
+has been shipped-and-fixed repeatedly (`screensaver`, `couchmode`/`desktop`, `steamlink`,
+`gaming`, `streamhost`, `steammenus` — the comments in `normalizeCaps` are a scar log).
+
+**This section said FIVE until 2026-08-01**, omitting site 6 — the canonical list in
+`protocol/protocol.json`, which is the file CLAUDE.md calls THE authority and which
+`tests/test_protocol_parity.py` enforces. Adding `bigpicture` failed parity on exactly that
+sixth site, because the checklist that was supposed to prevent it did not mention it.
 
 | # | File | Site |
 |---|---|---|
-| 1 | `agent/couchsided.py:980-994` | the real `CAPS` dict — `"newcap": safe(newcap_available)` |
-| 2 | `agent/couchsided.py:975-978` | the **mock all-true tuple** — add the string or `--mock` lies |
-| 3 | `app/lib/api.ts:79-137` | the `BoxCaps` type — declare it **optional** (`newcap?: boolean`) |
-| 4 | `app/lib/settings.ts:200-241` | `normalizeCaps` — `const newcap = bool('newcap')` **and** put it in the returned object |
-| 5 | `app/lib/api.ts:715-733` | `capsEqual` — add `a.newcap === b.newcap` |
+| 1 | `agent/couchsided.py:1586` | the real `CAPS` dict — `"newcap": safe(newcap_available)` |
+| 2 | `agent/couchsided.py:1579` | the **mock all-true tuple** — add the string or `--mock` lies |
+| 3 | `app/lib/api.ts:80` | the `BoxCaps` type — declare it **optional** (`newcap?: boolean`) |
+| 4 | `app/lib/settings.ts:205` | `normalizeCaps` — `const newcap = bool('newcap')` **and** put it in the returned object |
+| 5 | `app/lib/api.ts:1084` | `capsEqual` — add `a.newcap === b.newcap` |
+| 6 | `protocol/protocol.json` | the canonical list: `capabilities.keys`, or `linuxOnlyCapabilities.keys` if the Windows/macOS agents will not have it |
+
+Line numbers are a starting point, not a promise — every one in this table had drifted by
+hundreds of lines before 2026-08-01 (site 1 read `:980`, actually `:1586`; site 5 read
+`:715`, actually `:1084`). Grep the symbol.
 
 Sites 4 and 5 are the trap. `normalizeCaps` hard-requires the six **original** keys as booleans
 (`gamepad, steam, media, tv, screen, power_schedule`) and drops the whole blob if any is
 missing — a partial payload is not half-trusted. Every key added *after* those six must be
 optional, so `undefined` stays "unknown, probe" and never degrades to `false`.
 
-Current keys: `gamepad`, `steam`, `media`, `tv`, `screen`, `power_schedule`, `screensaver`,
-`couchmode`, `desktop`, `steamlink`, `gaming`, `streamhost`, `steammenus`.
+Current keys, in the two groups `protocol/protocol.json` splits them into — the split IS the
+subtlety of site 6, so pick the right group when adding one:
+
+- `capabilities.keys` (**every** agent must declare these, including Windows and macOS):
+  `gamepad`, `steam`, `media`, `tv`, `screen`, `power_schedule`, `screensaver`, `couchmode`,
+  `desktop`.
+- `linuxOnlyCapabilities.keys` (the Linux agent only; parity does not demand them elsewhere):
+  `bigpicture`, `boxbattery`, `display_info`, `file_upload`, `gaming`, `player`,
+  `session_default`, `steamlink`, `steammenus`, `streamhost`.
+
+This list is generated from the file above rather than remembered; it omitted six keys until
+2026-08-01. If it disagrees with `protocol.json`, the JSON is right.
 
 Caps also gate whole tabs — `hidePad = caps?.gamepad === false`,
 `hideLaunch = caps?.steam === false` (`app/app/(tabs)/_layout.tsx:28-30`), which is how a

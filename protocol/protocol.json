@@ -20,9 +20,11 @@
     "not an omission, and asserting it stops a half-port from looking finished.",
     "",
     "CAPABILITIES are included because they are the highest-drift surface here: a",
-    "capability key needs FIVE edit sites (agent CAPS + mock; app BoxCaps,",
-    "normalizeCaps, capsEqual) and missing the app ones is SILENT -- the cap never",
-    "persists and the app re-probes forever.",
+    "capability key needs SIX edit sites (agent CAPS + mock; app BoxCaps,",
+    "normalizeCaps, capsEqual; and THIS FILE) and missing the app ones is SILENT",
+    "-- the cap never persists and the app re-probes forever. This said FIVE and",
+    "omitted itself until 2026-08-01, when adding `bigpicture` failed parity on",
+    "the very site the checklist did not mention.",
     "",
     "HTTP ENDPOINTS are deliberately NOT modelled. Route dispatch takes at least",
     "four forms in the agents (path ==, path in (...), prefix match, and a generic",
@@ -154,7 +156,7 @@
     ]
   },
   "capabilities": {
-    "_doc": "/api/status caps flags. Compared against the agents' REAL runtime CAPS dicts (set_caps is called and the dict read) and the app's BoxCaps / normalizeCaps / capsEqual -- all five edit sites.",
+    "_doc": "/api/status caps flags. Compared against the agents' REAL runtime CAPS dicts (set_caps is called and the dict read) and the app's BoxCaps / normalizeCaps / capsEqual -- five of the six edit sites. The sixth is this list itself, which is why adding a key here is part of the checklist and not a side effect of it.",
     "platforms": [
       "linux",
       "windows"

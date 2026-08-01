@@ -233,8 +233,8 @@ Entry fields: `priority` (P0 blocker → P3 nice) · `risk` · `affects` · `dep
   table only; the URL, exe and argv come from the agent. This is the same rule as
   LAUNCHERS/ACTIONS and is the single thing most likely to be got wrong here.
 - Creating/removing tiles is state-changing, so it needs the bearer token, a capability
-  key (all five edit sites), and tests proving a non-allowlisted service_id registers
-  nothing.
+  key (all six edit sites — the sixth is `protocol/protocol.json`), and tests proving a
+  non-allowlisted service_id registers nothing.
 
 ### Two-way clipboard (box <-> phone)
 - **priority:** P2 · **risk:** low · **affects:** agent + app · **depends_on:** none

@@ -16,9 +16,17 @@ they run cross-platform (the agent module imports fine on macOS; winreg + the
 PowerShell bridge are guarded). Live GOG/Xbox enumeration is Windows-only and is
 verified on a real box separately; here we test their pure transforms + resolver.
 
-Also asserts the `launchers` capability is wired at all five edit sites
+Also asserts the `launchers` capability is wired at five of the SIX edit sites
 (CLAUDE.md §4): the two agent sites here, plus the three app sites by reading the
 app source — a missing app site is the classic silent "cap never persists" bug.
+
+The sixth site does not exist for this cap, and that is a real gap rather than an
+exemption: protocol/protocol.json models `capabilities.keys` (every agent must
+declare these) and `linuxOnlyCapabilities.keys`, with NO group for a
+Windows-only cap. `launchers` is therefore absent from the canonical list and
+test_protocol_parity.py does not gate it either way. Noted 2026-08-01; adding a
+windowsOnlyCapabilities group is a protocol change and belongs in its own PR,
+not smuggled in as a comment fix.
 
 Pure stdlib, no pytest — same style as the other agent tests.
 """
@@ -250,7 +258,8 @@ def test_auto_ids_not_creatable_or_deletable():
 
 
 def test_launchers_cap_five_sites():
-    print("`launchers` capability wired at all five edit sites (CLAUDE.md §4)")
+    print("`launchers` capability wired at five of six edit sites "
+          "(no protocol.json group exists for a Windows-only cap)")
     # Agent site 1: mock CAPS
     cw.set_caps(mock=True)
     check(cw.CAPS.get("launchers") is True, "agent mock CAPS carries launchers")

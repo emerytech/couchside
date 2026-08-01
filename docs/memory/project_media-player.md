@@ -363,8 +363,10 @@ file exfiltration. Therefore:
 
 ### Capability key
 
-`player`, wired at all five edit sites (agent CAPS dict + mock tuple; app BoxCaps +
-normalizeCaps + capsEqual), with a test asserting all five.
+`player`, wired at all six edit sites (agent CAPS dict + mock tuple; app BoxCaps +
+normalizeCaps + capsEqual; and `protocol/protocol.json`, where it sits in
+`linuxOnlyCapabilities.keys`). `tests/test_player_api.py` asserts the first five;
+`tests/test_protocol_parity.py` gates the sixth.
 
 ---
 
@@ -641,7 +643,7 @@ Asked directly by the owner, so it was measured rather than reasoned about:
 | Layer | Gate | How it is known |
 |---|---|---|
 | `player_available()` | tile file + service list + Widevine browser + steam + steamos-add-to-steam | test: cap is `false` when the tile is absent |
-| `caps.player` | that boolean on `/api/status` | test: all five edit sites |
+| `caps.player` | that boolean on `/api/status` | test: five edit sites here, sixth in parity |
 | `GET /api/player` | **404** | test: probe-and-appear |
 | Launch segment | `caps?.player === true && watchEnabled` | **harness, observed** |
 

@@ -138,7 +138,7 @@ injected actions) with real snippets. New code matches those exactly.
 | New agent endpoint | Happy path + auth failure + unknown-input rejection |
 | Anything taking a client id | A test proving a non-allowlisted id is refused and nothing runs |
 | Gamepad / input path change | Device lifecycle test (create → hold → hand off → reap) |
-| New capability key | A test asserting all five edit sites are wired |
+| New capability key | A test asserting all six edit sites are wired (§4) |
 | Parsing `/proc` or sysfs | Fixtures copied VERBATIM from real hardware |
 | App UI change | Driven in the web harness — **press the control, don't just render it** |
 | Anything only observable on the TV | Screen-capture proof via `/api/screen/frame` |
