@@ -954,10 +954,20 @@ def read_os_release():
     except OSError:
         vals = {}
     name = vals.get("PRETTY_NAME") or vals.get("NAME")
-    if name:
-        out["name"] = name
     # VERSION_ID is the point release; a rolling distro has only BUILD_ID.
     version = vals.get("VERSION_ID") or vals.get("BUILD_ID")
+    # Some distros bake the release INTO PRETTY_NAME — Nobara 43 ships
+    # PRETTY_NAME="Nobara Linux 43 (KDE Plasma Desktop Edition)" (VERBATIM from
+    # nobara-xps, 2026-08-01) — and the app header renders "<name> <version>",
+    # which would show the 43 twice with an edition string in between. When the
+    # pretty name already carries the version, fall back to the bare NAME
+    # ("Nobara Linux" + "43" -> "Nobara Linux 43"). Word-boundary match so a
+    # version like "4" cannot false-positive on "F43" inside a build string.
+    if (name and version and vals.get("NAME")
+            and re.search(r"(?<![\w.])%s(?![\w.])" % re.escape(version), name)):
+        name = vals.get("NAME")
+    if name:
+        out["name"] = name
     if version:
         out["version"] = version
     build = vals.get("BUILD_ID")

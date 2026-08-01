@@ -57,6 +57,18 @@ ANSI_COLOR="38;2;23;147;209"
 HOME_URL="https://cachyos.org/"
 '''
 
+# Nobara bakes the release AND edition into PRETTY_NAME — the case that made
+# the header show "…43 (KDE Plasma Desktop Edition) 43". VERBATIM from
+# nobara-xps (Nobara 43 KDE), 2026-08-01.
+NOBARA = '''NAME="Nobara Linux"
+VERSION="43 (KDE Plasma Desktop Edition)"
+ID=nobara
+ID_LIKE="fedora"
+VERSION_ID=43
+PRETTY_NAME="Nobara Linux 43 (KDE Plasma Desktop Edition)"
+LOGO=fedora-logo-icon
+'''
+
 # SteamOS ships a VERSION_ID and a build; the Deck is the reference handheld.
 STEAMOS = '''NAME="SteamOS"
 PRETTY_NAME="SteamOS"
@@ -91,6 +103,21 @@ check("cachyos name", c.get("name"), "CachyOS")
 # THE TRAP: no VERSION_ID at all. A VERSION_ID-only reader shows nothing here.
 check("cachyos falls back to BUILD_ID", c.get("version"), "rolling")
 check("...and does not duplicate it into build", "build" in c, False)
+
+n = read_with(NOBARA)
+check("nobara: version baked into PRETTY_NAME falls back to NAME",
+      n.get("name"), "Nobara Linux")
+check("nobara version", n.get("version"), "43")
+# The app header joins name + version, so the pair must not repeat the release:
+check("nobara: header would read cleanly",
+      ("%s %s" % (n.get("name"), n.get("version"))), "Nobara Linux 43")
+
+# CONTROL: Bazzite's PRETTY_NAME ("Bazzite") does NOT contain its version, so
+# the fallback must NOT fire there — b was read above.
+check("bazzite still uses PRETTY_NAME (control)", b.get("name"), "Bazzite")
+# CONTROL 2: a one-digit version must not match inside a build-ish token.
+q2 = read_with('NAME="X"\nPRETTY_NAME="X F43 edition"\nVERSION_ID=4\n')
+check("version 4 does not false-positive on F43", q2.get("name"), "X F43 edition")
 
 s = read_with(STEAMOS)
 check("steamos name", s.get("name"), "SteamOS")
