@@ -297,6 +297,13 @@ export function RemotePowerBar({ compact = false }: { compact?: boolean }) {
   );
   const displays = reachable ? displaysPoll.data ?? null : null;
   const [couchOpen, setCouchOpen] = React.useState(false);
+  // MUST live up here with the other hooks, NOT beside hasBigPicture below:
+  // there is an early `if (!ready || !configured) return null` between the two
+  // spots, so a hook declared after it runs on some renders and not others —
+  // React error #310 ("rendered more hooks than during the previous render"),
+  // which crashed the whole screen to an error boundary. Caught in the harness
+  // against a real box before this ever reached a build.
+  const [bpBusy, setBpBusy] = React.useState(false);
   // Optimistic session: the couch-mode POST response already says which
   // session the box is entering, and the box goes briefly unreachable during
   // the switch (Game Mode can drop .local resolution), so waiting on the poll
@@ -581,7 +588,6 @@ export function RemotePowerBar({ compact = false }: { compact?: boolean }) {
   // couch buttons is a worse failure than showing the better one.
   const hasBigPicture =
     reachable && settings.caps?.bigpicture === true && !hasCouch;
-  const [bpBusy, setBpBusy] = React.useState(false);
 
   // Nothing to control on this box right now. (Couch Mode counts: it renders
   // its own header button, so the bar must not bail when it's the only thing.)

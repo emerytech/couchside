@@ -2305,9 +2305,13 @@ export const api = {
    * rendering a toggle that would lie about the box's state.
    */
   bigPicture(settings: ConnSettings, op: 'open' | 'close'): Promise<ActionResult> {
+    // `body` is the RAW object: request() stringifies it. Passing a string
+    // here double-encodes it ("{\"op\":\"open\"}") and the agent correctly
+    // answers 400 — which is exactly what the box logged the first time this
+    // button was pressed in the harness.
     return request(settings, '/api/big-picture', {
       method: 'POST',
-      body: JSON.stringify({ op }),
+      body: { op },
     });
   },
 
