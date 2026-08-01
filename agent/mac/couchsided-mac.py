@@ -190,9 +190,14 @@ _CAFFEINATE_LOCK = threading.Lock()
 def _pmset_schedule_ok():
     """Can we ACTUALLY schedule a wake — i.e. do we have root?
 
-    Asks pmset to list the schedule, which is readable, then checks euid: the
-    write path is what needs root and probing it for real would leave a
-    scheduled wake behind. Degrades closed.
+    Two cheap facts, no subprocess: pmset must exist, and we must be euid 0.
+
+    It does NOT run pmset. `pmset -g sched` would only prove the schedule is
+    READABLE, which it is for everyone, so it cannot answer this question; and
+    probing the write path for real would leave a scheduled wake on the user's
+    machine. Both halves must be true or this returns False, so an
+    unprivileged agent reports the capability as absent rather than offering a
+    button that fails at the moment it is pressed. Degrades closed.
     """
     if not os.path.isfile(PMSET):
         return False
@@ -253,10 +258,23 @@ def keep_awake_set(on):
 # Media. Per-app AppleScript, because macOS has no MPRIS and MediaRemote is a
 # private framework a stdlib agent cannot link.
 #
-# The payload matches the Linux agent's /api/media shape exactly
+# The payload is the Linux agent's /api/media shape MINUS three fields
 # ({"available":true,"players":[...]}, each player with id/identity/status/
-# title/artist/album/position_ms/length_ms/can_*), so the app's Now Playing
-# card needs no macOS branch.
+# title/artist/album/position_ms/length_ms/can_*). The app's Now Playing card
+# needs no macOS branch, but the shape is not identical and the next person
+# should not be told it is:
+#
+#   rate     not read. AppleScript exposes no playback rate we have measured,
+#            and emitting a hardcoded 1.0 would be inventing a number.
+#   art      no art route on this train, so there are no bytes to advertise.
+#   art_key  the cache-buster for that fetch; meaningless without it.
+#
+# app/lib/api.ts declares all three NON-optional on MediaPlayer, so this is a
+# real divergence even though nothing breaks today (NowPlayingCard guards each
+# one before use). Adding them is legal -- response shapes here are append-only
+# -- but it is a deliberate change to a live payload, and the macOS agent is
+# absent from test_protocol_parity.py's AGENTS map, so nothing would catch a
+# mistake. Do it as its own commit with the parity wiring, not as a drive-by.
 # --------------------------------------------------------------------------
 
 OSASCRIPT = "/usr/bin/osascript"
@@ -715,7 +733,14 @@ def main(argv=None):
     srv.daemon_threads = True
     print("couchside-mac %s listening on %s:%d%s"
           % (VERSION, a.host, a.port, " (mock)" if a.mock else ""), flush=True)
-    print("caps: %s" % ",".join(sorted(k for k, v in CAPS.items() if v)) or "(none)",
+    # Parenthesise the join: `%` binds tighter than `or`, so without them this
+    # reads as ("caps: %s" % joined) or "(none)" -- the left side is always a
+    # non-empty string, so the fallback is unreachable and an all-false box
+    # prints a bare "caps: ". All-false is the DEFAULT state here (gamepad, tv,
+    # screensaver, couchmode and desktop are hardcoded False and _tcc_screen_ok()
+    # starts False), so the operator could not tell "nothing available" from
+    # "failed to compute". Wording matches the Linux agent verbatim: "none".
+    print("caps: %s" % (",".join(sorted(k for k, v in CAPS.items() if v)) or "none"),
           flush=True)
     try:
         srv.serve_forever()
