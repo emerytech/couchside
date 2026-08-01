@@ -93,6 +93,42 @@ Entry fields: `priority` (P0 blocker → P3 nice) · `risk` · `affects` · `dep
 - Both-directions rule applies to the build: the toggle must be proven to ENTER and
   EXIT on hardware before it ships, cold and warm.
 
+### macOS agent — alpha, Homebrew-installed (owner request 2026-08-01)
+- **priority:** P3 · **risk:** medium · **affects:** a NEW agent variant + app caps ·
+  **depends_on:** nothing; deliberately scoped small like the Windows alpha was
+- **Owner ask:** "a mac os version for controling a mac ... separate install method and
+  very much alpha like windows with limited functionality to start with. homebrew install
+  it or maybe app store."
+- **Homebrew, NOT the App Store — and this is not a preference, it is structural.** The
+  agent is a background daemon that synthesises input, reads the screen and reboots the
+  machine. The App Store requires sandboxing, which forbids every one of those; a
+  sandboxed build could not do the product. Homebrew (a tap + a `launchd` LaunchAgent) is
+  the macOS analogue of `install.sh` + systemd and matches how the Linux/Windows agents
+  already ship. The same reasoning already ruled out Flathub for Linux — see the Bazaar
+  question, 2026-08-01.
+- **THE THING THAT DECIDES THE SCOPE: TCC permissions.** macOS gates the interesting
+  capabilities behind per-app user consent that CANNOT be granted programmatically:
+  - **Accessibility** — required for `CGEvent` input synthesis (trackpad, keyboard). No
+    grant, no input, and the grant is a manual trip through System Settings.
+  - **Screen Recording** — required for any capture (`CGDisplayStream`/ScreenCaptureKit).
+  - Both are per-binary and reset on update, which is a real support burden and needs an
+    honest first-run flow rather than a silent failure.
+- **Likely v1 caps (measure before promising any of them):** `media` (now-playing +
+  transport via MediaRemote), `power` (sleep/wake/`pmset`, `caffeinate`), app launching,
+  volume, `screen` (with the grant), and possibly `trackpad`/keyboard (with Accessibility).
+- **Likely NOT in v1:** the virtual GAMEPAD. There is no `uinput` equivalent; a real
+  virtual controller needs a DriverKit system extension, which needs an Apple developer
+  entitlement and notarisation — a project of its own. The Pad tab should gate off, the
+  same way it already gates on `caps.gamepad`.
+- **Couch Mode / Big Picture:** the Big Picture tier could apply (`open`/`close` URLs on a
+  Mac Steam client) — MEASURE it, do not assume; the Windows measurement showed the same
+  URLs behaving differently per platform and per session.
+- **Architecture:** a `agent/mac/couchsided-mac.py` sibling, pure python3 stdlib like the
+  others, `launchd` plist instead of a systemd unit, same HTTP + token + allowlist
+  contract so the app needs no protocol change — only caps gating, which already exists.
+- **First slice, in order:** pair + `/api/ping` + `/api/status` with honest caps; then
+  power; then media. Ship nothing that has not run on a real Mac.
+
 ### Note mode — jot a clue on the phone while the game runs
 - **priority:** P2 · **risk:** low · **affects:** app only · **depends_on:** the drag stroke (shipped)
 - **Full spec: `docs/memory/project_note-mode.md`.** Read it first.
