@@ -202,12 +202,18 @@ def test_app_matches_spec():
               % (ts, gname, sorted(want - got) or "none", sorted(got - want) or "none"))
 
 
-# ---- capabilities: the five-edit-site rule, checked ------------------------
+# ---- capabilities: the six-edit-site rule, checked -------------------------
 #
-# A capability key needs FIVE edits: the agent's CAPS dict + its mock tuple, and
-# the app's BoxCaps + normalizeCaps + capsEqual. Missing the app ones is SILENT
-# -- the cap never persists, so the app re-probes on every launch forever. That
-# is exactly how `steammenus` and the TV sections drifted.
+# A capability key needs SIX edits: the agent's CAPS dict + its mock tuple, the
+# app's BoxCaps + normalizeCaps + capsEqual, and the canonical list in
+# protocol/protocol.json. Missing the app ones is SILENT -- the cap never
+# persists, so the app re-probes on every launch forever. That is exactly how
+# `steammenus` and the TV sections drifted.
+#
+# This comment said FIVE and omitted protocol.json until 2026-08-01 -- in a file
+# whose entire job is to ENFORCE the sixth site. Adding `bigpicture` failed here
+# for exactly that reason: the checklist did not mention the site the test was
+# about to fail on.
 #
 # Read from the agents' REAL runtime dicts (set_caps is called and CAPS is read),
 # not from source text. An earlier regex pass over the same data produced two
@@ -218,7 +224,7 @@ def _agent_caps(mod):
 
     set_caps(mock) has two code paths: the mock branch builds CAPS from a fixed
     name tuple, the real branch from a dict of detector calls. Those are two of
-    the five edit sites, and a cap added to one but not the other is exactly the
+    the six edit sites, and a cap added to one but not the other is exactly the
     drift being hunted -- an earlier version of this test read only the mock
     path and did NOT catch a cap injected into the real dict. Union both, and
     _agent_caps_disagree() reports the pair falling out of step."""

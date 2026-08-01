@@ -206,9 +206,14 @@ node --experimental-strip-types --test app/lib/__tests__/*.test.ts   # Node >= 2
 bundler-dependent test would have meant a whole toolchain; this needs none. If you make the
 tested module import a real dependency, this standalone path breaks — keep it import-free.
 
-CI is two jobs: `compile` (`py_compile` on all three entrypoints, then the unit tests) and `smoke`
-(boots the agent `--mock` on a spare port and proves auth: `/api/ping` 200, `/api/status` 401
-without a token, 200 with one) — `.github/workflows/ci.yml:103-186`.
+CI is three jobs — `compile` (`py_compile` on all three entrypoints, then every unit suite),
+`smoke` (boots the agent `--mock` on a spare port and proves auth: `/api/ping` 200,
+`/api/status` 401 without a token, 200 with one), and `app-input` (the standalone module
+above). This paragraph said "two jobs" until 2026-08-01 while naming `app-input` four lines
+earlier. Jobs begin at `.github/workflows/ci.yml:16`, `:594` and `:686`.
+
+Every suite in `tests/` must have a step, and `tests/test_ci_wiring.py` fails the build if one
+does not — eight suites had been committed and never run before that guard existed.
 
 ---
 
