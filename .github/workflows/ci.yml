@@ -16,8 +16,8 @@ jobs:
   compile:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
         with:
           python-version: "3.11"
       # py_compile is a pure-syntax check and is cross-platform: compiling the
@@ -485,7 +485,7 @@ jobs:
       - name: Unit tests (Windows game launchers)
         run: python3 tests/test_win_launchers.py
 
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v7
         with:
           node-version: "22"
           cache: npm
@@ -522,8 +522,8 @@ jobs:
     runs-on: ubuntu-latest
     needs: compile
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
         with:
           python-version: "3.11"
       # Boot the agent headless with --mock (never touches uinput/hardware/CEC),
@@ -613,8 +613,8 @@ jobs:
   app-input:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
         with:
           node-version: "22"
       # --test-timeout, NOT --test-force-exit. Force-exit was here because a
