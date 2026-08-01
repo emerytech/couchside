@@ -188,6 +188,12 @@ jobs:
       - name: Unit tests (privileged helper verb table)
         run: python3 tests/test_privileged_helper.py
 
+      # The macOS agent's first slice. Runs on ubuntu (probes are patched), but
+      # the numbers it pins were measured on a real Mac — a first slice that had
+      # only ever run in CI is what this project's rules forbid.
+      - name: Unit tests (macOS agent contract + auth gate)
+        run: python3 tests/test_mac_agent.py
+
       # SO_PEERCRED is Linux-only and the suite SKIPS elsewhere, so this step is
       # the only place it actually runs. A green local run on a Mac has not
       # tested the socket gate at all — same rule as the /proc parsers.
