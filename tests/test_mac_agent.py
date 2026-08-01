@@ -258,6 +258,53 @@ check("_app_running is deterministic across repeats",
       len({M._app_running("Finder") for _ in range(5)}), 1)
 
 print()
+print("the startup caps line says 'none' rather than nothing")
+# `%` binds tighter than `or`, so
+#     "caps: %s" % joined or "none"
+# is ("caps: %s" % joined) or "none" -- always truthy on the left, so the
+# fallback is unreachable and an all-false box printed a bare "caps: ". That is
+# the DEFAULT state on macOS (gamepad/tv/screensaver/couchmode/desktop are
+# hardcoded False), so the operator could not tell "nothing available" from
+# "failed to compute". Assert the behaviour, not just the source text.
+# Asserted STRUCTURALLY rather than by matching text: the defect is precedence,
+# so the question is where the `or` sits in the tree, not how the line is
+# spelled. A string match here also has to guess ast.unparse's quoting, which
+# is how the first version of this check failed.
+#
+#   fixed   BinOp(Mod, left="caps: %s", right=BoolOp(Or, ...))   <- or INSIDE %
+#   broken  BoolOp(Or, values=[BinOp(Mod, ...), "(none)"])       <- or OUTSIDE
+_caps_arg = None
+for _node in _ast.walk(_ast.parse(open(
+        os.path.join(ROOT, "agent", "mac", "couchsided-mac.py")).read())):
+    if (isinstance(_node, _ast.Call)
+            and isinstance(_node.func, _ast.Name) and _node.func.id == "print"
+            and _node.args
+            and "caps: %s" in _ast.dump(_node.args[0])):
+        _caps_arg = _node.args[0]
+check("the caps line was found at all", _caps_arg is not None, True)
+check("the format is the OUTER operation (or is inside it)",
+      isinstance(_caps_arg, _ast.BinOp) and isinstance(_caps_arg.op, _ast.Mod), True)
+check("the fallback is reachable (or is the right operand of %)",
+      isinstance(getattr(_caps_arg, "right", None), _ast.BoolOp), True)
+
+
+def _caps_line(caps):
+    """Reproduce the shipped expression against a given CAPS dict."""
+    return "caps: %s" % (",".join(sorted(k for k, v in caps.items() if v)) or "none")
+
+
+check("all-false renders a word, not an empty tail",
+      _caps_line({"gamepad": False, "tv": False}), "caps: none")
+# The control: an input whose answer is already known, and which the bug did
+# NOT affect. If this ever differs, the fix changed more than the broken case.
+check("some-true is unchanged by the fix",
+      _caps_line({"media": True, "power": True, "tv": False}), "caps: media,power")
+# Wording matches the Linux agent verbatim -- two agents, one vocabulary.
+with open(os.path.join(ROOT, "agent", "couchsided.py")) as f:
+    linux_src = f.read()
+check("Linux says 'none' too (not '(none)')", 'or "none")' in linux_src, True)
+
+print()
 if FAILURES:
     print("FAILED: %s" % ", ".join(FAILURES))
     sys.exit(1)
