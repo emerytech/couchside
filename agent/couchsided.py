@@ -1578,7 +1578,8 @@ def set_caps(mock):
     if mock:
         CAPS = {k: True for k in
                 ("gamepad", "steam", "media", "tv", "screen", "power_schedule",
-                 "screensaver", "couchmode", "desktop", "steamlink", "gaming",
+                 "screensaver", "couchmode", "bigpicture", "desktop",
+                 "steamlink", "gaming",
                  "streamhost", "steammenus", "boxbattery", "file_upload",
                  "session_default", "display_info", "player")}
         return
@@ -1591,6 +1592,9 @@ def set_caps(mock):
         "power_schedule": safe(rtc_available),
         "screensaver": safe(screensaver_available),
         "couchmode": safe(couchmode_available),
+        # Degraded couch tier, EXCLUSIVE with couchmode (see
+        # bigpicture_available): a box never advertises both.
+        "bigpicture": safe(bigpicture_available),
         "session_default": safe(session_default_available),
         "desktop": safe(desktop_available),
         "steamlink": safe(steamlink_available),
@@ -3446,6 +3450,129 @@ def real_action(action_id):
 _INTERNAL_OUTPUT_PREFIXES = ("eDP", "LVDS", "DSI")
 # The session tools Couch Mode drives; all must be present to offer it.
 _COUCHMODE_TOOLS = ("gamescope", "steamos-session-select", "kscreen-doctor", "wpctl")
+
+# --------------------------------------------------------------------------
+# Couch Mode, degraded tier: Steam Big Picture on a box with no gamescope.
+#
+# A desktop-only machine (Nobara, a generic KDE box) has no session to switch
+# INTO, but it does have the thing people actually want on a TV: Big Picture.
+# So the couch button gets a second backend that opens BPM in the session that
+# is already running, instead of the feature being absent entirely.
+#
+# MEASURED on nobara-xps (Nobara 43 KDE, 2026-08-01), screen-captured each way:
+#   steam://open/bigpicture   with Steam running  -> BPM, FULLSCREEN
+#   steam://close/bigpicture                      -> back to the desktop
+#   `steam -gamepadui` with Steam DOWN            -> cold-starts into BPM, but
+#       ONLY when launched inside the user session (systemd-run --user worked;
+#       an ssh shell with hand-set DISPLAY/WAYLAND_DISPLAY did not). The agent
+#       IS in that session, which is why this is viable here and was not
+#       reproducible over ssh.
+#
+# WHAT COULD NOT BE MEASURED, and what it costs: there is NO reliable probe for
+# "is Big Picture on screen right now". `pgrep -f gamepadui` returns the same
+# count with BPM up and closed (steamwebhelper carries the flag either way),
+# and the cmdline test is equally blind once Steam was started with -gamepadui.
+# So this backend deliberately reports NO live session state — the app offers
+# both actions rather than rendering a toggle that would lie. Reporting
+# "desktop" while BPM is up is exactly the dead-session card that KI-047 was.
+_BIGPICTURE_OPEN_URL = "steam://open/bigpicture"
+_BIGPICTURE_CLOSE_URL = "steam://close/bigpicture"
+
+
+def bigpicture_available():
+    """True when the Big Picture tier applies: Steam is installed, and this box
+    canNOT do the real gamescope switch.
+
+    Deliberately EXCLUSIVE with couchmode_available(): a Deck/Bazzite box gets
+    the full session handoff and must never be offered the lesser one, so the
+    two capabilities can never both be true and the app never has to choose."""
+    if couchmode_available():
+        return False
+    if _steam_root() is None:
+        return False
+    return shutil.which("steam") is not None
+
+
+def _bigpicture_fire(url):
+    """Hand a steam:// URL to the client. argv list, fixed URL from the two
+    constants above — the caller passes no part of it and the client never sees
+    anything a phone typed."""
+    env = dict(os.environ)
+    env.setdefault("XDG_RUNTIME_DIR", "/run/user/%d" % os.getuid())
+    try:
+        p = subprocess.run(["steam", url], capture_output=True, timeout=20,
+                           env=env)
+        return p.returncode == 0
+    except (OSError, subprocess.SubprocessError):
+        return False
+
+
+def _bigpicture_cold_start():
+    """Start Steam straight into Big Picture when it is not running at all.
+
+    `steam -gamepadui` needs the real user session — measured: it works from a
+    unit inside the session and dies from an ssh shell even with DISPLAY and
+    WAYLAND_DISPLAY set by hand. The agent already runs in that session
+    (User=<desktop user>, XDG_RUNTIME_DIR set by the unit), so spawning it here
+    is the supported case rather than the one that failed."""
+    env = dict(os.environ)
+    env.setdefault("XDG_RUNTIME_DIR", "/run/user/%d" % os.getuid())
+    try:
+        subprocess.Popen(["steam", "-gamepadui"], env=env,
+                         stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                         start_new_session=True)
+        return True
+    except (OSError, subprocess.SubprocessError):
+        return False
+
+
+def _steam_client_running():
+    """Is the Steam CLIENT up? (Not "is BPM showing" — that is unprobeable.)"""
+    try:
+        return subprocess.run(["pgrep", "-x", "steam"],
+                              capture_output=True, timeout=3).returncode == 0
+    except Exception:
+        return False
+
+
+def bigpicture_open():
+    """Put Big Picture on screen. Cold-starts Steam into it when the client is
+    down, otherwise asks the running client. Returns an ActionResult shape."""
+    if not bigpicture_available():
+        return {"ok": False, "exit_code": 1, "stdout": "",
+                "stderr": "Big Picture is not available on this box",
+                "duration_ms": 0}
+    start = time.monotonic()
+    if _steam_client_running():
+        ok = _bigpicture_fire(_BIGPICTURE_OPEN_URL)
+        how = "deep link"
+    else:
+        ok = _bigpicture_cold_start()
+        how = "cold start"
+    return {"ok": ok, "exit_code": 0 if ok else 1,
+            "stdout": how if ok else "",
+            "stderr": "" if ok else "could not launch Big Picture (%s)" % how,
+            "duration_ms": int((time.monotonic() - start) * 1000)}
+
+
+def bigpicture_close():
+    """Leave Big Picture, back to the desktop. Never quits Steam itself —
+    measured: the close URL returns to the desktop with the client still up,
+    which is what a user expects from 'exit couch mode'."""
+    if not bigpicture_available():
+        return {"ok": False, "exit_code": 1, "stdout": "",
+                "stderr": "Big Picture is not available on this box",
+                "duration_ms": 0}
+    start = time.monotonic()
+    if not _steam_client_running():
+        # Nothing to leave. Success: the box is already at the desktop, and an
+        # error here would make the app show a failure for a no-op.
+        return {"ok": True, "exit_code": 0, "stdout": "steam not running",
+                "stderr": "", "duration_ms": 0}
+    ok = _bigpicture_fire(_BIGPICTURE_CLOSE_URL)
+    return {"ok": ok, "exit_code": 0 if ok else 1, "stdout": "",
+            "stderr": "" if ok else "could not close Big Picture",
+            "duration_ms": int((time.monotonic() - start) * 1000)}
 
 
 def _couchmode_platform_ok():
@@ -16997,6 +17124,37 @@ class Handler(BaseHTTPRequestHandler):
                     self._send(200, screensaver_stop(), started)
                 else:
                     self._send(400, {"error": "op must be start|stop"}, started)
+                return
+
+            # POST /api/big-picture: {"op":"open"|"close"} — the DEGRADED couch
+            # tier for a box with no gamescope session (see bigpicture_available).
+            # Its own route rather than a mode inside /api/couch-mode: that
+            # endpoint runs the staged TV ceremony and returns a JOB, while this
+            # is one synchronous action with no stages. Folding them would make
+            # one response shape mean two different things.
+            if path == "/api/big-picture":
+                if not (self.mock or bigpicture_available()):
+                    self._send(404, {"error": "big picture unavailable"}, started)
+                    return
+                # Parse OUR OWN body: each POST route does, and the first
+                # version of this route read a `req` that is defined further
+                # down inside the couch-mode block — a NameError that surfaced
+                # as a 500 on hardware, not as anything a unit test would see.
+                try:
+                    bp_req = json.loads(body.decode("utf-8")) if body else {}
+                    if not isinstance(bp_req, dict):
+                        raise ValueError
+                except (ValueError, UnicodeDecodeError):
+                    self._send(400, {"error": "json body required"}, started)
+                    return
+                op = bp_req.get("op")
+                # Looked up against a frozen pair, never interpolated.
+                if op == "open":
+                    self._send(200, bigpicture_open(), started)
+                elif op == "close":
+                    self._send(200, bigpicture_close(), started)
+                else:
+                    self._send(400, {"error": "op must be open|close"}, started)
                 return
 
             # POST /api/couch-mode: {"output":"DP-2","hdr":false} — fling the box

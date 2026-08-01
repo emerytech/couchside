@@ -226,6 +226,11 @@ function normalizeCaps(raw: unknown): BoxCaps | undefined {
   // they never survived a persist/reload and the app re-probed every launch.
   // Optional like screensaver: absent stays undefined = unknown, never false.
   const couchmode = bool('couchmode');
+  // bigpicture arrived with agent 2.9.70 (the degraded couch tier) — same
+  // optional-cap drop trap as every key around it: omit it here (or from
+  // capsEqual) and the cap never persists, so the Watch/couch control
+  // re-probes on every launch.
+  const bigpicture = bool('bigpicture');
   const desktop = bool('desktop');
   // steamlink arrived with agent 2.9.23 and had the SAME drop bug — add it here
   // (and to capsEqual) or the "Stream from PC" cap never persists. Optional:
@@ -267,7 +272,8 @@ function normalizeCaps(raw: unknown): BoxCaps | undefined {
   const player = bool('player');
   return {
     gamepad, steam, media, tv, screen, power_schedule,
-    screensaver, couchmode, desktop, steamlink, gaming, streamhost, steammenus,
+    screensaver, couchmode, bigpicture, desktop, steamlink, gaming, streamhost,
+    steammenus,
     boxbattery, launchers, file_upload, session_default, display_info, player,
   };
 }
