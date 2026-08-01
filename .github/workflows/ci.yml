@@ -180,6 +180,20 @@ jobs:
       - name: Unit tests (display manager + greetd)
         run: python3 tests/test_display_manager.py
 
+      # The privileged helper is the only root code we ship, reachable from a
+      # local socket, so its REFUSAL surface is what gets tested: unknown verb,
+      # out-of-set argument, malformed envelope, and a display manager that
+      # cannot be identified — each asserting on a spawn counter, so a handler
+      # that "errored" while still shelling out would fail here.
+      - name: Unit tests (privileged helper verb table)
+        run: python3 tests/test_privileged_helper.py
+
+      # SO_PEERCRED is Linux-only and the suite SKIPS elsewhere, so this step is
+      # the only place it actually runs. A green local run on a Mac has not
+      # tested the socket gate at all — same rule as the /proc parsers.
+      - name: Unit tests (privileged helper socket auth — Linux only)
+        run: python3 tests/test_helper_socket.py
+
       # Who is OFFERED Couch Mode. The gate used to grep /etc/os-release for
       # "steamos"/"bazzite", so a CachyOS deckify box with every tool, both
       # sessions and a connected panel was refused by its NAME — hiding the
