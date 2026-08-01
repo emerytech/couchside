@@ -558,6 +558,15 @@ jobs:
       - name: Unit tests (every suite in tests/ actually runs in CI)
         run: python3 tests/test_ci_wiring.py
 
+      # The README's security section must name every root grant install.sh
+      # writes. It claimed "exactly six" while the installer wrote nine, and the
+      # three it missed included two root-owned FILE WRITES. That section is the
+      # document someone reads before running `curl … | bash` on the machine
+      # holding their game library, so its accuracy is a build gate, not a
+      # docs chore.
+      - name: Unit tests (README documents every root grant)
+        run: python3 tests/test_readme_sudo_grants.py
+
       - uses: actions/setup-node@v7
         with:
           node-version: "22"
