@@ -32,8 +32,16 @@ agent="$root/agent"
 # The exact files install.sh fetches. couchsided.py + couchside.service are
 # REQUIRED; qr.py + the two add-on scripts are optional at install time but
 # always shipped + signed here.
+#
+# The three couchside-helper files ship as a SET (agent >= 2.9.69): the helper
+# is ROOT code, so install.sh refuses one that is present but not listed in the
+# signed SHA256SUMS, and drops the set if any of the three failed to fetch.
+# Publishing them here is what lets a fetch-mode install gain the helper at
+# all — a release without them simply installs the sudo-only agent, which
+# keeps working (the shim detects absence and falls back).
 files=(couchsided.py couchside.service qr.py couchside-screensaver.sh \
-       couchside-player.sh)
+       couchside-player.sh couchside-helper.py couchside-helper.socket \
+       couchside-helper.service)
 for f in "${files[@]}"; do
     [ -f "$agent/$f" ] || { echo "error: missing agent/$f" >&2; exit 2; }
 done
