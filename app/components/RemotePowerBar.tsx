@@ -698,7 +698,16 @@ export function RemotePowerBar({ compact = false }: { compact?: boolean }) {
             color={t.text}
           />
           {!compact && (
-            <Text style={styles.couchLabel}>
+            // numberOfLines + the shrinkable style are NOT cosmetic here: this
+            // label grows ~45% when it flips to "Exit Big Picture", it lives in
+            // a flexDirection:'row', and on NATIVE a <Text> in a row does not
+            // shrink unless told to — a long label shoves its siblings (the box
+            // picker, the volume control) off the edge. The web harness gets
+            // flex-shrink:1 for free and so reports ZERO overflow either way,
+            // which is why this could not be caught where the rest of this
+            // feature was verified. Measured the hard way once already, on
+            // Android 2026-07-22.
+            <Text style={styles.couchLabel} numberOfLines={1}>
               {bpOpened ? 'Exit Big Picture' : 'Big Picture'}
             </Text>
           )}
@@ -1017,7 +1026,15 @@ const makeStyles = (t: Palette) => StyleSheet.create({
   // Icon-only: drop the label's side padding so the chip becomes a round button
   // rather than a wide pill with an icon floating in it.
   couchBtnCompact: { paddingHorizontal: 10 },
-  couchLabel: { color: t.text, fontSize: 13, fontWeight: '700', fontFamily: mono },
+  couchLabel: {
+    color: t.text,
+    fontSize: 13,
+    fontWeight: '700',
+    fontFamily: mono,
+    // Shrink rather than push siblings off the header on native. Shared with
+    // the Couch Mode button, which benefits from the same protection.
+    flexShrink: 1,
+  },
   trigger: {
     flexDirection: 'row',
     alignItems: 'center',
