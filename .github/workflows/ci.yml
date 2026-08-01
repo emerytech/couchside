@@ -567,6 +567,15 @@ jobs:
       - name: Unit tests (README documents every root grant)
         run: python3 tests/test_readme_sudo_grants.py
 
+      # The Play release-notes script now READS ITS OWN WORK BACK instead of
+      # trusting the :commit call's 200 — the shape that once published a stale
+      # changelog and exited 0. The three outcomes must stay distinct: match
+      # succeeds, mismatch hard-fails, unreadable only warns (the notes are
+      # already live by then). No network — the API layer is stubbed, and so is
+      # `cryptography`, which the runner does not install.
+      - name: Unit tests (play release notes are verified after commit)
+        run: python3 tests/test_play_release_notes.py
+
       - uses: actions/setup-node@v7
         with:
           node-version: "22"

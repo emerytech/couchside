@@ -88,6 +88,77 @@ def api(token: str, method: str, path: str, payload=None):
         sys.exit(f"error: {method} {path} -> {e.code}\n{e.read().decode(errors='ignore')[:600]}")
 
 
+def api_soft(token: str, method: str, path: str, payload=None):
+    """Like api(), but returns (ok, data_or_reason) instead of exiting.
+
+    Exists for the POST-COMMIT readback. api()'s sys.exit is right on the write
+    path — a failed write means the notes are not set, so stop. It is WRONG
+    afterwards: by then the notes are already published, and a transient 500 or
+    a dropped connection would make this script report a failed release that
+    actually succeeded. Getting that backwards is how a "safety check" costs
+    more than it saves.
+    """
+    url = f"{API}/{PACKAGE}{path}"
+    data = json.dumps(payload).encode() if payload is not None else None
+    req = urllib.request.Request(url, data=data, method=method, headers={
+        "Authorization": f"Bearer {token}",
+        "Content-Type": "application/json",
+    })
+    try:
+        with urllib.request.urlopen(req, timeout=30) as r:
+            raw = r.read()
+            return True, (json.loads(raw) if raw else {})
+    except urllib.error.HTTPError as e:
+        return False, f"{method} {path} -> {e.code} {e.read().decode(errors='ignore')[:200]}"
+    except Exception as e:  # noqa: BLE001 - transport, DNS, timeout
+        return False, f"{method} {path} -> {e}"
+
+
+def notes_match(sent: str, got: str) -> bool:
+    """Is what Play stored the same notes we sent?
+
+    Compared after normalising line endings and trailing whitespace, because
+    those are round-trip artifacts and not a difference anyone shipped. Anything
+    else — truncation, the wrong version's text, an empty field — is a real
+    mismatch and must fail loudly.
+    """
+    def norm(s: str) -> str:
+        return "\n".join(line.rstrip() for line in (s or "").replace("\r\n", "\n").split("\n")).strip()
+    return norm(sent) == norm(got)
+
+
+def read_back_notes(token: str, track: str, version_code: int, lang: str):
+    """What Play ACTUALLY has for this versionCode now. (text, None) or (None, reason).
+
+    Opens its own throwaway edit — an edit is a snapshot, so re-reading the one
+    we just committed would hand back our own local changes rather than server
+    state, which would make this check pass by construction. The edit is deleted
+    afterwards so a verification run never leaves a dangling one behind.
+    """
+    ok, edit = api_soft(token, "POST", "/edits")
+    if not ok:
+        return None, str(edit)
+    eid = (edit or {}).get("id")
+    if not eid:
+        return None, "no edit id in response"
+    try:
+        ok, t = api_soft(token, "GET", f"/edits/{eid}/tracks/{track}")
+        if not ok:
+            return None, str(t)
+        for r in (t or {}).get("releases") or []:
+            if str(version_code) in [str(v) for v in (r.get("versionCodes") or [])]:
+                for n in r.get("releaseNotes") or []:
+                    if n.get("language") == lang:
+                        return n.get("text") or "", None
+                # Release is there but carries no notes for this language. That
+                # is a genuine failure, not an unmeasurable one: it is exactly
+                # the empty "What's new" this script exists to prevent.
+                return "", None
+        return None, f"versionCode {version_code} not on track '{track}' after commit"
+    finally:
+        api_soft(token, "DELETE", f"/edits/{eid}")
+
+
 def main() -> None:
     p = argparse.ArgumentParser(description="Set Google Play release notes for a versionCode.")
     p.add_argument("version_code", type=int, help="versionCode of the release to annotate")
@@ -135,6 +206,34 @@ def main() -> None:
     api(token, "PUT", f"/edits/{edit_id}/tracks/{a.track}",
         {"track": a.track, "releases": releases})
     api(token, "POST", f"/edits/{edit_id}:commit")
+    print(f"==> committed edit {edit_id}; reading the notes back from Play")
+
+    # READ THE ARTIFACT, NOT THE EXIT CODE (CLAUDE.md §11.4). This script used
+    # to print OK on the strength of the :commit call returning 200 — which is
+    # exactly the shape that once published a stale changelog and exited 0. A
+    # 200 means Play accepted the edit, not that the listing now says what we
+    # sent.
+    #
+    # Three outcomes, deliberately different:
+    #   match      -> success
+    #   mismatch   -> HARD FAIL. Wrong text on the live listing is the bug.
+    #   unreadable -> WARN ONLY. The notes are already committed by this point,
+    #                 so a transient error here must never be reported as a
+    #                 failed release (see api_soft).
+    got, why = read_back_notes(token, a.track, a.version_code, a.lang)
+    if why is not None:
+        print(f"WARNING: could not verify the notes ({why}).\n"
+              f"         The commit succeeded; check the Play Console listing by hand.",
+              file=sys.stderr)
+    elif not notes_match(text, got):
+        sys.exit(
+            "error: Play does not show the notes that were just sent.\n"
+            f"  sent ({len(text)} chars): {text[:160]!r}\n"
+            f"  play ({len(got)} chars): {got[:160]!r}\n"
+            "The edit WAS committed, so fix the listing in the Play Console — "
+            "re-running this script will not help if the input file is wrong.")
+    else:
+        print(f"==> verified: Play shows the {len(got)}-char notes we sent")
     print(f"OK: release notes set for versionCode {a.version_code} on '{a.track}' and committed.")
 
     # Keep couchside.tv/app-version.json (the Android update-check source) in step
