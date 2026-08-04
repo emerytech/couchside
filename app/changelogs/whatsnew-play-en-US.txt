@@ -1,3 +1,5 @@
-Fixes a bug where the app could stop responding — trackpad and buttons frozen — within a minute of opening, then quietly restart itself. It was a purchase-verification loop, most likely on iOS beta versions, and it could also drain battery. Restoring purchases is more reliable now.
+New: a Big Picture button for PCs that have Steam but no Game Mode session (Nobara, most desktop Linux). One tap opens Steam Big Picture on the TV; tap again to come back to the desktop.
 
-Also new: the Console shows every GPU in your box — dual-GPU machines show both cards, each with its own temperature, usage and memory.
+The Console now shows which OS and version your box is running.
+
+Also: connection diagnostics are reachable in large-pad mode, tap-to-retry does a deeper reset when a connection goes quiet, and the app does less redundant work after a session switch.
