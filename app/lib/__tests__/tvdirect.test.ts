@@ -381,3 +381,76 @@ test('onFound streams results and abort stops the workers', async () => {
   assert.deepEqual(aborted, []);
   assert.equal(probes, 0);
 });
+
+// ---------------------------------------------------------------- app launcher
+
+import { rokuApps, rokuLaunch, rokuIconUrl } from '../tvdirect/roku.ts';
+
+async function stubRokuApps(appsXml: string) {
+  const hits: string[] = [];
+  const server = http.createServer((req, res) => {
+    hits.push(`${req.method} ${req.url}`);
+    if (req.url === '/query/apps') {
+      res.writeHead(200, { 'content-type': 'text/xml' });
+      res.end(appsXml);
+      return;
+    }
+    res.writeHead(200).end();
+  });
+  await new Promise<void>((r) => server.listen(0, '127.0.0.1', r));
+  const port = (server.address() as AddressInfo).port;
+  return { hits, host: `127.0.0.1:${port}`, close: () => new Promise<void>((r) => server.close(() => r())) };
+}
+
+test('rokuApps parses the ECP /query/apps list, keeps digit ids, decodes entities', async () => {
+  const xml =
+    '<apps>' +
+    '<app id="12" type="appl" version="4.2.8">Netflix</app>' +
+    '<app id="837" type="appl">YouTube</app>' +
+    '<app id="291097" type="appl">Hulu &amp; more</app>' +
+    '<app id="tvinput.hdmi1" type="tvin">HDMI 1</app>' + // non-digit id -> skipped
+    '</apps>';
+  const s = await stubRokuApps(xml);
+  try {
+    const apps = await withPortRewrite(s.host, () => rokuApps('10.0.0.5'));
+    assert.deepEqual(
+      apps.map((a) => ({ id: a.id, name: a.name })),
+      [
+        { id: '12', name: 'Netflix' },
+        { id: '837', name: 'YouTube' },
+        { id: '291097', name: 'Hulu & more' }, // &amp; decoded
+      ],
+    );
+    // HDMI input (non-digit id) is not a launchable channel.
+    assert.ok(!apps.some((a) => a.id.includes('hdmi')));
+    // Icon URL points at the TV's own icon endpoint.
+    assert.ok(apps[0].iconUrl?.endsWith('/query/icon/12'));
+  } finally {
+    await s.close();
+  }
+});
+
+test('rokuApps returns [] on an unreachable TV, never throws', async () => {
+  const apps = await rokuApps('10.255.255.1');
+  assert.deepEqual(apps, []);
+});
+
+test('rokuLaunch POSTs /launch/<id> for a digit id and REFUSES anything else', async () => {
+  const s = await stubRokuApps('<apps></apps>');
+  try {
+    const r = await withPortRewrite(s.host, () => rokuLaunch('10.0.0.5', '12'));
+    assert.equal(r.ok, true);
+    assert.ok(s.hits.some((h) => h === 'POST /launch/12'));
+    // A non-digit id (e.g. a smuggled path) is refused locally — nothing sent.
+    s.hits.length = 0;
+    const bad = await withPortRewrite(s.host, () => rokuLaunch('10.0.0.5', '12/../keypress/PowerOff'));
+    assert.equal(bad.ok, false);
+    assert.equal(s.hits.length, 0, 'refused id sends nothing');
+  } finally {
+    await s.close();
+  }
+});
+
+test('rokuIconUrl is the TV-served icon endpoint', () => {
+  assert.equal(rokuIconUrl('10.0.0.5', '12'), 'http://10.0.0.5:8060/query/icon/12');
+});

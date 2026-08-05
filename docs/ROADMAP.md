@@ -109,6 +109,37 @@ Entry fields: `priority` (P0 blocker → P3 nice) · `risk` · `affects` · `dep
 
 ## 📋 Planned
 
+### Remote-only mode: an "Apps" launcher grid (the TV's installed apps)
+- **priority:** P2 · **risk:** low · **affects:** app only (lib/tvdirect + the Remote tab) ·
+  **depends_on:** Roku direct (shipped); LG direct (device-verify first)
+- **Requested by owner 2026-08-05**, inspired by "Remo — Smart TV Remote"
+  (apps.apple.com/us/app/remo-smart-tv-remote/id6775416470): a grid of the TV's own
+  installed apps (Netflix/YouTube/…) launched in one tap, like the box's Watch tab but
+  app-direct.
+- **Feasibility splits HARD by brand — and it splits against exactly the brand we're
+  device-testing:**
+  - **Roku ✅ full.** ECP `GET /query/apps` (installed channels), `POST /launch/<id>`,
+    `GET /query/icon/<id>` (icon PNG). Plain HTTP, no auth; we already speak ECP. The easy,
+    fully app-direct win — a real "your TV's apps" grid with art.
+  - **LG webOS ✅ full.** SSAP `ssap://com.webos.applicationManager/listLaunchPoints`
+    (installed apps WITH icon URLs) + `ssap://system.launcher/launch` {id}. Small addition
+    on the SSAP session just built; the webOS spike already enumerated 126 apps. Gate: LG
+    app-direct itself is device-unverified.
+  - **Google TV ❌ NO real list.** The Remote v2 protocol has no app-enumeration message —
+    you cannot list a Google TV's installed apps over it. Best is a CURATED deep-link
+    catalog (the box Player's approach), which is NOT "the TV's downloaded apps". Be honest
+    in the UI: Roku/LG show the real grid; Google TV shows a fixed catalog or nothing.
+  - **Samsung/Hisense** — box-only until they go app-direct.
+- **CORRECTION banked:** the shipped AGENT does not do TV app-launching either (keys/power/
+  volume only). The "126 apps" was a webOS dev spike, never shipped — so this is net-new for
+  both box and app, not a port of shipped code.
+- **Shape:** an `Apps` segment on the Remote tab (remote-only), per-brand: Roku/LG fetch the
+  live list + icons; Google TV either hidden or a small curated catalog. Icons inlined as
+  data URIs (same LAN-only, no-CDN rule as the box cover art). Launch ids come from the TV's
+  own list — no client-supplied launch string (the allowlist rule, app-side).
+- **Verify:** Roku slice is unit-testable against a stub ECP `/query/apps`; the real grid
+  needs Roku/LG hardware. No store copy claims it until a real TV lists apps on a device.
+
 ### protocol.json has no home for a platform-only capability (KI-055)
 - **priority:** P2 · **risk:** low · **affects:** `protocol/protocol.json` +
   `tests/test_protocol_parity.py` · **depends_on:** none

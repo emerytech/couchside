@@ -24,6 +24,8 @@ import {
 } from './ws.ts';
 import {
   WEBOS_KEYS,
+  WEBOS_LAUNCH_URI,
+  WEBOS_LIST_APPS_URI,
   WEBOS_OP_URI,
   WEBOS_POINTER_URI,
   WEBOS_PORT,
@@ -35,6 +37,9 @@ import {
   requestMessage,
   type WebosMsg,
 } from './webosproto.ts';
+
+/** A launchable TV app (shared with roku.ts's TvApp shape). */
+export type TvApp = { id: string; name: string; iconUrl?: string };
 
 /** A raw TLS byte stream (atvnative.RawTlsSocket), injected. */
 export type ByteSocket = {
@@ -234,6 +239,35 @@ export class WebosSession {
     const uri = WEBOS_OP_URI[name];
     if (!uri) return { ok: false, error: `unsupported op ${name}` };
     try { await this.request(uri); return { ok: true }; }
+    catch (e) { this.drop(); return { ok: false, error: (e as Error).message }; }
+  }
+
+  /** The TV's installed apps, with icon URLs the TV serves itself. */
+  async listApps(): Promise<TvApp[]> {
+    try {
+      const r = await this.request(WEBOS_LIST_APPS_URI);
+      const points = r.payload?.launchPoints;
+      if (!Array.isArray(points)) return [];
+      const apps: TvApp[] = [];
+      for (const p of points) {
+        if (!p || typeof p !== 'object') continue;
+        const o = p as Record<string, unknown>;
+        const id = typeof o.id === 'string' ? o.id : null;
+        if (!id) continue;
+        const name = typeof o.title === 'string' && o.title ? o.title : id;
+        const iconUrl = typeof o.icon === 'string' && o.icon ? o.icon : undefined;
+        apps.push({ id, name, iconUrl });
+      }
+      return apps;
+    } catch {
+      this.drop();
+      return [];
+    }
+  }
+
+  /** Launch an installed app by its webOS id (from listApps — never a client string). */
+  async launchApp(id: string): Promise<{ ok: boolean; error?: string }> {
+    try { await this.request(WEBOS_LAUNCH_URI, { id }); return { ok: true }; }
     catch (e) { this.drop(); return { ok: false, error: (e as Error).message }; }
   }
 

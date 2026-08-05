@@ -189,3 +189,51 @@ export async function rokuIdentify(
   const name = tag('user-device-name') || tag('friendly-device-name') || model || host;
   return { name, model };
 }
+
+// ---------------------------------------------------------------- app launcher
+
+export type TvApp = { id: string; name: string; iconUrl?: string };
+
+/**
+ * The TV's installed channels. ECP `GET /query/apps` returns
+ *   <apps><app id="12" type="appl" version="4.2.8">Netflix</app>...</apps>
+ * parsed with a tag regex (RN has no DOMParser; the shape is flat). Never
+ * throws — an unreachable TV yields []. Icons are served by the TV itself at
+ * /query/icon/<id>, exposed as a URL rather than fetched (RN <Image> loads it
+ * over the LAN; nothing hits a CDN).
+ */
+export async function rokuApps(host: string): Promise<TvApp[]> {
+  const r = await ecp(host, '/query/apps', 'GET');
+  if (!r.ok || !r.body) return [];
+  const apps: TvApp[] = [];
+  const re = /<app\s+id="([^"]+)"[^>]*>([^<]*)<\/app>/g;
+  let m: RegExpExecArray | null;
+  while ((m = re.exec(r.body)) !== null) {
+    const id = m[1];
+    // Only digit ids are launchable channels; skip anything else defensively.
+    if (!/^\d+$/.test(id)) continue;
+    apps.push({ id, name: decodeEntities(m[2].trim()) || id, iconUrl: rokuIconUrl(host, id) });
+  }
+  return apps;
+}
+
+/** The TV-served icon URL for a channel. */
+export function rokuIconUrl(host: string, id: string): string {
+  return `${base(host)}/query/icon/${encodeURIComponent(id)}`;
+}
+
+/** Launch an installed channel by id. Digits only — the id comes from the TV's
+ *  own list, never a client string, so this cannot become an arbitrary launch. */
+export async function rokuLaunch(host: string, id: string): Promise<RokuResult> {
+  if (!/^\d+$/.test(id)) return { ok: false, error: 'invalid app id' };
+  return result(await ecp(host, `/launch/${id}`, 'POST'));
+}
+
+function decodeEntities(s: string): string {
+  return s
+    .replace(/&amp;/g, '&')
+    .replace(/&lt;/g, '<')
+    .replace(/&gt;/g, '>')
+    .replace(/&quot;/g, '"')
+    .replace(/&#39;/g, "'");
+}

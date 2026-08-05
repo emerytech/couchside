@@ -41,6 +41,10 @@ export const WEBOS_POINTER_URI = 'ssap://com.webos.service.networkinput/getPoint
 export const WEBOS_MUTE_URI = 'ssap://audio/setMute';
 export const WEBOS_IME_INSERT_URI = 'ssap://com.webos.service.ime/insertText';
 
+/** App launcher: list installed apps (with icon URLs) + launch one by id. */
+export const WEBOS_LIST_APPS_URI = 'ssap://com.webos.applicationManager/listLaunchPoints';
+export const WEBOS_LAUNCH_URI = 'ssap://system.launcher/launch';
+
 /**
  * The register envelope. `id` is assigned by the session (SSAP correlates
  * responses by id). A stored clientKey makes it silent; without one the TV

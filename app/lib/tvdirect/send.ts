@@ -14,10 +14,20 @@
 import type { AtvKey, AtvOp } from './atvproto.ts';
 import { AtvSession } from './androidtv.ts';
 import type { DirectTv } from './model.ts';
-import { type RokuKey, type RokuOp, rokuKey, rokuOp, rokuText } from './roku.ts';
+import {
+  type RokuKey,
+  type RokuOp,
+  type TvApp,
+  rokuApps,
+  rokuKey,
+  rokuLaunch,
+  rokuOp,
+  rokuText,
+} from './roku.ts';
 import { WebosSession, type WebosDeps } from './webos.ts';
 
 export type SendResult = { ok: boolean; hint?: string; error?: string };
+export type { TvApp } from './roku.ts';
 
 /**
  * Roku key name -> Android TV key name. Only keys BOTH sides implement appear;
@@ -186,4 +196,36 @@ export function supportsText(tv: DirectTv): boolean {
 /** Whether a power-ON control should be offered. */
 export function supportsPowerOn(tv: DirectTv): boolean {
   return tv.brand === 'roku';
+}
+
+/**
+ * Whether this TV can list its OWN installed apps. Roku (ECP /query/apps) and LG
+ * webOS (SSAP listLaunchPoints) can; Google TV's Remote v2 protocol has no app
+ * enumeration, so it gets no grid (a curated catalog would be a separate,
+ * clearly-labelled feature, not "the TV's apps").
+ */
+export function supportsApps(tv: DirectTv): boolean {
+  return tv.brand === 'roku' || tv.brand === 'webos';
+}
+
+/** The TV's installed apps. Never throws; an unreachable/unsupported TV -> []. */
+export async function listApps(tv: DirectTv, rt: AtvRuntime): Promise<TvApp[]> {
+  if (tv.brand === 'roku') return rokuApps(tv.host);
+  if (tv.brand === 'webos') {
+    const s = webosSessionFor(tv, rt);
+    return s ? s.listApps() : [];
+  }
+  return [];
+}
+
+/** Launch an installed app by the id from listApps (never a client string). */
+export async function launchApp(tv: DirectTv, id: string, rt: AtvRuntime): Promise<SendResult> {
+  if (tv.brand === 'roku') return rokuLaunch(tv.host, id);
+  if (tv.brand === 'webos') {
+    const s = webosSessionFor(tv, rt);
+    if (!s) return { ok: false, error: 'this TV is not paired' };
+    const r = await s.launchApp(id);
+    return r.ok ? { ok: true } : { ok: false, error: r.error };
+  }
+  return { ok: false, error: 'this TV cannot launch apps from the app' };
 }
