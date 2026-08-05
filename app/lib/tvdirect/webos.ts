@@ -50,10 +50,12 @@ export type ByteSocket = {
 };
 
 export type WebosDeps = {
-  /** Fetch the LG's self-signed cert once (TOFU) for pinning. */
-  fetchPeerCert(host: string, port: number): Promise<string | null>;
-  /** Open a pinned-cert raw TLS byte stream. */
-  rawConnect(caPem: string): (host: string, port: number) => Promise<ByteSocket>;
+  /**
+   * Open a raw TLS byte stream. Called with NO argument to accept the TV's
+   * self-signed cert (the normal path — react-native-tcp-socket does this via
+   * rejectUnauthorized:false), or with a PEM to pin that exact certificate.
+   */
+  rawConnect(caPem?: string): (host: string, port: number) => Promise<ByteSocket>;
   crypto: WsCrypto;
 };
 
@@ -171,22 +173,22 @@ export class WebosSession {
   private connecting: Promise<void> | null = null;
   private pointerPath: string | null = null;
 
-  constructor(host: string, deps: WebosDeps, creds?: { caPem: string; clientKey: string }) {
+  constructor(host: string, deps: WebosDeps, creds?: { caPem?: string; clientKey: string }) {
     this.host = host;
     this.deps = deps;
     this.caPem = creds?.caPem ?? null;
     this.clientKey = creds?.clientKey ?? null;
   }
 
-  /** First-time pairing: register → on-TV Accept prompt → client-key to persist. */
+  /** First-time pairing: register → on-TV Accept prompt → client-key to persist.
+   *
+   *  No certificate fetch first: the TV's self-signed cert is accepted by the
+   *  connection itself. An earlier design fetched the cert to pin it BEFORE
+   *  connecting, which could not work and made every pairing fail on device
+   *  with "could not read this TV's certificate". */
   async pair(onPrompt?: () => void, timeoutMs = 60000): Promise<WebosPairResult> {
     try {
-      const ca = this.caPem ?? (await this.deps.fetchPeerCert(this.host, WEBOS_PORT));
-      if (!ca) {
-        return { ok: false, error: 'Could not read this TV’s certificate. Check the IP and that the TV is on.' };
-      }
-      this.caPem = ca;
-      const conn = await this.open(ca);
+      const conn = await this.open(this.caPem ?? undefined);
       if (onPrompt) conn.onPrompt(onPrompt);
       const id = conn.nextId();
       conn.send(registerMessage(id, this.clientKey ?? undefined));
@@ -195,14 +197,14 @@ export class WebosSession {
       const key = clientKeyOf(msg) ?? this.clientKey ?? undefined;
       if (!key) return { ok: false, error: 'The TV did not return a pairing key.' };
       this.clientKey = key;
-      return { ok: true, clientKey: key, caPem: ca };
+      return { ok: true, clientKey: key, caPem: this.caPem ?? undefined };
     } catch (e) {
       this.drop();
       return { ok: false, error: (e as Error).message };
     }
   }
 
-  private async open(ca: string, path = '/'): Promise<SsapConn> {
+  private async open(ca?: string, path = '/'): Promise<SsapConn> {
     const raw = await this.deps.rawConnect(ca)(this.host, WEBOS_PORT);
     const conn = new SsapConn(raw, this.deps.crypto);
     await conn.handshakeWs(this.host, path);
@@ -213,10 +215,10 @@ export class WebosSession {
   /** Registered connection, reconnecting silently with the stored key. */
   private async ensure(): Promise<SsapConn> {
     if (this.conn) return this.conn;
-    if (!this.caPem || !this.clientKey) throw new Error('webos not paired');
+    if (!this.clientKey) throw new Error('webos not paired');
     if (!this.connecting) {
       this.connecting = (async () => {
-        const conn = await this.open(this.caPem!);
+        const conn = await this.open(this.caPem ?? undefined);
         const id = conn.nextId();
         conn.send(registerMessage(id, this.clientKey!));
         const msg = await conn.await_(id, 15000);
@@ -285,7 +287,7 @@ export class WebosSession {
       // connection is device-work for the hardware pass; for now open-and-send
       // (correctness over latency).
       const wsPath = this.pointerPath.replace(/^wss?:\/\/[^/]+/, '') || '/';
-      const ptr = await this.open(this.caPem!, wsPath);
+      const ptr = await this.open(this.caPem ?? undefined, wsPath);
       ptr.send(pointerButtonFrame(button));
       ptr.close();
       return { ok: true };

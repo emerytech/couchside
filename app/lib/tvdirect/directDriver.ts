@@ -13,7 +13,6 @@
 import { type DiscoveredTv, type TvIdentifyResult, type TvPairResult } from '../api.ts';
 import { pairStart, type PairSession } from './androidtv.ts';
 import {
-  fetchPeerCert,
   makeConnect,
   makeRawTlsConnect,
   mintIdentity,
@@ -38,7 +37,6 @@ const DIRECT_BRAND_IDS: Brand[] = ['roku', 'androidtv', 'webos'];
 
 /** webOS transport deps, from the native layer. */
 const WEBOS_DEPS = {
-  fetchPeerCert,
   rawConnect: makeRawTlsConnect,
   crypto: { randomBytes, sha1 },
 };
@@ -95,7 +93,7 @@ export function directDriver(): TvPairDriver {
         const s = new WebosSession(host, WEBOS_DEPS);
         const r = await s.pair();
         s.close();
-        if (!r.ok || !r.clientKey || !r.caPem) {
+        if (!r.ok || !r.clientKey) {
           return { ok: false, error: r.error ?? 'Pairing was refused by the TV.' };
         }
         dropTvSession(host); // a re-pair replaces creds; clear any live session
@@ -103,7 +101,7 @@ export function directDriver(): TvPairDriver {
           name: `LG webOS (${host})`,
           brand: 'webos',
           host,
-          webos: { caPem: r.caPem, clientKey: r.clientKey },
+          webos: r.caPem ? { caPem: r.caPem, clientKey: r.clientKey } : { clientKey: r.clientKey },
         });
         return stored
           ? { ok: true, name: stored.name, host: stored.host }
@@ -122,20 +120,14 @@ export function directDriver(): TvPairDriver {
       // (measured 39s failed / 5.6s worked), and RSA keygen must not run in
       // that window. The caller (TvPairForm) shows its own "opening…" state.
       const minted = mintIdentity();
-      const caPem = await fetchPeerCert(host, ATV_PAIR_PORT);
-      if (!caPem) {
-        return {
-          ok: false,
-          error:
-            'Could not read this TV’s certificate. Check the IP and that the TV is on and on the same Wi-Fi — this TV may not be pairable from the app yet.',
-        };
-      }
+      // No certificate pre-fetch: the connection accepts the TV's self-signed
+      // cert directly, and the pairing modulus is read off the LIVE socket.
       try {
-        session = await pairStart(host, minted, { connect: makeConnect(caPem), sha256 }, 'Couchside');
+        session = await pairStart(host, minted, { connect: makeConnect(), sha256 }, 'Couchside');
       } catch (e) {
         return { ok: false, error: `The TV did not start pairing: ${(e as Error).message}` };
       }
-      pendingCreds = { certPem: minted.certPem, keyPem: minted.keyPem, modulusHex: minted.modulusHex, caPem };
+      pendingCreds = { certPem: minted.certPem, keyPem: minted.keyPem, modulusHex: minted.modulusHex };
       pendingHost = host;
       pendingName = `Google TV (${host})`;
       return { ok: true, code_shown: true };

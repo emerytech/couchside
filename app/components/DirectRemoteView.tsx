@@ -5,7 +5,6 @@ import { Alert, Modal, Pressable, StyleSheet, Text, TextInput, View } from 'reac
 import { hapticLight } from '@/lib/haptics';
 import { DirectTv } from '@/lib/tvdirect/model';
 import {
-  fetchPeerCert,
   makeConnect,
   makeRawTlsConnect,
   randomBytes,
@@ -81,7 +80,7 @@ export function DirectRemoteView({ tv }: { tv: DirectTv }) {
     () => ({
       makeConnect,
       sha256,
-      webos: { fetchPeerCert, rawConnect: makeRawTlsConnect, crypto: { randomBytes, sha1 } },
+      webos: { rawConnect: makeRawTlsConnect, crypto: { randomBytes, sha1 } },
     }),
     [],
   );

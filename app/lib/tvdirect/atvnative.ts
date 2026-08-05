@@ -41,6 +41,26 @@ export { modulusFromPem, sha256 } from './atvcrypto.ts';
 export type { MintResult } from './atvcrypto.ts';
 
 /**
+ * TLS trust options for a smart TV, which ALWAYS presents a self-signed cert.
+ *
+ * `rejectUnauthorized:false` is MISSING from react-native-tcp-socket's
+ * TypeScript types but is READ BY ITS NATIVE CODE — verified 2026-08-05 in
+ * ios/TcpSocketClient.m `startTLS:`, which sets GCDAsyncSocketManuallyEvaluateTrust
+ * and answers its trust delegate with completionHandler(YES). An earlier design
+ * assumed the option did not exist and built a trust-on-first-use cert fetch to
+ * work around it; that fetch could not work (it tried to read a certificate off
+ * a handshake that had already failed) and BOTH LG and Google TV failed on
+ * device with "could not read this TV's certificate" because of it.
+ *
+ * Passing a `ca` PINS one certificate and is strictly stronger, so it wins when
+ * the caller has one. Without it we accept the TV's self-signed cert — the same
+ * trust posture as the box agent (Python `ssl.CERT_NONE`) on a LAN-only link.
+ */
+function tlsTrust(caPem?: string): Record<string, unknown> {
+  return caPem ? { ca: caPem } : { rejectUnauthorized: false };
+}
+
+/**
  * Mint this phone's client certificate, seeded from the platform CSPRNG that
  * the polyfill imported above installs. Throws rather than falling back to a
  * weak PRNG — a predictable client key is a real defect, not a nit.
@@ -106,20 +126,42 @@ export function fetchPeerCert(host: string, port: number, timeoutMs = 6000): Pro
  * that accepts any certificate, this accepts only the one this TV presented
  * when the user paired it.
  */
-export function makeConnect(caPem: string) {
+export function makeConnect(caPem?: string) {
   return (host: string, port: number, certPem: string, keyPem: string): Promise<AtvSocket> =>
     new Promise((resolve, reject) => {
       let settled = false;
       const framer = makeFramer();
       const frames: Uint8Array[] = [];
       const waiters: { resolve: (f: Uint8Array) => void; reject: (e: Error) => void }[] = [];
+      // Filled from the LIVE socket once TLS is up — see peerModulusHex below.
+      let liveModulusHex: string | null = null;
 
       const sock = TcpSocket.connectTLS(
-        { host, port, ca: caPem, cert: certPem, key: keyPem },
+        { host, port, cert: certPem, key: keyPem, ...tlsTrust(caPem) },
         () => {
           if (settled) return;
           settled = true;
-          resolve({
+          // Read the peer's RSA modulus off the connection BEFORE resolving —
+          // pairing calls peerModulusHex() as soon as this promise settles, so
+          // fetching it in the background would race. The native layer exposes
+          // it (certificateToDict -> "modulus") once trust has been manually
+          // evaluated, which both trust modes above do, so the pairing secret
+          // no longer needs an out-of-band certificate fetch.
+          void (async () => {
+            try {
+              const anySock = sock as unknown as {
+                getPeerCertificate?: () => Promise<{ modulus?: string } | null>;
+              };
+              const cert = await anySock.getPeerCertificate?.();
+              if (cert?.modulus) liveModulusHex = cert.modulus.toLowerCase().replace(/^0x/, '');
+            } catch {
+              // leave null; peerModulusHex falls back to the pinned cert
+            }
+            resolve(makeSocket());
+          })();
+
+          function makeSocket(): AtvSocket {
+            return {
             write: (bytes) => {
               // react-native-tcp-socket writes strings or Buffers; base64 is
               // the encoding both platforms agree on for arbitrary bytes.
@@ -136,12 +178,18 @@ export function makeConnect(caPem: string) {
                     });
                   }),
             close: () => { try { sock.destroy(); } catch {} },
-            // The pairing secret needs the TV's modulus. It is derived from the
-            // pinned certificate rather than from the live socket, because the
-            // library exposes no modulus getter — and the pinned cert IS the
-            // certificate this connection just verified against.
-            peerModulusHex: () => modulusFromPem(caPem),
-          });
+            // The pairing secret needs the TV's modulus. Preferred source is the
+            // LIVE socket (getPeerCertificate().modulus); a pinned cert is the
+            // fallback. Throwing beats guessing: a wrong modulus produces a
+            // secret the TV answers with silence, which is indistinguishable
+            // from a dead link.
+            peerModulusHex: () => {
+              if (liveModulusHex) return liveModulusHex;
+              if (caPem) return modulusFromPem(caPem);
+              throw new Error('no peer certificate available for pairing');
+            },
+            };
+          }
         },
       );
 
@@ -165,11 +213,14 @@ export function makeConnect(caPem: string) {
 }
 
 /**
- * A RAW TLS byte stream to a self-signed host, cert pinned. Unlike makeConnect
- * (which frames for the Android TV protocol), this hands the caller raw bytes in
- * and out — LG webOS runs a real RFC6455 WebSocket over it (see lib/tvdirect/ws).
- * `caPem` is the TV's own cert, fetched via fetchPeerCert first (TOFU), so this
- * accepts exactly that TV and nothing else.
+ * A RAW TLS byte stream to a SELF-SIGNED host. Unlike makeConnect (which frames
+ * for the Android TV protocol), this hands the caller raw bytes in and out — LG
+ * webOS runs a real RFC6455 WebSocket over it (see lib/tvdirect/ws).
+ *
+ * `caPem` is optional: pass one to PIN that exact certificate; omit it and the
+ * connection accepts the TV's self-signed cert via rejectUnauthorized:false.
+ * See the note on TLS_ACCEPT_SELF_SIGNED for why that option is safe to use
+ * here even though the library's TypeScript types omit it.
  */
 export type RawTlsSocket = {
   write(bytes: Uint8Array): void;
@@ -178,13 +229,13 @@ export type RawTlsSocket = {
   close(): void;
 };
 
-export function makeRawTlsConnect(caPem: string) {
+export function makeRawTlsConnect(caPem?: string) {
   return (host: string, port: number): Promise<RawTlsSocket> =>
     new Promise((resolve, reject) => {
       let settled = false;
       let dataCb: ((b: Uint8Array) => void) | null = null;
       let closeCb: (() => void) | null = null;
-      const sock = TcpSocket.connectTLS({ host, port, ca: caPem }, () => {
+      const sock = TcpSocket.connectTLS({ host, port, ...tlsTrust(caPem) }, () => {
         if (settled) return;
         settled = true;
         resolve({

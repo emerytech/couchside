@@ -119,7 +119,8 @@ export function dropAtvSession(host: string): void {
  * react-native-tcp-socket implementations from ./atvnative.ts.
  */
 export type AtvRuntime = {
-  makeConnect: (caPem: string) => import('./atvproto.ts').AtvConnect;
+  /** caPem optional: omit to accept the TV's self-signed cert, pass one to pin. */
+  makeConnect: (caPem?: string) => import('./atvproto.ts').AtvConnect;
   sha256: (d: Uint8Array) => Promise<Uint8Array>;
   /** webOS transport deps (fetchPeerCert + raw TLS + ws crypto). */
   webos: WebosDeps;
