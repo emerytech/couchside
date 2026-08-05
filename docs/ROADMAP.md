@@ -338,6 +338,29 @@ Entry fields: `priority` (P0 blocker → P3 nice) · `risk` · `affects` · `dep
 - A read route returns whatever the user last copied on their desktop — passwords included —
   to any LAN peer holding the token. It needs the same deliberate treatment as `/pair`, not a
   casual GET.
+- **Candidate mechanism for exactly that (added 2026-08-05):** consent-gated retrieval, per
+  the design in likwidtek's own Homer docs (github.com/likwidtek/Homer — design-only, GPL;
+  adopt the idea, implement independently). Shape: the read is a REQUEST the box must
+  acknowledge — a short-lived on-box prompt (KWin-raise path exists from pairing) or a
+  physical-presence rule ("only within N seconds of a copy"), rather than a silent GET.
+  Degrade closed: no acknowledgement, no content. If a `wlclipboard` capability gates the
+  app button, that is all SIX edit sites + the parity test.
+
+### Cancellable countdown on destructive actions
+- **priority:** P3 · **risk:** low · **affects:** app only ·
+  **depends_on:** none
+- **Idea from Homer's design docs (likwidtek); intake 2026-08-05.** Today high-danger
+  actions are DOUBLE-confirmed in `app/(tabs)/actions.tsx` (`onTap` -> generic confirm ->
+  "Are you sure?" for `danger === 'high'`), and suspend has its own confirm in
+  RemotePowerBar. Nothing is unprotected — but two blind pre-commit dialogs train
+  click-through. A countdown replaces the SECOND confirm with a post-commit cancel window:
+  one confirm, then a 5s "Rebooting the box — Undo" toast before the request fires. Catches
+  the fleet-era mistake the dialogs cannot: confirming with the WRONG BOX selected.
+- App-only v1: the request simply is not sent until the window closes (reuses the existing
+  toast pattern; no agent change, no API change). An agent-side scheduled/cancellable
+  variant (survives app kill) is explicitly out of scope until someone hits that edge.
+- Harness test per §6: press, cancel, assert NO request was fired; press, wait out the
+  countdown, assert exactly one request fired. Both states, or the test proves nothing.
 
 ### In-app Bluetooth pairing
 - **priority:** P2 · **risk:** medium · **affects:** agent + app · **depends_on:** none
