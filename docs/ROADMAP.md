@@ -678,6 +678,24 @@ recommendation was wrong, not merely superseded.
 - **Estimate:** Phase 1 in a few focused sessions; the win port took 0.3.x→0.4.3 to reach
   parity, but it also invented the non-Linux skeleton this port inherits.
 
+### Controller-wake arming — light up /api/usb-wake + opt-in root arming
+- **priority:** P2 · **risk:** medium (root write via helper; spurious-wake support burden if
+  the warning copy fails) · **affects:** app + agent + helper + docs ·
+  **depends_on:** privileged-helper channel (shipped, agent 2.9.69)
+- Full spec: `docs/memory/project_usb-wake-arming.md` (intake 2026-08-05, prompted by
+  contributing to Solaris17/SteamOS-USB-Wake).
+- **Most of the wake stack already ships:** installer arms wired-NIC WoL (f3), the app sends
+  magic packets with an `/api/wol` sibling-relay fallback, suspend is a sudoers-gated action,
+  and `/api/usb-wake` already enumerates wake sources with the transient heuristic — but **no
+  app screen calls it** (shipped dark), and arming is deliberately absent (root).
+- Phases: render the read half (harness-driven, press it) → docs cross-link (zero code) →
+  per-device opt-in arming via helper-written udev rule (client id looked up, never
+  interpolated; new `usbwake` cap = all six edit sites) → hardware proof BOTH states on the
+  bazzite box (arm → controller wakes it; disarm → it does not).
+- **Never arm-everything:** the field data in `usb_wake_devices()`'s own doc comment (leaf
+  auto-off counts as a disconnect and wakes the box back up) is the reason this is per-device
+  and warning-copy-first.
+
 ---
 
 ## 💡 Backlog
