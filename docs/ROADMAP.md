@@ -41,13 +41,25 @@ Entry fields: `priority` (P0 blocker → P3 nice) · `risk` · `affects` · `dep
   Setup card and ADD stores them pre-identified. Unit-tested (candidates both directions,
   identified-only results, abort stops workers); harness-pressed (scanning → honest empty
   state). A real FIND needs Roku hardware.
-- **Owner asked 2026-08-04 for LG + Google TV app-direct too — DECLINED FOR NOW, not
-  forgotten:** both sit behind the measured TLS wall (LG wss:3001 self-signed — RN
-  WebSocket cannot skip validation, react-native-tcp-socket pins only; Google TV adds
-  mTLS + protobuf and the app cannot mint a cert). The next concrete step is the Phase 2
-  SPIKE from the spec: a dev build carrying react-native-tcp-socket on a real phone
-  against the owned LG (home LAN), proving pinned-TLS SSAP end to end before any UI or
-  claim. Both brands meanwhile work agent-mediated, and the setup card says so.
+- **Google TV app-direct: the protocol half is PROVEN (2026-08-05, real hardware).** A JS
+  spike against the bedroom Hisense (10.1.1.98) minted a client cert in **pure JS**
+  (node-forge, RSA-2048 in 0.2s — the headline blocker, since the agent shells to
+  `openssl`), ported the `_atv_*` protobuf codec, PAIRED, **reconnected silently** on the
+  persisted cert, and injected keys the owner watched land: POWER toggled the TV, VOLUME_UP
+  took it to 30. So "the app cannot speak this protocol" is now false.
+- **The remaining blocker is narrower and unchanged in kind: react-native-tcp-socket TLS on
+  a device.** Node needed `rejectUnauthorized:false` for the TV's self-signed leaf; that lib
+  exposes only `ca` pinning — the TV's cert IS fetchable out-of-band first, so TOFU pinning
+  is plausible but UNPROVEN, as are client key/cert options on iOS.
+- **Shape for the build when it happens:** the proven codec/crypto goes in
+  `lib/tvdirect/androidtv.ts` behind an INJECTED socket interface, so it stays bare-Node
+  testable against the real TV and only the RN adapter is device-gated. Adding the native
+  dependency touches the shared build pipeline — the "shared-infra blast radius" the
+  freemium analysis named as the top risk to the core — so it wants a device to hand.
+- **NOT verified even now:** nav keys (HOME/DOWN/RIGHT) were never visually confirmed (the
+  one test was inconclusive — TV asleep or on another input); node-forge keygen time on a
+  phone; anything LG (webOS is JSON-over-WSS with no client cert — easier, same pinning
+  question). Both brands work agent-mediated today and the setup card says so.
 
 ### First-run mode chooser — "gaming box" vs "remote only"
 - **priority:** P2 · **risk:** low (app only, one new route + one pref) · **affects:** app ·
