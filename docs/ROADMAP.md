@@ -45,8 +45,10 @@ Entry fields: `priority` (P0 blocker → P3 nice) · `risk` · `affects` · `dep
   spike against the bedroom Hisense (10.1.1.98) minted a client cert in **pure JS**
   (node-forge, RSA-2048 in 0.2s — the headline blocker, since the agent shells to
   `openssl`), ported the `_atv_*` protobuf codec, PAIRED, **reconnected silently** on the
-  persisted cert, and injected keys the owner watched land: POWER toggled the TV, VOLUME_UP
-  took it to 30. So "the app cannot speak this protocol" is now false.
+  persisted cert, and injected keys the owner watched land across three classes: POWER
+  toggled the TV, VOLUME_UP took it to 30, and HOME/DOWN/RIGHT/UP moved the on-screen
+  selection. So "the app cannot speak this protocol" is now false, and **no part of the
+  protocol layer remains unproven**.
 - **The remaining blocker is narrower and unchanged in kind: react-native-tcp-socket TLS on
   a device.** Node needed `rejectUnauthorized:false` for the TV's self-signed leaf; that lib
   exposes only `ca` pinning — the TV's cert IS fetchable out-of-band first, so TOFU pinning
@@ -56,10 +58,13 @@ Entry fields: `priority` (P0 blocker → P3 nice) · `risk` · `affects` · `dep
   testable against the real TV and only the RN adapter is device-gated. Adding the native
   dependency touches the shared build pipeline — the "shared-infra blast radius" the
   freemium analysis named as the top risk to the core — so it wants a device to hand.
-- **NOT verified even now:** nav keys (HOME/DOWN/RIGHT) were never visually confirmed (the
-  one test was inconclusive — TV asleep or on another input); node-forge keygen time on a
-  phone; anything LG (webOS is JSON-over-WSS with no client cert — easier, same pinning
-  question). Both brands work agent-mediated today and the setup card says so.
+- **NOT verified even now:** node-forge keygen time on a PHONE (0.2s on this Mac says
+  nothing about a mid-range Android); anything LG (webOS is JSON-over-WSS with no client
+  cert — easier, same pinning question); and the RN socket itself. Both brands work
+  agent-mediated today and the setup card says so.
+- **Observation lesson worth keeping:** the first nav test read as a failure and was merely
+  unwatched. Key inject is fire-and-forget, so the human IS the instrument — give them a
+  countdown lead-in and space the keys, or the run produces no evidence in either direction.
 
 ### First-run mode chooser — "gaming box" vs "remote only"
 - **priority:** P2 · **risk:** low (app only, one new route + one pref) · **affects:** app ·
