@@ -7202,8 +7202,22 @@ def mock_downloads():
         {"appid": 1091500, "name": "Cyberpunk 2077", "state": "downloading",
          "active": True, "bytes_total": total, "bytes_downloaded": done,
          "percent": _MOCK_DL_PCT},
+        # KI-056 shapes, all legitimately produced by Steam's own .acf fields
+        # (BytesToDownload=0 pre-manifest; tiny content-only patches). The app's
+        # presentation is what the harness asserts against these rows.
+        {"appid": 100001, "name": "TRON RUN/r", "state": "finalizing",
+         "active": True, "bytes_total": 30_000_000,
+         "bytes_downloaded": 30_000_000, "percent": 100},
+        {"appid": 100002, "name": "Path of Exile 2", "state": "downloading",
+         "active": True, "bytes_total": 0, "bytes_downloaded": 0, "percent": 0},
+        {"appid": 100003, "name": "Grim Dawn", "state": "downloading",
+         "active": True, "bytes_total": 31_000_000,
+         "bytes_downloaded": 28_000_000, "percent": 90},
         {"appid": 570, "name": "Dota 2", "state": "queued", "active": False,
          "bytes_total": 18_000_000_000, "bytes_downloaded": 0, "percent": 0},
+        {"appid": 100004, "name": "Small Patch DLC", "state": "queued",
+         "active": False, "bytes_total": 45_000_000, "bytes_downloaded": 0,
+         "percent": 0},
         {"appid": 1245620, "name": "Elden Ring", "state": "queued",
          "active": False, "bytes_total": 3_100_000_000, "bytes_downloaded": 0,
          "percent": 0},

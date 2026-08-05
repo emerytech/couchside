@@ -183,6 +183,29 @@ function fmtGB(bytes: number): string {
   return (bytes / 1e9).toFixed(1);
 }
 
+/**
+ * Unit floor for switching a row from GB to MB. fmtGB's toFixed(1) rounds
+ * anything under ~50 MB to "0.0", so a tiny content patch sailed through the
+ * bytes_total > 0 gate below and printed "0.0 / 0.0 GB" — the row Steam was
+ * being honest about read as broken (KI-056, reported twice by the same
+ * tester). Under this floor sizes render as whole MB instead.
+ */
+const MB_FLOOR = 100e6;
+
+/** "1.2 / 42.0 GB" above the floor, "28 / 31 MB" under it. One unit per row,
+ *  chosen by the TOTAL, so the pair never mixes units mid-line. */
+function fmtPair(downloaded: number, total: number): string {
+  if (total < MB_FLOOR) {
+    return `${Math.round(downloaded / 1e6)} / ${Math.round(total / 1e6)} MB`;
+  }
+  return `${fmtGB(downloaded)} / ${fmtGB(total)} GB`;
+}
+
+/** Single-size variant for queued rows. */
+function fmtTotal(total: number): string {
+  return total < MB_FLOOR ? `${Math.round(total / 1e6)} MB` : `${fmtGB(total)} GB`;
+}
+
 function DownloadRow({ d }: { d: SteamDownload }) {
   const t = useTheme();
   const styles = useThemedStyles(makeStyles);
@@ -204,10 +227,16 @@ function DownloadRow({ d }: { d: SteamDownload }) {
         <Text style={[styles.dlState, paused && { color: t.amber }]}>
           {d.state.toUpperCase()}
         </Text>
-        {d.bytes_total > 0 && (
-          <Text style={styles.dlBytes}>
-            {fmtGB(d.bytes_downloaded)} / {fmtGB(d.bytes_total)} GB
-          </Text>
+        {/* KI-056: FINALIZING gets no size line at all — 100% down, nothing
+            left to fetch, so any size it could show is either 0 or noise; the
+            state label carries the story. An active row Steam hasn't sized yet
+            (bytes_total 0: pre-manifest, content-only patch) says so instead
+            of printing the "0.0 / 0.0 GB" that read as broken. The totals are
+            Steam's own truth — never faked, only presented. */}
+        {d.state === 'finalizing' ? null : d.bytes_total > 0 ? (
+          <Text style={styles.dlBytes}>{fmtPair(d.bytes_downloaded, d.bytes_total)}</Text>
+        ) : (
+          <Text style={styles.dlBytes}>starting…</Text>
         )}
       </View>
     </View>
@@ -222,7 +251,7 @@ function QueuedRow({ d }: { d: SteamDownload }) {
       <Text style={styles.qName} numberOfLines={1}>
         {d.name}
       </Text>
-      {d.bytes_total > 0 && <Text style={styles.qSize}>{fmtGB(d.bytes_total)} GB</Text>}
+      {d.bytes_total > 0 && <Text style={styles.qSize}>{fmtTotal(d.bytes_total)}</Text>}
     </View>
   );
 }

@@ -380,6 +380,28 @@ Entry fields: `priority` (P0 blocker → P3 nice) · `risk` · `affects` · `dep
   resets produces a large negative delta — clamp at zero and show nothing rather than a
   nonsense spike.
 
+### ~~Downloads that show "0.0 / 0.0 GB · 0%" read as broken (Launch tab)~~ — FIXED (KI-056)
+- **priority:** P2 · **risk:** low · **affects:** app only · **depends_on:** none
+- **Entry recovered:** originally captured 2026-07-22 in commit 63b353b, which was STRANDED
+  on the never-merged branch `docs/roadmap-community-captures-0722b` — the roadmap entry
+  everyone remembered was not actually in the roadmap, which is half of how the fix
+  "everyone remembers shipping" never shipped (KI-056; likwidtek reported on 2.9.21, was
+  told 2.9.35 fixed it, re-reported on 2.9.35 with a screenshot).
+- **The agent was always truthful** — Steam's own `.acf` `BytesToDownload=0` is legitimate
+  for finalizing rows, content-only patches, and pre-manifest fetches. Two app-side causes:
+  the `bytes_total > 0` gate never helped because `fmtGB`'s `toFixed(1)` rounds anything
+  under ~50 MB to `"0.0"`, and finalizing/unsized rows printed a size line at all.
+- **FIXED app-side in launch.tsx:** FINALIZING rows drop the size line (the state label
+  carries it); active rows with `bytes_total === 0` say "starting…"; totals under 100 MB
+  render as whole MB ("28 / 31 MB") in DownloadRow AND QueuedRow. Percent untouched —
+  always exactly what the agent reports. Totals are never faked.
+- **Verified in the harness against extended mock rows** (mock_downloads gained the
+  finalizing / unsized / tiny-patch shapes): row-level text asserted — TRON `100% ·
+  FINALIZING` with NO size line, `starting…` on the unsized row, `28 / 31 MB`, queued
+  `45 MB` (queue expanded by pressing), and the multi-GB control row still `26.5 / 42.0 GB`;
+  the string `0.0 GB` renders nowhere. Screenshot taken. NOT verified: a live box with a
+  real tiny patch (none queued today) — the mock shapes mirror the tester's screenshot.
+
 ### Make Preferences findable (filter + collapse + re-split PAD LAYOUT)
 - **priority:** P2 · **risk:** low · **affects:** app only · **depends_on:** none
 - **FILTER SHIPPED in #224 (2026-07-22).** Find-as-you-type over label+sub, card chrome
