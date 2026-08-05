@@ -35,6 +35,18 @@ Entry fields: `priority` (P0 blocker → P3 nice) · `risk` · `affects` · `dep
   the paywall's expired state, the iOS Local Network prompt and row overflow all need a
   device.
 
+### First-run mode chooser — "gaming box" vs "remote only"
+- **priority:** P2 · **risk:** low (app only, one new route + one pref) · **affects:** app ·
+  **depends_on:** remote-only mode (this branch)
+- **Full spec: `docs/memory/project_first-run-mode-chooser.md`.** Owner ask 2026-08-04: "a
+  first time download tutorial that allows the user to select gaming mode or remote only
+  mode."
+- One full-screen chooser on a truly FRESH install (no boxes, no TVs, pref unset): a gaming
+  card into the existing Setup funnel, a smart-TV card that flips `remoteOnlyMode` and lands
+  on the TV card, and a "decide later" skip. Upgrading users must never see it — the
+  empty-state guards carry that, not the pref alone.
+- NOT in iOS build 115 (spec was written while that build compiled).
+
 ### Trackpad WS liveness on iOS: the couch-switch half (#245)
 `priority: P1` · `risk: med (input path)` · `affects: app/lib/gamepad.ts` · `depends_on: —`
 - **Idle churn: DONE, shipped** in agent 2.9.53 (box-driven WS PING; the phone's OS
