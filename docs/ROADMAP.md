@@ -34,6 +34,20 @@ Entry fields: `priority` (P0 blocker → P3 nice) · `risk` · `affects` · `dep
 - **NOT verified:** no real Roku is owned, so no store copy may claim Roku support yet;
   the paywall's expired state, the iOS Local Network prompt and row overflow all need a
   device.
+- **SCAN FOR TVS added 2026-08-04 (late)** on `feat/tv-scan-direct`: a /24 HTTP sweep of
+  `GET :8060/query/device-info` (the boxDiscovery pattern — iOS blocks UDP, so SSDP/mDNS
+  were never options), 48 workers x 900ms, candidates gated by the same KI-033-hardened
+  LAN-IP rule as TV hosts (cellular/VPN = no sweep at all). Found TVs stream into the
+  Setup card and ADD stores them pre-identified. Unit-tested (candidates both directions,
+  identified-only results, abort stops workers); harness-pressed (scanning → honest empty
+  state). A real FIND needs Roku hardware.
+- **Owner asked 2026-08-04 for LG + Google TV app-direct too — DECLINED FOR NOW, not
+  forgotten:** both sit behind the measured TLS wall (LG wss:3001 self-signed — RN
+  WebSocket cannot skip validation, react-native-tcp-socket pins only; Google TV adds
+  mTLS + protobuf and the app cannot mint a cert). The next concrete step is the Phase 2
+  SPIKE from the spec: a dev build carrying react-native-tcp-socket on a real phone
+  against the owned LG (home LAN), proving pinned-TLS SSAP end to end before any UI or
+  claim. Both brands meanwhile work agent-mediated, and the setup card says so.
 
 ### First-run mode chooser — "gaming box" vs "remote only"
 - **priority:** P2 · **risk:** low (app only, one new route + one pref) · **affects:** app ·

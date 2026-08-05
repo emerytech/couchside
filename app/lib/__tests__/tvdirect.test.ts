@@ -43,6 +43,7 @@ import {
   rokuOp,
   rokuText,
 } from '../tvdirect/roku.ts';
+import { sweepCandidates, sweepForRokus } from '../tvdirect/scan.ts';
 
 // ---------------------------------------------------------------- key tables
 
@@ -318,4 +319,62 @@ test('identify accepts a Roku and refuses anything else', async () => {
   } finally {
     await missing.close();
   }
+});
+
+// ---------------------------------------------------------------- the sweep
+
+test('sweep candidates cover the /24, excluding the phone and network/broadcast', () => {
+  const ips = sweepCandidates('10.1.1.60');
+  assert.equal(ips.length, 253); // 254 hosts minus the phone itself
+  assert.ok(!ips.includes('10.1.1.60'), 'never probes the phone');
+  assert.ok(!ips.includes('10.1.1.0') && !ips.includes('10.1.1.255'));
+  assert.ok(ips.every((ip) => ip.startsWith('10.1.1.')));
+  assert.ok(ips.includes('10.1.1.1') && ips.includes('10.1.1.254'));
+});
+
+test('no usable LAN address means NO sweep — same gate as TV hosts', () => {
+  // A phone on cellular/VPN must not spray 254 requests at a public /24.
+  assert.deepEqual(sweepCandidates(undefined), []);
+  assert.deepEqual(sweepCandidates('8.8.8.8'), []);
+  assert.deepEqual(sweepCandidates('010.1.1.5'), []); // KI-033 octal form
+  // CONTROL: a real LAN address does sweep (not passing by refusing all).
+  assert.ok(sweepCandidates('192.168.1.7').length === 253);
+});
+
+test('the sweep returns exactly the hosts that identified as Rokus', async () => {
+  const probed: string[] = [];
+  const found = await sweepForRokus(['10.0.0.1', '10.0.0.2', '10.0.0.3', '10.0.0.4'], {
+    identify: async (h) => {
+      probed.push(h);
+      // .2 is a Roku; .3 answers as something-else (identify returns null);
+      // .1/.4 are dead (null). Only .2 may appear.
+      return h === '10.0.0.2' ? { name: 'Bedroom Roku', model: 'Roku TV' } : null;
+    },
+  });
+  assert.deepEqual(found, [
+    { brand: 'roku', host: '10.0.0.2', name: 'Bedroom Roku', model: 'Roku TV' },
+  ]);
+  assert.equal(probed.length, 4, 'every candidate was probed');
+});
+
+test('onFound streams results and abort stops the workers', async () => {
+  const streamed: string[] = [];
+  const found = await sweepForRokus(['a', 'b'], {
+    identify: async () => ({ name: 'TV', model: 'M' }),
+    onFound: (tv) => streamed.push(tv.host),
+  });
+  assert.equal(found.length, 2);
+  assert.deepEqual(streamed.sort(), ['a', 'b']); // reported as they landed
+  // Aborted before start: no probes at all (the empty-result CONTROL for the
+  // signal path — a sweep that ignores its signal would still probe).
+  let probes = 0;
+  const aborted = await sweepForRokus(['a', 'b', 'c'], {
+    signal: { aborted: true },
+    identify: async () => {
+      probes++;
+      return { name: 'TV', model: 'M' };
+    },
+  });
+  assert.deepEqual(aborted, []);
+  assert.equal(probes, 0);
 });

@@ -14,15 +14,30 @@
  * no explanation is the worst version of this screen.
  */
 import Ionicons from '@expo/vector-icons/Ionicons';
-import { useCallback, useState } from 'react';
-import { Pressable, StyleSheet, Switch, Text, TextInput, View } from 'react-native';
+import { useCallback, useEffect, useRef, useState } from 'react';
+import {
+  ActivityIndicator,
+  Pressable,
+  StyleSheet,
+  Switch,
+  Text,
+  TextInput,
+  View,
+} from 'react-native';
 
 import { hapticSelection } from '@/lib/haptics';
 import { setPref, usePref } from '@/lib/prefs';
 import { useBoxes } from '@/lib/SettingsContext';
 import { isValidTvHost } from '@/lib/tvdirect/model';
 import { rokuIdentify } from '@/lib/tvdirect/roku';
-import { addTv, removeTv, selectTv, useTvs } from '@/lib/tvdirect/store';
+import {
+  addTv,
+  removeTv,
+  scanForTvs,
+  selectTv,
+  useTvs,
+  type FoundTv,
+} from '@/lib/tvdirect/store';
 import { mono, useTheme, useThemedStyles, type Palette } from '@/lib/theme';
 
 type AddState =
@@ -39,6 +54,48 @@ export function DirectTvSetup() {
   const { boxes } = useBoxes();
   const [host, setHost] = useState('');
   const [state, setState] = useState<AddState>({ kind: 'idle' });
+  // LAN sweep: found TVs stream in via onFound while workers drain. 'done'
+  // distinguishes "haven't scanned" from "scanned and the LAN is empty".
+  const [scanning, setScanning] = useState(false);
+  const [scanDone, setScanDone] = useState(false);
+  const [foundTvs, setFoundTvs] = useState<FoundTv[]>([]);
+  const scanAbort = useRef<{ aborted: boolean }>({ aborted: false });
+  useEffect(
+    () => () => {
+      scanAbort.current.aborted = true; // unmount mid-sweep: stop the workers
+    },
+    [],
+  );
+
+  const scan = useCallback(async () => {
+    hapticSelection();
+    scanAbort.current = { aborted: false };
+    setScanning(true);
+    setScanDone(false);
+    setFoundTvs([]);
+    await scanForTvs((tv) => {
+      // Dedupe on host: a TV that answers twice (Wi-Fi hiccup retry) is one row.
+      setFoundTvs((prev) => (prev.some((p) => p.host === tv.host) ? prev : [...prev, tv]));
+    }, scanAbort.current);
+    if (!scanAbort.current.aborted) {
+      setScanning(false);
+      setScanDone(true);
+    }
+  }, []);
+
+  const addFound = useCallback(
+    async (tv: FoundTv) => {
+      hapticSelection();
+      // Already identified by the sweep itself — adding is just storing.
+      const stored = await addTv({ name: tv.name, brand: tv.brand, host: tv.host });
+      if (stored) {
+        setFoundTvs((prev) => prev.filter((p) => p.host !== tv.host));
+        setState({ kind: 'added', name: stored.name });
+        if (boxes.length === 0 && !remoteOnly) await setPref('remoteOnlyMode', true);
+      }
+    },
+    [boxes.length, remoteOnly],
+  );
 
   const hostOk = isValidTvHost(host.trim());
 
@@ -130,6 +187,48 @@ export function DirectTvSetup() {
         </View>
       )}
 
+      {/* LAN sweep — the no-typing path. Same /24 HTTP sweep the box scanner
+          uses (iOS blocks UDP, so SSDP was never an option). Every row here
+          already answered device-info AS a Roku; ADD just stores it. */}
+      <Pressable
+        onPress={() => void scan()}
+        disabled={scanning}
+        style={({ pressed }) => [styles.scanBtn, (pressed || scanning) && styles.pressed]}>
+        {scanning ? (
+          <ActivityIndicator size="small" color={t.blue} />
+        ) : (
+          <Ionicons name="wifi" size={16} color={t.blue} />
+        )}
+        <Text style={styles.scanBtnText}>
+          {scanning ? 'SCANNING YOUR WI-FI…' : 'SCAN FOR ROKU TVS'}
+        </Text>
+      </Pressable>
+      {foundTvs.map((tv) => (
+        <View key={tv.host} style={styles.tvRow}>
+          <View style={styles.tvMain}>
+            <Ionicons name="tv-outline" size={16} color={t.blue} />
+            <View style={styles.tvBody}>
+              <Text style={styles.tvName} numberOfLines={1}>
+                {tv.name}
+              </Text>
+              <Text style={styles.tvHost} numberOfLines={1}>
+                {tv.model ? `${tv.model} · ` : ''}
+                {tv.host}
+              </Text>
+            </View>
+          </View>
+          <Pressable onPress={() => void addFound(tv)} hitSlop={8} style={styles.removeBtn}>
+            <Text style={[styles.removeText, { color: t.blue }]}>ADD</Text>
+          </Pressable>
+        </View>
+      ))}
+      {scanDone && foundTvs.length === 0 && (
+        <Text style={styles.help}>
+          No Roku answered on this network. TV on the same Wi-Fi as the phone? You can still add
+          it by IP below.
+        </Text>
+      )}
+
       <Text style={styles.fieldLabel}>ROKU TV — IP ADDRESS</Text>
       <TextInput
         style={styles.input}
@@ -200,6 +299,24 @@ const makeStyles = (t: Palette) => StyleSheet.create({
   toggleLabel: { color: t.text, fontSize: 14, fontWeight: '700' },
   toggleSub: { color: t.textDim, fontSize: 12, lineHeight: 17 },
   list: { gap: 6 },
+  scanBtn: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 8,
+    borderRadius: 10,
+    paddingVertical: 12,
+    backgroundColor: t.inset,
+    borderWidth: 1,
+    borderColor: t.cardBorder,
+  },
+  scanBtnText: {
+    color: t.blue,
+    fontSize: 12,
+    fontWeight: '800',
+    letterSpacing: 1,
+    fontFamily: mono,
+  },
   tvRow: {
     flexDirection: 'row',
     alignItems: 'center',
