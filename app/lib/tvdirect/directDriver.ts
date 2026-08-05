@@ -15,7 +15,7 @@ import { pairStart, type PairSession } from './androidtv.ts';
 import {
   makeConnect,
   makeRawTlsConnect,
-  mintIdentity,
+  mintIdentityNonBlocking,
   randomBytes,
   sha1,
   sha256,
@@ -119,7 +119,8 @@ export function directDriver(): TvPairDriver {
       // Mint BEFORE opening the socket: the TV's code dialog expires fast
       // (measured 39s failed / 5.6s worked), and RSA keygen must not run in
       // that window. The caller (TvPairForm) shows its own "opening…" state.
-      const minted = mintIdentity();
+      // Non-blocking: the sync keygen froze the whole app on device.
+      const minted = await mintIdentityNonBlocking();
       // No certificate pre-fetch: the connection accepts the TV's self-signed
       // cert directly, and the pairing modulus is read off the LIVE socket.
       try {

@@ -50,16 +50,63 @@ export function makePrng(getRandomValues: GetRandomValues | undefined) {
 }
 
 /**
- * Mint a client certificate for this phone. ONE per TV, persisted afterwards.
+ * Mint a client certificate WITHOUT blocking the JS thread.
  *
- * Never call this on a render path: RSA-2048 in JS measured 0.2s on a dev Mac
- * and is expected to be far slower in Hermes on a phone — unmeasured, which is
- * exactly why elapsedMs is returned rather than assumed negligible.
+ * THIS EXISTS BECAUSE THE SYNCHRONOUS VERSION FROZE THE APP. Build 122 called
+ * the sync generateKeyPair below on the JS thread; RSA-2048 took ~1.8s on a dev
+ * Mac but far longer in Hermes on a phone, and while it ran the app accepted no
+ * touches and could not navigate — reported from the field as "it freezes and
+ * doesn't let me navigate anywhere".
+ *
+ * forge's stepping API (createKeyPairGenerationState / stepKeyPairGenerationState)
+ * runs the search in bounded slices. We step for `sliceMs`, then YIELD to the
+ * event loop so React can paint and the user can still move around or cancel.
+ * Measured on this Mac: 43 slices, worst slice 60ms — i.e. the UI never stalls
+ * longer than one slice.
+ */
+export async function mintIdentityAsync(
+  getRandomValues: GetRandomValues | undefined,
+  opts: { sliceMs?: number; onProgress?: (slices: number) => void; signal?: { aborted: boolean } } = {},
+): Promise<MintResult> {
+  const prng = makePrng(getRandomValues);
+  const sliceMs = opts.sliceMs ?? 40;
+  const t0 = Date.now();
+  // The stepping API exists at runtime but is ABSENT from @types/node-forge —
+  // the same "types are not the API surface" trap that cost us the TLS fix.
+  const rsa = forge.pki.rsa as unknown as {
+    createKeyPairGenerationState(bits: number, e: number, opts: unknown): unknown;
+    stepKeyPairGenerationState(state: unknown, n: number): boolean;
+  };
+  const state = rsa.createKeyPairGenerationState(2048, 0x10001, { prng });
+  let slices = 0;
+  for (;;) {
+    if (opts.signal?.aborted) throw new Error('key generation cancelled');
+    const done = rsa.stepKeyPairGenerationState(state, sliceMs);
+    slices += 1;
+    opts.onProgress?.(slices);
+    if (done) break;
+    // Yield: without this the loop is just the sync version with extra steps.
+    await new Promise((r) => setTimeout(r, 0));
+  }
+  const keys = (state as unknown as { keys: forge.pki.rsa.KeyPair }).keys;
+  return finishCert(keys, t0);
+}
+
+/**
+ * Mint a client certificate for this phone, SYNCHRONOUSLY. Kept for the bare-Node
+ * tests (where blocking is fine and determinism is easier); the app must use
+ * mintIdentityAsync above, or it freezes — see that docstring.
  */
 export function mintIdentity(getRandomValues: GetRandomValues | undefined): MintResult {
   const prng = makePrng(getRandomValues);
   const t0 = Date.now();
   const keys = forge.pki.rsa.generateKeyPair({ bits: 2048, prng });
+  return finishCert(keys, t0);
+}
+
+/** Build + self-sign the cert around a freshly generated keypair. Shared by the
+ *  sync and stepping mints so they cannot drift in cert shape. */
+function finishCert(keys: forge.pki.rsa.KeyPair, t0: number): MintResult {
   const cert = forge.pki.createCertificate();
   cert.publicKey = keys.publicKey;
   cert.serialNumber = '01';

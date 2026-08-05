@@ -35,7 +35,13 @@ import {
   frame,
   makeFramer,
 } from './atvproto.ts';
-import { type MintResult, mintIdentity as mintWith, modulusFromPem, sha256 } from './atvcrypto.ts';
+import {
+  type MintResult,
+  mintIdentity as mintWith,
+  mintIdentityAsync as mintWithAsync,
+  modulusFromPem,
+  sha256,
+} from './atvcrypto.ts';
 
 export { modulusFromPem, sha256 } from './atvcrypto.ts';
 export type { MintResult } from './atvcrypto.ts';
@@ -61,6 +67,66 @@ function tlsTrust(caPem?: string): Record<string, unknown> {
 }
 
 /**
+ * The peer's RSA modulus, read off a LIVE socket — retried until TLS is truly up.
+ *
+ * WHY THE RETRY IS LOAD-BEARING: react-native-tcp-socket fires `secureConnect`
+ * on the TCP connect event, NOT when TLS finishes —
+ *   `socket.once('connect', () => tlsSocket.emit('secureConnect'))`  (src/index.js)
+ * — so a `connectTLS` callback runs BEFORE the native side has set `_tls` and
+ * `_peerTrust`. Native `getPeerCertificate` bails out (`if (!_tcpSocket || !_tls
+ * || !_peerTrust) return nil`) and one eager read gets nothing. That is exactly
+ * why build 122 failed on device with "no peer certificate available for
+ * pairing" AFTER the TLS trust fix had otherwise worked.
+ *
+ * So: poll briefly until the certificate materialises. Prefer the native
+ * `modulus`; fall back to parsing `pubkey` (base64 PKCS#1 RSAPublicKey from
+ * SecKeyCopyExternalRepresentation) with forge, so a missing/odd modulus field
+ * is not fatal either. Returns null if it never arrives — the caller then falls
+ * back to a pinned cert or reports honestly.
+ */
+async function readPeerModulus(sock: unknown, timeoutMs = 4000): Promise<string | null> {
+  const anySock = sock as {
+    getPeerCertificate?: () => Promise<{ modulus?: string; pubkey?: string } | null>;
+  };
+  if (!anySock.getPeerCertificate) return null;
+  const deadline = Date.now() + timeoutMs;
+  for (;;) {
+    try {
+      const cert = await anySock.getPeerCertificate();
+      if (cert?.modulus) return normalizeHex(cert.modulus);
+      if (cert?.pubkey) {
+        const hex = modulusFromPublicKeyDer(cert.pubkey);
+        if (hex) return hex;
+      }
+    } catch {
+      // not ready yet (or unsupported) — fall through to the retry
+    }
+    if (Date.now() >= deadline) return null;
+    await new Promise((r) => setTimeout(r, 100));
+  }
+}
+
+function normalizeHex(v: string): string {
+  const h = v.trim().toLowerCase().replace(/^0x/, '');
+  return h.length % 2 ? '0' + h : h;
+}
+
+/** Parse the RSA modulus out of a base64 PKCS#1 RSAPublicKey (what iOS's
+ *  SecKeyCopyExternalRepresentation returns). Never throws. */
+function modulusFromPublicKeyDer(b64: string): string | null {
+  try {
+    const der = forge.util.decode64(b64);
+    const asn1 = forge.asn1.fromDer(der);
+    // RSAPublicKey ::= SEQUENCE { modulus INTEGER, publicExponent INTEGER }
+    const modulus = (asn1 as unknown as { value: { value: string }[] }).value?.[0]?.value;
+    if (!modulus) return null;
+    return normalizeHex(forge.util.bytesToHex(modulus));
+  } catch {
+    return null;
+  }
+}
+
+/**
  * Mint this phone's client certificate, seeded from the platform CSPRNG that
  * the polyfill imported above installs. Throws rather than falling back to a
  * weak PRNG — a predictable client key is a real defect, not a nit.
@@ -69,6 +135,18 @@ export function mintIdentity(): MintResult {
   const g = globalThis as { crypto?: { getRandomValues?: (a: Uint8Array) => Uint8Array } };
   const grv = g.crypto?.getRandomValues?.bind(g.crypto);
   return mintWith(grv);
+}
+
+/**
+ * The NON-BLOCKING mint the app must use. The sync one above froze the app on
+ * device (reported: "it freezes and doesn't let me navigate anywhere") because
+ * RSA-2048 monopolised the JS thread; this steps the keygen and yields between
+ * slices so touches and navigation keep working.
+ */
+export function mintIdentityNonBlocking(): Promise<MintResult> {
+  const g = globalThis as { crypto?: { getRandomValues?: (a: Uint8Array) => Uint8Array } };
+  const grv = g.crypto?.getRandomValues?.bind(g.crypto);
+  return mintWithAsync(grv);
 }
 
 /**
@@ -148,15 +226,7 @@ export function makeConnect(caPem?: string) {
           // evaluated, which both trust modes above do, so the pairing secret
           // no longer needs an out-of-band certificate fetch.
           void (async () => {
-            try {
-              const anySock = sock as unknown as {
-                getPeerCertificate?: () => Promise<{ modulus?: string } | null>;
-              };
-              const cert = await anySock.getPeerCertificate?.();
-              if (cert?.modulus) liveModulusHex = cert.modulus.toLowerCase().replace(/^0x/, '');
-            } catch {
-              // leave null; peerModulusHex falls back to the pinned cert
-            }
+            liveModulusHex = await readPeerModulus(sock);
             resolve(makeSocket());
           })();
 
