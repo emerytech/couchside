@@ -4,7 +4,14 @@ import { Alert, Modal, Pressable, StyleSheet, Text, TextInput, View } from 'reac
 
 import { hapticLight } from '@/lib/haptics';
 import { DirectTv } from '@/lib/tvdirect/model';
-import { makeConnect, sha256 } from '@/lib/tvdirect/atvnative';
+import {
+  fetchPeerCert,
+  makeConnect,
+  makeRawTlsConnect,
+  randomBytes,
+  sha1,
+  sha256,
+} from '@/lib/tvdirect/atvnative';
 import type { RokuKey, RokuOp } from '@/lib/tvdirect/roku';
 import {
   sendKey,
@@ -68,7 +75,14 @@ export function DirectRemoteView({ tv }: { tv: DirectTv }) {
 
   // The platform transport for Android TV. Roku needs none (plain HTTP), so
   // this is only consulted for a paired androidtv record.
-  const runtime = useMemo(() => ({ makeConnect, sha256 }), []);
+  const runtime = useMemo(
+    () => ({
+      makeConnect,
+      sha256,
+      webos: { fetchPeerCert, rawConnect: makeRawTlsConnect, crypto: { randomBytes, sha1 } },
+    }),
+    [],
+  );
 
   const key = useCallback(
     (k: RokuKey) => {

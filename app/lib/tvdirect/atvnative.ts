@@ -163,3 +163,62 @@ export function makeConnect(caPem: string) {
       sock.on('close', () => fail(new Error('socket closed')));
     });
 }
+
+/**
+ * A RAW TLS byte stream to a self-signed host, cert pinned. Unlike makeConnect
+ * (which frames for the Android TV protocol), this hands the caller raw bytes in
+ * and out — LG webOS runs a real RFC6455 WebSocket over it (see lib/tvdirect/ws).
+ * `caPem` is the TV's own cert, fetched via fetchPeerCert first (TOFU), so this
+ * accepts exactly that TV and nothing else.
+ */
+export type RawTlsSocket = {
+  write(bytes: Uint8Array): void;
+  onData(cb: (bytes: Uint8Array) => void): void;
+  onClose(cb: () => void): void;
+  close(): void;
+};
+
+export function makeRawTlsConnect(caPem: string) {
+  return (host: string, port: number): Promise<RawTlsSocket> =>
+    new Promise((resolve, reject) => {
+      let settled = false;
+      let dataCb: ((b: Uint8Array) => void) | null = null;
+      let closeCb: (() => void) | null = null;
+      const sock = TcpSocket.connectTLS({ host, port, ca: caPem }, () => {
+        if (settled) return;
+        settled = true;
+        resolve({
+          write: (bytes) => sock.write(Buffer.from(bytes) as unknown as string),
+          onData: (cb) => { dataCb = cb; },
+          onClose: (cb) => { closeCb = cb; },
+          close: () => { try { sock.destroy(); } catch {} },
+        });
+      });
+      sock.on('data', (d: string | Buffer) => {
+        const bytes = typeof d === 'string' ? Uint8Array.from(Buffer.from(d, 'base64')) : Uint8Array.from(d);
+        dataCb?.(bytes);
+      });
+      sock.on('error', (e: Error) => { if (!settled) { settled = true; reject(e); } });
+      sock.on('close', () => { closeCb?.(); });
+    });
+}
+
+/** SHA-1 for the WebSocket handshake accept, via forge (no platform crypto import). */
+export function sha1(data: Uint8Array): Uint8Array {
+  const md = forge.md.sha1.create();
+  let s = '';
+  for (const b of data) s += String.fromCharCode(b);
+  md.update(s);
+  const digest = md.digest().getBytes();
+  const out = new Uint8Array(digest.length);
+  for (let i = 0; i < digest.length; i++) out[i] = digest.charCodeAt(i) & 0xff;
+  return out;
+}
+
+/** CSPRNG bytes via the polyfilled platform crypto (WS masks + client key). */
+export function randomBytes(n: number): Uint8Array {
+  const g = globalThis as { crypto?: { getRandomValues?: (a: Uint8Array) => Uint8Array } };
+  const grv = g.crypto?.getRandomValues?.bind(g.crypto);
+  if (!grv) throw new Error('no platform CSPRNG');
+  return grv(new Uint8Array(n));
+}

@@ -23,8 +23,19 @@ import { isValidLanIp } from '../lanIp.ts';
 /** Brands the app can drive DIRECTLY (no box). Still short of the agent's list:
  *  webos/samsung/vidaa need TLS work of their own and are absent here rather
  *  than listed-and-broken. `androidtv` covers Google TV and Android TV sets. */
-export const DIRECT_BRANDS = ['roku', 'androidtv'] as const;
+export const DIRECT_BRANDS = ['roku', 'androidtv', 'webos'] as const;
 export type DirectBrand = (typeof DIRECT_BRANDS)[number];
+
+/**
+ * Credentials for a paired LG webOS TV. Absent on Roku. `caPem` is the TV's own
+ * self-signed cert, pinned on every connect (react-native-tcp-socket has no
+ * accept-any mode); `clientKey` is the token the TV returned when the user
+ * approved the on-screen prompt, and makes later connects silent.
+ */
+export type WebosCreds = {
+  caPem: string;
+  clientKey: string;
+};
 
 /**
  * Credentials for a paired Android TV. Absent on Roku, which needs none (its
@@ -55,6 +66,8 @@ export type DirectTv = {
    *  DROPS an androidtv entry that lacks them rather than keeping a TV whose
    *  every keypress would fail. */
   atv?: AtvCreds;
+  /** LG webOS only. Same rule: a webos entry without creds is dropped. */
+  webos?: WebosCreds;
 };
 
 export type DirectTvState = {
@@ -106,7 +119,21 @@ export function normalizeTv(raw: unknown): DirectTv | null {
     if (!creds) return null;
     tv.atv = creds;
   }
+  if (o.brand === 'webos') {
+    const creds = normalizeWebosCreds(o.webos);
+    if (!creds) return null;
+    tv.webos = creds;
+  }
   return tv;
+}
+
+function normalizeWebosCreds(raw: unknown): WebosCreds | null {
+  if (!raw || typeof raw !== 'object') return null;
+  const o = raw as Record<string, unknown>;
+  const caPem = typeof o.caPem === 'string' && o.caPem.includes('BEGIN CERTIFICATE') ? o.caPem : null;
+  const clientKey = typeof o.clientKey === 'string' && o.clientKey.length > 0 ? o.clientKey : null;
+  if (!caPem || !clientKey) return null;
+  return { caPem, clientKey };
 }
 
 function normalizeAtvCreds(raw: unknown): AtvCreds | null {

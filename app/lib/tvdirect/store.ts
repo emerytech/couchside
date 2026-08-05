@@ -18,6 +18,7 @@ import { Platform } from 'react-native';
 
 import {
   AtvCreds,
+  WebosCreds,
   DirectBrand,
   DirectTv,
   DirectTvState,
@@ -123,6 +124,8 @@ export async function addTv(input: {
   host: string;
   /** Android TV pairing credentials; required for brand 'androidtv'. */
   atv?: AtvCreds;
+  /** LG webOS pairing credentials; required for brand 'webos'. */
+  webos?: WebosCreds;
 }): Promise<DirectTv | null> {
   const existing = state.tvs.find((t) => t.brand === input.brand && t.host === input.host);
   if (existing) {
@@ -138,6 +141,7 @@ export async function addTv(input: {
     brand: input.brand,
     host: input.host,
     ...(input.atv ? { atv: input.atv } : {}),
+    ...(input.webos ? { webos: input.webos } : {}),
   };
   // Validate through the same normalizer the persisted blob goes through, so an
   // entry can never enter the store by a path the load path would reject.
