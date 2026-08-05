@@ -719,3 +719,15 @@ jobs:
       - name: Input-path unit tests (gamepad lifecycle + trackpad gestures)
         run: node --experimental-strip-types --test --test-timeout=60000 lib/__tests__/*.test.ts hooks/__tests__/*.test.ts
         working-directory: app
+      # The TV crypto (cert minting + SHA-256) genuinely NEEDS node-forge, so it
+      # cannot live in the install-free glob above — a tested module that imports
+      # a real dependency is exactly the trap CONVENTIONS warns about, and it went
+      # green locally (forge installed) while CI could not resolve the package.
+      # It runs in its own directory (lib/tvdirect/__tests__), so the fast step
+      # stays import-free; here we install ONLY node-forge (pure JS, no deps) and
+      # run it. Verifies the cert modulus against openssl, which the runner has.
+      - name: TV crypto unit tests (node-forge; cert mint + sha256 vs Node/openssl)
+        run: |
+          npm install node-forge@1.3.1 --no-save --no-package-lock --no-audit --no-fund
+          node --experimental-strip-types --test --test-timeout=120000 lib/tvdirect/__tests__/*.test.ts
+        working-directory: app

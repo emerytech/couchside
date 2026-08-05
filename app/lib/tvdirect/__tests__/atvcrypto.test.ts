@@ -22,7 +22,7 @@ import { mkdtempSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
-import { makePrng, mintIdentity, modulusFromPem, sha256 } from '../tvdirect/atvcrypto.ts';
+import { makePrng, mintIdentity, modulusFromPem, sha256 } from '../atvcrypto.ts';
 
 const getRandomValues = (a: Uint8Array) => {
   randomFillSync(a);
