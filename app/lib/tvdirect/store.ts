@@ -11,6 +11,7 @@
  * All validation lives in ./model.ts, which is import-free and tested; this
  * file is only plumbing.
  */
+import * as Network from 'expo-network';
 import * as SecureStore from 'expo-secure-store';
 import { useSyncExternalStore } from 'react';
 import { Platform } from 'react-native';
@@ -24,6 +25,29 @@ import {
   nextTvId,
   normalizeTvState,
 } from './model.ts';
+import { sweepCandidates, sweepForRokus, type FoundTv } from './scan.ts';
+
+export type { FoundTv } from './scan.ts';
+
+/**
+ * Sweep the phone's /24 for TVs the app can drive directly. Resolves [] (never
+ * throws) when the phone has no usable LAN address — cellular, VPN'd, or the
+ * web harness — and the card renders that as "couldn't scan", not as a crash.
+ * expo-network is read HERE rather than in scan.ts so the sweep logic itself
+ * stays import-free for the bare-Node tests.
+ */
+export async function scanForTvs(
+  onFound?: (tv: FoundTv) => void,
+  signal?: { aborted: boolean },
+): Promise<FoundTv[]> {
+  let ip: string | undefined;
+  try {
+    ip = (await Network.getIpAddressAsync()) ?? undefined;
+  } catch {
+    ip = undefined;
+  }
+  return sweepForRokus(sweepCandidates(ip), { onFound, signal });
+}
 
 const KEY = 'couchside.tvs.v1';
 

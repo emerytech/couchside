@@ -84,9 +84,10 @@ async function ecp(
   host: string,
   path: string,
   method: 'GET' | 'POST',
+  timeoutMs: number = TIMEOUT_MS,
 ): Promise<{ ok: boolean; status: number; body: string; error?: string }> {
   const ctrl = new AbortController();
-  const timer = setTimeout(() => ctrl.abort(), TIMEOUT_MS);
+  const timer = setTimeout(() => ctrl.abort(), timeoutMs);
   try {
     const res = await fetch(`${base(host)}${path}`, {
       method,
@@ -168,8 +169,14 @@ export type RokuInfo = {
  * dependency. A missing field falls back rather than failing the identify —
  * being a Roku is what this proves; the name is cosmetic.
  */
-export async function rokuIdentify(host: string): Promise<RokuInfo | null> {
-  const r = await ecp(host, '/query/device-info', 'GET');
+export async function rokuIdentify(
+  host: string,
+  // Overridable for the LAN sweep: 4s x 254 dead hosts is a minute of nothing,
+  // while a live Roku answers in milliseconds. The ADD-by-IP flow keeps the
+  // patient default (a TV waking its network stack deserves the wait).
+  timeoutMs: number = TIMEOUT_MS,
+): Promise<RokuInfo | null> {
+  const r = await ecp(host, '/query/device-info', 'GET', timeoutMs);
   if (!r.ok || !r.body) return null;
   const tag = (name: string): string => {
     const m = new RegExp(`<${name}>([^<]*)</${name}>`).exec(r.body);
