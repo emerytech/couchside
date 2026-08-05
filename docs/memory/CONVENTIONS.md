@@ -472,3 +472,33 @@ path that only exists on Linux goes in `linuxOnlyCapabilities`.
 
 Observed adding `boxbattery` (agent 2.9.40): the parity test caught the wiring half-done after
 the two agent sites were written and before any app site was.
+
+## App-side direct-device transports (`app/lib/tvdirect/`) — added for remote-only mode
+
+Remote-only mode (the app as a plain TV remote, no box) is the first place the APP opens a
+connection to something that is not a Couchside agent. Two rules carry over from the agent
+and one is new:
+
+1. **Command ids are LOOKED UP in a frozen table, never interpolated.** `roku.ts` exports
+   `rokuKey`/`rokuOp`, which index `ROKU_KEYS` / `ROKU_OP_KEY`; the helper that takes an
+   already-resolved ECP key is deliberately NOT exported. Same rule as the agent's
+   `/api/tv/key/<k>`, for the same reason.
+2. **The destination host goes through `isValidTvHost`** (LAN IP literals only, via the
+   KI-033-hardened `lib/lanIp.ts`). Hostnames are refused: what a name resolves to is up
+   to whoever answers DNS.
+3. **A duplicated table gets a drift guard.** `roku.ts` copies the agent's key tables
+   because in this mode there is no agent to ask. `lib/__tests__/tvdirect.test.ts` pins
+   both tables verbatim, so "fixing" the Roku pause→Play collision on one side fails CI.
+
+Transport modules stay **import-free** so the bare-Node runner can drive them against a
+real stub server (`lib/__tests__/*.test.ts` is already a CI glob — a new file there runs
+with no ci.yml edit).
+
+### The harness cannot judge a direct-to-device call
+
+**MEASURED 2026-08-04.** Adding a stub Roku in the web harness reported "No Roku answered"
+while the stub's own log showed the request had ARRIVED. Cause: browser CORS. React
+Native's `fetch` does not enforce CORS; the harness's browser does. So a direct-device call
+failing on web is not evidence of a bug, and the fix is a CORS header on the STUB — never
+CORS handling in the app. Everything else about such a call (which path, how many requests,
+what encoding) IS observable in the harness by reading the stub's log rather than the screen.

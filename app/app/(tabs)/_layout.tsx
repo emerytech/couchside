@@ -21,6 +21,11 @@ export default function TabLayout() {
   const t = useTheme();
   const { boxes, activeBox, ready } = useBoxes();
   const landingTab = usePref('landingTab');
+  // REMOTE-ONLY MODE: the app is just a smart-TV remote, no box anywhere. Every
+  // box tab is hidden and the Remote tab (which talks to the TV directly, see
+  // lib/tvdirect/) takes over. A pref rather than derived state, so a box owner
+  // can flip to it while the box is off and flip back without the box answering.
+  const remoteOnly = usePref('remoteOnlyMode');
   const segments = useSegments();
   // Always-mounted caps safety net: heals a stale persisted caps snapshot
   // (e.g. couchmode:false cached before the box became capable) no matter
@@ -31,12 +36,13 @@ export default function TabLayout() {
   // in /api/status caps, so its gaming tabs are hidden. Undefined caps (unknown,
   // or agent < 2.8.2) leaves both visible — never hide a tab on a guess.
   const caps = activeBox?.caps;
-  const hidePad = caps?.gamepad === false;
+  const hidePad = caps?.gamepad === false || remoteOnly;
   // `launchers` (Windows agent >= 0.4.0-win) means "any launcher present"
   // (Steam/Epic/GOG/custom), so an Epic/GOG/Game Pass box shows the Launch tab
   // even without Steam. Older agents (and every Linux agent) don't send it, so
   // fall back to the `steam` cap — never hide the tab on a guess.
   const hideLaunch =
+    remoteOnly ||
     caps?.launchers === false ||
     (caps?.launchers === undefined && caps?.steam === false);
 
@@ -55,6 +61,14 @@ export default function TabLayout() {
   useEffect(() => {
     if (!ready || redirected.current) return;
     redirected.current = true;
+    // In remote-only mode the landing tab is the Remote, always: the box tabs
+    // it could otherwise name are hidden, and Console with no box is an empty
+    // dashboard. Setup is still where someone with no TV yet has to go, but
+    // the Remote screen says so itself rather than skipping past its own tab.
+    if (remoteOnly) {
+      router.replace('/(tabs)/remote');
+      return;
+    }
     if (boxes.length === 0) {
       router.replace('/(tabs)/setup');
       return;
@@ -64,7 +78,7 @@ export default function TabLayout() {
     if (landingTab !== 'index') {
       router.replace(`/(tabs)/${landingTab}`);
     }
-  }, [ready, boxes.length, landingTab]);
+  }, [ready, boxes.length, landingTab, remoteOnly]);
 
   // Bounce off a tab hidden for the active box — landing on the Pad initial
   // route for a server box, or switching from an HTPC to a server box while the
@@ -72,10 +86,24 @@ export default function TabLayout() {
   useEffect(() => {
     if (!ready) return;
     const leaf = segments[segments.length - 1];
+    // Remote-only hides every box tab INCLUDING Console, so the bounce target
+    // is the Remote, not the tabs index. This is also what carries a runtime
+    // flip of the toggle: the landing redirect above is one-shot, so without
+    // this, switching modes from Setup would leave you on a tab that no longer
+    // has a tab-bar entry. Setup stays reachable in both modes — it is where
+    // the toggle lives, and a mode you cannot leave is a trap.
+    if (remoteOnly) {
+      if (leaf !== 'remote' && leaf !== 'setup') router.replace('/(tabs)/remote');
+      return;
+    }
+    if (leaf === 'remote') {
+      router.replace('/(tabs)');
+      return;
+    }
     if ((hidePad && leaf === 'pad') || (hideLaunch && leaf === 'launch')) {
       router.replace('/(tabs)');
     }
-  }, [ready, hidePad, hideLaunch, segments]);
+  }, [ready, hidePad, hideLaunch, remoteOnly, segments]);
 
   return (
     <Tabs
@@ -95,6 +123,21 @@ export default function TabLayout() {
         options={{
           title: 'Console',
           tabBarIcon: ({ color }) => <Ionicons name="pulse" size={24} color={color} />,
+          // A box dashboard with no box is an empty screen, so Console goes too
+          // in remote-only mode — the only tab left is the Remote (plus Setup).
+          href: remoteOnly ? null : undefined,
+        }}
+      />
+      {/* The TV remote. Present only in remote-only mode: a box owner already
+          has a richer remote inside the Pad tab (it reaches CEC, RS-232 and the
+          box's own volume through the agent), and two remotes in one tab bar
+          would be a question the user has to answer on every press. */}
+      <Tabs.Screen
+        name="remote"
+        options={{
+          title: 'Remote',
+          tabBarIcon: ({ color }) => <Ionicons name="tv" size={24} color={color} />,
+          href: remoteOnly ? undefined : null,
         }}
       />
       <Tabs.Screen
@@ -103,7 +146,7 @@ export default function TabLayout() {
           title: 'Fleet',
           tabBarIcon: ({ color }) => <Ionicons name="server" size={24} color={color} />,
           // Only useful with several boxes; single-box users keep a clean bar.
-          href: boxes.length >= 2 ? undefined : null,
+          href: !remoteOnly && boxes.length >= 2 ? undefined : null,
         }}
       />
       <Tabs.Screen
@@ -111,6 +154,7 @@ export default function TabLayout() {
         options={{
           title: 'Actions',
           tabBarIcon: ({ color }) => <Ionicons name="flash" size={24} color={color} />,
+          href: remoteOnly ? null : undefined,
         }}
       />
       <Tabs.Screen

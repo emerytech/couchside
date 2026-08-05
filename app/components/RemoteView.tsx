@@ -569,7 +569,10 @@ export function RemoteView({
 
 // ---- pieces ----------------------------------------------------------------
 
-function CornerBtn({
+/* CornerBtn / Dpad / Rocker / MidBtn are EXPORTED so the remote-only mode's
+   DirectRemoteView renders the identical controls rather than a lookalike copy
+   (components/DirectRemoteView.tsx). Export-only: the box path is unchanged. */
+export function CornerBtn({
   icon,
   label,
   onPress,
@@ -614,7 +617,7 @@ const JOY_TAP_MS = 350;
  * cursor VELOCITY (deadzone + expo curve, like a laptop pointing stick). A
  * quick tap is still OK. No mode switch needed for casual pointing.
  */
-function Dpad({
+export function Dpad({
   size,
   onUp,
   onDown,
@@ -821,7 +824,7 @@ function DeskBtn({
   );
 }
 
-function Rocker({
+export function Rocker({
   label,
   onPlus,
   onMinus,
@@ -845,7 +848,7 @@ function Rocker({
   );
 }
 
-function MidBtn({
+export function MidBtn({
   icon,
   label,
   color,

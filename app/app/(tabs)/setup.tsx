@@ -26,6 +26,7 @@ import { Gated } from '@/components/Gated';
 import { LogsPanel } from '@/components/LogsPanel';
 import { QrView } from '@/components/QrView';
 import { BoxScanPair } from '@/components/BoxScanPair';
+import { DirectTvSetup } from '@/components/DirectTvSetup';
 import { BoxScanQr } from '@/components/BoxScanQr';
 import { SetupProgress, SETUP_GUIDE_URL } from '@/components/SetupProgress';
 import { buildPairLink } from '@/lib/pairLink';
@@ -1123,6 +1124,14 @@ function SetupBody() {
             );
           })
         )}
+
+        {/* ---- TV remote without a box ---- */}
+        {/* Above the box-pairing section on purpose: someone who has no gaming
+            machine has nothing to pair, and the fleet empty state above already
+            spends its whole card telling them to install the service. This is
+            the answer to "I only have a TV". */}
+        <Text style={[styles.sectionLabel, { marginTop: 18 }]}>NO GAMING BOX?</Text>
+        <DirectTvSetup />
 
         {/* ---- Add / pair ---- */}
         <Text style={[styles.sectionLabel, { marginTop: 18 }]}>ADD / PAIR A BOX</Text>
