@@ -17,6 +17,7 @@ import { useSyncExternalStore } from 'react';
 import { Platform } from 'react-native';
 
 import {
+  AtvCreds,
   DirectBrand,
   DirectTv,
   DirectTvState,
@@ -26,6 +27,7 @@ import {
   normalizeTvState,
 } from './model.ts';
 import { sweepCandidates, sweepForRokus, type FoundTv } from './scan.ts';
+import { dropAtvSession } from './send.ts';
 
 export type { FoundTv } from './scan.ts';
 
@@ -119,6 +121,8 @@ export async function addTv(input: {
   name: string;
   brand: DirectBrand;
   host: string;
+  /** Android TV pairing credentials; required for brand 'androidtv'. */
+  atv?: AtvCreds;
 }): Promise<DirectTv | null> {
   const existing = state.tvs.find((t) => t.brand === input.brand && t.host === input.host);
   if (existing) {
@@ -133,6 +137,7 @@ export async function addTv(input: {
     name: input.name,
     brand: input.brand,
     host: input.host,
+    ...(input.atv ? { atv: input.atv } : {}),
   };
   // Validate through the same normalizer the persisted blob goes through, so an
   // entry can never enter the store by a path the load path would reject.
@@ -145,9 +150,16 @@ export async function addTv(input: {
   return stored;
 }
 
+/** Drop any cached live session for a host (re-pair, or TV removed). Re-exported
+ *  from ./send.ts so callers need only this module. */
+export { dropAtvSession as dropTvSession } from './send.ts';
+
 export async function removeTv(id: string): Promise<void> {
+  const gone = state.tvs.find((t) => t.id === id);
   const tvs = state.tvs.filter((t) => t.id !== id);
   state = normalizeTvState({ tvs, activeTvId: state.activeTvId });
+  // A removed TV must not keep a live TLS session alive in the background.
+  if (gone) dropAtvSession(gone.host);
   emit();
   await persist();
 }

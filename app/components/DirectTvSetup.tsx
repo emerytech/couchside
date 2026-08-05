@@ -7,11 +7,13 @@
  * box. This one has no box to post to, so the TV list lives on the phone
  * (lib/tvdirect/store.ts) and the commands go straight out over the LAN.
  *
- * Only Roku is offered today, and that is a capability statement rather than a
- * shortlist: Roku's ECP is plain unauthenticated HTTP, while LG/Samsung/Google
- * TV need a raw TLS socket the app does not have yet. The other brands are
- * NAMED here with what they currently need, because "my TV isn't listed" with
- * no explanation is the worst version of this screen.
+ * Roku and Google TV are offered; LG/Samsung/Hisense are not, and that is a
+ * capability statement rather than a shortlist. Roku's ECP is plain
+ * unauthenticated HTTP and needs no pairing at all; Google TV needs a
+ * mutually-authenticated TLS session, which is why it has its own pairing card.
+ * The brands that still require a box are NAMED below with what they need,
+ * because "my TV isn't listed" with no explanation is the worst version of this
+ * screen.
  */
 import Ionicons from '@expo/vector-icons/Ionicons';
 import { useCallback, useEffect, useRef, useState } from 'react';
@@ -25,6 +27,7 @@ import {
   View,
 } from 'react-native';
 
+import { AndroidTvPairCard } from '@/components/AndroidTvPairCard';
 import { hapticSelection } from '@/lib/haptics';
 import { setPref, usePref } from '@/lib/prefs';
 import { useBoxes } from '@/lib/SettingsContext';
@@ -264,12 +267,15 @@ export function DirectTvSetup() {
         <Text style={styles.ok}>Added {state.name}. It’s on the Remote tab.</Text>
       )}
 
-      {/* Honest ceiling. These brands work TODAY through a box (Setup → your
-          box → Smart TV), and need app-side TLS sockets to work without one. */}
+      {/* Google TV pairs directly now; the rest still need a box. */}
+      <AndroidTvPairCard />
+
+      {/* Honest ceiling, narrowed: LG/Samsung/Hisense still need the box path,
+          which does support them today. */}
       <Text style={styles.note}>
-        LG, Samsung, Google TV and Hisense need a Couchside box to control for now — the app
-        can’t yet make the encrypted connection those TVs require on its own. With a box, all
-        of them work: open the box above and use its Smart TV section.
+        LG, Samsung and Hisense still need a Couchside box — the app can’t yet make the kind of
+        encrypted connection those TVs require on its own. With a box they all work: open the
+        box above and use its Smart TV section.
       </Text>
     </View>
   );

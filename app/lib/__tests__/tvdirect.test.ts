@@ -104,7 +104,9 @@ test('a TV host must be a LAN IP literal — both directions', () => {
 test('only implemented brands are offered', () => {
   // If a brand is added to DIRECT_BRANDS without a transport, the setup card
   // will offer a TV it cannot drive. Change this list only alongside a client.
-  assert.deepEqual([...DIRECT_BRANDS], ['roku']);
+  // 'androidtv' joined when the Google TV client landed (atvproto/androidtv +
+  // the native TLS adapter), proven against real hardware before being listed.
+  assert.deepEqual([...DIRECT_BRANDS], ['roku', 'androidtv']);
 });
 
 // ------------------------------------------------------------ the TV store's

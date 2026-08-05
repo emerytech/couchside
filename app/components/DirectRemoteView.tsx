@@ -1,10 +1,18 @@
 import Ionicons from '@expo/vector-icons/Ionicons';
-import { useCallback, useState } from 'react';
+import { useCallback, useMemo, useState } from 'react';
 import { Alert, Modal, Pressable, StyleSheet, Text, TextInput, View } from 'react-native';
 
 import { hapticLight } from '@/lib/haptics';
 import { DirectTv } from '@/lib/tvdirect/model';
-import { RokuKey, RokuOp, rokuKey, rokuOp, rokuText } from '@/lib/tvdirect/roku';
+import { makeConnect, sha256 } from '@/lib/tvdirect/atvnative';
+import type { RokuKey, RokuOp } from '@/lib/tvdirect/roku';
+import {
+  sendKey,
+  sendOp,
+  sendText as sendTextTo,
+  supportsPowerOn,
+  supportsText,
+} from '@/lib/tvdirect/send';
 import { mono, useTheme, useThemedStyles, type Palette } from '@/lib/theme';
 
 import { CornerBtn, Dpad, MidBtn, Rocker } from './RemoteView';
@@ -58,28 +66,32 @@ export function DirectRemoteView({ tv }: { tv: DirectTv }) {
     }
   }, []);
 
+  // The platform transport for Android TV. Roku needs none (plain HTTP), so
+  // this is only consulted for a paired androidtv record.
+  const runtime = useMemo(() => ({ makeConnect, sha256 }), []);
+
   const key = useCallback(
     (k: RokuKey) => {
       hapticLight();
-      void rokuKey(tv.host, k).then(report);
+      void sendKey(tv, k, runtime).then(report);
     },
-    [tv.host, report],
+    [tv, runtime, report],
   );
 
   const op = useCallback(
     (o: RokuOp) => {
       hapticLight();
-      void rokuOp(tv.host, o).then(report);
+      void sendOp(tv, o, runtime).then(report);
     },
-    [tv.host, report],
+    [tv, runtime, report],
   );
 
   const sendText = useCallback(() => {
     const s = textVal;
     setTextOpen(false);
     setTextVal('');
-    if (s) void rokuText(tv.host, s).then(report);
-  }, [textVal, tv.host, report]);
+    if (s) void sendTextTo(tv, s, runtime).then(report);
+  }, [textVal, tv, runtime, report]);
 
   return (
     <View style={styles.root}>
@@ -93,21 +105,28 @@ export function DirectRemoteView({ tv }: { tv: DirectTv }) {
           <Ionicons name="power" size={20} color={t.red} />
           <Text style={[styles.pwrText, { color: t.red }]}>OFF</Text>
         </Pressable>
-        <Pressable
-          onPress={() => op('power_on')}
-          style={({ pressed }) => [styles.pwr, pressed && styles.pressed]}>
-          <Ionicons name="power" size={20} color={t.green} />
-          <Text style={[styles.pwrText, { color: t.green }]}>ON</Text>
-        </Pressable>
+        {/* Power ON only where it can actually work. A Roku answers ECP in
+            standby; an Android TV's remote service is not listening while the
+            set is off, so the button would be a lie there. */}
+        {supportsPowerOn(tv) && (
+          <Pressable
+            onPress={() => op('power_on')}
+            style={({ pressed }) => [styles.pwr, pressed && styles.pressed]}>
+            <Ionicons name="power" size={20} color={t.green} />
+            <Text style={[styles.pwrText, { color: t.green }]}>ON</Text>
+          </Pressable>
+        )}
         <View style={styles.spacer} />
-        <Pressable
-          onPress={() => {
-            hapticLight();
-            setTextOpen(true);
-          }}
-          style={({ pressed }) => [styles.iconBtn, pressed && styles.pressed]}>
-          <Ionicons name="keypad" size={20} color={t.blue} />
-        </Pressable>
+        {supportsText(tv) && (
+          <Pressable
+            onPress={() => {
+              hapticLight();
+              setTextOpen(true);
+            }}
+            style={({ pressed }) => [styles.iconBtn, pressed && styles.pressed]}>
+            <Ionicons name="keypad" size={20} color={t.blue} />
+          </Pressable>
+        )}
       </View>
 
       <View style={styles.navBlock}>
