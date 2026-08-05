@@ -38,3 +38,9 @@ docs/BUILD_LOG.md
 # untracked file at the root is exactly how an unrelated copy change got swept
 # into a feature commit once already.
 *-build-prompt.md
+
+# Live-hardware test identity (a real paired client cert + private key)
+app/lib/__tests__/.atv-identity.json
+app/lib/__tests__/.atv-code.txt
+app/build-*.ipa
+scratchpad-atv/
