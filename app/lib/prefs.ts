@@ -30,6 +30,20 @@ export type LandingTab = (typeof LANDING_TABS)[number];
 export type Prefs = {
   /** Ask before suspending the box (the Suspend button in the header). */
   confirmSuspend: boolean;
+  /** REMOTE-ONLY MODE: the app is just a smart-TV remote, no Couchside box.
+   *
+   *  For someone with a smart TV and no gaming machine. On, the box tabs
+   *  (Console/Pad/Launch/Actions/Fleet) are hidden and a single Remote tab
+   *  drives a TV the phone talks to DIRECTLY over the LAN — no agent involved,
+   *  see lib/tvdirect/. Off is the shipped behaviour and stays the default;
+   *  this is opt-in, and Setup turns it on by itself only when a TV is added
+   *  while the box fleet is empty (a user with no box who just paired a TV is
+   *  telling us which mode they want).
+   *
+   *  Deliberately a pref and not derived state: someone who owns both a box and
+   *  a TV can flip to the plain remote when the box is off, and flipping it back
+   *  must not depend on the box answering. */
+  remoteOnlyMode: boolean;
   /** Which tab the app opens on.
    *
    *  Defaults to 'index' (Console) because that is what the app has ALWAYS
@@ -214,6 +228,7 @@ export type Prefs = {
 
 export const DEFAULTS: Prefs = {
   confirmSuspend: true,
+  remoteOnlyMode: false,
   landingTab: 'index',
   autoKeyboard: true,
   keyboardMode: false,
@@ -327,6 +342,7 @@ function normalize(raw: unknown): Prefs {
     appUpdateReminder,
     confirmSuspend:
       typeof o.confirmSuspend === 'boolean' ? o.confirmSuspend : DEFAULTS.confirmSuspend,
+    remoteOnlyMode: bool(o.remoteOnlyMode, DEFAULTS.remoteOnlyMode),
     landingTab,
     autoKeyboard: bool(o.autoKeyboard, DEFAULTS.autoKeyboard),
     keyboardMode: bool(o.keyboardMode, DEFAULTS.keyboardMode),

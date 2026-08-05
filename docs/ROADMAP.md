@@ -9,6 +9,44 @@ Entry fields: `priority` (P0 blocker → P3 nice) · `risk` · `affects` · `dep
 
 ## 🔨 In Progress
 
+### Remote-only mode — Couchside as just a TV remote, no box
+- **priority:** P2 · **risk:** medium (new app-side transport; shared tab/entitlement
+  plumbing) · **affects:** app only · **depends_on:** nothing for Phase 1; Phase 2 depends
+  on a self-signed-TLS spike
+- **Full spec: `docs/memory/project_remote-only-mode.md`.** Read it first — the transport
+  ladder, the phase plan and the verification ledger are all there.
+- **Owner ask 2026-08-04:** a mode for people with a smart TV and no gaming computer —
+  "a way to toggle remote only mode so its just a tv remote app." This is the AGENTLESS
+  half of the 2026-07-17 freemium decision; the FREE half stays deferred and separate.
+- **PHASE 1 BUILT 2026-08-04** (uncommitted, `claude/remote-only-smart-tv-ecb9b3`): the
+  toggle, an app-side TV store, a direct Roku ECP client, a Remote tab, and the Setup card.
+  Harness-verified by PRESSING every control against a stub Roku and reading the wire —
+  18 presses, exactly the right ECP keys, both toggle directions, and a public IP refused
+  with nothing sent. 13 new tests (mutation-checked), 170/170 suite, tsc clean.
+- **The structural finding that shapes everything:** all TV control today is
+  agent-mediated and every TV credential lives on the BOX, so a box-less path is net-new
+  code, not a re-mount of `SmartTvSetup`.
+- **Roku is the only brand app-direct today, and that is a capability statement:** its ECP
+  is plain unauthenticated HTTP. LG/Samsung/Google TV/VIDAA need raw TLS with self-signed
+  certs, which RN's WebSocket cannot do at all and `react-native-tcp-socket` can only do by
+  PINNING a cert it has no way to obtain first. Phase 2 starts with that spike, on the
+  owned LG and Samsung sets — no UI work until it resolves.
+- **NOT verified:** no real Roku is owned, so no store copy may claim Roku support yet;
+  the paywall's expired state, the iOS Local Network prompt and row overflow all need a
+  device.
+
+### First-run mode chooser — "gaming box" vs "remote only"
+- **priority:** P2 · **risk:** low (app only, one new route + one pref) · **affects:** app ·
+  **depends_on:** remote-only mode (this branch)
+- **Full spec: `docs/memory/project_first-run-mode-chooser.md`.** Owner ask 2026-08-04: "a
+  first time download tutorial that allows the user to select gaming mode or remote only
+  mode."
+- One full-screen chooser on a truly FRESH install (no boxes, no TVs, pref unset): a gaming
+  card into the existing Setup funnel, a smart-TV card that flips `remoteOnlyMode` and lands
+  on the TV card, and a "decide later" skip. Upgrading users must never see it — the
+  empty-state guards carry that, not the pref alone.
+- NOT in iOS build 115 (spec was written while that build compiled).
+
 ### Trackpad WS liveness on iOS: the couch-switch half (#245)
 `priority: P1` · `risk: med (input path)` · `affects: app/lib/gamepad.ts` · `depends_on: —`
 - **Idle churn: DONE, shipped** in agent 2.9.53 (box-driven WS PING; the phone's OS

@@ -1,0 +1,117 @@
+/**
+ * The app-side TV device model for REMOTE-ONLY mode. ZERO runtime imports.
+ *
+ * Remote-only mode is the app driving a smart TV directly over the LAN with no
+ * Couchside box in the picture. That inverts the model the rest of the app is
+ * built on: every TV control today is agent-mediated, and every TV credential
+ * lives in the BOX's /etc/couchside/config.json. With no box there is no agent
+ * and no config file, so the phone has to own the device record itself.
+ *
+ * WHY A TV IS NOT A `Box`. Reusing lib/settings.ts's Box would be one field
+ * cheaper and wrong: every Box consumer polls /api/status, opens /ws/gamepad,
+ * syncs caps and expects a bearer token. A TV answers none of that, so a TV
+ * masquerading as a Box would produce a fleet entry that is permanently
+ * "unreachable" while working fine. Separate store, separate type.
+ *
+ * Import-free for the same reason lib/lanIp.ts is: this file holds the
+ * validation that decides what the app will send commands to, and the bare-Node
+ * test runner cannot load anything that imports react-native.
+ */
+
+import { isValidLanIp } from '../lanIp.ts';
+
+/** Brands the app can drive DIRECTLY (no box). Distinct from the agent's larger
+ *  backend list — webos/samsung/androidtv/vidaa all need raw TLS sockets the app
+ *  does not have yet, so they are absent here rather than listed-and-broken. */
+export const DIRECT_BRANDS = ['roku'] as const;
+export type DirectBrand = (typeof DIRECT_BRANDS)[number];
+
+export type DirectTv = {
+  /** Stable id within the list ('tv-N'). */
+  id: string;
+  /** User-facing name, defaulted from the TV's own device-info. */
+  name: string;
+  brand: DirectBrand;
+  /** LAN IPv4 literal. Names are refused — see isValidLanIp. */
+  host: string;
+};
+
+export type DirectTvState = {
+  tvs: DirectTv[];
+  activeTvId: string | null;
+};
+
+export const EMPTY_TV_STATE: DirectTvState = { tvs: [], activeTvId: null };
+
+/**
+ * Accept a host for a direct TV connection.
+ *
+ * IP literals in LAN space only, reusing the KI-033-hardened gate rather than
+ * writing a second address rule. Hostnames are refused deliberately: what a name
+ * resolves to is decided by whoever answers DNS, and the whole promise of this
+ * mode is that the phone only ever talks to something on the local network.
+ * A user with a TV on a name can type its IP; a TV that only has a name is a
+ * case we have not proven, and refusing is the closed direction.
+ */
+export function isValidTvHost(v: unknown): v is string {
+  return typeof v === 'string' && isValidLanIp(v);
+}
+
+function isBrand(v: unknown): v is DirectBrand {
+  return typeof v === 'string' && (DIRECT_BRANDS as readonly string[]).includes(v);
+}
+
+/**
+ * Coerce one persisted entry, or null if it cannot be trusted.
+ *
+ * Drops rather than repairs: an entry with a bad host is a command destination
+ * we cannot vouch for, and the repo rule is reject-don't-sanitise. A missing
+ * name is cosmetic, so that one is defaulted.
+ */
+export function normalizeTv(raw: unknown): DirectTv | null {
+  if (!raw || typeof raw !== 'object') return null;
+  const o = raw as Record<string, unknown>;
+  if (typeof o.id !== 'string' || o.id.length === 0) return null;
+  if (!isBrand(o.brand)) return null;
+  if (!isValidTvHost(o.host)) return null;
+  const name =
+    typeof o.name === 'string' && o.name.trim().length > 0 ? o.name.trim() : o.host;
+  return { id: o.id, name, brand: o.brand, host: o.host };
+}
+
+/** Coerce a whole persisted blob. Never throws; an unusable blob yields empty. */
+export function normalizeTvState(raw: unknown): DirectTvState {
+  if (!raw || typeof raw !== 'object') return EMPTY_TV_STATE;
+  const o = raw as Record<string, unknown>;
+  const list = Array.isArray(o.tvs) ? o.tvs : [];
+  const tvs: DirectTv[] = [];
+  for (const entry of list) {
+    const tv = normalizeTv(entry);
+    // Dedupe on brand+host: the same TV added twice is one device, and two
+    // entries would make the active-id pointer ambiguous.
+    if (tv && !tvs.some((t) => t.brand === tv.brand && t.host === tv.host)) tvs.push(tv);
+  }
+  const wanted = typeof o.activeTvId === 'string' ? o.activeTvId : null;
+  // A dangling active id falls back to the first TV rather than to null: the
+  // remote screen with a list of TVs and none selected is a dead end.
+  const activeTvId = tvs.some((t) => t.id === wanted) ? wanted : (tvs[0]?.id ?? null);
+  return { tvs, activeTvId };
+}
+
+/** Next free id for a list. Counter-free so it is a pure function of the list. */
+export function nextTvId(tvs: DirectTv[]): string {
+  let n = 0;
+  for (const t of tvs) {
+    const m = /^tv-(\d+)$/.exec(t.id);
+    if (m) {
+      const v = Number(m[1]);
+      if (Number.isFinite(v) && v >= n) n = v + 1;
+    }
+  }
+  return `tv-${n}`;
+}
+
+/** The active TV, or null. */
+export function activeTv(state: DirectTvState): DirectTv | null {
+  return state.tvs.find((t) => t.id === state.activeTvId) ?? null;
+}
