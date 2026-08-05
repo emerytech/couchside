@@ -20,11 +20,28 @@
 
 import { isValidLanIp } from '../lanIp.ts';
 
-/** Brands the app can drive DIRECTLY (no box). Distinct from the agent's larger
- *  backend list — webos/samsung/androidtv/vidaa all need raw TLS sockets the app
- *  does not have yet, so they are absent here rather than listed-and-broken. */
-export const DIRECT_BRANDS = ['roku'] as const;
+/** Brands the app can drive DIRECTLY (no box). Still short of the agent's list:
+ *  webos/samsung/vidaa need TLS work of their own and are absent here rather
+ *  than listed-and-broken. `androidtv` covers Google TV and Android TV sets. */
+export const DIRECT_BRANDS = ['roku', 'androidtv'] as const;
 export type DirectBrand = (typeof DIRECT_BRANDS)[number];
+
+/**
+ * Credentials for a paired Android TV. Absent on Roku, which needs none (its
+ * ECP is unauthenticated).
+ *
+ * `caPem` is the TV's OWN certificate, captured when the user paired. It is
+ * pinned on every later connection, because react-native-tcp-socket has no
+ * "accept any self-signed peer" mode — so this is both the workaround and a
+ * stronger guarantee than the dev-side rejectUnauthorized:false: only the exact
+ * certificate this TV presented at pairing time is accepted afterwards.
+ */
+export type AtvCreds = {
+  certPem: string;
+  keyPem: string;
+  modulusHex: string;
+  caPem: string;
+};
 
 export type DirectTv = {
   /** Stable id within the list ('tv-N'). */
@@ -34,6 +51,10 @@ export type DirectTv = {
   brand: DirectBrand;
   /** LAN IPv4 literal. Names are refused — see isValidLanIp. */
   host: string;
+  /** Android TV only. A record without these cannot be driven, so normalizeTv
+   *  DROPS an androidtv entry that lacks them rather than keeping a TV whose
+   *  every keypress would fail. */
+  atv?: AtvCreds;
 };
 
 export type DirectTvState = {
@@ -76,7 +97,32 @@ export function normalizeTv(raw: unknown): DirectTv | null {
   if (!isValidTvHost(o.host)) return null;
   const name =
     typeof o.name === 'string' && o.name.trim().length > 0 ? o.name.trim() : o.host;
-  return { id: o.id, name, brand: o.brand, host: o.host };
+  const tv: DirectTv = { id: o.id, name, brand: o.brand, host: o.host };
+  if (o.brand === 'androidtv') {
+    // An Android TV without credentials cannot be driven at all — every key
+    // would fail on a TLS handshake. Keeping such a record would put a dead
+    // device in the picker, so it is dropped like a bad host is.
+    const creds = normalizeAtvCreds(o.atv);
+    if (!creds) return null;
+    tv.atv = creds;
+  }
+  return tv;
+}
+
+function normalizeAtvCreds(raw: unknown): AtvCreds | null {
+  if (!raw || typeof raw !== 'object') return null;
+  const o = raw as Record<string, unknown>;
+  const pem = (v: unknown, marker: string) =>
+    typeof v === 'string' && v.includes(marker) ? v : null;
+  const certPem = pem(o.certPem, 'BEGIN CERTIFICATE');
+  const keyPem = pem(o.keyPem, 'PRIVATE KEY');
+  const caPem = pem(o.caPem, 'BEGIN CERTIFICATE');
+  const modulusHex =
+    typeof o.modulusHex === 'string' && /^[0-9a-f]+$/i.test(o.modulusHex)
+      ? o.modulusHex.toLowerCase()
+      : null;
+  if (!certPem || !keyPem || !caPem || !modulusHex) return null;
+  return { certPem, keyPem, caPem, modulusHex };
 }
 
 /** Coerce a whole persisted blob. Never throws; an unusable blob yields empty. */
