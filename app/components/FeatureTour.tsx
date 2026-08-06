@@ -89,24 +89,33 @@ export function FeatureTour({
       />
 
       <View style={[styles.card, { bottom: cardBottom }]} pointerEvents="box-none">
-        <View style={styles.head}>
-          <Text style={styles.count}>{stepLabel(state)}</Text>
-          <Pressable onPress={onSkip} hitSlop={10} accessibilityRole="button">
-            <Text style={styles.skip}>SKIP</Text>
-          </Pressable>
-        </View>
+        <Text style={styles.count}>{stepLabel(state)}</Text>
         <Text style={styles.title}>{step.title}</Text>
         <Text style={styles.body}>{step.body}</Text>
-        <Pressable
-          onPress={() => {
-            hapticLight();
-            onNext();
-          }}
-          accessibilityRole="button"
-          style={({ pressed }) => [styles.next, pressed && styles.pressed]}>
-          <Text style={styles.nextText}>GOT IT</Text>
-          <Ionicons name="arrow-forward" size={14} color="#04140c" />
-        </Pressable>
+        {/* Skip sits BESIDE Next, not as small print in a corner: a tour with
+            twelve steps needs an obvious way out, or it is a hostage situation. */}
+        <View style={styles.actions}>
+          <Pressable
+            onPress={() => {
+              hapticLight();
+              onSkip();
+            }}
+            accessibilityRole="button"
+            accessibilityLabel="Skip the tour"
+            style={({ pressed }) => [styles.skipBtn, pressed && styles.pressed]}>
+            <Text style={styles.skipText}>SKIP TOUR</Text>
+          </Pressable>
+          <Pressable
+            onPress={() => {
+              hapticLight();
+              onNext();
+            }}
+            accessibilityRole="button"
+            style={({ pressed }) => [styles.next, pressed && styles.pressed]}>
+            <Text style={styles.nextText}>GOT IT</Text>
+            <Ionicons name="arrow-forward" size={14} color="#04140c" />
+          </Pressable>
+        </View>
       </View>
     </View>
   );
@@ -134,13 +143,23 @@ const makeStyles = (t: Palette) =>
       padding: 16,
       gap: 8,
     },
-    head: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between' },
     count: { color: t.textDim, fontSize: 11, letterSpacing: 1, fontFamily: mono },
-    skip: { color: t.textDim, fontSize: 11, letterSpacing: 1, fontFamily: mono, fontWeight: '700' },
+    actions: { flexDirection: 'row', gap: 10, marginTop: 4 },
+    skipBtn: {
+      flex: 1,
+      alignItems: 'center',
+      justifyContent: 'center',
+      borderRadius: 11,
+      paddingVertical: 12,
+      backgroundColor: t.inset,
+      borderWidth: 1,
+      borderColor: t.cardBorder,
+    },
+    skipText: { color: t.textDim, fontSize: 13, fontWeight: '800', letterSpacing: 1, fontFamily: mono },
     title: { color: t.text, fontSize: 17, fontWeight: '800' },
     body: { color: t.textDim, fontSize: 13, lineHeight: 19 },
     next: {
-      marginTop: 4,
+      flex: 1,
       flexDirection: 'row',
       alignItems: 'center',
       justifyContent: 'center',

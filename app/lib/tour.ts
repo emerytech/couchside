@@ -17,31 +17,80 @@
 
 export type TourStep = {
   /** Route name of the tab this step points at. */
-  tab: 'index' | 'launch' | 'pad' | 'actions';
+  tab: 'index' | 'launch' | 'pad' | 'actions' | 'setup';
   title: string;
   body: string;
 };
 
 export const TOUR_STEPS: TourStep[] = [
+  // CONSOLE — why the app exists.
   {
     tab: 'index',
-    title: 'Your box, at a glance',
-    body: 'Temperature, memory, disks and the logs — the screen to open when the TV goes black and you need to know whether the machine is even awake.',
+    title: 'Is the box even awake?',
+    body: 'Temperature, load, memory and disks, live. The first thing to check when the TV is black and the controller does nothing.',
+  },
+  {
+    tab: 'index',
+    title: 'See the screen from here',
+    body: 'Pull a still frame of what the TV is actually showing — the difference between "it crashed" and "it is sitting on a login prompt".',
+  },
+  {
+    tab: 'index',
+    title: 'Read the logs without a keyboard',
+    body: 'The services you care about and their journal, on the phone. No SSH, no crawling behind the TV.',
+  },
+
+  // LAUNCH — the thing people open it for daily.
+  {
+    tab: 'launch',
+    title: 'Your library, with cover art',
+    body: 'Every game the box has. Tap one and it starts on the TV — no Big Picture menus, no hunting with a D-pad.',
   },
   {
     tab: 'launch',
-    title: 'Your games, in your hand',
-    body: 'The whole library with its cover art. Tap a game and it starts on the TV — no Big Picture menus, no hunting with a D-pad.',
+    title: 'Tap asks before it launches',
+    body: 'A tap opens the game rather than starting it, with playtime and when you last opened it. Launching takes over the TV, so it is never one stray tap.',
+  },
+  {
+    tab: 'launch',
+    title: 'Narrow it down',
+    body: 'Filter by never-played, under two hours, or not touched in a year. The button counts as you go, so you can see the shortlist shrink.',
+  },
+  {
+    tab: 'launch',
+    title: 'Or let it choose',
+    body: 'The shuffle picks from whatever is currently showing — so "something short I have never played" is one tap away.',
+  },
+
+  // PAD — the hardware replacement.
+  {
+    tab: 'pad',
+    title: 'The phone is a controller',
+    body: 'A real gamepad the box cannot tell from plastic: sticks, D-pad, triggers, haptics. For when the real one is dead or across the room.',
   },
   {
     tab: 'pad',
-    title: 'The phone is the controller',
-    body: 'A real gamepad the box cannot tell from plastic, plus a trackpad and a keyboard for the moments a controller cannot help — a login box, a launcher update.',
+    title: 'Trackpad, swipe, and a keyboard',
+    body: 'Swipe like an Apple TV remote, or use it as a trackpad and type into the box — for the login boxes and launcher updates a controller cannot handle.',
+  },
+
+  // ACTIONS — the rescue.
+  {
+    tab: 'actions',
+    title: 'Unstick a frozen display',
+    body: 'Restart the display when the TV goes black but the machine is plainly still running. The one that saves the evening.',
   },
   {
     tab: 'actions',
-    title: 'Fix it from the couch',
-    body: 'Restart a frozen display, switch to desktop, reboot or power off — grouped by how much each one interrupts, so nothing destructive is one stray tap away.',
+    title: 'Grouped by what it costs you',
+    body: 'Routine, changes-what-is-on-screen, and ends-your-session are separated on purpose — nothing destructive sits next to something harmless.',
+  },
+
+  // SETUP — where the rest lives.
+  {
+    tab: 'setup',
+    title: 'Everything else lives here',
+    body: 'Add more boxes, switch between them, and turn things on or off — including this tour, if you ever want to watch it again.',
   },
 ];
 
