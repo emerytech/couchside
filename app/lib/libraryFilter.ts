@@ -36,6 +36,9 @@ export type PlayedFilter =
   /** Played two hours or more. */
   | 'over2h';
 
+import type { Compat, DeckStatus, ProtonTier } from './compat.ts';
+import { matchesCompat } from './compat.ts';
+
 export type FilterState = {
   /** Case-insensitive substring of the title. */
   search: string;
@@ -44,6 +47,10 @@ export type FilterState = {
   played: PlayedFilter;
   /** Only games not launched in this many days. 0/undefined = no constraint. */
   staleDays?: number;
+  /** Steam Deck ratings to keep; empty = all. Unknown always passes. */
+  deck?: DeckStatus[];
+  /** ProtonDB tiers to keep; empty = all. Unknown always passes. */
+  proton?: ProtonTier[];
 };
 
 export const EMPTY_FILTER: FilterState = { search: '', kinds: [], played: 'any' };
@@ -67,7 +74,9 @@ export function isFiltering(f: FilterState): boolean {
     f.search.trim() !== '' ||
     f.kinds.length > 0 ||
     f.played !== 'any' ||
-    (f.staleDays ?? 0) > 0
+    (f.staleDays ?? 0) > 0 ||
+    (f.deck?.length ?? 0) > 0 ||
+    (f.proton?.length ?? 0) > 0
   );
 }
 
@@ -94,23 +103,33 @@ function matchesStale(g: FilterableGame, staleDays: number | undefined, nowSec: 
   return nowSec - g.last_played >= staleDays * 86400;
 }
 
-/** Does one game survive the filter? */
-export function matches(g: FilterableGame, f: FilterState, nowSec: number): boolean {
+/** Does one game survive the filter? `compat` is optional — a library with no
+ *  ratings loaded behaves exactly as before. */
+export function matches(
+  g: FilterableGame,
+  f: FilterState,
+  nowSec: number,
+  compat?: Compat,
+): boolean {
   const q = f.search.trim().toLowerCase();
   if (q && !g.label.toLowerCase().includes(q)) return false;
   if (f.kinds.length && !f.kinds.includes(g.kind)) return false;
   if (!matchesPlayed(g, f.played)) return false;
   if (!matchesStale(g, f.staleDays, nowSec)) return false;
+  if (!matchesCompat(compat, f.deck ?? [], f.proton ?? [])) return false;
   return true;
 }
 
 /** The surviving games, order preserved. */
-export function applyFilter<T extends FilterableGame>(
+export function applyFilter<T extends FilterableGame & { appid?: number }>(
   games: T[],
   f: FilterState,
   nowSec: number,
+  compat?: Record<number, Compat>,
 ): T[] {
-  return games.filter((g) => matches(g, f, nowSec));
+  return games.filter((g) =>
+    matches(g, f, nowSec, g.appid != null ? compat?.[g.appid] : undefined),
+  );
 }
 
 /**
@@ -118,9 +137,16 @@ export function applyFilter<T extends FilterableGame>(
  * makes filtering feel like an interaction rather than a chore ("SHOW 272
  * GAMES" falling as you narrow).
  */
-export function countMatching(games: FilterableGame[], f: FilterState, nowSec: number): number {
+export function countMatching(
+  games: (FilterableGame & { appid?: number })[],
+  f: FilterState,
+  nowSec: number,
+  compat?: Record<number, Compat>,
+): number {
   let n = 0;
-  for (const g of games) if (matches(g, f, nowSec)) n += 1;
+  for (const g of games) {
+    if (matches(g, f, nowSec, g.appid != null ? compat?.[g.appid] : undefined)) n += 1;
+  }
   return n;
 }
 
@@ -128,6 +154,25 @@ export function countMatching(games: FilterableGame[], f: FilterState, nowSec: n
 export function countLabel(n: number): string {
   if (n === 0) return 'NO GAMES MATCH';
   return `SHOW ${n.toLocaleString()} GAME${n === 1 ? '' : 'S'}`;
+}
+
+/**
+ * Pick one game at random from a filtered list — "just choose for me".
+ *
+ * The point on Couchside is that the pick is LAUNCHABLE: elsewhere a shuffle
+ * ends at a suggestion, here it ends at the game starting on the TV.
+ *
+ * `rand` is injected so this is testable; production passes Math.random.
+ * Returns null for an empty list rather than throwing, because "no games match"
+ * is a normal state of the filter above it.
+ */
+export function pickRandom<T>(games: T[], rand: () => number = Math.random): T | null {
+  if (!games.length) return null;
+  const i = Math.floor(rand() * games.length);
+  // Guard the rand() === 1 edge: Math.random() never returns 1, but an injected
+  // or future generator might, and an out-of-range index would return undefined
+  // while the type still claims T.
+  return games[Math.min(i, games.length - 1)] ?? null;
 }
 
 /** "12h 30m" / "45m" / "never". For the tile's playtime line. */

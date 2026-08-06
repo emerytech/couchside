@@ -93,9 +93,31 @@ presets. This is useful on day one and proves the interaction.
 app-side, cached, opt-in. The metal pill on the tile. Now "what runs well here"
 is answerable.
 
-**Phase 3 — time to beat.** HowLongToBeat hours and the STORY / EXTRAS /
-COMPLETION row, IF the ToS review clears. Enables the real query: *"something
-that runs great and I can finish this weekend."*
+**Phase 3 — time to beat. DROPPED 2026-08-06. Do not build this.**
+
+The ToS review did not clear, and the answer is not ambiguous. HowLongToBeat is
+Ziff Davis property, and its robots.txt states:
+
+> Use of any robot, crawler, or other tool to scrape, harvest, extract, or
+> retrieve any content on this website using automated means is prohibited
+> without written permission from Ziff Davis. Prohibited uses include ... (4) any
+> commercial purposes.
+
+It also carries `Disallow: /api` — the exact path any integration would use.
+Couchside is a paid app, so this is prohibited on three independent counts:
+automated retrieval, the disallowed path, and commercial use.
+
+**Routes that would make it legitimate**, if the feature is ever wanted enough:
+1. Written permission from licensing@ziffdavis.com. That is the intended path —
+   the robots.txt names the contact.
+2. A different source. IGDB (Twitch/Amazon) publishes `game_time_to_beats`
+   through an official, documented API. But it authenticates with a client
+   id/secret, which cannot ship inside the app binary — it would need the proxy
+   server this design has already rejected twice. So IGDB trades a legal
+   problem for an architectural one.
+
+Until one of those is true, the honest answer is that Couchside does not show
+time-to-beat.
 
 **Phase 4 — triage actions.** Unplayed / unfinished switches, bookmarks, and a
 shuffle ("pick something for me") — which on Couchside means **it launches**.

@@ -8,7 +8,7 @@
  * a native build with react-native-udp (scanAvailable).
  */
 import Ionicons from '@expo/vector-icons/Ionicons';
-import React, { useCallback, useState } from 'react';
+import React, { useCallback, useEffect, useRef, useState } from 'react';
 import { ActivityIndicator, Pressable, StyleSheet, Text, TextInput, View } from 'react-native';
 
 import { pairFinish, pairStart } from '@/lib/api';
@@ -25,7 +25,17 @@ type Phase =
   | { k: 'pin'; box: FoundBox } // box is showing a PIN; awaiting entry
   | { k: 'pairing'; box: FoundBox };
 
-export function BoxScanPair() {
+export function BoxScanPair({
+  autoStart,
+  onOutcome,
+}: {
+  /** Run the scan on mount. First-run uses this so the app LOOKS for the box
+   *  before telling anyone to go install anything. */
+  autoStart?: boolean;
+  /** How many boxes the last scan found. Lets a first-run wrapper reveal the
+   *  install steps only AFTER a search has actually come up empty. */
+  onOutcome?: (found: number) => void;
+} = {}) {
   const t = useTheme();
   const styles = useThemedStyles(makeStyles);
   const { addBox } = useBoxes();
@@ -39,6 +49,7 @@ export function BoxScanPair() {
     try {
       const boxes = await scanForBoxes({ timeoutMs: 3000 });
       setPhase({ k: 'list', boxes });
+      onOutcome?.(boxes.length);
       if (boxes.length === 0) {
         // Say WHY, not just WHAT. The scan can only sweep this device's own
         // /24, so a box on a different subnet is invisible to it however
@@ -66,6 +77,7 @@ export function BoxScanPair() {
       }
     } catch {
       setPhase({ k: 'idle' });
+      onOutcome?.(0);
       setMsg({ ok: false, text: 'Scan needs a newer build of the app.' });
     }
   }, []);
@@ -90,6 +102,16 @@ export function BoxScanPair() {
       setMsg({ ok: false, text: 'Could not reach that box.' });
     }
   }, []);
+
+  // First run searches by itself: telling someone to install something before
+  // even looking for what they may already have is the "overwhelming setup
+  // page" this fixes. Once only — a re-scan is the user's to ask for.
+  const didAuto = useRef(false);
+  useEffect(() => {
+    if (!autoStart || didAuto.current) return;
+    didAuto.current = true;
+    void scan();
+  }, [autoStart, scan]);
 
   const submitPin = useCallback(async () => {
     if (phase.k !== 'pin') return;

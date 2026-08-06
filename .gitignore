@@ -43,4 +43,6 @@ docs/BUILD_LOG.md
 app/lib/__tests__/.atv-identity.json
 app/lib/__tests__/.atv-code.txt
 app/build-*.ipa
+# `eas build --local` leaves the staged project tarball behind next to the ipa.
+app/build-*.tar.gz
 scratchpad-atv/

@@ -33,6 +33,8 @@ import { buildPairLink } from '@/lib/pairLink';
 import { GuideHoldSetup } from '@/components/GuideHoldSetup';
 import { SmartTvSetup } from '@/components/SmartTvSetup';
 import { TabScreen } from '@/components/TabScreen';
+import { TourAnchor } from '@/components/TourAnchor';
+import { registerScroller } from '@/hooks/useTourAnchor';
 import { useLockOrientation } from '@/hooks/useLockOrientation';
 import { api, ApiError } from '@/lib/api';
 import { isGenuinelyPurchased, recordPurchaseDate } from '@/lib/entitlement';
@@ -60,8 +62,10 @@ import {
   type MediaHoldSkipSec,
   type MediaSkipSec,
 } from '@/lib/mediaSeek';
+import { clearCompatCache } from '@/lib/compatFetch';
+import { resetFeatureTour } from '@/hooks/useFeatureTour';
 import { setPref, usePref } from '@/lib/prefs';
-import { buy, getProduct, restoreFromUserAction } from '@/lib/purchase';
+import { buy, userFacingPurchaseError, getProduct, restoreFromUserAction } from '@/lib/purchase';
 import { Box, DEFAULT_PORT, normalizeMac } from '@/lib/settings';
 import { VolumeTarget } from '@/lib/api';
 import { useBoxes, useBoxOnlineStatus, BoxReachability } from '@/lib/SettingsContext';
@@ -669,10 +673,12 @@ function CategoryTabs({ tab, onTab }: { tab: SetupTab; onTab: (t: SetupTab) => v
   const pal = useTheme();
   const styles = useThemedStyles(makeStyles);
   return (
-    <View style={styles.tabBar}>
+    // TourAnchor REPLACES the bar's View and inherits styles.tabBar, so the row
+    // is the same box it always was — see components/TourAnchor.tsx.
+    <TourAnchor id="setup.tabs" style={styles.tabBar}>
       {SETUP_TABS.map((t) => {
         const active = t.key === tab;
-        return (
+        const seg = (
           <Pressable
             key={t.key}
             onPress={() => {
@@ -686,8 +692,20 @@ function CategoryTabs({ tab, onTab }: { tab: SetupTab; onTab: (t: SetupTab) => v
             </Text>
           </Pressable>
         );
+        // Logs gets its own anchor so the tour can point at the segment rather
+        // than the whole bar. The wrapper carries flex:1 because that is what
+        // makes it layout-neutral: styles.tabItem is flex:1, and a default
+        // (flex:0) wrapper would collapse Logs to its text width while the
+        // other three kept expanding — the segment would visibly shrink.
+        return t.key === 'logs' ? (
+          <TourAnchor key={t.key} id="setup.logs" style={{ flex: 1 }}>
+            {seg}
+          </TourAnchor>
+        ) : (
+          seg
+        );
       })}
-    </View>
+    </TourAnchor>
   );
 }
 
@@ -781,6 +799,19 @@ function SetupBody() {
   const scheme = useResolvedScheme();
   const confirmSuspend = usePref('confirmSuspend');
   const streakCelebrations = usePref('streakCelebrations');
+  const compatLookups = usePref('compatLookups');
+  const featureTour = usePref('featureTour');
+  const remoteOnlyOn = usePref('remoteOnlyMode');
+  // DETECT, DO NOT PRESUME. This used to spring open for anyone with no box —
+  // which meant a brand-new user landed on the box install steps AND a full TV
+  // pairing form at once, before they had done anything. Reported as "the
+  // overwhelming setup page".
+  //
+  // A user with no box is far more likely to be mid-install than to own no PC
+  // at all, so the box path leads and this stays a quiet one-line offer they
+  // can take if it does not apply to them. Open only once remote-only mode is
+  // actually on, when it IS the section that matters.
+  const tvRemoteOpenByDefault = remoteOnlyOn;
   const defaultPadMode = usePref('defaultPadMode');
   const landingTab = usePref('landingTab');
   const autoKeyboard = usePref('autoKeyboard');
@@ -841,7 +872,10 @@ function SetupBody() {
     } else if (result.reason === 'unavailable') {
       setRestoreMsg({ text: 'Store unavailable, try again later.', ok: false });
     } else if (result.reason === 'error') {
-      setRestoreMsg({ text: result.message || 'Purchase failed, try again.', ok: false });
+      setRestoreMsg({
+        text: userFacingPurchaseError(result.message) ?? 'Purchase failed, try again.',
+        ok: false,
+      });
     }
     setBuying(false);
   }, [recordPurchase]);
@@ -854,6 +888,8 @@ function SetupBody() {
       if (result.purchaseDateMs != null) await recordPurchaseDate(result.purchaseDateMs);
       await recordPurchase();
       setRestoreMsg({ text: 'Purchase restored, unlocked.', ok: true });
+    } else if (result.state === 'cancelled') {
+      // Backed out of the store sheet: no message at all.
     } else if (result.state === 'none') {
       // Not "you have no purchase" — we cannot know that. A promo code redeemed
       // in the App Store app can still be missing here if the reconcile failed,
@@ -889,6 +925,12 @@ function SetupBody() {
   // Scan + PIN is the primary way to add a box; the manual host/port/token card
   // is a collapsed "advanced" fallback (headless / cross-subnet / non-Linux).
   const [showManual, setShowManual] = useState(false);
+  // The TV-remote block is tall — toggle, blurb, scan, IP, brand picker, MAC,
+  // pair button — and someone who owns a box scrolls past all of it every time
+  // they open Setup. Collapsed by default for them; open by default for someone
+  // with NO box, since they are exactly who it is for. Once remote-only mode is
+  // actually on it stays open, because then it is the section that matters.
+  const [showTvRemote, setShowTvRemote] = useState<boolean | null>(null);
 
   const draftConn = useCallback(() => {
     const p = parseInt(port, 10);
@@ -986,6 +1028,21 @@ function SetupBody() {
     }
   }, [params.tab, router]);
 
+  // Let the feature tour scroll a section into view before spotlighting it.
+  // DELIBERATELY the body ScrollView, never the Logs FlatList: Logs renders
+  // OUTSIDE this ScrollView (it hosts its own list — see below), and both
+  // anchors this screen registers live in the fixed header anyway, so this only
+  // ever has to move body content.
+  const scrollRef = useRef<ScrollView>(null);
+  const scrollY = useRef(0);
+  useEffect(
+    () =>
+      registerScroller('setup', (dy) => {
+        scrollRef.current?.scrollTo({ y: Math.max(0, scrollY.current + dy), animated: true });
+      }),
+    [],
+  );
+
   return (
     <KeyboardAvoidingView
       style={styles.screen}
@@ -1029,6 +1086,11 @@ function SetupBody() {
         </Gated>
       )}
       <ScrollView
+        ref={scrollRef}
+        onScroll={(e) => {
+          scrollY.current = e.nativeEvent.contentOffset.y;
+        }}
+        scrollEventThrottle={16}
         style={tab === 'logs' ? styles.hidden : undefined}
         contentContainerStyle={{
           paddingTop: 14,
@@ -1132,7 +1194,19 @@ function SetupBody() {
             spends its whole card telling them to install the service. This is
             the answer to "I only have a TV". */}
         <Text style={[styles.sectionLabel, { marginTop: 18 }]}>NO GAMING BOX?</Text>
-        <DirectTvSetup />
+        {/* null = not yet touched, so the default is derived rather than frozen
+            at first render: it opens by itself for a user with no box. */}
+        <Pressable
+          onPress={() => setShowTvRemote((v) => !(v ?? tvRemoteOpenByDefault))}
+          style={styles.advancedToggle}>
+          <Text style={styles.advancedToggleText}>No gaming PC? Use Couchside as a TV remote</Text>
+          <Ionicons
+            name={(showTvRemote ?? tvRemoteOpenByDefault) ? 'chevron-up' : 'chevron-down'}
+            size={16}
+            color={t.textDim}
+          />
+        </Pressable>
+        {(showTvRemote ?? tvRemoteOpenByDefault) ? <DirectTvSetup /> : null}
 
         {/* ---- Add / pair ---- */}
         <Text style={[styles.sectionLabel, { marginTop: 18 }]}>ADD / PAIR A BOX</Text>
@@ -1319,6 +1393,30 @@ function SetupBody() {
                 value={confirmSuspend}
                 onValueChange={(v) => {
                   void setPref('confirmSuspend', v);
+                  hapticSelection();
+                }}
+              />
+              <TogglePref
+                label="Look up game compatibility"
+                sub="Shows Steam Deck and ProtonDB ratings on your library. This is the one thing that leaves your phone — it sends a game id to Valve and ProtonDB, nothing about you, and never involves your box. Off clears what was stored."
+                value={compatLookups}
+                onValueChange={(v) => {
+                  void setPref('compatLookups', v);
+                  // Turning it off REMOVES what it collected rather than just
+                  // hiding it — otherwise "off" would be a lie about the data.
+                  if (!v) void clearCompatCache();
+                  hapticSelection();
+                }}
+              />
+              <TogglePref
+                label="Feature tour"
+                sub="A short spotlight walkthrough of the tabs. Switch it back on to watch it again."
+                value={featureTour}
+                onValueChange={(v) => {
+                  void setPref('featureTour', v);
+                  // Switching it back ON means "show me again" — otherwise the
+                  // control is dead once the tour has run once.
+                  if (v) void resetFeatureTour();
                   hapticSelection();
                 }}
               />

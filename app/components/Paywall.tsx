@@ -4,7 +4,7 @@ import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
 import { recordPurchaseDate } from '@/lib/entitlement';
 import { useEntitlement } from '@/lib/EntitlementContext';
-import { buy, getProduct, restoreFromUserAction } from '@/lib/purchase';
+import { buy, userFacingPurchaseError, getProduct, restoreFromUserAction } from '@/lib/purchase';
 import { mono, useThemedStyles } from '@/lib/theme';
 import type { Palette } from '@/lib/theme';
 
@@ -45,7 +45,7 @@ export default function Paywall() {
     } else if (result.reason === 'unavailable') {
       setError('Store unavailable. Please try again later.');
     } else if (result.reason === 'error') {
-      setError(result.message || 'Purchase failed. Please try again.');
+      setError(userFacingPurchaseError(result.message) ?? 'Purchase failed. Please try again.');
     }
     // 'cancelled': no error text, the user changed their mind
     setBusy(null);
@@ -58,6 +58,9 @@ export default function Paywall() {
     if (result.state === 'purchased') {
       if (result.purchaseDateMs != null) await recordPurchaseDate(result.purchaseDateMs);
       await recordPurchase();
+    } else if (result.state === 'cancelled') {
+      // Backed out of the store's own sheet — nothing was checked, so nothing
+      // is claimed and nothing is said.
     } else if (result.state === 'none') {
       // See the same message in setup.tsx: we cannot know the user has no
       // purchase, only that this device's store cache has none.

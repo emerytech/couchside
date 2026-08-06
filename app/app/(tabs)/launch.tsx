@@ -23,8 +23,13 @@ import {
 } from 'react-native';
 
 import { Gated } from '@/components/Gated';
+import { GameSheet } from '@/components/GameSheet';
+import { useCompat } from '@/hooks/useCompat';
+import { type Compat, deckLabel, protonLabel } from '@/lib/compat';
 import { LibraryFilterSheet } from '@/components/LibraryFilterSheet';
 import { TabScreen } from '@/components/TabScreen';
+import { TourAnchor } from '@/components/TourAnchor';
+import { registerScroller } from '@/hooks/useTourAnchor';
 import { useLockOrientation } from '@/hooks/useLockOrientation';
 import { usePoll } from '@/hooks/usePoll';
 import {
@@ -39,7 +44,7 @@ import {
 } from '@/lib/api';
 import { hapticError, hapticLight, hapticMedium, hapticSelection, hapticSuccess } from '@/lib/haptics';
 import { fmtGB, fmtPair, fmtTotal } from '@/lib/downloadSize';
-import { applyFilter, EMPTY_FILTER, isFiltering, type FilterState } from '@/lib/libraryFilter';
+import { applyFilter, EMPTY_FILTER, isFiltering, pickRandom, type FilterState } from '@/lib/libraryFilter';
 import { setPref, usePref } from '@/lib/prefs';
 import { useBoxes, useSettings } from '@/lib/SettingsContext';
 import { mono, useTheme, useThemedStyles, type Palette } from '@/lib/theme';
@@ -69,6 +74,8 @@ type TileProps = {
   /** Bumped on pull-to-refresh to retry a cover that previously failed to load. */
   retryKey?: number;
   onLaunch: () => void;
+  /** Compatibility rating, when the user opted in and an answer has arrived. */
+  compat?: Compat;
   onDelete?: () => void;
   /** When this game is mid-download, drives a small progress pill on the tile. */
   download?: SteamDownload;
@@ -80,6 +87,7 @@ function LauncherTile({
   coverSource,
   retryKey,
   onLaunch,
+  compat,
   onDelete,
   download,
 }: TileProps) {
@@ -107,6 +115,15 @@ function LauncherTile({
     <Pressable
       onPress={onLaunch}
       style={({ pressed }) => [styles.tile, { width, height }, pressed && styles.tilePressed]}>
+      {/* Only drawn when a rating actually exists — an unrated game shows
+          nothing rather than a "no data" chip on every tile. */}
+      {compat && (compat.deck !== 'unknown' || compat.proton !== 'unknown') ? (
+        <View style={styles.compatBadge} pointerEvents="none">
+          <Text style={styles.compatBadgeText} numberOfLines={1}>
+            {compat.deck !== 'unknown' ? deckLabel(compat.deck) : protonLabel(compat.proton)}
+          </Text>
+        </View>
+      ) : null}
       {art && isHeader ? (
         /* HEADER art is a 460x215 banner, not a 600x900 capsule. Centre-cropping
            one into a tall tile slices the middle out of the artwork and reads as
@@ -765,6 +782,10 @@ function LaunchScreen() {
   const [query, setQuery] = useState('');
   const [filter, setFilter] = useState<FilterState>(EMPTY_FILTER);
   const [filterOpen, setFilterOpen] = useState(false);
+  // Tapping a tile no longer launches. Launching takes over the television, and
+  // on a grid you scroll with a thumb a stray tap started a game on a TV in
+  // another room. Tap confirms; long-press opens the same sheet with detail.
+  const [sheetFor, setSheetFor] = useState<Launcher | null>(null);
   // Search first (the screen owns it and its matching ignores whitespace), then
   // the sheet's dimensions on top. The sheet is handed THIS list, so its live
   // count reflects the active query too and cannot promise more than the grid
@@ -774,10 +795,22 @@ function LaunchScreen() {
     if (!q) return allLaunchers;
     return allLaunchers.filter((l) => l.label.toLowerCase().replace(/\s+/g, '').includes(q));
   }, [allLaunchers, query]);
-  const launchers = useMemo(
-    () => applyFilter(searched, filter, Math.floor(Date.now() / 1000)),
-    [searched, filter],
+  // Ratings are fetched for everything the SEARCH leaves, not for what the
+  // filter leaves — otherwise turning on a compatibility filter would stop the
+  // app fetching the very data that filter needs, and the list would never
+  // settle. searched -> compat -> launchers, no cycle.
+  const compatOn = usePref('compatLookups');
+  const compatIds = useMemo(
+    () => searched.map((l) => l.appid).filter((a): a is number => a != null),
+    [searched],
   );
+  const compat = useCompat(compatIds, compatOn);
+
+  const launchers = useMemo(
+    () => applyFilter(searched, filter, Math.floor(Date.now() / 1000), compat),
+    [searched, filter, compat],
+  );
+
   const rows = useMemo(() => {
     const out: Launcher[][] = [];
     for (let i = 0; i < launchers.length; i += COLS) {
@@ -785,6 +818,20 @@ function LaunchScreen() {
     }
     return out;
   }, [launchers]);
+
+  // Let the feature tour scroll the grid into view before spotlighting it: with
+  // downloads, Remote Play and the search row stacked above it, the first tile
+  // can start below the fold, and a spotlight cut over an off-screen element is
+  // a hole around nothing.
+  const scrollRef = useRef<ScrollView>(null);
+  const scrollY = useRef(0);
+  useEffect(
+    () =>
+      registerScroller('launch', (dy) => {
+        scrollRef.current?.scrollTo({ y: Math.max(0, scrollY.current + dy), animated: true });
+      }),
+    [],
+  );
 
   return (
     <View style={styles.screen}>
@@ -834,6 +881,11 @@ function LaunchScreen() {
 
       {activeSection === 'games' && (
       <ScrollView
+        ref={scrollRef}
+        onScroll={(e) => {
+          scrollY.current = e.nativeEvent.contentOffset.y;
+        }}
+        scrollEventThrottle={16}
         style={styles.list}
         contentContainerStyle={{ paddingHorizontal: H_PAD, paddingBottom: 24 }}
         refreshControl={
@@ -933,30 +985,72 @@ function LaunchScreen() {
                 <Ionicons name="close-circle" size={17} color={t.textDim} />
               </Pressable>
             )}
-            <Pressable
-              onPress={() => {
-                hapticLight();
-                setFilterOpen(true);
-              }}
-              hitSlop={8}
-              accessibilityRole="button"
-              accessibilityLabel="Filter library"
-              style={({ pressed }) => [pressed && { opacity: 0.6 }]}>
-              <Ionicons
-                name="options-outline"
-                size={18}
-                color={isFiltering(filter) ? t.blue : t.textDim}
-              />
-            </Pressable>
+            {/* Pick one at random from WHAT IS CURRENTLY SHOWING, so it honours
+                the filter — "something short I have never played" is the point.
+                It opens the same confirm sheet, so a random pick still cannot
+                start a game by surprise. */}
+            {launchers.length > 1 ? (
+              // TourAnchor WRAPS rather than replaces here: the Pressable is
+              // already the only box, and a wrapper sized to its content is
+              // invisible to the row's gap/centre layout.
+              <TourAnchor id="launch.shuffle" hitSlop={8}>
+                <Pressable
+                  onPress={() => {
+                    hapticMedium();
+                    const pick = pickRandom(launchers);
+                    if (pick) setSheetFor(pick);
+                  }}
+                  hitSlop={8}
+                  accessibilityRole="button"
+                  accessibilityLabel="Pick a game for me"
+                  style={({ pressed }) => [pressed && { opacity: 0.6 }]}>
+                  <Ionicons name="shuffle" size={18} color={t.textDim} />
+                </Pressable>
+              </TourAnchor>
+            ) : null}
+            <TourAnchor id="launch.filter" hitSlop={8}>
+              <Pressable
+                onPress={() => {
+                  hapticLight();
+                  setFilterOpen(true);
+                }}
+                hitSlop={8}
+                accessibilityRole="button"
+                accessibilityLabel="Filter library"
+                style={({ pressed }) => [pressed && { opacity: 0.6 }]}>
+                <Ionicons
+                  name="options-outline"
+                  size={18}
+                  color={isFiltering(filter) ? t.blue : t.textDim}
+                />
+              </Pressable>
+            </TourAnchor>
           </View>
         )}
 
         {/* Nothing matched. Say so rather than showing an empty screen that
             reads as "the box has no games". */}
+        <GameSheet
+          launcher={sheetFor}
+          coverSource={
+            sheetFor?.appid != null
+              ? api.steamCoverSource(settings, sheetFor.appid)
+              : undefined
+          }
+          onPlay={() => {
+            const l = sheetFor;
+            setSheetFor(null);
+            if (l) launch(l);
+          }}
+          onClose={() => setSheetFor(null)}
+        />
+
         <LibraryFilterSheet
           visible={filterOpen}
           games={searched}
           value={filter}
+          compat={compat}
+          compatOn={compatOn}
           onChange={setFilter}
           onClose={() => setFilterOpen(false)}
         />
@@ -969,29 +1063,34 @@ function LaunchScreen() {
           </Text>
         )}
 
-        {/* Grid */}
-        {rows.map((row, ri) => (
-          <View key={ri} style={[styles.row, { gap: GAP, marginBottom: GAP }]}>
-            {row.map((l) => (
-              <LauncherTile
-                key={l.id}
-                launcher={l}
-                width={tileWidth}
-                coverSource={
-                  l.kind === 'steam' && l.appid != null
-                    ? api.steamCoverSource(settings, l.appid)
-                    : undefined
-                }
-                retryKey={retryKey}
-                onLaunch={() => launch(l)}
-                onDelete={l.kind === 'custom' ? () => remove(l) : undefined}
-                download={l.appid != null ? dlByAppid.get(l.appid) : undefined}
-              />
-            ))}
-            {/* Pad an odd final row so the single tile stays left-aligned. */}
-            {row.length < COLS && <View style={{ width: tileWidth }} />}
-          </View>
-        ))}
+        {/* Grid. The rows are a bare .map with nothing around them, so the
+            anchor supplies the one box the tour can measure — an unstyled
+            column child, which leaves each row's own layout untouched. */}
+        <TourAnchor id="launch.grid">
+          {rows.map((row, ri) => (
+            <View key={ri} style={[styles.row, { gap: GAP, marginBottom: GAP }]}>
+              {row.map((l) => (
+                <LauncherTile
+                  key={l.id}
+                  launcher={l}
+                  width={tileWidth}
+                  coverSource={
+                    l.kind === 'steam' && l.appid != null
+                      ? api.steamCoverSource(settings, l.appid)
+                      : undefined
+                  }
+                  retryKey={retryKey}
+                  onLaunch={() => setSheetFor(l)}
+                  compat={l.appid != null ? compat[l.appid] : undefined}
+                  onDelete={l.kind === 'custom' ? () => remove(l) : undefined}
+                  download={l.appid != null ? dlByAppid.get(l.appid) : undefined}
+                />
+              ))}
+              {/* Pad an odd final row so the single tile stays left-aligned. */}
+              {row.length < COLS && <View style={{ width: tileWidth }} />}
+            </View>
+          ))}
+        </TourAnchor>
       </ScrollView>
       )}
 
@@ -1088,6 +1187,17 @@ const makeStyles = (t: Palette) => StyleSheet.create({
   // the row still reads as tappable (it is: the check is advisory only).
   slDimText: { color: t.textDim },
   slFaintText: { color: t.textFaint },
+  compatBadge: {
+    position: 'absolute',
+    top: 6,
+    left: 6,
+    zIndex: 2,
+    paddingHorizontal: 7,
+    paddingVertical: 3,
+    borderRadius: 999,
+    backgroundColor: '#000000cc',
+  },
+  compatBadgeText: { color: '#e8eef7', fontSize: 10, fontWeight: '800', fontFamily: mono },
   slArtSlot: {
     width: 30,
     height: 45,

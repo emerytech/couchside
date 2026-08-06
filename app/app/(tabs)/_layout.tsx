@@ -1,10 +1,13 @@
 import Ionicons from '@expo/vector-icons/Ionicons';
 import { router, Tabs, useSegments } from 'expo-router';
+import { currentStep } from '@/lib/tour';
 import { useEffect, useRef } from 'react';
 
 import { useCapsSync } from '@/hooks/useCapsSync';
 import { hapticSelection } from '@/lib/haptics';
 import { usePref } from '@/lib/prefs';
+import { FeatureTour } from '@/components/FeatureTour';
+import { useFeatureTour } from '@/hooks/useFeatureTour';
 import { useBoxes } from '@/lib/SettingsContext';
 import { useTheme } from '@/lib/theme';
 
@@ -46,6 +49,39 @@ export default function TabLayout() {
     caps?.launchers === false ||
     (caps?.launchers === undefined && caps?.steam === false);
 
+  // The tour spotlights a tab by POSITION, so it needs the order actually
+  // rendered — caps and remote-only mode change both which tabs exist and where
+  // they sit. Derived from the same flags the <Tabs.Screen> entries use, so the
+  // two cannot drift.
+  const tabOrder = [
+    'index',
+    ...(remoteOnly ? ['remote'] : []),
+    ...(!remoteOnly && boxes.length >= 2 ? ['fleet'] : []),
+    ...(remoteOnly ? [] : ['actions']),
+    ...(hidePad ? [] : ['pad']),
+    ...(hideLaunch ? [] : ['launch']),
+    'setup',
+  ];
+  const tourEnabled = usePref('featureTour');
+  const tour = useFeatureTour(boxes.length > 0, tourEnabled);
+
+  // Take the user TO the tab being described. A spotlight on "Console" while
+  // they are looking at the Pad screen explains a screen they cannot see —
+  // reported from a device. Keyed on the step so it navigates once per step,
+  // not on every render, and only while the tour is actually up.
+  const tourStep = tour.visible ? currentStep(tour.state) : null;
+  const tourTab = tourStep?.tab ?? null;
+  const navigatedFor = useRef<string | null>(null);
+  useEffect(() => {
+    if (!tourTab) {
+      navigatedFor.current = null;
+      return;
+    }
+    if (navigatedFor.current === tourTab) return;
+    navigatedFor.current = tourTab;
+    router.replace(tourTab === 'index' ? '/(tabs)' : `/(tabs)/${tourTab}`);
+  }, [tourTab]);
+
   // On true first run (persisted fleet loaded, but empty) send the user to
   // Setup to pair. Otherwise honour the landing-tab preference.
   //
@@ -60,6 +96,11 @@ export default function TabLayout() {
   const redirected = useRef(false);
   useEffect(() => {
     if (!ready || redirected.current) return;
+    // THE TOUR OWNS NAVIGATION WHILE IT IS UP. This effect is declared after the
+    // tour's, so without this guard it ran second and overwrote the tour's first
+    // step — the tour opened on Console's copy while the app sat on Pad, and the
+    // user had to find Console themselves. Reported from a device.
+    if (tour.visible) return;
     redirected.current = true;
     // In remote-only mode the landing tab is the Remote, always: the box tabs
     // it could otherwise name are hidden, and Console with no box is an empty
@@ -106,6 +147,7 @@ export default function TabLayout() {
   }, [ready, hidePad, hideLaunch, remoteOnly, segments]);
 
   return (
+    <>
     <Tabs
       screenListeners={{ tabPress: () => hapticSelection() }}
       screenOptions={{
@@ -190,5 +232,14 @@ export default function TabLayout() {
         }}
       />
     </Tabs>
+    {tour.visible ? (
+      <FeatureTour
+        state={tour.state}
+        tabOrder={tabOrder}
+        onNext={tour.next}
+        onSkip={tour.skip}
+      />
+    ) : null}
+    </>
   );
 }

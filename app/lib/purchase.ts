@@ -1,3 +1,5 @@
+import { isUserCancellation } from './purchaseErrors';
+export { isUserCancellation, userFacingPurchaseError } from './purchaseErrors';
 /**
  * Thin, no-throw wrapper around expo-iap (direct StoreKit / Google Play
  * Billing, no third-party purchase service, receipts stay on-device).
@@ -24,6 +26,9 @@ export type RestoreResult =
   | { state: 'purchased'; purchaseDateMs?: number }
   | { state: 'none' }
   | { state: 'unavailable' }
+  /** The user backed out of the store's own sheet (Apple ID sign-in, etc.).
+   *  NOT the same as 'none': nothing was checked, so nothing can be claimed. */
+  | { state: 'cancelled' }
   | { state: 'error'; message?: string };
 
 // Minimal structural view of the expo-iap surface we use (v4, Open IAP API:
@@ -188,7 +193,7 @@ async function connect(): Promise<boolean> {
           });
           m.purchaseErrorListener((error) => {
             settleBuy(
-              error?.code === 'user-cancelled'
+              isUserCancellation(error)
                 ? { ok: false, reason: 'cancelled' }
                 : { ok: false, reason: 'error', message: error?.message },
             );
@@ -218,6 +223,7 @@ export async function getProduct(): Promise<ProductInfo | null> {
   }
 }
 
+
 /**
  * Start the one-time unlock purchase. Resolves when the store delivers the
  * purchase (via the update listener), the user cancels, or the request fails.
@@ -234,7 +240,13 @@ export async function buy(): Promise<BuyResult> {
       request: { apple: { sku: UNLOCK_PRODUCT_ID }, google: { skus: [UNLOCK_PRODUCT_ID] } },
       type: 'in-app',
     }).catch((e: unknown) => {
-      settleBuy({ ok: false, reason: 'error', message: e instanceof Error ? e.message : String(e) });
+      // Cancellation arrives HERE on this expo-iap version, not only via
+      // purchaseErrorListener — see isUserCancellation.
+      settleBuy(
+        isUserCancellation(e)
+          ? { ok: false, reason: 'cancelled' }
+          : { ok: false, reason: 'error', message: e instanceof Error ? e.message : String(e) },
+      );
     });
   });
 }
@@ -326,6 +338,11 @@ export async function restore(): Promise<RestoreResult> {
       typeof raw === 'number' && Number.isFinite(raw) && raw > 0 ? raw : undefined;
     return { state: 'purchased', purchaseDateMs };
   } catch (e: unknown) {
+    // Backing out of the Apple ID / store sheet is not a failure and not a
+    // verdict. Reporting "no purchase found" here would assert something the
+    // app never got to check — the exact claim the 'none' copy below is careful
+    // NOT to make — and it lands in red on someone who may well own the app.
+    if (isUserCancellation(e)) return { state: 'cancelled' };
     return { state: 'error', message: e instanceof Error ? e.message : String(e) };
   }
 }

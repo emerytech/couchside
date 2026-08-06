@@ -38,6 +38,18 @@ export type Prefs = {
    *  itself keeps counting locally either way, so turning it back on does not
    *  start from zero. Nothing about it ever leaves the phone. */
   streakCelebrations: boolean;
+  /** Look up per-game Steam Deck / ProtonDB compatibility.
+   *
+   *  OFF BY DEFAULT and opt-in, because it is the first thing in the app that
+   *  talks to the public internet for library data. The BOX is not involved and
+   *  keeps its LAN-only promise; these calls leave the phone. What is sent is an
+   *  appid — no account, no Steam key, nothing identifying — but a list of
+   *  appids still says something about what you own, so it is a switch the user
+   *  throws rather than a default they discover later. */
+  compatLookups: boolean;
+  /** The one-time spotlight tour, shown after the first box is paired. On by
+   *  default; turning it off before it has run means it never runs. */
+  featureTour: boolean;
   /** REMOTE-ONLY MODE: the app is just a smart-TV remote, no Couchside box.
    *
    *  For someone with a smart TV and no gaming machine. On, the box tabs
@@ -237,6 +249,8 @@ export type Prefs = {
 export const DEFAULTS: Prefs = {
   confirmSuspend: true,
   streakCelebrations: true,
+  compatLookups: false,
+  featureTour: true,
   remoteOnlyMode: false,
   landingTab: 'index',
   autoKeyboard: true,
@@ -352,6 +366,8 @@ function normalize(raw: unknown): Prefs {
     confirmSuspend:
       typeof o.confirmSuspend === 'boolean' ? o.confirmSuspend : DEFAULTS.confirmSuspend,
     streakCelebrations: bool(o.streakCelebrations, DEFAULTS.streakCelebrations),
+    compatLookups: bool(o.compatLookups, DEFAULTS.compatLookups),
+    featureTour: bool(o.featureTour, DEFAULTS.featureTour),
     remoteOnlyMode: bool(o.remoteOnlyMode, DEFAULTS.remoteOnlyMode),
     landingTab,
     autoKeyboard: bool(o.autoKeyboard, DEFAULTS.autoKeyboard),

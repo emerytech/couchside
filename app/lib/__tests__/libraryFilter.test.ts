@@ -192,3 +192,87 @@ test('the old-agent library would otherwise report ALL games never played', () =
   assert.equal(all, old.length, 'without the gate this is the false claim');
   assert.equal(hasPlaytimeData(old), false, 'which is exactly why the gate hides it');
 });
+
+// ---- compatibility dimensions (phase 2) ----
+
+import type { Compat } from '../compat.ts';
+
+const RATED: Record<number, Compat> = {
+  1: { deck: 'verified', proton: 'gold', protonReports: 1511 },
+  2: { deck: 'unsupported', proton: 'borked', protonReports: 309 },
+  // 3 is deliberately absent: nobody has rated it.
+};
+const WITH_IDS = [
+  g({ label: 'Verified game', playtime_min: 600 }),
+  g({ label: 'Broken game', playtime_min: 10 }),
+  g({ label: 'Unrated game' }),
+].map((x, i) => ({ ...x, appid: i + 1 }));
+
+test('a compat filter keeps the matching game and drops the mismatching one', () => {
+  const f: FilterState = { ...EMPTY_FILTER, deck: ['verified'] };
+  const out = applyFilter(WITH_IDS, f, NOW, RATED).map((x) => x.label);
+  assert.ok(out.includes('Verified game'));
+  assert.ok(!out.includes('Broken game'), 'unsupported must not survive a verified-only filter');
+});
+
+test('an UNRATED game survives every compat filter (the load-bearing rule)', () => {
+  // A third party having no data must never hide a game the user owns.
+  for (const f of [
+    { ...EMPTY_FILTER, deck: ['verified' as const] },
+    { ...EMPTY_FILTER, proton: ['platinum' as const] },
+    { ...EMPTY_FILTER, deck: ['verified' as const], proton: ['platinum' as const] },
+  ]) {
+    const out = applyFilter(WITH_IDS, f, NOW, RATED).map((x) => x.label);
+    assert.ok(out.includes('Unrated game'), `unrated hidden by ${JSON.stringify(f)}`);
+  }
+});
+
+test('with NO ratings loaded the library behaves exactly as before (control)', () => {
+  // Compat filters must be inert until data arrives, not empty the screen.
+  const f: FilterState = { ...EMPTY_FILTER, deck: ['verified'] };
+  assert.equal(applyFilter(WITH_IDS, f, NOW, undefined).length, WITH_IDS.length);
+  assert.equal(countMatching(WITH_IDS, f, NOW, undefined), WITH_IDS.length);
+});
+
+test('the count still equals the list once compat is in play (control)', () => {
+  for (const f of [
+    { ...EMPTY_FILTER, deck: ['verified' as const] },
+    { ...EMPTY_FILTER, proton: ['gold' as const, 'platinum' as const] },
+    { ...EMPTY_FILTER, deck: ['unsupported' as const], played: 'under2h' as const },
+  ]) {
+    assert.equal(
+      countMatching(WITH_IDS, f, NOW, RATED),
+      applyFilter(WITH_IDS, f, NOW, RATED).length,
+      JSON.stringify(f),
+    );
+  }
+});
+
+test('isFiltering notices the compat dimensions (control)', () => {
+  assert.equal(isFiltering({ ...EMPTY_FILTER, deck: [] }), false);
+  assert.equal(isFiltering({ ...EMPTY_FILTER, deck: ['verified'] }), true);
+  assert.equal(isFiltering({ ...EMPTY_FILTER, proton: ['gold'] }), true);
+});
+
+// ---- phase 4: pick something for me ----
+
+import { pickRandom } from '../libraryFilter.ts';
+
+test('shuffle returns null on an empty list rather than throwing', () => {
+  assert.equal(pickRandom([]), null);
+});
+
+test('shuffle can reach every game and never goes out of range (control)', () => {
+  const games = ['a', 'b', 'c'];
+  const seen = new Set<string>();
+  for (const r of [0, 0.32, 0.34, 0.66, 0.67, 0.999999]) {
+    const got = pickRandom(games, () => r);
+    assert.ok(got != null, `null at r=${r}`);
+    seen.add(got as string);
+  }
+  assert.deepEqual([...seen].sort(), ['a', 'b', 'c'], 'every game is reachable');
+});
+
+test('a generator returning exactly 1 does not fall off the end (control)', () => {
+  assert.equal(pickRandom(['a', 'b'], () => 1), 'b');
+});
