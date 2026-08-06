@@ -1,5 +1,6 @@
 import Ionicons from '@expo/vector-icons/Ionicons';
 import { router, Tabs, useSegments } from 'expo-router';
+import { currentStep } from '@/lib/tour';
 import { useEffect, useRef } from 'react';
 
 import { useCapsSync } from '@/hooks/useCapsSync';
@@ -63,6 +64,23 @@ export default function TabLayout() {
   ];
   const tourEnabled = usePref('featureTour');
   const tour = useFeatureTour(boxes.length > 0, tourEnabled);
+
+  // Take the user TO the tab being described. A spotlight on "Console" while
+  // they are looking at the Pad screen explains a screen they cannot see —
+  // reported from a device. Keyed on the step so it navigates once per step,
+  // not on every render, and only while the tour is actually up.
+  const tourStep = tour.visible ? currentStep(tour.state) : null;
+  const tourTab = tourStep?.tab ?? null;
+  const navigatedFor = useRef<string | null>(null);
+  useEffect(() => {
+    if (!tourTab) {
+      navigatedFor.current = null;
+      return;
+    }
+    if (navigatedFor.current === tourTab) return;
+    navigatedFor.current = tourTab;
+    router.replace(tourTab === 'index' ? '/(tabs)' : `/(tabs)/${tourTab}`);
+  }, [tourTab]);
 
   // On true first run (persisted fleet loaded, but empty) send the user to
   // Setup to pair. Otherwise honour the landing-tab preference.
