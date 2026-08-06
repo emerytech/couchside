@@ -15,7 +15,7 @@
 import React from 'react';
 import { View, type StyleProp, type ViewStyle } from 'react-native';
 
-import { useTourAnchor } from '@/hooks/useTourAnchor';
+import { notifyAnchorLayout, useTourAnchor } from '@/hooks/useTourAnchor';
 
 export function TourAnchor({
   id,
@@ -41,7 +41,17 @@ export function TourAnchor({
     // never fire or hand back zeros. iOS does not collapse, so this is the kind
     // of bug that ships green from a simulator and is broken on half the users'
     // phones.
-    <View ref={ref} style={style} hitSlop={hitSlop} collapsable={false}>
+    <View
+      ref={ref}
+      style={style}
+      hitSlop={hitSlop}
+      // Tell the tour when this box moves. Screens fill in asynchronously and
+      // push their contents around; without this the spotlight keeps the rect
+      // it measured on arrival. onLayout fires for a change of POSITION as well
+      // as size, which is the case that matters — the anchor itself is usually
+      // the same size, just further down the page than it was a moment ago.
+      onLayout={() => notifyAnchorLayout(id)}
+      collapsable={false}>
       {children}
     </View>
   );

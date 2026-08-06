@@ -112,6 +112,15 @@ export const TOUR_STEPS: TourStep[] = [
     title: 'Trackpad, swipe, and a keyboard',
     body: 'SWIPE works like an Apple TV remote and MOUSE is a trackpad you can type through — for the login boxes and launcher updates a controller cannot handle.',
   },
+  // The shortcut for the switch two steps up. Worth its own step because the
+  // selector sits at the very top of the screen and this does the same job
+  // under your thumb — and nobody finds it by accident.
+  {
+    tab: 'pad',
+    anchor: 'pad.keybar',
+    title: 'Switch modes without reaching',
+    body: 'Swipe left or right across this bar to change mode — same as the buttons at the top, but where your thumb already is. Tap it to type on the box instead.',
+  },
 
   // ACTIONS — the rescue.
   {

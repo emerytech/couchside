@@ -1557,15 +1557,21 @@ function PadScreen() {
   const kbEnter = useCallback(() => client.sendKey('enter'), [client]);
 
   const keyboardBar = showKeyboardBar ? (
-    <KeyboardBar
-      onText={kbText}
-      onBackspace={kbBackspace}
-      onEnter={kbEnter}
-      onSwipeMode={cycleMode}
-      autoOpenSignal={oskSignal}
-      onSearch={canSearch ? steamSearch : undefined}
-      onDismiss={closeSteamSearch}
-    />
+    // Anchored for the feature tour: swiping this bar cycles the pad mode, which
+    // is the thumb-reachable way to do what the selector at the very top of the
+    // screen does. Nobody discovers it on their own. The anchor is on the bar
+    // itself so the step disappears along with it when padKeyboardBar is off.
+    <TourAnchor id="pad.keybar">
+      <KeyboardBar
+        onText={kbText}
+        onBackspace={kbBackspace}
+        onEnter={kbEnter}
+        onSwipeMode={cycleMode}
+        autoOpenSignal={oskSignal}
+        onSearch={canSearch ? steamSearch : undefined}
+        onDismiss={closeSteamSearch}
+      />
+    </TourAnchor>
   ) : null;
 
   // One corner chip toggles large mode in a single tap, shared by the trackpad

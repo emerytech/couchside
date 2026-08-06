@@ -66,6 +66,33 @@ export async function measureAnchor(id: string): Promise<Rect | null> {
   }
 }
 
+// ---------------------------------------------------------------------------
+// Layout changes
+//
+// A measured rect goes STALE. Screens fill in asynchronously — the downloads
+// card appears, the "Stream from PC" host list expands, cover art loads — and
+// everything below shifts down. Measure once and the spotlight stays where the
+// element USED to be: seen on Android against a real box, where the ring sat
+// around the queued/stream sections while the card described the library.
+// Pointing confidently at the wrong thing is the one failure this whole module
+// exists to avoid, so anchors report their own movement.
+// ---------------------------------------------------------------------------
+
+const layoutListeners = new Set<(id: string) => void>();
+
+/** Called by TourAnchor whenever its box moves or resizes. */
+export function notifyAnchorLayout(id: string): void {
+  for (const l of layoutListeners) l(id);
+}
+
+/** Subscribe to anchor movement. Returns the unsubscribe function. */
+export function subscribeAnchorLayout(cb: (id: string) => void): () => void {
+  layoutListeners.add(cb);
+  return () => {
+    layoutListeners.delete(cb);
+  };
+}
+
 /** Register the scrollable container for a tab, so the tour can bring an
  *  off-screen anchor into view. `dy` is a DELTA, not an absolute offset. */
 export function registerScroller(tab: string, scrollBy: (dy: number) => void): () => void {

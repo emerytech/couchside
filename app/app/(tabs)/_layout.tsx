@@ -77,10 +77,27 @@ export default function TabLayout() {
       navigatedFor.current = null;
       return;
     }
-    if (navigatedFor.current === tourTab) return;
+    // ASSERT the tab, do not just fire once at it. `segments` is in the deps so
+    // this re-checks after navigation settles, because a single replace() can
+    // lose a race with the router's own initial route: on ANDROID the app comes
+    // up on Pad (unstable_settings.initialRouteName) and the tour's replace was
+    // silently overridden. The tour then sat on Pad while its step described
+    // Console — and worse, Console never mounted, so its anchors never
+    // registered and the first three steps skipped themselves as "absent".
+    // iOS did not show this; the comment below about index winning a cold start
+    // was measured in the web harness and is not true on every platform.
+    const leaf = segments[segments.length - 1];
+    // Console is the index route, so its leaf segment is the GROUP name — the
+    // typed-routes union has no 'index' member, which is the compiler telling
+    // you the same thing.
+    const onTourTab = tourTab === 'index' ? leaf === '(tabs)' : leaf === tourTab;
+    if (onTourTab) {
+      navigatedFor.current = tourTab;
+      return;
+    }
     navigatedFor.current = tourTab;
     router.replace(tourTab === 'index' ? '/(tabs)' : `/(tabs)/${tourTab}`);
-  }, [tourTab]);
+  }, [tourTab, segments]);
 
   // On true first run (persisted fleet loaded, but empty) send the user to
   // Setup to pair. Otherwise honour the landing-tab preference.
