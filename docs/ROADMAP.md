@@ -140,6 +140,33 @@ Entry fields: `priority` (P0 blocker → P3 nice) · `risk` · `affects` · `dep
 - **Verify:** Roku slice is unit-testable against a stub ECP `/query/apps`; the real grid
   needs Roku/LG hardware. No store copy claims it until a real TV lists apps on a device.
 
+### Ship the Steam Deck install fix and the Windows units fix (release-gated)
+
+**priority:** high
+**risk:** low code risk, HIGH forget risk
+**affects:** install.sh, agent/win/couchsided-win.py, couchside.tv
+**depends_on:** feat/webos-app-direct merged to main
+
+Both fixes are ALREADY WRITTEN and merged-pending, and NEITHER reaches a user
+through an app build — this entry exists because that is easy to forget and the
+first one is a fresh-install blocker.
+
+- **Steam Deck fresh installs fail** (`install: cannot change owner and
+  permissions of '/usr/local/libexec'` -> installer exits 1 before the helper,
+  socket or unit lands). SteamOS ships / and /usr read-only. Fixed by falling
+  back to /var/lib/couchside/libexec. **Reaches users only via a signed release
+  asset AND the couchside.tv install.sh sync** — the website serves its own copy,
+  so a merge alone changes nothing for anyone running the published one-liner.
+- **Windows units card shows a permanent yellow `couchside-agent
+  inactive/not-found`.** The fix is the `log_only` flag, which comes FROM THE
+  AGENT — so it needs a Windows agent release (0.4.4-win). The app-side filter
+  ships with the app but has nothing to filter until the agent sends the flag.
+
+**Verify on hardware before calling it done** (neither is hardware-verified):
+1. Fresh install on the Steam Deck — the only real proof of the installer fix.
+2. Deploy the win agent to EMERY-PC — confirm the yellow warning is gone AND
+   that couchside-agent is still selectable in the Logs picker.
+
 ### protocol.json has no home for a platform-only capability (KI-055)
 - **priority:** P2 · **risk:** low · **affects:** `protocol/protocol.json` +
   `tests/test_protocol_parity.py` · **depends_on:** none
