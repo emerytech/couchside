@@ -473,8 +473,14 @@ export function SetupProgress() {
 
   return (
     <View style={styles.card}>
+      {/* DETECT FIRST, INSTRUCT SECOND. These steps used to render throughout
+          `looking`, so a brand-new user was told to go install something while
+          the app was still searching for the thing they may already have — the
+          "overwhelming setup page" a tester landed on. The search now gets the
+          screen to itself until it has actually come up empty (showDiagnosis,
+          i.e. still nothing after DIAGNOSE_AFTER_MS, or an outright stall). */}
       {(phase.k === 'idle' ||
-        phase.k === 'looking' ||
+        (phase.k === 'looking' && showDiagnosis) ||
         phase.k === 'stalled' ||
         phase.k === 'nonet') && (
         <>
