@@ -4,7 +4,7 @@ import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
 import { recordPurchaseDate } from '@/lib/entitlement';
 import { useEntitlement } from '@/lib/EntitlementContext';
-import { buy, getProduct, restoreFromUserAction } from '@/lib/purchase';
+import { buy, userFacingPurchaseError, getProduct, restoreFromUserAction } from '@/lib/purchase';
 import { mono, useThemedStyles } from '@/lib/theme';
 import type { Palette } from '@/lib/theme';
 
@@ -45,7 +45,7 @@ export default function Paywall() {
     } else if (result.reason === 'unavailable') {
       setError('Store unavailable. Please try again later.');
     } else if (result.reason === 'error') {
-      setError(result.message || 'Purchase failed. Please try again.');
+      setError(userFacingPurchaseError(result.message) ?? 'Purchase failed. Please try again.');
     }
     // 'cancelled': no error text, the user changed their mind
     setBusy(null);

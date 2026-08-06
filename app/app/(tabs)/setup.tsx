@@ -62,7 +62,7 @@ import {
 } from '@/lib/mediaSeek';
 import { clearCompatCache } from '@/lib/compatFetch';
 import { setPref, usePref } from '@/lib/prefs';
-import { buy, getProduct, restoreFromUserAction } from '@/lib/purchase';
+import { buy, userFacingPurchaseError, getProduct, restoreFromUserAction } from '@/lib/purchase';
 import { Box, DEFAULT_PORT, normalizeMac } from '@/lib/settings';
 import { VolumeTarget } from '@/lib/api';
 import { useBoxes, useBoxOnlineStatus, BoxReachability } from '@/lib/SettingsContext';
@@ -846,7 +846,10 @@ function SetupBody() {
     } else if (result.reason === 'unavailable') {
       setRestoreMsg({ text: 'Store unavailable, try again later.', ok: false });
     } else if (result.reason === 'error') {
-      setRestoreMsg({ text: result.message || 'Purchase failed, try again.', ok: false });
+      setRestoreMsg({
+        text: userFacingPurchaseError(result.message) ?? 'Purchase failed, try again.',
+        ok: false,
+      });
     }
     setBuying(false);
   }, [recordPurchase]);

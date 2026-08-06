@@ -1,3 +1,5 @@
+import { isUserCancellation } from './purchaseErrors';
+export { isUserCancellation, userFacingPurchaseError } from './purchaseErrors';
 /**
  * Thin, no-throw wrapper around expo-iap (direct StoreKit / Google Play
  * Billing, no third-party purchase service, receipts stay on-device).
@@ -188,7 +190,7 @@ async function connect(): Promise<boolean> {
           });
           m.purchaseErrorListener((error) => {
             settleBuy(
-              error?.code === 'user-cancelled'
+              isUserCancellation(error)
                 ? { ok: false, reason: 'cancelled' }
                 : { ok: false, reason: 'error', message: error?.message },
             );
@@ -218,6 +220,7 @@ export async function getProduct(): Promise<ProductInfo | null> {
   }
 }
 
+
 /**
  * Start the one-time unlock purchase. Resolves when the store delivers the
  * purchase (via the update listener), the user cancels, or the request fails.
@@ -234,7 +237,13 @@ export async function buy(): Promise<BuyResult> {
       request: { apple: { sku: UNLOCK_PRODUCT_ID }, google: { skus: [UNLOCK_PRODUCT_ID] } },
       type: 'in-app',
     }).catch((e: unknown) => {
-      settleBuy({ ok: false, reason: 'error', message: e instanceof Error ? e.message : String(e) });
+      // Cancellation arrives HERE on this expo-iap version, not only via
+      // purchaseErrorListener — see isUserCancellation.
+      settleBuy(
+        isUserCancellation(e)
+          ? { ok: false, reason: 'cancelled' }
+          : { ok: false, reason: 'error', message: e instanceof Error ? e.message : String(e) },
+      );
     });
   });
 }
