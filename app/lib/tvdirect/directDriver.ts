@@ -19,6 +19,7 @@ import {
   randomBytes,
   sha1,
   sha256,
+  tcpProbe,
 } from './atvnative.ts';
 import { ATV_PAIR_PORT } from './atvproto.ts';
 import { type AtvCreds, isValidTvHost } from './model.ts';
@@ -73,8 +74,12 @@ export function directDriver(): TvPairDriver {
     // here it backs the shared form's "Scan for TVs". Android TV has no
     // broadcast discovery the app can do (iOS blocks UDP), so only Rokus appear.
     discover: async (): Promise<DiscoveredTv[]> => {
-      const found = await scanForTvs();
-      return found.map((tv) => ({ brand: 'roku', name: tv.name, host: tv.host }));
+      // Every direct brand, not just Roku: the sweep proves Google TV and LG by
+      // their control ports, so the brand it reports is the brand that answered
+      // and must be carried through — hard-coding 'roku' here would have made a
+      // discovered Google TV pair as a Roku and fail.
+      const found = await scanForTvs(undefined, undefined, tcpProbe);
+      return found.map((tv) => ({ brand: tv.brand, name: tv.name, host: tv.host }));
     },
 
     // No app-side identify probe: return null so the form SKIPS identify and

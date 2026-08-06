@@ -27,7 +27,7 @@ import {
   nextTvId,
   normalizeTvState,
 } from './model.ts';
-import { sweepCandidates, sweepForRokus, type FoundTv } from './scan.ts';
+import { sweepCandidates, sweepForTvs, type FoundTv, type TcpProbe } from './scan.ts';
 import { dropAtvSession } from './send.ts';
 
 export type { FoundTv } from './scan.ts';
@@ -42,6 +42,9 @@ export type { FoundTv } from './scan.ts';
 export async function scanForTvs(
   onFound?: (tv: FoundTv) => void,
   signal?: { aborted: boolean },
+  /** Native TCP probe. Without it the sweep still finds Rokus (HTTP), but not
+   *  the brands proven by an open control port. */
+  tcpProbe?: TcpProbe,
 ): Promise<FoundTv[]> {
   let ip: string | undefined;
   try {
@@ -49,7 +52,7 @@ export async function scanForTvs(
   } catch {
     ip = undefined;
   }
-  return sweepForRokus(sweepCandidates(ip), { onFound, signal });
+  return sweepForTvs(sweepCandidates(ip), { onFound, signal, tcpProbe });
 }
 
 const KEY = 'couchside.tvs.v1';

@@ -364,3 +364,35 @@ export function randomBytes(n: number): Uint8Array {
   if (!grv) throw new Error('no platform CSPRNG');
   return grv(new Uint8Array(n));
 }
+
+/**
+ * Is a TCP port open on this host? Used by the LAN sweep to prove a Google TV
+ * (Android TV Remote 6466) or an LG (webOS SSAP 3001) is really there — neither
+ * brand has an HTTP endpoint that proves its control channel is live, the way
+ * Roku's device-info does.
+ *
+ * Plain TCP, no TLS: this asks "is something listening", never "who are you",
+ * so it is the cheapest question that still answers honestly. Always resolves —
+ * a refused or timed-out port is `false`, never a throw, because a sweep of 254
+ * hosts is mostly failures by design.
+ */
+export function tcpProbe(host: string, port: number, timeoutMs: number): Promise<boolean> {
+  return new Promise((resolve) => {
+    let settled = false;
+    let sock: ReturnType<typeof TcpSocket.createConnection> | undefined;
+    const done = (v: boolean) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      try { sock?.destroy(); } catch {}
+      resolve(v);
+    };
+    const timer = setTimeout(() => done(false), timeoutMs);
+    try {
+      sock = TcpSocket.createConnection({ host, port }, () => done(true));
+      sock.on('error', () => done(false));
+    } catch {
+      done(false);
+    }
+  });
+}
