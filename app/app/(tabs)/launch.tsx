@@ -330,6 +330,39 @@ function DownloadsSection({ downloads }: { downloads: SteamDownload[] }) {
  * check is deliberately conservative, so a dimmed host stays tappable — the
  * user may well know better than we do.
  */
+/**
+ * Cover art for one stream-from-PC row.
+ *
+ * The agent has ALWAYS served these appids through /api/steam/<appid>/cover —
+ * its own note says the route "404s for uncached art; the app falls back to the
+ * title". The app simply never asked, so a list of games rendered as a wall of
+ * monospace text. This asks, and latches back to the play icon on 404 or error
+ * so a missing cover cannot error-loop.
+ *
+ * The slot is a FIXED size either way, so rows stay aligned whether the art
+ * loads, 404s, or is still arriving.
+ */
+function StreamGameArt({ appid, dim }: { appid: number; dim: boolean }) {
+  const t = useTheme();
+  const styles = useThemedStyles(makeStyles);
+  const { settings } = useSettings();
+  const [failed, setFailed] = useState(false);
+  return (
+    <View style={styles.slArtSlot}>
+      {failed ? (
+        <Ionicons name="play-circle" size={16} color={dim ? t.textDim : t.blue} />
+      ) : (
+        <Image
+          source={api.steamCoverSource(settings, appid)}
+          style={[styles.slArt, dim && styles.slArtDim]}
+          resizeMode="cover"
+          onError={() => setFailed(true)}
+        />
+      )}
+    </View>
+  );
+}
+
 function SteamLinkSection({
   data,
   onStream,
@@ -436,7 +469,7 @@ function SteamLinkSection({
                       key={g.appid}
                       onPress={() => onStream(g.appid, g.label)}
                       style={({ pressed }) => [styles.slGameRow, pressed && styles.pressed]}>
-                      <Ionicons name="play-circle" size={16} color={off ? t.textDim : t.blue} />
+                      <StreamGameArt appid={g.appid} dim={off} />
                       <Text
                         style={[styles.slGameName, off && styles.slDimText]}
                         numberOfLines={1}>
@@ -1043,6 +1076,19 @@ const makeStyles = (t: Palette) => StyleSheet.create({
   // the row still reads as tappable (it is: the check is advisory only).
   slDimText: { color: t.textDim },
   slFaintText: { color: t.textFaint },
+  slArtSlot: {
+    width: 30,
+    height: 45,
+    borderRadius: 4,
+    overflow: 'hidden',
+    backgroundColor: t.inset,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  // Steam library capsules are 2:3 (600x900); the slot matches so art is never
+  // letterboxed or cropped through the middle of the title.
+  slArt: { width: '100%', height: '100%' },
+  slArtDim: { opacity: 0.45 },
   slGameRow: {
     flexDirection: 'row',
     alignItems: 'center',

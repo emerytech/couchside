@@ -484,6 +484,14 @@ export type Unit = {
   active: string;
   sub: string;
   description: string;
+  /**
+   * A LOG SOURCE, not a real service (Windows agent >= 0.4.4). The agent's own
+   * log is in the watchlist so it reaches the Logs picker; it has no Windows
+   * service behind it, so showing it in the units card meant a permanent
+   * "inactive/not-found" warning. Absent on every other agent — treat undefined
+   * as "a real unit", which is what it has always been.
+   */
+  log_only?: boolean;
 };
 
 export type Danger = 'low' | 'medium' | 'high';

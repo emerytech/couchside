@@ -339,7 +339,12 @@ function ConsoleScreen() {
               <Text style={styles.unitErr}>{units.error.message}</Text>
             ) : units.data ? (
               <View style={styles.chips}>
-                {units.data.units.map((u) => (
+                {/* log_only entries are LOG SOURCES, not services (the
+                    Windows agent's own log). Rendering one as a unit showed a
+                    permanent "inactive/not-found" warning for something that
+                    cannot run. They stay in the Logs picker, which is why they
+                    are in the watchlist at all. */}
+                {units.data.units.filter((u) => !u.log_only).map((u) => (
                   <UnitChip key={`${u.scope}:${u.name}`} unit={u} />
                 ))}
               </View>
@@ -348,9 +353,13 @@ function ConsoleScreen() {
             )}
             {/* The watchlist is box-side config, not app state — point at it so
                 homelab users know they can watch their own services. */}
+            {/* Platform-aware: the Linux paths below are meaningless on a
+                Windows box, which has neither /etc/couchside nor systemd — it
+                was still printing them (reported from a real Windows box). */}
             <Text style={styles.unitHint}>
-              watchlist: /etc/couchside/config.json on the box (units[]), then
-              restart couchside.service
+              {(s?.agent_version ?? '').endsWith('-win')
+                ? 'watchlist: config.json in the Couchside folder on the box (units[]), then restart the agent'
+                : 'watchlist: /etc/couchside/config.json on the box (units[]), then restart couchside.service'}
             </Text>
           </Card>
         )}
