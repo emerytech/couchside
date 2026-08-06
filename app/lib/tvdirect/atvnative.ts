@@ -27,6 +27,11 @@
  *    action with a progress state, never at import or on a render path.
  */
 import 'react-native-get-random-values';
+// Buffer is NOT a global in Hermes — using it unqualified threw "Property
+// 'Buffer' doesn't exist" on device, AFTER TLS and the cert read had both
+// succeeded. react-native-tcp-socket itself imports it from this same package
+// (its own src/Socket.js line 1), which is why the dependency is already here.
+import { Buffer } from 'buffer';
 import forge from 'node-forge';
 import TcpSocket from 'react-native-tcp-socket';
 
