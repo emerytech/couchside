@@ -114,17 +114,23 @@ export function spotlightRect(
   tabBarHeight: number,
   tabCount: number,
   tabIndex: number,
+  /** Home-indicator inset. EXCLUDED from the hole: including it made the ring
+   *  taller than the tab it points at, so it hung into the gesture strip and
+   *  looked clipped at the bottom of the screen (seen on an iPhone 17 Pro Max).
+   *  The hole should hug the icon and label, nothing else. */
+  bottomInset = 0,
 ): Rect {
   const count = Math.max(1, tabCount);
   // Clamp rather than trust: a tab hidden by caps (remote-only mode) could
   // otherwise index past the end and spotlight empty space off-screen.
   const i = Math.min(Math.max(0, tabIndex), count - 1);
   const width = screenWidth / count;
+  const height = Math.min(tabBarHeight, screenHeight);
   return {
     x: i * width,
-    y: Math.max(0, screenHeight - tabBarHeight),
+    y: Math.max(0, screenHeight - bottomInset - height),
     width,
-    height: Math.min(tabBarHeight, screenHeight),
+    height,
   };
 }
 

@@ -13,6 +13,18 @@ import { advanceTour, dismissTour, shouldRun, TOUR_FINISHED, TOUR_NOT_STARTED, t
 
 const KEY = 'couchside.tour.v1';
 
+/**
+ * Forget that the tour ran, so it plays again.
+ *
+ * Turning the pref back on MUST do this. The pref only gates whether the tour
+ * may run; "already finished" is separate state, so without this the switch is
+ * dead once the tour has been seen — you can turn it off, and turning it back
+ * on does nothing, forever. Found by trying exactly that on a device.
+ */
+export async function resetFeatureTour(): Promise<void> {
+  await set(KEY, JSON.stringify(TOUR_NOT_STARTED));
+}
+
 async function get(k: string): Promise<string | null> {
   if (Platform.OS === 'web') {
     try {

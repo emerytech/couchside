@@ -61,6 +61,7 @@ import {
   type MediaSkipSec,
 } from '@/lib/mediaSeek';
 import { clearCompatCache } from '@/lib/compatFetch';
+import { resetFeatureTour } from '@/hooks/useFeatureTour';
 import { setPref, usePref } from '@/lib/prefs';
 import { buy, userFacingPurchaseError, getProduct, restoreFromUserAction } from '@/lib/purchase';
 import { Box, DEFAULT_PORT, normalizeMac } from '@/lib/settings';
@@ -1373,10 +1374,13 @@ function SetupBody() {
               />
               <TogglePref
                 label="Feature tour"
-                sub="A short spotlight walkthrough the first time a box is paired. Off means it never runs."
+                sub="A short spotlight walkthrough of the tabs. Switch it back on to watch it again."
                 value={featureTour}
                 onValueChange={(v) => {
                   void setPref('featureTour', v);
+                  // Switching it back ON means "show me again" — otherwise the
+                  // control is dead once the tour has run once.
+                  if (v) void resetFeatureTour();
                   hapticSelection();
                 }}
               />

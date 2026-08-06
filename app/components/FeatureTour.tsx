@@ -53,8 +53,9 @@ export function FeatureTour({
   // to point at — skip rather than spotlight a guess.
   if (idx < 0) return null;
 
-  const barH = TAB_BAR_H + insets.bottom;
-  const hole = spotlightRect(width, height, barH, tabOrder.length, idx);
+  // The bar is the tab row PLUS the home-indicator inset, but the spotlight
+  // should cover only the tab row — see spotlightRect.
+  const hole = spotlightRect(width, height, TAB_BAR_H, tabOrder.length, idx, insets.bottom);
   const panels = dimRects(width, height, hole);
   const cardBottom = height - hole.y + 14;
 
@@ -76,7 +77,14 @@ export function FeatureTour({
         pointerEvents="none"
         style={[
           styles.ring,
-          { left: hole.x + 4, top: hole.y + 2, width: hole.width - 8, height: hole.height - 6 },
+          {
+            // Clamped so the FIRST and LAST tab's ring stays fully on screen —
+            // at x=0 a negative inset clipped it against the bezel.
+            left: Math.max(3, hole.x + 4),
+            top: hole.y + 2,
+            width: Math.min(hole.width - 8, width - Math.max(3, hole.x + 4) - 3),
+            height: Math.max(0, hole.height - 4),
+          },
         ]}
       />
 
@@ -106,7 +114,9 @@ export function FeatureTour({
 
 const makeStyles = (t: Palette) =>
   StyleSheet.create({
-    dim: { position: 'absolute', backgroundColor: '#000000d8' },
+    // 55%, not 85%. The tour describes the screen behind it — dimming it into
+    // an unreadable slab defeats the point of pointing at it.
+    dim: { position: 'absolute', backgroundColor: '#0000008c' },
     ring: {
       position: 'absolute',
       borderRadius: 12,

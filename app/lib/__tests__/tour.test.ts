@@ -87,3 +87,24 @@ test('the dim rectangles cover the whole screen EXCEPT the hole (control)', () =
     assert.ok(!(overlapsX && overlapsY), `dim rect covers the spotlight: ${JSON.stringify(r)}`);
   }
 });
+
+test('the hole EXCLUDES the home-indicator inset (seen clipped on a real phone)', () => {
+  // Including the inset made the ring taller than the tab, so it hung into the
+  // gesture strip and read as clipped at the bottom edge.
+  const W = 400, H = 800, BAR = 49, INSET = 34, N = 6;
+  const r = spotlightRect(W, H, BAR, N, 0, INSET);
+  assert.equal(r.height, BAR, 'the hole is the tab row, not the row plus the strip');
+  assert.equal(r.y + r.height, H - INSET, 'it sits directly above the inset');
+});
+
+test('with no inset the hole still reaches the bottom (control)', () => {
+  const r = spotlightRect(400, 800, 49, 6, 0);
+  assert.equal(r.y + r.height, 800);
+});
+
+test('the dim panels still tile exactly around an inset hole (control)', () => {
+  const W = 400, H = 800, BAR = 49, INSET = 34, N = 6;
+  const hole = spotlightRect(W, H, BAR, N, 3, INSET);
+  const area = dimRects(W, H, hole).reduce((a, r) => a + r.width * r.height, 0);
+  assert.equal(area, W * H - hole.width * hole.height, 'no gap, no overlap below the hole either');
+});
