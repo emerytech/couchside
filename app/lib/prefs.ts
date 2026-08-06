@@ -30,6 +30,14 @@ export type LandingTab = (typeof LANDING_TABS)[number];
 export type Prefs = {
   /** Ask before suspending the box (the Suspend button in the header). */
   confirmSuspend: boolean;
+  /** Celebrate streak milestones (3, 7, 14, 30, 60, 100, 365 days in a row).
+   *
+   *  ON by default, but deliberately sparse: milestones only, never a daily
+   *  popup. Off hides the celebration AND the badge — someone who opts out of
+   *  gamification should not keep a scoreboard in their header. The streak
+   *  itself keeps counting locally either way, so turning it back on does not
+   *  start from zero. Nothing about it ever leaves the phone. */
+  streakCelebrations: boolean;
   /** REMOTE-ONLY MODE: the app is just a smart-TV remote, no Couchside box.
    *
    *  For someone with a smart TV and no gaming machine. On, the box tabs
@@ -228,6 +236,7 @@ export type Prefs = {
 
 export const DEFAULTS: Prefs = {
   confirmSuspend: true,
+  streakCelebrations: true,
   remoteOnlyMode: false,
   landingTab: 'index',
   autoKeyboard: true,
@@ -342,6 +351,7 @@ function normalize(raw: unknown): Prefs {
     appUpdateReminder,
     confirmSuspend:
       typeof o.confirmSuspend === 'boolean' ? o.confirmSuspend : DEFAULTS.confirmSuspend,
+    streakCelebrations: bool(o.streakCelebrations, DEFAULTS.streakCelebrations),
     remoteOnlyMode: bool(o.remoteOnlyMode, DEFAULTS.remoteOnlyMode),
     landingTab,
     autoKeyboard: bool(o.autoKeyboard, DEFAULTS.autoKeyboard),

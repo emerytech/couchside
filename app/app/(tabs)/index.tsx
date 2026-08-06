@@ -7,10 +7,12 @@ import { FileDropCard } from '@/components/FileDropCard';
 import { GamingCard } from '@/components/GamingCard';
 import { NowPlayingCard } from '@/components/NowPlayingCard';
 import { ScreenPreview } from '@/components/ScreenPreview';
+import { StreakCelebration } from '@/components/StreakCard';
 import { StreamHostCard } from '@/components/StreamHostCard';
 import { TabScreen } from '@/components/TabScreen';
 import { useLockOrientation } from '@/hooks/useLockOrientation';
 import { usePoll } from '@/hooks/usePoll';
+import { useStreak } from '@/hooks/useStreak';
 import { api, hostKey, humanizeUptime, Status, Unit } from '@/lib/api';
 import { usePref } from '@/lib/prefs';
 import { useSkinKit, VitalsContext, vitality } from '@/lib/skin';
@@ -89,6 +91,10 @@ function ConsoleScreen() {
 
   const s = status.data;
   const reachable = configured && status.error == null && s != null;
+  // Counted only once the box has actually ANSWERED — an app opened to find the
+  // box dead must not be congratulated for it.
+  const streakEnabled = usePref('streakCelebrations');
+  const streak = useStreak(reachable, streakEnabled);
   // Show the 60s average, not the 10s: a momentary spike while a game loads is
   // normal and not worth a number that jumps every poll. Only surfaced once it
   // is above a floor, so an idle box stays quiet.
@@ -154,6 +160,15 @@ function ConsoleScreen() {
               Steam machine, or PC — then add your TV for one remote that drives both.
             </Text>
           </View>
+        )}
+
+        {/* Milestone only, and inline — never a modal over the controls. */}
+        {streak.milestone != null && (
+          <StreakCelebration
+            milestone={streak.milestone}
+            best={streak.state.best}
+            onDismiss={streak.ack}
+          />
         )}
 
         {/* Unreachable banner: the whole point of this app. Wake lives in the
