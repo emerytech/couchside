@@ -25,9 +25,22 @@ const REMIND_MS = REMIND_DAYS * 24 * 60 * 60 * 1000;
 export async function reminderDue(now: number): Promise<boolean> {
   try {
     const raw = await storageGet(LAST_SHOWN_KEY);
-    if (!raw) return true;
+    // NO STAMP = FIRST EVER LAUNCH. Start the clock instead of nudging: telling
+    // somebody to "check for an app update now and then" seconds after they
+    // installed the newest version is noise at the worst possible moment, and
+    // it lands on the setup screen a brand-new user is already trying to read.
+    // Seen on a genuinely clean simulator install.
+    if (!raw) {
+      await markReminderShown(now);
+      return false;
+    }
     const last = parseInt(raw, 10);
-    if (!Number.isFinite(last)) return true;
+    // An unparseable stamp is treated the same way — restart the clock rather
+    // than nag, since we cannot tell how long it has been.
+    if (!Number.isFinite(last)) {
+      await markReminderShown(now);
+      return false;
+    }
     return now - last >= REMIND_MS;
   } catch {
     return false;
