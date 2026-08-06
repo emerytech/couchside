@@ -47,6 +47,9 @@ export type Prefs = {
    *  appids still says something about what you own, so it is a switch the user
    *  throws rather than a default they discover later. */
   compatLookups: boolean;
+  /** The one-time spotlight tour, shown after the first box is paired. On by
+   *  default; turning it off before it has run means it never runs. */
+  featureTour: boolean;
   /** REMOTE-ONLY MODE: the app is just a smart-TV remote, no Couchside box.
    *
    *  For someone with a smart TV and no gaming machine. On, the box tabs
@@ -247,6 +250,7 @@ export const DEFAULTS: Prefs = {
   confirmSuspend: true,
   streakCelebrations: true,
   compatLookups: false,
+  featureTour: true,
   remoteOnlyMode: false,
   landingTab: 'index',
   autoKeyboard: true,
@@ -363,6 +367,7 @@ function normalize(raw: unknown): Prefs {
       typeof o.confirmSuspend === 'boolean' ? o.confirmSuspend : DEFAULTS.confirmSuspend,
     streakCelebrations: bool(o.streakCelebrations, DEFAULTS.streakCelebrations),
     compatLookups: bool(o.compatLookups, DEFAULTS.compatLookups),
+    featureTour: bool(o.featureTour, DEFAULTS.featureTour),
     remoteOnlyMode: bool(o.remoteOnlyMode, DEFAULTS.remoteOnlyMode),
     landingTab,
     autoKeyboard: bool(o.autoKeyboard, DEFAULTS.autoKeyboard),

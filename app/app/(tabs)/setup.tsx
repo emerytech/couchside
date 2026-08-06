@@ -783,6 +783,7 @@ function SetupBody() {
   const confirmSuspend = usePref('confirmSuspend');
   const streakCelebrations = usePref('streakCelebrations');
   const compatLookups = usePref('compatLookups');
+  const featureTour = usePref('featureTour');
   const remoteOnlyOn = usePref('remoteOnlyMode');
   // DETECT, DO NOT PRESUME. This used to spring open for anyone with no box —
   // which meant a brand-new user landed on the box install steps AND a full TV
@@ -1367,6 +1368,15 @@ function SetupBody() {
                   // Turning it off REMOVES what it collected rather than just
                   // hiding it — otherwise "off" would be a lie about the data.
                   if (!v) void clearCompatCache();
+                  hapticSelection();
+                }}
+              />
+              <TogglePref
+                label="Feature tour"
+                sub="A short spotlight walkthrough the first time a box is paired. Off means it never runs."
+                value={featureTour}
+                onValueChange={(v) => {
+                  void setPref('featureTour', v);
                   hapticSelection();
                 }}
               />

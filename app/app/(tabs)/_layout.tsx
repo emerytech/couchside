@@ -5,6 +5,8 @@ import { useEffect, useRef } from 'react';
 import { useCapsSync } from '@/hooks/useCapsSync';
 import { hapticSelection } from '@/lib/haptics';
 import { usePref } from '@/lib/prefs';
+import { FeatureTour } from '@/components/FeatureTour';
+import { useFeatureTour } from '@/hooks/useFeatureTour';
 import { useBoxes } from '@/lib/SettingsContext';
 import { useTheme } from '@/lib/theme';
 
@@ -45,6 +47,22 @@ export default function TabLayout() {
     remoteOnly ||
     caps?.launchers === false ||
     (caps?.launchers === undefined && caps?.steam === false);
+
+  // The tour spotlights a tab by POSITION, so it needs the order actually
+  // rendered — caps and remote-only mode change both which tabs exist and where
+  // they sit. Derived from the same flags the <Tabs.Screen> entries use, so the
+  // two cannot drift.
+  const tabOrder = [
+    'index',
+    ...(remoteOnly ? ['remote'] : []),
+    ...(!remoteOnly && boxes.length >= 2 ? ['fleet'] : []),
+    ...(remoteOnly ? [] : ['actions']),
+    ...(hidePad ? [] : ['pad']),
+    ...(hideLaunch ? [] : ['launch']),
+    'setup',
+  ];
+  const tourEnabled = usePref('featureTour');
+  const tour = useFeatureTour(boxes.length > 0, tourEnabled);
 
   // On true first run (persisted fleet loaded, but empty) send the user to
   // Setup to pair. Otherwise honour the landing-tab preference.
@@ -106,6 +124,7 @@ export default function TabLayout() {
   }, [ready, hidePad, hideLaunch, remoteOnly, segments]);
 
   return (
+    <>
     <Tabs
       screenListeners={{ tabPress: () => hapticSelection() }}
       screenOptions={{
@@ -190,5 +209,14 @@ export default function TabLayout() {
         }}
       />
     </Tabs>
+    {tour.visible ? (
+      <FeatureTour
+        state={tour.state}
+        tabOrder={tabOrder}
+        onNext={tour.next}
+        onSkip={tour.skip}
+      />
+    ) : null}
+    </>
   );
 }
