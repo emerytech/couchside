@@ -96,6 +96,11 @@ export default function TabLayout() {
   const redirected = useRef(false);
   useEffect(() => {
     if (!ready || redirected.current) return;
+    // THE TOUR OWNS NAVIGATION WHILE IT IS UP. This effect is declared after the
+    // tour's, so without this guard it ran second and overwrote the tour's first
+    // step — the tour opened on Console's copy while the app sat on Pad, and the
+    // user had to find Console themselves. Reported from a device.
+    if (tour.visible) return;
     redirected.current = true;
     // In remote-only mode the landing tab is the Remote, always: the box tabs
     // it could otherwise name are hidden, and Console with no box is an empty
