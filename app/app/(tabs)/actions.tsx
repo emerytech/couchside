@@ -1,4 +1,4 @@
-import React, { useCallback, useMemo, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   Alert,
   Platform,
@@ -12,6 +12,8 @@ import {
 import { BootSessionCard } from '@/components/BootSessionCard';
 import { Gated } from '@/components/Gated';
 import { TabScreen } from '@/components/TabScreen';
+import { TourAnchor } from '@/components/TourAnchor';
+import { registerScroller } from '@/hooks/useTourAnchor';
 import { useLockOrientation } from '@/hooks/useLockOrientation';
 import { usePoll } from '@/hooks/usePoll';
 import { ActionInfo, ActionResult, api, Danger, hostKey } from '@/lib/api';
@@ -35,6 +37,16 @@ const GROUP_TITLE: Record<Danger, string> = {
   low: 'ROUTINE',
   medium: 'CHANGES WHAT’S ON SCREEN',
   high: 'ENDS YOUR SESSION',
+};
+/** Feature-tour anchor per group. Spelled out as LITERALS rather than built
+ *  with a template string: a test reads this source to prove every anchor named
+ *  in lib/tour.ts is actually registered somewhere, and an interpolated id is
+ *  invisible to it. A tour step whose anchor never registers does not crash — it
+ *  silently never shows — so the typo has to be caught here or not at all. */
+const TOUR_ANCHOR: Record<Danger, string> = {
+  low: 'actions.routine',
+  medium: 'actions.medium',
+  high: 'actions.high',
 };
 const BADGE_TEXT: Record<Danger, string> = {
   low: 'routine',
@@ -153,10 +165,30 @@ function ActionsScreen() {
     ),
   })).filter((g) => g.items.length > 0);
 
+  // Let the feature tour scroll a group into view before spotlighting it: with
+  // the boot-session card above them, ENDS YOUR SESSION is below the fold on a
+  // phone, and a spotlight cut over an off-screen group is a hole around nothing.
+  const scrollRef = useRef<ScrollView>(null);
+  const scrollY = useRef(0);
+  useEffect(
+    () =>
+      registerScroller('actions', (dy) => {
+        scrollRef.current?.scrollTo({ y: Math.max(0, scrollY.current + dy), animated: true });
+      }),
+    [],
+  );
+
   return (
     <View style={[styles.screen, { paddingTop: 12 }]}>
       <Text style={styles.title}>Actions</Text>
-      <ScrollView style={styles.list} contentContainerStyle={{ paddingBottom: 12 }}>
+      <ScrollView
+        ref={scrollRef}
+        onScroll={(e) => {
+          scrollY.current = e.nativeEvent.contentOffset.y;
+        }}
+        scrollEventThrottle={16}
+        style={styles.list}
+        contentContainerStyle={{ paddingBottom: 12 }}>
         {/* Fresh install: nothing paired yet, so nothing is "unreachable". */}
         {!configured && (
           <View style={styles.emptyCard}>
@@ -183,8 +215,18 @@ function ActionsScreen() {
         {/* Persistent boot preference, directly above the ONE-SHOT session
             switches below it — that adjacency is the point (see the card). */}
         {configured && <BootSessionCard />}
+        {/* TourAnchor REPLACES each group's View and inherits styles.group, so
+            the layout is unchanged and the anchor measures the whole block —
+            header plus rows. The id uses the UI's word for `low` ("ROUTINE")
+            rather than the agent's danger level, matching lib/tour.ts. A group
+            with no items is already filtered out above, so a box that reports no
+            harmless actions registers no `actions.routine` and that step skips
+            itself instead of pointing at a header that is not there. */}
         {groups.map((g) => (
-          <View key={g.danger} style={styles.group}>
+          <TourAnchor
+            key={g.danger}
+            id={TOUR_ANCHOR[g.danger]}
+            style={styles.group}>
             <Text style={[styles.groupTitle, { color: DANGER_COLOR[g.danger] }]}>
               {GROUP_TITLE[g.danger]}
             </Text>
@@ -212,7 +254,7 @@ function ActionsScreen() {
                     / "Leave Game Mode for the SteamOS desktop"). */}
               </Pressable>
             ))}
-            </View>
+            </TourAnchor>
           ))}
       </ScrollView>
 

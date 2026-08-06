@@ -33,6 +33,8 @@ import { buildPairLink } from '@/lib/pairLink';
 import { GuideHoldSetup } from '@/components/GuideHoldSetup';
 import { SmartTvSetup } from '@/components/SmartTvSetup';
 import { TabScreen } from '@/components/TabScreen';
+import { TourAnchor } from '@/components/TourAnchor';
+import { registerScroller } from '@/hooks/useTourAnchor';
 import { useLockOrientation } from '@/hooks/useLockOrientation';
 import { api, ApiError } from '@/lib/api';
 import { isGenuinelyPurchased, recordPurchaseDate } from '@/lib/entitlement';
@@ -671,10 +673,12 @@ function CategoryTabs({ tab, onTab }: { tab: SetupTab; onTab: (t: SetupTab) => v
   const pal = useTheme();
   const styles = useThemedStyles(makeStyles);
   return (
-    <View style={styles.tabBar}>
+    // TourAnchor REPLACES the bar's View and inherits styles.tabBar, so the row
+    // is the same box it always was — see components/TourAnchor.tsx.
+    <TourAnchor id="setup.tabs" style={styles.tabBar}>
       {SETUP_TABS.map((t) => {
         const active = t.key === tab;
-        return (
+        const seg = (
           <Pressable
             key={t.key}
             onPress={() => {
@@ -688,8 +692,20 @@ function CategoryTabs({ tab, onTab }: { tab: SetupTab; onTab: (t: SetupTab) => v
             </Text>
           </Pressable>
         );
+        // Logs gets its own anchor so the tour can point at the segment rather
+        // than the whole bar. The wrapper carries flex:1 because that is what
+        // makes it layout-neutral: styles.tabItem is flex:1, and a default
+        // (flex:0) wrapper would collapse Logs to its text width while the
+        // other three kept expanding — the segment would visibly shrink.
+        return t.key === 'logs' ? (
+          <TourAnchor key={t.key} id="setup.logs" style={{ flex: 1 }}>
+            {seg}
+          </TourAnchor>
+        ) : (
+          seg
+        );
       })}
-    </View>
+    </TourAnchor>
   );
 }
 
@@ -1012,6 +1028,21 @@ function SetupBody() {
     }
   }, [params.tab, router]);
 
+  // Let the feature tour scroll a section into view before spotlighting it.
+  // DELIBERATELY the body ScrollView, never the Logs FlatList: Logs renders
+  // OUTSIDE this ScrollView (it hosts its own list — see below), and both
+  // anchors this screen registers live in the fixed header anyway, so this only
+  // ever has to move body content.
+  const scrollRef = useRef<ScrollView>(null);
+  const scrollY = useRef(0);
+  useEffect(
+    () =>
+      registerScroller('setup', (dy) => {
+        scrollRef.current?.scrollTo({ y: Math.max(0, scrollY.current + dy), animated: true });
+      }),
+    [],
+  );
+
   return (
     <KeyboardAvoidingView
       style={styles.screen}
@@ -1055,6 +1086,11 @@ function SetupBody() {
         </Gated>
       )}
       <ScrollView
+        ref={scrollRef}
+        onScroll={(e) => {
+          scrollY.current = e.nativeEvent.contentOffset.y;
+        }}
+        scrollEventThrottle={16}
         style={tab === 'logs' ? styles.hidden : undefined}
         contentContainerStyle={{
           paddingTop: 14,

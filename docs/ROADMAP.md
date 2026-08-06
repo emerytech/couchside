@@ -9,6 +9,27 @@ Entry fields: `priority` (P0 blocker → P3 nice) · `risk` · `affects` · `dep
 
 ## 🔨 In Progress
 
+### Feature tour — element spotlights
+- **priority:** P2 · **risk:** low (app-only, additive) · **affects:** app only ·
+  **depends_on:** nothing
+- **DONE 2026-08-06, unmerged on `feat/launch-confirm`.** The tour spotlights real elements
+  (CPU temp, display info, the game grid, the pad mode selector, action groups, the Logs
+  segment) instead of only tab-bar icons, scrolling below-the-fold targets into view.
+- The load-bearing rule: **a step whose anchor is not registered is SKIPPED.** Screens
+  register anchors only for what they rendered, so the tour can no longer explain a control
+  the user does not have. This replaced four separate "the tour describes something absent"
+  bugs found by driving the app on a phone.
+- Also fixed: the Prefs toggle did nothing until a relaunch (tour state was per-hook state,
+  now an external store like `lib/prefs.ts`); a step naming a caps-hidden tab wedged the tour
+  permanently; the logs step pointed at Console, which has no logs UI.
+- **Verified** on the simulator against the real lenovodesktop box, all 13 steps, both the
+  spotlight and the skip paths. **NOT verified on Android** — `collapsable={false}` is
+  reasoned, not observed.
+- **Follow-ups (from the same audit, NOT done):** the launch confirm sheet drops the compat
+  rating the tile shows; dead space under a short library grid; Console title clips under the
+  sticky header; duplicate EDIT affordances on box rows; the Pad looks live while disconnected
+  and lacks the cellular hint Setup has.
+
 ### Remote-only mode — Couchside as just a TV remote, no box
 - **priority:** P2 · **risk:** medium (new app-side transport; shared tab/entitlement
   plumbing) · **affects:** app only · **depends_on:** nothing for Phase 1; Phase 2 depends

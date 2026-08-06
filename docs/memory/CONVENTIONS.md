@@ -502,3 +502,45 @@ Native's `fetch` does not enforce CORS; the harness's browser does. So a direct-
 failing on web is not evidence of a bug, and the fix is a CORS header on the STUB — never
 CORS handling in the app. Everything else about such a call (which path, how many requests,
 what encoding) IS observable in the harness by reading the stub's log rather than the screen.
+
+## Shared app state: the external-store shape (do not use a mount effect)
+
+Cross-component state that OUTLIVES one screen lives in a module-level store, never in a hook's
+`useState` + `useEffect(..., [])`. The shape, established by `app/lib/prefs.ts` and copied by
+`lib/haptics.ts`, `lib/keepAwake.ts`, `lib/theme.ts`, `lib/skin/index.tsx`,
+`lib/tvdirect/store.ts` and `hooks/useFeatureTour.ts`:
+
+```ts
+let value: T = DEFAULT;
+const listeners = new Set<() => void>();
+function emitChange() { for (const l of listeners) l(); }
+let loadStarted = false;               // one-shot load, kicked off at import
+export function useX() { return useSyncExternalStore(subscribe, get, get); }
+```
+
+Writers update the module value, `emitChange()` SYNCHRONOUSLY, and persist afterwards — so
+subscribers re-render on the same frame rather than waiting on the keychain.
+
+**Why this is a rule and not a preference.** `hooks/useFeatureTour.ts` used a mount effect with
+`[]` deps and lived in `app/(tabs)/_layout.tsx`, which never unmounts. A helper that wrote the
+same storage key therefore updated something nothing would read again until relaunch, and the
+Prefs switch that called it looked broken — while its own copy promised it would work. The bug
+is invisible in review because the code reads correctly; it only shows up when a SECOND
+component writes the state.
+
+## Feature-tour anchors
+
+A tour step names an element by id (`console.cpu`); the screen registers it with
+`<TourAnchor id="...">`. Rules:
+- **The anchor is the gate.** A screen registers only what it rendered, so an unregistered
+  anchor means the user does not have that control and the step is SKIPPED. Never add a
+  separate "should this step show" condition — it would drift from the UI it describes.
+- **Anchor ids are written as literals**, never built with a template string: a test in
+  `lib/__tests__/tour.test.ts` reads the screen sources to prove every id a step names is
+  actually registered, and an interpolated id is invisible to it.
+- **Anchor a plain View, not the skin `<Card>`.** Card is a plain function component in both
+  skins (a ref is dropped), and its `style` prop lands on a different box per skin, so the same
+  anchor would measure two different rectangles. Measuring a plain View also keeps it off
+  reactor's `Animated.View`, which moves 8px during its 260ms entrance.
+- **Mirror `hitSlop`** when wrapping a small Pressable: a parent clips hit-testing to its own
+  bounds, so a bare wrapper shrinks the touch target back to the drawn icon.

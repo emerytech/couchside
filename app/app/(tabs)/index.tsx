@@ -1,7 +1,9 @@
-import React, { useEffect } from 'react';
+import React, { useEffect, useRef } from 'react';
 import { Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
 
 import { Gated } from '@/components/Gated';
+import { TourAnchor } from '@/components/TourAnchor';
+import { registerScroller } from '@/hooks/useTourAnchor';
 import { DisplayAudioCard } from '@/components/DisplayAudioCard';
 import { FileDropCard } from '@/components/FileDropCard';
 import { GamingCard } from '@/components/GamingCard';
@@ -115,10 +117,28 @@ function ConsoleScreen() {
     [s?.load, s?.cpu_temp_c, reachable],
   );
 
+  // Let the feature tour scroll a card into view before spotlighting it: the
+  // screen preview and display info both sit below the fold on a phone, and a
+  // spotlight cut over an off-screen element is a hole around nothing.
+  const scrollRef = useRef<ScrollView>(null);
+  const scrollY = useRef(0);
+  useEffect(
+    () =>
+      registerScroller('index', (dy) => {
+        scrollRef.current?.scrollTo({ y: Math.max(0, scrollY.current + dy), animated: true });
+      }),
+    [],
+  );
+
   return (
     <VitalsContext.Provider value={vitals}>
     <View style={styles.screen}>
       <ScrollView
+        ref={scrollRef}
+        onScroll={(e) => {
+          scrollY.current = e.nativeEvent.contentOffset.y;
+        }}
+        scrollEventThrottle={16}
         style={styles.scroll}
         contentContainerStyle={{
           paddingTop: 12,
@@ -203,7 +223,9 @@ function ConsoleScreen() {
         {s && (
           <>
             <View style={styles.row}>
-              <View style={styles.half}>
+              {/* TourAnchor REPLACES the half View rather than wrapping it, so
+                  the flex row is untouched — see components/TourAnchor.tsx. */}
+              <TourAnchor id="console.cpu" style={styles.half}>
                 <Card title="CPU TEMP" index={0}>
                   <BigMetric
                     value={s.cpu_temp_c != null ? `${s.cpu_temp_c.toFixed(1)}°C` : '—'}
@@ -212,7 +234,7 @@ function ConsoleScreen() {
                   />
                   <Spark values={s.history?.temp} color={tempColor(s.cpu_temp_c, t)} />
                 </Card>
-              </View>
+              </TourAnchor>
               <View style={styles.half}>
                 <Card title="UPTIME" index={1}>
                   {/* Not numeric: "1d 2h 7m" must never be interpolated. */}
@@ -342,10 +364,14 @@ function ConsoleScreen() {
             region — the specs of the screen, then the picture on it. Below the
             vitals you opened this tab to read, above UNITS, which is reference
             config rather than something you watch. */}
-        <DisplayAudioCard />
+        <TourAnchor id="console.display">
+          <DisplayAudioCard />
+        </TourAnchor>
 
         {/* Live screen preview (probe-and-appear; hidden when no capture path) */}
-        <ScreenPreview />
+        <TourAnchor id="console.screen">
+          <ScreenPreview />
+        </TourAnchor>
 
         {/* Units */}
         {configured && (

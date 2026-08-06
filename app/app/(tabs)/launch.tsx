@@ -28,6 +28,8 @@ import { useCompat } from '@/hooks/useCompat';
 import { type Compat, deckLabel, protonLabel } from '@/lib/compat';
 import { LibraryFilterSheet } from '@/components/LibraryFilterSheet';
 import { TabScreen } from '@/components/TabScreen';
+import { TourAnchor } from '@/components/TourAnchor';
+import { registerScroller } from '@/hooks/useTourAnchor';
 import { useLockOrientation } from '@/hooks/useLockOrientation';
 import { usePoll } from '@/hooks/usePoll';
 import {
@@ -817,6 +819,20 @@ function LaunchScreen() {
     return out;
   }, [launchers]);
 
+  // Let the feature tour scroll the grid into view before spotlighting it: with
+  // downloads, Remote Play and the search row stacked above it, the first tile
+  // can start below the fold, and a spotlight cut over an off-screen element is
+  // a hole around nothing.
+  const scrollRef = useRef<ScrollView>(null);
+  const scrollY = useRef(0);
+  useEffect(
+    () =>
+      registerScroller('launch', (dy) => {
+        scrollRef.current?.scrollTo({ y: Math.max(0, scrollY.current + dy), animated: true });
+      }),
+    [],
+  );
+
   return (
     <View style={styles.screen}>
       <View style={styles.header}>
@@ -865,6 +881,11 @@ function LaunchScreen() {
 
       {activeSection === 'games' && (
       <ScrollView
+        ref={scrollRef}
+        onScroll={(e) => {
+          scrollY.current = e.nativeEvent.contentOffset.y;
+        }}
+        scrollEventThrottle={16}
         style={styles.list}
         contentContainerStyle={{ paddingHorizontal: H_PAD, paddingBottom: 24 }}
         refreshControl={
@@ -969,34 +990,41 @@ function LaunchScreen() {
                 It opens the same confirm sheet, so a random pick still cannot
                 start a game by surprise. */}
             {launchers.length > 1 ? (
+              // TourAnchor WRAPS rather than replaces here: the Pressable is
+              // already the only box, and a wrapper sized to its content is
+              // invisible to the row's gap/centre layout.
+              <TourAnchor id="launch.shuffle" hitSlop={8}>
+                <Pressable
+                  onPress={() => {
+                    hapticMedium();
+                    const pick = pickRandom(launchers);
+                    if (pick) setSheetFor(pick);
+                  }}
+                  hitSlop={8}
+                  accessibilityRole="button"
+                  accessibilityLabel="Pick a game for me"
+                  style={({ pressed }) => [pressed && { opacity: 0.6 }]}>
+                  <Ionicons name="shuffle" size={18} color={t.textDim} />
+                </Pressable>
+              </TourAnchor>
+            ) : null}
+            <TourAnchor id="launch.filter" hitSlop={8}>
               <Pressable
                 onPress={() => {
-                  hapticMedium();
-                  const pick = pickRandom(launchers);
-                  if (pick) setSheetFor(pick);
+                  hapticLight();
+                  setFilterOpen(true);
                 }}
                 hitSlop={8}
                 accessibilityRole="button"
-                accessibilityLabel="Pick a game for me"
+                accessibilityLabel="Filter library"
                 style={({ pressed }) => [pressed && { opacity: 0.6 }]}>
-                <Ionicons name="shuffle" size={18} color={t.textDim} />
+                <Ionicons
+                  name="options-outline"
+                  size={18}
+                  color={isFiltering(filter) ? t.blue : t.textDim}
+                />
               </Pressable>
-            ) : null}
-            <Pressable
-              onPress={() => {
-                hapticLight();
-                setFilterOpen(true);
-              }}
-              hitSlop={8}
-              accessibilityRole="button"
-              accessibilityLabel="Filter library"
-              style={({ pressed }) => [pressed && { opacity: 0.6 }]}>
-              <Ionicons
-                name="options-outline"
-                size={18}
-                color={isFiltering(filter) ? t.blue : t.textDim}
-              />
-            </Pressable>
+            </TourAnchor>
           </View>
         )}
 
@@ -1035,30 +1063,34 @@ function LaunchScreen() {
           </Text>
         )}
 
-        {/* Grid */}
-        {rows.map((row, ri) => (
-          <View key={ri} style={[styles.row, { gap: GAP, marginBottom: GAP }]}>
-            {row.map((l) => (
-              <LauncherTile
-                key={l.id}
-                launcher={l}
-                width={tileWidth}
-                coverSource={
-                  l.kind === 'steam' && l.appid != null
-                    ? api.steamCoverSource(settings, l.appid)
-                    : undefined
-                }
-                retryKey={retryKey}
-                onLaunch={() => setSheetFor(l)}
-                compat={l.appid != null ? compat[l.appid] : undefined}
-                onDelete={l.kind === 'custom' ? () => remove(l) : undefined}
-                download={l.appid != null ? dlByAppid.get(l.appid) : undefined}
-              />
-            ))}
-            {/* Pad an odd final row so the single tile stays left-aligned. */}
-            {row.length < COLS && <View style={{ width: tileWidth }} />}
-          </View>
-        ))}
+        {/* Grid. The rows are a bare .map with nothing around them, so the
+            anchor supplies the one box the tour can measure — an unstyled
+            column child, which leaves each row's own layout untouched. */}
+        <TourAnchor id="launch.grid">
+          {rows.map((row, ri) => (
+            <View key={ri} style={[styles.row, { gap: GAP, marginBottom: GAP }]}>
+              {row.map((l) => (
+                <LauncherTile
+                  key={l.id}
+                  launcher={l}
+                  width={tileWidth}
+                  coverSource={
+                    l.kind === 'steam' && l.appid != null
+                      ? api.steamCoverSource(settings, l.appid)
+                      : undefined
+                  }
+                  retryKey={retryKey}
+                  onLaunch={() => setSheetFor(l)}
+                  compat={l.appid != null ? compat[l.appid] : undefined}
+                  onDelete={l.kind === 'custom' ? () => remove(l) : undefined}
+                  download={l.appid != null ? dlByAppid.get(l.appid) : undefined}
+                />
+              ))}
+              {/* Pad an odd final row so the single tile stays left-aligned. */}
+              {row.length < COLS && <View style={{ width: tileWidth }} />}
+            </View>
+          ))}
+        </TourAnchor>
       </ScrollView>
       )}
 

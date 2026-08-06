@@ -47,6 +47,7 @@ import { SteamMenusPanel } from '@/components/SteamMenusPanel';
 import { RemoteView } from '@/components/RemoteView';
 import { PadDiagnostics } from '@/components/PadDiagnostics';
 import { TabScreen } from '@/components/TabScreen';
+import { TourAnchor } from '@/components/TourAnchor';
 import { useLockOrientation } from '@/hooks/useLockOrientation';
 import { usePoll } from '@/hooks/usePoll';
 import type { PlayerState, SteamMenus } from '@/lib/api';
@@ -1677,7 +1678,12 @@ function PadScreen() {
                   : statusLabel(status, dev)}
             </Text>
           </Pressable>
-          <View style={styles.modeToggle}>
+          {/* TourAnchor REPLACES the toggle's View and inherits its style, so
+              the row is byte-for-byte the same box — see components/TourAnchor.tsx.
+              It sits inside the same conditional as before, so large-pad mode
+              (which hides the selector) simply leaves the anchor unregistered
+              and the tour skips those steps. */}
+          <TourAnchor id="pad.modes" style={styles.modeToggle}>
             {modes.map((m) => (
               <Pressable
                 key={m.key}
@@ -1690,7 +1696,7 @@ function PadScreen() {
                 </Text>
               </Pressable>
             ))}
-          </View>
+          </TourAnchor>
         </>
       )}
 
