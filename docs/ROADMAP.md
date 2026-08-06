@@ -140,33 +140,6 @@ Entry fields: `priority` (P0 blocker → P3 nice) · `risk` · `affects` · `dep
 - **Verify:** Roku slice is unit-testable against a stub ECP `/query/apps`; the real grid
   needs Roku/LG hardware. No store copy claims it until a real TV lists apps on a device.
 
-### Ship the Steam Deck install fix and the Windows units fix (release-gated)
-
-**priority:** high
-**risk:** low code risk, HIGH forget risk
-**affects:** install.sh, agent/win/couchsided-win.py, couchside.tv
-**depends_on:** feat/webos-app-direct merged to main
-
-Both fixes are ALREADY WRITTEN and merged-pending, and NEITHER reaches a user
-through an app build — this entry exists because that is easy to forget and the
-first one is a fresh-install blocker.
-
-- **Steam Deck fresh installs fail** (`install: cannot change owner and
-  permissions of '/usr/local/libexec'` -> installer exits 1 before the helper,
-  socket or unit lands). SteamOS ships / and /usr read-only. Fixed by falling
-  back to /var/lib/couchside/libexec. **Reaches users only via a signed release
-  asset AND the couchside.tv install.sh sync** — the website serves its own copy,
-  so a merge alone changes nothing for anyone running the published one-liner.
-- **Windows units card shows a permanent yellow `couchside-agent
-  inactive/not-found`.** The fix is the `log_only` flag, which comes FROM THE
-  AGENT — so it needs a Windows agent release (0.4.4-win). The app-side filter
-  ships with the app but has nothing to filter until the agent sends the flag.
-
-**Verify on hardware before calling it done** (neither is hardware-verified):
-1. Fresh install on the Steam Deck — the only real proof of the installer fix.
-2. Deploy the win agent to EMERY-PC — confirm the yellow warning is gone AND
-   that couchside-agent is still selectable in the Logs picker.
-
 ### Library triage — filter your games by what runs here and how long it takes
 
 **priority:** medium
@@ -821,6 +794,37 @@ recommendation was wrong, not merely superseded.
 ---
 
 ## ✅ Completed
+
+### Steam Deck install fix + Windows units fix — SHIPPED in agent 2.9.71 / 0.4.5-win
+
+**shipped:** 2026-08-06
+**verified:** end to end, at the thing users actually download
+
+Both fixes were written, merged, and still reached NOBODY until a signed agent
+release was cut — the whole point of this entry. Now published:
+
+- `agent-version.txt` 2.9.70 -> **2.9.71**, `agent-version-win.txt` 0.4.4-win ->
+  **0.4.5-win**, asset `updated_at` moved off 2026-08-01, proving a real upload.
+- `https://couchside.tv/install.sh` now contains the SteamOS fallback (6 hits,
+  was 0). A fresh Steam Deck install no longer dies partway through.
+- The published Windows agent carries `log_only`, so the phantom yellow
+  `couchside-agent inactive/not-found` is gone.
+
+**Three traps this cost time on, all banked to memory (shipped-2.9.71):**
+1. **A same-version republish reaches nobody.** The Windows fix was about to ship
+   as 0.4.4-win — already published — so every install would have compared
+   versions, seen no change, and never updated. Diff the published asset's
+   CONTENT, not its version string. Bumped to 0.4.5-win.
+2. **`browser_download_url` serves stale bytes.** Verify through the API and
+   check `updated_at` moved.
+3. **The changelog gate is `agent/CHANGELOG.md`**, not the repo root, and it
+   fires AFTER signing — so the failure looks late.
+
+Ordering rule: `sync-installer.mjs` fetches install.sh FROM THE SIGNED RELEASE,
+so running it before `release-agent.sh` re-copies the old installer, reports
+"verified", and changes nothing. That happened on the first attempt.
+
+Website updates page carries the 2.9.71 / 0.4.5-win entries.
 
 ### Display-manager detection: plasmalogin + fail-closed session backend — agent 2.9.66 (PR pending)
 - **priority:** P1 (blocked the queued "Boots into" release on plasmalogin boxes) · **risk:**
