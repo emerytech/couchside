@@ -1,13 +1,15 @@
 import Ionicons from '@expo/vector-icons/Ionicons';
 import { router, Tabs, useSegments } from 'expo-router';
-import { currentStep } from '@/lib/tour';
-import { useEffect, useRef } from 'react';
+import { currentStep, isFinalStep } from '@/lib/tour';
+import { useCallback, useEffect, useRef } from 'react';
 
 import { useCapsSync } from '@/hooks/useCapsSync';
 import { hapticSelection } from '@/lib/haptics';
 import { usePref } from '@/lib/prefs';
 import { FeatureTour } from '@/components/FeatureTour';
+import { TourThanks } from '@/components/TourThanks';
 import { useFeatureTour } from '@/hooks/useFeatureTour';
+import { showTourThanks, useTourThanks } from '@/hooks/useTourThanks';
 import { useBoxes } from '@/lib/SettingsContext';
 import { useTheme } from '@/lib/theme';
 
@@ -64,6 +66,17 @@ export default function TabLayout() {
   ];
   const tourEnabled = usePref('featureTour');
   const tour = useFeatureTour(boxes.length > 0, tourEnabled);
+  const thanksVisible = useTourThanks();
+
+  // Thank the people who actually WALKED it. Wrapping `next` rather than
+  // watching for state.done is deliberate: skipping and finishing both land on
+  // TOUR_FINISHED, and someone who pressed "Skip tour" has just asked to be
+  // left alone — which is the worst possible moment to show them a note about
+  // buying. Only the last GOT IT gets here.
+  const tourNext = useCallback(() => {
+    if (isFinalStep(tour.state)) showTourThanks();
+    tour.next();
+  }, [tour]);
 
   // Take the user TO the tab being described. A spotlight on "Console" while
   // they are looking at the Pad screen explains a screen they cannot see —
@@ -253,7 +266,7 @@ export default function TabLayout() {
       <FeatureTour
         state={tour.state}
         tabOrder={tabOrder}
-        onNext={tour.next}
+        onNext={tourNext}
         onSkip={tour.skip}
       />
     ) : null}
