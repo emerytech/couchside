@@ -31,7 +31,7 @@ import React from 'react';
 import { Pressable, StyleSheet, Text, useWindowDimensions, View } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
-import { measureAnchor, scrollTabBy, subscribeAnchorLayout } from '@/hooks/useTourAnchor';
+import { measureAnchor, screenHasAnchors, scrollTabBy, subscribeAnchorLayout } from '@/hooks/useTourAnchor';
 import { hapticLight } from '@/lib/haptics';
 import {
   anchorHole,
@@ -68,6 +68,12 @@ const RETRY_EVERY_MS = 100;
  *  genuinely absent element takes this long to skip, which nobody sees as
  *  anything but a slightly late card. */
 const RETRY_FOR_MS = 4000;
+/** Budget once the target's SCREEN is up and other anchors on it have reported.
+ *  At that point a missing anchor is missing, not late, so waiting the full
+ *  budget just makes a skipped step look like the app froze — a user watching
+ *  the tour reported a dead pause between steps 7 and 8, and 12 and 13, which
+ *  were precisely the two steps skipped on their box. */
+const READY_GIVE_UP_MS = 700;
 /** Let a scroll settle before trusting the second measurement. */
 const SCROLL_SETTLE_MS = 380;
 /** How many times one step may chase a moving anchor before giving up. */
@@ -146,10 +152,16 @@ export function FeatureTour({
 
     void (async () => {
       let rect: Rect | null = null;
-      for (let waited = 0; waited <= RETRY_FOR_MS; waited += RETRY_EVERY_MS) {
+      for (let waited = 0; ; waited += RETRY_EVERY_MS) {
         if (!live()) return;
         rect = await measureAnchor(anchor);
         if (rect) break;
+        // Stop early once the screen itself is clearly up: a sibling anchor on
+        // the same screen has registered, so this one is absent by design (a
+        // filter that needs 8+ games, an action group this box does not report)
+        // and no amount of waiting will conjure it.
+        const budget = (await screenHasAnchors(anchor)) ? READY_GIVE_UP_MS : RETRY_FOR_MS;
+        if (waited >= budget) break;
         await delay(RETRY_EVERY_MS);
       }
       if (!live()) return;
