@@ -56,12 +56,21 @@ export function hasAnchor(id: string): boolean {
  * watching the tour saw a four-second dead pause between steps 7 and 8, and
  * again between 12 and 13 — exactly the steps skipped on their box.
  */
-export function screenHasAnchors(id: string): boolean {
+export async function screenHasAnchors(id: string): Promise<boolean> {
   const dot = id.indexOf('.');
   if (dot <= 0) return false;
   const prefix = id.slice(0, dot + 1);
   for (const key of anchors.keys()) {
-    if (key !== id && key.startsWith(prefix)) return true;
+    if (key === id || !key.startsWith(prefix)) continue;
+    // MEASURE the sibling; do not settle for it being registered. Several
+    // anchors wrap components that hide themselves (DisplayAudioCard and
+    // ScreenPreview both return null until the box answers), so the wrapper
+    // View is mounted and registered while rendering nothing at all. Treating
+    // that as "the screen is ready" made the three Console steps skip
+    // themselves on a cold pair — the exact bug the longer budget existed to
+    // fix, reintroduced from the other side. A sibling with real dimensions is
+    // the only honest evidence that this screen has content.
+    if (await measureAnchor(key)) return true;
   }
   return false;
 }

@@ -160,7 +160,7 @@ export function FeatureTour({
         // the same screen has registered, so this one is absent by design (a
         // filter that needs 8+ games, an action group this box does not report)
         // and no amount of waiting will conjure it.
-        const budget = screenHasAnchors(anchor) ? READY_GIVE_UP_MS : RETRY_FOR_MS;
+        const budget = (await screenHasAnchors(anchor)) ? READY_GIVE_UP_MS : RETRY_FOR_MS;
         if (waited >= budget) break;
         await delay(RETRY_EVERY_MS);
       }
