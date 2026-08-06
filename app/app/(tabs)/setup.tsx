@@ -784,8 +784,16 @@ function SetupBody() {
   const streakCelebrations = usePref('streakCelebrations');
   const compatLookups = usePref('compatLookups');
   const remoteOnlyOn = usePref('remoteOnlyMode');
-  // Open when there is nothing else here to use, or when the mode is already on.
-  const tvRemoteOpenByDefault = boxes.length === 0 || remoteOnlyOn;
+  // DETECT, DO NOT PRESUME. This used to spring open for anyone with no box —
+  // which meant a brand-new user landed on the box install steps AND a full TV
+  // pairing form at once, before they had done anything. Reported as "the
+  // overwhelming setup page".
+  //
+  // A user with no box is far more likely to be mid-install than to own no PC
+  // at all, so the box path leads and this stays a quiet one-line offer they
+  // can take if it does not apply to them. Open only once remote-only mode is
+  // actually on, when it IS the section that matters.
+  const tvRemoteOpenByDefault = remoteOnlyOn;
   const defaultPadMode = usePref('defaultPadMode');
   const landingTab = usePref('landingTab');
   const autoKeyboard = usePref('autoKeyboard');
@@ -1151,7 +1159,7 @@ function SetupBody() {
         <Pressable
           onPress={() => setShowTvRemote((v) => !(v ?? tvRemoteOpenByDefault))}
           style={styles.advancedToggle}>
-          <Text style={styles.advancedToggleText}>Use a TV remote instead (no box)</Text>
+          <Text style={styles.advancedToggleText}>No gaming PC? Use Couchside as a TV remote</Text>
           <Ionicons
             name={(showTvRemote ?? tvRemoteOpenByDefault) ? 'chevron-up' : 'chevron-down'}
             size={16}
