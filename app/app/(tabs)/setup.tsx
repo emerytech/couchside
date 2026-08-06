@@ -781,6 +781,9 @@ function SetupBody() {
   const scheme = useResolvedScheme();
   const confirmSuspend = usePref('confirmSuspend');
   const streakCelebrations = usePref('streakCelebrations');
+  const remoteOnlyOn = usePref('remoteOnlyMode');
+  // Open when there is nothing else here to use, or when the mode is already on.
+  const tvRemoteOpenByDefault = boxes.length === 0 || remoteOnlyOn;
   const defaultPadMode = usePref('defaultPadMode');
   const landingTab = usePref('landingTab');
   const autoKeyboard = usePref('autoKeyboard');
@@ -889,6 +892,12 @@ function SetupBody() {
   // Scan + PIN is the primary way to add a box; the manual host/port/token card
   // is a collapsed "advanced" fallback (headless / cross-subnet / non-Linux).
   const [showManual, setShowManual] = useState(false);
+  // The TV-remote block is tall — toggle, blurb, scan, IP, brand picker, MAC,
+  // pair button — and someone who owns a box scrolls past all of it every time
+  // they open Setup. Collapsed by default for them; open by default for someone
+  // with NO box, since they are exactly who it is for. Once remote-only mode is
+  // actually on it stays open, because then it is the section that matters.
+  const [showTvRemote, setShowTvRemote] = useState<boolean | null>(null);
 
   const draftConn = useCallback(() => {
     const p = parseInt(port, 10);
@@ -1132,7 +1141,19 @@ function SetupBody() {
             spends its whole card telling them to install the service. This is
             the answer to "I only have a TV". */}
         <Text style={[styles.sectionLabel, { marginTop: 18 }]}>NO GAMING BOX?</Text>
-        <DirectTvSetup />
+        {/* null = not yet touched, so the default is derived rather than frozen
+            at first render: it opens by itself for a user with no box. */}
+        <Pressable
+          onPress={() => setShowTvRemote((v) => !(v ?? tvRemoteOpenByDefault))}
+          style={styles.advancedToggle}>
+          <Text style={styles.advancedToggleText}>Use a TV remote instead (no box)</Text>
+          <Ionicons
+            name={(showTvRemote ?? tvRemoteOpenByDefault) ? 'chevron-up' : 'chevron-down'}
+            size={16}
+            color={t.textDim}
+          />
+        </Pressable>
+        {(showTvRemote ?? tvRemoteOpenByDefault) ? <DirectTvSetup /> : null}
 
         {/* ---- Add / pair ---- */}
         <Text style={[styles.sectionLabel, { marginTop: 18 }]}>ADD / PAIR A BOX</Text>

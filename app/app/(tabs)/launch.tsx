@@ -23,6 +23,7 @@ import {
 } from 'react-native';
 
 import { Gated } from '@/components/Gated';
+import { GameSheet } from '@/components/GameSheet';
 import { LibraryFilterSheet } from '@/components/LibraryFilterSheet';
 import { TabScreen } from '@/components/TabScreen';
 import { useLockOrientation } from '@/hooks/useLockOrientation';
@@ -765,6 +766,10 @@ function LaunchScreen() {
   const [query, setQuery] = useState('');
   const [filter, setFilter] = useState<FilterState>(EMPTY_FILTER);
   const [filterOpen, setFilterOpen] = useState(false);
+  // Tapping a tile no longer launches. Launching takes over the television, and
+  // on a grid you scroll with a thumb a stray tap started a game on a TV in
+  // another room. Tap confirms; long-press opens the same sheet with detail.
+  const [sheetFor, setSheetFor] = useState<Launcher | null>(null);
   // Search first (the screen owns it and its matching ignores whitespace), then
   // the sheet's dimensions on top. The sheet is handed THIS list, so its live
   // count reflects the active query too and cannot promise more than the grid
@@ -953,6 +958,21 @@ function LaunchScreen() {
 
         {/* Nothing matched. Say so rather than showing an empty screen that
             reads as "the box has no games". */}
+        <GameSheet
+          launcher={sheetFor}
+          coverSource={
+            sheetFor?.appid != null
+              ? api.steamCoverSource(settings, sheetFor.appid)
+              : undefined
+          }
+          onPlay={() => {
+            const l = sheetFor;
+            setSheetFor(null);
+            if (l) launch(l);
+          }}
+          onClose={() => setSheetFor(null)}
+        />
+
         <LibraryFilterSheet
           visible={filterOpen}
           games={searched}
@@ -983,7 +1003,7 @@ function LaunchScreen() {
                     : undefined
                 }
                 retryKey={retryKey}
-                onLaunch={() => launch(l)}
+                onLaunch={() => setSheetFor(l)}
                 onDelete={l.kind === 'custom' ? () => remove(l) : undefined}
                 download={l.appid != null ? dlByAppid.get(l.appid) : undefined}
               />
