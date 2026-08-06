@@ -7,13 +7,14 @@
  * THE THREE THINGS THIS FILE EXISTS TO SOLVE, each a real constraint:
  *
  * 1. SELF-SIGNED TLS. Every Android TV presents a certificate it generated
- *    itself (measured: issuer == subject, `CN=atvremote/<MAC>`). Node opts out
- *    of verification with `rejectUnauthorized:false`; react-native-tcp-socket
- *    has NO such flag and trusts a self-signed peer only by PINNING it as `ca`.
- *    So the cert is fetched out-of-band once (see fetchPeerCert) and pinned on
- *    every later connection — trust-on-first-use, with the pinned bytes stored
- *    beside the TV record so a swapped certificate fails loudly instead of
- *    silently connecting to something else.
+ *    itself (measured: issuer == subject, `CN=atvremote/<MAC>`). Both Node and
+ *    react-native-tcp-socket opt out of verification with
+ *    `rejectUnauthorized:false` — the flag is absent from the library's
+ *    TypeScript types but IS read by its native code (see tlsTrust below).
+ *    An earlier design assumed the flag did not exist and fetched the
+ *    certificate out-of-band to pin it; that could not work, because there is
+ *    no trusted connection to read a certificate from before you trust one.
+ *    Pinning via `ca` remains supported and is stronger when a cert is held.
  *
  * 2. ENTROPY. node-forge falls back to a Math.random-seeded PRNG when no
  *    platform CSPRNG is present, which would mint predictable RSA keys — a real
@@ -165,53 +166,6 @@ export function mintIdentityNonBlocking(): Promise<MintResult> {
   const g = globalThis as { crypto?: { getRandomValues?: (a: Uint8Array) => Uint8Array } };
   const grv = g.crypto?.getRandomValues?.bind(g.crypto);
   return mintWithAsync(grv);
-}
-
-/**
- * Fetch the TV's certificate so it can be pinned.
- *
- * This is the TOFU step forced by point 1 above: the library cannot be told to
- * accept an unknown self-signed peer, and the peer certificate is only readable
- * from an already-trusted connection. So the first connection is made in the
- * one mode that does not verify — `tls.connect` WITHOUT a `ca`, which
- * react-native-tcp-socket treats as "use the system trust store" and which
- * FAILS for a self-signed peer... therefore this instead reads the certificate
- * from the failure path where the library surfaces it.
- *
- * IMPORTANT: this is UNVERIFIED on device. If the library does not surface the
- * peer certificate on an untrusted handshake, TOFU is not possible this way and
- * the fallback is to ship the pinning step differently (see the PR body). The
- * caller must treat a null return as "cannot pair on this platform yet" and say
- * so, rather than pretending the TV was unreachable.
- */
-export function fetchPeerCert(host: string, port: number, timeoutMs = 6000): Promise<string | null> {
-  return new Promise((resolve) => {
-    let settled = false;
-    const done = (v: string | null) => {
-      if (settled) return;
-      settled = true;
-      try { sock?.destroy(); } catch {}
-      resolve(v);
-    };
-    const timer = setTimeout(() => done(null), timeoutMs);
-    let sock: ReturnType<typeof TcpSocket.connectTLS> | undefined;
-    try {
-      sock = TcpSocket.connectTLS({ host, port, ca: undefined as never }, () => {
-        clearTimeout(timer);
-        const anySock = sock as unknown as { getPeerCertificate?: () => { raw?: string } };
-        const peer = anySock.getPeerCertificate?.();
-        done(peer?.raw ?? null);
-      });
-      sock.on('error', () => {
-        clearTimeout(timer);
-        const anySock = sock as unknown as { getPeerCertificate?: () => { raw?: string } };
-        done(anySock.getPeerCertificate?.()?.raw ?? null);
-      });
-    } catch {
-      clearTimeout(timer);
-      done(null);
-    }
-  });
 }
 
 /**

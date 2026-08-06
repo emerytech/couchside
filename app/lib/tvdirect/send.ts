@@ -122,7 +122,7 @@ export type AtvRuntime = {
   /** caPem optional: omit to accept the TV's self-signed cert, pass one to pin. */
   makeConnect: (caPem?: string) => import('./atvproto.ts').AtvConnect;
   sha256: (d: Uint8Array) => Promise<Uint8Array>;
-  /** webOS transport deps (fetchPeerCert + raw TLS + ws crypto). */
+  /** webOS transport deps (raw TLS socket + ws crypto). */
   webos: WebosDeps;
 };
 
