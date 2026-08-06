@@ -204,6 +204,21 @@ export function dismissTour(): TourState {
   return TOUR_FINISHED;
 }
 
+/**
+ * Is this the LAST step — i.e. will the next tap finish the tour rather than
+ * advance it?
+ *
+ * Used for two things: the button says DONE instead of "GOT IT →", and the
+ * thank-you note is shown only to someone who actually reached the end. The
+ * state cannot tell you afterwards, because skipping and finishing both land on
+ * TOUR_FINISHED — and the difference matters, since pressing "Skip tour" is
+ * someone asking to be left alone, which is the worst possible moment to hand
+ * them a note about buying.
+ */
+export function isFinalStep(state: TourState): boolean {
+  return state.step === TOUR_STEPS.length - 1;
+}
+
 /** 1-based position for the "2 of 4" label. */
 export function stepLabel(state: TourState): string {
   const n = Math.min(state.step + 1, TOUR_STEPS.length);

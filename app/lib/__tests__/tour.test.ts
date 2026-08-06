@@ -15,6 +15,7 @@ import {
   currentStep,
   dimRects,
   dismissTour,
+  isFinalStep,
   scrollDeltaFor,
   shouldRun,
   spotlightRect,
@@ -208,4 +209,18 @@ test('every anchor a step names is registered by some screen', async () => {
 test('a step points at a tab that exists (control)', () => {
   const TABS = ['index', 'launch', 'pad', 'actions', 'setup'];
   for (const s of TOUR_STEPS) assert.ok(TABS.includes(s.tab), `unknown tab ${s.tab}`);
+});
+
+test('only the LAST step is final — skipping earlier must not count as finishing', () => {
+  // The thank-you note is gated on this. Skipping is someone asking to be left
+  // alone, and both skip and finish land on TOUR_FINISHED, so the difference has
+  // to be caught BEFORE the state is written or it is lost.
+  assert.equal(isFinalStep(TOUR_NOT_STARTED), false, 'step 1 of many is not the end');
+  let s = TOUR_NOT_STARTED;
+  for (let i = 0; i < TOUR_STEPS.length - 1; i += 1) {
+    assert.equal(isFinalStep(s), i === TOUR_STEPS.length - 1, `step ${i} finality`);
+    s = advanceTour(s);
+  }
+  assert.equal(isFinalStep(s), true, 'the last step reports final');
+  assert.equal(advanceTour(s).done, true, 'and advancing from it finishes the tour');
 });
