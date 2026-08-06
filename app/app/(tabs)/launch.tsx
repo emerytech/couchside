@@ -37,6 +37,7 @@ import {
   SteamLink,
 } from '@/lib/api';
 import { hapticError, hapticLight, hapticMedium, hapticSelection, hapticSuccess } from '@/lib/haptics';
+import { fmtGB, fmtPair, fmtTotal } from '@/lib/downloadSize';
 import { setPref, usePref } from '@/lib/prefs';
 import { useBoxes, useSettings } from '@/lib/SettingsContext';
 import { mono, useTheme, useThemedStyles, type Palette } from '@/lib/theme';
@@ -176,34 +177,6 @@ function LauncherTile({
       )}
     </Pressable>
   );
-}
-
-/** GB with one decimal (Steam's own display convention). */
-function fmtGB(bytes: number): string {
-  return (bytes / 1e9).toFixed(1);
-}
-
-/**
- * Unit floor for switching a row from GB to MB. fmtGB's toFixed(1) rounds
- * anything under ~50 MB to "0.0", so a tiny content patch sailed through the
- * bytes_total > 0 gate below and printed "0.0 / 0.0 GB" — the row Steam was
- * being honest about read as broken (KI-056, reported twice by the same
- * tester). Under this floor sizes render as whole MB instead.
- */
-const MB_FLOOR = 100e6;
-
-/** "1.2 / 42.0 GB" above the floor, "28 / 31 MB" under it. One unit per row,
- *  chosen by the TOTAL, so the pair never mixes units mid-line. */
-function fmtPair(downloaded: number, total: number): string {
-  if (total < MB_FLOOR) {
-    return `${Math.round(downloaded / 1e6)} / ${Math.round(total / 1e6)} MB`;
-  }
-  return `${fmtGB(downloaded)} / ${fmtGB(total)} GB`;
-}
-
-/** Single-size variant for queued rows. */
-function fmtTotal(total: number): string {
-  return total < MB_FLOOR ? `${Math.round(total / 1e6)} MB` : `${fmtGB(total)} GB`;
 }
 
 function DownloadRow({ d }: { d: SteamDownload }) {
