@@ -23,6 +23,7 @@ import {
 } from 'react-native';
 
 import { Gated } from '@/components/Gated';
+import { LibraryFilterSheet } from '@/components/LibraryFilterSheet';
 import { TabScreen } from '@/components/TabScreen';
 import { useLockOrientation } from '@/hooks/useLockOrientation';
 import { usePoll } from '@/hooks/usePoll';
@@ -38,6 +39,7 @@ import {
 } from '@/lib/api';
 import { hapticError, hapticLight, hapticMedium, hapticSelection, hapticSuccess } from '@/lib/haptics';
 import { fmtGB, fmtPair, fmtTotal } from '@/lib/downloadSize';
+import { applyFilter, EMPTY_FILTER, isFiltering, type FilterState } from '@/lib/libraryFilter';
 import { setPref, usePref } from '@/lib/prefs';
 import { useBoxes, useSettings } from '@/lib/SettingsContext';
 import { mono, useTheme, useThemedStyles, type Palette } from '@/lib/theme';
@@ -761,11 +763,21 @@ function LaunchScreen() {
   // phone. Client-side on a list the app already has -- no round trip, and it
   // stays responsive on a box that is busy installing something.
   const [query, setQuery] = useState('');
-  const launchers = useMemo(() => {
+  const [filter, setFilter] = useState<FilterState>(EMPTY_FILTER);
+  const [filterOpen, setFilterOpen] = useState(false);
+  // Search first (the screen owns it and its matching ignores whitespace), then
+  // the sheet's dimensions on top. The sheet is handed THIS list, so its live
+  // count reflects the active query too and cannot promise more than the grid
+  // will show.
+  const searched = useMemo(() => {
     const q = query.trim().toLowerCase().replace(/\s+/g, '');
     if (!q) return allLaunchers;
     return allLaunchers.filter((l) => l.label.toLowerCase().replace(/\s+/g, '').includes(q));
   }, [allLaunchers, query]);
+  const launchers = useMemo(
+    () => applyFilter(searched, filter, Math.floor(Date.now() / 1000)),
+    [searched, filter],
+  );
   const rows = useMemo(() => {
     const out: Launcher[][] = [];
     for (let i = 0; i < launchers.length; i += COLS) {
@@ -921,13 +933,40 @@ function LaunchScreen() {
                 <Ionicons name="close-circle" size={17} color={t.textDim} />
               </Pressable>
             )}
+            <Pressable
+              onPress={() => {
+                hapticLight();
+                setFilterOpen(true);
+              }}
+              hitSlop={8}
+              accessibilityRole="button"
+              accessibilityLabel="Filter library"
+              style={({ pressed }) => [pressed && { opacity: 0.6 }]}>
+              <Ionicons
+                name="options-outline"
+                size={18}
+                color={isFiltering(filter) ? t.blue : t.textDim}
+              />
+            </Pressable>
           </View>
         )}
 
         {/* Nothing matched. Say so rather than showing an empty screen that
             reads as "the box has no games". */}
-        {query.trim().length > 0 && launchers.length === 0 && (
-          <Text style={styles.noMatch}>No game matches &ldquo;{query.trim()}&rdquo;.</Text>
+        <LibraryFilterSheet
+          visible={filterOpen}
+          games={searched}
+          value={filter}
+          onChange={setFilter}
+          onClose={() => setFilterOpen(false)}
+        />
+
+        {launchers.length === 0 && (query.trim().length > 0 || isFiltering(filter)) && (
+          <Text style={styles.noMatch}>
+            {query.trim().length > 0
+              ? `No game matches “${query.trim()}”${isFiltering(filter) ? ' with these filters' : ''}.`
+              : 'No game matches these filters.'}
+          </Text>
         )}
 
         {/* Grid */}
