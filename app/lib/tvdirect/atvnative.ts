@@ -84,25 +84,38 @@ function tlsTrust(caPem?: string): Record<string, unknown> {
  * is not fatal either. Returns null if it never arrives — the caller then falls
  * back to a pinned cert or reports honestly.
  */
-async function readPeerModulus(sock: unknown, timeoutMs = 4000): Promise<string | null> {
+async function readPeerModulus(
+  sock: unknown,
+  timeoutMs = 6000,
+): Promise<{ hex: string | null; diag: string }> {
   const anySock = sock as {
     getPeerCertificate?: () => Promise<{ modulus?: string; pubkey?: string } | null>;
   };
-  if (!anySock.getPeerCertificate) return null;
+  if (typeof anySock.getPeerCertificate !== 'function') {
+    return { hex: null, diag: 'getPeerCertificate is not exposed by the TLS socket' };
+  }
   const deadline = Date.now() + timeoutMs;
+  let attempts = 0;
+  let last = 'never resolved';
   for (;;) {
+    attempts += 1;
     try {
       const cert = await anySock.getPeerCertificate();
-      if (cert?.modulus) return normalizeHex(cert.modulus);
-      if (cert?.pubkey) {
-        const hex = modulusFromPublicKeyDer(cert.pubkey);
-        if (hex) return hex;
+      if (cert && typeof cert === 'object') {
+        if (cert.modulus) return { hex: normalizeHex(cert.modulus), diag: `modulus after ${attempts}` };
+        const fromDer = cert.pubkey ? modulusFromPublicKeyDer(cert.pubkey) : null;
+        if (fromDer) return { hex: fromDer, diag: `pubkey after ${attempts}` };
+        // A dict with neither: record its actual keys — that is the whole
+        // question, and guessing it from source has already failed twice.
+        last = `cert dict had keys [${Object.keys(cert).join(',')}]`;
+      } else {
+        last = 'getPeerCertificate resolved null (TLS not secured yet?)';
       }
-    } catch {
-      // not ready yet (or unsupported) — fall through to the retry
+    } catch (e) {
+      last = `getPeerCertificate rejected: ${(e as Error)?.message ?? String(e)}`;
     }
-    if (Date.now() >= deadline) return null;
-    await new Promise((r) => setTimeout(r, 100));
+    if (Date.now() >= deadline) return { hex: null, diag: `${last} (${attempts} tries)` };
+    await new Promise((r) => setTimeout(r, 150));
   }
 }
 
@@ -213,6 +226,7 @@ export function makeConnect(caPem?: string) {
       const waiters: { resolve: (f: Uint8Array) => void; reject: (e: Error) => void }[] = [];
       // Filled from the LIVE socket once TLS is up — see peerModulusHex below.
       let liveModulusHex: string | null = null;
+      let modulusDiag = 'not attempted';
 
       const sock = TcpSocket.connectTLS(
         { host, port, cert: certPem, key: keyPem, ...tlsTrust(caPem) },
@@ -226,7 +240,9 @@ export function makeConnect(caPem?: string) {
           // evaluated, which both trust modes above do, so the pairing secret
           // no longer needs an out-of-band certificate fetch.
           void (async () => {
-            liveModulusHex = await readPeerModulus(sock);
+            const probe = await readPeerModulus(sock);
+            liveModulusHex = probe.hex;
+            modulusDiag = probe.diag;
             resolve(makeSocket());
           })();
 
@@ -256,7 +272,7 @@ export function makeConnect(caPem?: string) {
             peerModulusHex: () => {
               if (liveModulusHex) return liveModulusHex;
               if (caPem) return modulusFromPem(caPem);
-              throw new Error('no peer certificate available for pairing');
+              throw new Error(`no peer certificate for pairing — ${modulusDiag}`);
             },
             };
           }
