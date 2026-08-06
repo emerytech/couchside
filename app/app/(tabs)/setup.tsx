@@ -60,6 +60,7 @@ import {
   type MediaHoldSkipSec,
   type MediaSkipSec,
 } from '@/lib/mediaSeek';
+import { clearCompatCache } from '@/lib/compatFetch';
 import { setPref, usePref } from '@/lib/prefs';
 import { buy, getProduct, restoreFromUserAction } from '@/lib/purchase';
 import { Box, DEFAULT_PORT, normalizeMac } from '@/lib/settings';
@@ -781,6 +782,7 @@ function SetupBody() {
   const scheme = useResolvedScheme();
   const confirmSuspend = usePref('confirmSuspend');
   const streakCelebrations = usePref('streakCelebrations');
+  const compatLookups = usePref('compatLookups');
   const remoteOnlyOn = usePref('remoteOnlyMode');
   // Open when there is nothing else here to use, or when the mode is already on.
   const tvRemoteOpenByDefault = boxes.length === 0 || remoteOnlyOn;
@@ -1340,6 +1342,18 @@ function SetupBody() {
                 value={confirmSuspend}
                 onValueChange={(v) => {
                   void setPref('confirmSuspend', v);
+                  hapticSelection();
+                }}
+              />
+              <TogglePref
+                label="Look up game compatibility"
+                sub="Shows Steam Deck and ProtonDB ratings on your library. This is the one thing that leaves your phone — it sends a game id to Valve and ProtonDB, nothing about you, and never involves your box. Off clears what was stored."
+                value={compatLookups}
+                onValueChange={(v) => {
+                  void setPref('compatLookups', v);
+                  // Turning it off REMOVES what it collected rather than just
+                  // hiding it — otherwise "off" would be a lie about the data.
+                  if (!v) void clearCompatCache();
                   hapticSelection();
                 }}
               />

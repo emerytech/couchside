@@ -33,6 +33,7 @@ import {
   type FilterState,
   type PlayedFilter,
 } from '@/lib/libraryFilter';
+import type { Compat, DeckStatus, ProtonTier } from '@/lib/compat';
 import { mono, useTheme, useThemedStyles, type Palette } from '@/lib/theme';
 
 const PLAYED: { id: PlayedFilter; label: string }[] = [
@@ -46,6 +47,20 @@ const KINDS: { id: 'steam' | 'custom' | 'shortcut'; label: string }[] = [
   { id: 'steam', label: 'Steam' },
   { id: 'shortcut', label: 'Shortcuts' },
   { id: 'custom', label: 'Custom' },
+];
+
+const DECK: { id: DeckStatus; label: string }[] = [
+  { id: 'verified', label: 'Verified' },
+  { id: 'playable', label: 'Playable' },
+  { id: 'unsupported', label: 'Unsupported' },
+];
+
+const PROTON: { id: ProtonTier; label: string }[] = [
+  { id: 'platinum', label: 'Platinum' },
+  { id: 'gold', label: 'Gold' },
+  { id: 'silver', label: 'Silver' },
+  { id: 'bronze', label: 'Bronze' },
+  { id: 'borked', label: 'Borked' },
 ];
 
 const STALE: { days: number; label: string }[] = [
@@ -84,12 +99,18 @@ export function LibraryFilterSheet({
   visible,
   games,
   value,
+  compat,
+  compatOn,
   onChange,
   onClose,
 }: {
   visible: boolean;
-  games: FilterableGame[];
+  games: (FilterableGame & { appid?: number })[];
   value: FilterState;
+  compat?: Record<number, Compat>;
+  /** Compatibility lookups are opt-in; without them these chips would be dead
+   *  controls that silently match everything. */
+  compatOn?: boolean;
   onChange: (f: FilterState) => void;
   onClose: () => void;
 }) {
@@ -98,7 +119,7 @@ export function LibraryFilterSheet({
 
   // Same predicate the list runs, so the button cannot lie about the result.
   const nowSec = Math.floor(Date.now() / 1000);
-  const count = useMemo(() => countMatching(games, value, nowSec), [games, value, nowSec]);
+  const count = useMemo(() => countMatching(games, value, nowSec, compat), [games, value, nowSec, compat]);
   const active = isFiltering(value);
   // See hasPlaytimeData: on an older agent every game looks unplayed, so these
   // controls would state something false about the user's library.
@@ -169,6 +190,50 @@ export function LibraryFilterSheet({
                 Playtime filters need the Couchside service 2.9.71 or newer on the box.
               </Text>
             )}
+
+            {compatOn ? (
+              <>
+                <Text style={styles.label}>STEAM DECK</Text>
+                <View style={styles.row}>
+                  {DECK.map((d) => (
+                    <Chip
+                      key={d.id}
+                      label={d.label}
+                      on={(value.deck ?? []).includes(d.id)}
+                      onPress={() =>
+                        onChange({
+                          ...value,
+                          deck: (value.deck ?? []).includes(d.id)
+                            ? (value.deck ?? []).filter((x) => x !== d.id)
+                            : [...(value.deck ?? []), d.id],
+                        })
+                      }
+                    />
+                  ))}
+                </View>
+
+                <Text style={styles.label}>PROTONDB</Text>
+                <View style={styles.row}>
+                  {PROTON.map((pt) => (
+                    <Chip
+                      key={pt.id}
+                      label={pt.label}
+                      on={(value.proton ?? []).includes(pt.id)}
+                      onPress={() =>
+                        onChange({
+                          ...value,
+                          proton: (value.proton ?? []).includes(pt.id)
+                            ? (value.proton ?? []).filter((x) => x !== pt.id)
+                            : [...(value.proton ?? []), pt.id],
+                        })
+                      }
+                    />
+                  ))}
+                </View>
+                {/* Unrated games are never hidden by these — see matchesCompat. */}
+                <Text style={styles.note}>Games nobody has rated always stay visible.</Text>
+              </>
+            ) : null}
 
             <Text style={styles.label}>TYPE</Text>
             <View style={styles.row}>

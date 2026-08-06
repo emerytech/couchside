@@ -24,6 +24,8 @@ import {
 
 import { Gated } from '@/components/Gated';
 import { GameSheet } from '@/components/GameSheet';
+import { useCompat } from '@/hooks/useCompat';
+import { type Compat, deckLabel, protonLabel } from '@/lib/compat';
 import { LibraryFilterSheet } from '@/components/LibraryFilterSheet';
 import { TabScreen } from '@/components/TabScreen';
 import { useLockOrientation } from '@/hooks/useLockOrientation';
@@ -70,6 +72,8 @@ type TileProps = {
   /** Bumped on pull-to-refresh to retry a cover that previously failed to load. */
   retryKey?: number;
   onLaunch: () => void;
+  /** Compatibility rating, when the user opted in and an answer has arrived. */
+  compat?: Compat;
   onDelete?: () => void;
   /** When this game is mid-download, drives a small progress pill on the tile. */
   download?: SteamDownload;
@@ -81,6 +85,7 @@ function LauncherTile({
   coverSource,
   retryKey,
   onLaunch,
+  compat,
   onDelete,
   download,
 }: TileProps) {
@@ -108,6 +113,15 @@ function LauncherTile({
     <Pressable
       onPress={onLaunch}
       style={({ pressed }) => [styles.tile, { width, height }, pressed && styles.tilePressed]}>
+      {/* Only drawn when a rating actually exists — an unrated game shows
+          nothing rather than a "no data" chip on every tile. */}
+      {compat && (compat.deck !== 'unknown' || compat.proton !== 'unknown') ? (
+        <View style={styles.compatBadge} pointerEvents="none">
+          <Text style={styles.compatBadgeText} numberOfLines={1}>
+            {compat.deck !== 'unknown' ? deckLabel(compat.deck) : protonLabel(compat.proton)}
+          </Text>
+        </View>
+      ) : null}
       {art && isHeader ? (
         /* HEADER art is a 460x215 banner, not a 600x900 capsule. Centre-cropping
            one into a tall tile slices the middle out of the artwork and reads as
@@ -779,10 +793,22 @@ function LaunchScreen() {
     if (!q) return allLaunchers;
     return allLaunchers.filter((l) => l.label.toLowerCase().replace(/\s+/g, '').includes(q));
   }, [allLaunchers, query]);
-  const launchers = useMemo(
-    () => applyFilter(searched, filter, Math.floor(Date.now() / 1000)),
-    [searched, filter],
+  // Ratings are fetched for everything the SEARCH leaves, not for what the
+  // filter leaves — otherwise turning on a compatibility filter would stop the
+  // app fetching the very data that filter needs, and the list would never
+  // settle. searched -> compat -> launchers, no cycle.
+  const compatOn = usePref('compatLookups');
+  const compatIds = useMemo(
+    () => searched.map((l) => l.appid).filter((a): a is number => a != null),
+    [searched],
   );
+  const compat = useCompat(compatIds, compatOn);
+
+  const launchers = useMemo(
+    () => applyFilter(searched, filter, Math.floor(Date.now() / 1000), compat),
+    [searched, filter, compat],
+  );
+
   const rows = useMemo(() => {
     const out: Launcher[][] = [];
     for (let i = 0; i < launchers.length; i += COLS) {
@@ -977,6 +1003,8 @@ function LaunchScreen() {
           visible={filterOpen}
           games={searched}
           value={filter}
+          compat={compat}
+          compatOn={compatOn}
           onChange={setFilter}
           onClose={() => setFilterOpen(false)}
         />
@@ -1004,6 +1032,7 @@ function LaunchScreen() {
                 }
                 retryKey={retryKey}
                 onLaunch={() => setSheetFor(l)}
+                compat={l.appid != null ? compat[l.appid] : undefined}
                 onDelete={l.kind === 'custom' ? () => remove(l) : undefined}
                 download={l.appid != null ? dlByAppid.get(l.appid) : undefined}
               />
@@ -1108,6 +1137,17 @@ const makeStyles = (t: Palette) => StyleSheet.create({
   // the row still reads as tappable (it is: the check is advisory only).
   slDimText: { color: t.textDim },
   slFaintText: { color: t.textFaint },
+  compatBadge: {
+    position: 'absolute',
+    top: 6,
+    left: 6,
+    zIndex: 2,
+    paddingHorizontal: 7,
+    paddingVertical: 3,
+    borderRadius: 999,
+    backgroundColor: '#000000cc',
+  },
+  compatBadgeText: { color: '#e8eef7', fontSize: 10, fontWeight: '800', fontFamily: mono },
   slArtSlot: {
     width: 30,
     height: 45,
