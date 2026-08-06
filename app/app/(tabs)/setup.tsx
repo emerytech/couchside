@@ -870,6 +870,8 @@ function SetupBody() {
       if (result.purchaseDateMs != null) await recordPurchaseDate(result.purchaseDateMs);
       await recordPurchase();
       setRestoreMsg({ text: 'Purchase restored, unlocked.', ok: true });
+    } else if (result.state === 'cancelled') {
+      // Backed out of the store sheet: no message at all.
     } else if (result.state === 'none') {
       // Not "you have no purchase" — we cannot know that. A promo code redeemed
       // in the App Store app can still be missing here if the reconcile failed,

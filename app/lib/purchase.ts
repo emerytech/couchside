@@ -26,6 +26,9 @@ export type RestoreResult =
   | { state: 'purchased'; purchaseDateMs?: number }
   | { state: 'none' }
   | { state: 'unavailable' }
+  /** The user backed out of the store's own sheet (Apple ID sign-in, etc.).
+   *  NOT the same as 'none': nothing was checked, so nothing can be claimed. */
+  | { state: 'cancelled' }
   | { state: 'error'; message?: string };
 
 // Minimal structural view of the expo-iap surface we use (v4, Open IAP API:
@@ -335,6 +338,11 @@ export async function restore(): Promise<RestoreResult> {
       typeof raw === 'number' && Number.isFinite(raw) && raw > 0 ? raw : undefined;
     return { state: 'purchased', purchaseDateMs };
   } catch (e: unknown) {
+    // Backing out of the Apple ID / store sheet is not a failure and not a
+    // verdict. Reporting "no purchase found" here would assert something the
+    // app never got to check — the exact claim the 'none' copy below is careful
+    // NOT to make — and it lands in red on someone who may well own the app.
+    if (isUserCancellation(e)) return { state: 'cancelled' };
     return { state: 'error', message: e instanceof Error ? e.message : String(e) };
   }
 }

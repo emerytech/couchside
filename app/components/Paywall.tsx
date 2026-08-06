@@ -58,6 +58,9 @@ export default function Paywall() {
     if (result.state === 'purchased') {
       if (result.purchaseDateMs != null) await recordPurchaseDate(result.purchaseDateMs);
       await recordPurchase();
+    } else if (result.state === 'cancelled') {
+      // Backed out of the store's own sheet — nothing was checked, so nothing
+      // is claimed and nothing is said.
     } else if (result.state === 'none') {
       // See the same message in setup.tsx: we cannot know the user has no
       // purchase, only that this device's store cache has none.

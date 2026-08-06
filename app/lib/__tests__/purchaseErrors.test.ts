@@ -60,3 +60,19 @@ test('a genuinely human message is passed through unchanged (control)', () => {
   assert.equal(userFacingPurchaseError(undefined), null);
   assert.equal(userFacingPurchaseError(''), null);
 });
+
+// ---- restore, not just buy ----
+
+test('backing out of a RESTORE is a cancellation, not "no purchase found"', () => {
+  // Reported from the simulator: tapping Restore Purchases and backing out of
+  // the Apple ID sheet showed red "No purchase found on this Apple ID". The app
+  // never got to check — asserting it did is how a PAYING customer concludes
+  // the app is broken. Restore now has its own 'cancelled' state.
+  assert.equal(isUserCancellation(new Error('The operation was cancelled.')), true);
+  assert.equal(isUserCancellation({ code: 'E_USER_CANCELLED' }), true);
+});
+
+test('a restore that genuinely fails is still an error (control)', () => {
+  // The fix must not swallow real failures into silence.
+  assert.equal(isUserCancellation(new Error('Cannot connect to iTunes Store')), false);
+});
