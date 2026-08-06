@@ -308,8 +308,15 @@ def verb_logs_journal(arg):
                  "--no-pager", "-o", "short-iso"], timeout=30)
 
 
-_FLATPAK_WRAPPER = "/usr/local/libexec/couchside-flatpak-update"
-_OS_WRAPPER = "/usr/local/libexec/couchside-os-update"
+# WHERE install.sh ACTUALLY PUTS THESE. They were /usr/local/libexec/... here
+# while the installer has always written them to /etc/couchside/ — so
+# os.path.exists() below was False on every box and both update verbs reported
+# "unavailable" forever. Degrading closed kept it SAFE, which is exactly why it
+# went unnoticed. Keep these in step with FLATPAK_UPDATE_WRAPPER / OS_UPDATE_WRAPPER
+# in install.sh; that directory is root-owned, so the user can execute but never
+# modify what root runs.
+_FLATPAK_WRAPPER = "/etc/couchside/couchside-flatpak-update"
+_OS_WRAPPER = "/etc/couchside/couchside-os-update"
 
 
 def verb_update_flatpak():
