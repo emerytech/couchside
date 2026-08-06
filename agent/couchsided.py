@@ -45,7 +45,7 @@ except ImportError:  # pragma: no cover
     fcntl = None
 
 APP_NAME = "couchside-agent"
-VERSION = "2.9.70"
+VERSION = "2.9.71"
 UID = os.getuid()
 XDG_RUNTIME_DIR = "/run/user/%d" % UID
 
@@ -6059,6 +6059,133 @@ _STEAM_LIB_CACHE = {"root": None, "at": 0.0, "val": None}
 _STEAM_LIB_LOCK = threading.Lock()
 
 
+# ---------------------------------------------------------------------------
+# Per-game playtime, from Steam's own localconfig.vdf. LOCAL FILE, NO NETWORK
+# and no API key -- the same data the Steam Web API would return for a public
+# profile, except the box already has it on disk.
+#
+# MEASURED on real hardware (Bazzite, 2026-08-06): the file carries 304
+# "Playtime" and 295 "LastPlayed" entries under UserLocalConfigStore > Software
+# > Valve > Steam > apps > <appid>.
+#
+#   "apps"
+#   {
+#       "220"
+#       {
+#           "LastPlayed"    "1754130000"
+#           "Playtime"      "1234"
+#       }
+#   }
+#
+# Playtime is MINUTES, LastPlayed is unix seconds. Both are optional per app --
+# a game that was installed but never launched has neither, which is itself the
+# useful signal ("never played").
+#
+# Parsed with a scanner rather than a full VDF parser on purpose: this file is
+# multi-megabyte, contains a lot the agent has no business reading, and the only
+# fields wanted are two integers per appid inside one known block.
+# ---------------------------------------------------------------------------
+
+_PLAYTIME_CACHE = {"key": None, "apps": {}}
+_PLAYTIME_LOCK = threading.Lock()
+
+
+def _localconfig_paths(root):
+    """Every user's localconfig.vdf under a Steam root. Usually one; a shared
+    box can have several, and their playtimes are merged (highest wins)."""
+    if not root:
+        return []
+    try:
+        base = os.path.join(root, "userdata")
+        if not os.path.isdir(base):
+            return []
+        out = []
+        for uid in os.listdir(base):
+            p = os.path.join(base, uid, "config", "localconfig.vdf")
+            if os.path.isfile(p):
+                out.append(p)
+        return out
+    except OSError:
+        return []
+
+
+def parse_localconfig_playtime(text):
+    """{appid: {"playtime_min": int, "last_played": int}} from a localconfig body.
+
+    Pure and text-in, so it is testable without a Steam install. Unknown or
+    malformed entries are skipped rather than guessed -- a wrong playtime is
+    worse than an absent one, because the app would filter on it.
+    """
+    out = {}
+    m = re.search(r'"apps"\s*\{', text)
+    if not m:
+        return out
+    i = m.end()
+    depth = 1
+    appid = None
+    # Walk the apps block, tracking brace depth so a nested block cannot be
+    # mistaken for an appid at the top level.
+    token = re.compile(r'"([^"]*)"\s*(?:"([^"]*)")?|(\{)|(\})')
+    for t in token.finditer(text, i):
+        if t.group(3):
+            depth += 1
+            continue
+        if t.group(4):
+            depth -= 1
+            if depth <= 0:
+                break
+            if depth == 1:
+                appid = None
+            continue
+        key, val = t.group(1), t.group(2)
+        if depth == 1 and val is None and key and key.isdigit():
+            appid = key
+            continue
+        if depth == 2 and appid and val is not None:
+            if key == "Playtime":
+                try:
+                    out.setdefault(appid, {})["playtime_min"] = max(0, int(val))
+                except ValueError:
+                    pass
+            elif key == "LastPlayed":
+                try:
+                    out.setdefault(appid, {})["last_played"] = max(0, int(val))
+                except ValueError:
+                    pass
+    return out
+
+
+def _steam_playtime(root):
+    """Cached {appid: {...}} for a Steam root, keyed on the files' mtime+size so
+    a session that changes playtime invalidates it."""
+    paths = _localconfig_paths(root)
+    if not paths:
+        return {}
+    try:
+        key = tuple(sorted((p, os.path.getmtime(p), os.path.getsize(p)) for p in paths))
+    except OSError:
+        return {}
+    with _PLAYTIME_LOCK:
+        if _PLAYTIME_CACHE["key"] == key:
+            return _PLAYTIME_CACHE["apps"]
+    merged = {}
+    for p in paths:
+        try:
+            with open(p, "r", encoding="utf-8", errors="replace") as fh:
+                got = parse_localconfig_playtime(fh.read())
+        except OSError:
+            continue
+        for appid, rec in got.items():
+            cur = merged.setdefault(appid, {})
+            for k, v in rec.items():
+                if v > cur.get(k, -1):
+                    cur[k] = v
+    with _PLAYTIME_LOCK:
+        _PLAYTIME_CACHE["key"] = key
+        _PLAYTIME_CACHE["apps"] = merged
+    return merged
+
+
 def _steam_libraries_cached(root):
     """_steam_libraries(root) memoized for _STEAM_LIB_TTL seconds. Keyed on the
     root path so a changed root invalidates the cache. A lost race just
@@ -6299,12 +6426,22 @@ def discover_steam_games():
         # Costs a few stat() calls per installed game on a list that is already
         # walking every appmanifest off the same disk.
         launchers = []
+        # ADDITIVE: playtime_min / last_played let the app answer "never played",
+        # "under two hours", "not touched in a year" with NO network and no Steam
+        # API key. Absent per game when Steam has never recorded it, which is
+        # itself the "never played" signal -- the agent does not invent a zero.
+        playtime = _steam_playtime(_steam_root())
         for appid, name in games.items():
             entry = {"id": "steam:%s" % appid, "label": name,
                      "kind": "steam", "appid": int(appid)}
             _, art = _steam_cover(appid)
             if art:
                 entry["art"] = art
+            rec = playtime.get(str(appid)) or {}
+            if "playtime_min" in rec:
+                entry["playtime_min"] = rec["playtime_min"]
+            if "last_played" in rec:
+                entry["last_played"] = rec["last_played"]
             launchers.append(entry)
         launchers.sort(key=lambda l: (l["label"].lower(), l["appid"]))
         return launchers

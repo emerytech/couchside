@@ -484,6 +484,14 @@ export type Unit = {
   active: string;
   sub: string;
   description: string;
+  /**
+   * A LOG SOURCE, not a real service (Windows agent >= 0.4.4). The agent's own
+   * log is in the watchlist so it reaches the Logs picker; it has no Windows
+   * service behind it, so showing it in the units card meant a permanent
+   * "inactive/not-found" warning. Absent on every other agent — treat undefined
+   * as "a real unit", which is what it has always been.
+   */
+  log_only?: boolean;
 };
 
 export type Danger = 'low' | 'medium' | 'high';
@@ -533,6 +541,20 @@ export type Launcher = {
   kind: 'steam' | 'custom' | 'shortcut';
   /** Steam appid, present for kind "steam": used for library cover art. */
   appid?: number;
+  /**
+   * Minutes played, from Steam's own localconfig.vdf on the box (agent
+   * >= 2.9.71). LOCAL — no Steam Web API key, no public profile, no network.
+   *
+   * ABSENT means Steam has no record, which is exactly the "never played"
+   * signal; the agent deliberately does not send a zero it had to invent. A
+   * real 0 (installed, launched, quit immediately) IS sent as 0, so
+   * `playtime_min === 0` and `playtime_min === undefined` mean different
+   * things and the filter must not conflate them.
+   */
+  playtime_min?: number;
+  /** Unix seconds Steam last saw this game launched (agent >= 2.9.71). Absent
+   *  when never launched. */
+  last_played?: number;
   /** Which SHAPE of cover art the box has locally (agent >= 2.9.41).
    *  "portrait" = a 600x900 capsule that fills a tile; "header" = a 460x215
    *  banner that does NOT and needs its own layout. Absent means no local art

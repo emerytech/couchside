@@ -59,7 +59,15 @@ export function TvPairForm({
 }) {
   const t = useTheme();
   const styles = useThemedStyles(makeStyles);
-  const [brand, setBrand] = useState<Brand>(() => driver.brands[0]?.id ?? 'roku');
+  // Prefer Roku as the initial selection where the driver offers it: it needs
+  // no pairing handshake at all, so a user who just opens this form and taps
+  // the button gets the one brand that cannot fail a handshake. The list order
+  // is unchanged; only the DEFAULT is. Previously this took brands[0], which
+  // made LG — the brand with the most moving parts — the pre-filled choice and
+  // the button label.
+  const [brand, setBrand] = useState<Brand>(
+    () => (driver.brands.some((b) => b.id === 'roku') ? 'roku' : driver.brands[0]?.id) ?? 'roku',
+  );
   const [host, setHost] = useState('');
   const [mac, setMac] = useState('');
   const [code, setCode] = useState('');

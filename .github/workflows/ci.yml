@@ -485,6 +485,20 @@ jobs:
       - name: Unit tests (Windows game launchers)
         run: python3 tests/test_win_launchers.py
 
+      # The agent's own log rides the watchlist as a pseudo-unit so it reaches
+      # the Logs picker; `sc query` can only ever say it does not exist, which
+      # showed as a permanent yellow warning on a real Windows box. Pins the
+      # log_only flag AND that real services are never flagged.
+      - name: Unit tests (Windows log-only pseudo-unit)
+        run: python3 tests/test_win_log_unit.py
+
+      # Per-game playtime out of Steam's localconfig.vdf, which is what lets the
+      # app answer "never played" with no network and no Steam API key. The
+      # load-bearing control: a "Playtime" key in the FRIENDS block must never be
+      # attributed to a game.
+      - name: Unit tests (Steam playtime parsing)
+        run: python3 tests/test_steam_playtime.py
+
       # ---------------------------------------------------------------------
       # The eight suites below were written, committed, and then never wired
       # into CI — so they have never once gated a push. Found 2026-08-01 by

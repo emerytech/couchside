@@ -3,20 +3,29 @@
  * the on-phone TV store. Implements the same interface boxDriver does, so
  * components/TvPairForm renders identically with or without a box.
  *
- * Only the brands with a real app-side transport are exposed (Roku, Google TV);
- * the picker therefore never offers a TV this build cannot pair without a box.
- * webos/samsung/vidaa stay boxDriver-only until their TLS work lands.
+ * Only the brands with a real app-side transport are exposed (Roku, Google TV,
+ * LG webOS); the picker therefore never offers a TV this build cannot pair
+ * without a box. samsung/vidaa stay boxDriver-only until their TLS work lands.
  *
  * Stateful, like the agent is server-side: an Android TV pairing holds its open
  * PairSession and the minted identity between start() and finish().
  */
 import { type DiscoveredTv, type TvIdentifyResult, type TvPairResult } from '../api.ts';
 import { pairStart, type PairSession } from './androidtv.ts';
-import { fetchPeerCert, makeConnect, mintIdentity, sha256 } from './atvnative.ts';
+import {
+  makeConnect,
+  makeRawTlsConnect,
+  mintIdentityNonBlocking,
+  randomBytes,
+  sha1,
+  sha256,
+  tcpProbe,
+} from './atvnative.ts';
 import { ATV_PAIR_PORT } from './atvproto.ts';
 import { type AtvCreds, isValidTvHost } from './model.ts';
 import { rokuIdentify } from './roku.ts';
 import { addTv, dropTvSession, scanForTvs } from './store.ts';
+import { WebosSession } from './webos.ts';
 import {
   ALL_BRANDS,
   type AndroidtvStart,
@@ -25,7 +34,13 @@ import {
 } from '../tvPairDriver.ts';
 
 /** Brands the app can drive with no box. Mirrors model.DIRECT_BRANDS. */
-const DIRECT_BRAND_IDS: Brand[] = ['roku', 'androidtv'];
+const DIRECT_BRAND_IDS: Brand[] = ['roku', 'androidtv', 'webos'];
+
+/** webOS transport deps, from the native layer. */
+const WEBOS_DEPS = {
+  rawConnect: makeRawTlsConnect,
+  crypto: { randomBytes, sha1 },
+};
 
 export function directDriver(): TvPairDriver {
   // Held between the two Android TV steps.
@@ -59,8 +74,12 @@ export function directDriver(): TvPairDriver {
     // here it backs the shared form's "Scan for TVs". Android TV has no
     // broadcast discovery the app can do (iOS blocks UDP), so only Rokus appear.
     discover: async (): Promise<DiscoveredTv[]> => {
-      const found = await scanForTvs();
-      return found.map((tv) => ({ brand: 'roku', name: tv.name, host: tv.host }));
+      // Every direct brand, not just Roku: the sweep proves Google TV and LG by
+      // their control ports, so the brand it reports is the brand that answered
+      // and must be carried through — hard-coding 'roku' here would have made a
+      // discovered Google TV pair as a Roku and fail.
+      const found = await scanForTvs(undefined, undefined, tcpProbe);
+      return found.map((tv) => ({ brand: tv.brand, name: tv.name, host: tv.host }));
     },
 
     // No app-side identify probe: return null so the form SKIPS identify and
@@ -72,6 +91,27 @@ export function directDriver(): TvPairDriver {
       const bad = lanGuard(host);
       if (bad) return bad;
       if (brand === 'roku') return finishRoku(host);
+      if (brand === 'webos') {
+        // TOFU the LG's self-signed cert, register (the TV shows an Accept
+        // prompt — the form is already narrating "Waiting for you to accept"),
+        // persist the client-key for silent reconnect.
+        const s = new WebosSession(host, WEBOS_DEPS);
+        const r = await s.pair();
+        s.close();
+        if (!r.ok || !r.clientKey) {
+          return { ok: false, error: r.error ?? 'Pairing was refused by the TV.' };
+        }
+        dropTvSession(host); // a re-pair replaces creds; clear any live session
+        const stored = await addTv({
+          name: `LG webOS (${host})`,
+          brand: 'webos',
+          host,
+          webos: r.caPem ? { caPem: r.caPem, clientKey: r.clientKey } : { clientKey: r.clientKey },
+        });
+        return stored
+          ? { ok: true, name: stored.name, host: stored.host }
+          : { ok: false, error: 'Paired, but the TV could not be saved.' };
+      }
       // webos/samsung/vidaa are not in this driver's brand list, so the form
       // never calls them; guard anyway so a future caller fails loudly.
       return { ok: false, error: `${brand} needs a Couchside box.` };
@@ -84,21 +124,16 @@ export function directDriver(): TvPairDriver {
       // Mint BEFORE opening the socket: the TV's code dialog expires fast
       // (measured 39s failed / 5.6s worked), and RSA keygen must not run in
       // that window. The caller (TvPairForm) shows its own "opening…" state.
-      const minted = mintIdentity();
-      const caPem = await fetchPeerCert(host, ATV_PAIR_PORT);
-      if (!caPem) {
-        return {
-          ok: false,
-          error:
-            'Could not read this TV’s certificate. Check the IP and that the TV is on and on the same Wi-Fi — this TV may not be pairable from the app yet.',
-        };
-      }
+      // Non-blocking: the sync keygen froze the whole app on device.
+      const minted = await mintIdentityNonBlocking();
+      // No certificate pre-fetch: the connection accepts the TV's self-signed
+      // cert directly, and the pairing modulus is read off the LIVE socket.
       try {
-        session = await pairStart(host, minted, { connect: makeConnect(caPem), sha256 }, 'Couchside');
+        session = await pairStart(host, minted, { connect: makeConnect(), sha256 }, 'Couchside');
       } catch (e) {
         return { ok: false, error: `The TV did not start pairing: ${(e as Error).message}` };
       }
-      pendingCreds = { certPem: minted.certPem, keyPem: minted.keyPem, modulusHex: minted.modulusHex, caPem };
+      pendingCreds = { certPem: minted.certPem, keyPem: minted.keyPem, modulusHex: minted.modulusHex };
       pendingHost = host;
       pendingName = `Google TV (${host})`;
       return { ok: true, code_shown: true };

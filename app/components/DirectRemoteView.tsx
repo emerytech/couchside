@@ -4,18 +4,26 @@ import { Alert, Modal, Pressable, StyleSheet, Text, TextInput, View } from 'reac
 
 import { hapticLight } from '@/lib/haptics';
 import { DirectTv } from '@/lib/tvdirect/model';
-import { makeConnect, sha256 } from '@/lib/tvdirect/atvnative';
+import {
+  makeConnect,
+  makeRawTlsConnect,
+  randomBytes,
+  sha1,
+  sha256,
+} from '@/lib/tvdirect/atvnative';
 import type { RokuKey, RokuOp } from '@/lib/tvdirect/roku';
 import {
   sendKey,
   sendOp,
   sendText as sendTextTo,
+  supportsApps,
   supportsPowerOn,
   supportsText,
 } from '@/lib/tvdirect/send';
 import { mono, useTheme, useThemedStyles, type Palette } from '@/lib/theme';
 
 import { CornerBtn, Dpad, MidBtn, Rocker } from './RemoteView';
+import { TvAppsGrid } from './TvAppsGrid';
 
 /** Shown once per app session: a Roku that 403s control needs its "Control by
  *  mobile apps" network access made permissive. Same rule and copy as
@@ -68,7 +76,14 @@ export function DirectRemoteView({ tv }: { tv: DirectTv }) {
 
   // The platform transport for Android TV. Roku needs none (plain HTTP), so
   // this is only consulted for a paired androidtv record.
-  const runtime = useMemo(() => ({ makeConnect, sha256 }), []);
+  const runtime = useMemo(
+    () => ({
+      makeConnect,
+      sha256,
+      webos: { rawConnect: makeRawTlsConnect, crypto: { randomBytes, sha1 } },
+    }),
+    [],
+  );
 
   const key = useCallback(
     (k: RokuKey) => {
@@ -93,8 +108,35 @@ export function DirectRemoteView({ tv }: { tv: DirectTv }) {
     if (s) void sendTextTo(tv, s, runtime).then(report);
   }, [textVal, tv, runtime, report]);
 
+  // Remote vs the TV's-apps grid. Only offered where the TV can list its own
+  // apps (Roku, LG webOS); Google TV has no app enumeration, so no toggle.
+  const [view, setView] = useState<'remote' | 'apps'>('remote');
+  const hasApps = supportsApps(tv);
+
   return (
     <View style={styles.root}>
+      {hasApps && (
+        <View style={styles.viewSeg}>
+          {(['remote', 'apps'] as const).map((v) => (
+            <Pressable
+              key={v}
+              onPress={() => {
+                hapticLight();
+                setView(v);
+              }}
+              style={[styles.seg, view === v && styles.segOn]}>
+              <Text style={[styles.segText, view === v && styles.segTextOn]}>
+                {v === 'remote' ? 'REMOTE' : 'APPS'}
+              </Text>
+            </Pressable>
+          ))}
+        </View>
+      )}
+
+      {view === 'apps' ? (
+        <TvAppsGrid tv={tv} runtime={runtime} />
+      ) : (
+        <View style={styles.remoteBody}>
       {/* Power + keyboard row. Roku answers ECP in standby, so power ON is a
           real keypress here rather than the Wake-on-LAN dance the box path
           needs for webOS/Samsung. */}
@@ -187,6 +229,8 @@ export function DirectRemoteView({ tv }: { tv: DirectTv }) {
             keys, and a dead rocker would be worse than an empty slot. */}
         <View style={styles.rockerGhost} />
       </View>
+        </View>
+      )}
 
       <Modal visible={textOpen} transparent animationType="fade" onRequestClose={() => setTextOpen(false)}>
         <Pressable style={styles.textBackdrop} onPress={() => setTextOpen(false)}>
@@ -224,6 +268,21 @@ export function DirectRemoteView({ tv }: { tv: DirectTv }) {
 }
 
 const makeStyles = (t: Palette) => StyleSheet.create({
+  remoteBody: { flex: 1, gap: 10 },
+  viewSeg: {
+    flexDirection: 'row',
+    gap: 2,
+    padding: 2,
+    borderRadius: 10,
+    backgroundColor: t.inset,
+    borderWidth: 1,
+    borderColor: t.cardBorder,
+    marginBottom: 4,
+  },
+  seg: { flex: 1, alignItems: 'center', paddingVertical: 9, borderRadius: 8 },
+  segOn: { backgroundColor: t.card, borderWidth: 1, borderColor: t.blue },
+  segText: { color: t.textDim, fontSize: 12, fontWeight: '800', letterSpacing: 1, fontFamily: mono },
+  segTextOn: { color: t.blue },
   root: { flex: 1, gap: 10, paddingBottom: 6 },
   pressed: { opacity: 0.6 },
   topRow: { flexDirection: 'row', alignItems: 'center', gap: 10 },

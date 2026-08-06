@@ -1077,6 +1077,25 @@ def real_units():
     units = []
     for name, scope in WATCHLIST:
         active, sub, desc = "unknown", "unknown", ""
+        # AGENT_LOG_UNIT is NOT a Windows service -- it is in the watchlist only
+        # so the agent's own log passes the journal route's allowlist and shows
+        # up in the app's Logs picker. Querying it with sc.exe therefore always
+        # returned ERROR_SERVICE_DOES_NOT_EXIST, and the app rendered a
+        # permanent yellow "inactive/not-found" warning for a service that
+        # cannot exist (reported from a real Windows box).
+        #
+        # "active/running" here is a FACT, not a fallback: this code is running
+        # inside the agent, which is answering this very request. `log_only`
+        # lets the app drop it from the units card while keeping it in the Logs
+        # picker; an older app ignores the field and now simply sees the truth.
+        if name == AGENT_LOG_UNIT:
+            units.append({
+                "name": name, "scope": scope,
+                "active": "active", "sub": "running",
+                "description": "Couchside agent (log source, not a service)",
+                "log_only": True,
+            })
+            continue
         try:
             out, rc = _sc_run(["query", name])
             if rc == 0:

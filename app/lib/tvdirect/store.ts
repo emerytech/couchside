@@ -18,6 +18,7 @@ import { Platform } from 'react-native';
 
 import {
   AtvCreds,
+  WebosCreds,
   DirectBrand,
   DirectTv,
   DirectTvState,
@@ -26,7 +27,7 @@ import {
   nextTvId,
   normalizeTvState,
 } from './model.ts';
-import { sweepCandidates, sweepForRokus, type FoundTv } from './scan.ts';
+import { sweepCandidates, sweepForTvs, type FoundTv, type TcpProbe } from './scan.ts';
 import { dropAtvSession } from './send.ts';
 
 export type { FoundTv } from './scan.ts';
@@ -41,6 +42,9 @@ export type { FoundTv } from './scan.ts';
 export async function scanForTvs(
   onFound?: (tv: FoundTv) => void,
   signal?: { aborted: boolean },
+  /** Native TCP probe. Without it the sweep still finds Rokus (HTTP), but not
+   *  the brands proven by an open control port. */
+  tcpProbe?: TcpProbe,
 ): Promise<FoundTv[]> {
   let ip: string | undefined;
   try {
@@ -48,7 +52,7 @@ export async function scanForTvs(
   } catch {
     ip = undefined;
   }
-  return sweepForRokus(sweepCandidates(ip), { onFound, signal });
+  return sweepForTvs(sweepCandidates(ip), { onFound, signal, tcpProbe });
 }
 
 const KEY = 'couchside.tvs.v1';
@@ -123,6 +127,8 @@ export async function addTv(input: {
   host: string;
   /** Android TV pairing credentials; required for brand 'androidtv'. */
   atv?: AtvCreds;
+  /** LG webOS pairing credentials; required for brand 'webos'. */
+  webos?: WebosCreds;
 }): Promise<DirectTv | null> {
   const existing = state.tvs.find((t) => t.brand === input.brand && t.host === input.host);
   if (existing) {
@@ -138,6 +144,7 @@ export async function addTv(input: {
     brand: input.brand,
     host: input.host,
     ...(input.atv ? { atv: input.atv } : {}),
+    ...(input.webos ? { webos: input.webos } : {}),
   };
   // Validate through the same normalizer the persisted blob goes through, so an
   // entry can never enter the store by a path the load path would reject.

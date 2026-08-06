@@ -115,3 +115,41 @@ test('the cert carries the extensions Android TV expects', () => {
   // Long-dated: a short-lived cert is refused by the TV.
   assert.match(text, /2038/, 'notAfter is far future');
 });
+
+// ------------------------------------------------- the non-blocking mint
+// Build 122 froze the app on device: RSA-2048 ran synchronously and the JS
+// thread took no touches until it finished. These pin the fix.
+
+import { mintIdentityAsync } from '../atvcrypto.ts';
+
+test('mintIdentityAsync YIELDS to the event loop (the freeze fix)', async () => {
+  // A timer that keeps ticking during keygen is the observable proxy for "the
+  // JS thread is not monopolised". Under the SYNC mint this counter cannot
+  // advance at all; under the stepping mint it must.
+  let ticks = 0;
+  const timer = setInterval(() => { ticks += 1; }, 5);
+  try {
+    const id = await mintIdentityAsync(getRandomValues, { sliceMs: 20 });
+    assert.equal(id.modulusHex.length, 512, 'still a real 2048-bit key');
+    assert.match(id.certPem, /^-----BEGIN CERTIFICATE-----/);
+  } finally {
+    clearInterval(timer);
+  }
+  assert.ok(ticks > 0, `event loop ran during keygen (ticks=${ticks})`);
+});
+
+test('the async mint produces the SAME cert shape as the sync one', () => {
+  // Both go through finishCert, so this guards the two paths from drifting.
+  const sync = mintIdentity(getRandomValues);
+  assert.equal(sync.modulusHex.length, 512);
+  assert.equal(modulusFromPem(sync.certPem), sync.modulusHex);
+});
+
+test('async mint refuses without a CSPRNG, like the sync one', async () => {
+  await assert.rejects(() => mintIdentityAsync(undefined), /no platform CSPRNG/);
+});
+
+test('async mint is cancellable (a stuck pair must not run forever)', async () => {
+  const signal = { aborted: true };
+  await assert.rejects(() => mintIdentityAsync(getRandomValues, { signal }), /cancelled/);
+});

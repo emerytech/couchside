@@ -104,9 +104,10 @@ test('a TV host must be a LAN IP literal — both directions', () => {
 test('only implemented brands are offered', () => {
   // If a brand is added to DIRECT_BRANDS without a transport, the setup card
   // will offer a TV it cannot drive. Change this list only alongside a client.
-  // 'androidtv' joined when the Google TV client landed (atvproto/androidtv +
-  // the native TLS adapter), proven against real hardware before being listed.
-  assert.deepEqual([...DIRECT_BRANDS], ['roku', 'androidtv']);
+  // 'androidtv' joined when the Google TV client landed; 'webos' when the LG
+  // SSAP port landed (ws.ts + webosproto.ts + the raw-TLS adapter). Each change
+  // to this list must come WITH a working transport.
+  assert.deepEqual([...DIRECT_BRANDS], ['roku', 'androidtv', 'webos']);
 });
 
 // ------------------------------------------------------------ the TV store's
@@ -379,4 +380,133 @@ test('onFound streams results and abort stops the workers', async () => {
   });
   assert.deepEqual(aborted, []);
   assert.equal(probes, 0);
+});
+
+// ---------------------------------------------------------------- app launcher
+
+import { rokuApps, rokuLaunch, rokuIconUrl } from '../tvdirect/roku.ts';
+
+async function stubRokuApps(appsXml: string) {
+  const hits: string[] = [];
+  const server = http.createServer((req, res) => {
+    hits.push(`${req.method} ${req.url}`);
+    if (req.url === '/query/apps') {
+      res.writeHead(200, { 'content-type': 'text/xml' });
+      res.end(appsXml);
+      return;
+    }
+    res.writeHead(200).end();
+  });
+  await new Promise<void>((r) => server.listen(0, '127.0.0.1', r));
+  const port = (server.address() as AddressInfo).port;
+  return { hits, host: `127.0.0.1:${port}`, close: () => new Promise<void>((r) => server.close(() => r())) };
+}
+
+test('rokuApps parses the ECP /query/apps list, keeps digit ids, decodes entities', async () => {
+  const xml =
+    '<apps>' +
+    '<app id="12" type="appl" version="4.2.8">Netflix</app>' +
+    '<app id="837" type="appl">YouTube</app>' +
+    '<app id="291097" type="appl">Hulu &amp; more</app>' +
+    '<app id="tvinput.hdmi1" type="tvin">HDMI 1</app>' + // non-digit id -> skipped
+    '</apps>';
+  const s = await stubRokuApps(xml);
+  try {
+    const apps = await withPortRewrite(s.host, () => rokuApps('10.0.0.5'));
+    assert.deepEqual(
+      apps.map((a) => ({ id: a.id, name: a.name })),
+      [
+        { id: '12', name: 'Netflix' },
+        { id: '837', name: 'YouTube' },
+        { id: '291097', name: 'Hulu & more' }, // &amp; decoded
+      ],
+    );
+    // HDMI input (non-digit id) is not a launchable channel.
+    assert.ok(!apps.some((a) => a.id.includes('hdmi')));
+    // Icon URL points at the TV's own icon endpoint.
+    assert.ok(apps[0].iconUrl?.endsWith('/query/icon/12'));
+  } finally {
+    await s.close();
+  }
+});
+
+test('rokuApps returns [] on an unreachable TV, never throws', async () => {
+  const apps = await rokuApps('10.255.255.1');
+  assert.deepEqual(apps, []);
+});
+
+test('rokuLaunch POSTs /launch/<id> for a digit id and REFUSES anything else', async () => {
+  const s = await stubRokuApps('<apps></apps>');
+  try {
+    const r = await withPortRewrite(s.host, () => rokuLaunch('10.0.0.5', '12'));
+    assert.equal(r.ok, true);
+    assert.ok(s.hits.some((h) => h === 'POST /launch/12'));
+    // A non-digit id (e.g. a smuggled path) is refused locally — nothing sent.
+    s.hits.length = 0;
+    const bad = await withPortRewrite(s.host, () => rokuLaunch('10.0.0.5', '12/../keypress/PowerOff'));
+    assert.equal(bad.ok, false);
+    assert.equal(s.hits.length, 0, 'refused id sends nothing');
+  } finally {
+    await s.close();
+  }
+});
+
+test('rokuIconUrl is the TV-served icon endpoint', () => {
+  assert.equal(rokuIconUrl('10.0.0.5', '12'), 'http://10.0.0.5:8060/query/icon/12');
+});
+
+// ---------------------------------------------- multi-brand LAN sweep
+// "Scan for TVs" used to find Rokus only, and hard-coded brand 'roku' on the
+// way out — so a discovered Google TV would have tried to pair as a Roku.
+
+import { sweepForTvs, DEFAULT_PROBES, type TcpProbe } from '../tvdirect/scan.ts';
+
+const noRoku = async () => null;
+
+test('sweep finds a Google TV by its open remote port, with the TV’s real name', async () => {
+  const tcp: TcpProbe = async (h, port) => h === '10.0.0.5' && port === 6466;
+  const probes = DEFAULT_PROBES.map((p) =>
+    p.brand === 'androidtv' ? { ...p, nameLookup: async () => 'Bedroom TV' } : p,
+  );
+  const found = await sweepForTvs(['10.0.0.4', '10.0.0.5'], {
+    identify: noRoku, tcpProbe: tcp, probes, conc: 2,
+  });
+  assert.deepEqual(found.map((f) => [f.brand, f.host, f.name]), [['androidtv', '10.0.0.5', 'Bedroom TV']]);
+});
+
+test('sweep finds an LG by its SSAP port, naming it by host when it offers none', async () => {
+  const tcp: TcpProbe = async (h, port) => h === '10.0.0.9' && port === 3001;
+  const found = await sweepForTvs(['10.0.0.9'], { identify: noRoku, tcpProbe: tcp });
+  assert.equal(found.length, 1);
+  assert.equal(found[0].brand, 'webos');
+  assert.match(found[0].name, /LG webOS/);
+});
+
+test('a Roku still wins on the same sweep, and keeps its own name', async () => {
+  const tcp: TcpProbe = async () => false;
+  const found = await sweepForTvs(['10.0.0.2'], {
+    identify: async () => ({ name: 'Living Room Roku', model: 'Ultra' }) as never,
+    tcpProbe: tcp,
+  });
+  assert.deepEqual(found.map((f) => [f.brand, f.name]), [['roku', 'Living Room Roku']]);
+});
+
+test('one host yields ONE TV even when several ports answer', async () => {
+  // A box answering both 6466 and 3001 must not appear twice in the list.
+  const tcp: TcpProbe = async () => true;
+  const probes = DEFAULT_PROBES.map((p) =>
+    p.brand === 'androidtv' ? { ...p, nameLookup: async () => 'Ambiguous' } : p,
+  );
+  const found = await sweepForTvs(['10.0.0.7'], { identify: noRoku, tcpProbe: tcp, probes });
+  assert.equal(found.length, 1, 'first brand to prove itself wins');
+});
+
+test('without a TCP probe the sweep degrades to HTTP brands, it does not invent them', async () => {
+  const found = await sweepForTvs(['10.0.0.3'], { identify: noRoku });
+  assert.deepEqual(found, [], 'no tcpProbe must not mean "everything is a TV"');
+});
+
+test('a host where nothing answers is absent (control)', async () => {
+  const found = await sweepForTvs(['10.0.0.8'], { identify: noRoku, tcpProbe: async () => false });
+  assert.deepEqual(found, []);
 });

@@ -23,6 +23,7 @@ import {
 } from 'react-native';
 
 import { Gated } from '@/components/Gated';
+import { LibraryFilterSheet } from '@/components/LibraryFilterSheet';
 import { TabScreen } from '@/components/TabScreen';
 import { useLockOrientation } from '@/hooks/useLockOrientation';
 import { usePoll } from '@/hooks/usePoll';
@@ -37,6 +38,8 @@ import {
   SteamLink,
 } from '@/lib/api';
 import { hapticError, hapticLight, hapticMedium, hapticSelection, hapticSuccess } from '@/lib/haptics';
+import { fmtGB, fmtPair, fmtTotal } from '@/lib/downloadSize';
+import { applyFilter, EMPTY_FILTER, isFiltering, type FilterState } from '@/lib/libraryFilter';
 import { setPref, usePref } from '@/lib/prefs';
 import { useBoxes, useSettings } from '@/lib/SettingsContext';
 import { mono, useTheme, useThemedStyles, type Palette } from '@/lib/theme';
@@ -178,34 +181,6 @@ function LauncherTile({
   );
 }
 
-/** GB with one decimal (Steam's own display convention). */
-function fmtGB(bytes: number): string {
-  return (bytes / 1e9).toFixed(1);
-}
-
-/**
- * Unit floor for switching a row from GB to MB. fmtGB's toFixed(1) rounds
- * anything under ~50 MB to "0.0", so a tiny content patch sailed through the
- * bytes_total > 0 gate below and printed "0.0 / 0.0 GB" — the row Steam was
- * being honest about read as broken (KI-056, reported twice by the same
- * tester). Under this floor sizes render as whole MB instead.
- */
-const MB_FLOOR = 100e6;
-
-/** "1.2 / 42.0 GB" above the floor, "28 / 31 MB" under it. One unit per row,
- *  chosen by the TOTAL, so the pair never mixes units mid-line. */
-function fmtPair(downloaded: number, total: number): string {
-  if (total < MB_FLOOR) {
-    return `${Math.round(downloaded / 1e6)} / ${Math.round(total / 1e6)} MB`;
-  }
-  return `${fmtGB(downloaded)} / ${fmtGB(total)} GB`;
-}
-
-/** Single-size variant for queued rows. */
-function fmtTotal(total: number): string {
-  return total < MB_FLOOR ? `${Math.round(total / 1e6)} MB` : `${fmtGB(total)} GB`;
-}
-
 function DownloadRow({ d }: { d: SteamDownload }) {
   const t = useTheme();
   const styles = useThemedStyles(makeStyles);
@@ -330,6 +305,39 @@ function DownloadsSection({ downloads }: { downloads: SteamDownload[] }) {
  * check is deliberately conservative, so a dimmed host stays tappable — the
  * user may well know better than we do.
  */
+/**
+ * Cover art for one stream-from-PC row.
+ *
+ * The agent has ALWAYS served these appids through /api/steam/<appid>/cover —
+ * its own note says the route "404s for uncached art; the app falls back to the
+ * title". The app simply never asked, so a list of games rendered as a wall of
+ * monospace text. This asks, and latches back to the play icon on 404 or error
+ * so a missing cover cannot error-loop.
+ *
+ * The slot is a FIXED size either way, so rows stay aligned whether the art
+ * loads, 404s, or is still arriving.
+ */
+function StreamGameArt({ appid, dim }: { appid: number; dim: boolean }) {
+  const t = useTheme();
+  const styles = useThemedStyles(makeStyles);
+  const { settings } = useSettings();
+  const [failed, setFailed] = useState(false);
+  return (
+    <View style={styles.slArtSlot}>
+      {failed ? (
+        <Ionicons name="play-circle" size={16} color={dim ? t.textDim : t.blue} />
+      ) : (
+        <Image
+          source={api.steamCoverSource(settings, appid)}
+          style={[styles.slArt, dim && styles.slArtDim]}
+          resizeMode="cover"
+          onError={() => setFailed(true)}
+        />
+      )}
+    </View>
+  );
+}
+
 function SteamLinkSection({
   data,
   onStream,
@@ -436,7 +444,7 @@ function SteamLinkSection({
                       key={g.appid}
                       onPress={() => onStream(g.appid, g.label)}
                       style={({ pressed }) => [styles.slGameRow, pressed && styles.pressed]}>
-                      <Ionicons name="play-circle" size={16} color={off ? t.textDim : t.blue} />
+                      <StreamGameArt appid={g.appid} dim={off} />
                       <Text
                         style={[styles.slGameName, off && styles.slDimText]}
                         numberOfLines={1}>
@@ -755,11 +763,21 @@ function LaunchScreen() {
   // phone. Client-side on a list the app already has -- no round trip, and it
   // stays responsive on a box that is busy installing something.
   const [query, setQuery] = useState('');
-  const launchers = useMemo(() => {
+  const [filter, setFilter] = useState<FilterState>(EMPTY_FILTER);
+  const [filterOpen, setFilterOpen] = useState(false);
+  // Search first (the screen owns it and its matching ignores whitespace), then
+  // the sheet's dimensions on top. The sheet is handed THIS list, so its live
+  // count reflects the active query too and cannot promise more than the grid
+  // will show.
+  const searched = useMemo(() => {
     const q = query.trim().toLowerCase().replace(/\s+/g, '');
     if (!q) return allLaunchers;
     return allLaunchers.filter((l) => l.label.toLowerCase().replace(/\s+/g, '').includes(q));
   }, [allLaunchers, query]);
+  const launchers = useMemo(
+    () => applyFilter(searched, filter, Math.floor(Date.now() / 1000)),
+    [searched, filter],
+  );
   const rows = useMemo(() => {
     const out: Launcher[][] = [];
     for (let i = 0; i < launchers.length; i += COLS) {
@@ -915,13 +933,40 @@ function LaunchScreen() {
                 <Ionicons name="close-circle" size={17} color={t.textDim} />
               </Pressable>
             )}
+            <Pressable
+              onPress={() => {
+                hapticLight();
+                setFilterOpen(true);
+              }}
+              hitSlop={8}
+              accessibilityRole="button"
+              accessibilityLabel="Filter library"
+              style={({ pressed }) => [pressed && { opacity: 0.6 }]}>
+              <Ionicons
+                name="options-outline"
+                size={18}
+                color={isFiltering(filter) ? t.blue : t.textDim}
+              />
+            </Pressable>
           </View>
         )}
 
         {/* Nothing matched. Say so rather than showing an empty screen that
             reads as "the box has no games". */}
-        {query.trim().length > 0 && launchers.length === 0 && (
-          <Text style={styles.noMatch}>No game matches &ldquo;{query.trim()}&rdquo;.</Text>
+        <LibraryFilterSheet
+          visible={filterOpen}
+          games={searched}
+          value={filter}
+          onChange={setFilter}
+          onClose={() => setFilterOpen(false)}
+        />
+
+        {launchers.length === 0 && (query.trim().length > 0 || isFiltering(filter)) && (
+          <Text style={styles.noMatch}>
+            {query.trim().length > 0
+              ? `No game matches “${query.trim()}”${isFiltering(filter) ? ' with these filters' : ''}.`
+              : 'No game matches these filters.'}
+          </Text>
         )}
 
         {/* Grid */}
@@ -1043,6 +1088,19 @@ const makeStyles = (t: Palette) => StyleSheet.create({
   // the row still reads as tappable (it is: the check is advisory only).
   slDimText: { color: t.textDim },
   slFaintText: { color: t.textFaint },
+  slArtSlot: {
+    width: 30,
+    height: 45,
+    borderRadius: 4,
+    overflow: 'hidden',
+    backgroundColor: t.inset,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  // Steam library capsules are 2:3 (600x900); the slot matches so art is never
+  // letterboxed or cropped through the middle of the title.
+  slArt: { width: '100%', height: '100%' },
+  slArtDim: { opacity: 0.45 },
   slGameRow: {
     flexDirection: 'row',
     alignItems: 'center',

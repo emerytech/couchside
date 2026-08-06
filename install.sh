@@ -1287,9 +1287,21 @@ if [ -f "$WORK_DIR/couchside-helper.py" ] && \
     # user swaps the file, the root service runs it). Same home as the other
     # root-run wrappers. The service unit's ProtectHome=yes enforces this — a
     # helper left in $HOME is unreadable to its own service, measured live.
-    HELPER_PATH="/usr/local/libexec/couchside-helper.py"
-    # ostree boxes ship no /usr/local/libexec; create it (root-owned) first.
-    sudo install -d -m 0755 -o root -g root /usr/local/libexec
+    # /usr/local/libexec is preferred, but on SteamOS (Steam Deck) / and /usr are
+    # a READ-ONLY image, so it cannot be created — measured on a fresh Deck:
+    #   install: cannot change owner and permissions of '/usr/local/libexec':
+    #   No such file or directory
+    # and the installer exited 1 before the helper, socket or unit landed.
+    # /var/lib is writable on every target we support and is still ROOT-OWNED,
+    # which is the property that matters (see the note above: a root-run helper
+    # in a user-writable directory is privilege escalation).
+    HELPER_DIR="/usr/local/libexec"
+    if ! sudo install -d -m 0755 -o root -g root "$HELPER_DIR" 2>/dev/null; then
+        HELPER_DIR="/var/lib/couchside/libexec"
+        say "  /usr/local is read-only (SteamOS?) — installing the helper to $HELPER_DIR"
+        sudo install -d -m 0755 -o root -g root "$HELPER_DIR"
+    fi
+    HELPER_PATH="$HELPER_DIR/couchside-helper.py"
     sudo install -m 0755 -o root -g root "$WORK_DIR/couchside-helper.py" "$HELPER_PATH"
     sed -e "s|__USER__|$USER_NAME|g" \
         "$WORK_DIR/couchside-helper.socket" > "$WORK_DIR/couchside-helper.socket.rendered"

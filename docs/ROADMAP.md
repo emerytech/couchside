@@ -109,6 +109,92 @@ Entry fields: `priority` (P0 blocker → P3 nice) · `risk` · `affects` · `dep
 
 ## 📋 Planned
 
+### Remote-only mode: an "Apps" launcher grid (the TV's installed apps)
+- **priority:** P2 · **risk:** low · **affects:** app only (lib/tvdirect + the Remote tab) ·
+  **depends_on:** Roku direct (shipped); LG direct (device-verify first)
+- **Requested by owner 2026-08-05**, inspired by "Remo — Smart TV Remote"
+  (apps.apple.com/us/app/remo-smart-tv-remote/id6775416470): a grid of the TV's own
+  installed apps (Netflix/YouTube/…) launched in one tap, like the box's Watch tab but
+  app-direct.
+- **Feasibility splits HARD by brand — and it splits against exactly the brand we're
+  device-testing:**
+  - **Roku ✅ full.** ECP `GET /query/apps` (installed channels), `POST /launch/<id>`,
+    `GET /query/icon/<id>` (icon PNG). Plain HTTP, no auth; we already speak ECP. The easy,
+    fully app-direct win — a real "your TV's apps" grid with art.
+  - **LG webOS ✅ full.** SSAP `ssap://com.webos.applicationManager/listLaunchPoints`
+    (installed apps WITH icon URLs) + `ssap://system.launcher/launch` {id}. Small addition
+    on the SSAP session just built; the webOS spike already enumerated 126 apps. Gate: LG
+    app-direct itself is device-unverified.
+  - **Google TV ❌ NO real list.** The Remote v2 protocol has no app-enumeration message —
+    you cannot list a Google TV's installed apps over it. Best is a CURATED deep-link
+    catalog (the box Player's approach), which is NOT "the TV's downloaded apps". Be honest
+    in the UI: Roku/LG show the real grid; Google TV shows a fixed catalog or nothing.
+  - **Samsung/Hisense** — box-only until they go app-direct.
+- **CORRECTION banked:** the shipped AGENT does not do TV app-launching either (keys/power/
+  volume only). The "126 apps" was a webOS dev spike, never shipped — so this is net-new for
+  both box and app, not a port of shipped code.
+- **Shape:** an `Apps` segment on the Remote tab (remote-only), per-brand: Roku/LG fetch the
+  live list + icons; Google TV either hidden or a small curated catalog. Icons inlined as
+  data URIs (same LAN-only, no-CDN rule as the box cover art). Launch ids come from the TV's
+  own list — no client-supplied launch string (the allowlist rule, app-side).
+- **Verify:** Roku slice is unit-testable against a stub ECP `/query/apps`; the real grid
+  needs Roku/LG hardware. No store copy claims it until a real TV lists apps on a device.
+
+### Ship the Steam Deck install fix and the Windows units fix (release-gated)
+
+**priority:** high
+**risk:** low code risk, HIGH forget risk
+**affects:** install.sh, agent/win/couchsided-win.py, couchside.tv
+**depends_on:** feat/webos-app-direct merged to main
+
+Both fixes are ALREADY WRITTEN and merged-pending, and NEITHER reaches a user
+through an app build — this entry exists because that is easy to forget and the
+first one is a fresh-install blocker.
+
+- **Steam Deck fresh installs fail** (`install: cannot change owner and
+  permissions of '/usr/local/libexec'` -> installer exits 1 before the helper,
+  socket or unit lands). SteamOS ships / and /usr read-only. Fixed by falling
+  back to /var/lib/couchside/libexec. **Reaches users only via a signed release
+  asset AND the couchside.tv install.sh sync** — the website serves its own copy,
+  so a merge alone changes nothing for anyone running the published one-liner.
+- **Windows units card shows a permanent yellow `couchside-agent
+  inactive/not-found`.** The fix is the `log_only` flag, which comes FROM THE
+  AGENT — so it needs a Windows agent release (0.4.4-win). The app-side filter
+  ships with the app but has nothing to filter until the agent sends the flag.
+
+**Verify on hardware before calling it done** (neither is hardware-verified):
+1. Fresh install on the Steam Deck — the only real proof of the installer fix.
+2. Deploy the win agent to EMERY-PC — confirm the yellow warning is gone AND
+   that couchside-agent is still selectable in the Logs picker.
+
+### Library triage — filter your games by what runs here and how long it takes
+
+**priority:** medium
+**risk:** medium (one phase depends on a third-party ToS review)
+**affects:** app/(tabs)/launch.tsx, a new app-side metadata cache
+**depends_on:** nothing — phase 1 needs no network at all
+**spec:** docs/memory/project_library-triage.md
+
+Inspired by DeckFilter (deckfilter.app), driven on hardware 2026-08-06. It is a
+Steam Deck triage tool: filter a library you already own by Deck Verified
+status, ProtonDB tier, HowLongToBeat hours, unplayed/unfinished — with a live
+count on the confirm button ("SHOW 272 GAMES") that makes narrowing the
+interaction itself.
+
+**Why it fits here:** Couchside already targets SteamOS/Bazzite/Steam Deck, and
+can do the thing DeckFilter structurally cannot — LAUNCH the result. Filter to
+"runs great here, under 20 hours, never played", then tap and it starts on the
+TV.
+
+**Constraint that shapes it:** the APP fetches metadata, never the box. The agent
+gains no outbound network path and stays LAN-only. Opt-in, cached hard,
+revocable. A box owner's library comes from their own machine, so the core case
+needs no Steam API key at all — which is what makes this viable where a generic
+"sync your Steam account" dashboard would not be.
+
+Phase 1 (filter what the box already knows, live count, saved presets) needs no
+network and is useful alone.
+
 ### protocol.json has no home for a platform-only capability (KI-055)
 - **priority:** P2 · **risk:** low · **affects:** `protocol/protocol.json` +
   `tests/test_protocol_parity.py` · **depends_on:** none

@@ -1,5 +1,5 @@
 import React, { useCallback, useState } from 'react';
-import { FlatList, Pressable, StyleSheet, Switch, Text, View } from 'react-native';
+import { FlatList, Pressable, ScrollView, StyleSheet, Switch, Text, View } from 'react-native';
 
 import { usePoll } from '@/hooks/usePoll';
 import { api, hostKey, Journal, Unit, UnitScope } from '@/lib/api';
@@ -69,24 +69,40 @@ export function LogsPanel() {
 
   return (
     <View style={styles.root}>
-      {/* Segmented unit picker */}
-      <View style={styles.segments}>
+      {/* Unit picker. Chips are sized by their LABEL and scroll horizontally:
+          equal-width flex:1 segments wrapped "Steam Client Service" onto two
+          lines and left the row ragged, and they collapse entirely once a box
+          watches more than three units (Windows service names are long). */}
+      <ScrollView
+        horizontal
+        showsHorizontalScrollIndicator={false}
+        // flexGrow:0 — a ScrollView in a flex column otherwise claims the height
+        // the journal list needs. The panel's own docstring is about the PARENT
+        // not wrapping it vertically; a horizontal chip rail is not that.
+        style={styles.segmentsWrap}
+        contentContainerStyle={styles.segments}>
         {picker.map((w, i) => (
           <Pressable
             key={`${w.scope}:${w.unit}`}
             onPress={() => setSelected(i)}
             style={[styles.segment, target === w && styles.segmentActive]}>
-            <Text style={[styles.segmentText, target === w && styles.segmentTextActive]}>
+            <Text
+              numberOfLines={1}
+              style={[styles.segmentText, target === w && styles.segmentTextActive]}>
               {w.short}
             </Text>
           </Pressable>
         ))}
-      </View>
+      </ScrollView>
 
       {/* Toolbar */}
       <View style={styles.toolbar}>
-        <Text style={styles.unitLabel} numberOfLines={1}>
-          {target.unit} <Text style={styles.scopeLabel}>({target.scope})</Text>
+        {/* Scope only. This used to repeat the full unit name, which the
+            selected chip already shows — so on a phone it truncated mid-word
+            ("sddm.service (syste…") AND crowded the auto/refresh controls off
+            the row. The chip is the name; this is the one fact it omits. */}
+        <Text style={styles.scopeLabel} numberOfLines={1}>
+          {target.scope}
         </Text>
         <View style={styles.toolbarRight}>
           <Text style={styles.autoLabel}>auto 5s</Text>
@@ -132,19 +148,22 @@ export function LogsPanel() {
 
 const makeStyles = (t: Palette) => StyleSheet.create({
   root: { flex: 1, paddingHorizontal: 14, paddingTop: 14 },
+  segmentsWrap: { flexGrow: 0, flexShrink: 0, marginBottom: 10 },
   segments: {
     flexDirection: 'row',
-    backgroundColor: t.inset,
-    borderRadius: 10,
-    borderWidth: 1,
-    borderColor: t.cardBorder,
-    padding: 3,
-    marginBottom: 10,
+    alignItems: 'center',
+    gap: 6,
+    paddingVertical: 2,
+    paddingRight: 12,
   },
   segment: {
-    flex: 1,
-    paddingVertical: 10,
-    borderRadius: 8,
+    // Sized by content, not by an equal share of the width — see the note above.
+    paddingVertical: 9,
+    paddingHorizontal: 14,
+    borderRadius: 999,
+    backgroundColor: t.inset,
+    borderWidth: 1,
+    borderColor: t.cardBorder,
     alignItems: 'center',
   },
   segmentActive: { backgroundColor: t.card, borderWidth: 1, borderColor: t.blue },

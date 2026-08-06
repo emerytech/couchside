@@ -780,6 +780,7 @@ function SetupBody() {
   const accent = useAccent();
   const scheme = useResolvedScheme();
   const confirmSuspend = usePref('confirmSuspend');
+  const streakCelebrations = usePref('streakCelebrations');
   const defaultPadMode = usePref('defaultPadMode');
   const landingTab = usePref('landingTab');
   const autoKeyboard = usePref('autoKeyboard');
@@ -1318,6 +1319,15 @@ function SetupBody() {
                 value={confirmSuspend}
                 onValueChange={(v) => {
                   void setPref('confirmSuspend', v);
+                  hapticSelection();
+                }}
+              />
+              <TogglePref
+                label="Streak celebrations"
+                sub="Mark 3, 7, 14, 30, 100 days in a row. Never a daily popup, and nothing leaves your phone."
+                value={streakCelebrations}
+                onValueChange={(v) => {
+                  void setPref('streakCelebrations', v);
                   hapticSelection();
                 }}
               />

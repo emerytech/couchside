@@ -23,24 +23,36 @@ import { isValidLanIp } from '../lanIp.ts';
 /** Brands the app can drive DIRECTLY (no box). Still short of the agent's list:
  *  webos/samsung/vidaa need TLS work of their own and are absent here rather
  *  than listed-and-broken. `androidtv` covers Google TV and Android TV sets. */
-export const DIRECT_BRANDS = ['roku', 'androidtv'] as const;
+export const DIRECT_BRANDS = ['roku', 'androidtv', 'webos'] as const;
 export type DirectBrand = (typeof DIRECT_BRANDS)[number];
+
+/**
+ * Credentials for a paired LG webOS TV. Absent on Roku. `caPem` is the TV's own
+ * self-signed cert, pinned on every connect (react-native-tcp-socket has no
+ * accept-any mode); `clientKey` is the token the TV returned when the user
+ * approved the on-screen prompt, and makes later connects silent.
+ */
+export type WebosCreds = {
+  /** The TV's own cert, if captured, to PIN later connects. Optional: the
+   *  connection accepts a self-signed peer without it (see atvnative.tlsTrust). */
+  caPem?: string;
+  clientKey: string;
+};
 
 /**
  * Credentials for a paired Android TV. Absent on Roku, which needs none (its
  * ECP is unauthenticated).
  *
- * `caPem` is the TV's OWN certificate, captured when the user paired. It is
- * pinned on every later connection, because react-native-tcp-socket has no
- * "accept any self-signed peer" mode — so this is both the workaround and a
- * stronger guarantee than the dev-side rejectUnauthorized:false: only the exact
- * certificate this TV presented at pairing time is accepted afterwards.
+ * `caPem` is OPTIONAL: the TV's own certificate, if captured, to PIN later
+ * connections. Without it the connection accepts the self-signed peer directly
+ * (atvnative.tlsTrust). An earlier design made it REQUIRED and fetched it before
+ * connecting, which is what made every pairing fail on device.
  */
 export type AtvCreds = {
   certPem: string;
   keyPem: string;
   modulusHex: string;
-  caPem: string;
+  caPem?: string;
 };
 
 export type DirectTv = {
@@ -55,6 +67,8 @@ export type DirectTv = {
    *  DROPS an androidtv entry that lacks them rather than keeping a TV whose
    *  every keypress would fail. */
   atv?: AtvCreds;
+  /** LG webOS only. Same rule: a webos entry without creds is dropped. */
+  webos?: WebosCreds;
 };
 
 export type DirectTvState = {
@@ -106,7 +120,23 @@ export function normalizeTv(raw: unknown): DirectTv | null {
     if (!creds) return null;
     tv.atv = creds;
   }
+  if (o.brand === 'webos') {
+    const creds = normalizeWebosCreds(o.webos);
+    if (!creds) return null;
+    tv.webos = creds;
+  }
   return tv;
+}
+
+function normalizeWebosCreds(raw: unknown): WebosCreds | null {
+  if (!raw || typeof raw !== 'object') return null;
+  const o = raw as Record<string, unknown>;
+  // The client-key is what makes a reconnect silent, so it is REQUIRED; the
+  // pinned cert is an optional hardening and its absence must not drop the TV.
+  const clientKey = typeof o.clientKey === 'string' && o.clientKey.length > 0 ? o.clientKey : null;
+  if (!clientKey) return null;
+  const caPem = typeof o.caPem === 'string' && o.caPem.includes('BEGIN CERTIFICATE') ? o.caPem : undefined;
+  return caPem ? { caPem, clientKey } : { clientKey };
 }
 
 function normalizeAtvCreds(raw: unknown): AtvCreds | null {
@@ -116,13 +146,15 @@ function normalizeAtvCreds(raw: unknown): AtvCreds | null {
     typeof v === 'string' && v.includes(marker) ? v : null;
   const certPem = pem(o.certPem, 'BEGIN CERTIFICATE');
   const keyPem = pem(o.keyPem, 'PRIVATE KEY');
-  const caPem = pem(o.caPem, 'BEGIN CERTIFICATE');
   const modulusHex =
     typeof o.modulusHex === 'string' && /^[0-9a-f]+$/i.test(o.modulusHex)
       ? o.modulusHex.toLowerCase()
       : null;
-  if (!certPem || !keyPem || !caPem || !modulusHex) return null;
-  return { certPem, keyPem, caPem, modulusHex };
+  // Our own cert/key/modulus are REQUIRED (without them no connection can be
+  // made); the TV's pinned cert is optional hardening.
+  if (!certPem || !keyPem || !modulusHex) return null;
+  const caPem = pem(o.caPem, 'BEGIN CERTIFICATE') ?? undefined;
+  return caPem ? { certPem, keyPem, caPem, modulusHex } : { certPem, keyPem, modulusHex };
 }
 
 /** Coerce a whole persisted blob. Never throws; an unusable blob yields empty. */
