@@ -270,6 +270,10 @@ export default function TabLayout() {
         onSkip={tour.skip}
       />
     ) : null}
+    {/* Shown after the LAST step, never after Skip — see hooks/useTourThanks.ts.
+        Rendered after the tour so it sits above it during the frame the tour is
+        tearing down. */}
+    {thanksVisible ? <TourThanks /> : null}
     </>
   );
 }
