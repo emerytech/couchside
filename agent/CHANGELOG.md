@@ -18,6 +18,25 @@ the same thing regardless of what actually changed.
 Write for the person holding the phone, not for the commit log. They are
 deciding whether to press "Update now" on a machine across the room.
 
+## 2.9.71
+
+- **Fresh installs work again on a Steam Deck.** The installer stopped partway
+  through on SteamOS — it tried to create a folder in a place SteamOS keeps
+  read-only, and quit before the service was fully set up. It now puts that
+  piece somewhere writable instead. Nothing to do on an existing install; this
+  only affected setting up a new box.
+- **Couchside's own log is no longer listed as a broken service.** On Windows
+  the Console showed a permanent yellow `couchside-agent inactive/not-found`.
+  It was never a service — it is there so its log shows up in the Logs tab —
+  so it no longer pretends to be one. Requires the Windows service 0.4.5-win.
+- **The app can now tell you what you've actually played.** The service reads
+  the playtime Steam already records on your own machine, so the app can sort
+  and filter your library by hours played and last played. It never leaves your
+  box: no Steam account, no API key, nothing sent anywhere.
+- **Update wrappers work again.** The helper looked for the flatpak and OS
+  update commands in a folder the installer never wrote to, so both quietly
+  reported "unavailable" on every box.
+
 ## 2.9.70
 
 - **Big Picture on boxes that can't do Game Mode.** If your machine has Steam
