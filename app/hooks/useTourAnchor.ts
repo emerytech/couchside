@@ -45,6 +45,28 @@ export function hasAnchor(id: string): boolean {
 }
 
 /**
+ * Has the screen this anchor belongs to reported ANY anchor yet?
+ *
+ * Anchor ids are namespaced by screen ("launch.filter", "actions.routine"), so a
+ * registered sibling means that screen is mounted and laid out — and therefore
+ * that a missing anchor is genuinely missing rather than merely late.
+ *
+ * This is what lets the tour tell "not ready" from "not here". Without it both
+ * look identical and every skipped step has to burn the full wait: a user
+ * watching the tour saw a four-second dead pause between steps 7 and 8, and
+ * again between 12 and 13 — exactly the steps skipped on their box.
+ */
+export function screenHasAnchors(id: string): boolean {
+  const dot = id.indexOf('.');
+  if (dot <= 0) return false;
+  const prefix = id.slice(0, dot + 1);
+  for (const key of anchors.keys()) {
+    if (key !== id && key.startsWith(prefix)) return true;
+  }
+  return false;
+}
+
+/**
  * Where is it, in window coordinates? null when it is not mounted or has not
  * been laid out.
  *
