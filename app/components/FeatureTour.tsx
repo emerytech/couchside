@@ -31,7 +31,7 @@ import React from 'react';
 import { Pressable, StyleSheet, Text, useWindowDimensions, View } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
-import { measureAnchor, scrollTabBy } from '@/hooks/useTourAnchor';
+import { measureAnchor, scrollTabBy, subscribeAnchorLayout } from '@/hooks/useTourAnchor';
 import { hapticLight } from '@/lib/haptics';
 import {
   anchorHole,
@@ -70,6 +70,8 @@ const RETRY_EVERY_MS = 100;
 const RETRY_FOR_MS = 4000;
 /** Let a scroll settle before trusting the second measurement. */
 const SCROLL_SETTLE_MS = 380;
+/** How many times one step may chase a moving anchor before giving up. */
+const MAX_SCROLL_CORRECTIONS = 3;
 
 const delay = (ms: number) => new Promise<void>((r) => setTimeout(r, ms));
 
@@ -101,6 +103,9 @@ export function FeatureTour({
    *  cannot land after the user has already moved on and draw a hole over the
    *  wrong element. */
   const runId = React.useRef(0);
+  /** Scroll corrections spent on the CURRENT step; reset when the step changes.
+   *  Bounds the chase-the-anchor loop below. */
+  const corrections = React.useRef(0);
 
   const bandTop = insets.top + HEADER_H;
   const bandBottom = height - insets.bottom - TAB_BAR_H;
@@ -111,6 +116,7 @@ export function FeatureTour({
   React.useEffect(() => {
     const mine = ++runId.current;
     const live = () => runId.current === mine;
+    corrections.current = 0;
     setHole(null);
 
     if (!step) return;
@@ -166,6 +172,57 @@ export function FeatureTour({
     })();
     // `order` covers a tab-bar reshuffle (caps arriving, remote-only flipping).
   }, [state.step, anchor, tab, idx, order, width, height, insets.bottom]);
+
+  // Follow the anchor if it MOVES after we measured it. The screen keeps
+  // filling in — downloads appear, a host list expands, art loads — and
+  // everything below slides down. Without this the ring stays where the element
+  // was when the step opened; on Android that put it around the queued and
+  // stream sections while the card talked about the library.
+  //
+  // Deliberately only updates the hole: it must never re-run the skip logic, or
+  // a transient zero-height layout mid-reflow would advance the step.
+  React.useEffect(() => {
+    if (!anchor || !hole) return;
+    return subscribeAnchorLayout((movedId) => {
+      if (movedId !== anchor) return;
+      void (async () => {
+        let r = await measureAnchor(anchor);
+        if (!r) return;
+        // If the shift pushed it out of the visible band, chase it — measuring
+        // alone would leave the hole off-screen and the user staring at a fully
+        // dimmed page with no spotlight anywhere. Seen on Android, where a long
+        // "Stream from PC" list pushed the library grid below the fold after the
+        // step had already scrolled to it.
+        //
+        // BOUNDED. Each correction can trigger another layout, and an unbounded
+        // chase would be a scroll loop the user cannot escape.
+        if (corrections.current < MAX_SCROLL_CORRECTIONS) {
+          const dy = scrollDeltaFor(r, bandTop, bandBottom);
+          if (dy !== 0 && scrollTabBy(tab as string, dy)) {
+            corrections.current += 1;
+            await delay(SCROLL_SETTLE_MS);
+            const settled = await measureAnchor(anchor);
+            if (settled) r = settled;
+          }
+        }
+        setHole((prev) => {
+          const next = anchorHole(r, ANCHOR_PAD, width, height);
+          // Ignore sub-pixel churn so a settling layout cannot cause a render
+          // loop; onLayout can fire repeatedly with effectively the same box.
+          if (
+            prev &&
+            Math.abs(prev.x - next.x) < 1 &&
+            Math.abs(prev.y - next.y) < 1 &&
+            Math.abs(prev.width - next.width) < 1 &&
+            Math.abs(prev.height - next.height) < 1
+          ) {
+            return prev;
+          }
+          return next;
+        });
+      })();
+    });
+  }, [anchor, hole, width, height]);
 
   if (!step) return null;
   // A tab this build does not show (remote-only hides the box tabs) has nothing
