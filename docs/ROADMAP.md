@@ -167,6 +167,34 @@ first one is a fresh-install blocker.
 2. Deploy the win agent to EMERY-PC — confirm the yellow warning is gone AND
    that couchside-agent is still selectable in the Logs picker.
 
+### Library triage — filter your games by what runs here and how long it takes
+
+**priority:** medium
+**risk:** medium (one phase depends on a third-party ToS review)
+**affects:** app/(tabs)/launch.tsx, a new app-side metadata cache
+**depends_on:** nothing — phase 1 needs no network at all
+**spec:** docs/memory/project_library-triage.md
+
+Inspired by DeckFilter (deckfilter.app), driven on hardware 2026-08-06. It is a
+Steam Deck triage tool: filter a library you already own by Deck Verified
+status, ProtonDB tier, HowLongToBeat hours, unplayed/unfinished — with a live
+count on the confirm button ("SHOW 272 GAMES") that makes narrowing the
+interaction itself.
+
+**Why it fits here:** Couchside already targets SteamOS/Bazzite/Steam Deck, and
+can do the thing DeckFilter structurally cannot — LAUNCH the result. Filter to
+"runs great here, under 20 hours, never played", then tap and it starts on the
+TV.
+
+**Constraint that shapes it:** the APP fetches metadata, never the box. The agent
+gains no outbound network path and stays LAN-only. Opt-in, cached hard,
+revocable. A box owner's library comes from their own machine, so the core case
+needs no Steam API key at all — which is what makes this viable where a generic
+"sync your Steam account" dashboard would not be.
+
+Phase 1 (filter what the box already knows, live count, saved presets) needs no
+network and is useful alone.
+
 ### protocol.json has no home for a platform-only capability (KI-055)
 - **priority:** P2 · **risk:** low · **affects:** `protocol/protocol.json` +
   `tests/test_protocol_parity.py` · **depends_on:** none
