@@ -42,7 +42,7 @@ import {
 } from '@/lib/api';
 import { hapticError, hapticLight, hapticMedium, hapticSelection, hapticSuccess } from '@/lib/haptics';
 import { fmtGB, fmtPair, fmtTotal } from '@/lib/downloadSize';
-import { applyFilter, EMPTY_FILTER, isFiltering, type FilterState } from '@/lib/libraryFilter';
+import { applyFilter, EMPTY_FILTER, isFiltering, pickRandom, type FilterState } from '@/lib/libraryFilter';
 import { setPref, usePref } from '@/lib/prefs';
 import { useBoxes, useSettings } from '@/lib/SettingsContext';
 import { mono, useTheme, useThemedStyles, type Palette } from '@/lib/theme';
@@ -964,6 +964,24 @@ function LaunchScreen() {
                 <Ionicons name="close-circle" size={17} color={t.textDim} />
               </Pressable>
             )}
+            {/* Pick one at random from WHAT IS CURRENTLY SHOWING, so it honours
+                the filter — "something short I have never played" is the point.
+                It opens the same confirm sheet, so a random pick still cannot
+                start a game by surprise. */}
+            {launchers.length > 1 ? (
+              <Pressable
+                onPress={() => {
+                  hapticMedium();
+                  const pick = pickRandom(launchers);
+                  if (pick) setSheetFor(pick);
+                }}
+                hitSlop={8}
+                accessibilityRole="button"
+                accessibilityLabel="Pick a game for me"
+                style={({ pressed }) => [pressed && { opacity: 0.6 }]}>
+                <Ionicons name="shuffle" size={18} color={t.textDim} />
+              </Pressable>
+            ) : null}
             <Pressable
               onPress={() => {
                 hapticLight();

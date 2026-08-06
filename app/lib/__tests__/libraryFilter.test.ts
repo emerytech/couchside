@@ -253,3 +253,26 @@ test('isFiltering notices the compat dimensions (control)', () => {
   assert.equal(isFiltering({ ...EMPTY_FILTER, deck: ['verified'] }), true);
   assert.equal(isFiltering({ ...EMPTY_FILTER, proton: ['gold'] }), true);
 });
+
+// ---- phase 4: pick something for me ----
+
+import { pickRandom } from '../libraryFilter.ts';
+
+test('shuffle returns null on an empty list rather than throwing', () => {
+  assert.equal(pickRandom([]), null);
+});
+
+test('shuffle can reach every game and never goes out of range (control)', () => {
+  const games = ['a', 'b', 'c'];
+  const seen = new Set<string>();
+  for (const r of [0, 0.32, 0.34, 0.66, 0.67, 0.999999]) {
+    const got = pickRandom(games, () => r);
+    assert.ok(got != null, `null at r=${r}`);
+    seen.add(got as string);
+  }
+  assert.deepEqual([...seen].sort(), ['a', 'b', 'c'], 'every game is reachable');
+});
+
+test('a generator returning exactly 1 does not fall off the end (control)', () => {
+  assert.equal(pickRandom(['a', 'b'], () => 1), 'b');
+});

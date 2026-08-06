@@ -156,6 +156,25 @@ export function countLabel(n: number): string {
   return `SHOW ${n.toLocaleString()} GAME${n === 1 ? '' : 'S'}`;
 }
 
+/**
+ * Pick one game at random from a filtered list — "just choose for me".
+ *
+ * The point on Couchside is that the pick is LAUNCHABLE: elsewhere a shuffle
+ * ends at a suggestion, here it ends at the game starting on the TV.
+ *
+ * `rand` is injected so this is testable; production passes Math.random.
+ * Returns null for an empty list rather than throwing, because "no games match"
+ * is a normal state of the filter above it.
+ */
+export function pickRandom<T>(games: T[], rand: () => number = Math.random): T | null {
+  if (!games.length) return null;
+  const i = Math.floor(rand() * games.length);
+  // Guard the rand() === 1 edge: Math.random() never returns 1, but an injected
+  // or future generator might, and an out-of-range index would return undefined
+  // while the type still claims T.
+  return games[Math.min(i, games.length - 1)] ?? null;
+}
+
 /** "12h 30m" / "45m" / "never". For the tile's playtime line. */
 export function playtimeLabel(mins: number | undefined): string {
   if (mins == null || mins === 0) return 'never played';
