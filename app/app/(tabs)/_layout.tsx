@@ -297,6 +297,7 @@ export default function TabLayout() {
         state={tour.state}
         tabOrder={tabOrder}
         onNext={tourNext}
+        onBack={tour.back}
         onSkip={tour.skip}
       />
     ) : null}

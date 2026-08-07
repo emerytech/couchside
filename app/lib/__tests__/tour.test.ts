@@ -15,6 +15,7 @@ import {
   currentStep,
   dimRects,
   dismissTour,
+  previousTour,
   isFinalStep,
   scrollDeltaFor,
   shouldRun,
@@ -223,4 +224,26 @@ test('only the LAST step is final — skipping earlier must not count as finishi
   }
   assert.equal(isFinalStep(s), true, 'the last step reports final');
   assert.equal(advanceTour(s).done, true, 'and advancing from it finishes the tour');
+});
+
+test('back steps one at a time and cannot exit the tour', () => {
+  // A mis-tapped GOT IT should be recoverable. Back must NOT double as "leave" —
+  // that is the conflation the first-run flow already had to fix, and SKIP is
+  // what leaving is for.
+  let s = TOUR_NOT_STARTED;
+  s = advanceTour(s);
+  s = advanceTour(s);
+  assert.equal(s.step, 2);
+  assert.deepEqual(previousTour(s), { step: 1, done: false });
+  assert.deepEqual(previousTour({ step: 0, done: false }), { step: 0, done: false }, 'clamped, not negative');
+  assert.equal(previousTour({ step: 3, done: false }).done, false, 'back never finishes the tour');
+});
+
+test('back out of a finished tour returns to its last step (control)', () => {
+  // TOUR_FINISHED sits one past the end; stepping back from it must land on a
+  // real step rather than the empty slot.
+  const back = previousTour({ step: TOUR_STEPS.length, done: true });
+  assert.equal(back.step, TOUR_STEPS.length - 1);
+  assert.equal(back.done, false);
+  assert.ok(currentStep(back) !== null, 'and that step actually renders');
 });

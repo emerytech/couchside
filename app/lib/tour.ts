@@ -199,6 +199,21 @@ export function advanceTour(state: TourState): TourState {
   return next >= TOUR_STEPS.length ? TOUR_FINISHED : { step: next, done: false };
 }
 
+/**
+ * Step BACK, for a mis-tapped GOT IT.
+ *
+ * Clamped at zero rather than wrapping or going negative: the first step's back
+ * is a no-op, not an exit. Leaving is what SKIP is for, and a back gesture that
+ * silently ends the tour is the same conflation the first-run flow had to fix.
+ *
+ * A step whose anchor is absent will simply skip forward again as soon as it is
+ * shown, so going back past one lands where it started — correct, if slightly
+ * surprising, and better than pretending the step exists.
+ */
+export function previousTour(state: TourState): TourState {
+  return { step: Math.max(0, state.step - 1), done: false };
+}
+
 /** "Skip" and finishing land in the same place: never shown again. */
 export function dismissTour(): TourState {
   return TOUR_FINISHED;
