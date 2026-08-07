@@ -35,6 +35,7 @@ import {
   moveLayout,
   NAV,
   navZone,
+  verticalMoveLayout,
   MIN_SHORT_AXIS,
   MIN_TOUCH,
   dpadZone,
@@ -565,6 +566,114 @@ test('REVIEW: expansion is capped — no node grows more than EXPAND_CAP_U per s
         assert.ok(n.hit.x + n.hit.w - (n.rect.x + n.rect.w) <= cap, `${name}/${c.label}: ${n.id} right growth`);
         assert.ok(n.rect.y - n.hit.y <= cap, `${name}/${c.label}: ${n.id} top growth`);
         assert.ok(n.hit.y + n.hit.h - (n.rect.y + n.rect.h) <= cap, `${name}/${c.label}: ${n.id} bottom growth`);
+      }
+    }
+  }
+});
+
+// ---------- Vertical movement mode: portrait axes, same properties ----------
+
+/** Portrait versions of the device table: w/h swapped, notch on TOP (portrait
+ *  is the one orientation where insets.top is the cutout), home bar bottom. */
+function portraitCases(): Case[] {
+  const out: Case[] = [];
+  for (const d of DEVICES) {
+    out.push({
+      label: `${d.name} (portrait)`,
+      win: { width: d.h, height: d.w },
+      insets: { top: d.side, right: 0, bottom: d.bottom, left: 0 },
+      synthetic: d.synthetic ?? false,
+    });
+  }
+  return out;
+}
+
+test('VERTICAL: every property holds on every portrait device', () => {
+  for (const c of portraitCases()) {
+    const l = verticalMoveLayout(c.win, c.insets);
+    // The landscape floor devices are portrait-refusals here only if their
+    // WIDTH (portrait short axis) is under 326 — the S21 (360) passes.
+    if (!l.ok) {
+      assert.ok(c.win.width - c.insets.left - c.insets.right < 326,
+        `${c.label}: refused but wide enough (${c.win.width})`);
+      continue;
+    }
+    for (const n of l.nodes) {
+      assert.ok(contains(l.play, n.rect), `${c.label}: ${n.id} escapes play`);
+      assert.ok(contains(l.play, n.hit), `${c.label}: ${n.id} hit escapes play`);
+      const min = Math.min(n.hit.w, n.hit.h);
+      assert.ok(min >= MIN_TOUCH - 1e-6, `${c.label}: ${n.id} is ${min.toFixed(1)}dp`);
+      if (n.shape === 'circle') assert.equal(n.rect.w, n.rect.h, `${c.label}: ${n.id} ellipse`);
+    }
+    for (let i = 0; i < l.nodes.length; i += 1) {
+      for (let j = i + 1; j < l.nodes.length; j += 1) {
+        assert.ok(!rectsIntersect(l.nodes[i].hit, l.nodes[j].hit),
+          `${c.label}: ${l.nodes[i].id} and ${l.nodes[j].id} share a touch`);
+      }
+    }
+    for (const n of l.nodes) {
+      if (n.layer === 9) continue;
+      const gap = rectGap(l.byId.exit.hit, n.hit);
+      assert.ok(gap >= EXIT_MOAT_U * l.u - 1e-6,
+        `${c.label}: EXIT only ${(gap / l.u).toFixed(1)}U from ${n.id}`);
+    }
+    // NAV sector still the binding angular target.
+    assert.ok(NAV.thicknessU * l.u >= MIN_TOUCH - 1e-6, `${c.label}: NAV sector too thin`);
+    // Expansion cap holds here too.
+    for (const n of l.nodes) {
+      const cap: number = EXPAND_CAP_U * l.u + 1e-6;
+      assert.ok(n.rect.x - n.hit.x <= cap && n.rect.y - n.hit.y <= cap,
+        `${c.label}: ${n.id} over-expanded`);
+    }
+  }
+});
+
+test('VERTICAL: floors bind on the right axes, both directions', () => {
+  const no = { top: 0, right: 0, bottom: 0, left: 0 };
+  // Short axis is WIDTH in portrait.
+  assert.equal(verticalMoveLayout({ width: MIN_SHORT_AXIS - 1, height: 800 }, no).ok, false);
+  assert.equal(verticalMoveLayout({ width: MIN_SHORT_AXIS, height: 800 }, no).ok, true);
+  // Long axis is HEIGHT: refuse a squat window, accept a real phone.
+  const u = MIN_SHORT_AXIS / 100;
+  assert.equal(verticalMoveLayout({ width: MIN_SHORT_AXIS, height: Math.floor(149 * u) }, no).ok, false);
+  assert.equal(verticalMoveLayout({ width: 393, height: 852 }, no).ok, true, 'a normal phone portrait must render');
+});
+
+test('VERTICAL: the zone is the point — over a third of the screen is movement surface', () => {
+  const l = verticalMoveLayout({ width: 393, height: 852 }, { top: 59, right: 0, bottom: 34, left: 0 });
+  assert.ok(l.ok);
+  if (l.ok) {
+    const m = l.byId.move;
+    const share = (m.hit.w * m.hit.h) / (l.play.w * l.play.h);
+    assert.ok(share >= 0.24, `MOVE covers only ${(share * 100).toFixed(0)}% of a phone portrait play area`);
+  }
+});
+
+test('VERTICAL: the table has no variant node — rotation is the path between layouts', () => {
+  const l = verticalMoveLayout({ width: 393, height: 852 }, { top: 0, right: 0, bottom: 0, left: 0 });
+  assert.ok(l.ok);
+  if (l.ok) {
+    assert.deepEqual(
+      l.nodes.map((n) => n.id).sort(),
+      ['a', 'b', 'exit', 'lock', 'move', 'nav', 'start'],
+    );
+  }
+});
+
+test('VERTICAL: capped-u portrait sweep keeps the moat (tablets held upright)', () => {
+  // The vertical mirror of the landscape capped-u band: portrait width > 430
+  // caps u while the height ratio shrinks toward the floor.
+  for (let w = 430; w <= 840; w += 34) {
+    const u = Math.min(w, 430) / 100;
+    for (let hu = 150; hu <= 160; hu += 2) {
+      const h = Math.ceil(hu * u);
+      const l = verticalMoveLayout({ width: w, height: h }, { top: 0, right: 0, bottom: 0, left: 0 });
+      if (!l.ok) continue;
+      for (const n of l.nodes) {
+        if (n.layer === 9) continue;
+        const gap = rectGap(l.byId.exit.hit, n.hit);
+        assert.ok(gap >= EXIT_MOAT_U * l.u - 1e-6,
+          `@ ${w}x${h}: EXIT only ${(gap / l.u).toFixed(2)}U from ${n.id}`);
       }
     }
   }

@@ -315,6 +315,41 @@ const MOVE_TABLE: Spec[] = [
 ];
 
 /**
+ * VERTICAL MOVEMENT MODE — the third table (spec: project_vertical-move-mode.md).
+ *
+ * One-handed, portrait, immersive: the phone in one hand on the couch arm, the
+ * whole interaction is one thumb. Chrome row on top (LOCK/EXIT left-anchored,
+ * START in the far right corner — the moat maths cannot afford both a centred
+ * exit pair AND a right-anchored START inside a 100U-wide row), a right-biased
+ * A/B + NAV band in the thumb's stretch zone, and the bottom half of the
+ * screen is the movement zone.
+ *
+ * IN PORTRAIT, U IS 1% OF THE USABLE WIDTH — the short axis flips. buildLayout
+ * takes the orientation so the floors bind on the right dimensions; everything
+ * else (expansion, moat, 44dp rules) is axis-agnostic and carries unchanged.
+ */
+const VERTICAL_MOVE_TABLE: Spec[] = [
+  // Chrome, LEFT-anchored: EXIT's moat to START (right corner) is what the
+  // 100U row can actually afford. Same adjacency (LOCK then EXIT, 18U pitch)
+  // as the landscape layouts, so the pair still reads as one unit.
+  { id: 'lock', w: 15, h: 14, cx: { from: 'left', at: 12 }, cy: { from: 'top', at: 10 }, layer: 9 },
+  { id: 'exit', w: 15, h: 14, cx: { from: 'left', at: 30 }, cy: { from: 'top', at: 10 }, layer: 9 },
+  { id: 'start', w: 18, h: 14, cx: { from: 'right', at: 12 }, cy: { from: 'top', at: 10 }, layer: 5 },
+
+  // The thumb band: NAV against the right edge (right-thumb bias), A and B
+  // stacked inboard of it. A is lowest = nearest the thumb's rest.
+  { id: 'nav', w: 33, h: 33, cx: { from: 'right', at: 19 }, cy: { from: 'bottom', at: 69.5 }, layer: 6 },
+  { id: 'b', w: 15, h: 15, cx: { from: 'right', at: 48 }, cy: { from: 'bottom', at: 79 }, layer: 1, shape: 'circle' },
+  { id: 'a', w: 15, h: 15, cx: { from: 'right', at: 48 }, cy: { from: 'bottom', at: 60 }, layer: 1, shape: 'circle' },
+
+  // The movement zone: bottom band, floating origin, left stick. CENTRE-
+  // anchored, not left: on a capped-u tablet the play rect is far wider than
+  // 100U, and a left-anchored fixed-width band leaves a dead strip under the
+  // right thumb — the one this table is biased toward.
+  { id: 'move', w: 94, h: 47, cx: { from: 'centre', at: 0 }, cy: { from: 'bottom', at: 26.5 }, layer: 7 },
+];
+
+/**
  * The 4-way NAV cluster's geometry. Same angular hit test as the d-pad but no
  * centre disc: menus want pure directions, and A is a separate physical
  * button an inch away. A small dead centre returns null — releasing rather
@@ -374,7 +409,29 @@ export function moveLayout(win: Size, insets: Insets): PadLayout {
   return buildLayout(MOVE_TABLE, win, insets);
 }
 
-function buildLayout(table: Spec[], win: Size, insets: Insets): PadLayout {
+/**
+ * Vertical movement mode: portrait, one-handed. The short axis is the WIDTH;
+ * every rule (U, floors, 44dp, moat, expansion cap) binds exactly as in
+ * landscape with the axes swapped.
+ */
+export function verticalMoveLayout(win: Size, insets: Insets): PadLayout {
+  return buildLayout(VERTICAL_MOVE_TABLE, win, insets, 'portrait');
+}
+
+/**
+ * The long-axis floor for the VERTICAL table, in U of width. The content
+ * spans the chrome row (17U) plus the thumb band (nav top at bottom-86U), so
+ * anything under 150U has the bands colliding; every phone is >= ~195U tall
+ * in portrait, so this refuses only split-screen slivers.
+ */
+export const VMIN_LONG_AXIS_U = 150;
+
+function buildLayout(
+  table: Spec[],
+  win: Size,
+  insets: Insets,
+  orientation: 'landscape' | 'portrait' = 'landscape',
+): PadLayout {
   const play: Rect = {
     x: insets.left,
     y: insets.top,
@@ -383,14 +440,20 @@ function buildLayout(table: Spec[], win: Size, insets: Insets): PadLayout {
   };
 
   // Degrade closed, both axes. A cramped controller that half-works is worse
-  // than an honest "turn the phone back".
-  if (play.h < MIN_SHORT_AXIS) return { ok: false, reason: 'too-short' };
+  // than an honest "turn the phone back". In portrait the SHORT axis is the
+  // width and the LONG axis is the height; every rule binds the same way.
+  const short = orientation === 'landscape' ? play.h : play.w;
+  const long = orientation === 'landscape' ? play.w : play.h;
+  if (short < MIN_SHORT_AXIS)
+    return { ok: false, reason: orientation === 'landscape' ? 'too-short' : 'too-narrow' };
 
   // U caps at 4.3 so a tablet gets a BIGGER EMPTY MIDDLE rather than
   // comic-book buttons — the clusters stay thumb-sized and move apart.
-  const u = Math.min(play.h, 430) / 100;
+  const u = Math.min(short, 430) / 100;
 
-  if (play.w / u < MIN_LONG_AXIS_U) return { ok: false, reason: 'too-narrow' };
+  const longFloor = orientation === 'landscape' ? MIN_LONG_AXIS_U : VMIN_LONG_AXIS_U;
+  if (long / u < longFloor)
+    return { ok: false, reason: orientation === 'landscape' ? 'too-narrow' : 'too-short' };
 
   const centreX = play.x + play.w / 2;
 
