@@ -1,5 +1,5 @@
-New: Movement mode. Tap ⊕ MOVE on the sideways controller for a huge movement zone plus just the buttons you need — made for games like Vampire Survivors where you mostly steer.
+New: a one-handed MOVE mode. While a game is running, tap MOVE on the Pad tab for a full-screen movement layout you can play with one thumb — big steering zone, just the buttons you need, and a lock so it stays put. Turn the phone sideways for the wide version.
 
-The full-screen controller also arrives in this update: turn the phone sideways on the Pad tab and every stick and button spreads out edge-to-edge, with an orientation lock.
+Made for games like Vampire Survivors where you mostly steer.
 
-Plus: TV remote mode (Roku/Google TV), game bookmarks and filter presets, install sizes, download alerts, and many fixes.
+Also: a fix for iOS where dragging a stick could swipe you out of the controller, plus the full-screen sideways controller from the last update.

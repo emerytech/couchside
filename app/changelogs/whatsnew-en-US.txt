@@ -1,8 +1,9 @@
-Two ways to play, sideways. Turn the phone on the Pad tab and the controller fills the screen — every stick, button and d-pad spread out like the real thing, with an orientation lock for long sessions. And for games that are mostly about moving — Vampire Survivors and friends — tap ⊕ MOVE for the new Movement mode: one huge thumb zone that works like a left stick, plus just A, B, a menu pad and pause. Nothing to mis-press, nothing in the way.
+Play one-handed. While a game is running, a new MOVE button appears on the Pad tab: tap it and the phone becomes a full-screen movement controller you can hold in one hand — a big steering zone under your thumb, A and B, a menu pad, and pause. Nothing else to mis-press. Turn the phone sideways and it spreads into the wide version; the lock keeps it whichever way you like it.
+
+Built for games that are mostly steering — Vampire Survivors and its kind.
 
 Also in this release:
 • Fixed: on iOS, dragging a stick could swipe you out of the controller
+• The full-screen sideways controller, with every stick and button spread out
 • Use Couchside as a plain TV remote for Roku and Google TV — no PC required
-• Bookmark games (hold a tile) and save your favorite filters as presets
-• See each game's install size, and get a heads-up when a download finishes
-• A guided setup walkthrough — existing users can replay it from Setup
+• Bookmark games, save filter presets, and see each game's install size
