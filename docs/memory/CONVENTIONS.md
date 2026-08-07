@@ -544,3 +544,53 @@ A tour step names an element by id (`console.cpu`); the screen registers it with
   reactor's `Animated.View`, which moves 8px during its 260ms entrance.
 - **Mirror `hitSlop`** when wrapping a small Pressable: a parent clips hit-testing to its own
   bounds, so a bare wrapper shrinks the touch target back to the drawn icon.
+
+## Orientation: exactly one screen rotates
+
+Every screen states a policy with `useLockOrientation`. Only the Pad's **gamepad mode**
+allows landscape — and it is conditional on the mode, not on the screen:
+
+```ts
+useLockOrientation(mode === 'gamepad' ? 'allow-landscape' : 'portrait');
+```
+
+A flat `'allow-landscape'` on the tab wrapper rotated Swipe, Mouse, Remote and the Steam
+menus too, none of which have a landscape layout (reported from a device 2026-08-07).
+
+Two traps this has already hit:
+- **A route outside `(tabs)` inherits nothing.** `app/onboarding.tsx` rotated freely until
+  it was locked, because it is a sibling of the tab group.
+- **The failure is silent.** Nothing errors; the screen just rotates. So it is covered by
+  a source-reading guard in `lib/__tests__/onboarding.test.ts` that walks every screen
+  file, rather than by remembering.
+
+## Source-reading guards, for when "wired to nothing" cannot fail
+
+Some defects cannot fail a normal test because nothing throws — the control is simply
+inert. This session shipped that bug twice (a component wired to state and never mounted;
+a feature mounted and never invoked) and nearly a third time.
+
+Where the wiring is the thing that can rot, assert it by READING THE SOURCE:
+- `lib/__tests__/tour.test.ts` — every anchor a tour step names is registered by some
+  screen. Anchor ids must therefore be LITERALS; a template-built id is invisible to it.
+- `lib/__tests__/libraryFilter.test.ts` — the filter sheet really calls `savePreset`, the
+  game sheet really calls `toggleBookmarked`, the grid really filters by the bookmark set.
+- `lib/__tests__/onboarding.test.ts` — every screen states an orientation policy; the
+  install copy quotes a banner `install.sh` genuinely prints.
+
+**Always verify a guard in BOTH directions** — break the thing, watch the test fail, put it
+back. A guard that cannot fail is the bug it was written to prevent. One of these reported
+a FALSE failure on correct code first time (a character class tripping over the `)` inside
+`Math.floor(Date.now() / 1000)`), which is the other reason to check.
+
+## "Unknown is included" has exactly one exception, and it is measured
+
+`lib/libraryFilter.ts` never hides a game because a fact about it is missing — that rule
+protects against a third party's gap swallowing something the user owns.
+
+The size filter is the exception, and only because a real library proved it: "Over 10 GB"
+returned 29 of 33 games when ONE qualified, because non-Steam shortcuts have no install
+size by nature. They are not games of unknown size; they are entries the question does not
+apply to. Every unit test passed before and after — the fixtures had sizes.
+
+Before adding another exception, get the number off a real box.

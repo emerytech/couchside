@@ -68,3 +68,46 @@ step instead of making one audience read the other's instructions.
 - 2026-08-04: spec written mid-build (iOS 115 compiling — app source frozen until it
   finishes, so the chooser is NOT in build 115). Implementation next session or after the
   115 submit completes.
+- **2026-08-07: BUILT** as `app/onboarding.tsx` + `lib/onboarding.ts` (+ tests), folded
+  into a journey rather than shipped as a standalone chooser:
+  `welcome -> which device -> install-on-box / TV setup -> existing SetupProgress`.
+
+### What the fold changed, and what it did not
+
+Unchanged: mounts outside the tab navigator, both empty-state guards, skip on every
+screen, neither option labelled "recommended", both pref writes awaited before navigating.
+
+**CHANGED — the back rule.** §3 said "onboardingDone set on ANY exit ... and the hardware
+back button on Android". That was written when the chooser was ONE screen, where back
+could only mean leave. In a journey it must also mean "back a step", and marking the flow
+finished when someone backs off the install screen to re-read the chooser drops them into
+an app they have not set up. The rule now reads: back NAVIGATES inside the flow, and only
+leaving from the FIRST screen — or skip, or finishing — is an exit that sets the flag.
+`lib/onboarding.ts` holds it with tests.
+
+**ADDED — the install screen is where the real work is.** Researched six products whose
+critical step happens on another machine (Sonos, Hue, Chromecast, Steam Link, HomeKit,
+Plex). The ones that work ask the HUMAN to confirm what the other device showed, because
+the phone cannot see it. Two consequences:
+- The screen quotes the banner `install.sh` actually prints, and a test reads `install.sh`
+  to prove it. A confirmation quoting text the box never prints trains people to say yes
+  to something they did not read.
+- **`install.sh` already prints a camera-scannable pairing link** and nothing in the app
+  ever said so. That is faster and more reliable than sweeping 254 addresses, so both the
+  install screen and the give-up state now point at it.
+- SteamOS ships the `deck` user with NO password, so sudo refuses and the installer stops
+  partway. `install.sh` says so — but only after you have hit the wall. The screen says it
+  first.
+
+**ADDED — a Prefs control to replay it.** A button, not a toggle, and it NAVIGATES rather
+than only clearing the flag: the trigger also requires an empty fleet, so on a paired
+phone (i.e. every phone whose owner would look for this) clearing the flag alone does
+nothing.
+
+**Also:** this route is a sibling of `(tabs)`, so it inherits no orientation policy and
+rotated freely until locked to portrait. A source-reading guard now covers every screen.
+
+### Still NOT verified (2026-08-07)
+The flow has never run. Needs: the trigger firing on a fresh install AND staying silent
+for an existing one (each guard alone, per §5), Android hardware back at each step, and
+whether `DirectTvSetup` renders sensibly inside this layout — it was built for Setup.
