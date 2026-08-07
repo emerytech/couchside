@@ -1445,16 +1445,29 @@ function SetupBody() {
                   hapticSelection();
                 }}
               />
-              <TogglePref
-                label="Feature tour"
-                sub="A short spotlight walkthrough of the tabs. Switch it back on to watch it again."
-                value={featureTour}
-                onValueChange={(v) => {
-                  void setPref('featureTour', v);
-                  // Switching it back ON means "show me again" — otherwise the
-                  // control is dead once the tour has run once.
-                  if (v) void resetFeatureTour();
-                  hapticSelection();
+              {/* A BUTTON, not a toggle — for the same reason as the welcome
+                  flow below, which this now matches.
+
+                  As a switch it read like a preference and was not one. "Off"
+                  had no meaning after the first run: the tour only plays while
+                  it is unfinished, and SKIP TOUR already ends it forever. So
+                  the only position that did anything was ON — and ON did not
+                  mean "enabled", it meant "play it now", because switching it
+                  back on resets the state and the tour immediately takes over
+                  the screen. A control whose two positions are "nothing" and
+                  "start a walkthrough" is a button wearing a switch. */}
+              <PrefAction
+                label="Replay the feature tour"
+                sub="The spotlight walkthrough of the tabs. It starts straight away, on the Console tab."
+                icon="footsteps-outline"
+                onPress={async () => {
+                  hapticLight();
+                  // Asking for a replay IS consent to run it, so re-enable the
+                  // gate as well as clearing the finished state. Anyone who
+                  // turned the old switch off would otherwise press this and
+                  // watch nothing happen — the same dead control, one layer down.
+                  await setPref('featureTour', true);
+                  await resetFeatureTour();
                 }}
               />
               {/* A BUTTON, not a toggle. There is nothing to switch off — the
