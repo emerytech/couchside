@@ -153,3 +153,20 @@ test('async mint is cancellable (a stuck pair must not run forever)', async () =
   const signal = { aborted: true };
   await assert.rejects(() => mintIdentityAsync(getRandomValues, { signal }), /cancelled/);
 });
+
+test('the private key is PKCS#8, because Android cannot read PKCS#1', async () => {
+  // NOT a style preference. react-native-tcp-socket parses the PEM body on
+  // Android with PKCS8EncodedKeySpec and nothing else, so a PKCS#1 key
+  // ("BEGIN RSA PRIVATE KEY") throws on every connectTLS — every Google TV
+  // pair and every keypress, on every Android device. iOS quietly converts it,
+  // which is why this shipped unnoticed: the feature was only verified there.
+  //
+  // The older assertion in this file matched /PRIVATE KEY-----/, which is true
+  // of BOTH formats and therefore could never have caught it.
+  const id = await mintIdentityAsync(getRandomValues);
+  assert.ok(
+    id.keyPem.startsWith('-----BEGIN PRIVATE KEY-----'),
+    `key must be PKCS#8; got: ${id.keyPem.slice(0, 32)}`,
+  );
+  assert.ok(!id.keyPem.includes('BEGIN RSA PRIVATE KEY'), 'must not be PKCS#1');
+});
