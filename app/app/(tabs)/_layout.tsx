@@ -9,8 +9,9 @@ import { usePref } from '@/lib/prefs';
 import { FeatureTour } from '@/components/FeatureTour';
 import { TourThanks } from '@/components/TourThanks';
 import { useFeatureTour } from '@/hooks/useFeatureTour';
+import { useDownloadWatcher } from '@/hooks/useDownloadWatch';
 import { showTourThanks, useTourThanks } from '@/hooks/useTourThanks';
-import { useBoxes } from '@/lib/SettingsContext';
+import { useBoxes, useSettings } from '@/lib/SettingsContext';
 import { useTheme } from '@/lib/theme';
 
 // NOT the landing screen. This governs back-behaviour within the tab group; on a
@@ -67,6 +68,11 @@ export default function TabLayout() {
   const tourEnabled = usePref('featureTour');
   const tour = useFeatureTour(boxes.length > 0, tourEnabled);
   const thanksVisible = useTourThanks();
+  // EXACTLY ONE watcher for the whole app. This lived in the Launch tab, which
+  // mounts lazily on first focus — so a download finishing while the user sat on
+  // Console went unnoticed, which is precisely the case the feature exists for.
+  const { settings } = useSettings();
+  useDownloadWatcher(settings, ready && settings.host.trim().length > 0);
 
   // Thank the people who actually WALKED it. Wrapping `next` rather than
   // watching for state.done is deliberate: skipping and finishing both land on

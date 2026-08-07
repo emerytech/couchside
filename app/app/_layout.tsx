@@ -7,6 +7,7 @@ import { ReviewPrompt } from '@/components/ReviewPrompt';
 import { ReviewToast } from '@/components/ReviewToast';
 import { AppUpdateReminderToast } from '@/components/AppUpdateReminderToast';
 import { TrialEndsToast } from '@/components/TrialEndsToast';
+import { AppToast } from '@/components/AppToast';
 import { UnlockToast } from '@/components/UnlockToast';
 import { TapCapture } from '@/components/TouchIndicatorLayer';
 import { DeepLinkHandler } from '@/lib/DeepLink';
@@ -56,6 +57,8 @@ export default function RootLayout() {
           </Stack>
           {/* Global overlay: survives the Paywall unmount on unlock (see UnlockToast). */}
           <UnlockToast />
+          {/* Download completions and anything else worth saying from any tab. */}
+          <AppToast />
           {/* Last word before the paywall lands: one-shot, on the trial's final day. */}
           <TrialEndsToast />
           {/* Decides whether to ask for a review, and how. Asks once, ever. */}

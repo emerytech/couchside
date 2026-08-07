@@ -44,8 +44,9 @@ import {
 } from '@/lib/api';
 import { hapticError, hapticLight, hapticMedium, hapticSelection, hapticSuccess } from '@/lib/haptics';
 import { fmtGB, fmtPair, fmtTotal } from '@/lib/downloadSize';
-import { useLibraryMarks } from '@/hooks/useLibraryMarks';
-import { applyFilter, EMPTY_FILTER, isFiltering, pickRandom, type FilterState } from '@/lib/libraryFilter';
+import { useDownloads } from '@/hooks/useDownloadWatch';
+import { toggleBookmarked, useLibraryMarks } from '@/hooks/useLibraryMarks';
+import { applyFilter, bookmarkKey, EMPTY_FILTER, isFiltering, pickRandom, type FilterState } from '@/lib/libraryFilter';
 import { setPref, usePref } from '@/lib/prefs';
 import { useBoxes, useSettings } from '@/lib/SettingsContext';
 import { mono, useTheme, useThemedStyles, type Palette } from '@/lib/theme';
@@ -75,6 +76,10 @@ type TileProps = {
   /** Bumped on pull-to-refresh to retry a cover that previously failed to load. */
   retryKey?: number;
   onLaunch: () => void;
+  /** Hold to bookmark/unbookmark without opening the sheet. */
+  onToggleBookmark?: () => void;
+  /** Drives the corner mark. */
+  bookmarked?: boolean;
   /** Compatibility rating, when the user opted in and an answer has arrived. */
   compat?: Compat;
   onDelete?: () => void;
@@ -88,6 +93,8 @@ function LauncherTile({
   coverSource,
   retryKey,
   onLaunch,
+  onToggleBookmark,
+  bookmarked,
   compat,
   onDelete,
   download,
@@ -115,7 +122,25 @@ function LauncherTile({
   return (
     <Pressable
       onPress={onLaunch}
+      // Hold to bookmark. Tap already means "open this game", and a bookmark is
+      // a note to self rather than a decision about the TV, so it earns the
+      // quieter gesture — and it saves a trip through the sheet for the one
+      // action you repeat while triaging a shelf.
+      onLongPress={
+        onToggleBookmark
+          ? () => {
+              hapticSelection();
+              onToggleBookmark();
+            }
+          : undefined
+      }
+      accessibilityHint={onToggleBookmark ? 'Hold to bookmark' : undefined}
       style={({ pressed }) => [styles.tile, { width, height }, pressed && styles.tilePressed]}>
+      {bookmarked ? (
+        <View style={styles.bookmarkMark} pointerEvents="none">
+          <Ionicons name="bookmark" size={13} color="#04140c" />
+        </View>
+      ) : null}
       {/* Only drawn when a rating actually exists — an unrated game shows
           nothing rather than a "no data" chip on every tile. */}
       {compat && (compat.deck !== 'unknown' || compat.proton !== 'unknown') ? (
@@ -646,51 +671,27 @@ function LaunchScreen() {
     setTimeout(() => setToast((cur) => (cur === msg ? null : cur)), TOAST_MS);
   }, []);
 
-  // ---- Steam downloads (probe-and-appear; api.downloads() 404 -> null hides it) ----
-  // `active` is declared BEFORE the poll that reads it (avoids a TDZ self-ref)
-  // and flipped by the effect below; poll fast while something is downloading.
-  const [active, setActive] = useState(false);
-  const dl = usePoll<Downloads | null>(
-    () => api.downloads(settings), active ? 5000 : 20000, ready && configured, boxKey);
-  const downloads = useMemo(() => dl.data?.downloads ?? [], [dl.data]);
+  // ---- Steam downloads ----
+  // The POLL AND THE "finished" ANNOUNCEMENT LIVE IN hooks/useDownloadWatch.ts,
+  // mounted once in the tabs layout. They used to live here, which meant they
+  // only ran while this tab was mounted — and tabs mount lazily on first focus,
+  // so someone who stayed on Console never got told a download had finished.
+  // This screen just reads the result.
+  const { downloads, changeTick } = useDownloads();
+  const dlByAppid = useMemo(() => new Map(downloads.map((d) => [d.appid, d])), [downloads]);
 
   // ---- Steam Remote Play "Stream from PC" (probe-and-appear; 404 -> null) ----
   const sl = usePoll<SteamLink | null>(
     () => api.steamlink(settings), 30000, ready && configured, boxKey);
   const steamlink = sl.data;
-  const dlByAppid = useMemo(() => new Map(downloads.map((d) => [d.appid, d])), [downloads]);
 
-  // Completion: an appid seen downloading/paused this session that then vanishes
-  // from the list has finished — toast once and pull the game into the grid.
-  const prevDl = useRef<Map<number, SteamDownload>>(new Map());
-  const observedDl = useRef<Set<number>>(new Set());
+  // Something left the download list — finished OR cancelled. Both change what
+  // is installed, so pull the library again either way.
   useEffect(() => {
-    // Poll fast only while something is genuinely transferring — a static queue
-    // of pending updates shouldn't hammer the box every 5s.
-    setActive(downloads.some(isActiveDownload));
-    const curIds = new Set(downloads.map((d) => d.appid));
-    for (const d of downloads) {
-      // Only track truly-active downloads for the "finished" toast; a queued
-      // entry vanishing is a cancel/dequeue, not a completion.
-      if (isActiveDownload(d)) observedDl.current.add(d.appid);
-    }
-    for (const [appid, prev] of prevDl.current) {
-      if (!curIds.has(appid) && observedDl.current.has(appid)) {
-        observedDl.current.delete(appid);
-        // Disappearance means finished OR cancelled (the agent lists an app only
-        // while an op runs). Only claim "finished" when it vanished near-complete;
-        // a mid-progress vanish is a cancel/removal. Refresh either way so the
-        // grid reflects the new install (or the cancellation).
-        if (prev.percent >= 90 || prev.state === 'finalizing') {
-          showToast(`${prev.name} finished downloading`);
-        }
-        list.refresh();
-      }
-    }
-    prevDl.current = new Map(downloads.map((d) => [d.appid, d]));
-    // showToast + list.refresh are stable; keying on `downloads` only.
+    if (changeTick > 0) list.refresh();
+    // list.refresh is stable; keying on the tick only.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [downloads]);
+  }, [changeTick]);
 
   // Two columns with padding; each tile ~ half the content width.
   const COLS = 2;
@@ -1085,6 +1086,11 @@ function LaunchScreen() {
                   }
                   retryKey={retryKey}
                   onLaunch={() => setSheetFor(l)}
+                  bookmarked={marks.isBookmarked(bookmarkKey(l))}
+                  onToggleBookmark={() => {
+                    const k = bookmarkKey(l);
+                    if (k) toggleBookmarked(k);
+                  }}
                   compat={l.appid != null ? compat[l.appid] : undefined}
                   onDelete={l.kind === 'custom' ? () => remove(l) : undefined}
                   download={l.appid != null ? dlByAppid.get(l.appid) : undefined}
@@ -1265,6 +1271,19 @@ const makeStyles = (t: Palette) => StyleSheet.create({
     borderWidth: 1,
   },
   tilePressed: { opacity: 0.75, borderColor: t.blue },
+  // The corner mark on a bookmarked tile. zIndex so it sits above the cover art.
+  bookmarkMark: {
+    position: 'absolute',
+    top: 6,
+    right: 6,
+    zIndex: 2,
+    width: 22,
+    height: 22,
+    borderRadius: 11,
+    alignItems: 'center',
+    justifyContent: 'center',
+    backgroundColor: t.green,
+  },
   tileArt: { width: '100%', height: '100%' },
   tileFallback: {
     flex: 1,
