@@ -202,6 +202,11 @@ becomes the allowlist.
   the only one that removes the bar completely. Does the lock persist across sessions
   (a pref) or last only for the session? What happens to the lock when the user leaves
   the Pad tab.
+- **Full spec: `docs/memory/project_landscape-pad.md`** — read it before starting. It
+  has the arithmetic for why it breaks (≈575dp of fixed-pixel children in a ≈393dp short
+  axis; flexbox overflows silently), a complete absolute-position layout table in units of
+  1% of the usable short axis, the fixed-container/floating-origin stick decision, and the
+  five assertions a pure layout test should make.
 - **Interacts with:** the "Landscape laptop mode" entry below, which claims the same
   gesture on the same tab for a different purpose. One of the two has to win, or
   landscape needs a mode switch of its own. Decide before building either.
