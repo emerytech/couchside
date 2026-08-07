@@ -42,7 +42,12 @@ import {
 import * as Clipboard from 'expo-clipboard';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
+import { StatusBar } from 'expo-status-bar';
+
 import { Gated } from '@/components/Gated';
+import { LandscapePad, LandscapePadTooSmall } from '@/components/LandscapePad';
+import { setImmersive } from '@/lib/immersive';
+import { padLayout } from '@/lib/padLayout';
 import { SteamMenusPanel } from '@/components/SteamMenusPanel';
 import { RemoteView } from '@/components/RemoteView';
 import { PadDiagnostics } from '@/components/PadDiagnostics';
@@ -896,7 +901,58 @@ function PadScreen() {
    * is the intended behaviour: the mode you switched to has no landscape layout
    * to show you.
    */
-  useLockOrientation(mode === 'gamepad' ? 'allow-landscape' : 'portrait');
+  /** LOCK button: pin the orientation so a shift in grip doesn't drop you out. */
+  const [padLock, setPadLock] = useState(false);
+  /**
+   * Set by the ✕ button. The phone is still PHYSICALLY sideways at that moment,
+   * so without forcing portrait it would flip straight back in and the button
+   * would look broken. Cleared as soon as portrait is actually observed, so a
+   * later deliberate rotation re-enters play.
+   */
+  const [exited, setExited] = useState(false);
+  useEffect(() => {
+    if (exited && !landscape) setExited(false);
+  }, [exited, landscape]);
+
+  useLockOrientation(
+    mode !== 'gamepad' || exited ? 'portrait'
+      : padLock ? 'landscape-locked'
+        : 'allow-landscape',
+  );
+
+  /**
+   * IMMERSIVE: the controller owns the whole screen — no tab bar, no box
+   * picker, no status pill, no mode row. This is not only the owner's feature
+   * request, it is half the bug fix: those four things are what ate the short
+   * axis until the controller overflowed it.
+   *
+   * Published to a store rather than set imperatively (see lib/immersive.ts),
+   * and reset on unmount so the app can never be left with no tab bar.
+   */
+  const immersive = landscape && mode === 'gamepad' && !exited;
+  useEffect(() => {
+    setImmersive(immersive);
+  }, [immersive]);
+  useEffect(() => () => setImmersive(false), []);
+
+  /**
+   * The landscape controller's geometry. Insets are subtracted exactly once,
+   * HERE — nothing downstream may look at them again, which is what stops the
+   * safe area being counted twice or counted on the wrong edge.
+   */
+  // Depend on the inset NUMBERS, not the object: useSafeAreaInsets can hand
+  // back a fresh object on any re-render, which would rebuild the layout (and
+  // every PanResponder keyed off it) constantly.
+  const landGeom = useMemo(
+    () => padLayout({ width, height }, insets),
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [width, height, insets.top, insets.right, insets.bottom, insets.left],
+  );
+  const exitLandscape = useCallback(() => {
+    setPadLock(false);
+    setExited(true);
+  }, []);
+
   const [status, setStatus] = useState<GamepadStatus>('closed');
   // True when status is 'connected' but the socket has gone silent (half-dead):
   // polled from the client, it turns the pill amber + tap-to-retry live BEFORE
@@ -1663,6 +1719,78 @@ function PadScreen() {
     </Pressable>
   );
 
+  // ---------- Immersive: the controller, and nothing else ----------
+  //
+  // Returned BEFORE `styles.screen`. That is deliberate and load-bearing: that
+  // style carries `paddingHorizontal: 12` and `paddingBottom: max(insets.bottom,
+  // 10)`, and padLayout has ALREADY subtracted the insets. Rendering the
+  // controller inside it would count the safe area twice and pull every control
+  // 12dp inboard — the same double-count that helped clip the old layout.
+  //
+  // NOT a separate expo-router route, which is what every reference for this
+  // problem recommends. A route change unmounts PadScreen, tears down the
+  // gamepad WebSocket and makes the agent destroy and recreate its uinput
+  // device on EVERY rotation — the exact lifecycle churn this project's worst
+  // bugs live in (KI-053). Same component, chrome suppressed by state; the
+  // socket never notices the phone turned.
+  if (immersive) {
+    return (
+      <>
+        <StatusBar hidden />
+        {landGeom.ok ? (
+          <LandscapePad
+            layout={landGeom}
+            btn={btn}
+            trig={trig}
+            stickMove={stickMove}
+            stickRelease={stickRelease}
+            qam={qam}
+            locked={padLock}
+            onToggleLock={() => setPadLock((v) => !v)}
+            onExit={exitLandscape}
+          />
+        ) : (
+          <LandscapePadTooSmall reason={landGeom.reason} onExit={exitLandscape} />
+        )}
+        {/* Handoff survives immersive mode. Another phone asking for control is
+            a decision only the person holding this one can make, and ignoring it
+            long enough lets the other device force the takeover — so it cannot
+            be a piece of chrome that full-screen play hides. */}
+        {controlReq != null && (
+          <View style={styles.handoffOverlay}>
+            <Text style={styles.handoffText} numberOfLines={2}>
+              {controlReq} wants control
+            </Text>
+            <View style={styles.handoffBtns}>
+              <Pressable
+                onPress={() => {
+                  haptic();
+                  client.denyControl();
+                  setControlReq(null);
+                }}
+                style={({ pressed }) => [styles.handoffBtn, pressed && styles.btnPressed]}>
+                <Text style={styles.handoffBtnText}>KEEP</Text>
+              </Pressable>
+              <Pressable
+                onPress={() => {
+                  haptic();
+                  client.grantControl();
+                  setControlReq(null);
+                }}
+                style={({ pressed }) => [
+                  styles.handoffBtn,
+                  styles.handoffBtnPass,
+                  pressed && styles.btnPressed,
+                ]}>
+                <Text style={[styles.handoffBtnText, styles.handoffBtnPassText]}>PASS</Text>
+              </Pressable>
+            </View>
+          </View>
+        )}
+      </>
+    );
+  }
+
   return (
     <View
       style={[
@@ -1948,95 +2076,6 @@ function PadScreen() {
           )}
           {!largePad && keyboardBar}
         </>
-      ) : landscape ? (
-        // ---------- Landscape gamepad: real-controller spread ----------
-        <View style={styles.landRoot}>
-          {/* Bumpers/triggers along the top */}
-          <View style={styles.landShoulderRow}>
-            <View style={styles.landShoulderSide}>
-              <PadButton label="LT" {...trig('lt')} style={styles.shoulderBtn} />
-              <PadButton label="LB" {...btn('lb')} style={styles.shoulderBtn} />
-            </View>
-            <View style={styles.landShoulderSide}>
-              <PadButton label="RB" {...btn('rb')} style={styles.shoulderBtn} />
-              <PadButton label="RT" {...trig('rt')} style={styles.shoulderBtn} />
-            </View>
-          </View>
-
-          <View style={styles.landMain}>
-            {/* LEFT: stick above d-pad */}
-            <View style={styles.landColumn}>
-              <Stick onMove={stickMove('l')} onRelease={stickRelease('l')} />
-              <View style={styles.dpad}>
-                <View style={styles.dpadRow}>
-                  <View style={styles.dpadSpacer} />
-                  <PadButton label="▲" {...btn('du')} style={styles.dpadBtn} />
-                  <View style={styles.dpadSpacer} />
-                </View>
-                <View style={styles.dpadRow}>
-                  <PadButton label="◀" {...btn('dl')} style={styles.dpadBtn} />
-                  {/* Center OK = A: opens/activates the highlighted item. */}
-                  <PadButton label="OK" {...btn('a')} style={styles.dpadBtn} color={t.green} fontSize={14} />
-                  <PadButton label="▶" {...btn('dr')} style={styles.dpadBtn} />
-                </View>
-                <View style={styles.dpadRow}>
-                  <View style={styles.dpadSpacer} />
-                  <PadButton label="▼" {...btn('dd')} style={styles.dpadBtn} />
-                  <View style={styles.dpadSpacer} />
-                </View>
-              </View>
-            </View>
-
-            {/* CENTER: menu cluster + thumb-clicks */}
-            <View style={styles.landCenter}>
-              <View style={styles.menuRow}>
-                <PadButton label="SELECT" {...btn('select')} style={styles.menuBtn} fontSize={11} />
-                <PadButton
-                  label="STEAM"
-                  {...btn('guide')}
-                  style={[styles.menuBtn, styles.guideBtn]}
-                  color={t.blue}
-                  fontSize={11}
-                />
-                <PadButton
-                  label="⋯"
-                  onDown={qam}
-                  onUp={NOOP}
-                  style={[styles.menuBtn, styles.qamBtn, styles.guideBtn]}
-                  color={t.blue}
-                  fontSize={20}
-                />
-                <PadButton label="START" {...btn('start')} style={styles.menuBtn} fontSize={11} />
-              </View>
-              <View style={styles.landThumbRow}>
-                <PadButton label="L3" {...btn('l3')} style={styles.thumbBtn} fontSize={11} />
-                <PadButton label="R3" {...btn('r3')} style={styles.thumbBtn} fontSize={11} />
-              </View>
-            </View>
-
-            {/* RIGHT: ABXY above right stick */}
-            <View style={styles.landColumn}>
-              <View style={styles.abxy}>
-                <View style={styles.abxyRow}>
-                  <View style={styles.faceSpacer} />
-                  <PadButton label="Y" {...btn('y')} style={styles.faceBtn} color={t.amber} />
-                  <View style={styles.faceSpacer} />
-                </View>
-                <View style={styles.abxyRow}>
-                  <PadButton label="X" {...btn('x')} style={styles.faceBtn} color={t.blue} />
-                  <View style={styles.faceSpacer} />
-                  <PadButton label="B" {...btn('b')} style={styles.faceBtn} color={t.red} />
-                </View>
-                <View style={styles.abxyRow}>
-                  <View style={styles.faceSpacer} />
-                  <PadButton label="A" {...btn('a')} style={styles.faceBtn} color={t.green} />
-                  <View style={styles.faceSpacer} />
-                </View>
-              </View>
-              <Stick onMove={stickMove('r')} onRelease={stickRelease('r')} />
-            </View>
-          </View>
-        </View>
       ) : (
         // ---------- Portrait gamepad: original stacked layout ----------
         <>
@@ -2756,37 +2795,30 @@ const makeStyles = (t: Palette) => StyleSheet.create({
     borderWidth: 1,
   },
 
-  // ---------- Landscape gamepad layout ----------
-  landRoot: {
-    flex: 1,
-  },
-  landShoulderRow: {
+  // ---------- Landscape gamepad ----------
+  // The controls themselves are absolutely positioned from lib/padLayout.ts and
+  // drawn by components/LandscapePad.tsx; there are no styles for them here on
+  // purpose. What used to live at this spot was `landRoot` / `landShoulderRow` /
+  // `landMain` / `landColumn` / `landCenter` / `landThumbRow` — a flex tree
+  // whose fixed-pixel children added up to more than the screen was tall, which
+  // flex then overflowed in silence. That is the bug; the styles are gone with
+  // it.
+  //
+  // The one thing that still needs a style is the handoff prompt, because it
+  // has to float ABOVE the controller rather than take space in a column.
+  handoffOverlay: {
+    position: 'absolute',
+    top: 0,
+    left: 0,
+    right: 0,
     flexDirection: 'row',
-    justifyContent: 'space-between',
-    marginBottom: 8,
-  },
-  landShoulderSide: {
-    flexDirection: 'row',
-    gap: 8,
-  },
-  landMain: {
-    flex: 1,
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'space-between',
-  },
-  landColumn: {
     alignItems: 'center',
     justifyContent: 'center',
-    gap: 14,
-  },
-  landCenter: {
-    alignItems: 'center',
-    justifyContent: 'center',
-    gap: 16,
-  },
-  landThumbRow: {
-    flexDirection: 'row',
-    gap: 16,
+    gap: 12,
+    paddingVertical: 10,
+    paddingHorizontal: 16,
+    backgroundColor: t.card,
+    borderBottomWidth: 1,
+    borderBottomColor: t.amber,
   },
 });
