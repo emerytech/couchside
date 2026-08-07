@@ -55,6 +55,42 @@ ACCENT_TOP = 404
 
 PLAY_W = 1440                   # Play caps aspect at 2:1; 1440x2868 = 1.99
 
+# --- iPad Pro 13" -------------------------------------------------------------
+# The phone numbers above are measured; these are DERIVED from them, scaled by
+# the canvas width ratio (2064/1320 = 1.564) for anything type-related, with the
+# slab re-solved from the iPad's own 0.75 aspect rather than the phone's 0.46.
+# Scaling the phone slab directly would give a frame far too tall to fit.
+IPAD_CANVAS = (2064, 2752)      # App Store iPad Pro 13" native
+IPAD = {
+    "canvas": IPAD_CANVAS,
+    "caption_top": 261,         # 167 * 1.564
+    "caption_step": 186,        # 119 * 1.564
+    "caption_max_w": 1846,      # 1180 * 1.564
+    "caption_size_max": 155,    # 99 * 1.564
+    "accent_rect": (220, 20),   # (141, 13) * 1.564
+    "accent_top": 632,          # 404 * 1.564
+    "slab": (302, 700, 1460, 1912),
+    "radius": 96,               # iPads have a far tighter corner than a phone
+    "screen_inset": 52,         # 33 * 1.564
+    "island": None,             # no Dynamic Island on iPad
+}
+
+PHONE_PRESET = {
+    "canvas": CANVAS,
+    "caption_top": CAPTION_TOP,
+    "caption_step": CAPTION_LINE_STEP,
+    "caption_max_w": CAPTION_MAX_W,
+    "caption_size_max": CAPTION_SIZE_MAX,
+    "accent_rect": ACCENT_RECT,
+    "accent_top": ACCENT_TOP,
+    "slab": PHONE,
+    "radius": PHONE_RADIUS,
+    "screen_inset": SCREEN_INSET,
+    "island": (ISLAND, ISLAND_TOP),
+}
+
+PRESETS = {CANVAS: PHONE_PRESET, IPAD_CANVAS: IPAD}
+
 
 def load_font(size):
     """SF Pro Bold. Metric-matched to the shipped set: at 99px its cap height is
@@ -84,25 +120,29 @@ def gradient(size, top, bottom):
     return img.resize((w, h), Image.NEAREST)
 
 
-def fit_caption(lines, draw):
-    """Largest size at which every line fits CAPTION_MAX_W, capped at the
-    reference size so a short caption never renders LARGER than the shipped set."""
-    size = CAPTION_SIZE_MAX
-    while size > 40:
+def fit_caption(lines, draw, max_w=CAPTION_MAX_W, size_max=CAPTION_SIZE_MAX):
+    """Largest size at which every line fits max_w, capped at the reference size
+    so a short caption never renders LARGER than the shipped set."""
+    size = size_max
+    floor = round(40 * size_max / CAPTION_SIZE_MAX)
+    while size > floor:
         f = load_font(size)
-        if all(draw.textbbox((0, 0), ln, font=f)[2] <= CAPTION_MAX_W for ln in lines):
+        if all(draw.textbbox((0, 0), ln, font=f)[2] <= max_w for ln in lines):
             return f
         size -= 2
-    return load_font(40)
+    return load_font(floor)
 
 
 def build(src_path, caption, paint_out=None):
     shot = Image.open(src_path).convert("RGB")
-    if shot.size != CANVAS:
+    p = PRESETS.get(shot.size)
+    if p is None:
+        sizes = ", ".join(f"{w}x{h}" for w, h in PRESETS)
         raise SystemExit(
-            f"expected a {CANVAS[0]}x{CANVAS[1]} screenshot (App Store 6.9\" native), got "
-            f"{shot.size[0]}x{shot.size[1]}. Capture on a 6.9\" device/simulator."
+            f"expected one of {sizes}, got {shot.size[0]}x{shot.size[1]}. "
+            f"Capture on a 6.9\" phone or 13\" iPad device/simulator."
         )
+    canvas_size = p["canvas"]
 
     if paint_out:
         d = ImageDraw.Draw(shot)
@@ -111,51 +151,54 @@ def build(src_path, caption, paint_out=None):
         fill = shot.getpixel((max(0, x0 - 12), (y0 + y1) // 2))
         d.rectangle([x0, y0, x1, y1], fill=fill)
 
-    canvas = gradient(CANVAS, BG_TOP, BG_BOTTOM)
+    canvas = gradient(canvas_size, BG_TOP, BG_BOTTOM)
     draw = ImageDraw.Draw(canvas)
 
     # caption
     lines = [ln for ln in caption.split("|") if ln.strip()]
-    font = fit_caption(lines, draw)
+    font = fit_caption(lines, draw, p["caption_max_w"], p["caption_size_max"])
     for i, ln in enumerate(lines):
         w = draw.textbbox((0, 0), ln, font=font)[2]
-        # textbbox y0 is the glyph-top offset; subtract it so CAPTION_TOP is the
+        # textbbox y0 is the glyph-top offset; subtract it so caption_top is the
         # actual first inked row, which is how the reference was measured.
         oy = draw.textbbox((0, 0), ln, font=font)[1]
-        draw.text(((CANVAS[0] - w) // 2, CAPTION_TOP + i * CAPTION_LINE_STEP - oy),
+        draw.text(((canvas_size[0] - w) // 2,
+                   p["caption_top"] + i * p["caption_step"] - oy),
                   ln, font=font, fill=CAPTION_FILL)
 
     # accent rule
-    aw, ah = ACCENT_RECT
-    ax = (CANVAS[0] - aw) // 2
-    draw.rounded_rectangle([ax, ACCENT_TOP, ax + aw, ACCENT_TOP + ah],
+    aw, ah = p["accent_rect"]
+    ax = (canvas_size[0] - aw) // 2
+    draw.rounded_rectangle([ax, p["accent_top"], ax + aw, p["accent_top"] + ah],
                            radius=ah // 2, fill=ACCENT)
 
     # bezel
-    px_, py, pw, ph = PHONE
-    draw.rounded_rectangle([px_, py, px_ + pw, py + ph], radius=PHONE_RADIUS, fill=BEZEL_FILL)
+    radius, inset = p["radius"], p["screen_inset"]
+    px_, py, pw, ph = p["slab"]
+    draw.rounded_rectangle([px_, py, px_ + pw, py + ph], radius=radius, fill=BEZEL_FILL)
     i = BEZEL_STROKE_INSET
     draw.rounded_rectangle([px_ + i, py + i, px_ + pw - i, py + ph - i],
-                           radius=PHONE_RADIUS - i, outline=BEZEL_STROKE, width=2)
+                           radius=radius - i, outline=BEZEL_STROKE, width=2)
 
     # screen: scale the shot to the inner width, then mask to rounded corners
-    sw = pw - SCREEN_INSET * 2
+    sw = pw - inset * 2
     sh = round(shot.size[1] * sw / shot.size[0])
     inner = shot.resize((sw, sh), Image.LANCZOS)
-    sx, sy = px_ + SCREEN_INSET, py + SCREEN_INSET
-    avail = ph - SCREEN_INSET * 2
+    sx, sy = px_ + inset, py + inset
+    avail = ph - inset * 2
     if sh > avail:                      # bottom is clipped by the bezel, as in the reference
         inner = inner.crop((0, 0, sw, avail)); sh = avail
     mask = Image.new("L", (sw, sh), 0)
     ImageDraw.Draw(mask).rounded_rectangle([0, 0, sw - 1, sh - 1],
-                                           radius=PHONE_RADIUS - SCREEN_INSET, fill=255)
+                                           radius=radius - inset, fill=255)
     canvas.paste(inner, (sx, sy), mask)
 
-    # Dynamic Island
-    iw, ih = ISLAND
-    ix = (CANVAS[0] - iw) // 2
-    ImageDraw.Draw(canvas).rounded_rectangle([ix, ISLAND_TOP, ix + iw, ISLAND_TOP + ih],
-                                             radius=ih // 2, fill=(0, 0, 0))
+    # Dynamic Island (phones only)
+    if p["island"]:
+        (iw, ih), itop = p["island"]
+        ix = (canvas_size[0] - iw) // 2
+        ImageDraw.Draw(canvas).rounded_rectangle([ix, itop, ix + iw, itop + ih],
+                                                 radius=ih // 2, fill=(0, 0, 0))
     return canvas
 
 
