@@ -542,6 +542,14 @@ export type Launcher = {
   /** Steam appid, present for kind "steam": used for library cover art. */
   appid?: number;
   /**
+   * Install size in bytes, from Steam's own appmanifest (agent >= 2.9.72).
+   *
+   * ABSENT means Steam did not state a size — a game mid-download, or one it
+   * has not measured. The agent never sends an invented zero, because "0 GB"
+   * reads as free space that is not free.
+   */
+  size_bytes?: number;
+  /**
    * Minutes played, from Steam's own localconfig.vdf on the box (agent
    * >= 2.9.71). LOCAL — no Steam Web API key, no public profile, no network.
    *

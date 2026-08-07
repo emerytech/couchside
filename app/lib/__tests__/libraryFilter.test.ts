@@ -13,6 +13,7 @@ import {
   bookmarkKey,
   toggleBookmark,
   presetName,
+  sizeLabel,
   upsertPreset,
   normalizePresets,
   MAX_PRESETS,
@@ -425,4 +426,41 @@ test('the filter sheet actually calls savePreset and renders the preset list', a
     .split('\n')
     .some((l) => l.includes('applyFilter(') && l.includes('marks.bookmarks'));
   assert.ok(wired, 'the grid must be filtered by the bookmark set, or the sheet count lies');
+});
+
+test('the size filter keeps big games and never hides an unsized one', () => {
+  const games = [
+    { id: 'a', label: 'Huge', kind: 'steam' as const, size_bytes: 60 * 1024 ** 3 },
+    { id: 'b', label: 'Small', kind: 'steam' as const, size_bytes: 2 * 1024 ** 3 },
+    { id: 'c', label: 'Unmeasured', kind: 'steam' as const },
+  ];
+  const kept = applyFilter(games, { ...EMPTY_FILTER, minSizeGb: 10 }, 0).map((g) => g.label);
+  assert.ok(kept.includes('Huge'));
+  assert.ok(!kept.includes('Small'));
+  // Unstated size is unknown, not small — hiding it would lose a game the user
+  // owns because Steam had not finished measuring it.
+  assert.ok(kept.includes('Unmeasured'), 'an unsized game must stay visible');
+});
+
+test('a size filter counts as filtering (control)', () => {
+  assert.equal(isFiltering({ ...EMPTY_FILTER, minSizeGb: 10 }), true);
+  assert.equal(isFiltering({ ...EMPTY_FILTER, minSizeGb: 0 }), false);
+});
+
+test('sizeLabel omits a size it does not know rather than printing zero', () => {
+  assert.equal(sizeLabel(undefined), null, '0 GB would read as free space');
+  assert.equal(sizeLabel(0), null);
+  assert.equal(sizeLabel(165580472320), '154.2 GB');
+  assert.equal(sizeLabel(900 * 1024 * 1024), '900 MB');
+  assert.equal(sizeLabel(1024), '1 MB', 'a tiny install never rounds to 0 MB');
+});
+
+test('big-and-never-played is the combination the feature exists for', () => {
+  const games = [
+    { id: 'a', label: 'Big unplayed', kind: 'steam' as const, size_bytes: 80 * 1024 ** 3 },
+    { id: 'b', label: 'Big loved', kind: 'steam' as const, size_bytes: 80 * 1024 ** 3, playtime_min: 4000 },
+    { id: 'c', label: 'Small unplayed', kind: 'steam' as const, size_bytes: 1024 ** 3 },
+  ];
+  const f = { ...EMPTY_FILTER, minSizeGb: 50, played: 'never' as const };
+  assert.deepEqual(applyFilter(games, f, 0).map((g) => g.label), ['Big unplayed']);
 });

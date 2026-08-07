@@ -24,7 +24,7 @@ import type { ImageSourcePropType } from 'react-native';
 import { toggleBookmarked, useLibraryMarks } from '@/hooks/useLibraryMarks';
 import { hapticLight } from '@/lib/haptics';
 import type { Launcher } from '@/lib/api';
-import { bookmarkKey, playtimeLabel } from '@/lib/libraryFilter';
+import { bookmarkKey, playtimeLabel, sizeLabel } from '@/lib/libraryFilter';
 import { mono, useTheme, useThemedStyles, type Palette } from '@/lib/theme';
 
 /** "3 days ago" / "today" / "never". Absent last_played is honest, not zero. */
@@ -67,6 +67,9 @@ export function GameSheet({
   if (!launcher) return null;
 
   const key = bookmarkKey(launcher);
+  // null when Steam never stated one — the row is omitted rather than showing
+  // a zero that would read as free space.
+  const size = sizeLabel(launcher.size_bytes);
   const marked = marks.isBookmarked(key);
 
   const nowSec = Math.floor(Date.now() / 1000);
@@ -112,6 +115,7 @@ export function GameSheet({
                 <>
                   <Row label="Time played" value={played} />
                   <Row label="Last opened" value={lastPlayedLabel(launcher.last_played, nowSec)} />
+                  {size ? <Row label="On disk" value={size} /> : null}
                 </>
               ) : (
                 // Say WHY it is missing rather than showing a blank or a zero.

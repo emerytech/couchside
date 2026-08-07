@@ -150,6 +150,13 @@ jobs:
       - name: Unit tests (non-Steam shortcut launchers)
         run: python3 tests/test_steam_shortcuts.py
 
+      # Per-game install size, read out of Steam's appmanifest. The number
+      # drives "what is eating my disk that I never play", so a wrong one points
+      # the user at the wrong game to delete — and an invented zero reads as
+      # free space that is not free.
+      - name: Unit tests (steam install size)
+        run: python3 tests/test_steam_size.py
+
       # The boot-session default. The probe MUST parse steamosctl's output, not
       # its exit status: on Bazzite it prints a D-Bus UnknownInterface error and
       # exits 0, so an exit-code probe would claim the backend works on every

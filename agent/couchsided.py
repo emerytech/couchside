@@ -45,7 +45,7 @@ except ImportError:  # pragma: no cover
     fcntl = None
 
 APP_NAME = "couchside-agent"
-VERSION = "2.9.71"
+VERSION = "2.9.72"
 UID = os.getuid()
 XDG_RUNTIME_DIR = "/run/user/%d" % UID
 
@@ -6398,6 +6398,7 @@ def discover_steam_games():
         if root is None:
             return []
         games = {}  # appid(str) -> name
+        sizes = {}  # appid(str) -> bytes on disk, only when Steam states one
         for steamapps in _steam_libraries_cached(root):
             try:
                 manifests = glob.glob(os.path.join(steamapps, "appmanifest_*.acf"))
@@ -6406,7 +6407,10 @@ def discover_steam_games():
             for mf in manifests:
                 try:
                     with open(mf, "r", encoding="utf-8", errors="replace") as f:
-                        fields = _parse_acf(f.read())
+                        # SizeOnDisk rides along free: this manifest is already
+                        # being read and parsed, so per-game size costs one more
+                        # key rather than a second pass over the library.
+                        fields = _parse_acf(f.read(), keys=("appid", "name", "SizeOnDisk"))
                 except OSError:
                     continue
                 except Exception:
@@ -6418,6 +6422,14 @@ def discover_steam_games():
                 if _is_steam_tool(appid, name):
                     continue
                 games.setdefault(appid, name)  # de-dupe by appid
+                # Steam writes this as a decimal byte count. 0/absent stays 0 and
+                # is NOT sent, the same rule playtime follows: an invented zero
+                # would read as "this game takes no space", which is a claim we
+                # cannot make. A game mid-download has a partial figure here, so
+                # the app must not present it as a settled install size.
+                size = _acf_int(fields.get("SizeOnDisk"))
+                if size > 0:
+                    sizes.setdefault(appid, size)
         # "art" says which SHAPE of cover the box has for this game, so the app
         # can lay the tile out before the image loads instead of reflowing when
         # it arrives: "portrait" (600x900 capsule), "header" (460x215 banner) or
@@ -6442,6 +6454,9 @@ def discover_steam_games():
                 entry["playtime_min"] = rec["playtime_min"]
             if "last_played" in rec:
                 entry["last_played"] = rec["last_played"]
+            size = sizes.get(str(appid))
+            if size:
+                entry["size_bytes"] = size
             launchers.append(entry)
         launchers.sort(key=lambda l: (l["label"].lower(), l["appid"]))
         return launchers
