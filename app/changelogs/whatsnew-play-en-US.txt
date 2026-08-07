@@ -1,5 +1,5 @@
-Turn the phone sideways on the Pad tab: the controller now fills the screen edge-to-edge, with an orientation lock for long sessions.
+New: Movement mode. Tap ⊕ MOVE on the sideways controller for a huge movement zone plus just the buttons you need — made for games like Vampire Survivors where you mostly steer.
 
-New since last update: use the app as a plain TV remote (Roku and Google TV, no PC needed), bookmark games and save library filters, see each game's install size, get a heads-up when a download finishes, and a guided setup walkthrough — existing users can replay it from Setup.
+The full-screen controller also arrives in this update: turn the phone sideways on the Pad tab and every stick and button spreads out edge-to-edge, with an orientation lock.
 
-Plus many fixes, including Google TV pairing on Android.
+Plus: TV remote mode (Roku/Google TV), game bookmarks and filter presets, install sizes, download alerts, and many fixes.
