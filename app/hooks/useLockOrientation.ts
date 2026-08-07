@@ -23,7 +23,9 @@ export type OrientationPolicy =
   /** Let the device decide — the Pad's gamepad mode follows the phone. */
   | 'allow-landscape'
   /** Pinned sideways: the user asked for it with the LOCK button. */
-  | 'landscape-locked';
+  | 'landscape-locked'
+  /** Pinned upright — movement mode's LOCK while held vertically. */
+  | 'portrait-locked';
 
 export function useLockOrientation(policy: OrientationPolicy): void {
   useFocusEffect(
@@ -36,6 +38,13 @@ export function useLockOrientation(policy: OrientationPolicy): void {
             // DEFAULT policy = all orientations (minus upside-down on iOS),
             // so the device's own rotation drives the Pad layout.
             await ScreenOrientation.unlockAsync();
+          } else if (policy === 'portrait-locked') {
+            // The mirror of landscape-locked, for the vertical movement
+            // layout. PORTRAIT_UP (not PORTRAIT): upside-down portrait is
+            // nothing anyone locks into on purpose, and iOS refuses it anyway.
+            await ScreenOrientation.lockAsync(
+              ScreenOrientation.OrientationLock.PORTRAIT_UP,
+            );
           } else if (policy === 'landscape-locked') {
             // LANDSCAPE, not LANDSCAPE_LEFT: both directions stay legal, so the
             // lock never fights the user's grip or which side they turned the

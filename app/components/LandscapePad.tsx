@@ -713,7 +713,11 @@ export type MovePadProps = {
   locked: boolean;
   onToggleLock: () => void;
   onExit: () => void;
-  onVariant: () => void;
+  /** Landscape only: the 🎮 PAD toggle back to the full controller. The
+      VERTICAL table has no variant node (rotating IS the way to the landscape
+      layout), so this is optional and the button renders only when the layout
+      carries the node. */
+  onVariant?: () => void;
 };
 
 /**
@@ -744,18 +748,21 @@ export function MovePad({
         onClick={NOOP}
       />
 
-      {/* Right thumb: A at rest, B up-left, 4-way NAV above for menus. */}
+      {/* Right thumb: A at rest, B beside/above it, 4-way NAV for menus. */}
       <NavPad node={byId.nav} u={u} btn={btn} />
       <PadKey node={byId.b} label="B" u={u} color={t.red} fontSize={4.4 * u} {...btn('b')} />
       <PadKey node={byId.a} label="A" u={u} color={t.green} fontSize={4.4 * u} {...btn('a')} />
 
-      {/* Chrome: same row, same positions as the gamepad layout, so the toggle
-          never jumps under the thumb that pressed it. */}
-      <ChromeButton
-        node={byId.variant} u={u} text="🎮 PAD"
-        onPress={onVariant}
-        accessibilityLabel="Switch to the full controller"
-      />
+      {/* Chrome: in landscape, same row and positions as the gamepad layout so
+          the toggle never jumps under the thumb that pressed it. The vertical
+          table has no variant node — rotating is the path between layouts. */}
+      {byId.variant && onVariant ? (
+        <ChromeButton
+          node={byId.variant} u={u} text="🎮 PAD"
+          onPress={onVariant}
+          accessibilityLabel="Switch to the full controller"
+        />
+      ) : null}
       <ChromeButton
         node={byId.lock} u={u}
         text={locked ? '🔒 LOCKED' : '🔓 AUTO'}
@@ -780,8 +787,18 @@ const NOOP = () => {};
  * meets the 44dp touch floor. Refusing is the honest answer — a cramped
  * controller that half-works is worse than being told to turn the phone back.
  */
-export function LandscapePadTooSmall({ reason, onExit }: { reason: string; onExit: () => void }) {
+export function LandscapePadTooSmall({
+  reason, onExit, orientation = 'landscape',
+}: {
+  reason: string;
+  onExit: () => void;
+  /** Which way the phone is being held. The card used to assume landscape —
+      it is now reachable from PORTRAIT movement mode, where "turn the phone
+      back to portrait" is advice you have already taken. */
+  orientation?: 'landscape' | 'portrait';
+}) {
   const t = useTheme();
+  const portrait = orientation === 'portrait';
   return (
     <View style={[StyleSheet.absoluteFill, { alignItems: 'center', justifyContent: 'center', padding: 24 }]}>
       <Text style={{ color: t.text, fontFamily: mono, fontSize: 15, textAlign: 'center' }}>
@@ -790,10 +807,14 @@ export function LandscapePadTooSmall({ reason, onExit }: { reason: string; onExi
           : 'This screen is too short for the controller.'}
       </Text>
       <Text style={{ color: t.textFaint, fontSize: 13, textAlign: 'center', marginTop: 8 }}>
-        Turn the phone back to portrait to keep playing.
+        {portrait
+          ? 'Try turning the phone sideways, or leave the controller.'
+          : 'Turn the phone back to portrait to keep playing.'}
       </Text>
       <Pressable onPress={onExit} style={{ marginTop: 16, padding: 12 }}>
-        <Text style={{ color: t.blue, fontFamily: mono, fontSize: 13 }}>✕ BACK TO PORTRAIT</Text>
+        <Text style={{ color: t.blue, fontFamily: mono, fontSize: 13 }}>
+          {portrait ? '✕ LEAVE THE CONTROLLER' : '✕ BACK TO PORTRAIT'}
+        </Text>
       </Pressable>
     </View>
   );

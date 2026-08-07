@@ -47,7 +47,8 @@ import { StatusBar } from 'expo-status-bar';
 import { Gated } from '@/components/Gated';
 import { LandscapePad, LandscapePadTooSmall, MovePad } from '@/components/LandscapePad';
 import { setImmersive } from '@/lib/immersive';
-import { moveLayout, padLayout } from '@/lib/padLayout';
+import { surfaceChanged, type PadSurface } from '@/lib/padSurface';
+import { moveLayout, padLayout, verticalMoveLayout } from '@/lib/padLayout';
 import { SteamMenusPanel } from '@/components/SteamMenusPanel';
 import { RemoteView } from '@/components/RemoteView';
 import { PadDiagnostics } from '@/components/PadDiagnostics';
@@ -55,7 +56,7 @@ import { TabScreen } from '@/components/TabScreen';
 import { TourAnchor } from '@/components/TourAnchor';
 import { useLockOrientation } from '@/hooks/useLockOrientation';
 import { usePoll } from '@/hooks/usePoll';
-import type { PlayerState, SteamMenus } from '@/lib/api';
+import type { Gaming, PlayerState, SteamMenus } from '@/lib/api';
 import { useTrackpad } from '@/hooks/useTrackpad';
 import { useVolumeButtons } from '@/hooks/useVolumeButtons';
 import { api, hostKey, Status } from '@/lib/api';
@@ -839,6 +840,11 @@ export default function PadTab() {
 const MODES: { key: PadMode; label: string }[] = [
   { key: 'gamepad', label: 'PAD' },
   { key: 'swipe', label: 'SWIPE' },
+  // Movement mode: conditional — see `modes`. Only offered while a game is
+  // actually RUNNING on the box (owner ask): the layout exists for in-game
+  // steering, and a segment that opens a full-screen stick with nothing to
+  // steer would be the dead control this app keeps hunting down.
+  { key: 'move', label: 'MOVE' },
   // "MOUSE", not "TRACK": the surface IS a mouse — drag moves the pointer, tap
   // clicks. "Track" named the mechanism and left people guessing at the effect.
   { key: 'trackpad', label: 'MOUSE' },
@@ -886,7 +892,9 @@ function PadScreen() {
     : localMode;
   // In keyboard mode the agent is asked NOT to create a pad, so the PAD screen
   // has nothing to drive. Fall back rather than render sticks that go nowhere.
-  const mode: PadMode = keyboardMode && rawMode === 'gamepad' ? 'swipe' : rawMode;
+  // Keyboard mode covers 'move' too: the movement zone drives the virtual
+  // pad's left stick, which a no-pad handshake never creates.
+  const mode: PadMode = keyboardMode && (rawMode === 'gamepad' || rawMode === 'move') ? 'swipe' : rawMode;
   /**
    * ONLY THE GAMEPAD ROTATES.
    *
@@ -915,9 +923,13 @@ function PadScreen() {
   }, [exited, landscape]);
 
   useLockOrientation(
-    mode !== 'gamepad' || exited ? 'portrait'
-      : padLock ? 'landscape-locked'
-        : 'allow-landscape',
+    // MOVE is the one mode with layouts in BOTH orientations, so it never
+    // forces portrait — LOCK pins whichever way the phone is currently held.
+    mode === 'move'
+      ? (padLock ? (landscape ? 'landscape-locked' : 'portrait-locked') : 'allow-landscape')
+      : mode !== 'gamepad' || exited ? 'portrait'
+        : padLock ? 'landscape-locked'
+          : 'allow-landscape',
   );
 
   /**
@@ -929,10 +941,29 @@ function PadScreen() {
    * Published to a store rather than set imperatively (see lib/immersive.ts),
    * and reset on unmount so the app can never be left with no tab bar.
    */
-  const immersive = landscape && mode === 'gamepad' && !exited;
+  // Gamepad immerses in landscape only (rotating back is its exit).
+  // MOVE immerses in BOTH orientations — portrait gets the one-handed
+  // vertical table — so its only exits are ✕ and the mode switch.
+  const immersive = mode === 'move' || (landscape && mode === 'gamepad' && !exited);
+  /**
+   * PUBLISHED ONLY WHILE THE PAD TAB IS FOCUSED.
+   *
+   * This screen stays mounted after its first visit, so the derived value
+   * survives leaving the tab. That was harmless while every immersive state
+   * required landscape: every other screen forces portrait, the rotation
+   * flipped `landscape` here, and the flag cleared itself. MOVE has no
+   * orientation dependency, so that self-heal is gone — and a programmatic
+   * navigation off the Pad (the caps bounce in _layout when a box reports no
+   * gamepad, the tour's replace on a cold start) would strand the whole app
+   * with no tab bar, no BoxSwitcher and, because `gestureEnabled: !immersive`
+   * pins the stack, no way back on iOS. Exactly the failure lib/immersive.ts
+   * was written to make unrepresentable.
+   */
+  const [padFocused, setPadFocused] = useState(true);
+  const immersiveLive = immersive && padFocused;
   useEffect(() => {
-    setImmersive(immersive);
-  }, [immersive]);
+    setImmersive(immersiveLive);
+  }, [immersiveLive]);
   useEffect(() => () => setImmersive(false), []);
 
   /**
@@ -943,21 +974,27 @@ function PadScreen() {
   // Depend on the inset NUMBERS, not the object: useSafeAreaInsets can hand
   // back a fresh object on any re-render, which would rebuild the layout (and
   // every PanResponder keyed off it) constantly.
-  // Which landscape layout: the full controller or the movement mode. A pref
-  // (survives sessions); toggled from the chrome row of either layout.
-  const padVariant = usePref('landscapePadVariant');
+  // Which table: movement mode picks by orientation (portrait = the vertical
+  // one-handed layout, landscape = the spread MovePad); the gamepad is the
+  // full controller. Movement stopped being a pref in 2.9.39 — it is a real
+  // PadMode now, persisted per-box like every other mode.
   const landGeom = useMemo(
-    () => (padVariant === 'move' ? moveLayout : padLayout)({ width, height }, insets),
+    () => (mode === 'move'
+      ? (landscape ? moveLayout : verticalMoveLayout)
+      : padLayout)({ width, height }, insets),
     // eslint-disable-next-line react-hooks/exhaustive-deps
-    [width, height, insets.top, insets.right, insets.bottom, insets.left, padVariant],
+    [width, height, insets.top, insets.right, insets.bottom, insets.left, mode, landscape],
   );
+  /** ✕ in the LANDSCAPE GAMEPAD: force portrait and let rotation re-enter. */
   const exitLandscape = useCallback(() => {
     setPadLock(false);
     setExited(true);
   }, []);
-  const toggleVariant = useCallback(() => {
-    void setPref('landscapePadVariant', getPref('landscapePadVariant') === 'move' ? 'pad' : 'move');
-  }, []);
+  /** Last non-move mode, so ✕ in MOVE returns to the panel you came from. */
+  const preMoveRef = useRef<PadMode>('swipe');
+  useEffect(() => {
+    if (mode !== 'move') preMoveRef.current = mode;
+  }, [mode]);
 
 
   const [status, setStatus] = useState<GamepadStatus>('closed');
@@ -1024,15 +1061,17 @@ function PadScreen() {
   // window can stay landscape-shaped while shrinking below the layout floors
   // (Stage Manager, Android freeform), which swaps the pad for the too-small
   // card — an unmount the immersive flag never sees. Found in review.
-  const padMounted = immersive && landGeom.ok;
-  const releasedFor = useRef({ padMounted, padVariant });
+  const surface: PadSurface = { mounted: immersiveLive && landGeom.ok, mode, landscape };
+  const releasedFor = useRef(surface);
   useEffect(() => {
-    const prev = releasedFor.current;
-    if (prev.padMounted !== padMounted || prev.padVariant !== padVariant) {
-      releasedFor.current = { padMounted, padVariant };
+    if (surfaceChanged(releasedFor.current, surface)) {
+      releasedFor.current = surface;
       client.releaseAll();
     }
-  }, [padMounted, padVariant, client]);
+    // The signature is rebuilt every render; compare by VALUE (surfaceChanged)
+    // rather than listing it as a dep, which would fire on every render.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [surface.mounted, surface.mode, surface.landscape, client]);
 
   // Latest settings for connect() calls. The lifecycle effect below keys on
   // the connection identity (host/port/token) only. A background patch to
@@ -1112,6 +1151,7 @@ function PadScreen() {
 
     const connect = () => {
       focusedRef.current = true;
+      setPadFocused(true);
       client.connect(settingsRef.current, {
         handoffAsk: askToSwitchRef.current,
         deviceName: DEVICE_LABEL,
@@ -1124,6 +1164,8 @@ function PadScreen() {
     };
     const disconnect = () => {
       focusedRef.current = false;
+      // Chrome comes back the moment the Pad loses focus — see immersiveLive.
+      setPadFocused(false);
       client.close();
       // evaluateWakeLock would also release (focused=false), but call it
       // directly: leaving the Pad must never depend on the poll running.
@@ -1316,6 +1358,14 @@ function PadScreen() {
   const playerRunningRef = useRef(playerRunning);
   playerRunningRef.current = playerRunning;
 
+  // Running-game probe for the MOVE segment. Slow: a game starting or quitting
+  // is a once-in-minutes event. api.gaming is caps-gated, so a box that cannot
+  // report it resolves null and the segment simply never appears — probe-and-
+  // appear, the house pattern.
+  const gamingPoll = usePoll<Gaming | null>(
+    () => api.gaming(settings), 15000, true, hostKey(settings));
+  const runningGame = gamingPoll.data?.game != null;
+
   const steamMenus = menusPoll.data?.menus ?? [];
   const hasSteamMenus = steamMenus.length > 0;
   // Declared BEFORE `modes` because the Steam segment depends on it.
@@ -1336,9 +1386,15 @@ function PadScreen() {
   const modes = useMemo(
     () => MODES.filter(
       (m) => (m.key !== 'menus' || (hasSteamMenus && inGameMode))
-        && (m.key !== 'gamepad' || !keyboardMode),
+        && (m.key !== 'gamepad' || !keyboardMode)
+        // MOVE appears only while a game is running (and needs the virtual
+        // pad, so keyboard mode hides it like the gamepad). A box already
+        // PERSISTED on 'move' keeps working if the game quits — yanking the
+        // surface out from under someone on a poll flap would be worse than
+        // an idle stick — but the segment hides, so EXIT is the way back.
+        && (m.key !== 'move' || (runningGame && !keyboardMode) || mode === 'move'),
     ),
-    [hasSteamMenus, inGameMode, keyboardMode],
+    [hasSteamMenus, inGameMode, keyboardMode, runningGame, mode],
   );
   const desk = useCallback(
     (name: DesktopKey | 'esc') => () =>
@@ -1403,6 +1459,21 @@ function PadScreen() {
     },
     [mode, update],
   );
+
+  /** ✕ in MOVE: back to whatever mode the panel was on before. Unlike the
+      gamepad there is no rotate-out — MOVE is immersive in both orientations
+      — so the button is the exit, not a fallback. */
+  const exitMove = useCallback(() => {
+    setPadLock(false);
+    // `exited` is the GAMEPAD's flag and is cleared only by observing portrait
+    // — which never happens where the forced-portrait lock is a no-op (iPad,
+    // Android freeform). Leaving it set would make a return to 'gamepad' land
+    // on the non-immersive portrait layout instead of the controller, from a
+    // button labelled "switch to the full controller". Clear it on every exit
+    // out of MOVE, which is the only path that can carry a stale one.
+    setExited(false);
+    setMode(preMoveRef.current === 'move' ? 'swipe' : preMoveRef.current);
+  }, [setMode]);
 
   // Horizontal swipe on the keyboard bar cycles PAD -> SWIPE -> TRACK -> REMOTE
   // (wrapping), matching the segmented control's order.
@@ -1762,16 +1833,21 @@ function PadScreen() {
   // device on EVERY rotation — the exact lifecycle churn this project's worst
   // bugs live in (KI-053). Same component, chrome suppressed by state; the
   // socket never notices the phone turned.
-  if (immersive) {
+  if (immersiveLive) {
     return (
       <>
         <StatusBar hidden />
         {!landGeom.ok ? (
-          <LandscapePadTooSmall reason={landGeom.reason} onExit={exitLandscape} />
-        ) : padVariant === 'move' ? (
-          // Movement mode: one big left-thumb zone driving the LEFT STICK, a
-          // small A/B/NAV/START cluster, nothing else. Same WS session, same
-          // protocol keys — the agent cannot tell the layouts apart.
+          <LandscapePadTooSmall
+            reason={landGeom.reason}
+            orientation={landscape ? 'landscape' : 'portrait'}
+            onExit={mode === 'move' ? exitMove : exitLandscape}
+          />
+        ) : mode === 'move' ? (
+          // Movement mode: one big thumb zone driving the LEFT STICK plus a
+          // small A/B/NAV/START cluster — the landscape spread or the vertical
+          // one-handed table, picked by orientation in landGeom. Same WS
+          // session, same protocol keys — the agent cannot tell modes apart.
           <MovePad
             layout={landGeom}
             btn={btn}
@@ -1779,8 +1855,11 @@ function PadScreen() {
             stickRelease={stickRelease}
             locked={padLock}
             onToggleLock={() => setPadLock((v) => !v)}
-            onExit={exitLandscape}
-            onVariant={toggleVariant}
+            onExit={exitMove}
+            onVariant={landscape ? () => {
+              setExited(false); // same stale-flag reason as exitMove
+              setMode('gamepad');
+            } : undefined}
           />
         ) : (
           <LandscapePad
@@ -1793,7 +1872,7 @@ function PadScreen() {
             locked={padLock}
             onToggleLock={() => setPadLock((v) => !v)}
             onExit={exitLandscape}
-            onVariant={toggleVariant}
+            onVariant={() => setMode('move')}
           />
         )}
         {/* Handoff survives immersive mode. Another phone asking for control is
