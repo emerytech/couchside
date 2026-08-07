@@ -44,6 +44,7 @@ import {
 } from '@/lib/api';
 import { hapticError, hapticLight, hapticMedium, hapticSelection, hapticSuccess } from '@/lib/haptics';
 import { fmtGB, fmtPair, fmtTotal } from '@/lib/downloadSize';
+import { useLibraryMarks } from '@/hooks/useLibraryMarks';
 import { applyFilter, EMPTY_FILTER, isFiltering, pickRandom, type FilterState } from '@/lib/libraryFilter';
 import { setPref, usePref } from '@/lib/prefs';
 import { useBoxes, useSettings } from '@/lib/SettingsContext';
@@ -805,10 +806,13 @@ function LaunchScreen() {
     [searched],
   );
   const compat = useCompat(compatIds, compatOn);
+  const marks = useLibraryMarks();
 
+  // The bookmark set is part of the predicate, so the grid and the filter
+  // sheet's count are computed from the same inputs and cannot disagree.
   const launchers = useMemo(
-    () => applyFilter(searched, filter, Math.floor(Date.now() / 1000), compat),
-    [searched, filter, compat],
+    () => applyFilter(searched, filter, Math.floor(Date.now() / 1000), compat, marks.bookmarks),
+    [searched, filter, compat, marks.bookmarks],
   );
 
   const rows = useMemo(() => {

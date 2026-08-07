@@ -19,6 +19,9 @@
 
 /** The subset of a launcher this module needs. Structural, so tests need no api types. */
 export type FilterableGame = {
+  /** Stable per-launcher id from the agent. Optional here only so the pure
+   *  filter tests can build minimal fixtures; real launchers always carry it. */
+  id?: string;
   label: string;
   kind: 'steam' | 'custom' | 'shortcut';
   /** Absent = Steam has no record = never played. 0 = launched, played nothing. */
@@ -51,6 +54,16 @@ export type FilterState = {
   deck?: DeckStatus[];
   /** ProtonDB tiers to keep; empty = all. Unknown always passes. */
   proton?: ProtonTier[];
+  /**
+   * Show only games the user has bookmarked.
+   *
+   * UNLIKE every other filter here, an empty result is CORRECT rather than a
+   * bug: "show me my bookmarks" when nothing is bookmarked honestly means no
+   * games. The unknown-passes rule elsewhere exists so a third party's missing
+   * data cannot hide something you own; this is the user's own explicit mark,
+   * so absence is an answer, not ignorance.
+   */
+  bookmarked?: boolean;
 };
 
 export const EMPTY_FILTER: FilterState = { search: '', kinds: [], played: 'any' };
@@ -76,7 +89,8 @@ export function isFiltering(f: FilterState): boolean {
     f.played !== 'any' ||
     (f.staleDays ?? 0) > 0 ||
     (f.deck?.length ?? 0) > 0 ||
-    (f.proton?.length ?? 0) > 0
+    (f.proton?.length ?? 0) > 0 ||
+    f.bookmarked === true
   );
 }
 
@@ -110,6 +124,7 @@ export function matches(
   f: FilterState,
   nowSec: number,
   compat?: Compat,
+  bookmarks?: ReadonlySet<string>,
 ): boolean {
   const q = f.search.trim().toLowerCase();
   if (q && !g.label.toLowerCase().includes(q)) return false;
@@ -117,6 +132,10 @@ export function matches(
   if (!matchesPlayed(g, f.played)) return false;
   if (!matchesStale(g, f.staleDays, nowSec)) return false;
   if (!matchesCompat(compat, f.deck ?? [], f.proton ?? [])) return false;
+  if (f.bookmarked) {
+    const k = bookmarkKey(g);
+    if (!k || !bookmarks?.has(k)) return false;
+  }
   return true;
 }
 
@@ -126,9 +145,10 @@ export function applyFilter<T extends FilterableGame & { appid?: number }>(
   f: FilterState,
   nowSec: number,
   compat?: Record<number, Compat>,
+  bookmarks?: ReadonlySet<string>,
 ): T[] {
   return games.filter((g) =>
-    matches(g, f, nowSec, g.appid != null ? compat?.[g.appid] : undefined),
+    matches(g, f, nowSec, g.appid != null ? compat?.[g.appid] : undefined, bookmarks),
   );
 }
 
@@ -142,10 +162,12 @@ export function countMatching(
   f: FilterState,
   nowSec: number,
   compat?: Record<number, Compat>,
+  bookmarks?: ReadonlySet<string>,
 ): number {
   let n = 0;
   for (const g of games) {
-    if (matches(g, f, nowSec, g.appid != null ? compat?.[g.appid] : undefined)) n += 1;
+    const c = g.appid != null ? compat?.[g.appid] : undefined;
+    if (matches(g, f, nowSec, c, bookmarks)) n += 1;
   }
   return n;
 }
@@ -182,4 +204,133 @@ export function playtimeLabel(mins: number | undefined): string {
   const h = Math.floor(mins / 60);
   const m = mins % 60;
   return m ? `${h}h ${m}m` : `${h}h`;
+}
+
+// ---------------------------------------------------------------------------
+// Bookmarks — "come back to this one"
+// ---------------------------------------------------------------------------
+
+/**
+ * The stable identity a bookmark is stored against.
+ *
+ * PREFER THE STEAM APPID. It is global and permanent: 702670 is Donut County on
+ * every box, forever. The launcher `id` is the agent's own handle and is the
+ * only thing a custom launcher or a non-Steam shortcut has, so it is the
+ * fallback rather than the primary — a Steam game keyed by launcher id would
+ * lose its bookmark the day the agent renumbered anything.
+ *
+ * Returns null when a game carries neither, which the filter treats as
+ * "not bookmarked" rather than guessing.
+ */
+export function bookmarkKey(g: { appid?: number; id?: string }): string | null {
+  if (typeof g.appid === 'number' && Number.isFinite(g.appid) && g.appid > 0) {
+    return `app:${Math.floor(g.appid)}`;
+  }
+  const id = g.id?.trim();
+  return id ? `id:${id}` : null;
+}
+
+/** Add or remove a key. Returns a NEW array; order is insertion order, which is
+ *  also the order the UI lists them in. */
+export function toggleBookmark(keys: readonly string[], key: string): string[] {
+  return keys.includes(key) ? keys.filter((k) => k !== key) : [...keys, key];
+}
+
+// ---------------------------------------------------------------------------
+// Saved filter presets
+// ---------------------------------------------------------------------------
+
+export type FilterPreset = { name: string; filter: FilterState };
+
+/** Runtime allowlists for restoring a stored preset. The types themselves are
+ *  compile-time only, so without these a corrupted blob would sail through. */
+const DECK_VALUES: DeckStatus[] = ['verified', 'playable', 'unsupported', 'unknown'];
+const PROTON_VALUES: ProtonTier[] = ['platinum', 'gold', 'silver', 'bronze', 'borked', 'unknown'];
+
+/** Presets a user can keep. Past this the list stops being a shortcut. */
+export const MAX_PRESETS = 12;
+const MAX_PRESET_NAME = 28;
+
+/** Clean a typed name, or null if there is nothing usable in it. Whitespace is
+ *  collapsed so "  weekend   short " and "weekend short" are the same preset
+ *  rather than two that look identical in the list. */
+export function presetName(raw: string): string | null {
+  const n = raw.replace(/\s+/g, ' ').trim().slice(0, MAX_PRESET_NAME);
+  return n.length ? n : null;
+}
+
+/**
+ * Save a filter under a name, replacing any existing preset with that name
+ * case-insensitively — typing "Weekend" over "weekend" is plainly an edit, not
+ * a second entry. A replacement keeps its ORIGINAL position so the list does
+ * not reshuffle under the user's thumb.
+ */
+export function upsertPreset(
+  list: readonly FilterPreset[],
+  name: string,
+  filter: FilterState,
+): FilterPreset[] {
+  const clean = presetName(name);
+  if (!clean) return [...list];
+  const at = list.findIndex((p) => p.name.toLowerCase() === clean.toLowerCase());
+  const entry: FilterPreset = { name: clean, filter };
+  if (at >= 0) {
+    const next = [...list];
+    next[at] = entry;
+    return next;
+  }
+  // Oldest falls off the end rather than refusing the save: a full list must
+  // not turn the button into a dead control with no explanation.
+  return [...list, entry].slice(-MAX_PRESETS);
+}
+
+export function removePreset(list: readonly FilterPreset[], name: string): FilterPreset[] {
+  return list.filter((p) => p.name.toLowerCase() !== name.toLowerCase());
+}
+
+/**
+ * Coerce a stored blob back into presets, dropping anything malformed.
+ *
+ * Defensive on purpose: this is JSON that has been on disk across app upgrades,
+ * and a filter shape that has gained fields since it was written. A preset that
+ * cannot be read is skipped rather than allowed to throw and take every other
+ * preset with it.
+ */
+export function normalizePresets(raw: unknown): FilterPreset[] {
+  if (!Array.isArray(raw)) return [];
+  const out: FilterPreset[] = [];
+  for (const item of raw) {
+    const o = item as { name?: unknown; filter?: unknown };
+    const name = typeof o?.name === 'string' ? presetName(o.name) : null;
+    if (!name) continue;
+    const f = o.filter as Partial<FilterState> | undefined;
+    if (!f || typeof f !== 'object') continue;
+    const kinds = Array.isArray(f.kinds)
+      ? f.kinds.filter((k): k is 'steam' | 'custom' | 'shortcut' =>
+          k === 'steam' || k === 'custom' || k === 'shortcut')
+      : [];
+    const played: PlayedFilter =
+      f.played === 'never' || f.played === 'under2h' || f.played === 'over2h' ? f.played : 'any';
+    out.push({
+      name,
+      filter: {
+        search: typeof f.search === 'string' ? f.search : '',
+        kinds,
+        played,
+        staleDays: typeof f.staleDays === 'number' && f.staleDays > 0 ? Math.floor(f.staleDays) : undefined,
+        // VALIDATE THE MEMBERS, do not just check it is an array. matchesCompat
+        // filters on whatever it is handed, so a junk value in here would hide
+        // games the user owns — the one outcome this module exists to prevent.
+        deck: Array.isArray(f.deck)
+          ? (f.deck.filter((d) => DECK_VALUES.includes(d as DeckStatus)) as DeckStatus[])
+          : undefined,
+        proton: Array.isArray(f.proton)
+          ? (f.proton.filter((p2) => PROTON_VALUES.includes(p2 as ProtonTier)) as ProtonTier[])
+          : undefined,
+        bookmarked: f.bookmarked === true ? true : undefined,
+      },
+    });
+    if (out.length >= MAX_PRESETS) break;
+  }
+  return out;
 }

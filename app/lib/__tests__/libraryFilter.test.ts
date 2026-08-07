@@ -10,6 +10,13 @@ import { test } from 'node:test';
 import assert from 'node:assert';
 
 import {
+  bookmarkKey,
+  toggleBookmark,
+  presetName,
+  upsertPreset,
+  normalizePresets,
+  MAX_PRESETS,
+  type FilterPreset,
   applyFilter,
   countLabel,
   countMatching,
@@ -275,4 +282,116 @@ test('shuffle can reach every game and never goes out of range (control)', () =>
 
 test('a generator returning exactly 1 does not fall off the end (control)', () => {
   assert.equal(pickRandom(['a', 'b'], () => 1), 'b');
+});
+
+// ---------------------------------------------------------------------------
+// Bookmarks and saved presets
+// ---------------------------------------------------------------------------
+
+test('a bookmark is keyed on the Steam appid when there is one', () => {
+  // The appid is global and permanent; the launcher id is the agent's handle.
+  // Keying a Steam game by launcher id would drop the bookmark the day the
+  // agent renumbered anything.
+  assert.equal(bookmarkKey({ appid: 702670, id: 'steam-3' }), 'app:702670');
+  assert.equal(bookmarkKey({ id: 'custom-vlc' }), 'id:custom-vlc');
+  assert.equal(bookmarkKey({}), null, 'neither: refuse to guess');
+  assert.equal(bookmarkKey({ appid: 0, id: 'x' }), 'id:x', 'appid 0 is not a real appid');
+});
+
+test('toggling a bookmark is reversible and does not mutate (control)', () => {
+  const a: string[] = [];
+  const b = toggleBookmark(a, 'app:1');
+  assert.deepEqual(a, [], 'input untouched');
+  assert.deepEqual(b, ['app:1']);
+  assert.deepEqual(toggleBookmark(b, 'app:1'), [], 'toggles back off');
+});
+
+test('the bookmarked filter shows only marked games, and none when nothing is marked', () => {
+  const games = [
+    { id: 'a', appid: 1, label: 'Alpha', kind: 'steam' as const },
+    { id: 'b', label: 'Beta', kind: 'custom' as const },
+  ];
+  const f = { ...EMPTY_FILTER, bookmarked: true };
+  const marks = new Set(['app:1']);
+  assert.deepEqual(applyFilter(games, f, 0, undefined, marks).map((g) => g.label), ['Alpha']);
+  // Empty is the CORRECT answer here, unlike every other filter in this file:
+  // it is the user's own mark, so absence is an answer rather than ignorance.
+  assert.equal(applyFilter(games, f, 0, undefined, new Set()).length, 0);
+  // and with the filter off, the bookmark set is irrelevant (control)
+  assert.equal(applyFilter(games, EMPTY_FILTER, 0, undefined, new Set()).length, 2);
+});
+
+test('bookmarked counts as filtering, so the clear affordance appears', () => {
+  assert.equal(isFiltering(EMPTY_FILTER), false);
+  assert.equal(isFiltering({ ...EMPTY_FILTER, bookmarked: true }), true);
+});
+
+test('preset names are collapsed and capped, and blank names are refused', () => {
+  assert.equal(presetName('  weekend   short  '), 'weekend short');
+  assert.equal(presetName('   '), null);
+  assert.equal(presetName('x'.repeat(80))?.length, 28);
+});
+
+test('saving over an existing name edits in place rather than duplicating', () => {
+  const f1 = { ...EMPTY_FILTER, played: 'never' as const };
+  const f2 = { ...EMPTY_FILTER, played: 'over2h' as const };
+  let list = upsertPreset([], 'Weekend', f1);
+  list = upsertPreset(list, 'Backlog', f1);
+  const before = list.length;
+  list = upsertPreset(list, 'weekend', f2); // different case, same preset
+  assert.equal(list.length, before, 'no duplicate');
+  // Position is preserved so the list does not reshuffle under the user's
+  // thumb, but the NAME is whatever they just typed — what you type is what you
+  // get beats silently restoring capitalisation you did not ask for.
+  assert.equal(list[0].name, 'weekend', 'takes the newly typed name');
+  assert.equal(list[1].name, 'Backlog', 'the other preset stays put');
+  assert.equal(list[0].filter.played, 'over2h', 'and takes the new filter');
+});
+
+test('the preset list is capped, dropping the oldest rather than refusing', () => {
+  let list: FilterPreset[] = [];
+  for (let i = 0; i < MAX_PRESETS + 3; i += 1) list = upsertPreset(list, `p${i}`, EMPTY_FILTER);
+  assert.equal(list.length, MAX_PRESETS);
+  assert.equal(list[list.length - 1].name, `p${MAX_PRESETS + 2}`, 'newest kept');
+  assert.equal(list[0].name, 'p3', 'oldest dropped');
+});
+
+test('a malformed stored preset is skipped, not fatal (control)', () => {
+  const raw = [
+    { name: 'good', filter: { search: 'x', kinds: ['steam'], played: 'never' } },
+    { name: '', filter: {} },
+    { name: 'no filter' },
+    'not an object',
+    { name: 'bad fields', filter: { search: 5, kinds: 'nope', played: 'wat', staleDays: -3 } },
+  ];
+  const out = normalizePresets(raw);
+  assert.deepEqual(out.map((p) => p.name), ['good', 'bad fields']);
+  assert.deepEqual(out[0].filter.kinds, ['steam']);
+  assert.equal(out[1].filter.search, '', 'bad types fall back to defaults');
+  assert.deepEqual(out[1].filter.kinds, []);
+  assert.equal(out[1].filter.played, 'any');
+  assert.equal(out[1].filter.staleDays, undefined, 'a negative day count is dropped');
+});
+
+test('normalizePresets survives junk instead of throwing (control)', () => {
+  assert.deepEqual(normalizePresets(null), []);
+  assert.deepEqual(normalizePresets('nope'), []);
+  assert.deepEqual(normalizePresets(undefined), []);
+});
+
+test('a corrupted deck/proton list is stripped, not passed through (control)', () => {
+  // matchesCompat filters on whatever it is handed, so junk here would hide
+  // games the user owns — the exact failure this module exists to prevent.
+  const out = normalizePresets([
+    { name: 'junk', filter: { search: '', kinds: [], played: 'any', deck: ['verified', 'wat', 7], proton: ['gold', null] } },
+  ]);
+  assert.deepEqual(out[0].filter.deck, ['verified']);
+  assert.deepEqual(out[0].filter.proton, ['gold']);
+});
+
+test('an unknown played value cannot become the over-2h branch (control)', () => {
+  // matchesPlayed falls through to >=2h for anything it does not recognise, so
+  // a corrupted blob would silently hide every short game.
+  const out = normalizePresets([{ name: 'x', filter: { played: 'nonsense' } }]);
+  assert.equal(out[0].filter.played, 'any');
 });
