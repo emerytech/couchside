@@ -109,7 +109,9 @@ function TvPicker({ tvs, active }: { tvs: DirectTv[]; active: DirectTv | null })
             <Pressable
               onPress={() => {
                 setOpen(false);
-                router.push('/(tabs)/setup');
+                // navigate, not push — a push stacks a duplicate (tabs) entry
+                // that the iOS back-swipe can pop to. See _layout.tsx.
+                router.navigate('/(tabs)/setup');
               }}
               style={({ pressed }) => [styles.addRow, pressed && styles.pressed]}>
               <Ionicons name="add" size={16} color={t.blue} />
@@ -134,7 +136,7 @@ function NoTv() {
         over your Wi-Fi — nothing else has to be running.
       </Text>
       <Pressable
-        onPress={() => router.push('/(tabs)/setup')}
+        onPress={() => router.navigate('/(tabs)/setup')}
         style={({ pressed }) => [styles.emptyBtn, pressed && styles.pressed]}>
         <Text style={styles.emptyBtnText}>OPEN SETUP</Text>
       </Pressable>

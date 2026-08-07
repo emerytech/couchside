@@ -97,7 +97,11 @@ export function TourThanks() {
                 onPress={() => {
                   hapticLight();
                   dismissTourThanks();
-                  router.push('/(tabs)/setup?tab=account');
+                  // navigate, NOT push: a push creates a SECOND (tabs) entry on the root
+                  // stack, and every duplicate entry arms the iOS back-swipe with a
+                  // screen to pop to — measured pulling the pad out from under a
+                  // stick drag (see _layout.tsx). navigate switches tabs in place.
+                  router.navigate('/(tabs)/setup?tab=account');
                 }}
                 accessibilityRole="button"
                 style={({ pressed }) => [styles.secondary, pressed && styles.pressed]}>
