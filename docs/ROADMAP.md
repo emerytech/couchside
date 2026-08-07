@@ -130,6 +130,41 @@ Entry fields: `priority` (P0 blocker → P3 nice) · `risk` · `affects` · `dep
 
 ## 📋 Planned
 
+### Movement mode: landscape, one big thumb-zone, for Vampire-Survivors-likes (owner ask 2026-08-07)
+- **priority:** P2 · **risk:** low-medium (touches the input path, but adds a TABLE
+  rather than changing the shipped one) · **affects:** app only ·
+  **depends_on:** the landscape gamepad (shipped 2.9.37) — reuses `FloatingStick`
+  and `lib/padLayout.ts` wholesale
+- **Owner, after playing on the new landscape pad:** a movement surface "that acts
+  like a left joystick", because the phone turns out to be a great way to play
+  games that are 95% movement and 5% menus (Vampire Survivors, Megabonk).
+- **The primitive already exists.** `FloatingStick` is already fixed-container /
+  floating-origin / capture-until-release with a radial clamp. The only thing
+  missing is SIZE — it is a 30U circle today because thirteen other controls share
+  the screen. Movement mode is a second `padLayout` table where almost nothing
+  competes for space.
+- **NOT the swipe surface, despite the owner's second framing.** `SwipeSurface`
+  emits discrete d-pad steps (`{t:'b'}`); continuous movement needs analog stick
+  output (`{t:'s'}`). Building "landscape swipe" by following the words would
+  produce jerky, unplayable movement.
+- **NOT in the centre channel, despite the owner's first framing.** In a two-handed
+  landscape grip the centre of the screen is reachable by neither thumb; the ask is
+  really for a much bigger LEFT-thumb zone. Flagged rather than silently redesigned.
+- **This reverses a decision from the landscape spec** ("not spawn-anywhere floating
+  sticks — a half-screen stick eats the d-pad"). That reasoning holds for the general
+  controller and does NOT hold for a mode where the d-pad is unused during play — so
+  the resolution is a SEPARATE MODE, never a change to the default pad.
+- **Entry mechanism decided:** a toggle in the landscape chrome row next to LOCK
+  (swaps the table in place, no new pad mode, no selector-row pressure, WS/uinput
+  untouched). A fifth selector segment was considered and deferred; auto-detect from
+  the running game was rejected for v1 — guessing wrong mid-boss-fight fails silently.
+- **PHASE 1 IS VERIFICATION, NOT CODE:** run Vampire Survivors on bazzite from the
+  SHIPPED landscape pad and confirm the left stick alone suffices — and find out
+  whether Megabonk needs manual aim. If it does, the layout is a different shape.
+  Do not build the table before this answer exists.
+- **Full spec: `docs/memory/project_movement-mode.md`**
+
+
 ### Install a game you own but have not downloaded (owner ask 2026-08-07)
 - **priority:** P2 · **risk:** medium-high (needs a NEW client-supplied-appid path that
   the existing installed-game validator cannot gate) · **affects:** agent + app ·
