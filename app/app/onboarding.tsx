@@ -27,6 +27,7 @@ import { BackHandler, Pressable, ScrollView, StyleSheet, Text, View } from 'reac
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
 import { DirectTvSetup } from '@/components/DirectTvSetup';
+import { useLockOrientation } from '@/hooks/useLockOrientation';
 import { hapticLight, hapticSelection } from '@/lib/haptics';
 import {
   backFrom,
@@ -44,6 +45,11 @@ export default function Onboarding() {
   const t = useTheme();
   const styles = useThemedStyles(makeStyles);
   const insets = useSafeAreaInsets();
+  // Portrait, like every tab except Pad. This route lives OUTSIDE the tab group,
+  // so it does not inherit their lock — without this the first-run flow is the
+  // one screen in the app that can rotate, and it has a long copy block and a
+  // command line that reflow badly in landscape.
+  useLockOrientation('portrait');
   const [step, setStep] = useState<OnboardingStep>(FIRST_STEP);
   const [copied, setCopied] = useState(false);
 

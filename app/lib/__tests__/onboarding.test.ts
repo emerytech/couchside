@@ -99,3 +99,37 @@ test('the confirmation quotes what install.sh actually prints', async () => {
   );
   assert.ok(INSTALL_COMMAND.includes('couchside.tv/install.sh'), 'the command names the real script');
 });
+
+test('every screen locks orientation except the Pad, which allows landscape', async () => {
+  // Rotation is allowed on exactly ONE screen. This is a source-reading guard
+  // because the failure is silent: a new route outside the tab group does not
+  // inherit anything, it simply rotates — which is how the first-run flow, added
+  // as a sibling of (tabs), became the one screen in the app that could.
+  const { readFileSync, readdirSync, statSync } = await import('node:fs');
+  const { join, relative } = await import('node:path');
+  const appDir = join(import.meta.dirname, '../../app');
+  const screens: string[] = [];
+  const walk = (dir: string) => {
+    for (const e of readdirSync(dir)) {
+      const p = join(dir, e);
+      if (statSync(p).isDirectory()) walk(p);
+      else if (e.endsWith('.tsx') && !e.includes('_layout')) screens.push(p);
+    }
+  };
+  walk(appDir);
+
+  for (const p of screens) {
+    const rel = relative(appDir, p);
+    // +not-found is a dead-end error page with one line of text; it has nothing
+    // to reflow and no input path.
+    if (rel === '+not-found.tsx') continue;
+    const src = readFileSync(p, 'utf8');
+    assert.ok(src.includes('useLockOrientation('), `${rel} must state an orientation policy`);
+    const allowsLandscape = src.includes("useLockOrientation('allow-landscape')");
+    assert.equal(
+      allowsLandscape,
+      rel.endsWith('pad.tsx'),
+      `only the Pad may allow landscape; ${rel} disagrees`,
+    );
+  }
+});
