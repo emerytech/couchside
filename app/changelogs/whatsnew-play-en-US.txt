@@ -1,5 +1,5 @@
-New: a Big Picture button for PCs that have Steam but no Game Mode session (Nobara, most desktop Linux). One tap opens Steam Big Picture on the TV; tap again to come back to the desktop.
+Turn the phone sideways on the Pad tab: the controller now fills the screen edge-to-edge, with an orientation lock for long sessions.
 
-The Console now shows which OS and version your box is running.
+New since last update: use the app as a plain TV remote (Roku and Google TV, no PC needed), bookmark games and save library filters, see each game's install size, get a heads-up when a download finishes, and a guided setup walkthrough — existing users can replay it from Setup.
 
-Also: connection diagnostics are reachable in large-pad mode, tap-to-retry does a deeper reset when a connection goes quiet, and the app does less redundant work after a session switch.
+Plus many fixes, including Google TV pairing on Android.
