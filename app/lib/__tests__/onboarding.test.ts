@@ -125,11 +125,20 @@ test('every screen locks orientation except the Pad, which allows landscape', as
     if (rel === '+not-found.tsx') continue;
     const src = readFileSync(p, 'utf8');
     assert.ok(src.includes('useLockOrientation('), `${rel} must state an orientation policy`);
-    const allowsLandscape = src.includes("useLockOrientation('allow-landscape')");
+    const mentionsLandscape = src.includes("'allow-landscape'");
     assert.equal(
-      allowsLandscape,
+      mentionsLandscape,
       rel.endsWith('pad.tsx'),
       `only the Pad may allow landscape; ${rel} disagrees`,
     );
+    if (rel.endsWith('pad.tsx')) {
+      // And even there it is CONDITIONAL on the gamepad mode. A flat
+      // 'allow-landscape' rotated Swipe, Mouse, Remote and the Steam menus too —
+      // none of which have a landscape layout. Reported from a device.
+      assert.ok(
+        /useLockOrientation\(\s*mode === 'gamepad'/.test(src),
+        'the Pad must allow landscape only in gamepad mode',
+      );
+    }
   }
 });
