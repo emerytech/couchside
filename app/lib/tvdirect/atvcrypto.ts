@@ -123,7 +123,24 @@ function finishCert(keys: forge.pki.rsa.KeyPair, t0: number): MintResult {
   cert.sign(keys.privateKey, forge.md.sha256.create());
   return {
     certPem: forge.pki.certificateToPem(cert),
-    keyPem: forge.pki.privateKeyToPem(keys.privateKey),
+    // PKCS#8 ("BEGIN PRIVATE KEY"), NOT PKCS#1 ("BEGIN RSA PRIVATE KEY").
+    //
+    // This is the difference between Google TV pairing working on Android and
+    // not working at all. react-native-tcp-socket's Android side parses the PEM
+    // body with PKCS8EncodedKeySpec and nothing else
+    // (android/.../SSLCertificateHelper.java:108), so a PKCS#1 key throws
+    // "Failed to parse private key from PEM" on every connectTLS — every pair,
+    // every keypress. iOS happens to detect and convert PKCS#1
+    // (ios/TcpSocketClient.m:614), which is exactly why this survived: the
+    // feature was only ever verified on iOS TestFlight builds.
+    //
+    // PKCS#8 is accepted by BOTH platforms, so this is strictly wider.
+    // No migration needed: identities are per-device (SecureStore, never
+    // synced), Android has never had a working one to migrate, and an existing
+    // iOS identity in PKCS#1 keeps working on iOS.
+    keyPem: forge.pki.privateKeyInfoToPem(
+      forge.pki.wrapRsaPrivateKey(forge.pki.privateKeyToAsn1(keys.privateKey)),
+    ),
     modulusHex: modulusOf(keys.publicKey),
     elapsedMs: Date.now() - t0,
   };
