@@ -54,6 +54,10 @@ export default function RootLayout() {
           <TapCapture>
           <Stack>
             <Stack.Screen name="(tabs)" options={{ headerShown: false }} />
+            {/* First run. A sibling of (tabs), never inside it: the tab bar must
+                not render behind it and the tab layout's redirects must not race
+                it. See docs/memory/project_first-run-mode-chooser.md. */}
+            <Stack.Screen name="onboarding" options={{ headerShown: false, gestureEnabled: false }} />
           </Stack>
           {/* Global overlay: survives the Paywall unmount on unlock (see UnlockToast). */}
           <UnlockToast />

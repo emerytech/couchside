@@ -11,7 +11,9 @@ import { TourThanks } from '@/components/TourThanks';
 import { useFeatureTour } from '@/hooks/useFeatureTour';
 import { useDownloadWatcher } from '@/hooks/useDownloadWatch';
 import { showTourThanks, useTourThanks } from '@/hooks/useTourThanks';
+import { shouldShowOnboarding } from '@/lib/onboarding';
 import { useBoxes, useSettings } from '@/lib/SettingsContext';
+import { useTvs } from '@/lib/tvdirect/store';
 import { useTheme } from '@/lib/theme';
 
 // NOT the landing screen. This governs back-behaviour within the tab group; on a
@@ -65,6 +67,8 @@ export default function TabLayout() {
     ...(hideLaunch ? [] : ['launch']),
     'setup',
   ];
+  const onboardingDone = usePref('onboardingDone');
+  const { tvs } = useTvs();
   const tourEnabled = usePref('featureTour');
   const tour = useFeatureTour(boxes.length > 0, tourEnabled);
   const thanksVisible = useTourThanks();
@@ -138,6 +142,16 @@ export default function TabLayout() {
     // user had to find Console themselves. Reported from a device.
     if (tour.visible) return;
     redirected.current = true;
+    // FIRST RUN, before anything else. A truly fresh install goes to the
+    // welcome/chooser flow instead of straight to Setup, whose zero-box copy
+    // tells you to install a service on "the box you want to control" — a dead
+    // end for the smart-TV-only audience. The empty-state guards are what keep
+    // an UPGRADING user out of it: the pref defaults false for every install
+    // that already exists, so having a box or a TV is what answers the question.
+    if (shouldShowOnboarding({ done: onboardingDone, boxCount: boxes.length, tvCount: tvs.length, ready })) {
+      router.replace('/onboarding');
+      return;
+    }
     // In remote-only mode the landing tab is the Remote, always: the box tabs
     // it could otherwise name are hidden, and Console with no box is an empty
     // dashboard. Setup is still where someone with no TV yet has to go, but
@@ -155,6 +169,10 @@ export default function TabLayout() {
     if (landingTab !== 'index') {
       router.replace(`/(tabs)/${landingTab}`);
     }
+    // onboardingDone/tvs are read inside but deliberately NOT deps: this is a
+    // one-shot redirect guarded by `redirected`, and re-running it when the
+    // flag flips would fight the navigation that flip just caused.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [ready, boxes.length, landingTab, remoteOnly]);
 
   // Bounce off a tab hidden for the active box — landing on the Pad initial

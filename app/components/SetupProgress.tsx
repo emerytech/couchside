@@ -517,11 +517,13 @@ export function SetupProgress() {
         <View style={styles.diag}>
           <Text style={styles.diagTitle}>
             {phase.k === 'stalled'
-              ? `Stopped looking${subnet ? ` on ${subnet}` : ''} to save battery.`
+              ? `Nothing answered${subnet ? ` on ${subnet}` : ''}. Usually one of:`
               : `Still nothing${subnet ? ` on ${subnet}` : ''}. Usually one of:`}
           </Text>
           <Text style={styles.diagItem}>
-            · the installer has not finished on your PC yet — keep this open
+            {phase.k === 'stalled'
+              ? '· the installer has not finished yet — that is normal, tap Keep looking'
+              : '· the installer has not finished on your PC yet — keep this open'}
           </Text>
           <Text style={styles.diagItem}>
             · your phone is on a different network from your box (guest Wi-Fi, or the other band
@@ -529,6 +531,12 @@ export function SetupProgress() {
           </Text>
           <Text style={styles.diagItem}>
             · this phone is blocking local-network access for Couchside
+          </Text>
+          {/* The installer ends by printing a pairing link on the box's own
+              screen. Scanning it is faster and more reliable than sweeping 254
+              addresses, and until now nothing here said so. */}
+          <Text style={styles.diagItem}>
+            · quicker than waiting: scan the link the installer printed on your TV
           </Text>
           <View style={styles.btnRow}>
             {phase.k === 'stalled' && (

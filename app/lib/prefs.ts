@@ -113,6 +113,17 @@ export type Prefs = {
    *  and reopens in one tap, which a hidden one cannot. Persisted, because a
    *  section you fold away should stay folded. */
   streamCollapsed: boolean;
+  /**
+   * The first-run flow (welcome -> which device -> how to set it up) has been
+   * seen and exited. Set on ANY exit: either card, the skip link, or the Android
+   * back button out of the first screen — a flow that reappears after a
+   * deliberate back-out is a nag.
+   *
+   * NOT sufficient on its own to decide whether to show it: this defaults false
+   * for every EXISTING install, so the trigger also requires an empty fleet and
+   * no TVs. Someone who already has a box answered the question by having one.
+   */
+  onboardingDone: boolean;
   /** Remove the Steam downloads card from the Launch tab. Off by default: a
    *  transfer in flight is the most useful thing that tab can tell you. On for
    *  people who never queue from the couch and want the games grid to start at
@@ -257,6 +268,7 @@ export const DEFAULTS: Prefs = {
   keyboardMode: false,
   searchButtonSide: 'left',
   streamCollapsed: false,
+  onboardingDone: false,
   hideDownloads: false,
   appUpdateReminder: true,
   defaultPadMode: 'swipe',
@@ -349,6 +361,7 @@ function normalize(raw: unknown): Prefs {
       ? o.defaultPadMode
       : 'swipe';
   const streamCollapsed = bool(o.streamCollapsed, DEFAULTS.streamCollapsed);
+  const onboardingDone = bool(o.onboardingDone, DEFAULTS.onboardingDone);
   const hideDownloads = bool(o.hideDownloads, DEFAULTS.hideDownloads);
   const appUpdateReminder = bool(o.appUpdateReminder, DEFAULTS.appUpdateReminder);
   const searchSide: 'left' | 'right' | 'off' =
@@ -361,6 +374,7 @@ function normalize(raw: unknown): Prefs {
   return {
     searchButtonSide: searchSide,
     streamCollapsed,
+    onboardingDone,
     hideDownloads,
     appUpdateReminder,
     confirmSuspend:
