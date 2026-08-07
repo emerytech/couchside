@@ -130,6 +130,26 @@ Entry fields: `priority` (P0 blocker → P3 nice) · `risk` · `affects` · `dep
 
 ## 📋 Planned
 
+### Vertical MOVE: one-handed portrait movement mode (owner ask 2026-08-07, refined same day)
+- **priority:** P2 (owner is actively playing with the landscape one) · **risk:** medium
+  (extends the immersive gate to portrait for the first time; input path) ·
+  **affects:** app only · **depends_on:** movement mode (shipped 2.9.38)
+- Entered by a BUTTON from the pad mode panel alongside SWIPE; once open it is
+  IMMERSIVE with the same 🔒 LOCK / ✕ EXIT chrome as the landscape layouts. One mode,
+  two tables: portrait = new one-handed vertical layout, landscape = existing MovePad.
+  Orientation policy gains 'portrait-locked'. Reconcile the landscapePadVariant toggle
+  (one source of truth for movement-vs-controller).
+- **Full spec: `docs/memory/project_vertical-move-mode.md`**
+
+### Per-game themes, auto-applied from the running game (owner ask 2026-08-07)
+- **priority:** P3 / future · **risk:** low (pure app-side lookup; agent untouched) ·
+  **affects:** app only · **depends_on:** nothing; layers on feat/theming when that ships
+- Agent already reports the running appid; theme = frozen app-internal
+  appid -> Palette map, pad surfaces first. Pilot: Vampire Survivors + Megabonk —
+  the same bazzite session should answer movement-mode's open Megabonk aim question.
+- **Full spec: `docs/memory/project_game-themes.md`**
+
+
 ### Movement mode: landscape, one big thumb-zone, for Vampire-Survivors-likes (owner ask 2026-08-07)
 - **priority:** P2 · **risk:** low-medium (touches the input path, but adds a TABLE
   rather than changing the shipped one) · **affects:** app only ·
