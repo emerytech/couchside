@@ -74,6 +74,32 @@ export function shouldShowOnboarding(args: {
 }
 
 /**
+ * Should an EXISTING user be offered the new first-run flow?
+ *
+ * The condition is the exact mirror of the fleet guard above: someone who has a
+ * box or a TV but has never been through onboarding. `shouldShowOnboarding`
+ * refuses to FORCE the flow on them — this offers it instead. Same facts, two
+ * different answers, which is why they live next to each other.
+ *
+ * `offered` is its own flag rather than `done`: declining the offer must not
+ * read as having completed setup, or the Prefs replay control would re-offer
+ * this popup instead of replaying the flow.
+ */
+export function shouldOfferWhatsNew(args: {
+  offered: boolean;
+  done: boolean;
+  boxCount: number;
+  tvCount: number;
+  ready: boolean;
+}): boolean {
+  if (!args.ready) return false;
+  if (args.offered || args.done) return false;
+  // An existing user is precisely someone who already has something paired.
+  // A fresh install gets the flow itself, not an offer of it.
+  return args.boxCount > 0 || args.tvCount > 0;
+}
+
+/**
  * What the box prints when the installer succeeds — the sentence the user is
  * asked to confirm they saw.
  *

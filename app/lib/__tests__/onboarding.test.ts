@@ -16,6 +16,7 @@ import {
   INSTALL_COMMAND,
   INSTALL_SUCCESS_MARKER,
   isExit,
+  shouldOfferWhatsNew,
   shouldShowOnboarding,
   stepForChoice,
 } from '../onboarding.ts';
@@ -141,4 +142,60 @@ test('every screen locks orientation except the Pad, which allows landscape', as
       );
     }
   }
+});
+
+test('the offer is the exact mirror of the guard that suppresses the flow', () => {
+  const base = { offered: false, done: false, ready: true };
+  // Existing user: has something paired, never saw onboarding. The flow is NOT
+  // forced on them (guard), so it is OFFERED instead.
+  assert.equal(shouldOfferWhatsNew({ ...base, boxCount: 1, tvCount: 0 }), true);
+  assert.equal(shouldShowOnboarding({ done: false, boxCount: 1, tvCount: 0, ready: true }), false);
+  assert.equal(shouldOfferWhatsNew({ ...base, boxCount: 0, tvCount: 2 }), true);
+
+  // Fresh install: gets the flow itself, so there is nothing to offer.
+  assert.equal(shouldOfferWhatsNew({ ...base, boxCount: 0, tvCount: 0 }), false);
+  assert.equal(shouldShowOnboarding({ done: false, boxCount: 0, tvCount: 0, ready: true }), true);
+});
+
+test('asked at most once, and never after the flow has been seen', () => {
+  const paired = { boxCount: 1, tvCount: 0, ready: true };
+  assert.equal(shouldOfferWhatsNew({ ...paired, offered: true, done: false }), false, 'already asked');
+  assert.equal(shouldOfferWhatsNew({ ...paired, offered: false, done: true }), false, 'already seen it');
+});
+
+test('declining is not the same as completing (control)', () => {
+  // The reason `offered` is its own flag. If declining set `done` instead, the
+  // Prefs replay control would re-offer this popup rather than replay the flow.
+  const paired = { boxCount: 1, tvCount: 0, ready: true };
+  const declined = { ...paired, offered: true, done: false };
+  assert.equal(shouldOfferWhatsNew(declined), false, 'not asked again');
+  assert.equal(
+    shouldShowOnboarding({ done: declined.done, boxCount: 1, tvCount: 0, ready: true }),
+    false,
+    'and still not forced on them',
+  );
+});
+
+test('nothing is offered before state has loaded (control)', () => {
+  assert.equal(
+    shouldOfferWhatsNew({ offered: false, done: false, boxCount: 1, tvCount: 0, ready: false }),
+    false,
+  );
+});
+
+test('the offer is actually mounted and writes its flag before navigating', async () => {
+  // The wired-to-nothing guard again: a dialog gated on a condition nobody
+  // renders is invisible, and a flag written AFTER navigation can be lost when
+  // the navigation unmounts the component — which would re-ask on next launch.
+  const { readFileSync } = await import('node:fs');
+  const { join } = await import('node:path');
+  const layout = readFileSync(join(import.meta.dirname, '../../app/(tabs)/_layout.tsx'), 'utf8');
+  assert.ok(layout.includes('<WhatsNewOffer'), 'the offer must be rendered somewhere');
+  assert.ok(layout.includes('shouldOfferWhatsNew('), 'and gated on the shared condition');
+
+  const offer = readFileSync(join(import.meta.dirname, '../../components/WhatsNewOffer.tsx'), 'utf8');
+  const setIdx = offer.indexOf("setPref('whatsNewOffered', true)");
+  const navIdx = offer.indexOf("router.push('/onboarding')");
+  assert.ok(setIdx > 0 && navIdx > 0, 'both the flag write and the navigation must exist');
+  assert.ok(setIdx < navIdx, 'the flag must be written BEFORE navigating, or it can be lost');
 });

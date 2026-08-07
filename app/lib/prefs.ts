@@ -124,6 +124,15 @@ export type Prefs = {
    * no TVs. Someone who already has a box answered the question by having one.
    */
   onboardingDone: boolean;
+  /**
+   * The one-time "there is a new setup walkthrough, want to see it?" offer has
+   * been PUT TO the user — accepted or declined, both count.
+   *
+   * Deliberately NOT onboardingDone. Reusing that flag would make "I declined
+   * the offer" indistinguishable from "I finished setup", and the Prefs replay
+   * control would then re-offer the popup instead of replaying the flow.
+   */
+  whatsNewOffered: boolean;
   /** Remove the Steam downloads card from the Launch tab. Off by default: a
    *  transfer in flight is the most useful thing that tab can tell you. On for
    *  people who never queue from the couch and want the games grid to start at
@@ -269,6 +278,7 @@ export const DEFAULTS: Prefs = {
   searchButtonSide: 'left',
   streamCollapsed: false,
   onboardingDone: false,
+  whatsNewOffered: false,
   hideDownloads: false,
   appUpdateReminder: true,
   defaultPadMode: 'swipe',
@@ -362,6 +372,7 @@ function normalize(raw: unknown): Prefs {
       : 'swipe';
   const streamCollapsed = bool(o.streamCollapsed, DEFAULTS.streamCollapsed);
   const onboardingDone = bool(o.onboardingDone, DEFAULTS.onboardingDone);
+  const whatsNewOffered = bool(o.whatsNewOffered, DEFAULTS.whatsNewOffered);
   const hideDownloads = bool(o.hideDownloads, DEFAULTS.hideDownloads);
   const appUpdateReminder = bool(o.appUpdateReminder, DEFAULTS.appUpdateReminder);
   const searchSide: 'left' | 'right' | 'off' =
@@ -375,6 +386,7 @@ function normalize(raw: unknown): Prefs {
     searchButtonSide: searchSide,
     streamCollapsed,
     onboardingDone,
+    whatsNewOffered,
     hideDownloads,
     appUpdateReminder,
     confirmSuspend:

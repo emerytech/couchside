@@ -1,17 +1,18 @@
 import Ionicons from '@expo/vector-icons/Ionicons';
 import { router, Tabs, useSegments } from 'expo-router';
 import { currentStep, isFinalStep } from '@/lib/tour';
-import { useCallback, useEffect, useRef } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 
 import { useCapsSync } from '@/hooks/useCapsSync';
 import { hapticSelection } from '@/lib/haptics';
 import { usePref } from '@/lib/prefs';
 import { FeatureTour } from '@/components/FeatureTour';
 import { TourThanks } from '@/components/TourThanks';
+import { WhatsNewOffer } from '@/components/WhatsNewOffer';
 import { useFeatureTour } from '@/hooks/useFeatureTour';
 import { useDownloadWatcher } from '@/hooks/useDownloadWatch';
 import { showTourThanks, useTourThanks } from '@/hooks/useTourThanks';
-import { shouldShowOnboarding } from '@/lib/onboarding';
+import { shouldOfferWhatsNew, shouldShowOnboarding } from '@/lib/onboarding';
 import { useBoxes, useSettings } from '@/lib/SettingsContext';
 import { useTvs } from '@/lib/tvdirect/store';
 import { useTheme } from '@/lib/theme';
@@ -68,10 +69,15 @@ export default function TabLayout() {
     'setup',
   ];
   const onboardingDone = usePref('onboardingDone');
+  const whatsNewOffered = usePref('whatsNewOffered');
   const { tvs } = useTvs();
   const tourEnabled = usePref('featureTour');
   const tour = useFeatureTour(boxes.length > 0, tourEnabled);
   const thanksVisible = useTourThanks();
+  // Offer the new first-run flow to people who were already set up before it
+  // existed — the exact mirror of the fleet guard, which refuses to force it on
+  // them. Local state so answering hides it on the same frame.
+  const [offerDismissed, setOfferDismissed] = useState(false);
   // EXACTLY ONE watcher for the whole app. This lived in the Launch tab, which
   // mounts lazily on first focus — so a download finishing while the user sat on
   // Console went unnoticed, which is precisely the case the feature exists for.
@@ -298,6 +304,20 @@ export default function TabLayout() {
         Rendered after the tour so it sits above it during the frame the tour is
         tearing down. */}
     {thanksVisible ? <TourThanks /> : null}
+    {/* Never stacked on the tour or the thank-you card — one interruption at a
+        time, and the tour is the one already in progress. */}
+    {!offerDismissed &&
+    !tour.visible &&
+    !thanksVisible &&
+    shouldOfferWhatsNew({
+      offered: whatsNewOffered,
+      done: onboardingDone,
+      boxCount: boxes.length,
+      tvCount: tvs.length,
+      ready,
+    }) ? (
+      <WhatsNewOffer onDone={() => setOfferDismissed(true)} />
+    ) : null}
     </>
   );
 }
