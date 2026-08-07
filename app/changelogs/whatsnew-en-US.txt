@@ -1,5 +1,9 @@
-Fixes the big one: switching your box between Game Mode and Desktop no longer freezes the app. The trackpad would stop moving the cursor while everything still looked connected, and the only way back was force-quitting or switching boxes. That's fixed — switch as often as you like.
+The controller goes full screen: turn the phone sideways on the Pad tab and every button, stick and d-pad spreads out like a real gamepad — no tab bar, no headers, just the controller. Rotate back to exit, or use the new orientation lock to pin it while you play.
 
-New: a Big Picture button for PCs that have Steam but no Game Mode session (Nobara, most desktop Linux). One tap opens Steam Big Picture on the TV; long-press the same button to come back to the desktop.
-
-Also: connection diagnostics are reachable in large-pad mode, and tap-to-retry does a deeper reset when a connection goes quiet.
+Also in this release:
+• Use Couchside as a plain TV remote for Roku and Google TV — no PC required
+• Bookmark games (hold a tile) and save your favorite library filters as presets
+• See each game's install size and filter by what's eating your disk
+• A toast tells you when a download finishes, whichever tab you're on
+• A guided setup walkthrough for new users — and an offer for existing users who never got one
+• Google TV pairing fixed on Android
