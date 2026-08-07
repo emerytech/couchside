@@ -1,6 +1,16 @@
 # Movement mode — landscape, one big thumb-zone, for twin-stick-ish games (owner ask 2026-08-07)
 
-> **Status: SPEC ONLY, nothing built.** Roadmap entry is 📋 Planned.
+> **Status: BUILT 2026-08-07** (same day, owner pulled it into the 2.9.38
+> release). The as-built geometry differs from §B below — the tests forced two
+> corrections: MOVE grew to 52x68U @ (left+29, bottom−36) after the size
+> assertion showed the specced zone was only 2.6x the stick's touch area, and
+> NAV moved inboard to right−22 after the EXIT-moat assertion caught 25.1U on
+> 16:9. The table in `lib/padLayout.ts` (MOVE_TABLE) is the truth; §B is the
+> pre-build sketch. Entry mechanism shipped as the chrome-row toggle (option 2),
+> persisted as the `landscapePadVariant` pref. Phase-1 hardware verification
+> (Vampire Survivors run; Megabonk manual-aim question) was SKIPPED by owner
+> decision to ship in 2.9.38 — still worth doing, the answer decides whether a
+> second variant with a right stick is needed.
 >
 > Owner, after playing on the new landscape pad: *"is there a way to add a pad in
 > between the joystick buttons that acts like a pad for moving around like a left

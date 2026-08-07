@@ -48,7 +48,11 @@ export type PadNodeId =
   | 'select' | 'steam' | 'qam' | 'start'
   | 'dpad' | 'lstick' | 'rstick'
   | 'a' | 'b' | 'x' | 'y'
-  | 'lock' | 'exit';
+  | 'lock' | 'exit'
+  // Movement mode (moveLayout): the big left-thumb zone, the 4-way menu
+  // cluster, and the PAD/MOVE toggle that lives in the chrome row of BOTH
+  // layouts.
+  | 'move' | 'nav' | 'variant';
 
 export type PadNode = {
   id: PadNodeId;
@@ -106,9 +110,11 @@ export const MIN_SHORT_AXIS = 326;
  *  1. The clusters. Left occupies 79U from the left edge (3 margin + 39 d-pad +
  *     7 gap + 30 stick), right occupies 85U (3 + 45 face + 7 + 30) — so under
  *     164U there is no centre channel and they would collide.
- *  2. The EXIT moat. EXIT's right edge sits at `P.w/2 + 16.5` and RB's touch
- *     rect begins at `P.w - 45.5`, so the moat is `P.w/2 - 62` U wide. Holding
- *     it at 26U requires 176U.
+ *  2. The EXIT moat. EXIT's right edge sits at `P.w/2 + 14.5` (the chrome
+ *     trio moved 2U left when NAV grew to a 44dp sector) and RB's touch rect
+ *     begins at `P.w - 45.5`, so the moat is `P.w/2 - 60` U wide — 28U at
+ *     this floor. 176 is kept rather than lowered: the slack is margin, and
+ *     the movement table's NAV needs it.
  *
  * 16:9 — the narrowest real phone shape — is 177.6U, so this admits every real
  * device and refuses only genuinely narrow windows (Android split-screen and
@@ -136,6 +142,9 @@ export const EXIT_MOAT_U = 26;
 
 /** Every touch target must be at least this, in dp. */
 export const MIN_TOUCH = 44;
+
+/** Hard per-side cap on hit-rect expansion, in U. See expandHits. */
+export const EXPAND_CAP_U = 8;
 
 // ---------- Stick behaviour (consumed by the Stick component) ----------
 
@@ -180,8 +189,13 @@ export const STICK = {
  * navigation has no use for them.
  */
 export const DPAD = {
-  outerRU: 19.5,
-  innerRU: 6,
+  // outer/inner sized so BOTH real targets — the 90-degree sectors (radial
+  // thickness outer - inner) and the centre A/OK disc (diameter 2 * inner) —
+  // are 13.5U, i.e. exactly 44dp at the MIN_SHORT_AXIS floor. The first cut
+  // used inner 6 (a 12U disc, 39dp at the floor): the floor derivation had
+  // only considered the sector and forgot the disc is a target too.
+  outerRU: 20.25,
+  innerRU: 6.75,
   /** Radial thickness of a sector — the real touch target, not the 39U box. */
   get sectorThicknessU() {
     return this.outerRU - this.innerRU;
@@ -221,11 +235,15 @@ const FACE_CX = 25.5;
 const FACE_CY = 26.5;
 
 const TABLE: Spec[] = [
-  // Row 1 — shoulders, and the two chrome buttons in the middle.
+  // Row 1 — shoulders, and the three chrome buttons in the middle. VARIANT
+  // (the PAD/MOVE toggle) sits leftmost of the chrome group; on the 176U
+  // long-axis floor its left edge lands at C − 34.5U, clear of LB's right
+  // edge at left + 41U by 12.5U.
   { id: 'lt', w: 18, h: 14, cx: { from: 'left', at: 12 }, cy: { from: 'top', at: 10 }, layer: 1 },
   { id: 'lb', w: 18, h: 14, cx: { from: 'left', at: 32 }, cy: { from: 'top', at: 10 }, layer: 1 },
-  { id: 'lock', w: 15, h: 14, cx: { from: 'centre', at: -9 }, cy: { from: 'top', at: 10 }, layer: 9 },
-  { id: 'exit', w: 15, h: 14, cx: { from: 'centre', at: 9 }, cy: { from: 'top', at: 10 }, layer: 9 },
+  { id: 'variant', w: 15, h: 14, cx: { from: 'centre', at: -29 }, cy: { from: 'top', at: 10 }, layer: 9 },
+  { id: 'lock', w: 15, h: 14, cx: { from: 'centre', at: -11 }, cy: { from: 'top', at: 10 }, layer: 9 },
+  { id: 'exit', w: 15, h: 14, cx: { from: 'centre', at: 7 }, cy: { from: 'top', at: 10 }, layer: 9 },
   { id: 'rb', w: 18, h: 14, cx: { from: 'right', at: 32 }, cy: { from: 'top', at: 10 }, layer: 1 },
   { id: 'rt', w: 18, h: 14, cx: { from: 'right', at: 12 }, cy: { from: 'top', at: 10 }, layer: 1 },
 
@@ -236,7 +254,7 @@ const TABLE: Spec[] = [
   { id: 'start', w: 18, h: 14, cx: { from: 'right', at: 12 }, cy: { from: 'top', at: 27 }, layer: 5 },
 
   // Thumb clusters.
-  { id: 'dpad', w: 39, h: 39, cx: { from: 'left', at: 22.5 }, cy: { from: 'bottom', at: 23.5 }, layer: 6 },
+  { id: 'dpad', w: 40.5, h: 40.5, cx: { from: 'left', at: 22.5 }, cy: { from: 'bottom', at: 23.5 }, layer: 6 },
   { id: 'lstick', w: 30, h: 30, cx: { from: 'left', at: 64 }, cy: { from: 'bottom', at: 26 }, layer: 7, shape: 'circle' },
   { id: 'rstick', w: 30, h: 30, cx: { from: 'right', at: 70 }, cy: { from: 'bottom', at: 26 }, layer: 8, shape: 'circle' },
 
@@ -248,6 +266,74 @@ const TABLE: Spec[] = [
   { id: 'x', w: FACE.diaU, h: FACE.diaU, cx: { from: 'right', at: FACE_CX + FACE.radiusU }, cy: { from: 'bottom', at: FACE_CY }, layer: 1, shape: 'circle' },
   { id: 'b', w: FACE.diaU, h: FACE.diaU, cx: { from: 'right', at: FACE_CX - FACE.radiusU }, cy: { from: 'bottom', at: FACE_CY }, layer: 1, shape: 'circle' },
 ];
+
+/**
+ * MOVEMENT MODE — the second table (spec: project_movement-mode.md).
+ *
+ * For games that are ~95% continuous movement and ~5% menus (Vampire
+ * Survivors and its family): one enormous left-thumb MOVE zone emitting left-
+ * stick frames, and a small right-hand cluster — A (confirm), B (back), a
+ * 4-way NAV for upgrade menus, START to pause. Everything the controller has
+ * beyond that is ABSENT, not hidden: an absent control cannot be mis-pressed,
+ * and the whole point of the mode is a surface small enough to use blind.
+ *
+ * The owner's ask was a movement pad "in between the joysticks". Deliberately
+ * not built that way: in a two-handed landscape grip the CENTRE of the screen
+ * is reachable by neither thumb — it is the grip zone, which is why the main
+ * table keeps it empty. The ask is really for a bigger left-thumb zone, so
+ * that is what this is: 49 x 68U anchored to the left edge — its touchable
+ * area is several times the main table's stick container and over a fifth of
+ * the whole screen (both asserted in the tests, so neither claim can rot).
+ *
+ * This half-screen-stick shape was explicitly REJECTED for the main pad
+ * ("it eats the d-pad, which is the control this product actually uses").
+ * That reasoning holds there and not here: during play in these games the
+ * d-pad is unused, so the trade flips. Hence a separate MODE — if the main
+ * pad ever grows a zone like this, that is a regression, not a feature.
+ */
+const MOVE_TABLE: Spec[] = [
+  // Chrome row. Same positions as the main table, so the toggle does not jump
+  // under the thumb that just pressed it. START joins the row (pause is
+  // deliberate, out-of-the-way) — its main-table slot at row 2 doesn't exist
+  // here.
+  { id: 'variant', w: 15, h: 14, cx: { from: 'centre', at: -29 }, cy: { from: 'top', at: 10 }, layer: 9 },
+  { id: 'lock', w: 15, h: 14, cx: { from: 'centre', at: -11 }, cy: { from: 'top', at: 10 }, layer: 9 },
+  { id: 'exit', w: 15, h: 14, cx: { from: 'centre', at: 7 }, cy: { from: 'top', at: 10 }, layer: 9 },
+  { id: 'start', w: 18, h: 14, cx: { from: 'right', at: 12 }, cy: { from: 'top', at: 10 }, layer: 5 },
+
+  // The movement zone: floating-origin left stick with a container covering
+  // the whole left thumb-arc. Top edge sits 18U below the chrome row's bottom
+  // so a drag can never begin on a chrome button.
+  { id: 'move', w: 49, h: 68, cx: { from: 'left', at: 27.5 }, cy: { from: 'bottom', at: 36 }, layer: 7 },
+
+  // Right-thumb cluster, laid along the thumb arc: A at the resting position,
+  // B up-left of it, NAV above both. 3U edge-to-edge between A and B — the
+  // same gap rule as the face diamond (shrink diameters, never the gap).
+  { id: 'nav', w: 33, h: 33, cx: { from: 'right', at: 22 }, cy: { from: 'bottom', at: 62 }, layer: 6 },
+  { id: 'b', w: 15, h: 15, cx: { from: 'right', at: 34 }, cy: { from: 'bottom', at: 28 }, layer: 1, shape: 'circle' },
+  { id: 'a', w: 15, h: 15, cx: { from: 'right', at: 16 }, cy: { from: 'bottom', at: 20 }, layer: 1, shape: 'circle' },
+];
+
+/**
+ * The 4-way NAV cluster's geometry. Same angular hit test as the d-pad but no
+ * centre disc: menus want pure directions, and A is a separate physical
+ * button an inch away. A small dead centre returns null — releasing rather
+ * than latching an arbitrary direction on a dead-centre tap.
+ */
+export const NAV = {
+  outerRU: 16.5,
+  innerRU: 3,
+  /** Radial thickness of one direction — the REAL touch target, and the
+   *  binding 44dp measure for an angular control. 13.5U, the same as the
+   *  d-pad sector, which is exactly what MIN_SHORT_AXIS = 326 was derived
+   *  from. The first cut was outerRU 15 with the docstring claiming "15U of
+   *  thickness" — it had forgotten to subtract innerRU, and the real 12U
+   *  target was 39-43dp on real phones. Caught in review by redoing the
+   *  arithmetic; asserted by a test now. */
+  get thicknessU() {
+    return this.outerRU - this.innerRU;
+  },
+} as const;
 
 // ---------- Geometry helpers ----------
 
@@ -273,6 +359,22 @@ export function rectGap(a: Rect, b: Rect): number {
 // ---------- The layout ----------
 
 export function padLayout(win: Size, insets: Insets): PadLayout {
+  return buildLayout(TABLE, win, insets);
+}
+
+/**
+ * Movement mode. Same play rect, same unit, same floors, same expansion pass,
+ * same property tests — a different table. The short-axis floor carries over
+ * unchanged because the binding controls are no tighter here: the chrome row
+ * (14U tall, hit = drawn) needs 314dp, and NAV's sector thickness (16.5 - 3 =
+ * 13.5U — thickness, not radius) needs exactly 326, the same bound as the
+ * d-pad sector it was matched to.
+ */
+export function moveLayout(win: Size, insets: Insets): PadLayout {
+  return buildLayout(MOVE_TABLE, win, insets);
+}
+
+function buildLayout(table: Spec[], win: Size, insets: Insets): PadLayout {
   const play: Rect = {
     x: insets.left,
     y: insets.top,
@@ -292,7 +394,7 @@ export function padLayout(win: Size, insets: Insets): PadLayout {
 
   const centreX = play.x + play.w / 2;
 
-  const base: PadNode[] = TABLE.map((s) => {
+  const base: PadNode[] = table.map((s) => {
     const w = s.w * u;
     const h = s.h * u;
     const cx =
@@ -349,11 +451,16 @@ function expandHits(nodes: PadNode[], play: Rect, u: number): PadNode[] {
     if (n.layer === 9) return { ...n, hit: { ...n.rect } };
 
     const r = n.rect;
-    // Start from the two limits that do not depend on other controls.
-    let l = Math.min(0.25 * r.w, r.x - play.x);
-    let rt = Math.min(0.25 * r.w, right(play) - right(r));
-    let t = Math.min(0.25 * r.h, r.y - play.y);
-    let b = Math.min(0.25 * r.h, bottom(play) - bottom(r));
+    // Start from the limits that do not depend on other controls: a quarter of
+    // the node's own extent, but never more than EXPAND_CAP_U — the quarter
+    // rule was meant for thumb-sized controls, and on the giant MOVE zone it
+    // granted enough growth to erode the EXIT moat in narrow capped-u windows.
+    const capX = Math.min(0.25 * r.w, EXPAND_CAP_U * u);
+    const capY = Math.min(0.25 * r.h, EXPAND_CAP_U * u);
+    let l = Math.min(capX, r.x - play.x);
+    let rt = Math.min(capX, right(play) - right(r));
+    let t = Math.min(capY, r.y - play.y);
+    let b = Math.min(capY, bottom(play) - bottom(r));
 
     for (const o of nodes) {
       if (o.id === n.id) continue;
@@ -413,6 +520,20 @@ export function dpadZone(px: number, py: number, u: number): DpadZone {
   if (mag <= DPAD.innerRU * u) return 'a';
   if (mag > DPAD.outerRU * u) return null;
   // No diagonals: whichever axis dominates wins outright.
+  if (Math.abs(px) >= Math.abs(py)) return px >= 0 ? 'dr' : 'dl';
+  return py >= 0 ? 'dd' : 'du';
+}
+
+/**
+ * Movement mode's 4-way NAV. Same angular idea, two differences: the centre
+ * returns NULL rather than A (A is its own physical button here — a dead-
+ * centre tap should release, never latch an arbitrary direction), and the
+ * radii are NAV's.
+ */
+export function navZone(px: number, py: number, u: number): DpadZone {
+  const mag = Math.hypot(px, py);
+  if (mag <= NAV.innerRU * u) return null;
+  if (mag > NAV.outerRU * u) return null;
   if (Math.abs(px) >= Math.abs(py)) return px >= 0 ? 'dr' : 'dl';
   return py >= 0 ? 'dd' : 'du';
 }

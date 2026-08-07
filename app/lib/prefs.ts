@@ -168,6 +168,12 @@ export type Prefs = {
   padKeyboardBar: boolean;
   /** Gesture hint text on the swipe/trackpad surfaces. */
   padHints: boolean;
+  /** Landscape full-screen layout: the full controller, or the movement mode
+   *  (one big left-thumb zone + a small menu cluster) for games that are
+   *  mostly continuous movement. Toggled from the pad's own chrome row; a
+   *  pref so the choice survives sessions — someone playing Vampire Survivors
+   *  nightly should not re-toggle every evening. */
+  landscapePadVariant: 'pad' | 'move';
   /** Collapse the pill + mode tabs + button/keyboard rows so the trackpad
    *  surface fills the pane for edge-to-edge scrolling. Trackpad mode only;
    *  a floating chip restores the chrome. */
@@ -293,6 +299,7 @@ export const DEFAULTS: Prefs = {
   padWinShortcuts: true,
   padKeyboardBar: true,
   padHints: true,
+  landscapePadVariant: 'pad',
   padTrackpadLarge: false,
   padLargeToggle: true,
   askToSwitchControl: true,
@@ -410,6 +417,7 @@ function normalize(raw: unknown): Prefs {
     padWinShortcuts: bool(o.padWinShortcuts, DEFAULTS.padWinShortcuts),
     padKeyboardBar: bool(o.padKeyboardBar, DEFAULTS.padKeyboardBar),
     padHints: bool(o.padHints, DEFAULTS.padHints),
+    landscapePadVariant: o.landscapePadVariant === 'move' ? 'move' : 'pad',
     padTrackpadLarge: bool(o.padTrackpadLarge, DEFAULTS.padTrackpadLarge),
     padLargeToggle: bool(o.padLargeToggle, DEFAULTS.padLargeToggle),
     askToSwitchControl: bool(o.askToSwitchControl, DEFAULTS.askToSwitchControl),

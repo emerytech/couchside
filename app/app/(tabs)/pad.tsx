@@ -45,9 +45,9 @@ import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { StatusBar } from 'expo-status-bar';
 
 import { Gated } from '@/components/Gated';
-import { LandscapePad, LandscapePadTooSmall } from '@/components/LandscapePad';
+import { LandscapePad, LandscapePadTooSmall, MovePad } from '@/components/LandscapePad';
 import { setImmersive } from '@/lib/immersive';
-import { padLayout } from '@/lib/padLayout';
+import { moveLayout, padLayout } from '@/lib/padLayout';
 import { SteamMenusPanel } from '@/components/SteamMenusPanel';
 import { RemoteView } from '@/components/RemoteView';
 import { PadDiagnostics } from '@/components/PadDiagnostics';
@@ -943,15 +943,22 @@ function PadScreen() {
   // Depend on the inset NUMBERS, not the object: useSafeAreaInsets can hand
   // back a fresh object on any re-render, which would rebuild the layout (and
   // every PanResponder keyed off it) constantly.
+  // Which landscape layout: the full controller or the movement mode. A pref
+  // (survives sessions); toggled from the chrome row of either layout.
+  const padVariant = usePref('landscapePadVariant');
   const landGeom = useMemo(
-    () => padLayout({ width, height }, insets),
+    () => (padVariant === 'move' ? moveLayout : padLayout)({ width, height }, insets),
     // eslint-disable-next-line react-hooks/exhaustive-deps
-    [width, height, insets.top, insets.right, insets.bottom, insets.left],
+    [width, height, insets.top, insets.right, insets.bottom, insets.left, padVariant],
   );
   const exitLandscape = useCallback(() => {
     setPadLock(false);
     setExited(true);
   }, []);
+  const toggleVariant = useCallback(() => {
+    void setPref('landscapePadVariant', getPref('landscapePadVariant') === 'move' ? 'pad' : 'move');
+  }, []);
+
 
   const [status, setStatus] = useState<GamepadStatus>('closed');
   // True when status is 'connected' but the socket has gone silent (half-dead):
@@ -1004,6 +1011,28 @@ function PadScreen() {
     clientRef.current = new GamepadClient();
   }
   const client = clientRef.current;
+  /**
+   * RELEASE EVERYTHING when the surface under the fingers changes. Toggling
+   * the layout variant, or leaving immersive mode (EXIT / rotate / mode
+   * switch), unmounts the pad components — and an unmount mid-drag destroys
+   * the responder WITHOUT firing its release. Nothing else zeroes the axis:
+   * the socket stays healthy, the agent trusts the last frame, and the game
+   * keeps walking in a direction nobody is pushing. One releaseAll() per
+   * surface change is cheap (a handful of zero frames) and idempotent.
+   */
+  // `mounted` is the full pad-on-screen predicate, not just `immersive`: a
+  // window can stay landscape-shaped while shrinking below the layout floors
+  // (Stage Manager, Android freeform), which swaps the pad for the too-small
+  // card — an unmount the immersive flag never sees. Found in review.
+  const padMounted = immersive && landGeom.ok;
+  const releasedFor = useRef({ padMounted, padVariant });
+  useEffect(() => {
+    const prev = releasedFor.current;
+    if (prev.padMounted !== padMounted || prev.padVariant !== padVariant) {
+      releasedFor.current = { padMounted, padVariant };
+      client.releaseAll();
+    }
+  }, [padMounted, padVariant, client]);
 
   // Latest settings for connect() calls. The lifecycle effect below keys on
   // the connection identity (host/port/token) only. A background patch to
@@ -1737,7 +1766,23 @@ function PadScreen() {
     return (
       <>
         <StatusBar hidden />
-        {landGeom.ok ? (
+        {!landGeom.ok ? (
+          <LandscapePadTooSmall reason={landGeom.reason} onExit={exitLandscape} />
+        ) : padVariant === 'move' ? (
+          // Movement mode: one big left-thumb zone driving the LEFT STICK, a
+          // small A/B/NAV/START cluster, nothing else. Same WS session, same
+          // protocol keys — the agent cannot tell the layouts apart.
+          <MovePad
+            layout={landGeom}
+            btn={btn}
+            stickMove={stickMove}
+            stickRelease={stickRelease}
+            locked={padLock}
+            onToggleLock={() => setPadLock((v) => !v)}
+            onExit={exitLandscape}
+            onVariant={toggleVariant}
+          />
+        ) : (
           <LandscapePad
             layout={landGeom}
             btn={btn}
@@ -1748,9 +1793,8 @@ function PadScreen() {
             locked={padLock}
             onToggleLock={() => setPadLock((v) => !v)}
             onExit={exitLandscape}
+            onVariant={toggleVariant}
           />
-        ) : (
-          <LandscapePadTooSmall reason={landGeom.reason} onExit={exitLandscape} />
         )}
         {/* Handoff survives immersive mode. Another phone asking for control is
             a decision only the person holding this one can make, and ignoring it
