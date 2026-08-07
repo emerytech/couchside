@@ -585,6 +585,43 @@ function PrefFilterable({
   return <View style={styles.prefHit}>{children}</View>;
 }
 
+/**
+ * A preference row that DOES something rather than holding a value.
+ *
+ * Same search-filter behaviour as TogglePref so it cannot become invisible when
+ * someone filters the prefs list — a control you cannot find is the same as one
+ * that does not exist.
+ */
+export function PrefAction({
+  label,
+  sub,
+  icon,
+  onPress,
+}: {
+  label: string;
+  sub: string;
+  icon: React.ComponentProps<typeof Ionicons>['name'];
+  onPress: () => void | Promise<void>;
+}) {
+  const t = useTheme();
+  const styles = useThemedStyles(makeStyles);
+  const { q, hit } = useContext(PrefFilterCtx);
+  if (!prefMatches(q, label, sub)) return null;
+  hit();
+  return (
+    <Pressable
+      onPress={() => void onPress()}
+      accessibilityRole="button"
+      style={({ pressed }) => [styles.prefRow, q ? styles.prefHit : null, pressed && styles.pressed]}>
+      <View style={styles.prefBody}>
+        <Text style={styles.prefLabel}>{label}</Text>
+        <Text style={styles.prefSub}>{sub}</Text>
+      </View>
+      <Ionicons name={icon} size={17} color={t.textDim} />
+    </Pressable>
+  );
+}
+
 export function TogglePref({
   label,
   sub,
@@ -1418,6 +1455,23 @@ function SetupBody() {
                   // control is dead once the tour has run once.
                   if (v) void resetFeatureTour();
                   hapticSelection();
+                }}
+              />
+              {/* A BUTTON, not a toggle. There is nothing to switch off — the
+                  first run either happened or it did not — and more importantly
+                  the trigger also requires an empty fleet, so on a paired phone
+                  clearing the flag alone would do NOTHING. That is the dead
+                  control this app keeps re-inventing, so this navigates. */}
+              <PrefAction
+                label="Show the welcome flow again"
+                sub="The three first-run screens: what Couchside is, which device you have, and how to set it up."
+                icon="sparkles-outline"
+                onPress={async () => {
+                  hapticLight();
+                  // Cleared so a later fresh-install path behaves, but the
+                  // navigation is what actually shows it.
+                  await setPref('onboardingDone', false);
+                  router.push('/onboarding');
                 }}
               />
               <TogglePref

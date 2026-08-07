@@ -66,6 +66,22 @@ test('each choice leads to its own first task', () => {
   assert.equal(stepForChoice('tv'), 'tv');
 });
 
+test('the Prefs reset NAVIGATES, it does not just clear the flag', async () => {
+  // Clearing onboardingDone alone cannot re-show the flow on a phone that has a
+  // box: shouldShowOnboarding still returns false on the fleet guard. A reset
+  // control that relies on the trigger is therefore a dead control on exactly
+  // the devices whose owner would go looking for it.
+  assert.equal(
+    shouldShowOnboarding({ done: false, boxCount: 1, tvCount: 0, ready: true }),
+    false,
+    'flag cleared but a box exists — the trigger stays shut',
+  );
+  const { readFileSync } = await import('node:fs');
+  const { join } = await import('node:path');
+  const setup = readFileSync(join(import.meta.dirname, '../../app/(tabs)/setup.tsx'), 'utf8');
+  assert.ok(setup.includes("router.push('/onboarding')"), 'the reset must navigate directly');
+});
+
 test('the flow starts at the welcome screen', () => {
   assert.equal(FIRST_STEP, 'welcome');
 });
