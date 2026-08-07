@@ -166,6 +166,20 @@ export default function Onboarding() {
                 </Text>
               </Pressable>
               <Text style={styles.note}>On a Steam Deck, switch to Desktop Mode first.</Text>
+              {/* SteamOS ships the 'deck' user with NO password, so sudo refuses
+                  and the installer stops partway. install.sh detects this and
+                  says so — but only AFTER you have run it and hit the wall,
+                  which on a Deck is most people. Saying it first turns a failed
+                  run into a step. */}
+              <View style={styles.warn}>
+                <Ionicons name="information-circle-outline" size={16} color={t.amber} />
+                <Text style={styles.warnText}>
+                  First time on a Steam Deck? Run <Text style={styles.inline}>passwd</Text> before
+                  the line above — SteamOS ships without one, and the installer needs sudo. On
+                  Bazzite the password is usually <Text style={styles.inline}>bazzite</Text> unless
+                  you changed it.
+                </Text>
+              </View>
 
               {/* THE USER IS THE SENSOR. The phone cannot see the box's terminal,
                   so it asks — and the answer routes, rather than dropping
@@ -268,6 +282,17 @@ const makeStyles = (t: Palette) =>
     h2: { color: t.text, fontSize: 16, fontWeight: '800', marginTop: 10 },
     body1: { color: t.textDim, fontSize: 14.5, lineHeight: 21 },
     note: { color: t.textFaint, fontSize: 12.5, lineHeight: 18 },
+    warn: {
+      flexDirection: 'row',
+      gap: 9,
+      alignItems: 'flex-start',
+      backgroundColor: t.inset,
+      borderRadius: 11,
+      borderWidth: 1,
+      borderColor: t.cardBorder,
+      padding: 12,
+    },
+    warnText: { color: t.textDim, fontSize: 12.5, lineHeight: 18, flex: 1 },
     inline: { color: t.text, fontFamily: mono, fontSize: 13 },
     card: {
       backgroundColor: t.card,
