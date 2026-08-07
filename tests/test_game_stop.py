@@ -36,6 +36,15 @@ def check(name, got, want):
         FAILURES.append(name)
 
 
+# The fake's answer for "this process's own group" (getpgid(0)). A SENTINEL,
+# not os.getpid(): the fake used to hand back the real runner pid while the
+# tests hardcode the game's pgid as 4242 — so on any machine where the test
+# runner's pid happened to BE 4242, the agent's own-group guard fired and the
+# GROUP test failed with "got 'kill', want 'killpg'". CI containers recycle
+# low pids densely; it happened on the fifth run of the day. Same family as
+# the dated-fixture time bombs: a fixture quietly coupled to runtime state.
+OWN_PGID = 777777
+
 class Killed:
     """Capture what would have been signalled, instead of signalling.
 
@@ -68,7 +77,7 @@ class Killed:
                 raise outer._exc
 
         def fake_getpgid(pid):
-            return os.getpid() if pid == 0 else outer._pgid
+            return OWN_PGID if pid == 0 else outer._pgid
 
         os.kill, os.killpg, os.getpgid = fake_kill, fake_killpg, fake_getpgid
         cs._running_game = lambda: (
@@ -121,7 +130,7 @@ def test_never_signals_our_own_group():
     the game. Fall back to the single pid rather than signalling ourselves."""
     print("test_never_signals_our_own_group")
     game = {"appid": 570, "label": "Dota 2", "pid": 4242}
-    with Killed(game, pgid=os.getpid()) as k:
+    with Killed(game, pgid=OWN_PGID) as k:
         cs.stop_running_game()
         check("used kill, not killpg", k.sent[0][0], "kill")
 
