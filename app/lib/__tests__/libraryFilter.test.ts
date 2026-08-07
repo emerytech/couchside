@@ -395,3 +395,34 @@ test('an unknown played value cannot become the over-2h branch (control)', () =>
   const out = normalizePresets([{ name: 'x', filter: { played: 'nonsense' } }]);
   assert.equal(out[0].filter.played, 'any');
 });
+
+test('the filter sheet actually calls savePreset and renders the preset list', async () => {
+  // THE "WIRED TO NOTHING" GUARD. Twice in one day a feature here was connected
+  // to state and never mounted, or mounted and never invoked — and both times
+  // nothing failed, the control was just inert. Pure logic passing says nothing
+  // about whether a component calls it, so read the source and check.
+  const { readFileSync } = await import('node:fs');
+  const { join } = await import('node:path');
+  const sheet = readFileSync(
+    join(import.meta.dirname, '../../components/LibraryFilterSheet.tsx'),
+    'utf8',
+  );
+  assert.ok(sheet.includes('savePreset('), 'the sheet must call savePreset');
+  assert.ok(sheet.includes('deletePreset('), 'and offer a way to remove one');
+  assert.ok(sheet.includes('marks.presets.map'), 'and actually render the saved list');
+  assert.ok(sheet.includes('bookmarked:'), 'and toggle the bookmarked filter');
+
+  const game = readFileSync(join(import.meta.dirname, '../../components/GameSheet.tsx'), 'utf8');
+  assert.ok(game.includes('toggleBookmarked('), 'the game sheet must call toggleBookmarked');
+
+  const launch = readFileSync(
+    join(import.meta.dirname, '../../app/(tabs)/launch.tsx'),
+    'utf8',
+  );
+  // Match on one LINE: a character-class scan trips over the ')' inside
+  // Math.floor(Date.now() / 1000) and reports a false failure.
+  const wired = launch
+    .split('\n')
+    .some((l) => l.includes('applyFilter(') && l.includes('marks.bookmarks'));
+  assert.ok(wired, 'the grid must be filtered by the bookmark set, or the sheet count lies');
+});
