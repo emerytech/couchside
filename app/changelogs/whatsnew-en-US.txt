@@ -1,9 +1,8 @@
-The controller goes full screen: turn the phone sideways on the Pad tab and every button, stick and d-pad spreads out like a real gamepad — no tab bar, no headers, just the controller. Rotate back to exit, or use the new orientation lock to pin it while you play.
+Two ways to play, sideways. Turn the phone on the Pad tab and the controller fills the screen — every stick, button and d-pad spread out like the real thing, with an orientation lock for long sessions. And for games that are mostly about moving — Vampire Survivors and friends — tap ⊕ MOVE for the new Movement mode: one huge thumb zone that works like a left stick, plus just A, B, a menu pad and pause. Nothing to mis-press, nothing in the way.
 
 Also in this release:
+• Fixed: on iOS, dragging a stick could swipe you out of the controller
 • Use Couchside as a plain TV remote for Roku and Google TV — no PC required
-• Bookmark games (hold a tile) and save your favorite library filters as presets
-• See each game's install size and filter by what's eating your disk
-• A toast tells you when a download finishes, whichever tab you're on
-• A guided setup walkthrough for new users — and an offer for existing users who never got one
-• Google TV pairing fixed on Android
+• Bookmark games (hold a tile) and save your favorite filters as presets
+• See each game's install size, and get a heads-up when a download finishes
+• A guided setup walkthrough — existing users can replay it from Setup
