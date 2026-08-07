@@ -19,9 +19,10 @@
  * phase 2, deliberately absent rather than stubbed.
  */
 import Ionicons from '@expo/vector-icons/Ionicons';
-import React, { useMemo } from 'react';
-import { Modal, Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
+import React, { useMemo, useState } from 'react';
+import { Modal, Pressable, ScrollView, StyleSheet, Text, View, TextInput } from 'react-native';
 
+import { deletePreset, savePreset, useLibraryMarks } from '@/hooks/useLibraryMarks';
 import { hapticLight, hapticSelection } from '@/lib/haptics';
 import {
   countLabel,
@@ -29,6 +30,7 @@ import {
   EMPTY_FILTER,
   hasPlaytimeData,
   isFiltering,
+  presetName,
   type FilterableGame,
   type FilterState,
   type PlayedFilter,
@@ -70,6 +72,7 @@ const STALE: { days: number; label: string }[] = [
 ];
 
 function Chip({
+  onLongPress,
   label,
   on,
   onPress,
@@ -77,6 +80,8 @@ function Chip({
   label: string;
   on: boolean;
   onPress: () => void;
+  /** Only the saved-preset chips use this — hold to delete. */
+  onLongPress?: () => void;
 }) {
   const styles = useThemedStyles(makeStyles);
   return (
@@ -85,6 +90,7 @@ function Chip({
         hapticSelection();
         onPress();
       }}
+      onLongPress={onLongPress}
       accessibilityRole="button"
       accessibilityState={{ selected: on }}
       style={({ pressed }) => [styles.chip, on && styles.chipOn, pressed && styles.pressed]}>
@@ -116,10 +122,17 @@ export function LibraryFilterSheet({
 }) {
   const t = useTheme();
   const styles = useThemedStyles(makeStyles);
+  const marks = useLibraryMarks();
+  const [presetDraft, setPresetDraft] = useState('');
 
   // Same predicate the list runs, so the button cannot lie about the result.
   const nowSec = Math.floor(Date.now() / 1000);
-  const count = useMemo(() => countMatching(games, value, nowSec, compat), [games, value, nowSec, compat]);
+  // The bookmark set feeds the count too, or the button would promise a number
+  // the grid then contradicts the moment "Bookmarked" is on.
+  const count = useMemo(
+    () => countMatching(games, value, nowSec, compat, marks.bookmarks),
+    [games, value, nowSec, compat, marks.bookmarks],
+  );
   const active = isFiltering(value);
   // See hasPlaytimeData: on an older agent every game looks unplayed, so these
   // controls would state something false about the user's library.
@@ -154,6 +167,86 @@ export function LibraryFilterSheet({
           </View>
 
           <ScrollView contentContainerStyle={styles.body} keyboardShouldPersistTaps="handled">
+            {/* Bookmarks first: it is the one filter whose answer the user
+                authored themselves, so it is the fastest way to a short list. */}
+            <Text style={styles.label}>BOOKMARKS</Text>
+            <View style={styles.row}>
+              <Chip
+                label={marks.bookmarks.size ? `Bookmarked · ${marks.bookmarks.size}` : 'Bookmarked'}
+                on={value.bookmarked === true}
+                onPress={() =>
+                  onChange({ ...value, bookmarked: value.bookmarked ? undefined : true })
+                }
+              />
+            </View>
+            {value.bookmarked && marks.bookmarks.size === 0 ? (
+              <Text style={styles.note}>
+                Nothing bookmarked yet — tap a game, then Bookmark, to start a shortlist.
+              </Text>
+            ) : null}
+
+            {marks.presets.length ? (
+              <>
+                <Text style={styles.label}>SAVED</Text>
+                <View style={styles.row}>
+                  {marks.presets.map((p) => (
+                    <Chip
+                      key={p.name}
+                      label={p.name}
+                      on={false}
+                      // A COPY, not the stored object: the live filter is then
+                      // spread and rebuilt as the user taps, and sharing the
+                      // reference would let that edit the saved preset in place.
+                      onPress={() => onChange({ ...p.filter, kinds: [...p.filter.kinds] })}
+                      onLongPress={() => {
+                        hapticLight();
+                        deletePreset(p.name);
+                      }}
+                    />
+                  ))}
+                </View>
+                <Text style={styles.note}>Tap to apply · hold to delete.</Text>
+              </>
+            ) : null}
+
+            {active ? (
+              <View style={styles.row}>
+                <TextInput
+                  value={presetDraft}
+                  onChangeText={setPresetDraft}
+                  placeholder="Save this filter as…"
+                  placeholderTextColor={t.textFaint}
+                  style={styles.presetInput}
+                  returnKeyType="done"
+                  onSubmitEditing={() => {
+                    if (!presetName(presetDraft)) return;
+                    hapticLight();
+                    savePreset(presetDraft, value);
+                    setPresetDraft('');
+                  }}
+                />
+                <Pressable
+                  onPress={() => {
+                    if (!presetName(presetDraft)) return;
+                    hapticLight();
+                    savePreset(presetDraft, value);
+                    setPresetDraft('');
+                  }}
+                  disabled={!presetName(presetDraft)}
+                  accessibilityRole="button"
+                  accessibilityLabel="Save this filter"
+                  style={({ pressed }) => [
+                    styles.chip,
+                    presetName(presetDraft) ? styles.chipOn : null,
+                    pressed && styles.pressed,
+                  ]}>
+                  <Text style={[styles.chipText, presetName(presetDraft) ? styles.chipTextOn : null]}>
+                    SAVE
+                  </Text>
+                </Pressable>
+              </View>
+            ) : null}
+
             {playtime ? (
               <>
             <Text style={styles.label}>PLAYTIME</Text>
@@ -308,6 +401,19 @@ const makeStyles = (t: Palette) =>
       marginTop: 6,
     },
     row: { flexDirection: 'row', flexWrap: 'wrap', gap: 8 },
+    presetInput: {
+      flex: 1,
+      minWidth: 140,
+      color: t.text,
+      fontSize: 12,
+      fontFamily: mono,
+      paddingHorizontal: 12,
+      paddingVertical: 8,
+      borderRadius: 999,
+      borderWidth: 1,
+      borderColor: t.cardBorder,
+      backgroundColor: t.inset,
+    },
     note: { color: t.textFaint, fontSize: 12, lineHeight: 17, marginTop: 4 },
     chip: {
       paddingVertical: 8,

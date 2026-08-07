@@ -1,6 +1,22 @@
 # Library triage — "what in my library actually runs here, and can I finish it tonight?"
 
-**Status:** 📋 Planned — spec only, nothing built.
+**Status (2026-08-06):** Phases 1 and 2 SHIPPED; Phase 3 dropped on legal grounds;
+Phase 4 half shipped. Merged to main across PRs #362 and #366 in app 2.9.36, with the
+agent-side playtime parser in 2.9.71.
+
+| Phase | State | Evidence |
+|---|---|---|
+| 1 — filter what is on screen | **shipped**, minus saved presets | `app/lib/libraryFilter.ts`, `app/components/LibraryFilterSheet.tsx`, live count via `countLabel()`; playtime from `parse_localconfig_playtime()` in `agent/couchsided.py` (2.9.71) |
+| 2 — compatibility | **shipped** | `app/lib/compat.ts` + `compatFetch.ts`, opt-in `compatLookups` pref, badges seen on real hardware |
+| 3 — time to beat | **dropped** | see below; legal, not technical |
+| 4 — triage actions | **shuffle only** | `pickRandom()`; bookmarks NOT built |
+
+NOT BUILT: saved filter presets (phase 1), bookmarks (phase 4).
+
+VERIFIED ON HARDWARE: compat badges and the confirm-sheet launch, on a real box.
+NOT verified: the filter and shuffle controls themselves — they need a library of 8+
+games to appear (`allLaunchers.length >= 8` in `app/app/(tabs)/launch.tsx`) and the box
+used for testing has two, so both were only ever observed SKIPPING.
 **Source inspiration:** DeckFilter (deckfilter.app), **driven on the owner's phone
 2026-08-06** — the site 403s to fetch, so this is measured from the running app,
 not from marketing copy.
