@@ -22,8 +22,10 @@ import { hapticLight, hapticSelection as haptic } from '@/lib/haptics';
 import {
   DPAD,
   FACE,
+  NAV,
   STICK,
   dpadZone,
+  navZone,
   stickNubOffset,
   stickValue,
   type PadLayout,
@@ -61,6 +63,8 @@ export type LandscapePadProps = {
   locked: boolean;
   onToggleLock: () => void;
   onExit: () => void;
+  /** The PAD -> MOVE toggle in the chrome row. */
+  onVariant: () => void;
 };
 
 const abs = (r: Rect) => ({
@@ -135,7 +139,7 @@ function PadKey({
 // ---------- Analog stick: fixed container, floating origin ----------
 
 function FloatingStick({
-  node, u, onMove, onRelease, onClick, label,
+  node, u, onMove, onRelease, onClick, label, zoneOutline,
 }: {
   node: PadNode; u: number;
   onMove: (x: number, y: number) => void;
@@ -143,6 +147,11 @@ function FloatingStick({
   /** L3 / R3 — the stick CLICK, which is now a tap rather than its own button. */
   onClick: () => void;
   label: string;
+  /** Movement mode: the container is a large RECT zone, not a stick-sized
+      circle. Draw its outline faintly (so the zone is discoverable) plus a
+      standard-size resting ring at the node centre, instead of rounding the
+      whole node into a giant ellipse. */
+  zoneOutline?: boolean;
 }) {
   const t = useTheme();
   // Where in the container the finger landed. The ring is drawn there, not at
@@ -206,6 +215,33 @@ function FloatingStick({
       {/* Resting state: a faint ring where the stick nominally lives, so it can
           be found by eye the first time. Nothing else is drawn until touch. */}
       {origin === null ? (
+        zoneOutline ? (
+          <>
+            {/* The whole zone, barely visible — any touch inside starts a drag. */}
+            <View
+              pointerEvents="none"
+              style={[
+                inner(node),
+                { borderRadius: 4 * u, borderWidth: 1, borderColor: t.cardBorder, opacity: 0.35 },
+              ]}
+            />
+            {/* And a stick-sized ring at its centre as the visual anchor. */}
+            <View
+              pointerEvents="none"
+              style={{
+                position: 'absolute',
+                left: node.rect.x - node.hit.x + node.rect.w / 2 - ringR,
+                top: node.rect.y - node.hit.y + node.rect.h / 2 - ringR,
+                width: ringR * 2,
+                height: ringR * 2,
+                borderRadius: ringR,
+                borderWidth: 1,
+                borderColor: t.cardBorder,
+                opacity: 0.5,
+              }}
+            />
+          </>
+        ) : (
         <View
           pointerEvents="none"
           style={[
@@ -218,6 +254,7 @@ function FloatingStick({
             },
           ]}
         />
+        )
       ) : (
         <>
           <View
@@ -363,6 +400,92 @@ function Dpad({
   );
 }
 
+// ---------- Movement mode's 4-way NAV: angular, no centre action ----------
+
+function NavPad({
+  node, u, btn,
+}: {
+  node: PadNode; u: number; btn: (k: ButtonKey) => Down;
+}) {
+  const t = useTheme();
+  const [zone, setZone] = useState<ButtonKey | null>(null);
+  const held = useRef<ButtonKey | null>(null);
+  const bt = useRef(btn);
+  bt.current = btn;
+  const geom = useRef({ u, node });
+  geom.current = { u, node };
+
+  const to = useCallback((next: ButtonKey | null) => {
+    if (held.current === next) return;
+    if (held.current) bt.current(held.current).onUp();
+    held.current = next;
+    setZone(next);
+    if (next) {
+      bt.current(next).onDown();
+      hapticLight();
+    }
+  }, []);
+
+  const at = useCallback((e: GestureResponderEvent) => {
+    const { node: n, u: uu } = geom.current;
+    const cx = n.rect.x - n.hit.x + n.rect.w / 2;
+    const cy = n.rect.y - n.hit.y + n.rect.h / 2;
+    return navZone(e.nativeEvent.locationX - cx, e.nativeEvent.locationY - cy, uu);
+  }, []);
+
+  const responder = useMemo(
+    () =>
+      PanResponder.create({
+        onStartShouldSetPanResponder: () => true,
+        onMoveShouldSetPanResponder: () => true,
+        onPanResponderTerminationRequest: () => false,
+        onPanResponderGrant: (e) => to(at(e)),
+        onPanResponderMove: (e) => to(at(e)),
+        onPanResponderRelease: () => to(null),
+        onPanResponderTerminate: () => to(null),
+      }),
+    [at, to],
+  );
+
+  const r = node.rect.w / 2;
+  const outer = NAV.outerRU * u;
+  const arm = (k: ButtonKey, label: string, dx: number, dy: number) => (
+    <View
+      key={k}
+      pointerEvents="none"
+      style={{
+        position: 'absolute',
+        left: r + dx * (outer * 0.55) - 3 * u,
+        top: r + dy * (outer * 0.55) - 3 * u,
+        width: 6 * u,
+        height: 6 * u,
+        alignItems: 'center',
+        justifyContent: 'center',
+      }}>
+      <Text style={{ color: zone === k ? t.blue : t.textFaint, fontSize: 4 * u }}>{label}</Text>
+    </View>
+  );
+
+  return (
+    <View style={abs(node.hit)} {...responder.panHandlers} accessibilityLabel="Menu navigation">
+      <View pointerEvents="none" style={inner(node)}>
+        <View
+          style={{
+            position: 'absolute',
+            left: r - outer, top: r - outer, width: outer * 2, height: outer * 2,
+            borderRadius: outer, borderWidth: 1, borderColor: t.cardBorder,
+            backgroundColor: t.card,
+          }}
+        />
+        {arm('du', '▲', 0, -1)}
+        {arm('dd', '▼', 0, 1)}
+        {arm('dl', '◀', -1, 0)}
+        {arm('dr', '▶', 1, 0)}
+      </View>
+    </View>
+  );
+}
+
 // ---------- Face diamond: one responder, so a thumb can roll A -> B ----------
 
 function FaceCluster({
@@ -473,8 +596,45 @@ function FaceCluster({
 
 // ---------- The pad ----------
 
+/** One chrome-row button (LOCK / EXIT / the PAD⇄MOVE toggle). Layer 9: hit
+    rect = drawn rect, and a touch must start AND end inside. */
+function ChromeButton({
+  node, u, text, color, onPress, accessibilityLabel, checked,
+}: {
+  node: PadNode; u: number; text: string; color?: string;
+  onPress: () => void; accessibilityLabel: string; checked?: boolean;
+}) {
+  const t = useTheme();
+  return (
+    <Pressable
+      style={abs(node.hit)}
+      onPress={() => {
+        haptic();
+        onPress();
+      }}
+      accessibilityRole={checked === undefined ? 'button' : 'switch'}
+      accessibilityState={checked === undefined ? undefined : { checked }}
+      accessibilityLabel={accessibilityLabel}>
+      <View
+        style={[
+          inner(node),
+          {
+            borderRadius: 2.5 * u, borderWidth: 1,
+            borderColor: color ?? t.cardBorder,
+            backgroundColor: t.card,
+            alignItems: 'center', justifyContent: 'center',
+          },
+        ]}>
+        <Text style={{ color: color ?? t.textFaint, fontFamily: mono, fontSize: 2.6 * u }}>
+          {text}
+        </Text>
+      </View>
+    </Pressable>
+  );
+}
+
 export function LandscapePad({
-  layout, btn, trig, stickMove, stickRelease, qam, locked, onToggleLock, onExit,
+  layout, btn, trig, stickMove, stickRelease, qam, locked, onToggleLock, onExit, onVariant,
 }: LandscapePadProps) {
   const t = useTheme();
   const { byId, u } = layout;
@@ -518,55 +678,97 @@ export function LandscapePad({
       />
       <FaceCluster nodes={FACE_IDS.map((id) => byId[id])} u={u} btn={btn} colors={faceColors} />
 
-      {/* Chrome. Deliberately NOT auto-hiding on a timer: the two buttons cost
-          nothing (they sit in a band that is otherwise empty) and fading the
-          only exit on a screen nobody is looking at is a bad trade at any
+      {/* Chrome. Deliberately NOT auto-hiding on a timer: the three buttons
+          cost nothing (they sit in a band that is otherwise empty) and fading
+          the only exit on a screen nobody is looking at is a bad trade at any
           timeout. Steam Link fades its controls after 10s; not copied. */}
-      <Pressable
-        style={abs(byId.lock.hit)}
-        onPress={() => {
-          haptic();
-          onToggleLock();
-        }}
-        accessibilityRole="switch"
-        accessibilityState={{ checked: locked }}
-        accessibilityLabel={locked ? 'Orientation locked' : 'Orientation follows the phone'}>
-        <View
-          style={[
-            inner(byId.lock),
-            {
-              borderRadius: 2.5 * u, borderWidth: 1,
-              borderColor: locked ? t.amber : t.cardBorder,
-              backgroundColor: t.card,
-              alignItems: 'center', justifyContent: 'center',
-            },
-          ]}>
-          {/* State AND consequence: when it is on, ✕ is the only way out. */}
-          <Text style={{ color: locked ? t.amber : t.textFaint, fontFamily: mono, fontSize: 2.6 * u }}>
-            {locked ? '🔒 LOCKED' : '🔓 AUTO'}
-          </Text>
-        </View>
-      </Pressable>
+      <ChromeButton
+        node={byId.variant} u={u} text="⊕ MOVE"
+        onPress={onVariant}
+        accessibilityLabel="Switch to the movement layout"
+      />
+      <ChromeButton
+        node={byId.lock} u={u}
+        text={locked ? '🔒 LOCKED' : '🔓 AUTO'}
+        color={locked ? t.amber : undefined}
+        onPress={onToggleLock} checked={locked}
+        accessibilityLabel={locked ? 'Orientation locked' : 'Orientation follows the phone'}
+      />
+      <ChromeButton
+        node={byId.exit} u={u} text="✕ EXIT"
+        onPress={onExit}
+        accessibilityLabel="Exit full-screen controller"
+      />
+    </View>
+  );
+}
 
-      <Pressable
-        style={abs(byId.exit.hit)}
-        onPress={() => {
-          haptic();
-          onExit();
-        }}
-        accessibilityRole="button"
-        accessibilityLabel="Exit full-screen controller">
-        <View
-          style={[
-            inner(byId.exit),
-            {
-              borderRadius: 2.5 * u, borderWidth: 1, borderColor: t.cardBorder,
-              backgroundColor: t.card, alignItems: 'center', justifyContent: 'center',
-            },
-          ]}>
-          <Text style={{ color: t.textFaint, fontFamily: mono, fontSize: 3.4 * u }}>✕ EXIT</Text>
-        </View>
-      </Pressable>
+// ---------- Movement mode ----------
+
+export type MovePadProps = {
+  layout: Extract<PadLayout, { ok: true }>;
+  btn: (k: ButtonKey) => Down;
+  stickMove: (k: StickKey) => (x: number, y: number) => void;
+  stickRelease: (k: StickKey) => () => void;
+  locked: boolean;
+  onToggleLock: () => void;
+  onExit: () => void;
+  onVariant: () => void;
+};
+
+/**
+ * The movement layout: one enormous left-thumb zone driving the LEFT STICK,
+ * and a small right-hand cluster (A, B, 4-way NAV, START). For games that are
+ * almost entirely continuous movement — Vampire Survivors and its family.
+ * See moveLayout() in lib/padLayout.ts for why this is a separate mode and
+ * not a change to the controller.
+ *
+ * Same protocol keys as the gamepad — the zone emits {t:'s',k:'l'} frames and
+ * the buttons emit their normal ids — so the agent cannot tell the layouts
+ * apart and needs no change.
+ */
+export function MovePad({
+  layout, btn, stickMove, stickRelease, locked, onToggleLock, onExit, onVariant,
+}: MovePadProps) {
+  const t = useTheme();
+  const { byId, u } = layout;
+
+  return (
+    <View style={StyleSheet.absoluteFill}>
+      {/* The movement zone. A tap (no drag) is deliberately NOTHING here — in
+          the games this mode serves, a stray A press picks whatever upgrade is
+          highlighted. Confirm lives under the right thumb only. */}
+      <FloatingStick
+        node={byId.move} u={u} label="Move" zoneOutline
+        onMove={stickMove('l')} onRelease={stickRelease('l')}
+        onClick={NOOP}
+      />
+
+      {/* Right thumb: A at rest, B up-left, 4-way NAV above for menus. */}
+      <NavPad node={byId.nav} u={u} btn={btn} />
+      <PadKey node={byId.b} label="B" u={u} color={t.red} fontSize={4.4 * u} {...btn('b')} />
+      <PadKey node={byId.a} label="A" u={u} color={t.green} fontSize={4.4 * u} {...btn('a')} />
+
+      {/* Chrome: same row, same positions as the gamepad layout, so the toggle
+          never jumps under the thumb that pressed it. */}
+      <ChromeButton
+        node={byId.variant} u={u} text="🎮 PAD"
+        onPress={onVariant}
+        accessibilityLabel="Switch to the full controller"
+      />
+      <ChromeButton
+        node={byId.lock} u={u}
+        text={locked ? '🔒 LOCKED' : '🔓 AUTO'}
+        color={locked ? t.amber : undefined}
+        onPress={onToggleLock} checked={locked}
+        accessibilityLabel={locked ? 'Orientation locked' : 'Orientation follows the phone'}
+      />
+      <ChromeButton
+        node={byId.exit} u={u} text="✕ EXIT"
+        onPress={onExit}
+        accessibilityLabel="Exit full-screen controller"
+      />
+      <PadKey node={byId.start} label="START" u={u} fontSize={2.8 * u} {...btn('start')} />
     </View>
   );
 }

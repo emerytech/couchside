@@ -31,6 +31,10 @@ import { dirname, join } from 'node:path';
 import {
   DPAD,
   EXIT_MOAT_U,
+  EXPAND_CAP_U,
+  moveLayout,
+  NAV,
+  navZone,
   MIN_SHORT_AXIS,
   MIN_TOUCH,
   dpadZone,
@@ -399,4 +403,169 @@ test('d-pad: centre is A, cardinals are exact, corners pick ONE direction', () =
   assert.ok(corner === 'dr' || corner === 'dd', `corner gave ${corner}`);
   // Outside the cluster: released, not latched to the last direction.
   assert.equal(dpadZone(30 * u, 0, u), null);
+});
+
+// ---------- Movement mode: the same properties, the second table ----------
+//
+// moveLayout is a different TABLE through the same builder, so every property
+// that makes the main table safe has to hold for it too — asserted by looping,
+// not by trusting the shared code path.
+
+const LAYOUTS: [string, (w: Size, i: Insets) => PadLayout][] = [
+  ['padLayout', padLayout],
+  ['moveLayout', moveLayout],
+];
+
+test('MOVE: every property holds for both tables on every device', () => {
+  for (const [name, fn] of LAYOUTS) {
+    for (const c of cases()) {
+      const l = ok(fn(c.win, c.insets));
+      for (const n of l.nodes) {
+        assert.ok(contains(l.play, n.rect), `${name}/${c.label}: ${n.id} escapes play`);
+        assert.ok(contains(l.play, n.hit), `${name}/${c.label}: ${n.id} hit escapes play`);
+        const min = Math.min(n.hit.w, n.hit.h);
+        assert.ok(min >= MIN_TOUCH - 1e-6, `${name}/${c.label}: ${n.id} is ${min.toFixed(1)}dp`);
+        if (n.shape === 'circle') assert.equal(n.rect.w, n.rect.h, `${name}/${c.label}: ${n.id} ellipse`);
+      }
+      for (let i = 0; i < l.nodes.length; i += 1) {
+        for (let j = i + 1; j < l.nodes.length; j += 1) {
+          assert.ok(
+            !rectsIntersect(l.nodes[i].hit, l.nodes[j].hit),
+            `${name}/${c.label}: ${l.nodes[i].id} and ${l.nodes[j].id} share a touch`,
+          );
+        }
+      }
+      for (const n of l.nodes) {
+        if (n.layer === 9) continue;
+        const gap = rectGap(l.byId.exit.hit, n.hit);
+        assert.ok(gap >= EXIT_MOAT_U * l.u - 1e-6,
+          `${name}/${c.label}: EXIT only ${(gap / l.u).toFixed(1)}U from ${n.id}`);
+      }
+    }
+  }
+});
+
+test('MOVE: the movement zone is the point of the mode — assert its size', () => {
+  const l = ok(moveLayout({ width: 852, height: 393 }, { top: 0, right: 59, bottom: 21, left: 0 }));
+  const move = l.byId.move;
+  const stick = ok(padLayout({ width: 852, height: 393 }, { top: 0, right: 59, bottom: 21, left: 0 })).byId.lstick;
+  const ratio = (move.hit.w * move.hit.h) / (stick.hit.w * stick.hit.h);
+  assert.ok(ratio >= 2.5, `the MOVE zone is only ${ratio.toFixed(1)}x the stick container — the mode adds nothing`);
+  // And in absolute terms: over a fifth of the whole screen is drag-startable
+  // movement surface. This is the ergonomic promise of the mode, stated as a
+  // number instead of adjectives.
+  const share = (move.hit.w * move.hit.h) / (l.play.w * l.play.h);
+  assert.ok(share >= 0.2, `MOVE covers only ${(share * 100).toFixed(0)}% of the play area`);
+});
+
+test('MOVE: chrome sits at identical positions in both tables', () => {
+  // The PAD<->MOVE toggle must not jump under the thumb that just pressed it,
+  // and LOCK/EXIT must stay where muscle memory left them.
+  const win = { width: 852, height: 393 };
+  const ins = { top: 0, right: 0, bottom: 21, left: 59 };
+  const a = ok(padLayout(win, ins));
+  const b = ok(moveLayout(win, ins));
+  for (const id of ['variant', 'lock', 'exit'] as const) {
+    assert.deepEqual(a.byId[id].rect, b.byId[id].rect, `${id} moves between layouts`);
+  }
+});
+
+test('MOVE: the move table contains exactly what the mode needs, nothing else', () => {
+  // An absent control cannot be mis-pressed. If this list ever grows a
+  // trigger or a second stick, that is a different feature and a new decision,
+  // not a drive-by addition.
+  const l = ok(moveLayout({ width: 852, height: 393 }, { top: 0, right: 0, bottom: 21, left: 59 }));
+  assert.deepEqual(
+    l.nodes.map((n) => n.id).sort(),
+    ['a', 'b', 'exit', 'lock', 'move', 'nav', 'start', 'variant'],
+  );
+});
+
+test('MOVE: navZone has no centre action and releases outside the ring', () => {
+  const u = 3.93;
+  // Dead centre: NULL — A is a physical button here; latching an arbitrary
+  // direction on a centre tap would be a phantom input.
+  assert.equal(navZone(0, 0, u), null);
+  // Cardinals resolve, one direction only.
+  assert.equal(navZone(0, -10 * u, u), 'du');
+  assert.equal(navZone(0, 10 * u, u), 'dd');
+  assert.equal(navZone(-10 * u, 0, u), 'dl');
+  assert.equal(navZone(10 * u, 0, u), 'dr');
+  const corner = navZone(8 * u, 8 * u, u);
+  assert.ok(corner === 'dr' || corner === 'dd', `corner gave ${corner}`);
+  // Outside the ring: released, never latched.
+  assert.equal(navZone(20 * u, 0, u), null);
+});
+
+test('MOVE: every emitted id is a real protocol key', () => {
+  // The move/nav/variant NODES are layout-only; what goes on the wire is
+  // stick frames plus these buttons. Nothing here may invent a key.
+  const emitted = ['a', 'b', 'start', 'du', 'dd', 'dl', 'dr'];
+  const BUTTONS = new Set([
+    'a', 'b', 'x', 'y', 'lb', 'rb', 'l3', 'r3', 'start', 'select', 'guide',
+    'dl', 'dr', 'du', 'dd',
+  ]);
+  for (const k of emitted) assert.ok(BUTTONS.has(k), `${k} is not a ButtonKey`);
+});
+
+// ---------- Review regressions: the three geometry findings ----------
+
+test('REVIEW: angular sub-targets clear 44dp — sectors AND discs, both clusters', () => {
+  // The 44dp rule binds on what a thumb actually hits. For an angular control
+  // that is the radial THICKNESS of a sector (outer - inner), and the centre
+  // disc's DIAMETER where the centre is itself an action. The first cut of
+  // NAV claimed "15U of thickness" having forgotten to subtract innerRU, and
+  // the d-pad's A/OK disc had never been measured at all — both were 39-43dp
+  // on phones in this very device table.
+  for (const c of cases()) {
+    const l = ok(padLayout(c.win, c.insets));
+    const dpadSector = (DPAD.outerRU - DPAD.innerRU) * l.u;
+    const dpadDisc = 2 * DPAD.innerRU * l.u;
+    const navSector = NAV.thicknessU * l.u;
+    assert.ok(dpadSector >= MIN_TOUCH - 1e-6, `${c.label}: d-pad sector ${dpadSector.toFixed(1)}dp`);
+    assert.ok(dpadDisc >= MIN_TOUCH - 1e-6, `${c.label}: d-pad OK disc ${dpadDisc.toFixed(1)}dp`);
+    assert.ok(navSector >= MIN_TOUCH - 1e-6, `${c.label}: NAV sector ${navSector.toFixed(1)}dp`);
+  }
+});
+
+test('REVIEW: the EXIT moat survives the capped-u window band, both tables', () => {
+  // An adversarial sweep EXECUTING this module found moveLayout's moat at
+  // 23.07U in windows where u is capped (play.h 446-499) and the width sits
+  // near the long-axis floor — the expansion pass's best-separating-axis
+  // choice flipped for the (move, lock) pair and nothing clamped the giant
+  // node's growth toward the chrome. No shipping phone lives in that band,
+  // which is exactly why no device-table case caught it. Sweep the band.
+  for (let h = 440; h <= 510; h += 6) {
+    const u = Math.min(h, 430) / 100;
+    for (let wu = 176; wu <= 184; wu += 1) {
+      const w = Math.ceil(wu * u);
+      for (const [name, fn] of LAYOUTS) {
+        const l = fn({ width: w, height: h }, { top: 0, right: 0, bottom: 0, left: 0 });
+        if (!l.ok) continue;
+        for (const n of l.nodes) {
+          if (n.layer === 9) continue;
+          const gap = rectGap(l.byId.exit.hit, n.hit);
+          assert.ok(
+            gap >= EXIT_MOAT_U * l.u - 1e-6,
+            `${name} @ ${w}x${h}: EXIT only ${(gap / l.u).toFixed(2)}U from ${n.id}`,
+          );
+        }
+      }
+    }
+  }
+});
+
+test('REVIEW: expansion is capped — no node grows more than EXPAND_CAP_U per side', () => {
+  for (const [name, fn] of LAYOUTS) {
+    for (const c of cases()) {
+      const l = ok(fn(c.win, c.insets));
+      for (const n of l.nodes) {
+        const cap = EXPAND_CAP_U * l.u + 1e-6;
+        assert.ok(n.rect.x - n.hit.x <= cap, `${name}/${c.label}: ${n.id} left growth`);
+        assert.ok(n.hit.x + n.hit.w - (n.rect.x + n.rect.w) <= cap, `${name}/${c.label}: ${n.id} right growth`);
+        assert.ok(n.rect.y - n.hit.y <= cap, `${name}/${c.label}: ${n.id} top growth`);
+        assert.ok(n.hit.y + n.hit.h - (n.rect.y + n.rect.h) <= cap, `${name}/${c.label}: ${n.id} bottom growth`);
+      }
+    }
+  }
 });

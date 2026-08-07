@@ -46,3 +46,4 @@ app/build-*.ipa
 # `eas build --local` leaves the staged project tarball behind next to the ipa.
 app/build-*.tar.gz
 scratchpad-atv/
+app/build-*.aab
