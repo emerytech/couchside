@@ -594,3 +594,32 @@ size by nature. They are not games of unknown size; they are entries the questio
 apply to. Every unit test passed before and after — the fixtures had sizes.
 
 Before adding another exception, get the number off a real box.
+
+## Full-screen (immersive) surfaces: geometry is a pure module, chrome is derived state
+
+Established by the landscape gamepad (2026-08-07, `lib/padLayout.ts` +
+`lib/immersive.ts`); follow it for any future full-screen surface (player,
+screensaver preview, a second controller layout).
+
+1. **Geometry lives in a pure module, absolute positions from ONE table, sized in
+   ONE unit** (a fraction of the relevant axis). No flexbox for control placement
+   — flex overflows silently, which is exactly the class of bug it shipped. The
+   module reads `useSafeAreaInsets()` output ONCE into a play rect; downstream
+   components never see insets, the window, or a percentage string (grep-guard in
+   the layout test). A screen too small for the layout returns `{ok:false}` and
+   the component renders a refusal card — never a cramped layout.
+2. **The layout test asserts properties, not pixels:** everything inside the play
+   rect, no two hit rects intersect, every target >= 44dp, dangerous controls keep
+   their moat, floors refuse in BOTH directions — each size run twice (notch left/
+   notch right, `insets.top` is 0 in landscape). Include a CONTROL proving each
+   predicate can fail.
+3. **Chrome visibility is a store (`lib/immersive.ts`), never `setOptions`.** The
+   tab bar, TabScreen chrome and screen-local chrome all DERIVE from it. An
+   imperative hide has to remember to undo itself; a derived value cannot strand
+   the app chrome-less.
+4. **Harness wire-proof for gamepad surfaces:** the web harness has no WS proxy —
+   install an in-page fake WebSocket that ANSWERS EVERY FRAME WITH A PONG and read
+   `send()`ed frames instead. A fake that stays silent is torn down by the
+   half-dead-socket watchdog every ~12s and clicks in the dead windows mimic
+   broken buttons. Known ceiling: onPressIn-only Pressables never fire from mouse
+   on react-native-web (portrait pad has the same gap) — those need a device.

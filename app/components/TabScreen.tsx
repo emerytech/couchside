@@ -10,19 +10,24 @@ import { StyleSheet, Text, View } from 'react-native';
 import { BoxSwitcher } from '@/components/BoxSwitcher';
 import { TrialNudge } from '@/components/TrialNudge';
 import { IS_BETA_BUILD } from '@/lib/entitlement';
+import { useImmersive } from '@/lib/immersive';
 import { mono, useThemedStyles } from '@/lib/theme';
 import type { Palette } from '@/lib/theme';
 
 export function TabScreen({ children }: { children: React.ReactNode }) {
   const styles = useThemedStyles(makeStyles);
+  // Landscape gamepad owns the whole screen: no device picker, no trial nudge,
+  // no BETA badge. See lib/immersive.ts for why this is derived state rather
+  // than an imperative setOptions call with cleanup to forget.
+  const immersive = useImmersive();
   return (
     <View style={styles.root}>
-      <BoxSwitcher />
+      {!immersive && <BoxSwitcher />}
       {/* Near the end of the trial only, and never on Setup (which already
           carries the permanent unlock row). Self-hides otherwise. */}
-      <TrialNudge />
+      {!immersive && <TrialNudge />}
       <View style={styles.body}>{children}</View>
-      {IS_BETA_BUILD && (
+      {IS_BETA_BUILD && !immersive && (
         <View pointerEvents="none" style={styles.betaBadge}>
           <Text style={styles.betaText}>BETA</Text>
         </View>

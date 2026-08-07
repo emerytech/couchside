@@ -5,6 +5,7 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 
 import { useCapsSync } from '@/hooks/useCapsSync';
 import { hapticSelection } from '@/lib/haptics';
+import { useImmersive } from '@/lib/immersive';
 import { usePref } from '@/lib/prefs';
 import { FeatureTour } from '@/components/FeatureTour';
 import { TourThanks } from '@/components/TourThanks';
@@ -35,6 +36,11 @@ export default function TabLayout() {
   // lib/tvdirect/) takes over. A pref rather than derived state, so a box owner
   // can flip to it while the box is off and flip back without the box answering.
   const remoteOnly = usePref('remoteOnlyMode');
+  // Landscape gamepad: the tab bar is the thing that was cutting off the d-pad's
+  // DOWN arrow, so hiding it is both the feature and half the bug fix. Derived
+  // from state here rather than set imperatively from pad.tsx, so there is no
+  // cleanup that can fail to run and leave the app with no tab bar at all.
+  const immersive = useImmersive();
   const segments = useSegments();
   // Always-mounted caps safety net: heals a stale persisted caps snapshot
   // (e.g. couchmode:false cached before the box became capable) no matter
@@ -214,10 +220,12 @@ export default function TabLayout() {
         headerShown: false,
         tabBarActiveTintColor: t.blue,
         tabBarInactiveTintColor: t.textFaint,
-        tabBarStyle: {
-          backgroundColor: t.tabBar,
-          borderTopColor: t.tabBarBorder,
-        },
+        tabBarStyle: immersive
+          ? { display: 'none' }
+          : {
+              backgroundColor: t.tabBar,
+              borderTopColor: t.tabBarBorder,
+            },
         sceneStyle: { backgroundColor: t.bg },
       }}>
       <Tabs.Screen

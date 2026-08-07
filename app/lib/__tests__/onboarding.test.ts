@@ -126,7 +126,8 @@ test('every screen locks orientation except the Pad, which allows landscape', as
     if (rel === '+not-found.tsx') continue;
     const src = readFileSync(p, 'utf8');
     assert.ok(src.includes('useLockOrientation('), `${rel} must state an orientation policy`);
-    const mentionsLandscape = src.includes("'allow-landscape'");
+    const mentionsLandscape =
+      src.includes("'allow-landscape'") || src.includes("'landscape-locked'");
     assert.equal(
       mentionsLandscape,
       rel.endsWith('pad.tsx'),
@@ -136,9 +137,18 @@ test('every screen locks orientation except the Pad, which allows landscape', as
       // And even there it is CONDITIONAL on the gamepad mode. A flat
       // 'allow-landscape' rotated Swipe, Mouse, Remote and the Steam menus too —
       // none of which have a landscape layout. Reported from a device.
+      //
+      // Asserted as a PROPERTY rather than by matching the exact expression:
+      // the call site grew a third policy ('landscape-locked', for the LOCK
+      // button) and an `exited` term, and a test that pins one spelling just
+      // gets rewritten to whatever the code now says, which guards nothing.
       assert.ok(
-        /useLockOrientation\(\s*mode === 'gamepad'/.test(src),
-        'the Pad must allow landscape only in gamepad mode',
+        !/useLockOrientation\(\s*'(allow-landscape|landscape-locked)'\s*\)/.test(src),
+        'the Pad must not allow landscape unconditionally',
+      );
+      assert.ok(
+        /useLockOrientation\([^;]*\bmode\b[^;]*'gamepad'/.test(src),
+        'the Pad landscape policy must still be conditional on the gamepad mode',
       );
     }
   }

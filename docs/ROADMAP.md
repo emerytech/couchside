@@ -167,50 +167,6 @@ becomes the allowlist.
 - **Do NOT start with the UI.** Problem 1 decides whether this feature is possible without
   an API key, and that answer changes the whole shape.
 
-### Landscape Pad = full-screen controller (owner ask 2026-08-07)
-- **priority:** P1 — raised from P2 after seeing it. This is not "cramped", it is
-  CLIPPED AND OVERLAPPING. · **risk:** medium (touches the input path — CLAUDE.md §4
-  calls it safety-critical and the source of most escaped bugs) · **affects:** app only ·
-  **depends_on:** none
-- **Observed on a real phone in landscape (owner screenshot 2026-08-07):**
-  - the LEFT STICK is cut off by the left screen edge, and the `L` trigger sits half
-    off-screen behind it
-  - `B` is clipped by the right edge; `Y`/`X`/`A`/`B` no longer form a diamond and `RB`
-    overlaps the gap between `X` and `B`
-  - the D-pad's DOWN arrow is cut off by the tab bar
-  - the mode row (PAD/SWIPE/MOUSE/REMOTE) is partly behind the left stick, and its own
-    `PAD` label is not visible
-  - the entire centre of the screen is dead space while the edges overflow
-- Three things eat the short axis at once: the header (box picker + Game Mode + volume),
-  the connected-pad pill plus the mode row, and the tab bar. The controller gets what is
-  left, then overflows it. Hiding the chrome is therefore not only the feature request —
-  it is the fix for the clipping.
-- **Owner:** "landscape pad mode should be straight up game mode" — rotating the phone
-  sideways on the Pad tab shows ONLY the controller, no tab bar, no header, no box
-  picker. Rotating back to portrait exits it. Plus a LOCK toggle on the controller so
-  the orientation can be pinned while playing.
-- Not from nothing: Pad is already the one tab that allows landscape
-  (`useLockOrientation('allow-landscape')`, pad.tsx:823) and the gamepad already has a
-  separate landscape layout (`landscape ? ... : ...`, derived from `width > height`).
-  What is missing is hiding the app chrome and the lock.
-- There is ALREADY a large-pad concept to reconcile with, not duplicate: `largePad`
-  (pad.tsx, computed from the `trackpadLarge` pref) hides the status pill and the mode
-  selector for trackpad/swipe. Landscape game mode should reuse that hiding, or the two
-  will fight over who owns the chrome.
-- **Open questions:** does the tab bar hide via the navigator (tabBarStyle) or by
-  rendering Pad outside the tab group in landscape — the second is a bigger change but
-  the only one that removes the bar completely. Does the lock persist across sessions
-  (a pref) or last only for the session? What happens to the lock when the user leaves
-  the Pad tab.
-- **Full spec: `docs/memory/project_landscape-pad.md`** — read it before starting. It
-  has the arithmetic for why it breaks (≈575dp of fixed-pixel children in a ≈393dp short
-  axis; flexbox overflows silently), a complete absolute-position layout table in units of
-  1% of the usable short axis, the fixed-container/floating-origin stick decision, and the
-  five assertions a pure layout test should make.
-- **Interacts with:** the "Landscape laptop mode" entry below, which claims the same
-  gesture on the same tab for a different purpose. One of the two has to win, or
-  landscape needs a mode switch of its own. Decide before building either.
-
 ### Remote-only mode: an "Apps" launcher grid (the TV's installed apps)
 - **priority:** P2 · **risk:** low · **affects:** app only (lib/tvdirect + the Remote tab) ·
   **depends_on:** Roku direct (shipped); LG direct (device-verify first)
@@ -896,6 +852,27 @@ recommendation was wrong, not merely superseded.
 ---
 
 ## ✅ Completed
+
+### Landscape Pad = full-screen controller — BUILT 2026-08-07, awaiting device pass
+- **was:** P1 (clipped + overlapping, owner screenshot 2026-08-07) · **affects:** app only
+- Built to `docs/memory/project_landscape-pad.md`: pure `lib/padLayout.ts` (absolute
+  table, U = 1% of usable short axis, computed hit-rect expansion, refuse-below-floor),
+  `components/LandscapePad.tsx` (floating-origin sticks, angular d-pad, slide-within-layer
+  face cluster, LOCK + EXIT), `lib/immersive.ts` store hiding tab bar / BoxSwitcher /
+  pill / mode row. Same PadScreen, no route change — WS/uinput untouched by rotation.
+- **Open-questions answered:** tab bar hides via tabBarStyle from a store (not a separate
+  route — that churns the uinput device, KI-053); lock is session-only, released on
+  blur/unmount by the fixed useLockOrientation cleanup.
+- **Spec deviations (arithmetic, documented at the constants):** short-axis floor 326
+  not 340 (binding control is the d-pad sector on HIT rects; 340 would refuse a Galaxy
+  S21); EXIT moat 26U (= >=100dp on every real device, asserted separately; flat 100dp
+  is unsatisfiable at the 16:9 floor).
+- Proven: 24 layout tests x 12 devices x notch left/right; wire-level press-through in
+  the harness via a pong-answering fake WebSocket (all PanResponder surfaces + lock/exit
+  + rotate round-trip). NOT yet: the eight Pressable buttons on a device (onPressIn is
+  mouse-dead on RNW — same as shipped portrait), real rotation, Android nav bar
+  (expo-navigation-bar deliberately not added; layout is inset-correct without it).
+
 
 ### Steam Deck install fix + Windows units fix — SHIPPED in agent 2.9.71 / 0.4.5-win
 
