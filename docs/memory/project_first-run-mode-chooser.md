@@ -107,7 +107,25 @@ nothing.
 **Also:** this route is a sibling of `(tabs)`, so it inherits no orientation policy and
 rotated freely until locked to portrait. A source-reading guard now covers every screen.
 
-### Still NOT verified (2026-08-07)
-The flow has never run. Needs: the trigger firing on a fresh install AND staying silent
-for an existing one (each guard alone, per §5), Android hardware back at each step, and
-whether `DirectTvSetup` renders sensibly inside this layout — it was built for Setup.
+### VERIFIED on a Razr 2023, 2026-08-07
+
+All of §5's device checks pass:
+- Fresh install (`pm clear`) -> the flow appears and STAYS (sampled at 3/6/10/16s).
+- **Fleet guard ALONE** — flag cleared via the Prefs reset, then force-stopped without
+  exiting so `onboardingDone` stayed false, with a box paired -> no flow. This is the
+  upgrading-user case and the one worth the most.
+- Both guards together -> no flow.
+- Android back: chooser -> welcome (navigates, does NOT exit); welcome -> exits to Setup.
+- The Prefs reset navigates, and its row survives the prefs search filter.
+- Renders correctly on device: dark theme, no tab bar, portrait locked.
+
+TWO TESTING ARTEFACTS worth remembering, because both produced a false "it is broken":
+1. `pm clear` on a RUNNING app wipes storage but leaves the process alive with its
+   in-memory one-shot redirect flag already set — so the redirect never re-runs and the
+   app sits on Setup. Force-stop first, or the first result is a lie.
+2. Typing in the prefs SEARCH box leaves the keyboard up, which shifts the layout and
+   makes fixed-coordinate taps miss. Reaching the flow by `couchside://onboarding` avoids
+   both.
+
+Still NOT verified: whether `DirectTvSetup` (screen 3b) renders sensibly inside this
+layout — it was built for the Setup screen's container.
