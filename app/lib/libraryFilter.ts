@@ -70,10 +70,9 @@ export type FilterState = {
   /**
    * Only games at least this big, in GB. For "what is eating my disk".
    *
-   * A game whose size Steam has not stated still PASSES, like every other
-   * third-party fact here — the alternative is quietly hiding something the
-   * user owns because Steam had not finished measuring it. The sheet says so
-   * out loud rather than leaving it to be discovered.
+   * Entries with NO size are excluded while this is on — shortcuts have no
+   * install size at all, and on a real library they outnumbered the games and
+   * made the filter meaningless. See matchesSize for the full reasoning.
    */
   minSizeGb?: number;
 };
@@ -127,9 +126,20 @@ const GB = 1024 * 1024 * 1024;
 
 function matchesSize(g: FilterableGame, minGb: number | undefined): boolean {
   if (!minGb || minGb <= 0) return true;
-  // Unstated size is not "small" — it is unknown, and hiding it would lose a
-  // game the user owns. See the field comment on minSizeGb.
-  if (g.size_bytes == null || g.size_bytes <= 0) return true;
+  // AN ENTRY WITH NO SIZE IS EXCLUDED HERE, and this is the one place in this
+  // module that departs from "unknown is included".
+  //
+  // Measured on a real box: "over 10 GB" returned 29 of 33 games when exactly
+  // ONE was over 10 GB. The other 28 were non-Steam shortcuts — Netflix and the
+  // like — which have no install size by nature. They are not games of unknown
+  // size, they are entries the question does not apply to, and letting them
+  // through made the filter useless for the only thing it is for.
+  //
+  // The unknown-passes rule protects against a THIRD PARTY's missing data
+  // hiding something you own. Here the user has explicitly asked "show me what
+  // is big", and an entry with no size cannot answer that. The sheet says this
+  // out loud rather than leaving it to be discovered.
+  if (g.size_bytes == null || g.size_bytes <= 0) return false;
   return g.size_bytes >= minGb * GB;
 }
 

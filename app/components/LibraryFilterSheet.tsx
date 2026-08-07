@@ -358,7 +358,7 @@ export function LibraryFilterSheet({
                   ))}
                 </View>
                 <Text style={styles.note}>
-                  A game Steam has not measured yet stays visible.
+                  Only games Steam has measured. Shortcuts have no install size.
                 </Text>
               </>
             ) : null}

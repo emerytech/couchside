@@ -437,9 +437,12 @@ test('the size filter keeps big games and never hides an unsized one', () => {
   const kept = applyFilter(games, { ...EMPTY_FILTER, minSizeGb: 10 }, 0).map((g) => g.label);
   assert.ok(kept.includes('Huge'));
   assert.ok(!kept.includes('Small'));
-  // Unstated size is unknown, not small — hiding it would lose a game the user
-  // owns because Steam had not finished measuring it.
-  assert.ok(kept.includes('Unmeasured'), 'an unsized game must stay visible');
+  // MEASURED ON A REAL BOX: letting unsized entries through returned 29 of 33
+  // games for "over 10 GB" when exactly one qualified — the rest were non-Steam
+  // shortcuts, which have no install size at all. "Show me what is big" cannot
+  // be answered by something with no size, so it is excluded here even though
+  // the rest of this module includes unknowns.
+  assert.ok(!kept.includes('Unmeasured'), 'an entry with no size cannot answer "how big"');
 });
 
 test('a size filter counts as filtering (control)', () => {
