@@ -26,6 +26,9 @@ export type FilterableGame = {
   kind: 'steam' | 'custom' | 'shortcut';
   /** Absent = Steam has no record = never played. 0 = launched, played nothing. */
   playtime_min?: number;
+  /** Install size in bytes, from Steam's own appmanifest (agent >= 2.9.72).
+   *  Absent means Steam did not state one — never a zero we invented. */
+  size_bytes?: number;
   last_played?: number;
 };
 
@@ -64,6 +67,14 @@ export type FilterState = {
    * so absence is an answer, not ignorance.
    */
   bookmarked?: boolean;
+  /**
+   * Only games at least this big, in GB. For "what is eating my disk".
+   *
+   * Entries with NO size are excluded while this is on — shortcuts have no
+   * install size at all, and on a real library they outnumbered the games and
+   * made the filter meaningless. See matchesSize for the full reasoning.
+   */
+  minSizeGb?: number;
 };
 
 export const EMPTY_FILTER: FilterState = { search: '', kinds: [], played: 'any' };
@@ -90,6 +101,7 @@ export function isFiltering(f: FilterState): boolean {
     (f.staleDays ?? 0) > 0 ||
     (f.deck?.length ?? 0) > 0 ||
     (f.proton?.length ?? 0) > 0 ||
+    (f.minSizeGb ?? 0) > 0 ||
     f.bookmarked === true
   );
 }
@@ -108,6 +120,27 @@ function matchesPlayed(g: FilterableGame, played: PlayedFilter): boolean {
   if (mins == null) return true;
   if (played === 'under2h') return mins > 0 && mins < 2 * HOUR;
   return mins >= 2 * HOUR;
+}
+
+const GB = 1024 * 1024 * 1024;
+
+function matchesSize(g: FilterableGame, minGb: number | undefined): boolean {
+  if (!minGb || minGb <= 0) return true;
+  // AN ENTRY WITH NO SIZE IS EXCLUDED HERE, and this is the one place in this
+  // module that departs from "unknown is included".
+  //
+  // Measured on a real box: "over 10 GB" returned 29 of 33 games when exactly
+  // ONE was over 10 GB. The other 28 were non-Steam shortcuts — Netflix and the
+  // like — which have no install size by nature. They are not games of unknown
+  // size, they are entries the question does not apply to, and letting them
+  // through made the filter useless for the only thing it is for.
+  //
+  // The unknown-passes rule protects against a THIRD PARTY's missing data
+  // hiding something you own. Here the user has explicitly asked "show me what
+  // is big", and an entry with no size cannot answer that. The sheet says this
+  // out loud rather than leaving it to be discovered.
+  if (g.size_bytes == null || g.size_bytes <= 0) return false;
+  return g.size_bytes >= minGb * GB;
 }
 
 function matchesStale(g: FilterableGame, staleDays: number | undefined, nowSec: number): boolean {
@@ -132,6 +165,7 @@ export function matches(
   if (!matchesPlayed(g, f.played)) return false;
   if (!matchesStale(g, f.staleDays, nowSec)) return false;
   if (!matchesCompat(compat, f.deck ?? [], f.proton ?? [])) return false;
+  if (!matchesSize(g, f.minSizeGb)) return false;
   if (f.bookmarked) {
     const k = bookmarkKey(g);
     if (!k || !bookmarks?.has(k)) return false;
@@ -195,6 +229,18 @@ export function pickRandom<T>(games: T[], rand: () => number = Math.random): T |
   // or future generator might, and an out-of-range index would return undefined
   // while the type still claims T.
   return games[Math.min(i, games.length - 1)] ?? null;
+}
+
+/**
+ * "48.2 GB" / "860 MB" / null when Steam never said.
+ *
+ * Returns NULL rather than a dash or a zero: the caller then omits the line
+ * entirely, because "0 GB" reads as free space that is not free.
+ */
+export function sizeLabel(bytes: number | undefined): string | null {
+  if (bytes == null || bytes <= 0) return null;
+  if (bytes >= GB) return `${(bytes / GB).toFixed(1)} GB`;
+  return `${Math.max(1, Math.round(bytes / (1024 * 1024)))} MB`;
 }
 
 /** "12h 30m" / "45m" / "never". For the tile's playtime line. */

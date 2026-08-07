@@ -1,16 +1,20 @@
 import Ionicons from '@expo/vector-icons/Ionicons';
 import { router, Tabs, useSegments } from 'expo-router';
 import { currentStep, isFinalStep } from '@/lib/tour';
-import { useCallback, useEffect, useRef } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 
 import { useCapsSync } from '@/hooks/useCapsSync';
 import { hapticSelection } from '@/lib/haptics';
 import { usePref } from '@/lib/prefs';
 import { FeatureTour } from '@/components/FeatureTour';
 import { TourThanks } from '@/components/TourThanks';
+import { WhatsNewOffer } from '@/components/WhatsNewOffer';
 import { useFeatureTour } from '@/hooks/useFeatureTour';
+import { useDownloadWatcher } from '@/hooks/useDownloadWatch';
 import { showTourThanks, useTourThanks } from '@/hooks/useTourThanks';
-import { useBoxes } from '@/lib/SettingsContext';
+import { shouldOfferWhatsNew, shouldShowOnboarding } from '@/lib/onboarding';
+import { useBoxes, useSettings } from '@/lib/SettingsContext';
+import { useTvs } from '@/lib/tvdirect/store';
 import { useTheme } from '@/lib/theme';
 
 // NOT the landing screen. This governs back-behaviour within the tab group; on a
@@ -64,9 +68,21 @@ export default function TabLayout() {
     ...(hideLaunch ? [] : ['launch']),
     'setup',
   ];
+  const onboardingDone = usePref('onboardingDone');
+  const whatsNewOffered = usePref('whatsNewOffered');
+  const { tvs } = useTvs();
   const tourEnabled = usePref('featureTour');
   const tour = useFeatureTour(boxes.length > 0, tourEnabled);
   const thanksVisible = useTourThanks();
+  // Offer the new first-run flow to people who were already set up before it
+  // existed — the exact mirror of the fleet guard, which refuses to force it on
+  // them. Local state so answering hides it on the same frame.
+  const [offerDismissed, setOfferDismissed] = useState(false);
+  // EXACTLY ONE watcher for the whole app. This lived in the Launch tab, which
+  // mounts lazily on first focus — so a download finishing while the user sat on
+  // Console went unnoticed, which is precisely the case the feature exists for.
+  const { settings } = useSettings();
+  useDownloadWatcher(settings, ready && settings.host.trim().length > 0);
 
   // Thank the people who actually WALKED it. Wrapping `next` rather than
   // watching for state.done is deliberate: skipping and finishing both land on
@@ -132,6 +148,16 @@ export default function TabLayout() {
     // user had to find Console themselves. Reported from a device.
     if (tour.visible) return;
     redirected.current = true;
+    // FIRST RUN, before anything else. A truly fresh install goes to the
+    // welcome/chooser flow instead of straight to Setup, whose zero-box copy
+    // tells you to install a service on "the box you want to control" — a dead
+    // end for the smart-TV-only audience. The empty-state guards are what keep
+    // an UPGRADING user out of it: the pref defaults false for every install
+    // that already exists, so having a box or a TV is what answers the question.
+    if (shouldShowOnboarding({ done: onboardingDone, boxCount: boxes.length, tvCount: tvs.length, ready })) {
+      router.replace('/onboarding');
+      return;
+    }
     // In remote-only mode the landing tab is the Remote, always: the box tabs
     // it could otherwise name are hidden, and Console with no box is an empty
     // dashboard. Setup is still where someone with no TV yet has to go, but
@@ -149,6 +175,10 @@ export default function TabLayout() {
     if (landingTab !== 'index') {
       router.replace(`/(tabs)/${landingTab}`);
     }
+    // onboardingDone/tvs are read inside but deliberately NOT deps: this is a
+    // one-shot redirect guarded by `redirected`, and re-running it when the
+    // flag flips would fight the navigation that flip just caused.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [ready, boxes.length, landingTab, remoteOnly]);
 
   // Bounce off a tab hidden for the active box — landing on the Pad initial
@@ -267,6 +297,7 @@ export default function TabLayout() {
         state={tour.state}
         tabOrder={tabOrder}
         onNext={tourNext}
+        onBack={tour.back}
         onSkip={tour.skip}
       />
     ) : null}
@@ -274,6 +305,20 @@ export default function TabLayout() {
         Rendered after the tour so it sits above it during the frame the tour is
         tearing down. */}
     {thanksVisible ? <TourThanks /> : null}
+    {/* Never stacked on the tour or the thank-you card — one interruption at a
+        time, and the tour is the one already in progress. */}
+    {!offerDismissed &&
+    !tour.visible &&
+    !thanksVisible &&
+    shouldOfferWhatsNew({
+      offered: whatsNewOffered,
+      done: onboardingDone,
+      boxCount: boxes.length,
+      tvCount: tvs.length,
+      ready,
+    }) ? (
+      <WhatsNewOffer onDone={() => setOfferDismissed(true)} />
+    ) : null}
     </>
   );
 }

@@ -113,6 +113,26 @@ export type Prefs = {
    *  and reopens in one tap, which a hidden one cannot. Persisted, because a
    *  section you fold away should stay folded. */
   streamCollapsed: boolean;
+  /**
+   * The first-run flow (welcome -> which device -> how to set it up) has been
+   * seen and exited. Set on ANY exit: either card, the skip link, or the Android
+   * back button out of the first screen — a flow that reappears after a
+   * deliberate back-out is a nag.
+   *
+   * NOT sufficient on its own to decide whether to show it: this defaults false
+   * for every EXISTING install, so the trigger also requires an empty fleet and
+   * no TVs. Someone who already has a box answered the question by having one.
+   */
+  onboardingDone: boolean;
+  /**
+   * The one-time "there is a new setup walkthrough, want to see it?" offer has
+   * been PUT TO the user — accepted or declined, both count.
+   *
+   * Deliberately NOT onboardingDone. Reusing that flag would make "I declined
+   * the offer" indistinguishable from "I finished setup", and the Prefs replay
+   * control would then re-offer the popup instead of replaying the flow.
+   */
+  whatsNewOffered: boolean;
   /** Remove the Steam downloads card from the Launch tab. Off by default: a
    *  transfer in flight is the most useful thing that tab can tell you. On for
    *  people who never queue from the couch and want the games grid to start at
@@ -257,6 +277,8 @@ export const DEFAULTS: Prefs = {
   keyboardMode: false,
   searchButtonSide: 'left',
   streamCollapsed: false,
+  onboardingDone: false,
+  whatsNewOffered: false,
   hideDownloads: false,
   appUpdateReminder: true,
   defaultPadMode: 'swipe',
@@ -349,6 +371,8 @@ function normalize(raw: unknown): Prefs {
       ? o.defaultPadMode
       : 'swipe';
   const streamCollapsed = bool(o.streamCollapsed, DEFAULTS.streamCollapsed);
+  const onboardingDone = bool(o.onboardingDone, DEFAULTS.onboardingDone);
+  const whatsNewOffered = bool(o.whatsNewOffered, DEFAULTS.whatsNewOffered);
   const hideDownloads = bool(o.hideDownloads, DEFAULTS.hideDownloads);
   const appUpdateReminder = bool(o.appUpdateReminder, DEFAULTS.appUpdateReminder);
   const searchSide: 'left' | 'right' | 'off' =
@@ -361,6 +385,8 @@ function normalize(raw: unknown): Prefs {
   return {
     searchButtonSide: searchSide,
     streamCollapsed,
+    onboardingDone,
+    whatsNewOffered,
     hideDownloads,
     appUpdateReminder,
     confirmSuspend:

@@ -13,6 +13,7 @@ import {
   bookmarkKey,
   toggleBookmark,
   presetName,
+  sizeLabel,
   upsertPreset,
   normalizePresets,
   MAX_PRESETS,
@@ -394,4 +395,75 @@ test('an unknown played value cannot become the over-2h branch (control)', () =>
   // a corrupted blob would silently hide every short game.
   const out = normalizePresets([{ name: 'x', filter: { played: 'nonsense' } }]);
   assert.equal(out[0].filter.played, 'any');
+});
+
+test('the filter sheet actually calls savePreset and renders the preset list', async () => {
+  // THE "WIRED TO NOTHING" GUARD. Twice in one day a feature here was connected
+  // to state and never mounted, or mounted and never invoked — and both times
+  // nothing failed, the control was just inert. Pure logic passing says nothing
+  // about whether a component calls it, so read the source and check.
+  const { readFileSync } = await import('node:fs');
+  const { join } = await import('node:path');
+  const sheet = readFileSync(
+    join(import.meta.dirname, '../../components/LibraryFilterSheet.tsx'),
+    'utf8',
+  );
+  assert.ok(sheet.includes('savePreset('), 'the sheet must call savePreset');
+  assert.ok(sheet.includes('deletePreset('), 'and offer a way to remove one');
+  assert.ok(sheet.includes('marks.presets.map'), 'and actually render the saved list');
+  assert.ok(sheet.includes('bookmarked:'), 'and toggle the bookmarked filter');
+
+  const game = readFileSync(join(import.meta.dirname, '../../components/GameSheet.tsx'), 'utf8');
+  assert.ok(game.includes('toggleBookmarked('), 'the game sheet must call toggleBookmarked');
+
+  const launch = readFileSync(
+    join(import.meta.dirname, '../../app/(tabs)/launch.tsx'),
+    'utf8',
+  );
+  // Match on one LINE: a character-class scan trips over the ')' inside
+  // Math.floor(Date.now() / 1000) and reports a false failure.
+  const wired = launch
+    .split('\n')
+    .some((l) => l.includes('applyFilter(') && l.includes('marks.bookmarks'));
+  assert.ok(wired, 'the grid must be filtered by the bookmark set, or the sheet count lies');
+});
+
+test('the size filter keeps big games and never hides an unsized one', () => {
+  const games = [
+    { id: 'a', label: 'Huge', kind: 'steam' as const, size_bytes: 60 * 1024 ** 3 },
+    { id: 'b', label: 'Small', kind: 'steam' as const, size_bytes: 2 * 1024 ** 3 },
+    { id: 'c', label: 'Unmeasured', kind: 'steam' as const },
+  ];
+  const kept = applyFilter(games, { ...EMPTY_FILTER, minSizeGb: 10 }, 0).map((g) => g.label);
+  assert.ok(kept.includes('Huge'));
+  assert.ok(!kept.includes('Small'));
+  // MEASURED ON A REAL BOX: letting unsized entries through returned 29 of 33
+  // games for "over 10 GB" when exactly one qualified — the rest were non-Steam
+  // shortcuts, which have no install size at all. "Show me what is big" cannot
+  // be answered by something with no size, so it is excluded here even though
+  // the rest of this module includes unknowns.
+  assert.ok(!kept.includes('Unmeasured'), 'an entry with no size cannot answer "how big"');
+});
+
+test('a size filter counts as filtering (control)', () => {
+  assert.equal(isFiltering({ ...EMPTY_FILTER, minSizeGb: 10 }), true);
+  assert.equal(isFiltering({ ...EMPTY_FILTER, minSizeGb: 0 }), false);
+});
+
+test('sizeLabel omits a size it does not know rather than printing zero', () => {
+  assert.equal(sizeLabel(undefined), null, '0 GB would read as free space');
+  assert.equal(sizeLabel(0), null);
+  assert.equal(sizeLabel(165580472320), '154.2 GB');
+  assert.equal(sizeLabel(900 * 1024 * 1024), '900 MB');
+  assert.equal(sizeLabel(1024), '1 MB', 'a tiny install never rounds to 0 MB');
+});
+
+test('big-and-never-played is the combination the feature exists for', () => {
+  const games = [
+    { id: 'a', label: 'Big unplayed', kind: 'steam' as const, size_bytes: 80 * 1024 ** 3 },
+    { id: 'b', label: 'Big loved', kind: 'steam' as const, size_bytes: 80 * 1024 ** 3, playtime_min: 4000 },
+    { id: 'c', label: 'Small unplayed', kind: 'steam' as const, size_bytes: 1024 ** 3 },
+  ];
+  const f = { ...EMPTY_FILTER, minSizeGb: 50, played: 'never' as const };
+  assert.deepEqual(applyFilter(games, f, 0).map((g) => g.label), ['Big unplayed']);
 });

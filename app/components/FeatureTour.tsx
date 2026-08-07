@@ -85,6 +85,7 @@ export function FeatureTour({
   state,
   tabOrder,
   onNext,
+  onBack,
   onSkip,
 }: {
   state: TourState;
@@ -93,6 +94,8 @@ export function FeatureTour({
    *  count and the positions. */
   tabOrder: string[];
   onNext: () => void;
+  /** Step back, for a mis-tapped GOT IT. */
+  onBack: () => void;
   onSkip: () => void;
 }) {
   const t = useTheme();
@@ -286,6 +289,18 @@ export function FeatureTour({
         {/* Skip sits BESIDE Next, not as small print in a corner: a tour with a
             dozen steps needs an obvious way out, or it is a hostage situation. */}
         <View style={styles.actions}>
+          {state.step > 0 ? (
+            <Pressable
+              onPress={() => {
+                hapticLight();
+                onBack();
+              }}
+              accessibilityRole="button"
+              accessibilityLabel="Back a step"
+              style={({ pressed }) => [styles.backBtn, pressed && styles.pressed]}>
+              <Ionicons name="arrow-back" size={15} color={t.textDim} />
+            </Pressable>
+          ) : null}
           <Pressable
             onPress={() => {
               hapticLight();
@@ -343,6 +358,16 @@ const makeStyles = (t: Palette) =>
     },
     count: { color: t.textDim, fontSize: 11, letterSpacing: 1, fontFamily: mono },
     actions: { flexDirection: 'row', gap: 10, marginTop: 4 },
+    backBtn: {
+      width: 46,
+      alignItems: 'center',
+      justifyContent: 'center',
+      borderRadius: 11,
+      paddingVertical: 12,
+      backgroundColor: t.inset,
+      borderWidth: 1,
+      borderColor: t.cardBorder,
+    },
     skipBtn: {
       flex: 1,
       alignItems: 'center',

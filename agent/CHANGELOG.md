@@ -18,6 +18,18 @@ the same thing regardless of what actually changed.
 Write for the person holding the phone, not for the commit log. They are
 deciding whether to press "Update now" on a machine across the room.
 
+## 2.9.72
+
+**Per-game install size.** Each Steam game now reports how much disk it is
+using, read straight out of Steam's own `appmanifest_*.acf`. The app pairs it
+with playtime to answer the question you actually have when a drive fills up:
+what is big, and which of it have I never played?
+
+Costs nothing extra to collect — those manifests were already being read to
+find your games in the first place. A game Steam has not measured yet reports
+no size at all rather than a zero, because "0 GB" reads as free space that is
+not free.
+
 ## 2.9.71
 
 - **Fresh installs work again on a Steam Deck.** The installer stopped partway

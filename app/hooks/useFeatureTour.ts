@@ -18,7 +18,7 @@ import * as SecureStore from 'expo-secure-store';
 import { useCallback, useSyncExternalStore } from 'react';
 import { Platform } from 'react-native';
 
-import { advanceTour, dismissTour, shouldRun, TOUR_FINISHED, TOUR_NOT_STARTED, type TourState } from '@/lib/tour';
+import { advanceTour, dismissTour, previousTour, shouldRun, TOUR_FINISHED, TOUR_NOT_STARTED, type TourState } from '@/lib/tour';
 
 const KEY = 'couchside.tour.v1';
 
@@ -128,6 +128,7 @@ export function useFeatureTour(paired: boolean, enabled: boolean) {
     visible: s.ready && shouldRun(s.state, paired, enabled),
     state: s.state,
     next: useCallback(() => save(advanceTour(snap.state)), []),
+    back: useCallback(() => save(previousTour(snap.state)), []),
     skip: useCallback(() => save(dismissTour()), []),
   };
 }

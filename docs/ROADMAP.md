@@ -130,6 +130,87 @@ Entry fields: `priority` (P0 blocker → P3 nice) · `risk` · `affects` · `dep
 
 ## 📋 Planned
 
+### Install a game you own but have not downloaded (owner ask 2026-08-07)
+- **priority:** P2 · **risk:** medium-high (needs a NEW client-supplied-appid path that
+  the existing installed-game validator cannot gate) · **affects:** agent + app ·
+  **depends_on:** nothing built, but see the two problems below
+- **Owner:** "list Steam games from my library that aren't downloaded and install them on
+  the box from my phone." Natural next step after per-game install size (2.9.72) — the
+  disk view answers "what do I delete", this answers "what do I fetch".
+
+**PROBLEM 1 — the agent cannot currently SEE an uninstalled game.**
+`discover_steam_games()` globs `appmanifest_*.acf`, and Steam only writes a manifest for
+apps that are installed or installing. So the owned-but-absent library is invisible from
+disk today. Options, none free:
+  - Steam Web API (`IPlayerService/GetOwnedGames`) — needs an API KEY plus a public
+    profile. This is exactly what `lib/compat.ts` deliberately avoided ("NO STEAM API KEY,
+    and no account of any kind"), and a key is a per-user secret we would have to store.
+  - Local Steam caches (`appinfo.vdf`, `packageinfo.vdf`, `licenses`) — no key, no
+    account, stays true to the LAN-only promise, but they are UNDOCUMENTED BINARY formats
+    that Valve changes. Needs a spike before it is a plan.
+  - Ask Steam itself via its own client. Unexplored; the most likely honest answer.
+
+**PROBLEM 2 — the install trigger needs a gate that does not exist yet.**
+Installing is mechanically easy (`steam://install/<appid>`, same family as the
+`steam://rungameid` path already used). The hard part is the allowlist rule: launching
+validates a client-supplied appid with `_steam_game_installed()` (agent/couchsided.py:6205)
+— it stats that exact appmanifest and refuses anything absent. An INSTALL by definition
+has no manifest, so that validator cannot be reused, and without a replacement the endpoint
+would accept any numeric appid from the LAN. The gate has to be "this appid is in the
+owned list we just enumerated", which means Problem 1 must be solved FIRST and its output
+becomes the allowlist.
+
+- **Also unresolved:** an install is a long, failable, bandwidth-heavy operation started
+  from a device that will not be watching. The download watcher (hooks/useDownloadWatch.ts)
+  already reports progress and completion, so the payoff is real — but "started an install
+  and left" is exactly the case where the app cannot notify (no server, no background).
+- **Do NOT start with the UI.** Problem 1 decides whether this feature is possible without
+  an API key, and that answer changes the whole shape.
+
+### Landscape Pad = full-screen controller (owner ask 2026-08-07)
+- **priority:** P1 — raised from P2 after seeing it. This is not "cramped", it is
+  CLIPPED AND OVERLAPPING. · **risk:** medium (touches the input path — CLAUDE.md §4
+  calls it safety-critical and the source of most escaped bugs) · **affects:** app only ·
+  **depends_on:** none
+- **Observed on a real phone in landscape (owner screenshot 2026-08-07):**
+  - the LEFT STICK is cut off by the left screen edge, and the `L` trigger sits half
+    off-screen behind it
+  - `B` is clipped by the right edge; `Y`/`X`/`A`/`B` no longer form a diamond and `RB`
+    overlaps the gap between `X` and `B`
+  - the D-pad's DOWN arrow is cut off by the tab bar
+  - the mode row (PAD/SWIPE/MOUSE/REMOTE) is partly behind the left stick, and its own
+    `PAD` label is not visible
+  - the entire centre of the screen is dead space while the edges overflow
+- Three things eat the short axis at once: the header (box picker + Game Mode + volume),
+  the connected-pad pill plus the mode row, and the tab bar. The controller gets what is
+  left, then overflows it. Hiding the chrome is therefore not only the feature request —
+  it is the fix for the clipping.
+- **Owner:** "landscape pad mode should be straight up game mode" — rotating the phone
+  sideways on the Pad tab shows ONLY the controller, no tab bar, no header, no box
+  picker. Rotating back to portrait exits it. Plus a LOCK toggle on the controller so
+  the orientation can be pinned while playing.
+- Not from nothing: Pad is already the one tab that allows landscape
+  (`useLockOrientation('allow-landscape')`, pad.tsx:823) and the gamepad already has a
+  separate landscape layout (`landscape ? ... : ...`, derived from `width > height`).
+  What is missing is hiding the app chrome and the lock.
+- There is ALREADY a large-pad concept to reconcile with, not duplicate: `largePad`
+  (pad.tsx, computed from the `trackpadLarge` pref) hides the status pill and the mode
+  selector for trackpad/swipe. Landscape game mode should reuse that hiding, or the two
+  will fight over who owns the chrome.
+- **Open questions:** does the tab bar hide via the navigator (tabBarStyle) or by
+  rendering Pad outside the tab group in landscape — the second is a bigger change but
+  the only one that removes the bar completely. Does the lock persist across sessions
+  (a pref) or last only for the session? What happens to the lock when the user leaves
+  the Pad tab.
+- **Full spec: `docs/memory/project_landscape-pad.md`** — read it before starting. It
+  has the arithmetic for why it breaks (≈575dp of fixed-pixel children in a ≈393dp short
+  axis; flexbox overflows silently), a complete absolute-position layout table in units of
+  1% of the usable short axis, the fixed-container/floating-origin stick decision, and the
+  five assertions a pure layout test should make.
+- **Interacts with:** the "Landscape laptop mode" entry below, which claims the same
+  gesture on the same tab for a different purpose. One of the two has to win, or
+  landscape needs a mode switch of its own. Decide before building either.
+
 ### Remote-only mode: an "Apps" launcher grid (the TV's installed apps)
 - **priority:** P2 · **risk:** low · **affects:** app only (lib/tvdirect + the Remote tab) ·
   **depends_on:** Roku direct (shipped); LG direct (device-verify first)

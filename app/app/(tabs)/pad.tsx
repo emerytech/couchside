@@ -819,8 +819,9 @@ function statusLabel(status: GamepadStatus, dev: string | null): string {
 // ---------- Screen ----------
 
 export default function PadTab() {
-  // The one tab that allows landscape so the controller can spread out.
-  useLockOrientation('allow-landscape');
+  // The orientation policy lives in PadScreen, not here: it depends on the
+  // current pad MODE, and only the gamepad has a landscape layout. See the
+  // note there.
   return (
     <TabScreen>
       <Gated>
@@ -881,6 +882,21 @@ function PadScreen() {
   // In keyboard mode the agent is asked NOT to create a pad, so the PAD screen
   // has nothing to drive. Fall back rather than render sticks that go nowhere.
   const mode: PadMode = keyboardMode && rawMode === 'gamepad' ? 'swipe' : rawMode;
+  /**
+   * ONLY THE GAMEPAD ROTATES.
+   *
+   * This used to sit on the tab wrapper as a flat 'allow-landscape', which meant
+   * every pad mode rotated — reported from a device. Swipe, Mouse, Remote and
+   * the Steam menus are all portrait designs: a trackpad surface gains nothing
+   * from landscape, and the remote's button column becomes a wide, short strip
+   * with everything out of thumb reach. The gamepad is the one layout that
+   * actually has a landscape form.
+   *
+   * Switching out of the gamepad while held sideways re-locks to portrait, which
+   * is the intended behaviour: the mode you switched to has no landscape layout
+   * to show you.
+   */
+  useLockOrientation(mode === 'gamepad' ? 'allow-landscape' : 'portrait');
   const [status, setStatus] = useState<GamepadStatus>('closed');
   // True when status is 'connected' but the socket has gone silent (half-dead):
   // polled from the client, it turns the pill amber + tap-to-retry live BEFORE

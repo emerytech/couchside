@@ -38,6 +38,12 @@ import {
 import type { Compat, DeckStatus, ProtonTier } from '@/lib/compat';
 import { mono, useTheme, useThemedStyles, type Palette } from '@/lib/theme';
 
+const SIZES: { gb: number; label: string }[] = [
+  { gb: 10, label: 'Over 10 GB' },
+  { gb: 25, label: 'Over 25 GB' },
+  { gb: 50, label: 'Over 50 GB' },
+];
+
 const PLAYED: { id: PlayedFilter; label: string }[] = [
   { id: 'any', label: 'Any' },
   { id: 'never', label: 'Never played' },
@@ -137,6 +143,9 @@ export function LibraryFilterSheet({
   // See hasPlaytimeData: on an older agent every game looks unplayed, so these
   // controls would state something false about the user's library.
   const playtime = useMemo(() => hasPlaytimeData(games), [games]);
+  // Probe-and-appear, like playtime: an agent older than 2.9.72 sends no sizes,
+  // and a size filter would then be a control that silently matches everything.
+  const sizes = useMemo(() => games.some((g) => (g.size_bytes ?? 0) > 0), [games]);
 
   return (
     <Modal visible={visible} animationType="slide" transparent onRequestClose={onClose}>
@@ -325,6 +334,32 @@ export function LibraryFilterSheet({
                 </View>
                 {/* Unrated games are never hidden by these — see matchesCompat. */}
                 <Text style={styles.note}>Games nobody has rated always stay visible.</Text>
+              </>
+            ) : null}
+
+            {/* SPACE — the "what is eating my disk" half of triage. Pairs with
+                PLAYTIME above: big + never played is the actual question. */}
+            {sizes ? (
+              <>
+                <Text style={styles.label}>ON DISK</Text>
+                <View style={styles.row}>
+                  {SIZES.map((sz) => (
+                    <Chip
+                      key={sz.gb}
+                      label={sz.label}
+                      on={value.minSizeGb === sz.gb}
+                      onPress={() =>
+                        onChange({
+                          ...value,
+                          minSizeGb: value.minSizeGb === sz.gb ? undefined : sz.gb,
+                        })
+                      }
+                    />
+                  ))}
+                </View>
+                <Text style={styles.note}>
+                  Only games Steam has measured. Shortcuts have no install size.
+                </Text>
               </>
             ) : null}
 
