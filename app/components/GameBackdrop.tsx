@@ -18,7 +18,7 @@
  *
  * Nothing here is on the input path; it is pure decoration under the controls.
  */
-import { ImageBackground, StyleSheet, View, type ImageSourcePropType } from 'react-native';
+import { Image, StyleSheet, View, type ImageSourcePropType } from 'react-native';
 
 import { backdropAssets } from '@/lib/gameThemeAssets';
 import type { Backdrop } from '@/lib/gameTheme';
@@ -58,16 +58,26 @@ export function GameBackdrop({
   const assets = backdropAssets(backdrop.key);
 
   // ART path.
+  //
+  // A bare <Image> at absoluteFill + cover, NOT <ImageBackground>. ImageBackground
+  // sizes its inner image from an onLayout MEASUREMENT of its container, then
+  // stamps that as a numeric width/height. On native (iOS), the immersive/rotation
+  // transition measured the container once at a non-final size and never
+  // re-measured, so the art filled only a top band with BASE showing below —
+  // invisible in the web harness, where ImageBackground is a CSS `cover` div that
+  // always fills. A bare Image at absoluteFill covers the parent directly at
+  // layout time with no measurement step. The Scrim is a following sibling, so it
+  // still sits on top. (Same pattern the launch-tile art uses, device-proven.)
   if (assets) {
     const source = landscape ? assets.landscape : assets.portrait;
     return (
       <View style={[StyleSheet.absoluteFill, { backgroundColor: BASE }]} pointerEvents="none">
-        <ImageBackground
+        <Image
           source={source as ImageSourcePropType}
-          style={[StyleSheet.absoluteFill, { pointerEvents: 'none' }]}
-          resizeMode="cover">
-          <Scrim />
-        </ImageBackground>
+          style={StyleSheet.absoluteFill}
+          resizeMode="cover"
+        />
+        <Scrim />
       </View>
     );
   }
