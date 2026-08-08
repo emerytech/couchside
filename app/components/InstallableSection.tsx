@@ -29,16 +29,21 @@ import { fetchAppDetailsMany } from '@/lib/steamStore';
 import { isInstallableGameType, type AppDetails } from '@/lib/steamStoreParse';
 import { useThemedStyles, type Palette } from '@/lib/theme';
 
+// steam://install does NOT silently download — VERIFIED on hardware 2026-08-08: it pops
+// Steam's install PROMPT on the box's screen, and the download only starts once someone
+// APPROVES it there. So the copy says "approve on your box", never "downloading now", and a
+// tapped tile stays in a "waiting for approval" state until the box reports the download
+// (at which point the section drops it — it has moved to the Downloads list above).
+
 /** Cross-platform confirm (Alert buttons are no-ops on web). */
 function confirmInstall(label: string, onConfirm: () => void) {
+  const q = `Install "${label}"? A prompt appears on your box's screen to approve it — use a controller, or your phone's Pad.`;
   if (Platform.OS === 'web') {
     // eslint-disable-next-line no-alert
-    if (typeof window !== 'undefined' && window.confirm(`Install "${label}" on your box?`)) {
-      onConfirm();
-    }
+    if (typeof window !== 'undefined' && window.confirm(q)) onConfirm();
     return;
   }
-  Alert.alert('Install game', `Download and install "${label}" on your box?`, [
+  Alert.alert('Install game', q, [
     { text: 'Cancel', style: 'cancel' },
     { text: 'Install', onPress: onConfirm },
   ]);
@@ -50,6 +55,10 @@ function Tile({ appid, name }: { appid: number; name: string }) {
   const source = api.steamCoverSource(settings, appid);
   const [failed, setFailed] = useState(false);
   const [busy, setBusy] = useState(false);
+  // Set once the box has accepted the install request. The prompt is now on the box's
+  // screen; the tile shows "Approve on box" until the download appears (then the section
+  // filters this tile out). It does NOT mean "installed".
+  const [requested, setRequested] = useState(false);
   useEffect(() => setFailed(false), [source.uri]);
 
   const install = () => {
@@ -58,11 +67,12 @@ function Tile({ appid, name }: { appid: number; name: string }) {
       setBusy(true);
       try {
         const res = await api.launch(settings, `install:${appid}`);
+        if (res?.ok) setRequested(true);
         if (Platform.OS !== 'web') {
           Alert.alert(
-            res?.ok ? 'Installing' : "Couldn't start install",
+            res?.ok ? 'Approve it on your box' : "Couldn't start install",
             res?.ok
-              ? `"${name}" is downloading on your box — watch it in Downloads above.`
+              ? `A prompt for "${name}" is on your box's screen — approve it (a controller, or your phone's Pad) to start the download. It shows in Downloads once it begins.`
               : `The box refused the install for "${name}".`,
           );
         }
@@ -76,9 +86,9 @@ function Tile({ appid, name }: { appid: number; name: string }) {
     <Pressable
       style={styles.tile}
       onPress={install}
-      disabled={busy}
+      disabled={busy || requested}
       accessibilityRole="button"
-      accessibilityLabel={`Install ${name}`}>
+      accessibilityLabel={requested ? `${name}, waiting for approval on your box` : `Install ${name}`}>
       {!failed ? (
         <Image source={source} style={styles.cover} resizeMode="cover" onError={() => setFailed(true)} />
       ) : (
@@ -87,18 +97,27 @@ function Tile({ appid, name }: { appid: number; name: string }) {
         </View>
       )}
       <Text style={styles.tileLabel} numberOfLines={2}>{name}</Text>
+      {requested ? <Text style={styles.tileHint} numberOfLines={1}>Approve on box…</Text> : null}
       <View style={styles.badge}>
         {busy ? (
           <ActivityIndicator size="small" />
         ) : (
-          <Ionicons name="cloud-download-outline" size={14} color="#fff" />
+          <Ionicons name={requested ? 'hourglass-outline' : 'cloud-download-outline'} size={14} color="#fff" />
         )}
       </View>
     </Pressable>
   );
 }
 
-export function InstallableSection({ caps }: { caps?: BoxCaps }) {
+export function InstallableSection({
+  caps, downloadingAppids,
+}: {
+  caps?: BoxCaps;
+  /** Appids the box is currently downloading (from the Launch tab's download watcher).
+   *  Once an approved install starts, its game moves to the Downloads list above, so it
+   *  is dropped from this grid rather than shown in both places. */
+  downloadingAppids?: Set<number>;
+}) {
   const styles = useThemedStyles(makeStyles);
   const { settings } = useSettings();
   const lookupsOn = usePref('compatLookups');
@@ -149,6 +168,7 @@ export function InstallableSection({ caps }: { caps?: BoxCaps }) {
   if (!canProbe || !appids) return null;
 
   const games = appids
+    .filter((id) => !downloadingAppids?.has(id)) // already downloading -> in Downloads above
     .filter((id) => isInstallableGameType(details[id]))
     .map((id) => ({ id, name: details[id]!.name }))
     .sort((a, b) => a.name.localeCompare(b.name));
@@ -212,6 +232,7 @@ const makeStyles = (t: Palette) =>
     cover: { width: 92, height: 138, borderRadius: 8, backgroundColor: t.card },
     coverFallback: { alignItems: 'center', justifyContent: 'center', borderWidth: 1, borderColor: t.cardBorder },
     tileLabel: { color: t.text, fontSize: 11, textAlign: 'center', marginTop: 4, width: 92 },
+    tileHint: { color: t.amber, fontSize: 10, textAlign: 'center', marginTop: 2, width: 92 },
     badge: {
       position: 'absolute', top: 6, right: 6, width: 24, height: 24, borderRadius: 12,
       backgroundColor: 'rgba(0,0,0,0.6)', alignItems: 'center', justifyContent: 'center',
