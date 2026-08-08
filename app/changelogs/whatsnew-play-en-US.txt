@@ -1,5 +1,3 @@
-New: a one-handed MOVE mode. While a game is running, tap MOVE on the Pad tab for a full-screen movement layout you can play with one thumb — big steering zone, just the buttons you need, and a lock so it stays put. Turn the phone sideways for the wide version.
+35 controller themes. The Setup theme picker now offers a big library — Dark Gothic, Bonk, Cyberpunk Rain, Toxic Slime Lab and many more — each with its own full-screen backdrop behind the buttons.
 
-Made for games like Vampire Survivors where you mostly steer.
-
-Also: a fix for iOS where dragging a stick could swipe you out of the controller, plus the full-screen sideways controller from the last update.
+New: a palette button inside the full-screen MOVE controller switches themes on the fly, no trip to Setup. Auto matches Vampire Survivors and Megabonk to a fitting look. Plus the one-handed MOVE mode and fixes.
