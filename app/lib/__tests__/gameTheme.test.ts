@@ -197,7 +197,7 @@ test('resolveTheme: OFF is always null', () => {
 
 test('resolveTheme: AUTO follows the running game', () => {
   assert.equal(resolveTheme('auto', 1794680)?.label, 'Dark Gothic'); // VS -> gothic
-  assert.equal(resolveTheme('auto', 3405340)?.label, 'Neon Arcade'); // Megabonk -> neon
+  assert.equal(resolveTheme('auto', 3405340)?.label, 'Bonk'); // Megabonk -> bonk
   assert.equal(resolveTheme('auto', 999999), null); // unmapped game
   assert.equal(resolveTheme('auto', null), null);   // nothing running
 });
@@ -229,11 +229,11 @@ test('the pref normalizer only accepts off / auto / a real theme key', () => {
   for (const o of THEME_PICKER) assert.ok(accepted.has(o.value), `picker value ${o.value} not accepted`);
 });
 
-// ---------- Neon Arcade + the pref validator ----------
+// ---------- Bonk + the pref validator ----------
 
-test('Neon Arcade resolves and Megabonk auto-selects it', () => {
-  assert.equal(resolveTheme('neon-arcade', null)?.label, 'Neon Arcade');
-  assert.equal(resolveTheme('auto', 3405340)?.label, 'Neon Arcade'); // Megabonk
+test('Bonk resolves and Megabonk auto-selects it', () => {
+  assert.equal(resolveTheme('bonk', null)?.label, 'Bonk');
+  assert.equal(resolveTheme('auto', 3405340)?.label, 'Bonk'); // Megabonk
   assert.equal(resolveTheme('auto', 1794680)?.label, 'Dark Gothic'); // VS unchanged
 });
 
@@ -250,5 +250,5 @@ test('a saved theme key survives normalization (regression: was dropped to auto)
   // The whole point of validating against the registry rather than a hardcoded
   // list: a new theme the normalizer had never heard of used to fall back to
   // 'auto', silently losing the user's pick.
-  assert.ok(isControllerThemePref('neon-arcade'));
+  assert.ok(isControllerThemePref('bonk'));
 });

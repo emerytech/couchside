@@ -65,7 +65,7 @@ export type GameTheme = {
  * referenced everywhere. Extend this union as themes are added; the compiler
  * then forces the registry, the pref, and the picker to all list it.
  */
-export type ThemeKey = 'dark-gothic' | 'neon-arcade';
+export type ThemeKey = 'dark-gothic' | 'bonk';
 
 /**
  * The theme registry. A frozen, app-internal map — the same allowlist shape the
@@ -89,17 +89,17 @@ export const THEMES: Readonly<Record<ThemeKey, GameTheme>> = Object.freeze({
     // with no registered art falls back to a derived dark+glow wash.
     backdrop: { key: 'vampire-survivors', glow: { dark: '#f0c25a', light: '#c99b2e' } },
   },
-  // Neon Arcade — a silly, bright aesthetic for colourful bullet-heavens like
-  // Megabonk. Hot-pink accent, lime A, orange B; a vivid glow backdrop. All
-  // clear 3:1 on both schemes' card (verified in gameTheme.test.ts).
-  'neon-arcade': {
-    label: 'Neon Arcade',
+  // Bonk — a silly, bright aesthetic for colourful bullet-heavens like
+  // Megabonk. Hot-pink accent, lime A, orange B; a vivid neon-swarm backdrop.
+  // All clear 3:1 on both schemes' card (verified in gameTheme.test.ts).
+  bonk: {
+    label: 'Bonk',
     accent: { dark: '#ff5cc8', light: '#b0186f' },
     face: {
       a: { dark: '#5cf0a0', light: '#157a45' },
       b: { dark: '#ff8a3c', light: '#a8500f' },
     },
-    backdrop: { key: 'neon-arcade', glow: { dark: '#ff5cc8', light: '#b0186f' } },
+    backdrop: { key: 'bonk', glow: { dark: '#ff5cc8', light: '#b0186f' } },
   },
 });
 
@@ -112,9 +112,9 @@ export const APPID_THEMES: Readonly<Record<number, ThemeKey>> = Object.freeze({
   1794680: 'dark-gothic', // Vampire Survivors — appid from its Steam store URL.
   // Megabonk — appid from Steam's storefront search API (exact-name match),
   // confirmed installed on the owner's Steam Deck 2026-08-08. Silly and
-  // colourful, so it takes Neon Arcade, not the gothic look. Auto-attacks, so
+  // colourful, so it takes the Bonk theme, not the gothic look. Auto-attacks, so
   // the move-only MOVE layout fits it with no right stick.
-  3405340: 'neon-arcade',
+  3405340: 'bonk',
 });
 
 /**
