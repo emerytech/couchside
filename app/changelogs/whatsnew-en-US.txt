@@ -1,5 +1,3 @@
-Dress the controller for the game. A new Controller theme picker (Setup) styles the full-screen controller: choose Auto to match the game running on your box, pick Dark Gothic for a candlelit-hall backdrop with gold accents, or turn it Off. More themes arrive with updates.
+More controller themes. The theme picker (Setup) gains Bonk — bright and playful, for colorful games like Megabonk — alongside Dark Gothic. Auto now matches both Vampire Survivors and Megabonk to the right look, or pick a theme to apply it always.
 
-The theme applies to the MOVE and landscape pad — a game-styled backdrop behind the buttons, with the controls kept fully readable.
-
-Also in this release: the one-handed MOVE mode from the last update, and fixes.
+Each theme styles the full-screen controller (MOVE and landscape pad): a game-styled backdrop behind the buttons, with the controls kept fully readable.
