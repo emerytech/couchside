@@ -1600,6 +1600,23 @@ export const api = {
   },
 
   /**
+   * Owned-but-uninstalled Steam games (agent >= 2.9.73, gated by caps.steaminstall).
+   * Appids only — the box has no reliable offline name for an uninstalled game, so
+   * the app resolves names + type app-side from the keyless store endpoint (see
+   * lib/steamStore.ts) and pulls art from coverArt(appid). Probe-and-appear:
+   * resolves null on a 404 (older agent / no route) so the section stays hidden.
+   * To INSTALL one, call launch(settings, `install:${appid}`) — the agent gates it
+   * against this same set and hands steam://install to the client.
+   */
+  installable(
+    settings: ConnSettings,
+  ): Promise<{ games: { appid: number }[]; count: number } | null> {
+    return probeOrNull(
+      request<{ games: { appid: number }[]; count: number }>(
+        settings, '/api/steam/installable'));
+  },
+
+  /**
    * In-progress Steam downloads/updates. Probe-and-appear: resolves null on a
    * 404 (agent < 2.8 or no route) so the Launch tab hides the section; a 200
    * with an empty list also means "nothing pending".

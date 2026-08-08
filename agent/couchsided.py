@@ -16832,6 +16832,20 @@ class Handler(BaseHTTPRequestHandler):
                 # The app percent-encodes the id (encodeURIComponent turns the
                 # "steam:"/"custom:" colon into %3A), so decode before matching.
                 launcher_id = unquote(path[len(lprefix):])
+                # --mock/harness: _launcher_argv gates install:<appid> on the real
+                # on-disk library, which the mock box does not have. Validate against
+                # the mock installable set instead so the harness can exercise the
+                # install PRESS end-to-end. Same allowlist shape, mock data.
+                if self.mock and launcher_id.startswith("install:"):
+                    appid = launcher_id[len("install:"):]
+                    if not (appid.isdigit()
+                            and int(appid) in {g["appid"] for g in MOCK_INSTALLABLE}):
+                        self._send(404, {"ok": False,
+                                         "error": "unknown launcher"}, started)
+                        return
+                    self._send(200, mock_launch(
+                        ["steam", "steam://install/%s" % appid]), started)
+                    return
                 argv = _launcher_argv(launcher_id)
                 if argv is None:
                     self._send(404, {"ok": False,
