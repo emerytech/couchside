@@ -19,12 +19,72 @@ export type BackdropAssets = { portrait: unknown; landscape: unknown };
 
 const REGISTRY: Record<string, BackdropAssets> = {
   'vampire-survivors': {
-    portrait: require('../assets/gameThemes/vampire-survivors-portrait.png'),
-    landscape: require('../assets/gameThemes/vampire-survivors-landscape.png'),
+    portrait: require('../assets/gameThemes/vampire-survivors-portrait.webp'),
+    landscape: require('../assets/gameThemes/vampire-survivors-landscape.webp'),
   },
   'bonk': {
-    portrait: require('../assets/gameThemes/bonk-portrait.png'),
-    landscape: require('../assets/gameThemes/bonk-landscape.png'),
+    portrait: require('../assets/gameThemes/bonk-portrait.webp'),
+    landscape: require('../assets/gameThemes/bonk-landscape.webp'),
+  },
+  'ancient-forest': {
+    portrait: require('../assets/gameThemes/ancient-forest-portrait.webp'),
+    landscape: require('../assets/gameThemes/ancient-forest-landscape.webp'),
+  },
+  'arctic-aurora': {
+    portrait: require('../assets/gameThemes/arctic-aurora-portrait.webp'),
+    landscape: require('../assets/gameThemes/arctic-aurora-landscape.webp'),
+  },
+  'candy-cataclysm': {
+    portrait: require('../assets/gameThemes/candy-cataclysm-portrait.webp'),
+    landscape: require('../assets/gameThemes/candy-cataclysm-landscape.webp'),
+  },
+  'clockwork-voltage': {
+    portrait: require('../assets/gameThemes/clockwork-voltage-portrait.webp'),
+    landscape: require('../assets/gameThemes/clockwork-voltage-landscape.webp'),
+  },
+  'cosmic-comet': {
+    portrait: require('../assets/gameThemes/cosmic-comet-portrait.webp'),
+    landscape: require('../assets/gameThemes/cosmic-comet-landscape.webp'),
+  },
+  'cyberpunk-rain': {
+    portrait: require('../assets/gameThemes/cyberpunk-rain-portrait.webp'),
+    landscape: require('../assets/gameThemes/cyberpunk-rain-landscape.webp'),
+  },
+  'deep-sea-disco': {
+    portrait: require('../assets/gameThemes/deep-sea-disco-portrait.webp'),
+    landscape: require('../assets/gameThemes/deep-sea-disco-landscape.webp'),
+  },
+  'desert-sandstorm': {
+    portrait: require('../assets/gameThemes/desert-sandstorm-portrait.webp'),
+    landscape: require('../assets/gameThemes/desert-sandstorm-landscape.webp'),
+  },
+  'frostfire-shrine': {
+    portrait: require('../assets/gameThemes/frostfire-shrine-portrait.webp'),
+    landscape: require('../assets/gameThemes/frostfire-shrine-landscape.webp'),
+  },
+  'infernal-doomsday': {
+    portrait: require('../assets/gameThemes/infernal-doomsday-portrait.webp'),
+    landscape: require('../assets/gameThemes/infernal-doomsday-landscape.webp'),
+  },
+  'ink-wash-tempest': {
+    portrait: require('../assets/gameThemes/ink-wash-tempest-portrait.webp'),
+    landscape: require('../assets/gameThemes/ink-wash-tempest-landscape.webp'),
+  },
+  'limewire': {
+    portrait: require('../assets/gameThemes/limewire-portrait.webp'),
+    landscape: require('../assets/gameThemes/limewire-landscape.webp'),
+  },
+  'rusty-scrapyard': {
+    portrait: require('../assets/gameThemes/rusty-scrapyard-portrait.webp'),
+    landscape: require('../assets/gameThemes/rusty-scrapyard-landscape.webp'),
+  },
+  'stained-glass-night': {
+    portrait: require('../assets/gameThemes/stained-glass-night-portrait.webp'),
+    landscape: require('../assets/gameThemes/stained-glass-night-landscape.webp'),
+  },
+  'toxic-slime-lab': {
+    portrait: require('../assets/gameThemes/toxic-slime-lab-portrait.webp'),
+    landscape: require('../assets/gameThemes/toxic-slime-lab-landscape.webp'),
   },
 };
 
