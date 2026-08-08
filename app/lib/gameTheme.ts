@@ -65,7 +65,24 @@ export type GameTheme = {
  * referenced everywhere. Extend this union as themes are added; the compiler
  * then forces the registry, the pref, and the picker to all list it.
  */
-export type ThemeKey = 'dark-gothic' | 'bonk';
+export type ThemeKey =
+  | 'dark-gothic'
+  | 'bonk'
+  | 'ancient-forest'
+  | 'arctic-aurora'
+  | 'candy-cataclysm'
+  | 'clockwork-voltage'
+  | 'cosmic-comet'
+  | 'cyberpunk-rain'
+  | 'deep-sea-disco'
+  | 'desert-sandstorm'
+  | 'frostfire-shrine'
+  | 'infernal-doomsday'
+  | 'ink-wash-tempest'
+  | 'limewire'
+  | 'rusty-scrapyard'
+  | 'stained-glass-night'
+  | 'toxic-slime-lab';
 
 /**
  * The theme registry. A frozen, app-internal map — the same allowlist shape the
@@ -100,6 +117,81 @@ export const THEMES: Readonly<Record<ThemeKey, GameTheme>> = Object.freeze({
       b: { dark: '#ff8a3c', light: '#a8500f' },
     },
     backdrop: { key: 'bonk', glow: { dark: '#ff5cc8', light: '#b0186f' } },
+  },
+  'ancient-forest': {
+    label: 'Ancient Forest',
+    accent: { dark: '#9bb575', light: '#3a442c' },
+    backdrop: { key: 'ancient-forest', glow: { dark: '#9bb575', light: '#3a442c' } },
+  },
+  'arctic-aurora': {
+    label: 'Arctic Aurora',
+    accent: { dark: '#209fc4', light: '#0f4c5e' },
+    backdrop: { key: 'arctic-aurora', glow: { dark: '#209fc4', light: '#0f4c5e' } },
+  },
+  'candy-cataclysm': {
+    label: 'Candy Cataclysm',
+    accent: { dark: '#00f3fd', light: '#005256' },
+    backdrop: { key: 'candy-cataclysm', glow: { dark: '#00f3fd', light: '#005256' } },
+  },
+  'clockwork-voltage': {
+    label: 'Clockwork Voltage',
+    accent: { dark: '#ff51a6', light: '#ff007d' },
+    backdrop: { key: 'clockwork-voltage', glow: { dark: '#ff51a6', light: '#ff007d' } },
+  },
+  'cosmic-comet': {
+    label: 'Cosmic Comet',
+    accent: { dark: '#f75899', light: '#b01e5a' },
+    backdrop: { key: 'cosmic-comet', glow: { dark: '#f75899', light: '#b01e5a' } },
+  },
+  'cyberpunk-rain': {
+    label: 'Cyberpunk Rain',
+    accent: { dark: '#18b1e4', light: '#0a4d64' },
+    backdrop: { key: 'cyberpunk-rain', glow: { dark: '#18b1e4', light: '#0a4d64' } },
+  },
+  'deep-sea-disco': {
+    label: 'Deep Sea Disco',
+    accent: { dark: '#01d2f6', light: '#004f5d' },
+    backdrop: { key: 'deep-sea-disco', glow: { dark: '#01d2f6', light: '#004f5d' } },
+  },
+  'desert-sandstorm': {
+    label: 'Desert Sandstorm',
+    accent: { dark: '#f48e41', light: '#663b1b' },
+    backdrop: { key: 'desert-sandstorm', glow: { dark: '#f48e41', light: '#663b1b' } },
+  },
+  'frostfire-shrine': {
+    label: 'Frostfire Shrine',
+    accent: { dark: '#00c7ff', light: '#004f66' },
+    backdrop: { key: 'frostfire-shrine', glow: { dark: '#00c7ff', light: '#004f66' } },
+  },
+  'infernal-doomsday': {
+    label: 'Infernal Doomsday',
+    accent: { dark: '#ce6b54', light: '#8a2f19' },
+    backdrop: { key: 'infernal-doomsday', glow: { dark: '#ce6b54', light: '#8a2f19' } },
+  },
+  'ink-wash-tempest': {
+    label: 'Ink Wash Tempest',
+    accent: { dark: '#b27271', light: '#831d1b' },
+    backdrop: { key: 'ink-wash-tempest', glow: { dark: '#b27271', light: '#831d1b' } },
+  },
+  'limewire': {
+    label: 'Limewire',
+    accent: { dark: '#badd17', light: '#3b4607' },
+    backdrop: { key: 'limewire', glow: { dark: '#badd17', light: '#3b4607' } },
+  },
+  'rusty-scrapyard': {
+    label: 'Rusty Scrapyard',
+    accent: { dark: '#947b6d', light: '#5d3823' },
+    backdrop: { key: 'rusty-scrapyard', glow: { dark: '#947b6d', light: '#5d3823' } },
+  },
+  'stained-glass-night': {
+    label: 'Stained Glass Night',
+    accent: { dark: '#6483a9', light: '#053775' },
+    backdrop: { key: 'stained-glass-night', glow: { dark: '#6483a9', light: '#053775' } },
+  },
+  'toxic-slime-lab': {
+    label: 'Toxic Slime Lab',
+    accent: { dark: '#0ff9ff', light: '#044f51' },
+    backdrop: { key: 'toxic-slime-lab', glow: { dark: '#0ff9ff', light: '#044f51' } },
   },
 });
 
