@@ -193,8 +193,10 @@ becomes the allowlist.
   keyless store lookup; (b) the unchanged "started an install and left" notify gap — an
   install is long/failable/bandwidth-heavy from a device that will not be watching
   (`useDownloadWatch.ts` covers progress only while foregrounded).
-- **Next step is Phase 2 (code), not another spike.** Build the enumeration endpoint + the
-  gated install, still UI-last.
+- **✅ BUILT & VERIFIED 2026-08-08 (agent 2.9.73 + app) — see the Completed entry below.**
+  The design record above is kept for history; the shipped shape matches it (a read-only
+  `/api/steam/installable` enumerating `appcache/librarycache/` minus installed minus tools,
+  gated `install:<appid>` in `_launcher_argv`, keyless app-side names, cap `steaminstall`).
 
 ### Remote-only mode: an "Apps" launcher grid (the TV's installed apps)
 - **priority:** P2 · **risk:** low · **affects:** app only (lib/tvdirect + the Remote tab) ·
@@ -881,6 +883,26 @@ recommendation was wrong, not merely superseded.
 ---
 
 ## ✅ Completed
+
+### Install a game you own but have not downloaded — BUILT 2026-08-08 (agent 2.9.73 + app)
+- **was:** P2 Planned (owner ask 2026-08-07) · **affects:** agent + app · the design record
+  and the Problem-1 spike are under the Planned section above (kept for history)
+- **The owned-but-uninstalled library is enumerable with NO Steam API key** — the agent lists
+  digit-named subdirs of `appcache/librarycache/` MINUS installed MINUS tools
+  (`_installable_appids`, degrades closed). Hardware-verified on bazzite: 1104 owned-uninstalled
+  vs 12 installed, installed ∩ installable = 0.
+- **The install is gated on that set.** `install:<appid>` in `_launcher_argv` (mirrors
+  `stream:<appid>`) validates the appid against `_installable_appids()` then hands the fixed
+  `steam://install/<appid>` to Steam — reuses the existing launch fire path, no new POST route,
+  no client string on the command line. A non-owned/non-digit appid is 404, nothing runs.
+- **App:** a cap-gated ("Not installed") Launch section; appids from `/api/steam/installable`,
+  art from the box's existing cover endpoint, name + type from Valve's KEYLESS store appdetails
+  app-side (same opt-in + host as compat lookups, `type=game` drops the tools/DLC the art cache
+  overcounts). New cap `steaminstall` (six sites). Verified end-to-end in the harness: tile
+  press → `POST /api/launchers/install:400 → 200`.
+- **Not verified:** the real `steam://install` FIRE on the box (would download a multi-GB game)
+  and in-browser store name-resolution (browser CORS; works via native fetch on device, like
+  compat lookups). Ledger [[steam-owned-library-enumeration]].
 
 ### Per-game controller themes + in-controller switcher — SHIPPED 2.9.40 → 2.9.42
 - **was:** P3 Planned (owner ask 2026-08-07) · **affects:** app only (agent already
