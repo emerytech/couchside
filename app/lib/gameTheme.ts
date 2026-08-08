@@ -98,6 +98,11 @@ export const THEMES: Readonly<Record<ThemeKey, GameTheme>> = Object.freeze({
  */
 export const APPID_THEMES: Readonly<Record<number, ThemeKey>> = Object.freeze({
   1794680: 'dark-gothic', // Vampire Survivors — appid from its Steam store URL.
+  // Megabonk — appid from Steam's storefront search API (exact-name match),
+  // confirmed installed on the owner's Steam Deck 2026-08-08. A bullet-heaven /
+  // hack-and-slash, same family as VS, so 'auto' gives it the gothic look for
+  // now; its own art skews colourful and it may earn a dedicated theme later.
+  3405340: 'dark-gothic',
 });
 
 /**
