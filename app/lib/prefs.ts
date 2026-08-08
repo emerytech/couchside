@@ -20,7 +20,7 @@ import {
   type MediaSkipSec,
 } from './mediaSeek';
 import { PadMode } from './settings';
-import type { ControllerThemePref } from './gameTheme';
+import { isControllerThemePref, type ControllerThemePref } from './gameTheme';
 
 /** Tabs the app can open on. Values are the expo-router route names ('index' is
  *  Console). Setup is deliberately not offered: nobody wants to land there, and
@@ -416,10 +416,9 @@ function normalize(raw: unknown): Prefs {
     padWinShortcuts: bool(o.padWinShortcuts, DEFAULTS.padWinShortcuts),
     padKeyboardBar: bool(o.padKeyboardBar, DEFAULTS.padKeyboardBar),
     padHints: bool(o.padHints, DEFAULTS.padHints),
-    controllerTheme:
-      o.controllerTheme === 'off' || o.controllerTheme === 'dark-gothic'
-        ? o.controllerTheme
-        : 'auto',
+    controllerTheme: isControllerThemePref(o.controllerTheme)
+      ? o.controllerTheme
+      : DEFAULTS.controllerTheme,
     padTrackpadLarge: bool(o.padTrackpadLarge, DEFAULTS.padTrackpadLarge),
     padLargeToggle: bool(o.padLargeToggle, DEFAULTS.padLargeToggle),
     askToSwitchControl: bool(o.askToSwitchControl, DEFAULTS.askToSwitchControl),

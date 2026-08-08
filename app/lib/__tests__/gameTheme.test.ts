@@ -20,6 +20,7 @@ import {
   THEMES,
   THEME_PICKER,
   applyGameTheme,
+  isControllerThemePref,
   resolveTheme,
   themeForAppid,
   type GameTheme,
@@ -196,7 +197,7 @@ test('resolveTheme: OFF is always null', () => {
 
 test('resolveTheme: AUTO follows the running game', () => {
   assert.equal(resolveTheme('auto', 1794680)?.label, 'Dark Gothic'); // VS -> gothic
-  assert.equal(resolveTheme('auto', 3405340)?.label, 'Dark Gothic'); // Megabonk -> gothic
+  assert.equal(resolveTheme('auto', 3405340)?.label, 'Neon Arcade'); // Megabonk -> neon
   assert.equal(resolveTheme('auto', 999999), null); // unmapped game
   assert.equal(resolveTheme('auto', null), null);   // nothing running
 });
@@ -226,4 +227,28 @@ test('the pref normalizer only accepts off / auto / a real theme key', () => {
   // set the picker can produce is exactly what the normalizer keeps.
   const accepted = new Set(['off', 'auto', ...Object.keys(THEMES)]);
   for (const o of THEME_PICKER) assert.ok(accepted.has(o.value), `picker value ${o.value} not accepted`);
+});
+
+// ---------- Neon Arcade + the pref validator ----------
+
+test('Neon Arcade resolves and Megabonk auto-selects it', () => {
+  assert.equal(resolveTheme('neon-arcade', null)?.label, 'Neon Arcade');
+  assert.equal(resolveTheme('auto', 3405340)?.label, 'Neon Arcade'); // Megabonk
+  assert.equal(resolveTheme('auto', 1794680)?.label, 'Dark Gothic'); // VS unchanged
+});
+
+test('isControllerThemePref accepts off/auto/every theme key, rejects junk', () => {
+  assert.ok(isControllerThemePref('off'));
+  assert.ok(isControllerThemePref('auto'));
+  for (const k of Object.keys(THEMES)) assert.ok(isControllerThemePref(k), `rejected real key ${k}`);
+  for (const bad of ['', 'nope', 'DARK-GOTHIC', 42, null, undefined, {}]) {
+    assert.ok(!isControllerThemePref(bad), `accepted junk ${JSON.stringify(bad)}`);
+  }
+});
+
+test('a saved theme key survives normalization (regression: was dropped to auto)', () => {
+  // The whole point of validating against the registry rather than a hardcoded
+  // list: a new theme the normalizer had never heard of used to fall back to
+  // 'auto', silently losing the user's pick.
+  assert.ok(isControllerThemePref('neon-arcade'));
 });
