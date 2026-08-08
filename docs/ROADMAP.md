@@ -130,61 +130,6 @@ Entry fields: `priority` (P0 blocker → P3 nice) · `risk` · `affects` · `dep
 
 ## 📋 Planned
 
-### Vertical MOVE: one-handed portrait movement mode (owner ask 2026-08-07, refined same day)
-- **priority:** P2 (owner is actively playing with the landscape one) · **risk:** medium
-  (extends the immersive gate to portrait for the first time; input path) ·
-  **affects:** app only · **depends_on:** movement mode (shipped 2.9.38)
-- Entered by a BUTTON from the pad mode panel alongside SWIPE; once open it is
-  IMMERSIVE with the same 🔒 LOCK / ✕ EXIT chrome as the landscape layouts. One mode,
-  two tables: portrait = new one-handed vertical layout, landscape = existing MovePad.
-  Orientation policy gains 'portrait-locked'. Reconcile the landscapePadVariant toggle
-  (one source of truth for movement-vs-controller).
-- **Full spec: `docs/memory/project_vertical-move-mode.md`**
-
-### Per-game themes, auto-applied from the running game (owner ask 2026-08-07)
-- **priority:** P3 / future · **risk:** low (pure app-side lookup; agent untouched) ·
-  **affects:** app only · **depends_on:** nothing; layers on feat/theming when that ships
-- Agent already reports the running appid; theme = frozen app-internal
-  appid -> Palette map, pad surfaces first. Pilot: Vampire Survivors + Megabonk —
-  the same bazzite session should answer movement-mode's open Megabonk aim question.
-- **Full spec: `docs/memory/project_game-themes.md`**
-
-
-### Movement mode: landscape, one big thumb-zone, for Vampire-Survivors-likes (owner ask 2026-08-07)
-- **priority:** P2 · **risk:** low-medium (touches the input path, but adds a TABLE
-  rather than changing the shipped one) · **affects:** app only ·
-  **depends_on:** the landscape gamepad (shipped 2.9.37) — reuses `FloatingStick`
-  and `lib/padLayout.ts` wholesale
-- **Owner, after playing on the new landscape pad:** a movement surface "that acts
-  like a left joystick", because the phone turns out to be a great way to play
-  games that are 95% movement and 5% menus (Vampire Survivors, Megabonk).
-- **The primitive already exists.** `FloatingStick` is already fixed-container /
-  floating-origin / capture-until-release with a radial clamp. The only thing
-  missing is SIZE — it is a 30U circle today because thirteen other controls share
-  the screen. Movement mode is a second `padLayout` table where almost nothing
-  competes for space.
-- **NOT the swipe surface, despite the owner's second framing.** `SwipeSurface`
-  emits discrete d-pad steps (`{t:'b'}`); continuous movement needs analog stick
-  output (`{t:'s'}`). Building "landscape swipe" by following the words would
-  produce jerky, unplayable movement.
-- **NOT in the centre channel, despite the owner's first framing.** In a two-handed
-  landscape grip the centre of the screen is reachable by neither thumb; the ask is
-  really for a much bigger LEFT-thumb zone. Flagged rather than silently redesigned.
-- **This reverses a decision from the landscape spec** ("not spawn-anywhere floating
-  sticks — a half-screen stick eats the d-pad"). That reasoning holds for the general
-  controller and does NOT hold for a mode where the d-pad is unused during play — so
-  the resolution is a SEPARATE MODE, never a change to the default pad.
-- **Entry mechanism decided:** a toggle in the landscape chrome row next to LOCK
-  (swaps the table in place, no new pad mode, no selector-row pressure, WS/uinput
-  untouched). A fifth selector segment was considered and deferred; auto-detect from
-  the running game was rejected for v1 — guessing wrong mid-boss-fight fails silently.
-- **PHASE 1 IS VERIFICATION, NOT CODE:** run Vampire Survivors on bazzite from the
-  SHIPPED landscape pad and confirm the left stick alone suffices — and find out
-  whether Megabonk needs manual aim. If it does, the layout is a different shape.
-  Do not build the table before this answer exists.
-- **Full spec: `docs/memory/project_movement-mode.md`**
-
-
 ### Install a game you own but have not downloaded (owner ask 2026-08-07)
 - **priority:** P2 · **risk:** medium-high (needs a NEW client-supplied-appid path that
   the existing installed-game validator cannot gate) · **affects:** agent + app ·
@@ -193,17 +138,34 @@ Entry fields: `priority` (P0 blocker → P3 nice) · `risk` · `affects` · `dep
   the box from my phone." Natural next step after per-game install size (2.9.72) — the
   disk view answers "what do I delete", this answers "what do I fetch".
 
-**PROBLEM 1 — the agent cannot currently SEE an uninstalled game.**
-`discover_steam_games()` globs `appmanifest_*.acf`, and Steam only writes a manifest for
-apps that are installed or installing. So the owned-but-absent library is invisible from
-disk today. Options, none free:
-  - Steam Web API (`IPlayerService/GetOwnedGames`) — needs an API KEY plus a public
-    profile. This is exactly what `lib/compat.ts` deliberately avoided ("NO STEAM API KEY,
-    and no account of any kind"), and a key is a per-user secret we would have to store.
-  - Local Steam caches (`appinfo.vdf`, `packageinfo.vdf`, `licenses`) — no key, no
-    account, stays true to the LAN-only promise, but they are UNDOCUMENTED BINARY formats
-    that Valve changes. Needs a spike before it is a plan.
-  - Ask Steam itself via its own client. Unexplored; the most likely honest answer.
+**PROBLEM 1 — the agent cannot currently SEE an uninstalled game. SPIKE DONE 2026-08-08 →
+ANSWER: doable WITHOUT a Steam API key.** `discover_steam_games()` globs `appmanifest_*.acf`
+and Steam only writes a manifest for installed/installing apps, so the owned-but-absent
+library is invisible from disk *that way*. But the spike (on bazzite 10.1.1.60, account
+92324858, 12 installed) found a keyless on-disk enumeration:
+  - **Enumeration = `~/.steam/steam/appcache/librarycache/<appid>/`.** Steam caches library
+    art per app in the client's library view — **1117 appids** on the test box vs 12
+    installed. **Control held:** all 12 installed appids are present in the cache (installed
+    ⊆ cache), so it is a genuine superset → ~1105 owned-but-uninstalled candidates, offline,
+    no key, no account.
+  - **Art is already on disk** (`<appid>/header.jpg`, library art) → serve over the LAN
+    exactly like the existing installed-game cover art. No fetch to show the grid.
+  - **It OVERCOUNTS.** librarycache is "client-rendered library art," a good OWNED proxy but
+    NOT a cryptographic owned list — it includes tools/DLC/low appids (e.g. `1007`, a Steam
+    tool). Filter to `type=game`.
+  - **Names/type are NOT fully offline.** `appinfo.vdf` is a PARTIAL cache (only ~44 apps
+    carried full `type` detail on the box) — do not rely on it for the whole library. Names
+    + type come **app-side from the KEYLESS public store endpoint**
+    (`store.steampowered.com/api/appdetails?appids=`), the same "the app fetches metadata,
+    never the box, no key" pattern `lib/compat.ts` + library-triage already use.
+  - **Ownership authority final gate = `steam://install/<appid>` itself** — Steam refuses to
+    install an unowned app, so a slight overcount degrades to a no-op, never a wrong install.
+  - NOT needed: Steam Web API key, public profile, account linking. The box only reads its
+    own disk (LAN-only posture intact); the single internet touch is the app-side keyless
+    metadata fetch that library-triage already established as opt-in.
+  - Rejected alternatives confirmed: the Web API needs a key+public profile; `packageinfo.vdf`
+    (package→appid) exists but the account's authoritative license list is not a clean disk
+    file and is not needed given librarycache + the install gate.
 
 **PROBLEM 2 — the install trigger needs a gate that does not exist yet.**
 Installing is mechanically easy (`steam://install/<appid>`, same family as the
@@ -219,8 +181,20 @@ becomes the allowlist.
   from a device that will not be watching. The download watcher (hooks/useDownloadWatch.ts)
   already reports progress and completion, so the payoff is real — but "started an install
   and left" is exactly the case where the app cannot notify (no server, no background).
-- **Do NOT start with the UI.** Problem 1 decides whether this feature is possible without
-  an API key, and that answer changes the whole shape.
+- **STATUS 2026-08-08: unblocked — Problem 1 answered, Problem 2 now buildable.** The
+  allowlist Problem 2 needs = the librarycache-enumerated appid set (type-filtered). Shape:
+  a NEW read-only agent endpoint (extend `/api/gaming` or add `/api/steam/library`) lists
+  `{appid, hasArt}` for owned-but-uninstalled apps by reading `appcache/librarycache/`; the
+  install endpoint validates a client-supplied appid against **that enumerated set** — present
+  → `steam://install/<appid>`, absent → 404 (lookup-not-interpolate, same pattern as the
+  installed-game launch validator). No client string ever becomes a command.
+- **Remaining real risks (NOT blockers):** (a) overcount cleanliness — the `type=game` filter
+  quality, since `appinfo.vdf` is a partial offline cache and the clean signal is the app-side
+  keyless store lookup; (b) the unchanged "started an install and left" notify gap — an
+  install is long/failable/bandwidth-heavy from a device that will not be watching
+  (`useDownloadWatch.ts` covers progress only while foregrounded).
+- **Next step is Phase 2 (code), not another spike.** Build the enumeration endpoint + the
+  gated install, still UI-last.
 
 ### Remote-only mode: an "Apps" launcher grid (the TV's installed apps)
 - **priority:** P2 · **risk:** low · **affects:** app only (lib/tvdirect + the Remote tab) ·
@@ -907,6 +881,37 @@ recommendation was wrong, not merely superseded.
 ---
 
 ## ✅ Completed
+
+### Per-game controller themes + in-controller switcher — SHIPPED 2.9.40 → 2.9.42
+- **was:** P3 Planned (owner ask 2026-08-07) · **affects:** app only (agent already
+  reports the running appid — no new telemetry)
+- **Shipped both stores as 2.9.42** (iOS build 150 / Play vc 89, 2026-08-08): 35 themes,
+  each a frozen app-internal accent+backdrop keyed by `ThemeKey`; Off/Auto/<theme> picker
+  in Setup; **Auto** maps the running appid → theme (Vampire Survivors → dark-gothic,
+  Megabonk → bonk). An in-controller 🎨 switcher (a `padLayout` chrome node + dropdown)
+  re-skins mid-play. Contract that keeps WCAG: a theme moves ONLY accent/face-tint/backdrop,
+  never text/card/bg tokens; `gameTheme.test.ts` GUARD asserts it.
+- **The one that bit:** `GameBackdrop` used `<ImageBackground>` → on native the art filled
+  only a top band (harness showed it full-screen — the harness lied). Fix = bare
+  `<Image absoluteFill cover>`. Held the release (pulled iOS from review, halted Play),
+  rebuilt, **device-verified** on the owner's iPhone 2026-08-08. Full spec:
+  `docs/memory/project_game-themes.md`; ledger [[game-themes-shipped]].
+
+### Vertical MOVE: one-handed portrait movement mode — SHIPPED 2.9.39
+- **was:** P2 Planned (owner ask 2026-08-07) · **affects:** app only
+- One-handed portrait movement layout: a giant left-thumb `FloatingStick` zone + a small
+  right cluster, immersive with 🔒 LOCK / EXIT, gated to appear only while a game runs on
+  the box. Extended the immersive gate to portrait for the first time. Shipped in 2.9.39,
+  verified on the owner's Razr. Full spec: `docs/memory/project_vertical-move-mode.md`.
+
+### Movement mode: landscape one-big-thumb-zone for Vampire-Survivors-likes — SHIPPED 2.9.38
+- **was:** P2 Planned (owner ask 2026-08-07) · **affects:** app only · reused `FloatingStick`
+  + `lib/padLayout.ts` wholesale
+- A second `padLayout` table where the d-pad is unused during play, so the left stick can be
+  huge — a SEPARATE MODE, not a change to the default pad. Toggled from the landscape chrome
+  row (swaps the table in place; WS/uinput untouched). Analog stick output (`{t:'s'}`), NOT
+  the discrete swipe surface. Shipped 2.9.38 alongside the iOS back-swipe fix. Full spec:
+  `docs/memory/project_movement-mode.md`.
 
 ### Landscape Pad = full-screen controller — BUILT 2026-08-07, awaiting device pass
 - **was:** P1 (clipped + overlapping, owner screenshot 2026-08-07) · **affects:** app only
