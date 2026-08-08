@@ -24,6 +24,7 @@ import {
 
 import { Gated } from '@/components/Gated';
 import { GameSheet } from '@/components/GameSheet';
+import { InstallableSection } from '@/components/InstallableSection';
 import { useCompat } from '@/hooks/useCompat';
 import { type Compat, deckLabel, protonLabel } from '@/lib/compat';
 import { LibraryFilterSheet } from '@/components/LibraryFilterSheet';
@@ -679,6 +680,9 @@ function LaunchScreen() {
   // This screen just reads the result.
   const { downloads, changeTick } = useDownloads();
   const dlByAppid = useMemo(() => new Map(downloads.map((d) => [d.appid, d])), [downloads]);
+  // Appids currently downloading — the InstallableSection drops these (a just-approved
+  // install has moved into the Downloads list above, so it should not show in both).
+  const downloadingAppids = useMemo(() => new Set(downloads.map((d) => d.appid)), [downloads]);
 
   // ---- Steam Remote Play "Stream from PC" (probe-and-appear; 404 -> null) ----
   const sl = usePoll<SteamLink | null>(
@@ -908,6 +912,10 @@ function LaunchScreen() {
 
         {/* Active Steam downloads (hidden when none / agent < 2.8) */}
         <DownloadsSection downloads={downloads} />
+
+        {/* Install a game you own but haven't downloaded (hidden unless the box can:
+            caps.steaminstall / agent >= 2.9.73). Collapsed by default. */}
+        <InstallableSection caps={activeBox?.caps} downloadingAppids={downloadingAppids} />
 
         {/* Stream from PC (hidden when no host / agent < 2.9.23) */}
         {steamlink?.available && (

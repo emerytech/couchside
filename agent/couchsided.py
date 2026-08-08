@@ -45,7 +45,7 @@ except ImportError:  # pragma: no cover
     fcntl = None
 
 APP_NAME = "couchside-agent"
-VERSION = "2.9.72"
+VERSION = "2.9.73"
 UID = os.getuid()
 XDG_RUNTIME_DIR = "/run/user/%d" % UID
 
@@ -1579,7 +1579,7 @@ def set_caps(mock):
         CAPS = {k: True for k in
                 ("gamepad", "steam", "media", "tv", "screen", "power_schedule",
                  "screensaver", "couchmode", "bigpicture", "desktop",
-                 "steamlink", "gaming",
+                 "steamlink", "gaming", "steaminstall",
                  "streamhost", "steammenus", "boxbattery", "file_upload",
                  "session_default", "display_info", "player")}
         return
@@ -1599,6 +1599,11 @@ def set_caps(mock):
         "desktop": safe(desktop_available),
         "steamlink": safe(steamlink_available),
         "gaming": safe(gaming_available),
+        # Owned-but-uninstalled library + install action. Steam present is enough:
+        # the enumeration reads appcache/librarycache/ off the same root. Advertised
+        # as its own cap so old apps ignore it and new apps feature-detect the
+        # /api/steam/installable + install:<appid> pair (both absent pre-2.9.73).
+        "steaminstall": _steam_root() is not None,
         "streamhost": safe(streamhost_available),
         "steammenus": safe(steammenus_available),
         "boxbattery": safe(box_battery_available),
@@ -6465,6 +6470,98 @@ def discover_steam_games():
 
 
 # ---------------------------------------------------------------------------
+# Owned-but-uninstalled Steam games (GET /api/steam/installable + install:<appid>).
+#
+# Steam only writes an appmanifest for INSTALLED games, so discover_steam_games()
+# cannot see a game you own but have not downloaded. But the client caches library
+# ART for the whole library under appcache/librarycache/<appid>/ — MEASURED on
+# bazzite 2026-08-08: 1117 appids cached vs 12 installed. That directory listing IS
+# the owned-library enumeration, with NO Steam Web API key and no account: the box
+# only reads its own disk. It OVERCOUNTS (tools/DLC/demos, plus any store page whose
+# art the client rendered), so it is NOT authoritative ownership — the app filters
+# the DISPLAY to type=game via the keyless store lookup, and steam://install itself
+# is the final gate (Steam refuses to install an app the account does not own).
+#
+# This set is ALSO the allowlist for the install action: install:<appid> is refused
+# unless <appid> is in it, so a client can only ever trigger an install of a game
+# already in THIS box's library cache — never an arbitrary appid off the LAN.
+# ---------------------------------------------------------------------------
+_INSTALLABLE_TTL = 30.0
+_INSTALLABLE_CACHE = {"root": None, "at": 0.0, "val": None}
+_INSTALLABLE_LOCK = threading.Lock()
+
+
+def _installed_appids(root):
+    """Set of appid strings that have an appmanifest on disk (installed/installing).
+
+    Filename-only: the appid is the digits between `appmanifest_` and `.acf`, so
+    this is O(# installed) stats with no parsing. Read-only; never raises."""
+    out = set()
+    for steamapps in _steam_libraries_cached(root):
+        try:
+            for mf in glob.glob(os.path.join(steamapps, "appmanifest_*.acf")):
+                aid = os.path.basename(mf)[len("appmanifest_"):-len(".acf")]
+                if aid.isdigit():
+                    out.add(aid)
+        except Exception:
+            continue
+    return out
+
+
+def _installable_appids():
+    """Set of owned-but-uninstalled Steam appid strings, from the library art cache.
+
+    = digit-named subdirs of appcache/librarycache/  MINUS installed  MINUS known
+    Steam tools. Read-only, best-effort, and it DEGRADES CLOSED — no root, an
+    unreadable cache, or any error yields an EMPTY set, never "everything" (a
+    "fail-open" allowlist here would let any appid install). Cached for
+    _INSTALLABLE_TTL seconds, keyed on the root so a changed root invalidates it.
+
+    This is the allowlist the install action gates on: an appid not in here is not
+    installable (404), so no client-supplied appid reaches steam://install unless
+    the box's own library cache already lists it.
+    """
+    root = _steam_root()
+    if root is None:
+        return set()
+    now = time.monotonic()
+    with _INSTALLABLE_LOCK:
+        c = _INSTALLABLE_CACHE
+        if (c["val"] is not None and c["root"] == root
+                and now - c["at"] <= _INSTALLABLE_TTL):
+            return set(c["val"])
+    try:
+        entries = os.listdir(os.path.join(root, "appcache", "librarycache"))
+    except OSError:
+        entries = []
+    except Exception:
+        entries = []
+    cached = {e for e in entries if e.isdigit()}
+    installed = _installed_appids(root)
+    val = {a for a in cached if a not in installed and a not in STEAM_TOOL_APPIDS}
+    with _INSTALLABLE_LOCK:
+        _INSTALLABLE_CACHE.update(root=root, at=now, val=set(val))
+    return val
+
+
+def _installable_games():
+    """[{"appid": int}] for owned-but-uninstalled games, sorted by appid.
+
+    NAMES are deliberately omitted: the box has no reliable OFFLINE name for an
+    uninstalled game (appinfo.vdf is a partial cache), and inventing one is worse
+    than none — the app resolves names app-side from the KEYLESS store endpoint and
+    filters to type=game there. Art, when present, is already on disk and served by
+    the existing GET /api/steam/<appid>/cover for any appid, installed or not."""
+    return [{"appid": int(a)}
+            for a in sorted(_installable_appids(), key=lambda a: int(a))]
+
+
+# Mock owned-but-uninstalled list for the web harness / --mock. Real appids so the
+# app's keyless store-name lookup resolves recognisable titles when exercised.
+MOCK_INSTALLABLE = [{"appid": a} for a in (220, 400, 620, 292030, 570)]
+
+
+# ---------------------------------------------------------------------------
 # Steam Remote Play — in-home streaming (/api/steamlink).
 #
 # The box's Steam client can stream games FROM another Steam machine on the LAN
@@ -7274,6 +7371,21 @@ def _launcher_argv(launcher_id):
         # offers it is online; if not, the rungameid is a harmless no-op.
         if appid in _streamable_appids():
             return ["steam", "steam://rungameid/%s" % appid]
+        return None
+    if launcher_id.startswith("install:"):
+        appid = launcher_id[len("install:"):]
+        if not appid.isdigit():
+            return None
+        # Install a game you OWN but have not downloaded. Gated on the
+        # owned-but-uninstalled allowlist (_installable_appids, built from this
+        # box's own library art cache) — the client's appid selects a member of
+        # that set and NEVER reaches the command line as anything but a validated
+        # integer; the argv is the agent's own constant + that integer. steam://
+        # install is Steam's own flow, which refuses an app the account does not
+        # own, so an appid that slips through the (deliberately loose) library
+        # cache is a no-op, not a wrong install.
+        if appid in _installable_appids():
+            return ["steam", "steam://install/%s" % appid]
         return None
     if launcher_id.startswith("shortcut:"):
         appid = launcher_id[len("shortcut:"):]
@@ -16029,6 +16141,13 @@ class Handler(BaseHTTPRequestHandler):
                                                else list_launchers()),
                                  "create_enabled": bool(ALLOW_APP_LAUNCHERS)},
                            started)
+            elif path == "/api/steam/installable":
+                # Owned-but-uninstalled Steam games (appids only; the app resolves
+                # names + type app-side from the keyless store endpoint and pulls
+                # art from GET /api/steam/<appid>/cover). Read-only; an empty list
+                # when Steam or the library cache is absent — degrades closed.
+                games = (MOCK_INSTALLABLE if self.mock else _installable_games())
+                self._send(200, {"games": games, "count": len(games)}, started)
             elif path == "/api/session/default":
                 # Read-only. Always 200 with available=false rather than 404 so
                 # the app can tell "old agent" (404) from "this box has no
@@ -16713,6 +16832,20 @@ class Handler(BaseHTTPRequestHandler):
                 # The app percent-encodes the id (encodeURIComponent turns the
                 # "steam:"/"custom:" colon into %3A), so decode before matching.
                 launcher_id = unquote(path[len(lprefix):])
+                # --mock/harness: _launcher_argv gates install:<appid> on the real
+                # on-disk library, which the mock box does not have. Validate against
+                # the mock installable set instead so the harness can exercise the
+                # install PRESS end-to-end. Same allowlist shape, mock data.
+                if self.mock and launcher_id.startswith("install:"):
+                    appid = launcher_id[len("install:"):]
+                    if not (appid.isdigit()
+                            and int(appid) in {g["appid"] for g in MOCK_INSTALLABLE}):
+                        self._send(404, {"ok": False,
+                                         "error": "unknown launcher"}, started)
+                        return
+                    self._send(200, mock_launch(
+                        ["steam", "steam://install/%s" % appid]), started)
+                    return
                 argv = _launcher_argv(launcher_id)
                 if argv is None:
                     self._send(404, {"ok": False,

@@ -18,6 +18,15 @@ the same thing regardless of what actually changed.
 Write for the person holding the phone, not for the commit log. They are
 deciding whether to press "Update now" on a machine across the room.
 
+## 2.9.73
+
+**Install a game you own but haven't downloaded.** Couchside can now list the
+Steam games in your library that aren't on the box yet and start the download
+from your phone. It reads the library your Steam client already cached on disk —
+no Steam account, no API key, nothing leaves the box — and hands the install to
+Steam itself, so it only ever installs a game you actually own. Needs the app
+that ships alongside this agent; older apps simply don't show the new section.
+
 ## 2.9.72
 
 **Per-game install size.** Each Steam game now reports how much disk it is

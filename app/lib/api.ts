@@ -187,6 +187,15 @@ export type BoxCaps = {
    * older agents and on Windows, so undefined reads as "unknown, probe".
    */
   player?: boolean;
+  /**
+   * Install a game you OWN but have not downloaded (agent >= 2.9.73): the box can
+   * enumerate the owned-but-uninstalled library from Steam's local art cache and
+   * fire steam://install for one. Gates the Launch tab's "Not installed" section.
+   * Linux-only — it reads appcache/librarycache off the Steam root. Optional:
+   * absent on older agents and on Windows, so undefined reads as "unknown, probe"
+   * and only an explicit false skips the request.
+   */
+  steaminstall?: boolean;
 };
 
 /**
@@ -1136,7 +1145,8 @@ export function capsEqual(a?: BoxCaps, b?: BoxCaps): boolean {
     a.file_upload === b.file_upload &&
     a.session_default === b.session_default &&
     a.display_info === b.display_info &&
-    a.player === b.player
+    a.player === b.player &&
+    a.steaminstall === b.steaminstall
   );
 }
 
@@ -1587,6 +1597,23 @@ export const api = {
   /** List discovered Steam games + user-defined custom launchers. */
   launchers(settings: ConnSettings): Promise<{ launchers: Launcher[] }> {
     return request<{ launchers: Launcher[] }>(settings, '/api/launchers');
+  },
+
+  /**
+   * Owned-but-uninstalled Steam games (agent >= 2.9.73, gated by caps.steaminstall).
+   * Appids only — the box has no reliable offline name for an uninstalled game, so
+   * the app resolves names + type app-side from the keyless store endpoint (see
+   * lib/steamStore.ts) and pulls art from coverArt(appid). Probe-and-appear:
+   * resolves null on a 404 (older agent / no route) so the section stays hidden.
+   * To INSTALL one, call launch(settings, `install:${appid}`) — the agent gates it
+   * against this same set and hands steam://install to the client.
+   */
+  installable(
+    settings: ConnSettings,
+  ): Promise<{ games: { appid: number }[]; count: number } | null> {
+    return probeOrNull(
+      request<{ games: { appid: number }[]; count: number }>(
+        settings, '/api/steam/installable'));
   },
 
   /**
