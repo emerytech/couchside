@@ -52,7 +52,7 @@ export type PadNodeId =
   // Movement mode (moveLayout): the big left-thumb zone, the 4-way menu
   // cluster, and the PAD/MOVE toggle that lives in the chrome row of BOTH
   // layouts.
-  | 'move' | 'nav' | 'variant';
+  | 'move' | 'nav' | 'variant' | 'theme';
 
 export type PadNode = {
   id: PadNodeId;
@@ -296,6 +296,7 @@ const MOVE_TABLE: Spec[] = [
   // under the thumb that just pressed it. START joins the row (pause is
   // deliberate, out-of-the-way) — its main-table slot at row 2 doesn't exist
   // here.
+  { id: 'theme', w: 15, h: 14, cx: { from: 'left', at: 12 }, cy: { from: 'top', at: 10 }, layer: 9 },
   { id: 'variant', w: 15, h: 14, cx: { from: 'centre', at: -29 }, cy: { from: 'top', at: 10 }, layer: 9 },
   { id: 'lock', w: 15, h: 14, cx: { from: 'centre', at: -11 }, cy: { from: 'top', at: 10 }, layer: 9 },
   { id: 'exit', w: 15, h: 14, cx: { from: 'centre', at: 7 }, cy: { from: 'top', at: 10 }, layer: 9 },
@@ -334,6 +335,7 @@ const VERTICAL_MOVE_TABLE: Spec[] = [
   // as the landscape layouts, so the pair still reads as one unit.
   { id: 'lock', w: 15, h: 14, cx: { from: 'left', at: 12 }, cy: { from: 'top', at: 10 }, layer: 9 },
   { id: 'exit', w: 15, h: 14, cx: { from: 'left', at: 30 }, cy: { from: 'top', at: 10 }, layer: 9 },
+  { id: 'theme', w: 15, h: 14, cx: { from: 'centre', at: 0 }, cy: { from: 'top', at: 10 }, layer: 9 },
   { id: 'start', w: 18, h: 14, cx: { from: 'right', at: 12 }, cy: { from: 'top', at: 10 }, layer: 5 },
 
   // The thumb band: NAV against the right edge (right-thumb bias), A and B

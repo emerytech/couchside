@@ -478,7 +478,7 @@ test('MOVE: the move table contains exactly what the mode needs, nothing else', 
   const l = ok(moveLayout({ width: 852, height: 393 }, { top: 0, right: 0, bottom: 21, left: 59 }));
   assert.deepEqual(
     l.nodes.map((n) => n.id).sort(),
-    ['a', 'b', 'exit', 'lock', 'move', 'nav', 'start', 'variant'],
+    ['a', 'b', 'exit', 'lock', 'move', 'nav', 'start', 'theme', 'variant'],
   );
 });
 
@@ -655,7 +655,7 @@ test('VERTICAL: the table has no variant node — rotation is the path between l
   if (l.ok) {
     assert.deepEqual(
       l.nodes.map((n) => n.id).sort(),
-      ['a', 'b', 'exit', 'lock', 'move', 'nav', 'start'],
+      ['a', 'b', 'exit', 'lock', 'move', 'nav', 'start', 'theme'],
     );
   }
 });

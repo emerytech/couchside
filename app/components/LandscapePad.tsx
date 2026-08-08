@@ -36,6 +36,7 @@ import type { ButtonKey, StickKey, TriggerKey } from '@/lib/gamepad';
 import { mono, type Palette } from '@/lib/theme';
 import { useControllerTheme } from '@/hooks/useControllerTheme';
 import { GameBackdrop } from '@/components/GameBackdrop';
+import { ThemeSwitcher } from '@/components/ThemeSwitcher';
 
 /** Movement under this is still a tap (matches the swipe surface's rule). */
 const TAP_SLOP = 12;
@@ -789,6 +790,9 @@ export function MovePad({
         accessibilityLabel="Exit full-screen controller"
       />
       <PadKey node={byId.start} label="START" u={u} fontSize={2.8 * u} {...btn('start')} />
+      {/* In-view theme switcher — re-skin the controller on the fly. Rendered
+          LAST so its dropdown overlays every control. */}
+      <ThemeSwitcher node={byId.theme} play={layout.play} u={u} t={t} />
     </View>
   );
 }
