@@ -61,46 +61,90 @@ export type GameTheme = {
 };
 
 /**
- * The registry. A frozen, app-internal map — the same allowlist shape the agent
- * uses for launcher ids and actions. Adding a game means adding an entry here
- * and shipping a build; there is no dynamic source.
- *
- * Keys are Steam appids. Sources for each are recorded beside it, because an
- * appid guessed wrong themes the wrong game and that is invisible in review.
+ * A theme's stable KEY — the value the picker pref stores, and how a theme is
+ * referenced everywhere. Extend this union as themes are added; the compiler
+ * then forces the registry, the pref, and the picker to all list it.
  */
-export const GAME_THEMES: Readonly<Record<number, GameTheme>> = Object.freeze({
-  // Vampire Survivors — appid 1794680, from its Steam store URL.
-  // Gold on dark, the game's own HUD palette; red for B to match its damage
-  // numbers. Values chosen against this app's dark card, not sampled art.
-  1794680: {
-    label: 'Vampire Survivors',
+export type ThemeKey = 'dark-gothic';
+
+/**
+ * The theme registry. A frozen, app-internal map — the same allowlist shape the
+ * agent uses for launcher ids and actions. Adding a theme is one entry here, one
+ * ThemeKey above, and (for the picker) one option in Setup; there is no dynamic
+ * source, and an unknown key is a lookup miss, never a fetch.
+ */
+export const THEMES: Readonly<Record<ThemeKey, GameTheme>> = Object.freeze({
+  // Dark Gothic — a gothic bullet-heaven aesthetic. Gold on near-black, with a
+  // candlelit-hall backdrop; red B, green A. Values chosen against this app's
+  // dark card, not sampled from art. The first named theme; games that suit it
+  // (Vampire Survivors, below) auto-select it in 'auto' mode.
+  'dark-gothic': {
+    label: 'Dark Gothic',
     accent: { dark: '#f0c25a', light: '#8a6410' },
     face: {
       a: { dark: '#7bd88f', light: '#1d7a37' },
       b: { dark: '#f07a6a', light: '#a02a1c' },
     },
-    // Gothic bullet-heaven vibe. `key` resolves to a bundled PNG once the art
-    // exists (gameThemeAssets.ts); until then the derived backdrop is a dark
-    // base with a gold top-third glow — the same palette the art will use.
+    // `key` resolves to the bundled backdrop art (gameThemeAssets.ts); a key
+    // with no registered art falls back to a derived dark+glow wash.
     backdrop: { key: 'vampire-survivors', glow: { dark: '#f0c25a', light: '#c99b2e' } },
   },
 });
 
 /**
- * MEGABONK is the other pilot game and is deliberately NOT in the table yet.
- *
- * Its appid has not been confirmed from a first-party source, and the movement
- * spec's open question — whether it needs manual aim, which decides if the
- * movement layout even fits it — is unanswered. Guessing an appid would theme
- * some other game entirely, and nothing in the UI would reveal the mistake.
- * Add it after one session on real hardware; `debugGameTheme()` below prints
+ * Games that auto-select a theme when the picker is on 'auto'. appid -> theme
+ * key. Sources recorded because an appid guessed wrong themes the wrong game
+ * and that is invisible in review.
+ */
+export const APPID_THEMES: Readonly<Record<number, ThemeKey>> = Object.freeze({
+  1794680: 'dark-gothic', // Vampire Survivors — appid from its Steam store URL.
+});
+
+/**
+ * The picker preference: OFF (never theme), AUTO (match the running game via
+ * APPID_THEMES), or a specific theme key (always that theme).
+ */
+export type ControllerThemePref = 'off' | 'auto' | ThemeKey;
+
+/**
+ * Resolve the active theme from the picker pref + the running game. Pure.
+ *  - 'off'  -> null (base palette)
+ *  - 'auto' -> the running game's theme, if it has one, else null
+ *  - a key  -> that theme, always (independent of what is running)
+ */
+export function resolveTheme(
+  pref: ControllerThemePref,
+  runningAppid: number | null,
+): GameTheme | null {
+  if (pref === 'off') return null;
+  if (pref === 'auto') {
+    const key = runningAppid != null ? APPID_THEMES[runningAppid] : undefined;
+    return key ? THEMES[key] : null;
+  }
+  return THEMES[pref] ?? null;
+}
+
+/** Picker options, in display order. Label + the pref value each sets. */
+export const THEME_PICKER: ReadonlyArray<{ value: ControllerThemePref; label: string }> =
+  Object.freeze([
+    { value: 'off', label: 'Off' },
+    { value: 'auto', label: 'Auto' },
+    ...(Object.keys(THEMES) as ThemeKey[]).map((k) => ({ value: k, label: THEMES[k].label })),
+  ]);
+
+/**
+ * MEGABONK could auto-select Dark Gothic once its appid is confirmed from a
+ * first-party source AND the movement spec's manual-aim question is answered.
+ * Guessing an appid would theme some other game entirely, invisibly. Add it to
+ * APPID_THEMES after one session on real hardware; `debugGameTheme()` prints
  * the appid of whatever is actually running, which is how to get it.
  */
 
-/** Is this appid themed? Pure, exported for tests and the debug surface. */
+/** The theme a running game auto-selects (in 'auto' mode), or null. Pure. */
 export function themeForAppid(appid: number | undefined | null): GameTheme | null {
   if (appid == null) return null;
-  return GAME_THEMES[appid] ?? null;
+  const key = APPID_THEMES[appid];
+  return key ? THEMES[key] : null;
 }
 
 /**
@@ -190,7 +234,7 @@ export function __resetRunningAppid(): void {
 // The live-palette hook lives in hooks/useControllerTheme.ts, NOT here: it
 // needs useTheme()/useResolvedScheme(), whose module pulls in react-native and
 // expo-secure-store, and this file must stay importable by the bare-Node test
-// runner (lib/__tests__/gameTheme.test.ts imports GAME_THEMES + applyGameTheme
+// runner (lib/__tests__/gameTheme.test.ts imports THEMES + applyGameTheme
 // directly). Keeping the pure lookup/composition here and the React glue there
 // is what lets the contrast guarantee be asserted at all.
 

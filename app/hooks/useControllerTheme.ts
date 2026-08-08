@@ -22,10 +22,11 @@ import { useMemo, useSyncExternalStore } from 'react';
 import {
   applyGameTheme,
   getRunningAppid,
+  resolveTheme,
   subscribeRunningAppid,
-  themeForAppid,
   type ThemedPalette,
 } from '@/lib/gameTheme';
+import { usePref } from '@/lib/prefs';
 import { useResolvedScheme, useTheme } from '@/lib/theme';
 
 /**
@@ -41,8 +42,11 @@ export function useControllerTheme(): ThemedPalette {
   const base = useTheme();
   const scheme = useResolvedScheme();
   const appid = useRunningAppid();
+  // The picker pref decides: 'off' -> no theme, 'auto' -> the running game's
+  // theme, a key -> that theme always. resolveTheme is pure.
+  const pref = usePref('controllerTheme');
   return useMemo(
-    () => applyGameTheme(base, themeForAppid(appid), scheme),
-    [base, appid, scheme],
+    () => applyGameTheme(base, resolveTheme(pref, appid), scheme),
+    [base, pref, appid, scheme],
   );
 }

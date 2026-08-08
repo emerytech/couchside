@@ -20,6 +20,7 @@ import {
   type MediaSkipSec,
 } from './mediaSeek';
 import { PadMode } from './settings';
+import type { ControllerThemePref } from './gameTheme';
 
 /** Tabs the app can open on. Values are the expo-router route names ('index' is
  *  Console). Setup is deliberately not offered: nobody wants to land there, and
@@ -168,6 +169,10 @@ export type Prefs = {
   padKeyboardBar: boolean;
   /** Gesture hint text on the swipe/trackpad surfaces. */
   padHints: boolean;
+  /** Controller theme picker: Off, Auto (match the running game), or a named
+   *  theme key. Applied to the immersive controller only (MOVE / landscape
+   *  pad). Default 'auto' keeps the game-detection behaviour. */
+  controllerTheme: ControllerThemePref;
   /** Collapse the pill + mode tabs + button/keyboard rows so the trackpad
    *  surface fills the pane for edge-to-edge scrolling. Trackpad mode only;
    *  a floating chip restores the chrome. */
@@ -293,6 +298,7 @@ export const DEFAULTS: Prefs = {
   padWinShortcuts: true,
   padKeyboardBar: true,
   padHints: true,
+  controllerTheme: 'auto',
   padTrackpadLarge: false,
   padLargeToggle: true,
   askToSwitchControl: true,
@@ -410,6 +416,10 @@ function normalize(raw: unknown): Prefs {
     padWinShortcuts: bool(o.padWinShortcuts, DEFAULTS.padWinShortcuts),
     padKeyboardBar: bool(o.padKeyboardBar, DEFAULTS.padKeyboardBar),
     padHints: bool(o.padHints, DEFAULTS.padHints),
+    controllerTheme:
+      o.controllerTheme === 'off' || o.controllerTheme === 'dark-gothic'
+        ? o.controllerTheme
+        : 'auto',
     padTrackpadLarge: bool(o.padTrackpadLarge, DEFAULTS.padTrackpadLarge),
     padLargeToggle: bool(o.padLargeToggle, DEFAULTS.padLargeToggle),
     askToSwitchControl: bool(o.askToSwitchControl, DEFAULTS.askToSwitchControl),

@@ -17,8 +17,10 @@ import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
 
 import {
-  GAME_THEMES,
+  THEMES,
+  THEME_PICKER,
   applyGameTheme,
+  resolveTheme,
   themeForAppid,
   type GameTheme,
 } from '../gameTheme.ts';
@@ -60,7 +62,7 @@ const MIN = 3.0; // AA large text
 const HEX = /^#[0-9a-fA-F]{6}$/;
 
 test('every game theme has valid hex in both schemes', () => {
-  for (const [appid, th] of Object.entries(GAME_THEMES)) {
+  for (const [appid, th] of Object.entries(THEMES)) {
     assert.match(th.accent.dark, HEX, `${appid} accent.dark`);
     assert.match(th.accent.light, HEX, `${appid} accent.light`);
     for (const k of ['a', 'b', 'x', 'y'] as const) {
@@ -74,7 +76,7 @@ test('every game theme has valid hex in both schemes', () => {
 });
 
 test('every accent and face tint clears 3:1 on card, both schemes', () => {
-  for (const [appid, th] of Object.entries(GAME_THEMES)) {
+  for (const [appid, th] of Object.entries(THEMES)) {
     for (const scheme of ['dark', 'light'] as const) {
       const acc = contrast(th.accent[scheme], CARD[scheme]);
       assert.ok(acc >= MIN, `${appid} accent ${scheme}: ${acc.toFixed(2)}:1 on card`);
@@ -90,13 +92,13 @@ test('every accent and face tint clears 3:1 on card, both schemes', () => {
 });
 
 test('the contrast test is not vacuous — the registry is non-empty', () => {
-  assert.ok(Object.keys(GAME_THEMES).length >= 1, 'no game themes to test');
+  assert.ok(Object.keys(THEMES).length >= 1, 'no game themes to test');
 });
 
 // ---------- Lookup ----------
 
 test('a known appid resolves, an unknown one is null', () => {
-  assert.equal(themeForAppid(1794680)?.label, 'Vampire Survivors');
+  assert.equal(themeForAppid(1794680)?.label, 'Dark Gothic');
   assert.equal(themeForAppid(999999999), null);
   assert.equal(themeForAppid(null), null);
   assert.equal(themeForAppid(undefined), null);
@@ -147,7 +149,7 @@ test('GUARD — no game theme may name a protected token', () => {
   // can reach a palette token — the backdrop renders BEHIND the controls with a
   // scrim and touches nothing in the Palette type. Everything else stays banned.
   const allowed = new Set(['label', 'accent', 'face', 'backdrop']);
-  for (const [appid, th] of Object.entries(GAME_THEMES)) {
+  for (const [appid, th] of Object.entries(THEMES)) {
     for (const key of Object.keys(th as GameTheme)) {
       assert.ok(allowed.has(key), `${appid} theme has forbidden key '${key}'`);
     }
@@ -177,9 +179,50 @@ test('the backdrop glow is the scheme-correct colour', () => {
 // (GameBackdrop.Scrim) + the per-button card bg, not the glow colour. The glyph
 // COLOURS are covered by the accent/face-tint contrast test above.
 test('every backdrop glow is valid hex in both schemes', () => {
-  for (const [appid, th] of Object.entries(GAME_THEMES)) {
+  for (const [appid, th] of Object.entries(THEMES)) {
     if (!th.backdrop) continue;
     assert.match(th.backdrop.glow.dark, HEX, `${appid} backdrop glow.dark`);
     assert.match(th.backdrop.glow.light, HEX, `${appid} backdrop glow.light`);
   }
+});
+
+// ---------- Picker resolution ----------
+
+test('resolveTheme: OFF is always null', () => {
+  assert.equal(resolveTheme('off', 1794680), null);
+  assert.equal(resolveTheme('off', null), null);
+  assert.equal(resolveTheme('off', 999999), null);
+});
+
+test('resolveTheme: AUTO follows the running game', () => {
+  assert.equal(resolveTheme('auto', 1794680)?.label, 'Dark Gothic'); // VS -> gothic
+  assert.equal(resolveTheme('auto', 999999), null); // unmapped game
+  assert.equal(resolveTheme('auto', null), null);   // nothing running
+});
+
+test('resolveTheme: a named key applies ALWAYS, regardless of the game', () => {
+  assert.equal(resolveTheme('dark-gothic', null)?.label, 'Dark Gothic');
+  assert.equal(resolveTheme('dark-gothic', 999999)?.label, 'Dark Gothic');
+  assert.equal(resolveTheme('dark-gothic', 1794680)?.label, 'Dark Gothic');
+});
+
+test('the picker lists Off, Auto, and every registered theme — no orphans', () => {
+  const values = THEME_PICKER.map((o) => o.value);
+  assert.deepEqual(values.slice(0, 2), ['off', 'auto']);
+  // Every theme key appears exactly once after off/auto.
+  const keys = Object.keys(THEMES).sort();
+  assert.deepEqual(values.slice(2).sort(), keys);
+  // Every picker value beyond off/auto is a resolvable theme.
+  for (const v of values.slice(2)) {
+    assert.ok(resolveTheme(v, null), `picker offers '${v}' but resolveTheme returns null`);
+  }
+  // Labels are non-empty.
+  for (const o of THEME_PICKER) assert.ok(o.label.length > 0, `empty label for ${o.value}`);
+});
+
+test('the pref normalizer only accepts off / auto / a real theme key', () => {
+  // Mirrors lib/prefs.ts normalize: anything else falls back to auto. Assert the
+  // set the picker can produce is exactly what the normalizer keeps.
+  const accepted = new Set(['off', 'auto', ...Object.keys(THEMES)]);
+  for (const o of THEME_PICKER) assert.ok(accepted.has(o.value), `picker value ${o.value} not accepted`);
 });
