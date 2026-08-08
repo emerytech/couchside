@@ -47,6 +47,7 @@ import { StatusBar } from 'expo-status-bar';
 import { Gated } from '@/components/Gated';
 import { LandscapePad, LandscapePadTooSmall, MovePad } from '@/components/LandscapePad';
 import { setImmersive } from '@/lib/immersive';
+import { setRunningAppid } from '@/lib/gameTheme';
 import { surfaceChanged, type PadSurface } from '@/lib/padSurface';
 import { moveLayout, padLayout, verticalMoveLayout } from '@/lib/padLayout';
 import { SteamMenusPanel } from '@/components/SteamMenusPanel';
@@ -1365,6 +1366,22 @@ function PadScreen() {
   const gamingPoll = usePoll<Gaming | null>(
     () => api.gaming(settings), 15000, true, hostKey(settings));
   const runningGame = gamingPoll.data?.game != null;
+
+  // Publish the running game's appid so the controller surfaces can dress for
+  // it (lib/gameTheme.ts). A store rather than a prop because the immersive
+  // pad renders from a different subtree; setRunningAppid is idempotent, so
+  // driving it from render on every poll tick is free. Cleared on unmount so a
+  // theme never outlives the screen that knew a game was running.
+  // Focus-gated exactly like setImmersive above: this screen stays mounted after
+  // its first visit, so without the gate the store would hold a stale appid
+  // while the user is on another tab. Harmless today (only the immersive pad
+  // reads it, and that is not rendered off-tab) but the two stores must not
+  // drift — a future reader of the running game elsewhere would inherit the bug.
+  const runningAppid = gamingPoll.data?.game?.appid ?? null;
+  useEffect(() => {
+    setRunningAppid(padFocused ? runningAppid : null);
+  }, [runningAppid, padFocused]);
+  useEffect(() => () => setRunningAppid(null), []);
 
   const steamMenus = menusPoll.data?.menus ?? [];
   const hasSteamMenus = steamMenus.length > 0;

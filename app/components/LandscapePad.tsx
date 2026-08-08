@@ -33,7 +33,9 @@ import {
   type Rect,
 } from '@/lib/padLayout';
 import type { ButtonKey, StickKey, TriggerKey } from '@/lib/gamepad';
-import { useTheme, mono, type Palette } from '@/lib/theme';
+import { mono, type Palette } from '@/lib/theme';
+import { useControllerTheme } from '@/hooks/useControllerTheme';
+import { GameBackdrop } from '@/components/GameBackdrop';
 
 /** Movement under this is still a tap (matches the swipe surface's rule). */
 const TAP_SLOP = 12;
@@ -92,7 +94,7 @@ function PadKey({
   node: PadNode; label: string; color?: string; fontSize?: number;
   onDown: () => void; onUp: () => void; u: number;
 }) {
-  const t = useTheme();
+  const t = useControllerTheme();
   const [held, setHeld] = useState(false);
   return (
     <Pressable
@@ -153,7 +155,7 @@ function FloatingStick({
       whole node into a giant ellipse. */
   zoneOutline?: boolean;
 }) {
-  const t = useTheme();
+  const t = useControllerTheme();
   // Where in the container the finger landed. The ring is drawn there, not at
   // the container's centre: the thumb lands where it lands and there is nothing
   // to look at to aim with.
@@ -299,7 +301,7 @@ function Dpad({
 }: {
   node: PadNode; u: number; btn: (k: ButtonKey) => Down;
 }) {
-  const t = useTheme();
+  const t = useControllerTheme();
   // dpadZone returns 'du' | 'dd' | 'dl' | 'dr' | 'a' — every one of them a
   // ButtonKey, so nothing needs widening on the way to the wire.
   const [zone, setZone] = useState<ButtonKey | null>(null);
@@ -407,7 +409,7 @@ function NavPad({
 }: {
   node: PadNode; u: number; btn: (k: ButtonKey) => Down;
 }) {
-  const t = useTheme();
+  const t = useControllerTheme();
   const [zone, setZone] = useState<ButtonKey | null>(null);
   const held = useRef<ButtonKey | null>(null);
   const bt = useRef(btn);
@@ -493,7 +495,7 @@ function FaceCluster({
 }: {
   nodes: PadNode[]; u: number; btn: (k: ButtonKey) => Down; colors: Record<FaceId, string>;
 }) {
-  const t = useTheme();
+  const t = useControllerTheme();
   const [zone, setZone] = useState<FaceId | null>(null);
   const held = useRef<FaceId | null>(null);
   const bt = useRef(btn);
@@ -604,7 +606,7 @@ function ChromeButton({
   node: PadNode; u: number; text: string; color?: string;
   onPress: () => void; accessibilityLabel: string; checked?: boolean;
 }) {
-  const t = useTheme();
+  const t = useControllerTheme();
   return (
     <Pressable
       style={abs(node.hit)}
@@ -636,14 +638,22 @@ function ChromeButton({
 export function LandscapePad({
   layout, btn, trig, stickMove, stickRelease, qam, locked, onToggleLock, onExit, onVariant,
 }: LandscapePadProps) {
-  const t = useTheme();
+  const t = useControllerTheme();
   const { byId, u } = layout;
+  // A game theme may tint individual face buttons; a missing tint keeps the
+  // standard colour. `t.blue` already IS the game accent (see useController
+  // theme), so X follows the accent with no special-case.
   const faceColors: Record<FaceId, string> = {
-    a: t.green, b: t.red, x: t.blue, y: t.amber,
+    a: t.faceTint.a ?? t.green,
+    b: t.faceTint.b ?? t.red,
+    x: t.faceTint.x ?? t.blue,
+    y: t.faceTint.y ?? t.amber,
   };
 
   return (
     <View style={StyleSheet.absoluteFill}>
+      {/* Styled backdrop, when the running game has one. Non-interactive. */}
+      <GameBackdrop backdrop={t.backdrop} landscape={layout.play.w > layout.play.h} />
       {/* Row 1 — shoulders. */}
       <PadKey node={byId.lt} label="LT" u={u} {...trig('lt')} />
       <PadKey node={byId.lb} label="LB" u={u} {...btn('lb')} />
@@ -734,11 +744,14 @@ export type MovePadProps = {
 export function MovePad({
   layout, btn, stickMove, stickRelease, locked, onToggleLock, onExit, onVariant,
 }: MovePadProps) {
-  const t = useTheme();
+  const t = useControllerTheme();
   const { byId, u } = layout;
 
   return (
     <View style={StyleSheet.absoluteFill}>
+      {/* Styled backdrop behind everything, when the running game has one.
+          pointerEvents:none, so it never touches the input path. */}
+      <GameBackdrop backdrop={t.backdrop} landscape={layout.play.w > layout.play.h} />
       {/* The movement zone. A tap (no drag) is deliberately NOTHING here — in
           the games this mode serves, a stray A press picks whatever upgrade is
           highlighted. Confirm lives under the right thumb only. */}
@@ -750,8 +763,8 @@ export function MovePad({
 
       {/* Right thumb: A at rest, B beside/above it, 4-way NAV for menus. */}
       <NavPad node={byId.nav} u={u} btn={btn} />
-      <PadKey node={byId.b} label="B" u={u} color={t.red} fontSize={4.4 * u} {...btn('b')} />
-      <PadKey node={byId.a} label="A" u={u} color={t.green} fontSize={4.4 * u} {...btn('a')} />
+      <PadKey node={byId.b} label="B" u={u} color={t.faceTint.b ?? t.red} fontSize={4.4 * u} {...btn('b')} />
+      <PadKey node={byId.a} label="A" u={u} color={t.faceTint.a ?? t.green} fontSize={4.4 * u} {...btn('a')} />
 
       {/* Chrome: in landscape, same row and positions as the gamepad layout so
           the toggle never jumps under the thumb that pressed it. The vertical
@@ -797,7 +810,7 @@ export function LandscapePadTooSmall({
       back to portrait" is advice you have already taken. */
   orientation?: 'landscape' | 'portrait';
 }) {
-  const t = useTheme();
+  const t = useControllerTheme();
   const portrait = orientation === 'portrait';
   return (
     <View style={[StyleSheet.absoluteFill, { alignItems: 'center', justifyContent: 'center', padding: 24 }]}>

@@ -65,6 +65,7 @@ import {
 import { clearCompatCache } from '@/lib/compatFetch';
 import { resetFeatureTour } from '@/hooks/useFeatureTour';
 import { setPref, usePref } from '@/lib/prefs';
+import { THEME_PICKER } from '@/lib/gameTheme';
 import { buy, userFacingPurchaseError, getProduct, restoreFromUserAction } from '@/lib/purchase';
 import { Box, DEFAULT_PORT, normalizeMac } from '@/lib/settings';
 import { VolumeTarget } from '@/lib/api';
@@ -865,6 +866,7 @@ function SetupBody() {
   const padHints = usePref('padHints');
   const padTrackpadLarge = usePref('padTrackpadLarge');
   const padLargeToggle = usePref('padLargeToggle');
+  const controllerTheme = usePref('controllerTheme');
   const askToSwitchControl = usePref('askToSwitchControl');
   const keyboardMode = usePref('keyboardMode');
   const searchButtonSide = usePref('searchButtonSide');
@@ -1830,6 +1832,16 @@ function SetupBody() {
                 value={padLargeToggle}
                 onValueChange={(v) => {
                   void setPref('padLargeToggle', v);
+                  hapticSelection();
+                }}
+              />
+              <SegPref
+                label="Controller theme"
+                sub="Style the full-screen controller (MOVE / landscape pad). Auto matches the game running on your box; a named theme applies always. More themes arrive with updates."
+                options={THEME_PICKER.map((o) => ({ value: o.value, label: o.label.toUpperCase() }))}
+                value={controllerTheme}
+                onSelect={(v) => {
+                  void setPref('controllerTheme', v);
                   hapticSelection();
                 }}
               />
