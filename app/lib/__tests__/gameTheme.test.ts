@@ -196,6 +196,7 @@ test('resolveTheme: OFF is always null', () => {
 
 test('resolveTheme: AUTO follows the running game', () => {
   assert.equal(resolveTheme('auto', 1794680)?.label, 'Dark Gothic'); // VS -> gothic
+  assert.equal(resolveTheme('auto', 3405340)?.label, 'Dark Gothic'); // Megabonk -> gothic
   assert.equal(resolveTheme('auto', 999999), null); // unmapped game
   assert.equal(resolveTheme('auto', null), null);   // nothing running
 });
