@@ -82,7 +82,25 @@ export type ThemeKey =
   | 'limewire'
   | 'rusty-scrapyard'
   | 'stained-glass-night'
-  | 'toxic-slime-lab';
+  | 'toxic-slime-lab'
+  | 'alien-biosphere'
+  | 'arcane-observatory'
+  | 'autumn-canyon'
+  | 'bamboo-mist'
+  | 'bioluminescent-marsh'
+  | 'biotech-vault'
+  | 'coral-reef'
+  | 'crystal-caverns'
+  | 'dieselpunk-foundry'
+  | 'ember-forge'
+  | 'faerie-meadow'
+  | 'floating-sky-ruins'
+  | 'moonlit-witchwood'
+  | 'orbital-megacity'
+  | 'quantum-lattice'
+  | 'retro-space-colony'
+  | 'thunderhead-prairie'
+  | 'volcanic-island';
 
 /**
  * The theme registry. A frozen, app-internal map — the same allowlist shape the
@@ -192,6 +210,96 @@ export const THEMES: Readonly<Record<ThemeKey, GameTheme>> = Object.freeze({
     label: 'Toxic Slime Lab',
     accent: { dark: '#0ff9ff', light: '#044f51' },
     backdrop: { key: 'toxic-slime-lab', glow: { dark: '#0ff9ff', light: '#044f51' } },
+  },
+  'alien-biosphere': {
+    label: 'Alien Biosphere',
+    accent: { dark: '#428e9c', light: '#094f5c' },
+    backdrop: { key: 'alien-biosphere', glow: { dark: '#428e9c', light: '#094f5c' } },
+  },
+  'arcane-observatory': {
+    label: 'Arcane Observatory',
+    accent: { dark: '#a5764c', light: '#613c1c' },
+    backdrop: { key: 'arcane-observatory', glow: { dark: '#a5764c', light: '#613c1c' } },
+  },
+  'autumn-canyon': {
+    label: 'Autumn Canyon',
+    accent: { dark: '#c86e52', light: '#9f2b07' },
+    backdrop: { key: 'autumn-canyon', glow: { dark: '#c86e52', light: '#9f2b07' } },
+  },
+  'bamboo-mist': {
+    label: 'Bamboo Mist',
+    accent: { dark: '#7b7f86', light: '#0b1220' },
+    backdrop: { key: 'bamboo-mist', glow: { dark: '#7b7f86', light: '#0b1220' } },
+  },
+  'bioluminescent-marsh': {
+    label: 'Bioluminescent Marsh',
+    accent: { dark: '#5784a1', light: '#22475f' },
+    backdrop: { key: 'bioluminescent-marsh', glow: { dark: '#5784a1', light: '#22475f' } },
+  },
+  'biotech-vault': {
+    label: 'Biotech Vault',
+    accent: { dark: '#a2755e', light: '#573d2f' },
+    backdrop: { key: 'biotech-vault', glow: { dark: '#a2755e', light: '#573d2f' } },
+  },
+  'coral-reef': {
+    label: 'Coral Reef',
+    accent: { dark: '#cf817a', light: '#5b3835' },
+    backdrop: { key: 'coral-reef', glow: { dark: '#cf817a', light: '#5b3835' } },
+  },
+  'crystal-caverns': {
+    label: 'Crystal Caverns',
+    accent: { dark: '#3688d1', light: '#194974' },
+    backdrop: { key: 'crystal-caverns', glow: { dark: '#3688d1', light: '#194974' } },
+  },
+  'dieselpunk-foundry': {
+    label: 'Dieselpunk Foundry',
+    accent: { dark: '#c67e37', light: '#5f3c1a' },
+    backdrop: { key: 'dieselpunk-foundry', glow: { dark: '#c67e37', light: '#5f3c1a' } },
+  },
+  'ember-forge': {
+    label: 'Ember Forge',
+    accent: { dark: '#ac7457', light: '#783513' },
+    backdrop: { key: 'ember-forge', glow: { dark: '#ac7457', light: '#783513' } },
+  },
+  'faerie-meadow': {
+    label: 'Faerie Meadow',
+    accent: { dark: '#c4a070', light: '#4e402c' },
+    backdrop: { key: 'faerie-meadow', glow: { dark: '#c4a070', light: '#4e402c' } },
+  },
+  'floating-sky-ruins': {
+    label: 'Floating Sky Ruins',
+    accent: { dark: '#5b9abb', light: '#294656' },
+    backdrop: { key: 'floating-sky-ruins', glow: { dark: '#5b9abb', light: '#294656' } },
+  },
+  'moonlit-witchwood': {
+    label: 'Moonlit Witchwood',
+    accent: { dark: '#707fa2', light: '#314268' },
+    backdrop: { key: 'moonlit-witchwood', glow: { dark: '#707fa2', light: '#314268' } },
+  },
+  'orbital-megacity': {
+    label: 'Orbital Megacity',
+    accent: { dark: '#4f8ec3', light: '#144976' },
+    backdrop: { key: 'orbital-megacity', glow: { dark: '#4f8ec3', light: '#144976' } },
+  },
+  'quantum-lattice': {
+    label: 'Quantum Lattice',
+    accent: { dark: '#2498c4', light: '#124c62' },
+    backdrop: { key: 'quantum-lattice', glow: { dark: '#2498c4', light: '#124c62' } },
+  },
+  'retro-space-colony': {
+    label: 'Retro Space Colony',
+    accent: { dark: '#bd6f3f', light: '#6d3919' },
+    backdrop: { key: 'retro-space-colony', glow: { dark: '#bd6f3f', light: '#6d3919' } },
+  },
+  'thunderhead-prairie': {
+    label: 'Thunderhead Prairie',
+    accent: { dark: '#d5b98a', light: '#483e2e' },
+    backdrop: { key: 'thunderhead-prairie', glow: { dark: '#d5b98a', light: '#483e2e' } },
+  },
+  'volcanic-island': {
+    label: 'Volcanic Island',
+    accent: { dark: '#cd6d47', light: '#803214' },
+    backdrop: { key: 'volcanic-island', glow: { dark: '#cd6d47', light: '#803214' } },
   },
 });
 
