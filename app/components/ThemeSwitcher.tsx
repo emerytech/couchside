@@ -15,8 +15,8 @@
  * controls, so a stray drag closes the menu instead of moving the character —
  * which is the safe failure, not a latched axis.
  */
-import { useState } from 'react';
-import { Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
+import { useMemo, useState } from 'react';
+import { PanResponder, Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
 
 import { hapticSelection as haptic } from '@/lib/haptics';
 import { THEME_PICKER, type ControllerThemePref } from '@/lib/gameTheme';
@@ -52,6 +52,27 @@ export function ThemeSwitcher({
 }) {
   const [open, setOpen] = useState(false);
   const current = usePref('controllerTheme');
+
+  // The scrim must be a MODAL BARRIER, not just a tap target. A plain
+  // Pressable's onPress fires only on a quick tap, so a DRAG that started on
+  // the scrim would slip past it — and the movement zone's PanResponder claims
+  // on MOVE (onMoveShouldSetPanResponder: true), so that drag could steer the
+  // character while the menu is open. This responder claims the touch on
+  // START, before the stick can, and closes the menu on release. Rendered
+  // above the controls (see JSX), so it wins the negotiation for any touch
+  // that lands outside the panel.
+  const scrim = useMemo(
+    () =>
+      PanResponder.create({
+        onStartShouldSetPanResponder: () => true,
+        onMoveShouldSetPanResponder: () => true,
+        // Hold the touch: nothing below may steal a drag that began on the scrim.
+        onPanResponderTerminationRequest: () => false,
+        onPanResponderRelease: () => setOpen(false),
+        onPanResponderTerminate: () => setOpen(false),
+      }),
+    [],
+  );
 
   const pick = (value: ControllerThemePref) => {
     haptic();
@@ -98,11 +119,12 @@ export function ThemeSwitcher({
       {/* Dropdown overlay */}
       {open ? (
         <>
-          {/* Full-screen scrim: outside-tap closes. Sits above the controls so a
-              stray touch dismisses the menu rather than driving the game. */}
-          <Pressable
+          {/* Full-screen modal scrim: any touch (tap OR drag) closes the menu
+              and is consumed here, so a stray drag can never reach the movement
+              zone below while the dropdown is open. */}
+          <View
             style={StyleSheet.absoluteFill}
-            onPress={() => setOpen(false)}
+            {...scrim.panHandlers}
             accessibilityLabel="Close theme menu"
           />
           <View
