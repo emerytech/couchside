@@ -187,6 +187,15 @@ export type BoxCaps = {
    * older agents and on Windows, so undefined reads as "unknown, probe".
    */
   player?: boolean;
+  /**
+   * Install a game you OWN but have not downloaded (agent >= 2.9.73): the box can
+   * enumerate the owned-but-uninstalled library from Steam's local art cache and
+   * fire steam://install for one. Gates the Launch tab's "Not installed" section.
+   * Linux-only — it reads appcache/librarycache off the Steam root. Optional:
+   * absent on older agents and on Windows, so undefined reads as "unknown, probe"
+   * and only an explicit false skips the request.
+   */
+  steaminstall?: boolean;
 };
 
 /**
@@ -1136,7 +1145,8 @@ export function capsEqual(a?: BoxCaps, b?: BoxCaps): boolean {
     a.file_upload === b.file_upload &&
     a.session_default === b.session_default &&
     a.display_info === b.display_info &&
-    a.player === b.player
+    a.player === b.player &&
+    a.steaminstall === b.steaminstall
   );
 }
 

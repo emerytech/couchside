@@ -565,6 +565,14 @@ jobs:
       - name: Unit tests (steam cover art)
         run: python3 tests/test_steam_cover_art.py
 
+      # Install a game you own but have not downloaded. Adds a NEW client-supplied
+      # -appid path (install:<appid>), so these tests assert the allowlist rules:
+      # installed games are NOT installable (control), tools/non-digit dirs are
+      # excluded, an unowned appid is refused with nothing run, the argv is the
+      # agent's constant + a digits-only appid, and the enumeration degrades closed.
+      - name: Unit tests (steam install — owned-but-uninstalled)
+        run: python3 tests/test_steam_install.py
+
       # _unreadable_reason() — why a controller cannot be read. The app used to
       # tell every affected user to re-run install.sh, which on a Legion Go S
       # cannot work: a POSIX ACL grants the user, and mode 000 collapses the
