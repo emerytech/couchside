@@ -86,6 +86,78 @@ const REGISTRY: Record<string, BackdropAssets> = {
     portrait: require('../assets/gameThemes/toxic-slime-lab-portrait.webp'),
     landscape: require('../assets/gameThemes/toxic-slime-lab-landscape.webp'),
   },
+  'alien-biosphere': {
+    portrait: require('../assets/gameThemes/alien-biosphere-portrait.webp'),
+    landscape: require('../assets/gameThemes/alien-biosphere-landscape.webp'),
+  },
+  'arcane-observatory': {
+    portrait: require('../assets/gameThemes/arcane-observatory-portrait.webp'),
+    landscape: require('../assets/gameThemes/arcane-observatory-landscape.webp'),
+  },
+  'autumn-canyon': {
+    portrait: require('../assets/gameThemes/autumn-canyon-portrait.webp'),
+    landscape: require('../assets/gameThemes/autumn-canyon-landscape.webp'),
+  },
+  'bamboo-mist': {
+    portrait: require('../assets/gameThemes/bamboo-mist-portrait.webp'),
+    landscape: require('../assets/gameThemes/bamboo-mist-landscape.webp'),
+  },
+  'bioluminescent-marsh': {
+    portrait: require('../assets/gameThemes/bioluminescent-marsh-portrait.webp'),
+    landscape: require('../assets/gameThemes/bioluminescent-marsh-landscape.webp'),
+  },
+  'biotech-vault': {
+    portrait: require('../assets/gameThemes/biotech-vault-portrait.webp'),
+    landscape: require('../assets/gameThemes/biotech-vault-landscape.webp'),
+  },
+  'coral-reef': {
+    portrait: require('../assets/gameThemes/coral-reef-portrait.webp'),
+    landscape: require('../assets/gameThemes/coral-reef-landscape.webp'),
+  },
+  'crystal-caverns': {
+    portrait: require('../assets/gameThemes/crystal-caverns-portrait.webp'),
+    landscape: require('../assets/gameThemes/crystal-caverns-landscape.webp'),
+  },
+  'dieselpunk-foundry': {
+    portrait: require('../assets/gameThemes/dieselpunk-foundry-portrait.webp'),
+    landscape: require('../assets/gameThemes/dieselpunk-foundry-landscape.webp'),
+  },
+  'ember-forge': {
+    portrait: require('../assets/gameThemes/ember-forge-portrait.webp'),
+    landscape: require('../assets/gameThemes/ember-forge-landscape.webp'),
+  },
+  'faerie-meadow': {
+    portrait: require('../assets/gameThemes/faerie-meadow-portrait.webp'),
+    landscape: require('../assets/gameThemes/faerie-meadow-landscape.webp'),
+  },
+  'floating-sky-ruins': {
+    portrait: require('../assets/gameThemes/floating-sky-ruins-portrait.webp'),
+    landscape: require('../assets/gameThemes/floating-sky-ruins-landscape.webp'),
+  },
+  'moonlit-witchwood': {
+    portrait: require('../assets/gameThemes/moonlit-witchwood-portrait.webp'),
+    landscape: require('../assets/gameThemes/moonlit-witchwood-landscape.webp'),
+  },
+  'orbital-megacity': {
+    portrait: require('../assets/gameThemes/orbital-megacity-portrait.webp'),
+    landscape: require('../assets/gameThemes/orbital-megacity-landscape.webp'),
+  },
+  'quantum-lattice': {
+    portrait: require('../assets/gameThemes/quantum-lattice-portrait.webp'),
+    landscape: require('../assets/gameThemes/quantum-lattice-landscape.webp'),
+  },
+  'retro-space-colony': {
+    portrait: require('../assets/gameThemes/retro-space-colony-portrait.webp'),
+    landscape: require('../assets/gameThemes/retro-space-colony-landscape.webp'),
+  },
+  'thunderhead-prairie': {
+    portrait: require('../assets/gameThemes/thunderhead-prairie-portrait.webp'),
+    landscape: require('../assets/gameThemes/thunderhead-prairie-landscape.webp'),
+  },
+  'volcanic-island': {
+    portrait: require('../assets/gameThemes/volcanic-island-portrait.webp'),
+    landscape: require('../assets/gameThemes/volcanic-island-landscape.webp'),
+  },
 };
 
 /** The image pair for a backdrop key, or null when no art is registered. */
