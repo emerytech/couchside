@@ -900,9 +900,15 @@ recommendation was wrong, not merely superseded.
   app-side (same opt-in + host as compat lookups, `type=game` drops the tools/DLC the art cache
   overcounts). New cap `steaminstall` (six sites). Verified end-to-end in the harness: tile
   press → `POST /api/launchers/install:400 → 200`.
-- **Not verified:** the real `steam://install` FIRE on the box (would download a multi-GB game)
-  and in-browser store name-resolution (browser CORS; works via native fetch on device, like
-  compat lookups). Ledger [[steam-owned-library-enumeration]].
+- **Phase 3 — behavior verified on hardware + honest feedback (2026-08-08):** fired real
+  installs on bazzite — `steam://install/<appid>` pops Steam's install PROMPT on the box's
+  screen; the download only starts once someone APPROVES it there (a controller, or the phone's
+  own Pad), then it flows to `/api/downloads` → the Downloads list. So it is NOT one-tap-to-
+  download; the app copy now says "approve on your box's screen", a tapped tile shows
+  "Approve on box…", and a game the box is downloading drops out of "Not installed".
+- **Not verified:** completing a real `steam://install` to 100% on the box (test cancelled to
+  save bandwidth) and in-browser store name-resolution (browser CORS; native fetch on device is
+  fine, like compat lookups). Ledger [[steam-owned-library-enumeration]].
 
 ### Per-game controller themes + in-controller switcher — SHIPPED 2.9.40 → 2.9.42
 - **was:** P3 Planned (owner ask 2026-08-07) · **affects:** app only (agent already
