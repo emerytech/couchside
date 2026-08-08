@@ -65,7 +65,7 @@ export type GameTheme = {
  * referenced everywhere. Extend this union as themes are added; the compiler
  * then forces the registry, the pref, and the picker to all list it.
  */
-export type ThemeKey = 'dark-gothic';
+export type ThemeKey = 'dark-gothic' | 'neon-arcade';
 
 /**
  * The theme registry. A frozen, app-internal map — the same allowlist shape the
@@ -89,6 +89,18 @@ export const THEMES: Readonly<Record<ThemeKey, GameTheme>> = Object.freeze({
     // with no registered art falls back to a derived dark+glow wash.
     backdrop: { key: 'vampire-survivors', glow: { dark: '#f0c25a', light: '#c99b2e' } },
   },
+  // Neon Arcade — a silly, bright aesthetic for colourful bullet-heavens like
+  // Megabonk. Hot-pink accent, lime A, orange B; a vivid glow backdrop. All
+  // clear 3:1 on both schemes' card (verified in gameTheme.test.ts).
+  'neon-arcade': {
+    label: 'Neon Arcade',
+    accent: { dark: '#ff5cc8', light: '#b0186f' },
+    face: {
+      a: { dark: '#5cf0a0', light: '#157a45' },
+      b: { dark: '#ff8a3c', light: '#a8500f' },
+    },
+    backdrop: { key: 'neon-arcade', glow: { dark: '#ff5cc8', light: '#b0186f' } },
+  },
 });
 
 /**
@@ -99,10 +111,10 @@ export const THEMES: Readonly<Record<ThemeKey, GameTheme>> = Object.freeze({
 export const APPID_THEMES: Readonly<Record<number, ThemeKey>> = Object.freeze({
   1794680: 'dark-gothic', // Vampire Survivors — appid from its Steam store URL.
   // Megabonk — appid from Steam's storefront search API (exact-name match),
-  // confirmed installed on the owner's Steam Deck 2026-08-08. A bullet-heaven /
-  // hack-and-slash, same family as VS, so 'auto' gives it the gothic look for
-  // now; its own art skews colourful and it may earn a dedicated theme later.
-  3405340: 'dark-gothic',
+  // confirmed installed on the owner's Steam Deck 2026-08-08. Silly and
+  // colourful, so it takes Neon Arcade, not the gothic look. Auto-attacks, so
+  // the move-only MOVE layout fits it with no right stick.
+  3405340: 'neon-arcade',
 });
 
 /**
@@ -127,6 +139,16 @@ export function resolveTheme(
     return key ? THEMES[key] : null;
   }
   return THEMES[pref] ?? null;
+}
+
+/**
+ * Is a stored value a valid picker pref? 'off' / 'auto' / a real theme key.
+ * The single source of truth for the pref allowlist — prefs.ts normalize calls
+ * this, so adding a theme needs no normalizer edit and a saved theme key is
+ * never silently dropped back to 'auto'.
+ */
+export function isControllerThemePref(v: unknown): v is ControllerThemePref {
+  return v === 'off' || v === 'auto' || (typeof v === 'string' && v in THEMES);
 }
 
 /** Picker options, in display order. Label + the pref value each sets. */

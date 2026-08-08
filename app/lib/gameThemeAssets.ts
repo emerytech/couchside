@@ -22,6 +22,10 @@ const REGISTRY: Record<string, BackdropAssets> = {
     portrait: require('../assets/gameThemes/vampire-survivors-portrait.png'),
     landscape: require('../assets/gameThemes/vampire-survivors-landscape.png'),
   },
+  'neon-arcade': {
+    portrait: require('../assets/gameThemes/neon-arcade-portrait.png'),
+    landscape: require('../assets/gameThemes/neon-arcade-landscape.png'),
+  },
 };
 
 /** The image pair for a backdrop key, or null when no art is registered. */
