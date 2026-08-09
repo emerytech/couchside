@@ -1,3 +1,7 @@
-35 controller themes. The theme picker (Setup) now offers a big library — Dark Gothic, Bonk, Cyberpunk Rain, Toxic Slime Lab, Coral Reef, Arcane Observatory and many more — each with its own full-screen backdrop behind the buttons.
+Flash an OpenPuck receiver from the couch: turn a cheap nRF52840 board into a Steam Controller 2 wireless dongle, right from your phone.
 
-New: switch themes on the fly. A palette button right inside the full-screen MOVE controller opens a theme menu, so you can re-skin without leaving play. Auto still matches Vampire Survivors and Megabonk to a fitting look.
+Your whole library, instantly — browse games you own but haven't installed, and install them on the box from the couch.
+
+Game ratings on your library: Metacritic, Steam reviews, and Steam Deck/Proton compatibility, plus Open in Steam.
+
+New Playlog: queue and reorder the games you want to play next.
