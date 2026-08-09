@@ -9,6 +9,30 @@ Entry fields: `priority` (P0 blocker → P3 nice) · `risk` · `affects` · `dep
 
 ## 🔨 In Progress
 
+### Setup → Utilities menu — extensible one-click hardware/setup helpers (owner ask 2026-08-08)
+- **priority:** P2 · **risk:** medium-high (agent runs hardware-touching flashes + signed
+  setups; must stay strictly allowlisted) · **affects:** agent + app · **depends_on:** nothing
+- **Owner:** an extensible Utilities section that grows with the app. **Launch with two
+  tenants: OpenPuck flash + HDMI-CEC.** **Opt-in, off by default.**
+- **STAGE 1 DONE (PR #399, agent 2.9.74).** Read-only DETECTION only: `GET /api/utilities`
+  reports each tenant's live state (OpenPuck board_ready/puck_present/no_board; CEC
+  enabled/needs_enable/no_adapter). New cap `utilities` (six sites); frozen tenant set;
+  OpenPuck target = known bootloader label + `INFO_UF2.TXT` marker; degrade-closed. App:
+  `UtilitiesSection.tsx` gated on `utilitiesEnabled` pref (default false). Harness-verified
+  both states; box detection hardware-checked on bazzite.
+- **STAGE 2 (next):** the state-changing RUN handlers. (A) **board flasher engine** — detect
+  bootloader → PINNED firmware (verify sha256) → write → verify re-enumerate (OpenPuck now;
+  ZMK/QMK/WLED/Pico later); (B) **guided installer engine** — run a signed setup, report state
+  (CEC enable now via video-group grant through the privileged helper;
+  Sunshine/Tailscale/Decky/xone/fwupd/EmuDeck later). **Open decision:** OpenPuck firmware
+  bundle-in-agent vs fetch-pinned (LAN-only posture favors a signed bundle). Needs hardware
+  to verify: a board in DFU + a `needs_enable` box.
+- **Allowlist model (non-negotiable):** a client selects WHICH utility runs; never supplies a
+  command, firmware URL, or device. Firmware = pinned+sha256-verified; target = matched
+  bootloader VID:PID/mount, path-contained, fail-closed.
+- **Full spec + tenant detail: `docs/memory/project_utilities-menu.md`** (+ memory
+  [[openpuck-utilities-idea]]).
+
 ### Feature tour — element spotlights
 - **priority:** P2 · **risk:** low (app-only, additive) · **affects:** app only ·
   **depends_on:** nothing
@@ -129,21 +153,6 @@ Entry fields: `priority` (P0 blocker → P3 nice) · `risk` · `affects` · `dep
   so a stale frame can't produce a confident wrong click.
 
 ## 📋 Planned
-
-### Setup → Utilities menu — extensible one-click hardware/setup helpers (owner ask 2026-08-08)
-- **priority:** P2 · **risk:** medium-high (agent runs hardware-touching flashes + signed
-  setups; must stay strictly allowlisted) · **affects:** agent + app · **depends_on:** nothing
-- **Owner:** an extensible Utilities section that grows with the app. **Launch with two
-  tenants: OpenPuck flash + HDMI-CEC.**
-- **Two reusable ENGINES** (build once, tenants are manifests): (A) **board flasher** —
-  detect bootloader → PINNED firmware (verify sha256) → write → verify re-enumerate (OpenPuck
-  now; ZMK/QMK/WLED/Pico later); (B) **guided installer** — run a signed setup, report state
-  (Sunshine/Tailscale/Decky/xone/CEC-bridge/fwupd/EmuDeck later).
-- **Allowlist model (non-negotiable):** a client selects WHICH utility runs; never supplies a
-  command, firmware URL, or device. Firmware = pinned+sha256-verified; target = matched
-  bootloader VID:PID/mount, path-contained, fail-closed. New cap `utilities`.
-- **Full spec + tenant detail: `docs/memory/project_utilities-menu.md`** (+ memory
-  [[openpuck-utilities-idea]]). HDMI-CEC scope (box-enable vs Pi-bridge) pending owner confirm.
 
 ### Install a game you own but have not downloaded (owner ask 2026-08-07)
 - **priority:** P2 · **risk:** medium-high (needs a NEW client-supplied-appid path that
