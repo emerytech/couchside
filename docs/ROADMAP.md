@@ -172,6 +172,24 @@ Entry fields: `priority` (P0 blocker → P3 nice) · `risk` · `affects` · `dep
 
 ## 📋 Planned
 
+### Game backlog — "Now playing" + "Up next" queue (owner ask 2026-08-09)
+- **priority:** P2 · **risk:** low (app-only, additive; no agent change to start) ·
+  **affects:** app only · **depends_on:** nothing (extends the existing Bookmark store)
+- **Owner:** "sort games you are currently playing and add games you want to play next, to
+  organize what you play next." Two lists: **Now playing** (what you're actively in) and
+  **Up next** (an ordered queue of what to play).
+- **Build on what exists, don't reinvent:** `components/GameSheet.tsx` already has a
+  **Bookmark** ("note-to-self about a game"); "Up next" is a curated, *ordered* view over
+  bookmarks. "Now playing" sorts the library by `last_played` / `playtime_min` the sheet
+  already shows. Launch is unchanged (`steam://rungameid` already works).
+- **Phased (full spec: `docs/memory/project_game-backlog.md`):** P1 ordered "Up next" over
+  bookmarks; P2 "Now playing" auto-section by recency; P3 reorder + a dedicated Backlog view;
+  P4 (maybe) per-game status (playing / next / done / dropped). App-side state only, like
+  `lib/prefs.ts` / `hooks/useLibraryMarks`.
+- **Open question for owner before P1:** is "Up next" the SAME set as bookmarks (bookmark =
+  backlog), or a SEPARATE list? That choice decides whether we extend the bookmark store or
+  add a new one. Spec assumes "bookmark = up-next" (simplest) pending confirm.
+
 ### Install a game you own but have not downloaded (owner ask 2026-08-07)
 - **priority:** P2 · **risk:** medium-high (needs a NEW client-supplied-appid path that
   the existing installed-game validator cannot gate) · **affects:** agent + app ·
