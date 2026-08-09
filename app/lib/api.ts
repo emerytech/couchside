@@ -1645,10 +1645,17 @@ export const api = {
    * runUtility(settings, 'openpuck') to flash a plugged-in board. The id is
    * looked up in the agent's frozen run-allowlist; a non-runnable id (e.g. 'cec',
    * whose enable is an install-time step) 404s. Returns the standard ActionResult.
+   *
+   * LONG timeout on purpose: the OpenPuck flash blocks the response for the whole
+   * UF2 write (the bootloader burns ~376KB to nRF flash, several seconds). The
+   * default 4s timeout aborted the request mid-flash and reported "could not
+   * reach the box" for a flash that SUCCEEDED (observed on hardware 2026-08-08)
+   * — the worst kind of wrong.
    */
   runUtility(settings: ConnSettings, id: string): Promise<ActionResult> {
     return request<ActionResult>(
-      settings, `/api/utilities/${encodeURIComponent(id)}/run`, { method: 'POST' });
+      settings, `/api/utilities/${encodeURIComponent(id)}/run`,
+      { method: 'POST', timeoutMs: 60000 });
   },
 
   /**
