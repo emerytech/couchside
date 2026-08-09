@@ -697,6 +697,41 @@ export function SegPref<T extends string | number>({
   );
 }
 
+/** A pref row that navigates to a subpage instead of toggling/selecting inline —
+ *  for a choice with too many options to sit in a row (e.g. the 36-theme picker).
+ *  Shows the current value on the right + a chevron. Filter-aware like the rest. */
+export function NavPref({
+  label, sub, value, onPress,
+}: {
+  label: string;
+  sub: string;
+  value: string;
+  onPress: () => void;
+}) {
+  const t = useTheme();
+  const styles = useThemedStyles(makeStyles);
+  const { q, hit } = useContext(PrefFilterCtx);
+  if (!prefMatches(q, label, sub)) return null;
+  hit();
+  return (
+    <Pressable
+      onPress={onPress}
+      style={({ pressed }) => [styles.prefRow, q ? styles.prefHit : null, pressed ? { opacity: 0.7 } : null]}
+      accessibilityRole="button"
+      accessibilityLabel={`${label}, ${value}`}
+    >
+      <View style={styles.prefBody}>
+        <Text style={styles.prefLabel}>{label}</Text>
+        <Text style={styles.prefSub}>{sub}</Text>
+      </View>
+      <View style={styles.navValue}>
+        <Text style={styles.navValueText} numberOfLines={1}>{value}</Text>
+        <Ionicons name="chevron-forward" size={18} color={t.textFaint} />
+      </View>
+    </Pressable>
+  );
+}
+
 type IoniconName = React.ComponentProps<typeof Ionicons>['name'];
 
 /** The category tabs across the top of the setup screen. */
@@ -1852,14 +1887,13 @@ function SetupBody() {
                   hapticSelection();
                 }}
               />
-              <SegPref
+              <NavPref
                 label="Controller theme"
-                sub="Style the full-screen controller (MOVE / landscape pad). Auto matches the game running on your box; a named theme applies always. More themes arrive with updates."
-                options={THEME_PICKER.map((o) => ({ value: o.value, label: o.label.toUpperCase() }))}
-                value={controllerTheme}
-                onSelect={(v) => {
-                  void setPref('controllerTheme', v);
+                sub="Style the full-screen controller (MOVE / landscape pad). Auto matches the game running on your box; a named theme applies always."
+                value={THEME_PICKER.find((o) => o.value === controllerTheme)?.label ?? 'Off'}
+                onPress={() => {
                   hapticSelection();
+                  router.push('/theme-picker');
                 }}
               />
               <SegPref
@@ -2435,6 +2469,8 @@ const makeStyles = (t: Palette) => StyleSheet.create({
   prefCol: { gap: 10 },
   prefLabel: { color: t.text, fontSize: 15, fontWeight: '600', fontFamily: mono },
   prefSub: { color: t.textFaint, fontSize: 12, marginTop: 3 },
+  navValue: { flexDirection: 'row', alignItems: 'center', gap: 4, maxWidth: '42%' },
+  navValueText: { color: t.textDim, fontSize: 13, fontWeight: '600' },
   segRow: {
     flexDirection: 'row',
     gap: 2,
