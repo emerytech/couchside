@@ -102,20 +102,31 @@ export async function fetchAppDetails(
   const store = await load();
   const hit = store[String(appid)];
   if (hit && Date.now() - hit.at < TTL_MS) {
-    return hit.name ? { name: hit.name, type: hit.type } : null;
+    const { at: _at, ...d } = hit;
+    return d.name ? d : null; // empty name = cached tombstone (unknown)
   }
   const running = inflight.get(appid);
   if (running) return running;
 
   const job = (async (): Promise<AppDetails | null> => {
+    // Full appdetails (NOT filters=basic): we need release_date + genres for the
+    // library page's sort/filter, and basic omits them. Bigger response, but one
+    // call per game and cached hard.
     const body = await getJson(
-      `https://store.steampowered.com/api/appdetails?appids=${appid}&filters=basic`,
+      `https://store.steampowered.com/api/appdetails?appids=${appid}&l=english`,
       timeoutMs,
     );
+    // A null body is a TRANSPORT failure (timeout, network, or a 429 rate-limit —
+    // the store caps ~200/5min). Do NOT cache it: a tombstone would hide the game
+    // for 30 days over a momentary rate-limit. Only a real response is cached.
+    if (body === null) return null;
     const out = parseAppDetails(appid, body);
     const s = await load();
     // Cache the miss as a tombstone (empty name) so it isn't re-fetched constantly.
-    s[String(appid)] = { name: out?.name ?? '', type: out?.type ?? '', at: Date.now() };
+    // A resolved entry carries name/type/releaseYear/genres.
+    s[String(appid)] = out
+      ? { ...out, at: Date.now() }
+      : { name: '', type: '', at: Date.now() };
     persist();
     return out;
   })().finally(() => inflight.delete(appid));

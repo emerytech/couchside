@@ -50,6 +50,32 @@ test('garbage bodies degrade to null, never throw', () => {
   }
 });
 
+test('extracts release year + lowercased genres (real store shape)', () => {
+  // Shape verified against store.steampowered.com 2026-08-08 (Portal 2).
+  const body = { '620': { success: true, data: {
+    type: 'game', name: 'Portal 2',
+    release_date: { coming_soon: false, date: 'Apr 18, 2011' },
+    genres: [{ id: '1', description: 'Action' }, { id: '25', description: 'Adventure' }],
+  } } };
+  const d = parseAppDetails(620, body);
+  assert.equal(d?.releaseYear, 2011);
+  assert.deepEqual(d?.genres, ['action', 'adventure']);
+});
+
+test('year is pulled from varied date strings, absent when unparseable', () => {
+  const mk = (date: string) => ({ '1': { success: true, data: { type: 'game', name: 'X', release_date: { date } } } });
+  assert.equal(parseAppDetails(1, mk('Nov 16, 2004'))?.releaseYear, 2004);
+  assert.equal(parseAppDetails(1, mk('2015'))?.releaseYear, 2015);
+  assert.equal(parseAppDetails(1, mk('Q3 2024'))?.releaseYear, 2024);
+  assert.equal(parseAppDetails(1, mk('Coming soon'))?.releaseYear, undefined);
+});
+
+test('missing release/genres is simply absent (never invented)', () => {
+  const d = parseAppDetails(1, { '1': { success: true, data: { type: 'game', name: 'X' } } });
+  assert.equal(d?.releaseYear, undefined);
+  assert.equal(d?.genres, undefined);
+});
+
 test('only type "game" is installable', () => {
   assert.equal(isInstallableGameType({ name: 'Portal 2', type: 'game' }), true);
   assert.equal(isInstallableGameType({ name: 'Soundtrack', type: 'dlc' }), false);
