@@ -573,6 +573,15 @@ jobs:
       - name: Unit tests (steam install — owned-but-uninstalled)
         run: python3 tests/test_steam_install.py
 
+      # Setup -> Utilities (Stage 1: read-only detection). A new surface that will
+      # grow state-changing tenants, so the tests pin the §3 properties up front:
+      # the tenant set is FROZEN (built from _UTILITY_IDS, never client input), the
+      # OpenPuck flash target needs a known label AND the UF2 marker (a mislabelled
+      # stick is refused — the control), detection degrades closed, and the route is
+      # behind the bearer gate.
+      - name: Unit tests (utilities detection)
+        run: python3 tests/test_utilities.py
+
       # _unreadable_reason() — why a controller cannot be read. The app used to
       # tell every affected user to re-run install.sh, which on a Legion Go S
       # cannot work: a POSIX ACL grants the user, and mode 000 collapses the

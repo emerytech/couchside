@@ -9,6 +9,34 @@ Entry fields: `priority` (P0 blocker → P3 nice) · `risk` · `affects` · `dep
 
 ## 🔨 In Progress
 
+### Setup → Utilities menu — extensible one-click hardware/setup helpers (owner ask 2026-08-08)
+- **priority:** P2 · **risk:** medium-high (agent runs hardware-touching flashes + signed
+  setups; must stay strictly allowlisted) · **affects:** agent + app · **depends_on:** nothing
+- **Owner:** an extensible Utilities section that grows with the app. **Launch with two
+  tenants: OpenPuck flash + HDMI-CEC.** **Opt-in, off by default.**
+- **STAGE 1 DONE (PR #399, agent 2.9.74).** Read-only DETECTION: `GET /api/utilities`
+  reports each tenant's live state. New cap `utilities` (six sites); frozen tenant set;
+  OpenPuck target = known bootloader label + `INFO_UF2.TXT` marker; degrade-closed. App:
+  `UtilitiesSection.tsx` gated on `utilitiesEnabled` pref (default false).
+- **STAGE 2 DONE (PR #399, agent 2.9.75).** OpenPuck FLASH: `POST /api/utilities/openpuck/run`
+  copies the pinned firmware onto a DFU board (id in the frozen `_UTILITY_RUN_IDS`, target
+  from the bootloader-mount match, no-shell copy, ENXIO/EIO = success). Firmware = BUNDLE
+  (owner-chosen): release-agent.sh fetches from safijari/openpuck + pins sha256, install.sh
+  installs it only if it passed the signed SHA256SUMS gate, so flashing works offline; AGPL
+  notice ships alongside. CEC turned out NOT to be a runtime button — instead: honest detector
+  (`enabled` now gated on `os.access` openability, so a permission gap is observable both ways,
+  §11) + an install-time udev regroup-to-`input` rule for /dev/cec* (`cec` is NOT in
+  `_UTILITY_RUN_IDS`; POST cec/run → 404). App Flash button harness-verified end-to-end.
+  **NOT verified on hardware:** a real board in DFU, the udev rule flipping a real
+  `needs_enable` box, and a real release publishing the .uf2 (box was off-subnet).
+- **STAGE 3 (later, backlog):** more tenants on the two engines — board flasher (ZMK/QMK/
+  WLED/Pico), guided installer (Sunshine/Tailscale/Decky/xone/fwupd/EmuDeck).
+- **Allowlist model (non-negotiable):** a client selects WHICH utility runs; never supplies a
+  command, firmware URL, or device. Firmware = pinned+sha256-verified; target = matched
+  bootloader VID:PID/mount, path-contained, fail-closed.
+- **Full spec + tenant detail: `docs/memory/project_utilities-menu.md`** (+ memory
+  [[openpuck-utilities-idea]]).
+
 ### Feature tour — element spotlights
 - **priority:** P2 · **risk:** low (app-only, additive) · **affects:** app only ·
   **depends_on:** nothing

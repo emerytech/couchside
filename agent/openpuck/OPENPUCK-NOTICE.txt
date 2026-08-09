@@ -1,0 +1,25 @@
+OpenPuck firmware — attribution and source offer
+=================================================
+
+Couchside's "OpenPuck receiver" utility flashes the OpenPuck firmware onto a
+plugged-in nRF52840 board. That firmware is a separate work, NOT part of
+Couchside:
+
+  Project:  OpenPuck — https://github.com/safijari/openpuck
+  Author:   safijari
+  License:  GNU Affero General Public License v3.0 (AGPL-3.0)
+
+Couchside redistributes an UNMODIFIED OpenPuck release binary
+(OpenPuck-0.9.31-standard.uf2) purely as a convenience so the flash works with
+the box offline. Couchside itself (this agent) is licensed separately and does
+NOT incorporate OpenPuck's code.
+
+Corresponding source for the exact firmware version distributed here is
+available from the upstream release it was fetched from:
+
+  https://github.com/safijari/openpuck/releases/tag/0.9.31
+
+The AGPL-3.0 license text is published with the OpenPuck project at the URL
+above. This notice satisfies the redistribution requirement to convey the
+license and offer the corresponding source; it does not modify the terms under
+which OpenPuck is licensed.

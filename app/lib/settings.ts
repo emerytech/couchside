@@ -278,12 +278,16 @@ function normalizeCaps(raw: unknown): BoxCaps | undefined {
   // (and from capsEqual) and the cap never persists, so the Launch "Not installed"
   // section re-probes /api/steam/installable on every launch.
   const steaminstall = bool('steaminstall');
+  // utilities arrived with agent 2.9.74 (Setup → Utilities) — same optional-cap drop
+  // trap: omit it here (and from capsEqual) and the cap never persists, so the
+  // Utilities section re-probes on every launch.
+  const utilities = bool('utilities');
   return {
     gamepad, steam, media, tv, screen, power_schedule,
     screensaver, couchmode, bigpicture, desktop, steamlink, gaming, streamhost,
     steammenus,
     boxbattery, launchers, file_upload, session_default, display_info, player,
-    steaminstall,
+    steaminstall, utilities,
   };
 }
 

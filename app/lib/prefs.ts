@@ -48,6 +48,11 @@ export type Prefs = {
    *  appids still says something about what you own, so it is a switch the user
    *  throws rather than a default they discover later. */
   compatLookups: boolean;
+  /** Setup → Utilities: one-click hardware/setup helpers (flash an OpenPuck
+   *  receiver, enable HDMI-CEC). OFF by default and opt-in, because these run
+   *  firmware flashes / system changes on the box — a surface the user should
+   *  turn on deliberately, not stumble into. */
+  utilitiesEnabled: boolean;
   /** The one-time spotlight tour, shown after the first box is paired. On by
    *  default; turning it off before it has run means it never runs. */
   featureTour: boolean;
@@ -275,6 +280,7 @@ export const DEFAULTS: Prefs = {
   confirmSuspend: true,
   streakCelebrations: true,
   compatLookups: false,
+  utilitiesEnabled: false,
   featureTour: true,
   remoteOnlyMode: false,
   landingTab: 'index',
@@ -399,6 +405,7 @@ function normalize(raw: unknown): Prefs {
       typeof o.confirmSuspend === 'boolean' ? o.confirmSuspend : DEFAULTS.confirmSuspend,
     streakCelebrations: bool(o.streakCelebrations, DEFAULTS.streakCelebrations),
     compatLookups: bool(o.compatLookups, DEFAULTS.compatLookups),
+    utilitiesEnabled: bool(o.utilitiesEnabled, DEFAULTS.utilitiesEnabled),
     featureTour: bool(o.featureTour, DEFAULTS.featureTour),
     remoteOnlyMode: bool(o.remoteOnlyMode, DEFAULTS.remoteOnlyMode),
     landingTab,
