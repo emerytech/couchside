@@ -18,6 +18,16 @@ the same thing regardless of what actually changed.
 Write for the person holding the phone, not for the commit log. They are
 deciding whether to press "Update now" on a machine across the room.
 
+## 2.9.74
+
+**Utilities — one-click hardware helpers (new, opt-in).** Setup gains a Utilities
+section that shows what your box can help with: flashing an nRF52840 board into an
+OpenPuck Steam Controller receiver, and turning on HDMI-CEC so the box can power
+your TV and switch inputs over the HDMI cable. This first release only *detects*
+and reports status — it tells you when a board is plugged in and ready, or when a
+CEC adapter is present — with the flashing and enabling actions to follow. It's
+off by default; turn it on under Setup, and older apps don't show it at all.
+
 ## 2.9.73
 
 **Install a game you own but haven't downloaded.** Couchside can now list the

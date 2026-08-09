@@ -189,7 +189,8 @@
       "steaminstall",
       "steamlink",
       "steammenus",
-      "streamhost"
+      "streamhost",
+      "utilities"
     ]
   },
   "windowsOnlyCapabilities": {

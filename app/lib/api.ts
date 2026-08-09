@@ -196,7 +196,20 @@ export type BoxCaps = {
    * and only an explicit false skips the request.
    */
   steaminstall?: boolean;
+  /**
+   * Setup → Utilities endpoint present (agent >= 2.9.74): one-click hardware/setup
+   * helpers (flash an OpenPuck receiver, enable HDMI-CEC, …). Linux-only. The app
+   * ALSO gates the section behind an opt-in pref, so a firmware-flashing surface is
+   * never shown unless the user turns it on. Optional: undefined reads as "unknown,
+   * probe"; only explicit false skips it.
+   */
+  utilities?: boolean;
 };
+
+/** One Setup → Utilities helper + its live state, from GET /api/utilities.
+ *  `state` is per-utility (openpuck: 'board_ready' | 'puck_present' | 'no_board';
+ *  cec: 'enabled' | 'needs_enable' | 'no_adapter'). */
+export type Utility = { id: string; state: string; label: string; description: string };
 
 /**
  * Couchside Player state, from GET /api/player.
@@ -1146,7 +1159,8 @@ export function capsEqual(a?: BoxCaps, b?: BoxCaps): boolean {
     a.session_default === b.session_default &&
     a.display_info === b.display_info &&
     a.player === b.player &&
-    a.steaminstall === b.steaminstall
+    a.steaminstall === b.steaminstall &&
+    a.utilities === b.utilities
   );
 }
 
@@ -1614,6 +1628,16 @@ export const api = {
     return probeOrNull(
       request<{ games: { appid: number }[]; count: number }>(
         settings, '/api/steam/installable'));
+  },
+
+  /**
+   * Setup → Utilities: the box's one-click hardware/setup helpers + their live
+   * state (agent >= 2.9.74, cap `utilities`). Read-only probe-and-appear: null on a
+   * 404 hides the section. The app ALSO gates the section behind the opt-in
+   * `utilitiesEnabled` pref, so a firmware-flashing surface never shows unasked.
+   */
+  utilities(settings: ConnSettings): Promise<{ utilities: Utility[] } | null> {
+    return probeOrNull(request<{ utilities: Utility[] }>(settings, '/api/utilities'));
   },
 
   /**

@@ -45,7 +45,7 @@ except ImportError:  # pragma: no cover
     fcntl = None
 
 APP_NAME = "couchside-agent"
-VERSION = "2.9.73"
+VERSION = "2.9.74"
 UID = os.getuid()
 XDG_RUNTIME_DIR = "/run/user/%d" % UID
 
@@ -1579,7 +1579,7 @@ def set_caps(mock):
         CAPS = {k: True for k in
                 ("gamepad", "steam", "media", "tv", "screen", "power_schedule",
                  "screensaver", "couchmode", "bigpicture", "desktop",
-                 "steamlink", "gaming", "steaminstall",
+                 "steamlink", "gaming", "steaminstall", "utilities",
                  "streamhost", "steammenus", "boxbattery", "file_upload",
                  "session_default", "display_info", "player")}
         return
@@ -1604,6 +1604,10 @@ def set_caps(mock):
         # as its own cap so old apps ignore it and new apps feature-detect the
         # /api/steam/installable + install:<appid> pair (both absent pre-2.9.73).
         "steaminstall": _steam_root() is not None,
+        # Setup -> Utilities endpoint present (per-utility availability is in the
+        # state, not the cap). The app also gates the section behind an OPT-IN pref,
+        # so a firmware-flashing surface is never shown unless the user turns it on.
+        "utilities": True,
         "streamhost": safe(streamhost_available),
         "steammenus": safe(steammenus_available),
         "boxbattery": safe(box_battery_available),
@@ -7732,6 +7736,127 @@ def cec_current():
 
 def cec_available():
     return cec_current() is not None
+
+
+# ---------------------------------------------------------------------------
+# Utilities — one-click hardware/setup helpers (app: Setup → Utilities, OPT-IN).
+#
+# Each utility is a FIXED, allowlisted operation (CLAUDE.md §3): a client selects
+# WHICH utility runs by id (looked up in _UTILITY_IDS, never interpolated); it never
+# supplies a command, a device, or firmware. Everything here is READ-ONLY DETECTION —
+# the state-changing RUN handlers (flash / enable) are a separate step, gated on the
+# same frozen id set. Launch tenants: 'openpuck' (flash an nRF52840 nice!nano into a
+# Steam Controller 2 wireless receiver) and 'cec' (enable box->TV HDMI-CEC control).
+# ---------------------------------------------------------------------------
+_UTILITY_IDS = frozenset({"openpuck", "cec"})
+
+# The nRF52840 nice!nano presents its UF2 bootloader as a mass-storage volume with
+# one of these labels + an INFO_UF2.TXT marker. That mount is the drag-drop flash
+# target; its presence is how we know a board is plugged in AND in DFU mode.
+_UF2_BOOTLOADER_LABELS = ("NICENANO", "NRF52BOOT", "FTHR840BOOT")
+# A flashed board re-enumerates as Valve's Steam Controller Puck.
+_OPENPUCK_USB = ("28de", "1304")
+# udisks automount roots for the desktop user the agent runs as. A constant so a
+# test can point detection at a fixture tree.
+_MEDIA_ROOTS = ("/run/media", "/media")
+
+_UTILITY_META = {
+    "openpuck": {
+        "label": "OpenPuck receiver",
+        "description": "Flash a plugged-in nRF52840 board into a Steam Controller 2 "
+                       "wireless receiver.",
+    },
+    "cec": {
+        "label": "TV control over HDMI-CEC",
+        "description": "Let the box power your TV and switch inputs over the HDMI "
+                       "cable — no extra hardware.",
+    },
+}
+
+
+def _openpuck_bootloader_mount():
+    """Path to a mounted nRF52840 UF2 bootloader volume (INFO_UF2.TXT present), or
+    None. Read-only; never raises. This is the flash TARGET, matched by a known
+    label + the UF2 marker file, never a client-supplied path."""
+    for root in _MEDIA_ROOTS:
+        try:
+            users = os.listdir(root)
+        except OSError:
+            continue
+        for user in users:
+            d = os.path.join(root, user)
+            try:
+                vols = os.listdir(d)
+            except OSError:
+                continue
+            for vol in vols:
+                if vol.upper() in _UF2_BOOTLOADER_LABELS:
+                    p = os.path.join(d, vol)
+                    try:
+                        if os.path.isfile(os.path.join(p, "INFO_UF2.TXT")):
+                            return p
+                    except OSError:
+                        continue
+    return None
+
+
+def _usb_present(vid, pid):
+    """True if a USB device with idVendor:idProduct is enumerated. Read-only."""
+    try:
+        names = os.listdir(_USB_DEVICES_DIR)
+    except OSError:
+        return False
+    for name in names:
+        if ":" in name:
+            continue  # interface node
+        base = os.path.join(_USB_DEVICES_DIR, name)
+        if ((_usb_read(os.path.join(base, "idVendor")) or "").lower() == vid
+                and (_usb_read(os.path.join(base, "idProduct")) or "").lower() == pid):
+            return True
+    return False
+
+
+def _openpuck_state():
+    """'board_ready' (a bootloader mount is present -> ready to flash), 'puck_present'
+    (a flashed / real Valve puck is enumerated) or 'no_board'. Read-only."""
+    if _openpuck_bootloader_mount():
+        return "board_ready"
+    if _usb_present(*_OPENPUCK_USB):
+        return "puck_present"
+    return "no_board"
+
+
+def _cec_devices_exist():
+    try:
+        return bool(glob.glob("/dev/cec[0-9]"))
+    except Exception:
+        return False
+
+
+def _cec_util_state():
+    """'enabled' (the agent can drive CEC now), 'needs_enable' (a /dev/cec adapter
+    exists but the agent can't use it yet) or 'no_adapter'. Read-only."""
+    try:
+        if cec_available():
+            return "enabled"
+        if _cec_devices_exist():
+            return "needs_enable"
+    except Exception:
+        pass
+    return "no_adapter"
+
+
+def utilities_state(mock):
+    """The Setup->Utilities list: each supported utility + its live state. READ-ONLY.
+    In --mock both appear in a ready-ish state so the harness renders them."""
+    if mock:
+        states = {"openpuck": "board_ready", "cec": "needs_enable"}
+    else:
+        states = {"openpuck": _openpuck_state(), "cec": _cec_util_state()}
+    out = []
+    for uid in ("openpuck", "cec"):
+        out.append({"id": uid, "state": states[uid], **_UTILITY_META[uid]})
+    return out
 
 
 def _cec_argv(cec, op):
@@ -16148,6 +16273,12 @@ class Handler(BaseHTTPRequestHandler):
                 # when Steam or the library cache is absent — degrades closed.
                 games = (MOCK_INSTALLABLE if self.mock else _installable_games())
                 self._send(200, {"games": games, "count": len(games)}, started)
+            elif path == "/api/utilities":
+                # Setup -> Utilities: each supported utility + its live state
+                # (openpuck: board_ready/puck_present/no_board; cec: enabled/
+                # needs_enable/no_adapter). Read-only; the app gates the whole
+                # section behind an opt-in pref.
+                self._send(200, {"utilities": utilities_state(self.mock)}, started)
             elif path == "/api/session/default":
                 # Read-only. Always 200 with available=false rather than 404 so
                 # the app can tell "old agent" (404) from "this box has no

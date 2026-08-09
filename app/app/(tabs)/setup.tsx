@@ -29,6 +29,7 @@ import { BoxScanPair } from '@/components/BoxScanPair';
 import { DirectTvSetup } from '@/components/DirectTvSetup';
 import { BoxScanQr } from '@/components/BoxScanQr';
 import { SetupProgress, SETUP_GUIDE_URL } from '@/components/SetupProgress';
+import { UtilitiesSection } from '@/components/UtilitiesSection';
 import { buildPairLink } from '@/lib/pairLink';
 import { GuideHoldSetup } from '@/components/GuideHoldSetup';
 import { SmartTvSetup } from '@/components/SmartTvSetup';
@@ -823,6 +824,7 @@ function SetupBody() {
   } = useBoxes();
 
   const status = useBoxOnlineStatus(boxes, { active: true, intervalMs: 10000 });
+  const activeBox = boxes.find((b) => b.id === activeBoxId);
   const hapticsOn = useHapticsEnabled();
   const keepAwakeOn = useKeepAwakeEnabled();
   const keepAwakeTimeout = useKeepAwakeTimeoutMin();
@@ -838,6 +840,7 @@ function SetupBody() {
   const confirmSuspend = usePref('confirmSuspend');
   const streakCelebrations = usePref('streakCelebrations');
   const compatLookups = usePref('compatLookups');
+  const utilitiesEnabled = usePref('utilitiesEnabled');
   const featureTour = usePref('featureTour');
   const remoteOnlyOn = usePref('remoteOnlyMode');
   // DETECT, DO NOT PRESUME. This used to spring open for anyone with no box —
@@ -1447,6 +1450,20 @@ function SetupBody() {
                   hapticSelection();
                 }}
               />
+              <TogglePref
+                label="Utilities (advanced)"
+                sub="One-click hardware helpers on your box — flash an OpenPuck Steam Controller receiver, turn on HDMI-CEC TV control. OFF by default: these run firmware flashes and system changes on the box, so you turn them on deliberately. On to see what your box supports."
+                value={utilitiesEnabled}
+                onValueChange={(v) => {
+                  void setPref('utilitiesEnabled', v);
+                  hapticSelection();
+                }}
+              />
+              {/* The Utilities list itself — only when opted in, and hidden while
+                  searching prefs (it is a section, not a filtered pref row). */}
+              {utilitiesEnabled && !prefQuery ? (
+                <UtilitiesSection caps={activeBox?.caps} />
+              ) : null}
               {/* A BUTTON, not a toggle — for the same reason as the welcome
                   flow below, which this now matches.
 
