@@ -33,7 +33,16 @@ export function InstallableSection({ caps }: { caps?: BoxCaps }) {
     let live = true;
     void (async () => {
       const res = await api.installable(settings);
-      if (live) setCount(res ? res.count : null);
+      if (!live) return;
+      if (!res) { setCount(null); return; }
+      // New agents (>= 2.9.76) type each entry from appinfo.vdf — count actual
+      // GAMES, not the raw librarycache list (which overcounts ~2.5x with
+      // DLC/tools; a real library read "1101" when it has 441 games). Old
+      // agents send untyped entries: keep the raw count, as before.
+      const typed = res.games.filter((g) => g.type !== undefined);
+      setCount(typed.length > 0
+        ? typed.filter((g) => g.type === 'game').length
+        : res.count);
     })();
     return () => { live = false; };
   }, [settings, canProbe]);

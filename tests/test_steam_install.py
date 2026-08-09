@@ -292,6 +292,161 @@ def test_cap_present_in_mock_and_real():
         cs._steam_root = old
 
 
+# ---------------------------------------------------------------------------
+print("\nappinfo.vdf names — offline name+type for the installable list")
+# ---------------------------------------------------------------------------
+# The list used to ship appid-only ("appinfo.vdf is a partial cache" — DISPROVEN
+# by measurement: 100% coverage of a real 1101-app library). These fixtures are
+# SYNTHETIC (the real file is 4.2MB, too big to commit); the parser was also
+# verified against the real bazzite file (1560 apps, controls Portal 2 / Dota 2).
+
+import struct
+
+
+def _bvdf_bytes(d, strtab):
+    """Serialize a dict as binary VDF. strtab None -> v27/28 inline-cstring keys;
+    a list -> v29 (keys appended, encoded as u32 indices)."""
+    out = b""
+    for k, v in d.items():
+        if strtab is None:
+            key = k.encode() + b"\x00"
+        else:
+            if k not in strtab:
+                strtab.append(k)
+            key = struct.pack("<I", strtab.index(k))
+        if isinstance(v, dict):
+            out += b"\x00" + key + _bvdf_bytes(v, strtab) + b"\x08"
+        elif isinstance(v, str):
+            out += b"\x01" + key + v.encode() + b"\x00"
+        else:
+            out += b"\x02" + key + struct.pack("<I", v)
+    return out
+
+
+def _appinfo_file(apps, version=29):
+    """Write a synthetic appinfo.vdf: {appid: {"name":..., "type":...}}."""
+    magic = {27: 0x07564427, 28: 0x07564428, 29: 0x07564429}[version]
+    strtab = [] if version == 29 else None
+    blobs = b""
+    for appid, meta in apps.items():
+        kv = {"appinfo": {"common": dict(meta)}}
+        vdf = _bvdf_bytes(kv, strtab) + b"\x08"
+        hdr = struct.pack("<IIQ", 1, 0, 0) + b"\x00" * 20 + struct.pack("<I", 0)
+        if version >= 28:
+            hdr += b"\x00" * 20
+        body = hdr + vdf
+        blobs += struct.pack("<II", appid, len(body)) + body
+    blobs += struct.pack("<I", 0)  # terminator appid
+    if version == 29:
+        head = struct.pack("<II", magic, 1)
+        table_off = len(head) + 8 + len(blobs)
+        head += struct.pack("<q", table_off)
+        table = struct.pack("<I", len(strtab)) + b"".join(
+            s.encode() + b"\x00" for s in strtab)
+        data = head + blobs + table
+    else:
+        data = struct.pack("<II", magic, 1) + blobs
+    fd, p = tempfile.mkstemp(suffix=".vdf")
+    os.write(fd, data)
+    os.close(fd)
+    return p
+
+
+def _root_with_appinfo(apps, version=29, installed=(), cached=()):
+    r = Root(installed=installed, cached=cached)
+    os.makedirs(os.path.join(r.dir, "appcache"), exist_ok=True)
+    p = _appinfo_file(apps, version)
+    shutil.move(p, os.path.join(r.dir, "appcache", "appinfo.vdf"))
+    cs._APPINFO_CACHE.update(key=None, val=None)
+    return r
+
+
+def test_appinfo_names_v29_and_v28():
+    print("test_appinfo_names_v29_and_v28")
+    apps = {620: {"name": "Portal 2", "type": "Game"},
+            1234: {"name": "Some DLC", "type": "DLC"}}
+    for ver in (29, 28):
+        r = _root_with_appinfo(apps, version=ver)
+        try:
+            got = cs._appinfo_names()
+            check("v%d: name" % ver, got.get(620), {"name": "Portal 2", "type": "game"})
+            check("v%d: type lowercased" % ver, got.get(1234)["type"], "dlc")
+        finally:
+            r.close()
+            cs._APPINFO_CACHE.update(key=None, val=None)
+
+
+def test_appinfo_degrades_closed():
+    """Garbage/missing/truncated appinfo -> {}, and the list ships appid-only."""
+    print("test_appinfo_degrades_closed")
+    r = Root(installed=[], cached=["620"])
+    try:
+        check("no appinfo file -> {}", cs._appinfo_names(), {})
+        # Garbage magic.
+        os.makedirs(os.path.join(r.dir, "appcache"), exist_ok=True)
+        with open(os.path.join(r.dir, "appcache", "appinfo.vdf"), "wb") as f:
+            f.write(b"NOTVDF\x00\x00garbage")
+        cs._APPINFO_CACHE.update(key=None, val=None)
+        check("bad magic -> {}", cs._appinfo_names(), {})
+        # Truncated real-shaped file.
+        p = _appinfo_file({620: {"name": "Portal 2", "type": "game"}})
+        data = open(p, "rb").read()[:20]
+        os.unlink(p)
+        with open(os.path.join(r.dir, "appcache", "appinfo.vdf"), "wb") as f:
+            f.write(data)
+        cs._APPINFO_CACHE.update(key=None, val=None)
+        check("truncated -> {} (degrade closed)", cs._appinfo_names(), {})
+        games = cs._installable_games()
+        check("list still ships appid-only", games, [{"appid": 620}])
+    finally:
+        r.close()
+        cs._APPINFO_CACHE.update(key=None, val=None)
+
+
+def test_installable_games_carry_names():
+    """When appinfo parses, entries gain name+type; entries it lacks stay
+    appid-only (both states observed)."""
+    print("test_installable_games_carry_names")
+    r = _root_with_appinfo({620: {"name": "Portal 2", "type": "Game"}},
+                           installed=["440"], cached=["440", "620", "570"])
+    try:
+        games = {g["appid"]: g for g in cs._installable_games()}
+        check("620 named", games[620],
+              {"appid": 620, "name": "Portal 2", "type": "game"})
+        check("570 (absent from appinfo) appid-only", games[570], {"appid": 570})
+        check("installed 440 still excluded (control)", 440 in games, False)
+    finally:
+        r.close()
+        cs._APPINFO_CACHE.update(key=None, val=None)
+
+
+def test_http_installable_carries_names():
+    print("test_http_installable_carries_names")
+    r = _root_with_appinfo({620: {"name": "Portal 2", "type": "Game"}},
+                           installed=[], cached=["620"])
+    old = cs._steam_root
+    srv, port = _server(r.dir)
+    try:
+        cs._APPINFO_CACHE.update(key=None, val=None)
+        status, body = _req(port, "GET", "/api/steam/installable")
+        check("GET -> 200", status, 200)
+        check("names over the wire", body.get("games"),
+              [{"appid": 620, "name": "Portal 2", "type": "game"}])
+    finally:
+        srv.shutdown()
+        cs._steam_root = old
+        r.close()
+        cs._APPINFO_CACHE.update(key=None, val=None)
+
+
+def test_mock_installable_has_names():
+    """Harness renders titles immediately + exercises the type=game filter."""
+    print("test_mock_installable_has_names")
+    for g in cs.MOCK_INSTALLABLE:
+        check("mock %d has name+type" % g["appid"],
+              bool(g.get("name")) and g.get("type") == "game", True)
+
+
 if __name__ == "__main__":
     for fn in (test_excludes_installed_and_tools,
                test_ignores_non_digit_dirs,
@@ -303,6 +458,11 @@ if __name__ == "__main__":
                test_install_nondigit_refused,
                test_argv_has_no_shell_and_only_a_digit_slot,
                test_http_endpoints,
+               test_appinfo_names_v29_and_v28,
+               test_appinfo_degrades_closed,
+               test_installable_games_carry_names,
+               test_http_installable_carries_names,
+               test_mock_installable_has_names,
                test_cap_present_in_mock_and_real):
         fn()
     if FAILURES:

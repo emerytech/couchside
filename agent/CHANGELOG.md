@@ -18,6 +18,15 @@ the same thing regardless of what actually changed.
 Write for the person holding the phone, not for the commit log. They are
 deciding whether to press "Update now" on a machine across the room.
 
+## 2.9.76
+
+**Your whole library, instantly.** The Not-installed page used to fill in game
+names through Steam's rate-limited store API, so a big library appeared a few
+dozen games at a time (an 1101-app library showed 88 after days). The box now
+reads the names Steam already keeps on disk and sends them with the list — every
+game appears immediately, alphabetical and searchable, even with the internet
+down. Genres and release years still fill in gradually for the filters.
+
 ## 2.9.75
 
 **Utilities can now flash an OpenPuck receiver.** The OpenPuck utility gained a

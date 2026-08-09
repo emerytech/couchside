@@ -133,6 +133,14 @@ export default function InstallablePage() {
   const { width: winW } = useWindowDimensions();
   const [appids, setAppids] = useState<number[] | null>(null);
   const [details, setDetails] = useState<Record<number, AppDetails | null | undefined>>({});
+  // OFFLINE names+types from the agent (>= 2.9.76, parsed from the box's own
+  // appinfo.vdf). Kept SEPARATE from the store `details` map on purpose: the
+  // store index still runs to enrich genres/release-year (agent meta has
+  // neither), and `details[id] ?? agentMeta[id]` means store data wins when it
+  // arrives while the agent name survives a store failure. Before this seed, a
+  // big library filled at the store's ~200/5min rate — an 1101-app library
+  // showed 88 games after days of use.
+  const [agentMeta, setAgentMeta] = useState<Record<number, AppDetails>>({});
   const [compat, setCompat] = useState<Record<number, Compat | undefined>>({});
   const [query, setQuery] = useState('');
   const [sort, setSort] = useState<Sort>('az');
@@ -140,12 +148,20 @@ export default function InstallablePage() {
   const [onlyRunsWell, setOnlyRunsWell] = useState(false);
   const [sheet, setSheet] = useState(false);
 
-  // Fetch the appid list once.
+  // Fetch the appid list once. Entries carry name/type on new agents.
   useEffect(() => {
     let live = true;
     void (async () => {
       const res = await api.installable(settings);
-      if (live) setAppids(res ? res.games.map((g) => g.appid) : []);
+      if (!live) return;
+      setAppids(res ? res.games.map((g) => g.appid) : []);
+      if (res) {
+        const seed: Record<number, AppDetails> = {};
+        for (const g of res.games) {
+          if (g.name) seed[g.appid] = { name: g.name, type: g.type ?? '' };
+        }
+        setAgentMeta(seed);
+      }
     })();
     return () => { live = false; };
   }, [settings]);
@@ -176,8 +192,8 @@ export default function InstallablePage() {
   const compatRef = useRef(compat);
   compatRef.current = compat;
   const gameIds = useMemo(
-    () => (appids ?? []).filter((id) => isInstallableGameType(details[id])),
-    [appids, details],
+    () => (appids ?? []).filter((id) => isInstallableGameType(details[id] ?? agentMeta[id])),
+    [appids, details, agentMeta],
   );
   useEffect(() => {
     if (!onlyRunsWell) return;
@@ -219,8 +235,11 @@ export default function InstallablePage() {
 
   const q = query.trim().toLowerCase();
   const data = useMemo(() => {
+    // Store details win (they carry genres/year); the agent's offline name+type
+    // stand in until then — and permanently, if the store never answers.
+    const eff = (id: number) => (details[id] ?? agentMeta[id])!;
     const rows = gameIds.filter((id) => {
-      const d = details[id]!;
+      const d = eff(id);
       if (q && !d.name.toLowerCase().includes(q)) return false;
       if (genres.size && !(d.genres ?? []).some((g) => genres.has(g))) return false;
       if (onlyRunsWell) {
@@ -230,14 +249,14 @@ export default function InstallablePage() {
       return true;
     });
     rows.sort((a, b) => {
-      const da = details[a]!, db = details[b]!;
+      const da = eff(a), db = eff(b);
       if (sort === 'newest') return (db.releaseYear ?? -1) - (da.releaseYear ?? -1)
         || da.name.localeCompare(db.name);
       const c = da.name.localeCompare(db.name);
       return sort === 'za' ? -c : c;
     });
     return rows;
-  }, [gameIds, details, compat, q, genres, onlyRunsWell, sort]);
+  }, [gameIds, details, agentMeta, compat, q, genres, onlyRunsWell, sort]);
 
   const [requested, setRequested] = useState<Set<number>>(new Set());
   const onRequested = useCallback((appid: number) => setRequested((p) => new Set(p).add(appid)), []);
@@ -245,6 +264,7 @@ export default function InstallablePage() {
   const colW = Math.floor((winW - 12) / COLUMNS); // listWrap has paddingHorizontal: 6
   const resolvedCount = appids ? appids.filter((id) => details[id] !== undefined).length : 0;
   const indexing = appids ? resolvedCount < appids.length : false;
+  const seeded = Object.keys(agentMeta).length > 0;
   const activeFilters = genres.size + (onlyRunsWell ? 1 : 0);
   const sortLabel = SORTS.find((s) => s.key === sort)!.label;
 
@@ -256,7 +276,10 @@ export default function InstallablePage() {
           <Ionicons name="chevron-back" size={26} color={t.text} />
         </Pressable>
         <Text style={styles.title}>Not installed</Text>
-        <Text style={styles.count}>{appids ? `${appids.length}` : ''}</Text>
+        {/* Seeded (agent >= 2.9.76): the true GAME count, immediately — the raw
+            appid list overcounts ~2.5x with DLC/tools. Unseeded: the raw count,
+            as before, while the store index discovers which entries are games. */}
+        <Text style={styles.count}>{appids ? `${seeded ? gameIds.length : appids.length}` : ''}</Text>
       </View>
 
       <View style={styles.controls}>
@@ -289,7 +312,11 @@ export default function InstallablePage() {
       </View>
       <Text style={styles.sortLine} numberOfLines={1}>
         {sortLabel}{activeFilters > 0 ? ` · ${activeFilters} filter${activeFilters > 1 ? 's' : ''}` : ''}
-        {indexing ? `  ·  indexing ${resolvedCount}/${appids!.length}…` : ''}
+        {/* Seeded: the LIST is already complete (agent names); the store index only
+            enriches genres/release-year for the filters. Unseeded: it IS the list. */}
+        {indexing ? (seeded
+          ? `  ·  loading genres ${resolvedCount}/${appids!.length}…`
+          : `  ·  indexing ${resolvedCount}/${appids!.length}…`) : ''}
       </Text>
 
       {appids === null ? (
@@ -301,8 +328,8 @@ export default function InstallablePage() {
             keyExtractor={(id) => String(id)}
             numColumns={COLUMNS}
             renderItem={({ item }) => (
-              <Cell appid={item} name={details[item]?.name} requested={requested.has(item)}
-                onRequested={onRequested} colW={colW} />
+              <Cell appid={item} name={(details[item] ?? agentMeta[item])?.name}
+                requested={requested.has(item)} onRequested={onRequested} colW={colW} />
             )}
             onViewableItemsChanged={onViewableItemsChanged}
             viewabilityConfig={{ itemVisiblePercentThreshold: 10 }}
@@ -313,7 +340,7 @@ export default function InstallablePage() {
             keyboardShouldPersistTaps="handled"
             ListEmptyComponent={
               <Text style={styles.empty}>
-                {indexing ? 'Finding games in your library…'
+                {!seeded && indexing ? 'Finding games in your library…'
                   : (q || activeFilters) ? 'No games match.' : 'No games found.'}
               </Text>
             }

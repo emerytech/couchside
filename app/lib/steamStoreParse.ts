@@ -4,10 +4,12 @@
  *
  * Phase 2/filters of "install a game you own but haven't downloaded". The BOX
  * enumerates the owned-but-uninstalled library from its own disk (no key, no
- * account — see the agent's _installable_appids), but it has no reliable OFFLINE
- * NAME for an uninstalled game (appinfo.vdf is a partial cache). Name, type,
- * release date and genres all come from Valve's own KEYLESS store endpoint,
- * app-side:
+ * account — see the agent's _installable_appids). Since agent 2.9.76 it ALSO
+ * ships name+type parsed OFFLINE from appinfo.vdf (the earlier "partial cache"
+ * assumption was disproven by measurement: 100% name coverage of a real 1101-app
+ * library) — those seed the page instantly. This module parses what appinfo
+ * cannot supply (genres, release year), plus name/type for OLD agents, from
+ * Valve's own KEYLESS store endpoint, app-side:
  *
  *   store.steampowered.com/api/appdetails?appids=<id>&l=english
  *
