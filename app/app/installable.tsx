@@ -18,26 +18,36 @@ import Ionicons from '@expo/vector-icons/Ionicons';
 import { Stack, router } from 'expo-router';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
-  ActivityIndicator, Alert, FlatList, Image, Modal, Platform, Pressable,
+  ActivityIndicator, Alert, FlatList, Image, Linking, Modal, Platform, Pressable,
   ScrollView, StyleSheet, Text, TextInput, useWindowDimensions, View, type ViewToken,
 } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
-import { type Compat } from '@/lib/compat';
+import { type Compat, deckLabel, protonLabel } from '@/lib/compat';
 import { fetchCompat } from '@/lib/compatFetch';
 import { useLockOrientation } from '@/hooks/useLockOrientation';
 import { api } from '@/lib/api';
 import { hapticLight } from '@/lib/haptics';
 import { useSettings } from '@/lib/SettingsContext';
 import { fetchAppDetails } from '@/lib/steamStore';
-import { isInstallableGameType, type AppDetails } from '@/lib/steamStoreParse';
+import { fetchSteamReview } from '@/lib/steamReviews';
+import { isInstallableGameType, type AppDetails, type SteamReview } from '@/lib/steamStoreParse';
 import { useTheme, useThemedStyles, type Palette } from '@/lib/theme';
 
-type Sort = 'az' | 'za' | 'newest';
+type Sort = 'az' | 'za' | 'newest' | 'metacritic' | 'reviews';
 const SORTS: { key: Sort; label: string }[] = [
   { key: 'az', label: 'Name A–Z' },
   { key: 'za', label: 'Name Z–A' },
   { key: 'newest', label: 'Newest first' },
+  { key: 'metacritic', label: 'Metacritic' },
+  { key: 'reviews', label: 'Most reviewed' },
+];
+
+/** Metacritic filter tiers. 0 = any. */
+const RATINGS: { key: number; label: string }[] = [
+  { key: 0, label: 'Any' },
+  { key: 75, label: 'Metacritic 75+' },
+  { key: 90, label: 'Metacritic 90+' },
 ];
 
 /** "Runs well on this box": Deck verified/playable, or a good ProtonDB tier. */
@@ -45,6 +55,26 @@ function runsWell(c: Compat | undefined): boolean {
   if (!c) return false;
   if (c.deck === 'verified' || c.deck === 'playable') return true;
   return c.proton === 'platinum' || c.proton === 'gold' || c.proton === 'silver';
+}
+
+/** A Steam review is "good" for the filter at score >= 6 (Positive and up:
+ *  6=Positive, 7=Very Positive, 8=Overwhelmingly, plus 9). */
+function reviewIsPositive(r: SteamReview | null | undefined): boolean {
+  return !!r && r.score >= 6;
+}
+
+/** Open a game's Steam store page in the user's Steam app (deep link), falling
+ *  back to the web store when the Steam app / handler isn't available. */
+async function openInSteam(appid: number): Promise<void> {
+  const deep = `steam://store/${appid}`;
+  const web = `https://store.steampowered.com/app/${appid}`;
+  try {
+    if (Platform.OS !== 'web' && (await Linking.canOpenURL(deep))) {
+      await Linking.openURL(deep);
+      return;
+    }
+  } catch { /* fall through to web */ }
+  try { await Linking.openURL(web); } catch { /* nothing else to do */ }
 }
 
 /** steam://install pops an approve prompt on the box (verified) — say so. */
@@ -61,47 +91,33 @@ function confirmInstall(label: string, onConfirm: () => void) {
   ]);
 }
 
+/** Metacritic's own colour convention: green >=75, yellow 50–74, red <50. */
+function mcColor(score: number): string {
+  return score >= 75 ? '#4c8b2b' : score >= 50 ? '#a89226' : '#a02a1c';
+}
+
+/** A grid tile: cover + name + (when known) a Metacritic badge. Tapping opens the
+ *  game detail sheet — install and Open-in-Steam live there, not on the tile. */
 function Cell({
-  appid, name, requested, onRequested, colW,
+  appid, d, requested, colW, onOpen,
 }: {
-  appid: number; name?: string; requested: boolean;
-  onRequested: (appid: number) => void; colW: number;
+  appid: number; d?: AppDetails; requested: boolean;
+  colW: number; onOpen: (appid: number) => void;
 }) {
   const styles = useThemedStyles(makeStyles);
   const { settings } = useSettings();
   const source = api.steamCoverSource(settings, appid);
   const [failed, setFailed] = useState(false);
-  const [busy, setBusy] = useState(false);
   useEffect(() => setFailed(false), [source.uri]);
-
-  const install = () => {
-    hapticLight();
-    confirmInstall(name || `App ${appid}`, async () => {
-      setBusy(true);
-      try {
-        const res = await api.launch(settings, `install:${appid}`);
-        if (res?.ok) onRequested(appid);
-        if (Platform.OS !== 'web') {
-          Alert.alert(
-            res?.ok ? 'Approve it on your box' : "Couldn't start install",
-            res?.ok
-              ? `A prompt for "${name || `App ${appid}`}" is on your box's screen — approve it (a controller, or your phone's Pad) to start the download.`
-              : 'The box refused the install.',
-          );
-        }
-      } finally {
-        setBusy(false);
-      }
-    });
-  };
+  const name = d?.name;
+  const mc = d?.metacritic;
 
   return (
     <Pressable
       style={[styles.cell, { width: colW }]}
-      onPress={install}
-      disabled={busy || requested}
+      onPress={() => { hapticLight(); onOpen(appid); }}
       accessibilityRole="button"
-      accessibilityLabel={requested ? `${name}, waiting for approval on your box` : `Install ${name || appid}`}>
+      accessibilityLabel={`${name || appid}${mc !== undefined ? `, Metacritic ${mc}` : ''}${requested ? ', waiting for approval on your box' : ''}`}>
       <View style={[styles.coverWrap, { width: colW - 12, height: (colW - 12) * 1.5 }]}>
         {!failed ? (
           <Image source={source} style={StyleSheet.absoluteFill} resizeMode="cover" onError={() => setFailed(true)} />
@@ -110,14 +126,153 @@ function Cell({
             <Ionicons name="cloud-download-outline" size={22} color="#8aa" />
           </View>
         )}
+        {mc !== undefined ? (
+          <View style={[styles.mcBadge, { backgroundColor: mcColor(mc) }]}>
+            <Text style={styles.mcText}>{mc}</Text>
+          </View>
+        ) : null}
         <View style={styles.badge}>
-          {busy ? <ActivityIndicator size="small" />
-            : <Ionicons name={requested ? 'hourglass-outline' : 'cloud-download-outline'} size={14} color="#fff" />}
+          <Ionicons name={requested ? 'hourglass-outline' : 'cloud-download-outline'} size={14} color="#fff" />
         </View>
       </View>
       <Text style={styles.cellLabel} numberOfLines={2}>{name || '…'}</Text>
       {requested ? <Text style={styles.cellHint} numberOfLines={1}>Approve on box…</Text> : null}
     </Pressable>
+  );
+}
+
+/** The game detail sheet: cover, name, ratings (Metacritic + Steam review),
+ *  genres + controller support, and the two actions — Install on box, Open in
+ *  Steam. Fetches the game's Steam review lazily when opened. */
+function GameSheet({
+  appid, d, compat, requested, insetBottom, onClose, onRequested,
+}: {
+  appid: number; d?: AppDetails; compat?: Compat; requested: boolean;
+  insetBottom: number; onClose: () => void; onRequested: (appid: number) => void;
+}) {
+  const t = useTheme();
+  const styles = useThemedStyles(makeStyles);
+  const { settings } = useSettings();
+  const source = api.steamCoverSource(settings, appid);
+  const [failed, setFailed] = useState(false);
+  const [busy, setBusy] = useState(false);
+  const [review, setReview] = useState<SteamReview | null | undefined>(undefined);
+  const name = d?.name || `App ${appid}`;
+
+  useEffect(() => {
+    let live = true;
+    setReview(undefined);
+    void fetchSteamReview(appid).then((r) => { if (live) setReview(r); });
+    return () => { live = false; };
+  }, [appid]);
+
+  const install = () => {
+    hapticLight();
+    confirmInstall(name, async () => {
+      setBusy(true);
+      try {
+        const res = await api.launch(settings, `install:${appid}`);
+        if (res?.ok) onRequested(appid);
+        if (Platform.OS !== 'web') {
+          Alert.alert(
+            res?.ok ? 'Approve it on your box' : "Couldn't start install",
+            res?.ok
+              ? `A prompt for "${name}" is on your box's screen — approve it (a controller, or your phone's Pad) to start the download.`
+              : 'The box refused the install.',
+          );
+        }
+        if (res?.ok) onClose();
+      } finally {
+        setBusy(false);
+      }
+    });
+  };
+
+  const mc = d?.metacritic;
+  const controller = d?.controllerSupport;
+  const runsWellHere = compat && runsWell(compat);
+
+  return (
+    <Modal visible transparent animationType="slide" onRequestClose={onClose}>
+      <Pressable style={styles.sheetScrim} onPress={onClose} />
+      <View style={[styles.gameSheet, { paddingBottom: insetBottom + 16 }]}>
+        <View style={styles.sheetHandle} />
+        <View style={styles.gsHead}>
+          <View style={styles.gsCover}>
+            {!failed ? (
+              <Image source={source} style={StyleSheet.absoluteFill} resizeMode="cover" onError={() => setFailed(true)} />
+            ) : <View style={[StyleSheet.absoluteFill, styles.coverFallback]} />}
+          </View>
+          <View style={{ flex: 1 }}>
+            <Text style={styles.gsName} numberOfLines={3}>{name}</Text>
+            {d?.releaseYear ? <Text style={styles.gsSub}>{d.releaseYear}</Text> : null}
+          </View>
+        </View>
+
+        {/* Ratings row */}
+        <View style={styles.gsRatings}>
+          {mc !== undefined ? (
+            <View style={[styles.gsChip, { borderColor: mcColor(mc) }]}>
+              <Text style={[styles.gsChipStrong, { color: mcColor(mc) }]}>{mc}</Text>
+              <Text style={styles.gsChipText}>Metacritic</Text>
+            </View>
+          ) : null}
+          {review === undefined ? (
+            <View style={styles.gsChip}><ActivityIndicator size="small" color={t.textFaint} /></View>
+          ) : review ? (
+            <View style={styles.gsChip}>
+              <Text style={[styles.gsChipStrong, { color: review.score >= 6 ? t.green : t.red }]}>
+                {review.positivePct}%
+              </Text>
+              <Text style={styles.gsChipText} numberOfLines={1}>{review.desc}</Text>
+            </View>
+          ) : null}
+          {runsWellHere ? (
+            <View style={[styles.gsChip, { borderColor: t.green }]}>
+              <Ionicons name="game-controller-outline" size={14} color={t.green} />
+              <Text style={styles.gsChipText}>Runs well here</Text>
+            </View>
+          ) : null}
+          {controller ? (
+            <View style={styles.gsChip}>
+              <Ionicons name="game-controller-outline" size={14} color={t.textDim} />
+              <Text style={styles.gsChipText}>{controller === 'full' ? 'Full controller' : 'Partial controller'}</Text>
+            </View>
+          ) : null}
+        </View>
+
+        {d?.genres?.length ? (
+          <Text style={styles.gsGenres} numberOfLines={2}>
+            {d.genres.map((g) => g.replace(/\b\w/g, (c) => c.toUpperCase())).join(' · ')}
+          </Text>
+        ) : null}
+        {compat ? (
+          <Text style={styles.gsSub} numberOfLines={1}>
+            Deck: {deckLabel(compat.deck)} · ProtonDB: {protonLabel(compat.proton)}
+          </Text>
+        ) : null}
+
+        <View style={styles.gsActions}>
+          <Pressable
+            onPress={install}
+            disabled={busy || requested}
+            style={({ pressed }) => [styles.gsPrimary, { opacity: busy || requested ? 0.6 : pressed ? 0.85 : 1 }]}
+            accessibilityRole="button">
+            {busy ? <ActivityIndicator size="small" color="#fff" />
+              : <Ionicons name="cloud-download-outline" size={18} color="#fff" />}
+            <Text style={styles.gsPrimaryText}>{requested ? 'Waiting for approval…' : 'Install on box'}</Text>
+          </Pressable>
+          <Pressable
+            onPress={() => { hapticLight(); void openInSteam(appid); }}
+            style={({ pressed }) => [styles.gsGhost, { borderColor: t.cardBorder, opacity: pressed ? 0.8 : 1 }]}
+            accessibilityRole="button"
+            accessibilityLabel="Open in Steam">
+            <Ionicons name="logo-steam" size={18} color={t.text} />
+            <Text style={styles.gsGhostText}>Open in Steam</Text>
+          </Pressable>
+        </View>
+      </View>
+    </Modal>
   );
 }
 
@@ -146,7 +301,12 @@ export default function InstallablePage() {
   const [sort, setSort] = useState<Sort>('az');
   const [genres, setGenres] = useState<Set<string>>(new Set());
   const [onlyRunsWell, setOnlyRunsWell] = useState(false);
-  const [sheet, setSheet] = useState(false);
+  const [minRating, setMinRating] = useState(0);          // Metacritic tier
+  const [controllerOnly, setControllerOnly] = useState(false);
+  const [onlyPositive, setOnlyPositive] = useState(false); // Steam review >= Positive
+  const [reviews, setReviews] = useState<Record<number, SteamReview | null | undefined>>({});
+  const [sheet, setSheet] = useState(false);              // the FILTER sheet
+  const [sheetAppid, setSheetAppid] = useState<number | null>(null); // the game detail sheet
 
   // Fetch the appid list once. Entries carry name/type on new agents.
   useEffect(() => {
@@ -213,6 +373,29 @@ export default function InstallablePage() {
     return () => { signal.aborted = true; };
   }, [onlyRunsWell, gameIds]);
 
+  // REVIEW INDEX: only while the Steam-review filter is on (the sentiment is a
+  // SEPARATE request from appdetails). Same lazy, 3-worker, cached-hard shape as
+  // the compat index — bounded so it doesn't hammer the store's rate limit.
+  const reviewsRef = useRef(reviews);
+  reviewsRef.current = reviews;
+  useEffect(() => {
+    if (!onlyPositive) return;
+    const signal = { aborted: false };
+    const queue = gameIds.filter((id) => reviewsRef.current[id] === undefined);
+    let next = 0;
+    const worker = async () => {
+      while (!signal.aborted && next < queue.length) {
+        const id = queue[next++];
+        try {
+          const r = await fetchSteamReview(id);
+          if (!signal.aborted) setReviews((p) => ({ ...p, [id]: r }));
+        } catch { /* unknown */ }
+      }
+    };
+    void Promise.all([worker(), worker(), worker()]);
+    return () => { signal.aborted = true; };
+  }, [onlyPositive, gameIds]);
+
   // Lazy: prioritise resolving whatever is on screen (the background index catches
   // the rest). Keeps the first screenful filling fast.
   const resolveVisible = useCallback((ids: number[]) => {
@@ -242,9 +425,17 @@ export default function InstallablePage() {
       const d = eff(id);
       if (q && !d.name.toLowerCase().includes(q)) return false;
       if (genres.size && !(d.genres ?? []).some((g) => genres.has(g))) return false;
+      // Rating / controller come from the same details payload — a game not yet
+      // resolved (no details) is kept (shown) rather than hidden while indexing.
+      if (minRating > 0 && details[id] && (details[id]!.metacritic ?? -1) < minRating) return false;
+      if (controllerOnly && details[id] && details[id]!.controllerSupport !== 'full') return false;
       if (onlyRunsWell) {
         const c = compat[id];
         if (c !== undefined && !runsWell(c)) return false; // resolved-and-not-good hidden; still-checking shown
+      }
+      if (onlyPositive) {
+        const r = reviews[id];
+        if (r !== undefined && !reviewIsPositive(r)) return false; // resolved-and-not-positive hidden
       }
       return true;
     });
@@ -252,11 +443,15 @@ export default function InstallablePage() {
       const da = eff(a), db = eff(b);
       if (sort === 'newest') return (db.releaseYear ?? -1) - (da.releaseYear ?? -1)
         || da.name.localeCompare(db.name);
+      if (sort === 'metacritic') return (details[b]?.metacritic ?? -1) - (details[a]?.metacritic ?? -1)
+        || da.name.localeCompare(db.name);
+      if (sort === 'reviews') return (details[b]?.recommendations ?? -1) - (details[a]?.recommendations ?? -1)
+        || da.name.localeCompare(db.name);
       const c = da.name.localeCompare(db.name);
       return sort === 'za' ? -c : c;
     });
     return rows;
-  }, [gameIds, details, agentMeta, compat, q, genres, onlyRunsWell, sort]);
+  }, [gameIds, details, agentMeta, compat, reviews, q, genres, onlyRunsWell, minRating, controllerOnly, onlyPositive, sort]);
 
   const [requested, setRequested] = useState<Set<number>>(new Set());
   const onRequested = useCallback((appid: number) => setRequested((p) => new Set(p).add(appid)), []);
@@ -265,8 +460,11 @@ export default function InstallablePage() {
   const resolvedCount = appids ? appids.filter((id) => details[id] !== undefined).length : 0;
   const indexing = appids ? resolvedCount < appids.length : false;
   const seeded = Object.keys(agentMeta).length > 0;
-  const activeFilters = genres.size + (onlyRunsWell ? 1 : 0);
+  const activeFilters = genres.size + (onlyRunsWell ? 1 : 0)
+    + (minRating > 0 ? 1 : 0) + (controllerOnly ? 1 : 0) + (onlyPositive ? 1 : 0);
   const sortLabel = SORTS.find((s) => s.key === sort)!.label;
+  const sheetGame = sheetAppid != null
+    ? (details[sheetAppid] ?? agentMeta[sheetAppid]) : undefined;
 
   return (
     <View style={[styles.screen, { paddingTop: insets.top }]}>
@@ -328,8 +526,8 @@ export default function InstallablePage() {
             keyExtractor={(id) => String(id)}
             numColumns={COLUMNS}
             renderItem={({ item }) => (
-              <Cell appid={item} name={(details[item] ?? agentMeta[item])?.name}
-                requested={requested.has(item)} onRequested={onRequested} colW={colW} />
+              <Cell appid={item} d={details[item] ?? agentMeta[item] ?? undefined}
+                requested={requested.has(item)} colW={colW} onOpen={setSheetAppid} />
             )}
             onViewableItemsChanged={onViewableItemsChanged}
             viewabilityConfig={{ itemVisiblePercentThreshold: 10 }}
@@ -364,6 +562,36 @@ export default function InstallablePage() {
               ))}
             </View>
 
+            <Text style={styles.sheetH}>Rating</Text>
+            <View style={styles.chips}>
+              {RATINGS.map((r) => (
+                <Pressable key={r.key} onPress={() => setMinRating(r.key)}
+                  style={[styles.chip, minRating === r.key && styles.chipOn]}>
+                  <Text style={[styles.chipText, minRating === r.key && styles.chipTextOn]}>{r.label}</Text>
+                </Pressable>
+              ))}
+            </View>
+
+            <Text style={styles.sheetH}>Steam review</Text>
+            <Pressable onPress={() => setOnlyPositive((v) => !v)}
+              style={[styles.chip, styles.chipWide, onlyPositive && styles.chipOn]}>
+              <Ionicons name={onlyPositive ? 'checkbox' : 'square-outline'} size={16}
+                color={onlyPositive ? t.blue : t.textFaint} />
+              <Text style={[styles.chipText, onlyPositive && styles.chipTextOn]}>
+                Positive or better
+              </Text>
+            </Pressable>
+
+            <Text style={styles.sheetH}>Controller</Text>
+            <Pressable onPress={() => setControllerOnly((v) => !v)}
+              style={[styles.chip, styles.chipWide, controllerOnly && styles.chipOn]}>
+              <Ionicons name={controllerOnly ? 'checkbox' : 'square-outline'} size={16}
+                color={controllerOnly ? t.blue : t.textFaint} />
+              <Text style={[styles.chipText, controllerOnly && styles.chipTextOn]}>
+                Full controller support
+              </Text>
+            </Pressable>
+
             <Text style={styles.sheetH}>Runs well on this box</Text>
             <Pressable onPress={() => setOnlyRunsWell((v) => !v)}
               style={[styles.chip, styles.chipWide, onlyRunsWell && styles.chipOn]}>
@@ -395,7 +623,10 @@ export default function InstallablePage() {
             ) : null}
 
             <View style={styles.sheetActions}>
-              <Pressable onPress={() => { setGenres(new Set()); setOnlyRunsWell(false); setSort('az'); }}>
+              <Pressable onPress={() => {
+                setGenres(new Set()); setOnlyRunsWell(false); setSort('az');
+                setMinRating(0); setControllerOnly(false); setOnlyPositive(false);
+              }}>
                 <Text style={styles.clear}>Reset</Text>
               </Pressable>
               <Pressable style={styles.doneBtn} onPress={() => setSheet(false)}>
@@ -405,6 +636,19 @@ export default function InstallablePage() {
           </ScrollView>
         </View>
       </Modal>
+
+      {/* Game detail sheet — ratings + Install + Open in Steam. */}
+      {sheetAppid != null ? (
+        <GameSheet
+          appid={sheetAppid}
+          d={sheetGame ?? undefined}
+          compat={compat[sheetAppid]}
+          requested={requested.has(sheetAppid)}
+          insetBottom={insets.bottom}
+          onClose={() => setSheetAppid(null)}
+          onRequested={onRequested}
+        />
+      ) : null}
     </View>
   );
 }
@@ -440,6 +684,39 @@ const makeStyles = (t: Palette) =>
     cellLabel: { color: t.text, fontSize: 11, textAlign: 'center', marginTop: 4 },
     cellHint: { color: t.amber, fontSize: 10, textAlign: 'center', marginTop: 2 },
     empty: { color: t.textFaint, textAlign: 'center', marginTop: 40, fontSize: 13 },
+    mcBadge: {
+      position: 'absolute', top: 6, left: 6, minWidth: 22, height: 22, borderRadius: 5,
+      paddingHorizontal: 4, alignItems: 'center', justifyContent: 'center',
+    },
+    mcText: { color: '#fff', fontSize: 12, fontWeight: '800' },
+    // game detail sheet
+    gameSheet: {
+      backgroundColor: t.bg, borderTopLeftRadius: 18, borderTopRightRadius: 18,
+      paddingHorizontal: 16, paddingTop: 8, borderTopWidth: 1, borderColor: t.cardBorder,
+    },
+    gsHead: { flexDirection: 'row', gap: 12, alignItems: 'flex-start' },
+    gsCover: { width: 72, height: 108, borderRadius: 8, overflow: 'hidden', backgroundColor: t.card },
+    gsName: { color: t.text, fontSize: 18, fontWeight: '800' },
+    gsSub: { color: t.textFaint, fontSize: 12, marginTop: 4 },
+    gsRatings: { flexDirection: 'row', flexWrap: 'wrap', gap: 8, marginTop: 14 },
+    gsChip: {
+      flexDirection: 'row', alignItems: 'center', gap: 6, paddingVertical: 6, paddingHorizontal: 10,
+      borderRadius: 10, backgroundColor: t.card, borderWidth: 1, borderColor: t.cardBorder,
+    },
+    gsChipStrong: { fontSize: 14, fontWeight: '800' },
+    gsChipText: { color: t.textDim, fontSize: 12, fontWeight: '600' },
+    gsGenres: { color: t.textFaint, fontSize: 12, marginTop: 12, lineHeight: 17 },
+    gsActions: { flexDirection: 'row', gap: 10, marginTop: 18 },
+    gsPrimary: {
+      flex: 1, flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 8,
+      backgroundColor: t.blue, paddingVertical: 13, borderRadius: 12,
+    },
+    gsPrimaryText: { color: '#fff', fontWeight: '700', fontSize: 14 },
+    gsGhost: {
+      flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 8,
+      paddingVertical: 13, paddingHorizontal: 16, borderRadius: 12, borderWidth: 1, backgroundColor: t.card,
+    },
+    gsGhostText: { color: t.text, fontWeight: '700', fontSize: 14 },
     // sheet
     sheetScrim: { flex: 1, backgroundColor: 'rgba(0,0,0,0.5)' },
     sheet: {

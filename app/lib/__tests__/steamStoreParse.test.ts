@@ -15,7 +15,9 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 
-import { parseAppDetails, isInstallableGameType } from '../steamStoreParse.ts';
+import {
+  parseAppDetails, isInstallableGameType, parseReviewSummary,
+} from '../steamStoreParse.ts';
 
 test('parses a real game entry', () => {
   const body = { '620': { success: true, data: { type: 'game', name: 'Portal 2', steam_appid: 620 } } };
@@ -82,4 +84,45 @@ test('only type "game" is installable', () => {
   assert.equal(isInstallableGameType({ name: 'Runtime', type: 'tool' }), false);
   assert.equal(isInstallableGameType(null), false);
   assert.equal(isInstallableGameType(undefined), false);
+});
+
+test('parses metacritic, recommendations, and controller support (free fields)', () => {
+  const body = { '620': { success: true, data: {
+    type: 'game', name: 'Portal 2',
+    metacritic: { score: 95, url: 'x' },
+    recommendations: { total: 388848 },
+    controller_support: 'full',
+  } } };
+  const d = parseAppDetails(620, body);
+  assert.equal(d?.metacritic, 95);
+  assert.equal(d?.recommendations, 388848);
+  assert.equal(d?.controllerSupport, 'full');
+});
+
+test('bad rating fields are dropped, not clamped or invented', () => {
+  const mk = (data: object) => parseAppDetails(1, { '1': { success: true, data: { type: 'game', name: 'X', ...data } } });
+  assert.equal(mk({ metacritic: { score: 150 } })?.metacritic, undefined); // out of range
+  assert.equal(mk({ metacritic: { score: 'high' } })?.metacritic, undefined); // wrong type
+  assert.equal(mk({ metacritic: {} })?.metacritic, undefined); // no score
+  assert.equal(mk({})?.metacritic, undefined); // absent entirely
+  assert.equal(mk({ controller_support: 'none' })?.controllerSupport, undefined); // not full/partial
+  assert.equal(mk({ recommendations: { total: -5 } })?.recommendations, undefined);
+});
+
+test('parseReviewSummary reads the appreviews query_summary', () => {
+  const body = { success: 1, query_summary: {
+    review_score: 9, review_score_desc: 'Overwhelmingly Positive',
+    total_positive: 459021, total_negative: 6028, total_reviews: 465049,
+  } };
+  assert.deepEqual(parseReviewSummary(body), {
+    score: 9, desc: 'Overwhelmingly Positive', total: 465049, positivePct: 99,
+  });
+});
+
+test('parseReviewSummary is null for no reviews / malformed / failure', () => {
+  assert.equal(parseReviewSummary({ success: 1, query_summary: { review_score: 0, review_score_desc: '', total_reviews: 0 } }), null);
+  assert.equal(parseReviewSummary({ success: 0 }), null);
+  assert.equal(parseReviewSummary({ success: 1 }), null); // no summary
+  assert.equal(parseReviewSummary(null), null);
+  assert.equal(parseReviewSummary('nope'), null);
 });
