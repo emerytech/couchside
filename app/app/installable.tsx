@@ -28,6 +28,8 @@ import { fetchCompat } from '@/lib/compatFetch';
 import { useLockOrientation } from '@/hooks/useLockOrientation';
 import { api } from '@/lib/api';
 import { hapticLight } from '@/lib/haptics';
+import { toggleBookmarked, useLibraryMarks } from '@/hooks/useLibraryMarks';
+import { bookmarkKey } from '@/lib/libraryFilter';
 import { useSettings } from '@/lib/SettingsContext';
 import { openInSteamStore } from '@/lib/steamLinks';
 import { fetchAppDetails } from '@/lib/steamStore';
@@ -145,6 +147,11 @@ function GameSheet({
   const [busy, setBusy] = useState(false);
   const [review, setReview] = useState<SteamReview | null | undefined>(undefined);
   const name = d?.name || `App ${appid}`;
+  // Queue this not-installed game into the Playlog (= bookmark it). Same key space
+  // as installed games (app:<appid>), so it survives once the game is installed.
+  const marks = useLibraryMarks();
+  const bmKey = bookmarkKey({ appid });
+  const inPlaylog = marks.isBookmarked(bmKey);
 
   useEffect(() => {
     let live = true;
@@ -194,6 +201,21 @@ function GameSheet({
             <Text style={styles.gsName} numberOfLines={3}>{name}</Text>
             {d?.releaseYear ? <Text style={styles.gsSub}>{d.releaseYear}</Text> : null}
           </View>
+          {/* Queue into the Playlog even though it's not installed — the Playlog
+              offers Install when you tap it there. */}
+          <Pressable
+            onPress={() => { if (!bmKey) return; hapticLight(); toggleBookmarked(bmKey); }}
+            hitSlop={10}
+            accessibilityRole="button"
+            accessibilityState={{ selected: inPlaylog }}
+            accessibilityLabel={inPlaylog ? 'Remove from Playlog' : 'Add to Playlog'}
+            style={({ pressed }) => [{ padding: 4, opacity: pressed ? 0.6 : 1 }]}>
+            <Ionicons
+              name={inPlaylog ? 'bookmark' : 'bookmark-outline'}
+              size={22}
+              color={inPlaylog ? t.green : t.textDim}
+            />
+          </Pressable>
         </View>
 
         {/* Ratings row */}
@@ -254,7 +276,7 @@ function GameSheet({
             style={({ pressed }) => [styles.gsGhost, { borderColor: t.cardBorder, opacity: pressed ? 0.8 : 1 }]}
             accessibilityRole="button"
             accessibilityLabel="Open in Steam">
-            <Ionicons name="logo-steam" size={18} color={t.text} />
+            <Ionicons name="open-outline" size={18} color={t.text} />
             <Text style={styles.gsGhostText}>Open in Steam</Text>
           </Pressable>
         </View>
