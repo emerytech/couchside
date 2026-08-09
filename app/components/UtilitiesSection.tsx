@@ -24,7 +24,10 @@ function present(u: Utility): { line: string; icon: string; tone: 'good' | 'acti
   if (u.id === 'openpuck') {
     if (u.state === 'board_ready') return { line: 'Board connected — ready to flash.', icon: 'hardware-chip-outline', tone: 'action' };
     if (u.state === 'puck_present') return { line: 'A Steam Controller Puck is connected.', icon: 'checkmark-circle', tone: 'good' };
-    return { line: 'Plug an nRF52840 board into the box to flash one.', icon: 'hardware-chip-outline', tone: 'idle' };
+    // A plugged-in board only appears when it's in DFU (a mounted UF2 bootloader);
+    // a board running firmware reads as no_board and looks "invisible". Tell the
+    // user HOW to enter DFU, not just to plug one in.
+    return { line: 'Plug in an nRF52840, then put it in DFU — double-tap reset (or short RST/GND twice) — and it appears here to flash.', icon: 'hardware-chip-outline', tone: 'idle' };
   }
   if (u.id === 'cec') {
     if (u.state === 'enabled') return { line: 'On — the box can control your TV over HDMI.', icon: 'checkmark-circle', tone: 'good' };
