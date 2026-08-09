@@ -16,6 +16,7 @@ import { Stack, router } from 'expo-router';
 import { Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
+import { useLockOrientation } from '@/hooks/useLockOrientation';
 import { hapticLight } from '@/lib/haptics';
 import { useTheme, useThemedStyles, type Palette } from '@/lib/theme';
 
@@ -53,6 +54,7 @@ export default function LicensesScreen() {
   const t = useTheme();
   const styles = useThemedStyles(makeStyles);
   const insets = useSafeAreaInsets();
+  useLockOrientation('portrait'); // like every screen but the Pad
 
   return (
     <View style={[styles.screen, { paddingTop: insets.top }]}>
