@@ -55,6 +55,15 @@ PLAYER_DEST_NAME="Couchside Player"
 
 SCREENSAVER_DEST_NAME="Couchside Screensaver"
 SCREENSAVER_DEST_LEGACY="couchside-screensaver.sh"
+# OpenPuck firmware .uf2 (nRF52840 nice!nano), an AGPL-3.0 build from
+# safijari/openpuck, republished as a release asset and verified by the SAME
+# SHA256SUMS gate as the agent, then dropped at a fixed path the agent reads to
+# flash a plugged-in board (Setup -> Utilities). Bundling it means flashing works
+# with the box offline. Optional: a release predating it has no such asset and the
+# flash feature stays dark (the agent degrades closed).
+OPENPUCK_FW_NAME="OpenPuck-0.9.31-standard.uf2"
+OPENPUCK_FW_URL="${AGENT_BASE}/${OPENPUCK_FW_NAME}"
+OPENPUCK_FW_DEST="/etc/couchside/openpuck/firmware.uf2"
 # Signature + checksums for the agent files above, published as sibling assets
 # in the SAME release. install.sh verifies the sig (authenticity) + hashes
 # (integrity) before installing any fetched agent file.
@@ -459,7 +468,9 @@ if [ "$UNINSTALL" -eq 1 ]; then
     note "removed the privileged helper (binary, units, socket dir)"
     sudo rm -f /etc/udev/rules.d/99-couchside-uinput.rules \
                /etc/udev/rules.d/99-couchside-rtc.rules \
+               /etc/udev/rules.d/99-couchside-cec.rules \
                /etc/modules-load.d/couchside-uinput.conf
+    sudo rm -rf /etc/couchside/openpuck
     sudo udevadm control --reload-rules 2>/dev/null || true
     note "removed the udev/modules-load drop-ins"
     if [ "$NO_DECKY" -eq 0 ] && sudo test -d "$DECKY_PLUGIN_DIR"; then
@@ -647,6 +658,12 @@ else
         curl -fsSL "$SCREENSAVER_ART_LANDSCAPE_URL" -o "$WORK_DIR/screensaver-landscape.png" 2>/dev/null || true
         curl -fsSL "$SCREENSAVER_ART_LOGO_URL"      -o "$WORK_DIR/screensaver-logo.png"      2>/dev/null || true
     fi
+    # Optional OpenPuck firmware + its AGPL notice: fetched best-effort and
+    # verified by the SHA256SUMS gate below (both are listed there); installed
+    # only if they land AND are in the signed manifest. A release without them
+    # leaves the flash dark.
+    curl -fsSL "$OPENPUCK_FW_URL" -o "$WORK_DIR/$OPENPUCK_FW_NAME" 2>/dev/null || true
+    curl -fsSL "${AGENT_BASE}/OPENPUCK-NOTICE.txt" -o "$WORK_DIR/OPENPUCK-NOTICE.txt" 2>/dev/null || true
 
     # --- Supply-chain gate (FAIL CLOSED): the fetched agent must be SIGNED by
     # the maintainer's offline Ed25519 key AND match its SHA256SUMS before we
@@ -725,6 +742,24 @@ fi
 say "Installing daemon to $INSTALL_DIR"
 mkdir -p "$INSTALL_DIR"
 install -m 0755 "$WORK_DIR/couchsided.py" "$INSTALL_DIR/couchsided.py"
+# OpenPuck firmware (optional): install ONLY the verified release asset. It rode
+# through the SHA256SUMS gate above like every other fetched file, so if it is
+# both present AND listed in the signed manifest it has been hash-verified;
+# anything else is not installed (fail closed, same policy as the helper). Dropped
+# root-owned at the fixed path the agent reads for Setup -> Utilities flashing.
+if [ -f "$WORK_DIR/$OPENPUCK_FW_NAME" ] \
+   && [ -f "$WORK_DIR/SHA256SUMS" ] \
+   && grep -qF " $OPENPUCK_FW_NAME" "$WORK_DIR/SHA256SUMS"; then
+    sudo install -d -m 0755 "$(dirname "$OPENPUCK_FW_DEST")"
+    sudo install -m 0644 -o root -g root "$WORK_DIR/$OPENPUCK_FW_NAME" "$OPENPUCK_FW_DEST"
+    # AGPL-3.0: the notice (attribution + source offer) rides beside the binary.
+    if [ -f "$WORK_DIR/OPENPUCK-NOTICE.txt" ] \
+       && grep -qF ' OPENPUCK-NOTICE.txt' "$WORK_DIR/SHA256SUMS"; then
+        sudo install -m 0644 -o root -g root "$WORK_DIR/OPENPUCK-NOTICE.txt" \
+            "$(dirname "$OPENPUCK_FW_DEST")/OPENPUCK-NOTICE.txt"
+    fi
+    note "installed OpenPuck firmware ($OPENPUCK_FW_NAME)"
+fi
 # The aerial-screensaver player is optional: install only if wanted AND it
 # fetched and parses (bash -n), so a failed/HTML fetch can't land as an
 # executable script. Installed UNDER THE DISPLAY NAME "Couchside Screensaver" —
@@ -1191,10 +1226,20 @@ say "Granting the agent access to /dev/rtc0 (scheduled wake)"
 printf '%s\n' 'KERNEL=="rtc0", SUBSYSTEM=="rtc", GROUP="input", MODE="0660"' \
     | sudo tee /etc/udev/rules.d/99-couchside-rtc.rules >/dev/null
 
+# HDMI-CEC device access (/dev/cec*): so the Utilities "TV control over HDMI-CEC"
+# helper can actually open the node. Same regroup-to-"input" trick as uinput/rtc0
+# (the agent already holds that group) — applied live, so no re-login or service
+# restart. This is why the agent's CEC state gates "enabled" on real openability:
+# before this rule the node is not openable (needs_enable); after it, enabled.
+say "Granting the agent access to /dev/cec* (HDMI-CEC TV control)"
+printf '%s\n' 'KERNEL=="cec[0-9]", SUBSYSTEM=="cec", GROUP="input", MODE="0660"' \
+    | sudo tee /etc/udev/rules.d/99-couchside-cec.rules >/dev/null
+
 # Apply the rules to the already-present nodes so no reboot is needed.
 sudo udevadm control --reload-rules 2>/dev/null || true
 sudo udevadm trigger --name-match=uinput 2>/dev/null || true
 sudo udevadm trigger --subsystem-match=rtc --action=change 2>/dev/null || true
+sudo udevadm trigger --subsystem-match=cec --action=change 2>/dev/null || true
 
 # ---------------------------------------------------------------------------
 # (f3) Wake-on-LAN: arm the wired NIC so the phone can wake the box from suspend

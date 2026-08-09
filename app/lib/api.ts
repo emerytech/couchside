@@ -1641,6 +1641,17 @@ export const api = {
   },
 
   /**
+   * Run a Utilities tenant's state-changing action (agent >= 2.9.75), e.g.
+   * runUtility(settings, 'openpuck') to flash a plugged-in board. The id is
+   * looked up in the agent's frozen run-allowlist; a non-runnable id (e.g. 'cec',
+   * whose enable is an install-time step) 404s. Returns the standard ActionResult.
+   */
+  runUtility(settings: ConnSettings, id: string): Promise<ActionResult> {
+    return request<ActionResult>(
+      settings, `/api/utilities/${encodeURIComponent(id)}/run`, { method: 'POST' });
+  },
+
+  /**
    * In-progress Steam downloads/updates. Probe-and-appear: resolves null on a
    * 404 (agent < 2.8 or no route) so the Launch tab hides the section; a 200
    * with an empty list also means "nothing pending".

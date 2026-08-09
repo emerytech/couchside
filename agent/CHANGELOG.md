@@ -18,6 +18,18 @@ the same thing regardless of what actually changed.
 Write for the person holding the phone, not for the commit log. They are
 deciding whether to press "Update now" on a machine across the room.
 
+## 2.9.75
+
+**Utilities can now flash an OpenPuck receiver.** The OpenPuck utility gained a
+Flash button: plug an nRF52840 board into the box (in its UF2 bootloader), press
+Flash, and Couchside writes the OpenPuck firmware — the board reboots as a Steam
+Controller 2 wireless receiver. The firmware is fetched and verified by the
+installer, so flashing works with the box offline; the bootloader is kept, so you
+can re-flash any time. HDMI-CEC detection is now honest about whether the box can
+actually open the CEC device (so a permissions fix shows up), and the installer
+adds a udev rule that grants that access. Needs the app that ships alongside this
+agent.
+
 ## 2.9.74
 
 **Utilities — one-click hardware helpers (new, opt-in).** Setup gains a Utilities
