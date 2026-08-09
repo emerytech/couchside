@@ -33,8 +33,13 @@ Valve Steam Controller Puck (sped up slightly).
 
 ![Flashing an OpenPuck receiver from the app on a real box, ending with a Steam Controller Puck connected](docs/media/couchside-openpuck.gif)
 
-OpenPuck is a separate AGPL-3.0 project by [safijari](https://github.com/safijari/openpuck);
-Couchside only automates flashing its released firmware onto a board you plugged in.
+OpenPuck is a separate AGPL-3.0 project by [safijari](https://github.com/safijari/openpuck),
+flashed here from the [EmeryTech fork](https://github.com/emerytech/openpuck). Couchside
+does **not** embed or compile it: the box downloads the released firmware binary from the
+fork at flash time and writes it to the board you plugged in. Because Couchside distributes
+that binary, the corresponding source is offered at the exact shipped tag
+([0.9.40](https://github.com/emerytech/openpuck/tree/0.9.40)) — see the app's
+**Setup → Open source licenses** screen and `agent/openpuck/OPENPUCK-NOTICE.txt`.
 
 ## Features
 

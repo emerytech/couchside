@@ -18,6 +18,15 @@ the same thing regardless of what actually changed.
 Write for the person holding the phone, not for the commit log. They are
 deciding whether to press "Update now" on a machine across the room.
 
+## 2.9.77
+
+**OpenPuck firmware now comes straight from the source.** Flashing an OpenPuck
+receiver fetches the firmware at flash time from the maintained OpenPuck build on
+GitHub, verifies it (exact checksum + size + UF2 format) before writing a single
+byte, and caches it so the next flash is instant. A copy is still seeded at
+install time, so flashing works with the box offline. New: an optional "check for
+newer firmware" — the box never installs a newer build on its own; you choose.
+
 ## 2.9.76
 
 **Your whole library, instantly.** The Not-installed page used to fill in game

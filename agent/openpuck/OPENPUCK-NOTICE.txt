@@ -3,23 +3,35 @@ OpenPuck firmware — attribution and source offer
 
 Couchside's "OpenPuck receiver" utility flashes the OpenPuck firmware onto a
 plugged-in nRF52840 board. That firmware is a separate work, NOT part of
-Couchside:
+Couchside, and runs on the board — never on your phone or inside the Couchside
+app:
 
-  Project:  OpenPuck — https://github.com/safijari/openpuck
-  Author:   safijari
+  Project:  OpenPuck
+  Author:   safijari (original)          https://github.com/safijari/openpuck
+  Modified: EmeryTech (fork + fixes)     https://github.com/emerytech/openpuck
   License:  GNU Affero General Public License v3.0 (AGPL-3.0)
 
-Couchside redistributes an UNMODIFIED OpenPuck release binary
-(OpenPuck-0.9.31-standard.uf2) purely as a convenience so the flash works with
-the box offline. Couchside itself (this agent) is licensed separately and does
-NOT incorporate OpenPuck's code.
+Couchside DOWNLOADS a released OpenPuck build at flash time (it does not embed or
+compile any OpenPuck source) so the flash works with the box offline. The build
+distributed here is:
 
-Corresponding source for the exact firmware version distributed here is
-available from the upstream release it was fetched from:
+  OpenPuck 0.9.40  (EmeryTech fork build)
+  asset:  OpenPuck-0.9.40-standard.uf2
 
-  https://github.com/safijari/openpuck/releases/tag/0.9.31
+Because this is a MODIFIED version, AGPL-3.0 §5 applies. The corresponding source
+for the exact firmware version distributed here — this is the §6 source offer —
+is available at the shipped tag:
 
-The AGPL-3.0 license text is published with the OpenPuck project at the URL
-above. This notice satisfies the redistribution requirement to convey the
-license and offer the corresponding source; it does not modify the terms under
-which OpenPuck is licensed.
+  https://github.com/emerytech/openpuck/tree/0.9.40
+
+If you opt into flashing a NEWER build via the app's "Check for newer firmware",
+the corresponding source for that build is published under its own tag on the same
+fork; every release and its source are listed at:
+
+  https://github.com/emerytech/openpuck/releases
+
+The AGPL-3.0 license text is published with the OpenPuck project at the URLs
+above. This notice satisfies the requirement to convey the license and offer the
+corresponding source; it does not modify the terms under which OpenPuck is
+licensed. Couchside itself is licensed separately and does NOT incorporate
+OpenPuck's code.

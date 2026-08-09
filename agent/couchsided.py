@@ -46,7 +46,7 @@ except ImportError:  # pragma: no cover
     fcntl = None
 
 APP_NAME = "couchside-agent"
-VERSION = "2.9.76"
+VERSION = "2.9.77"
 UID = os.getuid()
 XDG_RUNTIME_DIR = "/run/user/%d" % UID
 
@@ -7909,10 +7909,38 @@ _UTILITY_IDS = frozenset({"openpuck", "cec"})
 # group, and the agent cannot edit its own unit). So there is no cec RUN action.
 _UTILITY_RUN_IDS = frozenset({"openpuck"})
 
-# install.sh fetches the pinned OpenPuck release .uf2 (sha256-verified, the same
-# gate as the agent asset) and drops it HERE. The flash op reads this fixed,
-# agent-owned path, selected only by the allowlisted 'openpuck' id — the client
-# never supplies a path or the firmware bytes. Absent -> the flash degrades closed.
+# OpenPuck firmware — Couchside REFERENCES it (downloads at runtime from the fork's
+# GitHub release), it never embeds or compiles OpenPuck. OpenPuck is a separate
+# AGPL-3.0 work by safijari, modified by EmeryTech; the corresponding source for the
+# exact build below is the tag URL carried in OPENPUCK-NOTICE.txt (the §6 offer).
+#
+# §3-safety: the agent owns this fetch end to end. A client only ever selects the
+# allowlisted 'openpuck' id + a fixed {pinned|latest} variant — it never supplies a
+# URL, a path, or the firmware bytes. Every source (cache, download, install seed)
+# is verified before a single byte is written to a board.
+_OPENPUCK_FW_TAG = "0.9.40"
+_OPENPUCK_FW_NAME = "OpenPuck-0.9.40-standard.uf2"
+_OPENPUCK_FW_URL = ("https://github.com/emerytech/openpuck/releases/download/%s/%s"
+                    % (_OPENPUCK_FW_TAG, _OPENPUCK_FW_NAME))
+# sha256 of the pinned asset above (verified at author time). The fetch ABORTS on
+# any mismatch, so a tampered or served-stale byte stream is never flashed.
+_OPENPUCK_FW_SHA256 = \
+    "ee2de6a415f87cacc2999893fd7803462a6d76f1ad4acbcd7962f0115575f478"
+# A real OpenPuck build is ~370 KB. The floor/ceiling guard a truncated or garbage
+# download that still happened to start with the UF2 magic; _is_uf2 separately
+# enforces the 512-byte-block shape + magic.
+_OPENPUCK_FW_MIN_SIZE = 300_000
+_OPENPUCK_FW_MAX_SIZE = 4_000_000
+# The fork's newest release — used ONLY by the opt-in "check for newer" path and by
+# an explicit variant=latest flash; a newer build is NEVER fetched or flashed on its
+# own. Assets are matched to the standard (non-factory-reset) .uf2.
+_OPENPUCK_RELEASES_API = \
+    "https://api.github.com/repos/emerytech/openpuck/releases/latest"
+
+# install.sh fetches the pinned .uf2 straight from the fork and drops it HERE as an
+# OFFLINE fallback (root-owned; the agent only reads it). The runtime fetch below
+# prefers this seed / its own cache over the network. Absent + offline -> the flash
+# degrades closed with a clear error.
 _OPENPUCK_FIRMWARE = "/etc/couchside/openpuck/firmware.uf2"
 
 # The nRF52840 nice!nano presents its UF2 bootloader as a mass-storage volume with
@@ -8086,20 +8114,224 @@ def _is_uf2(path):
         return False
 
 
-def real_openpuck_flash():
-    """Flash the pinned OpenPuck firmware onto a plugged-in nRF52840 board that is
-    in its UF2 bootloader. Returns the standard ActionResult (ok/exit_code/stdout/
-    stderr/duration_ms).
+def _openpuck_cache_path():
+    """Agent-WRITABLE cache for the runtime-fetched firmware. The install seed at
+    _OPENPUCK_FIRMWARE is root-owned (read-only to the agent), so a downloaded copy
+    lands here instead. One file per pinned tag, so a future tag bump never reuses
+    stale bytes."""
+    base = os.environ.get("XDG_CACHE_HOME") or os.path.expanduser("~/.cache")
+    return os.path.join(base, "couchside", "openpuck",
+                        "OpenPuck-%s.uf2" % _OPENPUCK_FW_TAG)
+
+
+def _sha256_file(path):
+    """Hex sha256 of a file, streamed. Raises OSError if it can't be read."""
+    h = hashlib.sha256()
+    with open(path, "rb") as f:
+        for chunk in iter(lambda: f.read(65536), b""):
+            h.update(chunk)
+    return h.hexdigest()
+
+
+def _openpuck_fw_valid(path, want_sha=None):
+    """True if `path` is a trustworthy OpenPuck firmware image: it passes _is_uf2
+    (UF2 magic + whole 512-byte blocks), its size is in the sane [MIN, MAX] window,
+    and — when want_sha is given — its sha256 matches EXACTLY. Degrades closed: any
+    error, wrong size, or hash mismatch -> False, so a bad image is never flashed."""
+    try:
+        if not path or not os.path.isfile(path):
+            return False
+        if not _is_uf2(path):
+            return False
+        size = os.path.getsize(path)
+        if size < _OPENPUCK_FW_MIN_SIZE or size > _OPENPUCK_FW_MAX_SIZE:
+            return False
+        if want_sha is not None and _sha256_file(path) != want_sha:
+            return False
+        return True
+    except OSError:
+        return False
+
+
+def _openpuck_download(url, dest, timeout=60):
+    """Download `url` to `dest` atomically (write a .part sibling, then os.replace).
+    Reads at most _OPENPUCK_FW_MAX_SIZE + 1 bytes so a wrong/huge target can't fill
+    the disk. `url` and `dest` are ALWAYS agent-chosen, never client input. Raises
+    on any failure; the caller verifies the result before trusting it."""
+    os.makedirs(os.path.dirname(dest), exist_ok=True)
+    req = urllib.request.Request(url, headers={
+        "User-Agent": "couchside-agent/%s" % VERSION})
+    tmp = dest + ".part"
+    try:
+        with urllib.request.urlopen(req, timeout=timeout) as r, \
+                open(tmp, "wb") as f:
+            hdr = r.getheader("Content-Length")
+            expected = int(hdr) if (hdr or "").strip().isdigit() else None
+            written = 0
+            remaining = _OPENPUCK_FW_MAX_SIZE + 1
+            while remaining > 0:
+                chunk = r.read(min(65536, remaining))
+                if not chunk:
+                    break
+                f.write(chunk)
+                written += len(chunk)
+                remaining -= len(chunk)
+        # A clean-EOF truncation (server/CDN closes the connection early) does NOT
+        # raise in http.client — a short read would otherwise pass as a complete
+        # file, and the 'latest' path has no sha pin to catch it. If the server
+        # declared a length, the bytes written MUST match it exactly.
+        if expected is not None and written != expected:
+            raise IOError("short read: got %d of %d bytes" % (written, expected))
+        os.replace(tmp, dest)
+    except BaseException:
+        try:
+            os.unlink(tmp)
+        except OSError:
+            pass
+        raise
+    return dest
+
+
+def _openpuck_pick_asset(assets):
+    """From a GitHub release 'assets' list, pick the STANDARD OpenPuck UF2: prefer a
+    name matching OpenPuck-*-standard*.uf2; otherwise the first *.uf2 that is NOT a
+    *-factory-reset* variant (a release may ship a factory-reset image we must never
+    default to). Returns the asset dict or None."""
+    uf2 = [a for a in (assets or []) if isinstance(a, dict)
+           and (a.get("name") or "").lower().endswith(".uf2")]
+    non_reset = [a for a in uf2
+                 if "factory-reset" not in (a.get("name") or "").lower()]
+    for a in non_reset:
+        n = (a.get("name") or "").lower()
+        if n.startswith("openpuck-") and "standard" in n:
+            return a
+    return non_reset[0] if non_reset else None
+
+
+def _openpuck_resolve_pinned():
+    """A path to a VERIFIED copy of the PINNED firmware, fetching from the fork only
+    if needed. Order, cheapest first: agent cache -> download from the fork ->
+    install seed. EVERY candidate must match the pinned sha256 (+ size + UF2 magic)
+    before it is returned, so an offline box only ever flashes the exact pinned
+    build. Returns (path, None) or (None, error_message). Never raises."""
+    cache = _openpuck_cache_path()
+    # 1. A verified pinned copy already on disk (runtime cache, then the install
+    #    seed) is BYTE-IDENTICAL to the fork asset — same pinned sha — so prefer it
+    #    and skip the network entirely. An offline box with a good seed must never
+    #    wait on a doomed download first: that round-trip can trip the app's flash
+    #    timeout. (A mutated re-tag can't slip through — both are sha-checked.)
+    if _openpuck_fw_valid(cache, _OPENPUCK_FW_SHA256):
+        return cache, None
+    if _openpuck_fw_valid(_OPENPUCK_FIRMWARE, _OPENPUCK_FW_SHA256):
+        return _OPENPUCK_FIRMWARE, None
+    # 2. No local pinned copy: fetch from the fork's pinned release, verify, cache.
+    try:
+        _openpuck_download(_OPENPUCK_FW_URL, cache)
+        if _openpuck_fw_valid(cache, _OPENPUCK_FW_SHA256):
+            return cache, None
+        try:
+            os.unlink(cache)
+        except OSError:
+            pass
+        return None, "the downloaded firmware failed verification (sha256/size/UF2)."
+    except Exception as e:
+        return None, "couldn't download firmware (%s)." % (str(e)[:120])
+
+
+def _openpuck_resolve_latest():
+    """Download + verify the fork's NEWEST standard firmware for the opt-in
+    variant=latest flash. No sha pin is possible for a build we haven't seen, so the
+    gate is UF2 magic + a sane size (via _openpuck_fw_valid). The download URL is
+    computed by the agent from the GitHub API — the client never supplies it.
+    Returns (path, tag, None) or (None, None, error_message). Never raises."""
+    try:
+        meta = json.loads(_http_text(_OPENPUCK_RELEASES_API))
+        tag = meta.get("tag_name") or "latest"
+        asset = _openpuck_pick_asset(meta.get("assets") or [])
+        url = asset.get("browser_download_url") if asset else None
+        if not url:
+            return None, None, "no standard .uf2 asset in the latest release."
+        safe = "".join(c for c in tag if c.isalnum() or c in "._-") or "latest"
+        dest = os.path.join(os.path.dirname(_openpuck_cache_path()),
+                            "OpenPuck-latest-%s.uf2" % safe)
+        _openpuck_download(url, dest)
+        if not _openpuck_fw_valid(dest):  # magic + size (no sha pin for latest)
+            try:
+                os.unlink(dest)
+            except OSError:
+                pass
+            return None, None, "the downloaded firmware failed verification (size/UF2)."
+        return dest, tag, None
+    except Exception as e:
+        return None, None, "couldn't fetch the newest firmware (%s)." % (str(e)[:120])
+
+
+# The fork's latest-release lookup is cached so the app's "check for newer" button
+# can't hammer GitHub; a network failure returns available:false, never raises.
+_OPENPUCK_LATEST_TTL_S = 10 * 60
+_openpuck_latest_cache = {"at": 0.0, "data": None}
+_openpuck_latest_lock = threading.Lock()
+
+
+def openpuck_latest(force=False):
+    """Read-only info about the fork's newest release for the OPT-IN newer-check:
+    {available, tag, name, size, is_newer, pinned_tag}. Cached (10 min). Never
+    raises; offline -> {available: False, error, pinned_tag}."""
+    now = time.monotonic()
+    with _openpuck_latest_lock:
+        c = _openpuck_latest_cache
+        if not force and c["data"] is not None \
+                and now - c["at"] < _OPENPUCK_LATEST_TTL_S:
+            return c["data"]
+    try:
+        meta = json.loads(_http_text(_OPENPUCK_RELEASES_API))
+        tag = meta.get("tag_name") or None
+        asset = _openpuck_pick_asset(meta.get("assets") or [])
+        if not asset:
+            data = {"available": False, "pinned_tag": _OPENPUCK_FW_TAG,
+                    "error": "no standard .uf2 asset in the latest release"}
+        else:
+            data = {"available": True, "tag": tag,
+                    "name": asset.get("name"), "size": asset.get("size"),
+                    "is_newer": _ver_tuple(tag) > _ver_tuple(_OPENPUCK_FW_TAG),
+                    "pinned_tag": _OPENPUCK_FW_TAG}
+    except Exception as e:
+        data = {"available": False, "pinned_tag": _OPENPUCK_FW_TAG,
+                "error": str(e)[:200]}
+    with _openpuck_latest_lock:
+        _openpuck_latest_cache["at"] = now
+        _openpuck_latest_cache["data"] = data
+    return data
+
+
+def mock_openpuck_latest():
+    return {"available": True, "tag": "0.9.41",
+            "name": "OpenPuck-0.9.41-standard.uf2", "size": 377856,
+            "is_newer": True, "pinned_tag": _OPENPUCK_FW_TAG}
+
+
+def real_openpuck_flash(variant="pinned"):
+    """Flash OpenPuck firmware onto a plugged-in nRF52840 board that is in its UF2
+    bootloader. Returns the standard ActionResult (ok/exit_code/stdout/stderr/
+    duration_ms).
+
+    `variant` is the allowlisted {pinned|latest} enum (validated by the caller):
+      - 'pinned' (default): the fork build pinned in source, resolved by
+        _openpuck_resolve_pinned() (cache -> fork download -> seed, sha-verified).
+      - 'latest': the fork's newest standard release, fetched + verified on demand
+        (opt-in only). Never reached without an explicit client request.
 
     §3-safe: the flash TARGET is _openpuck_bootloader_mount() (a label + UF2-marker
-    match, never client input), and the firmware is the agent-owned fixed-path
-    asset _OPENPUCK_FIRMWARE selected only by the 'openpuck' id — the client
-    supplies neither a path nor the bytes. The copy is shutil.copyfile into the
-    desktop user's own automount, so no sudo and no shell.
+    match, never client input) and the firmware is agent-owned — the client supplies
+    neither a URL, a path, nor the bytes; it only selects the id + variant enum. The
+    copy is shutil.copyfile into the desktop user's own automount: no sudo, no shell.
 
-    The board reboots the instant the UF2 lands and yanks its USB mass-storage
-    mid-write, so the copy errors (ENXIO/EIO) even on a SUCCESSFUL flash; that
-    specific errno is treated as success (both directions are tested)."""
+    The resolved firmware is ALWAYS verified (UF2 magic + size, and sha256 for the
+    pinned build) before it is written — a bootloader silently ignores a truncated /
+    non-UF2 image and never reboots, so copying garbage would falsely read as
+    success. The board then reboots the instant the UF2 lands and yanks its USB
+    mass-storage mid-write, so the copy errors (ENXIO/EIO) even on a SUCCESSFUL
+    flash; that specific errno is treated as success (both directions are tested)."""
     start = time.monotonic()
 
     def _done(ok, exit_code, stdout, stderr):
@@ -8113,19 +8345,34 @@ def real_openpuck_flash():
         return _done(False, -1, "",
                      "No board in DFU mode. Plug in an nRF52840 board (or "
                      "double-tap its reset button) and try again.")
-    fw = _OPENPUCK_FIRMWARE
-    if not os.path.isfile(fw):
+
+    if variant == "latest":
+        fw, tag, err = _openpuck_resolve_latest()
+        if tag:
+            # Carry the AGPL §6 corresponding-source offer WITH the conveyed build:
+            # a latest flash conveys a tag other than the app-pinned one, so the
+            # static NOTICE/licenses offer (0.9.40) would not cover it — name this
+            # build's own source here.
+            ok_msg = ("Flashed OpenPuck %s. The board is rebooting as a Steam "
+                      "Controller Puck. Source: "
+                      "https://github.com/emerytech/openpuck/releases/tag/%s"
+                      % (tag, tag))
+        else:
+            ok_msg = "Flashed. The board is rebooting as a Steam Controller Puck."
+    else:
+        fw, err = _openpuck_resolve_pinned()
+        ok_msg = "Flashed. The board is rebooting as a Steam Controller Puck."
+
+    if fw is None:
+        # Degrade closed: no verified firmware from any source. Surface the reason
+        # and how to recover (network, or re-run the installer to seed it).
         return _done(False, -1, "",
-                     "OpenPuck firmware is not installed on this box. Re-run the "
-                     "Couchside installer to fetch it.")
-    if not _is_uf2(fw):
-        # Degrade CLOSED: a bootloader silently ignores a truncated/garbage image
-        # and never reboots, so copying it would report a no-op flash as success.
-        return _done(False, -1, "",
-                     "OpenPuck firmware looks corrupt (not a valid UF2). Re-run "
-                     "the Couchside installer to reinstall it.")
+                     "Couldn't get the OpenPuck firmware — %s Connect the box to "
+                     "the internet and try again, or re-run the Couchside "
+                     "installer." % (err or "no source available."))
+
+    # fw is already fully verified by the resolver; write it onto the board.
     dst = os.path.join(mount, os.path.basename(fw))
-    ok_msg = "Flashed. The board is rebooting as a Steam Controller Puck."
     try:
         shutil.copyfile(fw, dst)
     except OSError as e:
@@ -8137,17 +8384,18 @@ def real_openpuck_flash():
     return _done(True, 0, ok_msg, "")
 
 
-def mock_openpuck_flash():
+def mock_openpuck_flash(variant="pinned"):
     """--mock/harness: exercise the flash PRESS end-to-end without a real board.
     Takes ~1.5s (a real UF2 burn takes several) so the app's Flashing… state is
     actually visible in the harness, then flips the mock row to puck_present so
-    the re-poll arc is exercised too."""
+    the re-poll arc is exercised too. `variant` only tweaks the note."""
     global _MOCK_OPENPUCK_FLASHED
     time.sleep(1.5)
     _MOCK_OPENPUCK_FLASHED = True
+    tag = "0.9.41 (newer)" if variant == "latest" else "pinned"
     return {"ok": True, "exit_code": 0,
-            "stdout": "Flashed (mock). The board is rebooting as a Steam "
-                      "Controller Puck.",
+            "stdout": "Flashed (mock, %s). The board is rebooting as a Steam "
+                      "Controller Puck." % tag,
             "stderr": "", "duration_ms": 1500}
 
 
@@ -16571,6 +16819,14 @@ class Handler(BaseHTTPRequestHandler):
                 # needs_enable/no_adapter). Read-only; the app gates the whole
                 # section behind an opt-in pref.
                 self._send(200, {"utilities": utilities_state(self.mock)}, started)
+            elif path == "/api/utilities/openpuck/latest":
+                # OPT-IN "check for newer firmware": the fork's newest release vs
+                # the pinned build. Read-only (contacts GitHub, cached 10 min); the
+                # app only calls it when the user asks, and NEVER auto-flashes the
+                # result. A newer build is flashed only via an explicit
+                # POST .../openpuck/run?variant=latest.
+                self._send(200, (mock_openpuck_latest() if self.mock
+                                 else openpuck_latest()), started)
             elif path == "/api/session/default":
                 # Read-only. Always 200 with available=false rather than 404 so
                 # the app can tell "old agent" (404) from "this box has no
@@ -17295,8 +17551,18 @@ class Handler(BaseHTTPRequestHandler):
                                      "error": "utility has no run action"}, started)
                     return
                 if uid == "openpuck":
-                    result = (mock_openpuck_flash() if self.mock
-                              else real_openpuck_flash())
+                    # variant is an ALLOWLISTED enum, not free input: the client
+                    # picks the pinned build (default) or, opt-in, the fork's
+                    # newest. Anything else is REJECTED (§3.6), never sanitised.
+                    variant = parse_qs(parsed.query).get(
+                        "variant", ["pinned"])[0]
+                    if variant not in ("pinned", "latest"):
+                        self._send(400, {"ok": False,
+                                         "error": "unknown firmware variant"},
+                                   started)
+                        return
+                    result = (mock_openpuck_flash(variant) if self.mock
+                              else real_openpuck_flash(variant))
                     self._send(200, result, started)
                     return
                 # Defensive: a run id in the frozen set with no dispatch branch.

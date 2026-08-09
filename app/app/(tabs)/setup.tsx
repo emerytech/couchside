@@ -2106,6 +2106,22 @@ function SetupBody() {
               </Text>
             </View>
 
+            <Pressable
+              onPress={() => {
+                hapticLight();
+                router.push('/licenses');
+              }}
+              style={({ pressed }) => [styles.rateRow, pressed && styles.pressed]}>
+              <Ionicons name="document-text-outline" size={18} color={t.blue} />
+              <View style={styles.rateBody}>
+                <Text style={styles.rateTitle}>Open source licenses</Text>
+                <Text style={styles.rateSub}>
+                  Attribution and licenses for third-party works, incl. OpenPuck (AGPL-3.0).
+                </Text>
+              </View>
+              <Ionicons name="chevron-forward" size={16} color={t.textDim} />
+            </Pressable>
+
             <Text style={styles.hint}>
               Each box&apos;s Couchside service listens on http://&lt;host&gt;:&lt;port&gt;. All routes except
               /api/ping require the bearer token.

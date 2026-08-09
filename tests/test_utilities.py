@@ -367,6 +367,45 @@ class copyfile_raising:
         cs.shutil.copyfile = self._old
 
 
+class flash_env:
+    """Make real_openpuck_flash() deterministic and OFFLINE for a flash test.
+
+    Since 2.9.77 the flash resolves firmware through cache -> fork download -> seed.
+    This context forces the download to RAISE (simulating no network / a box that
+    only has its install seed), points the runtime cache at an empty temp dir, and
+    pins the agent's expected sha256 to fixture `fw` — so a VALID seed is accepted
+    and an INVALID/missing one is still refused. The install seed (_OPENPUCK_FIRMWARE)
+    is set to `fw` and becomes the only possible source. No test ever hits GitHub."""
+
+    def __init__(self, fw):
+        self._fw = fw
+
+    def __enter__(self):
+        self._tmp = tempfile.mkdtemp(prefix="op-cache-")
+        try:
+            sha = cs._sha256_file(self._fw) if os.path.isfile(self._fw) else "0" * 64
+        except OSError:
+            sha = "0" * 64
+        cache = os.path.join(self._tmp, "cache.uf2")
+
+        def _offline(*a, **k):
+            raise OSError("offline (test)")
+
+        self._p = Patch(
+            _OPENPUCK_FIRMWARE=self._fw,
+            _OPENPUCK_FW_SHA256=sha,
+            _OPENPUCK_FW_MIN_SIZE=1,
+            _openpuck_cache_path=(lambda c=cache: c),
+            _openpuck_download=_offline,
+        )
+        self._p.__enter__()
+        return self
+
+    def __exit__(self, *a):
+        self._p.__exit__(*a)
+        shutil.rmtree(self._tmp, ignore_errors=True)
+
+
 def test_flash_no_board_degrades_closed():
     """No board in DFU -> refuse, never a guessed target."""
     print("test_flash_no_board_degrades_closed")
@@ -387,8 +426,8 @@ def test_flash_missing_firmware_degrades_closed():
     print("test_flash_missing_firmware_degrades_closed")
     ready = _media_tree({"NICENANO": True})
     try:
-        with Patch(_MEDIA_ROOTS=(ready,),
-                   _OPENPUCK_FIRMWARE="/nonexistent-couchside-fw.uf2"):
+        with Patch(_MEDIA_ROOTS=(ready,)), \
+                flash_env("/nonexistent-couchside-fw.uf2"):
             r = cs.real_openpuck_flash()
             check("no firmware -> ok False", r["ok"], False)
     finally:
@@ -409,7 +448,7 @@ def test_flash_rejects_invalid_firmware():
     os.write(fd, struct.pack("<II", 0x0A324655, 0x9E5D5157)); os.close(fd)
     try:
         for bad in (empty, garbage, short):
-            with Patch(_MEDIA_ROOTS=(ready,), _OPENPUCK_FIRMWARE=bad):
+            with Patch(_MEDIA_ROOTS=(ready,)), flash_env(bad):
                 r = cs.real_openpuck_flash()
                 check("invalid firmware -> ok False", r["ok"], False)
     finally:
@@ -425,7 +464,7 @@ def test_flash_clean_copy_is_success():
     ready = _media_tree({"NICENANO": True})
     fw = _fw_file()
     try:
-        with Patch(_MEDIA_ROOTS=(ready,), _OPENPUCK_FIRMWARE=fw):
+        with Patch(_MEDIA_ROOTS=(ready,)), flash_env(fw):
             r = cs.real_openpuck_flash()
             check("clean copy -> ok True", r["ok"], True)
             landed = os.path.join(ready, "deck", "NICENANO", os.path.basename(fw))
@@ -443,7 +482,7 @@ def test_flash_device_yank_errno_is_success():
     fw = _fw_file()
     try:
         for err in (errno.ENXIO, errno.EIO):
-            with Patch(_MEDIA_ROOTS=(ready,), _OPENPUCK_FIRMWARE=fw):
+            with Patch(_MEDIA_ROOTS=(ready,)), flash_env(fw):
                 with copyfile_raising(err):
                     r = cs.real_openpuck_flash()
                     check("errno %d -> ok True" % err, r["ok"], True)
@@ -461,7 +500,7 @@ def test_flash_other_errno_is_failure():
     fw = _fw_file()
     try:
         for err in (errno.EPERM, errno.EACCES, errno.ENOSPC):
-            with Patch(_MEDIA_ROOTS=(ready,), _OPENPUCK_FIRMWARE=fw):
+            with Patch(_MEDIA_ROOTS=(ready,)), flash_env(fw):
                 with copyfile_raising(err):
                     r = cs.real_openpuck_flash()
                     check("errno %d -> ok False" % err, r["ok"], False)
@@ -471,13 +510,262 @@ def test_flash_other_errno_is_failure():
 
 
 def test_flash_target_is_not_client_supplied():
-    """§3: real_openpuck_flash takes NO arguments — the target comes from
-    _openpuck_bootloader_mount() and the firmware from the fixed agent-owned
-    constant. The client can influence neither."""
+    """§3: the ONLY thing a client can influence about the flash is the `variant`
+    enum (pinned|latest, allowlisted at the HTTP layer, tested there). The flash
+    TARGET still comes from _openpuck_bootloader_mount() and the firmware URL/path/
+    bytes are always agent-owned — never a client-supplied path, url, or blob."""
     print("test_flash_target_is_not_client_supplied")
     import inspect
-    sig = inspect.signature(cs.real_openpuck_flash)
-    check("flash takes no client params", len(sig.parameters), 0)
+    params = list(inspect.signature(cs.real_openpuck_flash).parameters)
+    check("flash's only client param is variant", params, ["variant"])
+    check("variant defaults to pinned",
+          inspect.signature(cs.real_openpuck_flash).parameters["variant"].default,
+          "pinned")
+
+
+# ---------------------------------------------------------------------------
+print("\nruntime firmware fetch (2.9.77): verify + resolve, OFFLINE (no network)")
+# ---------------------------------------------------------------------------
+
+def _uf2_bytes(nblocks=736):
+    """Bytes of a structurally-valid UF2 of `nblocks` 512-byte blocks (default 736
+    ~= 376 KB, a real OpenPuck size), first block carrying the magic words."""
+    head = struct.pack("<II", 0x0A324655, 0x9E5D5157) + b"\x00" * (512 - 8)
+    return head + b"\x00" * (512 * (nblocks - 1))
+
+
+def test_fw_valid_both_directions():
+    """_openpuck_fw_valid: a real-shaped UF2 of the right size + matching sha PASSES;
+    every failure mode (missing, wrong magic, too small, wrong sha) FAILS. A verifier
+    is unverified until seen firing AND not firing (CLAUDE.md §11.2)."""
+    print("test_fw_valid_both_directions")
+    fd, good = tempfile.mkstemp(suffix=".uf2")
+    os.write(fd, _uf2_bytes(736)); os.close(fd)
+    fd, tiny = tempfile.mkstemp(suffix=".uf2")           # valid UF2 but too small
+    os.write(fd, _uf2_bytes(1)); os.close(fd)
+    fd, nomagic = tempfile.mkstemp(suffix=".uf2")        # right size, no magic
+    os.write(fd, b"\x00" * (512 * 736)); os.close(fd)
+    good_sha = cs._sha256_file(good)
+    try:
+        # FIRES: right size + right sha.
+        check("good uf2 (no sha) -> True", cs._openpuck_fw_valid(good), True)
+        check("good uf2 + correct sha -> True",
+              cs._openpuck_fw_valid(good, good_sha), True)
+        # DOES NOT FIRE: each failure mode.
+        check("missing path -> False", cs._openpuck_fw_valid("/no/such.uf2"), False)
+        check("wrong magic -> False", cs._openpuck_fw_valid(nomagic), False)
+        with Patch(_OPENPUCK_FW_MIN_SIZE=300_000):
+            check("too small -> False", cs._openpuck_fw_valid(tiny), False)
+        check("wrong sha -> False", cs._openpuck_fw_valid(good, "0" * 64), False)
+    finally:
+        for p in (good, tiny, nomagic):
+            os.unlink(p)
+
+
+def test_pick_asset_prefers_standard_never_factory_reset():
+    """The /releases/latest asset picker: prefer OpenPuck-*-standard*.uf2, take a
+    non-factory-reset .uf2 otherwise, and NEVER default to a factory-reset image."""
+    print("test_pick_asset_prefers_standard_never_factory_reset")
+    assets = [
+        {"name": "OpenPuck-0.9.41-factory-reset.uf2", "browser_download_url": "u1"},
+        {"name": "OpenPuck-0.9.41-standard.uf2", "browser_download_url": "u2"},
+        {"name": "notes.txt", "browser_download_url": "u3"},
+    ]
+    check("prefers -standard", cs._openpuck_pick_asset(assets)["browser_download_url"], "u2")
+    # No standard present: take the non-factory-reset .uf2, not the reset one.
+    only = [
+        {"name": "OpenPuck-0.9.41-factory-reset.uf2", "browser_download_url": "r"},
+        {"name": "OpenPuck-0.9.41.uf2", "browser_download_url": "keep"},
+    ]
+    check("skips factory-reset", cs._openpuck_pick_asset(only)["browser_download_url"], "keep")
+    # ONLY a factory-reset image -> refuse (None), never default to it.
+    check("factory-reset only -> None",
+          cs._openpuck_pick_asset(
+              [{"name": "OpenPuck-factory-reset.uf2", "browser_download_url": "r"}]),
+          None)
+    check("no assets -> None", cs._openpuck_pick_asset([]), None)
+
+
+def test_resolve_pinned_prefers_cache_no_network():
+    """A verified pinned copy already in the cache is used WITHOUT any download
+    (the download hook raises if called)."""
+    print("test_resolve_pinned_prefers_cache_no_network")
+    tmp = tempfile.mkdtemp(prefix="op-")
+    cache = os.path.join(tmp, "cache.uf2")
+    with open(cache, "wb") as f:
+        f.write(_uf2_bytes(736))
+    sha = cs._sha256_file(cache)
+
+    def _boom(*a, **k):
+        raise AssertionError("download must NOT be called on a cache hit")
+
+    try:
+        with Patch(_OPENPUCK_FW_SHA256=sha, _OPENPUCK_FW_MIN_SIZE=1,
+                   _openpuck_cache_path=(lambda: cache), _openpuck_download=_boom,
+                   _OPENPUCK_FIRMWARE="/no/seed.uf2"):
+            path, err = cs._openpuck_resolve_pinned()
+            check("cache hit -> that path", path, cache)
+            check("cache hit -> no error", err, None)
+    finally:
+        shutil.rmtree(tmp, ignore_errors=True)
+
+
+def test_resolve_pinned_downloads_then_verifies():
+    """No cache: the resolver downloads from the fork, and only returns the copy if
+    it matches the pin. A download that verifies is returned; one that does not is
+    deleted and reported (degrade closed)."""
+    print("test_resolve_pinned_downloads_then_verifies")
+    tmp = tempfile.mkdtemp(prefix="op-")
+    cache = os.path.join(tmp, "cache.uf2")
+    good = _uf2_bytes(736)
+    good_sha = cs.hashlib.sha256(good).hexdigest()
+
+    def _dl_good(url, dest, timeout=60):
+        os.makedirs(os.path.dirname(dest), exist_ok=True)
+        with open(dest, "wb") as f:
+            f.write(good)
+        return dest
+
+    def _dl_bad(url, dest, timeout=60):
+        os.makedirs(os.path.dirname(dest), exist_ok=True)
+        with open(dest, "wb") as f:
+            f.write(b"\x00" * (512 * 736))  # right size, wrong bytes -> sha mismatch
+        return dest
+
+    try:
+        with Patch(_OPENPUCK_FW_SHA256=good_sha, _OPENPUCK_FW_MIN_SIZE=1,
+                   _openpuck_cache_path=(lambda: cache), _openpuck_download=_dl_good,
+                   _OPENPUCK_FIRMWARE="/no/seed.uf2"):
+            path, err = cs._openpuck_resolve_pinned()
+            check("verified download -> cache path", path, cache)
+            check("verified download -> no error", err, None)
+        cache2 = os.path.join(tmp, "cache2.uf2")  # fresh path: no stale cache hit
+        with Patch(_OPENPUCK_FW_SHA256=good_sha, _OPENPUCK_FW_MIN_SIZE=1,
+                   _openpuck_cache_path=(lambda: cache2), _openpuck_download=_dl_bad,
+                   _OPENPUCK_FIRMWARE="/no/seed.uf2"):
+            path, err = cs._openpuck_resolve_pinned()
+            check("bad download -> refused", path, None)
+            check("bad download -> deleted", os.path.exists(cache2), False)
+            check("bad download -> error set", bool(err), True)
+    finally:
+        shutil.rmtree(tmp, ignore_errors=True)
+
+
+def test_resolve_pinned_offline_falls_back_to_seed():
+    """Offline (download raises) + a valid pinned SEED -> use the seed. Offline +
+    NO usable seed -> (None, error): degrade closed, never a guessed image."""
+    print("test_resolve_pinned_offline_falls_back_to_seed")
+    tmp = tempfile.mkdtemp(prefix="op-")
+    cache = os.path.join(tmp, "cache.uf2")
+    seed = os.path.join(tmp, "seed.uf2")
+    with open(seed, "wb") as f:
+        f.write(_uf2_bytes(736))
+    sha = cs._sha256_file(seed)
+
+    def _offline(*a, **k):
+        raise OSError("offline (test)")
+
+    try:
+        with Patch(_OPENPUCK_FW_SHA256=sha, _OPENPUCK_FW_MIN_SIZE=1,
+                   _openpuck_cache_path=(lambda: cache), _openpuck_download=_offline,
+                   _OPENPUCK_FIRMWARE=seed):
+            path, err = cs._openpuck_resolve_pinned()
+            check("offline -> seed used", path, seed)
+            check("offline seed -> no error", err, None)
+        # A seed whose sha does NOT match the pin is refused (never flash a wrong build).
+        with Patch(_OPENPUCK_FW_SHA256="0" * 64, _OPENPUCK_FW_MIN_SIZE=1,
+                   _openpuck_cache_path=(lambda: cache), _openpuck_download=_offline,
+                   _OPENPUCK_FIRMWARE=seed):
+            path, err = cs._openpuck_resolve_pinned()
+            check("offline + wrong-sha seed -> refused", path, None)
+            check("offline + no usable seed -> error", bool(err), True)
+    finally:
+        shutil.rmtree(tmp, ignore_errors=True)
+
+
+def test_resolve_pinned_prefers_seed_over_network():
+    """A valid install SEED (or cache) is used WITHOUT any download — an offline box
+    with a good local copy must never wait on a doomed network round-trip first
+    (that latency can trip the app's flash timeout)."""
+    print("test_resolve_pinned_prefers_seed_over_network")
+    tmp = tempfile.mkdtemp(prefix="op-")
+    seed = os.path.join(tmp, "seed.uf2")
+    with open(seed, "wb") as f:
+        f.write(_uf2_bytes(736))
+    sha = cs._sha256_file(seed)
+
+    def _boom(*a, **k):
+        raise AssertionError("download must NOT be called when a valid seed exists")
+
+    try:
+        with Patch(_OPENPUCK_FW_SHA256=sha, _OPENPUCK_FW_MIN_SIZE=1,
+                   _openpuck_cache_path=(lambda: os.path.join(tmp, "absent.uf2")),
+                   _openpuck_download=_boom, _OPENPUCK_FIRMWARE=seed):
+            path, err = cs._openpuck_resolve_pinned()
+            check("seed used with no network", path, seed)
+            check("seed -> no error", err, None)
+    finally:
+        shutil.rmtree(tmp, ignore_errors=True)
+
+
+class urlopen_patch:
+    """Swap cs.urllib.request.urlopen for the duration of a `with`."""
+
+    def __init__(self, fn):
+        self._fn = fn
+
+    def __enter__(self):
+        self._old = cs.urllib.request.urlopen
+        cs.urllib.request.urlopen = self._fn
+
+    def __exit__(self, *a):
+        cs.urllib.request.urlopen = self._old
+
+
+def test_download_rejects_truncated_content_length():
+    """_openpuck_download raises on a clean-EOF truncation when Content-Length is
+    known — the 'latest' path has no sha pin, so this is its truncation guard. A
+    complete body (bytes == Content-Length) is accepted (control)."""
+    print("test_download_rejects_truncated_content_length")
+    import io
+
+    class FakeResp:
+        def __init__(self, body, clen):
+            self._b = io.BytesIO(body)
+            self._clen = clen
+
+        def getheader(self, k, d=None):
+            return self._clen if k == "Content-Length" else d
+
+        def read(self, n=-1):
+            return self._b.read(n)
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *a):
+            return False
+
+    tmp = tempfile.mkdtemp(prefix="op-")
+    dest = os.path.join(tmp, "fw.uf2")
+    body = _uf2_bytes(700)
+    try:
+        # Header claims MORE bytes than the body delivers -> a truncation -> raise.
+        with urlopen_patch(lambda req, timeout=60: FakeResp(body, str(len(body) + 512))):
+            raised = False
+            try:
+                cs._openpuck_download("https://example/y.uf2", dest)
+            except Exception:
+                raised = True
+            check("short vs Content-Length -> raises", raised, True)
+            check("truncation -> no .part left", os.path.exists(dest + ".part"), False)
+            check("truncation -> no dest written", os.path.exists(dest), False)
+        # Control: bytes == Content-Length -> accepted.
+        with urlopen_patch(lambda req, timeout=60: FakeResp(body, str(len(body)))):
+            cs._openpuck_download("https://example/y.uf2", dest)
+            check("complete download -> written", os.path.exists(dest), True)
+    finally:
+        shutil.rmtree(tmp, ignore_errors=True)
 
 
 # ---------------------------------------------------------------------------
@@ -492,6 +780,19 @@ def test_http_run_endpoint():
         st, bd = _req(port, "POST", "/api/utilities/openpuck/run")
         check("POST openpuck/run -> 200", st, 200)
         check("mock flash -> ok True", bd.get("ok"), True)
+
+        # variant is an allowlisted enum. pinned + latest are accepted (mock);
+        # anything else is REJECTED with 400 and nothing flashes (§3.6).
+        check("variant=pinned -> 200",
+              _req(port, "POST", "/api/utilities/openpuck/run?variant=pinned")[0], 200)
+        check("variant=latest -> 200",
+              _req(port, "POST", "/api/utilities/openpuck/run?variant=latest")[0], 200)
+        st, bd = _req(port, "POST", "/api/utilities/openpuck/run?variant=bogus")
+        check("variant=bogus -> 400", st, 400)
+        check("bogus variant -> not flashed", bd.get("ok"), False)
+        st, bd = _req(port, "POST",
+                      "/api/utilities/openpuck/run?variant=../../etc/passwd")
+        check("path-shaped variant -> 400", st, 400)
 
         # Auth gate.
         check("no bearer -> 401",
@@ -516,6 +817,24 @@ def test_http_run_endpoint():
         # No /run suffix is not a run route at all (falls through to a 404).
         check("openpuck without /run -> 404",
               _req(port, "POST", "/api/utilities/openpuck")[0], 404)
+    finally:
+        srv.shutdown()
+
+
+def test_http_latest_endpoint():
+    """GET /api/utilities/openpuck/latest: the opt-in newer-check. Read-only, behind
+    the bearer gate; the mock reports a newer build. It NEVER flashes."""
+    print("test_http_latest_endpoint")
+    srv, port = _server()  # mock=True -> mock_openpuck_latest
+    try:
+        st, bd = _req(port, "GET", "/api/utilities/openpuck/latest")
+        check("GET openpuck/latest -> 200", st, 200)
+        check("mock reports available", bd.get("available"), True)
+        check("mock reports is_newer", bd.get("is_newer"), True)
+        check("carries the pinned tag", bd.get("pinned_tag"), cs._OPENPUCK_FW_TAG)
+        # Auth gate: same as every other /api route.
+        check("no bearer -> 401",
+              _req(port, "GET", "/api/utilities/openpuck/latest", token=None)[0], 401)
     finally:
         srv.shutdown()
 
@@ -554,7 +873,15 @@ if __name__ == "__main__":
                test_flash_device_yank_errno_is_success,
                test_flash_other_errno_is_failure,
                test_flash_target_is_not_client_supplied,
+               test_fw_valid_both_directions,
+               test_pick_asset_prefers_standard_never_factory_reset,
+               test_resolve_pinned_prefers_cache_no_network,
+               test_resolve_pinned_downloads_then_verifies,
+               test_resolve_pinned_offline_falls_back_to_seed,
+               test_resolve_pinned_prefers_seed_over_network,
+               test_download_rejects_truncated_content_length,
                test_http_run_endpoint,
+               test_http_latest_endpoint,
                test_cap_present_in_mock_and_real):
         fn()
     if FAILURES:

@@ -20,15 +20,29 @@ Entry fields: `priority` (P0 blocker → P3 nice) · `risk` · `affects` · `dep
   `UtilitiesSection.tsx` gated on `utilitiesEnabled` pref (default false).
 - **STAGE 2 DONE (PR #399, agent 2.9.75).** OpenPuck FLASH: `POST /api/utilities/openpuck/run`
   copies the pinned firmware onto a DFU board (id in the frozen `_UTILITY_RUN_IDS`, target
-  from the bootloader-mount match, no-shell copy, ENXIO/EIO = success). Firmware = BUNDLE
-  (owner-chosen): release-agent.sh fetches from safijari/openpuck + pins sha256, install.sh
-  installs it only if it passed the signed SHA256SUMS gate, so flashing works offline; AGPL
-  notice ships alongside. CEC turned out NOT to be a runtime button — instead: honest detector
+  from the bootloader-mount match, no-shell copy, ENXIO/EIO = success). CEC turned out NOT to
+  be a runtime button — instead: honest detector
   (`enabled` now gated on `os.access` openability, so a permission gap is observable both ways,
   §11) + an install-time udev regroup-to-`input` rule for /dev/cec* (`cec` is NOT in
   `_UTILITY_RUN_IDS`; POST cec/run → 404). App Flash button harness-verified end-to-end.
   **NOT verified on hardware:** a real board in DFU, the udev rule flipping a real
   `needs_enable` box, and a real release publishing the .uf2 (box was off-subnet).
+- **STAGE 2.5 DONE (agent 2.9.77).** OpenPuck firmware = RUNTIME FETCH from the EmeryTech
+  fork, not a Couchside bundle — a licensing change (Couchside references, never embeds, the
+  AGPL-3.0 firmware). The agent downloads the pinned build (`0.9.40`,
+  `OpenPuck-0.9.40-standard.uf2`, sha `ee2de6a4…`) from the fork at flash time (cache → fork
+  download → install seed, every source re-verified sha256 + UF2 magic + ~370 KB size);
+  install.sh seeds the same file straight from the fork (its own sha pin) for offline flashing;
+  release-agent.sh no longer republishes the .uf2 (ships only the AGPL notice). Opt-in
+  "check for newer": `GET /api/utilities/openpuck/latest` + `POST …/openpuck/run?variant=latest`
+  (variant is an allowlisted enum; bogus → 400; NEVER auto-flashes). App: Utilities gains a
+  "Check for newer firmware" control + "Flash newest"; new `Setup → Account → Open source
+  licenses` screen (`app/app/licenses.tsx`) names OpenPuck AGPL-3.0, credits safijari (modified
+  by EmeryTech), links source at the shipped tag (`.../tree/0.9.40` = the §6 offer). NOTICE +
+  README updated for the modified fork. **Verified:** agent tests (verify/resolve/pick-asset/
+  variant), tsc, harness (check-newer, pinned flash on the wire as `?variant=pinned`, licenses
+  screen), and a REAL fork download (376832 B, sha match). **NOT verified on hardware:** a real
+  board in DFU flashed via the runtime-fetched firmware.
 - **STAGE 3 (later, backlog):** more tenants on the two engines — board flasher (ZMK/QMK/
   WLED/Pico), guided installer (Sunshine/Tailscale/Decky/xone/fwupd/EmuDeck).
 - **Allowlist model (non-negotiable):** a client selects WHICH utility runs; never supplies a

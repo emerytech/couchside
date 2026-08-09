@@ -55,14 +55,17 @@ PLAYER_DEST_NAME="Couchside Player"
 
 SCREENSAVER_DEST_NAME="Couchside Screensaver"
 SCREENSAVER_DEST_LEGACY="couchside-screensaver.sh"
-# OpenPuck firmware .uf2 (nRF52840 nice!nano), an AGPL-3.0 build from
-# safijari/openpuck, republished as a release asset and verified by the SAME
-# SHA256SUMS gate as the agent, then dropped at a fixed path the agent reads to
-# flash a plugged-in board (Setup -> Utilities). Bundling it means flashing works
-# with the box offline. Optional: a release predating it has no such asset and the
-# flash feature stays dark (the agent degrades closed).
-OPENPUCK_FW_NAME="OpenPuck-0.9.31-standard.uf2"
-OPENPUCK_FW_URL="${AGENT_BASE}/${OPENPUCK_FW_NAME}"
+# OpenPuck firmware .uf2 (nRF52840 nice!nano), an AGPL-3.0 build from the EmeryTech
+# OpenPuck fork. Couchside does NOT republish it: the box downloads it STRAIGHT from
+# the fork's GitHub release, PINNED by tag + sha256, and drops it root-owned at a
+# fixed path as an OFFLINE SEED for Setup -> Utilities flashing. The agent
+# re-verifies (and can re-fetch the pinned or a newer build) at flash time, so a
+# failed/absent seed just means the first flash needs the box online — the flash
+# feature never depends on this file existing.
+OPENPUCK_FW_TAG="0.9.40"
+OPENPUCK_FW_NAME="OpenPuck-0.9.40-standard.uf2"
+OPENPUCK_FW_SHA256="ee2de6a415f87cacc2999893fd7803462a6d76f1ad4acbcd7962f0115575f478"
+OPENPUCK_FW_URL="https://github.com/emerytech/openpuck/releases/download/${OPENPUCK_FW_TAG}/${OPENPUCK_FW_NAME}"
 OPENPUCK_FW_DEST="/etc/couchside/openpuck/firmware.uf2"
 # Signature + checksums for the agent files above, published as sibling assets
 # in the SAME release. install.sh verifies the sig (authenticity) + hashes
@@ -658,11 +661,13 @@ else
         curl -fsSL "$SCREENSAVER_ART_LANDSCAPE_URL" -o "$WORK_DIR/screensaver-landscape.png" 2>/dev/null || true
         curl -fsSL "$SCREENSAVER_ART_LOGO_URL"      -o "$WORK_DIR/screensaver-logo.png"      2>/dev/null || true
     fi
-    # Optional OpenPuck firmware + its AGPL notice: fetched best-effort and
-    # verified by the SHA256SUMS gate below (both are listed there); installed
-    # only if they land AND are in the signed manifest. A release without them
-    # leaves the flash dark.
-    curl -fsSL "$OPENPUCK_FW_URL" -o "$WORK_DIR/$OPENPUCK_FW_NAME" 2>/dev/null || true
+    # OpenPuck firmware seed (optional): fetched best-effort DIRECT from the fork's
+    # pinned release and verified against a PINNED sha256 at install (below) — it is
+    # deliberately NOT in the signed SHA256SUMS manifest, because Couchside
+    # references the AGPL firmware rather than republishing it. Its AGPL notice DOES
+    # ride the signed manifest. A failed fetch just leaves the seed absent; the
+    # agent downloads + verifies the firmware itself at flash time.
+    curl -fsSL --max-time 60 "$OPENPUCK_FW_URL" -o "$WORK_DIR/$OPENPUCK_FW_NAME" 2>/dev/null || true
     curl -fsSL "${AGENT_BASE}/OPENPUCK-NOTICE.txt" -o "$WORK_DIR/OPENPUCK-NOTICE.txt" 2>/dev/null || true
 
     # --- Supply-chain gate (FAIL CLOSED): the fetched agent must be SIGNED by
@@ -742,23 +747,31 @@ fi
 say "Installing daemon to $INSTALL_DIR"
 mkdir -p "$INSTALL_DIR"
 install -m 0755 "$WORK_DIR/couchsided.py" "$INSTALL_DIR/couchsided.py"
-# OpenPuck firmware (optional): install ONLY the verified release asset. It rode
-# through the SHA256SUMS gate above like every other fetched file, so if it is
-# both present AND listed in the signed manifest it has been hash-verified;
-# anything else is not installed (fail closed, same policy as the helper). Dropped
-# root-owned at the fixed path the agent reads for Setup -> Utilities flashing.
-if [ -f "$WORK_DIR/$OPENPUCK_FW_NAME" ] \
-   && [ -f "$WORK_DIR/SHA256SUMS" ] \
-   && grep -qF " $OPENPUCK_FW_NAME" "$WORK_DIR/SHA256SUMS"; then
-    sudo install -d -m 0755 "$(dirname "$OPENPUCK_FW_DEST")"
-    sudo install -m 0644 -o root -g root "$WORK_DIR/$OPENPUCK_FW_NAME" "$OPENPUCK_FW_DEST"
-    # AGPL-3.0: the notice (attribution + source offer) rides beside the binary.
-    if [ -f "$WORK_DIR/OPENPUCK-NOTICE.txt" ] \
-       && grep -qF ' OPENPUCK-NOTICE.txt' "$WORK_DIR/SHA256SUMS"; then
-        sudo install -m 0644 -o root -g root "$WORK_DIR/OPENPUCK-NOTICE.txt" \
-            "$(dirname "$OPENPUCK_FW_DEST")/OPENPUCK-NOTICE.txt"
+# OpenPuck firmware (optional OFFLINE seed): install ONLY if the fetched .uf2
+# matches the sha256 PINNED in this installer. It comes straight from the fork, not
+# via the signed manifest, so this pin is its integrity gate — fail closed: no
+# match (or no file), no install, and the agent fetches + verifies at flash time
+# instead. Dropped root-owned at the fixed path the agent reads for Setup ->
+# Utilities flashing.
+if [ -f "$WORK_DIR/$OPENPUCK_FW_NAME" ]; then
+    openpuck_got="$( { command -v sha256sum >/dev/null 2>&1 \
+        && sha256sum "$WORK_DIR/$OPENPUCK_FW_NAME" \
+        || shasum -a 256 "$WORK_DIR/$OPENPUCK_FW_NAME"; } | cut -d' ' -f1)"
+    if [ "$openpuck_got" = "$OPENPUCK_FW_SHA256" ]; then
+        sudo install -d -m 0755 "$(dirname "$OPENPUCK_FW_DEST")"
+        sudo install -m 0644 -o root -g root "$WORK_DIR/$OPENPUCK_FW_NAME" "$OPENPUCK_FW_DEST"
+        # AGPL-3.0: the notice (attribution + source offer) rides beside the binary;
+        # it came through the signed SHA256SUMS gate above.
+        if [ -f "$WORK_DIR/OPENPUCK-NOTICE.txt" ] \
+           && [ -f "$WORK_DIR/SHA256SUMS" ] \
+           && grep -qF ' OPENPUCK-NOTICE.txt' "$WORK_DIR/SHA256SUMS"; then
+            sudo install -m 0644 -o root -g root "$WORK_DIR/OPENPUCK-NOTICE.txt" \
+                "$(dirname "$OPENPUCK_FW_DEST")/OPENPUCK-NOTICE.txt"
+        fi
+        note "installed OpenPuck firmware seed ($OPENPUCK_FW_NAME)"
+    else
+        note "OpenPuck firmware sha256 mismatch — skipping seed (agent fetches at flash time)."
     fi
-    note "installed OpenPuck firmware ($OPENPUCK_FW_NAME)"
 fi
 # The aerial-screensaver player is optional: install only if wanted AND it
 # fetched and parses (bash -n), so a failed/HTML fetch can't land as an

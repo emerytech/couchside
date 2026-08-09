@@ -46,8 +46,9 @@ it never supplies a command, path, firmware URL, or device.
 - **Detect:** the nRF52840 nice!nano UF2 bootloader mounts as `NICENANO` /
   `NRF52BOOT` on the box (Linux, same as macOS). Agent watches for that mount /
   the bootloader USB id.
-- **Flash:** fetch pinned `OpenPuck-<ver>-standard.uf2` from safijari/openpuck
-  (AGPL; verify pinned sha256), `cp` to the mount. The `cp` "Device not configured"
+- **Flash:** fetch pinned `OpenPuck-<ver>-standard.uf2` from the EmeryTech fork
+  `emerytech/openpuck` (AGPL-3.0; verify pinned sha256 — runtime fetch, not bundled,
+  since agent 2.9.77), `cp` to the mount. The `cp` "Device not configured"
   NON-ZERO exit **is success** (board reboots on write). Then confirm USB
   re-enumerates as Valve `0x28DE:0x1304` ("Steam Controller Puck").
 - **Open spike:** does the box automount the bootloader for the agent user (no root

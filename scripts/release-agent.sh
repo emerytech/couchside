@@ -128,26 +128,13 @@ printf '%s\n' "$win_ver" > "$tmp/agent-version-win.txt"
 files+=(agent-version-win.txt)
 echo "==> windows agent version: $win_ver"
 
-# OpenPuck firmware (AGPL-3.0, safijari/openpuck), republished as a signed asset
-# so install.sh can drop it on the box — Setup -> Utilities flashing then works
-# with the box offline. Fetched from the UPSTREAM release and PINNED by sha256;
-# the build ABORTS on any mismatch so we never publish a firmware we didn't
-# verify. The AGPL notice (attribution + source offer) rides alongside it.
-openpuck_fw="OpenPuck-0.9.31-standard.uf2"
-openpuck_sha="36ef6127afc46a067b17de4fe6e79f67a5e1eef15845899f1d4c5aaaf25ba844"
-openpuck_url="https://github.com/safijari/openpuck/releases/download/0.9.31/$openpuck_fw"
-echo "==> fetching OpenPuck firmware $openpuck_fw (pinned sha256)"
-curl -fsSL --max-time 60 "$openpuck_url" -o "$tmp/$openpuck_fw" \
-    || { echo "error: could not fetch OpenPuck firmware from upstream" >&2; exit 2; }
-openpuck_got="$( { command -v sha256sum >/dev/null 2>&1 \
-    && sha256sum "$tmp/$openpuck_fw" \
-    || shasum -a 256 "$tmp/$openpuck_fw"; } | cut -d' ' -f1)"
-if [ "$openpuck_got" != "$openpuck_sha" ]; then
-    echo "error: OpenPuck firmware sha256 mismatch (got $openpuck_got, want $openpuck_sha) — not publishing" >&2
-    exit 2
-fi
-echo "==> OpenPuck firmware verified ($openpuck_sha)"
-files+=("$openpuck_fw")
+# OpenPuck firmware (AGPL-3.0, safijari/openpuck, EmeryTech fork) is NOT
+# republished by Couchside. The box downloads it straight from the fork's GitHub
+# release — pinned by tag + sha256 in the agent, re-verified before every flash —
+# so Couchside only REFERENCES the firmware, never redistributes it (and never
+# embeds or compiles it). install.sh seeds an offline copy the same way, direct
+# from the fork. Only the AGPL notice (attribution + §6 source offer) still ships
+# as a signed asset, so install.sh can drop it on the box alongside the agent.
 [ -f "$agent/openpuck/OPENPUCK-NOTICE.txt" ] \
     || { echo "error: missing agent/openpuck/OPENPUCK-NOTICE.txt" >&2; exit 2; }
 cp "$agent/openpuck/OPENPUCK-NOTICE.txt" "$tmp/OPENPUCK-NOTICE.txt"
