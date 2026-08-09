@@ -18,7 +18,7 @@
  */
 import Ionicons from '@expo/vector-icons/Ionicons';
 import React from 'react';
-import { Image, Modal, Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
+import { Image, Modal, Pressable, StyleSheet, Text, View } from 'react-native';
 import type { ImageSourcePropType } from 'react-native';
 
 import { toggleBookmarked, useLibraryMarks } from '@/hooks/useLibraryMarks';
@@ -112,7 +112,10 @@ export function GameSheet({
             </View>
           </View>
 
-          <ScrollView style={styles.detail} contentContainerStyle={styles.detailBody}>
+          {/* Facts are a plain View, NOT a ScrollView: the whole sheet must be
+              visible without scrolling (at most five short rows), so the bookmark /
+              Open-in-Steam / launch buttons below are always in view. */}
+          <View style={styles.detailBody}>
               <Row label="Type" value={KIND_LABEL[launcher.kind]} />
               {launcher.appid != null ? <Row label="Steam appid" value={String(launcher.appid)} /> : null}
               {knowsPlaytime ? (
@@ -127,9 +130,15 @@ export function GameSheet({
                   Playtime needs the Couchside service 2.9.71 or newer on the box.
                 </Text>
               )}
-            {/* Bookmark lives with the game's facts, not in the action row:
-                it is a note-to-self about this game, not a decision about what
-                happens on the TV right now. */}
+          </View>
+
+          {/* Bookmark + Open in Steam are secondary actions on the GAME. The whole
+              sheet is visible without scrolling; these sit ABOVE the launch row
+              because CANCEL / PLAY are the "act on the TV now" buttons. (Build 161
+              regressed here: the facts were a fixed-height ScrollView and a game
+              with full playtime rows pushed Open-in-Steam below the clip — now the
+              sheet doesn't scroll at all.) */}
+          <View style={styles.sheetActions}>
             <Pressable
               onPress={() => {
                 if (!key) return;
@@ -151,10 +160,7 @@ export function GameSheet({
               </Text>
             </Pressable>
 
-            {/* Open in Steam is a "look at this game" action (opens the phone's
-                Steam app / web store), not a "do something to the TV" one, so it
-                sits with the facts like the bookmark — not in the launch row.
-                Steam games only; non-Steam shortcuts have no appid. */}
+            {/* Steam games only; non-Steam shortcuts have no appid. */}
             {appid != null ? (
               <Pressable
                 onPress={() => { hapticLight(); void openInSteamStore(appid); }}
@@ -165,7 +171,7 @@ export function GameSheet({
                 <Text style={styles.bookmarkText}>OPEN IN STEAM</Text>
               </Pressable>
             ) : null}
-          </ScrollView>
+          </View>
 
           <View style={styles.actions}>
             <Pressable
@@ -230,17 +236,18 @@ const makeStyles = (t: Palette) =>
     headBody: { flex: 1, gap: 3 },
     title: { color: t.text, fontSize: 16, fontWeight: '800' },
     sub: { color: t.textDim, fontSize: 12, fontFamily: mono },
-    detail: { maxHeight: 190 },
     detailBody: { gap: 8, paddingTop: 2 },
     row: { flexDirection: 'row', justifyContent: 'space-between', gap: 12 },
     rowLabel: { color: t.textDim, fontSize: 12, fontFamily: mono },
     rowValue: { color: t.text, fontSize: 12, fontFamily: mono, flexShrink: 1, textAlign: 'right' },
+    // The two secondary-action buttons (bookmark, open-in-steam), stacked below
+    // the facts. Spacing comes from the card gap + this gap, so no marginTop here.
+    sheetActions: { gap: 10 },
     bookmark: {
       flexDirection: 'row',
       alignItems: 'center',
       justifyContent: 'center',
       gap: 8,
-      marginTop: 14,
       paddingVertical: 11,
       borderRadius: 12,
       borderWidth: 1,
