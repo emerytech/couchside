@@ -89,6 +89,10 @@ export default function RootLayout() {
                 not render behind it and the tab layout's redirects must not race
                 it. See docs/memory/project_first-run-mode-chooser.md. */}
             <Stack.Screen name="onboarding" options={{ headerShown: false, gestureEnabled: false }} />
+            {/* The full owned-but-uninstalled library (pushed from the Launch tab's
+                "Not installed" row). A dedicated FlatList route because the library
+                is large — an inline grid can't virtualise it. */}
+            <Stack.Screen name="installable" options={{ headerShown: false }} />
           </Stack>
           {/* Global overlay: survives the Paywall unmount on unlock (see UnlockToast). */}
           <UnlockToast />
