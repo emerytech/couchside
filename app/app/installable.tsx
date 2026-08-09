@@ -23,6 +23,7 @@ import {
 } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
+import { useLockOrientation } from '@/hooks/useLockOrientation';
 import { api } from '@/lib/api';
 import { hapticLight } from '@/lib/haptics';
 import { useSettings } from '@/lib/SettingsContext';
@@ -119,6 +120,7 @@ export default function InstallablePage() {
   const styles = useThemedStyles(makeStyles);
   const insets = useSafeAreaInsets();
   const { settings } = useSettings();
+  useLockOrientation('portrait'); // like every screen but the Pad — no landscape layout here
 
   const [appids, setAppids] = useState<number[] | null>(null);
   const [details, setDetails] = useState<Record<number, Resolved>>({});
