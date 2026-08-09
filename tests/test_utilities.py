@@ -257,9 +257,26 @@ def test_state_iterates_frozen_id_set():
 
 def test_mock_state_is_renderable():
     print("test_mock_state_is_renderable")
+    cs._MOCK_OPENPUCK_FLASHED = False
     rows = {r["id"]: r["state"] for r in cs.utilities_state(mock=True)}
     check("mock openpuck board_ready", rows["openpuck"], "board_ready")
     check("mock cec needs_enable", rows["cec"], "needs_enable")
+
+
+def test_mock_flash_flips_state():
+    """The harness arc: a mock flash flips the mock row board_ready ->
+    puck_present, so the app's post-flash re-poll shows a changed state."""
+    print("test_mock_flash_flips_state")
+    cs._MOCK_OPENPUCK_FLASHED = False
+    try:
+        before = {r["id"]: r["state"] for r in cs.utilities_state(mock=True)}
+        check("before flash: board_ready", before["openpuck"], "board_ready")
+        r = cs.mock_openpuck_flash()
+        check("mock flash ok", r["ok"], True)
+        after = {r["id"]: r["state"] for r in cs.utilities_state(mock=True)}
+        check("after flash: puck_present", after["openpuck"], "puck_present")
+    finally:
+        cs._MOCK_OPENPUCK_FLASHED = False
 
 
 def test_real_state_uses_probes():
@@ -527,6 +544,7 @@ if __name__ == "__main__":
                test_cec_state_probe_raises_degrades_closed,
                test_state_iterates_frozen_id_set,
                test_mock_state_is_renderable,
+               test_mock_flash_flips_state,
                test_real_state_uses_probes,
                test_http_endpoint,
                test_flash_no_board_degrades_closed,

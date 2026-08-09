@@ -22,6 +22,20 @@ The gamepad UI on the phone and the Steam sidebar responding on the TV, at the s
 
 ![Phone showing the Couchside gamepad while the TV shows the Steam menu it is driving](docs/media/couchside-hero-real.jpg)
 
+### Utilities: flash an OpenPuck receiver from the couch
+
+Plug a cheap nRF52840 board into the box, open **Setup → Utilities**, and tap
+**Flash receiver** — Couchside writes the [OpenPuck](https://github.com/safijari/openpuck)
+firmware and the board reboots as a Steam Controller 2 wireless receiver. No cable
+juggling, no `cp` to a mystery mount, no terminal. (Below: the in-app flow against
+a mock box; the flash itself is verified on real hardware — the board re-enumerates
+as a Valve Steam Controller Puck.)
+
+![The OpenPuck receiver utility: a connected board flashing to a Steam Controller Puck, in the app](docs/media/couchside-openpuck-flash.gif)
+
+OpenPuck is a separate AGPL-3.0 project by [safijari](https://github.com/safijari/openpuck);
+Couchside only automates flashing its released firmware onto a board you plugged in.
+
 ## Features
 
 - **Live console:** hostname, uptime, CPU temperature, load averages, memory and per-disk usage with color-coded bars, refreshed every few seconds. A big red BOX UNREACHABLE banner (with last-seen time) when the box drops off the network, which is exactly when you need it.

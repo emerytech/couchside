@@ -8044,11 +8044,19 @@ def _cec_util_state():
     return "no_adapter"
 
 
+# --mock only: a mock flash flips the mock openpuck row board_ready ->
+# puck_present, so the harness exercises the app's whole arc (press -> Flashing…
+# -> success note -> re-poll flips the row) instead of a state that never moves.
+_MOCK_OPENPUCK_FLASHED = False
+
+
 def utilities_state(mock):
     """The Setup->Utilities list: each supported utility + its live state. READ-ONLY.
     In --mock both appear in a ready-ish state so the harness renders them."""
     if mock:
-        states = {"openpuck": "board_ready", "cec": "needs_enable"}
+        states = {"openpuck": ("puck_present" if _MOCK_OPENPUCK_FLASHED
+                               else "board_ready"),
+                  "cec": "needs_enable"}
     else:
         states = {"openpuck": _openpuck_state(), "cec": _cec_util_state()}
     out = []
@@ -8130,11 +8138,17 @@ def real_openpuck_flash():
 
 
 def mock_openpuck_flash():
-    """--mock/harness: exercise the flash PRESS end-to-end without a real board."""
+    """--mock/harness: exercise the flash PRESS end-to-end without a real board.
+    Takes ~1.5s (a real UF2 burn takes several) so the app's Flashing… state is
+    actually visible in the harness, then flips the mock row to puck_present so
+    the re-poll arc is exercised too."""
+    global _MOCK_OPENPUCK_FLASHED
+    time.sleep(1.5)
+    _MOCK_OPENPUCK_FLASHED = True
     return {"ok": True, "exit_code": 0,
             "stdout": "Flashed (mock). The board is rebooting as a Steam "
                       "Controller Puck.",
-            "stderr": "", "duration_ms": 3}
+            "stderr": "", "duration_ms": 1500}
 
 
 def _cec_argv(cec, op):
