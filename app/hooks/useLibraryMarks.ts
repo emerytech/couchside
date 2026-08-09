@@ -114,6 +114,26 @@ export function toggleBookmarked(key: string): void {
   void set(BOOKMARKS_KEY, JSON.stringify(next));
 }
 
+/** Persist a new ORDER for the existing bookmarks — the Playlog queue order. The
+ *  bookmark set is stored as an ordered array (a JS Set iterates in insertion
+ *  order), so a "reorder" just rewrites that array. Any key not currently
+ *  bookmarked is ignored, and any bookmarked key the caller left out is appended,
+ *  so a reorder can NEVER add or drop a game — only move one. */
+export function reorderBookmarks(orderedKeys: string[]): void {
+  const cur = snap.bookmarks;
+  const seen = new Set<string>();
+  const next: string[] = [];
+  for (const k of orderedKeys) {
+    if (cur.has(k) && !seen.has(k)) {
+      next.push(k);
+      seen.add(k);
+    }
+  }
+  for (const k of cur) if (!seen.has(k)) next.push(k);
+  commit({ ...snap, bookmarks: new Set(next), ready: true });
+  void set(BOOKMARKS_KEY, JSON.stringify(next));
+}
+
 export function savePreset(name: string, filter: FilterState): void {
   const next = upsertPreset(snap.presets, name, filter);
   commit({ ...snap, presets: next, ready: true });

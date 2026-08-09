@@ -25,6 +25,7 @@ import {
 import { Gated } from '@/components/Gated';
 import { GameSheet } from '@/components/GameSheet';
 import { InstallableSection } from '@/components/InstallableSection';
+import { PlaylogCard } from '@/components/PlaylogCard';
 import { useCompat } from '@/hooks/useCompat';
 import { type Compat, deckLabel, protonLabel } from '@/lib/compat';
 import { LibraryFilterSheet } from '@/components/LibraryFilterSheet';
@@ -912,6 +913,10 @@ function LaunchScreen() {
             buried in the list. Probe-and-appear on the LIVE endpoint (no cached
             cap that could go stale); taps through to the full library page. */}
         <InstallableSection />
+
+        {/* Playlog: the ordered "play next" queue (your bookmarks). Hidden until
+            you've queued at least one game. Taps through to app/playlog.tsx. */}
+        <PlaylogCard />
 
         {/* Active Steam downloads (hidden when none / agent < 2.8) */}
         <DownloadsSection downloads={downloads} />
