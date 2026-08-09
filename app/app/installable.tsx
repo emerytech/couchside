@@ -18,7 +18,7 @@ import Ionicons from '@expo/vector-icons/Ionicons';
 import { Stack, router } from 'expo-router';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
-  ActivityIndicator, Alert, FlatList, Image, Linking, Modal, Platform, Pressable,
+  ActivityIndicator, Alert, FlatList, Image, Modal, Platform, Pressable,
   ScrollView, StyleSheet, Text, TextInput, useWindowDimensions, View, type ViewToken,
 } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
@@ -29,6 +29,7 @@ import { useLockOrientation } from '@/hooks/useLockOrientation';
 import { api } from '@/lib/api';
 import { hapticLight } from '@/lib/haptics';
 import { useSettings } from '@/lib/SettingsContext';
+import { openInSteamStore } from '@/lib/steamLinks';
 import { fetchAppDetails } from '@/lib/steamStore';
 import { fetchSteamReview } from '@/lib/steamReviews';
 import { isInstallableGameType, type AppDetails, type SteamReview } from '@/lib/steamStoreParse';
@@ -61,20 +62,6 @@ function runsWell(c: Compat | undefined): boolean {
  *  6=Positive, 7=Very Positive, 8=Overwhelmingly, plus 9). */
 function reviewIsPositive(r: SteamReview | null | undefined): boolean {
   return !!r && r.score >= 6;
-}
-
-/** Open a game's Steam store page in the user's Steam app (deep link), falling
- *  back to the web store when the Steam app / handler isn't available. */
-async function openInSteam(appid: number): Promise<void> {
-  const deep = `steam://store/${appid}`;
-  const web = `https://store.steampowered.com/app/${appid}`;
-  try {
-    if (Platform.OS !== 'web' && (await Linking.canOpenURL(deep))) {
-      await Linking.openURL(deep);
-      return;
-    }
-  } catch { /* fall through to web */ }
-  try { await Linking.openURL(web); } catch { /* nothing else to do */ }
 }
 
 /** steam://install pops an approve prompt on the box (verified) — say so. */
@@ -263,7 +250,7 @@ function GameSheet({
             <Text style={styles.gsPrimaryText}>{requested ? 'Waiting for approval…' : 'Install on box'}</Text>
           </Pressable>
           <Pressable
-            onPress={() => { hapticLight(); void openInSteam(appid); }}
+            onPress={() => { hapticLight(); void openInSteamStore(appid); }}
             style={({ pressed }) => [styles.gsGhost, { borderColor: t.cardBorder, opacity: pressed ? 0.8 : 1 }]}
             accessibilityRole="button"
             accessibilityLabel="Open in Steam">

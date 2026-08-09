@@ -25,6 +25,7 @@ import { toggleBookmarked, useLibraryMarks } from '@/hooks/useLibraryMarks';
 import { hapticLight } from '@/lib/haptics';
 import type { Launcher } from '@/lib/api';
 import { bookmarkKey, playtimeLabel, sizeLabel } from '@/lib/libraryFilter';
+import { openInSteamStore } from '@/lib/steamLinks';
 import { mono, useTheme, useThemedStyles, type Palette } from '@/lib/theme';
 
 /** "3 days ago" / "today" / "never". Absent last_played is honest, not zero. */
@@ -71,6 +72,9 @@ export function GameSheet({
   // a zero that would read as free space.
   const size = sizeLabel(launcher.size_bytes);
   const marked = marks.isBookmarked(key);
+  // Steam games carry an appid; non-Steam shortcuts don't, so "Open in Steam" only
+  // makes sense for the former. Captured to a const so it narrows inside onPress.
+  const appid = launcher.appid ?? null;
 
   const nowSec = Math.floor(Date.now() / 1000);
   const played = playtimeLabel(launcher.playtime_min);
@@ -146,6 +150,21 @@ export function GameSheet({
                 {marked ? 'BOOKMARKED' : 'BOOKMARK'}
               </Text>
             </Pressable>
+
+            {/* Open in Steam is a "look at this game" action (opens the phone's
+                Steam app / web store), not a "do something to the TV" one, so it
+                sits with the facts like the bookmark — not in the launch row.
+                Steam games only; non-Steam shortcuts have no appid. */}
+            {appid != null ? (
+              <Pressable
+                onPress={() => { hapticLight(); void openInSteamStore(appid); }}
+                accessibilityRole="button"
+                accessibilityLabel="Open in Steam"
+                style={({ pressed }) => [styles.bookmark, pressed && styles.pressed]}>
+                <Ionicons name="open-outline" size={15} color={t.textDim} />
+                <Text style={styles.bookmarkText}>OPEN IN STEAM</Text>
+              </Pressable>
+            ) : null}
           </ScrollView>
 
           <View style={styles.actions}>
