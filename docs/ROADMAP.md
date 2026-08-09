@@ -182,13 +182,15 @@ Entry fields: `priority` (P0 blocker → P3 nice) · `risk` · `affects` · `dep
   **Bookmark** ("note-to-self about a game"); "Up next" is a curated, *ordered* view over
   bookmarks. "Now playing" sorts the library by `last_played` / `playtime_min` the sheet
   already shows. Launch is unchanged (`steam://rungameid` already works).
-- **Phased (full spec: `docs/memory/project_game-backlog.md`):** P1 ordered "Up next" over
-  bookmarks; P2 "Now playing" auto-section by recency; P3 reorder + a dedicated Backlog view;
-  P4 (maybe) per-game status (playing / next / done / dropped). App-side state only, like
-  `lib/prefs.ts` / `hooks/useLibraryMarks`.
-- **Open question for owner before P1:** is "Up next" the SAME set as bookmarks (bookmark =
-  backlog), or a SEPARATE list? That choice decides whether we extend the bookmark store or
-  add a new one. Spec assumes "bookmark = up-next" (simplest) pending confirm.
+- **Shape (owner-decided 2026-08-09):** a **dedicated "Playlog" page** (`app/app/playlog.tsx`,
+  own route like theme-picker/licenses), NOT a Launch-tab section — "a separate page you can
+  open to manage backlogs and order games from your library you want to play."
+- **Phased (full spec: `docs/memory/project_game-backlog.md`):** P1 the Playlog page + ordered
+  queue; P2 add-from-library + reorder; P3 "Now playing" section by recency; P4 (maybe) per-game
+  status. App-side state only, like `lib/prefs.ts` / `hooks/useLibraryMarks`.
+- **Still open before P1:** is the queue the SAME set as bookmarks (bookmark = backlog) or a
+  SEPARATE store? Decides extend-bookmarks vs new store. Spec assumes bookmark==queue pending
+  confirm. (UI shape is now settled = the dedicated page.)
 
 ### Install a game you own but have not downloaded (owner ask 2026-08-07)
 - **priority:** P2 · **risk:** medium-high (needs a NEW client-supplied-appid path that
