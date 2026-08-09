@@ -27,11 +27,12 @@ The gamepad UI on the phone and the Steam sidebar responding on the TV, at the s
 Plug a cheap nRF52840 board into the box, open **Setup → Utilities**, and tap
 **Flash receiver** — Couchside writes the [OpenPuck](https://github.com/safijari/openpuck)
 firmware and the board reboots as a Steam Controller 2 wireless receiver. No cable
-juggling, no `cp` to a mystery mount, no terminal. Below is real footage: flashing
-an actual board on a living-room box from the phone, the board re-enumerating as a
-Valve Steam Controller Puck (sped up slightly).
+juggling, no `cp` to a mystery mount, no terminal. Below is real footage, end to end:
+a bare nRF52840 hanging off a USB cable, the flash driven from the phone, and then
+Steam's own controller list showing a **Steam Controller Puck** attached — the same
+board, one tap later (the wait during flashing is sped up slightly).
 
-![Flashing an OpenPuck receiver from the app on a real box, ending with a Steam Controller Puck connected](docs/media/couchside-openpuck.gif)
+![A bare nRF52840 board, then flashing it from the Couchside app, then Steam's controller settings listing a Steam Controller Puck](docs/media/couchside-openpuck.gif)
 
 OpenPuck is a separate AGPL-3.0 project by [safijari](https://github.com/safijari/openpuck),
 flashed here from the [EmeryTech fork](https://github.com/emerytech/openpuck). Couchside
