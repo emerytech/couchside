@@ -15,7 +15,7 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import { ActivityIndicator, Alert, Platform, Pressable, StyleSheet, Text, View } from 'react-native';
 
 import { hapticLight, hapticSuccess, hapticWarning } from '@/lib/haptics';
-import { api, type BoxCaps, type Utility } from '@/lib/api';
+import { api, ApiError, type BoxCaps, type Utility } from '@/lib/api';
 import { useSettings } from '@/lib/SettingsContext';
 import { useTheme, useThemedStyles, type Palette } from '@/lib/theme';
 
@@ -40,14 +40,34 @@ export function UtilitiesSection({ caps }: { caps?: BoxCaps }) {
   const { settings } = useSettings();
   const [utils, setUtils] = useState<Utility[] | null>(null);
   const [busy, setBusy] = useState<string | null>(null); // utility id being run
-  const [note, setNote] = useState<Record<string, { ok: boolean; msg: string }>>({});
+  const [note, setNote] = useState<Record<string, { tone: 'ok' | 'err' | 'info'; msg: string }>>({});
   const live = useRef(true);
+  const lastUtils = useRef<Utility[] | null>(null);
 
   const canProbe = caps?.utilities !== false;
 
   const refresh = useCallback(async () => {
     const res = await api.utilities(settings);
-    if (live.current) setUtils(res ? res.utilities : null);
+    if (!live.current) return;
+    const next = res ? res.utilities : null;
+    // A state flip makes any old flash note stale — the fresh status line is the
+    // truth now. (Hardware-observed: a stale "No board in DFU mode" error sat
+    // under a fresh "A Steam Controller Puck is connected" after the row updated.)
+    const prev = lastUtils.current;
+    if (prev && next) {
+      const changed = next
+        .filter((u) => prev.find((p) => p.id === u.id)?.state !== u.state)
+        .map((u) => u.id);
+      if (changed.length) {
+        setNote((n) => {
+          const c = { ...n };
+          for (const id of changed) delete c[id];
+          return c;
+        });
+      }
+    }
+    lastUtils.current = next;
+    setUtils(next);
   }, [settings]);
 
   useEffect(() => {
@@ -68,18 +88,32 @@ export function UtilitiesSection({ caps }: { caps?: BoxCaps }) {
         const msg = r.ok
           ? (r.stdout || 'Flashed. The board is rebooting as a Steam Controller Puck.')
           : (r.stderr || 'Flash failed.');
-        setNote((n) => ({ ...n, openpuck: { ok: r.ok, msg } }));
+        setNote((n) => ({ ...n, openpuck: { tone: r.ok ? 'ok' : 'err', msg } }));
         if (r.ok) hapticSuccess(); else hapticWarning();
-        // The board re-enumerates as a puck a few seconds after flashing; re-poll
-        // so the row flips board_ready -> puck_present.
-        setTimeout(() => { void refresh(); }, 4000);
-      } catch {
+      } catch (e) {
         if (live.current) {
-          setNote((n) => ({ ...n, openpuck: { ok: false, msg: 'Could not reach the box.' } }));
-          hapticWarning();
+          if (e instanceof ApiError && e.kind === 'timeout') {
+            // The write may simply be outlasting our patience — the flash often
+            // SUCCEEDS after this (hardware-observed). Say so; the re-poll below
+            // replaces this with the real state.
+            setNote((n) => ({ ...n, openpuck: {
+              tone: 'info',
+              msg: 'Still flashing — the box is writing firmware. The status here '
+                + 'updates when it finishes.',
+            } }));
+          } else {
+            setNote((n) => ({ ...n, openpuck: { tone: 'err', msg: 'Could not reach the box.' } }));
+            hapticWarning();
+          }
         }
       } finally {
         if (live.current) setBusy(null);
+        // Re-poll REGARDLESS of outcome. After a timeout the flash may still have
+        // succeeded box-side; after "no board in DFU" the truthful row state
+        // (e.g. puck_present) replaces the stale one. Twice: once right away,
+        // once after the board has had time to reboot + re-enumerate.
+        setTimeout(() => { void refresh(); }, 1500);
+        setTimeout(() => { void refresh(); }, 6000);
       }
     };
     // A firmware write is a real action — confirm first, even though the
@@ -139,7 +173,9 @@ export function UtilitiesSection({ caps }: { caps?: BoxCaps }) {
                 </Pressable>
               ) : null}
               {n ? (
-                <Text style={[styles.note, { color: n.ok ? t.green : t.red }]}>{n.msg}</Text>
+                <Text style={[styles.note, {
+                  color: n.tone === 'ok' ? t.green : n.tone === 'err' ? t.red : t.blue,
+                }]}>{n.msg}</Text>
               ) : null}
             </View>
           </View>
