@@ -17,6 +17,7 @@ import { router } from 'expo-router';
 import { useEffect, useState } from 'react';
 import { Pressable, StyleSheet, Text, View } from 'react-native';
 
+import { TourAnchor } from '@/components/TourAnchor';
 import { api } from '@/lib/api';
 import { hapticLight } from '@/lib/haptics';
 import { useSettings } from '@/lib/SettingsContext';
@@ -49,6 +50,7 @@ export function InstallableSection() {
   if (count === null || count === 0) return null;
 
   return (
+    <TourAnchor id="launch.installable">
     <Pressable
       style={({ pressed }) => [styles.card, pressed && styles.cardPressed]}
       onPress={() => {
@@ -68,6 +70,7 @@ export function InstallableSection() {
       </View>
       <Ionicons name="chevron-forward" size={18} color={t.textFaint} />
     </Pressable>
+    </TourAnchor>
   );
 }
 

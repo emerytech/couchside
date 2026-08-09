@@ -12,6 +12,7 @@ import Ionicons from '@expo/vector-icons/Ionicons';
 import { router } from 'expo-router';
 import { Pressable, StyleSheet, Text, View } from 'react-native';
 
+import { TourAnchor } from '@/components/TourAnchor';
 import { useLibraryMarks } from '@/hooks/useLibraryMarks';
 import { hapticLight } from '@/lib/haptics';
 import { useTheme, useThemedStyles, type Palette } from '@/lib/theme';
@@ -25,6 +26,7 @@ export function PlaylogCard() {
   if (count === 0) return null;
 
   return (
+    <TourAnchor id="launch.playlog">
     <Pressable
       style={({ pressed }) => [styles.card, pressed && styles.cardPressed]}
       onPress={() => {
@@ -44,6 +46,7 @@ export function PlaylogCard() {
       </View>
       <Ionicons name="chevron-forward" size={18} color={t.textFaint} />
     </Pressable>
+    </TourAnchor>
   );
 }
 

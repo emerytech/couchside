@@ -270,6 +270,10 @@ export function UtilitiesSection({ caps }: { caps?: BoxCaps }) {
           </View>
         );
       })}
+      <Text style={styles.footNote}>
+        A small set for now. As more one-click helpers land here, Utilities will move to
+        its own dashboard page.
+      </Text>
     </View>
   );
 }
@@ -299,4 +303,5 @@ const makeStyles = (t: Palette) =>
     link: { color: t.blue, fontSize: 12, fontWeight: '700' },
     newerLine: { color: t.textFaint, fontSize: 12, fontWeight: '600', lineHeight: 17 },
     newerHint: { color: t.textFaint, fontSize: 12, marginTop: 6 },
+    footNote: { color: t.textFaint, fontSize: 11, lineHeight: 16, marginTop: 4, fontStyle: 'italic' },
   });

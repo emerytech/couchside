@@ -95,6 +95,23 @@ export const TOUR_STEPS: TourStep[] = [
     title: 'Or let it choose',
     body: 'The shuffle picks from whatever is currently showing — so "something short I have never played" is one tap away.',
   },
+  // Anchored INSIDE the cards (components/InstallableSection, PlaylogCard), so
+  // each step only shows when its card actually rendered: the install card needs
+  // owned-but-uninstalled games, the Playlog needs at least one queued game.
+  // No card, no anchor, step skips — the same "never describe an absent control"
+  // rule as the filter/shuffle steps above.
+  {
+    tab: 'launch',
+    anchor: 'launch.installable',
+    title: 'Your whole library — even what you haven’t installed',
+    body: 'Games you own but never downloaded show up here. Kick off the install on the box from the couch; no Big Picture, no keyboard.',
+  },
+  {
+    tab: 'launch',
+    anchor: 'launch.playlog',
+    title: 'Line up what to play next',
+    body: 'Bookmark a game and it lands in your Playlog — a play-next queue you can reorder. Not installed yet? Tap it there to install.',
+  },
 
   // PAD — the hardware replacement.
   // Anchored to the mode selector rather than the surface below it: the pad
