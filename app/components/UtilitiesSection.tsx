@@ -15,7 +15,7 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import { ActivityIndicator, Alert, Platform, Pressable, StyleSheet, Text, View } from 'react-native';
 
 import { hapticLight, hapticSuccess, hapticWarning } from '@/lib/haptics';
-import { api, ApiError, type BoxCaps, type Utility } from '@/lib/api';
+import { api, ApiError, type BoxCaps, type OpenpuckLatest, type Utility } from '@/lib/api';
 import { useSettings } from '@/lib/SettingsContext';
 import { useTheme, useThemedStyles, type Palette } from '@/lib/theme';
 
@@ -41,6 +41,9 @@ export function UtilitiesSection({ caps }: { caps?: BoxCaps }) {
   const [utils, setUtils] = useState<Utility[] | null>(null);
   const [busy, setBusy] = useState<string | null>(null); // utility id being run
   const [note, setNote] = useState<Record<string, { tone: 'ok' | 'err' | 'info'; msg: string }>>({});
+  // Opt-in "check for newer firmware": null = not checked, then the box's answer.
+  const [latest, setLatest] = useState<OpenpuckLatest | null>(null);
+  const [checking, setChecking] = useState(false);
   const live = useRef(true);
   const lastUtils = useRef<Utility[] | null>(null);
 
@@ -77,13 +80,13 @@ export function UtilitiesSection({ caps }: { caps?: BoxCaps }) {
     return () => { live.current = false; };
   }, [refresh, canProbe]);
 
-  const flashOpenpuck = useCallback(() => {
+  const flashOpenpuck = useCallback((variant: 'pinned' | 'latest' = 'pinned') => {
     const doFlash = async () => {
       hapticLight();
       setBusy('openpuck');
       setNote((n) => { const c = { ...n }; delete c.openpuck; return c; });
       try {
-        const r = await api.runUtility(settings, 'openpuck');
+        const r = await api.runUtility(settings, 'openpuck', variant);
         if (!live.current) return;
         const msg = r.ok
           ? (r.stdout || 'Flashed. The board is rebooting as a Steam Controller Puck.')
@@ -117,20 +120,49 @@ export function UtilitiesSection({ caps }: { caps?: BoxCaps }) {
       }
     };
     // A firmware write is a real action — confirm first, even though the
-    // bootloader stays intact and it's re-flashable.
-    const q = 'Flash the OpenPuck firmware to the plugged-in board? It reboots as '
-      + 'a Steam Controller Puck when done. The bootloader is kept, so you can '
-      + 're-flash any time.';
+    // bootloader stays intact and it's re-flashable. The 'latest' path is opt-in
+    // and flashes a build newer than the one the app pins, so it says so.
+    const newer = latest?.tag ? ` (${latest.tag})` : '';
+    const q = variant === 'latest'
+      ? 'Flash the NEWEST OpenPuck firmware' + newer + ' to the plugged-in board? '
+        + 'This is newer than the build the app ships and pins. It reboots as a '
+        + 'Steam Controller Puck when done; the bootloader is kept, so you can '
+        + 're-flash any time.'
+      : 'Flash the OpenPuck firmware to the plugged-in board? It reboots as '
+        + 'a Steam Controller Puck when done. The bootloader is kept, so you can '
+        + 're-flash any time.';
     if (Platform.OS === 'web') {
       // eslint-disable-next-line no-alert
       if (typeof window !== 'undefined' && window.confirm(q)) void doFlash();
       return;
     }
-    Alert.alert('Flash OpenPuck receiver?', q, [
-      { text: 'Cancel', style: 'cancel' },
-      { text: 'Flash', onPress: () => { void doFlash(); } },
-    ]);
-  }, [settings, refresh]);
+    Alert.alert(
+      variant === 'latest' ? 'Flash newest firmware?' : 'Flash OpenPuck receiver?',
+      q,
+      [
+        { text: 'Cancel', style: 'cancel' },
+        { text: 'Flash', onPress: () => { void doFlash(); } },
+      ],
+    );
+  }, [settings, refresh, latest]);
+
+  // Opt-in: ask the box to compare its pinned firmware against the fork's newest
+  // release. Read-only — this NEVER flashes; it only reveals the "Flash newest"
+  // control when a newer build exists.
+  const checkNewer = useCallback(async () => {
+    hapticLight();
+    setChecking(true);
+    try {
+      // null == a 404: the box's service is too old for this endpoint (distinct
+      // from a thrown error, which is an unreachable/unhealthy box).
+      const r = await api.openpuckLatest(settings);
+      if (live.current) setLatest(r ?? { available: false, pinned_tag: '', error: 'old-agent' });
+    } catch {
+      if (live.current) setLatest({ available: false, pinned_tag: '', error: 'unreachable' });
+    } finally {
+      if (live.current) setChecking(false);
+    }
+  }, [settings]);
 
   // Nothing to show if the box lacks the endpoint (old agent / Windows).
   if (!canProbe || !utils || utils.length === 0) return null;
@@ -153,7 +185,7 @@ export function UtilitiesSection({ caps }: { caps?: BoxCaps }) {
               <Text style={[styles.status, { color }]}>{p.line}</Text>
               {canFlash ? (
                 <Pressable
-                  onPress={flashOpenpuck}
+                  onPress={() => flashOpenpuck('pinned')}
                   disabled={running}
                   style={({ pressed }) => [
                     styles.btn,
@@ -176,6 +208,60 @@ export function UtilitiesSection({ caps }: { caps?: BoxCaps }) {
                 <Text style={[styles.note, {
                   color: n.tone === 'ok' ? t.green : n.tone === 'err' ? t.red : t.blue,
                 }]}>{n.msg}</Text>
+              ) : null}
+              {u.id === 'openpuck' ? (
+                <View style={styles.newer}>
+                  {latest === null ? (
+                    <Pressable
+                      onPress={checkNewer}
+                      disabled={checking}
+                      accessibilityRole="button"
+                      accessibilityLabel="Check for newer OpenPuck firmware"
+                      style={({ pressed }) => [{ opacity: checking ? 0.6 : pressed ? 0.7 : 1 }]}
+                    >
+                      <Text style={styles.link}>
+                        {checking ? 'Checking…' : 'Check for newer firmware'}
+                      </Text>
+                    </Pressable>
+                  ) : latest.available && latest.is_newer ? (
+                    <>
+                      <Text style={styles.newerLine}>
+                        {`Newer firmware available${latest.tag ? ` (${latest.tag})` : ''}.`}
+                      </Text>
+                      {canFlash ? (
+                        <Pressable
+                          onPress={() => flashOpenpuck('latest')}
+                          disabled={running}
+                          style={({ pressed }) => [
+                            styles.btn,
+                            { borderColor: t.blue, opacity: running ? 0.6 : pressed ? 0.8 : 1 },
+                          ]}
+                          accessibilityRole="button"
+                          accessibilityLabel="Flash newest OpenPuck firmware"
+                        >
+                          {running ? (
+                            <ActivityIndicator size="small" color={t.blue} />
+                          ) : (
+                            <Ionicons name="flash-outline" size={16} color={t.blue} />
+                          )}
+                          <Text style={[styles.btnText, { color: t.blue }]}>
+                            {running ? 'Flashing…' : 'Flash newest'}
+                          </Text>
+                        </Pressable>
+                      ) : (
+                        <Text style={styles.newerHint}>Plug a board in to flash it.</Text>
+                      )}
+                    </>
+                  ) : (
+                    <Text style={styles.newerLine}>
+                      {latest.available
+                        ? "You're on the newest firmware."
+                        : latest.error === 'old-agent'
+                          ? "Update the box's Couchside service to check for newer firmware."
+                          : "Couldn't reach the box to check."}
+                    </Text>
+                  )}
+                </View>
               ) : null}
             </View>
           </View>
@@ -206,4 +292,8 @@ const makeStyles = (t: Palette) =>
     },
     btnText: { fontSize: 13, fontWeight: '700' },
     note: { fontSize: 12, marginTop: 8, fontWeight: '600', lineHeight: 17 },
+    newer: { marginTop: 10 },
+    link: { color: t.blue, fontSize: 12, fontWeight: '700' },
+    newerLine: { color: t.textFaint, fontSize: 12, fontWeight: '600', lineHeight: 17 },
+    newerHint: { color: t.textFaint, fontSize: 12, marginTop: 6 },
   });

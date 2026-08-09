@@ -211,6 +211,20 @@ export type BoxCaps = {
  *  cec: 'enabled' | 'needs_enable' | 'no_adapter'). */
 export type Utility = { id: string; state: string; label: string; description: string };
 
+/** GET /api/utilities/openpuck/latest — the OpenPuck fork's newest release vs the
+ *  build the box pins, for the opt-in "check for newer firmware" control. Read-only;
+ *  `available: false` means the box couldn't reach GitHub (an `error` string says
+ *  why). `is_newer` gates whether the app offers a newer flash. */
+export type OpenpuckLatest = {
+  available: boolean;
+  pinned_tag: string;
+  tag?: string | null;
+  name?: string | null;
+  size?: number | null;
+  is_newer?: boolean;
+  error?: string;
+};
+
 /** One owned-but-uninstalled entry from GET /api/steam/installable. name/type are
  *  present when the agent (>= 2.9.76) parsed them offline from appinfo.vdf; type
  *  is lowercased ('game' | 'dlc' | 'tool' | …) and drives the app's game filter. */
@@ -1661,10 +1675,30 @@ export const api = {
    * reach the box" for a flash that SUCCEEDED (observed on hardware 2026-08-08)
    * — the worst kind of wrong.
    */
-  runUtility(settings: ConnSettings, id: string): Promise<ActionResult> {
+  runUtility(
+    settings: ConnSettings,
+    id: string,
+    variant?: 'pinned' | 'latest',
+  ): Promise<ActionResult> {
+    // `variant` is an allowlisted enum the agent validates (pinned | latest); it is
+    // sent only for openpuck's opt-in "flash newer" and defaults to pinned server-
+    // side when omitted, so old agents (which ignore the query) keep working.
+    const q = variant ? `?variant=${encodeURIComponent(variant)}` : '';
     return request<ActionResult>(
-      settings, `/api/utilities/${encodeURIComponent(id)}/run`,
+      settings, `/api/utilities/${encodeURIComponent(id)}/run${q}`,
       { method: 'POST', timeoutMs: 60000 });
+  },
+
+  /**
+   * OPT-IN "check for newer OpenPuck firmware" (agent >= 2.9.77): the fork's newest
+   * release vs the build the box pins. Read-only, cached box-side; resolves null on
+   * a 404 so older agents simply don't show the control. Calling this NEVER flashes
+   * anything — flashing a newer build is a separate, explicit
+   * runUtility(settings, 'openpuck', 'latest').
+   */
+  openpuckLatest(settings: ConnSettings): Promise<OpenpuckLatest | null> {
+    return probeOrNull(
+      request<OpenpuckLatest>(settings, '/api/utilities/openpuck/latest'));
   },
 
   /**
