@@ -46,7 +46,7 @@ except ImportError:  # pragma: no cover
     fcntl = None
 
 APP_NAME = "couchside-agent"
-VERSION = "2.9.75"
+VERSION = "2.9.76"
 UID = os.getuid()
 XDG_RUNTIME_DIR = "/run/user/%d" % UID
 
@@ -6549,21 +6549,172 @@ def _installable_appids():
     return val
 
 
+# ---------------------------------------------------------------------------
+# appinfo.vdf — Steam's own metadata cache: name + type for every owned app.
+#
+# The first cut of the installable list shipped appid-only, on the belief that
+# "appinfo.vdf is a partial cache". MEASURED on real hardware (bazzite,
+# 2026-08-09): it carried a name for 1101/1101 (100%) of the installable set —
+# and the app-side store lookup it deferred to rate-limits at ~200/5min, which on
+# an 1101-app library meant the Not-installed page listed 88 games after days of
+# use. So the agent now parses appinfo.vdf (READ-ONLY, pure stdlib) and ships
+# name+type with the list; the store lookup remains app-side for what appinfo
+# lacks (genres, release year). Additive fields only — old apps ignore them.
+#
+# Format (binary): header magic 0x075644{27,28,29} + universe u32; v29 adds an
+# i64 offset to a string table (keys become u32 indices instead of inline
+# cstrings). Then per app: appid u32, size u32, then `size` bytes = fixed fields
+# (infoState u32, lastUpdated u32, picsToken u64, sha1[20], changeNumber u32,
+# v28+: binarySha1[20]) + a binary-VDF blob. name/type live at
+# appinfo.common.{name,type}. Node types: 0x00 dict, 0x01 str, 0x02 u32,
+# 0x07 u64, 0x08 end-of-dict.
+# ---------------------------------------------------------------------------
+_APPINFO_MAGIC_V29 = 0x07564429
+_APPINFO_MAGIC_V28 = 0x07564428
+_APPINFO_MAGIC_V27 = 0x07564427
+# Parse cache keyed on (path, mtime, size) — the file only changes when Steam
+# updates app metadata, and a full parse of a real 4.2MB file measures ~80ms.
+_APPINFO_CACHE = {"key": None, "val": None}
+
+
+def _appinfo_bvdf(buf, pos, end, strings):
+    """One binary-VDF node table -> dict. Keys: v29 = u32 string-table index;
+    v27/v28 = inline cstring. Raises on malformed input (caller degrades)."""
+    root = {}
+    stack = [root]
+    while pos < end:
+        t = buf[pos]
+        pos += 1
+        if t == 0x08:  # end of current dict
+            stack.pop()
+            if not stack:
+                break
+            continue
+        if strings is not None:
+            (idx,) = struct.unpack_from("<I", buf, pos)
+            pos += 4
+            key = strings[idx]
+        else:
+            zero = buf.index(b"\x00", pos)
+            key = buf[pos:zero].decode("utf-8", "replace")
+            pos = zero + 1
+        if t == 0x00:
+            d = {}
+            stack[-1][key] = d
+            stack.append(d)
+        elif t == 0x01:
+            zero = buf.index(b"\x00", pos)
+            stack[-1][key] = buf[pos:zero].decode("utf-8", "replace")
+            pos = zero + 1
+        elif t == 0x02:
+            (v,) = struct.unpack_from("<I", buf, pos)
+            pos += 4
+            stack[-1][key] = v
+        elif t == 0x07:
+            (v,) = struct.unpack_from("<Q", buf, pos)
+            pos += 8
+            stack[-1][key] = v
+        else:
+            raise ValueError("unknown vdf node type 0x%02X" % t)
+    return root
+
+
+def _appinfo_path():
+    root = _steam_root()
+    if not root:
+        return None
+    p = os.path.join(root, "appcache", "appinfo.vdf")
+    return p if os.path.isfile(p) else None
+
+
+def _appinfo_names():
+    """{appid: {"name": str, "type": str}} parsed from appinfo.vdf. READ-ONLY and
+    degrades CLOSED: any missing file, bad magic, or malformed blob yields {} (or
+    skips just that app) — the list then ships appid-only exactly as before."""
+    path = _appinfo_path()
+    if not path:
+        return {}
+    try:
+        st = os.stat(path)
+        key = (path, st.st_mtime, st.st_size)
+        if _APPINFO_CACHE["key"] == key:
+            return _APPINFO_CACHE["val"]
+        with open(path, "rb") as f:
+            buf = f.read()
+        magic, _universe = struct.unpack_from("<II", buf, 0)
+        if magic not in (_APPINFO_MAGIC_V29, _APPINFO_MAGIC_V28, _APPINFO_MAGIC_V27):
+            return {}
+        pos = 8
+        strings = None
+        data_end = len(buf)
+        if magic == _APPINFO_MAGIC_V29:
+            (table_off,) = struct.unpack_from("<q", buf, pos)
+            pos += 8
+            (count,) = struct.unpack_from("<I", buf, table_off)
+            strings = []
+            p = table_off + 4
+            for _ in range(count):
+                zero = buf.index(b"\x00", p)
+                strings.append(buf[p:zero].decode("utf-8", "replace"))
+                p = zero + 1
+            data_end = table_off
+        out = {}
+        while pos + 8 <= data_end:
+            appid, size = struct.unpack_from("<II", buf, pos)
+            pos += 8
+            if appid == 0:
+                break
+            blob_end = pos + size
+            hdr = 4 + 4 + 8 + 20 + 4  # infoState, lastUpdated, picsToken, sha1, changeNumber
+            if magic in (_APPINFO_MAGIC_V28, _APPINFO_MAGIC_V29):
+                hdr += 20  # binarySha1
+            try:
+                kv = _appinfo_bvdf(buf, pos + hdr, blob_end, strings)
+                common = kv.get("appinfo", {}).get("common", {})
+                name = common.get("name")
+                if isinstance(name, str) and name:
+                    typ = common.get("type")
+                    out[appid] = {"name": name,
+                                  "type": (typ if isinstance(typ, str) else "").lower()}
+            except Exception:
+                pass  # one bad blob must not sink the rest
+            pos = blob_end
+        _APPINFO_CACHE.update(key=key, val=out)
+        return out
+    except Exception:
+        return {}
+
+
 def _installable_games():
-    """[{"appid": int}] for owned-but-uninstalled games, sorted by appid.
+    """[{"appid": int, "name"?: str, "type"?: str}] for owned-but-uninstalled
+    apps, sorted by appid. name/type come OFFLINE from Steam's own appinfo.vdf
+    when it parses (measured 100% coverage on a real 1101-app library); entries
+    it lacks ship appid-only and the app's keyless store lookup covers them.
+    The app filters to type=game — DLC/tools/demos carry librarycache art too,
+    so the raw list overcounts games by ~2.5x. Additive fields only (§4)."""
+    meta = _appinfo_names()
+    out = []
+    for a in sorted(_installable_appids(), key=lambda a: int(a)):
+        g = {"appid": int(a)}
+        m = meta.get(int(a))
+        if m:
+            g["name"] = m["name"]
+            g["type"] = m["type"]
+        out.append(g)
+    return out
 
-    NAMES are deliberately omitted: the box has no reliable OFFLINE name for an
-    uninstalled game (appinfo.vdf is a partial cache), and inventing one is worse
-    than none — the app resolves names app-side from the KEYLESS store endpoint and
-    filters to type=game there. Art, when present, is already on disk and served by
-    the existing GET /api/steam/<appid>/cover for any appid, installed or not."""
-    return [{"appid": int(a)}
-            for a in sorted(_installable_appids(), key=lambda a: int(a))]
 
-
-# Mock owned-but-uninstalled list for the web harness / --mock. Real appids so the
-# app's keyless store-name lookup resolves recognisable titles when exercised.
-MOCK_INSTALLABLE = [{"appid": a} for a in (220, 400, 620, 292030, 570)]
+# Mock owned-but-uninstalled list for the web harness / --mock. Real appids +
+# names/types matching what a real appinfo.vdf would supply, so the app renders
+# titles immediately and its type=game filter is exercised (620 = a non-game
+# control would be wrong here: all five are games).
+MOCK_INSTALLABLE = [
+    {"appid": 220, "name": "Half-Life 2", "type": "game"},
+    {"appid": 400, "name": "Portal", "type": "game"},
+    {"appid": 620, "name": "Portal 2", "type": "game"},
+    {"appid": 292030, "name": "The Witcher 3: Wild Hunt", "type": "game"},
+    {"appid": 570, "name": "Dota 2", "type": "game"},
+]
 
 
 # ---------------------------------------------------------------------------

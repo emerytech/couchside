@@ -211,6 +211,11 @@ export type BoxCaps = {
  *  cec: 'enabled' | 'needs_enable' | 'no_adapter'). */
 export type Utility = { id: string; state: string; label: string; description: string };
 
+/** One owned-but-uninstalled entry from GET /api/steam/installable. name/type are
+ *  present when the agent (>= 2.9.76) parsed them offline from appinfo.vdf; type
+ *  is lowercased ('game' | 'dlc' | 'tool' | …) and drives the app's game filter. */
+export type InstallableGame = { appid: number; name?: string; type?: string };
+
 /**
  * Couchside Player state, from GET /api/player.
  *
@@ -1615,18 +1620,22 @@ export const api = {
 
   /**
    * Owned-but-uninstalled Steam games (agent >= 2.9.73, gated by caps.steaminstall).
-   * Appids only — the box has no reliable offline name for an uninstalled game, so
-   * the app resolves names + type app-side from the keyless store endpoint (see
-   * lib/steamStore.ts) and pulls art from coverArt(appid). Probe-and-appear:
-   * resolves null on a 404 (older agent / no route) so the section stays hidden.
-   * To INSTALL one, call launch(settings, `install:${appid}`) — the agent gates it
-   * against this same set and hands steam://install to the client.
+   * Since agent 2.9.76 each entry may carry name + type, parsed OFFLINE from
+   * Steam's own appinfo.vdf on the box (measured 100% coverage of a real 1101-app
+   * library) — the app seeds its details index from these so the whole library
+   * renders instantly instead of trickling through the rate-limited store API
+   * (~200/5min; an 1101-app library showed 88 games after days). The store lookup
+   * remains as enrichment for what appinfo lacks (genres, release year). Older
+   * agents send appids only; the store path still covers those. Art comes from
+   * coverArt(appid). Probe-and-appear: null on 404 hides the section. To INSTALL
+   * one, call launch(settings, `install:${appid}`) — the agent gates it against
+   * this same set and hands steam://install to the client.
    */
   installable(
     settings: ConnSettings,
-  ): Promise<{ games: { appid: number }[]; count: number } | null> {
+  ): Promise<{ games: InstallableGame[]; count: number } | null> {
     return probeOrNull(
-      request<{ games: { appid: number }[]; count: number }>(
+      request<{ games: InstallableGame[]; count: number }>(
         settings, '/api/steam/installable'));
   },
 
