@@ -4,37 +4,36 @@
  * row buried in the list) so people find it while browsing games. Tapping it pushes
  * app/installable.tsx (the virtualised, searchable full-library page).
  *
- * Probe-and-appear: cap-gated on caps.steaminstall, and hidden entirely when the
- * box has none to offer (0) or an older agent 404s /api/steam/installable — so an
- * old box or a Windows box is simply unaffected.
+ * Probe-and-appear: the endpoint IS the gate. /api/steam/installable 404s on a
+ * box that can't offer it (old agent, Windows) -> probeOrNull returns null -> the
+ * card hides. It deliberately does NOT gate on the cached `steaminstall` cap: a
+ * STALE cap (a box cached as false before it supported the feature, and never
+ * re-probed) would hide the card even though the box now returns games — the
+ * exact symptom seen on a 2.9.76 box with 441 games. The live endpoint can't go
+ * stale, so it is the source of truth.
  */
 import Ionicons from '@expo/vector-icons/Ionicons';
 import { router } from 'expo-router';
 import { useEffect, useState } from 'react';
 import { Pressable, StyleSheet, Text, View } from 'react-native';
 
-import { api, type BoxCaps } from '@/lib/api';
+import { api } from '@/lib/api';
 import { hapticLight } from '@/lib/haptics';
 import { useSettings } from '@/lib/SettingsContext';
 import { useTheme, useThemedStyles, type Palette } from '@/lib/theme';
 
-export function InstallableSection({ caps }: { caps?: BoxCaps }) {
+export function InstallableSection() {
   const t = useTheme();
   const styles = useThemedStyles(makeStyles);
   const { settings } = useSettings();
   const [count, setCount] = useState<number | null>(null);
 
-  // Cap false = box can't; don't probe. Undefined/true = probe (404 on an older
-  // agent hides the card: count stays null).
-  const canProbe = caps?.steaminstall !== false;
-
   useEffect(() => {
-    if (!canProbe) return;
     let live = true;
     void (async () => {
       const res = await api.installable(settings);
       if (!live) return;
-      if (!res) { setCount(null); return; }
+      if (!res) { setCount(null); return; } // 404 / unreachable -> hidden
       // New agents (>= 2.9.76) type each entry from appinfo.vdf — count actual
       // GAMES, not the raw librarycache list (which overcounts ~2.5x with
       // DLC/tools; a real library read "1101" when it has 441 games). Old
@@ -45,9 +44,9 @@ export function InstallableSection({ caps }: { caps?: BoxCaps }) {
         : res.count);
     })();
     return () => { live = false; };
-  }, [settings, canProbe]);
+  }, [settings]);
 
-  if (!canProbe || count === null || count === 0) return null;
+  if (count === null || count === 0) return null;
 
   return (
     <Pressable

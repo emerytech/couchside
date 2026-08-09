@@ -909,9 +909,9 @@ function LaunchScreen() {
 
         {/* Install games you own but haven't downloaded — a PROMINENT card near the
             top (above downloads) so it's discoverable while browsing, not a thin row
-            buried in the list. Hidden unless the box can (caps.steaminstall / agent
-            >= 2.9.73); taps through to the full virtualised library page. */}
-        <InstallableSection caps={activeBox?.caps} />
+            buried in the list. Probe-and-appear on the LIVE endpoint (no cached
+            cap that could go stale); taps through to the full library page. */}
+        <InstallableSection />
 
         {/* Active Steam downloads (hidden when none / agent < 2.8) */}
         <DownloadsSection downloads={downloads} />
