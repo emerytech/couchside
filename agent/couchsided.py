@@ -7462,13 +7462,27 @@ def mock_session_default_set(mode):
 
 
 def mock_launchers():
-    """Custom launchers plus fake Steam games carrying every art kind."""
+    """Custom launchers plus fake Steam games carrying every art kind. A SUBSET
+    carry playtime/last_played/size so the harness exercises the FULL GameSheet
+    layout (Type + appid + Time played + Last opened + On disk = five rows), not
+    only the shorter no-playtime note. That fuller shape is the one that hid a
+    detail-sheet clipping bug (build 161): the mock had no playtime, so every
+    harness game rendered short and the overflow never showed."""
+    # appid -> (playtime_min, last_played_epoch, size_bytes). Only some games, so
+    # the harness ALSO still renders the "needs 2.9.71" no-playtime shape.
+    facts = {
+        1091500: (11165, int(time.time()) - 3600, 68 * 10**9),   # ~186h, today
+        292030: (8020, int(time.time()) - 5 * 86400, 50 * 10**9),
+        620: (1240, int(time.time()) - 40 * 86400, 12 * 10**9),
+    }
     out = [{"id": l["id"], "label": l["label"], "kind": "custom"} for l in LAUNCHERS]
     for appid, label, art in MOCK_STEAM_GAMES:
         e = {"id": "steam:%d" % appid, "label": label,
              "kind": "steam", "appid": appid}
         if art:
             e["art"] = art
+        if appid in facts:
+            e["playtime_min"], e["last_played"], e["size_bytes"] = facts[appid]
         out.append(e)
     # Non-Steam shortcuts, so the web harness renders the streaming tiles that
     # dominate a real SteamOS box (these are the actual names Bazzite's
