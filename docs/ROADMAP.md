@@ -130,6 +130,21 @@ Entry fields: `priority` (P0 blocker → P3 nice) · `risk` · `affects` · `dep
 
 ## 📋 Planned
 
+### Setup → Utilities menu — extensible one-click hardware/setup helpers (owner ask 2026-08-08)
+- **priority:** P2 · **risk:** medium-high (agent runs hardware-touching flashes + signed
+  setups; must stay strictly allowlisted) · **affects:** agent + app · **depends_on:** nothing
+- **Owner:** an extensible Utilities section that grows with the app. **Launch with two
+  tenants: OpenPuck flash + HDMI-CEC.**
+- **Two reusable ENGINES** (build once, tenants are manifests): (A) **board flasher** —
+  detect bootloader → PINNED firmware (verify sha256) → write → verify re-enumerate (OpenPuck
+  now; ZMK/QMK/WLED/Pico later); (B) **guided installer** — run a signed setup, report state
+  (Sunshine/Tailscale/Decky/xone/CEC-bridge/fwupd/EmuDeck later).
+- **Allowlist model (non-negotiable):** a client selects WHICH utility runs; never supplies a
+  command, firmware URL, or device. Firmware = pinned+sha256-verified; target = matched
+  bootloader VID:PID/mount, path-contained, fail-closed. New cap `utilities`.
+- **Full spec + tenant detail: `docs/memory/project_utilities-menu.md`** (+ memory
+  [[openpuck-utilities-idea]]). HDMI-CEC scope (box-enable vs Pi-bridge) pending owner confirm.
+
 ### Install a game you own but have not downloaded (owner ask 2026-08-07)
 - **priority:** P2 · **risk:** medium-high (needs a NEW client-supplied-appid path that
   the existing installed-game validator cannot gate) · **affects:** agent + app ·
