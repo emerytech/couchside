@@ -1301,11 +1301,13 @@ export async function mediaArtSource(
  * show a password prompt, so nothing is written to Fresco's disk cache. null on
  * failure or 503 (capture failed). `t` cache-busts each frame.
  */
-export async function screenFrameSource(settings: ConnSettings): Promise<string | null> {
+export async function screenFrameSource(
+  settings: ConnSettings, signal?: AbortSignal,
+): Promise<string | null> {
   const host = resolveEffectiveHost(settings);
   const url = `http://${host}:${settings.port}/api/screen/frame?t=${Date.now()}`;
   try {
-    const res = await fetch(url, { headers: { Authorization: `Bearer ${settings.token}` } });
+    const res = await fetch(url, { headers: { Authorization: `Bearer ${settings.token}` }, signal });
     if (!res.ok) return null;
     // Same cap as album art, and it matters more here: the preview POLLS, so an
     // oversized frame gets a fresh chance at the phone's memory every tick.

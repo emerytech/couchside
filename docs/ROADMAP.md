@@ -159,18 +159,98 @@ Entry fields: `priority` (P0 blocker → P3 nice) · `risk` · `affects` · `dep
   socket) + inputSends / inputDropped / recoveries / opens counters.
 - **NEXT:** capture one reading during a real episode; that picks the fix.
 
-### Remote desktop "screenshot + tap"
-`priority: P2` · `risk: med` · `affects: agent, app` · `depends_on: #245 learnings`
-- MEASURED ceiling ~1.2 fps now / ~1.4 fps optimized (~0.41s of every frame is
-  spectacle's Qt startup). **True VNC is off the table** on this architecture;
-  what is achievable is tap-to-click on a slow-refreshing frame.
-- Absolute pointer PROVEN pixel-exact on Plasma Wayland (screenshot-diff, with a
-  relative-mouse control). Declare BTN_TOUCH to suppress a phantom /dev/input/js0.
-- **Unproven: gamescope.** Also needs zoom or a two-stage crosshair — a 44pt finger
-  is ~289 logical px on a 4K desktop vs a ~100x30 px button — and frame-age gating
-  so a stale frame can't produce a confident wrong click.
+### Remote desktop — fullscreen viewer + on-screen controls + lower latency (owner ask 2026-08-10)
+`priority: P2` · `risk: med (phases 1-3) → high (phase 4)` · `affects: agent, app` · `depends_on: #245 learnings`
+- **Owner:** "screen viewer, when clicked, opens fullscreen with on-screen pad controls to
+  control the desktop like remote desktop / RustDesk; reduce latency so it feels fluid."
+- **Current state (mapped 2026-08-10, two agents):**
+  - VIEWER = still-frame poller. `GET /api/screen/frame` → ONE downscaled (960px, q80) JPEG per
+    HTTP GET, Bearer header, `no-store`. Capture: `gamescopectl screenshot` (~1.4s, 4K PNG) in
+    Game Mode / `spectacle` JPEG (~0.7s) on KDE. Server-capped ~2 captures/s (`SCREEN_MIN_INTERVAL_S`
+    0.5 + 500ms cache + single-flight). App polls 1000ms (700ms in the existing tap→`<Modal>`
+    fullscreen). `components/ScreenPreview.tsx`, `api.ts:screenFrameSource`. On the Console tab.
+    `ScreenInfo` has NO width/height. `lib/immersive.ts` fullscreen store exists; no fullscreen route.
+  - INPUT = separate `/ws/gamepad` WebSocket (`lib/gamepad.ts`), injected via direct `/dev/uinput`
+    evdev writes behind a frozenset allowlist (§3-clean). Mouse is **relative-only** (`{t:'m',dx,dy}`,
+    EV_REL); coalesced ~90Hz — input latency is already LOW. `hooks/useTrackpad` + `components/RemoteView`
+    already overlay a trackpad + click/scroll/meta/overview/esc over this path.
+- **The two asks are different problems.** Controls-in-fullscreen is easy reuse; "fluid" is architectural:
+  MEASURED ceiling ~1.2/1.4 fps, and **true VNC/fluid video is off the table on the screenshot pipeline** —
+  each frame is a full screenshot+decode. Fluid (15-60fps) needs a whole new capture→encode→transport stack.
+- **Absolute pointer PROVEN pixel-exact on Plasma Wayland** (screenshot-diff, with a relative-mouse
+  control). Declare BTN_TOUCH to suppress a phantom /dev/input/js0. NOT shipped today (device is EV_REL only).
+  **Unproven: gamescope.** Needs zoom or a two-stage crosshair (a 44pt finger ≈ 289 logical px on a 4K
+  desktop vs a ~100×30px button) and frame-age gating so a stale frame can't produce a confident wrong click.
+- **Phased plan:**
+  - **P1 (low, app-only, ship-now): Fullscreen control mode.** Screen frame as a live background +
+    a RemoteView-style trackpad + button overlay + `immersive.ts` chrome-hide + landscape. Reuses the
+    whole input path — relative-mouse control at ~1.4fps ("confirm-by-frame"): genuinely useful for
+    occasional desktop tasks (click, close, type), NOT motion. No agent change.
+  - **P2 (med, agent+app): absolute tap-to-click** — add an EV_ABS uinput mouse (+BTN_TOUCH), a
+    `{t:'ma',x,y}` protocol frame (additive), width/height on `ScreenInfo`, tap→coordinate mapping,
+    frame-age gating. Proven on Plasma; gamescope needs the zoom/crosshair. Makes P1 feel like remote desktop.
+  - **P3 (med, agent+app): faster frames** — smaller region/res, and stream frames (MJPEG multipart or
+    WS-framed JPEG) instead of one HTTP GET each. Realistic ~5-10fps of small JPEGs. Better, not "fluid."
+  - **P4 (HIGH, large — the true "RustDesk" answer): fluid hardware-encoded video, as an OPT-IN MODULE.**
+    Owner framing (2026-08-10): make it "an additional option that adds more dependencies to the install
+    and more system access to enable the feature." This is the CORRECT shape and it fits the constraints:
+    - **Core agent stays pure-stdlib single-file.** No third-party PYTHON import — the module SHELLS OUT to
+      system binaries (gstreamer/ffmpeg/pipewire) via the existing argv allowlist, exactly like today's
+      gamescopectl/spectacle/ffmpeg capture. The extra DEPS are SYSTEM packages the user opts into, not
+      pip/bundled python.
+    - **Gated by caps + probe-and-appear.** A new `caps.screenstream` (six edit sites, §4) advertises the
+      module; the app shows the fluid viewer ONLY when present, else degrades to the still-frame poller
+      (P1-P3). Never a guess.
+    - **Opt-in deps + access** (precedent: Decky channel, the privileged helper). A separate install step /
+      ujust recipe installs gstreamer+VAAPI+pipewire, grants the PipeWire screencast-portal permission (and
+      maybe a unit/helper). "More access" (continuous screen capture, HW encoder) is explicit + documented.
+      Distribution like the signed helper/Decky channel, not the base install.sh.
+    - **Transport:** avoid full WebRTC (ICE/DTLS/SRTP = needs aiortc = FORBIDDEN). Either H264/VP8-over-WS
+      or MJPEG-over-WS on the existing hand-rolled RFC6455 socket; encoder subprocess stdout → framed to the WS.
+    - **The one ASYMMETRY to know:** the BOX side is cleanly opt-in, but the APP-side decoder is NOT
+      per-box optional — a single app binary ships to everyone. Two tiers:
+      - **P4a (recommended first): MJPEG "fast-capture" module** — pipewire continuous grab → small JPEGs
+        over WS. Opt-in box deps + screencast access, ~15-25fps, and **NO new app native dep** (JPEG decode
+        reuses `<Image>`). Most of the "fluid" win, cleanly optional end-to-end.
+      - **P4b (max): H264/VAAPI stream** — true 30-60fps/~50-150ms, but forces `react-native-webrtc` (or a
+        native H264 player) into EVERY app build (bloat + iOS build surface) even for non-users.
+    - gamescope continuous capture still unproven (gamescopectl is one-shot); may be desktop-session-only.
+      New stream endpoint = a new "video of your screen" data flow → security pass (token-authed, LAN-only).
+- **Next step:** P1+P2 are a reasonable near-term deliverable; P4 warrants `docs/memory/project_remote-desktop.md`
+  before any code (§10) — lead with P4a (optional, no app native dep). Note: input isn't the bottleneck — video is.
 
 ## 📋 Planned
+
+### Apple Watch + desktop widgets — quick actions (owner ask 2026-08-10)
+- **priority:** P2 · **risk:** medium-high (NEW native surfaces: WidgetKit + watchOS;
+  App Intents; runs OUTSIDE the RN runtime) · **affects:** app + a native config plugin ·
+  **depends_on:** nothing new server-side — Restart Session (`/api/actions/restart-session`,
+  bearer) and Wake-on-LAN (`app/lib/wol.ts` + `/api/wake`, magic packet) already exist.
+- **Owner:** "an Apple Watch and desktop widget with quick actions for restarting a session
+  and turning the box on/off via Wake-on-LAN if enabled."
+- **What:** home-screen / Watch complications + macOS desktop widget offering 2–3 one-taps:
+  **Wake box** (WoL magic packet, LAN — works while the box is OFF, the whole point), **Restart
+  Session**, and possibly **Power off** (a session-ending action → MUST reuse the cancellable
+  countdown safeguard, [[shipped-2.9.43-testflight]] #429, not a bare one-tap).
+- **Hard feasibility notes (before any code):**
+  - Expo/RN has no widget/Watch runtime. Needs **WidgetKit (SwiftUI)** + a **watchOS target**
+    + **App Intents** for the tappable actions, wired via a **config plugin / native module**
+    (or a bare workflow). This is real Swift, outside the JS app — a first for this repo.
+  - Widgets/Watch run in their **own process** with no access to the RN app's state. They must
+    read box host/port/token + WoL MAC from a **shared App Group container**, and the app must
+    WRITE those there. Token in an App Group = a new place a bearer token lives — security review
+    required (LAN-only model, but still).
+  - Actions fire raw HTTP from the extension (bearer for `/api/actions/*`; WoL is a UDP magic
+    packet, no auth). LAN-only: the widget does nothing useful off the home network — copy must
+    be honest about that.
+  - `restart-session`/`poweroff` are `danger:'high'`; a widget one-tap has no room for the 5s
+    countdown — gate destructive ones behind the App Intent's confirmation, or scope v1 to
+    **Wake only** (safe, additive, off-box) and add restart/poweroff behind confirmation later.
+  - Android parity is a separate lift (Glance/App Widgets, no Watch equivalent) — scope iOS
+    first, note the gap.
+- **Next step:** 3+ phases → write `docs/memory/project_watch-desktop-widgets.md` before code
+  (§10). Likely phase 1 = App Group plumbing + **Wake-only** widget (lowest risk, highest
+  "box is off" value); phase 2 = Restart Session behind confirmation; phase 3 = Watch + macOS.
 
 ### Game backlog — "Now playing" + "Up next" queue (owner ask 2026-08-09)
 - **priority:** P2 · **risk:** low (app-only, additive; no agent change to start) ·

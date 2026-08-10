@@ -7,7 +7,7 @@
  * blurs or the app backgrounds. Tap the frame for a fullscreen modal.
  */
 import Ionicons from '@expo/vector-icons/Ionicons';
-import { useFocusEffect } from 'expo-router';
+import { router, useFocusEffect } from 'expo-router';
 import React, { useCallback, useEffect, useRef, useState } from 'react';
 import { AppState, AppStateStatus, Image, Modal, Pressable, StyleSheet, Text, View } from 'react-native';
 
@@ -155,18 +155,28 @@ export function ScreenPreview() {
       <View style={styles.header}>
         <Text style={styles.title}>SCREEN</Text>
         {supported && (
-          <Pressable
-            onPress={toggle}
-            style={({ pressed }) => [styles.pill, active && styles.pillOn, pressed && styles.pressed]}>
-            <Ionicons
-              name={active ? 'stop' : 'play'}
-              size={12}
-              color={active ? t.bg : t.green}
-            />
-            <Text style={[styles.pillText, active && styles.pillTextOn]}>
-              {active ? 'STOP' : 'START PREVIEW'}
-            </Text>
-          </Pressable>
+          <View style={styles.headerBtns}>
+            <Pressable
+              onPress={() => { hapticLight(); router.push('/desktop'); }}
+              accessibilityRole="button"
+              accessibilityLabel="Control the desktop"
+              style={({ pressed }) => [styles.pill, pressed && styles.pressed]}>
+              <Ionicons name="game-controller-outline" size={12} color={t.blue} />
+              <Text style={styles.pillText}>CONTROL</Text>
+            </Pressable>
+            <Pressable
+              onPress={toggle}
+              style={({ pressed }) => [styles.pill, active && styles.pillOn, pressed && styles.pressed]}>
+              <Ionicons
+                name={active ? 'stop' : 'play'}
+                size={12}
+                color={active ? t.bg : t.green}
+              />
+              <Text style={[styles.pillText, active && styles.pillTextOn]}>
+                {active ? 'STOP' : 'START PREVIEW'}
+              </Text>
+            </Pressable>
+          </View>
         )}
       </View>
 
@@ -223,6 +233,7 @@ const makeStyles = (t: Palette) => StyleSheet.create({
     marginBottom: 10,
   },
   header: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', marginBottom: 10 },
+  headerBtns: { flexDirection: 'row', alignItems: 'center', gap: 8 },
   title: { color: t.textFaint, fontSize: 11, fontWeight: '700', letterSpacing: 1.2, fontFamily: mono },
   pill: {
     flexDirection: 'row',
