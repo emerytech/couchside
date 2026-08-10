@@ -3601,8 +3601,9 @@ def _couchmode_platform_ok():
     So the gate asks what the switch NEEDS instead of who made the distro:
 
       1. the four tools (checked by the caller, unchanged), and
-      2. both switch TARGETS installed — `gamescope-session.desktop` to fling
-         to, and some known desktop session to come back to.
+      2. both switch TARGETS installed — a gamescope Game Mode session (any
+         name in _GAMESCOPE_SESSION_FILES, since images differ) to fling to,
+         and some known desktop session to come back to.
 
     (2) is the KI-038 lesson applied to a gate rather than a write: it is not
     enough that a *command* exists, the thing it switches to has to be really
@@ -3618,7 +3619,7 @@ def _couchmode_platform_ok():
     installed = _installed_session_files()
     if not installed:
         return True  # cannot enumerate: fall back to the tool requirement
-    if GAMESCOPE_SESSION_FILE not in installed:
+    if not any(name in installed for name in _GAMESCOPE_SESSION_FILES):
         return False
     return any(name in installed for name in _DESKTOP_SESSIONS)
 
@@ -4133,6 +4134,19 @@ def _dm_dropin_legacy(dm):
 
 
 GAMESCOPE_SESSION_FILE = "gamescope-session.desktop"
+# The gamescope Game Mode session ships under different .desktop names across
+# images: SteamOS/Bazzite/ChimeraOS use gamescope-session.desktop, but some
+# SteamOS builds ship gamescope-wayland.desktop (MEASURED on a Legion Go S,
+# SteamOS 3.8.16, 2026-08-10: its /usr/share/wayland-sessions held
+# gamescope-wayland.desktop + plasma.desktop + plasmax11.desktop, so the single
+# hardcoded name above made _couchmode_platform_ok() refuse a box that was
+# literally sitting in Game Mode — the app then showed the Big Picture fallback).
+# This set gates DETECTION only (_couchmode_platform_ok / couchmode_available).
+# The autologin WRITE path still keys on the single GAMESCOPE_SESSION_FILE and is
+# deliberately unchanged here: writing a session name the box does not have is the
+# stranding failure _write_autologin already guards against, and resolving the
+# box's real name for that path is a separate, higher-risk change (see ROADMAP).
+_GAMESCOPE_SESSION_FILES = (GAMESCOPE_SESSION_FILE, "gamescope-wayland.desktop")
 
 
 def _steamosctl_session_ok():

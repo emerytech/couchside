@@ -70,6 +70,10 @@ BAZZITE = ["gamescope-session.desktop", "gamescope-session-steam.desktop",
            "plasma.desktop", "plasma-steamos-wayland-oneshot.desktop",
            "plasma-steamos-oneshot.desktop"]                       # 10.1.1.60
 STEAMOS = ["gamescope-session.desktop", "plasma.desktop", "plasmax11.desktop"]
+# Legion Go S, SteamOS 3.8.16 (owner box 10.1.1.195, 2026-08-10). Same plasma
+# sessions as STEAMOS, but the gamescope session ships as gamescope-WAYLAND
+# .desktop — the single hardcoded name refused it while it sat in Game Mode.
+LEGIONGOS = ["gamescope-wayland.desktop", "plasma.desktop", "plasmax11.desktop"]
 # Bazzite publishes GNOME variants too, and they carry "bazzite" in os-release
 # so the OLD gate said yes to them. Plasma is absent; the desktop cluster must
 # NOT depend on it (see _desktop_session_installed).
@@ -105,6 +109,21 @@ def main():
                   cs.couchmode_available(), True)
             check("%-16s offers the desktop cluster (in the desktop)" % label,
                   cs.desktop_available(), True)
+
+        print()
+        print("a gamescope session under a DIFFERENT filename still counts")
+        # Legion Go S, SteamOS 3.8.16 (owner box 10.1.1.195): ships
+        # gamescope-wayland.desktop, not gamescope-session.desktop. The old
+        # single-name gate refused it, so a box literally in Game Mode was shown
+        # the Big Picture fallback. Both states with a control, per §11.2/§11.3.
+        dirs.append(setup(LEGIONGOS))
+        check("legion go s (gamescope-wayland) offers Couch Mode",
+              cs.couchmode_available(), True)
+        check("legion go s offers the desktop cluster (in the desktop)",
+              cs.desktop_available(), True)
+        dirs.append(setup(["gamescope-wayland.desktop"]))
+        check("gamescope-wayland but NO desktop session -> refused (control)",
+              cs.couchmode_available(), False)
 
         print()
         print("...and it is the SESSIONS that decide, not the distro name")

@@ -172,6 +172,26 @@ Entry fields: `priority` (P0 blocker → P3 nice) · `risk` · `affects` · `dep
 
 ## 📋 Planned
 
+### Couch Mode: resolve the box's REAL gamescope session filename (autologin write path)
+- **priority:** P2 · **risk:** medium (touches the safety-critical session-select / autologin
+  write — the stranding failure mode) · **affects:** agent · **depends_on:** —
+- **Why:** the agent hardcoded `GAMESCOPE_SESSION_FILE = "gamescope-session.desktop"`. A Legion
+  Go S (SteamOS 3.8.16, owner box 10.1.1.195, 2026-08-10) ships the Game Mode session as
+  `gamescope-wayland.desktop`, so `_couchmode_platform_ok()` refused a box literally in Game
+  Mode and the app showed the Big Picture fallback instead of the Game Mode couch button.
+- **DETECTION already fixed** on `claude/couchmode-gamescope-session-detect`: a
+  `_GAMESCOPE_SESSION_FILES` set the gate accepts, with a Legion Go S fixture + control in
+  `tests/test_couchmode_gate.py`. That restores `couchmode:true` / `bigpicture:false`.
+- **What's left — the WRITE half.** `GAMESCOPE_SESSION_FILE` is still the single name written
+  into the autologin drop-in and read for its `Exec=` (couchsided.py ~4660/4793/4967/5004/
+  5026/5124), so on this image the persistent "Boots into Game Mode" autologin writes a
+  session name the box does not have. `_write_autologin` refuses a missing session, so it
+  degrades closed (the feature no-ops) rather than stranding — but it is still broken here.
+  Fix: resolve the installed gamescope session from `_installed_session_files()` (accept any
+  `_GAMESCOPE_SESSION_FILES`) and thread the resolved value through the write/read sites and
+  the `target == GAMESCOPE_SESSION_FILE` "game vs desktop" comparisons; degrade closed if none
+  found. Needs the session-lifecycle test (§6) and a confirm on the owner's Legion Go S.
+
 ### Game backlog — "Now playing" + "Up next" queue (owner ask 2026-08-09)
 - **priority:** P2 · **risk:** low (app-only, additive; no agent change to start) ·
   **affects:** app only · **depends_on:** nothing (extends the existing Bookmark store)
