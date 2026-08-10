@@ -68,12 +68,77 @@ toggle) driving the existing `/ws/gamepad` client. Reuses `useTrackpad` + Remote
   fake-WebSocket harness pattern (in-page fake WS that PONGs every frame; assert the `send()`ed input
   frames) to prove the overlay emits the right `{t:'m'/'mb'/'mw'/'k'}` frames; the feel needs a device.
 
-### P2 — Absolute tap-to-click (agent + app, medium)
-Tap a point on the frame → pointer goes there. Add: EV_ABS uinput mouse (+BTN_TOUCH), a `{t:'ma',x,y}`
-protocol frame (ADDITIVE, six-site cap if gated), width/height on `ScreenInfo`, tap→coordinate mapping
-(frame is `contain` → letterbox math), and **frame-age gating** so a stale frame can't cause a confident
-wrong click. Proven on Plasma; **gamescope unproven** → needs a zoom or two-stage crosshair (a 44pt
-finger ≈ 289 logical px on a 4K desktop vs a ~100×30px button). Makes P1 feel like real remote desktop.
+### P2 — Absolute tap-to-click (agent + app, medium) — INVESTIGATED on real KDE hardware 2026-08-10
+Tap a point on the frame → pointer goes there. Makes P1 feel like real remote desktop.
+
+**HONEST STATE (an earlier "device de-risked" claim this session was PREMATURE — §11).** On a real KDE
+Plasma box (lenovodesktop switched to Desktop Mode; it re-DHCP'd to 192.168.11.137, agent 2.9.71,
+`/dev/uinput` writable) I iterated the uinput descriptor with `libinput debug-events`. What was actually
+learned:
+- **The agent's LEGACY uinput path CANNOT make a working absolute pointer.** `EV_ABS(ABS_X/Y) + BTN_TOUCH`
+  via the legacy `_UINPUT_USER_DEV` struct classifies as `cap:p` (pointer) but a bare ABS move produces
+  **NO `POINTER_MOTION_ABSOLUTE`** — libinput treats a "pointer" as RELATIVE and ignores the ABS axes. So
+  `cap:p` classification is NOT proof of motion (my earlier optimistic read).
+- **Absolute needs the MODERN uinput setup** (`UI_DEV_SETUP` + `UI_ABS_SETUP` WITH per-axis resolution —
+  the legacy struct has no `absres`). With that: adding `BTN_TOOL_PEN` → `cap:T` (tablet), or
+  `INPUT_PROP_DIRECT` (+ optionally `ABS_MT_*`) → `cap:t` (touchscreen, `ntouches`). Classification is
+  CORRECT, but I could NOT confirm the events actually move the cursor — `libinput debug-events` (a second
+  libinput context on a live compositor) never printed the TOUCH/TABLET motion, which is an unreliable
+  proxy, NOT proof the cursor didn't move. Needs observation of the REAL effect (a visible cursor in a
+  spectacle capture, or a click landing on a known target).
+- **ydotool (installed + the proven abs tool on this box) uses NO absolute device at all** — its virtual
+  device is `EV=7 / REL=147` (a RELATIVE mouse). It fakes "absolute" by WARPING via relative deltas
+  (slam toward a corner, then move by the target delta). Imprecise (pointer accel distorts) + needs the
+  screen resolution, but it is the approach that demonstrably works on Wayland here.
+
+**RESULT after observing the REAL effect on the KDE box (owner picked the "modern absolute" path):**
+the modern absolute device does **NOT** work here. Tested a full tablet (BTN_TOOL_PEN, cap:T) and a
+touchscreen (INPUT_PROP_DIRECT + ABS_MT, cap:t), both with modern `UI_DEV_SETUP`/`UI_ABS_SETUP` +
+resolution. Decisive test: hover to a known spot then **right-click** — KDE anchors the desktop context
+menu at the cursor, so the menu's position IS the click position. **No menu appeared** → the absolute
+positioning never took. The device's BUTTONS do work (an earlier `BTN_LEFT` showed as `POINTER_BUTTON`
+in libinput), so a click fires at wherever the cursor already is — but nothing I emit MOVES the cursor
+absolutely. So on this kwin/KDE box, a virtual absolute uinput pointer (tablet or touchscreen) is not
+honored for cursor positioning.
+
+**What demonstrably works here is the RELATIVE-WARP approach** (ydotool's — its device is `EV=7/REL=147`,
+a relative mouse; it fakes absolute by warping via relative deltas). So P2 tap-to-click on Wayland/KDE
+realistically means: reuse the EXISTING relative `UInputMouse`, and for `ma(x,y)` slam toward a corner
+with a large negative REL move then step to the target — needs the desktop **resolution** (add width/
+height to `ScreenInfo` after all) and must defeat pointer acceleration (emit small ~1px steps, or an
+accel-immune sequence). Imprecise vs a true absolute device, but it is the path that works.
+
+**Open (deferred):** whether a MORE complete tablet descriptor (pressure axis, tablet-pad, a KDE tablet
+config) would make the absolute path work — possibly, but it was not crackable in this session and KDE's
+virtual-tablet support is the suspect. Recommend building P2 on the **relative-warp** unless someone
+confirms a working absolute descriptor on real hardware first. Experiments were in the session scratchpad
+(now cleaned). This is a genuinely harder feature than "add a uinput frame" — the OS input semantics are
+the wall, not the plumbing.
+
+**Concrete build plan (mechanical; the descriptor above is the only thing that was uncertain):**
+1. Agent (`agent/couchsided.py`): new `UInputAbsPointer` class (near `UInputMouse` ~12436, model its
+   `emit`/`destroy`/settle + the gamepad ABS packing ~12305). Consts near MOUSE (~12365): `BTN_TOUCH=0x14A`,
+   `ABSPTR_MAX=32767`, name/vendor. `MockAbsMouse` near `MockMouse` (12571). `mouse_abs_events(msg)`
+   after `mouse_events` (12656): validate x,y are numbers in [0,1] (REJECT else, §3), emit
+   `[(EV_ABS,ABS_X,round(x*ABSPTR_MAX)),(EV_ABS,ABS_Y,round(y*ABSPTR_MAX))]`. Dispatch: add
+   `_ABSMOUSE_TYPES=frozenset(("ma",))` near `_MOUSE_TYPES` (18709) + an `elif` (18842) → decode
+   `mouse_abs_events`, slot `"absmouse"`, factory `MockAbsMouse/UInputAbsPointer`. Slot pre-create
+   (15916) + reap it in the device teardown list (18691).
+2. Cap `abspointer` = `_uinput_writable()` — **all SIX sites** (agent CAPS dict 1587 + mock tuple 1580;
+   app BoxCaps + normalizeCaps + capsEqual; `protocol/protocol.json` capabilities/linuxOnly + frameTypes
+   `"ma"`; `tests/test_protocol_parity.py` enforces the sixth). Needed so a NEW app never sends `ma` to
+   an OLD agent (unknown `t` → err+close today).
+3. App: `sendMouseAbsolute(x,y)` in `lib/gamepad.ts` (`{t:'ma',x,y}`); in `app/desktop.tsx`, a tap on the
+   FRAME (separate from the trackpad zone) → normalized (x,y) via the `contain` letterbox math →
+   **frame-age gate** (ignore if the last frame is > ~1.5s old — a stale frame must not cause a confident
+   wrong click) → `sendMouseAbsolute` then the existing left click. Gate the frame-tap affordance on
+   `caps.abspointer`.
+4. Tests: agent device-lifecycle + `mouse_abs_events` decoder (create→emit→reap; reject out-of-range/
+   non-finite). App: harness fake-WS asserts a frame tap emits `{t:'ma',x,y}` with x,y in [0,1].
+5. **Deferred verification (needs a VISIBLE cursor):** pixel-exact "cursor lands where you tap" — proven
+   descriptor + libinput classification, but seeing the cursor land needs a KDE **Desktop-Mode** box
+   (both reachable boxes are gamescope Game Mode; cursor hidden). gamescope-precision is the open
+   question (may need a zoom / two-stage crosshair: a 44pt finger ≈ 289 logical px on a 4K desktop).
 
 ### P3 — Faster frames (agent + app, medium)
 Smaller region/res + stream frames (MJPEG multipart or WS-framed JPEG) instead of one HTTP GET each.
