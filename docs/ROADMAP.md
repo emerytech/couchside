@@ -172,29 +172,6 @@ Entry fields: `priority` (P0 blocker → P3 nice) · `risk` · `affects` · `dep
 
 ## 📋 Planned
 
-### Couch Mode gamescope-session filename fix — DONE in code, pending on-hardware confirm
-- **priority:** P2 · **risk:** medium (touches the safety-critical session-select / autologin
-  write — the stranding failure mode) · **affects:** agent · **branch:**
-  `claude/couchmode-gamescope-session-detect`
-- **Why:** the agent hardcoded `GAMESCOPE_SESSION_FILE = "gamescope-session.desktop"`. A Legion
-  Go S (SteamOS 3.8.16, owner box 10.1.1.195, 2026-08-10) ships the Game Mode session as
-  `gamescope-wayland.desktop`, so `_couchmode_platform_ok()` refused a box literally in Game
-  Mode and the app showed the Big Picture fallback instead of the Game Mode couch button.
-- **DETECTION — DONE.** A `_GAMESCOPE_SESSION_FILES` set the gate accepts, restoring
-  `couchmode:true` / `bigpicture:false`. Legion Go S fixture + control in
-  `tests/test_couchmode_gate.py`.
-- **WRITE PATH — DONE.** New `_gamescope_session_for_autologin()` (the Game-Mode mirror of
-  `_desktop_session_for_autologin()`) resolves the box's real gamescope session name and is
-  threaded through `session_default_arm` / `session_default_set` / `session_default_get` /
-  `_migrate_dropin_into_config`; the steamosctl arg now derives from `mode`, not `target`, so a
-  resolved `gamescope-wayland` name can't mislabel a request. Degrades closed (refuses) when no
-  gamescope session is installed. Coverage in `tests/test_session_default.py` (resolver +
-  arm-writes-the-real-name + read-back + steamosctl arg).
-- **OPEN — on-hardware confirm (§11).** Not yet run on the actual Legion Go S. Fixtures are
-  verbatim from the box's real `ls`, but the box itself is the remaining check: `/api/displays`
-  returns 200 with `session:gamescope`, caps show `couchmode:true` / `bigpicture:false`, and
-  "Boots into Game Mode" persists across a reboot.
-
 ### Game backlog — "Now playing" + "Up next" queue (owner ask 2026-08-09)
 - **priority:** P2 · **risk:** low (app-only, additive; no agent change to start) ·
   **affects:** app only · **depends_on:** nothing (extends the existing Bookmark store)
@@ -968,6 +945,26 @@ recommendation was wrong, not merely superseded.
 ---
 
 ## ✅ Completed
+
+### Couch Mode gamescope-session filename fix — VERIFIED on hardware 2026-08-10 (Legion Go S)
+- **was:** P2 (owner-reported 2026-08-10) · **affects:** agent · **branch/PR:**
+  `claude/couchmode-gamescope-session-detect` → #432
+- **The bug:** the agent hardcoded `GAMESCOPE_SESSION_FILE = "gamescope-session.desktop"`; a
+  Legion Go S (SteamOS 3.8.16, 10.1.1.195) ships the Game Mode session as
+  `gamescope-wayland.desktop`, so `_couchmode_platform_ok()` refused a box literally in Game
+  Mode → `couchmode:false` → `bigpicture:true` → the app showed a Big Picture button instead of
+  the Game Mode couch control. Diagnosed live: `/api/displays` 404, caps
+  `couchmode:false`/`bigpicture:true`, session files carried the wayland name; tools + outputs
+  passed. (Also surfaced that caps are a boot-time snapshot — a restart re-runs `set_caps`.)
+- **Detection:** `_GAMESCOPE_SESSION_FILES` set the gate accepts (Legion Go S fixture + control
+  in `tests/test_couchmode_gate.py`).
+- **Write path:** new `_gamescope_session_for_autologin()` (mirror of
+  `_desktop_session_for_autologin()`) resolves the box's real gamescope session name, threaded
+  through `session_default_arm`/`set`/`get`/`_migrate_dropin_into_config`; the steamosctl arg
+  derives from `mode`, not `target`, so a resolved wayland name can't mislabel a request.
+  Degrades closed. Coverage in `tests/test_session_default.py`.
+- **HARDWARE-VERIFIED (owner, 2026-08-10):** on the real Legion Go S the Game Mode button now
+  shows correctly and session switching works.
 
 ### Install a game you own but have not downloaded — BUILT 2026-08-08 (agent 2.9.73 + app)
 - **was:** P2 Planned (owner ask 2026-08-07) · **affects:** agent + app · the design record
