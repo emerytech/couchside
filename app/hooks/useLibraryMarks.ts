@@ -30,9 +30,18 @@ import {
   type FilterPreset,
   type FilterState,
 } from '@/lib/libraryFilter';
+import { reorderWithinSubset } from '@/lib/playlogReorder';
 
 const BOOKMARKS_KEY = 'couchside.bookmarks.v1';
 const PRESETS_KEY = 'couchside.filterPresets.v1';
+// Now-playing rows the user has cleared ("I'm done with this for now"). Each
+// entry is `${bookmarkKey}@${last_played}`, so it hides that game only until the
+// box reports a NEWER last_played — play it again and it re-surfaces on its own.
+// A dismissal is never a permanent block, which is why it degrades to "shown".
+const NP_HIDDEN_KEY = 'couchside.nowPlayingHidden.v1';
+// Keep at most this many dismissals — one per game normally, plus a few dead
+// keys from games that were replayed and re-cleared. Far above any real usage.
+const NP_HIDDEN_MAX = 300;
 
 async function get(k: string): Promise<string | null> {
   if (Platform.OS === 'web') {
@@ -61,11 +70,15 @@ type Snapshot = {
   /** Bookmark keys — see bookmarkKey() in lib/libraryFilter.ts. */
   bookmarks: ReadonlySet<string>;
   presets: readonly FilterPreset[];
+  /** Cleared Now-playing rows, keyed `${bookmarkKey}@${last_played}`. */
+  hiddenNowPlaying: ReadonlySet<string>;
   /** False until storage has been read. */
   ready: boolean;
 };
 
-let snap: Snapshot = { bookmarks: new Set(), presets: [], ready: false };
+let snap: Snapshot = {
+  bookmarks: new Set(), presets: [], hiddenNowPlaying: new Set(), ready: false,
+};
 const listeners = new Set<() => void>();
 
 function commit(next: Snapshot): void {
@@ -90,6 +103,7 @@ export async function loadLibraryMarks(): Promise<void> {
   loadStarted = true;
   let bookmarks: string[] = [];
   let presets: FilterPreset[] = [];
+  let hiddenNowPlaying: string[] = [];
   try {
     const raw = await get(BOOKMARKS_KEY);
     const parsed = raw ? JSON.parse(raw) : [];
@@ -103,7 +117,17 @@ export async function loadLibraryMarks(): Promise<void> {
   } catch {
     presets = [];
   }
-  commit({ bookmarks: new Set(bookmarks), presets, ready: true });
+  try {
+    const raw = await get(NP_HIDDEN_KEY);
+    const parsed = raw ? JSON.parse(raw) : [];
+    if (Array.isArray(parsed)) hiddenNowPlaying = parsed.filter((k): k is string => typeof k === 'string');
+  } catch {
+    hiddenNowPlaying = [];
+  }
+  commit({
+    bookmarks: new Set(bookmarks), presets,
+    hiddenNowPlaying: new Set(hiddenNowPlaying), ready: true,
+  });
 }
 void loadLibraryMarks();
 
@@ -116,22 +140,27 @@ export function toggleBookmarked(key: string): void {
 
 /** Persist a new ORDER for the existing bookmarks — the Playlog queue order. The
  *  bookmark set is stored as an ordered array (a JS Set iterates in insertion
- *  order), so a "reorder" just rewrites that array. Any key not currently
- *  bookmarked is ignored, and any bookmarked key the caller left out is appended,
- *  so a reorder can NEVER add or drop a game — only move one. */
+ *  order), so a "reorder" just rewrites that array. `orderedKeys` may name only
+ *  the games currently ON SCREEN (installed and owned-but-uninstalled arrive on
+ *  different polls); reorderWithinSubset permutes only those slots and leaves
+ *  every off-screen bookmark exactly where it was, so a reorder can NEVER add,
+ *  drop, or relocate an unshown game — only move a shown one. */
 export function reorderBookmarks(orderedKeys: string[]): void {
-  const cur = snap.bookmarks;
-  const seen = new Set<string>();
-  const next: string[] = [];
-  for (const k of orderedKeys) {
-    if (cur.has(k) && !seen.has(k)) {
-      next.push(k);
-      seen.add(k);
-    }
-  }
-  for (const k of cur) if (!seen.has(k)) next.push(k);
+  const next = reorderWithinSubset([...snap.bookmarks], orderedKeys);
   commit({ ...snap, bookmarks: new Set(next), ready: true });
   void set(BOOKMARKS_KEY, JSON.stringify(next));
+}
+
+/** Clear a Now-playing row. `compositeKey` is `${bookmarkKey}@${last_played}` so
+ *  the game re-appears on its own once the box reports a newer play. Bounded: a
+ *  replay makes the previous entry dead weight, so only the most recent
+ *  NP_HIDDEN_MAX are kept — the tail can never grow without limit. */
+export function dismissNowPlaying(compositeKey: string): void {
+  if (snap.hiddenNowPlaying.has(compositeKey)) return;
+  let next = [...snap.hiddenNowPlaying, compositeKey];
+  if (next.length > NP_HIDDEN_MAX) next = next.slice(next.length - NP_HIDDEN_MAX);
+  commit({ ...snap, hiddenNowPlaying: new Set(next), ready: true });
+  void set(NP_HIDDEN_KEY, JSON.stringify(next));
 }
 
 export function savePreset(name: string, filter: FilterState): void {
@@ -151,6 +180,7 @@ export function useLibraryMarks() {
   return {
     bookmarks: s.bookmarks,
     presets: s.presets,
+    hiddenNowPlaying: s.hiddenNowPlaying,
     ready: s.ready,
     isBookmarked: useCallback((key: string | null) => (key ? s.bookmarks.has(key) : false), [s.bookmarks]),
   };
