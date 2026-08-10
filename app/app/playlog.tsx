@@ -26,13 +26,27 @@ import { reorderBookmarks, toggleBookmarked, useLibraryMarks } from '@/hooks/use
 import { usePoll } from '@/hooks/usePoll';
 import { api, hostKey, type ImageSource, type InstallableGame, type Launcher } from '@/lib/api';
 import { hapticError, hapticLight, hapticMedium, hapticSuccess } from '@/lib/haptics';
-import { bookmarkKey } from '@/lib/libraryFilter';
+import { bookmarkKey, playtimeLabel } from '@/lib/libraryFilter';
 import { useSettings } from '@/lib/SettingsContext';
 import { useTheme, useThemedStyles, type Palette } from '@/lib/theme';
 
 type Row =
   | { key: string; kind: 'installed'; launcher: Launcher }
   | { key: string; kind: 'notInstalled'; appid: number; name: string };
+
+/** Compact "when" for the Now-playing section. */
+function lastAgo(sec: number, nowSec: number): string {
+  const d = Math.floor((nowSec - sec) / 86400);
+  if (d <= 0) return 'today';
+  if (d === 1) return 'yesterday';
+  if (d < 7) return `${d}d ago`;
+  const w = Math.round(d / 7);
+  return w === 1 ? 'a week ago' : `${w}w ago`;
+}
+
+/** Games count as "now playing" if opened within this window. */
+const NOW_PLAYING_WINDOW_S = 21 * 86400;
+const NOW_PLAYING_MAX = 6;
 
 export default function PlaylogScreen() {
   const t = useTheme();
@@ -81,6 +95,20 @@ export default function PlaylogScreen() {
     }
     return out;
   }, [list.data, inst.data, marks.bookmarks]);
+
+  const nowSec = Math.floor(Date.now() / 1000);
+  // "Now playing" = installed games opened recently, most-recent first. Purely
+  // derived from the box's playtime data (agent >= 2.9.71); empty (section
+  // hidden) on older agents that send no last_played — never a guess.
+  const nowPlaying = useMemo(
+    () => (list.data?.launchers ?? [])
+      .filter((l) => l.last_played != null && l.last_played > 0
+        && nowSec - l.last_played <= NOW_PLAYING_WINDOW_S)
+      .sort((a, b) => (b.last_played ?? 0) - (a.last_played ?? 0))
+      .slice(0, NOW_PLAYING_MAX),
+    // nowSec changes each render but the window is coarse (days); depend on data.
+    [list.data], // eslint-disable-line react-hooks/exhaustive-deps
+  );
 
   const move = useCallback(
     (index: number, dir: -1 | 1) => {
@@ -161,23 +189,59 @@ export default function PlaylogScreen() {
         arrows to reorder.
       </Text>
 
-      {rows.length === 0 ? (
-        <View style={styles.empty}>
-          <Ionicons name="bookmark-outline" size={30} color={t.textFaint} />
-          <Text style={styles.emptyText}>
-            {!configured
-              ? 'Connect a box to see your library.'
-              : !list.data
-                ? 'Loading your library…'
-                : 'No games queued yet. Bookmark a game — installed or from your Not-installed library — to add it here.'}
-          </Text>
-        </View>
-      ) : (
-        <FlatList
-          data={rows}
-          keyExtractor={(r) => r.key}
-          contentContainerStyle={{ padding: 14, paddingBottom: insets.bottom + 24, gap: 10 }}
-          renderItem={({ item, index }) => {
+      <FlatList
+        data={rows}
+        keyExtractor={(r) => r.key}
+        contentContainerStyle={{ padding: 14, paddingBottom: insets.bottom + 24, gap: 10 }}
+        ListHeaderComponent={
+          <View style={{ gap: 10 }}>
+            {nowPlaying.length > 0 ? (
+              <>
+                <Text style={styles.sectionH}>NOW PLAYING</Text>
+                {nowPlaying.map((l) => {
+                  const cover = coverForAppid(l.appid);
+                  return (
+                    <Pressable
+                      key={l.id}
+                      onPress={() => { hapticLight(); setSheetFor(l); }}
+                      style={({ pressed }) => [styles.npRow, pressed && { opacity: 0.7 }]}
+                      accessibilityRole="button"
+                      accessibilityLabel={`Open ${l.label}`}>
+                      {cover ? (
+                        <Image source={cover} style={styles.art} resizeMode="cover" />
+                      ) : (
+                        <View style={[styles.art, styles.artFallback]}>
+                          <Ionicons name="game-controller-outline" size={18} color={t.textDim} />
+                        </View>
+                      )}
+                      <View style={styles.rowText}>
+                        <Text style={styles.label} numberOfLines={1}>{l.label}</Text>
+                        <Text style={styles.npSub}>
+                          Played {lastAgo(l.last_played ?? nowSec, nowSec)}
+                          {l.playtime_min ? ` · ${playtimeLabel(l.playtime_min)}` : ''}
+                        </Text>
+                      </View>
+                      <Ionicons name="play" size={16} color={t.green} />
+                    </Pressable>
+                  );
+                })}
+              </>
+            ) : null}
+            <Text style={styles.sectionH}>UP NEXT</Text>
+          </View>
+        }
+        ListEmptyComponent={
+          <View style={styles.emptyInline}>
+            <Text style={styles.emptyText}>
+              {!configured
+                ? 'Connect a box to see your library.'
+                : !list.data
+                  ? 'Loading your library…'
+                  : 'No games queued yet. Bookmark a game — installed or from your Not-installed library — to add it here.'}
+            </Text>
+          </View>
+        }
+        renderItem={({ item, index }) => {
             const isInstalled = item.kind === 'installed';
             const label = isInstalled ? item.launcher.label : item.name;
             const appid = isInstalled ? item.launcher.appid ?? null : item.appid;
@@ -250,7 +314,6 @@ export default function PlaylogScreen() {
             );
           }}
         />
-      )}
 
       <GameSheet
         launcher={sheetFor}
@@ -273,7 +336,14 @@ const makeStyles = (t: Palette) =>
     title: { color: t.text, fontSize: 20, fontWeight: '800' },
     lede: { color: t.textFaint, fontSize: 13, lineHeight: 18, paddingHorizontal: 14, marginBottom: 8 },
     empty: { flex: 1, alignItems: 'center', justifyContent: 'center', padding: 32, gap: 12 },
+    emptyInline: { paddingVertical: 20, paddingHorizontal: 8, alignItems: 'center' },
     emptyText: { color: t.textFaint, fontSize: 13, lineHeight: 19, textAlign: 'center', maxWidth: 300 },
+    sectionH: { color: t.textFaint, fontSize: 11, fontWeight: '800', letterSpacing: 1, marginTop: 2 },
+    npRow: {
+      flexDirection: 'row', alignItems: 'center', gap: 12, padding: 10,
+      backgroundColor: t.card, borderRadius: 12, borderWidth: 1, borderColor: t.cardBorder,
+    },
+    npSub: { color: t.textDim, fontSize: 12, marginTop: 2 },
     row: {
       flexDirection: 'row', alignItems: 'center', gap: 10,
       backgroundColor: t.card, borderRadius: 12, borderWidth: 1, borderColor: t.cardBorder,
