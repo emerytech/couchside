@@ -1,0 +1,28 @@
+; Couchside remote-desktop portal helper: USER unit TEMPLATE (opt-in module).
+; The portal-module installer substitutes __PORTAL__ (the resolved helper path)
+; and installs the result as ~/.config/systemd/user/couchside-portal.service,
+; then `systemctl --user enable --now couchside-portal.service`.
+;
+; UNLIKE couchside-helper.service (the ROOT system unit), this runs as the USER:
+; the xdg-desktop-portal, PipeWire and the Wayland compositor are all the desktop
+; user's, and the helper has no privileged operation, so root would be both wrong
+; (root can't reach the user's portal) and a needless escalation. See
+; docs/memory/project_remote-desktop.md §3. Its entire surface is the frozen VERBS
+; table in couchside-portal.py behind a 0600 socket + SO_PEERCRED — read that
+; file's header before touching this one.
+;
+; Tied to graphical-session.target so it runs with the session bus available and
+; stops when the graphical session ends. %t is the user's XDG_RUNTIME_DIR.
+[Unit]
+Description=Couchside remote-desktop portal helper (opt-in)
+PartOf=graphical-session.target
+After=graphical-session.target
+
+[Service]
+Type=simple
+ExecStart=/usr/bin/python3 __PORTAL__ --socket %t/couchside/portal.sock
+Restart=on-failure
+RestartSec=3
+
+[Install]
+WantedBy=graphical-session.target

@@ -214,6 +214,14 @@ jobs:
       - name: Unit tests (helper shim in the agent)
         run: python3 tests/test_helper_shim.py
 
+      # The opt-in remote-desktop portal module's AGENT side: the _portal_call
+      # detect-and-degrade shim, the screenstream cap probe, the {t:'ma'}/{t:'mbp'}
+      # absolute-pointer holder gate + closed-set allowlist, and the /ws/screen
+      # auth failure + profile allowlist. Same class of surface as the input path
+      # and the helper socket — a client-supplied id must be refused with nothing run.
+      - name: Unit tests (remote-desktop portal module)
+        run: python3 tests/test_portal_module.py
+
       # Who is OFFERED Couch Mode. The gate used to grep /etc/os-release for
       # "steamos"/"bazzite", so a CachyOS deckify box with every tool, both
       # sessions and a connected panel was refused by its NAME — hiding the

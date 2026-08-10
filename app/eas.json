@@ -30,6 +30,11 @@
     "production": {
       "autoIncrement": true
     },
+    "tf-local": {
+      "ios": {
+        "simulator": false
+      }
+    },
     "simulator": {
       "autoIncrement": true,
       "distribution": "internal",

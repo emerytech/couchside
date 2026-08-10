@@ -16,6 +16,12 @@
  *   {"t":"m","dx":I,"dy":I}            relative move (REL_X/REL_Y)
  *   {"t":"mb","k":"l"|"r"|"m","v":0|1} button (BTN_LEFT/RIGHT/MIDDLE)
  *   {"t":"mw","dy":I}                  vertical wheel (dy>0 = scroll up)
+ *   -- absolute pointer (remote-desktop P2, opt-in portal module) --
+ *   {"t":"ma","x":F,"y":F}             absolute move, x/y normalized 0..1 of the
+ *                                      frame (xdg-desktop-portal NotifyPointer-
+ *                                      MotionAbsolute). Additive: an agent/box
+ *                                      without the module drops it (no-op).
+ *   {"t":"mbp","k":"l"|"r"|"m","v":0|1} portal pointer button (NotifyPointerButton)
  *   -- keyboard (v2) --
  *   {"t":"kt","text":S}                type a string
  *   {"t":"k","key":NAME}              a single special key
@@ -282,6 +288,12 @@ function clamp(v: number, lo: number, hi: number): number {
 /** Round to 3 decimals to keep frames small; precision beyond this is noise. */
 function q(v: number): number {
   return Math.round(clamp(v, -1, 1) * 1000) / 1000;
+}
+
+/** Quantize an ABSOLUTE normalized coordinate to 0..1 (NOT -1..1 like q()).
+ *  For {t:'ma'} portal moves; the agent multiplies by the stream dimensions. */
+function q01(v: number): number {
+  return Math.round(clamp(v, 0, 1) * 1000) / 1000;
 }
 
 // Steam search focus walk. Counts are deliberately generous: an arrow at the
@@ -808,6 +820,34 @@ export class GamepadClient {
     const idy = Math.round(dy);
     if (idy === 0) return;
     this.sendRaw({ t: 'mw', dy: idy });
+  }
+
+  // ---------- absolute pointer (remote-desktop P2, opt-in portal module) ----------
+
+  /**
+   * Absolute pointer move: x/y are normalized 0..1 of the frame (top-left
+   * origin). Routed to the xdg-desktop-portal module; a box WITHOUT the module
+   * drops it, so this is safe to send unconditionally. NOT quantized like the
+   * stick's q() (that clamps -1..1) — a NEW 0..1 quantizer keeps the on-wire
+   * value small without losing sub-pixel-irrelevant precision.
+   */
+  sendMouseAbs(x: number, y: number): void {
+    this.sendRaw({ t: 'ma', x: q01(x), y: q01(y) });
+  }
+
+  /** Portal pointer button (BTN_LEFT/RIGHT/MIDDLE) for absolute tap-to-point.
+   *  Distinct from sendMouseButton (which drives the uinput mouse); this rides
+   *  the portal so the button lands at the absolute position. */
+  sendMouseButtonPortal(k: MouseButton, v: 0 | 1): void {
+    this.sendRaw({ t: 'mbp', k, v });
+  }
+
+  /** Absolute tap-to-point: move to (x,y) 0..1 then a momentary left click,
+   *  both over the portal. One gesture = one call. */
+  tapAbs(x: number, y: number): void {
+    this.sendMouseAbs(x, y);
+    this.sendMouseButtonPortal('l', 1);
+    setTimeout(() => this.sendMouseButtonPortal('l', 0), 40);
   }
 
   // ---------- keyboard (v2) ----------

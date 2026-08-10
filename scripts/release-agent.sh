@@ -39,9 +39,15 @@ agent="$root/agent"
 # Publishing them here is what lets a fetch-mode install gain the helper at
 # all — a release without them simply installs the sudo-only agent, which
 # keeps working (the shim detects absence and falls back).
+#
+# couchside-portal.{py,service} are the OPT-IN remote-desktop module (agent >=
+# 2.9.77): shipped + signed here so scripts/portal-module.sh can install them,
+# but NEVER enabled by base install.sh. A release without them just means no
+# fluid /ws/screen + tap-to-point; the agent's screenstream cap probes the
+# helper socket and degrades to the still-frame poller when absent.
 files=(couchsided.py couchside.service qr.py couchside-screensaver.sh \
        couchside-player.sh couchside-helper.py couchside-helper.socket \
-       couchside-helper.service)
+       couchside-helper.service couchside-portal.py couchside-portal.service)
 for f in "${files[@]}"; do
     [ -f "$agent/$f" ] || { echo "error: missing agent/$f" >&2; exit 2; }
 done
