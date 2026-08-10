@@ -77,6 +77,15 @@ _STREAM_PROFILES = {
     "1080p15": {"width": 1920, "height": 1080, "fps": 15, "quality": 70},
 }
 
+# H.264/WebRTC profiles (P4b) — a CLOSED SET, same discipline as _STREAM_PROFILES.
+# The client names a KEY; the helper owns every pipeline parameter. bitrate in kbps.
+_H264_PROFILES = {
+    "720p30":  {"width": 1280, "height": 720,  "fps": 30, "bitrate": 5000},
+    "720p60":  {"width": 1280, "height": 720,  "fps": 60, "bitrate": 8000},
+    "1080p30": {"width": 1920, "height": 1080, "fps": 30, "bitrate": 10000},
+    "1080p60": {"width": 1920, "height": 1080, "fps": 60, "bitrate": 16000},
+}
+
 # How long Start may wait for the user to click Share/Allow on the box.
 _CONSENT_TIMEOUT_S = 150
 
@@ -210,12 +219,16 @@ def _open_pipewire_fd():
 # ---------------------------------------------------------------- the verbs ---
 
 def verb_status():
+    h264 = _h264_available()
     with _SLOCK:
         sess = _SESSION
+    base = {"ok": True, "h264": h264, "h264_profiles": sorted(_H264_PROFILES)}
     if sess is None:
-        return {"ok": True, "session": False}
-    return {"ok": True, "session": True, "w": sess["w"], "h": sess["h"],
-            "node": sess["node"], "profiles": sorted(_STREAM_PROFILES)}
+        base["session"] = False
+        return base
+    base.update({"session": True, "w": sess["w"], "h": sess["h"],
+                 "node": sess["node"], "profiles": sorted(_STREAM_PROFILES)})
+    return base
 
 
 def verb_ensure():
@@ -273,6 +286,13 @@ def _profile_arg(v):
     if isinstance(v, dict):
         v = v.get("profile")
     return v if isinstance(v, str) and v in _STREAM_PROFILES else None
+
+
+def _h264_profile_arg(v):
+    """An H.264/WebRTC profile KEY. Looked up, never interpolated (§3.1)."""
+    if isinstance(v, dict):
+        v = v.get("profile")
+    return v if isinstance(v, str) and v in _H264_PROFILES else None
 
 
 # one-shot JSON verbs (streaming is handled separately in serve_one)
@@ -379,6 +399,238 @@ def stream(profile, conn):
             pass
 
 
+# ---- H.264 / WebRTC (P4b) --------------------------------------------------
+# In-process `webrtcbin` (NOT gst-launch — it needs async create-offer / ICE
+# callbacks). H264-only, sendonly, host candidates only (stun-server=NULL: the
+# app and box share a LAN). The agent's /ws/webrtc relays OPAQUE SDP/ICE JSON
+# between the app and this socket; THIS builds the whole pipeline. §3: no client
+# string ever reaches gst — the client only names a profile KEY (looked up), and
+# the PipeWire node/fd come only from the portal's own Start result.
+#
+# All GStreamer gi imports are LAZY + guarded so a box missing GstWebRTC/GstSdp
+# (or the libnice `nice` plugin webrtcbin needs) degrades closed to no-h264 —
+# it must NOT break import (that would take the shipped P4a MJPEG path down too).
+
+_ALLOWED_WEBRTC_IN = ("answer", "ice", "bye")   # frozen set of inbound msg types
+_WEBRTC_LOCK = threading.Lock()                 # one WebRTC session at a time (heavy)
+
+
+class _ByeSignal(Exception):
+    """Internal: the peer sent {t:bye}; unwind the signaling read loop."""
+
+
+def _h264_available():
+    """True only if webrtcbin can ACTUALLY run here — which requires the libnice
+    `nice` elements (nicesrc/nicesink), NOT just that webrtcbin is registered.
+    Proven on hardware: `gst-inspect webrtcbin` succeeds but any media pad errors
+    'libnice elements are not available' without the nice plugin. Also needs a VA
+    H.264 encoder + the RTP/portal path. Degrade closed on any failure."""
+    try:
+        import gi as _gi
+        _gi.require_version("Gst", "1.0")
+        _gi.require_version("GstWebRTC", "1.0")
+        _gi.require_version("GstSdp", "1.0")
+        from gi.repository import Gst as _Gst
+        _Gst.init(None)
+        need = ("webrtcbin", "nicesrc", "nicesink", "rtph264pay",
+                "vapostproc", "pipewiresrc", "h264parse", "videorate")
+        if any(_Gst.ElementFactory.find(e) is None for e in need):
+            return False
+        if _Gst.ElementFactory.find("vah264enc") is None and \
+           _Gst.ElementFactory.find("vah264lpenc") is None:
+            return False
+        return True
+    except Exception:
+        return False
+
+
+def _webrtc_desc(profile, pwfd, node, Gst):
+    """gstreamer-parse description for one profile. Every element/parameter is
+    chosen HERE. Prefer the full `vah264enc` (CBR = predictable bitrate for
+    streaming); fall back to the low-power `vah264lpenc` (CQP-only on some GPUs).
+    webrtcbin is declared and linked via the trailing-dot request-pad syntax
+    (inline `! webrtcbin` fails to link — proven)."""
+    p = _H264_PROFILES[profile]
+    if Gst.ElementFactory.find("vah264enc") is not None:
+        enc = ("vah264enc rate-control=cbr bitrate=%d target-usage=7 "
+               "key-int-max=%d b-frames=0 ref-frames=1"
+               % (p["bitrate"], p["fps"] * 2))
+    else:
+        enc = ("vah264lpenc rate-control=cqp target-usage=7 "
+               "key-int-max=%d b-frames=0 ref-frames=1" % (p["fps"] * 2))
+    return ("webrtcbin name=sendrecv bundle-policy=max-bundle latency=0 "
+            "pipewiresrc fd=%d path=%d do-timestamp=true keepalive-time=1000 "
+            "! videorate ! video/x-raw,framerate=%d/1 "
+            "! vapostproc ! video/x-raw(memory:VAMemory),format=NV12,width=%d,height=%d "
+            "! %s ! h264parse config-interval=-1 "
+            "! rtph264pay pt=96 config-interval=-1 aggregate-mode=zero-latency mtu=1200 "
+            "! queue ! application/x-rtp,media=video,encoding-name=H264,payload=96 "
+            "! sendrecv."
+            % (pwfd, node, p["fps"], p["width"], p["height"], enc))
+
+
+def _webrtc_session(profile, conn):
+    """One WebRTC streaming session: build the webrtcbin pipeline for `profile`,
+    exchange OPAQUE SDP/ICE as JSON lines over `conn` (the agent relays them to
+    the app), stream until the peer sends {t:bye} or disconnects, then REAP the
+    pipeline (a leaked encoder keeps filming the screen).
+
+    webrtcbin is built and driven on a DEDICATED GLib main-loop thread (default
+    context) — proven on hardware: driving it from a private thread-default
+    context yields an empty offer (webrtcbin's DTLS/ICE machinery expects the
+    global default context). The socket read loop runs on THIS thread and hands
+    inbound answer/ICE to the loop thread via idle_add. One session at a time
+    (_WEBRTC_LOCK) — webrtcbin is heavy and shares the default context."""
+    try:
+        import gi as _gi
+        _gi.require_version("Gst", "1.0")
+        _gi.require_version("GstWebRTC", "1.0")
+        _gi.require_version("GstSdp", "1.0")
+        from gi.repository import GLib as _GLib, Gst, GstWebRTC, GstSdp
+        Gst.init(None)
+    except Exception:
+        _send_json(conn, {"t": "error", "error": "no webrtc support"})
+        return
+    if _ensure_session() is None:
+        _send_json(conn, {"t": "error", "error": "no session"})
+        return
+    if not _WEBRTC_LOCK.acquire(blocking=False):
+        _send_json(conn, {"t": "error", "error": "busy"})       # cap 1
+        return
+
+    with _SLOCK:
+        node = _SESSION["node"]
+    loop = _GLib.MainLoop()                                      # default context
+    state = {"pipeline": None, "webrtc": None, "pwfd": None,
+             "wlock": threading.Lock()}
+
+    def send(obj):
+        # webrtcbin fires offer/ICE on internal gst threads → serialize writes.
+        with state["wlock"]:
+            try:
+                conn.sendall((json.dumps(obj) + "\n").encode())
+            except OSError:
+                loop.quit()
+
+    def on_offer_created(promise, _elem, _u):
+        promise.wait()
+        reply = promise.get_reply()
+        offer = reply.get_value("offer") if reply else None
+        if offer is None:
+            return
+        state["webrtc"].emit("set-local-description", offer, Gst.Promise.new())
+        send({"t": "offer", "sdp": offer.sdp.as_text()})
+
+    def on_negotiation_needed(elem):
+        pr = Gst.Promise.new_with_change_func(on_offer_created, elem, None)
+        elem.emit("create-offer", None, pr)
+
+    def on_ice(_elem, mline, cand):
+        send({"t": "ice", "sdpMLineIndex": int(mline), "candidate": cand})
+
+    def build():                                                # on the loop thread
+        pwfd = _open_pipewire_fd()
+        if pwfd is None:
+            send({"t": "error", "error": "no pw fd"})
+            loop.quit()
+            return False
+        state["pwfd"] = pwfd
+        try:
+            pipeline = Gst.parse_launch(_webrtc_desc(profile, pwfd, node, Gst))
+            state["pipeline"] = pipeline
+            wb = pipeline.get_by_name("sendrecv")
+            state["webrtc"] = wb
+            try:
+                wb.set_property("stun-server", None)   # host candidates only (LAN)
+            except Exception:
+                pass
+            wb.connect("on-negotiation-needed", on_negotiation_needed)
+            wb.connect("on-ice-candidate", on_ice)
+
+            # Pump the pipeline bus: webrtcbin relies on its bus being serviced
+            # (without a watch the negotiation stalls / yields an empty offer,
+            # proven on hardware). Log errors; end the session on a fatal one.
+            def _on_bus(_b, m):
+                if m.type == Gst.MessageType.ERROR:
+                    err, dbg = m.parse_error()
+                    print("[portal] webrtc bus error: %s | %s"
+                          % (err.message, dbg), flush=True)
+                    loop.quit()
+            bus = pipeline.get_bus()
+            bus.add_signal_watch()
+            bus.connect("message", _on_bus)
+            state["bus"] = bus
+            pipeline.set_state(Gst.State.PLAYING)
+        except Exception:
+            send({"t": "error", "error": "pipeline failed"})
+            loop.quit()
+        return False
+
+    def do_answer(sdp):
+        _res, m = GstSdp.SDPMessage.new()
+        GstSdp.sdp_message_parse_buffer(sdp.encode(), m)
+        ans = GstWebRTC.WebRTCSessionDescription.new(
+            GstWebRTC.WebRTCSDPType.ANSWER, m)
+        state["webrtc"].emit("set-remote-description", ans, Gst.Promise.new())
+        return False
+
+    def do_ice(cand, mline):
+        state["webrtc"].emit("add-ice-candidate", mline, cand)
+        return False
+
+    lt = threading.Thread(target=loop.run, daemon=True)
+    lt.start()
+    _GLib.idle_add(build)
+
+    # Inbound signaling: read JSON lines on THIS thread, marshal to the loop.
+    buf = b""
+    try:
+        while True:
+            chunk = conn.recv(65536)
+            if not chunk:
+                break
+            buf += chunk
+            while b"\n" in buf:
+                line, buf = buf.split(b"\n", 1)
+                if not line.strip():
+                    continue
+                try:
+                    msg = json.loads(line.decode("utf-8"))
+                except (ValueError, UnicodeDecodeError):
+                    continue
+                if not isinstance(msg, dict):
+                    continue
+                t = msg.get("t")
+                if t not in _ALLOWED_WEBRTC_IN:            # frozen inbound set (§3.2)
+                    continue
+                if t == "answer" and isinstance(msg.get("sdp"), str):
+                    _GLib.idle_add(do_answer, msg["sdp"])
+                elif t == "ice":
+                    cand, mline = msg.get("candidate"), msg.get("sdpMLineIndex", 0)
+                    if isinstance(cand, str) and isinstance(mline, int):
+                        _GLib.idle_add(do_ice, cand, mline)
+                elif t == "bye":
+                    raise _ByeSignal()
+    except (OSError, _ByeSignal):
+        pass
+    finally:
+        loop.quit()
+        lt.join(timeout=3)
+        if state.get("bus") is not None:
+            try:
+                state["bus"].remove_signal_watch()
+            except Exception:
+                pass
+        if state["pipeline"] is not None:
+            state["pipeline"].set_state(Gst.State.NULL)   # REAP the encoder
+        if state["pwfd"] is not None:
+            try:
+                os.close(state["pwfd"])
+            except OSError:
+                pass
+        _WEBRTC_LOCK.release()
+
+
 # ------------------------------------------------------------------- serving
 
 def peer_uid(conn):
@@ -391,6 +643,13 @@ def peer_uid(conn):
         return uid
     except (OSError, struct.error, AttributeError):
         return None
+
+
+def _send_json(conn, obj):
+    try:
+        conn.sendall((json.dumps(obj) + "\n").encode())
+    except OSError:
+        pass
 
 
 def _read_line(conn, limit=65536):
@@ -431,6 +690,18 @@ def serve_one(conn):
                 return
             conn.settimeout(None)                    # long-lived stream
             stream(profile, conn)
+            return
+        # The webrtc verb switches this connection to a JSON SDP/ICE signaling
+        # channel (H.264 over webrtcbin); every other verb is one line in/out.
+        if isinstance(req, dict) and req.get("verb") == "webrtc":
+            profile = _h264_profile_arg(req.get("arg"))
+            if profile is None:
+                conn.sendall(json.dumps(
+                    {"ok": False, "error": "invalid argument for webrtc"}).encode()
+                    + b"\n")
+                return
+            conn.settimeout(None)                    # long-lived signaling
+            _webrtc_session(profile, conn)
             return
         reply = dispatch(req)
         conn.sendall(json.dumps(reply).encode() + b"\n")

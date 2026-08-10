@@ -214,6 +214,15 @@ export type BoxCaps = {
    * skips the fluid path (the app then uses the P1 poller).
    */
   screenstream?: boolean;
+  /**
+   * P4b: the remote-desktop module ALSO exposes a working H.264/WebRTC video
+   * path (webrtcbin + libnice + a VA encoder) — 30–60fps via react-native-webrtc
+   * instead of MJPEG-over-<Image>. Linux/Wayland-desktop only, opt-in. Optional +
+   * additive: absent on agents without it and on Windows, so undefined reads as
+   * "unknown"; the app only uses the WebRTC path when this is true AND the app was
+   * built with react-native-webrtc, else it falls back to screenstream (MJPEG).
+   */
+  screenstream_h264?: boolean;
 };
 
 /** One Setup → Utilities helper + its live state, from GET /api/utilities.
@@ -1190,7 +1199,8 @@ export function capsEqual(a?: BoxCaps, b?: BoxCaps): boolean {
     a.player === b.player &&
     a.steaminstall === b.steaminstall &&
     a.utilities === b.utilities &&
-    a.screenstream === b.screenstream
+    a.screenstream === b.screenstream &&
+    a.screenstream_h264 === b.screenstream_h264
   );
 }
 

@@ -257,13 +257,15 @@ def _app_caps_sites():
     fixed window -- truncation is what produced the earlier false finding."""
     api = open(os.path.join(ROOT, "app", "lib", "api.ts")).read()
     st = open(os.path.join(ROOT, "app", "lib", "settings.ts")).read()
+    # cap names may contain DIGITS (e.g. screenstream_h264); [a-z0-9_]+ or a
+    # digit-bearing name is silently unparseable and reads as a missing site.
     m = re.search(r"export type BoxCaps = \{(.*?)\n\};", api, re.S)
-    box = set(re.findall(r"^\s{2}([a-z_]+)\??:", m.group(1), re.M)) if m else set()
+    box = set(re.findall(r"^\s{2}([a-z0-9_]+)\??:", m.group(1), re.M)) if m else set()
     i = api.find("capsEqual")
-    equal = set(re.findall(r"a\.([a-z_]+) === b\.", api[i:i + 2000])) if i >= 0 else set()
+    equal = set(re.findall(r"a\.([a-z0-9_]+) === b\.", api[i:i + 2000])) if i >= 0 else set()
     j = st.find("normalizeCaps")
     k = st.find("\n}", j)
-    norm = set(re.findall(r"bool\('([a-z_]+)'\)", st[j:k])) if j >= 0 else set()
+    norm = set(re.findall(r"bool\('([a-z0-9_]+)'\)", st[j:k])) if j >= 0 else set()
     return {"BoxCaps": box, "normalizeCaps": norm, "capsEqual": equal}
 
 
