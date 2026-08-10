@@ -623,3 +623,35 @@ screensaver preview, a second controller layout).
    half-dead-socket watchdog every ~12s and clicks in the dead windows mimic
    broken buttons. Known ceiling: onPressIn-only Pressables never fire from mouse
    on react-native-web (portrait pad has the same gap) — those need a device.
+
+### Drag-to-reorder a list (Playlog `UP NEXT`)
+
+Hand-rolled on `PanResponder` (gesture-handler is present transitively but NOT
+wired at the root, so it is not an option). The pattern, and the traps a review
+caught before it shipped:
+
+1. **A grip owns the responder on `onStartShouldSetPanResponder`, and refuses to
+   yield (`onPanResponderTerminationRequest: () => false`).** `onPanResponderMove`
+   fires continuously for the *owner* (unlike an ancestor's capture handlers, per
+   the note above), so the owner reads `gestureState.dy` directly.
+2. **Commit only on release, against a snapshot frozen at grant.** The data never
+   mutates mid-drag, so row layout stays valid; the drop slot is a pure function
+   (`lib/playlogReorder.ts`, unit-tested both directions + boundaries).
+3. **`CellRendererComponent` MUST have a stable identity.** Passing a
+   `useCallback(...,[dragKey])` swaps the component *type* the instant the drag
+   starts, which remounts every cell and tears down the grip's in-flight
+   responder — the drag then never tracks the finger, and a render-only test
+   can't see it. Build the cell once (a ref) and let it re-render via a
+   `Context` consumer (context updates pierce the list's internal PureComponent).
+4. **Centres come from measured HEIGHTS as a running sum, not absolute `y`, with a
+   positive default for rows the list hasn't rendered** (`rowCenters`). A missing
+   row defaulting to `0` sorts it to the top and teleports the drag — degrade to
+   an estimate, never a guess.
+5. **A subset reorder must not relocate off-screen items** (`reorderWithinSubset`).
+   The queue mixes installed + owned-but-uninstalled games that arrive on
+   different polls; permute only the shown slots, leave every unshown bookmark
+   where it is. Appending the omitted ones to the tail is silent, persisted
+   corruption.
+6. **Keep an accessible fallback.** The grip is pointer-only (`accessible={false}`);
+   up/down arrow buttons remain for assistive tech and as the guaranteed path.
+   The drag gesture itself needs a device to verify (same RNW ceiling as above).
