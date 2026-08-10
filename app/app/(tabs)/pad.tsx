@@ -50,6 +50,7 @@ import { setImmersive } from '@/lib/immersive';
 import { setRunningAppid } from '@/lib/gameTheme';
 import { surfaceChanged, type PadSurface } from '@/lib/padSurface';
 import { moveLayout, padLayout, verticalMoveLayout } from '@/lib/padLayout';
+import { NotePad } from '@/components/NotePad';
 import { SteamMenusPanel } from '@/components/SteamMenusPanel';
 import { RemoteView } from '@/components/RemoteView';
 import { PadDiagnostics } from '@/components/PadDiagnostics';
@@ -854,6 +855,9 @@ const MODES: { key: PadMode; label: string }[] = [
   // reach for most. Conditional -- see `modes` below; a box without Steam menus
   // never sees this segment, because an empty panel is worse than no segment.
   { key: 'menus', label: 'STEAM' },
+  // A phone-side text scratchpad, not a box control. Sits last (furthest swipe)
+  // and is hideable via the hideNoteMode pref — see `modes` below.
+  { key: 'note', label: 'NOTE' },
 ];
 
 function PadScreen() {
@@ -1087,6 +1091,7 @@ function PadScreen() {
   const keepAwakeOn = useKeepAwakeEnabled();
   const keepAwakeTimeout = useKeepAwakeTimeoutMin();
   const tvNavEnabled = usePref('tvNavEnabled');
+  const hideNoteMode = usePref('hideNoteMode');
 
   // Wake-lock state. wakeHeldRef mirrors what we last told expo-keep-awake so
   // the poll is a no-op in the steady state instead of re-issuing a native call
@@ -1409,9 +1414,12 @@ function PadScreen() {
         // PERSISTED on 'move' keeps working if the game quits — yanking the
         // surface out from under someone on a poll flap would be worse than
         // an idle stick — but the segment hides, so EXIT is the way back.
-        && (m.key !== 'move' || (runningGame && !keyboardMode) || mode === 'move'),
+        && (m.key !== 'move' || (runningGame && !keyboardMode) || mode === 'move')
+        // NOTE is a local scratchpad, available on any box; the pref hides the
+        // segment. A box already PERSISTED on 'note' keeps it so EXIT still works.
+        && (m.key !== 'note' || !hideNoteMode || mode === 'note'),
     ),
-    [hasSteamMenus, inGameMode, keyboardMode, runningGame, mode],
+    [hasSteamMenus, inGameMode, keyboardMode, runningGame, mode, hideNoteMode],
   );
   const desk = useCallback(
     (name: DesktopKey | 'esc') => () =>
@@ -2032,7 +2040,11 @@ function PadScreen() {
         </View>
       )}
 
-      {mode === 'menus' ? (
+      {mode === 'note' ? (
+        // A local text scratchpad. Renders in place of the box-driving surfaces;
+        // the mode bar above stays visible, so a swipe/tap still exits.
+        <NotePad />
+      ) : mode === 'menus' ? (
         // MUST scroll: TabScreen's body is a plain View, and this list is ~16
         // chips across five sections -- taller than the pane on a phone. The
         // Actions tab gets scrolling from its own ScrollView; Pad has none, so

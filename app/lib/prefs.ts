@@ -146,6 +146,11 @@ export type Prefs = {
    *  going. Named `hide` to match hideStreamFromPc / hideTvVolume; a mixed
    *  polarity is how a toggle ends up wired backwards. */
   hideDownloads: boolean;
+  /** Hide the NOTE segment from the Pad's mode bar. Off by default (visible):
+   *  note mode is a phone-side scratchpad for jotting a clue mid-game. On for
+   *  people who don't want the extra segment. `hide` polarity to match the
+   *  other hide* prefs. The note itself is never touched by this. */
+  hideNoteMode: boolean;
   /** Show the occasional "check for an app update" reminder toast. On by
    *  default; the toast itself carries a "Don't show again" that flips this
    *  off. The update CHECK is always manual — this only governs the nudge. */
@@ -291,6 +296,7 @@ export const DEFAULTS: Prefs = {
   onboardingDone: false,
   whatsNewOffered: false,
   hideDownloads: false,
+  hideNoteMode: false,
   appUpdateReminder: true,
   defaultPadMode: 'swipe',
   statusIntervalMs: 5000,
@@ -386,6 +392,7 @@ function normalize(raw: unknown): Prefs {
   const onboardingDone = bool(o.onboardingDone, DEFAULTS.onboardingDone);
   const whatsNewOffered = bool(o.whatsNewOffered, DEFAULTS.whatsNewOffered);
   const hideDownloads = bool(o.hideDownloads, DEFAULTS.hideDownloads);
+  const hideNoteMode = bool(o.hideNoteMode, DEFAULTS.hideNoteMode);
   const appUpdateReminder = bool(o.appUpdateReminder, DEFAULTS.appUpdateReminder);
   const searchSide: 'left' | 'right' | 'off' =
     o.searchButtonSide === 'right' || o.searchButtonSide === 'off'
@@ -400,6 +407,7 @@ function normalize(raw: unknown): Prefs {
     onboardingDone,
     whatsNewOffered,
     hideDownloads,
+    hideNoteMode,
     appUpdateReminder,
     confirmSuspend:
       typeof o.confirmSuspend === 'boolean' ? o.confirmSuspend : DEFAULTS.confirmSuspend,
