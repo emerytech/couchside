@@ -7,6 +7,7 @@ import { TabScreen } from '@/components/TabScreen';
 import { useFocusEffect } from 'expo-router';
 import { useLockOrientation } from '@/hooks/useLockOrientation';
 import { api, Status } from '@/lib/api';
+import { fmtLastSeen, noteBoxSeen } from '@/lib/lastSeen';
 import { usePref } from '@/lib/prefs';
 import { Box } from '@/lib/settings';
 import { useSkinKit, VitalsContext, vitality } from '@/lib/skin';
@@ -33,6 +34,13 @@ type FleetMap = Record<string, FleetEntry>;
  */
 function useFleetStatus(boxes: Box[], intervalMs: number): FleetMap {
   const [map, setMap] = React.useState<FleetMap>({});
+
+  // Persist each box's last-reachable time (throttled) so a DOWN tile shows a
+  // real "last seen" after an app restart instead of "never". A ref keeps the
+  // focus effect's deps as [intervalMs] rather than re-subscribing on identity.
+  const { updateBox } = useBoxes();
+  const updateBoxRef = React.useRef(updateBox);
+  updateBoxRef.current = updateBox;
 
   const boxesRef = React.useRef<Box[]>(boxes);
   boxesRef.current = boxes;
@@ -76,9 +84,11 @@ function useFleetStatus(boxes: Box[], intervalMs: number): FleetMap {
             .status(conn)
             .then((s) => {
               if (!mounted.current) return;
+              const now = Date.now();
+              noteBoxSeen(box.id, now, (ts) => void updateBoxRef.current(box.id, { lastSeen: ts }));
               setMap((prev) => ({
                 ...prev,
-                [box.id]: { status: s, error: null, lastSuccess: Date.now() },
+                [box.id]: { status: s, error: null, lastSuccess: now },
               }));
             })
             .catch((e: unknown) => {
@@ -128,15 +138,6 @@ function useFleetStatus(boxes: Box[], intervalMs: number): FleetMap {
   );
 
   return map;
-}
-
-function fmtLastSeen(ts: number | null): string {
-  if (!ts) return 'never';
-  const s = Math.round((Date.now() - ts) / 1000);
-  if (s < 60) return `${s}s ago`;
-  const m = Math.floor(s / 60);
-  if (m < 60) return `${m}m ago`;
-  return `${Math.floor(m / 60)}h ${m % 60}m ago`;
 }
 
 function Tile({ box, entry, active, index, onPress }: {
@@ -206,7 +207,9 @@ function Tile({ box, entry, active, index, onPress }: {
           </>
         ) : (
           <Text style={styles.downText}>
-            {entry == null ? 'probing…' : `DOWN · last seen ${fmtLastSeen(entry.lastSuccess)}`}
+            {entry == null
+              ? 'probing…'
+              : `DOWN · last seen ${fmtLastSeen(entry.lastSuccess ?? box.lastSeen ?? null)}`}
           </Text>
         )}
       </Card>

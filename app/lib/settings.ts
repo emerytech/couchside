@@ -55,6 +55,14 @@ export type Box = {
    * poll. Undefined until first learned / on older agents.
    */
   caps?: BoxCaps;
+  /**
+   * Unix ms the app last reached this box (learned from a successful status
+   * poll while reachable, throttled). Persisted so the unreachable banner and
+   * the Fleet tile can show a real "last seen" after an app restart or box
+   * switch, instead of "never" — usePoll's in-memory lastSuccess survives
+   * neither. See lib/lastSeen.ts.
+   */
+  lastSeen?: number;
 };
 
 /**
@@ -74,6 +82,8 @@ export type Settings = {
   volumeTarget?: 'box' | 'tv';
   /** Capability summary of the active box (see Box.caps). */
   caps?: BoxCaps;
+  /** Unix ms the active box was last reached (see Box.lastSeen). */
+  lastSeen?: number;
 };
 
 /** Safe placeholder used when no box is active (nothing paired yet). */
@@ -308,9 +318,13 @@ function normalizeBox(raw: unknown): Box | null {
   const mac = normalizeMac(o.mac) ?? undefined;
   const volumeTarget = normalizeVolumeTarget(o.volumeTarget);
   const caps = normalizeCaps(o.caps);
+  const lastSeen =
+    typeof o.lastSeen === 'number' && Number.isFinite(o.lastSeen) && o.lastSeen > 0
+      ? o.lastSeen
+      : undefined;
   return {
     id, name, host, port, token, padMode: normalizePadMode(o.padMode),
-    lastIp, mac, volumeTarget, caps,
+    lastIp, mac, volumeTarget, caps, lastSeen,
   };
 }
 
@@ -401,6 +415,7 @@ export function activeSettings(state: BoxesState): Settings {
     mac: active.mac,
     volumeTarget: active.volumeTarget,
     caps: active.caps,
+    lastSeen: active.lastSeen,
   };
 }
 
