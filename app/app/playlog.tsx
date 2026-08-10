@@ -339,6 +339,8 @@ export default function PlaylogScreen() {
                 <Text style={styles.sectionH}>NOW PLAYING</Text>
                 {nowPlaying.map((l) => {
                   const cover = coverForAppid(l.appid);
+                  const qk = bookmarkKey({ appid: l.appid, id: l.id });
+                  const queued = marks.isBookmarked(qk);
                   return (
                     <Pressable
                       key={l.id}
@@ -360,6 +362,23 @@ export default function PlaylogScreen() {
                           {l.playtime_min ? ` · ${playtimeLabel(l.playtime_min)}` : ''}
                         </Text>
                       </View>
+                      <Pressable
+                        onPress={() => {
+                          if (!qk) return;
+                          hapticLight();
+                          toggleBookmarked(qk);
+                        }}
+                        disabled={!qk}
+                        hitSlop={10}
+                        accessibilityRole="button"
+                        accessibilityLabel={queued ? `Remove ${l.label} from Up Next` : `Add ${l.label} to Up Next`}
+                        style={({ pressed }) => [styles.npClear, pressed && { opacity: 0.6 }]}>
+                        <Ionicons
+                          name={queued ? 'bookmark' : 'bookmark-outline'}
+                          size={17}
+                          color={queued ? t.blue : t.textDim}
+                        />
+                      </Pressable>
                       <Pressable
                         onPress={() => clearNowPlaying(l)}
                         hitSlop={10}
