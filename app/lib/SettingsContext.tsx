@@ -266,6 +266,7 @@ export function useSettings(): SettingsContextValue {
       mac: activeBox.mac,
       volumeTarget: activeBox.volumeTarget,
       caps: activeBox.caps,
+      lastSeen: activeBox.lastSeen,
     };
   }, [activeBox]);
 

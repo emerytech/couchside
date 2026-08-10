@@ -16,6 +16,7 @@ import { useLockOrientation } from '@/hooks/useLockOrientation';
 import { usePoll } from '@/hooks/usePoll';
 import { useStreak } from '@/hooks/useStreak';
 import { api, hostKey, humanizeUptime, Status, Unit } from '@/lib/api';
+import { fmtLastSeen, noteBoxSeen } from '@/lib/lastSeen';
 import { usePref } from '@/lib/prefs';
 import { useSkinKit, VitalsContext, vitality } from '@/lib/skin';
 import { noteBoxReachable } from '@/lib/review';
@@ -47,15 +48,6 @@ function UnitChip({ unit }: { unit: Unit }) {
   );
 }
 
-function fmtLastSeen(ts: number | null): string {
-  if (!ts) return 'never';
-  const s = Math.round((Date.now() - ts) / 1000);
-  if (s < 60) return `${s}s ago`;
-  const m = Math.floor(s / 60);
-  if (m < 60) return `${m}m ago`;
-  return `${Math.floor(m / 60)}h ${m % 60}m ago`;
-}
-
 /** "1h 24m" / "40m" — minutes only under an hour, so a short charge does not
  *  read as "0h 40m". */
 function fmtDuration(mins: number): string {
@@ -78,7 +70,7 @@ function ConsoleScreen() {
   const t = useTheme();
   const styles = useThemedStyles(makeStyles);
   const { Screen, Card, Bar, Dot, Spark, BigMetric } = useSkinKit();
-  const { settings, ready } = useSettings();
+  const { settings, ready, update } = useSettings();
 
   // No host yet (fresh install): don't poll, and show the pairing hint
   // instead of the unreachable banner.
@@ -109,6 +101,17 @@ function ConsoleScreen() {
   useEffect(() => {
     if (reachable) void noteBoxReachable();
   }, [reachable]);
+
+  // Persist a per-box "last seen" so the unreachable banner shows a real elapsed
+  // time after an app restart or box switch instead of "never" — usePoll's
+  // in-memory lastSuccess is null on a cold launch to a dead box and is cleared
+  // on every box switch. Throttled in noteBoxSeen; keyed by boxKey so switching
+  // boxes records the newly-active one promptly.
+  useEffect(() => {
+    if (status.lastSuccess != null) {
+      noteBoxSeen(boxKey, status.lastSuccess, (ts) => void update({ lastSeen: ts }));
+    }
+  }, [status.lastSuccess, boxKey, update]);
 
   // How hard the box is working, 0..1. Skins use this to set the RATE of their
   // idle motion -- a busy box breathes faster. Never a colour input.
@@ -198,7 +201,7 @@ function ConsoleScreen() {
             <Text style={styles.bannerTitle}>BOX UNREACHABLE</Text>
             <Text style={styles.bannerDetail}>{status.error.message}</Text>
             <Text style={styles.bannerDetail}>
-              last seen: {fmtLastSeen(status.lastSuccess)}
+              last seen: {fmtLastSeen(status.lastSuccess ?? settings.lastSeen ?? null)}
             </Text>
             <Pressable
               style={({ pressed }) => [styles.retryBtn, pressed && styles.pressed]}

@@ -3601,8 +3601,9 @@ def _couchmode_platform_ok():
     So the gate asks what the switch NEEDS instead of who made the distro:
 
       1. the four tools (checked by the caller, unchanged), and
-      2. both switch TARGETS installed — `gamescope-session.desktop` to fling
-         to, and some known desktop session to come back to.
+      2. both switch TARGETS installed — a gamescope Game Mode session (any
+         name in _GAMESCOPE_SESSION_FILES, since images differ) to fling to,
+         and some known desktop session to come back to.
 
     (2) is the KI-038 lesson applied to a gate rather than a write: it is not
     enough that a *command* exists, the thing it switches to has to be really
@@ -3618,7 +3619,7 @@ def _couchmode_platform_ok():
     installed = _installed_session_files()
     if not installed:
         return True  # cannot enumerate: fall back to the tool requirement
-    if GAMESCOPE_SESSION_FILE not in installed:
+    if not any(name in installed for name in _GAMESCOPE_SESSION_FILES):
         return False
     return any(name in installed for name in _DESKTOP_SESSIONS)
 
@@ -4133,6 +4134,19 @@ def _dm_dropin_legacy(dm):
 
 
 GAMESCOPE_SESSION_FILE = "gamescope-session.desktop"
+# The gamescope Game Mode session ships under different .desktop names across
+# images: SteamOS/Bazzite/ChimeraOS use gamescope-session.desktop, but some
+# SteamOS builds ship gamescope-wayland.desktop (MEASURED on a Legion Go S,
+# SteamOS 3.8.16, 2026-08-10: its /usr/share/wayland-sessions held
+# gamescope-wayland.desktop + plasma.desktop + plasmax11.desktop, so the single
+# hardcoded name above made _couchmode_platform_ok() refuse a box that was
+# literally sitting in Game Mode — the app then showed the Big Picture fallback).
+# This set gates DETECTION only (_couchmode_platform_ok / couchmode_available).
+# The autologin WRITE path still keys on the single GAMESCOPE_SESSION_FILE and is
+# deliberately unchanged here: writing a session name the box does not have is the
+# stranding failure _write_autologin already guards against, and resolving the
+# box's real name for that path is a separate, higher-risk change (see ROADMAP).
+_GAMESCOPE_SESSION_FILES = (GAMESCOPE_SESSION_FILE, "gamescope-wayland.desktop")
 
 
 def _steamosctl_session_ok():
@@ -4657,7 +4671,8 @@ def session_default_get():
         cmd = _greetd_current_command()
         if not cmd:
             return {"available": True, "backend": backend, "mode": "unknown"}
-        game_cmd = _session_exec_command(GAMESCOPE_SESSION_FILE)
+        game_cmd = _session_exec_command(
+            _gamescope_session_for_autologin() or GAMESCOPE_SESSION_FILE)
         if game_cmd and cmd == game_cmd:
             return {"available": True, "backend": backend, "mode": "game"}
         for session_file in _DESKTOP_SESSIONS:
@@ -4690,7 +4705,7 @@ def session_default_get():
     # about — the app highlights that from its own state) or unset. Either way
     # the honest answer is what the box will actually come up as: its record.
     name = _dm_current_session_file(backend)
-    if name == GAMESCOPE_SESSION_FILE:
+    if name in _GAMESCOPE_SESSION_FILES:
         mode = "game"
     elif name in _DESKTOP_SESSIONS:
         mode = "desktop"
@@ -4872,7 +4887,7 @@ def _migrate_dropin_into_config(dm):
     name = _last_session_line(_dm_dropin(dm)) or _last_session_line(_dm_dropin_legacy(dm))
     if not name:
         return
-    if name == GAMESCOPE_SESSION_FILE:
+    if name in _GAMESCOPE_SESSION_FILES:
         mode = "game"
     elif name in _DESKTOP_SESSIONS:
         mode = "desktop"
@@ -4964,7 +4979,11 @@ def session_default_arm():
         _dm_disarm(dm)
         return
     if pref == "game":
-        target = GAMESCOPE_SESSION_FILE
+        target = _gamescope_session_for_autologin()
+        if not target:
+            print("[session] arm: no gamescope session installed; refusing",
+                  flush=True)
+            return
     else:
         target = _desktop_session_for_autologin()
         if not target:
@@ -5001,7 +5020,13 @@ def session_default_set(mode):
         # broke every one-shot switch (KI-051).
         target = None
     elif mode == "game":
-        target = GAMESCOPE_SESSION_FILE
+        # Resolve the box's REAL gamescope session name (images differ), mirroring
+        # the desktop branch below. steamosctl switches by mode name and needs no
+        # file, so only the file-writing backends (greetd + the drop-in managers)
+        # must refuse when none is installed.
+        target = _gamescope_session_for_autologin()
+        if not target and backend != "steamosctl":
+            return done(False, "no gamescope session installed on this box")
     else:
         # Desktop: the session must EXIST or autologin fails and the box lands
         # at the greeter with no agent (see _installed_session_files). Refusing
@@ -5023,9 +5048,9 @@ def session_default_set(mode):
     if backend == "steamosctl":
         # SteamOS proper has a real API for this that costs nobody their
         # session, so use it and skip the drop-in dance entirely.
-        arg = "game" if target == GAMESCOPE_SESSION_FILE else "desktop"
-        if target is None:  # "last": nothing to tell steamosctl
+        if mode == "last":  # nothing to tell steamosctl
             return done(True)
+        arg = "game" if mode == "game" else "desktop"
         try:
             r = subprocess.run(["steamosctl", "set-default-login-mode", arg],
                                capture_output=True, text=True, timeout=8)
@@ -5121,7 +5146,28 @@ def _desktop_session_for_autologin():
     # still only ever a file we have SEEN, and never the gamescope session
     # (that is Game Mode, the opposite of what was asked for).
     for name in sorted(installed):
-        if name.startswith("plasma") and name != GAMESCOPE_SESSION_FILE:
+        if name.startswith("plasma") and name not in _GAMESCOPE_SESSION_FILES:
+            return name
+    return None
+
+
+def _gamescope_session_for_autologin():
+    """The gamescope Game Mode session file that EXISTS on this box, or None.
+
+    The Game-Mode mirror of _desktop_session_for_autologin(): images name the
+    session differently — gamescope-session.desktop on SteamOS/Bazzite/ChimeraOS,
+    gamescope-wayland.desktop on some SteamOS builds (MEASURED on a Legion Go S,
+    SteamOS 3.8.16, 2026-08-10) — so writing the single hardcoded name into an
+    autologin entry strands a box whose real session is named otherwise, the same
+    greeter-drop _dm_write already refuses. Degrades CLOSED like the desktop side:
+    None (refuse) when the dirs cannot be enumerated or no known gamescope session
+    is installed. Callers that do NOT write a filename (steamosctl switches by mode
+    name) must not treat None as a refusal."""
+    installed = _installed_session_files()
+    if not installed:
+        return None  # cannot enumerate; refuse rather than guess
+    for name in _GAMESCOPE_SESSION_FILES:
+        if name in installed:
             return name
     return None
 

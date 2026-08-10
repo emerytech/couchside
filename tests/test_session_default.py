@@ -397,6 +397,144 @@ def test_boot_preference_is_armed_only_while_the_box_is_off(tmp):
          cs._DM_STATE_FILES, cs._arm_hook_installed) = real
 
 
+def test_gamescope_session_resolver():
+    """_gamescope_session_for_autologin() picks the gamescope session the box
+    ACTUALLY ships, the Game-Mode mirror of _desktop_session_for_autologin.
+
+    Legion Go S, SteamOS 3.8.16 (owner box 10.1.1.195, 2026-08-10) ships the
+    Game Mode session as gamescope-WAYLAND.desktop, not gamescope-session.desktop
+    — the single hardcoded name refused Couch Mode and would have written an
+    autologin entry the box does not have. Degrade closed (None) when neither is
+    installed or the dirs cannot be read. Both states with controls (§11.2/3)."""
+    print("test_gamescope_session_resolver")
+    saved = cs._installed_session_files
+    try:
+        cs._installed_session_files = lambda: {"gamescope-session.desktop",
+                                               "plasma.desktop"}
+        check("picks gamescope-session when that is installed",
+              cs._gamescope_session_for_autologin(), "gamescope-session.desktop")
+        cs._installed_session_files = lambda: {"gamescope-wayland.desktop",
+                                               "plasma.desktop", "plasmax11.desktop"}
+        check("picks gamescope-wayland when THAT is installed (Legion Go S)",
+              cs._gamescope_session_for_autologin(), "gamescope-wayland.desktop")
+        cs._installed_session_files = lambda: {"plasma.desktop"}
+        check("no gamescope session at all -> None (refuse, do not guess)",
+              cs._gamescope_session_for_autologin(), None)
+        cs._installed_session_files = lambda: set()
+        check("cannot enumerate -> None (refuse)",
+              cs._gamescope_session_for_autologin(), None)
+    finally:
+        cs._installed_session_files = saved
+
+
+def test_gamescope_wayland_write_and_read(tmp):
+    """The WRITE half of the Legion Go S fix. A box that ships the Game Mode
+    session as gamescope-wayland.desktop must have THAT name armed into its
+    autologin drop-in (writing gamescope-session.desktop would strand it), and
+    the getter must read it back as 'game'. Both directions + a refuse control."""
+    print("test_gamescope_wayland_write_and_read")
+    real = (cs.subprocess.run, cs._sudo_nopasswd_allows, cs.detect_display_manager,
+            cs._installed_session_files, cs.CONFIG_PATH, cs._DM_CONF_DIRS,
+            cs._DM_SYS_CONF_DIRS, cs._DM_MAIN_CONFS, cs._DM_STATE_FILES,
+            cs._arm_hook_installed)
+    try:
+        confdir = os.path.join(tmp, "sddm.conf.d")
+        os.makedirs(confdir, exist_ok=True)
+        cs._DM_CONF_DIRS = {"sddm": confdir, "plasmalogin": confdir}
+        cs._DM_SYS_CONF_DIRS, cs._DM_MAIN_CONFS, cs._DM_STATE_FILES = {}, {}, {}
+        cs.CONFIG_PATH = os.path.join(tmp, "config.json")
+        with open(cs.CONFIG_PATH, "w") as f:
+            f.write('{"units": []}')
+        cs._sudo_nopasswd_allows = lambda needle: True
+        cs._arm_hook_installed = lambda: True
+        cs.detect_display_manager = lambda: "sddm"
+        # Legion Go S session set: gamescope under the WAYLAND name.
+        cs._installed_session_files = lambda: {"gamescope-wayland.desktop",
+                                               "plasma.desktop", "plasmax11.desktop"}
+        dropin = cs._dm_dropin("sddm")
+
+        def fake_run(argv, **kw):
+            class R:
+                pass
+            r = R()
+            r.returncode, r.stdout, r.stderr = 0, "", ""
+            if argv[:3] == ["sudo", "-n", "tee"]:
+                with open(argv[3], "w") as fh:
+                    fh.write(kw.get("input", ""))
+            elif argv[:1] == ["steamosctl"]:
+                r.stderr = "Error: UnknownInterface"  # force the sddm backend
+            return r
+        cs.subprocess.run = fake_run
+
+        check("set('game') succeeds on a gamescope-wayland box",
+              cs.session_default_set("game")["ok"], True)
+        cs.session_default_arm()
+        check("arm writes the box's REAL gamescope name, not the hardcoded one",
+              cs._last_session_line(dropin), "gamescope-wayland.desktop")
+        # Force the name-read path (pref 'last', not 'game') so this exercises the
+        # filename->mode mapping, not the stored preference short-circuit.
+        with cs.CONFIG_LOCK:
+            cs._config_set_field(cs.SESSION_DEFAULT_CONFIG_KEY, "last")
+        check("get maps a gamescope-wayland record back to 'game'",
+              cs.session_default_get()["mode"], "game")
+        # CONTROL: a box with NO gamescope session refuses to arm rather than
+        # writing a name it does not have (the stranding guard, one layer up).
+        cs._installed_session_files = lambda: {"plasma.desktop"}
+        with cs.CONFIG_LOCK:
+            cs._config_set_field(cs.SESSION_DEFAULT_CONFIG_KEY, "game")
+        with open(dropin, "w") as f:
+            f.write("")
+        cs.session_default_arm()
+        check("arm refuses (writes nothing) when no gamescope session exists",
+              cs._last_session_line(dropin), "")
+    finally:
+        (cs.subprocess.run, cs._sudo_nopasswd_allows, cs.detect_display_manager,
+         cs._installed_session_files, cs.CONFIG_PATH, cs._DM_CONF_DIRS,
+         cs._DM_SYS_CONF_DIRS, cs._DM_MAIN_CONFS, cs._DM_STATE_FILES,
+         cs._arm_hook_installed) = real
+
+
+def test_steamosctl_set_uses_mode_arg(tmp):
+    """set('game') on a steamosctl box sends the 'game' arg — pins the
+    arg-from-mode refactor. The old code derived the arg from
+    target == GAMESCOPE_SESSION_FILE; once target resolves to
+    gamescope-wayland.desktop that comparison is False, so it would have sent
+    'desktop' for a 'game' request. Deriving from `mode` is immune."""
+    print("test_steamosctl_set_uses_mode_arg")
+    real = (cs.subprocess.run, cs.session_default_backend, cs.session_default_get,
+            cs.CONFIG_PATH, cs._installed_session_files)
+    try:
+        cs.CONFIG_PATH = os.path.join(tmp, "config.json")
+        with open(cs.CONFIG_PATH, "w") as f:
+            f.write('{"units": []}')
+        cs.session_default_backend = lambda: "steamosctl"
+        # A wayland-named box: target resolves to gamescope-wayland.desktop, which
+        # the OLD arg-from-target logic would have mislabelled 'desktop'.
+        cs._installed_session_files = lambda: {"gamescope-wayland.desktop",
+                                               "plasma.desktop"}
+        calls = []
+
+        def fake_run(argv, **kw):
+            calls.append(list(argv))
+
+            class R:
+                pass
+            r = R()
+            r.returncode, r.stdout, r.stderr = 0, "", ""
+            return r
+        cs.subprocess.run = fake_run
+        cs.session_default_get = lambda: {"mode": "game"}  # readback verification
+        r = cs.session_default_set("game")
+        sent = [c for c in calls if c[:1] == ["steamosctl"]]
+        check("steamosctl set('game') sends the 'game' arg (not 'desktop')",
+              bool(sent) and sent[-1] == ["steamosctl", "set-default-login-mode", "game"],
+              True)
+        check("...and set() reports ok", r["ok"], True)
+    finally:
+        (cs.subprocess.run, cs.session_default_backend, cs.session_default_get,
+         cs.CONFIG_PATH, cs._installed_session_files) = real
+
+
 def main():
     real_run = cs.subprocess.run
     real_sudo = cs._sudo_nopasswd_allows
@@ -547,6 +685,17 @@ def main():
     finally:
         import shutil
         shutil.rmtree(_t, ignore_errors=True)
+
+    print()
+    print("gamescope session filename varies by image (Legion Go S / SteamOS 3.8)")
+    test_gamescope_session_resolver()
+    _g = tempfile.mkdtemp()
+    try:
+        test_gamescope_wayland_write_and_read(_g)
+        test_steamosctl_set_uses_mode_arg(_g)
+    finally:
+        import shutil
+        shutil.rmtree(_g, ignore_errors=True)
 
     print("the drop-in body (both conf-dir managers)")
     written = {}
