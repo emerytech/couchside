@@ -216,8 +216,11 @@ Entry fields: `priority` (P0 blocker → P3 nice) · `risk` · `affects` · `dep
         native H264 player) into EVERY app build (bloat + iOS build surface) even for non-users.
     - gamescope continuous capture still unproven (gamescopectl is one-shot); may be desktop-session-only.
       New stream endpoint = a new "video of your screen" data flow → security pass (token-authed, LAN-only).
-- **Next step:** P1+P2 are a reasonable near-term deliverable; P4 warrants `docs/memory/project_remote-desktop.md`
-  before any code (§10) — lead with P4a (optional, no app native dep). Note: input isn't the bottleneck — video is.
+- **Next step:** P1 SHIPPED (#433). P2 (tap-to-click) is the near-term app+agent deliverable. P4a is
+  fully spec'd in **`docs/memory/project_screenstream-module.md`** (opt-in MJPEG module: KDE-desktop
+  PipeWire/wlr capture → ffmpeg MJPEG → `/ws/screen`, `caps.screenstream` gating, opt-in deps+access,
+  `<Image>` decode = no app native dep; gamescope Game Mode out of scope). Note: input isn't the
+  bottleneck — video is.
 
 ## 📋 Planned
 
