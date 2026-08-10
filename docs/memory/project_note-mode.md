@@ -1,6 +1,24 @@
 # Note mode — jot a clue on the phone while the game runs
 
-**Status:** 📋 Planned. Spec only; nothing built.
+> **2026-08-10 PIVOT (owner):** "drawing is nice for doodling, but text typing notes
+> would be a big part of the experience." So v1 is a **TEXT** scratchpad, not the drag-ink
+> surface. The drawing sections below are retained for the **doodle fast-follow** (phase 2),
+> which reuses `touchTrail`/`TouchIndicatorLayer` and is the device-only-verifiable part.
+>
+> **v1 SHIPPED shape (text):** `note` is a new `PadMode` (`lib/settings.ts`); a **NOTE**
+> segment on the Pad mode bar, hideable via the `hideNoteMode` pref (`lib/prefs.ts`, Setup
+> toggle). Selecting it renders `components/NotePad.tsx` — a multiline `TextInput` bound to
+> `lib/note.ts` (single GLOBAL note string, key `couchside.note.v1`, SecureStore native /
+> localStorage web, autosave, `NOTE_MAX=4000`, persists across restart). Clear = a deliberate
+> confirmed act. It drives NOTHING on the box (no PanResponder, no d-pad) — mounts in place of
+> the swipe surface, so it carries none of the stuck-direction risk. Harness-verified fully:
+> segment show/hide by pref, type→autosave→persist across reload, Clear, works box-disconnected.
+> Decisions taken (were "ask, not assume"): single GLOBAL note; persists across app restart.
+>
+> **Doodle (phase 2, deferred):** freehand ink over/beside the text, reusing the machinery
+> below. Device-only verify (RN-Web has no touch events).
+
+**Status:** ✅ v1 (text) built on branch `claude/note-mode`. Drawing below = phase 2.
 **Origin:** owner, 2026-07-22, watching the drag stroke land on a real device:
 "the drag lines could even be a note tool in the swipe menu — a toggle to switch to note
 mode for when you are gaming and want to jot down a clue."

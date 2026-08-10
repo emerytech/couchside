@@ -16,7 +16,7 @@ import type { BoxCaps } from './api';
  * menus (agent >= 2.9.31). Pad filters it out otherwise rather than offering a
  * mode that would open an empty panel.
  */
-export type PadMode = 'gamepad' | 'swipe' | 'trackpad' | 'remote' | 'menus' | 'tvnav' | 'move';
+export type PadMode = 'gamepad' | 'swipe' | 'trackpad' | 'remote' | 'menus' | 'tvnav' | 'move' | 'note';
 
 /**
  * A single paired box (Bazzite media center, Steam Deck, ...). The app manages

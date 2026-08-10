@@ -911,6 +911,7 @@ function SetupBody() {
   const volumeButtons = usePref('volumeButtons');
   const hideOfflineStreamHosts = usePref('hideOfflineStreamHosts');
   const hideDownloads = usePref('hideDownloads');
+  const hideNoteMode = usePref('hideNoteMode');
   const appUpdateReminder = usePref('appUpdateReminder');
   const hideStreamFromPc = usePref('hideStreamFromPc');
   const hideTvVolume = usePref('hideTvVolume');
@@ -1452,6 +1453,15 @@ function SetupBody() {
                 value={hideDownloads}
                 onValueChange={(v) => {
                   void setPref('hideDownloads', v);
+                  hapticSelection();
+                }}
+              />
+              <TogglePref
+                label="Hide note mode"
+                sub="Removes the NOTE segment from the Pad's mode bar. Note mode is a phone-side scratchpad for jotting a clue while a game runs. Your note is kept either way — this only hides the segment."
+                value={hideNoteMode}
+                onValueChange={(v) => {
+                  void setPref('hideNoteMode', v);
                   hapticSelection();
                 }}
               />
