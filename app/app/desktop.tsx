@@ -3,10 +3,17 @@
  * project; see docs/memory/project_remote-desktop.md). Reached from the Console
  * screen viewer's "Control" button.
  *
- * The live screen frame fills the view; a transparent trackpad overlay on top
- * drives the desktop pointer over the SAME /ws/gamepad input path the Pad uses
- * (relative mouse — proven + already low-latency). This is "confirm-by-frame"
- * control at ~1.4fps, not fluid video (that is the opt-in P4 streaming module).
+ * The live screen frame fills the view; a dedicated trackpad zone drives the
+ * desktop pointer over the SAME /ws/gamepad input path the Pad uses (relative
+ * mouse — proven + already low-latency).
+ *
+ * TWO modes, chosen by caps.screenstream (the opt-in xdg-desktop-portal module):
+ *   - module ABSENT (default): the P1 still-frame poller (~1.4fps, "confirm-by-
+ *     frame") + relative trackpad. Works on every box.
+ *   - module PRESENT: the FLUID /ws/screen MJPEG stream + tap-to-point (tap the
+ *     frame -> the portal's absolute pointer moves there and clicks). The relative
+ *     trackpad still works for fine control. Degrades to the poller if the stream
+ *     fails (e.g. box in Game Mode -> no portal desktop session).
  *
  * It owns its OWN GamepadClient for the duration of the screen: connect +
  * requestControl on mount, releaseAll + close on unmount. `noPad:true` — this
@@ -25,11 +32,13 @@ import { Stack, router } from 'expo-router';
 import { useCallback, useEffect, useRef, useState } from 'react';
 import {
   ActivityIndicator, Image, Pressable, StyleSheet, Text, View,
+  type GestureResponderEvent,
 } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
 import { useLockOrientation } from '@/hooks/useLockOrientation';
 import { useScreenFrame } from '@/hooks/useScreenFrame';
+import { useScreenStream } from '@/hooks/useScreenStream';
 import { useTrackpad } from '@/hooks/useTrackpad';
 import { GamepadClient, type GamepadStatus } from '@/lib/gamepad';
 import { hapticLight, hapticMedium } from '@/lib/haptics';
@@ -47,7 +56,14 @@ export default function DesktopControlScreen() {
   const insets = useSafeAreaInsets();
   const { settings, ready } = useSettings();
   const configured = settings.host.trim().length > 0;
-  const { frame, failed } = useScreenFrame(settings, ready && configured, FRAME_MS);
+  // FLUID when the opt-in portal module is present (caps.screenstream): the
+  // /ws/screen MJPEG stream + tap-to-point. Otherwise the P1 still-frame poller +
+  // relative trackpad. Both hooks run (hooks rules); only the active one connects.
+  const streamMode = settings.caps?.screenstream === true;
+  const live = ready && configured;
+  const poll = useScreenFrame(settings, live && !streamMode, FRAME_MS);
+  const streamed = useScreenStream(settings, live && streamMode);
+  const { frame, failed } = streamMode ? streamed : poll;
 
   const clientRef = useRef<GamepadClient | null>(null);
   if (clientRef.current == null) clientRef.current = new GamepadClient();
@@ -108,6 +124,19 @@ export default function DesktopControlScreen() {
     onDragEnd: () => client.sendMouseButton('l', 0),
   });
 
+  // Tap-to-point (P2, fluid mode only): the tap's location within the frame maps
+  // to a normalized 0..1 coordinate for the portal's absolute pointer. The stage
+  // is 16:9 and the stream is 16:9, so there is no `contain` letterbox — the map
+  // is just location / measured size. (A non-16:9 source would need letterbox math.)
+  const stageSize = useRef({ w: 0, h: 0 });
+  const onTapFrame = useCallback((e: GestureResponderEvent) => {
+    const { w, h } = stageSize.current;
+    if (w <= 0 || h <= 0) return;
+    hapticLight();
+    // q01 on the client clamps to 0..1, so an edge tap past the bounds is fine.
+    client.tapAbs(e.nativeEvent.locationX / w, e.nativeEvent.locationY / h);
+  }, [client]);
+
   const exit = useCallback(() => { hapticMedium(); router.back(); }, []);
 
   return (
@@ -121,9 +150,22 @@ export default function DesktopControlScreen() {
           <View style={[StyleSheet.absoluteFill, styles.center]}>
             <ActivityIndicator color={t.textDim} />
             <Text style={styles.dim}>
-              {!configured ? 'Connect a box first.' : 'Waiting for the screen…'}
+              {!configured ? 'Connect a box first.'
+                : streamMode ? 'Approve remote control on your box…'
+                : 'Waiting for the screen…'}
             </Text>
           </View>
+        )}
+        {/* Tap-to-point overlay (fluid mode only): tapping the frame moves the
+            real cursor there and clicks, via the portal's absolute pointer. */}
+        {streamMode && frame && (
+          <Pressable
+            style={StyleSheet.absoluteFill}
+            onLayout={(e) => {
+              stageSize.current = { w: e.nativeEvent.layout.width, h: e.nativeEvent.layout.height };
+            }}
+            onPress={onTapFrame}
+            accessibilityLabel="Tap the screen to click there" />
         )}
         {status !== 'connected' && (
           <View style={[styles.pill, { top: 6 }]} pointerEvents="none">
@@ -142,7 +184,11 @@ export default function DesktopControlScreen() {
       {/* TRACKPAD (middle): the touch surface that drives the pointer */}
       <View style={styles.trackpad} {...pad.panHandlers} accessibilityLabel="Desktop trackpad">
         <Ionicons name="move-outline" size={22} color={t.textFaint} />
-        <Text style={styles.trackpadHint}>drag to move · tap to click · two-finger scroll</Text>
+        <Text style={styles.trackpadHint}>
+          {streamMode
+            ? 'tap the screen to point · drag here to move · two-finger scroll'
+            : 'drag to move · tap to click · two-finger scroll'}
+        </Text>
       </View>
 
       <View style={[styles.bar, { paddingBottom: insets.bottom + 8 }]}>

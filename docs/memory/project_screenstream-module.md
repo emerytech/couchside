@@ -1,6 +1,13 @@
 # Project — Screen-stream module (P4a): fluid remote desktop, as an OPT-IN add-on
 
-Status: **SPEC.** Not built. Written 2026-08-10.
+> **SUPERSEDED 2026-08-10 by `project_remote-desktop.md`** (portal-unified). The MJPEG-over-WebSocket
+> TRANSPORT here (§3b, §4 caps, §6 security) is still exact and carried forward verbatim. What CHANGED:
+> the capture backend is now the **xdg-desktop-portal ScreenCast PipeWire node** (proven), not a
+> wlr-grabber/pw-dump match, and it shares ONE portal session with P2 absolute input — both live in a
+> session-scoped helper (needs `gi`/`Gio`, so it can't be in the stdlib agent). Read the unified spec
+> first; keep this only for the transport/backpressure/security detail.
+
+Status: **SPEC (superseded — see banner).** Written 2026-08-10.
 Origin: owner wants the screen viewer to feel **fluid** ("like RustDesk"), and agreed it should be
 "an additional option that adds more dependencies to the install and more system access to enable
 the feature." This is the P4a tier of `docs/memory/project_remote-desktop.md` (P1 shipped in #433).

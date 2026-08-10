@@ -177,10 +177,16 @@ Entry fields: `priority` (P0 blocker → P3 nice) · `risk` · `affects` · `dep
 - **The two asks are different problems.** Controls-in-fullscreen is easy reuse; "fluid" is architectural:
   MEASURED ceiling ~1.2/1.4 fps, and **true VNC/fluid video is off the table on the screenshot pipeline** —
   each frame is a full screenshot+decode. Fluid (15-60fps) needs a whole new capture→encode→transport stack.
-- **Absolute pointer PROVEN pixel-exact on Plasma Wayland** (screenshot-diff, with a relative-mouse
-  control). Declare BTN_TOUCH to suppress a phantom /dev/input/js0. NOT shipped today (device is EV_REL only).
-  **Unproven: gamescope.** Needs zoom or a two-stage crosshair (a 44pt finger ≈ 289 logical px on a 4K
-  desktop vs a ~100×30px button) and frame-age gating so a stale frame can't produce a confident wrong click.
+- **⚡ BREAKTHROUGH 2026-08-10 — the path is xdg-desktop-portal, NOT raw uinput; P2+P4a UNIFY.** Raw-uinput
+  absolute is a PROVEN DEAD END on Wayland (kwin honors the portal, not a virtual EV_ABS device — legacy = no
+  motion; modern tablet/touchscreen classify but the cursor never moves). RustDesk shows the approach (AGPL →
+  borrow mechanism, never code). **Portal cursor PROVEN pixel-exact** on the KDE box (contamination-free: mouse
+  parked, portal warped to two arbitrary targets, menu tracked to each ~8px). **Capture PROVEN** via gstreamer
+  `pipewiresrc` on the SAME portal session — ONE consent grants input AND capture ("See what's on the screen" +
+  "Control input devices"). So **P2 (absolute input) + P4a (fluid capture) are ONE opt-in portal module.** The
+  portal driver needs `gi`/`Gio` (third-party) → lives in a session-scoped helper (user, not root); the agent
+  stays pure-stdlib. Consent is per-session on this box's (older) KDE (no persist checkbox); newer KDE persists.
+  Full unified spec: **`docs/memory/project_remote-desktop.md`**. gamescope Game Mode is OUT (no portal desktop).
 - **Phased plan:**
   - **P1 (low, app-only, ship-now): Fullscreen control mode.** Screen frame as a live background +
     a RemoteView-style trackpad + button overlay + `immersive.ts` chrome-hide + landscape. Reuses the
@@ -216,11 +222,18 @@ Entry fields: `priority` (P0 blocker → P3 nice) · `risk` · `affects` · `dep
         native H264 player) into EVERY app build (bloat + iOS build surface) even for non-users.
     - gamescope continuous capture still unproven (gamescopectl is one-shot); may be desktop-session-only.
       New stream endpoint = a new "video of your screen" data flow → security pass (token-authed, LAN-only).
-- **Next step:** P1 SHIPPED (#433). P2 (tap-to-click) is the near-term app+agent deliverable. P4a is
-  fully spec'd in **`docs/memory/project_screenstream-module.md`** (opt-in MJPEG module: KDE-desktop
-  PipeWire/wlr capture → ffmpeg MJPEG → `/ws/screen`, `caps.screenstream` gating, opt-in deps+access,
-  `<Image>` decode = no app native dep; gamescope Game Mode out of scope). Note: input isn't the
-  bottleneck — video is.
+- **Next step (updated 2026-08-10):** P1 SHIPPED (#433). Portal cursor + capture PROVEN; spec rewritten around
+  the portal (P2+P4a unified). **Build not started — it is now mechanical plumbing over mapped anchors:**
+  (1) `couchside-portal` helper (session mgmt + absolute-input verbs + gstreamer capture, runs as user);
+  (2) agent `/ws/screen` (mirrors `/ws/gamepad`) + additive `{t:'ma',x,y}` + `screenstream` cap (six sites);
+  (3) app `lib/screenstream.ts` MJPEG consumer + absolute-tap overlay on `app/app/desktop.tsx`;
+  (4) signed-channel install (deps + user unit) + uninstall. Capture = **gstreamer** (box ffmpeg lacks
+  pipewiregrab). `project_screenstream-module.md` is SUPERSEDED (transport detail only). Older P4b (H264 →
+  `react-native-webrtc` app-wide) stays deferred.
+  <!-- legacy note (kept per §7): P4a was earlier spec'd standalone in project_screenstream-module.md as
+  opt-in MJPEG: KDE-desktop PipeWire/wlr capture → ffmpeg MJPEG → /ws/screen, caps.screenstream gating,
+  `<Image>` decode = no app native dep; gamescope Game Mode out of scope. -->
+  Note: input isn't the bottleneck — video is.
 
 ## 📋 Planned
 

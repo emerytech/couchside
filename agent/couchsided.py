@@ -1582,7 +1582,7 @@ def set_caps(mock):
                  "screensaver", "couchmode", "bigpicture", "desktop",
                  "steamlink", "gaming", "steaminstall", "utilities",
                  "streamhost", "steammenus", "boxbattery", "file_upload",
-                 "session_default", "display_info", "player")}
+                 "session_default", "display_info", "player", "screenstream")}
         return
     CAPS = {
         "gamepad": _uinput_writable(),
@@ -1615,6 +1615,11 @@ def set_caps(mock):
         "file_upload": safe(lambda: os.access(_drop_dir(), os.W_OK)),
         "display_info": safe(display_info_available),
         "player": safe(player_available),
+        # OPT-IN remote-desktop module present (agent/couchside-portal.py reachable
+        # on its socket) -> the app uses the fluid /ws/screen viewer + tap-to-point;
+        # absent -> the still-frame poller + relative mouse (P1). A boot-time hint:
+        # /ws/screen re-checks the portal live and degrades closed regardless.
+        "screenstream": safe(screenstream_available),
     }
 
 
@@ -4755,6 +4760,95 @@ def _helper_call(verb, arg=None, timeout=10):
         # fallback still enforces every original constraint, so degrading to it
         # never widens anything.
         return None
+
+
+# ------------------------------------------------------ remote-desktop portal
+#
+# The OPT-IN remote-desktop module (agent/couchside-portal.py) is a SEPARATE
+# process because the xdg-desktop-portal driver needs gi/Gio, a third-party
+# import this stdlib agent forbids. It runs as the SAME user (portal/PipeWire/
+# Wayland are the user's, not root), and we reach it over its own unix socket
+# under XDG_RUNTIME_DIR. Same detect-and-degrade shape as the privileged helper:
+# absent socket -> None -> the feature simply isn't available (the app falls back
+# to the still-frame poller). A verb the portal REFUSES is a real answer.
+
+def _portal_socket_path():
+    rt = os.environ.get("XDG_RUNTIME_DIR") or ("/run/user/%d" % os.getuid())
+    return os.path.join(rt, "couchside", "portal.sock")
+
+
+PORTAL_SOCKET = _portal_socket_path()
+
+
+def _portal_connect(timeout):
+    """A connected socket to the portal helper, or None when it is not present
+    (no socket / nothing listening). None is the only 'degrade to poller' case."""
+    if not os.path.exists(PORTAL_SOCKET):
+        return None
+    try:
+        s = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+        s.settimeout(timeout)
+        s.connect(PORTAL_SOCKET)
+        return s
+    except OSError:
+        return None
+
+
+def _portal_call(verb, arg=None, timeout=10):
+    """One JSON verb over the portal socket. Returns the reply dict, or None
+    when the helper is not present/dead. `ensure`/`move`/`button`/`status` only;
+    `stream` uses _portal_stream (it switches to raw bytes)."""
+    s = _portal_connect(timeout)
+    if s is None:
+        return None
+    try:
+        req = {"verb": verb}
+        if arg is not None:
+            req["arg"] = arg
+        s.sendall(json.dumps(req).encode("utf-8") + b"\n")
+        buf = b""
+        while b"\n" not in buf and len(buf) < 65536:
+            chunk = s.recv(4096)
+            if not chunk:
+                break
+            buf += chunk
+        return json.loads(buf.split(b"\n", 1)[0].decode("utf-8"))
+    except (OSError, ValueError):
+        return None
+    finally:
+        try:
+            s.close()
+        except OSError:
+            pass
+
+
+def _portal_stream(profile, timeout=10):
+    """Open a stream connection: send the `stream` verb, then the socket becomes
+    a raw MJPEG byte stream the caller reads until it closes the socket (which
+    makes the helper reap gstreamer). Returns the connected socket, or None."""
+    s = _portal_connect(timeout)
+    if s is None:
+        return None
+    try:
+        s.sendall(json.dumps(
+            {"verb": "stream", "arg": {"profile": profile}}).encode("utf-8") + b"\n")
+        s.settimeout(None)
+        return s
+    except OSError:
+        try:
+            s.close()
+        except OSError:
+            pass
+        return None
+
+
+def screenstream_available():
+    """True when the opt-in remote-desktop module is reachable on its socket.
+    A boot-time hint for caps.screenstream; /ws/screen re-checks live and degrades
+    closed. `status` needs no consent, so this never pops a dialog. Wrapped in
+    safe() at the call site, so any failure reads as unavailable (§3.7)."""
+    r = _portal_call("status", timeout=2)
+    return bool(r and r.get("ok"))
 
 
 def _dm_write(dm, session_file):
@@ -15641,7 +15735,7 @@ def mock_steamlink():
 # ---------------------------------------------------------------------------
 
 WS_GUID = "258EAFA5-E914-47DA-95CA-C5AB0DC85B11"
-WS_OP_TEXT, WS_OP_CLOSE, WS_OP_PING, WS_OP_PONG = 0x1, 0x8, 0x9, 0xA
+WS_OP_TEXT, WS_OP_BINARY, WS_OP_CLOSE, WS_OP_PING, WS_OP_PONG = 0x1, 0x2, 0x8, 0x9, 0xA
 WS_MAX_FRAME = 1 << 20
 
 
@@ -15766,6 +15860,18 @@ GAMEPAD_IDLE_TIMEOUT_S = 12.0
 # Box-driven keepalive interval. Kept well under the reap window above (3 PINGs
 # per window) so a single dropped PONG can't trip a false reap.
 GAMEPAD_PING_INTERVAL_S = 4.0
+
+# Concurrent /ws/screen streams are capped: each holds a server connection slot
+# AND drives a gstreamer encoder in the portal helper, so N phones would fork N
+# heavy encoders. 2 is plenty for a home LAN; over the cap, a new stream is
+# refused (the phone falls back to the still-frame poller).
+SCREEN_STREAM_MAX = 2
+_screen_stream_sema = threading.BoundedSemaphore(SCREEN_STREAM_MAX)
+# Profile ids the client may request on /ws/screen (?profile=). A closed set,
+# looked up never interpolated; the portal helper owns the actual pipeline
+# parameters and re-validates the key. Must mirror the helper's _STREAM_PROFILES.
+_SCREEN_STREAM_PROFILES = frozenset(("540p25", "720p20", "1080p15"))
+_SCREEN_STREAM_DEFAULT = "720p20"
 
 
 def _wsend_json(entry, obj):
@@ -16748,6 +16854,13 @@ class Handler(BaseHTTPRequestHandler):
 
             if path == "/ws/gamepad":
                 self._handle_gamepad_ws(parsed, started)
+                return
+
+            if path == "/ws/screen":
+                # Pre-auth like /ws/gamepad: the handler does its own ?token=
+                # check + handshake, so it must not sit behind the JSON auth gate
+                # (a JSON 401 body onto an upgrading socket would be garbage).
+                self._handle_screen_ws(parsed, started)
                 return
 
             if path == "/pair":
@@ -18572,6 +18685,118 @@ class Handler(BaseHTTPRequestHandler):
             print("[gamepad] session error: %s: %s"
                   % (e.__class__.__name__, e), flush=True)
 
+    # -- screen stream websocket (P4a, opt-in portal module) -------------------
+
+    def _handle_screen_ws(self, parsed, started):
+        """MJPEG-over-WebSocket from the portal module. Mirrors the gamepad WS
+        handshake verbatim (same ?token= auth), then streams JPEG frames. A box
+        without the module degrades closed (the socket opens then closes; the app
+        falls back to the still-frame poller)."""
+        self.close_connection = True
+        qs = parse_qs(parsed.query)
+        supplied = qs.get("token", [""])[0]
+        if not supplied or not hmac.compare_digest(supplied, self.token):
+            self._send(401, {"error": "unauthorized"}, started,
+                       extra_headers={"Connection": "close"})
+            return
+        key = self.headers.get("Sec-WebSocket-Key", "")
+        upgrade = (self.headers.get("Upgrade") or "").lower()
+        if upgrade != "websocket" or not key:
+            self._send(400, {"error": "websocket upgrade required"}, started,
+                       extra_headers={"Connection": "close"})
+            return
+        accept = base64.b64encode(
+            hashlib.sha1((key + WS_GUID).encode("ascii")).digest()).decode("ascii")
+        try:
+            self.connection.sendall(
+                b"HTTP/1.1 101 Switching Protocols\r\n"
+                b"Upgrade: websocket\r\n"
+                b"Connection: Upgrade\r\n"
+                b"Sec-WebSocket-Accept: " + accept.encode("ascii") + b"\r\n\r\n")
+        except OSError:
+            return
+        self._log(101, started)
+        profile = qs.get("profile", [_SCREEN_STREAM_DEFAULT])[0]
+        if profile not in _SCREEN_STREAM_PROFILES:
+            profile = _SCREEN_STREAM_DEFAULT
+        try:
+            self._screen_session(profile)
+        except Exception as e:
+            print("[screen] session error: %s: %s"
+                  % (e.__class__.__name__, e), flush=True)
+
+    def _screen_session(self, profile):
+        """One consent opens the SHARED portal session (input + capture); then
+        pipe the helper's MJPEG onto the WS. Capped concurrency; degrade closed."""
+        conn = self.connection
+        if not _screen_stream_sema.acquire(blocking=False):
+            try:
+                ws_send(conn, WS_OP_CLOSE)          # too many streams -> fall back
+            except OSError:
+                pass
+            return
+        portal_sock = None
+        try:
+            # ensure = create the session + block on the box's consent dialog.
+            # None/!ok means no module or denied -> close so the app falls back.
+            res = _portal_call("ensure", timeout=170)
+            if not res or not res.get("ok"):
+                try:
+                    ws_send(conn, WS_OP_CLOSE)
+                except OSError:
+                    pass
+                return
+            portal_sock = _portal_stream(profile)
+            if portal_sock is None:
+                try:
+                    ws_send(conn, WS_OP_CLOSE)
+                except OSError:
+                    pass
+                return
+            self._screen_pump(conn, portal_sock)
+        finally:
+            if portal_sock is not None:
+                try:
+                    portal_sock.close()             # closing -> helper reaps gst
+                except OSError:
+                    pass
+            _screen_stream_sema.release()
+
+    def _screen_pump(self, conn, portal_sock):
+        """Read the helper's MJPEG byte stream, split whole JPEGs (FFD8..FFD9),
+        send each as ONE binary WS frame. This is the ONLY writer of `conn`, so no
+        slock is needed. Backpressure is handled at the SOURCE: a slow phone
+        blocks this send, which stops draining the helper, which makes the
+        helper's gst `queue leaky=downstream` drop old frames — so the phone falls
+        behind rather than accumulating latency. A send failure = phone gone."""
+        buf = bytearray()
+        portal_sock.settimeout(30)
+        while True:
+            try:
+                chunk = portal_sock.recv(65536)
+            except OSError:
+                break
+            if not chunk:
+                break                                # helper/gst ended
+            buf += chunk
+            while True:
+                soi = buf.find(b"\xff\xd8")
+                if soi < 0:
+                    if len(buf) > (8 << 20):         # runaway guard: no SOI in 8MB
+                        del buf[:]
+                    break
+                if soi > 0:
+                    del buf[:soi]                    # drop bytes before a SOI
+                eoi = buf.find(b"\xff\xd9", 2)
+                if eoi < 0:
+                    break                            # partial frame; wait for more
+                jpg = bytes(buf[:eoi + 2])
+                del buf[:eoi + 2]
+                try:
+                    ws_send(conn, WS_OP_BINARY, jpg)
+                except OSError:
+                    return                           # phone disconnected
+
     def _gamepad_session(self):
         global GAMEPAD_HOLDER
         conn = self.connection
@@ -18754,6 +18979,31 @@ class Handler(BaseHTTPRequestHandler):
                 clipboard_paste(chunk, kbd, self.mock, entry)
         return True
 
+    # Absolute-pointer button names -> the portal helper's closed set. A client
+    # names one of these keys; anything else is dropped (the helper re-checks too).
+    _PORTAL_BTNS = {"l": "left", "r": "right", "m": "middle",
+                    "left": "left", "right": "right", "middle": "middle"}
+
+    def _handle_portal_abs(self, entry, msg):
+        """{t:'ma',x,y} -> portal absolute move (x,y normalized 0..1). Best-effort:
+        bad coords or an absent/refusing portal are dropped silently, keeping the
+        desktop-control session alive. The session is opened by /ws/screen; a tap
+        that arrives before then just quick-fails."""
+        x, y = msg.get("x"), msg.get("y")
+        if not (isinstance(x, (int, float)) and isinstance(y, (int, float))):
+            return
+        if not (0.0 <= x <= 1.0 and 0.0 <= y <= 1.0):
+            return
+        _portal_call("move", {"x": float(x), "y": float(y)}, timeout=5)
+
+    def _handle_portal_btn(self, entry, msg):
+        """{t:'mbp',k,v} -> portal pointer button (k in l/r/m, v in 0/1)."""
+        name = self._PORTAL_BTNS.get(msg.get("k"))
+        v = msg.get("v")
+        if name is None or v not in (0, 1):
+            return
+        _portal_call("button", {"button": name, "state": v}, timeout=5)
+
     # Control frames (holder handoff) — handled regardless of hold state.
     _CONTROL_TYPES = frozenset(("grant", "deny", "request", "force"))
 
@@ -18830,6 +19080,16 @@ class Handler(BaseHTTPRequestHandler):
             return self._handle_control(entry, t)
         # Input frames only from the holder; a waiter's input is ignored.
         if not entry.get("held"):
+            return True
+        # ABSOLUTE pointer (remote-desktop P2) rides the opt-in portal module, a
+        # SEPARATE channel from the uinput mouse. Additive + tolerant: an absent/
+        # refusing portal makes these a no-op, never closes the session (same
+        # spirit as kt). The portal helper re-validates every argument.
+        if t == "ma":
+            self._handle_portal_abs(entry, msg)
+            return True
+        if t == "mbp":
+            self._handle_portal_btn(entry, msg)
             return True
         if t == "kt":
             # Text passthrough is handled here, BEFORE the decode table, so it

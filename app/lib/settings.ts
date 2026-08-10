@@ -292,12 +292,17 @@ function normalizeCaps(raw: unknown): BoxCaps | undefined {
   // trap: omit it here (and from capsEqual) and the cap never persists, so the
   // Utilities section re-probes on every launch.
   const utilities = bool('utilities');
+  // screenstream = the opt-in remote-desktop module (fluid /ws/screen + tap-to-point).
+  // Same optional-cap drop trap: omit it from the RETURN object below (or from
+  // capsEqual) and the cap never persists, so the desktop view can never latch onto
+  // the fluid stream and re-probes forever.
+  const screenstream = bool('screenstream');
   return {
     gamepad, steam, media, tv, screen, power_schedule,
     screensaver, couchmode, bigpicture, desktop, steamlink, gaming, streamhost,
     steammenus,
     boxbattery, launchers, file_upload, session_default, display_info, player,
-    steaminstall, utilities,
+    steaminstall, utilities, screenstream,
   };
 }
 

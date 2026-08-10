@@ -204,6 +204,16 @@ export type BoxCaps = {
    * probe"; only explicit false skips it.
    */
   utilities?: boolean;
+  /**
+   * Opt-in remote-desktop module present (agent + the couchside-portal helper on
+   * its socket): the fullscreen desktop view uses the FLUID /ws/screen MJPEG
+   * stream + tap-to-point (absolute pointer via xdg-desktop-portal) instead of the
+   * still-frame poller + relative mouse. Linux/Wayland-desktop only, opt-in deps +
+   * a per-session consent on the box. Optional: absent on agents without the module
+   * and on Windows, so undefined reads as "unknown, probe"; only explicit false
+   * skips the fluid path (the app then uses the P1 poller).
+   */
+  screenstream?: boolean;
 };
 
 /** One Setup → Utilities helper + its live state, from GET /api/utilities.
@@ -1179,7 +1189,8 @@ export function capsEqual(a?: BoxCaps, b?: BoxCaps): boolean {
     a.display_info === b.display_info &&
     a.player === b.player &&
     a.steaminstall === b.steaminstall &&
-    a.utilities === b.utilities
+    a.utilities === b.utilities &&
+    a.screenstream === b.screenstream
   );
 }
 
@@ -1245,8 +1256,10 @@ export async function uploadFile(
 }
 
 const B64_ALPHABET = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/';
-/** base64-encode raw bytes (no reliance on btoa/Buffer, which RN may lack). */
-function base64FromArrayBuffer(buf: ArrayBuffer): string {
+/** base64-encode raw bytes (no reliance on btoa/Buffer, which RN may lack).
+ *  Exported for the /ws/screen stream client, which turns each binary WS JPEG
+ *  frame into a data: URI for <Image> the same way the HTTP frame path does. */
+export function base64FromArrayBuffer(buf: ArrayBuffer): string {
   const bytes = new Uint8Array(buf);
   const len = bytes.length;
   let out = '';
