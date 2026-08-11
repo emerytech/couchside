@@ -37,6 +37,7 @@ import {
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
 import { DesktopFullscreen } from '@/components/DesktopFullscreen';
+import { useDesktopKeyboard } from '@/components/DesktopKeyboard';
 import { ScreenVideo } from '@/components/ScreenVideo';
 import { useLockOrientation } from '@/hooks/useLockOrientation';
 import { useScreenFrame } from '@/hooks/useScreenFrame';
@@ -131,13 +132,20 @@ export default function DesktopControlScreen() {
   const [status, setStatus] = useState<GamepadStatus>('connecting');
   const connectedOnce = useRef(false);
 
+  // Phone keyboard -> box (existing {t:'kt'}/{t:'k'} uinput path). The box's
+  // own {t:'osk'} event (Steam raised a text field) auto-raises it.
+  const [oskSignal, setOskSignal] = useState(0);
+  const kb = useDesktopKeyboard(client, { autoOpenSignal: oskSignal });
+
   // Lifecycle: immersive + status subscription + teardown. Runs for the life of
   // the screen regardless of when (or whether) the box is reachable.
   useEffect(() => {
     setImmersive(true);
     client.onStatus((s) => setStatus(s));
+    client.onOsk(() => setOskSignal((n) => n + 1));
     return () => {
       client.onStatus(null);
+      client.onOsk(null);
       // Release the MOUSE buttons explicitly before closing: releaseAll() covers
       // the pad (buttons/sticks) but NOT the pointer (see GamepadClient), and an
       // unmount mid double-tap-drag fires no onDragEnd — a left button left down
@@ -215,6 +223,7 @@ export default function DesktopControlScreen() {
           configured={configured}
           absoluteInput={fluidMode}
           onExit={exit}
+          keyboard={kb}
         />
       </>
     );
@@ -282,9 +291,11 @@ export default function DesktopControlScreen() {
         <BarBtn t={t} styles={styles} icon="ellipsis-horizontal" label="Right" onPress={rightClick} />
         <BarBtn t={t} styles={styles} icon="apps" label="Start"
           onPress={() => { hapticLight(); client.sendDesktopKey('meta'); }} />
+        <BarBtn t={t} styles={styles} icon="keypad-outline" label="Keys" onPress={kb.toggle} />
         <BarBtn t={t} styles={styles} icon="arrow-undo" label="Esc"
           onPress={() => { hapticLight(); client.sendKey('esc'); }} />
       </View>
+      {kb.bar}
     </View>
   );
 }

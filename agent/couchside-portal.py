@@ -46,6 +46,7 @@ import struct
 import subprocess
 import sys
 import threading
+import time
 
 import gi
 gi.require_version("Gio", "2.0")
@@ -304,6 +305,15 @@ def verb_button(arg):
     return {"ok": True}
 
 
+# NOTE deliberately NO keyboard verbs here: phone-keyboard typing rides the
+# AGENT's existing uinput path ({t:'kt'}/{t:'k'} on /ws/gamepad), which is
+# PROVEN on the KDE desktop (typed into a konsole + opened Kickoff via a
+# virtual uinput keyboard on hardware, 2026-08-11). The portal alternative
+# (NotifyKeyboardKeysym) was probed the same day: the call chain exists in
+# xdg-desktop-portal-kde 6.6.4 but no keystrokes ever landed — and the uinput
+# path needs no extra portal capability in the consent dialog.
+
+
 # ---- argument validators (return the parsed value, or None to REFUSE) -------
 
 def _move_arg(v):
@@ -426,7 +436,40 @@ def _stream_argv(profile, pwfd, node):
 # which is also instant. Idle (no subscriber) keeps encoding + discards — the
 # hardware JPEG path makes that ~free, and NOT respawning is the entire point.
 _STREAM_LOCK = threading.Lock()
-_STREAM = {"proc": None, "profile": None, "sub": None, "done": None}
+_STREAM = {"proc": None, "profile": None, "sub": None, "done": None,
+           # wall-clock when the last subscriber left (None while subscribed);
+           # the reader enforces the idle TTL from it.
+           "idle_since": None}
+
+# No viewer for this long -> tear down the encoder AND the portal session, so an
+# abandoned Control screen stops costing GPU/CPU (and stops holding the KWin
+# screencast, which disables direct scanout for fullscreen apps). The next use
+# re-ensures the session — on KDE without RemoteDesktop persist that re-pops ONE
+# consent; short exit/reopen cycles stay instant (well under the TTL).
+_STREAM_IDLE_TTL_S = 900
+
+
+def _close_session():
+    """Tear down the portal session (Session.Close) + cached PipeWire fd. The
+    next ensure re-creates from scratch (fresh consent where persist is
+    unavailable). Degrade-closed: failures still clear local state."""
+    global _SESSION
+    with _SLOCK:
+        sess, _SESSION = _SESSION, None
+    if sess is None:
+        return
+    pwfd = sess.get("pwfd")
+    if pwfd is not None:
+        try:
+            os.close(pwfd)
+        except OSError:
+            pass
+    try:
+        _con.call_sync(_PORTAL, sess["handle"], "org.freedesktop.portal.Session",
+                       "Close", None, None, Gio.DBusCallFlags.NONE, -1, None)
+    except Exception:
+        pass
+    print("[portal] idle TTL: session closed (re-consent on next use)", flush=True)
 
 
 def _stream_reader(proc):
@@ -435,6 +478,7 @@ def _stream_reader(proc):
     nobody is watching. A dead/slow subscriber is dropped (its socket has a
     timeout); the encoder is NEVER stopped here."""
     buf = bytearray()
+    idle_teardown = False
     while True:
         try:
             chunk = proc.stdout.read(65536)
@@ -458,8 +502,15 @@ def _stream_reader(proc):
             del buf[:eoi + 2]
             with _STREAM_LOCK:
                 sub, done = _STREAM["sub"], _STREAM["done"]
+                idle_since = _STREAM["idle_since"]
             if sub is None:
-                continue                             # idle: discard, keep draining
+                # Idle: discard + keep draining (the node must stay serviced) —
+                # until the TTL, then tear the whole thing down (gst + session).
+                if (idle_since is not None
+                        and time.time() - idle_since > _STREAM_IDLE_TTL_S):
+                    idle_teardown = True
+                    proc.terminate()                 # read() EOFs; cleanup below
+                continue
             try:
                 sub.sendall(jpg)                     # timeout set at subscribe
             except OSError:
@@ -467,19 +518,25 @@ def _stream_reader(proc):
                     if _STREAM["sub"] is sub:
                         _STREAM["sub"] = None
                         _STREAM["done"] = None
+                        _STREAM["idle_since"] = time.time()
                 try:
                     sub.close()
                 except OSError:
                     pass
                 if done is not None:
                     done.set()
-    # gst ended (helper shutdown or crash): clear state, wake any subscriber so
-    # its stream() call returns; the NEXT stream() may then respawn cleanly.
+    # gst ended (idle TTL, helper shutdown, or crash): clear state, wake any
+    # subscriber so its stream() call returns; the NEXT stream() may respawn —
+    # after an idle teardown that goes through a FRESH session (re-consent),
+    # which is exactly what makes the respawn safe (new node, healthy pool).
     with _STREAM_LOCK:
         done = _STREAM["done"]
-        _STREAM.update(proc=None, profile=None, sub=None, done=None)
+        _STREAM.update(proc=None, profile=None, sub=None, done=None,
+                       idle_since=None)
     if done is not None:
         done.set()
+    if idle_teardown:
+        _close_session()
 
 
 def stream(profile, conn):
@@ -520,6 +577,7 @@ def stream(profile, conn):
         done = threading.Event()
         old_sub, old_done = _STREAM["sub"], _STREAM["done"]
         _STREAM["sub"], _STREAM["done"] = conn, done
+        _STREAM["idle_since"] = None                 # someone is watching again
     if old_done is not None:
         old_done.set()
     if old_sub is not None:

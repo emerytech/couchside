@@ -38,6 +38,7 @@ const clamp = (v: number, lo: number, hi: number) => Math.max(lo, Math.min(hi, v
 
 export function DesktopFullscreen({
   client, streamURL, frame, status, failed, configured, absoluteInput, onExit,
+  keyboard,
 }: {
   client: GamepadClient;
   streamURL: string | null;
@@ -47,6 +48,9 @@ export function DesktopFullscreen({
   configured: boolean;
   absoluteInput: boolean;
   onExit: () => void;
+  /** From useDesktopKeyboard (owned by the parent so one instance serves both
+   *  orientations): toolbar Keys button calls toggle; bar renders here. */
+  keyboard?: { bar: React.ReactNode; open: boolean; toggle: () => void };
 }) {
   const t = useTheme();
   const { width, height } = useWindowDimensions();
@@ -241,6 +245,10 @@ export function DesktopFullscreen({
             onPress={() => { hapticLight(); rightClick(); }} />
           <TB icon="apps" label="Start" styles={styles} t={t}
             onPress={() => { hapticLight(); client.sendDesktopKey('meta'); }} />
+          {keyboard && (
+            <TB icon="keypad-outline" label="Keys" styles={styles} t={t}
+              active={keyboard.open} onPress={keyboard.toggle} />
+          )}
           <TB icon="arrow-undo" label="Esc" styles={styles} t={t}
             onPress={() => { hapticLight(); client.sendKey('esc'); }} />
           <TB icon="chevron-up" label="Hide" styles={styles} t={t}
@@ -268,6 +276,9 @@ export function DesktopFullscreen({
           <Text style={styles.pillText}>screen unavailable</Text>
         </View>
       )}
+
+      {/* Phone-keyboard compose bar (absolute at the screen bottom) */}
+      {keyboard?.bar}
     </View>
   );
 }
