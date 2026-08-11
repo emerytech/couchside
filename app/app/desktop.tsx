@@ -88,9 +88,19 @@ export default function DesktopControlScreen() {
   const streamMode = !webrtcMode && settings.caps?.screenstream === true;
   const fluidMode = webrtcMode || streamMode;
   const live = ready && configured;
-  const poll = useScreenFrame(settings, live && !fluidMode, FRAME_MS);
   const streamed = useScreenStream(settings, live && streamMode);
   const webrtc = useWebRtcStream(settings, live && webrtcMode);
+  // Still-frame poller. Runs when there is no fluid tier — AND as a STOPGAP VIEW
+  // while a selected fluid tier has not produced its first frame yet. That gap
+  // is not rare: an app background can leave the box's previous gst still on the
+  // shared portal capture when the reopened stream starts, so the new /ws/screen
+  // is OPEN but silent (0 frames) — which used to spin "Approve…" forever with
+  // no escape. The poller captures via spectacle/gamescopectl (NOT the portal),
+  // so it shows the desktop even when the portal session is wedged, and it gates
+  // OFF the instant the fluid tier delivers a frame (reopening retries fluid).
+  const fluidHasFrame = (webrtcMode && webrtc.streamURL != null)
+    || (streamMode && streamed.frame != null);
+  const poll = useScreenFrame(settings, live && (!fluidMode || !fluidHasFrame), FRAME_MS);
 
   // Auto-fallback: a hard WebRTC failure (negotiation/timeout) demotes to MJPEG
   // for the rest of this screen. One-way — we do not re-try WebRTC (that re-pops
@@ -100,10 +110,19 @@ export default function DesktopControlScreen() {
   }, [webrtcMode, webrtc.failed]);
 
   const streamURL = webrtcMode ? webrtc.streamURL : null;
-  // The <Image> frame (tiers 2/3). In WebRTC mode a "failure" means we are
-  // demoting, not that the screen is unavailable, so don't surface it as such.
-  const frame = webrtcMode ? null : streamMode ? streamed.frame : poll.frame;
-  const failed = webrtcMode ? false : streamMode ? streamed.failed : poll.failed;
+  // The <Image> frame (tiers 2/3). Prefer the fluid stream frame; fall back to
+  // the poller frame during the first-frame gap / a wedged portal session. In
+  // WebRTC mode a "failure" means we are demoting, not that the screen is
+  // unavailable, so don't surface it as such.
+  const frame = webrtcMode ? null
+    : streamMode ? (streamed.frame ?? poll.frame)
+    : poll.frame;
+  // "failed" only when we have NO visual path left — the fluid stream failed AND
+  // the poller fallback also failed. A silent/wedged stream with a working
+  // poller is NOT a failure (the desktop is still on screen).
+  const failed = webrtcMode ? false
+    : streamMode ? (streamed.failed && poll.failed)
+    : poll.failed;
   const hasVisual = streamURL != null || frame != null;
 
   const clientRef = useRef<GamepadClient | null>(null);
@@ -186,7 +205,7 @@ export default function DesktopControlScreen() {
   if (landscape) {
     return (
       <>
-        <Stack.Screen options={{ headerShown: false }} />
+        <Stack.Screen options={{ headerShown: false, gestureEnabled: false, fullScreenGestureEnabled: false }} />
         <DesktopFullscreen
           client={client}
           streamURL={streamURL}
@@ -203,7 +222,7 @@ export default function DesktopControlScreen() {
 
   return (
     <View style={[styles.root, { paddingTop: insets.top }]}>
-      <Stack.Screen options={{ headerShown: false }} />
+      <Stack.Screen options={{ headerShown: false, gestureEnabled: false, fullScreenGestureEnabled: false }} />
       {/* SCREEN (top): the live desktop frame */}
       <View style={styles.stage}>
         {streamURL ? (
