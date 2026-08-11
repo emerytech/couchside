@@ -361,19 +361,19 @@ function ConsoleScreen() {
           </>
         )}
 
-        {/* What the box is driving: mode, panel, HDR/VRR, default audio in/out
-            (probe-and-appear; agent >= 2.9.59).
-            HERE, directly above the preview, on purpose: the two are one
-            region — the specs of the screen, then the picture on it. Below the
-            vitals you opened this tab to read, above UNITS, which is reference
-            config rather than something you watch. */}
-        <TourAnchor id="console.display">
-          <DisplayAudioCard />
-        </TourAnchor>
-
-        {/* Live screen preview (probe-and-appear; hidden when no capture path) */}
+        {/* Live screen preview (probe-and-appear; hidden when no capture path).
+            RIGHT UNDER THE VITALS (above DISPLAY + UNITS) on purpose: the SCREEN
+            card carries the CONTROL button, so it must be reachable without
+            scrolling past the display specs. */}
         <TourAnchor id="console.screen">
           <ScreenPreview />
+        </TourAnchor>
+
+        {/* What the box is driving: mode, panel, HDR/VRR, default audio in/out
+            (probe-and-appear; agent >= 2.9.59). Below the preview it describes,
+            above UNITS (reference config rather than something you watch). */}
+        <TourAnchor id="console.display">
+          <DisplayAudioCard />
         </TourAnchor>
 
         {/* Units */}
