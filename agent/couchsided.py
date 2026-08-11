@@ -18846,21 +18846,34 @@ class Handler(BaseHTTPRequestHandler):
 
     def _screen_pump(self, conn, portal_sock):
         """Read the helper's MJPEG byte stream, split whole JPEGs (FFD8..FFD9),
-        send each as ONE binary WS frame. This is the ONLY writer of `conn`, so no
-        slock is needed. Backpressure is handled at the SOURCE: a slow phone
-        blocks this send, which stops draining the helper, which makes the
-        helper's gst `queue leaky=downstream` drop old frames — so the phone falls
-        behind rather than accumulating latency. A send failure = phone gone."""
+        send NEWEST-ONLY to `conn`: before each send, drain everything the helper
+        has ready and keep only the LATEST complete JPEG, dropping older ones.
+        This is the ONLY writer of `conn`, so no slock is needed. A send failure =
+        phone gone.
+
+        WHY NEWEST-ONLY: hardware jpeg (vajpegenc) produces frames faster than a
+        phone can base64-decode + <Image>-render on high motion. Sending EVERY
+        frame lets a backlog build in transit (seconds of lag when a window opens
+        — observed). Dropping to the freshest frame each send-cycle bounds
+        end-to-end latency to ~one frame: the phone gets fewer, CURRENT frames
+        instead of a growing pile of stale ones. Frames produced during the
+        (blocking) send land in the OS recv buffer and are dropped-but-newest on
+        the next cycle; a truly slow phone also backpressures gst at the source."""
         buf = bytearray()
-        portal_sock.settimeout(30)
-        while True:
-            try:
-                chunk = portal_sock.recv(65536)
-            except OSError:
-                break
-            if not chunk:
-                break                                # helper/gst ended
-            buf += chunk
+
+        def _drain_newest(first):
+            # Append `first` + any immediately-available bytes; return the LATEST
+            # complete JPEG in the buffer (older complete frames are discarded).
+            buf.extend(first)
+            while select.select([portal_sock], [], [], 0)[0]:
+                try:
+                    more = portal_sock.recv(262144)
+                except OSError:
+                    more = b""
+                if not more:
+                    break
+                buf.extend(more)
+            newest = None
             while True:
                 soi = buf.find(b"\xff\xd8")
                 if soi < 0:
@@ -18872,12 +18885,25 @@ class Handler(BaseHTTPRequestHandler):
                 eoi = buf.find(b"\xff\xd9", 2)
                 if eoi < 0:
                     break                            # partial frame; wait for more
-                jpg = bytes(buf[:eoi + 2])
+                newest = bytes(buf[:eoi + 2])        # keep the last complete JPEG
                 del buf[:eoi + 2]
-                try:
-                    ws_send(conn, WS_OP_BINARY, jpg)
-                except OSError:
-                    return                           # phone disconnected
+            return newest
+
+        portal_sock.settimeout(30)
+        while True:
+            try:
+                chunk = portal_sock.recv(65536)
+            except OSError:
+                break
+            if not chunk:
+                break                                # helper/gst ended
+            jpg = _drain_newest(chunk)
+            if jpg is None:
+                continue                             # only a partial frame so far
+            try:
+                ws_send(conn, WS_OP_BINARY, jpg)     # blocking; gst buffers meanwhile
+            except OSError:
+                return                               # phone disconnected
 
     # -- H.264/WebRTC signaling websocket (P4b, opt-in portal module) ----------
 
