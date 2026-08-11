@@ -24,6 +24,7 @@ import {
 } from 'react-native';
 
 import { textDelta } from '@/app/(tabs)/pad';
+import { DesktopKeys } from '@/components/DesktopKeys';
 import { GamepadClient } from '@/lib/gamepad';
 import { hapticLight } from '@/lib/haptics';
 import { mono, useTheme, useThemedStyles, type Palette } from '@/lib/theme';
@@ -49,17 +50,20 @@ export function useDesktopKeyboard(
 
   const focus = useCallback(() => {
     setOpenSynced(true);
-    // Synchronous inside the tap handler — deferring loses the touch context
-    // and iOS refuses to raise the keyboard. The input is always mounted.
-    inputRef.current?.focus();
-  }, [setOpenSynced]);
+    // Landscape uses our own drawn keys — no system-keyboard focus. Portrait
+    // focuses SYNCHRONOUSLY inside the tap handler (deferring loses the touch
+    // context and iOS refuses to raise the keyboard). The input is always mounted.
+    if (!landscape) inputRef.current?.focus();
+  }, [setOpenSynced, landscape]);
 
   const dismiss = useCallback(() => {
-    Keyboard.dismiss();
-    inputRef.current?.blur();
+    if (!landscape) {
+      Keyboard.dismiss();
+      inputRef.current?.blur();
+    }
     setOpenSynced(false);
     setValue('');
-  }, [setOpenSynced]);
+  }, [setOpenSynced, landscape]);
 
   const toggle = useCallback(() => {
     hapticLight();
@@ -122,6 +126,23 @@ export function useDesktopKeyboard(
     });
     return () => sub.remove();
   }, []);
+
+  // LANDSCAPE: our own translucent floating keys over the desktop — no opaque
+  // system keyboard walling off the screen. Same uinput send path.
+  if (landscape) {
+    return {
+      open,
+      toggle,
+      bar: (
+        <DesktopKeys
+          visible={open}
+          onChar={(ch) => client.sendText(ch)}
+          onSpecial={(k) => client.sendKey(k)}
+          onHide={dismiss}
+        />
+      ),
+    };
+  }
 
   const bar = (
     <>
