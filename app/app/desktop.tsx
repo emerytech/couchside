@@ -135,7 +135,7 @@ export default function DesktopControlScreen() {
   // Phone keyboard -> box (existing {t:'kt'}/{t:'k'} uinput path). The box's
   // own {t:'osk'} event (Steam raised a text field) auto-raises it.
   const [oskSignal, setOskSignal] = useState(0);
-  const kb = useDesktopKeyboard(client, { autoOpenSignal: oskSignal });
+  const kb = useDesktopKeyboard(client, { autoOpenSignal: oskSignal, landscape });
 
   // Lifecycle: immersive + status subscription + teardown. Runs for the life of
   // the screen regardless of when (or whether) the box is reachable.

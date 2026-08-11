@@ -30,8 +30,9 @@ import { mono, useTheme, useThemedStyles, type Palette } from '@/lib/theme';
 
 export function useDesktopKeyboard(
   client: GamepadClient,
-  opts?: { autoOpenSignal?: number },
+  opts?: { autoOpenSignal?: number; landscape?: boolean },
 ): { bar: React.ReactNode; open: boolean; toggle: () => void } {
+  const landscape = opts?.landscape ?? false;
   const t = useTheme();
   const styles = useThemedStyles(makeStyles);
   const inputRef = useRef<TextInput>(null);
@@ -139,7 +140,9 @@ export function useDesktopKeyboard(
         onKeyPress={onKeyPress}
         onSubmitEditing={() => client.sendKey('enter')}
         onBlur={() => { setOpenSynced(false); setValue(''); }}
-        style={open ? [styles.kbInput, { bottom: 10 + kbLift }] : styles.hiddenInput}
+        style={open
+          ? [styles.kbInput, landscape && styles.kbInputLandscape, { bottom: 10 + kbLift }]
+          : styles.hiddenInput}
         placeholder={open ? 'Type on the box…' : undefined}
         placeholderTextColor={t.textFaint}
         autoCapitalize="none"
@@ -179,6 +182,14 @@ const makeStyles = (t: Palette) => StyleSheet.create({
     paddingVertical: 10, paddingHorizontal: 12, paddingRight: 40,
     backgroundColor: t.card, borderRadius: 10,
     borderColor: t.cardBorder, borderWidth: 1,
+  },
+  // LANDSCAPE: the remote screen fills the phone, so the field must not wall it
+  // off — translucent (see the desktop through it) + narrower (leave the right
+  // side clear). Portrait keeps the solid full-width field (plenty of room).
+  kbInputLandscape: {
+    right: '42%', paddingVertical: 7,
+    backgroundColor: 'rgba(12,14,20,0.62)',
+    borderColor: 'rgba(255,255,255,0.18)',
   },
   kbHide: {
     position: 'absolute', right: 16, zIndex: 61,
