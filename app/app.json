@@ -42,6 +42,13 @@
     "plugins": [
       "expo-router",
       [
+        "@config-plugins/react-native-webrtc",
+        {
+          "cameraPermission": "Couchside does not use your camera. This permission is declared by the WebRTC video library Couchside uses to stream your computer's screen to this device.",
+          "microphonePermission": "Couchside does not use your microphone. This permission is declared by the WebRTC video library Couchside uses to stream your computer's screen to this device."
+        }
+      ],
+      [
         "expo-splash-screen",
         {
           "image": "./assets/images/splash-icon.png",

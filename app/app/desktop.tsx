@@ -36,11 +36,14 @@ import {
 } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
+import { ScreenVideo } from '@/components/ScreenVideo';
 import { useLockOrientation } from '@/hooks/useLockOrientation';
 import { useScreenFrame } from '@/hooks/useScreenFrame';
 import { useScreenStream } from '@/hooks/useScreenStream';
+import { useWebRtcStream } from '@/hooks/useWebRtcStream';
 import { useTrackpad } from '@/hooks/useTrackpad';
 import { GamepadClient, type GamepadStatus } from '@/lib/gamepad';
+import { webrtcSupported } from '@/lib/webrtcstream';
 import { hapticLight, hapticMedium } from '@/lib/haptics';
 import { setImmersive } from '@/lib/immersive';
 import { useSettings } from '@/lib/SettingsContext';
@@ -56,14 +59,38 @@ export default function DesktopControlScreen() {
   const insets = useSafeAreaInsets();
   const { settings, ready } = useSettings();
   const configured = settings.host.trim().length > 0;
-  // FLUID when the opt-in portal module is present (caps.screenstream): the
-  // /ws/screen MJPEG stream + tap-to-point. Otherwise the P1 still-frame poller +
-  // relative trackpad. Both hooks run (hooks rules); only the active one connects.
-  const streamMode = settings.caps?.screenstream === true;
+  // THREE tiers, best-first (all hooks run — hooks rules — only the active one
+  // connects):
+  //   1. WebRTC H.264 (fluid, 30–60fps): app built WITH react-native-webrtc AND
+  //      the box advertising a WORKING H.264 path (caps.screenstream_h264). On a
+  //      hard failure we demote to tier 2 for the rest of the session.
+  //   2. MJPEG /ws/screen (fluid, ~15fps): caps.screenstream. Also what every
+  //      in-the-wild app (no WebRTC) gets.
+  //   3. P1 still-frame poller (~1.4fps): always available.
+  // Tiers 1 & 2 both get tap-to-point (the portal's absolute pointer).
+  const [webrtcGaveUp, setWebrtcGaveUp] = useState(false);
+  const webrtcMode =
+    webrtcSupported && settings.caps?.screenstream_h264 === true && !webrtcGaveUp;
+  const streamMode = !webrtcMode && settings.caps?.screenstream === true;
+  const fluidMode = webrtcMode || streamMode;
   const live = ready && configured;
-  const poll = useScreenFrame(settings, live && !streamMode, FRAME_MS);
+  const poll = useScreenFrame(settings, live && !fluidMode, FRAME_MS);
   const streamed = useScreenStream(settings, live && streamMode);
-  const { frame, failed } = streamMode ? streamed : poll;
+  const webrtc = useWebRtcStream(settings, live && webrtcMode);
+
+  // Auto-fallback: a hard WebRTC failure (negotiation/timeout) demotes to MJPEG
+  // for the rest of this screen. One-way — we do not re-try WebRTC (that re-pops
+  // the box's consent); reopening the desktop starts fresh.
+  useEffect(() => {
+    if (webrtcMode && webrtc.failed) setWebrtcGaveUp(true);
+  }, [webrtcMode, webrtc.failed]);
+
+  const streamURL = webrtcMode ? webrtc.streamURL : null;
+  // The <Image> frame (tiers 2/3). In WebRTC mode a "failure" means we are
+  // demoting, not that the screen is unavailable, so don't surface it as such.
+  const frame = webrtcMode ? null : streamMode ? streamed.frame : poll.frame;
+  const failed = webrtcMode ? false : streamMode ? streamed.failed : poll.failed;
+  const hasVisual = streamURL != null || frame != null;
 
   const clientRef = useRef<GamepadClient | null>(null);
   if (clientRef.current == null) clientRef.current = new GamepadClient();
@@ -144,21 +171,25 @@ export default function DesktopControlScreen() {
       <Stack.Screen options={{ headerShown: false }} />
       {/* SCREEN (top): the live desktop frame */}
       <View style={styles.stage}>
-        {frame ? (
+        {streamURL ? (
+          // Tier 1: native H.264 video (hardware decode).
+          <ScreenVideo streamURL={streamURL} style={StyleSheet.absoluteFill} />
+        ) : frame ? (
+          // Tier 2/3: MJPEG stream / still-frame poller, as a base64 <Image>.
           <Image source={{ uri: frame }} style={StyleSheet.absoluteFill} resizeMode="contain" />
         ) : (
           <View style={[StyleSheet.absoluteFill, styles.center]}>
             <ActivityIndicator color={t.textDim} />
             <Text style={styles.dim}>
               {!configured ? 'Connect a box first.'
-                : streamMode ? 'Approve remote control on your box…'
+                : fluidMode ? 'Approve remote control on your box…'
                 : 'Waiting for the screen…'}
             </Text>
           </View>
         )}
-        {/* Tap-to-point overlay (fluid mode only): tapping the frame moves the
+        {/* Tap-to-point overlay (fluid tiers only): tapping the frame moves the
             real cursor there and clicks, via the portal's absolute pointer. */}
-        {streamMode && frame && (
+        {fluidMode && hasVisual && (
           <Pressable
             style={StyleSheet.absoluteFill}
             onLayout={(e) => {
@@ -185,7 +216,7 @@ export default function DesktopControlScreen() {
       <View style={styles.trackpad} {...pad.panHandlers} accessibilityLabel="Desktop trackpad">
         <Ionicons name="move-outline" size={22} color={t.textFaint} />
         <Text style={styles.trackpadHint}>
-          {streamMode
+          {fluidMode
             ? 'tap the screen to point · drag here to move · two-finger scroll'
             : 'drag to move · tap to click · two-finger scroll'}
         </Text>
