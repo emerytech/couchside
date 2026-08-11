@@ -228,18 +228,37 @@ def _ensure_session():
 
 
 def _open_pipewire_fd():
-    """OpenPipeWireRemote on the live session → a unix fd for gstreamer. The
-    session must already exist. Returns an int fd (caller owns it) or None."""
+    """A unix fd to the session's PipeWire remote, for gstreamer. Returns an int
+    fd the CALLER OWNS (must close) or None.
+
+    OpenPipeWireRemote is called at most ONCE per session; the fd is CACHED on the
+    session and every caller gets an `os.dup()` of it. A SECOND OpenPipeWireRemote
+    on a KDE portal session hands back a DEAD remote (0 frames) — proven on
+    hardware: the FIRST /ws/screen streamed, every reopen showed nothing because
+    the agent re-opened the remote per connect. Caching + dup keeps the one good
+    remote alive for the session's life, so reopens (and the WebRTC path) work.
+    Closing a dup only drops that consumer; the cached original stays open."""
     with _SLOCK:
         sess = _SESSION
-    if sess is None:
-        return None
-    ret, fdlist = _con.call_with_unix_fd_list_sync(
-        _PORTAL, _OBJ, _IF_SC, "OpenPipeWireRemote",
-        GLib.Variant("(oa{sv})", (sess["handle"], {})),
-        GLib.VariantType.new("(h)"), Gio.DBusCallFlags.NONE, -1, None, None)
-    idx = ret.unpack()[0]
-    return fdlist.get(idx)
+        if sess is None:
+            return None
+        cached = sess.get("pwfd")
+        if cached is None:
+            try:
+                ret, fdlist = _con.call_with_unix_fd_list_sync(
+                    _PORTAL, _OBJ, _IF_SC, "OpenPipeWireRemote",
+                    GLib.Variant("(oa{sv})", (sess["handle"], {})),
+                    GLib.VariantType.new("(h)"), Gio.DBusCallFlags.NONE, -1, None, None)
+                cached = fdlist.get(ret.unpack()[0])
+            except Exception:
+                return None
+            if cached is None:
+                return None
+            sess["pwfd"] = cached
+        try:
+            return os.dup(cached)
+        except OSError:
+            return None
 
 
 # ---------------------------------------------------------------- the verbs ---
