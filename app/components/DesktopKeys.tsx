@@ -69,10 +69,14 @@ export function DesktopKeys({
     active?: boolean; wide?: boolean;
   }) => (
     <Pressable
-      // Haptic on key-DOWN, not release — a real key ticks the instant you touch
-      // it. Firing on onPress (release) felt laggy/absent while typing fast.
-      onPressIn={hapticLight}
-      onPress={onPress}
+      // Fire the key on key-DOWN, not release. A real key ticks the instant you
+      // touch it — and release-fire (onPress) DROPPED keys while typing fast: a
+      // finger that rolls slightly before lifting cancels Pressable's onPress,
+      // and the mouse zone underneath can claim the moved touch. Press-down fires
+      // the char AND the haptic together, before either can steal it, so every
+      // tap lands. hitSlop widens the small chips without overlapping neighbours.
+      onPressIn={() => { hapticLight(); onPress(); }}
+      hitSlop={{ top: 2, bottom: 2, left: 2, right: 2 }}
       style={({ pressed }) => [
         styles.key, { flexGrow: flex, flexBasis: 0 },
         wide && styles.keyWide, active && styles.keyActive,
