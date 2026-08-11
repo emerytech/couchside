@@ -160,6 +160,31 @@ _SLOCK = threading.RLock()
 _SESSION = None    # {"handle": str, "node": int, "w": int, "h": int} or None
 
 
+# Audible alert players tried in order when a consent dialog is about to pop —
+# the phone cannot click Approve, someone has to at the box, so a chime helps a
+# user who is not looking at the screen. argv LISTs, fixed strings, no client
+# input (§3). Fire-and-forget; a box with no player / no audio stays silent.
+_CHIME_PLAYERS = (
+    ["canberra-gtk-play", "-i", "dialog-warning"],
+    ["pw-play", "/usr/share/sounds/freedesktop/stereo/dialog-warning.oga"],
+    ["paplay", "/usr/share/sounds/freedesktop/stereo/dialog-warning.oga"],
+)
+
+
+def _consent_chime():
+    """Best-effort audible alert that the box is showing a consent dialog. Non-
+    blocking, degrade-closed: any failure (no player, no audio) is ignored."""
+    import shutil
+    for argv in _CHIME_PLAYERS:
+        if shutil.which(argv[0]):
+            try:
+                subprocess.Popen(argv, stdout=subprocess.DEVNULL,
+                                 stderr=subprocess.DEVNULL)
+            except OSError:
+                continue
+            return
+
+
 def _ensure_session():
     """Create + consent the ONE portal session if we don't have it yet.
     Serialized: setup happens once. Returns the session dict or None (denied/
@@ -186,6 +211,7 @@ def _ensure_session():
             return None
         # Start pops the KDE consent dialog. persist_mode=2 asks to remember (a
         # no-op on older KDE that lacks the checkbox — then it re-prompts).
+        _consent_chime()                              # alert: Approve at the box
         code, res = _request(_IF_RD, "Start", "os", (handle, ""),
                              {"persist_mode": GLib.Variant("u", 2)},
                              _CONSENT_TIMEOUT_S)
