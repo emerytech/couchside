@@ -73,10 +73,11 @@ export class WebRtcStreamClient implements IWebRtcStreamClient {
     this.statusCb?.(s);
   }
 
-  private fail(): void {
+  private fail(reason?: string): void {
     // Hard, terminal failure -> report once and stop (no reconnect); the caller
     // falls back to MJPEG. Guarded by `active` so stop() stays quiet.
     if (!this.active) return;
+    console.log('[webrtc] FAIL:', reason ?? '(unknown)');
     this.teardown();
     this.setStatus('error');
   }
@@ -93,11 +94,12 @@ export class WebRtcStreamClient implements IWebRtcStreamClient {
     const url =
       `ws://${host}:${port}/ws/webrtc?token=${encodeURIComponent(token)}` +
       `&profile=${this.profile}`;
+    console.log('[webrtc] connecting', host, port, this.profile);
     let ws: WebSocket;
     try {
       ws = new WebSocket(url);
-    } catch {
-      this.fail();
+    } catch (e) {
+      this.fail('WebSocket ctor threw ' + String(e));
       return;
     }
     this.ws = ws;
@@ -105,11 +107,12 @@ export class WebRtcStreamClient implements IWebRtcStreamClient {
     this.connectTimer = setTimeout(() => {
       this.connectTimer = null;
       if (ws !== this.ws || ws.readyState !== 0 /* CONNECTING */) return;
-      this.fail();
+      this.fail('connect watchdog (WS stuck CONNECTING)');
     }, CONNECT_TIMEOUT_MS);
 
     ws.onopen = () => {
       if (ws !== this.ws) return;
+      console.log('[webrtc] ws open');
       this.clearTimer('connect');
       this.setupPeer();          // ready to answer once the offer arrives
     };
@@ -118,16 +121,15 @@ export class WebRtcStreamClient implements IWebRtcStreamClient {
       if (typeof ev.data !== 'string') return;
       this.onSignal(ev.data);
     };
-    ws.onerror = () => {
+    ws.onerror = (e: unknown) => {
       if (ws !== this.ws) return;
-      this.fail();               // onclose may follow; fail() is idempotent-ish
+      this.fail('ws onerror ' + String((e as { message?: string })?.message ?? ''));
     };
-    ws.onclose = () => {
+    ws.onclose = (e: unknown) => {
       if (ws !== this.ws) return;
       // A box without a working H.264 path (or Game Mode) closes right away ->
-      // fall back. If we were already connected+streaming, a close is also the
-      // end of the session.
-      this.fail();
+      // fall back. If we were already connected+streaming, a close is also the end.
+      this.fail('ws onclose code=' + String((e as { code?: number })?.code ?? '?'));
     };
   }
 
@@ -150,7 +152,14 @@ export class WebRtcStreamClient implements IWebRtcStreamClient {
     pc.ontrack = (e: any) => {
       const stream = e?.streams?.[0] as { toURL?: () => string } | undefined;
       const toURL = stream?.toURL;
+      console.log('[webrtc] ontrack, hasStream=', !!toURL);
       if (toURL) this.streamCb?.(toURL.call(stream));
+    };
+    (pc as any).oniceconnectionstatechange = () => {
+      console.log('[webrtc] iceConnectionState=', (this.pc as any)?.iceConnectionState);
+    };
+    (pc as any).onicegatheringstatechange = () => {
+      console.log('[webrtc] iceGatheringState=', (this.pc as any)?.iceGatheringState);
     };
     pc.onicecandidate = (e: any) => {
       const c = e?.candidate as
@@ -165,11 +174,12 @@ export class WebRtcStreamClient implements IWebRtcStreamClient {
     };
     pc.onconnectionstatechange = () => {
       const st = this.pc?.connectionState;
+      console.log('[webrtc] connectionState=', st);
       if (st === 'connected') {
         this.clearTimer('negotiate');
         this.setStatus('connected');
       } else if (st === 'failed' || st === 'closed') {
-        this.fail();
+        this.fail('connectionState=' + st);
       }
     };
   }
@@ -183,13 +193,17 @@ export class WebRtcStreamClient implements IWebRtcStreamClient {
     }
     const pc = this.pc;
     if (!pc) return;
+    console.log('[webrtc] <-', msg.t, msg.t === 'offer' ? '(sdp ' + (msg.sdp?.length ?? 0) + ')' : '');
     try {
       if (msg.t === 'offer' && typeof msg.sdp === 'string') {
         await pc.setRemoteDescription(
           new RTCSessionDescription({ type: 'offer', sdp: msg.sdp }));
+        console.log('[webrtc] setRemote done, creating answer');
         const answer = await pc.createAnswer();
+        console.log('[webrtc] answer created, setting local');
         await pc.setLocalDescription(answer);
         this.send({ t: 'answer', sdp: answer.sdp });
+        console.log('[webrtc] answer sent');
         // Media should flow within seconds now; arm the fallback timeout.
         this.armNegotiateTimeout();
       } else if (msg.t === 'ice' && typeof msg.candidate === 'string') {
@@ -198,10 +212,10 @@ export class WebRtcStreamClient implements IWebRtcStreamClient {
           sdpMLineIndex: typeof msg.sdpMLineIndex === 'number' ? msg.sdpMLineIndex : 0,
         }));
       } else if (msg.t === 'bye' || msg.t === 'error') {
-        this.fail();
+        this.fail('box sent ' + msg.t);
       }
-    } catch {
-      this.fail();
+    } catch (e) {
+      this.fail('onSignal ' + msg.t + ' threw ' + String(e));
     }
   }
 
@@ -209,7 +223,7 @@ export class WebRtcStreamClient implements IWebRtcStreamClient {
     this.clearTimer('negotiate');
     this.negotiateTimer = setTimeout(() => {
       this.negotiateTimer = null;
-      if (this.status !== 'connected') this.fail();
+      if (this.status !== 'connected') this.fail('negotiate timeout (ICE never connected)');
     }, NEGOTIATE_TIMEOUT_MS);
   }
 

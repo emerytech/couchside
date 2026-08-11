@@ -53,6 +53,14 @@ import { useTheme, useThemedStyles, type Palette } from '@/lib/theme';
 const FRAME_MS = 700;
 const DEVICE_LABEL = 'Couchside Desktop';
 
+// The H.264/WebRTC tier is DISABLED: react-native-webrtc@124 is incompatible with
+// React Native 0.86's new architecture — RTCView crashes on render and
+// setRemoteDescription takes 10+ seconds before the peer connection aborts
+// (diagnosed on-device 2026-08-10). Until a react-native-webrtc release supports
+// RN 0.86, the app uses the MJPEG stream (caps.screenstream) + the still-frame
+// poller. Flip to true to re-enable once the native dep catches up.
+const WEBRTC_TIER_ENABLED = false;
+
 export default function DesktopControlScreen() {
   // Portrait = the laptop layout; landscape = the fullscreen "Remote Desktop"
   // surface (the whole screen is the touch input). Rotate freely between them.
@@ -75,7 +83,8 @@ export default function DesktopControlScreen() {
   // Tiers 1 & 2 both get tap-to-point (the portal's absolute pointer).
   const [webrtcGaveUp, setWebrtcGaveUp] = useState(false);
   const webrtcMode =
-    webrtcSupported && settings.caps?.screenstream_h264 === true && !webrtcGaveUp;
+    WEBRTC_TIER_ENABLED && webrtcSupported
+    && settings.caps?.screenstream_h264 === true && !webrtcGaveUp;
   const streamMode = !webrtcMode && settings.caps?.screenstream === true;
   const fluidMode = webrtcMode || streamMode;
   const live = ready && configured;
