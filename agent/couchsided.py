@@ -18835,6 +18835,12 @@ class Handler(BaseHTTPRequestHandler):
                 except OSError:
                     pass
                 return
+            # An abruptly-backgrounded phone leaves its socket half-dead: sends
+            # stop draining but never error, so a bare sendall blocks FOREVER —
+            # a zombie thread holding one of the two stream slots (two zombies
+            # = every reopen refused). With a timeout the zombie dies in ≤20s
+            # (normal sends are <1s), releasing the slot + reaping the stream.
+            conn.settimeout(20)
             self._screen_pump(conn, portal_sock)
         finally:
             if portal_sock is not None:
@@ -18860,6 +18866,9 @@ class Handler(BaseHTTPRequestHandler):
         (blocking) send land in the OS recv buffer and are dropped-but-newest on
         the next cycle; a truly slow phone also backpressures gst at the source."""
         buf = bytearray()
+        # TEMP instrumentation (remove before ship): sent/dropped per interval +
+        # how long ws_send blocks (TCP backpressure = the phone not draining).
+        stats = {"sent": 0, "drop": 0, "block": 0.0, "last": time.time()}
 
         def _drain_newest(first):
             # Append `first` + any immediately-available bytes; return the LATEST
@@ -18885,6 +18894,8 @@ class Handler(BaseHTTPRequestHandler):
                 eoi = buf.find(b"\xff\xd9", 2)
                 if eoi < 0:
                     break                            # partial frame; wait for more
+                if newest is not None:
+                    stats["drop"] += 1               # superseded before send
                 newest = bytes(buf[:eoi + 2])        # keep the last complete JPEG
                 del buf[:eoi + 2]
             return newest
@@ -18901,9 +18912,25 @@ class Handler(BaseHTTPRequestHandler):
             if jpg is None:
                 continue                             # only a partial frame so far
             try:
+                # TEMP: box wall-clock as a TEXT frame right before each binary
+                # frame — the app computes (phone_now - ms) to expose transit
+                # backlog. Additive: clients ignore non-binary frames.
+                ws_send_json(conn, {"t": "ts", "ms": int(time.time() * 1000)})
+                t0 = time.time()
                 ws_send(conn, WS_OP_BINARY, jpg)     # blocking; gst buffers meanwhile
+                stats["block"] += time.time() - t0
+                stats["sent"] += 1
             except OSError:
                 return                               # phone disconnected
+            now = time.time()
+            if now - stats["last"] >= 2.0:
+                el = now - stats["last"]
+                print("[screenstat-agent] sent/s=%.1f drop/s=%.1f "
+                      "avg_send_ms=%.0f kb=%d"
+                      % (stats["sent"] / el, stats["drop"] / el,
+                         stats["block"] * 1000 / max(1, stats["sent"]),
+                         len(jpg) // 1024), flush=True)
+                stats.update(sent=0, drop=0, block=0.0, last=now)
 
     # -- H.264/WebRTC signaling websocket (P4b, opt-in portal module) ----------
 

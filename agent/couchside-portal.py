@@ -412,97 +412,122 @@ def _stream_argv(profile, pwfd, node):
     return argv
 
 
-# The portal ScreenCast pipewire node allows exactly ONE gst consumer. A SECOND
-# concurrent gst on the same node fails ("Buffer allocation failed" /
-# "not-negotiated (-4)" — proven on hardware). That is the "reopen shows nothing"
-# wedge: an abrupt phone background leaves the previous stream's gst alive (its
-# dead socket not yet noticed) while the reopened stream spawns a second gst on
-# the same node -> the new one gets 0 bytes. So streams are serialized to ONE at
-# a time: a new stream REAPS the prior gst before spawning (last-opener wins).
+# The stream gst is spawned ONCE per portal session and NEVER killed while the
+# session lives. Proven on hardware, in stages:
+#   1. TWO concurrent gsts on the session's node -> the second fails ("Buffer
+#      allocation failed" / "not-negotiated (-4)", 0 bytes).
+#   2. Kill-then-respawn (preempting) LOOKED fixed but was not: the respawned
+#      gst receives (almost) no fresh buffers — pipewiresrc's keepalive-time
+#      re-encodes the last STALE buffer at full fps, so the stream "flows"
+#      while showing seconds-old content (constant-size JPEGs are the tell;
+#      a killed consumer's held buffers starve the node's small pool).
+# So: one persistent encoder per session, and a reader thread fans its frames
+# out to the ONE current subscriber (last-opener wins). Reopen = re-subscribe,
+# which is also instant. Idle (no subscriber) keeps encoding + discards — the
+# hardware JPEG path makes that ~free, and NOT respawning is the entire point.
 _STREAM_LOCK = threading.Lock()
-_CUR_STREAM = None                                   # the running stream gst, or None
+_STREAM = {"proc": None, "profile": None, "sub": None, "done": None}
 
 
-def _preempt_stream():
-    """Reap the currently-running stream gst (if any) so a new stream gets the
-    single-consumer pipewire node clean. Called before spawning a new stream."""
-    global _CUR_STREAM
-    with _STREAM_LOCK:
-        old, _CUR_STREAM = _CUR_STREAM, None
-    if old is not None and old.poll() is None:
-        old.terminate()
+def _stream_reader(proc):
+    """Read the persistent gst's MJPEG stdout forever; split whole JPEGs
+    (FFD8..FFD9) and forward each to the current subscriber, or discard when
+    nobody is watching. A dead/slow subscriber is dropped (its socket has a
+    timeout); the encoder is NEVER stopped here."""
+    buf = bytearray()
+    while True:
         try:
-            old.wait(timeout=3)
-        except subprocess.TimeoutExpired:
-            old.kill()
+            chunk = proc.stdout.read(65536)
+        except (OSError, ValueError):
+            break
+        if not chunk:
+            break                                    # gst ended
+        buf.extend(chunk)
+        while True:
+            soi = buf.find(b"\xff\xd8")
+            if soi < 0:
+                if len(buf) > (8 << 20):             # runaway guard: no SOI in 8MB
+                    del buf[:]
+                break
+            if soi > 0:
+                del buf[:soi]                        # drop bytes before a SOI
+            eoi = buf.find(b"\xff\xd9", 2)
+            if eoi < 0:
+                break                                # partial frame; wait for more
+            jpg = bytes(buf[:eoi + 2])
+            del buf[:eoi + 2]
+            with _STREAM_LOCK:
+                sub, done = _STREAM["sub"], _STREAM["done"]
+            if sub is None:
+                continue                             # idle: discard, keep draining
+            try:
+                sub.sendall(jpg)                     # timeout set at subscribe
+            except OSError:
+                with _STREAM_LOCK:
+                    if _STREAM["sub"] is sub:
+                        _STREAM["sub"] = None
+                        _STREAM["done"] = None
+                try:
+                    sub.close()
+                except OSError:
+                    pass
+                if done is not None:
+                    done.set()
+    # gst ended (helper shutdown or crash): clear state, wake any subscriber so
+    # its stream() call returns; the NEXT stream() may then respawn cleanly.
+    with _STREAM_LOCK:
+        done = _STREAM["done"]
+        _STREAM.update(proc=None, profile=None, sub=None, done=None)
+    if done is not None:
+        done.set()
 
 
 def stream(profile, conn):
-    """Spawn gst for `profile` and pipe its MJPEG stdout to `conn` until the peer
-    disconnects, then reap. The agent side splits the MJPEG byte stream on
-    FFD8..FFD9 and frames each JPEG onto /ws/screen. Serialized: reaps any prior
-    stream first so only one gst ever holds the (single-consumer) portal node."""
-    global _CUR_STREAM
+    """Subscribe `conn` to the session's persistent MJPEG encoder (spawning it
+    on first use), then block until the subscription ends — a newer subscriber
+    kicked us (last-opener wins), the peer vanished, or gst ended. The agent
+    splits the MJPEG bytes on FFD8..FFD9 and frames each JPEG onto /ws/screen.
+    The FIRST subscriber's profile wins for the encoder's lifetime (the app
+    always asks 720p20 today)."""
     if _ensure_session() is None:
         return
-    _preempt_stream()                                # single-consumer node (see above)
-    with _SLOCK:
-        node = _SESSION["node"]
-    pwfd = _open_pipewire_fd()
-    if pwfd is None:
-        return
-    proc = None
-    try:
-        proc = subprocess.Popen(
-            _stream_argv(profile, pwfd, node),
-            stdout=subprocess.PIPE, stderr=subprocess.PIPE,
-            pass_fds=(pwfd,))
-    finally:
-        try:
-            os.close(pwfd)                           # the child holds it now
-        except OSError:
-            pass
-    if proc is None:
-        return
     with _STREAM_LOCK:
-        _CUR_STREAM = proc                           # register as the active stream
-    nbytes = 0
-    try:
-        while True:
-            chunk = proc.stdout.read(65536)
-            if not chunk:
-                break                                # gst ended
-            nbytes += len(chunk)
-            conn.sendall(chunk)                      # raises when the peer is gone
-    except OSError:
-        pass                                         # peer disconnected — normal
-    finally:
-        try:
-            proc.stdout.close()
-        except OSError:
-            pass
-        proc.terminate()
-        try:
-            proc.wait(timeout=3)
-        except subprocess.TimeoutExpired:
-            proc.kill()
-        # Deregister only if still the active stream — a newer stream that
-        # preempted us already replaced _CUR_STREAM with its own proc.
-        with _STREAM_LOCK:
-            if _CUR_STREAM is proc:
-                _CUR_STREAM = None
-        if nbytes == 0:
-            err = b""
+        proc = _STREAM["proc"]
+        if proc is not None and proc.poll() is not None:
+            proc = None                              # crashed: allow respawn
+            _STREAM.update(proc=None, profile=None)
+        if proc is None:
+            with _SLOCK:
+                node = _SESSION["node"]
+            pwfd = _open_pipewire_fd()
+            if pwfd is None:
+                return
             try:
-                err = proc.stderr.read() or b""
-            except OSError:
-                pass
-            print("[portal] stream: NO BYTES; gst stderr: %s"
-                  % err.decode("utf-8", "replace").strip()[:500], flush=True)
+                proc = subprocess.Popen(
+                    _stream_argv(profile, pwfd, node),
+                    stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
+                    pass_fds=(pwfd,))
+            finally:
+                try:
+                    os.close(pwfd)                   # the child holds it now
+                except OSError:
+                    pass
+            _STREAM.update(proc=proc, profile=profile)
+            threading.Thread(target=_stream_reader, args=(proc,),
+                             daemon=True).start()
+        # Subscribe, last-opener wins: kick + close any current subscriber.
+        conn.settimeout(10)                          # a wedged peer can't block the reader
+        done = threading.Event()
+        old_sub, old_done = _STREAM["sub"], _STREAM["done"]
+        _STREAM["sub"], _STREAM["done"] = conn, done
+    if old_done is not None:
+        old_done.set()
+    if old_sub is not None:
         try:
-            proc.stderr.close()
+            old_sub.close()
         except OSError:
             pass
+    done.wait()                                      # until kicked / gone / gst end
 
 
 # ---- H.264 / WebRTC (P4b) --------------------------------------------------
