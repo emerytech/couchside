@@ -8,9 +8,9 @@
  * portal desktop session) the agent degrades /ws/screen closed, so the caller
  * can fall back to the still-frame poller.
  */
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 
-import type { ConnSettings } from '@/lib/api';
+import { resolveEffectiveHost, type ConnSettings } from '@/lib/api';
 import { ScreenStreamClient, type StreamProfile } from '@/lib/screenstream';
 
 export function useScreenStream(
@@ -21,6 +21,15 @@ export function useScreenStream(
   const [frame, setFrame] = useState<string | null>(null);
   const [failed, setFailed] = useState(false);
   const [lastGood, setLastGood] = useState<number | null>(null);
+
+  // Connect with the freshest settings without making them a dep: `settings` is
+  // a new object on every reachability poll (lastSeen/lastIp/caps), so a
+  // `[settings]` dep reconnected the stream every few seconds. Key ONLY on the
+  // connection identity (effective host, port, token).
+  const settingsRef = useRef(settings);
+  settingsRef.current = settings;
+  const effHost = resolveEffectiveHost(settings);
+  const { port, token } = settings;
 
   useEffect(() => {
     if (!active) return undefined;
@@ -33,13 +42,13 @@ export function useScreenStream(
     client.onStatus((s) => {
       if (s === 'error') setFailed(true);
     });
-    client.start(settings, profile);
+    client.start(settingsRef.current, profile);
     return () => {
       client.onFrame(null);
       client.onStatus(null);
       client.stop();
     };
-  }, [active, profile, settings]);
+  }, [active, profile, effHost, port, token]);
 
   return { frame, failed, lastGood };
 }

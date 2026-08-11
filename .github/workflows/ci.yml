@@ -222,6 +222,14 @@ jobs:
       - name: Unit tests (remote-desktop portal module)
         run: python3 tests/test_portal_module.py
 
+      # P4b: the H.264/WebRTC signaling relay (/ws/webrtc). Same class of surface:
+      # the screenstream_h264 cap probe (honest — needs a WORKING webrtcbin), the
+      # _portal_webrtc shim, the app->box SDP/ICE allowlist boundary (only
+      # answer/ice/bye + known fields forward, no arbitrary client JSON reaches
+      # webrtcbin), and the /ws/webrtc auth failure + profile allowlist + cap.
+      - name: Unit tests (remote-desktop WebRTC relay)
+        run: python3 tests/test_webrtc_relay.py
+
       # Who is OFFERED Couch Mode. The gate used to grep /etc/os-release for
       # "steamos"/"bazzite", so a CachyOS deckify box with every tool, both
       # sessions and a connected panel was refused by its NAME — hiding the

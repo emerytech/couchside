@@ -1,6 +1,7 @@
-import React, { useEffect, useRef } from 'react';
+import React, { useEffect, useRef, useState } from 'react';
 import { Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
 
+import { EditableSection } from '@/components/EditableSection';
 import { Gated } from '@/components/Gated';
 import { TourAnchor } from '@/components/TourAnchor';
 import { registerScroller } from '@/hooks/useTourAnchor';
@@ -17,6 +18,7 @@ import { usePoll } from '@/hooks/usePoll';
 import { useStreak } from '@/hooks/useStreak';
 import { api, hostKey, humanizeUptime, Status, Unit } from '@/lib/api';
 import { fmtLastSeen, noteBoxSeen } from '@/lib/lastSeen';
+import { useConsoleLayout, effectiveOrder, moveSection, setConsoleLayout } from '@/lib/consoleLayout';
 import { usePref } from '@/lib/prefs';
 import { useSkinKit, VitalsContext, vitality } from '@/lib/skin';
 import { noteBoxReachable } from '@/lib/review';
@@ -133,6 +135,181 @@ function ConsoleScreen() {
     [],
   );
 
+  // --- Console card layout: hold-to-edit reorder + hide (persisted) --------
+  const CARD_ORDER_CANON = [
+    'nowplaying', 'streamhost', 'gaming', 'vitals', 'screen', 'display', 'units', 'filedrop',
+  ];
+  const cardLayout = useConsoleLayout();
+  const [editingCards, setEditingCards] = useState(false);
+  const [cardPresent, setCardPresent] = useState<Record<string, boolean>>({});
+  const cardOrder = effectiveOrder(cardLayout.order, CARD_ORDER_CANON);
+  const cardHidden = new Set(cardLayout.hidden);
+  const setPresent = (id: string, p: boolean) =>
+    setCardPresent((prev) => (prev[id] === p ? prev : { ...prev, [id]: p }));
+  const visibleCards = cardOrder.filter((id) => cardPresent[id]);
+  const moveCard = (id: string, dir: -1 | 1) =>
+    setConsoleLayout({ order: moveSection(cardOrder, visibleCards, id, dir), hidden: cardLayout.hidden });
+  const toggleHideCard = (id: string) => {
+    const h = new Set(cardLayout.hidden);
+    if (h.has(id)) h.delete(id); else h.add(id);
+    setConsoleLayout({ order: cardOrder, hidden: [...h] });
+  };
+
+  // The movable cards, by id. null = not applicable on this box/state (skipped).
+  // The self-gating (probe-and-appear) cards render null internally when absent;
+  // EditableSection then shows no edit controls for them.
+  const cardNodes: Record<string, React.ReactNode> = {
+    nowplaying: <NowPlayingCard />,
+    streamhost: <StreamHostCard />,
+    gaming: <GamingCard />,
+    vitals: s ? (
+      <>
+        <View style={styles.row}>
+          {/* TourAnchor REPLACES the half View rather than wrapping it, so
+              the flex row is untouched — see components/TourAnchor.tsx. */}
+          <TourAnchor id="console.cpu" style={styles.half}>
+            <Card title="CPU TEMP" index={0}>
+              <BigMetric
+                value={s.cpu_temp_c != null ? `${s.cpu_temp_c.toFixed(1)}°C` : '—'}
+                numeric={s.cpu_temp_c}
+                color={tempColor(s.cpu_temp_c, t)}
+              />
+              <Spark values={s.history?.temp} color={tempColor(s.cpu_temp_c, t)} />
+            </Card>
+          </TourAnchor>
+          <View style={styles.half}>
+            <Card title="UPTIME" index={1}>
+              <BigMetric value={humanizeUptime(s.uptime_s)} numeric={null} color={t.text} />
+              {s.ip ? <Text style={styles.ipLine}>{s.ip}</Text> : null}
+            </Card>
+          </View>
+        </View>
+
+        <Card title="LOAD 1m / 5m / 15m" index={2}>
+          <View style={styles.loadRow}>
+            {s.load.map((l, i) => (
+              <Text key={i} style={styles.loadVal}>
+                {l.toFixed(2)}
+              </Text>
+            ))}
+          </View>
+          <Spark values={s.history?.load} color={t.blue} />
+        </Card>
+
+        <Card title="MEMORY" index={3}>
+          <View style={styles.barLabelRow}>
+            <Text style={styles.barLabel}>
+              {(s.mem.used_mb / 1024).toFixed(1)} / {(s.mem.total_mb / 1024).toFixed(1)} GB
+            </Text>
+            <Text style={[styles.barLabel, { color: pctColor(memPct, t) }]}>{memPct}%</Text>
+          </View>
+          <Bar pct={memPct} color={pctColor(memPct, t)} />
+          <Spark values={s.history?.mem_pct} color={pctColor(memPct, t)} min={0} max={100} />
+          {(memPressure != null || (s.mem.swap_used_mb ?? 0) > 0) && (
+            <Text style={styles.ipLine}>
+              {[
+                memPressure != null ? `stalled ${memPressure.toFixed(1)}%` : null,
+                (s.mem.swap_used_mb ?? 0) > 0
+                  ? `swap ${(s.mem.swap_used_mb! / 1024).toFixed(1)}G`
+                  : null,
+              ]
+                .filter(Boolean)
+                .join('  ·  ')}
+            </Text>
+          )}
+        </Card>
+
+        <Card title="DISKS" index={4}>
+          {s.disks.map((d) => (
+            <View key={d.mount} style={styles.diskRow}>
+              <View style={styles.barLabelRow}>
+                <Text style={styles.diskMount}>{d.mount}</Text>
+                <Text style={styles.barLabel}>
+                  {d.used_gb.toFixed(1)} / {d.total_gb.toFixed(1)} GB
+                  {'   '}
+                  <Text style={{ color: pctColor(d.pct, t) }}>{d.pct}%</Text>
+                </Text>
+              </View>
+              <Bar pct={d.pct} color={pctColor(d.pct, t)} />
+            </View>
+          ))}
+        </Card>
+
+        {/* Probe-and-appear: the agent OMITS `battery` on a mains desktop
+            and on agents older than 2.9.40, so presence of the key is the
+            whole gate -- no cap check, no placeholder, no "0%" on a machine
+            that has no pack. */}
+        {s.battery && (
+          <Card title="BATTERY" index={5}>
+            <View style={styles.barLabelRow}>
+              <Text style={styles.barLabel}>
+                {s.battery.status === 'Charging'
+                  ? 'Charging'
+                  : s.battery.on_ac
+                    ? 'On AC'
+                    : 'On battery'}
+                {s.battery.minutes_to_full != null
+                  ? `   ${fmtDuration(s.battery.minutes_to_full)} to full`
+                  : s.battery.minutes != null
+                    ? `   ${fmtDuration(s.battery.minutes)} left`
+                    : ''}
+              </Text>
+              <Text style={[styles.barLabel, { color: batteryColor(s.battery.pct, t) }]}>
+                {s.battery.pct}%
+              </Text>
+            </View>
+            <Bar pct={s.battery.pct} color={batteryColor(s.battery.pct, t)} />
+            {(s.battery.watts != null || s.battery.profile) && (
+              <Text style={styles.ipLine}>
+                {[
+                  s.battery.watts != null
+                    ? `${s.battery.watts.toFixed(1)}W ${
+                        s.battery.status === 'Charging' ? 'in' : 'draw'
+                      }`
+                    : null,
+                  s.battery.profile,
+                ]
+                  .filter(Boolean)
+                  .join('  ·  ')}
+              </Text>
+            )}
+          </Card>
+        )}
+      </>
+    ) : null,
+    screen: (
+      <TourAnchor id="console.screen">
+        <ScreenPreview />
+      </TourAnchor>
+    ),
+    display: (
+      <TourAnchor id="console.display">
+        <DisplayAudioCard />
+      </TourAnchor>
+    ),
+    units: configured ? (
+      <Card title="UNITS" index={5}>
+        {units.error != null && !units.data ? (
+          <Text style={styles.unitErr}>{units.error.message}</Text>
+        ) : units.data ? (
+          <View style={styles.chips}>
+            {units.data.units.filter((u) => !u.log_only).map((u) => (
+              <UnitChip key={`${u.scope}:${u.name}`} unit={u} />
+            ))}
+          </View>
+        ) : (
+          <Text style={styles.unitErr}>loading…</Text>
+        )}
+        <Text style={styles.unitHint}>
+          {(s?.agent_version ?? '').endsWith('-win')
+            ? 'watchlist: config.json in the Couchside folder on the box (units[]), then restart the agent'
+            : 'watchlist: /etc/couchside/config.json on the box (units[]), then restart couchside.service'}
+        </Text>
+      </Card>
+    ) : null,
+    filedrop: <FileDropCard />,
+  };
+
   return (
     <VitalsContext.Provider value={vitals}>
     <View style={styles.screen}>
@@ -214,207 +391,44 @@ function ConsoleScreen() {
           </View>
         )}
 
-        {/* Now Playing (MPRIS) — probe-and-appear; hidden when no media backend */}
-        <NowPlayingCard />
-
-        {/* Serving a Remote Play session (hidden unless one is live) */}
-        <StreamHostCard />
-
-        {/* Gaming card (probe-and-appear; hidden when the box has no Steam) */}
-        <GamingCard />
-
-        {s && (
-          <>
-            <View style={styles.row}>
-              {/* TourAnchor REPLACES the half View rather than wrapping it, so
-                  the flex row is untouched — see components/TourAnchor.tsx. */}
-              <TourAnchor id="console.cpu" style={styles.half}>
-                <Card title="CPU TEMP" index={0}>
-                  <BigMetric
-                    value={s.cpu_temp_c != null ? `${s.cpu_temp_c.toFixed(1)}°C` : '—'}
-                    numeric={s.cpu_temp_c}
-                    color={tempColor(s.cpu_temp_c, t)}
-                  />
-                  <Spark values={s.history?.temp} color={tempColor(s.cpu_temp_c, t)} />
-                </Card>
-              </TourAnchor>
-              <View style={styles.half}>
-                <Card title="UPTIME" index={1}>
-                  {/* Not numeric: "1d 2h 7m" must never be interpolated. */}
-                  <BigMetric value={humanizeUptime(s.uptime_s)} numeric={null} color={t.text} />
-                  {/* The address the phone actually reached the box on, straight
-                      from the socket (agent >= 2.9.22). Worth showing because it
-                      is what you need when mDNS breaks and the box has to be
-                      re-added by IP — the exact moment the app is hardest to
-                      use. Rides the poll that is already happening. */}
-                  {s.ip ? <Text style={styles.ipLine}>{s.ip}</Text> : null}
-                </Card>
-              </View>
-            </View>
-
-            <Card title="LOAD 1m / 5m / 15m" index={2}>
-              <View style={styles.loadRow}>
-                {s.load.map((l, i) => (
-                  <Text key={i} style={styles.loadVal}>
-                    {l.toFixed(2)}
-                  </Text>
-                ))}
-              </View>
-              <Spark values={s.history?.load} color={t.blue} />
-            </Card>
-
-            <Card title="MEMORY" index={3}>
-              <View style={styles.barLabelRow}>
-                <Text style={styles.barLabel}>
-                  {(s.mem.used_mb / 1024).toFixed(1)} / {(s.mem.total_mb / 1024).toFixed(1)} GB
-                </Text>
-                <Text style={[styles.barLabel, { color: pctColor(memPct, t) }]}>{memPct}%</Text>
-              </View>
-              <Bar pct={memPct} color={pctColor(memPct, t)} />
-              {/* Fixed 0-100 scale: a memory sparkline that auto-scales would
-                  make a 2% wiggle look like a cliff. */}
-              <Spark values={s.history?.mem_pct} color={pctColor(memPct, t)} min={0} max={100} />
-              {/* Swap and stall pressure, each shown ONLY when it is saying
-                  something. Zero pressure on an idle box is the normal state and
-                  printing "0.0%" every second would train you to ignore the row
-                  that matters. PSI is absent entirely on kernels without
-                  CONFIG_PSI, which is why undefined and 0 are treated
-                  differently here. */}
-              {(memPressure != null || (s.mem.swap_used_mb ?? 0) > 0) && (
-                <Text style={styles.ipLine}>
-                  {[
-                    memPressure != null ? `stalled ${memPressure.toFixed(1)}%` : null,
-                    (s.mem.swap_used_mb ?? 0) > 0
-                      ? `swap ${(s.mem.swap_used_mb! / 1024).toFixed(1)}G`
-                      : null,
-                  ]
-                    .filter(Boolean)
-                    .join('  ·  ')}
-                </Text>
-              )}
-            </Card>
-
-            <Card title="DISKS" index={4}>
-              {s.disks.map((d) => (
-                <View key={d.mount} style={styles.diskRow}>
-                  <View style={styles.barLabelRow}>
-                    <Text style={styles.diskMount}>{d.mount}</Text>
-                    <Text style={styles.barLabel}>
-                      {d.used_gb.toFixed(1)} / {d.total_gb.toFixed(1)} GB
-                      {'   '}
-                      <Text style={{ color: pctColor(d.pct, t) }}>{d.pct}%</Text>
-                    </Text>
-                  </View>
-                  <Bar pct={d.pct} color={pctColor(d.pct, t)} />
-                </View>
-              ))}
-            </Card>
-
-            {/* Probe-and-appear: the agent OMITS `battery` on a mains desktop
-                and on agents older than 2.9.40, so presence of the key is the
-                whole gate -- no cap check, no placeholder, no "0%" on a machine
-                that has no pack. */}
-            {s.battery && (
-              <Card title="BATTERY" index={5}>
-                <View style={styles.barLabelRow}>
-                  <Text style={styles.barLabel}>
-                    {s.battery.status === 'Charging'
-                      ? 'Charging'
-                      : s.battery.on_ac
-                        ? 'On AC'
-                        : 'On battery'}
-                    {/* Two different clocks, never both: time-to-full while
-                        charging, runtime-left while discharging. The agent
-                        keeps them as separate fields for exactly that reason. */}
-                    {s.battery.minutes_to_full != null
-                      ? `   ${fmtDuration(s.battery.minutes_to_full)} to full`
-                      : s.battery.minutes != null
-                        ? `   ${fmtDuration(s.battery.minutes)} left`
-                        : ''}
-                  </Text>
-                  <Text style={[styles.barLabel, { color: batteryColor(s.battery.pct, t) }]}>
-                    {s.battery.pct}%
-                  </Text>
-                </View>
-                <Bar pct={s.battery.pct} color={batteryColor(s.battery.pct, t)} />
-                {/* Draw and power profile, each independently optional so a box
-                    that reports only one still shows it. The watts figure is
-                    labelled by STATUS -- the same counter is the charge rate
-                    when plugged in, so calling it "draw" while charging would
-                    be wrong. */}
-                {(s.battery.watts != null || s.battery.profile) && (
-                  <Text style={styles.ipLine}>
-                    {[
-                      s.battery.watts != null
-                        ? `${s.battery.watts.toFixed(1)}W ${
-                            s.battery.status === 'Charging' ? 'in' : 'draw'
-                          }`
-                        : null,
-                      s.battery.profile,
-                    ]
-                      .filter(Boolean)
-                      .join('  ·  ')}
-                  </Text>
-                )}
-              </Card>
-            )}
-          </>
-        )}
-
-        {/* What the box is driving: mode, panel, HDR/VRR, default audio in/out
-            (probe-and-appear; agent >= 2.9.59).
-            HERE, directly above the preview, on purpose: the two are one
-            region — the specs of the screen, then the picture on it. Below the
-            vitals you opened this tab to read, above UNITS, which is reference
-            config rather than something you watch. */}
-        <TourAnchor id="console.display">
-          <DisplayAudioCard />
-        </TourAnchor>
-
-        {/* Live screen preview (probe-and-appear; hidden when no capture path) */}
-        <TourAnchor id="console.screen">
-          <ScreenPreview />
-        </TourAnchor>
-
-        {/* Units */}
-        {configured && (
-          <Card title="UNITS" index={5}>
-            {units.error != null && !units.data ? (
-              <Text style={styles.unitErr}>{units.error.message}</Text>
-            ) : units.data ? (
-              <View style={styles.chips}>
-                {/* log_only entries are LOG SOURCES, not services (the
-                    Windows agent's own log). Rendering one as a unit showed a
-                    permanent "inactive/not-found" warning for something that
-                    cannot run. They stay in the Logs picker, which is why they
-                    are in the watchlist at all. */}
-                {units.data.units.filter((u) => !u.log_only).map((u) => (
-                  <UnitChip key={`${u.scope}:${u.name}`} unit={u} />
-                ))}
-              </View>
-            ) : (
-              <Text style={styles.unitErr}>loading…</Text>
-            )}
-            {/* The watchlist is box-side config, not app state — point at it so
-                homelab users know they can watch their own services. */}
-            {/* Platform-aware: the Linux paths below are meaningless on a
-                Windows box, which has neither /etc/couchside nor systemd — it
-                was still printing them (reported from a real Windows box). */}
-            <Text style={styles.unitHint}>
-              {(s?.agent_version ?? '').endsWith('-win')
-                ? 'watchlist: config.json in the Couchside folder on the box (units[]), then restart the agent'
-                : 'watchlist: /etc/couchside/config.json on the box (units[]), then restart couchside.service'}
-            </Text>
-          </Card>
-        )}
-
-        {/* Send a file to the box (probe-and-appear; agent >= 2.9.54).
-            LAST on purpose: sending a file is a deliberate errand you go
-            looking for, not something you monitor, so it does not earn space
-            above the vitals you opened this tab to read. */}
-        <FileDropCard />
+        {/* Movable cards: order + hidden from the hold-to-edit layout pref.
+            Each wrapped in EditableSection (long-press → edit; ↑ ↓ hide). The
+            self-gating cards still render null internally when their box lacks
+            the feature; EditableSection shows no controls for a null card. */}
+        {cardOrder.map((id) => {
+          const node = cardNodes[id];
+          if (node == null) return null;
+          return (
+            <EditableSection
+              key={id}
+              editing={editingCards}
+              hidden={cardHidden.has(id)}
+              isFirst={visibleCards[0] === id}
+              isLast={visibleCards[visibleCards.length - 1] === id}
+              onEnterEdit={() => setEditingCards(true)}
+              onPresent={(p) => setPresent(id, p)}
+              onUp={() => moveCard(id, -1)}
+              onDown={() => moveCard(id, 1)}
+              onToggleHide={() => toggleHideCard(id)}>
+              {node}
+            </EditableSection>
+          );
+        })}
         </Screen>
       </ScrollView>
+      {/* Edit-layout bar: hold any card to enter, then reorder/hide + Done. */}
+      {editingCards && (
+        <View style={styles.editBar}>
+          <Text style={styles.editHint}>Reorder or hide cards</Text>
+          <Pressable
+            onPress={() => setEditingCards(false)}
+            accessibilityRole="button"
+            accessibilityLabel="Done editing layout"
+            style={({ pressed }) => [styles.doneBtn, pressed && styles.pressed]}>
+            <Text style={styles.doneText}>Done</Text>
+          </Pressable>
+        </View>
+      )}
     </View>
     </VitalsContext.Provider>
   );
@@ -423,6 +437,18 @@ function ConsoleScreen() {
 const makeStyles = (t: Palette) => StyleSheet.create({
   screen: { flex: 1, backgroundColor: t.bg },
   scroll: { flex: 1 },
+  editBar: {
+    position: 'absolute', left: 0, right: 0, bottom: 0,
+    flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between',
+    paddingHorizontal: 16, paddingTop: 12, paddingBottom: 28,
+    backgroundColor: t.card, borderTopColor: t.cardBorder, borderTopWidth: 1,
+  },
+  editHint: { color: t.textDim, fontSize: 13 },
+  doneBtn: {
+    backgroundColor: t.blue, borderRadius: 999,
+    paddingVertical: 8, paddingHorizontal: 22,
+  },
+  doneText: { color: t.bg, fontWeight: '700', fontSize: 14 },
   header: {
     flexDirection: 'row',
     alignItems: 'center',

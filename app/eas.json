@@ -35,6 +35,12 @@
         "simulator": false
       }
     },
+    "tf-dev": {
+      "developmentClient": true,
+      "ios": {
+        "simulator": false
+      }
+    },
     "simulator": {
       "autoIncrement": true,
       "distribution": "internal",

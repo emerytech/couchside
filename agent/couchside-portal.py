@@ -46,6 +46,7 @@ import struct
 import subprocess
 import sys
 import threading
+import time
 
 import gi
 gi.require_version("Gio", "2.0")
@@ -75,6 +76,15 @@ _STREAM_PROFILES = {
     "540p25":  {"width": 960,  "height": 540,  "fps": 25, "quality": 72},
     "720p20":  {"width": 1280, "height": 720,  "fps": 20, "quality": 75},
     "1080p15": {"width": 1920, "height": 1080, "fps": 15, "quality": 70},
+}
+
+# H.264/WebRTC profiles (P4b) — a CLOSED SET, same discipline as _STREAM_PROFILES.
+# The client names a KEY; the helper owns every pipeline parameter. bitrate in kbps.
+_H264_PROFILES = {
+    "720p30":  {"width": 1280, "height": 720,  "fps": 30, "bitrate": 5000},
+    "720p60":  {"width": 1280, "height": 720,  "fps": 60, "bitrate": 8000},
+    "1080p30": {"width": 1920, "height": 1080, "fps": 30, "bitrate": 10000},
+    "1080p60": {"width": 1920, "height": 1080, "fps": 60, "bitrate": 16000},
 }
 
 # How long Start may wait for the user to click Share/Allow on the box.
@@ -151,6 +161,31 @@ _SLOCK = threading.RLock()
 _SESSION = None    # {"handle": str, "node": int, "w": int, "h": int} or None
 
 
+# Audible alert players tried in order when a consent dialog is about to pop —
+# the phone cannot click Approve, someone has to at the box, so a chime helps a
+# user who is not looking at the screen. argv LISTs, fixed strings, no client
+# input (§3). Fire-and-forget; a box with no player / no audio stays silent.
+_CHIME_PLAYERS = (
+    ["canberra-gtk-play", "-i", "dialog-warning"],
+    ["pw-play", "/usr/share/sounds/freedesktop/stereo/dialog-warning.oga"],
+    ["paplay", "/usr/share/sounds/freedesktop/stereo/dialog-warning.oga"],
+)
+
+
+def _consent_chime():
+    """Best-effort audible alert that the box is showing a consent dialog. Non-
+    blocking, degrade-closed: any failure (no player, no audio) is ignored."""
+    import shutil
+    for argv in _CHIME_PLAYERS:
+        if shutil.which(argv[0]):
+            try:
+                subprocess.Popen(argv, stdout=subprocess.DEVNULL,
+                                 stderr=subprocess.DEVNULL)
+            except OSError:
+                continue
+            return
+
+
 def _ensure_session():
     """Create + consent the ONE portal session if we don't have it yet.
     Serialized: setup happens once. Returns the session dict or None (denied/
@@ -177,6 +212,7 @@ def _ensure_session():
             return None
         # Start pops the KDE consent dialog. persist_mode=2 asks to remember (a
         # no-op on older KDE that lacks the checkbox — then it re-prompts).
+        _consent_chime()                              # alert: Approve at the box
         code, res = _request(_IF_RD, "Start", "os", (handle, ""),
                              {"persist_mode": GLib.Variant("u", 2)},
                              _CONSENT_TIMEOUT_S)
@@ -193,29 +229,52 @@ def _ensure_session():
 
 
 def _open_pipewire_fd():
-    """OpenPipeWireRemote on the live session → a unix fd for gstreamer. The
-    session must already exist. Returns an int fd (caller owns it) or None."""
+    """A unix fd to the session's PipeWire remote, for gstreamer. Returns an int
+    fd the CALLER OWNS (must close) or None.
+
+    OpenPipeWireRemote is called at most ONCE per session; the fd is CACHED on the
+    session and every caller gets an `os.dup()` of it. A SECOND OpenPipeWireRemote
+    on a KDE portal session hands back a DEAD remote (0 frames) — proven on
+    hardware: the FIRST /ws/screen streamed, every reopen showed nothing because
+    the agent re-opened the remote per connect. Caching + dup keeps the one good
+    remote alive for the session's life, so reopens (and the WebRTC path) work.
+    Closing a dup only drops that consumer; the cached original stays open."""
     with _SLOCK:
         sess = _SESSION
-    if sess is None:
-        return None
-    ret, fdlist = _con.call_with_unix_fd_list_sync(
-        _PORTAL, _OBJ, _IF_SC, "OpenPipeWireRemote",
-        GLib.Variant("(oa{sv})", (sess["handle"], {})),
-        GLib.VariantType.new("(h)"), Gio.DBusCallFlags.NONE, -1, None, None)
-    idx = ret.unpack()[0]
-    return fdlist.get(idx)
+        if sess is None:
+            return None
+        cached = sess.get("pwfd")
+        if cached is None:
+            try:
+                ret, fdlist = _con.call_with_unix_fd_list_sync(
+                    _PORTAL, _OBJ, _IF_SC, "OpenPipeWireRemote",
+                    GLib.Variant("(oa{sv})", (sess["handle"], {})),
+                    GLib.VariantType.new("(h)"), Gio.DBusCallFlags.NONE, -1, None, None)
+                cached = fdlist.get(ret.unpack()[0])
+            except Exception:
+                return None
+            if cached is None:
+                return None
+            sess["pwfd"] = cached
+        try:
+            return os.dup(cached)
+        except OSError:
+            return None
 
 
 # ---------------------------------------------------------------- the verbs ---
 
 def verb_status():
+    h264 = _h264_available()
     with _SLOCK:
         sess = _SESSION
+    base = {"ok": True, "h264": h264, "h264_profiles": sorted(_H264_PROFILES)}
     if sess is None:
-        return {"ok": True, "session": False}
-    return {"ok": True, "session": True, "w": sess["w"], "h": sess["h"],
-            "node": sess["node"], "profiles": sorted(_STREAM_PROFILES)}
+        base["session"] = False
+        return base
+    base.update({"session": True, "w": sess["w"], "h": sess["h"],
+                 "node": sess["node"], "profiles": sorted(_STREAM_PROFILES)})
+    return base
 
 
 def verb_ensure():
@@ -244,6 +303,15 @@ def verb_button(arg):
         return {"ok": False, "error": "no session"}
     _notify("NotifyPointerButton", "(oa{sv}iu)", (sess["handle"], {}, code, state))
     return {"ok": True}
+
+
+# NOTE deliberately NO keyboard verbs here: phone-keyboard typing rides the
+# AGENT's existing uinput path ({t:'kt'}/{t:'k'} on /ws/gamepad), which is
+# PROVEN on the KDE desktop (typed into a konsole + opened Kickoff via a
+# virtual uinput keyboard on hardware, 2026-08-11). The portal alternative
+# (NotifyKeyboardKeysym) was probed the same day: the call chain exists in
+# xdg-desktop-portal-kde 6.6.4 but no keystrokes ever landed — and the uinput
+# path needs no extra portal capability in the consent dialog.
 
 
 # ---- argument validators (return the parsed value, or None to REFUSE) -------
@@ -275,6 +343,13 @@ def _profile_arg(v):
     return v if isinstance(v, str) and v in _STREAM_PROFILES else None
 
 
+def _h264_profile_arg(v):
+    """An H.264/WebRTC profile KEY. Looked up, never interpolated (§3.1)."""
+    if isinstance(v, dict):
+        v = v.get("profile")
+    return v if isinstance(v, str) and v in _H264_PROFILES else None
+
+
 # one-shot JSON verbs (streaming is handled separately in serve_one)
 VERBS = {
     "status": (verb_status, None),
@@ -301,82 +376,448 @@ def dispatch(req):
 
 # ---- streaming (raw MJPEG bytes, not a JSON reply) --------------------------
 
+_HW_JPEG = None
+
+
+def _hw_jpeg():
+    """True if the box has a hardware JPEG encoder (vapostproc + vajpegenc).
+    Cached. Degrade closed to software jpegenc."""
+    global _HW_JPEG
+    if _HW_JPEG is None:
+        try:
+            import gi as _gi
+            _gi.require_version("Gst", "1.0")
+            from gi.repository import Gst as _Gst
+            _Gst.init(None)
+            _HW_JPEG = (_Gst.ElementFactory.find("vajpegenc") is not None
+                        and _Gst.ElementFactory.find("vapostproc") is not None)
+        except Exception:
+            _HW_JPEG = False
+    return _HW_JPEG
+
+
 def _stream_argv(profile, pwfd, node):
     """gstreamer argv LIST for one profile. Every pipeline element and parameter
     is chosen HERE; the client only picked the profile key. pipewiresrc reads the
-    portal's own node over the passed fd; jpegenc → fdsink fd=1 (stdout)."""
+    portal's own node over the passed fd; encoder → fdsink fd=1 (stdout).
+
+    Prefer HARDWARE JPEG (vapostproc VAMemory → vajpegenc): on an Intel iGPU the
+    software jpegenc capped the box at ~6fps @720p — the display 'lag'. vajpegenc
+    clears 300+fps, so the box no longer bottlenecks the MJPEG. Software jpegenc
+    is the fallback where no VA encoder exists."""
     p = _STREAM_PROFILES[profile]
-    caps = "video/x-raw,framerate=%d/1,width=%d,height=%d" % (
-        p["fps"], p["width"], p["height"])
-    return ["gst-launch-1.0", "-q",
+    argv = ["gst-launch-1.0", "-q",
             "pipewiresrc", "fd=%d" % pwfd, "path=%d" % node, "keepalive-time=1000",
-            "!", "videorate", "!", "videoscale", "!", "videoconvert",
-            "!", caps,
-            # TODO(backpressure): a `queue leaky=downstream` here stalled the
-            # pipeline mid-frame on hardware (2026-08-10) — needs isolated gst
-            # tuning (placement/max-size). For now no leaky queue: a slow phone
-            # backpressures gst via TCP flow control. Drop-oldest to be added
-            # once verified in isolation, not guessed on a live session.
-            "!", "jpegenc", "quality=%d" % p["quality"],
-            "!", "fdsink", "fd=1"]
+            "!", "videorate", "!", "video/x-raw,framerate=%d/1" % p["fps"]]
+    if _hw_jpeg():
+        argv += ["!", "vapostproc",
+                 "!", "video/x-raw(memory:VAMemory),format=NV12,width=%d,height=%d"
+                 % (p["width"], p["height"]),
+                 "!", "vajpegenc", "quality=%d" % p["quality"]]
+    else:
+        argv += ["!", "videoscale", "!", "videoconvert",
+                 "!", "video/x-raw,width=%d,height=%d" % (p["width"], p["height"]),
+                 "!", "jpegenc", "quality=%d" % p["quality"]]
+    argv += ["!", "fdsink", "fd=1"]
+    return argv
+
+
+# The stream gst is spawned ONCE per portal session and NEVER killed while the
+# session lives. Proven on hardware, in stages:
+#   1. TWO concurrent gsts on the session's node -> the second fails ("Buffer
+#      allocation failed" / "not-negotiated (-4)", 0 bytes).
+#   2. Kill-then-respawn (preempting) LOOKED fixed but was not: the respawned
+#      gst receives (almost) no fresh buffers — pipewiresrc's keepalive-time
+#      re-encodes the last STALE buffer at full fps, so the stream "flows"
+#      while showing seconds-old content (constant-size JPEGs are the tell;
+#      a killed consumer's held buffers starve the node's small pool).
+# So: one persistent encoder per session, and a reader thread fans its frames
+# out to the ONE current subscriber (last-opener wins). Reopen = re-subscribe,
+# which is also instant. Idle (no subscriber) keeps encoding + discards — the
+# hardware JPEG path makes that ~free, and NOT respawning is the entire point.
+_STREAM_LOCK = threading.Lock()
+_STREAM = {"proc": None, "profile": None, "sub": None, "done": None,
+           # wall-clock when the last subscriber left (None while subscribed);
+           # the reader enforces the idle TTL from it.
+           "idle_since": None}
+
+# No viewer for this long -> tear down the encoder AND the portal session, so an
+# abandoned Control screen stops costing GPU/CPU (and stops holding the KWin
+# screencast, which disables direct scanout for fullscreen apps). The next use
+# re-ensures the session — on KDE without RemoteDesktop persist that re-pops ONE
+# consent; short exit/reopen cycles stay instant (well under the TTL).
+_STREAM_IDLE_TTL_S = 900
+
+
+def _close_session():
+    """Tear down the portal session (Session.Close) + cached PipeWire fd. The
+    next ensure re-creates from scratch (fresh consent where persist is
+    unavailable). Degrade-closed: failures still clear local state."""
+    global _SESSION
+    with _SLOCK:
+        sess, _SESSION = _SESSION, None
+    if sess is None:
+        return
+    pwfd = sess.get("pwfd")
+    if pwfd is not None:
+        try:
+            os.close(pwfd)
+        except OSError:
+            pass
+    try:
+        _con.call_sync(_PORTAL, sess["handle"], "org.freedesktop.portal.Session",
+                       "Close", None, None, Gio.DBusCallFlags.NONE, -1, None)
+    except Exception:
+        pass
+    print("[portal] idle TTL: session closed (re-consent on next use)", flush=True)
+
+
+def _stream_reader(proc):
+    """Read the persistent gst's MJPEG stdout forever; split whole JPEGs
+    (FFD8..FFD9) and forward each to the current subscriber, or discard when
+    nobody is watching. A dead/slow subscriber is dropped (its socket has a
+    timeout); the encoder is NEVER stopped here."""
+    buf = bytearray()
+    idle_teardown = False
+    while True:
+        try:
+            chunk = proc.stdout.read(65536)
+        except (OSError, ValueError):
+            break
+        if not chunk:
+            break                                    # gst ended
+        buf.extend(chunk)
+        while True:
+            soi = buf.find(b"\xff\xd8")
+            if soi < 0:
+                if len(buf) > (8 << 20):             # runaway guard: no SOI in 8MB
+                    del buf[:]
+                break
+            if soi > 0:
+                del buf[:soi]                        # drop bytes before a SOI
+            eoi = buf.find(b"\xff\xd9", 2)
+            if eoi < 0:
+                break                                # partial frame; wait for more
+            jpg = bytes(buf[:eoi + 2])
+            del buf[:eoi + 2]
+            with _STREAM_LOCK:
+                sub, done = _STREAM["sub"], _STREAM["done"]
+                idle_since = _STREAM["idle_since"]
+            if sub is None:
+                # Idle: discard + keep draining (the node must stay serviced) —
+                # until the TTL, then tear the whole thing down (gst + session).
+                if (idle_since is not None
+                        and time.time() - idle_since > _STREAM_IDLE_TTL_S):
+                    idle_teardown = True
+                    proc.terminate()                 # read() EOFs; cleanup below
+                continue
+            try:
+                sub.sendall(jpg)                     # timeout set at subscribe
+            except OSError:
+                with _STREAM_LOCK:
+                    if _STREAM["sub"] is sub:
+                        _STREAM["sub"] = None
+                        _STREAM["done"] = None
+                        _STREAM["idle_since"] = time.time()
+                try:
+                    sub.close()
+                except OSError:
+                    pass
+                if done is not None:
+                    done.set()
+    # gst ended (idle TTL, helper shutdown, or crash): clear state, wake any
+    # subscriber so its stream() call returns; the NEXT stream() may respawn —
+    # after an idle teardown that goes through a FRESH session (re-consent),
+    # which is exactly what makes the respawn safe (new node, healthy pool).
+    with _STREAM_LOCK:
+        done = _STREAM["done"]
+        _STREAM.update(proc=None, profile=None, sub=None, done=None,
+                       idle_since=None)
+    if done is not None:
+        done.set()
+    if idle_teardown:
+        _close_session()
 
 
 def stream(profile, conn):
-    """Spawn gst for `profile` and pipe its MJPEG stdout to `conn` until the peer
-    disconnects, then reap. The agent side splits the MJPEG byte stream on
-    FFD8..FFD9 and frames each JPEG onto /ws/screen."""
+    """Subscribe `conn` to the session's persistent MJPEG encoder (spawning it
+    on first use), then block until the subscription ends — a newer subscriber
+    kicked us (last-opener wins), the peer vanished, or gst ended. The agent
+    splits the MJPEG bytes on FFD8..FFD9 and frames each JPEG onto /ws/screen.
+    The FIRST subscriber's profile wins for the encoder's lifetime (the app
+    always asks 720p20 today)."""
     if _ensure_session() is None:
         return
+    with _STREAM_LOCK:
+        proc = _STREAM["proc"]
+        if proc is not None and proc.poll() is not None:
+            proc = None                              # crashed: allow respawn
+            _STREAM.update(proc=None, profile=None)
+        if proc is None:
+            with _SLOCK:
+                node = _SESSION["node"]
+            pwfd = _open_pipewire_fd()
+            if pwfd is None:
+                return
+            try:
+                proc = subprocess.Popen(
+                    _stream_argv(profile, pwfd, node),
+                    stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
+                    pass_fds=(pwfd,))
+            finally:
+                try:
+                    os.close(pwfd)                   # the child holds it now
+                except OSError:
+                    pass
+            _STREAM.update(proc=proc, profile=profile)
+            threading.Thread(target=_stream_reader, args=(proc,),
+                             daemon=True).start()
+        # Subscribe, last-opener wins: kick + close any current subscriber.
+        conn.settimeout(10)                          # a wedged peer can't block the reader
+        done = threading.Event()
+        old_sub, old_done = _STREAM["sub"], _STREAM["done"]
+        _STREAM["sub"], _STREAM["done"] = conn, done
+        _STREAM["idle_since"] = None                 # someone is watching again
+    if old_done is not None:
+        old_done.set()
+    if old_sub is not None:
+        try:
+            old_sub.close()
+        except OSError:
+            pass
+    done.wait()                                      # until kicked / gone / gst end
+
+
+# ---- H.264 / WebRTC (P4b) --------------------------------------------------
+# In-process `webrtcbin` (NOT gst-launch — it needs async create-offer / ICE
+# callbacks). H264-only, sendonly, host candidates only (stun-server=NULL: the
+# app and box share a LAN). The agent's /ws/webrtc relays OPAQUE SDP/ICE JSON
+# between the app and this socket; THIS builds the whole pipeline. §3: no client
+# string ever reaches gst — the client only names a profile KEY (looked up), and
+# the PipeWire node/fd come only from the portal's own Start result.
+#
+# All GStreamer gi imports are LAZY + guarded so a box missing GstWebRTC/GstSdp
+# (or the libnice `nice` plugin webrtcbin needs) degrades closed to no-h264 —
+# it must NOT break import (that would take the shipped P4a MJPEG path down too).
+
+_ALLOWED_WEBRTC_IN = ("answer", "ice", "bye")   # frozen set of inbound msg types
+_WEBRTC_LOCK = threading.Lock()                 # one WebRTC session at a time (heavy)
+
+
+class _ByeSignal(Exception):
+    """Internal: the peer sent {t:bye}; unwind the signaling read loop."""
+
+
+def _h264_available():
+    """True only if webrtcbin can ACTUALLY run here — which requires the libnice
+    `nice` elements (nicesrc/nicesink), NOT just that webrtcbin is registered.
+    Proven on hardware: `gst-inspect webrtcbin` succeeds but any media pad errors
+    'libnice elements are not available' without the nice plugin. Also needs a VA
+    H.264 encoder + the RTP/portal path. Degrade closed on any failure."""
+    try:
+        import gi as _gi
+        _gi.require_version("Gst", "1.0")
+        _gi.require_version("GstWebRTC", "1.0")
+        _gi.require_version("GstSdp", "1.0")
+        from gi.repository import Gst as _Gst
+        _Gst.init(None)
+        need = ("webrtcbin", "nicesrc", "nicesink", "rtph264pay",
+                "vapostproc", "pipewiresrc", "h264parse", "videorate")
+        if any(_Gst.ElementFactory.find(e) is None for e in need):
+            return False
+        if _Gst.ElementFactory.find("vah264enc") is None and \
+           _Gst.ElementFactory.find("vah264lpenc") is None:
+            return False
+        return True
+    except Exception:
+        return False
+
+
+def _webrtc_desc(profile, pwfd, node, Gst):
+    """gstreamer-parse description for one profile. Every element/parameter is
+    chosen HERE. Prefer the full `vah264enc` (CBR = predictable bitrate for
+    streaming); fall back to the low-power `vah264lpenc` (CQP-only on some GPUs).
+    webrtcbin is declared and linked via the trailing-dot request-pad syntax
+    (inline `! webrtcbin` fails to link — proven)."""
+    p = _H264_PROFILES[profile]
+    if Gst.ElementFactory.find("vah264enc") is not None:
+        enc = ("vah264enc rate-control=cbr bitrate=%d target-usage=7 "
+               "key-int-max=%d b-frames=0 ref-frames=1"
+               % (p["bitrate"], p["fps"] * 2))
+    else:
+        enc = ("vah264lpenc rate-control=cqp target-usage=7 "
+               "key-int-max=%d b-frames=0 ref-frames=1" % (p["fps"] * 2))
+    return ("webrtcbin name=sendrecv bundle-policy=max-bundle latency=0 "
+            "pipewiresrc fd=%d path=%d do-timestamp=true keepalive-time=1000 "
+            "! videorate ! video/x-raw,framerate=%d/1 "
+            "! vapostproc ! video/x-raw(memory:VAMemory),format=NV12,width=%d,height=%d "
+            "! %s ! h264parse config-interval=-1 "
+            "! rtph264pay pt=96 config-interval=-1 aggregate-mode=zero-latency mtu=1200 "
+            "! queue ! application/x-rtp,media=video,encoding-name=H264,payload=96 "
+            "! sendrecv."
+            % (pwfd, node, p["fps"], p["width"], p["height"], enc))
+
+
+def _webrtc_session(profile, conn):
+    """One WebRTC streaming session: build the webrtcbin pipeline for `profile`,
+    exchange OPAQUE SDP/ICE as JSON lines over `conn` (the agent relays them to
+    the app), stream until the peer sends {t:bye} or disconnects, then REAP the
+    pipeline (a leaked encoder keeps filming the screen).
+
+    webrtcbin is built and driven on a DEDICATED GLib main-loop thread (default
+    context) — proven on hardware: driving it from a private thread-default
+    context yields an empty offer (webrtcbin's DTLS/ICE machinery expects the
+    global default context). The socket read loop runs on THIS thread and hands
+    inbound answer/ICE to the loop thread via idle_add. One session at a time
+    (_WEBRTC_LOCK) — webrtcbin is heavy and shares the default context."""
+    try:
+        import gi as _gi
+        _gi.require_version("Gst", "1.0")
+        _gi.require_version("GstWebRTC", "1.0")
+        _gi.require_version("GstSdp", "1.0")
+        from gi.repository import GLib as _GLib, Gst, GstWebRTC, GstSdp
+        Gst.init(None)
+    except Exception:
+        _send_json(conn, {"t": "error", "error": "no webrtc support"})
+        return
+    if _ensure_session() is None:
+        _send_json(conn, {"t": "error", "error": "no session"})
+        return
+    if not _WEBRTC_LOCK.acquire(blocking=False):
+        _send_json(conn, {"t": "error", "error": "busy"})       # cap 1
+        return
+
     with _SLOCK:
         node = _SESSION["node"]
-    pwfd = _open_pipewire_fd()
-    if pwfd is None:
-        return
-    proc = None
-    try:
-        proc = subprocess.Popen(
-            _stream_argv(profile, pwfd, node),
-            stdout=subprocess.PIPE, stderr=subprocess.PIPE,
-            pass_fds=(pwfd,))
-    finally:
+    loop = _GLib.MainLoop()                                      # default context
+    state = {"pipeline": None, "webrtc": None, "pwfd": None,
+             "wlock": threading.Lock()}
+
+    def send(obj):
+        # webrtcbin fires offer/ICE on internal gst threads → serialize writes.
+        with state["wlock"]:
+            try:
+                conn.sendall((json.dumps(obj) + "\n").encode())
+            except OSError:
+                loop.quit()
+
+    def on_offer_created(promise, _elem, _u):
+        promise.wait()
+        reply = promise.get_reply()
+        offer = reply.get_value("offer") if reply else None
+        if offer is None:
+            return
+        state["webrtc"].emit("set-local-description", offer, Gst.Promise.new())
+        send({"t": "offer", "sdp": offer.sdp.as_text()})
+
+    def on_negotiation_needed(elem):
+        pr = Gst.Promise.new_with_change_func(on_offer_created, elem, None)
+        elem.emit("create-offer", None, pr)
+
+    def on_ice(_elem, mline, cand):
+        send({"t": "ice", "sdpMLineIndex": int(mline), "candidate": cand})
+
+    def build():                                                # on the loop thread
+        pwfd = _open_pipewire_fd()
+        if pwfd is None:
+            send({"t": "error", "error": "no pw fd"})
+            loop.quit()
+            return False
+        state["pwfd"] = pwfd
         try:
-            os.close(pwfd)                           # the child holds it now
-        except OSError:
-            pass
-    if proc is None:
-        return
-    nbytes = 0
+            pipeline = Gst.parse_launch(_webrtc_desc(profile, pwfd, node, Gst))
+            state["pipeline"] = pipeline
+            wb = pipeline.get_by_name("sendrecv")
+            state["webrtc"] = wb
+            try:
+                wb.set_property("stun-server", None)   # host candidates only (LAN)
+            except Exception:
+                pass
+            wb.connect("on-negotiation-needed", on_negotiation_needed)
+            wb.connect("on-ice-candidate", on_ice)
+
+            # Pump the pipeline bus: webrtcbin relies on its bus being serviced
+            # (without a watch the negotiation stalls / yields an empty offer,
+            # proven on hardware). Log errors; end the session on a fatal one.
+            def _on_bus(_b, m):
+                if m.type == Gst.MessageType.ERROR:
+                    err, dbg = m.parse_error()
+                    print("[portal] webrtc bus error: %s | %s"
+                          % (err.message, dbg), flush=True)
+                    loop.quit()
+            bus = pipeline.get_bus()
+            bus.add_signal_watch()
+            bus.connect("message", _on_bus)
+            state["bus"] = bus
+            pipeline.set_state(Gst.State.PLAYING)
+        except Exception:
+            send({"t": "error", "error": "pipeline failed"})
+            loop.quit()
+        return False
+
+    def do_answer(sdp):
+        _res, m = GstSdp.SDPMessage.new()
+        GstSdp.sdp_message_parse_buffer(sdp.encode(), m)
+        ans = GstWebRTC.WebRTCSessionDescription.new(
+            GstWebRTC.WebRTCSDPType.ANSWER, m)
+        state["webrtc"].emit("set-remote-description", ans, Gst.Promise.new())
+        return False
+
+    def do_ice(cand, mline):
+        state["webrtc"].emit("add-ice-candidate", mline, cand)
+        return False
+
+    lt = threading.Thread(target=loop.run, daemon=True)
+    lt.start()
+    _GLib.idle_add(build)
+
+    # Inbound signaling: read JSON lines on THIS thread, marshal to the loop.
+    buf = b""
     try:
         while True:
-            chunk = proc.stdout.read(65536)
+            chunk = conn.recv(65536)
             if not chunk:
-                break                                # gst ended
-            nbytes += len(chunk)
-            conn.sendall(chunk)                      # raises when the peer is gone
-    except OSError:
-        pass                                         # peer disconnected — normal
+                break
+            buf += chunk
+            while b"\n" in buf:
+                line, buf = buf.split(b"\n", 1)
+                if not line.strip():
+                    continue
+                try:
+                    msg = json.loads(line.decode("utf-8"))
+                except (ValueError, UnicodeDecodeError):
+                    continue
+                if not isinstance(msg, dict):
+                    continue
+                t = msg.get("t")
+                if t not in _ALLOWED_WEBRTC_IN:            # frozen inbound set (§3.2)
+                    continue
+                if t == "answer" and isinstance(msg.get("sdp"), str):
+                    _GLib.idle_add(do_answer, msg["sdp"])
+                elif t == "ice":
+                    cand, mline = msg.get("candidate"), msg.get("sdpMLineIndex", 0)
+                    if isinstance(cand, str) and isinstance(mline, int):
+                        _GLib.idle_add(do_ice, cand, mline)
+                elif t == "bye":
+                    raise _ByeSignal()
+    except (OSError, _ByeSignal):
+        pass
     finally:
-        try:
-            proc.stdout.close()
-        except OSError:
-            pass
-        proc.terminate()
-        try:
-            proc.wait(timeout=3)
-        except subprocess.TimeoutExpired:
-            proc.kill()
-        if nbytes == 0:
-            err = b""
+        loop.quit()
+        lt.join(timeout=3)
+        if state.get("bus") is not None:
             try:
-                err = proc.stderr.read() or b""
+                state["bus"].remove_signal_watch()
+            except Exception:
+                pass
+        if state["pipeline"] is not None:
+            state["pipeline"].set_state(Gst.State.NULL)   # REAP the encoder
+        if state["pwfd"] is not None:
+            try:
+                os.close(state["pwfd"])
             except OSError:
                 pass
-            print("[portal] stream: NO BYTES; gst stderr: %s"
-                  % err.decode("utf-8", "replace").strip()[:500], flush=True)
-        try:
-            proc.stderr.close()
-        except OSError:
-            pass
+        _WEBRTC_LOCK.release()
 
 
 # ------------------------------------------------------------------- serving
@@ -391,6 +832,13 @@ def peer_uid(conn):
         return uid
     except (OSError, struct.error, AttributeError):
         return None
+
+
+def _send_json(conn, obj):
+    try:
+        conn.sendall((json.dumps(obj) + "\n").encode())
+    except OSError:
+        pass
 
 
 def _read_line(conn, limit=65536):
@@ -431,6 +879,18 @@ def serve_one(conn):
                 return
             conn.settimeout(None)                    # long-lived stream
             stream(profile, conn)
+            return
+        # The webrtc verb switches this connection to a JSON SDP/ICE signaling
+        # channel (H.264 over webrtcbin); every other verb is one line in/out.
+        if isinstance(req, dict) and req.get("verb") == "webrtc":
+            profile = _h264_profile_arg(req.get("arg"))
+            if profile is None:
+                conn.sendall(json.dumps(
+                    {"ok": False, "error": "invalid argument for webrtc"}).encode()
+                    + b"\n")
+                return
+            conn.settimeout(None)                    # long-lived signaling
+            _webrtc_session(profile, conn)
             return
         reply = dispatch(req)
         conn.sendall(json.dumps(reply).encode() + b"\n")

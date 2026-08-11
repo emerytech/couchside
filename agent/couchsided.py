@@ -1582,7 +1582,8 @@ def set_caps(mock):
                  "screensaver", "couchmode", "bigpicture", "desktop",
                  "steamlink", "gaming", "steaminstall", "utilities",
                  "streamhost", "steammenus", "boxbattery", "file_upload",
-                 "session_default", "display_info", "player", "screenstream")}
+                 "session_default", "display_info", "player", "screenstream",
+                 "screenstream_h264")}
         return
     CAPS = {
         "gamepad": _uinput_writable(),
@@ -1620,6 +1621,10 @@ def set_caps(mock):
         # absent -> the still-frame poller + relative mouse (P1). A boot-time hint:
         # /ws/screen re-checks the portal live and degrades closed regardless.
         "screenstream": safe(screenstream_available),
+        # P4b: the module ALSO exposes a working H.264/WebRTC path (webrtcbin +
+        # libnice + a VA encoder). Linux-only, additive; absent -> the app uses
+        # MJPEG (caps.screenstream) then the poller. /ws/webrtc re-checks live.
+        "screenstream_h264": safe(screenstream_h264_available),
     }
 
 
@@ -4849,6 +4854,37 @@ def screenstream_available():
     safe() at the call site, so any failure reads as unavailable (§3.7)."""
     r = _portal_call("status", timeout=2)
     return bool(r and r.get("ok"))
+
+
+def screenstream_h264_available():
+    """True when the portal module reports a WORKING H.264/WebRTC path — which
+    means webrtcbin is actually functional (the libnice `nice` elements present),
+    NOT merely registered, plus a VA H.264 encoder. A boot-time hint for
+    caps.screenstream_h264; /ws/webrtc re-checks live and degrades closed. The
+    helper's `status` computes h264 honestly (see _h264_available there)."""
+    r = _portal_call("status", timeout=2)
+    return bool(r and r.get("ok") and r.get("h264"))
+
+
+def _portal_webrtc(profile, timeout=10):
+    """Open a WebRTC signaling connection to the helper: send the `webrtc` verb,
+    then the socket carries newline-delimited JSON SDP/ICE both ways until it is
+    closed (which makes the helper reap webrtcbin). Returns the socket, or None.
+    The agent NEVER parses the SDP — it relays opaque offer/answer/ice lines."""
+    s = _portal_connect(timeout)
+    if s is None:
+        return None
+    try:
+        s.sendall(json.dumps(
+            {"verb": "webrtc", "arg": {"profile": profile}}).encode("utf-8") + b"\n")
+        s.settimeout(None)
+        return s
+    except OSError:
+        try:
+            s.close()
+        except OSError:
+            pass
+        return None
 
 
 def _dm_write(dm, session_file):
@@ -15873,6 +15909,45 @@ _screen_stream_sema = threading.BoundedSemaphore(SCREEN_STREAM_MAX)
 _SCREEN_STREAM_PROFILES = frozenset(("540p25", "720p20", "1080p15"))
 _SCREEN_STREAM_DEFAULT = "720p20"
 
+# --- P4b: H.264/WebRTC signaling relay (/ws/webrtc) -------------------------
+# Only ONE WebRTC session at a time: webrtcbin + a hardware H.264 encoder is far
+# heavier than the MJPEG path, and the helper itself caps at one. Over the cap a
+# new /ws/webrtc is refused (the app auto-falls back to MJPEG then the poller).
+WEBRTC_MAX = 1
+_webrtc_sema = threading.BoundedSemaphore(WEBRTC_MAX)
+# Profile ids the client may request on /ws/webrtc (?profile=). Closed set,
+# looked up never interpolated; the helper owns the pipeline and re-validates.
+# Must mirror the helper's _H264_PROFILES.
+_WEBRTC_PROFILES = frozenset(("720p30", "720p60", "1080p30", "1080p60"))
+_WEBRTC_DEFAULT = "720p60"
+# The agent is a DUMB relay: it forwards only these message TYPES and, per type,
+# only the known fields (never arbitrary client JSON). The opaque SDP/ICE strings
+# ride inside; the agent never parses them (they go to webrtcbin/libnice, a
+# parser like json.loads — never an argv/shell/path, §3). app->box is untrusted.
+_WEBRTC_APP_MSG = frozenset(("answer", "ice", "bye"))          # app -> box
+_WEBRTC_BOX_MSG = frozenset(("offer", "ice", "error", "bye"))  # box -> app
+_WEBRTC_MAX_MSG = 64 * 1024        # an SDP is a few KB; cap generously, reject over
+
+
+def _webrtc_app_msg(msg):
+    """Validate one app->box signaling message and return the EXACT dict to
+    forward to the helper (known fields only), or None to drop it. This is the
+    allowlist boundary for the untrusted direction (§3.2/§3.6)."""
+    if not isinstance(msg, dict):
+        return None
+    t = msg.get("t")
+    if t not in _WEBRTC_APP_MSG:
+        return None
+    if t == "answer":
+        sdp = msg.get("sdp")
+        return {"t": "answer", "sdp": sdp} if isinstance(sdp, str) else None
+    if t == "ice":
+        cand, mline = msg.get("candidate"), msg.get("sdpMLineIndex", 0)
+        if isinstance(cand, str) and isinstance(mline, int):
+            return {"t": "ice", "candidate": cand, "sdpMLineIndex": mline}
+        return None
+    return {"t": "bye"}                                         # t == "bye"
+
 
 def _wsend_json(entry, obj):
     """Send one JSON text frame to a session, serialised per-socket. Never raises."""
@@ -16861,6 +16936,13 @@ class Handler(BaseHTTPRequestHandler):
                 # check + handshake, so it must not sit behind the JSON auth gate
                 # (a JSON 401 body onto an upgrading socket would be garbage).
                 self._handle_screen_ws(parsed, started)
+                return
+
+            if path == "/ws/webrtc":
+                # P4b: same pre-auth-zone rationale as /ws/screen. The handler
+                # self-auths (?token=), then relays opaque SDP/ICE to the portal
+                # helper's webrtcbin. Absent module / no H.264 -> degrades closed.
+                self._handle_webrtc_ws(parsed, started)
                 return
 
             if path == "/pair":
@@ -18753,6 +18835,12 @@ class Handler(BaseHTTPRequestHandler):
                 except OSError:
                     pass
                 return
+            # An abruptly-backgrounded phone leaves its socket half-dead: sends
+            # stop draining but never error, so a bare sendall blocks FOREVER —
+            # a zombie thread holding one of the two stream slots (two zombies
+            # = every reopen refused). With a timeout the zombie dies in ≤20s
+            # (normal sends are <1s), releasing the slot + reaping the stream.
+            conn.settimeout(20)
             self._screen_pump(conn, portal_sock)
         finally:
             if portal_sock is not None:
@@ -18764,21 +18852,34 @@ class Handler(BaseHTTPRequestHandler):
 
     def _screen_pump(self, conn, portal_sock):
         """Read the helper's MJPEG byte stream, split whole JPEGs (FFD8..FFD9),
-        send each as ONE binary WS frame. This is the ONLY writer of `conn`, so no
-        slock is needed. Backpressure is handled at the SOURCE: a slow phone
-        blocks this send, which stops draining the helper, which makes the
-        helper's gst `queue leaky=downstream` drop old frames — so the phone falls
-        behind rather than accumulating latency. A send failure = phone gone."""
+        send NEWEST-ONLY to `conn`: before each send, drain everything the helper
+        has ready and keep only the LATEST complete JPEG, dropping older ones.
+        This is the ONLY writer of `conn`, so no slock is needed. A send failure =
+        phone gone.
+
+        WHY NEWEST-ONLY: hardware jpeg (vajpegenc) produces frames faster than a
+        phone can base64-decode + <Image>-render on high motion. Sending EVERY
+        frame lets a backlog build in transit (seconds of lag when a window opens
+        — observed). Dropping to the freshest frame each send-cycle bounds
+        end-to-end latency to ~one frame: the phone gets fewer, CURRENT frames
+        instead of a growing pile of stale ones. Frames produced during the
+        (blocking) send land in the OS recv buffer and are dropped-but-newest on
+        the next cycle; a truly slow phone also backpressures gst at the source."""
         buf = bytearray()
-        portal_sock.settimeout(30)
-        while True:
-            try:
-                chunk = portal_sock.recv(65536)
-            except OSError:
-                break
-            if not chunk:
-                break                                # helper/gst ended
-            buf += chunk
+
+        def _drain_newest(first):
+            # Append `first` + any immediately-available bytes; return the LATEST
+            # complete JPEG in the buffer (older complete frames are discarded).
+            buf.extend(first)
+            while select.select([portal_sock], [], [], 0)[0]:
+                try:
+                    more = portal_sock.recv(262144)
+                except OSError:
+                    more = b""
+                if not more:
+                    break
+                buf.extend(more)
+            newest = None
             while True:
                 soi = buf.find(b"\xff\xd8")
                 if soi < 0:
@@ -18790,12 +18891,174 @@ class Handler(BaseHTTPRequestHandler):
                 eoi = buf.find(b"\xff\xd9", 2)
                 if eoi < 0:
                     break                            # partial frame; wait for more
-                jpg = bytes(buf[:eoi + 2])
+                newest = bytes(buf[:eoi + 2])        # keep the last complete JPEG
                 del buf[:eoi + 2]
+            return newest
+
+        portal_sock.settimeout(30)
+        while True:
+            try:
+                chunk = portal_sock.recv(65536)
+            except OSError:
+                break
+            if not chunk:
+                break                                # helper/gst ended
+            jpg = _drain_newest(chunk)
+            if jpg is None:
+                continue                             # only a partial frame so far
+            try:
+                ws_send(conn, WS_OP_BINARY, jpg)     # blocking; gst buffers meanwhile
+            except OSError:
+                return                               # phone disconnected
+
+    # -- H.264/WebRTC signaling websocket (P4b, opt-in portal module) ----------
+
+    def _handle_webrtc_ws(self, parsed, started):
+        """WebRTC SDP/ICE signaling relay. Mirrors the gamepad/screen WS handshake
+        verbatim (same ?token= auth), then relays OPAQUE JSON between the app and
+        the portal helper's webrtcbin. A box without the module (or without a
+        working H.264 path) degrades closed: the socket opens then closes and the
+        app falls back to MJPEG, then the still-frame poller."""
+        self.close_connection = True
+        qs = parse_qs(parsed.query)
+        supplied = qs.get("token", [""])[0]
+        if not supplied or not hmac.compare_digest(supplied, self.token):
+            self._send(401, {"error": "unauthorized"}, started,
+                       extra_headers={"Connection": "close"})
+            return
+        key = self.headers.get("Sec-WebSocket-Key", "")
+        upgrade = (self.headers.get("Upgrade") or "").lower()
+        if upgrade != "websocket" or not key:
+            self._send(400, {"error": "websocket upgrade required"}, started,
+                       extra_headers={"Connection": "close"})
+            return
+        accept = base64.b64encode(
+            hashlib.sha1((key + WS_GUID).encode("ascii")).digest()).decode("ascii")
+        try:
+            self.connection.sendall(
+                b"HTTP/1.1 101 Switching Protocols\r\n"
+                b"Upgrade: websocket\r\n"
+                b"Connection: Upgrade\r\n"
+                b"Sec-WebSocket-Accept: " + accept.encode("ascii") + b"\r\n\r\n")
+        except OSError:
+            return
+        self._log(101, started)
+        profile = qs.get("profile", [_WEBRTC_DEFAULT])[0]
+        if profile not in _WEBRTC_PROFILES:            # closed set, never interpolated
+            profile = _WEBRTC_DEFAULT
+        try:
+            self._webrtc_relay_session(profile)
+        except Exception as e:
+            print("[webrtc] session error: %s: %s"
+                  % (e.__class__.__name__, e), flush=True)
+
+    def _webrtc_relay_session(self, profile):
+        """One WebRTC session: consent opens the shared portal session, then relay
+        SDP/ICE both ways between the app WS and the helper `webrtc` socket. The
+        agent is a DUMB relay (never parses SDP); it forwards only allowlisted
+        message types + known fields. Capped at one; degrade closed; reap on exit
+        (closing the helper socket makes the helper tear down webrtcbin)."""
+        conn = self.connection
+        if not _webrtc_sema.acquire(blocking=False):
+            try:
+                ws_send(conn, WS_OP_CLOSE)             # over cap -> app falls back
+            except OSError:
+                pass
+            return
+        hsock = None
+        pump_thread = None
+        wlock = threading.Lock()                       # 2 threads write conn -> lock
+        try:
+            # ensure = create the session + block on the box's consent dialog.
+            res = _portal_call("ensure", timeout=170)
+            if not res or not res.get("ok"):
                 try:
-                    ws_send(conn, WS_OP_BINARY, jpg)
+                    ws_send(conn, WS_OP_CLOSE)
                 except OSError:
-                    return                           # phone disconnected
+                    pass
+                return
+            hsock = _portal_webrtc(profile)
+            if hsock is None:
+                try:
+                    ws_send(conn, WS_OP_CLOSE)
+                except OSError:
+                    pass
+                return
+
+            def pump_box_to_app():
+                """Helper -> app: forward only allowlisted box message types."""
+                hbuf = b""
+                try:
+                    while True:
+                        chunk = hsock.recv(65536)
+                        if not chunk:
+                            break
+                        hbuf += chunk
+                        while b"\n" in hbuf:
+                            line, hbuf = hbuf.split(b"\n", 1)
+                            if not line.strip():
+                                continue
+                            try:
+                                m = json.loads(line.decode("utf-8"))
+                            except (ValueError, UnicodeDecodeError):
+                                continue
+                            if not isinstance(m, dict) or \
+                                    m.get("t") not in _WEBRTC_BOX_MSG:
+                                continue
+                            try:
+                                with wlock:
+                                    ws_send_json(conn, m)
+                            except OSError:
+                                return
+                except OSError:
+                    pass
+                finally:
+                    try:
+                        conn.shutdown(socket.SHUT_RDWR)   # unblock the app read loop
+                    except OSError:
+                        pass
+
+            pump_thread = threading.Thread(target=pump_box_to_app, daemon=True)
+            pump_thread.start()
+
+            # App -> helper (this thread). Untrusted direction: strict allowlist.
+            buf = bytearray()
+            while True:
+                frame = ws_recv_frame(conn, buf)
+                if frame is None:
+                    break
+                opcode, payload = frame
+                if opcode == WS_OP_CLOSE:
+                    break
+                if opcode == WS_OP_PING:
+                    try:
+                        with wlock:
+                            ws_send(conn, WS_OP_PONG, payload)
+                    except OSError:
+                        break
+                    continue
+                if opcode != WS_OP_TEXT or len(payload) > _WEBRTC_MAX_MSG:
+                    continue
+                try:
+                    msg = json.loads(payload.decode("utf-8"))
+                except (ValueError, UnicodeDecodeError):
+                    continue
+                out = _webrtc_app_msg(msg)
+                if out is None:
+                    continue
+                try:
+                    hsock.sendall(json.dumps(out).encode("utf-8") + b"\n")
+                except OSError:
+                    break
+        finally:
+            if hsock is not None:
+                try:
+                    hsock.close()                      # closing -> helper reaps
+                except OSError:
+                    pass
+            if pump_thread is not None:
+                pump_thread.join(timeout=2)
+            _webrtc_sema.release()
 
     def _gamepad_session(self):
         global GAMEPAD_HOLDER

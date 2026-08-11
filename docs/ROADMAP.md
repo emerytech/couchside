@@ -186,7 +186,8 @@ Entry fields: `priority` (P0 blocker → P3 nice) · `risk` · `affects` · `dep
   "Control input devices"). So **P2 (absolute input) + P4a (fluid capture) are ONE opt-in portal module.** The
   portal driver needs `gi`/`Gio` (third-party) → lives in a session-scoped helper (user, not root); the agent
   stays pure-stdlib. Consent is per-session on this box's (older) KDE (no persist checkbox); newer KDE persists.
-  Full unified spec: **`docs/memory/project_remote-desktop.md`**. gamescope Game Mode is OUT (no portal desktop).
+  Full unified spec: **`docs/memory/project_remote-desktop.md`**. gamescope Game Mode is OUT *for the portal path* —
+  BUT hardware-probed 2026-08-11 and menu-nav is DOABLE via a DIFFERENT stack (see the game-mode sub-entry below).
 - **Phased plan:**
   - **P1 (low, app-only, ship-now): Fullscreen control mode.** Screen frame as a live background +
     a RemoteView-style trackpad + button overlay + `immersive.ts` chrome-hide + landscape. Reuses the
@@ -222,18 +223,29 @@ Entry fields: `priority` (P0 blocker → P3 nice) · `risk` · `affects` · `dep
         native H264 player) into EVERY app build (bloat + iOS build surface) even for non-users.
     - gamescope continuous capture still unproven (gamescopectl is one-shot); may be desktop-session-only.
       New stream endpoint = a new "video of your screen" data flow → security pass (token-authed, LAN-only).
-- **Next step (updated 2026-08-10):** P1 SHIPPED (#433). Portal cursor + capture PROVEN; spec rewritten around
-  the portal (P2+P4a unified). **Build not started — it is now mechanical plumbing over mapped anchors:**
-  (1) `couchside-portal` helper (session mgmt + absolute-input verbs + gstreamer capture, runs as user);
-  (2) agent `/ws/screen` (mirrors `/ws/gamepad`) + additive `{t:'ma',x,y}` + `screenstream` cap (six sites);
-  (3) app `lib/screenstream.ts` MJPEG consumer + absolute-tap overlay on `app/app/desktop.tsx`;
-  (4) signed-channel install (deps + user unit) + uninstall. Capture = **gstreamer** (box ffmpeg lacks
-  pipewiregrab). `project_screenstream-module.md` is SUPERSEDED (transport detail only). Older P4b (H264 →
-  `react-native-webrtc` app-wide) stays deferred.
-  <!-- legacy note (kept per §7): P4a was earlier spec'd standalone in project_screenstream-module.md as
-  opt-in MJPEG: KDE-desktop PipeWire/wlr capture → ffmpeg MJPEG → /ws/screen, caps.screenstream gating,
-  `<Image>` decode = no app native dep; gamescope Game Mode out of scope. -->
-  Note: input isn't the bottleneck — video is.
+- **STATUS 2026-08-11 (marathon): P4a MJPEG remote-desktop SHIPPED (MERGED #435) + a big polish/keyboard/latency
+  pass ON PR #436 (branch `claude/remote-desktop-p4b-h264`, ~26 commits, pushed, NOT merged).** Desktop-mode MJPEG
+  control is now GOOD (owner "working great"). Done this pass: persistent per-session encoder (killed the stale/
+  black/laggy-reopen bug) + newest-only pump/decode + 20s zombie-socket timeout (latency solved); idle-TTL teardown;
+  CONTROL button gated to desktop mode; poller fallback (no infinite "Approve…" spin); precise ring+dot cursor;
+  landscape fullscreen "Remote Desktop" surface + double-tap window-drag; a FULL KEYBOARD (portrait iOS system kbd +
+  a landscape custom translucent floating QWERTY, both via the uinput `{t:'kt'}/{t:'k'}` path — portal keyboard
+  probed + REJECTED as dead on this kwin); install.sh refreshes the opt-in helper on agent update; Console SCREEN
+  card moved up + hold-to-edit reorder/hide ([[console-hold-to-edit-cards]]). **Full detail: auto-memory
+  [[remote-desktop-and-screen-capture]].** BEFORE MERGE: strip the TEMP `[screenstat]` latency instrumentation.
+- **P4b (H.264/WebRTC) = SHELVED:** box side (B1 helper webrtc + A0 agent /ws/webrtc relay + caps.screenstream_h264)
+  all PROVEN, BUT `react-native-webrtc@124` is INCOMPATIBLE with RN 0.86 (RTCView crash + 14s setRemoteDescription
+  → the tier is `WEBRTC_TIER_ENABLED=false`). Re-enable when the lib supports RN 0.86.
+- **📋 SUB-ENTRY — Game-mode (gamescope) MENU navigation (owner ask 2026-08-11; PROVEN doable, NOT built).** Owner
+  narrowed scope to "just menu nav, not control while a game runs." Hardware-probed on lenovodesktop (gamescope
+  1.4.10): **VIEW already works** — the agent's existing gamescopectl still-frame reads the real scanout buffer, so
+  Big-Picture menus come through non-black (~1.4fps, fine for menus). **INPUT proven** — xdotool on gamescope's
+  Xwayland `:0` moved the pointer to exact coords (routes XTEST→gamescope EIS→wlserver); libei socket present. Portal
+  is dead in game mode (irrelevant here). The fluid pipewire node (`node.name=gamescope`, ~75fps) is BLACK for
+  fullscreen apps (direct-scanout) — needs `--force-composition`; NOT needed for menu nav. **Build (small, ~1–2
+  sessions):** un-gate the CONTROL button in game mode (or a game-mode variant); view = existing still-frame; input =
+  a new allowlisted agent verb driving xdotool/libei on `:0` OR reuse the uinput gamepad for D-pad+A. **Owner UX pref:
+  game mode defaults to TOUCH (tap-to-point), Mouse as a toggle.** Detail in [[remote-desktop-and-screen-capture]].
 
 ## 📋 Planned
 

@@ -580,6 +580,17 @@ case "${COUCHSIDE_PLAYER:-ask}" in
        fi ;;
 esac
 
+# Opt-in remote-desktop module (couchside-portal.py): REFRESH its helper when
+# an agent update runs, but ONLY on a box that already installed it — the base
+# install NEVER opts a box in here (that stays scripts/portal-module.sh / the
+# app's setup). This carries the module's own fixes to boxes that chose it,
+# instead of stranding them on the helper version they first installed. PRESERVE,
+# never opt in: presence of the installed helper is the whole gate.
+REFRESH_PORTAL=0
+if [ -f "$INSTALL_DIR/couchside-portal.py" ]; then
+    REFRESH_PORTAL=1
+fi
+
 SCRIPT_DIR=""
 if [ -n "${BASH_SOURCE[0]:-}" ] && [ -f "${BASH_SOURCE[0]:-}" ]; then
     SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -598,6 +609,12 @@ if [ -n "$SCRIPT_DIR" ] && [ -f "$SCRIPT_DIR/agent/couchsided.py" ]; then
     for f in couchside-helper.py couchside-helper.socket couchside-helper.service; do
         [ -f "$SCRIPT_DIR/agent/$f" ] && cp "$SCRIPT_DIR/agent/$f" "$WORK_DIR/$f"
     done
+    # Remote-desktop module helper + unit — ONLY when already installed (refresh).
+    if [ "$REFRESH_PORTAL" = 1 ]; then
+        for f in couchside-portal.py couchside-portal.service; do
+            [ -f "$SCRIPT_DIR/agent/$f" ] && cp "$SCRIPT_DIR/agent/$f" "$WORK_DIR/$f"
+        done
+    fi
     # Optional Couchside Player tile + its branded art, only when wanted.
     if [ "$WANT_PLAYER" = 1 ]; then
         [ -f "$SCRIPT_DIR/agent/couchside-player.sh" ] && \
@@ -642,6 +659,16 @@ else
         rm -f "$WORK_DIR/couchside-helper.py" \
               "$WORK_DIR/couchside-helper.socket" \
               "$WORK_DIR/couchside-helper.service"
+    fi
+    # Remote-desktop module helper + unit — fetched ONLY to refresh a box that
+    # already installed it. Signed like the privileged helper (gated below); a
+    # partial fetch drops the pair so a stale unit never points at a missing file.
+    if [ "$REFRESH_PORTAL" = 1 ]; then
+        curl -fsSL "${AGENT_BASE}/couchside-portal.py" -o "$WORK_DIR/couchside-portal.py" 2>/dev/null || true
+        curl -fsSL "${AGENT_BASE}/couchside-portal.service" -o "$WORK_DIR/couchside-portal.service" 2>/dev/null || true
+        if [ ! -s "$WORK_DIR/couchside-portal.py" ] || [ ! -s "$WORK_DIR/couchside-portal.service" ]; then
+            rm -f "$WORK_DIR/couchside-portal.py" "$WORK_DIR/couchside-portal.service"
+        fi
     fi
     # Optional Couchside Player tile + art, same policy. The tile is CODE, so it
     # goes through the same signature + checksum gate as everything else below;
@@ -731,6 +758,23 @@ if [ -f "$WORK_DIR/couchside-helper.py" ]; then
     python3 -m py_compile "$WORK_DIR/couchside-helper.py" \
         || die "downloaded couchside-helper.py does not compile, aborting."
 fi
+# The remote-desktop module helper gets the SAME strict rule: present-but-not in
+# the signed manifest means DON'T refresh it (leave the working one in place),
+# never install unverified. A local checkout skips the crypto, same as the agent.
+if [ -f "$WORK_DIR/couchside-portal.py" ]; then
+    if [ -f "$WORK_DIR/SHA256SUMS" ] && \
+       ! grep -qF ' couchside-portal.py' "$WORK_DIR/SHA256SUMS"; then
+        note "remote-desktop module not in the signed manifest; keeping the installed helper."
+        rm -f "$WORK_DIR"/couchside-portal.py "$WORK_DIR"/couchside-portal.service
+    elif [ ! -f "$WORK_DIR/SHA256SUMS" ] && [ -z "$SCRIPT_DIR" ]; then
+        note "remote-desktop module present but no signed manifest; keeping the installed helper."
+        rm -f "$WORK_DIR"/couchside-portal.py "$WORK_DIR"/couchside-portal.service
+    fi
+fi
+if [ -f "$WORK_DIR/couchside-portal.py" ]; then
+    python3 -m py_compile "$WORK_DIR/couchside-portal.py" \
+        || die "downloaded couchside-portal.py does not compile, aborting."
+fi
 # Secondary sanity gate: even a correctly-signed file must actually parse (a
 # git-checkout install skips the crypto above, and this catches a bad local
 # tree too). py_compile also rejects a truncated read or an HTML error page.
@@ -747,6 +791,30 @@ fi
 say "Installing daemon to $INSTALL_DIR"
 mkdir -p "$INSTALL_DIR"
 install -m 0755 "$WORK_DIR/couchsided.py" "$INSTALL_DIR/couchsided.py"
+# Refresh the opt-in remote-desktop module helper (only reached when the box
+# already had it — REFRESH_PORTAL, and only if it survived the signed-manifest
+# gate above). Same install dir + __PORTAL__ unit substitution scripts/
+# portal-module.sh uses. The base install NEVER lands this file.
+if [ -f "$WORK_DIR/couchside-portal.py" ]; then
+    install -m 0755 "$WORK_DIR/couchside-portal.py" "$INSTALL_DIR/couchside-portal.py"
+    if [ -f "$WORK_DIR/couchside-portal.service" ]; then
+        mkdir -p "$HOME/.config/systemd/user"
+        sed "s#__PORTAL__#$INSTALL_DIR/couchside-portal.py#g" \
+            "$WORK_DIR/couchside-portal.service" > "$HOME/.config/systemd/user/couchside-portal.service"
+    fi
+    # Best-effort restart so the fix takes effect now. It is a USER unit; an
+    # update fired from the headless service context may have no reachable user
+    # systemd instance — then the new file simply loads on the next graphical
+    # login instead (the running old helper keeps serving until then). Never
+    # fatal: the file is already in place.
+    _cs_xrd="${XDG_RUNTIME_DIR:-/run/user/$(id -u)}"
+    if XDG_RUNTIME_DIR="$_cs_xrd" systemctl --user daemon-reload 2>/dev/null \
+       && XDG_RUNTIME_DIR="$_cs_xrd" systemctl --user restart couchside-portal.service 2>/dev/null; then
+        note "remote-desktop module refreshed + restarted."
+    else
+        note "remote-desktop module file refreshed; restart deferred to next login."
+    fi
+fi
 # OpenPuck firmware (optional OFFLINE seed): install ONLY if the fetched .uf2
 # matches the sha256 PINNED in this installer. It comes straight from the fork, not
 # via the signed manifest, so this pin is its integrity gate — fail closed: no

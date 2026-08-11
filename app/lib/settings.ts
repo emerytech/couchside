@@ -297,12 +297,15 @@ function normalizeCaps(raw: unknown): BoxCaps | undefined {
   // capsEqual) and the cap never persists, so the desktop view can never latch onto
   // the fluid stream and re-probes forever.
   const screenstream = bool('screenstream');
+  // P4b: same module, its H.264/WebRTC tier. Same optional-cap drop trap — it MUST
+  // appear in the RETURN object below or it never persists and the app re-probes.
+  const screenstream_h264 = bool('screenstream_h264');
   return {
     gamepad, steam, media, tv, screen, power_schedule,
     screensaver, couchmode, bigpicture, desktop, steamlink, gaming, streamhost,
     steammenus,
     boxbattery, launchers, file_upload, session_default, display_info, player,
-    steaminstall, utilities, screenstream,
+    steaminstall, utilities, screenstream, screenstream_h264,
   };
 }
 

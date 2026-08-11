@@ -32,15 +32,20 @@ import { Stack, router } from 'expo-router';
 import { useCallback, useEffect, useRef, useState } from 'react';
 import {
   ActivityIndicator, Image, Pressable, StyleSheet, Text, View,
-  type GestureResponderEvent,
+  useWindowDimensions, type GestureResponderEvent,
 } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
+import { DesktopFullscreen } from '@/components/DesktopFullscreen';
+import { useDesktopKeyboard } from '@/components/DesktopKeyboard';
+import { ScreenVideo } from '@/components/ScreenVideo';
 import { useLockOrientation } from '@/hooks/useLockOrientation';
 import { useScreenFrame } from '@/hooks/useScreenFrame';
 import { useScreenStream } from '@/hooks/useScreenStream';
+import { useWebRtcStream } from '@/hooks/useWebRtcStream';
 import { useTrackpad } from '@/hooks/useTrackpad';
 import { GamepadClient, type GamepadStatus } from '@/lib/gamepad';
+import { webrtcSupported } from '@/lib/webrtcstream';
 import { hapticLight, hapticMedium } from '@/lib/haptics';
 import { setImmersive } from '@/lib/immersive';
 import { useSettings } from '@/lib/SettingsContext';
@@ -49,21 +54,77 @@ import { useTheme, useThemedStyles, type Palette } from '@/lib/theme';
 const FRAME_MS = 700;
 const DEVICE_LABEL = 'Couchside Desktop';
 
+// The H.264/WebRTC tier is DISABLED: react-native-webrtc@124 is incompatible with
+// React Native 0.86's new architecture — RTCView crashes on render and
+// setRemoteDescription takes 10+ seconds before the peer connection aborts
+// (diagnosed on-device 2026-08-10). Until a react-native-webrtc release supports
+// RN 0.86, the app uses the MJPEG stream (caps.screenstream) + the still-frame
+// poller. Flip to true to re-enable once the native dep catches up.
+const WEBRTC_TIER_ENABLED = false;
+
 export default function DesktopControlScreen() {
-  useLockOrientation('portrait'); // laptop layout; only the Pad may allow landscape
+  // Portrait = the laptop layout; landscape = the fullscreen "Remote Desktop"
+  // surface (the whole screen is the touch input). Rotate freely between them.
+  useLockOrientation('allow-landscape');
+  const { width, height } = useWindowDimensions();
+  const landscape = width > height;
   const t = useTheme();
   const styles = useThemedStyles(makeStyles);
   const insets = useSafeAreaInsets();
   const { settings, ready } = useSettings();
   const configured = settings.host.trim().length > 0;
-  // FLUID when the opt-in portal module is present (caps.screenstream): the
-  // /ws/screen MJPEG stream + tap-to-point. Otherwise the P1 still-frame poller +
-  // relative trackpad. Both hooks run (hooks rules); only the active one connects.
-  const streamMode = settings.caps?.screenstream === true;
+  // THREE tiers, best-first (all hooks run — hooks rules — only the active one
+  // connects):
+  //   1. WebRTC H.264 (fluid, 30–60fps): app built WITH react-native-webrtc AND
+  //      the box advertising a WORKING H.264 path (caps.screenstream_h264). On a
+  //      hard failure we demote to tier 2 for the rest of the session.
+  //   2. MJPEG /ws/screen (fluid, ~15fps): caps.screenstream. Also what every
+  //      in-the-wild app (no WebRTC) gets.
+  //   3. P1 still-frame poller (~1.4fps): always available.
+  // Tiers 1 & 2 both get tap-to-point (the portal's absolute pointer).
+  const [webrtcGaveUp, setWebrtcGaveUp] = useState(false);
+  const webrtcMode =
+    WEBRTC_TIER_ENABLED && webrtcSupported
+    && settings.caps?.screenstream_h264 === true && !webrtcGaveUp;
+  const streamMode = !webrtcMode && settings.caps?.screenstream === true;
+  const fluidMode = webrtcMode || streamMode;
   const live = ready && configured;
-  const poll = useScreenFrame(settings, live && !streamMode, FRAME_MS);
   const streamed = useScreenStream(settings, live && streamMode);
-  const { frame, failed } = streamMode ? streamed : poll;
+  const webrtc = useWebRtcStream(settings, live && webrtcMode);
+  // Still-frame poller. Runs when there is no fluid tier — AND as a STOPGAP VIEW
+  // while a selected fluid tier has not produced its first frame yet. That gap
+  // is not rare: an app background can leave the box's previous gst still on the
+  // shared portal capture when the reopened stream starts, so the new /ws/screen
+  // is OPEN but silent (0 frames) — which used to spin "Approve…" forever with
+  // no escape. The poller captures via spectacle/gamescopectl (NOT the portal),
+  // so it shows the desktop even when the portal session is wedged, and it gates
+  // OFF the instant the fluid tier delivers a frame (reopening retries fluid).
+  const fluidHasFrame = (webrtcMode && webrtc.streamURL != null)
+    || (streamMode && streamed.frame != null);
+  const poll = useScreenFrame(settings, live && (!fluidMode || !fluidHasFrame), FRAME_MS);
+
+  // Auto-fallback: a hard WebRTC failure (negotiation/timeout) demotes to MJPEG
+  // for the rest of this screen. One-way — we do not re-try WebRTC (that re-pops
+  // the box's consent); reopening the desktop starts fresh.
+  useEffect(() => {
+    if (webrtcMode && webrtc.failed) setWebrtcGaveUp(true);
+  }, [webrtcMode, webrtc.failed]);
+
+  const streamURL = webrtcMode ? webrtc.streamURL : null;
+  // The <Image> frame (tiers 2/3). Prefer the fluid stream frame; fall back to
+  // the poller frame during the first-frame gap / a wedged portal session. In
+  // WebRTC mode a "failure" means we are demoting, not that the screen is
+  // unavailable, so don't surface it as such.
+  const frame = webrtcMode ? null
+    : streamMode ? (streamed.frame ?? poll.frame)
+    : poll.frame;
+  // "failed" only when we have NO visual path left — the fluid stream failed AND
+  // the poller fallback also failed. A silent/wedged stream with a working
+  // poller is NOT a failure (the desktop is still on screen).
+  const failed = webrtcMode ? false
+    : streamMode ? (streamed.failed && poll.failed)
+    : poll.failed;
+  const hasVisual = streamURL != null || frame != null;
 
   const clientRef = useRef<GamepadClient | null>(null);
   if (clientRef.current == null) clientRef.current = new GamepadClient();
@@ -71,13 +132,20 @@ export default function DesktopControlScreen() {
   const [status, setStatus] = useState<GamepadStatus>('connecting');
   const connectedOnce = useRef(false);
 
+  // Phone keyboard -> box (existing {t:'kt'}/{t:'k'} uinput path). The box's
+  // own {t:'osk'} event (Steam raised a text field) auto-raises it.
+  const [oskSignal, setOskSignal] = useState(0);
+  const kb = useDesktopKeyboard(client, { autoOpenSignal: oskSignal, landscape });
+
   // Lifecycle: immersive + status subscription + teardown. Runs for the life of
   // the screen regardless of when (or whether) the box is reachable.
   useEffect(() => {
     setImmersive(true);
     client.onStatus((s) => setStatus(s));
+    client.onOsk(() => setOskSignal((n) => n + 1));
     return () => {
       client.onStatus(null);
+      client.onOsk(null);
       // Release the MOUSE buttons explicitly before closing: releaseAll() covers
       // the pad (buttons/sticks) but NOT the pointer (see GamepadClient), and an
       // unmount mid double-tap-drag fires no onDragEnd — a left button left down
@@ -139,26 +207,52 @@ export default function DesktopControlScreen() {
 
   const exit = useCallback(() => { hapticMedium(); router.back(); }, []);
 
+  // LANDSCAPE: the fullscreen "Remote Desktop" surface — the whole screen is the
+  // touch input (Mouse trackpad + local cursor, or direct Touch). Absolute input
+  // (the local cursor lock) needs the portal, i.e. a fluid tier.
+  if (landscape) {
+    return (
+      <>
+        <Stack.Screen options={{ headerShown: false, gestureEnabled: false, fullScreenGestureEnabled: false }} />
+        <DesktopFullscreen
+          client={client}
+          streamURL={streamURL}
+          frame={frame}
+          status={status}
+          failed={failed}
+          configured={configured}
+          absoluteInput={fluidMode}
+          onExit={exit}
+          keyboard={kb}
+        />
+      </>
+    );
+  }
+
   return (
     <View style={[styles.root, { paddingTop: insets.top }]}>
-      <Stack.Screen options={{ headerShown: false }} />
+      <Stack.Screen options={{ headerShown: false, gestureEnabled: false, fullScreenGestureEnabled: false }} />
       {/* SCREEN (top): the live desktop frame */}
       <View style={styles.stage}>
-        {frame ? (
+        {streamURL ? (
+          // Tier 1: native H.264 video (hardware decode).
+          <ScreenVideo streamURL={streamURL} style={StyleSheet.absoluteFill} />
+        ) : frame ? (
+          // Tier 2/3: MJPEG stream / still-frame poller, as a base64 <Image>.
           <Image source={{ uri: frame }} style={StyleSheet.absoluteFill} resizeMode="contain" />
         ) : (
           <View style={[StyleSheet.absoluteFill, styles.center]}>
             <ActivityIndicator color={t.textDim} />
             <Text style={styles.dim}>
               {!configured ? 'Connect a box first.'
-                : streamMode ? 'Approve remote control on your box…'
+                : fluidMode ? 'Approve remote control on your box…'
                 : 'Waiting for the screen…'}
             </Text>
           </View>
         )}
-        {/* Tap-to-point overlay (fluid mode only): tapping the frame moves the
+        {/* Tap-to-point overlay (fluid tiers only): tapping the frame moves the
             real cursor there and clicks, via the portal's absolute pointer. */}
-        {streamMode && frame && (
+        {fluidMode && hasVisual && (
           <Pressable
             style={StyleSheet.absoluteFill}
             onLayout={(e) => {
@@ -185,7 +279,7 @@ export default function DesktopControlScreen() {
       <View style={styles.trackpad} {...pad.panHandlers} accessibilityLabel="Desktop trackpad">
         <Ionicons name="move-outline" size={22} color={t.textFaint} />
         <Text style={styles.trackpadHint}>
-          {streamMode
+          {fluidMode
             ? 'tap the screen to point · drag here to move · two-finger scroll'
             : 'drag to move · tap to click · two-finger scroll'}
         </Text>
@@ -197,9 +291,11 @@ export default function DesktopControlScreen() {
         <BarBtn t={t} styles={styles} icon="ellipsis-horizontal" label="Right" onPress={rightClick} />
         <BarBtn t={t} styles={styles} icon="apps" label="Start"
           onPress={() => { hapticLight(); client.sendDesktopKey('meta'); }} />
+        <BarBtn t={t} styles={styles} icon="keypad-outline" label="Keys" onPress={kb.toggle} />
         <BarBtn t={t} styles={styles} icon="arrow-undo" label="Esc"
           onPress={() => { hapticLight(); client.sendKey('esc'); }} />
       </View>
+      {kb.bar}
     </View>
   );
 }
