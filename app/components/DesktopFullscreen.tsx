@@ -214,12 +214,15 @@ export function DesktopFullscreen({
       {/* INPUT SURFACE (whole screen) */}
       <View style={StyleSheet.absoluteFill} {...pan.panHandlers} />
 
-      {/* LOCAL CURSOR (mouse/touch, portal only) */}
+      {/* LOCAL CURSOR (mouse/touch, portal only). A small ring with a center dot:
+          the DOT is the exact click point (curXY), so what you aim IS what clicks —
+          no hotspot offset like an arrow whose tip differs from its body. */}
       {showCursor && (
         <Animated.View
           pointerEvents="none"
           style={[styles.cursor, { transform: curXY.getTranslateTransform() }]}>
-          <Ionicons name="navigate" size={22} color="#fff" style={styles.cursorIcon} />
+          <View style={styles.cursorRing} />
+          <View style={styles.cursorDot} />
         </Animated.View>
       )}
 
@@ -294,10 +297,16 @@ const makeStyles = (t: Palette) =>
     dim: { color: t.textDim, fontSize: 13 },
     cursor: {
       position: 'absolute', left: -11, top: -11, width: 22, height: 22,
+      alignItems: 'center', justifyContent: 'center',
     },
-    cursorIcon: {
-      textShadowColor: 'rgba(0,0,0,0.9)', textShadowRadius: 3,
-      transform: [{ rotate: '-45deg' }],
+    cursorRing: {
+      position: 'absolute', width: 18, height: 18, borderRadius: 9,
+      borderWidth: 1.5, borderColor: 'rgba(255,255,255,0.95)',
+      shadowColor: '#000', shadowOpacity: 0.85, shadowRadius: 2,
+    },
+    cursorDot: {
+      width: 4, height: 4, borderRadius: 2, backgroundColor: '#fff',
+      shadowColor: '#000', shadowOpacity: 0.9, shadowRadius: 1.5,
     },
     bar: {
       position: 'absolute', flexDirection: 'row', alignItems: 'center', gap: 2,

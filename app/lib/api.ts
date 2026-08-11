@@ -2,6 +2,7 @@
  * Typed client for the Couchside agent API (contract v1).
  * Base URL: http://<host>:<port>  (default port 8787)
  */
+import { Buffer } from 'buffer';
 import { isDeclaredTooLarge, isUsableBodySize } from './responseCap';
 import { Settings } from './settings';
 
@@ -1265,24 +1266,13 @@ export async function uploadFile(
   }
 }
 
-const B64_ALPHABET = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/';
-/** base64-encode raw bytes (no reliance on btoa/Buffer, which RN may lack).
- *  Exported for the /ws/screen stream client, which turns each binary WS JPEG
- *  frame into a data: URI for <Image> the same way the HTTP frame path does. */
+/** base64-encode raw bytes for the /ws/screen stream client, which turns each
+ *  binary WS JPEG frame into a data: URI for <Image>. Uses the `buffer` lib
+ *  (base64-js under the hood): chunked typed-array work, no per-char string
+ *  concat — meaningfully faster than a hand loop on the per-frame MJPEG path,
+ *  which trims app-side video latency. */
 export function base64FromArrayBuffer(buf: ArrayBuffer): string {
-  const bytes = new Uint8Array(buf);
-  const len = bytes.length;
-  let out = '';
-  for (let i = 0; i < len; i += 3) {
-    const b0 = bytes[i];
-    const b1 = i + 1 < len ? bytes[i + 1] : 0;
-    const b2 = i + 2 < len ? bytes[i + 2] : 0;
-    out += B64_ALPHABET[b0 >> 2];
-    out += B64_ALPHABET[((b0 & 3) << 4) | (b1 >> 4)];
-    out += i + 1 < len ? B64_ALPHABET[((b1 & 15) << 2) | (b2 >> 6)] : '=';
-    out += i + 2 < len ? B64_ALPHABET[b2 & 63] : '=';
-  }
-  return out;
+  return Buffer.from(buf).toString('base64');
 }
 
 /**
