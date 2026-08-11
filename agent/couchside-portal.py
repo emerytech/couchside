@@ -412,12 +412,40 @@ def _stream_argv(profile, pwfd, node):
     return argv
 
 
+# The portal ScreenCast pipewire node allows exactly ONE gst consumer. A SECOND
+# concurrent gst on the same node fails ("Buffer allocation failed" /
+# "not-negotiated (-4)" — proven on hardware). That is the "reopen shows nothing"
+# wedge: an abrupt phone background leaves the previous stream's gst alive (its
+# dead socket not yet noticed) while the reopened stream spawns a second gst on
+# the same node -> the new one gets 0 bytes. So streams are serialized to ONE at
+# a time: a new stream REAPS the prior gst before spawning (last-opener wins).
+_STREAM_LOCK = threading.Lock()
+_CUR_STREAM = None                                   # the running stream gst, or None
+
+
+def _preempt_stream():
+    """Reap the currently-running stream gst (if any) so a new stream gets the
+    single-consumer pipewire node clean. Called before spawning a new stream."""
+    global _CUR_STREAM
+    with _STREAM_LOCK:
+        old, _CUR_STREAM = _CUR_STREAM, None
+    if old is not None and old.poll() is None:
+        old.terminate()
+        try:
+            old.wait(timeout=3)
+        except subprocess.TimeoutExpired:
+            old.kill()
+
+
 def stream(profile, conn):
     """Spawn gst for `profile` and pipe its MJPEG stdout to `conn` until the peer
     disconnects, then reap. The agent side splits the MJPEG byte stream on
-    FFD8..FFD9 and frames each JPEG onto /ws/screen."""
+    FFD8..FFD9 and frames each JPEG onto /ws/screen. Serialized: reaps any prior
+    stream first so only one gst ever holds the (single-consumer) portal node."""
+    global _CUR_STREAM
     if _ensure_session() is None:
         return
+    _preempt_stream()                                # single-consumer node (see above)
     with _SLOCK:
         node = _SESSION["node"]
     pwfd = _open_pipewire_fd()
@@ -436,6 +464,8 @@ def stream(profile, conn):
             pass
     if proc is None:
         return
+    with _STREAM_LOCK:
+        _CUR_STREAM = proc                           # register as the active stream
     nbytes = 0
     try:
         while True:
@@ -456,6 +486,11 @@ def stream(profile, conn):
             proc.wait(timeout=3)
         except subprocess.TimeoutExpired:
             proc.kill()
+        # Deregister only if still the active stream — a newer stream that
+        # preempted us already replaced _CUR_STREAM with its own proc.
+        with _STREAM_LOCK:
+            if _CUR_STREAM is proc:
+                _CUR_STREAM = None
         if nbytes == 0:
             err = b""
             try:
