@@ -32,10 +32,11 @@ import { Stack, router } from 'expo-router';
 import { useCallback, useEffect, useRef, useState } from 'react';
 import {
   ActivityIndicator, Image, Pressable, StyleSheet, Text, View,
-  type GestureResponderEvent,
+  useWindowDimensions, type GestureResponderEvent,
 } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
+import { DesktopFullscreen } from '@/components/DesktopFullscreen';
 import { ScreenVideo } from '@/components/ScreenVideo';
 import { useLockOrientation } from '@/hooks/useLockOrientation';
 import { useScreenFrame } from '@/hooks/useScreenFrame';
@@ -53,7 +54,11 @@ const FRAME_MS = 700;
 const DEVICE_LABEL = 'Couchside Desktop';
 
 export default function DesktopControlScreen() {
-  useLockOrientation('portrait'); // laptop layout; only the Pad may allow landscape
+  // Portrait = the laptop layout; landscape = the fullscreen "Remote Desktop"
+  // surface (the whole screen is the touch input). Rotate freely between them.
+  useLockOrientation('allow-landscape');
+  const { width, height } = useWindowDimensions();
+  const landscape = width > height;
   const t = useTheme();
   const styles = useThemedStyles(makeStyles);
   const insets = useSafeAreaInsets();
@@ -165,6 +170,27 @@ export default function DesktopControlScreen() {
   }, [client]);
 
   const exit = useCallback(() => { hapticMedium(); router.back(); }, []);
+
+  // LANDSCAPE: the fullscreen "Remote Desktop" surface — the whole screen is the
+  // touch input (Mouse trackpad + local cursor, or direct Touch). Absolute input
+  // (the local cursor lock) needs the portal, i.e. a fluid tier.
+  if (landscape) {
+    return (
+      <>
+        <Stack.Screen options={{ headerShown: false }} />
+        <DesktopFullscreen
+          client={client}
+          streamURL={streamURL}
+          frame={frame}
+          status={status}
+          failed={failed}
+          configured={configured}
+          absoluteInput={fluidMode}
+          onExit={exit}
+        />
+      </>
+    );
+  }
 
   return (
     <View style={[styles.root, { paddingTop: insets.top }]}>
