@@ -50,18 +50,6 @@ export class ScreenStreamClient {
   private pendingFrame: ArrayBuffer | null = null;
   private decodeScheduled = false;
   private rafId: ReturnType<typeof requestAnimationFrame> | null = null;
-  // TEMP instrumentation (remove before ship): where does display latency live?
-  private statRecv = 0;         // frames received from the WS
-  private statShown = 0;        // frames actually decoded + surfaced
-  private statDecodeMs = 0;     // total ms spent in base64 decode
-  private statRafDelayMs = 0;   // total ms between schedule and rAF firing
-  private statPendingAt = 0;    // when the currently-pending frame arrived
-  private statAgeMs = 0;        // total ms frames sat pending before decode
-  private statLastLog = 0;
-  private statBoxTs = 0;        // box wall-clock from the ts text frame
-  private statLagMs = 0;        // total (phone_now - box_ts) at binary arrival
-  private statLagMax = 0;       // worst single-frame transit lag this interval
-  private statLagN = 0;
 
   onFrame(cb: ((uri: string) => void) | null): void {
     this.frameCb = cb;
@@ -138,34 +126,13 @@ export class ScreenStreamClient {
     ws.onmessage = (ev: WebSocketMessageEvent) => {
       if (ws !== this.ws) return;
       const data = ev.data as unknown;
-      // TEMP instrumentation: the agent sends {"t":"ts","ms":<box clock>} as a
-      // text frame right before each binary frame; (phone_now - ms) exposes how
-      // long the frame spent in transit/buffers upstream of JS. Clock skew makes
-      // the absolute value approximate — the TREND is what matters.
-      if (typeof data === 'string') {
-        if (data.length < 64 && data.includes('"ts"')) {
-          try {
-            const m = JSON.parse(data) as { t?: string; ms?: number };
-            if (m.t === 'ts' && typeof m.ms === 'number') this.statBoxTs = m.ms;
-          } catch { /* not ours */ }
-        }
-        return;
-      }
+      if (typeof data === 'string') return; // this stream carries no text frames
       if (!(data instanceof ArrayBuffer)) return; // ignore stray frames
       if (!isUsableBodySize(data.byteLength)) return;
-      if (this.statBoxTs > 0) {
-        const lag = Date.now() - this.statBoxTs;
-        this.statLagMs += lag;
-        this.statLagN++;
-        if (lag > this.statLagMax) this.statLagMax = lag;
-        this.statBoxTs = 0;
-      }
       // Store the newest raw frame and decode on the next tick — do NOT decode
       // here. Decoding every frame the native WS delivers serializes a backlog
       // into display lag; overwriting keeps only the freshest and the piled-up
       // older frames are dropped UNDECODED.
-      this.statRecv++;
-      this.statPendingAt = Date.now();
       this.pendingFrame = data;
       this.scheduleDecode();
     };
@@ -214,11 +181,7 @@ export class ScreenStreamClient {
   private scheduleDecode(): void {
     if (this.decodeScheduled) return;
     this.decodeScheduled = true;
-    const scheduledAt = Date.now();
-    this.rafId = requestAnimationFrame(() => {
-      this.statRafDelayMs += Date.now() - scheduledAt;
-      this.decodePending();
-    });
+    this.rafId = requestAnimationFrame(() => this.decodePending());
   }
 
   private decodePending(): void {
@@ -227,34 +190,8 @@ export class ScreenStreamClient {
     const data = this.pendingFrame;
     this.pendingFrame = null;
     if (!data) return;
-    const t0 = Date.now();
-    this.statAgeMs += t0 - this.statPendingAt;
     const uri = `data:image/jpeg;base64,${base64FromArrayBuffer(data)}`;
-    this.statDecodeMs += Date.now() - t0;
-    this.statShown++;
     this.frameCb?.(uri);
-    // TEMP instrumentation: once per ~2s, log where time goes. recv vs shown =
-    // drop rate; rafDelay = scheduling starvation; age = pending-wait; decode =
-    // base64 cost. All averages per SHOWN frame except recv (per second).
-    const now = Date.now();
-    if (now - this.statLastLog >= 2000) {
-      const secs = (now - (this.statLastLog || now - 2000)) / 1000;
-      const shown = Math.max(1, this.statShown);
-      const lagN = Math.max(1, this.statLagN);
-      console.log(
-        `[screenstat] recv/s=${(this.statRecv / secs).toFixed(1)} ` +
-        `shown/s=${(this.statShown / secs).toFixed(1)} ` +
-        `rafDelay=${(this.statRafDelayMs / shown).toFixed(0)}ms ` +
-        `age=${(this.statAgeMs / shown).toFixed(0)}ms ` +
-        `decode=${(this.statDecodeMs / shown).toFixed(0)}ms ` +
-        `lag=${(this.statLagMs / lagN).toFixed(0)}ms ` +
-        `lagMax=${this.statLagMax.toFixed(0)}ms ` +
-        `kb=${(data.byteLength / 1024).toFixed(0)}`);
-      this.statRecv = this.statShown = 0;
-      this.statDecodeMs = this.statRafDelayMs = this.statAgeMs = 0;
-      this.statLagMs = this.statLagMax = this.statLagN = 0;
-      this.statLastLog = now;
-    }
     // Frames that arrived while decoding overwrote pendingFrame — take the
     // freshest on the next tick (again just one; anything between is dropped).
     if (this.pendingFrame) this.scheduleDecode();

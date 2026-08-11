@@ -128,10 +128,16 @@ test('every screen locks orientation except the Pad, which allows landscape', as
     assert.ok(src.includes('useLockOrientation('), `${rel} must state an orientation policy`);
     const mentionsLandscape =
       src.includes("'allow-landscape'") || src.includes("'landscape-locked'");
+    // Two screens legitimately rotate, because each has a REAL landscape layout:
+    // the Pad (conditional on gamepad mode) and the desktop Control screen — its
+    // fullscreen "Remote Desktop" mode IS the landscape layout (portrait renders
+    // the laptop layout). Any OTHER screen that rotates is the silent bug this
+    // guard exists to catch.
+    const mayRotate = rel.endsWith('pad.tsx') || rel.endsWith('desktop.tsx');
     assert.equal(
       mentionsLandscape,
-      rel.endsWith('pad.tsx'),
-      `only the Pad may allow landscape; ${rel} disagrees`,
+      mayRotate,
+      `only the Pad and the desktop Control screen may allow landscape; ${rel} disagrees`,
     );
     if (rel.endsWith('pad.tsx')) {
       // And even there it is CONDITIONAL on the gamepad mode. A flat
