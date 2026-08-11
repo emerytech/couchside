@@ -124,32 +124,39 @@ export function useDesktopKeyboard(
 
   const bar = (
     <>
-      {/* zero-size anchor marking the container's bottom in window coords */}
-      <View ref={anchorRef} style={styles.kbAnchor} pointerEvents="none" />
-      <View
-        style={[styles.kbBar, { bottom: kbLift }, !open && styles.kbBarHidden]}
-        pointerEvents={open ? 'auto' : 'none'}>
-        <TextInput
-          ref={inputRef}
-          style={styles.kbInput}
-          value={value}
-          onChangeText={onChangeText}
-          onKeyPress={onKeyPress}
-          onSubmitEditing={() => client.sendKey('enter')}
-          blurOnSubmit={false}
-          autoCapitalize="none"
-          autoCorrect={false}
-          spellCheck={false}
-          keyboardAppearance="dark"
-          placeholder="Type on the box…"
-          placeholderTextColor={t.textFaint}
-        />
-        <Pressable onPress={dismiss} hitSlop={8}
+      {/* Zero-size anchor at the container's bottom edge — window-coord measure
+          feeds the keyboard lift. collapsable=false so Android keeps it. */}
+      <View ref={anchorRef} collapsable={false} style={styles.kbAnchor} pointerEvents="none" />
+      {/* ONE input, restyled — NOT hidden in a 0-height box. Closed it is a 1x1
+          opacity-0.02 focusable sliver: iOS refuses first-responder on a
+          zero-size/transparent/overflow-hidden view, so hiding the container
+          made focus() bounce ("flash and close"). Open it becomes the compose
+          field above the keyboard. (Proven pattern from the Pad's KeyboardBar.) */}
+      <TextInput
+        ref={inputRef}
+        value={value}
+        onChangeText={onChangeText}
+        onKeyPress={onKeyPress}
+        onSubmitEditing={() => client.sendKey('enter')}
+        onBlur={() => { setOpenSynced(false); setValue(''); }}
+        style={open ? [styles.kbInput, { bottom: 10 + kbLift }] : styles.hiddenInput}
+        placeholder={open ? 'Type on the box…' : undefined}
+        placeholderTextColor={t.textFaint}
+        autoCapitalize="none"
+        autoCorrect={false}
+        autoComplete="off"
+        spellCheck={false}
+        blurOnSubmit={false}
+        caretHidden={!open}
+        keyboardAppearance="dark"
+      />
+      {open && (
+        <Pressable onPress={dismiss} hitSlop={12}
           accessibilityLabel="Hide keyboard"
-          style={({ pressed }) => [styles.kbHide, pressed && styles.pressed]}>
-          <Ionicons name="chevron-down" size={18} color={t.textDim} />
+          style={({ pressed }) => [styles.kbHide, { bottom: 10 + kbLift + 52 }, pressed && styles.pressed]}>
+          <Ionicons name="chevron-down" size={16} color={t.textDim} />
         </Pressable>
-      </View>
+      )}
     </>
   );
 
@@ -159,18 +166,23 @@ export function useDesktopKeyboard(
 const makeStyles = (t: Palette) => StyleSheet.create({
   pressed: { opacity: 0.7 },
   kbAnchor: { position: 'absolute', bottom: 0, left: 0, width: 0, height: 0 },
-  kbBar: {
-    position: 'absolute', left: 0, right: 0,
-    flexDirection: 'row', alignItems: 'center', gap: 8,
-    paddingHorizontal: 10, paddingVertical: 6,
-    backgroundColor: t.card, borderTopColor: t.cardBorder, borderTopWidth: 1,
+  // CLOSED: invisible but FOCUSABLE 1x1 sliver (iOS won't focus a 0-size or
+  // fully transparent view). Transparent text keeps keystrokes unseen.
+  hiddenInput: {
+    position: 'absolute', bottom: 0, left: 0, width: 1, height: 1,
+    opacity: 0.02, color: 'transparent',
   },
-  kbBarHidden: { opacity: 0, height: 0, paddingVertical: 0, overflow: 'hidden' },
+  // OPEN: the compose field pinned above the keyboard (lift added inline).
   kbInput: {
-    flex: 1, color: t.text, fontSize: 15, fontFamily: mono,
-    paddingVertical: 8, paddingHorizontal: 10,
-    backgroundColor: t.bg, borderRadius: 8,
+    position: 'absolute', left: 10, right: 10, zIndex: 60,
+    color: t.text, fontSize: 15, fontFamily: mono,
+    paddingVertical: 10, paddingHorizontal: 12, paddingRight: 40,
+    backgroundColor: t.card, borderRadius: 10,
     borderColor: t.cardBorder, borderWidth: 1,
   },
-  kbHide: { padding: 6 },
+  kbHide: {
+    position: 'absolute', right: 16, zIndex: 61,
+    backgroundColor: t.card, borderColor: t.cardBorder, borderWidth: 1,
+    borderRadius: 999, padding: 8,
+  },
 });
