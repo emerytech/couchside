@@ -18,6 +18,20 @@ the same thing regardless of what actually changed.
 Write for the person holding the phone, not for the commit log. They are
 deciding whether to press "Update now" on a machine across the room.
 
+## 2.9.78
+
+**"Switch to Game Mode" works on the newest SteamOS.** On a Steam Machine, a
+Legion Go S, or any box running a recent SteamOS build, the Couch button now
+hands the box to Game Mode correctly instead of falling back to Big Picture (or
+failing with an "Unable to open a connection to X" error). Your box's Game Mode
+session is now recognised by the name current SteamOS ships it under.
+
+**Smoother remote desktop (opt-in module).** For boxes with the remote-desktop
+module installed, controlling the desktop from your phone is markedly more fluid:
+reopening the view is instant, the picture stays low-latency under motion,
+there's an on-screen keyboard, and a full-screen landscape "Remote Desktop" mode.
+Boxes without the module are unaffected.
+
 ## 2.9.77
 
 **OpenPuck firmware now comes straight from the source.** Flashing an OpenPuck
