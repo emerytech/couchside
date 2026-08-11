@@ -18763,39 +18763,68 @@ class Handler(BaseHTTPRequestHandler):
             _screen_stream_sema.release()
 
     def _screen_pump(self, conn, portal_sock):
-        """Read the helper's MJPEG byte stream, split whole JPEGs (FFD8..FFD9),
-        send each as ONE binary WS frame. This is the ONLY writer of `conn`, so no
-        slock is needed. Backpressure is handled at the SOURCE: a slow phone
-        blocks this send, which stops draining the helper, which makes the
-        helper's gst `queue leaky=downstream` drop old frames — so the phone falls
-        behind rather than accumulating latency. A send failure = phone gone."""
-        buf = bytearray()
-        portal_sock.settimeout(30)
-        while True:
-            try:
-                chunk = portal_sock.recv(65536)
-            except OSError:
-                break
-            if not chunk:
-                break                                # helper/gst ended
-            buf += chunk
-            while True:
-                soi = buf.find(b"\xff\xd8")
-                if soi < 0:
-                    if len(buf) > (8 << 20):         # runaway guard: no SOI in 8MB
-                        del buf[:]
-                    break
-                if soi > 0:
-                    del buf[:soi]                    # drop bytes before a SOI
-                eoi = buf.find(b"\xff\xd9", 2)
-                if eoi < 0:
-                    break                            # partial frame; wait for more
-                jpg = bytes(buf[:eoi + 2])
-                del buf[:eoi + 2]
+        """Send the phone only the NEWEST frame, dropping any that piled up while
+        the previous send was in flight — the fix for a "laggy view" that drifts
+        behind reality. A reader thread drains the helper's MJPEG into a single
+        one-frame slot (overwriting = dropping the older unsent frame); the sender
+        always grabs the freshest slot. So a slow phone falls behind-by-one, never
+        accumulating a backlog. `conn` has ONE writer (this thread) and
+        `portal_sock` ONE reader (the thread) — no shared-socket race, no slock."""
+        slot = {"jpg": None}
+        lock = threading.Lock()
+        ready = threading.Event()
+        stop = threading.Event()
+
+        def reader():
+            buf = bytearray()
+            portal_sock.settimeout(30)
+            while not stop.is_set():
                 try:
-                    ws_send(conn, WS_OP_BINARY, jpg)
+                    chunk = portal_sock.recv(65536)
                 except OSError:
-                    return                           # phone disconnected
+                    break
+                if not chunk:
+                    break                            # helper/gst ended
+                buf += chunk
+                newest = None
+                while True:
+                    soi = buf.find(b"\xff\xd8")
+                    if soi < 0:
+                        if len(buf) > (8 << 20):     # runaway guard: no SOI in 8MB
+                            del buf[:]
+                        break
+                    if soi > 0:
+                        del buf[:soi]                # drop bytes before a SOI
+                    eoi = buf.find(b"\xff\xd9", 2)
+                    if eoi < 0:
+                        break                        # partial frame; wait for more
+                    newest = bytes(buf[:eoi + 2])    # keep only the LAST complete one
+                    del buf[:eoi + 2]
+                if newest is not None:
+                    with lock:
+                        slot["jpg"] = newest          # overwrite -> older unsent frame dropped
+                    ready.set()
+            stop.set()
+            ready.set()                              # wake the sender to exit
+
+        t = threading.Thread(target=reader, name="screen-reader", daemon=True)
+        t.start()
+        try:
+            while not stop.is_set():
+                ready.wait()
+                ready.clear()
+                with lock:
+                    jpg = slot["jpg"]
+                    slot["jpg"] = None
+                if jpg is None:
+                    continue                         # spurious wake / stopping
+                try:
+                    ws_send(conn, WS_OP_BINARY, jpg)  # blocks a slow phone; reader keeps dropping
+                except OSError:
+                    break                            # phone disconnected
+        finally:
+            stop.set()
+            t.join(timeout=1)
 
     def _gamepad_session(self):
         global GAMEPAD_HOLDER

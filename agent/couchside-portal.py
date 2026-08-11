@@ -318,7 +318,9 @@ def _stream_argv(profile, pwfd, node):
             # backpressures gst via TCP flow control. Drop-oldest to be added
             # once verified in isolation, not guessed on a live session.
             "!", "jpegenc", "quality=%d" % p["quality"],
-            "!", "fdsink", "fd=1"]
+            # sync=false: push each encoded frame to the socket immediately instead
+            # of pacing it against the pipeline clock -> lower sink-side latency.
+            "!", "fdsink", "fd=1", "sync=false"]
 
 
 def stream(profile, conn):
