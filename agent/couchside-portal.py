@@ -366,24 +366,50 @@ def dispatch(req):
 
 # ---- streaming (raw MJPEG bytes, not a JSON reply) --------------------------
 
+_HW_JPEG = None
+
+
+def _hw_jpeg():
+    """True if the box has a hardware JPEG encoder (vapostproc + vajpegenc).
+    Cached. Degrade closed to software jpegenc."""
+    global _HW_JPEG
+    if _HW_JPEG is None:
+        try:
+            import gi as _gi
+            _gi.require_version("Gst", "1.0")
+            from gi.repository import Gst as _Gst
+            _Gst.init(None)
+            _HW_JPEG = (_Gst.ElementFactory.find("vajpegenc") is not None
+                        and _Gst.ElementFactory.find("vapostproc") is not None)
+        except Exception:
+            _HW_JPEG = False
+    return _HW_JPEG
+
+
 def _stream_argv(profile, pwfd, node):
     """gstreamer argv LIST for one profile. Every pipeline element and parameter
     is chosen HERE; the client only picked the profile key. pipewiresrc reads the
-    portal's own node over the passed fd; jpegenc → fdsink fd=1 (stdout)."""
+    portal's own node over the passed fd; encoder → fdsink fd=1 (stdout).
+
+    Prefer HARDWARE JPEG (vapostproc VAMemory → vajpegenc): on an Intel iGPU the
+    software jpegenc capped the box at ~6fps @720p — the display 'lag'. vajpegenc
+    clears 300+fps, so the box no longer bottlenecks the MJPEG. Software jpegenc
+    is the fallback where no VA encoder exists."""
     p = _STREAM_PROFILES[profile]
-    caps = "video/x-raw,framerate=%d/1,width=%d,height=%d" % (
-        p["fps"], p["width"], p["height"])
-    return ["gst-launch-1.0", "-q",
+    argv = ["gst-launch-1.0", "-q",
             "pipewiresrc", "fd=%d" % pwfd, "path=%d" % node, "keepalive-time=1000",
-            "!", "videorate", "!", "videoscale", "!", "videoconvert",
-            "!", caps,
-            # TODO(backpressure): a `queue leaky=downstream` here stalled the
-            # pipeline mid-frame on hardware (2026-08-10) — needs isolated gst
-            # tuning (placement/max-size). For now no leaky queue: a slow phone
-            # backpressures gst via TCP flow control. Drop-oldest to be added
-            # once verified in isolation, not guessed on a live session.
-            "!", "jpegenc", "quality=%d" % p["quality"],
-            "!", "fdsink", "fd=1"]
+            "!", "videorate", "!", "video/x-raw,framerate=%d/1" % p["fps"]]
+    if _hw_jpeg():
+        argv += ["!", "vapostproc",
+                 "!", "video/x-raw(memory:VAMemory),format=NV12,width=%d,height=%d"
+                 % (p["width"], p["height"]),
+                 "!", "vajpegenc", "quality=%d" % p["quality"]]
+    else:
+        argv += ["!", "videoscale", "!", "videoconvert",
+                 "!", "video/x-raw,width=%d,height=%d" % (p["width"], p["height"]),
+                 "!", "jpegenc", "quality=%d" % p["quality"]]
+    argv += ["!", "fdsink", "fd=1"]
+    return argv
 
 
 def stream(profile, conn):

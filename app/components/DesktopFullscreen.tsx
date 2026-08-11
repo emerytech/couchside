@@ -33,6 +33,7 @@ type Mode = 'mouse' | 'touch';
 const TAP_MS = 250;
 const TAP_SLOP = 8;
 const SCROLL_STEP = 26;
+const SEND_MS = 25; // coalesce absolute-move sends to ~40/s (box round-trip cap)
 const clamp = (v: number, lo: number, hi: number) => Math.max(lo, Math.min(hi, v));
 
 export function DesktopFullscreen({
@@ -66,12 +67,36 @@ export function DesktopFullscreen({
   const cur = useRef({ x: rect.x + rect.w / 2, y: rect.y + rect.h / 2 });
   const curXY = useRef(new Animated.ValueXY(cur.current)).current;
 
+  // The local sprite moves at touch rate (instant), but the ABSOLUTE position
+  // sent to the box is COALESCED to ~40/s: the box does a portal round-trip per
+  // move, and flooding it at 60/s queues the real cursor behind. Always send the
+  // LATEST position (drop intermediate), so the box cursor tracks in real time.
+  const send = useRef<{ x: number; y: number } | null>(null);
+  const sendAt = useRef(0);
+  const sendTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const flushSend = () => {
+    sendTimer.current = null;
+    const p = send.current;
+    if (!p) return;
+    send.current = null;
+    sendAt.current = Date.now();
+    client.sendMouseAbs(p.x, p.y);
+  };
+  const queueSend = (nx: number, ny: number) => {
+    send.current = { x: nx, y: ny };
+    const dt = Date.now() - sendAt.current;
+    if (dt >= SEND_MS) { flushSend(); return; }
+    if (sendTimer.current == null) {
+      sendTimer.current = setTimeout(flushSend, SEND_MS - dt);
+    }
+  };
+
   const moveCursorTo = (px: number, py: number) => {
     const x = clamp(px, rect.x, rect.x + rect.w);
     const y = clamp(py, rect.y, rect.y + rect.h);
     cur.current = { x, y };
-    curXY.setValue({ x, y });
-    client.sendMouseAbs((x - rect.x) / rect.w, (y - rect.y) / rect.h);
+    curXY.setValue({ x, y });                    // sprite: instant
+    queueSend((x - rect.x) / rect.w, (y - rect.y) / rect.h); // box: coalesced
   };
 
   const g = useRef({
