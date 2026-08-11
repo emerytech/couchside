@@ -41,6 +41,15 @@ export class ScreenStreamClient {
   private connectTimer: ReturnType<typeof setTimeout> | null = null;
   private reconnectTimer: ReturnType<typeof setTimeout> | null = null;
   private backoffIdx = 0;
+  // Newest-only DECODE: onmessage stores the freshest raw frame here (cheap) and
+  // a per-render-tick job base64-decodes just that one, dropping any that piled
+  // up undecoded. Without this, the phone decodes every frame the native WS
+  // hands it — and hardware jpeg on the box out-produces the JS decode on high
+  // motion, so a backlog serializes into seconds of DISPLAY lag (input is on a
+  // separate socket and stays instant).
+  private pendingFrame: ArrayBuffer | null = null;
+  private decodeScheduled = false;
+  private rafId: ReturnType<typeof requestAnimationFrame> | null = null;
 
   onFrame(cb: ((uri: string) => void) | null): void {
     this.frameCb = cb;
@@ -119,8 +128,12 @@ export class ScreenStreamClient {
       const data = ev.data as unknown;
       if (!(data instanceof ArrayBuffer)) return; // ignore text / stray frames
       if (!isUsableBodySize(data.byteLength)) return;
-      // Newest-only: decode + surface immediately, no queue.
-      this.frameCb?.(`data:image/jpeg;base64,${base64FromArrayBuffer(data)}`);
+      // Store the newest raw frame and decode on the next tick — do NOT decode
+      // here. Decoding every frame the native WS delivers serializes a backlog
+      // into display lag; overwriting keeps only the freshest and the piled-up
+      // older frames are dropped UNDECODED.
+      this.pendingFrame = data;
+      this.scheduleDecode();
     };
     ws.onerror = () => {
       if (ws !== this.ws) return;
@@ -163,8 +176,37 @@ export class ScreenStreamClient {
     }
   }
 
+  // Decode at most one frame per render tick — the freshest — and drop the rest.
+  private scheduleDecode(): void {
+    if (this.decodeScheduled) return;
+    this.decodeScheduled = true;
+    this.rafId = requestAnimationFrame(() => this.decodePending());
+  }
+
+  private decodePending(): void {
+    this.decodeScheduled = false;
+    this.rafId = null;
+    const data = this.pendingFrame;
+    this.pendingFrame = null;
+    if (!data) return;
+    this.frameCb?.(`data:image/jpeg;base64,${base64FromArrayBuffer(data)}`);
+    // Frames that arrived while decoding overwrote pendingFrame — take the
+    // freshest on the next tick (again just one; anything between is dropped).
+    if (this.pendingFrame) this.scheduleDecode();
+  }
+
+  private clearDecode(): void {
+    if (this.rafId != null) {
+      cancelAnimationFrame(this.rafId);
+      this.rafId = null;
+    }
+    this.decodeScheduled = false;
+    this.pendingFrame = null;
+  }
+
   private teardownSocket(): void {
     this.clearConnectTimer();
+    this.clearDecode();
     const ws = this.ws;
     this.ws = null;
     if (ws) {
