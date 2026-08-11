@@ -54,6 +54,16 @@ export function ScreenPreview() {
   }
   if (probe.data && probe.dataKey === boxKey) everSupported.current = true;
   const supported = probe.data != null;
+  // CONTROL (portal remote-desktop: absolute cursor + input) is DESKTOP-ONLY.
+  // gamescope Game Mode has no xdg-desktop-portal RemoteDesktop path, so a
+  // Control button there leads to a dead surface — hide it (degrade closed).
+  // START PREVIEW stays available in both: gamescopectl grabs game-mode frames.
+  // 'mock' = dev harness. Live + non-sticky (reads probe.data, not the sticky
+  // ref), so a desktop<->game switch flips this within one probe (~30s) rather
+  // than needing an agent restart. `session` is recomputed per /api/screen call
+  // agent-side from the live wayland socket, so it never goes stale.
+  const controllable =
+    probe.data?.session === 'desktop' || probe.data?.session === 'mock';
 
   const [active, setActive] = useState(false);
   const [frame, setFrame] = useState<string | null>(null);
@@ -156,14 +166,16 @@ export function ScreenPreview() {
         <Text style={styles.title}>SCREEN</Text>
         {supported && (
           <View style={styles.headerBtns}>
-            <Pressable
-              onPress={() => { hapticLight(); router.push('/desktop'); }}
-              accessibilityRole="button"
-              accessibilityLabel="Control the desktop"
-              style={({ pressed }) => [styles.pill, pressed && styles.pressed]}>
-              <Ionicons name="game-controller-outline" size={12} color={t.blue} />
-              <Text style={styles.pillText}>CONTROL</Text>
-            </Pressable>
+            {controllable && (
+              <Pressable
+                onPress={() => { hapticLight(); router.push('/desktop'); }}
+                accessibilityRole="button"
+                accessibilityLabel="Control the desktop"
+                style={({ pressed }) => [styles.pill, pressed && styles.pressed]}>
+                <Ionicons name="game-controller-outline" size={12} color={t.blue} />
+                <Text style={styles.pillText}>CONTROL</Text>
+              </Pressable>
+            )}
             <Pressable
               onPress={toggle}
               style={({ pressed }) => [styles.pill, active && styles.pillOn, pressed && styles.pressed]}>
