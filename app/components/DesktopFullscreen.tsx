@@ -34,6 +34,10 @@ const TAP_MS = 250;
 const TAP_SLOP = 8;
 const SCROLL_STEP = 26;
 const SEND_MS = 25; // coalesce absolute-move sends to ~40/s (box round-trip cap)
+// A second touch starting within this of a tap release ARMS a drag: the first
+// move then holds the left button, so you can drag a window title bar (or
+// marquee-select). Matches the trackpad's double-tap-drag feel.
+const DOUBLE_TAP_MS = 300;
 const clamp = (v: number, lo: number, hi: number) => Math.max(lo, Math.min(hi, v));
 
 export function DesktopFullscreen({
@@ -106,26 +110,20 @@ export function DesktopFullscreen({
   const g = useRef({
     t0: 0, lastDx: 0, lastDy: 0, moved: false, touches: 1,
     scrollAccum: 0, scrollLastY: 0, startX: 0, startY: 0,
+    lastTapEndT: 0, armed: false, dragging: false,
   });
 
-  const leftClick = () => {
-    if (absoluteInput) {
-      client.sendMouseButtonPortal('l', 1);
-      setTimeout(() => client.sendMouseButtonPortal('l', 0), 40);
-    } else {
-      client.sendMouseButton('l', 1);
-      setTimeout(() => client.sendMouseButton('l', 0), 40);
-    }
+  // Left button down/up, held across a drag (portal abs vs uinput relative).
+  const mouseDown = (btn: 'l' | 'r') => {
+    if (absoluteInput) client.sendMouseButtonPortal(btn, 1);
+    else client.sendMouseButton(btn, 1);
   };
-  const rightClick = () => {
-    if (absoluteInput) {
-      client.sendMouseButtonPortal('r', 1);
-      setTimeout(() => client.sendMouseButtonPortal('r', 0), 40);
-    } else {
-      client.sendMouseButton('r', 1);
-      setTimeout(() => client.sendMouseButton('r', 0), 40);
-    }
+  const mouseUp = (btn: 'l' | 'r') => {
+    if (absoluteInput) client.sendMouseButtonPortal(btn, 0);
+    else client.sendMouseButton(btn, 0);
   };
+  const leftClick = () => { mouseDown('l'); setTimeout(() => mouseUp('l'), 40); };
+  const rightClick = () => { mouseDown('r'); setTimeout(() => mouseUp('r'), 40); };
 
   const pan = useMemo(
     () =>
@@ -135,12 +133,18 @@ export function DesktopFullscreen({
         onPanResponderTerminationRequest: () => false,
         onPanResponderGrant: (e: GestureResponderEvent) => {
           const s = g.current;
-          s.t0 = Date.now();
+          const now = Date.now();
+          s.t0 = now;
           s.lastDx = 0; s.lastDy = 0; s.moved = false;
           s.touches = e.nativeEvent.touches.length || 1;
           s.scrollAccum = 0; s.scrollLastY = 0;
           s.startX = e.nativeEvent.locationX;
           s.startY = e.nativeEvent.locationY;
+          // A single touch landing just after a tap ARMS a drag (button held on
+          // first move — see below). A plain double-tap that never moves stays a
+          // second click, so double-click still maximizes a window.
+          s.armed = s.touches < 2 && now - s.lastTapEndT < DOUBLE_TAP_MS;
+          s.dragging = false;
           // Touch mode: the cursor jumps to the finger immediately.
           if (mode === 'touch' && absoluteInput) {
             moveCursorTo(e.nativeEvent.locationX, e.nativeEvent.locationY);
@@ -168,6 +172,14 @@ export function DesktopFullscreen({
           const ddy = gs.dy - s.lastDy;
           s.lastDx = gs.dx; s.lastDy = gs.dy;
 
+          // Armed double-tap: the first real movement presses + HOLDS the left
+          // button, so the drag that follows moves a window / marquee-selects.
+          if (s.armed && !s.dragging && s.moved) {
+            s.dragging = true;
+            hapticLight();
+            mouseDown('l');
+          }
+
           if (mode === 'touch' && absoluteInput) {
             moveCursorTo(e.nativeEvent.locationX, e.nativeEvent.locationY);
           } else if (absoluteInput) {
@@ -178,10 +190,23 @@ export function DesktopFullscreen({
         },
         onPanResponderRelease: () => {
           const s = g.current;
-          const dt = Date.now() - s.t0;
+          const now = Date.now();
+          if (s.dragging) {
+            // End the held-button drag; not a tap, and don't chain another.
+            s.dragging = false;
+            s.armed = false;
+            s.lastTapEndT = 0;
+            mouseUp('l');
+            s.touches = 1;
+            return;
+          }
+          const dt = now - s.t0;
           if (!s.moved && dt < TAP_MS && s.touches < 2) {
             hapticLight();
             leftClick(); // both modes: a tap is a left click at the cursor
+            s.lastTapEndT = now; // arm a possible double-tap-drag next
+          } else {
+            s.lastTapEndT = 0;
           }
           s.touches = 1;
         },

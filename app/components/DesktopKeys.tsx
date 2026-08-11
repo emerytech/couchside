@@ -10,7 +10,7 @@
  * has the room. This is landscape-only.
  */
 import Ionicons from '@expo/vector-icons/Ionicons';
-import React, { useState } from 'react';
+import React, { useEffect, useState } from 'react';
 import { Pressable, StyleSheet, Text, View } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
@@ -41,13 +41,28 @@ export function DesktopKeys({
   const insets = useSafeAreaInsets();
   const [shift, setShift] = useState(false);
   const [sym, setSym] = useState(false);
+  // Local echo of what was sent this open — the box's own field is often hidden
+  // behind the keys, so this is the "what am I typing" feedback. Cleared when
+  // the keyboard hides or Enter submits. Best-effort mirror, not the truth.
+  const [typed, setTyped] = useState('');
+  useEffect(() => { if (!visible) setTyped(''); }, [visible]);
   if (!visible) return null;
 
   const rows = sym ? ROWS_SYM : ROWS_ABC;
   const styles = makeStyles(t);
+  const PREVIEW_MAX = 40;
 
-  const tapChar = (ch: string) => onChar(shift && !sym ? ch.toUpperCase() : ch);
-  const tapSpecial = (k: SpecialKey) => onSpecial(k);
+  const tapChar = (ch: string) => {
+    const out = shift && !sym ? ch.toUpperCase() : ch;
+    onChar(out);
+    setTyped((v) => (v + out).slice(-PREVIEW_MAX));
+  };
+  const tapSpecial = (k: SpecialKey) => {
+    onSpecial(k);
+    if (k === 'backspace') setTyped((v) => v.slice(0, -1));
+    else if (k === 'space') setTyped((v) => (v + ' ').slice(-PREVIEW_MAX));
+    else if (k === 'enter') setTyped('');
+  };
 
   const Key = ({ label, onPress, flex = 1, active, wide }: {
     label: React.ReactNode; onPress: () => void; flex?: number;
@@ -73,6 +88,12 @@ export function DesktopKeys({
     <View
       style={[styles.wrap, { paddingBottom: insets.bottom + 6, right: insets.right + 6, left: insets.left + 6 }]}
       pointerEvents="box-none">
+      {/* Local echo of what's been typed (the box field may sit behind the keys) */}
+      {typed.length > 0 && (
+        <View style={styles.preview}>
+          <Text style={styles.previewText} numberOfLines={1}>{typed}</Text>
+        </View>
+      )}
       {/* Row 1 */}
       <View style={styles.row}>
         {rows[0].map((c) => (
@@ -121,6 +142,16 @@ const makeStyles = (_t: Palette) => StyleSheet.create({
   },
   row: { flexDirection: 'row', gap: 5, justifyContent: 'center' },
   rowIndent: { paddingHorizontal: '3%' },
+  preview: {
+    alignSelf: 'flex-start', maxWidth: '75%', marginBottom: 3,
+    backgroundColor: 'rgba(12,14,20,0.72)', borderRadius: 8,
+    borderColor: 'rgba(255,255,255,0.18)', borderWidth: 1,
+    paddingVertical: 5, paddingHorizontal: 10,
+  },
+  previewText: {
+    color: 'rgba(255,255,255,0.95)', fontSize: 14, fontFamily: mono,
+    textShadowColor: 'rgba(0,0,0,0.85)', textShadowRadius: 3,
+  },
   key: {
     height: 40, borderRadius: 7,
     alignItems: 'center', justifyContent: 'center',
