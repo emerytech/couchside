@@ -46,17 +46,17 @@ export function DesktopKeys({
   const rows = sym ? ROWS_SYM : ROWS_ABC;
   const styles = makeStyles(t);
 
-  const tapChar = (ch: string) => {
-    hapticLight();
-    onChar(shift && !sym ? ch.toUpperCase() : ch);
-  };
-  const tapSpecial = (k: SpecialKey) => { hapticLight(); onSpecial(k); };
+  const tapChar = (ch: string) => onChar(shift && !sym ? ch.toUpperCase() : ch);
+  const tapSpecial = (k: SpecialKey) => onSpecial(k);
 
   const Key = ({ label, onPress, flex = 1, active, wide }: {
     label: React.ReactNode; onPress: () => void; flex?: number;
     active?: boolean; wide?: boolean;
   }) => (
     <Pressable
+      // Haptic on key-DOWN, not release — a real key ticks the instant you touch
+      // it. Firing on onPress (release) felt laggy/absent while typing fast.
+      onPressIn={hapticLight}
       onPress={onPress}
       style={({ pressed }) => [
         styles.key, { flexGrow: flex, flexBasis: 0 },
@@ -91,7 +91,7 @@ export function DesktopKeys({
           label={<Ionicons name={sym ? 'text' : 'arrow-up'} size={17}
             color={shift ? t.bg : 'rgba(255,255,255,0.9)'} />}
           active={shift && !sym}
-          onPress={() => { hapticLight(); sym ? setSym(false) : setShift((s) => !s); }} />
+          onPress={() => { sym ? setSym(false) : setShift((s) => !s); }} />
         {rows[2].map((c) => (
           <Key key={c} label={shift && !sym ? c.toUpperCase() : c} onPress={() => tapChar(c)} />
         ))}
@@ -102,14 +102,14 @@ export function DesktopKeys({
       {/* Row 4: layer toggle · space · enter · hide */}
       <View style={styles.row}>
         <Key flex={1.4} label={sym ? 'ABC' : '?123'}
-          onPress={() => { hapticLight(); setSym((v) => !v); setShift(false); }} />
+          onPress={() => { setSym((v) => !v); setShift(false); }} />
         <Key flex={4} wide label="space" onPress={() => tapSpecial('space')} />
         <Key flex={1.4}
           label={<Ionicons name="return-down-back-outline" size={18} color="rgba(255,255,255,0.9)" />}
           onPress={() => tapSpecial('enter')} />
         <Key flex={1.2}
           label={<Ionicons name="chevron-down" size={18} color="rgba(255,255,255,0.9)" />}
-          onPress={() => { hapticLight(); onHide(); }} />
+          onPress={onHide} />
       </View>
     </View>
   );
