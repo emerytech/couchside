@@ -1,3 +1,3 @@
-35 controller themes. The Setup theme picker now offers a big library — Dark Gothic, Bonk, Cyberpunk Rain, Toxic Slime Lab and many more — each with its own full-screen backdrop behind the buttons.
+Remote desktop, now fluid: see and control your box's desktop from your phone with smooth, hardware-accelerated H.264 video. Move the cursor with a trackpad or tap where you want to click, use a full keyboard, and flip to a full-screen landscape mode.
 
-New: a palette button inside the full-screen MOVE controller switches themes on the fly, no trip to Setup. Auto matches Vampire Survivors and Megabonk to a fitting look. Plus the one-handed MOVE mode and fixes.
+Navigate Steam Big Picture from the couch. Switch the box's audio output from your phone. Set your front light-bar colour in the app. Plus a note scratchpad on the controller, and the usual fixes.
