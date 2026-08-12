@@ -24,7 +24,6 @@ import {
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
 import { H264DecoderView, type H264Msg, type H264Profile } from '@/components/H264DecoderView';
-import { ScreenVideo } from '@/components/ScreenVideo';
 import type { GamepadClient, GamepadStatus } from '@/lib/gamepad';
 import { hapticLight, hapticMedium } from '@/lib/haptics';
 import { useTheme, type Palette } from '@/lib/theme';
@@ -42,7 +41,7 @@ const DOUBLE_TAP_MS = 300;
 const clamp = (v: number, lo: number, hi: number) => Math.max(lo, Math.min(hi, v));
 
 export function DesktopFullscreen({
-  client, h264 = null, streamURL, frame, status, failed, configured, absoluteInput,
+  client, h264 = null, frame, status, failed, configured, absoluteInput,
   pointerChannel = 'portal', preferTouch = false, onExit, keyboard,
 }: {
   client: GamepadClient;
@@ -53,7 +52,6 @@ export function DesktopFullscreen({
     host: string; port: number; token: string;
     profile: H264Profile; onMessage: (m: H264Msg) => void;
   } | null;
-  streamURL: string | null;
   frame: string | null;
   status: GamepadStatus;
   failed: boolean;
@@ -245,7 +243,7 @@ export function DesktopFullscreen({
   );
 
   const styles = makeStyles(t);
-  const showCursor = absoluteInput && (h264 != null || streamURL != null || frame != null);
+  const showCursor = absoluteInput && (h264 != null || frame != null);
 
   return (
     <View style={styles.root}>
@@ -270,8 +268,6 @@ export function DesktopFullscreen({
               <Image source={{ uri: frame }} style={StyleSheet.absoluteFill} resizeMode="contain" />
             )}
           </>
-        ) : streamURL ? (
-          <ScreenVideo streamURL={streamURL} style={StyleSheet.absoluteFill} />
         ) : frame ? (
           <Image source={{ uri: frame }} style={StyleSheet.absoluteFill} resizeMode="contain" />
         ) : (

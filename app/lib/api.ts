@@ -216,12 +216,13 @@ export type BoxCaps = {
    */
   screenstream?: boolean;
   /**
-   * P4b: the remote-desktop module ALSO exposes a working H.264/WebRTC video
-   * path (webrtcbin + libnice + a VA encoder) — 30–60fps via react-native-webrtc
-   * instead of MJPEG-over-<Image>. Linux/Wayland-desktop only, opt-in. Optional +
-   * additive: absent on agents without it and on Windows, so undefined reads as
-   * "unknown"; the app only uses the WebRTC path when this is true AND the app was
-   * built with react-native-webrtc, else it falls back to screenstream (MJPEG).
+   * P4b: the box has a VA H.264 encoder, so it can serve the /ws/h264 Annex-B
+   * stream the app decodes with WebCodecs (VideoDecoder -> canvas in a WebView) —
+   * 30–60fps hardware-decoded instead of MJPEG-over-<Image>. Linux/Wayland-desktop
+   * only, opt-in. Optional + additive: absent on agents without it and on Windows,
+   * so undefined reads as "unknown"; the app uses the H.264 tier when this is true
+   * AND the WebView can decode, else it falls back to screenstream (MJPEG). (This
+   * cap no longer implies libnice/webrtcbin — the WebCodecs path needs no WebRTC.)
    */
   screenstream_h264?: boolean;
 };

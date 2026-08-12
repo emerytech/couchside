@@ -3,7 +3,6 @@
   "main": "expo-router/entry",
   "version": "1.0.0",
   "dependencies": {
-    "@config-plugins/react-native-webrtc": "^15.0.1",
     "@expo/metro-runtime": "~57.0.6",
     "@expo/vector-icons": "^15.0.2",
     "buffer": "^6.0.3",
@@ -43,7 +42,6 @@
     "react-native-udp": "^4.1.7",
     "react-native-volume-manager": "^2.0.8",
     "react-native-web": "~0.21.0",
-    "react-native-webrtc": "^124.0.8",
     "react-native-webview": "13.16.1",
     "react-native-worklets": "0.10.0"
   },
