@@ -18,6 +18,14 @@ the same thing regardless of what actually changed.
 Write for the person holding the phone, not for the commit log. They are
 deciding whether to press "Update now" on a machine across the room.
 
+## 2.9.79
+
+**Steer your Steam Big Picture menus from the phone.** With the remote-desktop
+module installed, the Control screen now works in Game Mode too: tap a Big
+Picture menu item on your phone and it selects there, with a D-pad + Select on the
+toolbar as a fallback. (On the desktop it stays the full remote desktop.) Boxes
+without the module, or in Game Mode without it, are unaffected.
+
 ## 2.9.78
 
 **"Switch to Game Mode" works on the newest SteamOS.** On a Steam Machine, a
