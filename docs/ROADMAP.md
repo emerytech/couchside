@@ -275,6 +275,37 @@ Entry fields: `priority` (P0 blocker → P3 nice) · `risk` · `affects` · `dep
 
 ## 📋 Planned
 
+### Front light-bar / RGB LED customization (owner ask 2026-08-12)
+- **priority:** P2 · **risk:** medium (writes to a hardware LED path; must stay strictly
+  allowlisted + validated) · **affects:** agent + app · **depends_on:** nothing
+- **Owner:** "customize the Steam machine's front light bar LED." Set the box's front
+  RGB/status LED — color, brightness, and maybe a small set of effects — from the phone.
+- **Mechanism (stays pure-stdlib, no bundled deps):** the Linux **LED class** under
+  `/sys/class/leds/*` — `brightness` + `max_brightness`, and `multi_intensity` +
+  `multi_index` for RGB/multicolor LEDs — written as plain files, exactly the "resolve then
+  contain" pattern uploads already use. Handheld front LEDs are exposed by platform drivers
+  (`ayaneo-platform`, `ayn-platform`, `oxp-platform`; ASUS via `asusctl` if present); the new
+  Valve Steam Machine has a front status LED. If a tool like OpenRGB is *installed*, shell out
+  to it via the allowlist like we do `pactl`/`wpctl` — never bundle it (agent stays stdlib).
+- **Allowlist plan (the load-bearing part):**
+  - **Enumerate** controllable LEDs read-only from sysfs (probe-and-appear). A box with no
+    writable front LED → cap absent, no card. Degrade closed.
+  - **Set** is token-gated. The target LED is an **id looked up in the enumerated set**, never
+    interpolated into a path. Color is parsed to validated 0–255 ints; brightness clamped to
+    `[0, max_brightness]`; any effect id must be in a **frozen set**. Reject, don't sanitise.
+    Contain the resolved sysfs path under `/sys/class/leds` before writing (§3.5).
+  - New cap **`lightbar`** → all SIX edit sites (§4). `GET /api/lightbar` (state) +
+    `POST /api/lightbar` (set). `MOCK_*` LEDs so the switch is harness-observable, like
+    [[the audio switcher]] (`audioswitch`, PR #441) — this feature is that one's sibling and
+    should mirror its shape (enumerate → look-up-not-interpolate → argv/file write → mock).
+- **The hard part = device diversity.** The controllable LED, its path, and RGB vs single-color
+  differ per machine; parse real sysfs fixtures copied VERBATIM from hardware (§6). Start with
+  the generic LED-class multicolor path + one or two known handhelds, degrade closed everywhere
+  else. **If the build plan reaches 3+ phases, move it to `docs/memory/project_lightbar-led.md`
+  and leave a pointer here** (§10).
+- **NOT yet designed:** effect set (static / breathe / off?), whether brightness rides the
+  existing vitals signal, per-box persistence. Capture on build, not now.
+
 ### Apple Watch + desktop widgets — quick actions (owner ask 2026-08-10)
 - **priority:** P2 · **risk:** medium-high (NEW native surfaces: WidgetKit + watchOS;
   App Intents; runs OUTSIDE the RN runtime) · **affects:** app + a native config plugin ·
