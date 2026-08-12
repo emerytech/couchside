@@ -18,6 +18,25 @@ the same thing regardless of what actually changed.
 Write for the person holding the phone, not for the commit log. They are
 deciding whether to press "Update now" on a machine across the room.
 
+## 2.9.83
+
+**Pairing now works on desktop-session boxes.** On a box sitting at the Linux
+desktop (not Game Mode), the pairing PIN could fail to appear on the box's screen
+— a hard stop, since you can't finish setup without it. The box now reliably shows
+the PIN full-screen. (Game Mode was unaffected.) Everything from the last update is
+here too:
+
+**Fluid remote desktop.** When your box has a hardware H.264 encoder, the Control
+screen streams smooth, hardware-decoded video — trackpad, tap-to-point, keyboard,
+landscape — much closer to sitting at the machine. Boxes without an encoder keep
+the existing view.
+
+**Switch your audio output from the couch.** A new AUDIO OUTPUT card moves the
+box's sound to the TV, a speaker, or its built-in output with one tap.
+
+**Set your box's light from the phone.** A new LIGHT card sets a controllable front
+RGB/status LED's colour and brightness, or turns it off.
+
 ## 2.9.82
 
 Three features, now with a more reliable fluid remote desktop.

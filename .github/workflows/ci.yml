@@ -265,6 +265,13 @@ jobs:
       - name: Unit tests (remote-desktop portal helper logic)
         run: python3 tests/test_portal_helper_logic.py
 
+      # Pairing PIN full-screen launch resolver. A desktop-session box is a system
+      # service with a partial env, so a bare xdg-open failed and the PIN never
+      # showed (a hard stop for pairing). Pins the browser->--kiosk argv mapping
+      # (flatpak vs system browser, known browsers only, url passed verbatim).
+      - name: Unit tests (pairing PIN kiosk launch)
+        run: python3 tests/test_pair_kiosk.py
+
       # Game-mode (gamescope / Big Picture) pointer input: the {t:'gm'} verb.
       # The portal is absent in Game Mode, so absolute menu nav rides an xdotool
       # ARGV LIST. Same security class as {t:'ma'}: holder gate + range-validated
