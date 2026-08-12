@@ -18,6 +18,27 @@ the same thing regardless of what actually changed.
 Write for the person holding the phone, not for the commit log. They are
 deciding whether to press "Update now" on a machine across the room.
 
+## 2.9.82
+
+Three features, now with a more reliable fluid remote desktop.
+
+**Fluid remote desktop.** When your box has a hardware H.264 encoder, the Control
+screen streams smooth, hardware-decoded video — the same trackpad, tap-to-point,
+keyboard and landscape mode, much closer to sitting at the machine. This update
+fixes two cases where it could fail to start and drop back to the older
+frame-by-frame view: the app now switches up to H.264 the moment your box gains an
+encoder, and the capability check no longer stalls while a screen-share prompt is
+open. Boxes without an encoder keep the existing view automatically. LAN-only.
+
+**Switch your audio output from the couch.** A new AUDIO OUTPUT card on the
+Console tab lists the devices your box can play through — the TV over HDMI, a
+Bluetooth speaker, the built-in output — and moves the sound there with one tap,
+including whatever is already playing.
+
+**Set your box's light from the phone.** If your machine has a controllable front
+RGB or status LED, a new LIGHT card sets its colour and brightness, or turns it
+off. Boxes with no controllable LED don't show the card.
+
 ## 2.9.81
 
 Three things land here if you're coming from an older agent.
