@@ -233,9 +233,20 @@ Entry fields: `priority` (P0 blocker → P3 nice) · `risk` · `affects` · `dep
   probed + REJECTED as dead on this kwin); install.sh refreshes the opt-in helper on agent update; Console SCREEN
   card moved up + hold-to-edit reorder/hide ([[console-hold-to-edit-cards]]). **Full detail: auto-memory
   [[remote-desktop-and-screen-capture]].** BEFORE MERGE: strip the TEMP `[screenstat]` latency instrumentation.
-- **P4b (H.264/WebRTC) = SHELVED:** box side (B1 helper webrtc + A0 agent /ws/webrtc relay + caps.screenstream_h264)
-  all PROVEN, BUT `react-native-webrtc@124` is INCOMPATIBLE with RN 0.86 (RTCView crash + 14s setRemoteDescription
-  → the tier is `WEBRTC_TIER_ENABLED=false`). Re-enable when the lib supports RN 0.86.
+- **P4b (H.264) = UNBLOCKED via WebCodecs, box side SHIPPED to the spike branch.** The react-native-webrtc path is a
+  confirmed DEAD END on RN 0.86 (RTCView crash + 14s setRemoteDescription → `WEBRTC_TIER_ENABLED=false` STAYS). The
+  unblock is **H.264 Annex-B over a plain WebSocket → WebCodecs `VideoDecoder` → `<canvas>` in react-native-webview**
+  (moonlight-web arch; the WKWebView VideoDecoder gate PASSED on device — iOS 18.7, HW decode for all three H.264
+  profiles). No SDP/ICE/libnice (the gap that shelved the webrtc P4b). **Stage B (box) DONE + HARDWARE-VERIFIED
+  2026-08-12 on bazzite 10.1.1.60** (branch `spike/webcodecs-h264`): helper `stream_h264` verb + codec-aware
+  persistent encoder (`vah264enc → h264parse config-interval=-1 → byte-stream/alignment=au`, raw Annex-B passthrough,
+  MJPEG untouched) + relaxed `_h264_available` (VA encoder present, drops the webrtc-only nice check); agent `/ws/h264`
+  (mirrors `/ws/screen`, raw in-order pump, cap 1); `tests/test_h264_stream.py` (16 checks, CI-wired). Live e2e:
+  ~32 fps @ 720p30, `AUD·SPS·PPS·IDR` framing, 3 keyframes / 5s. `caps.screenstream_h264` is now honest = VA encoder
+  present. NEXT: **Stage C** (the WebView VideoDecoder page over Metro) then **Stage D** (wire tier-1 in desktop.tsx +
+  measure fps/latency on device, strip the temp probe, fold into the store build with the rn-webrtc dep strip). The
+  webrtc box side (B1 helper webrtc verb + A0 /ws/webrtc) stays as the parked ceiling reference. Detail in
+  [[h264-tier-webcodecs-not-webrtc]] + [[remote-desktop-and-screen-capture]].
 - **📋 SUB-ENTRY — Game-mode (gamescope) MENU navigation (owner ask 2026-08-11; PROVEN doable, NOT built).** Owner
   narrowed scope to "just menu nav, not control while a game runs." Hardware-probed on lenovodesktop (gamescope
   1.4.10): **VIEW already works** — the agent's existing gamescopectl still-frame reads the real scanout buffer, so
