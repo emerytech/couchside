@@ -54,16 +54,18 @@ export function ScreenPreview() {
   }
   if (probe.data && probe.dataKey === boxKey) everSupported.current = true;
   const supported = probe.data != null;
-  // CONTROL (portal remote-desktop: absolute cursor + input) is DESKTOP-ONLY.
-  // gamescope Game Mode has no xdg-desktop-portal RemoteDesktop path, so a
-  // Control button there leads to a dead surface — hide it (degrade closed).
-  // START PREVIEW stays available in both: gamescopectl grabs game-mode frames.
-  // 'mock' = dev harness. Live + non-sticky (reads probe.data, not the sticky
-  // ref), so a desktop<->game switch flips this within one probe (~30s) rather
-  // than needing an agent restart. `session` is recomputed per /api/screen call
-  // agent-side from the live wayland socket, so it never goes stale.
+  // CONTROL is offered on DESKTOP (portal absolute cursor + input) AND in
+  // gamescope GAME MODE (Big Picture menu nav — the portal is absent there, so
+  // input rides the {t:'gm'} xdotool path instead; the route reads the `session`
+  // param to pick that path and default to Touch). START PREVIEW works in both:
+  // gamescopectl grabs game-mode frames. 'mock' = dev harness. Live + non-sticky
+  // (reads probe.data, not the sticky ref), so a desktop<->game switch flips this
+  // within one probe (~30s), no agent restart. `session` is recomputed per
+  // /api/screen call from the live wayland socket, so it never goes stale.
+  // Degrade closed: session===null (agent couldn't read the socket) stays off.
   const controllable =
-    probe.data?.session === 'desktop' || probe.data?.session === 'mock';
+    probe.data?.session === 'desktop' || probe.data?.session === 'mock'
+    || probe.data?.session === 'gamescope';
 
   const [active, setActive] = useState(false);
   const [frame, setFrame] = useState<string | null>(null);
@@ -168,7 +170,10 @@ export function ScreenPreview() {
           <View style={styles.headerBtns}>
             {controllable && (
               <Pressable
-                onPress={() => { hapticLight(); router.push('/desktop'); }}
+                onPress={() => {
+                  hapticLight();
+                  router.push({ pathname: '/desktop', params: { session: probe.data?.session ?? '' } });
+                }}
                 accessibilityRole="button"
                 accessibilityLabel="Control the desktop"
                 style={({ pressed }) => [styles.pill, pressed && styles.pressed]}>

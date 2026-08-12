@@ -41,8 +41,8 @@ const DOUBLE_TAP_MS = 300;
 const clamp = (v: number, lo: number, hi: number) => Math.max(lo, Math.min(hi, v));
 
 export function DesktopFullscreen({
-  client, streamURL, frame, status, failed, configured, absoluteInput, onExit,
-  keyboard,
+  client, streamURL, frame, status, failed, configured, absoluteInput,
+  pointerChannel = 'portal', preferTouch = false, onExit, keyboard,
 }: {
   client: GamepadClient;
   streamURL: string | null;
@@ -51,6 +51,11 @@ export function DesktopFullscreen({
   failed: boolean;
   configured: boolean;
   absoluteInput: boolean;
+  /** Which absolute-pointer wire path to drive: 'portal' ({t:'ma'}/{t:'mbp'}) on
+   *  the desktop, 'game' ({t:'gm'}, xdotool) in gamescope Game Mode. */
+  pointerChannel?: 'portal' | 'game';
+  /** Default the touch mode to direct tap-to-point (the Game Mode default). */
+  preferTouch?: boolean;
   onExit: () => void;
   /** From useDesktopKeyboard (owned by the parent so one instance serves both
    *  orientations): toolbar Keys button calls toggle; bar renders here. */
@@ -59,7 +64,7 @@ export function DesktopFullscreen({
   const t = useTheme();
   const { width, height } = useWindowDimensions();
   const insets = useSafeAreaInsets();
-  const [mode, setMode] = useState<Mode>(absoluteInput ? 'mouse' : 'mouse');
+  const [mode, setMode] = useState<Mode>(preferTouch ? 'touch' : 'mouse');
   const [barOpen, setBarOpen] = useState(true);
 
   // 16:9 content rect, contain-fit + centered (letterbox on the wider phone).
@@ -88,7 +93,8 @@ export function DesktopFullscreen({
     if (!p) return;
     send.current = null;
     sendAt.current = Date.now();
-    client.sendMouseAbs(p.x, p.y);
+    if (pointerChannel === 'game') client.sendGameMove(p.x, p.y);
+    else client.sendMouseAbs(p.x, p.y);
   };
   const queueSend = (nx: number, ny: number) => {
     send.current = { x: nx, y: ny };
@@ -114,16 +120,30 @@ export function DesktopFullscreen({
   });
 
   // Left button down/up, held across a drag (portal abs vs uinput relative).
+  // Game Mode has no separate button down/up (the {t:'gm'} verb is an atomic
+  // move+click), so down/up are no-ops there and a click becomes a tap at the
+  // current cursor. Portal + relative keep their real down/up (drag/marquee).
   const mouseDown = (btn: 'l' | 'r') => {
+    if (pointerChannel === 'game') return;
     if (absoluteInput) client.sendMouseButtonPortal(btn, 1);
     else client.sendMouseButton(btn, 1);
   };
   const mouseUp = (btn: 'l' | 'r') => {
+    if (pointerChannel === 'game') return;
     if (absoluteInput) client.sendMouseButtonPortal(btn, 0);
     else client.sendMouseButton(btn, 0);
   };
-  const leftClick = () => { mouseDown('l'); setTimeout(() => mouseUp('l'), 40); };
-  const rightClick = () => { mouseDown('r'); setTimeout(() => mouseUp('r'), 40); };
+  const tapAtCursor = () => {
+    client.tapGame((cur.current.x - rect.x) / rect.w, (cur.current.y - rect.y) / rect.h);
+  };
+  const leftClick = () => {
+    if (pointerChannel === 'game') { tapAtCursor(); return; }
+    mouseDown('l'); setTimeout(() => mouseUp('l'), 40);
+  };
+  const rightClick = () => {
+    if (pointerChannel === 'game') return; // right-click isn't meaningful in Big Picture
+    mouseDown('r'); setTimeout(() => mouseUp('r'), 40);
+  };
 
   const pan = useMemo(
     () =>
@@ -234,6 +254,7 @@ export function DesktopFullscreen({
           <View style={[StyleSheet.absoluteFill, styles.center]}>
             <Text style={styles.dim}>
               {!configured ? 'Connect a box first.'
+                : pointerChannel === 'game' ? 'Waiting for the screen…'
                 : 'Approve remote control on your box…'}
             </Text>
           </View>
@@ -264,12 +285,32 @@ export function DesktopFullscreen({
             label={mode === 'mouse' ? 'Mouse' : 'Touch'} styles={styles} t={t}
             active
             onPress={() => { hapticLight(); setMode((m) => (m === 'mouse' ? 'touch' : 'mouse')); }} />
-          <TB icon="radio-button-on" label="Left" styles={styles} t={t}
-            onPress={() => { hapticLight(); leftClick(); }} />
-          <TB icon="ellipsis-horizontal" label="Right" styles={styles} t={t}
-            onPress={() => { hapticLight(); rightClick(); }} />
-          <TB icon="apps" label="Start" styles={styles} t={t}
-            onPress={() => { hapticLight(); client.sendDesktopKey('meta'); }} />
+          {pointerChannel === 'game' ? (
+            // Game Mode: the D-pad + Select ride the keyboard path Steam Big
+            // Picture reads (the uinput mouse is not grabbed there), alongside
+            // tap-to-point.
+            <>
+              <TB icon="chevron-back" label="Left" styles={styles} t={t}
+                onPress={() => { hapticLight(); client.sendKey('left'); }} />
+              <TB icon="chevron-up" label="Up" styles={styles} t={t}
+                onPress={() => { hapticLight(); client.sendKey('up'); }} />
+              <TB icon="chevron-down" label="Down" styles={styles} t={t}
+                onPress={() => { hapticLight(); client.sendKey('down'); }} />
+              <TB icon="chevron-forward" label="Right" styles={styles} t={t}
+                onPress={() => { hapticLight(); client.sendKey('right'); }} />
+              <TB icon="checkmark-circle" label="Select" styles={styles} t={t}
+                onPress={() => { hapticLight(); client.sendKey('enter'); }} />
+            </>
+          ) : (
+            <>
+              <TB icon="radio-button-on" label="Left" styles={styles} t={t}
+                onPress={() => { hapticLight(); leftClick(); }} />
+              <TB icon="ellipsis-horizontal" label="Right" styles={styles} t={t}
+                onPress={() => { hapticLight(); rightClick(); }} />
+              <TB icon="apps" label="Start" styles={styles} t={t}
+                onPress={() => { hapticLight(); client.sendDesktopKey('meta'); }} />
+            </>
+          )}
           {keyboard && (
             <TB icon="keypad-outline" label="Keys" styles={styles} t={t}
               active={keyboard.open} onPress={keyboard.toggle} />
