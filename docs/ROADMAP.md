@@ -9,6 +9,36 @@ Entry fields: `priority` (P0 blocker → P3 nice) · `risk` · `affects` · `dep
 
 ## 🔨 In Progress
 
+### Front light-bar / status-LED control (owner ask 2026-08-12)
+- **priority:** P2 · **risk:** medium (writes a hardware sysfs path; strictly allowlisted +
+  validated) · **affects:** agent + app · **depends_on:** an install-time udev grant (below)
+- **BUILT (agent 2.9.81, branch `claude/lightbar-led`).** Console-tab LIGHT card: pick an
+  LED's colour (preset swatches) + brightness (Off/25/50/75/100) with a tap. `GET /api/leds`
+  enumerates the writable LEDs; `POST /api/leds/set {led,brightness?,color?}` writes. Cap
+  `ledcontrol` (six sites, parity green). Mirrors [[the audio switcher]] (`audioswitch`).
+- **Allowlist:** the client `led` must be an EXACT member of the live
+  `os.listdir(/sys/class/leds)` set AND writable → else 404, **nothing written**. Attribute
+  files are fixed literals (`brightness`/`multi_intensity`/`trigger`); trigger is only ever
+  `none`; colour is reordered into the device's `multi_index` order + scaled; brightness/colour
+  range-checked (reject, don't sanitise); path contained under `/sys`. `notable` name-heuristic
+  is presentation-only, NEVER gates authorization. Built from a research pass on the kernel
+  multicolor-LED ABI + a 4-lens adversarial review of the diff.
+- **Verified:** `tests/test_led_control.py` (refused/traversal/non-writable ids write NOTHING;
+  colour reordered to device channel order; trigger only `none`; validation rejects bad
+  colour/brightness; mock observable) + protocol parity + CI step. Agent end-to-end vs `--mock`
+  over curl (401 no/wrong-token, 404 unknown, 400 colour-on-mono/bad-brightness, colour moves).
+  App in the harness: pressed a swatch and a level, box state moved to green @ 50%, ring
+  followed the re-read (observe both states, §11).
+- **NOT verified / the real gate:** no real LED hardware lit. On a stock box the sysfs files
+  are **root-owned**, so `writable:false` → the card **hides** until an **install-time udev
+  grant** makes a specific LED writable — that rule is **not written yet**, must be scoped to
+  the target LED (don't blanket-open every LED), and proven on the home Legion Go S / an
+  AYANEO before this is "done". Also unverified: which node exists per box, write contention
+  with Steam/InputPlumber, AYN `led_mode` gotcha, reported-colour accuracy. Classifier tested
+  only on SYNTHETIC names (no `/sys/class/leds` fixtures yet). OpenRGB fallback: deferred.
+- **Follow-ups:** the scoped udev rule + hardware pass; real sysfs fixtures for the classifier;
+  effects (breathe/rainbow) once a device is in hand.
+
 ### Audio output switcher — pick the box's sink from the phone (user ask 2026-08-12)
 - **priority:** P2 · **risk:** low · **affects:** agent + app · **depends_on:** none
 - **BUILT (agent 2.9.80, branch `claude/audio-output-switcher`).** Console-tab AUDIO OUTPUT
@@ -274,37 +304,6 @@ Entry fields: `priority` (P0 blocker → P3 nice) · `risk` · `affects` · `dep
   game mode defaults to TOUCH (tap-to-point), Mouse as a toggle.** Detail in [[remote-desktop-and-screen-capture]].
 
 ## 📋 Planned
-
-### Front light-bar / RGB LED customization (owner ask 2026-08-12)
-- **priority:** P2 · **risk:** medium (writes to a hardware LED path; must stay strictly
-  allowlisted + validated) · **affects:** agent + app · **depends_on:** nothing
-- **Owner:** "customize the Steam machine's front light bar LED." Set the box's front
-  RGB/status LED — color, brightness, and maybe a small set of effects — from the phone.
-- **Mechanism (stays pure-stdlib, no bundled deps):** the Linux **LED class** under
-  `/sys/class/leds/*` — `brightness` + `max_brightness`, and `multi_intensity` +
-  `multi_index` for RGB/multicolor LEDs — written as plain files, exactly the "resolve then
-  contain" pattern uploads already use. Handheld front LEDs are exposed by platform drivers
-  (`ayaneo-platform`, `ayn-platform`, `oxp-platform`; ASUS via `asusctl` if present); the new
-  Valve Steam Machine has a front status LED. If a tool like OpenRGB is *installed*, shell out
-  to it via the allowlist like we do `pactl`/`wpctl` — never bundle it (agent stays stdlib).
-- **Allowlist plan (the load-bearing part):**
-  - **Enumerate** controllable LEDs read-only from sysfs (probe-and-appear). A box with no
-    writable front LED → cap absent, no card. Degrade closed.
-  - **Set** is token-gated. The target LED is an **id looked up in the enumerated set**, never
-    interpolated into a path. Color is parsed to validated 0–255 ints; brightness clamped to
-    `[0, max_brightness]`; any effect id must be in a **frozen set**. Reject, don't sanitise.
-    Contain the resolved sysfs path under `/sys/class/leds` before writing (§3.5).
-  - New cap **`lightbar`** → all SIX edit sites (§4). `GET /api/lightbar` (state) +
-    `POST /api/lightbar` (set). `MOCK_*` LEDs so the switch is harness-observable, like
-    [[the audio switcher]] (`audioswitch`, PR #441) — this feature is that one's sibling and
-    should mirror its shape (enumerate → look-up-not-interpolate → argv/file write → mock).
-- **The hard part = device diversity.** The controllable LED, its path, and RGB vs single-color
-  differ per machine; parse real sysfs fixtures copied VERBATIM from hardware (§6). Start with
-  the generic LED-class multicolor path + one or two known handhelds, degrade closed everywhere
-  else. **If the build plan reaches 3+ phases, move it to `docs/memory/project_lightbar-led.md`
-  and leave a pointer here** (§10).
-- **NOT yet designed:** effect set (static / breathe / off?), whether brightness rides the
-  existing vitals signal, per-box persistence. Capture on build, not now.
 
 ### Apple Watch + desktop widgets — quick actions (owner ask 2026-08-10)
 - **priority:** P2 · **risk:** medium-high (NEW native surfaces: WidgetKit + watchOS;

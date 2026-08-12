@@ -18,6 +18,15 @@ the same thing regardless of what actually changed.
 Write for the person holding the phone, not for the commit log. They are
 deciding whether to press "Update now" on a machine across the room.
 
+## 2.9.81
+
+**Set your box's light from the phone.** If your machine has a controllable
+front RGB or status LED, a new LIGHT card on the Console tab lets you pick a
+colour and brightness (or turn it off) with a tap. LAN-only like everything else.
+Boxes with no controllable LED simply don't show the card — and note that on many
+machines the LED files are locked to the system account, so this needs a one-time
+permission grant (coming in the installer) before it can take effect.
+
 ## 2.9.80
 
 **Switch your audio output from the couch.** A new AUDIO OUTPUT card on the
