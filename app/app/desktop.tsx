@@ -28,10 +28,10 @@
  * keeps the relative-mouse model honest (tap-a-spot-on-the-frame is P2/absolute).
  */
 import Ionicons from '@expo/vector-icons/Ionicons';
-import { Stack, router } from 'expo-router';
+import { Stack, router, useLocalSearchParams } from 'expo-router';
 import { useCallback, useEffect, useRef, useState } from 'react';
 import {
-  ActivityIndicator, Image, Pressable, StyleSheet, Text, View,
+  ActivityIndicator, Animated, Image, Pressable, StyleSheet, Text, View,
   useWindowDimensions, type GestureResponderEvent,
 } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
@@ -73,6 +73,13 @@ export default function DesktopControlScreen() {
   const insets = useSafeAreaInsets();
   const { settings, ready } = useSettings();
   const configured = settings.host.trim().length > 0;
+  // GAME MODE (gamescope / Big Picture): the xdg-desktop-portal is absent, so
+  // input rides the {t:'gm'} xdotool path and the view stays on the still-frame
+  // poller. `session` is a snapshot passed by the Console card at navigation time
+  // (a mid-control desktop<->game flip just needs a reopen). Consumed only as a
+  // boolean flag — never interpolated into anything.
+  const { session } = useLocalSearchParams<{ session?: string }>();
+  const gameMode = session === 'gamescope';
   // THREE tiers, best-first (all hooks run — hooks rules — only the active one
   // connects):
   //   1. WebRTC H.264 (fluid, 30–60fps): app built WITH react-native-webrtc AND
@@ -83,11 +90,19 @@ export default function DesktopControlScreen() {
   //   3. P1 still-frame poller (~1.4fps): always available.
   // Tiers 1 & 2 both get tap-to-point (the portal's absolute pointer).
   const [webrtcGaveUp, setWebrtcGaveUp] = useState(false);
+  // The fluid (portal) tiers are OFF in game mode — the portal doesn't exist
+  // there, so gating them off keeps the view on the poller and avoids a dead
+  // "Approve…" spinner.
   const webrtcMode =
-    WEBRTC_TIER_ENABLED && webrtcSupported
+    !gameMode && WEBRTC_TIER_ENABLED && webrtcSupported
     && settings.caps?.screenstream_h264 === true && !webrtcGaveUp;
-  const streamMode = !webrtcMode && settings.caps?.screenstream === true;
+  const streamMode = !gameMode && !webrtcMode && settings.caps?.screenstream === true;
   const fluidMode = webrtcMode || streamMode;
+  // The absolute-pointer flag both the portal (fluid) and game-mode (xdotool)
+  // paths share: tap-to-point + the local cursor render, and the trackpad drives
+  // an ABSOLUTE cursor rather than a relative one. Which wire verb it uses is
+  // chosen per-send by `gameMode` ({t:'gm'} vs {t:'ma'}).
+  const absoluteInput = fluidMode || gameMode;
   const live = ready && configured;
   const streamed = useScreenStream(settings, live && streamMode);
   const webrtc = useWebRtcStream(settings, live && webrtcMode);
@@ -172,38 +187,113 @@ export default function DesktopControlScreen() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [ready, configured]);
 
-  const leftClick = useCallback(() => {
+  // ── Portrait local cursor (absolute mode: portal OR game) ──────────────────
+  // The frame carries the box's own (tiny) cursor, but portrait otherwise draws
+  // nothing — so next to landscape's ring+dot it read as "no cursor". Give
+  // portrait the same local sprite: the trackpad drives a cursor inside the 16:9
+  // stage and sends an ABSOLUTE position, so the sprite is visible AND the box
+  // cursor locks to it. The wire verb is portal {t:'ma'} on desktop, xdotool
+  // {t:'gm'} in game mode. Relative mode (no portal, no game) keeps the plain
+  // trackpad — it never knows the box's absolute position, so a sprite would drift.
+  const SEND_MS = 25; // coalesce abs-move sends to ~40/s (box round-trip cap)
+  const stageSize = useRef({ w: 0, h: 0 });
+  const cur = useRef({ x: 0, y: 0 });                 // stage px
+  const curXY = useRef(new Animated.ValueXY({ x: 0, y: 0 })).current;
+  const curReady = useRef(false);
+  const sendAbs = useRef<{ x: number; y: number } | null>(null);
+  const sendAbsAt = useRef(0);
+  const sendAbsTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const flushAbs = () => {
+    sendAbsTimer.current = null;
+    const p = sendAbs.current;
+    if (!p) return;
+    sendAbs.current = null;
+    sendAbsAt.current = Date.now();
+    if (gameMode) client.sendGameMove(p.x, p.y);
+    else client.sendMouseAbs(p.x, p.y);
+  };
+  const queueAbs = (nx: number, ny: number) => {
+    sendAbs.current = { x: nx, y: ny };
+    const dt = Date.now() - sendAbsAt.current;
+    if (dt >= SEND_MS) { flushAbs(); return; }
+    if (sendAbsTimer.current == null) sendAbsTimer.current = setTimeout(flushAbs, SEND_MS - dt);
+  };
+  // Move the sprite to a stage-px point; `send` also pushes its normalized position.
+  const cursorToPx = (px: number, py: number, send = true) => {
+    const { w, h } = stageSize.current;
+    if (w <= 0 || h <= 0) return;
+    const x = Math.max(0, Math.min(w, px));
+    const y = Math.max(0, Math.min(h, py));
+    cur.current = { x, y };
+    curXY.setValue({ x, y });
+    if (send) queueAbs(x / w, y / h);
+  };
+  useEffect(() => () => {
+    if (sendAbsTimer.current) clearTimeout(sendAbsTimer.current);
+  }, []);
+
+  // In fluid mode a click rides the PORTAL button (at the portal's absolute
+  // position, where the sprite is); in game mode it is an atomic xdotool tap at
+  // the sprite; relative mode uses the uinput button.
+  const clickAt = useCallback((btn: 'l' | 'r') => {
     hapticLight();
-    client.sendMouseButton('l', 1);
-    setTimeout(() => client.sendMouseButton('l', 0), 40);
-  }, [client]);
-  const rightClick = useCallback(() => {
-    hapticLight();
-    client.sendMouseButton('r', 1);
-    setTimeout(() => client.sendMouseButton('r', 0), 40);
-  }, [client]);
+    if (gameMode) {
+      // Game mode has no separate button down/up — a click is a move+click at the
+      // current cursor. Only left is meaningful for Big Picture menus.
+      const { w, h } = stageSize.current;
+      if (btn === 'l' && w > 0 && h > 0) {
+        client.tapGame(cur.current.x / w, cur.current.y / h);
+      }
+    } else if (fluidMode) {
+      client.sendMouseButtonPortal(btn, 1);
+      setTimeout(() => client.sendMouseButtonPortal(btn, 0), 40);
+    } else {
+      client.sendMouseButton(btn, 1);
+      setTimeout(() => client.sendMouseButton(btn, 0), 40);
+    }
+  }, [client, fluidMode, gameMode]);
+  const leftClick = useCallback(() => clickAt('l'), [clickAt]);
+  const rightClick = useCallback(() => clickAt('r'), [clickAt]);
 
   const pad = useTrackpad({
-    onMove: (dx, dy) => client.sendMouseMove(dx, dy),
+    onMove: (dx, dy) => {
+      if (absoluteInput) cursorToPx(cur.current.x + dx, cur.current.y + dy);
+      else client.sendMouseMove(dx, dy);
+    },
     onLeftClick: leftClick,
     onRightClick: rightClick,
     onScroll: (notches) => client.sendWheel(notches),
-    onDragStart: () => { hapticLight(); client.sendMouseButton('l', 1); },
-    onDragEnd: () => client.sendMouseButton('l', 0),
+    onDragStart: () => {
+      hapticLight();
+      // Game mode has no held-button drag (the {t:'gm'} verb is an atomic
+      // move+click), so a drag there just moves the cursor — no button hold.
+      if (gameMode) return;
+      if (fluidMode) client.sendMouseButtonPortal('l', 1);
+      else client.sendMouseButton('l', 1);
+    },
+    onDragEnd: () => {
+      if (gameMode) return;
+      if (fluidMode) client.sendMouseButtonPortal('l', 0);
+      else client.sendMouseButton('l', 0);
+    },
   });
 
   // Tap-to-point (P2, fluid mode only): the tap's location within the frame maps
   // to a normalized 0..1 coordinate for the portal's absolute pointer. The stage
   // is 16:9 and the stream is 16:9, so there is no `contain` letterbox — the map
-  // is just location / measured size. (A non-16:9 source would need letterbox math.)
-  const stageSize = useRef({ w: 0, h: 0 });
+  // is just location / measured size. The local sprite jumps to the tap too, so
+  // it stays where the click lands.
   const onTapFrame = useCallback((e: GestureResponderEvent) => {
     const { w, h } = stageSize.current;
     if (w <= 0 || h <= 0) return;
     hapticLight();
-    // q01 on the client clamps to 0..1, so an edge tap past the bounds is fine.
-    client.tapAbs(e.nativeEvent.locationX / w, e.nativeEvent.locationY / h);
-  }, [client]);
+    const px = e.nativeEvent.locationX;
+    const py = e.nativeEvent.locationY;
+    cursorToPx(px, py, false);          // sprite jumps; the tap does the send + click
+    if (gameMode) client.tapGame(px / w, py / h);
+    else client.tapAbs(px / w, py / h); // q01 clamps to 0..1 (an edge tap is fine)
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [client, gameMode]);
 
   const exit = useCallback(() => { hapticMedium(); router.back(); }, []);
 
@@ -221,7 +311,9 @@ export default function DesktopControlScreen() {
           status={status}
           failed={failed}
           configured={configured}
-          absoluteInput={fluidMode}
+          absoluteInput={absoluteInput}
+          pointerChannel={gameMode ? 'game' : 'portal'}
+          preferTouch={gameMode}
           onExit={exit}
           keyboard={kb}
         />
@@ -252,14 +344,30 @@ export default function DesktopControlScreen() {
         )}
         {/* Tap-to-point overlay (fluid tiers only): tapping the frame moves the
             real cursor there and clicks, via the portal's absolute pointer. */}
-        {fluidMode && hasVisual && (
+        {absoluteInput && hasVisual && (
           <Pressable
             style={StyleSheet.absoluteFill}
             onLayout={(e) => {
-              stageSize.current = { w: e.nativeEvent.layout.width, h: e.nativeEvent.layout.height };
+              const { width, height } = e.nativeEvent.layout;
+              stageSize.current = { w: width, h: height };
+              if (!curReady.current && width > 0 && height > 0) {
+                curReady.current = true;
+                cur.current = { x: width / 2, y: height / 2 };
+                curXY.setValue({ x: width / 2, y: height / 2 });
+              }
             }}
             onPress={onTapFrame}
             accessibilityLabel="Tap the screen to click there" />
+        )}
+        {/* Local cursor sprite (fluid mode): ring + center dot; the DOT is the
+            exact click point — same as the landscape surface. */}
+        {absoluteInput && hasVisual && (
+          <Animated.View
+            pointerEvents="none"
+            style={[styles.cursor, { transform: curXY.getTranslateTransform() }]}>
+            <View style={styles.cursorRing} />
+            <View style={styles.cursorDot} />
+          </Animated.View>
         )}
         {status !== 'connected' && (
           <View style={[styles.pill, { top: 6 }]} pointerEvents="none">
@@ -279,7 +387,7 @@ export default function DesktopControlScreen() {
       <View style={styles.trackpad} {...pad.panHandlers} accessibilityLabel="Desktop trackpad">
         <Ionicons name="move-outline" size={22} color={t.textFaint} />
         <Text style={styles.trackpadHint}>
-          {fluidMode
+          {absoluteInput
             ? 'tap the screen to point · drag here to move · two-finger scroll'
             : 'drag to move · tap to click · two-finger scroll'}
         </Text>
@@ -287,11 +395,32 @@ export default function DesktopControlScreen() {
 
       <View style={[styles.bar, { paddingBottom: insets.bottom + 8 }]}>
         <BarBtn t={t} styles={styles} icon="close" label="Exit" onPress={exit} />
-        <BarBtn t={t} styles={styles} icon="radio-button-on" label="Left" onPress={leftClick} />
-        <BarBtn t={t} styles={styles} icon="ellipsis-horizontal" label="Right" onPress={rightClick} />
-        <BarBtn t={t} styles={styles} icon="apps" label="Start"
-          onPress={() => { hapticLight(); client.sendDesktopKey('meta'); }} />
-        <BarBtn t={t} styles={styles} icon="keypad-outline" label="Keys" onPress={kb.toggle} />
+        {gameMode ? (
+          // Game Mode: the D-pad + Select ride the KEYBOARD path Steam Big Picture
+          // reads (arrows/enter). The uinput MOUSE is not grabbed in Game Mode, so
+          // this is the proven fallback alongside tap-to-point. The phone keyboard
+          // still auto-raises on a Steam text field via the {t:'osk'} subscription.
+          <>
+            <BarBtn t={t} styles={styles} icon="chevron-back" label="Left"
+              onPress={() => { hapticLight(); client.sendKey('left'); }} />
+            <BarBtn t={t} styles={styles} icon="chevron-up" label="Up"
+              onPress={() => { hapticLight(); client.sendKey('up'); }} />
+            <BarBtn t={t} styles={styles} icon="chevron-down" label="Down"
+              onPress={() => { hapticLight(); client.sendKey('down'); }} />
+            <BarBtn t={t} styles={styles} icon="chevron-forward" label="Right"
+              onPress={() => { hapticLight(); client.sendKey('right'); }} />
+            <BarBtn t={t} styles={styles} icon="checkmark-circle" label="Select"
+              onPress={() => { hapticLight(); client.sendKey('enter'); }} />
+          </>
+        ) : (
+          <>
+            <BarBtn t={t} styles={styles} icon="radio-button-on" label="Left" onPress={leftClick} />
+            <BarBtn t={t} styles={styles} icon="ellipsis-horizontal" label="Right" onPress={rightClick} />
+            <BarBtn t={t} styles={styles} icon="apps" label="Start"
+              onPress={() => { hapticLight(); client.sendDesktopKey('meta'); }} />
+            <BarBtn t={t} styles={styles} icon="keypad-outline" label="Keys" onPress={kb.toggle} />
+          </>
+        )}
         <BarBtn t={t} styles={styles} icon="arrow-undo" label="Esc"
           onPress={() => { hapticLight(); client.sendKey('esc'); }} />
       </View>
@@ -342,4 +471,17 @@ const makeStyles = (t: Palette) =>
     },
     barBtn: { alignItems: 'center', justifyContent: 'center', gap: 3, paddingHorizontal: 10, paddingVertical: 4, minWidth: 56 },
     barLabel: { color: t.textDim, fontSize: 11, fontWeight: '600' },
+    cursor: {
+      position: 'absolute', left: -11, top: -11, width: 22, height: 22,
+      alignItems: 'center', justifyContent: 'center',
+    },
+    cursorRing: {
+      position: 'absolute', width: 18, height: 18, borderRadius: 9,
+      borderWidth: 1.5, borderColor: 'rgba(255,255,255,0.95)',
+      shadowColor: '#000', shadowOpacity: 0.85, shadowRadius: 2,
+    },
+    cursorDot: {
+      width: 4, height: 4, borderRadius: 2, backgroundColor: '#fff',
+      shadowColor: '#000', shadowOpacity: 0.9, shadowRadius: 1.5,
+    },
   });

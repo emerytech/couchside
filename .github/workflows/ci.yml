@@ -230,6 +230,14 @@ jobs:
       - name: Unit tests (remote-desktop WebRTC relay)
         run: python3 tests/test_webrtc_relay.py
 
+      # Game-mode (gamescope / Big Picture) pointer input: the {t:'gm'} verb.
+      # The portal is absent in Game Mode, so absolute menu nav rides an xdotool
+      # ARGV LIST. Same security class as {t:'ma'}: holder gate + range-validated
+      # coords + a looked-up button (the client string never reaches argv) +
+      # degrade-closed when xdotool / a live gamescope session is missing.
+      - name: Unit tests (game-mode pointer input)
+        run: python3 tests/test_gamemode_input.py
+
       # Who is OFFERED Couch Mode. The gate used to grep /etc/os-release for
       # "steamos"/"bazzite", so a CachyOS deckify box with every tool, both
       # sessions and a connected panel was refused by its NAME — hiding the

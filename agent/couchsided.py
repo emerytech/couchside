@@ -11840,6 +11840,82 @@ def _screen_env(live=None):
     return env
 
 
+# Game-mode (gamescope) pointer button -> the xdotool button NUMBER. A client
+# names one of these keys; anything else falls back to left. LOOKED UP, never
+# interpolated -- the §3 analogue of Handler._PORTAL_BTNS.
+_XDO_BTN = {"l": "1", "m": "2", "r": "3"}
+
+# gamescope's Xwayland geometry, cached briefly: plugging in a TV re-probes, but
+# a stream of taps must not each spawn xdotool just to read the display size.
+_GS_GEOM = {"wh": None, "at": 0.0}
+_GS_GEOM_TTL_S = 10.0
+
+
+def _gamescope_geometry():
+    """(width, height) of gamescope's Xwayland via `xdotool getdisplaygeometry`,
+    or None. Cached ~10s. Degrades closed (§3.7): absent tool / non-zero exit /
+    unparseable output / timeout all return None, and the caller then does nothing."""
+    now = time.monotonic()
+    if _GS_GEOM["wh"] is not None and now - _GS_GEOM["at"] < _GS_GEOM_TTL_S:
+        return _GS_GEOM["wh"]
+    if shutil.which("xdotool") is None:
+        return None
+    try:
+        r = subprocess.run(["xdotool", "getdisplaygeometry"],
+                           env=_screen_env(_screen_live()), timeout=2,
+                           capture_output=True, text=True)
+    except Exception:
+        return None
+    if r.returncode != 0:
+        return None
+    try:
+        w, h = (int(v) for v in r.stdout.split())
+    except (ValueError, TypeError):
+        return None
+    if w <= 0 or h <= 0:
+        return None
+    _GS_GEOM["wh"] = (w, h)
+    _GS_GEOM["at"] = now
+    return (w, h)
+
+
+def _gamescope_pointer(nx, ny, click=False, btn_key=None):
+    """Move gamescope's Xwayland pointer to normalized (nx,ny) in 0..1 and
+    optionally click, via an xdotool ARGV LIST (never a shell string). The
+    xdg-desktop-portal is absent in Game Mode, so this is how the phone drives
+    Big Picture menus (proven on hardware 2026-08-11: `xdotool mousemove` on
+    DISPLAY=:0 routes XTEST -> gamescope EIS -> wlserver).
+
+    Degrades closed at every step: no xdotool, no live gamescope socket, or
+    unreadable geometry -> nothing runs, the session stays alive.
+
+    §3: the binary and every subcommand ('mousemove'/'click') are agent
+    CONSTANTS; the only client inputs are (nx,ny) -- already range-checked by the
+    caller, re-clamped here to integer pixels inside the display, emitted as
+    pure-digit str() tokens -- and btn_key, LOOKED UP in _XDO_BTN (unknown ->
+    default '1', the client string never reaches argv). shell=False throughout."""
+    if shutil.which("xdotool") is None:
+        return
+    # Defense in depth: a stray {t:'gm'} in desktop mode is a clean no-op (desktop
+    # drives the portal 'ma'/'mbp' path). Only act when a gamescope session lives.
+    if not any(s.startswith("gamescope-") for s in _wayland_display_sockets()):
+        return
+    geo = _gamescope_geometry()
+    if not geo:
+        return
+    w, h = geo
+    px = min(max(int(nx * w), 0), w - 1)
+    py = min(max(int(ny * h), 0), h - 1)
+    argv = ["xdotool", "mousemove", str(px), str(py)]
+    if click:
+        argv += ["click", _XDO_BTN.get(btn_key, "1")]
+    try:
+        subprocess.run(argv, env=_screen_env(_screen_live()), timeout=2,
+                       stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    except Exception:
+        return
+
+
 def _image_complete(path):
     """True when a captured image is FULLY written: >=100 bytes and carrying its
     format's end marker -- PNG's IEND chunk or JPEG's EOI (FFD9).
@@ -19267,6 +19343,21 @@ class Handler(BaseHTTPRequestHandler):
             return
         _portal_call("button", {"button": name, "state": v}, timeout=5)
 
+    def _handle_gamemode_abs(self, entry, msg):
+        """{t:'gm',x,y[,click,k]} -> gamescope Xwayland pointer (x,y normalized
+        0..1), optional click at a looked-up button. Range-validates x,y EXACTLY
+        like _handle_portal_abs; _gamescope_pointer degrades closed if xdotool or a
+        live gamescope session is missing. Best-effort: bad input is dropped, the
+        session stays alive. This is the Game-Mode counterpart of {t:'ma'} — the
+        portal is absent in gamescope, so Big Picture menu nav rides xdotool."""
+        x, y = msg.get("x"), msg.get("y")
+        if not (isinstance(x, (int, float)) and isinstance(y, (int, float))):
+            return
+        if not (0.0 <= x <= 1.0 and 0.0 <= y <= 1.0):
+            return
+        _gamescope_pointer(float(x), float(y),
+                           click=bool(msg.get("click")), btn_key=msg.get("k"))
+
     # Control frames (holder handoff) — handled regardless of hold state.
     _CONTROL_TYPES = frozenset(("grant", "deny", "request", "force"))
 
@@ -19353,6 +19444,13 @@ class Handler(BaseHTTPRequestHandler):
             return True
         if t == "mbp":
             self._handle_portal_btn(entry, msg)
+            return True
+        if t == "gm":
+            # Game-mode absolute pointer (Big Picture / gamescope menu nav). The
+            # portal is absent in Game Mode, so this drives gamescope's Xwayland
+            # via xdotool instead. Additive + tolerant like 'ma': bad coords or an
+            # absent tool are a no-op, never closing the session.
+            self._handle_gamemode_abs(entry, msg)
             return True
         if t == "kt":
             # Text passthrough is handled here, BEFORE the decode table, so it

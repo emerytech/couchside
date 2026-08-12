@@ -850,6 +850,21 @@ export class GamepadClient {
     setTimeout(() => this.sendMouseButtonPortal('l', 0), 40);
   }
 
+  /** GAME-MODE absolute pointer move: x/y normalized 0..1 of the frame. Routes to
+   *  the {t:'gm'} verb, which drives gamescope's Xwayland via xdotool — the
+   *  xdg-desktop-portal is absent in Game Mode. An agent without game-mode support
+   *  drops it, so it is safe to send unconditionally. */
+  sendGameMove(x: number, y: number): void {
+    this.sendRaw({ t: 'gm', x: q01(x), y: q01(y) });
+  }
+
+  /** GAME-MODE tap-to-point: move to (x,y) 0..1 AND left-click, atomically, in a
+   *  single {t:'gm'} frame (xdotool moves + clicks in one spawn — Game Mode has no
+   *  separate button down/up, so a tap is the whole select gesture). */
+  tapGame(x: number, y: number): void {
+    this.sendRaw({ t: 'gm', x: q01(x), y: q01(y), click: true, k: 'l' });
+  }
+
   // ---------- keyboard (v2) ----------
 
   /**
