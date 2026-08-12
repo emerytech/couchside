@@ -266,8 +266,15 @@ def _open_pipewire_fd():
 
 def verb_status():
     h264 = _h264_available()
-    with _SLOCK:
-        sess = _SESSION
+    # Read the session WITHOUT taking _SLOCK. _ensure_session holds _SLOCK for its
+    # ENTIRE run, including the Start call that BLOCKS on the user's consent (up to
+    # _CONSENT_TIMEOUT_S). The agent probes this verb on a ~2s budget to fill
+    # caps.screenstream[_h264]; blocking on _SLOCK made that probe time out whenever
+    # a consent dialog was pending, so caps read False and the app never offered the
+    # fluid tiers. A single-pointer read needs no lock: _ensure_session publishes
+    # `_SESSION = {...}` as its last step and _close_session sets it to None, both
+    # atomic under the GIL, so a reader sees either None or a fully-built dict.
+    sess = _SESSION
     base = {"ok": True, "h264": h264, "h264_profiles": sorted(_H264_PROFILES)}
     if sess is None:
         base["session"] = False
@@ -639,6 +646,30 @@ def _stream_reader(proc, codec):
         _close_session()
 
 
+def _spawn_encoder(profile, codec):
+    """Spawn the persistent gst encoder for `codec` + start its reader thread, and
+    register it in _STREAM. CALLER MUST HOLD _STREAM_LOCK. Returns the proc, or
+    None on failure. The pwfd is a dup of the session's cached PipeWire remote."""
+    with _SLOCK:
+        node = _SESSION["node"]
+    pwfd = _open_pipewire_fd()
+    if pwfd is None:
+        return None
+    argv = (_stream_h264_argv(profile, pwfd, node) if codec == "h264"
+            else _stream_argv(profile, pwfd, node))
+    try:
+        proc = subprocess.Popen(argv, stdout=subprocess.PIPE,
+                                stderr=subprocess.DEVNULL, pass_fds=(pwfd,))
+    finally:
+        try:
+            os.close(pwfd)                           # the child holds it now
+        except OSError:
+            pass
+    _STREAM.update(proc=proc, profile=profile, codec=codec)
+    threading.Thread(target=_stream_reader, args=(proc, codec), daemon=True).start()
+    return proc
+
+
 def stream(profile, conn, codec):
     """Subscribe `conn` to the session's persistent encoder for `codec` ("mjpeg"
     or "h264"), spawning it on first use, then block until the subscription ends —
@@ -647,43 +678,58 @@ def stream(profile, conn, codec):
 
     MJPEG and H.264 are MUTUALLY EXCLUSIVE — one encoder per session (they can't
     both read the single portal ScreenCast node). If an encoder of the OTHER codec
-    is already running we REFUSE (return without subscribing); the agent then
-    closes the socket and the app degrades to its fallback. The app commits to one
-    tier per box (caps-driven), so a codec clash only happens when two clients
-    disagree — rare, and it self-heals once the running encoder hits its idle
-    TTL and the session tears down. We do NOT preempt by killing the running gst:
-    two gsts briefly sharing the node fail 'not-negotiated (-4)' (proven), and a
-    kill-then-respawn re-encodes stale keepalive buffers (also proven)."""
+    is already running we PREEMPT it (last-opener wins across codecs): this happens
+    when the app moves MJPEG->H.264 after the box gains a VA encoder, and REFUSING
+    left the app wedged on the old codec (the /ws/h264 socket closed and it demoted
+    straight back to MJPEG). Preempt safely: detach the old encoder under the lock,
+    then terminate it and WAIT for it to fully exit OUTSIDE the lock, so two gsts
+    never briefly share the node (the proven 'not-negotiated (-4)' / stale-keepalive
+    trap) — a fully-exited gst releases the node's buffer pool before the new one
+    opens it."""
     if _ensure_session() is None:
         return
+    # 1. Detect a codec switch under the lock + DETACH the old encoder (don't reap
+    #    while holding the lock — the wait would block the reader).
+    preempt = old_sub2 = old_done2 = None
     with _STREAM_LOCK:
         proc = _STREAM["proc"]
         if proc is not None and proc.poll() is not None:
             proc = None                              # crashed: allow respawn
             _STREAM.update(proc=None, profile=None, codec=None)
         if proc is not None and _STREAM["codec"] != codec:
-            return                                   # other codec live -> refuse
-        if proc is None:
-            with _SLOCK:
-                node = _SESSION["node"]
-            pwfd = _open_pipewire_fd()
-            if pwfd is None:
-                return
-            argv = (_stream_h264_argv(profile, pwfd, node) if codec == "h264"
-                    else _stream_argv(profile, pwfd, node))
+            preempt = proc
+            old_sub2, old_done2 = _STREAM["sub"], _STREAM["done"]
+            _STREAM.update(proc=None, profile=None, codec=None,
+                           sub=None, done=None, idle_since=None)
+    # 2. Reap the preempted encoder OUTSIDE the lock: wake its subscriber, then
+    #    terminate + wait for it to fully exit before we spawn the new codec.
+    if preempt is not None:
+        if old_done2 is not None:
+            old_done2.set()
+        if old_sub2 is not None:
             try:
-                proc = subprocess.Popen(
-                    argv,
-                    stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
-                    pass_fds=(pwfd,))
-            finally:
-                try:
-                    os.close(pwfd)                   # the child holds it now
-                except OSError:
-                    pass
-            _STREAM.update(proc=proc, profile=profile, codec=codec)
-            threading.Thread(target=_stream_reader, args=(proc, codec),
-                             daemon=True).start()
+                old_sub2.close()
+            except OSError:
+                pass
+        try:
+            preempt.terminate()
+            preempt.wait(timeout=5)
+        except Exception:
+            try:
+                preempt.kill()
+            except Exception:
+                pass
+    # 3. Spawn the new codec (if needed) + subscribe.
+    with _STREAM_LOCK:
+        proc = _STREAM["proc"]
+        if proc is not None and proc.poll() is not None:
+            proc = None
+            _STREAM.update(proc=None, profile=None, codec=None)
+        if proc is not None and _STREAM["codec"] != codec:
+            return                                   # a racing switch won; bail
+        if proc is None:
+            if _spawn_encoder(profile, codec) is None:
+                return
         # Subscribe, last-opener wins: kick + close any current subscriber.
         conn.settimeout(10)                          # a wedged peer can't block the reader
         done = threading.Event()

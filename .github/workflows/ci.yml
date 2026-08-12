@@ -257,6 +257,14 @@ jobs:
       - name: Unit tests (remote-desktop H.264 stream relay)
         run: python3 tests/test_h264_stream.py
 
+      # Portal helper stream-path fixes (a fake `gi` shim makes it importable):
+      # verb_status must NOT block on _SLOCK (a pending consent held it and
+      # deadlocked the agent's 2s caps probe -> caps read False -> no fluid tier),
+      # and stream() must PREEMPT a different-codec encoder on a MJPEG->H.264
+      # switch instead of refusing (a refusal wedged the app back on MJPEG).
+      - name: Unit tests (remote-desktop portal helper logic)
+        run: python3 tests/test_portal_helper_logic.py
+
       # Game-mode (gamescope / Big Picture) pointer input: the {t:'gm'} verb.
       # The portal is absent in Game Mode, so absolute menu nav rides an xdotool
       # ARGV LIST. Same security class as {t:'ma'}: holder gate + range-validated
