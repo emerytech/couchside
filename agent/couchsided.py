@@ -16018,7 +16018,13 @@ _SCREEN_STREAM_DEFAULT = "720p20"
 # refused and the app falls back to MJPEG then the still-frame poller. Profile
 # ids are a CLOSED SET, looked up never interpolated; the helper owns the actual
 # pipeline and re-validates the key. Must mirror the helper's _H264_PROFILES.
-H264_STREAM_MAX = 1
+# 2, not 1: the app REMOUNTS the decoder WebView on a portrait<->landscape
+# rotation (a fresh /ws/h264), so the new session briefly overlaps the old one's
+# teardown. One slot of headroom lets the rotate through; the helper still runs a
+# SINGLE encoder (H.264/MJPEG mutually exclusive) and hands the last opener the
+# subscription, so two agent sessions never mean two encoders. Over the cap a new
+# /ws/h264 is refused (the app falls back to MJPEG then the poller).
+H264_STREAM_MAX = 2
 _h264_stream_sema = threading.BoundedSemaphore(H264_STREAM_MAX)
 _H264_STREAM_PROFILES = frozenset(("720p30", "720p60", "1080p30", "1080p60"))
 _H264_STREAM_DEFAULT = "720p30"

@@ -23,6 +23,7 @@ import {
 } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
+import { H264DecoderView, type H264Msg, type H264Profile } from '@/components/H264DecoderView';
 import { ScreenVideo } from '@/components/ScreenVideo';
 import type { GamepadClient, GamepadStatus } from '@/lib/gamepad';
 import { hapticLight, hapticMedium } from '@/lib/haptics';
@@ -41,10 +42,17 @@ const DOUBLE_TAP_MS = 300;
 const clamp = (v: number, lo: number, hi: number) => Math.max(lo, Math.min(hi, v));
 
 export function DesktopFullscreen({
-  client, streamURL, frame, status, failed, configured, absoluteInput,
+  client, h264 = null, streamURL, frame, status, failed, configured, absoluteInput,
   pointerChannel = 'portal', preferTouch = false, onExit, keyboard,
 }: {
   client: GamepadClient;
+  /** Tier 1: H.264 WebCodecs decode (a WebView opening the box's /ws/h264). When
+   *  set, it is the video layer; `frame` (the poller) covers its black canvas
+   *  until the decoder paints. null on the MJPEG / poller tiers. */
+  h264?: {
+    host: string; port: number; token: string;
+    profile: H264Profile; onMessage: (m: H264Msg) => void;
+  } | null;
   streamURL: string | null;
   frame: string | null;
   status: GamepadStatus;
@@ -237,7 +245,7 @@ export function DesktopFullscreen({
   );
 
   const styles = makeStyles(t);
-  const showCursor = absoluteInput && (streamURL != null || frame != null);
+  const showCursor = absoluteInput && (h264 != null || streamURL != null || frame != null);
 
   return (
     <View style={styles.root}>
@@ -246,7 +254,23 @@ export function DesktopFullscreen({
         style={{
           position: 'absolute', left: rect.x, top: rect.y, width: rect.w, height: rect.h,
         }}>
-        {streamURL ? (
+        {h264 ? (
+          // Tier 1: H.264 WebCodecs decode. pointerEvents=none so the input
+          // surface above always wins the touch; the poller `frame` covers the
+          // black canvas until the decoder paints its first frame.
+          <>
+            <View pointerEvents="none" style={StyleSheet.absoluteFill}>
+              <H264DecoderView
+                host={h264.host} port={h264.port} token={h264.token}
+                profile={h264.profile} onMessage={h264.onMessage}
+                style={StyleSheet.absoluteFill}
+              />
+            </View>
+            {frame && (
+              <Image source={{ uri: frame }} style={StyleSheet.absoluteFill} resizeMode="contain" />
+            )}
+          </>
+        ) : streamURL ? (
           <ScreenVideo streamURL={streamURL} style={StyleSheet.absoluteFill} />
         ) : frame ? (
           <Image source={{ uri: frame }} style={StyleSheet.absoluteFill} resizeMode="contain" />

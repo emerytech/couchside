@@ -170,10 +170,13 @@ try:
     check("known profile passed through", st.session_profile, "1080p60")
 
     # (f) over the concurrency cap -> the socket is CLOSED and NO session opens.
+    #     Exhaust EVERY slot (H264_STREAM_MAX, not a hardcoded 1) so the guard is
+    #     pinned to the actual cap.
     portal_calls = []
     real_portal_call = cs._portal_call
     cs._portal_call = lambda verb, arg=None, timeout=10: portal_calls.append(verb)
-    acquired = cs._h264_stream_sema.acquire(blocking=False)
+    acquired = [cs._h264_stream_sema.acquire(blocking=False)
+                for _ in range(cs.H264_STREAM_MAX)]
     try:
         st = ws_stub({}, stub_session=False)           # real _h264_session
         st._h264_session(cs._H264_STREAM_DEFAULT)
@@ -181,8 +184,9 @@ try:
         check("over cap -> a WS frame was sent (CLOSE, app falls back)",
               len(st._sendall) >= 1, True)
     finally:
-        if acquired:
-            cs._h264_stream_sema.release()
+        for a in acquired:
+            if a:
+                cs._h264_stream_sema.release()
         cs._portal_call = real_portal_call
 
     # --- 3. profile allowlist discipline (§3.1) -----------------------------
