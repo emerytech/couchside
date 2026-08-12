@@ -46,7 +46,7 @@ except ImportError:  # pragma: no cover
     fcntl = None
 
 APP_NAME = "couchside-agent"
-VERSION = "2.9.79"
+VERSION = "2.9.80"
 UID = os.getuid()
 XDG_RUNTIME_DIR = "/run/user/%d" % UID
 
@@ -1583,7 +1583,7 @@ def set_caps(mock):
                  "steamlink", "gaming", "steaminstall", "utilities",
                  "streamhost", "steammenus", "boxbattery", "file_upload",
                  "session_default", "display_info", "player", "screenstream",
-                 "screenstream_h264")}
+                 "screenstream_h264", "audioswitch")}
         return
     CAPS = {
         "gamepad": _uinput_writable(),
@@ -1625,6 +1625,10 @@ def set_caps(mock):
         # libnice + a VA encoder). Linux-only, additive; absent -> the app uses
         # MJPEG (caps.screenstream) then the poller. /ws/webrtc re-checks live.
         "screenstream_h264": safe(screenstream_h264_available),
+        # Choose the box's default audio output (TV/HDMI <-> Bluetooth <-> analog)
+        # from the phone. Linux-only: pactl. A deliberate user pick, so unlike the
+        # Couch Mode audio move it never guesses a sink to restore.
+        "audioswitch": safe(audioswitch_available),
     }
 
 
@@ -3860,10 +3864,12 @@ def _couch_run(cmd, timeout=25, max_out=1500):
 
 
 def _pactl_sinks():
-    """Parse `pactl list sinks` into [{name, hdmi, available}]. `available` is
-    True only when a port on the sink reports availability 'available' (an
+    """Parse `pactl list sinks` into [{name, desc, hdmi, available}]. `available`
+    is True only when a port on the sink reports availability 'available' (an
     HDMI/DP output with a live display), so the TV's audio sink is the one that's
-    both hdmi and available. [] when pactl is missing or errors."""
+    both hdmi and available. `desc` is the human "Description:" ("LG TV", "Built-in
+    Audio Analog Stereo") for the switcher UI, "" when pactl omitted it. [] when
+    pactl is missing or errors."""
     if not shutil.which("pactl"):
         return []
     r = _couch_run(["pactl", "list", "sinks"], timeout=8, max_out=None)
@@ -3874,8 +3880,10 @@ def _pactl_sinks():
         s = raw.strip()
         if s.startswith("Name:"):
             cur = {"name": s.split(":", 1)[1].strip(),
-                   "hdmi": False, "available": False}
+                   "desc": "", "hdmi": False, "available": False}
             sinks.append(cur)
+        elif cur is not None and s.startswith("Description:"):
+            cur["desc"] = s.split(":", 1)[1].strip()
         elif cur is not None and "type: HDMI" in s:
             cur["hdmi"] = True
             # port line ends "..., available)" vs "..., not available)"
@@ -3957,6 +3965,100 @@ def _restore_default_sink():
     if _current_default_sink() == want:
         return {"skipped": True, "reason": "already the default"}
     return _couch_run(["pactl", "set-default-sink", want])
+
+
+# ---- Audio output switcher (cap: audioswitch) -----------------------------
+# Choose which sink the box plays through -- TV/HDMI, a Bluetooth speaker, the
+# built-in analog out -- from the phone. DISTINCT from the Couch Mode audio move
+# above: that AUTO-moves audio to the TV and remembers the prior sink to restore
+# it, which is where "guessing a sink cost a user their audio" came from (see the
+# _PRIOR_DEFAULT_SINK note). This is a DELIBERATE user pick with no restore -- the
+# user names the exact device they want -- so it carries none of that hazard.
+
+# The off-box contract the app develops against (--mock). Shapes mirror a real
+# `pactl list sinks`: a TV on HDMI, a Bluetooth speaker, the built-in analog out.
+MOCK_SINKS = [
+    {"name": "alsa_output.pci-0000_00_1f.3.hdmi-stereo",
+     "desc": "LG TV (HDMI)", "hdmi": True, "available": True},
+    {"name": "bluez_output.AC_12_34_56_78_9A.1",
+     "desc": "Soundcore Motion+ (Bluetooth)", "hdmi": False, "available": True},
+    {"name": "alsa_output.pci-0000_00_1f.3.analog-stereo",
+     "desc": "Built-in Audio Analog Stereo", "hdmi": False, "available": True},
+]
+
+# Remembered across --mock requests so a harness tap on a sink actually MOVES the
+# default (observe both states, CLAUDE.md §11) instead of snapping back to the
+# first one. Mock-only; the real path reads pactl's live default every call.
+_MOCK_DEFAULT_SINK = None
+
+
+def set_mock_default_sink(name):
+    global _MOCK_DEFAULT_SINK
+    _MOCK_DEFAULT_SINK = name
+
+
+def audioswitch_available():
+    """True when the box can enumerate and set the default audio sink, i.e. pactl
+    is on PATH. Read-only probe; degrades closed (no pactl -> False, never raises)."""
+    return shutil.which("pactl") is not None
+
+
+def audio_state(mock):
+    """Payload for GET /api/audio: the sinks the box can play through, each tagged
+    with whether it is the current default. Read-only. In --mock, the fixed
+    MOCK_SINKS with the remembered (or first) sink marked default so the harness
+    can exercise the switch off-box and SEE it land."""
+    src = MOCK_SINKS if mock else _pactl_sinks()
+    if not mock and not audioswitch_available():
+        return {"available": False, "default": None, "sinks": []}
+    if mock:
+        default = _MOCK_DEFAULT_SINK or (src[0]["name"] if src else None)
+    else:
+        default = _current_default_sink()
+    sinks = [{"name": s["name"], "desc": s.get("desc", ""), "hdmi": s["hdmi"],
+              "available": s["available"], "default": s["name"] == default}
+             for s in src]
+    return {"available": True, "default": default, "sinks": sinks}
+
+
+def _move_sink_inputs(name):
+    """Best-effort: move every currently-playing stream onto `name` so the switch
+    takes effect on audio that is ALREADY playing, not just the next app to start.
+    Each input id comes from pactl's OWN `list sink-inputs short` output -- never
+    from the client -- and is passed as one argv element. Failures are swallowed:
+    a stream that refuses to move must not fail the switch."""
+    r = _couch_run(["pactl", "list", "sink-inputs", "short"], timeout=8)
+    if not r["ok"]:
+        return
+    for line in (r["stdout"] or "").splitlines():
+        sid = line.split("\t", 1)[0].strip()
+        if sid.isdigit():
+            _couch_run(["pactl", "move-sink-input", sid, name])
+
+
+def set_audio_default(name):
+    """Make `name` the box's default audio sink.
+
+    ALLOWLIST (CLAUDE.md §3.1/§3.2): `name` must be a sink pactl ITSELF just
+    reported -- it is looked up in the live `_pactl_sinks()` set, never
+    interpolated. An unknown name returns None and NOTHING runs; the caller maps
+    that to 404. The name only ever reaches subprocess as a single argv element of
+    a fixed `pactl set-default-sink` command -- no shell, no format string.
+
+    No remember/restore: the user chose this device explicitly, so there is no
+    sink to guess on the way back (the hazard the _PRIOR_DEFAULT_SINK note above
+    documents). Returns the new state on success, {"ok": False, "error": ...} on a
+    pactl failure, or None when `name` is not a current sink."""
+    if not isinstance(name, str) or name not in [s["name"] for s in _pactl_sinks()]:
+        return None
+    r = _couch_run(["pactl", "set-default-sink", name])
+    if not r["ok"]:
+        return {"ok": False,
+                "error": (r.get("stderr") or "").strip() or "set-default-sink failed"}
+    # Move audio that is already playing, too -- otherwise the change only applies
+    # to the next app to open a stream, which reads as "nothing happened".
+    _move_sink_inputs(name)
+    return {"ok": True, "default": _current_default_sink() or name}
 
 
 def _couch_run_first(cmds):
@@ -17284,6 +17386,13 @@ class Handler(BaseHTTPRequestHandler):
                 # note above display_info() for what each name may claim.
                 data = mock_display_payload() if self.mock else display_payload()
                 self._send(200, data, started)
+            elif path == "/api/audio":
+                # READ-ONLY: the audio sinks this box can play through + which is
+                # the current default, for the output switcher (cap `audioswitch`).
+                # Always 200 with `available` (like /api/display-info): the app
+                # tells "agent too old" (404) apart from "no pactl here"
+                # (available:false). The set is POST /api/audio/default.
+                self._send(200, audio_state(self.mock), started)
             elif path == "/api/displays":
                 # Probe-and-appear: 404 unless this box can do the desktop->TV
                 # Game Mode handoff (SteamOS/Bazzite, 2+ outputs), so the app
@@ -17734,6 +17843,37 @@ class Handler(BaseHTTPRequestHandler):
                 ok = open_steam_menu(menu_id)
                 self._send(200 if ok else 500,
                            {"ok": ok, "id": menu_id}, started)
+                return
+            if path == "/api/audio/default":
+                # Set the box's default audio sink. Same allowlist shape as
+                # /api/steam/menus: the client `sink` is LOOKED UP in the live set
+                # of sinks pactl itself reports (mock: MOCK_SINKS) and 404s if it
+                # is not one of them -- never interpolated into a command. On a
+                # match, set_audio_default() passes it as a single argv element.
+                try:
+                    req = json.loads(body.decode("utf-8")) if body else {}
+                    if not isinstance(req, dict):
+                        raise ValueError("body must be a JSON object")
+                except (ValueError, TypeError, UnicodeDecodeError):
+                    self._send(400, {"error": "body must be a JSON object"},
+                               started)
+                    return
+                sink = req.get("sink")
+                if self.mock:
+                    if not isinstance(sink, str) or sink not in [
+                            s["name"] for s in MOCK_SINKS]:
+                        self._send(404, {"error": "unknown sink"}, started)
+                        return
+                    # Remember it so the next GET /api/audio shows the move (the
+                    # harness needs to SEE the default change, not snap back).
+                    set_mock_default_sink(sink)
+                    self._send(200, {"ok": True, "default": sink}, started)
+                    return
+                res = set_audio_default(sink)
+                if res is None:
+                    self._send(404, {"error": "unknown sink"}, started)
+                    return
+                self._send(200 if res.get("ok") else 500, res, started)
                 return
 
             prefix = "/api/actions/"

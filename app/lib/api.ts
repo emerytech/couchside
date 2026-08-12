@@ -224,6 +224,14 @@ export type BoxCaps = {
    * built with react-native-webrtc, else it falls back to screenstream (MJPEG).
    */
   screenstream_h264?: boolean;
+  /**
+   * Audio output switcher (agent >= 2.9.80): the box can enumerate its audio
+   * sinks and set the default from the phone (TV/HDMI ↔ Bluetooth ↔ analog).
+   * Linux-only — it drives pactl. Gates the Console-tab "AUDIO OUTPUT" card.
+   * Optional: absent on older agents and on Windows, so undefined reads as
+   * "unknown, probe" — only an explicit false (no pactl) hides the card.
+   */
+  audioswitch?: boolean;
 };
 
 /** One Setup → Utilities helper + its live state, from GET /api/utilities.
@@ -402,6 +410,26 @@ export type DisplayInfo = {
         sink, so the two are separate fields and both are shown. */
     input?: string;
   };
+};
+
+/** One audio output the box can play through, from GET /api/audio (agent >= 2.9.80,
+    cap `audioswitch`). `name` is the pactl node id the switch POSTs back verbatim;
+    `desc` is the human label shown in the row. */
+export type AudioSink = {
+  name: string;
+  desc: string;
+  hdmi: boolean;
+  available: boolean;
+  /** True for the sink pactl currently reports as the default. */
+  default: boolean;
+};
+
+/** GET /api/audio: the box's audio outputs + which is the current default.
+    `available: false` = no pactl on this box (the card hides). */
+export type AudioState = {
+  available: boolean;
+  default: string | null;
+  sinks: AudioSink[];
 };
 
 /** One stage of the Couch Mode ceremony (GET /api/couch-mode/status, agent
@@ -1201,7 +1229,8 @@ export function capsEqual(a?: BoxCaps, b?: BoxCaps): boolean {
     a.steaminstall === b.steaminstall &&
     a.utilities === b.utilities &&
     a.screenstream === b.screenstream &&
-    a.screenstream_h264 === b.screenstream_h264
+    a.screenstream_h264 === b.screenstream_h264 &&
+    a.audioswitch === b.audioswitch
   );
 }
 
@@ -2435,6 +2464,35 @@ export const api = {
   ): Promise<DisplayInfo | null> {
     return probeGated(caps?.display_info, () =>
       probeOrNull(request<DisplayInfo>(settings, '/api/display-info')));
+  },
+
+  /**
+   * The box's audio outputs + the current default (agent >= 2.9.80, cap
+   * `audioswitch`). Probe-and-appear: null on a 404 (older agent) so the AUDIO
+   * OUTPUT card hides; an `available: false` payload (no pactl) hides it too.
+   */
+  audio(
+    settings: ConnSettings,
+    caps: BoxCaps | undefined = cachedCaps(settings),
+  ): Promise<AudioState | null> {
+    return probeGated(caps?.audioswitch, () =>
+      probeOrNull(request<AudioState>(settings, '/api/audio')));
+  },
+
+  /**
+   * Make `sink` the box's default output. `sink` is a `name` the box itself sent
+   * in audio()'s sink list — the agent looks it up in its live set and 404s an
+   * unknown one, so this can never point audio at something the box didn't offer.
+   * Resolves false on any failure; the caller re-reads /api/audio to show the REAL
+   * default rather than trusting this return (CLAUDE.md §11: observe the state).
+   */
+  setAudioDefault(settings: ConnSettings, sink: string): Promise<boolean> {
+    return request<{ ok: boolean }>(settings, '/api/audio/default', {
+      method: 'POST',
+      body: { sink },
+    })
+      .then((r) => !!r?.ok)
+      .catch(() => false);
   },
 
   /** Enter Couch Mode: fling Game Mode onto `output` (HDR optional). */

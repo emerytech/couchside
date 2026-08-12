@@ -18,6 +18,14 @@ the same thing regardless of what actually changed.
 Write for the person holding the phone, not for the commit log. They are
 deciding whether to press "Update now" on a machine across the room.
 
+## 2.9.80
+
+**Switch your audio output from the couch.** A new AUDIO OUTPUT card on the
+Console tab lists the devices your box can play through — the TV over HDMI, a
+Bluetooth speaker, the built-in output — and one tap moves the sound there,
+including whatever is already playing. LAN-only like everything else; boxes
+without PipeWire/PulseAudio simply don't show the card.
+
 ## 2.9.79
 
 **Steer your Steam Big Picture menus from the phone.** With the remote-desktop

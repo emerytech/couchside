@@ -6,6 +6,7 @@ import { Gated } from '@/components/Gated';
 import { TourAnchor } from '@/components/TourAnchor';
 import { registerScroller } from '@/hooks/useTourAnchor';
 import { DisplayAudioCard } from '@/components/DisplayAudioCard';
+import { AudioOutputCard } from '@/components/AudioOutputCard';
 import { FileDropCard } from '@/components/FileDropCard';
 import { GamingCard } from '@/components/GamingCard';
 import { NowPlayingCard } from '@/components/NowPlayingCard';
@@ -137,7 +138,7 @@ function ConsoleScreen() {
 
   // --- Console card layout: hold-to-edit reorder + hide (persisted) --------
   const CARD_ORDER_CANON = [
-    'nowplaying', 'streamhost', 'gaming', 'vitals', 'screen', 'display', 'units', 'filedrop',
+    'nowplaying', 'streamhost', 'gaming', 'vitals', 'screen', 'display', 'audio', 'units', 'filedrop',
   ];
   const cardLayout = useConsoleLayout();
   const [editingCards, setEditingCards] = useState(false);
@@ -287,6 +288,7 @@ function ConsoleScreen() {
         <DisplayAudioCard />
       </TourAnchor>
     ),
+    audio: <AudioOutputCard />,
     units: configured ? (
       <Card title="UNITS" index={5}>
         {units.error != null && !units.data ? (
