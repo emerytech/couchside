@@ -2149,6 +2149,23 @@ function SetupBody() {
               <Ionicons name="chevron-forward" size={16} color={t.textDim} />
             </Pressable>
 
+            {/* TEMP diagnostic (P4b H.264 decoder, Stage C) — remove with the route. */}
+            <Pressable
+              onPress={() => {
+                hapticLight();
+                router.push('/h264-test');
+              }}
+              style={({ pressed }) => [styles.rateRow, pressed && styles.pressed]}>
+              <Ionicons name="videocam-outline" size={18} color={t.blue} />
+              <View style={styles.rateBody}>
+                <Text style={styles.rateTitle}>H.264 decoder test (diagnostic)</Text>
+                <Text style={styles.rateSub}>
+                  Live-decodes the box&apos;s /ws/h264 stream to a canvas. Temporary.
+                </Text>
+              </View>
+              <Ionicons name="chevron-forward" size={16} color={t.textDim} />
+            </Pressable>
+
             <Text style={styles.hint}>
               Each box&apos;s Couchside service listens on http://&lt;host&gt;:&lt;port&gt;. All routes except
               /api/ping require the bearer token.
