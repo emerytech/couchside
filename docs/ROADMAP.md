@@ -233,20 +233,29 @@ Entry fields: `priority` (P0 blocker → P3 nice) · `risk` · `affects` · `dep
   probed + REJECTED as dead on this kwin); install.sh refreshes the opt-in helper on agent update; Console SCREEN
   card moved up + hold-to-edit reorder/hide ([[console-hold-to-edit-cards]]). **Full detail: auto-memory
   [[remote-desktop-and-screen-capture]].** BEFORE MERGE: strip the TEMP `[screenstat]` latency instrumentation.
-- **P4b (H.264) = UNBLOCKED via WebCodecs, box side SHIPPED to the spike branch.** The react-native-webrtc path is a
-  confirmed DEAD END on RN 0.86 (RTCView crash + 14s setRemoteDescription → `WEBRTC_TIER_ENABLED=false` STAYS). The
-  unblock is **H.264 Annex-B over a plain WebSocket → WebCodecs `VideoDecoder` → `<canvas>` in react-native-webview**
-  (moonlight-web arch; the WKWebView VideoDecoder gate PASSED on device — iOS 18.7, HW decode for all three H.264
-  profiles). No SDP/ICE/libnice (the gap that shelved the webrtc P4b). **Stage B (box) DONE + HARDWARE-VERIFIED
-  2026-08-12 on bazzite 10.1.1.60** (branch `spike/webcodecs-h264`): helper `stream_h264` verb + codec-aware
-  persistent encoder (`vah264enc → h264parse config-interval=-1 → byte-stream/alignment=au`, raw Annex-B passthrough,
-  MJPEG untouched) + relaxed `_h264_available` (VA encoder present, drops the webrtc-only nice check); agent `/ws/h264`
-  (mirrors `/ws/screen`, raw in-order pump, cap 1); `tests/test_h264_stream.py` (16 checks, CI-wired). Live e2e:
-  ~32 fps @ 720p30, `AUD·SPS·PPS·IDR` framing, 3 keyframes / 5s. `caps.screenstream_h264` is now honest = VA encoder
-  present. NEXT: **Stage C** (the WebView VideoDecoder page over Metro) then **Stage D** (wire tier-1 in desktop.tsx +
-  measure fps/latency on device, strip the temp probe, fold into the store build with the rn-webrtc dep strip). The
-  webrtc box side (B1 helper webrtc verb + A0 /ws/webrtc) stays as the parked ceiling reference. Detail in
-  [[h264-tier-webcodecs-not-webrtc]] + [[remote-desktop-and-screen-capture]].
+- **P4b (H.264) = BUILT + DEVICE-VERIFIED via WebCodecs (Stages B/C/D all done, branch `spike/webcodecs-h264`).** The
+  react-native-webrtc path was a DEAD END on RN 0.86; the unblock is **H.264 Annex-B over a plain WebSocket → WebCodecs
+  `VideoDecoder` → `<canvas>` in react-native-webview** (moonlight-web arch). No SDP/ICE/libnice. **All device-verified
+  2026-08-12 on bazzite 10.1.1.60 + the owner's iPhone (iOS 18.7):**
+  - **Stage B (box, 6209e5a):** helper `stream_h264` verb + codec-aware persistent encoder (`vah264enc → h264parse
+    config-interval=-1 → byte-stream/alignment=au`, raw Annex-B passthrough, MJPEG untouched) + relaxed
+    `_h264_available` (VA encoder present; dropped the webrtc-only nice check); agent `/ws/h264` (mirrors `/ws/screen`,
+    raw in-order pump); `tests/test_h264_stream.py` (16 checks, CI-wired). Live e2e ~32 fps @ 720p30, AUD·SPS·PPS·IDR.
+  - **Stage C (decoder, e17d47a):** `components/H264DecoderView.tsx` — a react-native-webview whose OWN JS opens
+    ws://box/ws/h264, segments AUs on the AUD start code, parses the codec from the SPS, feeds `VideoDecoder` (Annex-B,
+    no description, optimizeForLatency), paints to a canvas. baseUrl `http://localhost/` = secure context + ws:// with no
+    mixed-content block (the KEY). Device: live desktop rendered, secureCtx/hasVideoDecoder true, all 4 profiles, errs=0
+    q=0 (decode headroom), first frame 0.9–1.7s.
+  - **Stage D (wire, e9b6f3e):** H.264 is tier 1 in `desktop.tsx` (> MJPEG > poller) in BOTH the portrait laptop layout
+    and the landscape `DesktopFullscreen`; input overlays unchanged (WebView pointerEvents=none, tap-to-point over the
+    canvas). Poller covers the black canvas during spin-up; one-way demote to MJPEG on no-decoder / cfgerror /
+    close-before-frame. Agent cap 2 for the rotate remount. Owner verdict: "very smooth", tap + rotate "works great".
+  - **Cleanup (4f89a5d, 2747559):** stripped the temp probe/test routes; stripped the dead react-native-webrtc dep
+    (~20MB + camera/mic/SYSTEM_ALERT_WINDOW Play perms) + its config plugin + `.npmrc`. Tiers are now H.264 → MJPEG →
+    poller. The AGENT keeps `/ws/webrtc` + the helper webrtc verb as the parked ceiling reference.
+  - **REMAINING:** an EAS app-store build (billed cloud; owner's timing) to ship H.264 to users, and merge the spike
+    branch. Steam Machine (AMD Navi33) lacks a gst VA encoder → stays MJPEG; H.264 is Intel/AMD-with-VA boxes.
+  Detail in [[h264-tier-webcodecs-not-webrtc]] + [[remote-desktop-and-screen-capture]].
 - **📋 SUB-ENTRY — Game-mode (gamescope) MENU navigation (owner ask 2026-08-11; PROVEN doable, NOT built).** Owner
   narrowed scope to "just menu nav, not control while a game runs." Hardware-probed on lenovodesktop (gamescope
   1.4.10): **VIEW already works** — the agent's existing gamescopectl still-frame reads the real scanout buffer, so
