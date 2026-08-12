@@ -1,7 +1,9 @@
-Flash an OpenPuck receiver from the couch: turn a cheap nRF52840 board into a Steam Controller 2 wireless dongle, right from your phone.
+Remote desktop, now fluid. See and control your box's whole desktop from your phone, with smooth hardware-accelerated H.264 video. Move the cursor with a trackpad or just tap where you want to click, type with a full keyboard, and flip to a full-screen landscape mode.
 
-Your whole library, instantly — browse games you own but haven't installed, and install them on the box from the couch.
+Navigate Steam's Big Picture from the couch — point and tap your way through Game Mode menus.
 
-Game ratings on your library: Metacritic, Steam reviews, and Steam Deck/Proton compatibility, plus Open in Steam.
+Switch the box's audio output from your phone: speakers, headphones, or HDMI, without getting up.
 
-New Playlog: queue and reorder the games you want to play next.
+Set the colour of your box's front light bar right in the app.
+
+Also new: a quick note scratchpad on the controller. Plus fixes and polish.

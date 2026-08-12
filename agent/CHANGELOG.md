@@ -20,12 +20,26 @@ deciding whether to press "Update now" on a machine across the room.
 
 ## 2.9.81
 
+Three things land here if you're coming from an older agent.
+
+**Fluid remote desktop.** When your box has a hardware H.264 video encoder, the
+Control screen now streams smooth, hardware-decoded video instead of the older
+frame-by-frame picture — much closer to sitting at the machine, with the same
+trackpad, tap-to-point, keyboard and landscape mode. Boxes without an encoder
+keep the existing view automatically. LAN-only, and it uses the same remote-
+desktop module you already opted into.
+
+**Switch your audio output from the couch.** A new AUDIO OUTPUT card on the
+Console tab lists the devices your box can play through — the TV over HDMI, a
+Bluetooth speaker, the built-in output — and one tap moves the sound there,
+including whatever is already playing. Boxes without PipeWire/PulseAudio simply
+don't show the card.
+
 **Set your box's light from the phone.** If your machine has a controllable
-front RGB or status LED, a new LIGHT card on the Console tab lets you pick a
-colour and brightness (or turn it off) with a tap. LAN-only like everything else.
-Boxes with no controllable LED simply don't show the card — and note that on many
-machines the LED files are locked to the system account, so this needs a one-time
-permission grant (coming in the installer) before it can take effect.
+front RGB or status LED, a new LIGHT card lets you pick a colour and brightness
+(or turn it off) with a tap. Boxes with no controllable LED don't show the card —
+and note that on many machines the LED files are locked to the system account, so
+this needs a one-time permission grant before it can take effect.
 
 ## 2.9.80
 
