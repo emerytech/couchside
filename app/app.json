@@ -3,7 +3,7 @@
     "name": "Couchside",
     "slug": "rescue-remote",
     "owner": "ets3d-llc",
-    "version": "2.9.44",
+    "version": "2.9.45",
     "orientation": "default",
     "icon": "./assets/images/icon.png",
     "scheme": "couchside",
@@ -11,7 +11,7 @@
     "ios": {
       "supportsTablet": true,
       "bundleIdentifier": "com.ets3d.rescueremote",
-      "buildNumber": "171",
+      "buildNumber": "172",
       "infoPlist": {
         "ITSAppUsesNonExemptEncryption": false,
         "NSAppTransportSecurity": {
@@ -32,7 +32,7 @@
         "monochromeImage": "./assets/images/android-icon-monochrome.png"
       },
       "predictiveBackGestureEnabled": false,
-      "versionCode": 91
+      "versionCode": 92
     },
     "web": {
       "bundler": "metro",
@@ -41,13 +41,6 @@
     },
     "plugins": [
       "expo-router",
-      [
-        "@config-plugins/react-native-webrtc",
-        {
-          "cameraPermission": "Couchside does not use your camera. This permission is declared by the WebRTC video library Couchside uses to stream your computer's screen to this device.",
-          "microphonePermission": "Couchside does not use your microphone. This permission is declared by the WebRTC video library Couchside uses to stream your computer's screen to this device."
-        }
-      ],
       [
         "expo-splash-screen",
         {

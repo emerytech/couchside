@@ -38,14 +38,13 @@ import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
 import { DesktopFullscreen } from '@/components/DesktopFullscreen';
 import { useDesktopKeyboard } from '@/components/DesktopKeyboard';
-import { ScreenVideo } from '@/components/ScreenVideo';
+import { H264DecoderView, type H264Msg, type H264Profile } from '@/components/H264DecoderView';
 import { useLockOrientation } from '@/hooks/useLockOrientation';
 import { useScreenFrame } from '@/hooks/useScreenFrame';
 import { useScreenStream } from '@/hooks/useScreenStream';
-import { useWebRtcStream } from '@/hooks/useWebRtcStream';
 import { useTrackpad } from '@/hooks/useTrackpad';
+import { resolveEffectiveHost } from '@/lib/api';
 import { GamepadClient, type GamepadStatus } from '@/lib/gamepad';
-import { webrtcSupported } from '@/lib/webrtcstream';
 import { hapticLight, hapticMedium } from '@/lib/haptics';
 import { setImmersive } from '@/lib/immersive';
 import { useSettings } from '@/lib/SettingsContext';
@@ -54,13 +53,10 @@ import { useTheme, useThemedStyles, type Palette } from '@/lib/theme';
 const FRAME_MS = 700;
 const DEVICE_LABEL = 'Couchside Desktop';
 
-// The H.264/WebRTC tier is DISABLED: react-native-webrtc@124 is incompatible with
-// React Native 0.86's new architecture — RTCView crashes on render and
-// setRemoteDescription takes 10+ seconds before the peer connection aborts
-// (diagnosed on-device 2026-08-10). Until a react-native-webrtc release supports
-// RN 0.86, the app uses the MJPEG stream (caps.screenstream) + the still-frame
-// poller. Flip to true to re-enable once the native dep catches up.
-const WEBRTC_TIER_ENABLED = false;
+// H.264 WebCodecs tier profile. 720p60 = smooth on the LAN with decode headroom
+// (measured q=0 on device); the box downscales the desktop to 720p and the phone
+// hardware-decodes. Bump to 1080p* for sharper text at more bandwidth.
+const H264_PROFILE: H264Profile = '720p60';
 
 export default function DesktopControlScreen() {
   // Portrait = the laptop layout; landscape = the fullscreen "Remote Desktop"
@@ -82,22 +78,26 @@ export default function DesktopControlScreen() {
   const gameMode = session === 'gamescope';
   // THREE tiers, best-first (all hooks run — hooks rules — only the active one
   // connects):
-  //   1. WebRTC H.264 (fluid, 30–60fps): app built WITH react-native-webrtc AND
-  //      the box advertising a WORKING H.264 path (caps.screenstream_h264). On a
-  //      hard failure we demote to tier 2 for the rest of the session.
-  //   2. MJPEG /ws/screen (fluid, ~15fps): caps.screenstream. Also what every
-  //      in-the-wild app (no WebRTC) gets.
+  //   1. H.264 WebCodecs (fluid, 30–60fps): the box advertises a VA encoder
+  //      (caps.screenstream_h264) AND the WebView can decode. Renders the box's
+  //      /ws/h264 Annex-B stream in a react-native-webview canvas. On a hard
+  //      failure (no VideoDecoder / configure error / closed before a frame) we
+  //      demote to tier 2 for the rest of the session.
+  //   2. MJPEG /ws/screen (fluid, ~15fps): caps.screenstream. What every box
+  //      without a VA H.264 encoder (or an older WebView that can't decode) gets.
   //   3. P1 still-frame poller (~1.4fps): always available.
-  // Tiers 1 & 2 both get tap-to-point (the portal's absolute pointer).
-  const [webrtcGaveUp, setWebrtcGaveUp] = useState(false);
+  // All three get tap-to-point (the portal's absolute pointer).
+  const [h264GaveUp, setH264GaveUp] = useState(false);
+  const [h264HasFrame, setH264HasFrame] = useState(false);
+  const h264GotFrame = useRef(false);   // stable read for the close-before-frame demote
   // The fluid (portal) tiers are OFF in game mode — the portal doesn't exist
   // there, so gating them off keeps the view on the poller and avoids a dead
   // "Approve…" spinner.
-  const webrtcMode =
-    !gameMode && WEBRTC_TIER_ENABLED && webrtcSupported
-    && settings.caps?.screenstream_h264 === true && !webrtcGaveUp;
-  const streamMode = !gameMode && !webrtcMode && settings.caps?.screenstream === true;
-  const fluidMode = webrtcMode || streamMode;
+  const h264Mode =
+    !gameMode && settings.caps?.screenstream_h264 === true && !h264GaveUp;
+  const streamMode =
+    !gameMode && !h264Mode && settings.caps?.screenstream === true;
+  const fluidMode = h264Mode || streamMode;
   // The absolute-pointer flag both the portal (fluid) and game-mode (xdotool)
   // paths share: tap-to-point + the local cursor render, and the trackpad drives
   // an ABSOLUTE cursor rather than a relative one. Which wire verb it uses is
@@ -105,7 +105,6 @@ export default function DesktopControlScreen() {
   const absoluteInput = fluidMode || gameMode;
   const live = ready && configured;
   const streamed = useScreenStream(settings, live && streamMode);
-  const webrtc = useWebRtcStream(settings, live && webrtcMode);
   // Still-frame poller. Runs when there is no fluid tier — AND as a STOPGAP VIEW
   // while a selected fluid tier has not produced its first frame yet. That gap
   // is not rare: an app background can leave the box's previous gst still on the
@@ -114,32 +113,49 @@ export default function DesktopControlScreen() {
   // no escape. The poller captures via spectacle/gamescopectl (NOT the portal),
   // so it shows the desktop even when the portal session is wedged, and it gates
   // OFF the instant the fluid tier delivers a frame (reopening retries fluid).
-  const fluidHasFrame = (webrtcMode && webrtc.streamURL != null)
+  const fluidHasFrame = (h264Mode && h264HasFrame)
     || (streamMode && streamed.frame != null);
   const poll = useScreenFrame(settings, live && (!fluidMode || !fluidHasFrame), FRAME_MS);
 
-  // Auto-fallback: a hard WebRTC failure (negotiation/timeout) demotes to MJPEG
-  // for the rest of this screen. One-way — we do not re-try WebRTC (that re-pops
-  // the box's consent); reopening the desktop starts fresh.
-  useEffect(() => {
-    if (webrtcMode && webrtc.failed) setWebrtcGaveUp(true);
-  }, [webrtcMode, webrtc.failed]);
+  // H.264 tier messages (from the decoder WebView's own JS). first-frame gates the
+  // poller stopgap off; a device that can't decode (no VideoDecoder / configure
+  // error) or a stream the box closes BEFORE any frame (no module / denied / over
+  // cap) demotes to MJPEG for the rest of the screen — one-way, like WebRTC.
+  const onH264Msg = useCallback((m: H264Msg) => {
+    if (m.t === 'firstframe') {
+      h264GotFrame.current = true;
+      setH264HasFrame(true);
+    } else if (m.t === 'env' && !m.hasVideoDecoder) {
+      setH264GaveUp(true);
+    } else if (m.t === 'cfgerror') {
+      setH264GaveUp(true);
+    } else if (m.t === 'wsclose' && !h264GotFrame.current) {
+      setH264GaveUp(true);
+    }
+  }, []);
 
-  const streamURL = webrtcMode ? webrtc.streamURL : null;
-  // The <Image> frame (tiers 2/3). Prefer the fluid stream frame; fall back to
-  // the poller frame during the first-frame gap / a wedged portal session. In
-  // WebRTC mode a "failure" means we are demoting, not that the screen is
-  // unavailable, so don't surface it as such.
-  const frame = webrtcMode ? null
+  // The H.264 decoder params, passed to whichever layout is mounted. Host is the
+  // last-good resolved host (mirrors every other box call).
+  const h264 = h264Mode
+    ? { host: resolveEffectiveHost(settings), port: settings.port,
+        token: settings.token, profile: H264_PROFILE, onMessage: onH264Msg }
+    : null;
+  // The <Image> frame (the MJPEG/poller tiers, and the H.264 spin-up COVER).
+  // Prefer the MJPEG stream frame; fall back to the poller frame during the
+  // first-frame gap / a wedged portal session. For H.264 the poller frame covers
+  // the black canvas ONLY until the decoder paints (then null -> the WebView
+  // shows). An H.264 "failure" means demoting, not that the screen is unavailable.
+  const frame = h264Mode ? (h264HasFrame ? null : poll.frame)
     : streamMode ? (streamed.frame ?? poll.frame)
     : poll.frame;
   // "failed" only when we have NO visual path left — the fluid stream failed AND
   // the poller fallback also failed. A silent/wedged stream with a working
-  // poller is NOT a failure (the desktop is still on screen).
-  const failed = webrtcMode ? false
+  // poller is NOT a failure (the desktop is still on screen). H.264 renders its
+  // own canvas + demotes on hard failure, so it never sets `failed`.
+  const failed = h264Mode ? false
     : streamMode ? (streamed.failed && poll.failed)
     : poll.failed;
-  const hasVisual = streamURL != null || frame != null;
+  const hasVisual = h264Mode || frame != null;
 
   const clientRef = useRef<GamepadClient | null>(null);
   if (clientRef.current == null) clientRef.current = new GamepadClient();
@@ -306,7 +322,7 @@ export default function DesktopControlScreen() {
         <Stack.Screen options={{ headerShown: false, gestureEnabled: false, fullScreenGestureEnabled: false }} />
         <DesktopFullscreen
           client={client}
-          streamURL={streamURL}
+          h264={h264}
           frame={frame}
           status={status}
           failed={failed}
@@ -326,9 +342,23 @@ export default function DesktopControlScreen() {
       <Stack.Screen options={{ headerShown: false, gestureEnabled: false, fullScreenGestureEnabled: false }} />
       {/* SCREEN (top): the live desktop frame */}
       <View style={styles.stage}>
-        {streamURL ? (
-          // Tier 1: native H.264 video (hardware decode).
-          <ScreenVideo streamURL={streamURL} style={StyleSheet.absoluteFill} />
+        {h264 ? (
+          // Tier 1: H.264 WebCodecs decode in a WebView canvas. pointerEvents=none
+          // so the tap-to-point overlay above always gets the touch (the WebView
+          // never grabs it). The poller `frame` covers the black canvas until the
+          // decoder paints its first frame.
+          <>
+            <View pointerEvents="none" style={StyleSheet.absoluteFill}>
+              <H264DecoderView
+                host={h264.host} port={h264.port} token={h264.token}
+                profile={h264.profile} onMessage={h264.onMessage}
+                style={StyleSheet.absoluteFill}
+              />
+            </View>
+            {frame && (
+              <Image source={{ uri: frame }} style={StyleSheet.absoluteFill} resizeMode="contain" />
+            )}
+          </>
         ) : frame ? (
           // Tier 2/3: MJPEG stream / still-frame poller, as a base64 <Image>.
           <Image source={{ uri: frame }} style={StyleSheet.absoluteFill} resizeMode="contain" />

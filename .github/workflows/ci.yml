@@ -248,6 +248,15 @@ jobs:
       - name: Unit tests (remote-desktop WebRTC relay)
         run: python3 tests/test_webrtc_relay.py
 
+      # P4b WebCodecs tier: the H.264 Annex-B stream relay (/ws/h264). Same class
+      # of surface as /ws/screen and /ws/webrtc: the _portal_stream_h264 shim, the
+      # /ws/h264 auth failure + profile allowlist (a bad client ?profile becomes
+      # the default, never reaches the helper) + the concurrency cap that closes
+      # the socket with no portal session opened. A client id is looked up, never
+      # interpolated.
+      - name: Unit tests (remote-desktop H.264 stream relay)
+        run: python3 tests/test_h264_stream.py
+
       # Game-mode (gamescope / Big Picture) pointer input: the {t:'gm'} verb.
       # The portal is absent in Game Mode, so absolute menu nav rides an xdotool
       # ARGV LIST. Same security class as {t:'ma'}: holder gate + range-validated

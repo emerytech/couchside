@@ -5284,13 +5284,37 @@ def screenstream_available():
 
 
 def screenstream_h264_available():
-    """True when the portal module reports a WORKING H.264/WebRTC path — which
-    means webrtcbin is actually functional (the libnice `nice` elements present),
-    NOT merely registered, plus a VA H.264 encoder. A boot-time hint for
-    caps.screenstream_h264; /ws/webrtc re-checks live and degrades closed. The
-    helper's `status` computes h264 honestly (see _h264_available there)."""
+    """True when the portal module reports a working H.264 encode path — a VA
+    H.264 encoder plus the pipewiresrc/vapostproc/h264parse elements the Annex-B
+    stream needs. A boot-time hint for caps.screenstream_h264; the app then opens
+    /ws/h264 (the WebCodecs tier) when the WebView also supports VideoDecoder, and
+    /ws/h264 re-checks live + degrades closed. Does NOT require libnice — that is
+    only for the parked /ws/webrtc path. The helper's `status` computes h264
+    honestly (see _h264_available there)."""
     r = _portal_call("status", timeout=2)
     return bool(r and r.get("ok") and r.get("h264"))
+
+
+def _portal_stream_h264(profile, timeout=10):
+    """Open an H.264 stream connection: send the `stream_h264` verb, then the
+    socket becomes a raw H.264 Annex-B byte stream the caller reads until it
+    closes the socket (which makes the helper reap gstreamer). Returns the
+    connected socket, or None. Mirrors _portal_stream (MJPEG)."""
+    s = _portal_connect(timeout)
+    if s is None:
+        return None
+    try:
+        s.sendall(json.dumps(
+            {"verb": "stream_h264",
+             "arg": {"profile": profile}}).encode("utf-8") + b"\n")
+        s.settimeout(None)
+        return s
+    except OSError:
+        try:
+            s.close()
+        except OSError:
+            pass
+        return None
 
 
 def _portal_webrtc(profile, timeout=10):
@@ -16412,6 +16436,26 @@ _screen_stream_sema = threading.BoundedSemaphore(SCREEN_STREAM_MAX)
 _SCREEN_STREAM_PROFILES = frozenset(("540p25", "720p20", "1080p15"))
 _SCREEN_STREAM_DEFAULT = "720p20"
 
+# --- P4b: H.264 Annex-B stream relay (/ws/h264, the WebCodecs tier) ---------
+# The app opens /ws/h264 when caps.screenstream_h264 is true AND the WebView
+# supports WebCodecs; the agent relays the helper's raw H.264 Annex-B bytes and
+# the app decodes them via VideoDecoder -> <canvas>. NO SDP/ICE/libnice (unlike
+# the parked /ws/webrtc path below). One H.264 encoder at a time: it is far
+# heavier than MJPEG and the helper caps at one; over the cap a new /ws/h264 is
+# refused and the app falls back to MJPEG then the still-frame poller. Profile
+# ids are a CLOSED SET, looked up never interpolated; the helper owns the actual
+# pipeline and re-validates the key. Must mirror the helper's _H264_PROFILES.
+# 2, not 1: the app REMOUNTS the decoder WebView on a portrait<->landscape
+# rotation (a fresh /ws/h264), so the new session briefly overlaps the old one's
+# teardown. One slot of headroom lets the rotate through; the helper still runs a
+# SINGLE encoder (H.264/MJPEG mutually exclusive) and hands the last opener the
+# subscription, so two agent sessions never mean two encoders. Over the cap a new
+# /ws/h264 is refused (the app falls back to MJPEG then the poller).
+H264_STREAM_MAX = 2
+_h264_stream_sema = threading.BoundedSemaphore(H264_STREAM_MAX)
+_H264_STREAM_PROFILES = frozenset(("720p30", "720p60", "1080p30", "1080p60"))
+_H264_STREAM_DEFAULT = "720p30"
+
 # --- P4b: H.264/WebRTC signaling relay (/ws/webrtc) -------------------------
 # Only ONE WebRTC session at a time: webrtcbin + a hardware H.264 encoder is far
 # heavier than the MJPEG path, and the helper itself caps at one. Over the cap a
@@ -17439,6 +17483,14 @@ class Handler(BaseHTTPRequestHandler):
                 # check + handshake, so it must not sit behind the JSON auth gate
                 # (a JSON 401 body onto an upgrading socket would be garbage).
                 self._handle_screen_ws(parsed, started)
+                return
+
+            if path == "/ws/h264":
+                # P4b WebCodecs tier: same pre-auth-zone rationale as /ws/screen.
+                # The handler self-auths (?token=), then relays the portal helper's
+                # raw H.264 Annex-B bytes. Absent module / no VA encoder -> degrades
+                # closed (the app falls back to MJPEG then the still-frame poller).
+                self._handle_h264_ws(parsed, started)
                 return
 
             if path == "/ws/webrtc":
@@ -19499,6 +19551,114 @@ class Handler(BaseHTTPRequestHandler):
                 ws_send(conn, WS_OP_BINARY, jpg)     # blocking; gst buffers meanwhile
             except OSError:
                 return                               # phone disconnected
+
+    # -- H.264 Annex-B stream websocket (P4b WebCodecs tier, opt-in module) ----
+
+    def _handle_h264_ws(self, parsed, started):
+        """Raw H.264 Annex-B over WebSocket from the portal module (the WebCodecs
+        tier). Mirrors the gamepad/screen WS handshake verbatim (same ?token=
+        auth), then streams Annex-B bytes. A box without the module or without a
+        VA H.264 encoder degrades closed (the socket opens then closes; the app
+        falls back to MJPEG then the still-frame poller)."""
+        self.close_connection = True
+        qs = parse_qs(parsed.query)
+        supplied = qs.get("token", [""])[0]
+        if not supplied or not hmac.compare_digest(supplied, self.token):
+            self._send(401, {"error": "unauthorized"}, started,
+                       extra_headers={"Connection": "close"})
+            return
+        key = self.headers.get("Sec-WebSocket-Key", "")
+        upgrade = (self.headers.get("Upgrade") or "").lower()
+        if upgrade != "websocket" or not key:
+            self._send(400, {"error": "websocket upgrade required"}, started,
+                       extra_headers={"Connection": "close"})
+            return
+        accept = base64.b64encode(
+            hashlib.sha1((key + WS_GUID).encode("ascii")).digest()).decode("ascii")
+        try:
+            self.connection.sendall(
+                b"HTTP/1.1 101 Switching Protocols\r\n"
+                b"Upgrade: websocket\r\n"
+                b"Connection: Upgrade\r\n"
+                b"Sec-WebSocket-Accept: " + accept.encode("ascii") + b"\r\n\r\n")
+        except OSError:
+            return
+        self._log(101, started)
+        profile = qs.get("profile", [_H264_STREAM_DEFAULT])[0]
+        if profile not in _H264_STREAM_PROFILES:       # closed set, never interpolated
+            profile = _H264_STREAM_DEFAULT
+        try:
+            self._h264_session(profile)
+        except Exception as e:
+            print("[h264] session error: %s: %s"
+                  % (e.__class__.__name__, e), flush=True)
+
+    def _h264_session(self, profile):
+        """One consent opens the SHARED portal session (input + capture); then
+        pipe the helper's raw H.264 Annex-B onto the WS. Capped at one encoder;
+        degrade closed. Mirrors _screen_session (MJPEG)."""
+        conn = self.connection
+        if not _h264_stream_sema.acquire(blocking=False):
+            try:
+                ws_send(conn, WS_OP_CLOSE)             # over cap -> app falls back
+            except OSError:
+                pass
+            return
+        portal_sock = None
+        try:
+            # ensure = create the session + block on the box's consent dialog.
+            # None/!ok means no module or denied -> close so the app falls back.
+            res = _portal_call("ensure", timeout=170)
+            if not res or not res.get("ok"):
+                try:
+                    ws_send(conn, WS_OP_CLOSE)
+                except OSError:
+                    pass
+                return
+            portal_sock = _portal_stream_h264(profile)
+            if portal_sock is None:
+                try:
+                    ws_send(conn, WS_OP_CLOSE)
+                except OSError:
+                    pass
+                return
+            # As in _screen_session: a half-dead backgrounded phone would block a
+            # bare sendall forever; the 20s timeout reaps the zombie + its slot.
+            conn.settimeout(20)
+            self._h264_pump(conn, portal_sock)
+        finally:
+            if portal_sock is not None:
+                try:
+                    portal_sock.close()                # closing -> helper reaps gst
+                except OSError:
+                    pass
+            _h264_stream_sema.release()
+
+    def _h264_pump(self, conn, portal_sock):
+        """Read the helper's raw H.264 Annex-B byte stream and forward it to
+        `conn` as WS binary frames, IN ORDER and byte-for-byte. Unlike MJPEG,
+        H.264 must NOT drop bytes — every access unit depends on the ones before
+        it and the app segments on the AUD start code, so the stream has to arrive
+        whole and in order. WS frame boundaries need not align with access units:
+        the app re-buffers and splits. This is the ONLY writer of `conn`. Latency
+        is bounded by the encoder (b-frames=0, key-int) + the app decoder, not by
+        dropping frames here (the MJPEG newest-only trick would corrupt H.264).
+
+        Backpressure chain when the phone is slow: ws_send blocks (conn timeout)
+        -> we stop reading portal_sock -> the helper's sendall blocks (its 10s
+        timeout) -> gst's fdsink backpressures the encoder at the source."""
+        portal_sock.settimeout(30)
+        while True:
+            try:
+                chunk = portal_sock.recv(65536)
+            except OSError:
+                break
+            if not chunk:
+                break                                  # helper/gst ended
+            try:
+                ws_send(conn, WS_OP_BINARY, chunk)     # blocking; backpressures gst
+            except OSError:
+                return                                 # phone disconnected
 
     # -- H.264/WebRTC signaling websocket (P4b, opt-in portal module) ----------
 

@@ -422,6 +422,61 @@ def _stream_argv(profile, pwfd, node):
     return argv
 
 
+_VA_H264ENC = None
+
+
+def _va_h264enc():
+    """The VA H.264 encoder element to use, or None. Prefer the full `vah264enc`
+    (rate-control=cbr gives a predictable streaming bitrate); fall back to the
+    low-power `vah264lpenc` (CQP-only on some GPUs). Cached; degrade closed."""
+    global _VA_H264ENC
+    if _VA_H264ENC is None:
+        try:
+            import gi as _gi
+            _gi.require_version("Gst", "1.0")
+            from gi.repository import Gst as _Gst
+            _Gst.init(None)
+            if _Gst.ElementFactory.find("vah264enc") is not None:
+                _VA_H264ENC = "vah264enc"
+            elif _Gst.ElementFactory.find("vah264lpenc") is not None:
+                _VA_H264ENC = "vah264lpenc"
+            else:
+                _VA_H264ENC = ""
+        except Exception:
+            _VA_H264ENC = ""
+    return _VA_H264ENC or None
+
+
+def _stream_h264_argv(profile, pwfd, node):
+    """gstreamer argv LIST for one H.264 profile — the P4b fluid tier. Produces an
+    Annex-B (byte-stream) elementary stream, one access unit at a time, to fdsink
+    fd=1. Every element/parameter is chosen HERE; the client only named a profile
+    KEY. `config-interval=-1` inlines SPS/PPS ahead of each IDR and `alignment=au`
+    (plus the encoder's AUD, NAL type 9) delimits access units, so the app can
+    segment the stream on the AUD start code — the WebCodecs decoder consumes
+    Annex-B directly (no AVCC/description). Proven on hardware (bazzite Intel UHD
+    620): NAL types [1,5,7,8,9] flow. §3: no client string reaches gst."""
+    p = _H264_PROFILES[profile]
+    enc = _va_h264enc()
+    argv = ["gst-launch-1.0", "-q",
+            "pipewiresrc", "fd=%d" % pwfd, "path=%d" % node, "keepalive-time=1000",
+            "!", "videorate", "!", "video/x-raw,framerate=%d/1" % p["fps"],
+            "!", "vapostproc",
+            "!", "video/x-raw(memory:VAMemory),format=NV12,width=%d,height=%d"
+            % (p["width"], p["height"])]
+    if enc == "vah264enc":
+        argv += ["!", "vah264enc", "rate-control=cbr", "bitrate=%d" % p["bitrate"],
+                 "target-usage=7", "key-int-max=%d" % (p["fps"] * 2),
+                 "b-frames=0", "ref-frames=1"]
+    else:                                            # vah264lpenc (CQP-only)
+        argv += ["!", "vah264lpenc", "rate-control=cqp", "target-usage=7",
+                 "key-int-max=%d" % (p["fps"] * 2), "b-frames=0", "ref-frames=1"]
+    argv += ["!", "h264parse", "config-interval=-1",
+             "!", "video/x-h264,stream-format=byte-stream,alignment=au",
+             "!", "fdsink", "fd=1"]
+    return argv
+
+
 # The stream gst is spawned ONCE per portal session and NEVER killed while the
 # session lives. Proven on hardware, in stages:
 #   1. TWO concurrent gsts on the session's node -> the second fails ("Buffer
@@ -436,7 +491,12 @@ def _stream_argv(profile, pwfd, node):
 # which is also instant. Idle (no subscriber) keeps encoding + discards — the
 # hardware JPEG path makes that ~free, and NOT respawning is the entire point.
 _STREAM_LOCK = threading.Lock()
-_STREAM = {"proc": None, "profile": None, "sub": None, "done": None,
+_STREAM = {"proc": None, "profile": None,
+           # "mjpeg" or "h264" — the running encoder's codec. MJPEG and H.264 are
+           # MUTUALLY EXCLUSIVE (one encoder per session); the reader forwards
+           # bytes differently per codec (JPEG framing vs raw Annex-B passthrough).
+           "codec": None,
+           "sub": None, "done": None,
            # wall-clock when the last subscriber left (None while subscribed);
            # the reader enforces the idle TTL from it.
            "idle_since": None}
@@ -472,13 +532,47 @@ def _close_session():
     print("[portal] idle TTL: session closed (re-consent on next use)", flush=True)
 
 
-def _stream_reader(proc):
-    """Read the persistent gst's MJPEG stdout forever; split whole JPEGs
-    (FFD8..FFD9) and forward each to the current subscriber, or discard when
-    nobody is watching. A dead/slow subscriber is dropped (its socket has a
-    timeout); the encoder is NEVER stopped here."""
+def _drop_subscriber(sub, done):
+    """Drop the current subscriber whose socket just errored: clear it (only if
+    it is still the current one), close it, and wake its stream() call. Shared by
+    both codec paths in the reader."""
+    with _STREAM_LOCK:
+        if _STREAM["sub"] is sub:
+            _STREAM["sub"] = None
+            _STREAM["done"] = None
+            _STREAM["idle_since"] = time.time()
+    try:
+        sub.close()
+    except OSError:
+        pass
+    if done is not None:
+        done.set()
+
+
+def _stream_reader(proc, codec):
+    """Read the persistent gst's stdout forever and forward to the current
+    subscriber (or discard when nobody is watching). MJPEG is split into whole
+    JPEGs (FFD8..FFD9). H.264 Annex-B is forwarded RAW, byte-for-byte, in order —
+    the app segments access units on the AUD start code, so dropping bytes would
+    corrupt the stream (there is no newest-only drop for H.264; latency is bounded
+    by the encoder + the app decoder instead). A dead/slow subscriber is dropped
+    (its socket has a timeout); the encoder is NEVER stopped here except on the
+    idle TTL."""
     buf = bytearray()
     idle_teardown = False
+
+    def _idle_expired():
+        # True once the idle TTL has passed with no subscriber — begin teardown.
+        nonlocal idle_teardown
+        with _STREAM_LOCK:
+            idle_since = _STREAM["idle_since"]
+        if (idle_since is not None
+                and time.time() - idle_since > _STREAM_IDLE_TTL_S):
+            idle_teardown = True
+            proc.terminate()                         # read() EOFs; cleanup below
+            return True
+        return False
+
     while True:
         try:
             chunk = proc.stdout.read(65536)
@@ -486,6 +580,21 @@ def _stream_reader(proc):
             break
         if not chunk:
             break                                    # gst ended
+
+        if codec == "h264":
+            # Raw Annex-B passthrough: forward every byte in order.
+            with _STREAM_LOCK:
+                sub, done = _STREAM["sub"], _STREAM["done"]
+            if sub is None:
+                _idle_expired()                      # discard; keep node serviced
+                continue
+            try:
+                sub.sendall(chunk)                   # timeout set at subscribe
+            except OSError:
+                _drop_subscriber(sub, done)
+            continue
+
+        # MJPEG: split whole JPEGs (FFD8..FFD9), forward each as one frame.
         buf.extend(chunk)
         while True:
             soi = buf.find(b"\xff\xd8")
@@ -502,66 +611,69 @@ def _stream_reader(proc):
             del buf[:eoi + 2]
             with _STREAM_LOCK:
                 sub, done = _STREAM["sub"], _STREAM["done"]
-                idle_since = _STREAM["idle_since"]
             if sub is None:
                 # Idle: discard + keep draining (the node must stay serviced) —
                 # until the TTL, then tear the whole thing down (gst + session).
-                if (idle_since is not None
-                        and time.time() - idle_since > _STREAM_IDLE_TTL_S):
-                    idle_teardown = True
-                    proc.terminate()                 # read() EOFs; cleanup below
+                if _idle_expired():
+                    break                            # tearing down; stop parsing
                 continue
             try:
                 sub.sendall(jpg)                     # timeout set at subscribe
             except OSError:
-                with _STREAM_LOCK:
-                    if _STREAM["sub"] is sub:
-                        _STREAM["sub"] = None
-                        _STREAM["done"] = None
-                        _STREAM["idle_since"] = time.time()
-                try:
-                    sub.close()
-                except OSError:
-                    pass
-                if done is not None:
-                    done.set()
-    # gst ended (idle TTL, helper shutdown, or crash): clear state, wake any
-    # subscriber so its stream() call returns; the NEXT stream() may respawn —
-    # after an idle teardown that goes through a FRESH session (re-consent),
-    # which is exactly what makes the respawn safe (new node, healthy pool).
+                _drop_subscriber(sub, done)
+    # gst ended (idle TTL, helper shutdown, crash, or a codec switch preempted
+    # us). Clear state ONLY if we still own the encoder slot — a newer stream()
+    # may already have installed a fresh proc; don't clobber it. Wake any
+    # subscriber so its stream() returns; finish an idle teardown by closing the
+    # session (the next use re-ensures from a FRESH session = a healthy node).
     with _STREAM_LOCK:
-        done = _STREAM["done"]
-        _STREAM.update(proc=None, profile=None, sub=None, done=None,
-                       idle_since=None)
+        if _STREAM["proc"] is proc:
+            done = _STREAM["done"]
+            _STREAM.update(proc=None, profile=None, codec=None,
+                           sub=None, done=None, idle_since=None)
+        else:
+            done = None
     if done is not None:
         done.set()
     if idle_teardown:
         _close_session()
 
 
-def stream(profile, conn):
-    """Subscribe `conn` to the session's persistent MJPEG encoder (spawning it
-    on first use), then block until the subscription ends — a newer subscriber
-    kicked us (last-opener wins), the peer vanished, or gst ended. The agent
-    splits the MJPEG bytes on FFD8..FFD9 and frames each JPEG onto /ws/screen.
-    The FIRST subscriber's profile wins for the encoder's lifetime (the app
-    always asks 720p20 today)."""
+def stream(profile, conn, codec):
+    """Subscribe `conn` to the session's persistent encoder for `codec` ("mjpeg"
+    or "h264"), spawning it on first use, then block until the subscription ends —
+    a newer subscriber kicked us (last-opener wins), the peer vanished, or gst
+    ended. The FIRST subscriber's profile wins for the encoder's lifetime.
+
+    MJPEG and H.264 are MUTUALLY EXCLUSIVE — one encoder per session (they can't
+    both read the single portal ScreenCast node). If an encoder of the OTHER codec
+    is already running we REFUSE (return without subscribing); the agent then
+    closes the socket and the app degrades to its fallback. The app commits to one
+    tier per box (caps-driven), so a codec clash only happens when two clients
+    disagree — rare, and it self-heals once the running encoder hits its idle
+    TTL and the session tears down. We do NOT preempt by killing the running gst:
+    two gsts briefly sharing the node fail 'not-negotiated (-4)' (proven), and a
+    kill-then-respawn re-encodes stale keepalive buffers (also proven)."""
     if _ensure_session() is None:
         return
     with _STREAM_LOCK:
         proc = _STREAM["proc"]
         if proc is not None and proc.poll() is not None:
             proc = None                              # crashed: allow respawn
-            _STREAM.update(proc=None, profile=None)
+            _STREAM.update(proc=None, profile=None, codec=None)
+        if proc is not None and _STREAM["codec"] != codec:
+            return                                   # other codec live -> refuse
         if proc is None:
             with _SLOCK:
                 node = _SESSION["node"]
             pwfd = _open_pipewire_fd()
             if pwfd is None:
                 return
+            argv = (_stream_h264_argv(profile, pwfd, node) if codec == "h264"
+                    else _stream_argv(profile, pwfd, node))
             try:
                 proc = subprocess.Popen(
-                    _stream_argv(profile, pwfd, node),
+                    argv,
                     stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
                     pass_fds=(pwfd,))
             finally:
@@ -569,8 +681,8 @@ def stream(profile, conn):
                     os.close(pwfd)                   # the child holds it now
                 except OSError:
                     pass
-            _STREAM.update(proc=proc, profile=profile)
-            threading.Thread(target=_stream_reader, args=(proc,),
+            _STREAM.update(proc=proc, profile=profile, codec=codec)
+            threading.Thread(target=_stream_reader, args=(proc, codec),
                              daemon=True).start()
         # Subscribe, last-opener wins: kick + close any current subscriber.
         conn.settimeout(10)                          # a wedged peer can't block the reader
@@ -609,26 +721,26 @@ class _ByeSignal(Exception):
 
 
 def _h264_available():
-    """True only if webrtcbin can ACTUALLY run here — which requires the libnice
-    `nice` elements (nicesrc/nicesink), NOT just that webrtcbin is registered.
-    Proven on hardware: `gst-inspect webrtcbin` succeeds but any media pad errors
-    'libnice elements are not available' without the nice plugin. Also needs a VA
-    H.264 encoder + the RTP/portal path. Degrade closed on any failure."""
+    """True when the box can produce the H.264 Annex-B stream the WebCodecs app
+    tier consumes: a VA H.264 encoder plus the pipewiresrc → vapostproc →
+    h264parse elements. Drives verb_status's `h264` field -> the agent's
+    caps.screenstream_h264 -> the app's /ws/h264 (WebCodecs) tier.
+
+    It deliberately does NOT require the libnice `nice` elements: those are only
+    for the PARKED webrtcbin path (the `webrtc` verb), which /ws/h264 does not use
+    (WebCodecs decodes an Annex-B elementary stream over a plain WebSocket — no
+    SDP/ICE/DTLS). Relaxing this from the old nice-check is what lets a box with a
+    VA encoder but no libnice (e.g. Bazzite) advertise the H.264 tier. Degrade
+    closed on any failure."""
     try:
         import gi as _gi
         _gi.require_version("Gst", "1.0")
-        _gi.require_version("GstWebRTC", "1.0")
-        _gi.require_version("GstSdp", "1.0")
         from gi.repository import Gst as _Gst
         _Gst.init(None)
-        need = ("webrtcbin", "nicesrc", "nicesink", "rtph264pay",
-                "vapostproc", "pipewiresrc", "h264parse", "videorate")
+        need = ("pipewiresrc", "vapostproc", "h264parse", "videorate")
         if any(_Gst.ElementFactory.find(e) is None for e in need):
             return False
-        if _Gst.ElementFactory.find("vah264enc") is None and \
-           _Gst.ElementFactory.find("vah264lpenc") is None:
-            return False
-        return True
+        return _va_h264enc() is not None
     except Exception:
         return False
 
@@ -878,7 +990,20 @@ def serve_one(conn):
                     + b"\n")
                 return
             conn.settimeout(None)                    # long-lived stream
-            stream(profile, conn)
+            stream(profile, conn, "mjpeg")
+            return
+        # The stream_h264 verb switches this connection to a raw H.264 Annex-B
+        # byte stream (the P4b WebCodecs tier). Same discipline as `stream`, a
+        # different codec + profile set; mutually exclusive with MJPEG.
+        if isinstance(req, dict) and req.get("verb") == "stream_h264":
+            profile = _h264_profile_arg(req.get("arg"))
+            if profile is None:
+                conn.sendall(json.dumps(
+                    {"ok": False,
+                     "error": "invalid argument for stream_h264"}).encode() + b"\n")
+                return
+            conn.settimeout(None)                    # long-lived stream
+            stream(profile, conn, "h264")
             return
         # The webrtc verb switches this connection to a JSON SDP/ICE signaling
         # channel (H.264 over webrtcbin); every other verb is one line in/out.

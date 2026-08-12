@@ -2132,6 +2132,7 @@ function SetupBody() {
               <Ionicons name="chevron-forward" size={16} color={t.textDim} />
             </Pressable>
 
+
             <Text style={styles.hint}>
               Each box&apos;s Couchside service listens on http://&lt;host&gt;:&lt;port&gt;. All routes except
               /api/ping require the bearer token.
