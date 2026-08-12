@@ -179,6 +179,7 @@
       "linux"
     ],
     "keys": [
+      "audioswitch",
       "bigpicture",
       "boxbattery",
       "display_info",

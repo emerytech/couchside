@@ -9,6 +9,24 @@ Entry fields: `priority` (P0 blocker → P3 nice) · `risk` · `affects` · `dep
 
 ## 🔨 In Progress
 
+### Audio output switcher — pick the box's sink from the phone (user ask 2026-08-12)
+- **priority:** P2 · **risk:** low · **affects:** agent + app · **depends_on:** none
+- **BUILT (agent 2.9.80, branch `claude/audio-output-switcher`).** Console-tab AUDIO OUTPUT
+  card: lists the box's audio sinks and one tap sets the default (TV/HDMI ↔ Bluetooth ↔
+  analog), moving already-playing streams too.
+- **Allowlist:** the client `sink` is looked up in the LIVE set `_pactl_sinks()` reported and
+  404s otherwise; only ever reaches subprocess as one argv element of `pactl set-default-sink`.
+  Distinct from Couch Mode's audio move — a deliberate user pick, so no guess-to-restore
+  (the hazard the `_PRIOR_DEFAULT_SINK` note documents).
+- **Cap:** new `audioswitch` (all six sites; parity green). `GET /api/audio`,
+  `POST /api/audio/default`. `MOCK_SINKS` + remembered mock default so the switch is
+  observable off-box.
+- **Verified:** agent proven end-to-end vs `--mock` (GET lists, 401 no-token, POST moves the
+  default HDMI→BT, unknown/injection → 404); `tests/test_audio_switch.py` + protocol parity.
+  App: typecheck clean, harness tap = the last step before merge.
+- **NOT yet:** on-box against real pactl (multi-sink box with HDMI + a BT device); native row
+  overflow for long device descriptions (harness can't judge, §6).
+
 ### Setup → Utilities menu — extensible one-click hardware/setup helpers (owner ask 2026-08-08)
 - **priority:** P2 · **risk:** medium-high (agent runs hardware-touching flashes + signed
   setups; must stay strictly allowlisted) · **affects:** agent + app · **depends_on:** nothing
