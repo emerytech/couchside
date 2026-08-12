@@ -236,7 +236,15 @@ Entry fields: `priority` (P0 blocker → P3 nice) · `risk` · `affects` · `dep
 - **P4b (H.264/WebRTC) = SHELVED:** box side (B1 helper webrtc + A0 agent /ws/webrtc relay + caps.screenstream_h264)
   all PROVEN, BUT `react-native-webrtc@124` is INCOMPATIBLE with RN 0.86 (RTCView crash + 14s setRemoteDescription
   → the tier is `WEBRTC_TIER_ENABLED=false`). Re-enable when the lib supports RN 0.86.
-- **📋 SUB-ENTRY — Game-mode (gamescope) MENU navigation (owner ask 2026-08-11; PROVEN doable, NOT built).** Owner
+- **✅ SHIPPED 2026-08-11 (agent 2.9.79, PR #438) — Game-mode (gamescope) MENU navigation.** DEVICE-VERIFIED on a
+  Steam Machine (owner: touch tap-to-point "spot on" = the xdotool click lands where you tap). New §3-clean agent
+  verb `{t:'gm'}` drives gamescope's Xwayland via an xdotool argv (`_gamescope_pointer`, mirrors `{t:'ma'}`;
+  `tests/test_gamemode_input.py` CI-wired); app un-gates CONTROL in game mode (session-driven, NO cap), Touch default
+  + D-pad/Select keyboard fallback; portrait local cursor shipped alongside. VIEW = the existing gamescopectl
+  still-frame (already game-mode-capable). TV shows no cursor in game mode = gamescope `--hide-cursor-delay` +
+  Big-Picture controller-UI (box-side, NOT an app bug). Original probe notes kept below (§7). APP STORE build still
+  deferred (agent verb released; app UI on main, needs an EAS build + the react-native-webrtc strip).
+- **📋 (original probe) Game-mode (gamescope) MENU navigation (owner ask 2026-08-11; PROVEN doable, NOT built).** Owner
   narrowed scope to "just menu nav, not control while a game runs." Hardware-probed on lenovodesktop (gamescope
   1.4.10): **VIEW already works** — the agent's existing gamescopectl still-frame reads the real scanout buffer, so
   Big-Picture menus come through non-black (~1.4fps, fine for menus). **INPUT proven** — xdotool on gamescope's
