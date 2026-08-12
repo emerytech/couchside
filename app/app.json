@@ -3,7 +3,7 @@
     "name": "Couchside",
     "slug": "rescue-remote",
     "owner": "ets3d-llc",
-    "version": "2.9.44",
+    "version": "2.9.45",
     "orientation": "default",
     "icon": "./assets/images/icon.png",
     "scheme": "couchside",
@@ -32,7 +32,7 @@
         "monochromeImage": "./assets/images/android-icon-monochrome.png"
       },
       "predictiveBackGestureEnabled": false,
-      "versionCode": 91
+      "versionCode": 92
     },
     "web": {
       "bundler": "metro",
