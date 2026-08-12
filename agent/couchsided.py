@@ -46,7 +46,7 @@ except ImportError:  # pragma: no cover
     fcntl = None
 
 APP_NAME = "couchside-agent"
-VERSION = "2.9.82"
+VERSION = "2.9.83"
 UID = os.getuid()
 XDG_RUNTIME_DIR = "/run/user/%d" % UID
 
@@ -16978,22 +16978,93 @@ def pair_show_on_box(port):
     pair_show_on_box_url("http://localhost:%d/pair" % port)
 
 
+_PIN_KIOSK_BROWSERS = ("firefox", "chromium", "chrome", "brave", "edge", "vivaldi")
+
+
+def _pin_kiosk_argv(url, default_browser, have=None):
+    """FULLSCREEN launch argv for `default_browser` (an `xdg-settings get
+    default-web-browser` .desktop id) on `url`, or None to fall back to windowed.
+
+    Firefox and every Chromium-family browser take --kiosk. A flatpak default
+    browser has a reverse-DNS .desktop id (e.g. org.mozilla.firefox.desktop) ->
+    `flatpak run <id> --kiosk`; a system browser -> its binary --kiosk. `have` is
+    the presence check (shutil.which), injectable for tests. No client input:
+    `url` is agent-built, the browser id comes from the box's own settings."""
+    if have is None:
+        have = shutil.which
+    app = default_browser[:-len(".desktop")] if default_browser.endswith(
+        ".desktop") else default_browser
+    dl = app.lower()
+    if not any(b in dl for b in _PIN_KIOSK_BROWSERS):
+        return None
+    if "." in app and have("flatpak"):                  # flatpak reverse-DNS id
+        return ["flatpak", "run", app, "--kiosk", url]
+    for b in ("firefox", "chromium", "chromium-browser", "google-chrome",
+              "google-chrome-stable", "brave-browser", "microsoft-edge",
+              "vivaldi-stable"):
+        if b in dl and have(b):
+            return [b, "--kiosk", url]
+    return None
+
+
 def pair_show_on_box_url(url):
     """Open a LOOPBACK url on the box's own screen. Game Mode -> Steam's
-    built-in browser (steam://openurl); desktop -> xdg-open. Best-effort,
-    detached, never blocks the request.
+    built-in browser (steam://openurl); desktop -> a FULLSCREEN (kiosk) browser
+    launched inside the user's systemd session. Best-effort, detached, never
+    blocks the request.
 
     Shared by the pairing PIN page and the update progress page. Callers pass a
     url this module built; nothing here comes from a client."""
     gamescope = _couchmode_session() == "gamescope"
+
+    # The agent is a SYSTEM service. It runs as the desktop user but inherits only
+    # a partial session env (XDG_RUNTIME_DIR yes; DISPLAY/WAYLAND_DISPLAY/
+    # DBUS_SESSION_BUS_ADDRESS no), so a BARE `xdg-open` has no display to draw on
+    # and — with a flatpak browser as the default — silently fails or hangs. The
+    # PIN then NEVER appears on a desktop-session box, a hard stop for pairing.
+    # Measured on a live Bazzite desktop 2026-08-12: bare xdg-open hung (rc 124, no
+    # browser); `systemd-run --user xdg-open <url>` opened Firefox on the /pair page
+    # (it runs inside the user's systemd manager, which carries the full graphical
+    # session env). Set DBUS_SESSION_BUS_ADDRESS so systemd-run can reach that
+    # manager. Game Mode is unchanged: Steam's own browser via steam://openurl.
+    def _desktop_env():
+        uid = os.getuid()
+        rt = os.environ.get("XDG_RUNTIME_DIR") or ("/run/user/%d" % uid)
+        env = dict(os.environ)
+        env.setdefault("XDG_RUNTIME_DIR", rt)
+        env.setdefault("DBUS_SESSION_BUS_ADDRESS", "unix:path=%s/bus" % rt)
+        return env
+
+    def _kiosk_argv():
+        try:
+            d = subprocess.run(["xdg-settings", "get", "default-web-browser"],
+                               capture_output=True, text=True, timeout=5,
+                               env=_desktop_env()).stdout.strip()
+        except Exception:
+            d = ""
+        return _pin_kiosk_argv(url, d)
 
     def go():
         try:
             if gamescope:
                 subprocess.run(["steam", "-ifrunning", "steam://openurl/" + url],
                                timeout=10)
-            elif shutil.which("xdg-open"):
-                subprocess.run(["xdg-open", url], timeout=10)
+                return
+            # Desktop: run inside the user's systemd manager (full session env),
+            # FULLSCREEN via the browser's --kiosk when we can resolve it, else a
+            # windowed xdg-open (the PIN still shows, just not fullscreen).
+            if shutil.which("systemd-run"):
+                launch = _kiosk_argv()
+                if launch is None and shutil.which("xdg-open"):
+                    launch = ["xdg-open", url]
+                if launch is not None:
+                    subprocess.run(
+                        ["systemd-run", "--user", "--collect"] + launch,
+                        timeout=10, env=_desktop_env(),
+                        stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+                    return
+            if shutil.which("xdg-open"):
+                subprocess.run(["xdg-open", url], timeout=10, env=_desktop_env())
             elif shutil.which("steam"):
                 subprocess.run(["steam", "-ifrunning", "steam://openurl/" + url],
                                timeout=10)
