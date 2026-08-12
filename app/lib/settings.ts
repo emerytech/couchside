@@ -304,12 +304,18 @@ function normalizeCaps(raw: unknown): BoxCaps | undefined {
   // drop trap: omit it from the RETURN object below (or from capsEqual) and the
   // cap never persists, so the AUDIO OUTPUT card re-probes /api/audio every launch.
   const audioswitch = bool('audioswitch');
+  // ledcontrol = the front light-bar / status-LED control (agent >= 2.9.81). Same
+  // optional-cap drop trap: omit it from the RETURN object below (or from
+  // capsEqual) and the cap never persists, so the LIGHT card re-probes /api/leds
+  // every launch.
+  const ledcontrol = bool('ledcontrol');
   return {
     gamepad, steam, media, tv, screen, power_schedule,
     screensaver, couchmode, bigpicture, desktop, steamlink, gaming, streamhost,
     steammenus,
     boxbattery, launchers, file_upload, session_default, display_info, player,
     steaminstall, utilities, screenstream, screenstream_h264, audioswitch,
+    ledcontrol,
   };
 }
 
