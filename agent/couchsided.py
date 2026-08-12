@@ -46,7 +46,7 @@ except ImportError:  # pragma: no cover
     fcntl = None
 
 APP_NAME = "couchside-agent"
-VERSION = "2.9.79"
+VERSION = "2.9.81"
 UID = os.getuid()
 XDG_RUNTIME_DIR = "/run/user/%d" % UID
 
@@ -1583,7 +1583,7 @@ def set_caps(mock):
                  "steamlink", "gaming", "steaminstall", "utilities",
                  "streamhost", "steammenus", "boxbattery", "file_upload",
                  "session_default", "display_info", "player", "screenstream",
-                 "screenstream_h264")}
+                 "screenstream_h264", "audioswitch", "ledcontrol")}
         return
     CAPS = {
         "gamepad": _uinput_writable(),
@@ -1625,6 +1625,14 @@ def set_caps(mock):
         # libnice + a VA encoder). Linux-only, additive; absent -> the app uses
         # MJPEG (caps.screenstream) then the poller. /ws/webrtc re-checks live.
         "screenstream_h264": safe(screenstream_h264_available),
+        # Choose the box's default audio output (TV/HDMI <-> Bluetooth <-> analog)
+        # from the phone. Linux-only: pactl. A deliberate user pick, so unlike the
+        # Couch Mode audio move it never guesses a sink to restore.
+        "audioswitch": safe(audioswitch_available),
+        # Set the box's front RGB / status LED (colour + brightness) from the
+        # phone via /sys/class/leds. Linux-only. False on a stock box (files are
+        # root-owned) until an install-time udev grant makes an LED writable.
+        "ledcontrol": safe(ledcontrol_available),
     }
 
 
@@ -3860,10 +3868,12 @@ def _couch_run(cmd, timeout=25, max_out=1500):
 
 
 def _pactl_sinks():
-    """Parse `pactl list sinks` into [{name, hdmi, available}]. `available` is
-    True only when a port on the sink reports availability 'available' (an
+    """Parse `pactl list sinks` into [{name, desc, hdmi, available}]. `available`
+    is True only when a port on the sink reports availability 'available' (an
     HDMI/DP output with a live display), so the TV's audio sink is the one that's
-    both hdmi and available. [] when pactl is missing or errors."""
+    both hdmi and available. `desc` is the human "Description:" ("LG TV", "Built-in
+    Audio Analog Stereo") for the switcher UI, "" when pactl omitted it. [] when
+    pactl is missing or errors."""
     if not shutil.which("pactl"):
         return []
     r = _couch_run(["pactl", "list", "sinks"], timeout=8, max_out=None)
@@ -3874,8 +3884,10 @@ def _pactl_sinks():
         s = raw.strip()
         if s.startswith("Name:"):
             cur = {"name": s.split(":", 1)[1].strip(),
-                   "hdmi": False, "available": False}
+                   "desc": "", "hdmi": False, "available": False}
             sinks.append(cur)
+        elif cur is not None and s.startswith("Description:"):
+            cur["desc"] = s.split(":", 1)[1].strip()
         elif cur is not None and "type: HDMI" in s:
             cur["hdmi"] = True
             # port line ends "..., available)" vs "..., not available)"
@@ -3957,6 +3969,421 @@ def _restore_default_sink():
     if _current_default_sink() == want:
         return {"skipped": True, "reason": "already the default"}
     return _couch_run(["pactl", "set-default-sink", want])
+
+
+# ---- Audio output switcher (cap: audioswitch) -----------------------------
+# Choose which sink the box plays through -- TV/HDMI, a Bluetooth speaker, the
+# built-in analog out -- from the phone. DISTINCT from the Couch Mode audio move
+# above: that AUTO-moves audio to the TV and remembers the prior sink to restore
+# it, which is where "guessing a sink cost a user their audio" came from (see the
+# _PRIOR_DEFAULT_SINK note). This is a DELIBERATE user pick with no restore -- the
+# user names the exact device they want -- so it carries none of that hazard.
+
+# The off-box contract the app develops against (--mock). Shapes mirror a real
+# `pactl list sinks`: a TV on HDMI, a Bluetooth speaker, the built-in analog out.
+MOCK_SINKS = [
+    {"name": "alsa_output.pci-0000_00_1f.3.hdmi-stereo",
+     "desc": "LG TV (HDMI)", "hdmi": True, "available": True},
+    {"name": "bluez_output.AC_12_34_56_78_9A.1",
+     "desc": "Soundcore Motion+ (Bluetooth)", "hdmi": False, "available": True},
+    {"name": "alsa_output.pci-0000_00_1f.3.analog-stereo",
+     "desc": "Built-in Audio Analog Stereo", "hdmi": False, "available": True},
+]
+
+# Remembered across --mock requests so a harness tap on a sink actually MOVES the
+# default (observe both states, CLAUDE.md §11) instead of snapping back to the
+# first one. Mock-only; the real path reads pactl's live default every call.
+_MOCK_DEFAULT_SINK = None
+
+
+def set_mock_default_sink(name):
+    global _MOCK_DEFAULT_SINK
+    _MOCK_DEFAULT_SINK = name
+
+
+def audioswitch_available():
+    """True when the box can enumerate and set the default audio sink, i.e. pactl
+    is on PATH. Read-only probe; degrades closed (no pactl -> False, never raises)."""
+    return shutil.which("pactl") is not None
+
+
+def audio_state(mock):
+    """Payload for GET /api/audio: the sinks the box can play through, each tagged
+    with whether it is the current default. Read-only. In --mock, the fixed
+    MOCK_SINKS with the remembered (or first) sink marked default so the harness
+    can exercise the switch off-box and SEE it land."""
+    src = MOCK_SINKS if mock else _pactl_sinks()
+    if not mock and not audioswitch_available():
+        return {"available": False, "default": None, "sinks": []}
+    if mock:
+        default = _MOCK_DEFAULT_SINK or (src[0]["name"] if src else None)
+    else:
+        default = _current_default_sink()
+    sinks = [{"name": s["name"], "desc": s.get("desc", ""), "hdmi": s["hdmi"],
+              "available": s["available"], "default": s["name"] == default}
+             for s in src]
+    return {"available": True, "default": default, "sinks": sinks}
+
+
+def _move_sink_inputs(name):
+    """Best-effort: move every currently-playing stream onto `name` so the switch
+    takes effect on audio that is ALREADY playing, not just the next app to start.
+    Each input id comes from pactl's OWN `list sink-inputs short` output -- never
+    from the client -- and is passed as one argv element. Failures are swallowed:
+    a stream that refuses to move must not fail the switch."""
+    r = _couch_run(["pactl", "list", "sink-inputs", "short"], timeout=8)
+    if not r["ok"]:
+        return
+    for line in (r["stdout"] or "").splitlines():
+        sid = line.split("\t", 1)[0].strip()
+        if sid.isdigit():
+            _couch_run(["pactl", "move-sink-input", sid, name])
+
+
+def set_audio_default(name):
+    """Make `name` the box's default audio sink.
+
+    ALLOWLIST (CLAUDE.md §3.1/§3.2): `name` must be a sink pactl ITSELF just
+    reported -- it is looked up in the live `_pactl_sinks()` set, never
+    interpolated. An unknown name returns None and NOTHING runs; the caller maps
+    that to 404. The name only ever reaches subprocess as a single argv element of
+    a fixed `pactl set-default-sink` command -- no shell, no format string.
+
+    No remember/restore: the user chose this device explicitly, so there is no
+    sink to guess on the way back (the hazard the _PRIOR_DEFAULT_SINK note above
+    documents). Returns the new state on success, {"ok": False, "error": ...} on a
+    pactl failure, or None when `name` is not a current sink."""
+    if not isinstance(name, str) or name not in [s["name"] for s in _pactl_sinks()]:
+        return None
+    r = _couch_run(["pactl", "set-default-sink", name])
+    if not r["ok"]:
+        return {"ok": False,
+                "error": (r.get("stderr") or "").strip() or "set-default-sink failed"}
+    # Move audio that is already playing, too -- otherwise the change only applies
+    # to the next app to open a stream, which reads as "nothing happened".
+    _move_sink_inputs(name)
+    return {"ok": True, "default": _current_default_sink() or name}
+
+
+# ---- Front light-bar / status-LED control (cap: ledcontrol) ----------------
+# Set the box's front RGB / status LED (color + brightness) from the phone via
+# the Linux LED class, /sys/class/leds. Same shape as the audio switcher: the
+# live-enumerated set of LED names IS the allowlist -- a POST id is honoured only
+# if it is an EXACT member of os.listdir(_LEDS_ROOT) and writable (else 404, and
+# NOTHING is written). Attribute file names are always fixed literals joined onto
+# the contained per-LED dir; client input only ever selects WHICH enumerated LED.
+#
+# Colour model (kernel multicolor LED class): `multi_intensity` carries the hue
+# (one value per channel, in `multi_index` order), `brightness` is the master
+# dimmer; the driver emits brightness * intensity / max_brightness per channel.
+# So a swatch sets multi_intensity and a level button sets brightness -- they
+# multiply, which is exactly the two-control app UI.
+#
+# HARDWARE-UNVERIFIED (see the PR): the write path is validated against the
+# kernel ABI + the mock only, never observed lighting a real LED, and on a stock
+# box the sysfs files are root-owned (writable:false -> the card hides) until an
+# install-time udev grant is added and proven on real hardware.
+_LEDS_ROOT = "/sys/class/leds"
+
+# Presentation-only classifier. NEVER gates authorization -- the agent honours a
+# POST to any enumerated *writable* LED regardless of this; it only decides what
+# the app SHOWS and whether the cap is advertised (don't offer a "lights" card
+# whose only targets are keyboard indicators).
+_LED_NOISE = ("capslock", "numlock", "scrolllock", "compose", "kana", "shift")
+_LED_POSITIVE = ("rgb", "chassis", "status", "joystick_ring", "logo", "bar", "light")
+
+# The off-box contract the app develops against (--mock): one RGB "front bar"
+# (swatches + brightness), one mono status LED (brightness only), one keyboard
+# indicator (writable but notable:false -> proves the app filters noise out).
+MOCK_LEDS = [
+    {"name": "multicolor:chassis", "desc": "Chassis RGB", "rgb": True,
+     "notable": True, "writable": True, "max_brightness": 255,
+     "index": ["red", "green", "blue"], "maxint": [255, 255, 255],
+     "brightness": 255, "color": {"r": 0, "g": 200, "b": 255}},
+    {"name": "steamdeck::status", "desc": "Status LED", "rgb": False,
+     "notable": True, "writable": True, "max_brightness": 100,
+     "index": [], "maxint": [], "brightness": 60, "color": None},
+    {"name": "input3::capslock", "desc": "Caps Lock", "rgb": False,
+     "notable": False, "writable": True, "max_brightness": 1,
+     "index": [], "maxint": [], "brightness": 0, "color": None},
+]
+# name -> {"brightness": <device units>, "color": {r,g,b}}, remembered across
+# --mock requests so a harness swatch/level tap MOVES the value and the next GET
+# shows it (observe both states, CLAUDE.md §11). Mock-only.
+_MOCK_LED_STATE = {}
+
+
+def set_mock_led(name, brightness=None, color=None):
+    base = next((l for l in MOCK_LEDS if l["name"] == name), None)
+    if base is None:
+        return
+    st = dict(_MOCK_LED_STATE.get(name, {}))
+    if brightness is not None:
+        # Round half up (see set_led): keep the mock faithful to the device path.
+        st["brightness"] = int(brightness / 100 * base["max_brightness"] + 0.5)
+    if color is not None:
+        st["color"] = color
+    _MOCK_LED_STATE[name] = st
+
+
+def _led_notable(name, rgb):
+    """Presentation/cap hint only (see the section note). rgb LEDs are always
+    notable; a mono LED is notable if its name looks like a front/status light and
+    not like a keyboard/storage/wifi indicator."""
+    low = name.lower()
+    if any(n in low for n in _LED_NOISE):
+        return False
+    if low.startswith(("input", "mmc")) or (low.startswith("phy") and "led" in low):
+        return False
+    if rgb:
+        return True
+    return any(p in low for p in _LED_POSITIVE)
+
+
+def _led_int(s):
+    try:
+        return int((s or "").strip())
+    except (ValueError, AttributeError):
+        return None
+
+
+def _led_access_w(name, attr):
+    try:
+        return os.access(os.path.join(_LEDS_ROOT, name, attr), os.W_OK)
+    except OSError:
+        return False
+
+
+def _led_read_attr(name, attr):
+    """Read one fixed-literal attribute file fresh (sysfs is one-shot per open).
+    `attr` is NEVER client input. None when missing/unreadable (degrade closed)."""
+    try:
+        with open(os.path.join(_LEDS_ROOT, name, attr)) as f:
+            return f.read().strip()
+    except OSError:
+        return None
+
+
+def _led_chmax(maxint, i, maxb):
+    """Per-channel intensity max for channel i: multi_max_intensity[i] when the
+    driver publishes it, else the LED's max_brightness (the kernel bounds each
+    multi_intensity value by max_brightness). ONE fallback used by BOTH the colour
+    read and write so the 0-255 <-> device round-trip is consistent -- a mismatch
+    here corrupts the colour on any LED whose max_brightness isn't 255."""
+    if i < len(maxint) and maxint[i] > 0:
+        return maxint[i]
+    return maxb or 255
+
+
+def _led_color_from_intensity(mi, index, maxint, maxb):
+    """Reverse-map multi_intensity (device order) to canonical {r,g,b} 0-255, or
+    None if unparseable. Only red/green/blue channels are mapped."""
+    try:
+        vals = [int(x) for x in (mi or "").split()]
+    except ValueError:
+        return None
+    if not vals or len(vals) != len(index):
+        return None
+    out = {"r": 0, "g": 0, "b": 0}
+    for i, ch in enumerate(index):
+        key = {"red": "r", "green": "g", "blue": "b"}.get(ch)
+        if key is None:
+            continue
+        chmax = _led_chmax(maxint, i, maxb)
+        out[key] = max(0, min(255, round(vals[i] * 255 / chmax)))
+    return out
+
+
+def _read_led_raw(name):
+    """Read /sys/class/leds/<name> into a full dict (incl. internal `index`/
+    `maxint` used by the writer), or None if max_brightness can't be read. `name`
+    is a bare dir name from _list_led_names(), never client-derived here."""
+    maxb = _led_int(_led_read_attr(name, "max_brightness"))
+    if maxb is None or maxb <= 0:
+        return None
+    cur = _led_int(_led_read_attr(name, "brightness")) or 0
+    mi = _led_read_attr(name, "multi_intensity")
+    idx_s = _led_read_attr(name, "multi_index")
+    index = idx_s.split() if idx_s is not None else []
+    # Treat as an RGB LED only when the multicolor channels are exactly the
+    # red/green/blue ones the colour path can read AND write. An amber/white or
+    # RGBW LED (or an empty index) is offered as brightness-only instead -- else
+    # its colour reads back as black and a swatch tap writes 0 to its real
+    # channels, turning it OFF.
+    rgb = (mi is not None and bool(index)
+           and set(index).issubset({"red", "green", "blue"}))
+    maxint = [int(x) for x in (_led_read_attr(name, "multi_max_intensity") or "").split()
+              if x.strip().isdigit()] if rgb else []
+    color = _led_color_from_intensity(mi, index, maxint, maxb) if rgb else None
+    writable = _led_access_w(name, "brightness") and (
+        (not rgb) or _led_access_w(name, "multi_intensity"))
+    return {"name": name, "desc": name, "rgb": rgb,
+            "notable": _led_notable(name, rgb), "writable": writable,
+            "max_brightness": maxb, "brightness": cur, "index": index,
+            "maxint": maxint, "color": color}
+
+
+def _led_public(raw):
+    """Project a raw LED dict to the API fields (drops internal index/maxint)."""
+    maxb = raw["max_brightness"]
+    return {"name": raw["name"], "desc": raw["desc"], "rgb": raw["rgb"],
+            "notable": raw["notable"], "writable": raw["writable"],
+            "max_brightness": maxb, "brightness": raw["brightness"],
+            "brightness_pct": round(raw["brightness"] / maxb * 100) if maxb else 0,
+            "color": raw["color"]}
+
+
+def _list_led_names():
+    """The live LED-name allowlist: bare child dirs of /sys/class/leds. [] when
+    the tree is absent/unreadable (degrade closed)."""
+    try:
+        return sorted(n for n in os.listdir(_LEDS_ROOT)
+                      if os.path.isdir(os.path.join(_LEDS_ROOT, n)))
+    except OSError:
+        return []
+
+
+def _mock_led_public(name):
+    base = next(l for l in MOCK_LEDS if l["name"] == name)
+    st = _MOCK_LED_STATE.get(name, {})
+    maxb = base["max_brightness"]
+    brightness = st.get("brightness", base["brightness"])
+    color = st.get("color", base.get("color"))
+    return {"name": name, "desc": base["desc"], "rgb": base["rgb"],
+            "notable": base["notable"], "writable": base["writable"],
+            "max_brightness": maxb, "brightness": brightness,
+            "brightness_pct": round(brightness / maxb * 100) if maxb else 0,
+            "color": color}
+
+
+def ledcontrol_available():
+    """True when at least one enumerated LED is BOTH writable by us and 'notable'
+    (a front/status/RGB light, not a keyboard indicator). Read-only; degrades
+    closed. On a stock box the sysfs files are root-owned, so this is False until
+    an install-time udev grant lands -- and the card then stays hidden."""
+    for name in _list_led_names():
+        raw = _read_led_raw(name)
+        if raw and raw["writable"] and raw["notable"]:
+            return True
+    return False
+
+
+def leds_state(mock):
+    """Payload for GET /api/leds: the writable LEDs the box exposes + their state,
+    each tagged `notable` so the app renders the front/status lights and ignores
+    keyboard indicators. Read-only. --mock returns MOCK_LEDS merged with the
+    remembered mock state so the harness can observe a change."""
+    if mock:
+        pubs = [_mock_led_public(l["name"]) for l in MOCK_LEDS if l["writable"]]
+        return {"available": any(p["notable"] for p in pubs), "leds": pubs}
+    raws = [_read_led_raw(n) for n in _list_led_names()]
+    pubs = [_led_public(r) for r in raws if r and r["writable"]]
+    return {"available": any(p["notable"] for p in pubs), "leds": pubs}
+
+
+def _led_realpath_ok(name):
+    """The per-LED dir must resolve under /sys (the node is usually a symlink into
+    /sys/devices, so we contain under /sys, not /sys/class/leds -- the listdir
+    membership + fixed literal attr names are the real guard)."""
+    try:
+        rp = os.path.realpath(os.path.join(_LEDS_ROOT, name))
+    except OSError:
+        return False
+    return rp == "/sys" or rp.startswith("/sys/")
+
+
+def _led_write(name, attr, value):
+    """Write to the FIXED-literal attribute `attr` of LED `name`. attr is NEVER
+    client input -- only 'brightness', 'multi_intensity', 'trigger' are ever
+    passed by set_led()."""
+    with open(os.path.join(_LEDS_ROOT, name, attr), "w") as f:
+        f.write(value)
+
+
+def _led_clear_trigger(name):
+    """Set the LED's trigger to 'none' (the ONLY trigger string we ever write) so
+    a live heartbeat/timer can't keep overwriting our static value. No-op when the
+    trigger is already none/absent. Non-fatal."""
+    cur = _led_read_attr(name, "trigger")
+    if cur is None or "[none]" in cur or "[" not in cur:
+        return
+    try:
+        _led_write(name, "trigger", "none")
+    except OSError:
+        pass
+
+
+def _led_write_color(name, raw, color):
+    """Write client {r,g,b} (0-255) to multi_intensity in the DEVICE's channel
+    order (raw['index']), scaled to each channel's max, whole array at once (the
+    kernel needs every element in one write)."""
+    canon = {"red": color["r"], "green": color["g"], "blue": color["b"]}
+    maxint = raw["maxint"]
+    maxb = raw["max_brightness"]
+    vals = []
+    for i, ch in enumerate(raw["index"]):
+        v = canon.get(ch, 0)
+        chmax = _led_chmax(maxint, i, maxb)
+        vals.append(str(max(0, min(chmax, round(v * chmax / 255)))))
+    _led_write(name, "multi_intensity", " ".join(vals))
+
+
+def set_led(name, brightness, color):
+    """Apply brightness (0-100) and/or color ({r,g,b} 0-255) to LED `name`.
+
+    ALLOWLIST (CLAUDE.md §3): `name` must be an EXACT member of the freshly
+    re-read os.listdir(_LEDS_ROOT) set AND writable -- else None (caller -> 404)
+    and NOTHING is written. Attribute paths use fixed literal names on the
+    contained per-LED dir; the client never names a path. Body shape is validated
+    by the caller; here we reject `color` on a mono LED. Returns
+    {"ok":True,...} | {"ok":False,"status":400|500,"error":..} | None."""
+    if not isinstance(name, str) or "/" in name or ".." in name or "\x00" in name:
+        return None
+    if name not in _list_led_names() or not _led_realpath_ok(name):
+        return None
+    raw = _read_led_raw(name)
+    if raw is None or not raw["writable"]:
+        return None
+    if color is not None and not raw["rgb"]:
+        return {"ok": False, "status": 400, "error": "led has no colour channels"}
+    try:
+        _led_clear_trigger(name)
+        if color is not None:
+            _led_write_color(name, raw, color)
+        if brightness is not None:
+            # Round half UP, not Python's banker's rounding: on a 2-state LED
+            # (max_brightness == 1) round(0.5) is 0, so tapping 50% would turn it
+            # OFF. int(x + 0.5) sends the midpoint to ON.
+            _led_write(name, "brightness",
+                       str(int(brightness / 100 * raw["max_brightness"] + 0.5)))
+    except OSError as e:
+        return {"ok": False, "status": 500,
+                "error": (str(e) or "led write failed")}
+    fresh = _read_led_raw(name) or raw
+    pub = _led_public(fresh)
+    return {"ok": True, "led": name,
+            "brightness_pct": pub["brightness_pct"], "color": pub["color"]}
+
+
+def _validate_led_body(req):
+    """Shared shape check for POST /api/leds/set. Returns
+    (brightness|None, color|None, error|None); error -> 400. Rejects (never
+    sanitises) anything that isn't an int 0-100 brightness or a {r,g,b} 0-255
+    colour. Booleans are excluded (JSON true == 1 in Python)."""
+    brightness = req.get("brightness")
+    color = req.get("color")
+    if brightness is None and color is None:
+        return None, None, "need brightness or color"
+    if brightness is not None and not (
+            isinstance(brightness, int) and not isinstance(brightness, bool)
+            and 0 <= brightness <= 100):
+        return None, None, "brightness must be an int 0-100"
+    if color is not None and not (
+            isinstance(color, dict) and set(color) == {"r", "g", "b"}
+            and all(isinstance(color[c], int) and not isinstance(color[c], bool)
+                    and 0 <= color[c] <= 255 for c in ("r", "g", "b"))):
+        return None, None, "color must be {r,g,b} ints 0-255"
+    return brightness, color, None
 
 
 def _couch_run_first(cmds):
@@ -17336,6 +17763,20 @@ class Handler(BaseHTTPRequestHandler):
                 # note above display_info() for what each name may claim.
                 data = mock_display_payload() if self.mock else display_payload()
                 self._send(200, data, started)
+            elif path == "/api/audio":
+                # READ-ONLY: the audio sinks this box can play through + which is
+                # the current default, for the output switcher (cap `audioswitch`).
+                # Always 200 with `available` (like /api/display-info): the app
+                # tells "agent too old" (404) apart from "no pactl here"
+                # (available:false). The set is POST /api/audio/default.
+                self._send(200, audio_state(self.mock), started)
+            elif path == "/api/leds":
+                # READ-ONLY: the writable front/status/RGB LEDs this box exposes +
+                # their state, for the light-bar card (cap `ledcontrol`). Always
+                # 200 with `available` (like /api/audio): 404 = agent too old,
+                # available:false = nothing controllable here. Set = POST
+                # /api/leds/set.
+                self._send(200, leds_state(self.mock), started)
             elif path == "/api/displays":
                 # Probe-and-appear: 404 unless this box can do the desktop->TV
                 # Game Mode handoff (SteamOS/Bazzite, 2+ outputs), so the app
@@ -17786,6 +18227,78 @@ class Handler(BaseHTTPRequestHandler):
                 ok = open_steam_menu(menu_id)
                 self._send(200 if ok else 500,
                            {"ok": ok, "id": menu_id}, started)
+                return
+            if path == "/api/audio/default":
+                # Set the box's default audio sink. Same allowlist shape as
+                # /api/steam/menus: the client `sink` is LOOKED UP in the live set
+                # of sinks pactl itself reports (mock: MOCK_SINKS) and 404s if it
+                # is not one of them -- never interpolated into a command. On a
+                # match, set_audio_default() passes it as a single argv element.
+                try:
+                    req = json.loads(body.decode("utf-8")) if body else {}
+                    if not isinstance(req, dict):
+                        raise ValueError("body must be a JSON object")
+                except (ValueError, TypeError, UnicodeDecodeError):
+                    self._send(400, {"error": "body must be a JSON object"},
+                               started)
+                    return
+                sink = req.get("sink")
+                if self.mock:
+                    if not isinstance(sink, str) or sink not in [
+                            s["name"] for s in MOCK_SINKS]:
+                        self._send(404, {"error": "unknown sink"}, started)
+                        return
+                    # Remember it so the next GET /api/audio shows the move (the
+                    # harness needs to SEE the default change, not snap back).
+                    set_mock_default_sink(sink)
+                    self._send(200, {"ok": True, "default": sink}, started)
+                    return
+                res = set_audio_default(sink)
+                if res is None:
+                    self._send(404, {"error": "unknown sink"}, started)
+                    return
+                self._send(200 if res.get("ok") else 500, res, started)
+                return
+            if path == "/api/leds/set":
+                # Set an LED's colour/brightness. Same allowlist shape as
+                # /api/audio/default: the client `led` is LOOKED UP in the live
+                # os.listdir(/sys/class/leds) set (mock: MOCK_LEDS) and 404s if it
+                # is not a writable member -- never interpolated into a path.
+                # Attribute file names are fixed literals inside set_led().
+                try:
+                    req = json.loads(body.decode("utf-8")) if body else {}
+                    if not isinstance(req, dict):
+                        raise ValueError("body must be a JSON object")
+                except (ValueError, TypeError, UnicodeDecodeError):
+                    self._send(400, {"error": "body must be a JSON object"},
+                               started)
+                    return
+                led_name = req.get("led")
+                brightness, color, verr = _validate_led_body(req)
+                if verr is not None:
+                    self._send(400, {"error": verr}, started)
+                    return
+                if self.mock:
+                    match = next((l for l in MOCK_LEDS
+                                  if l["name"] == led_name), None)
+                    if not isinstance(led_name, str) or match is None:
+                        self._send(404, {"error": "unknown led"}, started)
+                        return
+                    if color is not None and not match["rgb"]:
+                        self._send(400, {"error": "led has no colour channels"},
+                                   started)
+                        return
+                    # Remember it so the next GET /api/leds shows the change.
+                    set_mock_led(led_name, brightness, color)
+                    self._send(200, dict({"ok": True},
+                                         **_mock_led_public(led_name)), started)
+                    return
+                res = set_led(led_name, brightness, color)
+                if res is None:
+                    self._send(404, {"error": "unknown led"}, started)
+                    return
+                self._send(res.get("status", 200) if not res.get("ok") else 200,
+                           res, started)
                 return
 
             prefix = "/api/actions/"

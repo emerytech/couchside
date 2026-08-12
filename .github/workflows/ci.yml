@@ -83,6 +83,24 @@ jobs:
       - name: Unit tests (audio sink restore)
         run: python3 tests/test_audio_sink_restore.py
 
+      # Audio OUTPUT switcher (GET /api/audio, POST /api/audio/default). The one
+      # that matters is the allowlist: the sink a client names is looked up in the
+      # set pactl itself reported and refused otherwise, reaching subprocess only
+      # as a single argv element. Proves an unknown/empty/injection name runs
+      # nothing, and that the --mock switch is observable (default moves).
+      - name: Unit tests (audio output switcher)
+        run: python3 tests/test_audio_switch.py
+
+      # Front light-bar / status-LED control (GET /api/leds, POST /api/leds/set).
+      # The one that matters is the allowlist: the LED a client names is looked up
+      # in the live os.listdir(/sys/class/leds) set and must be writable, else
+      # NOTHING is written; attribute paths are fixed literals; trigger is only
+      # ever 'none'. Proves unknown/traversal/non-writable ids write nothing,
+      # colour is written in the device's own channel order, and the --mock switch
+      # is observable.
+      - name: Unit tests (led control)
+        run: python3 tests/test_led_control.py
+
       # Which filesystems the dashboard reports. A Deck owner was shown
       # "3.5 / 5.0 GB, 69%" because read_disks() only looked at "/" -- which on
       # SteamOS is a small READ-ONLY rootfs -- and never mentioned /home. Asserts

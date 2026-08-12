@@ -9,6 +9,54 @@ Entry fields: `priority` (P0 blocker → P3 nice) · `risk` · `affects` · `dep
 
 ## 🔨 In Progress
 
+### Front light-bar / status-LED control (owner ask 2026-08-12)
+- **priority:** P2 · **risk:** medium (writes a hardware sysfs path; strictly allowlisted +
+  validated) · **affects:** agent + app · **depends_on:** an install-time udev grant (below)
+- **BUILT (agent 2.9.81, branch `claude/lightbar-led`).** Console-tab LIGHT card: pick an
+  LED's colour (preset swatches) + brightness (Off/25/50/75/100) with a tap. `GET /api/leds`
+  enumerates the writable LEDs; `POST /api/leds/set {led,brightness?,color?}` writes. Cap
+  `ledcontrol` (six sites, parity green). Mirrors [[the audio switcher]] (`audioswitch`).
+- **Allowlist:** the client `led` must be an EXACT member of the live
+  `os.listdir(/sys/class/leds)` set AND writable → else 404, **nothing written**. Attribute
+  files are fixed literals (`brightness`/`multi_intensity`/`trigger`); trigger is only ever
+  `none`; colour is reordered into the device's `multi_index` order + scaled; brightness/colour
+  range-checked (reject, don't sanitise); path contained under `/sys`. `notable` name-heuristic
+  is presentation-only, NEVER gates authorization. Built from a research pass on the kernel
+  multicolor-LED ABI + a 4-lens adversarial review of the diff.
+- **Verified:** `tests/test_led_control.py` (refused/traversal/non-writable ids write NOTHING;
+  colour reordered to device channel order; trigger only `none`; validation rejects bad
+  colour/brightness; mock observable) + protocol parity + CI step. Agent end-to-end vs `--mock`
+  over curl (401 no/wrong-token, 404 unknown, 400 colour-on-mono/bad-brightness, colour moves).
+  App in the harness: pressed a swatch and a level, box state moved to green @ 50%, ring
+  followed the re-read (observe both states, §11).
+- **NOT verified / the real gate:** no real LED hardware lit. On a stock box the sysfs files
+  are **root-owned**, so `writable:false` → the card **hides** until an **install-time udev
+  grant** makes a specific LED writable — that rule is **not written yet**, must be scoped to
+  the target LED (don't blanket-open every LED), and proven on the home Legion Go S / an
+  AYANEO before this is "done". Also unverified: which node exists per box, write contention
+  with Steam/InputPlumber, AYN `led_mode` gotcha, reported-colour accuracy. Classifier tested
+  only on SYNTHETIC names (no `/sys/class/leds` fixtures yet). OpenRGB fallback: deferred.
+- **Follow-ups:** the scoped udev rule + hardware pass; real sysfs fixtures for the classifier;
+  effects (breathe/rainbow) once a device is in hand.
+
+### Audio output switcher — pick the box's sink from the phone (user ask 2026-08-12)
+- **priority:** P2 · **risk:** low · **affects:** agent + app · **depends_on:** none
+- **BUILT (agent 2.9.80, branch `claude/audio-output-switcher`).** Console-tab AUDIO OUTPUT
+  card: lists the box's audio sinks and one tap sets the default (TV/HDMI ↔ Bluetooth ↔
+  analog), moving already-playing streams too.
+- **Allowlist:** the client `sink` is looked up in the LIVE set `_pactl_sinks()` reported and
+  404s otherwise; only ever reaches subprocess as one argv element of `pactl set-default-sink`.
+  Distinct from Couch Mode's audio move — a deliberate user pick, so no guess-to-restore
+  (the hazard the `_PRIOR_DEFAULT_SINK` note documents).
+- **Cap:** new `audioswitch` (all six sites; parity green). `GET /api/audio`,
+  `POST /api/audio/default`. `MOCK_SINKS` + remembered mock default so the switch is
+  observable off-box.
+- **Verified:** agent proven end-to-end vs `--mock` (GET lists, 401 no-token, POST moves the
+  default HDMI→BT, unknown/injection → 404); `tests/test_audio_switch.py` + protocol parity.
+  App: typecheck clean, harness tap = the last step before merge.
+- **NOT yet:** on-box against real pactl (multi-sink box with HDMI + a BT device); native row
+  overflow for long device descriptions (harness can't judge, §6).
+
 ### Setup → Utilities menu — extensible one-click hardware/setup helpers (owner ask 2026-08-08)
 - **priority:** P2 · **risk:** medium-high (agent runs hardware-touching flashes + signed
   setups; must stay strictly allowlisted) · **affects:** agent + app · **depends_on:** nothing
@@ -256,7 +304,15 @@ Entry fields: `priority` (P0 blocker → P3 nice) · `risk` · `affects` · `dep
   - **REMAINING:** an EAS app-store build (billed cloud; owner's timing) to ship H.264 to users, and merge the spike
     branch. Steam Machine (AMD Navi33) lacks a gst VA encoder → stays MJPEG; H.264 is Intel/AMD-with-VA boxes.
   Detail in [[h264-tier-webcodecs-not-webrtc]] + [[remote-desktop-and-screen-capture]].
-- **📋 SUB-ENTRY — Game-mode (gamescope) MENU navigation (owner ask 2026-08-11; PROVEN doable, NOT built).** Owner
+- **✅ SHIPPED 2026-08-11 (agent 2.9.79, PR #438) — Game-mode (gamescope) MENU navigation.** DEVICE-VERIFIED on a
+  Steam Machine (owner: touch tap-to-point "spot on" = the xdotool click lands where you tap). New §3-clean agent
+  verb `{t:'gm'}` drives gamescope's Xwayland via an xdotool argv (`_gamescope_pointer`, mirrors `{t:'ma'}`;
+  `tests/test_gamemode_input.py` CI-wired); app un-gates CONTROL in game mode (session-driven, NO cap), Touch default
+  + D-pad/Select keyboard fallback; portrait local cursor shipped alongside. VIEW = the existing gamescopectl
+  still-frame (already game-mode-capable). TV shows no cursor in game mode = gamescope `--hide-cursor-delay` +
+  Big-Picture controller-UI (box-side, NOT an app bug). Original probe notes kept below (§7). APP STORE build still
+  deferred (agent verb released; app UI on main, needs an EAS build + the react-native-webrtc strip).
+- **📋 (original probe) Game-mode (gamescope) MENU navigation (owner ask 2026-08-11; PROVEN doable, NOT built).** Owner
   narrowed scope to "just menu nav, not control while a game runs." Hardware-probed on lenovodesktop (gamescope
   1.4.10): **VIEW already works** — the agent's existing gamescopectl still-frame reads the real scanout buffer, so
   Big-Picture menus come through non-black (~1.4fps, fine for menus). **INPUT proven** — xdotool on gamescope's

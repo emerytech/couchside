@@ -225,6 +225,24 @@ export type BoxCaps = {
    * cap no longer implies libnice/webrtcbin — the WebCodecs path needs no WebRTC.)
    */
   screenstream_h264?: boolean;
+  /**
+   * Audio output switcher (agent >= 2.9.80): the box can enumerate its audio
+   * sinks and set the default from the phone (TV/HDMI ↔ Bluetooth ↔ analog).
+   * Linux-only — it drives pactl. Gates the Console-tab "AUDIO OUTPUT" card.
+   * Optional: absent on older agents and on Windows, so undefined reads as
+   * "unknown, probe" — only an explicit false (no pactl) hides the card.
+   */
+  audioswitch?: boolean;
+  /**
+   * Front light-bar / status-LED control (agent >= 2.9.81): the box can set an
+   * RGB or mono LED's colour + brightness from the phone (via /sys/class/leds).
+   * Linux-only. Gates the Console-tab "LIGHT" card. Optional: absent on older
+   * agents and on Windows, so undefined reads as "unknown, probe" — and an
+   * explicit false (no controllable/writable LED) hides the card. NOTE: on a
+   * stock box the sysfs files are root-owned, so this is false until an
+   * install-time udev grant makes an LED writable.
+   */
+  ledcontrol?: boolean;
 };
 
 /** One Setup → Utilities helper + its live state, from GET /api/utilities.
@@ -403,6 +421,57 @@ export type DisplayInfo = {
         sink, so the two are separate fields and both are shown. */
     input?: string;
   };
+};
+
+/** One audio output the box can play through, from GET /api/audio (agent >= 2.9.80,
+    cap `audioswitch`). `name` is the pactl node id the switch POSTs back verbatim;
+    `desc` is the human label shown in the row. */
+export type AudioSink = {
+  name: string;
+  desc: string;
+  hdmi: boolean;
+  available: boolean;
+  /** True for the sink pactl currently reports as the default. */
+  default: boolean;
+};
+
+/** GET /api/audio: the box's audio outputs + which is the current default.
+    `available: false` = no pactl on this box (the card hides). */
+export type AudioState = {
+  available: boolean;
+  default: string | null;
+  sinks: AudioSink[];
+};
+
+/** An 8-bit RGB colour, as the app and agent both speak it (0–255 per channel,
+    device-independent — the agent scales to the LED's own range). */
+export type Rgb = { r: number; g: number; b: number };
+
+/** One controllable LED from GET /api/leds (agent >= 2.9.81, cap `ledcontrol`).
+    `name` is the /sys/class/leds node id the setter POSTs back verbatim. */
+export type LedInfo = {
+  name: string;
+  desc: string;
+  /** True for a multicolour LED (has colour swatches); false = brightness only. */
+  rgb: boolean;
+  /** Presentation hint from the agent: a front/status/RGB light vs a keyboard
+      indicator. The app renders only notable LEDs. */
+  notable: boolean;
+  /** The agent can write this LED as the desktop user (else it isn't returned). */
+  writable: boolean;
+  max_brightness: number;
+  brightness: number;
+  /** 0–100, so the app can light the matching level button. */
+  brightness_pct: number;
+  /** Current colour for an rgb LED, or null (mono, or the box couldn't tell). */
+  color: Rgb | null;
+};
+
+/** GET /api/leds: the writable LEDs the box exposes + their state.
+    `available: false` = nothing controllable here (the card hides). */
+export type LedsState = {
+  available: boolean;
+  leds: LedInfo[];
 };
 
 /** One stage of the Couch Mode ceremony (GET /api/couch-mode/status, agent
@@ -1202,7 +1271,9 @@ export function capsEqual(a?: BoxCaps, b?: BoxCaps): boolean {
     a.steaminstall === b.steaminstall &&
     a.utilities === b.utilities &&
     a.screenstream === b.screenstream &&
-    a.screenstream_h264 === b.screenstream_h264
+    a.screenstream_h264 === b.screenstream_h264 &&
+    a.audioswitch === b.audioswitch &&
+    a.ledcontrol === b.ledcontrol
   );
 }
 
@@ -2436,6 +2507,69 @@ export const api = {
   ): Promise<DisplayInfo | null> {
     return probeGated(caps?.display_info, () =>
       probeOrNull(request<DisplayInfo>(settings, '/api/display-info')));
+  },
+
+  /**
+   * The box's audio outputs + the current default (agent >= 2.9.80, cap
+   * `audioswitch`). Probe-and-appear: null on a 404 (older agent) so the AUDIO
+   * OUTPUT card hides; an `available: false` payload (no pactl) hides it too.
+   */
+  audio(
+    settings: ConnSettings,
+    caps: BoxCaps | undefined = cachedCaps(settings),
+  ): Promise<AudioState | null> {
+    return probeGated(caps?.audioswitch, () =>
+      probeOrNull(request<AudioState>(settings, '/api/audio')));
+  },
+
+  /**
+   * Make `sink` the box's default output. `sink` is a `name` the box itself sent
+   * in audio()'s sink list — the agent looks it up in its live set and 404s an
+   * unknown one, so this can never point audio at something the box didn't offer.
+   * Resolves false on any failure; the caller re-reads /api/audio to show the REAL
+   * default rather than trusting this return (CLAUDE.md §11: observe the state).
+   */
+  setAudioDefault(settings: ConnSettings, sink: string): Promise<boolean> {
+    return request<{ ok: boolean }>(settings, '/api/audio/default', {
+      method: 'POST',
+      body: { sink },
+    })
+      .then((r) => !!r?.ok)
+      .catch(() => false);
+  },
+
+  /**
+   * The box's controllable LEDs + their state (agent >= 2.9.81, cap
+   * `ledcontrol`). Probe-and-appear: null on a 404 (older agent) so the LIGHT
+   * card hides; an `available: false` payload (no writable LED) hides it too.
+   */
+  leds(
+    settings: ConnSettings,
+    caps: BoxCaps | undefined = cachedCaps(settings),
+  ): Promise<LedsState | null> {
+    return probeGated(caps?.ledcontrol, () =>
+      probeOrNull(request<LedsState>(settings, '/api/leds')));
+  },
+
+  /**
+   * Set an LED's colour and/or brightness. `led` is a `name` the box itself sent
+   * in leds()'s list — the agent looks it up in its live /sys/class/leds set and
+   * 404s an unknown one, so this can never aim a write anywhere the box didn't
+   * offer. `brightness` is 0–100; `color` is 0–255 per channel. Resolves false on
+   * any failure; the caller re-reads /api/leds to show the REAL state rather than
+   * trusting this return (CLAUDE.md §11: observe the state).
+   */
+  setLed(
+    settings: ConnSettings,
+    led: string,
+    patch: { brightness?: number; color?: Rgb },
+  ): Promise<boolean> {
+    return request<{ ok: boolean }>(settings, '/api/leds/set', {
+      method: 'POST',
+      body: { led, ...patch },
+    })
+      .then((r) => !!r?.ok)
+      .catch(() => false);
   },
 
   /** Enter Couch Mode: fling Game Mode onto `output` (HDR optional). */
