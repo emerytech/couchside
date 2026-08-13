@@ -1,6 +1,7 @@
 import { DarkTheme, DefaultTheme, Stack, ThemeProvider } from 'expo-router';
 import { StatusBar } from 'expo-status-bar';
 import { useMemo } from 'react';
+import { GestureHandlerRootView } from 'react-native-gesture-handler';
 import 'react-native-reanimated';
 
 import { ReviewPrompt } from '@/components/ReviewPrompt';
@@ -44,6 +45,7 @@ export default function RootLayout() {
   }, [t, scheme]);
 
   return (
+    <GestureHandlerRootView style={{ flex: 1 }}>
     <SettingsProvider>
       <EntitlementProvider>
         <ThemeProvider value={navTheme}>
@@ -111,5 +113,6 @@ export default function RootLayout() {
         </ThemeProvider>
       </EntitlementProvider>
     </SettingsProvider>
+    </GestureHandlerRootView>
   );
 }

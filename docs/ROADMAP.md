@@ -9,6 +9,40 @@ Entry fields: `priority` (P0 blocker → P3 nice) · `risk` · `affects` · `dep
 
 ## 🔨 In Progress
 
+### LED Studio — editor + presets + effects + persistence + OpenRGB (owner ask 2026-08-13)
+- **priority:** P2 · **risk:** medium (effect thread + a new loopback OpenRGB subsystem;
+  strictly allowlisted) · **affects:** agent + app · **depends_on:** the LIGHT card below;
+  OpenRGB installed + `--server` running on the box (P3+). **Spec:**
+  `docs/memory/project_led-studio.md`.
+- Builds the LIGHT card out per the owner's ask: easier editor (native hue/brightness
+  sliders), **saved custom presets** (app-side `couchside.ledpresets.v1`), **automation /
+  effects** (`breathe`/`pulse`/`rainbow`/`strobe` + a **night-rider `scanner`**), and
+  **survive reboot** (agent persists the active effect to `~/.config/couchside/leds.json`
+  and re-applies on login). Two backends behind one effect engine: the existing
+  `/sys/class/leds` path (works on the Steam Machine today) and a new **OpenRGB** stdlib
+  SDK client (127.0.0.1:6742) for whole-system / addressable RGB — the real multi-zone
+  scanner. Owner chose *both in one push*, *addressable real sweep*, *native sliders*.
+- **Caps:** keep `ledcontrol` (effects/presets ride on additive `/api/leds` payload fields,
+  no new cap); add ONE cap `openrgb` (install-gated subsystem). New routes
+  `POST /api/leds/effect`, `GET/POST /api/openrgb[/set]` — all bearer-gated, effect names a
+  frozen set, params reject-don't-sanitise, OpenRGB writes bounded by server-reported counts.
+- **BUILT (agent 2.9.84).** Kernel half: `led-fx` render thread + `POST /api/leds/effect` +
+  additive `effects`/`active` on GET /api/leds + persistence (`~/.config/couchside/leds.json`,
+  restored on login); `RgbLedCard` rewritten with native hue/brightness sliders + effect/speed
+  chips + a per-phone preset library (`lib/ledPresets.ts`, seeded incl. Night Rider). OpenRGB
+  half: hand-rolled stdlib SDK client (127.0.0.1:6742) + `orgb-fx` per-LED scanner +
+  `GET/POST /api/openrgb[/set]` + cap `openrgb` (six sites) + `OpenRgbCard` ("SYSTEM RGB").
+  Shared `lib/ledColor.ts` + `components/TrackSlider.tsx`.
+- **Verified:** 69/69 test files green incl. new `test_led_effects.py` + `test_openrgb.py`
+  (the latter's mock-OpenRGB-server test CAUGHT a real bug — `_update_leds` sent no body).
+  Both endpoints exercised vs `--mock` over curl (401/404/400/200 + observe-both). App
+  PRESSED in the harness (§6): effect chips, Night Rider preset, sliders, Save; SYSTEM RGB
+  scanner moved /api/openrgb active. See BUILD_LOG 2026-08-13.
+- **NOT verified / gates:** no real LED/OpenRGB hardware this session. Kernel path still needs
+  the install-time udev grant on a stock box; OpenRGB wire format proven only vs the mock
+  server + docs (real hardware = final gate). Sliders' DRAG needs on-device proof. Land on a
+  fresh `claude/led-studio` off origin/main (built on the H264 spike branch).
+
 ### Front light-bar / status-LED control (owner ask 2026-08-12)
 - **priority:** P2 · **risk:** medium (writes a hardware sysfs path; strictly allowlisted +
   validated) · **affects:** agent + app · **depends_on:** an install-time udev grant (below)
@@ -35,9 +69,10 @@ Entry fields: `priority` (P0 blocker → P3 nice) · `risk` · `affects` · `dep
   the target LED (don't blanket-open every LED), and proven on the home Legion Go S / an
   AYANEO before this is "done". Also unverified: which node exists per box, write contention
   with Steam/InputPlumber, AYN `led_mode` gotcha, reported-colour accuracy. Classifier tested
-  only on SYNTHETIC names (no `/sys/class/leds` fixtures yet). OpenRGB fallback: deferred.
-- **Follow-ups:** the scoped udev rule + hardware pass; real sysfs fixtures for the classifier;
-  effects (breathe/rainbow) once a device is in hand.
+  only on SYNTHETIC names (no `/sys/class/leds` fixtures yet).
+- **Follow-ups:** the scoped udev rule + hardware pass; real sysfs fixtures for the classifier.
+  Editor/presets/effects/OpenRGB now tracked as **LED Studio** above
+  (`docs/memory/project_led-studio.md`) — OpenRGB is no longer "deferred".
 
 ### Audio output switcher — pick the box's sink from the phone (user ask 2026-08-12)
 - **priority:** P2 · **risk:** low · **affects:** agent + app · **depends_on:** none

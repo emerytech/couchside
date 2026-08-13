@@ -101,6 +101,31 @@ jobs:
       - name: Unit tests (led control)
         run: python3 tests/test_led_control.py
 
+      # LED effect engine + persistence (POST /api/leds/effect, the effects/active
+      # fields on GET /api/leds, reboot restore). Proves an unknown effect id or an
+      # unknown/traversal/non-writable LED starts + writes NOTHING, that the render
+      # thread only ever writes the three fixed-literal attrs, that persistence
+      # round-trips and is REVALIDATED on restore, and that --mock is observable.
+      - name: Unit tests (led effects)
+        run: python3 tests/test_led_effects.py
+
+      # OpenRGB backend (GET /api/openrgb, POST /api/openrgb/set) + the hand-rolled
+      # SDK client. No OpenRGB hardware in CI, so the wire format is proven against
+      # an in-process mock OpenRGB server (handshake, controller-data parse, per-LED
+      # UPDATE_LEDS frames). Proves an out-of-range device index or unknown effect
+      # writes NOTHING, colours round-trip, and --mock is observable.
+      - name: Unit tests (openrgb)
+        run: python3 tests/test_openrgb.py
+
+      # Addressable LED strip + hardware effects (valve-leds). The allowlist one:
+      # the client sends a strip PREFIX, members come from the live listdir, and
+      # the `effect` VALUE written must be one the device itself publishes in
+      # effect_index. Proves an unknown prefix writes nothing, an unpublished
+      # firmware effect is never written, and only fixed-literal attrs on the
+      # strip's own members are touched.
+      - name: Unit tests (led strip)
+        run: python3 tests/test_led_strip.py
+
       # Which filesystems the dashboard reports. A Deck owner was shown
       # "3.5 / 5.0 GB, 69%" because read_disks() only looked at "/" -- which on
       # SteamOS is a small READ-ONLY rootfs -- and never mentioned /home. Asserts
