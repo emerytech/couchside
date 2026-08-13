@@ -655,3 +655,21 @@ caught before it shipped:
 6. **Keep an accessible fallback.** The grip is pointer-only (`accessible={false}`);
    up/down arrow buttons remain for assistive tech and as the guaranteed path.
    The drag gesture itself needs a device to verify (same RNW ceiling as above).
+
+## Addressable LED strips + hardware effects (LED Studio, agent 2.9.85+)
+
+- **Drive the DEVICE's firmware effect, not an agent frame-loop.** A strip whose driver
+  publishes an `effect_index` (e.g. `valve-leds`: patrol/breath/rainbow/manual) is animated by
+  the box itself. `apply_strip_effect(prefix, ...)` maps our effect id → a firmware name that
+  is an EXACT member of that device's `effect_index` (looked up, never trusted) and writes
+  `effect` + `delay`. It survives the app closing / reboot. Only strips WITHOUT firmware
+  effects fall back to an agent per-LED render loop.
+- **Strip allowlist:** the client sends a PREFIX; members are the live `os.listdir` entries
+  matching `prefix[<n>]` (never interpolated); the `effect` VALUE must be published by the
+  device. `set_led` on a strip node auto-writes `effect=manual` first so a hand-paint sticks.
+- **App slider convention: `components/TrackSlider.tsx` on react-native-gesture-handler**, not
+  PanResponder — `activeOffsetX([-8,8])` claims the horizontal drag over the iOS nav-swipe,
+  `failOffsetY` yields vertical scroll. Needs `GestureHandlerRootView` at the app root.
+- **Strip physical order:** `lib/ledStrip.ts` groups `prefix[N]`; `StripLightCard.displayLeds()`
+  REVERSES `valve-leds` (its index runs opposite the physical bar). Cells, paints, and saved
+  patterns all use physical (display) order.

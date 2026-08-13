@@ -1,5 +1,12 @@
 # Project: LED Studio — editor, presets, effects, persistence, OpenRGB
 
+> **✅ SHIPPED 2026-08-13 — app 2.9.46 / agent 2.9.86, tag v2.9.46 (full release chain).**
+> Marquee = the addressable `valve-leds` strip driven by the box's FIRMWARE effects
+> (scanner→patrol survives app-close/reboot) + manual per-LED paint + pattern presets,
+> HARDWARE-PROVEN on a real Steam Machine. PRs #450/#451/#452 merged; agent signed +
+> published, iOS in App Store review, Android in Play production. OpenRGB still
+> mock-server-only (no real daemon). Next: TLS app track (see `tls-encryption-p1` memory).
+
 **Owner ask (2026-08-13):** the LED control "works good on Steam Machine but I'd like to
 build it out" — an easier in-app editor, saved custom presets, automation/effects (a
 "night rider" KITT scanner named as the example), and survive reboot (a reboot currently

@@ -9,7 +9,8 @@ Entry fields: `priority` (P0 blocker → P3 nice) · `risk` · `affects` · `dep
 
 ## 🔨 In Progress
 
-### LED Studio — editor + presets + effects + persistence + OpenRGB (owner ask 2026-08-13)
+### ✅ LED Studio — SHIPPED 2026-08-13 (app 2.9.46 / agent 2.9.86, tag v2.9.46) — MOVE TO COMPLETED
+### LED Studio — editor + presets + effects + persistence + OpenRGB + addressable strip (owner ask 2026-08-13)
 - **priority:** P2 · **risk:** medium (effect thread + a new loopback OpenRGB subsystem;
   strictly allowlisted) · **affects:** agent + app · **depends_on:** the LIGHT card below;
   OpenRGB installed + `--server` running on the box (P3+). **Spec:**
@@ -38,10 +39,16 @@ Entry fields: `priority` (P0 blocker → P3 nice) · `risk` · `affects` · `dep
   Both endpoints exercised vs `--mock` over curl (401/404/400/200 + observe-both). App
   PRESSED in the harness (§6): effect chips, Night Rider preset, sliders, Save; SYSTEM RGB
   scanner moved /api/openrgb active. See BUILD_LOG 2026-08-13.
-- **NOT verified / gates:** no real LED/OpenRGB hardware this session. Kernel path still needs
-  the install-time udev grant on a stock box; OpenRGB wire format proven only vs the mock
-  server + docs (real hardware = final gate). Sliders' DRAG needs on-device proof. Land on a
-  fresh `claude/led-studio` off origin/main (built on the H264 spike branch).
+- **✅ SHIPPED (agent 2.9.86, app 2.9.46, tag v2.9.46, full chain 2026-08-13).** Kernel effect
+  engine + persistence + presets (PRs #450/#451/#452 merged). **Addressable strip = the
+  marquee, HARDWARE-PROVEN on a real Steam Machine:** 17 `valve-leds` nodes with FIRMWARE
+  effects (scanner→patrol night-rider survives app-close/reboot), per-LED **manual** paint +
+  pattern presets, agent-driven so the app just controls it. App: one-row flipped strip,
+  named/protected presets, gesture-handler sliders (fix nav-swipe collision). Agent signed +
+  published (boxes auto-update, folds in the AMD CPU-temp fix #453); iOS 2.9.46/176 in App
+  Store review, Android vc94 in Play production. 72/72 tests green.
+- **Still open (follow-ups, not blockers):** OpenRGB against a REAL daemon (mock-server proven
+  only); non-valve strip flip generalization; box-side preset-library sync.
 
 ### Front light-bar / status-LED control (owner ask 2026-08-12)
 - **priority:** P2 · **risk:** medium (writes a hardware sysfs path; strictly allowlisted +
