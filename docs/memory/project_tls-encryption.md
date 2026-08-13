@@ -6,14 +6,16 @@
 > + the UDP discovery reply + `build_pair_url` gain `tls_*` fields **only when TLS is
 > enabled** — dark payloads stay byte-identical. Dark by default, tested
 > (`tests/test_tls_cert.py`, `tests/test_tls_smoke.py`, `tests/test_tls_advertise.py`).
-> README port-forward warning shipped. **App track (P3/P5) blocked on the device spike.**
+> README port-forward warning shipped. **App-track device spike DONE (2026-08-13, iOS+
+> Android): `{ca}` pinning is unreliable (dead on iOS); the cross-platform path is a
+> MANUAL modulus pin via `getPeerCertificate` — see §2. P3/P5 unblocked, NOT yet built.**
 > Grounded 2026-08-13 by a 5-agent investigation (app transport inventory, agent
 > server surface, protocol/caps/tests impact, trust-model panel, cert-lifecycle
 > panel). Every file:line below was read, not guessed.
 >
 > **P1 as-built notes:** cert shape = RSA-2048, `CA:FALSE` + `serverAuth` (the
-> `CA:TRUE`-vs-`CA:FALSE` question in §3 is deferred to the device spike — trivial
-> re-sign to flip). `--tls` flag force-enables with an ephemeral (non-persisted)
+> `CA:TRUE`-vs-`CA:FALSE` question is now MOOT — the spike proved the app pins by
+> modulus, which ignores `basicConstraints`; keep `CA:FALSE`). `--tls` flag force-enables with an ephemeral (non-persisted)
 > cert for CI; real enablement is config-driven and persists. `/api/tls/cert` is
 > PRE-AUTH (cert is public). No cap added (Decision A held).
 >
@@ -114,23 +116,44 @@ install**, so there's nothing to bake. The app's ONE self-signed-capable transpo
 
 ---
 
-## 2. Trust model — the crux (recommended)
+## 2. Trust model — the crux (RESOLVED by device spike 2026-08-13)
 
-**Route all RN-side box traffic through `react-native-tcp-socket` over TLS, pin the
-box's self-signed cert with `{ ca: <box PEM> }`, where the PEM is anchored to the
-SHA-256 fingerprint shown in the pairing QR/PIN.** Over that raw TLS socket, hand-roll
-an HTTP/1.1 client (replaces `fetch`) and an RFC6455 client (replaces `new WebSocket`) —
-mirroring how the agent already hand-rolls its own HTTP server + WS upgrade over one socket.
+> **✅ SPIKE RESULT — iOS + Android, RN 0.86, real hardware (iPhone iOS 27 + Razr).**
+> The original plan (pin with `{ca}` and let the TLS stack enforce it) is **WRONG on
+> iOS.** react-native-tcp-socket's iOS side flips to manual-accept-all the moment a `ca`
+> is present, so `{ca}` — *even with `rejectUnauthorized:true`* — accepts **any** cert,
+> including an unrelated DECOY. Android is the OPPOSITE: `{ca, rejectUnauthorized:true}`
+> DOES enforce (decoy rejected, `CertPathValidatorException: Trust anchor not found`).
+> The one mechanism that works on **BOTH** is a **MANUAL modulus pin**: connect accept-
+> all, then read the live cert via `getPeerCertificate()` and compare its RSA **modulus**
+> to the pinned box modulus. Proven to accept the right cert and reject the decoy on both
+> platforms. **⇒ ADOPT the manual modulus pin as the single cross-platform path.**
+> (Spike branch `spike/tls-app-device`, screen `app/app/tls-spike.tsx`, throwaway.)
+
+**Route all RN-side box traffic through `react-native-tcp-socket` over TLS. Connect
+accept-all (encrypt), then AUTHENTICATE by reading the live peer cert's RSA modulus via
+`getPeerCertificate()` and comparing it to the modulus of the cert pinned at pairing** —
+whose integrity is anchored to the SHA-256 fingerprint shown in the pairing QR. Mismatch =
+destroy the socket. Over the verified socket, hand-roll an HTTP/1.1 client (replaces
+`fetch`) and an RFC6455 client (replaces `new WebSocket`), mirroring the agent's own
+hand-rolled HTTP server + WS upgrade over one socket.
+
+**Pin the modulus (RSA public key), NOT the whole-cert DER:** the agent reuses its key
+across IP-drift re-signs, so the modulus is STABLE while the cert fp changes — the same
+property `tls_spki` advertises. Belt-and-suspenders: ALSO pass `{ca, rejectUnauthorized:
+true}` so Android enforces natively for free (iOS ignores it); the manual modulus compare
+is the load-bearing check on both.
 
 Why this and not the alternatives:
 
-| Option | iOS | Android | Trust | New native work | Verdict |
-|---|---|---|---|---|---|
-| **A. rn-tcp-socket + hand-rolled HTTP/WS over TLS, `{ca}` pin** | ✅ | ✅ | **pinning** (physical-access TOFU) | none (module present) | **ADOPT** |
-| B. `NSAllowsArbitraryLoads` / cleartext flags | ❌ | ❌ | none — does NOT trust bad certs | plist/NSC | reject |
-| C. Local CA / user installs a profile (mkcert) | ⚠️ brutal | ❌ (Android 7+ ignores user CAs for app traffic) | CA install | profile + NSC | reject (friction) |
-| D. `react-native-ssl-pinning` for fetch | ⚠️ | ⚠️ | pinning, **fetch only** (no WS) | +1 dep | reject (redundant with A) |
-| E. app-layer crypto (Noise/WireGuard) / token-only wrap | — | — | mixed | varies | reject the crypto (stdlib has no X25519/ChaCha; can't roll in pure Python). **Keep one idea: the stream ticket (§4).** |
+| Option | iOS | Android | Trust | Verdict |
+|---|---|---|---|---|
+| **A. rn-tcp-socket, accept-all + MANUAL modulus pin (getPeerCertificate)** | ✅ proven | ✅ proven | pinning (physical-access anchor) | **ADOPT** |
+| A′. rn-tcp-socket `{ca}`, trust the TLS stack to enforce | ❌ accepts any cert | ✅ enforces | — | **REJECTED on iOS by spike** |
+| B. `NSAllowsArbitraryLoads` / cleartext flags | ❌ | ❌ | none — does NOT trust bad certs | reject |
+| C. Local CA / user installs a profile (mkcert) | ⚠️ brutal | ❌ (Android 7+ ignores user CAs) | CA install | reject (friction) |
+| D. `react-native-ssl-pinning` for fetch | ⚠️ | ⚠️ | pinning, **fetch only** (no WS) | reject (redundant, no WS) |
+| E. app-layer crypto (Noise/WireGuard) / token-only wrap | — | — | mixed | reject the crypto (stdlib has no X25519/ChaCha). **Keep the stream ticket idea (§4).** |
 
 ### The pairing sequence (the trust anchor)
 ```
@@ -141,28 +164,33 @@ Why this and not the alternatives:
 3. App:      read fp from QR (trusted channel)
              GET http://box:8787/api/tls/cert  -> PEM         (plaintext, convenient)
              assert SHA-256(PEM) == fp                        (detects a swapped PEM)
-             store { secure:true, tlsPort:N, certPin:PEM } on the Box
-4. Connect:  TcpSocket.connectTLS({ host, port:tlsPort, ca: certPin })  -> HARD PIN
-             hand-rolled HTTP/1.1 + RFC6455 ride this socket
+             store { secure:true, tlsPort:N, certPin:PEM, pinModulus:<hex> } on the Box
+4. Connect:  TcpSocket.connectTLS({ host, port:tlsPort, ...acceptAll })  (encrypt only)
+             getPeerCertificate() -> live modulus (retry ~150ms; fires before TLS finish)
+             assert normalize(liveModulus) == pinModulus  else DESTROY socket   <-- THE PIN
+             hand-rolled HTTP/1.1 + RFC6455 ride this VERIFIED socket
 ```
-A skeptic accepts this because the trust root is **physical possession of the box at
-pairing** (you read the fingerprint off its screen), not trust-on-first-use over a
-hostile wire. The plaintext PEM fetch is *not* trusted — its integrity is proven by the
-QR-delivered fingerprint. After pairing, `{ca}` pinning means an active MITM presenting
-any other cert is rejected by the TLS stack. That is confidentiality **and** authenticity
-against a hostile LAN — the property bare `rejectUnauthorized:false` (no pin) quietly lacks.
+The trust root is **physical possession of the box at pairing** (you read the fingerprint
+off its screen), not trust-on-first-use over a hostile wire. The plaintext PEM fetch is
+*not* trusted — its integrity is proven by the QR fingerprint; the modulus is then derived
+from that verified PEM. After pairing, the modulus compare means an active MITM presenting
+any other cert is rejected in JS before a byte of app data is sent. Confidentiality **and**
+authenticity against a hostile LAN — the property `{ca}` quietly FAILS to deliver on iOS.
 
-### The `react-native-tcp-socket` `.d.ts` trap (repo lesson [[rn-tcp-socket-tls-truth]])
-- `rejectUnauthorized` is **missing from the TS types** but read by native
-  `ios/TcpSocketClient.m startTLS:` (GCDAsyncSocket manual trust → `completionHandler(YES)`),
-  Android mirrors it. **Verify against native source, not the `.d.ts`.** Pass via a
-  loosely-typed options object, exactly as `app/lib/tvdirect/atvnative.ts:72` already does.
-- `{ ca }` is the **strong mode** (the code calls it "strictly stronger; wins when the
-  caller has one") — library-enforced validation replaces manual fingerprint compare.
-- `getPeerCertificate()` works but is a **device minefield** (why it's the fallback, not
-  primary): `secureConnect` fires on TCP connect not TLS finish (build 122 bug — must
-  poll); native returns `nil` until manual trust evaluated; exposes `{modulus,pubkey}`
-  (better for a public-key pin than whole-cert SHA-256).
+### react-native-tcp-socket TLS truths (spike-verified — supersedes [[rn-tcp-socket-tls-truth]])
+- `rejectUnauthorized`/`ca` are **missing from the TS types** but read by native code. Pass
+  via a loosely-typed options object (as `app/lib/tvdirect/atvnative.ts:72` does).
+- **`{ca}` is NOT reliable pinning.** iOS: `ios/TcpSocketClient.m startTLS:` sets manual-
+  trust and `completionHandler(YES)` unconditionally when a ca is supplied → accepts every
+  cert (spike case 3). Android DOES enforce ca (spike case 3 → CertPathValidatorException).
+  `{rejectUnauthorized:true}` with **no** ca rejects self-signed on both (iOS −9807 SSL,
+  Android CertPath) — so the platform trust layer is active, just not steerable by `{ca}` on
+  iOS.
+- **`getPeerCertificate()` is the PRIMARY pin mechanism (not a fallback).** It reliably
+  returns `{modulus,pubkey}` on BOTH platforms after a short retry (`secureConnect` fires
+  before native TLS finishes — poll ~150ms). Compare the RSA **modulus** (normalize: strip
+  `0x`/colons, lowercase, drop a leading DER sign byte) — a public-key pin, stable across
+  cert re-signs.
 
 ---
 
@@ -183,13 +211,12 @@ argv = ["openssl","req","-x509","-newkey","rsa:2048","-keyout",kp,"-out",cp,
         "-addext","extendedKeyUsage=serverAuth"]
 # re-sign path: argv[3:6] = ["-key", existing_key_path]  # reuse key → SPKI stable
 ```
-> **⚠ OPEN DESIGN POINT (spike #1):** the two design panels disagree on `basicConstraints`.
-> The cert-lifecycle panel wants a proper leaf (`CA:FALSE`+`serverAuth`). The trust-model
-> panel wants `CA:TRUE` to match the *proven* ATV cert shape, arguing
-> `{ca: selfSignedLeaf}` validation is cleaner when the pinned cert is its own anchor.
-> **Resolve on-device**: does `react-native-tcp-socket`'s `{ca}` validate a self-signed
-> `CA:FALSE` leaf, or does it need `CA:TRUE`? Pick whichever actually validates on both
-> iOS + Android, RN 0.86.
+> **✅ RESOLVED by the device spike (2026-08-13): `basicConstraints` is MOOT — keep the
+> current `CA:FALSE`+`serverAuth` leaf.** The debate assumed `{ca}` validation, but the
+> spike proved we do NOT rely on it (iOS accepts any cert with a `ca` present). The app
+> pins by comparing the live cert's RSA **modulus** (`getPeerCertificate`), which never
+> consults `basicConstraints` — so `CA:FALSE` vs `CA:TRUE` makes no difference. No agent
+> cert change needed.
 
 Fingerprints are **pure stdlib** (no openssl needed to compute):
 `hashlib.sha256(ssl.PEM_cert_to_DER_cert(cert_pem)).hexdigest()`. **SPKI hash** (stable
@@ -294,9 +321,9 @@ The single **flip (P5)** is app-side and **GATED** on the RN self-signed-trust a
 |---|---|---|---|---|
 | **P1** cert lifecycle + dual-listen | agent | dark | `_tls_generate_server_cert`, config `tls` section, SPKI/fp compute, IP-drift re-sign (key reused), 2nd SSL-wrapped listener gated by flag | cert-gen unit (SANs/fp/spki/key-0600); **re-sign-on-IP-change unit** (spki stable, fp changes); **https smoke** (`curl -k` ping-200 / no-token-401 / token-200 on the encrypted listener); **plaintext smoke stays green** |
 | **P2** additive advertisement ✅ BUILT | agent | dark | `/api/ping` + UDP + `build_pair_url` gain `tls_*` (only when enabled); `TLS_ADVERT` global + `_discovery_reply()` helper | ✅ `test_tls_advertise.py`: additive-shape control (TLS-off == legacy bytes; TLS-on adds only `tls_*`) on all 3 surfaces + degrade-closed (advert without port → nothing); parity unchanged (no cap) |
-| **P3** app reads/persists (dark) | app | dark (`http`) | `Box`/`Settings`/`PairLink` gain `secure`/`tlsPort`/`certPin`/`fp`; `normalizeBox` round-trips; pair parser reads new fragment keys | **harness: press Connect/pair**, assert fields persist AND app still reaches `--mock` over http (render ≠ test) |
+| **P3** app reads/persists (dark) | app | dark (`http`) | `Box`/`Settings`/`PairLink` gain `secure`/`tlsPort`/`fp`/**`pinModulus`** (derived from the verified PEM at pairing); `normalizeBox` round-trips; pair parser reads `tlsport`/`fp` fragment keys | **harness: press Connect/pair**, assert fields persist AND app still reaches `--mock` over http (render ≠ test) |
 | **P4** installer/opt-in enable | agent/installer | user opt-in | `couchside tls on` sets `enabled=true`, mints, starts HTTPS listener | boot `enabled:true` mock: both listeners serve; both triads pass in one run |
-| **P5** app flip (GATED) | app | flip-on when pinned | app prefers `https`/`wss` + validates pinned SPKI when box advertises `tls_port`; **http fallback never removed** | harness vs TLS mock; pin-mismatch surfaced, not silently trusted |
+| **P5** app flip (GATED) | app | flip-on when pinned | app prefers the pinned TLS transport (connect accept-all → **modulus compare** → hand-rolled HTTP/1.1 + RFC6455) when box advertises `tls_port`; **http fallback never removed** | harness vs TLS mock; **modulus-mismatch surfaced + socket destroyed**, not silently trusted; on-device pin accept+reject proof (§2 spike) |
 
 **P5 hard dependency (stated, not hand-waved):** the RN trust wall (§1). P5 needs a
 separate app-track deliverable — the hand-rolled HTTP/1.1 + RFC6455 clients over
