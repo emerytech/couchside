@@ -19,12 +19,15 @@ import Ionicons from '@expo/vector-icons/Ionicons';
 import React, { useEffect, useRef, useState } from 'react';
 import { Alert, Pressable, StyleSheet, Text, View } from 'react-native';
 
+import { PresetNameModal } from '@/components/PresetNameModal';
 import { TrackSlider } from '@/components/TrackSlider';
 import { usePoll } from '@/hooks/usePoll';
 import { api, hostKey, type LedEffect, type LedsState, type Rgb } from '@/lib/api';
 import { hapticLight } from '@/lib/haptics';
 import { cssRgb, hexRgb, hueToRgb, rgbToHue, HUE_STOPS } from '@/lib/ledColor';
-import { addPreset, removePreset, useLedPresets, type LedPreset } from '@/lib/ledPresets';
+import {
+  addPreset, isBuiltinPreset, removePreset, useLedPresets, type LedPreset,
+} from '@/lib/ledPresets';
 import { detectStrips, type LedStrip } from '@/lib/ledStrip';
 import { useSkinKit } from '@/lib/skin';
 import { useSettings } from '@/lib/SettingsContext';
@@ -84,6 +87,10 @@ export function StripLightCard() {
   const [speedPct, setSpeedPct] = useState(55);
   const [frame, setFrame] = useState<(Rgb | null)[]>([]);
   const [busy, setBusy] = useState(false);
+  // Pending "name this preset" prompt: the auto label + a builder that turns the
+  // typed name into the full preset to save.
+  const [namePrompt, setNamePrompt] = useState<
+    { label: string; build: (name: string) => Omit<LedPreset, 'id'> } | null>(null);
 
   const poll = usePoll<LedsState | null>(
     () => api.leds(settings), POLL_MS, ready && configured, hostKey(settings));
@@ -233,31 +240,43 @@ export function StripLightCard() {
     }
   };
 
+  /** Open the "name this preset" prompt, pre-filled with an auto label. */
   const saveCurrent = () => {
     hapticLight();
-    // In Manual mode, save the whole painted pattern (one colour per LED).
     if (effect === 'manual') {
-      void addPreset({
-        label: `Custom ${strip.leds.length}`, effect: 'manual', color: null,
-        speed: Math.round(speedPct), brightness: Math.round(bright),
-        pattern: frame.map((c) => c ?? null),
+      const pattern = frame.map((c) => c ?? null);
+      setNamePrompt({
+        label: `Custom ${strip.leds.length}`,
+        build: (name) => ({
+          label: name, effect: 'manual', color: null,
+          speed: Math.round(speedPct), brightness: Math.round(bright), pattern,
+        }),
       });
       return;
     }
-    const label = EFFECTS.find((x) => x.id === effect)?.label ?? 'Look';
+    const base = EFFECTS.find((x) => x.id === effect)?.label ?? 'Look';
     const usesColor = effect !== 'rainbow' && effect !== 'off';
-    void addPreset({
-      label: label + (usesColor ? ` ${hexRgb(color)}` : ''),
-      effect: effect as LedEffect, color: usesColor ? color : null,
-      speed: Math.round(speedPct), brightness: Math.round(bright),
+    setNamePrompt({
+      label: base + (usesColor ? ` ${hexRgb(color)}` : ''),
+      build: (name) => ({
+        label: name, effect: effect as LedEffect, color: usesColor ? color : null,
+        speed: Math.round(speedPct), brightness: Math.round(bright),
+      }),
     });
   };
 
-  const confirmDelete = (p: LedPreset) =>
+  /** Long-press a preset to delete it — but PREINSTALLED (seeded) presets are
+   *  protected, so those explain instead of deleting. */
+  const confirmDelete = (p: LedPreset) => {
+    if (isBuiltinPreset(p.id)) {
+      Alert.alert('Built-in preset', `"${p.label}" is preinstalled and can't be deleted.`);
+      return;
+    }
     Alert.alert('Delete preset', `Remove "${p.label}"?`, [
       { text: 'Cancel', style: 'cancel' },
       { text: 'Delete', style: 'destructive', onPress: () => void removePreset(p.id) },
     ]);
+  };
 
   return (
     <Card index={7}>
@@ -393,6 +412,13 @@ export function StripLightCard() {
             ? 'Effects run on the box — they keep going with the app closed. Long-press a preset to delete.'
             : 'Tap a cell to paint it. Scanner sweeps a dot across the strip.'}
       </Text>
+
+      <PresetNameModal
+        visible={!!namePrompt}
+        defaultName={namePrompt?.label ?? ''}
+        onSubmit={(name) => { if (namePrompt) void addPreset(namePrompt.build(name)); setNamePrompt(null); }}
+        onClose={() => setNamePrompt(null)}
+      />
     </Card>
   );
 }
