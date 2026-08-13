@@ -54,6 +54,7 @@ XDG_RUNTIME_DIR = "/run/user/%d" % UID
 
 DEFAULT_CONFIG_PATH = "/etc/couchside/config.json"
 DEFAULT_PORT = 8787
+DEFAULT_TLS_PORT = 8788  # HTTPS listener when tls.enabled; plaintext stays on DEFAULT_PORT
 
 # ---------------------------------------------------------------------------
 # Config: watched units + recovery actions
@@ -225,6 +226,7 @@ WATCHLIST_NAMES = {name for name, _scope in WATCHLIST}
 ACTIONS = dict(DEFAULT_ACTIONS)
 ACTION_ORDER = list(DEFAULT_ACTION_ORDER)
 CONFIG_PORT = None  # optional "port" from config.json
+CONFIG_TLS = None  # optional {"enabled","port","cert","key","sans","fp","spki"} TLS block
 CONFIG_PANEL = None  # optional {"device","baud"} RS-232 panel-control config
 CONFIG_WEBOS = None  # optional {"host","mac","client_key"} LG webOS TV config
 CONFIG_SAMSUNG = None  # optional {"host","mac","token"} Samsung Tizen TV config
@@ -583,12 +585,43 @@ def _parse_config(raw):
             roku, androidtv, vidaa, lgcom, guide)
 
 
+def _parse_tls(raw):
+    """Parse+validate the optional top-level "tls" block. Returns a normalized
+    dict ({"enabled": bool, "port": int, ...persisted cert fields}) or None when
+    absent.
+
+    Degrade-closed: any validation failure returns a DISABLED config (or None),
+    never raises. A malformed tls block can neither crash the agent nor silently
+    flip encryption on. cert/key/sans/fp/spki are written by _tls_ensure and
+    round-tripped here — mirrors the androidtv cert-in-config precedent."""
+    tls_raw = raw.get("tls")
+    if tls_raw is None:
+        return None
+    if not isinstance(tls_raw, dict):
+        print("warning: tls must be an object, ignoring", file=sys.stderr, flush=True)
+        return None
+    port = tls_raw.get("port", DEFAULT_TLS_PORT)
+    if isinstance(port, bool) or not isinstance(port, int) or not (1 <= port <= 65535):
+        print("warning: tls.port must be 1..65535, using %d" % DEFAULT_TLS_PORT,
+              file=sys.stderr, flush=True)
+        port = DEFAULT_TLS_PORT
+    out = {"enabled": bool(tls_raw.get("enabled", False)), "port": port}
+    for field in ("cert", "key", "spki", "fp"):
+        val = tls_raw.get(field)
+        if isinstance(val, str) and val:
+            out[field] = val
+    sans = tls_raw.get("sans")
+    if isinstance(sans, list) and all(isinstance(x, str) and x for x in sans):
+        out["sans"] = sans
+    return out
+
+
 def load_config(path):
     """Load config.json into the module globals; fall back to defaults."""
     global WATCHLIST, WATCHLIST_NAMES, ACTIONS, ACTION_ORDER, CONFIG_PORT
     global LAUNCHERS, CONFIG_PATH, CONFIG_PANEL, CONFIG_WEBOS, CONFIG_SAMSUNG
     global CONFIG_ROKU, CONFIG_ANDROIDTV, CONFIG_VIDAA, ALLOW_APP_UPDATE
-    global CONFIG_LGCOM, CONFIG_TV_ACTIVE
+    global CONFIG_LGCOM, CONFIG_TV_ACTIVE, CONFIG_TLS
     global ALLOW_APP_LAUNCHERS, CONFIG_GUIDE
     # ABSOLUTE on purpose: every rewrite derives the temp-file directory from
     # os.path.dirname(CONFIG_PATH), and a relative path has no directory part.
@@ -629,6 +662,7 @@ def load_config(path):
     active = raw.get("tv_active")
     CONFIG_TV_ACTIVE = active if isinstance(active, str) and active else None
     CONFIG_GUIDE = guide
+    CONFIG_TLS = _parse_tls(raw)
     print("config loaded from %s: %d units, %d actions, %d launchers"
           % (path, len(WATCHLIST), len(ACTIONS), len(LAUNCHERS)), flush=True)
 
@@ -18374,6 +18408,7 @@ class Handler(BaseHTTPRequestHandler):
     token_file = None   # path to re-read the current token for /pair
     port = DEFAULT_PORT  # advertised in the pairing deep link
     mock = False
+    tls_info = None     # public TLS bits {cert_pem,fp,spki,port} or None (dark). /api/tls/cert
 
     def log_message(self, fmt, *args):  # route BaseHTTPRequestHandler logs away
         pass
@@ -18624,6 +18659,23 @@ class Handler(BaseHTTPRequestHandler):
                 self._send(200, {"ok": True, "app": APP_NAME,
                                  "version": VERSION, "ip": own_ip,
                                  "host": short_host}, started)
+                return
+
+            if path == "/api/tls/cert":
+                # Pre-auth like /api/ping: the server's cert is PUBLIC — it is what
+                # the TLS handshake presents to anyone who connects anyway. During
+                # pairing the app fetches it to PIN it, having already learned the
+                # fingerprint from the QR/PIN (the trusted, physical-presence
+                # channel), so it verifies SHA-256(cert)==fp before trusting it.
+                # No secret is disclosed. Disabled/dark -> 404 (feature absent).
+                info = self.tls_info
+                if not info:
+                    self._send(404, {"error": "tls not enabled"}, started)
+                    return
+                self._send(200, {"cert": info.get("cert_pem"),
+                                 "fp": info.get("fp"),
+                                 "spki": info.get("spki"),
+                                 "port": info.get("port")}, started)
                 return
 
             if not path.startswith("/api/"):
@@ -21391,6 +21443,213 @@ class Handler(BaseHTTPRequestHandler):
         return True
 
 
+# ---------------------------------------------------------------------------
+# TLS (P1): optional self-signed HTTPS/WSS listener alongside the plaintext one.
+#
+# DARK by default. When config.tls.enabled is true the agent mints (or reuses)
+# a self-signed SERVER cert, serves HTTPS on config.tls.port (default 8788), and
+# leaves the plaintext DEFAULT_PORT listener UNTOUCHED — every shipped app speaks
+# http://, so TLS is strictly additive/negotiated, never a flip (CLAUDE.md §4).
+# Wrapping the listening socket gives HTTP requests, the hand-rolled WS upgrade,
+# and the whole WS frame loop WSS for free: they all ride self.connection, which
+# becomes the accepted SSLSocket. Cert generation shells to `openssl` (stdlib ssl
+# cannot create X.509) using an argv LIST — same in-character shell-out as the
+# Android-TV client-cert path (_atv_generate_cert), never shell=True.
+#
+# Every failure here DEGRADES CLOSED: no cert / no openssl / unwritable config ->
+# HTTPS listener simply does not start, plaintext serving is never affected.
+#
+# Trust anchoring lives on the app side (pin the cert by the SHA-256 fingerprint
+# delivered in the pairing QR/PIN); see docs/memory/project_tls-encryption.md.
+# ---------------------------------------------------------------------------
+
+def _tls_desired_sans():
+    """SANs the server cert must cover: the live LAN IP (the box is usually
+    reached by IP), the .local + bare hostname (mDNS), and loopback (the on-box
+    /pair fetch). De-duped, order preserved."""
+    sans = []
+    ip = _pair_lan_ip()
+    if ip:
+        sans.append("IP:" + ip)
+    short = socket.gethostname().split(".")[0]
+    if short:
+        sans.append("DNS:" + short + ".local")
+        sans.append("DNS:" + short)
+    sans += ["DNS:couchside", "DNS:localhost", "IP:127.0.0.1"]
+    seen = set()
+    out = []
+    for s in sans:
+        if s not in seen:
+            seen.add(s)
+            out.append(s)
+    return out
+
+
+def _tls_generate_server_cert(sans, existing_key_pem=None):
+    """Mint a self-signed SERVER cert via openssl. Returns (cert_pem, key_pem).
+
+    SERVER variant of _atv_generate_cert (:_atv_generate_cert): real SANs
+    (IP + hostnames), a leaf (basicConstraints=CA:FALSE) carrying serverAuth EKU.
+    RSA-2048 to match the PROVEN Android-TV cert shape and keep the app-side pin
+    spike (EC vs RSA, CA:FALSE vs CA:TRUE — see the spec) to one variable at a
+    time. When existing_key_pem is given the key is REUSED so the SPKI hash stays
+    stable across an IP-drift re-sign; otherwise a fresh key is generated. argv is
+    a LIST, never a shell string."""
+    d = tempfile.mkdtemp(prefix="couchside-tls-")
+    cp = os.path.join(d, "server-cert.pem")
+    kp = os.path.join(d, "server-key.pem")
+    argv = ["openssl", "req", "-x509", "-days", "3650", "-nodes",
+            "-subj", "/CN=couchside",
+            "-addext", "subjectAltName=" + ",".join(sans),
+            "-addext", "basicConstraints=CA:FALSE",
+            "-addext", "keyUsage=digitalSignature,keyEncipherment",
+            "-addext", "extendedKeyUsage=serverAuth",
+            "-out", cp]
+    if existing_key_pem:
+        with open(kp, "w") as f:
+            f.write(existing_key_pem)
+        os.chmod(kp, 0o600)
+        argv += ["-key", kp]
+    else:
+        argv += ["-newkey", "rsa:2048", "-keyout", kp]
+    subprocess.run(argv, check=True, capture_output=True)
+    os.chmod(kp, 0o600)
+    with open(cp) as f:
+        cert_pem = f.read()
+    with open(kp) as f:
+        key_pem = f.read()
+    return cert_pem, key_pem
+
+
+def _tls_fp(cert_pem):
+    """SHA-256 of the DER cert (full-cert fingerprint). Pure stdlib. None on fail."""
+    try:
+        return hashlib.sha256(ssl.PEM_cert_to_DER_cert(cert_pem)).hexdigest()
+    except Exception:
+        return None
+
+
+def _tls_spki_fp(cert_path):
+    """SHA-256 of the DER SubjectPublicKeyInfo — STABLE across re-signs that reuse
+    the key, so it is the recommended app pin (a subnet move won't break it).
+    Needs the pubkey DER; openssl extracts it. None on failure (degrade to fp)."""
+    try:
+        r1 = subprocess.run(
+            ["openssl", "x509", "-in", cert_path, "-pubkey", "-noout"],
+            check=True, capture_output=True)
+        r2 = subprocess.run(
+            ["openssl", "pkey", "-pubin", "-outform", "DER"],
+            input=r1.stdout, check=True, capture_output=True)
+        return hashlib.sha256(r2.stdout).hexdigest()
+    except Exception:
+        return None
+
+
+def _tls_materialize(cert_pem, key_pem):
+    """Write cert/key PEM to a fresh temp dir; return (cert_path, key_path).
+    ssl.load_cert_chain needs file paths. Key chmod 0600 (mirrors _atv_write_cert)."""
+    d = tempfile.mkdtemp(prefix="couchside-tls-")
+    cp = os.path.join(d, "cert.pem")
+    kp = os.path.join(d, "key.pem")
+    with open(cp, "w") as f:
+        f.write(cert_pem)
+    with open(kp, "w") as f:
+        f.write(key_pem)
+    os.chmod(kp, 0o600)
+    return cp, kp
+
+
+def _tls_ensure(cfg, persist=True):
+    """Ensure a server cert exists and covers the current LAN IP. Mints on first
+    run, re-signs (reusing the key -> stable SPKI) when a newly-needed SAN appears
+    (IP drift). When persist, writes cert/key/sans/fp/spki back to config.json so
+    the same identity survives a restart. Returns a serve dict
+    {cert_path,key_path,port,fp,spki,cert_pem} or None when TLS is disabled or no
+    cert could be produced (degrade closed -> caller starts no HTTPS listener)."""
+    if not cfg or not cfg.get("enabled"):
+        return None
+    port = cfg.get("port", DEFAULT_TLS_PORT)
+    desired = _tls_desired_sans()
+    cert_pem = cfg.get("cert")
+    key_pem = cfg.get("key")
+    have_sans = cfg.get("sans") or []
+    need_mint = not (cert_pem and key_pem)
+    need_resign = (not need_mint) and any(s not in have_sans for s in desired)
+    try:
+        if need_mint:
+            merged = desired
+            cert_pem, key_pem = _tls_generate_server_cert(merged)
+        elif need_resign:
+            merged = list(have_sans)
+            for s in desired:
+                if s not in merged:
+                    merged.append(s)
+            cert_pem, key_pem = _tls_generate_server_cert(
+                merged, existing_key_pem=key_pem)
+        else:
+            merged = have_sans
+    except Exception as e:
+        print("warning: TLS cert generation failed (%s); HTTPS listener disabled"
+              % e, file=sys.stderr, flush=True)
+        return None
+    cp, kp = _tls_materialize(cert_pem, key_pem)
+    fp = _tls_fp(cert_pem)
+    spki = _tls_spki_fp(cp)
+    if persist and (need_mint or need_resign):
+        new_cfg = {"enabled": True, "port": port, "cert": cert_pem,
+                   "key": key_pem, "sans": merged}
+        if fp:
+            new_cfg["fp"] = fp
+        if spki:
+            new_cfg["spki"] = spki
+        try:
+            with CONFIG_LOCK:
+                _config_set_field("tls", new_cfg)
+            global CONFIG_TLS
+            CONFIG_TLS = new_cfg
+        except Exception as e:
+            print("warning: could not persist TLS cert (%s); using in-memory cert"
+                  % e, file=sys.stderr, flush=True)
+    return {"cert_path": cp, "key_path": kp, "port": port,
+            "fp": fp, "spki": spki, "cert_pem": cert_pem}
+
+
+def _tls_start(host, handler_cls, force_enable=False):
+    """If TLS is enabled, mint/ensure the cert and start an HTTPS
+    BoundedThreadingHTTPServer on its own daemon thread, sharing the same Handler
+    /token/CAPS as the plaintext server. Returns the public serve dict (for
+    Handler.tls_info + the banner) or None. NEVER raises: any failure leaves the
+    plaintext listener serving alone.
+
+    force_enable (the --tls dev/CI flag) enables TLS regardless of config and does
+    NOT persist (an ephemeral cert per boot; SPKI stability is irrelevant there)."""
+    cfg = CONFIG_TLS
+    if force_enable:
+        cfg = dict(cfg or {})
+        cfg["enabled"] = True
+        cfg.setdefault("port", DEFAULT_TLS_PORT)
+    try:
+        info = _tls_ensure(cfg, persist=not force_enable)
+    except Exception as e:
+        print("warning: TLS setup failed (%s); serving plaintext only" % e,
+              file=sys.stderr, flush=True)
+        return None
+    if not info:
+        return None
+    try:
+        ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
+        ctx.load_cert_chain(certfile=info["cert_path"], keyfile=info["key_path"])
+        tls_srv = BoundedThreadingHTTPServer((host, info["port"]), handler_cls)
+        tls_srv.daemon_threads = True
+        tls_srv.socket = ctx.wrap_socket(tls_srv.socket, server_side=True)
+    except Exception as e:
+        print("warning: HTTPS listener on %d failed to start (%s); plaintext only"
+              % (info["port"], e), file=sys.stderr, flush=True)
+        return None
+    threading.Thread(target=tls_srv.serve_forever, daemon=True, name="tls").start()
+    return info
+
+
 class BoundedThreadingHTTPServer(ThreadingHTTPServer):
     """ThreadingHTTPServer with a hard cap on concurrent connections so a
     connection flood cannot exhaust threads/FDs. A non-blocking semaphore is
@@ -21461,6 +21720,9 @@ def main():
                    help="write the stored boot preference and exit (ExecStop hook)")
     p.add_argument("--mock", action="store_true",
                    help="serve fake data, never run real commands")
+    p.add_argument("--tls", action="store_true",
+                   help="force-enable the HTTPS listener (overrides config "
+                        "tls.enabled; ephemeral cert, not persisted; dev/CI)")
     args = p.parse_args()
 
     load_config(args.config)
@@ -21518,9 +21780,20 @@ def main():
         # Same for OpenRGB devices, when an OpenRGB server is present.
         threading.Thread(target=_orgb_restore_worker,
                          daemon=True, name="orgb-restore").start()
+    # Optional HTTPS/WSS listener (dark unless config.tls.enabled or --tls). Shares
+    # this Handler; failures degrade closed and never touch the plaintext server.
+    tls_serve = _tls_start(args.host, Handler, force_enable=args.tls)
+    Handler.tls_info = ({"cert_pem": tls_serve["cert_pem"], "fp": tls_serve["fp"],
+                         "spki": tls_serve["spki"], "port": tls_serve["port"]}
+                        if tls_serve else None)
     mode = "mock" if args.mock else "real"
     print("%s %s listening on %s:%d (%s mode)" % (
         APP_NAME, VERSION, args.host, port, mode), flush=True)
+    if tls_serve:
+        print("tls: HTTPS on %s:%d  spki=%s" % (
+            args.host, tls_serve["port"], (tls_serve["spki"] or "?")[:16]), flush=True)
+    else:
+        print("tls: disabled (plaintext only)", flush=True)
     info = tv_info()
     print("tv: %s" % ("%s (%s)" % (info["backend"], info["adapter"])
                       if info else "unavailable"), flush=True)

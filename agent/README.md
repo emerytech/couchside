@@ -355,9 +355,26 @@ success, so the app's TV strip can be built without any hardware.
   frame captured to a tmpfs file that is deleted immediately after
   (rate-clamped to ~2/s, 12 MiB cap; client passes no path). The `lines`
   parameter is clamped; errors return brief JSON, never tracebacks.
-- **LAN-only, plain HTTP**: there is no TLS. Keep port 8787 on your local
-  network and do **not** port-forward it. Anyone with the token on your LAN
-  controls the box.
+- **LAN-only, plain HTTP** (TLS is on the roadmap; see below). Today the
+  transport is unencrypted: the bearer token rides HTTP headers and
+  `ws://…?token=` in the clear, so anyone who can *sniff your local network*
+  (a promiscuous device, a compromised switch/AP) can read it and control the
+  box. That is an accepted trade-off **on a home LAN you trust** — the token is
+  the gate and there is no cloud tier to attack.
+
+  > ⚠️ **Do not port-forward Couchside to the internet.** Couchside is built for
+  > a trusted home LAN. Exposing port 8787 (or any Couchside port) publicly is
+  > unsafe: a single bearer token is the only gate, there is no account to lock
+  > and no cloud tier to revoke, and anyone who can reach the port can attempt to
+  > pair. For remote access, use a VPN or Tailscale/WireGuard back to your home
+  > network — **never** a router port-forward.
+
+  **Coming: opt-in TLS.** A dark, additive HTTPS listener (self-signed cert,
+  trusted-on-first-use by a fingerprint you confirm off the box's own screen at
+  pairing — the SSH model) is in progress so the token stops crossing the LAN in
+  the clear. It will not change the port-forward guidance above: TLS protects the
+  wire, it does not make public exposure safe. See
+  `docs/memory/project_tls-encryption.md`.
 
 ## SteamOS vs Bazzite notes
 
