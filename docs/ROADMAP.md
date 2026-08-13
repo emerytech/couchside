@@ -404,10 +404,16 @@ Entry fields: `priority` (P0 blocker → P3 nice) · `risk` · `affects` · `dep
   plaintext still 200, persistence. See BUILD_LOG 2026-08-13.
 - **✅ README port-forward warning SHIPPED** (`agent/README.md` security section — threat rationale,
   boxed ⚠ warning, VPN/Tailscale guidance).
+- **✅ P2 BUILT + DARK (2026-08-13, `feat/agent-tls-p2`) — additive advertisement, agent side.**
+  `/api/ping` + the UDP discovery reply + `build_pair_url` gain `tls_port`/`tls_fp`/`tls_spki`
+  (QR carries `tlsport`+`fp`) **only when TLS is enabled**; dark payloads stay byte-identical.
+  `TLS_ADVERT` global + `_discovery_reply()` helper. Test `tests/test_tls_advertise.py` (3rd CI
+  step): additive-shape control on all 3 surfaces + degrade-closed, proven in-process AND live
+  (`--tls` vs not, ping + UDP round-trip both states). No cap → parity unchanged.
 - **Next step:** the **device spike** (spike #1) — does `react-native-tcp-socket {ca}` validate
   this self-signed leaf on iOS + Android RN 0.86, and CA:FALSE vs CA:TRUE? Needs hardware; gates
-  the whole app track (P3/P5). In parallel, box-side P2 (advertise `tls_port`/`fp` on `/api/ping`
-  + UDP + pair link) can land — additive, no app dependency.
+  the whole app track (P3/P5). Box-side P1+P2 now complete — the app track is the only remaining
+  box-independent-blocked work.
 
 ### Apple Watch + desktop widgets — quick actions (owner ask 2026-08-10)
 - **priority:** P2 · **risk:** medium-high (NEW native surfaces: WidgetKit + watchOS;
