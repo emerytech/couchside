@@ -298,6 +298,24 @@ jobs:
       - name: Unit tests (remote-desktop portal helper logic)
         run: python3 tests/test_portal_helper_logic.py
 
+      # TLS (P1, dark/additive): the box-side cert lifecycle. Parse degrades
+      # closed (a bad tls block never enables, never raises); the mint carries the
+      # real SANs (IP + .local + loopback, not the ATV DNS:couchside-only); and an
+      # IP-drift re-sign REUSES the key so the SPKI pin is stable while the cert fp
+      # changes — asserted in both directions, since a regression would break every
+      # phone's pin on a subnet move.
+      - name: Unit tests (TLS cert lifecycle)
+        run: python3 tests/test_tls_cert.py
+
+      # TLS (P1): the reachability + auth gate over the ENCRYPTED listener — the
+      # same ping-200 / no-token-401 / token-200 triad CLAUDE.md §4 protects, but
+      # TLS-wrapped via the exact production seam (ssl.wrap_socket the listener,
+      # the hand-rolled Handler serves unchanged). Plus /api/tls/cert (enabled ->
+      # 200+PEM, disabled -> 404) and the decisive control: the advertised fp
+      # equals the fingerprint of the cert the server actually presents.
+      - name: Unit tests (TLS reachability smoke)
+        run: python3 tests/test_tls_smoke.py
+
       # Pairing PIN full-screen launch resolver. A desktop-session box is a system
       # service with a partial env, so a bare xdg-open failed and the PIN never
       # showed (a hard stop for pairing). Pins the browser->--kiosk argv mapping

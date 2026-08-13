@@ -360,6 +360,55 @@ Entry fields: `priority` (P0 blocker → P3 nice) · `risk` · `affects` · `dep
 
 ## 📋 Planned
 
+### TLS / on-wire encryption — stop the LAN sniffing the token (public critique 2026-08-13)
+- **priority:** P2 · **risk:** medium-high (the RN self-signed-trust wall is real; box side
+  is low-risk, app side needs a hand-rolled HTTP/1.1 + RFC6455 client over a raw TLS socket) ·
+  **affects:** agent + app + couchside.tv QR producer · **depends_on:** nothing built; box
+  side (P1–P4) ships without the app; app flip (P5) is gated on the trust app-track.
+- **Origin:** a public critic — *"everything unencrypted, anyone on your home network can
+  hijack it"* — a fair hit. Today the bearer token rides cleartext HTTP headers and
+  `ws://…?token=` query strings on the LAN. **Full spec: `docs/memory/project_tls-encryption.md`.**
+- **Two settled decisions:** (A) TLS is a **transport concern, NOT a capability** — caps are
+  read over the transport (auth-gated `/api/status`), so a cap can't select the *first*
+  scheme; advertise on the pre-auth surface (`/api/ping` + UDP + pair link). No `protocol.json`
+  cap, no six-edit-site drift. (B) **Dual-listen, never flip** — keep 8787 plaintext forever
+  (every shipped app hardcodes `http://`/`ws://`); add HTTPS on a 2nd port as a daemon thread
+  sharing the same `Handler`/token/CAPS. Wrapping the listener socket gives HTTP + the
+  hand-rolled WS upgrade + frame loop WSS for free (all ride `self.connection`).
+- **The wall (why non-trivial):** RN `fetch`/`WebSocket`/`<Image>`/`WebView` expose **no**
+  trust override — self-signed on a LAN IP fails platform trust with no seam.
+  `NSAllowsArbitraryLoads` does NOT trust bad certs; Android needs a build-time trust anchor
+  but the cert is per-box. The one self-signed-capable transport already in the app is
+  `react-native-tcp-socket` (`^6.4.2`, proven on the TV path, [[rn-tcp-socket-tls-truth]]).
+- **Trust model:** route box traffic through rn-tcp-socket TLS, **pin `{ca: box PEM }`**
+  anchored to a SHA-256 fingerprint delivered in the pairing **QR/PIN read off the box's own
+  screen** (physical-access TOFU, SSH host-key model — resists active MITM, not just passive
+  sniffing). Pin on **SPKI** so a subnet-move re-sign (key reused) never breaks the pin.
+- **Cert:** mint via the existing `openssl req -x509` precedent (`_atv_generate_cert`, SERVER
+  variant: SAN=IP+.local, `serverAuth`), store PEM in `/var/lib/couchside/config.json` (agent
+  runs as user, can't write `/etc`) — same cert-in-config pattern the ATV block already uses.
+- **The sharp exception:** the H.264 marquee WebView has **no cert-override hook** for its
+  in-page `wss://`. P1 = swap the token for a single-use **stream ticket** over the pinned
+  control channel (token off the wire; pixels stay cleartext = disclosed residual); P2 =
+  optional frame-bridge via `postMessage` (needs a throughput spike to keep "verified smooth").
+- **Phases:** P1 agent cert+dual-listen (dark) · P2 additive `/api/ping`+UDP+QR advertisement
+  (dark) · P3 app reads/persists pin fields (dark, still http) · P4 installer opt-in enable ·
+  **P5 (gated)** app flips to `https`/`wss` + validates the pin, http fallback never removed.
+  P1–P4 are backward-compat and shippable today; P5 waits on the app trust-track.
+- **✅ P1 BUILT + DARK (2026-08-13, this branch) — agent side, backward-compat, tested.**
+  `agent/couchsided.py` now serves an optional self-signed HTTPS/WSS listener beside plaintext
+  8787 (`tls.enabled` config, or `--tls` for CI). Cert mint (SERVER variant of `_atv_generate_cert`,
+  real SANs), SPKI-stable IP-drift re-sign, persisted to config, pre-auth `GET /api/tls/cert`.
+  Tests: `tests/test_tls_cert.py` + `tests/test_tls_smoke.py` (2 CI steps). Locally smoke-verified
+  on macOS: HTTPS ping/401/authed triad, `/api/tls/cert`, **advertised fp == live-handshake fp**,
+  plaintext still 200, persistence. See BUILD_LOG 2026-08-13.
+- **✅ README port-forward warning SHIPPED** (`agent/README.md` security section — threat rationale,
+  boxed ⚠ warning, VPN/Tailscale guidance).
+- **Next step:** the **device spike** (spike #1) — does `react-native-tcp-socket {ca}` validate
+  this self-signed leaf on iOS + Android RN 0.86, and CA:FALSE vs CA:TRUE? Needs hardware; gates
+  the whole app track (P3/P5). In parallel, box-side P2 (advertise `tls_port`/`fp` on `/api/ping`
+  + UDP + pair link) can land — additive, no app dependency.
+
 ### Apple Watch + desktop widgets — quick actions (owner ask 2026-08-10)
 - **priority:** P2 · **risk:** medium-high (NEW native surfaces: WidgetKit + watchOS;
   App Intents; runs OUTSIDE the RN runtime) · **affects:** app + a native config plugin ·
