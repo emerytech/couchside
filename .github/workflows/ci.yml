@@ -316,6 +316,14 @@ jobs:
       - name: Unit tests (TLS reachability smoke)
         run: python3 tests/test_tls_smoke.py
 
+      # TLS (P2): availability is advertised on the three pre-auth surfaces a
+      # TLS-aware app can reach (GET /api/ping, the UDP discovery reply, the
+      # pairing QR). The load-bearing assertion is the additive control — when TLS
+      # is dark the bytes are exactly today's, and when enabled the tls_* fields
+      # are the ONLY difference — so an old app keeps working (CLAUDE.md §4).
+      - name: Unit tests (TLS availability advertisement)
+        run: python3 tests/test_tls_advertise.py
+
       # Pairing PIN full-screen launch resolver. A desktop-session box is a system
       # service with a partial env, so a bare xdg-open failed and the PIN never
       # showed (a hard stop for pairing). Pins the browser->--kiosk argv mapping

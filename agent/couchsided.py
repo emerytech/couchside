@@ -227,6 +227,10 @@ ACTIONS = dict(DEFAULT_ACTIONS)
 ACTION_ORDER = list(DEFAULT_ACTION_ORDER)
 CONFIG_PORT = None  # optional "port" from config.json
 CONFIG_TLS = None  # optional {"enabled","port","cert","key","sans","fp","spki"} TLS block
+TLS_ADVERT = None  # public TLS advert {"port","fp","spki"} or None (dark). Set by main()
+                   # after _tls_start; read by the UDP discovery reply + build_pair_url so
+                   # a future app can DISCOVER the HTTPS listener + pin fingerprint. Never
+                   # a secret (the cert is what the handshake presents anyway).
 CONFIG_PANEL = None  # optional {"device","baud"} RS-232 panel-control config
 CONFIG_WEBOS = None  # optional {"host","mac","client_key"} LG webOS TV config
 CONFIG_SAMSUNG = None  # optional {"host","mac","token"} Samsung Tizen TV config
@@ -17913,6 +17917,16 @@ def build_pair_url(token, port):
     ip = _pair_lan_ip()
     if ip:
         url += "&ip=" + quote(ip, safe="")
+    # When the optional HTTPS listener is up, carry its port + the cert
+    # fingerprint in the QR fragment so the app can pin the box's self-signed
+    # cert at pairing (physical-presence trust anchor: the fp is read off the
+    # box's own screen). Appended only when TLS is enabled -> the plaintext-only
+    # pairing link is unchanged. port= stays the plaintext port for compat.
+    adv = TLS_ADVERT
+    if adv and adv.get("port"):
+        url += "&tlsport=%d" % adv["port"]
+        if adv.get("fp"):
+            url += "&fp=" + quote(adv["fp"], safe="")
     return url
 
 
@@ -18162,6 +18176,26 @@ def render_pin_page(pin):
 COUCHSIDE_DISCOVER_MAGIC = b"COUCHSIDE_DISCOVER?"
 
 
+def _discovery_reply(port):
+    """The dict a discovery probe gets back. Existing keys first, in the order
+    every shipped app already parses; the optional TLS advert is appended ONLY
+    when the HTTPS listener is up, so the dark reply is byte-for-byte unchanged.
+    Pure (reads the TLS_ADVERT module global) so the both-states byte-identity is
+    unit-testable without a socket."""
+    short = socket.gethostname().split(".")[0] or "couchside"
+    payload = {"couchside": True, "name": short,
+               "host": short + ".local", "port": port,
+               "version": VERSION}
+    adv = TLS_ADVERT
+    if adv and adv.get("port"):
+        payload["tls_port"] = adv["port"]
+        if adv.get("fp"):
+            payload["tls_fp"] = adv["fp"]
+        if adv.get("spki"):
+            payload["tls_spki"] = adv["spki"]
+    return payload
+
+
 def _udp_discovery_responder(port):
     """Answer LAN discovery probes on UDP <port>. Best-effort daemon; a bind
     failure just disables discovery (the app can still add a box by IP)."""
@@ -18180,10 +18214,7 @@ def _udp_discovery_responder(port):
             continue
         if not data.startswith(COUCHSIDE_DISCOVER_MAGIC):
             continue
-        short = socket.gethostname().split(".")[0] or "couchside"
-        reply = json.dumps({"couchside": True, "name": short,
-                            "host": short + ".local", "port": port,
-                            "version": VERSION}).encode()
+        reply = json.dumps(_discovery_reply(port)).encode()
         try:
             s.sendto(reply, addr)
         except OSError:
@@ -18656,9 +18687,21 @@ class Handler(BaseHTTPRequestHandler):
                 except OSError:
                     own_ip = None
                 short_host = socket.gethostname().split(".")[0] or None
-                self._send(200, {"ok": True, "app": APP_NAME,
-                                 "version": VERSION, "ip": own_ip,
-                                 "host": short_host}, started)
+                resp = {"ok": True, "app": APP_NAME,
+                        "version": VERSION, "ip": own_ip,
+                        "host": short_host}
+                # Advertise the optional HTTPS listener so a TLS-aware app can
+                # discover it (and the fingerprint to pin) over the plaintext
+                # channel it already uses. Appended AFTER the existing keys and
+                # ONLY when TLS is enabled -> the dark payload is byte-unchanged.
+                info = self.tls_info
+                if info and info.get("port"):
+                    resp["tls_port"] = info["port"]
+                    if info.get("fp"):
+                        resp["tls_fp"] = info["fp"]
+                    if info.get("spki"):
+                        resp["tls_spki"] = info["spki"]
+                self._send(200, resp, started)
                 return
 
             if path == "/api/tls/cert":
@@ -21786,6 +21829,12 @@ def main():
     Handler.tls_info = ({"cert_pem": tls_serve["cert_pem"], "fp": tls_serve["fp"],
                          "spki": tls_serve["spki"], "port": tls_serve["port"]}
                         if tls_serve else None)
+    # Public advert bits (no cert PEM) for the surfaces that have no Handler in hand:
+    # the UDP discovery reply and build_pair_url read this module global. Stays None
+    # while TLS is dark, so those payloads/URLs are byte-for-byte unchanged.
+    global TLS_ADVERT
+    TLS_ADVERT = ({"port": tls_serve["port"], "fp": tls_serve["fp"],
+                   "spki": tls_serve["spki"]} if tls_serve else None)
     mode = "mock" if args.mock else "real"
     print("%s %s listening on %s:%d (%s mode)" % (
         APP_NAME, VERSION, args.host, port, mode), flush=True)

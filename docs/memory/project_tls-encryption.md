@@ -1,9 +1,12 @@
 # Project spec — TLS / on-wire encryption for Couchside
 
-> Status: **🔨 P1 BUILT + DARK (2026-08-13), rest planned.** Box-side HTTPS
-> listener + cert lifecycle + `/api/tls/cert` shipped on the H.264 branch, dark by
-> default, tested (`tests/test_tls_cert.py`, `tests/test_tls_smoke.py`). README
-> port-forward warning shipped. **App track (P3/P5) blocked on the device spike.**
+> Status: **🔨 P1 + P2 BUILT + DARK (2026-08-13), rest planned.** Box-side HTTPS
+> listener + cert lifecycle + `/api/tls/cert` (P1, merged `ea43155`/#454), plus the
+> additive availability advertisement (P2, branch `feat/agent-tls-p2`): `/api/ping`
+> + the UDP discovery reply + `build_pair_url` gain `tls_*` fields **only when TLS is
+> enabled** — dark payloads stay byte-identical. Dark by default, tested
+> (`tests/test_tls_cert.py`, `tests/test_tls_smoke.py`, `tests/test_tls_advertise.py`).
+> README port-forward warning shipped. **App track (P3/P5) blocked on the device spike.**
 > Grounded 2026-08-13 by a 5-agent investigation (app transport inventory, agent
 > server surface, protocol/caps/tests impact, trust-model panel, cert-lifecycle
 > panel). Every file:line below was read, not guessed.
@@ -232,8 +235,19 @@ override) is a later ticket, noted-not-done.
 Present **only when TLS enabled**:
 - `GET /api/ping` (`:17626`) → add `tls_port`, `tls_fp`, `tls_spki`. Existing keys untouched.
 - UDP reply (`:17152`) → same three. Existing keys untouched.
-- `/pair` page + `build_pair_url` fragment (`:16879`) → add `&tlsport=<n>&fp=<spki>`.
+- `/pair` page + `build_pair_url` fragment (`:16879`) → add `&tlsport=<n>&fp=<hex>`.
 Old apps ignore unknown keys; new apps gate on presence of `tls_port`.
+
+**BUILT (P2, `feat/agent-tls-p2`).** `TLS_ADVERT` module global (`{port,fp,spki}` or None)
+is set by `main()` right after `_tls_start`; `_discovery_reply()` and `build_pair_url()`
+read it, `/api/ping` reads the equivalent `Handler.tls_info`. The QR carries `fp` = the
+**DER cert fingerprint** (`_tls_fp`, the same value `/api/tls/cert` returns and the P1
+smoke test pins), NOT the SPKI — resolves the earlier `fp=<spki>` line here: the QR fp is a
+pairing-time integrity check on the fetched PEM (`SHA-256(PEM)==fp`), and the box re-fetches
+the PEM on any re-sign, so the *stable* SPKI pin is not needed in the one-shot QR. `spki` is
+still advertised on `/api/ping` + UDP for an app that wants the stable pin. Additive control
+proven in `test_tls_advertise.py` (dark == legacy bytes; enabled adds only `tls_*`) AND live
+(agent `--tls` vs not: ping + UDP round-trip, both states).
 
 ### New endpoint
 `GET /api/tls/cert` → PEM text (cert is public by nature; can be pre-auth). Needs the
@@ -279,7 +293,7 @@ The single **flip (P5)** is app-side and **GATED** on the RN self-signed-trust a
 | Phase | Ships | Default | Lands | Tests (CLAUDE.md §6) |
 |---|---|---|---|---|
 | **P1** cert lifecycle + dual-listen | agent | dark | `_tls_generate_server_cert`, config `tls` section, SPKI/fp compute, IP-drift re-sign (key reused), 2nd SSL-wrapped listener gated by flag | cert-gen unit (SANs/fp/spki/key-0600); **re-sign-on-IP-change unit** (spki stable, fp changes); **https smoke** (`curl -k` ping-200 / no-token-401 / token-200 on the encrypted listener); **plaintext smoke stays green** |
-| **P2** additive advertisement | agent | dark | `/api/ping` + UDP + `/pair` + `build_pair_url` gain `tls_*` (only when enabled) | **additive-shape assertion** (TLS-off == legacy byte-shape; TLS-on adds only new keys); `/pair` loopback + Host-check still enforced; parity unchanged (no cap) |
+| **P2** additive advertisement ✅ BUILT | agent | dark | `/api/ping` + UDP + `build_pair_url` gain `tls_*` (only when enabled); `TLS_ADVERT` global + `_discovery_reply()` helper | ✅ `test_tls_advertise.py`: additive-shape control (TLS-off == legacy bytes; TLS-on adds only `tls_*`) on all 3 surfaces + degrade-closed (advert without port → nothing); parity unchanged (no cap) |
 | **P3** app reads/persists (dark) | app | dark (`http`) | `Box`/`Settings`/`PairLink` gain `secure`/`tlsPort`/`certPin`/`fp`; `normalizeBox` round-trips; pair parser reads new fragment keys | **harness: press Connect/pair**, assert fields persist AND app still reaches `--mock` over http (render ≠ test) |
 | **P4** installer/opt-in enable | agent/installer | user opt-in | `couchside tls on` sets `enabled=true`, mints, starts HTTPS listener | boot `enabled:true` mock: both listeners serve; both triads pass in one run |
 | **P5** app flip (GATED) | app | flip-on when pinned | app prefers `https`/`wss` + validates pinned SPKI when box advertises `tls_port`; **http fallback never removed** | harness vs TLS mock; pin-mismatch surfaced, not silently trusted |
