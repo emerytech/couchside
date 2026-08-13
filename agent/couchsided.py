@@ -48,7 +48,7 @@ except ImportError:  # pragma: no cover
     fcntl = None
 
 APP_NAME = "couchside-agent"
-VERSION = "2.9.85"
+VERSION = "2.9.86"
 UID = os.getuid()
 XDG_RUNTIME_DIR = "/run/user/%d" % UID
 
@@ -1079,12 +1079,52 @@ def read_load():
         return [0.0, 0.0, 0.0]
 
 
-def read_cpu_temp_c():
-    """Scan hwmon for coretemp; fall back to any temp1_input; then thermal zones."""
+# hwmon `name` values that expose a real CPU package temperature at temp1_input.
+# Intel: coretemp. AMD Zen/Zen2/Zen3/Zen4: k10temp (Tctl at temp1_input); zenpower
+# is the out-of-tree equivalent; k8temp covers ancient AMD. A recognized CPU driver
+# MUST win over the generic "first temp1_input" fallback: on desktop boards the
+# first hwmon is often a Super-I/O / NVMe / chipset sensor reading a static value
+# (issue #449 — an AMD 7800X3D board reported a fixed 16.8C because there is no
+# coretemp and the fallback latched a board sensor).
+_CPU_HWMON_NAMES = ("coretemp", "k10temp", "zenpower", "k8temp")
+
+
+def _cpu_thermal_zone(thermal_root):
+    """A thermal_zone/temp whose `type` names the CPU package (x86_pkg_temp, or a
+    type containing cpu/tctl/tdie). More trustworthy than a random hwmon sensor,
+    less so than a recognized CPU hwmon driver. None if none match."""
     try:
-        coretemp_path = None
+        for type_file in sorted(glob.glob(
+                os.path.join(thermal_root, "thermal_zone*", "type"))):
+            try:
+                with open(type_file) as f:
+                    t = f.read().strip().lower()
+            except OSError:
+                continue
+            if ("x86_pkg_temp" in t or "cpu" in t or "tctl" in t or "tdie" in t):
+                temp = os.path.join(os.path.dirname(type_file), "temp")
+                if os.path.exists(temp):
+                    return temp
+    except Exception:
+        pass
+    return None
+
+
+def read_cpu_temp_c(hwmon_root="/sys/class/hwmon", thermal_root="/sys/class/thermal"):
+    """CPU package temperature in °C, or None.
+
+    Preference order, most-specific first, so a static board/NVMe sensor can never
+    shadow the real CPU reading (issue #449):
+      1. a recognized CPU-temp hwmon driver (coretemp / k10temp / zenpower / k8temp),
+      2. an x86_pkg_temp / cpu-typed thermal zone,
+      3. any hwmon temp1_input (last resort — may be a board/NVMe sensor),
+      4. any thermal zone.
+    Roots are parameters purely so a sysfs fixture can exercise the selection."""
+    try:
+        cpu_path = None
         fallback_path = None
-        for name_file in sorted(glob.glob("/sys/class/hwmon/hwmon*/name")):
+        for name_file in sorted(glob.glob(
+                os.path.join(hwmon_root, "hwmon*", "name"))):
             hwmon_dir = os.path.dirname(name_file)
             try:
                 with open(name_file) as f:
@@ -1094,13 +1134,14 @@ def read_cpu_temp_c():
             temp_file = os.path.join(hwmon_dir, "temp1_input")
             if not os.path.exists(temp_file):
                 continue
-            if name == "coretemp" and coretemp_path is None:
-                coretemp_path = temp_file
+            if name in _CPU_HWMON_NAMES and cpu_path is None:
+                cpu_path = temp_file
             if fallback_path is None:
                 fallback_path = temp_file
-        path = coretemp_path or fallback_path
+        path = cpu_path or _cpu_thermal_zone(thermal_root) or fallback_path
         if path is None:
-            for tz in sorted(glob.glob("/sys/class/thermal/thermal_zone*/temp")):
+            for tz in sorted(glob.glob(
+                    os.path.join(thermal_root, "thermal_zone*", "temp"))):
                 path = tz
                 break
         if path is None:

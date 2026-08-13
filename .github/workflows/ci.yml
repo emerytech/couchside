@@ -134,6 +134,14 @@ jobs:
       - name: Unit tests (disk mounts)
         run: python3 tests/test_disk_mounts.py
 
+      # CPU temperature sensor selection (issue #449). An AMD 7800X3D board read a
+      # static 16.8C forever because the reader only knew Intel's coretemp and, on
+      # AMD, latched the first board/NVMe hwmon. Asserts a recognized CPU driver
+      # (coretemp/k10temp/zenpower) wins over a decoy board sensor sorted before it,
+      # a CPU-typed thermal zone beats a random hwmon, and both directions of #449.
+      - name: Unit tests (CPU temp sensor selection)
+        run: python3 tests/test_cpu_temp.py
+
       # USB wake sources (/api/usb-wake), read-only. Two field reports are
       # encoded here: arming only the ROOT HUBS misses controllers (their signal
       # arrives through a dongle further down the tree), and arming EVERY device

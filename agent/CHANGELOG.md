@@ -18,7 +18,13 @@ the same thing regardless of what actually changed.
 Write for the person holding the phone, not for the commit log. They are
 deciding whether to press "Update now" on a machine across the room.
 
-## 2.9.85
+## 2.9.86
+
+**Correct CPU temperature on AMD boxes.** On some AMD builds (for example a Ryzen
+7800X3D on a Gigabyte board) the Console showed a single, frozen CPU temperature
+that never moved. The box was reading the wrong sensor. It now finds the real CPU
+temperature on AMD as well as Intel, so the reading tracks your machine. Everything
+from the last update is here too:
 
 **Your light bar, brought to life.** If your box has an addressable RGB strip —
 like a Steam Machine's — the app now drives the whole strip at once. Run a real
