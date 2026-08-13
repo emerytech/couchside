@@ -18,6 +18,22 @@ the same thing regardless of what actually changed.
 Write for the person holding the phone, not for the commit log. They are
 deciding whether to press "Update now" on a machine across the room.
 
+## 2.9.85
+
+**Your light bar, brought to life.** If your box has an addressable RGB strip —
+like a Steam Machine's — the app now drives the whole strip at once. Run a real
+"night rider" sweep, a rainbow, or a breathe, and they run **on the box itself**,
+so they keep going with the phone closed, asleep, or gone, and come back after a
+reboot. Paint each LED its own colour by hand and save the look, pick one colour
+and brightness for the whole strip, and save named presets you can tap to recall.
+
+**Whole-system RGB.** If you run OpenRGB on the box, a new card controls your
+motherboard, RAM and strip lighting from the phone too — including a real sweep
+across the zones.
+
+Everything the LIGHT card does still works, and simple front/status LEDs now get
+effects and presets as well.
+
 ## 2.9.83
 
 **Pairing now works on desktop-session boxes.** On a box sitting at the Linux

@@ -1,9 +1,5 @@
-Remote desktop, now fluid. See and control your box's whole desktop from your phone, with smooth hardware-accelerated H.264 video. Move the cursor with a trackpad or just tap where you want to click, type with a full keyboard, and flip to a full-screen landscape mode.
+Light up your box. If it has an addressable RGB strip — like a Steam Machine's — you can now drive the whole strip from your phone: a real "night rider" sweep, rainbow, breathe, or a solid colour. Effects run on the box, so they keep going with the app closed and come back after a reboot.
 
-Navigate Steam's Big Picture from the couch — point and tap your way through Game Mode menus.
+Paint each LED its own colour and save the pattern, name your presets to recall them with a tap, and set colour and brightness with smooth sliders.
 
-Switch the box's audio output from your phone: speakers, headphones, or HDMI, without getting up.
-
-Set the colour of your box's front light bar right in the app.
-
-Also new: a quick note scratchpad on the controller. Plus fixes and polish.
+Whole-system RGB via OpenRGB when it's installed — control your motherboard, RAM and strips too. Plus fixes and polish.
