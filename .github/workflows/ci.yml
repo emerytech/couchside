@@ -117,6 +117,15 @@ jobs:
       - name: Unit tests (openrgb)
         run: python3 tests/test_openrgb.py
 
+      # Addressable LED strip + hardware effects (valve-leds). The allowlist one:
+      # the client sends a strip PREFIX, members come from the live listdir, and
+      # the `effect` VALUE written must be one the device itself publishes in
+      # effect_index. Proves an unknown prefix writes nothing, an unpublished
+      # firmware effect is never written, and only fixed-literal attrs on the
+      # strip's own members are touched.
+      - name: Unit tests (led strip)
+        run: python3 tests/test_led_strip.py
+
       # Which filesystems the dashboard reports. A Deck owner was shown
       # "3.5 / 5.0 GB, 69%" because read_disks() only looked at "/" -- which on
       # SteamOS is a small READ-ONLY rootfs -- and never mentioned /home. Asserts

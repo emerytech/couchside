@@ -8,6 +8,7 @@ import { registerScroller } from '@/hooks/useTourAnchor';
 import { DisplayAudioCard } from '@/components/DisplayAudioCard';
 import { AudioOutputCard } from '@/components/AudioOutputCard';
 import { RgbLedCard } from '@/components/RgbLedCard';
+import { StripLightCard } from '@/components/StripLightCard';
 import { OpenRgbCard } from '@/components/OpenRgbCard';
 import { FileDropCard } from '@/components/FileDropCard';
 import { GamingCard } from '@/components/GamingCard';
@@ -140,7 +141,7 @@ function ConsoleScreen() {
 
   // --- Console card layout: hold-to-edit reorder + hide (persisted) --------
   const CARD_ORDER_CANON = [
-    'nowplaying', 'streamhost', 'gaming', 'vitals', 'screen', 'display', 'audio', 'leds', 'openrgb', 'units', 'filedrop',
+    'nowplaying', 'streamhost', 'gaming', 'vitals', 'screen', 'display', 'audio', 'leds', 'stripleds', 'openrgb', 'units', 'filedrop',
   ];
   const cardLayout = useConsoleLayout();
   const [editingCards, setEditingCards] = useState(false);
@@ -292,6 +293,7 @@ function ConsoleScreen() {
     ),
     audio: <AudioOutputCard />,
     leds: <RgbLedCard />,
+    stripleds: <StripLightCard />,
     openrgb: <OpenRgbCard />,
     units: configured ? (
       <Card title="UNITS" index={5}>

@@ -35,6 +35,7 @@ import {
 } from '@/lib/api';
 import { hapticLight } from '@/lib/haptics';
 import { cssRgb, hexRgb, hueToRgb, rgbToHue, HUE_STOPS } from '@/lib/ledColor';
+import { detectStrips } from '@/lib/ledStrip';
 import {
   addPreset, removePreset, useLedPresets, type LedPreset,
 } from '@/lib/ledPresets';
@@ -89,7 +90,12 @@ export function RgbLedCard() {
     () => api.leds(settings), POLL_MS, ready && configured, hostKey(settings));
 
   const d = poll.data;
-  const leds = (d?.leds ?? []).filter((l) => l.notable && l.writable);
+  // Addressable strips (valve-leds[0..N]) are owned by StripLightCard; this card
+  // keeps only the SINGLE lights (status LED, a lone front bar) so it isn't a
+  // wall of per-node chips.
+  const notable = (d?.leds ?? []).filter((l) => l.notable && l.writable);
+  const { strips, singles } = detectStrips(notable);
+  const leds = singles;
   const led: LedInfo | undefined = leds.find((l) => l.name === selName) ?? leds[0];
 
   useEffect(() => {
@@ -103,8 +109,14 @@ export function RgbLedCard() {
     setHue(c ? rgbToHue(c) : 0);
   }, [led, d]);
 
-  // Old agent, no writable LED, or nothing notable -> render nothing at all.
-  if (!d || !d.available || !led || leds.length === 0) return null;
+  // Render nothing when: old agent / no writable LED / nothing notable — OR when
+  // an addressable strip owns the box's lights and the only singles left are mono
+  // status LEDs (a lone status light isn't worth a card next to the STRIP card,
+  // which now carries the presets). Keep this card for a real RGB single (a
+  // chassis bar on non-strip hardware) or when there's no strip.
+  const onlyMonoSingles = leds.length > 0 && leds.every((l) => !l.rgb);
+  if (!d || !d.available || !led || leds.length === 0
+      || (strips.length > 0 && onlyMonoSingles)) return null;
 
   const supported: LedEffect[] = (d.effects ?? ['solid', 'off']).filter((e) =>
     led.rgb ? true : MONO_EFFECTS.includes(e));

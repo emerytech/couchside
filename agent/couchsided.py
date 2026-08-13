@@ -48,7 +48,7 @@ except ImportError:  # pragma: no cover
     fcntl = None
 
 APP_NAME = "couchside-agent"
-VERSION = "2.9.84"
+VERSION = "2.9.85"
 UID = os.getuid()
 XDG_RUNTIME_DIR = "/run/user/%d" % UID
 
@@ -4115,6 +4115,23 @@ MOCK_LEDS = [
      "notable": False, "writable": True, "max_brightness": 1,
      "index": [], "maxint": [], "brightness": 0, "color": None},
 ]
+# A mock ADDRESSABLE STRIP (Steam-Machine-style valve-leds) so the app can build
+# + drive the strip UI off-box: 8 RGB nodes named valve-leds[0..7].
+MOCK_LEDS += [
+    {"name": "valve-leds[%d]" % i, "desc": "valve-leds[%d]" % i, "rgb": True,
+     "notable": True, "writable": True, "max_brightness": 255,
+     "index": ["red", "green", "blue"], "maxint": [255, 255, 255],
+     "brightness": 120, "color": {"r": 0, "g": 200, "b": 255}}
+    for i in range(8)
+]
+# Firmware effects the mock strip advertises (mirrors a real valve-leds device).
+_MOCK_STRIP_HW = ["patrol", "breath", "factory", "normal", "off", "rainbow",
+                  "demo", "manual"]
+
+
+def _mock_strip_public(prefix, members):
+    return {"prefix": prefix, "count": len(members), "rgb": True,
+            "hw_effects": list(_MOCK_STRIP_HW)}
 # name -> {"brightness": <device units>, "color": {r,g,b}}, remembered across
 # --mock requests so a harness swatch/level tap MOVES the value and the next GET
 # shows it (observe both states, CLAUDE.md §11). Mock-only.
@@ -4283,13 +4300,18 @@ def leds_state(mock):
     remembered mock state so the harness can observe a change."""
     if mock:
         pubs = [_mock_led_public(l["name"]) for l in MOCK_LEDS if l["writable"]]
+        strips = _led_strips([l["name"] for l in MOCK_LEDS if l["writable"]])
         return {"available": any(p["notable"] for p in pubs), "leds": pubs,
                 "effects": list(_LED_EFFECTS),
-                "active": {k: dict(v) for k, v in _MOCK_FX.items()}}
-    raws = [_read_led_raw(n) for n in _list_led_names()]
+                "active": {k: dict(v) for k, v in _MOCK_FX.items()},
+                "strips": [_mock_strip_public(p, m) for p, m in strips.items()]}
+    names = _list_led_names()
+    raws = [_read_led_raw(n) for n in names]
     pubs = [_led_public(r) for r in raws if r and r["writable"]]
+    strips = _led_strips(names)
     return {"available": any(p["notable"] for p in pubs), "leds": pubs,
-            "effects": list(_LED_EFFECTS), "active": _led_active_map()}
+            "effects": list(_LED_EFFECTS), "active": _led_active_map(),
+            "strips": [_strip_public(p, m) for p, m in strips.items()]}
 
 
 def _led_realpath_ok(name):
@@ -4305,8 +4327,10 @@ def _led_realpath_ok(name):
 
 def _led_write(name, attr, value):
     """Write to the FIXED-literal attribute `attr` of LED `name`. attr is NEVER
-    client input -- only 'brightness', 'multi_intensity', 'trigger' are ever
-    passed by set_led()."""
+    client input -- the only literals ever passed are 'brightness',
+    'multi_intensity', 'trigger' (set_led) and 'effect', 'enabled', 'delay'
+    (the valve-leds hardware-effect strip path). The effect VALUE is validated
+    against the device's own effect_index before it reaches here."""
     with open(os.path.join(_LEDS_ROOT, name, attr), "w") as f:
         f.write(value)
 
@@ -4651,9 +4675,11 @@ def _led_restore():
     """Re-apply the persisted effect/colour to each LED still present + writable.
     Revalidates EVERY field (never trusts the file); a vanished/locked LED or a
     junk record is skipped. Best-effort."""
-    live = set(_list_led_names())
+    names = _list_led_names()
+    live = set(names)
+    strips = _led_strips(names)
     for name, st in _led_state_load().items():
-        if name not in live or not isinstance(st, dict):
+        if not isinstance(st, dict):
             continue
         effect = st.get("effect")
         if effect not in _LED_EFFECTS:
@@ -4662,7 +4688,14 @@ def _led_restore():
         speed = st.get("speed") if _is_pct(st.get("speed"), 1) else 50
         brightness = st.get("brightness") if _is_pct(st.get("brightness")) else 100
         try:
-            apply_led_effect(name, effect, color, speed, brightness)
+            if name.startswith("strip:"):
+                # A persisted strip (firmware effect): re-arm the whole strip so a
+                # reboot brings back the night-rider without the phone.
+                prefix = name[len("strip:"):]
+                if prefix in strips:
+                    apply_strip_effect(prefix, effect, color, speed, brightness)
+            elif name in live:
+                apply_led_effect(name, effect, color, speed, brightness)
         except OSError:
             pass
 
@@ -4678,6 +4711,148 @@ def _led_restore_worker():
                 return
         except OSError:
             pass
+
+
+# ---- Addressable LED STRIP + hardware effects (valve-leds) -------------------
+# A Steam Deck / Steam Machine exposes its front strip as N kernel LED nodes
+# `valve-leds[0]` .. `valve-leds[16]`, and the driver runs animations IN FIRMWARE
+# via an `effect` attribute whose allowed values it publishes in `effect_index`
+# (patrol/breath/rainbow/normal/off/manual/...). So the box owns the animation:
+# set `effect=patrol` once and the strip does a real night-rider sweep with the
+# phone closed, backgrounded, or gone -- and it survives reboot via our restore.
+#
+# ALLOWLIST (CLAUDE.md §3): the client sends a strip PREFIX; members come from the
+# live os.listdir(/sys/class/leds) filtered by `prefix[<n>]`, never interpolated.
+# The `effect` attr name is a fixed literal; the VALUE written must be an EXACT
+# member of the device's own `effect_index` set (looked up, not trusted); `delay`
+# is range-checked against the device's `delay_range`; colour/brightness are the
+# same validated writers set_led() uses.
+_STRIP_RE = re.compile(r"^(.*)\[(\d+)\]$")
+
+# our effect id -> the firmware effect name we try (only used if the device's
+# effect_index actually offers it; else we fall back to a per-LED manual paint).
+_STRIP_HW_MAP = {"scanner": "patrol", "breathe": "breath", "rainbow": "rainbow",
+                 "pulse": "breath", "strobe": "breath", "solid": "manual",
+                 "off": "off"}
+# effects whose look depends on the picked colour (set multi_intensity first).
+_STRIP_COLOUR_FX = ("scanner", "breathe", "pulse", "strobe", "solid")
+
+
+def _led_strips(names=None):
+    """Group live LEDs into strips: {prefix: [member names sorted by index]} for
+    any `prefix[N]` family with >= 3 members. Members are bare listdir names."""
+    groups = {}
+    for name in (names if names is not None else _list_led_names()):
+        m = _STRIP_RE.match(name)
+        if m:
+            groups.setdefault(m.group(1), []).append(name)
+    return {p: sorted(ns, key=lambda n: int(_STRIP_RE.match(n).group(2)))
+            for p, ns in groups.items() if len(ns) >= 3}
+
+
+def _strip_hw_effects(member):
+    """The firmware effect names the device publishes for this node
+    (`effect_index`, space-separated), or [] for a plain strip with no hardware
+    effects. Read-only."""
+    raw = _led_read_attr(member, "effect_index")
+    return raw.split() if raw else []
+
+
+def _strip_delay(member, speed):
+    """Map speed 1-100 -> the device's `delay` value (higher speed = smaller
+    delay = faster), clamped to the node's own `delay_range` (e.g. '0-20'). None
+    when the node has no delay control."""
+    rng = _led_read_attr(member, "delay_range")
+    if not rng or "-" not in rng:
+        return None
+    try:
+        lo, hi = (int(x) for x in rng.split("-")[:2])
+    except (ValueError, TypeError):
+        return None
+    s = speed if _is_pct(speed, 1) else 50
+    return max(lo, min(hi, round(hi - (s / 100.0) * (hi - lo))))
+
+
+def _strip_public(prefix, members):
+    """API view of a strip for GET /api/leds `strips`."""
+    raw0 = _read_led_raw(members[0])
+    return {"prefix": prefix, "count": len(members),
+            "rgb": bool(raw0 and raw0["rgb"]),
+            "hw_effects": _strip_hw_effects(members[0])}
+
+
+def apply_strip_effect(prefix, effect, color, speed, brightness):
+    """Set an addressable strip to a FIRMWARE effect (or a manual solid/off).
+
+    Returns {"ok":True,"active":..} | {"ok":False,"status":..} | None(->404).
+    The heavy lifting is the driver's: for a hardware effect we set the base
+    colour/brightness then write `effect`=<firmware name> + `delay`, and the strip
+    animates itself. `solid` paints every LED (effect=manual); `off` zeroes them."""
+    if effect not in _LED_EFFECTS:
+        return {"ok": False, "status": 400, "error": "unknown effect"}
+    if not isinstance(prefix, str):
+        return None
+    members = _led_strips().get(prefix)
+    if not members:
+        return None
+    raws = {n: _read_led_raw(n) for n in members}
+    if not all(r and r["writable"] for r in raws.values()):
+        return None
+    avail = _strip_hw_effects(members[0])
+    hw = _STRIP_HW_MAP.get(effect)
+    b = brightness if _is_pct(brightness) else 100
+    sp = speed if _is_pct(speed, 1) else 50
+    col = color or ({"r": 255, "g": 0, "b": 0} if effect == "scanner"
+                    else {"r": 255, "g": 255, "b": 255})
+
+    def _bval(raw):
+        return str(int(b / 100 * raw["max_brightness"] + 0.5))
+
+    try:
+        if effect == "off":
+            for n in members:
+                if "off" in avail:
+                    _led_write(n, "effect", "off")
+                _led_write(n, "brightness", "0")
+        elif hw and hw in avail and hw != "manual":
+            # FIRMWARE effect. Set the base colour (for colour-driven effects) +
+            # brightness, then flip the mode + speed; the driver animates.
+            for n in members:
+                if effect in _STRIP_COLOUR_FX and raws[n]["rgb"]:
+                    _led_write_color(n, raws[n], col)
+                _led_write(n, "brightness", _bval(raws[n]))
+            for n in members:
+                _led_write(n, "effect", hw)
+                try:
+                    _led_write(n, "enabled", "1")
+                except OSError:
+                    pass
+                d = _strip_delay(n, sp)
+                if d is not None:
+                    try:
+                        _led_write(n, "delay", str(d))
+                    except OSError:
+                        pass
+        else:
+            # No matching firmware effect (or `solid`): manual per-LED paint.
+            for n in members:
+                if "manual" in avail:
+                    try:
+                        _led_write(n, "effect", "manual")
+                    except OSError:
+                        pass
+                if raws[n]["rgb"]:
+                    _led_write_color(n, raws[n], col)
+                _led_write(n, "brightness", _bval(raws[n]))
+    except OSError as e:
+        return {"ok": False, "status": 500, "error": str(e) or "strip write failed"}
+
+    with _FX_LOCK:
+        _LED_PERSIST["strip:" + prefix] = {"effect": effect, "color": col,
+                                           "speed": sp, "brightness": b}
+    _led_state_save()
+    return {"ok": True, "strip": prefix,
+            "active": {"effect": effect, "color": col, "speed": sp, "brightness": b}}
 
 
 # ---- OpenRGB backend (cap: openrgb) -----------------------------------------
@@ -19166,6 +19341,38 @@ class Handler(BaseHTTPRequestHandler):
                 if verr is not None:
                     self._send(400, {"error": verr}, started)
                     return
+
+                # STRIP target: the client sends a `strip` PREFIX; the agent drives
+                # the whole valve-leds[*] family (firmware effect on the box, so it
+                # survives the phone closing). Same allowlist: prefix members come
+                # from the live listdir, effect id is frozen, params range-checked.
+                strip_name = req.get("strip")
+                if strip_name is not None:
+                    if self.mock:
+                        ms = _led_strips([l["name"] for l in MOCK_LEDS if l["writable"]])
+                        if not isinstance(strip_name, str) or strip_name not in ms:
+                            self._send(404, {"error": "unknown strip"}, started)
+                            return
+                        key = "strip:" + strip_name
+                        if effect in _LED_STATIC:
+                            _MOCK_FX.pop(key, None)
+                        else:
+                            _MOCK_FX[key] = {
+                                "effect": effect,
+                                "color": color if color is not None else {"r": 255, "g": 0, "b": 0},
+                                "speed": speed if speed is not None else 50,
+                                "brightness": brightness if brightness is not None else 100}
+                        self._send(200, {"ok": True, "strip": strip_name,
+                                         "active": _MOCK_FX.get(key)}, started)
+                        return
+                    res = apply_strip_effect(strip_name, effect, color, speed, brightness)
+                    if res is None:
+                        self._send(404, {"error": "unknown strip"}, started)
+                        return
+                    self._send(res.get("status", 200) if not res.get("ok") else 200,
+                               res, started)
+                    return
+
                 if self.mock:
                     match = next((l for l in MOCK_LEDS
                                   if l["name"] == led_name), None)

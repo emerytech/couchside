@@ -490,6 +490,17 @@ export type LedActive = {
   brightness: number;
 };
 
+/** An addressable STRIP the agent groups from `prefix[N]` LED nodes (agent >=
+    2.9.85), e.g. a Steam Machine's 17 `valve-leds`. `hw_effects` are the firmware
+    effect names the driver runs on the box itself (patrol/breath/rainbow/…), so
+    the animation survives the app closing. */
+export type StripInfo = {
+  prefix: string;
+  count: number;
+  rgb: boolean;
+  hw_effects: string[];
+};
+
 /** GET /api/leds: the writable LEDs the box exposes + their state.
     `available: false` = nothing controllable here (the card hides). */
 export type LedsState = {
@@ -498,8 +509,11 @@ export type LedsState = {
   /** Supported effect ids (agent >= 2.9.84); absent on an older agent, in which
       case the app shows colour/brightness only and hides the effect controls. */
   effects?: LedEffect[];
-  /** Per-LED running animation, keyed by LED name (agent >= 2.9.84). */
+  /** Per-LED (and per-strip, keyed `strip:<prefix>`) running effect (agent >= 2.9.84). */
   active?: Record<string, LedActive>;
+  /** Addressable strips the agent can drive as a whole (agent >= 2.9.85). Absent
+      on older agents → the app falls back to driving the sweep itself. */
+  strips?: StripInfo[];
 };
 
 /** One OpenRGB controller from GET /api/openrgb (agent >= 2.9.84, cap `openrgb`).
@@ -2639,6 +2653,25 @@ export const api = {
     return request<{ ok: boolean }>(settings, '/api/leds/effect', {
       method: 'POST',
       body: { led, ...patch },
+    })
+      .then((r) => !!r?.ok)
+      .catch(() => false);
+  },
+
+  /**
+   * Drive a whole addressable STRIP (agent >= 2.9.85) — the box runs the effect
+   * in firmware (a real night-rider `scanner`, `rainbow`, `breathe`) so it keeps
+   * going with the app closed. `strip` is a prefix the box sent in leds()'s
+   * `strips`; the agent looks it up and 404s otherwise. Resolves false on failure.
+   */
+  setStripEffect(
+    settings: ConnSettings,
+    strip: string,
+    patch: { effect: LedEffect; color?: Rgb; speed?: number; brightness?: number },
+  ): Promise<boolean> {
+    return request<{ ok: boolean }>(settings, '/api/leds/effect', {
+      method: 'POST',
+      body: { strip, ...patch },
     })
       .then((r) => !!r?.ok)
       .catch(() => false);
