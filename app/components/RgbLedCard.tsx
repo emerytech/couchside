@@ -1,69 +1,70 @@
 /**
- * LIGHT (Console tab) — set the box's front RGB / status LED colour + brightness
- * from the phone. The read-only siblings show state; this one changes it.
+ * LIGHT (Console tab) — the box's front RGB / status LED editor: colour, effects,
+ * and saved presets, from the phone. The read-only siblings show state; this one
+ * changes it. Owner ask 2026-08-13: "easier editor … save presets … automation
+ * (night rider) … survive reboot".
  *
- * Probe-and-appear, the AudioOutputCard shape exactly: a 404 (agent too old),
- * `available: false` (no controllable/writable LED), or zero *notable* LEDs
- * renders NOTHING — no dead card. On a stock box the LED sysfs files are
- * root-owned, so nothing is writable until an install-time udev grant lands, and
- * the card correctly stays hidden until then.
+ * Probe-and-appear (the AudioOutputCard shape): a 404 (agent too old),
+ * `available: false`, or zero *notable* LEDs renders NOTHING — no dead card. On a
+ * stock box the LED sysfs files are root-owned, so nothing is writable until an
+ * install-time udev grant lands, and the card correctly stays hidden until then.
  *
- * Tap-only by design (colour swatches + discrete brightness levels), because
- * drag gestures aren't verifiable in the web harness. Every tap fires one POST
- * then RE-READS /api/leds rather than trusting the echo (CLAUDE.md §11: observe
- * the real state) — the ring that moves is the box telling us it moved.
+ * Controls, and why each is testable:
+ *  - EFFECT chips + SPEED chips + PRESET chips are TAPS → verifiable in the web
+ *    harness (§6: press the control, don't just render it).
+ *  - HUE / BRIGHTNESS are PanResponder sliders. A drag feels native; a single TAP
+ *    on the track also sets the value (grant fires with the tap position), so the
+ *    harness can press them too. The *drag* itself is on-device-only proof.
+ *
+ * Every change fires one POST then RE-READS /api/leds rather than trusting the
+ * echo (§11: observe the real state). Effects/presets persist on the box, so a
+ * reboot restores them (agent >= 2.9.84); the preset *library* is per-phone
+ * (lib/ledPresets.ts) — applying one is just another setLedEffect call.
  *
  * The LED `name` sent back is one the box itself listed; the agent looks it up in
- * its live /sys/class/leds set and refuses anything else, so this control can
- * only ever aim at an LED the box offered.
+ * its live /sys/class/leds set and refuses anything else.
  */
 import Ionicons from '@expo/vector-icons/Ionicons';
-import React, { useState } from 'react';
-import { ActivityIndicator, Pressable, StyleSheet, Text, View } from 'react-native';
+import React, { useEffect, useRef, useState } from 'react';
+import { ActivityIndicator, Alert, Pressable, StyleSheet, Text, View } from 'react-native';
 
+import { TrackSlider } from '@/components/TrackSlider';
 import { usePoll } from '@/hooks/usePoll';
-import { api, hostKey, type LedInfo, type LedsState, type Rgb } from '@/lib/api';
+import {
+  api, hostKey, type LedEffect, type LedInfo, type LedsState, type Rgb,
+} from '@/lib/api';
 import { hapticLight } from '@/lib/haptics';
+import { cssRgb, hexRgb, hueToRgb, rgbToHue, HUE_STOPS } from '@/lib/ledColor';
+import {
+  addPreset, removePreset, useLedPresets, type LedPreset,
+} from '@/lib/ledPresets';
 import { useSkinKit } from '@/lib/skin';
 import { useSettings } from '@/lib/SettingsContext';
 import { mono, useTheme, useThemedStyles, type Palette } from '@/lib/theme';
 
-/** LEDs don't change on their own second-by-second; the taps refresh immediately,
- *  so this is just a backstop (e.g. another app changed the colour). */
+/** LEDs don't change on their own second-by-second; taps refresh immediately, so
+ *  this is just a backstop (e.g. another app changed the colour). */
 const POLL_MS = 15000;
 
-/** Frozen preset colours (0–255 per channel), sent verbatim; the agent
- *  range-checks each triple. Tap-testable: one swatch = one POST. */
-const PRESETS: { label: string; rgb: Rgb }[] = [
-  { label: 'Red', rgb: { r: 255, g: 0, b: 0 } },
-  { label: 'Orange', rgb: { r: 255, g: 120, b: 0 } },
-  { label: 'Yellow', rgb: { r: 255, g: 220, b: 0 } },
-  { label: 'Green', rgb: { r: 0, g: 200, b: 0 } },
-  { label: 'Cyan', rgb: { r: 0, g: 200, b: 255 } },
-  { label: 'Blue', rgb: { r: 0, g: 80, b: 255 } },
-  { label: 'Purple', rgb: { r: 160, g: 0, b: 255 } },
-  { label: 'Pink', rgb: { r: 255, g: 0, b: 150 } },
-  { label: 'White', rgb: { r: 255, g: 255, b: 255 } },
-  { label: 'Warm', rgb: { r: 255, g: 170, b: 90 } },
+/** Effect id → label + whether it drives a colour. `rainbow` cycles its own hue,
+ *  so we never send it a colour; the rest use the picked colour. */
+const EFFECT_META: Record<LedEffect, { label: string; usesColor: boolean }> = {
+  solid: { label: 'Solid', usesColor: true },
+  off: { label: 'Off', usesColor: false },
+  breathe: { label: 'Breathe', usesColor: true },
+  pulse: { label: 'Pulse', usesColor: true },
+  rainbow: { label: 'Rainbow', usesColor: false },
+  strobe: { label: 'Strobe', usesColor: true },
+  scanner: { label: 'Scanner', usesColor: true },
+};
+/** A mono LED can't show colour, so only these effects make sense on one. */
+const MONO_EFFECTS: LedEffect[] = ['solid', 'off', 'breathe', 'pulse', 'strobe'];
+
+const SPEEDS: { label: string; value: number }[] = [
+  { label: 'Slow', value: 25 },
+  { label: 'Med', value: 55 },
+  { label: 'Fast', value: 90 },
 ];
-
-const LEVELS = [0, 25, 50, 75, 100];
-
-const css = (c: Rgb) => `rgb(${c.r}, ${c.g}, ${c.b})`;
-
-/** A colour round-trips through device scaling, so match within a small
- *  tolerance rather than requiring exact equality. */
-function sameColor(a: Rgb | null, b: Rgb): boolean {
-  if (!a) return false;
-  return Math.abs(a.r - b.r) <= 3 && Math.abs(a.g - b.g) <= 3 && Math.abs(a.b - b.b) <= 3;
-}
-
-/** The level button (from the rendered set) that best matches the reported
- *  brightness, so exactly one lights up. */
-function nearestLevel(pct: number, levels: number[]): number {
-  return levels.reduce((best, lv) =>
-    Math.abs(lv - pct) < Math.abs(best - pct) ? lv : best, levels[0]);
-}
 
 export function RgbLedCard() {
   const t = useTheme();
@@ -71,55 +72,112 @@ export function RgbLedCard() {
   const { Card } = useSkinKit();
   const { settings, ready } = useSettings();
   const configured = !!settings.host && !!settings.token;
+  const presets = useLedPresets();
 
-  // Which LED is being written (disables the controls + shows a spinner) so a
-  // double-tap can't fire two writes at once.
   const [busy, setBusy] = useState(false);
-  // When several notable LEDs exist, which one the controls act on.
   const [selName, setSelName] = useState<string | null>(null);
+
+  // Local editor state; seeded from the box once per selected LED, then the
+  // user's edits drive the UI (poll is a backstop, not the source of truth).
+  const [effect, setEffect] = useState<LedEffect>('solid');
+  const [hue, setHue] = useState(0);
+  const [bright, setBright] = useState(100);
+  const [speed, setSpeed] = useState(55);
+  const seeded = useRef<string | null>(null);
 
   const poll = usePoll<LedsState | null>(
     () => api.leds(settings), POLL_MS, ready && configured, hostKey(settings));
 
   const d = poll.data;
   const leds = (d?.leds ?? []).filter((l) => l.notable && l.writable);
+  const led: LedInfo | undefined = leds.find((l) => l.name === selName) ?? leds[0];
+
+  useEffect(() => {
+    if (!led || seeded.current === led.name) return;
+    seeded.current = led.name;
+    const a = d?.active?.[led.name];
+    setEffect(a?.effect ?? 'solid');
+    setSpeed(a?.speed ?? 55);
+    setBright(a?.brightness ?? led.brightness_pct ?? 100);
+    const c = a?.color ?? led.color;
+    setHue(c ? rgbToHue(c) : 0);
+  }, [led, d]);
+
   // Old agent, no writable LED, or nothing notable -> render nothing at all.
-  if (!d || !d.available || leds.length === 0) return null;
+  if (!d || !d.available || !led || leds.length === 0) return null;
 
-  const led: LedInfo = leds.find((l) => l.name === selName) ?? leds[0];
-  const off = led.brightness_pct === 0;
-  // An rgb LED gets its "off" from the OFF swatch, so drop the duplicate level-0
-  // button (otherwise both light up when off). A mono LED keeps it — it has no
-  // swatch. When off, no level highlights (the OFF swatch shows the state).
-  const levels = led.rgb ? LEVELS.filter((l) => l > 0) : LEVELS;
-  const activeLevel = off ? -1 : nearestLevel(led.brightness_pct, levels);
+  const supported: LedEffect[] = (d.effects ?? ['solid', 'off']).filter((e) =>
+    led.rgb ? true : MONO_EFFECTS.includes(e));
+  const animated = effect !== 'solid' && effect !== 'off';
+  const color = hueToRgb(hue);
 
-  const apply = async (patch: { brightness?: number; color?: Rgb }) => {
-    if (busy) return;
+  /** One place that turns the current editor state into a box write, then
+   *  re-reads. `over` lets a control apply its brand-new value in the same tick
+   *  (setState is async). Editing colour/brightness while 'off' switches to solid. */
+  const send = async (over: Partial<{ effect: LedEffect; hue: number; bright: number; speed: number }>) => {
+    if (busy || !led) return;
+    let eff = over.effect ?? effect;
+    if (over.effect === undefined && (over.hue !== undefined || over.bright !== undefined) && eff === 'off') {
+      eff = 'solid';
+      setEffect('solid');
+    }
+    const h = over.hue ?? hue;
+    const b = Math.round(over.bright ?? bright);
+    const sp = Math.round(over.speed ?? speed);
+    const col = hueToRgb(h);
     hapticLight();
     setBusy(true);
     try {
-      await api.setLed(settings, led.name, patch);
+      if (eff === 'off') {
+        await api.setLedEffect(settings, led.name, { effect: 'off' });
+      } else if (eff === 'solid') {
+        await api.setLed(settings, led.name,
+          led.rgb ? { color: col, brightness: b } : { brightness: b });
+      } else {
+        await api.setLedEffect(settings, led.name, {
+          effect: eff, speed: sp, brightness: b,
+          ...(led.rgb && EFFECT_META[eff].usesColor ? { color: col } : {}),
+        });
+      }
     } finally {
       await poll.refresh();
       setBusy(false);
     }
   };
 
+  const applyPreset = (p: LedPreset) => {
+    const h = p.color ? rgbToHue(p.color) : hue;
+    setEffect(p.effect); setHue(h); setBright(p.brightness); setSpeed(p.speed);
+    void send({ effect: p.effect, hue: h, bright: p.brightness, speed: p.speed });
+  };
+
+  const saveCurrent = () => {
+    const label = EFFECT_META[effect].label +
+      (led.rgb && EFFECT_META[effect].usesColor ? ` ${hexRgb(color)}` : '');
+    void addPreset({
+      label,
+      effect,
+      color: led.rgb && EFFECT_META[effect].usesColor ? color : null,
+      speed: Math.round(speed),
+      brightness: Math.round(bright),
+    });
+    hapticLight();
+  };
+
+  const confirmDelete = (p: LedPreset) =>
+    Alert.alert('Delete preset', `Remove "${p.label}"?`, [
+      { text: 'Cancel', style: 'cancel' },
+      { text: 'Delete', style: 'destructive', onPress: () => void removePreset(p.id) },
+    ]);
+
   return (
     <Card index={6}>
       <View style={styles.header}>
         <Text style={styles.cardTitle}>LIGHT</Text>
         <View style={styles.headerRight}>
-          {/* One spinner for the whole card while a write is in flight — the
-              swatch/level that lands is shown by the ring after the re-read, so
-              a per-control spinner (which would sit on stale state) is wrong. */}
           {busy ? <ActivityIndicator size="small" color={t.blue} /> : null}
           <Pressable
-            onPress={() => {
-              hapticLight();
-              poll.refresh();
-            }}
+            onPress={() => { hapticLight(); poll.refresh(); }}
             hitSlop={10}
             accessibilityRole="button"
             accessibilityLabel="Refresh lights"
@@ -131,7 +189,7 @@ export function RgbLedCard() {
 
       {/* LED picker — only when the box exposes more than one controllable light. */}
       {leds.length > 1 && (
-        <View style={styles.ledRow}>
+        <View style={styles.chipRow}>
           {leds.map((l) => {
             const on = l.name === led.name;
             return (
@@ -143,8 +201,8 @@ export function RgbLedCard() {
                 accessibilityState={{ selected: on }}
                 accessibilityLabel={`Control ${l.desc}`}
                 style={({ pressed }) => [
-                  styles.ledChip, on && styles.ledChipOn, pressed && styles.pressed]}>
-                <Text style={[styles.ledChipText, on && styles.ledChipTextOn]} numberOfLines={1}>
+                  styles.chip, on && styles.chipOn, pressed && styles.pressed]}>
+                <Text style={[styles.chipText, on && styles.chipTextOn]} numberOfLines={1}>
                   {l.desc}
                 </Text>
               </Pressable>
@@ -153,82 +211,137 @@ export function RgbLedCard() {
         </View>
       )}
 
-      {/* Colour swatches (rgb LEDs only). */}
-      {led.rgb && (
+      {/* EFFECT chips (agent >= 2.9.84). */}
+      {supported.length > 0 && (
         <>
-          <Text style={styles.sectionLabel}>COLOUR</Text>
-          <View style={styles.swatchGrid}>
-            {PRESETS.map((p) => {
-              const on = !off && sameColor(led.color, p.rgb);
+          <Text style={styles.sectionLabel}>EFFECT</Text>
+          <View style={styles.chipRow}>
+            {supported.map((e) => {
+              const on = effect === e;
               return (
                 <Pressable
-                  key={p.label}
-                  onPress={() => apply({
-                    color: p.rgb,
-                    brightness: led.brightness_pct > 0 ? led.brightness_pct : 100,
-                  })}
+                  key={e}
+                  onPress={() => { setEffect(e); void send({ effect: e }); }}
                   disabled={busy}
-                  accessibilityRole="radio"
+                  accessibilityRole="button"
                   accessibilityState={{ selected: on, disabled: busy }}
-                  accessibilityLabel={`Set light to ${p.label}`}
+                  accessibilityLabel={`Effect ${EFFECT_META[e].label}`}
                   style={({ pressed }) => [
-                    styles.swatch,
-                    { backgroundColor: css(p.rgb) },
-                    on && styles.swatchOn,
-                    pressed && !busy && styles.pressed,
-                  ]}>
-                  {on ? (
-                    <Ionicons
-                      name="checkmark"
-                      size={16}
-                      color={p.rgb.r + p.rgb.g + p.rgb.b > 480 ? '#000' : '#fff'}
-                    />
-                  ) : null}
+                    styles.chip, on && styles.chipOn, pressed && !busy && styles.pressed]}>
+                  <Text style={[styles.chipText, on && styles.chipTextOn]}>
+                    {EFFECT_META[e].label}
+                  </Text>
                 </Pressable>
               );
             })}
-            {/* Off — turns the light out (brightness 0), rendered as an inset chip. */}
-            <Pressable
-              onPress={() => apply({ brightness: 0 })}
-              disabled={busy}
-              accessibilityRole="radio"
-              accessibilityState={{ selected: off, disabled: busy }}
-              accessibilityLabel="Turn the light off"
-              style={({ pressed }) => [
-                styles.swatch, styles.offSwatch, off && styles.swatchOn,
-                pressed && !busy && styles.pressed]}>
-              <Text style={styles.offText}>OFF</Text>
-            </Pressable>
           </View>
         </>
       )}
 
-      {/* Brightness levels (every LED). */}
-      <Text style={styles.sectionLabel}>BRIGHTNESS</Text>
-      <View style={styles.levelRow}>
-        {levels.map((lv) => {
-          const on = activeLevel === lv;
-          return (
-            <Pressable
-              key={lv}
-              onPress={() => apply({ brightness: lv })}
-              disabled={busy}
-              accessibilityRole="button"
-              accessibilityState={{ selected: on, disabled: busy }}
-              accessibilityLabel={lv === 0 ? 'Brightness off' : `Brightness ${lv} percent`}
-              style={({ pressed }) => [
-                styles.level, on && styles.levelOn, pressed && !busy && styles.pressed]}>
-              <Text style={[styles.levelText, on && styles.levelTextOn]}>
-                {lv === 0 ? 'Off' : `${lv}`}
-              </Text>
-            </Pressable>
-          );
-        })}
+      {/* SPEED — only for an animated effect. */}
+      {animated && (
+        <>
+          <Text style={styles.sectionLabel}>SPEED</Text>
+          <View style={styles.chipRow}>
+            {SPEEDS.map((s) => {
+              const on = Math.abs(speed - s.value) <= 15;
+              return (
+                <Pressable
+                  key={s.label}
+                  onPress={() => { setSpeed(s.value); void send({ speed: s.value }); }}
+                  disabled={busy}
+                  accessibilityRole="button"
+                  accessibilityState={{ selected: on, disabled: busy }}
+                  accessibilityLabel={`Speed ${s.label}`}
+                  style={({ pressed }) => [
+                    styles.chip, on && styles.chipOn, pressed && !busy && styles.pressed]}>
+                  <Text style={[styles.chipText, on && styles.chipTextOn]}>{s.label}</Text>
+                </Pressable>
+              );
+            })}
+          </View>
+        </>
+      )}
+
+      {/* COLOUR — rgb LEDs only. Hue slider + a live swatch. */}
+      {led.rgb && effect !== 'rainbow' && effect !== 'off' && (
+        <>
+          <View style={styles.sliderHeader}>
+            <Text style={styles.sectionLabel}>COLOUR</Text>
+            <View style={[styles.swatchPreview, { backgroundColor: cssRgb(color) }]} />
+          </View>
+          <TrackSlider
+            value={hue}
+            min={0}
+            max={360}
+            disabled={busy}
+            onChange={setHue}
+            onCommit={(v) => void send({ hue: v })}
+            thumbColor={cssRgb(color)}
+            accessibilityLabel="Light colour hue"
+            renderTrack={() => (
+              <View style={styles.hueFill}>
+                {HUE_STOPS.map((c, i) => (
+                  <View key={i} style={{ flex: 1, backgroundColor: c }} />
+                ))}
+              </View>
+            )}
+          />
+        </>
+      )}
+
+      {/* BRIGHTNESS — every LED, unless off. */}
+      {effect !== 'off' && (
+        <>
+          <Text style={styles.sectionLabel}>BRIGHTNESS</Text>
+          <TrackSlider
+            value={bright}
+            min={0}
+            max={100}
+            disabled={busy}
+            onChange={setBright}
+            onCommit={(v) => void send({ bright: v })}
+            thumbColor={t.text}
+            accessibilityLabel="Light brightness"
+            renderTrack={(pct) => (
+              <View style={styles.brightTrack}>
+                <View style={[styles.brightFill,
+                  { width: `${pct * 100}%`, backgroundColor: led.rgb ? cssRgb(color) : t.text }]} />
+              </View>
+            )}
+          />
+        </>
+      )}
+
+      {/* PRESETS — tap to apply, long-press to delete, + to save the current look. */}
+      <Text style={styles.sectionLabel}>PRESETS</Text>
+      <View style={styles.chipRow}>
+        {presets.map((p) => (
+          <Pressable
+            key={p.id}
+            onPress={() => applyPreset(p)}
+            onLongPress={() => confirmDelete(p)}
+            disabled={busy}
+            accessibilityRole="button"
+            accessibilityLabel={`Apply preset ${p.label}`}
+            style={({ pressed }) => [styles.presetChip, pressed && !busy && styles.pressed]}>
+            <View style={[styles.presetDot,
+              { backgroundColor: p.color ? cssRgb(p.color) : t.textDim }]} />
+            <Text style={styles.chipText} numberOfLines={1}>{p.label}</Text>
+          </Pressable>
+        ))}
+        <Pressable
+          onPress={saveCurrent}
+          disabled={busy}
+          accessibilityRole="button"
+          accessibilityLabel="Save current look as a preset"
+          style={({ pressed }) => [styles.savePreset, pressed && !busy && styles.pressed]}>
+          <Ionicons name="add" size={14} color={t.blue} />
+          <Text style={[styles.chipText, { color: t.blue }]}>Save</Text>
+        </Pressable>
       </View>
 
-      <Text style={styles.hint}>
-        {led.rgb ? 'Tap a colour, then a brightness.' : 'Tap a brightness level.'}
-      </Text>
+      <Text style={styles.hint}>Long-press a preset to delete it.</Text>
     </Card>
   );
 }
@@ -236,92 +349,63 @@ export function RgbLedCard() {
 const makeStyles = (t: Palette) =>
   StyleSheet.create({
     header: {
-      flexDirection: 'row',
-      alignItems: 'center',
-      justifyContent: 'space-between',
+      flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between',
       marginBottom: 10,
     },
     headerRight: { flexDirection: 'row', alignItems: 'center', gap: 10 },
     cardTitle: {
-      color: t.textDim,
-      fontSize: 11,
-      fontWeight: '700',
-      letterSpacing: 1,
-      fontFamily: mono,
+      color: t.textDim, fontSize: 11, fontWeight: '700', letterSpacing: 1, fontFamily: mono,
     },
     refreshBtn: {
-      borderColor: t.cardBorder,
-      borderWidth: 1,
-      borderRadius: 999,
-      paddingVertical: 4,
-      paddingHorizontal: 9,
+      borderColor: t.cardBorder, borderWidth: 1, borderRadius: 999,
+      paddingVertical: 4, paddingHorizontal: 9,
     },
     pressed: { opacity: 0.6 },
 
     sectionLabel: {
-      color: t.textFaint,
-      fontSize: 10,
-      fontWeight: '700',
-      letterSpacing: 1.2,
-      fontFamily: mono,
-      marginTop: 12,
-      marginBottom: 8,
+      color: t.textFaint, fontSize: 10, fontWeight: '700', letterSpacing: 1.2,
+      fontFamily: mono, marginTop: 14, marginBottom: 8,
     },
-
-    ledRow: { flexDirection: 'row', flexWrap: 'wrap', gap: 6 },
-    ledChip: {
-      borderColor: t.cardBorder,
-      borderWidth: 1,
-      borderRadius: 999,
-      paddingVertical: 5,
-      paddingHorizontal: 11,
+    sliderHeader: {
+      flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between',
     },
-    ledChipOn: { borderColor: t.text },
-    ledChipText: { color: t.textDim, fontSize: 12, fontFamily: mono },
-    ledChipTextOn: { color: t.text, fontWeight: '700' },
-
-    swatchGrid: { flexDirection: 'row', flexWrap: 'wrap', gap: 10 },
-    // A 2px transparent border is ALWAYS present so selecting shifts no layout.
-    swatch: {
-      width: 44,
-      height: 44,
-      borderRadius: 10,
-      borderWidth: 2,
-      borderColor: 'transparent',
-      alignItems: 'center',
-      justifyContent: 'center',
-    },
-    swatchOn: { borderColor: t.text },
-    offSwatch: {
-      backgroundColor: t.card,
-      borderColor: t.cardBorder,
-    },
-    offText: {
-      color: t.textDim,
-      fontSize: 10,
-      fontWeight: '700',
-      letterSpacing: 1,
-      fontFamily: mono,
-    },
-
-    levelRow: { flexDirection: 'row', gap: 6 },
-    level: {
-      flex: 1,
-      height: 38,
-      borderRadius: 8,
-      borderWidth: 1,
-      borderColor: t.cardBorder,
-      alignItems: 'center',
-      justifyContent: 'center',
-    },
-    levelOn: { borderColor: t.blue, backgroundColor: t.card },
-    levelText: { color: t.textDim, fontSize: 13, fontFamily: mono },
-    levelTextOn: { color: t.text, fontWeight: '700' },
-
-    hint: {
-      color: t.textFaint,
-      fontSize: 11,
-      fontFamily: mono,
+    swatchPreview: {
+      width: 22, height: 22, borderRadius: 6, borderWidth: 1, borderColor: t.cardBorder,
       marginTop: 10,
     },
+
+    chipRow: { flexDirection: 'row', flexWrap: 'wrap', gap: 6 },
+    chip: {
+      borderColor: t.cardBorder, borderWidth: 1, borderRadius: 999,
+      paddingVertical: 6, paddingHorizontal: 12,
+    },
+    chipOn: { borderColor: t.blue, backgroundColor: t.card },
+    chipText: { color: t.textDim, fontSize: 12, fontFamily: mono },
+    chipTextOn: { color: t.text, fontWeight: '700' },
+
+    // The hue/brightness slider bodies (the TrackSlider draws the tall touch
+    // target + thumb; these are the coloured fills it renders inside).
+    hueFill: {
+      flexDirection: 'row', height: 18, borderRadius: 9, overflow: 'hidden',
+      borderWidth: StyleSheet.hairlineWidth, borderColor: t.cardBorder,
+    },
+    brightTrack: {
+      height: 18, borderRadius: 9, backgroundColor: t.card, overflow: 'hidden',
+      borderWidth: StyleSheet.hairlineWidth, borderColor: t.cardBorder,
+    },
+    brightFill: { height: '100%', borderRadius: 9 },
+
+    presetChip: {
+      flexDirection: 'row', alignItems: 'center', gap: 6,
+      borderColor: t.cardBorder, borderWidth: 1, borderRadius: 999,
+      paddingVertical: 6, paddingHorizontal: 10,
+    },
+    presetDot: { width: 12, height: 12, borderRadius: 6 },
+    savePreset: {
+      flexDirection: 'row', alignItems: 'center', gap: 4,
+      borderColor: t.blue, borderWidth: 1, borderRadius: 999,
+      paddingVertical: 6, paddingHorizontal: 10,
+    },
+
+    hint: { color: t.textFaint, fontSize: 11, fontFamily: mono, marginTop: 10 },
   });

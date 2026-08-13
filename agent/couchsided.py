@@ -14,11 +14,13 @@ defaults.
 import argparse
 import base64
 import calendar
+import colorsys
 import errno
 import glob
 import hashlib
 import hmac
 import json
+import math
 import os
 import random
 import re
@@ -46,7 +48,7 @@ except ImportError:  # pragma: no cover
     fcntl = None
 
 APP_NAME = "couchside-agent"
-VERSION = "2.9.83"
+VERSION = "2.9.84"
 UID = os.getuid()
 XDG_RUNTIME_DIR = "/run/user/%d" % UID
 
@@ -1583,7 +1585,8 @@ def set_caps(mock):
                  "steamlink", "gaming", "steaminstall", "utilities",
                  "streamhost", "steammenus", "boxbattery", "file_upload",
                  "session_default", "display_info", "player", "screenstream",
-                 "screenstream_h264", "audioswitch", "ledcontrol")}
+                 "screenstream_h264", "audioswitch", "ledcontrol",
+                 "openrgb")}
         return
     CAPS = {
         "gamepad": _uinput_writable(),
@@ -1633,6 +1636,11 @@ def set_caps(mock):
         # phone via /sys/class/leds. Linux-only. False on a stock box (files are
         # root-owned) until an install-time udev grant makes an LED writable.
         "ledcontrol": safe(ledcontrol_available),
+        # Whole-system / addressable RGB via a local OpenRGB SDK server
+        # (127.0.0.1:6742) -> motherboard/RAM/GPU/strip control + a real
+        # multi-zone scanner. Absent unless the user installed OpenRGB and its
+        # server answers on loopback (degrade closed).
+        "openrgb": safe(openrgb_available),
     }
 
 
@@ -4275,10 +4283,13 @@ def leds_state(mock):
     remembered mock state so the harness can observe a change."""
     if mock:
         pubs = [_mock_led_public(l["name"]) for l in MOCK_LEDS if l["writable"]]
-        return {"available": any(p["notable"] for p in pubs), "leds": pubs}
+        return {"available": any(p["notable"] for p in pubs), "leds": pubs,
+                "effects": list(_LED_EFFECTS),
+                "active": {k: dict(v) for k, v in _MOCK_FX.items()}}
     raws = [_read_led_raw(n) for n in _list_led_names()]
     pubs = [_led_public(r) for r in raws if r and r["writable"]]
-    return {"available": any(p["notable"] for p in pubs), "leds": pubs}
+    return {"available": any(p["notable"] for p in pubs), "leds": pubs,
+            "effects": list(_LED_EFFECTS), "active": _led_active_map()}
 
 
 def _led_realpath_ok(name):
@@ -4365,6 +4376,20 @@ def set_led(name, brightness, color):
             "brightness_pct": pub["brightness_pct"], "color": pub["color"]}
 
 
+def _is_rgb_triple(c):
+    """True iff `c` is exactly {r,g,b} of ints 0-255. Booleans are excluded
+    (JSON true == 1 in Python). Shared by every LED colour validator so the
+    accept/reject rule is defined once."""
+    return (isinstance(c, dict) and set(c) == {"r", "g", "b"}
+            and all(isinstance(c[k], int) and not isinstance(c[k], bool)
+                    and 0 <= c[k] <= 255 for k in ("r", "g", "b")))
+
+
+def _is_pct(v, lo=0):
+    """True iff `v` is an int lo..100 (not a bool)."""
+    return isinstance(v, int) and not isinstance(v, bool) and lo <= v <= 100
+
+
 def _validate_led_body(req):
     """Shared shape check for POST /api/leds/set. Returns
     (brightness|None, color|None, error|None); error -> 400. Rejects (never
@@ -4374,16 +4399,753 @@ def _validate_led_body(req):
     color = req.get("color")
     if brightness is None and color is None:
         return None, None, "need brightness or color"
-    if brightness is not None and not (
-            isinstance(brightness, int) and not isinstance(brightness, bool)
-            and 0 <= brightness <= 100):
+    if brightness is not None and not _is_pct(brightness):
         return None, None, "brightness must be an int 0-100"
-    if color is not None and not (
-            isinstance(color, dict) and set(color) == {"r", "g", "b"}
-            and all(isinstance(color[c], int) and not isinstance(color[c], bool)
-                    and 0 <= color[c] <= 255 for c in ("r", "g", "b"))):
+    if color is not None and not _is_rgb_triple(color):
         return None, None, "color must be {r,g,b} ints 0-255"
     return brightness, color, None
+
+
+# ---- LED effect engine + persistence (rides on the `ledcontrol` cap) --------
+# Animates the kernel LEDs the LIGHT card already controls: breathe / pulse /
+# rainbow / strobe (and `scanner`, which really wants MULTIPLE LEDs -> the
+# OpenRGB backend; on a single kernel LED it degrades to a bounce-pulse). ONE
+# daemon thread renders every ACTIVE effect ~30x/s by calling the SAME validated
+# writers set_led() uses -- a client only ever selects an ALLOWLISTED effect id
+# + range-checked params + an LED looked up in the live /sys/class/leds set when
+# the effect starts. Nothing client-supplied reaches a path per-frame; no new
+# raw write path is exposed (CLAUDE.md §3).
+#
+# The active effect (and a plain solid colour) is persisted to
+# ~/.config/couchside/leds.json and re-applied at startup, so a reboot restores
+# it instead of reverting to the firmware default -- the agent is a systemd
+# *user* service, so the restore runs on login.
+_LED_STATE_CONF = os.path.expanduser("~/.config/couchside/leds.json")
+
+# Frozen allowlist of effect ids (looked up, never interpolated). 'solid'/'off'
+# are one-shot (no animation); the rest animate on the render thread.
+_LED_EFFECTS = ("solid", "off", "breathe", "pulse", "rainbow", "strobe", "scanner")
+_LED_STATIC = frozenset(("solid", "off"))
+
+_FX_TICK = 0.033                 # ~30 fps render cadence
+_FX_LOCK = threading.RLock()
+_FX_ACTIVE = {}                  # led name -> params dict {effect,color,speed,brightness}
+_FX_RAW = {}                     # led name -> cached raw LED dict (index/maxint/maxb)
+_LED_PERSIST = {}                # led name -> last-applied state (statics too), for restore
+_FX_THREAD = [None]              # the single render thread (mutable cell)
+_FX_STOP = threading.Event()     # set only on full shutdown; single stops just pop _FX_ACTIVE
+_MOCK_FX = {}                    # --mock: animated effect the harness last selected, per LED
+
+
+def _fx_period(speed):
+    """Map speed (int 1..100) to an effect period in seconds -- higher = faster.
+    100 -> ~0.5s, 50 -> ~2.75s, 1 -> ~6s. Clamped so speed 1 isn't absurd."""
+    s = speed if _is_pct(speed, 1) else 50
+    return 6.0 - (s / 100.0) * 5.5
+
+
+def _fx_frame(effect, params, t):
+    """(color|None, brightness_pct) for `effect` at elapsed time t seconds.
+    color None -> leave the LED's colour, drive brightness only."""
+    target = params.get("brightness")
+    target = 100 if not _is_pct(target) else target
+    color = params.get("color")
+    period = _fx_period(params.get("speed"))
+    if effect == "breathe":
+        frac = (math.sin(2 * math.pi * (t / period) - math.pi / 2) + 1) / 2
+        return color, int(round(target * frac))
+    if effect == "pulse":
+        frac = 1.0 - (t % period) / period          # sharp on, linear fade
+        return color, int(round(target * frac))
+    if effect == "strobe":
+        return color, (target if (t % period) < period / 2 else 0)
+    if effect == "rainbow":
+        r, g, b = colorsys.hsv_to_rgb((t / period) % 1.0, 1.0, 1.0)
+        return ({"r": int(r * 255), "g": int(g * 255), "b": int(b * 255)}, target)
+    if effect == "scanner":
+        frac = abs(1.0 - 2.0 * ((t % period) / period))   # triangle 1->0->1 bounce
+        return color, int(round(target * frac))
+    return color, target
+
+
+def _fx_write(name, raw, color, brightness_pct):
+    """Write one animation frame via the SAME fixed-literal writers set_led()
+    uses. `name`/`raw` were validated when the effect started; nothing here is
+    client-derived. A transient sysfs error must not kill the render loop."""
+    try:
+        if color is not None and raw.get("rgb"):
+            _led_write_color(name, raw, color)
+        if brightness_pct is not None:
+            maxb = raw["max_brightness"]
+            _led_write(name, "brightness",
+                       str(int(brightness_pct / 100 * maxb + 0.5)))
+    except OSError:
+        pass
+
+
+def _fx_loop():
+    """Render every active animated effect until none remain (or shutdown)."""
+    start = time.monotonic()
+    with _FX_LOCK:
+        for name in list(_FX_ACTIVE):
+            _led_clear_trigger(name)          # a kernel heartbeat can't fight us
+    while not _FX_STOP.is_set():
+        with _FX_LOCK:
+            items = [(n, dict(p), _FX_RAW.get(n)) for n, p in _FX_ACTIVE.items()]
+        if not items:
+            break
+        now = time.monotonic() - start
+        for name, params, raw in items:
+            if raw is None:
+                continue
+            color, b = _fx_frame(params["effect"], params, now)
+            _fx_write(name, raw, color, b)
+        _FX_STOP.wait(_FX_TICK)
+    with _FX_LOCK:
+        _FX_THREAD[0] = None
+
+
+def _fx_ensure_thread():
+    with _FX_LOCK:
+        th = _FX_THREAD[0]
+        if th is None or not th.is_alive():
+            _FX_STOP.clear()
+            th = threading.Thread(target=_fx_loop, daemon=True, name="led-fx")
+            _FX_THREAD[0] = th
+            th.start()
+
+
+def _fx_start(name, raw, effect, params):
+    """Register/replace an animated effect on already-validated LED `name`."""
+    with _FX_LOCK:
+        _FX_RAW[name] = raw
+        _FX_ACTIVE[name] = dict(params, effect=effect)
+    _fx_ensure_thread()
+
+
+def _fx_stop(name):
+    """Stop any animation on `name` (leaves whatever frame it last wrote)."""
+    with _FX_LOCK:
+        _FX_ACTIVE.pop(name, None)
+        _FX_RAW.pop(name, None)
+
+
+def _fx_note_static(name, res):
+    """After a solid/off write (via set_led): stop any animation on `name` and
+    persist it as a solid so a reboot restores the colour."""
+    _fx_stop(name)
+    with _FX_LOCK:
+        _LED_PERSIST[name] = {"effect": "solid", "color": res.get("color"),
+                              "brightness": res.get("brightness_pct"), "speed": 50}
+    _led_state_save()
+
+
+def _led_state_save():
+    """Atomically persist _LED_PERSIST to ~/.config/couchside/leds.json. Best
+    effort -- a save failure never breaks a live LED write."""
+    with _FX_LOCK:
+        data = {"version": 1, "leds": {k: dict(v) for k, v in _LED_PERSIST.items()}}
+    d = os.path.dirname(_LED_STATE_CONF)
+    try:
+        os.makedirs(d, exist_ok=True)
+        fd, tmp = tempfile.mkstemp(prefix=".couchside-leds-", dir=d)
+        try:
+            with os.fdopen(fd, "w", encoding="utf-8") as f:
+                json.dump(data, f)
+                f.flush()
+                os.fsync(f.fileno())
+            os.replace(tmp, _LED_STATE_CONF)
+        except OSError:
+            try:
+                os.unlink(tmp)
+            except OSError:
+                pass
+    except OSError:
+        pass
+
+
+def _led_state_load():
+    """Read the persisted led map (name -> state dict), or {} on any problem.
+    Never trusts the contents -- callers revalidate every field."""
+    try:
+        with open(_LED_STATE_CONF) as f:
+            data = json.load(f)
+    except (OSError, ValueError):
+        return {}
+    leds = data.get("leds") if isinstance(data, dict) else None
+    return leds if isinstance(leds, dict) else {}
+
+
+def _led_active_map():
+    """The animated-effect state per LED for GET /api/leds `active` (statics are
+    already reflected in each led's colour/brightness_pct, so they're omitted)."""
+    with _FX_LOCK:
+        return {n: dict(s) for n, s in _LED_PERSIST.items()
+                if s.get("effect") not in _LED_STATIC}
+
+
+def apply_led_effect(name, effect, color, speed, brightness):
+    """Start/replace an effect (or a solid/off) on LED `name`.
+
+    ALLOWLIST (CLAUDE.md §3): `name` must be an EXACT writable member of the
+    freshly re-read /sys/class/leds set -- else None (caller -> 404) and nothing
+    is touched. Effect id is checked against the frozen _LED_EFFECTS; params were
+    range-checked by the caller. Returns {"ok":True,"active":..} |
+    {"ok":False,"status":..,"error":..} | None."""
+    if effect not in _LED_EFFECTS:
+        return {"ok": False, "status": 400, "error": "unknown effect"}
+    if (not isinstance(name, str) or "/" in name or ".." in name
+            or "\x00" in name or name not in _list_led_names()
+            or not _led_realpath_ok(name)):
+        return None
+    raw = _read_led_raw(name)
+    if raw is None or not raw["writable"]:
+        return None
+    if effect in _LED_STATIC:
+        res = set_led(name, 0 if effect == "off" else brightness,
+                      None if effect == "off" else color)
+        if res is None:
+            return None
+        if not res.get("ok"):
+            return res
+        _fx_note_static(name, res)
+        return {"ok": True, "active": None, "led": name,
+                "brightness_pct": res.get("brightness_pct"), "color": res.get("color")}
+    # animated effect
+    params = {"color": color,
+              "speed": speed if _is_pct(speed, 1) else 50,
+              "brightness": brightness if _is_pct(brightness) else 100}
+    if raw["rgb"] and params["color"] is None:
+        params["color"] = raw["color"] or (
+            {"r": 255, "g": 0, "b": 0} if effect == "scanner"
+            else {"r": 255, "g": 255, "b": 255})
+    _fx_start(name, raw, effect, params)
+    with _FX_LOCK:
+        _LED_PERSIST[name] = dict(params, effect=effect)
+    _led_state_save()
+    return {"ok": True, "led": name,
+            "active": {"effect": effect, "color": params["color"],
+                       "speed": params["speed"], "brightness": params["brightness"]}}
+
+
+def _validate_effect_body(req):
+    """Shape check for POST /api/leds/effect. Returns
+    (effect, color|None, speed|None, brightness|None, error|None). Rejects, never
+    sanitises."""
+    effect = req.get("effect")
+    if effect not in _LED_EFFECTS:
+        return None, None, None, None, "unknown effect"
+    color = req.get("color")
+    if color is not None and not _is_rgb_triple(color):
+        return None, None, None, None, "color must be {r,g,b} ints 0-255"
+    speed = req.get("speed")
+    if speed is not None and not _is_pct(speed, 1):
+        return None, None, None, None, "speed must be an int 1-100"
+    brightness = req.get("brightness")
+    if brightness is not None and not _is_pct(brightness):
+        return None, None, None, None, "brightness must be an int 0-100"
+    return effect, color, speed, brightness, None
+
+
+def _led_restore():
+    """Re-apply the persisted effect/colour to each LED still present + writable.
+    Revalidates EVERY field (never trusts the file); a vanished/locked LED or a
+    junk record is skipped. Best-effort."""
+    live = set(_list_led_names())
+    for name, st in _led_state_load().items():
+        if name not in live or not isinstance(st, dict):
+            continue
+        effect = st.get("effect")
+        if effect not in _LED_EFFECTS:
+            continue
+        color = st.get("color") if _is_rgb_triple(st.get("color")) else None
+        speed = st.get("speed") if _is_pct(st.get("speed"), 1) else 50
+        brightness = st.get("brightness") if _is_pct(st.get("brightness")) else 100
+        try:
+            apply_led_effect(name, effect, color, speed, brightness)
+        except OSError:
+            pass
+
+
+def _led_restore_worker():
+    """Startup thread: wait for the OS/Steam to finish its own LED init, then
+    restore. One retry covers the boot race where the LED node appears late."""
+    for delay in (2.0, 6.0):
+        time.sleep(delay)
+        try:
+            if _list_led_names():
+                _led_restore()
+                return
+        except OSError:
+            pass
+
+
+# ---- OpenRGB backend (cap: openrgb) -----------------------------------------
+# Whole-system / addressable RGB via a LOCAL OpenRGB SDK server on
+# 127.0.0.1:6742 (the phone keypad spelling of "ORGB"). This is what makes a real
+# KITT scanner possible: OpenRGB exposes per-LED control of motherboard / RAM /
+# GPU / strip zones, and the agent drives a lit dot across them frame-by-frame.
+#
+# Hand-rolled stdlib client (socket + struct) -- the agent must stay pure stdlib,
+# so no openrgb-python import. LOOPBACK ONLY: the OpenRGB SDK has no auth, so we
+# connect only to 127.0.0.1 and never expose a socket/host/command to the client.
+# A client request only ever selects WHICH enumerated device index (looked up
+# against the live controller count -> 404 otherwise) + an ALLOWLISTED effect id
+# + range-checked colour/speed/brightness. Degrade closed: if the server isn't
+# running, the cap is absent and the whole surface hides.
+#
+# HARDWARE-UNVERIFIED (see the PR): the wire format is validated against the
+# documented protocol + an in-process mock OpenRGB server in the tests, never
+# against a real OpenRGB daemon. Protocol drift across installs is handled by
+# version negotiation + defensive parsing, but real hardware is the final gate.
+_ORGB_HOST = "127.0.0.1"
+_ORGB_PORT = 6742
+_ORGB_MAGIC = b"ORGB"
+_ORGB_CLIENT_PROTOCOL = 3          # negotiated down to the server's if older
+# packet ids (NetworkProtocol.h)
+_ORGB_REQUEST_CONTROLLER_COUNT = 0
+_ORGB_REQUEST_CONTROLLER_DATA = 1
+_ORGB_REQUEST_PROTOCOL_VERSION = 40
+_ORGB_SET_CLIENT_NAME = 50
+_ORGB_UPDATE_LEDS = 1050
+_ORGB_SET_CUSTOM_MODE = 1100
+
+_ORGB_STATE_CONF = os.path.expanduser("~/.config/couchside/openrgb.json")
+
+
+def _orgb_header(dev_idx, pkt_id, size):
+    return _ORGB_MAGIC + struct.pack("<III", dev_idx & 0xFFFFFFFF, pkt_id, size)
+
+
+def _orgb_recv_exact(s, n):
+    buf = b""
+    while len(buf) < n:
+        chunk = s.recv(n - len(buf))
+        if not chunk:
+            raise OSError("openrgb server closed the connection")
+        buf += chunk
+    return buf
+
+
+def _orgb_recv_packet(s):
+    hdr = _orgb_recv_exact(s, 16)
+    if hdr[:4] != _ORGB_MAGIC:
+        raise OSError("bad openrgb packet magic")
+    dev_idx, pkt_id, size = struct.unpack("<III", hdr[4:16])
+    body = _orgb_recv_exact(s, size) if size else b""
+    return dev_idx, pkt_id, body
+
+
+class _ORGBCursor:
+    """Little-endian reader for an OpenRGB controller-data blob."""
+    def __init__(self, data):
+        self.d = data
+        self.i = 0
+
+    def u16(self):
+        v = struct.unpack_from("<H", self.d, self.i)[0]
+        self.i += 2
+        return v
+
+    def i32(self):
+        v = struct.unpack_from("<i", self.d, self.i)[0]
+        self.i += 4
+        return v
+
+    def u32(self):
+        v = struct.unpack_from("<I", self.d, self.i)[0]
+        self.i += 4
+        return v
+
+    def skip(self, n):
+        self.i += n
+
+    def bstr(self):
+        n = self.u16()
+        s = self.d[self.i:self.i + max(0, n - 1)].decode("utf-8", "replace")
+        self.i += n
+        return s
+
+
+class _OpenRGBClient:
+    """Persistent loopback client to the OpenRGB SDK server. Thread-safe; a dead
+    socket is dropped + reconnected on the next call."""
+    def __init__(self):
+        self._sock = None
+        self._proto = _ORGB_CLIENT_PROTOCOL
+        self._lock = threading.RLock()
+
+    def _connect(self):
+        s = socket.create_connection((_ORGB_HOST, _ORGB_PORT), timeout=1.0)
+        s.settimeout(2.0)
+        name = b"Couchside"
+        s.sendall(_orgb_header(0, _ORGB_SET_CLIENT_NAME, len(name) + 1) + name + b"\x00")
+        # negotiate protocol: send our version, server replies with the min.
+        s.sendall(_orgb_header(0, _ORGB_REQUEST_PROTOCOL_VERSION, 4)
+                  + struct.pack("<I", _ORGB_CLIENT_PROTOCOL))
+        try:
+            _, _, body = _orgb_recv_packet(s)
+            self._proto = min(_ORGB_CLIENT_PROTOCOL, struct.unpack("<I", body[:4])[0])
+        except (OSError, struct.error):
+            # a very old server that doesn't answer version -> assume 0-era layout
+            self._proto = 0
+        self._sock = s
+        return s
+
+    def _ensure(self):
+        if self._sock is None:
+            return self._connect()
+        return self._sock
+
+    def _drop(self):
+        if self._sock is not None:
+            try:
+                self._sock.close()
+            except OSError:
+                pass
+            self._sock = None
+
+    def _parse_controller(self, idx, data):
+        """Parse just what we need: name + zones (name + led count). The device's
+        total LED count is the SUM of its zone counts, so we can stop before the
+        per-LED section. Version-aware (brightness fields exist only on proto>=3;
+        segments on proto>=4, which we never negotiate up to)."""
+        c = _ORGBCursor(data)
+        c.u32()               # data_size
+        c.i32()               # device type
+        name = c.bstr()
+        c.bstr()              # description
+        c.bstr()              # version
+        c.bstr()              # serial
+        c.bstr()              # location
+        num_modes = c.u16()
+        c.i32()               # active mode
+        for _ in range(num_modes):
+            c.bstr()          # mode name
+            c.i32()           # value
+            c.u32()           # flags
+            c.u32(); c.u32()  # speed_min, speed_max
+            if self._proto >= 3:
+                c.u32(); c.u32()  # brightness_min, brightness_max
+            c.u32(); c.u32()  # colors_min, colors_max
+            c.u32()           # speed
+            if self._proto >= 3:
+                c.u32()       # brightness
+            c.u32()           # direction
+            c.u32()           # color_mode
+            c.skip(c.u16() * 4)   # mode colors
+        num_zones = c.u16()
+        zones = []
+        total = 0
+        for _ in range(num_zones):
+            zname = c.bstr()
+            c.i32()           # zone type
+            c.u32()           # leds_min
+            c.u32()           # leds_max
+            zleds = c.u32()   # leds_count
+            mlen = c.u16()
+            if mlen > 0:
+                h = c.u32(); w = c.u32()
+                c.skip(h * w * 4)
+            zones.append({"name": zname, "leds": zleds})
+            total += zleds
+        return {"index": idx, "name": name, "zones": zones, "led_count": total}
+
+    def controllers(self):
+        """Enumerate all controllers. Reconnects once on a stale socket."""
+        with self._lock:
+            for attempt in (1, 2):
+                try:
+                    s = self._ensure()
+                    s.sendall(_orgb_header(0, _ORGB_REQUEST_CONTROLLER_COUNT, 0))
+                    _, _, body = _orgb_recv_packet(s)
+                    count = struct.unpack("<I", body[:4])[0]
+                    out = []
+                    for i in range(count):
+                        s.sendall(_orgb_header(i, _ORGB_REQUEST_CONTROLLER_DATA, 4)
+                                  + struct.pack("<I", self._proto))
+                        _, _, data = _orgb_recv_packet(s)
+                        out.append(self._parse_controller(i, data))
+                    return out
+                except (OSError, struct.error):
+                    self._drop()
+                    if attempt == 2:
+                        raise
+            return []
+
+    def _update_leds(self, s, idx, colors):
+        body = struct.pack("<H", len(colors))
+        for c in colors:
+            body += struct.pack("<BBBx", c["r"] & 0xFF, c["g"] & 0xFF, c["b"] & 0xFF)
+        body = struct.pack("<I", len(body) + 4) + body
+        s.sendall(_orgb_header(idx, _ORGB_UPDATE_LEDS, len(body)) + body)
+
+    def set_frame(self, idx, colors):
+        """Write one full-device frame (a list of {r,g,b}). Puts the device in
+        its custom/direct mode first so the colours stick."""
+        with self._lock:
+            for attempt in (1, 2):
+                try:
+                    s = self._ensure()
+                    s.sendall(_orgb_header(idx, _ORGB_SET_CUSTOM_MODE, 0))
+                    self._update_leds(s, idx, colors)
+                    return True
+                except OSError:
+                    self._drop()
+                    if attempt == 2:
+                        return False
+            return False
+
+
+_ORGB = _OpenRGBClient()
+
+# Cached controller list (enumeration opens a socket + reads every device, so we
+# don't do it per request). name -> ... ; refreshed on a short TTL / on writes.
+_ORGB_CACHE = {"at": 0.0, "ctrls": []}
+_ORGB_CACHE_TTL = 5.0
+
+
+def _orgb_list(force=False):
+    now = time.monotonic()
+    if not force and _ORGB_CACHE["ctrls"] and (now - _ORGB_CACHE["at"]) < _ORGB_CACHE_TTL:
+        return _ORGB_CACHE["ctrls"]
+    try:
+        ctrls = _ORGB.controllers()
+    except (OSError, struct.error):
+        ctrls = []
+    _ORGB_CACHE["ctrls"] = ctrls
+    _ORGB_CACHE["at"] = now
+    return ctrls
+
+
+def openrgb_available():
+    """True when the OpenRGB SDK server answers on loopback AND reports at least
+    one controller. Read-only; degrades closed."""
+    try:
+        return bool(_ORGB.controllers())
+    except (OSError, struct.error):
+        return False
+
+
+# OpenRGB effect engine: a dedicated render thread (separate from the kernel
+# _fx engine, which drives single sysfs LEDs) that streams per-LED frames over
+# the socket. Same allowlist/param rules.
+_ORGB_FX_LOCK = threading.RLock()
+_ORGB_FX_ACTIVE = {}        # device index -> {effect,color,speed,brightness,led_count}
+_ORGB_PERSIST = {}          # device index (str) -> last-applied state, for restore
+_ORGB_FX_THREAD = [None]
+_ORGB_FX_STOP = threading.Event()
+_MOCK_ORGB_FX = {}          # --mock observable active effects
+
+
+def _hsv255(h):
+    r, g, b = colorsys.hsv_to_rgb(h % 1.0, 1.0, 1.0)
+    return {"r": int(r * 255), "g": int(g * 255), "b": int(b * 255)}
+
+
+def _orgb_frame(effect, n, color, t, speed):
+    """A list of n {r,g,b} for `effect` at elapsed time t. `scanner` is the real
+    KITT sweep -- a lit dot bouncing across the strip with a short fading tail."""
+    n = max(1, n)
+    period = _fx_period(speed)
+    if effect == "rainbow":
+        base = t / period
+        return [_hsv255(base + i / n) for i in range(n)]
+    if effect == "scanner":
+        pos = (n - 1) * abs(1.0 - 2.0 * ((t % period) / period))
+        out = []
+        for i in range(n):
+            f = max(0.0, 1.0 - abs(i - pos) / 2.5)   # ~2-3 LED tail
+            out.append({"r": int(color["r"] * f), "g": int(color["g"] * f),
+                        "b": int(color["b"] * f)})
+        return out
+    if effect in ("breathe", "pulse", "strobe"):
+        _, b = _fx_frame(effect, {"color": color, "speed": speed, "brightness": 100}, t)
+        f = (b or 0) / 100.0
+        return [{"r": int(color["r"] * f), "g": int(color["g"] * f),
+                 "b": int(color["b"] * f)}] * n
+    return [dict(color)] * n       # solid
+
+
+def _orgb_fx_loop():
+    start = time.monotonic()
+    while not _ORGB_FX_STOP.is_set():
+        with _ORGB_FX_LOCK:
+            items = [(i, dict(p)) for i, p in _ORGB_FX_ACTIVE.items()]
+        if not items:
+            break
+        t = time.monotonic() - start
+        for idx, p in items:
+            frame = _orgb_frame(p["effect"], p["led_count"], p["color"], t, p["speed"])
+            bf = (p.get("brightness", 100)) / 100.0
+            if bf < 1.0:
+                frame = [{"r": int(c["r"] * bf), "g": int(c["g"] * bf),
+                          "b": int(c["b"] * bf)} for c in frame]
+            try:
+                _ORGB.set_frame(idx, frame)
+            except OSError:
+                pass
+        _ORGB_FX_STOP.wait(_FX_TICK)
+    with _ORGB_FX_LOCK:
+        _ORGB_FX_THREAD[0] = None
+
+
+def _orgb_fx_ensure():
+    with _ORGB_FX_LOCK:
+        th = _ORGB_FX_THREAD[0]
+        if th is None or not th.is_alive():
+            _ORGB_FX_STOP.clear()
+            th = threading.Thread(target=_orgb_fx_loop, daemon=True, name="orgb-fx")
+            _ORGB_FX_THREAD[0] = th
+            th.start()
+
+
+def _orgb_fx_start(idx, effect, color, speed, brightness, led_count):
+    with _ORGB_FX_LOCK:
+        _ORGB_FX_ACTIVE[idx] = {"effect": effect, "color": color, "speed": speed,
+                                "brightness": brightness, "led_count": led_count}
+    _orgb_fx_ensure()
+
+
+def _orgb_fx_stop(idx):
+    with _ORGB_FX_LOCK:
+        _ORGB_FX_ACTIVE.pop(idx, None)
+
+
+def _orgb_state_save():
+    with _ORGB_FX_LOCK:
+        data = {"version": 1, "devices": {k: dict(v) for k, v in _ORGB_PERSIST.items()}}
+    d = os.path.dirname(_ORGB_STATE_CONF)
+    try:
+        os.makedirs(d, exist_ok=True)
+        fd, tmp = tempfile.mkstemp(prefix=".couchside-orgb-", dir=d)
+        try:
+            with os.fdopen(fd, "w", encoding="utf-8") as f:
+                json.dump(data, f)
+                f.flush()
+                os.fsync(f.fileno())
+            os.replace(tmp, _ORGB_STATE_CONF)
+        except OSError:
+            try:
+                os.unlink(tmp)
+            except OSError:
+                pass
+    except OSError:
+        pass
+
+
+def _orgb_state_load():
+    try:
+        with open(_ORGB_STATE_CONF) as f:
+            data = json.load(f)
+    except (OSError, ValueError):
+        return {}
+    devs = data.get("devices") if isinstance(data, dict) else None
+    return devs if isinstance(devs, dict) else {}
+
+
+def openrgb_state(mock):
+    """Payload for GET /api/openrgb: controllers + their running effect."""
+    if mock:
+        return {"available": bool(MOCK_ORGB), "server": "%s:%d" % (_ORGB_HOST, _ORGB_PORT),
+                "controllers": [dict(c) for c in MOCK_ORGB],
+                "effects": list(_LED_EFFECTS),
+                "active": {str(k): dict(v) for k, v in _MOCK_ORGB_FX.items()}}
+    ctrls = _orgb_list()
+    with _ORGB_FX_LOCK:
+        active = {str(i): dict(p) for i, p in _ORGB_FX_ACTIVE.items()}
+    return {"available": bool(ctrls), "server": ("%s:%d" % (_ORGB_HOST, _ORGB_PORT)) if ctrls else None,
+            "controllers": [{"index": c["index"], "name": c["name"],
+                             "led_count": c["led_count"], "zones": c["zones"]} for c in ctrls],
+            "effects": list(_LED_EFFECTS), "active": active}
+
+
+def apply_openrgb(device, effect, color, speed, brightness):
+    """Set an OpenRGB device to a solid colour or an animated effect.
+
+    ALLOWLIST: `device` must be an int index present in the LIVE controller list
+    -- else None (caller -> 404). `effect` is checked against _LED_EFFECTS; params
+    were range-checked by the caller. Returns {"ok":True,...} | {"ok":False,...} |
+    None."""
+    if effect not in _LED_EFFECTS:
+        return {"ok": False, "status": 400, "error": "unknown effect"}
+    if not isinstance(device, int) or isinstance(device, bool):
+        return None
+    ctrls = _orgb_list(force=True)
+    match = next((c for c in ctrls if c["index"] == device), None)
+    if match is None:
+        return None
+    n = match["led_count"]
+    col = color or {"r": 255, "g": 0, "b": 0}
+    b = brightness if _is_pct(brightness) else 100
+    sp = speed if _is_pct(speed, 1) else 50
+    if effect in _LED_STATIC:
+        _orgb_fx_stop(device)
+        frame = [{"r": 0, "g": 0, "b": 0}] * max(1, n) if effect == "off" else \
+                [{"r": int(col["r"] * b / 100), "g": int(col["g"] * b / 100),
+                  "b": int(col["b"] * b / 100)}] * max(1, n)
+        ok = _ORGB.set_frame(device, frame)
+        if not ok:
+            return {"ok": False, "status": 502, "error": "openrgb write failed"}
+        with _ORGB_FX_LOCK:
+            _ORGB_PERSIST[str(device)] = {"effect": "solid", "color": col,
+                                          "brightness": b, "speed": sp}
+        _orgb_state_save()
+        return {"ok": True, "device": device, "active": None}
+    _orgb_fx_start(device, effect, col, sp, b, n)
+    with _ORGB_FX_LOCK:
+        _ORGB_PERSIST[str(device)] = {"effect": effect, "color": col,
+                                      "brightness": b, "speed": sp}
+    _orgb_state_save()
+    return {"ok": True, "device": device,
+            "active": {"effect": effect, "color": col, "speed": sp, "brightness": b}}
+
+
+def _orgb_restore():
+    """Re-apply persisted OpenRGB effects after a reboot. Revalidates every field;
+    a device index that no longer exists is skipped."""
+    saved = _orgb_state_load()
+    if not saved:
+        return
+    live = {c["index"] for c in _orgb_list(force=True)}
+    for k, st in saved.items():
+        try:
+            idx = int(k)
+        except (TypeError, ValueError):
+            continue
+        if idx not in live or not isinstance(st, dict):
+            continue
+        effect = st.get("effect")
+        if effect not in _LED_EFFECTS:
+            continue
+        color = st.get("color") if _is_rgb_triple(st.get("color")) else None
+        speed = st.get("speed") if _is_pct(st.get("speed"), 1) else 50
+        brightness = st.get("brightness") if _is_pct(st.get("brightness")) else 100
+        try:
+            apply_openrgb(idx, effect, color, speed, brightness)
+        except OSError:
+            pass
+
+
+def _orgb_restore_worker():
+    for delay in (3.0, 8.0):
+        time.sleep(delay)
+        try:
+            if _orgb_list(force=True):
+                _orgb_restore()
+                return
+        except (OSError, struct.error):
+            pass
+
+
+# The off-box contract the app develops against (--mock): two controllers with
+# addressable zones so the scanner + zone UI have something to render.
+MOCK_ORGB = [
+    {"index": 0, "name": "ASUS Aura Motherboard", "led_count": 12,
+     "zones": [{"name": "Addressable 1", "leds": 8}, {"name": "Onboard", "leds": 4}]},
+    {"index": 1, "name": "Corsair Vengeance RGB", "led_count": 20,
+     "zones": [{"name": "DIMM 1", "leds": 10}, {"name": "DIMM 2", "leds": 10}]},
+]
 
 
 def _couch_run_first(cmds):
@@ -17848,6 +18610,12 @@ class Handler(BaseHTTPRequestHandler):
                 # available:false = nothing controllable here. Set = POST
                 # /api/leds/set.
                 self._send(200, leds_state(self.mock), started)
+            elif path == "/api/openrgb":
+                # READ-ONLY: OpenRGB controllers (whole-system / addressable RGB)
+                # + their running effect, for the OpenRGB card (cap `openrgb`).
+                # available:false = no OpenRGB server on loopback. Set = POST
+                # /api/openrgb/set.
+                self._send(200, openrgb_state(self.mock), started)
             elif path == "/api/displays":
                 # Probe-and-appear: 404 unless this box can do the desktop->TV
                 # Game Mode handoff (SteamOS/Bazzite, 2+ outputs), so the app
@@ -18360,13 +19128,116 @@ class Handler(BaseHTTPRequestHandler):
                                    started)
                         return
                     # Remember it so the next GET /api/leds shows the change.
+                    # A solid tap also stops any animation the harness started.
                     set_mock_led(led_name, brightness, color)
+                    _MOCK_FX.pop(led_name, None)
                     self._send(200, dict({"ok": True},
                                          **_mock_led_public(led_name)), started)
                     return
                 res = set_led(led_name, brightness, color)
                 if res is None:
                     self._send(404, {"error": "unknown led"}, started)
+                    return
+                # A plain colour/brightness write is a "solid": stop any running
+                # effect on this LED and persist it so a reboot restores it.
+                if res.get("ok"):
+                    _fx_note_static(led_name, res)
+                self._send(res.get("status", 200) if not res.get("ok") else 200,
+                           res, started)
+                return
+
+            if path == "/api/leds/effect":
+                # Start/replace an animated effect (breathe/pulse/rainbow/strobe/
+                # scanner) or a solid/off on an LED. SAME allowlist shape as
+                # /api/leds/set: the client `led` is LOOKED UP in the live
+                # /sys/class/leds set (mock: MOCK_LEDS) and 404s otherwise; the
+                # effect id is checked against the frozen _LED_EFFECTS; params are
+                # range-checked (reject, don't sanitise).
+                try:
+                    req = json.loads(body.decode("utf-8")) if body else {}
+                    if not isinstance(req, dict):
+                        raise ValueError("body must be a JSON object")
+                except (ValueError, TypeError, UnicodeDecodeError):
+                    self._send(400, {"error": "body must be a JSON object"},
+                               started)
+                    return
+                led_name = req.get("led")
+                effect, color, speed, brightness, verr = _validate_effect_body(req)
+                if verr is not None:
+                    self._send(400, {"error": verr}, started)
+                    return
+                if self.mock:
+                    match = next((l for l in MOCK_LEDS
+                                  if l["name"] == led_name), None)
+                    if not isinstance(led_name, str) or match is None:
+                        self._send(404, {"error": "unknown led"}, started)
+                        return
+                    if effect in _LED_STATIC:
+                        # solid/off moves colour/brightness like /set; no anim.
+                        _MOCK_FX.pop(led_name, None)
+                        set_mock_led(led_name,
+                                     0 if effect == "off" else brightness,
+                                     None if effect == "off" else color)
+                    else:
+                        if color is not None and not match["rgb"]:
+                            self._send(400, {"error":
+                                             "led has no colour channels"}, started)
+                            return
+                        _MOCK_FX[led_name] = {
+                            "effect": effect, "color": color,
+                            "speed": speed if speed is not None else 50,
+                            "brightness": brightness if brightness is not None else 100}
+                    self._send(200, {"ok": True, "led": led_name,
+                                     "active": _MOCK_FX.get(led_name)}, started)
+                    return
+                res = apply_led_effect(led_name, effect, color, speed, brightness)
+                if res is None:
+                    self._send(404, {"error": "unknown led"}, started)
+                    return
+                self._send(res.get("status", 200) if not res.get("ok") else 200,
+                           res, started)
+                return
+
+            if path == "/api/openrgb/set":
+                # Set an OpenRGB device to a solid colour or an animated effect
+                # (real multi-zone scanner). ALLOWLIST: the client `device` is an
+                # int index LOOKED UP in the live controller list (mock:
+                # MOCK_ORGB) and 404s if absent -- never a socket/host/command.
+                # `effect` is checked against _LED_EFFECTS; params range-checked.
+                try:
+                    req = json.loads(body.decode("utf-8")) if body else {}
+                    if not isinstance(req, dict):
+                        raise ValueError("body must be a JSON object")
+                except (ValueError, TypeError, UnicodeDecodeError):
+                    self._send(400, {"error": "body must be a JSON object"},
+                               started)
+                    return
+                device = req.get("device")
+                effect, color, speed, brightness, verr = _validate_effect_body(req)
+                if verr is not None:
+                    self._send(400, {"error": verr}, started)
+                    return
+                if self.mock:
+                    match = next((c for c in MOCK_ORGB
+                                  if c["index"] == device), None)
+                    if not isinstance(device, int) or isinstance(device, bool) \
+                            or match is None:
+                        self._send(404, {"error": "unknown device"}, started)
+                        return
+                    if effect in _LED_STATIC:
+                        _MOCK_ORGB_FX.pop(device, None)
+                    else:
+                        _MOCK_ORGB_FX[device] = {
+                            "effect": effect,
+                            "color": color if color is not None else {"r": 255, "g": 0, "b": 0},
+                            "speed": speed if speed is not None else 50,
+                            "brightness": brightness if brightness is not None else 100}
+                    self._send(200, {"ok": True, "device": device,
+                                     "active": _MOCK_ORGB_FX.get(device)}, started)
+                    return
+                res = apply_openrgb(device, effect, color, speed, brightness)
+                if res is None:
+                    self._send(404, {"error": "unknown device"}, started)
                     return
                 self._send(res.get("status", 200) if not res.get("ok") else 200,
                            res, started)
@@ -20370,6 +21241,15 @@ def main():
     # the session alive even while the app's own JS keepalive timer is frozen (iOS).
     threading.Thread(target=_gamepad_keepalive_loop,
                      daemon=True, name="gp-keepalive").start()
+    # Restore the persisted LED colour/effect after a reboot so the front bar
+    # comes back the way the user left it instead of the firmware default. Real
+    # hardware only; waits for the OS/Steam to finish its own LED init first.
+    if not args.mock:
+        threading.Thread(target=_led_restore_worker,
+                         daemon=True, name="led-restore").start()
+        # Same for OpenRGB devices, when an OpenRGB server is present.
+        threading.Thread(target=_orgb_restore_worker,
+                         daemon=True, name="orgb-restore").start()
     mode = "mock" if args.mock else "real"
     print("%s %s listening on %s:%d (%s mode)" % (
         APP_NAME, VERSION, args.host, port, mode), flush=True)

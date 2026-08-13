@@ -243,6 +243,13 @@ export type BoxCaps = {
    * install-time udev grant makes an LED writable.
    */
   ledcontrol?: boolean;
+  /**
+   * Whole-system / addressable RGB via a local OpenRGB SDK server (agent >=
+   * 2.9.84, cap `openrgb`). undefined = unknown/probe (older agent, Windows);
+   * false = no OpenRGB server on the box. Gates the OpenRGB card + the real
+   * multi-zone scanner.
+   */
+  openrgb?: boolean;
 };
 
 /** One Setup → Utilities helper + its live state, from GET /api/utilities.
@@ -467,11 +474,53 @@ export type LedInfo = {
   color: Rgb | null;
 };
 
+/** The animated LED effects the agent supports (agent >= 2.9.84). `solid` and
+    `off` are one-shot (no animation); the rest run on the box until changed.
+    `scanner` is the KITT sweep — real across multiple LEDs (OpenRGB), a
+    bounce-pulse on a single kernel LED. */
+export type LedEffect =
+  | 'solid' | 'off' | 'breathe' | 'pulse' | 'rainbow' | 'strobe' | 'scanner';
+
+/** The effect currently running on an LED (from GET /api/leds `active`). Absent
+    for an LED showing a plain solid colour (that's read from LedInfo instead). */
+export type LedActive = {
+  effect: LedEffect;
+  color: Rgb | null;
+  speed: number;
+  brightness: number;
+};
+
 /** GET /api/leds: the writable LEDs the box exposes + their state.
     `available: false` = nothing controllable here (the card hides). */
 export type LedsState = {
   available: boolean;
   leds: LedInfo[];
+  /** Supported effect ids (agent >= 2.9.84); absent on an older agent, in which
+      case the app shows colour/brightness only and hides the effect controls. */
+  effects?: LedEffect[];
+  /** Per-LED running animation, keyed by LED name (agent >= 2.9.84). */
+  active?: Record<string, LedActive>;
+};
+
+/** One OpenRGB controller from GET /api/openrgb (agent >= 2.9.84, cap `openrgb`).
+    `index` is what the setter POSTs back; `led_count` is the sum of its zones. */
+export type OpenRgbController = {
+  index: number;
+  name: string;
+  led_count: number;
+  zones: { name: string; leds: number }[];
+};
+
+/** GET /api/openrgb: the OpenRGB controllers the box exposes + their running
+    effect. `available: false` = no OpenRGB server on the box (card hides). */
+export type OpenRgbState = {
+  available: boolean;
+  /** "host:port" of the OpenRGB SDK server, or null when unavailable. */
+  server: string | null;
+  controllers: OpenRgbController[];
+  effects?: LedEffect[];
+  /** Per-device running animation, keyed by device index (as a string). */
+  active?: Record<string, LedActive>;
 };
 
 /** One stage of the Couch Mode ceremony (GET /api/couch-mode/status, agent
@@ -1273,7 +1322,8 @@ export function capsEqual(a?: BoxCaps, b?: BoxCaps): boolean {
     a.screenstream === b.screenstream &&
     a.screenstream_h264 === b.screenstream_h264 &&
     a.audioswitch === b.audioswitch &&
-    a.ledcontrol === b.ledcontrol
+    a.ledcontrol === b.ledcontrol &&
+    a.openrgb === b.openrgb
   );
 }
 
@@ -2567,6 +2617,62 @@ export const api = {
     return request<{ ok: boolean }>(settings, '/api/leds/set', {
       method: 'POST',
       body: { led, ...patch },
+    })
+      .then((r) => !!r?.ok)
+      .catch(() => false);
+  },
+
+  /**
+   * Start (or replace) an animated effect on an LED — or a `solid`/`off`
+   * (agent >= 2.9.84). Same allowlist as setLed: `led` is a name the box sent,
+   * looked up in its live /sys/class/leds set (404 otherwise). `effect` must be
+   * one of the ids the box advertised in leds()'s `effects`; the agent
+   * range-checks `speed` (1–100) and `brightness` (0–100) and rejects anything
+   * else. The agent persists the choice so a reboot restores it. Resolves false
+   * on any failure; the caller re-reads /api/leds for the real state (§11).
+   */
+  setLedEffect(
+    settings: ConnSettings,
+    led: string,
+    patch: { effect: LedEffect; color?: Rgb; speed?: number; brightness?: number },
+  ): Promise<boolean> {
+    return request<{ ok: boolean }>(settings, '/api/leds/effect', {
+      method: 'POST',
+      body: { led, ...patch },
+    })
+      .then((r) => !!r?.ok)
+      .catch(() => false);
+  },
+
+  /**
+   * OpenRGB controllers (whole-system / addressable RGB) + their state (agent >=
+   * 2.9.84, cap `openrgb`). Probe-and-appear: null on a 404 (older agent) so the
+   * OpenRGB card hides; an `available: false` payload (no OpenRGB server on the
+   * box) hides it too.
+   */
+  openrgb(
+    settings: ConnSettings,
+    caps: BoxCaps | undefined = cachedCaps(settings),
+  ): Promise<OpenRgbState | null> {
+    return probeGated(caps?.openrgb, () =>
+      probeOrNull(request<OpenRgbState>(settings, '/api/openrgb')));
+  },
+
+  /**
+   * Set an OpenRGB device to a solid colour or an animated effect (the real
+   * multi-zone scanner). `device` is an int index the box itself sent in
+   * openrgb()'s list — the agent looks it up in its live controller list and
+   * 404s an unknown one, so this can never aim at a device the box didn't offer.
+   * Resolves false on any failure; the caller re-reads /api/openrgb (§11).
+   */
+  openrgbSet(
+    settings: ConnSettings,
+    device: number,
+    patch: { effect: LedEffect; color?: Rgb; speed?: number; brightness?: number },
+  ): Promise<boolean> {
+    return request<{ ok: boolean }>(settings, '/api/openrgb/set', {
+      method: 'POST',
+      body: { device, ...patch },
     })
       .then((r) => !!r?.ok)
       .catch(() => false);
