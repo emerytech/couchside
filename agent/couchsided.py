@@ -4383,6 +4383,16 @@ def set_led(name, brightness, color):
         return {"ok": False, "status": 400, "error": "led has no colour channels"}
     try:
         _led_clear_trigger(name)
+        # If this LED is a firmware-effect strip node (valve-leds[N]), a running
+        # effect (patrol/breath/…) would overwrite a static paint -- put just this
+        # node into manual mode first so the colour STICKS. 'manual' is written
+        # only when the device itself lists it in effect_index (looked up, not
+        # trusted); this is what makes per-LED painting a real customizer.
+        if _STRIP_RE.match(name) and "manual" in _strip_hw_effects(name):
+            try:
+                _led_write(name, "effect", "manual")
+            except OSError:
+                pass
         if color is not None:
             _led_write_color(name, raw, color)
         if brightness is not None:
@@ -4448,7 +4458,8 @@ _LED_STATE_CONF = os.path.expanduser("~/.config/couchside/leds.json")
 
 # Frozen allowlist of effect ids (looked up, never interpolated). 'solid'/'off'
 # are one-shot (no animation); the rest animate on the render thread.
-_LED_EFFECTS = ("solid", "off", "breathe", "pulse", "rainbow", "strobe", "scanner")
+_LED_EFFECTS = ("solid", "off", "breathe", "pulse", "rainbow", "strobe",
+                "scanner", "manual")
 _LED_STATIC = frozenset(("solid", "off"))
 
 _FX_TICK = 0.033                 # ~30 fps render cadence
@@ -4625,7 +4636,8 @@ def apply_led_effect(name, effect, color, speed, brightness):
     raw = _read_led_raw(name)
     if raw is None or not raw["writable"]:
         return None
-    if effect in _LED_STATIC:
+    # `manual` is a strip concept; on a single LED it's just a static paint.
+    if effect in _LED_STATIC or effect == "manual":
         res = set_led(name, 0 if effect == "off" else brightness,
                       None if effect == "off" else color)
         if res is None:
@@ -4733,7 +4745,7 @@ _STRIP_RE = re.compile(r"^(.*)\[(\d+)\]$")
 # effect_index actually offers it; else we fall back to a per-LED manual paint).
 _STRIP_HW_MAP = {"scanner": "patrol", "breathe": "breath", "rainbow": "rainbow",
                  "pulse": "breath", "strobe": "breath", "solid": "manual",
-                 "off": "off"}
+                 "manual": "manual", "off": "off"}
 # effects whose look depends on the picked colour (set multi_intensity first).
 _STRIP_COLOUR_FX = ("scanner", "breathe", "pulse", "strobe", "solid")
 
@@ -4833,6 +4845,14 @@ def apply_strip_effect(prefix, effect, color, speed, brightness):
                         _led_write(n, "delay", str(d))
                     except OSError:
                         pass
+        elif effect == "manual":
+            # Enter manual mode strip-wide (stops any running firmware effect) but
+            # PRESERVE each LED's colour, so the phone can paint a per-LED pattern
+            # (via /api/leds/set) that sticks instead of being overwritten.
+            for n in members:
+                if "manual" in avail:
+                    _led_write(n, "effect", "manual")
+                _led_write(n, "brightness", _bval(raws[n]))
         else:
             # No matching firmware effect (or `solid`): manual per-LED paint.
             for n in members:

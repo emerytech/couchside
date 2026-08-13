@@ -57,6 +57,8 @@ const EFFECT_META: Record<LedEffect, { label: string; usesColor: boolean }> = {
   rainbow: { label: 'Rainbow', usesColor: false },
   strobe: { label: 'Strobe', usesColor: true },
   scanner: { label: 'Scanner', usesColor: true },
+  // `manual` is a strip-only concept; filtered out of this single-LED card below.
+  manual: { label: 'Manual', usesColor: true },
 };
 /** A mono LED can't show colour, so only these effects make sense on one. */
 const MONO_EFFECTS: LedEffect[] = ['solid', 'off', 'breathe', 'pulse', 'strobe'];
@@ -118,8 +120,9 @@ export function RgbLedCard() {
   if (!d || !d.available || !led || leds.length === 0
       || (strips.length > 0 && onlyMonoSingles)) return null;
 
-  const supported: LedEffect[] = (d.effects ?? ['solid', 'off']).filter((e) =>
-    led.rgb ? true : MONO_EFFECTS.includes(e));
+  const supported: LedEffect[] = (d.effects ?? ['solid', 'off'])
+    .filter((e) => e !== 'manual') // `manual` is a strip painter, not a single-LED effect
+    .filter((e) => (led.rgb ? true : MONO_EFFECTS.includes(e)));
   const animated = effect !== 'solid' && effect !== 'off';
   const color = hueToRgb(hue);
 

@@ -32,9 +32,10 @@ import { mono, useTheme, useThemedStyles, type Palette } from '@/lib/theme';
 
 const POLL_MS = 15000;
 
-type StripEffect = 'solid' | 'off' | 'scanner' | 'rainbow' | 'breathe';
+type StripEffect = 'solid' | 'off' | 'manual' | 'scanner' | 'rainbow' | 'breathe';
 const EFFECTS: { id: StripEffect; label: string }[] = [
   { id: 'solid', label: 'Solid' },
+  { id: 'manual', label: 'Manual' },
   { id: 'off', label: 'Off' },
   { id: 'scanner', label: 'Scanner' },
   { id: 'rainbow', label: 'Rainbow' },
@@ -201,6 +202,24 @@ export function StripLightCard() {
 
   const applyPreset = (p: LedPreset) => {
     hapticLight();
+    // A painted PATTERN preset: enter manual mode, then repaint every LED.
+    if (p.pattern && p.pattern.length) {
+      setEffect('manual'); setBright(p.brightness);
+      const pat = strip.leds.map((_, i) => p.pattern![i] ?? null);
+      setFrame(pat);
+      if (agentMode && agentStrip) {
+        void api.setStripEffect(settings, agentStrip.prefix, { effect: 'manual', brightness: p.brightness })
+          .then(() => Promise.all(strip.leds.map((l, i) =>
+            api.setLed(settings, l.name, pat[i]
+              ? { color: pat[i] as Rgb, brightness: Math.round(p.brightness) }
+              : { brightness: 0 }))))
+          .then(() => poll.refresh());
+      } else {
+        strip.leds.forEach((l, i) => void api.setLed(settings, l.name, pat[i]
+          ? { color: pat[i] as Rgb, brightness: Math.round(p.brightness) } : { brightness: 0 }));
+      }
+      return;
+    }
     const e = toStripEffect(p.effect);
     const h = p.color ? rgbToHue(p.color) : hue;
     setEffect(e); setHue(h); setBright(p.brightness); setSpeedPct(nearestSpeed(p.speed));
@@ -216,6 +235,15 @@ export function StripLightCard() {
 
   const saveCurrent = () => {
     hapticLight();
+    // In Manual mode, save the whole painted pattern (one colour per LED).
+    if (effect === 'manual') {
+      void addPreset({
+        label: `Custom ${strip.leds.length}`, effect: 'manual', color: null,
+        speed: Math.round(speedPct), brightness: Math.round(bright),
+        pattern: frame.map((c) => c ?? null),
+      });
+      return;
+    }
     const label = EFFECTS.find((x) => x.id === effect)?.label ?? 'Look';
     const usesColor = effect !== 'rainbow' && effect !== 'off';
     void addPreset({
@@ -359,9 +387,11 @@ export function StripLightCard() {
       </View>
 
       <Text style={styles.hint}>
-        {agentMode
-          ? 'Effects run on the box — they keep going with the app closed. Long-press a preset to delete.'
-          : 'Tap a cell to paint it. Scanner sweeps a dot across the strip.'}
+        {effect === 'manual'
+          ? 'Pick a colour, tap cells to paint them, then Save the pattern.'
+          : agentMode
+            ? 'Effects run on the box — they keep going with the app closed. Long-press a preset to delete.'
+            : 'Tap a cell to paint it. Scanner sweeps a dot across the strip.'}
       </Text>
     </Card>
   );

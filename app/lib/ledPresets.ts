@@ -33,6 +33,9 @@ export type LedPreset = {
   color: Rgb | null;
   speed: number;
   brightness: number;
+  /** A per-LED painted pattern (effect==='manual' only): one colour per strip
+      node, null = off. Applying it repaints every LED. */
+  pattern?: (Rgb | null)[];
 };
 
 /** Seeded once when the library is empty. "Night Rider" is the owner's example. */
@@ -99,6 +102,9 @@ function normalize(raw: unknown): LedPreset[] {
       color: isRgb(p.color) ? { r: p.color.r, g: p.color.g, b: p.color.b } : null,
       speed: typeof p.speed === 'number' ? p.speed : 50,
       brightness: typeof p.brightness === 'number' ? p.brightness : 100,
+      pattern: Array.isArray(p.pattern)
+        ? (p.pattern as unknown[]).map((c) => (isRgb(c) ? { r: c.r, g: c.g, b: c.b } : null))
+        : undefined,
     });
     if (out.length >= PRESET_MAX) break;
   }

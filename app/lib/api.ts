@@ -479,7 +479,10 @@ export type LedInfo = {
     `scanner` is the KITT sweep — real across multiple LEDs (OpenRGB), a
     bounce-pulse on a single kernel LED. */
 export type LedEffect =
-  | 'solid' | 'off' | 'breathe' | 'pulse' | 'rainbow' | 'strobe' | 'scanner';
+  | 'solid' | 'off' | 'breathe' | 'pulse' | 'rainbow' | 'strobe' | 'scanner'
+  // `manual` = a per-LED painted pattern on a strip (agent >= 2.9.85); the
+  // colours stick because the agent puts each node in the driver's manual mode.
+  | 'manual';
 
 /** The effect currently running on an LED (from GET /api/leds `active`). Absent
     for an LED showing a plain solid colour (that's read from LedInfo instead). */

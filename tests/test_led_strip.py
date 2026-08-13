@@ -183,6 +183,39 @@ def test_delay_maps_speed():
         cs._led_read_attr = saved
 
 
+def test_manual_mode_preserves_colours():
+    print("manual = effect=manual on every member, colours PRESERVED (no fill)")
+    writes = []
+    restore = _install(writes)
+    try:
+        res = cs.apply_strip_effect("valve-leds", "manual", None, 50, 90)
+        check(res and res.get("ok"), "manual accepted")
+        for i in range(_N):
+            n = "valve-leds[%d]" % i
+            check((n, "effect", "manual") in writes, "%s set effect=manual" % n)
+        check(not any(w[1] == "multi_intensity" for w in writes),
+              "manual does NOT repaint (colours kept so the phone can paint a pattern)")
+    finally:
+        restore()
+
+
+def test_paint_auto_switches_to_manual():
+    print("painting a strip node auto-sets effect=manual FIRST so the colour sticks")
+    writes = []
+    restore = _install(writes)
+    try:
+        res = cs.set_led("valve-leds[3]", 100, {"r": 255, "g": 0, "b": 0})
+        check(res and res.get("ok"), "paint accepted")
+        attrs = [w[1] for w in writes if w[0] == "valve-leds[3]"]
+        check("effect" in attrs and "multi_intensity" in attrs
+              and attrs.index("effect") < attrs.index("multi_intensity"),
+              "effect=manual written before the colour (so a running effect can't override it)")
+        check(("valve-leds[3]", "effect", "manual") in writes,
+              "the effect written is 'manual' (the device lists it)")
+    finally:
+        restore()
+
+
 def test_strips_in_payload():
     print("GET /api/leds advertises strips (mock)")
     st = cs.leds_state(True)
@@ -199,6 +232,8 @@ if __name__ == "__main__":
     test_scanner_writes_firmware_patrol()
     test_effect_value_must_be_published()
     test_solid_and_off()
+    test_manual_mode_preserves_colours()
+    test_paint_auto_switches_to_manual()
     test_delay_maps_speed()
     test_strips_in_payload()
     print()
