@@ -159,8 +159,13 @@ export async function addPreset(p: Omit<LedPreset, 'id'>): Promise<LedPreset | n
   return preset;
 }
 
-/** Remove a preset by id (default or user-added; deletions persist). */
+/** True for a preinstalled (seeded) preset — those can't be deleted. */
+export const isBuiltinPreset = (id: string): boolean => id.startsWith('seed-');
+
+/** Remove a USER-made preset by id (deletions persist). Built-in (seeded) presets
+ *  are protected: this is a no-op for them. */
 export async function removePreset(id: string): Promise<void> {
+  if (isBuiltinPreset(id)) return;
   const next = presets.filter((p) => p.id !== id);
   if (next.length === presets.length) return;
   presets = next;

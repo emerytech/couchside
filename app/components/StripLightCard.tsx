@@ -19,12 +19,15 @@ import Ionicons from '@expo/vector-icons/Ionicons';
 import React, { useEffect, useRef, useState } from 'react';
 import { Alert, Pressable, StyleSheet, Text, View } from 'react-native';
 
+import { PresetNameModal } from '@/components/PresetNameModal';
 import { TrackSlider } from '@/components/TrackSlider';
 import { usePoll } from '@/hooks/usePoll';
-import { api, hostKey, type LedEffect, type LedsState, type Rgb } from '@/lib/api';
+import { api, hostKey, type LedEffect, type LedInfo, type LedsState, type Rgb } from '@/lib/api';
 import { hapticLight } from '@/lib/haptics';
 import { cssRgb, hexRgb, hueToRgb, rgbToHue, HUE_STOPS } from '@/lib/ledColor';
-import { addPreset, removePreset, useLedPresets, type LedPreset } from '@/lib/ledPresets';
+import {
+  addPreset, isBuiltinPreset, removePreset, useLedPresets, type LedPreset,
+} from '@/lib/ledPresets';
 import { detectStrips, type LedStrip } from '@/lib/ledStrip';
 import { useSkinKit } from '@/lib/skin';
 import { useSettings } from '@/lib/SettingsContext';
@@ -56,6 +59,14 @@ function stripDeviceLabel(prefix: string): string {
   return prefix.replace(/[:_-]+$/, '');
 }
 
+/** LEDs in PHYSICAL left-to-right order for the customizer. The Steam Machine's
+ *  `valve-leds` index runs opposite to the physical strip, so cell 0 painted the
+ *  wrong end ("the bar is backwards") — flip it so the row matches the hardware. */
+function displayLeds(strip: LedStrip): LedInfo[] {
+  const flip = strip.leds[0]?.name.startsWith('valve-leds');
+  return flip ? strip.leds.slice().reverse() : strip.leds;
+}
+
 /** One frame of the APP-driven fallback animation (only used on old agents). */
 function computeFrame(effect: StripEffect, n: number, t: number, color: Rgb): (Rgb | null)[] {
   const period = (n - 1) * 2 || 1;
@@ -84,6 +95,10 @@ export function StripLightCard() {
   const [speedPct, setSpeedPct] = useState(55);
   const [frame, setFrame] = useState<(Rgb | null)[]>([]);
   const [busy, setBusy] = useState(false);
+  // Pending "name this preset" prompt: the auto label + a builder that turns the
+  // typed name into the full preset to save.
+  const [namePrompt, setNamePrompt] = useState<
+    { label: string; build: (name: string) => Omit<LedPreset, 'id'> } | null>(null);
 
   const poll = usePoll<LedsState | null>(
     () => api.leds(settings), POLL_MS, ready && configured, hostKey(settings));
@@ -107,7 +122,7 @@ export function StripLightCard() {
     if (!strip) return;
     if (seeded.current === strip.key) return;
     seeded.current = strip.key;
-    setFrame(strip.leds.map((l) => (l.brightness_pct > 0 ? l.color : null)));
+    setFrame(displayLeds(strip).map((l) => (l.brightness_pct > 0 ? l.color : null)));
     const a = strip && poll.data?.active?.[`strip:${agentStrip?.prefix}`];
     if (a) { setEffect(a.effect as StripEffect); setBright(a.brightness); if (a.color) setHue(rgbToHue(a.color)); }
     else {
@@ -119,7 +134,8 @@ export function StripLightCard() {
   // APP-driven fallback animation (old agents only). No-op in agent mode.
   useEffect(() => {
     if (agentMode || !strip || (effect !== 'scanner')) return;
-    const n = strip.leds.length;
+    const ol = displayLeds(strip);
+    const n = ol.length;
     let tick = 0;
     let first = true;
     let last: (Rgb | null)[] = new Array(n).fill(null);
@@ -130,7 +146,7 @@ export function StripLightCard() {
       for (let i = 0; i < n; i++) {
         if (first || !sameCell(next[i], last[i])) {
           const cell = next[i];
-          void api.setLed(settings, strip.leds[i].name, cell ? { color: cell, brightness: b } : { brightness: 0 });
+          void api.setLed(settings, ol[i].name, cell ? { color: cell, brightness: b } : { brightness: 0 });
         }
       }
       setFrame(next); last = next; first = false; tick++;
@@ -141,6 +157,9 @@ export function StripLightCard() {
 
   if (!poll.data || strips.length === 0 || !strip) return null;
 
+  // Cells, paints and patterns all operate in PHYSICAL order (flipped for the
+  // Steam Machine so the row matches the strip).
+  const orderedLeds = displayLeds(strip);
   const color = hueToRgb(hue);
   const animated = effect === 'scanner' || effect === 'rainbow' || effect === 'breathe';
   const shown = agentMode
@@ -165,8 +184,8 @@ export function StripLightCard() {
     // App fallback: solid/off fill immediately; scanner runs the loop above.
     if (e === 'solid' || e === 'off') {
       const b = Math.round(bright);
-      strip.leds.forEach((l) => void api.setLed(settings, l.name, e === 'off' ? { brightness: 0 } : { color, brightness: b }));
-      setFrame(strip.leds.map(() => (e === 'off' ? null : color)));
+      orderedLeds.forEach((l) => void api.setLed(settings, l.name, e === 'off' ? { brightness: 0 } : { color, brightness: b }));
+      setFrame(orderedLeds.map(() => (e === 'off' ? null : color)));
     }
   };
 
@@ -182,15 +201,15 @@ export function StripLightCard() {
     }
     if (effect === 'solid') {
       const b = Math.round(bright);
-      strip.leds.forEach((l) => void api.setLed(settings, l.name, { color, brightness: b }));
-      setFrame(strip.leds.map(() => color));
+      orderedLeds.forEach((l) => void api.setLed(settings, l.name, { color, brightness: b }));
+      setFrame(orderedLeds.map(() => color));
     }
   };
 
   /** Paint one cell — a per-LED customizer (best in Solid). */
   const paintCell = (i: number) => {
     hapticLight();
-    void api.setLed(settings, strip.leds[i].name, { color, brightness: Math.round(bright) });
+    void api.setLed(settings, orderedLeds[i].name, { color, brightness: Math.round(bright) });
     setFrame((f) => { const c = f.slice(); c[i] = color; return c; });
   };
 
@@ -205,17 +224,17 @@ export function StripLightCard() {
     // A painted PATTERN preset: enter manual mode, then repaint every LED.
     if (p.pattern && p.pattern.length) {
       setEffect('manual'); setBright(p.brightness);
-      const pat = strip.leds.map((_, i) => p.pattern![i] ?? null);
+      const pat = orderedLeds.map((_, i) => p.pattern![i] ?? null);
       setFrame(pat);
       if (agentMode && agentStrip) {
         void api.setStripEffect(settings, agentStrip.prefix, { effect: 'manual', brightness: p.brightness })
-          .then(() => Promise.all(strip.leds.map((l, i) =>
+          .then(() => Promise.all(orderedLeds.map((l, i) =>
             api.setLed(settings, l.name, pat[i]
               ? { color: pat[i] as Rgb, brightness: Math.round(p.brightness) }
               : { brightness: 0 }))))
           .then(() => poll.refresh());
       } else {
-        strip.leds.forEach((l, i) => void api.setLed(settings, l.name, pat[i]
+        orderedLeds.forEach((l, i) => void api.setLed(settings, l.name, pat[i]
           ? { color: pat[i] as Rgb, brightness: Math.round(p.brightness) } : { brightness: 0 }));
       }
       return;
@@ -233,38 +252,50 @@ export function StripLightCard() {
     }
   };
 
+  /** Open the "name this preset" prompt, pre-filled with an auto label. */
   const saveCurrent = () => {
     hapticLight();
-    // In Manual mode, save the whole painted pattern (one colour per LED).
     if (effect === 'manual') {
-      void addPreset({
-        label: `Custom ${strip.leds.length}`, effect: 'manual', color: null,
-        speed: Math.round(speedPct), brightness: Math.round(bright),
-        pattern: frame.map((c) => c ?? null),
+      const pattern = frame.map((c) => c ?? null);
+      setNamePrompt({
+        label: `Custom ${orderedLeds.length}`,
+        build: (name) => ({
+          label: name, effect: 'manual', color: null,
+          speed: Math.round(speedPct), brightness: Math.round(bright), pattern,
+        }),
       });
       return;
     }
-    const label = EFFECTS.find((x) => x.id === effect)?.label ?? 'Look';
+    const base = EFFECTS.find((x) => x.id === effect)?.label ?? 'Look';
     const usesColor = effect !== 'rainbow' && effect !== 'off';
-    void addPreset({
-      label: label + (usesColor ? ` ${hexRgb(color)}` : ''),
-      effect: effect as LedEffect, color: usesColor ? color : null,
-      speed: Math.round(speedPct), brightness: Math.round(bright),
+    setNamePrompt({
+      label: base + (usesColor ? ` ${hexRgb(color)}` : ''),
+      build: (name) => ({
+        label: name, effect: effect as LedEffect, color: usesColor ? color : null,
+        speed: Math.round(speedPct), brightness: Math.round(bright),
+      }),
     });
   };
 
-  const confirmDelete = (p: LedPreset) =>
+  /** Long-press a preset to delete it — but PREINSTALLED (seeded) presets are
+   *  protected, so those explain instead of deleting. */
+  const confirmDelete = (p: LedPreset) => {
+    if (isBuiltinPreset(p.id)) {
+      Alert.alert('Built-in preset', `"${p.label}" is preinstalled and can't be deleted.`);
+      return;
+    }
     Alert.alert('Delete preset', `Remove "${p.label}"?`, [
       { text: 'Cancel', style: 'cancel' },
       { text: 'Delete', style: 'destructive', onPress: () => void removePreset(p.id) },
     ]);
+  };
 
   return (
     <Card index={7}>
       <View style={styles.header}>
         <Text style={styles.cardTitle}>LIGHT STRIP</Text>
         <View style={styles.headerRight}>
-          <Text style={styles.count}>{stripDeviceLabel(agentStrip?.prefix ?? strip.key)} · {strip.leds.length}</Text>
+          <Text style={styles.count}>{stripDeviceLabel(agentStrip?.prefix ?? strip.key)} · {orderedLeds.length}</Text>
           <Pressable
             onPress={() => { hapticLight(); poll.refresh(); }}
             hitSlop={10} accessibilityRole="button" accessibilityLabel="Refresh strip"
@@ -277,7 +308,7 @@ export function StripLightCard() {
       {/* The strip as ONE row (matches the single physical line) — tap a cell to
           paint it. Cells flex to share the width so 17 fit without wrapping. */}
       <View style={styles.strip}>
-        {strip.leds.map((l, i) => {
+        {orderedLeds.map((l, i) => {
           const c = frame[i] ?? null;
           return (
             <Pressable
@@ -393,6 +424,13 @@ export function StripLightCard() {
             ? 'Effects run on the box — they keep going with the app closed. Long-press a preset to delete.'
             : 'Tap a cell to paint it. Scanner sweeps a dot across the strip.'}
       </Text>
+
+      <PresetNameModal
+        visible={!!namePrompt}
+        defaultName={namePrompt?.label ?? ''}
+        onSubmit={(name) => { if (namePrompt) void addPreset(namePrompt.build(name)); setNamePrompt(null); }}
+        onClose={() => setNamePrompt(null)}
+      />
     </Card>
   );
 }

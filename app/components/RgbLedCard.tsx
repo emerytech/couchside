@@ -34,10 +34,11 @@ import {
   api, hostKey, type LedEffect, type LedInfo, type LedsState, type Rgb,
 } from '@/lib/api';
 import { hapticLight } from '@/lib/haptics';
+import { PresetNameModal } from '@/components/PresetNameModal';
 import { cssRgb, hexRgb, hueToRgb, rgbToHue, HUE_STOPS } from '@/lib/ledColor';
 import { detectStrips } from '@/lib/ledStrip';
 import {
-  addPreset, removePreset, useLedPresets, type LedPreset,
+  addPreset, isBuiltinPreset, removePreset, useLedPresets, type LedPreset,
 } from '@/lib/ledPresets';
 import { useSkinKit } from '@/lib/skin';
 import { useSettings } from '@/lib/SettingsContext';
@@ -79,6 +80,8 @@ export function RgbLedCard() {
 
   const [busy, setBusy] = useState(false);
   const [selName, setSelName] = useState<string | null>(null);
+  const [namePrompt, setNamePrompt] = useState<
+    { label: string; build: (name: string) => Omit<LedPreset, 'id'> } | null>(null);
 
   // Local editor state; seeded from the box once per selected LED, then the
   // user's edits drive the UI (poll is a backstop, not the source of truth).
@@ -167,23 +170,27 @@ export function RgbLedCard() {
   };
 
   const saveCurrent = () => {
-    const label = EFFECT_META[effect].label +
-      (led.rgb && EFFECT_META[effect].usesColor ? ` ${hexRgb(color)}` : '');
-    void addPreset({
-      label,
-      effect,
-      color: led.rgb && EFFECT_META[effect].usesColor ? color : null,
-      speed: Math.round(speed),
-      brightness: Math.round(bright),
-    });
     hapticLight();
+    const usesColor = led.rgb && EFFECT_META[effect].usesColor;
+    setNamePrompt({
+      label: EFFECT_META[effect].label + (usesColor ? ` ${hexRgb(color)}` : ''),
+      build: (name) => ({
+        label: name, effect, color: usesColor ? color : null,
+        speed: Math.round(speed), brightness: Math.round(bright),
+      }),
+    });
   };
 
-  const confirmDelete = (p: LedPreset) =>
+  const confirmDelete = (p: LedPreset) => {
+    if (isBuiltinPreset(p.id)) {
+      Alert.alert('Built-in preset', `"${p.label}" is preinstalled and can't be deleted.`);
+      return;
+    }
     Alert.alert('Delete preset', `Remove "${p.label}"?`, [
       { text: 'Cancel', style: 'cancel' },
       { text: 'Delete', style: 'destructive', onPress: () => void removePreset(p.id) },
     ]);
+  };
 
   return (
     <Card index={6}>
@@ -357,6 +364,13 @@ export function RgbLedCard() {
       </View>
 
       <Text style={styles.hint}>Long-press a preset to delete it.</Text>
+
+      <PresetNameModal
+        visible={!!namePrompt}
+        defaultName={namePrompt?.label ?? ''}
+        onSubmit={(name) => { if (namePrompt) void addPreset(namePrompt.build(name)); setNamePrompt(null); }}
+        onClose={() => setNamePrompt(null)}
+      />
     </Card>
   );
 }
