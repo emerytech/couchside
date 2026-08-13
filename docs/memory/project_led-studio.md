@@ -149,6 +149,16 @@ kernel LED path shipped hardware-unverified.
 - **P4 — app OpenRGB section.** Controller list + drive color/effect from the phone.
 - **P5 — polish/backlog:** box-side preset sync; auto-start the OpenRGB server (argv, opt-in);
   more effects; per-zone scanner direction/tail params.
+- **P6 — per-LED "addressable, made easy" (owner ask 2026-08-13).** "Allow each LED to be
+  addressable but easier to use — v1 demonstrated it but was clunky." Agent side is ALREADY
+  there: `_ORGB.set_frame(idx, colors[])` writes an arbitrary per-LED colour array (the
+  scanner uses it). Missing piece is an APP paint UX + a `POST /api/openrgb/paint {device,
+  colors:[{r,g,b}...]}` (or `per_led`) passthrough. Proposed UX (iterate live on device):
+  a strip rendered as a row of LED cells you tap/DRAG to paint with the picked colour, plus
+  fill helpers (whole-strip, per-ZONE using the zones the agent already reports, gradient
+  between two colours, N-segment split) so common looks need one gesture, not N taps. Drag-
+  paint is the crux and is NOT harness-testable → this is the reason for the on-device dev
+  build. Persist a painted frame like other states so it survives reboot.
 
 ## Risks / must-prove
 - Write contention: Steam/InputPlumber may also drive the Deck LED; our effect thread races
