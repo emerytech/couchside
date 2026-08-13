@@ -48,6 +48,7 @@ prebuilt `ios/` directory checked in.
 | `expo-splash-screen` | `~57.0.1` | Config plugin only, no imports. Supplies the splash image and `#0b1220` background at build time. |
 | `react-native-reanimated` | `4.5.0` | Imported for side effects only — a bare `import 'react-native-reanimated'` in `app/_layout.tsx` to install the runtime. No animations authored against its API yet. |
 | `react-native-worklets` | `0.10.0` | Never imported directly — mandatory peer of Reanimated 4, which moved the worklet runtime into its own package. Removing it breaks Reanimated. |
+| `react-native-gesture-handler` | `3.1.0` | Was transitive (react-navigation peer); now imported DIRECTLY by `components/TrackSlider.tsx` (the LED sliders) via `Gesture.Pan().activeOffsetX(...)` to win the horizontal drag over the iOS nav-swipe. Requires `GestureHandlerRootView` at the app root (`app/_layout.tsx`) — expo-router does NOT auto-wrap it. |
 
 ### Native capability
 
