@@ -70,7 +70,7 @@ export function DeepLinkHandler() {
     let mounted = true;
     void Linking.getInitialURL().then((url) => {
       if (mounted) apply(url);
-    });
+    }).catch(() => {});
     const sub = Linking.addEventListener('url', (e) => apply(e.url));
     return () => {
       mounted = false;
