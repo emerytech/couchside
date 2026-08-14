@@ -48,7 +48,7 @@ except ImportError:  # pragma: no cover
     fcntl = None
 
 APP_NAME = "couchside-agent"
-VERSION = "2.9.86"
+VERSION = "2.9.87"
 UID = os.getuid()
 XDG_RUNTIME_DIR = "/run/user/%d" % UID
 
@@ -234,6 +234,44 @@ TLS_ADVERT = None  # public TLS advert {"port","fp","spki"} or None (dark). Set 
 CONFIG_PANEL = None  # optional {"device","baud"} RS-232 panel-control config
 CONFIG_WEBOS = None  # optional {"host","mac","client_key"} LG webOS TV config
 CONFIG_SAMSUNG = None  # optional {"host","mac","token"} Samsung Tizen TV config
+
+# --- Short-lived tickets for un-pinnable native loaders (TLS P5) -------------
+# The app pins its OWN TLS socket for the API/WS (react-native-tcp-socket), but the
+# platform <Image> loader and the streamed file uploader CANNOT pin a self-signed
+# cert -- so on a TLS box they'd otherwise carry the bearer token in cleartext
+# (?token= / an Authorization header over http). Instead the app mints a SHORT-LIVED
+# TICKET over the ALREADY-PINNED channel (POST /api/ticket) and passes ?ticket= on
+# those requests. A ticket is NOT the bearer token: it grants only cover-art reads
+# for a few minutes (multi-use) or ONE file upload (single-use), never box control.
+# So even if a ticket is sniffed off the plaintext URL, the real token stays secret.
+_TICKETS = {}                 # ticket_hex -> {"exp": epoch, "once": bool}
+_TICKETS_LOCK = threading.Lock()
+_TICKET_TTL = 300             # seconds
+
+def _mint_ticket(once=False):
+    """Mint a short-lived ticket. once=True -> single-use (file upload)."""
+    t = os.urandom(16).hex()
+    now = time.time()
+    with _TICKETS_LOCK:
+        for k in [k for k, v in _TICKETS.items() if v["exp"] < now]:
+            _TICKETS.pop(k, None)  # opportunistic prune of the expired
+        _TICKETS[t] = {"exp": now + _TICKET_TTL, "once": bool(once)}
+    return t
+
+def _ticket_ok(t):
+    """True iff t is an unexpired ticket. A single-use ticket is CONSUMED here, so
+    a sniffed upload ticket cannot be replayed (the real upload already burned it)."""
+    if not t:
+        return False
+    now = time.time()
+    with _TICKETS_LOCK:
+        v = _TICKETS.get(t)
+        if not v or v["exp"] < now:
+            _TICKETS.pop(t, None)
+            return False
+        if v["once"]:
+            _TICKETS.pop(t, None)
+        return True
 CONFIG_ROKU = None  # optional {"host","name"} Roku (ECP) TV config
 CONFIG_ANDROIDTV = None  # optional {"host","cert","key","name","mac"} Android TV config
 CONFIG_VIDAA = None  # optional {"host","name","mac"} Hisense VIDAA (MQTT) config
@@ -3423,11 +3461,12 @@ def real_status():
         **({"audio": audio} if audio else {}),
         "net": net_info_cached(),
         "agent_version": VERSION,
-        # CAPS is a boot-time snapshot, but "desktop" is SESSION-volatile (it
-        # flips with every Game Mode <-> desktop switch), so recompute it per
-        # request — a cheap pgrep — or the app's desktop cluster would freeze
-        # at whatever session the agent booted in.
-        "caps": dict(CAPS, desktop=desktop_available()),
+        # CAPS is a boot-time snapshot, but a few caps are SESSION-volatile — they
+        # flip with every Game Mode <-> desktop switch — so recompute them per
+        # request or the app would freeze at whatever session the agent booted in.
+        # `desktop` is a cheap pgrep; screenstream[_h264] track the portal backend
+        # (present on desktop, absent in Game Mode) and share a short-TTL probe.
+        "caps": dict(CAPS, desktop=desktop_available(), **live_screenstream_caps()),
         # False when the config dir isn't writable by the agent user, so the app
         # can warn that TV pairing / launcher edits won't persist (agent >= 2.9.12).
         "config_writable": CONFIG_WRITABLE,
@@ -6343,13 +6382,25 @@ def _portal_stream(profile, timeout=10):
         return None
 
 
+def _portal_backend_ok(r):
+    """Honor the helper's `screencast` flag: True only when the portal really has
+    a ScreenCast/RemoteDesktop backend (desktop session), False in Steam Game Mode
+    where it is absent. A helper that predates the field omits it -> trust `ok`
+    (old behavior); helper and agent ship together, so a live box always reports
+    it. Keeps caps.screenstream[_h264] honest so the app skips the dead fluid tiers
+    in game mode instead of stalling on each one's connect timeout."""
+    sc = r.get("screencast")
+    return True if sc is None else bool(sc)
+
+
 def screenstream_available():
-    """True when the opt-in remote-desktop module is reachable on its socket.
-    A boot-time hint for caps.screenstream; /ws/screen re-checks live and degrades
-    closed. `status` needs no consent, so this never pops a dialog. Wrapped in
-    safe() at the call site, so any failure reads as unavailable (§3.7)."""
+    """True when the opt-in remote-desktop module is reachable on its socket AND a
+    real portal screencast backend is present. A boot-time hint for caps.screenstream;
+    /ws/screen re-checks live and degrades closed. `status` needs no consent, so this
+    never pops a dialog. Wrapped in safe() at the call site, so any failure reads as
+    unavailable (§3.7)."""
     r = _portal_call("status", timeout=2)
-    return bool(r and r.get("ok"))
+    return bool(r and r.get("ok") and _portal_backend_ok(r))
 
 
 def screenstream_h264_available():
@@ -6359,9 +6410,41 @@ def screenstream_h264_available():
     /ws/h264 (the WebCodecs tier) when the WebView also supports VideoDecoder, and
     /ws/h264 re-checks live + degrades closed. Does NOT require libnice — that is
     only for the parked /ws/webrtc path. The helper's `status` computes h264
-    honestly (see _h264_available there)."""
+    honestly (see _h264_available there). Also gated on a real portal backend, so a
+    game-mode box (no backend) never advertises the H.264 tier it can't serve."""
     r = _portal_call("status", timeout=2)
-    return bool(r and r.get("ok") and r.get("h264"))
+    return bool(r and r.get("ok") and r.get("h264") and _portal_backend_ok(r))
+
+
+_SCREENCAST_CAPS = {"ts": 0.0, "val": None}
+_SCREENCAST_CAPS_TTL = 5.0
+
+
+def live_screenstream_caps():
+    """Session-volatile screenstream[_h264] caps for /api/status — recomputed per
+    request like `desktop`, NOT read from the boot-time CAPS snapshot.
+
+    The portal's ScreenCast/RemoteDesktop backend is present on a KDE desktop
+    session and ABSENT in Steam Game Mode, so these caps flip with every Game Mode
+    <-> desktop switch. Freezing them at boot leaves stale caps in either direction:
+    a box booted in desktop that launches Game Mode keeps screenstream=True and the
+    app burns a connect timeout on each dead fluid tier before the poller (the ~10s
+    lag); a box booted in Game Mode switched to desktop would never be offered fluid.
+
+    One portal `status` probe answers both caps. A short TTL bounds a burst of
+    pollers (and a fleet of phones) to at most one probe every few seconds. Degrade
+    closed (§3.7): no helper, no backend, or any error -> both False."""
+    now = time.monotonic()
+    c = _SCREENCAST_CAPS
+    if c["val"] is not None and now - c["ts"] < _SCREENCAST_CAPS_TTL:
+        return c["val"]
+    r = _portal_call("status", timeout=2)
+    if r and r.get("ok") and _portal_backend_ok(r):
+        val = {"screenstream": True, "screenstream_h264": bool(r.get("h264"))}
+    else:
+        val = {"screenstream": False, "screenstream_h264": False}
+    c["ts"], c["val"] = now, val
+    return val
 
 
 def _portal_stream_h264(profile, timeout=10):
@@ -18625,9 +18708,17 @@ class Handler(BaseHTTPRequestHandler):
         if self._authorized():
             return True
         try:
-            supplied = (parse_qs(parsed.query).get("token") or [""])[0]
+            q = parse_qs(parsed.query)
+            supplied = (q.get("token") or [""])[0]
+            ticket = (q.get("ticket") or [""])[0]
         except Exception:
             return False
+        # A short-lived TLS ticket (minted over the PINNED channel, POST /api/ticket)
+        # is accepted for image GETs so the app never puts the real bearer token on
+        # an un-pinnable <Image> request on a TLS box. Reads only -- no state-changing
+        # route uses _authorized_image, and a ticket can never satisfy _authorized().
+        if ticket and _ticket_ok(ticket):
+            return True
         return bool(supplied) and hmac.compare_digest(supplied, self.token)
 
     # -- verbs ---------------------------------------------------------------
@@ -19330,12 +19421,39 @@ class Handler(BaseHTTPRequestHandler):
                                  "port": self.port}, started)
                 return
 
+            # A single-use upload TICKET (minted over the pinned channel) lets the
+            # native streamed uploader push a file WITHOUT the bearer token on the
+            # wire. Checked before the token gate; the ticket is burned on use so a
+            # sniffed URL can't be replayed. Only /api/upload accepts it; every other
+            # state-changing route still demands the real token below.
+            if path == "/api/upload":
+                try:
+                    tk = (parse_qs(parsed.query).get("ticket") or [""])[0]
+                except Exception:
+                    tk = ""
+                if tk and _ticket_ok(tk):
+                    self._handle_upload(parsed, started)
+                    return
+
             # Authorize BEFORE reading the body: an unauthenticated client must
             # not be able to make us allocate for its body. Reject + close so the
             # undrained body can't desync a keep-alive connection.
             if not self._authorized():
                 self.close_connection = True
                 self._send(401, {"error": "unauthorized"}, started)
+                return
+
+            # POST /api/ticket[?once=1] — mint a short-lived ticket the app uses in
+            # ?ticket= on un-pinnable <Image> (cover art) / upload requests, so the
+            # real token never rides those cleartext URLs on a TLS box. Reachable
+            # only PAST the token gate, so a ticket can only be minted by a client
+            # that already holds the token (over the pinned channel).
+            if path == "/api/ticket":
+                try:
+                    once = (parse_qs(parsed.query).get("once") or [""])[0] in ("1", "true", "yes")
+                except Exception:
+                    once = False
+                self._send(200, {"ticket": _mint_ticket(once), "ttl": _TICKET_TTL}, started)
                 return
 
             # POST /api/upload?name=<filename> — a phone->box file drop. Handled

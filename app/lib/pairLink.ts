@@ -119,6 +119,15 @@ export type PairLink = {
   token: string;
   /** Optional cached LAN IP fallback. Absent when the link omitted or failed it. */
   ip?: string;
+  /**
+   * TLS pin (agent >= P2): the HTTPS port + DER-cert SHA-256 the box advertised
+   * in the QR fragment (`&tlsport=&fp=`). Present ONLY as a pair — both are needed
+   * to derive + verify a pin — and both are validated (else dropped, non-fatal;
+   * the box still pairs over plaintext). The fp is the physical-presence anchor:
+   * at pairing the app fetches the cert and asserts SHA-256(DER)==fp.
+   */
+  tlsPort?: number;
+  fp?: string;
 };
 
 /**
@@ -319,9 +328,29 @@ export function parsePairLink(
   const rawIp = (params.ip ?? '').trim();
   const ip = rawIp && isLanIpv4(rawIp, true) ? rawIp : undefined;
 
+  // TLS advert (agent >= P2): `tlsport` + `fp`. Both required to pin — a lone one
+  // is useless — and both validated. A bad/partial pair is DROPPED, not fatal:
+  // the box still pairs over plaintext (degrade closed), exactly like a bad `ip`.
+  let tlsPort: number | undefined;
+  let fp: string | undefined;
+  const rawTlsPort = (params.tlsport ?? '').trim();
+  const rawFp = (params.fp ?? '').trim().toLowerCase();
+  if (rawTlsPort && rawFp && /^[0-9]{1,5}$/.test(rawTlsPort) && /^[0-9a-f]{64}$/.test(rawFp)) {
+    const n = Number(rawTlsPort);
+    if (n >= 1 && n <= 65535) { tlsPort = n; fp = rawFp; }
+  }
+
   // Unknown params are ignored, not fatal: they cannot reach anything, and
   // refusing them would break forward compatibility with a newer agent.
-  return { ok: true, link: { host, port, token, ip } };
+  const link: PairLink = { host, port, token, ip };
+  // Additive: the tls keys appear ONLY when a valid pair was present, so a
+  // plaintext link's shape is byte-identical to before (matters for the parser
+  // round-trip tests + any deep-equal consumer).
+  if (tlsPort !== undefined && fp !== undefined) {
+    link.tlsPort = tlsPort;
+    link.fp = fp;
+  }
+  return { ok: true, link };
 }
 
 /**
@@ -361,6 +390,8 @@ export function buildPairLink(box: {
   port: number;
   token: string;
   lastIp?: string;
+  tlsPort?: number;
+  fp?: string;
 }): string | null {
   const host = (box.host ?? '').trim();
   if (!hostShapeOk(host)) return null;
@@ -374,6 +405,15 @@ export function buildPairLink(box: {
   // A lastIp that would not survive the reader is dropped, not fatal — same
   // policy as the reader's own ip handling.
   if (box.lastIp && isLanIpv4(box.lastIp, true)) q += `&ip=${encodeURIComponent(box.lastIp)}`;
+  // TLS advert — written only as a valid pair the reader would accept (a fp is a
+  // 64-hex DER-cert SHA-256), else dropped. Mirrors agent build_pair_url().
+  const fp = (box.fp ?? '').trim().toLowerCase();
+  if (
+    typeof box.tlsPort === 'number' && Number.isInteger(box.tlsPort) &&
+    box.tlsPort >= 1 && box.tlsPort <= 65535 && /^[0-9a-f]{64}$/.test(fp)
+  ) {
+    q += `&tlsport=${box.tlsPort}&fp=${fp}`;
+  }
   const url = `https://couchside.tv/pair#${q}`;
   return url.length > MAX_RAW_LEN ? null : url;
 }

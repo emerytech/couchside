@@ -30,6 +30,7 @@
  *   The hello `text` field advertises how much of a typed string the agent can
  *   deliver; sendText() strips non-typeable chars when it is not "unicode".
  */
+import { openBoxSocket, type BoxSocketLike } from './boxTransport.ts';
 import type { Settings } from './settings';
 
 export type GamepadStatus =
@@ -279,7 +280,10 @@ const CONNECT_TIMEOUT_MS = 4000;
 
 export type GamepadStatusListener = (status: GamepadStatus, dev: string | null) => void;
 
-type Conn = Pick<Settings, 'host' | 'port' | 'token' | 'lastIp'>;
+type Conn = Pick<
+  Settings,
+  'host' | 'port' | 'token' | 'lastIp' | 'secure' | 'tlsPort' | 'pinModulus'
+>;
 
 function clamp(v: number, lo: number, hi: number): number {
   return v < lo ? lo : v > hi ? hi : v;
@@ -309,7 +313,7 @@ const SEARCH_KEY_GAP_MS = 120;
 const sleep = (ms: number) => new Promise<void>((r) => setTimeout(r, ms));
 
 export class GamepadClient {
-  private ws: WebSocket | null = null;
+  private ws: BoxSocketLike | null = null;
   private status: GamepadStatus = 'closed';
   private dev: string | null = null;
   /** Text capability from the hello frame ('unicode'|'ascii'); null until known. */
@@ -954,7 +958,7 @@ export class GamepadClient {
     this.teardownSocket(false);
     this.setStatus('connecting', null);
 
-    const { host, port, token, lastIp } = this.conn;
+    const { host, port, token, lastIp, secure, tlsPort, pinModulus } = this.conn;
     // Resolve to a NON-EMPTY host. `host` is blank when the box was paired by IP
     // before its mDNS name was learned (the settings default host is ''), and the
     // cached LAN IP is then the real address — the HTTP API falls back to it the
@@ -976,15 +980,18 @@ export class GamepadClient {
       this.setStatus('error', null);
       return;
     }
-    const url =
-      `ws://${target}:${port}/ws/gamepad?token=${encodeURIComponent(token)}` +
+    // On a secure box the token + query ride the ENCRYPTED, cert-pinned handshake
+    // (openBoxSocket picks the tlsPort); plaintext ws:// on `target` otherwise. The
+    // input-path lifecycle below is UNCHANGED — only the socket's construction is.
+    const path =
+      `/ws/gamepad?token=${encodeURIComponent(token)}` +
       `&handoff=${this.handoffAsk ? 'ask' : 'takeover'}` +
       `&name=${encodeURIComponent(this.deviceName)}` +
       (this.noPad ? '&nopad=1' : '');
 
-    let ws: WebSocket;
+    let ws: BoxSocketLike;
     try {
-      ws = new WebSocket(url);
+      ws = openBoxSocket({ host: target, port, secure, tlsPort, pinModulus }, path);
     } catch {
       this.setStatus('error', null);
       this.scheduleReconnect();
@@ -1030,7 +1037,7 @@ export class GamepadClient {
       this.startPing();
     };
 
-    ws.onmessage = (ev: WebSocketMessageEvent) => {
+    ws.onmessage = (ev: { data: string | ArrayBuffer }) => {
       // A reconnect can replace this.ws while this socket's callbacks are still
       // pending, so ignore events from a socket we have already superseded.
       // (Same guard in onerror/onclose below.)

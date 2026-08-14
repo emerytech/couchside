@@ -20,6 +20,7 @@
  * the P1 still-frame poller.
  */
 import { base64FromArrayBuffer, resolveEffectiveHost, type ConnSettings } from './api';
+import { openBoxSocket, type BoxSocketLike } from './boxTransport.ts';
 import { isUsableBodySize } from './responseCap';
 
 export type StreamStatus = 'connecting' | 'connected' | 'error' | 'closed';
@@ -31,7 +32,7 @@ const CONNECT_TIMEOUT_MS = 8000;
 const BACKOFF_MS = [500, 1000, 2000, 4000];
 
 export class ScreenStreamClient {
-  private ws: WebSocket | null = null;
+  private ws: BoxSocketLike | null = null;
   private settings: ConnSettings | null = null;
   private profile: StreamProfile = '720p20';
   private active = false;
@@ -92,12 +93,22 @@ export class ScreenStreamClient {
       this.scheduleReconnect();
       return;
     }
-    const url =
-      `ws://${host}:${port}/ws/screen?token=${encodeURIComponent(token)}` +
-      `&profile=${this.profile}`;
-    let ws: WebSocket;
+    // Path (token + profile) rides the ENCRYPTED handshake on a secure box; the
+    // pinned transport picks its own tlsPort. Plaintext ws:// otherwise.
+    const path =
+      `/ws/screen?token=${encodeURIComponent(token)}&profile=${this.profile}`;
+    let ws: BoxSocketLike;
     try {
-      ws = new WebSocket(url);
+      ws = openBoxSocket(
+        {
+          host,
+          port,
+          secure: this.settings.secure,
+          tlsPort: this.settings.tlsPort,
+          pinModulus: this.settings.pinModulus,
+        },
+        path,
+      );
     } catch {
       this.setStatus('error');
       this.scheduleReconnect();
@@ -123,7 +134,7 @@ export class ScreenStreamClient {
       this.backoffIdx = 0;
       this.setStatus('connected');
     };
-    ws.onmessage = (ev: WebSocketMessageEvent) => {
+    ws.onmessage = (ev: { data: string | ArrayBuffer }) => {
       if (ws !== this.ws) return;
       const data = ev.data as unknown;
       if (typeof data === 'string') return; // this stream carries no text frames

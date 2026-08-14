@@ -1,5 +1,1 @@
-Light up your box. If it has an addressable RGB strip — like a Steam Machine's — you can now drive the whole strip from your phone: a real "night rider" sweep, rainbow, breathe, or a solid colour. Effects run on the box, so they keep going with the app closed and come back after a reboot.
-
-Paint each LED its own colour and save the pattern, name your presets to recall them with a tap, and set colour and brightness with smooth sliders.
-
-Whole-system RGB via OpenRGB when it's installed — control your motherboard, RAM and strips too. Plus fixes and polish.
+A much faster remote screen in Game Mode. When your box is in Steam Big Picture / Game Mode, opening the remote screen viewer on your phone used to hang for several seconds before the first picture appeared. Now it shows the live preview right away — what's on your TV shows up on your phone in about a second. Desktop sessions still stream smooth video. Plus reliability fixes and polish.

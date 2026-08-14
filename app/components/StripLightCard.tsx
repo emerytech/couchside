@@ -146,7 +146,7 @@ export function StripLightCard() {
       for (let i = 0; i < n; i++) {
         if (first || !sameCell(next[i], last[i])) {
           const cell = next[i];
-          void api.setLed(settings, ol[i].name, cell ? { color: cell, brightness: b } : { brightness: 0 });
+          void api.setLed(settings, ol[i].name, cell ? { color: cell, brightness: b } : { brightness: 0 }).catch(() => {});
         }
       }
       setFrame(next); last = next; first = false; tick++;
@@ -184,7 +184,7 @@ export function StripLightCard() {
     // App fallback: solid/off fill immediately; scanner runs the loop above.
     if (e === 'solid' || e === 'off') {
       const b = Math.round(bright);
-      orderedLeds.forEach((l) => void api.setLed(settings, l.name, e === 'off' ? { brightness: 0 } : { color, brightness: b }));
+      orderedLeds.forEach((l) => void api.setLed(settings, l.name, e === 'off' ? { brightness: 0 } : { color, brightness: b }).catch(() => {}));
       setFrame(orderedLeds.map(() => (e === 'off' ? null : color)));
     }
   };
@@ -196,12 +196,12 @@ export function StripLightCard() {
       void api.setStripEffect(settings, agentStrip.prefix, {
         effect: effect as LedEffect, brightness: Math.round(bright),
         speed: Math.round(speedPct), ...(effect === 'rainbow' ? {} : { color }),
-      });
+      }).catch(() => {});
       return;
     }
     if (effect === 'solid') {
       const b = Math.round(bright);
-      orderedLeds.forEach((l) => void api.setLed(settings, l.name, { color, brightness: b }));
+      orderedLeds.forEach((l) => void api.setLed(settings, l.name, { color, brightness: b }).catch(() => {}));
       setFrame(orderedLeds.map(() => color));
     }
   };
@@ -209,7 +209,7 @@ export function StripLightCard() {
   /** Paint one cell — a per-LED customizer (best in Solid). */
   const paintCell = (i: number) => {
     hapticLight();
-    void api.setLed(settings, orderedLeds[i].name, { color, brightness: Math.round(bright) });
+    void api.setLed(settings, orderedLeds[i].name, { color, brightness: Math.round(bright) }).catch(() => {});
     setFrame((f) => { const c = f.slice(); c[i] = color; return c; });
   };
 
@@ -232,10 +232,11 @@ export function StripLightCard() {
             api.setLed(settings, l.name, pat[i]
               ? { color: pat[i] as Rgb, brightness: Math.round(p.brightness) }
               : { brightness: 0 }))))
-          .then(() => poll.refresh());
+          .then(() => poll.refresh())
+          .catch(() => {});
       } else {
         orderedLeds.forEach((l, i) => void api.setLed(settings, l.name, pat[i]
-          ? { color: pat[i] as Rgb, brightness: Math.round(p.brightness) } : { brightness: 0 }));
+          ? { color: pat[i] as Rgb, brightness: Math.round(p.brightness) } : { brightness: 0 }).catch(() => {}));
       }
       return;
     }
@@ -246,7 +247,7 @@ export function StripLightCard() {
       void api.setStripEffect(settings, agentStrip.prefix, {
         effect: e as LedEffect, brightness: p.brightness, speed: p.speed,
         ...(e === 'rainbow' ? {} : { color: p.color ?? hueToRgb(h) }),
-      }).then(() => poll.refresh());
+      }).then(() => poll.refresh()).catch(() => {});
     } else {
       void applyEffect(e);
     }

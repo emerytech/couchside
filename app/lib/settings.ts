@@ -63,6 +63,20 @@ export type Box = {
    * neither. See lib/lastSeen.ts.
    */
   lastSeen?: number;
+  /**
+   * TLS (on-wire encryption, agent >= P4). Set at pairing ONLY when the box
+   * advertised a `tls_port` AND the cert fetched over plaintext matched the `fp`
+   * from the pairing QR (see lib/boxTls.resolveTlsPin). When `secure`, box traffic
+   * routes through the modulus-pinned transport (lib/boxTls / lib/boxWs) on
+   * `tlsPort`; `pinModulus` is the RSA key the live cert must present. Plaintext is
+   * never removed — an unset/false `secure` keeps today's http/ws behaviour.
+   */
+  secure?: boolean;
+  tlsPort?: number;
+  /** DER-cert SHA-256 from the QR — the integrity anchor kept for reference. */
+  fp?: string;
+  /** Normalized RSA modulus the pinned transport compares against at connect. */
+  pinModulus?: string;
 };
 
 /**
@@ -84,6 +98,11 @@ export type Settings = {
   caps?: BoxCaps;
   /** Unix ms the active box was last reached (see Box.lastSeen). */
   lastSeen?: number;
+  /** TLS pin of the active box (see Box.secure/tlsPort/fp/pinModulus). */
+  secure?: boolean;
+  tlsPort?: number;
+  fp?: string;
+  pinModulus?: string;
 };
 
 /** Safe placeholder used when no box is active (nothing paired yet). */
@@ -345,9 +364,23 @@ function normalizeBox(raw: unknown): Box | null {
     typeof o.lastSeen === 'number' && Number.isFinite(o.lastSeen) && o.lastSeen > 0
       ? o.lastSeen
       : undefined;
+  // TLS pin fields. `secure` is honoured ONLY with a valid tlsPort AND pinModulus
+  // (a secure box that can't be reached/verified would be a dead box), so a
+  // corrupt/partial persist degrades to plaintext rather than a stuck connection.
+  const tlsPort =
+    typeof o.tlsPort === 'number' && Number.isInteger(o.tlsPort) && o.tlsPort >= 1 && o.tlsPort <= 65535
+      ? o.tlsPort
+      : undefined;
+  const fp = typeof o.fp === 'string' && /^[0-9a-f]{64}$/i.test(o.fp) ? o.fp.toLowerCase() : undefined;
+  const pinModulus =
+    typeof o.pinModulus === 'string' && /^[0-9a-f]+$/i.test(o.pinModulus) && o.pinModulus.length >= 64
+      ? o.pinModulus.toLowerCase()
+      : undefined;
+  const secure = o.secure === true && tlsPort !== undefined && !!pinModulus ? true : undefined;
   return {
     id, name, host, port, token, padMode: normalizePadMode(o.padMode),
     lastIp, mac, volumeTarget, caps, lastSeen,
+    secure, tlsPort, fp, pinModulus,
   };
 }
 
@@ -439,6 +472,10 @@ export function activeSettings(state: BoxesState): Settings {
     volumeTarget: active.volumeTarget,
     caps: active.caps,
     lastSeen: active.lastSeen,
+    secure: active.secure,
+    tlsPort: active.tlsPort,
+    fp: active.fp,
+    pinModulus: active.pinModulus,
   };
 }
 

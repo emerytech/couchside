@@ -210,6 +210,8 @@ function ScannerModal({ onClose }: { onClose: () => void }) {
           port: link.port,
           token: link.token,
           lastIp: link.ip,
+          tlsPort: link.tlsPort,
+          fp: link.fp,
         });
         // The success beat fires HERE, after the collision gate and the write
         // — not on decode. A success haptic before the one dialog that defends

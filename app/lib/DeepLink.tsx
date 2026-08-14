@@ -54,11 +54,11 @@ export function DeepLinkHandler() {
         return;
       }
 
-      const { host, port, token, ip } = parsed.link;
+      const { host, port, token, ip, tlsPort, fp } = parsed.link;
 
       // Navigate only once the box is actually stored and active, so the Pad
       // opens against the box that was just paired rather than the previous one.
-      void addBox({ host, port, token, lastIp: ip }).then(navigateAfterPair, () => {
+      void addBox({ host, port, token, lastIp: ip, tlsPort, fp }).then(navigateAfterPair, () => {
         // addBox failed (storage write) — stay put rather than opening a remote
         // for a box that was never saved.
       });

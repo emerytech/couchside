@@ -17,6 +17,7 @@ import {
 } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
+import { LockBadge } from '@/components/EncryptionBadge';
 import { RemotePowerBar } from '@/components/RemotePowerBar';
 import { hapticSelection } from '@/lib/haptics';
 import {
@@ -112,6 +113,7 @@ export function BoxSwitcher() {
           <Text style={styles.pillLabel} numberOfLines={1}>
             {pillLabel}
           </Text>
+          {boxes.length > 0 && activeBox && <LockBadge secure={activeBox.secure} size={13} />}
           {boxes.length > 0 && (
             <Ionicons
               name={open ? 'chevron-up' : 'chevron-down'}
@@ -156,6 +158,7 @@ export function BoxSwitcher() {
                         {box.host}:{box.port}
                       </Text>
                     </View>
+                    <LockBadge secure={box.secure} size={14} />
                     {isActive && (
                       <Ionicons name="checkmark" size={18} color={t.blue} />
                     )}
