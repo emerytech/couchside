@@ -87,7 +87,13 @@ export function AgentUpdateBanner() {
       setMsg('Updating — your box will restart. This can take a minute.');
       const target = check.latest;
       let done = false;
-      for (let i = 0; i < 40 && !done; i++) {
+      // Poll generously. A slow box (e.g. a SteamOS Steam Machine whose restart
+      // runs a ~6s CEC probe + Steam log watchers) can take minutes to come back
+      // up on the new version; a short window meant we gave up before it did and
+      // showed "may still be finishing" on an update that actually succeeded.
+      // ~6 min at 3s. This never reports FAILURE — only success or a soft
+      // "still finishing" — and the version display self-corrects once it's up.
+      for (let i = 0; i < 120 && !done; i++) {
         await new Promise((r) => setTimeout(r, 3000));
         // Show what the box is ACTUALLY doing. The installer writes a
         // transcript the app never read, so this used to be a canned message

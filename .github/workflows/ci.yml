@@ -466,11 +466,14 @@ jobs:
         run: python3 tests/test_pair_page.py
 
       # The on-box UPDATE progress page. It polls /api/ping across the agent's
-      # own restart and must express THREE outcomes, not one: version changed
-      # (updated), unreachable a while (restarting), and reachable-but-unchanged
-      # for a long time (STALLED — the installer died before restarting, so the
-      # old agent keeps answering). The stall branch is the fix for a real box
-      # that span forever; this pins all three so a refactor cannot drop them.
+      # own restart. SUCCESS (version changed) is the ONE state that stops the
+      # poll; unreachable == restarting and reachable-but-unchanged == still
+      # installing are BOTH non-terminal — they escalate wording and, after a
+      # generous wait, a SOFT recovery hint, but NEVER declare failure and never
+      # stop watching. That is the fix for two real boxes: one that span forever
+      # on a stalled install (Legion Go S), and one that FALSELY said "didn't
+      # finish" on a slow-but-successful restart (SteamOS Steam Machine). The
+      # test executes the pure updDecide() under node to observe both states.
       - name: Unit tests (update page)
         run: python3 tests/test_update_page.py
 
