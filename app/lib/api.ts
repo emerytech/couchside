@@ -5,6 +5,7 @@
 import { Buffer } from 'buffer';
 import { isPinMismatchError, pinnedRequest, type PinnedResponse } from './boxTransport.ts';
 import { isDeclaredTooLarge, isUsableBodySize } from './responseCap';
+import { ensureImageTicket, getImageTicket, mintUploadTicket } from './ticket.ts';
 import { Settings } from './settings';
 
 /** The subset of Settings the API client actually needs. */
@@ -1389,11 +1390,23 @@ export async function uploadFile(
 ): Promise<UploadResult> {
   const { File, UploadType } = await import('expo-file-system');
   const host = resolveEffectiveHost(settings);
-  const url = `${baseUrl({ host, port: settings.port })}/api/upload?name=${encodeURIComponent(name)}`;
+  let url = `${baseUrl({ host, port: settings.port })}/api/upload?name=${encodeURIComponent(name)}`;
+  let headers: Record<string, string> = { Authorization: `Bearer ${settings.token}` };
+  // Secure box: the native streamed uploader can't pin, so keep the token off the
+  // wire with a SINGLE-USE ticket (minted over the pinned channel). The file bytes
+  // still ride plaintext http (documented residual), but the token does not. A rare
+  // mint failure falls back to the token header for just this one request.
+  if (settings.secure && settings.pinModulus && settings.tlsPort) {
+    const t = await mintUploadTicket(settings, host);
+    if (t) {
+      url = `http://${host}:${settings.port}/api/upload?name=${encodeURIComponent(name)}&ticket=${encodeURIComponent(t)}`;
+      headers = {};
+    }
+  }
   const task = new File(fileUri).createUploadTask(url, {
     httpMethod: 'POST',
     uploadType: UploadType.BINARY_CONTENT,
-    headers: { Authorization: `Bearer ${settings.token}` },
+    headers,
     onProgress: ({ bytesSent, totalBytes }: { bytesSent: number; totalBytes: number }) => {
       if (onProgress && totalBytes > 0) onProgress(bytesSent / totalBytes);
     },
@@ -2163,6 +2176,17 @@ export const api = {
    */
   steamCoverSource(settings: ConnSettings, appid: number): ImageSource {
     const host = resolveEffectiveHost(settings);
+    // Secure box: the token can't ride an un-pinnable <Image>, so authorize with a
+    // short-lived TLS TICKET (minted over the pinned channel) instead. Until a
+    // ticket is warm (the first ~second on a fresh secure box) the request 401s and
+    // the tile shows its text fallback — never the token. Cover art is public, so
+    // its bytes over http are not sensitive; only the token needed protecting.
+    if (settings.secure && settings.pinModulus && settings.tlsPort) {
+      ensureImageTicket(settings, host);
+      const t = getImageTicket(host, settings.port);
+      const base = `http://${host}:${settings.port}/api/steam/${appid}/cover`;
+      return { uri: t ? `${base}?ticket=${encodeURIComponent(t)}` : base };
+    }
     // The token goes in BOTH the header and the query, on purpose.
     //
     // MEASURED, not assumed: React Native's <Image> accepts source.headers, and
