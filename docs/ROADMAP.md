@@ -343,6 +343,17 @@ Entry fields: `priority` (P0 blocker → P3 nice) · `risk` · `affects` · `dep
   - **Cleanup (4f89a5d, 2747559):** stripped the temp probe/test routes; stripped the dead react-native-webrtc dep
     (~20MB + camera/mic/SYSTEM_ALERT_WINDOW Play perms) + its config plugin + `.npmrc`. Tiers are now H.264 → MJPEG →
     poller. The AGENT keeps `/ws/webrtc` + the helper webrtc verb as the parked ceiling reference.
+- **STATUS 2026-08-14 (SHIPPED 2.9.49, agent 2.9.87): Game Mode remote-screen lag FIXED — and fluid-in-Game-Mode
+  proven a gamescope PLATFORM LIMIT, not agent-fixable.** The ~10s lag was FALSE-POSITIVE caps: gamescope Game Mode has
+  NO portal ScreenCast/RemoteDesktop backend (both interfaces UnknownMethod; Introspect shows only
+  Trash/GameMode/NetworkMonitor/…), so /ws/screen + /ws/h264 101-then-close — but the box advertised
+  screenstream[_h264]=True, so the app burned an 8s connect timeout on EACH dead tier before the ~1.5s poller. Fix =
+  truthful, SESSION-VOLATILE caps: portal helper `verb_status` checks a real backend via a consent-free
+  `Properties.Get(version)`; agent gates the caps on it AND recomputes them per `/api/status` (`live_screenstream_caps`,
+  5s TTL) like `desktop`, so a Game Mode↔desktop switch tracks with no agent restart. Game Mode now goes straight to the
+  poller. **Continuous fluid capture under gamescope is NOT achievable from the agent** — the gamescope pipewire
+  Video/Source node is single-shot (RATE=0/suspended at 59fps, one preroll frame per connect). True fluid-in-Game-Mode
+  needs a gamescope-level continuous pipewire stream (future / distro-dependent). Detail: [[shipped-2.9.49-full-release]].
   - **REMAINING:** an EAS app-store build (billed cloud; owner's timing) to ship H.264 to users, and merge the spike
     branch. Steam Machine (AMD Navi33) lacks a gst VA encoder → stays MJPEG; H.264 is Intel/AMD-with-VA boxes.
   Detail in [[h264-tier-webcodecs-not-webrtc]] + [[remote-desktop-and-screen-capture]].
