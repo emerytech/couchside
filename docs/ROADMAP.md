@@ -1227,6 +1227,22 @@ recommendation was wrong, not merely superseded.
 
 ## ✅ Completed
 
+### Update-completion false-negative fixed — browser-verified 2026-08-13 (SteamOS Steam Machine)
+- **was:** P2 (owner-reported 2026-08-13) · **affects:** agent on-box `/update` page + app
+  `AgentUpdateBanner` · **branch:** `claude/bold-kilby-b2a611`
+- **The bug:** on a slow-restarting box (steamdeck@10.1.1.34) the agent updated 2.9.83 → 2.9.86
+  successfully, but the on-box progress page said "Update didn't finish. The box is still running
+  2.9.83." The poller declared a HARD FAILURE at `same>=STALL` (90 ticks ≈ 3 min of the old agent
+  still answering) and then STOPPED polling — so a slow restart (real-mode ~6s CEC probe + Steam
+  log watchers + the install phase) tripped it and the page never saw the new version arrive.
+- **The fix:** success (version changed) is now the ONLY terminal state; restarting + installing
+  are non-terminal and NEVER declare failure. Extracted pure `updDecide()`; `STUCK` 90→300 ticks
+  (~10 min) and its hint is a SOFT recovery message while polling continues, so a late success
+  flips to "Updated". App banner confirm loop 40→120 iters (~6 min). No VERSION bump (page-only).
+- **Verified:** node-exec unit test of both states + LIVE browser repro of the exact sequence
+  (same-version → restarting → success), screenshot of green "Updated / Now running 2.9.86.".
+  NOT re-run on the real steamdeck yet — owner to confirm at next agent bump.
+
 ### Couch Mode gamescope-session filename fix — VERIFIED on hardware 2026-08-10 (Legion Go S)
 - **was:** P2 (owner-reported 2026-08-10) · **affects:** agent · **branch/PR:**
   `claude/couchmode-gamescope-session-detect` → #432

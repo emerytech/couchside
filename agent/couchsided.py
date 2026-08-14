@@ -1921,64 +1921,97 @@ def render_update_page():
 <p class="dots" id="d"><span>&#9679;</span><span>&#9679;</span><span>&#9679;</span></p>
 <p id="hint" style="display:none;font-size:.95rem;color:#6b7a90;margin-top:1.4rem"></p>
 </div><script>
-/* Poll /api/ping (the one pre-auth endpoint) until the version CHANGES.
-   Three outcomes, not one:
-     - version changes            -> Updated (success).
-     - unreachable for a while     -> the service is restarting (expected).
-     - reachable, SAME version,    -> the update STALLED. The installer copies
-       for a long time                the new file first, then restarts; if it
-                                       dies in between (e.g. it needed a sudo
-                                       password it could not get in the detached
-                                       run), the OLD agent keeps answering the
-                                       same version forever. Without this branch
-                                       the page spins forever for that case,
-                                       telling the user it was still working
-                                       when it was not.
-   A genuine restart shows up as MISSES (unreachable), which reset the stall
-   clock -- so `same` only climbs while the old agent stays healthy, which is
-   exactly the stalled case. */
-var was=null, misses=0, same=0;
-var STALL=90;   /* ~3 min of reachable + unchanged version -> call it stalled */
-function stalled(){
-  document.getElementById('t').textContent='Update didn\u2019t finish';
-  document.getElementById('t').style.color='#f0b232';
-  document.getElementById('s').textContent='The box is still running '+was+'.';
-  document.getElementById('d').style.display='none';
-  var h=document.getElementById('hint');
-  h.style.display='block';
-  h.innerHTML='Try Update again from the app. If it keeps stopping here, open a '
-    +'terminal on the box and run:<br><br>'
-    +'<code style="color:#9fb3cc">curl -fsSL https://couchside.tv/install.sh | bash</code>';
+/* Served ONCE, then keeps polling /api/ping (the one pre-auth endpoint) across
+   the agent's own restart. The ONLY reliable success signal is the reported
+   version CHANGING from the one we first saw, so success is the one state that
+   ever stops the poll. Every other state keeps polling.
+
+   THE TRAP THIS FIXES (real box, SteamOS Steam Machine, 2026-08-13): the update
+   SUCCEEDED (2.9.83 -> 2.9.86) but the page said "Update didn't finish". The old
+   logic declared a HARD FAILURE after ~3 min of the old agent still answering,
+   then STOPPED polling -- so when the new agent finished its slow restart (a
+   ~6s CEC probe + Steam log watchers) a moment later, the page never saw it. A
+   detector that fires only the failure half AND then stops looking ships a
+   scary, wrong message on a successful update.
+
+   The rule now: NEVER declare failure, NEVER stop watching for success.
+     - version changed         -> Updated. Stop. (the one terminal, reliable state)
+     - unreachable             -> restarting (expected mid-update); escalate the
+                                  wording, but this is never a failure.
+     - reachable, SAME version -> still the old agent answering: "installing",
+                                  then only after a GENEROUS wait a SOFT "taking
+                                  longer" hint with a recovery command -- while
+                                  STILL polling, so a late success flips it to
+                                  Updated. Every tick past the hint is itself the
+                                  final confirming ping. */
+var was=null, same=0, miss=0, DONE=false;
+
+// --UPD-DECIDE-START
+var SLOW=20;         /* ticks, 2s each: 40s reachable+same -> "still working"    */
+var STUCK=300;       /* 10 min reachable+SAME before a SOFT recovery hint. Was 90
+                        (~3 min) AND terminal -- that pairing is exactly what
+                        flagged a slow-but-working box as failed. Non-terminal now */
+var RESTART_MISS=8;  /* 16s unreachable -> "restarting the service"              */
+var LONG_MISS=150;   /* 5 min unreachable -> suggest a reboot (still not "failed") */
+/* Pure decision: given the first-seen version `was`, this poll's version `ver`
+   (null == unreachable) and the running same/miss counters, name the state.
+   done:true ONLY for 'updated' -- there is deliberately NO terminal failure
+   state, so the poll can always still catch a late success. */
+function updDecide(was, ver, same, miss){
+  if(ver!==null && was!==null && ver!==was){
+    return {done:true, state:'updated', version:ver};
+  }
+  if(ver===null){
+    if(miss>=LONG_MISS) return {done:false, state:'long_restart'};
+    if(miss>=RESTART_MISS) return {done:false, state:'restarting'};
+    return {done:false, state:'installing'};
+  }
+  if(same>=STUCK) return {done:false, state:'maybe_stuck'};
+  if(same>=SLOW)  return {done:false, state:'slow'};
+  return {done:false, state:'installing'};
 }
+// --UPD-DECIDE-END
+
+function apply(d){
+  var t=document.getElementById('t'), s=document.getElementById('s'),
+      dots=document.getElementById('d'), h=document.getElementById('hint');
+  if(d.state!=='maybe_stuck') h.style.display='none';
+  if(d.state==='updated'){
+    t.textContent='Updated'; t.className='ok';
+    s.textContent='Now running '+d.version+'.';
+    dots.style.display='none';
+    DONE=true; return;                          /* the one terminal state */
+  }
+  if(d.state==='maybe_stuck'){
+    /* NON-TERMINAL: we keep polling. On a slow box the old agent can answer for
+       minutes while a real update is still in flight, so we SOFTEN to a recovery
+       hint -- we do NOT claim it failed. A later tick that sees the new version
+       overwrites this with "Updated". */
+    s.textContent='Still on '+was+'. This is taking longer than usual \u2014 keep this screen up.';
+    h.style.display='block';
+    h.innerHTML='If it stays here, open a terminal on the box and run:<br><br>'
+      +'<code style="color:#9fb3cc">curl -fsSL https://couchside.tv/install.sh | bash</code>';
+    return;
+  }
+  if(d.state==='slow'){ s.textContent='Still working\u2026 downloading and installing.'; return; }
+  if(d.state==='restarting'){ s.textContent='Restarting the service\u2026'; return; }
+  if(d.state==='long_restart'){
+    s.textContent='Taking longer than usual. If the screen stays here, reboot the box.'; return; }
+  s.textContent='Keep the box powered on. This takes about a minute.';  /* installing */
+}
+
 function tick(){
   fetch('/api/ping',{cache:'no-store'}).then(function(r){return r.json()}).then(function(j){
-    misses=0;
-    if(was===null){ was=j.version; }
-    else if(j.version!==was){
-      document.getElementById('t').textContent='Updated';
-      document.getElementById('t').className='ok';
-      document.getElementById('s').textContent='Now running '+j.version+'.';
-      document.getElementById('d').style.display='none';
-      document.getElementById('hint').style.display='none';
-      return;                                  /* stop polling: success */
-    } else {
-      /* reachable, same version: normal for the download/install phase */
-      same++;
-      if(same===20){ document.getElementById('s').textContent=
-        'Still working\u2026 downloading and installing.'; }
-      if(same>=STALL){ stalled(); return; }    /* stop polling: stalled */
-    }
-    setTimeout(tick,2000);
+    if(was===null) was=j.version;
+    miss=0;
+    if(j.version!==was) same=0; else same++;
+    apply(updDecide(was, j.version, same, miss));
   }).catch(function(){
-    /* The agent restarts mid-update, so a failed poll is EXPECTED, not an
-       error. A restart also means we are NOT stalled -- reset that clock. */
-    misses++; same=0;
-    if(misses>8){ document.getElementById('s').textContent=
-      'Restarting the service\u2026'; }
-    if(misses>150){ document.getElementById('s').textContent=
-      'Taking longer than usual. If the screen stays here, reboot the box.'; }
-    setTimeout(tick,2000);
-  });
+    /* A failed poll mid-update is EXPECTED (the agent is restarting), not an
+       error -- and a restart means we are NOT stuck, so reset the same clock. */
+    same=0; miss++;
+    apply(updDecide(was, null, same, miss));
+  }).then(function(){ if(!DONE) setTimeout(tick,2000); });
 }
 tick();
 </script></body></html>"""
