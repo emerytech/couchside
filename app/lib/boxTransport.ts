@@ -29,18 +29,17 @@ export type BoxSocketLike = {
   close(): void;
 };
 
-// Metro bundles these static-string requires normally; a Node unit test never
-// hits them (plaintext only), so react-native-only packages stay unloaded there.
-const req = (m: string): unknown =>
-  (globalThis as { require?: (m: string) => unknown }).require?.(m) ??
-  // eslint-disable-next-line @typescript-eslint/no-require-imports, no-undef
-  (typeof require === 'function' ? require(m) : (() => { throw new Error('native transport unavailable'); })());
-
+// The require string MUST be a literal so Metro statically bundles the native
+// module. A Node unit test never reaches these (secure branch only), so `require`
+// being undefined in ESM there is harmless. eslint-disable: this indirection is
+// the whole point — keep the native package out of the static import graph.
 function nativeTls(): typeof import('./boxTls') {
-  return req('./boxTls') as typeof import('./boxTls');
+  // eslint-disable-next-line @typescript-eslint/no-require-imports
+  return require('./boxTls');
 }
 function nativeWs(): typeof import('./boxWs') {
-  return req('./boxWs') as typeof import('./boxWs');
+  // eslint-disable-next-line @typescript-eslint/no-require-imports
+  return require('./boxWs');
 }
 
 export type PinnedRequestOpts = {
