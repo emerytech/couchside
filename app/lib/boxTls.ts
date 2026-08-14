@@ -22,32 +22,15 @@
  * `pinModulus`.
  */
 import { Buffer } from 'buffer';
-import forge from 'node-forge';
 import TcpSocket from 'react-native-tcp-socket';
 
 import { normalizeModulus, parseHttpResponse, type PinnedResponse } from './boxTlsCodec';
 
 export { normalizeModulus, parseHttpResponse } from './boxTlsCodec';
 export type { PinnedResponse } from './boxTlsCodec';
-
-/**
- * RSA modulus (normalized hex) of a PEM certificate, via node-forge. Called at
- * PAIRING time on the PEM fetched from /api/tls/cert (whose integrity the QR fp
- * proves) to derive the value we pin. Lives here (not the pure codec) because it
- * needs forge; its output must match getPeerCertificate's live modulus at connect
- * — device-verified end-to-end by the 2026-08-13 spike, and forge's modulus
- * derivation is cross-checked against openssl in lib/tvdirect/__tests__.
- */
-export function modulusFromPem(pem: string): string | null {
-  try {
-    const cert = forge.pki.certificateFromPem(pem);
-    const key = cert.publicKey as forge.pki.rsa.PublicKey;
-    if (!key?.n) return null;
-    return normalizeModulus(key.n.toString(16));
-  } catch {
-    return null;
-  }
-}
+// Pairing-time forge helpers live in boxTlsPair (no native import); re-exported
+// here for convenience.
+export { certFpFromPem, modulusFromPem, resolveTlsPin, type TlsPin } from './boxTlsPair';
 
 /** A live, pinned TLS byte stream. Mirrors the shape lib/tvdirect uses. */
 export type PinnedSocket = {

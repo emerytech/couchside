@@ -3,11 +3,15 @@
  * Base URL: http://<host>:<port>  (default port 8787)
  */
 import { Buffer } from 'buffer';
+import { isPinMismatchError, pinnedRequest, type PinnedResponse } from './boxTransport.ts';
 import { isDeclaredTooLarge, isUsableBodySize } from './responseCap';
 import { Settings } from './settings';
 
 /** The subset of Settings the API client actually needs. */
-export type ConnSettings = Pick<Settings, 'host' | 'port' | 'token' | 'lastIp'>;
+export type ConnSettings = Pick<
+  Settings,
+  'host' | 'port' | 'token' | 'lastIp' | 'secure' | 'tlsPort' | 'pinModulus'
+>;
 
 /**
  * A remote image source (uri + optional request headers). Structurally a subset
@@ -1474,6 +1478,20 @@ export async function screenFrameSource(
 }
 
 /** One fetch attempt against a specific host. Throws ApiError on transport failure. */
+/**
+ * Adapt a PinnedResponse to the subset of the fetch `Response` shape that
+ * request() consumes (status, ok, json(), text()) — so the pinned-TLS path drops
+ * into the existing host-selection + error-handling flow unchanged.
+ */
+function pinnedToResponse(pr: PinnedResponse): Response {
+  return {
+    status: pr.status,
+    ok: pr.status >= 200 && pr.status < 300,
+    json: async () => JSON.parse(pr.body || 'null'),
+    text: async () => pr.body,
+  } as unknown as Response;
+}
+
 async function attempt(
   host: string,
   settings: ConnSettings,
@@ -1502,6 +1520,24 @@ async function attempt(
     );
   });
   try {
+    // Secure box (spec §2/P5): the bearer token rides a modulus-pinned TLS
+    // socket, never a cleartext header. FAIL CLOSED — there is deliberately no
+    // http fallback here, because a blocked/spoofed TLS port must NOT be allowed
+    // to downgrade the token back onto the wire. (The probe/ping/pair paths stay
+    // plaintext: they are pre-auth and carry no token.)
+    if (settings.secure && settings.pinModulus && settings.tlsPort) {
+      const pr = await Promise.race([
+        pinnedRequest(host, settings.tlsPort, settings.pinModulus, {
+          method,
+          path,
+          token: auth ? settings.token : undefined,
+          body: body !== undefined ? JSON.stringify(body) : undefined,
+          timeoutMs,
+        }),
+        hardDeadline,
+      ]);
+      return pinnedToResponse(pr);
+    }
     const headers: Record<string, string> = {};
     if (auth) headers.Authorization = `Bearer ${settings.token}`;
     if (body !== undefined) headers['Content-Type'] = 'application/json';
@@ -1514,6 +1550,12 @@ async function attempt(
     return await Promise.race([fetchPromise, hardDeadline]);
   } catch (e: unknown) {
     if (e instanceof ApiError) throw e; // hard-deadline timeout, already shaped
+    if (isPinMismatchError(e)) {
+      // A secure box presented an unexpected cert. Fail closed, do NOT retry over
+      // plaintext; surface as unreachable so the reconnect loop keeps trying the
+      // pinned transport (a re-pair is the real fix).
+      throw new ApiError('unreachable', 'TLS certificate pin mismatch');
+    }
     if (e instanceof Error && e.name === 'AbortError') {
       throw new ApiError('timeout', `Timed out after ${timeoutMs / 1000}s`);
     }

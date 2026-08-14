@@ -10,6 +10,7 @@ import React, {
 import { AppState, AppStateStatus } from 'react-native';
 
 import { pingMatchesBox } from './api';
+import { resolveTlsPin } from './boxTlsPair';
 import { getPref } from './prefs';
 import { isAllowedPairHost } from './pairLink';
 import {
@@ -36,6 +37,14 @@ export type AddBoxInput = {
   padMode?: Box['padMode'];
   /** Fallback IP (e.g. from the pairing QR's &ip= param). */
   lastIp?: string;
+  /**
+   * TLS advert from the pairing QR (agent >= P2): the HTTPS port + DER-cert
+   * SHA-256. When both are present, addBox derives + verifies the pin
+   * (resolveTlsPin) and stores `secure` — otherwise the box pairs over plaintext,
+   * exactly as before. Only the QR/deep-link paths supply these.
+   */
+  tlsPort?: number;
+  fp?: string;
   /**
    * The user personally typed this host into the manual add form. ONLY that
    * form may set it. Every other producer of a host string is a machine
@@ -144,6 +153,18 @@ export function SettingsProvider({ children }: { children: React.ReactNode }) {
       const inputIp =
         input.lastIp && isValidLanIp(input.lastIp) ? input.lastIp : undefined;
 
+      // TLS pin (spec §2): when the QR advertised a tls_port + fp, fetch the cert
+      // over plaintext, verify SHA-256(DER)==fp (the QR-delivered anchor), and
+      // derive the modulus to pin. Null on any failure/mismatch -> the box pairs
+      // over plaintext (no regression). This is the ONE place a pin is enabled.
+      const pin =
+        typeof input.tlsPort === 'number' && input.fp
+          ? await resolveTlsPin(host, port, input.tlsPort, input.fp)
+          : null;
+      const pinFields = pin
+        ? { secure: true as const, tlsPort: pin.tlsPort, fp: pin.fp, pinModulus: pin.pinModulus }
+        : {};
+
       const existing = cur.boxes.find((b) => sameTarget(b, host, port));
       if (existing) {
         // Update the match's token/name in place; make it active. No duplicate.
@@ -154,6 +175,9 @@ export function SettingsProvider({ children }: { children: React.ReactNode }) {
           padMode: input.padMode ?? existing.padMode,
           // A fresh pairing's IP is newer than whatever was cached.
           lastIp: inputIp || existing.lastIp,
+          // Re-pairing with a verified TLS advert refreshes the pin (covers a box
+          // that re-signed its cert); a link without one leaves the pin untouched.
+          ...pinFields,
         };
         const boxes = cur.boxes.map((b) => (b.id === existing.id ? updated : b));
         await commit({ boxes, activeBoxId: existing.id });
@@ -169,6 +193,7 @@ export function SettingsProvider({ children }: { children: React.ReactNode }) {
         // A newly paired box starts on the user's preferred input mode.
         padMode: input.padMode ?? getPref('defaultPadMode'),
         lastIp: inputIp,
+        ...pinFields,
       };
       await commit({
         boxes: [...cur.boxes, box],
