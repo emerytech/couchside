@@ -141,6 +141,45 @@ try:
     check("legacy helper (no field) -> screenstream_h264 True (trust ok)",
           cs.screenstream_h264_available(), True)
 
+    # --- 2c. live_screenstream_caps: session-volatile, cached, degrade closed
+    # /api/status recomputes these per request (like `desktop`) so a Game Mode <->
+    # desktop switch is reflected WITHOUT restarting the agent — the whole point of
+    # the fix. One probe answers both; a short TTL bounds re-probing.
+    print()
+    print("2c. live_screenstream_caps: session-volatile + TTL cache + degrade closed")
+
+    def reset_live_cache():
+        cs._SCREENCAST_CAPS["ts"] = 0.0
+        cs._SCREENCAST_CAPS["val"] = None
+
+    reset_live_cache()
+    one_status({"ok": True, "screencast": True, "h264": True})
+    check("live: backend + h264 -> both True", cs.live_screenstream_caps(),
+          {"screenstream": True, "screenstream_h264": True})
+
+    reset_live_cache()
+    one_status({"ok": True, "screencast": False, "h264": True})
+    check("live: no backend (game mode) -> both False", cs.live_screenstream_caps(),
+          {"screenstream": False, "screenstream_h264": False})
+
+    reset_live_cache()
+    cs.PORTAL_SOCKET = "/nonexistent-couchside-test/portal.sock"
+    check("live: no helper -> both False (degrade closed)", cs.live_screenstream_caps(),
+          {"screenstream": False, "screenstream_h264": False})
+
+    # TTL cache: a second call within TTL returns the cached value with NO re-probe.
+    # Proven by pointing the socket at a dead path after the first probe — a
+    # re-probe would degrade to False, so an unchanged True proves it was cached.
+    reset_live_cache()
+    one_status({"ok": True, "screencast": True, "h264": False})
+    first = cs.live_screenstream_caps()
+    cs.PORTAL_SOCKET = "/nonexistent-couchside-test/portal.sock"
+    second = cs.live_screenstream_caps()
+    check("live: within-TTL call is cached (no re-probe)", second, first)
+    check("live: cached value survives a dead socket (proves no re-probe)",
+          second, {"screenstream": True, "screenstream_h264": False})
+
+    reset_live_cache()
     cs.PORTAL_SOCKET = saved_portal_socket
 
     # --- 3. absolute pointer input on /ws/gamepad --------------------------

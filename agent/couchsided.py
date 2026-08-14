@@ -3428,11 +3428,12 @@ def real_status():
         **({"audio": audio} if audio else {}),
         "net": net_info_cached(),
         "agent_version": VERSION,
-        # CAPS is a boot-time snapshot, but "desktop" is SESSION-volatile (it
-        # flips with every Game Mode <-> desktop switch), so recompute it per
-        # request — a cheap pgrep — or the app's desktop cluster would freeze
-        # at whatever session the agent booted in.
-        "caps": dict(CAPS, desktop=desktop_available()),
+        # CAPS is a boot-time snapshot, but a few caps are SESSION-volatile — they
+        # flip with every Game Mode <-> desktop switch — so recompute them per
+        # request or the app would freeze at whatever session the agent booted in.
+        # `desktop` is a cheap pgrep; screenstream[_h264] track the portal backend
+        # (present on desktop, absent in Game Mode) and share a short-TTL probe.
+        "caps": dict(CAPS, desktop=desktop_available(), **live_screenstream_caps()),
         # False when the config dir isn't writable by the agent user, so the app
         # can warn that TV pairing / launcher edits won't persist (agent >= 2.9.12).
         "config_writable": CONFIG_WRITABLE,
@@ -6380,6 +6381,37 @@ def screenstream_h264_available():
     game-mode box (no backend) never advertises the H.264 tier it can't serve."""
     r = _portal_call("status", timeout=2)
     return bool(r and r.get("ok") and r.get("h264") and _portal_backend_ok(r))
+
+
+_SCREENCAST_CAPS = {"ts": 0.0, "val": None}
+_SCREENCAST_CAPS_TTL = 5.0
+
+
+def live_screenstream_caps():
+    """Session-volatile screenstream[_h264] caps for /api/status — recomputed per
+    request like `desktop`, NOT read from the boot-time CAPS snapshot.
+
+    The portal's ScreenCast/RemoteDesktop backend is present on a KDE desktop
+    session and ABSENT in Steam Game Mode, so these caps flip with every Game Mode
+    <-> desktop switch. Freezing them at boot leaves stale caps in either direction:
+    a box booted in desktop that launches Game Mode keeps screenstream=True and the
+    app burns a connect timeout on each dead fluid tier before the poller (the ~10s
+    lag); a box booted in Game Mode switched to desktop would never be offered fluid.
+
+    One portal `status` probe answers both caps. A short TTL bounds a burst of
+    pollers (and a fleet of phones) to at most one probe every few seconds. Degrade
+    closed (§3.7): no helper, no backend, or any error -> both False."""
+    now = time.monotonic()
+    c = _SCREENCAST_CAPS
+    if c["val"] is not None and now - c["ts"] < _SCREENCAST_CAPS_TTL:
+        return c["val"]
+    r = _portal_call("status", timeout=2)
+    if r and r.get("ok") and _portal_backend_ok(r):
+        val = {"screenstream": True, "screenstream_h264": bool(r.get("h264"))}
+    else:
+        val = {"screenstream": False, "screenstream_h264": False}
+    c["ts"], c["val"] = now, val
+    return val
 
 
 def _portal_stream_h264(profile, timeout=10):
