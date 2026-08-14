@@ -1,5 +1,1 @@
-A much faster remote screen in Game Mode: in Steam Big Picture, the remote viewer no longer hangs for several seconds before the first picture — it shows the live preview right away, in about a second. Desktop sessions still stream smooth video.
-
-Added TLS encryption with certificate pinning for the connection to your box, so a box that enables it keeps your traffic and access token off your network. A lock badge shows when it's on.
-
-Plus reliability fixes and polish.
+Encryption now turns on by itself. Once your box has the latest update, the app detects its encrypted connection and locks onto it automatically — the green lock appears on your boxes with no re-pairing needed. Plus reliability fixes and polish.
