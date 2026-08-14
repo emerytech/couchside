@@ -926,9 +926,9 @@ function SetupBody() {
   const [price, setPrice] = useState<string | null>(null);
   useEffect(() => {
     let cancelled = false;
-    getProduct().then((p) => {
+    void getProduct().then((p) => {
       if (!cancelled && p?.displayPrice) setPrice(p.displayPrice);
-    });
+    }).catch(() => {});
     return () => {
       cancelled = true;
     };

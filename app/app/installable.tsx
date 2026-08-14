@@ -156,7 +156,7 @@ function GameSheet({
   useEffect(() => {
     let live = true;
     setReview(undefined);
-    void fetchSteamReview(appid).then((r) => { if (live) setReview(r); });
+    void fetchSteamReview(appid).then((r) => { if (live) setReview(r); }).catch(() => {});
     return () => { live = false; };
   }, [appid]);
 
