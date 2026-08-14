@@ -17,7 +17,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 
-import { normalizeModulus, parseHttpResponse } from '../boxTlsCodec.ts';
+import { httpFrameLength, normalizeModulus, parseHttpResponse } from '../boxTlsCodec.ts';
 
 test('normalizeModulus reduces getPeerCertificate vs forge formats to one string', () => {
   // The whole point: a colon-delimited uppercase modulus (one platform's shape)
@@ -99,4 +99,40 @@ test('parseHttpResponse: colons in the body do not leak into header parsing', ()
   assert.deepEqual(Object.keys(r.headers), ['x-a']);
   assert.equal(r.headers['x-a'], '1');
   assert.deepEqual(JSON.parse(r.body), { ratio: '16:9', t: 'a:b:c' });
+});
+
+// httpFrameLength: frames responses on a REUSED keep-alive socket. A wrong length
+// desyncs the stream — every subsequent response on that socket is garbage.
+test('httpFrameLength: -1 until the header terminator, then headers+Content-Length', () => {
+  assert.equal(httpFrameLength(enc('HTTP/1.1 200 OK\r\nContent-Length: 11\r\n')), -1); // headers incomplete
+  const full = 'HTTP/1.1 200 OK\r\nContent-Length: 11\r\n\r\n{"ok":true}';
+  assert.equal(httpFrameLength(enc(full)), full.length);
+  assert.equal(httpFrameLength(enc(full)), full.indexOf('\r\n\r\n') + 4 + 11);
+});
+
+test('httpFrameLength: case-insensitive Content-Length; no CL = header-only', () => {
+  const lc = 'HTTP/1.1 200 OK\r\ncontent-length: 3\r\n\r\nabc';
+  assert.equal(httpFrameLength(enc(lc)), lc.length);
+  const none = 'HTTP/1.1 204 No Content\r\nX: y\r\n\r\n';
+  assert.equal(httpFrameLength(enc(none)), none.length); // sep+4, no body
+});
+
+test('httpFrameLength: with two responses buffered, returns ONLY the first', () => {
+  // The crux of keep-alive framing: the frame length must stop at the end of the
+  // first response so the leftover bytes are handed to the next one intact.
+  const first = 'HTTP/1.1 200 OK\r\nContent-Length: 5\r\n\r\nhello';
+  const second = 'HTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\nhi';
+  const n = httpFrameLength(enc(first + second));
+  assert.equal(n, first.length);
+  // the remainder is exactly the second response, framable on its own
+  const restBytes = enc(first + second).subarray(n);
+  assert.equal(httpFrameLength(restBytes), second.length);
+});
+
+test('httpFrameLength: body not fully arrived still returns the total expected length', () => {
+  // Headers say 11 bytes but only 4 arrived — caller keeps buffering until it has n.
+  const partial = 'HTTP/1.1 200 OK\r\nContent-Length: 11\r\n\r\n{"ok';
+  const n = httpFrameLength(enc(partial));
+  assert.equal(n, partial.indexOf('\r\n\r\n') + 4 + 11);
+  assert.ok(enc(partial).length < n); // caller correctly waits for more
 });

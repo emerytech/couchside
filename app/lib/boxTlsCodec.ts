@@ -59,3 +59,19 @@ export function parseHttpResponse(raw: Uint8Array): PinnedResponse | null {
   const body = Buffer.from(bodyBytes).toString('utf8');
   return { status, headers, body, bodyBytes };
 }
+
+/**
+ * Total byte length (headers + body) of ONE HTTP/1.1 response at the front of an
+ * accumulating buffer, or -1 while the header block (CRLFCRLF) is still arriving.
+ * The body length is the `Content-Length` header (the agent always sends an exact
+ * one; a response with none is treated as header-only). This is what frames a
+ * REUSED keep-alive socket — read exactly this many bytes, the rest belongs to the
+ * next response. Header bytes are scanned as latin1 so the CRLF search is byte-exact.
+ */
+export function httpFrameLength(raw: Uint8Array): number {
+  const head = Buffer.from(raw).toString('latin1');
+  const sep = head.indexOf('\r\n\r\n');
+  if (sep < 0) return -1;
+  const cl = /content-length:\s*(\d+)/i.exec(head.slice(0, sep));
+  return sep + 4 + (cl ? parseInt(cl[1], 10) : 0);
+}

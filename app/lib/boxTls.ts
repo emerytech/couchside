@@ -24,7 +24,7 @@
 import { Buffer } from 'buffer';
 import TcpSocket from 'react-native-tcp-socket';
 
-import { normalizeModulus, parseHttpResponse, type PinnedResponse } from './boxTlsCodec';
+import { httpFrameLength, normalizeModulus, parseHttpResponse, type PinnedResponse } from './boxTlsCodec';
 
 export { normalizeModulus, parseHttpResponse } from './boxTlsCodec';
 export type { PinnedResponse } from './boxTlsCodec';
@@ -133,43 +133,166 @@ export function connectPinned(
   });
 }
 
-// ---- Hand-rolled HTTP/1.1 client over the pinned socket ---------------------
+// ---- Hand-rolled HTTP/1.1 client over a REUSED pinned socket ----------------
+//
+// A per-box persistent connection: connect + verify the modulus ONCE, then reuse
+// the socket for every request with HTTP/1.1 keep-alive + Content-Length framing.
+// The alternative — a fresh TLS handshake + getPeerCertificate retry PER request —
+// stacks into seconds of latency on repeated calls (the screen still-frame poll,
+// dozens of connects per second). Requests to one box are serialized over its one
+// socket; the connection self-heals on close/error (the pin is re-verified on the
+// reconnect). The agent is HTTP/1.1 and sends an exact Content-Length on every
+// response, so framing on a reused socket is safe.
+
+function u8concat(a: Uint8Array, b: Uint8Array): Uint8Array {
+  const out = new Uint8Array(a.length + b.length);
+  out.set(a);
+  out.set(b, a.length);
+  return out;
+}
+
+type PendingReq = {
+  bytes: Uint8Array;
+  resolve: (r: PinnedResponse) => void;
+  reject: (e: Error) => void;
+  timeoutMs: number;
+};
+
+class PinnedConn {
+  private sock: PinnedSocket | null = null;
+  private connectP: Promise<PinnedSocket> | null = null;
+  private queue: PendingReq[] = [];
+  private active: PendingReq | null = null;
+  private timer: ReturnType<typeof setTimeout> | null = null;
+  private buf: Uint8Array = new Uint8Array(0);
+  private wantLen = -1; // total bytes (headers+body) of the in-flight response, -1 until headers parse
+
+  constructor(
+    private host: string,
+    private port: number,
+    private pin: string,
+    private caPem?: string,
+  ) {}
+
+  request(bytes: Uint8Array, timeoutMs: number): Promise<PinnedResponse> {
+    return new Promise((resolve, reject) => {
+      this.queue.push({ bytes, resolve, reject, timeoutMs });
+      void this.pump();
+    });
+  }
+
+  private ensureSock(): Promise<PinnedSocket> {
+    if (this.sock) return Promise.resolve(this.sock);
+    if (!this.connectP) {
+      this.connectP = connectPinned(this.host, this.port, this.pin, { caPem: this.caPem })
+        .then((s) => {
+          this.sock = s;
+          this.buf = new Uint8Array(0);
+          s.onData((b) => this.onData(b));
+          s.onClose(() => this.onClose());
+          return s;
+        })
+        .finally(() => {
+          this.connectP = null;
+        });
+    }
+    return this.connectP;
+  }
+
+  private async pump(): Promise<void> {
+    if (this.active || this.queue.length === 0) return;
+    const req = this.queue[0];
+    this.active = req;
+    this.wantLen = -1;
+    let sock: PinnedSocket;
+    try {
+      sock = await this.ensureSock();
+    } catch (e) {
+      this.failActive(e as Error);
+      return;
+    }
+    this.timer = setTimeout(() => this.failActive(new Error('pinned request timeout')), req.timeoutMs);
+    try {
+      sock.write(req.bytes);
+    } catch (e) {
+      this.failActive(e as Error);
+    }
+  }
+
+  private onData(bytes: Uint8Array): void {
+    if (!this.active) return; // stray bytes with nothing in flight — drop
+    this.buf = u8concat(this.buf, bytes);
+    if (this.wantLen < 0) {
+      this.wantLen = httpFrameLength(this.buf);
+      if (this.wantLen < 0) return; // headers still arriving
+    }
+    if (this.buf.length < this.wantLen) return; // body still arriving
+    const raw = this.buf.subarray(0, this.wantLen);
+    const rest = this.buf.slice(this.wantLen);
+    const parsed = parseHttpResponse(raw);
+    const req = this.active;
+    if (this.timer) { clearTimeout(this.timer); this.timer = null; }
+    this.queue.shift();
+    this.active = null;
+    this.wantLen = -1;
+    this.buf = rest;
+    if (parsed) req!.resolve(parsed);
+    else req!.reject(new Error('malformed HTTP response'));
+    void this.pump();
+  }
+
+  private failActive(e: Error): void {
+    const req = this.active;
+    if (this.timer) { clearTimeout(this.timer); this.timer = null; }
+    this.active = null;
+    this.wantLen = -1;
+    // A mid-response error may have left the stream desynced — drop the socket so
+    // the next request reconnects and re-verifies the pin.
+    try { this.sock?.close(); } catch {}
+    this.sock = null;
+    this.buf = new Uint8Array(0);
+    if (req) {
+      this.queue.shift();
+      req.reject(e);
+    }
+    void this.pump();
+  }
+
+  private onClose(): void {
+    this.sock = null;
+    this.buf = new Uint8Array(0);
+    if (this.active) this.failActive(new Error('pinned socket closed'));
+    else void this.pump();
+  }
+}
+
+const POOL = new Map<string, PinnedConn>();
 
 /**
- * One HTTP/1.1 request over a freshly-pinned socket, `Connection: close` so the
- * box closes when done and we read the whole response. Replaces `fetch` for box
- * calls when the box is `secure`. Small JSON responses only — this is the box
- * control API, not a bulk transfer.
+ * One HTTP/1.1 request over a REUSED, modulus-pinned keep-alive socket to the box.
+ * Replaces fetch for box calls when the box is secure. Requests to the same box
+ * share one TLS connection (handshake + pin verify amortized), serialized in order.
  */
-export async function pinnedRequest(
+export function pinnedRequest(
   host: string,
   port: number,
   pinModulus: string,
   req: { method?: string; path: string; token?: string; body?: string; caPem?: string; timeoutMs?: number },
 ): Promise<PinnedResponse> {
-  const sock = await connectPinned(host, port, pinModulus, { caPem: req.caPem, timeoutMs: req.timeoutMs });
-  return new Promise<PinnedResponse>((resolve, reject) => {
-    const chunks: Uint8Array[] = [];
-    let done = false;
-    const finish = (fn: () => void) => { if (done) return; done = true; try { sock.close(); } catch {} fn(); };
-    const readTimer = setTimeout(
-      () => finish(() => reject(new Error('pinned request read timeout'))),
-      req.timeoutMs ?? 12000,
-    );
-    sock.onData((b) => chunks.push(b));
-    sock.onClose(() => {
-      clearTimeout(readTimer);
-      const raw = Buffer.concat(chunks.map((c) => Buffer.from(c)));
-      const parsed = parseHttpResponse(new Uint8Array(raw));
-      finish(() => (parsed ? resolve(parsed) : reject(new Error('malformed HTTP response'))));
-    });
-    const method = req.method ?? 'GET';
-    const bodyBytes = req.body ? Buffer.from(req.body, 'utf8') : null;
-    let head = `${method} ${req.path} HTTP/1.1\r\nHost: ${host}\r\nConnection: close\r\n`;
-    if (req.token) head += `Authorization: Bearer ${req.token}\r\n`;
-    if (bodyBytes) head += `Content-Type: application/json\r\nContent-Length: ${bodyBytes.length}\r\n`;
-    head += '\r\n';
-    sock.write(new Uint8Array(Buffer.from(head, 'utf8')));
-    if (bodyBytes) sock.write(new Uint8Array(bodyBytes));
-  });
+  const key = `${host}:${port}:${pinModulus.slice(0, 16)}`;
+  let conn = POOL.get(key);
+  if (!conn) {
+    conn = new PinnedConn(host, port, pinModulus, req.caPem);
+    POOL.set(key, conn);
+  }
+  const method = req.method ?? 'GET';
+  const bodyBytes = req.body ? Buffer.from(req.body, 'utf8') : null;
+  let head = `${method} ${req.path} HTTP/1.1\r\nHost: ${host}\r\nConnection: keep-alive\r\n`;
+  if (req.token) head += `Authorization: Bearer ${req.token}\r\n`;
+  if (bodyBytes) head += `Content-Type: application/json\r\nContent-Length: ${bodyBytes.length}\r\n`;
+  head += '\r\n';
+  const reqBytes = bodyBytes
+    ? u8concat(new Uint8Array(Buffer.from(head, 'utf8')), new Uint8Array(bodyBytes))
+    : new Uint8Array(Buffer.from(head, 'utf8'));
+  return conn.request(reqBytes, req.timeoutMs ?? 12000);
 }
