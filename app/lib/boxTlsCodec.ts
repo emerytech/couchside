@@ -29,7 +29,14 @@ export function normalizeModulus(v?: string | null): string | null {
   return h || null;
 }
 
-export type PinnedResponse = { status: number; headers: Record<string, string>; body: string };
+export type PinnedResponse = {
+  status: number;
+  headers: Record<string, string>;
+  /** Body decoded as UTF-8 (the box control API is JSON). */
+  body: string;
+  /** Raw body bytes — for binary responses (cover art, screen frames). */
+  bodyBytes: Uint8Array;
+};
 
 /**
  * Parse a raw HTTP/1.1 response buffer into status + headers + body. Returns null
@@ -48,6 +55,7 @@ export function parseHttpResponse(raw: Uint8Array): PinnedResponse | null {
     const idx = lines[i].indexOf(':');
     if (idx > 0) headers[lines[i].slice(0, idx).trim().toLowerCase()] = lines[i].slice(idx + 1).trim();
   }
-  const body = Buffer.from(raw.subarray(sep + 4)).toString('utf8');
-  return { status, headers, body };
+  const bodyBytes = raw.subarray(sep + 4);
+  const body = Buffer.from(bodyBytes).toString('utf8');
+  return { status, headers, body, bodyBytes };
 }

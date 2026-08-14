@@ -1419,6 +1419,50 @@ export function base64FromArrayBuffer(buf: ArrayBuffer): string {
 }
 
 /**
+ * GET a binary body (cover art, screen frames) with bearer auth. On a `secure`
+ * box the token AND the bytes ride the modulus-pinned TLS socket (never cleartext
+ * header/query); plaintext http otherwise. Returns content-type + the declared
+ * length (for the caller's pre-decode cap) + the raw bytes, or null on non-2xx /
+ * transport error. NOTE: over the pinned path the whole body is read before this
+ * returns, so the Content-Length pre-read refusal is advisory there — a paired
+ * (trusted) box only; a hard read cap on pinnedRequest is a follow-up.
+ */
+async function binaryGet(
+  settings: ConnSettings,
+  path: string,
+  signal?: AbortSignal,
+): Promise<{ contentType: string; declaredLen: string | null; bytes: Uint8Array } | null> {
+  const host = resolveEffectiveHost(settings);
+  try {
+    if (settings.secure && settings.pinModulus && settings.tlsPort) {
+      const pr = await pinnedRequest(host, settings.tlsPort, settings.pinModulus, {
+        method: 'GET',
+        path,
+        token: settings.token,
+      });
+      if (pr.status < 200 || pr.status >= 300) return null;
+      return {
+        contentType: pr.headers['content-type'] || 'image/jpeg',
+        declaredLen: pr.headers['content-length'] ?? null,
+        bytes: pr.bodyBytes,
+      };
+    }
+    const res = await fetch(`http://${host}:${settings.port}${path}`, {
+      headers: { Authorization: `Bearer ${settings.token}` },
+      signal,
+    });
+    if (!res.ok) return null;
+    return {
+      contentType: res.headers.get('Content-Type') || 'image/jpeg',
+      declaredLen: res.headers.get('Content-Length'),
+      bytes: new Uint8Array(await res.arrayBuffer()),
+    };
+  } catch {
+    return null;
+  }
+}
+
+/**
  * Album art for a player's current track, as a base64 `data:` URI for <Image>.
  * Fetches from the resolved host (§3b) with the bearer token (an <Image> URL
  * can't carry Authorization) and inlines the bytes, so nothing sensitive lands
@@ -1429,25 +1473,15 @@ export async function mediaArtSource(
   player: string,
   artKey: string,
 ): Promise<string | null> {
-  const host = resolveEffectiveHost(settings);
-  const url = `http://${host}:${settings.port}/api/media/art?player=${encodeURIComponent(
-    player,
-  )}&k=${encodeURIComponent(artKey)}`;
-  try {
-    const res = await fetch(url, { headers: { Authorization: `Bearer ${settings.token}` } });
-    if (!res.ok) return null;
-    // Refuse an oversized body BEFORE reading it — the only point where refusing
-    // actually avoids buffering the bytes (KI-035).
-    if (isDeclaredTooLarge(res.headers.get('Content-Length'))) return null;
-    const type = res.headers.get('Content-Type') || 'image/jpeg';
-    const buf = await res.arrayBuffer();
-    // Backstop for a missing or dishonest Content-Length: stop here rather than
-    // base64-amplifying it ~1.33x and handing a giant string to <Image>.
-    if (!isUsableBodySize(buf.byteLength)) return null;
-    return `data:${type};base64,${base64FromArrayBuffer(buf)}`;
-  } catch {
-    return null;
-  }
+  const path = `/api/media/art?player=${encodeURIComponent(player)}&k=${encodeURIComponent(artKey)}`;
+  const r = await binaryGet(settings, path);
+  if (!r) return null;
+  // Refuse an oversized body (plaintext: before reading; see binaryGet's note).
+  if (isDeclaredTooLarge(r.declaredLen)) return null;
+  // Backstop for a missing/dishonest Content-Length: stop rather than base64-
+  // amplifying it ~1.33x and handing a giant string to <Image>.
+  if (!isUsableBodySize(r.bytes.byteLength)) return null;
+  return `data:${r.contentType};base64,${Buffer.from(r.bytes).toString('base64')}`;
 }
 
 /**
@@ -1460,21 +1494,14 @@ export async function mediaArtSource(
 export async function screenFrameSource(
   settings: ConnSettings, signal?: AbortSignal,
 ): Promise<string | null> {
-  const host = resolveEffectiveHost(settings);
-  const url = `http://${host}:${settings.port}/api/screen/frame?t=${Date.now()}`;
-  try {
-    const res = await fetch(url, { headers: { Authorization: `Bearer ${settings.token}` }, signal });
-    if (!res.ok) return null;
-    // Same cap as album art, and it matters more here: the preview POLLS, so an
-    // oversized frame gets a fresh chance at the phone's memory every tick.
-    if (isDeclaredTooLarge(res.headers.get('Content-Length'))) return null;
-    const type = res.headers.get('Content-Type') || 'image/jpeg';
-    const buf = await res.arrayBuffer();
-    if (!isUsableBodySize(buf.byteLength)) return null;
-    return `data:${type};base64,${base64FromArrayBuffer(buf)}`;
-  } catch {
-    return null;
-  }
+  const path = `/api/screen/frame?t=${Date.now()}`;
+  const r = await binaryGet(settings, path, signal);
+  if (!r) return null;
+  // Same cap as album art, and it matters more here: the preview POLLS, so an
+  // oversized frame gets a fresh chance at the phone's memory every tick.
+  if (isDeclaredTooLarge(r.declaredLen)) return null;
+  if (!isUsableBodySize(r.bytes.byteLength)) return null;
+  return `data:${r.contentType};base64,${Buffer.from(r.bytes).toString('base64')}`;
 }
 
 /** One fetch attempt against a specific host. Throws ApiError on transport failure. */
