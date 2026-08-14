@@ -48,7 +48,7 @@ except ImportError:  # pragma: no cover
     fcntl = None
 
 APP_NAME = "couchside-agent"
-VERSION = "2.9.87"
+VERSION = "2.9.88"
 UID = os.getuid()
 XDG_RUNTIME_DIR = "/run/user/%d" % UID
 
@@ -629,25 +629,32 @@ def _parse_config(raw):
 
 def _parse_tls(raw):
     """Parse+validate the optional top-level "tls" block. Returns a normalized
-    dict ({"enabled": bool, "port": int, ...persisted cert fields}) or None when
-    absent.
+    dict ({"enabled": bool, "port": int, ...persisted cert fields}).
 
-    Degrade-closed: any validation failure returns a DISABLED config (or None),
-    never raises. A malformed tls block can neither crash the agent nor silently
-    flip encryption on. cert/key/sans/fp/spki are written by _tls_ensure and
-    round-tripped here — mirrors the androidtv cert-in-config precedent."""
+    TLS is ON BY DEFAULT (since 2.9.88): an ABSENT or malformed tls block yields an
+    ENABLED config, so a box auto-mints a self-signed cert and serves HTTPS on
+    DEFAULT_TLS_PORT ALONGSIDE the untouched plaintext listener (dual-listen, never
+    flips — old apps keep using 8787; new apps can pin). To OPT OUT, set
+    `"tls": {"enabled": false}`.
+
+    Degrade-closed still holds: this only asks for TLS — cert generation happens in
+    _tls_ensure, and if it fails (no openssl, etc.) the HTTPS listener simply never
+    starts and the plaintext listener serves alone. cert/key/sans/fp/spki are
+    written by _tls_ensure and round-tripped here."""
+    default_on = {"enabled": True, "port": DEFAULT_TLS_PORT}
     tls_raw = raw.get("tls")
     if tls_raw is None:
-        return None
+        return dict(default_on)
     if not isinstance(tls_raw, dict):
-        print("warning: tls must be an object, ignoring", file=sys.stderr, flush=True)
-        return None
+        print("warning: tls must be an object, using defaults (TLS on)",
+              file=sys.stderr, flush=True)
+        return dict(default_on)
     port = tls_raw.get("port", DEFAULT_TLS_PORT)
     if isinstance(port, bool) or not isinstance(port, int) or not (1 <= port <= 65535):
         print("warning: tls.port must be 1..65535, using %d" % DEFAULT_TLS_PORT,
               file=sys.stderr, flush=True)
         port = DEFAULT_TLS_PORT
-    out = {"enabled": bool(tls_raw.get("enabled", False)), "port": port}
+    out = {"enabled": bool(tls_raw.get("enabled", True)), "port": port}
     for field in ("cert", "key", "spki", "fp"):
         val = tls_raw.get(field)
         if isinstance(val, str) and val:

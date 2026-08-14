@@ -62,7 +62,7 @@ export type FoundBox = {
 };
 
 /** Extract + validate a box's advertised TLS pin fields from a ping/UDP reply. */
-function readTlsAdvert(d: Record<string, unknown>): { tlsPort?: number; fp?: string } {
+export function readTlsAdvert(d: Record<string, unknown>): { tlsPort?: number; fp?: string } {
   const p = d.tls_port;
   const f = typeof d.tls_fp === 'string' ? d.tls_fp.toLowerCase() : '';
   if (typeof p === 'number' && Number.isInteger(p) && p >= 1 && p <= 65535 && /^[0-9a-f]{64}$/.test(f)) {
