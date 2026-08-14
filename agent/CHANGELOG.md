@@ -18,6 +18,18 @@ the same thing regardless of what actually changed.
 Write for the person holding the phone, not for the commit log. They are
 deciding whether to press "Update now" on a machine across the room.
 
+## 2.9.87
+
+**A much faster remote screen in Game Mode.** When your box is in Steam Game Mode
+(Big Picture), opening the remote screen viewer on the phone used to hang for
+several seconds — sometimes up to ten — before the first picture appeared. Now it
+goes straight to the live preview, so what's on your TV shows up on the phone in
+about a second. (Game Mode can't do the fully smooth video the desktop uses — that
+is a limit of the game compositor itself, not the app — so this is the fastest
+preview Game Mode can give.) Desktop sessions are unchanged and still stream smooth
+video. The viewer also keeps up now when you switch between Game Mode and the
+desktop without restarting anything.
+
 ## 2.9.86
 
 **Correct CPU temperature on AMD boxes.** On some AMD builds (for example a Ryzen
