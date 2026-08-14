@@ -50,7 +50,26 @@ export type FoundBox = {
   port: number;
   /** Agent version (so the UI can flag a box too old to PIN-pair). */
   version: string;
+  /**
+   * TLS advert (agent >= P2): the HTTPS port + DER-cert SHA-256 the box announced
+   * on /api/ping / the UDP reply. Present ONLY as a validated pair. Used to pin a
+   * discovered box at pair time. NOTE the trust: unlike a QR fp (read off the box's
+   * own screen), this fp arrives over the LAN — TOFU, i.e. it stops a PASSIVE
+   * eavesdropper but not an active MITM present at first pairing.
+   */
+  tlsPort?: number;
+  fp?: string;
 };
+
+/** Extract + validate a box's advertised TLS pin fields from a ping/UDP reply. */
+function readTlsAdvert(d: Record<string, unknown>): { tlsPort?: number; fp?: string } {
+  const p = d.tls_port;
+  const f = typeof d.tls_fp === 'string' ? d.tls_fp.toLowerCase() : '';
+  if (typeof p === 'number' && Number.isInteger(p) && p >= 1 && p <= 65535 && /^[0-9a-f]{64}$/.test(f)) {
+    return { tlsPort: p, fp: f };
+  }
+  return {};
+}
 
 /**
  * The device's own LAN IPv4, used to derive the /24 to sweep. Best-effort —
@@ -104,6 +123,7 @@ async function pingHost(ip: string, port: number, timeoutMs: number): Promise<Fo
       ip,
       port,
       version: typeof d.version === 'string' ? d.version : '',
+      ...readTlsAdvert(d),
     };
   } catch {
     return null; // unreachable / not an agent / timed out
@@ -238,6 +258,7 @@ function udpProbe(
             ip: rinfo.address,
             port: typeof d.port === 'number' ? d.port : port,
             version: typeof d.version === 'string' ? d.version : '',
+            ...readTlsAdvert(d),
           };
           found.set(rinfo.address, box);
           // Same drain fix as the HTTP sweep: replies land in milliseconds but

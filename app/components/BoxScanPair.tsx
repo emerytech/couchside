@@ -130,6 +130,10 @@ export function BoxScanPair({
           port: r.port ?? box.port,
           token: r.token,
           lastIp: box.ip,
+          // TOFU-pin a discovered box that advertised TLS (fp came over the LAN,
+          // not a QR — see FoundBox). Absent -> plaintext, as before.
+          tlsPort: box.tlsPort,
+          fp: box.fp,
         });
         setPhase({ k: 'idle' });
         setPin('');

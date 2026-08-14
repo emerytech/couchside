@@ -157,9 +157,13 @@ export function SettingsProvider({ children }: { children: React.ReactNode }) {
       // over plaintext, verify SHA-256(DER)==fp (the QR-delivered anchor), and
       // derive the modulus to pin. Null on any failure/mismatch -> the box pairs
       // over plaintext (no regression). This is the ONE place a pin is enabled.
+      // Fetch the cert over the IP when we have one (a QR/discovery `ip=`): an
+      // mDNS `.local` host may not resolve on the phone (observed on iOS), which
+      // would silently drop the box to plaintext. The pin binds to the cert (its
+      // modulus), not the address, so fetching by IP is equivalent + reliable.
       const pin =
         typeof input.tlsPort === 'number' && input.fp
-          ? await resolveTlsPin(host, port, input.tlsPort, input.fp)
+          ? await resolveTlsPin(inputIp || host, port, input.tlsPort, input.fp)
           : null;
       const pinFields = pin
         ? { secure: true as const, tlsPort: pin.tlsPort, fp: pin.fp, pinModulus: pin.pinModulus }
