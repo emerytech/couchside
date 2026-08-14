@@ -18,6 +18,16 @@ the same thing regardless of what actually changed.
 Write for the person holding the phone, not for the commit log. They are
 deciding whether to press "Update now" on a machine across the room.
 
+## 2.9.88
+
+**Encryption, on by default.** Your box now protects its connection automatically.
+On this update it creates its own security certificate and starts serving an
+encrypted channel **alongside** the normal one — nothing you use changes, and older
+phones keep working exactly as before (the plain connection never goes away). Pair
+or re-pair this box in the app to see the new green lock, which means the link to
+this box is encrypted and pinned to this exact machine so nothing else on your
+network can read it. (Prefer it off? Set `tls` `enabled` to false in the box config.)
+
 ## 2.9.87
 
 **A much faster remote screen in Game Mode.** When your box is in Steam Game Mode

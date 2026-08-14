@@ -65,8 +65,9 @@ def _san(cert_pem):
 
 
 def test_parse_tls():
-    # absent -> None
-    check(cs._parse_tls({}) is None, "no tls block -> None")
+    # DEFAULT-ON (2.9.88): an absent tls block enables TLS on the default port.
+    check(cs._parse_tls({}) == {"enabled": True, "port": cs.DEFAULT_TLS_PORT},
+          "no tls block -> default ON", cs._parse_tls({}))
     # enabled + explicit port
     got = cs._parse_tls({"tls": {"enabled": True, "port": 9443}})
     check(got == {"enabled": True, "port": 9443}, "enabled+port parsed", got)
@@ -74,12 +75,19 @@ def test_parse_tls():
     got = cs._parse_tls({"tls": {"enabled": True}})
     check(got and got["port"] == cs.DEFAULT_TLS_PORT,
           "default port applied", got)
-    # enabled defaults false
+    # enabled defaults TRUE within a block too (an empty block means on)
     got = cs._parse_tls({"tls": {}})
+    check(got == {"enabled": True, "port": cs.DEFAULT_TLS_PORT},
+          "enabled defaults True", got)
+    # OPT-OUT: explicit enabled:false is respected
+    got = cs._parse_tls({"tls": {"enabled": False}})
     check(got == {"enabled": False, "port": cs.DEFAULT_TLS_PORT},
-          "enabled defaults False", got)
-    # DEGRADE CLOSED: bad types never raise, never enable
-    check(cs._parse_tls({"tls": 5}) is None, "non-dict tls -> None (no raise)")
+          "enabled:false respected (opt-out)", got)
+    # DEGRADE CLOSED for TYPES: a non-dict tls block never raises; it falls back to
+    # the default-on config (TLS is additive — a garbled block should not silently
+    # DISABLE the encryption a plain box now gets).
+    check(cs._parse_tls({"tls": 5}) == {"enabled": True, "port": cs.DEFAULT_TLS_PORT},
+          "non-dict tls -> default ON (no raise)", cs._parse_tls({"tls": 5}))
     got = cs._parse_tls({"tls": {"enabled": True, "port": "nope"}})
     check(got and got["port"] == cs.DEFAULT_TLS_PORT,
           "bad port falls back to default (no raise)", got)

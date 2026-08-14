@@ -10,6 +10,7 @@ import React, {
 import { AppState, AppStateStatus } from 'react-native';
 
 import { pingMatchesBox } from './api';
+import { readTlsAdvert } from './boxDiscovery';
 import { resolveTlsPin } from './boxTlsPair';
 import { getPref } from './prefs';
 import { isAllowedPairHost } from './pairLink';
@@ -327,6 +328,13 @@ type PingProbe = {
   ok: boolean;
   /** LAN IP reported by the agent (>= 2.3), for the Box.lastIp cache. */
   ip: string | null;
+  /**
+   * Advertised TLS pin fields (agent >= 2.9.85 with TLS on), for the auto-upgrade
+   * that pins a known plaintext box in place the moment it starts advertising
+   * TLS — no re-pair. `tls_fp` from a ping is a TOFU anchor (LAN, stops passive
+   * sniffing); the QR's fp is the stronger physical-presence one.
+   */
+  tls?: { tlsPort: number; fp: string };
 };
 
 /**
@@ -362,7 +370,14 @@ async function pingHost(
     const ip = body && typeof (body as { ip?: unknown }).ip === 'string'
       ? ((body as { ip: string }).ip || null)
       : null;
-    return { ok: true, ip };
+    const advert = body && typeof body === 'object'
+      ? readTlsAdvert(body as Record<string, unknown>)
+      : {};
+    const tls =
+      typeof advert.tlsPort === 'number' && advert.fp
+        ? { tlsPort: advert.tlsPort, fp: advert.fp }
+        : undefined;
+    return { ok: true, ip, tls };
   } catch {
     return { ok: false, ip: null };
   } finally {
@@ -384,6 +399,10 @@ async function pingBox(box: Box, timeoutMs: number): Promise<PingProbe> {
   }
   return primary;
 }
+
+/** Min gap between TLS auto-upgrade attempts for a box that advertises TLS but
+ *  hasn't verified yet (a verified box flips to secure and is skipped). */
+const TLS_UPGRADE_COOLDOWN_MS = 60_000;
 
 /**
  * Periodically pings every box's /api/ping and reports reachable per id.
@@ -409,6 +428,10 @@ export function useBoxOnlineStatus(
 
   // Per-id in-flight guard so a slow box doesn't stack pings.
   const inFlight = useRef<Set<string>>(new Set());
+  // Last TLS auto-upgrade attempt per box id, so a box that advertises TLS but
+  // won't verify isn't re-resolved every tick (a box that verifies flips to
+  // secure and is skipped thereafter).
+  const upgradeAt = useRef<Map<string, number>>(new Map());
   const mounted = useRef(true);
 
   // Prune status entries for boxes that no longer exist.
@@ -468,6 +491,36 @@ export function useBoxOnlineStatus(
                 cur.lastIp !== probe.ip
               ) {
                 void updateBox(box.id, { lastIp: probe.ip });
+              }
+            }
+            // TLS AUTO-UPGRADE (turnkey): a KNOWN plaintext box that starts
+            // advertising TLS is pinned IN PLACE — no re-pair. Resolve the pin
+            // from the advertised fp (fetch cert over plaintext, verify
+            // SHA-256(DER)==fp, derive the modulus); on success store
+            // secure/tlsPort/fp/pinModulus so every request switches to the pinned
+            // transport and the lock turns green. Skipped once secure; throttled so
+            // a box that advertises TLS but won't verify isn't re-resolved each tick.
+            if (probe.ok && probe.tls && !box.secure) {
+              const now = Date.now();
+              if (now - (upgradeAt.current.get(box.id) ?? 0) >= TLS_UPGRADE_COOLDOWN_MS) {
+                upgradeAt.current.set(box.id, now);
+                const addr = probe.ip && isValidLanIp(probe.ip) ? probe.ip : box.host;
+                void resolveTlsPin(addr, box.port, probe.tls.tlsPort, probe.tls.fp)
+                  .then((pin) => {
+                    if (!mounted.current || !pin) return;
+                    const cur = boxesRef.current.find((b) => b.id === box.id);
+                    // Re-read: don't pin onto a box the user re-targeted mid-flight,
+                    // and don't clobber a pin that landed by another path.
+                    if (cur && !cur.secure && cur.host === box.host && cur.port === box.port) {
+                      void updateBox(box.id, {
+                        secure: true,
+                        tlsPort: pin.tlsPort,
+                        fp: pin.fp,
+                        pinModulus: pin.pinModulus,
+                      });
+                    }
+                  })
+                  .catch(() => {});
               }
             }
           })
