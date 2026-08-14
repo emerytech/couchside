@@ -234,6 +234,44 @@ TLS_ADVERT = None  # public TLS advert {"port","fp","spki"} or None (dark). Set 
 CONFIG_PANEL = None  # optional {"device","baud"} RS-232 panel-control config
 CONFIG_WEBOS = None  # optional {"host","mac","client_key"} LG webOS TV config
 CONFIG_SAMSUNG = None  # optional {"host","mac","token"} Samsung Tizen TV config
+
+# --- Short-lived tickets for un-pinnable native loaders (TLS P5) -------------
+# The app pins its OWN TLS socket for the API/WS (react-native-tcp-socket), but the
+# platform <Image> loader and the streamed file uploader CANNOT pin a self-signed
+# cert -- so on a TLS box they'd otherwise carry the bearer token in cleartext
+# (?token= / an Authorization header over http). Instead the app mints a SHORT-LIVED
+# TICKET over the ALREADY-PINNED channel (POST /api/ticket) and passes ?ticket= on
+# those requests. A ticket is NOT the bearer token: it grants only cover-art reads
+# for a few minutes (multi-use) or ONE file upload (single-use), never box control.
+# So even if a ticket is sniffed off the plaintext URL, the real token stays secret.
+_TICKETS = {}                 # ticket_hex -> {"exp": epoch, "once": bool}
+_TICKETS_LOCK = threading.Lock()
+_TICKET_TTL = 300             # seconds
+
+def _mint_ticket(once=False):
+    """Mint a short-lived ticket. once=True -> single-use (file upload)."""
+    t = os.urandom(16).hex()
+    now = time.time()
+    with _TICKETS_LOCK:
+        for k in [k for k, v in _TICKETS.items() if v["exp"] < now]:
+            _TICKETS.pop(k, None)  # opportunistic prune of the expired
+        _TICKETS[t] = {"exp": now + _TICKET_TTL, "once": bool(once)}
+    return t
+
+def _ticket_ok(t):
+    """True iff t is an unexpired ticket. A single-use ticket is CONSUMED here, so
+    a sniffed upload ticket cannot be replayed (the real upload already burned it)."""
+    if not t:
+        return False
+    now = time.time()
+    with _TICKETS_LOCK:
+        v = _TICKETS.get(t)
+        if not v or v["exp"] < now:
+            _TICKETS.pop(t, None)
+            return False
+        if v["once"]:
+            _TICKETS.pop(t, None)
+        return True
 CONFIG_ROKU = None  # optional {"host","name"} Roku (ECP) TV config
 CONFIG_ANDROIDTV = None  # optional {"host","cert","key","name","mac"} Android TV config
 CONFIG_VIDAA = None  # optional {"host","name","mac"} Hisense VIDAA (MQTT) config
@@ -18592,9 +18630,17 @@ class Handler(BaseHTTPRequestHandler):
         if self._authorized():
             return True
         try:
-            supplied = (parse_qs(parsed.query).get("token") or [""])[0]
+            q = parse_qs(parsed.query)
+            supplied = (q.get("token") or [""])[0]
+            ticket = (q.get("ticket") or [""])[0]
         except Exception:
             return False
+        # A short-lived TLS ticket (minted over the PINNED channel, POST /api/ticket)
+        # is accepted for image GETs so the app never puts the real bearer token on
+        # an un-pinnable <Image> request on a TLS box. Reads only -- no state-changing
+        # route uses _authorized_image, and a ticket can never satisfy _authorized().
+        if ticket and _ticket_ok(ticket):
+            return True
         return bool(supplied) and hmac.compare_digest(supplied, self.token)
 
     # -- verbs ---------------------------------------------------------------
@@ -19297,12 +19343,39 @@ class Handler(BaseHTTPRequestHandler):
                                  "port": self.port}, started)
                 return
 
+            # A single-use upload TICKET (minted over the pinned channel) lets the
+            # native streamed uploader push a file WITHOUT the bearer token on the
+            # wire. Checked before the token gate; the ticket is burned on use so a
+            # sniffed URL can't be replayed. Only /api/upload accepts it; every other
+            # state-changing route still demands the real token below.
+            if path == "/api/upload":
+                try:
+                    tk = (parse_qs(parsed.query).get("ticket") or [""])[0]
+                except Exception:
+                    tk = ""
+                if tk and _ticket_ok(tk):
+                    self._handle_upload(parsed, started)
+                    return
+
             # Authorize BEFORE reading the body: an unauthenticated client must
             # not be able to make us allocate for its body. Reject + close so the
             # undrained body can't desync a keep-alive connection.
             if not self._authorized():
                 self.close_connection = True
                 self._send(401, {"error": "unauthorized"}, started)
+                return
+
+            # POST /api/ticket[?once=1] — mint a short-lived ticket the app uses in
+            # ?ticket= on un-pinnable <Image> (cover art) / upload requests, so the
+            # real token never rides those cleartext URLs on a TLS box. Reachable
+            # only PAST the token gate, so a ticket can only be minted by a client
+            # that already holds the token (over the pinned channel).
+            if path == "/api/ticket":
+                try:
+                    once = (parse_qs(parsed.query).get("once") or [""])[0] in ("1", "true", "yes")
+                except Exception:
+                    once = False
+                self._send(200, {"ticket": _mint_ticket(once), "ttl": _TICKET_TTL}, started)
                 return
 
             # POST /api/upload?name=<filename> — a phone->box file drop. Handled

@@ -324,6 +324,14 @@ jobs:
       - name: Unit tests (TLS availability advertisement)
         run: python3 tests/test_tls_advertise.py
 
+      # TLS (P5): short-lived tickets let the un-pinnable native <Image> loader +
+      # streamed uploader avoid putting the bearer token on the wire on a TLS box.
+      # The load-bearing invariants: mint is bearer-gated, a ticket authorizes only
+      # image GETs (never a control route like /api/status), and a single-use upload
+      # ticket is burned on first use so a sniffed URL can't be replayed.
+      - name: Unit tests (TLS tickets)
+        run: python3 tests/test_tls_ticket.py
+
       # Pairing PIN full-screen launch resolver. A desktop-session box is a system
       # service with a partial env, so a bare xdg-open failed and the PIN never
       # showed (a hard stop for pairing). Pins the browser->--kiosk argv mapping
