@@ -292,6 +292,12 @@ export function useSettings(): SettingsContextValue {
       volumeTarget: activeBox.volumeTarget,
       caps: activeBox.caps,
       lastSeen: activeBox.lastSeen,
+      // TLS pin — without these the pinned transport never engages (the poll,
+      // gamepad + screen all read settings from HERE, not activeSettings()).
+      secure: activeBox.secure,
+      tlsPort: activeBox.tlsPort,
+      fp: activeBox.fp,
+      pinModulus: activeBox.pinModulus,
     };
   }, [activeBox]);
 
