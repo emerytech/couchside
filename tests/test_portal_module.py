@@ -106,6 +106,43 @@ try:
     cs.PORTAL_SOCKET = "/nonexistent-couchside-test/portal.sock"
     check("absent helper -> cap False (degrade closed)", cs.screenstream_available(), False)
 
+    # --- 2b. fluid caps gated on a REAL portal backend (the game-mode fix) --
+    # A reachable helper is NOT enough: Steam Game Mode has no ScreenCast/
+    # RemoteDesktop backend, so /ws/screen would 101-then-close. The helper reports
+    # `screencast`; the agent must report screenstream[_h264] False when it is False,
+    # or the app burns a connect timeout on each dead fluid tier before the poller.
+    print()
+    print("2b. screenstream[_h264] honest: no portal backend -> caps False")
+
+    def one_status(reply):
+        path, _ = fake_portal([reply])
+        cs.PORTAL_SOCKET = path
+
+    # desktop: backend present -> both caps True
+    one_status({"ok": True, "screencast": True, "h264": True})
+    check("backend present -> screenstream True", cs.screenstream_available(), True)
+    one_status({"ok": True, "screencast": True, "h264": True})
+    check("backend present + h264 -> screenstream_h264 True",
+          cs.screenstream_h264_available(), True)
+
+    # game mode: reachable helper but NO backend -> both caps False
+    one_status({"ok": True, "screencast": False, "h264": True})
+    check("no backend -> screenstream False (game-mode fix)",
+          cs.screenstream_available(), False)
+    one_status({"ok": True, "screencast": False, "h264": True})
+    check("no backend -> screenstream_h264 False even with h264",
+          cs.screenstream_h264_available(), False)
+
+    # legacy helper that predates the field -> trust `ok` (no regression)
+    one_status({"ok": True, "h264": True})
+    check("legacy helper (no field) -> screenstream True (trust ok)",
+          cs.screenstream_available(), True)
+    one_status({"ok": True, "h264": True})
+    check("legacy helper (no field) -> screenstream_h264 True (trust ok)",
+          cs.screenstream_h264_available(), True)
+
+    cs.PORTAL_SOCKET = saved_portal_socket
+
     # --- 3. absolute pointer input on /ws/gamepad --------------------------
     print()
     print("3. {t:'ma'}/{t:'mbp'}: holder gate + allowlist")

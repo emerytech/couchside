@@ -6348,13 +6348,25 @@ def _portal_stream(profile, timeout=10):
         return None
 
 
+def _portal_backend_ok(r):
+    """Honor the helper's `screencast` flag: True only when the portal really has
+    a ScreenCast/RemoteDesktop backend (desktop session), False in Steam Game Mode
+    where it is absent. A helper that predates the field omits it -> trust `ok`
+    (old behavior); helper and agent ship together, so a live box always reports
+    it. Keeps caps.screenstream[_h264] honest so the app skips the dead fluid tiers
+    in game mode instead of stalling on each one's connect timeout."""
+    sc = r.get("screencast")
+    return True if sc is None else bool(sc)
+
+
 def screenstream_available():
-    """True when the opt-in remote-desktop module is reachable on its socket.
-    A boot-time hint for caps.screenstream; /ws/screen re-checks live and degrades
-    closed. `status` needs no consent, so this never pops a dialog. Wrapped in
-    safe() at the call site, so any failure reads as unavailable (§3.7)."""
+    """True when the opt-in remote-desktop module is reachable on its socket AND a
+    real portal screencast backend is present. A boot-time hint for caps.screenstream;
+    /ws/screen re-checks live and degrades closed. `status` needs no consent, so this
+    never pops a dialog. Wrapped in safe() at the call site, so any failure reads as
+    unavailable (§3.7)."""
     r = _portal_call("status", timeout=2)
-    return bool(r and r.get("ok"))
+    return bool(r and r.get("ok") and _portal_backend_ok(r))
 
 
 def screenstream_h264_available():
@@ -6364,9 +6376,10 @@ def screenstream_h264_available():
     /ws/h264 (the WebCodecs tier) when the WebView also supports VideoDecoder, and
     /ws/h264 re-checks live + degrades closed. Does NOT require libnice — that is
     only for the parked /ws/webrtc path. The helper's `status` computes h264
-    honestly (see _h264_available there)."""
+    honestly (see _h264_available there). Also gated on a real portal backend, so a
+    game-mode box (no backend) never advertises the H.264 tier it can't serve."""
     r = _portal_call("status", timeout=2)
-    return bool(r and r.get("ok") and r.get("h264"))
+    return bool(r and r.get("ok") and r.get("h264") and _portal_backend_ok(r))
 
 
 def _portal_stream_h264(profile, timeout=10):

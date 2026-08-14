@@ -264,8 +264,37 @@ def _open_pipewire_fd():
 
 # ---------------------------------------------------------------- the verbs ---
 
+def _screencast_backend_ok():
+    """True only when the portal ACTUALLY implements ScreenCast AND RemoteDesktop
+    — i.e. a real backend is present (a KDE / wlroots DESKTOP session). In Steam
+    Game Mode the xdg-desktop-portal frontend runs but has NO screencast backend:
+    both interfaces are absent (Get raises UnknownMethod), _ensure_session's
+    CreateSession can never succeed, and /ws/screen would 101-then-close. Reporting
+    it here keeps caps.screenstream[_h264] HONEST — without it the box advertises a
+    fluid tier that does not exist, and the app burns its full connect timeout on
+    each dead tier (H.264 then MJPEG) before falling back to the still-frame poller.
+
+    Cheap Properties.Get(version) — NO session, NO consent dialog: a live backend
+    answers in ms, a missing one raises immediately. Short-circuits on the first
+    absent interface. Degrade closed (§3.7): any error, or a hung portal, reads as
+    no-backend (False)."""
+    for iface in (_IF_SC, _IF_RD):
+        try:
+            _con.call_sync(
+                _PORTAL, _OBJ, "org.freedesktop.DBus.Properties", "Get",
+                GLib.Variant("(ss)", (iface, "version")),
+                GLib.VariantType.new("(v)"), Gio.DBusCallFlags.NONE, 800, None)
+        except Exception:
+            return False
+    return True
+
+
 def verb_status():
     h264 = _h264_available()
+    # Whether a working portal screencast backend exists (desktop) or not (game
+    # mode). The agent gates caps.screenstream[_h264] on this so a game-mode box
+    # never advertises a fluid tier it can't serve. Cheap + consent-free.
+    backend = _screencast_backend_ok()
     # Read the session WITHOUT taking _SLOCK. _ensure_session holds _SLOCK for its
     # ENTIRE run, including the Start call that BLOCKS on the user's consent (up to
     # _CONSENT_TIMEOUT_S). The agent probes this verb on a ~2s budget to fill
@@ -275,7 +304,8 @@ def verb_status():
     # `_SESSION = {...}` as its last step and _close_session sets it to None, both
     # atomic under the GIL, so a reader sees either None or a fully-built dict.
     sess = _SESSION
-    base = {"ok": True, "h264": h264, "h264_profiles": sorted(_H264_PROFILES)}
+    base = {"ok": True, "screencast": backend,
+            "h264": h264, "h264_profiles": sorted(_H264_PROFILES)}
     if sess is None:
         base["session"] = False
         return base
