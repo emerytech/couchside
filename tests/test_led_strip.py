@@ -226,6 +226,56 @@ def test_strips_in_payload():
     check(vs and "patrol" in vs["hw_effects"], "hw_effects advertised (patrol)")
 
 
+def test_reconcile_reapplies_only_on_drift():
+    print("reconcile re-arms the strip ONLY when the hw effect drifted (Steam reset)")
+    writes = []
+    restore = _install(writes)
+    saved_load = cs._led_state_load
+    try:
+        # persisted desired = scanner (which wants firmware `patrol`)
+        cs._led_state_load = lambda: {"strip:valve-leds": {
+            "effect": "scanner", "color": {"r": 255, "g": 0, "b": 0},
+            "speed": 55, "brightness": 100}}
+        base_read = cs._led_read_attr
+        hw = {"effect": "patrol"}                 # the live hardware effect
+        cs._led_read_attr = lambda n, a: (hw["effect"] if a == "effect"
+                                          else base_read(n, a))
+        # (a) steady: hw already patrol -> reconcile must write nothing
+        writes.clear()
+        cs._led_reconcile()
+        check(not any(w[1] == "effect" for w in writes),
+              "steady strip (already patrol) is NOT rewritten")
+        # (b) drifted: Steam reset the strip to 'normal' -> reconcile re-arms patrol
+        hw["effect"] = "normal"
+        writes.clear()
+        cs._led_reconcile()
+        check(any(w == ("valve-leds[0]", "effect", "patrol") for w in writes),
+              "drifted strip re-armed to patrol")
+    finally:
+        cs._led_state_load = saved_load
+        restore()
+
+
+def test_strip_effect_clears_stale_per_led_persist():
+    print("a whole-strip effect drops stale per-LED persists (no conflicting restore)")
+    writes = []
+    restore = _install(writes)
+    saved_save = cs._led_state_save
+    try:
+        cs._led_state_save = lambda: None         # don't touch disk
+        with cs._FX_LOCK:
+            cs._LED_PERSIST.clear()
+            cs._LED_PERSIST["valve-leds[2]"] = {"effect": "solid",
+                "color": {"r": 0, "g": 0, "b": 255}, "brightness": 90, "speed": 50}
+        cs.apply_strip_effect("valve-leds", "scanner", {"r": 255, "g": 0, "b": 0}, 70, 100)
+        check("valve-leds[2]" not in cs._LED_PERSIST,
+              "stale per-LED persist cleared by the strip effect")
+        check("strip:valve-leds" in cs._LED_PERSIST, "strip effect persisted")
+    finally:
+        cs._led_state_save = saved_save
+        restore()
+
+
 if __name__ == "__main__":
     test_detect_strip()
     test_allowlist_unknown_prefix()
@@ -236,6 +286,8 @@ if __name__ == "__main__":
     test_paint_auto_switches_to_manual()
     test_delay_maps_speed()
     test_strips_in_payload()
+    test_reconcile_reapplies_only_on_drift()
+    test_strip_effect_clears_stale_per_led_persist()
     print()
     if _fail:
         print("FAILED: %d" % len(_fail))
