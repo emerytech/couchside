@@ -48,7 +48,7 @@ except ImportError:  # pragma: no cover
     fcntl = None
 
 APP_NAME = "couchside-agent"
-VERSION = "2.9.88"
+VERSION = "2.9.89"
 UID = os.getuid()
 XDG_RUNTIME_DIR = "/run/user/%d" % UID
 
@@ -4610,8 +4610,12 @@ def _validate_led_body(req):
 #
 # The active effect (and a plain solid colour) is persisted to
 # ~/.config/couchside/leds.json and re-applied at startup, so a reboot restores
-# it instead of reverting to the firmware default -- the agent is a systemd
-# *user* service, so the restore runs on login.
+# it instead of reverting to the firmware default. The agent is a systemd SYSTEM
+# service, so it does NOT restart on a gamescope<->desktop switch -- and Steam
+# re-initializes the valve-leds on that switch, silently reverting our effect. So
+# _led_restore_worker also runs a background RECONCILER that re-asserts the strip's
+# effect whenever the live hardware drifts from what we set (session switch, boot
+# race, or anything else that resets the strip).
 _LED_STATE_CONF = os.path.expanduser("~/.config/couchside/leds.json")
 
 # Frozen allowlist of effect ids (looked up, never interpolated). 'solid'/'off'
@@ -4728,6 +4732,11 @@ def _fx_note_static(name, res):
     persist it as a solid so a reboot restores the colour."""
     _fx_stop(name)
     with _FX_LOCK:
+        # Painting one LED supersedes any whole-strip effect it belongs to -- drop
+        # that strip's persist so the two modes can't both restore + fight.
+        m = _STRIP_RE.match(name)
+        if m:
+            _LED_PERSIST.pop("strip:" + m.group(1), None)
         _LED_PERSIST[name] = {"effect": "solid", "color": res.get("color"),
                               "brightness": res.get("brightness_pct"), "speed": 50}
     _led_state_save()
@@ -4870,15 +4879,74 @@ def _led_restore():
             pass
 
 
+# The reconciler re-checks each strip's hardware effect this often. Cheap (one
+# sysfs read per strip) and only WRITES on a real mismatch -> never flickers, never
+# fights a steady strip.
+_LED_RECONCILE_INTERVAL_S = 4.0
+
+
+def _led_desired_hw_effect(effect, member):
+    """The firmware `effect` value apply_strip_effect() would write for our effect
+    id on this strip: the mapped name IF the device publishes it, else the manual/
+    off fallback. Read-only -- used to tell whether the live strip drifted from us."""
+    fw = _STRIP_HW_MAP.get(effect)
+    if fw and fw in _strip_hw_effects(member):
+        return fw
+    return "off" if effect == "off" else "manual"
+
+
+def _led_reconcile():
+    """Re-assert each persisted STRIP effect IF the live hardware drifted from it.
+
+    The agent is a systemd SYSTEM service, so a gamescope<->desktop switch (Steam
+    re-inits the valve-leds back to its own default) never restarts us and the
+    one-shot startup restore never re-runs -- the strip silently reverts. This
+    reads ONE `effect` attr per strip and re-applies ONLY on a mismatch, so a
+    steady strip is never rewritten (no flicker, no fight with a stable state)."""
+    strips = _led_strips()
+    for name, st in _led_state_load().items():
+        if not name.startswith("strip:") or not isinstance(st, dict):
+            continue
+        effect = st.get("effect")
+        if effect not in _LED_EFFECTS:
+            continue
+        members = strips.get(name[len("strip:"):])
+        if not members:
+            continue
+        try:
+            cur = _led_read_attr(members[0], "effect")
+        except OSError:
+            continue
+        if cur == _led_desired_hw_effect(effect, members[0]):
+            continue
+        color = st.get("color") if _is_rgb_triple(st.get("color")) else None
+        speed = st.get("speed") if _is_pct(st.get("speed"), 1) else 50
+        brightness = st.get("brightness") if _is_pct(st.get("brightness")) else 100
+        try:
+            apply_strip_effect(name[len("strip:"):], effect, color, speed, brightness)
+            print("[led] reconciled %s (hw effect was %r)" % (name, cur), flush=True)
+        except OSError:
+            pass
+
+
 def _led_restore_worker():
-    """Startup thread: wait for the OS/Steam to finish its own LED init, then
-    restore. One retry covers the boot race where the LED node appears late."""
+    """Startup: wait out the OS/Steam LED init, restore once, THEN keep reconciling.
+    Because the agent is a SYSTEM service a session switch never restarts us, so a
+    periodic drift check is what re-asserts our effect after Steam resets the strip.
+    The two initial delays cover the boot race where the node / Steam init lands
+    late. Runs on a daemon thread; the reconcile loop lives for the process."""
     for delay in (2.0, 6.0):
         time.sleep(delay)
         try:
             if _list_led_names():
                 _led_restore()
-                return
+                break
+        except OSError:
+            pass
+    while not _FX_STOP.is_set():
+        time.sleep(_LED_RECONCILE_INTERVAL_S)
+        try:
+            _led_reconcile()
         except OSError:
             pass
 
@@ -5026,6 +5094,11 @@ def apply_strip_effect(prefix, effect, color, speed, brightness):
         return {"ok": False, "status": 500, "error": str(e) or "strip write failed"}
 
     with _FX_LOCK:
+        # A whole-strip effect supersedes any per-LED paints on this strip: drop
+        # their persists so a restore/reconcile can never re-apply a conflicting
+        # mix (the "weird" state -- a scanner + stale solids fighting each other).
+        for m in members:
+            _LED_PERSIST.pop(m, None)
         _LED_PERSIST["strip:" + prefix] = {"effect": effect, "color": col,
                                            "speed": sp, "brightness": b}
     _led_state_save()

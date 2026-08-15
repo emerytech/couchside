@@ -18,6 +18,15 @@ the same thing regardless of what actually changed.
 Write for the person holding the phone, not for the commit log. They are
 deciding whether to press "Update now" on a machine across the room.
 
+## 2.9.89
+
+**Your light strip stops reverting.** If your box has an addressable RGB strip —
+like a Steam Machine's — switching between Game Mode and the desktop, or restarting,
+used to knock the strip back to its factory default and undo your effect. The box
+now notices when something resets the strip and re-applies your effect within a few
+seconds, so your night-rider (or whatever you set) stays put. Also cleans up a case
+where a saved strip effect and older hand-painted colours could fight each other.
+
 ## 2.9.88
 
 **Encryption, on by default.** Your box now protects its connection automatically.
