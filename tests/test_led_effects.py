@@ -98,20 +98,22 @@ def _reset_engine():
 
 def test_validate_effect_body():
     print("effect body validation (reject, don't sanitise)")
-    e, c, s, b, err = cs._validate_effect_body({"effect": "breathe"})
-    check(err is None and e == "breathe", "accepts a bare known effect")
-    e, c, s, b, err = cs._validate_effect_body(
-        {"effect": "rainbow", "speed": 80, "brightness": 40,
-         "color": {"r": 1, "g": 2, "b": 3}})
-    check(err is None and s == 80 and b == 40 and c == {"r": 1, "g": 2, "b": 3},
-          "accepts full valid params")
+    e, c, s, b, rev, err = cs._validate_effect_body({"effect": "breathe"})
+    check(err is None and e == "breathe" and rev is False,
+          "accepts a bare known effect (reverse defaults False)")
+    e, c, s, b, rev, err = cs._validate_effect_body(
+        {"effect": "circle", "speed": 80, "brightness": 40,
+         "color": {"r": 1, "g": 2, "b": 3}, "reverse": True})
+    check(err is None and s == 80 and b == 40 and c == {"r": 1, "g": 2, "b": 3}
+          and rev is True, "accepts full valid params incl. reverse")
     bad = [{"effect": "nope"}, {"effect": "breathe", "speed": 0},
            {"effect": "breathe", "speed": 101}, {"effect": "breathe", "speed": True},
            {"effect": "breathe", "brightness": -1}, {"effect": "breathe", "brightness": 101},
            {"effect": "breathe", "color": {"r": 256, "g": 0, "b": 0}},
-           {"effect": "breathe", "color": [1, 2, 3]}, {}]
+           {"effect": "breathe", "color": [1, 2, 3]},
+           {"effect": "breathe", "reverse": "yes"}, {}]
     for body in bad:
-        _, _, _, _, err = cs._validate_effect_body(body)
+        _, _, _, _, _, err = cs._validate_effect_body(body)
         check(err is not None, "rejects %s" % body)
 
 

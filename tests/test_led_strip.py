@@ -276,6 +276,125 @@ def test_strip_effect_clears_stale_per_led_persist():
         restore()
 
 
+def test_circle_starts_agent_animation():
+    print("circle: agent-rendered -> registers a sequence, flips members to manual")
+    writes = []
+    restore = _install(writes)
+    saved_thread, saved_save = cs._seq_ensure_thread, cs._led_state_save
+    try:
+        cs._seq_ensure_thread = lambda: None      # don't spawn the render thread
+        cs._led_state_save = lambda: None
+        with cs._SEQ_LOCK:
+            cs._SEQ_ACTIVE.clear()
+        with cs._FX_LOCK:
+            cs._LED_PERSIST.clear()
+        res = cs.apply_strip_effect("valve-leds", "circle",
+                                    {"r": 0, "g": 200, "b": 255}, 70, 90)
+        check(res and res.get("ok") and res["active"]["effect"] == "circle",
+              "circle accepted, active reports it")
+        check("valve-leds" in cs._SEQ_ACTIVE, "agent sequence registered for the strip")
+        check(all((("valve-leds[%d]" % i), "effect", "manual") in writes
+                  for i in range(_N)), "every member flipped to manual")
+        check(cs._LED_PERSIST.get("strip:valve-leds", {}).get("effect") == "circle",
+              "circle persisted so a reboot re-arms it")
+        # a firmware effect supersedes the running agent animation
+        cs.apply_strip_effect("valve-leds", "scanner", {"r": 255, "g": 0, "b": 0}, 70, 100)
+        check("valve-leds" not in cs._SEQ_ACTIVE, "scanner stops the agent sequence")
+    finally:
+        cs._seq_ensure_thread, cs._led_state_save = saved_thread, saved_save
+        with cs._SEQ_LOCK:
+            cs._SEQ_ACTIVE.clear()
+        restore()
+
+
+def test_circle_frame_sweeps_and_wraps():
+    print("circle frame: a head that advances one direction and wraps")
+    n, period, col = 8, 4.0, {"r": 255, "g": 0, "b": 0}
+    f0 = cs._seq_frame_circle(n, 0.0, period, col)
+    check(f0[0] is not None and f0[0]["r"] == 255, "bright head at index 0 at t=0")
+    check(sum(1 for c in f0 if c is not None) <= cs._SEQ_TAIL, "only head + tail lit")
+    fq = cs._seq_frame_circle(n, period / n * 2, period, col)
+    check(fq[2] is not None and fq[2]["r"] == 255, "head advanced to index 2")
+    fw = cs._seq_frame_circle(n, period * (n - 0.01) / n, period, col)
+    check(fw[n - 1] is not None, "head reaches the last LED before wrapping to 0")
+
+
+def test_reconcile_skips_agent_effects():
+    print("reconcile SKIPS agent-rendered effects (they self-heal each frame)")
+    writes = []
+    restore = _install(writes)
+    saved_load = cs._led_state_load
+    try:
+        cs._led_state_load = lambda: {"strip:valve-leds": {
+            "effect": "circle", "color": {"r": 255, "g": 0, "b": 0},
+            "speed": 55, "brightness": 100}}
+        base = cs._led_read_attr
+        cs._led_read_attr = lambda nm, a: ("normal" if a == "effect" else base(nm, a))
+        writes.clear()
+        cs._led_reconcile()
+        check(not any(w[1] == "effect" for w in writes),
+              "circle is not re-armed by the reconciler (render thread owns it)")
+    finally:
+        cs._led_state_load = saved_load
+        restore()
+
+
+def test_sequence_validation():
+    print("sequence body validation (reject, don't sanitise)")
+    good = {"frames": [[{"r": 255, "g": 0, "b": 0}, None], [None, {"r": 0, "g": 0, "b": 255}]],
+            "hold_ms": 400, "loop": True, "brightness": 90}
+    frames, hold, br, loop, err = cs._validate_sequence_body(good)
+    check(err is None and len(frames) == 2 and hold == 400 and loop is True and br == 90,
+          "accepts a valid 2-frame sequence")
+    bad = [
+        {"frames": []},                                  # empty
+        {"frames": [[{"r": 256, "g": 0, "b": 0}]]},      # bad colour
+        {"frames": [[{"r": 1, "g": 2, "b": 3}]], "hold_ms": 10},    # hold too small
+        {"frames": [[{"r": 1, "g": 2, "b": 3}]], "hold_ms": 999999},  # hold too big
+        {"frames": [[{"r": 1, "g": 2, "b": 3}]], "loop": "yes"},    # loop not bool
+        {"frames": "nope"},                              # frames not a list
+        {"frames": [["red"]]},                           # colour not {r,g,b}|null
+    ]
+    for b in bad:
+        _, _, _, _, err = cs._validate_sequence_body(b)
+        check(err is not None, "rejects %s" % (list(b)[:1]))
+
+
+def test_sequence_starts_and_persists():
+    print("apply_strip_sequence: registers a sequence, normalizes frames, persists")
+    writes = []
+    restore = _install(writes)
+    saved_thread, saved_save = cs._seq_ensure_thread, cs._led_state_save
+    try:
+        cs._seq_ensure_thread = lambda: None
+        cs._led_state_save = lambda: None
+        with cs._SEQ_LOCK:
+            cs._SEQ_ACTIVE.clear()
+        with cs._FX_LOCK:
+            cs._LED_PERSIST.clear()
+        # frames SHORTER than the 5-member strip -> normalized (padded with off)
+        A = [{"r": 255, "g": 0, "b": 0}, {"r": 255, "g": 0, "b": 0}]
+        B = [None, None, {"r": 0, "g": 0, "b": 255}]
+        res = cs.apply_strip_sequence("valve-leds", [A, B], 400, 90, True)
+        check(res and res.get("ok") and res["active"]["frames"] == 2,
+              "sequence accepted")
+        spec = cs._SEQ_ACTIVE.get("valve-leds")
+        check(spec and spec["effect"] == "sequence" and len(spec["frames"]) == 2,
+              "registered as a 2-frame sequence")
+        check(spec and all(len(fr) == _N for fr in spec["frames"]),
+              "every frame normalized to the member count (%d)" % _N)
+        check(all((("valve-leds[%d]" % i), "effect", "manual") in writes for i in range(_N)),
+              "members flipped to manual")
+        p = cs._LED_PERSIST.get("strip:valve-leds", {})
+        check(p.get("effect") == "sequence" and p.get("hold_ms") == 400,
+              "sequence persisted for reboot re-arm")
+    finally:
+        cs._seq_ensure_thread, cs._led_state_save = saved_thread, saved_save
+        with cs._SEQ_LOCK:
+            cs._SEQ_ACTIVE.clear()
+        restore()
+
+
 if __name__ == "__main__":
     test_detect_strip()
     test_allowlist_unknown_prefix()
@@ -288,6 +407,11 @@ if __name__ == "__main__":
     test_strips_in_payload()
     test_reconcile_reapplies_only_on_drift()
     test_strip_effect_clears_stale_per_led_persist()
+    test_circle_starts_agent_animation()
+    test_circle_frame_sweeps_and_wraps()
+    test_reconcile_skips_agent_effects()
+    test_sequence_validation()
+    test_sequence_starts_and_persists()
     print()
     if _fail:
         print("FAILED: %d" % len(_fail))
