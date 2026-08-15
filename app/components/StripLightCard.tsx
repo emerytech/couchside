@@ -35,12 +35,18 @@ import { mono, useTheme, useThemedStyles, type Palette } from '@/lib/theme';
 
 const POLL_MS = 15000;
 
-type StripEffect = 'solid' | 'off' | 'manual' | 'scanner' | 'rainbow' | 'breathe';
+type StripEffect =
+  | 'solid' | 'off' | 'manual' | 'scanner' | 'rainbow' | 'breathe'
+  | 'circle' | 'comet' | 'wipe' | 'twinkle';
 const EFFECTS: { id: StripEffect; label: string }[] = [
   { id: 'solid', label: 'Solid' },
   { id: 'manual', label: 'Manual' },
   { id: 'off', label: 'Off' },
   { id: 'scanner', label: 'Scanner' },
+  { id: 'circle', label: 'Circle' },
+  { id: 'comet', label: 'Comet' },
+  { id: 'wipe', label: 'Wipe' },
+  { id: 'twinkle', label: 'Twinkle' },
   { id: 'rainbow', label: 'Rainbow' },
   { id: 'breathe', label: 'Breathe' },
 ];
@@ -49,6 +55,15 @@ const SPEEDS = [
   { label: 'Med', pct: 55, ms: 90 },
   { label: 'Fast', pct: 90, ms: 55 },
 ];
+// Brightness levels a tap on a single LED cycles UP through, then off:
+// off -> 35 -> 70 -> 100 -> off.
+const CELL_STEPS = [35, 70, 100];
+/** The next per-LED brightness for a tap: up a step, or off past the top. */
+function nextCellBrightness(cur: number): number {
+  if (cur <= 0) return CELL_STEPS[0];
+  const idx = CELL_STEPS.findIndex((s) => cur <= s);
+  return idx < 0 || idx >= CELL_STEPS.length - 1 ? 0 : CELL_STEPS[idx + 1];
+}
 const scale = (c: Rgb, f: number): Rgb => ({
   r: Math.round(c.r * f), g: Math.round(c.g * f), b: Math.round(c.b * f),
 });
@@ -93,7 +108,12 @@ export function StripLightCard() {
   const [hue, setHue] = useState(0);
   const [bright, setBright] = useState(100);
   const [speedPct, setSpeedPct] = useState(55);
+  // Sweep direction for the agent-rendered directional effects (circle/comet/wipe).
+  const [reverse, setReverse] = useState(false);
   const [frame, setFrame] = useState<(Rgb | null)[]>([]);
+  // Per-LED brightness % (0 = off). A tap on a cell cycles it up the CELL_STEPS
+  // then off, so you can dial each LED's level (and turn it off) by tapping.
+  const [cellBright, setCellBright] = useState<number[]>([]);
   const [busy, setBusy] = useState(false);
   // Pending "name this preset" prompt: the auto label + a builder that turns the
   // typed name into the full preset to save.
@@ -123,6 +143,7 @@ export function StripLightCard() {
     if (seeded.current === strip.key) return;
     seeded.current = strip.key;
     setFrame(displayLeds(strip).map((l) => (l.brightness_pct > 0 ? l.color : null)));
+    setCellBright(displayLeds(strip).map((l) => l.brightness_pct));
     const a = strip && poll.data?.active?.[`strip:${agentStrip?.prefix}`];
     if (a) { setEffect(a.effect as StripEffect); setBright(a.brightness); if (a.color) setHue(rgbToHue(a.color)); }
     else {
@@ -161,7 +182,8 @@ export function StripLightCard() {
   // Steam Machine so the row matches the strip).
   const orderedLeds = displayLeds(strip);
   const color = hueToRgb(hue);
-  const animated = effect === 'scanner' || effect === 'rainbow' || effect === 'breathe';
+  const AGENT_ANIMATED = ['scanner', 'rainbow', 'breathe', 'circle', 'comet', 'wipe', 'twinkle'];
+  const animated = AGENT_ANIMATED.includes(effect);
   const shown = agentMode
     ? EFFECTS
     : EFFECTS.filter((e) => e.id === 'solid' || e.id === 'off' || e.id === 'scanner');
@@ -174,7 +196,7 @@ export function StripLightCard() {
       setBusy(true);
       try {
         await api.setStripEffect(settings, agentStrip.prefix, {
-          effect: e as LedEffect, brightness: Math.round(bright),
+          effect: e as LedEffect, brightness: Math.round(bright), reverse,
           ...(animated || e !== 'off' ? { speed: Math.round(speedPct) } : {}),
           ...(e === 'rainbow' ? {} : { color }),
         });
@@ -191,11 +213,17 @@ export function StripLightCard() {
 
   /** Re-apply the current colour/brightness — for a solid strip, or to re-arm an
    *  agent effect with the tweaked colour/speed (slider/speed commit). */
-  const reapply = () => {
+  // speedOverride: a speed CHIP sets state + re-applies in one tick, so it must
+  // pass the new value explicitly — reading speedPct here would send the PREVIOUS
+  // speed (stale closure: setSpeedPct hasn't re-rendered yet). Sliders re-render on
+  // each onChange before onCommit, so they call reapply() with no arg (current).
+  const reapply = (over?: { speed?: number; reverse?: boolean }) => {
     if (agentMode && agentStrip && effect !== 'off') {
       void api.setStripEffect(settings, agentStrip.prefix, {
         effect: effect as LedEffect, brightness: Math.round(bright),
-        speed: Math.round(speedPct), ...(effect === 'rainbow' ? {} : { color }),
+        speed: Math.round(over?.speed ?? speedPct),
+        reverse: over?.reverse ?? reverse,
+        ...(effect === 'rainbow' ? {} : { color }),
       }).catch(() => {});
       return;
     }
@@ -206,11 +234,24 @@ export function StripLightCard() {
     }
   };
 
-  /** Paint one cell — a per-LED customizer (best in Solid). */
+  /** Tap one LED to cycle its brightness up a step, then off — a per-LED dimmer.
+   *  Keeps the cell's own colour if it's already lit; a first tap on an off cell
+   *  uses the current picker colour. */
   const paintCell = (i: number) => {
     hapticLight();
-    void api.setLed(settings, orderedLeds[i].name, { color, brightness: Math.round(bright) }).catch(() => {});
-    setFrame((f) => { const c = f.slice(); c[i] = color; return c; });
+    const cur = cellBright[i] ?? (frame[i] ? 100 : 0);
+    const next = nextCellBrightness(cur);
+    const name = orderedLeds[i].name;
+    if (next > 0) {
+      const cellColor = frame[i] ?? color;   // keep this LED's colour if already lit
+      void api.setLed(settings, name, { color: cellColor, brightness: next }).catch(() => {});
+      setFrame((f) => { const c = f.slice(); c[i] = cellColor; return c; });
+      setCellBright((b) => { const c = b.slice(); c[i] = next; return c; });
+    } else {
+      void api.setLed(settings, name, { brightness: 0 }).catch(() => {});
+      setFrame((f) => { const c = f.slice(); c[i] = null; return c; });
+      setCellBright((b) => { const c = b.slice(); c[i] = 0; return c; });
+    }
   };
 
   /** Coerce any saved preset effect to one the strip runs. */
@@ -221,6 +262,25 @@ export function StripLightCard() {
 
   const applyPreset = (p: LedPreset) => {
     hapticLight();
+    // A GENERATOR preset (Police): build a strip-sized timed sequence + play it on
+    // the box (red/blue halves alternating -> a police bar).
+    if (p.generator === 'police') {
+      setBright(p.brightness);
+      const n = orderedLeds.length;
+      const R: Rgb = { r: 255, g: 0, b: 0 };
+      const B: Rgb = { r: 0, g: 40, b: 255 };
+      const half = Math.ceil(n / 2);
+      const A = orderedLeds.map((_, i) => (i < half ? R : null));
+      const Bf = orderedLeds.map((_, i) => (i >= half ? B : null));
+      setFrame(A);   // preview one flash in the grid
+      if (agentMode && agentStrip) {
+        const holdMs = Math.max(90, 600 - p.speed * 5);   // faster preset = quicker flash
+        void api.setStripSequence(settings, agentStrip.prefix, {
+          frames: [A, Bf], holdMs, loop: true, brightness: p.brightness,
+        }).then(() => poll.refresh()).catch(() => {});
+      }
+      return;
+    }
     // A painted PATTERN preset: enter manual mode, then repaint every LED.
     if (p.pattern && p.pattern.length) {
       setEffect('manual'); setBright(p.brightness);
@@ -311,12 +371,15 @@ export function StripLightCard() {
       <View style={styles.strip}>
         {orderedLeds.map((l, i) => {
           const c = frame[i] ?? null;
+          const bpct = cellBright[i] ?? (c ? 100 : 0);
+          const shown = c && bpct > 0 ? scale(c, bpct / 100) : null;   // dim by level
           return (
             <Pressable
               key={l.name} onPress={() => paintCell(i)} style={styles.cellWrap}
-              accessibilityRole="button" accessibilityLabel={`Paint LED ${i}`}>
+              accessibilityRole="button"
+              accessibilityLabel={`LED ${i}, ${bpct > 0 ? `${bpct}%` : 'off'} — tap to change`}>
               {({ pressed }) => (
-                <View style={[styles.cell, { backgroundColor: c ? cssRgb(c) : t.card },
+                <View style={[styles.cell, { backgroundColor: shown ? cssRgb(shown) : t.card },
                   pressed && styles.pressed]} />
               )}
             </Pressable>
@@ -350,11 +413,33 @@ export function StripLightCard() {
               const on = speedPct === s.pct;
               return (
                 <Pressable
-                  key={s.label} onPress={() => { hapticLight(); setSpeedPct(s.pct); if (agentMode) reapply(); }}
+                  key={s.label} onPress={() => { hapticLight(); setSpeedPct(s.pct); if (agentMode) reapply({ speed: s.pct }); }}
                   accessibilityRole="button" accessibilityState={{ selected: on }}
                   accessibilityLabel={`Speed ${s.label}`}
                   style={({ pressed }) => [styles.chip, on && styles.chipOn, pressed && styles.pressed]}>
                   <Text style={[styles.chipText, on && styles.chipTextOn]}>{s.label}</Text>
+                </Pressable>
+              );
+            })}
+          </View>
+        </>
+      )}
+
+      {/* DIRECTION — only the agent-rendered sweeps have a direction. */}
+      {agentMode && (['circle', 'comet', 'wipe'] as StripEffect[]).includes(effect) && (
+        <>
+          <Text style={styles.sectionLabel}>DIRECTION</Text>
+          <View style={styles.chipRow}>
+            {[{ label: '→', rev: false }, { label: '←', rev: true }].map((d) => {
+              const on = reverse === d.rev;
+              return (
+                <Pressable
+                  key={d.label}
+                  onPress={() => { hapticLight(); setReverse(d.rev); reapply({ reverse: d.rev }); }}
+                  accessibilityRole="button" accessibilityState={{ selected: on }}
+                  accessibilityLabel={d.rev ? 'Direction reverse' : 'Direction forward'}
+                  style={({ pressed }) => [styles.chip, on && styles.chipOn, pressed && styles.pressed]}>
+                  <Text style={[styles.chipText, on && styles.chipTextOn]}>{d.label}</Text>
                 </Pressable>
               );
             })}
@@ -370,7 +455,7 @@ export function StripLightCard() {
             <View style={[styles.swatchPreview, { backgroundColor: cssRgb(color) }]} />
           </View>
           <TrackSlider
-            value={hue} min={0} max={360} onChange={setHue} onCommit={reapply}
+            value={hue} min={0} max={360} onChange={setHue} onCommit={() => reapply()}
             thumbColor={cssRgb(color)} accessibilityLabel="Strip colour hue"
             renderTrack={() => (
               <View style={styles.hueFill}>
@@ -386,7 +471,7 @@ export function StripLightCard() {
         <>
           <Text style={styles.sectionLabel}>BRIGHTNESS</Text>
           <TrackSlider
-            value={bright} min={0} max={100} onChange={setBright} onCommit={reapply}
+            value={bright} min={0} max={100} onChange={setBright} onCommit={() => reapply()}
             thumbColor={t.text} accessibilityLabel="Strip brightness"
             renderTrack={(pct) => (
               <View style={styles.brightTrack}>

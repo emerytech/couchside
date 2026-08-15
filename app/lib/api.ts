@@ -487,7 +487,12 @@ export type LedEffect =
   | 'solid' | 'off' | 'breathe' | 'pulse' | 'rainbow' | 'strobe' | 'scanner'
   // `manual` = a per-LED painted pattern on a strip (agent >= 2.9.85); the
   // colours stick because the agent puts each node in the driver's manual mode.
-  | 'manual';
+  | 'manual'
+  // Agent-rendered strip animations (agent >= 2.9.90): the box renders them per-LED,
+  // so they survive the phone closing like the firmware effects. `circle` = a dot
+  // that wraps; `comet` = a long fading trail; `wipe` = fill one way then clear;
+  // `twinkle` = random sparkle in the picked colour.
+  | 'circle' | 'comet' | 'wipe' | 'twinkle';
 
 /** The effect currently running on an LED (from GET /api/leds `active`). Absent
     for an LED showing a plain solid colour (that's read from LedInfo instead). */
@@ -2763,11 +2768,39 @@ export const api = {
   setStripEffect(
     settings: ConnSettings,
     strip: string,
-    patch: { effect: LedEffect; color?: Rgb; speed?: number; brightness?: number },
+    patch: {
+      effect: LedEffect; color?: Rgb; speed?: number; brightness?: number;
+      // Reverse the sweep direction (agent-rendered circle/comet/wipe only;
+      // agent >= 2.9.90). Ignored by firmware effects + older agents.
+      reverse?: boolean;
+    },
   ): Promise<boolean> {
     return request<{ ok: boolean }>(settings, '/api/leds/effect', {
       method: 'POST',
       body: { strip, ...patch },
+    })
+      .then((r) => !!r?.ok)
+      .catch(() => false);
+  },
+
+  /**
+   * Play a custom TIMED sequence on a strip (agent >= 2.9.90): a list of per-LED
+   * frames shown `holdMs` each, looping — what the alternate-colour feature and the
+   * Police preset build. Agent-rendered, so it survives the phone closing. Older
+   * agents 404/400 -> resolves false and the caller degrades.
+   */
+  setStripSequence(
+    settings: ConnSettings,
+    strip: string,
+    seq: { frames: (Rgb | null)[][]; holdMs: number; loop?: boolean; brightness?: number },
+  ): Promise<boolean> {
+    return request<{ ok: boolean }>(settings, '/api/leds/sequence', {
+      method: 'POST',
+      body: {
+        strip, frames: seq.frames, hold_ms: Math.round(seq.holdMs),
+        loop: seq.loop ?? true,
+        ...(seq.brightness != null ? { brightness: Math.round(seq.brightness) } : {}),
+      },
     })
       .then((r) => !!r?.ok)
       .catch(() => false);

@@ -48,7 +48,7 @@ except ImportError:  # pragma: no cover
     fcntl = None
 
 APP_NAME = "couchside-agent"
-VERSION = "2.9.89"
+VERSION = "2.9.90"
 UID = os.getuid()
 XDG_RUNTIME_DIR = "/run/user/%d" % UID
 
@@ -4621,7 +4621,7 @@ _LED_STATE_CONF = os.path.expanduser("~/.config/couchside/leds.json")
 # Frozen allowlist of effect ids (looked up, never interpolated). 'solid'/'off'
 # are one-shot (no animation); the rest animate on the render thread.
 _LED_EFFECTS = ("solid", "off", "breathe", "pulse", "rainbow", "strobe",
-                "scanner", "manual")
+                "scanner", "manual", "circle", "comet", "wipe", "twinkle")
 _LED_STATIC = frozenset(("solid", "off"))
 
 _FX_TICK = 0.033                 # ~30 fps render cadence
@@ -4833,21 +4833,24 @@ def apply_led_effect(name, effect, color, speed, brightness):
 
 def _validate_effect_body(req):
     """Shape check for POST /api/leds/effect. Returns
-    (effect, color|None, speed|None, brightness|None, error|None). Rejects, never
-    sanitises."""
+    (effect, color|None, speed|None, brightness|None, reverse:bool, error|None).
+    Rejects, never sanitises."""
     effect = req.get("effect")
     if effect not in _LED_EFFECTS:
-        return None, None, None, None, "unknown effect"
+        return None, None, None, None, False, "unknown effect"
     color = req.get("color")
     if color is not None and not _is_rgb_triple(color):
-        return None, None, None, None, "color must be {r,g,b} ints 0-255"
+        return None, None, None, None, False, "color must be {r,g,b} ints 0-255"
     speed = req.get("speed")
     if speed is not None and not _is_pct(speed, 1):
-        return None, None, None, None, "speed must be an int 1-100"
+        return None, None, None, None, False, "speed must be an int 1-100"
     brightness = req.get("brightness")
     if brightness is not None and not _is_pct(brightness):
-        return None, None, None, None, "brightness must be an int 0-100"
-    return effect, color, speed, brightness, None
+        return None, None, None, None, False, "brightness must be an int 0-100"
+    reverse = req.get("reverse")
+    if reverse is not None and not isinstance(reverse, bool):
+        return None, None, None, None, False, "reverse must be a boolean"
+    return effect, color, speed, brightness, bool(reverse), None
 
 
 def _led_restore():
@@ -4861,18 +4864,34 @@ def _led_restore():
         if not isinstance(st, dict):
             continue
         effect = st.get("effect")
+        # A custom sequence isn't a plain effect id -> re-arm it via its own path.
+        if effect == "sequence" and name.startswith("strip:"):
+            prefix = name[len("strip:"):]
+            frames = st.get("frames")
+            hold = st.get("hold_ms")
+            if (prefix in strips and isinstance(frames, list) and frames
+                    and isinstance(hold, int) and not isinstance(hold, bool)):
+                try:
+                    apply_strip_sequence(
+                        prefix, frames[:_SEQ_MAX_FRAMES], min(60000, max(30, hold)),
+                        st.get("brightness") if _is_pct(st.get("brightness")) else 100,
+                        bool(st.get("loop", True)))
+                except OSError:
+                    pass
+            continue
         if effect not in _LED_EFFECTS:
             continue
         color = st.get("color") if _is_rgb_triple(st.get("color")) else None
         speed = st.get("speed") if _is_pct(st.get("speed"), 1) else 50
         brightness = st.get("brightness") if _is_pct(st.get("brightness")) else 100
+        reverse = bool(st.get("reverse"))
         try:
             if name.startswith("strip:"):
                 # A persisted strip (firmware effect): re-arm the whole strip so a
                 # reboot brings back the night-rider without the phone.
                 prefix = name[len("strip:"):]
                 if prefix in strips:
-                    apply_strip_effect(prefix, effect, color, speed, brightness)
+                    apply_strip_effect(prefix, effect, color, speed, brightness, reverse)
             elif name in live:
                 apply_led_effect(name, effect, color, speed, brightness)
         except OSError:
@@ -4910,6 +4929,10 @@ def _led_reconcile():
         effect = st.get("effect")
         if effect not in _LED_EFFECTS:
             continue
+        if effect in _STRIP_SEQ_EFFECTS:
+            continue  # agent-rendered: the render thread re-writes it every frame,
+                      # so it self-heals a reset without a reconcile re-arm (which
+                      # would restart the animation with a visible jump).
         members = strips.get(name[len("strip:"):])
         if not members:
             continue
@@ -4974,6 +4997,10 @@ _STRIP_HW_MAP = {"scanner": "patrol", "breathe": "breath", "rainbow": "rainbow",
                  "manual": "manual", "off": "off"}
 # effects whose look depends on the picked colour (set multi_intensity first).
 _STRIP_COLOUR_FX = ("scanner", "breathe", "pulse", "strobe", "solid")
+# Strip effects the AGENT renders per-LED (no firmware effect exists for them):
+# a one-way "circle"/comet the render thread sweeps + wraps. These are looked up
+# like any effect id; the agent owns every frame (fixed-literal writers, §3).
+_STRIP_SEQ_EFFECTS = ("circle", "comet", "wipe", "twinkle")
 
 
 def _led_strips(names=None):
@@ -5019,13 +5046,184 @@ def _strip_public(prefix, members):
             "hw_effects": _strip_hw_effects(members[0])}
 
 
-def apply_strip_effect(prefix, effect, color, speed, brightness):
+# ---- Agent-rendered strip animations (circle/comet + future custom sequences) --
+# Some looks have NO firmware effect -- a one-way "circle"/comet that runs off one
+# end and restarts at the other. The AGENT renders those per-LED on this thread,
+# same discipline as _fx_loop: fixed-literal writers, and the client only picks an
+# allowlisted effect id + range-checked colour/speed/brightness (validated frame
+# DATA for custom sequences comes later). ONE animation per strip. The thread
+# writes ~30x/s, so a Steam reset self-heals within a frame (the reconciler skips
+# these); persisted like any strip effect, so a reboot re-arms it.
+_SEQ_TICK = 0.033                # ~30 fps
+_SEQ_LOCK = threading.RLock()
+_SEQ_ACTIVE = {}                 # prefix -> spec (members/effect/color/speed/brightness/t0/raws)
+_SEQ_THREAD = [None]
+_SEQ_TAIL = 3                    # comet head + fading-tail length
+
+
+def _seq_period(speed):
+    """Speed 1..100 -> seconds for one full lap around the strip (higher = faster).
+    100 -> ~0.5s (snappy), 55 -> ~2s, 25 -> ~3.1s, 1 -> ~4s."""
+    s = speed if _is_pct(speed, 1) else 50
+    return 4.0 - (s / 100.0) * 3.5
+
+
+def _seq_frame_sweep(n, t, period, color, tail, reverse=False):
+    """A bright head + a `tail`-LED fading trail sweeping ONE direction and WRAPPING.
+    Short tail = a "circle" dot; long tail = a comet. reverse -> the other way; the
+    tail always trails BEHIND the head's motion."""
+    frame = [None] * n
+    d = -1 if reverse else 1
+    head = (t / period) * n * d
+    for k in range(min(tail, n)):
+        pos = int(head - d * k) % n
+        frac = 1.0 - (k / float(tail))               # head brightest, tail fades
+        frame[pos] = {"r": int(color["r"] * frac),
+                      "g": int(color["g"] * frac),
+                      "b": int(color["b"] * frac)}
+    return frame
+
+
+# circle keeps its old name for callers/tests; it's a short-tail sweep.
+def _seq_frame_circle(n, t, period, color):
+    return _seq_frame_sweep(n, t, period, color, _SEQ_TAIL)
+
+
+def _seq_frame_wipe(n, t, period, color, reverse=False):
+    """Fill the strip one direction over the first half of the period, then clear it
+    over the second half -- a repeating colour wipe. reverse -> from the other end."""
+    frame = [None] * n
+    phase = (t % period) / period                    # 0..1
+    if phase < 0.5:
+        upto = int((phase / 0.5) * n + 0.5)          # filling
+        idxs = range(min(upto, n)) if not reverse else range(max(0, n - upto), n)
+    else:
+        frm = int(((phase - 0.5) / 0.5) * n + 0.5)   # clearing
+        idxs = range(min(frm, n), n) if not reverse else range(0, max(0, n - frm))
+    for i in idxs:
+        frame[i] = color
+    return frame
+
+
+def _seq_frame_twinkle(n, t, period, color):
+    """Each LED sparkles in `color` on its own index-derived phase (no RNG state):
+    a sharpened sine -> mostly dim with occasional bright pops = a twinkle."""
+    frame = [None] * n
+    for i in range(n):
+        ph = (i * 0.6180339887) % 1.0                # golden-ratio spread of phases
+        f = 0.5 + 0.5 * math.sin(2 * math.pi * ((t / (period * 0.5)) + ph))
+        f = f * f * f                                # sharpen: dim base, rare pops
+        if f > 0.06:
+            frame[i] = {"r": int(color["r"] * f),
+                        "g": int(color["g"] * f),
+                        "b": int(color["b"] * f)}
+    return frame
+
+
+def _seq_render(spec, now):
+    """Write ONE frame of `spec` to its strip via the fixed-literal writers."""
+    members = spec["members"]
+    n = len(members)
+    t = now - spec["t0"]
+    e = spec["effect"]
+    period = _seq_period(spec["speed"])
+    color = spec["color"]
+    rev = bool(spec.get("reverse"))
+    if e == "circle":
+        frame = _seq_frame_sweep(n, t, period, color, _SEQ_TAIL, rev)
+    elif e == "comet":
+        frame = _seq_frame_sweep(n, t, period, color, max(4, n // 2), rev)
+    elif e == "wipe":
+        frame = _seq_frame_wipe(n, t, period, color, rev)
+    elif e == "twinkle":
+        frame = _seq_frame_twinkle(n, t, period, color)
+    elif e == "sequence":
+        # A custom TIMED sequence: a list of per-LED frames (already normalized to n
+        # members at validation) shown `hold_ms` each. loop -> wrap; else hold the
+        # last frame. This is what the app's alternate-colour feature builds (2
+        # frames) and the future editor builds (N frames).
+        frames = spec.get("frames") or []
+        if not frames:
+            return
+        hold = max(0.03, spec.get("hold_ms", 500) / 1000.0)
+        step = int(t / hold)
+        idx = (step % len(frames)) if spec.get("loop", True) else min(step, len(frames) - 1)
+        frame = frames[idx]
+    else:
+        return
+    bmax = spec["brightness"]
+    for i, name in enumerate(members):
+        raw = spec["raws"].get(name)
+        if not raw:
+            continue
+        c = frame[i]
+        try:
+            if c is not None and raw.get("rgb"):
+                _led_write_color(name, raw, c)
+                _led_write(name, "brightness",
+                           str(int(bmax / 100.0 * raw["max_brightness"] + 0.5)))
+            else:
+                _led_write(name, "brightness", "0")
+        except OSError:
+            pass
+
+
+def _seq_loop():
+    """Render every active agent strip animation until none remain (or shutdown)."""
+    while not _FX_STOP.is_set():
+        with _SEQ_LOCK:
+            active = list(_SEQ_ACTIVE.values())
+        if not active:
+            return
+        now = time.monotonic()
+        for spec in active:
+            _seq_render(spec, now)
+        _FX_STOP.wait(_SEQ_TICK)
+
+
+def _seq_ensure_thread():
+    with _SEQ_LOCK:
+        th = _SEQ_THREAD[0]
+        if th is None or not th.is_alive():
+            _SEQ_THREAD[0] = threading.Thread(target=_seq_loop, daemon=True,
+                                              name="led-seq")
+            _SEQ_THREAD[0].start()
+
+
+def _seq_start(prefix, members, effect, color, speed, brightness, reverse=False):
+    """Begin an agent-rendered animation on the strip: flip every member to manual
+    (so the firmware isn't also animating), register the spec, start the thread."""
+    raws = {n: _read_led_raw(n) for n in members}
+    for n in members:
+        try:
+            _led_write(n, "effect", "manual")
+        except OSError:
+            pass
+    with _SEQ_LOCK:
+        _SEQ_ACTIVE[prefix] = {
+            "members": members, "effect": effect,
+            "color": color or {"r": 255, "g": 0, "b": 0},
+            "speed": speed if _is_pct(speed, 1) else 50,
+            "brightness": brightness if _is_pct(brightness) else 100,
+            "reverse": bool(reverse),
+            "t0": time.monotonic(), "raws": raws}
+    _seq_ensure_thread()
+
+
+def _seq_stop(prefix):
+    """Stop any agent animation on `prefix` (leaves its last frame lit)."""
+    with _SEQ_LOCK:
+        _SEQ_ACTIVE.pop(prefix, None)
+
+
+def apply_strip_effect(prefix, effect, color, speed, brightness, reverse=False):
     """Set an addressable strip to a FIRMWARE effect (or a manual solid/off).
 
     Returns {"ok":True,"active":..} | {"ok":False,"status":..} | None(->404).
     The heavy lifting is the driver's: for a hardware effect we set the base
     colour/brightness then write `effect`=<firmware name> + `delay`, and the strip
-    animates itself. `solid` paints every LED (effect=manual); `off` zeroes them."""
+    animates itself. `solid` paints every LED (effect=manual); `off` zeroes them.
+    `reverse` only affects the agent-rendered sweeps (circle/comet/wipe)."""
     if effect not in _LED_EFFECTS:
         return {"ok": False, "status": 400, "error": "unknown effect"}
     if not isinstance(prefix, str):
@@ -5045,6 +5243,25 @@ def apply_strip_effect(prefix, effect, color, speed, brightness):
 
     def _bval(raw):
         return str(int(b / 100 * raw["max_brightness"] + 0.5))
+
+    # Agent-rendered animation (no firmware effect for it -- a one-way "circle"):
+    # the render thread drives per-LED frames. Supersedes per-LED paints; persisted
+    # so a reboot re-arms it via _seq_start again.
+    if effect in _STRIP_SEQ_EFFECTS:
+        rev = bool(reverse)
+        _seq_start(prefix, members, effect, col, sp, b, rev)
+        with _FX_LOCK:
+            for m in members:
+                _LED_PERSIST.pop(m, None)
+            _LED_PERSIST["strip:" + prefix] = {"effect": effect, "color": col,
+                                               "speed": sp, "brightness": b,
+                                               "reverse": rev}
+        _led_state_save()
+        return {"ok": True, "strip": prefix,
+                "active": {"effect": effect, "color": col, "speed": sp,
+                           "brightness": b, "reverse": rev}}
+    # A firmware / manual effect supersedes any running agent animation here.
+    _seq_stop(prefix)
 
     try:
         if effect == "off":
@@ -5104,6 +5321,85 @@ def apply_strip_effect(prefix, effect, color, speed, brightness):
     _led_state_save()
     return {"ok": True, "strip": prefix,
             "active": {"effect": effect, "color": col, "speed": sp, "brightness": b}}
+
+
+_SEQ_MAX_FRAMES = 64          # cap on a custom sequence's frame count (bounds memory)
+
+
+def apply_strip_sequence(prefix, frames, hold_ms, brightness, loop=True):
+    """Play a custom TIMED SEQUENCE of per-LED frames on the strip (agent-rendered):
+    the general form behind the app's alternate-colour feature (2 frames) and the
+    future editor (N frames). `frames` is validated per-LED colour DATA; the render
+    thread owns every write (fixed literals, §3). Persisted -> re-arms on reboot.
+    Returns {"ok":True,..} | None (-> 404)."""
+    if not isinstance(prefix, str):
+        return None
+    members = _led_strips().get(prefix)
+    if not members:
+        return None
+    raws = {n: _read_led_raw(n) for n in members}
+    if not all(r and r["writable"] for r in raws.values()):
+        return None
+    b = brightness if _is_pct(brightness) else 100
+    n = len(members)
+    # Normalize each frame to EXACTLY the member count (pad short with off, drop
+    # extra), keeping only valid RGB triples -- nothing client-shaped reaches a write.
+    norm = [[(fr[i] if i < len(fr) and _is_rgb_triple(fr[i]) else None)
+             for i in range(n)] for fr in frames]
+    for name in members:
+        try:
+            _led_write(name, "effect", "manual")
+        except OSError:
+            pass
+    with _SEQ_LOCK:
+        _SEQ_ACTIVE[prefix] = {
+            "members": members, "effect": "sequence", "frames": norm,
+            "hold_ms": int(hold_ms), "loop": bool(loop), "brightness": b,
+            "color": {"r": 255, "g": 255, "b": 255}, "speed": 50,
+            "t0": time.monotonic(), "raws": raws}
+    _seq_ensure_thread()
+    with _FX_LOCK:
+        for m in members:
+            _LED_PERSIST.pop(m, None)
+        _LED_PERSIST["strip:" + prefix] = {"effect": "sequence", "frames": norm,
+                                           "hold_ms": int(hold_ms), "loop": bool(loop),
+                                           "brightness": b}
+    _led_state_save()
+    return {"ok": True, "strip": prefix,
+            "active": {"effect": "sequence", "frames": len(norm),
+                       "hold_ms": int(hold_ms), "loop": bool(loop), "brightness": b}}
+
+
+def _validate_sequence_body(req):
+    """Shape-check POST /api/leds/sequence. Returns
+    (frames, hold_ms, brightness|None, loop, error|None). Rejects, never sanitises."""
+    frames = req.get("frames")
+    if not isinstance(frames, list) or not (1 <= len(frames) <= _SEQ_MAX_FRAMES):
+        return None, None, None, None, \
+            "frames must be a list of 1..%d frames" % _SEQ_MAX_FRAMES
+    out = []
+    for fr in frames:
+        if not isinstance(fr, list) or len(fr) > 512:
+            return None, None, None, None, "each frame is a list of <=512 colours"
+        row = []
+        for c in fr:
+            if c is None:
+                row.append(None)
+            elif _is_rgb_triple(c):
+                row.append(c)
+            else:
+                return None, None, None, None, "frame colours must be {r,g,b} ints or null"
+        out.append(row)
+    hold_ms = req.get("hold_ms", 500)
+    if isinstance(hold_ms, bool) or not isinstance(hold_ms, int) or not (30 <= hold_ms <= 60000):
+        return None, None, None, None, "hold_ms must be an int 30..60000"
+    brightness = req.get("brightness")
+    if brightness is not None and not _is_pct(brightness):
+        return None, None, None, None, "brightness must be an int 0-100"
+    loop = req.get("loop", True)
+    if not isinstance(loop, bool):
+        return None, None, None, None, "loop must be a boolean"
+    return out, hold_ms, brightness, loop, None
 
 
 # ---- OpenRGB backend (cap: openrgb) -----------------------------------------
@@ -19708,6 +20004,42 @@ class Handler(BaseHTTPRequestHandler):
                            res, started)
                 return
 
+            if path == "/api/leds/sequence":
+                # Play a custom TIMED sequence on a STRIP: the client sends `frames`
+                # (per-LED colour DATA, each validated to {r,g,b}|null), `hold_ms`,
+                # `loop`. SAME allowlist discipline as the paint path -- the client
+                # provides colour DATA the agent renders via fixed-literal writers;
+                # the strip PREFIX is looked up in the live listdir, never interpolated.
+                try:
+                    req = json.loads(body.decode("utf-8")) if body else {}
+                    if not isinstance(req, dict):
+                        raise ValueError("body must be a JSON object")
+                except (ValueError, TypeError, UnicodeDecodeError):
+                    self._send(400, {"error": "body must be a JSON object"}, started)
+                    return
+                strip_name = req.get("strip")
+                frames, hold_ms, brightness, loop, verr = _validate_sequence_body(req)
+                if verr is not None:
+                    self._send(400, {"error": verr}, started)
+                    return
+                if self.mock:
+                    ms = _led_strips([l["name"] for l in MOCK_LEDS if l["writable"]])
+                    if not isinstance(strip_name, str) or strip_name not in ms:
+                        self._send(404, {"error": "unknown strip"}, started)
+                        return
+                    _MOCK_FX["strip:" + strip_name] = {
+                        "effect": "sequence", "frames": len(frames), "hold_ms": hold_ms,
+                        "loop": loop, "brightness": brightness if brightness is not None else 100}
+                    self._send(200, {"ok": True, "strip": strip_name,
+                                     "active": _MOCK_FX["strip:" + strip_name]}, started)
+                    return
+                res = apply_strip_sequence(strip_name, frames, hold_ms, brightness, loop)
+                if res is None:
+                    self._send(404, {"error": "unknown strip"}, started)
+                    return
+                self._send(200, res, started)
+                return
+
             if path == "/api/leds/effect":
                 # Start/replace an animated effect (breathe/pulse/rainbow/strobe/
                 # scanner) or a solid/off on an LED. SAME allowlist shape as
@@ -19724,7 +20056,7 @@ class Handler(BaseHTTPRequestHandler):
                                started)
                     return
                 led_name = req.get("led")
-                effect, color, speed, brightness, verr = _validate_effect_body(req)
+                effect, color, speed, brightness, reverse, verr = _validate_effect_body(req)
                 if verr is not None:
                     self._send(400, {"error": verr}, started)
                     return
@@ -19752,7 +20084,7 @@ class Handler(BaseHTTPRequestHandler):
                         self._send(200, {"ok": True, "strip": strip_name,
                                          "active": _MOCK_FX.get(key)}, started)
                         return
-                    res = apply_strip_effect(strip_name, effect, color, speed, brightness)
+                    res = apply_strip_effect(strip_name, effect, color, speed, brightness, reverse)
                     if res is None:
                         self._send(404, {"error": "unknown strip"}, started)
                         return
@@ -19807,7 +20139,7 @@ class Handler(BaseHTTPRequestHandler):
                                started)
                     return
                 device = req.get("device")
-                effect, color, speed, brightness, verr = _validate_effect_body(req)
+                effect, color, speed, brightness, reverse, verr = _validate_effect_body(req)
                 if verr is not None:
                     self._send(400, {"error": verr}, started)
                     return

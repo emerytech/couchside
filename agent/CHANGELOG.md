@@ -18,6 +18,16 @@ the same thing regardless of what actually changed.
 Write for the person holding the phone, not for the commit log. They are
 deciding whether to press "Update now" on a machine across the room.
 
+## 2.9.90
+
+**More ways to light up your strip.** If your box has an addressable RGB strip —
+like a Steam Machine's — it can now run a bunch of new looks: a one-way "circle"
+chase that wraps around, a comet with a fading tail, a colour wipe, and a twinkle,
+each with a direction control. It also gained **custom timed sequences** — the box
+plays a series of frames you set on a loop, which is what powers new presets like a
+red/blue "Police" flasher and (soon) a build-your-own pattern editor. These show up
+in the app's Light card once your app updates too.
+
 ## 2.9.89
 
 **Your light strip stops reverting.** If your box has an addressable RGB strip —

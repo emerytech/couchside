@@ -60,6 +60,11 @@ const EFFECT_META: Record<LedEffect, { label: string; usesColor: boolean }> = {
   scanner: { label: 'Scanner', usesColor: true },
   // `manual` is a strip-only concept; filtered out of this single-LED card below.
   manual: { label: 'Manual', usesColor: true },
+  // Strip-only agent animations; filtered out of this mono card (not in MONO_EFFECTS).
+  circle: { label: 'Circle', usesColor: true },
+  comet: { label: 'Comet', usesColor: true },
+  wipe: { label: 'Wipe', usesColor: true },
+  twinkle: { label: 'Twinkle', usesColor: true },
 };
 /** A mono LED can't show colour, so only these effects make sense on one. */
 const MONO_EFFECTS: LedEffect[] = ['solid', 'off', 'breathe', 'pulse', 'strobe'];
