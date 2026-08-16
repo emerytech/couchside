@@ -1697,6 +1697,31 @@ DAEMON="${DIR}/couchsided.py"
 # with nothing else. Turning it on did nothing, and status then said "on".
 CFG="/var/lib/couchside/config.json"
 
+# Restart the agent so a config edit actually TAKES EFFECT.
+#
+# The argv here is not free-form: the sudoers grant install.sh writes is
+# EXACT-argument, allowing only
+#     /usr/bin/systemctl restart --no-block couchside.service
+# (spelled as a passwordless rule in the sudoers block above -- deliberately not
+# quoted verbatim here, because tests/test_readme_sudo_grants.py counts those
+# rules textually and a comment that looks like one is counted as a real grant),
+# so `sudo systemctl restart couchside` (what these verbs used to run) does
+# NOT match it, demands a password, and with 2>/dev/null attached fails
+# SILENTLY. Measured on a real box 2026-08-16: `couchside allow-launchers on`
+# wrote the config correctly, reported success, and the agent went on serving
+# the old value because the restart never happened. Same for allow-updates and
+# tls, where `tls off` left HTTPS up while telling the user it was off.
+#
+# -n so it can never hang waiting on a password, the granted argv verbatim, and
+# a LOUD message when neither path works -- the silence is what hid this.
+_restart_agent() {
+    sudo -n systemctl restart --no-block couchside.service 2>/dev/null && return 0
+    systemctl --user restart couchside 2>/dev/null && return 0
+    echo "warning: could not restart the agent, so this change is NOT live yet." >&2
+    echo "         Run:  sudo systemctl restart couchside" >&2
+    return 1
+}
+
 case "${1:-help}" in
   update|upgrade)
     yes=0; force=0
@@ -1821,8 +1846,7 @@ tmp = p + ".tmp"
 with open(tmp, "w") as f: json.dump(d, f, indent=2)
 os.replace(tmp, p)
 PY
-        sudo systemctl restart couchside 2>/dev/null \
-          || systemctl --user restart couchside 2>/dev/null || true
+        _restart_agent
         echo "App-triggered updates: ${2}"
         ;;
       ""|status)
@@ -1915,8 +1939,7 @@ tmp = p + ".tmp"
 with open(tmp, "w") as f: json.dump(d, f, indent=2)
 os.replace(tmp, p)
 PY
-        sudo systemctl restart couchside 2>/dev/null \
-          || systemctl --user restart couchside 2>/dev/null || true
+        _restart_agent
         echo "App-created launchers: ${2}  (${CFG})"
         ;;
       ""|status)
@@ -1955,8 +1978,7 @@ PY
     sudo chown "$(id -un)" "$TOKEN_FILE"
     # Restart so the auth gate compares against the NEW token (the agent loads
     # it at startup; without this the old token would still authorize).
-    sudo systemctl restart couchside 2>/dev/null \
-      || systemctl --user restart couchside 2>/dev/null || true
+    _restart_agent
     echo "New token minted. Old pairings are now invalid."
     echo "Show the new pairing QR on this box's screen with:  couchside pair"
     ;;
@@ -1992,8 +2014,7 @@ tmp = p + ".tmp"
 with open(tmp, "w") as f: json.dump(d, f, indent=2)
 os.replace(tmp, p)
 PY
-        sudo systemctl restart couchside 2>/dev/null \
-          || systemctl --user restart couchside 2>/dev/null || true
+        _restart_agent
         echo "TLS (HTTPS listener): ${2}"
         ;;
       status)
