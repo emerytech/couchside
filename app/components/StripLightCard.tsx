@@ -115,6 +115,10 @@ export function StripLightCard() {
   const [altOn, setAltOn] = useState(false);
   const [altHue, setAltHue] = useState(210);      // default a blue alternate
   const [cycleMs, setCycleMs] = useState(500);    // ms between the two frames
+  // N-FRAME EDITOR: captured frames (colours already baked with per-LED brightness).
+  // >= 2 frames -> plays as a looping sequence on the box; tap a frame to load it
+  // back into the grid for editing/re-capture.
+  const [seqFrames, setSeqFrames] = useState<(Rgb | null)[][]>([]);
   const [frame, setFrame] = useState<(Rgb | null)[]>([]);
   // Per-LED brightness % (0 = off). A tap on a cell cycles it up the CELL_STEPS
   // then off, so you can dial each LED's level (and turn it off) by tapping.
@@ -299,6 +303,47 @@ export function StripLightCard() {
       void api.setLed(settings, orderedLeds[i].name,
         next > 0 ? { color: cellColor as Rgb, brightness: next } : { brightness: 0 }).catch(() => {});
     }
+  };
+
+  /** Bake the current paint (colour × per-LED brightness) into one frame. */
+  const bakeCurrent = (): (Rgb | null)[] =>
+    orderedLeds.map((_, i) => {
+      const c = frame[i]; const b = cellBright[i] ?? (c ? 100 : 0);
+      return c && b > 0 ? scale(c as Rgb, b / 100) : null;
+    });
+
+  /** Play a list of frames on the box as a looping sequence. */
+  const pushSeq = (fr: (Rgb | null)[][], ms: number) => {
+    if (!agentMode || !agentStrip || fr.length < 1) return;
+    void api.setStripSequence(settings, agentStrip.prefix, {
+      frames: fr, holdMs: ms, loop: true, brightness: 100,
+    }).catch(() => {});
+  };
+
+  /** Capture the current paint as a new frame; auto-play once there are >= 2. */
+  const addFrame = () => {
+    hapticLight();
+    const next = [...seqFrames, bakeCurrent()];
+    setSeqFrames(next);
+    if (next.length >= 2) pushSeq(next, cycleMs);
+  };
+
+  /** Load a captured frame back into the grid so it can be tweaked + re-captured. */
+  const loadFrame = (i: number) => {
+    hapticLight();
+    const fr = seqFrames[i];
+    if (!fr) return;
+    setEffect('manual');
+    setFrame(fr.map((c) => c));
+    setCellBright(fr.map((c) => (c ? 100 : 0)));
+  };
+
+  const removeFrame = (i: number) => {
+    hapticLight();
+    const next = seqFrames.filter((_, k) => k !== i);
+    setSeqFrames(next);
+    if (next.length >= 2) pushSeq(next, cycleMs);
+    else if (next.length === 1) applyMainPattern(next[0], next[0].map((c) => (c ? 100 : 0)));
   };
 
   /** Coerce any saved preset effect to one the strip runs. */
@@ -579,6 +624,70 @@ export function StripLightCard() {
         </>
       )}
 
+      {/* SEQUENCE — the N-frame editor: capture frames, play them on a loop. */}
+      {effect === 'manual' && (
+        <>
+          <View style={styles.sliderHeader}>
+            <Text style={styles.sectionLabel}>
+              SEQUENCE{seqFrames.length ? ` · ${seqFrames.length}` : ''}
+            </Text>
+            <View style={{ flexDirection: 'row', gap: 6 }}>
+              {seqFrames.length > 0 && (
+                <Pressable onPress={() => { hapticLight(); setSeqFrames([]); }}
+                  accessibilityRole="button" accessibilityLabel="Clear sequence"
+                  style={({ pressed }) => [styles.chip, pressed && styles.pressed]}>
+                  <Text style={[styles.chipText, { color: t.textDim }]}>Clear</Text>
+                </Pressable>
+              )}
+              <Pressable onPress={addFrame}
+                accessibilityRole="button" accessibilityLabel="Add current paint as a sequence frame"
+                style={({ pressed }) => [styles.chip, styles.chipOn, pressed && styles.pressed]}>
+                <Text style={[styles.chipText, styles.chipTextOn]}>+ Add frame</Text>
+              </Pressable>
+            </View>
+          </View>
+          {seqFrames.length > 0 && (
+            <>
+              <View style={styles.filmstrip}>
+                {seqFrames.map((fr, fi) => (
+                  <Pressable key={fi} onPress={() => loadFrame(fi)} onLongPress={() => removeFrame(fi)}
+                    accessibilityRole="button"
+                    accessibilityLabel={`Frame ${fi + 1} — tap to edit, hold to remove`}
+                    style={({ pressed }) => [styles.filmFrame, pressed && styles.pressed]}>
+                    <View style={styles.filmRow}>
+                      {fr.map((c, ci) => (
+                        <View key={ci} style={{ flex: 1, backgroundColor: c ? cssRgb(c) : t.card }} />
+                      ))}
+                    </View>
+                    <Text style={styles.filmIdx}>{fi + 1}</Text>
+                  </Pressable>
+                ))}
+              </View>
+              {seqFrames.length >= 2 && (
+                <>
+                  <View style={styles.sliderHeader}>
+                    <Text style={styles.sectionLabel}>FRAME EVERY</Text>
+                    <Text style={{ color: t.textDim, fontSize: 12, fontFamily: mono }}>
+                      {(cycleMs / 1000).toFixed(cycleMs < 1000 ? 2 : 1)}s
+                    </Text>
+                  </View>
+                  <TrackSlider
+                    value={cycleMs} min={100} max={3000} onChange={setCycleMs}
+                    onCommit={() => pushSeq(seqFrames, cycleMs)}
+                    thumbColor={t.text} accessibilityLabel="Sequence frame time"
+                    renderTrack={(pct) => (
+                      <View style={styles.brightTrack}>
+                        <View style={[styles.brightFill, { width: `${pct * 100}%`, backgroundColor: t.text }]} />
+                      </View>
+                    )}
+                  />
+                </>
+              )}
+            </>
+          )}
+        </>
+      )}
+
       {/* PRESETS — saved profiles, applied to the whole strip. */}
       <Text style={styles.sectionLabel}>PRESETS</Text>
       <View style={styles.chipRow}>
@@ -654,6 +763,14 @@ const makeStyles = (t: Palette) =>
       borderWidth: StyleSheet.hairlineWidth, borderColor: t.cardBorder,
     },
     brightFill: { height: '100%', borderRadius: 9 },
+
+    filmstrip: { flexDirection: 'row', flexWrap: 'wrap', gap: 6, marginTop: 8 },
+    filmFrame: {
+      width: 68, borderRadius: 6, overflow: 'hidden',
+      borderWidth: 1, borderColor: t.cardBorder, backgroundColor: t.card,
+    },
+    filmRow: { flexDirection: 'row', height: 22 },
+    filmIdx: { color: t.textDim, fontSize: 10, textAlign: 'center', fontFamily: mono, paddingVertical: 1 },
 
     presetChip: {
       flexDirection: 'row', alignItems: 'center', gap: 6,
