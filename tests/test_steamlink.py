@@ -38,17 +38,30 @@ def check(cond, label):
 
 def _v29_appinfo(app_names):
     """Build a minimal but real v29 appinfo.vdf: header + one section per
-    (appid, name) with a common->name string field + a terminating appid 0 +
-    the string table. Keys in the KV blob are int32 string-table indices."""
-    strings = [b"common", b"name"]              # common_idx=0, name_idx=1
-    common_idx, name_idx = 0, 1
+    (appid, name) with an appinfo->common->name string field + a terminating
+    appid 0 + the string table. Keys in the KV blob are int32 string-table
+    indices.
+
+    The `appinfo` wrapper is NOT decoration. Real files nest the fields at
+    appinfo.common.{name,type}, and this fixture used to omit that level —
+    emitting common->name at the top. It passed anyway, because the duplicate
+    appinfo parser this suite used to call was lenient enough to find a name
+    wherever it sat. So the fixture had quietly stopped resembling the format it
+    claims to lock, and nothing said so. Corrected 2026-08-16 when the duplicate
+    parser was removed and the strict (hardware-measured, 1101/1101) parser
+    started rejecting it. Keep the nesting.
+    """
+    strings = [b"appinfo", b"common", b"name"]   # 0, 1, 2
+    appinfo_idx, common_idx, name_idx = 0, 1, 2
 
     def kv_blob(name):
         b = bytearray()
+        b += b"\x00" + struct.pack("<I", appinfo_idx)    # nested "appinfo"
         b += b"\x00" + struct.pack("<I", common_idx)     # nested "common"
         b += b"\x01" + struct.pack("<I", name_idx)       # string "name"
         b += name.encode("utf-8") + b"\x00"
         b += b"\x08"                                     # end common
+        b += b"\x08"                                     # end appinfo
         b += b"\x08"                                     # end top map
         return bytes(b)
 
@@ -130,12 +143,87 @@ def with_fixtures(fn):
 
 
 def test_appinfo_v29_names():
+    """The v29 name parse, exercised through the PUBLIC entry point.
+
+    This used to call cs._parse_appinfo_names(bytes) — an internal of a SECOND,
+    duplicate appinfo parser that has since been removed (it redefined the real
+    parser's module-level cache at import, so the two evicted each other). The
+    surviving parser reads a file rather than a buffer, so the fixture is
+    installed and _steam_appinfo_names() is driven end to end. Testing the
+    shipped path rather than a helper is the better assertion anyway.
+    """
     print("v29 appinfo name parser")
-    names = cs._parse_appinfo_names(_v29_appinfo(list(NAMES.items())))
-    check(names.get(1174180) == "Red Dead Redemption 2", "extracts RDR2 name")
-    check(names.get(1086940) == "Baldur's Gate 3", "extracts BG3 name (apostrophe)")
-    check(len(names) == len(NAMES), "every app named")
-    check(cs._parse_appinfo_names(b"garbage") == {}, "garbage -> {} not raise")
+
+    def body():
+        names = cs._steam_appinfo_names()
+        check(names.get(1174180) == "Red Dead Redemption 2", "extracts RDR2 name")
+        check(names.get(1086940) == "Baldur's Gate 3", "extracts BG3 name (apostrophe)")
+        check(len(names) == len(NAMES), "every app named")
+        return True
+
+    with_fixtures(body)
+
+    # Degrade CLOSED on a malformed file: {} rather than a raise. Same property
+    # the old buffer-level check pinned, now at the file level.
+    import tempfile
+    d = tempfile.mkdtemp()
+    bad = os.path.join(d, "appinfo.vdf")
+    with open(bad, "wb") as f:
+        f.write(b"garbage")
+    orig_ai, orig_root = cs._appinfo_path, cs._steam_root
+    cs._appinfo_path, cs._steam_root = (lambda: bad), (lambda: d)
+    cs._APPINFO_CACHE["key"] = None
+    try:
+        check(cs._steam_appinfo_names() == {}, "garbage -> {} not raise")
+    finally:
+        cs._appinfo_path, cs._steam_root = orig_ai, orig_root
+        cs._APPINFO_CACHE["key"] = None
+
+
+def test_appinfo_cache_is_shared_not_thrashed():
+    """The bug the duplicate parser caused, pinned so it cannot come back.
+
+    Two parsers shared one module-level cache dict under INCOMPATIBLE key shapes
+    — (path, mtime, size) vs (mtime, size) — so alternating between the two
+    consumers (/api/steam/installable and /api/steamlink) invalidated the cache
+    every single time and paid a full re-parse of a multi-MB file (~80ms on real
+    hardware). Nothing measured it, so it was invisible.
+
+    Counts actual file reads: alternating the two views must parse ONCE.
+    """
+    print("appinfo cache is shared, not thrashed")
+
+    def body():
+        cs._APPINFO_CACHE["key"] = None
+        reads = []
+        real_open = cs.open if hasattr(cs, "open") else open
+        import builtins
+        orig = builtins.open
+
+        def counting_open(path, *a, **kw):
+            if isinstance(path, str) and path.endswith("appinfo.vdf"):
+                reads.append(path)
+            return orig(path, *a, **kw)
+
+        builtins.open = counting_open
+        try:
+            for _ in range(3):
+                cs._appinfo_names()          # the installable view
+                cs._steam_appinfo_names()    # the Steam Link view
+        finally:
+            builtins.open = orig
+        check(len(reads) == 1,
+              "6 alternating calls parse appinfo.vdf exactly once (got %d)"
+              % len(reads))
+        # Both views agree on the same underlying parse.
+        rich = cs._appinfo_names()
+        flat = cs._steam_appinfo_names()
+        check(set(rich) == set(flat), "both views cover the same appids")
+        check(all(flat[a] == rich[a]["name"] for a in flat),
+              "the flat view is exactly the rich view's names")
+        return True
+
+    with_fixtures(body)
 
 
 def test_discovery():
@@ -210,6 +298,7 @@ def test_available_false_when_empty():
 
 if __name__ == "__main__":
     test_appinfo_v29_names()
+    test_appinfo_cache_is_shared_not_thrashed()
     test_discovery()
     test_info_grouping()
     test_launch_gate()
