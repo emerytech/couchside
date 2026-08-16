@@ -110,6 +110,11 @@ export function StripLightCard() {
   const [speedPct, setSpeedPct] = useState(55);
   // Sweep direction for the agent-rendered directional effects (circle/comet/wipe).
   const [reverse, setReverse] = useState(false);
+  // ALTERNATE: when on, the painted pattern cycles between its colours and a single
+  // alternate colour on a timer (a 2-frame sequence played on the box).
+  const [altOn, setAltOn] = useState(false);
+  const [altHue, setAltHue] = useState(210);      // default a blue alternate
+  const [cycleMs, setCycleMs] = useState(500);    // ms between the two frames
   const [frame, setFrame] = useState<(Rgb | null)[]>([]);
   // Per-LED brightness % (0 = off). A tap on a cell cycles it up the CELL_STEPS
   // then off, so you can dial each LED's level (and turn it off) by tapping.
@@ -234,23 +239,65 @@ export function StripLightCard() {
     }
   };
 
+  /** The two frames of the alternate: each lit LED shows its painted colour (A) or
+   *  the single alternate colour (B), both at that LED's brightness. Off stays off. */
+  const buildAltFrames = (mf: (Rgb | null)[], br: number[], alt: Rgb): (Rgb | null)[][] => {
+    const at = (i: number) => (br[i] ?? (mf[i] ? 100 : 0)) / 100;
+    const A = orderedLeds.map((_, i) => (mf[i] && at(i) > 0 ? scale(mf[i] as Rgb, at(i)) : null));
+    const B = orderedLeds.map((_, i) => (mf[i] && at(i) > 0 ? scale(alt, at(i)) : null));
+    return [A, B];
+  };
+
+  /** Play the current alternate on the box (a 2-frame looping sequence). */
+  const pushAlt = (mf: (Rgb | null)[], br: number[], altHueVal: number, ms: number) => {
+    if (!agentMode || !agentStrip) return;
+    void api.setStripSequence(settings, agentStrip.prefix, {
+      frames: buildAltFrames(mf, br, hueToRgb(altHueVal)), holdMs: ms, loop: true, brightness: 100,
+    }).catch(() => {});
+  };
+
+  /** Paint the static main pattern on the box (used when ALTERNATE turns off). */
+  const applyMainPattern = (mf: (Rgb | null)[], br: number[]) => {
+    if (!agentMode || !agentStrip) return;
+    void api.setStripEffect(settings, agentStrip.prefix, { effect: 'manual', brightness: 100 })
+      .then(() => Promise.all(orderedLeds.map((l, i) => {
+        const c = mf[i]; const b = br[i] ?? (c ? 100 : 0);
+        return api.setLed(settings, l.name,
+          c && b > 0 ? { color: c as Rgb, brightness: b } : { brightness: 0 });
+      })))
+      .catch(() => {});
+  };
+
+  /** Turn the alternate on (play the 2-frame sequence) or off (static main pattern). */
+  const toggleAlt = (on: boolean) => {
+    hapticLight();
+    setAltOn(on);
+    if (on) {
+      setEffect('manual');
+      pushAlt(frame, cellBright, altHue, cycleMs);
+    } else {
+      applyMainPattern(frame, cellBright);
+    }
+  };
+
   /** Tap one LED to cycle its brightness up a step, then off — a per-LED dimmer.
    *  Keeps the cell's own colour if it's already lit; a first tap on an off cell
-   *  uses the current picker colour. */
+   *  uses the current picker colour. When ALTERNATE is on, the tap re-pushes the
+   *  2-frame sequence instead of a one-off write. */
   const paintCell = (i: number) => {
     hapticLight();
     const cur = cellBright[i] ?? (frame[i] ? 100 : 0);
     const next = nextCellBrightness(cur);
-    const name = orderedLeds[i].name;
-    if (next > 0) {
-      const cellColor = frame[i] ?? color;   // keep this LED's colour if already lit
-      void api.setLed(settings, name, { color: cellColor, brightness: next }).catch(() => {});
-      setFrame((f) => { const c = f.slice(); c[i] = cellColor; return c; });
-      setCellBright((b) => { const c = b.slice(); c[i] = next; return c; });
+    const cellColor = next > 0 ? (frame[i] ?? color) : null;
+    const newFrame = frame.slice(); newFrame[i] = cellColor;
+    const newBright = orderedLeds.map((_, k) => (k === i ? next : (cellBright[k] ?? (frame[k] ? 100 : 0))));
+    setFrame(newFrame);
+    setCellBright(newBright);
+    if (altOn) {
+      pushAlt(newFrame, newBright, altHue, cycleMs);
     } else {
-      void api.setLed(settings, name, { brightness: 0 }).catch(() => {});
-      setFrame((f) => { const c = f.slice(); c[i] = null; return c; });
-      setCellBright((b) => { const c = b.slice(); c[i] = 0; return c; });
+      void api.setLed(settings, orderedLeds[i].name,
+        next > 0 ? { color: cellColor as Rgb, brightness: next } : { brightness: 0 }).catch(() => {});
     }
   };
 
@@ -479,6 +526,56 @@ export function StripLightCard() {
               </View>
             )}
           />
+        </>
+      )}
+
+      {/* ALTERNATE — a painted pattern that cycles to a second colour on a timer. */}
+      {effect === 'manual' && (
+        <>
+          <View style={styles.sliderHeader}>
+            <Text style={styles.sectionLabel}>ALTERNATE</Text>
+            <Pressable
+              onPress={() => toggleAlt(!altOn)}
+              accessibilityRole="switch" accessibilityState={{ checked: altOn }}
+              accessibilityLabel="Alternate colour cycling"
+              style={({ pressed }) => [styles.chip, altOn && styles.chipOn, pressed && styles.pressed]}>
+              <Text style={[styles.chipText, altOn && styles.chipTextOn]}>{altOn ? 'On' : 'Off'}</Text>
+            </Pressable>
+          </View>
+          {altOn && (
+            <>
+              <View style={styles.sliderHeader}>
+                <Text style={styles.sectionLabel}>ALTERNATE COLOUR</Text>
+                <View style={[styles.swatchPreview, { backgroundColor: cssRgb(hueToRgb(altHue)) }]} />
+              </View>
+              <TrackSlider
+                value={altHue} min={0} max={360} onChange={setAltHue}
+                onCommit={() => pushAlt(frame, cellBright, altHue, cycleMs)}
+                thumbColor={cssRgb(hueToRgb(altHue))} accessibilityLabel="Alternate colour hue"
+                renderTrack={() => (
+                  <View style={styles.hueFill}>
+                    {HUE_STOPS.map((c, i) => (<View key={i} style={{ flex: 1, backgroundColor: c }} />))}
+                  </View>
+                )}
+              />
+              <View style={styles.sliderHeader}>
+                <Text style={styles.sectionLabel}>CYCLE EVERY</Text>
+                <Text style={{ color: t.textDim, fontSize: 12, fontFamily: mono }}>
+                  {(cycleMs / 1000).toFixed(cycleMs < 1000 ? 2 : 1)}s
+                </Text>
+              </View>
+              <TrackSlider
+                value={cycleMs} min={100} max={3000} onChange={setCycleMs}
+                onCommit={() => pushAlt(frame, cellBright, altHue, cycleMs)}
+                thumbColor={t.text} accessibilityLabel="Alternate cycle time"
+                renderTrack={(pct) => (
+                  <View style={styles.brightTrack}>
+                    <View style={[styles.brightFill, { width: `${pct * 100}%`, backgroundColor: cssRgb(hueToRgb(altHue)) }]} />
+                  </View>
+                )}
+              />
+            </>
+          )}
         </>
       )}
 
