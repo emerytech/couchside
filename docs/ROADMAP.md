@@ -1238,6 +1238,24 @@ recommendation was wrong, not merely superseded.
 
 ## ✅ Completed
 
+### Repo-wide audit — bugs fixed + dead code removed — 2026-08-16
+- **was:** owner-directed "analyze the repo for simplification/optimization" ·
+  **affects:** agent, installer, release scripts, tests, app
+- **Four correctness bugs, all shipped:** `couchside allow-launchers` was a DEAD
+  SWITCH writing a config nothing reads (#476); pre-auth `/api/pair/finish` 500'd
+  on a non-object body, two edit sites, closes KI-020 (#475, agent 2.9.92);
+  `test_steam_menus.py` asserted nothing via `or True` + an AST guard for the
+  class (#474); release self-verification checked the key it had just signed
+  with, so a wrong/rotated key would ship and fail on every box (#477).
+- **−750 lines** of re-verified dead code (#478). The first pass at that list was
+  mostly WRONG — it measured refs over agent source only and flagged three live
+  test entrypoints; see the audit doc's methodology note.
+- **Full findings + the deferred program** (~2,200 more lines identified, none
+  executed): `docs/memory/project_repo-audit-2026-08.md`. Next up there, in order:
+  the test harness killing the four-incompatible-`check()`-signatures trap
+  (~−970), the CI shard matrix (~−450), app mechanical dedupe (~−490).
+
+
 ### Comms audit → installer security fixes + public Security & Privacy page — 2026-08-15
 - **was:** owner-directed audit · **affects:** install.sh (CLI, banner, firewall), couchside.tv
 - **Merged #469:** `couchside new-token` (token rotation = the only revocation; one shared
