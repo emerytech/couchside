@@ -18,6 +18,16 @@ the same thing regardless of what actually changed.
 Write for the person holding the phone, not for the commit log. They are
 deciding whether to press "Update now" on a machine across the room.
 
+## 2.9.91
+
+**Build your own light-strip animations, frame by frame.** Custom timed sequences
+can now hold each frame for a **different** length of time, so a pattern can linger
+on one look and flash quickly through others. This is what powers the app's new
+**frame-by-frame strip editor** — paint a look, capture it as a frame, set how long
+each frame plays, and the box loops them on its own (and remembers across reboots).
+Older sequences keep playing exactly as before. Show up in the app's Light card once
+your app updates too.
+
 ## 2.9.90
 
 **More ways to light up your strip.** If your box has an addressable RGB strip —
