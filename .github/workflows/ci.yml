@@ -607,6 +607,17 @@ jobs:
       - name: Release signing verifies the keys a box trusts
         run: python3 tests/test_release_signing.py
 
+      # `couchside allow-launchers` gates POST /api/launchers, which runs a
+      # client-supplied argv — and it was a DEAD SWITCH: it wrote
+      # /etc/couchside/config.json while the agent reads the state config the
+      # unit names, so turning it on did nothing and status then said "on".
+      # Nothing caught that, and ALLOW_APP_LAUNCHERS had no coverage at all
+      # despite §6 requiring it. This drives the REAL CLI against a temp config,
+      # boots a live Handler, and asserts the route's answer actually changes —
+      # plus a control that reproduces the dead switch in the same run.
+      - name: Allow-launchers switch really gates the route
+        run: python3 tests/test_allow_launchers_switch.py
+
       # Injected actions: buttons the agent offers only when the box can really
       # perform them ("a dead button costs more trust than a missing one"), so
       # every gate is asserted in BOTH directions. Covers the Bluetooth pairing
