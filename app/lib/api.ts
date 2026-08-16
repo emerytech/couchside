@@ -2788,18 +2788,32 @@ export const api = {
    * frames shown `holdMs` each, looping — what the alternate-colour feature and the
    * Police preset build. Agent-rendered, so it survives the phone closing. Older
    * agents 404/400 -> resolves false and the caller degrades.
+   *
+   * `holds` (agent >= 2.9.91) is an OPTIONAL per-frame duration list (one ms per
+   * frame, len === frames): each frame can linger a different length of time. When
+   * omitted every frame shows for the uniform `holdMs`. Agents that predate it
+   * ignore `holds` and fall back to `holdMs`, so always send a sensible `holdMs`.
    */
   setStripSequence(
     settings: ConnSettings,
     strip: string,
-    seq: { frames: (Rgb | null)[][]; holdMs: number; loop?: boolean; brightness?: number },
+    seq: {
+      frames: (Rgb | null)[][]; holdMs: number; loop?: boolean;
+      brightness?: number; holds?: number[];
+    },
   ): Promise<boolean> {
+    // Only forward `holds` when it is a clean per-frame list (one entry per frame);
+    // otherwise let the box use the uniform holdMs.
+    const holds = Array.isArray(seq.holds) && seq.holds.length === seq.frames.length
+      ? seq.holds.map((h) => Math.round(h))
+      : undefined;
     return request<{ ok: boolean }>(settings, '/api/leds/sequence', {
       method: 'POST',
       body: {
         strip, frames: seq.frames, hold_ms: Math.round(seq.holdMs),
         loop: seq.loop ?? true,
         ...(seq.brightness != null ? { brightness: Math.round(seq.brightness) } : {}),
+        ...(holds ? { holds } : {}),
       },
     })
       .then((r) => !!r?.ok)

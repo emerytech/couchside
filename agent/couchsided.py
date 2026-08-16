@@ -48,7 +48,7 @@ except ImportError:  # pragma: no cover
     fcntl = None
 
 APP_NAME = "couchside-agent"
-VERSION = "2.9.90"
+VERSION = "2.9.91"
 UID = os.getuid()
 XDG_RUNTIME_DIR = "/run/user/%d" % UID
 
@@ -4869,13 +4869,20 @@ def _led_restore():
             prefix = name[len("strip:"):]
             frames = st.get("frames")
             hold = st.get("hold_ms")
+            holds = st.get("holds")
             if (prefix in strips and isinstance(frames, list) and frames
                     and isinstance(hold, int) and not isinstance(hold, bool)):
+                fr = frames[:_SEQ_MAX_FRAMES]
+                # per-frame durations only if a clean int list matching the frames;
+                # apply_strip_sequence re-validates too (defence in depth).
+                hh = holds if (isinstance(holds, list) and len(holds) == len(fr)
+                               and all(isinstance(x, int) and not isinstance(x, bool)
+                                       for x in holds)) else None
                 try:
                     apply_strip_sequence(
-                        prefix, frames[:_SEQ_MAX_FRAMES], min(60000, max(30, hold)),
+                        prefix, fr, min(60000, max(30, hold)),
                         st.get("brightness") if _is_pct(st.get("brightness")) else 100,
-                        bool(st.get("loop", True)))
+                        bool(st.get("loop", True)), hh)
                 except OSError:
                     pass
             continue
@@ -5139,15 +5146,40 @@ def _seq_render(spec, now):
         frame = _seq_frame_twinkle(n, t, period, color)
     elif e == "sequence":
         # A custom TIMED sequence: a list of per-LED frames (already normalized to n
-        # members at validation) shown `hold_ms` each. loop -> wrap; else hold the
-        # last frame. This is what the app's alternate-colour feature builds (2
-        # frames) and the future editor builds (N frames).
+        # members at validation). With per-frame `holds` (one ms per frame) we walk a
+        # cumulative timeline; without them every frame shows for the uniform
+        # `hold_ms`. loop -> wrap; else hold the last frame. This is what the app's
+        # alternate-colour feature builds (2 frames) and the N-frame editor builds.
         frames = spec.get("frames") or []
         if not frames:
             return
-        hold = max(0.03, spec.get("hold_ms", 500) / 1000.0)
-        step = int(t / hold)
-        idx = (step % len(frames)) if spec.get("loop", True) else min(step, len(frames) - 1)
+        loop = spec.get("loop", True)
+        holds = spec.get("holds")
+        if holds and len(holds) == len(frames):
+            total = sum(holds) / 1000.0
+            if total <= 0:
+                idx = 0
+            elif loop:
+                tm = t % total
+                acc = 0.0
+                idx = len(frames) - 1
+                for j, h in enumerate(holds):
+                    acc += h / 1000.0
+                    if tm < acc:
+                        idx = j
+                        break
+            else:
+                acc = 0.0
+                idx = len(frames) - 1
+                for j, h in enumerate(holds):
+                    acc += h / 1000.0
+                    if t < acc:
+                        idx = j
+                        break
+        else:
+            hold = max(0.03, spec.get("hold_ms", 500) / 1000.0)
+            step = int(t / hold)
+            idx = (step % len(frames)) if loop else min(step, len(frames) - 1)
         frame = frames[idx]
     else:
         return
@@ -5326,12 +5358,13 @@ def apply_strip_effect(prefix, effect, color, speed, brightness, reverse=False):
 _SEQ_MAX_FRAMES = 64          # cap on a custom sequence's frame count (bounds memory)
 
 
-def apply_strip_sequence(prefix, frames, hold_ms, brightness, loop=True):
+def apply_strip_sequence(prefix, frames, hold_ms, brightness, loop=True, holds=None):
     """Play a custom TIMED SEQUENCE of per-LED frames on the strip (agent-rendered):
     the general form behind the app's alternate-colour feature (2 frames) and the
-    future editor (N frames). `frames` is validated per-LED colour DATA; the render
-    thread owns every write (fixed literals, §3). Persisted -> re-arms on reboot.
-    Returns {"ok":True,..} | None (-> 404)."""
+    N-frame editor. `frames` is validated per-LED colour DATA; the render thread
+    owns every write (fixed literals, §3). `holds` is an OPTIONAL per-frame duration
+    list (len == frames); absent -> every frame shows for the uniform `hold_ms`.
+    Persisted -> re-arms on reboot. Returns {"ok":True,..} | None (-> 404)."""
     if not isinstance(prefix, str):
         return None
     members = _led_strips().get(prefix)
@@ -5346,6 +5379,18 @@ def apply_strip_sequence(prefix, frames, hold_ms, brightness, loop=True):
     # extra), keeping only valid RGB triples -- nothing client-shaped reaches a write.
     norm = [[(fr[i] if i < len(fr) and _is_rgb_triple(fr[i]) else None)
              for i in range(n)] for fr in frames]
+    # Optional per-frame durations: keep only a full, in-range int list (one per
+    # frame); anything else -> None (uniform hold_ms). Defensively re-validated here
+    # too, so a junk persist file / caller can never drive an out-of-range timeline.
+    hnorm = None
+    if isinstance(holds, list) and len(holds) == len(norm) and norm:
+        try:
+            cand = [min(60000, max(30, int(h))) for h in holds
+                    if not isinstance(h, bool)]
+            if len(cand) == len(norm):
+                hnorm = cand
+        except (TypeError, ValueError):
+            hnorm = None
     for name in members:
         try:
             _led_write(name, "effect", "manual")
@@ -5354,7 +5399,7 @@ def apply_strip_sequence(prefix, frames, hold_ms, brightness, loop=True):
     with _SEQ_LOCK:
         _SEQ_ACTIVE[prefix] = {
             "members": members, "effect": "sequence", "frames": norm,
-            "hold_ms": int(hold_ms), "loop": bool(loop), "brightness": b,
+            "hold_ms": int(hold_ms), "holds": hnorm, "loop": bool(loop), "brightness": b,
             "color": {"r": 255, "g": 255, "b": 255}, "speed": 50,
             "t0": time.monotonic(), "raws": raws}
     _seq_ensure_thread()
@@ -5362,25 +5407,30 @@ def apply_strip_sequence(prefix, frames, hold_ms, brightness, loop=True):
         for m in members:
             _LED_PERSIST.pop(m, None)
         _LED_PERSIST["strip:" + prefix] = {"effect": "sequence", "frames": norm,
-                                           "hold_ms": int(hold_ms), "loop": bool(loop),
-                                           "brightness": b}
+                                           "hold_ms": int(hold_ms), "holds": hnorm,
+                                           "loop": bool(loop), "brightness": b}
     _led_state_save()
-    return {"ok": True, "strip": prefix,
-            "active": {"effect": "sequence", "frames": len(norm),
-                       "hold_ms": int(hold_ms), "loop": bool(loop), "brightness": b}}
+    active = {"effect": "sequence", "frames": len(norm),
+              "hold_ms": int(hold_ms), "loop": bool(loop), "brightness": b}
+    if hnorm is not None:
+        active["holds"] = hnorm
+    return {"ok": True, "strip": prefix, "active": active}
 
 
 def _validate_sequence_body(req):
     """Shape-check POST /api/leds/sequence. Returns
-    (frames, hold_ms, brightness|None, loop, error|None). Rejects, never sanitises."""
+    (frames, hold_ms, holds, brightness|None, loop, error|None). Rejects, never
+    sanitises. `holds` is an OPTIONAL per-frame duration list (one int ms per
+    frame, len == frames); absent -> None and the uniform `hold_ms` governs every
+    frame. Old clients that omit it keep the uniform-cadence behaviour."""
     frames = req.get("frames")
     if not isinstance(frames, list) or not (1 <= len(frames) <= _SEQ_MAX_FRAMES):
-        return None, None, None, None, \
+        return None, None, None, None, None, \
             "frames must be a list of 1..%d frames" % _SEQ_MAX_FRAMES
     out = []
     for fr in frames:
         if not isinstance(fr, list) or len(fr) > 512:
-            return None, None, None, None, "each frame is a list of <=512 colours"
+            return None, None, None, None, None, "each frame is a list of <=512 colours"
         row = []
         for c in fr:
             if c is None:
@@ -5388,18 +5438,26 @@ def _validate_sequence_body(req):
             elif _is_rgb_triple(c):
                 row.append(c)
             else:
-                return None, None, None, None, "frame colours must be {r,g,b} ints or null"
+                return None, None, None, None, None, "frame colours must be {r,g,b} ints or null"
         out.append(row)
     hold_ms = req.get("hold_ms", 500)
     if isinstance(hold_ms, bool) or not isinstance(hold_ms, int) or not (30 <= hold_ms <= 60000):
-        return None, None, None, None, "hold_ms must be an int 30..60000"
+        return None, None, None, None, None, "hold_ms must be an int 30..60000"
+    holds = req.get("holds")
+    if holds is not None:
+        if not isinstance(holds, list) or len(holds) != len(out):
+            return None, None, None, None, None, \
+                "holds must be a list of one duration per frame"
+        for h in holds:
+            if isinstance(h, bool) or not isinstance(h, int) or not (30 <= h <= 60000):
+                return None, None, None, None, None, "each hold must be an int 30..60000"
     brightness = req.get("brightness")
     if brightness is not None and not _is_pct(brightness):
-        return None, None, None, None, "brightness must be an int 0-100"
+        return None, None, None, None, None, "brightness must be an int 0-100"
     loop = req.get("loop", True)
     if not isinstance(loop, bool):
-        return None, None, None, None, "loop must be a boolean"
-    return out, hold_ms, brightness, loop, None
+        return None, None, None, None, None, "loop must be a boolean"
+    return out, hold_ms, holds, brightness, loop, None
 
 
 # ---- OpenRGB backend (cap: openrgb) -----------------------------------------
@@ -20018,7 +20076,7 @@ class Handler(BaseHTTPRequestHandler):
                     self._send(400, {"error": "body must be a JSON object"}, started)
                     return
                 strip_name = req.get("strip")
-                frames, hold_ms, brightness, loop, verr = _validate_sequence_body(req)
+                frames, hold_ms, holds, brightness, loop, verr = _validate_sequence_body(req)
                 if verr is not None:
                     self._send(400, {"error": verr}, started)
                     return
@@ -20027,13 +20085,16 @@ class Handler(BaseHTTPRequestHandler):
                     if not isinstance(strip_name, str) or strip_name not in ms:
                         self._send(404, {"error": "unknown strip"}, started)
                         return
-                    _MOCK_FX["strip:" + strip_name] = {
+                    active = {
                         "effect": "sequence", "frames": len(frames), "hold_ms": hold_ms,
                         "loop": loop, "brightness": brightness if brightness is not None else 100}
+                    if holds is not None:
+                        active["holds"] = list(holds)
+                    _MOCK_FX["strip:" + strip_name] = active
                     self._send(200, {"ok": True, "strip": strip_name,
                                      "active": _MOCK_FX["strip:" + strip_name]}, started)
                     return
-                res = apply_strip_sequence(strip_name, frames, hold_ms, brightness, loop)
+                res = apply_strip_sequence(strip_name, frames, hold_ms, brightness, loop, holds)
                 if res is None:
                     self._send(404, {"error": "unknown strip"}, started)
                     return

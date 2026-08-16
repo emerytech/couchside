@@ -343,9 +343,14 @@ def test_sequence_validation():
     print("sequence body validation (reject, don't sanitise)")
     good = {"frames": [[{"r": 255, "g": 0, "b": 0}, None], [None, {"r": 0, "g": 0, "b": 255}]],
             "hold_ms": 400, "loop": True, "brightness": 90}
-    frames, hold, br, loop, err = cs._validate_sequence_body(good)
-    check(err is None and len(frames) == 2 and hold == 400 and loop is True and br == 90,
-          "accepts a valid 2-frame sequence")
+    frames, hold, holds, br, loop, err = cs._validate_sequence_body(good)
+    check(err is None and len(frames) == 2 and hold == 400 and loop is True and br == 90
+          and holds is None, "accepts a valid 2-frame sequence (no per-frame holds)")
+    # per-frame holds: a valid list matching the frame count is accepted verbatim
+    withholds = dict(good, holds=[200, 800])
+    _, _, holds2, _, _, err = cs._validate_sequence_body(withholds)
+    check(err is None and holds2 == [200, 800],
+          "accepts per-frame holds matching the frame count")
     bad = [
         {"frames": []},                                  # empty
         {"frames": [[{"r": 256, "g": 0, "b": 0}]]},      # bad colour
@@ -354,9 +359,16 @@ def test_sequence_validation():
         {"frames": [[{"r": 1, "g": 2, "b": 3}]], "loop": "yes"},    # loop not bool
         {"frames": "nope"},                              # frames not a list
         {"frames": [["red"]]},                           # colour not {r,g,b}|null
+        # per-frame holds: wrong length, out of range, wrong type -> rejected
+        {"frames": [[{"r": 1, "g": 2, "b": 3}], [None]], "holds": [200]},  # len != frames
+        {"frames": [[{"r": 1, "g": 2, "b": 3}]], "holds": [10]},           # hold too small
+        {"frames": [[{"r": 1, "g": 2, "b": 3}]], "holds": [999999]},       # hold too big
+        {"frames": [[{"r": 1, "g": 2, "b": 3}]], "holds": ["x"]},          # not an int
+        {"frames": [[{"r": 1, "g": 2, "b": 3}]], "holds": [True]},         # bool not int
+        {"frames": [[{"r": 1, "g": 2, "b": 3}]], "holds": "nope"},         # not a list
     ]
     for b in bad:
-        _, _, _, _, err = cs._validate_sequence_body(b)
+        _, _, _, _, _, err = cs._validate_sequence_body(b)
         check(err is not None, "rejects %s" % (list(b)[:1]))
 
 
@@ -388,7 +400,110 @@ def test_sequence_starts_and_persists():
         p = cs._LED_PERSIST.get("strip:valve-leds", {})
         check(p.get("effect") == "sequence" and p.get("hold_ms") == 400,
               "sequence persisted for reboot re-arm")
+        check(p.get("holds") is None,
+              "no per-frame holds persisted when none supplied")
+        # now with per-frame holds -> stored on the spec AND persisted for re-arm
+        res = cs.apply_strip_sequence("valve-leds", [A, B], 500, 90, True, [150, 850])
+        check(res["active"].get("holds") == [150, 850], "per-frame holds echoed")
+        check(cs._SEQ_ACTIVE["valve-leds"].get("holds") == [150, 850],
+              "per-frame holds on the live spec")
+        check(cs._LED_PERSIST["strip:valve-leds"].get("holds") == [150, 850],
+              "per-frame holds persisted for reboot re-arm")
+        # a holds list that does NOT match the frame count is dropped (uniform hold)
+        res = cs.apply_strip_sequence("valve-leds", [A, B], 500, 90, True, [150])
+        check(res["active"].get("holds") is None and "holds" not in res["active"],
+              "mismatched holds length dropped -> uniform hold")
     finally:
+        cs._seq_ensure_thread, cs._led_state_save = saved_thread, saved_save
+        with cs._SEQ_LOCK:
+            cs._SEQ_ACTIVE.clear()
+        restore()
+
+
+def test_sequence_per_frame_holds_timeline():
+    print("per-frame holds: render walks a cumulative timeline (loop wraps)")
+    writes = []
+    restore = _install(writes)
+    saved_wc = cs._led_write_color
+    painted = {}
+    cs._led_write_color = lambda name, raw, c: painted.__setitem__(name, dict(c))
+    saved_thread, saved_save = cs._seq_ensure_thread, cs._led_state_save
+    try:
+        cs._seq_ensure_thread = lambda: None
+        cs._led_state_save = lambda: None
+        with cs._SEQ_LOCK:
+            cs._SEQ_ACTIVE.clear()
+        R = [{"r": 255, "g": 0, "b": 0}] * _N
+        G = [{"r": 0, "g": 255, "b": 0}] * _N
+        B = [{"r": 0, "g": 0, "b": 255}] * _N
+        # red 100ms, green 200ms, blue 300ms -> total 600ms, looping
+        cs.apply_strip_sequence("valve-leds", [R, G, B], 500, 100, True, [100, 200, 300])
+        spec = cs._SEQ_ACTIVE["valve-leds"]
+        m0 = spec["members"][0]
+
+        def frame_at(elapsed):
+            painted.clear()
+            spec["t0"] = 0.0            # so t == elapsed selects the frame at that time
+            cs._seq_render(spec, elapsed)
+            return painted.get(m0)
+
+        check(frame_at(0.05) == {"r": 255, "g": 0, "b": 0}, "t=50ms  -> frame 0 (red)")
+        check(frame_at(0.25) == {"r": 0, "g": 255, "b": 0}, "t=250ms -> frame 1 (green)")
+        check(frame_at(0.55) == {"r": 0, "g": 0, "b": 255}, "t=550ms -> frame 2 (blue)")
+        # loop wraps: 650ms == 50ms into the next cycle -> back to frame 0
+        check(frame_at(0.65) == {"r": 255, "g": 0, "b": 0}, "t=650ms -> wraps to frame 0")
+
+        # NON-LOOP: same holds, loop=False -> advances through, then HOLDS the last
+        # frame forever (never wraps). Observe both states at the SAME time points.
+        cs.apply_strip_sequence("valve-leds", [R, G, B], 500, 100, False, [100, 200, 300])
+        spec = cs._SEQ_ACTIVE["valve-leds"]
+        m0 = spec["members"][0]
+        check(frame_at(0.05) == {"r": 255, "g": 0, "b": 0}, "non-loop t=50ms  -> frame 0")
+        check(frame_at(0.25) == {"r": 0, "g": 255, "b": 0}, "non-loop t=250ms -> frame 1")
+        check(frame_at(0.55) == {"r": 0, "g": 0, "b": 255}, "non-loop t=550ms -> frame 2")
+        # past the 600ms total: clamps to the LAST frame (blue), does NOT wrap to red
+        check(frame_at(0.65) == {"r": 0, "g": 0, "b": 255}, "non-loop t=650ms -> clamps to last (blue)")
+        check(frame_at(5.0) == {"r": 0, "g": 0, "b": 255}, "non-loop far past end -> still last (blue)")
+    finally:
+        cs._led_write_color = saved_wc
+        cs._seq_ensure_thread, cs._led_state_save = saved_thread, saved_save
+        with cs._SEQ_LOCK:
+            cs._SEQ_ACTIVE.clear()
+        restore()
+
+
+def test_led_restore_rearms_per_frame_holds():
+    print("restore: a persisted sequence re-arms with its per-frame holds (revalidated)")
+    writes = []
+    restore = _install(writes)
+    saved_load = cs._led_state_load
+    saved_thread, saved_save = cs._seq_ensure_thread, cs._led_state_save
+    try:
+        cs._seq_ensure_thread = lambda: None
+        cs._led_state_save = lambda: None
+        R = [{"r": 255, "g": 0, "b": 0}] * _N
+        B = [{"r": 0, "g": 0, "b": 255}] * _N
+        with cs._SEQ_LOCK:
+            cs._SEQ_ACTIVE.clear()
+        cs._led_state_load = lambda: {"strip:valve-leds": {
+            "effect": "sequence", "frames": [R, B], "hold_ms": 500,
+            "holds": [120, 880], "loop": True, "brightness": 100}}
+        cs._led_restore()
+        spec = cs._SEQ_ACTIVE.get("valve-leds")
+        check(spec and spec["effect"] == "sequence" and spec.get("holds") == [120, 880],
+              "sequence re-armed WITH its per-frame holds")
+        # a junk holds list (wrong length) is ignored -> uniform hold, still re-arms
+        with cs._SEQ_LOCK:
+            cs._SEQ_ACTIVE.clear()
+        cs._led_state_load = lambda: {"strip:valve-leds": {
+            "effect": "sequence", "frames": [R, B], "hold_ms": 500,
+            "holds": [120], "loop": True, "brightness": 100}}
+        cs._led_restore()
+        spec = cs._SEQ_ACTIVE.get("valve-leds")
+        check(spec and spec.get("holds") is None,
+              "mismatched persisted holds dropped -> uniform hold (still re-arms)")
+    finally:
+        cs._led_state_load = saved_load
         cs._seq_ensure_thread, cs._led_state_save = saved_thread, saved_save
         with cs._SEQ_LOCK:
             cs._SEQ_ACTIVE.clear()
@@ -412,6 +527,8 @@ if __name__ == "__main__":
     test_reconcile_skips_agent_effects()
     test_sequence_validation()
     test_sequence_starts_and_persists()
+    test_sequence_per_frame_holds_timeline()
+    test_led_restore_rearms_per_frame_holds()
     print()
     if _fail:
         print("FAILED: %d" % len(_fail))

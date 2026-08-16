@@ -39,6 +39,10 @@ export type LedPreset = {
   /** A built-in that GENERATES a timed sequence sized to the strip when applied
       (e.g. 'police' = red/blue halves alternating). Overrides effect/pattern. */
   generator?: 'police';
+  /** A hand-built TIMED SEQUENCE (from the N-frame editor): per-LED colour frames
+      plus one hold (ms) per frame. Applying it plays the loop on the box via
+      /api/leds/sequence. Overrides effect/pattern/generator. */
+  sequence?: { frames: (Rgb | null)[][]; holds: number[]; loop?: boolean };
 };
 
 /** Seeded once when the library is empty. "Night Rider" is the owner's example. */
@@ -92,6 +96,22 @@ const isRgb = (c: unknown): c is Rgb =>
   !!c && typeof c === 'object' &&
   ['r', 'g', 'b'].every((k) => Number.isInteger((c as Record<string, unknown>)[k]));
 
+/** Coerce a stored `sequence` into a clean shape, or undefined if malformed. A
+ *  valid sequence has >= 2 colour frames and one hold (ms) per frame. */
+function normalizeSequence(raw: unknown): LedPreset['sequence'] {
+  if (!raw || typeof raw !== 'object') return undefined;
+  const s = raw as Record<string, unknown>;
+  if (!Array.isArray(s.frames) || !Array.isArray(s.holds)) return undefined;
+  const frames = (s.frames as unknown[])
+    .filter((f) => Array.isArray(f))
+    .map((f) => (f as unknown[]).map((c) => (isRgb(c) ? { r: c.r, g: c.g, b: c.b } : null)));
+  const holds = (s.holds as unknown[]).map((h) => (typeof h === 'number' ? h : 0));
+  if (frames.length < 2 || holds.length !== frames.length || holds.some((h) => h <= 0)) {
+    return undefined;
+  }
+  return { frames, holds, loop: s.loop !== false };
+}
+
 /** Coerce a parsed value into a clean LedPreset[], dropping anything malformed. */
 function normalize(raw: unknown): LedPreset[] {
   if (!Array.isArray(raw)) return [];
@@ -111,6 +131,7 @@ function normalize(raw: unknown): LedPreset[] {
         ? (p.pattern as unknown[]).map((c) => (isRgb(c) ? { r: c.r, g: c.g, b: c.b } : null))
         : undefined,
       generator: p.generator === 'police' ? 'police' : undefined,
+      sequence: normalizeSequence(p.sequence),
     });
     if (out.length >= PRESET_MAX) break;
   }
