@@ -1,5 +1,1 @@
-Light up your box. If it has an addressable RGB strip (like a Steam Machine's), drive the whole strip from your phone: a real night-rider sweep, rainbow, breathe, or a solid colour — running on the box, so they keep going with the app closed and survive a reboot.
-
-Paint each LED its own colour and save the pattern, name your presets, and set colour + brightness with smooth sliders.
-
-Whole-system RGB via OpenRGB when it's installed. Plus fixes and polish.
+Build your own light shows. If your box has an addressable RGB strip (like a Steam Machine's), the Light card gains a frame-by-frame editor: paint each frame, set its timing, and the strip loops your animation — on the box, so it runs with the app closed and survives a reboot. Two new presets to start: Rainbow River and Heartbeat. Pairing is quicker too — the sixth PIN digit connects automatically. Plus fixes and polish.
