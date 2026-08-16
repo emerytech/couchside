@@ -596,6 +596,16 @@ jobs:
       - name: Installer CLI + token-redaction pins
         run: bash tests/test_installer_cli.sh install.sh
 
+      # An OPTIONAL step must never abort an app-triggered update. install.sh
+      # runs `set -euo pipefail` and the phone runs it DETACHED, so on a box
+      # whose user has a sudo password there is no tty and no root — an
+      # unguarded sudo in an optional step killed the whole run BEFORE the
+      # service restart, leaving the new agent on disk and the old one serving
+      # (KI-064, observed on a real Legion Go). Drives the seed block with a
+      # sudo that cannot prompt and asserts the run continues.
+      - name: Optional steps cannot abort a no-root update
+        run: bash tests/test_update_no_root.sh install.sh
+
       # The release scripts used to "self-verify" a signature against a pubkey
       # derived from the key that had just signed it — true by construction for
       # ANY key, so it could never catch the one failure it claimed to prevent.
