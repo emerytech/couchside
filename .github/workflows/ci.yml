@@ -596,6 +596,17 @@ jobs:
       - name: Installer CLI + token-redaction pins
         run: bash tests/test_installer_cli.sh install.sh
 
+      # The release scripts used to "self-verify" a signature against a pubkey
+      # derived from the key that had just signed it — true by construction for
+      # ANY key, so it could never catch the one failure it claimed to prevent.
+      # A wrong or rotated key passed, uploaded, and was then refused on every
+      # user's box AFTER the release went public. They now check the keys
+      # embedded in install.sh, which is what a box actually trusts. Includes a
+      # control that runs the pre-fix sequence and asserts it ACCEPTS a key no
+      # box would.
+      - name: Release signing verifies the keys a box trusts
+        run: python3 tests/test_release_signing.py
+
       # Injected actions: buttons the agent offers only when the box can really
       # perform them ("a dead button costs more trust than a missing one"), so
       # every gate is asserted in BOTH directions. Covers the Bluetooth pairing
