@@ -113,10 +113,12 @@ export function BoxScanPair({
     void scan();
   }, [autoStart, scan]);
 
-  const submitPin = useCallback(async () => {
+  // `codeArg` lets the auto-submit path (6th digit typed) pass the fresh value
+  // directly — reading `pin` here would see the pre-keystroke value (stale closure).
+  const submitPin = useCallback(async (codeArg?: string) => {
     if (phase.k !== 'pin') return;
     const box = phase.box;
-    const code = pin.trim();
+    const code = (codeArg ?? pin).trim();
     if (code.length !== 6) {
       setMsg({ ok: false, text: 'Enter the 6-digit PIN from the box.' });
       return;
@@ -165,7 +167,14 @@ export function BoxScanPair({
           <Text style={styles.hint}>A 6-digit PIN is showing on {phase.box.name}. Enter it:</Text>
           <TextInput
             value={pin}
-            onChangeText={(v) => setPin(v.replace(/[^0-9]/g, '').slice(0, 6))}
+            onChangeText={(v) => {
+              const next = v.replace(/[^0-9]/g, '').slice(0, 6);
+              setPin(next);
+              // Auto-pair the moment the 6th digit is entered — no PAIR tap needed.
+              // Pass `next` explicitly so submitPin sees the fresh value, not stale
+              // `pin`. A wrong PIN returns to this screen for a retry.
+              if (next.length === 6) void submitPin(next);
+            }}
             placeholder="6-digit PIN"
             placeholderTextColor={t.textFaint}
             keyboardType="number-pad"
@@ -176,7 +185,7 @@ export function BoxScanPair({
             <Pressable onPress={cancel} style={[styles.btn, styles.btnGhost]}>
               <Text style={styles.btnGhostText}>CANCEL</Text>
             </Pressable>
-            <Pressable onPress={submitPin} style={[styles.btn, styles.btnPrimary]}>
+            <Pressable onPress={() => submitPin()} style={[styles.btn, styles.btnPrimary]}>
               <Text style={styles.btnPrimaryText}>PAIR</Text>
             </Pressable>
           </View>
