@@ -297,8 +297,12 @@ export function useSettings(): SettingsContextValue {
       volumeTarget: activeBox.volumeTarget,
       caps: activeBox.caps,
       lastSeen: activeBox.lastSeen,
-      // TLS pin — without these the pinned transport never engages (the poll,
-      // gamepad + screen all read settings from HERE, not activeSettings()).
+      // TLS pin — without these the pinned transport never engages: the poll,
+      // gamepad and screen all read settings from HERE. This projection used to
+      // have a twin (lib/settings.ts activeSettings), and a field added to Box
+      // that reached only one of them silently disabled the pinned transport.
+      // The twin was dead and is gone (2026-08-16); this is now the only copy,
+      // so any new Box field belongs here.
       secure: activeBox.secure,
       tlsPort: activeBox.tlsPort,
       fp: activeBox.fp,
