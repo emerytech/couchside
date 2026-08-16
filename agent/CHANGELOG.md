@@ -18,6 +18,16 @@ the same thing regardless of what actually changed.
 Write for the person holding the phone, not for the commit log. They are
 deciding whether to press "Update now" on a machine across the room.
 
+## 2.9.93
+
+**Legion Go S thumbstick lighting now works from the app.** The Go S drives its
+joystick-ring RGB through a special mode that turns the lights OFF the instant any
+setting is written — so the app would "set a colour" and the rings would just stay
+dark. The box now speaks that driver's language: pick a colour and brightness from
+the Light card and the rings actually light up, and stay lit across reboots. (Effect
+buttons show as a solid colour on the rings for now — the driver's own animations
+aren't safely controllable yet.) Other boxes are unaffected.
+
 ## 2.9.92
 
 **Your game lists stop re-reading a big file every time you look at them.** The box

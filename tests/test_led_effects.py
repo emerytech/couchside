@@ -52,6 +52,13 @@ _FAKE = {
         "notable": True, "writable": False, "max_brightness": 255,
         "index": ["red", "green", "blue"], "maxint": [255, 255, 255],
         "brightness": 0, "color": {"r": 0, "g": 0, "b": 0}},
+    # A GATED HID RGB LED (Lenovo Legion Go S thumbstick rings): `enable_on` set ->
+    # the mode=custom-first / enabled-last sequencing path.
+    "go_s:rgb:joystick_rings": {"name": "go_s:rgb:joystick_rings",
+        "desc": "go_s:rgb:joystick_rings", "rgb": True, "notable": True,
+        "writable": True, "max_brightness": 100, "index": ["red", "green", "blue"],
+        "maxint": [100, 100, 100], "brightness": 100, "color": {"r": 0, "g": 0, "b": 0},
+        "enable_on": "true"},
 }
 
 
@@ -236,6 +243,60 @@ def test_persistence_restore_revalidates():
         restore()
 
 
+def test_gated_go_s_led():
+    print("gated go_s rings: mode=custom first, enabled LAST; effects fall back to solid")
+    G = "go_s:rgb:joystick_rings"
+    writes = []
+    restore = _install_fake(writes)
+    try:
+        # SOLID colour: mode=custom BEFORE the colour, enabled=true is the LAST write
+        writes.clear()
+        res = cs.set_led(G, 80, {"r": 255, "g": 0, "b": 0})
+        check(res and res.get("ok"), "gated set_led accepted")
+        gw = [w for w in writes if w[0] == G]
+        attrs = [w[1] for w in gw]
+        check((G, "mode", "custom") in writes, "mode set to custom")
+        check("mode" in attrs and "multi_intensity" in attrs
+              and attrs.index("mode") < attrs.index("multi_intensity"),
+              "mode=custom written before the colour")
+        check(attrs and attrs[-1] == "enabled" and gw[-1] == (G, "enabled", "true"),
+              "enabled=true is the LAST write")
+
+        # NEVER write mode=dynamic: that write BLOCKS FOREVER on the real driver.
+        check(not any(w == (G, "mode", "dynamic") for w in writes),
+              "solid path never writes the unsafe mode=dynamic")
+
+        # ANY animated effect -> static-colour fallback (mode=custom, enabled last),
+        # NOT the firmware-effect route and NOT the software render thread.
+        for eff, col in (("rainbow", None), ("pulse", {"r": 0, "g": 255, "b": 0})):
+            _reset_engine()
+            writes.clear()
+            res = cs.apply_led_effect(G, eff, col, 60, 100)
+            check(res and res.get("ok") and res.get("active") is None,
+                  "gated %s falls back to a solid (no live effect)" % eff)
+            check((G, "mode", "custom") in writes
+                  and not any(w == (G, "mode", "dynamic") for w in writes)
+                  and not any(w[1] == "effect" for w in writes if w[0] == G),
+                  "%s -> mode=custom only, no effect / no mode=dynamic write" % eff)
+            check([w[1] for w in writes if w[0] == G][-1] == "enabled",
+                  "%s fallback arms enabled LAST" % eff)
+            check(G not in cs._FX_ACTIVE, "%s does not start the render thread" % eff)
+    finally:
+        restore()
+
+
+def test_normal_led_not_gated():
+    print("a plain LED is untouched by the gated path (no mode/enabled writes)")
+    writes = []
+    restore = _install_fake(writes)
+    try:
+        cs.set_led("multicolor:front", 50, {"r": 10, "g": 20, "b": 30})
+        check(not any(w[1] in ("mode", "enabled") for w in writes),
+              "no mode/enabled written for a plain LED")
+    finally:
+        restore()
+
+
 def test_mock_effect_observable():
     print("mock: selecting an effect moves GET /api/leds `active` (observe both)")
     saved = dict(cs._MOCK_FX)
@@ -262,6 +323,8 @@ if __name__ == "__main__":
     test_allowlist_effect()
     test_animate_then_solid_lifecycle()
     test_persistence_restore_revalidates()
+    test_gated_go_s_led()
+    test_normal_led_not_gated()
     test_mock_effect_observable()
     print()
     if _fail:
