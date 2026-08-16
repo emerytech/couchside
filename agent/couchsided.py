@@ -13041,6 +13041,11 @@ _LGCOM_OPS = {
                                 # NIC alive in standby, unlike a consumer TV
                                 # which needs Wake-on-LAN.
 }
+# Input switching is NOT wired: there is no "input" op here, and real_lgcom
+# consults only this table (plus the special-cased "mute"). If it is ever added,
+# the command is "xb" with LG's input byte — 90 = HDMI1, 91 = HDMI2, and so on.
+# That mapping is the only thing worth keeping from the unreachable lgcom_input()
+# helper that sat below until 2026-08-16.
 
 
 def lgcom_available():
@@ -13081,11 +13086,6 @@ def _lgcom_value(reply):
     i = reply.index("OK") + 2
     v = reply[i:i + 2]
     return v if len(v) == 2 else None
-
-
-def lgcom_input(host, code):
-    """Switch input. `code` is LG's input byte (90 = HDMI1, 91 = HDMI2, ...)."""
-    return _lgcom_ok(_lgcom_cmd(host, "xb", code))
 
 
 def lgcom_mute(host, on):

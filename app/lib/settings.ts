@@ -456,37 +456,16 @@ export async function saveBoxes(state: BoxesState): Promise<void> {
   await storageSet(BOXES_KEY, JSON.stringify(state));
 }
 
-// ---------- back-compat single-settings loaders (legacy callers) ----------
-
-/** Back-compat: the active box projected as flat Settings, or EMPTY_SETTINGS. */
-export function activeSettings(state: BoxesState): Settings {
-  const active = state.boxes.find((b) => b.id === state.activeBoxId);
-  if (!active) return { ...EMPTY_SETTINGS };
-  return {
-    host: active.host,
-    port: active.port,
-    token: active.token,
-    padMode: active.padMode,
-    lastIp: active.lastIp,
-    mac: active.mac,
-    volumeTarget: active.volumeTarget,
-    caps: active.caps,
-    lastSeen: active.lastSeen,
-    secure: active.secure,
-    tlsPort: active.tlsPort,
-    fp: active.fp,
-    pinModulus: active.pinModulus,
-  };
-}
-
-/**
- * Legacy async loader retained for any code that imported it directly.
- * Returns the active box as flat Settings.
- */
-export async function loadSettings(): Promise<Settings> {
-  const state = await loadBoxes();
-  return activeSettings(state);
-}
+// The back-compat pair activeSettings()/loadSettings() lived here until
+// 2026-08-16. Both were dead: loadSettings had no callers anywhere (app,
+// components, hooks or tests) and was activeSettings's only caller.
+//
+// Worth deleting rather than leaving inert. activeSettings was a SECOND
+// hand-maintained Box -> Settings projection, duplicating the one in
+// SettingsContext (see the note at its useMemo), and the two had already
+// drifted once: fields added to Box reached only one copy, which silently
+// stopped the pinned TLS transport engaging. A projection nothing calls is a
+// standing invitation to fix the wrong copy.
 
 const _EMPTY = EMPTY_STATE;
 export { _EMPTY as EMPTY_BOXES_STATE };
