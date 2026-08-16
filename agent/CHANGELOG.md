@@ -28,6 +28,10 @@ the Light card and the rings actually light up, and stay lit across reboots. (Ef
 buttons show as a solid colour on the rings for now — the driver's own animations
 aren't safely controllable yet.) Other boxes are unaffected.
 
+Also in this update: switching between your game lists (Steam Link and your
+uninstalled-games list) is quicker — the box no longer re-reads a multi-megabyte
+Steam file each time — plus a small pairing-robustness fix.
+
 ## 2.9.92
 
 **Your game lists stop re-reading a big file every time you look at them.** The box
