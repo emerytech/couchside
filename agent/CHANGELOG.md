@@ -20,6 +20,13 @@ deciding whether to press "Update now" on a machine across the room.
 
 ## 2.9.92
 
+**Your game lists stop re-reading a big file every time you look at them.** The box
+kept the names for Steam Link and your uninstalled-games list in two separate
+caches that knocked each other over, so switching between those screens made it
+re-read a multi-megabyte Steam file each time — about a fifth of a second of work
+on a 1,500-game library, over and over. It now reads that file once and both
+screens share it. Same names, same lists; the box just stops doing the work twice.
+
 **Pairing is steadier against junk input.** If something on your network sent the
 pairing endpoint a malformed request, the box answered with a server error instead
 of a clean refusal. It now refuses cleanly, the way it always did for a wrong PIN.
