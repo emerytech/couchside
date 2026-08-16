@@ -41,17 +41,34 @@ gh release download "$tag" --repo "$REPO" --pattern SHA256SUMS --dir "$tmp" --cl
 echo "==> signing with $key (via $ossl)"
 "$ossl" pkeyutl -sign -inkey "$key" -rawin -in "$tmp/SHA256SUMS" -out "$tmp/SHA256SUMS.sig"
 
-# Sanity: verify our own signature with the public half before uploading, so we
-# never publish a signature install.sh would reject.
-"$ossl" pkey -in "$key" -pubout -out "$tmp/pub.pem"
-if ! "$ossl" pkeyutl -verify -pubin -inkey "$tmp/pub.pem" -rawin \
-        -in "$tmp/SHA256SUMS" -sigfile "$tmp/SHA256SUMS.sig" >/dev/null 2>&1; then
-    echo "error: self-verification failed — not uploading" >&2
-    exit 1
-fi
+# Verify against the keys A BOX ACTUALLY TRUSTS before uploading.
+#
+# This used to derive the public half from "$key" itself, which succeeds by
+# construction for any key and therefore could never catch a wrong or rotated
+# one — the failure it claimed to prevent. See scripts/release-keys.sh.
+here="$(cd "$(dirname "$0")" && pwd)"
+root="$(cd "$here/.." && pwd)"
+. "$here/release-keys.sh"
+# `|| _rc=$?` is load-bearing: both scripts run under `set -e`, so calling the
+# function bare would abort the moment it returns non-zero and the case below
+# would never print WHY. Measured: the first version of this exited 1 silently.
+_rc=0
+verify_against_installer "$root/install.sh" \
+    "$tmp/SHA256SUMS" "$tmp/SHA256SUMS.sig" "$ossl" || _rc=$?
+case "$_rc" in
+    0) echo "    verifies against the key embedded in install.sh (key #$RELEASE_KEY_MATCHED)" ;;
+    1) echo "error: BOTH keys embedded in install.sh reject this signature." >&2
+       echo "       Every box would refuse it. Not uploading." >&2
+       exit 1 ;;
+    *) echo "error: could not verify against install.sh's embedded keys." >&2
+       echo "       Publishing something unverifiable is the failure this check" >&2
+       echo "       exists to prevent. Not uploading." >&2
+       exit 1 ;;
+esac
 
 echo "==> uploading SHA256SUMS.sig to $tag"
 gh release upload "$tag" "$tmp/SHA256SUMS.sig" --repo "$REPO" --clobber
 
 echo "OK: signed + uploaded SHA256SUMS.sig for $tag"
-echo "    (verify the embedded key matches: openssl pkey -in $key -pubout)"
+echo "    (checked against install.sh's embedded release key, not against \$key —"
+echo "     so a wrong or rotated key aborts above instead of shipping.)"

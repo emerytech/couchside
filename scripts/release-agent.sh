@@ -155,15 +155,30 @@ cat "$tmp/SHA256SUMS"
 echo "==> signing SHA256SUMS with $key (via $ossl)"
 "$ossl" pkeyutl -sign -inkey "$key" -rawin -in "$tmp/SHA256SUMS" -out "$tmp/SHA256SUMS.sig"
 
-# Self-verify with the public half before uploading — never publish a signature
-# install.sh would reject.
-"$ossl" pkey -in "$key" -pubout -out "$tmp/pub.pem"
-if ! "$ossl" pkeyutl -verify -pubin -inkey "$tmp/pub.pem" -rawin \
-        -in "$tmp/SHA256SUMS" -sigfile "$tmp/SHA256SUMS.sig" >/dev/null 2>&1; then
-    echo "error: self-verification failed — not uploading" >&2
-    exit 1
-fi
-echo "    signature self-verified OK"
+# Verify against the keys A BOX ACTUALLY TRUSTS before uploading.
+#
+# This used to derive the public half from "$key" itself and verify against
+# that, which succeeds by construction for ANY key — so it could never detect
+# the one thing it claimed to ("never publish a signature install.sh would
+# reject"). Signing with a wrong or rotated key passed, uploaded, and failed on
+# every user's box after the release was public. See scripts/release-keys.sh.
+. "$here/release-keys.sh"
+# `|| _rc=$?` is load-bearing: both scripts run under `set -e`, so calling the
+# function bare would abort the moment it returns non-zero and the case below
+# would never print WHY. Measured: the first version of this exited 1 silently.
+_rc=0
+verify_against_installer "$root/install.sh" \
+    "$tmp/SHA256SUMS" "$tmp/SHA256SUMS.sig" "$ossl" || _rc=$?
+case "$_rc" in
+    0) echo "    signature verifies against the key embedded in install.sh (key #$RELEASE_KEY_MATCHED)" ;;
+    1) echo "error: BOTH keys embedded in install.sh reject this signature." >&2
+       echo "       Every box would refuse this release. Not uploading." >&2
+       exit 1 ;;
+    *) echo "error: could not verify against install.sh's embedded keys." >&2
+       echo "       Publishing something unverifiable is exactly the failure" >&2
+       echo "       this check exists to prevent. Not uploading." >&2
+       exit 1 ;;
+esac
 
 # Release notes = the matching section of agent/CHANGELOG.md.
 #
