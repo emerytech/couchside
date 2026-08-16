@@ -122,14 +122,46 @@ def test_available_gate():
 
 
 def test_caps_key_registered():
+    """The caps key, asserted against the RUNTIME dict rather than the source.
+
+    This test used to open with
+
+        check("steammenus" in cs.CAPS or True, "caps dict is built at boot")
+
+    `X or True` is unconditionally true, so it asserted nothing: it stayed green
+    with CAPS empty, with set_caps() never called, and with the key deleted
+    outright. The cause is visible one line up — CAPS is `{}` until set_caps()
+    runs (agent/couchsided.py: CAPS is initialised empty and populated there),
+    so the honest assertion failed and was neutered instead of fixed.
+
+    The other two checks grepped AGENT's source text for the literal wiring,
+    which §11.1 rules out ("test the thing; don't grep for it") — a rename of
+    `safe` or a reflow of that dict would fail them while the behaviour was
+    perfect, and, worse, they pass whenever the string exists even if the key
+    never reaches CAPS. All three are now runtime assertions on both branches.
+    """
     print("caps key")
-    check("steammenus" in cs.CAPS or True, "caps dict is built at boot")
-    # The mock tuple is the off-box contract the app develops against.
-    src = open(AGENT).read()
-    check('"steammenus")' in src or '"steammenus",' in src,
-          "steammenus present in the mock all-true caps tuple")
-    check('"steammenus": safe(steammenus_available)' in src,
-          "steammenus wired into the real CAPS dict")
+    orig_caps = dict(cs.CAPS)
+    orig_root = cs._steam_root
+    try:
+        # The mock tuple is the off-box contract the app develops against.
+        cs.set_caps(mock=True)
+        check(cs.CAPS.get("steammenus") is True,
+              "mock caps advertise steammenus")
+        # The real dict must COMPUTE the key from the probe, not hardcode it —
+        # so assert both directions. A key wired to a constant passes the first
+        # of these and fails the second.
+        cs._steam_root = lambda: None
+        cs.set_caps(mock=False)
+        check(cs.CAPS.get("steammenus") is False,
+              "real caps: no Steam -> steammenus False")
+        cs._steam_root = lambda: "/home/u/.local/share/Steam"
+        cs.set_caps(mock=False)
+        check(cs.CAPS.get("steammenus") is True,
+              "real caps: Steam present -> steammenus True")
+    finally:
+        cs._steam_root = orig_root
+        cs.CAPS = orig_caps
 
 
 if __name__ == "__main__":
