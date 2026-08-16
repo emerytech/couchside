@@ -588,6 +588,14 @@ jobs:
       - name: Installer distro-neutrality pins
         run: bash tests/test_installer_distro.sh install.sh
 
+      # The installer's security-page-facing surface: the KI-022 token
+      # redaction in the closing banner, `couchside new-token` (revocation),
+      # `couchside tls on|off|status`, and the firewall opening the TLS
+      # listener port (a ufw box that advertises a blocked 8788 strands a
+      # pinned app, which fails closed by design). Mutation-checked pins.
+      - name: Installer CLI + token-redaction pins
+        run: bash tests/test_installer_cli.sh install.sh
+
       # Injected actions: buttons the agent offers only when the box can really
       # perform them ("a dead button costs more trust than a missing one"), so
       # every gate is asserted in BOTH directions. Covers the Bluetooth pairing

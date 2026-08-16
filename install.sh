@@ -205,6 +205,7 @@ NO_SUDOERS=0
 UNINSTALL=0
 NO_DECKY=0
 NO_OPEN=0
+SHOW_TOKEN=0
 FRESH_TOKEN=0   # flipped to 1 only on a truly fresh token mint (see below)
 
 usage() {
@@ -223,6 +224,10 @@ Usage: install.sh [--no-sudoers] [--no-decky] [--screensaver] [--no-screensaver]
   --no-player       skip the Couchside Player add-on
   --no-open         don't auto-open the on-screen pairing tutorial on a fresh
                     install (it only ever opens on a first install anyway)
+  --show-token      print the bearer token and pairing link as plain text in
+                    the closing banner (KI-022: by default only the QR is
+                    shown, so the secret doesn't persist in scrollback,
+                    screenshots, or screen shares)
   --uninstall       remove the agent (asks before deleting the token/sudoers)
   --help            this text
 
@@ -246,6 +251,7 @@ for arg in "$@"; do
         --player)         COUCHSIDE_PLAYER=1 ;;
         --no-player)      COUCHSIDE_PLAYER=0 ;;
         --no-open)        NO_OPEN=1 ;;
+        --show-token)     SHOW_TOKEN=1 ;;
         --uninstall)      UNINSTALL=1 ;;
         --help|-h)        usage; exit 0 ;;
         *) echo "error: unknown flag: $arg" >&2; usage >&2; exit 2 ;;
@@ -1471,6 +1477,25 @@ PORT="$(sudo cat "$CONFIG_FILE" 2>/dev/null | python3 -c 'import json,sys
 try: print(json.load(sys.stdin).get("port") or '"$PORT_DEFAULT"')
 except Exception: print('"$PORT_DEFAULT"')' 2>/dev/null || echo "$PORT_DEFAULT")"
 
+# The HTTPS listener's port (agent >= 2.9.88 serves TLS by default, dual-listen
+# beside plaintext). Empty when the owner explicitly opted out with
+# "tls": {"enabled": false} — no hole is opened for a listener that will never
+# start. Opening it when the agent later degrades to plaintext-only (no
+# openssl) is harmless: nothing listens there. Without this, a firewalled box
+# (ufw default-deny, strict firewalld zones) advertises a TLS port the phone
+# can't reach — and a pinned app FAILS CLOSED rather than downgrading, so the
+# box would read as offline.
+TLS_PORT="$(sudo cat "$CONFIG_FILE" 2>/dev/null | python3 -c 'import json,sys
+try:
+    tls = json.load(sys.stdin).get("tls")
+    if isinstance(tls, dict) and not tls.get("enabled", True):
+        print("")
+    else:
+        p = tls.get("port", 8788) if isinstance(tls, dict) else 8788
+        print(p if isinstance(p, int) and 1 <= p <= 65535 else 8788)
+except Exception:
+    print(8788)' 2>/dev/null || echo 8788)"
+
 # Only a RUNNING firewall is touched — an installed-but-disabled one is the
 # owner's choice, and enabling or configuring it on their behalf is not this
 # installer's job. Same principle for both backends:
@@ -1483,10 +1508,18 @@ except Exception: print('"$PORT_DEFAULT"')' 2>/dev/null || echo "$PORT_DEFAULT")
 if command -v firewall-cmd >/dev/null 2>&1 && sudo firewall-cmd --state >/dev/null 2>&1; then
     say "Opening ${PORT}/tcp in firewalld"
     sudo firewall-cmd --add-port="${PORT}/tcp" --permanent
+    if [ -n "$TLS_PORT" ]; then
+        say "Opening ${TLS_PORT}/tcp in firewalld (HTTPS listener)"
+        sudo firewall-cmd --add-port="${TLS_PORT}/tcp" --permanent
+    fi
     sudo firewall-cmd --reload
 elif command -v ufw >/dev/null 2>&1 && sudo ufw status 2>/dev/null | grep -q "^Status: active"; then
     say "Opening ${PORT}/tcp in ufw"
     sudo ufw allow "${PORT}/tcp"
+    if [ -n "$TLS_PORT" ]; then
+        say "Opening ${TLS_PORT}/tcp in ufw (HTTPS listener)"
+        sudo ufw allow "${TLS_PORT}/tcp"
+    fi
 else
     say "No running firewall (firewalld/ufw) detected, skipping firewall step"
     note "(SteamOS, CachyOS and most Arch installs ship none; nothing to open.)"
@@ -1879,6 +1912,104 @@ PY
       *) echo "usage: couchside allow-launchers on|off" >&2; exit 2 ;;
     esac
     ;;
+  new-token)
+    # Revocation: mint a NEW bearer token, invalidating every paired phone at
+    # once. This is the remedy for a lost/stolen phone or a token that leaked
+    # (scrollback, screenshot, screen share): the agent has ONE shared token,
+    # so cutting off one device means rotating it for all of them. The token
+    # itself is never printed (same rule as the install banner, KI-022) — the
+    # new QR carries it to the camera and nowhere else.
+    TOKEN_FILE="/etc/couchside/token"
+    echo "This mints a NEW pairing token and restarts the agent."
+    echo "EVERY paired phone stops working until it re-pairs (scan the new QR"
+    echo "or PIN-pair again from the app's Setup tab)."
+    printf 'Continue? [y/N] '
+    ans=""
+    read -r ans </dev/tty 2>/dev/null || { echo; echo "No terminal for the prompt — rerun from an interactive shell."; exit 1; }
+    case "$ans" in y|Y|yes|YES) ;; *) echo "Cancelled."; exit 0 ;; esac
+    if command -v openssl >/dev/null 2>&1; then
+      new="$(openssl rand -hex 24)"
+    else
+      new="$(python3 -c 'import secrets; print(secrets.token_hex(24))')"
+    fi
+    printf '%s\n' "$new" | sudo tee "$TOKEN_FILE" >/dev/null || { echo "failed to write $TOKEN_FILE" >&2; exit 1; }
+    sudo chmod 600 "$TOKEN_FILE"
+    sudo chown "$(id -un)" "$TOKEN_FILE"
+    # Restart so the auth gate compares against the NEW token (the agent loads
+    # it at startup; without this the old token would still authorize).
+    sudo systemctl restart couchside 2>/dev/null \
+      || systemctl --user restart couchside 2>/dev/null || true
+    echo "New token minted. Old pairings are now invalid."
+    echo "Show the new pairing QR on this box's screen with:  couchside pair"
+    ;;
+  tls)
+    # On-wire encryption (agent >= 2.9.88 defaults ON: HTTPS beside plaintext,
+    # dual-listen). This flips config.json's tls.enabled and restarts the
+    # agent. Config lives in the user-owned state dir, so no sudo — same as
+    # allow-updates.
+    CFG="/var/lib/couchside/config.json"
+    case "${2:-status}" in
+      on|off)
+        if [ "$2" = "off" ]; then
+          echo "NOTE: a phone that already pinned this box's certificate FAILS"
+          echo "CLOSED rather than silently downgrading to plaintext — after"
+          echo "turning TLS off, such a phone will show the box as unreachable"
+          echo "until you remove and re-pair it."
+        fi
+        val="false"; [ "$2" = "on" ] && val="true"
+        python3 - "$val" "$CFG" <<'PY' || { echo "failed to update config" >&2; exit 1; }
+import json, os, sys
+val = sys.argv[1] == "true"
+p = sys.argv[2]
+try:
+    with open(p) as f: d = json.load(f)
+    if not isinstance(d, dict): d = {}
+except Exception:
+    d = {}
+tls = d.get("tls")
+if not isinstance(tls, dict): tls = {}
+tls["enabled"] = val
+d["tls"] = tls
+os.makedirs(os.path.dirname(p), exist_ok=True)
+tmp = p + ".tmp"
+with open(tmp, "w") as f: json.dump(d, f, indent=2)
+os.replace(tmp, p)
+PY
+        sudo systemctl restart couchside 2>/dev/null \
+          || systemctl --user restart couchside 2>/dev/null || true
+        echo "TLS (HTTPS listener): ${2}"
+        ;;
+      status)
+        # LIVE state, not the config's opinion: /api/ping advertises tls_port
+        # only while the HTTPS listener is actually up (a box without openssl
+        # degrades closed to plaintext even with tls.enabled true).
+        PORT="$(python3 - "$CFG" <<'PY' 2>/dev/null || echo 8787
+import json, sys
+try:
+    with open(sys.argv[1]) as f:
+        print(json.load(f).get("port") or 8787)
+except Exception:
+    print(8787)
+PY
+)"
+        ping="$(curl -fsS --max-time 3 "http://127.0.0.1:${PORT}/api/ping" 2>/dev/null)"
+        if [ -z "$ping" ]; then
+          echo "agent not reachable on 127.0.0.1:${PORT} — is the service running?"
+          exit 1
+        fi
+        printf '%s' "$ping" | python3 -c 'import json,sys
+d = json.load(sys.stdin)
+p = d.get("tls_port")
+if p:
+    print("TLS: on — HTTPS listener on port %s" % p)
+    print("  cert sha256: %s" % d.get("tls_fp", "?"))
+    print("  spki sha256: %s" % d.get("tls_spki", "?"))
+else:
+    print("TLS: off — plaintext only")'
+        ;;
+      *) echo "usage: couchside tls on|off|status" >&2; exit 2 ;;
+    esac
+    ;;
   help|-h|--help|"")
     cat <<USAGE
 couchside — manage the Couchside agent on this box
@@ -1887,6 +2018,9 @@ couchside — manage the Couchside agent on this box
   couchside allow-updates on|off   let (or stop) the phone app trigger updates
   couchside allow-system-updates on|off   let the app run system package updates (root, via fixed wrappers)
   couchside allow-launchers on|off let (or stop) the phone app create launchers
+  couchside new-token       mint a new pairing token (revokes EVERY paired phone)
+  couchside tls on|off|status      the HTTPS listener (on by default; status shows
+                            the live cert fingerprints)
   couchside pair            show the pairing QR on this box's screen
   couchside version         print the installed agent version
   couchside status          show the agent service status
@@ -2488,10 +2622,21 @@ echo
 echo "=================================================================="
 echo " Couchside agent is running on ${HOST_SHORT}.local:${PORT}"
 echo
-echo " TOKEN: ${TOKEN}"
-echo
-echo " Pair the app by scanning this link with your phone camera:"
-echo " ${PAIR_URL}"
+# KI-022: the bearer token (and the pairing URL that embeds it) is NOT printed
+# by default — a plain-text secret persists in scrollback, shell history
+# captures, screenshots and screen shares long after the install. The QR below
+# carries the same link but only to the camera pointed at it. --show-token
+# opts back into the literal for headless/copy-paste pairing.
+if [ "$SHOW_TOKEN" = "1" ]; then
+    echo " TOKEN: ${TOKEN}"
+    echo
+    echo " Pair the app by scanning this link with your phone camera:"
+    echo " ${PAIR_URL}"
+else
+    echo " Pair the app by scanning the QR code below with your phone camera."
+    echo " (The token itself isn't printed here so it can't leak via scrollback"
+    echo "  or screen shares — re-run with --show-token if you need the text.)"
+fi
 echo "=================================================================="
 echo
 if command -v qrencode >/dev/null 2>&1; then
@@ -2503,7 +2648,11 @@ elif command -v npx >/dev/null 2>&1; then
     # no -t flag: the qrcode CLI's default renderer draws in the terminal
     npx --yes qrcode "$PAIR_URL" || echo "$PAIR_URL"
 else
-    echo "(couldn't render a terminal QR here; copy the URL above to pair)"
+    # No QR renderer at all: pairing must not be blocked, so the URL prints
+    # here even without --show-token (this is the one case where the literal
+    # is the only way to pair from this terminal).
+    echo "(couldn't render a terminal QR here; pair by copying this link)"
+    echo " ${PAIR_URL}"
 fi
 
 echo
