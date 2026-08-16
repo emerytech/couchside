@@ -18,6 +18,14 @@ the same thing regardless of what actually changed.
 Write for the person holding the phone, not for the commit log. They are
 deciding whether to press "Update now" on a machine across the room.
 
+## 2.9.92
+
+**Pairing is steadier against junk input.** If something on your network sent the
+pairing endpoint a malformed request, the box answered with a server error instead
+of a clean refusal. It now refuses cleanly, the way it always did for a wrong PIN.
+Nothing about how you pair changes, and no PIN or token was ever exposed by this —
+the box was just giving an untidy answer to a question it should simply decline.
+
 ## 2.9.91
 
 **Build your own light-strip animations, frame by frame.** Custom timed sequences

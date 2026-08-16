@@ -4848,7 +4848,11 @@ def pair_pin_check(pin):
         if s["attempts"] >= PAIR_PIN_MAX_ATTEMPTS:
             PAIR_PIN = None
             raise ValueError("too many wrong PINs - start again")
-        if (pin or "").strip() != s["pin"]:
+        # Untrusted input from an unauthenticated route: REJECT a non-string
+        # rather than coerce it (§3.6). `(pin or "").strip()` raised
+        # AttributeError on any truthy non-string, which surfaced as a 500.
+        # Kept in lockstep with agent/couchsided.py pair_pin_check.
+        if not isinstance(pin, str) or pin.strip() != s["pin"]:
             s["attempts"] += 1
             raise ValueError("wrong PIN")
         PAIR_PIN = None                       # consume on success
@@ -5536,11 +5540,14 @@ class Handler(BaseHTTPRequestHandler):
                         pair_show_on_box(self.port)
                     self._send(200, {"ok": True, "ttl": ttl}, started)
                     return
+                # .get() OUTSIDE the try: a body that parses but is not an object
+                # ([], "x", 5) raised AttributeError past this tuple and answered
+                # 500 on a pre-auth route. Lockstep with agent/couchsided.py.
                 try:
                     req = json.loads(pair_body.decode("utf-8")) if pair_body else {}
-                    submitted = req.get("pin")
                 except (ValueError, UnicodeDecodeError):
-                    submitted = None
+                    req = None
+                submitted = req.get("pin") if isinstance(req, dict) else None
                 try:
                     pair_pin_check(submitted)
                 except ValueError as e:

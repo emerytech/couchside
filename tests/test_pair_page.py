@@ -16,10 +16,14 @@ the one bug the design can ship: a tutorial that never hands off. It was proven
 end to end on a real box's CEF, but the page's structural half (it polls, and it
 reloads on active===true) is asserted here so a refactor can't quietly break it.
 """
+import http.client
 import importlib.util
+import json
 import os
 import sys
+import threading
 import time
+from http.server import ThreadingHTTPServer
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 _spec = importlib.util.spec_from_file_location(
@@ -240,6 +244,138 @@ def test_box_pop_is_rate_limited():
         cs.pair_show_on_box_url = real
 
 
+# --- the two pre-auth POST routes, END TO END (KI-020) ---------------------
+# Everything above exercises pair_pin_start / pair_pin_check as FUNCTIONS. The
+# HTTP routes themselves had no coverage, which is what KI-020 recorded — and
+# they are two of only three unauthenticated routes on the agent, exactly the
+# surface §6 demands an unknown-input-rejection test for.
+#
+# The gap was not theoretical. `req.get("pin")` used to sit inside a try that
+# caught only parse errors, so a body that PARSES but is not an object ([], "x",
+# 5) raised AttributeError into the do_POST catch-all and answered 500. A dict
+# with a non-string pin ({"pin": 5}) escaped one frame deeper, in pair_pin_check.
+#
+# Server harness mirrors tests/test_upload.py:_server.
+
+TOKEN = "t0ken-for-pair-route-tests"
+
+
+def _server():
+    """Handler on a random loopback port. Returns (srv, port)."""
+    cs.Handler.token = TOKEN
+    cs.Handler.token_file = None
+    cs.Handler.mock = False
+    srv = ThreadingHTTPServer(("127.0.0.1", 0), cs.Handler)
+    cs.Handler.port = srv.server_address[1]
+    threading.Thread(target=srv.serve_forever, daemon=True).start()
+    return srv, srv.server_address[1]
+
+
+def _post(port, path, body=b""):
+    """POST with NO Authorization header — these routes are pre-auth by design."""
+    conn = http.client.HTTPConnection("127.0.0.1", port, timeout=5)
+    conn.request("POST", path, body=body)
+    resp = conn.getresponse()
+    data = resp.read()
+    conn.close()
+    try:
+        return resp.status, json.loads(data.decode("utf-8"))
+    except (ValueError, UnicodeDecodeError):
+        return resp.status, {}
+
+
+def _arm_pin():
+    """Force a fresh, live PIN session without popping the box screen."""
+    real = cs.pair_show_on_box_url
+    cs.pair_show_on_box_url = lambda url: None
+    try:
+        with cs.PAIR_PIN_LOCK:
+            cs.PAIR_PIN = None
+        pin, _ttl, _fresh = cs.pair_pin_start()
+        return pin
+    finally:
+        cs.pair_show_on_box_url = real
+
+
+def test_pair_routes_end_to_end():
+    print("pre-auth pair routes, end to end")
+    real_pop = cs.pair_show_on_box_url
+    cs.pair_show_on_box_url = lambda url: None      # never throw a page on a TV
+    srv, port = _server()
+    try:
+        # /start answers unauthenticated and hands back a TTL, no secret.
+        with cs._BOX_POP_LOCK:
+            cs._BOX_POP_AT[0] = 0.0
+        status, body = _post(port, "/api/pair/start")
+        check("start: 200 without any credential", status, 200)
+        check("start: returns a ttl", isinstance(body.get("ttl"), int), True)
+        check("start: hands back no token", "token" in body, False)
+
+        # The bug: bodies that PARSE but are not a {"pin": <str>} object. Every
+        # one of these answered 500 {"error": "AttributeError"} before the fix.
+        # Each burns an attempt, and the cap is 5 — so re-arm before EVERY case
+        # or the sixth assertion fails on "too many wrong PINs" instead.
+        malformed = [b"[]", b'"x"', b"5", b"null", b"true", b'{"pin": 5}',
+                     b'{"pin": {}}', b'{"pin": 3.4}', b'{"pin": []}',
+                     b"not json", b""]
+        bad_status, bad_err, leaked = set(), set(), []
+        for raw in malformed:
+            _arm_pin()
+            st, bd = _post(port, "/api/pair/finish", raw)
+            bad_status.add(st)
+            bad_err.add(bd.get("error"))
+            if "token" in bd:
+                leaked.append(raw)
+        check("malformed bodies: every one is 403", bad_status, {403})
+        check("malformed bodies: none 500s", 500 in bad_status, False)
+        check("malformed bodies: no AttributeError surfaces",
+              "AttributeError" in bad_err, False)
+        check("malformed bodies: no token ever returned", leaked, [])
+
+        # Wrong PIN: refused, and still no token.
+        _arm_pin()
+        st, bd = _post(port, "/api/pair/finish", b'{"pin": "000000"}')
+        check("wrong pin: 403", st, 403)
+        check("wrong pin: no token", "token" in bd, False)
+
+        # Control — the happy path still works after all of the above, so the
+        # refusals above are the route rejecting input, not the route being dead.
+        pin = _arm_pin()
+        st, bd = _post(port, "/api/pair/finish",
+                       json.dumps({"pin": pin}).encode())
+        check("correct pin: 200", st, 200)
+        check("correct pin: returns the token", bd.get("token"), TOKEN)
+
+        # And the session is single-use: replaying the same PIN is refused.
+        st, bd = _post(port, "/api/pair/finish",
+                       json.dumps({"pin": pin}).encode())
+        check("replayed pin: 403", st, 403)
+        check("replayed pin: no token", "token" in bd, False)
+    finally:
+        srv.shutdown()
+        srv.server_close()
+        cs.pair_show_on_box_url = real_pop
+        with cs.PAIR_PIN_LOCK:
+            cs.PAIR_PIN = None
+
+
+def test_pin_check_rejects_non_strings():
+    """Unit-level companion: the second edit site, reachable independently."""
+    print("pair_pin_check rejects non-string pins")
+    for bad in (5, 3.4, {}, [], None, object()):
+        _arm_pin()
+        try:
+            cs.pair_pin_check(bad)
+            check("non-string %r refused" % (bad,), "accepted", "ValueError")
+        except ValueError:
+            check("non-string %r -> ValueError" % type(bad).__name__, True, True)
+        except Exception as e:                      # the old failure mode
+            check("non-string %r -> ValueError (got %s)"
+                  % (type(bad).__name__, type(e).__name__), False, True)
+    with cs.PAIR_PIN_LOCK:
+        cs.PAIR_PIN = None
+
+
 if __name__ == "__main__":
     for fn in (test_loopback_gate,
                test_host_header_gate,
@@ -251,7 +387,9 @@ if __name__ == "__main__":
                test_pin_check_counts_attempts_and_caps,
                test_pin_check_is_single_use,
                test_pin_expiry_clears_the_session,
-               test_box_pop_is_rate_limited):
+               test_box_pop_is_rate_limited,
+               test_pair_routes_end_to_end,
+               test_pin_check_rejects_non_strings):
         fn()
     if FAILURES:
         print("\n%d FAILED: %s" % (len(FAILURES), ", ".join(FAILURES)))

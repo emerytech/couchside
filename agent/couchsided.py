@@ -48,7 +48,7 @@ except ImportError:  # pragma: no cover
     fcntl = None
 
 APP_NAME = "couchside-agent"
-VERSION = "2.9.91"
+VERSION = "2.9.92"
 UID = os.getuid()
 XDG_RUNTIME_DIR = "/run/user/%d" % UID
 
@@ -18535,7 +18535,14 @@ def pair_pin_active():
 def pair_pin_check(pin):
     """Validate a submitted PIN. True (and burns the session) on match; raises
     ValueError with a user-facing reason on no-session / expired / locked /
-    wrong. A wrong guess counts toward the attempt cap."""
+    wrong. A wrong guess counts toward the attempt cap.
+
+    `pin` is UNTRUSTED and arrives from an unauthenticated route, so a non-string
+    is REJECTED rather than coerced (§3.6). It used to be `(pin or "").strip()`,
+    which raises AttributeError on any truthy non-string — `{"pin": 5}` and
+    `{"pin": 3.4}` both escaped the caller's except tuple and surfaced as a 500.
+    A falsy non-string (None, [], 0) happened to survive via the `or`, which is
+    why this was never noticed."""
     global PAIR_PIN
     with PAIR_PIN_LOCK:
         s = PAIR_PIN
@@ -18545,7 +18552,7 @@ def pair_pin_check(pin):
         if s["attempts"] >= PAIR_PIN_MAX_ATTEMPTS:
             PAIR_PIN = None
             raise ValueError("too many wrong PINs — start again")
-        if (pin or "").strip() != s["pin"]:
+        if not isinstance(pin, str) or pin.strip() != s["pin"]:
             s["attempts"] += 1
             raise ValueError("wrong PIN")
         PAIR_PIN = None                       # consume on success
@@ -19841,11 +19848,17 @@ class Handler(BaseHTTPRequestHandler):
                         pair_show_on_box(self.port)
                     self._send(200, {"ok": True, "ttl": ttl}, started)
                     return
+                # .get() stays OUTSIDE the try on purpose. It used to sit inside,
+                # so a body that PARSES but is not an object ([], "x", 5) raised
+                # AttributeError past this except tuple into the do_POST catch-all
+                # and answered 500 on a pre-auth route. Widening the tuple would
+                # have hidden it instead: any future AttributeError in the
+                # token-issuing block below would silently read as "no PIN sent".
                 try:
                     req = json.loads(pair_body.decode("utf-8")) if pair_body else {}
-                    submitted = req.get("pin")
                 except (ValueError, UnicodeDecodeError):
-                    submitted = None
+                    req = None
+                submitted = req.get("pin") if isinstance(req, dict) else None
                 try:
                     pair_pin_check(submitted)
                 except ValueError as e:
