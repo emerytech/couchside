@@ -48,7 +48,7 @@ except ImportError:  # pragma: no cover
     fcntl = None
 
 APP_NAME = "couchside-agent"
-VERSION = "2.9.92"
+VERSION = "2.9.93"
 UID = os.getuid()
 XDG_RUNTIME_DIR = "/run/user/%d" % UID
 
@@ -4400,10 +4400,23 @@ def _read_led_raw(name):
     color = _led_color_from_intensity(mi, index, maxint, maxb) if rgb else None
     writable = _led_access_w(name, "brightness") and (
         (not rgb) or _led_access_w(name, "multi_intensity"))
+    # Some HID RGB drivers gate output behind an `enabled` flag AND flip it back to
+    # false whenever any OTHER attr is written -- the Lenovo Legion Go S thumbstick
+    # rings (node `go_s:rgb:joystick_rings`, driver hid_lenovo_go_s) do exactly this,
+    # so a colour write "succeeds" yet the rings stay dark. Such a node also carries a
+    # `mode` (custom = manual colour, dynamic = firmware effect) -- REQUIRED here so a
+    # valve-leds strip node (which also has `enabled` but no `mode`) is NOT mistaken
+    # for one. When gated: set mode first + re-assert `enabled` LAST. `enable_on` is
+    # the truthy token the device itself lists in enabled_index (looked up, not
+    # trusted); None on every ordinary LED, so the gated path is dead code for them.
+    enable_on = None
+    if _led_access_w(name, "mode") and _led_access_w(name, "enabled"):
+        toks = (_led_read_attr(name, "enabled_index") or "").split()
+        enable_on = next((t for t in toks if t.lower() in ("true", "1", "on", "enabled")), None)
     return {"name": name, "desc": name, "rgb": rgb,
             "notable": _led_notable(name, rgb), "writable": writable,
             "max_brightness": maxb, "brightness": cur, "index": index,
-            "maxint": maxint, "color": color}
+            "maxint": maxint, "color": color, "enable_on": enable_on}
 
 
 def _led_public(raw):
@@ -4486,9 +4499,10 @@ def _led_realpath_ok(name):
 def _led_write(name, attr, value):
     """Write to the FIXED-literal attribute `attr` of LED `name`. attr is NEVER
     client input -- the only literals ever passed are 'brightness',
-    'multi_intensity', 'trigger' (set_led) and 'effect', 'enabled', 'delay'
-    (the valve-leds hardware-effect strip path). The effect VALUE is validated
-    against the device's own effect_index before it reaches here."""
+    'multi_intensity', 'trigger' (set_led), 'effect', 'enabled', 'delay'
+    (the valve-leds hardware-effect strip path), and 'mode' (fixed 'custom') +
+    'enabled' (the truthy token the device lists) for the gated Lenovo go_s rings.
+    The effect VALUE is validated against the device's own effect_index first."""
     with open(os.path.join(_LEDS_ROOT, name, attr), "w") as f:
         f.write(value)
 
@@ -4551,6 +4565,14 @@ def set_led(name, brightness, color):
                 _led_write(name, "effect", "manual")
             except OSError:
                 pass
+        if raw.get("enable_on"):
+            # Gated go_s rings: manual colour only shows in mode=custom (dynamic runs
+            # the firmware effect and ignores multi_intensity). Set it BEFORE the
+            # colour; `enabled` is re-asserted last below.
+            try:
+                _led_write(name, "mode", "custom")
+            except OSError:
+                pass
         if color is not None:
             _led_write_color(name, raw, color)
         if brightness is not None:
@@ -4559,6 +4581,13 @@ def set_led(name, brightness, color):
             # OFF. int(x + 0.5) sends the midpoint to ON.
             _led_write(name, "brightness",
                        str(int(brightness / 100 * raw["max_brightness"] + 0.5)))
+        if raw.get("enable_on"):
+            # LAST: every attr write above flips this driver's `enabled` back to
+            # false, so re-assert it or the rings stay dark (the whole bug).
+            try:
+                _led_write(name, "enabled", raw["enable_on"])
+            except OSError:
+                pass
     except OSError as e:
         return {"ok": False, "status": 500,
                 "error": (str(e) or "led write failed")}
@@ -4822,6 +4851,10 @@ def apply_led_effect(name, effect, color, speed, brightness):
         params["color"] = raw["color"] or (
             {"r": 255, "g": 0, "b": 0} if effect == "scanner"
             else {"r": 255, "g": 255, "b": 255})
+    if raw.get("enable_on"):
+        # Gated go_s rings can't be driven by the software frame writer (every tick
+        # would flip `enabled` off) -- use the firmware's own effect instead.
+        return _apply_gated_effect(name, raw, effect, params)
     _fx_start(name, raw, effect, params)
     with _FX_LOCK:
         _LED_PERSIST[name] = dict(params, effect=effect)
@@ -4829,6 +4862,23 @@ def apply_led_effect(name, effect, color, speed, brightness):
     return {"ok": True, "led": name,
             "active": {"effect": effect, "color": params["color"],
                        "speed": params["speed"], "brightness": params["brightness"]}}
+
+
+def _apply_gated_effect(name, raw, effect, params):
+    """Animated effect on a gated HID LED (Lenovo go_s rings). Two dead ends here:
+    the software frame writer can't drive it (every tick flips `enabled` off), and
+    forcing the firmware's OWN animation is UNSAFE -- writing `mode=dynamic` to the
+    hid_lenovo_go_s driver BLOCKS FOREVER (measured on real hardware; it hung a
+    request thread and took the agent down). So an effect just shows its colour as a
+    STATIC light via the reliable mode=custom path -- the rings light instead of
+    going dark or hanging. (A future software renderer could re-arm `enabled` per
+    frame in custom mode, but that is not this.)"""
+    res = set_led(name, params["brightness"], params["color"])
+    if not res or not res.get("ok"):
+        return res if res else None
+    _fx_note_static(name, res)
+    return {"ok": True, "active": None, "led": name,
+            "brightness_pct": res.get("brightness_pct"), "color": res.get("color")}
 
 
 def _validate_effect_body(req):
