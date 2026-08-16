@@ -1687,6 +1687,15 @@ RELEASE_API="https://api.github.com/repos/emerytech/couchside/releases/latest"
 AGENT_VER_URL="https://github.com/emerytech/couchside/releases/latest/download/agent-version.txt"
 DIR="${HOME}/.local/opt/couchside"
 DAEMON="${DIR}/couchsided.py"
+# THE config the agent actually reads. The unit's ExecStart carries
+# `--config <this>` (install.sh CONFIG_FILE -> couchside.service), and
+# couchsided.py's load_config() opens exactly that path with no fallback.
+#
+# ONE variable for every verb that edits or REPORTS config, because the
+# alternative already failed: `allow-launchers` had the pre-2.9 /etc path
+# hardcoded, so the write and its own status grep agreed with each other and
+# with nothing else. Turning it on did nothing, and status then said "on".
+CFG="/var/lib/couchside/config.json"
 
 case "${1:-help}" in
   update|upgrade)
@@ -1797,10 +1806,10 @@ PY
     case "${2:-}" in
       on|off)
         val="false"; [ "$2" = "on" ] && val="true"
-        python3 - "$val" <<'PY' || { echo "failed to update config" >&2; exit 1; }
+        python3 - "$val" "$CFG" <<'PY' || { echo "failed to update config" >&2; exit 1; }
 import json, os, sys
-p = "/var/lib/couchside/config.json"
 val = sys.argv[1] == "true"
+p = sys.argv[2]
 try:
     with open(p) as f: d = json.load(f)
     if not isinstance(d, dict): d = {}
@@ -1817,7 +1826,7 @@ PY
         echo "App-triggered updates: ${2}"
         ;;
       ""|status)
-        grep -q '"allow_app_update"[[:space:]]*:[[:space:]]*true' /var/lib/couchside/config.json 2>/dev/null \
+        grep -q '"allow_app_update"[[:space:]]*:[[:space:]]*true' "$CFG" 2>/dev/null \
           && echo "App-triggered updates: on" || echo "App-triggered updates: off"
         ;;
       *) echo "usage: couchside allow-updates on|off" >&2; exit 2 ;;
@@ -1886,10 +1895,15 @@ GRANT
     case "${2:-}" in
       on|off)
         val="false"; [ "$2" = "on" ] && val="true"
-        sudo python3 - "$val" <<'PY' || { echo "failed to update config" >&2; exit 1; }
+        # NO sudo, same as allow-updates above: the desktop user owns the state
+        # dir, and a sudo write would os.replace() the file into root ownership
+        # — after which the agent (which runs as that user) can no longer rewrite
+        # it, and every TV pairing / launcher edit 500s. This verb used to shell
+        # out with sudo AND at the wrong path; both halves are the fix.
+        python3 - "$val" "$CFG" <<'PY' || { echo "failed to update config" >&2; exit 1; }
 import json, os, sys
-p = "/etc/couchside/config.json"
 val = sys.argv[1] == "true"
+p = sys.argv[2]
 try:
     with open(p) as f: d = json.load(f)
     if not isinstance(d, dict): d = {}
@@ -1903,11 +1917,15 @@ os.replace(tmp, p)
 PY
         sudo systemctl restart couchside 2>/dev/null \
           || systemctl --user restart couchside 2>/dev/null || true
-        echo "App-created launchers: ${2}"
+        echo "App-created launchers: ${2}  (${CFG})"
         ;;
       ""|status)
-        grep -q '"allow_app_launchers"[[:space:]]*:[[:space:]]*true' /etc/couchside/config.json 2>/dev/null \
-          && echo "App-created launchers: on" || echo "App-created launchers: off"
+        # Print the file that was read. A status line that names its source
+        # cannot silently report on a config nothing loads, which is exactly
+        # how this verb lied for as long as it did.
+        grep -q '"allow_app_launchers"[[:space:]]*:[[:space:]]*true' "$CFG" 2>/dev/null \
+          && echo "App-created launchers: on  (${CFG})" \
+          || echo "App-created launchers: off  (${CFG})"
         ;;
       *) echo "usage: couchside allow-launchers on|off" >&2; exit 2 ;;
     esac
@@ -1946,8 +1964,7 @@ PY
     # On-wire encryption (agent >= 2.9.88 defaults ON: HTTPS beside plaintext,
     # dual-listen). This flips config.json's tls.enabled and restarts the
     # agent. Config lives in the user-owned state dir, so no sudo — same as
-    # allow-updates.
-    CFG="/var/lib/couchside/config.json"
+    # allow-updates. Uses the hoisted $CFG (one source of truth for all verbs).
     case "${2:-status}" in
       on|off)
         if [ "$2" = "off" ]; then
