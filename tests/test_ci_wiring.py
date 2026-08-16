@@ -26,6 +26,7 @@ substring search for the filename in the workflow — because anything cleverer
 (parsing the YAML, resolving shell) has its own way of being wrong, and the
 failure mode of dumb-and-textual is a false alarm, not a false pass.
 """
+import ast
 import os
 import re
 import sys
@@ -107,6 +108,46 @@ for fn in sorted(os.listdir(WORKFLOWS)):
 for b in bad_names:
     print("  FAIL  %s" % b)
 check("no unquoted colon-space in a step name", bad_names, [])
+
+
+# A guard that cannot fail is the same class of bug as a suite that never runs,
+# so it belongs in this file. An assertion of the form `check(<expr> or True, …)`
+# is unconditionally true; found live in tests/test_steam_menus.py, where
+# "caps dict is built at boot" stayed GREEN with set_caps() stubbed out entirely
+# (measured 2026-08-16, both states). The author neutered a real failure instead
+# of fixing it — CAPS is {} until set_caps() runs.
+#
+# AST, not a regex, and the first attempt here is exactly why: a textual scan
+# cannot tell code from prose, so it flagged this very comment, its own check()
+# call below, and the docstring in test_steam_menus.py that quotes the old line
+# to explain it. Parsing matches real call sites only. It also stays narrow by
+# construction — the legitimate stub idiom `lambda n: (seen.append(n) or True)`
+# in tests/test_flatpak_update.py is not a check() argument, so it never matches.
+print()
+print("no assertion is neutered with `or True`")
+neutered = []
+for fn in sorted(f for f in os.listdir(TESTS) if f.endswith(".py")):
+    path = os.path.join(TESTS, fn)
+    with open(path) as f:
+        try:
+            tree = ast.parse(f.read(), filename=fn)
+        except SyntaxError as e:            # a suite that cannot parse is its own failure
+            neutered.append("%s: does not parse (%s)" % (fn, e))
+            continue
+    for node in ast.walk(tree):
+        if not (isinstance(node, ast.Call)
+                and isinstance(node.func, ast.Name)
+                and node.func.id == "check"):
+            continue
+        for arg in node.args:
+            # `X or True` — a BoolOp whose last operand is the literal True.
+            if (isinstance(arg, ast.BoolOp) and isinstance(arg.op, ast.Or)
+                    and isinstance(arg.values[-1], ast.Constant)
+                    and arg.values[-1].value is True):
+                neutered.append("%s:%d  check(... or True, ...)" % (fn, node.lineno))
+for n in neutered:
+    print("  FAIL  %s" % n)
+check("no check(... or True ...) in tests/", neutered, [])
 
 print()
 if FAILURES:
