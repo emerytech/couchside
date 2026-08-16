@@ -48,7 +48,7 @@ except ImportError:  # pragma: no cover
     fcntl = None
 
 APP_NAME = "couchside-agent"
-VERSION = "2.9.93"
+VERSION = "2.9.94"
 UID = os.getuid()
 XDG_RUNTIME_DIR = "/run/user/%d" % UID
 
@@ -4403,20 +4403,25 @@ def _read_led_raw(name):
     # Some HID RGB drivers gate output behind an `enabled` flag AND flip it back to
     # false whenever any OTHER attr is written -- the Lenovo Legion Go S thumbstick
     # rings (node `go_s:rgb:joystick_rings`, driver hid_lenovo_go_s) do exactly this,
-    # so a colour write "succeeds" yet the rings stay dark. Such a node also carries a
-    # `mode` (custom = manual colour, dynamic = firmware effect) -- REQUIRED here so a
-    # valve-leds strip node (which also has `enabled` but no `mode`) is NOT mistaken
-    # for one. When gated: set mode first + re-assert `enabled` LAST. `enable_on` is
-    # the truthy token the device itself lists in enabled_index (looked up, not
-    # trusted); None on every ordinary LED, so the gated path is dead code for them.
+    # so a colour write "succeeds" yet the rings stay dark. TWO more quirks (both
+    # confirmed on real hardware): the FIRMWARE runs whatever `effect` says --
+    # `monocolor` shows the manual colour, `rainbow`/`breathe` animate -- so a solid
+    # colour needs effect=monocolor (mode=custom alone leaves the last effect running);
+    # and writing `mode=dynamic` BLOCKS FOREVER, so we never do. Requiring `mode`
+    # (which a valve-leds strip node lacks despite having `enabled`) keeps a strip from
+    # being mistaken for one. `enable_on` is the truthy token the device lists in
+    # enabled_index (looked up, not trusted) -- None on every ordinary LED, so the gated
+    # path is dead code for them; `dev_effects` is the firmware effect allowlist.
     enable_on = None
     if _led_access_w(name, "mode") and _led_access_w(name, "enabled"):
         toks = (_led_read_attr(name, "enabled_index") or "").split()
         enable_on = next((t for t in toks if t.lower() in ("true", "1", "on", "enabled")), None)
+    dev_effects = tuple((_led_read_attr(name, "effect_index") or "").split()) if enable_on else ()
     return {"name": name, "desc": name, "rgb": rgb,
             "notable": _led_notable(name, rgb), "writable": writable,
             "max_brightness": maxb, "brightness": cur, "index": index,
-            "maxint": maxint, "color": color, "enable_on": enable_on}
+            "maxint": maxint, "color": color,
+            "enable_on": enable_on, "dev_effects": dev_effects}
 
 
 def _led_public(raw):
@@ -4566,11 +4571,14 @@ def set_led(name, brightness, color):
             except OSError:
                 pass
         if raw.get("enable_on"):
-            # Gated go_s rings: manual colour only shows in mode=custom (dynamic runs
-            # the firmware effect and ignores multi_intensity). Set it BEFORE the
-            # colour; `enabled` is re-asserted last below.
+            # Gated go_s rings: the firmware runs `effect`, so a SOLID colour needs
+            # effect=monocolor -- otherwise the last animation (e.g. the factory
+            # rainbow spin) keeps running and ignores the colour. Set mode=custom +
+            # effect=monocolor BEFORE the colour; `enabled` is re-asserted last below.
             try:
                 _led_write(name, "mode", "custom")
+                if "monocolor" in (raw.get("dev_effects") or ()):
+                    _led_write(name, "effect", "monocolor")
             except OSError:
                 pass
         if color is not None:
@@ -4864,21 +4872,48 @@ def apply_led_effect(name, effect, color, speed, brightness):
                        "speed": params["speed"], "brightness": params["brightness"]}}
 
 
+# Map an app effect id -> the go_s firmware effect that best matches it. The software
+# frame writer can't drive these rings (every tick flips `enabled` off), so the
+# FIRMWARE animates instead -- driven by the `effect` attr, NOT `mode=dynamic` (that
+# write BLOCKS FOREVER on hid_lenovo_go_s; never issued). A value not mapped here (or
+# not in the device's own effect_index) falls back to a solid colour via set_led.
+_GO_S_FX = {"rainbow": "rainbow", "breathe": "breathe",
+            "pulse": "breathe", "strobe": "breathe"}
+
+
 def _apply_gated_effect(name, raw, effect, params):
-    """Animated effect on a gated HID LED (Lenovo go_s rings). Two dead ends here:
-    the software frame writer can't drive it (every tick flips `enabled` off), and
-    forcing the firmware's OWN animation is UNSAFE -- writing `mode=dynamic` to the
-    hid_lenovo_go_s driver BLOCKS FOREVER (measured on real hardware; it hung a
-    request thread and took the agent down). So an effect just shows its colour as a
-    STATIC light via the reliable mode=custom path -- the rings light instead of
-    going dark or hanging. (A future software renderer could re-arm `enabled` per
-    frame in custom mode, but that is not this.)"""
-    res = set_led(name, params["brightness"], params["color"])
-    if not res or not res.get("ok"):
-        return res if res else None
-    _fx_note_static(name, res)
-    return {"ok": True, "active": None, "led": name,
-            "brightness_pct": res.get("brightness_pct"), "color": res.get("color")}
+    """Animated effect on a gated HID LED (Lenovo go_s rings). Route to the DEVICE's
+    own firmware effect via the `effect` attr when it lists a matching name (looked up
+    in effect_index, §3) -- it animates in hardware, no per-frame `enabled` re-arming
+    and no `mode=dynamic` (that hangs the driver). breathe carries the chosen colour;
+    rainbow ignores it. An effect the firmware has no analogue for (scanner) shows the
+    colour statically via set_led. Persisted -> re-armed on reboot."""
+    dev = raw.get("dev_effects") or ()
+    fw = _GO_S_FX.get(effect)
+    if not fw or fw not in dev:
+        # no firmware analogue -> solid colour (set_led writes effect=monocolor)
+        res = set_led(name, params["brightness"], params["color"])
+        if not res or not res.get("ok"):
+            return res if res else None
+        _fx_note_static(name, res)
+        return {"ok": True, "active": None, "led": name,
+                "brightness_pct": res.get("brightness_pct"), "color": res.get("color")}
+    b = str(int(params["brightness"] / 100 * raw["max_brightness"] + 0.5))
+    try:
+        _led_write(name, "mode", "custom")   # only writable mode; dynamic hangs
+        _led_write(name, "effect", fw)       # looked up in the device's effect_index
+        if fw == "breathe" and params["color"]:
+            _led_write_color(name, raw, params["color"])
+        _led_write(name, "brightness", b)
+        _led_write(name, "enabled", raw["enable_on"])   # LAST -- see set_led
+    except OSError as e:
+        return {"ok": False, "status": 500, "error": (str(e) or "led write failed")}
+    with _FX_LOCK:
+        _LED_PERSIST[name] = dict(params, effect=effect)
+    _led_state_save()
+    return {"ok": True, "led": name,
+            "active": {"effect": effect, "color": params["color"],
+                       "speed": params["speed"], "brightness": params["brightness"]}}
 
 
 def _validate_effect_body(req):

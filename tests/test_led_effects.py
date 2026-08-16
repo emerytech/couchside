@@ -52,13 +52,13 @@ _FAKE = {
         "notable": True, "writable": False, "max_brightness": 255,
         "index": ["red", "green", "blue"], "maxint": [255, 255, 255],
         "brightness": 0, "color": {"r": 0, "g": 0, "b": 0}},
-    # A GATED HID RGB LED (Lenovo Legion Go S thumbstick rings): `enable_on` set ->
-    # the mode=custom-first / enabled-last sequencing path.
+    # A GATED HID RGB LED (Lenovo Legion Go S thumbstick rings): `enable_on` set +
+    # a firmware `dev_effects` list -> the effect=monocolor / enabled-last path.
     "go_s:rgb:joystick_rings": {"name": "go_s:rgb:joystick_rings",
         "desc": "go_s:rgb:joystick_rings", "rgb": True, "notable": True,
         "writable": True, "max_brightness": 100, "index": ["red", "green", "blue"],
         "maxint": [100, 100, 100], "brightness": 100, "color": {"r": 0, "g": 0, "b": 0},
-        "enable_on": "true"},
+        "enable_on": "true", "dev_effects": ("monocolor", "breathe", "chroma", "rainbow")},
 }
 
 
@@ -244,43 +244,55 @@ def test_persistence_restore_revalidates():
 
 
 def test_gated_go_s_led():
-    print("gated go_s rings: mode=custom first, enabled LAST; effects fall back to solid")
+    print("gated go_s rings: effect=monocolor for solid, firmware effect for rainbow/breathe")
     G = "go_s:rgb:joystick_rings"
     writes = []
     restore = _install_fake(writes)
     try:
-        # SOLID colour: mode=custom BEFORE the colour, enabled=true is the LAST write
+        # SOLID colour: mode=custom + effect=monocolor BEFORE the colour (or the
+        # factory rainbow keeps running), enabled=true is the LAST write.
         writes.clear()
         res = cs.set_led(G, 80, {"r": 255, "g": 0, "b": 0})
         check(res and res.get("ok"), "gated set_led accepted")
         gw = [w for w in writes if w[0] == G]
         attrs = [w[1] for w in gw]
-        check((G, "mode", "custom") in writes, "mode set to custom")
-        check("mode" in attrs and "multi_intensity" in attrs
-              and attrs.index("mode") < attrs.index("multi_intensity"),
-              "mode=custom written before the colour")
-        check(attrs and attrs[-1] == "enabled" and gw[-1] == (G, "enabled", "true"),
-              "enabled=true is the LAST write")
-
-        # NEVER write mode=dynamic: that write BLOCKS FOREVER on the real driver.
+        check((G, "effect", "monocolor") in writes, "solid writes effect=monocolor")
+        check("effect" in attrs and "multi_intensity" in attrs
+              and attrs.index("effect") < attrs.index("multi_intensity"),
+              "effect=monocolor written before the colour")
+        check(gw and gw[-1] == (G, "enabled", "true"), "enabled=true is the LAST write")
         check(not any(w == (G, "mode", "dynamic") for w in writes),
-              "solid path never writes the unsafe mode=dynamic")
+              "solid never writes the unsafe mode=dynamic")
 
-        # ANY animated effect -> static-colour fallback (mode=custom, enabled last),
-        # NOT the firmware-effect route and NOT the software render thread.
-        for eff, col in (("rainbow", None), ("pulse", {"r": 0, "g": 255, "b": 0})):
+        # FIRMWARE effects: rainbow / breathe drive the device's own `effect` (looked
+        # up in effect_index), NOT the software render thread, NOT mode=dynamic.
+        for eff, fw, wants_color in (("rainbow", "rainbow", False),
+                                     ("breathe", "breathe", True),
+                                     ("pulse", "breathe", True)):
             _reset_engine()
             writes.clear()
-            res = cs.apply_led_effect(G, eff, col, 60, 100)
-            check(res and res.get("ok") and res.get("active") is None,
-                  "gated %s falls back to a solid (no live effect)" % eff)
-            check((G, "mode", "custom") in writes
-                  and not any(w == (G, "mode", "dynamic") for w in writes)
-                  and not any(w[1] == "effect" for w in writes if w[0] == G),
-                  "%s -> mode=custom only, no effect / no mode=dynamic write" % eff)
+            res = cs.apply_led_effect(G, eff, {"r": 0, "g": 255, "b": 0}, 60, 100)
+            check(res and res.get("ok") and res["active"]["effect"] == eff,
+                  "gated %s accepted as a live effect" % eff)
+            check((G, "effect", fw) in writes,
+                  "%s -> firmware effect=%s (looked up in effect_index)" % (eff, fw))
+            check(not any(w == (G, "mode", "dynamic") for w in writes),
+                  "%s never writes mode=dynamic" % eff)
+            check(any(w[0] == G and w[1] == "multi_intensity" for w in writes) == wants_color,
+                  "%s writes a colour only when it uses one" % eff)
             check([w[1] for w in writes if w[0] == G][-1] == "enabled",
-                  "%s fallback arms enabled LAST" % eff)
-            check(G not in cs._FX_ACTIVE, "%s does not start the render thread" % eff)
+                  "%s arms enabled LAST" % eff)
+            check(G not in cs._FX_ACTIVE, "%s does not start the software render thread" % eff)
+
+        # No firmware analogue (scanner) -> solid colour via effect=monocolor
+        _reset_engine()
+        writes.clear()
+        res = cs.apply_led_effect(G, "scanner", {"r": 255, "g": 0, "b": 0}, 50, 90)
+        check(res and res.get("ok") and res.get("active") is None,
+              "gated scanner falls back to a solid")
+        check((G, "effect", "monocolor") in writes
+              and not any(w in ((G, "effect", "rainbow"), (G, "effect", "breathe")) for w in writes),
+              "scanner -> effect=monocolor, not a firmware animation")
     finally:
         restore()
 

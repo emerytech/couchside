@@ -18,6 +18,17 @@ the same thing regardless of what actually changed.
 Write for the person holding the phone, not for the commit log. They are
 deciding whether to press "Update now" on a machine across the room.
 
+## 2.9.94
+
+**Legion Go S thumbstick lighting — colours and effects that actually stick.** The
+rings run whatever their firmware is set to, so just sending a colour left them
+spinning their factory rainbow. The box now switches them to a solid colour when you
+pick one, and can also run their built-in **rainbow** and **breathe** effects — all
+from the Light card, and it survives a reboot. (This finishes the half-done fix in
+2.9.93, which lit the rings but left the rainbow running.) Also included for boxes
+coming from an older version: quicker game-list switching and a pairing fix. Other
+boxes are unaffected.
+
 ## 2.9.93
 
 **Legion Go S thumbstick lighting now works from the app.** The Go S drives its
