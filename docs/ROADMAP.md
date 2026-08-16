@@ -1238,6 +1238,21 @@ recommendation was wrong, not merely superseded.
 
 ## ✅ Completed
 
+### Comms audit → installer security fixes + public Security & Privacy page — 2026-08-15
+- **was:** owner-directed audit · **affects:** install.sh (CLI, banner, firewall), couchside.tv
+- **Merged #469:** `couchside new-token` (token rotation = the only revocation; one shared
+  token per box, no per-device identity), `couchside tls on|off|status` (status reads the live
+  /api/ping advert), KI-022 closed (banner QR-only by default, `--show-token` for the literal),
+  firewall opens the TLS port (ufw box + agent ≥ 2.9.88 otherwise advertises a blocked 8788 and
+  the auto-pinned app fails closed into "box offline"). Pins mutation-checked in
+  tests/test_installer_cli.sh.
+- **Site (ets3d e201cc6):** /security/ rewritten as the technical page — transport + pin model
+  incl. the TOFU auto-upgrade caveat, pairing, revocation, discovery disclosure, the exact
+  outbound-connection table, "what the token actually grants" (virtual keyboard honesty), an
+  explicit "what this does NOT protect against" section, verify-yourself commands. Dismissible
+  landing banner links to it. Deploy pending the signed installer republish (release-agent.sh).
+- **Backlog spawned:** per-device tokens (revoke one phone without rotating all).
+
 ### Update-completion false-negative fixed — browser-verified 2026-08-13 (SteamOS Steam Machine)
 - **was:** P2 (owner-reported 2026-08-13) · **affects:** agent on-box `/update` page + app
   `AgentUpdateBanner` · **branch:** `claude/bold-kilby-b2a611`
