@@ -827,13 +827,39 @@ fi
 # match (or no file), no install, and the agent fetches + verifies at flash time
 # instead. Dropped root-owned at the fixed path the agent reads for Setup ->
 # Utilities flashing.
+# Can we get root at all? Computed HERE rather than at the fast-path gate below,
+# because the OPTIONAL steps between here and there must be able to ask. A
+# detached app-triggered update has no tty and, on a box whose user has a sudo
+# password, no way to become root -- and under `set -e` an unguarded sudo in an
+# optional step aborts the WHOLE update before the service is ever restarted.
+CAN_PRIVILEGE=0
+if sudo -n true 2>/dev/null; then
+    CAN_PRIVILEGE=1                       # passwordless sudo (e.g. a fresh Deck)
+elif { true < /dev/tty; } 2>/dev/null; then
+    CAN_PRIVILEGE=1                       # a terminal we can prompt on
+fi
+
 if [ -f "$WORK_DIR/$OPENPUCK_FW_NAME" ]; then
     openpuck_got="$( { command -v sha256sum >/dev/null 2>&1 \
         && sha256sum "$WORK_DIR/$OPENPUCK_FW_NAME" \
         || shasum -a 256 "$WORK_DIR/$OPENPUCK_FW_NAME"; } | cut -d' ' -f1)"
-    if [ "$openpuck_got" = "$OPENPUCK_FW_SHA256" ]; then
-        sudo install -d -m 0755 "$(dirname "$OPENPUCK_FW_DEST")"
-        sudo install -m 0644 -o root -g root "$WORK_DIR/$OPENPUCK_FW_NAME" "$OPENPUCK_FW_DEST"
+    if [ "$openpuck_got" != "$OPENPUCK_FW_SHA256" ]; then
+        note "OpenPuck firmware sha256 mismatch — skipping seed (agent fetches at flash time)."
+    elif [ "$CAN_PRIVILEGE" -eq 0 ]; then
+        # KI-064: this seed is OPTIONAL and sits BEFORE the detached-update
+        # fast-path below, so its sudo must never be able to abort the run.
+        # Under `set -e` it did exactly that -- an app-triggered update on a
+        # password-sudo box died here with "a terminal is required to read the
+        # password", leaving the new agent on disk and the OLD one still
+        # serving (observed on a Legion Go, 2026-08-16). Skipping is a
+        # SUPPORTED outcome: the agent fetches + verifies this firmware at
+        # flash time whenever the seed is absent.
+        note "no way to get root here — skipping the OpenPuck seed (agent fetches at flash time)."
+    else
+        sudo install -d -m 0755 "$(dirname "$OPENPUCK_FW_DEST")" \
+            || note "OpenPuck seed dir failed — skipping (agent fetches at flash time)."
+        sudo install -m 0644 -o root -g root "$WORK_DIR/$OPENPUCK_FW_NAME" "$OPENPUCK_FW_DEST" \
+            || note "OpenPuck seed copy failed — skipping (agent fetches at flash time)."
         # AGPL-3.0: the notice (attribution + source offer) rides beside the binary;
         # it came through the signed SHA256SUMS gate above.
         if [ -f "$WORK_DIR/OPENPUCK-NOTICE.txt" ] \
@@ -843,8 +869,6 @@ if [ -f "$WORK_DIR/$OPENPUCK_FW_NAME" ]; then
                 "$(dirname "$OPENPUCK_FW_DEST")/OPENPUCK-NOTICE.txt"
         fi
         note "installed OpenPuck firmware seed ($OPENPUCK_FW_NAME)"
-    else
-        note "OpenPuck firmware sha256 mismatch — skipping seed (agent fetches at flash time)."
     fi
 fi
 # The aerial-screensaver player is optional: install only if wanted AND it
@@ -916,12 +940,6 @@ fi
 # Decky) -- so DON'T gate on "Decky absent", which wrongly skipped exactly that
 # box. A pure Decky setup leaves couchside.service INACTIVE (the plugin runs its
 # own copy), so is-active is false there and the fast-path correctly stands down.
-CAN_PRIVILEGE=0
-if sudo -n true 2>/dev/null; then
-    CAN_PRIVILEGE=1                       # passwordless sudo (e.g. a fresh Deck)
-elif { true < /dev/tty; } 2>/dev/null; then
-    CAN_PRIVILEGE=1                       # a terminal we can prompt on
-fi
 if [ "$CAN_PRIVILEGE" -eq 0 ] && [ -s "$TOKEN_FILE" ] \
    && systemctl is-active --quiet couchside.service 2>/dev/null; then
     if sudo -n systemctl restart --no-block couchside.service 2>/dev/null; then
