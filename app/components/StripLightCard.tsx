@@ -301,6 +301,19 @@ export function StripLightCard() {
     const newBright = orderedLeds.map((_, k) => (k === i ? next : (cellBright[k] ?? (frame[k] ? 100 : 0))));
     setFrame(newFrame);
     setCellBright(newBright);
+    // DIRECT EDIT: when a captured frame is selected, the grid IS that frame —
+    // painting updates it in place and re-plays the show live (no re-capture step).
+    if (selFrame != null && selFrame < seqFrames.length) {
+      const baked = orderedLeds.map((_, k) => {
+        const c = newFrame[k]; const b = newBright[k] ?? (c ? 100 : 0);
+        return c && b > 0 ? scale(c as Rgb, b / 100) : null;
+      });
+      const nf = seqFrames.map((f, k) => (k === selFrame ? baked : f));
+      setSeqFrames(nf);
+      if (nf.length >= 2) pushSeq(nf, frameHold);
+      else applyMainPattern(baked, newBright);
+      return;
+    }
     if (altOn) {
       pushAlt(newFrame, newBright, altHue, cycleMs);
     } else {
@@ -327,8 +340,8 @@ export function StripLightCard() {
     }).catch(() => {});
   };
 
-  /** Capture the current paint as a new frame; auto-play once there are >= 2. The
-   *  new frame inherits the current global cadence (cycleMs) as its hold. */
+  /** Add the current grid as a NEW frame at the end + select it (so you tweak
+   *  forward from the look you have). Auto-plays once there are >= 2. */
   const addFrame = () => {
     hapticLight();
     const next = [...seqFrames, bakeCurrent()];
@@ -337,6 +350,32 @@ export function StripLightCard() {
     setFrameHold(holds);
     setSelFrame(next.length - 1);
     if (next.length >= 2) pushSeq(next, holds);
+  };
+
+  /** Duplicate frame i (insert a copy right after it) + select the copy. */
+  const duplicateFrame = (i: number) => {
+    hapticLight();
+    const src = seqFrames[i];
+    if (!src) return;
+    const nf = [...seqFrames.slice(0, i + 1), src.map((c) => c), ...seqFrames.slice(i + 1)];
+    const nh = [...frameHold.slice(0, i + 1), frameHold[i] ?? cycleMs, ...frameHold.slice(i + 1)];
+    setSeqFrames(nf);
+    setFrameHold(nh);
+    setSelFrame(i + 1);
+    if (nf.length >= 2) pushSeq(nf, nh);
+  };
+
+  /** Move frame i one slot left (-1) or right (+1); reorders the show. */
+  const moveFrame = (i: number, dir: -1 | 1) => {
+    const j = i + dir;
+    if (j < 0 || j >= seqFrames.length) return;
+    hapticLight();
+    const nf = seqFrames.slice(); [nf[i], nf[j]] = [nf[j], nf[i]];
+    const nh = frameHold.slice(); [nh[i], nh[j]] = [nh[j], nh[i]];
+    setSeqFrames(nf);
+    setFrameHold(nh);
+    setSelFrame(j);
+    if (nf.length >= 2) pushSeq(nf, nh);
   };
 
   /** Load a captured frame back into the grid so it can be tweaked + re-captured. */
@@ -694,49 +733,83 @@ export function StripLightCard() {
         </>
       )}
 
-      {/* SEQUENCE — the N-frame editor: capture frames, play them on a loop. */}
+      {/* SEQUENCE — the N-frame editor: paint frames, the box loops them into a
+          light show. The grid IS the selected frame; editing it plays live. */}
       {effect === 'manual' && (
         <>
           <View style={styles.sliderHeader}>
             <Text style={styles.sectionLabel}>
-              SEQUENCE{seqFrames.length ? ` · ${seqFrames.length}` : ''}
+              LIGHT SHOW{seqFrames.length ? ` · ${seqFrames.length} frames` : ''}
             </Text>
             <View style={{ flexDirection: 'row', gap: 6 }}>
               {seqFrames.length > 0 && (
                 <Pressable onPress={clearSeq}
-                  accessibilityRole="button" accessibilityLabel="Clear sequence"
+                  accessibilityRole="button" accessibilityLabel="Clear the whole light show"
                   style={({ pressed }) => [styles.chip, pressed && styles.pressed]}>
                   <Text style={[styles.chipText, { color: t.textDim }]}>Clear</Text>
                 </Pressable>
               )}
               <Pressable onPress={addFrame}
-                accessibilityRole="button" accessibilityLabel="Add current paint as a sequence frame"
+                accessibilityRole="button" accessibilityLabel="Add the current paint as a new frame"
                 style={({ pressed }) => [styles.chip, styles.chipOn, pressed && styles.pressed]}>
-                <Text style={[styles.chipText, styles.chipTextOn]}>+ Add frame</Text>
+                <Text style={[styles.chipText, styles.chipTextOn]}>＋ New frame</Text>
               </Pressable>
             </View>
           </View>
+          <Text style={styles.hint}>
+            {seqFrames.length === 0
+              ? 'Paint a look above, then tap ＋ New frame. Add a few and the box loops them into a show.'
+              : 'Tap a frame to edit it — the grid becomes that frame and plays live. ＋ New frame duplicates it to tweak forward.'}
+          </Text>
           {seqFrames.length > 0 && (
             <>
               <View style={styles.filmstrip}>
                 {seqFrames.map((fr, fi) => (
-                  <Pressable key={fi} onPress={() => loadFrame(fi)} onLongPress={() => removeFrame(fi)}
-                    accessibilityRole="button"
-                    accessibilityLabel={`Frame ${fi + 1} — tap to edit, hold to remove`}
-                    style={({ pressed }) => [
-                      styles.filmFrame, selFrame === fi && styles.filmFrameSel, pressed && styles.pressed,
-                    ]}>
-                    <View style={styles.filmRow}>
-                      {fr.map((c, ci) => (
-                        <View key={ci} style={{ flex: 1, backgroundColor: c ? cssRgb(c) : t.card }} />
-                      ))}
-                    </View>
-                    <Text style={[styles.filmIdx, selFrame === fi && { color: t.text }]}>
-                      {fi + 1} · {((frameHold[fi] ?? cycleMs) / 1000).toFixed(1)}s
-                    </Text>
-                  </Pressable>
+                  <View key={fi} style={styles.filmFrameWrap}>
+                    <Pressable onPress={() => loadFrame(fi)}
+                      accessibilityRole="button"
+                      accessibilityLabel={`Frame ${fi + 1}${selFrame === fi ? ', editing' : ''} — tap to edit`}
+                      style={({ pressed }) => [
+                        styles.filmFrame, selFrame === fi && styles.filmFrameSel, pressed && styles.pressed,
+                      ]}>
+                      <View style={styles.filmRow}>
+                        {fr.map((c, ci) => (
+                          <View key={ci} style={{ flex: 1, backgroundColor: c ? cssRgb(c) : t.card }} />
+                        ))}
+                      </View>
+                      <Text style={[styles.filmIdx, selFrame === fi && { color: t.text }]}>
+                        {fi + 1} · {((frameHold[fi] ?? cycleMs) / 1000).toFixed(1)}s
+                      </Text>
+                    </Pressable>
+                    <Pressable onPress={() => removeFrame(fi)} hitSlop={6}
+                      accessibilityRole="button" accessibilityLabel={`Remove frame ${fi + 1}`}
+                      style={({ pressed }) => [styles.filmX, pressed && styles.pressed]}>
+                      <Ionicons name="close" size={11} color={t.text} />
+                    </Pressable>
+                  </View>
                 ))}
               </View>
+              {/* Selected-frame actions: duplicate + reorder. */}
+              {selFrame != null && selFrame < seqFrames.length && (
+                <View style={styles.frameTools}>
+                  <Pressable onPress={() => moveFrame(selFrame, -1)} disabled={selFrame === 0}
+                    accessibilityRole="button" accessibilityLabel="Move frame left"
+                    style={({ pressed }) => [styles.toolBtn, selFrame === 0 && styles.toolBtnOff, pressed && styles.pressed]}>
+                    <Ionicons name="chevron-back" size={14} color={selFrame === 0 ? t.textFaint : t.text} />
+                  </Pressable>
+                  <Pressable onPress={() => duplicateFrame(selFrame)}
+                    accessibilityRole="button" accessibilityLabel="Duplicate this frame"
+                    style={({ pressed }) => [styles.toolBtn, pressed && styles.pressed]}>
+                    <Ionicons name="copy-outline" size={13} color={t.text} />
+                    <Text style={[styles.chipText, { color: t.text }]}>Duplicate</Text>
+                  </Pressable>
+                  <Pressable onPress={() => moveFrame(selFrame, 1)} disabled={selFrame === seqFrames.length - 1}
+                    accessibilityRole="button" accessibilityLabel="Move frame right"
+                    style={({ pressed }) => [styles.toolBtn, selFrame === seqFrames.length - 1 && styles.toolBtnOff, pressed && styles.pressed]}>
+                    <Ionicons name="chevron-forward" size={14} color={selFrame === seqFrames.length - 1 ? t.textFaint : t.text} />
+                  </Pressable>
+                </View>
+              )}
               {seqFrames.length >= 2 && (
                 <>
                   {/* PER-FRAME timer: overrides just the frame loaded in the grid. */}
@@ -866,7 +939,8 @@ const makeStyles = (t: Palette) =>
     },
     brightFill: { height: '100%', borderRadius: 9 },
 
-    filmstrip: { flexDirection: 'row', flexWrap: 'wrap', gap: 6, marginTop: 8 },
+    filmstrip: { flexDirection: 'row', flexWrap: 'wrap', gap: 8, marginTop: 8 },
+    filmFrameWrap: { position: 'relative' },
     filmFrame: {
       width: 68, borderRadius: 6, overflow: 'hidden',
       borderWidth: 1, borderColor: t.cardBorder, backgroundColor: t.card,
@@ -874,6 +948,18 @@ const makeStyles = (t: Palette) =>
     filmFrameSel: { borderColor: t.blue, borderWidth: 2 },
     filmRow: { flexDirection: 'row', height: 22 },
     filmIdx: { color: t.textDim, fontSize: 10, textAlign: 'center', fontFamily: mono, paddingVertical: 1 },
+    filmX: {
+      position: 'absolute', top: -6, right: -6, width: 18, height: 18, borderRadius: 9,
+      alignItems: 'center', justifyContent: 'center',
+      backgroundColor: t.card, borderWidth: 1, borderColor: t.cardBorder,
+    },
+    frameTools: { flexDirection: 'row', gap: 6, marginTop: 8 },
+    toolBtn: {
+      flexDirection: 'row', alignItems: 'center', gap: 4,
+      borderColor: t.cardBorder, borderWidth: 1, borderRadius: 8,
+      paddingVertical: 6, paddingHorizontal: 10, minHeight: 32,
+    },
+    toolBtnOff: { opacity: 0.4 },
 
     presetChip: {
       flexDirection: 'row', alignItems: 'center', gap: 6,
