@@ -467,6 +467,38 @@ export function StripLightCard() {
       }
       return;
     }
+    // GENERATOR presets sized to THIS strip, then loaded into the editor so they
+    // can be tweaked + re-saved. `playGen` plays the loop on the box and shows it.
+    const playGen = (frames: (Rgb | null)[][], holds: number[]) => {
+      setEffect('manual'); setBright(p.brightness);
+      setSeqFrames(frames); setFrameHold(holds); setSelFrame(0);
+      setFrame(frames[0].map((c) => c));
+      setCellBright(frames[0].map((c) => (c ? 100 : 0)));
+      if (agentMode && agentStrip) {
+        void api.setStripSequence(settings, agentStrip.prefix, {
+          frames, holdMs: holds[0] ?? 120, holds, loop: true, brightness: p.brightness,
+        }).then(() => poll.refresh()).catch(() => {});
+      }
+    };
+    // Rainbow River: a full-spectrum gradient that flows around the strip — one
+    // frame per shift step (n frames for an n-LED strip = a seamless loop).
+    if (p.generator === 'rainbowflow') {
+      const n = orderedLeds.length;
+      const frames = Array.from({ length: n }, (_, s) =>
+        orderedLeds.map((_, i) => hueToRgb((((i + s) / n) * 360) % 360)));
+      playGen(frames, frames.map(() => 80));
+      return;
+    }
+    // Heartbeat: two quick red pulses then a long dark rest (per-frame timing is
+    // what sells it — uniform timing would just look like blinking).
+    if (p.generator === 'heartbeat') {
+      const R: Rgb = { r: 255, g: 0, b: 0 };
+      const red = orderedLeds.map(() => ({ ...R }));
+      const off = orderedLeds.map(() => null);
+      playGen([red, off, orderedLeds.map(() => ({ ...R })), off.slice()],
+        [150, 120, 150, 800]);
+      return;
+    }
     // A painted PATTERN preset: enter manual mode, then repaint every LED.
     if (p.pattern && p.pattern.length) {
       setEffect('manual'); setBright(p.brightness);

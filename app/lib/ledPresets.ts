@@ -36,9 +36,10 @@ export type LedPreset = {
   /** A per-LED painted pattern (effect==='manual' only): one colour per strip
       node, null = off. Applying it repaints every LED. */
   pattern?: (Rgb | null)[];
-  /** A built-in that GENERATES a timed sequence sized to the strip when applied
-      (e.g. 'police' = red/blue halves alternating). Overrides effect/pattern. */
-  generator?: 'police';
+  /** A built-in that GENERATES a timed sequence sized to the strip when applied:
+      'police' (red/blue halves), 'rainbowflow' (a spectrum flowing around the
+      strip), 'heartbeat' (two red pulses + a long rest). Overrides effect/pattern. */
+  generator?: 'police' | 'rainbowflow' | 'heartbeat';
   /** A hand-built TIMED SEQUENCE (from the N-frame editor): per-LED colour frames
       plus one hold (ms) per frame. Applying it plays the loop on the box via
       /api/leds/sequence. Overrides effect/pattern/generator. */
@@ -51,6 +52,10 @@ const DEFAULTS: LedPreset[] = [
     color: { r: 255, g: 0, b: 0 }, speed: 80, brightness: 100 },
   { id: 'seed-police', label: 'Police', effect: 'manual',
     color: null, speed: 85, brightness: 100, generator: 'police' },
+  { id: 'seed-rainbowflow', label: 'Rainbow River', effect: 'manual',
+    color: null, speed: 80, brightness: 100, generator: 'rainbowflow' },
+  { id: 'seed-heartbeat', label: 'Heartbeat', effect: 'manual',
+    color: { r: 255, g: 0, b: 0 }, speed: 50, brightness: 100, generator: 'heartbeat' },
   { id: 'seed-breathe-blue', label: 'Breathe Blue', effect: 'breathe',
     color: { r: 0, g: 80, b: 255 }, speed: 35, brightness: 90 },
   { id: 'seed-rainbow', label: 'Rainbow', effect: 'rainbow',
@@ -130,7 +135,8 @@ function normalize(raw: unknown): LedPreset[] {
       pattern: Array.isArray(p.pattern)
         ? (p.pattern as unknown[]).map((c) => (isRgb(c) ? { r: c.r, g: c.g, b: c.b } : null))
         : undefined,
-      generator: p.generator === 'police' ? 'police' : undefined,
+      generator: (p.generator === 'police' || p.generator === 'rainbowflow'
+        || p.generator === 'heartbeat') ? p.generator : undefined,
       sequence: normalizeSequence(p.sequence),
     });
     if (out.length >= PRESET_MAX) break;
