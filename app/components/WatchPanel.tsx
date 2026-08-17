@@ -212,6 +212,33 @@ export function WatchPanel() {
     [settings, player],
   );
 
+  // Free-URL tier (agent §5 tier 3): only when the BOX opted in (open_url) does
+  // the app offer opening an arbitrary web page. The box does the real
+  // validation; looksLikeUrl is a client hint only, so a bad paste is refused
+  // helpfully rather than sent.
+  const canOpenAnyLink = state?.open_url === true;
+  const openUrl = useCallback(
+    async (url: string) => {
+      hapticLight();
+      setBusy('__url__');
+      setError(null);
+      try {
+        await api.playerOp(settings, 'open', { url });
+        hapticSuccess();
+        setLink('');
+        player.refresh();
+      } catch (e) {
+        hapticError();
+        setError(
+          `The box wouldn’t open that page. ${e instanceof Error ? e.message : ''}`.trim(),
+        );
+      } finally {
+        setBusy(null);
+      }
+    },
+    [settings, player],
+  );
+
   const stop = useCallback(async () => {
     hapticLight();
     setBusy('__stop__');
@@ -235,6 +262,13 @@ export function WatchPanel() {
         : null,
     [link, state?.service_urls, state?.service_hosts],
   );
+  // A pasted string the box's free-URL tier could accept: an http(s) URL that
+  // isn't already a known service (those take the deep-link path above). Client
+  // hint only — the box validates scheme/host/port and refuses the rest.
+  const webLink = useMemo(() => {
+    const s = link.trim();
+    return canOpenAnyLink && !parsedLink && /^https?:\/\/\S+$/i.test(s) ? s : null;
+  }, [link, canOpenAnyLink, parsedLink]);
 
   const playback = state?.playback ?? null;
   // Offsets come from the BOX (seek_secs), so the app can never offer a value
@@ -262,9 +296,9 @@ export function WatchPanel() {
   );
 
   const sendLink = useCallback(() => {
-    if (!parsedLink) return;
-    open(parsedLink.service, parsedLink.path);
-  }, [parsedLink, open]);
+    if (parsedLink) { open(parsedLink.service, parsedLink.path); return; }
+    if (webLink) openUrl(webLink);              // free-URL tier (box opted in)
+  }, [parsedLink, webLink, open, openUrl]);
 
   if (!configured) {
     return (
@@ -506,7 +540,7 @@ export function WatchPanel() {
         <TextInput
           value={link}
           onChangeText={setLink}
-          placeholder="Paste a link from a service"
+          placeholder={canOpenAnyLink ? 'Paste a service link or any web page' : 'Paste a link from a service'}
           placeholderTextColor={t.textFaint}
           autoCapitalize="none"
           autoCorrect={false}
@@ -516,22 +550,29 @@ export function WatchPanel() {
         />
         <Pressable
           onPress={sendLink}
-          disabled={!parsedLink || busy !== null}
+          disabled={!(parsedLink || webLink) || busy !== null}
           testID="watch-link-send"
           style={({ pressed }) => [
             styles.sendBtn,
-            !parsedLink && styles.sendBtnOff,
+            !(parsedLink || webLink) && styles.sendBtnOff,
             pressed && styles.pressed,
           ]}
         >
-          <Text style={[styles.sendText, !parsedLink && styles.sendTextOff]}>
-            Send
+          <Text style={[styles.sendText, !(parsedLink || webLink) && styles.sendTextOff]}>
+            {webLink ? 'Open' : 'Send'}
           </Text>
         </Pressable>
       </View>
-      {link.trim() && !parsedLink ? (
+      {link.trim() && !parsedLink && !webLink ? (
         <Text style={styles.hint} testID="watch-link-hint">
-          That isn’t a link from a service this box knows.
+          {canOpenAnyLink
+            ? 'Paste a service link, or a full http(s) web address to open on the box.'
+            : 'That isn’t a link from a service this box knows.'}
+        </Text>
+      ) : null}
+      {webLink ? (
+        <Text style={styles.hintOk} testID="watch-weblink-ok">
+          Opens as a web page on the box.
         </Text>
       ) : null}
       {parsedLink ? (

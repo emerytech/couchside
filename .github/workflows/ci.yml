@@ -552,6 +552,12 @@ jobs:
       - name: Unit tests (player tile)
         run: python3 tests/test_player_tile.py
 
+      # Free-URL tier (§5 tier 3): the agent urllib validator, the opt-in flag
+      # that ships OFF, and the tile scheme backstop. The allowlist proof for
+      # "a client makes the box browser open an arbitrary page".
+      - name: Unit tests (player free-URL tier)
+        run: python3 tests/test_player_open_url.py
+
       # Player routes. Drives a real Handler on loopback with STUB steam /
       # steamos-add-to-steam binaries that log every call, so "refused" and
       # "nothing ran" are two separate observations -- a test that only checked

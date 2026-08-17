@@ -19,6 +19,7 @@ import errno
 import glob
 import hashlib
 import hmac
+import ipaddress
 import json
 import math
 import os
@@ -83,6 +84,12 @@ DEFAULT_TLS_PORT = 8788  # HTTPS listener when tls.enabled; plaintext stays on D
 #     "enabled": false,                             # default false (opt-in)
 #     "hold_ms": 1200,                              # 600..5000, default 1200
 #     "uniq": ""                                    # optional; pin to ONE pad (MAC)
+#   },
+#   "player": {                                     # optional; Couchside Player
+#     "custom_url": false                           # opt-in free-URL tier (§5);
+#                                                   # OFF by default. true lets the
+#                                                   # phone open ANY http(s) page on
+#                                                   # the box's browser (validated).
 #   }
 # }
 #
@@ -2849,16 +2856,19 @@ def _pl_conf_read():
     return service, path, query
 
 
-def _pl_conf_write(service, path, query="", hub=False):
-    """A deep-link path and a search query are mutually exclusive — the tile
-    treats a query as "open this service's search results", and writing both
-    would leave which one wins to reading order."""
+def _pl_conf_write(service, path, query="", hub=False, url=""):
+    """A deep-link path, a search query, and a free `url` are mutually exclusive
+    — the tile treats a query as "open this service's search results" and a url
+    as "open exactly this page", and writing more than one would leave which wins
+    to reading order. `url` is already validated by _pl_validate_open_url."""
     os.makedirs(os.path.dirname(PLAYER_CONF), exist_ok=True)
     with open(PLAYER_CONF, "w") as f:
         if hub:
             f.write("hub=1\n")
         f.write("service=%s\n" % service)
-        if query:
+        if url:
+            f.write("url=%s\n" % url)
+        elif query:
             f.write("query=%s\n" % query)
         elif path:
             f.write("path=%s\n" % path)
@@ -2895,6 +2905,100 @@ def _pl_validate_search(service, query):
     if PL_MOCK:
         return "https://example.invalid/%s?q=%s" % (service, len(query))
     return _pl_ask("--print-search", service, query)
+
+
+# ---------------------------------------------------------------------------
+# Free-URL tier (project_media-player.md §5, tier 3): open an ARBITRARY web page
+# on the box's player. A genuinely new primitive ("a client makes the box's
+# browser go somewhere"), so it SHIPS OFF and is gated behind a box-side config
+# flag — a default install never gains arbitrary navigation. Validation is
+# reject-never-sanitise (§3 rule 6); the URL only ever becomes an argv element to
+# the resolved browser binary (`--app=<url>`), NEVER xdg-open/steam://openurl
+# (those re-dispatch by scheme = arbitrary handler launch, the real RCE path).
+# ---------------------------------------------------------------------------
+_PL_URL_MAX = 2048
+# A small allowed port set: standard web + the LAN media servers this tier is
+# for (Plex 32400, Jellyfin 8096/8920, Home Assistant 8123, common alt-http).
+_PL_ALLOWED_PORTS = frozenset({80, 443, 8080, 8443, 8096, 8920, 8123, 32400})
+_PL_OPEN_MIN_INTERVAL_S = 2.0   # rate-limit (KI-019): a token holder can't strobe the TV
+_pl_last_open = [0.0]
+
+
+def _pl_custom_url_enabled():
+    """True only when the box owner opted into the free-URL tier
+    (config.json `"player": {"custom_url": true}`). Read FRESH from the config so
+    the edit + agent restart is the whole toggle. Degrade-closed (§3 rule 7): any
+    error, or the key absent/not exactly true, is OFF."""
+    if PL_MOCK:
+        return True
+    try:
+        with open(CONFIG_PATH) as f:
+            raw = json.load(f)
+    except (OSError, ValueError):
+        return False
+    p = raw.get("player")
+    return isinstance(p, dict) and p.get("custom_url") is True
+
+
+def _pl_host_is_lan(host):
+    """True for a loopback / RFC1918 / link-local IP, or a localhost-ish name —
+    the only hosts plain http is allowed to (the Plex/Jellyfin-on-the-LAN case)."""
+    try:
+        ip = ipaddress.ip_address(host)
+        return ip.is_loopback or ip.is_private or ip.is_link_local
+    except ValueError:
+        h = host.lower()
+        return (h == "localhost" or h.endswith(".local") or h.endswith(".lan")
+                or h.endswith(".home") or h.endswith(".internal"))
+
+
+def _pl_valid_host(host):
+    """host is a valid IP literal OR a DNS name (labels [A-Za-z0-9-], not
+    edge-hyphenated, 1..63 each, total <=253). ASCII only — IDN is rejected
+    upstream, not normalised."""
+    try:
+        ipaddress.ip_address(host)
+        return True
+    except ValueError:
+        pass
+    if not host or len(host) > 253:
+        return False
+    labels = host.split(".")
+    return all(re.fullmatch(r"(?!-)[A-Za-z0-9-]{1,63}(?<!-)", lbl) for lbl in labels)
+
+
+def _pl_validate_open_url(url):
+    """§5 tier-3 validation. Returns the URL string if allowed, else None. Reject,
+    never sanitise: https anywhere; http ONLY to a LAN host; no userinfo; a valid
+    host; a port from the small allowed set; no control chars or whitespace
+    anywhere; length-capped; ASCII-printable only (rejects IDN + control + space)."""
+    if not isinstance(url, str) or not url or len(url) > _PL_URL_MAX:
+        return None
+    # Every byte must be ASCII printable (0x21..0x7e): rejects whitespace,
+    # control bytes, and any non-ASCII (IDN) in ONE check, before parsing.
+    if any(not (0x21 <= ord(c) <= 0x7e) for c in url):
+        return None
+    try:
+        p = urlparse(url)
+    except ValueError:
+        return None
+    if p.scheme not in ("https", "http"):
+        return None
+    if p.username is not None or p.password is not None:
+        return None
+    host = p.hostname
+    if not host or not _pl_valid_host(host):
+        return None
+    lan = _pl_host_is_lan(host)
+    if p.scheme == "http" and not lan:
+        return None                                  # plaintext only on the LAN
+    try:
+        port = p.port
+    except ValueError:
+        return None
+    if port is not None and port not in _PL_ALLOWED_PORTS:
+        return None
+    return url
 
 
 def _pl_appid():
@@ -2966,6 +3070,7 @@ def player_info():
                 "service_urls": dict(_PLAYER_SERVICE_URLS),
                 "searchable": list(_PLAYER_SEARCHABLE),
                 "service_hosts": {k: list(v) for k, v in _PLAYER_SERVICE_HOSTS.items()},
+                "open_url": _pl_custom_url_enabled(),
                 "playback": player_playback(),
                 "seek_secs": list(PLAYER_SEEK_SECS)}
     service, path, query = _pl_conf_read()
@@ -2975,6 +3080,10 @@ def player_info():
             "service_urls": dict(_PLAYER_SERVICE_URLS),
             "searchable": list(_PLAYER_SEARCHABLE),
             "service_hosts": {k: list(v) for k, v in _PLAYER_SERVICE_HOSTS.items()},
+            # Free-URL tier availability (§5 tier 3): true only when the box owner
+            # set player.custom_url. Additive; an old app ignores it, a new one
+            # shows the "open any web link" field only when the box allows it.
+            "open_url": _pl_custom_url_enabled(),
             # Added field, never a shape change: null when nothing is playing
             # or the browser can't be reached, so an old app ignores it and a
             # new one hides the transport rather than showing a dead scrubber.
@@ -3021,17 +3130,40 @@ def _pl_relaunch(appid, was_running):
     threading.Thread(target=launch, daemon=True).start()
 
 
-def player_open(service, path="", query=""):
+def player_open(service, path="", query="", url=""):
     """Point the tile at an allowlisted service and launch it through Steam.
 
     With `query`, the tile opens that service's OWN search results instead —
     which is the whole of "search from the phone": nobody types a title on a TV
     with a d-pad. A query and a deep-link path are mutually exclusive.
 
-    Raises ValueError when the service/path/query is refused — the caller turns
-    that into a 404, and NOTHING is written or launched. Registration and the
-    fresh-registration double-fire run in a background thread so the POST
+    With `url` (the opt-in free-URL tier — the CALLER must have already checked
+    _pl_custom_url_enabled() + the rate limit), open exactly that page. The url is
+    validated HERE by _pl_validate_open_url and only ever becomes a `--app=<url>`
+    argv to the browser — never xdg-open (§5).
+
+    Raises ValueError when the service/path/query/url is refused — the caller
+    turns that into a 404, and NOTHING is written or launched. Registration and
+    the fresh-registration double-fire run in a background thread so the POST
     returns immediately; the app watches `running` flip via GET."""
+    if url:
+        valid = _pl_validate_open_url(url)
+        if valid is None:
+            raise ValueError("url rejected")
+        service, path, query, url = "netflix", "", "", valid
+        if PL_MOCK:
+            _PL_MOCK.update(running=True, service="", path="", query="", url=valid)
+            return {"ok": True, "running": True, "url": valid}
+        if not player_available():
+            raise RuntimeError("player not installed on this box")
+        with _PL_LOCK:
+            _pl_conf_write(service, "", "", url=valid)
+            was_running = _pl_running()
+            if was_running:
+                player_close()
+            appid = _pl_appid()
+        _pl_relaunch(appid, was_running)
+        return {"ok": True, "starting": True, "url": valid}
     if query:
         url = _pl_validate_search(service, query)
         if url is None:
@@ -20930,10 +21062,25 @@ class Handler(BaseHTTPRequestHandler):
                     self._send(400, {"error": "json body with op required"}, started)
                     return
                 if op == "open":
+                    open_url = req.get("url")
+                    if open_url is not None:
+                        # Free-URL tier (§5 tier 3): SHIPS OFF, gated behind a
+                        # box-side config flag, and rate-limited (KI-019) so a
+                        # token holder cannot strobe the TV. The url itself is
+                        # validated inside player_open (reject, never sanitise).
+                        if not _pl_custom_url_enabled():
+                            self._send(403, {"error": "custom URL not enabled on this box"}, started)
+                            return
+                        now = time.time()
+                        if now - _pl_last_open[0] < _PL_OPEN_MIN_INTERVAL_S:
+                            self._send(429, {"error": "slow down"}, started)
+                            return
+                        _pl_last_open[0] = now
                     try:
                         r = player_open(req.get("service"),
                                         req.get("path", ""),
-                                        req.get("query", ""))
+                                        req.get("query", ""),
+                                        open_url or "")
                     except ValueError:
                         # Deliberately does NOT echo the rejected value back.
                         self._send(404, {"error": "unknown service"}, started)

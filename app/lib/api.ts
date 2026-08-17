@@ -318,6 +318,12 @@ export type PlayerState = {
   /** Query the tile is currently showing results for, '' otherwise. */
   query?: string;
   /**
+   * True only when the box owner opted into the free-URL tier
+   * (config.json player.custom_url). Absent/false on every box that has not —
+   * so the app offers "open any web page" only where the box allows it.
+   */
+  open_url?: boolean;
+  /**
    * {service -> extra hosts it is reachable on}, for LINK MATCHING only.
    * Measured: play.max.com redirects to play.hbomax.com and shared Max links
    * use the latter, so matching only the canonical host rejected the one
@@ -2624,8 +2630,12 @@ export const api = {
       /** Free text. The box rejects it on structure and percent-encodes the
        *  rest; only services in PlayerState.searchable accept it. */
       query?: string;
+      /** An arbitrary http(s) URL — the free-URL tier. Accepted ONLY when the
+       *  box set player.custom_url (PlayerState.open_url); the box validates
+       *  scheme/host/port and refuses the rest with 403/404. */
+      url?: string;
     } = {},
-  ): Promise<{ ok: boolean; running?: boolean; starting?: boolean; service?: string }> {
+  ): Promise<{ ok: boolean; running?: boolean; starting?: boolean; service?: string; url?: string }> {
     return request(settings, '/api/player', {
       method: 'POST',
       body: { op, ...opts },

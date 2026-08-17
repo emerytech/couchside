@@ -39,9 +39,11 @@ LOG="$CACHE_DIR/player.log"
 # everything in it is treated as untrusted input: an id that is not a case arm
 # below exits non-zero and launches NOTHING.
 #
-# Adding a service means adding an arm here. There is deliberately no "custom
-# URL" arm: that tier is a separate, box-side-gated feature (see
-# docs/memory/project_media-player.md §5), not something the tile grants.
+# Adding a service means adding an arm here. The service table never grants a
+# "custom URL" — that is a SEPARATE, box-side-gated tier (project_media-player.md
+# §5 tier 3): the agent validates the raw URL with urllib and gates it behind an
+# opt-in flag, and the tile only opens what arrives in `url=`, backstopped by
+# validate_open_url() below (http/https, a host, nothing structural).
 # ---------------------------------------------------------------------------
 service_url() {
     case "$1" in
@@ -390,6 +392,7 @@ read_conf() {
     DEEP_PATH=""
     QUERY=""
     HUB=""
+    URL_RAW=""
     [ -f "$CONF" ] || return 0
     # Parse strictly: only these keys, only from `key=value` lines. Anything
     # else in the file is ignored rather than interpreted.
@@ -397,6 +400,7 @@ read_conf() {
     SERVICE=$(sed -n 's/^service=\(.*\)$/\1/p' "$CONF" | tail -1)
     DEEP_PATH=$(sed -n 's/^path=\(.*\)$/\1/p' "$CONF" | tail -1)
     QUERY=$(sed -n 's/^query=\(.*\)$/\1/p' "$CONF" | tail -1)
+    URL_RAW=$(sed -n 's/^url=\(.*\)$/\1/p' "$CONF" | tail -1)
 }
 
 # Build a SEARCH url: frozen prefix from the table + the encoded query.
@@ -448,11 +452,35 @@ build_url() {
     echo "${base%/}$path"
 }
 
+# Free-URL tier (project_media-player.md §5 tier 3) BACKSTOP. The AGENT does the
+# full urllib validation and gates the whole tier behind an opt-in flag; this is
+# defense-in-depth at the enforcement point. http/https only, a non-empty host,
+# no whitespace/control/backslash/quote. The URL only ever becomes --app=<url> to
+# the browser (an argv element) — it is NEVER handed to xdg-open/steam://openurl,
+# whose scheme re-dispatch is the actual RCE path.
+validate_open_url() {
+    local url="$1" rest host
+    case "$url" in
+        https://?*|http://?*) : ;;
+        *) log "refused: url scheme (http/https only)"; return 1 ;;
+    esac
+    case "$url" in
+        *[[:space:][:cntrl:]]*|*'\'*|*'"'*) log "refused: url whitespace/control"; return 1 ;;
+    esac
+    rest="${url#*://}"; host="${rest%%[/?#]*}"
+    [ -n "$host" ] || { log "refused: url has no host"; return 1; }
+    case "$host" in
+        *[!A-Za-z0-9.:_%[-]-]*) log "refused: url host chars"; return 1 ;;
+    esac
+    printf '%s' "$url"
+}
+
 # --- debug entry points, used by tests/test_player_tile.py -------------------
 # They exercise the real functions above; they do not reimplement them.
 case "${1:-}" in
     --print-ozone) pick_ozone; exit 0 ;;
     --print-url)   build_url "${2:-}" "${3:-}" || exit 1; exit 0 ;;
+    --print-open-url) validate_open_url "${2:-}" || exit 1; exit 0 ;;
     --print-search) build_search_url "${2:-}" "${3:-}" || exit 1; exit 0 ;;
     --print-hub)   write_hub && printf 'file://%s\n' "$HUB_FILE"; exit $? ;;
     --print-hosts) service_hosts "${2:-}" || exit 1; exit 0 ;;
@@ -489,6 +517,10 @@ if [ "${HUB:-}" = "1" ]; then
     # The hub is the tile's own page, so there is nothing to validate: it is
     # written here from the frozen table and lives inside the browser profile.
     if write_hub; then URL="file://$HUB_FILE"; else URL=""; fi
+elif [ -n "${URL_RAW:-}" ]; then
+    # Free-URL tier (§5 tier 3): the agent already validated + gated it; the tile
+    # backstops the scheme/host before opening. Wins over service/path/query.
+    URL="$(validate_open_url "$URL_RAW")" || URL=""
 elif [ -n "${QUERY:-}" ]; then
     URL="$(build_search_url "$SERVICE" "$QUERY")" || URL=""
 else
