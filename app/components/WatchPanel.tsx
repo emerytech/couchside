@@ -14,6 +14,7 @@ import { hapticError, hapticLight, hapticSuccess } from '@/lib/haptics';
 import { useSettings } from '@/lib/SettingsContext';
 import { clearRecents, noteRecent, useWatchRecents } from '@/lib/watchRecents';
 import { useTheme, useThemedStyles, type Palette } from '@/lib/theme';
+import { WatchDpad } from '@/components/WatchDpad';
 
 /**
  * DISPLAY ONLY. This is not an allowlist and must never become one — the box's
@@ -364,6 +365,11 @@ export function WatchPanel() {
             </Pressable>
           </View>
 
+          {/* D-pad drives the page's focus ring (Netflix/YouTube tile grids,
+              and any web page). Rides the existing uinput key path, so it shows
+              for ANY open page — not gated on <video> like the scrubber below. */}
+          <WatchDpad settings={settings} ready={ready} />
+
           {/* Transport appears only when the box reports a real <video>. A
               service that is open but sitting on its home screen has nothing to
               scrub, and a dead scrubber is worse than no scrubber. */}
@@ -441,8 +447,8 @@ export function WatchPanel() {
       {error ? <Text style={styles.error}>{error}</Text> : null}
 
       <Text style={styles.beta} testID="watch-beta">
-        EXPERIMENTAL — expect rough edges. Streaming sites need the trackpad,
-        not the d-pad.
+        EXPERIMENTAL — expect rough edges. Use the d-pad above to move between
+        tiles once a page is open.
       </Text>
 
       {/* The box's own screen. Useful when the phone is not the thing in your
