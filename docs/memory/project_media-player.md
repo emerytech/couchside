@@ -332,6 +332,12 @@ plus CDP. Both are handled explicitly rather than assumed benign.
    share a link from the phone, it opens on the TV — with zero widening of the allowlist.
 3. **Free URL bar.** A genuinely new primitive, so it is gated behind a **box-side config flag
    that ships OFF**. A default install never gains arbitrary navigation.
+   **✅ BUILT 2026-08-11 — PR #491 (branch claude/player-open-url, off main).** Config
+   `"player": {"custom_url": false}`; `_pl_validate_open_url()` (agent, urllib) + a tile
+   `validate_open_url()` scheme backstop; route gated 403-when-off + rate-limited (429); app
+   WatchPanel offers "open as a web page" when the box reports `open_url`. 37-check test
+   (`tests/test_player_open_url.py`) in CI. NOT yet: on-box Chrome open (needs a Player box);
+   WatchPanel field device/harness tap (tsc-clean, testIDs in place).
 
 Tier-3 validation rules (reject, never sanitise — §3 rule 6):
 
