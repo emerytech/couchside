@@ -15,6 +15,8 @@ import { useSettings } from '@/lib/SettingsContext';
 import { clearRecents, noteRecent, useWatchRecents } from '@/lib/watchRecents';
 import { useTheme, useThemedStyles, type Palette } from '@/lib/theme';
 import { WatchDpad } from '@/components/WatchDpad';
+import { useDesktopKeyboard } from '@/components/DesktopKeyboard';
+import { GamepadClient } from '@/lib/gamepad';
 
 /**
  * DISPLAY ONLY. This is not an allowlist and must never become one — the box's
@@ -173,6 +175,12 @@ export function WatchPanel() {
   // Jump the panel to the top when an open starts, so the Starting/Now card is
   // on screen instead of below the fold the user tapped from.
   const scrollRef = useRef<ScrollView | null>(null);
+  // The gamepad session is OWNED here (WatchDpad runs its lifecycle) so the
+  // phone-keyboard hook can share it: typing rides the same {t:'kt'} path,
+  // and the compose bar must render at panel root, outside the ScrollView.
+  const gpRef = useRef<GamepadClient | null>(null);
+  if (gpRef.current == null) gpRef.current = new GamepadClient();
+  const kb = useDesktopKeyboard(gpRef.current);
 
   const configured = settings.host.trim().length > 0;
 
@@ -360,6 +368,7 @@ export function WatchPanel() {
   }
 
   return (
+    <View style={styles.root}>
     <ScrollView
       ref={scrollRef}
       style={styles.root}
@@ -419,6 +428,9 @@ export function WatchPanel() {
             ready={ready}
             navOps={state.nav_ops}
             onGestureActive={setDpadGesture}
+            client={gpRef.current}
+            onKeyboard={kb.toggle}
+            keyboardOpen={kb.open}
           />
 
           {/* TV zoom. Values come from the BOX (ui_scales — a frozen set), so
@@ -728,6 +740,10 @@ export function WatchPanel() {
         })}
       </View>
     </ScrollView>
+    {/* Phone-keyboard compose bar: absolute at panel root so its keyboard-lift
+        math sees the screen, not a card inside the scroll. */}
+    {kb.bar}
+    </View>
   );
 }
 

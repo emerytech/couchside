@@ -3650,6 +3650,13 @@ def player_transport(op, secs=None):
     elif op == "seek":
         if secs not in PLAYER_SEEK_SECS:
             raise ValueError("seek offset not allowed")
+        if _pl_seek_wants_keys():
+            # Netflix-class player: direct currentTime writes kill it (M7375,
+            # measured). Press its own arrow key instead. secs is the vetted
+            # frozen-tuple member from the check above.
+            if not _pl_running():
+                raise RuntimeError("player is not running")
+            return _pl_seek_by_key(secs)
         script = PLAYER_JS_SEEK[secs]           # pre-built per allowed offset
     else:
         raise ValueError("unknown transport op")
@@ -3660,6 +3667,51 @@ def player_transport(op, secs=None):
     if ok is None:
         raise RuntimeError("could not reach the player")
     return {"ok": bool(ok), "op": op}
+
+
+# Services whose web player breaks on direct currentTime writes. MEASURED on
+# real playback (Steam Machine, 2026-08-18): v.currentTime += 10 on
+# netflix.com/watch tore the player down with error M7375, while ONE uinput
+# ArrowRight — the binding Netflix's own player ships — seeked +10s cleanly
+# (t 254.4 -> 267.9 over ~4s of wall clock, no error). So for these services
+# the seek op presses the player's own key instead of touching the element.
+_PL_KEY_SEEK_SERVICES = frozenset({"netflix"})
+
+
+def _pl_seek_wants_keys():
+    """True when the OPEN PAGE belongs to a service that must seek by key."""
+    try:
+        with open(PLAYER_CONF) as f:
+            raw = f.read()
+    except OSError:
+        return False
+    if "\nurl=" in "\n" + raw:
+        return False   # free-URL page: a plain <video>, JS seek is correct
+    service, _path, _query = _pl_conf_read()
+    return service in _PL_KEY_SEEK_SERVICES
+
+
+def _pl_seek_by_key(secs):
+    """Seek by pressing the player's own arrow key, one press per 10 seconds.
+
+    A transient uinput keyboard: created, pressed, destroyed. Focus caveat is
+    the same as the d-pad's (the fullscreen player owns focus). `secs` was
+    already validated against PLAYER_SEEK_SECS by the caller — the key and
+    press count derive from that vetted constant, never from the request.
+    """
+    key = KEY_RIGHT if secs > 0 else KEY_LEFT
+    presses = max(1, int(round(abs(secs) / 10.0)))
+    kb = UInputKeyboard()
+    try:
+        for _ in range(presses):
+            kb.emit([(EV_KEY, key, 1), (EV_KEY, key, 0)])
+            time.sleep(0.15)
+    finally:
+        try:
+            kb.destroy()
+        except Exception:
+            pass
+    return {"ok": True, "op": "seek", "secs": secs, "via": "key"}
 
 
 def player_nav(op):

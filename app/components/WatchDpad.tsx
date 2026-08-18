@@ -110,6 +110,9 @@ export function WatchDpad({
   ready,
   navOps,
   onGestureActive,
+  client: clientProp,
+  onKeyboard,
+  keyboardOpen,
 }: {
   settings: Settings;
   ready: boolean;
@@ -122,6 +125,17 @@ export function WatchDpad({
    * turning "swipe down a row" into "scroll the panel".
    */
   onGestureActive?: (active: boolean) => void;
+  /**
+   * The gamepad client to drive. Owned by WatchPanel so the panel can ALSO
+   * hang the phone-keyboard hook off the same session (its compose bar must
+   * render at panel root, outside the ScrollView). This component still owns
+   * the connect/hold lifecycle.
+   */
+  client?: GamepadClient;
+  /** Present = render a Keyboard button next to Back (opens the phone keyboard
+   *  for typing into whatever the TV has focused — search fields). */
+  onKeyboard?: () => void;
+  keyboardOpen?: boolean;
 }) {
   const styles = useThemedStyles(makeStyles);
   const navigation = useNavigation();
@@ -137,7 +151,9 @@ export function WatchDpad({
   const [holder, setHolder] = useState<string | null>(null);
   const [canForce, setCanForce] = useState(false);
 
-  const clientRef = useRef<GamepadClient | null>(null);
+  // Use the panel-owned client when given (so the panel's keyboard hook shares
+  // this session); create our own otherwise.
+  const clientRef = useRef<GamepadClient | null>(clientProp ?? null);
   if (clientRef.current == null) clientRef.current = new GamepadClient();
   const client = clientRef.current;
 
@@ -458,13 +474,30 @@ export function WatchDpad({
         </Text>
       </View>
 
-      <Pressable
-        onPress={() => press('esc')}
-        testID="watch-dpad-back"
-        style={({ pressed }) => [styles.backBtn, pressed && styles.pressed]}
-      >
-        <Text style={styles.backText}>Back</Text>
-      </Pressable>
+      <View style={styles.btnRow2}>
+        <Pressable
+          onPress={() => press('esc')}
+          testID="watch-dpad-back"
+          style={({ pressed }) => [styles.backBtn, pressed && styles.pressed]}
+        >
+          <Text style={styles.backText}>Back</Text>
+        </Pressable>
+        {onKeyboard && (
+          <Pressable
+            onPress={onKeyboard}
+            testID="watch-dpad-keyboard"
+            style={({ pressed }) => [
+              styles.backBtn,
+              keyboardOpen && styles.kbOn,
+              pressed && styles.pressed,
+            ]}
+          >
+            <Text style={[styles.backText, keyboardOpen && styles.kbOnText]}>
+              Keyboard
+            </Text>
+          </Pressable>
+        )}
+      </View>
 
       <Text style={styles.hint}>
         {pointer
@@ -523,8 +556,8 @@ const makeStyles = (t: Palette) =>
     },
     swipeGlyph: { color: t.textFaint, fontSize: 22 },
     swipeHint: { color: t.textFaint, fontSize: 12 },
+    btnRow2: { flexDirection: 'row', gap: 8, marginTop: 2 },
     backBtn: {
-      marginTop: 2,
       paddingHorizontal: 22,
       paddingVertical: 10,
       borderRadius: 10,
@@ -533,6 +566,8 @@ const makeStyles = (t: Palette) =>
       borderColor: t.cardBorder,
     },
     backText: { color: t.text, fontSize: 13, fontWeight: '600' },
+    kbOn: { backgroundColor: t.accent, borderColor: t.accent },
+    kbOnText: { color: '#0b1220', fontWeight: '700' },
     hint: { color: t.textFaint, fontSize: 11, textAlign: 'center' },
     pressed: { opacity: 0.6 },
     handoff: {

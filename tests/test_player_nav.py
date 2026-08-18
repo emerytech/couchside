@@ -191,6 +191,78 @@ finally:
     os.unlink(cs.PLAYER_SCALE_FILE)
     cs.PLAYER_SCALE_FILE = _saved_file
 
+# --- 6. per-service seek strategy (the Netflix M7375 fix) --------------------
+# Measured on real playback: currentTime writes kill Netflix's player (M7375);
+# its own ArrowRight seeks cleanly. So seek presses keys for services in
+# _PL_KEY_SEEK_SERVICES and keeps the JS path for everything else.
+print("6. seek-by-key selection + press derivation")
+import tempfile as _tf
+
+_saved_conf = cs.PLAYER_CONF
+try:
+    fd = _tf.NamedTemporaryFile("w", suffix=".conf", delete=False)
+    cs.PLAYER_CONF = fd.name
+
+    fd.write("service=netflix\npath=\n")
+    fd.flush()
+    check("netflix page -> key seek", cs._pl_seek_wants_keys(), True)
+
+    with open(cs.PLAYER_CONF, "w") as f:
+        f.write("service=youtube\n")
+    check("youtube page -> JS seek", cs._pl_seek_wants_keys(), False)
+
+    # A free-URL open forces service=netflix into the conf, but carries url= —
+    # that page is a plain <video>, so it must NOT key-seek.
+    with open(cs.PLAYER_CONF, "w") as f:
+        f.write("service=netflix\nurl=https://example.com/x\n")
+    check("free-URL page -> JS seek even with service=netflix",
+          cs._pl_seek_wants_keys(), False)
+finally:
+    os.unlink(cs.PLAYER_CONF)
+    cs.PLAYER_CONF = _saved_conf
+
+check("absent conf -> JS seek (degrade to generic)", cs._pl_seek_wants_keys()
+      if not os.path.exists(cs.PLAYER_CONF) else False, False)
+
+
+class _RecKB:
+    """Records emitted key events instead of opening /dev/uinput."""
+    made = []
+
+    def __init__(self):
+        self.events = []
+        _RecKB.made.append(self)
+
+    def emit(self, events):
+        self.events.extend(events)
+
+    def destroy(self):
+        self.destroyed = True
+
+
+_saved_kb = cs.UInputKeyboard
+_saved_sleep = cs.time.sleep
+try:
+    cs.UInputKeyboard = _RecKB
+    cs.time.sleep = lambda s: None
+    _RecKB.made = []
+    r = cs._pl_seek_by_key(10)
+    kb = _RecKB.made[-1]
+    check("+10s = one Right press+release",
+          kb.events, [(cs.EV_KEY, cs.KEY_RIGHT, 1), (cs.EV_KEY, cs.KEY_RIGHT, 0)])
+    check("+10s reports via=key", (r["ok"], r["via"]), (True, "key"))
+    check("keyboard destroyed", getattr(kb, "destroyed", False), True)
+
+    _RecKB.made = []
+    cs._pl_seek_by_key(-30)
+    kb = _RecKB.made[-1]
+    lefts = [e for e in kb.events if e[1] == cs.KEY_LEFT and e[2] == 1]
+    check("-30s = three Left presses", len(lefts), 3)
+    check("-30s uses no Right", any(e[1] == cs.KEY_RIGHT for e in kb.events), False)
+finally:
+    cs.UInputKeyboard = _saved_kb
+    cs.time.sleep = _saved_sleep
+
 print()
 if FAILURES:
     print("FAILED: %s" % ", ".join(FAILURES))
