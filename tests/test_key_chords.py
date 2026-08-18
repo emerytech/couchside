@@ -150,6 +150,47 @@ def _bad_type():
 
 check("unknown message type still raises", _bad_type(), True)
 
+# --- 6. the same unhashable-name hazard in the OTHER decoders ----------------
+# Found by sweeping for the shape after fixing it in keyboard_events: a client
+# controls the TYPE of these fields, not just their content, and `x in dict`
+# raises TypeError on an unhashable x — escaping the caller's `except
+# ValueError` and killing the session thread. Every decoder that indexes a
+# frozen table with a client value must type-check first.
+print("6. mouse/gamepad decoders refuse unhashable names too")
+
+_UNHASHABLE = ({"nested": "object"}, ["array"])
+
+
+def refused_by(fn, msg):
+    try:
+        fn(msg)
+    except ValueError:
+        return True
+    except TypeError:
+        return False   # the bug: escapes the caller's handler
+    return False
+
+
+for bad in _UNHASHABLE:
+    check("mouse mb refuses %r" % (bad,),
+          refused_by(cs.mouse_events, {"t": "mb", "k": bad, "v": 1}), True)
+    check("mouse mbp refuses %r" % (bad,),
+          refused_by(cs.mouse_events, {"t": "mbp", "k": bad, "v": 1}), True)
+    check("gamepad b refuses %r" % (bad,),
+          refused_by(cs.gamepad_events, {"t": "b", "k": bad, "v": 1}), True)
+    check("gamepad t refuses %r" % (bad,),
+          refused_by(cs.gamepad_events, {"t": "t", "k": bad, "v": 1}), True)
+    check("gamepad s refuses %r" % (bad,),
+          refused_by(cs.gamepad_events, {"t": "s", "k": bad, "x": 0, "y": 0}), True)
+
+# Controls: the fix must not have made valid input unreachable.
+check("control — gamepad button 'a' still decodes",
+      cs.gamepad_events({"t": "b", "k": "a", "v": 1}),
+      [(EV_KEY, cs.BTN_CODES["a"], 1)])
+check("control — mouse button 'l' still decodes",
+      cs.mouse_events({"t": "mb", "k": "l", "v": 1}),
+      [(EV_KEY, cs.MOUSE_BTN_CODES["l"], 1)])
+
 print()
 if FAILURES:
     print("FAILED: %s" % ", ".join(FAILURES))

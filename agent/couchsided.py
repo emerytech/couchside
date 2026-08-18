@@ -15000,6 +15000,12 @@ def gamepad_events(msg):
         v = msg.get("v")
         if v not in (0, 1):
             raise ValueError("button v must be 0 or 1")
+        # An unhashable name (a JSON object/array) makes the `in` tests below
+        # raise TypeError, which escapes the caller's `except ValueError` and
+        # kills the session thread. Check the type before the lookup. See the
+        # same guard in keyboard_events and mouse_events.
+        if not isinstance(k, str):
+            raise ValueError("button must be a string")
         if k in BTN_CODES:
             return [(EV_KEY, BTN_CODES[k], v)]
         if k in DPAD_MAP:
@@ -15051,6 +15057,12 @@ def mouse_events(msg):
     if t == "mb":
         k = msg.get("k")
         v = msg.get("v")
+        # An unhashable name (a JSON object/array) makes the `in` test itself
+        # raise TypeError, which escapes the caller's `except ValueError` and
+        # kills the session thread. Check the type before the lookup. See the
+        # same guard in keyboard_events and gamepad_events.
+        if not isinstance(k, str):
+            raise ValueError("mouse button must be a string")
         if k not in MOUSE_BTN_CODES:
             raise ValueError("unknown mouse button %r" % (k,))
         if v not in (0, 1):
