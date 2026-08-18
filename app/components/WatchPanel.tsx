@@ -1,4 +1,4 @@
-import React, { useCallback, useMemo, useState } from 'react';
+import React, { useCallback, useMemo, useRef, useState } from 'react';
 import {
   Pressable,
   ScrollView,
@@ -164,6 +164,15 @@ export function WatchPanel() {
   // not scroll during it, or a vertical swipe scrolls the panel instead of
   // stepping the TV's focus a row.
   const [dpadGesture, setDpadGesture] = useState(false);
+  // Optimistic "Starting…" card. The box's truth arrives on a 5s poll, so
+  // without this a tapped service shows NOTHING for up to five seconds — the
+  // single biggest "does not feel native" gap. Set from the POST's own success
+  // (the box really is starting it), cleared when the poll confirms running or
+  // after a timeout that means the tile died.
+  const [pending, setPending] = useState<string | null>(null);
+  // Jump the panel to the top when an open starts, so the Starting/Now card is
+  // on screen instead of below the fold the user tapped from.
+  const scrollRef = useRef<ScrollView | null>(null);
 
   const configured = settings.host.trim().length > 0;
 
@@ -180,6 +189,17 @@ export function WatchPanel() {
 
   const state = player.data;
   const services = state?.services ?? [];
+
+  // Poll confirmed the player is up (or it never came up): drop the optimism.
+  React.useEffect(() => {
+    if (!pending) return undefined;
+    if (state?.running) {
+      setPending(null);
+      return undefined;
+    }
+    const timer = setTimeout(() => setPending(null), 25_000);
+    return () => clearTimeout(timer);
+  }, [pending, state?.running]);
   // Which services can be searched is the BOX's answer, not a guess here:
   // a verified search URL exists for some services and not others.
   const searchable = state?.searchable ?? [];
@@ -199,6 +219,8 @@ export function WatchPanel() {
           query ? { service, query } : path ? { service, path } : { service },
         );
         hapticSuccess();
+        setPending(service);
+        scrollRef.current?.scrollTo({ y: 0, animated: true });
         noteRecent({ service, query, path: query ? '' : path });
         setLink('');
         setQuery('');
@@ -230,6 +252,8 @@ export function WatchPanel() {
       try {
         await api.playerOp(settings, 'open', { url });
         hapticSuccess();
+        setPending('__web__');
+        scrollRef.current?.scrollTo({ y: 0, animated: true });
         setLink('');
         player.refresh();
       } catch (e) {
@@ -283,7 +307,7 @@ export function WatchPanel() {
   const fwd = offsets.filter((n) => n > 0).sort((a, b) => a - b)[0] ?? null;
 
   const transport = useCallback(
-    async (op: PlayerOp, opts: { secs?: number } = {}) => {
+    async (op: PlayerOp, opts: { secs?: number; value?: string } = {}) => {
       hapticLight();
       setBusy(op);
       setError(null);
@@ -337,16 +361,33 @@ export function WatchPanel() {
 
   return (
     <ScrollView
+      ref={scrollRef}
       style={styles.root}
       contentContainerStyle={styles.content}
       keyboardShouldPersistTaps="handled"
       scrollEnabled={!dpadGesture}
     >
       {state.running ? (
-        <View style={styles.nowCard} testID="watch-now-playing">
+        <View
+          style={[
+            styles.nowCard,
+            // Service-branded card: the accent the tile carries follows the
+            // service onto the now-playing card, so Netflix feels like
+            // Netflix's card and not a generic player shell.
+            { borderLeftColor: ACCENTS[state.service ?? ''] ?? t.accent, borderLeftWidth: 3 },
+          ]}
+          testID="watch-now-playing"
+        >
           <View style={styles.nowTop}>
             <View style={{ flex: 1 }}>
-              <Text style={styles.nowLabel}>ON THE TV</Text>
+              <Text
+                style={[
+                  styles.nowLabel,
+                  { color: ACCENTS[state.service ?? ''] ?? t.green },
+                ]}
+              >
+                ON THE TV
+              </Text>
               <Text style={styles.nowService}>{label(state.service)}</Text>
               {playback?.title ? (
                 <Text style={styles.nowPath} numberOfLines={1}>
@@ -379,6 +420,33 @@ export function WatchPanel() {
             navOps={state.nav_ops}
             onGestureActive={setDpadGesture}
           />
+
+          {/* TV zoom. Values come from the BOX (ui_scales — a frozen set), so
+              the app can never offer a scale the box would refuse. Older
+              agents don't send it and the row hides. */}
+          {(state.ui_scales?.length ?? 0) > 0 && (
+            <View style={styles.zoomRow} testID="watch-zoom">
+              <Text style={styles.zoomLabel}>TV ZOOM</Text>
+              <View style={styles.zoomChips}>
+                {state.ui_scales!.map((v) => {
+                  const on = v === (state.ui_scale ?? '');
+                  return (
+                    <Pressable
+                      key={v}
+                      onPress={() => transport('scale', { value: v })}
+                      disabled={busy !== null}
+                      testID={`watch-zoom-${v}`}
+                      style={[styles.zoomChip, on && styles.zoomChipOn]}
+                    >
+                      <Text style={[styles.zoomText, on && styles.zoomTextOn]}>
+                        {v}×
+                      </Text>
+                    </Pressable>
+                  );
+                })}
+              </View>
+            </View>
+          )}
 
           {/* Transport appears only when the box reports a real <video>. A
               service that is open but sitting on its home screen has nothing to
@@ -449,6 +517,38 @@ export function WatchPanel() {
 
             </View>
           ) : null}
+        </View>
+      ) : pending ? (
+        <View
+          style={[
+            styles.nowCard,
+            {
+              borderLeftColor:
+                pending === '__web__' ? t.accent : (ACCENTS[pending] ?? t.accent),
+              borderLeftWidth: 3,
+            },
+          ]}
+          testID="watch-starting"
+        >
+          <View style={styles.nowTop}>
+            <View style={{ flex: 1 }}>
+              <Text
+                style={[
+                  styles.nowLabel,
+                  {
+                    color:
+                      pending === '__web__' ? t.accent : (ACCENTS[pending] ?? t.green),
+                  },
+                ]}
+              >
+                STARTING
+              </Text>
+              <Text style={styles.nowService}>
+                {pending === '__web__' ? 'Web page' : label(pending)}
+              </Text>
+              <Text style={styles.nowPath}>Opening on the TV…</Text>
+            </View>
+          </View>
         </View>
       ) : (
         <Text style={styles.idle}>Nothing playing. Pick a service.</Text>
@@ -686,6 +786,27 @@ const makeStyles = (t: Palette) =>
     tBtnText: { color: t.text, fontSize: 13, fontWeight: '600' },
     tBtnMainText: { color: '#0b1220', fontWeight: '700' },
     nowLabel: { color: t.green, fontSize: 10, fontWeight: '700', letterSpacing: 1.2 },
+    zoomRow: {
+      flexDirection: 'row',
+      alignItems: 'center',
+      gap: 10,
+      borderTopWidth: StyleSheet.hairlineWidth,
+      borderTopColor: t.cardBorder,
+      paddingTop: 12,
+    },
+    zoomLabel: { color: t.textFaint, fontSize: 11, fontWeight: '700', letterSpacing: 1.2 },
+    zoomChips: { flexDirection: 'row', gap: 6, flex: 1, justifyContent: 'flex-end' },
+    zoomChip: {
+      paddingHorizontal: 10,
+      paddingVertical: 6,
+      borderRadius: 8,
+      backgroundColor: t.inset,
+      borderWidth: StyleSheet.hairlineWidth,
+      borderColor: t.cardBorder,
+    },
+    zoomChipOn: { backgroundColor: t.accent, borderColor: t.accent },
+    zoomText: { color: t.textDim, fontSize: 12, fontWeight: '600' },
+    zoomTextOn: { color: '#0b1220', fontWeight: '700' },
     nowService: { color: t.text, fontSize: 20, fontWeight: '700', marginTop: 2 },
     nowPath: { color: t.textFaint, fontSize: 12, marginTop: 2 },
     stopBtn: {

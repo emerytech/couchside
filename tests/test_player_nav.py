@@ -128,6 +128,51 @@ finally:
     cs.player_available = _saved_avail
     cs.PL_MOCK = _saved_mock
 
+# --- 5. TV zoom (op "scale") — a client value can only SELECT a member -------
+print("5. scale op: frozen-membership selector")
+_saved_mock2 = cs.PL_MOCK
+try:
+    cs.PL_MOCK = True
+    for bad in ("3", "0.5", "1.6", "2.0", " 1.5", "1.5 ", "", None, 1.5, 2,
+                {"v": "2"}, ["2"]):
+        try:
+            cs.player_scale(bad)
+            check("scale refused %r" % (bad,), "ACCEPTED", "ValueError")
+        except ValueError:
+            check("scale refused %r" % (bad,), True, True)
+        except TypeError as e:
+            check("scale refused %r without TypeError" % (bad,),
+                  "TypeError: %s" % e, "ValueError")
+    for good in cs._PL_UI_SCALES:
+        r = cs.player_scale(good)
+        check("scale accepts %r" % good, (r["ok"], r["scale"]), (True, good))
+    # discovery matches the acceptor
+    _saved_avail2 = cs.player_available
+    cs.player_available = lambda: True
+    info = cs.player_info()
+    cs.player_available = _saved_avail2
+    check("ui_scales advertised == frozen tuple",
+          info.get("ui_scales"), list(cs._PL_UI_SCALES))
+    check("ui_scale is a member or empty",
+          (info.get("ui_scale") or "2") in cs._PL_UI_SCALES, True)
+finally:
+    cs.PL_MOCK = _saved_mock2
+
+# stale/garbage override file is ignored, never interpreted
+import tempfile
+_saved_file = cs.PLAYER_SCALE_FILE
+try:
+    with tempfile.NamedTemporaryFile("w", suffix=".scale", delete=False) as tf:
+        tf.write("2; rm -rf /\n")
+        cs.PLAYER_SCALE_FILE = tf.name
+    check("garbage override file ignored", cs._pl_scale_override(), "")
+    with open(cs.PLAYER_SCALE_FILE, "w") as f:
+        f.write("1.5\n")
+    check("valid override file honoured", cs._pl_scale_override(), "1.5")
+finally:
+    os.unlink(cs.PLAYER_SCALE_FILE)
+    cs.PLAYER_SCALE_FILE = _saved_file
+
 print()
 if FAILURES:
     print("FAILED: %s" % ", ".join(FAILURES))

@@ -2856,16 +2856,101 @@ def _pl_conf_read():
     return service, path, query
 
 
+# UI scale for the player's Chrome. A 4K TV at couch distance renders desktop
+# scale unusably small (owner report, 2026-08-17), so the browser gets
+# --force-device-scale-factor. The effective value is either the user's saved
+# choice or an automatic pick from the agent's own display probe. Every value
+# that can reach the conf comes from THIS frozen tuple — a client request can
+# only select a member, and the tile additionally refuses anything outside its
+# own literal whitelist before it becomes argv.
+_PL_UI_SCALES = ("1", "1.25", "1.5", "1.75", "2")
+PLAYER_SCALE_FILE = os.path.expanduser("~/.config/couchside/player-scale")
+
+
+def _pl_scale_override():
+    """The user's saved zoom, or '' when unset/invalid. A garbage file is
+    ignored, never interpreted (§3.6)."""
+    try:
+        with open(PLAYER_SCALE_FILE) as f:
+            v = f.read().strip()
+    except OSError:
+        return ""
+    return v if v in _PL_UI_SCALES else ""
+
+
+def _pl_ui_scale():
+    o = _pl_scale_override()
+    if o:
+        return o
+    # Auto by display height: 4K-class -> 2, 1440p-class -> 1.5, anything
+    # smaller still gets a couch bump (1.0 never reads well from ten feet).
+    try:
+        info = display_info()
+        mode = (info.get("mode") or info.get("preferred_mode") or {}) if info else {}
+        h = int(mode.get("height") or 0)
+    except Exception:
+        h = 0
+    if h >= 2000:
+        return "2"
+    if h >= 1300:
+        return "1.5"
+    if h > 0:
+        return "1.25"
+    return ""   # unknown display: write nothing, tile keeps Chrome's default
+
+
+def player_scale(value):
+    """Set the player zoom. ValueError => 404, nothing written or run.
+
+    The client's value is a SELECTOR into _PL_UI_SCALES — exact membership,
+    no parsing, no clamping (§3.6: reject rather than sanitise). Persisted so
+    every later open uses it; a running page is relaunched to apply it now.
+    """
+    if not isinstance(value, str) or value not in _PL_UI_SCALES:
+        raise ValueError("scale not allowed")
+    if PL_MOCK:
+        _PL_MOCK["scale"] = value
+        return {"ok": True, "scale": value, "relaunched": _PL_MOCK["running"]}
+    os.makedirs(os.path.dirname(PLAYER_SCALE_FILE), exist_ok=True)
+    with open(PLAYER_SCALE_FILE, "w") as f:
+        f.write(value + "\n")
+    relaunched = False
+    if _pl_running():
+        # Rewrite ONLY the scale line; every other conf line is preserved
+        # byte-for-byte (they were validated when written — re-deriving them
+        # here would mean a second writer for the same facts).
+        try:
+            with open(PLAYER_CONF) as f:
+                lines = [l for l in f.read().splitlines()
+                         if l and not l.startswith("scale=")]
+        except OSError:
+            lines = []
+        if lines:
+            with _PL_LOCK:
+                with open(PLAYER_CONF, "w") as f:
+                    f.write("\n".join(lines) + "\nscale=%s\n" % value)
+                player_close()
+                appid = _pl_appid()
+            # Same close -> relaunch shape as player_open: the tile is
+            # single-instance, and _pl_relaunch waits out the old one.
+            _pl_relaunch(appid, True)
+            relaunched = True
+    return {"ok": True, "scale": value, "relaunched": relaunched}
+
+
 def _pl_conf_write(service, path, query="", hub=False, url=""):
     """A deep-link path, a search query, and a free `url` are mutually exclusive
     — the tile treats a query as "open this service's search results" and a url
     as "open exactly this page", and writing more than one would leave which wins
     to reading order. `url` is already validated by _pl_validate_open_url."""
     os.makedirs(os.path.dirname(PLAYER_CONF), exist_ok=True)
+    scale = _pl_ui_scale()
     with open(PLAYER_CONF, "w") as f:
         if hub:
             f.write("hub=1\n")
         f.write("service=%s\n" % service)
+        if scale:
+            f.write("scale=%s\n" % scale)
         if url:
             f.write("url=%s\n" % url)
         elif query:
@@ -3072,6 +3157,8 @@ def player_info():
                 "service_hosts": {k: list(v) for k, v in _PLAYER_SERVICE_HOSTS.items()},
                 "open_url": _pl_custom_url_enabled(),
                 "nav_ops": sorted(PLAYER_JS_NAV),
+                "ui_scale": _PL_MOCK.get("scale") or _pl_ui_scale(),
+                "ui_scales": list(_PL_UI_SCALES),
                 "playback": player_playback(),
                 "seek_secs": list(PLAYER_SEEK_SECS)}
     service, path, query = _pl_conf_read()
@@ -3090,6 +3177,10 @@ def player_info():
             # d-pad's up/down can move focus BETWEEN rows or must fall back to
             # plain arrow keys (which only scroll on the streaming sites).
             "nav_ops": sorted(PLAYER_JS_NAV),
+            # TV zoom (additive): the effective scale and the frozen set of
+            # choices, so the app renders exactly the values the box accepts.
+            "ui_scale": _pl_ui_scale(),
+            "ui_scales": list(_PL_UI_SCALES),
             # Added field, never a shape change: null when nothing is playing
             # or the browser can't be reached, so an old app ignores it and a
             # new one hides the transport rather than showing a dead scrubber.
@@ -3299,8 +3390,14 @@ PLAYER_JS_SEEK = {
 # Enter) activates whatever this landed on.
 _PL_JS_NAV_BODY = """(function(){
   var DIR = %d;
+  var a = document.activeElement;
+  // MODAL SCOPING (measured on tv.apple.com): a signup <dialog> holds a focus
+  // trap — focusing a tile behind it just gets stolen back. When a modal owns
+  // focus, navigate INSIDE it, which is what a native UI does with a modal.
+  var scope = (a && a.closest &&
+               a.closest('dialog,[role="dialog"],[aria-modal="true"]')) || document;
   var sel = 'a[href],button,[tabindex]:not([tabindex="-1"]),input,select,textarea,[role="link"],[role="button"]';
-  var nodes = document.querySelectorAll(sel), all = [];
+  var nodes = scope.querySelectorAll(sel), all = [];
   for (var i = 0; i < nodes.length; i++){
     var e = nodes[i], r = e.getBoundingClientRect();
     if (r.width < 8 || r.height < 8) continue;
@@ -3310,9 +3407,16 @@ _PL_JS_NAV_BODY = """(function(){
     all.push({el: e, cx: r.left + r.width/2, cy: r.top + r.height/2});
   }
   if (!all.length) return false;
-  var a = document.activeElement, ar = a ? a.getBoundingClientRect() : null;
-  var cur = (ar && ar.width) ? {cx: ar.left + ar.width/2, cy: ar.top + ar.height/2}
-                             : {cx: innerWidth/2, cy: 0};
+  var ar = a ? a.getBoundingClientRect() : null;
+  // The current position must be a REAL focused control. With nothing focused,
+  // activeElement is BODY, whose rect spans the whole page — its centre sat at
+  // y=8398 on play.hbomax.com and put every candidate "above" us, so navdown
+  // found nothing (measured; broke max/hulu/paramount landing pages). Anything
+  // taller than ~1.5 viewports is a container, not a control.
+  var real = ar && ar.width && ar.height && ar.height < innerHeight * 1.5 &&
+             a !== document.body && a.tagName !== 'HTML';
+  var cur = real ? {cx: ar.left + ar.width/2, cy: ar.top + ar.height/2}
+                 : {cx: innerWidth/2, cy: 0};
   var best = null, bestScore = Infinity;
   for (var j = 0; j < all.length; j++){
     var c = all[j], dy = (c.cy - cur.cy) * DIR;
@@ -21258,6 +21362,18 @@ class Handler(BaseHTTPRequestHandler):
                     # at import time. A rejected id is a 404 and nothing runs.
                     try:
                         r = player_nav(op)
+                    except ValueError:
+                        self._send(404, {"error": "not allowed"}, started)
+                        return
+                    except RuntimeError as e:
+                        self._send(409, {"error": str(e)}, started)
+                        return
+                    self._send(200, r, started)
+                elif op == "scale":
+                    # TV zoom. The value is a SELECTOR into the frozen
+                    # _PL_UI_SCALES tuple — membership or 404, never parsed.
+                    try:
+                        r = player_scale(req.get("value"))
                     except ValueError:
                         self._send(404, {"error": "not allowed"}, started)
                         return

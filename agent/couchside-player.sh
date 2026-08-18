@@ -399,6 +399,7 @@ read_conf() {
     QUERY=""
     HUB=""
     URL_RAW=""
+    UI_SCALE=""
     [ -f "$CONF" ] || return 0
     # Parse strictly: only these keys, only from `key=value` lines. Anything
     # else in the file is ignored rather than interpreted.
@@ -407,6 +408,15 @@ read_conf() {
     DEEP_PATH=$(sed -n 's/^path=\(.*\)$/\1/p' "$CONF" | tail -1)
     QUERY=$(sed -n 's/^query=\(.*\)$/\1/p' "$CONF" | tail -1)
     URL_RAW=$(sed -n 's/^url=\(.*\)$/\1/p' "$CONF" | tail -1)
+    # UI scale for --force-device-scale-factor. Written by the agent from its
+    # own display probe (4K TVs render desktop scale unusably small from the
+    # couch). LITERAL whitelist — this becomes an argv element, so anything
+    # not exactly one of these values is dropped, not passed through.
+    UI_SCALE=$(sed -n 's/^scale=\(.*\)$/\1/p' "$CONF" | tail -1)
+    case "$UI_SCALE" in
+        1|1.25|1.5|1.75|2) : ;;
+        *) UI_SCALE="" ;;
+    esac
 }
 
 # Build a SEARCH url: frozen prefix from the table + the encoded query.
@@ -597,6 +607,9 @@ CHROME_ARGS=(
     --start-fullscreen
     --app="$URL"
 )
+# Couch zoom: whitelisted in read_conf (a literal 1|1.25|1.5|1.75|2), so this
+# argv element can only ever be one of five fixed strings.
+[ -n "$UI_SCALE" ] && CHROME_ARGS+=(--force-device-scale-factor="$UI_SCALE")
 [ -n "$OZONE" ] && CHROME_ARGS=("$OZONE" "${CHROME_ARGS[@]}")
 
 if [ "$BROWSER_KIND" = "flatpak" ]; then

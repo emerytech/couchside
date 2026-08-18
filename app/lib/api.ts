@@ -330,6 +330,10 @@ export type PlayerState = {
    * cannot move between rows. Feature-detect; never assume.
    */
   nav_ops?: string[];
+  /** Effective TV zoom ('2') and the frozen set the box accepts (agent >=
+   *  2.9.95). Absent on older boxes — hide the zoom control there. */
+  ui_scale?: string;
+  ui_scales?: string[];
   /**
    * {service -> extra hosts it is reachable on}, for LINK MATCHING only.
    * Measured: play.max.com redirects to play.hbomax.com and shared Max links
@@ -358,7 +362,9 @@ export type PlayerOp =
    *  to the nearest element above/below — Tab only walks ALONG a row of tiles,
    *  and arrow keys just scroll on the streaming sites. Gated on
    *  PlayerState.nav_ops; an older agent answers 400. */
-  | 'navup' | 'navdown';
+  | 'navup' | 'navdown'
+  /** TV zoom: value must be a member of PlayerState.ui_scales (agent >= 2.9.95). */
+  | 'scale';
 
 /** One connected display, from GET /api/displays. */
 export type Display = {
@@ -2646,6 +2652,8 @@ export const api = {
        *  box set player.custom_url (PlayerState.open_url); the box validates
        *  scheme/host/port and refuses the rest with 403/404. */
       url?: string;
+      /** For op 'scale': must be a member of PlayerState.ui_scales. */
+      value?: string;
     } = {},
   ): Promise<{ ok: boolean; running?: boolean; starting?: boolean; service?: string; url?: string }> {
     return request(settings, '/api/player', {
