@@ -329,10 +329,16 @@ BROWSER_KIND=""
 BROWSER_BIN=""
 
 resolve_browser() {
+    # Widevine may live under the SYSTEM flatpak tree or the USER one — the
+    # Steam Machine's polkit refuses system installs over SSH, so Chrome lands
+    # in ~/.local/share/flatpak there (first box to need this, 2026-08-17).
+    # `flatpak info` already answers for both scopes.
     if command -v flatpak >/dev/null 2>&1 \
        && flatpak info com.google.Chrome >/dev/null 2>&1 \
-       && [ -n "$(find /var/lib/flatpak/app/com.google.Chrome -name libwidevinecdm.so \
-                  -print -quit 2>/dev/null)" ]; then
+       && { [ -n "$(find /var/lib/flatpak/app/com.google.Chrome -name libwidevinecdm.so \
+                    -print -quit 2>/dev/null)" ] \
+          || [ -n "$(find "$HOME/.local/share/flatpak/app/com.google.Chrome" \
+                     -name libwidevinecdm.so -print -quit 2>/dev/null)" ]; }; then
         BROWSER_KIND="flatpak"
         BROWSER_BIN="com.google.Chrome"
         return 0
