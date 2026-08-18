@@ -12,7 +12,7 @@
  */
 import Ionicons from '@expo/vector-icons/Ionicons';
 import { useCallback, useEffect, useRef, useState } from 'react';
-import { ActivityIndicator, Alert, Platform, Pressable, StyleSheet, Text, View } from 'react-native';
+import { ActivityIndicator, Alert, Platform, Pressable, StyleSheet, Switch, Text, View } from 'react-native';
 
 import { hapticLight, hapticSuccess, hapticWarning } from '@/lib/haptics';
 import { api, ApiError, type BoxCaps, type OpenpuckLatest, type Utility } from '@/lib/api';
@@ -83,8 +83,21 @@ export function UtilitiesSection({ caps }: { caps?: BoxCaps }) {
     return () => { live.current = false; };
   }, [refresh, canProbe]);
 
-  const flashOpenpuck = useCallback((variant: 'pinned' | 'latest' = 'pinned') => {
-    const doFlash = async () => {
+  // Auto-flash (batch) mode: flash every board plugged in, one after another,
+  // with no per-board prompt. The toggle IS the consent. Implemented purely
+  // app-side over the existing flash endpoint — the agent needs nothing new.
+  const [autoflash, setAutoflash] = useState(false);
+  const [flashedCount, setFlashedCount] = useState(0);
+  // Edge latch: one flash per board-present episode. Cleared when we fire,
+  // re-armed only after the row leaves board_ready (the board rebooted /
+  // unplugged), so a board that lingers ready is never double-flashed and a
+  // failed flash on a stuck board is not hammered.
+  const armed = useRef(true);
+
+  // The core flash, shared by the manual (confirmed) and auto (silent) paths.
+  const doFlash = useCallback(
+    async (variant: 'pinned' | 'latest', opts?: { silent?: boolean }) => {
+      const silent = opts?.silent ?? false;
       hapticLight();
       setBusy('openpuck');
       setNote((n) => { const c = { ...n }; delete c.openpuck; return c; });
@@ -95,18 +108,21 @@ export function UtilitiesSection({ caps }: { caps?: BoxCaps }) {
           ? (r.stdout || 'Flashed. The board is rebooting as a Steam Controller Puck.')
           : (r.stderr || 'Flash failed.');
         setNote((n) => ({ ...n, openpuck: { tone: r.ok ? 'ok' : 'err', msg } }));
-        if (r.ok) hapticSuccess(); else hapticWarning();
+        if (r.ok) { hapticSuccess(); if (silent) setFlashedCount((c) => c + 1); }
+        else hapticWarning();
       } catch (e) {
         if (live.current) {
           if (e instanceof ApiError && e.kind === 'timeout') {
             // The write may simply be outlasting our patience — the flash often
-            // SUCCEEDS after this (hardware-observed). Say so; the re-poll below
-            // replaces this with the real state.
+            // SUCCEEDS after this (hardware-observed). In auto mode a timeout on
+            // a real write still means a board went through, so count it: the
+            // board reboots, leaves board_ready, and re-arms us for the next.
             setNote((n) => ({ ...n, openpuck: {
               tone: 'info',
               msg: 'Still flashing — the box is writing firmware. The status here '
                 + 'updates when it finishes.',
             } }));
+            if (silent) setFlashedCount((c) => c + 1);
           } else {
             setNote((n) => ({ ...n, openpuck: { tone: 'err', msg: 'Could not reach the box.' } }));
             hapticWarning();
@@ -121,7 +137,31 @@ export function UtilitiesSection({ caps }: { caps?: BoxCaps }) {
         setTimeout(() => { void refresh(); }, 1500);
         setTimeout(() => { void refresh(); }, 6000);
       }
-    };
+    },
+    [settings, refresh],
+  );
+
+  // While auto-flash is on, poll the row briskly so a freshly-plugged board is
+  // caught within ~1.5s instead of waiting for the mount-time refresh.
+  useEffect(() => {
+    if (!autoflash || !canProbe) return undefined;
+    const id = setInterval(() => { void refresh(); }, 1500);
+    return () => clearInterval(id);
+  }, [autoflash, canProbe, refresh]);
+
+  // The edge trigger: flash on the rising edge of board_ready, re-arm on leave.
+  useEffect(() => {
+    if (!autoflash) { armed.current = true; return; }
+    const st = utils?.find((u) => u.id === 'openpuck')?.state;
+    if (!st) return;
+    if (st !== 'board_ready') { armed.current = true; return; }
+    if (armed.current && busy !== 'openpuck') {
+      armed.current = false;           // sync latch: blocks re-entry before setBusy lands
+      void doFlash('pinned', { silent: true });
+    }
+  }, [utils, autoflash, busy, doFlash]);
+
+  const flashOpenpuck = useCallback((variant: 'pinned' | 'latest' = 'pinned') => {
     // A firmware write is a real action — confirm first, even though the
     // bootloader stays intact and it's re-flashable. The 'latest' path is opt-in
     // and flashes a build newer than the one the app pins, so it says so.
@@ -136,7 +176,7 @@ export function UtilitiesSection({ caps }: { caps?: BoxCaps }) {
         + 're-flash any time.';
     if (Platform.OS === 'web') {
       // eslint-disable-next-line no-alert
-      if (typeof window !== 'undefined' && window.confirm(q)) void doFlash();
+      if (typeof window !== 'undefined' && window.confirm(q)) void doFlash(variant);
       return;
     }
     Alert.alert(
@@ -144,10 +184,30 @@ export function UtilitiesSection({ caps }: { caps?: BoxCaps }) {
       q,
       [
         { text: 'Cancel', style: 'cancel' },
-        { text: 'Flash', onPress: () => { void doFlash(); } },
+        { text: 'Flash', onPress: () => { void doFlash(variant); } },
       ],
     );
-  }, [settings, refresh, latest]);
+  }, [latest, doFlash]);
+
+  // Turning auto-flash ON is the batch consent (replaces the per-board prompt),
+  // so it confirms once and resets the counter for a fresh run.
+  const toggleAutoflash = useCallback((on: boolean) => {
+    hapticLight();
+    if (!on) { setAutoflash(false); return; }
+    const start = () => { armed.current = true; setFlashedCount(0); setAutoflash(true); };
+    const q = 'Auto-flash will flash the OpenPuck firmware onto EVERY board you '
+      + 'plug in, with no prompt each time. Plug boards in one after another; '
+      + 'each reboots as a Steam Controller Puck. Turn it off when you’re done.';
+    if (Platform.OS === 'web') {
+      // eslint-disable-next-line no-alert
+      if (typeof window !== 'undefined' && window.confirm(q)) start();
+      return;
+    }
+    Alert.alert('Turn on auto-flash?', q, [
+      { text: 'Cancel', style: 'cancel' },
+      { text: 'Turn on', onPress: start },
+    ]);
+  }, []);
 
   // Opt-in: ask the box to compare its pinned firmware against the fork's newest
   // release. Read-only — this NEVER flashes; it only reveals the "Flash newest"
@@ -186,7 +246,9 @@ export function UtilitiesSection({ caps }: { caps?: BoxCaps }) {
               <Text style={styles.label}>{u.label}</Text>
               <Text style={styles.sub}>{u.description}</Text>
               <Text style={[styles.status, { color }]}>{p.line}</Text>
-              {canFlash ? (
+              {/* Manual flash — hidden while auto-flash is armed (it fires on
+                  its own). Still shown for the one-off case. */}
+              {canFlash && !autoflash ? (
                 <Pressable
                   onPress={() => flashOpenpuck('pinned')}
                   disabled={running}
@@ -206,6 +268,30 @@ export function UtilitiesSection({ caps }: { caps?: BoxCaps }) {
                     {running ? 'Flashing…' : 'Flash receiver'}
                   </Text>
                 </Pressable>
+              ) : null}
+
+              {/* Auto-flash (batch) — flash every board plugged in, no prompts. */}
+              {u.id === 'openpuck' ? (
+                <View style={styles.autoRow} testID="openpuck-autoflash">
+                  <View style={styles.autoText}>
+                    <Text style={styles.autoLabel}>Auto-flash</Text>
+                    <Text style={styles.autoSub}>
+                      {autoflash
+                        ? running
+                          ? 'Flashing…'
+                          : u.state === 'board_ready'
+                            ? 'Board detected — flashing…'
+                            : `Armed — plug in the next board.  Flashed: ${flashedCount}`
+                        : 'Flash every board you plug in, one after another.'}
+                    </Text>
+                  </View>
+                  <Switch
+                    value={autoflash}
+                    onValueChange={toggleAutoflash}
+                    trackColor={{ true: t.blue }}
+                    testID="openpuck-autoflash-switch"
+                  />
+                </View>
               ) : null}
               {n ? (
                 <Text style={[styles.note, {
@@ -303,5 +389,17 @@ const makeStyles = (t: Palette) =>
     link: { color: t.blue, fontSize: 12, fontWeight: '700' },
     newerLine: { color: t.textFaint, fontSize: 12, fontWeight: '600', lineHeight: 17 },
     newerHint: { color: t.textFaint, fontSize: 12, marginTop: 6 },
+    autoRow: {
+      flexDirection: 'row',
+      alignItems: 'center',
+      gap: 12,
+      marginTop: 10,
+      paddingTop: 10,
+      borderTopWidth: StyleSheet.hairlineWidth,
+      borderTopColor: t.cardBorder,
+    },
+    autoText: { flex: 1 },
+    autoLabel: { color: t.text, fontSize: 14, fontWeight: '600' },
+    autoSub: { color: t.textFaint, fontSize: 12, marginTop: 2 },
     footNote: { color: t.textFaint, fontSize: 11, lineHeight: 16, marginTop: 4, fontStyle: 'italic' },
   });
