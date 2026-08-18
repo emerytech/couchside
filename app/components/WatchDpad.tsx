@@ -113,6 +113,10 @@ export function WatchDpad({
   client: clientProp,
   onKeyboard,
   keyboardOpen,
+  playing,
+  onSeek,
+  onPlayPause,
+  onVolume,
 }: {
   settings: Settings;
   ready: boolean;
@@ -136,6 +140,21 @@ export function WatchDpad({
    *  for typing into whatever the TV has focused — search fields). */
   onKeyboard?: () => void;
   keyboardOpen?: boolean;
+  /**
+   * True while the box reports a video actually playing. MEASURED on the
+   * reference box: during Netflix playback the page has ZERO focusable
+   * controls until its control bar is revealed, so spatial nav has nothing to
+   * land on and every swipe silently does nothing. So the pad becomes a
+   * TRANSPORT while playing — which is what a TV remote does anyway — and
+   * reverts to tile navigation the moment playback stops.
+   */
+  playing?: boolean;
+  /** Seek by an offset the BOX advertised (PlayerState.seek_secs). */
+  onSeek?: (secs: number) => void;
+  /** Toggle play/pause on the box. */
+  onPlayPause?: () => void;
+  /** Nudge the box's volume. */
+  onVolume?: (dir: 1 | -1) => void;
 }) {
   const styles = useThemedStyles(makeStyles);
   const navigation = useNavigation();
@@ -261,8 +280,20 @@ export function WatchDpad({
     api.playerOp(settings, op).catch(() => {});
   };
 
-  /** One gesture step from the planner onto the right verb. */
+  /**
+   * One gesture step onto the right verb.
+   *
+   * While a video is PLAYING the pad is a transport (seek / volume): the page
+   * has no focusable controls then, so tile navigation would be a no-op with
+   * no feedback. Otherwise it navigates tiles.
+   */
   const stepDir = (d: StepDir) => {
+    if (playing) {
+      if (d === 'dl') onSeek?.(-1);
+      else if (d === 'dr') onSeek?.(1);
+      else onVolume?.(d === 'du' ? 1 : -1);
+      return;
+    }
     if (d === 'dl') focusStep(false);
     else if (d === 'dr') focusStep(true);
     else if (d === 'du') vertical(false);
@@ -276,6 +307,17 @@ export function WatchDpad({
   pressRef.current = press;
   const gestureRef = useRef<(active: boolean) => void>(() => {});
   gestureRef.current = onGestureActive ?? (() => {});
+  /** Centre tap: play/pause while playing, OK otherwise. */
+  const tap = () => {
+    if (playing) {
+      hapticLight();
+      onPlayPause?.();
+      return;
+    }
+    press('enter');
+  };
+  const tapRef = useRef(tap);
+  tapRef.current = tap;
   /** Pointer-mode tap-click: press then release, gated on holding control. */
   const click = (btn: MouseButton) => {
     if (!holding) return;
@@ -371,7 +413,9 @@ export function WatchDpad({
           hapticLight();
           clickRef.current('l');
         } else {
-          pressRef.current('enter');
+          // Playing: tap is play/pause (a TV remote's centre button), because
+          // there is no focus ring to "select" during playback.
+          tapRef.current();
         }
       },
       // A parent stealing the gesture (edge-swipe, navigation) just cancels
@@ -468,9 +512,13 @@ export function WatchDpad({
       {/* Tiles: flick = one focus step, tap = OK. Pointer: drag the real mouse,
           tap = left click. Two-finger tap = Back in both. */}
       <View style={styles.swipePad} testID="watch-dpad-swipe" {...responder.panHandlers}>
-        <Text style={styles.swipeGlyph}>{pointer ? '⌖' : '✦'}</Text>
+        <Text style={styles.swipeGlyph}>{pointer ? '⌖' : playing ? '⏯' : '✦'}</Text>
         <Text style={styles.swipeHint}>
-          {pointer ? 'drag the pointer · tap to click' : 'swipe to move · tap for OK'}
+          {pointer
+            ? 'drag the pointer · tap to click'
+            : playing
+              ? 'swipe ◀ ▶ to seek · tap to play/pause'
+              : 'swipe to move · tap for OK'}
         </Text>
       </View>
 
@@ -502,7 +550,9 @@ export function WatchDpad({
       <Text style={styles.hint}>
         {pointer
           ? 'drag moves the TV pointer · tap clicks · two-finger tap = Back'
-          : 'swipe to move · tap selects · two-finger tap = Back'}
+          : playing
+            ? '◀ ▶ seek · ▲ ▼ volume · tap play/pause · two-finger tap = Back'
+            : 'swipe to move · tap selects · two-finger tap = Back'}
       </Text>
     </View>
   );

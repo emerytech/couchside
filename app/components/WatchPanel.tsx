@@ -431,6 +431,24 @@ export function WatchPanel() {
             client={gpRef.current}
             onKeyboard={kb.toggle}
             keyboardOpen={kb.open}
+            // Transport mode while a video actually plays — the page has no
+            // focusable controls then, so tile nav would be a silent no-op.
+            playing={playback?.playing === true}
+            onSeek={(dir) => {
+              const secs = dir > 0 ? fwd : back;
+              if (secs != null) transport('seek', { secs });
+            }}
+            onPlayPause={() => transport('playpause')}
+            onVolume={(dir) => {
+              hapticLight();
+              void api
+                .tvSend(
+                  settings,
+                  dir > 0 ? 'volume_up' : 'volume_down',
+                  settings.volumeTarget ?? 'box',
+                )
+                .catch(() => {});
+            }}
           />
 
           {/* TV zoom. Values come from the BOX (ui_scales — a frozen set), so
