@@ -37,7 +37,16 @@ function present(u: Utility): { line: string; icon: string; tone: 'good' | 'acti
   return { line: u.state, icon: 'construct-outline', tone: 'idle' };
 }
 
-export function UtilitiesSection({ caps }: { caps?: BoxCaps }) {
+export function UtilitiesSection({
+  caps,
+  context = 'setup',
+}: {
+  caps?: BoxCaps;
+  /** 'setup' = the full utilities list under Setup (all utilities). 'actions'
+   *  = a slimmed OpenPuck-only card surfaced on the Actions tab for quick
+   *  reach, with its own heading. Same poll + flash + auto-flash logic. */
+  context?: 'setup' | 'actions';
+}) {
   const t = useTheme();
   const styles = useThemedStyles(makeStyles);
   const { settings } = useSettings();
@@ -230,10 +239,17 @@ export function UtilitiesSection({ caps }: { caps?: BoxCaps }) {
   // Nothing to show if the box lacks the endpoint (old agent / Windows).
   if (!canProbe || !utils || utils.length === 0) return null;
 
+  // On the Actions tab we surface OpenPuck only — the flash is the reason to
+  // reach it there; CEC is a Setup-time toggle, not a couch action.
+  const shown = context === 'actions'
+    ? utils.filter((u) => u.id === 'openpuck')
+    : utils;
+  if (shown.length === 0) return null;
+
   return (
     <View style={styles.wrap}>
-      <Text style={styles.h}>UTILITIES</Text>
-      {utils.map((u) => {
+      <Text style={styles.h}>{context === 'actions' ? 'OPENPUCK RECEIVER' : 'UTILITIES'}</Text>
+      {shown.map((u) => {
         const p = present(u);
         const color = p.tone === 'good' ? t.green : p.tone === 'action' ? t.blue : t.textFaint;
         const canFlash = u.id === 'openpuck' && u.state === 'board_ready';
