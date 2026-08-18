@@ -23,12 +23,19 @@
  * Arrow-key grid navigation is a TV-APP behaviour; the WEB versions of these
  * services ignore arrows entirely and move their focus ring on Tab. So:
  *
- *   left / right -> Shift+Tab / Tab   walk the focus ring between tiles
- *   up / down    -> arrow keys        scroll the page (netflix browse scrolled
- *                                     0 -> 51 -> 120 on down)
- *   OK           -> enter             activates the focused tile (observed
- *                                     selecting a Netflix profile)
+ *   left / right -> Shift+Tab / Tab   walk the focus ring ALONG a row
+ *   up / down    -> navup / navdown   a SPATIAL focus step between rows
+ *   OK           -> enter             activates whatever now has focus
  *   Back         -> esc
+ *
+ * Up/down cannot be keys. Tab is linear, so from the middle of a row it would
+ * have to walk every remaining tile to reach the row below, and arrow keys only
+ * scroll the viewport on these sites — the focus ring stays put. The agent's
+ * navup/navdown ops instead pick the nearest focusable element above/below
+ * geometrically (agent >= 2.9.95). Verified on the real Netflix browse grid:
+ * down walked More Info -> Netflix Minigolf -> The Last House -> Walter Boys and
+ * up retraced it; OK then opened that title's detail modal, proving the focus
+ * those ops set is REAL focus a genuine key activates.
  *
  * Shift+Tab needs agent >= 2.9.95 (the `shifttab` chord). An older agent does
  * not merely ignore an unknown key name — it errors and CLOSES the session — so
@@ -44,6 +51,7 @@ import React, { useEffect, useRef, useState } from 'react';
 import { AppState, Platform, Pressable, StyleSheet, Text, View } from 'react-native';
 import { useNavigation } from 'expo-router';
 
+import { api } from '@/lib/api';
 import { GamepadClient, GamepadStatus, SpecialKey } from '@/lib/gamepad';
 import { hapticLight } from '@/lib/haptics';
 import { usePref } from '@/lib/prefs';
@@ -57,7 +65,16 @@ const DEVICE_LABEL =
 /** How long to wait on a silent holder before offering a forced takeover. */
 const FORCE_AFTER_MS = 20_000;
 
-export function WatchDpad({ settings, ready }: { settings: Settings; ready: boolean }) {
+export function WatchDpad({
+  settings,
+  ready,
+  navOps,
+}: {
+  settings: Settings;
+  ready: boolean;
+  /** PlayerState.nav_ops — which spatial steps this box accepts. */
+  navOps?: string[];
+}) {
   const styles = useThemedStyles(makeStyles);
   const navigation = useNavigation();
 
@@ -151,6 +168,23 @@ export function WatchDpad({ settings, ready }: { settings: Settings; ready: bool
     return press(client.supportsKey('shifttab') ? 'shifttab' : 'left');
   };
 
+  /**
+   * Vertical step. Rides the agent's spatial nav op when the box offers it,
+   * else falls back to an arrow key — which on these sites only scrolls, but is
+   * the most a pre-2.9.95 box can do and is never harmful.
+   *
+   * Fire-and-forget: a failed step is not worth an error banner (the common
+   * "failure" is simply having reached the last row), and the d-pad must stay
+   * responsive to rapid presses rather than serialising on a round trip.
+   */
+  const canNav = (op: 'navup' | 'navdown') => navOps?.includes(op) === true;
+  const vertical = (down: boolean) => {
+    const op = down ? 'navdown' : 'navup';
+    if (!canNav(op)) return press(down ? 'down' : 'up');
+    hapticLight();
+    api.playerOp(settings, op).catch(() => {});
+  };
+
   const takeControl = () => {
     hapticLight();
     const s = client.getStatus();
@@ -208,7 +242,12 @@ export function WatchDpad({ settings, ready }: { settings: Settings; ready: bool
       {/* Cross: up/down SCROLL the page, left/right walk the focus ring. */}
       <View style={styles.row}>
         <View style={styles.cell} />
-        <DKey label="▲" testID="watch-dpad-up" onPress={() => press('up')} styles={styles} />
+        <DKey
+          label="▲"
+          testID="watch-dpad-up"
+          onPress={() => vertical(false)}
+          styles={styles}
+        />
         <View style={styles.cell} />
       </View>
       <View style={styles.row}>
@@ -234,7 +273,12 @@ export function WatchDpad({ settings, ready }: { settings: Settings; ready: bool
       </View>
       <View style={styles.row}>
         <View style={styles.cell} />
-        <DKey label="▼" testID="watch-dpad-down" onPress={() => press('down')} styles={styles} />
+        <DKey
+          label="▼"
+          testID="watch-dpad-down"
+          onPress={() => vertical(true)}
+          styles={styles}
+        />
         <View style={styles.cell} />
       </View>
 
@@ -247,7 +291,7 @@ export function WatchDpad({ settings, ready }: { settings: Settings; ready: bool
       </Pressable>
 
       <Text style={styles.hint}>
-        ◀ ▶ move between tiles · ▲ ▼ scroll · OK selects · Back exits
+        ◀ ▶ along a row · ▲ ▼ between rows · OK selects · Back exits
       </Text>
     </View>
   );

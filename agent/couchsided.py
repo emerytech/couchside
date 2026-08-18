@@ -3071,6 +3071,7 @@ def player_info():
                 "searchable": list(_PLAYER_SEARCHABLE),
                 "service_hosts": {k: list(v) for k, v in _PLAYER_SERVICE_HOSTS.items()},
                 "open_url": _pl_custom_url_enabled(),
+                "nav_ops": sorted(PLAYER_JS_NAV),
                 "playback": player_playback(),
                 "seek_secs": list(PLAYER_SEEK_SECS)}
     service, path, query = _pl_conf_read()
@@ -3084,6 +3085,11 @@ def player_info():
             # set player.custom_url. Additive; an old app ignores it, a new one
             # shows the "open any web link" field only when the box allows it.
             "open_url": _pl_custom_url_enabled(),
+            # Which spatial focus steps this agent accepts. Additive: an older
+            # app ignores it, and a newer one uses it to decide whether the
+            # d-pad's up/down can move focus BETWEEN rows or must fall back to
+            # plain arrow keys (which only scroll on the streaming sites).
+            "nav_ops": sorted(PLAYER_JS_NAV),
             # Added field, never a shape change: null when nothing is playing
             # or the browser can't be reached, so an old app ignores it and a
             # new one hides the transport rather than showing a dead scrubber.
@@ -3270,6 +3276,62 @@ PLAYER_JS_SEEK = {
            " v.currentTime = Math.max(0, d ? Math.min(d - 0.5, t) : t);"
            " return true;})()" % (_PL_JS_PICK, secs))
     for secs in PLAYER_SEEK_SECS
+}
+
+
+# Spatial (up/down) focus navigation for the on-screen d-pad.
+#
+# WHY THIS IS NOT A KEY. Tab walks a page's focus order LINEARLY, which is right
+# ALONG a row of tiles and useless BETWEEN rows: from the middle of a Netflix
+# row, reaching the row below means tabbing through every remaining tile in the
+# current one. Arrow keys don't help either — measured on the box, netflix.com
+# and youtube.com ignore them entirely (they only scroll the viewport, leaving
+# focus where it was).
+#
+# So vertical movement picks the nearest focusable element in that direction
+# geometrically — the same thing a TV browser's spatial navigation does. No
+# site-specific selectors: it reads the live layout, so it works on any page.
+# Verified on the real Netflix browse grid (552 focusables): down walked
+# Ashley Garcia -> Teen Wolf -> ONE PIECE -> The Hunger Games -> Venom, and up
+# retraced it.
+#
+# Focus set this way is REAL focus, so the d-pad's OK button (a genuine uinput
+# Enter) activates whatever this landed on.
+_PL_JS_NAV_BODY = """(function(){
+  var DIR = %d;
+  var sel = 'a[href],button,[tabindex]:not([tabindex="-1"]),input,select,textarea,[role="link"],[role="button"]';
+  var nodes = document.querySelectorAll(sel), all = [];
+  for (var i = 0; i < nodes.length; i++){
+    var e = nodes[i], r = e.getBoundingClientRect();
+    if (r.width < 8 || r.height < 8) continue;
+    if (r.bottom < -200 || r.top > innerHeight + 600) continue;
+    var s = getComputedStyle(e);
+    if (s.visibility === 'hidden' || s.display === 'none') continue;
+    all.push({el: e, cx: r.left + r.width/2, cy: r.top + r.height/2});
+  }
+  if (!all.length) return false;
+  var a = document.activeElement, ar = a ? a.getBoundingClientRect() : null;
+  var cur = (ar && ar.width) ? {cx: ar.left + ar.width/2, cy: ar.top + ar.height/2}
+                             : {cx: innerWidth/2, cy: 0};
+  var best = null, bestScore = Infinity;
+  for (var j = 0; j < all.length; j++){
+    var c = all[j], dy = (c.cy - cur.cy) * DIR;
+    if (dy < 24) continue;
+    var score = dy + Math.abs(c.cx - cur.cx) * 2;
+    if (score < bestScore){ bestScore = score; best = c; }
+  }
+  if (!best) return false;
+  best.el.focus({preventScroll: true});
+  best.el.scrollIntoView({block: 'center', inline: 'nearest'});
+  return true;
+})()"""
+
+# One script per direction, built at import time. A request only ever indexes
+# this dict by op id; the direction is an agent-chosen literal, never a value
+# formatted out of the request body.
+PLAYER_JS_NAV = {
+    "navdown": _PL_JS_NAV_BODY % 1,
+    "navup": _PL_JS_NAV_BODY % -1,
 }
 
 
@@ -3481,6 +3543,37 @@ def player_transport(op, secs=None):
     ok = _pl_cdp_run(script)
     if ok is None:
         raise RuntimeError("could not reach the player")
+    return {"ok": bool(ok), "op": op}
+
+
+def player_nav(op):
+    """Move the page's focus one step up/down. ValueError => 404, nothing runs.
+
+    Same shape as player_transport: the op id INDEXES a frozen dict of scripts
+    the agent authored; the request never contributes a character of JS.
+    """
+    # Type first: an unhashable op (a JSON object/array) would make the `in`
+    # tests below raise TypeError rather than the ValueError this function's
+    # callers handle — the same hazard fixed in the input decoders (KI-065).
+    if not isinstance(op, str):
+        raise ValueError("nav op must be a string")
+
+    if PL_MOCK:
+        if op in PLAYER_JS_NAV:
+            return {"ok": True, "op": op}
+        raise ValueError("unknown nav op")
+
+    if op not in PLAYER_JS_NAV:
+        raise ValueError("unknown nav op")
+    script = PLAYER_JS_NAV[op]                  # lookup, never interpolation
+
+    if not _pl_running():
+        raise RuntimeError("player is not running")
+    ok = _pl_cdp_run(script)
+    if ok is None:
+        raise RuntimeError("could not reach the player")
+    # False means "nothing focusable that way" (already at the edge) — a true
+    # answer, not a failure, so the app can stay quiet rather than show an error.
     return {"ok": bool(ok), "op": op}
 
 
@@ -21151,6 +21244,20 @@ class Handler(BaseHTTPRequestHandler):
                     # rejected value is a 404 and no script runs.
                     try:
                         r = player_transport(op, secs=req.get("secs"))
+                    except ValueError:
+                        self._send(404, {"error": "not allowed"}, started)
+                        return
+                    except RuntimeError as e:
+                        self._send(409, {"error": str(e)}, started)
+                        return
+                    self._send(200, r, started)
+                elif op in ("navup", "navdown"):
+                    # Spatial focus step for the on-screen d-pad. Same frozen
+                    # lookup as transport: the op id picks one of two scripts
+                    # the agent wrote, and the direction is a literal baked in
+                    # at import time. A rejected id is a 404 and nothing runs.
+                    try:
+                        r = player_nav(op)
                     except ValueError:
                         self._send(404, {"error": "not allowed"}, started)
                         return

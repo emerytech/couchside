@@ -368,7 +368,7 @@ export function WatchPanel() {
           {/* D-pad drives the page's focus ring (Netflix/YouTube tile grids,
               and any web page). Rides the existing uinput key path, so it shows
               for ANY open page — not gated on <video> like the scrubber below. */}
-          <WatchDpad settings={settings} ready={ready} />
+          <WatchDpad settings={settings} ready={ready} navOps={state.nav_ops} />
 
           {/* Transport appears only when the box reports a real <video>. A
               service that is open but sitting on its home screen has nothing to

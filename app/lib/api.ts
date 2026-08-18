@@ -324,6 +324,13 @@ export type PlayerState = {
    */
   open_url?: boolean;
   /**
+   * Spatial focus steps this agent accepts (e.g. ['navdown','navup'], agent
+   * >= 2.9.95). Absent on older boxes, where the d-pad's up/down falls back to
+   * plain arrow keys — which only scroll on the streaming sites, so the fallback
+   * cannot move between rows. Feature-detect; never assume.
+   */
+  nav_ops?: string[];
+  /**
    * {service -> extra hosts it is reachable on}, for LINK MATCHING only.
    * Measured: play.max.com redirects to play.hbomax.com and shared Max links
    * use the latter, so matching only the canonical host rejected the one
@@ -346,7 +353,12 @@ export type PlayerPlayback = {
 /** Transport ops the box accepts. Anything else is refused with a 404. */
 export type PlayerOp =
   | 'open' | 'close' | 'hub'
-  | 'play' | 'pause' | 'playpause' | 'mute' | 'seek';
+  | 'play' | 'pause' | 'playpause' | 'mute' | 'seek'
+  /** Spatial focus steps for the d-pad (agent >= 2.9.95). Move the page's focus
+   *  to the nearest element above/below — Tab only walks ALONG a row of tiles,
+   *  and arrow keys just scroll on the streaming sites. Gated on
+   *  PlayerState.nav_ops; an older agent answers 400. */
+  | 'navup' | 'navdown';
 
 /** One connected display, from GET /api/displays. */
 export type Display = {
