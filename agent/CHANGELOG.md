@@ -20,14 +20,16 @@ deciding whether to press "Update now" on a machine across the room.
 
 ## 2.9.95
 
-**Move around a streaming site from the couch.** The Watch screen's new on-screen
-d-pad can now step **backwards** through a page as well as forwards, so you can move
-between tiles on Netflix, YouTube and the rest without reaching for the trackpad.
-(Those sites navigate by focus ring rather than arrow keys — the box now speaks that
-too.) Also hardens the keyboard channel: a malformed key from a client is refused
-cleanly instead of dropping the remote's connection. Boxes coming from an older
-version also get the Legion Go S thumbstick lighting fixes, quicker game-list
-switching and a pairing fix; other boxes are unaffected.
+**Move around a streaming site from the couch.** The Watch screen's swipe pad now
+moves between tiles in **all four directions** on Netflix, YouTube and the rest —
+including in Game Mode, where the old key-based approach used to pop Steam's side
+menu instead of moving. Pages also open **properly sized for a TV** now (zoomed for
+the couch, adjustable from the app), and every service's home page is navigable —
+including the ones that used to ignore the pad entirely. Also hardens the keyboard
+channel: a malformed key from a client is refused cleanly instead of dropping the
+remote's connection. Boxes coming from an older version also get the Legion Go S
+thumbstick lighting fixes, quicker game-list switching and a pairing fix; other
+boxes are unaffected.
 
 ## 2.9.94
 

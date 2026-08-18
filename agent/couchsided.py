@@ -3389,7 +3389,7 @@ PLAYER_JS_SEEK = {
 # Focus set this way is REAL focus, so the d-pad's OK button (a genuine uinput
 # Enter) activates whatever this landed on.
 _PL_JS_NAV_BODY = """(function(){
-  var DIR = %d;
+  var DX = %d, DY = %d;
   var a = document.activeElement;
   // MODAL SCOPING (measured on tv.apple.com): a signup <dialog> holds a focus
   // trap — focusing a tile behind it just gets stolen back. When a modal owns
@@ -3419,9 +3419,13 @@ _PL_JS_NAV_BODY = """(function(){
                  : {cx: innerWidth/2, cy: 0};
   var best = null, bestScore = Infinity;
   for (var j = 0; j < all.length; j++){
-    var c = all[j], dy = (c.cy - cur.cy) * DIR;
-    if (dy < 24) continue;
-    var score = dy + Math.abs(c.cx - cur.cx) * 2;
+    var c = all[j];
+    // Signed travel along the requested axis; distance across it is a penalty
+    // so a step stays in its row/column rather than jumping diagonally.
+    var fwd = DX ? (c.cx - cur.cx) * DX : (c.cy - cur.cy) * DY;
+    if (fwd < 24) continue;
+    var cross = DX ? Math.abs(c.cy - cur.cy) : Math.abs(c.cx - cur.cx);
+    var score = fwd + cross * 2;
     if (score < bestScore){ bestScore = score; best = c; }
   }
   if (!best) return false;
@@ -3434,8 +3438,16 @@ _PL_JS_NAV_BODY = """(function(){
 # this dict by op id; the direction is an agent-chosen literal, never a value
 # formatted out of the request body.
 PLAYER_JS_NAV = {
-    "navdown": _PL_JS_NAV_BODY % 1,
-    "navup": _PL_JS_NAV_BODY % -1,
+    "navdown": _PL_JS_NAV_BODY % (0, 1),
+    "navup": _PL_JS_NAV_BODY % (0, -1),
+    # Horizontal spatial steps. These exist because the obvious key answer —
+    # Tab / Shift+Tab — is Steam's OVERLAY HOTKEY: in Game Mode the tile is a
+    # Steam game, and a Shift+Tab from the d-pad opened the Steam side menu on
+    # the TV instead of walking focus (owner report, Steam Machine,
+    # 2026-08-18). CDP focus steps involve no keys at all, so there is nothing
+    # for Steam to intercept.
+    "navleft": _PL_JS_NAV_BODY % (-1, 0),
+    "navright": _PL_JS_NAV_BODY % (1, 0),
 }
 
 
@@ -21355,7 +21367,7 @@ class Handler(BaseHTTPRequestHandler):
                         self._send(409, {"error": str(e)}, started)
                         return
                     self._send(200, r, started)
-                elif op in ("navup", "navdown"):
+                elif op in ("navup", "navdown", "navleft", "navright"):
                     # Spatial focus step for the on-screen d-pad. Same frozen
                     # lookup as transport: the op id picks one of two scripts
                     # the agent wrote, and the direction is a literal baked in

@@ -47,7 +47,8 @@ def check(name, got, want):
 
 # --- 1. allowlist ------------------------------------------------------------
 print("1. op id is looked up, never interpolated")
-check("exactly two nav ops", sorted(cs.PLAYER_JS_NAV), ["navdown", "navup"])
+check("exactly four nav ops", sorted(cs.PLAYER_JS_NAV),
+      ["navdown", "navleft", "navright", "navup"])
 
 _saved_running = cs._pl_running
 _saved_run = cs._pl_cdp_run
@@ -101,10 +102,14 @@ finally:
 # --- 2. the scripts carry no client-fillable holes ---------------------------
 print("2. scripts are constants with an agent-chosen direction")
 down, up = cs.PLAYER_JS_NAV["navdown"], cs.PLAYER_JS_NAV["navup"]
-check("the two scripts differ", down != up, True)
-check("down uses DIR = 1", "var DIR = 1;" in down, True)
-check("up uses DIR = -1", "var DIR = -1;" in up, True)
-for name, js in (("navdown", down), ("navup", up)):
+left, right = cs.PLAYER_JS_NAV["navleft"], cs.PLAYER_JS_NAV["navright"]
+check("all four scripts differ",
+      len({down, up, left, right}), 4)
+check("down is +Y", "var DX = 0, DY = 1;" in down, True)
+check("up is -Y", "var DX = 0, DY = -1;" in up, True)
+check("left is -X", "var DX = -1, DY = 0;" in left, True)
+check("right is +X", "var DX = 1, DY = 0;" in right, True)
+for name, js in (("navdown", down), ("navup", up), ("navleft", left), ("navright", right)):
     # A leftover %s/%d would mean a later edit could format a request value in.
     check("%s has no format placeholder" % name,
           ("%s" not in js) and ("%d" not in js), True)
@@ -118,7 +123,8 @@ try:
     cs.PL_MOCK = False
     cs.player_available = lambda: True
     info = cs.player_info()
-    check("nav_ops advertised", sorted(info.get("nav_ops") or []), ["navdown", "navup"])
+    check("nav_ops advertised", sorted(info.get("nav_ops") or []),
+          ["navdown", "navleft", "navright", "navup"])
     check("advertised == frozen table", sorted(info.get("nav_ops") or []),
           sorted(cs.PLAYER_JS_NAV))
     # additive, not a shape change: the long-standing fields are still there
@@ -127,6 +133,18 @@ try:
 finally:
     cs.player_available = _saved_avail
     cs.PL_MOCK = _saved_mock
+
+# --- 4b. the ROUTE gate covers every nav op ----------------------------------
+# Found the hard way: PLAYER_JS_NAV grew navleft/navright and nav_ops
+# advertised them, but the do_POST membership tuple still said only
+# navup/navdown — so the box advertised ops it then refused with 400. The
+# handler-level test above can't see that; check the dispatch source itself.
+print("4b. route dispatch tuple covers every nav op")
+import re
+_src = open(os.path.join(ROOT, "agent", "couchsided.py")).read()
+_m = re.search(r'elif op in \(([^)]*"navup"[^)]*)\):', _src)
+_route_ops = set(re.findall(r'"(nav[a-z]+)"', _m.group(1))) if _m else set()
+check("route tuple == PLAYER_JS_NAV keys", _route_ops, set(cs.PLAYER_JS_NAV))
 
 # --- 5. TV zoom (op "scale") — a client value can only SELECT a member -------
 print("5. scale op: frozen-membership selector")

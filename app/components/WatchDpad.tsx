@@ -213,14 +213,18 @@ export function WatchDpad({
   };
 
   /**
-   * Walk the page's focus ring. Forward is Tab everywhere; backward needs the
-   * Shift+Tab chord (agent >= 2.9.95). Against an older agent that name would
-   * close the session, so fall back to a plain Left arrow — which does nothing
-   * on Netflix/YouTube but is harmless, and still scrolls pages that respond to
-   * arrows. Checked at press time, not mount: the socket may reconnect to a
-   * different box while the panel is open.
+   * One focus step along the row. Prefer the agent's SPATIAL navleft/navright
+   * (CDP, no keys): the key answer — Tab / Shift+Tab — is Steam's OVERLAY
+   * hotkey, and in Game Mode a Shift+Tab from this pad opened the Steam side
+   * menu on the TV instead of walking focus (owner report, Steam Machine).
+   * Key fallback only for boxes whose agent predates the horizontal ops.
    */
   const focusStep = (forward: boolean) => {
+    const op = forward ? 'navright' : 'navleft';
+    if (navOps?.includes(op) === true) {
+      api.playerOp(settings, op).catch(() => {});
+      return;
+    }
     if (forward) return pressQuiet('tab');
     return pressQuiet(client.supportsKey('shifttab') ? 'shifttab' : 'left');
   };

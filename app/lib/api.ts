@@ -362,7 +362,7 @@ export type PlayerOp =
    *  to the nearest element above/below — Tab only walks ALONG a row of tiles,
    *  and arrow keys just scroll on the streaming sites. Gated on
    *  PlayerState.nav_ops; an older agent answers 400. */
-  | 'navup' | 'navdown'
+  | 'navup' | 'navdown' | 'navleft' | 'navright'
   /** TV zoom: value must be a member of PlayerState.ui_scales (agent >= 2.9.95). */
   | 'scale';
 
