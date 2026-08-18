@@ -160,6 +160,10 @@ export function WatchPanel() {
   const [error, setError] = useState<string | null>(null);
   const [link, setLink] = useState('');
   const [query, setQuery] = useState('');
+  // True while a finger is on the d-pad's swipe surface. The ScrollView must
+  // not scroll during it, or a vertical swipe scrolls the panel instead of
+  // stepping the TV's focus a row.
+  const [dpadGesture, setDpadGesture] = useState(false);
 
   const configured = settings.host.trim().length > 0;
 
@@ -336,6 +340,7 @@ export function WatchPanel() {
       style={styles.root}
       contentContainerStyle={styles.content}
       keyboardShouldPersistTaps="handled"
+      scrollEnabled={!dpadGesture}
     >
       {state.running ? (
         <View style={styles.nowCard} testID="watch-now-playing">
@@ -368,7 +373,12 @@ export function WatchPanel() {
           {/* D-pad drives the page's focus ring (Netflix/YouTube tile grids,
               and any web page). Rides the existing uinput key path, so it shows
               for ANY open page — not gated on <video> like the scrubber below. */}
-          <WatchDpad settings={settings} ready={ready} navOps={state.nav_ops} />
+          <WatchDpad
+            settings={settings}
+            ready={ready}
+            navOps={state.nav_ops}
+            onGestureActive={setDpadGesture}
+          />
 
           {/* Transport appears only when the box reports a real <video>. A
               service that is open but sitting on its home screen has nothing to

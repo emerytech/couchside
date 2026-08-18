@@ -1,10 +1,27 @@
 /**
- * WatchDpad — an on-screen d-pad for driving the page open in the Couchside
- * Player (Netflix/YouTube tile grids, and any web page's focus ring).
+ * WatchDpad — a swipe pad for driving the page open in the Couchside Player
+ * (Netflix/YouTube tile grids, and any web page's focus ring).
  *
- * WHY THIS EXISTS: streaming UIs are spatial grids you navigate with a remote's
- * arrows, not by scrolling. Before this, the Watch panel could only launch a
- * service and then abandon it — you could not move between tiles from the couch.
+ * WHY THIS EXISTS: streaming UIs are spatial grids you navigate with a remote,
+ * not by scrolling. Before this, the Watch panel could only launch a service
+ * and then abandon it — you could not move between tiles from the couch.
+ *
+ * WHY SWIPES, NOT BUTTONS: owner feedback once the arrow buttons worked —
+ * swiping is the natural phone gesture for "move one tile", and a tap beats
+ * hunting for an OK button mid-scroll. Gestures map onto the same verbs the
+ * buttons used:
+ *
+ *   swipe left/right -> one focus step along the row
+ *   swipe up/down    -> one spatial step between rows
+ *   tap              -> OK (enter)
+ *   two-finger tap   -> Back (esc), same convention as the trackpad's
+ *                       two-finger right-click; a visible Back button stays
+ *                       for discoverability
+ *
+ * The step engine is lib/swipeSteps.planSteps — the unit-tested planner the
+ * Pad's swipe mode uses (first step cheap, repeats expensive, so a flick moves
+ * ONE tile and a deliberate drag walks several; dominant axis wins so a
+ * diagonal never fires both).
  *
  * HOW IT WORKS: the agent exposes a token-authed, hold-gated uinput keyboard on
  * /ws/gamepad, so this reuses GamepadClient.sendKey() exactly like the desktop
@@ -48,15 +65,29 @@
  * offers Take control, mirroring the Pad tab's handoff.
  */
 import React, { useEffect, useRef, useState } from 'react';
-import { AppState, Platform, Pressable, StyleSheet, Text, View } from 'react-native';
+import {
+  AppState,
+  PanResponder,
+  Platform,
+  Pressable,
+  StyleSheet,
+  Text,
+  View,
+} from 'react-native';
 import { useNavigation } from 'expo-router';
 
 import { api } from '@/lib/api';
 import { GamepadClient, GamepadStatus, SpecialKey } from '@/lib/gamepad';
 import { hapticLight } from '@/lib/haptics';
 import { usePref } from '@/lib/prefs';
+import { planSteps, type StepDir, type StepState } from '@/lib/swipeSteps';
 import { useThemedStyles, type Palette } from '@/lib/theme';
 import type { Settings } from '@/lib/settings';
+
+/** Movement under this (px) within TAP_MS is a tap, not a swipe. Matches the
+ *  Pad's swipe surface. */
+const TAP_SLOP = 10;
+const TAP_MS = 350;
 
 /** Names this device to the current holder's Pass/Keep prompt. Matches pad.tsx. */
 const DEVICE_LABEL =
@@ -69,11 +100,19 @@ export function WatchDpad({
   settings,
   ready,
   navOps,
+  onGestureActive,
 }: {
   settings: Settings;
   ready: boolean;
   /** PlayerState.nav_ops — which spatial steps this box accepts. */
   navOps?: string[];
+  /**
+   * Fires true while a touch is on the swipe pad, false when it ends. The
+   * parent ScrollView must set scrollEnabled={false} during it — a native
+   * scroll otherwise steals every vertical drag from the pad's PanResponder,
+   * turning "swipe down a row" into "scroll the panel".
+   */
+  onGestureActive?: (active: boolean) => void;
 }) {
   const styles = useThemedStyles(makeStyles);
   const navigation = useNavigation();
@@ -149,10 +188,17 @@ export function WatchDpad({
 
   const holding = status === 'connected';
 
-  const press = (key: SpecialKey) => {
+  /** Send without haptic — the gesture path fires ONE haptic per move event,
+   *  never one per step; per-step ticks flooded iOS's feedback queue on the Pad
+   *  and were the best-motivated suspect for a JS stall (see pad.tsx). */
+  const pressQuiet = (key: SpecialKey) => {
     if (!holding) return;
-    hapticLight();
     client.sendKey(key);
+  };
+
+  const press = (key: SpecialKey) => {
+    hapticLight();
+    pressQuiet(key);
   };
 
   /**
@@ -164,8 +210,8 @@ export function WatchDpad({
    * different box while the panel is open.
    */
   const focusStep = (forward: boolean) => {
-    if (forward) return press('tab');
-    return press(client.supportsKey('shifttab') ? 'shifttab' : 'left');
+    if (forward) return pressQuiet('tab');
+    return pressQuiet(client.supportsKey('shifttab') ? 'shifttab' : 'left');
   };
 
   /**
@@ -180,10 +226,91 @@ export function WatchDpad({
   const canNav = (op: 'navup' | 'navdown') => navOps?.includes(op) === true;
   const vertical = (down: boolean) => {
     const op = down ? 'navdown' : 'navup';
-    if (!canNav(op)) return press(down ? 'down' : 'up');
-    hapticLight();
+    if (!canNav(op)) return pressQuiet(down ? 'down' : 'up');
     api.playerOp(settings, op).catch(() => {});
   };
+
+  /** One gesture step from the planner onto the right verb. */
+  const stepDir = (d: StepDir) => {
+    if (d === 'dl') focusStep(false);
+    else if (d === 'dr') focusStep(true);
+    else if (d === 'du') vertical(false);
+    else vertical(true);
+  };
+  const stepRef = useRef(stepDir);
+  stepRef.current = stepDir;
+  // press() closes over `holding`; the once-created responder must see the
+  // live version, not the first render's. Same for the gesture-active signal.
+  const pressRef = useRef(press);
+  pressRef.current = press;
+  const gestureRef = useRef<(active: boolean) => void>(() => {});
+  gestureRef.current = onGestureActive ?? (() => {});
+
+  // Swipe surface. planSteps is the Pad's unit-tested planner: first step
+  // cheap, repeats expensive, dominant axis wins. The responder is created
+  // once; live state reaches it through refs.
+  const track = useRef({
+    consumedX: 0,
+    consumedY: 0,
+    stepped: false,
+    moved: false,
+    twoFinger: false,
+    t0: 0,
+  });
+  const sens = usePref('swipeSensitivity');
+  const sensRef = useRef(sens);
+  sensRef.current = sens;
+
+  const responder = useRef(
+    PanResponder.create({
+      onStartShouldSetPanResponder: () => true,
+      onMoveShouldSetPanResponder: () => true,
+      onPanResponderGrant: () => {
+        gestureRef.current(true);
+        track.current = {
+          consumedX: 0,
+          consumedY: 0,
+          stepped: false,
+          moved: false,
+          twoFinger: false,
+          t0: Date.now(),
+        };
+      },
+      onPanResponderMove: (_evt, g) => {
+        const t = track.current;
+        // A second finger at ANY point marks the gesture two-finger; checked on
+        // move because Grant often fires before the second finger lands.
+        if (g.numberActiveTouches >= 2) t.twoFinger = true;
+        if (!t.moved && Math.hypot(g.dx, g.dy) > TAP_SLOP) t.moved = true;
+        if (t.twoFinger) return; // two-finger = Back on release, never steps
+        const plan = planSteps(g.dx, g.dy, t as StepState, sensRef.current);
+        t.consumedX = plan.next.consumedX;
+        t.consumedY = plan.next.consumedY;
+        t.stepped = plan.next.stepped;
+        for (const d of plan.dirs) stepRef.current(d);
+        // ONE haptic per move event, never per step — a fast swipe emits a
+        // burst, and per-step selectionAsync() floods iOS's feedback queue
+        // (measured on the Pad; see pad.tsx SwipeSurface).
+        if (plan.dirs.length > 0) hapticLight();
+      },
+      onPanResponderRelease: () => {
+        gestureRef.current(false);
+        const t = track.current;
+        if (t.moved || Date.now() - t.t0 >= TAP_MS) return;
+        // Tap: one finger = OK, two fingers = Back (the trackpad's two-finger
+        // right-click convention, answering "how do we do the back button").
+        if (t.twoFinger) pressRef.current('esc');
+        else pressRef.current('enter');
+      },
+      // A parent stealing the gesture (edge-swipe, navigation) just cancels
+      // it — steps already sent are single presses, nothing latches. Still must
+      // re-enable the parent's scroll.
+      onPanResponderTerminate: () => {
+        gestureRef.current(false);
+      },
+      onPanResponderTerminationRequest: () => false,
+    }),
+  ).current;
 
   const takeControl = () => {
     hapticLight();
@@ -239,47 +366,11 @@ export function WatchDpad({
     <View style={styles.wrap} testID="watch-dpad">
       <Text style={styles.title}>NAVIGATE</Text>
 
-      {/* Cross: up/down SCROLL the page, left/right walk the focus ring. */}
-      <View style={styles.row}>
-        <View style={styles.cell} />
-        <DKey
-          label="▲"
-          testID="watch-dpad-up"
-          onPress={() => vertical(false)}
-          styles={styles}
-        />
-        <View style={styles.cell} />
-      </View>
-      <View style={styles.row}>
-        <DKey
-          label="◀"
-          testID="watch-dpad-left"
-          onPress={() => focusStep(false)}
-          styles={styles}
-        />
-        <DKey
-          label="OK"
-          testID="watch-dpad-ok"
-          onPress={() => press('enter')}
-          styles={styles}
-          main
-        />
-        <DKey
-          label="▶"
-          testID="watch-dpad-right"
-          onPress={() => focusStep(true)}
-          styles={styles}
-        />
-      </View>
-      <View style={styles.row}>
-        <View style={styles.cell} />
-        <DKey
-          label="▼"
-          testID="watch-dpad-down"
-          onPress={() => vertical(true)}
-          styles={styles}
-        />
-        <View style={styles.cell} />
+      {/* Swipe surface: flick left/right = one step along the row, up/down =
+          one row; tap = OK; two-finger tap = Back. */}
+      <View style={styles.swipePad} testID="watch-dpad-swipe" {...responder.panHandlers}>
+        <Text style={styles.swipeGlyph}>✦</Text>
+        <Text style={styles.swipeHint}>swipe to move · tap for OK</Text>
       </View>
 
       <Pressable
@@ -291,35 +382,10 @@ export function WatchDpad({
       </Pressable>
 
       <Text style={styles.hint}>
-        ◀ ▶ along a row · ▲ ▼ between rows · OK selects · Back exits
+        swipe ◀ ▶ along a row · ▲ ▼ between rows · tap selects · two-finger tap
+        or Back exits
       </Text>
     </View>
-  );
-}
-
-/** One d-pad key. Split out so every cell is the same square, keeping the cross
- *  aligned regardless of glyph width. */
-function DKey({
-  label,
-  testID,
-  onPress,
-  styles,
-  main,
-}: {
-  label: string;
-  testID: string;
-  onPress: () => void;
-  styles: ReturnType<typeof makeStyles>;
-  main?: boolean;
-}) {
-  return (
-    <Pressable
-      onPress={onPress}
-      testID={testID}
-      style={({ pressed }) => [styles.key, main && styles.keyMain, pressed && styles.pressed]}
-    >
-      <Text style={[styles.keyText, main && styles.keyMainText]}>{label}</Text>
-    </Pressable>
   );
 }
 
@@ -339,21 +405,19 @@ const makeStyles = (t: Palette) =>
       letterSpacing: 1.2,
       alignSelf: 'stretch',
     },
-    row: { flexDirection: 'row', gap: 8 },
-    cell: { width: 64, height: 52 },
-    key: {
-      width: 64,
-      height: 52,
+    swipePad: {
+      alignSelf: 'stretch',
+      height: 168,
       alignItems: 'center',
       justifyContent: 'center',
-      borderRadius: 10,
+      gap: 6,
+      borderRadius: 12,
       backgroundColor: t.inset,
       borderWidth: StyleSheet.hairlineWidth,
       borderColor: t.cardBorder,
     },
-    keyMain: { backgroundColor: t.accent, borderColor: t.accent },
-    keyText: { color: t.text, fontSize: 18, fontWeight: '700' },
-    keyMainText: { color: '#0b1220', fontSize: 15 },
+    swipeGlyph: { color: t.textFaint, fontSize: 22 },
+    swipeHint: { color: t.textFaint, fontSize: 12 },
     backBtn: {
       marginTop: 2,
       paddingHorizontal: 22,
