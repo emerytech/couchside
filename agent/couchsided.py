@@ -49,7 +49,7 @@ except ImportError:  # pragma: no cover
     fcntl = None
 
 APP_NAME = "couchside-agent"
-VERSION = "2.9.94"
+VERSION = "2.9.95"
 UID = os.getuid()
 XDG_RUNTIME_DIR = "/run/user/%d" % UID
 
@@ -14548,6 +14548,21 @@ DESKTOP_CHORDS = {
     "overview": (KEY_LEFTMETA, KEY_W),  # KWin "Overview" effect (Plasma 6)
 }
 
+# Generic key chords, not desktop-specific. Same press-in-order/release-in-
+# reverse expansion as DESKTOP_CHORDS; kept separate so the desktop cluster
+# stays a list of desktop actions.
+#
+# WHY shifttab EXISTS: measured on the reference box 2026-08-17 against the real
+# sites, with a control key in the same run — netflix.com and youtube.com IGNORE
+# arrow keys entirely (right/down moved nothing) and walk their focus ring on
+# TAB (focus went Mima -> pokemonRhyott on Netflix, "Skip navigation" -> "Search
+# with your voice" on YouTube). Arrow-key grid nav is a TV-APP behaviour, not a
+# web behaviour. So a couch d-pad driving a web page needs Tab to go forward and
+# Shift+Tab to go back; without this entry the ring could only ever advance.
+KEY_CHORDS = {
+    "shifttab": (KEY_LEFTSHIFT, KEY_TAB),
+}
+
 # All KEY_* codes the virtual keyboard may emit (declared at device create).
 # KEY_LEFTCTRL is included for the Ctrl+V paste chord even though no char maps
 # to it, else the uinput device won't declare the capability and emit fails.
@@ -14555,6 +14570,7 @@ KEYBOARD_CODES = sorted(
     {code for code, _shift in CHAR_KEYMAP.values()}
     | set(SPECIAL_KEYS.values())
     | {c for codes in DESKTOP_CHORDS.values() for c in codes}
+    | {c for codes in KEY_CHORDS.values() for c in codes}
     | {KEY_LEFTSHIFT, KEY_LEFTCTRL, KEY_LEFTALT}
 )
 
@@ -15066,12 +15082,23 @@ def keyboard_events(msg):
         return _type_events(text)
     if t == "k":
         key = msg.get("key")
+        # A non-string name can never be a table entry, and an UNHASHABLE one (a
+        # JSON object or array) raises TypeError out of the `in` tests below —
+        # which escapes the caller's `except ValueError` and takes the session
+        # thread with it. Refuse it as the unknown key it is: reject, don't
+        # sanitise (§3.6), and fail closed (§7).
+        if not isinstance(key, str):
+            raise ValueError("key must be a string")
         if key in SPECIAL_KEYS:
             code = SPECIAL_KEYS[key]
             return [(EV_KEY, code, 1), (EV_KEY, code, 0)]
         if key in DESKTOP_CHORDS:
             codes = DESKTOP_CHORDS[key]
             # Press in order, release in reverse (modifiers wrap the base key).
+            return ([(EV_KEY, c, 1) for c in codes]
+                    + [(EV_KEY, c, 0) for c in reversed(codes)])
+        if key in KEY_CHORDS:
+            codes = KEY_CHORDS[key]
             return ([(EV_KEY, c, 1) for c in codes]
                     + [(EV_KEY, c, 0) for c in reversed(codes)])
         raise ValueError("unknown special key %r" % (key,))
@@ -18350,8 +18377,16 @@ def _make_holder(entry, mock):
     entry["held"] = True
     entry["requested"] = False
     dev = entry["device"].name if entry.get("device") is not None else "keyboard only"
+    # `keys` is ADDITIVE (see CLAUDE.md §4): it lets a client discover which
+    # named keys/chords this agent accepts instead of guessing from a version
+    # number. It matters because an unknown key name raises in keyboard_events
+    # and CLOSES the session — so a client that blind-fired a newer name would
+    # kill its own socket against an older agent. Old clients ignore the field.
     _wsend_json(entry, {"t": "hello", "dev": dev,
-                        "text": _text_caps(mock)})
+                        "text": _text_caps(mock),
+                        "keys": sorted(set(SPECIAL_KEYS)
+                                       | set(DESKTOP_CHORDS)
+                                       | set(KEY_CHORDS))})
     for slot, factory in (("mouse", MockMouse if mock else UInputMouse),
                           ("keyboard", MockKeyboard if mock else UInputKeyboard)):
         if entry.get(slot) is None:

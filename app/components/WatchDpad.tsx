@@ -6,14 +6,34 @@
  * arrows, not by scrolling. Before this, the Watch panel could only launch a
  * service and then abandon it — you could not move between tiles from the couch.
  *
- * HOW IT WORKS (and why it needs no new agent code): the agent already exposes a
- * token-authed, hold-gated uinput keyboard on /ws/gamepad, and the key names
- * up/down/left/right/enter/esc are already frozen into its SPECIAL_KEYS table.
- * So this reuses GamepadClient.sendKey() exactly like the desktop keyboard does.
- * uinput delivers a REAL, trusted key event to whatever the compositor has
- * focused — which for the Player tile is its fullscreen Chrome — so Netflix's
+ * HOW IT WORKS: the agent exposes a token-authed, hold-gated uinput keyboard on
+ * /ws/gamepad, so this reuses GamepadClient.sendKey() exactly like the desktop
+ * keyboard does. uinput delivers a REAL, trusted key event to whatever the
+ * compositor has focused — the Player tile's fullscreen Chrome — so the page's
  * own key handler responds. (A synthetic CDP KeyboardEvent would be
  * isTrusted:false and Netflix ignores it; that is why this path, not CDP.)
+ *
+ * WHICH KEYS — MEASURED, NOT ASSUMED (2026-08-17, reference box, real sites,
+ * each run carrying a control key whose answer was already known):
+ *
+ *   netflix.com   right/down -> focus UNCHANGED     tab -> Mima to pokemonRhyott
+ *   youtube.com   right/down -> focus UNCHANGED     tab -> "Skip navigation" to
+ *                                                          "Search with voice"
+ *
+ * Arrow-key grid navigation is a TV-APP behaviour; the WEB versions of these
+ * services ignore arrows entirely and move their focus ring on Tab. So:
+ *
+ *   left / right -> Shift+Tab / Tab   walk the focus ring between tiles
+ *   up / down    -> arrow keys        scroll the page (netflix browse scrolled
+ *                                     0 -> 51 -> 120 on down)
+ *   OK           -> enter             activates the focused tile (observed
+ *                                     selecting a Netflix profile)
+ *   Back         -> esc
+ *
+ * Shift+Tab needs agent >= 2.9.95 (the `shifttab` chord). An older agent does
+ * not merely ignore an unknown key name — it errors and CLOSES the session — so
+ * the back-direction button feature-detects via client.supportsKey() and falls
+ * back to a plain arrow rather than risking the socket.
  *
  * We connect with noPad:true so the agent never materialises a virtual Xbox pad
  * for this session (which would make Steam announce a controller). Keys only
@@ -118,6 +138,19 @@ export function WatchDpad({ settings, ready }: { settings: Settings; ready: bool
     client.sendKey(key);
   };
 
+  /**
+   * Walk the page's focus ring. Forward is Tab everywhere; backward needs the
+   * Shift+Tab chord (agent >= 2.9.95). Against an older agent that name would
+   * close the session, so fall back to a plain Left arrow — which does nothing
+   * on Netflix/YouTube but is harmless, and still scrolls pages that respond to
+   * arrows. Checked at press time, not mount: the socket may reconnect to a
+   * different box while the panel is open.
+   */
+  const focusStep = (forward: boolean) => {
+    if (forward) return press('tab');
+    return press(client.supportsKey('shifttab') ? 'shifttab' : 'left');
+  };
+
   const takeControl = () => {
     hapticLight();
     const s = client.getStatus();
@@ -172,14 +205,19 @@ export function WatchDpad({ settings, ready }: { settings: Settings; ready: bool
     <View style={styles.wrap} testID="watch-dpad">
       <Text style={styles.title}>NAVIGATE</Text>
 
-      {/* Cross: up on top, left/OK/right in the middle, down on the bottom. */}
+      {/* Cross: up/down SCROLL the page, left/right walk the focus ring. */}
       <View style={styles.row}>
         <View style={styles.cell} />
         <DKey label="▲" testID="watch-dpad-up" onPress={() => press('up')} styles={styles} />
         <View style={styles.cell} />
       </View>
       <View style={styles.row}>
-        <DKey label="◀" testID="watch-dpad-left" onPress={() => press('left')} styles={styles} />
+        <DKey
+          label="◀"
+          testID="watch-dpad-left"
+          onPress={() => focusStep(false)}
+          styles={styles}
+        />
         <DKey
           label="OK"
           testID="watch-dpad-ok"
@@ -187,7 +225,12 @@ export function WatchDpad({ settings, ready }: { settings: Settings; ready: bool
           styles={styles}
           main
         />
-        <DKey label="▶" testID="watch-dpad-right" onPress={() => press('right')} styles={styles} />
+        <DKey
+          label="▶"
+          testID="watch-dpad-right"
+          onPress={() => focusStep(true)}
+          styles={styles}
+        />
       </View>
       <View style={styles.row}>
         <View style={styles.cell} />
@@ -203,7 +246,9 @@ export function WatchDpad({ settings, ready }: { settings: Settings; ready: bool
         <Text style={styles.backText}>Back</Text>
       </Pressable>
 
-      <Text style={styles.hint}>Arrows move between tiles · OK selects · Back exits</Text>
+      <Text style={styles.hint}>
+        ◀ ▶ move between tiles · ▲ ▼ scroll · OK selects · Back exits
+      </Text>
     </View>
   );
 }

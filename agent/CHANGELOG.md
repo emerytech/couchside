@@ -18,6 +18,17 @@ the same thing regardless of what actually changed.
 Write for the person holding the phone, not for the commit log. They are
 deciding whether to press "Update now" on a machine across the room.
 
+## 2.9.95
+
+**Move around a streaming site from the couch.** The Watch screen's new on-screen
+d-pad can now step **backwards** through a page as well as forwards, so you can move
+between tiles on Netflix, YouTube and the rest without reaching for the trackpad.
+(Those sites navigate by focus ring rather than arrow keys — the box now speaks that
+too.) Also hardens the keyboard channel: a malformed key from a client is refused
+cleanly instead of dropping the remote's connection. Boxes coming from an older
+version also get the Legion Go S thumbstick lighting fixes, quicker game-list
+switching and a pairing fix; other boxes are unaffected.
+
 ## 2.9.94
 
 **Legion Go S thumbstick lighting — colours and effects that actually stick.** The

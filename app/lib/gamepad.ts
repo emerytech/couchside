@@ -85,6 +85,16 @@ export type StickKey = 'l' | 'r';
 export type MouseButton = 'l' | 'r' | 'm';
 
 /** Special keys the server maps to KEY_* codes (see protocol v2). */
+/**
+ * Key names every agent has accepted since the protocol's original set. Used to
+ * answer supportsKey() for an agent too old to advertise hello.keys — anything
+ * outside this set is assumed unsupported there.
+ */
+const LEGACY_KEYS: ReadonlySet<string> = new Set([
+  'backspace', 'enter', 'tab', 'esc', 'space',
+  'up', 'down', 'left', 'right', 'home', 'end',
+]);
+
 export type SpecialKey =
   | 'backspace'
   | 'enter'
@@ -96,7 +106,11 @@ export type SpecialKey =
   | 'left'
   | 'right'
   | 'home'
-  | 'end';
+  | 'end'
+  /** Shift+Tab — walks a web page's focus ring BACKWARDS (agent >= 2.9.95).
+   *  Only send it when the agent advertises it in hello.keys: an agent that
+   *  does not know a name replies {t:'err'} and CLOSES the session. */
+  | 'shifttab';
 
 export const BUTTON_KEYS: ButtonKey[] = [
   'a',
@@ -318,6 +332,15 @@ export class GamepadClient {
   private dev: string | null = null;
   /** Text capability from the hello frame ('unicode'|'ascii'); null until known. */
   private textCaps: 'unicode' | 'ascii' | null = null;
+  /**
+   * Named keys/chords this agent accepts, from hello.keys (agent >= 2.9.95).
+   * null while unknown (older agent, or before hello).
+   *
+   * This exists because an unknown key name is not ignored by the agent — it
+   * raises and CLOSES the session. So a newer app must feature-detect rather
+   * than blind-fire a name an older box has never heard of.
+   */
+  private keyNames: Set<string> | null = null;
   private listener: GamepadStatusListener | null = null;
 
   // Input-injection paused state, signalled by the server (Windows agent):
@@ -900,6 +923,20 @@ export class GamepadClient {
   }
 
   /**
+   * Does the connected agent accept this key name?
+   *
+   * Only meaningful for names added after the original protocol set: an agent
+   * that never advertised `keys` is assumed to know exactly the long-standing
+   * names and nothing more. Answering false for an unknown-but-supported key
+   * costs a disabled button; answering true for an unsupported one costs the
+   * whole session (the agent errors and closes), so this errs to false.
+   */
+  supportsKey(key: SpecialKey): boolean {
+    if (this.keyNames) return this.keyNames.has(key);
+    return LEGACY_KEYS.has(key);
+  }
+
+  /**
    * Walk Steam's focus to its global search field, then resolve.
    *
    * MEASURED on a Legion Go S in Game Mode, 2026-07-22, driven from a real
@@ -1047,6 +1084,8 @@ export class GamepadClient {
         t?: string; dev?: string; msg?: string; text?: string;
         code?: string; name?: string; holder?: string; by?: string;
         open?: boolean; value?: string;
+        /** hello: named keys/chords this agent accepts (agent >= 2.9.95). */
+        keys?: unknown;
       };
       try {
         msg = JSON.parse(String(ev.data));
@@ -1066,6 +1105,13 @@ export class GamepadClient {
             : this.dev === 'ViGEm X360 pad'
               ? 'unicode'
               : 'ascii';
+        // Advertised key names (agent >= 2.9.95). Absent on older agents, which
+        // leaves this null and makes supportsKey() answer false for anything
+        // beyond the long-standing set — the safe direction, since a wrong
+        // guess closes the socket.
+        this.keyNames = Array.isArray(msg.keys)
+          ? new Set(msg.keys.filter((k: unknown): k is string => typeof k === 'string'))
+          : null;
         this.setStatus('connected', this.dev);
         this.startPing();
       } else if (msg.t === 'waiting') {
@@ -1331,6 +1377,10 @@ export class GamepadClient {
     if (status !== 'connected') {
       this.setInputBlocked(false, null);
       this.textCaps = null;
+      // Likewise the advertised key list: reconnecting may land on a DIFFERENT
+      // box (the mDNS fallback, a switched box), and firing a key the new one
+      // never advertised would close that session.
+      this.keyNames = null;
     }
     if (this.listener) this.listener(status, dev);
   }

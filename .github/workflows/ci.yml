@@ -558,6 +558,16 @@ jobs:
       - name: Unit tests (player free-URL tier)
         run: python3 tests/test_player_open_url.py
 
+      # Named key chords on {t:'k'} — the Shift+Tab the Watch d-pad needs to
+      # walk a web page's focus ring backwards (netflix.com and youtube.com
+      # ignore arrow keys entirely). Pins that an unknown key NAME is refused
+      # rather than pattern-matched, that a non-string name cannot escape the
+      # caller's ValueError handling and kill the session, and that the hello
+      # frame advertises exactly the names the decoder accepts — the field a
+      # newer app relies on to avoid firing an unknown key at an older agent.
+      - name: Unit tests (key chords)
+        run: python3 tests/test_key_chords.py
+
       # Player routes. Drives a real Handler on loopback with STUB steam /
       # steamos-add-to-steam binaries that log every call, so "refused" and
       # "nothing ran" are two separate observations -- a test that only checked
