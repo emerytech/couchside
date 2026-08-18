@@ -457,7 +457,7 @@ export function WatchPanel() {
       {error ? <Text style={styles.error}>{error}</Text> : null}
 
       <Text style={styles.beta} testID="watch-beta">
-        EXPERIMENTAL — expect rough edges. Use the d-pad above to move between
+        EXPERIMENTAL — expect rough edges. Swipe the pad above to move between
         tiles once a page is open.
       </Text>
 

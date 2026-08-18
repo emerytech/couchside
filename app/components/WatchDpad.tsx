@@ -77,7 +77,7 @@ import {
 import { useNavigation } from 'expo-router';
 
 import { api } from '@/lib/api';
-import { GamepadClient, GamepadStatus, SpecialKey } from '@/lib/gamepad';
+import { GamepadClient, GamepadStatus, MouseButton, SpecialKey } from '@/lib/gamepad';
 import { hapticLight } from '@/lib/haptics';
 import { usePref } from '@/lib/prefs';
 import { planSteps, type StepDir, type StepState } from '@/lib/swipeSteps';
@@ -88,6 +88,15 @@ import type { Settings } from '@/lib/settings';
  *  Pad's swipe surface. */
 const TAP_SLOP = 10;
 const TAP_MS = 350;
+
+/**
+ * Pointer-mode gain: on-pad px -> on-TV pointer px. A flat multiplier rather
+ * than the Pad trackpad's speed-adaptive curve — this pad is for picking a
+ * tile, not desktop precision work; 1.6 crosses a 4K row in about one swipe.
+ */
+const POINTER_GAIN = 1.6;
+
+type PadMode = 'tiles' | 'pointer';
 
 /** Names this device to the current holder's Pass/Keep prompt. Matches pad.tsx. */
 const DEVICE_LABEL =
@@ -187,6 +196,8 @@ export function WatchDpad({
   }, [status]);
 
   const holding = status === 'connected';
+  const holdingRef = useRef(holding);
+  holdingRef.current = holding;
 
   /** Send without haptic — the gesture path fires ONE haptic per move event,
    *  never one per step; per-step ticks flooded iOS's feedback queue on the Pad
@@ -245,6 +256,24 @@ export function WatchDpad({
   pressRef.current = press;
   const gestureRef = useRef<(active: boolean) => void>(() => {});
   gestureRef.current = onGestureActive ?? (() => {});
+  /** Pointer-mode tap-click: press then release, gated on holding control. */
+  const click = (btn: MouseButton) => {
+    if (!holding) return;
+    client.sendMouseButton(btn, 1);
+    client.sendMouseButton(btn, 0);
+  };
+  const clickRef = useRef(click);
+  clickRef.current = click;
+
+  // Tiles vs Pointer. Tiles steps the focus ring (the couch default); Pointer
+  // drives the real mouse like the Pad's trackpad — same {t:'m'}/{t:'mb'}
+  // frames, so the agent needs nothing new. Per-mount state on purpose: the
+  // right default after reopening a page is tiles.
+  const [mode, setMode] = useState<PadMode>('tiles');
+  const modeRef = useRef(mode);
+  modeRef.current = mode;
+  const clientRefStable = useRef(client);
+  clientRefStable.current = client;
 
   // Swipe surface. planSteps is the Pad's unit-tested planner: first step
   // cheap, repeats expensive, dominant axis wins. The responder is created
@@ -255,6 +284,8 @@ export function WatchDpad({
     stepped: false,
     moved: false,
     twoFinger: false,
+    lastX: 0,
+    lastY: 0,
     t0: 0,
   });
   const sens = usePref('swipeSensitivity');
@@ -273,6 +304,8 @@ export function WatchDpad({
           stepped: false,
           moved: false,
           twoFinger: false,
+          lastX: 0,
+          lastY: 0,
           t0: Date.now(),
         };
       },
@@ -282,7 +315,20 @@ export function WatchDpad({
         // move because Grant often fires before the second finger lands.
         if (g.numberActiveTouches >= 2) t.twoFinger = true;
         if (!t.moved && Math.hypot(g.dx, g.dy) > TAP_SLOP) t.moved = true;
-        if (t.twoFinger) return; // two-finger = Back on release, never steps
+        if (t.twoFinger) return; // two-finger = Back on release, never moves
+        if (modeRef.current === 'pointer') {
+          if (!holdingRef.current) return;
+          // Relative mouse, like the Pad trackpad. g.dx/dy are CUMULATIVE, so
+          // send the delta since the last move event; sendMouseMove coalesces
+          // and rate-limits internally.
+          clientRefStable.current.sendMouseMove(
+            (g.dx - t.lastX) * POINTER_GAIN,
+            (g.dy - t.lastY) * POINTER_GAIN,
+          );
+          t.lastX = g.dx;
+          t.lastY = g.dy;
+          return;
+        }
         const plan = planSteps(g.dx, g.dy, t as StepState, sensRef.current);
         t.consumedX = plan.next.consumedX;
         t.consumedY = plan.next.consumedY;
@@ -297,10 +343,16 @@ export function WatchDpad({
         gestureRef.current(false);
         const t = track.current;
         if (t.moved || Date.now() - t.t0 >= TAP_MS) return;
-        // Tap: one finger = OK, two fingers = Back (the trackpad's two-finger
-        // right-click convention, answering "how do we do the back button").
-        if (t.twoFinger) pressRef.current('esc');
-        else pressRef.current('enter');
+        // Tap: two fingers = Back in both modes; one finger = OK in tiles,
+        // LEFT CLICK in pointer (what a trackpad tap means).
+        if (t.twoFinger) {
+          pressRef.current('esc');
+        } else if (modeRef.current === 'pointer') {
+          hapticLight();
+          clickRef.current('l');
+        } else {
+          pressRef.current('enter');
+        }
       },
       // A parent stealing the gesture (edge-swipe, navigation) just cancels
       // it — steps already sent are single presses, nothing latches. Still must
@@ -337,7 +389,9 @@ export function WatchDpad({
     const waiting = status === 'connecting' || status === 'closed';
     return (
       <View style={styles.wrap} testID="watch-dpad">
-        <Text style={styles.title}>NAVIGATE</Text>
+        <View style={styles.titleRow}>
+          <Text style={styles.title}>NAVIGATE</Text>
+        </View>
         <View style={styles.handoff}>
           <Text style={styles.handoffText} numberOfLines={2}>
             {waiting
@@ -362,15 +416,42 @@ export function WatchDpad({
     );
   }
 
+  const pointer = mode === 'pointer';
   return (
     <View style={styles.wrap} testID="watch-dpad">
-      <Text style={styles.title}>NAVIGATE</Text>
+      <View style={styles.titleRow}>
+        <Text style={styles.title}>NAVIGATE</Text>
+        <View style={styles.modeRow}>
+          <Pressable
+            onPress={() => {
+              hapticLight();
+              setMode('tiles');
+            }}
+            testID="watch-dpad-mode-tiles"
+            style={[styles.modeChip, !pointer && styles.modeChipOn]}
+          >
+            <Text style={[styles.modeText, !pointer && styles.modeTextOn]}>Tiles</Text>
+          </Pressable>
+          <Pressable
+            onPress={() => {
+              hapticLight();
+              setMode('pointer');
+            }}
+            testID="watch-dpad-mode-pointer"
+            style={[styles.modeChip, pointer && styles.modeChipOn]}
+          >
+            <Text style={[styles.modeText, pointer && styles.modeTextOn]}>Pointer</Text>
+          </Pressable>
+        </View>
+      </View>
 
-      {/* Swipe surface: flick left/right = one step along the row, up/down =
-          one row; tap = OK; two-finger tap = Back. */}
+      {/* Tiles: flick = one focus step, tap = OK. Pointer: drag the real mouse,
+          tap = left click. Two-finger tap = Back in both. */}
       <View style={styles.swipePad} testID="watch-dpad-swipe" {...responder.panHandlers}>
-        <Text style={styles.swipeGlyph}>✦</Text>
-        <Text style={styles.swipeHint}>swipe to move · tap for OK</Text>
+        <Text style={styles.swipeGlyph}>{pointer ? '⌖' : '✦'}</Text>
+        <Text style={styles.swipeHint}>
+          {pointer ? 'drag the pointer · tap to click' : 'swipe to move · tap for OK'}
+        </Text>
       </View>
 
       <Pressable
@@ -382,8 +463,9 @@ export function WatchDpad({
       </Pressable>
 
       <Text style={styles.hint}>
-        swipe ◀ ▶ along a row · ▲ ▼ between rows · tap selects · two-finger tap
-        or Back exits
+        {pointer
+          ? 'drag moves the TV pointer · tap clicks · two-finger tap = Back'
+          : 'swipe to move · tap selects · two-finger tap = Back'}
       </Text>
     </View>
   );
@@ -398,16 +480,35 @@ const makeStyles = (t: Palette) =>
       paddingTop: 12,
       alignItems: 'center',
     },
+    titleRow: {
+      alignSelf: 'stretch',
+      flexDirection: 'row',
+      alignItems: 'center',
+      justifyContent: 'space-between',
+    },
     title: {
       color: t.textFaint,
       fontSize: 11,
       fontWeight: '700',
       letterSpacing: 1.2,
-      alignSelf: 'stretch',
     },
+    modeRow: { flexDirection: 'row', gap: 6 },
+    modeChip: {
+      paddingHorizontal: 12,
+      paddingVertical: 6,
+      borderRadius: 8,
+      backgroundColor: t.inset,
+      borderWidth: StyleSheet.hairlineWidth,
+      borderColor: t.cardBorder,
+    },
+    modeChipOn: { backgroundColor: t.accent, borderColor: t.accent },
+    modeText: { color: t.textDim, fontSize: 12, fontWeight: '600' },
+    modeTextOn: { color: '#0b1220', fontWeight: '700' },
     swipePad: {
       alignSelf: 'stretch',
-      height: 168,
+      // Owner feedback on the first build: 168 felt cramped. A swipe surface
+      // is the primary control here — give it real estate.
+      height: 300,
       alignItems: 'center',
       justifyContent: 'center',
       gap: 6,
