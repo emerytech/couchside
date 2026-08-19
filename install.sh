@@ -478,6 +478,7 @@ if [ "$UNINSTALL" -eq 1 ]; then
     sudo rm -f /etc/udev/rules.d/99-couchside-uinput.rules \
                /etc/udev/rules.d/99-couchside-rtc.rules \
                /etc/udev/rules.d/99-couchside-cec.rules \
+               /etc/udev/rules.d/99-couchside-openpuck.rules \
                /etc/modules-load.d/couchside-uinput.conf
     sudo rm -rf /etc/couchside/openpuck
     sudo udevadm control --reload-rules 2>/dev/null || true
@@ -1339,6 +1340,17 @@ printf '%s\n' 'KERNEL=="rtc0", SUBSYSTEM=="rtc", GROUP="input", MODE="0660"' \
 say "Granting the agent access to /dev/cec* (HDMI-CEC TV control)"
 printf '%s\n' 'KERNEL=="cec[0-9]", SUBSYSTEM=="cec", GROUP="input", MODE="0660"' \
     | sudo tee /etc/udev/rules.d/99-couchside-cec.rules >/dev/null
+
+# OpenPuck WebUSB access (vendor 28de): the OpenPuck configurator is a WebUSB page
+# opened in the box's browser (that is where the puck is plugged), and by default
+# a desktop user can't open raw USB devices, so the config page shows
+# "disconnected". uaccess grants the ACTIVE SEAT's user (the one the browser runs
+# as) — the same seat mechanism uinput relies on in Game Mode — no group juggling
+# or re-login. This is the ONLY thing the OpenPuck configurator button needs
+# box-side; the rest is the existing "open a web page on the box" path.
+say "Granting the browser WebUSB access to OpenPuck / Valve devices (vendor 28de)"
+printf '%s\n' 'SUBSYSTEM=="usb", ATTR{idVendor}=="28de", TAG+="uaccess", MODE="0664"' \
+    | sudo tee /etc/udev/rules.d/99-couchside-openpuck.rules >/dev/null
 
 # Apply the rules to the already-present nodes so no reboot is needed.
 sudo udevadm control --reload-rules 2>/dev/null || true

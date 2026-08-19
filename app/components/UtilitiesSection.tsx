@@ -218,6 +218,33 @@ export function UtilitiesSection({
     ]);
   }, []);
 
+  // Open the OpenPuck WebUSB configurator ON THE BOX's browser (that is where
+  // the puck is plugged, and WebUSB only reaches a device on the same machine).
+  // Drive it with the Watch pointer/keyboard remote. Rides the free-URL open, so
+  // it needs the box's "open web pages" opt-in; a box without it answers 403 and
+  // we say how to turn it on.
+  const OPENPUCK_URL = 'https://safijari.github.io/openpuck/';
+  const openConfigurator = useCallback(async () => {
+    hapticLight();
+    setNote((n) => { const c = { ...n }; delete c.openpuck; return c; });
+    try {
+      await api.playerOp(settings, 'open', { url: OPENPUCK_URL });
+      hapticSuccess();
+      setNote((n) => ({ ...n, openpuck: {
+        tone: 'info',
+        msg: 'Configurator opening on the TV. Drive it from Launch → Watch (Pointer '
+          + 'mode), and click Connect to pick the puck. If it says disconnected, the '
+          + 'box needs USB access for the browser (udev rule) — ask me.',
+      } }));
+    } catch (e) {
+      hapticWarning();
+      const msg = e instanceof ApiError && (e.status === 403 || e.status === 404)
+        ? 'Turn on “open web pages on the box” in Setup → Watch first, then try again.'
+        : 'Could not reach the box.';
+      setNote((n) => ({ ...n, openpuck: { tone: 'err', msg } }));
+    }
+  }, [settings]);
+
   // Opt-in: ask the box to compare its pinned firmware against the fork's newest
   // release. Read-only — this NEVER flashes; it only reveals the "Flash newest"
   // control when a newer build exists.
@@ -313,6 +340,26 @@ export function UtilitiesSection({
                 <Text style={[styles.note, {
                   color: n.tone === 'ok' ? t.green : n.tone === 'err' ? t.red : t.blue,
                 }]}>{n.msg}</Text>
+              ) : null}
+              {/* Open the OpenPuck WebUSB configurator on the box's browser —
+                  change mode/mappings, update firmware, or reboot into DFU, all
+                  over WebUSB. Driven with the Watch pointer remote. */}
+              {u.id === 'openpuck' ? (
+                <Pressable
+                  onPress={openConfigurator}
+                  testID="openpuck-configurator"
+                  style={({ pressed }) => [
+                    styles.btn,
+                    { borderColor: t.blue, opacity: pressed ? 0.8 : 1 },
+                  ]}
+                  accessibilityRole="button"
+                  accessibilityLabel="Open OpenPuck configurator on the box"
+                >
+                  <Ionicons name="open-outline" size={16} color={t.blue} />
+                  <Text style={[styles.btnText, { color: t.blue }]}>
+                    Open configurator on TV
+                  </Text>
+                </Pressable>
               ) : null}
               {u.id === 'openpuck' ? (
                 <View style={styles.newer}>
