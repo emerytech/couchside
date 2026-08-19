@@ -552,6 +552,31 @@ jobs:
       - name: Unit tests (player tile)
         run: python3 tests/test_player_tile.py
 
+      # Free-URL tier (§5 tier 3): the agent urllib validator, the opt-in flag
+      # that ships OFF, and the tile scheme backstop. The allowlist proof for
+      # "a client makes the box browser open an arbitrary page".
+      - name: Unit tests (player free-URL tier)
+        run: python3 tests/test_player_open_url.py
+
+      # Named key chords on {t:'k'} — the Shift+Tab the Watch d-pad needs to
+      # walk a web page's focus ring backwards (netflix.com and youtube.com
+      # ignore arrow keys entirely). Pins that an unknown key NAME is refused
+      # rather than pattern-matched, that a non-string name cannot escape the
+      # caller's ValueError handling and kill the session, and that the hello
+      # frame advertises exactly the names the decoder accepts — the field a
+      # newer app relies on to avoid firing an unknown key at an older agent.
+      - name: Unit tests (key chords)
+        run: python3 tests/test_key_chords.py
+
+      # Spatial focus navigation (navup/navdown) — the d-pad's vertical step.
+      # These run agent-authored JS in the box's browser, so the guard that
+      # matters is that the op id only ever INDEXES a frozen script table, that
+      # the scripts carry no format placeholder a later edit could fill from a
+      # request, and that an unreachable browser is an error rather than a
+      # pretend success.
+      - name: Unit tests (player spatial nav)
+        run: python3 tests/test_player_nav.py
+
       # Player routes. Drives a real Handler on loopback with STUB steam /
       # steamos-add-to-steam binaries that log every call, so "refused" and
       # "nothing ran" are two separate observations -- a test that only checked

@@ -318,6 +318,23 @@ export type PlayerState = {
   /** Query the tile is currently showing results for, '' otherwise. */
   query?: string;
   /**
+   * True only when the box owner opted into the free-URL tier
+   * (config.json player.custom_url). Absent/false on every box that has not —
+   * so the app offers "open any web page" only where the box allows it.
+   */
+  open_url?: boolean;
+  /**
+   * Spatial focus steps this agent accepts (e.g. ['navdown','navup'], agent
+   * >= 2.9.95). Absent on older boxes, where the d-pad's up/down falls back to
+   * plain arrow keys — which only scroll on the streaming sites, so the fallback
+   * cannot move between rows. Feature-detect; never assume.
+   */
+  nav_ops?: string[];
+  /** Effective TV zoom ('2') and the frozen set the box accepts (agent >=
+   *  2.9.95). Absent on older boxes — hide the zoom control there. */
+  ui_scale?: string;
+  ui_scales?: string[];
+  /**
    * {service -> extra hosts it is reachable on}, for LINK MATCHING only.
    * Measured: play.max.com redirects to play.hbomax.com and shared Max links
    * use the latter, so matching only the canonical host rejected the one
@@ -340,7 +357,14 @@ export type PlayerPlayback = {
 /** Transport ops the box accepts. Anything else is refused with a 404. */
 export type PlayerOp =
   | 'open' | 'close' | 'hub'
-  | 'play' | 'pause' | 'playpause' | 'mute' | 'seek';
+  | 'play' | 'pause' | 'playpause' | 'mute' | 'seek'
+  /** Spatial focus steps for the d-pad (agent >= 2.9.95). Move the page's focus
+   *  to the nearest element above/below — Tab only walks ALONG a row of tiles,
+   *  and arrow keys just scroll on the streaming sites. Gated on
+   *  PlayerState.nav_ops; an older agent answers 400. */
+  | 'navup' | 'navdown' | 'navleft' | 'navright'
+  /** TV zoom: value must be a member of PlayerState.ui_scales (agent >= 2.9.95). */
+  | 'scale';
 
 /** One connected display, from GET /api/displays. */
 export type Display = {
@@ -2624,8 +2648,14 @@ export const api = {
       /** Free text. The box rejects it on structure and percent-encodes the
        *  rest; only services in PlayerState.searchable accept it. */
       query?: string;
+      /** An arbitrary http(s) URL — the free-URL tier. Accepted ONLY when the
+       *  box set player.custom_url (PlayerState.open_url); the box validates
+       *  scheme/host/port and refuses the rest with 403/404. */
+      url?: string;
+      /** For op 'scale': must be a member of PlayerState.ui_scales. */
+      value?: string;
     } = {},
-  ): Promise<{ ok: boolean; running?: boolean; starting?: boolean; service?: string }> {
+  ): Promise<{ ok: boolean; running?: boolean; starting?: boolean; service?: string; url?: string }> {
     return request(settings, '/api/player', {
       method: 'POST',
       body: { op, ...opts },

@@ -19,6 +19,7 @@ import errno
 import glob
 import hashlib
 import hmac
+import ipaddress
 import json
 import math
 import os
@@ -48,7 +49,7 @@ except ImportError:  # pragma: no cover
     fcntl = None
 
 APP_NAME = "couchside-agent"
-VERSION = "2.9.94"
+VERSION = "2.9.95"
 UID = os.getuid()
 XDG_RUNTIME_DIR = "/run/user/%d" % UID
 
@@ -83,6 +84,12 @@ DEFAULT_TLS_PORT = 8788  # HTTPS listener when tls.enabled; plaintext stays on D
 #     "enabled": false,                             # default false (opt-in)
 #     "hold_ms": 1200,                              # 600..5000, default 1200
 #     "uniq": ""                                    # optional; pin to ONE pad (MAC)
+#   },
+#   "player": {                                     # optional; Couchside Player
+#     "custom_url": false                           # opt-in free-URL tier (§5);
+#                                                   # OFF by default. true lets the
+#                                                   # phone open ANY http(s) page on
+#                                                   # the box's browser (validated).
 #   }
 # }
 #
@@ -2849,16 +2856,104 @@ def _pl_conf_read():
     return service, path, query
 
 
-def _pl_conf_write(service, path, query="", hub=False):
-    """A deep-link path and a search query are mutually exclusive — the tile
-    treats a query as "open this service's search results", and writing both
-    would leave which one wins to reading order."""
+# UI scale for the player's Chrome. A 4K TV at couch distance renders desktop
+# scale unusably small (owner report, 2026-08-17), so the browser gets
+# --force-device-scale-factor. The effective value is either the user's saved
+# choice or an automatic pick from the agent's own display probe. Every value
+# that can reach the conf comes from THIS frozen tuple — a client request can
+# only select a member, and the tile additionally refuses anything outside its
+# own literal whitelist before it becomes argv.
+_PL_UI_SCALES = ("1", "1.25", "1.5", "1.75", "2")
+PLAYER_SCALE_FILE = os.path.expanduser("~/.config/couchside/player-scale")
+
+
+def _pl_scale_override():
+    """The user's saved zoom, or '' when unset/invalid. A garbage file is
+    ignored, never interpreted (§3.6)."""
+    try:
+        with open(PLAYER_SCALE_FILE) as f:
+            v = f.read().strip()
+    except OSError:
+        return ""
+    return v if v in _PL_UI_SCALES else ""
+
+
+def _pl_ui_scale():
+    o = _pl_scale_override()
+    if o:
+        return o
+    # Auto by display height: 4K-class -> 2, 1440p-class -> 1.5, anything
+    # smaller still gets a couch bump (1.0 never reads well from ten feet).
+    try:
+        info = display_info()
+        mode = (info.get("mode") or info.get("preferred_mode") or {}) if info else {}
+        h = int(mode.get("height") or 0)
+    except Exception:
+        h = 0
+    if h >= 2000:
+        return "2"
+    if h >= 1300:
+        return "1.5"
+    if h > 0:
+        return "1.25"
+    return ""   # unknown display: write nothing, tile keeps Chrome's default
+
+
+def player_scale(value):
+    """Set the player zoom. ValueError => 404, nothing written or run.
+
+    The client's value is a SELECTOR into _PL_UI_SCALES — exact membership,
+    no parsing, no clamping (§3.6: reject rather than sanitise). Persisted so
+    every later open uses it; a running page is relaunched to apply it now.
+    """
+    if not isinstance(value, str) or value not in _PL_UI_SCALES:
+        raise ValueError("scale not allowed")
+    if PL_MOCK:
+        _PL_MOCK["scale"] = value
+        return {"ok": True, "scale": value, "relaunched": _PL_MOCK["running"]}
+    os.makedirs(os.path.dirname(PLAYER_SCALE_FILE), exist_ok=True)
+    with open(PLAYER_SCALE_FILE, "w") as f:
+        f.write(value + "\n")
+    relaunched = False
+    if _pl_running():
+        # Rewrite ONLY the scale line; every other conf line is preserved
+        # byte-for-byte (they were validated when written — re-deriving them
+        # here would mean a second writer for the same facts).
+        try:
+            with open(PLAYER_CONF) as f:
+                lines = [l for l in f.read().splitlines()
+                         if l and not l.startswith("scale=")]
+        except OSError:
+            lines = []
+        if lines:
+            with _PL_LOCK:
+                with open(PLAYER_CONF, "w") as f:
+                    f.write("\n".join(lines) + "\nscale=%s\n" % value)
+                player_close()
+                appid = _pl_appid()
+            # Same close -> relaunch shape as player_open: the tile is
+            # single-instance, and _pl_relaunch waits out the old one.
+            _pl_relaunch(appid, True)
+            relaunched = True
+    return {"ok": True, "scale": value, "relaunched": relaunched}
+
+
+def _pl_conf_write(service, path, query="", hub=False, url=""):
+    """A deep-link path, a search query, and a free `url` are mutually exclusive
+    — the tile treats a query as "open this service's search results" and a url
+    as "open exactly this page", and writing more than one would leave which wins
+    to reading order. `url` is already validated by _pl_validate_open_url."""
     os.makedirs(os.path.dirname(PLAYER_CONF), exist_ok=True)
+    scale = _pl_ui_scale()
     with open(PLAYER_CONF, "w") as f:
         if hub:
             f.write("hub=1\n")
         f.write("service=%s\n" % service)
-        if query:
+        if scale:
+            f.write("scale=%s\n" % scale)
+        if url:
+            f.write("url=%s\n" % url)
+        elif query:
             f.write("query=%s\n" % query)
         elif path:
             f.write("path=%s\n" % path)
@@ -2895,6 +2990,100 @@ def _pl_validate_search(service, query):
     if PL_MOCK:
         return "https://example.invalid/%s?q=%s" % (service, len(query))
     return _pl_ask("--print-search", service, query)
+
+
+# ---------------------------------------------------------------------------
+# Free-URL tier (project_media-player.md §5, tier 3): open an ARBITRARY web page
+# on the box's player. A genuinely new primitive ("a client makes the box's
+# browser go somewhere"), so it SHIPS OFF and is gated behind a box-side config
+# flag — a default install never gains arbitrary navigation. Validation is
+# reject-never-sanitise (§3 rule 6); the URL only ever becomes an argv element to
+# the resolved browser binary (`--app=<url>`), NEVER xdg-open/steam://openurl
+# (those re-dispatch by scheme = arbitrary handler launch, the real RCE path).
+# ---------------------------------------------------------------------------
+_PL_URL_MAX = 2048
+# A small allowed port set: standard web + the LAN media servers this tier is
+# for (Plex 32400, Jellyfin 8096/8920, Home Assistant 8123, common alt-http).
+_PL_ALLOWED_PORTS = frozenset({80, 443, 8080, 8443, 8096, 8920, 8123, 32400})
+_PL_OPEN_MIN_INTERVAL_S = 2.0   # rate-limit (KI-019): a token holder can't strobe the TV
+_pl_last_open = [0.0]
+
+
+def _pl_custom_url_enabled():
+    """True only when the box owner opted into the free-URL tier
+    (config.json `"player": {"custom_url": true}`). Read FRESH from the config so
+    the edit + agent restart is the whole toggle. Degrade-closed (§3 rule 7): any
+    error, or the key absent/not exactly true, is OFF."""
+    if PL_MOCK:
+        return True
+    try:
+        with open(CONFIG_PATH) as f:
+            raw = json.load(f)
+    except (OSError, ValueError):
+        return False
+    p = raw.get("player")
+    return isinstance(p, dict) and p.get("custom_url") is True
+
+
+def _pl_host_is_lan(host):
+    """True for a loopback / RFC1918 / link-local IP, or a localhost-ish name —
+    the only hosts plain http is allowed to (the Plex/Jellyfin-on-the-LAN case)."""
+    try:
+        ip = ipaddress.ip_address(host)
+        return ip.is_loopback or ip.is_private or ip.is_link_local
+    except ValueError:
+        h = host.lower()
+        return (h == "localhost" or h.endswith(".local") or h.endswith(".lan")
+                or h.endswith(".home") or h.endswith(".internal"))
+
+
+def _pl_valid_host(host):
+    """host is a valid IP literal OR a DNS name (labels [A-Za-z0-9-], not
+    edge-hyphenated, 1..63 each, total <=253). ASCII only — IDN is rejected
+    upstream, not normalised."""
+    try:
+        ipaddress.ip_address(host)
+        return True
+    except ValueError:
+        pass
+    if not host or len(host) > 253:
+        return False
+    labels = host.split(".")
+    return all(re.fullmatch(r"(?!-)[A-Za-z0-9-]{1,63}(?<!-)", lbl) for lbl in labels)
+
+
+def _pl_validate_open_url(url):
+    """§5 tier-3 validation. Returns the URL string if allowed, else None. Reject,
+    never sanitise: https anywhere; http ONLY to a LAN host; no userinfo; a valid
+    host; a port from the small allowed set; no control chars or whitespace
+    anywhere; length-capped; ASCII-printable only (rejects IDN + control + space)."""
+    if not isinstance(url, str) or not url or len(url) > _PL_URL_MAX:
+        return None
+    # Every byte must be ASCII printable (0x21..0x7e): rejects whitespace,
+    # control bytes, and any non-ASCII (IDN) in ONE check, before parsing.
+    if any(not (0x21 <= ord(c) <= 0x7e) for c in url):
+        return None
+    try:
+        p = urlparse(url)
+    except ValueError:
+        return None
+    if p.scheme not in ("https", "http"):
+        return None
+    if p.username is not None or p.password is not None:
+        return None
+    host = p.hostname
+    if not host or not _pl_valid_host(host):
+        return None
+    lan = _pl_host_is_lan(host)
+    if p.scheme == "http" and not lan:
+        return None                                  # plaintext only on the LAN
+    try:
+        port = p.port
+    except ValueError:
+        return None
+    if port is not None and port not in _PL_ALLOWED_PORTS:
+        return None
+    return url
 
 
 def _pl_appid():
@@ -2966,6 +3155,10 @@ def player_info():
                 "service_urls": dict(_PLAYER_SERVICE_URLS),
                 "searchable": list(_PLAYER_SEARCHABLE),
                 "service_hosts": {k: list(v) for k, v in _PLAYER_SERVICE_HOSTS.items()},
+                "open_url": _pl_custom_url_enabled(),
+                "nav_ops": sorted(PLAYER_JS_NAV),
+                "ui_scale": _PL_MOCK.get("scale") or _pl_ui_scale(),
+                "ui_scales": list(_PL_UI_SCALES),
                 "playback": player_playback(),
                 "seek_secs": list(PLAYER_SEEK_SECS)}
     service, path, query = _pl_conf_read()
@@ -2975,6 +3168,19 @@ def player_info():
             "service_urls": dict(_PLAYER_SERVICE_URLS),
             "searchable": list(_PLAYER_SEARCHABLE),
             "service_hosts": {k: list(v) for k, v in _PLAYER_SERVICE_HOSTS.items()},
+            # Free-URL tier availability (§5 tier 3): true only when the box owner
+            # set player.custom_url. Additive; an old app ignores it, a new one
+            # shows the "open any web link" field only when the box allows it.
+            "open_url": _pl_custom_url_enabled(),
+            # Which spatial focus steps this agent accepts. Additive: an older
+            # app ignores it, and a newer one uses it to decide whether the
+            # d-pad's up/down can move focus BETWEEN rows or must fall back to
+            # plain arrow keys (which only scroll on the streaming sites).
+            "nav_ops": sorted(PLAYER_JS_NAV),
+            # TV zoom (additive): the effective scale and the frozen set of
+            # choices, so the app renders exactly the values the box accepts.
+            "ui_scale": _pl_ui_scale(),
+            "ui_scales": list(_PL_UI_SCALES),
             # Added field, never a shape change: null when nothing is playing
             # or the browser can't be reached, so an old app ignores it and a
             # new one hides the transport rather than showing a dead scrubber.
@@ -3021,17 +3227,40 @@ def _pl_relaunch(appid, was_running):
     threading.Thread(target=launch, daemon=True).start()
 
 
-def player_open(service, path="", query=""):
+def player_open(service, path="", query="", url=""):
     """Point the tile at an allowlisted service and launch it through Steam.
 
     With `query`, the tile opens that service's OWN search results instead —
     which is the whole of "search from the phone": nobody types a title on a TV
     with a d-pad. A query and a deep-link path are mutually exclusive.
 
-    Raises ValueError when the service/path/query is refused — the caller turns
-    that into a 404, and NOTHING is written or launched. Registration and the
-    fresh-registration double-fire run in a background thread so the POST
+    With `url` (the opt-in free-URL tier — the CALLER must have already checked
+    _pl_custom_url_enabled() + the rate limit), open exactly that page. The url is
+    validated HERE by _pl_validate_open_url and only ever becomes a `--app=<url>`
+    argv to the browser — never xdg-open (§5).
+
+    Raises ValueError when the service/path/query/url is refused — the caller
+    turns that into a 404, and NOTHING is written or launched. Registration and
+    the fresh-registration double-fire run in a background thread so the POST
     returns immediately; the app watches `running` flip via GET."""
+    if url:
+        valid = _pl_validate_open_url(url)
+        if valid is None:
+            raise ValueError("url rejected")
+        service, path, query, url = "netflix", "", "", valid
+        if PL_MOCK:
+            _PL_MOCK.update(running=True, service="", path="", query="", url=valid)
+            return {"ok": True, "running": True, "url": valid}
+        if not player_available():
+            raise RuntimeError("player not installed on this box")
+        with _PL_LOCK:
+            _pl_conf_write(service, "", "", url=valid)
+            was_running = _pl_running()
+            if was_running:
+                player_close()
+            appid = _pl_appid()
+        _pl_relaunch(appid, was_running)
+        return {"ok": True, "starting": True, "url": valid}
     if query:
         url = _pl_validate_search(service, query)
         if url is None:
@@ -3138,6 +3367,87 @@ PLAYER_JS_SEEK = {
            " v.currentTime = Math.max(0, d ? Math.min(d - 0.5, t) : t);"
            " return true;})()" % (_PL_JS_PICK, secs))
     for secs in PLAYER_SEEK_SECS
+}
+
+
+# Spatial (up/down) focus navigation for the on-screen d-pad.
+#
+# WHY THIS IS NOT A KEY. Tab walks a page's focus order LINEARLY, which is right
+# ALONG a row of tiles and useless BETWEEN rows: from the middle of a Netflix
+# row, reaching the row below means tabbing through every remaining tile in the
+# current one. Arrow keys don't help either — measured on the box, netflix.com
+# and youtube.com ignore them entirely (they only scroll the viewport, leaving
+# focus where it was).
+#
+# So vertical movement picks the nearest focusable element in that direction
+# geometrically — the same thing a TV browser's spatial navigation does. No
+# site-specific selectors: it reads the live layout, so it works on any page.
+# Verified on the real Netflix browse grid (552 focusables): down walked
+# Ashley Garcia -> Teen Wolf -> ONE PIECE -> The Hunger Games -> Venom, and up
+# retraced it.
+#
+# Focus set this way is REAL focus, so the d-pad's OK button (a genuine uinput
+# Enter) activates whatever this landed on.
+_PL_JS_NAV_BODY = """(function(){
+  var DX = %d, DY = %d;
+  var a = document.activeElement;
+  // MODAL SCOPING (measured on tv.apple.com): a signup <dialog> holds a focus
+  // trap — focusing a tile behind it just gets stolen back. When a modal owns
+  // focus, navigate INSIDE it, which is what a native UI does with a modal.
+  var scope = (a && a.closest &&
+               a.closest('dialog,[role="dialog"],[aria-modal="true"]')) || document;
+  var sel = 'a[href],button,[tabindex]:not([tabindex="-1"]),input,select,textarea,[role="link"],[role="button"]';
+  var nodes = scope.querySelectorAll(sel), all = [];
+  for (var i = 0; i < nodes.length; i++){
+    var e = nodes[i], r = e.getBoundingClientRect();
+    if (r.width < 8 || r.height < 8) continue;
+    if (r.bottom < -200 || r.top > innerHeight + 600) continue;
+    var s = getComputedStyle(e);
+    if (s.visibility === 'hidden' || s.display === 'none') continue;
+    all.push({el: e, cx: r.left + r.width/2, cy: r.top + r.height/2});
+  }
+  if (!all.length) return false;
+  var ar = a ? a.getBoundingClientRect() : null;
+  // The current position must be a REAL focused control. With nothing focused,
+  // activeElement is BODY, whose rect spans the whole page — its centre sat at
+  // y=8398 on play.hbomax.com and put every candidate "above" us, so navdown
+  // found nothing (measured; broke max/hulu/paramount landing pages). Anything
+  // taller than ~1.5 viewports is a container, not a control.
+  var real = ar && ar.width && ar.height && ar.height < innerHeight * 1.5 &&
+             a !== document.body && a.tagName !== 'HTML';
+  var cur = real ? {cx: ar.left + ar.width/2, cy: ar.top + ar.height/2}
+                 : {cx: innerWidth/2, cy: 0};
+  var best = null, bestScore = Infinity;
+  for (var j = 0; j < all.length; j++){
+    var c = all[j];
+    // Signed travel along the requested axis; distance across it is a penalty
+    // so a step stays in its row/column rather than jumping diagonally.
+    var fwd = DX ? (c.cx - cur.cx) * DX : (c.cy - cur.cy) * DY;
+    if (fwd < 24) continue;
+    var cross = DX ? Math.abs(c.cy - cur.cy) : Math.abs(c.cx - cur.cx);
+    var score = fwd + cross * 2;
+    if (score < bestScore){ bestScore = score; best = c; }
+  }
+  if (!best) return false;
+  best.el.focus({preventScroll: true});
+  best.el.scrollIntoView({block: 'center', inline: 'nearest'});
+  return true;
+})()"""
+
+# One script per direction, built at import time. A request only ever indexes
+# this dict by op id; the direction is an agent-chosen literal, never a value
+# formatted out of the request body.
+PLAYER_JS_NAV = {
+    "navdown": _PL_JS_NAV_BODY % (0, 1),
+    "navup": _PL_JS_NAV_BODY % (0, -1),
+    # Horizontal spatial steps. These exist because the obvious key answer —
+    # Tab / Shift+Tab — is Steam's OVERLAY HOTKEY: in Game Mode the tile is a
+    # Steam game, and a Shift+Tab from the d-pad opened the Steam side menu on
+    # the TV instead of walking focus (owner report, Steam Machine,
+    # 2026-08-18). CDP focus steps involve no keys at all, so there is nothing
+    # for Steam to intercept.
+    "navleft": _PL_JS_NAV_BODY % (-1, 0),
+    "navright": _PL_JS_NAV_BODY % (1, 0),
 }
 
 
@@ -3340,6 +3650,13 @@ def player_transport(op, secs=None):
     elif op == "seek":
         if secs not in PLAYER_SEEK_SECS:
             raise ValueError("seek offset not allowed")
+        if _pl_seek_wants_keys():
+            # Netflix-class player: direct currentTime writes kill it (M7375,
+            # measured). Press its own arrow key instead. secs is the vetted
+            # frozen-tuple member from the check above.
+            if not _pl_running():
+                raise RuntimeError("player is not running")
+            return _pl_seek_by_key(secs)
         script = PLAYER_JS_SEEK[secs]           # pre-built per allowed offset
     else:
         raise ValueError("unknown transport op")
@@ -3349,6 +3666,82 @@ def player_transport(op, secs=None):
     ok = _pl_cdp_run(script)
     if ok is None:
         raise RuntimeError("could not reach the player")
+    return {"ok": bool(ok), "op": op}
+
+
+# Services whose web player breaks on direct currentTime writes. MEASURED on
+# real playback (Steam Machine, 2026-08-18): v.currentTime += 10 on
+# netflix.com/watch tore the player down with error M7375, while ONE uinput
+# ArrowRight — the binding Netflix's own player ships — seeked +10s cleanly
+# (t 254.4 -> 267.9 over ~4s of wall clock, no error). So for these services
+# the seek op presses the player's own key instead of touching the element.
+_PL_KEY_SEEK_SERVICES = frozenset({"netflix"})
+
+
+def _pl_seek_wants_keys():
+    """True when the OPEN PAGE belongs to a service that must seek by key."""
+    try:
+        with open(PLAYER_CONF) as f:
+            raw = f.read()
+    except OSError:
+        return False
+    if "\nurl=" in "\n" + raw:
+        return False   # free-URL page: a plain <video>, JS seek is correct
+    service, _path, _query = _pl_conf_read()
+    return service in _PL_KEY_SEEK_SERVICES
+
+
+def _pl_seek_by_key(secs):
+    """Seek by pressing the player's own arrow key, one press per 10 seconds.
+
+    A transient uinput keyboard: created, pressed, destroyed. Focus caveat is
+    the same as the d-pad's (the fullscreen player owns focus). `secs` was
+    already validated against PLAYER_SEEK_SECS by the caller — the key and
+    press count derive from that vetted constant, never from the request.
+    """
+    key = KEY_RIGHT if secs > 0 else KEY_LEFT
+    presses = max(1, int(round(abs(secs) / 10.0)))
+    kb = UInputKeyboard()
+    try:
+        for _ in range(presses):
+            kb.emit([(EV_KEY, key, 1), (EV_KEY, key, 0)])
+            time.sleep(0.15)
+    finally:
+        try:
+            kb.destroy()
+        except Exception:
+            pass
+    return {"ok": True, "op": "seek", "secs": secs, "via": "key"}
+
+
+def player_nav(op):
+    """Move the page's focus one step up/down. ValueError => 404, nothing runs.
+
+    Same shape as player_transport: the op id INDEXES a frozen dict of scripts
+    the agent authored; the request never contributes a character of JS.
+    """
+    # Type first: an unhashable op (a JSON object/array) would make the `in`
+    # tests below raise TypeError rather than the ValueError this function's
+    # callers handle — the same hazard fixed in the input decoders (KI-065).
+    if not isinstance(op, str):
+        raise ValueError("nav op must be a string")
+
+    if PL_MOCK:
+        if op in PLAYER_JS_NAV:
+            return {"ok": True, "op": op}
+        raise ValueError("unknown nav op")
+
+    if op not in PLAYER_JS_NAV:
+        raise ValueError("unknown nav op")
+    script = PLAYER_JS_NAV[op]                  # lookup, never interpolation
+
+    if not _pl_running():
+        raise RuntimeError("player is not running")
+    ok = _pl_cdp_run(script)
+    if ok is None:
+        raise RuntimeError("could not reach the player")
+    # False means "nothing focusable that way" (already at the edge) — a true
+    # answer, not a failure, so the app can stay quiet rather than show an error.
     return {"ok": bool(ok), "op": op}
 
 
@@ -14416,6 +14809,21 @@ DESKTOP_CHORDS = {
     "overview": (KEY_LEFTMETA, KEY_W),  # KWin "Overview" effect (Plasma 6)
 }
 
+# Generic key chords, not desktop-specific. Same press-in-order/release-in-
+# reverse expansion as DESKTOP_CHORDS; kept separate so the desktop cluster
+# stays a list of desktop actions.
+#
+# WHY shifttab EXISTS: measured on the reference box 2026-08-17 against the real
+# sites, with a control key in the same run — netflix.com and youtube.com IGNORE
+# arrow keys entirely (right/down moved nothing) and walk their focus ring on
+# TAB (focus went Mima -> pokemonRhyott on Netflix, "Skip navigation" -> "Search
+# with your voice" on YouTube). Arrow-key grid nav is a TV-APP behaviour, not a
+# web behaviour. So a couch d-pad driving a web page needs Tab to go forward and
+# Shift+Tab to go back; without this entry the ring could only ever advance.
+KEY_CHORDS = {
+    "shifttab": (KEY_LEFTSHIFT, KEY_TAB),
+}
+
 # All KEY_* codes the virtual keyboard may emit (declared at device create).
 # KEY_LEFTCTRL is included for the Ctrl+V paste chord even though no char maps
 # to it, else the uinput device won't declare the capability and emit fails.
@@ -14423,6 +14831,7 @@ KEYBOARD_CODES = sorted(
     {code for code, _shift in CHAR_KEYMAP.values()}
     | set(SPECIAL_KEYS.values())
     | {c for codes in DESKTOP_CHORDS.values() for c in codes}
+    | {c for codes in KEY_CHORDS.values() for c in codes}
     | {KEY_LEFTSHIFT, KEY_LEFTCTRL, KEY_LEFTALT}
 )
 
@@ -14852,6 +15261,12 @@ def gamepad_events(msg):
         v = msg.get("v")
         if v not in (0, 1):
             raise ValueError("button v must be 0 or 1")
+        # An unhashable name (a JSON object/array) makes the `in` tests below
+        # raise TypeError, which escapes the caller's `except ValueError` and
+        # kills the session thread. Check the type before the lookup. See the
+        # same guard in keyboard_events and mouse_events.
+        if not isinstance(k, str):
+            raise ValueError("button must be a string")
         if k in BTN_CODES:
             return [(EV_KEY, BTN_CODES[k], v)]
         if k in DPAD_MAP:
@@ -14903,6 +15318,12 @@ def mouse_events(msg):
     if t == "mb":
         k = msg.get("k")
         v = msg.get("v")
+        # An unhashable name (a JSON object/array) makes the `in` test itself
+        # raise TypeError, which escapes the caller's `except ValueError` and
+        # kills the session thread. Check the type before the lookup. See the
+        # same guard in keyboard_events and gamepad_events.
+        if not isinstance(k, str):
+            raise ValueError("mouse button must be a string")
         if k not in MOUSE_BTN_CODES:
             raise ValueError("unknown mouse button %r" % (k,))
         if v not in (0, 1):
@@ -14934,12 +15355,23 @@ def keyboard_events(msg):
         return _type_events(text)
     if t == "k":
         key = msg.get("key")
+        # A non-string name can never be a table entry, and an UNHASHABLE one (a
+        # JSON object or array) raises TypeError out of the `in` tests below —
+        # which escapes the caller's `except ValueError` and takes the session
+        # thread with it. Refuse it as the unknown key it is: reject, don't
+        # sanitise (§3.6), and fail closed (§7).
+        if not isinstance(key, str):
+            raise ValueError("key must be a string")
         if key in SPECIAL_KEYS:
             code = SPECIAL_KEYS[key]
             return [(EV_KEY, code, 1), (EV_KEY, code, 0)]
         if key in DESKTOP_CHORDS:
             codes = DESKTOP_CHORDS[key]
             # Press in order, release in reverse (modifiers wrap the base key).
+            return ([(EV_KEY, c, 1) for c in codes]
+                    + [(EV_KEY, c, 0) for c in reversed(codes)])
+        if key in KEY_CHORDS:
+            codes = KEY_CHORDS[key]
             return ([(EV_KEY, c, 1) for c in codes]
                     + [(EV_KEY, c, 0) for c in reversed(codes)])
         raise ValueError("unknown special key %r" % (key,))
@@ -18218,8 +18650,16 @@ def _make_holder(entry, mock):
     entry["held"] = True
     entry["requested"] = False
     dev = entry["device"].name if entry.get("device") is not None else "keyboard only"
+    # `keys` is ADDITIVE (see CLAUDE.md §4): it lets a client discover which
+    # named keys/chords this agent accepts instead of guessing from a version
+    # number. It matters because an unknown key name raises in keyboard_events
+    # and CLOSES the session — so a client that blind-fired a newer name would
+    # kill its own socket against an older agent. Old clients ignore the field.
     _wsend_json(entry, {"t": "hello", "dev": dev,
-                        "text": _text_caps(mock)})
+                        "text": _text_caps(mock),
+                        "keys": sorted(set(SPECIAL_KEYS)
+                                       | set(DESKTOP_CHORDS)
+                                       | set(KEY_CHORDS))})
     for slot, factory in (("mouse", MockMouse if mock else UInputMouse),
                           ("keyboard", MockKeyboard if mock else UInputKeyboard)):
         if entry.get(slot) is None:
@@ -20930,10 +21370,25 @@ class Handler(BaseHTTPRequestHandler):
                     self._send(400, {"error": "json body with op required"}, started)
                     return
                 if op == "open":
+                    open_url = req.get("url")
+                    if open_url is not None:
+                        # Free-URL tier (§5 tier 3): SHIPS OFF, gated behind a
+                        # box-side config flag, and rate-limited (KI-019) so a
+                        # token holder cannot strobe the TV. The url itself is
+                        # validated inside player_open (reject, never sanitise).
+                        if not _pl_custom_url_enabled():
+                            self._send(403, {"error": "custom URL not enabled on this box"}, started)
+                            return
+                        now = time.time()
+                        if now - _pl_last_open[0] < _PL_OPEN_MIN_INTERVAL_S:
+                            self._send(429, {"error": "slow down"}, started)
+                            return
+                        _pl_last_open[0] = now
                     try:
                         r = player_open(req.get("service"),
                                         req.get("path", ""),
-                                        req.get("query", ""))
+                                        req.get("query", ""),
+                                        open_url or "")
                     except ValueError:
                         # Deliberately does NOT echo the rejected value back.
                         self._send(404, {"error": "unknown service"}, started)
@@ -20957,6 +21412,32 @@ class Handler(BaseHTTPRequestHandler):
                     # rejected value is a 404 and no script runs.
                     try:
                         r = player_transport(op, secs=req.get("secs"))
+                    except ValueError:
+                        self._send(404, {"error": "not allowed"}, started)
+                        return
+                    except RuntimeError as e:
+                        self._send(409, {"error": str(e)}, started)
+                        return
+                    self._send(200, r, started)
+                elif op in ("navup", "navdown", "navleft", "navright"):
+                    # Spatial focus step for the on-screen d-pad. Same frozen
+                    # lookup as transport: the op id picks one of two scripts
+                    # the agent wrote, and the direction is a literal baked in
+                    # at import time. A rejected id is a 404 and nothing runs.
+                    try:
+                        r = player_nav(op)
+                    except ValueError:
+                        self._send(404, {"error": "not allowed"}, started)
+                        return
+                    except RuntimeError as e:
+                        self._send(409, {"error": str(e)}, started)
+                        return
+                    self._send(200, r, started)
+                elif op == "scale":
+                    # TV zoom. The value is a SELECTOR into the frozen
+                    # _PL_UI_SCALES tuple — membership or 404, never parsed.
+                    try:
+                        r = player_scale(req.get("value"))
                     except ValueError:
                         self._send(404, {"error": "not allowed"}, started)
                         return

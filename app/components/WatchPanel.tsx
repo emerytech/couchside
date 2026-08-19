@@ -1,4 +1,4 @@
-import React, { useCallback, useMemo, useState } from 'react';
+import React, { useCallback, useMemo, useRef, useState } from 'react';
 import {
   Pressable,
   ScrollView,
@@ -14,6 +14,9 @@ import { hapticError, hapticLight, hapticSuccess } from '@/lib/haptics';
 import { useSettings } from '@/lib/SettingsContext';
 import { clearRecents, noteRecent, useWatchRecents } from '@/lib/watchRecents';
 import { useTheme, useThemedStyles, type Palette } from '@/lib/theme';
+import { WatchDpad } from '@/components/WatchDpad';
+import { useDesktopKeyboard } from '@/components/DesktopKeyboard';
+import { GamepadClient } from '@/lib/gamepad';
 
 /**
  * DISPLAY ONLY. This is not an allowlist and must never become one — the box's
@@ -159,6 +162,25 @@ export function WatchPanel() {
   const [error, setError] = useState<string | null>(null);
   const [link, setLink] = useState('');
   const [query, setQuery] = useState('');
+  // True while a finger is on the d-pad's swipe surface. The ScrollView must
+  // not scroll during it, or a vertical swipe scrolls the panel instead of
+  // stepping the TV's focus a row.
+  const [dpadGesture, setDpadGesture] = useState(false);
+  // Optimistic "Starting…" card. The box's truth arrives on a 5s poll, so
+  // without this a tapped service shows NOTHING for up to five seconds — the
+  // single biggest "does not feel native" gap. Set from the POST's own success
+  // (the box really is starting it), cleared when the poll confirms running or
+  // after a timeout that means the tile died.
+  const [pending, setPending] = useState<string | null>(null);
+  // Jump the panel to the top when an open starts, so the Starting/Now card is
+  // on screen instead of below the fold the user tapped from.
+  const scrollRef = useRef<ScrollView | null>(null);
+  // The gamepad session is OWNED here (WatchDpad runs its lifecycle) so the
+  // phone-keyboard hook can share it: typing rides the same {t:'kt'} path,
+  // and the compose bar must render at panel root, outside the ScrollView.
+  const gpRef = useRef<GamepadClient | null>(null);
+  if (gpRef.current == null) gpRef.current = new GamepadClient();
+  const kb = useDesktopKeyboard(gpRef.current);
 
   const configured = settings.host.trim().length > 0;
 
@@ -175,6 +197,17 @@ export function WatchPanel() {
 
   const state = player.data;
   const services = state?.services ?? [];
+
+  // Poll confirmed the player is up (or it never came up): drop the optimism.
+  React.useEffect(() => {
+    if (!pending) return undefined;
+    if (state?.running) {
+      setPending(null);
+      return undefined;
+    }
+    const timer = setTimeout(() => setPending(null), 25_000);
+    return () => clearTimeout(timer);
+  }, [pending, state?.running]);
   // Which services can be searched is the BOX's answer, not a guess here:
   // a verified search URL exists for some services and not others.
   const searchable = state?.searchable ?? [];
@@ -194,6 +227,8 @@ export function WatchPanel() {
           query ? { service, query } : path ? { service, path } : { service },
         );
         hapticSuccess();
+        setPending(service);
+        scrollRef.current?.scrollTo({ y: 0, animated: true });
         noteRecent({ service, query, path: query ? '' : path });
         setLink('');
         setQuery('');
@@ -204,6 +239,35 @@ export function WatchPanel() {
         // not echo the value back, so say what the user can act on.
         setError(
           `The box wouldn’t open that. ${e instanceof Error ? e.message : ''}`.trim(),
+        );
+      } finally {
+        setBusy(null);
+      }
+    },
+    [settings, player],
+  );
+
+  // Free-URL tier (agent §5 tier 3): only when the BOX opted in (open_url) does
+  // the app offer opening an arbitrary web page. The box does the real
+  // validation; looksLikeUrl is a client hint only, so a bad paste is refused
+  // helpfully rather than sent.
+  const canOpenAnyLink = state?.open_url === true;
+  const openUrl = useCallback(
+    async (url: string) => {
+      hapticLight();
+      setBusy('__url__');
+      setError(null);
+      try {
+        await api.playerOp(settings, 'open', { url });
+        hapticSuccess();
+        setPending('__web__');
+        scrollRef.current?.scrollTo({ y: 0, animated: true });
+        setLink('');
+        player.refresh();
+      } catch (e) {
+        hapticError();
+        setError(
+          `The box wouldn’t open that page. ${e instanceof Error ? e.message : ''}`.trim(),
         );
       } finally {
         setBusy(null);
@@ -235,6 +299,13 @@ export function WatchPanel() {
         : null,
     [link, state?.service_urls, state?.service_hosts],
   );
+  // A pasted string the box's free-URL tier could accept: an http(s) URL that
+  // isn't already a known service (those take the deep-link path above). Client
+  // hint only — the box validates scheme/host/port and refuses the rest.
+  const webLink = useMemo(() => {
+    const s = link.trim();
+    return canOpenAnyLink && !parsedLink && /^https?:\/\/\S+$/i.test(s) ? s : null;
+  }, [link, canOpenAnyLink, parsedLink]);
 
   const playback = state?.playback ?? null;
   // Offsets come from the BOX (seek_secs), so the app can never offer a value
@@ -244,7 +315,7 @@ export function WatchPanel() {
   const fwd = offsets.filter((n) => n > 0).sort((a, b) => a - b)[0] ?? null;
 
   const transport = useCallback(
-    async (op: PlayerOp, opts: { secs?: number } = {}) => {
+    async (op: PlayerOp, opts: { secs?: number; value?: string } = {}) => {
       hapticLight();
       setBusy(op);
       setError(null);
@@ -262,9 +333,9 @@ export function WatchPanel() {
   );
 
   const sendLink = useCallback(() => {
-    if (!parsedLink) return;
-    open(parsedLink.service, parsedLink.path);
-  }, [parsedLink, open]);
+    if (parsedLink) { open(parsedLink.service, parsedLink.path); return; }
+    if (webLink) openUrl(webLink);              // free-URL tier (box opted in)
+  }, [parsedLink, webLink, open, openUrl]);
 
   if (!configured) {
     return (
@@ -297,16 +368,35 @@ export function WatchPanel() {
   }
 
   return (
+    <View style={styles.root}>
     <ScrollView
+      ref={scrollRef}
       style={styles.root}
       contentContainerStyle={styles.content}
       keyboardShouldPersistTaps="handled"
+      scrollEnabled={!dpadGesture}
     >
       {state.running ? (
-        <View style={styles.nowCard} testID="watch-now-playing">
+        <View
+          style={[
+            styles.nowCard,
+            // Service-branded card: the accent the tile carries follows the
+            // service onto the now-playing card, so Netflix feels like
+            // Netflix's card and not a generic player shell.
+            { borderLeftColor: ACCENTS[state.service ?? ''] ?? t.accent, borderLeftWidth: 3 },
+          ]}
+          testID="watch-now-playing"
+        >
           <View style={styles.nowTop}>
             <View style={{ flex: 1 }}>
-              <Text style={styles.nowLabel}>ON THE TV</Text>
+              <Text
+                style={[
+                  styles.nowLabel,
+                  { color: ACCENTS[state.service ?? ''] ?? t.green },
+                ]}
+              >
+                ON THE TV
+              </Text>
               <Text style={styles.nowService}>{label(state.service)}</Text>
               {playback?.title ? (
                 <Text style={styles.nowPath} numberOfLines={1}>
@@ -329,6 +419,64 @@ export function WatchPanel() {
               </Text>
             </Pressable>
           </View>
+
+          {/* D-pad drives the page's focus ring (Netflix/YouTube tile grids,
+              and any web page). Rides the existing uinput key path, so it shows
+              for ANY open page — not gated on <video> like the scrubber below. */}
+          <WatchDpad
+            settings={settings}
+            ready={ready}
+            navOps={state.nav_ops}
+            onGestureActive={setDpadGesture}
+            client={gpRef.current}
+            onKeyboard={kb.toggle}
+            keyboardOpen={kb.open}
+            // Transport mode while a video actually plays — the page has no
+            // focusable controls then, so tile nav would be a silent no-op.
+            playing={playback?.playing === true}
+            onSeek={(dir) => {
+              const secs = dir > 0 ? fwd : back;
+              if (secs != null) transport('seek', { secs });
+            }}
+            onPlayPause={() => transport('playpause')}
+            onVolume={(dir) => {
+              hapticLight();
+              void api
+                .tvSend(
+                  settings,
+                  dir > 0 ? 'volume_up' : 'volume_down',
+                  settings.volumeTarget ?? 'box',
+                )
+                .catch(() => {});
+            }}
+          />
+
+          {/* TV zoom. Values come from the BOX (ui_scales — a frozen set), so
+              the app can never offer a scale the box would refuse. Older
+              agents don't send it and the row hides. */}
+          {(state.ui_scales?.length ?? 0) > 0 && (
+            <View style={styles.zoomRow} testID="watch-zoom">
+              <Text style={styles.zoomLabel}>TV ZOOM</Text>
+              <View style={styles.zoomChips}>
+                {state.ui_scales!.map((v) => {
+                  const on = v === (state.ui_scale ?? '');
+                  return (
+                    <Pressable
+                      key={v}
+                      onPress={() => transport('scale', { value: v })}
+                      disabled={busy !== null}
+                      testID={`watch-zoom-${v}`}
+                      style={[styles.zoomChip, on && styles.zoomChipOn]}
+                    >
+                      <Text style={[styles.zoomText, on && styles.zoomTextOn]}>
+                        {v}×
+                      </Text>
+                    </Pressable>
+                  );
+                })}
+              </View>
+            </View>
+          )}
 
           {/* Transport appears only when the box reports a real <video>. A
               service that is open but sitting on its home screen has nothing to
@@ -400,6 +548,38 @@ export function WatchPanel() {
             </View>
           ) : null}
         </View>
+      ) : pending ? (
+        <View
+          style={[
+            styles.nowCard,
+            {
+              borderLeftColor:
+                pending === '__web__' ? t.accent : (ACCENTS[pending] ?? t.accent),
+              borderLeftWidth: 3,
+            },
+          ]}
+          testID="watch-starting"
+        >
+          <View style={styles.nowTop}>
+            <View style={{ flex: 1 }}>
+              <Text
+                style={[
+                  styles.nowLabel,
+                  {
+                    color:
+                      pending === '__web__' ? t.accent : (ACCENTS[pending] ?? t.green),
+                  },
+                ]}
+              >
+                STARTING
+              </Text>
+              <Text style={styles.nowService}>
+                {pending === '__web__' ? 'Web page' : label(pending)}
+              </Text>
+              <Text style={styles.nowPath}>Opening on the TV…</Text>
+            </View>
+          </View>
+        </View>
       ) : (
         <Text style={styles.idle}>Nothing playing. Pick a service.</Text>
       )}
@@ -407,8 +587,8 @@ export function WatchPanel() {
       {error ? <Text style={styles.error}>{error}</Text> : null}
 
       <Text style={styles.beta} testID="watch-beta">
-        EXPERIMENTAL — expect rough edges. Streaming sites need the trackpad,
-        not the d-pad.
+        EXPERIMENTAL — expect rough edges. Swipe the pad above to move between
+        tiles once a page is open.
       </Text>
 
       {/* The box's own screen. Useful when the phone is not the thing in your
@@ -506,7 +686,7 @@ export function WatchPanel() {
         <TextInput
           value={link}
           onChangeText={setLink}
-          placeholder="Paste a link from a service"
+          placeholder={canOpenAnyLink ? 'Paste a service link or any web page' : 'Paste a link from a service'}
           placeholderTextColor={t.textFaint}
           autoCapitalize="none"
           autoCorrect={false}
@@ -516,22 +696,29 @@ export function WatchPanel() {
         />
         <Pressable
           onPress={sendLink}
-          disabled={!parsedLink || busy !== null}
+          disabled={!(parsedLink || webLink) || busy !== null}
           testID="watch-link-send"
           style={({ pressed }) => [
             styles.sendBtn,
-            !parsedLink && styles.sendBtnOff,
+            !(parsedLink || webLink) && styles.sendBtnOff,
             pressed && styles.pressed,
           ]}
         >
-          <Text style={[styles.sendText, !parsedLink && styles.sendTextOff]}>
-            Send
+          <Text style={[styles.sendText, !(parsedLink || webLink) && styles.sendTextOff]}>
+            {webLink ? 'Open' : 'Send'}
           </Text>
         </Pressable>
       </View>
-      {link.trim() && !parsedLink ? (
+      {link.trim() && !parsedLink && !webLink ? (
         <Text style={styles.hint} testID="watch-link-hint">
-          That isn’t a link from a service this box knows.
+          {canOpenAnyLink
+            ? 'Paste a service link, or a full http(s) web address to open on the box.'
+            : 'That isn’t a link from a service this box knows.'}
+        </Text>
+      ) : null}
+      {webLink ? (
+        <Text style={styles.hintOk} testID="watch-weblink-ok">
+          Opens as a web page on the box.
         </Text>
       ) : null}
       {parsedLink ? (
@@ -571,6 +758,10 @@ export function WatchPanel() {
         })}
       </View>
     </ScrollView>
+    {/* Phone-keyboard compose bar: absolute at panel root so its keyboard-lift
+        math sees the screen, not a card inside the scroll. */}
+    {kb.bar}
+    </View>
   );
 }
 
@@ -629,6 +820,27 @@ const makeStyles = (t: Palette) =>
     tBtnText: { color: t.text, fontSize: 13, fontWeight: '600' },
     tBtnMainText: { color: '#0b1220', fontWeight: '700' },
     nowLabel: { color: t.green, fontSize: 10, fontWeight: '700', letterSpacing: 1.2 },
+    zoomRow: {
+      flexDirection: 'row',
+      alignItems: 'center',
+      gap: 10,
+      borderTopWidth: StyleSheet.hairlineWidth,
+      borderTopColor: t.cardBorder,
+      paddingTop: 12,
+    },
+    zoomLabel: { color: t.textFaint, fontSize: 11, fontWeight: '700', letterSpacing: 1.2 },
+    zoomChips: { flexDirection: 'row', gap: 6, flex: 1, justifyContent: 'flex-end' },
+    zoomChip: {
+      paddingHorizontal: 10,
+      paddingVertical: 6,
+      borderRadius: 8,
+      backgroundColor: t.inset,
+      borderWidth: StyleSheet.hairlineWidth,
+      borderColor: t.cardBorder,
+    },
+    zoomChipOn: { backgroundColor: t.accent, borderColor: t.accent },
+    zoomText: { color: t.textDim, fontSize: 12, fontWeight: '600' },
+    zoomTextOn: { color: '#0b1220', fontWeight: '700' },
     nowService: { color: t.text, fontSize: 20, fontWeight: '700', marginTop: 2 },
     nowPath: { color: t.textFaint, fontSize: 12, marginTop: 2 },
     stopBtn: {

@@ -12,6 +12,7 @@ import {
 import { useFocusEffect } from 'expo-router';
 
 import { BootSessionCard } from '@/components/BootSessionCard';
+import { UtilitiesSection } from '@/components/UtilitiesSection';
 import { Gated } from '@/components/Gated';
 import { TabScreen } from '@/components/TabScreen';
 import { TourAnchor } from '@/components/TourAnchor';
@@ -260,6 +261,10 @@ function ActionsScreen() {
         {/* Persistent boot preference, directly above the ONE-SHOT session
             switches below it — that adjacency is the point (see the card). */}
         {configured && <BootSessionCard />}
+        {/* OpenPuck flasher, surfaced here for quick reach (also lives under
+            Setup → Utilities). Self-hides on boxes without the utilities
+            endpoint; shows OpenPuck only, with its own flash + auto-flash. */}
+        {configured && <UtilitiesSection context="actions" />}
         {/* TourAnchor REPLACES each group's View and inherits styles.group, so
             the layout is unchanged and the anchor measures the whole block —
             header plus rows. The id uses the UI's word for `low` ("ROUTINE")
