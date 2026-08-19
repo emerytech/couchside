@@ -146,6 +146,55 @@ _m = re.search(r'elif op in \(([^)]*"navup"[^)]*)\):', _src)
 _route_ops = set(re.findall(r'"(nav[a-z]+)"', _m.group(1))) if _m else set()
 check("route tuple == PLAYER_JS_NAV keys", _route_ops, set(cs.PLAYER_JS_NAV))
 
+# --- 4c. trusted CDP key ops (OK/Back) — the KI-066 focus-independence fix ----
+print("4c. player_key: frozen key-op selection + dispatch")
+_saved_run3 = cs._pl_cdp_key
+_saved_running3 = cs._pl_running
+_saved_mock3 = cs.PL_MOCK
+try:
+    cs.PL_MOCK = False
+    dispatched = []
+    cs._pl_cdp_key = lambda name: dispatched.append(name) or True
+    cs._pl_running = lambda: True
+
+    for bad in ("enter", "escape", "OK", "ok ", "activate", "", None, 1, {"a": 1}, ["ok"]):
+        dispatched.clear()
+        try:
+            cs.player_key(bad)
+            check("key refused %r" % (bad,), "ACCEPTED", "ValueError")
+        except ValueError:
+            check("key refused %r (nothing dispatched)" % (bad,), dispatched, [])
+        except TypeError as e:
+            check("key refused %r without TypeError" % (bad,), "TypeError: %s" % e, "ValueError")
+
+    for op in ("ok", "back"):
+        dispatched.clear()
+        r = cs.player_key(op)
+        check("%s dispatches itself" % op, dispatched, [op])
+        check("%s reports ok" % op, (r["ok"], r["op"]), (True, op))
+
+    # degrade closed
+    cs._pl_running = lambda: False
+    try:
+        cs.player_key("ok")
+        check("key not running -> refused", "RAN", "RuntimeError")
+    except RuntimeError:
+        check("key not running -> RuntimeError", True, True)
+finally:
+    cs._pl_cdp_key = _saved_run3
+    cs._pl_running = _saved_running3
+    cs.PL_MOCK = _saved_mock3
+
+# the key specs are constants: exactly ok+back, each a trusted keycode
+check("key ops are exactly ok+back", sorted(cs.PLAYER_CDP_KEYS), ["back", "ok"])
+check("ok = Enter (vk 13)", cs.PLAYER_CDP_KEYS["ok"], ("Enter", "Enter", 13))
+check("back = Escape (vk 27)", cs.PLAYER_CDP_KEYS["back"], ("Escape", "Escape", 27))
+
+# route tuple covers every key op (same drift guard as nav)
+_mk = re.search(r'elif op in \(([^)]*"ok"[^)]*)\):', _src)
+_route_keys = set(re.findall(r'"(ok|back)"', _mk.group(1))) if _mk else set()
+check("route tuple == PLAYER_CDP_KEYS", _route_keys, set(cs.PLAYER_CDP_KEYS))
+
 # --- 5. TV zoom (op "scale") — a client value can only SELECT a member -------
 print("5. scale op: frozen-membership selector")
 _saved_mock2 = cs.PL_MOCK

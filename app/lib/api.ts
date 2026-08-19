@@ -330,6 +330,9 @@ export type PlayerState = {
    * cannot move between rows. Feature-detect; never assume.
    */
   nav_ops?: string[];
+  /** OK/Back the box delivers as trusted CDP keys (focus-independent, agent
+   *  >= 2.9.96). Absent on older boxes -> the d-pad falls back to uinput. */
+  key_ops?: string[];
   /** Effective TV zoom ('2') and the frozen set the box accepts (agent >=
    *  2.9.95). Absent on older boxes — hide the zoom control there. */
   ui_scale?: string;
@@ -363,6 +366,7 @@ export type PlayerOp =
    *  and arrow keys just scroll on the streaming sites. Gated on
    *  PlayerState.nav_ops; an older agent answers 400. */
   | 'navup' | 'navdown' | 'navleft' | 'navright'
+  | 'ok' | 'back'
   /** TV zoom: value must be a member of PlayerState.ui_scales (agent >= 2.9.95). */
   | 'scale';
 

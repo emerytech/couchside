@@ -49,7 +49,7 @@ except ImportError:  # pragma: no cover
     fcntl = None
 
 APP_NAME = "couchside-agent"
-VERSION = "2.9.95"
+VERSION = "2.9.96"
 UID = os.getuid()
 XDG_RUNTIME_DIR = "/run/user/%d" % UID
 
@@ -3157,6 +3157,7 @@ def player_info():
                 "service_hosts": {k: list(v) for k, v in _PLAYER_SERVICE_HOSTS.items()},
                 "open_url": _pl_custom_url_enabled(),
                 "nav_ops": sorted(PLAYER_JS_NAV),
+                "key_ops": sorted(PLAYER_CDP_KEYS),
                 "ui_scale": _PL_MOCK.get("scale") or _pl_ui_scale(),
                 "ui_scales": list(_PL_UI_SCALES),
                 "playback": player_playback(),
@@ -3177,6 +3178,9 @@ def player_info():
             # d-pad's up/down can move focus BETWEEN rows or must fall back to
             # plain arrow keys (which only scroll on the streaming sites).
             "nav_ops": sorted(PLAYER_JS_NAV),
+            # Trusted CDP key ops (OK/Back) the d-pad can use instead of uinput,
+            # so they work when the Player window is not OS-focused (additive).
+            "key_ops": sorted(PLAYER_CDP_KEYS),
             # TV zoom (additive): the effective scale and the frozen set of
             # choices, so the app renders exactly the values the box accepts.
             "ui_scale": _pl_ui_scale(),
@@ -3572,13 +3576,12 @@ class _PlayerCDP:
             if opcode == 0x8:
                 raise OSError("CDP peer closed")
 
-    def evaluate(self, expression):
-        """Run ONE agent-authored script and return its value. `expression` is
-        always a constant from this module — never anything a client sent."""
-        payload = json.dumps({
-            "id": 1, "method": "Runtime.evaluate",
-            "params": {"expression": expression, "returnByValue": True},
-        }).encode()
+    def _call(self, method, params):
+        """Send ONE CDP command and return its `result`. `method` and `params`
+        are always module constants — never anything a client sent. Ids are
+        reused across sequential calls (send -> reply -> next send), which CDP
+        permits since there is never more than one in flight."""
+        payload = json.dumps({"id": 1, "method": method, "params": params}).encode()
         mask = os.urandom(4)
         n = len(payload)
         header = bytes([0x81])
@@ -3594,11 +3597,34 @@ class _PlayerCDP:
         while time.monotonic() < deadline:
             msg = json.loads(self._frame())
             if msg.get("id") == 1:      # everything else is an event
+                if "error" in msg:
+                    raise OSError("CDP error")
                 res = msg.get("result", {})
                 if "exceptionDetails" in res:
                     raise OSError("CDP script raised")
-                return res.get("result", {}).get("value")
+                return res
         raise OSError("CDP timed out")
+
+    def evaluate(self, expression):
+        """Run ONE agent-authored script and return its value. `expression` is
+        always a constant from this module — never anything a client sent."""
+        return self._call("Runtime.evaluate",
+                          {"expression": expression, "returnByValue": True}
+                          ).get("result", {}).get("value")
+
+    def dispatch_key(self, key, code, vk):
+        """Send a TRUSTED key press+release to the page via CDP. Unlike the
+        uinput keyboard (which goes to whatever the compositor has focused),
+        Input.dispatchKeyEvent targets the page's renderer directly, so it works
+        even when the Player window is not the OS-focused surface (KI-066) — and
+        it is isTrusted, so sites like Netflix that ignore synthetic JS events
+        still act on it. key/code/vk are always module constants."""
+        for typ in ("keyDown", "keyUp"):
+            self._call("Input.dispatchKeyEvent", {
+                "type": typ, "key": key, "code": code,
+                "windowsVirtualKeyCode": vk, "nativeVirtualKeyCode": vk,
+            })
+        return True
 
 
 def _pl_cdp_run(expression):
@@ -3712,6 +3738,59 @@ def _pl_seek_by_key(secs):
         except Exception:
             pass
     return {"ok": True, "op": "seek", "secs": secs, "via": "key"}
+
+
+# Trusted key presses the d-pad sends via CDP instead of the uinput keyboard.
+# WHY: uinput delivers to whatever the COMPOSITOR has focused, so OK/Back went
+# nowhere whenever the Player window lost OS focus (KI-066). CDP
+# Input.dispatchKeyEvent targets the page's renderer directly — focus-independent
+# AND trusted (Netflix acts on it). Frozen: op id -> (key, code, virtual-keycode),
+# every field a constant. The spatial nav ops (navup/down/left/right) already
+# avoid keys entirely; these are the two that had to be keys (activate + exit).
+PLAYER_CDP_KEYS = {
+    "ok":   ("Enter", "Enter", 13),
+    "back": ("Escape", "Escape", 27),
+}
+
+
+def _pl_cdp_key(name):
+    """Dispatch one allowlisted trusted key to the player's page. None on any
+    failure (degrade closed). `name` is a frozen-dict key, never interpolated."""
+    spec = PLAYER_CDP_KEYS.get(name)
+    if spec is None:
+        return None
+    port = _pl_cdp_port()
+    if port is None:
+        return None
+    cdp = None
+    try:
+        cdp = _PlayerCDP(port)
+        return cdp.dispatch_key(*spec)
+    except (OSError, ValueError, KeyError):
+        return None
+    finally:
+        if cdp is not None:
+            cdp.close()
+
+
+def player_key(op):
+    """Send OK/Back as a trusted CDP key. ValueError => 404, nothing runs.
+
+    Same frozen-lookup discipline as player_nav: the op id selects an entry in
+    PLAYER_CDP_KEYS; the key/code/keycode are constants, never from the request.
+    """
+    if not isinstance(op, str):
+        raise ValueError("key op must be a string")
+    if op not in PLAYER_CDP_KEYS:
+        raise ValueError("unknown key op")
+    if PL_MOCK:
+        return {"ok": True, "op": op}
+    if not _pl_running():
+        raise RuntimeError("player is not running")
+    ok = _pl_cdp_key(op)
+    if ok is None:
+        raise RuntimeError("could not reach the player")
+    return {"ok": bool(ok), "op": op}
 
 
 def player_nav(op):
@@ -21426,6 +21505,18 @@ class Handler(BaseHTTPRequestHandler):
                     # at import time. A rejected id is a 404 and nothing runs.
                     try:
                         r = player_nav(op)
+                    except ValueError:
+                        self._send(404, {"error": "not allowed"}, started)
+                        return
+                    except RuntimeError as e:
+                        self._send(409, {"error": str(e)}, started)
+                        return
+                    self._send(200, r, started)
+                elif op in ("ok", "back"):
+                    # Trusted CDP key (Enter / Escape) — focus-independent
+                    # OK/Back for the d-pad. op id selects a frozen key spec.
+                    try:
+                        r = player_key(op)
                     except ValueError:
                         self._send(404, {"error": "not allowed"}, started)
                         return

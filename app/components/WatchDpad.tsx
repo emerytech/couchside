@@ -109,6 +109,7 @@ export function WatchDpad({
   settings,
   ready,
   navOps,
+  keyOps,
   onGestureActive,
   client: clientProp,
   onKeyboard,
@@ -122,6 +123,13 @@ export function WatchDpad({
   ready: boolean;
   /** PlayerState.nav_ops — which spatial steps this box accepts. */
   navOps?: string[];
+  /**
+   * PlayerState.key_ops — OK/Back the box can deliver as TRUSTED CDP key events
+   * (agent >= 2.9.96) instead of uinput. Preferred because uinput needs the
+   * Player window to be OS-focused; CDP does not (KI-066). Falls back to the
+   * uinput keys against an older box.
+   */
+  keyOps?: string[];
   /**
    * Fires true while a touch is on the swipe pad, false when it ends. The
    * parent ScrollView must set scrollEnabled={false} during it — a native
@@ -307,6 +315,23 @@ export function WatchDpad({
   pressRef.current = press;
   const gestureRef = useRef<(active: boolean) => void>(() => {});
   gestureRef.current = onGestureActive ?? (() => {});
+  /** OK / Back, preferring the trusted CDP key op (focus-independent, agent
+   *  >= 2.9.96) and falling back to the uinput key on older boxes. */
+  const okAction = () => {
+    if (!holding) return;
+    hapticLight();
+    if (keyOps?.includes('ok')) api.playerOp(settings, 'ok').catch(() => {});
+    else pressQuiet('enter');
+  };
+  const backAction = () => {
+    if (!holding) return;
+    hapticLight();
+    if (keyOps?.includes('back')) api.playerOp(settings, 'back').catch(() => {});
+    else pressQuiet('esc');
+  };
+  const backRef = useRef(backAction);
+  backRef.current = backAction;
+
   /** Centre tap: play/pause while playing, OK otherwise. */
   const tap = () => {
     if (playing) {
@@ -314,7 +339,7 @@ export function WatchDpad({
       onPlayPause?.();
       return;
     }
-    press('enter');
+    okAction();
   };
   const tapRef = useRef(tap);
   tapRef.current = tap;
@@ -408,7 +433,7 @@ export function WatchDpad({
         // Tap: two fingers = Back in both modes; one finger = OK in tiles,
         // LEFT CLICK in pointer (what a trackpad tap means).
         if (t.twoFinger) {
-          pressRef.current('esc');
+          backRef.current();
         } else if (modeRef.current === 'pointer') {
           hapticLight();
           clickRef.current('l');
@@ -524,7 +549,7 @@ export function WatchDpad({
 
       <View style={styles.btnRow2}>
         <Pressable
-          onPress={() => press('esc')}
+          onPress={backAction}
           testID="watch-dpad-back"
           style={({ pressed }) => [styles.backBtn, pressed && styles.pressed]}
         >

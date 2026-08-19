@@ -427,6 +427,7 @@ export function WatchPanel() {
             settings={settings}
             ready={ready}
             navOps={state.nav_ops}
+            keyOps={state.key_ops}
             onGestureActive={setDpadGesture}
             client={gpRef.current}
             onKeyboard={kb.toggle}
