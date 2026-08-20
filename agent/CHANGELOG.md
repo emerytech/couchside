@@ -18,6 +18,20 @@ the same thing regardless of what actually changed.
 Write for the person holding the phone, not for the commit log. They are
 deciding whether to press "Update now" on a machine across the room.
 
+## 2.9.97
+
+**Light themes update from the box.** Built-in RGB strip themes (Portal, Rainbow
+River, Heartbeat, Police) now live on the box, so new ones arrive with a box
+update and show up in the app on their own — no app-store wait. Other boxes are
+unaffected.
+
+## 2.9.96
+
+**Watch d-pad works even when the box's window isn't in front.** The pad's OK and
+Back now drive the page directly instead of typing a key at whatever the box has
+focused, so they keep working after you switch away and back on the box. No change
+for other boxes.
+
 ## 2.9.95
 
 **Move around a streaming site from the couch.** The Watch screen's swipe pad now
