@@ -330,6 +330,9 @@ export type PlayerState = {
    * cannot move between rows. Feature-detect; never assume.
    */
   nav_ops?: string[];
+  /** OK/Back the box delivers as trusted CDP keys (focus-independent, agent
+   *  >= 2.9.96). Absent on older boxes -> the d-pad falls back to uinput. */
+  key_ops?: string[];
   /** Effective TV zoom ('2') and the frozen set the box accepts (agent >=
    *  2.9.95). Absent on older boxes — hide the zoom control there. */
   ui_scale?: string;
@@ -363,6 +366,7 @@ export type PlayerOp =
    *  and arrow keys just scroll on the streaming sites. Gated on
    *  PlayerState.nav_ops; an older agent answers 400. */
   | 'navup' | 'navdown' | 'navleft' | 'navright'
+  | 'ok' | 'back'
   /** TV zoom: value must be a member of PlayerState.ui_scales (agent >= 2.9.95). */
   | 'scale';
 
@@ -482,6 +486,10 @@ export type AudioState = {
 /** An 8-bit RGB colour, as the app and agent both speak it (0–255 per channel,
     device-independent — the agent scales to the LED's own range). */
 export type Rgb = { r: number; g: number; b: number };
+
+/** A built-in strip theme the box advertises (GET /api/leds/themes, agent >=
+ *  2.9.97). `accent` is a representative colour for the picker chip. */
+export type LedTheme = { id: string; label: string; accent?: Rgb | null };
 
 /** One controllable LED from GET /api/leds (agent >= 2.9.81, cap `ledcontrol`).
     `name` is the /sys/class/leds node id the setter POSTs back verbatim. */
@@ -2845,6 +2853,31 @@ export const api = {
         ...(seq.brightness != null ? { brightness: Math.round(seq.brightness) } : {}),
         ...(holds ? { holds } : {}),
       },
+    })
+      .then((r) => !!r?.ok)
+      .catch(() => false);
+  },
+
+  /**
+   * Built-in strip THEMES served by the box (agent >= 2.9.97). The catalog lives
+   * in the agent, so new themes ship with a box update and appear here without an
+   * app resubmit. Probe-and-appear: null on a 404 (older agent) so the app falls
+   * back to its own built-in preset seeds.
+   */
+  ledThemes(settings: ConnSettings): Promise<LedTheme[] | null> {
+    return request<{ themes: LedTheme[] }>(settings, '/api/leds/themes')
+      .then((r) => (Array.isArray(r?.themes) ? r.themes : []))
+      .catch((e) => (e instanceof ApiError && e.status === 404 ? null : []));
+  },
+
+  /** Play a built-in theme (by id) on a strip — the box generates the frames
+   *  sized to the strip. The id must be one the box advertised in ledThemes(). */
+  applyLedTheme(
+    settings: ConnSettings, strip: string, theme: string, brightness?: number,
+  ): Promise<boolean> {
+    return request<{ ok: boolean }>(settings, '/api/leds/theme', {
+      method: 'POST',
+      body: { strip, theme, ...(brightness != null ? { brightness: Math.round(brightness) } : {}) },
     })
       .then((r) => !!r?.ok)
       .catch(() => false);
