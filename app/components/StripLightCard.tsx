@@ -489,6 +489,27 @@ export function StripLightCard() {
       playGen(frames, frames.map(() => 80));
       return;
     }
+    // Portal: Aperture-style split field — orange on the LEFT half, blue on the
+    // RIGHT half, meeting in the middle, each side flickering like an energy
+    // field. Every LED keeps its side's colour but its brightness jitters
+    // per-frame (per-pixel random), so the loop reads as a live flicker rather
+    // than a blink. A handful of pre-rolled random frames loops seamlessly.
+    if (p.generator === 'portal') {
+      const n = orderedLeds.length;
+      const half = Math.ceil(n / 2);
+      const ORANGE: Rgb = { r: 255, g: 95, b: 0 };
+      const BLUE: Rgb = { r: 0, g: 120, b: 255 };
+      const scale = (c: Rgb, f: number): Rgb => ({
+        r: Math.round(c.r * f), g: Math.round(c.g * f), b: Math.round(c.b * f),
+      });
+      const NFRAMES = 12;
+      const frames = Array.from({ length: NFRAMES }, () =>
+        orderedLeds.map((_, i) => scale(i < half ? ORANGE : BLUE,
+          0.5 + Math.random() * 0.5)));         // per-pixel flicker 0.5..1.0
+      // Slightly varied short holds so the flicker feels organic, not metronomic.
+      playGen(frames, frames.map(() => 60 + Math.round(Math.random() * 50)));
+      return;
+    }
     // Heartbeat: two quick red pulses then a long dark rest (per-frame timing is
     // what sells it — uniform timing would just look like blinking).
     if (p.generator === 'heartbeat') {
