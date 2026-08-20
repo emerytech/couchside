@@ -487,6 +487,10 @@ export type AudioState = {
     device-independent — the agent scales to the LED's own range). */
 export type Rgb = { r: number; g: number; b: number };
 
+/** A built-in strip theme the box advertises (GET /api/leds/themes, agent >=
+ *  2.9.97). `accent` is a representative colour for the picker chip. */
+export type LedTheme = { id: string; label: string; accent?: Rgb | null };
+
 /** One controllable LED from GET /api/leds (agent >= 2.9.81, cap `ledcontrol`).
     `name` is the /sys/class/leds node id the setter POSTs back verbatim. */
 export type LedInfo = {
@@ -2849,6 +2853,31 @@ export const api = {
         ...(seq.brightness != null ? { brightness: Math.round(seq.brightness) } : {}),
         ...(holds ? { holds } : {}),
       },
+    })
+      .then((r) => !!r?.ok)
+      .catch(() => false);
+  },
+
+  /**
+   * Built-in strip THEMES served by the box (agent >= 2.9.97). The catalog lives
+   * in the agent, so new themes ship with a box update and appear here without an
+   * app resubmit. Probe-and-appear: null on a 404 (older agent) so the app falls
+   * back to its own built-in preset seeds.
+   */
+  ledThemes(settings: ConnSettings): Promise<LedTheme[] | null> {
+    return request<{ themes: LedTheme[] }>(settings, '/api/leds/themes')
+      .then((r) => (Array.isArray(r?.themes) ? r.themes : []))
+      .catch((e) => (e instanceof ApiError && e.status === 404 ? null : []));
+  },
+
+  /** Play a built-in theme (by id) on a strip — the box generates the frames
+   *  sized to the strip. The id must be one the box advertised in ledThemes(). */
+  applyLedTheme(
+    settings: ConnSettings, strip: string, theme: string, brightness?: number,
+  ): Promise<boolean> {
+    return request<{ ok: boolean }>(settings, '/api/leds/theme', {
+      method: 'POST',
+      body: { strip, theme, ...(brightness != null ? { brightness: Math.round(brightness) } : {}) },
     })
       .then((r) => !!r?.ok)
       .catch(() => false);

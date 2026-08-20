@@ -49,7 +49,7 @@ except ImportError:  # pragma: no cover
     fcntl = None
 
 APP_NAME = "couchside-agent"
-VERSION = "2.9.96"
+VERSION = "2.9.97"
 UID = os.getuid()
 XDG_RUNTIME_DIR = "/run/user/%d" % UID
 
@@ -5972,6 +5972,115 @@ def apply_strip_sequence(prefix, frames, hold_ms, brightness, loop=True, holds=N
     if hnorm is not None:
         active["holds"] = hnorm
     return {"ok": True, "strip": prefix, "active": active}
+
+
+# ---------------------------------------------------------------------------
+# LED THEME CATALOG — built-in strip animations that live HERE, in the agent,
+# so a new theme ships with an agent update (which auto-installs to boxes) and
+# appears in the app WITHOUT an app-store resubmit. The app fetches the catalog
+# (GET /api/leds/themes) and fires one by id (POST /api/leds/theme); the agent
+# knows the strip's LED count, so each generator sizes its frames to the strip.
+#
+# A theme id is LOOKED UP in the frozen LED_THEMES dict, never interpolated. A
+# generator returns (frames, holds) as pure colour DATA + int ms, which is then
+# re-validated per-LED by apply_strip_sequence (fixed-literal writers, §3). The
+# flicker is a DETERMINISTIC hash of pixel+frame index (not random), so a theme
+# renders identically every time and stays unit-testable.
+# ---------------------------------------------------------------------------
+def _theme_hue_rgb(h):
+    """h in [0,1) -> (r,g,b) 0..255, full saturation/value. No colorsys import."""
+    i = int(h * 6) % 6
+    f = h * 6 - int(h * 6)
+    q = int(255 * (1 - f))
+    t = int(255 * f)
+    return ((255, t, 0), (q, 255, 0), (0, 255, t), (0, q, 255),
+            (t, 0, 255), (255, 0, q))[i]
+
+
+def _theme_flicker(i, f):
+    """Deterministic per-pixel/per-frame brightness factor in [0.5, 1.0]."""
+    return 0.5 + 0.5 * (((i * 7 + f * 13) % 11) / 10.0)
+
+
+def _theme_scale(c, fl):
+    return (int(c[0] * fl), int(c[1] * fl), int(c[2] * fl))
+
+
+def _theme_portal(n):
+    """Aperture-style split field: orange LEFT half, blue RIGHT half, meeting in
+    the middle, each side flickering like an energy field."""
+    half = (n + 1) // 2
+    orange, blue = (255, 95, 0), (0, 120, 255)
+    frames, holds = [], []
+    for f in range(12):
+        frames.append([_theme_scale(orange if i < half else blue, _theme_flicker(i, f))
+                       for i in range(n)])
+        holds.append(60 + (f * 17) % 50)   # 60..110 ms, varied so it feels organic
+    return frames, holds
+
+
+def _theme_rainbowflow(n):
+    """A full-spectrum gradient flowing around the strip (seamless loop)."""
+    frames = [[_theme_hue_rgb(((i + s) / max(1, n)) % 1.0) for i in range(n)]
+              for s in range(max(1, n))]
+    return frames, [80] * len(frames)
+
+
+def _theme_heartbeat(n):
+    """Two quick red pulses, then a long dark rest."""
+    red = [(255, 0, 0)] * n
+    off = [None] * n
+    return [list(red), list(off), list(red), list(off)], [150, 120, 150, 800]
+
+
+def _theme_police(n):
+    """Red half / blue half, flashing between the two sides."""
+    half = (n + 1) // 2
+    a = [(255, 0, 0) if i < half else None for i in range(n)]
+    b = [None if i < half else (0, 40, 255) for i in range(n)]
+    return [a, b], [110, 110]
+
+
+# Frozen: id -> (label, generator). A request only ever indexes this by id.
+LED_THEMES = {
+    "portal":      ("Portal", _theme_portal),
+    "rainbowflow": ("Rainbow River", _theme_rainbowflow),
+    "heartbeat":   ("Heartbeat", _theme_heartbeat),
+    "police":      ("Police", _theme_police),
+}
+# Preview accent for the app's picker chip (a representative colour), so the app
+# needn't know each theme's internals. Additive; unknown ids just get no accent.
+LED_THEME_ACCENTS = {
+    "portal": {"r": 255, "g": 95, "b": 0},
+    "rainbowflow": {"r": 0, "g": 200, "b": 120},
+    "heartbeat": {"r": 255, "g": 0, "b": 0},
+    "police": {"r": 0, "g": 80, "b": 255},
+}
+
+
+def leds_theme_catalog():
+    """The theme list for GET /api/leds/themes (app picker). Order is stable."""
+    return [{"id": k, "label": LED_THEMES[k][0],
+             "accent": LED_THEME_ACCENTS.get(k)}
+            for k in LED_THEMES]
+
+
+def apply_led_theme(theme_id, prefix, brightness):
+    """Generate a built-in theme sized to the strip and play it. theme_id is a
+    frozen-dict key; the generator's output is colour DATA re-validated by
+    apply_strip_sequence. None -> 404 (unknown theme or strip)."""
+    if not isinstance(theme_id, str) or theme_id not in LED_THEMES:
+        return None
+    if not isinstance(prefix, str):
+        return None
+    members = _led_strips().get(prefix)
+    if not members:
+        return None
+    n = len(members)
+    frames, holds = LED_THEMES[theme_id][1](n)
+    b = brightness if _is_pct(brightness) else 100
+    return apply_strip_sequence(prefix, frames, holds[0] if holds else 120, b,
+                                loop=True, holds=holds)
 
 
 def _validate_sequence_body(req):
@@ -20018,6 +20127,12 @@ class Handler(BaseHTTPRequestHandler):
                 # available:false = nothing controllable here. Set = POST
                 # /api/leds/set.
                 self._send(200, leds_state(self.mock), started)
+            elif path == "/api/leds/themes":
+                # READ-ONLY: the built-in strip theme catalog (id + label +
+                # accent), so the app renders the picker without knowing each
+                # theme's internals. New themes appear here on an agent update —
+                # no app resubmit. 404 on an old agent -> app uses its built-ins.
+                self._send(200, {"themes": leds_theme_catalog()}, started)
             elif path == "/api/openrgb":
                 # READ-ONLY: OpenRGB controllers (whole-system / addressable RGB)
                 # + their running effect, for the OpenRGB card (cap `openrgb`).
@@ -20623,6 +20738,45 @@ class Handler(BaseHTTPRequestHandler):
                 if res is None:
                     self._send(404, {"error": "unknown strip"}, started)
                     return
+                self._send(200, res, started)
+                return
+
+            if path == "/api/leds/theme":
+                # Play a BUILT-IN theme on a strip. The client sends only the
+                # theme id (looked up in the frozen LED_THEMES) + the strip
+                # prefix (looked up in the live listdir) + brightness. The agent
+                # GENERATES the frames sized to the strip; the client never
+                # supplies colour data, so a new theme is agent-only (ships with
+                # an agent update, no app resubmit).
+                try:
+                    req = json.loads(body.decode("utf-8")) if body else {}
+                    if not isinstance(req, dict):
+                        raise ValueError("body must be a JSON object")
+                except (ValueError, TypeError, UnicodeDecodeError):
+                    self._send(400, {"error": "body must be a JSON object"}, started)
+                    return
+                theme_id = req.get("theme")
+                strip_name = req.get("strip")
+                brightness = req.get("brightness")
+                if self.mock:
+                    if not isinstance(theme_id, str) or theme_id not in LED_THEMES:
+                        self._send(404, {"error": "unknown theme"}, started)
+                        return
+                    ms = _led_strips([l["name"] for l in MOCK_LEDS if l["writable"]])
+                    if not isinstance(strip_name, str) or strip_name not in ms:
+                        self._send(404, {"error": "unknown strip"}, started)
+                        return
+                    _MOCK_FX["strip:" + strip_name] = {"effect": "sequence",
+                        "theme": theme_id, "brightness": brightness if _is_pct(brightness) else 100}
+                    self._send(200, {"ok": True, "strip": strip_name,
+                                     "theme": theme_id}, started)
+                    return
+                res = apply_led_theme(theme_id, strip_name, brightness)
+                if res is None:
+                    self._send(404, {"error": "unknown theme or strip"}, started)
+                    return
+                res = dict(res)
+                res["theme"] = theme_id
                 self._send(200, res, started)
                 return
 

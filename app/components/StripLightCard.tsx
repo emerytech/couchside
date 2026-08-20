@@ -22,7 +22,7 @@ import { Alert, Pressable, StyleSheet, Text, View } from 'react-native';
 import { PresetNameModal } from '@/components/PresetNameModal';
 import { TrackSlider } from '@/components/TrackSlider';
 import { usePoll } from '@/hooks/usePoll';
-import { api, hostKey, type LedEffect, type LedInfo, type LedsState, type Rgb } from '@/lib/api';
+import { api, hostKey, type LedEffect, type LedInfo, type LedsState, type LedTheme, type Rgb } from '@/lib/api';
 import { hapticLight } from '@/lib/haptics';
 import { cssRgb, hexRgb, hueToRgb, rgbToHue, HUE_STOPS } from '@/lib/ledColor';
 import {
@@ -102,6 +102,9 @@ export function StripLightCard() {
   const { settings, ready } = useSettings();
   const configured = !!settings.host && !!settings.token;
   const presets = useLedPresets();
+  // Built-in themes SERVED BY THE BOX (agent >= 2.9.97). null = not fetched yet
+  // or an older agent (404) -> we fall back to the app's own built-in seeds.
+  const [themes, setThemes] = useState<LedTheme[] | null>(null);
 
   const [selKey, setSelKey] = useState<string | null>(null);
   const [effect, setEffect] = useState<StripEffect>('solid');
@@ -144,6 +147,25 @@ export function StripLightCard() {
     ? (poll.data?.strips ?? []).find((s) => strip.key === `strip:${s.prefix}`)
     : undefined;
   const agentMode = !!agentStrip;
+
+  // Fetch the box's built-in theme catalog once the box is reachable. Themes
+  // live on the box, so a box update adds new ones with no app resubmit; a 404
+  // (older agent) leaves `themes` null and the app's own seed presets show.
+  useEffect(() => {
+    if (!ready || !configured) return;
+    let live = true;
+    void api.ledThemes(settings).then((r) => { if (live) setThemes(r); });
+    return () => { live = false; };
+  }, [ready, configured, settings]);
+
+  /** Play a box theme by id — the box sizes it to the strip. */
+  const applyTheme = (theme: LedTheme) => {
+    if (!agentStrip) return;
+    hapticLight();
+    setBright(bright);
+    void api.applyLedTheme(settings, agentStrip.prefix, theme.id, bright)
+      .then(() => poll.refresh()).catch(() => {});
+  };
 
   const colorRef = useRef<Rgb>({ r: 255, g: 0, b: 0 });
   const brightRef = useRef(100);
@@ -916,10 +938,32 @@ export function StripLightCard() {
         </>
       )}
 
-      {/* PRESETS — saved profiles, applied to the whole strip. */}
+      {/* BOX THEMES — built-in animations served by the box (agent >= 2.9.97),
+          so new ones appear here after a box update with no app resubmit. Only
+          for a strip the agent owns (it renders them). */}
+      {agentMode && themes && themes.length > 0 ? (
+        <>
+          <Text style={styles.sectionLabel}>THEMES</Text>
+          <View style={styles.chipRow}>
+            {themes.map((th) => (
+              <Pressable
+                key={th.id} onPress={() => applyTheme(th)}
+                accessibilityRole="button" accessibilityLabel={`Apply theme ${th.label}`}
+                style={({ pressed }) => [styles.presetChip, pressed && styles.pressed]}>
+                <View style={[styles.presetDot, { backgroundColor: th.accent ? cssRgb(th.accent) : t.textDim }]} />
+                <Text style={styles.chipText} numberOfLines={1}>{th.label}</Text>
+              </Pressable>
+            ))}
+          </View>
+        </>
+      ) : null}
+
+      {/* PRESETS — saved profiles, applied to the whole strip. When the box
+          serves themes, drop our built-in seeds (the box owns those now) and
+          keep only the user's own saved presets. */}
       <Text style={styles.sectionLabel}>PRESETS</Text>
       <View style={styles.chipRow}>
-        {presets.map((p) => (
+        {(themes && themes.length > 0 ? presets.filter((p) => !isBuiltinPreset(p.id)) : presets).map((p) => (
           <Pressable
             key={p.id} onPress={() => applyPreset(p)} onLongPress={() => confirmDelete(p)}
             accessibilityRole="button" accessibilityLabel={`Apply preset ${p.label}`}

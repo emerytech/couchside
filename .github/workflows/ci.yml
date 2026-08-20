@@ -577,6 +577,13 @@ jobs:
       - name: Unit tests (player spatial nav)
         run: python3 tests/test_player_nav.py
 
+      # Agent-served LED theme catalog + generators — a new theme ships with an
+      # agent update and appears in the app with no resubmit, so the guard is
+      # that the theme id is a frozen lookup, the generators are well-formed at
+      # any strip length, and they render deterministically.
+      - name: Unit tests (LED themes)
+        run: python3 tests/test_led_themes.py
+
       # Player routes. Drives a real Handler on loopback with STUB steam /
       # steamos-add-to-steam binaries that log every call, so "refused" and
       # "nothing ran" are two separate observations -- a test that only checked
