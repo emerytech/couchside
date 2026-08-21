@@ -9,6 +9,7 @@ import { useImmersive } from '@/lib/immersive';
 import { usePref } from '@/lib/prefs';
 import { FeatureTour } from '@/components/FeatureTour';
 import { TourThanks } from '@/components/TourThanks';
+import VolumeOsd from '@/components/VolumeOsd';
 import { WhatsNewOffer } from '@/components/WhatsNewOffer';
 import { useFeatureTour } from '@/hooks/useFeatureTour';
 import { useDownloadWatcher } from '@/hooks/useDownloadWatch';
@@ -327,6 +328,10 @@ export default function TabLayout() {
     }) ? (
       <WhatsNewOffer onDone={() => setOfferDismissed(true)} />
     ) : null}
+    {/* App-wide volume OSD: flashes when Couchside changes the volume, so the
+        user sees it on the phone without looking at the TV. pointerEvents:none,
+        so it never intercepts a tap. */}
+    <VolumeOsd />
     </>
   );
 }
