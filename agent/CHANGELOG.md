@@ -18,6 +18,14 @@ the same thing regardless of what actually changed.
 Write for the person holding the phone, not for the commit log. They are
 deciding whether to press "Update now" on a machine across the room.
 
+## 2.9.99
+
+**See the volume on your phone.** When you change the volume from the Couchside
+app, your phone now flashes the change instantly — so you can tell it worked
+without looking at the TV. This pairs with the matching app update; older phones
+are unaffected. Also carries the earlier fix so games launch reliably from the
+couch (the box now finds the right display instead of guessing).
+
 ## 2.9.98
 
 **Games launch reliably from the couch.** On some setups, launching a game from

@@ -49,7 +49,7 @@ except ImportError:  # pragma: no cover
     fcntl = None
 
 APP_NAME = "couchside-agent"
-VERSION = "2.9.98"
+VERSION = "2.9.99"
 UID = os.getuid()
 XDG_RUNTIME_DIR = "/run/user/%d" % UID
 
@@ -18858,6 +18858,60 @@ def _gamepad_keepalive_loop():
             pass
 
 
+# ---------------------------------------------------------------------------
+# Live volume events (/ws/volume) — a receive-only WS push channel.
+#
+# WHY THIS EXISTS: on a Steam Machine the box audio is a FIXED HDMI-passthrough
+# sink (measured: `wpctl set-volume` is ignored) and a plain TV feature-aborts
+# CEC Give Audio Status (measured), so the app cannot READ an absolute volume
+# level to display. But it CAN show the change the moment it happens: whenever
+# Couchside itself runs a volume op (the app's own volume buttons), the agent
+# pushes a relative nudge (up / down / mute) so the phone flashes a volume OSD
+# without the user looking at the TV. This is 100% reliable because the agent is
+# the one performing the change — no snooping. (Catching EXTERNAL changes, e.g.
+# a physical rocker, would need root CEC MONITOR_ALL; not delivered.)
+#
+# ALLOWLIST/SAFETY (CLAUDE.md §3): purely OUTBOUND. The client authenticates
+# with the bearer token, then only RECEIVES — nothing it sends becomes a command,
+# a path, or a shell string. The nudge direction is chosen by the agent from a
+# frozen op map, never from client input.
+VOLUME_SESSIONS = []                 # list of {"conn","slock"} entries (receive-only)
+VOLUME_LOCK = threading.Lock()
+VOLUME_IDLE_TIMEOUT_S = 65           # reap a client silent this long (app pings ~25s)
+
+# The volume ops whose success is worth flashing an OSD for -> the direction we
+# report. A frozen lookup (CLAUDE.md §3): a non-volume op yields None and pushes
+# nothing. mute is a toggle, reported as its own kind.
+_VOLUME_OP_DIR = {"volume_up": "up", "volume_down": "down", "mute": "mute"}
+
+
+def _volume_broadcast(obj):
+    """Send one JSON frame to every live /ws/volume client. Snapshot under the
+    lock, send outside it (each _wsend_json takes only that socket's slock), so
+    socket I/O never blocks VOLUME_LOCK — same discipline as _gamepad_broadcast."""
+    with VOLUME_LOCK:
+        entries = list(VOLUME_SESSIONS)
+    for entry in entries:
+        _wsend_json(entry, obj)
+
+
+def _volume_nudge(op):
+    """Broadcast a volume-OSD nudge for a volume op Couchside just ran. A
+    non-volume op (power_on/…) or a non-string is ignored — nothing is pushed.
+    Call only AFTER the op succeeded, so the OSD never lies about a no-op."""
+    direction = _VOLUME_OP_DIR.get(op) if isinstance(op, str) else None
+    if direction:
+        _volume_broadcast({"t": "vol", "dir": direction})
+
+
+def _volume_events_available():
+    """Hint for the hello frame: the push channel itself is always functional, so
+    this is True. A nudge only actually arrives when Couchside runs a volume op,
+    so a box that can't change volume simply never flashes an OSD — the app keys
+    off the frames, not this flag."""
+    return True
+
+
 def _release_devices(entry):
     """Demote a session that stays connected as a waiter: destroy its gamepad
     (one pad per holder — the new holder brings its own) but KEEP the mouse and
@@ -19910,6 +19964,13 @@ class Handler(BaseHTTPRequestHandler):
                 # check + handshake, so it must not sit behind the JSON auth gate
                 # (a JSON 401 body onto an upgrading socket would be garbage).
                 self._handle_screen_ws(parsed, started)
+                return
+
+            if path == "/ws/volume":
+                # Same pre-auth-zone rationale as /ws/screen. Receive-only push
+                # of CEC volume nudges; self-auths (?token=) then degrades closed
+                # (hello volume_events:false) on a box without kernel CEC.
+                self._handle_volume_ws(parsed, started)
                 return
 
             if path == "/ws/h264":
@@ -22014,6 +22075,12 @@ class Handler(BaseHTTPRequestHandler):
                 if result is None:  # nothing can handle this op
                     self._send(404, {"error": "not found"}, started)
                     return
+                # Flash a volume OSD on every connected phone: the op ran, so a
+                # volume op means the volume just changed (non-volume ops are a
+                # no-op in _volume_nudge). App-driven and reliable — the agent
+                # itself performed the change, no CEC snooping involved.
+                if result.get("ok"):
+                    _volume_nudge(op)
                 self._send(200, result, started)
                 return
 
@@ -22176,6 +22243,82 @@ class Handler(BaseHTTPRequestHandler):
                   % (e.__class__.__name__, e), flush=True)
 
     # -- screen stream websocket (P4a, opt-in portal module) -------------------
+
+    def _volume_ws_handshake(self, parsed, started):
+        """Shared ?token= auth + 101 upgrade for a receive-only push WS. Returns
+        True once switched to WebSocket, False after sending an HTTP error. Mirrors
+        the /ws/screen handshake verbatim."""
+        self.close_connection = True
+        qs = parse_qs(parsed.query)
+        supplied = qs.get("token", [""])[0]
+        if not supplied or not hmac.compare_digest(supplied, self.token):
+            self._send(401, {"error": "unauthorized"}, started,
+                       extra_headers={"Connection": "close"})
+            return False
+        key = self.headers.get("Sec-WebSocket-Key", "")
+        upgrade = (self.headers.get("Upgrade") or "").lower()
+        if upgrade != "websocket" or not key:
+            self._send(400, {"error": "websocket upgrade required"}, started,
+                       extra_headers={"Connection": "close"})
+            return False
+        accept = base64.b64encode(
+            hashlib.sha1((key + WS_GUID).encode("ascii")).digest()).decode("ascii")
+        try:
+            self.connection.sendall(
+                b"HTTP/1.1 101 Switching Protocols\r\n"
+                b"Upgrade: websocket\r\n"
+                b"Connection: Upgrade\r\n"
+                b"Sec-WebSocket-Accept: " + accept.encode("ascii") + b"\r\n\r\n")
+        except OSError:
+            return False
+        self._log(101, started)
+        return True
+
+    def _handle_volume_ws(self, parsed, started):
+        """Live volume-change events over WebSocket. Self-auths (?token=) +
+        handshakes like /ws/screen, sends a `hello` advertising whether volume
+        events are live (a kernel CEC monitor is available), then registers as a
+        receive-only client and blocks until the socket closes. A box without CEC
+        degrades closed: hello says volume_events:false and the app shows no OSD."""
+        if not self._volume_ws_handshake(parsed, started):
+            return
+        self._volume_session()
+
+    def _volume_session(self):
+        """Register as a receive-only volume client and block until the socket
+        closes. Split out so a test can stub the blocking loop (same shape as
+        _h264_session)."""
+        conn = self.connection
+        entry = {"conn": conn, "slock": threading.Lock()}
+        _wsend_json(entry, {"t": "hello", "volume_events": _volume_events_available()})
+        with VOLUME_LOCK:
+            VOLUME_SESSIONS.append(entry)
+        # Receive-only: we read solely to notice the client go away and to keep
+        # the recv idle-clock fresh from its keepalive frames (the app pings so a
+        # backgrounded phone is reaped in <=VOLUME_IDLE_TIMEOUT_S and reconnects
+        # on foreground). The monitor thread is the ONLY writer of out-of-band
+        # frames; its writes take entry["slock"], so this reader never races it.
+        last = time.monotonic()
+        try:
+            conn.settimeout(min(20, VOLUME_IDLE_TIMEOUT_S))
+            while True:
+                try:
+                    data = conn.recv(1024)
+                except socket.timeout:
+                    if time.monotonic() - last > VOLUME_IDLE_TIMEOUT_S:
+                        break               # silent too long -> zombie, reap
+                    continue
+                except OSError:
+                    break
+                if not data:                 # clean TCP close
+                    break
+                last = time.monotonic()      # any inbound frame proves liveness
+        finally:
+            with VOLUME_LOCK:
+                try:
+                    VOLUME_SESSIONS.remove(entry)
+                except ValueError:
+                    pass
 
     def _handle_screen_ws(self, parsed, started):
         """MJPEG-over-WebSocket from the portal module. Mirrors the gamepad WS

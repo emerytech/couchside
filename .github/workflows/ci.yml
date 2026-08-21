@@ -593,6 +593,15 @@ jobs:
       - name: Unit tests (session env discovery)
         run: python3 tests/test_session_env.py
 
+      # Live volume events (/ws/volume). The box audio is often a fixed HDMI
+      # passthrough sink and a plain TV won't report its level over CEC, so the
+      # OSD is app-driven: the agent pushes a nudge when IT runs a volume op.
+      # Guard: the op->direction map is a frozen lookup (non-volume/garbage push
+      # nothing), the WS self-auths (bad token -> 401), and a broadcast is
+      # outbound-only (dead socket skipped, never raises).
+      - name: Unit tests (volume events)
+        run: python3 tests/test_volume_events.py
+
       # Player routes. Drives a real Handler on loopback with STUB steam /
       # steamos-add-to-steam binaries that log every call, so "refused" and
       # "nothing ran" are two separate observations -- a test that only checked
