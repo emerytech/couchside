@@ -584,6 +584,15 @@ jobs:
       - name: Unit tests (LED themes)
         run: python3 tests/test_led_themes.py
 
+      # Graphical-session env discovery for launches. The agent (a --user
+      # service) inherits no DISPLAY, so it used to hard-guess ":0"; a wrong
+      # guess is Steam's "Unable to open a connection to X". The guard is that
+      # _session_env() DISCOVERS the display from a live session process and
+      # only falls back to the guess when nothing is found — pinned in both
+      # directions, since healthy hardware only exercises the ":0-is-right" half.
+      - name: Unit tests (session env discovery)
+        run: python3 tests/test_session_env.py
+
       # Player routes. Drives a real Handler on loopback with STUB steam /
       # steamos-add-to-steam binaries that log every call, so "refused" and
       # "nothing ran" are two separate observations -- a test that only checked

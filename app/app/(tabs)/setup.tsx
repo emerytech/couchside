@@ -67,7 +67,14 @@ import { clearCompatCache } from '@/lib/compatFetch';
 import { resetFeatureTour } from '@/hooks/useFeatureTour';
 import { setPref, usePref } from '@/lib/prefs';
 import { THEME_PICKER } from '@/lib/gameTheme';
-import { buy, userFacingPurchaseError, getProduct, restoreFromUserAction } from '@/lib/purchase';
+import {
+  buy,
+  userFacingPurchaseError,
+  getProduct,
+  restoreFromUserAction,
+  openRedeemCode,
+  REDEEM_STORE_NAME,
+} from '@/lib/purchase';
 import { Box, DEFAULT_PORT, normalizeMac } from '@/lib/settings';
 import { VolumeTarget } from '@/lib/api';
 import { useBoxes, useBoxOnlineStatus, BoxReachability } from '@/lib/SettingsContext';
@@ -2067,6 +2074,13 @@ function SetupBody() {
                   One-time unlock · no subscription, no account, no tracking.
                 </Text>
               )}
+              {!isGenuinelyPurchased(entitlement) && (
+                <Pressable onPress={() => void openRedeemCode()} hitSlop={8}>
+                  <Text style={styles.redeemHint}>
+                    Have a code? Redeem it in the {REDEEM_STORE_NAME}, then tap Restore Purchases.
+                  </Text>
+                </Pressable>
+              )}
             </View>
 
             {/* User-initiated, always available. This LINKS OUT to the store's
@@ -2472,6 +2486,13 @@ const makeStyles = (t: Palette) => StyleSheet.create({
   btnRestoreText: { color: t.textDim, fontWeight: '800', fontSize: 13, letterSpacing: 1 },
   restoreMsg: { fontSize: 12, fontFamily: mono, marginTop: 10 },
   purchaseHint: { color: t.textFaint, fontSize: 11, marginTop: 10 },
+  redeemHint: {
+    color: t.textDim,
+    fontSize: 11,
+    lineHeight: 16,
+    marginTop: 10,
+    textDecorationLine: 'underline',
+  },
   pressed: { opacity: 0.7 },
   stepRow: { flexDirection: 'row', alignItems: 'flex-start', marginBottom: 10, gap: 10 },
   stepMark: { fontSize: 18, fontWeight: '800', width: 22, textAlign: 'center' },

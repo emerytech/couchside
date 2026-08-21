@@ -10,7 +10,7 @@ export { isUserCancellation, userFacingPurchaseError } from './purchaseErrors';
  * throwing; callers (lib/entitlement.ts) treat that as "nothing to sell here,
  * do not gate".
  */
-import { Platform } from 'react-native';
+import { Linking, Platform } from 'react-native';
 import { shouldReconcileWithStore } from './restoreSync';
 
 /** The single non-consumable unlock product (App Store + Play Store). */
@@ -344,5 +344,38 @@ export async function restore(): Promise<RestoreResult> {
     // NOT to make — and it lands in red on someone who may well own the app.
     if (isUserCancellation(e)) return { state: 'cancelled' };
     return { state: 'error', message: e instanceof Error ? e.message : String(e) };
+  }
+}
+
+/** The store whose promo-code redeem flow a "Have a code?" hint points at. */
+export const REDEEM_STORE_NAME = Platform.OS === 'ios' ? 'App Store' : 'Play Store';
+
+/**
+ * Open the platform store's promo-code redeem screen.
+ *
+ * Non-consumable IAP codes are NOT entered inside the app — Apple redeems them
+ * in the App Store (a hidden in-app unlock field is an App Review 2.3.1 / 2.1(b)
+ * rejection; see docs/memory). This just hands the user off to the right place;
+ * the redeemed unlock then flows back in via Restore Purchases.
+ *
+ * iOS -> the App Store "Redeem Code" sheet. Android -> Play's redeem page.
+ * Best-effort and never throws: falls back to the https form, which always
+ * resolves to something.
+ */
+export async function openRedeemCode(): Promise<void> {
+  const deep = Platform.OS === 'ios' ? 'itms-apps://apps.apple.com/redeem' : 'https://play.google.com/redeem';
+  const web = Platform.OS === 'ios' ? 'https://apps.apple.com/redeem' : 'https://play.google.com/redeem';
+  try {
+    if (await Linking.canOpenURL(deep)) {
+      await Linking.openURL(deep);
+      return;
+    }
+  } catch {
+    // fall through to the https form
+  }
+  try {
+    await Linking.openURL(web);
+  } catch {
+    // Nothing sensible left to do; never crash over a redeem link.
   }
 }
