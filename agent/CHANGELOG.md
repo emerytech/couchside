@@ -18,6 +18,15 @@ the same thing regardless of what actually changed.
 Write for the person holding the phone, not for the commit log. They are
 deciding whether to press "Update now" on a machine across the room.
 
+## 2.9.98
+
+**Games launch reliably from the couch.** On some setups, launching a game from
+the app could fail with Steam's "Unable to open a connection to X" instead of
+starting the game — the box couldn't tell which display to launch onto and
+guessed wrong. It now reads the right display from your running session, so a
+tap on the phone starts the game like it should. If yours already worked, nothing
+changes.
+
 ## 2.9.97
 
 **Light themes update from the box.** Built-in RGB strip themes (Portal, Rainbow

@@ -49,7 +49,7 @@ except ImportError:  # pragma: no cover
     fcntl = None
 
 APP_NAME = "couchside-agent"
-VERSION = "2.9.97"
+VERSION = "2.9.98"
 UID = os.getuid()
 XDG_RUNTIME_DIR = "/run/user/%d" % UID
 
@@ -10364,14 +10364,120 @@ def _launcher_argv(launcher_id):
     return None
 
 
+# Graphical-session env vars a launched process needs to reach the display.
+# The agent (a systemd --user service) inherits NONE of these, so without
+# discovery it can only guess -- and a wrong DISPLAY is exactly Steam's
+# "Unable to open a connection to X" (kb ref 4050-WOJB-0608). Measured on a
+# SteamOS Game Mode box: the Steam UI is on :0, games on :1, and the agent's
+# process environ carried only XDG_RUNTIME_DIR.
+_SESSION_ENV_KEYS = ("DISPLAY", "WAYLAND_DISPLAY", "XAUTHORITY")
+
+# Live processes to harvest that env from, most authoritative first. `steam`
+# is the exact context a Steam handoff launches into; the desktop shells cover
+# a box sitting on the desktop with Steam closed. gamescope is deliberately
+# absent -- on SteamOS its /proc/<pid>/environ is NOT readable by our uid
+# (measured: EACCES), so relying on it would silently degrade to the guess.
+_SESSION_ENV_DONORS = ("steam", "plasmashell", "kwin_wayland", "gnome-shell",
+                       "sway", "Hyprland", "labwc", "weston", "Xwayland")
+
+
+def _parse_environ_blob(raw):
+    """NUL-separated KEY=VALUE bytes (as in /proc/<pid>/environ) -> dict.
+    Skips chunks without '=' and any value that is not valid UTF-8."""
+    out = {}
+    for chunk in raw.split(b"\0"):
+        if b"=" not in chunk:
+            continue
+        k, _, v = chunk.partition(b"=")
+        try:
+            out[k.decode()] = v.decode()
+        except UnicodeDecodeError:
+            pass
+    return out
+
+
+def _read_proc_environ(pid):
+    """Parse /proc/<pid>/environ into a dict. Returns {} on any error (the
+    process may be gone, or owned by another uid). Never raises."""
+    try:
+        with open("/proc/%d/environ" % pid, "rb") as f:
+            raw = f.read()
+    except OSError:
+        return {}
+    return _parse_environ_blob(raw)
+
+
+def _session_donor_pids():
+    """PIDs of same-uid graphical-session donor processes, ordered by
+    _SESSION_ENV_DONORS priority. Reads only /proc; degrades to [] on error."""
+    our_uid = UID
+    by_donor = {d: [] for d in _SESSION_ENV_DONORS}
+    try:
+        entries = os.listdir("/proc")
+    except OSError:
+        return []
+    for entry in entries:
+        if not entry.isdigit():
+            continue
+        pid = int(entry)
+        try:
+            if os.stat("/proc/%d" % pid).st_uid != our_uid:
+                continue
+            with open("/proc/%d/comm" % pid) as f:
+                comm = f.read().strip()
+        except OSError:
+            continue
+        if comm in by_donor:
+            by_donor[comm].append(pid)
+    ordered = []
+    for d in _SESSION_ENV_DONORS:
+        ordered.extend(by_donor[d])
+    return ordered
+
+
+def _harvest_session_env():
+    """Best-effort DISPLAY / WAYLAND_DISPLAY / XAUTHORITY read from a live,
+    same-uid process already inside the graphical session. Returns a dict of
+    only the keys actually found (so the caller can leave the rest to its
+    fallbacks). Never raises; {} means "discovered nothing, use the guess".
+
+    Only reflects reality -- it never invents a value. A per-game
+    pressure-vessel sandbox XAUTHORITY is skipped: it is not valid for a
+    general launch, and the real host one (if any) comes from another donor."""
+    found = {}
+    for pid in _session_donor_pids():
+        env = _read_proc_environ(pid)
+        if not env:
+            continue
+        for k in _SESSION_ENV_KEYS:
+            if k in found or not env.get(k):
+                continue
+            v = env[k]
+            if k == "XAUTHORITY" and "/pressure-vessel/" in v:
+                continue
+            found[k] = v
+        # A DISPLAY or WAYLAND_DISPLAY is the load-bearing bit; once we have one
+        # from the highest-priority donor that had it, stop.
+        if found.get("DISPLAY") or found.get("WAYLAND_DISPLAY"):
+            break
+    return found
+
+
 def _session_env():
     """Env for launching into the user's graphical session.
 
-    Starts from _user_env() (sets XDG_RUNTIME_DIR) and best-effort discovers
-    DISPLAY / WAYLAND_DISPLAY if not already present: DISPLAY defaults to ":0";
-    WAYLAND_DISPLAY is inferred from a wayland-* socket in XDG_RUNTIME_DIR.
+    Starts from _user_env() (sets XDG_RUNTIME_DIR), then DISCOVERS
+    DISPLAY / WAYLAND_DISPLAY / XAUTHORITY from a live session process
+    (_harvest_session_env) rather than guessing -- the guess is what produced
+    Steam's X-connection error on boxes whose display was not :0. Anything
+    discovery cannot find falls back to the old behaviour: DISPLAY defaults to
+    ":0"; WAYLAND_DISPLAY is inferred from a wayland-* socket in
+    XDG_RUNTIME_DIR. A value already present in the environ always wins.
     """
     env = _user_env()
+    if any(not env.get(k) for k in _SESSION_ENV_KEYS):
+        for k, v in _harvest_session_env().items():
+            env.setdefault(k, v)  # never override an inherited real value
     if not env.get("DISPLAY"):
         env["DISPLAY"] = ":0"
     if not env.get("WAYLAND_DISPLAY"):

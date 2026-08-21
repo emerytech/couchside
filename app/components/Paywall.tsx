@@ -4,7 +4,14 @@ import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
 import { recordPurchaseDate } from '@/lib/entitlement';
 import { useEntitlement } from '@/lib/EntitlementContext';
-import { buy, userFacingPurchaseError, getProduct, restoreFromUserAction } from '@/lib/purchase';
+import {
+  buy,
+  userFacingPurchaseError,
+  getProduct,
+  restoreFromUserAction,
+  openRedeemCode,
+  REDEEM_STORE_NAME,
+} from '@/lib/purchase';
 import { mono, useThemedStyles } from '@/lib/theme';
 import type { Palette } from '@/lib/theme';
 
@@ -118,6 +125,16 @@ export default function Paywall() {
         </Pressable>
 
         {error != null && <Text style={styles.error}>{error}</Text>}
+
+        <Pressable
+          onPress={() => void openRedeemCode()}
+          disabled={busy != null}
+          hitSlop={8}
+          style={({ pressed }) => [styles.redeemHint, pressed && styles.pressed]}>
+          <Text style={styles.redeemHintText}>
+            Have a code? Redeem it in the {REDEEM_STORE_NAME}, then tap Restore.
+          </Text>
+        </Pressable>
       </View>
     </View>
   );
@@ -179,6 +196,14 @@ const makeStyles = (t: Palette) => StyleSheet.create({
     fontFamily: mono,
     textAlign: 'center',
     marginTop: 14,
+  },
+  redeemHint: { marginTop: 20, paddingHorizontal: 8 },
+  redeemHintText: {
+    color: t.textDim,
+    fontSize: 12,
+    lineHeight: 17,
+    textAlign: 'center',
+    textDecorationLine: 'underline',
   },
   pressed: { opacity: 0.7 },
 });
