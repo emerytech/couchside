@@ -49,7 +49,7 @@ except ImportError:  # pragma: no cover
     fcntl = None
 
 APP_NAME = "couchside-agent"
-VERSION = "2.9.99"
+VERSION = "2.9.100"
 UID = os.getuid()
 XDG_RUNTIME_DIR = "/run/user/%d" % UID
 
@@ -15010,6 +15010,7 @@ KEY_Z, KEY_X, KEY_C, KEY_V, KEY_B, KEY_N, KEY_M = 44, 45, 46, 47, 48, 49, 50
 KEY_COMMA, KEY_DOT, KEY_SLASH = 51, 52, 53
 KEY_LEFTALT = 56
 KEY_SPACE = 57
+KEY_F4 = 62  # for the Alt+F4 "close window" combo
 KEY_HOME, KEY_UP = 102, 103
 KEY_LEFT, KEY_RIGHT, KEY_END, KEY_DOWN = 105, 106, 107, 108
 KEY_MUTE, KEY_VOLUMEDOWN, KEY_VOLUMEUP = 113, 114, 115
@@ -15118,6 +15119,25 @@ KEY_CHORDS = {
     "shifttab": (KEY_LEFTSHIFT, KEY_TAB),
 }
 
+# Named key COMBINATIONS the app's combo panel fires with one
+# {t:'k','key':<name>} frame (the reviewer ask: "a way to send button/key
+# combinations"). Same allowlist discipline as DESKTOP_CHORDS/KEY_CHORDS
+# (CLAUDE.md §3): the client sends a NAME that INDEXES this frozen table; the
+# key CODES are agent-chosen and never interpolated, and an unknown name is a
+# ValueError (-> the session's decoder rejects it), never a pass-through. Kept
+# to plain, universal desktop editing chords — Kodi/media actions are single
+# keys the app already sends via SPECIAL_KEYS / text, so they are NOT here.
+COMBO_CHORDS = {
+    "copy":      (KEY_LEFTCTRL, KEY_C),
+    "paste":     (KEY_LEFTCTRL, KEY_V),
+    "cut":       (KEY_LEFTCTRL, KEY_X),
+    "undo":      (KEY_LEFTCTRL, KEY_Z),
+    "selectall": (KEY_LEFTCTRL, KEY_A),
+    "find":      (KEY_LEFTCTRL, KEY_F),
+    "closetab":  (KEY_LEFTCTRL, KEY_W),
+    "closewin":  (KEY_LEFTALT, KEY_F4),
+}
+
 # All KEY_* codes the virtual keyboard may emit (declared at device create).
 # KEY_LEFTCTRL is included for the Ctrl+V paste chord even though no char maps
 # to it, else the uinput device won't declare the capability and emit fails.
@@ -15126,6 +15146,7 @@ KEYBOARD_CODES = sorted(
     | set(SPECIAL_KEYS.values())
     | {c for codes in DESKTOP_CHORDS.values() for c in codes}
     | {c for codes in KEY_CHORDS.values() for c in codes}
+    | {c for codes in COMBO_CHORDS.values() for c in codes}
     | {KEY_LEFTSHIFT, KEY_LEFTCTRL, KEY_LEFTALT}
 )
 
@@ -15666,6 +15687,10 @@ def keyboard_events(msg):
                     + [(EV_KEY, c, 0) for c in reversed(codes)])
         if key in KEY_CHORDS:
             codes = KEY_CHORDS[key]
+            return ([(EV_KEY, c, 1) for c in codes]
+                    + [(EV_KEY, c, 0) for c in reversed(codes)])
+        if key in COMBO_CHORDS:
+            codes = COMBO_CHORDS[key]
             return ([(EV_KEY, c, 1) for c in codes]
                     + [(EV_KEY, c, 0) for c in reversed(codes)])
         raise ValueError("unknown special key %r" % (key,))
@@ -19007,7 +19032,8 @@ def _make_holder(entry, mock):
                         "text": _text_caps(mock),
                         "keys": sorted(set(SPECIAL_KEYS)
                                        | set(DESKTOP_CHORDS)
-                                       | set(KEY_CHORDS))})
+                                       | set(KEY_CHORDS)
+                                       | set(COMBO_CHORDS))})
     for slot, factory in (("mouse", MockMouse if mock else UInputMouse),
                           ("keyboard", MockKeyboard if mock else UInputKeyboard)):
         if entry.get(slot) is None:

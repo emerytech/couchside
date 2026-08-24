@@ -44,6 +44,7 @@ import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
 import { StatusBar } from 'expo-status-bar';
 
+import { ComboPanel } from '@/components/ComboPanel';
 import { Gated } from '@/components/Gated';
 import { LandscapePad, LandscapePadTooSmall, MovePad } from '@/components/LandscapePad';
 import { setImmersive } from '@/lib/immersive';
@@ -2121,6 +2122,7 @@ function PadScreen() {
           </View>
           )}
           {!largePad && keyboardBar}
+          {!largePad && <ComboPanel client={client} />}
         </>
       ) : mode === 'trackpad' ? (
         <>
@@ -2227,6 +2229,7 @@ function PadScreen() {
             </View>
           )}
           {!largePad && keyboardBar}
+          {!largePad && <ComboPanel client={client} />}
         </>
       ) : (
         // ---------- Portrait gamepad: original stacked layout ----------
