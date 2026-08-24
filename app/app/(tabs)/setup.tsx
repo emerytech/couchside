@@ -908,6 +908,7 @@ function SetupBody() {
   const padDesktopNav = usePref('padDesktopNav');
   const padWinShortcuts = usePref('padWinShortcuts');
   const padKeyboardBar = usePref('padKeyboardBar');
+  const padCombosHold = usePref('padCombosHold');
   const padHints = usePref('padHints');
   const padTrackpadLarge = usePref('padTrackpadLarge');
   const padLargeToggle = usePref('padLargeToggle');
@@ -1874,6 +1875,15 @@ function SetupBody() {
                 value={padKeyboardBar}
                 onValueChange={(v) => {
                   void setPref('padKeyboardBar', v);
+                  hapticSelection();
+                }}
+              />
+              <TogglePref
+                label="Hold keyboard for combos"
+                sub="Long-press the KEYBOARD button to open the Combos panel — copy/paste and Kodi/media shortcuts."
+                value={padCombosHold}
+                onValueChange={(v) => {
+                  void setPref('padCombosHold', v);
                   hapticSelection();
                 }}
               />

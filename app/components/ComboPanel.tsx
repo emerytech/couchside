@@ -77,23 +77,33 @@ function Chip({
   );
 }
 
-export function ComboPanel({ client }: { client: GamepadClient }) {
+export function ComboPanel({
+  client,
+  open,
+  onClose,
+}: {
+  client: GamepadClient;
+  open: boolean;
+  onClose: () => void;
+}) {
   const styles = useThemedStyles(makeStyles);
-  const [open, setOpen] = React.useState(false);
+  if (!open) return null;
 
-  // Collapsed by default: it is an occasional tool, not the primary pad surface.
-  // The header toggles it, so the panel owns its own show/hide (no pad state).
+  // Opened by holding the keyboard button (see pad.tsx); a header ✕ closes it.
   return (
     <View style={styles.outer}>
-      <Pressable
-        onPress={() => {
-          hapticLight();
-          setOpen((v) => !v);
-        }}
-        style={({ pressed }) => [styles.toggle, (pressed || open) && styles.toggleOn]}>
-        <Text style={styles.toggleText}>{open ? '⌘  COMBOS  ▾' : '⌘  COMBOS  ▸'}</Text>
-      </Pressable>
-      {!open ? null : (
+      <View style={styles.header}>
+        <Text style={styles.title}>⌘  COMBOS</Text>
+        <Pressable
+          onPress={() => {
+            hapticLight();
+            onClose();
+          }}
+          hitSlop={12}
+          style={({ pressed }) => [styles.close, pressed && styles.closePressed]}>
+          <Text style={styles.closeText}>✕</Text>
+        </Pressable>
+      </View>
     <ScrollView
       style={styles.wrap}
       contentContainerStyle={styles.content}
@@ -126,26 +136,40 @@ export function ComboPanel({ client }: { client: GamepadClient }) {
         Media keys are Kodi shortcuts; combos need a box on agent 2.9.100+.
       </Text>
     </ScrollView>
-      )}
     </View>
   );
 }
 
 const makeStyles = (t: Palette) =>
   StyleSheet.create({
-    outer: { alignSelf: 'stretch' },
-    toggle: {
-      alignSelf: 'flex-start',
-      backgroundColor: t.inset,
+    outer: {
+      alignSelf: 'stretch',
+      backgroundColor: t.card,
       borderColor: t.cardBorder,
       borderWidth: 1,
-      borderRadius: 9,
-      paddingVertical: 8,
-      paddingHorizontal: 14,
-      marginTop: 4,
+      borderRadius: 12,
+      marginTop: 6,
+      paddingHorizontal: 8,
+      paddingBottom: 8,
     },
-    toggleOn: { borderColor: t.blue },
-    toggleText: { color: t.textDim, fontSize: 12, fontWeight: '800', fontFamily: mono, letterSpacing: 1 },
+    header: {
+      flexDirection: 'row',
+      alignItems: 'center',
+      justifyContent: 'space-between',
+      paddingTop: 10,
+      paddingHorizontal: 4,
+    },
+    title: { color: t.text, fontSize: 13, fontWeight: '800', fontFamily: mono, letterSpacing: 2 },
+    close: {
+      width: 30,
+      height: 30,
+      borderRadius: 15,
+      alignItems: 'center',
+      justifyContent: 'center',
+      backgroundColor: t.inset,
+    },
+    closePressed: { opacity: 0.6 },
+    closeText: { color: t.textDim, fontSize: 15, fontWeight: '800' },
     wrap: { alignSelf: 'stretch', maxHeight: 260 },
     content: { paddingVertical: 6, paddingHorizontal: 4, gap: 6 },
     group: {

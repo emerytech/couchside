@@ -177,6 +177,10 @@ export type Prefs = {
   padWinShortcuts: boolean;
   /** The KEYBOARD bar at the bottom of the Pad tab. */
   padKeyboardBar: boolean;
+  /** Long-press the KEYBOARD bar to open the Combos panel (copy/paste, Kodi
+   *  media shortcuts). Default OFF — an extra gesture on a load-bearing button,
+   *  opt-in. */
+  padCombosHold: boolean;
   /** Gesture hint text on the swipe/trackpad surfaces. */
   padHints: boolean;
   /** Controller theme picker: Off, Auto (match the running game), or a named
@@ -309,6 +313,7 @@ export const DEFAULTS: Prefs = {
   padDesktopNav: true,
   padWinShortcuts: true,
   padKeyboardBar: true,
+  padCombosHold: false,
   padHints: true,
   controllerTheme: 'auto',
   padTrackpadLarge: false,
@@ -430,6 +435,7 @@ function normalize(raw: unknown): Prefs {
     padDesktopNav: bool(o.padDesktopNav, DEFAULTS.padDesktopNav),
     padWinShortcuts: bool(o.padWinShortcuts, DEFAULTS.padWinShortcuts),
     padKeyboardBar: bool(o.padKeyboardBar, DEFAULTS.padKeyboardBar),
+    padCombosHold: bool(o.padCombosHold, DEFAULTS.padCombosHold),
     padHints: bool(o.padHints, DEFAULTS.padHints),
     controllerTheme: isControllerThemePref(o.controllerTheme)
       ? o.controllerTheme
