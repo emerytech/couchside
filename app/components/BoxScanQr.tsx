@@ -436,7 +436,7 @@ function PermissionGate({
         }}
         accessibilityRole="button"
         style={({ pressed }) => [styles.permBtn, pressed && styles.pressed]}>
-        <Text style={styles.permBtnText}>{deniedForever ? 'OPEN SETTINGS' : 'ALLOW CAMERA'}</Text>
+        <Text style={styles.permBtnText}>{deniedForever ? 'OPEN SETTINGS' : 'CONTINUE'}</Text>
       </Pressable>
     </View>
   );
