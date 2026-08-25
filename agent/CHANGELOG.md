@@ -18,6 +18,16 @@ the same thing regardless of what actually changed.
 Write for the person holding the phone, not for the commit log. They are
 deciding whether to press "Update now" on a machine across the room.
 
+## 2.9.101
+
+**Combos, and a snappier connection.** This powers the app's new Combos panel —
+hold the keyboard button on the Pad to fire one-tap key combinations: copy,
+paste and more for the desktop, plus Kodi and media shortcuts (play/pause,
+context menu, info, back). It also fixes a first-tap hiccup — the very first key
+or combo you sent right after connecting could get dropped while the box got
+ready; now it lands every time. Pairs with the matching app update; older phones
+keep working unchanged.
+
 ## 2.9.99
 
 **See the volume on your phone.** When you change the volume from the Couchside
