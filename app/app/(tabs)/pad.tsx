@@ -44,6 +44,7 @@ import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
 import { StatusBar } from 'expo-status-bar';
 
+import { ComboPanel } from '@/components/ComboPanel';
 import { Gated } from '@/components/Gated';
 import { LandscapePad, LandscapePadTooSmall, MovePad } from '@/components/LandscapePad';
 import { setImmersive } from '@/lib/immersive';
@@ -410,6 +411,9 @@ type KeyboardBarProps = {
       NOT "always send Esc" either — Esc is back-navigation on Steam, so firing
       it when nothing is open moves the user. The caller decides. */
   onDismiss?: (typed: boolean) => void;
+  /** Long-press the CLOSED keyboard button: open the combo panel. Absent (and
+      the hint hidden) when the "hold keyboard for combos" pref is off. */
+  onHoldForCombos?: () => void;
 };
 
 /**
@@ -425,7 +429,7 @@ type KeyboardBarProps = {
  * so callbacks always see the live value without stale closures.
  */
 function KeyboardBar({ autoOpenSignal, onText, onBackspace, onEnter, onSwipeMode,
-                       onSearch, onDismiss }: KeyboardBarProps) {
+                       onSearch, onDismiss, onHoldForCombos }: KeyboardBarProps) {
   const inputRef = useRef<TextInput>(null);
   const [open, setOpen] = useState(false);
   // Live ref so the once-created swipe responder sees the current callback.
@@ -643,6 +647,8 @@ function KeyboardBar({ autoOpenSignal, onText, onBackspace, onEnter, onSwipeMode
         {!open && onSearch && searchSide === 'left' && searchBtn}
         <Pressable
           onPress={open ? dismiss : focus}
+          onLongPress={!open && onHoldForCombos ? () => { haptic(); onHoldForCombos(); } : undefined}
+          delayLongPress={450}
           style={({ pressed }) => [
             styles.kbBar,
             styles.kbBarFlex,
@@ -653,7 +659,11 @@ function KeyboardBar({ autoOpenSignal, onText, onBackspace, onEnter, onSwipeMode
           {/* Closed: edge chevrons advertise the horizontal mode-switch swipe. */}
           {!open && <Text style={styles.kbSwipeCue}>‹</Text>}
           <Text style={[styles.kbBarText, open && styles.kbBarTextOpen]}>
-            {open ? '⌨  type to send · swipe down or tap Done' : '⌨  KEYBOARD  ·  swipe to switch mode'}
+            {open
+              ? '⌨  type to send · swipe down or tap Done'
+              : onHoldForCombos
+                ? '⌨  KEYBOARD  ·  swipe = mode · hold = combos'
+                : '⌨  KEYBOARD  ·  swipe to switch mode'}
           </Text>
           {!open && <Text style={styles.kbSwipeCue}>›</Text>}
         </Pressable>
@@ -1046,6 +1056,7 @@ function PadScreen() {
   // OVER the Pad without unmounting it -- see PadDiagnostics for why that
   // matters (leaving the tab tears down the socket being investigated).
   const [diagOpen, setDiagOpen] = useState(false);
+  const [combosOpen, setCombosOpen] = useState(false);
   const [canForce, setCanForce] = useState(false);
 
   const clientRef = useRef<GamepadClient | null>(null);
@@ -1433,6 +1444,7 @@ function PadScreen() {
   const showDesktopNav = usePref('padDesktopNav');
   const showWinShortcuts = usePref('padWinShortcuts');
   const showKeyboardBar = usePref('padKeyboardBar');
+  const combosHold = usePref('padCombosHold');
   const trackpadLarge = usePref('padTrackpadLarge');
   const padLargeToggle = usePref('padLargeToggle');
   // Large-pad mode applies to the two big drag surfaces (trackpad + swipe): it
@@ -1767,6 +1779,7 @@ function PadScreen() {
         autoOpenSignal={oskSignal}
         onSearch={canSearch ? steamSearch : undefined}
         onDismiss={closeSteamSearch}
+        onHoldForCombos={combosHold ? () => setCombosOpen(true) : undefined}
       />
     </TourAnchor>
   ) : null;
@@ -2121,6 +2134,13 @@ function PadScreen() {
           </View>
           )}
           {!largePad && keyboardBar}
+          {!largePad && (
+            <ComboPanel
+              client={client}
+              open={combosOpen}
+              onClose={() => setCombosOpen(false)}
+            />
+          )}
         </>
       ) : mode === 'trackpad' ? (
         <>
@@ -2227,6 +2247,13 @@ function PadScreen() {
             </View>
           )}
           {!largePad && keyboardBar}
+          {!largePad && (
+            <ComboPanel
+              client={client}
+              open={combosOpen}
+              onClose={() => setCombosOpen(false)}
+            />
+          )}
         </>
       ) : (
         // ---------- Portrait gamepad: original stacked layout ----------

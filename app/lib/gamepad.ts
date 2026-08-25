@@ -112,6 +112,21 @@ export type SpecialKey =
    *  does not know a name replies {t:'err'} and CLOSES the session. */
   | 'shifttab';
 
+/**
+ * Named key COMBINATIONS the combo panel fires (agent >= 2.9.100, expanded from
+ * COMBO_CHORDS). Ride the SAME {t:'k'} channel as SpecialKey, so the same
+ * unknown-name-closes-the-session rule applies — always gate on supportsCombo().
+ */
+export type KeyCombo =
+  | 'copy'
+  | 'paste'
+  | 'cut'
+  | 'undo'
+  | 'selectall'
+  | 'find'
+  | 'closetab'
+  | 'closewin';
+
 export const BUTTON_KEYS: ButtonKey[] = [
   'a',
   'b',
@@ -934,6 +949,26 @@ export class GamepadClient {
   supportsKey(key: SpecialKey): boolean {
     if (this.keyNames) return this.keyNames.has(key);
     return LEGACY_KEYS.has(key);
+  }
+
+  /**
+   * Does the agent accept this combo? Combos are all newer than the advertised-
+   * keys protocol, so an agent that never sent `keys` cannot have them: no
+   * LEGACY_KEYS fallback (unlike supportsKey), it just answers false.
+   */
+  supportsCombo(name: KeyCombo): boolean {
+    return this.keyNames ? this.keyNames.has(name) : false;
+  }
+
+  /**
+   * Fire a key combination (Ctrl+C, Alt+F4, …). Rides the {t:'k'} channel; the
+   * agent expands the name. GATED: sending a name the agent doesn't advertise
+   * makes it close the session, so a combo the agent doesn't know is dropped
+   * here rather than risking the socket.
+   */
+  sendCombo(name: KeyCombo): void {
+    if (!this.supportsCombo(name)) return;
+    this.sendRaw({ t: 'k', key: name });
   }
 
   /**

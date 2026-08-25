@@ -55,8 +55,14 @@ check("no canonical cap is silently omitted", sorted(missing), [])
 check("every value is a real bool",
       all(isinstance(v, bool) for v in caps.values()), True)
 # The ones we KNOW macOS cannot do in this slice must be False, not absent.
+# NOT media: unlike these, macOS CAN drive media (Music / Spotify via osascript
+# -- see media_op below), so caps["media"] is a LIVE probe of _media_players()
+# and is True whenever such a player is running. Pinning it to False here failed
+# on a real Mac with Music/Spotify open; it only "passed" in CI because ubuntu
+# has no players. Its presence + bool-ness are asserted above, and the media_op
+# block covers the behaviour, so it needs no fixed-value check here.
 for k in ("gamepad", "tv", "screen", "couchmode", "desktop", "screensaver",
-          "power_schedule", "media"):
+          "power_schedule"):
     check("%s is explicitly False" % k, caps.get(k), False)
 
 print()

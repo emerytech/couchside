@@ -68,6 +68,13 @@ jobs:
       - name: Unit tests (dpad latch)
         run: python3 tests/test_dpad_latch.py
 
+      # Key combinations the combo panel fires (COMBO_CHORDS). Guard: each name
+      # is a frozen lookup that expands press-in-order/release-in-reverse, an
+      # unknown name is refused (not a pass-through) so it can't become a
+      # command, and every combo code is declared in KEYBOARD_CODES.
+      - name: Unit tests (combo chords)
+        run: python3 tests/test_combo_chords.py
+
       # Couch Mode ceremony: the staged desktop->TV switch. Its whole reason for
       # existing is to stop two lies (a fake-green "Ready" that didn't verify
       # Game Mode came up, and audio that silently "skipped" onto the wrong
