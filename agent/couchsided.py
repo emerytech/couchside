@@ -49,7 +49,7 @@ except ImportError:  # pragma: no cover
     fcntl = None
 
 APP_NAME = "couchside-agent"
-VERSION = "2.9.100"
+VERSION = "2.9.101"
 UID = os.getuid()
 XDG_RUNTIME_DIR = "/run/user/%d" % UID
 
@@ -15520,6 +15520,7 @@ class MockGamepad:
         print("[gamepad] EV_SYN SYN_REPORT", flush=True)
 
     def destroy(self):
+        self.destroyed = True
         print("[gamepad] mock device destroyed", flush=True)
 
 
@@ -15541,6 +15542,7 @@ class MockMouse:
         print("[mouse] EV_SYN SYN_REPORT", flush=True)
 
     def destroy(self):
+        self.destroyed = True
         print("[mouse] mock device destroyed", flush=True)
 
 
@@ -15557,7 +15559,42 @@ class MockKeyboard:
         print("[keyboard] EV_SYN SYN_REPORT", flush=True)
 
     def destroy(self):
+        self.destroyed = True
         print("[keyboard] mock device destroyed", flush=True)
+
+
+# The virtual keyboard is a PROCESS-LIFETIME SINGLETON, not a per-session device
+# like the pad and mouse. WHY: a fresh uinput device is enumerated
+# ASYNCHRONOUSLY by the compositor (gamescope / X), and events sent before that
+# lands are silently dropped -- the _UINPUT_SETTLE_S race (~0.5s on KWin,
+# MEASURED ~2s on gamescope Game Mode). A per-session keyboard paid that settle
+# on EVERY connect, so the first combo / keystroke of a session could be eaten
+# (verified live: a combo fired <2s after connect never opened Kodi's context
+# menu; the same combo after the settle opened it every time). One keyboard,
+# created once and warmed at boot in main(), pays the settle ONCE; every later
+# session reuses an already-enumerated device, so its first keystroke lands.
+#
+# ONLY the keyboard is shared; the pad and mouse stay per-session. Keyboard
+# frames always pair press+release (keyboard_events / _handle_kt), so no key can
+# be left held between sessions. A pad's d-pad is a LATCHED absolute axis and a
+# mouse button can be held mid-drag, so those two are torn down with the session
+# to guarantee release (see _release_devices / _gamepad_cleanup) -- the keyboard
+# has no such state to leak, which is exactly what makes sharing it safe.
+_SHARED_KEYBOARD = None
+_SHARED_KEYBOARD_LOCK = threading.Lock()
+
+
+def _shared_keyboard(mock):
+    """The one process-lifetime virtual keyboard. Created on first use (warmed at
+    boot), cached, and reused by every gamepad session; NEVER destroyed per
+    session -- _gamepad_cleanup skips it by identity. Thread-safe: creation is
+    guarded, and each emit() is a single atomic os.write of a complete
+    press+release batch, so the holder-only emit model needs no further lock."""
+    global _SHARED_KEYBOARD
+    with _SHARED_KEYBOARD_LOCK:
+        if _SHARED_KEYBOARD is None:
+            _SHARED_KEYBOARD = MockKeyboard() if mock else UInputKeyboard()
+        return _SHARED_KEYBOARD
 
 
 def _scale_stick(f):
@@ -19034,14 +19071,22 @@ def _make_holder(entry, mock):
                                        | set(DESKTOP_CHORDS)
                                        | set(KEY_CHORDS)
                                        | set(COMBO_CHORDS))})
-    for slot, factory in (("mouse", MockMouse if mock else UInputMouse),
-                          ("keyboard", MockKeyboard if mock else UInputKeyboard)):
-        if entry.get(slot) is None:
-            try:
-                entry[slot] = factory()
-            except Exception as e:
-                print("[gamepad] %s pre-create failed (lazy path will retry):"
-                      " %s" % (slot, e), flush=True)
+    # The mouse stays per-session (its buttons can be held mid-drag, so it is
+    # torn down with the session to guarantee release). The KEYBOARD is the
+    # shared process-lifetime singleton (see _shared_keyboard): reusing it pays
+    # the uinput enumeration settle once, at boot, not on every connect.
+    if entry.get("mouse") is None:
+        try:
+            entry["mouse"] = MockMouse() if mock else UInputMouse()
+        except Exception as e:
+            print("[gamepad] mouse pre-create failed (lazy path will retry):"
+                  " %s" % e, flush=True)
+    if entry.get("keyboard") is None:
+        try:
+            entry["keyboard"] = _shared_keyboard(mock)
+        except Exception as e:
+            print("[gamepad] keyboard pre-create failed (lazy path will retry):"
+                  " %s" % e, flush=True)
     print("[gamepad] control -> %s" % entry["name"], flush=True)
     return True
 
@@ -22861,8 +22906,16 @@ class Handler(BaseHTTPRequestHandler):
                     GAMEPAD_HOLDER = promote
             # Destroy OUR devices under nothing (destroy is idempotent); grab
             # refs while we hold the lock so a concurrent promote can't race.
-            devices = [entry.get("device"), entry.get("mouse"),
-                       entry.get("keyboard")]
+            # The keyboard is the PROCESS-LIFETIME SINGLETON (see
+            # _shared_keyboard): keep it alive so the next session skips the
+            # uinput enumeration settle, and so a WAITER disconnecting can never
+            # tear the keyboard out from under the current holder. Reap it only
+            # in the impossible case that this entry somehow holds a different
+            # keyboard object.
+            kbd = entry.get("keyboard")
+            devices = [entry.get("device"), entry.get("mouse")]
+            if kbd is not None and kbd is not _SHARED_KEYBOARD:
+                devices.append(kbd)
         for dev in devices:
             if dev is not None:
                 try:
@@ -22904,7 +22957,7 @@ class Handler(BaseHTTPRequestHandler):
         kbd = entry.get("keyboard")
         if kbd is None:
             try:
-                kbd = MockKeyboard() if self.mock else UInputKeyboard()
+                kbd = _shared_keyboard(self.mock)
             except Exception as e:
                 _paste_log_once(entry, "keyboard unavailable (%s); text dropped" % e)
                 return True
@@ -23445,6 +23498,16 @@ def main():
     # the session alive even while the app's own JS keepalive timer is frozen (iOS).
     threading.Thread(target=_gamepad_keepalive_loop,
                      daemon=True, name="gp-keepalive").start()
+    # Warm the shared virtual keyboard NOW, at boot, so its uinput enumeration
+    # settle (the dropped-first-keystroke race) is paid before any phone
+    # connects -- the first combo of the first session then lands instead of
+    # being eaten. Real hardware only; a failure is non-fatal (lazy path retries).
+    if not args.mock:
+        try:
+            _shared_keyboard(False)
+        except Exception as e:
+            print("[gamepad] shared keyboard warm failed (lazy path retries):"
+                  " %s" % e, flush=True)
     # Restore the persisted LED colour/effect after a reboot so the front bar
     # comes back the way the user left it instead of the firmware default. Real
     # hardware only; waits for the OS/Steam to finish its own LED init first.

@@ -166,13 +166,80 @@ def test_fresh_session_still_gets_devices():
     check("hello sent on promotion", len(hello) >= 1, True)
 
 
+# --- shared process-lifetime keyboard (the uinput enumeration-settle fix) -----
+# A fresh uinput keyboard is enumerated asynchronously by the compositor;
+# events sent before that lands are dropped (~2s on gamescope, MEASURED). A
+# per-session keyboard paid that settle on every connect, eating the first
+# combo. The keyboard is now ONE process-lifetime device reused by every
+# session (pad + mouse stay per-session). These lock that in.
+
+def test_keyboard_is_a_shared_singleton_across_sessions():
+    print("all sessions share ONE virtual keyboard (pad/mouse stay per-session)")
+    cs._SHARED_KEYBOARD = None
+    a = {"name": "phone-a"}
+    b = {"name": "phone-b"}
+    cs._make_holder(a, mock=True)
+    cs._make_holder(b, mock=True)
+    check("two sessions share one keyboard",
+          a.get("keyboard") is b.get("keyboard"), True)
+    check("it is the module singleton",
+          a.get("keyboard") is cs._SHARED_KEYBOARD, True)
+    check("but each session has its OWN pad",
+          a.get("device") is not b.get("device"), True)
+    check("and its OWN mouse", a.get("mouse") is not b.get("mouse"), True)
+
+
+def test_cleanup_keeps_shared_keyboard_but_reaps_pad_and_mouse():
+    """Teardown must reap this session's pad+mouse but NEVER the shared keyboard
+    -- otherwise a waiter dropping off tears the keyboard from the live holder,
+    and the next connect re-pays the enumeration settle."""
+    print("teardown reaps pad+mouse, keeps the shared keyboard")
+    cs._SHARED_KEYBOARD = None
+    with cs.GAMEPAD_LOCK:
+        cs.GAMEPAD_SESSIONS.clear()
+        cs.GAMEPAD_HOLDER = None
+    entry = {"name": "phone", "slock": _NullLock()}
+    cs._make_holder(entry, mock=True)
+    with cs.GAMEPAD_LOCK:
+        cs.GAMEPAD_SESSIONS.append(entry)
+        cs.GAMEPAD_HOLDER = entry
+    pad, mouse, kbd = (entry.get("device"), entry.get("mouse"),
+                       entry.get("keyboard"))
+    cs.Handler._gamepad_cleanup(_HandlerStub(), entry)
+    check("this session's pad destroyed", getattr(pad, "destroyed", False), True)
+    check("this session's mouse destroyed",
+          getattr(mouse, "destroyed", False), True)
+    check("shared keyboard NOT destroyed",
+          getattr(kbd, "destroyed", False), False)
+    check("singleton still available", cs._SHARED_KEYBOARD is kbd, True)
+    nxt = {"name": "phone-2"}
+    cs._make_holder(nxt, mock=True)
+    check("next session reuses the same keyboard",
+          nxt.get("keyboard") is kbd, True)
+
+
+def test_nopad_session_also_uses_the_shared_keyboard():
+    """Keyboard-only (?nopad=1) sessions are the whole point of the fix -- combos
+    land on the keyboard -- so they must get the shared singleton too."""
+    print("nopad sessions get the shared keyboard")
+    cs._SHARED_KEYBOARD = None
+    entry = {"name": "kb-phone", "nopad": True}
+    cs._make_holder(entry, mock=True)
+    check("keyboard is the shared singleton",
+          entry.get("keyboard") is cs._SHARED_KEYBOARD, True)
+    check("still no pad", entry.get("device") is None, True)
+
+
 if __name__ == "__main__":
     for fn in (test_repromotion_reuses_pad,
                test_fresh_session_still_gets_devices,
                test_nopad_session_never_creates_a_pad,
                test_nopad_gamepad_frame_is_dropped_not_lazily_created,
                test_normal_session_unaffected_by_the_opt_in,
-               test_nopad_release_is_clean):
+               test_nopad_release_is_clean,
+               test_keyboard_is_a_shared_singleton_across_sessions,
+               test_cleanup_keeps_shared_keyboard_but_reaps_pad_and_mouse,
+               test_nopad_session_also_uses_the_shared_keyboard):
         fn()
     print()
     if FAILURES:
