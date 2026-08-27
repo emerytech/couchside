@@ -7,9 +7,22 @@ Entry fields: `priority` (P0 blocker → P3 nice) · `risk` · `affects` · `dep
 
 ---
 
+<!-- RECONCILED -->
+## ⚡ Reconciliation — verified against `main` on 2026-08-27
+
+Every In-Progress / Planned / Backlog entry below was checked against the actual code on `origin/main`, because this roadmap had drifted badly (finished work still listed as pending). Result of 42 entries: **20 DONE** (shipped, should move to Completed), **8 PARTIAL**, **14 genuinely OPEN**.
+
+Each entry now carries a `✅ DONE` / `🟡 PARTIAL` / `📋 OPEN` banner with its verified current status. The whole **In Progress** section is shipped except the trackpad-#245 root cause; TLS, remote desktop (incl. H.264), remote-only TV control, the setup card, Playlog, and the Utilities/OpenPuck flow are all live on `main`. Trust the banners over the original prose. (Done entries are annotated in place rather than physically relocated, to avoid mangling this hand-maintained file.)
+
 ## 🔨 In Progress
 
+> ✅ **DONE — shipped, verified on `main` (reconciled 2026-08-27). Move to Completed.**
+> Shipped and on main — LED Studio effect engine, presets, persistence, and OpenRGB are all wired (agent 2.9.101, caps ledcontrol+openrgb).
+>
 ### ✅ LED Studio — SHIPPED 2026-08-13 (app 2.9.46 / agent 2.9.86, tag v2.9.46) — MOVE TO COMPLETED
+> ✅ **DONE — shipped, verified on `main` (reconciled 2026-08-27). Move to Completed.**
+> Duplicate header for the shipped LED Studio feature; editor, presets, effects, persistence, OpenRGB and strip all live on main.
+>
 ### LED Studio — editor + presets + effects + persistence + OpenRGB + addressable strip (owner ask 2026-08-13)
 - **priority:** P2 · **risk:** medium (effect thread + a new loopback OpenRGB subsystem;
   strictly allowlisted) · **affects:** agent + app · **depends_on:** the LIGHT card below;
@@ -50,6 +63,9 @@ Entry fields: `priority` (P0 blocker → P3 nice) · `risk` · `affects` · `dep
 - **Still open (follow-ups, not blockers):** OpenRGB against a REAL daemon (mock-server proven
   only); non-valve strip flip generalization; box-side preset-library sync.
 
+> ✅ **DONE — shipped, verified on `main` (reconciled 2026-08-27). Move to Completed.**
+> Shipped — the LIGHT card and /api/leds[/set] with the ledcontrol cap are on main (the install-time udev grant / hardware-lit follow-up remains a box-side concern).
+>
 ### Front light-bar / status-LED control (owner ask 2026-08-12)
 - **priority:** P2 · **risk:** medium (writes a hardware sysfs path; strictly allowlisted +
   validated) · **affects:** agent + app · **depends_on:** an install-time udev grant (below)
@@ -81,6 +97,9 @@ Entry fields: `priority` (P0 blocker → P3 nice) · `risk` · `affects` · `dep
   Editor/presets/effects/OpenRGB now tracked as **LED Studio** above
   (`docs/memory/project_led-studio.md`) — OpenRGB is no longer "deferred".
 
+> ✅ **DONE — shipped, verified on `main` (reconciled 2026-08-27). Move to Completed.**
+> Shipped — AUDIO OUTPUT card, /api/audio + /api/audio/default and the audioswitch cap are all on main and wired to the Console tab.
+>
 ### Audio output switcher — pick the box's sink from the phone (user ask 2026-08-12)
 - **priority:** P2 · **risk:** low · **affects:** agent + app · **depends_on:** none
 - **BUILT (agent 2.9.80, branch `claude/audio-output-switcher`).** Console-tab AUDIO OUTPUT
@@ -99,6 +118,9 @@ Entry fields: `priority` (P0 blocker → P3 nice) · `risk` · `affects` · `dep
 - **NOT yet:** on-box against real pactl (multi-sink box with HDMI + a BT device); native row
   overflow for long device descriptions (harness can't judge, §6).
 
+> ✅ **DONE — shipped, verified on `main` (reconciled 2026-08-27). Move to Completed.**
+> Shipped through Stage 2.5 — detection, OpenPuck flash, and runtime firmware-fetch from the emerytech fork are all on main; only Stage 3 extra tenants remain backlog.
+>
 ### Setup → Utilities menu — extensible one-click hardware/setup helpers (owner ask 2026-08-08)
 - **priority:** P2 · **risk:** medium-high (agent runs hardware-touching flashes + signed
   setups; must stay strictly allowlisted) · **affects:** agent + app · **depends_on:** nothing
@@ -141,6 +163,9 @@ Entry fields: `priority` (P0 blocker → P3 nice) · `risk` · `affects` · `dep
 - **Full spec + tenant detail: `docs/memory/project_utilities-menu.md`** (+ memory
   [[openpuck-utilities-idea]]).
 
+> ✅ **DONE — shipped, verified on `main` (reconciled 2026-08-27). Move to Completed.**
+> Shipped — element-spotlight tour with the skip-unregistered-anchor rule is on main across all tab screens (roadmap's 'unmerged on feat/launch-confirm' is stale).
+>
 ### Feature tour — element spotlights
 - **priority:** P2 · **risk:** low (app-only, additive) · **affects:** app only ·
   **depends_on:** nothing
@@ -162,6 +187,9 @@ Entry fields: `priority` (P0 blocker → P3 nice) · `risk` · `affects` · `dep
   sticky header; duplicate EDIT affordances on box rows; the Pad looks live while disconnected
   and lacks the cellular hint Setup has.
 
+> ✅ **DONE — shipped, verified on `main` (reconciled 2026-08-27). Move to Completed.**
+> Shipped well beyond roadmap's 'Phase 1 uncommitted' — Remote tab, remoteOnlyMode, and Roku + Google TV + LG app-direct drivers are all on main.
+>
 ### Remote-only mode — Couchside as just a TV remote, no box
 - **priority:** P2 · **risk:** medium (new app-side transport; shared tab/entitlement
   plumbing) · **affects:** app only · **depends_on:** nothing for Phase 1; Phase 2 depends
@@ -219,6 +247,9 @@ Entry fields: `priority` (P0 blocker → P3 nice) · `risk` · `affects` · `dep
   unwatched. Key inject is fire-and-forget, so the human IS the instrument — give them a
   countdown lead-in and space the keys, or the run produces no evidence in either direction.
 
+> ✅ **DONE — shipped, verified on `main` (reconciled 2026-08-27). Move to Completed.**
+> Shipped — the fresh-install gaming-vs-remote-only chooser (onboarding.tsx) is on main (roadmap's 'NOT in iOS build 115' is stale).
+>
 ### First-run mode chooser — "gaming box" vs "remote only"
 - **priority:** P2 · **risk:** low (app only, one new route + one pref) · **affects:** app ·
   **depends_on:** remote-only mode (this branch)
@@ -231,6 +262,9 @@ Entry fields: `priority` (P0 blocker → P3 nice) · `risk` · `affects` · `dep
   empty-state guards carry that, not the pref alone.
 - NOT in iOS build 115 (spec was written while that build compiled).
 
+> 🟡 **PARTIAL (reconciled 2026-08-27, verified on `main`).**
+> Partial — idle-churn fixed and strong mitigations shipped (diagnostics + watchdog recovery + one-tap hardReset), but per code comments the couch-switch root cause (KI-053) is still open and the recovery is symptom treatment.
+>
 ### Trackpad WS liveness on iOS: the couch-switch half (#245)
 `priority: P1` · `risk: med (input path)` · `affects: app/lib/gamepad.ts` · `depends_on: —`
 - **Idle churn: DONE, shipped** in agent 2.9.53 (box-driven WS PING; the phone's OS
@@ -249,6 +283,9 @@ Entry fields: `priority` (P0 blocker → P3 nice) · `risk` · `affects` · `dep
   socket) + inputSends / inputDropped / recoveries / opens counters.
 - **NEXT:** capture one reading during a real episode; that picks the fix.
 
+> ✅ **DONE — shipped, verified on `main` (reconciled 2026-08-27). Move to Completed.**
+> Shipped — P1–P4b remote desktop (still-frame poller, MJPEG, H.264/WebCodecs tiers, fullscreen + keyboard) and gamescope game-mode nav are all on main; only an app-store EAS build to ship H.264 binaries to users remains a release step.
+>
 ### Remote desktop — fullscreen viewer + on-screen controls + lower latency (owner ask 2026-08-10)
 `priority: P2` · `risk: med (phases 1-3) → high (phase 4)` · `affects: agent, app` · `depends_on: #245 learnings`
 - **Owner:** "screen viewer, when clicked, opens fullscreen with on-screen pad controls to
@@ -378,6 +415,9 @@ Entry fields: `priority` (P0 blocker → P3 nice) · `risk` · `affects` · `dep
 
 ## 📋 Planned
 
+> ✅ **DONE — shipped, verified on `main` (reconciled 2026-08-27). Move to Completed.**
+> SHIPPED end-to-end (P1-P5 + stream ticket): agent TLS default-on, app pins via boxTls.ts — move to Completed.
+>
 ### TLS / on-wire encryption — stop the LAN sniffing the token (public critique 2026-08-13)
 - **priority:** P2 · **risk:** medium-high (the RN self-signed-trust wall is real; box side
   is low-risk, app side needs a hand-rolled HTTP/1.1 + RFC6455 client over a raw TLS socket) ·
@@ -433,6 +473,9 @@ Entry fields: `priority` (P0 blocker → P3 nice) · `risk` · `affects` · `dep
   the whole app track (P3/P5). Box-side P1+P2 now complete — the app track is the only remaining
   box-independent-blocked work.
 
+> 📋 **OPEN — still not built (reconciled 2026-08-27).**
+> Not built — no native WidgetKit/watchOS surface, App Group plumbing, or even the required spec doc exists.
+>
 ### Apple Watch + desktop widgets — quick actions (owner ask 2026-08-10)
 - **priority:** P2 · **risk:** medium-high (NEW native surfaces: WidgetKit + watchOS;
   App Intents; runs OUTSIDE the RN runtime) · **affects:** app + a native config plugin ·
@@ -464,6 +507,9 @@ Entry fields: `priority` (P0 blocker → P3 nice) · `risk` · `affects` · `dep
   (§10). Likely phase 1 = App Group plumbing + **Wake-only** widget (lowest risk, highest
   "box is off" value); phase 2 = Restart Session behind confirmation; phase 3 = Watch + macOS.
 
+> ✅ **DONE — shipped, verified on `main` (reconciled 2026-08-27). Move to Completed.**
+> SHIPPED as the Playlog page (P1-P3) with reorder + Now Playing — move to Completed.
+>
 ### Game backlog — "Now playing" + "Up next" queue (owner ask 2026-08-09)
 - **priority:** P2 · **risk:** low (app-only, additive; no agent change to start) ·
   **affects:** app only · **depends_on:** nothing (extends the existing Bookmark store)
@@ -484,6 +530,9 @@ Entry fields: `priority` (P0 blocker → P3 nice) · `risk` · `affects` · `dep
   SEPARATE store? Decides extend-bookmarks vs new store. Spec assumes bookmark==queue pending
   confirm. (UI shape is now settled = the dedicated page.)
 
+> ✅ **DONE — shipped, verified on `main` (reconciled 2026-08-27). Move to Completed.**
+> SHIPPED (agent 2.9.73+): /api/steam/installable + gated install:<appid> + cap steaminstall + installable.tsx — entry already self-annotated BUILT, confirmed in code; move to Completed.
+>
 ### Install a game you own but have not downloaded (owner ask 2026-08-07)
 - **priority:** P2 · **risk:** medium-high (needs a NEW client-supplied-appid path that
   the existing installed-game validator cannot gate) · **affects:** agent + app ·
@@ -552,6 +601,9 @@ becomes the allowlist.
   `/api/steam/installable` enumerating `appcache/librarycache/` minus installed minus tools,
   gated `install:<appid>` in `_launcher_argv`, keyless app-side names, cap `steaminstall`).
 
+> ✅ **DONE — shipped, verified on `main` (reconciled 2026-08-27). Move to Completed.**
+> SHIPPED: Apps grid on Remote tab (Roku full + webOS, Google TV hidden) — LG device-verification is a QA caveat, not a code gap. Move to Completed.
+>
 ### Remote-only mode: an "Apps" launcher grid (the TV's installed apps)
 - **priority:** P2 · **risk:** low · **affects:** app only (lib/tvdirect + the Remote tab) ·
   **depends_on:** Roku direct (shipped); LG direct (device-verify first)
@@ -583,6 +635,9 @@ becomes the allowlist.
 - **Verify:** Roku slice is unit-testable against a stub ECP `/query/apps`; the real grid
   needs Roku/LG hardware. No store copy claims it until a real TV lists apps on a device.
 
+> ✅ **DONE — shipped, verified on `main` (reconciled 2026-08-27). Move to Completed.**
+> SHIPPED beyond phase 1: filter + live count + ProtonDB/Deck compat, wired into launch tab — move to Completed.
+>
 ### Library triage — filter your games by what runs here and how long it takes
 
 **priority:** medium
@@ -611,6 +666,9 @@ needs no Steam API key at all — which is what makes this viable where a generi
 Phase 1 (filter what the box already knows, live count, saved presets) needs no
 network and is useful alone.
 
+> 🟡 **PARTIAL (reconciled 2026-08-27, verified on `main`).**
+> Core hole closed (launchers now in windowsOnlyCapabilities, gated both ways); still missing macOnlyCapabilities group, macOS agent in parity AGENTS map, and the exactly-one-group guard the entry prescribes.
+>
 ### protocol.json has no home for a platform-only capability (KI-055)
 - **priority:** P2 · **risk:** low · **affects:** `protocol/protocol.json` +
   `tests/test_protocol_parity.py` · **depends_on:** none
@@ -632,6 +690,9 @@ network and is useful alone.
   "omitted reads as unknown" trap inverted.
 - Found by the 2026-08-01 polish sweep while correcting the five-vs-six edit-site count.
 
+> 🟡 **PARTIAL (reconciled 2026-08-27, verified on `main`).**
+> Helper mechanism built, wired, tested and preferred-when-present; sudoers grants still installed by install.sh (kept for a release cycle per spec) so the surface is not yet retired — PARTIAL/in-progress, not Complete.
+>
 ### The privileged helper — retire the sudoers surface
 - **priority:** P1 · **risk:** high (new root-side code) · **affects:** agent + install.sh +
   new helper binary · **depends_on:** none
@@ -648,6 +709,9 @@ network and is useful alone.
   updates ship the agent binary WITHOUT the installer, the helper must be detected and optional
   with the sudo path kept for a full release cycle.
 
+> 📋 **OPEN — still not built (reconciled 2026-08-27).**
+> Not built — no XDG Desktop Actions launcher for native Kodi/Plex/Jellyfin/Moonlight/VLC; Player still web-URL-only, Kodi combos only control an already-open app.
+>
 ### Couchside Player Phase 7 — native media apps via `.desktop` + Actions
 - **priority:** P2 · **risk:** medium · **affects:** tile + agent + app · **depends_on:**
   Player Phases 0–6 (shipped)
@@ -662,6 +726,9 @@ network and is useful alone.
   under gamescope (a TV that blanks mid-movie is a bug we have never tested for), and which of
   those apps ship usable Actions.
 
+> ✅ **DONE — shipped, verified on `main` (reconciled 2026-08-27). Move to Completed.**
+> Shipped (agent 2.9.70) — bigpicture cap + open/close on /api/couchmode, app RemotePowerBar renders the Big Picture backend, all six edit sites wired. Move to Completed.
+>
 ### Couch Mode fallback: Big Picture on gamescope-less boxes
 - **priority:** P2 · **risk:** medium · **affects:** agent + app · **depends_on:** nothing
   (measured feasible 2026-08-01)
@@ -685,6 +752,9 @@ network and is useful alone.
 - Both-directions rule applies to the build: the toggle must be proven to ENTER and
   EXIT on hardware before it ships, cold and warm.
 
+> 🟡 **PARTIAL (reconciled 2026-08-27, verified on `main`).**
+> Alpha agent/mac/couchsided-mac.py (v0.1.0-mac) on main with pair/ping/status/power/media; screen-capture, trackpad/keyboard input, and Homebrew packaging not yet built.
+>
 ### macOS agent — alpha, Homebrew-installed (owner request 2026-08-01)
 - **priority:** P3 · **risk:** medium · **affects:** a NEW agent variant + app caps ·
   **depends_on:** nothing; deliberately scoped small like the Windows alpha was
@@ -721,6 +791,9 @@ network and is useful alone.
 - **First slice, in order:** pair + `/api/ping` + `/api/status` with honest caps; then
   power; then media. Ship nothing that has not run on a real Mac.
 
+> ✅ **DONE — shipped, verified on `main` (reconciled 2026-08-27). Move to Completed.**
+> Shipped (PR #431) — NOTE PadMode segment, NotePad.tsx surface, lib/note.ts persistence, hideNoteMode Setup pref. Move to Completed.
+>
 ### Note mode — jot a clue on the phone while the game runs
 - **priority:** P2 · **risk:** low · **affects:** app only · **depends_on:** the drag stroke (shipped)
 - **Full spec: `docs/memory/project_note-mode.md`.** Read it first.
@@ -735,6 +808,9 @@ network and is useful alone.
 - **Cannot be verified in the web harness** — RN Web emits mouse events, never touch events.
   Device only, via `adb shell input swipe` + `screencap` mid-gesture.
 
+> ✅ **DONE — shipped, verified on `main` (reconciled 2026-08-27). Move to Completed.**
+> Shipped — /api/update/flatpak + /api/update/os with the 'Update everything' button (flatpak then OS, staged-reboot prompt). Covers flatpak+OS; Steam and Decky-plugin updaters are not in the sequence. Move to Completed with that scope note.
+>
 ### One-button "update everything" from the phone
 - **priority:** P1 · **risk:** MEDIUM — allowlist-sensitive · **affects:** agent + app · **depends_on:** the sudo/NOPASSWD problem below
 - **Requested by likwidtek (Discord, 2026-07-22):** actions to update Bazzite (`ujust update`),
@@ -757,6 +833,9 @@ network and is useful alone.
 - Flatpak (`flatpak update`) is per-user and needs no root — cheapest first slice, and the one
   that proves the pattern end to end.
 
+> 📋 **OPEN — still not built (reconciled 2026-08-27).**
+> Not built — only restart-decky (the already-shipped injected action) exists; the update/reinstall-Decky self-heal action does not.
+>
 ### Decky self-heal (update / reinstall from the phone)
 - **priority:** P2 · **risk:** low · **affects:** agent · **depends_on:** none
 - **Requested by likwidtek (Discord, 2026-07-22):** "a solution to decky crashing and needing
@@ -768,6 +847,9 @@ network and is useful alone.
   around, not fixed). Worth reading that before designing — a reinstall button that papers
   over a known root cause is worse than fixing the cause.
 
+> 🟡 **PARTIAL (reconciled 2026-08-27, verified on `main`).**
+> Partial — existing media tiles are enumerated and launchable (adopt-launch), but phone-driven install/packaging of per-service media shortcuts with cover art (and removal) is not built.
+>
 ### Packaged media shortcuts, installable from the phone
 - **priority:** P2 · **risk:** medium · **affects:** agent + app · **depends_on:** shortcut
   launching (shipped 2026-07-26)
@@ -828,6 +910,9 @@ network and is useful alone.
   key (all six edit sites — the sixth is `protocol/protocol.json`), and tests proving a
   non-allowlisted service_id registers nothing.
 
+> 📋 **OPEN — still not built (reconciled 2026-08-27).**
+> Not built — only phone->box text entry (wl-copy); no /api/clipboard read route, no wlclipboard cap, no consent-gated box->phone copy.
+>
 ### Two-way clipboard (box <-> phone)
 - **priority:** P2 · **risk:** low · **affects:** agent + app · **depends_on:** none
 - **Requested by likwidtek (Discord, 2026-07-22).** **Half of this does NOT exist**, contrary
@@ -848,6 +933,9 @@ network and is useful alone.
   Degrade closed: no acknowledgement, no content. If a `wlclipboard` capability gates the
   app button, that is all SIX edit sites + the parity test.
 
+> ✅ **DONE — shipped, verified on `main` (reconciled 2026-08-27). Move to Completed.**
+> Shipped — actions.tsx one-confirm-then-cancellable-5s-countdown with CANCEL, box-switch aborts pending. Move to Completed.
+>
 ### Cancellable countdown on destructive actions
 - **priority:** P3 · **risk:** low · **affects:** app only ·
   **depends_on:** none
@@ -864,6 +952,9 @@ network and is useful alone.
 - Harness test per §6: press, cancel, assert NO request was fired; press, wait out the
   countdown, assert exactly one request fired. Both states, or the test proves nothing.
 
+> 📋 **OPEN — still not built (reconciled 2026-08-27).**
+> Not built — only the Steam-UI redirect (pair-controller) ships; agent-driven bluetoothctl pairing with an in-app discovered-device list does not exist.
+>
 ### In-app Bluetooth pairing
 - **priority:** P2 · **risk:** medium · **affects:** agent + app · **depends_on:** none
 - Agent drives `bluetoothctl`; app renders discovered devices and pairs on tap. Removes the
@@ -876,6 +967,9 @@ network and is useful alone.
 - **Value is narrower than it looks:** the shipped Bluetooth button already reaches Steam's
   own pairing UI, which handles agents and PINs correctly.
 
+> 📋 **OPEN — still not built (reconciled 2026-08-27).**
+> Not built — no active-streaming-client detection, no 'Streaming <game> from <host>' NowPlayingCard variant, and no stop/leave-stream action; only host-side (streamhost) and launcher (steamlink) exist.
+>
 ### "Now streaming" card + stop-stream, for games streamed from a PC
 - **priority:** P2 · **risk:** low · **affects:** agent + app · **depends_on:** none
 - **Reported by owner 2026-07-22.** A LOCAL running game shows a "now playing" card with the
@@ -900,6 +994,9 @@ network and is useful alone.
 - **Verify on hardware** (a real Remote Play session from the PC to the box); the harness
   can't produce a stream.
 
+> 📋 **OPEN — still not built (reconciled 2026-08-27).**
+> Not built — none of battery-health/cycle_count, CPU governor+freq, GPU power draw, GPU clock, or fan RPM are read by the agent.
+>
 ### More Console sensors (battery health, CPU governor, GPU power)
 - **priority:** P3 · **risk:** low · **affects:** agent + app · **depends_on:** none
 - All read-only sysfs, no new capability, no client input. **PROBED on a Legion Go S,
@@ -923,6 +1020,9 @@ network and is useful alone.
 - **Unverified:** none of these have been read on a DISCRETE-GPU box or a desktop; the
   hwmon paths in particular vary by driver.
 
+> 📋 **OPEN — still not built (reconciled 2026-08-27).**
+> Not built — agent reports link info but never samples /proc/net/dev for a byte-rate delta.
+>
 ### Live network throughput on Console
 - **priority:** P3 · **risk:** low · **affects:** agent + app · **depends_on:** none
 - The box IP half of this SHIPPED in 2.9.21 — Console renders `status.ip` under uptime.
@@ -936,6 +1036,9 @@ network and is useful alone.
   resets produces a large negative delta — clamp at zero and show nothing rather than a
   nonsense spike.
 
+> ✅ **DONE — shipped, verified on `main` (reconciled 2026-08-27). Move to Completed.**
+> Shipped — FINALIZING/unsized/tiny-patch download rows fixed in launch.tsx + downloadSize.ts (KI-056).
+>
 ### ~~Downloads that show "0.0 / 0.0 GB · 0%" read as broken (Launch tab)~~ — FIXED (KI-056)
 - **priority:** P2 · **risk:** low · **affects:** app only · **depends_on:** none
 - **Entry recovered:** originally captured 2026-07-22 in commit 63b353b, which was STRANDED
@@ -958,6 +1061,9 @@ network and is useful alone.
   the string `0.0 GB` renders nowhere. Screenshot taken. NOT verified: a live box with a
   real tiny patch (none queued today) — the mock shapes mirror the tester's screenshot.
 
+> 🟡 **PARTIAL (reconciled 2026-08-27, verified on `main`).**
+> Filter shipped (#224); the two remaining pieces — collapsible sections and the PAD LAYOUT card split — are not built.
+>
 ### Make Preferences findable (filter + collapse + re-split PAD LAYOUT)
 - **priority:** P2 · **risk:** low · **affects:** app only · **depends_on:** none
 - **FILTER SHIPPED in #224 (2026-07-22).** Find-as-you-type over label+sub, card chrome
@@ -988,6 +1094,9 @@ recommendation was wrong, not merely superseded.
   Worth building behind the existing web harness and pressing, rather than assuming — the
   harness CAN exercise this one, unlike row-overflow or cover art.
 
+> 📋 **OPEN — still not built (reconciled 2026-08-27).**
+> Not built — landscape only spreads the gamepad/move pad; no mini-QWERTY + trackpad desktop layout exists.
+>
 ### Landscape "laptop mode" — mini QWERTY + trackpad
 - **priority:** P2 · **risk:** low · **affects:** app only · **depends_on:** none
 - Rotating the phone to landscape shows a full soft QWERTY plus a trackpad on one screen,
@@ -1007,6 +1116,9 @@ recommendation was wrong, not merely superseded.
 - **Unverified:** whether the existing surfaces survive a landscape re-layout at all; no
   screen has ever been rendered rotated.
 
+> 📋 **OPEN — still not built (reconciled 2026-08-27).**
+> Not built — only the manual 'Send keys instead of a controller' toggle exists; nothing auto-flips it on Steam game launch/exit.
+>
 ### Auto-drop the phone's pad while a real game runs (opt-in input-mode switch)
 - **priority:** P2 · **risk:** medium (churn if debounce is wrong) · **affects:** app only ·
   **depends_on:** none
@@ -1040,6 +1152,9 @@ recommendation was wrong, not merely superseded.
   re-handshake input gap is unmeasured. The web harness can't exercise this (needs a real Steam
   game on a box) — verify on the AMD Zephyrus G14 testbed once Bazzite is on it.
 
+> 📋 **OPEN — still not built (reconciled 2026-08-27).**
+> Not done — measurement task, no numbers captured; still gated on the Bazzite-on-Zephyrus testbed.
+>
 ### Measure Couchside's perf impact on a live gaming session (validation task)
 - **priority:** P2 · **risk:** none (measurement, ships nothing) · **affects:** validation only ·
   **depends_on:** none
@@ -1062,11 +1177,17 @@ recommendation was wrong, not merely superseded.
   down when the controller role is released (overlaps the auto-drop-pad feature above).
 - **Output:** the numbers, plus a KNOWN_ISSUES entry only if a real regression is found.
 
+> 📋 **OPEN — still not built (reconciled 2026-08-27).**
+> Not found — Notifications / In Game / Remote Play slugs are still missing from STEAM_MENUS.
+>
 ### Find the missing Steam settings slugs
 - **priority:** P3 · **risk:** none · **affects:** agent only
 - Notifications, In Game and Remote Play are visible in Steam's sidebar but their slugs are
   unknown; ~25 guesses measured absent. Any find ships agent-side with no app release.
 
+> 🟡 **PARTIAL (reconciled 2026-08-27, verified on `main`).**
+> Core Nobara 43 KDE verified on real hardware (couchmode + os header); GNOME/Steam-HTPC/NVIDIA editions and SELinux-elsewhere still unverified.
+>
 ### First-class Nobara support
 - **priority:** P2 · **risk:** medium · **affects:** installer + agent · **depends_on:** a Nobara
   box or VM (none exists yet — this is the blocker, not the code)
@@ -1103,6 +1224,9 @@ recommendation was wrong, not merely superseded.
   hardware 2026-07-30 — see `docs/memory/project_cachyos-support.md` and the CachyOS entry
   below.
 
+> 📋 **OPEN — still not built (reconciled 2026-08-27).**
+> Not first-class — ufw/os-reader generic support exists, but the gating non-AMD GPU reader and cosmic-greeter DM support are missing and no Pop box is verified.
+>
 ### Pop!_OS support — requested by owner 2026-07-31
 - **priority:** P3 (after Nobara) · **risk:** medium · **affects:** installer + agent +
   the non-AMD GPU work · **depends_on:** a Pop box or VM; the non-AMD GPU reader
@@ -1126,6 +1250,9 @@ recommendation was wrong, not merely superseded.
   2026-07-31) answered the same way: expected-compatible-unverified is the strongest
   claim any untested distro gets.
 
+> ✅ **DONE — shipped, verified on `main` (reconciled 2026-08-27). Move to Completed.**
+> Shipped (#318) — CachyOS ufw branch + pacman hint + _couchmode_platform_ok gate all on main.
+>
 ### ~~CachyOS: remaining installer pass~~ — DONE 2026-07-31 (#318)
 - **priority:** P2 · **risk:** low · **affects:** installer only · **depends_on:** the
   10.7.1.92 test box (temporary — owner will tear it down)
@@ -1156,6 +1283,9 @@ recommendation was wrong, not merely superseded.
   "Boots into" and created this), so the fleet splits by install age. **Fix before
   releasing 2.9.66.**
 
+> 🟡 **PARTIAL (reconciled 2026-08-27, verified on `main`).**
+> Early skeleton on main (status/media/power/os only); input injection, steam, screen capture, WS and the install/release pipeline are all missing.
+>
 ### macOS agent (beta) — Macs as a supported box
 - **priority:** P2 · **risk:** MEDIUM — new OS surface, TCC unknowns · **affects:** new agent
   variant + installer + release pipeline + couchside.tv · **depends_on:** none (dev Mac = test box)
@@ -1203,6 +1333,9 @@ recommendation was wrong, not merely superseded.
 - **Estimate:** Phase 1 in a few focused sessions; the win port took 0.3.x→0.4.3 to reach
   parity, but it also invented the non-Linux skeleton this port inherits.
 
+> 📋 **OPEN — still not built (reconciled 2026-08-27).**
+> Not built — /api/usb-wake enumeration exists dark; no app screen calls it, no usbwake cap, no arming.
+>
 ### Controller-wake arming — light up /api/usb-wake + opt-in root arming
 - **priority:** P2 · **risk:** medium (root write via helper; spurious-wake support burden if
   the warning copy fails) · **affects:** app + agent + helper + docs ·
