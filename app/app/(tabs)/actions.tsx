@@ -26,6 +26,7 @@ import {
   hapticLight,
   hapticSuccess,
 } from '@/lib/haptics';
+import { usePref } from '@/lib/prefs';
 import { useSettings } from '@/lib/SettingsContext';
 import { mono, numeric, useTheme, useThemedStyles, type Palette } from '@/lib/theme';
 
@@ -114,6 +115,11 @@ function ActionsScreen() {
   // No host yet (fresh install): don't poll, and show the pairing hint instead
   // of a red "Box unreachable" banner retrying every 2s against http://:8787.
   const configured = settings.host.trim().length > 0;
+  // Gate the OpenPuck/Utilities card on the same opt-in pref the Setup surface
+  // uses, so this firmware-flashing card is OFF by default in Actions too (a
+  // flashing surface never shows unasked). Turn it on in Setup → "Utilities
+  // (advanced)"; that one switch now controls both places.
+  const utilitiesEnabled = usePref('utilitiesEnabled');
 
   const actions = usePoll<{ actions: ActionInfo[] }>(
     () => api.actions(settings),
@@ -262,9 +268,10 @@ function ActionsScreen() {
             switches below it — that adjacency is the point (see the card). */}
         {configured && <BootSessionCard />}
         {/* OpenPuck flasher, surfaced here for quick reach (also lives under
-            Setup → Utilities). Self-hides on boxes without the utilities
-            endpoint; shows OpenPuck only, with its own flash + auto-flash. */}
-        {configured && <UtilitiesSection context="actions" />}
+            Setup → Utilities). OPT-IN: gated on the same `utilitiesEnabled`
+            pref as the Setup surface, OFF by default, so it no longer shows
+            unasked. Self-hides on boxes without the utilities endpoint too. */}
+        {configured && utilitiesEnabled && <UtilitiesSection context="actions" />}
         {/* TourAnchor REPLACES each group's View and inherits styles.group, so
             the layout is unchanged and the anchor measures the whole block —
             header plus rows. The id uses the UI's word for `low` ("ROUTINE")
