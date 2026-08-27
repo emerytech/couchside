@@ -104,6 +104,24 @@ export type Prefs = {
    *  benefit. The dedicated PAD screen always sends gamepad frames regardless:
    *  a gamepad screen with no gamepad would be a lie. */
   keyboardMode: boolean;
+  /** AUTO-DROP THE PAD while a real game is running.
+   *
+   *  Same problem `keyboardMode` fixes, but automatic and temporary. The app's
+   *  virtual pad persists across tabs once created, so a phone kept in hand for
+   *  nav/media registers as a SECOND controller and a running game can hand it
+   *  player one instead of the real controller you're playing with. When this
+   *  is on, the Pad screen treats "a game is running" exactly like keyboard
+   *  mode — the box tears its virtual pad down for the duration of the game and
+   *  recreates it the moment the game exits. Nothing persists: your keyboardMode
+   *  pref is untouched, this only overrides while a game is actually up.
+   *
+   *  OFF by default and opt-in: someone who plays with the phone AS the
+   *  controller must not have it yanked mid-game. Only useful to people who
+   *  play with a real pad and hold the phone for the second screen. Detection is
+   *  the same `/api/gaming` running-game probe the MOVE segment uses (agent
+   *  >= 2.9.25); older agents never report a game, so the override never fires
+   *  and the app behaves exactly as before. */
+  autoDropPad: boolean;
   /** Input mode a newly paired box starts on. */
   /** Where the Steam search button sits on the keyboard bar, or 'off' to hide
    *  it entirely.
@@ -304,6 +322,7 @@ export const DEFAULTS: Prefs = {
   landingTab: 'index',
   autoKeyboard: true,
   keyboardMode: false,
+  autoDropPad: false,
   searchButtonSide: 'left',
   streamCollapsed: false,
   consoleMoreCollapsed: true,
@@ -436,6 +455,7 @@ function normalize(raw: unknown): Prefs {
     landingTab,
     autoKeyboard: bool(o.autoKeyboard, DEFAULTS.autoKeyboard),
     keyboardMode: bool(o.keyboardMode, DEFAULTS.keyboardMode),
+    autoDropPad: bool(o.autoDropPad, DEFAULTS.autoDropPad),
     defaultPadMode: padMode,
     statusIntervalMs: num(o.statusIntervalMs, STATUS_INTERVAL_OPTIONS, DEFAULTS.statusIntervalMs),
     journalLines: num(o.journalLines, JOURNAL_LINE_OPTIONS, DEFAULTS.journalLines),

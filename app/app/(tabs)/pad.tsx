@@ -898,7 +898,22 @@ function PadScreen() {
   // arrow keys, and the pad has a cost the keyboard does not -- see the pref's
   // doc comment in lib/prefs.ts. Read here rather than inside the surfaces so
   // ONE value drives both the send path and which segments exist.
-  const keyboardMode = usePref('keyboardMode');
+  const keyboardModePref = usePref('keyboardMode');
+  // AUTO-DROP THE PAD (opt-in, see prefs.ts). A running game is folded into the
+  // SAME "act as keys, not a pad" state the manual toggle drives, so the box
+  // tears its virtual pad down while a game is up and recreates it on exit —
+  // stopping the phone from stealing player one from a real controller. The
+  // running-game probe (also the MOVE segment's source) is polled faster when
+  // auto-drop is armed so the pad is yielded within a few seconds of launch,
+  // not up to the idle 15 s the MOVE segment alone is happy with.
+  const autoDropPad = usePref('autoDropPad');
+  const gamingPoll = usePoll<Gaming | null>(
+    () => api.gaming(settings), autoDropPad ? 5000 : 15000, true, hostKey(settings));
+  const runningGame = gamingPoll.data?.game != null;
+  // The EFFECTIVE keyboard-mode every surface below reads: the manual pref OR an
+  // armed auto-drop with a game actually running. One value, one code path — so
+  // segment list, connect noPad, and the send path all follow automatically.
+  const keyboardMode = keyboardModePref || (autoDropPad && runningGame);
   const [localMode, setLocalMode] = useState<PadMode>(getPref('defaultPadMode'));
   // EMPTY_SETTINGS hardcodes padMode:'swipe', so key off "is a box paired"
   // rather than ?? — otherwise the local fallback never engages.
@@ -1374,14 +1389,6 @@ function PadScreen() {
   // frames into a browser that ignores them.
   const playerRunningRef = useRef(playerRunning);
   playerRunningRef.current = playerRunning;
-
-  // Running-game probe for the MOVE segment. Slow: a game starting or quitting
-  // is a once-in-minutes event. api.gaming is caps-gated, so a box that cannot
-  // report it resolves null and the segment simply never appears — probe-and-
-  // appear, the house pattern.
-  const gamingPoll = usePoll<Gaming | null>(
-    () => api.gaming(settings), 15000, true, hostKey(settings));
-  const runningGame = gamingPoll.data?.game != null;
 
   // Publish the running game's appid so the controller surfaces can dress for
   // it (lib/gameTheme.ts). A store rather than a prop because the immersive

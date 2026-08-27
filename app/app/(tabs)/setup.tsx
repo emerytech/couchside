@@ -916,6 +916,7 @@ function SetupBody() {
   const controllerTheme = usePref('controllerTheme');
   const askToSwitchControl = usePref('askToSwitchControl');
   const keyboardMode = usePref('keyboardMode');
+  const autoDropPad = usePref('autoDropPad');
   const searchButtonSide = usePref('searchButtonSide');
   const volumeButtons = usePref('volumeButtons');
   const hideOfflineStreamHosts = usePref('hideOfflineStreamHosts');
@@ -1947,6 +1948,15 @@ function SetupBody() {
                 value={keyboardMode}
                 onValueChange={(v) => {
                   void setPref('keyboardMode', v);
+                  hapticSelection();
+                }}
+              />
+              <TogglePref
+                label="Drop the pad while a game is running"
+                sub="For playing with a real controller: while a Steam game is up, the phone stops presenting a controller so it can't take player one from your gamepad — then goes back to a full pad the moment the game exits. Leave off if you play with the phone itself. Needs the Couchside service 2.9.39 or newer."
+                value={autoDropPad}
+                onValueChange={(v) => {
+                  void setPref('autoDropPad', v);
                   hapticSelection();
                 }}
               />
