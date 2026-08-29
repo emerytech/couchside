@@ -18,6 +18,18 @@ the same thing regardless of what actually changed.
 Write for the person holding the phone, not for the commit log. They are
 deciding whether to press "Update now" on a machine across the room.
 
+## 2.9.102
+
+**The light-bar themes actually light up now.** Portal, Police, Rainbow River and
+Heartbeat in the LED card played to a dark strip — the box accepted the tap and
+then rendered every frame as "off", so nothing visibly happened. Fixed: all four
+built-in themes now animate the strip the way they were designed to (verified on
+a Steam Machine's light bar). Solid colours, firmware effects and your own saved
+presets were never affected. If you're a version or two behind, this update also
+brings the Combos panel (hold the keyboard button on the Pad for one-tap copy /
+paste / Kodi and media shortcuts) and a fix for the first keypress after
+connecting sometimes being dropped.
+
 ## 2.9.101
 
 **Combos, and a snappier connection.** This powers the app's new Combos panel —

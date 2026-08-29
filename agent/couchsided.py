@@ -49,7 +49,7 @@ except ImportError:  # pragma: no cover
     fcntl = None
 
 APP_NAME = "couchside-agent"
-VERSION = "2.9.101"
+VERSION = "2.9.102"
 UID = os.getuid()
 XDG_RUNTIME_DIR = "/run/user/%d" % UID
 
@@ -6078,6 +6078,13 @@ def apply_led_theme(theme_id, prefix, brightness):
         return None
     n = len(members)
     frames, holds = LED_THEMES[theme_id][1](n)
+    # Generators speak (r, g, b) TUPLES; apply_strip_sequence validates the JSON
+    # wire shape {r,g,b} (_is_rgb_triple) and turns anything else into an OFF
+    # cell. Convert at this boundary or every theme renders as darkness — which
+    # is exactly how the themes shipped broken in 2.9.97 (caught on the Steam
+    # Machine 2026-08-29; test_builtin_themes_paint_colour pins this).
+    frames = [[({"r": c[0], "g": c[1], "b": c[2]} if c is not None else None)
+               for c in fr] for fr in frames]
     b = brightness if _is_pct(brightness) else 100
     return apply_strip_sequence(prefix, frames, holds[0] if holds else 120, b,
                                 loop=True, holds=holds)
