@@ -420,6 +420,61 @@ def test_sequence_starts_and_persists():
         restore()
 
 
+def test_builtin_themes_paint_colour():
+    """REGRESSION (found on the Steam Machine, 2026-08-29): every built-in theme
+    rendered as darkness. The theme generators emit TUPLE colours ((255,0,0)) but
+    apply_strip_sequence's normalizer validates with _is_rgb_triple, which accepts
+    only the JSON dict shape {r,g,b} — so every cell normalized to None and the
+    render thread wrote brightness=0 forever, with the API answering ok:true.
+    This drives every catalog theme through apply_led_theme TO THE WRITERS and
+    asserts real colour lands, so a generator/validator shape drift can never
+    ship dark themes again."""
+    print("built-in themes: apply_led_theme paints actual colour (tuple/dict drift)")
+    writes = []
+    restore = _install(writes)
+    saved_wc = cs._led_write_color
+    painted = {}
+    cs._led_write_color = lambda name, raw, c: painted.__setitem__(name, dict(c))
+    saved_thread, saved_save = cs._seq_ensure_thread, cs._led_state_save
+    try:
+        cs._seq_ensure_thread = lambda: None
+        cs._led_state_save = lambda: None
+        for theme_id in cs.LED_THEMES:
+            with cs._SEQ_LOCK:
+                cs._SEQ_ACTIVE.clear()
+            painted.clear()
+            del writes[:]
+            res = cs.apply_led_theme(theme_id, "valve-leds", 100)
+            check(res and res.get("ok"), "%s: accepted" % theme_id)
+            spec = cs._SEQ_ACTIVE.get("valve-leds")
+            lit = spec and any(c is not None for fr in spec["frames"] for c in fr)
+            check(bool(lit), "%s: frames survive normalization (not all-None)" % theme_id)
+            if not spec:
+                continue
+            # Walk the whole timeline: every theme must paint at least one LED a
+            # non-black colour at some point (heartbeat has all-off REST frames,
+            # so sample many instants rather than one).
+            holds = spec.get("holds") or [spec.get("hold_ms", 120)] * len(spec["frames"])
+            total_s = max(0.001, sum(holds) / 1000.0)
+            t0 = spec["t0"]
+            saw_colour = False
+            steps = max(8, 2 * len(spec["frames"]))
+            for k in range(steps):
+                painted.clear()
+                cs._seq_render(spec, t0 + (k / float(steps)) * total_s)
+                if any(v and (v.get("r") or v.get("g") or v.get("b"))
+                       for v in painted.values()):
+                    saw_colour = True
+                    break
+            check(saw_colour, "%s: render writes a non-black colour" % theme_id)
+    finally:
+        cs._led_write_color = saved_wc
+        cs._seq_ensure_thread, cs._led_state_save = saved_thread, saved_save
+        with cs._SEQ_LOCK:
+            cs._SEQ_ACTIVE.clear()
+        restore()
+
+
 def test_sequence_per_frame_holds_timeline():
     print("per-frame holds: render walks a cumulative timeline (loop wraps)")
     writes = []
@@ -527,6 +582,7 @@ if __name__ == "__main__":
     test_reconcile_skips_agent_effects()
     test_sequence_validation()
     test_sequence_starts_and_persists()
+    test_builtin_themes_paint_colour()
     test_sequence_per_frame_holds_timeline()
     test_led_restore_rearms_per_frame_holds()
     print()
