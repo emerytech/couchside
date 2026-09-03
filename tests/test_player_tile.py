@@ -229,6 +229,60 @@ check("no Widevine-capable browser -> unavailable, non-zero exit",
       rc != 0 and out == "unavailable", "rc=%s out=%r" % (rc, out))
 
 # ---------------------------------------------------------------------------
+print("\nde-Google — the Player finds a non-Chrome Chromium browser (owner + review 2026-08-30)")
+# ---------------------------------------------------------------------------
+# The tile drives any Chromium-family browser over CDP, so it must not REQUIRE
+# Google Chrome. These mock a flatpak world: `flatpak info <id>` succeeds for the
+# "installed" set, and a fake libwidevinecdm.so sits in a per-user flatpak tree
+# we own (XDG_DATA_HOME) for the "has-CDM" set. That exercises the real
+# resolve_browser() allowlist walk + Widevine gate without a browser present.
+def _fake_browser_env(installed, cdm_for):
+    d = tempfile.mkdtemp()
+    bindir = os.path.join(d, "bin"); os.makedirs(bindir)
+    fp = os.path.join(bindir, "flatpak")
+    with open(fp, "w") as f:
+        f.write('#!/bin/sh\n'
+                'if [ "$1" = info ]; then\n'
+                '  for i in %s; do [ "$2" = "$i" ] && exit 0; done\n'
+                '  exit 1\n'
+                'fi\nexit 0\n' % " ".join(installed))
+    os.chmod(fp, 0o755)
+    xdg = os.path.join(d, "data")
+    for i in cdm_for:
+        cdmdir = os.path.join(xdg, "flatpak", "app", i, "cur", "files", "lib")
+        os.makedirs(cdmdir)
+        open(os.path.join(cdmdir, "libwidevinecdm.so"), "w").close()
+    return {"PATH": bindir + os.pathsep + os.environ.get("PATH", ""),
+            "XDG_DATA_HOME": xdg}
+
+# A de-Googled box — Brave, no Chrome — is now supported instead of dead.
+rc, out = tile("--print-browser",
+               env=_fake_browser_env(["com.brave.Browser"], ["com.brave.Browser"]))
+check("Brave with no Chrome resolves as the player browser",
+      rc == 0 and out == "flatpak com.brave.Browser", "rc=%s out=%r" % (rc, out))
+
+# A second non-Google option resolves too (allowlist walk, not a Chrome special-case).
+rc, out = tile("--print-browser",
+               env=_fake_browser_env(["com.vivaldi.Vivaldi"], ["com.vivaldi.Vivaldi"]))
+check("Vivaldi resolves as the player browser",
+      rc == 0 and out == "flatpak com.vivaldi.Vivaldi", "rc=%s out=%r" % (rc, out))
+
+# BACKWARD COMPAT: with BOTH Chrome and Brave present, Chrome still wins, so an
+# existing install keeps its same profile and streaming logins across the update.
+rc, out = tile("--print-browser",
+               env=_fake_browser_env(["com.google.Chrome", "com.brave.Browser"],
+                                     ["com.google.Chrome", "com.brave.Browser"]))
+check("Chrome still preferred when present (no regression for existing boxes)",
+      rc == 0 and out == "flatpak com.google.Chrome", "rc=%s out=%r" % (rc, out))
+
+# The Widevine gate still holds for the NEW browsers: installed but no CDM must
+# degrade closed, not launch a browser that renders a black rectangle.
+rc, out = tile("--print-browser",
+               env=_fake_browser_env(["com.brave.Browser"], []))
+check("a de-Googled browser with no Widevine CDM is refused (degrade closed)",
+      rc != 0 and out == "unavailable", "rc=%s out=%r" % (rc, out))
+
+# ---------------------------------------------------------------------------
 # NOTE: this file's check() is check(NAME, COND, detail) — the other two
 # player suites are check(COND, LABEL, detail). Getting it backwards here
 # puts the label in the cond slot, where a non-empty string is always

@@ -18,6 +18,17 @@ the same thing regardless of what actually changed.
 Write for the person holding the phone, not for the commit log. They are
 deciding whether to press "Update now" on a machine across the room.
 
+## 2.9.103
+
+**The Player no longer requires Google Chrome.** Couchside Player (the experimental
+Watch tile) only ever looked for Google Chrome, so on a de-Googled box it quietly
+did nothing. It now works with any Chromium-based browser that can play DRM — Brave,
+Vivaldi, Microsoft Edge, ungoogled-chromium or plain Chromium — and picks up
+whichever one you already have. Chrome still works exactly as before, so nothing
+changes for boxes already set up on it. If none of these is installed the Player
+stays hidden rather than opening a black screen. (The Player is still early — expect
+rough edges.)
+
 ## 2.9.102
 
 **The light-bar themes actually light up now.** Portal, Police, Rainbow River and
