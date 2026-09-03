@@ -409,17 +409,19 @@ function ConsoleScreen() {
               Long-press still works; this just makes the same mode discoverable.
               Gone while editing — the Done bar owns the exit. */}
           {configured && !editingCards && (
-            <Pressable
-              onPress={() => {
-                hapticSelection();
-                setEditingCards(true);
-              }}
-              accessibilityRole="button"
-              accessibilityLabel="Customize which cards show"
-              hitSlop={8}
-              style={({ pressed }) => [styles.customizeBtn, pressed && styles.pressed]}>
-              <Ionicons name="options-outline" size={18} color={t.textDim} />
-            </Pressable>
+            <TourAnchor id="console.customize">
+              <Pressable
+                onPress={() => {
+                  hapticSelection();
+                  setEditingCards(true);
+                }}
+                accessibilityRole="button"
+                accessibilityLabel="Customize which cards show"
+                hitSlop={8}
+                style={({ pressed }) => [styles.customizeBtn, pressed && styles.pressed]}>
+                <Ionicons name="options-outline" size={18} color={t.textDim} />
+              </Pressable>
+            </TourAnchor>
           )}
         </View>
 
@@ -474,25 +476,27 @@ function ConsoleScreen() {
             the choice persists. Disabled while editing, when it is forced open
             so hidden tool cards stay reachable. */}
         {configured && moreOrder.length > 0 && (
-          <Pressable
-            onPress={() => {
-              hapticSelection();
-              void setPref('consoleMoreCollapsed', !moreCollapsedPref);
-            }}
-            disabled={editingCards}
-            accessibilityRole="button"
-            accessibilityState={{ expanded: moreOpen }}
-            accessibilityLabel={moreOpen ? 'Collapse more controls' : 'Show more controls'}
-            style={({ pressed }) => [styles.foldRow, pressed && !editingCards && styles.pressed]}>
-            <Ionicons name="options-outline" size={14} color={t.blue} />
-            <Text style={styles.foldText}>MORE</Text>
-            <Text style={styles.foldSub} numberOfLines={1}>controls &amp; tools</Text>
-            <Ionicons
-              name={moreOpen ? 'chevron-up' : 'chevron-down'}
-              size={15}
-              color={t.textDim}
-            />
-          </Pressable>
+          <TourAnchor id="console.more">
+            <Pressable
+              onPress={() => {
+                hapticSelection();
+                void setPref('consoleMoreCollapsed', !moreCollapsedPref);
+              }}
+              disabled={editingCards}
+              accessibilityRole="button"
+              accessibilityState={{ expanded: moreOpen }}
+              accessibilityLabel={moreOpen ? 'Collapse more controls' : 'Show more controls'}
+              style={({ pressed }) => [styles.foldRow, pressed && !editingCards && styles.pressed]}>
+              <Ionicons name="options-outline" size={14} color={t.blue} />
+              <Text style={styles.foldText}>MORE</Text>
+              <Text style={styles.foldSub} numberOfLines={1}>controls &amp; tools</Text>
+              <Ionicons
+                name={moreOpen ? 'chevron-up' : 'chevron-down'}
+                size={15}
+                color={t.textDim}
+              />
+            </Pressable>
+          </TourAnchor>
         )}
         {moreOpen && renderCards(moreOrder)}
         </Screen>

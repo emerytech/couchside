@@ -65,6 +65,7 @@ import {
 } from '@/lib/mediaSeek';
 import { clearCompatCache } from '@/lib/compatFetch';
 import { resetFeatureTour } from '@/hooks/useFeatureTour';
+import { resetTips } from '@/lib/tips';
 import { setPref, usePref } from '@/lib/prefs';
 import { THEME_PICKER } from '@/lib/gameTheme';
 import {
@@ -1540,6 +1541,9 @@ function SetupBody() {
                   // watch nothing happen — the same dead control, one layer down.
                   await setPref('featureTour', true);
                   await resetFeatureTour();
+                  // The tips are the same idea to the person flipping this
+                  // switch ("show me the onboarding again"), so they reset too.
+                  await resetTips();
                 }}
               />
               {/* A BUTTON, not a toggle. There is nothing to switch off — the
