@@ -1,5 +1,6 @@
 import React, { useEffect, useRef, useState } from 'react';
 import { Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
+import Ionicons from '@expo/vector-icons/Ionicons';
 
 import { EditableSection } from '@/components/EditableSection';
 import { Gated } from '@/components/Gated';
@@ -23,7 +24,8 @@ import { useStreak } from '@/hooks/useStreak';
 import { api, hostKey, humanizeUptime, Status, Unit } from '@/lib/api';
 import { fmtLastSeen, noteBoxSeen } from '@/lib/lastSeen';
 import { useConsoleLayout, effectiveOrder, moveSection, setConsoleLayout } from '@/lib/consoleLayout';
-import { usePref } from '@/lib/prefs';
+import { hapticSelection } from '@/lib/haptics';
+import { setPref, usePref } from '@/lib/prefs';
 import { useSkinKit, VitalsContext, vitality } from '@/lib/skin';
 import { noteBoxReachable } from '@/lib/review';
 import { useSettings } from '@/lib/SettingsContext';
@@ -150,9 +152,25 @@ function ConsoleScreen() {
   const cardHidden = new Set(cardLayout.hidden);
   const setPresent = (id: string, p: boolean) =>
     setCardPresent((prev) => (prev[id] === p ? prev : { ...prev, [id]: p }));
-  const visibleCards = cardOrder.filter((id) => cardPresent[id]);
-  const moveCard = (id: string, dir: -1 | 1) =>
-    setConsoleLayout({ order: moveSection(cardOrder, visibleCards, id, dir), hidden: cardLayout.hidden });
+  // FOCUSED DEFAULT (App Store review, 2026-08-30: "the UI is a little busy").
+  // Cards split into what is happening NOW (media, a stream, a game, the box's
+  // vitals) and the box's CONTROLS & TOOLS (lights, display/audio, screen,
+  // units, file drop). Status stays in the main flow; the tools fold behind one
+  // "More" row, collapsed by default. Folding is NOT hiding: a folded card still
+  // exists and opens in one tap, where a hidden one leaves you wondering where
+  // it went. The split is by card id, so a user's saved order is respected
+  // inside each group and reorder moves stay within a group. The fold is forced
+  // open while editing so every card — hidden ones included — is reachable.
+  const MORE_IDS = new Set(['screen', 'display', 'audio', 'leds', 'stripleds', 'openrgb', 'units', 'filedrop']);
+  const primaryOrder = cardOrder.filter((id) => !MORE_IDS.has(id));
+  const moreOrder = cardOrder.filter((id) => MORE_IDS.has(id));
+  const moreCollapsedPref = usePref('consoleMoreCollapsed');
+  const moreOpen = editingCards || !moreCollapsedPref;
+  const visibleIn = (ids: string[]) => ids.filter((id) => cardPresent[id]);
+  const moveCard = (id: string, dir: -1 | 1) => {
+    const group = MORE_IDS.has(id) ? moreOrder : primaryOrder;
+    setConsoleLayout({ order: moveSection(cardOrder, visibleIn(group), id, dir), hidden: cardLayout.hidden });
+  };
   const toggleHideCard = (id: string) => {
     const h = new Set(cardLayout.hidden);
     if (h.has(id)) h.delete(id); else h.add(id);
@@ -318,6 +336,34 @@ function ConsoleScreen() {
     filedrop: <FileDropCard />,
   };
 
+  // One group of movable cards (status or tools), each in EditableSection
+  // (long-press → edit; ↑ ↓ hide). first/last are computed WITHIN the group so
+  // the arrows never try to cross the fold. Self-gating cards still render null
+  // internally when the box lacks the feature; EditableSection then shows no
+  // controls for them.
+  const renderCards = (group: string[]) => {
+    const vis = visibleIn(group);
+    return group.map((id) => {
+      const node = cardNodes[id];
+      if (node == null) return null;
+      return (
+        <EditableSection
+          key={id}
+          editing={editingCards}
+          hidden={cardHidden.has(id)}
+          isFirst={vis[0] === id}
+          isLast={vis[vis.length - 1] === id}
+          onEnterEdit={() => setEditingCards(true)}
+          onPresent={(p) => setPresent(id, p)}
+          onUp={() => moveCard(id, -1)}
+          onDown={() => moveCard(id, 1)}
+          onToggleHide={() => toggleHideCard(id)}>
+          {node}
+        </EditableSection>
+      );
+    });
+  };
+
   return (
     <VitalsContext.Provider value={vitals}>
     <View style={styles.screen}>
@@ -357,6 +403,24 @@ function ConsoleScreen() {
               </Text>
             )}
           </View>
+          {/* CUSTOMIZE: a visible way into the layout editor. Hold-to-edit
+              shipped long ago but is an invisible gesture nobody found (the
+              review that called the UI busy never knew cards could be hidden).
+              Long-press still works; this just makes the same mode discoverable.
+              Gone while editing — the Done bar owns the exit. */}
+          {configured && !editingCards && (
+            <Pressable
+              onPress={() => {
+                hapticSelection();
+                setEditingCards(true);
+              }}
+              accessibilityRole="button"
+              accessibilityLabel="Customize which cards show"
+              hitSlop={8}
+              style={({ pressed }) => [styles.customizeBtn, pressed && styles.pressed]}>
+              <Ionicons name="options-outline" size={18} color={t.textDim} />
+            </Pressable>
+          )}
         </View>
 
         {/* Fresh install: nothing paired yet, so nothing is "unreachable". */}
@@ -403,25 +467,34 @@ function ConsoleScreen() {
             Each wrapped in EditableSection (long-press → edit; ↑ ↓ hide). The
             self-gating cards still render null internally when their box lacks
             the feature; EditableSection shows no controls for a null card. */}
-        {cardOrder.map((id) => {
-          const node = cardNodes[id];
-          if (node == null) return null;
-          return (
-            <EditableSection
-              key={id}
-              editing={editingCards}
-              hidden={cardHidden.has(id)}
-              isFirst={visibleCards[0] === id}
-              isLast={visibleCards[visibleCards.length - 1] === id}
-              onEnterEdit={() => setEditingCards(true)}
-              onPresent={(p) => setPresent(id, p)}
-              onUp={() => moveCard(id, -1)}
-              onDown={() => moveCard(id, 1)}
-              onToggleHide={() => toggleHideCard(id)}>
-              {node}
-            </EditableSection>
-          );
-        })}
+        {renderCards(primaryOrder)}
+
+        {/* MORE: the box's controls & tools, folded by default (see the layout
+            note above). The row is the whole affordance — one tap opens it and
+            the choice persists. Disabled while editing, when it is forced open
+            so hidden tool cards stay reachable. */}
+        {configured && moreOrder.length > 0 && (
+          <Pressable
+            onPress={() => {
+              hapticSelection();
+              void setPref('consoleMoreCollapsed', !moreCollapsedPref);
+            }}
+            disabled={editingCards}
+            accessibilityRole="button"
+            accessibilityState={{ expanded: moreOpen }}
+            accessibilityLabel={moreOpen ? 'Collapse more controls' : 'Show more controls'}
+            style={({ pressed }) => [styles.foldRow, pressed && !editingCards && styles.pressed]}>
+            <Ionicons name="options-outline" size={14} color={t.blue} />
+            <Text style={styles.foldText}>MORE</Text>
+            <Text style={styles.foldSub} numberOfLines={1}>controls &amp; tools</Text>
+            <Ionicons
+              name={moreOpen ? 'chevron-up' : 'chevron-down'}
+              size={15}
+              color={t.textDim}
+            />
+          </Pressable>
+        )}
+        {moreOpen && renderCards(moreOrder)}
         </Screen>
       </ScrollView>
       {/* Edit-layout bar: hold any card to enter, then reorder/hide + Done. */}
@@ -452,6 +525,18 @@ const makeStyles = (t: Palette) => StyleSheet.create({
     backgroundColor: t.card, borderTopColor: t.cardBorder, borderTopWidth: 1,
   },
   editHint: { color: t.textDim, fontSize: 13 },
+  // Header "customize" affordance: quiet on purpose — the point of this pass is
+  // LESS chrome, so it is an icon at the header's edge, not a labelled button.
+  customizeBtn: { marginLeft: 10, padding: 6, borderRadius: 8 },
+  // The "More" fold row: reads as a section label, not a card, so it doesn't
+  // add to the very stack it is there to shorten.
+  foldRow: {
+    flexDirection: 'row', alignItems: 'center', gap: 8,
+    paddingVertical: 10, paddingHorizontal: 12, marginTop: 2, marginBottom: 10,
+    borderRadius: 10, backgroundColor: t.inset,
+  },
+  foldText: { color: t.textDim, fontSize: 12, fontWeight: '700', letterSpacing: 1.2 },
+  foldSub: { color: t.textFaint, fontSize: 12, flex: 1 },
   doneBtn: {
     backgroundColor: t.blue, borderRadius: 999,
     paddingVertical: 8, paddingHorizontal: 22,

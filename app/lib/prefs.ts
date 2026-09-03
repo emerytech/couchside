@@ -119,6 +119,15 @@ export type Prefs = {
    *  and reopens in one tap, which a hidden one cannot. Persisted, because a
    *  section you fold away should stay folded. */
   streamCollapsed: boolean;
+  /** Fold the Console's CONTROLS & TOOLS cards (lights, display/audio, screen,
+   *  units, file drop) behind one "More" row. Defaults to FOLDED — the focused
+   *  default that answers "the UI is a little busy" (App Store review,
+   *  2026-08-30): the console opens showing what is happening NOW (media, a
+   *  stream, a game, vitals) and the tools are one tap away. Folding is not
+   *  hiding: every card still exists and hold-to-edit still reorders/hides.
+   *  Persisted, because a fold you opened should stay open. Driven by the fold
+   *  itself, not a Setup toggle — no new switch to find. */
+  consoleMoreCollapsed: boolean;
   /**
    * The first-run flow (welcome -> which device -> how to set it up) has been
    * seen and exited. Set on ANY exit: either card, the skip link, or the Android
@@ -297,6 +306,7 @@ export const DEFAULTS: Prefs = {
   keyboardMode: false,
   searchButtonSide: 'left',
   streamCollapsed: false,
+  consoleMoreCollapsed: true,
   onboardingDone: false,
   whatsNewOffered: false,
   hideDownloads: false,
@@ -394,6 +404,7 @@ function normalize(raw: unknown): Prefs {
       ? o.defaultPadMode
       : 'swipe';
   const streamCollapsed = bool(o.streamCollapsed, DEFAULTS.streamCollapsed);
+  const consoleMoreCollapsed = bool(o.consoleMoreCollapsed, DEFAULTS.consoleMoreCollapsed);
   const onboardingDone = bool(o.onboardingDone, DEFAULTS.onboardingDone);
   const whatsNewOffered = bool(o.whatsNewOffered, DEFAULTS.whatsNewOffered);
   const hideDownloads = bool(o.hideDownloads, DEFAULTS.hideDownloads);
@@ -409,6 +420,7 @@ function normalize(raw: unknown): Prefs {
   return {
     searchButtonSide: searchSide,
     streamCollapsed,
+    consoleMoreCollapsed,
     onboardingDone,
     whatsNewOffered,
     hideDownloads,
