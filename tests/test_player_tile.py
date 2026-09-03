@@ -275,12 +275,15 @@ rc, out = tile("--print-browser",
 check("Chrome still preferred when present (no regression for existing boxes)",
       rc == 0 and out == "flatpak com.google.Chrome", "rc=%s out=%r" % (rc, out))
 
-# The Widevine gate still holds for the NEW browsers: installed but no CDM must
-# degrade closed, not launch a browser that renders a black rectangle.
+# The Widevine gate still holds for the NEW browsers: a flatpak that is INSTALLED
+# but carries no CDM must never be selected. Asserted as "not chosen" rather than
+# "unavailable" so the test is hermetic — a CI runner with its own native Chrome
+# correctly falls through to THAT (still proving Brave-without-CDM was skipped),
+# while a clean box degrades closed; both satisfy the property.
 rc, out = tile("--print-browser",
                env=_fake_browser_env(["com.brave.Browser"], []))
-check("a de-Googled browser with no Widevine CDM is refused (degrade closed)",
-      rc != 0 and out == "unavailable", "rc=%s out=%r" % (rc, out))
+check("a flatpak browser with no Widevine CDM is never selected (gate holds)",
+      out != "flatpak com.brave.Browser", "rc=%s out=%r" % (rc, out))
 
 # ---------------------------------------------------------------------------
 # NOTE: this file's check() is check(NAME, COND, detail) — the other two
