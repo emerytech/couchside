@@ -321,37 +321,79 @@ mkdir -p "$CACHE_DIR"
 # Widevine CDM is present we report unavailable and exit, rather than launching
 # something that renders a black rectangle where the film should be.
 #
-# The flatpak is listed first because it is what these boxes actually have —
-# measured on the reference Bazzite box, com.google.Chrome was the ONLY
-# Widevine-capable browser present, with no system Chromium at all.
+# The Player drives the browser over the Chrome DevTools Protocol, which EVERY
+# Chromium-family browser speaks — so it does NOT have to be Google Chrome. This
+# is a FROZEN allowlist of Chromium browsers that can carry a Widevine CDM,
+# looked up and never widened to a pattern. De-Googled options (Brave, Vivaldi,
+# ungoogled-chromium) are included so someone who has removed Chrome still gets
+# the Player rather than a dead feature (owner + an App Store review, 2026-08-30).
+#
+# Google Chrome stays FIRST purely for backward compatibility: a box already set
+# up on Chrome keeps the SAME profile — and its streaming logins — across this
+# update, and only a box WITHOUT Chrome falls through to an alternative. Order is
+# preference, not exclusion; every listed browser is fully supported.
 # ---------------------------------------------------------------------------
 BROWSER_KIND=""
 BROWSER_BIN=""
 
+# flatpak app-ids, in preference order. Fixed literals — an id is only ever
+# SELECTED (when installed AND carrying a CDM), never built from input.
+_PLAYER_FLATPAK_IDS="com.google.Chrome com.brave.Browser com.vivaldi.Vivaldi \
+com.microsoft.Edge io.github.ungoogled_software.ungoogled_chromium org.chromium.Chromium"
+
+# native binary -> the dir(s) that hold its bundled WidevineCdm. A build with no
+# CDM plays nothing DRM-protected, so it is skipped (degrade closed). A frozen
+# map: an unlisted binary returns non-zero and is never launched.
+_player_native_cdm() {
+    case "$1" in
+        google-chrome-stable|google-chrome) echo /opt/google/chrome/WidevineCdm ;;
+        brave-browser|brave|brave-browser-stable) echo /opt/brave.com/brave/WidevineCdm ;;
+        vivaldi-stable|vivaldi) echo /opt/vivaldi/WidevineCdm ;;
+        microsoft-edge-stable|microsoft-edge) echo /opt/microsoft/msedge/WidevineCdm ;;
+        chromium|chromium-browser|ungoogled-chromium)
+            echo "/usr/lib64/chromium-browser/WidevineCdm /usr/lib/chromium/WidevineCdm /usr/lib/chromium-browser/WidevineCdm" ;;
+        *) return 1 ;;
+    esac
+}
+
+# libwidevinecdm.so under EITHER the SYSTEM or the per-user flatpak install of
+# app-id $1. The user scope is not optional: the Steam Machine's polkit refuses
+# system installs over SSH, so a browser lands in ~/.local/share/flatpak there
+# (first box to need this, 2026-08-17). `flatpak info` already answers for both.
+_flatpak_has_widevine() {
+    local id="$1" root
+    for root in /var/lib/flatpak "${XDG_DATA_HOME:-$HOME/.local/share}/flatpak"; do
+        [ -n "$(find "$root/app/$id" -name libwidevinecdm.so -print -quit 2>/dev/null)" ] \
+            && return 0
+    done
+    return 1
+}
+
 resolve_browser() {
-    # Widevine may live under the SYSTEM flatpak tree or the USER one — the
-    # Steam Machine's polkit refuses system installs over SSH, so Chrome lands
-    # in ~/.local/share/flatpak there (first box to need this, 2026-08-17).
-    # `flatpak info` already answers for both scopes.
-    if command -v flatpak >/dev/null 2>&1 \
-       && flatpak info com.google.Chrome >/dev/null 2>&1 \
-       && { [ -n "$(find /var/lib/flatpak/app/com.google.Chrome -name libwidevinecdm.so \
-                    -print -quit 2>/dev/null)" ] \
-          || [ -n "$(find "$HOME/.local/share/flatpak/app/com.google.Chrome" \
-                     -name libwidevinecdm.so -print -quit 2>/dev/null)" ]; }; then
-        BROWSER_KIND="flatpak"
-        BROWSER_BIN="com.google.Chrome"
-        return 0
+    if command -v flatpak >/dev/null 2>&1; then
+        for id in $_PLAYER_FLATPAK_IDS; do
+            flatpak info "$id" >/dev/null 2>&1 || continue
+            _flatpak_has_widevine "$id" || continue
+            BROWSER_KIND="flatpak"
+            BROWSER_BIN="$id"
+            # A flatpak may only write inside its OWN ~/.var/app/<id> sandbox
+            # home, so the profile (and the hub page it reads) MUST live there.
+            PROFILE="$HOME/.var/app/$id/config/couchside-player"
+            HUB_FILE="$PROFILE/hub.html"
+            return 0
+        done
     fi
-    for b in google-chrome-stable google-chrome chromium chromium-browser; do
+    for b in google-chrome-stable google-chrome brave-browser brave brave-browser-stable \
+             vivaldi-stable vivaldi microsoft-edge-stable microsoft-edge \
+             chromium chromium-browser ungoogled-chromium; do
         p="$(command -v "$b" 2>/dev/null)" || continue
-        # A Chromium build without a bundled CDM plays nothing DRM-protected.
-        for cdm in /opt/google/chrome/WidevineCdm \
-                   /usr/lib64/chromium-browser/WidevineCdm \
-                   /usr/lib/chromium/WidevineCdm; do
+        cdms="$(_player_native_cdm "$b")" || continue
+        for cdm in $cdms; do
             if [ -d "$cdm" ]; then
                 BROWSER_KIND="native"
                 BROWSER_BIN="$p"
+                PROFILE="$CACHE_DIR/player-profile"
+                HUB_FILE="$PROFILE/hub.html"
                 return 0
             fi
         done
@@ -527,6 +569,16 @@ echo "$$" > "$PIDFILE"
 
 read_conf
 SERVICE="${SERVICE:-netflix}"
+
+# Resolve the browser FIRST: the hub page is written into the CHOSEN browser's
+# own profile dir (a flatpak sandbox restricts writes to itself), so PROFILE and
+# HUB_FILE must be settled before write_hub runs below. Degrade closed if none.
+if ! resolve_browser; then
+    log "no Widevine-capable browser found; refusing to launch (degrade closed)"
+    rm -f "$PIDFILE"
+    exit 3
+fi
+
 # A query in the conf means "open this service's search results"; it wins over
 # a deep-link path, and the two are never combined.
 if [ "${HUB:-}" = "1" ]; then
@@ -546,12 +598,6 @@ if [ -z "$URL" ]; then
     log "nothing to open; exiting without launching a browser"
     rm -f "$PIDFILE"
     exit 2
-fi
-
-if ! resolve_browser; then
-    log "no Widevine-capable browser found; refusing to launch (degrade closed)"
-    rm -f "$PIDFILE"
-    exit 3
 fi
 
 # Wait for a previous Chrome to release the profile before launching.
@@ -588,7 +634,7 @@ stop() {
     log "stopping"
     [ -n "$CHILD" ] && kill "$CHILD" 2>/dev/null
     if [ "$BROWSER_KIND" = "flatpak" ]; then
-        flatpak kill com.google.Chrome >/dev/null 2>&1
+        flatpak kill "$BROWSER_BIN" >/dev/null 2>&1
     fi
     rm -f "$PIDFILE" "$PORTFILE"
     exit 0
