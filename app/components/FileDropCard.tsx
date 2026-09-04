@@ -205,7 +205,7 @@ const makeStyles = (t: Palette) =>
     },
     btnPressed: { opacity: 0.85 },
     btnDisabled: { opacity: 0.6 },
-    btnText: { color: '#0b1220', fontSize: 13, fontWeight: '700' },
+    btnText: { color: t.onAccent, fontSize: 13, fontWeight: '700' },
     // Secondary action: outlined, so it reads as "optional extra" next to the
     // filled primary button rather than competing with it.
     btnGhost: {

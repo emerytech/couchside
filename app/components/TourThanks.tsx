@@ -154,7 +154,7 @@ const makeStyles = (t: Palette) =>
       paddingVertical: 13,
       backgroundColor: t.green,
     },
-    secondaryText: { color: '#04140c', fontSize: 13, fontWeight: '900', letterSpacing: 1, fontFamily: mono },
+    secondaryText: { color: t.onGreen, fontSize: 13, fontWeight: '900', letterSpacing: 1, fontFamily: mono },
     primary: {
       flex: 1,
       alignItems: 'center',

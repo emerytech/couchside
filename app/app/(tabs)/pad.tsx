@@ -2502,7 +2502,7 @@ const makeStyles = (t: Palette) => StyleSheet.create({
     paddingHorizontal: 22,
   },
   waitBtnText: {
-    color: '#08101f',
+    color: t.onAccent,
     fontSize: 13,
     fontWeight: '800',
     letterSpacing: 1,
@@ -2675,7 +2675,7 @@ const makeStyles = (t: Palette) => StyleSheet.create({
     backgroundColor: t.card,
   },
   kbDoneText: {
-    color: '#0b1220',
+    color: t.onAccent,
     fontFamily: mono,
     fontSize: 13,
     fontWeight: '800',
@@ -2782,7 +2782,7 @@ const makeStyles = (t: Palette) => StyleSheet.create({
     fontWeight: '800',
     letterSpacing: 1,
   },
-  handoffBtnPassText: { color: '#0b1220' },
+  handoffBtnPassText: { color: t.onAccent },
   inputBlockedText: {
     color: t.amber,
     fontFamily: mono,

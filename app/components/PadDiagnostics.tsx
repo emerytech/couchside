@@ -217,5 +217,5 @@ const makeStyles = (t: Palette) =>
       alignItems: 'center',
       marginTop: 6,
     },
-    btnText: { color: '#0b1220', fontSize: 13, fontWeight: '700' },
+    btnText: { color: t.onAccent, fontSize: 13, fontWeight: '700' },
   });

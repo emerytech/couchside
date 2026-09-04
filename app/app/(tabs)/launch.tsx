@@ -140,7 +140,7 @@ function LauncherTile({
       style={({ pressed }) => [styles.tile, { width, height }, pressed && styles.tilePressed]}>
       {bookmarked ? (
         <View style={styles.bookmarkMark} pointerEvents="none">
-          <Ionicons name="bookmark" size={13} color="#04140c" />
+          <Ionicons name="bookmark" size={13} color={t.onGreen} />
         </View>
       ) : null}
       {/* Only drawn when a rating actually exists — an unrated game shows
@@ -1364,7 +1364,7 @@ const makeStyles = (t: Palette) => StyleSheet.create({
     paddingHorizontal: 28,
     borderRadius: 8,
   },
-  retryText: { color: '#450a0a', fontWeight: '800', fontSize: 13, letterSpacing: 1 },
+  retryText: { color: t.onRed, fontWeight: '800', fontSize: 13, letterSpacing: 1 },
 
   emptyCard: {
     backgroundColor: t.card,

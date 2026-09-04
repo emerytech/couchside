@@ -277,7 +277,7 @@ const makeStyles = (t: Palette) => StyleSheet.create({
     marginTop: 2,
   },
   btnPressed: { opacity: 0.85 },
-  btnText: { color: '#0b1220', fontSize: 14, fontWeight: '700' },
+  btnText: { color: t.onAccent, fontSize: 14, fontWeight: '700' },
   msg: { color: t.text, fontSize: 13, lineHeight: 19 },
   // Quieter and monospaced: this is machine output, and it should read as
   // detail under the headline rather than competing with it.

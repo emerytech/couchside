@@ -595,7 +595,7 @@ const makeStyles = (t: Palette) => StyleSheet.create({
     paddingHorizontal: 36,
     borderRadius: 8,
   },
-  retryText: { color: '#450a0a', fontWeight: '800', fontSize: 15, letterSpacing: 1 },
+  retryText: { color: t.onRed, fontWeight: '800', fontSize: 15, letterSpacing: 1 },
   pressed: { opacity: 0.7 },
   row: { flexDirection: 'row', gap: 10 },
   half: { flex: 1 },

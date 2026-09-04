@@ -182,6 +182,6 @@ const makeStyles = (t: Palette) => StyleSheet.create({
   },
   btnText: { color: t.textDim, fontSize: 12, fontWeight: '800', letterSpacing: 1 },
   btnPrimary: { backgroundColor: t.blue, borderColor: t.blue },
-  btnPrimaryText: { color: '#0b1220', fontSize: 12, fontWeight: '800', letterSpacing: 1 },
+  btnPrimaryText: { color: t.onAccent, fontSize: 12, fontWeight: '800', letterSpacing: 1 },
   pressed: { opacity: 0.7 },
 });

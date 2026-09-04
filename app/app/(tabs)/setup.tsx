@@ -83,11 +83,16 @@ import {
   ACCENTS,
   ACCENT_KEYS,
   mono,
+  packPalette,
   setAccent,
   setThemeMode,
+  setThemePack,
+  THEME_PACKS,
+  THEME_PACK_KEYS,
   useAccent,
   useResolvedScheme,
   useTheme,
+  useThemePack,
   useThemedStyles,
   useThemeMode,
   type Palette,
@@ -879,6 +884,7 @@ function SetupBody() {
   const watchEnabled = usePref('watchEnabled');
   const themeMode = useThemeMode();
   const accent = useAccent();
+  const themePack = useThemePack();
   const scheme = useResolvedScheme();
   const confirmSuspend = usePref('confirmSuspend');
   const streakCelebrations = usePref('streakCelebrations');
@@ -1621,6 +1627,59 @@ function SetupBody() {
                   hapticSelection();
                 }}
               />
+              {/* LOOK = a whole palette, not just an accent (owner ask 2026-09-02).
+                  One horizontal row of preview cards, each drawn in ITS OWN colours
+                  for the scheme in effect, so a light-mode phone previews the light
+                  variants where a pack has one. Dark-only packs say so in their
+                  blurb. Midnight is today's look, so nothing changes until chosen. */}
+              <PrefFilterable
+                label="Look"
+                sub={'Midnight OLED Black Steam Nord Dracula Solarized High Contrast theme pack palette'}>
+              <View style={styles.prefCol}>
+                <View style={styles.prefBody}>
+                  <Text style={styles.prefLabel}>Look</Text>
+                  <Text style={styles.prefSub}>
+                    A whole palette. The accent below layers on top of any of them.
+                  </Text>
+                </View>
+                <ScrollView
+                  horizontal
+                  showsHorizontalScrollIndicator={false}
+                  contentContainerStyle={styles.packRow}>
+                  {THEME_PACK_KEYS.map((k) => {
+                    const pk = THEME_PACKS[k];
+                    const pv = packPalette(k, scheme);
+                    const on = themePack === k;
+                    return (
+                      <Pressable
+                        key={k}
+                        onPress={() => {
+                          void setThemePack(k);
+                          hapticSelection();
+                        }}
+                        accessibilityRole="button"
+                        accessibilityState={{ selected: on }}
+                        accessibilityLabel={`${pk.label} look`}
+                        style={({ pressed }) => [
+                          styles.packCard,
+                          { backgroundColor: pv.bg, borderColor: on ? t.accent : pv.cardBorder },
+                          on && styles.packCardActive,
+                          pressed && { opacity: 0.8 },
+                        ]}>
+                        {/* mini preview: a card on the bg, a text line, an accent dot */}
+                        <View style={[styles.packInner, { backgroundColor: pv.card, borderColor: pv.cardBorder }]}>
+                          <View style={[styles.packLine, { backgroundColor: pv.text }]} />
+                          <View style={[styles.packLine, styles.packLineShort, { backgroundColor: pv.textDim }]} />
+                          <View style={[styles.packDot, { backgroundColor: pv.accent }]} />
+                        </View>
+                        <Text style={[styles.packName, { color: pv.text }]} numberOfLines={1}>{pk.label}</Text>
+                        <Text style={[styles.packBlurb, { color: pv.textFaint }]} numberOfLines={2}>{pk.blurb}</Text>
+                      </Pressable>
+                    );
+                  })}
+                </ScrollView>
+              </View>
+              </PrefFilterable>
               <PrefFilterable
                 label="Accent"
                 sub="The app&apos;s highlight color.">
@@ -2448,7 +2507,7 @@ const makeStyles = (t: Palette) => StyleSheet.create({
   btnTest: { backgroundColor: t.inset, borderColor: t.blue, borderWidth: 1 },
   btnTestText: { color: t.blue, fontWeight: '800', fontSize: 13, letterSpacing: 1 },
   btnSave: { backgroundColor: t.blue },
-  btnSaveText: { color: '#0b1220', fontWeight: '800', fontSize: 13, letterSpacing: 1 },
+  btnSaveText: { color: t.onAccent, fontWeight: '800', fontSize: 13, letterSpacing: 1 },
   rateRow: {
     flexDirection: 'row',
     alignItems: 'center',
@@ -2498,7 +2557,7 @@ const makeStyles = (t: Palette) => StyleSheet.create({
     alignItems: 'center',
     marginBottom: 10,
   },
-  btnBuyText: { color: '#0b1220', fontWeight: '800', fontSize: 13, letterSpacing: 1 },
+  btnBuyText: { color: t.onAccent, fontWeight: '800', fontSize: 13, letterSpacing: 1 },
   btnRestore: {
     backgroundColor: t.inset,
     borderColor: t.cardBorder,
@@ -2555,6 +2614,17 @@ const makeStyles = (t: Palette) => StyleSheet.create({
   segText: { color: t.textDim, fontSize: 13, fontWeight: '700', fontFamily: mono },
   segTextActive: { color: t.text },
   accentRow: { flexDirection: 'row', gap: 12, flexWrap: 'wrap' },
+  // Theme-pack "Look" cards: each is painted in the pack's OWN palette (inline),
+  // so these carry only geometry. Border colour is set inline (accent when on).
+  packRow: { flexDirection: 'row', gap: 10, paddingVertical: 4, paddingRight: 8 },
+  packCard: { width: 128, borderRadius: 12, borderWidth: 1, padding: 10 },
+  packCardActive: { borderWidth: 2 },
+  packInner: { borderRadius: 8, borderWidth: 1, padding: 8, gap: 5, marginBottom: 8 },
+  packLine: { height: 6, borderRadius: 3, width: '80%' },
+  packLineShort: { width: '55%' },
+  packDot: { width: 12, height: 12, borderRadius: 6, marginTop: 2 },
+  packName: { fontSize: 12, fontWeight: '800', fontFamily: mono },
+  packBlurb: { fontSize: 10, marginTop: 2, lineHeight: 13 },
   accentSwatch: {
     width: 30,
     height: 30,

@@ -218,7 +218,7 @@ const makeStyles = (t: Palette) => StyleSheet.create({
     borderRadius: 12,
     backgroundColor: t.blue,
   },
-  startText: { color: '#fff', fontSize: 15, fontWeight: '700' },
+  startText: { color: t.onAccent, fontSize: 15, fontWeight: '700' },
 
   armedRow: {
     flexDirection: 'row',

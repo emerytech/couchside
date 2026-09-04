@@ -819,7 +819,7 @@ const makeStyles = (t: Palette) =>
     },
     tBtnMain: { backgroundColor: t.accent, borderColor: t.accent },
     tBtnText: { color: t.text, fontSize: 13, fontWeight: '600' },
-    tBtnMainText: { color: '#0b1220', fontWeight: '700' },
+    tBtnMainText: { color: t.onAccent, fontWeight: '700' },
     nowLabel: { color: t.green, fontSize: 10, fontWeight: '700', letterSpacing: 1.2 },
     zoomRow: {
       flexDirection: 'row',
@@ -841,7 +841,7 @@ const makeStyles = (t: Palette) =>
     },
     zoomChipOn: { backgroundColor: t.accent, borderColor: t.accent },
     zoomText: { color: t.textDim, fontSize: 12, fontWeight: '600' },
-    zoomTextOn: { color: '#0b1220', fontWeight: '700' },
+    zoomTextOn: { color: t.onAccent, fontWeight: '700' },
     nowService: { color: t.text, fontSize: 20, fontWeight: '700', marginTop: 2 },
     nowPath: { color: t.textFaint, fontSize: 12, marginTop: 2 },
     stopBtn: {
@@ -871,7 +871,7 @@ const makeStyles = (t: Palette) =>
       backgroundColor: t.accent,
     },
     sendBtnOff: { backgroundColor: t.inset },
-    sendText: { color: '#0b1220', fontWeight: '700', fontSize: 14 },
+    sendText: { color: t.onAccent, fontWeight: '700', fontSize: 14 },
     sendTextOff: { color: t.textFaint },
     searchBtn: {
       flexGrow: 1,

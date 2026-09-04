@@ -470,7 +470,7 @@ const makeStyles = (t: Palette) =>
       backgroundColor: t.green,
     },
     confirmEmpty: { backgroundColor: t.inset, borderWidth: 1, borderColor: t.cardBorder },
-    confirmText: { color: '#04140c', fontSize: 14, fontWeight: '900', letterSpacing: 1, fontFamily: mono },
+    confirmText: { color: t.onGreen, fontSize: 14, fontWeight: '900', letterSpacing: 1, fontFamily: mono },
     confirmTextEmpty: { color: t.textDim },
     pressed: { opacity: 0.6 },
   });

@@ -22,10 +22,13 @@ import { Image, StyleSheet, View, type ImageSourcePropType } from 'react-native'
 
 import { backdropAssets } from '@/lib/gameThemeAssets';
 import type { Backdrop } from '@/lib/gameTheme';
+import { useTheme } from '@/lib/theme';
 
-/** The dark base every backdrop sits on — the app's own bg, so a missing or
- *  transparent asset can never flash a bright frame. */
-const BASE = '#0b1220';
+// The base every backdrop sits on is the live palette's `bg` (read via
+// useTheme() inside the component) — the app's own bg, so a missing or
+// transparent asset can never flash a frame that clashes with the pad, and a
+// theme pack (OLED black, Steam, Nord, ...) gets its own base rather than the
+// default navy.
 
 /**
  * The legibility scrim. Four bands from top (light) to bottom (heavy): the
@@ -50,6 +53,9 @@ export function GameBackdrop({
   backdrop: Backdrop | null;
   landscape: boolean;
 }) {
+  // Hook first (unconditionally), then the guard: the base colour is the live
+  // palette's bg so the backdrop follows theme packs.
+  const t = useTheme();
   // No theme, or a theme with no backdrop: draw nothing. The pad keeps its
   // normal bg. (This component is only mounted when backdrop != null, but the
   // guard keeps it honest and cheap.)
@@ -63,7 +69,7 @@ export function GameBackdrop({
   // sizes its inner image from an onLayout MEASUREMENT of its container, then
   // stamps that as a numeric width/height. On native (iOS), the immersive/rotation
   // transition measured the container once at a non-final size and never
-  // re-measured, so the art filled only a top band with BASE showing below —
+  // re-measured, so the art filled only a top band with the base bg showing below —
   // invisible in the web harness, where ImageBackground is a CSS `cover` div that
   // always fills. A bare Image at absoluteFill covers the parent directly at
   // layout time with no measurement step. The Scrim is a following sibling, so it
@@ -71,7 +77,7 @@ export function GameBackdrop({
   if (assets) {
     const source = landscape ? assets.landscape : assets.portrait;
     return (
-      <View style={[StyleSheet.absoluteFill, { backgroundColor: BASE }]} pointerEvents="none">
+      <View style={[StyleSheet.absoluteFill, { backgroundColor: t.bg }]} pointerEvents="none">
         <Image
           source={source as ImageSourcePropType}
           style={StyleSheet.absoluteFill}
@@ -87,7 +93,7 @@ export function GameBackdrop({
   // controls sit — plus the same scrim, so it reads as "styled" without ever
   // competing with the buttons.
   return (
-    <View style={[StyleSheet.absoluteFill, { backgroundColor: BASE }]} pointerEvents="none">
+    <View style={[StyleSheet.absoluteFill, { backgroundColor: t.bg }]} pointerEvents="none">
       <View
         pointerEvents="none"
         style={{

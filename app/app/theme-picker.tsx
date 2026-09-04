@@ -27,7 +27,6 @@ import { backdropAssets } from '@/lib/gameThemeAssets';
 import { setPref, usePref } from '@/lib/prefs';
 import { useResolvedScheme, useTheme, useThemedStyles, type Palette } from '@/lib/theme';
 
-const BASE = '#0b1220'; // the same dark base the real backdrop sits on
 const COLUMNS = 2;
 
 const isSpecial = (v: ControllerThemePref): v is 'off' | 'auto' => v === 'off' || v === 'auto';
@@ -131,7 +130,7 @@ function Card({
         ) : null}
         {selected ? (
           <View style={[styles.check, { backgroundColor: accent }]}>
-            <Ionicons name="checkmark" size={14} color={BASE} />
+            <Ionicons name="checkmark" size={14} color={t.onAccent} />
           </View>
         ) : null}
       </View>
@@ -209,7 +208,8 @@ const makeStyles = (t: Palette) =>
     card: { borderRadius: 14, borderWidth: 1, borderColor: t.cardBorder, backgroundColor: t.card, padding: 6 },
     art: {
       width: '100%', aspectRatio: 0.82, borderRadius: 10, overflow: 'hidden',
-      backgroundColor: BASE, position: 'relative',
+      // The same base the real backdrop (GameBackdrop) sits on: the live bg.
+      backgroundColor: t.bg, position: 'relative',
     },
     specialArt: { alignItems: 'center', justifyContent: 'center', backgroundColor: t.inset },
     artScrim: {

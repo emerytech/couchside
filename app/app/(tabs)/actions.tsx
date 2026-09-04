@@ -28,7 +28,7 @@ import {
 } from '@/lib/haptics';
 import { usePref } from '@/lib/prefs';
 import { useSettings } from '@/lib/SettingsContext';
-import { mono, numeric, useTheme, useThemedStyles, type Palette } from '@/lib/theme';
+import { mono, numeric, textOn, useTheme, useThemedStyles, type Palette } from '@/lib/theme';
 
 const DANGER_ORDER: Danger[] = ['low', 'medium', 'high'];
 
@@ -301,7 +301,9 @@ function ActionsScreen() {
                       session is worth repeating; the other two are not. */}
                   {a.danger === 'high' && (
                     <View style={[styles.badge, { backgroundColor: DANGER_COLOR[a.danger] }]}>
-                      <Text style={styles.badgeText}>{BADGE_TEXT[a.danger]}</Text>
+                      {/* The badge's fill is per-danger (red/amber/green), so its text is
+                          chosen for contrast against THAT fill, not a fixed on-red. */}
+                      <Text style={[styles.badgeText, { color: textOn(DANGER_COLOR[a.danger], t) }]}>{BADGE_TEXT[a.danger]}</Text>
                     </View>
                   )}
                 </View>
@@ -403,7 +405,7 @@ const makeStyles = (t: Palette) => StyleSheet.create({
     paddingHorizontal: 8,
     paddingVertical: 3,
   },
-  badgeText: { color: '#0b1220', fontSize: 11, fontWeight: '800' },
+  badgeText: { color: t.onRed, fontSize: 11, fontWeight: '800' },
   pressed: { opacity: 0.7 },
   emptyCard: {
     backgroundColor: t.card,
@@ -431,7 +433,7 @@ const makeStyles = (t: Palette) => StyleSheet.create({
     paddingHorizontal: 28,
     borderRadius: 8,
   },
-  retryText: { color: '#450a0a', fontWeight: '800', fontSize: 13, letterSpacing: 1 },
+  retryText: { color: t.onRed, fontWeight: '800', fontSize: 13, letterSpacing: 1 },
   dim: { color: t.textDim, fontSize: 13 },
   dimMono: { color: t.textFaint, fontSize: 12, fontFamily: mono },
   resultPanel: {
@@ -470,5 +472,5 @@ const makeStyles = (t: Palette) => StyleSheet.create({
     paddingHorizontal: 22,
     borderRadius: 8,
   },
-  countdownCancelText: { color: '#450a0a', fontWeight: '800', fontSize: 13, letterSpacing: 1 },
+  countdownCancelText: { color: t.onRed, fontWeight: '800', fontSize: 13, letterSpacing: 1 },
 });

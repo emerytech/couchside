@@ -189,7 +189,7 @@ export function GameSheet({
               accessibilityRole="button"
               accessibilityLabel={`Play ${launcher.label}`}
               style={({ pressed }) => [styles.btn, styles.btnPlay, pressed && styles.pressed]}>
-              <Ionicons name="play" size={15} color="#04140c" />
+              <Ionicons name="play" size={15} color={t.onGreen} />
               <Text style={styles.btnPlayText}>{busy ? 'LAUNCHING…' : 'PLAY'}</Text>
             </Pressable>
           </View>
@@ -270,6 +270,6 @@ const makeStyles = (t: Palette) =>
     btnGhost: { backgroundColor: t.inset, borderWidth: 1, borderColor: t.cardBorder },
     btnGhostText: { color: t.textDim, fontSize: 13, fontWeight: '800', letterSpacing: 1, fontFamily: mono },
     btnPlay: { backgroundColor: t.green },
-    btnPlayText: { color: '#04140c', fontSize: 13, fontWeight: '900', letterSpacing: 1, fontFamily: mono },
+    btnPlayText: { color: t.onGreen, fontSize: 13, fontWeight: '900', letterSpacing: 1, fontFamily: mono },
     pressed: { opacity: 0.65 },
   });

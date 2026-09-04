@@ -179,7 +179,7 @@ const makeStyles = (t: Palette) => StyleSheet.create({
     alignItems: 'center',
     marginBottom: 12,
   },
-  buyBtnText: { color: '#0b1220', fontSize: 14, fontWeight: '800', letterSpacing: 1 },
+  buyBtnText: { color: t.onAccent, fontSize: 14, fontWeight: '800', letterSpacing: 1 },
   restoreBtn: {
     alignSelf: 'stretch',
     backgroundColor: t.inset,
