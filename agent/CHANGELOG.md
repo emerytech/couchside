@@ -18,6 +18,14 @@ the same thing regardless of what actually changed.
 Write for the person holding the phone, not for the commit log. They are
 deciding whether to press "Update now" on a machine across the room.
 
+## 2.9.104
+
+**Switch your TV to the box, over HDMI-CEC.** On a box with real CEC (a Steam
+Machine, most modern motherboards) the app's "switch the TV to this box" button
+now works — one tap wakes the TV and pulls it to the box's HDMI input, no
+universal-remote setup, no IR blaster. It was already there for the serial-panel
+boxes; now CEC boxes get it too. Nothing changes on a box without CEC.
+
 ## 2.9.103
 
 **The Player no longer requires Google Chrome.** Couchside Player (the experimental
