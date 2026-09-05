@@ -1,12 +1,17 @@
 import { router } from 'expo-router';
-import React from 'react';
+import Ionicons from '@expo/vector-icons/Ionicons';
+import React, { useState } from 'react';
 import { AppState, AppStateStatus, Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
 
+import { EditableSection } from '@/components/EditableSection';
 import { Gated } from '@/components/Gated';
 import { TabScreen } from '@/components/TabScreen';
 import { useFocusEffect } from 'expo-router';
 import { useLockOrientation } from '@/hooks/useLockOrientation';
 import { api, Status } from '@/lib/api';
+import { effectiveOrder, moveSection } from '@/lib/cardLayout';
+import { useFleetLayout, setFleetLayout } from '@/lib/fleetLayout';
+import { hapticSelection } from '@/lib/haptics';
 import { fmtLastSeen, noteBoxSeen } from '@/lib/lastSeen';
 import { usePref } from '@/lib/prefs';
 import { Box } from '@/lib/settings';
@@ -229,40 +234,133 @@ export default function FleetTab() {
 }
 
 function FleetScreen() {
+  const t = useTheme();
   const { boxes, activeBoxId, switchBox } = useBoxes();
   const statusInterval = usePref('statusIntervalMs');
   const fleet = useFleetStatus(boxes, statusInterval);
   const styles = useThemedStyles(makeStyles);
   const { Screen, SectionTitle } = useSkinKit();
 
+  // Hold-to-edit reorder + hide, same store/pattern as the Console tab, but the
+  // ids are BOX ids: order is which box sits where, hidden is boxes tucked out of
+  // the fleet list (still paired, still switchable from Setup). effectiveOrder
+  // reconciles against the live boxes each render, so pairing appends and
+  // unpairing drops cleanly.
+  const layout = useFleetLayout();
+  const [editing, setEditing] = useState(false);
+  const [present, setPresent] = useState<Record<string, boolean>>({});
+  const canonical = boxes.map((b) => b.id);
+  const order = effectiveOrder(layout.order, canonical);
+  const hidden = new Set(layout.hidden);
+  const boxById = new Map(boxes.map((b) => [b.id, b]));
+  const setPres = (id: string, p: boolean) =>
+    setPresent((prev) => (prev[id] === p ? prev : { ...prev, [id]: p }));
+  // Every tile renders content, so "visible" is the ordered ids that aren't
+  // hidden — that is what the up/down arrows step through.
+  const visible = order.filter((id) => boxById.has(id) && !hidden.has(id));
+  const moveTile = (id: string, dir: -1 | 1) =>
+    setFleetLayout({ order: moveSection(order, visible, id, dir), hidden: layout.hidden });
+  const toggleHide = (id: string) => {
+    const h = new Set(layout.hidden);
+    if (h.has(id)) h.delete(id); else h.add(id);
+    setFleetLayout({ order, hidden: [...h] });
+  };
+
   return (
-    <ScrollView
-      style={styles.scroll}
-      contentContainerStyle={{ paddingTop: 12, paddingBottom: 32, paddingHorizontal: 14 }}>
-      <Screen>
-        <SectionTitle>YOUR FLEET</SectionTitle>
-        {boxes.map((box, i) => (
-          <Tile
-            key={box.id}
-            box={box}
-            entry={fleet[box.id]}
-            active={box.id === activeBoxId}
-            index={i}
-            onPress={() => {
-              switchBox(box.id);
-              // Land on the box's Console; a box whose gaming tabs are hidden
-              // still always has Console.
-              router.replace('/(tabs)');
-            }}
-          />
-        ))}
-      </Screen>
-    </ScrollView>
+    <View style={styles.screen}>
+      <ScrollView
+        style={styles.scroll}
+        contentContainerStyle={{ paddingTop: 12, paddingBottom: 32, paddingHorizontal: 14 }}>
+        <Screen>
+          <View style={styles.headerRow}>
+            <SectionTitle>YOUR FLEET</SectionTitle>
+            {/* CUSTOMIZE: a visible way into the same hold-to-edit mode, and the
+                only way back in when every box is hidden. Gone while editing —
+                the Done bar owns the exit. */}
+            {!editing && boxes.length > 0 && (
+              <Pressable
+                onPress={() => { hapticSelection(); setEditing(true); }}
+                accessibilityRole="button"
+                accessibilityLabel="Reorder or hide boxes"
+                hitSlop={8}
+                style={({ pressed }) => [styles.customizeBtn, pressed && styles.pressed]}>
+                <Ionicons name="options-outline" size={18} color={t.textDim} />
+              </Pressable>
+            )}
+          </View>
+          {order.map((id, i) => {
+            const box = boxById.get(id);
+            if (box == null) return null;
+            return (
+              <EditableSection
+                key={id}
+                editing={editing}
+                hidden={hidden.has(id)}
+                isFirst={visible[0] === id}
+                isLast={visible[visible.length - 1] === id}
+                onEnterEdit={() => setEditing(true)}
+                onPresent={(p) => setPres(id, p)}
+                onUp={() => moveTile(id, -1)}
+                onDown={() => moveTile(id, 1)}
+                onToggleHide={() => toggleHide(id)}
+                inertWhileEditing>
+                <Tile
+                  box={box}
+                  entry={fleet[box.id]}
+                  active={box.id === activeBoxId}
+                  index={i}
+                  onPress={() => {
+                    // A tap while editing belongs to the reorder/hide strip
+                    // (inertWhileEditing already blocks it); guard anyway.
+                    if (editing) return;
+                    switchBox(box.id);
+                    // Land on the box's Console; a box whose gaming tabs are
+                    // hidden still always has Console.
+                    router.replace('/(tabs)');
+                  }}
+                />
+              </EditableSection>
+            );
+          })}
+        </Screen>
+      </ScrollView>
+      {/* Edit-layout bar: hold any tile (or tap Customize) to enter; reorder/hide
+          then Done. Matches the Console tab. */}
+      {editing && (
+        <View style={styles.editBar}>
+          <Text style={styles.editHint}>Reorder or hide boxes</Text>
+          <Pressable
+            onPress={() => setEditing(false)}
+            accessibilityRole="button"
+            accessibilityLabel="Done editing fleet"
+            style={({ pressed }) => [styles.doneBtn, pressed && styles.pressed]}>
+            <Text style={styles.doneText}>Done</Text>
+          </Pressable>
+        </View>
+      )}
+    </View>
   );
 }
 
 const makeStyles = (t: Palette) => StyleSheet.create({
+  screen: { flex: 1, backgroundColor: t.bg },
   scroll: { flex: 1 },
+  // The title row now also holds the Customize entry point, so the bare
+  // SectionTitle's own margin is dropped in favour of the row's.
+  headerRow: { flexDirection: 'row', alignItems: 'center', marginBottom: 10 },
+  customizeBtn: { marginLeft: 'auto', padding: 6, borderRadius: 8 },
+  editBar: {
+    position: 'absolute', left: 0, right: 0, bottom: 0,
+    flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between',
+    paddingHorizontal: 16, paddingTop: 12, paddingBottom: 28,
+    backgroundColor: t.card, borderTopColor: t.cardBorder, borderTopWidth: 1,
+  },
+  editHint: { color: t.textDim, fontSize: 13 },
+  doneBtn: {
+    backgroundColor: t.blue, borderRadius: 999,
+    paddingVertical: 8, paddingHorizontal: 22,
+  },
+  doneText: { color: t.onAccent, fontWeight: '700', fontSize: 14 },
   sectionTitle: {
     color: t.textFaint,
     fontFamily: mono,

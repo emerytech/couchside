@@ -18,7 +18,7 @@ import { useTheme, useThemedStyles, type Palette } from '@/lib/theme';
 
 export function EditableSection({
   editing, hidden, isFirst, isLast,
-  onEnterEdit, onUp, onDown, onToggleHide, onPresent, children,
+  onEnterEdit, onUp, onDown, onToggleHide, onPresent, inertWhileEditing, children,
 }: {
   editing: boolean;
   hidden: boolean;
@@ -31,6 +31,12 @@ export function EditableSection({
   /** Reports whether the card actually rendered content (measured height > 0),
    *  so the parent's arrow bounds skip probe-and-appear cards that are null. */
   onPresent?: (present: boolean) => void;
+  /** Make the card's OWN controls inert while editing, so a tap lands on the
+   *  reorder/hide strip and not on the card. Console leaves this off — its cards
+   *  are display-only and harmless to tap. Fleet (a tap switches box + navigates)
+   *  and Actions (a tap arms an action) turn it ON so editing never fires the
+   *  card. Layout measurement is unaffected (pointerEvents does not change it). */
+  inertWhileEditing?: boolean;
   children: React.ReactNode;
 }) {
   const t = useTheme();
@@ -50,6 +56,10 @@ export function EditableSection({
   const content = (
     <View
       onLayout={(e) => measure(e.nativeEvent.layout.height)}
+      // While editing, a card whose own taps have side effects (Fleet switches
+      // box, Actions arms an action) is made non-interactive so the tap belongs
+      // to the reorder/hide strip, not the card.
+      pointerEvents={editing && inertWhileEditing ? 'none' : 'auto'}
       style={hidden && editing ? styles.dim : undefined}>
       {children}
     </View>
