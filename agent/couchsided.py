@@ -49,7 +49,7 @@ except ImportError:  # pragma: no cover
     fcntl = None
 
 APP_NAME = "couchside-agent"
-VERSION = "2.9.103"
+VERSION = "2.9.104"
 UID = os.getuid()
 XDG_RUNTIME_DIR = "/run/user/%d" % UID
 
@@ -11369,6 +11369,82 @@ def mock_cec(op):
             "stderr": "", "duration_ms": 100}
 
 
+# One Touch Play over CEC -- switch the TV to THIS box's HDMI input.
+_CEC_PHYS_RE = re.compile(r"Physical Address\s*:\s*([0-9a-fA-F](?:\.[0-9a-fA-F]){3})")
+
+
+def _cec_phys_addr(cec):
+    """This box's OWN CEC physical address (e.g. '4.0.0.0'), read from the
+    adapter itself via `cec-ctl -d <dev>` (config dump, no ops), or None. The
+    value is KERNEL-sourced and regex-validated -- never a client value. Rejects
+    'f.f.f.f' (unconfigured) and '0.0.0.0' (the TV, never a playback box's own).
+    cec-ctl only; never raises."""
+    if cec.get("tool") != "cec-ctl" or not cec.get("device"):
+        return None
+    try:
+        r = subprocess.run([cec["bin"], "-d", cec["device"]],
+                           capture_output=True, timeout=6)
+    except Exception:
+        return None
+    m = _CEC_PHYS_RE.search((r.stdout or b"").decode("utf-8", "replace"))
+    if not m:
+        return None
+    addr = m.group(1).lower()
+    return None if addr in ("f.f.f.f", "0.0.0.0") else addr
+
+
+def _cec_source_box_available():
+    """True when CEC One Touch Play could switch the TV to this box: the kernel
+    cec-ctl backend on a live port. Cheap (cec_current is sysfs reads) so it is
+    safe on the per-request tv_info path; the physical-address read that can fail
+    happens at ACTION time in real_cec_source_box(), which degrades closed.
+    libcec is excluded -- its one-shot mode cannot broadcast Active Source."""
+    cec = cec_current()
+    return bool(cec and cec.get("tool") == "cec-ctl")
+
+
+def real_cec_source_box():
+    """CEC One Touch Play: switch the TV to THIS box's HDMI input. Image View On
+    (wake; harmless if already on), then an Active Source broadcast carrying the
+    box's OWN physical address, re-sent once to beat a TV that returns to its
+    launcher on wake. Confirmed on real hardware (a MediaTek Google TV) 2026-09-04.
+
+    ALLOWLIST (CLAUDE.md 3.1-3.2): the argv is a fixed literal list; the ONLY
+    variable is the box's own physical address, read from the kernel adapter and
+    regex-validated (never a client value). `--playback` claims the playback
+    logical address so the Active Source comes from a valid source -- without it
+    some TVs ignore it. cec-ctl only; degrades closed if the address is
+    unreadable. ActionResult-shaped."""
+    start = time.monotonic()
+
+    def done(ok, err=""):
+        return {"ok": bool(ok), "exit_code": 0 if ok else -1, "stdout": "",
+                "stderr": err,
+                "duration_ms": int((time.monotonic() - start) * 1000)}
+
+    cec = cec_current()
+    if cec is None or cec.get("tool") != "cec-ctl":
+        return done(False, "CEC input-switch needs the kernel cec-ctl backend")
+    addr = _cec_phys_addr(cec)
+    if addr is None:
+        return done(False, "could not read this box's CEC physical address")
+    base = [cec["bin"], "-d", cec["device"], "--playback"]
+    announce = base + ["--active-source", "phys-addr=" + addr]
+    try:
+        r1 = subprocess.run(base + ["--to", "0", "--image-view-on"],
+                            capture_output=True, timeout=10)
+        time.sleep(0.8)                     # let the TV wake/settle
+        r2 = subprocess.run(announce, capture_output=True, timeout=10)
+        time.sleep(2.0)
+        subprocess.run(announce, capture_output=True, timeout=10)  # re-send
+    except subprocess.TimeoutExpired:
+        return done(False, "cec command timed out")
+    except Exception as e:
+        return done(False, "%s: %s" % (e.__class__.__name__, e))
+    ok = r1.returncode == 0 and r2.returncode == 0
+    return done(ok, "" if ok else "cec-ctl returned non-zero")
+
+
 # ---- panel backend (RS-232 serial) ----------------------------------------
 # Supported serial line speeds (int -> termios constant). Membership is also
 # the config validator for panel.baud (see _parse_config).
@@ -13876,7 +13952,10 @@ _POWER_OPS = ("power_on", "power_off")
 
 # Ops only the RS-232 panel can do (no CEC/soft equivalent): jump to the box's
 # OPS input, and blank/unblank the screen without cutting power.
-_PANEL_ONLY_OPS = ("source_box", "screen_toggle")
+# TV ops that ride POST /api/tv/<op> but are NOT volume/power: the input
+# jump-to-this-box and the screen blank. Kept as an allowlist for the route;
+# tv_send() dispatches each (source_box -> panel OR CEC; screen_toggle -> panel).
+_EXTRA_TV_OPS = ("source_box", "screen_toggle")
 
 
 def set_tv(mock):
@@ -14007,10 +14086,11 @@ def tv_info():
         "box_volume": box_vol,
         "tv_volume": hw is not None,
         "tv_power": hw is not None,
-        # Input source switch (jump the panel to the box's OPS input). Only the
-        # RS-232 panel backend can do it, so the app shows the button solely for
-        # panel boxes — CEC/soft boxes never see it (keeps the default UI clean).
-        "source_box": panel_available(),
+        # Input source switch: jump the TV to THIS box's input. The RS-232 panel
+        # does it as a discrete input-select; a CEC box does it via One Touch Play
+        # (hardware-confirmed 2026-09-04). Either lights up the app's existing
+        # "pull the display to this box" button — no app change needed.
+        "source_box": panel_available() or _cec_source_box_available(),
         # Full display-input picker (panel only). Each entry: {id,label}; the app
         # POSTs /api/tv/source/<id> to switch. Empty when no panel backend.
         "sources": ([{"id": sid, "label": label}
@@ -14079,9 +14159,21 @@ def tv_send(op, mock, target=None):
     goes to the box's own OS volume (soft) by default, or to the TV backend when
     target == "tv" (the app's opt-in). Falls back to whichever exists when the
     chosen target is missing. None when nothing can handle it (caller 404s)."""
-    if op in _PANEL_ONLY_OPS:
-        # Input-select and screen-blank are panel-only (RS-232). No CEC/soft
-        # fallback exists for them.
+    if op == "source_box":
+        # Jump the TV to THIS box's input. The RS-232 panel does it as a discrete
+        # input-select; a CEC box does it via One Touch Play (Image View On +
+        # Active Source with the box's own physical address) -- hardware-confirmed
+        # on a MediaTek Google TV 2026-09-04. Panel wins when present (an
+        # unambiguous discrete select), else CEC. Under --mock the panel backend
+        # handles it (set_cec registers no CEC in --mock).
+        if panel_available():
+            return mock_panel(op) if mock else real_panel(op)
+        if _cec_source_box_available():
+            return mock_cec("source_box") if mock else real_cec_source_box()
+        return None
+    if op == "screen_toggle":
+        # Blank/unblank the screen without cutting power -- RS-232 panel only, no
+        # CEC/soft equivalent.
         if not panel_available():
             return None
         return mock_panel(op) if mock else real_panel(op)
@@ -22145,7 +22237,7 @@ class Handler(BaseHTTPRequestHandler):
                 op = path[len(tprefix):]
                 # source_box/screen_toggle ride the same route but are not
                 # volume/power ops, so they are not in TV_OPS; allow explicitly.
-                if op not in TV_OPS and op not in _PANEL_ONLY_OPS:
+                if op not in TV_OPS and op not in _EXTRA_TV_OPS:
                     self._send(404, {"error": "unknown tv op"}, started)
                     return
                 target = parse_qs(parsed.query).get("target", [None])[0]

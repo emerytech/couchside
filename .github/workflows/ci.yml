@@ -397,6 +397,9 @@ jobs:
       - name: Unit tests (tv identify)
         run: python3 tests/test_tv_identify.py
 
+      - name: Unit tests (tv source_box over CEC)
+        run: python3 tests/test_tv_source_box.py
+
       # Config load. _parse_config() returns a POSITIONAL tuple that
       # load_config() unpacks, so a new optional section must be threaded
       # through both ends -- miss either and the agent crash-loops on startup
