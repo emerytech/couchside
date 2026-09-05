@@ -340,7 +340,7 @@ const makeStyles = (t: Palette) =>
       paddingVertical: 15,
       backgroundColor: t.green,
     },
-    primaryText: { color: '#04140c', fontSize: 13.5, fontWeight: '900', letterSpacing: 1, fontFamily: mono },
+    primaryText: { color: t.onGreen, fontSize: 13.5, fontWeight: '900', letterSpacing: 1, fontFamily: mono },
     skip: { alignItems: 'center', paddingVertical: 11 },
     skipText: { color: t.textFaint, fontSize: 13 },
     pressed: { opacity: 0.75 },

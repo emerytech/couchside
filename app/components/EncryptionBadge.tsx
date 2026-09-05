@@ -13,8 +13,6 @@ import { Alert, Pressable, Text, View } from 'react-native';
 
 import { useTheme } from '@/lib/theme';
 
-const AMBER = '#e0a12e';
-
 /** Compact lock glyph — for the box switcher pill + fleet rows. */
 export function LockBadge({ secure, size = 13 }: { secure?: boolean; size?: number }) {
   const t = useTheme();
@@ -22,7 +20,7 @@ export function LockBadge({ secure, size = 13 }: { secure?: boolean; size?: numb
     <Ionicons
       name={secure ? 'lock-closed' : 'lock-open-outline'}
       size={size}
-      color={secure ? t.green : AMBER}
+      color={secure ? t.green : t.amber}
       accessibilityLabel={secure ? 'Encrypted connection' : 'Unencrypted connection'}
     />
   );
@@ -46,7 +44,7 @@ export function EncryptionBadge({ secure }: { secure?: boolean }) {
     <Pressable onPress={explain} hitSlop={8}>
       <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6 }}>
         <LockBadge secure={secure} size={15} />
-        <Text style={{ color: secure ? t.green : AMBER, fontSize: 13, fontWeight: '600' }}>
+        <Text style={{ color: secure ? t.green : t.amber, fontSize: 13, fontWeight: '600' }}>
           {secure ? 'Encrypted' : 'Unencrypted'}
         </Text>
         <Ionicons name="information-circle-outline" size={13} color={t.textDim} />

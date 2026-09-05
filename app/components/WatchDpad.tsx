@@ -615,7 +615,7 @@ const makeStyles = (t: Palette) =>
     },
     modeChipOn: { backgroundColor: t.accent, borderColor: t.accent },
     modeText: { color: t.textDim, fontSize: 12, fontWeight: '600' },
-    modeTextOn: { color: '#0b1220', fontWeight: '700' },
+    modeTextOn: { color: t.onAccent, fontWeight: '700' },
     swipePad: {
       alignSelf: 'stretch',
       // Owner feedback on the first build: 168 felt cramped. A swipe surface
@@ -642,7 +642,7 @@ const makeStyles = (t: Palette) =>
     },
     backText: { color: t.text, fontSize: 13, fontWeight: '600' },
     kbOn: { backgroundColor: t.accent, borderColor: t.accent },
-    kbOnText: { color: '#0b1220', fontWeight: '700' },
+    kbOnText: { color: t.onAccent, fontWeight: '700' },
     hint: { color: t.textFaint, fontSize: 11, textAlign: 'center' },
     pressed: { opacity: 0.6 },
     handoff: {
@@ -659,5 +659,5 @@ const makeStyles = (t: Palette) =>
       borderRadius: 10,
       backgroundColor: t.accent,
     },
-    takeText: { color: '#0b1220', fontSize: 13, fontWeight: '700' },
+    takeText: { color: t.onAccent, fontSize: 13, fontWeight: '700' },
   });

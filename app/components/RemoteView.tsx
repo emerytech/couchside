@@ -642,6 +642,7 @@ export function Dpad({
   /** Joystick armed/released — the parent locks page scrolling while armed. */
   onJoyActive: (active: boolean) => void;
 }) {
+  const t = useTheme();
   const styles = useThemedStyles(makeStyles);
   const sens = usePref('trackpadSensitivity');
   const [joy, setJoy] = useState(false);
@@ -753,7 +754,7 @@ export function Dpad({
       </Pressable>
       <View {...okResponder.panHandlers} style={[styles.ok, geo.ok, joy && styles.okJoy]}>
         {joy ? (
-          <Ionicons name="move" size={Math.round(size * 0.15)} color="#f8fafc" />
+          <Ionicons name="move" size={Math.round(size * 0.15)} color={t.onAccent} />
         ) : (
           <Text style={[styles.okText, { fontSize: Math.round(size * 0.1) }]}>OK</Text>
         )}
@@ -914,7 +915,7 @@ const makeStyles = (t: Palette) => StyleSheet.create({
     borderRadius: 10,
     backgroundColor: t.card,
     borderWidth: 1,
-    borderColor: 'rgba(248,113,113,0.5)',
+    borderColor: t.red + '80',
     alignItems: 'center',
     justifyContent: 'center',
   },
@@ -1063,7 +1064,7 @@ const makeStyles = (t: Palette) => StyleSheet.create({
     borderWidth: 1,
     borderColor: t.cardBorder,
   },
-  sourcePillBox: { borderColor: 'rgba(52,211,153,0.5)' },
+  sourcePillBox: { borderColor: t.green + '80' },
   sourceText: {
     color: t.textDim,
     fontSize: 11,
@@ -1108,5 +1109,5 @@ const makeStyles = (t: Palette) => StyleSheet.create({
   },
   textBtnSendBg: { backgroundColor: t.blue },
   textBtnCancel: { color: t.textDim, fontWeight: '700', fontSize: 13 },
-  textBtnSend: { color: t.bg, fontWeight: '800', fontSize: 13 },
+  textBtnSend: { color: t.onAccent, fontWeight: '800', fontSize: 13 },
 });

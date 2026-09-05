@@ -43,6 +43,19 @@ export type Palette = {
   tabBarBorder: string;
   /** The resolved accent hue (drives the active/link color; mirrors `blue`). */
   accent: string;
+  /**
+   * Text/icon drawn ON an accent-coloured surface (primary buttons, the Done
+   * pill). Sites used to hardcode the navy `'#0b1220'`, which is unreadable on
+   * a light pack's blue button and simply wrong on any pack whose bg isn't
+   * navy. Always this token on an accent surface; never a literal.
+   */
+  onAccent: string;
+  /** Text/icon drawn ON a `green` button (Play, Next, Confirm). Sites hardcoded
+   *  `'#04140c'`; on a light pack's darker green that is unreadable. */
+  onGreen: string;
+  /** Text/icon drawn ON a `red` button (Retry, Cancel countdown). Sites hardcoded
+   *  `'#450a0a'`; same story as onGreen. */
+  onRed: string;
 };
 
 /** Dark ops-console palette. Legible at 2am. The historical default. */
@@ -69,6 +82,9 @@ const dark: Palette = {
   tabBar: '#0e1526',
   tabBarBorder: '#1e2942',
   accent: '#60a5fa',
+  onAccent: '#0b1220',
+  onGreen: '#04140c',
+  onRed: '#450a0a',
 };
 
 /** Light palette. Same navy/green identity, tuned for contrast on a light bg. */
@@ -96,6 +112,9 @@ const light: Palette = {
   tabBar: '#ffffff',
   tabBarBorder: '#dbe3f0',
   accent: '#2563eb',
+  onAccent: '#ffffff',
+  onGreen: '#ffffff',
+  onRed: '#ffffff',
 };
 
 export const palettes: Record<'dark' | 'light', Palette> = { dark, light };
@@ -114,7 +133,10 @@ export type AccentKey = 'blue' | 'green' | 'violet' | 'amber' | 'rose' | 'teal';
 
 /** The selectable accent hues, one value per scheme (tuned for contrast). */
 export const ACCENTS: Record<AccentKey, { label: string; dark: string; light: string }> = {
-  blue: { label: 'Blue', dark: '#60a5fa', light: '#2563eb' },
+  // 'blue' is the DEFAULT slot: it resolves to the active pack's own accent
+  // (Steam's #66c0f4, Dracula's purple…) rather than a fixed hue, so every pack
+  // looks like itself out of the box and the other five still override.
+  blue: { label: 'Default', dark: '#60a5fa', light: '#2563eb' },
   green: { label: 'Green', dark: '#34d399', light: '#059669' },
   violet: { label: 'Violet', dark: '#a78bfa', light: '#7c3aed' },
   amber: { label: 'Amber', dark: '#fbbf24', light: '#d97706' },
@@ -123,6 +145,134 @@ export const ACCENTS: Record<AccentKey, { label: string; dark: string; light: st
 };
 
 export const ACCENT_KEYS = Object.keys(ACCENTS) as AccentKey[];
+
+// ---------------------------------------------------------------------------
+// Theme packs — whole looks, not just an accent (owner ask, 2026-09-02).
+//
+// A pack is a dark palette plus, where the look has a canonical one, a light
+// palette. Light/Dark/System keeps working: for a pack with both variants the
+// switch chooses between them; a dark-only pack (OLED, Steam, Nord, Dracula)
+// stays dark whatever the switch says — you chose black, you get black. The
+// accent picker layers on top of any pack; its "Default" slot is the pack's own
+// accent. Midnight is today's look exactly, so existing installs change nothing.
+//
+// Every value below is a full Palette (spread from Midnight so a pack can never
+// forget a token — tsc enforces the shape). Contrast was kept at or above the
+// Midnight baseline for text tiers; the faint tier is the one to watch.
+// ---------------------------------------------------------------------------
+
+export type ThemePackKey =
+  | 'midnight' | 'oled' | 'steam' | 'nord' | 'dracula' | 'solarized' | 'contrast';
+
+export type ThemePack = {
+  label: string;
+  /** One line for the picker card. */
+  blurb: string;
+  dark: Palette;
+  light?: Palette;
+};
+
+const oledDark: Palette = {
+  ...dark,
+  bg: '#000000', card: '#0c0c0e', cardBorder: '#1f1f24', inset: '#080809',
+  text: '#f2f4f8', textDim: '#a0a6b3', textFaint: '#7d8494',
+  tabBar: '#000000', tabBarBorder: '#1f1f24',
+  onAccent: '#000000',
+};
+
+/** Valve's own palette: the Steam client's navy/slate with its light-blue links. */
+const steamDark: Palette = {
+  ...dark,
+  bg: '#171a21', card: '#1b2838', cardBorder: '#2a475e', inset: '#16202d',
+  text: '#c6d4df', textDim: '#9aa6b1', textFaint: '#8290a0',
+  green: '#a4d007', amber: '#e5b800', red: '#e0563c',
+  redDeep: '#5c1a12', onRedDeep: '#f4c7bf',
+  blue: '#66c0f4', slate: '#4b6479',
+  tabBar: '#171a21', tabBarBorder: '#2a475e',
+  accent: '#66c0f4', onAccent: '#0f1a26',
+};
+
+const nordDark: Palette = {
+  ...dark,
+  bg: '#2e3440', card: '#3b4252', cardBorder: '#4c566a', inset: '#353b49',
+  text: '#eceff4', textDim: '#d8dee9', textFaint: '#a3b1c6',
+  green: '#a3be8c', amber: '#ebcb8b', red: '#bf616a',
+  redDeep: '#4b2a30', onRedDeep: '#f1c6ca',
+  blue: '#88c0d0', slate: '#4c566a',
+  tabBar: '#2e3440', tabBarBorder: '#4c566a',
+  accent: '#88c0d0', onAccent: '#2e3440',
+};
+
+const draculaDark: Palette = {
+  ...dark,
+  bg: '#282a36', card: '#343746', cardBorder: '#44475a', inset: '#2c2f3d',
+  text: '#f8f8f2', textDim: '#bfc3d9', textFaint: '#8b93b8',
+  green: '#50fa7b', amber: '#f1fa8c', red: '#ff5555',
+  redDeep: '#4a1f2a', onRedDeep: '#ffb3b3',
+  blue: '#8be9fd', slate: '#6272a4',
+  tabBar: '#282a36', tabBarBorder: '#44475a',
+  accent: '#bd93f9', onAccent: '#282a36',
+};
+
+const solarizedDark: Palette = {
+  ...dark,
+  bg: '#002b36', card: '#073642', cardBorder: '#1c4a58', inset: '#00232c',
+  text: '#eee8d5', textDim: '#a7b5b8', textFaint: '#8a9a9c',
+  green: '#859900', amber: '#b58900', red: '#dc322f',
+  redDeep: '#4a1512', onRedDeep: '#f5c2c0',
+  blue: '#268bd2', slate: '#586e75',
+  tabBar: '#002b36', tabBarBorder: '#1c4a58',
+  accent: '#268bd2', onAccent: '#fdf6e3',
+};
+const solarizedLight: Palette = {
+  ...light,
+  bg: '#fdf6e3', card: '#eee8d5', cardBorder: '#d6cfb8', inset: '#f5efdc',
+  text: '#073642', textDim: '#586e75', textFaint: '#657b83',
+  green: '#6f8000', amber: '#b58900', red: '#dc322f',
+  redDeep: '#f8d0ce', onRedDeep: '#7a1a17',
+  blue: '#268bd2', slate: '#93a1a1',
+  tabBar: '#eee8d5', tabBarBorder: '#d6cfb8',
+  accent: '#268bd2', onAccent: '#fdf6e3',
+};
+
+const contrastDark: Palette = {
+  ...dark,
+  bg: '#000000', card: '#000000', cardBorder: '#ffffff', inset: '#111111',
+  text: '#ffffff', textDim: '#ffffff', textFaint: '#d0d0d0',
+  green: '#00ff88', amber: '#ffd60a', red: '#ff4d4d',
+  redDeep: '#330000', onRedDeep: '#ffffff',
+  blue: '#4dc3ff', slate: '#bbbbbb',
+  tabBar: '#000000', tabBarBorder: '#ffffff',
+  accent: '#4dc3ff', onAccent: '#000000',
+};
+const contrastLight: Palette = {
+  ...light,
+  bg: '#ffffff', card: '#ffffff', cardBorder: '#000000', inset: '#f0f0f0',
+  text: '#000000', textDim: '#000000', textFaint: '#333333',
+  green: '#006b3c', amber: '#8a5a00', red: '#b00020',
+  redDeep: '#ffd6d6', onRedDeep: '#5a0010',
+  blue: '#0044cc', slate: '#444444',
+  tabBar: '#ffffff', tabBarBorder: '#000000',
+  accent: '#0044cc', onAccent: '#ffffff',
+};
+
+export const THEME_PACKS: Record<ThemePackKey, ThemePack> = {
+  midnight: { label: 'Midnight', blurb: 'The original. Navy, legible at 2am.', dark, light },
+  oled: { label: 'OLED Black', blurb: 'True black for OLED screens. Dark only.', dark: oledDark },
+  steam: { label: 'Steam', blurb: "Valve's navy and light blue. Dark only.", dark: steamDark },
+  nord: { label: 'Nord', blurb: 'Arctic, bluish greys. Dark only.', dark: nordDark },
+  dracula: { label: 'Dracula', blurb: 'Purple accent on deep grey. Dark only.', dark: draculaDark },
+  solarized: { label: 'Solarized', blurb: 'Precision colours; has a light side too.', dark: solarizedDark, light: solarizedLight },
+  contrast: { label: 'High Contrast', blurb: 'Maximum legibility, both schemes.', dark: contrastDark, light: contrastLight },
+};
+
+export const THEME_PACK_KEYS = Object.keys(THEME_PACKS) as ThemePackKey[];
+
+/** The pack's palette for a scheme; a dark-only pack stays dark in light mode. */
+export function packPalette(pack: ThemePackKey, scheme: 'light' | 'dark'): Palette {
+  const p = THEME_PACKS[pack] ?? THEME_PACKS.midnight;
+  return scheme === 'light' && p.light ? p.light : p.dark;
+}
 
 // ---------------------------------------------------------------------------
 // Type + numeric fragments (unchanged)
@@ -171,12 +321,12 @@ export function batteryColor(pct: number, t: Palette = dark): string {
 
 export type ThemeMode = 'system' | 'light' | 'dark';
 
-type ThemePrefs = { mode: ThemeMode; accent: AccentKey };
+type ThemePrefs = { mode: ThemeMode; accent: AccentKey; pack: ThemePackKey };
 
 // Default preserves today's look exactly: forced dark, blue accent. Change
 // `mode` to 'system' here once the light palette is verified across every
 // screen and you want new installs to follow the OS by default.
-const THEME_DEFAULTS: ThemePrefs = { mode: 'dark', accent: 'blue' };
+const THEME_DEFAULTS: ThemePrefs = { mode: 'dark', accent: 'blue', pack: 'midnight' };
 
 const THEME_KEY = 'couchside.theme.v1';
 
@@ -224,7 +374,11 @@ function normalize(raw: unknown): ThemePrefs {
     typeof o.accent === 'string' && (ACCENT_KEYS as string[]).includes(o.accent)
       ? (o.accent as AccentKey)
       : THEME_DEFAULTS.accent;
-  return { mode, accent };
+  const pack: ThemePackKey =
+    typeof o.pack === 'string' && (THEME_PACK_KEYS as string[]).includes(o.pack)
+      ? (o.pack as ThemePackKey)
+      : THEME_DEFAULTS.pack;
+  return { mode, accent, pack };
 }
 
 let loadStarted = false;
@@ -291,6 +445,58 @@ export function useAccent(): AccentKey {
   );
 }
 
+export function getThemePack(): ThemePackKey {
+  return prefs.pack;
+}
+
+export async function setThemePack(pack: ThemePackKey): Promise<void> {
+  if (prefs.pack === pack) return;
+  prefs = { ...prefs, pack };
+  emitChange();
+  await storageSet(THEME_KEY, JSON.stringify(prefs));
+}
+
+export function useThemePack(): ThemePackKey {
+  return useSyncExternalStore(
+    subscribe,
+    () => prefs.pack,
+    () => prefs.pack,
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Contrast helpers
+// ---------------------------------------------------------------------------
+
+/** WCAG relative luminance of a '#rrggbb' colour (0 = black, 1 = white).
+ *  Anything unparsable reads as mid-grey, which makes textOn pick dark text —
+ *  the conservative choice on a light surface and harmless on a dark one. */
+export function relLum(hex: string): number {
+  const m = /^#([0-9a-f]{2})([0-9a-f]{2})([0-9a-f]{2})/i.exec(hex.trim());
+  if (!m) return 0.5;
+  const ch = (h: string) => {
+    const c = parseInt(h, 16) / 255;
+    return c <= 0.03928 ? c / 12.92 : Math.pow((c + 0.055) / 1.055, 2.4);
+  };
+  return 0.2126 * ch(m[1]) + 0.7152 * ch(m[2]) + 0.0722 * ch(m[3]);
+}
+
+/**
+ * The text colour to paint ON a filled surface of colour `surface`, chosen for
+ * contrast: dark text on light-ish fills, light text on dark fills. Black and
+ * white reach equal contrast at luminance ≈ 0.18, so that is the split.
+ *
+ * `t.onAccent` / `t.onGreen` / `t.onRed` are already resolved this way by
+ * useTheme(); reach for textOn() directly when the surface is chosen at render
+ * time (a per-danger badge, a service brand colour, a user-picked swatch).
+ */
+export function textOn(surface: string, t: Palette): string {
+  const dark = relLum(t.bg) < 0.5;           // is this a dark palette?
+  const darkText = dark ? t.onAccent : t.text; // the palette's dark candidate
+  const lightText = dark ? t.text : t.onAccent; // ...and its light candidate
+  return relLum(surface) >= 0.18 ? darkText : lightText;
+}
+
 // ---------------------------------------------------------------------------
 // The hooks components use
 // ---------------------------------------------------------------------------
@@ -307,12 +513,25 @@ export function useResolvedScheme(): 'light' | 'dark' {
 export function useTheme(): Palette {
   const scheme = useResolvedScheme();
   const accent = useAccent();
+  const pack = useThemePack();
   return useMemo(() => {
-    const base = palettes[scheme];
-    const acc = ACCENTS[accent][scheme];
-    // The accent drives the primary active/link color (historically `blue`).
-    return { ...base, accent: acc, blue: acc };
-  }, [scheme, accent]);
+    const base = packPalette(pack, scheme);
+    // 'blue' is the "Default" slot = the pack's own accent; any other key
+    // overrides it. The accent drives the primary active/link color (`blue`).
+    const acc = accent === 'blue' ? base.accent : ACCENTS[accent][scheme];
+    const resolved: Palette = { ...base, accent: acc, blue: acc };
+    // On-surface text is DERIVED from the surface it sits on, not fixed per
+    // palette: a light accent (amber, Steam's sky blue) wants dark text, a deep
+    // one (Solarized blue) wants light — and the accent picker can swap the
+    // surface under the text at runtime. The static tokens above are the two
+    // candidates textOn() chooses between.
+    return {
+      ...resolved,
+      onAccent: textOn(acc, resolved),
+      onGreen: textOn(resolved.green, resolved),
+      onRed: textOn(resolved.red, resolved),
+    };
+  }, [scheme, accent, pack]);
 }
 
 /**

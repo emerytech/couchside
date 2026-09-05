@@ -308,7 +308,7 @@ const makeStyles = (t: Palette) => StyleSheet.create({
     marginTop: 1,
   },
   btnPressed: { opacity: 0.85 },
-  btnText: { color: '#0b1220', fontSize: 13, fontWeight: '700' },
+  btnText: { color: t.onAccent, fontSize: 13, fontWeight: '700' },
   hint: { color: t.textFaint, fontSize: 11, lineHeight: 16 },
   code: { fontFamily: mono, color: t.textDim },
 });

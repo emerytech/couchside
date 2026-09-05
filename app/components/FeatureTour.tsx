@@ -319,7 +319,7 @@ export function FeatureTour({
             accessibilityRole="button"
             style={({ pressed }) => [styles.next, pressed && styles.pressed]}>
             <Text style={styles.nextText}>{isLast(state) ? 'DONE' : 'GOT IT'}</Text>
-            {isLast(state) ? null : <Ionicons name="arrow-forward" size={14} color="#04140c" />}
+            {isLast(state) ? null : <Ionicons name="arrow-forward" size={14} color={t.onGreen} />}
           </Pressable>
         </View>
       </View>
@@ -391,6 +391,6 @@ const makeStyles = (t: Palette) =>
       borderRadius: 11,
       paddingVertical: 12,
     },
-    nextText: { color: '#04140c', fontSize: 13, fontWeight: '900', letterSpacing: 1, fontFamily: mono },
+    nextText: { color: t.onGreen, fontSize: 13, fontWeight: '900', letterSpacing: 1, fontFamily: mono },
     pressed: { opacity: 0.7 },
   });

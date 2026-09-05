@@ -121,6 +121,6 @@ const makeStyles = (t: Palette) =>
       paddingVertical: 13,
       backgroundColor: t.green,
     },
-    primaryText: { color: '#04140c', fontSize: 12.5, fontWeight: '900', letterSpacing: 1, fontFamily: mono },
+    primaryText: { color: t.onGreen, fontSize: 12.5, fontWeight: '900', letterSpacing: 1, fontFamily: mono },
     pressed: { opacity: 0.75 },
   });

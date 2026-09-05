@@ -9,6 +9,7 @@ import { useImmersive } from '@/lib/immersive';
 import { usePref } from '@/lib/prefs';
 import { FeatureTour } from '@/components/FeatureTour';
 import { TourThanks } from '@/components/TourThanks';
+import { TipToast } from '@/components/TipToast';
 import VolumeOsd from '@/components/VolumeOsd';
 import { WhatsNewOffer } from '@/components/WhatsNewOffer';
 import { useFeatureTour } from '@/hooks/useFeatureTour';
@@ -85,6 +86,19 @@ export default function TabLayout() {
   // existed — the exact mirror of the fleet guard, which refuses to force it on
   // them. Local state so answering hides it on the same frame.
   const [offerDismissed, setOfferDismissed] = useState(false);
+  // Computed ONCE so the offer card and the tip toast agree on it: a tip must
+  // never stack on this card — one interruption at a time.
+  const offerVisible =
+    !offerDismissed &&
+    !tour.visible &&
+    !thanksVisible &&
+    shouldOfferWhatsNew({
+      offered: whatsNewOffered,
+      done: onboardingDone,
+      boxCount: boxes.length,
+      tvCount: tvs.length,
+      ready,
+    });
   // EXACTLY ONE watcher for the whole app. This lived in the Launch tab, which
   // mounts lazily on first focus — so a download finishing while the user sat on
   // Console went unnoticed, which is precisely the case the feature exists for.
@@ -314,18 +328,20 @@ export default function TabLayout() {
         Rendered after the tour so it sits above it during the frame the tour is
         tearing down. */}
     {thanksVisible ? <TourThanks /> : null}
+    {/* "Did you know" — one contextual tip on the tab in view, once each, ever.
+        Never over the tour or its thank-you (busy), never before a box is
+        paired, and off with the same pref as the tour. See lib/tips.ts. */}
+    <TipToast
+      tab={(() => {
+        const last = segments[segments.length - 1];
+        return !last || last === '(tabs)' ? 'index' : String(last);
+      })()}
+      paired={boxes.length > 0}
+      busy={tour.visible || thanksVisible || offerVisible}
+    />
     {/* Never stacked on the tour or the thank-you card — one interruption at a
         time, and the tour is the one already in progress. */}
-    {!offerDismissed &&
-    !tour.visible &&
-    !thanksVisible &&
-    shouldOfferWhatsNew({
-      offered: whatsNewOffered,
-      done: onboardingDone,
-      boxCount: boxes.length,
-      tvCount: tvs.length,
-      ready,
-    }) ? (
+    {offerVisible ? (
       <WhatsNewOffer onDone={() => setOfferDismissed(true)} />
     ) : null}
     {/* App-wide volume OSD: flashes when Couchside changes the volume, so the

@@ -93,6 +93,7 @@ function Cell({
   appid: number; d?: AppDetails; requested: boolean;
   colW: number; onOpen: (appid: number) => void;
 }) {
+  const t = useTheme();
   const styles = useThemedStyles(makeStyles);
   const { settings } = useSettings();
   const source = api.steamCoverSource(settings, appid);
@@ -112,7 +113,7 @@ function Cell({
           <Image source={source} style={StyleSheet.absoluteFill} resizeMode="cover" onError={() => setFailed(true)} />
         ) : (
           <View style={[StyleSheet.absoluteFill, styles.coverFallback]}>
-            <Ionicons name="cloud-download-outline" size={22} color="#8aa" />
+            <Ionicons name="cloud-download-outline" size={22} color={t.textDim} />
           </View>
         )}
         {mc !== undefined ? (
@@ -267,8 +268,8 @@ function GameSheet({
             disabled={busy || requested}
             style={({ pressed }) => [styles.gsPrimary, { opacity: busy || requested ? 0.6 : pressed ? 0.85 : 1 }]}
             accessibilityRole="button">
-            {busy ? <ActivityIndicator size="small" color="#fff" />
-              : <Ionicons name="cloud-download-outline" size={18} color="#fff" />}
+            {busy ? <ActivityIndicator size="small" color={t.onAccent} />
+              : <Ionicons name="cloud-download-outline" size={18} color={t.onAccent} />}
             <Text style={styles.gsPrimaryText}>{requested ? 'Waiting for approval…' : 'Install on box'}</Text>
           </Pressable>
           <Pressable
@@ -720,7 +721,7 @@ const makeStyles = (t: Palette) =>
       flex: 1, flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 8,
       backgroundColor: t.blue, paddingVertical: 13, borderRadius: 12,
     },
-    gsPrimaryText: { color: '#fff', fontWeight: '700', fontSize: 14 },
+    gsPrimaryText: { color: t.onAccent, fontWeight: '700', fontSize: 14 },
     gsGhost: {
       flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 8,
       paddingVertical: 13, paddingHorizontal: 16, borderRadius: 12, borderWidth: 1, backgroundColor: t.card,
@@ -747,5 +748,5 @@ const makeStyles = (t: Palette) =>
     sheetActions: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', marginTop: 20 },
     clear: { color: t.textFaint, fontSize: 14 },
     doneBtn: { backgroundColor: t.blue, paddingVertical: 10, paddingHorizontal: 20, borderRadius: 10 },
-    doneText: { color: '#fff', fontWeight: '700', fontSize: 14 },
+    doneText: { color: t.onAccent, fontWeight: '700', fontSize: 14 },
   });

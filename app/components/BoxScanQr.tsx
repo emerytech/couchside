@@ -532,9 +532,9 @@ const makeStyles = (t: Palette) =>
 
     // Permission gate — no feed behind it, so theme-ish darks are fine.
     permWrap: { alignItems: 'center', justifyContent: 'center', padding: 32, gap: 12 },
-    permTitle: { color: '#e5ecf8', fontSize: 17, fontWeight: '700', textAlign: 'center' },
+    permTitle: { color: t.text, fontSize: 17, fontWeight: '700', textAlign: 'center' },
     permSub: {
-      color: '#8b97ad',
+      color: t.textDim,
       fontSize: 13,
       lineHeight: 19,
       textAlign: 'center',
