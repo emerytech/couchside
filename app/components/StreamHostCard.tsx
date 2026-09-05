@@ -31,7 +31,7 @@ function fmtElapsed(sinceEpoch: number): string {
 export function StreamHostCard() {
   const t = useTheme();
   const styles = useThemedStyles(makeStyles);
-  const { Card } = useSkinKit();
+  const { Card, text: tk } = useSkinKit();
   const { settings, ready } = useSettings();
   const configured = !!settings.host && !!settings.token;
 
@@ -48,12 +48,12 @@ export function StreamHostCard() {
     <Card tone="live" accentColor={t.green}>
       <View style={styles.header}>
         <View style={styles.dot} />
-        <Text style={styles.title}>STREAMING TO</Text>
+        <Text style={[styles.title, tk?.title]}>STREAMING TO</Text>
         {h.since != null && <Text style={styles.elapsed}>{fmtElapsed(h.since)}</Text>}
       </View>
       <View style={styles.row}>
         <Ionicons name="tv-outline" size={16} color={t.green} />
-        <Text style={styles.peer} numberOfLines={1}>
+        <Text style={[styles.peer, tk?.body]} numberOfLines={1}>
           {h.client ?? 'a device on your network'}
         </Text>
       </View>

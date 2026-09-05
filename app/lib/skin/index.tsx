@@ -11,12 +11,13 @@ import { Platform } from 'react-native';
 
 import { classicSkin } from './classic';
 import { reactorSkin } from './reactor';
+import { studioSkin } from './studio';
 import type { SkinKit } from './kit';
 
 export * from './kit';
 export * from './motion';
 
-export type SkinKey = 'classic' | 'reactor';
+export type SkinKey = 'classic' | 'reactor' | 'studio';
 
 /**
  * The two surviving directions. 'vitals' (motion-only, life-support) and 'hud'
@@ -26,6 +27,7 @@ export type SkinKey = 'classic' | 'reactor';
 export const SKINS: Record<SkinKey, SkinKit> = {
   classic: classicSkin,
   reactor: reactorSkin,
+  studio: studioSkin,
 };
 
 export const SKIN_KEYS = Object.keys(SKINS) as SkinKey[];

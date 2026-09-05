@@ -77,7 +77,7 @@ export default function ConsoleTab() {
 function ConsoleScreen() {
   const t = useTheme();
   const styles = useThemedStyles(makeStyles);
-  const { Screen, Card, Bar, Dot, Spark, BigMetric } = useSkinKit();
+  const { Screen, Card, Bar, Dot, Spark, BigMetric, text: tk } = useSkinKit();
   const { settings, ready, update } = useSettings();
 
   // No host yet (fresh install): don't poll, and show the pairing hint
@@ -383,7 +383,7 @@ function ConsoleScreen() {
         {/* Status header */}
         <View style={styles.header}>
           <Dot color={reachable ? t.green : t.red} size={14} live={reachable} />
-          <Text style={styles.hostname}>
+          <Text style={[styles.hostname, tk?.heading]}>
             {s?.hostname ?? (configured ? settings.host : 'Couchside')}
           </Text>
           <View style={styles.headerRight}>

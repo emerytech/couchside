@@ -8,6 +8,8 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 HERE = os.path.dirname(os.path.abspath(__file__))
 ART = open(os.path.join(HERE, "art.png"), "rb").read()
 COVER = open(os.path.join(HERE, "cover.png"), "rb").read()
+SHOTS_DIR = os.environ.get("DEMO_SHOTS_DIR", os.path.join(HERE, "shots"))
+os.makedirs(SHOTS_DIR, exist_ok=True)
 T0 = time.time()
 STATE = {"playing": True, "pos0": 11000, "pos_t": T0}
 LEN_MS = 214000
@@ -108,6 +110,18 @@ class H(BaseHTTPRequestHandler):
             elif op in ("next", "previous"):
                 STATE["pos0"], STATE["pos_t"] = 0, time.time()
             return self._json(200, {"ok": True, "exit_code": 0, "stdout": "", "stderr": ""})
+        if path == "/sink":
+            import base64, urllib.parse
+            q = urllib.parse.parse_qs(self.path.split("?", 1)[1] if "?" in self.path else "")
+            name = (q.get("name", ["shot"])[0]).replace("/", "_")
+            n = int(self.headers.get("Content-Length") or 0)
+            data = self.rfile.read(n).decode("latin-1")
+            if data.startswith("data:"):
+                data = data.split(",", 1)[1]
+            raw = base64.b64decode(data)
+            with open(os.path.join(SHOTS_DIR, name), "wb") as f:
+                f.write(raw)
+            return self._json(200, {"ok": True, "bytes": len(raw), "name": name})
         if path == "/api/game/stop": return self._json(200, {"stopped": True})
         self._json(404, {"error": "not found"})
     def log_message(self, fmt, *args):
