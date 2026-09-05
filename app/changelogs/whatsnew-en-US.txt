@@ -1,1 +1,9 @@
-New Combos panel — hold the KEYBOARD button on the Pad to open one-tap key combinations: copy, paste, undo and more for the desktop, plus Kodi and media shortcuts (play/pause, context menu, info, back). Turn it on in Setup. See the volume change on your phone the moment you adjust it from Couchside — a quick on-screen readout so you don't have to look at the TV. Have an unlock code? The purchase screen now points you to redeem it in the App Store. New Portal light theme — a flickering orange-and-blue split down your RGB strip. On the Watch screen, Select and Back now work even when the box's window isn't in front, so the pad keeps driving after you switch away and back. If you tinker with OpenPuck receivers, there's a new shortcut to open its configurator right on the TV and drive it with the remote. Plus a snappier connection and reliability fixes throughout.
+Theme packs — give the whole app a new look. Choose OLED Black (true black, made for OLED screens), Steam, Nord, Dracula, Solarized, High Contrast and more in Setup → Appearance. The accent picker still layers on top.
+
+A calmer Console — it opens to what's happening right now (media, streaming, a running game, your box's vitals), with lights, display, audio and tools tucked behind one "More" tap. A new button in the header lets you reorder or hide any card — tap it, make the Console yours.
+
+Auto-drop the pad — for playing with a real controller: turn it on and, while a Steam game is running, your phone stops presenting a controller so it can't take player one from your gamepad. The full pad comes back the moment the game exits.
+
+"Did you know" tips — occasional one-line hints introduce features you might have missed, right where they live. One at a time, at most once a day, never naggy — and you can turn them off with the onboarding tour.
+
+Plus polish and reliability fixes throughout.
