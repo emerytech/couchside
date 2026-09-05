@@ -10,8 +10,10 @@ import {
 } from 'react-native';
 
 import { useFocusEffect } from 'expo-router';
+import Ionicons from '@expo/vector-icons/Ionicons';
 
 import { BootSessionCard } from '@/components/BootSessionCard';
+import { EditableSection } from '@/components/EditableSection';
 import { UtilitiesSection } from '@/components/UtilitiesSection';
 import { Gated } from '@/components/Gated';
 import { TabScreen } from '@/components/TabScreen';
@@ -20,10 +22,13 @@ import { registerScroller } from '@/hooks/useTourAnchor';
 import { useLockOrientation } from '@/hooks/useLockOrientation';
 import { usePoll } from '@/hooks/usePoll';
 import { ActionInfo, ActionResult, api, Danger, hostKey } from '@/lib/api';
+import { effectiveOrder, moveSection } from '@/lib/cardLayout';
+import { useActionsLayout, setActionsLayout } from '@/lib/actionsLayout';
 import {
   hapticError,
   hapticHeavy,
   hapticLight,
+  hapticSelection,
   hapticSuccess,
 } from '@/lib/haptics';
 import { usePref } from '@/lib/prefs';
@@ -57,6 +62,12 @@ const BADGE_TEXT: Record<Danger, string> = {
   medium: 'interrupts',
   high: 'ends session',
 };
+
+/** The Actions tab's movable SECTIONS for hold-to-edit reorder/hide (same store
+ *  as the Console). 'boot' is the Boot Session card; the other three are the
+ *  impact groups keyed by the UI's word (low → 'routine'). The Utilities surface
+ *  is deliberately absent — it stays pinned, never reordered or hidden. */
+const SECTION_ORDER = ['boot', 'routine', 'medium', 'high'] as const;
 
 /** Seconds a session-ending action waits, cancellable, before it actually fires.
  *  This REPLACES the old blind second "Are you sure?" dialog: one confirm, then a
@@ -230,9 +241,103 @@ function ActionsScreen() {
     [],
   );
 
+  // --- Actions section layout: hold-to-edit reorder + hide (persisted) ------
+  // The movable "cards" are the Boot Session card and the three impact groups.
+  // Utilities is NOT movable (pinned above). Same store/pattern as the Console:
+  // long-press a section (or tap Customize) to enter, ↑ ↓ / hide, then Done.
+  const layout = useActionsLayout();
+  const [editing, setEditing] = useState(false);
+  const [present, setPresent] = useState<Record<string, boolean>>({});
+  const order = effectiveOrder(layout.order, [...SECTION_ORDER]);
+  const hidden = new Set(layout.hidden);
+  const setPres = (id: string, p: boolean) =>
+    setPresent((prev) => (prev[id] === p ? prev : { ...prev, [id]: p }));
+  const visible = order.filter((id) => present[id]);
+  const moveCard = (id: string, dir: -1 | 1) =>
+    setActionsLayout({ order: moveSection(order, visible, id, dir), hidden: layout.hidden });
+  const toggleHide = (id: string) => {
+    const h = new Set(layout.hidden);
+    if (h.has(id)) h.delete(id); else h.add(id);
+    setActionsLayout({ order, hidden: [...h] });
+  };
+
+  // The impact groups by section id (undefined when the box reports none of that
+  // level — the section then renders null and shows no edit controls).
+  const groupById: Record<string, { danger: Danger; items: ActionInfo[] } | undefined> = {
+    routine: groups.find((g) => g.danger === 'low'),
+    medium: groups.find((g) => g.danger === 'medium'),
+    high: groups.find((g) => g.danger === 'high'),
+  };
+  const renderGroup = (g: { danger: Danger; items: ActionInfo[] }) => (
+    // TourAnchor REPLACES the group's View and inherits styles.group, so the
+    // layout and the tour anchor are unchanged by the wrapping EditableSection.
+    <TourAnchor id={TOUR_ANCHOR[g.danger]} style={styles.group}>
+      <Text style={[styles.groupTitle, { color: DANGER_COLOR[g.danger] }]}>
+        {GROUP_TITLE[g.danger]}
+      </Text>
+      {g.items.map((a) => (
+        <Pressable
+          key={a.id}
+          onPress={() => onTap(a)}
+          style={({ pressed }) => [styles.card, pressed && styles.pressed]}>
+          <View style={styles.cardHead}>
+            <Text style={styles.cardLabel}>{a.label}</Text>
+            {a.danger === 'high' && (
+              <View style={[styles.badge, { backgroundColor: DANGER_COLOR[a.danger] }]}>
+                {/* The badge's fill is per-danger (red/amber/green), so its text is
+                    chosen for contrast against THAT fill, not a fixed on-red. */}
+                <Text style={[styles.badgeText, { color: textOn(DANGER_COLOR[a.danger], t) }]}>{BADGE_TEXT[a.danger]}</Text>
+              </View>
+            )}
+          </View>
+        </Pressable>
+      ))}
+    </TourAnchor>
+  );
+  const sectionNodes: Record<string, React.ReactNode> = {
+    boot: configured ? <BootSessionCard /> : null,
+    routine: groupById.routine ? renderGroup(groupById.routine) : null,
+    medium: groupById.medium ? renderGroup(groupById.medium) : null,
+    high: groupById.high ? renderGroup(groupById.high) : null,
+  };
+  const renderSection = (id: string) => {
+    const node = sectionNodes[id];
+    if (node == null) return null;
+    return (
+      <EditableSection
+        key={id}
+        editing={editing}
+        hidden={hidden.has(id)}
+        isFirst={visible[0] === id}
+        isLast={visible[visible.length - 1] === id}
+        onEnterEdit={() => setEditing(true)}
+        onPresent={(p) => setPres(id, p)}
+        onUp={() => moveCard(id, -1)}
+        onDown={() => moveCard(id, 1)}
+        onToggleHide={() => toggleHide(id)}
+        inertWhileEditing>
+        {node}
+      </EditableSection>
+    );
+  };
+
   return (
     <View style={[styles.screen, { paddingTop: 12 }]}>
-      <Text style={styles.title}>Actions</Text>
+      <View style={styles.titleRow}>
+        <Text style={styles.title}>Actions</Text>
+        {/* CUSTOMIZE: a visible way into hold-to-edit, and the way back in when a
+            section is hidden. Gone while editing — the Done bar owns the exit. */}
+        {configured && !editing && (
+          <Pressable
+            onPress={() => { hapticSelection(); setEditing(true); }}
+            accessibilityRole="button"
+            accessibilityLabel="Reorder or hide sections"
+            hitSlop={8}
+            style={({ pressed }) => [styles.customizeBtn, pressed && styles.pressed]}>
+            <Ionicons name="options-outline" size={18} color={t.textDim} />
+          </Pressable>
+        )}
+      </View>
       <ScrollView
         ref={scrollRef}
         onScroll={(e) => {
@@ -264,58 +369,38 @@ function ActionsScreen() {
         {configured && !actions.data && actions.error == null && (
           <Text style={styles.dim}>loading…</Text>
         )}
-        {/* Persistent boot preference, directly above the ONE-SHOT session
-            switches below it — that adjacency is the point (see the card). */}
-        {configured && <BootSessionCard />}
         {/* OpenPuck flasher, surfaced here for quick reach (also lives under
             Setup → Utilities). OPT-IN: gated on the same `utilitiesEnabled`
             pref as the Setup surface, OFF by default, so it no longer shows
-            unasked. Self-hides on boxes without the utilities endpoint too. */}
+            unasked. Self-hides on boxes without the utilities endpoint too.
+            PINNED above the movable sections — an advanced flashing tool is not
+            something to reorder or hide by accident. */}
         {configured && utilitiesEnabled && <UtilitiesSection context="actions" />}
-        {/* TourAnchor REPLACES each group's View and inherits styles.group, so
-            the layout is unchanged and the anchor measures the whole block —
-            header plus rows. The id uses the UI's word for `low` ("ROUTINE")
-            rather than the agent's danger level, matching lib/tour.ts. A group
-            with no items is already filtered out above, so a box that reports no
-            harmless actions registers no `actions.routine` and that step skips
-            itself instead of pointing at a header that is not there. */}
-        {groups.map((g) => (
-          <TourAnchor
-            key={g.danger}
-            id={TOUR_ANCHOR[g.danger]}
-            style={styles.group}>
-            <Text style={[styles.groupTitle, { color: DANGER_COLOR[g.danger] }]}>
-              {GROUP_TITLE[g.danger]}
-            </Text>
-            {g.items.map((a) => (
-              <Pressable
-                key={a.id}
-                onPress={() => onTap(a)}
-                style={({ pressed }) => [styles.card, pressed && styles.pressed]}>
-                <View style={styles.cardHead}>
-                  <Text style={styles.cardLabel}>{a.label}</Text>
-                  {/* Only the destructive one keeps a badge. "routine" under a
-                      ROUTINE header and "interrupts" under CHANGES WHAT'S ON
-                      SCREEN said the same thing twice on every single row —
-                      that repetition was the reported noise. Ending your
-                      session is worth repeating; the other two are not. */}
-                  {a.danger === 'high' && (
-                    <View style={[styles.badge, { backgroundColor: DANGER_COLOR[a.danger] }]}>
-                      {/* The badge's fill is per-danger (red/amber/green), so its text is
-                          chosen for contrast against THAT fill, not a fixed on-red. */}
-                      <Text style={[styles.badgeText, { color: textOn(DANGER_COLOR[a.danger], t) }]}>{BADGE_TEXT[a.danger]}</Text>
-                    </View>
-                  )}
-                </View>
-                {/* The description is NOT lost — confirm() already shows it in
-                    full before anything runs, which is where the detail belongs.
-                    On the row it mostly restated the label ("Switch to Desktop"
-                    / "Leave Game Mode for the SteamOS desktop"). */}
-              </Pressable>
-            ))}
-            </TourAnchor>
-          ))}
+        {/* Movable sections — the Boot Session card and the three impact groups —
+            with hold-to-edit reorder + hide (Customize in the header, Done bar
+            below). Each is inert while editing so a tap lands on the reorder/hide
+            strip, not on a card or an action. renderSection returns null for a
+            section the box has nothing for, so its edit controls never orphan.
+            The group blocks keep their tour anchors (actions.routine/medium/high),
+            matching lib/tour.ts; a group with no items renders null and that tour
+            step skips itself rather than pointing at a header that is not there. */}
+        {configured && order.map((id) => renderSection(id))}
       </ScrollView>
+
+      {/* Edit-layout bar: hold any section (or tap Customize) to enter; reorder /
+          hide, then Done. Matches the Console tab. */}
+      {editing && (
+        <View style={styles.editBar}>
+          <Text style={styles.editHint}>Reorder or hide sections</Text>
+          <Pressable
+            onPress={() => setEditing(false)}
+            accessibilityRole="button"
+            accessibilityLabel="Done editing actions"
+            style={({ pressed }) => [styles.doneBtn, pressed && styles.pressed]}>
+            <Text style={styles.doneText}>Done</Text>
+          </Pressable>
+        </View>
+      )}
 
       {/* Countdown before a session-ending action fires */}
       {pending && (
@@ -386,7 +471,21 @@ function ActionsScreen() {
 
 const makeStyles = (t: Palette) => StyleSheet.create({
   screen: { flex: 1, backgroundColor: t.bg, paddingHorizontal: 14 },
+  titleRow: { flexDirection: 'row', alignItems: 'center' },
   title: { color: t.text, fontSize: 26, fontWeight: '700', marginBottom: 12, fontFamily: mono },
+  customizeBtn: { marginLeft: 'auto', marginBottom: 12, padding: 6, borderRadius: 8 },
+  editBar: {
+    position: 'absolute', left: 0, right: 0, bottom: 0,
+    flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between',
+    paddingHorizontal: 16, paddingTop: 12, paddingBottom: 28,
+    backgroundColor: t.card, borderTopColor: t.cardBorder, borderTopWidth: 1,
+  },
+  editHint: { color: t.textDim, fontSize: 13 },
+  doneBtn: {
+    backgroundColor: t.blue, borderRadius: 999,
+    paddingVertical: 8, paddingHorizontal: 22,
+  },
+  doneText: { color: t.onAccent, fontWeight: '700', fontSize: 14 },
   list: { flex: 1 },
   group: { marginBottom: 16 },
   groupTitle: { fontSize: 11, fontWeight: '800', letterSpacing: 1.5, marginBottom: 8 },
