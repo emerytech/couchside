@@ -2080,6 +2080,19 @@ git history if revisited.
 **Known gap:** `ScreenPreview`, the BOX UNREACHABLE banner and the "No box configured"
 empty card still use bespoke local styles rather than the kit.
 
+**2026-09-06 update — four more skins on `design/console-polish` (not shipped):** the seam
+now carries three added directions beyond classic/reactor — **studio** (quiet/product), and
+seeded from awesome-components refs via a design+judge workflow, **slate** (dense SaaS, hairline
+panels + accent rail + mono numerals + trend chip), **paper** (editorial, light-first: serif
+headings, ink metrics under an accent tick), **panel** (Braun/TE hardware faceplate: silkscreen
+mono legends, recessed windows, LED-segment VU meter). All read only Palette tokens, so they
+compose with the seven colour packs automatically; all provide the optional `text/radius/quiet`
+kit tokens so card-owned chrome inherits their type. Verified in the web harness (Playwright),
+dark + light, six skins distinct; native rendering unverified (panel uses `inset` boxShadow).
+**Blocking ship:** there is no user-facing skin picker yet — mirror the Setup "Look" row that
+selects colour packs, add a skin selector, and decide the default (native `DEFAULT_SKIN` is
+still `reactor`). Then per-skin device QA.
+
 ### 2026-07-20 — Stream hosts show whether they are actually online (#143)
 Offline hosts dim with a reason; Setup › Prefs can hide them entirely. Detection reads
 **Steam's own remote-connection log** for when each client was last seen — no hostname
