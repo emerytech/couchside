@@ -2,7 +2,7 @@
  * PAPER skin -- the editorial / light-first direction.
  *
  * A printed spec-sheet rendered as an app: a serif display heading, small-caps
- * sans labels, ink metrics standing under a short accent hairline tick, fine
+ * * sans labels, ink metrics, fine
  * rules and generous whitespace instead of chrome. The one skin designed
  * LIGHT-first -- there is no glow anywhere, so nothing can go muddy on white;
  * dark mode re-derives the same vocabulary as light hairlines on navy.
@@ -11,7 +11,7 @@
  *    chrome and data. Metric stays sans+tabular so live figures never bounce.
  *  * SURFACE: flat, rule-not-lift. Hairline-bordered card, 8px corners, no
  *    shadow. Semantic emphasis is a 3px left EDGE-RULE, not a fill.
- *  * COLOUR: two places only -- an alarming metric, and the semantic tick/edge.
+ *  * COLOUR: two places only -- an alarming metric, and the semantic left edge-rule.
  *    Healthy readings are ink (studio's rule).
  *  * MOTION: none. Print does not flicker.
  */
@@ -110,11 +110,11 @@ function BigMetric({ value, color }: MetricProps) {
   const styles = useThemedStyles(makeStyles);
   const alarming = color === t.amber || color === t.red;
   const [num, unit] = splitUnit(value);
-  // The tick above the number is paper's decoration slot, restrained by meaning.
-  const tickColor = alarming ? color : color === t.green ? alpha(color, 0.6) : alpha(t.text, 0.22);
+  // No decoration line above the number: the section title already carries an
+  // editorial hairline rule, so a second short tick here just read as a stray
+  // line. Paper's metric is the ink numeral itself — an alarming value colours it.
   return (
     <View style={styles.metricWrap}>
-      <View style={[styles.tick, { height: alarming ? 2.5 : 2, backgroundColor: tickColor }]} />
       <Text style={[styles.bigMetric, { color: alarming ? color : t.text }]} numberOfLines={1}>
         {num}
         {unit != null && <Text style={styles.metricUnit}>{unit}</Text>}
@@ -216,7 +216,6 @@ const makeStyles = (t: Palette) =>
     },
     sectionRule: { marginTop: 6, height: StyleSheet.hairlineWidth, backgroundColor: alpha(t.text, 0.14) },
     metricWrap: { alignSelf: 'flex-start' },
-    tick: { width: 22, borderRadius: 1, marginBottom: 8 },
     bigMetric: {
       fontSize: 34,
       fontWeight: '800',
