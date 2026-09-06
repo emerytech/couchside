@@ -153,7 +153,7 @@ function Spark({ values, color, height = 20, min, max }: SparkProps) {
           return (
             <View
               key={i}
-              style={[styles.sparkBar, { height: h, backgroundColor: color, opacity: i === last ? 1 : light ? 0.38 : 0.32 }]}
+              style={[styles.sparkBar, { height: h, backgroundColor: color, opacity: i === last ? 1 : light ? 0.62 : 0.5 }]}
             />
           );
         })}

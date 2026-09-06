@@ -161,7 +161,7 @@ function Spark({ values, color, height = 24, min, max }: SparkProps) {
         const frac = span > 0 ? (v - lo) / span : 0.5;
         const h = Math.max(3, Math.round(height * (0.12 + 0.88 * clamp(frac, 0, 1))));
         return (
-          <View key={i} style={[styles.sparkBar, { height: h, backgroundColor: i === last ? color : alpha(t.text, 0.22) }]} />
+          <View key={i} style={[styles.sparkBar, { height: h, backgroundColor: i === last ? color : t.textFaint }]} />
         );
       })}
       <View style={styles.sparkFloor} />
@@ -210,7 +210,7 @@ const makeStyles = (t: Palette) => {
     sectionRow: { flexDirection: 'row', alignItems: 'center', gap: 6, marginBottom: 8 },
     sectionTick: { width: 8, height: 2, backgroundColor: alpha(t.text, 0.35) },
     sectionTitle: {
-      color: alpha(t.text, 0.5),
+      color: t.textFaint,
       fontFamily: mono,
       fontSize: 10,
       fontWeight: '700',
@@ -236,7 +236,7 @@ const makeStyles = (t: Palette) => {
       fontVariant: ['tabular-nums'],
       lineHeight: 30,
     },
-    metricUnit: { fontSize: 12, fontWeight: '600', color: alpha(t.text, 0.5), fontFamily: mono, textTransform: 'uppercase' },
+    metricUnit: { fontSize: 12, fontWeight: '600', color: t.textFaint, fontFamily: mono, textTransform: 'uppercase' },
     well: {
       flexDirection: 'row',
       alignItems: 'center',
