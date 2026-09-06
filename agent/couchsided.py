@@ -23440,6 +23440,30 @@ def _tls_ensure(cfg, persist=True):
             "fp": fp, "spki": spki, "cert_pem": cert_pem}
 
 
+# The live HTTPS server + its serve thread, tracked so the TLS watchdog
+# (_tls_supervisor) can tell whether the listener is actually up and re-bind it
+# WITHOUT a full agent reboot. This matters because TLS is on by default and a
+# paired app is LOCKED to the TLS port -- api.ts fails closed with no plaintext
+# fallback (deliberately, so a killed TLS port can't downgrade the token onto the
+# wire). So a listener that never bound after an in-place update, or whose serve
+# thread later dies, strands EVERY secure client in a connect/disconnect loop
+# until the box is rebooted. Restart=always/RestartSec=3 does not help: if the
+# port is briefly held during the restart race the first bind used to give up for
+# the whole life of the process. The retry-then-watchdog below closes that gap.
+_TLS_SERVER = None
+_TLS_THREAD = None
+_TLS_LOCK = threading.Lock()
+# Initial-bind retries cover the restart race: systemd can start the new process
+# before the old one's listening socket is released (EADDRINUSE for a fraction of
+# a second). ~4s of retries outlasts a normal handoff.
+_TLS_BIND_ATTEMPTS = 8
+_TLS_BIND_BACKOFF_S = 0.5
+# Steady-state watchdog cadence: re-check the listener is alive this often and, if
+# not, re-attempt the whole start. 20s recovers a box within an app reconnect
+# cycle or two without busy-looping.
+_TLS_WATCH_INTERVAL_S = 20
+
+
 def _tls_start(host, handler_cls, force_enable=False):
     """If TLS is enabled, mint/ensure the cert and start an HTTPS
     BoundedThreadingHTTPServer on its own daemon thread, sharing the same Handler
@@ -23447,8 +23471,14 @@ def _tls_start(host, handler_cls, force_enable=False):
     Handler.tls_info + the banner) or None. NEVER raises: any failure leaves the
     plaintext listener serving alone.
 
+    Retries the initial BIND through a restart race (EADDRINUSE while the old
+    process releases the port) instead of giving up for the life of the process;
+    on success records the live server in _TLS_SERVER/_TLS_THREAD so
+    _tls_supervisor can watch it and re-bind if it ever goes down.
+
     force_enable (the --tls dev/CI flag) enables TLS regardless of config and does
     NOT persist (an ephemeral cert per boot; SPKI stability is irrelevant there)."""
+    global _TLS_SERVER, _TLS_THREAD
     cfg = CONFIG_TLS
     if force_enable:
         cfg = dict(cfg or {})
@@ -23462,18 +23492,97 @@ def _tls_start(host, handler_cls, force_enable=False):
         return None
     if not info:
         return None
-    try:
-        ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
-        ctx.load_cert_chain(certfile=info["cert_path"], keyfile=info["key_path"])
-        tls_srv = BoundedThreadingHTTPServer((host, info["port"]), handler_cls)
-        tls_srv.daemon_threads = True
-        tls_srv.socket = ctx.wrap_socket(tls_srv.socket, server_side=True)
-    except Exception as e:
-        print("warning: HTTPS listener on %d failed to start (%s); plaintext only"
-              % (info["port"], e), file=sys.stderr, flush=True)
-        return None
-    threading.Thread(target=tls_srv.serve_forever, daemon=True, name="tls").start()
-    return info
+    port = info["port"]
+    for attempt in range(_TLS_BIND_ATTEMPTS):
+        try:
+            ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
+            ctx.load_cert_chain(certfile=info["cert_path"], keyfile=info["key_path"])
+            tls_srv = BoundedThreadingHTTPServer((host, port), handler_cls)
+            tls_srv.daemon_threads = True
+            tls_srv.socket = ctx.wrap_socket(tls_srv.socket, server_side=True)
+        except OSError as e:
+            # EADDRINUSE (or similar) during the restart race: the old process
+            # has not released the listening socket yet. Back off and retry --
+            # never give up here, or a TLS-locked app loops until a box reboot.
+            if attempt + 1 < _TLS_BIND_ATTEMPTS:
+                time.sleep(_TLS_BIND_BACKOFF_S)
+                continue
+            print("warning: HTTPS listener on %d could not bind after %d tries "
+                  "(%s); plaintext only for now -- the TLS watchdog will keep "
+                  "retrying" % (port, _TLS_BIND_ATTEMPTS, e),
+                  file=sys.stderr, flush=True)
+            return None
+        except Exception as e:
+            # A non-bind failure (bad cert/ssl): immediate retry with the same
+            # inputs won't help, so hand off to the watchdog's slow retry rather
+            # than spinning here.
+            print("warning: HTTPS listener on %d failed to start (%s); plaintext "
+                  "only for now -- the TLS watchdog will keep retrying"
+                  % (port, e), file=sys.stderr, flush=True)
+            return None
+        th = threading.Thread(target=tls_srv.serve_forever, daemon=True, name="tls")
+        th.start()
+        with _TLS_LOCK:
+            _TLS_SERVER = tls_srv
+            _TLS_THREAD = th
+        return info
+    return None
+
+
+def _tls_apply_serve(handler_cls, serve):
+    """Publish a serve dict (from _tls_start) to the surfaces that read TLS state:
+    Handler.tls_info (the cert PEM the pinning handshake needs) and the TLS_ADVERT
+    module global (no PEM; the UDP discovery reply + build_pair_url read it).
+    Called at startup AND by the watchdog when the listener comes up LATE, so a
+    box that recovered HTTPS advertises it without a reboot. None clears both
+    (TLS dark) so the payloads/URLs stay byte-for-byte unchanged."""
+    global TLS_ADVERT
+    if serve:
+        handler_cls.tls_info = {"cert_pem": serve["cert_pem"], "fp": serve["fp"],
+                                "spki": serve["spki"], "port": serve["port"]}
+        TLS_ADVERT = {"port": serve["port"], "fp": serve["fp"], "spki": serve["spki"]}
+    else:
+        handler_cls.tls_info = None
+        TLS_ADVERT = None
+
+
+def _tls_supervisor(host, handler_cls, force_enable=False):
+    """Watchdog that keeps the HTTPS listener up so the box self-heals instead of
+    needing a manual reboot. TLS is on by default and a paired app is LOCKED to it
+    (fails closed, no plaintext fallback), so a listener that never bound after an
+    in-place update -- or whose serve thread dies -- would strand every secure
+    client. This daemon re-attempts the start until it succeeds, then idles
+    cheaply once the listener is confirmed alive. Never raises."""
+    global _TLS_SERVER, _TLS_THREAD
+    while True:
+        try:
+            time.sleep(_TLS_WATCH_INTERVAL_S)
+            if not (force_enable or (CONFIG_TLS and CONFIG_TLS.get("enabled"))):
+                continue  # TLS turned off at runtime: nothing to supervise.
+            with _TLS_LOCK:
+                srv, th = _TLS_SERVER, _TLS_THREAD
+            if srv is not None and th is not None and th.is_alive():
+                continue  # listener healthy
+            # Down (never bound, or the serve thread died). Release a half-dead
+            # server's socket before re-binding, or we'd EADDRINUSE against
+            # ourselves.
+            if srv is not None:
+                for close in (srv.shutdown, srv.server_close):
+                    try:
+                        close()
+                    except Exception:
+                        pass
+                with _TLS_LOCK:
+                    _TLS_SERVER = None
+                    _TLS_THREAD = None
+            serve = _tls_start(host, handler_cls, force_enable=force_enable)
+            if serve:
+                _tls_apply_serve(handler_cls, serve)
+                print("tls: HTTPS listener recovered on %s:%d" % (host, serve["port"]),
+                      flush=True)
+        except Exception as e:
+            print("warning: TLS watchdog iteration failed (%s)" % e,
+                  file=sys.stderr, flush=True)
 
 
 class BoundedThreadingHTTPServer(ThreadingHTTPServer):
@@ -23619,15 +23728,19 @@ def main():
     # Optional HTTPS/WSS listener (dark unless config.tls.enabled or --tls). Shares
     # this Handler; failures degrade closed and never touch the plaintext server.
     tls_serve = _tls_start(args.host, Handler, force_enable=args.tls)
-    Handler.tls_info = ({"cert_pem": tls_serve["cert_pem"], "fp": tls_serve["fp"],
-                         "spki": tls_serve["spki"], "port": tls_serve["port"]}
-                        if tls_serve else None)
-    # Public advert bits (no cert PEM) for the surfaces that have no Handler in hand:
-    # the UDP discovery reply and build_pair_url read this module global. Stays None
-    # while TLS is dark, so those payloads/URLs are byte-for-byte unchanged.
-    global TLS_ADVERT
-    TLS_ADVERT = ({"port": tls_serve["port"], "fp": tls_serve["fp"],
-                   "spki": tls_serve["spki"]} if tls_serve else None)
+    # Publish TLS state (Handler.tls_info for the pinning handshake + the TLS_ADVERT
+    # module global for the UDP discovery reply / build_pair_url). Stays None while
+    # TLS is dark, so those payloads/URLs are byte-for-byte unchanged.
+    _tls_apply_serve(Handler, tls_serve)
+    # Keep the HTTPS listener up without a reboot (see _tls_supervisor): TLS is on
+    # by default and a paired app is LOCKED to the TLS port (fails closed, no
+    # plaintext fallback), so a listener that missed its bind after an in-place
+    # update would otherwise strand every secure client in a connect/disconnect
+    # loop until a manual box restart. Real mode only; honours --tls.
+    if (args.tls or (CONFIG_TLS and CONFIG_TLS.get("enabled"))) and not args.mock:
+        threading.Thread(target=_tls_supervisor,
+                         args=(args.host, Handler, args.tls),
+                         daemon=True, name="tls-watch").start()
     mode = "mock" if args.mock else "real"
     print("%s %s listening on %s:%d (%s mode)" % (
         APP_NAME, VERSION, args.host, port, mode), flush=True)
