@@ -12,12 +12,15 @@ import { Platform } from 'react-native';
 import { classicSkin } from './classic';
 import { reactorSkin } from './reactor';
 import { studioSkin } from './studio';
+import { slateSkin } from './slate';
+import { paperSkin } from './paper';
+import { panelSkin } from './panel';
 import type { SkinKit } from './kit';
 
 export * from './kit';
 export * from './motion';
 
-export type SkinKey = 'classic' | 'reactor' | 'studio';
+export type SkinKey = 'classic' | 'reactor' | 'studio' | 'slate' | 'paper' | 'panel';
 
 /**
  * The two surviving directions. 'vitals' (motion-only, life-support) and 'hud'
@@ -28,6 +31,9 @@ export const SKINS: Record<SkinKey, SkinKit> = {
   classic: classicSkin,
   reactor: reactorSkin,
   studio: studioSkin,
+  slate: slateSkin,
+  paper: paperSkin,
+  panel: panelSkin,
 };
 
 export const SKIN_KEYS = Object.keys(SKINS) as SkinKey[];
