@@ -27,6 +27,7 @@ import { useConsoleLayout, effectiveOrder, moveSection, setConsoleLayout } from 
 import { hapticSelection } from '@/lib/haptics';
 import { setPref, usePref } from '@/lib/prefs';
 import { useSkinKit, VitalsContext, vitality } from '@/lib/skin';
+import { EffectsOverlays } from '@/lib/effects';
 import { noteBoxReachable } from '@/lib/review';
 import { useSettings } from '@/lib/SettingsContext';
 import { batteryColor, mono, numeric, pctColor, tempColor, useTheme, useThemedStyles } from '@/lib/theme';
@@ -127,6 +128,25 @@ function ConsoleScreen() {
     () => ({ v: vitality(s?.load?.[0], s?.cpu_temp_c), alive: reachable }),
     [s?.load, s?.cpu_temp_c, reachable],
   );
+
+  // Worst semantic tier across the live vitals, for the optional alarm-pulse
+  // effect: 0 none, 1 amber, 2 red. Uses the SAME thresholds the metric cards
+  // paint with (tempColor/pctColor/batteryColor), so the edge pulse can never
+  // disagree with a number on screen. Cheap; recomputes only when a vital moves.
+  const alarmLevel = React.useMemo<0 | 1 | 2>(() => {
+    if (!s) return 0;
+    const tier = (c: string): 0 | 1 | 2 => (c === t.red ? 2 : c === t.amber ? 1 : 0);
+    let lvl: 0 | 1 | 2 = 0;
+    const bump = (c: string) => {
+      const x = tier(c);
+      if (x > lvl) lvl = x;
+    };
+    if (s.cpu_temp_c != null) bump(tempColor(s.cpu_temp_c, t));
+    bump(pctColor(memPct, t));
+    for (const d of s.disks) bump(pctColor(d.pct, t));
+    if (s.battery) bump(batteryColor(s.battery.pct, t));
+    return lvl;
+  }, [s, memPct, t]);
 
   // Let the feature tour scroll a card into view before spotlighting it: the
   // screen preview and display info both sit below the fold on a phone, and a
@@ -501,6 +521,10 @@ function ConsoleScreen() {
         {moreOpen && renderCards(moreOrder)}
         </Screen>
       </ScrollView>
+      {/* Cross-skin visual effects (motion / texture / reactive / alarm), a single
+          overlay above the content of whatever skin is active. Renders nothing
+          unless the user enabled effects in the Theme Builder. */}
+      <EffectsOverlays alarm={alarmLevel} />
       {/* Edit-layout bar: hold any card to enter, then reorder/hide + Done. */}
       {editingCards && (
         <View style={styles.editBar}>
