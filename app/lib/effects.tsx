@@ -35,6 +35,9 @@ import Animated, {
 import { useEffects as usePersistedEffects, setEffects, useResolvedScheme, useTheme } from '@/lib/theme';
 import { useReducedMotion, useVitals } from '@/lib/skin';
 
+// Re-export so callers reach the whole effects API from one module.
+export { useEffects } from '@/lib/theme';
+
 const EDGE = require('../assets/effects/edge.png');
 const SCANLINE = require('../assets/effects/scanline.png');
 const GRAIN = require('../assets/effects/grain.png');
