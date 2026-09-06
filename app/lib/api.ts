@@ -1636,6 +1636,15 @@ async function attempt(
     if (e instanceof Error && e.name === 'AbortError') {
       throw new ApiError('timeout', `Timed out after ${timeoutMs / 1000}s`);
     }
+    if (settings.secure && settings.pinModulus && settings.tlsPort) {
+      // A secure box whose PINNED TLS port did not answer — distinct from the pin
+      // MISMATCH handled above. The common cause is the box mid-update: the agent
+      // restarts and its HTTPS listener re-binds a moment later (the agent
+      // self-heals its listener), so this recovers on its own without a re-pair.
+      // Still fail CLOSED — never downgrade the token to plaintext — but say
+      // something the user can act on instead of a bare "unreachable" loop.
+      throw new ApiError('unreachable', 'Secure link down — the box may be restarting');
+    }
     throw new ApiError('unreachable', 'Box unreachable: network error');
   } finally {
     clearTimeout(abortTimer);
