@@ -339,6 +339,16 @@ jobs:
       - name: Unit tests (TLS tickets)
         run: python3 tests/test_tls_ticket.py
 
+      # TLS listener self-heal. TLS is on by default and a paired app is LOCKED to
+      # the TLS port (fails closed, no plaintext fallback), so a listener that
+      # misses its bind after an in-place update — or whose serve thread dies —
+      # would strand every secure client in a connect/disconnect loop until a
+      # manual box reboot (observed on a Steam Machine after a 2.9.10x update).
+      # Proves _tls_start retries the bind through the restart race and the
+      # watchdog re-binds a down listener + re-advertises it, so the box self-heals.
+      - name: Unit tests (TLS self-heal)
+        run: python3 tests/test_tls_selfheal.py
+
       # Pairing PIN full-screen launch resolver. A desktop-session box is a system
       # service with a partial env, so a bare xdg-open failed and the PIN never
       # showed (a hard stop for pairing). Pins the browser->--kiosk argv mapping
