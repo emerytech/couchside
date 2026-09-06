@@ -23453,6 +23453,12 @@ def _tls_ensure(cfg, persist=True):
 _TLS_SERVER = None
 _TLS_THREAD = None
 _TLS_LOCK = threading.Lock()
+# Cooperative stop for the watchdog: set() makes _tls_supervisor exit its loop
+# promptly (it waits ON this event, not a bare sleep). Never set in production —
+# the daemon runs for the life of the process — but it makes the watchdog
+# responsive to shutdown and lets tests stop a supervisor deterministically
+# instead of leaking daemon threads across cases.
+_TLS_WATCH_STOP = threading.Event()
 # Initial-bind retries cover the restart race: systemd can start the new process
 # before the old one's listening socket is released (EADDRINUSE for a fraction of
 # a second). ~4s of retries outlasts a normal handoff.
@@ -23554,9 +23560,12 @@ def _tls_supervisor(host, handler_cls, force_enable=False):
     client. This daemon re-attempts the start until it succeeds, then idles
     cheaply once the listener is confirmed alive. Never raises."""
     global _TLS_SERVER, _TLS_THREAD
-    while True:
+    while not _TLS_WATCH_STOP.is_set():
         try:
-            time.sleep(_TLS_WATCH_INTERVAL_S)
+            # Wait ON the stop event so a shutdown (or a test) exits promptly
+            # instead of sleeping out the interval; returns True when stopped.
+            if _TLS_WATCH_STOP.wait(_TLS_WATCH_INTERVAL_S):
+                return
             if not (force_enable or (CONFIG_TLS and CONFIG_TLS.get("enabled"))):
                 continue  # TLS turned off at runtime: nothing to supervise.
             with _TLS_LOCK:

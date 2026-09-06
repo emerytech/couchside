@@ -22,6 +22,11 @@ DECISIVE control (CLAUDE.md §11, observe-both-states): while the port is held t
 listener is DOWN (no HTTPS connect); the ONLY change after freeing it is the SAME
 port comes UP -- i.e. genuine recovery, not a new identity or a silent no-op.
 
+Test isolation: the watchdog is a daemon thread, so each case that starts one STOPS
+and JOINs it (via cs._TLS_WATCH_STOP) before the next case runs -- otherwise a
+leftover supervisor sharing the module globals grabs the next test's port (the exact
+Linux-only flake that first shipped here).
+
 Pure stdlib, no pytest.
 """
 import http.client
@@ -87,7 +92,26 @@ def https_ping_ok(port, timeout=2.0):
         return False
 
 
+def start_watch():
+    """Start a fresh watchdog for one test; returns the thread to stop later."""
+    cs._TLS_WATCH_STOP.clear()
+    th = threading.Thread(target=cs._tls_supervisor, args=(HOST, DummyHandler, True),
+                          daemon=True)
+    th.start()
+    return th
+
+
+def stop_watch(th):
+    """Stop and JOIN a watchdog so it can't leak into the next case."""
+    cs._TLS_WATCH_STOP.set()
+    if th is not None:
+        th.join(timeout=3)
+    cs._TLS_WATCH_STOP.clear()
+
+
 def reset_tls_globals():
+    cs._TLS_WATCH_STOP.set()  # make any stray supervisor exit before we tear down
+    time.sleep(0.02)
     srv = cs._TLS_SERVER
     if srv is not None:
         for close in (srv.shutdown, srv.server_close):
@@ -97,6 +121,7 @@ def reset_tls_globals():
                 pass
     cs._TLS_SERVER = None
     cs._TLS_THREAD = None
+    cs._TLS_WATCH_STOP.clear()
 
 
 def _require_cert_or_skip():
@@ -111,10 +136,10 @@ def _require_cert_or_skip():
 
 
 def test_bind_retry_then_success():
+    reset_tls_globals()
     port = free_port()
     cs.CONFIG_TLS = {"enabled": True, "port": port}
     DummyHandler.tls_info = None
-    reset_tls_globals()
     cs._TLS_BIND_ATTEMPTS = 6
     cs._TLS_BIND_BACKOFF_S = 0.15
 
@@ -136,10 +161,10 @@ def test_bind_retry_then_success():
 
 
 def test_watchdog_recovers_late():
+    reset_tls_globals()
     port = free_port()
     cs.CONFIG_TLS = {"enabled": True, "port": port}
     DummyHandler.tls_info = None
-    reset_tls_globals()
     cs._TLS_BIND_ATTEMPTS = 2
     cs._TLS_BIND_BACKOFF_S = 0.05
     cs._TLS_WATCH_INTERVAL_S = 0.2
@@ -150,28 +175,30 @@ def test_watchdog_recovers_late():
     cs._tls_apply_serve(DummyHandler, serve)  # None -> tls_info cleared (TLS dark)
     assert DummyHandler.tls_info is None
 
-    threading.Thread(target=cs._tls_supervisor, args=(HOST, DummyHandler, True),
-                     daemon=True).start()
-    time.sleep(cs._TLS_WATCH_INTERVAL_S * 3)
-    assert not https_ping_ok(port), "listener must stay DOWN while the port is held"
-    assert cs._TLS_SERVER is None, "must not claim a live server while down"
+    th = start_watch()
+    try:
+        time.sleep(cs._TLS_WATCH_INTERVAL_S * 3)
+        assert not https_ping_ok(port), "listener must stay DOWN while the port is held"
+        assert cs._TLS_SERVER is None, "must not claim a live server while down"
 
-    occ.close()
-    deadline = time.time() + 5
-    while time.time() < deadline and not https_ping_ok(port):
-        time.sleep(0.1)
-    assert https_ping_ok(port), "watchdog did not recover the listener after the port freed"
-    assert cs._TLS_SERVER is not None, "recovered server not tracked"
-    assert DummyHandler.tls_info is not None and DummyHandler.tls_info["port"] == port, \
-        "a late listener must be re-advertised (tls_info republished)"
+        occ.close()
+        deadline = time.time() + 5
+        while time.time() < deadline and not https_ping_ok(port):
+            time.sleep(0.1)
+        assert https_ping_ok(port), "watchdog did not recover the listener after the port freed"
+        assert cs._TLS_SERVER is not None, "recovered server not tracked"
+        assert DummyHandler.tls_info is not None and DummyHandler.tls_info["port"] == port, \
+            "a late listener must be re-advertised (tls_info republished)"
+    finally:
+        stop_watch(th)
     reset_tls_globals()
     print("ok watchdog-recovers-late")
 
 
 def test_watchdog_restarts_dead_thread():
+    reset_tls_globals()
     port = free_port()
     cs.CONFIG_TLS = {"enabled": True, "port": port}
-    reset_tls_globals()
     cs._TLS_BIND_ATTEMPTS = 4
     cs._TLS_BIND_BACKOFF_S = 0.1
     cs._TLS_WATCH_INTERVAL_S = 0.2
@@ -180,20 +207,22 @@ def test_watchdog_restarts_dead_thread():
     assert serve is not None and https_ping_ok(port), "initial listener should be up"
     old = cs._TLS_SERVER
 
-    threading.Thread(target=cs._tls_supervisor, args=(HOST, DummyHandler, True),
-                     daemon=True).start()
-    # Simulate the serve thread dying: serve_forever returns, the daemon thread
-    # ends, but the socket stays bound until the watchdog's server_close.
-    old.shutdown()
+    th = start_watch()
+    try:
+        # Simulate the serve thread dying: serve_forever returns, the daemon thread
+        # ends, but the socket stays bound until the watchdog's server_close.
+        old.shutdown()
 
-    deadline = time.time() + 6
-    ok = False
-    while time.time() < deadline:
-        if cs._TLS_SERVER is not None and cs._TLS_SERVER is not old and https_ping_ok(port):
-            ok = True
-            break
-        time.sleep(0.1)
-    assert ok, "watchdog did not restart a dead listener on the same port"
+        deadline = time.time() + 6
+        ok = False
+        while time.time() < deadline:
+            if cs._TLS_SERVER is not None and cs._TLS_SERVER is not old and https_ping_ok(port):
+                ok = True
+                break
+            time.sleep(0.1)
+        assert ok, "watchdog did not restart a dead listener on the same port"
+    finally:
+        stop_watch(th)
     reset_tls_globals()
     print("ok watchdog-restarts-dead-thread")
 
