@@ -351,6 +351,16 @@ too_old 1.1.0 1.0.0; check "new helper installed but a stale 1.0.0 landing THIS 
 too_old absent 1.0.0; check "no installed helper, a 1.0.0 landing THIS run -> refuse" 0 "$RC"
 
 echo
+echo "(g2) a helper UPGRADE must restart the socket-activated service (KI-075)"
+# HARDWARE-FOUND 2026-09-06: install.sh replaced the helper .py but never
+# restarted the running process (Accept=no, one long-lived process), so a 1.0.0
+# -> 1.1.0 upgrade kept answering the OLD verbs until reboot. The (g2) block
+# must restart/try-restart couchside-helper.service AFTER installing the helper,
+# else the decky.loader verb (and every future verb) reads as helper_outdated
+# forever. Textual, like test_readme_sudo_grants — fails toward a false alarm.
+g2="$(awk '/couchside-helper\.service$/{svc=1} svc' "$SH" | grep -n 'systemctl .*couchside-helper\.service' | grep -E 'restart|try-restart')"
+check "install.sh restarts couchside-helper.service on upgrade" 1 "$(printf '%s\n' "$g2" | grep -c 'restart couchside-helper.service')"
+
 if [ "$fails" -ne 0 ]; then
     echo "FAILED: $fails check(s)"
     exit 1

@@ -1760,6 +1760,19 @@ if [ -f "$WORK_DIR/couchside-helper.py" ] && \
         /etc/systemd/system/couchside-helper.service
     sudo systemctl daemon-reload
     sudo systemctl enable --now couchside-helper.socket >/dev/null 2>&1 || true
+    # Load the NEW helper code. The helper is socket-activated with Accept=no —
+    # ONE long-lived process, Restart=always — so replacing the .py above does
+    # NOT change the running process: it keeps executing the OLD version from
+    # memory until it restarts. `enable --now` on the SOCKET does not restart an
+    # already-running SERVICE. Without this, a helper UPGRADE (e.g. 1.0.0 -> the
+    # decky.loader verb in 1.1.0) never takes effect until reboot, and the agent
+    # correctly reports `helper: outdated` forever. HARDWARE-CONFIRMED on the
+    # SteamOS Steam Machine 2026-09-06: file 1.1.0, live process still 1.0.0
+    # answering "unknown verb". try-restart reloads it when running; when idle
+    # (socket-activated, not yet connected) it is a no-op and the next
+    # connection starts fresh from the new file — either way the next call runs
+    # the new code.
+    sudo systemctl try-restart couchside-helper.service >/dev/null 2>&1 || true
 else
     # A quick update fetched only the agent binary: no helper files, no change.
     # The agent's sudo fallback keeps working exactly as before.
