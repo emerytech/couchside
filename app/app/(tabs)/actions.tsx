@@ -65,10 +65,13 @@ const BADGE_TEXT: Record<Danger, string> = {
 };
 
 /** The Actions tab's movable SECTIONS for hold-to-edit reorder/hide (same store
- *  as the Console). 'boot' is the Boot Session card; the other three are the
- *  impact groups keyed by the UI's word (low → 'routine'). The Utilities surface
- *  is deliberately absent — it stays pinned, never reordered or hidden. */
-const SECTION_ORDER = ['boot', 'routine', 'medium', 'high'] as const;
+ *  as the Console). 'decky' is the Decky Loader entry card; 'boot' is the Boot
+ *  Session card; the other three are the impact groups keyed by the UI's word
+ *  (low → 'routine'). The Utilities surface is deliberately absent — it stays
+ *  pinned, never reordered or hidden. 'decky' is a probe-and-appear card: it
+ *  renders null when the box has no Decky, and EditableSection then reports it
+ *  absent (height ~0) so it shows no orphan reorder/hide controls. */
+const SECTION_ORDER = ['decky', 'boot', 'routine', 'medium', 'high'] as const;
 
 /** Seconds a session-ending action waits, cancellable, before it actually fires.
  *  This REPLACES the old blind second "Are you sure?" dialog: one confirm, then a
@@ -296,6 +299,10 @@ function ActionsScreen() {
     </TourAnchor>
   );
   const sectionNodes: Record<string, React.ReactNode> = {
+    // Movable/hideable like the rest (owner ask): the card itself self-hides on
+    // a box with no Decky, and EditableSection measures that null render as
+    // absent — so it never shows an orphan reorder/hide strip.
+    decky: configured ? <DeckyActionCard /> : null,
     boot: configured ? <BootSessionCard /> : null,
     routine: groupById.routine ? renderGroup(groupById.routine) : null,
     medium: groupById.medium ? renderGroup(groupById.medium) : null,
@@ -376,12 +383,6 @@ function ActionsScreen() {
             unasked. Self-hides on boxes without the utilities endpoint too.
             PINNED above the movable sections — an advanced flashing tool is not
             something to reorder or hide by accident. */}
-        {/* Decky Loader entry point (owner's placement, 2026-09-06): a compact
-            tappable card that OPENS the manager (/decky). NOT pref-gated — like
-            the Setup card, the box-side opt-in is the consent — and self-hides
-            on a box with no loader / opt-in / installer (probe-and-appear).
-            Pinned above the movable sections, next to Utilities. */}
-        {configured && <DeckyActionCard />}
         {configured && utilitiesEnabled && <UtilitiesSection context="actions" />}
         {/* Movable sections — the Boot Session card and the three impact groups —
             with hold-to-edit reorder + hide (Customize in the header, Done bar

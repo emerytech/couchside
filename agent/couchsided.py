@@ -13048,6 +13048,7 @@ def _decky_job_install(rec):
     ws = None
     request_id = None
     sent = False
+    confirm_sent = False
     try:
         ws = _DeckyWS(tok, _DECKY_WS_SESSION_S)
         _decky_job_set(rec, phase="request")
@@ -13061,29 +13062,39 @@ def _decky_job_install(rec):
         args = ws.wait_event("loader/add_plugin_install_prompt", match)
         request_id = args[2]
         _decky_job_set(rec, phase="confirm", request_id=request_id)
+        # The confirm FRAME is written at the start of ws.call, so from here on
+        # Decky has (very likely) received the confirm even if its REPLY never
+        # comes back — hence confirm_sent BEFORE the call.
+        confirm_sent = True
         ws.call("utilities/confirm_plugin_install", request_id)
         _decky_job_log(rec, "confirmed; Decky is downloading and extracting")
         ws.close()
         ws = None
     except socket.timeout:
-        # Budget exhausted with the socket still OPEN — before the prompt, or
-        # after the prompt with the confirm reply never arriving. Spec §10:
-        # that is `retry`, not `failed` and not `unknown`; `unknown` + read-back
-        # is reserved for a CLOSE (the branches below), where Decky may already
-        # be extracting. Cancel the pending prompt when we learned its
-        # request_id (a fresh <=1 s session; best-effort), so a later retry does
-        # not stack a second prompt on the TV. Before 2026-09-06 this branch
-        # only took the retry path when request_id was None, which made the
-        # cancel unreachable and turned a silent confirm into a 120 s read-back
-        # ending in a bare `failed` — measured by tests/test_decky_plugins.py.
+        # Budget exhausted with the socket still OPEN. TWO cases, distinguished
+        # by whether the confirm was sent (HARDWARE-CONFIRMED 2026-09-07: on a
+        # real box with Steam open, the frontend reconnects and displaces our
+        # socket mid-op, so the confirm's REPLY is routinely lost even though
+        # Decky received the confirm and installs the plugin — the phone then
+        # falsely showed "nothing was installed yet, retry" next to the freshly
+        # installed plugin, KI-074).
         if ws:
             ws.close()
             ws = None
-        if request_id:
-            _decky_cancel_install(request_id)
-        _decky_job_fail_install(rec, "Decky did not answer in time — try again",
-                                retry=True)
-        return
+        if confirm_sent:
+            # Decky has the confirm and is very likely extracting: the disk
+            # read-back is the truth, NOT a retry. Never claim "nothing
+            # installed" — fall through to the read-back (unknown → done).
+            _decky_job_log(rec, "confirm sent but reply lost; reading back from disk")
+            _decky_job_set(rec, phase="readback", outcome="unknown")
+        else:
+            # Timed out BEFORE the prompt/confirm — nothing was asked of Decky
+            # to install, so retry is safe (and cancel any pending prompt).
+            if request_id:
+                _decky_cancel_install(request_id)
+            _decky_job_fail_install(rec, "Decky did not answer in time — try again",
+                                    retry=True)
+            return
     except _DeckyWSClosed:
         if ws:
             ws.close()
