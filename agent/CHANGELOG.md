@@ -18,6 +18,19 @@ the same thing regardless of what actually changed.
 Write for the person holding the phone, not for the commit log. They are
 deciding whether to press "Update now" on a machine across the room.
 
+## 2.9.105
+
+**Install Decky Loader and manage its plugins from your phone.** A new Decky
+Loader row in Setup › Utilities (and a Decky card in Setup › Account) can
+install, repair, update or remove Decky Loader on the box, and a new Decky
+screen lists your installed plugins, updates or removes them one at a time, and
+installs new ones from the official Decky store. It stays off until you run
+`couchside allow-decky on` on the box once — that step lets the app control a
+root-level service, so the command spells out exactly what it enables before it
+does anything. Repair installs the latest **stable** loader and restarts every
+plugin; Decky's own in-app updater is not used. A box without Decky Loader is
+unchanged, and a box that has not opted in only gains a hint on how to.
+
 ## 2.9.104
 
 **Switch your TV to the box, over HDMI-CEC.** On a box with real CEC (a Steam

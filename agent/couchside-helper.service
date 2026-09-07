@@ -3,8 +3,10 @@
 ; installs the result as /etc/systemd/system/couchside-helper.service.
 ;
 ; This is the ONLY root process in the product. Its entire surface is the
-; eight-verb table in couchside-helper.py — read that file's header before
-; touching this one. The agent stays User=__USER__; see
+; nine-verb table in couchside-helper.py — read that file's header before
+; touching this one. (ProtectHome=yes below is WHY the decky.loader verb starts
+; a separate oneshot unit instead of running the wrapper as our child: a child
+; of this service cannot see ~/homebrew.) The agent stays User=__USER__; see
 ; docs/memory/project_privileged-helper.md §6 for why running the agent as
 ; root was rejected.
 [Unit]

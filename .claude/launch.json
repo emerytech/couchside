@@ -15,6 +15,13 @@
       "runtimeArgs": ["scripts/web-dev.sh", "8199"],
       "port": 8199,
       "autoPort": false
+    },
+    {
+      "name": "couchside-web-harness-decky",
+      "runtimeExecutable": "bash",
+      "runtimeArgs": ["scripts/web-dev.sh", "8199", "--mock-decky", "not_installed"],
+      "port": 8199,
+      "autoPort": false
     }
   ]
 }

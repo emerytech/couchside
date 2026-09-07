@@ -378,6 +378,14 @@ both app stores with the branch red for six commits.
   cannot forge a release (`scripts/release-agent.sh:11-12`, `scripts/sign-release.sh:8-10`).
 - `release-agent.sh` clobbers assets on an existing tag, so re-run it after every agent bump that
   ships under the same app-version tag.
+- **Helper `VERSION` bumps require `scripts/release-agent.sh <tag>` to publish the new helper
+  BEFORE the `install.sh` change that depends on it merges.** `install.sh` fetches helper assets
+  `|| true` and drops them when `SHA256SUMS` lacks them, while its heredocs always land — so an
+  install.sh that assumes a newer helper, published before that helper, produces boxes with the
+  new wrapper and the old helper. The Decky manager (helper 1.1.0) guards this both ways
+  (`_decky_helper_verb() == "outdated"` in the agent; install.sh (f1c) refuses to install the
+  wrapper when the installed helper is < 1.1.0 and prints "re-run the installer once the release
+  assets are published"), but the guard is a safety net, not the process: publish the helper first.
 
 ### Cloud builds cost money — use them only where they are required
 
@@ -673,3 +681,69 @@ caught before it shipped:
 - **Strip physical order:** `lib/ledStrip.ts` groups `prefix[N]`; `StripLightCard.displayLeds()`
   REVERSES `valve-leds` (its index runs opposite the physical bar). Cells, paints, and saved
   patterns all use physical (display) order.
+
+## Root work from the phone: the Decky-manager patterns (agent 2.9.105 / helper 1.1.0)
+
+Established by `docs/memory/project_decky-manager.md` (adversarially reviewed, 2026-09-06). Any
+future feature that needs minutes-long root work on the box triggered from the phone copies
+these four shapes exactly; do not invent a fifth.
+
+- **Root wrapper via a pinned oneshot template unit.** The only new root logic is ONE bash
+  heredoc in `install.sh` (`/etc/couchside/couchside-decky-loader install|uninstall`, `0755 root`,
+  baked with `sed` only after the installer REFUSED a `$HOME`/`$USER` outside
+  `^[A-Za-z0-9/._-]+$`). It is reachable only through `couchside-decky-loader@<mode>.service`
+  (`Type=oneshot`, `ConditionPathExists=<marker>`, `TimeoutStartSec=900`), started with
+  `systemctl start --no-block` — by the helper verb `decky.loader` (validator `_one_of(("install",
+  "uninstall"))`, the argv element is the dict VALUE) or by the sudoers grant on that EXACT
+  `systemctl` argv. The wrapper itself carries **no** grant, so no path can run it with other
+  arguments; it runs under PID 1, never in the agent's or the helper's cgroup (an agent restart
+  mid-run cannot kill it; the helper's `ProtectHome=yes`/`Accept=no` sandbox is irrelevant to it).
+  Root never follows a path under the user's home: symlinked components abort (exit 6), user-tree
+  dirs are created AS THE USER via `runuser`, nothing under `$HOME` is ever `chown`ed to the user.
+- **flock running flag + result file + request correlation.** The wrapper takes
+  `/run/couchside/decky-loader.lock` (`flock -w 15`), writes the transcript to `.log` and an
+  atomic JSON verdict to `.result` (`{mode, ok, tag, at}` + `refused`/`failed`/`done`). The agent
+  probes the lock with `LOCK_SH|LOCK_NB` (held = running; absent = idle; released at once), and
+  reports `op` ONLY against the request it made: `starting` until a result with
+  `at >= floor(requested_at) - 1` exists or the lock appears; after 20 s `systemctl show`'s
+  `ConditionResult`/`ExecMainStatus` decide `did_not_start`/`needs_optin`/`busy`; lock-free +
+  `running` = `interrupted`; a result older than the request is NEVER shown as its outcome
+  (the stale-result control in the tests). `started` is never trusted from `systemctl start`'s
+  exit code — `_decky_confirm_started` waits for the lock or `activating`. One `_decky_busy()`
+  mutex covers the flock, the plugin-job slot and an in-flight check, in both directions.
+- **Marker-file opt-in read by helper, unit AND wrapper.** `couchside allow-decky on|off|status`
+  (never reuse `allow-system-updates`, whose README promise is "cannot install new software")
+  prints the material fact first, confirms through a stub-able `confirm_tty()` on `/dev/tty`
+  (no tty → exit 1, nothing written), then writes `zz-couchside-decky` (0440) + the marker
+  `/etc/couchside/allow-decky` (0644). Three independent readers of the same file fail closed
+  without it: the helper verb (`ok:false`), the unit (`ConditionPathExists=`), the wrapper (`refused`,
+  exit 77). Route gating is stated per route: anything that opens the Decky WebSocket or leaves
+  the LAN on demand needs the marker (403 `needs_optin`, no spawn, no socket); filesystem/cache
+  reads are token-only. The interactive installer OFFERS the opt-in once (skipped when the marker
+  or the declined stamp exists, and when there is no openable tty — a detached app-driven update
+  must never "decline" for the owner); no env var or flag enables it non-interactively.
+- **`--mock-<feature> <state>` argparse flag + `set_<feature>_mock(state)`.** Env-free mock state:
+  `--mock-decky <state>` (`choices=` enforced, default `running`) seeds a wall-clock state machine
+  that mock ops mutate, so one harness run walks every state and `--mock` exercises every new
+  route off-box. `scripts/web-dev.sh <port> [args…]` now forwards every argument after the port to
+  the agent, and `.claude/launch.json` carries one entry per seeded state worth pressing through
+  (`couchside-web-harness-decky`, port 8199, `--mock-decky not_installed`). A mock must mirror the
+  real precondition chain (403/409/503 shapes) — a mock that is more permissive than the real
+  route hides the exact refusal the app has to render.
+
+Two smaller rules the same work established:
+
+- **Box-side fetches whose result the box will TRUST go through a no-redirect opener**
+  (`_DeckyNoRedirect`: `redirect_request` returns `None`, any 3xx is a failure) with the
+  host+scheme pin checked on the URL actually fetched, a read cap of `cap+1`, in a background
+  thread — never inside a GET handler. The catalogue names the hash Decky will trust, so an
+  off-host or plaintext body must never become the catalogue. Data is normalised **by rejection**
+  (a bad entry is dropped, never repaired); the one field nulled instead of dropped is a
+  display-only optional (`image_url`), and its type is sniffed before it is ever advertised.
+- **App side:** `ApiError` carries the parsed JSON error `body` (additive) so refusal shapes
+  (`409 {busy, what}`, `409 {error:"loader_stopped", restart_action}`, `503 {error:"loader_down"}`)
+  are actionable, not just a message; presentation logic lives in an import-free module
+  (`app/lib/deckyPlugins.ts`, like `ledStrip.ts`) so `node --test` covers every copy branch;
+  a client timeout on a job-shaped POST is NEVER reported as failure — the poll is the truth; and
+  a screen's shared confirm helpers are exported from its card component (`DeckyCard.tsx`) rather
+  than a fourth file when the three surfaces must show the same Alert word for word.

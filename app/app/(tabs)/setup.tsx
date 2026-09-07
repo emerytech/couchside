@@ -22,6 +22,7 @@ import {
 import { AgentUpdateBanner } from '@/components/AgentUpdateBanner';
 import { AppUpdateRow } from '@/components/AppUpdateRow';
 import { SystemUpdatesCard } from '@/components/SystemUpdatesCard';
+import { DeckyCard } from '@/components/DeckyCard';
 import { Gated } from '@/components/Gated';
 import { LogsPanel } from '@/components/LogsPanel';
 import { QrView } from '@/components/QrView';
@@ -2226,6 +2227,10 @@ function SetupBody() {
                 agent check; then the box-software card. */}
             <AppUpdateRow />
             <SystemUpdatesCard />
+            {/* Decky Loader: install / manage from the phone. Probe-and-appear on
+                /api/decky/loader; not pref-gated — the box's `couchside
+                allow-decky on` is the consent (docs/memory/project_decky-manager.md). */}
+            <DeckyCard />
             <View style={styles.accountBadges}>
               <EarlyAdopterBadge />
               <EntitlementPill />

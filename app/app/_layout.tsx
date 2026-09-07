@@ -96,6 +96,11 @@ export default function RootLayout() {
                 "Not installed" row). A dedicated FlatList route because the library
                 is large — an inline grid can't virtualise it. */}
             <Stack.Screen name="installable" options={{ headerShown: false }} />
+            {/* Decky Loader + plugins manager (pushed from the Setup card, the
+                Utilities row's "Manage ›"). Its own route because the store list
+                is ~110 entries and virtualises; probe-and-appear — the push
+                only exists where /api/decky/loader answered. */}
+            <Stack.Screen name="decky" options={{ headerShown: false }} />
           </Stack>
           {/* Global overlay: survives the Paywall unmount on unlock (see UnlockToast). */}
           <UnlockToast />

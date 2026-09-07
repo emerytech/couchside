@@ -276,6 +276,213 @@ export type OpenpuckLatest = {
   error?: string;
 };
 
+// ---------- Decky manager (agent >= 2.9.105, docs/memory/project_decky-manager.md) ----------
+
+/**
+ * Loader state, in the agent's precedence order (spec §7). The union is OPEN
+ * (`| string`): a newer agent may add a state, and an unknown one must still
+ * render its raw name rather than crash a switch — the UtilitiesSection
+ * `present()` fallback has always done exactly that for unknown utilities.
+ */
+export type DeckyLoaderState =
+  | 'not_installed'
+  | 'installing'
+  | 'uninstalling'
+  /** Installed but `plugin_loader` is inactive — the KI-004 shape. Never auto-restarted. */
+  | 'installed_stopped'
+  /** Something listens on 1337 but not as root — the agent refuses to talk to it. */
+  | 'running_untrusted'
+  /** Active, root, but /auth/token is silent. Repair is the fix. */
+  | 'running_unreachable'
+  /** Loader fine, Steam not running — neutral copy, nothing to do. */
+  | 'running_no_steam'
+  /** Steam running, no .cef-enable-remote-debugging flag — Repair writes it. */
+  | 'installed_cef_flag_missing'
+  /** Flag newer than Steam's process start: Steam must restart to show the menu. */
+  | 'installed_steam_needs_restart'
+  | 'running'
+  | (string & {});
+
+/** One loader op (install/repair or uninstall) as correlated to THIS request by
+ *  the agent (spec §4.5): a result older than the request is never shown as its
+ *  outcome, so `starting` is what you see until a fresh result or the lock appears. */
+export type DeckyLoaderOp = {
+  state: 'starting' | 'running' | 'done' | 'failed' | 'refused' | 'interrupted' | 'did_not_start';
+  mode: 'install' | 'uninstall' | null;
+  ok: boolean | null;
+  /** The release tag the wrapper resolved (e.g. "v3.2.8"), once known. */
+  tag: string | null;
+  /** Unix seconds the result was written; null while starting/running. */
+  at: number | null;
+  detail?: string | null;
+};
+
+/** GET /api/decky/loader. 404 = no Steam root / non-Linux / old agent → the whole
+ *  Decky surface (card, screen, utilities row) hides. Every field is add-only. */
+export type DeckyLoader = {
+  state: DeckyLoaderState;
+  installed: boolean;
+  active: boolean;
+  api_reachable: boolean;
+  loader_is_root: boolean;
+  steam_running: boolean;
+  /** Steam's SharedJSContext tab answers on :8080 — the Decky menu is live on the TV. */
+  steam_ui_up: boolean;
+  cef_flag_present: boolean;
+  /** From services/.loader.version — "as recorded" by the installer, not the live binary. */
+  version: string | null;
+  /** Decky's own update channel from loader.json `branch`: 0 stable, 1 prerelease, 2 testing. */
+  channel: 0 | 1 | 2 | null;
+  /** The box opt-in marker (`couchside allow-decky on`) is present. */
+  allowed: boolean;
+  /** The root wrapper + oneshot unit template are installed (install.sh ran with them). */
+  installer_ready: boolean;
+  /** A privilege path exists: helper verb present, or the sudoers grant. */
+  elevated: boolean;
+  helper: 'present' | 'outdated' | 'absent' | 'unreachable';
+  installed_by: 'install.sh' | 'plugin' | 'unknown';
+  /** Whether the Couchside plugin folder exists under ~/homebrew/plugins. */
+  panel: 'installed' | 'missing';
+  /** Set when the loader stopped ITSELF (<60 s ago, Result=success) — a Steam crash loop. */
+  stopped_reason: 'self_stop_recent' | null;
+  loader_update: {
+    current: string | null;
+    remote: string | null;
+    updatable: boolean;
+    checked_at: number;
+  } | null;
+  op: DeckyLoaderOp | null;
+  /** The injected Actions-tab entry to start a stopped loader, when it exists. */
+  restart_action: 'restart-decky' | null;
+  /** Live unit byte-equal to the pinned copy; false = Decky's updater rewrote it. */
+  unit_pinned: boolean | null;
+};
+
+/** One installed plugin, listed from the filesystem (never a WS poll — spec §8). */
+export type DeckyPlugin = {
+  name: string;
+  folder: string;
+  version: string | null;
+  author: string;
+  /** plugin.json flags contains "root": the backend runs as root. */
+  root: boolean;
+  /** null when loader.json was unparsable this poll (`flags_available:false`). */
+  disabled: boolean | null;
+  hidden: boolean | null;
+  frozen: boolean | null;
+  /** null until the /proc fixture lands (KI-072); a bool only when `running_probe === "proc"`. */
+  running: boolean | null;
+  /** The Couchside panel — read-only in the app, 409 on every op. */
+  protected: boolean;
+  /** Store has a strictly newer semver; null when unknown or the store cache is cold. */
+  update: { version: string; hash: string } | null;
+};
+
+export type DeckyPluginsList = {
+  /** false when the loader is not installed (a 200, like /api/session/default). */
+  available: boolean;
+  source: 'fs';
+  flags_available: boolean;
+  running_probe: 'proc' | 'unknown';
+  plugins: DeckyPlugin[];
+  updates: number | null;
+  store_checked_at: number | null;
+  unreadable: number;
+  job: DeckyJob | null;
+};
+
+/** How the agent classifies a store install against what is on disk (spec §10):
+ *  Decky's own INSTALL(0)/REINSTALL(1)/UPDATE(2)/DOWNGRADE(3), presented honestly. */
+export type DeckyInstallType = 'install' | 'update' | 'reinstall' | 'downgrade';
+
+export type DeckyStoreEntry = {
+  id: number;
+  name: string;
+  author: string;
+  description: string;
+  tags: string[];
+  downloads: number;
+  updated: string;
+  /** Icon is cached/proxied on the box; the app never contacts the CDN. */
+  has_icon: boolean;
+  installed_version: string | null;
+  update_available: boolean;
+  install_type: DeckyInstallType | null;
+  /** versions[0] is what an install uses; its hash is what Decky sha256-checks. */
+  versions: { name: string; hash: string; created: string }[];
+  /**
+   * Not in the upstream store schema (plugin.json flags live inside the zip), so
+   * an agent cannot know it before install. Declared optional so a future agent
+   * that learns it (e.g. from an installed copy) lights the root warning.
+   */
+  root?: boolean;
+};
+
+export type DeckyStore = {
+  available: boolean;
+  /** A background fetch is running on the box — re-poll, never fetch on demand. */
+  fetching: boolean;
+  count?: number;
+  fetched_at?: number | null;
+  /** The last fetch failed; this is the previous copy. */
+  stale?: boolean;
+  plugins?: DeckyStoreEntry[];
+};
+
+/**
+ * Extra fields on POST /api/utilities/decky/run's ActionResult. `started:true`
+ * is confirmed by the agent (lock held or unit activating), never inferred from
+ * `systemctl start`'s exit code — a condition-skipped unit also exits 0. Every
+ * `ok:false` reason is a flag the UI maps to copy; `error` is the human string
+ * an OLD app (no `?op=`) shows verbatim.
+ */
+export type DeckyRunResult = {
+  started?: boolean;
+  via?: 'helper' | 'sudo';
+  log?: string;
+  needs_installer?: boolean;
+  needs_optin?: boolean;
+  helper_outdated?: boolean;
+  helper_unreachable?: boolean;
+  retry?: boolean;
+  busy?: boolean;
+  what?: 'loader_op' | 'plugin_job' | string;
+  did_not_start?: boolean;
+  detail?: string;
+  error?: string;
+};
+
+// No 'retry' outcome: the agent signals a retriable soft-failure as
+// outcome:'failed' with the `retry` flag set (see DeckyJob.retry).
+export type DeckyJobOutcome = 'done' | 'failed' | 'unknown' | 'interrupted';
+
+/** GET /api/decky/jobs — read from the disk record, so an agent restart never
+ *  turns a running job into null. */
+export type DeckyJob = {
+  kind: 'install' | 'update' | 'uninstall' | 'reload';
+  name: string;
+  version: string | null;
+  store_id: number | null;
+  phase: string;
+  started_at: number;
+  done: boolean;
+  ok: boolean | null;
+  outcome: DeckyJobOutcome | null;
+  error: string | null;
+  /** Always false by design: the agent never restarts the loader inside a job. */
+  restarted_loader: boolean;
+  log: string[];
+  /** A failed UPDATE whose old copy Decky already removed: offer one-tap Reinstall. */
+  reinstall_id?: number | null;
+  /** Uninstall: folder gone; reload: null (queued). */
+  verified?: boolean | null;
+  steam_ui_up?: boolean;
+  /** A soft failure the phone should offer to retry — a prompt timeout (the
+   *  confirm may be on the TV) or a socket that never reached Decky. The agent
+   *  signals it as `outcome:'failed', retry:true`, NOT a distinct outcome. */
+  retry?: boolean;
+};
+
 /** One owned-but-uninstalled entry from GET /api/steam/installable. name/type are
  *  present when the agent (>= 2.9.76) parsed them offline from appinfo.vdf; type
  *  is lowercased ('game' | 'dlc' | 'tool' | …) and drives the app's game filter. */
@@ -1274,12 +1481,24 @@ export class ApiError extends Error {
    * without also swallowing transient 5xx. See probeOrNull().
    */
   status?: number;
+  /**
+   * The parsed JSON error body, when the agent sent one (kind === 'http').
+   * Added for the Decky routes (agent >= 2.9.105), whose refusals carry MORE
+   * than `error`: a 409 says `{busy:true, what:"loader_op"|"plugin_job"}` or
+   * `{error:"loader_stopped", restart_action, repair, stopped_reason}`, a 503
+   * says `{error:"loader_down", repair:true}`. The message string keeps only
+   * `error`, so without this the UI could not offer the named restart action
+   * or tell "busy with a loader op" from "busy with a plugin job". Untyped on
+   * purpose — every reader narrows it (see lib/deckyPlugins.ts apiErrorHint).
+   */
+  body?: unknown;
 
-  constructor(kind: ApiErrorKind, message: string, status?: number) {
+  constructor(kind: ApiErrorKind, message: string, status?: number, body?: unknown) {
     super(message);
     this.name = 'ApiError';
     this.kind = kind;
     this.status = status;
+    this.body = body;
   }
 }
 
@@ -1794,13 +2013,17 @@ async function request<T>(
   }
   if (!res.ok) {
     let detail = `HTTP ${res.status}`;
+    let errBody: unknown;
     try {
       const body = (await res.json()) as { error?: string };
       if (body && typeof body.error === 'string') detail = `${detail}: ${body.error}`;
+      // Keep the whole object: some refusals (Decky 409/503) carry fields the
+      // UI acts on beyond `error`. Only a parsed JSON OBJECT is kept.
+      if (body && typeof body === 'object') errBody = body;
     } catch {
       // non-JSON body; keep the status line
     }
-    throw new ApiError('http', detail, res.status);
+    throw new ApiError('http', detail, res.status, errBody);
   }
 
   try {
@@ -1863,6 +2086,16 @@ export function pairStart(ip: string, port: number): Promise<PairStartResult> {
 export function pairFinish(ip: string, port: number, pin: string): Promise<PairFinishResult> {
   return unauthPost<PairFinishResult>(ip, port, '/api/pair/finish', { pin }, 8000);
 }
+
+/**
+ * Plugin-op routes, keyed by the op LITERAL. The app-side mirror of the agent's
+ * `_DECKY_PLUGIN_OPS` dict (CLAUDE.md §3 rule 1): a caller can only ever pick
+ * one of two fixed paths — nothing is interpolated into the URL.
+ */
+const DECKY_PLUGIN_OP_PATH = {
+  uninstall: '/api/decky/plugins/uninstall',
+  reload: '/api/decky/plugins/reload',
+} as const;
 
 export const api = {
   /** Stream a local file to the box's drop dir (POST /api/upload, agent >= 2.9.54). */
@@ -1961,14 +2194,154 @@ export const api = {
     settings: ConnSettings,
     id: string,
     variant?: 'pinned' | 'latest',
-  ): Promise<ActionResult> {
+    opts?: {
+      /**
+       * Decky tenant only (agent >= 2.9.105): which loader op to start. An enum the
+       * agent checks against its frozen `_DECKY_LOADER_OPS`; the unit it starts is
+       * looked up from that value, never built from it. Omitted for every other
+       * tenant — agents that ignore the query are unaffected.
+       */
+      op?: 'install' | 'uninstall';
+    },
+  ): Promise<ActionResult & DeckyRunResult> {
     // `variant` is an allowlisted enum the agent validates (pinned | latest); it is
     // sent only for openpuck's opt-in "flash newer" and defaults to pinned server-
     // side when omitted, so old agents (which ignore the query) keep working.
-    const q = variant ? `?variant=${encodeURIComponent(variant)}` : '';
-    return request<ActionResult>(
+    const params: string[] = [];
+    if (variant) params.push(`variant=${encodeURIComponent(variant)}`);
+    if (opts?.op) params.push(`op=${encodeURIComponent(opts.op)}`);
+    const q = params.length ? `?${params.join('&')}` : '';
+    return request<ActionResult & DeckyRunResult>(
       settings, `/api/utilities/${encodeURIComponent(id)}/run${q}`,
       { method: 'POST', timeoutMs: 60000 });
+  },
+
+  /**
+   * Decky Loader state (agent >= 2.9.105). THE probe for the whole Decky
+   * surface: null on 404 (no Steam root, non-Linux, or older agent) hides the
+   * Setup card, the Utilities row and the /decky screen. Memoised box-side
+   * (<500 ms) so the 2 s poll during a loader op is cheap.
+   */
+  deckyLoader(settings: ConnSettings): Promise<DeckyLoader | null> {
+    return probeOrNull(request<DeckyLoader>(settings, '/api/decky/loader'));
+  },
+
+  /** Tail of the loader install/uninstall transcript (constant box-side path).
+   *  `n` is clamped 1..400 by the agent. [] on older agents / no run yet. */
+  deckyLoaderLog(settings: ConnSettings, n = 80): Promise<string[]> {
+    const lines = Math.max(1, Math.min(400, Math.floor(n)));
+    return request<{ lines: string[] }>(settings, `/api/decky/loader/log?n=${lines}`)
+      .then((r) => (Array.isArray(r?.lines) ? r.lines : []))
+      .catch(() => []);
+  },
+
+  /**
+   * Ask the box for Decky's own version info (one bounded WS call, cached 6 h
+   * box-side). Marker-gated: 403 without `couchside allow-decky on`, 409 while
+   * busy, 503 when the loader is down. Read-only — never updates anything;
+   * Repair is the one update path (spec §11).
+   */
+  deckyLoaderCheck(settings: ConnSettings): Promise<DeckyLoader['loader_update']> {
+    // The agent WRAPS it: POST /api/decky/loader/check answers
+    // `{ok, loader_update:{...}, cached}` (spec §6), not the bare block. Unwrap
+    // to loader_update so `.updatable`/`.remote`/`.current` are read from the
+    // right object — reading them on the envelope made them all undefined and
+    // the screen always said "up to date" even right after learning of an update.
+    return request<{ ok?: boolean; loader_update: DeckyLoader['loader_update']; cached?: boolean }>(
+      settings, '/api/decky/loader/check', { method: 'POST', timeoutMs: 8000 },
+    ).then((r) => (r ? r.loader_update ?? null : null));
+  },
+
+  /**
+   * Installed plugins, listed from the box's filesystem (agent >= 2.9.105,
+   * Phase B). Null on 404 — a Phase A agent lacks this route and the Setup
+   * card renders without its "N plugin updates" line, otherwise unchanged.
+   */
+  deckyPlugins(settings: ConnSettings): Promise<DeckyPluginsList | null> {
+    return probeOrNull(request<DeckyPluginsList>(settings, '/api/decky/plugins'));
+  },
+
+  /**
+   * The store catalogue as the BOX last fetched it (never fetched on demand —
+   * a cold cache answers `{available:false, fetching:true}` and the app re-polls).
+   * ~200 KB normalised list; search and sort happen on the phone
+   * (lib/deckyPlugins.ts), so no free text ever reaches the box.
+   */
+  deckyStore(settings: ConnSettings): Promise<DeckyStore | null> {
+    return probeOrNull(request<DeckyStore>(settings, '/api/decky/store', { timeoutMs: 8000 }));
+  },
+
+  /** Ask the box to re-fetch the store in the background (>= 60 s apart). Marker-gated. */
+  deckyStoreRefresh(
+    settings: ConnSettings,
+  ): Promise<{ refreshed: boolean; fetching: boolean; fetched_at: number | null }> {
+    return request<{ refreshed: boolean; fetching: boolean; fetched_at: number | null }>(
+      settings, '/api/decky/store/refresh', { method: 'POST' });
+  },
+
+  /**
+   * Image source for a store plugin's icon, proxied and cached by the BOX (the
+   * phone never contacts the Decky CDN — README's "never talks to anything
+   * except your service"). Same auth carriage as steamCoverSource: a TLS ticket
+   * on a secure box, else the token in both the header and the query because
+   * Android's <Image> drops source.headers (measured). `id` is the store id the
+   * agent looked up in its own cache; the path segment is digits-only there.
+   */
+  deckyIconUrl(settings: ConnSettings, id: number): ImageSource {
+    const host = resolveEffectiveHost(settings);
+    const path = `/api/decky/store/icon/${Math.trunc(id)}`;
+    if (settings.secure && settings.pinModulus && settings.tlsPort) {
+      ensureImageTicket(settings, host);
+      const t = getImageTicket(host, settings.port);
+      const base = `http://${host}:${settings.port}${path}`;
+      return { uri: t ? `${base}?ticket=${encodeURIComponent(t)}` : base };
+    }
+    const qs = `?token=${encodeURIComponent(settings.token)}`;
+    return {
+      uri: `${baseUrl({ host, port: settings.port })}${path}${qs}`,
+      headers: { Authorization: `Bearer ${settings.token}` },
+    };
+  },
+
+  /**
+   * Install / update / reinstall / downgrade a STORE plugin by its store id —
+   * the only thing the phone names. The agent resolves the entry in its own
+   * cache, builds the artifact URL, computes install_type and hands Decky the
+   * hash it will sha256-check. Returns the queued JOB (poll deckyJobs()): the
+   * reply comes back before Decky finishes, so a client timeout here is never
+   * a failure (the poll is the truth). 403 needs opt-in · 404 unknown id ·
+   * 409 busy/protected/loader_stopped · 422 no verifiable hash · 503 loader_down
+   * / store_unavailable — all readable via ApiError.body.
+   */
+  deckyInstall(
+    settings: ConnSettings,
+    id: number,
+  ): Promise<{ ok: boolean; job: DeckyJob | null; steam_ui_up?: boolean }> {
+    return request<{ ok: boolean; job: DeckyJob | null; steam_ui_up?: boolean }>(
+      settings, '/api/decky/plugins/install', { method: 'POST', body: { id }, timeoutMs: 8000 });
+  },
+
+  /**
+   * Uninstall or reload ONE installed plugin by its plugin.json name. The route
+   * is chosen from a frozen map by the op literal (never interpolated); the name
+   * must be a member of the agent's on-disk listing or it 404s with no socket
+   * opened. Both are JOBS like install (Decky's stop can take 6 s, longer than
+   * the 4 s request timeout — an inline reply would report a completed op as a
+   * failure, the hardware-observed OpenPuck shape).
+   */
+  deckyPluginOp(
+    settings: ConnSettings,
+    op: 'uninstall' | 'reload',
+    name: string,
+  ): Promise<{ ok: boolean; job: DeckyJob | null; steam_ui_up?: boolean }> {
+    const path = DECKY_PLUGIN_OP_PATH[op];
+    return request<{ ok: boolean; job: DeckyJob | null; steam_ui_up?: boolean }>(
+      settings, path, { method: 'POST', body: { name }, timeoutMs: 8000 });
+  },
+
+  /** The current/last plugin job from the box's disk record (null = none). */
+  deckyJobs(settings: ConnSettings): Promise<{ job: DeckyJob | null } | null> {
+    return probeOrNull(request<{ job: DeckyJob | null }>(settings, '/api/decky/jobs'));
   },
 
   /**

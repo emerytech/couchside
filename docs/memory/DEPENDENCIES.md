@@ -191,6 +191,28 @@ The heavy hitters, by role:
 queries), plus `winreg` for registry access. Its only non-stdlib-shaped import
 is `qr` — the sibling `agent/qr.py`, in-repo.
 
+### External runtime endpoints the agent talks to — Decky manager (agent 2.9.105+)
+
+Nothing is vendored: no Decky source, no store client, no zip handling ships in
+the repo. The agent is a *client* of four things that exist on or reach the box,
+all pinned to what was verified against **Decky Loader v3.2.8** (stable tag,
+published 2026-09-02) and **decky-installer v1.9.0** on 2026-09-06
+(`docs/memory/project_decky-manager.md`; evidence in the research capture).
+Every one of them is reached from the box, never from the phone (README promises
+the app "never talks to anything except your service").
+
+| Endpoint | Who | Used for | Bound / pin |
+|---|---|---|---|
+| `ws://127.0.0.1:1337/ws?auth=<token>` + `GET http://127.0.0.1:1337/auth/token` | Decky Loader v3.2.8, running as root on the box | the loader's own WebSocket RPC. Only these routes, a `frozenset` the client refuses to leave: `utilities/ping`, `loader/get_plugins`, `loader/reload_plugin`, `utilities/install_plugin`, `utilities/confirm_plugin_install`, `utilities/cancel_plugin_install`, `utilities/uninstall_plugin`, `updater/get_version_info`. Wire: `{"type":0,"route","args","id"}` → type 1/-1/2 reply, `{"type":3,"id"}` ack, type-5 events. **Not used, deliberately:** `updater/do_update` (unpins the unit, `chmod 777`s the binary, follows the box's prerelease branch), `execute_in_tab`/`get_tab_id` (hang without Steam) | token fetched only after `/proc/net/tcp` shows the listener is uid 0; own bounded RFC6455 client (1 MiB frame cap, one deadline per call, ≤64 events, 3 s per session, per-job watchdog 150/40/20 s). The loader holds ONE socket — a connect displaces Steam's frontend ~5 s (KI-068) |
+| `https://plugins.deckbrew.xyz/plugins` | the official Decky plugin store (decky-plugin-store, AGPL-3.0 server — we use the public JSON API only, no server code) | the plugin catalogue: ~200 KB JSON list of `{id, name, author, description, tags, downloads, created, updated, image_url, versions[{name, hash, created}]}` | fetched in a background thread, 8 s timeout, 4 MiB cap, **no redirects followed** (`_DeckyNoRedirect`), 900 s TTL, normalised by rejection, UA `couchside-agent/<VERSION>`. No API key, no ToS published; third-party clients (EmuDeck) already consume it the same way |
+| `https://cdn.tzatzikiweeb.moe/file/steam-deck-homebrew/versions/<sha256>.zip` and the store's `image_url` on the same host | the store's CDN (Backblaze B2 behind Cloudflare) | plugin zips — **downloaded by Decky Loader itself, never by the agent** (the agent only hands Decky the agent-built URL + the store hash, and Decky sha256-checks the bytes); plugin icons — proxied by the agent for the phone | icon fetch: host pinned to exactly `cdn.tzatzikiweeb.moe`, https only, no redirects, ≤1 MiB, image-sniffed (jpeg/png/webp/gif/avif), cached at `~/.cache/couchside/decky-icons/<int id>` |
+| `https://github.com/SteamDeckHomebrew/decky-loader/releases/download/<tag>/PluginLoader` (tag resolved via the `releases/latest` redirect hop, API fallback) | GitHub releases, GPL-2.0 project | the loader binary, ~27 MB PyInstaller executable — fetched by the **root wrapper** `/etc/couchside/couchside-decky-loader` (a heredoc in `install.sh`, not a release asset), never by the agent | `curl --proto '=https' --proto-redir '=https' --connect-timeout 20 --max-time 300 --retry 2`, unit `TimeoutStartSec=900`; ELF + ≥5 MB sanity check; **no upstream checksum or signature exists** (KI-070) — TLS + host pin only |
+
+The pinned Decky service file the wrapper writes is Decky's own
+`dist/plugin_loader-release.service` text with `${HOMEBREW_FOLDER}` substituted
+(identical at v3.2.8 and main); `unit_pinned` on `/api/decky/loader` reports
+whether the live unit still byte-matches it.
+
 ### Python version floor
 
 **Python 3.8+.** The binding constraint is a single walrus operator at

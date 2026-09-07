@@ -186,6 +186,28 @@ decky_installed() {
     [ -f "$DECKY_UNIT" ] || [ -e "$DECKY_LOADER" ]
 }
 
+# Decky Loader MANAGER (agent 2.9.105+, project_decky-manager.md §4): the
+# phone can install / repair / uninstall Decky Loader itself, but ONLY through
+# this fixed, root-owned wrapper, started as a pinned systemd oneshot template
+# instance (couchside-decky-loader@install|uninstall). Installed ALWAYS in
+# section (f1c) and inert on its own, exactly like the update wrappers above;
+# nothing runs until the owner writes the opt-in marker with
+# `couchside allow-decky on`, which is also what the unit's
+# ConditionPathExists= and the wrapper's own first check look for. The helper
+# (agent/couchside-helper.py, verb decky.loader) hardcodes DECKY_WRAP and
+# DECKY_MARKER — keep them in step.
+DECKY_WRAP="${ETC_DIR}/couchside-decky-loader"
+DECKY_UNIT_TMPL="/etc/systemd/system/couchside-decky-loader@.service"
+DECKY_MARKER="${ETC_DIR}/allow-decky"
+# Written when the owner answers "n" to the one-time install-time offer, so a
+# re-run (or the app-driven update) never nags. `allow-decky on` removes it.
+DECKY_DECLINED="${ETC_DIR}/decky-optin-declined"
+# Opt-in grant: two EXACT systemctl argvs starting the two unit instances.
+# The wrapper itself gets no grant, so the grant cannot run it with other
+# arguments. Separate file, like zz-couchside-updates, so it is one file to
+# add/remove and the always-on core grants are never touched.
+DECKY_SUDOERS_FILE="/etc/sudoers.d/zz-couchside-decky"
+
 # Pairing-QR launcher: a script that opens http://localhost:PORT/pair full-screen
 # on the box's own display, plus a .desktop entry to add it to Steam (Game Mode).
 PAIR_SCRIPT="${INSTALL_DIR}/couchside-pair"
@@ -470,6 +492,20 @@ if [ "$UNINSTALL" -eq 1 ]; then
     sudo rm -f /etc/systemd/system/couchside-helper.socket \
                /etc/systemd/system/couchside-helper.service \
                /usr/local/libexec/couchside-helper.py
+    # The Decky Loader MANAGER pieces (agent 2.9.105+): stop a run in flight
+    # (its EXIT trap rolls the box back to the previous loader), then drop the
+    # wrapper, the unit template, the opt-in marker + declined stamp + grant,
+    # the run-state files and the user-side caches. Decky Loader ITSELF — the
+    # unit, ~/homebrew, its plugins — is the user's and is deliberately left
+    # alone: uninstalling Couchside must never uninstall their Decky.
+    sudo systemctl stop couchside-decky-loader@install.service \
+                        couchside-decky-loader@uninstall.service 2>/dev/null || true
+    sudo rm -f "$DECKY_WRAP" "$DECKY_UNIT_TMPL" "$DECKY_MARKER" "$DECKY_DECLINED" \
+               "$DECKY_SUDOERS_FILE" \
+               /run/couchside/decky-loader.lock /run/couchside/decky-loader.log \
+               /run/couchside/decky-loader.result
+    rm -rf "${HOME}/.cache/couchside/decky-icons" "${HOME}/.cache/couchside/decky-job.json"
+    note "removed the Decky Loader manager (wrapper, unit template, opt-in); Decky Loader itself is untouched"
     sudo rm -rf /run/couchside
     # The block above runs after the earlier daemon-reload, so reload again or
     # systemd keeps ghost helper units until the next boot.
@@ -1306,6 +1342,253 @@ OSWRAP
 fi
 
 # ---------------------------------------------------------------------------
+# (f1c) Decky Loader manager: root wrapper + oneshot unit template
+#       (inert until the owner opts in with `couchside allow-decky on`)
+# ---------------------------------------------------------------------------
+# Installed ALWAYS, even with --no-sudoers, like the two wrappers above: the
+# wrapper is a script that refuses to do anything until /etc/couchside/
+# allow-decky exists, and the unit template carries the same path as a
+# ConditionPathExists=. Two gates, two callers (the helper's decky.loader verb
+# and the opt-in sudoers grant) that both start the SAME unit, one procedure.
+#
+# Why the target user and home are BAKED IN rather than read at run time:
+# upstream's installer resolves the user from $SUDO_USER and falls back to
+# `/homebrew` when it is unset (decky-installer cli/install_release.sh :29-36,
+# read 2026-09-06) — under a systemd unit there IS no SUDO_USER, and a root
+# script that trusts its environment for a path under a home directory is a
+# root script the desktop user can steer. Baking means the only run-time input
+# is the mode word, validated to exactly install|uninstall.
+#
+# Why the bake REFUSES odd characters instead of escaping them: the bake is a
+# `sed` substitution, and `&`, `|` and `\` each mean something to sed — a home
+# containing one would silently corrupt every substituted line of the wrapper
+# (the unit body is substituted by Python str.replace, which has no such trap,
+# but the wrapper's own U=/H= lines go through sed). Reject, never sanitise
+# (CLAUDE.md §3.6): a box whose home path is exotic simply does not get the
+# feature, and the app reports the installer as not ready.
+decky_bake_safe() {
+    case "${1:-}" in
+        ''|*[!A-Za-z0-9/._-]*) return 1 ;;
+    esac
+    return 0
+}
+# Where install.sh (g2) puts the helper, first choice first. A box that took
+# the SteamOS fallback has it under /var/lib.
+DECKY_HELPER_CANDIDATES="/usr/local/libexec/couchside-helper.py /var/lib/couchside/libexec/couchside-helper.py"
+DECKY_OLD_HELPER=""
+decky_helper_too_old() {
+    # True (0) when the helper this box will END UP WITH predates the
+    # decky.loader verb (< 1.1.0). Reachable for real: the helper assets are
+    # fetched `|| true` and dropped when SHA256SUMS lacks them, while this
+    # heredoc always lands — so without this check a release cut before
+    # release-agent.sh published 1.1.0 would leave a wrapper the helper can
+    # never start (the agent shows "helper outdated" forever). Refusing here
+    # keeps the two in step: no wrapper -> the app says "re-run the installer"
+    # once the assets exist. An unreadable VERSION counts as old (degrade
+    # closed).
+    #
+    # The helper that LANDED THIS RUN is judged by ITS OWN VERSION line, not by
+    # its mere presence: AGENT_BASE is releases/latest, so in the window
+    # between this install.sh merging and release-agent.sh publishing 1.1.0
+    # the fetched helper is still 1.0.0 (and still in the signed SHA256SUMS).
+    # "Any helper landed -> not old" let exactly that case through (found in
+    # review 2026-09-06): new wrapper + helper 1.0.0 = the state this guard
+    # exists to prevent. Only a fetched helper >= 1.1.0 short-circuits.
+    local p v
+    _decky_helper_ver_ok() { python3 -c 'import sys
+v = tuple(int(x) for x in sys.argv[1].split("."))
+sys.exit(0 if v >= (1, 1, 0) else 1)' "${1:-0}" 2>/dev/null; }
+    if [ -f "$WORK_DIR/couchside-helper.py" ]; then
+        v="$(sed -n 's/^VERSION *= *"\([0-9][0-9.]*\)".*/\1/p' \
+             "$WORK_DIR/couchside-helper.py" 2>/dev/null | head -n 1)"
+        if _decky_helper_ver_ok "$v"; then return 1; fi
+        DECKY_OLD_HELPER="$WORK_DIR/couchside-helper.py (fetched this run, VERSION ${v:-unreadable})"
+        return 0
+    fi
+    for p in $DECKY_HELPER_CANDIDATES; do
+        sudo test -f "$p" 2>/dev/null || continue
+        v="$(sudo grep -m1 '^VERSION' "$p" 2>/dev/null \
+             | sed -n 's/^VERSION *= *"\([0-9][0-9.]*\)".*/\1/p' || true)"
+        if ! _decky_helper_ver_ok "$v"; then
+            DECKY_OLD_HELPER="$p (VERSION ${v:-unreadable})"
+            return 0
+        fi
+    done
+    return 1
+}
+if ! decky_bake_safe "$HOME" || ! decky_bake_safe "$USER_NAME"; then
+    note "SKIPPING the Decky Loader manager: your home path or user name contains a"
+    note "character outside [A-Za-z0-9/._-], which the root wrapper cannot bake safely."
+    note "(The app will report its installer as not ready; everything else works.)"
+elif decky_helper_too_old; then
+    note "SKIPPING the Decky Loader manager: the installed privileged helper"
+    note "$DECKY_OLD_HELPER predates it (needs 1.1.0) and this run fetched no newer"
+    note "helper — re-run the installer once the release assets are published."
+else
+    say "Installing the Decky Loader manager wrapper ($DECKY_WRAP)"
+    note "Inert until you run: couchside allow-decky on"
+    cat > "$WORK_DIR/couchside-decky-loader.tmpl" <<'DECKYWRAP'
+#!/usr/bin/env bash
+# couchside-decky-loader install|uninstall — FIXED procedure run as root by
+# couchside-decky-loader@.service. The mode is the only input, validated to
+# exactly install|uninstall and never forwarded. Target user/home are BAKED.
+# RULE: root never follows a path under the user's home. Every write under $H
+# is done AS THE USER (runuser) or into the root-owned services/ dir via
+# install(1) (which unlinks its destination first); nothing is chown'ed to $U.
+# The ownership/symlink check of ~/homebrew is minutes away from the writes
+# (the download sits between them), so the check alone is not the invariant:
+# pin_hb `cd -P`s INTO ~/homebrew and re-checks the directory it is actually
+# inside, and every later mv/mkdir/install/rm is RELATIVE to that cwd — a
+# rename+symlink of the path after the check (needs only write on $H) cannot
+# redirect a relative write, because the cwd is the inode, not the name. The
+# aside copy of services/ is staged in the root-only $TMP (never a predictable
+# name under the user tree that could be pre-created as a symlink or a decoy
+# directory to nest into / roll back from), and `mv -T` refuses to descend
+# into an existing destination. Residual, stated: ~/homebrew must stay
+# user-owned (plugins write there), so the user can still rename root's
+# services/ between runs — Decky's design, not something this closes.
+# Exit codes: 2 usage, 4 download/shape, 5 loader did not come up,
+# 6 symlink/ownership refusal, 75 busy, 77 not opted in.
+set -euo pipefail
+U="__USER__"; H="__HOME__"; HB="$H/homebrew"
+UNIT=/etc/systemd/system/plugin_loader.service; MARK=/etc/couchside/allow-decky
+RUN=/run/couchside; LOCK=$RUN/decky-loader.lock; LOG=$RUN/decky-loader.log; RES=$RUN/decky-loader.result
+# Every fetch is bounded: https only (a redirect to http:// is refused), connect
+# and total timeouts, two retries. A stalled transfer can never hold the lock
+# past the unit's TimeoutStartSec=900.
+CURL=(curl -fsS --proto '=https' --proto-redir '=https' --connect-timeout 20 --max-time 300 --retry 2 -A couchside-decky-loader)
+[ "$#" -eq 1 ] || { echo "usage: couchside-decky-loader install|uninstall" >&2; exit 2; }
+case "$1" in install|uninstall) mode=$1 ;; *) echo "mode must be install or uninstall" >&2; exit 2 ;; esac
+[ "$(id -u)" -eq 0 ] || { echo "must run as root" >&2; exit 2; }
+install -d -m 0755 "$RUN"; exec 9>>"$LOCK"; chmod 0644 "$LOCK"
+flock -w 15 9 || exit 75                    # bounded wait: a poll's LOCK_SH can no longer fail an op; a REAL holder -> touch NOTHING (its result is theirs)
+TAG=""; TMP=""; PREV=""
+res(){ printf '{"mode":"%s","state":"%s","ok":%s,"tag":"%s","at":%s}\n' "$mode" "$1" "$2" "$TAG" "$(date +%s)" >"$RES.tmp"; chmod 0644 "$RES.tmp"; mv -f "$RES.tmp" "$RES"; }
+[ -f "$MARK" ] || { res refused false; echo "decky management not enabled (couchside allow-decky on)" >&2; exit 77; }
+res running false                           # FIRST act under the lock, before any redirect or work
+exec >"$LOG" 2>&1
+# rollback runs from the EXIT trap with the cwd still pinned by pin_hb, so it
+# is relative too: `rm -rf` of a planted symlink removes the LINK (never its
+# target) and `mv -T` restores by rename(2), never nesting into a decoy dir.
+rollback(){ if [ -n "$PREV" ] && [ -d "$PREV" ]; then rm -rf ./services; mv -T "$PREV" ./services; systemctl daemon-reload; systemctl enable --now plugin_loader 2>/dev/null || true; echo "rolled back to previous services/"; fi; }
+# pin_hb: cd -P into ~/homebrew (the cwd becomes the INODE) and re-check the
+# directory we are now inside — real, owned by $U. A swap that pointed the
+# name at a root-owned tree lands here as exit 6, not as a root write there.
+pin_hb(){ [ -d "$HB" ] && [ ! -L "$HB" ] || { echo "$HB missing or a symlink — refusing"; exit 6; }; cd -P "$HB" || exit 6; [ "$(stat -c %u .)" = "$(id -u "$U")" ] || { echo "$HB is not owned by $U — refusing"; exit 6; }; }
+trap 'rc=$?; if [ $rc -eq 0 ]; then res done true; else rollback; journalctl -u plugin_loader -n 30 --no-pager 2>/dev/null || true; res failed false; fi; [ -n "$TMP" ] && rm -rf "$TMP"; exit $rc' EXIT
+# Symlink refusal: every component root will write under must be a real directory owned by $U.
+G="$(id -gn "$U")"                          # also proves the baked user still exists (set -e aborts otherwise)
+[ -d "$H" ] && [ ! -L "$H" ] || { echo "home $H missing or a symlink"; exit 6; }
+if [ -e "$HB" ]; then
+  [ -d "$HB" ] && [ ! -L "$HB" ] && [ "$(stat -c %u "$HB")" = "$(id -u "$U")" ] || { echo "$HB is a symlink or not owned by $U — refusing"; exit 6; }
+fi
+if [ "$mode" = uninstall ]; then          # mirrors decky-installer cli/uninstall.sh + the daemon-reload it forgets; NO rm -rf /tmp/plugin_loader (user-controllable name, no product benefit)
+  systemctl disable --now plugin_loader.service 2>/dev/null || true
+  rm -f "$UNIT"
+  if [ -d "$HB" ]; then pin_hb; if [ -d ./services ] && [ ! -L ./services ]; then rm -rf ./services; fi; fi
+  for d in "$H/.steam/steam" "$H/.local/share/Steam" "$H/.var/app/com.valvesoftware.Steam/data/Steam"; do
+    [ -d "$d" ] && [ ! -L "$d" ] && runuser -u "$U" -- rm -f "$d/.cef-enable-remote-debugging" || true
+  done
+  systemctl daemon-reload; echo "removed; $HB/plugins and settings kept"; exit 0
+fi
+TMP="$(mktemp -d)"
+# Resolve the stable tag WITHOUT the rate-limited API: one un-followed hop of releases/latest/download
+# (observed 2026-09-06 from a Mac: 302 -> .../releases/download/v3.2.8/PluginLoader). Host+shape pinned.
+LATEST="https://github.com/SteamDeckHomebrew/decky-loader/releases/latest/download/PluginLoader"
+if ! NEXT="$("${CURL[@]}" -o /dev/null -w '%{redirect_url}' "$LATEST")"; then NEXT=""; fi   # a curl FAILURE (not just a mis-shape) also reaches the fallback
+if [[ ! "$NEXT" =~ ^https://github\.com/SteamDeckHomebrew/decky-loader/releases/download/(v[0-9]+(\.[0-9]+){1,3})/PluginLoader$ ]]; then
+  if ! API="$("${CURL[@]}" -L -H 'Accept: application/vnd.github+json' https://api.github.com/repos/SteamDeckHomebrew/decky-loader/releases/latest)"; then echo "tag resolution failed"; exit 4; fi
+  NEXT="$(printf '%s' "$API" | python3 -c 'import json,sys;m=json.load(sys.stdin);print([a["browser_download_url"] for a in m["assets"] if a["name"]=="PluginLoader"][0])')" || { echo "unexpected release json"; exit 4; }
+  [[ "$NEXT" =~ ^https://github\.com/SteamDeckHomebrew/decky-loader/releases/download/(v[0-9]+(\.[0-9]+){1,3})/PluginLoader$ ]] || { echo "unexpected asset url: $NEXT"; exit 4; }
+fi
+TAG="${BASH_REMATCH[1]}"
+"${CURL[@]}" -L --max-filesize 209715200 -o "$TMP/PluginLoader" "$NEXT" || { echo "download failed"; exit 4; }
+python3 -c 'import os,sys;p=sys.argv[1];sys.exit(0 if os.path.getsize(p)>=5000000 and open(p,"rb").read(4)==b"\x7fELF" else 1)' "$TMP/PluginLoader" || { echo "download is not a plausible PluginLoader"; exit 4; }
+# Unit: the tag-pinned upstream file if its shape checks out, else the embedded v3.2.8 copy (byte-identical to main at design time).
+if ! "${CURL[@]}" -L -o "$TMP/unit" "https://raw.githubusercontent.com/SteamDeckHomebrew/decky-loader/$TAG/dist/plugin_loader-release.service" \
+   || ! grep -q '^ExecStart=\${HOMEBREW_FOLDER}/services/PluginLoader$' "$TMP/unit" || ! grep -q '^User=root$' "$TMP/unit"; then
+  cat >"$TMP/unit" <<'U'
+[Unit]
+Description=SteamDeck Plugin Loader
+After=network.target
+[Service]
+Type=simple
+User=root
+Restart=always
+KillMode=process
+TimeoutStopSec=15
+ExecStart=${HOMEBREW_FOLDER}/services/PluginLoader
+WorkingDirectory=${HOMEBREW_FOLDER}/services
+Environment=UNPRIVILEGED_PATH=${HOMEBREW_FOLDER}
+Environment=PRIVILEGED_PATH=${HOMEBREW_FOLDER}
+Environment=LOG_LEVEL=INFO
+[Install]
+WantedBy=multi-user.target
+U
+fi
+python3 - "$TMP/unit" "$TMP/unit.r" "$HB" <<'PY'
+import sys; src,dst,hb=sys.argv[1:4]; open(dst,"w").write(open(src).read().replace("${HOMEBREW_FOLDER}",hb))
+PY
+printf '%s\n' "$TAG" >"$TMP/loader.version"
+# Everything fetched and verified: now (and only now) touch the box. User-tree dirs are made AS THE USER (no chown ever).
+runuser -u "$U" -- mkdir -p "$HB" "$HB/plugins" "$HB/settings"       # existing dirs untouched (Decky roots plugins/ itself); as the USER, so a swapped path is followed only with the user's own rights
+pin_hb                                                                # cwd = the real ~/homebrew inode; every write below is RELATIVE to it
+systemctl disable --now plugin_loader 2>/dev/null || true
+if [ -e ./services ]; then
+  [ -d ./services ] && [ ! -L ./services ] || { echo "services/ is a symlink or not a directory — refusing"; exit 6; }
+  PREV="$TMP/services.prev"; mv -T ./services "$PREV"                 # aside copy OUTSIDE the user tree (root 0700 mktemp): nothing can pre-create it
+fi
+mkdir -m 0755 ./services; mkdir -m 0755 ./services/.systemd           # ROOT-owned from here on; no -p: a planted entry is EEXIST (exit), never followed
+install -m 0755 -o root -g root "$TMP/PluginLoader" ./services/PluginLoader
+install -m 0644 -o root -g root "$TMP/loader.version" ./services/.loader.version   # nothing in Decky reads it; world-readable for the agent
+install -m 0644 -o root -g root "$TMP/unit.r" ./services/.systemd/plugin_loader-release.service
+if command -v getenforce >/dev/null 2>&1 && [ "$(getenforce 2>/dev/null)" = Enforcing ]; then chcon -t bin_t ./services/PluginLoader || echo "chcon failed (will be caught by the liveness check)"; fi
+install -m 0644 -o root -g root "$TMP/unit.r" "$UNIT"
+for d in "$H/.steam/steam" "$H/.local/share/Steam" "$H/.var/app/com.valvesoftware.Steam/data/Steam"; do
+  if [ -d "$d" ] && [ ! -L "$d" ]; then runuser -u "$U" -- touch "$d/.cef-enable-remote-debugging"; fi   # as the user: a planted symlink is followed only with the user's own rights
+done
+systemctl daemon-reload; systemctl enable --now plugin_loader
+# Verify the thing the user needs, not the unit state: Restart=always makes is-active TRUE between crashes.
+sleep 2
+ok=0
+for _ in $(seq 1 15); do
+  if [ "$(systemctl show -p NRestarts --value plugin_loader)" = 0 ] && curl -fsS --max-time 2 -o /dev/null http://127.0.0.1:1337/auth/token; then ok=1; break; fi
+  sleep 1
+done
+[ "$ok" = 1 ] || { echo "plugin_loader did not come up cleanly (NRestarts=$(systemctl show -p NRestarts --value plugin_loader))"; exit 5; }
+[ -n "$PREV" ] && rm -rf "$PREV"; PREV=""
+echo "installed $TAG"; exit 0
+DECKYWRAP
+    # Bake, then PARSE the baked script before it can land as root code: a
+    # substitution that broke the syntax must fail here, not at first use.
+    sed -e "s|__USER__|$USER_NAME|g" -e "s|__HOME__|$HOME|g" \
+        "$WORK_DIR/couchside-decky-loader.tmpl" > "$WORK_DIR/couchside-decky-loader"
+    bash -n "$WORK_DIR/couchside-decky-loader"
+    sudo install -m 0755 -o root -g root \
+        "$WORK_DIR/couchside-decky-loader" "$DECKY_WRAP"
+    # The unit template. %i reaches only the wrapper's mode validator; both
+    # callers name the instance from a frozen dict. ConditionPathExists= is the
+    # second opt-in gate (a condition-skipped start still exits 0, which is why
+    # the agent never trusts "started" from the exit code alone).
+    # TimeoutStartSec=900: oneshot's default is INFINITE, so without it a hung
+    # download would hold the lock forever; PID 1 SIGTERMs the run, the
+    # wrapper's EXIT trap rolls back and records `failed`. No [Install]: never
+    # enabled, only started.
+    cat > "$WORK_DIR/couchside-decky-loader@.service" <<'DECKYUNIT'
+[Unit]
+Description=Couchside: Decky Loader %i (phone-triggered, fixed procedure)
+ConditionPathExists=/etc/couchside/allow-decky
+[Service]
+Type=oneshot
+TimeoutStartSec=900
+ExecStart=/etc/couchside/couchside-decky-loader %i
+DECKYUNIT
+    sudo install -m 0644 -o root -g root \
+        "$WORK_DIR/couchside-decky-loader@.service" "$DECKY_UNIT_TMPL"
+    sudo systemctl daemon-reload
+fi
+
+# ---------------------------------------------------------------------------
 # (f2) Virtual-gamepad device access (/dev/uinput)
 # ---------------------------------------------------------------------------
 # The gamepad needs the daemon to write /dev/uinput. On seat-based desktops
@@ -1433,9 +1716,9 @@ sudo install -m 0644 -o root -g root "$WORK_DIR/couchside.service.rendered" "$UN
 # ---------------------------------------------------------------------------
 # (g2) privileged helper — replaces the sudoers surface, one verb at a time
 # ---------------------------------------------------------------------------
-# The helper is the ONLY root process in the product: eight frozen verbs behind
+# The helper is the ONLY root process in the product: nine frozen verbs behind
 # a 0660 unix socket + SO_PEERCRED uid check (agent/couchside-helper.py has the
-# full rules). The agent DETECTS it and falls back to sudo when absent, so this
+# full rules; the ninth, decky.loader, only starts the (f1c) oneshot unit). The agent DETECTS it and falls back to sudo when absent, so this
 # block is additive: nothing else in this installer changes behaviour because
 # of it, and the sudoers file keeps being written until the fallback is retired
 # (project_privileged-helper.md, phase 2). Fetched alongside the agent and
@@ -1752,6 +2035,20 @@ _restart_agent() {
     return 1
 }
 
+# Ask a yes/no question on the CONTROLLING TERMINAL, never stdin, so it works
+# when this script is piped and can never be answered by a piped "y". Returns
+# 0 = yes, 1 = anything else, 2 = no terminal at all. The caller decides what
+# 2 means; for an opt-in it must be "fail closed", never "default to yes".
+# Factored out of the /dev/tty read so tests/test_decky_optin.sh can stub the
+# FUNCTION after eval'ing the shipped text (the `sudo() { "$@"; }` precedent)
+# instead of rewriting it.
+confirm_tty() {
+    local ans=""
+    printf '%s ' "$1"
+    read -r ans </dev/tty 2>/dev/null || { echo; echo "No terminal for the prompt — rerun from an interactive shell."; return 2; }
+    case "$ans" in y|Y|yes|YES) return 0 ;; *) return 1 ;; esac
+}
+
 case "${1:-help}" in
   update|upgrade)
     yes=0; force=0
@@ -1940,6 +2237,83 @@ GRANT
       *) echo "usage: couchside allow-system-updates on|off" >&2; exit 2 ;;
     esac
     ;;
+  allow-decky)
+    # OPT-IN, root-touching: let the phone app install / repair / remove Decky
+    # Loader and install its store plugins. OFF by default and must be run
+    # HERE on the box — the app can never enable this itself, and no flag or
+    # environment variable enables it non-interactively. Two artefacts, both
+    # written only here: a sudoers grant on the two EXACT `systemctl start`
+    # argvs for the pinned oneshot units (the wrapper they run gets NO grant of
+    # its own), and the marker file that the helper, the units'
+    # ConditionPathExists= and the wrapper itself all check. Deliberately NOT
+    # folded into allow-system-updates: that one promises it "cannot install
+    # new software", and this one is exactly that.
+    DECKY_WRAP="/etc/couchside/couchside-decky-loader"
+    DECKY_UNIT_TMPL="/etc/systemd/system/couchside-decky-loader@.service"
+    DECKY_MARKER="/etc/couchside/allow-decky"
+    DECKY_DECLINED="/etc/couchside/decky-optin-declined"
+    DECKY_SUDOERS="/etc/sudoers.d/zz-couchside-decky"
+    case "${2:-}" in
+      on)
+        [ -x "$DECKY_WRAP" ] && [ -f "$DECKY_UNIT_TMPL" ] || { echo "error: the Decky Loader manager is not installed — re-run install.sh first" >&2; exit 1; }
+        # The material fact FIRST, in this wording (project_decky-manager.md §5).
+        echo "Decky Loader runs as root from your home directory. On a Decky box, anyone"
+        echo "who can act as your desktop user — including a paired phone, through the"
+        echo "gamepad — can become root. That is Decky's design, not something Couchside"
+        echo "can wall off."
+        echo
+        echo "Turning this on lets the Couchside app (and so anyone holding this box's"
+        echo "pairing token):"
+        echo
+        echo "  * install, repair or remove Decky Loader as a ROOT service, downloaded"
+        echo "    from GitHub over TLS — Decky publishes NO checksum for it, so TLS plus"
+        echo "    a pinned download host is the only verification there is;"
+        echo "  * install plugins from Decky's curated store. Decky Loader sha256-checks"
+        echo "    each one against the store's hash, but plugins run as your user or,"
+        echo "    when a plugin is flagged for it, AS ROOT."
+        echo
+        echo "The root work is one fixed procedure (/etc/couchside/couchside-decky-loader,"
+        echo "root-owned, install|uninstall only) started through a pinned systemd unit."
+        echo "Turn it off anytime:  couchside allow-decky off"
+        echo
+        confirm_tty 'Enable? [y/N]'; rc=$?
+        [ "$rc" -eq 2 ] && exit 1
+        [ "$rc" -eq 0 ] || { echo "Cancelled."; exit 0; }
+        tmpf="$(mktemp)"
+        cat > "$tmpf" <<GRANT
+# couchside OPT-IN (couchside allow-decky): let the agent START exactly these
+# two pinned oneshot units (install / uninstall Decky Loader) without a
+# password. The wrapper they run has NO grant of its own, so this can never
+# run it with any other argument. Remove with: couchside allow-decky off
+$([ -f "$DECKY_UNIT_TMPL" ] && echo "$(id -un) ALL=(root) NOPASSWD: /usr/bin/systemctl start --no-block couchside-decky-loader@install.service")
+$([ -f "$DECKY_UNIT_TMPL" ] && echo "$(id -un) ALL=(root) NOPASSWD: /usr/bin/systemctl start --no-block couchside-decky-loader@uninstall.service")
+GRANT
+        sudo visudo -cf "$tmpf" || { rm -f "$tmpf"; echo "sudoers validation failed — nothing installed" >&2; exit 1; }
+        sudo install -m 0440 -o root -g root "$tmpf" "$DECKY_SUDOERS"
+        # The marker: root-owned 0644 so the agent (the desktop user) can see it
+        # but never write it. Its existence IS the consent.
+        printf '# Written by `couchside allow-decky on`. While this file exists the Couchside\n# app may install/repair/remove Decky Loader and its plugins on this box.\n# Remove with: couchside allow-decky off\n' > "$tmpf"
+        sudo install -m 0644 -o root -g root "$tmpf" "$DECKY_MARKER"
+        rm -f "$tmpf"
+        sudo rm -f "$DECKY_DECLINED"
+        echo "Decky management from the app: on"
+        ;;
+      off)
+        sudo rm -f "$DECKY_SUDOERS" "$DECKY_MARKER"
+        echo "Decky management from the app: off"
+        ;;
+      ""|status)
+        if sudo test -e "$DECKY_MARKER" 2>/dev/null; then
+          echo "Decky management from the app: on"
+        else
+          echo "Decky management from the app: off"
+        fi
+        [ -x "$DECKY_WRAP" ] && [ -f "$DECKY_UNIT_TMPL" ] \
+          || echo "(the Decky Loader manager is not installed — re-run install.sh before turning it on)"
+        ;;
+      *) echo "usage: couchside allow-decky on|off|status" >&2; exit 2 ;;
+    esac
+    ;;
   allow-launchers)
     # Opt-in: let the phone app CREATE custom launchers (POST /api/launchers).
     # OFF by default. A launcher's argv is run verbatim as the desktop user, so
@@ -2085,6 +2459,7 @@ couchside — manage the Couchside agent on this box
   couchside update -y       update without the prompt
   couchside allow-updates on|off   let (or stop) the phone app trigger updates
   couchside allow-system-updates on|off   let the app run system package updates (root, via fixed wrappers)
+  couchside allow-decky on|off|status     let the app install/manage Decky Loader + plugins (root; shows what it grants first)
   couchside allow-launchers on|off let (or stop) the phone app create launchers
   couchside new-token       mint a new pairing token (revokes EVERY paired phone)
   couchside tls on|off|status      the HTTPS listener (on by default; status shows
@@ -2744,5 +3119,60 @@ if [ "$FRESH_TOKEN" = "1" ] && [ "$NO_OPEN" != "1" ] && [ -x "$PAIR_SCRIPT" ]; t
     ( setsid "$PAIR_SCRIPT" >/dev/null 2>&1 & ) 2>/dev/null || true
     note "opened the pairing tutorial on this box's screen (--no-open to skip)"
 fi
+
+# ---------------------------------------------------------------------------
+# (k) Decky Loader manager: offer the opt-in ONCE, and only to a person
+# ---------------------------------------------------------------------------
+# "Install Decky directly from the app" is honoured by OFFERING the opt-in
+# here, so a fresh box needs no second trip to a terminal — but the answer is
+# always a human's. Four gates, each a real case:
+#   * the (f1c) pieces landed (else `allow-decky on` would just say re-run);
+#   * a Steam root exists (no Steam, no Decky — same gate the agent uses to
+#     hide the whole surface);
+#   * neither the marker (already on) nor the declined stamp (already asked)
+#     exists — "n" writes the stamp so a re-run never nags;
+#   * a controlling terminal can actually be OPENED. `[ -r /dev/tty ]` is
+#     true for a detached process too (the node is 0666 — access() says yes,
+#     open() says ENXIO), so the app-driven update (update_apply, no tty)
+#     would otherwise "decline" on the owner's behalf and stamp the box.
+#     Opening it is the test; no tty means no offer AND no stamp.
+# "y" hands off to the CLI, which prints the full grant text and asks again on
+# the tty: the grant wording lives in exactly one place and the informed
+# consent is the CLI's, not a paraphrase here.
+decky_steam_root_present() {
+    local d
+    for d in "$HOME/.steam/steam" "$HOME/.local/share/Steam" \
+             "$HOME/.var/app/com.valvesoftware.Steam/data/Steam"; do
+        [ -d "$d/steamapps" ] && return 0
+    done
+    return 1
+}
+decky_have_tty() {
+    { true </dev/tty; } 2>/dev/null
+}
+offer_decky_optin() {
+    [ -x "$DECKY_WRAP" ] && [ -f "$DECKY_UNIT_TMPL" ] || return 0
+    decky_steam_root_present || return 0
+    if sudo test -e "$DECKY_MARKER" 2>/dev/null || sudo test -e "$DECKY_DECLINED" 2>/dev/null; then
+        return 0
+    fi
+    decky_have_tty || return 0
+    echo
+    say "Optional: manage Decky Loader from the app"
+    note "Decky Loader runs as root from your home directory. Enabling this lets the"
+    note "phone install, repair or remove it and install store plugins. You will see"
+    note "exactly what it grants and confirm again before anything is written."
+    if ask_yn "Let the app install and manage Decky Loader and its plugins?"; then
+        "$CLI" allow-decky on || note "not enabled — run 'couchside allow-decky on' later to try again"
+    else
+        local tmpf
+        tmpf="$(mktemp)"
+        printf '# Written by install.sh: the owner declined the Decky Loader opt-in, so the\n# installer will not ask again. Enable later with: couchside allow-decky on\n' > "$tmpf"
+        sudo install -m 0644 -o root -g root "$tmpf" "$DECKY_DECLINED"
+        rm -f "$tmpf"
+        note "OK — not enabled. Later, if you change your mind:  couchside allow-decky on"
+    fi
+}
+offer_decky_optin
 
 } # end partial-download guard — see the matching `{` near the top

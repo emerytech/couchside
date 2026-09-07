@@ -9,15 +9,32 @@
  * Controller Puck — the list then re-polls and the row flips to `puck_present`.
  * CEC stays display-only: enabling it is an install-time udev step, not a daemon
  * action, so there is deliberately no button that would lie about flipping it.
+ *
+ * DECKY (agent >= 2.9.105, docs/memory/project_decky-manager.md §12): the `decky`
+ * row is the Utilities tenant for Decky Loader. Its row state IS the loader
+ * state string; the overlays a button needs (opt-in marker, installer present,
+ * helper version, the correlated op result) come from a second probe of
+ * GET /api/decky/loader, polled every 2 s while an op is in flight with the
+ * box's log tailed under it. `starting` renders "Starting…", and a finished
+ * op renders the AGENT's verdict for THIS request — never a stale success.
+ * The Actions-tab mount stays OpenPuck-only (the filter below), so no third
+ * entry point appears.
  */
 import Ionicons from '@expo/vector-icons/Ionicons';
+import { router } from 'expo-router';
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { ActivityIndicator, Alert, Platform, Pressable, StyleSheet, Switch, Text, View } from 'react-native';
 
+import {
+  confirmDeckyLoaderInstall, confirmRestartDecky, toneColor, useDeckyLoaderOp,
+} from '@/components/DeckyCard';
 import { hapticLight, hapticSuccess, hapticWarning } from '@/lib/haptics';
-import { api, ApiError, type BoxCaps, type OpenpuckLatest, type Utility } from '@/lib/api';
+import { api, ApiError, type BoxCaps, type DeckyLoader, type OpenpuckLatest, type Utility } from '@/lib/api';
+import {
+  canRunLoaderOp, deckyHint, describeLoaderState, isLoaderOpActive, loaderOpCopy,
+} from '@/lib/deckyPlugins';
 import { useSettings } from '@/lib/SettingsContext';
-import { useTheme, useThemedStyles, type Palette } from '@/lib/theme';
+import { mono, useTheme, useThemedStyles, type Palette } from '@/lib/theme';
 
 /** (statusLine, iconName, tone) for a utility's state. tone: 'good' | 'action' | 'idle'. */
 function present(u: Utility): { line: string; icon: string; tone: 'good' | 'action' | 'idle' } {
@@ -33,6 +50,12 @@ function present(u: Utility): { line: string; icon: string; tone: 'good' | 'acti
     if (u.state === 'enabled') return { line: 'On — the box can control your TV over HDMI.', icon: 'checkmark-circle', tone: 'good' };
     if (u.state === 'needs_enable') return { line: 'Adapter found — re-run the installer to enable it.', icon: 'tv-outline', tone: 'action' };
     return { line: 'No HDMI-CEC adapter found on this box.', icon: 'tv-outline', tone: 'idle' };
+  }
+  if (u.id === 'decky') {
+    // The row's state string is the loader state (spec §7); one shared table
+    // words it, so this row, the Setup card and /decky never disagree.
+    const d = describeLoaderState({ state: u.state });
+    return { line: d.line, icon: d.icon, tone: d.tone === 'warn' ? 'action' : d.tone };
   }
   return { line: u.state, icon: 'construct-outline', tone: 'idle' };
 }
@@ -263,6 +286,178 @@ export function UtilitiesSection({
     }
   }, [settings]);
 
+  // ---- Decky Loader row (spec §12 bullet 1) ----
+  // The row's own state is enough to WORD it; a button needs the overlays only
+  // GET /api/decky/loader carries (allowed / installer_ready / helper / op),
+  // so probe that once the row exists, and poll it at 2 s while an op runs.
+  const hasDecky = !!utils?.some((u) => u.id === 'decky');
+  const [decky, setDecky] = useState<DeckyLoader | null>(null);
+  const [deckyLog, setDeckyLog] = useState<string[]>([]);
+  const refreshDecky = useCallback(async () => {
+    try {
+      const d = await api.deckyLoader(settings);
+      if (live.current) setDecky(d);
+    } catch {
+      // keep the last known state; the row itself still renders
+    }
+  }, [settings]);
+  useEffect(() => {
+    if (!hasDecky) { setDecky(null); return; }
+    void refreshDecky();
+  }, [hasDecky, refreshDecky]);
+  const deckyOpActive = isLoaderOpActive(decky?.op);
+  useEffect(() => {
+    if (!deckyOpActive) return undefined;
+    const tick = () => {
+      void refreshDecky();
+      void api.deckyLoaderLog(settings, 8).then((ls) => { if (live.current) setDeckyLog(ls); });
+    };
+    tick();
+    const id = setInterval(tick, 2000);
+    return () => clearInterval(id);
+  }, [deckyOpActive, refreshDecky, settings]);
+  // On the op's transition OUT of starting/running, re-poll the row twice (its
+  // state string flips) — the same 1.5 s / 6 s pair the flash uses.
+  const deckyOpWas = useRef(false);
+  useEffect(() => {
+    if (deckyOpWas.current && !deckyOpActive) {
+      setTimeout(() => { void refresh(); void refreshDecky(); }, 1500);
+      setTimeout(() => { void refresh(); void refreshDecky(); }, 6000);
+    }
+    deckyOpWas.current = deckyOpActive;
+  }, [deckyOpActive, refresh, refreshDecky]);
+  const onDeckyStarted = useCallback(() => { void refreshDecky(); }, [refreshDecky]);
+  const deckyOp = useDeckyLoaderOp(onDeckyStarted);
+  const [deckyRestarting, setDeckyRestarting] = useState(false);
+  const [deckyNote, setDeckyNote] = useState<{ tone: 'ok' | 'err' | 'info'; msg: string } | null>(null);
+  // "Start Decky" for a stopped loader = the EXISTING injected restart-decky
+  // action, named by the agent — with the KI-037 wording. Never silent.
+  const restartDecky = useCallback(() => {
+    const action = decky?.restart_action;
+    if (!action) return;
+    confirmRestartDecky(() => {
+      void (async () => {
+        setDeckyRestarting(true);
+        hapticLight();
+        try {
+          // runAction resolves ok:false (never throws) when the box refuses the
+          // restart-decky action (no sudo grant, helper refusal, unit failed).
+          // A blind success haptic hid that and left the loader stopped with no
+          // reason shown — surface the box's stderr instead.
+          const r = await api.runAction(settings, action);
+          if (r.ok) {
+            hapticSuccess();
+            if (live.current) setDeckyNote(null);
+          } else {
+            hapticWarning();
+            if (live.current) setDeckyNote({ tone: 'err', msg: (r.stderr || '').trim() || 'Start Decky did not run on the box.' });
+          }
+        } catch {
+          hapticWarning();
+          if (live.current) setDeckyNote({ tone: 'err', msg: 'Could not reach the box.' });
+        } finally {
+          if (live.current) setDeckyRestarting(false);
+          setTimeout(() => { void refresh(); void refreshDecky(); }, 1500);
+          setTimeout(() => { void refresh(); void refreshDecky(); }, 6000);
+        }
+      })();
+    }, 'Start Decky?');
+  }, [decky?.restart_action, settings, refresh, refreshDecky]);
+
+  const renderDecky = () => {
+    const d = decky;
+    if (!d) return null;
+    const desc = describeLoaderState(d);
+    const hint = deckyHint(d);
+    const canOp = canRunLoaderOp(d);
+    const opLine = loaderOpCopy(d.op);
+    const busyOp = deckyOp.busy || deckyOpActive;
+    const repairBtn = (
+      <Pressable
+        onPress={() => confirmDeckyLoaderInstall('repair', () => deckyOp.start('install'))}
+        disabled={busyOp}
+        testID="decky-row-repair"
+        style={({ pressed }) => [styles.btn, { borderColor: t.blue, opacity: busyOp ? 0.6 : pressed ? 0.8 : 1 }]}
+        accessibilityRole="button"
+        accessibilityLabel="Repair Decky Loader">
+        <Ionicons name="build-outline" size={16} color={t.blue} />
+        <Text style={[styles.btnText, { color: t.blue }]}>Repair</Text>
+      </Pressable>
+    );
+    return (
+      <View>
+        {opLine ? (
+          <View style={styles.deckyOpRow}>
+            {deckyOpActive ? <ActivityIndicator size="small" color={t.blue} /> : null}
+            <Text style={[styles.note, { color: toneColor(t, opLine.tone), marginTop: 0, flex: 1 }]}>{opLine.line}</Text>
+          </View>
+        ) : null}
+        {deckyOpActive && deckyLog.length ? (
+          <View style={styles.deckyLog}>
+            {deckyLog.slice(-6).map((ln, i) => (
+              <Text key={`${i}-${ln}`} style={styles.deckyLogLine} numberOfLines={1}>{ln}</Text>
+            ))}
+          </View>
+        ) : null}
+        {deckyNote ? (
+          <Text style={[styles.note, { color: deckyNote.tone === 'err' ? t.red : deckyNote.tone === 'ok' ? t.green : t.blue }]}>{deckyNote.msg}</Text>
+        ) : null}
+        {desc.action === 'install' && d.allowed && canOp ? (
+          <Pressable
+            onPress={() => confirmDeckyLoaderInstall('install', () => deckyOp.start('install'))}
+            disabled={busyOp}
+            testID="decky-row-install"
+            style={({ pressed }) => [styles.btn, { borderColor: t.blue, opacity: busyOp ? 0.6 : pressed ? 0.8 : 1 }]}
+            accessibilityRole="button"
+            accessibilityLabel="Install Decky Loader">
+            {deckyOp.busy ? <ActivityIndicator size="small" color={t.blue} /> : <Ionicons name="download-outline" size={16} color={t.blue} />}
+            <Text style={[styles.btnText, { color: t.blue }]}>{deckyOp.busy ? 'Starting…' : 'Install Decky Loader'}</Text>
+          </Pressable>
+        ) : null}
+        {desc.action === 'start' ? (
+          d.restart_action ? (
+            <Pressable
+              onPress={restartDecky}
+              disabled={deckyRestarting}
+              testID="decky-row-start"
+              style={({ pressed }) => [styles.btn, { borderColor: t.blue, opacity: deckyRestarting ? 0.6 : pressed ? 0.8 : 1 }]}
+              accessibilityRole="button"
+              accessibilityLabel="Start Decky (restarts all plugins)">
+              {deckyRestarting ? <ActivityIndicator size="small" color={t.blue} /> : <Ionicons name="play-outline" size={16} color={t.blue} />}
+              <Text style={[styles.btnText, { color: t.blue }]}>{deckyRestarting ? 'Starting…' : 'Start Decky'}</Text>
+            </Pressable>
+          ) : canOp ? repairBtn : null
+        ) : null}
+        {desc.action === 'repair' && canOp ? repairBtn : null}
+        {d.installed ? (
+          <Pressable
+            onPress={() => { hapticLight(); router.push('/decky'); }}
+            testID="decky-row-manage"
+            style={({ pressed }) => [styles.btn, { borderColor: t.blue, opacity: pressed ? 0.8 : 1 }]}
+            accessibilityRole="button"
+            accessibilityLabel="Manage Decky Loader and plugins">
+            <Ionicons name="extension-puzzle-outline" size={16} color={t.blue} />
+            <Text style={[styles.btnText, { color: t.blue }]}>Manage ›</Text>
+          </Pressable>
+        ) : null}
+        {deckyOp.note && !(opLine && deckyOp.note.tone === 'info') ? (
+          <Text style={[styles.note, { color: deckyOp.note.tone === 'ok' ? t.green : deckyOp.note.tone === 'err' ? t.red : t.blue }]}>
+            {deckyOp.note.msg}
+          </Text>
+        ) : null}
+        {hint ? (
+          hint.kind === 'optin' ? (
+            <Text style={styles.newerHint}>
+              Enable on the box: <Text style={styles.code}>couchside allow-decky on</Text>
+            </Text>
+          ) : (
+            <Text style={styles.newerHint}>{hint.text}</Text>
+          )
+        ) : null}
+      </View>
+    );
+  };
+
   // Nothing to show if the box lacks the endpoint (old agent / Windows).
   if (!canProbe || !utils || utils.length === 0) return null;
 
@@ -289,6 +484,7 @@ export function UtilitiesSection({
               <Text style={styles.label}>{u.label}</Text>
               <Text style={styles.sub}>{u.description}</Text>
               <Text style={[styles.status, { color }]}>{p.line}</Text>
+              {u.id === 'decky' ? renderDecky() : null}
               {/* Manual flash — hidden while auto-flash is armed (it fires on
                   its own). Still shown for the one-off case. */}
               {canFlash && !autoflash ? (
@@ -465,4 +661,11 @@ const makeStyles = (t: Palette) =>
     autoLabel: { color: t.text, fontSize: 14, fontWeight: '600' },
     autoSub: { color: t.textFaint, fontSize: 12, marginTop: 2 },
     footNote: { color: t.textFaint, fontSize: 11, lineHeight: 16, marginTop: 4, fontStyle: 'italic' },
+    deckyOpRow: { flexDirection: 'row', alignItems: 'center', gap: 8, marginTop: 8 },
+    deckyLog: {
+      marginTop: 8, padding: 8, borderRadius: 8, backgroundColor: t.inset,
+      borderWidth: 1, borderColor: t.cardBorder,
+    },
+    deckyLogLine: { color: t.textDim, fontSize: 10, fontFamily: mono, lineHeight: 14 },
+    code: { fontFamily: mono, color: t.textDim },
   });

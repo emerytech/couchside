@@ -67,6 +67,7 @@ that binary, the corresponding source is offered at the exact shipped tag
 - **Steam download progress**, **live screen preview**, and an **aerial screensaver** you can start from the couch.
 - **Controller handoff:** when a second phone joins a box you're already driving, it asks and you tap Pass — instead of silently stealing input.
 - **Stay current from the couch:** the app can ask the box whether a newer signed release exists and — if you opted in at the box — install it, verifying the maintainer signature first.
+- **Decky Loader, from the couch (opt-in):** install, repair or remove Decky Loader on the box, see your installed plugins with their updates, reload or remove one at a time, and install new ones from the official Decky store — all from a Decky screen in the app. It needs a one-time `couchside allow-decky on` on the box, because it lets the phone manage a root-level service; the command spells out what that means before it does anything (see **Security model**).
 - **Wake a sleeping box:** send a Wake-on-LAN magic packet from the phone, or have an **already-awake box wake a sleeping one** for you (the only route on iOS, where the OS blocks apps from broadcasting).
 - **Volume, mute, and box power.** A control next to the device picker adjusts the box's own OS volume and mute (a real drag-to-set 0–100 slider on SteamOS/Bazzite). On an HDMI-CEC or RS-232 setup you can switch it to drive the TV/panel instead — and on an RS-232 panel, also switch the display's input source, blank the screen without cutting power to an OPS box, and pass factory-remote keys. The same control suspends the box and, once it is offline, wakes it back up with a Wake-on-LAN magic packet.
 
@@ -138,19 +139,24 @@ Couchside is deliberately small and boring about security:
 
   The **privileged** actions are a fixed table; there is no route that runs an arbitrary command **as root**. Updating Flatpak apps or the OS from the app is an explicit **opt-in** (`couchside allow-system-updates on`, see the command table below) that adds a *separate* sudoers file granting **one fixed root-owned wrapper each** — never `flatpak` or `rpm-ostree` themselves, whose subcommands (install, run, override, rebase) would be arbitrary root. Off by default.
 
-- **The privileged helper (agent 2.9.69+).** Newer installs also place a small root process, `couchside-helper.py`, socket-activated by systemd. It exists to shrink the sudoers surface above, not to widen it: the same privileged operations are reached through a **frozen verb table** of eight entries (`session.set-boot`, `session.clear-boot`, `dm.restart`, `power`, `unit.restart`, `logs.journal`, `update.flatpak`, `update.os`), and an unknown verb runs nothing. It never sees a command, a path, or a shell string from a client — a verb selects a handler, and any argument is validated against a closed set before use.
+- **The privileged helper (agent 2.9.69+).** Newer installs also place a small root process, `couchside-helper.py`, socket-activated by systemd. It exists to shrink the sudoers surface above, not to widen it: the same privileged operations are reached through a **frozen verb table** of nine entries (`session.set-boot`, `session.clear-boot`, `dm.restart`, `power`, `unit.restart`, `logs.journal`, `update.flatpak`, `update.os`, and — helper 1.1.0+ — `decky.loader`, which only starts the pinned Decky Loader unit described below and refuses without the opt-in marker), and an unknown verb runs nothing. It never sees a command, a path, or a shell string from a client — a verb selects a handler, and any argument is validated against a closed set before use.
 
   Two independent auth layers, both fail-closed: the socket is `0660`, owned by the install user's group, so nothing else can connect; and the helper re-checks the caller's uid with `SO_PEERCRED` and refuses anything that is not exactly the install user — including when the uid cannot be read at all. It listens on a **local unix socket only** and is not reachable from the network. It lives in root-owned `/usr/local/libexec`, never a user-writable directory, and `couchside uninstall` removes it along with both units.
+- **Managing Decky Loader from the phone is a separate opt-in (agent 2.9.105+), and here is the thing to know before you turn it on.** Decky Loader runs as root from your home directory. On a Decky box, anyone who can act as your desktop user — including a paired phone, through the gamepad — can become root. That is Decky's design, not something Couchside can wall off; it is true with or without Couchside, and it makes the standing `systemctl restart plugin_loader` grant above a root-exec primitive on such a box. Couchside refuses to make it worse, and says so plainly instead of hiding it.
+
+  Off by default. `couchside allow-decky on` (run on the box; it prints exactly this before asking) writes a *separate* sudoers file, `zz-couchside-decky`, granting **two exact `systemctl start` argvs** — `couchside-decky-loader@install.service` and `couchside-decky-loader@uninstall.service` — plus a marker file, `/etc/couchside/allow-decky`, that the privileged helper, the unit's `ConditionPathExists=` and the root wrapper all check independently. The only new root logic is one fixed-procedure wrapper, `/etc/couchside/couchside-decky-loader`, which gets **no grant of its own** and can only be reached through those pinned oneshot units, so nothing can run it with other arguments. Step by step it: refuses if `~/homebrew` or `~/.steam/steam` is a symlink (root never follows a path under your home); downloads the latest **stable** `PluginLoader` from Decky's GitHub release over TLS with bounded, HTTPS-only `curl`; stages it beside the old copy in a root-owned `services/` directory (never `chmod 777`, and nothing under your home is ever `chown`ed to you); writes and pins Decky's own service file; restarts the loader and verifies it actually answers; and rolls back to the previous loader on any failure. Uninstall mirrors Decky's own uninstaller and keeps your plugins and settings. Decky publishes **no checksum or signature** for `PluginLoader`, so the download is protected by TLS and a host pin only — Couchside cannot verify what Decky does not sign, and does not pretend to.
+
+  Plugins are different: the **bytes are handled entirely by Decky Loader itself** — it downloads the zip from its own CDN, checks the SHA-256 the store publishes (Couchside always passes the hash so that check runs), extracts and starts it. The agent only talks to the loader over its loopback API, after confirming that what listens on port 1337 really is a root-owned Decky process. Plugins run as your desktop user, or — if a plugin is **flagged for it** in the store — **as root**; the confirmation on the phone says which. Decky's own in-app updater is not exposed (it un-pins the service file and follows whatever pre-release channel the box picked); the one loader-update path is Repair, which re-runs the same wrapper. `couchside allow-decky off` removes the grant and the marker; `couchside uninstall` removes all of it and leaves your Decky install alone.
 - **Launchers run as you, and creating them remotely is opt-in.** Beyond the fixed privileged actions, the app can *trigger* launchers — auto-discovered Steam games plus any custom commands the box owner defined. A launcher's command runs as the **desktop user, never root**. Because a custom launcher is an arbitrary command, *creating* one over the network is **off by default**: run `couchside allow-launchers on` to enable it, otherwise a bearer token can only trigger launchers you set up on the box, not mint new ones. (The same token can already synthesize keystrokes through the virtual gamepad, so treat the token as user-level trust on a machine you control — which is why it stays on your LAN.)
 - **Journal access is allowlisted.** Only units on the configured watchlist can be read, with line counts clamped server-side, so a leaked token can't be used to trawl the whole system journal.
 - **The one outbound call the app makes.** Couchside talks to your box and, for updates, nothing else — with a single, manual exception you trigger yourself. In Setup › Account, *Check for app update* asks whether a newer Couchside is published: on iOS it queries Apple's own App Store lookup directly; on Android it reads a static version file from couchside.tv (Google Play has no public version API). It sends **nothing** about you, your box, or your usage — just "what version is live?" — and it never runs on its own. (The box-side *agent* update check runs on the box precisely so the app itself never reaches the internet for box data.)
 - **LAN-only by design.** The API is plain HTTP on port 8787 and is meant to stay on your local network. The firewall rule opens the port locally; **do not port-forward it**. There is no relay, no cloud endpoint, and the app never talks to anything except your service.
-- No client-addressable file routes. The service serves image bytes on two routes only: the album-art image a running media player advertises (realpath-allowlisted, image-sniffed, 2 MiB cap; client passes a player id, never a path) and an on-demand screen-preview frame captured to a tmpfs file that's deleted right after (rate-clamped, off by default in the app). Subprocesses run with `shell=False`, errors return brief JSON, never tracebacks.
+- No client-addressable file routes. The service serves image bytes on four routes only: the album-art image a running media player advertises (realpath-allowlisted, image-sniffed, 2 MiB cap; client passes a player id, never a path); an on-demand screen-preview frame captured to a tmpfs file that's deleted right after (rate-clamped, off by default in the app); Steam cover art from the box's own library cache (client passes an app id); and the Decky store icon proxy (client passes a store id looked up in the box's own cached store list — the box fetches the icon from Decky's CDN with the host pinned and **no redirects followed**, caps it at 1 MiB, sniffs it as an image, and serves it from cache; the phone never talks to the CDN). Subprocesses run with `shell=False`, errors return brief JSON, never tracebacks.
 
 ## The `couchside` command — enabling extra features
 
 The installer adds a `couchside` command to manage the box. Most of it is
-everyday (`couchside update`, `couchside status`, `couchside pair`), but three
+everyday (`couchside update`, `couchside status`, `couchside pair`), but four
 subcommands are **opt-ins that are OFF by default** — they widen what a paired
 phone is allowed to do, so you turn them on **only on the box**, never from the
 app. Each prints exactly what it grants before it does anything.
@@ -160,13 +166,17 @@ app. Each prints exactly what it grants before it does anything.
 | `couchside allow-updates on` | Trigger a **Couchside agent** update from the app | none new — runs the signed installer the box already trusts |
 | `couchside allow-system-updates on` | Update your box's **Flatpak apps and OS** (SteamOS/Bazzite) from the app | passwordless sudo for **one fixed command each** — a root-owned wrapper that runs `flatpak update --system` / stages an `rpm-ostree`/`steamos-update`, and accepts no other arguments. Never a grant on `flatpak`/`rpm-ostree` themselves. |
 | `couchside allow-launchers on` | **Create** custom launchers from the app (not just trigger ones you defined) | none new — a launcher runs as your desktop user, never root |
+| `couchside allow-decky on` | **Install, repair or remove Decky Loader** on the box and **install Decky store plugins** from the app | passwordless sudo for **two exact `systemctl start` argvs** (the pinned `couchside-decky-loader@install` / `@uninstall` oneshot units) plus the `/etc/couchside/allow-decky` marker. The root wrapper those units run gets no grant of its own. This one *does* install software as root — Decky Loader runs as root from your home by design — which is why it is its own switch and prints the full story first. See **Security model**. |
 
 Turn any of them off again with `... off`, or check state with `... status`.
 An OS update **stages for the next boot** — the app shows "reboot to apply"
-rather than pretending it finished. Nothing here can install new software or run
-an arbitrary command as root: each grant is on a single fixed wrapper, validated
-with `visudo`, and sorted last (`zz-couchside-updates`) so a distro's `wheel`
-rule can't shadow it.
+rather than pretending it finished. Nothing here can run an arbitrary command as
+root: each grant is on a single fixed wrapper or an exact argv, validated with
+`visudo`, and sorted last (`zz-couchside-updates`, `zz-couchside-decky`) so a
+distro's `wheel` rule can't shadow it. Only `allow-decky` can install new
+software, and only the one thing it names. An interactive install offers the
+Decky opt-in once (default no); a detached, app-driven update never asks and
+never enables it.
 
 Full detail on why the grants are shaped this way is in the **Security model**
 section above.
@@ -177,7 +187,7 @@ section above.
 curl -fsSL https://couchside.tv/install.sh | bash -s -- --uninstall
 ```
 
-That removes the service, sudoers rule, udev/modules-load drop-ins, and the install dir (it asks before deleting the token). To do it by hand:
+That removes the service, sudoers rules, udev/modules-load drop-ins, the privileged helper and its units, the install dir (it asks before deleting the token), and the Decky Loader manager pieces if they were installed — the root wrapper `/etc/couchside/couchside-decky-loader`, the unit template `couchside-decky-loader@.service`, the `allow-decky` marker and declined stamp, the `zz-couchside-decky` grant, the run-state files under `/run/couchside/decky-loader.*`, and the user-side caches `~/.cache/couchside/decky-icons` and `~/.cache/couchside/decky-job.json`. **Decky Loader itself and your plugins are left alone.** To do it by hand:
 
 ```sh
 sudo systemctl disable --now couchside.service
@@ -186,6 +196,13 @@ sudo rm -f /etc/udev/rules.d/99-couchside-uinput.rules \
            /etc/modules-load.d/couchside-uinput.conf \
            /etc/systemd/network/50-couchside-wol.link
 sudo rm -f /etc/systemd/system/couchside.service && sudo systemctl daemon-reload
+# Decky Loader manager pieces (agent 2.9.105+), if present; Decky itself is untouched
+sudo rm -f /etc/sudoers.d/zz-couchside-decky \
+           /etc/systemd/system/couchside-decky-loader@.service \
+           /run/couchside/decky-loader.lock /run/couchside/decky-loader.log \
+           /run/couchside/decky-loader.result
+rm -rf ~/.cache/couchside/decky-icons ~/.cache/couchside/decky-job.json
+sudo systemctl daemon-reload
 ```
 
 Then delete the app from your phone.

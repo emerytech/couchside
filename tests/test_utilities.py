@@ -248,7 +248,10 @@ def test_state_iterates_frozen_id_set():
     rows = cs.utilities_state(mock=True)
     ids = [r["id"] for r in rows]
     check("ids are exactly the frozen tenants", set(ids), set(cs._UTILITY_IDS))
-    check("openpuck + cec, in order", ids, ["openpuck", "cec"])
+    # The mock always has a Steam root, so the decky row is present (2.9.105).
+    check("openpuck + cec + decky, in order", ids, ["openpuck", "cec", "decky"])
+    check("decky is a frozen tenant", "decky" in cs._UTILITY_IDS, True)
+    check("decky is a runnable tenant", "decky" in cs._UTILITY_RUN_IDS, True)
     for r in rows:
         check("row %s has label" % r["id"], bool(r.get("label")), True)
         check("row %s has description" % r["id"], bool(r.get("description")), True)
@@ -290,6 +293,20 @@ def test_real_state_uses_probes():
             rows = {r["id"]: r["state"] for r in cs.utilities_state(mock=False)}
             check("real openpuck -> no_board", rows["openpuck"], "no_board")
             check("real cec -> no_adapter", rows["cec"], "no_adapter")
+        # CONTROL (degrade closed): without a Steam root the decky row is
+        # ABSENT — no client ever sees an `unsupported` Decky state — and
+        # with one it is present, carrying a loader state.
+        with Patch(_MEDIA_ROOTS=(media,), _USB_DEVICES_DIR=usb,
+                   cec_current=lambda: None, _cec_devices_exist=lambda: False,
+                   _steam_root=lambda: None):
+            ids = [r["id"] for r in cs.utilities_state(mock=False)]
+            check("no Steam root -> no decky row", "decky" in ids, False)
+        with Patch(_MEDIA_ROOTS=(media,), _USB_DEVICES_DIR=usb,
+                   cec_current=lambda: None, _cec_devices_exist=lambda: False,
+                   _steam_root=lambda: "/nonexistent-couchside-test/steam",
+                   _decky_loader_state=lambda: {"state": "not_installed"}):
+            rows = {r["id"]: r["state"] for r in cs.utilities_state(mock=False)}
+            check("Steam root -> decky row present", rows.get("decky"), "not_installed")
     finally:
         shutil.rmtree(media, ignore_errors=True)
         shutil.rmtree(usb, ignore_errors=True)
@@ -329,7 +346,17 @@ def test_http_endpoint():
         status, body = _req(port, "GET", "/api/utilities")
         check("GET utilities -> 200", status, 200)
         ids = [u["id"] for u in body.get("utilities", [])]
-        check("body lists the tenants", ids, ["openpuck", "cec"])
+        check("body lists the tenants", ids, ["openpuck", "cec", "decky"])
+
+        # decky run: ?op= is an ENUM. A bad value is REJECTED (400), a missing
+        # one (an app older than 2.9.58) gets a 200 human string, never a 400.
+        check("decky run ?op=bogus -> 400",
+              _req(port, "POST", "/api/utilities/decky/run?op=bogus")[0], 400)
+        st, body = _req(port, "POST", "/api/utilities/decky/run")
+        check("decky run without ?op= -> 200", st, 200)
+        check("...ok:false with the update-the-app string",
+              (body.get("ok"), "Update the Couchside app" in body.get("stderr", "")),
+              (False, True))
 
         # Auth gate: same as every other /api route.
         check("no bearer -> 401", _req(port, "GET", "/api/utilities", token=None)[0], 401)

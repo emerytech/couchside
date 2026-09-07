@@ -127,6 +127,63 @@ if installs_helper:
           "unix socket" in readme_l, True)
 
 print()
+print("the helper's verb table, as the README spells it out")
+# WHY: the helper's VERBS dict IS the closed set of root operations a process
+# on the box can reach, and the README paragraph that names them is what a
+# person audits before running `curl … | bash`. The count is spelled out in
+# prose ("of eight entries"), so nothing compiled it: helper 1.1.0 (2026-09-06)
+# added `decky.loader` and the README would have kept saying "eight" forever.
+# This imports the helper's real table and holds the README to it, key by key
+# and count word by count word — the same dumb-and-textual shape as the grant
+# checks above (a reword fails toward a FALSE ALARM, never a false pass).
+import importlib.util
+_hspec = importlib.util.spec_from_file_location(
+    "couchside_helper", os.path.join(ROOT, "agent", "couchside-helper.py"))
+_helper = importlib.util.module_from_spec(_hspec)
+sys.modules["couchside_helper"] = _helper
+_hspec.loader.exec_module(_helper)
+VERBS = _helper.VERBS
+NUMBER_WORDS = {5: "five", 6: "six", 7: "seven", 8: "eight", 9: "nine", 10: "ten",
+                11: "eleven", 12: "twelve"}
+
+# The helper paragraph = the blank-line-delimited block holding the phrase
+# the check above already requires ("frozen verb table").
+paragraph = ""
+for block in readme.split("\n\n"):
+    if "frozen verb table" in block.lower():
+        paragraph = block
+        break
+check("the helper paragraph exists", bool(paragraph), True)
+for verb in sorted(VERBS):
+    check("README's helper paragraph names `%s`" % verb, "`%s`" % verb in paragraph, True)
+m = re.search(r"frozen verb table\*\*\s+of\s+(\w+)\s+entries", paragraph)
+check("the count is spelled out next to 'frozen verb table'", bool(m), True)
+check("...and the word matches len(VERBS) == %d" % len(VERBS),
+      m.group(1).lower() if m else None, NUMBER_WORDS.get(len(VERBS)))
+
+print()
+print("the Decky opt-in (helper 1.1.0 / agent 2.9.105) is documented")
+# install.sh writes a second opt-in sudoers file for Decky management; its
+# two grant lines take the `$([` shape and are filtered above (base pin stays
+# 9). The README must still name the switch, the root wrapper it enables, and
+# the grant file — that is the whole point of the filter: opt-in wrappers are
+# documented as prose, and this is the prose.
+installs_decky = "allow-decky" in install and "couchside-decky-loader" in install
+check("install.sh does ship the Decky opt-in (else this section is moot)",
+      installs_decky, True)
+if installs_decky:
+    check("README names the `couchside allow-decky` switch", "allow-decky" in readme, True)
+    check("README names the root wrapper couchside-decky-loader",
+          "couchside-decky-loader" in readme, True)
+    check("README names the grant file zz-couchside-decky", "zz-couchside-decky" in readme, True)
+    check("install.sh's decky grant lines are the filtered `$([` opt-in shape (base pin unchanged)",
+          all(ln.lstrip().startswith("$([") for ln in install.splitlines()
+              if "NOPASSWD:" in ln and "couchside-decky-loader@" in ln), True)
+    check("...and there are two of them (install + uninstall units)",
+          sum(1 for ln in install.splitlines()
+              if "NOPASSWD:" in ln and "couchside-decky-loader@" in ln), 2)
+
+print()
 if FAILURES:
     print("FAILED: %s" % ", ".join(FAILURES))
     print()

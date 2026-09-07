@@ -5,7 +5,12 @@
 # (see web-dev-proxy.py for why a proxy rather than CORS on the agent). Prints a
 # URL and a localStorage snippet that points the app at itself.
 #
-#   scripts/web-dev.sh [port]        # default 8099
+#   scripts/web-dev.sh [port] [agent args...]   # default port 8099
+#
+# Anything after the port is forwarded VERBATIM to the mock agent, e.g.
+#   scripts/web-dev.sh 8199 --mock-decky not_installed
+# so a harness config can boot the mock in a specific feature state without
+# an env var (the --mock-<feature> <state> pattern, CONVENTIONS.md).
 #
 # WHAT THIS IS FOR: presentational work -- card layouts, empty/loading/error
 # states, caps gating, theming, impact groupings. It renders payload states the
@@ -28,6 +33,8 @@
 set -euo pipefail
 
 PORT="${1:-8099}"
+# Drop the port; every remaining argument goes to the agent unchanged.
+[ "$#" -gt 0 ] && shift
 AGENT_PORT=$((PORT + 1))
 TOKEN="web-dev-$RANDOM"
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -77,7 +84,7 @@ PY
 
 echo "==> starting mock agent on 127.0.0.1:$AGENT_PORT"
 python3 "$ROOT/agent/couchsided.py" --mock --host 127.0.0.1 \
-  --port "$AGENT_PORT" --token "$TOKEN" >/tmp/couchside-web-dev-agent.log 2>&1 &
+  --port "$AGENT_PORT" --token "$TOKEN" "$@" >/tmp/couchside-web-dev-agent.log 2>&1 &
 AGENT_PID=$!
 
 for _ in $(seq 1 30); do

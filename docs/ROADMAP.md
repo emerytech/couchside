@@ -16,6 +16,22 @@ Each entry now carries a `✅ DONE` / `🟡 PARTIAL` / `📋 OPEN` banner with i
 
 ## 🔨 In Progress
 
+> 🔨 **IN PROGRESS 2026-09-06 — branch `feat/decky-manager` (agent 2.9.105 · helper 1.1.0 · app 2.9.58).** Spec: `docs/memory/project_decky-manager.md` (adversarially reviewed, revision 2). Was: 📋 OPEN since the 2026-08-27 reconciliation.
+> **Scope built:** (a) install / repair-or-update / uninstall Decky Loader from the phone via ONE root wrapper (`/etc/couchside/couchside-decky-loader`, an install.sh heredoc) run only through a pinned oneshot template unit, started by helper verb `decky.loader` or an exact-argv sudoers grant; (b) KI-004 made explicit — a stopped loader is a STATE (`installed_stopped`, `stopped_reason:self_stop_recent`) with the existing `restart-decky` action and Repair offered, never a silent restart; (c) plugin listing (filesystem, containment-checked), per-plugin update / uninstall / reload as jobs over the loader's loopback WebSocket (own bounded client), store browse/search + icon proxy + install by store id; (d) one box-side opt-in `couchside allow-decky on|off|status` (offered once by an interactive install), marker read by helper, unit and wrapper; (e) Utilities tenant `decky`, Setup `DeckyCard`, `app/app/decky.tsx`; (f) `--mock-decky <state>` harness.
+> **Not in scope (follow-ups F1–F9, spec §17):** enable/disable/hide/freeze; picking an older store version; "update all" / the Decky slice of "update everything"; loader self-update through Decky's own updater (deliberately never); prerelease channel; vendoring the wrapper into couchside-decky for plugin-only boxes (`needs_installer` until F5); marker-gating the standing `restart plugin_loader` grant (F9).
+> **Gate to Done:** the constraint checklist + the hardware items in spec §16 (helper-sandbox `--no-block` start of the template instance, the three-way Steam split, a real `/proc/net/tcp` row, the `/proc/<pid>/cmdline` fixture for `running`) observed on the Bazzite box in BOTH states — every one was UNVERIFIED at build time (KI-068…KI-072).
+>
+### Decky self-heal (update / reinstall from the phone) — now the Decky manager
+- **priority:** P2 · **risk:** low · **affects:** agent · **depends_on:** none
+- **Requested by likwidtek (Discord, 2026-07-22):** "a solution to decky crashing and needing
+  to be updated — an action to update or reinstall decky to keep it from crashing."
+- **Partly exists:** `restart-decky` is already an INJECTED action, gated on the unit existing
+  AND the NOPASSWD grant being present (`_inject_decky_action`). What does not exist is
+  update-or-reinstall.
+- Directly related to **KI-004** (Decky Loader vanishes on every Steam CEF restart; worked
+  around, not fixed). Worth reading that before designing — a reinstall button that papers
+  over a known root cause is worse than fixing the cause.
+
 > ✅ **DONE — shipped, verified on `main` (reconciled 2026-08-27). Move to Completed.**
 > Shipped and on main — LED Studio effect engine, presets, persistence, and OpenRGB are all wired (agent 2.9.101, caps ledcontrol+openrgb).
 >
@@ -811,6 +827,14 @@ network and is useful alone.
 > ✅ **DONE — shipped, verified on `main` (reconciled 2026-08-27). Move to Completed.**
 > Shipped — /api/update/flatpak + /api/update/os with the 'Update everything' button (flatpak then OS, staged-reboot prompt). Covers flatpak+OS; Steam and Decky-plugin updaters are not in the sequence. Move to Completed with that scope note.
 >
+> **Decky slice (2026-09-06, agent 2.9.105, branch `feat/decky-manager`):** the Decky manager
+> ships the *primitives* this entry needs — a per-plugin update job (`POST /api/decky/plugins/install`
+> with `install_type:"update"`, store hash verified by Decky Loader itself) and a loader Repair/update
+> (`POST /api/utilities/decky/run?op=install`, the pinned root wrapper) — but does NOT wire them
+> into the "Update everything" sequence. "Update all plugins" and the Decky slice of this button are
+> follow-up F3 in `docs/memory/project_decky-manager.md` §17 (shared sequencing/honesty rules:
+> a loader Repair restarts every plugin, KI-037, so it must never run silently inside the sequence).
+>
 ### One-button "update everything" from the phone
 - **priority:** P1 · **risk:** MEDIUM — allowlist-sensitive · **affects:** agent + app · **depends_on:** the sudo/NOPASSWD problem below
 - **Requested by likwidtek (Discord, 2026-07-22):** actions to update Bazzite (`ujust update`),
@@ -832,20 +856,6 @@ network and is useful alone.
   failure this project keeps paying for.
 - Flatpak (`flatpak update`) is per-user and needs no root — cheapest first slice, and the one
   that proves the pattern end to end.
-
-> 📋 **OPEN — still not built (reconciled 2026-08-27).**
-> Not built — only restart-decky (the already-shipped injected action) exists; the update/reinstall-Decky self-heal action does not.
->
-### Decky self-heal (update / reinstall from the phone)
-- **priority:** P2 · **risk:** low · **affects:** agent · **depends_on:** none
-- **Requested by likwidtek (Discord, 2026-07-22):** "a solution to decky crashing and needing
-  to be updated — an action to update or reinstall decky to keep it from crashing."
-- **Partly exists:** `restart-decky` is already an INJECTED action, gated on the unit existing
-  AND the NOPASSWD grant being present (`_inject_decky_action`). What does not exist is
-  update-or-reinstall.
-- Directly related to **KI-004** (Decky Loader vanishes on every Steam CEF restart; worked
-  around, not fixed). Worth reading that before designing — a reinstall button that papers
-  over a known root cause is worse than fixing the cause.
 
 > 🟡 **PARTIAL (reconciled 2026-08-27, verified on `main`).**
 > Partial — existing media tiles are enumerated and launchable (adopt-launch), but phone-driven install/packaging of per-service media shortcuts with cover art (and removal) is not built.

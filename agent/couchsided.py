@@ -49,7 +49,7 @@ except ImportError:  # pragma: no cover
     fcntl = None
 
 APP_NAME = "couchside-agent"
-VERSION = "2.9.104"
+VERSION = "2.9.105"
 UID = os.getuid()
 XDG_RUNTIME_DIR = "/run/user/%d" % UID
 
@@ -953,6 +953,11 @@ def _can_sudo_decky_restart():
     return _sudo_nopasswd_allows("systemctl restart plugin_loader")
 
 
+# True once _inject_decky_action added Restart Decky itself (not a config-defined
+# action of the same id), so _decky_actions_resync may pop it after an uninstall.
+_DECKY_ACTION_INJECTED = False
+
+
 def _inject_decky_action(mock):
     """Add the Restart Decky action on boxes that have Decky Loader installed
     AND the sudoers grant to restart it. Both gates matter: without the unit
@@ -960,7 +965,7 @@ def _inject_decky_action(mock):
     dead button costs more trust than a missing one. In --mock it is always
     added so the app's Actions tab can be developed off-box. Called after
     load_config; idempotent; a config-defined action of the same id wins."""
-    global ACTIONS, ACTION_ORDER
+    global ACTIONS, ACTION_ORDER, _DECKY_ACTION_INJECTED
     if "restart-decky" in ACTIONS:
         return
     if not mock:
@@ -971,6 +976,7 @@ def _inject_decky_action(mock):
     ACTIONS["restart-decky"] = dict(DECKY_RESTART_ACTION)
     if "restart-decky" not in ACTION_ORDER:
         ACTION_ORDER.append("restart-decky")
+    _DECKY_ACTION_INJECTED = True
 
 
 def _inject_bluetooth_action(mock):
@@ -10814,14 +10820,17 @@ def cec_available():
 # same frozen id set. Launch tenants: 'openpuck' (flash an nRF52840 nice!nano into a
 # Steam Controller 2 wireless receiver) and 'cec' (enable box->TV HDMI-CEC control).
 # ---------------------------------------------------------------------------
-_UTILITY_IDS = frozenset({"openpuck", "cec"})
+# 'decky' (Decky Loader install/repair/uninstall, spec project_decky-manager.md)
+# is a member of BOTH sets but its row appears in /api/utilities ONLY on a box
+# with a Steam root (utilities_state) — no client ever sees an `unsupported`.
+_UTILITY_IDS = frozenset({"openpuck", "cec", "decky"})
 
 # The state-CHANGING subset of _UTILITY_IDS, used by POST /api/utilities/<id>/run.
 # 'cec' is deliberately absent: enabling CEC is an install-time udev regroup of the
 # device into the `input` group (the agent already holds it) — NOT something the
 # daemon can do to itself at runtime (a running process cannot gain a supplementary
 # group, and the agent cannot edit its own unit). So there is no cec RUN action.
-_UTILITY_RUN_IDS = frozenset({"openpuck"})
+_UTILITY_RUN_IDS = frozenset({"openpuck", "decky"})
 
 # OpenPuck firmware — Couchside REFERENCES it (downloads at runtime from the fork's
 # GitHub release), it never embeds or compiles OpenPuck. OpenPuck is a separate
@@ -10877,6 +10886,11 @@ _UTILITY_META = {
         "label": "TV control over HDMI-CEC",
         "description": "Let the box power your TV and switch inputs over the HDMI "
                        "cable — no extra hardware.",
+    },
+    "decky": {
+        "label": "Decky Loader",
+        "description": "Install, repair or remove Decky Loader (the Quick Access "
+                       "plugin menu) on the box, and manage its plugins.",
     },
 }
 
@@ -10986,6 +11000,3057 @@ def _cec_util_state():
     return "no_adapter"
 
 
+# ---------------------------------------------------------------------------
+# Decky Loader manager (spec: docs/memory/project_decky-manager.md).
+#
+# Phase A: install / repair / uninstall Decky Loader from the phone, the loader
+# state machine behind GET /api/decky/loader, and the `decky` Utilities tenant.
+# Phase B (further down, "--- Phase B"): the fs plugin listing, the store
+# cache + icon proxy, the bounded `_DeckyWS` client and the plugin jobs; they
+# hang off the constants + the single `_decky_busy()` mutex defined here.
+#
+# THE ONE ROOT SURFACE. The agent never runs anything as root here. Both
+# privilege paths (`decky.loader` helper verb, or the exact-argv sudoers grant)
+# start the SAME pinned oneshot template unit `couchside-decky-loader@<mode>`,
+# whose only ExecStart is the fixed wrapper `/etc/couchside/couchside-decky-loader
+# %i`. `<mode>` is the VALUE of the frozen `_DECKY_UNITS` dict, chosen by the
+# route after `?op=` was matched against `_DECKY_LOADER_OPS` — the query string
+# is never an argv element (CLAUDE.md §3.1-3.2). The wrapper runs under PID 1,
+# not as our child, so an agent restart mid-install cannot kill it and the
+# helper's ProtectHome sandbox is irrelevant to it.
+#
+# WHY A LOCK FILE AND A RESULT FILE, NOT `systemctl is-active`: a `Type=oneshot`
+# unit is `activating` for its whole run, `inactive` after, and a
+# `ConditionPathExists` skip exits 0 with NOTHING run — so `systemctl start`
+# returning 0 proves nothing (§4.5). The wrapper takes a kernel flock on
+# /run/couchside/decky-loader.lock for its whole life and writes a tiny JSON
+# result (`running` FIRST, under the lock; then `done|failed|refused`), so the
+# running flag is the flock (`_decky_op_running`) and the verdict is the file,
+# CORRELATED to this request's `requested_at` (`_decky_op_status`) — a previous
+# run's `done` can never render as this run's outcome (the stale-result hole).
+#
+# DEGRADE CLOSED everywhere (§3.7): no Steam root -> the whole surface 404s and
+# no `decky` row appears in /api/utilities; wrapper/template missing ->
+# `needs_installer` and nothing is spawned; marker absent -> `needs_optin`;
+# a helper that predates the verb -> `helper_outdated` and the sudo grant is NOT
+# tried (a refusal is final, tests/test_helper_shim.py); a helper socket that is
+# present but silent -> `helper_unreachable`, never the sudo path.
+# ---------------------------------------------------------------------------
+
+# Every value a client can influence is looked up here, never interpolated.
+_DECKY_LOADER_OPS = ("install", "uninstall")
+_DECKY_UNITS = {"install": "couchside-decky-loader@install.service",
+                "uninstall": "couchside-decky-loader@uninstall.service"}
+# Plugin names the phone may never uninstall/reload: the Couchside panel is the
+# box's own management surface (NFKC-normalised match, Phase B enforces it).
+_DECKY_PROTECTED = frozenset({"Couchside"})
+
+# Filesystem roots as MODULE CONSTANTS so tests repoint them at fixtures (the
+# _DRM_DIR / _PROC_INPUT_DEVICES pattern). Never hardcode these paths below.
+_DECKY_UNIT = "/etc/systemd/system/plugin_loader.service"
+_DECKY_HOMEBREW = os.path.expanduser("~/homebrew")
+_DECKY_PLUGINS_DIR = os.path.join(_DECKY_HOMEBREW, "plugins")
+_DECKY_SERVICES_DIR = os.path.join(_DECKY_HOMEBREW, "services")
+_DECKY_LOADER_BIN = os.path.join(_DECKY_SERVICES_DIR, "PluginLoader")
+# Written by install.sh's wrapper (and by Decky's own installer/updater);
+# nothing in Decky READS it, so it is "the version as recorded", not proof.
+_DECKY_LOADER_VERSION_FILE = os.path.join(_DECKY_SERVICES_DIR, ".loader.version")
+# The unit text the wrapper installed. The live unit drifting from it means
+# Decky's own updater rewrote /etc/systemd/system/plugin_loader.service from
+# its unpinned main branch -> `unit_pinned:false`, Repair re-pins it.
+_DECKY_PINNED_UNIT = os.path.join(_DECKY_SERVICES_DIR, ".systemd",
+                                  "plugin_loader-release.service")
+_DECKY_SETTINGS = os.path.join(_DECKY_HOMEBREW, "settings", "loader.json")
+# The Couchside panel plugin folder (install.sh DECKY_PLUGIN_DIR).
+_DECKY_PANEL_DIR = os.path.join(_DECKY_PLUGINS_DIR, "Couchside")
+_DECKY_MARKER = "/etc/couchside/allow-decky"
+_DECKY_WRAPPER = "/etc/couchside/couchside-decky-loader"
+_DECKY_UNIT_TMPL = "/etc/systemd/system/couchside-decky-loader@.service"
+_DECKY_RUN = "/run/couchside"
+_DECKY_ICON_DIR = os.path.expanduser("~/.cache/couchside/decky-icons")
+_DECKY_JOB_FILE = os.path.expanduser("~/.cache/couchside/decky-job.json")
+_DECKY_STORE_URL = "https://plugins.deckbrew.xyz/plugins"
+_DECKY_CDN = "https://cdn.tzatzikiweeb.moe/file/steam-deck-homebrew/versions/"
+# `installed_by`: install.sh leaves BOTH of these; a Decky-plugin-only install
+# (couchside-decky/main.py, the KI-050 shape) leaves neither. `couchside.service`
+# being enabled is deliberately NOT used — both install kinds enable it.
+_DECKY_CLI_BIN = os.path.expanduser("~/.local/bin/couchside")
+_DECKY_JOURNAL_WRAPPER = "/etc/couchside/couchside-journal"
+# Loopback probes. /auth/token is Decky's UNAUTHENTICATED token hand-out (any
+# local process gets it — Decky's design, §1); a 200 there is "the API answers".
+# :8080/json is Steam's CEF debugger, which lists a `SharedJSContext` tab only
+# once Steam was started with the .cef-enable-remote-debugging flag present.
+_DECKY_TOKEN_URL = "http://127.0.0.1:1337/auth/token"
+_DECKY_CEF_URL = "http://127.0.0.1:8080/json"
+_DECKY_CEF_FLAG = ".cef-enable-remote-debugging"
+# /proc roots (repointable for fixtures). /proc/net/tcp is how the loader's
+# IDENTITY is checked: the row listening on 127.0.0.1:1337 must carry uid 0.
+_DECKY_PROC = "/proc"
+_DECKY_PROC_NET_TCP = "/proc/net/tcp"
+# 127.0.0.1:1337 as /proc/net/tcp spells it (little-endian hex address:port).
+_DECKY_TCP_LOCAL = "0100007F:0539"
+_DECKY_TCP_LISTEN = "0A"
+_DECKY_PLUGIN_LOADER_UNIT = "plugin_loader.service"
+
+# Emergency constant only: the RUNTIME choice between the helper verb and the
+# sudo grant is `_decky_helper_verb()` (present/outdated/absent/unreachable).
+# Flip to False if hardware item 1 (§16) shows a template-instance start cannot
+# run from the helper's sandbox — the sudo path then starts the same unit.
+_DECKY_VIA_HELPER = True
+
+# The request this agent process most recently started, for result correlation
+# (§4.5). `verdict` memoises the post-20 s did_not_start decision so the poll
+# does not re-spawn `systemctl show` forever for a request that never ran.
+_DECKY_REQ = {"mode": None, "requested_at": 0.0, "unit": None, "verdict": None}
+_DECKY_REQ_LOCK = threading.Lock()
+
+# TTL caches (§7 cost control: polled every 2 s during an op, app timeout 4 s).
+#   slow (30 s): marker / wrapper+template / helper probe / sudo -l / installed_by
+#   cef  (10 s): the :8080/json probe at a 0.5 s timeout
+#   fast  (2 s): plugin_loader unit facts, /auth/token, pgrep steam, flock
+# and the whole state memoised for _DECKY_STATE_TTL so concurrent polls share ONE
+# probe set (the flatpak GET spawns `sudo -l` per poll — do not copy that).
+_DECKY_SLOW_TTL = 30.0
+_DECKY_CEF_TTL = 10.0
+_DECKY_FAST_TTL = 2.0
+_DECKY_STATE_TTL = 0.5
+_DECKY_HELPER_CACHE = {"at": 0.0, "val": None}
+_DECKY_SLOW_CACHE = {"at": 0.0, "val": None}
+_DECKY_CEF_CACHE = {"at": 0.0, "val": None}
+_DECKY_FAST_CACHE = {"at": 0.0, "val": None}
+_DECKY_STATE_CACHE = {"at": 0.0, "val": None}
+_DECKY_STATE_LOCK = threading.Lock()
+# Last op state seen by the state machine, so the done-transition hooks
+# (token re-check, actions resync) fire exactly once per completed op.
+_DECKY_LAST_OP = {"key": None}
+# Log tail: read at most this many bytes from the end of the transcript.
+_DECKY_LOG_TAIL_BYTES = 64 * 1024
+_DECKY_LOG_MAX_LINES = 400
+_DECKY_LOG_DEFAULT_LINES = 100
+
+
+def _decky_supported():
+    """The whole /api/decky/* surface (and the `decky` Utilities row) exists only
+    on a box with a Steam root. Elsewhere it 404s like an old agent, so no client
+    ever sees an `unsupported` state — the same hide-yourself rule as
+    _inject_decky_action. Never raises."""
+    try:
+        return _steam_root() is not None
+    except Exception:
+        return False
+
+
+def _decky_invalidate():
+    """Drop every memoised probe so the next poll re-measures. Called on an op
+    transition and by tests; cheap, never raises."""
+    for c in (_DECKY_HELPER_CACHE, _DECKY_SLOW_CACHE, _DECKY_CEF_CACHE,
+              _DECKY_FAST_CACHE, _DECKY_STATE_CACHE):
+        c["at"] = 0.0
+        c["val"] = None
+
+
+def _decky_helper_verb():
+    """'present' | 'outdated' | 'absent' | 'unreachable', cached 30 s.
+
+    The probe is the verb itself with an argument its validator REJECTS
+    ('probe'): a 1.1.0 helper answers 'invalid argument for decky.loader'
+    (nothing spawned — validators run before handlers), a 1.0.0 helper answers
+    'unknown verb'. No new verb, no spawn, no root work, and the answer is
+    runtime-detectable without trusting a version string.
+
+    'unreachable' (socket FILE present, no or garbled answer: helper busy or
+    crashed) is deliberately distinct from 'absent': only a MISSING socket takes
+    the sudo path. Falling through to sudo on a silent helper-only box would tell
+    the owner to run `allow-decky on` for a grant that box never had."""
+    now = time.monotonic()
+    if _DECKY_HELPER_CACHE["val"] is not None and \
+            now - _DECKY_HELPER_CACHE["at"] < _DECKY_SLOW_TTL:
+        return _DECKY_HELPER_CACHE["val"]
+    try:
+        if not os.path.exists(HELPER_SOCKET):
+            val = "absent"
+        else:
+            r = _helper_call("decky.loader", "probe", timeout=5)
+            if not isinstance(r, dict):
+                val = "unreachable"
+            else:
+                err = r.get("error", "")
+                val = "outdated" if err == "unknown verb" else "present"
+    except Exception:
+        val = "unreachable"
+    _DECKY_HELPER_CACHE["at"] = now
+    _DECKY_HELPER_CACHE["val"] = val
+    return val
+
+
+def _decky_installer_ready():
+    """Wrapper executable AND unit template present. A quick-updated box (agent
+    only, no install.sh run) has neither -> every loader op answers
+    `needs_installer` and spawns nothing. Never raises."""
+    try:
+        return os.access(_DECKY_WRAPPER, os.X_OK) and os.path.exists(_DECKY_UNIT_TMPL)
+    except Exception:
+        return False
+
+
+def _decky_allowed():
+    """The box-side opt-in marker (`couchside allow-decky on`). Never raises."""
+    try:
+        return os.path.exists(_DECKY_MARKER)
+    except Exception:
+        return False
+
+
+def _decky_op_running():
+    """True while the wrapper holds /run/couchside/decky-loader.lock.
+
+    A SHARED, non-blocking flock probe: the wrapper holds the lock EXCLUSIVELY
+    for its whole life, so LOCK_SH|LOCK_NB raises BlockingIOError exactly while
+    an op runs. The shared lock is released immediately (and the wrapper's own
+    `flock -w 15` absorbs any overlap, so a poll can never make an op exit 75).
+    Absent file / unreadable / no fcntl (non-POSIX) -> idle. Never raises."""
+    if fcntl is None:
+        return False
+    path = os.path.join(_DECKY_RUN, "decky-loader.lock")
+    try:
+        fd = os.open(path, os.O_RDONLY)
+    except OSError:
+        return False
+    try:
+        try:
+            fcntl.flock(fd, fcntl.LOCK_SH | fcntl.LOCK_NB)
+        except BlockingIOError:
+            return True
+        except OSError:
+            return False
+        try:
+            fcntl.flock(fd, fcntl.LOCK_UN)
+        except OSError:
+            pass
+        return False
+    finally:
+        try:
+            os.close(fd)
+        except OSError:
+            pass
+
+
+def _decky_busy():
+    """The ONE mutex across loader ops and plugin jobs: returns what is busy
+    ('loader_op' | 'plugin_job') or None. Three sources, checked in order: the
+    wrapper flock, the plugin job slot (a record not yet `done`), and an
+    in-flight `loader/check` (it holds the one Decky socket) — the last two
+    both report 'plugin_job'. This is what stops a Repair from moving
+    `services/` under a mid-extract loader and a plugin op from connecting to
+    a loader mid-swap. Never raises."""
+    try:
+        if _decky_op_running():
+            return "loader_op"
+    except Exception:
+        return "loader_op"        # an unreadable lock is "busy", never "free"
+    try:
+        if _decky_job_active() is not None or _decky_check_in_flight():
+            return "plugin_job"
+    except Exception:
+        return "plugin_job"
+    return None
+
+
+_DECKY_RESULT_STATES = ("running", "done", "failed", "refused")
+_DECKY_TAG_RE = re.compile(r"v?[0-9]+(\.[0-9]+){0,3}(-[A-Za-z0-9.]{1,16})?")
+
+
+def _decky_read_result():
+    """The wrapper's atomic result JSON (`{"mode","state","ok","tag","at"}`),
+    shape-validated, or None. Every field is checked rather than trusted: the
+    file is root-written, but a truncated or half-moved copy must read as "no
+    result", never as a verdict. Never raises."""
+    path = os.path.join(_DECKY_RUN, "decky-loader.result")
+    try:
+        with open(path, "rb") as f:
+            d = json.loads(f.read(4096).decode("utf-8"))
+    except (OSError, ValueError, UnicodeDecodeError):
+        return None
+    if not isinstance(d, dict):
+        return None
+    mode, state, ok, tag, at = (d.get("mode"), d.get("state"), d.get("ok"),
+                                d.get("tag"), d.get("at"))
+    if mode not in _DECKY_LOADER_OPS or state not in _DECKY_RESULT_STATES:
+        return None
+    if not isinstance(ok, bool):
+        return None
+    if isinstance(at, bool) or not isinstance(at, (int, float)):
+        return None
+    if not isinstance(tag, str) or (tag and not _DECKY_TAG_RE.fullmatch(tag)):
+        tag = ""
+    return {"mode": mode, "state": state, "ok": ok, "tag": tag, "at": int(at)}
+
+
+def _decky_loader_log(n=None):
+    """Last `n` lines of the wrapper transcript (constant path, root 0644),
+    clamped 1..400; `{"lines": []}` when there is none. Reads only the tail of
+    the file so a runaway log cannot make a poll allocate its whole size.
+    Never raises."""
+    try:
+        n = int(n) if n is not None else _DECKY_LOG_DEFAULT_LINES
+    except (TypeError, ValueError):
+        n = _DECKY_LOG_DEFAULT_LINES
+    n = max(1, min(_DECKY_LOG_MAX_LINES, n))
+    path = os.path.join(_DECKY_RUN, "decky-loader.log")
+    try:
+        with open(path, "rb") as f:
+            f.seek(0, os.SEEK_END)
+            size = f.tell()
+            f.seek(max(0, size - _DECKY_LOG_TAIL_BYTES))
+            data = f.read(_DECKY_LOG_TAIL_BYTES)
+    except OSError:
+        return {"lines": []}
+    text = data.decode("utf-8", "replace")
+    lines = text.splitlines()
+    if size > _DECKY_LOG_TAIL_BYTES and lines:
+        lines = lines[1:]           # drop the partial first line of the window
+    return {"lines": lines[-n:]}
+
+
+def _unit_props(unit, props):
+    """`systemctl show` properties of a SYSTEM unit as a dict; {} on failure.
+    Parses Key=Value output because systemctl prints properties in vtable
+    order, not -p order (see real_units), so `--value` line order cannot be
+    trusted. The unit name is always a module literal. Never raises."""
+    argv = ["systemctl", "show"]
+    for p in props:
+        argv += ["-p", p]
+    argv.append(unit)
+    try:
+        r = subprocess.run(argv, capture_output=True, text=True, timeout=4)
+    except Exception:
+        return {}
+    out = {}
+    for line in (r.stdout or "").splitlines():
+        key, eq, value = line.partition("=")
+        if eq:
+            out[key.strip()] = value.strip()
+    return out
+
+
+def _unit_prop(unit, prop):
+    """One `systemctl show` property, '' when unknown. Never raises."""
+    return _unit_props(unit, (prop,)).get(prop, "")
+
+
+def _decky_loader_start(mode):
+    """Start the pinned oneshot unit for `mode` — a module literal chosen by the
+    route AFTER `?op=` matched `_DECKY_LOADER_OPS`; the argv element is
+    `_DECKY_UNITS[mode]`, never the query string.
+
+    Returns a dict, never raises. Order of refusals (each spawns NOTHING):
+    wrapper/template absent -> needs_installer; marker absent -> needs_optin;
+    busy -> busy+what; helper `outdated` -> helper_outdated (FINAL: the sudo
+    grant is not tried, rule 3 of tests/test_helper_shim.py); helper
+    `unreachable` -> helper_unreachable+retry (a present-but-silent socket is
+    NOT 'absent'). Then helper `present` -> the verb; only a MISSING socket takes
+    the sudo path, and only when sudoers ACTUALLY grants the exact argv
+    (last-match evaluated, _sudo_nopasswd_allows) — else needs_optin.
+    `started` is never taken from the start's exit code: _decky_confirm_started
+    waits for the flock or an activating unit."""
+    try:
+        if not _decky_installer_ready():
+            return {"started": False, "needs_installer": True}
+        if not _decky_allowed():
+            return {"started": False, "needs_optin": True}
+        what = _decky_busy()
+        if what:
+            return {"started": False, "busy": True, "what": what}
+        unit = _DECKY_UNITS[mode]
+        hv = _decky_helper_verb() if _DECKY_VIA_HELPER else "absent"
+        if hv == "outdated":
+            return {"started": False, "helper_outdated": True}
+        if hv == "unreachable":
+            return {"started": False, "helper_unreachable": True, "retry": True}
+        with _DECKY_REQ_LOCK:
+            _DECKY_REQ.update(mode=mode, requested_at=time.time(), unit=unit,
+                              verdict=None)
+        _DECKY_LAST_OP["key"] = None
+        _decky_invalidate()
+        if hv == "present":
+            r = _helper_call("decky.loader", mode, timeout=20)
+            if not isinstance(r, dict):
+                return {"started": False, "helper_unreachable": True, "retry": True}
+            if not r.get("ok"):
+                return {"started": False, "via": "helper",
+                        "detail": str(r.get("error") or r.get("detail") or "")[:200]}
+            return _decky_confirm_started(unit, via="helper")
+        if not _sudo_nopasswd_allows(unit):
+            return {"started": False, "needs_optin": True}
+        r = subprocess.run(["sudo", "-n", "/usr/bin/systemctl", "start",
+                            "--no-block", unit],
+                           capture_output=True, text=True, timeout=15)
+        if r.returncode != 0:
+            return {"started": False, "via": "sudo", "exit_code": r.returncode,
+                    "detail": (r.stderr or "").strip()[:200]}
+        return _decky_confirm_started(unit, via="sudo")
+    except Exception as e:
+        return {"started": False, "did_not_start": True,
+                "detail": "%s: %s" % (e.__class__.__name__, str(e)[:160])}
+
+
+def _decky_confirm_started(unit, via):
+    """`systemctl start --no-block` returns 0 for a condition-skipped unit and
+    before the wrapper runs, so wait <=3 s for the flock to be held or the unit
+    to be activating/active; otherwise read ConditionResult / Result /
+    ExecMainStatus and answer honestly (needs_optin for a skipped condition or
+    exit 77, busy for exit 75, did_not_start with the unit's Result= else).
+    Never raises."""
+    try:
+        deadline = time.monotonic() + 3.0
+        while time.monotonic() < deadline:
+            if _decky_op_running() or \
+                    _unit_prop(unit, "ActiveState") in ("activating", "active"):
+                return {"started": True, "via": via,
+                        "log": os.path.join(_DECKY_RUN, "decky-loader.log")}
+            time.sleep(0.2)
+        props = _unit_props(unit, ("ConditionResult", "Result", "ExecMainStatus"))
+        cond, res, st = (props.get("ConditionResult", ""), props.get("Result", ""),
+                         props.get("ExecMainStatus", ""))
+        if cond == "no" or st == "77":
+            return {"started": False, "needs_optin": True}
+        if st == "75":
+            return {"started": False, "busy": True, "what": "loader_op"}
+        return {"started": False, "did_not_start": True,
+                "detail": "unit %s result=%s status=%s" % (unit, res, st)}
+    except Exception as e:
+        return {"started": False, "did_not_start": True,
+                "detail": "%s: %s" % (e.__class__.__name__, str(e)[:160])}
+
+
+def _decky_op_status(lock_held, result):
+    """The `op` block of /api/decky/loader, correlated to THIS process's request.
+
+    Sources: the flock (`running` is the truth while held), the result file,
+    and `_DECKY_REQ`. A result is "fresh" only when its `at` >= floor(requested_at)
+    - 1 — an older `done` on disk is never this request's outcome; until a fresh
+    result or the lock appears the state is `starting`, and after 20 s of that
+    `systemctl show` on the instance decides `did_not_start` (with `needs_optin`
+    for a skipped condition / exit 77, `busy` for 75), memoised in `verdict`.
+    Lock free AND result `running` -> `interrupted` (SIGKILL/OOM: the EXIT trap
+    never ran). With no request in this process's life only that `interrupted`
+    case is reported — an old verdict is not resurrected as news. Never raises."""
+    with _DECKY_REQ_LOCK:
+        req = dict(_DECKY_REQ)
+    req_at = req.get("requested_at") or 0.0
+    fresh = bool(result) and bool(req_at) and \
+        result["at"] >= math.floor(req_at) - 1
+
+    def block(state, mode, ok, tag=None, at=None, detail="", **extra):
+        b = {"state": state, "mode": mode, "ok": ok, "tag": tag, "at": at,
+             "detail": detail}
+        b.update(extra)
+        return b
+
+    if lock_held:
+        mode = (result["mode"] if (result and result["state"] == "running")
+                else req.get("mode"))
+        return block("running", mode, None,
+                     tag=(result["tag"] or None) if result else None,
+                     at=result["at"] if result else (int(req_at) or None))
+    if result and result["state"] == "running":
+        if fresh or not req_at:
+            return block("interrupted", result["mode"], False,
+                         tag=result["tag"] or None, at=result["at"],
+                         detail="the installer stopped without recording a result")
+    if fresh and result["state"] in ("done", "failed", "refused"):
+        return block(result["state"], result["mode"], result["ok"],
+                     tag=result["tag"] or None, at=result["at"])
+    if not req_at:
+        return None
+    if req.get("verdict"):
+        return req["verdict"]
+    if time.time() - req_at > 20.0:
+        props = _unit_props(req.get("unit") or _DECKY_UNITS.get(req.get("mode"), ""),
+                            ("Result", "ExecMainStatus", "ConditionResult",
+                             "ActiveState"))
+        if props.get("ActiveState") in ("activating", "active"):
+            return block("starting", req.get("mode"), None, at=int(req_at))
+        st = props.get("ExecMainStatus", "")
+        if props.get("ConditionResult") == "no" or st == "77":
+            v = block("did_not_start", req.get("mode"), False, at=int(req_at),
+                      detail="not opted in (couchside allow-decky on)",
+                      needs_optin=True)
+        elif st == "75":
+            v = block("did_not_start", req.get("mode"), False, at=int(req_at),
+                      detail="another loader operation held the lock", busy=True)
+        else:
+            v = block("did_not_start", req.get("mode"), False, at=int(req_at),
+                      detail="unit %s result=%s status=%s"
+                             % (req.get("unit"), props.get("Result", ""), st))
+        with _DECKY_REQ_LOCK:
+            if _DECKY_REQ.get("requested_at") == req_at:
+                _DECKY_REQ["verdict"] = v
+        return v
+    return block("starting", req.get("mode"), None, at=int(req_at))
+
+
+def _decky_loader_installed():
+    """Decky Loader is INSTALLED: the unit file OR the loader binary exists —
+    mirrors install.sh decky_installed(). The plugins dir is deliberately not a
+    signal: uninstall keeps it, so plugins-dir litter is not an install. This is
+    the bool; `_decky_plugins_on_disk()` (Phase B) is the dict — two names for
+    two contracts. Never raises."""
+    try:
+        return os.path.isfile(_DECKY_UNIT) or os.path.exists(_DECKY_LOADER_BIN)
+    except Exception:
+        return False
+
+
+def _decky_read_small(path, cap=65536):
+    """Bytes of a small file (capped), or None. Never raises."""
+    try:
+        with open(path, "rb") as f:
+            return f.read(cap + 1)
+    except OSError:
+        return None
+
+
+def _decky_recorded_version():
+    """`services/.loader.version` as written by the wrapper ("as recorded" —
+    Decky never reads it, so it is provenance, not proof). None when absent or
+    not tag-shaped. Never raises."""
+    data = _decky_read_small(_DECKY_LOADER_VERSION_FILE, 256)
+    if not data:
+        return None
+    v = data.decode("utf-8", "replace").strip()
+    return v if _DECKY_TAG_RE.fullmatch(v) else None
+
+
+def _decky_channel():
+    """Decky's update channel from settings/loader.json `branch` (0 stable,
+    1 prerelease, 2 testing); None when the file is absent, unparsable (Decky
+    rewrites it non-atomically, settings.py:51-53) or the key is missing/odd.
+    Unknown is never reported as stable. Never raises."""
+    data = _decky_read_small(_DECKY_SETTINGS)
+    if data is None or len(data) > 65536:
+        return None
+    try:
+        d = json.loads(data.decode("utf-8"))
+    except (ValueError, UnicodeDecodeError):
+        return None
+    if not isinstance(d, dict):
+        return None
+    b = d.get("branch")
+    if isinstance(b, bool) or not isinstance(b, int) or b not in (0, 1, 2):
+        return None
+    return b
+
+
+def _decky_unit_pinned():
+    """True when the live plugin_loader unit is byte-equal to the copy the
+    wrapper installed, False when it drifted (Decky's own updater rewrote it
+    from main — Repair re-pins), None when either is unreadable. Never raises."""
+    live = _decky_read_small(_DECKY_UNIT)
+    pinned = _decky_read_small(_DECKY_PINNED_UNIT)
+    if live is None or pinned is None:
+        return None
+    return live == pinned
+
+
+def _decky_installed_by():
+    """'install.sh' (CLI + journal wrapper both present), 'plugin' (the panel
+    folder exists and neither install.sh artefact does — the KI-050 shape) or
+    'unknown'. Never raises."""
+    try:
+        cli = os.path.exists(_DECKY_CLI_BIN)
+        jw = os.path.exists(_DECKY_JOURNAL_WRAPPER)
+        if cli and jw:
+            return "install.sh"
+        if os.path.isdir(_DECKY_PANEL_DIR) and not cli and not jw:
+            return "plugin"
+    except Exception:
+        pass
+    return "unknown"
+
+
+def _decky_listener_uid():
+    """Who owns the 127.0.0.1:1337 LISTEN socket per /proc/net/tcp: 'root',
+    'other', or None (no listener / unreadable). Unreadable is None, never
+    'root' — a loader we cannot identify is `loader_down`, not trusted (§3.7).
+    Never raises."""
+    try:
+        with open(_DECKY_PROC_NET_TCP, "r", encoding="ascii", errors="replace") as f:
+            rows = f.read(1_000_000).splitlines()
+    except OSError:
+        return None
+    for line in rows[1:]:
+        parts = line.split()
+        if len(parts) < 8:
+            continue
+        if parts[1].upper() != _DECKY_TCP_LOCAL or parts[3].upper() != _DECKY_TCP_LISTEN:
+            continue
+        try:
+            return "root" if int(parts[7]) == 0 else "other"
+        except ValueError:
+            return None
+    return None
+
+
+def _decky_loader_is_root():
+    """True only when something listens on 127.0.0.1:1337 AND its uid is 0.
+    Consulted before any token is fetched (Phase B) — a user-level impostor on a
+    free port 1337 is `running_untrusted`, never "reachable". Never raises."""
+    return _decky_listener_uid() == "root"
+
+
+def _decky_token_answers():
+    """Does Decky's /auth/token answer (200, non-empty body) within 1 s? The
+    token itself is discarded here — never logged, never returned. Never raises."""
+    try:
+        req = urllib.request.Request(_DECKY_TOKEN_URL,
+                                     headers={"User-Agent": "couchside-agent/%s" % VERSION})
+        with urllib.request.urlopen(req, timeout=1.0) as r:
+            return r.status == 200 and bool(r.read(256).strip())
+    except Exception:
+        return False
+
+
+def _decky_cef_probe():
+    """Steam's CEF debugger at :8080/json, 0.5 s timeout, cached 10 s:
+    {'answers': bool, 'shared_js': bool}. `shared_js` is what matters — the
+    SharedJSContext tab exists only when Steam started WITH the remote-debugging
+    flag, which is the honest "Decky's menu can appear" signal. Never raises."""
+    now = time.monotonic()
+    c = _DECKY_CEF_CACHE
+    if c["val"] is not None and now - c["at"] < _DECKY_CEF_TTL:
+        return c["val"]
+    val = {"answers": False, "shared_js": False}
+    try:
+        req = urllib.request.Request(_DECKY_CEF_URL,
+                                     headers={"User-Agent": "couchside-agent/%s" % VERSION})
+        # No-redirect opener like every other Decky fetch: :8080 is a debug port,
+        # and a service squatting it must not be able to 3xx this probe somewhere
+        # else. A redirect becomes an HTTPError here -> caught -> "no SharedJSContext".
+        with _DECKY_NO_REDIRECT_OPENER.open(req, timeout=0.5) as r:
+            tabs = json.loads(r.read(2_000_000).decode("utf-8", "replace"))
+        val["answers"] = True
+        if isinstance(tabs, list):
+            val["shared_js"] = any(isinstance(t, dict)
+                                   and t.get("title") == "SharedJSContext"
+                                   for t in tabs)
+    except Exception:
+        pass
+    c["at"], c["val"] = now, val
+    return val
+
+
+def _decky_cef_flag_path():
+    """The remote-debugging flag inside the RESOLVED Steam root, or None when
+    there is no Steam root. Never raises."""
+    try:
+        root = _steam_root()
+    except Exception:
+        root = None
+    return os.path.join(root, _DECKY_CEF_FLAG) if root else None
+
+
+def _decky_cef_flag_mtime():
+    """mtime (epoch) of the CEF flag in the Steam root, or None. Never raises."""
+    p = _decky_cef_flag_path()
+    if not p:
+        return None
+    try:
+        return os.stat(p).st_mtime
+    except OSError:
+        return None
+
+
+def _decky_steam_pid():
+    """The OLDEST `steam` process pid (pgrep -o -x), or None. Never raises."""
+    try:
+        r = subprocess.run(["pgrep", "-o", "-x", "steam"], capture_output=True,
+                           text=True, timeout=3)
+        if r.returncode != 0:
+            return None
+        pid = (r.stdout or "").strip().splitlines()[0].strip()
+        return int(pid) if pid.isdigit() else None
+    except Exception:
+        return None
+
+
+def _decky_proc_start_epoch(pid):
+    """Process start time as an epoch, from /proc/<pid>/stat field 22
+    (starttime, clock ticks since boot) + /proc/stat btime. None on any
+    failure. The comm field can contain spaces/parens, so fields are taken
+    AFTER the last ')'. Never raises."""
+    try:
+        with open(os.path.join(_DECKY_PROC, str(int(pid)), "stat"), "r") as f:
+            stat = f.read(4096)
+        rest = stat[stat.rfind(")") + 2:].split()
+        # rest[0] is field 3 (state); field 22 (starttime) is rest[19].
+        ticks = int(rest[19])
+        btime = None
+        with open(os.path.join(_DECKY_PROC, "stat"), "r") as f:
+            for line in f:
+                if line.startswith("btime "):
+                    btime = int(line.split()[1])
+                    break
+        if btime is None:
+            return None
+        hz = os.sysconf("SC_CLK_TCK") if hasattr(os, "sysconf") else 100
+        return btime + ticks / float(hz or 100)
+    except Exception:
+        return None
+
+
+def _decky_uptime_s():
+    """Seconds since boot from /proc/uptime, or None. Never raises."""
+    try:
+        with open(os.path.join(_DECKY_PROC, "uptime"), "r") as f:
+            return float(f.read(64).split()[0])
+    except Exception:
+        return None
+
+
+def _decky_slow_facts():
+    """The 30 s-cached facts that change only when `allow-decky` or install.sh
+    runs: allowed, installer_ready, helper, elevated, installed_by. `elevated`
+    is helper-present OR an actual NOPASSWD grant for the install instance
+    (last-match evaluated). Never raises."""
+    now = time.monotonic()
+    c = _DECKY_SLOW_CACHE
+    if c["val"] is not None and now - c["at"] < _DECKY_SLOW_TTL:
+        return c["val"]
+    helper = _decky_helper_verb()
+    try:
+        elevated = helper == "present" or _sudo_nopasswd_allows(_DECKY_UNITS["install"])
+    except Exception:
+        elevated = False
+    val = {"allowed": _decky_allowed(), "installer_ready": _decky_installer_ready(),
+           "helper": helper, "elevated": bool(elevated),
+           "installed_by": _decky_installed_by()}
+    c["at"], c["val"] = now, val
+    return val
+
+
+def _decky_fast_facts():
+    """The 2 s-cached facts: plugin_loader unit state (+ the self-stop verdict),
+    whether Steam runs, the 1337 listener owner, /auth/token liveness, the flock.
+    One `systemctl show` covers ActiveState + Result + ActiveExitTimestampMonotonic
+    so a poll spawns it once, not twice. Never raises."""
+    now = time.monotonic()
+    c = _DECKY_FAST_CACHE
+    if c["val"] is not None and now - c["at"] < _DECKY_FAST_TTL:
+        return c["val"]
+    val = {"active": False, "stopped_reason": None, "steam_running": False,
+           "listener": None, "api_reachable": False, "lock_held": False}
+    try:
+        val["lock_held"] = _decky_op_running()
+        props = _unit_props(_DECKY_PLUGIN_LOADER_UNIT,
+                            ("ActiveState", "Result", "ActiveExitTimestampMonotonic"))
+        val["active"] = props.get("ActiveState") == "active"
+        if not val["active"] and props.get("Result") == "success":
+            # The loader's OWN `systemctl stop` after a steamwebhelper crash loop
+            # (main.py:103-118) exits cleanly; Restart=always never fires. A
+            # clean exit < 60 s ago is that shape; systemd's monotonic stamp is
+            # microseconds since boot.
+            try:
+                exit_us = int(props.get("ActiveExitTimestampMonotonic", ""))
+                up = _decky_uptime_s()
+                if up is not None and exit_us > 0 and (up - exit_us / 1e6) < 60.0:
+                    val["stopped_reason"] = "self_stop_recent"
+            except ValueError:
+                pass
+        val["steam_running"] = bool(_steam_client_running())
+        if val["active"]:
+            val["listener"] = _decky_listener_uid()
+            if val["listener"] == "root":
+                val["api_reachable"] = _decky_token_answers()
+    except Exception:
+        pass
+    c["at"], c["val"] = now, val
+    return val
+
+
+def _decky_op_key(op):
+    return (op.get("state"), op.get("mode"), op.get("at")) if op else None
+
+
+def _decky_loader_state():
+    """The full /api/decky/loader payload, memoised <=500 ms under one lock so
+    concurrent 2 s polls share a single probe set. Never raises (a probe that
+    explodes degrades to the closed value of its field).
+
+    `state` precedence: not_installed / installing|uninstalling (flock held) ->
+    installed_stopped (unit inactive; the KI-004 shape, with `stopped_reason`)
+    -> running_untrusted (1337 owned by a non-root uid: refuse to talk to it) ->
+    running_unreachable (root listener, /auth/token silent) -> the THREE-WAY
+    Steam split: running_no_steam (client not running: neutral copy) ->
+    installed_cef_flag_missing (Steam up, no flag in the resolved root: Repair)
+    -> installed_steam_needs_restart (flag present, CEF lists no SharedJSContext,
+    AND the flag is newer than Steam's process start — otherwise the cause is
+    unknown and the state is `running` with steam_ui_up:false, so "Restart
+    Steam" is never issued on a guess) -> running.
+
+    ORDER NOTE: the flock outranks `not_installed` — an install of a box that
+    has no loader yet must read `installing`, not `not_installed`."""
+    now = time.monotonic()
+    with _DECKY_STATE_LOCK:
+        c = _DECKY_STATE_CACHE
+        if c["val"] is not None and now - c["at"] < _DECKY_STATE_TTL:
+            return c["val"]
+        try:
+            val = _decky_compute_state()
+        except Exception as e:
+            val = _decky_base_payload()
+            val["state"] = "not_installed" if not _decky_loader_installed() else "running_unreachable"
+            val["detail"] = "%s: %s" % (e.__class__.__name__, str(e)[:120])
+        c["at"], c["val"] = time.monotonic(), val
+        return val
+
+
+def _decky_base_payload():
+    """Every field of the loader payload with its closed/unknown value, so the
+    shape is stable across states and agent versions (add-only)."""
+    return {"state": "not_installed", "installed": False, "active": False,
+            "api_reachable": False, "loader_is_root": False,
+            "steam_running": False, "steam_ui_up": False,
+            "cef_flag_present": False, "version": None, "channel": None,
+            "allowed": False, "installer_ready": False, "elevated": False,
+            "helper": "absent", "installed_by": "unknown", "panel": "missing",
+            "stopped_reason": None, "loader_update": None, "op": None,
+            "restart_action": None, "unit_pinned": None}
+
+
+def _decky_compute_state():
+    slow = _decky_slow_facts()
+    fast = _decky_fast_facts()
+    result = _decky_read_result()
+    op = _decky_op_status(fast["lock_held"], result)
+    # Done-transition hooks, once per completed op: forget the probe caches so
+    # `running` is only ever reported after a FRESH /auth/token answer (the
+    # wrapper's verdict is necessary, not sufficient), and resync the Actions
+    # tab (Restart Decky appears after an install, goes after an uninstall)
+    # without an agent restart.
+    key = _decky_op_key(op)
+    if key != _DECKY_LAST_OP["key"]:
+        _DECKY_LAST_OP["key"] = key
+        if op and op.get("state") in ("done", "failed", "interrupted", "refused"):
+            _DECKY_FAST_CACHE["at"] = 0.0
+            _DECKY_FAST_CACHE["val"] = None
+            _DECKY_CEF_CACHE["at"] = 0.0
+            _DECKY_CEF_CACHE["val"] = None
+            fast = _decky_fast_facts()
+            if op.get("state") == "done":
+                _decky_actions_resync(False)
+    installed = _decky_loader_installed()
+    p = _decky_base_payload()
+    p.update(slow)
+    p.update({"installed": installed, "active": fast["active"],
+              "api_reachable": fast["api_reachable"],
+              "loader_is_root": fast["listener"] == "root",
+              "steam_running": fast["steam_running"],
+              "stopped_reason": fast["stopped_reason"], "op": op,
+              "restart_action": "restart-decky" if "restart-decky" in ACTIONS else None})
+    if installed:
+        p["version"] = _decky_recorded_version()
+        p["channel"] = _decky_channel()
+        p["unit_pinned"] = _decky_unit_pinned()
+        # Filled by POST /api/decky/loader/check (cached 6 h); null until then.
+        p["loader_update"] = _decky_loader_update_cached()
+    try:
+        p["panel"] = "installed" if os.path.isdir(_DECKY_PANEL_DIR) else "missing"
+    except Exception:
+        p["panel"] = "missing"
+    flag_mtime = _decky_cef_flag_mtime()
+    p["cef_flag_present"] = flag_mtime is not None
+    if fast["lock_held"]:
+        mode = op.get("mode") if op else None
+        p["state"] = "uninstalling" if mode == "uninstall" else "installing"
+        return p
+    if not installed:
+        p["state"] = "not_installed"
+        return p
+    if not fast["active"]:
+        p["state"] = "installed_stopped"
+        return p
+    if fast["listener"] == "other":
+        p["state"] = "running_untrusted"
+        return p
+    if not fast["api_reachable"]:
+        p["state"] = "running_unreachable"
+        return p
+    if not fast["steam_running"]:
+        p["state"] = "running_no_steam"
+        return p
+    if flag_mtime is None:
+        p["state"] = "installed_cef_flag_missing"
+        return p
+    cef = _decky_cef_probe()
+    p["steam_ui_up"] = bool(cef["shared_js"])
+    if not cef["shared_js"]:
+        pid = _decky_steam_pid()
+        started = _decky_proc_start_epoch(pid) if pid else None
+        if started is not None and flag_mtime > started:
+            p["state"] = "installed_steam_needs_restart"
+            return p
+    p["state"] = "running"
+    return p
+
+
+def _decky_actions_resync(mock):
+    """Keep the Actions tab right across loader ops without an agent restart:
+    after an install the unit exists, so `_inject_decky_action` (idempotent,
+    re-checks the grant) can add Restart Decky; after an uninstall the entry is
+    popped — but ONLY if this agent injected it (`_DECKY_ACTION_INJECTED`), a
+    config-defined action of the same id is the user's and stays. Never raises."""
+    global _DECKY_ACTION_INJECTED, ACTION_ORDER
+    try:
+        if mock or _decky_loader_installed():
+            _inject_decky_action(mock)
+            return
+        if _DECKY_ACTION_INJECTED:
+            ACTIONS.pop("restart-decky", None)
+            if "restart-decky" in ACTION_ORDER:
+                ACTION_ORDER.remove("restart-decky")
+            _DECKY_ACTION_INJECTED = False
+    except Exception:
+        pass
+
+
+def _decky_util_state(mock):
+    """The `decky` Utilities row state = the loader state. Never raises."""
+    try:
+        return (mock_decky_loader_state() if mock else _decky_loader_state())["state"]
+    except Exception:
+        return "running_unreachable"
+
+
+# --- Phase B: plugin listing, store, icons, the bounded Decky WS client, jobs ---
+#
+# WHY THE LISTING IS FILESYSTEM-ONLY: Decky's router holds exactly ONE
+# WebSocket, so every connect we make displaces the Steam frontend for ~5 s
+# (verified, research localapi fact 18). A 2 s poll over the socket would keep
+# the Quick Access Menu permanently blinking. The truth on disk (plugin.json /
+# package.json / settings/loader.json) is what Decky itself reads, so the list
+# never needs the socket; the socket is opened only inside a JOB, for at most
+# _DECKY_WS_SESSION_S per session, and closed before the frontend reconnects.
+#
+# WHY ITS OWN WS CLIENT: `_WebOSWS.recv_text` has no frame-length cap and its
+# timeout is per recv(), so a user-level impostor on a free port 1337 could
+# drip bytes forever and pin the job thread (or announce a 2^62-byte frame and
+# OOM the agent). `_DeckyWS` caps frames at 1 MiB, recomputes ONE deadline
+# before every recv, collects at most 64 events and is only ever opened after
+# `_decky_loader_is_root()` said the 1337 listener is uid 0 (/proc/net/tcp).
+#
+# WHY A DISK JOB RECORD: install.sh restarts the agent routinely (:1500) and a
+# running job must never turn into `job:null` — the record is written to
+# ~/.cache/couchside/decky-job.json BEFORE any socket is opened, every phase
+# change rewrites it atomically, and main() resumes a record younger than 180 s
+# (fs + get_plugins read-back) or marks it `interrupted`.
+
+_DECKY_STORE_TTL_S = 900.0
+_DECKY_STORE_REFRESH_MIN_S = 60.0
+_DECKY_STORE_TIMEOUT_S = 8.0
+_DECKY_STORE_MAX_BYTES = 4 * 1024 * 1024
+_DECKY_ICON_MAX_BYTES = 1024 * 1024
+_DECKY_ICON_HOST = "cdn.tzatzikiweeb.moe"
+_DECKY_ICON_TIMEOUT_S = 8.0
+# plugin.json / package.json / loader.json reads are capped: an over-cap file
+# marks the entry `unreadable` (counted, omitted) rather than being parsed.
+_DECKY_META_CAP = 64 * 1024
+_DECKY_WS_HOST = "127.0.0.1"
+_DECKY_WS_PORT = 1337
+_DECKY_WS_PATH = "/ws"
+_DECKY_WS_GUID = "258EAFA5-E914-47DA-95CA-C5AB0DC85B11"
+_DECKY_WS_FRAME_MAX = 1024 * 1024
+_DECKY_WS_SESSION_S = 3.0          # the displaced frontend reconnects at ~5 s
+_DECKY_WS_MAX_EVENTS = 64
+# The ONLY routes the client will ever send (frozen; `call` raises otherwise).
+_DECKY_WS_ROUTES = frozenset({
+    "utilities/ping", "loader/get_plugins", "loader/reload_plugin",
+    "utilities/install_plugin", "utilities/confirm_plugin_install",
+    "utilities/cancel_plugin_install", "utilities/uninstall_plugin",
+    "updater/get_version_info",
+})
+# Decky's PluginInstallType enum (browser.py:29-34): INSTALL=0, REINSTALL=1,
+# UPDATE=2, DOWNGRADE=3 (OVERWRITE=4 is never sent).
+_DECKY_INSTALL_TYPES = {"install": 0, "reinstall": 1, "update": 2, "downgrade": 3}
+# Fixed route literal -> WS route constant for the two name-taking plugin ops.
+_DECKY_PLUGIN_OPS = {"uninstall": "utilities/uninstall_plugin",
+                     "reload": "loader/reload_plugin"}
+_DECKY_JOB_KINDS = ("install", "update", "uninstall", "reload")
+_DECKY_JOB_WATCHDOG_S = {"install": 150.0, "update": 150.0,
+                         "uninstall": 40.0, "reload": 20.0}
+_DECKY_JOB_RESUME_S = 180.0
+_DECKY_INSTALL_READBACK_S = 120.0
+_DECKY_UNINSTALL_VERIFY_S = 15.0
+_DECKY_CHECK_TTL_S = 6 * 3600.0
+_DECKY_TOKEN_RE = re.compile(r"[0-9a-f-]{36}")
+_DECKY_HASH_RE = re.compile(r"[0-9a-f]{64}")
+_DECKY_SEMVER_RE = re.compile(r"\d+(\.\d+){0,3}")
+_DECKY_STORE_ID_MAX = 10 ** 9
+
+_DECKY_STORE = {"plugins": [], "by_id": {}, "by_name": {}, "fetched_at": None,
+                "stale": False, "fetching": False, "error": None,
+                "last_attempt": 0.0, "refresh_at": 0.0}
+_DECKY_STORE_LOCK = threading.Lock()
+# The job slot: `rec` mirrors the disk record (None = no job ever / cleared).
+_DECKY_JOB = {"rec": None}
+_DECKY_JOB_LOCK = threading.Lock()
+# `updater/get_version_info` result cache (6 h) + the in-flight flag that
+# makes a check count as busy (it holds the one Decky socket).
+_DECKY_CHECK = {"val": None, "at": 0.0, "in_flight": False}
+_DECKY_CHECK_LOCK = threading.Lock()
+
+
+class _DeckyNoRedirect(urllib.request.HTTPRedirectHandler):
+    """A 3xx from the store or the CDN is a FAILURE, never followed: the
+    catalogue names the hash Decky will trust and the icon bytes are served to
+    the phone, so a redirect to an off-host or plaintext URL (a CDN 302 to
+    http://192.168.1.1/) must never become the box's data."""
+
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        return None
+
+
+_DECKY_NO_REDIRECT_OPENER = urllib.request.build_opener(_DeckyNoRedirect())
+
+
+def _decky_fetch_bounded(url, cap, timeout):
+    """GET `url` through the no-redirect opener, returning at most `cap` bytes
+    or None (any error, any 3xx, or a body over the cap). The URL is always
+    agent-built or host-pinned by the caller. Never raises."""
+    try:
+        req = urllib.request.Request(url, headers={
+            "User-Agent": "couchside-agent/%s" % VERSION,
+            "Accept": "*/*",
+        })
+        with _DECKY_NO_REDIRECT_OPENER.open(req, timeout=timeout) as r:
+            if r.status != 200:
+                return None
+            data = r.read(cap + 1)
+    except Exception:
+        return None
+    if len(data) > cap:
+        return None
+    return data
+
+
+def _semver_tuple(s):
+    """STRICT dotted-int version -> tuple, else None. Both sides of every update
+    comparison go through this; `_ver_tuple` (:1883) strips non-digits and turns
+    `2.0.17-f57f127` into (2, 0, 1757127), which would show phantom updates
+    Decky's own UI (compare-versions, strict semver) does not. Never raises."""
+    if not isinstance(s, str):
+        return None
+    s = s.strip()
+    if not _DECKY_SEMVER_RE.fullmatch(s):
+        return None
+    try:
+        return tuple(int(p) for p in s.split("."))
+    except ValueError:
+        return None
+
+
+def _decky_protected(name):
+    """True when the NFKC-normalised, stripped name is a protected plugin (the
+    Couchside panel — the box's own management surface). Never raises."""
+    try:
+        import unicodedata
+        return unicodedata.normalize("NFKC", str(name)).strip() in _DECKY_PROTECTED
+    except Exception:
+        return True                  # unknown is protected, never operable
+
+
+def _decky_read_json_capped(path):
+    """(obj, status): status 'ok' | 'absent' | 'unreadable'. Over-cap, undecodable
+    or unparsable files are `unreadable`, never partially trusted. Never raises."""
+    data = _decky_read_small(path, _DECKY_META_CAP)
+    if data is None:
+        try:
+            return None, ("unreadable" if os.path.exists(path) else "absent")
+        except Exception:
+            return None, "unreadable"
+    if len(data) > _DECKY_META_CAP:
+        return None, "unreadable"
+    try:
+        return json.loads(data.decode("utf-8")), "ok"
+    except (ValueError, UnicodeDecodeError):
+        return None, "unreadable"
+
+
+def _decky_name_ok(name):
+    return isinstance(name, str) and 1 <= len(name) <= 64 and name.isprintable()
+
+
+def _decky_scan_plugins():
+    """(dict name -> entry, unreadable count) from the plugins directory.
+
+    CONTAINMENT compares resolved against resolved: root = realpath(plugins
+    dir), computed per call, and a folder is listed only when
+    realpath(join(root, d)) still starts with root + os.sep. This is what makes
+    a symlinked ~/homebrew (SD-card relocation) and Bazzite's /home -> /var/home
+    list correctly instead of returning a confident empty list, while a folder
+    that is itself a symlink out of the tree is dropped. Folder names come only
+    from listdir; a folder is a plugin only when it carries plugin.json (the
+    loader's own rule, loader.py:196). Names are plugin.json["name"], never the
+    folder; a duplicate name keeps the first folder in sorted order (Decky's
+    find_plugin_folder returns its first match too). Never raises."""
+    out = {}
+    unreadable = 0
+    try:
+        root = os.path.realpath(_DECKY_PLUGINS_DIR)
+        names = sorted(os.listdir(_DECKY_PLUGINS_DIR))
+    except OSError:
+        return out, unreadable
+    for d in names:
+        try:
+            rp = os.path.realpath(os.path.join(root, d))
+            if not rp.startswith(root + os.sep) or not os.path.isdir(rp):
+                continue
+            pj_path = os.path.join(rp, "plugin.json")
+            if not os.path.isfile(pj_path):
+                continue
+        except OSError:
+            continue
+        pj, st = _decky_read_json_capped(pj_path)
+        if st != "ok" or not isinstance(pj, dict) or not _decky_name_ok(pj.get("name")):
+            unreadable += 1
+            continue
+        name = pj["name"]
+        if name in out:
+            continue
+        flags = pj.get("flags")
+        flags = [f for f in flags if isinstance(f, str)] if isinstance(flags, list) else []
+        author = pj.get("author")
+        author = author[:64] if isinstance(author, str) and author.isprintable() else None
+        version = None
+        pkg, pst = _decky_read_json_capped(os.path.join(rp, "package.json"))
+        if pst == "unreadable":
+            unreadable += 1
+            continue
+        if pst == "ok" and isinstance(pkg, dict):
+            v = pkg.get("version")
+            version = v.strip()[:32] if isinstance(v, str) and v.strip() else None
+        out[name] = {"name": name, "folder": d, "version": version,
+                     "author": author, "root": "root" in flags,
+                     "protected": _decky_protected(name)}
+    return out, unreadable
+
+
+def _decky_plugins_on_disk():
+    """The dict keyed by each folder's plugin.json["name"] — the membership set
+    every client-supplied plugin `name` is looked up in before any socket is
+    opened. `_decky_loader_installed()` is the bool; this is the dict. Never
+    raises."""
+    return _decky_scan_plugins()[0]
+
+
+def _decky_loader_flags():
+    """settings/loader.json flag lists as sets, or None when the file is absent,
+    over-cap or unparsable (Decky rewrites it NON-atomically, settings.py:51-53,
+    so a torn read is expected; unknown must never render as "enabled").
+    Never raises."""
+    d, st = _decky_read_json_capped(_DECKY_SETTINGS)
+    if st != "ok" or not isinstance(d, dict):
+        return None
+
+    def strs(key):
+        v = d.get(key)
+        return [x for x in v if isinstance(x, str)] if isinstance(v, list) else []
+    return {"disabled": set(strs("disabled_plugins")),
+            "hidden": set(strs("hiddenPlugins")),
+            "frozen": set(strs("frozenPlugins")),
+            "order": strs("pluginOrder")}
+
+
+def _decky_store_snapshot():
+    with _DECKY_STORE_LOCK:
+        return {"by_id": _DECKY_STORE["by_id"], "by_name": _DECKY_STORE["by_name"],
+                "plugins": _DECKY_STORE["plugins"],
+                "fetched_at": _DECKY_STORE["fetched_at"],
+                "stale": _DECKY_STORE["stale"], "fetching": _DECKY_STORE["fetching"],
+                "error": _DECKY_STORE["error"]}
+
+
+def _decky_plugin_update(entry, flags, store):
+    """{version, hash} when the store's versions[0] is STRICTLY newer than the
+    installed package.json version (both strict semver), else None. Frozen
+    plugins never update; a cold store cache or unknown flags is None (unknown,
+    never "up to date" and never a phantom). Replicates store.tsx:116-137."""
+    if flags is None or not store["fetched_at"]:
+        return None
+    if entry["name"] in flags["frozen"]:
+        return None
+    remote = store["by_name"].get(entry["name"])
+    if not remote or not remote.get("versions"):
+        return None
+    cur = _semver_tuple(entry.get("version"))
+    new = _semver_tuple(remote["versions"][0]["name"])
+    if cur is None or new is None or not new > cur:
+        return None
+    return {"version": remote["versions"][0]["name"], "hash": remote["versions"][0]["hash"]}
+
+
+def decky_plugins_payload():
+    """GET /api/decky/plugins: the fs listing (§8). `running` is `null` with
+    `running_probe:"unknown"` — the /proc/<pid>/cmdline probe ships only once a
+    VERBATIM fixture for a running and a stopped backend plus a control exists
+    (spec §16 item 5), so a dot is never shown on a guess. Sorted by
+    pluginOrder, then name. `available:false` (200, not 404) when the loader is
+    not installed, like /api/session/default. Never raises."""
+    job = decky_jobs_payload().get("job")
+    if not _decky_loader_installed():
+        return {"available": False, "source": "fs", "flags_available": False,
+                "running_probe": "unknown", "plugins": [], "updates": None,
+                "store_checked_at": None, "unreadable": 0, "job": job}
+    plugins, unreadable = _decky_scan_plugins()
+    flags = _decky_loader_flags()
+    store = _decky_store_snapshot()
+    rows = []
+    n_updates = 0
+    for e in plugins.values():
+        upd = _decky_plugin_update(e, flags, store)
+        if upd:
+            n_updates += 1
+        rows.append({
+            "name": e["name"], "folder": e["folder"], "version": e["version"],
+            "author": e["author"], "root": e["root"],
+            "disabled": (e["name"] in flags["disabled"]) if flags else None,
+            "hidden": (e["name"] in flags["hidden"]) if flags else None,
+            "frozen": (e["name"] in flags["frozen"]) if flags else None,
+            "running": None, "protected": e["protected"], "update": upd,
+        })
+    order = {n: i for i, n in enumerate(flags["order"])} if flags else {}
+    rows.sort(key=lambda r: (order.get(r["name"], len(order)), r["name"]))
+    warm = bool(flags) and bool(store["fetched_at"])
+    return {"available": True, "source": "fs", "flags_available": flags is not None,
+            "running_probe": "unknown", "plugins": rows,
+            "updates": n_updates if warm else None,
+            "store_checked_at": store["fetched_at"], "unreadable": unreadable,
+            "job": job}
+
+
+# --- store -------------------------------------------------------------------
+
+def _decky_image_url_ok(u):
+    """Keep an image_url only when it is https on EXACTLY the CDN host; else
+    None (the one field normalised to null rather than dropping the entry: the
+    loader treats it as optional too). Never raises."""
+    try:
+        if not isinstance(u, str) or len(u) > 1024:
+            return None
+        p = urlparse(u)
+        if p.scheme != "https" or p.hostname != _DECKY_ICON_HOST:
+            return None
+        return u
+    except Exception:
+        return None
+
+
+def _decky_store_normalise_entry(raw):
+    """One store entry, normalised BY REJECTION (§3): any violation returns
+    None, nothing is repaired. The only trim is `description` (display-only)
+    and the only null-not-reject field is `image_url`. Never raises."""
+    try:
+        if not isinstance(raw, dict):
+            return None
+        pid = raw.get("id")
+        if isinstance(pid, bool) or not isinstance(pid, int) or not 0 < pid < _DECKY_STORE_ID_MAX:
+            return None
+        name = raw.get("name")
+        if not _decky_name_ok(name):
+            return None
+        author = raw.get("author")
+        if not isinstance(author, str) or len(author) > 64 or not author.isprintable():
+            return None
+        desc = raw.get("description")
+        if not isinstance(desc, str):
+            return None
+        desc = desc[:400]
+        tags = raw.get("tags")
+        if not isinstance(tags, list) or len(tags) > 10:
+            return None
+        for t in tags:
+            if not isinstance(t, str) or not 1 <= len(t) <= 24 or not t.isprintable():
+                return None
+        dl = raw.get("downloads")
+        if isinstance(dl, bool) or not isinstance(dl, int) or dl < 0:
+            return None
+        created, updated = raw.get("created"), raw.get("updated")
+        for s in (created, updated):
+            if not isinstance(s, str) or len(s) > 32:
+                return None
+        vers = raw.get("versions")
+        if not isinstance(vers, list) or not vers:
+            return None
+        out_v = []
+        for v in vers[:5]:
+            if not isinstance(v, dict):
+                return None
+            vn, vh, vc = v.get("name"), v.get("hash"), v.get("created")
+            if not isinstance(vn, str) or not 1 <= len(vn) <= 32:
+                return None
+            if not isinstance(vh, str) or not _DECKY_HASH_RE.fullmatch(vh):
+                return None
+            if not isinstance(vc, str) or len(vc) > 32:
+                return None
+            out_v.append({"name": vn, "hash": vh, "created": vc})
+        return {"id": pid, "name": name, "author": author, "description": desc,
+                "tags": list(tags), "downloads": dl, "created": created,
+                "updated": updated, "image_url": _decky_image_url_ok(raw.get("image_url")),
+                "versions": out_v}
+    except Exception:
+        return None
+
+
+def _decky_store_normalise(raw):
+    """The store list -> kept entries (a non-list body keeps nothing). Never
+    raises."""
+    if not isinstance(raw, list):
+        return []
+    out = []
+    seen = set()
+    for r in raw:
+        e = _decky_store_normalise_entry(r)
+        if e is None or e["id"] in seen:
+            continue
+        seen.add(e["id"])
+        out.append(e)
+    return out
+
+
+def _decky_store_install(entries, fetched_at):
+    """Swap the store cache in one step (under the lock)."""
+    with _DECKY_STORE_LOCK:
+        _DECKY_STORE["plugins"] = entries
+        _DECKY_STORE["by_id"] = {e["id"]: e for e in entries}
+        _DECKY_STORE["by_name"] = {e["name"]: e for e in entries}
+        _DECKY_STORE["fetched_at"] = fetched_at
+        _DECKY_STORE["stale"] = False
+        _DECKY_STORE["error"] = None
+
+
+def _decky_store_fetch():
+    """The background fetch (§9): constant URL, no query, no-redirect opener,
+    4 MiB cap, 8 s timeout; a failure keeps the previous copy and flags it
+    `stale` — never a guessed "no updates". Runs in its own thread, never
+    inside a GET handler. Never raises."""
+    data = None
+    try:
+        data = _decky_fetch_bounded(_DECKY_STORE_URL, _DECKY_STORE_MAX_BYTES,
+                                    _DECKY_STORE_TIMEOUT_S)
+        entries = []
+        if data is not None:
+            try:
+                entries = _decky_store_normalise(json.loads(data.decode("utf-8")))
+            except (ValueError, UnicodeDecodeError):
+                entries = []
+        if entries:
+            _decky_store_install(entries, int(time.time()))
+        else:
+            with _DECKY_STORE_LOCK:
+                _DECKY_STORE["stale"] = bool(_DECKY_STORE["fetched_at"])
+                _DECKY_STORE["error"] = ("store unreachable" if data is None
+                                         else "store answered nothing usable")
+    except Exception as e:
+        with _DECKY_STORE_LOCK:
+            _DECKY_STORE["stale"] = bool(_DECKY_STORE["fetched_at"])
+            _DECKY_STORE["error"] = e.__class__.__name__
+    finally:
+        with _DECKY_STORE_LOCK:
+            _DECKY_STORE["fetching"] = False
+            _DECKY_STORE["last_attempt"] = time.monotonic()
+
+
+def _decky_store_kick(force=False):
+    """Start a background fetch if none runs and the marker is present (a fetch
+    LEAVES the LAN, so it is marker-gated even when a token-only GET asks).
+    Returns True when a fetch was started. `force` skips the 30 s backoff
+    between demand-driven attempts. Never raises."""
+    if not _decky_allowed():
+        return False
+    with _DECKY_STORE_LOCK:
+        if _DECKY_STORE["fetching"]:
+            return False
+        if not force and time.monotonic() - _DECKY_STORE["last_attempt"] < 30.0:
+            return False
+        _DECKY_STORE["fetching"] = True
+    try:
+        threading.Thread(target=_decky_store_fetch, name="decky-store",
+                         daemon=True).start()
+    except Exception:
+        with _DECKY_STORE_LOCK:
+            _DECKY_STORE["fetching"] = False
+        return False
+    return True
+
+
+def _decky_install_type(installed_version, remote_version, have_listing=True):
+    """'install' | 'update' | 'reinstall' | 'downgrade' | None, by strict
+    semver comparison; an unparsable installed version is REINSTALL, presented
+    as such (never silently INSTALL). None only when the fs listing itself was
+    unavailable."""
+    if not have_listing:
+        return None
+    if installed_version is None:
+        return "install"
+    cur, new = _semver_tuple(installed_version), _semver_tuple(remote_version)
+    if cur is None or new is None or cur == new:
+        return "reinstall"
+    return "update" if new > cur else "downgrade"
+
+
+def decky_store_payload():
+    """GET /api/decky/store: serves the CACHE, never fetches on demand; a cold
+    cache answers {available:false, fetching:true} at once and a background
+    fetch starts (marker permitting); an expired TTL likewise refreshes in the
+    background while the old copy is served. Search/sort are phone-side over
+    this already-capped list. Never raises."""
+    store = _decky_store_snapshot()
+    now = time.monotonic()
+    with _DECKY_STORE_LOCK:
+        expired = (_DECKY_STORE["fetched_at"] is not None
+                   and time.time() - _DECKY_STORE["fetched_at"] > _DECKY_STORE_TTL_S)
+    if store["fetched_at"] is None or expired:
+        _decky_store_kick()
+        store = _decky_store_snapshot()
+    if store["fetched_at"] is None:
+        return {"available": False, "fetching": bool(store["fetching"]), "count": 0,
+                "fetched_at": None, "stale": False, "plugins": [],
+                "error": store["error"]}
+    installed = {}
+    have_listing = False
+    if _decky_loader_installed():
+        installed = _decky_plugins_on_disk()
+        have_listing = True
+    rows = []
+    for e in store["plugins"]:
+        inst = installed.get(e["name"])
+        iv = inst["version"] if inst else None
+        rows.append({
+            "id": e["id"], "name": e["name"], "author": e["author"],
+            "description": e["description"], "tags": e["tags"],
+            "downloads": e["downloads"], "updated": e["updated"],
+            "has_icon": e["image_url"] is not None,
+            "installed_version": iv,
+            "update_available": _decky_install_type(iv, e["versions"][0]["name"],
+                                                    have_listing) == "update" if inst else False,
+            "install_type": (_decky_install_type(iv, e["versions"][0]["name"], have_listing)
+                             if inst else ("install" if have_listing else None)),
+            "versions": e["versions"],
+        })
+    return {"available": True, "fetching": bool(store["fetching"]), "count": len(rows),
+            "fetched_at": store["fetched_at"], "stale": bool(store["stale"]),
+            "plugins": rows, "error": store["error"]}
+
+
+def decky_store_refresh():
+    """POST /api/decky/store/refresh (marker-gated by the route): at most one
+    forced fetch per 60 s; the fetch runs in a thread and the app re-polls.
+    Never raises."""
+    with _DECKY_STORE_LOCK:
+        now = time.monotonic()
+        allowed = now - _DECKY_STORE["refresh_at"] >= _DECKY_STORE_REFRESH_MIN_S
+        if allowed:
+            _DECKY_STORE["refresh_at"] = now
+    started = _decky_store_kick(force=True) if allowed else False
+    store = _decky_store_snapshot()
+    return {"refreshed": started, "fetching": bool(store["fetching"]),
+            "fetched_at": store["fetched_at"]}
+
+
+def _decky_sniff_image(data):
+    """`_sniff_image` plus AVIF (an ISO-BMFF `ftypavif` brand at offset 4),
+    since the store serves .avif icons and `has_icon` must never advertise a
+    tile the sniff would then refuse."""
+    mime = _sniff_image(data)
+    if mime:
+        return mime
+    if len(data) >= 12 and data[4:12] == b"ftypavif":
+        return "image/avif"
+    return None
+
+
+def _decky_icon_bytes(store_id):
+    """(bytes, mime) for a store icon, or None. The id is an INT the route
+    validated by shape and looked up in the box's own cache; the on-disk name
+    is str(int), never the request. Served from
+    realpath(_DECKY_ICON_DIR)/<id> when present (token-only), else fetched
+    from the entry's host-pinned image_url through the no-redirect opener,
+    <=1 MiB, sniffed (incl. AVIF) and written atomically — but ONLY when the
+    marker is present (a fetch leaves the LAN). Never raises."""
+    try:
+        sid = int(store_id)
+        if sid <= 0:
+            return None
+        with _DECKY_STORE_LOCK:
+            entry = _DECKY_STORE["by_id"].get(sid)
+        root = os.path.realpath(_DECKY_ICON_DIR)
+        path = os.path.join(root, str(sid))
+        if not os.path.realpath(path).startswith(root + os.sep):
+            return None
+        try:
+            with open(path, "rb") as f:
+                data = f.read(_DECKY_ICON_MAX_BYTES + 1)
+            if len(data) <= _DECKY_ICON_MAX_BYTES:
+                mime = _decky_sniff_image(data)
+                if mime:
+                    return data, mime
+        except OSError:
+            pass
+        if not entry or not entry.get("image_url") or not _decky_allowed():
+            return None
+        url = _decky_image_url_ok(entry["image_url"])   # re-checked on the URL fetched
+        if not url:
+            return None
+        data = _decky_fetch_bounded(url, _DECKY_ICON_MAX_BYTES, _DECKY_ICON_TIMEOUT_S)
+        if not data:
+            return None
+        mime = _decky_sniff_image(data)
+        if not mime:
+            return None
+        try:
+            os.makedirs(root, exist_ok=True)
+            fd, tmp = tempfile.mkstemp(prefix=".icon-", dir=root)
+            with os.fdopen(fd, "wb") as f:
+                f.write(data)
+            os.replace(tmp, path)
+        except OSError:
+            pass                                    # served anyway; cache is best-effort
+        return data, mime
+    except Exception:
+        return None
+
+
+# --- the bounded Decky WebSocket client --------------------------------------
+
+class _DeckyWSError(Exception):
+    """A route-level error reply (type -1) or a discarded call (type 2)."""
+
+
+class _DeckyWSClosed(Exception):
+    """The loader closed the socket (or it died) mid-session: the outcome is
+    UNKNOWN and the disk read-back decides — never `failed` from this alone."""
+
+
+class _DeckyWS:
+    """A minimal, BOUNDED RFC 6455 client for Decky's /ws (research localapi
+    facts 7, 12, 18, 22, verified against v3.2.8): masked client frames, the
+    Sec-WebSocket-Accept check, a 1 MiB frame cap (close + raise beyond it),
+    ONE deadline per call recomputed before every recv, <=64 collected events,
+    ping/pong ignored, a close frame on exit, and a hard whole-session budget.
+
+    Wire format: CALL {"type":0,"route","args","id"} -> REPLY {"type":1,"id",
+    "result"} | ERROR {"type":-1,"id","error":{name,message}} | DISCARD
+    {"type":2,"id"}; the client acks with {"type":3,"id"} (else the backend
+    keeps the reply in pending_responses); EVENT {"type":5,"event","args"}.
+    Ids come from SystemRandom so a stale FULL_SYNC can never collide.
+
+    Opened ONLY by callers that already checked `_decky_loader_is_root()` and
+    fetched a shape-validated token; `call` refuses any route outside
+    `_DECKY_WS_ROUTES` before a byte is sent."""
+
+    def __init__(self, token, budget_s=_DECKY_WS_SESSION_S):
+        self.deadline = time.monotonic() + float(budget_s)
+        self.events = []
+        self.sock = None
+        self._rng = random.SystemRandom()
+        self.sock = socket.create_connection((_DECKY_WS_HOST, _DECKY_WS_PORT),
+                                             timeout=self._remaining())
+        self._handshake(token)
+
+    # -- plumbing --
+    def _remaining(self, until=None):
+        end = self.deadline if until is None else min(self.deadline, until)
+        left = end - time.monotonic()
+        if left <= 0:
+            raise socket.timeout("decky ws budget exhausted")
+        return left
+
+    def _handshake(self, token):
+        key = base64.b64encode(os.urandom(16)).decode()
+        path = "%s?auth=%s" % (_DECKY_WS_PATH, token)
+        req = ("GET %s HTTP/1.1\r\nHost: %s:%d\r\nUpgrade: websocket\r\n"
+               "Connection: Upgrade\r\nSec-WebSocket-Key: %s\r\n"
+               "Sec-WebSocket-Version: 13\r\nUser-Agent: couchside-agent/%s\r\n\r\n"
+               % (path, _DECKY_WS_HOST, _DECKY_WS_PORT, key, VERSION))
+        self.sock.settimeout(self._remaining())
+        self.sock.sendall(req.encode("ascii"))
+        resp = b""
+        while b"\r\n\r\n" not in resp:
+            if len(resp) > 16384:
+                raise IOError("decky ws handshake too large")
+            self.sock.settimeout(self._remaining())
+            chunk = self.sock.recv(1024)
+            if not chunk:
+                raise _DeckyWSClosed("closed during handshake")
+            resp += chunk
+        head, _, rest = resp.partition(b"\r\n\r\n")
+        status = head.split(b"\r\n", 1)[0]
+        if b" 101 " not in status:
+            raise IOError("decky ws handshake rejected: %s"
+                          % status.decode("ascii", "replace")[:80])
+        accept = base64.b64encode(
+            hashlib.sha1((key + _DECKY_WS_GUID).encode()).digest())
+        if not re.search(rb"(?im)^sec-websocket-accept:\s*" + re.escape(accept) + rb"\s*$",
+                         head):
+            raise IOError("decky ws accept mismatch")
+        self._buf = rest
+
+    def _recv_exact(self, n, until):
+        buf = self._buf[:n]
+        self._buf = self._buf[n:]
+        while len(buf) < n:
+            self.sock.settimeout(self._remaining(until))
+            chunk = self.sock.recv(min(65536, n - len(buf)))
+            if not chunk:
+                raise _DeckyWSClosed("closed mid-frame")
+            buf += chunk
+        return buf
+
+    def _send_frame(self, opcode, payload=b""):
+        n = len(payload)
+        hdr = bytes([0x80 | opcode])
+        if n < 126:
+            hdr += bytes([0x80 | n])
+        elif n < 65536:
+            hdr += bytes([0x80 | 126]) + struct.pack("!H", n)
+        else:
+            hdr += bytes([0x80 | 127]) + struct.pack("!Q", n)
+        mask = os.urandom(4)
+        masked = bytes(b ^ mask[i % 4] for i, b in enumerate(payload))
+        self.sock.settimeout(self._remaining())
+        self.sock.sendall(hdr + mask + masked)
+
+    def _recv_frame(self, until):
+        b0, b1 = self._recv_exact(2, until)
+        opcode, length = b0 & 0x0F, b1 & 0x7F
+        if length == 126:
+            length = struct.unpack("!H", self._recv_exact(2, until))[0]
+        elif length == 127:
+            length = struct.unpack("!Q", self._recv_exact(8, until))[0]
+        if length > _DECKY_WS_FRAME_MAX:
+            self.close()
+            raise IOError("decky ws frame over cap (%d bytes)" % length)
+        if b1 & 0x80:                                   # server frames are never masked
+            self._recv_exact(4, until)
+        payload = self._recv_exact(length, until) if length else b""
+        return opcode, payload
+
+    def _recv_message(self, until):
+        """Next TEXT message as a dict (None for non-JSON / non-dict); raises
+        _DeckyWSClosed on a close frame. Ping/pong are skipped."""
+        while True:
+            opcode, payload = self._recv_frame(until)
+            if opcode == 0x8:
+                raise _DeckyWSClosed("closed by loader")
+            if opcode in (0x9, 0xA):
+                continue
+            if opcode not in (0x1, 0x0):
+                continue
+            try:
+                msg = json.loads(payload.decode("utf-8"))
+            except (ValueError, UnicodeDecodeError):
+                return None
+            return msg if isinstance(msg, dict) else None
+
+    def _note_event(self, msg):
+        if len(self.events) < _DECKY_WS_MAX_EVENTS:
+            args = msg.get("args")
+            self.events.append({"event": msg.get("event"),
+                                "args": args if isinstance(args, list) else []})
+
+    # -- API --
+    def call(self, route, *args, **kw):
+        """Send one CALL and wait for ITS reply (type 1/-1/2, matching id),
+        acking it; events seen meanwhile go to `self.events`. `timeout` (kw)
+        bounds this call inside the session budget. Raises RuntimeError for a
+        route outside the frozenset BEFORE anything is sent."""
+        if route not in _DECKY_WS_ROUTES:
+            raise RuntimeError("decky ws route not allowlisted: %r" % (route,))
+        timeout = kw.get("timeout")
+        until = (time.monotonic() + float(timeout)) if timeout else None
+        call_id = self._rng.randrange(2 ** 40, 2 ** 52)
+        self._send_frame(0x1, json.dumps({"type": 0, "route": route, "args": list(args),
+                                          "id": call_id}).encode("utf-8"))
+        while True:
+            msg = self._recv_message(until)
+            if msg is None:
+                continue
+            t = msg.get("type")
+            if t == 5:
+                self._note_event(msg)
+                continue
+            if msg.get("id") != call_id:
+                continue
+            if t == 1:
+                try:
+                    self._send_frame(0x1, json.dumps({"type": 3, "id": call_id}).encode())
+                except Exception:
+                    pass
+                return msg.get("result")
+            if t == -1:
+                err = msg.get("error")
+                text = ""
+                if isinstance(err, dict):
+                    text = str(err.get("message") or err.get("error") or err.get("name") or "")
+                elif err is not None:
+                    text = str(err)
+                raise _DeckyWSError(text[:200] or "decky route error")
+            if t == 2:
+                raise _DeckyWSError("call discarded (plugin stopped)")
+
+    def wait_event(self, name, match, timeout=None):
+        """Read frames until an EVENT `name` whose args satisfy `match(args)`
+        appears (already-collected events are checked first); returns its args
+        or raises socket.timeout at the deadline."""
+        for ev in self.events:
+            if ev["event"] == name and match(ev["args"]):
+                return ev["args"]
+        until = (time.monotonic() + float(timeout)) if timeout else None
+        while True:
+            msg = self._recv_message(until)
+            if not msg or msg.get("type") != 5:
+                continue
+            self._note_event(msg)
+            args = msg.get("args")
+            if msg.get("event") == name and isinstance(args, list) and match(args):
+                return args
+
+    def close(self):
+        s = self.sock
+        self.sock = None
+        if s is None:
+            return
+        try:
+            s.settimeout(0.2)
+            s.sendall(b"\x88\x80" + os.urandom(4))       # masked empty close
+        except Exception:
+            pass
+        try:
+            s.close()
+        except Exception:
+            pass
+
+
+def _decky_fetch_token():
+    """Decky's API token, or None. Fetched ONLY after `_decky_loader_is_root()`
+    (a user-level impostor on 1337 never gets a request), shape-validated
+    (36 chars of [0-9a-f-]) before it is placed in the handshake request line,
+    re-fetched per session because it rotates on every loader restart. Never
+    logged, never returned to a client. Never raises."""
+    try:
+        if not _decky_loader_is_root():
+            return None
+        req = urllib.request.Request(_DECKY_TOKEN_URL,
+                                     headers={"User-Agent": "couchside-agent/%s" % VERSION})
+        with urllib.request.urlopen(req, timeout=1.0) as r:
+            if r.status != 200:
+                return None
+            tok = r.read(256).decode("ascii", "replace").strip()
+        return tok if _DECKY_TOKEN_RE.fullmatch(tok) else None
+    except Exception:
+        return None
+
+
+# --- jobs --------------------------------------------------------------------
+
+_DECKY_JOB_PUBLIC = ("kind", "name", "version", "store_id", "phase", "started_at",
+                     "done", "ok", "outcome", "error", "restarted_loader", "log",
+                     "verified", "reinstall_id", "retry", "steam_ui_up", "old_version",
+                     "finished_at")
+
+
+def _decky_job_public(rec):
+    """The client-facing view of a record (never the hash/request_id)."""
+    if not isinstance(rec, dict):
+        return None
+    out = {k: rec.get(k) for k in _DECKY_JOB_PUBLIC}
+    out["restarted_loader"] = False
+    out["log"] = list(rec.get("log") or [])[-40:]
+    return out
+
+
+def _decky_job_write(rec):
+    """Persist the record atomically (tmp + os.replace under the cache dir).
+    Best-effort: a failed write never fails the job. Never raises."""
+    try:
+        d = os.path.dirname(_DECKY_JOB_FILE)
+        os.makedirs(d, exist_ok=True)
+        fd, tmp = tempfile.mkstemp(prefix=".decky-job-", dir=d)
+        with os.fdopen(fd, "w") as f:
+            json.dump(rec, f)
+        os.replace(tmp, _DECKY_JOB_FILE)
+    except Exception:
+        pass
+
+
+def _decky_job_read():
+    """The disk record, shape-validated, or None. Never raises."""
+    data = _decky_read_small(_DECKY_JOB_FILE, 65536)
+    if not data or len(data) > 65536:
+        return None
+    try:
+        d = json.loads(data.decode("utf-8"))
+    except (ValueError, UnicodeDecodeError):
+        return None
+    if not isinstance(d, dict) or d.get("kind") not in _DECKY_JOB_KINDS:
+        return None
+    if not _decky_name_ok(d.get("name")):
+        return None
+    st = d.get("started_at")
+    if isinstance(st, bool) or not isinstance(st, (int, float)):
+        return None
+    d["done"] = bool(d.get("done"))
+    d["log"] = [str(x)[:300] for x in (d.get("log") or []) if isinstance(x, str)][-60:]
+    return d
+
+
+def _decky_job_set(rec, **changes):
+    """Apply changes to the live record and persist. Never raises."""
+    with _DECKY_JOB_LOCK:
+        rec.update(changes)
+        snapshot = dict(rec)
+    _decky_job_write(snapshot)
+
+
+def _decky_job_log(rec, line):
+    with _DECKY_JOB_LOCK:
+        rec.setdefault("log", []).append(str(line)[:300])
+        rec["log"] = rec["log"][-60:]
+        snapshot = dict(rec)
+    _decky_job_write(snapshot)
+
+
+def _decky_job_finish(rec, outcome, ok, error=None, **extra):
+    """Terminal transition (idempotent: the watchdog and the worker may race;
+    the first verdict wins). Frees the slot by marking `done`."""
+    with _DECKY_JOB_LOCK:
+        if rec.get("done"):
+            return False
+        rec.update({"done": True, "ok": bool(ok), "outcome": outcome,
+                    "error": error, "finished_at": int(time.time())})
+        rec.update(extra)
+        snapshot = dict(rec)
+    _decky_job_write(snapshot)
+    return True
+
+
+def _decky_job_active():
+    """The running (not done) record, or None."""
+    with _DECKY_JOB_LOCK:
+        rec = _DECKY_JOB["rec"]
+        return rec if rec and not rec.get("done") else None
+
+
+def decky_jobs_payload():
+    """GET /api/decky/jobs: the job record, from DISK when this process has no
+    live copy (an agent restart never turns a running job into null). Never
+    raises."""
+    with _DECKY_JOB_LOCK:
+        rec = _DECKY_JOB["rec"]
+    if rec is None:
+        rec = _decky_job_read()
+    return {"job": _decky_job_public(rec)}
+
+
+def _decky_check_in_flight():
+    with _DECKY_CHECK_LOCK:
+        return bool(_DECKY_CHECK["in_flight"])
+
+
+def _decky_journal_tail(n=30):
+    """Last `n` lines of plugin_loader's journal via the fixed-argument
+    journal wrapper (the existing `logs` path); [] on any failure."""
+    try:
+        return [str(x)[:300] for x in real_journal("plugin_loader", "system", int(n))][-n:]
+    except Exception:
+        return []
+
+
+def _decky_ready_for_ops():
+    """The precondition chain (§10) for every marker-gated plugin op / check:
+    None when the loader may be talked to, else (http_code, body). Order:
+    marker 403 -> busy 409 -> loader_stopped 409 (with the restart action, NO
+    auto-restart: KI-037, every plugin restarts, and a self-stopped loader
+    would stop again mid-extract) -> loader_down 503 (untrusted / unreachable /
+    not installed). Never raises."""
+    try:
+        if not _decky_allowed():
+            return 403, {"ok": False, "error": "needs_optin", "needs_optin": True}
+        what = _decky_busy()
+        if what:
+            return 409, {"ok": False, "error": "busy", "busy": True, "what": what}
+        st = _decky_loader_state()
+        state = st.get("state")
+        if state in ("installing", "uninstalling"):
+            return 409, {"ok": False, "error": "busy", "busy": True, "what": "loader_op"}
+        if state == "not_installed":
+            return 503, {"ok": False, "error": "loader_down", "repair": False,
+                         "installed": False}
+        if state == "installed_stopped":
+            return 409, {"ok": False, "error": "loader_stopped",
+                         "restart_action": st.get("restart_action"), "repair": True,
+                         "stopped_reason": st.get("stopped_reason")}
+        if state in ("running_untrusted", "running_unreachable"):
+            return 503, {"ok": False, "error": "loader_down", "repair": True,
+                         "state": state}
+        return None
+    except Exception as e:
+        return 503, {"ok": False, "error": "loader_down", "repair": True,
+                     "detail": e.__class__.__name__}
+
+
+def _decky_job_take(rec):
+    """Claim the job slot under the lock (re-checking busy INSIDE it so two
+    concurrent POSTs cannot both start), persist the record BEFORE any socket,
+    then start the worker + watchdog. Returns None or (409 body)."""
+    with _DECKY_JOB_LOCK:
+        cur = _DECKY_JOB["rec"]
+        if cur and not cur.get("done"):
+            return {"ok": False, "error": "busy", "busy": True, "what": "plugin_job"}
+        if _decky_check_in_flight():
+            return {"ok": False, "error": "busy", "busy": True, "what": "plugin_job"}
+        _DECKY_JOB["rec"] = rec
+        snapshot = dict(rec)
+    _decky_job_write(snapshot)
+    kind = rec["kind"]
+    budget = _DECKY_JOB_WATCHDOG_S.get(kind, 60.0)
+
+    def watchdog():
+        if _decky_job_finish(rec, "failed", False,
+                             error="timed out after %d s" % int(budget), retry=True):
+            print("[decky] job %s %r watchdog fired" % (kind, rec.get("name")), flush=True)
+    t = threading.Timer(budget, watchdog)
+    t.daemon = True
+    t.start()
+    threading.Thread(target=_decky_job_run, args=(rec,), name="decky-job",
+                     daemon=True).start()
+    return None
+
+
+def _decky_job_run(rec):
+    """Worker entry: dispatch by kind; any escape is `failed`, never a hung
+    slot. Never raises."""
+    try:
+        kind = rec["kind"]
+        if kind in ("install", "update"):
+            _decky_job_install(rec)
+        elif kind == "uninstall":
+            _decky_job_uninstall(rec)
+        elif kind == "reload":
+            _decky_job_reload(rec)
+        else:
+            _decky_job_finish(rec, "failed", False, error="unknown job kind")
+    except Exception as e:
+        _decky_job_finish(rec, "failed", False,
+                          error="%s: %s" % (e.__class__.__name__, str(e)[:160]))
+    finally:
+        _decky_invalidate()
+
+
+def _decky_folder_for(name):
+    """The on-disk entry for a plugin.json name, or None (fresh scan)."""
+    return _decky_plugins_on_disk().get(name)
+
+
+def _decky_loader_lists(name, budget=1.0):
+    """One short `loader/get_plugins` session: True when the loader lists
+    `name` with disabled:false, False when it does not, None when the socket
+    could not answer (token / close / timeout). Never raises."""
+    ws = None
+    try:
+        tok = _decky_fetch_token()
+        if not tok:
+            return None
+        ws = _DeckyWS(tok, budget)
+        res = ws.call("loader/get_plugins")
+        if not isinstance(res, list):
+            return None
+        for p in res:
+            if isinstance(p, dict) and p.get("name") == name:
+                return not bool(p.get("disabled"))
+        return False
+    except Exception:
+        return None
+    finally:
+        if ws:
+            ws.close()
+
+
+def _decky_job_readback_install(rec):
+    """Poll the fs <=120 s for a folder whose plugin.json name == name AND
+    package.json version == version; folder presence is necessary, not
+    sufficient (Decky returns without importing when a remote_binary fetch
+    fails — files stay on disk, verified with the Dummy C case), so one
+    `loader/get_plugins` then has to list it enabled. A failed UPDATE whose old
+    copy is gone (Decky uninstalls BEFORE the sha256/extract step) says so and
+    offers `reinstall_id`."""
+    name, version = rec["name"], rec.get("version")
+    deadline = time.monotonic() + _DECKY_INSTALL_READBACK_S
+    found = False
+    while time.monotonic() < deadline and not rec.get("done"):
+        e = _decky_folder_for(name)
+        if e and (version is None or e.get("version") == version):
+            found = True
+            break
+        time.sleep(1.0)
+    if rec.get("done"):
+        return
+    if found:
+        _decky_job_set(rec, phase="verify")
+        listed = None
+        for _ in range(3):
+            listed = _decky_loader_lists(name)
+            if listed is not None:
+                break
+            time.sleep(1.5)
+        if listed:
+            _decky_job_finish(rec, "done", True, verified=True)
+            return
+        if listed is False:
+            _decky_job_finish(rec, "failed", False, error="extracted but not loaded",
+                              verified=False, log=(rec.get("log") or []) + _decky_journal_tail(30))
+            return
+        # The loader would not answer the verification poll: honest unknown.
+        _decky_job_finish(rec, "unknown", False, verified=None,
+                          error="installed on disk; Decky did not confirm it loaded")
+        return
+    _decky_job_fail_install(rec, "no %s %s appeared within %d s"
+                            % (name, version or "", int(_DECKY_INSTALL_READBACK_S)))
+
+
+def _decky_job_fail_install(rec, error, **extra):
+    """Failure path for install/update: on an UPDATE whose previous copy is now
+    absent, replace the message with the removal notice + reinstall_id."""
+    if rec.get("kind") == "update" and _decky_folder_for(rec["name"]) is None:
+        error = ("update failed; %s %s was removed by Decky Loader — reinstall from the Store"
+                 % (rec["name"], rec.get("old_version") or ""))
+        extra["reinstall_id"] = rec.get("store_id")
+    _decky_job_finish(rec, "failed", False, error=error, **extra)
+
+
+def _decky_job_install(rec):
+    """Install/update job (§10): ONE write burst under the 3 s budget —
+    install_plugin(artifact, name, version, hash, install_type) -> the
+    add_plugin_install_prompt event whose name+version match -> its request_id
+    -> confirm_plugin_install(request_id) -> close (calls run as tasks, so the
+    install proceeds server-side). Budget exceeded before the prompt -> failed
+    with retry:true (and cancel_plugin_install in a fresh <=1 s session when a
+    request_id is known); socket closed after install_plugin returned but
+    before the confirm reply -> outcome unknown and the read-back decides."""
+    name, version = rec["name"], rec["version"]
+    artifact = _DECKY_CDN + rec["hash"] + ".zip"
+    itype = _DECKY_INSTALL_TYPES.get(rec.get("install_type") or "install", 0)
+    _decky_job_set(rec, phase="connect")
+    tok = _decky_fetch_token()
+    if not tok:
+        _decky_job_finish(rec, "failed", False, error="loader_down", loader_down=True)
+        return
+    ws = None
+    request_id = None
+    sent = False
+    try:
+        ws = _DeckyWS(tok, _DECKY_WS_SESSION_S)
+        _decky_job_set(rec, phase="request")
+        ws.call("utilities/install_plugin", artifact, name, version, rec["hash"], itype)
+        sent = True
+        _decky_job_log(rec, "install_plugin sent (%s)" % rec.get("install_type"))
+
+        def match(args):
+            return (len(args) >= 3 and args[0] == name and args[1] == version
+                    and isinstance(args[2], str) and bool(args[2]))
+        args = ws.wait_event("loader/add_plugin_install_prompt", match)
+        request_id = args[2]
+        _decky_job_set(rec, phase="confirm", request_id=request_id)
+        ws.call("utilities/confirm_plugin_install", request_id)
+        _decky_job_log(rec, "confirmed; Decky is downloading and extracting")
+        ws.close()
+        ws = None
+    except socket.timeout:
+        # Budget exhausted with the socket still OPEN — before the prompt, or
+        # after the prompt with the confirm reply never arriving. Spec §10:
+        # that is `retry`, not `failed` and not `unknown`; `unknown` + read-back
+        # is reserved for a CLOSE (the branches below), where Decky may already
+        # be extracting. Cancel the pending prompt when we learned its
+        # request_id (a fresh <=1 s session; best-effort), so a later retry does
+        # not stack a second prompt on the TV. Before 2026-09-06 this branch
+        # only took the retry path when request_id was None, which made the
+        # cancel unreachable and turned a silent confirm into a 120 s read-back
+        # ending in a bare `failed` — measured by tests/test_decky_plugins.py.
+        if ws:
+            ws.close()
+            ws = None
+        if request_id:
+            _decky_cancel_install(request_id)
+        _decky_job_fail_install(rec, "Decky did not answer in time — try again",
+                                retry=True)
+        return
+    except _DeckyWSClosed:
+        if ws:
+            ws.close()
+            ws = None
+        if not sent:
+            _decky_job_fail_install(rec, "Decky closed the connection", retry=True)
+            return
+        _decky_job_log(rec, "socket closed mid-call; reading back from disk")
+        _decky_job_set(rec, phase="readback", outcome="unknown")
+    except _DeckyWSError as e:
+        if ws:
+            ws.close()
+        _decky_job_fail_install(rec, "Decky refused: %s" % str(e)[:160])
+        return
+    except OSError as e:
+        # A loader that closes the socket under us can surface as a
+        # BrokenPipe/ConnectionReset on OUR next send rather than as a close
+        # frame — after install_plugin was accepted that is the same "closed
+        # mid-call" case: unknown, and the read-back decides.
+        if ws:
+            ws.close()
+            ws = None
+        if not sent:
+            _decky_job_fail_install(rec, "could not talk to Decky Loader: %s"
+                                    % e.__class__.__name__, retry=True)
+            return
+        _decky_job_log(rec, "socket dropped mid-call; reading back from disk")
+        _decky_job_set(rec, phase="readback", outcome="unknown")
+    except Exception as e:
+        if ws:
+            ws.close()
+        _decky_job_fail_install(rec, "%s: %s" % (e.__class__.__name__, str(e)[:160]))
+        return
+    _decky_job_set(rec, phase="readback")
+    _decky_job_readback_install(rec)
+
+
+def _decky_cancel_install(request_id):
+    """Best-effort cancel of a pending prompt in a fresh <=1 s session."""
+    ws = None
+    try:
+        tok = _decky_fetch_token()
+        if tok:
+            ws = _DeckyWS(tok, 1.0)
+            ws.call("utilities/cancel_plugin_install", request_id)
+    except Exception:
+        pass
+    finally:
+        if ws:
+            ws.close()
+
+
+def _decky_job_uninstall(rec):
+    """uninstall_plugin(name) awaited only within the budget (Decky's stop can
+    take 1 s socket timeout + 5 s SIGKILL grace), close, then verify the folder
+    is gone <=15 s -> done, verified:true. A mid-call close is `unknown` until
+    the fs poll answers; `loader_down` is reserved for /auth/token failing."""
+    name = rec["name"]
+    _decky_job_set(rec, phase="connect")
+    tok = _decky_fetch_token()
+    if not tok:
+        _decky_job_finish(rec, "failed", False, error="loader_down", loader_down=True)
+        return
+    ws = None
+    replied = False
+    sent = False
+    try:
+        ws = _DeckyWS(tok, _DECKY_WS_SESSION_S)
+        _decky_job_set(rec, phase="request")
+        sent = True
+        ws.call("utilities/uninstall_plugin", name)
+        replied = True
+        _decky_job_log(rec, "uninstall_plugin acknowledged")
+    except _DeckyWSError as e:
+        if ws:
+            ws.close()
+        _decky_job_finish(rec, "failed", False, error="Decky refused: %s" % str(e)[:160])
+        return
+    except (socket.timeout, _DeckyWSClosed, OSError) as e:
+        if not sent:
+            # Never connected: nothing was asked of Decky, so this is a plain
+            # failure (loader_down is reserved for /auth/token failing).
+            if ws:
+                ws.close()
+            _decky_job_finish(rec, "failed", False, retry=True,
+                              error="could not talk to Decky Loader: %s" % e.__class__.__name__)
+            return
+        _decky_job_log(rec, "no reply within the budget; verifying on disk")
+    except Exception as e:
+        if ws:
+            ws.close()
+        _decky_job_finish(rec, "failed", False,
+                          error="%s: %s" % (e.__class__.__name__, str(e)[:160]))
+        return
+    finally:
+        if ws:
+            ws.close()
+    _decky_job_set(rec, phase="verify", outcome=None if replied else "unknown")
+    deadline = time.monotonic() + _DECKY_UNINSTALL_VERIFY_S
+    while time.monotonic() < deadline and not rec.get("done"):
+        if _decky_folder_for(name) is None:
+            _decky_job_finish(rec, "done", True, verified=True)
+            return
+        time.sleep(0.5)
+    if rec.get("done"):
+        return
+    if replied:
+        _decky_job_finish(rec, "failed", False, verified=False,
+                          error="%s is still on disk after %d s" % (name, int(_DECKY_UNINSTALL_VERIFY_S)))
+    else:
+        _decky_job_finish(rec, "unknown", False, verified=False,
+                          error="Decky did not answer and %s is still on disk" % name)
+
+
+def _decky_job_reload(rec):
+    """reload_plugin(name): one backend restarted (KI-037's preferred
+    granularity); verified:null (queued), done once the reply arrives, unknown
+    on a close."""
+    name = rec["name"]
+    _decky_job_set(rec, phase="connect")
+    tok = _decky_fetch_token()
+    if not tok:
+        _decky_job_finish(rec, "failed", False, error="loader_down", loader_down=True)
+        return
+    ws = None
+    sent = False
+    try:
+        ws = _DeckyWS(tok, _DECKY_WS_SESSION_S)
+        _decky_job_set(rec, phase="request")
+        sent = True
+        ws.call("loader/reload_plugin", name)
+        _decky_job_finish(rec, "done", True, verified=None)
+    except _DeckyWSError as e:
+        _decky_job_finish(rec, "failed", False, error="Decky refused: %s" % str(e)[:160])
+    except (socket.timeout, _DeckyWSClosed, OSError) as e:
+        if sent:
+            _decky_job_finish(rec, "unknown", False, verified=None,
+                              error="Decky did not confirm the reload")
+        else:
+            _decky_job_finish(rec, "failed", False, retry=True,
+                              error="could not talk to Decky Loader: %s" % e.__class__.__name__)
+    except Exception as e:
+        _decky_job_finish(rec, "failed", False,
+                          error="%s: %s" % (e.__class__.__name__, str(e)[:160]))
+    finally:
+        if ws:
+            ws.close()
+
+
+def _decky_jobs_resume(mock):
+    """main(): a disk record younger than 180 s that is not done resumes its
+    read-back (fs + get_plugins) in a thread; an older one is `interrupted`.
+    A finished record is kept as the last job to display. Never raises."""
+    if mock:
+        return
+    try:
+        rec = _decky_job_read()
+        if rec is None:
+            return
+        with _DECKY_JOB_LOCK:
+            _DECKY_JOB["rec"] = rec
+        if rec.get("done"):
+            return
+        age = time.time() - float(rec.get("started_at") or 0)
+        if age >= _DECKY_JOB_RESUME_S:
+            _decky_job_finish(rec, "interrupted", False,
+                              error="the agent restarted during this job")
+            return
+        _decky_job_log(rec, "agent restarted; resuming read-back")
+        budget = max(5.0, _DECKY_JOB_WATCHDOG_S.get(rec["kind"], 60.0) - age)
+
+        def watchdog():
+            _decky_job_finish(rec, "interrupted", False,
+                              error="the agent restarted during this job")
+        t = threading.Timer(budget, watchdog)
+        t.daemon = True
+        t.start()
+
+        def worker():
+            try:
+                if rec["kind"] in ("install", "update"):
+                    _decky_job_readback_install(rec)
+                elif rec["kind"] == "uninstall":
+                    deadline = time.monotonic() + _DECKY_UNINSTALL_VERIFY_S
+                    while time.monotonic() < deadline and not rec.get("done"):
+                        if _decky_folder_for(rec["name"]) is None:
+                            _decky_job_finish(rec, "done", True, verified=True)
+                            return
+                        time.sleep(0.5)
+                    _decky_job_finish(rec, "unknown", False, verified=False,
+                                      error="%s is still on disk" % rec["name"])
+                else:
+                    _decky_job_finish(rec, "unknown", False, verified=None,
+                                      error="the agent restarted before Decky replied")
+            except Exception as e:
+                _decky_job_finish(rec, "failed", False,
+                                  error="%s: %s" % (e.__class__.__name__, str(e)[:160]))
+        threading.Thread(target=worker, name="decky-job-resume", daemon=True).start()
+    except Exception:
+        pass
+
+
+def _decky_new_job(kind, name, version=None, hash_=None, store_id=None,
+                   install_type=None, old_version=None):
+    st = None
+    try:
+        st = _decky_loader_state()
+    except Exception:
+        st = None
+    return {"kind": kind, "name": name, "version": version, "hash": hash_,
+            "store_id": store_id, "install_type": install_type,
+            "old_version": old_version, "started_at": int(time.time()),
+            "phase": "queued", "done": False, "ok": None, "outcome": None,
+            "error": None, "restarted_loader": False, "log": [],
+            "verified": None, "reinstall_id": None, "retry": False,
+            "steam_ui_up": bool(st.get("steam_ui_up")) if st else False}
+
+
+def decky_plugin_install(body):
+    """POST /api/decky/plugins/install {id:int} (§3, §10). Returns (code, body).
+    `id` is int-not-bool in (0, 1e9), then a KEY of the box's own store cache
+    (cold cache -> 503 store_unavailable, no socket); versions[0] is always
+    used and its hash must be 64-hex (else 422 — an empty hash makes Decky
+    skip its sha256 gate); the entry's NFKC-normalised name is checked
+    against _DECKY_PROTECTED (409) BEFORE any socket; the artifact URL is
+    agent-built from the CDN constant + hash; install_type is agent-computed.
+    Never raises."""
+    try:
+        if not isinstance(body, dict):
+            return 400, {"ok": False, "error": "body must be a JSON object"}
+        sid = body.get("id")
+        if isinstance(sid, bool) or not isinstance(sid, int) or not 0 < sid < _DECKY_STORE_ID_MAX:
+            return 400, {"ok": False, "error": "id must be a positive integer"}
+        pre = _decky_ready_for_ops()
+        if pre:
+            return pre
+        store = _decky_store_snapshot()
+        if not store["fetched_at"]:
+            return 503, {"ok": False, "error": "store_unavailable",
+                         "fetching": bool(store["fetching"])}
+        entry = store["by_id"].get(sid)
+        if entry is None:
+            return 404, {"ok": False, "error": "unknown store id"}
+        if _decky_protected(entry["name"]):
+            return 409, {"ok": False, "error": "protected", "protected": True,
+                         "name": entry["name"]}
+        ver = entry["versions"][0]
+        if not isinstance(ver.get("hash"), str) or not _DECKY_HASH_RE.fullmatch(ver["hash"]):
+            return 422, {"ok": False, "error": "no verifiable hash"}
+        installed = _decky_plugins_on_disk().get(entry["name"])
+        itype = _decky_install_type(installed["version"] if installed else None,
+                                    ver["name"], True)
+        kind = "update" if (installed and itype != "install") else "install"
+        rec = _decky_new_job(kind, entry["name"], version=ver["name"], hash_=ver["hash"],
+                             store_id=entry["id"], install_type=itype,
+                             old_version=installed["version"] if installed else None)
+        busy = _decky_job_take(rec)
+        if busy:
+            return 409, busy
+        return 200, {"ok": True, "job": _decky_job_public(rec)}
+    except Exception as e:
+        return 500, {"ok": False, "error": e.__class__.__name__}
+
+
+def decky_plugin_op(op, body):
+    """POST /api/decky/plugins/uninstall|reload {name}. `op` is the route
+    literal already matched against _DECKY_PLUGIN_OPS; `name` must be a
+    printable 1–64 char str AND a member of _decky_plugins_on_disk() (404, no
+    socket), and not protected (409, NFKC). The string handed to Decky is the
+    dict's own key. Returns (code, body). Never raises."""
+    try:
+        if op not in _DECKY_PLUGIN_OPS:
+            return 404, {"ok": False, "error": "not found"}
+        if not isinstance(body, dict):
+            return 400, {"ok": False, "error": "body must be a JSON object"}
+        name = body.get("name")
+        if not _decky_name_ok(name):
+            return 400, {"ok": False, "error": "name must be a printable string (1-64 chars)"}
+        pre = _decky_ready_for_ops()
+        if pre:
+            return pre
+        plugins = _decky_plugins_on_disk()
+        if name not in plugins:
+            return 404, {"ok": False, "error": "unknown plugin"}
+        canon = plugins[name]["name"]
+        if _decky_protected(canon) or plugins[name].get("protected"):
+            return 409, {"ok": False, "error": "protected", "protected": True, "name": canon}
+        rec = _decky_new_job(op, canon, version=plugins[name].get("version"))
+        busy = _decky_job_take(rec)
+        if busy:
+            return 409, busy
+        return 200, {"ok": True, "job": _decky_job_public(rec)}
+    except Exception as e:
+        return 500, {"ok": False, "error": e.__class__.__name__}
+
+
+def _decky_loader_update_cached():
+    """The cached `updater/get_version_info` verdict (6 h), or None."""
+    with _DECKY_CHECK_LOCK:
+        v = _DECKY_CHECK["val"]
+        if v and time.monotonic() - _DECKY_CHECK["at"] < _DECKY_CHECK_TTL_S:
+            return dict(v)
+    return None
+
+
+def decky_loader_check():
+    """POST /api/decky/loader/check: one `updater/get_version_info` over a
+    <=3 s session, cached 6 h, reporting the box's `channel` next to `remote`
+    (the loader's remote follows its own branch setting, so the app says
+    "Repair installs the latest STABLE loader" when channel != 0). READ-ONLY:
+    `updater/do_update` is never called (§11). Returns (code, body). Never
+    raises."""
+    try:
+        if not _decky_allowed():
+            # Marker-gated like every route that opens the socket — even a
+            # cached answer, so the route's 403 contract is unconditional.
+            return 403, {"ok": False, "error": "needs_optin", "needs_optin": True}
+        cached = _decky_loader_update_cached()
+        if cached:
+            return 200, {"ok": True, "loader_update": cached, "cached": True}
+        pre = _decky_ready_for_ops()
+        if pre:
+            return pre
+        with _DECKY_CHECK_LOCK:
+            if _DECKY_CHECK["in_flight"]:
+                return 409, {"ok": False, "error": "busy", "busy": True, "what": "plugin_job"}
+            _DECKY_CHECK["in_flight"] = True
+        ws = None
+        try:
+            tok = _decky_fetch_token()
+            if not tok:
+                return 503, {"ok": False, "error": "loader_down", "repair": True}
+            ws = _DeckyWS(tok, _DECKY_WS_SESSION_S)
+            res = ws.call("updater/get_version_info")
+        except _DeckyWSError as e:
+            return 503, {"ok": False, "error": "loader_down", "repair": True,
+                         "detail": str(e)[:160]}
+        except Exception as e:
+            return 503, {"ok": False, "error": "loader_down", "repair": True,
+                         "detail": e.__class__.__name__}
+        finally:
+            if ws:
+                ws.close()
+            with _DECKY_CHECK_LOCK:
+                _DECKY_CHECK["in_flight"] = False
+        if not isinstance(res, dict):
+            return 503, {"ok": False, "error": "loader_down", "repair": True,
+                         "detail": "unexpected version info"}
+        cur, rem, upd = res.get("current"), res.get("remote"), res.get("updatable")
+        val = {"current": str(cur)[:32] if isinstance(cur, str) else None,
+               "remote": str(rem)[:32] if isinstance(rem, str) else None,
+               "updatable": bool(upd) if isinstance(upd, bool) else None,
+               "checked_at": int(time.time()), "channel": _decky_channel()}
+        with _DECKY_CHECK_LOCK:
+            _DECKY_CHECK["val"] = val
+            _DECKY_CHECK["at"] = time.monotonic()
+        _decky_invalidate()
+        return 200, {"ok": True, "loader_update": dict(val), "cached": False}
+    except Exception as e:
+        return 500, {"ok": False, "error": e.__class__.__name__}
+
+
+# --- --mock: an env-free state machine driven by `--mock-decky <state>` ------
+#
+# Every state the app renders is reachable from the flag, and the loader ops
+# MUTATE the mock so one harness run walks not_installed -> installing ->
+# installed_steam_needs_restart -> running -> uninstalling -> not_installed
+# (each op ~3 s, with a ~1 s `starting` window first so the stale-result
+# control — the UI must show Starting…, never a previous `done` — is exercised).
+# `set_decky_mock()` is the pattern for feature mocks with a state argument.
+_DECKY_MOCK_STATES = (
+    "running", "not_installed", "installing", "uninstalling", "stopped",
+    "needs_optin", "needs_installer", "helper_outdated", "steam_needs_restart",
+    "installed_steam_needs_restart", "cef_flag_missing", "no_steam",
+    "interrupted", "untrusted", "unreachable", "update_available",
+)
+_DECKY_MOCK_LOG_SEED = [
+    "[mock] couchside-decky-loader: transcript of the last loader operation",
+    "resolved tag v3.2.8 via releases/latest redirect",
+    "downloaded PluginLoader (27,274,048 bytes), ELF check ok",
+    "installed v3.2.8",
+]
+_DECKY_MOCK_LOG_STEPS = {
+    "install": ["resolving stable tag via releases/latest/download …",
+                "resolved tag v3.2.8",
+                "downloading PluginLoader …",
+                "downloaded PluginLoader (27,274,048 bytes), ELF check ok",
+                "staging services/ (previous copy kept for rollback)",
+                "systemctl daemon-reload; enable --now plugin_loader",
+                "plugin_loader answered /auth/token, NRestarts=0",
+                "installed v3.2.8"],
+    "uninstall": ["systemctl disable --now plugin_loader.service",
+                  "removed /etc/systemd/system/plugin_loader.service",
+                  "removed ~/homebrew/services (plugins and settings kept)",
+                  "removed; ~/homebrew/plugins and settings kept"],
+}
+
+
+_DECKY_MOCK = {"state": "running", "op": None,
+               "log": list(_DECKY_MOCK_LOG_SEED), "installed": True}
+_DECKY_MOCK_LOCK = threading.Lock()
+_DECKY_MOCK_TAG = "v3.2.8"
+_DECKY_MOCK_UPDATE_TAG = "v3.3.0"   # the "newer" tag for --mock-decky update_available
+_DECKY_MOCK_OP_S = 3.0
+_DECKY_MOCK_STARTING_S = 1.0
+_DECKY_MOCK_SETTLE_S = 5.0     # installed_steam_needs_restart -> running
+
+
+def set_decky_mock(state):
+    """Arm the mock Decky state machine (main(), --mock only). Unknown states
+    fall back to `running` rather than raising: argparse already restricts the
+    choices, this is belt-and-braces for callers in tests."""
+    if state not in _DECKY_MOCK_STATES:
+        state = "running"
+    with _DECKY_MOCK_LOCK:
+        _DECKY_MOCK["state"] = state
+        _DECKY_MOCK["op"] = None
+        _DECKY_MOCK["log"] = list(_DECKY_MOCK_LOG_SEED)
+        _DECKY_MOCK["installed"] = state not in ("not_installed", "installing")
+        if not _DECKY_MOCK["installed"]:
+            # main() injects Restart Decky unconditionally in --mock (Actions-tab
+            # dev), but the REAL path hides it on a box without the loader and
+            # the harness walk must match production: a `not_installed` mock
+            # that still advertises restart_action would let the app show a
+            # Start/Restart control for a loader that does not exist. A mock
+            # install re-injects it through _decky_actions_resync(True).
+            _mock_decky_pop_action()
+        # A newer loader available: arm the check so `--mock-decky
+        # update_available` renders the "Update to <tag>" button AND makes
+        # Check-for-updates answer updatable:true — the one state that presses
+        # the app's check-unwrap and the update copy (they were silently
+        # unreachable before, which is how the deckyLoaderCheck wrap bug hid).
+        _DECKY_MOCK_B["check"] = (
+            {"current": _DECKY_MOCK_TAG, "remote": _DECKY_MOCK_UPDATE_TAG,
+             "updatable": True, "checked_at": int(time.time()), "channel": 0}
+            if state == "update_available" else None)
+        if state == "interrupted":
+            _DECKY_MOCK["op"] = {"mode": "install", "requested_at": time.time() - 40,
+                                 "done_at": None, "interrupted": True}
+        elif state in ("installing", "uninstalling"):
+            # A FROZEN in-progress op so the flag renders the transient state
+            # directly (advance() skips frozen ops), instead of falling through
+            # to `running`. The op flow (POST run) still produces the live,
+            # self-advancing version.
+            _DECKY_MOCK["op"] = {
+                "mode": "uninstall" if state == "uninstalling" else "install",
+                "requested_at": time.time() - 1.5, "done_at": None, "frozen": True}
+
+
+def _mock_decky_advance():
+    """Advance the mock op by wall clock; called under _DECKY_MOCK_LOCK."""
+    op = _DECKY_MOCK.get("op")
+    if not op or op.get("interrupted") or op.get("frozen"):
+        return
+    t = time.time() - op["requested_at"]
+    steps = _DECKY_MOCK_LOG_STEPS[op["mode"]]
+    if t >= _DECKY_MOCK_STARTING_S:
+        n = min(len(steps), 1 + int((t - _DECKY_MOCK_STARTING_S)
+                                     / (_DECKY_MOCK_OP_S - _DECKY_MOCK_STARTING_S)
+                                     * len(steps)))
+        _DECKY_MOCK["log"] = list(_DECKY_MOCK_LOG_SEED[:1]) + steps[:n]
+    if t >= _DECKY_MOCK_OP_S and op.get("done_at") is None:
+        op["done_at"] = time.time()
+        _DECKY_MOCK["log"] = list(_DECKY_MOCK_LOG_SEED[:1]) + steps
+        if op["mode"] == "install":
+            _DECKY_MOCK["installed"] = True
+            _DECKY_MOCK["state"] = "installed_steam_needs_restart"
+        else:
+            _DECKY_MOCK["installed"] = False
+            _DECKY_MOCK["state"] = "not_installed"
+        if op["mode"] == "install":
+            _decky_actions_resync(True)
+        else:
+            _mock_decky_pop_action()
+    if (op.get("done_at") and op["mode"] == "install"
+            and _DECKY_MOCK["state"] == "installed_steam_needs_restart"
+            and time.time() - op["done_at"] >= _DECKY_MOCK_SETTLE_S):
+        _DECKY_MOCK["state"] = "running"      # "Steam restarted" in the harness
+
+
+def _mock_decky_pop_action():
+    """Mock uninstall: drop Restart Decky from the Actions tab like the real
+    resync would (it was mock-injected at boot)."""
+    global ACTION_ORDER
+    ACTIONS.pop("restart-decky", None)
+    if "restart-decky" in ACTION_ORDER:
+        ACTION_ORDER.remove("restart-decky")
+
+
+def _mock_decky_op_block():
+    op = _DECKY_MOCK.get("op")
+    if not op:
+        return None
+    at = int(op["requested_at"])
+    if op.get("interrupted"):
+        return {"state": "interrupted", "mode": op["mode"], "ok": False,
+                "tag": None, "at": at,
+                "detail": "the installer stopped without recording a result"}
+    t = time.time() - op["requested_at"]
+    tag = _DECKY_MOCK_TAG if op["mode"] == "install" else None
+    if op.get("done_at"):
+        return {"state": "done", "mode": op["mode"], "ok": True, "tag": tag,
+                "at": int(op["done_at"]), "detail": ""}
+    if t < _DECKY_MOCK_STARTING_S:
+        return {"state": "starting", "mode": op["mode"], "ok": None, "tag": None,
+                "at": at, "detail": ""}
+    return {"state": "running", "mode": op["mode"], "ok": None, "tag": tag,
+            "at": at, "detail": ""}
+
+
+def mock_decky_loader_state():
+    """--mock GET /api/decky/loader: the flagged state rendered with every
+    field, ops advancing by wall clock. Never raises."""
+    with _DECKY_MOCK_LOCK:
+        _mock_decky_advance()
+        s = _DECKY_MOCK["state"]
+        op = _mock_decky_op_block()
+        installed = bool(_DECKY_MOCK["installed"])
+        p = _decky_base_payload()
+        p.update({"installed": installed, "allowed": True, "installer_ready": True,
+                  "elevated": True, "helper": "present", "installed_by": "install.sh",
+                  "panel": "installed", "op": op,
+                  "restart_action": "restart-decky" if "restart-decky" in ACTIONS else None})
+        if installed:
+            p.update({"active": True, "api_reachable": True, "loader_is_root": True,
+                      "steam_running": True, "steam_ui_up": True,
+                      "cef_flag_present": True, "version": _DECKY_MOCK_TAG,
+                      "channel": 0, "unit_pinned": True,
+                      "loader_update": _DECKY_MOCK_B.get("check")})
+        if op and op["state"] in ("starting", "running"):
+            p["state"] = "uninstalling" if op["mode"] == "uninstall" else "installing"
+            p.update({"active": False, "api_reachable": False, "steam_ui_up": False})
+            return p
+        if s == "not_installed":
+            p["state"] = "not_installed"
+        elif s == "stopped":
+            p.update({"state": "installed_stopped", "active": False,
+                      "api_reachable": False, "loader_is_root": False,
+                      "steam_ui_up": False, "stopped_reason": "self_stop_recent"})
+        elif s == "needs_optin":
+            p.update({"state": "running", "allowed": False})
+        elif s == "needs_installer":
+            p.update({"state": "running", "allowed": False, "installer_ready": False})
+        elif s == "helper_outdated":
+            p.update({"state": "running", "helper": "outdated", "elevated": False})
+        elif s in ("steam_needs_restart", "installed_steam_needs_restart"):
+            p.update({"state": "installed_steam_needs_restart", "steam_ui_up": False})
+        elif s == "cef_flag_missing":
+            p.update({"state": "installed_cef_flag_missing", "steam_ui_up": False,
+                      "cef_flag_present": False})
+        elif s == "no_steam":
+            p.update({"state": "running_no_steam", "steam_running": False,
+                      "steam_ui_up": False})
+        elif s == "untrusted":
+            p.update({"state": "running_untrusted", "loader_is_root": False,
+                      "api_reachable": False, "steam_ui_up": False})
+        elif s == "unreachable":
+            p.update({"state": "running_unreachable", "api_reachable": False,
+                      "steam_ui_up": False})
+        else:
+            p["state"] = "running"
+        return p
+
+
+def mock_decky_loader_start(mode):
+    """--mock POST /api/utilities/decky/run: the same refusal table as the real
+    shim, then a ~3 s op that mutates the mock state. Never raises."""
+    with _DECKY_MOCK_LOCK:
+        _mock_decky_advance()
+        s = _DECKY_MOCK["state"]
+        if s == "needs_installer":
+            return {"started": False, "needs_installer": True}
+        if s == "needs_optin":
+            return {"started": False, "needs_optin": True}
+        if s == "helper_outdated":
+            return {"started": False, "helper_outdated": True}
+        op = _DECKY_MOCK.get("op")
+        if op and not op.get("interrupted") and not op.get("done_at"):
+            return {"started": False, "busy": True, "what": "loader_op"}
+        _mock_decky_job_advance()
+        job = _DECKY_MOCK_B.get("job")
+        if job and not job.get("done"):
+            # The single mutex, both directions: a plugin job blocks Repair.
+            return {"started": False, "busy": True, "what": "plugin_job"}
+        _DECKY_MOCK["op"] = {"mode": mode, "requested_at": time.time(),
+                             "done_at": None}
+        _DECKY_MOCK["log"] = list(_DECKY_MOCK_LOG_SEED[:1])
+        print("[decky] mock loader op: %s" % mode, flush=True)
+        return {"started": True, "via": "helper",
+                "log": os.path.join(_DECKY_RUN, "decky-loader.log")}
+
+
+def mock_decky_loader_log(n=None):
+    try:
+        n = int(n) if n is not None else _DECKY_LOG_DEFAULT_LINES
+    except (TypeError, ValueError):
+        n = _DECKY_LOG_DEFAULT_LINES
+    n = max(1, min(_DECKY_LOG_MAX_LINES, n))
+    with _DECKY_MOCK_LOCK:
+        _mock_decky_advance()
+        return {"lines": list(_DECKY_MOCK["log"])[-n:]}
+
+
+# --- --mock Phase B: plugins, store, icons, jobs — NO network -----------------
+#
+# Four plugins (Couchside root+protected, SteamGridDB with a 1.7.0 -> 1.7.1
+# update, CSS Loader, PowerTools disabled), an 8-entry store fixture cut from
+# the 2026-09-06 capture (REAL ids / names / hashes, so a mock install builds
+# the exact artifact URL the box would), two mock icons (a PNG and an AVIF-ish
+# header that passes the sniff — `has_icon` is true ONLY for those two, so the
+# tile is never advertised-then-404), jobs that advance phases over ~3 s and
+# MUTATE the mock list, fake log lines. The store fixture goes through the
+# real normaliser at import time, so a fixture the normaliser would reject
+# cannot silently ship.
+_DECKY_MOCK_PLUGINS_SEED = [
+    {"name": "Couchside", "folder": "Couchside", "version": "0.2.9",
+     "author": "Emery Tech Solutions", "root": True, "disabled": False,
+     "hidden": False, "frozen": False},
+    {"name": "SteamGridDB", "folder": "SteamGridDB", "version": "1.7.0",
+     "author": "SteamGridDB", "root": False, "disabled": False,
+     "hidden": False, "frozen": False},
+    {"name": "CSS Loader", "folder": "SDH-CssLoader", "version": "2.1.2",
+     "author": "DeckThemes", "root": False, "disabled": False,
+     "hidden": False, "frozen": False},
+    {"name": "PowerTools", "folder": "PowerTools", "version": "2.0.3",
+     "author": "NGnius", "root": True, "disabled": True,
+     "hidden": False, "frozen": False},
+]
+_DECKY_MOCK_ORDER = ["Couchside", "SteamGridDB", "CSS Loader", "PowerTools"]
+_DECKY_MOCK_STORE_RAW = [
+    {"id": 36, "name": "SteamGridDB", "author": "SteamGridDB",
+     "description": "Customize your library with user-submitted images or local files, and other style tweaks like square capsules, uniform sizing, and more!",
+     "tags": ["artwork", "sgdb"], "downloads": 1648887,
+     "created": "2022-12-18T21:21:19Z", "updated": "2026-03-27T16:53:16Z",
+     "image_url": "https://cdn.tzatzikiweeb.moe/file/steam-deck-homebrew/artifact_images/SteamGridDB-1a938447c46d3d7816c87181c20b96ca438840cbdbb556c13c37cf1f923b3512.png",
+     "versions": [{"name": "1.7.1", "hash": "6d6eca184677dc9ff7736439ee7a575ca8ab386c5ffb1627d446bc43dbd1ecf3", "created": "2026-03-27T16:53:16Z"},
+                  {"name": "1.7.0", "hash": "f18279dc95b6ee003a7f53a84e8f7eee3a8fdd042ef67e5160c91c31ad12659f", "created": "2025-10-28T02:35:51Z"}]},
+    {"id": 7, "name": "CSS Loader", "author": "DeckThemes",
+     "description": "Dynamically loads themes developed with CSS into the Steam UI. For more information, visit deckthemes.com.",
+     "tags": ["style"], "downloads": 1595589,
+     "created": "2023-04-06T02:44:54Z", "updated": "2024-07-06T11:37:37Z",
+     # The real listing serves a PNG here; the mock advertises an AVIF so the
+     # harness exercises the AVIF sniff branch on a real store id.
+     "image_url": "https://cdn.tzatzikiweeb.moe/file/steam-deck-homebrew/artifact_images/CSS%20Loader-mock.avif",
+     "versions": [{"name": "2.1.2", "hash": "1a1e8f4dded8494febe56df16429ef5bba1e5b8feb3fd989d5808fbef0d71350", "created": "2024-07-06T11:37:37Z"},
+                  {"name": "2.1.1", "hash": "9f83a4c8a95c1e71a56dd375d4ab137d1e2ed9f0e037dbf39a81fa31b65070a4", "created": "2024-04-19T09:21:43Z"}]},
+    {"id": 14, "name": "ProtonDB Badges", "author": "Schelstraete Bart",
+     "description": "Display tappable ProtonDB badges on your game pages",
+     "tags": ["protondb"], "downloads": 1007456,
+     "created": "2023-04-01T16:53:50Z", "updated": "2026-01-07T23:08:55Z",
+     "image_url": None,
+     "versions": [{"name": "1.2.0", "hash": "54fadb8faec26bb8667a6fd7c61167bc4e5584414f142ae455c74a381ee23891", "created": "2026-01-07T23:08:55Z"}]},
+    {"id": 23, "name": "Animation Changer", "author": "Justin Marentette",
+     "description": "A boot/suspend animation management plugin.",
+     "tags": ["boot-animation", "utility"], "downloads": 862949,
+     "created": "2022-10-09T22:46:29Z", "updated": "2025-02-10T21:25:10Z",
+     "image_url": None,
+     "versions": [{"name": "1.3.2", "hash": "f2c62b90ca60d8a80b6d0f75d8027552b1509c7a05842c6f4a24a9072846d133", "created": "2025-02-10T21:25:10Z"}]},
+    {"id": 21, "name": "PowerTools", "author": "NGnius",
+     "description": "Power tweaks for power users",
+     "tags": ["power-management", "root", "utility"], "downloads": 590517,
+     "created": "2022-09-25T18:35:40Z", "updated": "2024-06-18T14:02:00Z",
+     "image_url": None,
+     "versions": [{"name": "2.0.3", "hash": "47614f53b8c538c4caa15f89a01e4ab106fa328e89f78545bacb3166d104d964", "created": "2024-06-18T14:02:00Z"}]},
+    {"id": 10, "name": "vibrantDeck", "author": "Scrumplex",
+     "description": "Adjust color settings of your Deck",
+     "tags": ["saturation", "vibrant"], "downloads": 509641,
+     "created": "2022-11-19T22:42:09Z", "updated": "2024-05-19T18:25:52Z",
+     "image_url": None,
+     "versions": [{"name": "2.0.1", "hash": "272f6f3cd66c5d5c9b50ff46463ad509c8afc014633febd22046ff1aee52ee0f", "created": "2024-05-19T18:25:52Z"}]},
+    {"id": 137, "name": "Decky Proton Launch", "author": "moi952",
+     "description": "Manage Steam game launch options from Gaming Mode. Set Proton environment variables like PROTON_FSR4_UPGRADE=1 or PROTON_DLSS4_UPGRADE=1 and add wrappers such as MangoHud or GameScope.",
+     "tags": ["command", "launch", "proton"], "downloads": 17580,
+     "created": "2026-05-13T22:21:52Z", "updated": "2026-05-13T22:21:52Z",
+     "image_url": None,
+     "versions": [{"name": "0.9.0", "hash": "e7b98a7ca8817ef08584ed0828eee8702631af33daccc229075a012eca91f731", "created": "2026-05-13T22:21:52Z"}]},
+    {"id": 13, "name": "Pause Games", "author": "popsUlfr & wynn1212 & AkazaRenn",
+     "description": "Pause/Resume games to redirect resources and even play/stop apps that don't natively have an immediate option to do so.",
+     "tags": ["pause", "play", "quick-resume", "resume", "sigcont", "sigstop", "sleep", "stop", "suspend"],
+     "downloads": 175622,
+     "created": "2022-08-17T20:32:47Z", "updated": "2026-09-02T05:19:14Z",
+     "image_url": None,
+     "versions": [{"name": "1.0.2", "hash": "68aa705107ceec43a50882e53d6dedc86cf4d9889c87a83279089c73b9de3c4f", "created": "2026-09-02T05:19:14Z"}]},
+]
+_DECKY_MOCK_STORE = _decky_store_normalise(_DECKY_MOCK_STORE_RAW)
+assert len(_DECKY_MOCK_STORE) == 8, "mock store fixture must survive the normaliser"
+_DECKY_MOCK_STORE_BY_ID = {e["id"]: e for e in _DECKY_MOCK_STORE}
+_DECKY_MOCK_STORE_BY_NAME = {e["name"]: e for e in _DECKY_MOCK_STORE}
+# id 36 (SteamGridDB) -> PNG, id 7 (CSS Loader) -> an AVIF header the sniff
+# accepts (ISO-BMFF ftyp box with the avif brand); nothing else has an icon.
+_DECKY_MOCK_ICON_IDS = (36, 7)
+_DECKY_MOCK_JOB_PHASES = {
+    "install": ["connect", "request", "confirm", "readback", "verify"],
+    "update": ["connect", "request", "confirm", "readback", "verify"],
+    "uninstall": ["connect", "request", "verify"],
+    "reload": ["connect", "request"],
+}
+_DECKY_MOCK_JOB_S = 3.0
+_DECKY_MOCK_B = {"plugins": [dict(p) for p in _DECKY_MOCK_PLUGINS_SEED],
+                 "order": list(_DECKY_MOCK_ORDER), "job": None,
+                 "store_fetched_at": int(time.time()), "refresh_at": 0.0,
+                 "check": None}
+
+
+def _mock_decky_avif():
+    return (b"\x00\x00\x00\x1cftypavif\x00\x00\x00\x00avifmif1miaf"
+            + b"\x00" * 48)
+
+
+def mock_decky_icon(store_id):
+    """(bytes, mime) or None; only the two advertised ids answer."""
+    try:
+        sid = int(store_id)
+    except (TypeError, ValueError):
+        return None
+    if sid == 36:
+        return _png(64, 64, (60, 90, 160)), "image/png"
+    if sid == 7:
+        data = _mock_decky_avif()
+        return data, (_decky_sniff_image(data) or "image/avif")
+    return None
+
+
+def _mock_decky_store_snapshot():
+    return {"by_name": _DECKY_MOCK_STORE_BY_NAME, "by_id": _DECKY_MOCK_STORE_BY_ID,
+            "plugins": _DECKY_MOCK_STORE, "fetched_at": _DECKY_MOCK_B["store_fetched_at"],
+            "stale": False, "fetching": False, "error": None}
+
+
+def _mock_decky_flags():
+    ps = _DECKY_MOCK_B["plugins"]
+    return {"disabled": {p["name"] for p in ps if p.get("disabled")},
+            "hidden": {p["name"] for p in ps if p.get("hidden")},
+            "frozen": {p["name"] for p in ps if p.get("frozen")},
+            "order": list(_DECKY_MOCK_B["order"])}
+
+
+def _mock_decky_job_advance():
+    """Advance the mock job by wall clock (under _DECKY_MOCK_LOCK): phases at
+    equal steps over ~3 s, then the terminal verdict + list mutation."""
+    job = _DECKY_MOCK_B.get("job")
+    if not job or job.get("done"):
+        return
+    t = time.time() - job["_t0"]
+    phases = _DECKY_MOCK_JOB_PHASES[job["kind"]]
+    idx = min(len(phases) - 1, int(t / (_DECKY_MOCK_JOB_S / len(phases))))
+    if phases[idx] != job["phase"]:
+        job["phase"] = phases[idx]
+        job["log"].append("[mock] phase %s" % phases[idx])
+    if t >= _DECKY_MOCK_JOB_S:
+        job.update({"done": True, "ok": True, "outcome": "done",
+                    "finished_at": int(time.time()), "phase": "done"})
+        ps = _DECKY_MOCK_B["plugins"]
+        if job["kind"] in ("install", "update"):
+            e = _DECKY_MOCK_STORE_BY_ID.get(job.get("store_id")) or {}
+            cur = next((p for p in ps if p["name"] == job["name"]), None)
+            if cur:
+                cur["version"] = job["version"]
+            else:
+                ps.append({"name": job["name"], "folder": job["name"].replace(" ", ""),
+                           "version": job["version"], "author": e.get("author"),
+                           "root": "root" in (e.get("tags") or []), "disabled": False,
+                           "hidden": False, "frozen": False})
+                _DECKY_MOCK_B["order"].append(job["name"])
+            job["verified"] = True
+            job["log"].append("[mock] Decky lists %s %s enabled" % (job["name"], job["version"]))
+        elif job["kind"] == "uninstall":
+            _DECKY_MOCK_B["plugins"] = [p for p in ps if p["name"] != job["name"]]
+            if job["name"] in _DECKY_MOCK_B["order"]:
+                _DECKY_MOCK_B["order"].remove(job["name"])
+            job["verified"] = True
+            job["log"].append("[mock] folder gone")
+        else:
+            job["verified"] = None
+            job["log"].append("[mock] reload_plugin acknowledged")
+
+
+def _mock_decky_job_public():
+    job = _DECKY_MOCK_B.get("job")
+    return _decky_job_public(job) if job else None
+
+
+def mock_decky_plugins():
+    with _DECKY_MOCK_LOCK:
+        _mock_decky_advance()
+        _mock_decky_job_advance()
+        job = _mock_decky_job_public()
+        if not _DECKY_MOCK["installed"]:
+            return {"available": False, "source": "fs", "flags_available": False,
+                    "running_probe": "unknown", "plugins": [], "updates": None,
+                    "store_checked_at": None, "unreadable": 0, "job": job}
+        flags = _mock_decky_flags()
+        store = _mock_decky_store_snapshot()
+        rows = []
+        n = 0
+        for p in _DECKY_MOCK_B["plugins"]:
+            upd = _decky_plugin_update(p, flags, store)
+            if upd:
+                n += 1
+            rows.append({"name": p["name"], "folder": p["folder"], "version": p["version"],
+                         "author": p["author"], "root": p["root"],
+                         "disabled": p["disabled"], "hidden": p["hidden"],
+                         "frozen": p["frozen"], "running": None,
+                         "protected": _decky_protected(p["name"]), "update": upd})
+        order = {nm: i for i, nm in enumerate(flags["order"])}
+        rows.sort(key=lambda r: (order.get(r["name"], len(order)), r["name"]))
+        return {"available": True, "source": "fs", "flags_available": True,
+                "running_probe": "unknown", "plugins": rows, "updates": n,
+                "store_checked_at": store["fetched_at"], "unreadable": 0, "job": job}
+
+
+def mock_decky_store():
+    with _DECKY_MOCK_LOCK:
+        _mock_decky_advance()
+        _mock_decky_job_advance()
+        installed = {p["name"]: p for p in _DECKY_MOCK_B["plugins"]}
+        have = bool(_DECKY_MOCK["installed"])
+        rows = []
+        for e in _DECKY_MOCK_STORE:
+            inst = installed.get(e["name"]) if have else None
+            iv = inst["version"] if inst else None
+            it = (_decky_install_type(iv, e["versions"][0]["name"], have) if inst
+                  else ("install" if have else None))
+            rows.append({"id": e["id"], "name": e["name"], "author": e["author"],
+                         "description": e["description"], "tags": e["tags"],
+                         "downloads": e["downloads"], "updated": e["updated"],
+                         "has_icon": e["image_url"] is not None,
+                         "installed_version": iv,
+                         "update_available": it == "update", "install_type": it,
+                         "versions": e["versions"]})
+        return {"available": True, "fetching": False, "count": len(rows),
+                "fetched_at": _DECKY_MOCK_B["store_fetched_at"], "stale": False,
+                "plugins": rows, "error": None}
+
+
+def mock_decky_store_refresh():
+    with _DECKY_MOCK_LOCK:
+        now = time.monotonic()
+        ok = now - _DECKY_MOCK_B["refresh_at"] >= _DECKY_STORE_REFRESH_MIN_S
+        if ok:
+            _DECKY_MOCK_B["refresh_at"] = now
+            _DECKY_MOCK_B["store_fetched_at"] = int(time.time())
+        return {"refreshed": ok, "fetching": False,
+                "fetched_at": _DECKY_MOCK_B["store_fetched_at"]}
+
+
+def mock_decky_jobs():
+    with _DECKY_MOCK_LOCK:
+        _mock_decky_job_advance()
+        return {"job": _mock_decky_job_public()}
+
+
+def _mock_decky_ready():
+    """The mock precondition chain, mirroring _decky_ready_for_ops on the
+    flagged state. Called under _DECKY_MOCK_LOCK."""
+    _mock_decky_advance()
+    _mock_decky_job_advance()
+    s = _DECKY_MOCK["state"]
+    if s == "needs_optin":
+        return 403, {"ok": False, "error": "needs_optin", "needs_optin": True}
+    op = _DECKY_MOCK.get("op")
+    if op and not op.get("interrupted") and not op.get("done_at"):
+        return 409, {"ok": False, "error": "busy", "busy": True, "what": "loader_op"}
+    job = _DECKY_MOCK_B.get("job")
+    if job and not job.get("done"):
+        return 409, {"ok": False, "error": "busy", "busy": True, "what": "plugin_job"}
+    if not _DECKY_MOCK["installed"]:
+        return 503, {"ok": False, "error": "loader_down", "repair": False, "installed": False}
+    if s == "stopped":
+        return 409, {"ok": False, "error": "loader_stopped",
+                     "restart_action": "restart-decky" if "restart-decky" in ACTIONS else None,
+                     "repair": True, "stopped_reason": "self_stop_recent"}
+    if s in ("untrusted", "unreachable"):
+        return 503, {"ok": False, "error": "loader_down", "repair": True,
+                     "state": "running_" + s}
+    return None
+
+
+def _mock_decky_job_new(kind, name, version=None, store_id=None, install_type=None,
+                        old_version=None):
+    return {"kind": kind, "name": name, "version": version, "hash": None,
+            "store_id": store_id, "install_type": install_type,
+            "old_version": old_version, "started_at": int(time.time()),
+            "_t0": time.time(), "phase": "queued", "done": False, "ok": None,
+            "outcome": None, "error": None, "restarted_loader": False,
+            "log": ["[mock] job %s %s queued" % (kind, name)], "verified": None,
+            "reinstall_id": None, "retry": False,
+            "steam_ui_up": _DECKY_MOCK["state"] not in ("no_steam", "stopped",
+                                                        "cef_flag_missing",
+                                                        "steam_needs_restart",
+                                                        "installed_steam_needs_restart")}
+
+
+def mock_decky_plugin_install(body):
+    """--mock POST /api/decky/plugins/install: the same validation order as the
+    real handler, then a ~3 s job that mutates the mock list."""
+    if not isinstance(body, dict):
+        return 400, {"ok": False, "error": "body must be a JSON object"}
+    sid = body.get("id")
+    if isinstance(sid, bool) or not isinstance(sid, int) or not 0 < sid < _DECKY_STORE_ID_MAX:
+        return 400, {"ok": False, "error": "id must be a positive integer"}
+    with _DECKY_MOCK_LOCK:
+        pre = _mock_decky_ready()
+        if pre:
+            return pre
+        entry = _DECKY_MOCK_STORE_BY_ID.get(sid)
+        if entry is None:
+            return 404, {"ok": False, "error": "unknown store id"}
+        if _decky_protected(entry["name"]):
+            return 409, {"ok": False, "error": "protected", "protected": True,
+                         "name": entry["name"]}
+        ver = entry["versions"][0]
+        if not _DECKY_HASH_RE.fullmatch(ver["hash"]):
+            return 422, {"ok": False, "error": "no verifiable hash"}
+        inst = next((p for p in _DECKY_MOCK_B["plugins"] if p["name"] == entry["name"]), None)
+        it = _decky_install_type(inst["version"] if inst else None, ver["name"], True)
+        kind = "update" if (inst and it != "install") else "install"
+        job = _mock_decky_job_new(kind, entry["name"], version=ver["name"],
+                                  store_id=entry["id"], install_type=it,
+                                  old_version=inst["version"] if inst else None)
+        job["log"].append("[mock] artifact %s%s.zip" % (_DECKY_CDN, ver["hash"]))
+        _DECKY_MOCK_B["job"] = job
+        print("[decky] mock plugin job: %s %s" % (kind, entry["name"]), flush=True)
+        return 200, {"ok": True, "job": _decky_job_public(job)}
+
+
+def mock_decky_plugin_op(op, body):
+    if op not in _DECKY_PLUGIN_OPS:
+        return 404, {"ok": False, "error": "not found"}
+    if not isinstance(body, dict):
+        return 400, {"ok": False, "error": "body must be a JSON object"}
+    name = body.get("name")
+    if not _decky_name_ok(name):
+        return 400, {"ok": False, "error": "name must be a printable string (1-64 chars)"}
+    with _DECKY_MOCK_LOCK:
+        pre = _mock_decky_ready()
+        if pre:
+            return pre
+        inst = next((p for p in _DECKY_MOCK_B["plugins"] if p["name"] == name), None)
+        if inst is None:
+            return 404, {"ok": False, "error": "unknown plugin"}
+        if _decky_protected(inst["name"]):
+            return 409, {"ok": False, "error": "protected", "protected": True,
+                         "name": inst["name"]}
+        job = _mock_decky_job_new(op, inst["name"], version=inst.get("version"))
+        _DECKY_MOCK_B["job"] = job
+        print("[decky] mock plugin job: %s %s" % (op, inst["name"]), flush=True)
+        return 200, {"ok": True, "job": _decky_job_public(job)}
+
+
+def mock_decky_loader_check():
+    with _DECKY_MOCK_LOCK:
+        pre = _mock_decky_ready()
+        if pre:
+            return pre
+        # Honour an armed updatable check (--mock-decky update_available), so
+        # the harness can press Check-for-updates and see the "update available"
+        # path — not only the always-up-to-date one.
+        armed = _DECKY_MOCK_B.get("check")
+        val = (dict(armed) if armed and armed.get("updatable")
+               else {"current": _DECKY_MOCK_TAG, "remote": _DECKY_MOCK_TAG,
+                     "updatable": False, "channel": 0})
+        val["checked_at"] = int(time.time())
+        _DECKY_MOCK_B["check"] = val
+        return 200, {"ok": True, "loader_update": dict(val), "cached": False}
+
+
 # --mock only: a mock flash flips the mock openpuck row board_ready ->
 # puck_present, so the harness exercises the app's whole arc (press -> Flashing…
 # -> success note -> re-poll flips the row) instead of a state that never moves.
@@ -10994,15 +14059,24 @@ _MOCK_OPENPUCK_FLASHED = False
 
 def utilities_state(mock):
     """The Setup->Utilities list: each supported utility + its live state. READ-ONLY.
-    In --mock both appear in a ready-ish state so the harness renders them."""
+    In --mock all appear in a ready-ish state so the harness renders them.
+
+    The `decky` row is emitted only when the box has a Steam root (the mock
+    always has one): on a non-Steam box the row is absent, like the rest of
+    /api/decky/* 404s there — a client never sees an `unsupported` state."""
     if mock:
         states = {"openpuck": ("puck_present" if _MOCK_OPENPUCK_FLASHED
                                else "board_ready"),
-                  "cec": "needs_enable"}
+                  "cec": "needs_enable",
+                  "decky": _decky_util_state(True)}
     else:
         states = {"openpuck": _openpuck_state(), "cec": _cec_util_state()}
+        if _decky_supported():
+            states["decky"] = _decky_util_state(False)
     out = []
-    for uid in ("openpuck", "cec"):
+    for uid in ("openpuck", "cec", "decky"):
+        if uid not in states:
+            continue
         out.append({"id": uid, "state": states[uid], **_UTILITY_META[uid]})
     return out
 
@@ -20261,6 +23335,17 @@ class Handler(BaseHTTPRequestHandler):
                 self._handle_steam_cover(appid, started)
                 return
 
+            if path.startswith("/api/decky/store/icon/"):
+                # Same pre-gate/_authorized_image treatment as the cover route
+                # (RN <Image> drops headers on Android): still AUTHENTICATED,
+                # 401 like everything else. The id segment is shape-checked
+                # ([0-9]{1,9}) and looked up in the box's own store cache.
+                if not self._authorized_image(parsed):
+                    self._send(401, {"error": "unauthorized"}, started)
+                    return
+                self._handle_decky_icon(path[len("/api/decky/store/icon/"):], started)
+                return
+
             if not self._authorized():
                 self._send(401, {"error": "unauthorized"}, started)
                 return
@@ -20324,6 +23409,59 @@ class Handler(BaseHTTPRequestHandler):
                 # POST .../openpuck/run?variant=latest.
                 self._send(200, (mock_openpuck_latest() if self.mock
                                  else openpuck_latest()), started)
+            elif path == "/api/decky/loader":
+                # Decky Loader state machine (memoised <=500 ms). Token-only
+                # (filesystem/loopback reads). 404 on a box without a Steam
+                # root so an old-agent probe and a non-Steam box look alike
+                # to the app (probe-and-appear); `loader_update` is null
+                # until Phase B's /loader/check fills it (shape stable).
+                if not (self.mock or _decky_supported()):
+                    self._send(404, {"error": "not found"}, started)
+                    return
+                self._send(200, (mock_decky_loader_state() if self.mock
+                                 else _decky_loader_state()), started)
+            elif path == "/api/decky/loader/log":
+                # Tail of the wrapper transcript at its CONSTANT path.
+                # ?n= is an int clamped 1..400 (rejected, not sanitised,
+                # when it is not an integer at all).
+                if not (self.mock or _decky_supported()):
+                    self._send(404, {"error": "not found"}, started)
+                    return
+                # keep_blank_values so a PRESENT-but-empty ?n= is rejected (400)
+                # exactly like a present-but-empty ?op= on the run route — reject,
+                # don't silently sanitise to the default (§3.6).
+                raw = (parse_qs(parsed.query, keep_blank_values=True).get("n") or [None])[0]
+                if raw is not None and not re.fullmatch(r"-?[0-9]{1,6}", raw):
+                    self._send(400, {"error": "n must be an integer"}, started)
+                    return
+                self._send(200, (mock_decky_loader_log(raw) if self.mock
+                                 else _decky_loader_log(raw)), started)
+            elif path == "/api/decky/plugins":
+                # Filesystem listing (§8): token-only, never opens the Decky
+                # socket (one connect displaces the Steam frontend for ~5 s).
+                # 200 available:false when the loader is not installed.
+                if not (self.mock or _decky_supported()):
+                    self._send(404, {"error": "not found"}, started)
+                    return
+                self._send(200, (mock_decky_plugins() if self.mock
+                                 else decky_plugins_payload()), started)
+            elif path == "/api/decky/store":
+                # Serves the box's CACHE; a cold cache answers available:false
+                # and starts a background fetch (marker permitting). Search
+                # and sort are phone-side — no free text reaches the box.
+                if not (self.mock or _decky_supported()):
+                    self._send(404, {"error": "not found"}, started)
+                    return
+                self._send(200, (mock_decky_store() if self.mock
+                                 else decky_store_payload()), started)
+            elif path == "/api/decky/jobs":
+                # The plugin job record, read from disk when this process has
+                # no live copy (an agent restart never turns it into null).
+                if not (self.mock or _decky_supported()):
+                    self._send(404, {"error": "not found"}, started)
+                    return
+                self._send(200, (mock_decky_jobs() if self.mock
+                                 else decky_jobs_payload()), started)
             elif path == "/api/session/default":
                 # Read-only. Always 200 with available=false rather than 404 so
                 # the app can tell "old agent" (404) from "this box has no
@@ -20774,6 +23912,145 @@ class Handler(BaseHTTPRequestHandler):
             os.unlink(path)
         except OSError:
             pass
+
+    def _handle_decky_icon(self, seg, started):
+        """GET /api/decky/store/icon/<id> (reached past _authorized_image).
+        The segment must match [0-9]{1,9} EXACTLY (never str.isdigit(): '²'
+        is a digit to Python and int('²') raises) -> 400; then int() -> a key
+        of the box's own store cache -> the cached file, or a host-pinned,
+        no-redirect, <=1 MiB, sniffed CDN fetch (marker only) -> 404 else."""
+        if not (self.mock or _decky_supported()):
+            self._send(404, {"error": "not found"}, started)
+            return
+        if not re.fullmatch(r"[0-9]{1,9}", seg):
+            self._send(400, {"error": "bad icon id"}, started)
+            return
+        sid = int(seg)
+        got = mock_decky_icon(sid) if self.mock else _decky_icon_bytes(sid)
+        if not got:
+            self._send(404, {"error": "no icon"}, started)
+            return
+        data, mime = got
+        self._send_bytes(200, data, mime, started,
+                         extra_headers={"Cache-Control": "public, max-age=86400"})
+
+    def _handle_decky_post(self, path, body, started):
+        """The five Phase B POST routes (all MARKER-GATED: each opens the Decky
+        WebSocket or leaves the LAN), reached only past the bearer gate. The
+        route literal picks the handler; `body` is parsed here as JSON and every
+        client value inside it is validated + looked up by the handler (a store
+        id in the cache, a plugin name in the fs listing) — never interpolated.
+        404 for anything else under /api/decky/ so an old agent and an unknown
+        route look alike to the app."""
+        if not (self.mock or _decky_supported()):
+            self._send(404, {"error": "not found"}, started)
+            return
+        if path == "/api/decky/store/refresh":
+            if self.mock:
+                ok = _DECKY_MOCK["state"] != "needs_optin"
+            else:
+                ok = _decky_allowed()
+            if not ok:
+                self._send(403, {"ok": False, "error": "needs_optin", "needs_optin": True},
+                           started)
+                return
+            self._send(200, (mock_decky_store_refresh() if self.mock
+                             else decky_store_refresh()), started)
+            return
+        if path == "/api/decky/loader/check":
+            code, out = mock_decky_loader_check() if self.mock else decky_loader_check()
+            self._send(code, out, started)
+            return
+        if path in ("/api/decky/plugins/install", "/api/decky/plugins/uninstall",
+                    "/api/decky/plugins/reload"):
+            try:
+                req = json.loads(body.decode("utf-8")) if body else {}
+            except (ValueError, UnicodeDecodeError):
+                self._send(400, {"ok": False, "error": "body must be JSON"}, started)
+                return
+            if path.endswith("/install"):
+                code, out = (mock_decky_plugin_install(req) if self.mock
+                             else decky_plugin_install(req))
+            else:
+                op = path.rsplit("/", 1)[1]          # literal: 'uninstall' | 'reload'
+                code, out = (mock_decky_plugin_op(op, req) if self.mock
+                             else decky_plugin_op(op, req))
+            self._send(code, out, started)
+            return
+        self._send(404, {"error": "not found"}, started)
+
+    def _handle_decky_loader_run(self, parsed, started):
+        """POST /api/utilities/decky/run?op=install|uninstall (MARKER-GATED: it
+        starts a root oneshot unit). Reached only past the bearer gate and the
+        frozen utility-id lookup.
+
+        `?op=` is an ENUM matched against _DECKY_LOADER_OPS; the unit started is
+        _DECKY_UNITS[op] — the query string is never an argv element. A MISSING
+        `?op=` is a pre-2.9.58 app pressing the row's run button: it gets 200
+        {ok:false} with a human string in `error` AND `stderr` (old present()
+        renders stderr) — never a 400 dead button. Absent Steam root -> 404 like
+        the rest of the surface. Response: ActionResult + started/via/log on
+        success; 403 needs_optin; 409 busy; else 200 ok:false carrying the
+        shim's reason (needs_installer / helper_outdated / helper_unreachable,
+        retry / did_not_start / a helper or sudo detail)."""
+        if not (self.mock or _decky_supported()):
+            self._send(404, {"ok": False, "error": "unknown utility"}, started)
+            return
+        # keep_blank_values: `?op=` (present, EMPTY) must reach the enum check
+        # and be REJECTED with 400 — the default parse_qs drops blank values,
+        # which would quietly re-label a malformed request as the old-app
+        # "missing ?op=" case (sanitising, not rejecting; CLAUDE.md §3.6).
+        # Only a truly ABSENT key is the pre-2.9.58 app.
+        q = parse_qs(parsed.query, keep_blank_values=True)
+        if "op" not in q:
+            msg = "Update the Couchside app to manage Decky Loader"
+            self._send(200, {"ok": False, "exit_code": 1, "stdout": "",
+                             "stderr": msg, "duration_ms": 0, "error": msg},
+                       started)
+            return
+        op = q["op"][0]
+        if op not in _DECKY_LOADER_OPS:
+            self._send(400, {"ok": False, "error": "unknown loader op"}, started)
+            return
+        t0 = time.monotonic()
+        r = mock_decky_loader_start(op) if self.mock else _decky_loader_start(op)
+        ms = int((time.monotonic() - t0) * 1000)
+        if r.get("started"):
+            body = {"ok": True, "exit_code": 0,
+                    "stdout": "Decky Loader %s started" % op, "stderr": "",
+                    "duration_ms": ms}
+            body.update(r)
+            self._send(200, body, started)
+            return
+        if r.get("needs_optin"):
+            self._send(403, {"ok": False, "error": "needs_optin",
+                             "needs_optin": True,
+                             "stderr": "Run `couchside allow-decky on` on the box "
+                                       "first.", "exit_code": 1, "stdout": "",
+                             "duration_ms": ms}, started)
+            return
+        if r.get("busy"):
+            self._send(409, {"ok": False, "error": "busy", "busy": True,
+                             "what": r.get("what") or "loader_op",
+                             "stderr": "Another Decky operation is running.",
+                             "exit_code": 1, "stdout": "", "duration_ms": ms},
+                       started)
+            return
+        if r.get("needs_installer"):
+            why = "The Decky installer is not on this box — re-run the Couchside installer."
+        elif r.get("helper_outdated"):
+            why = ("The box's privileged helper predates this feature — re-run the "
+                   "Couchside installer to update it.")
+        elif r.get("helper_unreachable"):
+            why = "The box's privileged helper did not answer — try again."
+        elif r.get("detail"):
+            why = "Decky Loader %s did not start: %s" % (op, r["detail"])
+        else:
+            why = "Decky Loader %s did not start." % op
+        body = {"ok": False, "exit_code": int(r.get("exit_code") or 1), "stdout": "",
+                "stderr": why, "duration_ms": ms, "error": why}
+        body.update(r)
+        self._send(200, body, started)
 
     def do_POST(self):
         started = time.monotonic()
@@ -21380,6 +24657,12 @@ class Handler(BaseHTTPRequestHandler):
             # interpolated and never a command. Only 'openpuck' (flash a board) is
             # runnable; 'cec' is detect-only (its enable is an install-time udev
             # rule, not a daemon action) so it 404s with a distinct reason.
+            # POST /api/decky/*: store refresh, loader check, plugin install/
+            # uninstall/reload as JOBS (the loader op stays under /utilities).
+            if path.startswith("/api/decky/"):
+                self._handle_decky_post(path, body, started)
+                return
+
             uprefix = "/api/utilities/"
             if path.startswith(uprefix) and path.endswith("/run"):
                 uid = unquote(path[len(uprefix):-len("/run")])
@@ -21405,6 +24688,9 @@ class Handler(BaseHTTPRequestHandler):
                     result = (mock_openpuck_flash(variant) if self.mock
                               else real_openpuck_flash(variant))
                     self._send(200, result, started)
+                    return
+                if uid == "decky":
+                    self._handle_decky_loader_run(parsed, started)
                     return
                 # Defensive: a run id in the frozen set with no dispatch branch.
                 self._send(404, {"ok": False, "error": "unknown utility"}, started)
@@ -23664,6 +26950,13 @@ def main():
                    help="write the stored boot preference and exit (ExecStop hook)")
     p.add_argument("--mock", action="store_true",
                    help="serve fake data, never run real commands")
+    # Env-free mock state for the Decky manager (only meaningful with --mock):
+    # the harness config couchside-web-harness-decky passes `not_installed` so
+    # one run walks install -> Steam-restart -> running -> uninstall.
+    p.add_argument("--mock-decky", default="running", choices=_DECKY_MOCK_STATES,
+                   metavar="STATE",
+                   help="--mock only: initial Decky Loader state (one of %s)"
+                        % ", ".join(_DECKY_MOCK_STATES))
     p.add_argument("--tls", action="store_true",
                    help="force-enable the HTTPS listener (overrides config "
                         "tls.enabled; ephemeral cert, not persisted; dev/CI)")
@@ -23685,6 +26978,11 @@ def main():
     _inject_session_actions()
     _inject_suspend_action(args.mock)
     _inject_decky_action(args.mock)
+    if args.mock:
+        set_decky_mock(args.mock_decky)
+    # A plugin job that was running when install.sh restarted us resumes its
+    # read-back from the disk record (or is marked interrupted when stale).
+    _decky_jobs_resume(args.mock)
     _inject_bluetooth_action(args.mock)
     set_tv(args.mock)
     set_mpris(args.mock)
