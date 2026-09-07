@@ -13,6 +13,7 @@ import { useFocusEffect } from 'expo-router';
 import Ionicons from '@expo/vector-icons/Ionicons';
 
 import { BootSessionCard } from '@/components/BootSessionCard';
+import { DeckyActionCard } from '@/components/DeckyActionCard';
 import { EditableSection } from '@/components/EditableSection';
 import { UtilitiesSection } from '@/components/UtilitiesSection';
 import { Gated } from '@/components/Gated';
@@ -375,6 +376,12 @@ function ActionsScreen() {
             unasked. Self-hides on boxes without the utilities endpoint too.
             PINNED above the movable sections — an advanced flashing tool is not
             something to reorder or hide by accident. */}
+        {/* Decky Loader entry point (owner's placement, 2026-09-06): a compact
+            tappable card that OPENS the manager (/decky). NOT pref-gated — like
+            the Setup card, the box-side opt-in is the consent — and self-hides
+            on a box with no loader / opt-in / installer (probe-and-appear).
+            Pinned above the movable sections, next to Utilities. */}
+        {configured && <DeckyActionCard />}
         {configured && utilitiesEnabled && <UtilitiesSection context="actions" />}
         {/* Movable sections — the Boot Session card and the three impact groups —
             with hold-to-edit reorder + hide (Customize in the header, Done bar
