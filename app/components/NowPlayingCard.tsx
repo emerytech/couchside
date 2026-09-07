@@ -28,7 +28,7 @@ function fmtTime(ms: number): string {
 export function NowPlayingCard() {
   const t = useTheme();
   const styles = useThemedStyles(makeStyles);
-  const { Card } = useSkinKit();
+  const { Card, text: tk } = useSkinKit();
   const { settings, ready } = useSettings();
   const skipSec = usePref('mediaSkipSec');
   const holdEnabled = usePref('mediaHoldSkip');
@@ -194,10 +194,10 @@ export function NowPlayingCard() {
           )}
         </View>
         <View style={styles.meta}>
-          <Text style={styles.trackTitle} numberOfLines={1}>
+          <Text style={[styles.trackTitle, tk?.body]} numberOfLines={1}>
             {active.title || active.identity}
           </Text>
-          <Text style={styles.trackArtist} numberOfLines={1}>
+          <Text style={[styles.trackArtist, tk?.muted]} numberOfLines={1}>
             {active.artist || active.album || '—'}
           </Text>
         </View>

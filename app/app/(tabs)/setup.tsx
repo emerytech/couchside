@@ -68,6 +68,8 @@ import { resetFeatureTour } from '@/hooks/useFeatureTour';
 import { resetTips } from '@/lib/tips';
 import { setPref, usePref } from '@/lib/prefs';
 import { THEME_PICKER } from '@/lib/gameTheme';
+import { SKINS, SKIN_KEYS, setSkin, useSkinKey } from '@/lib/skin';
+import { EFFECTS, EFFECT_KEYS, toggleEffect, useActiveEffects, useEffects } from '@/lib/effects';
 import {
   buy,
   userFacingPurchaseError,
@@ -885,6 +887,9 @@ function SetupBody() {
   const themeMode = useThemeMode();
   const accent = useAccent();
   const themePack = useThemePack();
+  const skinKey = useSkinKey();
+  const effectsList = useEffects();
+  const activeFx = useActiveEffects();
   const scheme = useResolvedScheme();
   const confirmSuspend = usePref('confirmSuspend');
   const streakCelebrations = usePref('streakCelebrations');
@@ -1680,6 +1685,58 @@ function SetupBody() {
                 </ScrollView>
               </View>
               </PrefFilterable>
+              {/* SKIN = the Console's chrome (shape + type), independent of the
+                  palette above. Each card is a LIVE mini-preview drawn with that
+                  skin's own components in the current colours, so the pick shows
+                  itself. */}
+              <PrefFilterable
+                label="Skin"
+                sub={'Classic Reactor Studio Slate Paper Panel console skin chrome shape type layout'}>
+              <View style={styles.prefCol}>
+                <View style={styles.prefBody}>
+                  <Text style={styles.prefLabel}>Skin</Text>
+                  <Text style={styles.prefSub}>
+                    The Console&apos;s shape and type. Colours come from the Look above.
+                  </Text>
+                </View>
+                <ScrollView
+                  horizontal
+                  showsHorizontalScrollIndicator={false}
+                  contentContainerStyle={styles.packRow}>
+                  {SKIN_KEYS.map((k) => {
+                    const kit = SKINS[k];
+                    const on = skinKey === k;
+                    return (
+                      <Pressable
+                        key={k}
+                        onPress={() => {
+                          setSkin(k);
+                          hapticSelection();
+                        }}
+                        accessibilityRole="button"
+                        accessibilityState={{ selected: on }}
+                        accessibilityLabel={`${kit.label} skin`}
+                        style={({ pressed }) => [
+                          styles.skinCard,
+                          { borderColor: on ? t.accent : t.cardBorder },
+                          on && styles.packCardActive,
+                          pressed && { opacity: 0.8 },
+                        ]}>
+                        <View style={styles.skinPreview} pointerEvents="none">
+                          <kit.Card title="CPU">
+                            <kit.BigMetric value="50°C" color={t.green} numeric={50} />
+                            <kit.Bar pct={62} color={t.green} />
+                          </kit.Card>
+                        </View>
+                        <Text style={[styles.packName, { color: t.text }]} numberOfLines={1}>
+                          {kit.label}
+                        </Text>
+                      </Pressable>
+                    );
+                  })}
+                </ScrollView>
+              </View>
+              </PrefFilterable>
               <PrefFilterable
                 label="Accent"
                 sub="The app&apos;s highlight color.">
@@ -1706,6 +1763,52 @@ function SetupBody() {
                     />
                   ))}
                 </View>
+              </View>
+              </PrefFilterable>
+              {/* EFFECTS = an optional visual layer on top of ANY skin. Off by
+                  default; each is reduced-motion safe and never fakes a status
+                  colour (see lib/effects). */}
+              <PrefFilterable
+                label="Effects"
+                sub={'motion texture reactive alarm ambient glow scanline vignette pulse grain visual'}>
+              <View style={styles.prefCol}>
+                <View style={styles.prefBody}>
+                  <Text style={styles.prefLabel}>Effects</Text>
+                  <Text style={styles.prefSub}>An optional visual layer, on top of any skin.</Text>
+                </View>
+                <View style={styles.effectWrap}>
+                  {EFFECT_KEYS.map((k) => {
+                    const on = activeFx[k];
+                    return (
+                      <Pressable
+                        key={k}
+                        onPress={() => {
+                          toggleEffect(effectsList, k);
+                          hapticSelection();
+                        }}
+                        accessibilityRole="switch"
+                        accessibilityState={{ checked: on }}
+                        accessibilityLabel={EFFECTS[k].label}
+                        style={({ pressed }) => [
+                          styles.effectChip,
+                          on
+                            ? { backgroundColor: t.accent, borderColor: t.accent }
+                            : { borderColor: t.cardBorder },
+                          pressed && { opacity: 0.8 },
+                        ]}>
+                        <Text
+                          style={[styles.effectChipText, { color: on ? t.onAccent : t.textDim }]}
+                          numberOfLines={1}>
+                          {EFFECTS[k].label}
+                        </Text>
+                      </Pressable>
+                    );
+                  })}
+                </View>
+                <Text style={styles.prefSub} numberOfLines={2}>
+                  {EFFECT_KEYS.filter((k) => activeFx[k]).map((k) => EFFECTS[k].description).join('  ') ||
+                    'Tap to enable. Motion respects your reduce-motion setting.'}
+                </Text>
               </View>
               </PrefFilterable>
             </View>
@@ -2633,6 +2736,14 @@ const makeStyles = (t: Palette) => StyleSheet.create({
     borderColor: 'transparent',
   },
   accentSwatchActive: { borderColor: t.text },
+  // Skin picker: each card holds a LIVE mini-preview drawn by that skin's own
+  // components (see the Skin block), so it carries only geometry + clipping.
+  skinCard: { width: 150, borderRadius: 12, borderWidth: 1, padding: 8, gap: 6 },
+  skinPreview: { width: 134, height: 108, overflow: 'hidden', justifyContent: 'center' },
+  // Effects toggles: pill chips, accent-filled when on.
+  effectWrap: { flexDirection: 'row', flexWrap: 'wrap', gap: 8 },
+  effectChip: { borderWidth: 1, borderRadius: 999, paddingVertical: 7, paddingHorizontal: 12 },
+  effectChipText: { fontSize: 12, fontWeight: '700', fontFamily: mono },
   versionLabel: { color: t.textDim, fontSize: 13 },
   versionValue: { color: t.green, fontSize: 13, fontFamily: mono, fontWeight: '700' },
   hint: { color: t.textFaint, fontSize: 12, lineHeight: 17, fontFamily: mono },

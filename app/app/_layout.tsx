@@ -1,3 +1,4 @@
+import '@/lib/demo'; // no-op unless EXPO_PUBLIC_DEMO=1 (web design-review fixture)
 import { DarkTheme, DefaultTheme, Stack, ThemeProvider } from 'expo-router';
 import { StatusBar } from 'expo-status-bar';
 import { useMemo } from 'react';

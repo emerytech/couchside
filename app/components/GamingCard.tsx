@@ -27,6 +27,7 @@ function batteryColor(pct: number, t: Palette): string {
 
 function GameCover({ appid, label }: { appid: number; label?: string }) {
   const styles = useThemedStyles(makeStyles);
+  const { text: tk } = useSkinKit();
   const { settings } = useSettings();
   const source = api.steamCoverSource(settings, appid);
   const [failed, setFailed] = useState(false);
@@ -47,7 +48,7 @@ function GameCover({ appid, label }: { appid: number; label?: string }) {
           <Ionicons name="game-controller" size={20} color="#8aa" />
         </View>
       )}
-      <Text style={styles.gameLabel} numberOfLines={2}>
+      <Text style={[styles.gameLabel, tk?.body]} numberOfLines={2}>
         {label || `App ${appid}`}
       </Text>
     </View>
@@ -138,11 +139,13 @@ function GpuBlock({
   label,
   styles,
   t,
+  tk,
 }: {
   gpu: GpuInfo;
   label: string;
   styles: ReturnType<typeof makeStyles>;
   t: Palette;
+  tk?: ReturnType<typeof useSkinKit>['text'];
 }) {
   // SHARED-MEMORY GPUs (every handheld APU) carve out a token amount of "VRAM"
   // and do the real work in GTT, which is system RAM. MEASURED on a Legion Go S:
@@ -169,7 +172,7 @@ function GpuBlock({
   return (
     <View style={styles.block}>
       <View style={styles.lineRow}>
-        <Text style={styles.lineLabel}>{label}</Text>
+        <Text style={[styles.lineLabel, tk?.label]}>{label}</Text>
         {gpu.busy_pct != null && <Text style={styles.dim}>{gpu.busy_pct}% busy</Text>}
         {gpu.temp_c != null && (
           <Text style={[styles.lineVal, { color: tempColor(gpu.temp_c, t) }]}>
@@ -197,7 +200,7 @@ function GpuBlock({
 export function GamingCard() {
   const t = useTheme();
   const styles = useThemedStyles(makeStyles);
-  const { Card, Bar } = useSkinKit();
+  const { Card, Bar, text: tk } = useSkinKit();
   const { settings, ready } = useSettings();
   const configured = !!settings.host && !!settings.token;
 
@@ -229,14 +232,14 @@ export function GamingCard() {
   return (
     <Card index={2}>
       <View style={styles.header}>
-        <Text style={styles.cardTitle}>GAMING</Text>
+        <Text style={[styles.cardTitle, tk?.title]}>GAMING</Text>
         <View style={[styles.sessionPill, inGameMode && styles.sessionPillOn]}>
           <Ionicons
             name={inGameMode ? 'tv' : 'desktop-outline'}
             size={11}
             color={inGameMode ? t.bg : t.textDim}
           />
-          <Text style={[styles.sessionText, inGameMode && { color: t.bg }]}>
+          <Text style={[styles.sessionText, tk?.label, inGameMode && { color: t.bg }]}>
             {inGameMode ? 'Game Mode' : 'Desktop'}
           </Text>
         </View>
@@ -252,7 +255,7 @@ export function GamingCard() {
       {g.game && (
         <View style={styles.block}>
           <View style={styles.lineRow}>
-            <Text style={styles.lineLabel}>RUNNING</Text>
+            <Text style={[styles.lineLabel, tk?.label]}>RUNNING</Text>
             {g.game.running_s != null && (
               <Text style={styles.dim}>{humanizeRun(g.game.running_s)}</Text>
             )}
@@ -298,12 +301,13 @@ export function GamingCard() {
           label={gpuList.length > 1 ? `GPU ${card.card ?? i + 1}` : 'GPU'}
           styles={styles}
           t={t}
+          tk={tk}
         />
       ))}
 
       {g.output && (
         <View style={styles.lineRow}>
-          <Text style={styles.lineLabel}>OUTPUT</Text>
+          <Text style={[styles.lineLabel, tk?.label]}>OUTPUT</Text>
           <Text style={styles.lineVal}>
             {g.output.name}
             <Text style={styles.dim}>{g.output.internal ? '  built-in' : '  external'}</Text>

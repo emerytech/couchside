@@ -16,7 +16,7 @@
  * green/amber/red carry meaning, and battery is inverted.
  */
 import React from 'react';
-import type { StyleProp, ViewStyle } from 'react-native';
+import type { StyleProp, TextStyle, ViewStyle } from 'react-native';
 
 // ---------------------------------------------------------------------------
 // Component contracts
@@ -92,6 +92,31 @@ export type DotProps = {
 export type SkinKit = {
   /** Human label, for the dev skin switcher. */
   label: string;
+  /**
+   * Type and shape tokens a skin may hand to the cards that draw their own
+   * headers (NowPlaying, Gaming, StreamHost, the Console header). All optional:
+   * a skin that omits them (classic, reactor) leaves those cards exactly as they
+   * were, so adding a token here can never move a pixel in an existing skin.
+   */
+  text?: {
+    /** Screen header / hostname. */
+    heading: TextStyle;
+    /** Card / section title. */
+    title: TextStyle;
+    /** Small field label ("Output", "Running"). */
+    label: TextStyle;
+    /** Primary body copy (a track title, a game name, a peer name). */
+    body: TextStyle;
+    /** Secondary copy (artist, hint lines). */
+    muted: TextStyle;
+  };
+  radius?: { card: number; control: number; pill: number };
+  /**
+   * Quiet chrome: the card-owned controls drop their filled/outlined dressing
+   * (ghost transport buttons, tinted rather than outlined destructive button).
+   * Undefined reads as false.
+   */
+  quiet?: boolean;
   /**
    * Wraps a screen's scrolling content. Lets a skin paint a full-bleed
    * background layer (grid, scanlines, reactor sheen) behind everything.

@@ -321,12 +321,31 @@ export function batteryColor(pct: number, t: Palette = dark): string {
 
 export type ThemeMode = 'system' | 'light' | 'dark';
 
-type ThemePrefs = { mode: ThemeMode; accent: AccentKey; pack: ThemePackKey };
+// `skin` (the Console/Fleet chrome direction, see lib/skin) and `effects` (the
+// cross-skin visual effect toggles, see lib/effects) are persisted here too so a
+// user's whole "look" is one blob. theme.ts stays AGNOSTIC of both key sets —
+// skin is a bare string validated by lib/skin (isSkinKey), effects a string[]
+// validated by lib/effects — so this module never imports the skin registry
+// (which imports theme.ts) and no cycle forms.
+type ThemePrefs = {
+  mode: ThemeMode;
+  accent: AccentKey;
+  pack: ThemePackKey;
+  skin: string;
+  effects: string[];
+};
 
-// Default preserves today's look exactly: forced dark, blue accent. Change
-// `mode` to 'system' here once the light palette is verified across every
-// screen and you want new installs to follow the OS by default.
-const THEME_DEFAULTS: ThemePrefs = { mode: 'dark', accent: 'blue', pack: 'midnight' };
+// Default preserves today's look exactly: forced dark, blue accent, the shipped
+// `reactor` skin, no effects. Change `mode` to 'system' here once the light
+// palette is verified across every screen and you want new installs to follow
+// the OS by default.
+const THEME_DEFAULTS: ThemePrefs = {
+  mode: 'dark',
+  accent: 'blue',
+  pack: 'midnight',
+  skin: 'reactor',
+  effects: [],
+};
 
 const THEME_KEY = 'couchside.theme.v1';
 
@@ -378,7 +397,15 @@ function normalize(raw: unknown): ThemePrefs {
     typeof o.pack === 'string' && (THEME_PACK_KEYS as string[]).includes(o.pack)
       ? (o.pack as ThemePackKey)
       : THEME_DEFAULTS.pack;
-  return { mode, accent, pack };
+  // Loose validation on purpose: theme.ts does not know the skin/effect key sets
+  // (lib/skin and lib/effects own those). A skin string that is no longer a valid
+  // key falls back to the default in useSkinKit; unknown effect keys are ignored
+  // by the effects layer. So a forward-compatible blob never crashes an older app.
+  const skin: string = typeof o.skin === 'string' && o.skin ? o.skin : THEME_DEFAULTS.skin;
+  const effects: string[] = Array.isArray(o.effects)
+    ? o.effects.filter((e): e is string => typeof e === 'string')
+    : THEME_DEFAULTS.effects;
+  return { mode, accent, pack, skin, effects };
 }
 
 let loadStarted = false;
@@ -461,6 +488,53 @@ export function useThemePack(): ThemePackKey {
     subscribe,
     () => prefs.pack,
     () => prefs.pack,
+  );
+}
+
+// --- Skin (chrome direction) ------------------------------------------------
+// Persisted here but VALIDATED in lib/skin (useSkinKit → isSkinKey), so theme.ts
+// stays free of the skin registry. On web a `?skin=` dev override still wins for
+// the harness; on device this pref is the source of truth.
+
+export function getThemeSkin(): string {
+  return prefs.skin;
+}
+
+export async function setThemeSkin(skin: string): Promise<void> {
+  if (prefs.skin === skin) return;
+  prefs = { ...prefs, skin };
+  emitChange();
+  await storageSet(THEME_KEY, JSON.stringify(prefs));
+}
+
+export function useThemeSkin(): string {
+  return useSyncExternalStore(
+    subscribe,
+    () => prefs.skin,
+    () => prefs.skin,
+  );
+}
+
+// --- Effects (cross-skin visual toggles, see lib/effects) -------------------
+// A set of independent effect keys, stored as string[] (theme.ts is agnostic of
+// the key set). setEffects always writes a NEW array so useSyncExternalStore's
+// snapshot reference is stable between changes.
+
+export function getEffects(): string[] {
+  return prefs.effects;
+}
+
+export async function setEffects(effects: string[]): Promise<void> {
+  prefs = { ...prefs, effects: [...effects] };
+  emitChange();
+  await storageSet(THEME_KEY, JSON.stringify(prefs));
+}
+
+export function useEffects(): string[] {
+  return useSyncExternalStore(
+    subscribe,
+    () => prefs.effects,
+    () => prefs.effects,
   );
 }
 
