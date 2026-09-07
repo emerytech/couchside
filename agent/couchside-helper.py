@@ -11,9 +11,11 @@ never wrote, so that path never worked on any box), and KI-050. It also meant a
 box whose display manager changed could not be repaired by the agent alone —
 install.sh had to be re-run.
 
-This process replaces all of it with EIGHT VERBS behind a local unix socket.
+This process replaces all of it with NINE VERBS behind a local unix socket.
 The DM name stops being part of a grant and becomes an internal detail here,
 so a box that changes display manager repairs itself on the next call.
+(Eight verbs through 1.0.x; 1.1.0 added `decky.loader`, which starts a pinned
+oneshot unit rather than doing any work itself — see verb_decky_loader.)
 
 WHAT THIS IS NOT
 ----------------
@@ -49,7 +51,7 @@ import struct
 import subprocess
 import sys
 
-VERSION = "1.0.0"
+VERSION = "1.1.0"
 
 SOCKET_PATH = "/run/couchside/helper.sock"
 # The uid allowed to talk to us. Baked in at install time via --uid; there is
@@ -331,6 +333,56 @@ def verb_update_os():
     return _run([_OS_WRAPPER, "apply"], timeout=900)
 
 
+# ------------------------------------------------------------ decky.loader
+#
+# Install / repair / uninstall Decky Loader from the phone (helper 1.1.0,
+# project_decky-manager.md §4.3). The helper does NONE of the work: it starts a
+# pinned systemd oneshot template instance and returns. The instance runs
+# /etc/couchside/couchside-decky-loader (root-owned wrapper written by
+# install.sh), which is the only place the actual procedure lives.
+#
+# Why a unit and not a child of this process — both reasons were measured on
+# the helper's own unit file, not guessed:
+#   * couchside-helper.service has ProtectHome=yes. A child of this helper
+#     would see an EMPTY /home, so it could never reach ~/homebrew, and it
+#     would fail in a way that looks like "Decky is not installed".
+#   * The socket is Accept=no: ONE process serves every verb sequentially. A
+#     download-and-verify that takes minutes as our child would block power,
+#     session and dm verbs for that whole time (KI-071). Under PID 1 the run
+#     is detached from us, survives an agent restart, and is killed by the
+#     unit's TimeoutStartSec=900 if it hangs.
+#
+# Two files gate it, and BOTH are checked here so a refusal costs nothing:
+# the opt-in marker (written only by `couchside allow-decky on`, and the same
+# path the unit's ConditionPathExists= names) and the wrapper itself (a box
+# that quick-updated the agent but never re-ran install.sh has neither). Note
+# the argv element is the DICT VALUE — the caller's string selects a key and
+# never reaches systemctl (CLAUDE.md §3.1). Keep the paths in step with
+# DECKY_WRAP / DECKY_MARKER in install.sh.
+_DECKY_WRAPPER = "/etc/couchside/couchside-decky-loader"
+_DECKY_MARKER = "/etc/couchside/allow-decky"
+_DECKY_UNITS = {"install": "couchside-decky-loader@install.service",
+                "uninstall": "couchside-decky-loader@uninstall.service"}
+
+
+def verb_decky_loader(mode):
+    """Start the pinned oneshot unit (detached, under PID 1). NOT a child of
+    this helper: ProtectHome=yes would hide ~/homebrew from it, and a minutes-
+    long child would block every other verb (Accept=no, one process).
+
+    `mode` has already passed _one_of(tuple(_DECKY_UNITS)), so the lookup
+    below cannot miss; it is still a lookup, never a format."""
+    if not os.path.exists(_DECKY_MARKER):
+        return False, "decky management not enabled (couchside allow-decky on)"
+    if not os.path.exists(_DECKY_WRAPPER):
+        return False, "decky installer not installed (re-run install.sh)"
+    # --no-block: the unit takes minutes; we only enqueue the start. The agent
+    # reads the outcome back from /run/couchside/decky-loader.result, never
+    # from this reply (a condition-skipped unit also "starts" with exit 0).
+    return _run(["/usr/bin/systemctl", "start", "--no-block",
+                 _DECKY_UNITS[mode]], timeout=15)
+
+
 # ------------------------------------------------------------------ the table
 #
 # THE WHOLE PRIVILEGED SURFACE, on one screen. Each entry is
@@ -365,6 +417,7 @@ VERBS = {
     "logs.journal":       (verb_logs_journal, _journal_arg),
     "update.flatpak":     (verb_update_flatpak, None),
     "update.os":          (verb_update_os, None),
+    "decky.loader":       (verb_decky_loader, _one_of(tuple(_DECKY_UNITS))),
 }
 
 

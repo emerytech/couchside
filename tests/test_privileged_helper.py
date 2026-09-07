@@ -237,8 +237,70 @@ for verb, (handler, validate) in H.VERBS.items():
 print("  PASS  no closed-set verb accepts a path or a bare binary name")
 
 print()
+print("decky.loader: a two-word closed set, two file gates, one exact argv")
+# The mode word selects a unit from the frozen _DECKY_UNITS dict. Anything
+# else — including the agent's own capability probe, "probe" — must be refused
+# by the VALIDATOR, before the handler runs: that is what makes the probe free
+# (a 1.1.0 helper answers "invalid argument" with nothing spawned; a 1.0.0
+# helper answered "unknown verb"), and what keeps a caller's string out of
+# the systemctl argv.
+for bad in ("", "install ", "Install", "repair", "probe", None, ["install"],
+            "install;id", "uninstall\n", 1, {"mode": "install"}):
+    SPAWNS.clear()
+    r = H.dispatch({"verb": "decky.loader", "arg": bad})
+    if not (r.get("ok") is False
+            and str(r.get("error", "")).startswith("invalid argument")
+            and SPAWNS == []):
+        check("decky.loader(%r) refused with no spawn" % (bad,), r, "refusal")
+print("  PASS  every out-of-set mode refused, zero spawns")
+
+d = tempfile.mkdtemp()
+saved_marker, saved_wrapper = H._DECKY_MARKER, H._DECKY_WRAPPER
+try:
+    marker = os.path.join(d, "allow-decky")
+    wrapper = os.path.join(d, "couchside-decky-loader")
+    H._DECKY_MARKER, H._DECKY_WRAPPER = marker, wrapper
+    # Opt-in marker absent: the FIRST gate, and it must cost nothing.
+    SPAWNS.clear()
+    r = H.dispatch({"verb": "decky.loader", "arg": "install"})
+    check("marker absent -> refused", r.get("ok"), False)
+    check("...the refusal names the opt-in command",
+          "allow-decky on" in r.get("detail", ""), True)
+    check("...and nothing ran", SPAWNS, [])
+    # Marker present but the wrapper missing (a quick-updated box that never
+    # re-ran install.sh): refuse rather than start a unit that would fail.
+    with open(marker, "w") as f:
+        f.write("ok\n")
+    SPAWNS.clear()
+    r = H.dispatch({"verb": "decky.loader", "arg": "uninstall"})
+    check("wrapper absent -> refused", r.get("ok"), False)
+    check("...names the installer", "install.sh" in r.get("detail", ""), True)
+    check("...and nothing ran", SPAWNS, [])
+    # Both present: the argv is EXACTLY the pinned start, unit from the dict.
+    with open(wrapper, "w") as f:
+        f.write("#!/bin/sh\n")
+    for mode in ("install", "uninstall"):
+        SPAWNS.clear()
+        r = H.dispatch({"verb": "decky.loader", "arg": mode})
+        check("%s -> ok" % mode, r.get("ok"), True)
+        check("%s spawns exactly `systemctl start --no-block <unit>`" % mode,
+              SPAWNS, [["/usr/bin/systemctl", "start", "--no-block",
+                        "couchside-decky-loader@%s.service" % mode]])
+    check("the unit names are the frozen dict's values",
+          sorted(H._DECKY_UNITS.values()),
+          ["couchside-decky-loader@install.service",
+           "couchside-decky-loader@uninstall.service"])
+    check("the helper never runs the wrapper itself (ProtectHome would hide ~)",
+          any(wrapper in a for spawn in SPAWNS for a in spawn), False)
+finally:
+    H._DECKY_MARKER, H._DECKY_WRAPPER = saved_marker, saved_wrapper
+
+print()
 print("the verb table is small enough to audit")
-check("eight verbs, no more", len(H.VERBS), 8)
+# Eight through helper 1.0.x; 1.1.0 added decky.loader. The count is spelled
+# out in the helper's header, its .service comment, install.sh (g2), README
+# and project_privileged-helper.md — all move together.
+check("nine verbs, no more", len(H.VERBS), 9)
 
 print()
 if FAILURES:

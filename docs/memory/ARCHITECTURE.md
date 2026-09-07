@@ -260,7 +260,7 @@ action of the same id (`main:11076-11079`).
 |---|---|---|
 | Switch to Desktop / Return to Game Mode | `shutil.which("steamos-session-select")` | `:611-623` |
 | Suspend | sudoers NOPASSWD grant for `systemctl suspend` | `:677-690` |
-| Restart Decky | unit file **and** NOPASSWD grant for `systemctl restart plugin_loader` | `:698-716` |
+| Restart Decky | unit file **and** NOPASSWD grant for `systemctl restart plugin_loader`; since 2.9.105 re-evaluated at runtime by `_decky_actions_resync()` after a phone-driven loader install/uninstall (injects, or pops only what the agent itself injected — `_DECKY_ACTION_INJECTED`) so the Actions tab is right without an agent restart | `:698-716` |
 | Pair Controller | a Steam install (the action is a `steam://` URL) | `:718-733` |
 
 The sudo probe is the load-bearing part, and its docstring is the best bug story in the repo

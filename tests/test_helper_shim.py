@@ -186,6 +186,177 @@ finally:
     cs.HELPER_SOCKET = saved["socket"]
     cs._dm_neutralise_legacy = saved["neutralise"]
 
+
+# ---------------------------------------------------------------------------
+# 6. decky.loader through _decky_loader_start (agent 2.9.105, helper 1.1.0):
+# the same three rules, plus the case the older shims never had to face — a
+# helper socket that is PRESENT BUT SILENT.
+#
+# WHY THE SILENT CASE IS DIFFERENT HERE. Section 5 above pins that _dm_write
+# treats a dead socket FILE as "absent" and falls back to sudo; that is safe
+# for session.set-boot because the sudo fallback enforces every constraint the
+# helper does. The decky shim deliberately does NOT do that: on a helper-only
+# box (no sudoers grant was ever written for the decky unit), falling through
+# to sudo would answer `needs_optin` and tell the owner to run
+# `couchside allow-decky on` for a grant the box never had — a wrong
+# instruction. So only a MISSING socket file takes the sudo path; a present
+# socket that does not answer (busy helper, crashed helper, stale file) is
+# `helper_unreachable, retry:true` and sudo is never spawned.
+#
+# The capability probe is the verb itself with an argument its validator
+# rejects ("probe"): a 1.1.0 helper answers "invalid argument for decky.loader"
+# (present), a 1.0.0 helper answers "unknown verb" (outdated -> FINAL, rule 3).
+# ---------------------------------------------------------------------------
+import time
+
+
+def silent_helper(hold_s=8.0):
+    """A helper that ACCEPTS, reads the request, and never answers — the shape
+    of a helper busy in a minutes-long verb or wedged. Returns the socket path
+    and the list of requests it swallowed."""
+    d = tempfile.mkdtemp()
+    path = os.path.join(d, "helper.sock")
+    srv = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+    srv.bind(path)
+    srv.listen(4)
+    seen = []
+
+    def serve():
+        conn, _ = srv.accept()
+        buf = b""
+        while b"\n" not in buf:
+            chunk = conn.recv(4096)
+            if not chunk:
+                break
+            buf += chunk
+        try:
+            seen.append(json.loads(buf.split(b"\n", 1)[0].decode()))
+        except ValueError:
+            seen.append(None)
+        time.sleep(hold_s)
+        conn.close()
+
+    threading.Thread(target=serve, daemon=True).start()
+    return path, seen
+
+
+DECKY_TMP = tempfile.mkdtemp(prefix="shim-decky-")
+DECKY_RUN = os.path.join(DECKY_TMP, "run")
+os.makedirs(DECKY_RUN)
+decky_saved = {
+    "run": cs._DECKY_RUN, "wrapper": cs._DECKY_WRAPPER, "tmpl": cs._DECKY_UNIT_TMPL,
+    "marker": cs._DECKY_MARKER, "unit_props": cs._unit_props,
+    "sudo_allows": cs._sudo_nopasswd_allows, "socket": cs.HELPER_SOCKET,
+}
+cs._DECKY_RUN = DECKY_RUN
+cs._DECKY_WRAPPER = os.path.join(DECKY_TMP, "couchside-decky-loader")
+cs._DECKY_UNIT_TMPL = os.path.join(DECKY_TMP, "couchside-decky-loader@.service")
+cs._DECKY_MARKER = os.path.join(DECKY_TMP, "allow-decky")
+for path_, body in ((cs._DECKY_WRAPPER, "#!/bin/sh\nexit 0\n"),
+                    (cs._DECKY_UNIT_TMPL, "[Service]\nType=oneshot\n"),
+                    (cs._DECKY_MARKER, "")):
+    with open(path_, "w") as f:
+        f.write(body)
+os.chmod(cs._DECKY_WRAPPER, 0o755)
+# `started` is read back from the unit, not from the exit code; answer
+# "activating" so the confirmation returns at once instead of polling 3 s.
+cs._unit_props = lambda unit, props: {"ActiveState": "activating"}
+# The fake subprocess.run above answers `sudo -n -l` with empty output, which
+# the real parser reads as "no grant"; the sudo-path cases below need a grant.
+cs._sudo_nopasswd_allows = lambda needle: True
+DECKY_SUDO_ARGV = ["sudo", "-n", "/usr/bin/systemctl", "start", "--no-block",
+                   "couchside-decky-loader@install.service"]
+
+try:
+    print()
+    print("6. decky.loader: rule 1 — helper PRESENT -> the verb; sudo untouched")
+    cs._decky_invalidate()
+    path, seen = fake_helper([{"ok": False, "error": "invalid argument for decky.loader"},
+                              {"ok": True, "detail": "fake-ok"}])
+    cs.HELPER_SOCKET = path
+    SUDO_CALLS.clear()
+    r = cs._decky_loader_start("install")
+    check("started via the helper", (r.get("started"), r.get("via")), (True, "helper"))
+    check("the probe carried the rejected argument 'probe'",
+          (seen[0].get("verb"), seen[0].get("arg")), ("decky.loader", "probe"))
+    check("the verb carried the enum value", (seen[1].get("verb"), seen[1].get("arg")),
+          ("decky.loader", "install"))
+    check("sudo was NOT called", SUDO_CALLS, [])
+
+    print()
+    print("6. decky.loader: rule 2 — helper ABSENT -> the exact sudo argv")
+    cs._decky_invalidate()
+    cs.HELPER_SOCKET = "/nonexistent-couchside-test/helper.sock"
+    SUDO_CALLS.clear()
+    r = cs._decky_loader_start("install")
+    check("started via sudo", (r.get("started"), r.get("via")), (True, "sudo"))
+    check("exactly one sudo call, the pinned unit start", SUDO_CALLS, [DECKY_SUDO_ARGV])
+    check("the wrapper path is not in the argv",
+          any(cs._DECKY_WRAPPER in a for a in SUDO_CALLS[0]), False)
+
+    print()
+    print("6. decky.loader: rule 3 — helper REFUSES -> final; sudo NOT tried")
+    # (a) a 1.0.0 helper: the probe itself is refused as an unknown verb.
+    cs._decky_invalidate()
+    path, seen = fake_helper([{"ok": False, "error": "unknown verb"}])
+    cs.HELPER_SOCKET = path
+    SUDO_CALLS.clear()
+    r = cs._decky_loader_start("install")
+    check("unknown verb -> helper_outdated (final)",
+          r, {"started": False, "helper_outdated": True})
+    check("sudo was NOT tried afterwards", SUDO_CALLS, [])
+    check("only the probe reached the helper", len(seen), 1)
+    # (b) a 1.1.0 helper that refuses the verb (marker/wrapper gone under it).
+    cs._decky_invalidate()
+    path, seen = fake_helper([{"ok": False, "error": "invalid argument for decky.loader"},
+                              {"ok": False,
+                               "detail": "decky management not enabled (couchside allow-decky on)"}])
+    cs.HELPER_SOCKET = path
+    SUDO_CALLS.clear()
+    r = cs._decky_loader_start("install")
+    check("a verb refusal is returned as the answer",
+          (r.get("started"), r.get("via"), r.get("detail")),
+          (False, "helper", "decky management not enabled (couchside allow-decky on)"))
+    check("sudo was NOT tried as a second ask", SUDO_CALLS, [])
+
+    print()
+    print("6. decky.loader: socket PRESENT BUT SILENT -> unreachable, never sudo")
+    cs._decky_invalidate()
+    path, seen = silent_helper()
+    cs.HELPER_SOCKET = path
+    SUDO_CALLS.clear()
+    t0 = time.monotonic()
+    r = cs._decky_loader_start("install")
+    dt = time.monotonic() - t0
+    check("silent helper -> helper_unreachable, retry",
+          r, {"started": False, "helper_unreachable": True, "retry": True})
+    check("bounded by the 5 s probe timeout (took %.1f s)" % dt, 4.0 <= dt < 9.0, True)
+    check("sudo was NOT called", SUDO_CALLS, [])
+    check("the helper had swallowed the probe", len(seen), 1)
+    # A dead socket FILE: section 5's "absent" for _dm_write is deliberately
+    # NOT the decky answer — only a MISSING file is absent here.
+    cs._decky_invalidate()
+    d = tempfile.mkdtemp()
+    stale = os.path.join(d, "helper.sock")
+    s = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+    s.bind(stale)
+    s.close()
+    cs.HELPER_SOCKET = stale
+    SUDO_CALLS.clear()
+    r = cs._decky_loader_start("install")
+    check("dead socket file -> helper_unreachable (not the sudo path)",
+          r, {"started": False, "helper_unreachable": True, "retry": True})
+    check("sudo was NOT called for a dead socket file", SUDO_CALLS, [])
+finally:
+    cs._DECKY_RUN = decky_saved["run"]
+    cs._DECKY_WRAPPER = decky_saved["wrapper"]
+    cs._DECKY_UNIT_TMPL = decky_saved["tmpl"]
+    cs._DECKY_MARKER = decky_saved["marker"]
+    cs._unit_props = decky_saved["unit_props"]
+    cs._sudo_nopasswd_allows = decky_saved["sudo_allows"]
+    cs.HELPER_SOCKET = decky_saved["socket"]
+    cs._decky_invalidate()
+
 print()
 if FAILURES:
     print("FAILED: %s" % ", ".join(FAILURES))

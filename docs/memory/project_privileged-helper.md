@@ -86,8 +86,9 @@ a unit name, or any string that reaches a shell. `subprocess` is argv-list only.
 | `logs.journal` | `{unit, lines}`, unit from the units table | 9 |
 | `update.flatpak` | — | 10 |
 | `update.os` | — | 11 |
+| `decky.loader` | `install` \| `uninstall` | — (new in 1.1.0: `systemctl start --no-block couchside-decky-loader@<mode>.service`; refuses without the `/etc/couchside/allow-decky` marker and the root-owned wrapper; see project_decky-manager.md §4.3) |
 
-Eight verbs for eleven grants plus the two ungranted greetd calls. The DM name
+Nine verbs (eight through helper 1.0.x) for eleven grants plus the two ungranted greetd calls. The DM name
 stops being part of the *grant* and becomes an internal detail of the helper,
 which detects it the same way the agent does today — so a box whose DM changes
 repairs itself on the next call instead of needing install.sh re-run.

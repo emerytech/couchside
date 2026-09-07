@@ -154,6 +154,28 @@ All responses carry permissive CORS headers; `OPTIONS` returns 204.
 | `/api/power/schedule` | GET | Sleep timer + wake schedule: `{"sleep":{action,fire_at,remaining_s}\|null,"wake":{fire_at,remaining_s}\|null,"wake_available":bool,"limits":{...}}`. The sleep timer is in-process (a restart clears it); the wake alarm is read from `/dev/rtc0` each request. Added in 2.8.1 |
 | `/api/power/sleep` | POST | Arm a delayed `{"delay_s":60..28800,"action":"suspend"\|"poweroff"}`. The action must be permitted (arm-time `sudo -n -l` probe) or 400. `DELETE` cancels (idempotent) |
 | `/api/power/wake` | POST | Set an RTC wake alarm `{"at":epoch}`, clamped now+120s..now+86100s; read-back verified. 409 when `/dev/rtc0` isn't writable (needs the udev rule). `DELETE` clears (idempotent) |
+| `/api/utilities` | GET | Setup › Utilities tenants (`openpuck`, `cec`, and — agent 2.9.105+, **only when a Steam root exists** — `decky` with `state` = the loader state below). A box without Steam never lists the row; the app probes `/api/decky/loader` for the rest |
+| `/api/utilities/decky/run?op=install\|uninstall` | POST | Start a Decky Loader install/repair/update (`install` is one idempotent procedure) or uninstall (plugins + settings kept). `op` must be exactly one of the two literals → 400 otherwise; a **missing** `?op=` (an app older than 2.9.58) answers 200 `{ok:false, error:"Update the Couchside app to manage Decky Loader"}` rather than a dead 400. 403 `needs_optin` without the `/etc/couchside/allow-decky` marker; 409 `{busy, what:"loader_op"\|"plugin_job"}`; 200 `ok:false` with `needs_installer` (wrapper/unit template absent — re-run install.sh), `helper_outdated` (helper < 1.1.0; final, sudo is NOT tried), `helper_unreachable` + `retry` (helper socket present but silent), or `did_not_start` + `detail`. Success: ActionResult + `{started:true, via:"helper"\|"sudo", log:"/run/couchside/decky-loader.log"}` — then poll `/api/decky/loader` for `op`. The work runs as root under a pinned oneshot unit (`couchside-decky-loader@<op>.service`), never in the agent's process |
+| `/api/decky/loader` | GET | Decky Loader state, memoised ≤500 ms. `state` ∈ `not_installed installing uninstalling installed_stopped running_untrusted running_unreachable running_no_steam installed_cef_flag_missing installed_steam_needs_restart running` plus `installed, active, api_reachable, loader_is_root, steam_running, steam_ui_up, cef_flag_present, version, channel:0\|1\|2\|null, allowed, installer_ready, elevated, helper:"present"\|"outdated"\|"absent"\|"unreachable", installed_by:"install.sh"\|"plugin"\|"unknown", panel:"installed"\|"missing", stopped_reason:"self_stop_recent"\|null, loader_update:{current,remote,updatable,checked_at,channel}\|null, op:{state:"starting"\|"running"\|"done"\|"failed"\|"refused"\|"interrupted"\|"did_not_start", mode, ok, tag, at, detail}\|null, restart_action:"restart-decky"\|null, unit_pinned:bool\|null`. `op` is correlated to THIS agent's last request (a previous run's `done` is never shown as this one's). **404 when the box has no Steam root** — that is how an app probes for the whole feature. Added in 2.9.105 |
+| `/api/decky/loader/log?n=` | GET | `{lines}` — the last `n` (int, clamped 1..400, default 100; non-integer → 400) lines of the wrapper transcript at the constant path `/run/couchside/decky-loader.log` |
+| `/api/decky/loader/check` | POST | One `updater/get_version_info` over the loader's loopback WebSocket (≤3 s hold, cached 6 h): `{ok, loader_update:{current,remote,updatable,checked_at,channel}, cached}`. Read-only; the loader's own updater is never invoked (Repair = `?op=install`). 403 without the marker · 409 busy · 503 `loader_down` |
+| `/api/decky/plugins` | GET | Filesystem listing of `~/homebrew/plugins` (never a WebSocket poll — Decky holds ONE socket and a connect displaces Steam's frontend): `{available, source:"fs", flags_available, running_probe:"proc"\|"unknown", plugins:[{name, folder, version, author, root, disabled, hidden, frozen, running:bool\|null, protected, update:{version,hash}\|null}], updates:n\|null, store_checked_at, unreadable:n, job}`. `name` is `plugin.json`'s name, never the folder; `disabled/hidden/frozen` come from `settings/loader.json` and are `null` (with `flags_available:false`, `update:null`) when that file is mid-rewrite; `running` is `null` until a verbatim `/proc` fixture ships; `update` uses strict semver against the cached store (`null` when the cache is cold). `available:false` (200) when the loader is not installed. `Couchside` is `protected` |
+| `/api/decky/store` | GET | The box's cached copy of `https://plugins.deckbrew.xyz/plugins` (fetched in a background thread, never inside a GET; 900 s TTL; 4 MiB cap; **no redirects followed**; every field type-checked and capped, bad entries dropped): `{available, fetching, count, fetched_at, stale, error, plugins:[{id, name, author, description, tags, downloads, updated, has_icon, installed_version, update_available, install_type:"install"\|"update"\|"reinstall"\|"downgrade"\|null, versions:[{name,hash,created}]}]}`. Cold cache → `{available:false, fetching:true}` and a fetch starts — only if the marker is present. Search/sort happen on the phone |
+| `/api/decky/store/refresh` | POST | Refetch the store list (≥60 s apart): `{refreshed, fetching, fetched_at}`. 403 without the marker |
+| `/api/decky/store/icon/<id>` | GET | Plugin icon bytes, `Cache-Control: public, max-age=86400`. Auth like `/api/steam/<appid>/cover` (bearer header, `?token=`, or `?ticket=`). `<id>` must match `[0-9]{1,9}` (400) and be a key of the cached store list (404); the icon is fetched from the entry's `image_url` only when its host is exactly `cdn.tzatzikiweeb.moe` over https, with no redirects, ≤1 MiB, image-sniffed (jpeg/png/webp/gif/avif), cached at `~/.cache/couchside/decky-icons/<id>`. Served from cache without the marker; fetched only with it (uncached → 404) |
+| `/api/decky/plugins/install` | POST | `{id:int}` (int-not-bool, `0 < id < 10^9`, looked up in the cached store) → `{ok:true, job}`. The agent builds the artifact URL from `versions[0].hash` (must be 64-hex → else 422 `no verifiable hash`), tells Decky Loader over its loopback WebSocket to download, sha256-check, extract and start it, confirms Decky's own prompt, then reads completion back from disk + one `loader/get_plugins`. 400 · 403 · 404 · 409 `{busy,what}` / `{error:"protected"}` / `{error:"loader_stopped", restart_action, repair, stopped_reason}` (never a silent loader restart) · 503 `{error:"loader_down", repair}` / `{error:"store_unavailable"}` |
+| `/api/decky/plugins/uninstall` · `/reload` | POST | `{name}` (str, 1–64 printable; must be a name the fs listing enumerates → 404; `Couchside` and NFKC look-alikes → 409 protected) → `{ok:true, job}`. Jobs, like install, so the app's 4 s request timeout never turns a completed op into a reported failure. Reload restarts ONE plugin backend (`loader/reload_plugin`). Same 403/409/503 refusals as install |
+| `/api/decky/jobs` | GET | `{job:{kind:"install"\|"update"\|"uninstall"\|"reload", name, version, store_id, phase, started_at, done, ok, outcome:"done"\|"failed"\|"unknown"\|"interrupted", error, retry, reinstall_id, verified, steam_ui_up, restarted_loader:false, log:[…]}\|null}` — read from the disk record (`~/.cache/couchside/decky-job.json`), so an agent restart mid-job resumes the read-back (< 180 s) or reports `interrupted`, never `null`. `retry:true` marks a soft failure (Decky's prompt timed out — it may be asking on the TV — or the loader could not be reached before anything was sent); `reinstall_id` is set when a failed update left no copy behind |
+
+**Decky manager gating rule:** every `/api/decky/*` route is bearer-gated and 404s
+when the box has no Steam root. Routes that open the loader's WebSocket or leave
+the LAN on demand (`/utilities/decky/run`, `/loader/check`, `/store/refresh`,
+`/plugins/install|uninstall|reload`) additionally require the owner's one-time
+`couchside allow-decky on` on the box (403 `needs_optin` otherwise, nothing
+spawned, no socket opened); pure filesystem/cache reads are token-only. The
+agent never touches plugin bytes, never runs root work in its own process, and
+never restarts the loader on its own — a stopped loader is a state the app
+shows, with the existing `restart-decky` action offered.
 
 **Media players:** any MPRIS-speaking app works (Spotify, Firefox/Chromium, VLC, mpv, …). **Kodi** needs its MPRIS add-on enabled to appear here.
 
@@ -340,21 +362,36 @@ success, so the app's TV strip can be built without any hardware.
   `hmac.compare_digest` (constant-time). Every route except `/api/ping`
   requires it.
 - **Scoped sudoers**: the daemon runs as your desktop user with no TTY, so
-  privileged actions need `NOPASSWD` rules. The installer grants exactly
-  five commands (`systemctl restart sddm`, `systemctl reboot`,
-  `systemctl poweroff`, `systemctl suspend`, `journalctl *`) and nothing else,
-  validated with `visudo -cf` before install. Skip with `--no-sudoers` (those
-  actions and system-journal reads will then fail).
+  privileged actions need `NOPASSWD` rules. The installer grants a fixed set
+  of **exact-argument** commands (`systemctl reboot|poweroff|suspend`,
+  `systemctl restart plugin_loader`, `systemctl restart --no-block
+  couchside.service`, the root-owned journal wrapper — never `journalctl`
+  itself — plus display-manager grants only for the DETECTED manager) and
+  nothing else, validated with `visudo -cf` before install; the top-level
+  README's **Security model** is the authoritative list and
+  `tests/test_readme_sudo_grants.py` compiles it against install.sh. Skip with
+  `--no-sudoers` (those actions and system-journal reads will then fail).
 - **Allowlists, not shells**: journal reads are limited to the configured
   unit list; actions are a fixed config table run with argument lists
   (`shell=False`), so no arbitrary commands. No route takes a client-supplied
-  file path. The agent serves image bytes on exactly two routes: the album-art
+  file path. The agent serves image bytes on exactly four routes: the album-art
   image a running media player advertises (validated against a small realpath
   allowlist — `/tmp`, `$XDG_RUNTIME_DIR`, `~/.cache`, `~/.var`, `~/.mozilla` —
-  image-sniffed, 2 MiB cap; client passes a player id) and an on-demand screen
+  image-sniffed, 2 MiB cap; client passes a player id), an on-demand screen
   frame captured to a tmpfs file that is deleted immediately after
-  (rate-clamped to ~2/s, 12 MiB cap; client passes no path). The `lines`
-  parameter is clamped; errors return brief JSON, never tracebacks.
+  (rate-clamped to ~2/s, 12 MiB cap; client passes no path), Steam cover art
+  from the box's own library cache (client passes an app id), and the Decky
+  store icon proxy (client passes a store id that must be a key of the box's
+  own cached store list; the box fetches from `cdn.tzatzikiweeb.moe` only,
+  https only, no redirects, ≤1 MiB, image-sniffed, cached by the integer id —
+  never by anything the client sent). The `lines`/`n` parameters are clamped;
+  errors return brief JSON, never tracebacks.
+- **Decky Loader management is a separate opt-in** (`couchside allow-decky on`,
+  agent 2.9.105+): it grants two exact `systemctl start` argvs for pinned
+  oneshot units and a marker file; the root wrapper they run has no grant of
+  its own. The full story — including that Decky Loader runs as root from your
+  home and that Decky publishes no checksum for it — is in the top-level
+  README's **Security model**.
 - **LAN-only, plain HTTP** (TLS is on the roadmap; see below). Today the
   transport is unencrypted: the bearer token rides HTTP headers and
   `ws://…?token=` in the clear, so anyone who can *sniff your local network*
@@ -401,6 +438,18 @@ python3 agent/couchsided.py --mock --host 127.0.0.1 --port 8787 --token devtoken
 Serves believable fake data (wandering CPU temp, counting uptime, plausible
 journal lines) and never executes real commands. Actions sleep 0.3 s and
 return `ok:true`.
+
+`--mock-decky <state>` (2.9.105+) picks the Decky Loader state the mock starts
+in — one of `running not_installed installing uninstalling stopped needs_optin
+needs_installer helper_outdated steam_needs_restart installed_steam_needs_restart
+cef_flag_missing no_steam interrupted untrusted unreachable` (argparse rejects
+anything else). Mock loader ops mutate it, so one run walks
+`not_installed → installing → installed_steam_needs_restart → running →
+uninstalling → not_installed`; mock plugin jobs advance over ~3 s and mutate a
+four-plugin list; the store is an 8-entry fixture with one PNG and one AVIF icon.
+`scripts/web-dev.sh <port> [agent args…]` forwards everything after the port to
+the agent, and `.claude/launch.json` has `couchside-web-harness-decky` (port
+8199, `--mock-decky not_installed`).
 
 Deploy a working checkout to a test box (dev only; end users use the curl
 one-liner):
