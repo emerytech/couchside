@@ -184,14 +184,27 @@ function StoreRow({
   const { settings } = useSettings();
   const top = e.versions[0];
   const type = e.install_type ?? (top ? installType(e.installed_version, top.name) : 'install');
-  const [iconFailed, setIconFailed] = useState(false);
-  const src = e.has_icon ? api.deckyIconUrl(settings, e.id) : null;
-  useEffect(() => setIconFailed(false), [src?.uri]);
+  // Freeze the icon URL per row. api.deckyIconUrl() derives its host from
+  // resolveEffectiveHost(), which OSCILLATES between the box hostname and its
+  // cached IP as each poll's raceGet winner flips (lib/api). Recomputing `src`
+  // every render therefore changed src.uri constantly; on the TLS path the
+  // ticket is cached per-host, so a flip to the not-yet-warm host made the box
+  // 401 the image → onError → retry → 401 …, an unbounded reload churn across
+  // ~110 store rows that crashed the screen on-device ("Maximum update depth").
+  // useMemo on the STABLE box identity (never the effective host) pins the URL,
+  // and failure is tracked BY URL so a failed image can never reset-and-retry.
+  const src = useMemo(
+    () => (e.has_icon ? api.deckyIconUrl(settings, e.id) : null),
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- stable identity only, NOT resolveEffectiveHost
+    [e.has_icon, e.id, settings.host, settings.port, settings.secure],
+  );
+  const [failedUri, setFailedUri] = useState<string | null>(null);
+  const showIcon = !!src && src.uri !== failedUri;
   const root = e.root ?? installedRoot ?? false;
   return (
     <View style={styles.row} testID={`decky-store-${e.id}`}>
-      {src && !iconFailed ? (
-        <Image source={src} style={styles.icon} onError={() => setIconFailed(true)} />
+      {showIcon && src ? (
+        <Image source={src} style={styles.icon} onError={() => setFailedUri(src.uri)} />
       ) : (
         <View style={[styles.icon, styles.iconFallback]}>
           <Ionicons name="extension-puzzle-outline" size={18} color={t.textDim} />
