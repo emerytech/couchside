@@ -1,9 +1,9 @@
-Make the app your own. The customize gesture that was on the Console tab now works on the Fleet and Actions tabs too: tap the sliders icon in the corner (or press and hold any card) to reorder cards and hide the ones you don't use. Your layout is remembered.
+Manage Decky Loader from your phone. Install, repair, update or remove Decky Loader on your box, browse and install plugins from the official Decky store, and see what's installed — all from Setup, without leaving the couch. (Turn it on once on the box; the app tells you how.)
 
-Coming from an older version? This update also brings:
-- Theme packs — give the whole app a new look: OLED Black (true black for OLED screens), Steam, Nord, Dracula, Solarized, High Contrast and more, in Setup → Appearance.
-- A calmer Console that opens to what's happening right now, with lights, display and tools tucked behind one "More" tap.
-- "Did you know" tips that gently point out features you might have missed — one at a time, never naggy.
-- Auto-drop the pad: an option so that, while a game is running, your phone stops acting as a controller and can't take player one from your real gamepad.
+New too:
+- Skins — give the Console a whole new shape in Setup → Appearance. Six looks, from the quiet "Studio" to the machined "Panel", each shown as a live preview and layered on top of your colour pack and accent.
+- An optional alarm pulse that flags a hot vital from the corner of your eye.
 
-Plus polish and reliability fixes throughout.
+Coming from an older version? You also get theme packs (OLED Black, Steam, Nord, Dracula and more), a calmer Console that opens to what's happening now, "Did you know" tips, card reorder on every tab, and an auto-drop option so the phone can't take player one mid-game.
+
+Plus polish and reliability fixes — including a secure connection that heals itself after a box update, so the app no longer sits reconnecting until you reboot.
