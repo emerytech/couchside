@@ -862,27 +862,39 @@ def test_install_job_failures():
                       calls(fl, "utilities/cancel_plugin_install"), [])
                 check("...slot freed", cs._decky_busy(), None)
             fl.stop()
-            # (b) prompt arrives, confirm never answered (spec §10 second clause,
-            # §14 "prompt timeout -> retry + cancel_plugin_install sent")
+            # (b) KI-074 (HARDWARE-CONFIRMED 2026-09-07): the prompt arrives, the
+            # confirm FRAME is sent, but its REPLY is lost past the budget (the
+            # Steam frontend reconnected and displaced our socket) — AND Decky
+            # installs the plugin anyway. This must NOT report retry/"nothing
+            # installed": confirm_sent -> read back from disk (unknown -> done),
+            # and NEVER send cancel (cancelling a confirmed install is wrong).
             reset_state()
 
             def install_prompt_only(l, c, m):
                 return [reply(m), prompt_event(m["args"], "1757178001.5")]
 
-            def confirm_silent(l, c, m):
-                time.sleep(6)
-                return [reply(m)]
+            def confirm_no_reply(l, c, m):
+                # Decky got the confirm and installs (folder appears), but its
+                # reply never comes back to us — our confirm call times out.
+                threading.Timer(0.8, lambda: plugin(env.plugins, "AnimationChanger",
+                                                    "Animation Changer", AC_VERSION)).start()
+                return []
+
+            def get_plugins(l, c, m):
+                return [get_plugins_reply(m, [("Animation Changer", AC_VERSION, False)])]
             fl = FakeLoader({"utilities/install_plugin": install_prompt_only,
-                             "utilities/confirm_plugin_install": confirm_silent})
+                             "utilities/confirm_plugin_install": confirm_no_reply,
+                             "loader/get_plugins": get_plugins})
             with Patch(_DECKY_WS_PORT=fl.port,
                        _DECKY_TOKEN_URL="http://127.0.0.1:%d/auth/token" % fl.port):
                 cs.decky_plugin_install({"id": 23})
                 rec = wait_job(20)
-                check("SPEC §10: confirm unanswered within budget -> retry:true",
-                      (rec["done"], rec["retry"]), (True, True))
-                check("SPEC §14: ...and cancel_plugin_install sent with the known request_id",
-                      [c[1] for c in calls(fl, "utilities/cancel_plugin_install")],
-                      [["1757178001.5"]])
+                check("KI-074: confirm sent + reply lost + folder appears -> done via read-back",
+                      (rec["done"], rec["outcome"]), (True, "done"))
+                check("KI-074: NOT reported as retry",
+                      rec.get("retry", False), False)
+                check("KI-074: NO cancel_plugin_install after the confirm was sent",
+                      calls(fl, "utilities/cancel_plugin_install"), [])
                 check("...slot freed", cs._decky_busy(), None)
             fl.stop()
             # (c) extracted but not loaded
