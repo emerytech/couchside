@@ -31,6 +31,12 @@ does anything. Repair installs the latest **stable** loader and restarts every
 plugin; Decky's own in-app updater is not used. A box without Decky Loader is
 unchanged, and a box that has not opted in only gains a hint on how to.
 
+**The secure connection heals itself after an update.** On an encrypted box, if a
+restart or update ever left the box unable to re-open its secure port, the app
+used to sit stuck reconnecting until you rebooted the box by hand. The agent now
+re-binds that port on its own within seconds — the connection comes back without
+you touching the box. Nothing changes when it was already working.
+
 ## 2.9.104
 
 **Switch your TV to the box, over HDMI-CEC.** On a box with real CEC (a Steam
