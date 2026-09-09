@@ -26,6 +26,9 @@ import { Gated } from '@/components/Gated';
 import { GameSheet } from '@/components/GameSheet';
 import { InstallableSection } from '@/components/InstallableSection';
 import { PlaylogCard } from '@/components/PlaylogCard';
+import { EditableSection } from '@/components/EditableSection';
+import { effectiveOrder, moveSection } from '@/lib/cardLayout';
+import { useLaunchLayout, setLaunchLayout } from '@/lib/launchLayout';
 import { useCompat } from '@/hooks/useCompat';
 import { type Compat, deckLabel, protonLabel } from '@/lib/compat';
 import { LibraryFilterSheet } from '@/components/LibraryFilterSheet';
@@ -286,11 +289,10 @@ function QueuedRow({ d }: { d: SteamDownload }) {
 function DownloadsSection({ downloads }: { downloads: SteamDownload[] }) {
   const t = useTheme();
   const styles = useThemedStyles(makeStyles);
-  const hidden = usePref('hideDownloads');
   const [showQueue, setShowQueue] = useState(false);
   // Gate inside the component, not at the call site: the hooks above must run
   // unconditionally, and any future second call site inherits the pref for free.
-  if (hidden || downloads.length === 0) return null;
+  if (downloads.length === 0) return null;
   const active = downloads.filter(isActiveDownload);
   const queued = downloads.filter((d) => !isActiveDownload(d));
   return (
@@ -393,7 +395,6 @@ function SteamLinkSection({
   const t = useTheme();
   const styles = useThemedStyles(makeStyles);
   const hideOffline = usePref('hideOfflineStreamHosts');
-  const hideSection = usePref('hideStreamFromPc');
   const collapsed = usePref('streamCollapsed');
   // Expand the freshest host by default, preferring one that's actually up.
   // `online` is absent on agents older than 2.9.32, and undefined !== false, so
@@ -402,10 +403,6 @@ function SteamLinkSection({
     const first = data.hosts.find((h) => h.online !== false) ?? data.hosts[0];
     return first ? { [first.host]: true } : {};
   });
-  // Turned off outright in Preferences. Checked AFTER the hooks above so the
-  // hook order never changes between renders, and before the empty-host check
-  // so the reason for an absent card is the pref, not the data.
-  if (hideSection) return null;
   if (data.hosts.length === 0) return null;
   const hosts = hideOffline ? data.hosts.filter((h) => h.online !== false) : data.hosts;
   return (
@@ -840,6 +837,56 @@ function LaunchScreen() {
     [],
   );
 
+  // --- Launch aux-card layout: hold-to-edit reorder + hide (persisted) ------
+  // The cards above the grid (installable, playlog, downloads, stream-from-PC)
+  // are movable/hideable, same store/pattern as the Console. Now Playing stays
+  // pinned above (urgent-by-design) and the grid is the primary content. This
+  // hide gesture replaced the old "Hide the downloads card" / "Hide this
+  // section" Prefs toggles.
+  const launchLayout = useLaunchLayout();
+  const [editingCards, setEditingCards] = useState(false);
+  const [cardPresent, setCardPresent] = useState<Record<string, boolean>>({});
+  const LAUNCH_CARD_ORDER = ['installable', 'playlog', 'downloads', 'streamfrompc'];
+  const launchOrder = effectiveOrder(launchLayout.order, LAUNCH_CARD_ORDER);
+  const launchHidden = new Set(launchLayout.hidden);
+  const setCardPres = (id: string, pres: boolean) =>
+    setCardPresent((prev) => (prev[id] === pres ? prev : { ...prev, [id]: pres }));
+  const visibleLaunch = launchOrder.filter((id) => cardPresent[id] && !launchHidden.has(id));
+  const moveLaunchCard = (id: string, dir: -1 | 1) =>
+    setLaunchLayout({ order: moveSection(launchOrder, visibleLaunch, id, dir), hidden: launchLayout.hidden });
+  const toggleHideLaunch = (id: string) => {
+    const h = new Set(launchLayout.hidden);
+    if (h.has(id)) h.delete(id); else h.add(id);
+    setLaunchLayout({ order: launchOrder, hidden: [...h] });
+  };
+  const launchCardNodes: Record<string, React.ReactNode> = {
+    installable: <InstallableSection />,
+    playlog: <PlaylogCard />,
+    downloads: <DownloadsSection downloads={downloads} />,
+    streamfrompc: steamlink?.available ? <SteamLinkSection data={steamlink} onStream={streamLaunch} /> : null,
+  };
+  const renderLaunchCards = () =>
+    launchOrder.map((id) => {
+      const node = launchCardNodes[id];
+      if (node == null) return null;
+      return (
+        <EditableSection
+          key={id}
+          editing={editingCards}
+          hidden={launchHidden.has(id)}
+          isFirst={visibleLaunch[0] === id}
+          isLast={visibleLaunch[visibleLaunch.length - 1] === id}
+          onEnterEdit={() => setEditingCards(true)}
+          onPresent={(pres) => setCardPres(id, pres)}
+          onUp={() => moveLaunchCard(id, -1)}
+          onDown={() => moveLaunchCard(id, 1)}
+          onToggleHide={() => toggleHideLaunch(id)}
+          inertWhileEditing>
+          {node}
+        </EditableSection>
+      );
+    });
+
   return (
     <View style={styles.screen}>
       <View style={styles.header}>
@@ -854,6 +901,18 @@ function LaunchScreen() {
             style={({ pressed }) => [styles.addBtn, pressed && styles.pressed]}>
             <Ionicons name="add" size={18} color={t.blue} />
             <Text style={styles.addBtnText}>Add</Text>
+          </Pressable>
+        )}
+        {/* CUSTOMIZE: same hold-to-edit entry as the Console (games section only,
+            and the only way back in once every aux card is hidden). */}
+        {configured && activeSection === 'games' && !editingCards && (
+          <Pressable
+            onPress={() => { hapticSelection(); setEditingCards(true); }}
+            accessibilityRole="button"
+            accessibilityLabel="Reorder or hide cards"
+            hitSlop={8}
+            style={({ pressed }) => [styles.customizeBtn, pressed && styles.pressed]}>
+            <Ionicons name="options-outline" size={18} color={t.textDim} />
           </Pressable>
         )}
       </View>
@@ -908,23 +967,13 @@ function LaunchScreen() {
             seeing what is running belongs in both places. */}
         <NowPlayingCard />
 
-        {/* Install games you own but haven't downloaded — a PROMINENT card near the
-            top (above downloads) so it's discoverable while browsing, not a thin row
-            buried in the list. Probe-and-appear on the LIVE endpoint (no cached
-            cap that could go stale); taps through to the full library page. */}
-        <InstallableSection />
-
-        {/* Playlog: the ordered "play next" queue (your bookmarks). Hidden until
-            you've queued at least one game. Taps through to app/playlog.tsx. */}
-        <PlaylogCard />
-
-        {/* Active Steam downloads (hidden when none / agent < 2.8) */}
-        <DownloadsSection downloads={downloads} />
-
-        {/* Stream from PC (hidden when no host / agent < 2.9.23) */}
-        {steamlink?.available && (
-          <SteamLinkSection data={steamlink} onStream={streamLaunch} />
-        )}
+        {/* Aux cards (installable, playlog, downloads, stream-from-PC) — movable
+            and hideable via hold-to-edit (Customize in the header, Done bar
+            below), same pattern as the Console. Each is inert while editing so a
+            tap lands on the reorder/hide strip. Now Playing above stays pinned.
+            Each self-gates internally (probe-and-appear), so an absent card
+            renders null and shows no reorder/hide controls. */}
+        {renderLaunchCards()}
 
         {/* Fresh install: nothing paired yet, so nothing is "unreachable". */}
         {!configured && (
@@ -1124,12 +1173,36 @@ function LaunchScreen() {
       )}
 
       <AddLauncherForm visible={addOpen} onClose={() => setAddOpen(false)} onSubmit={add} />
+      {/* Edit-layout bar: hold any aux card (or tap Customize) to enter, then
+          reorder / hide, Done. Matches the Console tab. */}
+      {editingCards && (
+        <View style={styles.editBar}>
+          <Text style={styles.editHint}>Reorder or hide cards</Text>
+          <Pressable
+            onPress={() => setEditingCards(false)}
+            accessibilityRole="button"
+            accessibilityLabel="Done editing layout"
+            style={({ pressed }) => [styles.doneBtn, pressed && styles.pressed]}>
+            <Text style={styles.doneText}>Done</Text>
+          </Pressable>
+        </View>
+      )}
     </View>
   );
 }
 
 const makeStyles = (t: Palette) => StyleSheet.create({
   screen: { flex: 1, backgroundColor: t.bg },
+  customizeBtn: { marginLeft: 10, padding: 6, borderRadius: 8 },
+  editBar: {
+    position: 'absolute', left: 0, right: 0, bottom: 0,
+    flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between',
+    paddingHorizontal: 16, paddingTop: 12, paddingBottom: 28,
+    backgroundColor: t.card, borderTopColor: t.cardBorder, borderTopWidth: 1,
+  },
+  editHint: { color: t.textDim, fontSize: 13 },
+  doneBtn: { backgroundColor: t.blue, borderRadius: 999, paddingVertical: 8, paddingHorizontal: 22 },
+  doneText: { color: t.onAccent, fontWeight: '700', fontSize: 14 },
   header: {
     flexDirection: 'row',
     alignItems: 'center',
