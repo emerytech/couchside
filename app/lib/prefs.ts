@@ -166,13 +166,6 @@ export type Prefs = {
    * control would then re-offer the popup instead of replaying the flow.
    */
   whatsNewOffered: boolean;
-  /** Remove the Steam downloads card from the Launch tab. Off by default: a
-   *  transfer in flight is the most useful thing that tab can tell you. On for
-   *  people who never queue from the couch and want the games grid to start at
-   *  the top. Hiding the card does not touch the downloads -- Steam keeps
-   *  going. Named `hide` to match hideStreamFromPc / hideTvVolume; a mixed
-   *  polarity is how a toggle ends up wired backwards. */
-  hideDownloads: boolean;
   /** Hide the NOTE segment from the Pad's mode bar. Off by default (visible):
    *  note mode is a phone-side scratchpad for jotting a clue mid-game. On for
    *  people who don't want the extra segment. `hide` polarity to match the
@@ -235,16 +228,6 @@ export type Prefs = {
       check is conservative and does call a live host offline, so the row stays
       visible and tappable unless you ask for it gone. Agent >= 2.9.32. */
   hideOfflineStreamHosts: boolean;
-  /** Drop the Launch tab's "Stream from PC" section entirely.
-   *
-   *  Distinct from hideOfflineStreamHosts, which only filters rows: this hides
-   *  the whole card. Asked for by a user running SteamOS on their main PC with
-   *  Remote Play disabled -- every host listed was one they would never stream
-   *  from, and there was no way to make the section go away. The agent cannot
-   *  currently tell "Remote Play is off" from "no host is online", so this stays
-   *  a manual switch rather than an auto-hide; guessing wrong here removes a
-   *  working feature. */
-  hideStreamFromPc: boolean;
   /** Drop the TV side of the Box/TV volume switch.
    *
    *  On a setup where the box's own volume already reaches the speakers -- CEC
@@ -328,7 +311,6 @@ export const DEFAULTS: Prefs = {
   consoleMoreCollapsed: true,
   onboardingDone: false,
   whatsNewOffered: false,
-  hideDownloads: false,
   hideNoteMode: false,
   appUpdateReminder: true,
   defaultPadMode: 'swipe',
@@ -352,7 +334,6 @@ export const DEFAULTS: Prefs = {
   // until the user opts in.
   volumeButtons: Platform.OS === 'android',
   hideOfflineStreamHosts: false,
-  hideStreamFromPc: false,
   hideTvVolume: false,
   showTaps: false,
   traceDrags: false,
@@ -426,7 +407,6 @@ function normalize(raw: unknown): Prefs {
   const consoleMoreCollapsed = bool(o.consoleMoreCollapsed, DEFAULTS.consoleMoreCollapsed);
   const onboardingDone = bool(o.onboardingDone, DEFAULTS.onboardingDone);
   const whatsNewOffered = bool(o.whatsNewOffered, DEFAULTS.whatsNewOffered);
-  const hideDownloads = bool(o.hideDownloads, DEFAULTS.hideDownloads);
   const hideNoteMode = bool(o.hideNoteMode, DEFAULTS.hideNoteMode);
   const appUpdateReminder = bool(o.appUpdateReminder, DEFAULTS.appUpdateReminder);
   const searchSide: 'left' | 'right' | 'off' =
@@ -442,7 +422,6 @@ function normalize(raw: unknown): Prefs {
     consoleMoreCollapsed,
     onboardingDone,
     whatsNewOffered,
-    hideDownloads,
     hideNoteMode,
     appUpdateReminder,
     confirmSuspend:
@@ -477,7 +456,6 @@ function normalize(raw: unknown): Prefs {
     askToSwitchControl: bool(o.askToSwitchControl, DEFAULTS.askToSwitchControl),
     volumeButtons: bool(o.volumeButtons, DEFAULTS.volumeButtons),
     hideOfflineStreamHosts: bool(o.hideOfflineStreamHosts, DEFAULTS.hideOfflineStreamHosts),
-    hideStreamFromPc: bool(o.hideStreamFromPc, DEFAULTS.hideStreamFromPc),
     hideTvVolume: bool(o.hideTvVolume, DEFAULTS.hideTvVolume),
     showTaps: bool(o.showTaps, DEFAULTS.showTaps),
     traceDrags: bool(o.traceDrags, DEFAULTS.traceDrags),

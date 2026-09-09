@@ -932,10 +932,8 @@ function SetupBody() {
   const searchButtonSide = usePref('searchButtonSide');
   const volumeButtons = usePref('volumeButtons');
   const hideOfflineStreamHosts = usePref('hideOfflineStreamHosts');
-  const hideDownloads = usePref('hideDownloads');
   const hideNoteMode = usePref('hideNoteMode');
   const appUpdateReminder = usePref('appUpdateReminder');
-  const hideStreamFromPc = usePref('hideStreamFromPc');
   const hideTvVolume = usePref('hideTvVolume');
   const showTaps = usePref('showTaps');
   const traceDrags = usePref('traceDrags');
@@ -1470,15 +1468,6 @@ function SetupBody() {
               </View>
               </PrefFilterable>
               <TogglePref
-                label="Hide the downloads card"
-                sub="Removes the Steam downloads panel from the top of the Launch tab. Downloads keep running — this only hides the card."
-                value={hideDownloads}
-                onValueChange={(v) => {
-                  void setPref('hideDownloads', v);
-                  hapticSelection();
-                }}
-              />
-              <TogglePref
                 label="Hide note mode"
                 sub="Removes the NOTE segment from the Pad's mode bar. Note mode is a phone-side scratchpad for jotting a clue while a game runs. Your note is kept either way — this only hides the segment."
                 value={hideNoteMode}
@@ -1585,6 +1574,12 @@ function SetupBody() {
                   hapticSelection();
                 }}
               />
+            </View>
+
+            {/* DIAGNOSTICS: the polling/logs controls, pulled out of the
+                overloaded GENERAL group (busy-UI pass). */}
+            <View style={prefCardGroupStyle}>
+              <CardHeader icon="pulse-outline" label="DIAGNOSTICS" />
               <SegPref
                 label="Vitals refresh"
                 sub="How often the console polls the box."
@@ -2175,15 +2170,6 @@ function SetupBody() {
                 value={hideOfflineStreamHosts}
                 onValueChange={(v) => {
                   void setPref('hideOfflineStreamHosts', v);
-                  hapticSelection();
-                }}
-              />
-              <TogglePref
-                label="Hide this section"
-                sub="Removes Stream from PC from the Launch tab. For setups where you'd never stream a game off another machine."
-                value={hideStreamFromPc}
-                onValueChange={(v) => {
-                  void setPref('hideStreamFromPc', v);
                   hapticSelection();
                 }}
               />

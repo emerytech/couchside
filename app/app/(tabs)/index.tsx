@@ -206,39 +206,42 @@ function ConsoleScreen() {
     gaming: <GamingCard />,
     vitals: s ? (
       <>
-        <View style={styles.row}>
-          {/* TourAnchor REPLACES the half View rather than wrapping it, so
-              the flex row is untouched — see components/TourAnchor.tsx. */}
-          <TourAnchor id="console.cpu" style={styles.half}>
-            <Card title="CPU TEMP" index={0}>
-              <BigMetric
-                value={s.cpu_temp_c != null ? `${s.cpu_temp_c.toFixed(1)}°C` : '—'}
-                numeric={s.cpu_temp_c}
-                color={tempColor(s.cpu_temp_c, t)}
-              />
-              <Spark values={s.history?.temp} color={tempColor(s.cpu_temp_c, t)} />
-            </Card>
-          </TourAnchor>
-          <View style={styles.half}>
-            <Card title="UPTIME" index={1}>
-              <BigMetric value={humanizeUptime(s.uptime_s)} numeric={null} color={t.text} />
-              {s.ip ? <Text style={styles.ipLine}>{s.ip}</Text> : null}
-            </Card>
-          </View>
-        </View>
+        {/* Glance strip — the four numbers you actually scan, in one row. The
+            detail cards (memory breakdown, disks, battery) sit below; the six
+            stacked headline cards this replaced were the busiest part of the
+            Console. console.cpu anchor rides the strip now (tour + measurement).
+            VitalsContext breathing is screen-level and untouched. */}
+        <TourAnchor id="console.cpu">
+          <Card title="VITALS" index={0}>
+            <View style={styles.vstrip}>
+              <View style={styles.vcell}>
+                <Text style={styles.vlabel}>TEMP</Text>
+                <Text style={[styles.vval, { color: tempColor(s.cpu_temp_c, t) }]}>
+                  {s.cpu_temp_c != null ? `${Math.round(s.cpu_temp_c)}\u00b0` : '\u2014'}
+                </Text>
+              </View>
+              <View style={styles.vcell}>
+                <Text style={styles.vlabel}>LOAD</Text>
+                <Text style={[styles.vval, { color: t.text }]}>{s.load[0].toFixed(2)}</Text>
+              </View>
+              <View style={styles.vcell}>
+                <Text style={styles.vlabel}>MEM</Text>
+                <Text style={[styles.vval, { color: pctColor(memPct, t) }]}>{memPct}%</Text>
+              </View>
+              {s.battery && (
+                <View style={styles.vcell}>
+                  <Text style={styles.vlabel}>BATT</Text>
+                  <Text style={[styles.vval, { color: batteryColor(s.battery.pct, t) }]}>{s.battery.pct}%</Text>
+                </View>
+              )}
+            </View>
+            <Text style={styles.vsub} numberOfLines={1}>
+              up {humanizeUptime(s.uptime_s)}{s.ip ? `  \u00b7  ${s.ip}` : ''}
+            </Text>
+          </Card>
+        </TourAnchor>
 
-        <Card title="LOAD 1m / 5m / 15m" index={2}>
-          <View style={styles.loadRow}>
-            {s.load.map((l, i) => (
-              <Text key={i} style={styles.loadVal}>
-                {l.toFixed(2)}
-              </Text>
-            ))}
-          </View>
-          <Spark values={s.history?.load} color={t.blue} />
-        </Card>
-
-        <Card title="MEMORY" index={3}>
+        <Card title="MEMORY" index={1}>
           <View style={styles.barLabelRow}>
             <Text style={styles.barLabel}>
               {(s.mem.used_mb / 1024).toFixed(1)} / {(s.mem.total_mb / 1024).toFixed(1)} GB
@@ -256,12 +259,12 @@ function ConsoleScreen() {
                   : null,
               ]
                 .filter(Boolean)
-                .join('  ·  ')}
+                .join('  \u00b7  ')}
             </Text>
           )}
         </Card>
 
-        <Card title="DISKS" index={4}>
+        <Card title="DISKS" index={2}>
           {s.disks.map((d) => (
             <View key={d.mount} style={styles.diskRow}>
               <View style={styles.barLabelRow}>
@@ -282,7 +285,7 @@ function ConsoleScreen() {
             whole gate -- no cap check, no placeholder, no "0%" on a machine
             that has no pack. */}
         {s.battery && (
-          <Card title="BATTERY" index={5}>
+          <Card title="BATTERY" index={3}>
             <View style={styles.barLabelRow}>
               <Text style={styles.barLabel}>
                 {s.battery.status === 'Charging'
@@ -312,7 +315,7 @@ function ConsoleScreen() {
                   s.battery.profile,
                 ]
                   .filter(Boolean)
-                  .join('  ·  ')}
+                  .join('  \u00b7  ')}
               </Text>
             )}
           </Card>
@@ -565,6 +568,13 @@ const makeStyles = (t: Palette) => StyleSheet.create({
   },
   foldText: { color: t.textDim, fontSize: 12, fontWeight: '700', letterSpacing: 1.2 },
   foldSub: { color: t.textFaint, fontSize: 12, flex: 1 },
+  // Vitals glance strip (pass #4): one row of the four scanned numbers, then a
+  // quiet uptime/ip line. Detail cards (memory/disks/battery) render below.
+  vstrip: { flexDirection: 'row', gap: 14 },
+  vcell: { flex: 1 },
+  vlabel: { color: t.textFaint, fontFamily: mono, fontSize: 10, letterSpacing: 1 },
+  vval: { ...numeric, fontSize: 22, fontWeight: '700', marginTop: 2 },
+  vsub: { color: t.textFaint, fontFamily: mono, fontSize: 11, marginTop: 8 },
   doneBtn: {
     backgroundColor: t.blue, borderRadius: 999,
     paddingVertical: 8, paddingHorizontal: 22,
