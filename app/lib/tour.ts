@@ -43,6 +43,11 @@ export type TourStep = {
 };
 
 export const TOUR_STEPS: TourStep[] = [
+  // Six steps, one per place a new user would otherwise miss the point. The tour
+  // was 16 and read as a manual; trimmed to the handful that teach something the
+  // UI does not make obvious on its own. Steps whose anchor is absent still
+  // self-skip (see useTourAnchor), so a box missing one surface just shows fewer.
+
   // CONSOLE — why the app exists.
   {
     tab: 'index',
@@ -50,67 +55,13 @@ export const TOUR_STEPS: TourStep[] = [
     title: 'Is the box even awake?',
     body: 'Temperature, load, memory and disks, live. The first thing to check when the TV is black and the controller does nothing.',
   },
-  {
-    tab: 'index',
-    anchor: 'console.display',
-    title: 'What the TV is actually being sent',
-    body: 'Resolution, refresh, HDR and which output is connected. When the picture is wrong, this says whether the box even thinks a screen is there.',
-  },
-  {
-    tab: 'index',
-    anchor: 'console.screen',
-    title: 'See the screen from here',
-    body: 'Pull a still frame of what the TV is actually showing — the difference between "it crashed" and "it is sitting on a login prompt".',
-  },
 
   // LAUNCH — the thing people open it for daily.
   {
     tab: 'launch',
     anchor: 'launch.grid',
-    title: 'Your library, with cover art',
-    // Do NOT say "tap one and it starts": tapping opens the confirm sheet, and
-    // the very next step explains that. Saying both is a tour arguing with
-    // itself in front of a new user.
-    body: 'Every game the box has, laid out with its art. No Big Picture menus, no hunting across a grid with a D-pad.',
-  },
-  {
-    tab: 'launch',
-    anchor: 'launch.grid',
     title: 'Tap asks before it launches',
-    body: 'A tap opens the game rather than starting it, with playtime and when you last opened it. Launching takes over the TV, so it is never one stray tap.',
-  },
-  // The next two are anchored to controls that only exist once a library is
-  // big enough to need them (8+ games). On a small library there is no filter
-  // and no shuffle, and these steps skip themselves rather than describing
-  // buttons the user will go hunting for and never find.
-  {
-    tab: 'launch',
-    anchor: 'launch.filter',
-    title: 'Narrow it down',
-    body: 'Filter by never-played, under two hours, or not touched in a year. The button counts as you go, so you can see the shortlist shrink.',
-  },
-  {
-    tab: 'launch',
-    anchor: 'launch.shuffle',
-    title: 'Or let it choose',
-    body: 'The shuffle picks from whatever is currently showing — so "something short I have never played" is one tap away.',
-  },
-  // Anchored INSIDE the cards (components/InstallableSection, PlaylogCard), so
-  // each step only shows when its card actually rendered: the install card needs
-  // owned-but-uninstalled games, the Playlog needs at least one queued game.
-  // No card, no anchor, step skips — the same "never describe an absent control"
-  // rule as the filter/shuffle steps above.
-  {
-    tab: 'launch',
-    anchor: 'launch.installable',
-    title: 'Your whole library — even what you haven’t installed',
-    body: 'Games you own but never downloaded show up here. Kick off the install on the box from the couch; no Big Picture, no keyboard.',
-  },
-  {
-    tab: 'launch',
-    anchor: 'launch.playlog',
-    title: 'Line up what to play next',
-    body: 'Bookmark a game and it lands in your Playlog — a play-next queue you can reorder. Not installed yet? Tap it there to install.',
+    body: 'Your library with cover art — no Big Picture, no D-pad hunting. A tap opens the game rather than starting it, with playtime and when you last opened it; launching takes over the TV, so it is never one stray tap.',
   },
 
   // PAD — the hardware replacement.
@@ -121,15 +72,9 @@ export const TOUR_STEPS: TourStep[] = [
     tab: 'pad',
     anchor: 'pad.modes',
     title: 'The phone is a controller',
-    body: 'Switch to PAD for a real gamepad the box cannot tell from plastic: sticks, D-pad, triggers, haptics. For when the real one is dead or across the room.',
+    body: 'Switch to PAD for a real gamepad the box cannot tell from plastic: sticks, D-pad, triggers, haptics. SWIPE works like an Apple TV remote and MOUSE is a trackpad you can type through — for the login boxes a controller cannot handle.',
   },
-  {
-    tab: 'pad',
-    anchor: 'pad.modes',
-    title: 'Trackpad, swipe, and a keyboard',
-    body: 'SWIPE works like an Apple TV remote and MOUSE is a trackpad you can type through — for the login boxes and launcher updates a controller cannot handle.',
-  },
-  // The shortcut for the switch two steps up. Worth its own step because the
+  // The shortcut for the mode switch above. Worth its own step because the
   // selector sits at the very top of the screen and this does the same job
   // under your thumb — and nobody finds it by accident.
   {
@@ -144,35 +89,13 @@ export const TOUR_STEPS: TourStep[] = [
     tab: 'actions',
     anchor: 'actions.high',
     title: 'Unstick a frozen display',
-    // NAME THE CONTROL AS IT IS LABELLED. This used to say "restart the
-    // display", which is not a button that exists — the user scanned the list
-    // for it and found nothing. It also sold the action as the harmless hero
-    // move while the UI tags it red and "ends session". A tour that undersells
-    // the cost of a destructive action is worse than one that never mentions it.
+    // NAME THE CONTROL AS IT IS LABELLED. Saying "restart the display" sent users
+    // hunting for a button that does not exist; and the action is tagged red and
+    // "ends session", so the tour must not undersell its cost.
     body: 'Restart Session rebuilds the desktop when the TV is black but the machine is plainly still running. It closes what is open, which is why it sits under "Ends your session".',
-  },
-  // Anchored to the ROUTINE group, which is the one that is often ABSENT: a
-  // plain Linux box reports no harmless actions at all (the only one is
-  // "Restart Decky", which needs Decky installed), while a Windows box does.
-  // This step used to claim three groups unconditionally, in front of a screen
-  // showing two.
-  {
-    tab: 'actions',
-    anchor: 'actions.routine',
-    title: 'Grouped by what it costs you',
-    body: 'The harmless ones sit up here, apart from the ones that change what is on the TV and the ones that end your session. Nothing destructive sits next to something safe.',
   },
 
   // SETUP — where the rest lives.
-  // The logs step lives HERE, not on Console. It used to be a Console step
-  // describing "the services you care about and their journal" — a screen that
-  // has no logs on it at all. LogsPanel is a Setup section, and always was.
-  {
-    tab: 'setup',
-    anchor: 'setup.logs',
-    title: 'Read the logs without a keyboard',
-    body: 'The services you care about and their journal, on the phone. No SSH, no crawling behind the TV.',
-  },
   {
     tab: 'setup',
     anchor: 'setup.tabs',
