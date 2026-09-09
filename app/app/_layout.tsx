@@ -10,6 +10,7 @@ import { ReviewToast } from '@/components/ReviewToast';
 import { AppUpdateReminderToast } from '@/components/AppUpdateReminderToast';
 import { TrialEndsToast } from '@/components/TrialEndsToast';
 import { AppToast } from '@/components/AppToast';
+import { SplashIntro } from '@/components/SplashIntro';
 import { UnlockToast } from '@/components/UnlockToast';
 import { TapCapture } from '@/components/TouchIndicatorLayer';
 import { DeepLinkHandler } from '@/lib/DeepLink';
@@ -115,6 +116,9 @@ export default function RootLayout() {
           {/* Rare nudge that the MANUAL app-update check exists (Setup > Account);
               off via the pref or its own "Don't show again". */}
           <AppUpdateReminderToast />
+          {/* Brief app-opening animation. Last child = drawn on top; covers the
+              tree until it fades, then unmounts (once per launch). */}
+          <SplashIntro />
         </TapCapture>
         </ThemeProvider>
       </EntitlementProvider>
