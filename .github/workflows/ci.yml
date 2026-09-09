@@ -133,6 +133,16 @@ jobs:
       - name: Unit tests (led strip)
         run: python3 tests/test_led_strip.py
 
+      # Steam grabs valve-leds for its own use (download progress) by writing
+      # multi_intensity in the SAME manual mode our sequence engine paints in, so
+      # our repaint fights it and the bar flickers (seen on hardware). The engine
+      # reads back a canary node and STANDS DOWN when its paint stops sticking,
+      # resuming only once the strip is free. Proves both states -- fires under
+      # clobbering, never under a paint that sticks -- and that a stood-down strip
+      # stops writing and only ever touches the fixed-literal attrs.
+      - name: Unit tests (led stand-down)
+        run: python3 tests/test_led_standdown.py
+
       # Which filesystems the dashboard reports. A Deck owner was shown
       # "3.5 / 5.0 GB, 69%" because read_disks() only looked at "/" -- which on
       # SteamOS is a small READ-ONLY rootfs -- and never mentioned /home. Asserts

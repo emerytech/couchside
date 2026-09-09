@@ -104,6 +104,30 @@ and the frozen `_DM_CONF_DIRS` table (`sddm`, `plasmalogin`) — conf dir, drop-
 only itself; the symlink proves which manager runs. No detected manager (or no grant for
 the detected one) = no capability, no action — never a fallback to SDDM.
 
+### Don't fight a shared device — stand down on a readback-survival check
+
+When the agent animates a device the platform ALSO writes, cooperate instead of
+overwriting. The valve-leds strip is the case: on a Steam Deck/Machine, Steam grabs the
+front bar for its own use (download progress — it writes `multi_intensity` in the SAME
+`manual` mode we paint in), so the sequence engine's ~30fps repaint fought it and the bar
+flickered between our frame and all-black. Fix (`_seq_render`, since agent 2.9.106): read
+back a canary node and STAND DOWN — stop writing, let the platform own the device — probing
+a single node every `_SEQ_PROBE_INTERVAL` and resuming only once our paint holds again.
+
+Two rules the hardware taught:
+- **Measure survival across the inter-frame gap, not right after your own write.** A
+  readback in the same frame you wrote always matches — you won that microsecond; the other
+  writer clobbers in the ~33ms *between* frames. Check whether LAST frame's canary is still
+  there BEFORE repainting. (The first version read back in-frame, passed its unit test, and
+  did nothing on the box — the mock modelled "always black" and hid the timing. Test the
+  thing: the log line `[led] … standing down` and a rapid sysfs sample were the proof.)
+- **Hysteresis both ways + degrade closed.** A few consecutive misses to stand down, a
+  streak of clean probes to resume (`_SEQ_STANDDOWN_MISS`/`_HITS`), and an unreadable
+  canary (`None`) never trips it. Verified on `steam-machine` 2026-09-08: the state machine
+  oscillates with the download (`standing down` ↔ `resuming (strip free again)` in the
+  journal), flicker gone (was ~50% black, went 24/24 clean). No new client-reachable
+  surface — the readback is a fixed-literal attr on an already-allowlisted node (§3).
+
 ---
 
 ## 2. Tests (`tests/test_*.py`)

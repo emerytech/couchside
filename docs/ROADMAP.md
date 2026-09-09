@@ -1381,6 +1381,24 @@ recommendation was wrong, not merely superseded.
 
 ## ✅ Completed
 
+### LED strip stand-down — stop fighting Steam for the light bar — 2026-09-08
+- **was:** owner-reported "light bar spazzing on the Steam machine" while a game ran and a
+  download was in flight, LED set to rainbow · **affects:** agent (`agent/couchsided.py`)
+- **Root cause (hardware-confirmed on `steam-machine`):** the rainbow was an agent-rendered
+  `sequence` (not the firmware `rainbow` effect). Steam grabs the valve-leds bar for its own
+  use during downloads, writing `multi_intensity` in the SAME `manual` mode we paint in; our
+  ~30fps repaint fought it → the strip flickered rainbow↔black (a fast sysfs sample read
+  all-black on ~half the ticks; `effect` stayed `manual` throughout).
+- **Fix:** `_seq_render` reads back a canary node and STANDS DOWN when its paint stops
+  surviving the inter-frame gap — stops writing, lets Steam own the bar, probes one node
+  every `_SEQ_PROBE_INTERVAL`, resumes on a clean-probe streak. Hysteresis both ways;
+  `None` readback degrades closed. No new client surface (fixed-literal attr on an
+  allowlisted node). New pattern recorded in CONVENTIONS §1.
+- **Verified:** `tests/test_led_standdown.py` (8 checks, both states) + a CI step; all four
+  existing LED suites still green. In-vivo on `steam-machine`: journal shows
+  `standing down` ↔ `resuming (strip free again)` tracking the download, flicker gone
+  (~50% black → 24/24 clean). Ships in agent 2.9.106.
+
 ### Repo-wide audit — bugs fixed + dead code removed — 2026-08-16
 - **was:** owner-directed "analyze the repo for simplification/optimization" ·
   **affects:** agent, installer, release scripts, tests, app

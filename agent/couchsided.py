@@ -49,7 +49,7 @@ except ImportError:  # pragma: no cover
     fcntl = None
 
 APP_NAME = "couchside-agent"
-VERSION = "2.9.105"
+VERSION = "2.9.106"
 UID = os.getuid()
 XDG_RUNTIME_DIR = "/run/user/%d" % UID
 
@@ -5003,10 +5003,11 @@ def _led_clear_trigger(name):
         pass
 
 
-def _led_write_color(name, raw, color):
-    """Write client {r,g,b} (0-255) to multi_intensity in the DEVICE's channel
-    order (raw['index']), scaled to each channel's max, whole array at once (the
-    kernel needs every element in one write)."""
+def _led_color_vals(raw, color):
+    """The multi_intensity STRING for {r,g,b} on `raw`: the DEVICE's channel order
+    (raw['index']), each value scaled to its channel max. Single source of truth
+    shared by the writer AND the stand-down readback check, so the compare uses the
+    exact string we wrote (no re-derivation drift)."""
     canon = {"red": color["r"], "green": color["g"], "blue": color["b"]}
     maxint = raw["maxint"]
     maxb = raw["max_brightness"]
@@ -5015,7 +5016,14 @@ def _led_write_color(name, raw, color):
         v = canon.get(ch, 0)
         chmax = _led_chmax(maxint, i, maxb)
         vals.append(str(max(0, min(chmax, round(v * chmax / 255)))))
-    _led_write(name, "multi_intensity", " ".join(vals))
+    return " ".join(vals)
+
+
+def _led_write_color(name, raw, color):
+    """Write client {r,g,b} (0-255) to multi_intensity in the DEVICE's channel
+    order (raw['index']), scaled to each channel's max, whole array at once (the
+    kernel needs every element in one write)."""
+    _led_write(name, "multi_intensity", _led_color_vals(raw, color))
 
 
 def set_led(name, brightness, color):
@@ -5630,6 +5638,18 @@ _SEQ_ACTIVE = {}                 # prefix -> spec (members/effect/color/speed/br
 _SEQ_THREAD = [None]
 _SEQ_TAIL = 3                    # comet head + fading-tail length
 
+# Stand-down: Steam grabs valve-leds itself (download progress, etc.), writing
+# multi_intensity in the SAME `manual` mode we paint in -> our repaint fights it
+# and the bar flickers. We read back a canary node each frame; if our paint stops
+# sticking we STOP writing (let Steam own the bar) and probe a single node on a
+# slow cadence, resuming only once it holds again. Readback = ground truth, so
+# this catches ANY external writer, self-resumes, and cuts our write load while
+# Steam is busy. Thresholds give ~fast detect (a few frames) + slow, hysteretic
+# resume (avoid oscillating against a still-busy Steam). See _seq_standdown_decide.
+_SEQ_STANDDOWN_MISS = 3          # consecutive canary misses before standing down (~100ms @30fps)
+_SEQ_STANDDOWN_HITS = 3          # consecutive clean probes before resuming
+_SEQ_PROBE_INTERVAL = 2.0        # seconds between probes while stood down
+
 
 def _seq_period(speed):
     """Speed 1..100 -> seconds for one full lap around the strip (higher = faster).
@@ -5690,8 +5710,10 @@ def _seq_frame_twinkle(n, t, period, color):
     return frame
 
 
-def _seq_render(spec, now):
-    """Write ONE frame of `spec` to its strip via the fixed-literal writers."""
+def _seq_compute_frame(spec, now):
+    """The per-LED frame for this strip animation at time `now`, or None if there's
+    nothing to draw. Pure time+geometry -> colour; performs no writes so it stays
+    unit-testable and is reused by both the paint path and the stand-down probe."""
     members = spec["members"]
     n = len(members)
     t = now - spec["t0"]
@@ -5700,14 +5722,14 @@ def _seq_render(spec, now):
     color = spec["color"]
     rev = bool(spec.get("reverse"))
     if e == "circle":
-        frame = _seq_frame_sweep(n, t, period, color, _SEQ_TAIL, rev)
-    elif e == "comet":
-        frame = _seq_frame_sweep(n, t, period, color, max(4, n // 2), rev)
-    elif e == "wipe":
-        frame = _seq_frame_wipe(n, t, period, color, rev)
-    elif e == "twinkle":
-        frame = _seq_frame_twinkle(n, t, period, color)
-    elif e == "sequence":
+        return _seq_frame_sweep(n, t, period, color, _SEQ_TAIL, rev)
+    if e == "comet":
+        return _seq_frame_sweep(n, t, period, color, max(4, n // 2), rev)
+    if e == "wipe":
+        return _seq_frame_wipe(n, t, period, color, rev)
+    if e == "twinkle":
+        return _seq_frame_twinkle(n, t, period, color)
+    if e == "sequence":
         # A custom TIMED sequence: a list of per-LED frames (already normalized to n
         # members at validation). With per-frame `holds` (one ms per frame) we walk a
         # cumulative timeline; without them every frame shows for the uniform
@@ -5715,7 +5737,7 @@ def _seq_render(spec, now):
         # alternate-colour feature builds (2 frames) and the N-frame editor builds.
         frames = spec.get("frames") or []
         if not frames:
-            return
+            return None
         loop = spec.get("loop", True)
         holds = spec.get("holds")
         if holds and len(holds) == len(frames):
@@ -5743,11 +5765,32 @@ def _seq_render(spec, now):
             hold = max(0.03, spec.get("hold_ms", 500) / 1000.0)
             step = int(t / hold)
             idx = (step % len(frames)) if loop else min(step, len(frames) - 1)
-        frame = frames[idx]
-    else:
-        return
+        return frames[idx]
+    return None
+
+
+def _seq_canary_index(frame):
+    """Index of the first LIT (non-black) member in `frame` -- the node we read
+    back to tell whether our paint stuck, and the ONLY node we touch while probing
+    a stood-down strip. None if the frame lights nothing (can't verify this tick)."""
+    for i, c in enumerate(frame):
+        if c is not None and (c.get("r") or c.get("g") or c.get("b")):
+            return i
+    return None
+
+
+def _seq_paint(spec, frame, only_index=None):
+    """Write `frame` to the strip via the SAME fixed-literal writers as before
+    (multi_intensity + brightness, per member; brightness 0 for a dark cell).
+    only_index -> write JUST that one member (a light one-LED probe used while
+    stood down). Returns (canary_name, expected_multi_intensity) for a lit member
+    we can read back, or (None, None) when the frame lit nothing we wrote."""
+    members = spec["members"]
     bmax = spec["brightness"]
-    for i, name in enumerate(members):
+    canary_name, canary_vals = None, None
+    idxs = (only_index,) if only_index is not None else range(len(members))
+    for i in idxs:
+        name = members[i]
         raw = spec["raws"].get(name)
         if not raw:
             continue
@@ -5757,10 +5800,99 @@ def _seq_render(spec, now):
                 _led_write_color(name, raw, c)
                 _led_write(name, "brightness",
                            str(int(bmax / 100.0 * raw["max_brightness"] + 0.5)))
+                if canary_name is None and (c.get("r") or c.get("g") or c.get("b")):
+                    # Remember the exact string _led_write_color just wrote, so the
+                    # readback compare is an identity check (no re-derivation drift).
+                    canary_name, canary_vals = name, _led_color_vals(raw, c)
             else:
                 _led_write(name, "brightness", "0")
         except OSError:
             pass
+    return canary_name, canary_vals
+
+
+def _seq_canary_matches(name, expected):
+    """True if strip node `name` still reads back the multi_intensity we wrote (our
+    paint stuck), False if another writer clobbered it (e.g. Steam grabbing the bar
+    for download progress -- it writes in the SAME `manual` mode we do), None if
+    unreadable/undeterminable (degrade closed -> the decider ignores None)."""
+    if name is None:
+        return None
+    got = _led_read_attr(name, "multi_intensity")
+    if got is None:
+        return None
+    return got.split() == expected.split()
+
+
+def _seq_standdown_decide(spec, matched, now):
+    """Advance a strip's stand-down state from whether our last paint stuck.
+    `matched`: True (stuck) / False (clobbered) / None (couldn't tell -> ignore).
+    Returns True while we are stood down, so the caller stops full painting and
+    lets Steam own the bar cleanly. See _SEQ_STANDDOWN_* for the mechanism."""
+    if matched is None:
+        return spec.get("_down", False)
+    if not spec.get("_down", False):
+        if matched:
+            spec["_miss"] = 0
+            return False
+        spec["_miss"] = spec.get("_miss", 0) + 1
+        if spec["_miss"] >= _SEQ_STANDDOWN_MISS:
+            spec["_down"] = True
+            spec["_hit"] = 0
+            spec["_probe_at"] = now + _SEQ_PROBE_INTERVAL
+            print("[led] %s: standing down (strip owned by another writer)"
+                  % spec.get("effect", "seq"), flush=True)
+        return spec.get("_down", False)
+    # Stood down: a clean probe advances toward resume; a clobbered one resets the
+    # streak and holds us down (hysteresis -> no flicker fighting a busy Steam).
+    if matched:
+        spec["_hit"] = spec.get("_hit", 0) + 1
+        if spec["_hit"] >= _SEQ_STANDDOWN_HITS:
+            spec["_down"] = False
+            spec["_miss"] = 0
+            spec["_hit"] = 0
+            print("[led] %s: resuming (strip free again)"
+                  % spec.get("effect", "seq"), flush=True)
+    else:
+        spec["_hit"] = 0
+    return spec.get("_down", False)
+
+
+def _seq_render(spec, now):
+    """Write ONE frame of `spec` to its strip via the fixed-literal writers -- but
+    STAND DOWN while another writer owns the strip. On a Steam Deck/Machine, Steam
+    grabs valve-leds for its own use (download progress, etc.) by writing
+    multi_intensity in the SAME `manual` mode we paint in, so our ~30fps repaint
+    fights it (observed: the bar flickers between our frame and all-black).
+
+    Detection is a SURVIVAL check across the inter-frame gap: read the canary we
+    wrote LAST frame BEFORE repainting. Reading right after our own write is
+    useless -- we always win that microsecond; Steam clobbers in the ~33ms between
+    frames, which only a cross-frame readback sees. Once our paint stops surviving
+    we stop writing and let Steam have the bar, probing a SINGLE node every
+    _SEQ_PROBE_INTERVAL and resuming only when our paint holds again. The timeline
+    is `now`-based, so a resume picks up at the correct phase (no restart jump)."""
+    frame = _seq_compute_frame(spec, now)
+    if frame is None:
+        return
+    if spec.get("_down", False):
+        # Leave Steam's bar alone; just probe one node on a slow cadence, checking
+        # whether the PREVIOUS probe write survived the interval.
+        if now < spec.get("_probe_at", 0.0):
+            return
+        matched = _seq_canary_matches(*spec.get("_canary", (None, None)))
+        ci = _seq_canary_index(frame)
+        if ci is not None:
+            spec["_canary"] = _seq_paint(spec, frame, only_index=ci)
+        _seq_standdown_decide(spec, matched, now)
+        if spec.get("_down", False):
+            spec["_probe_at"] = now + _SEQ_PROBE_INTERVAL
+        return
+    # Did last frame's paint survive until now? (the window Steam actually writes
+    # in). Decide on that, THEN lay down this frame and remember its canary.
+    matched = _seq_canary_matches(*spec.get("_canary", (None, None)))
+    spec["_canary"] = _seq_paint(spec, frame)
+    _seq_standdown_decide(spec, matched, now)
 
 
 def _seq_loop():
