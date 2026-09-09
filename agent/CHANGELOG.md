@@ -18,6 +18,16 @@ the same thing regardless of what actually changed.
 Write for the person holding the phone, not for the commit log. They are
 deciding whether to press "Update now" on a machine across the room.
 
+## 2.9.106
+
+**Your light bar stops fighting Steam.** On a Steam Deck or Steam Machine, Steam
+sometimes takes over the front light bar for itself — for example to show download
+progress. If you had a Couchside effect running (a rainbow or any animation), the
+two used to fight over the bar and it flickered. Now Couchside notices when Steam
+has taken the bar, quietly steps aside so Steam's own lighting shows cleanly, and
+brings your effect back on its own a few seconds after Steam is done. Nothing to
+set — a bar that wasn't flickering is unaffected.
+
 ## 2.9.105
 
 **Install Decky Loader and manage its plugins from your phone.** A new Decky
