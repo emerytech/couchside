@@ -1585,6 +1585,12 @@ function SetupBody() {
                   hapticSelection();
                 }}
               />
+            </View>
+
+            {/* DIAGNOSTICS: the polling/logs controls, pulled out of the
+                overloaded GENERAL group (busy-UI pass). */}
+            <View style={prefCardGroupStyle}>
+              <CardHeader icon="pulse-outline" label="DIAGNOSTICS" />
               <SegPref
                 label="Vitals refresh"
                 sub="How often the console polls the box."
