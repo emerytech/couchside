@@ -1,9 +1,9 @@
-Manage Decky Loader from your phone. Install, repair, update or remove Decky Loader on your box, browse and install plugins from the official Decky store, and see what's installed — all from Setup, without leaving the couch. (Turn it on once on the box; the app tells you how.)
+A new opening animation — the Couchside couch, with its live green dot, greets you on launch.
 
-New too:
-- Skins — give the Console a whole new shape in Setup → Appearance. Six looks, from the quiet "Studio" to the machined "Panel", each shown as a live preview and layered on top of your colour pack and accent.
-- An optional alarm pulse that flags a hot vital from the corner of your eye.
+Plus a calmer, more customizable interface:
+- The Console opens to a compact vitals strip — temperature, load and memory at a glance, with the full detail a tap away.
+- Reorder or hide cards on the Fleet and Actions tabs too: press and hold a card, or tap the sliders icon. The same customize gesture the Console already had.
+- A shorter, friendlier first-run tour.
+- Tidier Settings, with the polling controls grouped on their own.
 
-Coming from an older version? You also get theme packs (OLED Black, Steam, Nord, Dracula and more), a calmer Console that opens to what's happening now, "Did you know" tips, card reorder on every tab, and an auto-drop option so the phone can't take player one mid-game.
-
-Plus polish and reliability fixes — including a secure connection that heals itself after a box update, so the app no longer sits reconnecting until you reboot.
+Plus polish and reliability fixes throughout.
