@@ -20,6 +20,8 @@ import { useCallback, useRef, useState } from 'react';
 import { Alert, Pressable, StyleSheet, Text, View } from 'react-native';
 
 import { usePoll } from '@/hooks/usePoll';
+import { useArmedAction } from '@/hooks/useArmedAction';
+import { ArmedActionBar } from '@/components/ArmedActionBar';
 import { api, FlatpakStatus, hostKey, OsStatus } from '@/lib/api';
 import { isFlatpakUpdateComplete } from '@/lib/flatpakUpdate';
 import { hapticLight } from '@/lib/haptics';
@@ -187,26 +189,29 @@ export function SystemUpdatesCard() {
     [fp.data?.count, hasFp, hasOs, runFlatpak, runOs],
   );
 
+  // Confirm once, then a cancellable countdown (Cancel / Do it now) before the
+  // reboot actually fires — the same window the Actions tab gives a session-
+  // ending action, instead of the one-shot Alert this used to be.
+  const { armed, arm, cancel, fireNow } = useArmedAction(hostKey(settings));
+  const runReboot = useCallback(() => {
+    void (async () => {
+      setRebooting(true);
+      hapticLight();
+      try {
+        await api.runAction(settings, 'reboot');
+      } catch {
+        // connection drops on reboot — expected
+      } finally {
+        setRebooting(false);
+      }
+    })();
+  }, [settings]);
   const reboot = useCallback(() => {
     Alert.alert('Reboot the box?', 'This applies the staged OS update. Any unsaved work will be lost.', [
       { text: 'Cancel', style: 'cancel' },
-      {
-        text: 'Reboot',
-        style: 'destructive',
-        onPress: async () => {
-          setRebooting(true);
-          hapticLight();
-          try {
-            await api.runAction(settings, 'reboot');
-          } catch {
-            // connection drops on reboot — expected
-          } finally {
-            setRebooting(false);
-          }
-        },
-      },
+      { text: 'Reboot', style: 'destructive', onPress: () => arm('Reboot the box', runReboot) },
     ]);
-  }, [settings]);
+  }, [arm, runReboot]);
 
   if (!configured || (!hasFp && !hasOs)) return null;
 
@@ -250,6 +255,13 @@ export function SystemUpdatesCard() {
       )}
 
       {msg ? <Text style={styles.msg}>{msg}</Text> : null}
+
+      <ArmedActionBar
+        armed={armed}
+        boxName={settings.host}
+        onCancel={cancel}
+        onFireNow={fireNow}
+      />
 
       {osStaged ? (
         <Pressable
