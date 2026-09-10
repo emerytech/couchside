@@ -228,6 +228,17 @@ function ConsoleScreen() {
                 <Text style={styles.vlabel}>MEM</Text>
                 <Text style={[styles.vval, { color: pctColor(memPct, t) }]}>{memPct}%</Text>
               </View>
+              {/* CPU clock (agent >= 2.9.107). Key-presence gate exactly like BATT:
+                  the agent OMITS `cpu` on a box with no cpufreq, so no dash — the
+                  tile simply is not there. Peak live core clock in GHz. */}
+              {s.cpu?.cur_mhz != null && (
+                <View style={styles.vcell}>
+                  <Text style={styles.vlabel}>CLOCK</Text>
+                  <Text style={[styles.vval, { color: t.text }]}>
+                    {(s.cpu.cur_mhz / 1000).toFixed(1)}G
+                  </Text>
+                </View>
+              )}
               {s.battery && (
                 <View style={styles.vcell}>
                   <Text style={styles.vlabel}>BATT</Text>
@@ -304,7 +315,12 @@ function ConsoleScreen() {
               </Text>
             </View>
             <Bar pct={s.battery.pct} color={batteryColor(s.battery.pct, t)} />
-            {(s.battery.watts != null || s.battery.profile) && (
+            {(s.battery.watts != null ||
+              s.battery.profile ||
+              s.battery.health_pct != null ||
+              s.battery.cycle_count != null ||
+              (s.battery.capacity_level != null &&
+                s.battery.capacity_level !== 'Normal')) && (
               <Text style={styles.ipLine}>
                 {[
                   s.battery.watts != null
@@ -313,6 +329,14 @@ function ConsoleScreen() {
                       }`
                     : null,
                   s.battery.profile,
+                  // Wear indicators (agent >= 2.9.107). capacity_level is shown
+                  // only when it is NOT the healthy "Normal" \u2014 a quiet detail line
+                  // shouldn't announce the everyday case (mirrors the MEM card).
+                  s.battery.health_pct != null ? `health ${s.battery.health_pct}%` : null,
+                  s.battery.cycle_count != null ? `${s.battery.cycle_count} cycles` : null,
+                  s.battery.capacity_level != null && s.battery.capacity_level !== 'Normal'
+                    ? s.battery.capacity_level
+                    : null,
                 ]
                   .filter(Boolean)
                   .join('  \u00b7  ')}
@@ -570,10 +594,13 @@ const makeStyles = (t: Palette) => StyleSheet.create({
   foldSub: { color: t.textFaint, fontSize: 12, flex: 1 },
   // Vitals glance strip (pass #4): one row of the four scanned numbers, then a
   // quiet uptime/ip line. Detail cards (memory/disks/battery) render below.
-  vstrip: { flexDirection: 'row', gap: 14 },
+  // Five cells (TEMP/LOAD/MEM/CLOCK/BATT) share the row on a handheld; the gap
+  // and value size are tuned so a 4-char value ("0.59", "2.7G") does not wrap on
+  // a 360-375pt phone. BATT is omitted on a desktop, leaving four roomier cells.
+  vstrip: { flexDirection: 'row', gap: 10 },
   vcell: { flex: 1 },
-  vlabel: { color: t.textFaint, fontFamily: mono, fontSize: 10, letterSpacing: 1 },
-  vval: { ...numeric, fontSize: 22, fontWeight: '700', marginTop: 2 },
+  vlabel: { color: t.textFaint, fontFamily: mono, fontSize: 10, letterSpacing: 0.5 },
+  vval: { ...numeric, fontSize: 18, fontWeight: '700', marginTop: 2 },
   vsub: { color: t.textFaint, fontFamily: mono, fontSize: 11, marginTop: 8 },
   doneBtn: {
     backgroundColor: t.blue, borderRadius: 999,

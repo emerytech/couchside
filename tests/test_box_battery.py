@@ -395,6 +395,128 @@ def test_handheld_with_paired_controller_reads_its_own_pack():
         s.close()
 
 
+def test_health_from_energy_gauge():
+    """The VERBATIM Legion Go S pack: ENERGY_FULL == ENERGY_FULL_DESIGN
+    (55500000) -> 100% health, CYCLE_COUNT 53, CAPACITY_LEVEL Normal (emitted
+    verbatim by the agent even though the app hides the healthy 'Normal')."""
+    print("test_health_from_energy_gauge")
+    s = Supplies({"BAT0": BAT0, "ACAD": ACAD_OFFLINE})
+    try:
+        got = cs.read_box_battery()
+        check("health 100%", got.get("health_pct"), 100)
+        check("cycle count 53", got.get("cycle_count"), 53)
+        check("capacity level verbatim", got.get("capacity_level"), "Normal")
+    finally:
+        s.close()
+
+
+def test_health_degraded_pack():
+    """A worn pack: ENERGY_FULL 48285000 / DESIGN 55500000 = 87%."""
+    print("test_health_degraded_pack")
+    s = Supplies({"BAT0": BAT0.replace("POWER_SUPPLY_ENERGY_FULL=55500000",
+                                       "POWER_SUPPLY_ENERGY_FULL=48285000")})
+    try:
+        check("health 87%", cs.read_box_battery().get("health_pct"), 87)
+    finally:
+        s.close()
+
+
+def test_health_from_charge_gauge():
+    """A CHARGE-based gauge (uAh) with no ENERGY_* still yields health:
+    CHARGE_FULL 5400000 / CHARGE_FULL_DESIGN 6000000 = 90%."""
+    print("test_health_from_charge_gauge")
+    s = Supplies({"BAT1": """POWER_SUPPLY_NAME=BAT1
+POWER_SUPPLY_TYPE=Battery
+POWER_SUPPLY_STATUS=Discharging
+POWER_SUPPLY_PRESENT=1
+POWER_SUPPLY_CAPACITY=50
+POWER_SUPPLY_CHARGE_FULL_DESIGN=6000000
+POWER_SUPPLY_CHARGE_FULL=5400000
+POWER_SUPPLY_CYCLE_COUNT=0
+"""})
+    try:
+        got = cs.read_box_battery()
+        check("health 90% from charge gauge", got.get("health_pct"), 90)
+        # A zero cycle count is a NEW pack, not "unknown" -- it must be kept.
+        check("cycle count 0 kept", got.get("cycle_count"), 0)
+    finally:
+        s.close()
+
+
+def test_health_omitted_without_design():
+    """No *_FULL_DESIGN -> no way to compute wear -> the key is OMITTED, never a
+    fabricated 100%."""
+    print("test_health_omitted_without_design")
+    s = Supplies({"BAT0": BAT0.replace(
+        "POWER_SUPPLY_ENERGY_FULL_DESIGN=55500000\n", "")})
+    try:
+        check("no health_pct key", "health_pct" in cs.read_box_battery(), False)
+    finally:
+        s.close()
+
+
+def test_health_fresh_pack_over_100_reported_verbatim():
+    """A fresh pack routinely reports full ABOVE design. That is real and
+    reported as-is (101%), not clamped to 100 -- same principle as the verbatim
+    platform profile."""
+    print("test_health_fresh_pack_over_100_reported_verbatim")
+    s = Supplies({"BAT0": BAT0.replace("POWER_SUPPLY_ENERGY_FULL=55500000",
+                                       "POWER_SUPPLY_ENERGY_FULL=56000000")})
+    try:
+        check("101% reported, not clamped", cs.read_box_battery().get("health_pct"), 101)
+    finally:
+        s.close()
+
+
+def test_health_absurd_ratio_rejected():
+    """A ratio beyond ~120% is a gauge reporting nonsense: degrade closed and
+    OMIT rather than show '126% healthy'. full 70000000 / design 55500000."""
+    print("test_health_absurd_ratio_rejected")
+    s = Supplies({"BAT0": BAT0.replace("POWER_SUPPLY_ENERGY_FULL=55500000",
+                                       "POWER_SUPPLY_ENERGY_FULL=70000000")})
+    try:
+        check("no health_pct for absurd ratio", "health_pct" in cs.read_box_battery(), False)
+    finally:
+        s.close()
+
+
+def test_cycle_count_garbage_omitted():
+    """A non-integer cycle count is dropped rather than cleaned."""
+    print("test_cycle_count_garbage_omitted")
+    s = Supplies({"BAT0": BAT0.replace("POWER_SUPPLY_CYCLE_COUNT=53",
+                                       "POWER_SUPPLY_CYCLE_COUNT=abc")})
+    try:
+        check("no cycle_count key for garbage", "cycle_count" in cs.read_box_battery(), False)
+    finally:
+        s.close()
+
+
+def test_capacity_level_non_normal_verbatim():
+    """capacity_level is the box's honest self-report, emitted verbatim -- a
+    'Low' bucket is passed straight through (the app decides how to show it)."""
+    print("test_capacity_level_non_normal_verbatim")
+    s = Supplies({"BAT0": BAT0.replace("POWER_SUPPLY_CAPACITY_LEVEL=Normal",
+                                       "POWER_SUPPLY_CAPACITY_LEVEL=Low")})
+    try:
+        check("capacity level Low verbatim", cs.read_box_battery().get("capacity_level"), "Low")
+    finally:
+        s.close()
+
+
+def test_mains_desktop_carries_no_health():
+    """CONTROL: a machine with no battery returns {} -- and therefore none of the
+    new health keys leak onto a desktop."""
+    print("test_mains_desktop_carries_no_health")
+    s = Supplies({"ACAD": ACAD_ONLINE})
+    try:
+        got = cs.read_box_battery()
+        check("empty on a desktop", got, {})
+        check("no health_pct", "health_pct" in got, False)
+        check("no cycle_count", "cycle_count" in got, False)
+    finally:
+        s.close()
+
+
 if __name__ == "__main__":
     for fn in (test_real_handheld,
                test_watts_from_power_now,
@@ -413,7 +535,16 @@ if __name__ == "__main__":
                test_garbage_capacity_rejected,
                test_desktop_with_paired_controller_is_not_on_battery,
                test_device_scope_alone_degrades_closed,
-               test_handheld_with_paired_controller_reads_its_own_pack):
+               test_handheld_with_paired_controller_reads_its_own_pack,
+               test_health_from_energy_gauge,
+               test_health_degraded_pack,
+               test_health_from_charge_gauge,
+               test_health_omitted_without_design,
+               test_health_fresh_pack_over_100_reported_verbatim,
+               test_health_absurd_ratio_rejected,
+               test_cycle_count_garbage_omitted,
+               test_capacity_level_non_normal_verbatim,
+               test_mains_desktop_carries_no_health):
         fn()
     if FAILURES:
         print("\n%d FAILED: %s" % (len(FAILURES), ", ".join(FAILURES)))

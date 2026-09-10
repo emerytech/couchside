@@ -192,6 +192,19 @@ function GpuBlock({
           <Bar pct={vramPct} color={pctColor(vramPct, t)} height={6} />
         </>
       )}
+      {/* Package power draw + core clock (agent >= 2.9.107). Each independently
+          optional — Intel/NVIDIA and older agents omit them, so the line simply
+          does not appear rather than showing a mislabelled zero. */}
+      {(gpu.power_w != null || gpu.clock_mhz != null) && (
+        <Text style={styles.dim}>
+          {[
+            gpu.power_w != null ? `${gpu.power_w.toFixed(1)} W` : null,
+            gpu.clock_mhz != null ? `${(gpu.clock_mhz / 1000).toFixed(2)} GHz` : null,
+          ]
+            .filter(Boolean)
+            .join('  ·  ')}
+        </Text>
+      )}
     </View>
   );
 }
