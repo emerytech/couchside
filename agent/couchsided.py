@@ -49,7 +49,7 @@ except ImportError:  # pragma: no cover
     fcntl = None
 
 APP_NAME = "couchside-agent"
-VERSION = "2.9.106"
+VERSION = "2.9.107"
 UID = os.getuid()
 XDG_RUNTIME_DIR = "/run/user/%d" % UID
 
@@ -3915,6 +3915,7 @@ def real_status():
     temp = read_cpu_temp_c()
     mem = read_mem()
     battery = read_box_battery()
+    cpu = read_cpu_freq()
     display = display_info()
     audio = audio_info()
     now = int(time.time())
@@ -3936,6 +3937,10 @@ def real_status():
         # new ones can treat "absent" as "this box has no battery" rather than
         # having to distinguish that from 0%.
         **({"battery": battery} if battery else {}),
+        # CPU frequency scaling -- governor, live peak clock, and (on amd-pstate-epp
+        # handhelds) the energy-performance preference. ADDITIVE and OMITTED ENTIRELY
+        # on a box with no cpufreq (a VM), so old apps ignore it (agent >= 2.9.107).
+        **({"cpu": cpu} if cpu else {}),
         # The panel the box is driving, and the default audio OUT/IN devices.
         # Same shape of contract as `battery`: ADDITIVE, and OMITTED ENTIRELY
         # when nothing could be read, so absence means "unavailable" and never
@@ -8857,8 +8862,16 @@ def mock_status():
         # harness -- a mains desktop would render nothing and prove nothing.
         # Mock is DISCHARGING by default; flip status/on_ac and swap
         # minutes for minutes_to_full to exercise the charging layout.
+        # health_pct/cycle_count/capacity_level are set to a slightly-worn pack so
+        # the health detail line renders (100%/0 cycles would read as "no wear").
         "battery": {"pct": 58, "status": "Discharging", "on_ac": False,
-                    "minutes": 251, "watts": 7.7, "profile": "balanced"},
+                    "minutes": 251, "watts": 7.7, "profile": "balanced",
+                    "health_pct": 94, "cycle_count": 112, "capacity_level": "Normal"},
+        # A handheld CPU under load: amd-pstate-epp reports governor "powersave"
+        # permanently, so EPP carries the real intent. Non-quiet values so the
+        # CLOCK tile renders in --mock.
+        "cpu": {"governor": "powersave", "cur_mhz": 2745,
+                "max_mhz": 4900, "epp": "balance_performance"},
         # Mock drives a 4K HDR VRR TV so every display row is renderable, and a
         # sink/source pair that are DIFFERENT devices with a long description --
         # see mock_display_info() / mock_audio_info() for why those specific
@@ -19818,6 +19831,70 @@ def _read_int(path):
         return None
 
 
+def _read_str(path):
+    """Stripped one-line string from a sysfs file, or None (never raises)."""
+    try:
+        with open(path) as f:
+            return f.read().strip() or None
+    except OSError:
+        return None
+
+
+# Root of the per-CPU sysfs tree; a module constant so tests point it at a fixture.
+_CPUFREQ_DIR = "/sys/devices/system/cpu"
+
+
+def read_cpu_freq():
+    """{"governor", "cur_mhz"[, "max_mhz"][, "epp"]} for CPU frequency scaling, or
+    {} when the machine exposes no cpufreq (a VM, or a kernel without the driver).
+
+    Read-only, best-effort, never raises. Every field is independently optional and
+    OMITTED when unreadable -- absence means "unavailable", never a fabricated zero.
+
+    cur_mhz is the HIGHEST scaling_cur_freq across cores -- what the busiest core is
+    doing right now, which a cpu0-only read would miss when the scheduler has parked
+    core 0. On amd-pstate-epp handhelds (Legion Go S, ROG Ally) scaling_governor is
+    permanently "powersave" and the real lever is energy_performance_preference, so
+    EPP is surfaced ALONGSIDE the governor, not instead of it. cpuinfo_cur_freq is
+    deliberately NOT read -- it is 0400 root-only on many kernels, whereas
+    scaling_cur_freq is world-readable.
+    """
+    base = os.path.join(_CPUFREQ_DIR, "cpu0", "cpufreq")
+    governor = _read_str(os.path.join(base, "scaling_governor"))
+    if governor is None:
+        return {}
+    out = {"governor": governor}
+
+    # Peak current clock across all online cores (kHz -> MHz). Reject non-positive
+    # readings rather than reporting a confident 0 MHz.
+    peak_khz = None
+    try:
+        names = os.listdir(_CPUFREQ_DIR)
+    except OSError:
+        names = []
+    for name in names:
+        if not re.fullmatch(r"cpu\d+", name):
+            continue
+        khz = _read_int(os.path.join(_CPUFREQ_DIR, name, "cpufreq",
+                                     "scaling_cur_freq"))
+        if khz and khz > 0 and (peak_khz is None or khz > peak_khz):
+            peak_khz = khz
+    if peak_khz:
+        out["cur_mhz"] = peak_khz // 1000
+
+    max_khz = _read_int(os.path.join(base, "scaling_max_freq"))
+    if max_khz and max_khz > 0:
+        out["max_mhz"] = max_khz // 1000
+
+    # Verbatim like the platform profile -- an EPP string we do not recognise is
+    # still the box's honest self-report.
+    epp = _read_str(os.path.join(base, "energy_performance_preference"))
+    if epp:
+        out["epp"] = epp
+
+    return out
+
+
 def gaming_available():
     """Boot-time caps hint: a box with Steam can have a gaming session worth
     showing. GET /api/gaming is the live authority (per-field probe-and-appear).
@@ -19853,7 +19930,7 @@ def _gpu_sensors_all():
     out = []
     for card in sorted(cards):
         dev = os.path.join(drm, card, "device")
-        hw_name, temp_path = None, None
+        hw_name, temp_path, hw_dir = None, None, None
         # hwmon index is not stable across boxes: match on the name file, never a
         # hardcoded hwmonN (as read_cpu_temp_c does).
         for nf in sorted(glob.glob(os.path.join(dev, "hwmon", "hwmon*", "name"))):
@@ -19864,7 +19941,8 @@ def _gpu_sensors_all():
                 continue
             if nm == "amdgpu":
                 hw_name = nm
-                cand = os.path.join(os.path.dirname(nf), "temp1_input")
+                hw_dir = os.path.dirname(nf)
+                cand = os.path.join(hw_dir, "temp1_input")
                 temp_path = cand if os.path.exists(cand) else None
                 break
         if hw_name is None:
@@ -19907,6 +19985,23 @@ def _gpu_sensors_all():
         busy = _read_int(os.path.join(dev, "gpu_busy_percent"))
         if busy is not None and 0 <= busy <= 100:
             gpu["busy_pct"] = busy
+
+        # Package power draw and core clock, from the amdgpu hwmon. power1_average
+        # is the smoothed draw; newer ASICs expose only power1_input. Microwatts ->
+        # watts; a non-positive reading is a gauge not measuring, so OMIT it (same
+        # rule as battery watts). freq1_input is the core (sclk) clock in Hz -> MHz.
+        # power1_cap (a LIMIT, not a draw) and pp_dpm_sclk (a multi-line,
+        # root-writable table) are deliberately NOT read. MEASURED on a Legion Go S,
+        # 2026-08-27: power1_average 5.07 W, freq1_input 800 MHz, no power1_cap.
+        if hw_dir:
+            uw = _read_int(os.path.join(hw_dir, "power1_average"))
+            if uw is None:
+                uw = _read_int(os.path.join(hw_dir, "power1_input"))
+            if uw is not None and uw > 0:
+                gpu["power_w"] = round(uw / 1e6, 1)
+            hz = _read_int(os.path.join(hw_dir, "freq1_input"))
+            if hz is not None and hz > 0:
+                gpu["clock_mhz"] = hz // 1_000_000
         out.append(gpu)
     return out
 
@@ -20193,6 +20288,49 @@ def read_box_battery():
     if profile:
         out["profile"] = profile
 
+    # Battery HEALTH: full-charge capacity as a percentage of the pack's design
+    # capacity, plus wear indicators. All THREE are additive and OMITTED when the
+    # gauge does not expose them -- an old agent or a desktop simply lacks them,
+    # and a missing wear reading must never read as "0% healthy". Two gauge
+    # families exist and both are handled: ENERGY_FULL[_DESIGN] is microwatt-hours,
+    # CHARGE_FULL[_DESIGN] is microamp-hours; either ratio is a valid health %.
+    #
+    # MEASURED on a Legion Go S, 2026-07-22 (verbatim in tests/test_box_battery.py):
+    #   ENERGY_FULL 55500000 == ENERGY_FULL_DESIGN 55500000 -> 100%, CYCLE_COUNT 53.
+    for full_k, design_k in (
+            ("POWER_SUPPLY_ENERGY_FULL", "POWER_SUPPLY_ENERGY_FULL_DESIGN"),
+            ("POWER_SUPPLY_CHARGE_FULL", "POWER_SUPPLY_CHARGE_FULL_DESIGN")):
+        try:
+            full, design = int(batt[full_k]), int(batt[design_k])
+        except (KeyError, ValueError):
+            continue
+        if design <= 0:
+            continue
+        health = round(full * 100 / design)
+        # A fresh pack routinely reports full slightly ABOVE design (>100%): that
+        # is real and reported as-is, NOT clamped -- same principle as the verbatim
+        # platform profile above. But a ratio beyond ~120% is a gauge reporting
+        # nonsense; degrade closed and omit rather than show "137% healthy".
+        if 0 < health <= 120:
+            out["health_pct"] = health
+        break
+
+    # Charge cycles. A count of 0 is a legitimately new pack, so the gate is
+    # ">= 0", not truthiness; a non-integer node is dropped rather than cleaned.
+    try:
+        cycles = int(batt["POWER_SUPPLY_CYCLE_COUNT"])
+        if cycles >= 0:
+            out["cycle_count"] = cycles
+    except (KeyError, ValueError):
+        pass
+
+    # The kernel's coarse capacity bucket (Full / Normal / Low / Critical), when
+    # the driver provides it. Reported VERBATIM (read_power_profile precedent) --
+    # a value we do not recognise is still the box's honest self-report.
+    level = batt.get("POWER_SUPPLY_CAPACITY_LEVEL")
+    if level:
+        out["capacity_level"] = level
+
     # Time to FULL while charging. Separate field, NOT folded into `minutes`:
     # that one means "runtime left on battery" to every app already shipped, and
     # reusing it here would make a 2.9.40-era app cheerfully report "42m left"
@@ -20478,7 +20616,9 @@ def mock_gaming():
                 "vram_used_mb": 3300, "vram_total_mb": 8192,
                 # Mock a DISCRETE card: gtt smaller than vram, so the app takes
                 # the non-shared branch. A handheld APU is the other shape.
-                "gtt_used_mb": 210, "gtt_total_mb": 4096, "busy_pct": 63},
+                # power_w/clock_mhz non-quiet so the GPU power/clock line renders.
+                "gtt_used_mb": 210, "gtt_total_mb": 4096, "busy_pct": 63,
+                "power_w": 42.5, "clock_mhz": 2400},
         # TWO cards, the dual-GPU laptop shape, so --mock exercises the
         # multi-GPU render path (the single-card boxes here never would).
         # `gpu` above is the discrete one, matching what the payload builder
@@ -20486,10 +20626,12 @@ def mock_gaming():
         "gpus": [
             {"name": "amdgpu", "card": "card0", "temp_c": 47.0,
              "vram_used_mb": 19, "vram_total_mb": 512,
-             "gtt_used_mb": 15, "gtt_total_mb": 19659, "busy_pct": 3},
+             "gtt_used_mb": 15, "gtt_total_mb": 19659, "busy_pct": 3,
+             "power_w": 4.5, "clock_mhz": 800},
             {"name": "amdgpu", "card": "card1", "temp_c": 61.0,
              "vram_used_mb": 3300, "vram_total_mb": 8192,
-             "gtt_used_mb": 210, "gtt_total_mb": 4096, "busy_pct": 63},
+             "gtt_used_mb": 210, "gtt_total_mb": 4096, "busy_pct": 63,
+             "power_w": 42.5, "clock_mhz": 2400},
         ],
         "game": {"appid": 1091500, "label": "Cyberpunk 2077"},
         "output": {"name": "DP-1", "internal": False},

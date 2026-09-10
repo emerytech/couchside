@@ -73,6 +73,9 @@ def test_gpu_sensors():
         dev = os.path.join(d, "card1", "device")
         _write(os.path.join(dev, "hwmon", "hwmon5", "name"), "amdgpu\n")
         _write(os.path.join(dev, "hwmon", "hwmon5", "temp1_input"), "61000\n")
+        # Package power (microwatts) + core clock (Hz), from the same hwmon.
+        _write(os.path.join(dev, "hwmon", "hwmon5", "power1_average"), "5070000\n")
+        _write(os.path.join(dev, "hwmon", "hwmon5", "freq1_input"), "800000000\n")
         _write(os.path.join(dev, "mem_info_vram_total"), str(8 * 1024**3) + "\n")
         _write(os.path.join(dev, "mem_info_vram_used"), str(3300 * 1024**2) + "\n")
         # ...and a CONNECTOR dir that also matches a bare card* glob and also has
@@ -86,12 +89,40 @@ def test_gpu_sensors():
         check(gpu.get("temp_c") == 61.0, "temp from the matched hwmon (not hwmonN)")
         check(gpu.get("vram_total_mb") == 8192, "vram_total in MB from card1, NOT the connector")
         check(gpu.get("vram_used_mb") == 3300, "vram_used in MB")
+        check(gpu.get("power_w") == 5.1, "power_w = power1_average uW/1e6 (5.07 -> 5.1)")
+        check(gpu.get("clock_mhz") == 800, "clock_mhz = freq1_input Hz//1e6")
 
         # Intel i915: a device hwmon that is not amdgpu -> no GPU block at all.
         d2 = tempfile.mkdtemp()
         cs._DRM_DIR = d2
         _write(os.path.join(d2, "card0", "device", "hwmon", "hwmon1", "name"), "i915\n")
         check(cs._gpu_sensors() == {}, "Intel i915 -> {} (no GPU block, not CPU temp)")
+    finally:
+        cs._DRM_DIR = orig
+
+
+def test_gpu_power_clock_fallback_and_omission():
+    print("GPU power/clock: power1_input fallback + omission")
+    # A card that exposes ONLY power1_input (newer ASICs) still reports power_w.
+    d = tempfile.mkdtemp()
+    orig = cs._DRM_DIR
+    cs._DRM_DIR = d
+    try:
+        dev = os.path.join(d, "card1", "device")
+        _write(os.path.join(dev, "hwmon", "hwmon0", "name"), "amdgpu\n")
+        _write(os.path.join(dev, "hwmon", "hwmon0", "power1_input"), "12340000\n")
+        gpu = cs._gpu_sensors()
+        check(gpu.get("power_w") == 12.3, "power_w falls back to power1_input")
+        check("clock_mhz" not in gpu, "no clock_mhz when freq1_input absent")
+
+        # A card with NEITHER: no power/clock keys, never a mislabelled zero.
+        d2 = tempfile.mkdtemp()
+        cs._DRM_DIR = d2
+        _write(os.path.join(d2, "card1", "device", "hwmon", "hwmon0", "name"), "amdgpu\n")
+        _write(os.path.join(d2, "card1", "device", "hwmon", "hwmon0", "power1_average"), "0\n")
+        gpu2 = cs._gpu_sensors()
+        check("power_w" not in gpu2, "power1_average 0 -> no power_w (gauge not measuring)")
+        check("clock_mhz" not in gpu2, "no clock_mhz when the card exposes none")
     finally:
         cs._DRM_DIR = orig
 
@@ -379,6 +410,7 @@ def test_payload_omits_absent_fields():
 if __name__ == "__main__":
     test_appid_from_cmdline()
     test_gpu_sensors()
+    test_gpu_power_clock_fallback_and_omission()
     test_payload_reports_every_gpu()
     test_vram_sanity()
     test_controllers_and_battery()

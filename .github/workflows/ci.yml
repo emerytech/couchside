@@ -866,6 +866,21 @@ jobs:
       - name: Unit tests (memory pressure parsing)
         run: python3 tests/test_mem_pressure.py
 
+      # CPU frequency scaling on GET /api/status. read_cpu_freq degrades to {} on
+      # a box with no cpufreq (so `cur_mhz` is never a fabricated 0), reports the
+      # PEAK core clock, and surfaces EPP because amd-pstate-epp handhelds sit on
+      # governor "powersave" permanently. The status splice must OMIT the block
+      # entirely when absent, like `battery` — never a null.
+      - name: Unit tests (console sensors)
+        run: python3 tests/test_console_sensors.py
+
+      # The /api/actions route dispatch. A non-allowlisted id must be 404'd AND
+      # dispatch nothing (asserted on a spy, not inferred from the status code) —
+      # this route hands ids to subprocess, so a hole here runs arbitrary
+      # allowlisted-adjacent commands. Also pins the auth gate on GET and POST.
+      - name: Unit tests (actions endpoint)
+        run: python3 tests/test_actions_endpoint.py
+
       # Steam cover art. The resolver looked only for library_600x900.jpg and
       # left 30 of 80 installed games showing a blank text card while the real
       # capsule sat one directory deeper under a content-hash subdirectory.

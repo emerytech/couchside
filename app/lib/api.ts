@@ -919,6 +919,29 @@ export type Status = {
         reported "custom" because Steam's TDP control set one. Render whatever
         arrives; do not switch on a fixed set. */
     profile?: string;
+    /** Full-charge capacity as a percent of DESIGN capacity (agent >= 2.9.107).
+        A pack's wear: 100 is factory-fresh, lower is worn. Absent on older agents
+        and on gauges that do not expose design capacity — never assume 100. May
+        exceed 100 on a fresh pack (reported as-is, not clamped). */
+    health_pct?: number;
+    /** Charge cycles the pack has been through (agent >= 2.9.107). 0 is a new
+        pack, not "unknown"; absent means the gauge does not report it. */
+    cycle_count?: number;
+    /** Kernel capacity bucket — Full/Normal/Low/Critical (agent >= 2.9.107),
+        verbatim. Absent when the driver does not provide it. */
+    capacity_level?: string;
+  };
+  /** CPU frequency scaling (agent >= 2.9.107). ABSENT on a box with no cpufreq
+      (a VM) and on older agents. On amd-pstate-epp handhelds `governor` is
+      permanently "powersave" and `epp` carries the real intent, so show both.
+      Every inner field is independently optional. */
+  cpu?: {
+    governor: string;
+    /** Highest live core clock in MHz — what the busiest core is doing now. */
+    cur_mhz?: number;
+    max_mhz?: number;
+    /** energy_performance_preference, verbatim (e.g. "balance_performance"). */
+    epp?: string;
   };
 };
 
@@ -1106,6 +1129,12 @@ export type GpuInfo = {
   /** How hard the GPU is actually working, 0-100 (agent >= 2.9.43). A memory
    *  bar says what is allocated, not whether anything is happening. */
   busy_pct?: number;
+  /** Package power draw in watts (agent >= 2.9.107): power1_average, or
+   *  power1_input on newer ASICs. Absent when the gauge reports nothing. */
+  power_w?: number;
+  /** Core (sclk) clock in MHz (agent >= 2.9.107), from freq1_input. Absent when
+   *  the card does not expose it. */
+  clock_mhz?: number;
 };
 
 export type Gaming = {

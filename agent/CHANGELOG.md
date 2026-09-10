@@ -18,6 +18,17 @@ the same thing regardless of what actually changed.
 Write for the person holding the phone, not for the commit log. They are
 deciding whether to press "Update now" on a machine across the room.
 
+## 2.9.107
+
+**More at a glance on the Console.** The vitals strip now shows your CPU's live
+clock speed, and — on a handheld — how healthy the battery is: its full-charge
+capacity compared to when it was new, plus how many charge cycles it has been
+through, so a tired battery is easy to tell from a fresh one. When a game is
+running, each GPU also reports how many watts it is drawing and how fast its
+cores are clocked. Every one of these shows up only on boxes that actually
+measure it, so a machine that can't report a number simply doesn't display it —
+nothing to turn on.
+
 ## 2.9.106
 
 **Your light bar stops fighting Steam.** On a Steam Deck or Steam Machine, Steam

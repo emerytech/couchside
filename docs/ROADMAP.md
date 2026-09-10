@@ -1004,9 +1004,14 @@ network and is useful alone.
 - **Verify on hardware** (a real Remote Play session from the PC to the box); the harness
   can't produce a stream.
 
-> 📋 **OPEN — still not built (reconciled 2026-08-27).**
-> Not built — none of battery-health/cycle_count, CPU governor+freq, GPU power draw, GPU clock, or fan RPM are read by the agent.
->
+> ✅ **DONE — shipped in agent 2.9.107 (PR #523, 2026-09-10). Move to Completed.**
+> Built: battery `health_pct`/`cycle_count`/`capacity_level` on read_box_battery; new
+> `read_cpu_freq()` → `cpu` block (governor/cur_mhz peak-core/max_mhz/epp) on /api/status;
+> GPU `power_w`/`clock_mhz` on _gpu_sensors_all (rides /api/gaming). App: 5th VITALS CLOCK
+> tile, battery detail line "health N% · N cycles", GamingCard "W · GHz". All additive/
+> omit-when-absent, no cap. Fan RPM deliberately NOT built (no box exposes fan1_input).
+> NOT hardware-verified: cpufreq + amdgpu power/clock sysfs reads (no box on LAN at build
+> time) — test fixtures synthetic, values anchored to the Legion Go S measurement below.
 ### More Console sensors (battery health, CPU governor, GPU power)
 - **priority:** P3 · **risk:** low · **affects:** agent + app · **depends_on:** none
 - All read-only sysfs, no new capability, no client input. **PROBED on a Legion Go S,

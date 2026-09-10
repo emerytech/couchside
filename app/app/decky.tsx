@@ -60,6 +60,8 @@ import {
 } from '@/lib/deckyPlugins';
 import { hapticLight, hapticSuccess, hapticWarning } from '@/lib/haptics';
 import { useSettings } from '@/lib/SettingsContext';
+import { useArmedAction } from '@/hooks/useArmedAction';
+import { ArmedActionBar } from '@/components/ArmedActionBar';
 import { mono, useTheme, useThemedStyles, type Palette } from '@/lib/theme';
 
 type Tab = 'installed' | 'store';
@@ -359,17 +361,24 @@ export default function DeckyPage() {
     }, title);
   }, [settings, refreshLoader]);
 
+  // Reboot: confirm once, then a cancellable countdown (Cancel / Do it now) —
+  // the same window the Actions tab gives a session-ending action, instead of a
+  // one-shot Alert that reboots the instant you tap through.
+  const { armed, arm, cancel, fireNow } = useArmedAction(key);
   const [rebooting, setRebooting] = useState(false);
+  const runReboot = useCallback(() => {
+    void (async () => {
+      setRebooting(true);
+      hapticLight();
+      try { await api.runAction(settings, 'reboot'); } catch { /* connection drops on reboot — expected */ }
+      finally { setRebooting(false); }
+    })();
+  }, [settings]);
   const reboot = useCallback(() => {
     deckyConfirm('Reboot the box?', 'Steam restarts with it and the Decky menu appears. Any unsaved work is lost.', 'Reboot', () => {
-      void (async () => {
-        setRebooting(true);
-        hapticLight();
-        try { await api.runAction(settings, 'reboot'); } catch { /* connection drops on reboot — expected */ }
-        finally { setRebooting(false); }
-      })();
+      arm('Reboot the box', runReboot);
     }, true);
-  }, [settings]);
+  }, [arm, runReboot]);
 
   // ---- plugins / store / jobs (Phase B; each 404s → null on a Phase A agent) ----
   const installed = !!l?.installed;
@@ -873,6 +882,17 @@ export default function DeckyPage() {
         </Pressable>
         <Text style={styles.title}>Decky</Text>
         <View style={{ width: 26 }} />
+      </View>
+
+      {/* Pinned above the list so an armed reboot's countdown is visible no
+          matter how far the plugin list is scrolled. */}
+      <View style={{ paddingHorizontal: 14 }}>
+        <ArmedActionBar
+          armed={armed}
+          boxName={settings.host}
+          onCancel={cancel}
+          onFireNow={fireNow}
+        />
       </View>
 
       {!configured ? (

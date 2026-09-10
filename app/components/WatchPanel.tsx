@@ -10,7 +10,8 @@ import {
 
 import { usePoll } from '@/hooks/usePoll';
 import { api, hostKey, PlayerOp, PlayerPlayback, PlayerState } from '@/lib/api';
-import { hapticError, hapticLight, hapticSuccess } from '@/lib/haptics';
+import { hapticError, hapticHeavy, hapticLight, hapticSuccess } from '@/lib/haptics';
+import { MEDIA_HOLD_MS } from '@/lib/mediaSeek';
 import { useSettings } from '@/lib/SettingsContext';
 import { clearRecents, noteRecent, useWatchRecents } from '@/lib/watchRecents';
 import { useTheme, useThemedStyles, type Palette } from '@/lib/theme';
@@ -311,8 +312,16 @@ export function WatchPanel() {
   // Offsets come from the BOX (seek_secs), so the app can never offer a value
   // the box would refuse. Smallest magnitude each way is what the buttons use.
   const offsets = state?.seek_secs ?? [];
-  const back = offsets.filter((n) => n < 0).sort((a, b) => b - a)[0] ?? null;
-  const fwd = offsets.filter((n) => n > 0).sort((a, b) => a - b)[0] ?? null;
+  // Ordered by magnitude each way, e.g. [-10,-30,-90] / [10,30,90]. The button
+  // TAP uses the smallest jump; a HOLD uses the next one up (the box's own next
+  // allowlisted offset, ±30 on a typical box), so both still come only from
+  // seek_secs — the app never invents an offset the box would refuse.
+  const backSteps = offsets.filter((n) => n < 0).sort((a, b) => b - a);
+  const fwdSteps = offsets.filter((n) => n > 0).sort((a, b) => a - b);
+  const back = backSteps[0] ?? null;
+  const fwd = fwdSteps[0] ?? null;
+  const backHold = backSteps[1] ?? null;
+  const fwdHold = fwdSteps[1] ?? null;
 
   const transport = useCallback(
     async (op: PlayerOp, opts: { secs?: number; value?: string } = {}) => {
@@ -503,8 +512,22 @@ export function WatchPanel() {
                 {back != null && (
                   <Pressable
                     onPress={() => transport('seek', { secs: back })}
+                    onLongPress={
+                      backHold != null
+                        ? () => {
+                            hapticHeavy();
+                            transport('seek', { secs: backHold });
+                          }
+                        : undefined
+                    }
+                    delayLongPress={MEDIA_HOLD_MS}
                     disabled={busy !== null}
                     testID="watch-seek-back"
+                    accessibilityHint={
+                      backHold != null
+                        ? `Hold to jump back ${Math.abs(backHold)} seconds`
+                        : undefined
+                    }
                     style={({ pressed }) => [styles.tBtn, pressed && styles.pressed]}
                   >
                     <Text style={styles.tBtnText}>{back}s</Text>
@@ -527,8 +550,20 @@ export function WatchPanel() {
                 {fwd != null && (
                   <Pressable
                     onPress={() => transport('seek', { secs: fwd })}
+                    onLongPress={
+                      fwdHold != null
+                        ? () => {
+                            hapticHeavy();
+                            transport('seek', { secs: fwdHold });
+                          }
+                        : undefined
+                    }
+                    delayLongPress={MEDIA_HOLD_MS}
                     disabled={busy !== null}
                     testID="watch-seek-fwd"
+                    accessibilityHint={
+                      fwdHold != null ? `Hold to jump forward ${fwdHold} seconds` : undefined
+                    }
                     style={({ pressed }) => [styles.tBtn, pressed && styles.pressed]}
                   >
                     <Text style={styles.tBtnText}>+{fwd}s</Text>

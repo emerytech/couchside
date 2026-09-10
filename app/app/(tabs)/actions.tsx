@@ -12,6 +12,7 @@ import {
 import { useFocusEffect } from 'expo-router';
 import Ionicons from '@expo/vector-icons/Ionicons';
 
+import { ArmedActionBar } from '@/components/ArmedActionBar';
 import { BootSessionCard } from '@/components/BootSessionCard';
 import { DeckyActionCard } from '@/components/DeckyActionCard';
 import { EditableSection } from '@/components/EditableSection';
@@ -20,6 +21,7 @@ import { Gated } from '@/components/Gated';
 import { TabScreen } from '@/components/TabScreen';
 import { TourAnchor } from '@/components/TourAnchor';
 import { registerScroller } from '@/hooks/useTourAnchor';
+import { useArmedAction } from '@/hooks/useArmedAction';
 import { useLockOrientation } from '@/hooks/useLockOrientation';
 import { usePoll } from '@/hooks/usePoll';
 import { ActionInfo, ActionResult, api, Danger, hostKey } from '@/lib/api';
@@ -73,14 +75,6 @@ const BADGE_TEXT: Record<Danger, string> = {
  *  absent (height ~0) so it shows no orphan reorder/hide controls. */
 const SECTION_ORDER = ['decky', 'boot', 'routine', 'medium', 'high'] as const;
 
-/** Seconds a session-ending action waits, cancellable, before it actually fires.
- *  This REPLACES the old blind second "Are you sure?" dialog: one confirm, then a
- *  visible countdown you can cancel — which also catches the fleet-era mistake the
- *  dialogs cannot, confirming with the WRONG BOX selected (the box is named in the
- *  countdown). App-side only: the request is simply not sent until the window
- *  elapses, so leaving the screen or switching boxes cancels it for free. */
-const COUNTDOWN_SECS = 5;
-
 /** Confirm helper that also works on web (Alert buttons are no-ops on web). */
 function confirm(title: string, message: string, onConfirm: () => void) {
   if (Platform.OS === 'web') {
@@ -117,10 +111,6 @@ function ActionsScreen() {
   const styles = useThemedStyles(makeStyles);
   const { settings, ready } = useSettings();
   const [run, setRun] = useState<RunRecord | null>(null);
-  // A session-ending action that has been confirmed and is counting down. Null
-  // when nothing is pending. Cleared (never fired) by Cancel, a box switch, or
-  // leaving the screen.
-  const [pending, setPending] = useState<{ action: ActionInfo; secs: number } | null>(null);
 
   const DANGER_COLOR = useMemo<Record<Danger, string>>(
     () => ({ low: t.slate, medium: t.amber, high: t.red }),
@@ -173,54 +163,31 @@ function ActionsScreen() {
     [settings],
   );
 
+  // A session-ending action is confirmed once, then ARMED: a visible countdown
+  // (ArmedActionBar) the user can Cancel or skip with "Do it now". The hook owns
+  // the timer, the box-switch abort, and the background abort; see useArmedAction.
+  const { armed, arm, cancel, fireNow } = useArmedAction(hostKey(settings));
+
   const onTap = useCallback(
     (action: ActionInfo) => {
       hapticLight();
       confirm(action.label, `${action.description}\n\nRun this action?`, () => {
         if (action.danger === 'high') {
           // One confirm, then a cancellable countdown — not a second blind dialog.
-          setPending({ action, secs: COUNTDOWN_SECS });
+          arm(action.label, () => execute(action));
         } else {
           execute(action);
         }
       });
     },
-    [execute],
+    [execute, arm],
   );
 
-  // Tick the pending countdown once a second; fire the action when it reaches
-  // zero. `execute` is read through a ref so that a `settings` change (e.g. a
-  // background caps write, which re-memoizes execute) cannot re-arm the timer
-  // mid-count — that would reset the current second and, if it churned faster
-  // than 1/s, stall the countdown so it never fires. The effect depends on
-  // `pending` alone; Cancel / box-switch / tab-blur all clear it (below).
-  const executeRef = useRef(execute);
-  executeRef.current = execute;
-  useEffect(() => {
-    if (!pending) return;
-    const id = setTimeout(() => {
-      if (pending.secs <= 1) {
-        const a = pending.action;
-        setPending(null);
-        executeRef.current(a);
-      } else {
-        setPending({ action: pending.action, secs: pending.secs - 1 });
-      }
-    }, 1000);
-    return () => clearTimeout(id);
-  }, [pending]);
-
-  // Switching boxes must abort a pending countdown — otherwise it would fire on
-  // whatever box is now selected, the exact wrong-box mistake this guards against.
-  const hk = hostKey(settings);
-  useEffect(() => { setPending(null); }, [hk]);
-
-  // Leaving the Actions tab also aborts it. Tab screens are FROZEN, not
-  // unmounted, so a plain effect's cleanup never runs on blur — the setTimeout
-  // would keep counting under react-freeze and fire on a tab the user already
-  // left, with no visible countdown to cancel. useFocusEffect's cleanup runs on
-  // blur: walk away and nothing destructive happens.
-  useFocusEffect(useCallback(() => () => setPending(null), []));
+  // Leaving the Actions tab also aborts a pending countdown. Tab screens are
+  // FROZEN, not unmounted, so a plain effect's cleanup never runs on blur — the
+  // hook's unmount/AppState guards would not catch a tab-switch. useFocusEffect's
+  // cleanup does: walk away and nothing destructive fires.
+  useFocusEffect(useCallback(() => () => cancel(), [cancel]));
 
   // "suspend" is handled by the Console tab's power control, which pairs it
   // with the Wake-on-LAN wake button and the wired-only guard, so it is left
@@ -410,27 +377,13 @@ function ActionsScreen() {
         </View>
       )}
 
-      {/* Countdown before a session-ending action fires */}
-      {pending && (
-        <View style={styles.countdownPanel}>
-          <View style={styles.countdownText}>
-            <Text style={styles.countdownTitle} numberOfLines={1}>
-              {pending.action.label} in {pending.secs}s
-            </Text>
-            <Text style={styles.countdownSub} numberOfLines={1}>
-              on {settings.host}
-            </Text>
-          </View>
-          <Pressable
-            onPress={() => { hapticLight(); setPending(null); }}
-            hitSlop={8}
-            accessibilityRole="button"
-            accessibilityLabel={`Cancel ${pending.action.label}`}
-            style={({ pressed }) => [styles.countdownCancel, pressed && styles.pressed]}>
-            <Text style={styles.countdownCancelText}>CANCEL</Text>
-          </Pressable>
-        </View>
-      )}
+      {/* Countdown before a session-ending action fires: Cancel or Do it now. */}
+      <ArmedActionBar
+        armed={armed}
+        boxName={settings.host}
+        onCancel={cancel}
+        onFireNow={fireNow}
+      />
 
       {/* Result panel */}
       {run && (
@@ -559,25 +512,4 @@ const makeStyles = (t: Palette) => StyleSheet.create({
   resultErr: { color: t.red, fontSize: 13, fontFamily: mono },
   resultScroll: { maxHeight: 150 },
   resultOut: { color: t.textDim, fontSize: 12, fontFamily: mono, lineHeight: 17 },
-  countdownPanel: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 12,
-    backgroundColor: t.redDeep,
-    borderColor: t.red,
-    borderWidth: 1,
-    borderRadius: 12,
-    padding: 12,
-    marginBottom: 8,
-  },
-  countdownText: { flex: 1 },
-  countdownTitle: { color: t.onRedDeep, fontSize: 15, fontWeight: '800' },
-  countdownSub: { color: t.onRedDeep, opacity: 0.8, fontSize: 12, marginTop: 2, fontFamily: mono },
-  countdownCancel: {
-    backgroundColor: t.red,
-    paddingVertical: 10,
-    paddingHorizontal: 22,
-    borderRadius: 8,
-  },
-  countdownCancelText: { color: t.onRed, fontWeight: '800', fontSize: 13, letterSpacing: 1 },
 });
