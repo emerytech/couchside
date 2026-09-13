@@ -30,6 +30,10 @@ import { mono, useTheme, useThemedStyles } from '@/lib/theme';
 import type { Palette } from '@/lib/theme';
 
 const POLL_MS = 30 * 60 * 1000;
+/** How long a press waits for a fresh flatpak status before using the cached
+ *  count. Long enough for a normal LAN round-trip, short enough that a slow
+ *  `remote-ls` on the box never makes the press look dead. */
+const FRESH_STATUS_DEADLINE_MS = 1500;
 type Step = 'idle' | 'running' | 'done' | 'staged' | 'skipped';
 
 function Row({
@@ -207,9 +211,15 @@ export function SystemUpdatesCard() {
       // Decide on FRESH box state, not the 30-minute cache: updates that
       // appeared (or a grant added) while this tab sat open were invisible,
       // and "nothing pending" from a stale count painted a green checkmark on
-      // apps that were never updated. Fall back to the cache if the box is
-      // momentarily unreachable; refresh the polls so the UI catches up too.
-      const freshFp = await api.flatpakStatus(settings).catch(() => null);
+      // apps that were never updated. But a status GET costs the box a
+      // `flatpak remote-ls` (30s timeout on a slow network), and a press that
+      // sits there before anything starts reads as a hang — so RACE the fresh
+      // read against a short deadline and fall back to the cached count; the
+      // polls are refreshed regardless so the UI catches up.
+      const freshFp = await Promise.race([
+        api.flatpakStatus(settings).catch(() => null),
+        new Promise<null>((r) => setTimeout(() => r(null), FRESH_STATUS_DEADLINE_MS)),
+      ]);
       const pending = freshFp?.count ?? fp.data?.count ?? 0;
       fp.refresh();
       os.refresh();

@@ -1076,8 +1076,10 @@ network and is useful alone.
   the string `0.0 GB` renders nowhere. Screenshot taken. NOT verified: a live box with a
   real tiny patch (none queued today) — the mock shapes mirror the tester's screenshot.
 
-> 🟡 **PARTIAL (reconciled 2026-08-27, verified on `main`).**
-> Filter shipped (#224); the two remaining pieces — collapsible sections and the PAD LAYOUT card split — are not built.
+> ✅ **DONE (2026-09-13, #525).** Filter shipped in #224; collapsible sections
+> (`PrefSection`, fold set persisted as `prefsCollapsed`, a live query overrides every fold)
+> and the PAD LAYOUT → PAD LAYOUT + PAD BEHAVIOR split landed in #525. Harness-pressed both
+> directions (fold/expand, query/clear, reload persistence). Ships in the next app cut.
 >
 ### Make Preferences findable (filter + collapse + re-split PAD LAYOUT)
 - **priority:** P2 · **risk:** low · **affects:** app only · **depends_on:** none
