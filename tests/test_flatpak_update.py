@@ -47,6 +47,10 @@ class SpyPopen:
 
     def __enter__(self):
         outer = self
+        # flatpak_update refuses a second launch while its last child is alive
+        # (agent >= 2.9.108) and the handle is MODULE state, so a stub child
+        # left by the previous test would make this one a no-op. Start clean.
+        cs._FLATPAK_PROC = None
 
         class P:
             def __init__(self, argv, env=None, **kw):
@@ -56,11 +60,17 @@ class SpyPopen:
             def poll(self):
                 return None      # "still running" — the success path
 
+            def wait(self, timeout=None):
+                # flatpak_update now waits (bounded) instead of sleep+poll; a
+                # live child returns None here just as poll() does.
+                return self.poll()
+
         cs.subprocess.Popen = P
         return self
 
     def __exit__(self, *a):
         cs.subprocess.Popen = self._real
+        cs._FLATPAK_PROC = None
 
 
 def test_takes_no_argument():
@@ -108,6 +118,43 @@ def test_unelevated_runs_exactly_the_user_update():
         check("reports elevated=False", r.get("elevated"), False)
     finally:
         cs.flatpak_can_elevate = old
+
+
+def test_second_launch_is_refused_while_one_runs():
+    """A re-POST while an update is live (a second phone, an app restart
+    mid-drain, a double tap) must NOT spawn a second updater: that truncated
+    the live transcript and re-pointed the running-handle at the wrong child.
+    Both directions: a live child blocks; a finished one does not."""
+    print("test_second_launch_is_refused_while_one_runs")
+
+    class Live:
+        def poll(self):
+            return None      # still running
+
+    class Done:
+        def poll(self):
+            return 0         # exited
+
+    old = cs.flatpak_can_elevate
+    cs.flatpak_can_elevate = lambda: False
+    try:
+        with SpyPopen() as spy:
+            cs._FLATPAK_PROC = Live()
+            r = cs.flatpak_update()
+            check("live child -> not started", r.get("started"), False)
+            check("live child -> says it is running", r.get("running"), True)
+            check("live child -> error names the reason",
+                  "already running" in (r.get("error") or ""), True)
+            check("live child -> NOTHING was spawned", spy.argv, None)
+        with SpyPopen() as spy:
+            cs._FLATPAK_PROC = Done()   # CONTROL: a finished child does not block
+            r = cs.flatpak_update()
+            check("finished child -> a new update starts", r.get("started"), True)
+            check("finished child -> the frozen argv ran",
+                  spy.argv, ["flatpak", "update", "--user", "-y", "--noninteractive"])
+    finally:
+        cs.flatpak_can_elevate = old
+        cs._FLATPAK_PROC = None
 
 
 def test_elevation_probe_degrades_closed():
@@ -178,6 +225,7 @@ if __name__ == "__main__":
     for fn in (test_takes_no_argument,
                test_elevated_runs_exactly_the_wrapper,
                test_unelevated_runs_exactly_the_user_update,
+               test_second_launch_is_refused_while_one_runs,
                test_elevation_probe_degrades_closed,
                test_installer_wrapper_takes_no_arguments,
                test_log_reader_is_constant_path):

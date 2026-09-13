@@ -145,6 +145,10 @@ def test_invalid_field_still_loads_tls():
     # CONTROL: the invalid field itself was still REJECTED -- the config fell
     # back to defaults for everything except the identity it must keep.
     check(cs.CONFIG_PORT != "not-a-port", "the invalid port was not applied")
+    # And the box can SAY so: CONFIG_ERROR carries the parser's reason, which
+    # /api/status surfaces as `config_error` and /api/ping as `config_ok:false`.
+    check(isinstance(cs.CONFIG_ERROR, str) and "port" in cs.CONFIG_ERROR,
+          "CONFIG_ERROR names the rejected field (%r)" % (cs.CONFIG_ERROR,))
 
 
 def test_valid_config_loads_tls_the_same_way():
@@ -156,6 +160,7 @@ def test_valid_config_loads_tls_the_same_way():
     t = cs.CONFIG_TLS if isinstance(cs.CONFIG_TLS, dict) else {}
     check(t.get("key") == TLS_BLOCK["key"], "key loaded on a valid config")
     check(cs.CONFIG_PORT == 8787, "and the rest of the config applied normally")
+    check(cs.CONFIG_ERROR is None, "a clean load clears CONFIG_ERROR (control)")
 
 
 def test_missing_tls_block_defaults_on_without_a_key():

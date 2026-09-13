@@ -234,6 +234,12 @@ ACTIONS = dict(DEFAULT_ACTIONS)
 ACTION_ORDER = list(DEFAULT_ACTION_ORDER)
 CONFIG_PORT = None  # optional "port" from config.json
 CONFIG_TLS = None  # optional {"enabled","port","cert","key","sans","fp","spki"} TLS block
+# Why the last load_config fell back to built-in defaults (a str), or None when
+# the config loaded cleanly. Surfaced so the PHONE can say "this box's settings
+# file is broken" instead of a generic "unreachable": a syntax-broken
+# config.json leaves HTTPS dark (there is no tls block to keep), and until this
+# existed the only trace was one stderr line on the box.
+CONFIG_ERROR = None
 TLS_ADVERT = None  # public TLS advert {"port","fp","spki"} or None (dark). Set by main()
                    # after _tls_start; read by the UDP discovery reply + build_pair_url so
                    # a future app can DISCOVER the HTTPS listener + pin fingerprint. Never
@@ -678,7 +684,7 @@ def load_config(path):
     global LAUNCHERS, CONFIG_PATH, CONFIG_PANEL, CONFIG_WEBOS, CONFIG_SAMSUNG
     global CONFIG_ROKU, CONFIG_ANDROIDTV, CONFIG_VIDAA, ALLOW_APP_UPDATE
     global CONFIG_LGCOM, CONFIG_TV_ACTIVE, CONFIG_TLS
-    global ALLOW_APP_LAUNCHERS, CONFIG_GUIDE
+    global ALLOW_APP_LAUNCHERS, CONFIG_GUIDE, CONFIG_ERROR
     # ABSOLUTE on purpose: every rewrite derives the temp-file directory from
     # os.path.dirname(CONFIG_PATH), and a relative path has no directory part.
     # That fell through to the process CWD, which under systemd is "/" — see
@@ -710,13 +716,16 @@ def load_config(path):
         (units, actions, order, port, launchers, panel, webos, samsung,
          roku, androidtv, vidaa, lgcom, guide) = _parse_config(raw)
     except FileNotFoundError:
+        CONFIG_ERROR = "config not found"
         print("warning: config %s not found, using built-in generic defaults"
               % path, file=sys.stderr, flush=True)
         return
     except (OSError, ValueError) as e:  # ValueError covers JSON + ConfigError
+        CONFIG_ERROR = str(e) or "invalid config"
         print("warning: invalid config %s (%s), using built-in generic defaults"
               % (path, e), file=sys.stderr, flush=True)
         return
+    CONFIG_ERROR = None
     WATCHLIST = units
     WATCHLIST_NAMES = {name for name, _scope in WATCHLIST}
     ACTIONS = actions
@@ -2265,6 +2274,15 @@ def flatpak_update():
     reboot/poweroff never hit because they exit instantly but a long update
     would. A short poll catches an instant failure so we never report a false
     'started'."""
+    # Refuse a second launch while one is live. A re-POST (a second phone, an
+    # app restart mid-drain, a double tap) used to truncate the live transcript,
+    # spawn a second updater to fight the first for flatpak's lock, and re-point
+    # _FLATPAK_PROC so `running` tracked the wrong child. Additive keys only;
+    # the card renders `error`.
+    if flatpak_running():
+        return {"started": False, "running": True,
+                "error": "an update is already running",
+                "log": FLATPAK_UPDATE_LOG}
     elevated = flatpak_can_elevate()
     if elevated:
         # Root wrapper (system installs). Fixed path, no args — the grant is on
@@ -2292,10 +2310,15 @@ def flatpak_update():
             logf.close()
         except OSError:
             pass
-    # ~400ms: an elevation/permission failure with --noninteractive dies at once,
-    # and surfacing that beats a false 'started'.
-    time.sleep(0.4)
-    rc = proc.poll()
+    # Up to ~400ms: an elevation/permission failure with --noninteractive dies
+    # at once, and surfacing that beats a false 'started'. wait(timeout) rather
+    # than sleep+poll so a child that dies in 5ms returns in 5ms -- the handler
+    # thread holds a bounded connection slot for the whole wait, and the failed
+    # press is exactly the case that used to pay the full 400ms every time.
+    try:
+        rc = proc.wait(timeout=0.4)
+    except subprocess.TimeoutExpired:
+        rc = None
     if rc is not None and rc != 0:
         return {"started": False, "elevated": elevated, "exit_code": rc,
                 "log": FLATPAK_UPDATE_LOG, "lines": read_flatpak_log()}
@@ -2461,8 +2484,11 @@ def os_update_apply():
             logf.close()
         except OSError:
             pass
-    time.sleep(0.4)
-    rc = proc.poll()
+    # Same early-death window as flatpak_update, same wait-not-sleep reason.
+    try:
+        rc = proc.wait(timeout=0.4)
+    except subprocess.TimeoutExpired:
+        rc = None
     if rc is not None and rc != 0:
         return {"started": False, "exit_code": rc,
                 "log": OS_UPDATE_LOG, "lines": read_os_update_log()}
@@ -4010,6 +4036,11 @@ def real_status():
         # False when the config dir isn't writable by the agent user, so the app
         # can warn that TV pairing / launcher edits won't persist (agent >= 2.9.12).
         "config_writable": CONFIG_WRITABLE,
+        # Why config.json did not load (agent >= 2.9.108). ADDITIVE and OMITTED
+        # when it loaded cleanly -- the message is the parser's own, e.g.
+        # "Expecting ',' delimiter: line 12 column 3" or "units must be a
+        # non-empty list", so the phone can name the problem.
+        **({"config_error": CONFIG_ERROR} if CONFIG_ERROR else {}),
         "history": _history_snapshot(),
     }
 
@@ -23616,6 +23647,15 @@ class Handler(BaseHTTPRequestHandler):
                 resp = {"ok": True, "app": APP_NAME,
                         "version": VERSION, "ip": own_ip,
                         "host": short_host}
+                # config_ok:false ONLY when config.json failed to load (agent
+                # >= 2.9.108) -- omitted when fine, so the healthy payload is
+                # byte-unchanged. Pre-auth by design: it is a bare boolean (no
+                # path, no field name), and its whole purpose is to let a phone
+                # whose SECURE link just went dark ask, over the plaintext port
+                # it can still reach, "did your settings break?" -- the exact
+                # state a broken config leaves a box in (HTTPS off).
+                if CONFIG_ERROR:
+                    resp["config_ok"] = False
                 # Advertise the optional HTTPS listener so a TLS-aware app can
                 # discover it (and the fingerprint to pin) over the plaintext
                 # channel it already uses. Appended AFTER the existing keys and
