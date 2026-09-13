@@ -1,4 +1,5 @@
 import { createContext, useContext } from 'react';
+import type { StyleProp, ViewStyle } from 'react-native';
 import Ionicons from '@expo/vector-icons/Ionicons';
 import * as Application from 'expo-application';
 import Constants from 'expo-constants';
@@ -68,6 +69,7 @@ import { clearCompatCache } from '@/lib/compatFetch';
 import { resetFeatureTour } from '@/hooks/useFeatureTour';
 import { resetTips } from '@/lib/tips';
 import { setPref, usePref } from '@/lib/prefs';
+import { sectionOpen, toggleCollapsed, type PrefSectionId } from '@/lib/prefSections';
 import { THEME_PICKER } from '@/lib/gameTheme';
 import { SKINS, SKIN_KEYS, setSkin, useSkinKey } from '@/lib/skin';
 import { EFFECTS, EFFECT_KEYS, toggleEffect, useActiveEffects, useEffects } from '@/lib/effects';
@@ -832,6 +834,63 @@ function CardHeader({ icon, label }: { icon: IoniconName; label: string }) {
   );
 }
 
+/**
+ * A foldable Preferences section: the card, a header that toggles the fold,
+ * and the rows — which are NOT mounted while folded, so there is nothing to
+ * scan past. The fold set is one persisted pref (`prefsCollapsed`), validated
+ * against the frozen list in lib/prefSections.ts; default = nothing folded, so
+ * an existing user sees exactly what they saw before. Folding is not hiding:
+ * the header stays and reopens in one tap (the Stream from PC card's
+ * mechanism). Under a live search query the fold is overridden AND the header
+ * goes away, same as CardHeader — results read as one flat list and a hit can
+ * never sit behind a fold. Driven by the header itself; no Setup toggle.
+ */
+function PrefSection({
+  id,
+  icon,
+  label,
+  style,
+  children,
+}: {
+  id: PrefSectionId;
+  icon: IoniconName;
+  label: string;
+  style: StyleProp<ViewStyle>;
+  children: React.ReactNode;
+}) {
+  const t = useTheme();
+  const styles = useThemedStyles(makeStyles);
+  const { q } = useContext(PrefFilterCtx);
+  const collapsed = usePref('prefsCollapsed');
+  const folded = collapsed.includes(id);
+  const open = sectionOpen(collapsed, id, q);
+  return (
+    <View style={style}>
+      {!q && (
+        <Pressable
+          onPress={() => {
+            hapticSelection();
+            void setPref('prefsCollapsed', toggleCollapsed(collapsed, id));
+          }}
+          accessibilityRole="button"
+          accessibilityState={{ expanded: !folded }}
+          accessibilityLabel={`${folded ? 'Expand' : 'Collapse'} ${label}`}
+          style={styles.cardHeader}>
+          <Ionicons name={icon} size={14} color={t.textDim} />
+          <Text style={styles.cardHeaderText}>{label}</Text>
+          <Ionicons
+            name={folded ? 'chevron-forward' : 'chevron-down'}
+            size={14}
+            color={t.textFaint}
+            style={{ marginLeft: 'auto' }}
+          />
+        </Pressable>
+      )}
+      {open && children}
+    </View>
+  );
+}
+
 function SetupBody() {
   const [prefQuery, setPrefQuery] = useState('');
   const t = useTheme();
@@ -1441,8 +1500,7 @@ function SetupBody() {
                 </Pressable>
               )}
             </View>
-            <View style={prefCardGroupStyle}>
-              <CardHeader icon="options-outline" label="GENERAL" />
+            <PrefSection id="general" icon="options-outline" label="GENERAL" style={prefCardGroupStyle}>
               <PrefFilterable
                 label="Haptic feedback"
                 sub="Vibration on taps, buttons, swipes, and actions.">
@@ -1574,12 +1632,11 @@ function SetupBody() {
                   hapticSelection();
                 }}
               />
-            </View>
+            </PrefSection>
 
             {/* DIAGNOSTICS: the polling/logs controls, pulled out of the
                 overloaded GENERAL group (busy-UI pass). */}
-            <View style={prefCardGroupStyle}>
-              <CardHeader icon="pulse-outline" label="DIAGNOSTICS" />
+            <PrefSection id="diagnostics" icon="pulse-outline" label="DIAGNOSTICS" style={prefCardGroupStyle}>
               <SegPref
                 label="Vitals refresh"
                 sub="How often the console polls the box."
@@ -1610,10 +1667,9 @@ function SetupBody() {
                   hapticSelection();
                 }}
               />
-            </View>
+            </PrefSection>
 
-            <View style={prefCardGroupStyle}>
-              <CardHeader icon="color-palette-outline" label="APPEARANCE" />
+            <PrefSection id="appearance" icon="color-palette-outline" label="APPEARANCE" style={prefCardGroupStyle}>
               <SegPref
                 label="Theme"
                 sub="Follow the system, or force light or dark."
@@ -1807,10 +1863,9 @@ function SetupBody() {
                 </Text>
               </View>
               </PrefFilterable>
-            </View>
+            </PrefSection>
 
-            <View style={prefCardGroupStyle}>
-              <CardHeader icon="musical-notes-outline" label="MEDIA" />
+            <PrefSection id="media" icon="musical-notes-outline" label="MEDIA" style={prefCardGroupStyle}>
               <SegPref
                 label="Skip by"
                 sub="How far the skip buttons on the Now Playing card jump when you tap them."
@@ -1842,10 +1897,9 @@ function SetupBody() {
                   }}
                 />
               )}
-            </View>
+            </PrefSection>
 
-            <View style={prefCardGroupStyle}>
-              <CardHeader icon="game-controller-outline" label="INPUT & PAD" />
+            <PrefSection id="input" icon="game-controller-outline" label="INPUT & PAD" style={prefCardGroupStyle}>
               <PrefFilterable
                 label="Keep screen awake on Pad"
                 sub="Hold the display on while the controller is open. Off saves battery.">
@@ -1991,11 +2045,11 @@ function SetupBody() {
                   hapticSelection();
                 }}
               />
-            </View>
+            </PrefSection>
 
-            {/* Every optional Pad row/view can be hidden — declutter to taste. */}
-            <View style={prefCardStyle}>
-              <CardHeader icon="game-controller-outline" label="PAD LAYOUT" />
+            {/* What APPEARS on the Pad — every optional row/view can be hidden. How the
+                pad behaves lives in PAD BEHAVIOR, the next card. */}
+            <PrefSection id="padLayout" icon="game-controller-outline" label="PAD LAYOUT" style={prefCardStyle}>
               <TogglePref
                 label="Mouse buttons"
                 sub="L / M / R click row under the trackpad."
@@ -2086,6 +2140,12 @@ function SetupBody() {
                   router.push('/theme-picker');
                 }}
               />
+            </PrefSection>
+
+            {/* How the pad BEHAVES, split out of PAD LAYOUT (what appears on screen)
+                along that seam so each card scans in one pass (roadmap: "Make
+                Preferences findable"). */}
+            <PrefSection id="padBehavior" icon="hand-right-outline" label="PAD BEHAVIOR" style={prefCardStyle}>
               <SegPref
                 label="Steam search button"
                 sub="Opens Steam's search on the box and brings up your keyboard. Left by default — the right end of the bar is where your thumb rests, so it's easier to hit by accident there."
@@ -2158,12 +2218,11 @@ function SetupBody() {
                   hapticSelection();
                 }}
               />
-            </View>
+            </PrefSection>
 
             {/* The box's offline check is conservative and will sometimes call a
                 live PC offline, so dimming is the default and hiding is opt-in. */}
-            <View style={prefCardStyle}>
-              <CardHeader icon="tv-outline" label="STREAM FROM PC" />
+            <PrefSection id="stream" icon="tv-outline" label="STREAM FROM PC" style={prefCardStyle}>
               <TogglePref
                 label="Hide offline stream hosts"
                 sub="Offline PCs are dimmed with the reason shown, and stay tappable. Turn this on to drop them from the Launch tab's stream list entirely."
@@ -2173,7 +2232,7 @@ function SetupBody() {
                   hapticSelection();
                 }}
               />
-            </View>
+            </PrefSection>
 
             {/* Named for WHAT IT DOES, not for one use case. Recording is the
                 motivating example, but these also make the swipe and trackpad
@@ -2181,8 +2240,7 @@ function SetupBody() {
                 own -- and help on a support screen-share. Calling the card
                 "SCREEN RECORDING" would hide it from anyone looking for the
                 other two. */}
-            <View style={prefCardStyle}>
-              <CardHeader icon="hand-left-outline" label="TOUCH ANIMATIONS" />
+            <PrefSection id="touch" icon="hand-left-outline" label="TOUCH ANIMATIONS" style={prefCardStyle}>
               <TogglePref
                 label="Show taps"
                 sub="Draws a ring wherever you tap, so a screen recording shows what was pressed. iOS can't do this system-wide, so the app draws its own."
@@ -2201,7 +2259,7 @@ function SetupBody() {
                   hapticSelection();
                 }}
               />
-            </View>
+            </PrefSection>
             {prefNoMatch && <PrefNoMatches query={prefQuery.trim()} />}
           </PrefFilterCtx.Provider>
         )}
