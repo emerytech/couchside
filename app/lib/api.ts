@@ -1222,6 +1222,23 @@ export type FlatpakStatus = {
   running?: boolean;
 };
 
+/**
+ * What POST /api/update/flatpak says about the launch. `started:false` carries
+ * the agent's diagnostics — an `error` when the process could not be spawned,
+ * or `exit_code` + the transcript tail in `lines` when it died within ~400ms
+ * (a permission failure with --noninteractive dies at once). The card MUST show
+ * one of these: for a long time it discarded them and just reverted the row,
+ * which users reported as "I press update and nothing happens".
+ */
+export type FlatpakStartResult = {
+  started: boolean;
+  /** Ran the root wrapper (true) or only `flatpak update --user` (false). */
+  elevated?: boolean;
+  error?: string;
+  exit_code?: number;
+  lines?: string[];
+};
+
 export type UpdateCheck = {
   available: boolean;
   installed: string;
@@ -1878,8 +1895,10 @@ async function attempt(
     if (isPinMismatchError(e)) {
       // A secure box presented an unexpected cert. Fail closed, do NOT retry over
       // plaintext; surface as unreachable so the reconnect loop keeps trying the
-      // pinned transport (a re-pair is the real fix).
-      throw new ApiError('unreachable', 'TLS certificate pin mismatch');
+      // pinned transport (a re-pair is the real fix). The Console banner shows
+      // this text verbatim, so say what to DO — a user reported weeks of
+      // "generate a new token" without ever learning why.
+      throw new ApiError('unreachable', 'This box’s security key changed — re-pair it to reconnect');
     }
     if (e instanceof Error && e.name === 'AbortError') {
       throw new ApiError('timeout', `Timed out after ${timeoutMs / 1000}s`);
@@ -2552,11 +2571,8 @@ export const api = {
    * Sends NO body: the agent runs one frozen command — the app cannot name a
    * package or a scope, which is what keeps the token from being a root shell.
    */
-  flatpakUpdate(
-    settings: ConnSettings,
-  ): Promise<{ started: boolean; elevated?: boolean; error?: string }> {
-    return request<{ started: boolean; elevated?: boolean; error?: string }>(
-      settings, '/api/update/flatpak', { method: 'POST' });
+  flatpakUpdate(settings: ConnSettings): Promise<FlatpakStartResult> {
+    return request<FlatpakStartResult>(settings, '/api/update/flatpak', { method: 'POST' });
   },
 
   /** Tail of the flatpak update transcript. [] on older agents / no run yet. */

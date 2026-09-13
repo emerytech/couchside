@@ -23,7 +23,7 @@ import { usePoll } from '@/hooks/usePoll';
 import { useArmedAction } from '@/hooks/useArmedAction';
 import { ArmedActionBar } from '@/components/ArmedActionBar';
 import { api, FlatpakStatus, hostKey, OsStatus } from '@/lib/api';
-import { isFlatpakUpdateComplete } from '@/lib/flatpakUpdate';
+import { flatpakStartMessage, isFlatpakUpdateComplete } from '@/lib/flatpakUpdate';
 import { hapticLight } from '@/lib/haptics';
 import { useSettings } from '@/lib/SettingsContext';
 import { mono, useTheme, useThemedStyles } from '@/lib/theme';
@@ -137,11 +137,19 @@ export function SystemUpdatesCard() {
         // un-updatable app (e.g. an EOL runtime) — honest to leave shown, not a
         // failure. Only an update that never STARTED is "skipped".
         setFpStep('done');
+        // ...but an un-elevated run with system updates still pending did
+        // nothing visible; say why, or the checkmark lies.
+        const note = flatpakStartMessage(r, fp.data?.count ?? 0);
+        if (note) setMsg(note);
       } else {
+        // Never silently revert: the agent's diagnostics are in `r`. Discarding
+        // them here is what made a failed press look like no press at all.
         setFpStep('skipped');
+        setMsg(flatpakStartMessage(r, fp.data?.count ?? 0));
       }
     } catch {
       setFpStep('skipped');
+      setMsg('Could not reach the box to start the update.');
     }
     fp.refresh();
   }, [drain, fp, settings]);

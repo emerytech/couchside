@@ -39,3 +39,55 @@ export function isFlatpakUpdateComplete(status: FlatpakProgress | null | undefin
   if (typeof status.running === 'boolean') return status.running === false;
   return status.count === 0;
 }
+
+/** The launch response, mirroring api.FlatpakStartResult (kept import-free). */
+export type FlatpakStart = {
+  started: boolean;
+  elevated?: boolean;
+  error?: string;
+  exit_code?: number;
+  lines?: string[];
+};
+
+/**
+ * What to TELL the user after a press, or null when nothing needs saying.
+ *
+ * THE BUG THIS FIXES: the card set the row to 'skipped' with no message on every
+ * `started:false` and on every thrown error, and 'skipped' renders no icon — so
+ * a `sudo` denial, a missing wrapper, or a process that died in 400ms all looked
+ * identical to not having pressed anything. A user reported exactly that:
+ * "mostly works, but the last 2 times nothing happens when I press it". The
+ * agent had been returning the reason the whole time; the card threw it away.
+ *
+ * Precedence for a failed start: the agent's own `error` (could not spawn), then
+ * the last transcript line (what flatpak itself said), then the exit code.
+ *
+ * A start that succeeded but ran UN-elevated while system updates are pending is
+ * the other silent case: `flatpak update --user` on a box whose apps are all
+ * system-installed finishes in under a second having done nothing, the row shows
+ * a checkmark, and the count never moves. Say so, and say what enables the rest.
+ */
+/**
+ * flatpak writes its transcript for a TERMINAL: cursor-show/hide, line-clear
+ * and colour escapes ride along in the log lines (MEASURED on a Bazzite box:
+ * the last line of a real run was "\x1b[?25h"). Strip them, or the message
+ * the user reads ends in garbage — or is NOTHING but garbage.
+ */
+const TERMINAL_CONTROL = /\x1b\[[0-9;?]*[A-Za-z]|[\x00-\x08\x0b-\x1f\x7f]/g;
+
+export function flatpakStartMessage(r: FlatpakStart, pendingCount: number): string | null {
+  if (!r.started) {
+    if (r.error) return `Update did not start: ${r.error}`;
+    const last = [...(r.lines ?? [])]
+      .map((l) => l.replace(TERMINAL_CONTROL, '').trim())
+      .reverse()
+      .find((l) => l.length > 0);
+    if (last) return `Update did not start: ${last}`;
+    if (typeof r.exit_code === 'number') return `Update did not start (exit ${r.exit_code}).`;
+    return 'Update did not start.';
+  }
+  if (r.elevated === false && pendingCount > 0) {
+    return 'Only your user-installed apps were updated. Enable system updates on the box to update the rest.';
+  }
+  return null;
+}
