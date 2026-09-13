@@ -114,6 +114,18 @@ test('terminal escapes in the transcript never reach the user (measured on a Baz
     'Update did not start (exit 1).');
 });
 
+test('the OS row reuses the same failed-start messaging (same silent-failure class)', () => {
+  // POST /api/update/os returns the same launch contract; the card passes its
+  // result straight in with pendingCount 0 (no un-elevated note applies).
+  assert.equal(
+    flatpakStartMessage({ started: false, exit_code: 1, lines: ['error: no atomic OS updater found'] }, 0),
+    'Update did not start: error: no atomic OS updater found',
+  );
+  // A clean OS start says nothing, and the un-elevated note can never fire at 0.
+  assert.equal(flatpakStartMessage({ started: true }, 0), null);
+  assert.equal(flatpakStartMessage({ started: true, elevated: false }, 0), null);
+});
+
 test('error beats transcript beats exit code (precedence is deterministic)', () => {
   const both = { started: false, error: 'spawn failed', exit_code: 2, lines: ['flatpak: nope'] };
   assert.equal(flatpakStartMessage(both, 1), 'Update did not start: spawn failed');

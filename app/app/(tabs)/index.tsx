@@ -1,6 +1,7 @@
 import React, { useEffect, useRef, useState } from 'react';
 import { Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
 import Ionicons from '@expo/vector-icons/Ionicons';
+import { router } from 'expo-router';
 
 import { EditableSection } from '@/components/EditableSection';
 import { Gated } from '@/components/Gated';
@@ -21,7 +22,7 @@ import { TabScreen } from '@/components/TabScreen';
 import { useLockOrientation } from '@/hooks/useLockOrientation';
 import { usePoll } from '@/hooks/usePoll';
 import { useStreak } from '@/hooks/useStreak';
-import { api, hostKey, humanizeUptime, Status, Unit } from '@/lib/api';
+import { api, ApiError, hostKey, humanizeUptime, Status, Unit } from '@/lib/api';
 import { fmtLastSeen, noteBoxSeen } from '@/lib/lastSeen';
 import { useConsoleLayout, effectiveOrder, moveSection, setConsoleLayout } from '@/lib/consoleLayout';
 import { hapticSelection } from '@/lib/haptics';
@@ -509,6 +510,20 @@ function ConsoleScreen() {
               }}>
               <Text style={styles.retryText}>RETRY</Text>
             </Pressable>
+            {/* When the failure has a known remedy — the box's key changed, or
+                it is up with encryption off — RETRY can never succeed; offer the
+                fix. Matches on ApiError.hint, never on the message text. A user
+                spent weeks "generating a new token" without being told where. */}
+            {status.error instanceof ApiError &&
+              (status.error.hint === 'repair' || status.error.hint === 'secure_down') && (
+                <Pressable
+                  style={({ pressed }) => [styles.retryBtn, { marginTop: 8 }, pressed && styles.pressed]}
+                  accessibilityRole="button"
+                  accessibilityLabel="Open Setup to re-pair this box"
+                  onPress={() => router.navigate('/(tabs)/setup')}>
+                  <Text style={styles.retryText}>OPEN SETUP TO RE-PAIR</Text>
+                </Pressable>
+              )}
           </View>
         )}
 
