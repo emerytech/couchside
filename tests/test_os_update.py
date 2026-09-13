@@ -56,6 +56,11 @@ class SpyPopen:
             def poll(self):
                 return None
 
+            def wait(self, timeout=None):
+                # os_update_apply now waits (bounded) instead of sleep+poll; a
+                # live child returns None here just as poll() does.
+                return self.poll()
+
         cs.subprocess.Popen = P
         return self
 
