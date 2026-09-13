@@ -49,7 +49,7 @@ except ImportError:  # pragma: no cover
     fcntl = None
 
 APP_NAME = "couchside-agent"
-VERSION = "2.9.107"
+VERSION = "2.9.108"
 UID = os.getuid()
 XDG_RUNTIME_DIR = "/run/user/%d" % UID
 
@@ -692,6 +692,21 @@ def load_config(path):
         if isinstance(raw, dict):
             ALLOW_APP_UPDATE = bool(raw.get("allow_app_update", False))
             ALLOW_APP_LAUNCHERS = bool(raw.get("allow_app_launchers", False))
+            # The TLS block gets the SAME treatment, for a worse reason: it holds
+            # the box's persisted cert + PRIVATE KEY. If it is only loaded after
+            # _parse_config succeeds (as it was until 2.9.108), then ANY invalid
+            # unrelated field — a bad port, a malformed launcher — makes
+            # load_config bail before reaching it, CONFIG_TLS stays empty,
+            # _parse_tls defaults TLS on with no key, and _tls_ensure MINTS A
+            # FRESH KEY. A new key is a new SPKI, and the app pins the SPKI and
+            # fails closed on mismatch (by design — it must never re-trust a
+            # changed key silently). Net effect on the phone: "unreachable" until
+            # the user re-pairs, i.e. a silent key rotation caused by a config
+            # typo. Reported by a user as "every couple of weeks I have to
+            # generate a new token" — the cadence was the agent-update cadence,
+            # each update being a chance for the parser and the on-disk config to
+            # disagree. Degrade closed = KEEP the identity we already have.
+            CONFIG_TLS = _parse_tls(raw)
         (units, actions, order, port, launchers, panel, webos, samsung,
          roku, androidtv, vidaa, lgcom, guide) = _parse_config(raw)
     except FileNotFoundError:
@@ -718,7 +733,7 @@ def load_config(path):
     active = raw.get("tv_active")
     CONFIG_TV_ACTIVE = active if isinstance(active, str) and active else None
     CONFIG_GUIDE = guide
-    CONFIG_TLS = _parse_tls(raw)
+    # CONFIG_TLS was already set above, before _parse_config could bail.
     print("config loaded from %s: %d units, %d actions, %d launchers"
           % (path, len(WATCHLIST), len(ACTIONS), len(LAUNCHERS)), flush=True)
 
@@ -742,6 +757,41 @@ def check_config_writable():
               "launcher changes will fail to save. chown the config dir to the "
               "agent's user." % (directory, os.getuid()), file=sys.stderr,
               flush=True)
+
+
+def _config_read_for_write():
+    """Read CONFIG_PATH at the start of a read-modify-write. THE reader, paired
+    with _write_config_atomic below.
+
+    Returns the parsed dict, or None when the file is ABSENT — a legitimate
+    first write (nothing on disk to lose), so the caller builds its skeleton.
+
+    Raises ConfigError when the file EXISTS but cannot be read or is not a JSON
+    object. Every writer used to treat that the same as absent: swallow the
+    error, rebuild a minimal {"units": ...} skeleton, and os.replace it over
+    the real file. That skeleton has no "tls" block — i.e. no cert and no
+    PRIVATE KEY — so one momentarily-unreadable config (a rewrite racing a
+    reader, a full disk, a transient EIO) permanently destroyed the box's TLS
+    identity. The next restart minted a fresh key, the phone's SPKI pin failed
+    closed, and the user had to re-pair ("generate a new token"). Along with
+    the key it silently wiped every launcher, TV pairing and opt-in flag.
+
+    Refusing is the degrade-closed answer: a save that fails with a message
+    beats a save that "succeeds" by deleting the config. Callers already
+    handle ConfigError (a ValueError) — _tls_ensure falls back to its in-memory
+    cert, the pairing routes render a 500, the launcher route a 4xx."""
+    try:
+        with open(CONFIG_PATH, "r", encoding="utf-8") as f:
+            raw = json.load(f)
+    except FileNotFoundError:
+        return None
+    except (OSError, ValueError) as e:
+        raise ConfigError("config %s exists but is unreadable (%s); refusing to "
+                          "overwrite it" % (CONFIG_PATH, e))
+    if not isinstance(raw, dict):
+        raise ConfigError("config %s is not a JSON object; refusing to overwrite "
+                          "it" % CONFIG_PATH)
+    return raw
 
 
 def _write_config_atomic(raw):
@@ -10751,15 +10801,13 @@ def _write_config_launchers_locked(new_launchers):
     config that would wedge the Restart=always daemon. Raises on I/O failure
     (the caller maps it to a 500).
     """
-    raw = None
-    try:
-        with open(CONFIG_PATH, "r", encoding="utf-8") as f:
-            raw = json.load(f)
-    except (OSError, ValueError):
-        raw = None
-    if not isinstance(raw, dict):
-        # No usable config on disk: build a minimal one that still round-
-        # trips through _parse_config (units/actions are required there).
+    # Raises ConfigError on a present-but-unreadable config rather than
+    # rebuilding a skeleton over it (which dropped the TLS key and every
+    # pairing). Only an ABSENT file gets the skeleton below.
+    raw = _config_read_for_write()
+    if raw is None:
+        # No config on disk yet: build a minimal one that still round-trips
+        # through _parse_config (units/actions are required there).
         raw = {
             "units": [{"name": name, "scope": scope}
                       for name, scope in WATCHLIST],
@@ -15647,12 +15695,11 @@ def _webos_save(host, client_key, mac=None):
         cfg["mac"] = mac
     global CONFIG_WEBOS
     with CONFIG_LOCK:
-        try:
-            with open(CONFIG_PATH, "r", encoding="utf-8") as f:
-                raw = json.load(f)
-        except (OSError, ValueError):
-            raw = None
-        if not isinstance(raw, dict):
+        # Raises ConfigError on a present-but-unreadable config rather than
+        # rebuilding a skeleton over it (which dropped the TLS key). The
+        # pairing route catches it and renders a 500 with the reason.
+        raw = _config_read_for_write()
+        if raw is None:
             raw = {"units": [{"name": n, "scope": s} for n, s in WATCHLIST]}
         raw["webos"] = cfg
         _write_config_atomic(raw)
@@ -15701,13 +15748,10 @@ def set_tv_active(brand):
 def _config_set_field(field, value):
     """Read-modify-write CONFIG_PATH, setting top-level <field> = value, via the
     same atomic temp-file + os.replace pattern as the launcher writer. Caller
-    MUST hold CONFIG_LOCK."""
-    try:
-        with open(CONFIG_PATH, "r", encoding="utf-8") as f:
-            raw = json.load(f)
-    except (OSError, ValueError):
-        raw = None
-    if not isinstance(raw, dict):
+    MUST hold CONFIG_LOCK. Raises ConfigError (never overwrites) when the
+    config exists but is unreadable — see _config_read_for_write."""
+    raw = _config_read_for_write()
+    if raw is None:
         raw = {"units": [{"name": n, "scope": s} for n, s in WATCHLIST]}
     raw[field] = value
     _write_config_atomic(raw)

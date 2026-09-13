@@ -18,6 +18,17 @@ the same thing regardless of what actually changed.
 Write for the person holding the phone, not for the commit log. They are
 deciding whether to press "Update now" on a machine across the room.
 
+## 2.9.108
+
+**Your phone stays paired.** Some people found their phone losing its
+connection to the box every couple of weeks and having to pair again from
+scratch. The cause: two ways the box could quietly forget its own security
+key — a small typo in its settings file, or a settings file that was busy for
+a moment while something saved — and a box with a new key looks like a
+stranger to the phone, which rightly refuses it. The box now keeps its key
+through both, so a pairing lasts until you remove it. Nothing to redo: if
+you've been re-pairing, this is the last time.
+
 ## 2.9.107
 
 **More at a glance on the Console.** The vitals strip now shows your CPU's live
