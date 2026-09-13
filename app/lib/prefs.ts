@@ -12,6 +12,8 @@ import * as SecureStore from 'expo-secure-store';
 import { useSyncExternalStore } from 'react';
 import { Platform } from 'react-native';
 
+import { normalizeCollapsed, type PrefSectionId } from './prefSections';
+
 import { TV_STEPS, TV_STEP_DEFAULT, type TvStepPx } from './tvNav';
 import {
   MEDIA_HOLD_SKIP_SECS,
@@ -146,6 +148,12 @@ export type Prefs = {
    *  Persisted, because a fold you opened should stay open. Driven by the fold
    *  itself, not a Setup toggle — no new switch to find. */
   consoleMoreCollapsed: boolean;
+  /** Preferences-tab sections the user folded shut, by id (lib/prefSections.ts —
+   *  a frozen list, so unknown ids are dropped on load). Persisted, because a
+   *  section you fold away should stay folded; driven by the section header
+   *  itself, not a toggle. Default: nothing folded, so an existing user sees
+   *  exactly what they saw before. A live search query overrides every fold. */
+  prefsCollapsed: readonly PrefSectionId[];
   /**
    * The first-run flow (welcome -> which device -> how to set it up) has been
    * seen and exited. Set on ANY exit: either card, the skip link, or the Android
@@ -309,6 +317,7 @@ export const DEFAULTS: Prefs = {
   searchButtonSide: 'left',
   streamCollapsed: false,
   consoleMoreCollapsed: true,
+  prefsCollapsed: [],
   onboardingDone: false,
   whatsNewOffered: false,
   hideNoteMode: false,
@@ -405,6 +414,7 @@ function normalize(raw: unknown): Prefs {
       : 'swipe';
   const streamCollapsed = bool(o.streamCollapsed, DEFAULTS.streamCollapsed);
   const consoleMoreCollapsed = bool(o.consoleMoreCollapsed, DEFAULTS.consoleMoreCollapsed);
+  const prefsCollapsed = normalizeCollapsed(o.prefsCollapsed);
   const onboardingDone = bool(o.onboardingDone, DEFAULTS.onboardingDone);
   const whatsNewOffered = bool(o.whatsNewOffered, DEFAULTS.whatsNewOffered);
   const hideNoteMode = bool(o.hideNoteMode, DEFAULTS.hideNoteMode);
@@ -420,6 +430,7 @@ function normalize(raw: unknown): Prefs {
     searchButtonSide: searchSide,
     streamCollapsed,
     consoleMoreCollapsed,
+    prefsCollapsed,
     onboardingDone,
     whatsNewOffered,
     hideNoteMode,
