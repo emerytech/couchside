@@ -30,6 +30,13 @@ export type Ping = {
   ip?: string | null;
   /** The agent's short hostname (agent >= 2.3); used to verify fallback identity. */
   host?: string | null;
+  /** HTTPS listener port, present only while the agent is serving TLS
+   *  (agent >= 2.9.88). Its ABSENCE on a box we hold a TLS pin for is the
+   *  tell that the box fell back to plaintext. */
+  tls_port?: number;
+  /** Present (and false) only when the box's config.json failed to load
+   *  (agent >= 2.9.108) — the one state that also turns its HTTPS off. */
+  config_ok?: boolean;
 };
 
 /** Agent families this app will talk to (current + prior product names). */
@@ -1222,6 +1229,34 @@ export type FlatpakStatus = {
   running?: boolean;
 };
 
+/**
+ * What POST /api/update/flatpak says about the launch. `started:false` carries
+ * the agent's diagnostics — an `error` when the process could not be spawned,
+ * or `exit_code` + the transcript tail in `lines` when it died within ~400ms
+ * (a permission failure with --noninteractive dies at once). The card MUST show
+ * one of these: for a long time it discarded them and just reverted the row,
+ * which users reported as "I press update and nothing happens".
+ */
+export type FlatpakStartResult = {
+  started: boolean;
+  /** Ran the root wrapper (true) or only `flatpak update --user` (false). */
+  elevated?: boolean;
+  error?: string;
+  exit_code?: number;
+  lines?: string[];
+};
+
+/** POST /api/update/os — same launch contract as FlatpakStartResult, plus the
+ *  box's opt-in refusal. `exit_code` + `lines` arrive when the updater died
+ *  within ~400ms; the card must show them (same silent-failure class). */
+export type OsStartResult = {
+  started: boolean;
+  needs_optin?: boolean;
+  error?: string;
+  exit_code?: number;
+  lines?: string[];
+};
+
 export type UpdateCheck = {
   available: boolean;
   installed: string;
@@ -1521,13 +1556,28 @@ export class ApiError extends Error {
    * purpose — every reader narrows it (see lib/deckyPlugins.ts apiErrorHint).
    */
   body?: unknown;
+  /**
+   * What the UI can OFFER, when the failure has a known remedy. App-internal
+   * and optional; readers match on this, never on the message text.
+   * - 'repair': the box's pinned key changed — only a re-pair reconnects.
+   * - 'secure_down': the box is up on plaintext with encryption off (a broken
+   *   config.json does this); re-pairing or fixing the box reconnects.
+   */
+  hint?: 'repair' | 'secure_down';
 
-  constructor(kind: ApiErrorKind, message: string, status?: number, body?: unknown) {
+  constructor(
+    kind: ApiErrorKind,
+    message: string,
+    status?: number,
+    body?: unknown,
+    hint?: 'repair' | 'secure_down',
+  ) {
     super(message);
     this.name = 'ApiError';
     this.kind = kind;
     this.status = status;
     this.body = body;
+    this.hint = hint;
   }
 }
 
@@ -1878,8 +1928,16 @@ async function attempt(
     if (isPinMismatchError(e)) {
       // A secure box presented an unexpected cert. Fail closed, do NOT retry over
       // plaintext; surface as unreachable so the reconnect loop keeps trying the
-      // pinned transport (a re-pair is the real fix).
-      throw new ApiError('unreachable', 'TLS certificate pin mismatch');
+      // pinned transport (a re-pair is the real fix). The Console banner shows
+      // this text verbatim, so say what to DO — a user reported weeks of
+      // "generate a new token" without ever learning why.
+      throw new ApiError(
+        'unreachable',
+        'This box’s security key changed — re-pair it to reconnect',
+        undefined,
+        undefined,
+        'repair',
+      );
     }
     if (e instanceof Error && e.name === 'AbortError') {
       throw new ApiError('timeout', `Timed out after ${timeoutMs / 1000}s`);
@@ -1891,6 +1949,27 @@ async function attempt(
       // self-heals its listener), so this recovers on its own without a re-pair.
       // Still fail CLOSED — never downgrade the token to plaintext — but say
       // something the user can act on instead of a bare "unreachable" loop.
+      //
+      // Tell "restarting" apart from "up, but encryption is OFF": one bounded,
+      // token-free plaintext ping (host, then the cached IP). A box that answers
+      // as itself WITHOUT tls_port will never bring the secure link back on its
+      // own — the user has to fix it or re-pair — and config_ok:false says why.
+      // lastIp is validated (isValidLanIp) by normalizeBox before it is ever
+      // stored, so it is safe to try as-is.
+      const plain =
+        (await plainPing(settings.host, settings)) ??
+        (settings.lastIp ? await plainPing(settings.lastIp, settings) : null);
+      if (plain && !plain.tls_port) {
+        throw new ApiError(
+          'unreachable',
+          plain.config_ok === false
+            ? 'This box’s settings file is broken, so it turned encryption off — fix it on the box, or re-pair'
+            : 'Box is up but encryption is off — run couchside tls status on the box, or re-pair',
+          undefined,
+          undefined,
+          'secure_down',
+        );
+      }
       throw new ApiError('unreachable', 'Secure link down — the box may be restarting');
     }
     throw new ApiError('unreachable', 'Box unreachable: network error');
@@ -1952,6 +2031,30 @@ async function raceGet(
     settled = true;
     // Both paths failed. Re-throw the hostname error for a familiar message.
     return await hostPath;
+  }
+}
+
+/**
+ * Unauthenticated plaintext /api/ping to `host`, returned only if it answers AS
+ * this box (pingMatchesBox). Never sends the bearer token. Null on any failure.
+ *
+ * Exists for ONE diagnosis: a box we hold a TLS pin for stops answering on its
+ * HTTPS port. "Restarting" and "up, but encryption is off" look identical from
+ * the pinned transport, and only the second needs the user to act — MEASURED:
+ * an invalid config.json makes the agent come up plaintext-only, and the phone
+ * used to say "may be restarting" indefinitely.
+ */
+async function plainPing(host: string, settings: ConnSettings): Promise<Ping | null> {
+  try {
+    const res = await attempt(host, settings, '/api/ping', {
+      auth: false,
+      timeoutMs: PROBE_TIMEOUT_MS,
+    });
+    if (!res.ok) return null;
+    const body: unknown = await res.json();
+    return pingMatchesBox(body, settings.host) ? (body as Ping) : null;
+  } catch {
+    return null;
   }
 }
 
@@ -2552,11 +2655,8 @@ export const api = {
    * Sends NO body: the agent runs one frozen command — the app cannot name a
    * package or a scope, which is what keeps the token from being a root shell.
    */
-  flatpakUpdate(
-    settings: ConnSettings,
-  ): Promise<{ started: boolean; elevated?: boolean; error?: string }> {
-    return request<{ started: boolean; elevated?: boolean; error?: string }>(
-      settings, '/api/update/flatpak', { method: 'POST' });
+  flatpakUpdate(settings: ConnSettings): Promise<FlatpakStartResult> {
+    return request<FlatpakStartResult>(settings, '/api/update/flatpak', { method: 'POST' });
   },
 
   /** Tail of the flatpak update transcript. [] on older agents / no run yet. */
@@ -2580,11 +2680,8 @@ export const api = {
    * unprivileged fallback for an OS image, so the box returns needs_optin when
    * ungranted. Detached on the box; poll osStatus() for staged:true. No body.
    */
-  osUpdate(
-    settings: ConnSettings,
-  ): Promise<{ started: boolean; needs_optin?: boolean; error?: string }> {
-    return request<{ started: boolean; needs_optin?: boolean; error?: string }>(
-      settings, '/api/update/os', { method: 'POST' });
+  osUpdate(settings: ConnSettings): Promise<OsStartResult> {
+    return request<OsStartResult>(settings, '/api/update/os', { method: 'POST' });
   },
 
   /** Tail of the OS update transcript. [] on older agents / no run yet. */

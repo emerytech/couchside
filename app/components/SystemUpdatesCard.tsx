@@ -23,7 +23,7 @@ import { usePoll } from '@/hooks/usePoll';
 import { useArmedAction } from '@/hooks/useArmedAction';
 import { ArmedActionBar } from '@/components/ArmedActionBar';
 import { api, FlatpakStatus, hostKey, OsStatus } from '@/lib/api';
-import { isFlatpakUpdateComplete } from '@/lib/flatpakUpdate';
+import { flatpakStartMessage, isFlatpakUpdateComplete } from '@/lib/flatpakUpdate';
 import { hapticLight } from '@/lib/haptics';
 import { useSettings } from '@/lib/SettingsContext';
 import { mono, useTheme, useThemedStyles } from '@/lib/theme';
@@ -63,6 +63,13 @@ function Row({
       <Text style={styles.rowValue} numberOfLines={1}>
         {value}
       </Text>
+      {/* A failed press marks the ROW, beside (not instead of) its Update
+          button so the retry stays reachable; the `msg` line below says why.
+          'idle' stays icon-free — this is the one state that must not look
+          like nothing was pressed. */}
+      {step === 'skipped' && (
+        <Ionicons name="alert-circle" size={15} color={t.amber ?? t.red} />
+      )}
       {statusIcon ? (
         <Ionicons name={statusIcon} size={15} color={statusColor} />
       ) : canUpdate && onUpdate ? (
@@ -111,7 +118,13 @@ export function SystemUpdatesCard() {
     async (poll: () => Promise<boolean>) => {
       for (let i = 0; i < 120; i++) {
         await new Promise((r) => setTimeout(r, 5000));
-        if (i % 6 === 5 && (await poll().catch(() => false))) return true;
+        // Probe at 5s and 10s, then every 30s. With the agent's `running`
+        // signal a `--user` "Nothing to do" finishes in under a second; the
+        // old first probe at 30s showed a half-minute spinner for a no-op, so
+        // the honest note arrived late enough to look like a hang. Not every
+        // 5s: each status GET costs the box a `sudo -l` and a network
+        // remote-ls.
+        if ((i < 2 || i % 6 === 5) && (await poll().catch(() => false))) return true;
       }
       return false;
     },
@@ -137,11 +150,19 @@ export function SystemUpdatesCard() {
         // un-updatable app (e.g. an EOL runtime) — honest to leave shown, not a
         // failure. Only an update that never STARTED is "skipped".
         setFpStep('done');
+        // ...but an un-elevated run with system updates still pending did
+        // nothing visible; say why, or the checkmark lies.
+        const note = flatpakStartMessage(r, fp.data?.count ?? 0);
+        if (note) setMsg(note);
       } else {
+        // Never silently revert: the agent's diagnostics are in `r`. Discarding
+        // them here is what made a failed press look like no press at all.
         setFpStep('skipped');
+        setMsg(flatpakStartMessage(r, fp.data?.count ?? 0));
       }
     } catch {
       setFpStep('skipped');
+      setMsg('Could not reach the box to start the update.');
     }
     fp.refresh();
   }, [drain, fp, settings]);
@@ -156,10 +177,18 @@ export function SystemUpdatesCard() {
         setOsStep(staged ? 'staged' : 'done');
       } else {
         setOsStep('skipped');
-        if (r.needs_optin) setMsg('OS updates are not enabled on this box.');
+        // Same silent-failure class as the flatpak row: a spawn error or a
+        // 400ms death carries error/exit_code/lines; say them. The opt-in
+        // refusal keeps its friendlier copy.
+        setMsg(
+          r.needs_optin
+            ? 'OS updates are not enabled on this box.'
+            : flatpakStartMessage(r, 0),
+        );
       }
     } catch {
       setOsStep('skipped');
+      setMsg('Could not reach the box to start the update.');
     }
     os.refresh();
   }, [drain, os, settings]);
@@ -175,8 +204,18 @@ export function SystemUpdatesCard() {
       if (which !== 'os') setFpStep('idle');
       if (which !== 'flatpak') setOsStep('idle');
 
+      // Decide on FRESH box state, not the 30-minute cache: updates that
+      // appeared (or a grant added) while this tab sat open were invisible,
+      // and "nothing pending" from a stale count painted a green checkmark on
+      // apps that were never updated. Fall back to the cache if the box is
+      // momentarily unreachable; refresh the polls so the UI catches up too.
+      const freshFp = await api.flatpakStatus(settings).catch(() => null);
+      const pending = freshFp?.count ?? fp.data?.count ?? 0;
+      fp.refresh();
+      os.refresh();
+
       if ((which === 'flatpak' || which === 'all') && hasFp) {
-        if ((fp.data?.count ?? 0) > 0) await runFlatpak();
+        if (pending > 0) await runFlatpak();
         else setFpStep('done');
       }
       if ((which === 'os' || which === 'all') && hasOs) {
@@ -286,9 +325,22 @@ export function SystemUpdatesCard() {
       )}
 
       {!elevated && (
-        <Text style={styles.hint}>
-          Enable on the box: <Text style={styles.code}>couchside allow-system-updates on</Text>
-        </Text>
+        // Pressable: the grant lives on the box, and `elevated` rides a
+        // 30-minute poll — so after running the command, a tap here re-checks
+        // instead of leaving the buttons dead until the next poll.
+        <Pressable
+          onPress={() => {
+            hapticLight();
+            fp.refresh();
+            os.refresh();
+          }}
+          accessibilityRole="button"
+          accessibilityLabel="Re-check whether system updates are enabled">
+          <Text style={styles.hint}>
+            Enable on the box: <Text style={styles.code}>couchside allow-system-updates on</Text>
+            {' '}· tap to re-check
+          </Text>
+        </Pressable>
       )}
     </View>
   );

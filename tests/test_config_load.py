@@ -116,10 +116,70 @@ def test_bad_section_is_rejected():
         check(raised, "lg_commercial %s -> ConfigError" % why)
 
 
+# A tls block exactly as _tls_ensure persists it: cert + PRIVATE KEY + the SPKI
+# the phone pins. Fake PEM bodies -- the point is whether the block SURVIVES
+# load_config, not whether openssl likes it.
+TLS_BLOCK = {
+    "enabled": True, "port": 8788,
+    "cert": "-----BEGIN CERTIFICATE-----\nFAKE\n-----END CERTIFICATE-----\n",
+    "key": "-----BEGIN PRIVATE KEY-----\nFAKE\n-----END PRIVATE KEY-----\n",
+    "sans": ["127.0.0.1"], "spki": "ab" * 32, "fp": "cd" * 32,
+}
+
+
+def test_invalid_field_still_loads_tls():
+    """THE BUG (2.9.108): load_config read the tls block only AFTER _parse_config
+    succeeded, so any invalid UNRELATED field made it bail first, CONFIG_TLS
+    stayed empty, and _tls_ensure minted a FRESH KEY -- a new SPKI the phone
+    (correctly) refuses. A user saw this as "re-pair every couple of weeks"."""
+    print("THE BUG: an invalid unrelated field must NOT drop the persisted TLS key")
+    cfg = dict(FULL)
+    cfg["tls"] = TLS_BLOCK
+    cfg["port"] = "not-a-port"  # _parse_config raises ConfigError on this
+    cs.CONFIG_TLS = None        # prove THIS load sets it, not a previous one
+    _load(cfg)
+    t = cs.CONFIG_TLS if isinstance(cs.CONFIG_TLS, dict) else {}
+    check(t.get("cert") == TLS_BLOCK["cert"], "cert survives an invalid port")
+    check(t.get("key") == TLS_BLOCK["key"], "PRIVATE KEY survives an invalid port")
+    check(t.get("spki") == TLS_BLOCK["spki"], "spki (what the phone pins) survives")
+    # CONTROL: the invalid field itself was still REJECTED -- the config fell
+    # back to defaults for everything except the identity it must keep.
+    check(cs.CONFIG_PORT != "not-a-port", "the invalid port was not applied")
+    # And the box can SAY so: CONFIG_ERROR carries the parser's reason, which
+    # /api/status surfaces as `config_error` and /api/ping as `config_ok:false`.
+    check(isinstance(cs.CONFIG_ERROR, str) and "port" in cs.CONFIG_ERROR,
+          "CONFIG_ERROR names the rejected field (%r)" % (cs.CONFIG_ERROR,))
+
+
+def test_valid_config_loads_tls_the_same_way():
+    print("CONTROL: a valid config still loads tls (the reorder kept the normal path)")
+    cfg = dict(FULL)
+    cfg["tls"] = TLS_BLOCK
+    cs.CONFIG_TLS = None
+    _load(cfg)
+    t = cs.CONFIG_TLS if isinstance(cs.CONFIG_TLS, dict) else {}
+    check(t.get("key") == TLS_BLOCK["key"], "key loaded on a valid config")
+    check(cs.CONFIG_PORT == 8787, "and the rest of the config applied normally")
+    check(cs.CONFIG_ERROR is None, "a clean load clears CONFIG_ERROR (control)")
+
+
+def test_missing_tls_block_defaults_on_without_a_key():
+    print("CONTROL: no tls block -> TLS defaults ON with no cert/key (a fresh box mints once)")
+    cfg = dict(FULL)  # deliberately no "tls"
+    cs.CONFIG_TLS = None
+    _load(cfg)
+    t = cs.CONFIG_TLS if isinstance(cs.CONFIG_TLS, dict) else {}
+    check(t.get("enabled") is True, "defaults enabled")
+    check("key" not in t and "cert" not in t, "nothing to preserve on a fresh box")
+
+
 if __name__ == "__main__":
     test_full_config_loads()
     test_absent_sections_are_none()
     test_bad_section_is_rejected()
+    test_invalid_field_still_loads_tls()
+    test_valid_config_loads_tls_the_same_way()
+    test_missing_tls_block_defaults_on_without_a_key()
     print()
     if _fail:
         print("FAILED: %d" % len(_fail))

@@ -49,7 +49,7 @@ except ImportError:  # pragma: no cover
     fcntl = None
 
 APP_NAME = "couchside-agent"
-VERSION = "2.9.107"
+VERSION = "2.9.108"
 UID = os.getuid()
 XDG_RUNTIME_DIR = "/run/user/%d" % UID
 
@@ -234,6 +234,12 @@ ACTIONS = dict(DEFAULT_ACTIONS)
 ACTION_ORDER = list(DEFAULT_ACTION_ORDER)
 CONFIG_PORT = None  # optional "port" from config.json
 CONFIG_TLS = None  # optional {"enabled","port","cert","key","sans","fp","spki"} TLS block
+# Why the last load_config fell back to built-in defaults (a str), or None when
+# the config loaded cleanly. Surfaced so the PHONE can say "this box's settings
+# file is broken" instead of a generic "unreachable": a syntax-broken
+# config.json leaves HTTPS dark (there is no tls block to keep), and until this
+# existed the only trace was one stderr line on the box.
+CONFIG_ERROR = None
 TLS_ADVERT = None  # public TLS advert {"port","fp","spki"} or None (dark). Set by main()
                    # after _tls_start; read by the UDP discovery reply + build_pair_url so
                    # a future app can DISCOVER the HTTPS listener + pin fingerprint. Never
@@ -678,7 +684,7 @@ def load_config(path):
     global LAUNCHERS, CONFIG_PATH, CONFIG_PANEL, CONFIG_WEBOS, CONFIG_SAMSUNG
     global CONFIG_ROKU, CONFIG_ANDROIDTV, CONFIG_VIDAA, ALLOW_APP_UPDATE
     global CONFIG_LGCOM, CONFIG_TV_ACTIVE, CONFIG_TLS
-    global ALLOW_APP_LAUNCHERS, CONFIG_GUIDE
+    global ALLOW_APP_LAUNCHERS, CONFIG_GUIDE, CONFIG_ERROR
     # ABSOLUTE on purpose: every rewrite derives the temp-file directory from
     # os.path.dirname(CONFIG_PATH), and a relative path has no directory part.
     # That fell through to the process CWD, which under systemd is "/" — see
@@ -692,16 +698,34 @@ def load_config(path):
         if isinstance(raw, dict):
             ALLOW_APP_UPDATE = bool(raw.get("allow_app_update", False))
             ALLOW_APP_LAUNCHERS = bool(raw.get("allow_app_launchers", False))
+            # The TLS block gets the SAME treatment, for a worse reason: it holds
+            # the box's persisted cert + PRIVATE KEY. If it is only loaded after
+            # _parse_config succeeds (as it was until 2.9.108), then ANY invalid
+            # unrelated field — a bad port, a malformed launcher — makes
+            # load_config bail before reaching it, CONFIG_TLS stays empty,
+            # _parse_tls defaults TLS on with no key, and _tls_ensure MINTS A
+            # FRESH KEY. A new key is a new SPKI, and the app pins the SPKI and
+            # fails closed on mismatch (by design — it must never re-trust a
+            # changed key silently). Net effect on the phone: "unreachable" until
+            # the user re-pairs, i.e. a silent key rotation caused by a config
+            # typo. Reported by a user as "every couple of weeks I have to
+            # generate a new token" — the cadence was the agent-update cadence,
+            # each update being a chance for the parser and the on-disk config to
+            # disagree. Degrade closed = KEEP the identity we already have.
+            CONFIG_TLS = _parse_tls(raw)
         (units, actions, order, port, launchers, panel, webos, samsung,
          roku, androidtv, vidaa, lgcom, guide) = _parse_config(raw)
     except FileNotFoundError:
+        CONFIG_ERROR = "config not found"
         print("warning: config %s not found, using built-in generic defaults"
               % path, file=sys.stderr, flush=True)
         return
     except (OSError, ValueError) as e:  # ValueError covers JSON + ConfigError
+        CONFIG_ERROR = str(e) or "invalid config"
         print("warning: invalid config %s (%s), using built-in generic defaults"
               % (path, e), file=sys.stderr, flush=True)
         return
+    CONFIG_ERROR = None
     WATCHLIST = units
     WATCHLIST_NAMES = {name for name, _scope in WATCHLIST}
     ACTIONS = actions
@@ -718,7 +742,7 @@ def load_config(path):
     active = raw.get("tv_active")
     CONFIG_TV_ACTIVE = active if isinstance(active, str) and active else None
     CONFIG_GUIDE = guide
-    CONFIG_TLS = _parse_tls(raw)
+    # CONFIG_TLS was already set above, before _parse_config could bail.
     print("config loaded from %s: %d units, %d actions, %d launchers"
           % (path, len(WATCHLIST), len(ACTIONS), len(LAUNCHERS)), flush=True)
 
@@ -742,6 +766,41 @@ def check_config_writable():
               "launcher changes will fail to save. chown the config dir to the "
               "agent's user." % (directory, os.getuid()), file=sys.stderr,
               flush=True)
+
+
+def _config_read_for_write():
+    """Read CONFIG_PATH at the start of a read-modify-write. THE reader, paired
+    with _write_config_atomic below.
+
+    Returns the parsed dict, or None when the file is ABSENT — a legitimate
+    first write (nothing on disk to lose), so the caller builds its skeleton.
+
+    Raises ConfigError when the file EXISTS but cannot be read or is not a JSON
+    object. Every writer used to treat that the same as absent: swallow the
+    error, rebuild a minimal {"units": ...} skeleton, and os.replace it over
+    the real file. That skeleton has no "tls" block — i.e. no cert and no
+    PRIVATE KEY — so one momentarily-unreadable config (a rewrite racing a
+    reader, a full disk, a transient EIO) permanently destroyed the box's TLS
+    identity. The next restart minted a fresh key, the phone's SPKI pin failed
+    closed, and the user had to re-pair ("generate a new token"). Along with
+    the key it silently wiped every launcher, TV pairing and opt-in flag.
+
+    Refusing is the degrade-closed answer: a save that fails with a message
+    beats a save that "succeeds" by deleting the config. Callers already
+    handle ConfigError (a ValueError) — _tls_ensure falls back to its in-memory
+    cert, the pairing routes render a 500, the launcher route a 4xx."""
+    try:
+        with open(CONFIG_PATH, "r", encoding="utf-8") as f:
+            raw = json.load(f)
+    except FileNotFoundError:
+        return None
+    except (OSError, ValueError) as e:
+        raise ConfigError("config %s exists but is unreadable (%s); refusing to "
+                          "overwrite it" % (CONFIG_PATH, e))
+    if not isinstance(raw, dict):
+        raise ConfigError("config %s is not a JSON object; refusing to overwrite "
+                          "it" % CONFIG_PATH)
+    return raw
 
 
 def _write_config_atomic(raw):
@@ -2215,6 +2274,15 @@ def flatpak_update():
     reboot/poweroff never hit because they exit instantly but a long update
     would. A short poll catches an instant failure so we never report a false
     'started'."""
+    # Refuse a second launch while one is live. A re-POST (a second phone, an
+    # app restart mid-drain, a double tap) used to truncate the live transcript,
+    # spawn a second updater to fight the first for flatpak's lock, and re-point
+    # _FLATPAK_PROC so `running` tracked the wrong child. Additive keys only;
+    # the card renders `error`.
+    if flatpak_running():
+        return {"started": False, "running": True,
+                "error": "an update is already running",
+                "log": FLATPAK_UPDATE_LOG}
     elevated = flatpak_can_elevate()
     if elevated:
         # Root wrapper (system installs). Fixed path, no args — the grant is on
@@ -2242,10 +2310,15 @@ def flatpak_update():
             logf.close()
         except OSError:
             pass
-    # ~400ms: an elevation/permission failure with --noninteractive dies at once,
-    # and surfacing that beats a false 'started'.
-    time.sleep(0.4)
-    rc = proc.poll()
+    # Up to ~400ms: an elevation/permission failure with --noninteractive dies
+    # at once, and surfacing that beats a false 'started'. wait(timeout) rather
+    # than sleep+poll so a child that dies in 5ms returns in 5ms -- the handler
+    # thread holds a bounded connection slot for the whole wait, and the failed
+    # press is exactly the case that used to pay the full 400ms every time.
+    try:
+        rc = proc.wait(timeout=0.4)
+    except subprocess.TimeoutExpired:
+        rc = None
     if rc is not None and rc != 0:
         return {"started": False, "elevated": elevated, "exit_code": rc,
                 "log": FLATPAK_UPDATE_LOG, "lines": read_flatpak_log()}
@@ -2411,8 +2484,11 @@ def os_update_apply():
             logf.close()
         except OSError:
             pass
-    time.sleep(0.4)
-    rc = proc.poll()
+    # Same early-death window as flatpak_update, same wait-not-sleep reason.
+    try:
+        rc = proc.wait(timeout=0.4)
+    except subprocess.TimeoutExpired:
+        rc = None
     if rc is not None and rc != 0:
         return {"started": False, "exit_code": rc,
                 "log": OS_UPDATE_LOG, "lines": read_os_update_log()}
@@ -3960,6 +4036,11 @@ def real_status():
         # False when the config dir isn't writable by the agent user, so the app
         # can warn that TV pairing / launcher edits won't persist (agent >= 2.9.12).
         "config_writable": CONFIG_WRITABLE,
+        # Why config.json did not load (agent >= 2.9.108). ADDITIVE and OMITTED
+        # when it loaded cleanly -- the message is the parser's own, e.g.
+        # "Expecting ',' delimiter: line 12 column 3" or "units must be a
+        # non-empty list", so the phone can name the problem.
+        **({"config_error": CONFIG_ERROR} if CONFIG_ERROR else {}),
         "history": _history_snapshot(),
     }
 
@@ -10751,15 +10832,13 @@ def _write_config_launchers_locked(new_launchers):
     config that would wedge the Restart=always daemon. Raises on I/O failure
     (the caller maps it to a 500).
     """
-    raw = None
-    try:
-        with open(CONFIG_PATH, "r", encoding="utf-8") as f:
-            raw = json.load(f)
-    except (OSError, ValueError):
-        raw = None
-    if not isinstance(raw, dict):
-        # No usable config on disk: build a minimal one that still round-
-        # trips through _parse_config (units/actions are required there).
+    # Raises ConfigError on a present-but-unreadable config rather than
+    # rebuilding a skeleton over it (which dropped the TLS key and every
+    # pairing). Only an ABSENT file gets the skeleton below.
+    raw = _config_read_for_write()
+    if raw is None:
+        # No config on disk yet: build a minimal one that still round-trips
+        # through _parse_config (units/actions are required there).
         raw = {
             "units": [{"name": name, "scope": scope}
                       for name, scope in WATCHLIST],
@@ -15647,12 +15726,11 @@ def _webos_save(host, client_key, mac=None):
         cfg["mac"] = mac
     global CONFIG_WEBOS
     with CONFIG_LOCK:
-        try:
-            with open(CONFIG_PATH, "r", encoding="utf-8") as f:
-                raw = json.load(f)
-        except (OSError, ValueError):
-            raw = None
-        if not isinstance(raw, dict):
+        # Raises ConfigError on a present-but-unreadable config rather than
+        # rebuilding a skeleton over it (which dropped the TLS key). The
+        # pairing route catches it and renders a 500 with the reason.
+        raw = _config_read_for_write()
+        if raw is None:
             raw = {"units": [{"name": n, "scope": s} for n, s in WATCHLIST]}
         raw["webos"] = cfg
         _write_config_atomic(raw)
@@ -15701,13 +15779,10 @@ def set_tv_active(brand):
 def _config_set_field(field, value):
     """Read-modify-write CONFIG_PATH, setting top-level <field> = value, via the
     same atomic temp-file + os.replace pattern as the launcher writer. Caller
-    MUST hold CONFIG_LOCK."""
-    try:
-        with open(CONFIG_PATH, "r", encoding="utf-8") as f:
-            raw = json.load(f)
-    except (OSError, ValueError):
-        raw = None
-    if not isinstance(raw, dict):
+    MUST hold CONFIG_LOCK. Raises ConfigError (never overwrites) when the
+    config exists but is unreadable — see _config_read_for_write."""
+    raw = _config_read_for_write()
+    if raw is None:
         raw = {"units": [{"name": n, "scope": s} for n, s in WATCHLIST]}
     raw[field] = value
     _write_config_atomic(raw)
@@ -23572,6 +23647,15 @@ class Handler(BaseHTTPRequestHandler):
                 resp = {"ok": True, "app": APP_NAME,
                         "version": VERSION, "ip": own_ip,
                         "host": short_host}
+                # config_ok:false ONLY when config.json failed to load (agent
+                # >= 2.9.108) -- omitted when fine, so the healthy payload is
+                # byte-unchanged. Pre-auth by design: it is a bare boolean (no
+                # path, no field name), and its whole purpose is to let a phone
+                # whose SECURE link just went dark ask, over the plaintext port
+                # it can still reach, "did your settings break?" -- the exact
+                # state a broken config leaves a box in (HTTPS off).
+                if CONFIG_ERROR:
+                    resp["config_ok"] = False
                 # Advertise the optional HTTPS listener so a TLS-aware app can
                 # discover it (and the fingerprint to pin) over the plaintext
                 # channel it already uses. Appended AFTER the existing keys and

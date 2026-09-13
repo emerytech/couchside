@@ -85,7 +85,7 @@ except ImportError:
 # Same app id the phone expects (AGENT_APPS in app/lib/api.ts); the Windows
 # agent versions independently of the Linux one.
 APP_NAME = "couchside-agent"
-VERSION = "0.4.5-win"
+VERSION = "0.4.6-win"
 
 _PROGRAMDATA = os.environ.get("ProgramData", r"C:\ProgramData")
 DEFAULT_CONFIG_PATH = os.path.join(_PROGRAMDATA, "Couchside", "config.json")
@@ -2221,16 +2221,39 @@ def _write_config_atomic(raw):
         raise
 
 
-def _config_set_field(field, value):
-    """Read config.json, set one top-level field, and write it back atomically
-    (temp file + os.replace). The CALLER must hold CONFIG_LOCK. Raises on I/O
-    failure. Used to persist a Roku add without disturbing other config."""
+def _config_read_for_write():
+    """Read CONFIG_PATH at the start of a read-modify-write (parity with the
+    Linux agent's helper of the same name).
+
+    Returns the parsed dict, or None when the file is ABSENT (a legitimate
+    first write). Raises ConfigError when the file EXISTS but is unreadable or
+    is not a JSON object. The writer below used to treat that like absent --
+    swallow the error and os.replace an EMPTY dict over the real file -- so one
+    momentarily-unreadable config (a save racing a read, a full disk) silently
+    wiped every launcher and Roku pairing. Refusing with a message is the
+    degrade-closed answer; the callers already map ConfigError to a 4xx/500."""
     try:
         with open(CONFIG_PATH, "r", encoding="utf-8-sig") as f:
             raw = json.load(f)
-    except (OSError, ValueError):
-        raw = None
+    except FileNotFoundError:
+        return None
+    except (OSError, ValueError) as e:
+        raise ConfigError("config %s exists but is unreadable (%s); refusing to "
+                          "overwrite it" % (CONFIG_PATH, e))
     if not isinstance(raw, dict):
+        raise ConfigError("config %s is not a JSON object; refusing to overwrite "
+                          "it" % CONFIG_PATH)
+    return raw
+
+
+def _config_set_field(field, value):
+    """Read config.json, set one top-level field, and write it back atomically
+    (temp file + os.replace). The CALLER must hold CONFIG_LOCK. Raises on I/O
+    failure, and ConfigError (never overwrites) when the config exists but is
+    unreadable -- see _config_read_for_write. Used to persist a Roku add
+    without disturbing other config."""
+    raw = _config_read_for_write()
+    if raw is None:
         raw = {}
     raw[field] = value
     _write_config_atomic(raw)
