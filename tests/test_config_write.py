@@ -155,12 +155,95 @@ def test_writable_dir_still_saves(cm):
         shutil.rmtree(directory, ignore_errors=True)
 
 
+def test_unreadable_config_is_refused_not_overwritten(cm):
+    """THE BUG (2.9.108 / 0.4.6-win). Every writer treated "present but
+    unreadable" like "absent": swallow the error, rebuild a skeleton, and
+    os.replace it over the real file. On Linux that skeleton has no `tls`
+    block -- no cert, no PRIVATE KEY -- so one momentarily-unreadable config
+    destroyed the box's TLS identity; the next boot minted a fresh key and the
+    phone's pin (correctly) refused it. Along with the key it wiped every
+    launcher and TV pairing, on both agents. The save must REFUSE instead."""
+    print("THE BUG: a present-but-unreadable config is refused, never overwritten")
+    directory = tempfile.mkdtemp(prefix="cfg-corrupt-")
+    try:
+        path = _seed(directory)
+        cm.load_config(path)
+        corrupt = b'{"units": [ this is not json'
+        with open(path, "wb") as f:
+            f.write(corrupt)
+        raised = None
+        try:
+            _save(cm, "tv_active", "webos")
+        except Exception as e:
+            raised = e
+        check(isinstance(raised, cm.ConfigError),
+              "raises ConfigError (the routes already map it to a 4xx/500)")
+        check(path in str(raised or ""), "message names the config it refused")
+        with open(path, "rb") as f:
+            after = f.read()
+        check(after == corrupt,
+              "the file on disk is byte-identical -- NOT replaced by a skeleton")
+        leftovers = [n for n in os.listdir(directory)
+                     if n.startswith(".couchside-config-")]
+        check(leftovers == [], "no temp file left behind (was: %r)" % leftovers)
+    finally:
+        shutil.rmtree(directory, ignore_errors=True)
+
+
+def test_absent_config_gets_a_skeleton(cm):
+    """CONTROL, opposite direction: a genuinely MISSING file is the legitimate
+    first write -- nothing on disk to lose -- and must still succeed. Without
+    this, refusing unconditionally would pass the test above."""
+    print("control: an absent config is created (first write), not refused")
+    directory = tempfile.mkdtemp(prefix="cfg-absent-")
+    try:
+        path = _seed(directory)
+        cm.load_config(path)   # sets CONFIG_PATH
+        os.unlink(path)        # now absent
+        _save(cm, "tv_active", "roku")
+        with open(path) as f:
+            saved = json.load(f)
+        check(isinstance(saved, dict) and saved.get("tv_active") == "roku",
+              "created from a skeleton and the field landed")
+    finally:
+        shutil.rmtree(directory, ignore_errors=True)
+
+
+def test_existing_fields_survive_a_write(cm):
+    """CONTROL: a readable config is MERGED, not replaced. This is the
+    tls-preservation guarantee on the write path -- the block the Linux agent's
+    identity lives in must come out the other side of an unrelated save."""
+    print("control: an unrelated save keeps the tls block + launchers on disk")
+    directory = tempfile.mkdtemp(prefix="cfg-merge-")
+    try:
+        seeded = dict(MINIMAL)
+        seeded["tls"] = {"enabled": True, "port": 8788, "cert": "CERT", "key": "KEY",
+                         "spki": "ab" * 32}
+        seeded["launchers"] = [{"id": "custom:x", "label": "X", "cmd": ["x"]}]
+        path = os.path.join(directory, "config.json")
+        with open(path, "w") as f:
+            json.dump(seeded, f)
+        cm.load_config(path)
+        _save(cm, "tv_active", "samsung")
+        with open(path) as f:
+            saved = json.load(f)
+        check(saved.get("tls", {}).get("key") == "KEY", "PRIVATE KEY survives the save")
+        check(saved.get("tls", {}).get("spki") == "ab" * 32, "spki survives the save")
+        check(saved.get("launchers") == seeded["launchers"], "launchers survive the save")
+        check(saved.get("tv_active") == "samsung", "and the new field landed")
+    finally:
+        shutil.rmtree(directory, ignore_errors=True)
+
+
 if __name__ == "__main__":
     for _agent, _mod in AGENTS:
         print("=== %s agent ===" % _agent)
         test_relative_path_does_not_follow_cwd(_mod)
         test_unwritable_dir_is_actionable(_mod)
         test_writable_dir_still_saves(_mod)
+        test_unreadable_config_is_refused_not_overwritten(_mod)
+        test_absent_config_gets_a_skeleton(_mod)
+        test_existing_fields_survive_a_write(_mod)
         print()
     if _fail:
         print("FAILED: %d" % len(_fail))
