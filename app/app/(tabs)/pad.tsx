@@ -46,6 +46,7 @@ import { StatusBar } from 'expo-status-bar';
 
 import { ComboPanel } from '@/components/ComboPanel';
 import { Gated } from '@/components/Gated';
+import { LandscapeLaptop } from '@/components/LandscapeLaptop';
 import { LandscapePad, LandscapePadTooSmall, MovePad } from '@/components/LandscapePad';
 import { setImmersive } from '@/lib/immersive';
 import { setRunningAppid } from '@/lib/gameTheme';
@@ -889,6 +890,11 @@ function PadScreen() {
   const navigation = useNavigation();
   const { width, height } = useWindowDimensions();
   const landscape = width > height;
+  // Landscape "laptop mode" (opt-out pref, default on): the pointer/keyboard
+  // surfaces — everything that is NOT the gamepad, move, or the phone-local note
+  // — turn into a trackpad + mini-QWERTY when the phone is held sideways, instead
+  // of force-locking to portrait. See the laptop derivation and early return below.
+  const landscapeLaptopPref = usePref('landscapeLaptop');
   const { settings, ready, update } = useSettings();
   // Input mode lives on the active BOX record; with no box paired,
   // SettingsContext.update() is a silent no-op and the mode toggle looked
@@ -952,14 +958,27 @@ function PadScreen() {
     if (exited && !landscape) setExited(false);
   }, [exited, landscape]);
 
+  // LAPTOP MODE eligibility (opt-out pref, default on): the pointer/keyboard
+  // surfaces — anything that is not the gamepad, move, or the phone-local note —
+  // rotate into a trackpad + mini-QWERTY instead of force-locking to portrait.
+  // `note` stays a portrait scratchpad; gamepad/move keep their own spreads.
+  // Declared before useLockOrientation because the policy below reads it.
+  const laptopEligible =
+    landscapeLaptopPref && mode !== 'gamepad' && mode !== 'move' && mode !== 'note';
+  const laptop = laptopEligible && landscape && !exited;
+
   useLockOrientation(
     // MOVE is the one mode with layouts in BOTH orientations, so it never
     // forces portrait — LOCK pins whichever way the phone is currently held.
     mode === 'move'
       ? (padLock ? (landscape ? 'landscape-locked' : 'portrait-locked') : 'allow-landscape')
-      : mode !== 'gamepad' || exited ? 'portrait'
-        : padLock ? 'landscape-locked'
-          : 'allow-landscape',
+      : mode === 'gamepad'
+        // Gamepad rotates unless the user tapped ✕ (exited); LOCK pins it.
+        ? (exited ? 'portrait' : padLock ? 'landscape-locked' : 'allow-landscape')
+        // Every other surface: allow rotation into laptop mode when the pref is on
+        // (and the user hasn't just exited it), else stay portrait as before.
+        : laptopEligible && !exited ? 'allow-landscape'
+          : 'portrait',
   );
 
   /**
@@ -974,7 +993,9 @@ function PadScreen() {
   // Gamepad immerses in landscape only (rotating back is its exit).
   // MOVE immerses in BOTH orientations — portrait gets the one-handed
   // vertical table — so its only exits are ✕ and the mode switch.
-  const immersive = mode === 'move' || (landscape && mode === 'gamepad' && !exited);
+  // Laptop mode is immersive too: it owns the whole screen (no tab bar / pill /
+  // mode row), so the trackpad + keyboard get the short axis the chrome ate.
+  const immersive = mode === 'move' || (landscape && mode === 'gamepad' && !exited) || laptop;
   /**
    * PUBLISHED ONLY WHILE THE PAD TAB IS FOCUSED.
    *
@@ -991,6 +1012,9 @@ function PadScreen() {
    */
   const [padFocused, setPadFocused] = useState(true);
   const immersiveLive = immersive && padFocused;
+  // Laptop mode takes the whole screen like the gamepad immersion, but composes
+  // the trackpad + keyboard rather than a controller — its own early return below.
+  const laptopLive = laptop && padFocused;
   useEffect(() => {
     setImmersive(immersiveLive);
   }, [immersiveLive]);
@@ -1878,6 +1902,48 @@ function PadScreen() {
   // device on EVERY rotation — the exact lifecycle churn this project's worst
   // bugs live in (KI-053). Same component, chrome suppressed by state; the
   // socket never notices the phone turned.
+  if (laptopLive) {
+    // Trackpad + mini-QWERTY over the Pad's existing gamepad-WS client (no new
+    // socket — the KI-053 rule). ✕ / rotate-back exits via the same `exited`
+    // latch the gamepad landscape uses.
+    return (
+      <>
+        <StatusBar hidden />
+        <LandscapeLaptop
+          client={client}
+          tp={{
+            onMove: tpMove,
+            onLeftClick: tpLeft,
+            onRightClick: tpRight,
+            onScroll: tpScroll,
+            onDragStart: tpDragStart,
+            onDragEnd: tpDragEnd,
+          }}
+          hasDesktop={hasDesktop}
+          onExit={exitLandscape}
+        />
+        {controlReq != null && (
+          <View style={styles.handoffOverlay}>
+            <Text style={styles.handoffText} numberOfLines={2}>
+              {controlReq} wants control
+            </Text>
+            <View style={styles.handoffBtns}>
+              <Pressable
+                onPress={() => { haptic(); client.denyControl(); setControlReq(null); }}
+                style={({ pressed }) => [styles.handoffBtn, pressed && styles.btnPressed]}>
+                <Text style={styles.handoffBtnText}>KEEP</Text>
+              </Pressable>
+              <Pressable
+                onPress={() => { haptic(); client.grantControl(); setControlReq(null); }}
+                style={({ pressed }) => [styles.handoffBtn, styles.handoffBtnPass, pressed && styles.btnPressed]}>
+                <Text style={[styles.handoffBtnText, styles.handoffBtnPassText]}>PASS</Text>
+              </Pressable>
+            </View>
+          </View>
+        )}
+      </>
+    );
+  }
   if (immersiveLive) {
     return (
       <>

@@ -944,6 +944,7 @@ function SetupBody() {
   const tvStepPx = usePref('tvStepPx');
   const tvNavEnabled = usePref('tvNavEnabled');
   const watchEnabled = usePref('watchEnabled');
+  const landscapeLaptop = usePref('landscapeLaptop');
   const themeMode = useThemeMode();
   const accent = useAccent();
   const themePack = useThemePack();
@@ -1947,6 +1948,15 @@ function SetupBody() {
                 value={watchEnabled}
                 onValueChange={(v) => {
                   void setPref('watchEnabled', v);
+                  hapticSelection();
+                }}
+              />
+              <TogglePref
+                label="Landscape laptop mode"
+                sub="Turn the phone sideways on the Pad and the pointer/keyboard surfaces become a trackpad with a keyboard under it, like a laptop, for driving the box's desktop. Portrait is unchanged, and the gamepad still spreads out sideways as before. Turn this off to keep every mode upright, so rotating by accident never changes the screen."
+                value={landscapeLaptop}
+                onValueChange={(v) => {
+                  void setPref('landscapeLaptop', v);
                   hapticSelection();
                 }}
               />

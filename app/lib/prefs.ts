@@ -301,6 +301,15 @@ export type Prefs = {
    *  cap still gates it first: turning this on cannot make the segment appear
    *  on a box that has no player. */
   watchEnabled: boolean;
+  /** Rotate the phone sideways on the Pad tab and (in the non-gamepad surfaces)
+   *  it becomes a trackpad + mini-QWERTY "laptop", for driving the box's desktop.
+   *
+   *  Default ON: landscape is otherwise an unused gesture on those surfaces (they
+   *  force portrait today). The switch exists because rotation must not silently
+   *  change the interface for someone who turns the phone by accident or reads in
+   *  bed — turning this off keeps every mode portrait-locked as before. The
+   *  gamepad and move modes are unaffected: they keep their own landscape spreads. */
+  landscapeLaptop: boolean;
 };
 
 export const DEFAULTS: Prefs = {
@@ -352,6 +361,7 @@ export const DEFAULTS: Prefs = {
   tvStepPx: TV_STEP_DEFAULT,
   tvNavEnabled: false,
   watchEnabled: true,
+  landscapeLaptop: true,
 };
 
 /** The choices each select-style pref offers (kept next to the store it feeds). */
@@ -483,6 +493,7 @@ function normalize(raw: unknown): Prefs {
     tvStepPx: num(o.tvStepPx, TV_STEPS, DEFAULTS.tvStepPx) as TvStepPx,
     tvNavEnabled: bool(o.tvNavEnabled, DEFAULTS.tvNavEnabled),
     watchEnabled: bool(o.watchEnabled, DEFAULTS.watchEnabled),
+    landscapeLaptop: bool(o.landscapeLaptop, DEFAULTS.landscapeLaptop),
   };
 }
 
