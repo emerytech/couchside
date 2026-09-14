@@ -338,13 +338,18 @@ function normalizeCaps(raw: unknown): BoxCaps | undefined {
   // capsEqual) and the cap never persists, so "Paste from box" re-probes
   // /api/clipboard every launch.
   const wlclipboard = bool('wlclipboard');
+  // medialaunch = launch native media apps via curated .desktop (agent >= 2.9.110).
+  // Same optional-cap drop trap: omit it from the RETURN object below (or from
+  // capsEqual) and the cap never persists, so the "Apps on the box" grid
+  // re-probes /api/player/media every launch.
+  const medialaunch = bool('medialaunch');
   return {
     gamepad, steam, media, tv, screen, power_schedule,
     screensaver, couchmode, bigpicture, desktop, steamlink, gaming, streamhost,
     steammenus,
     boxbattery, launchers, file_upload, session_default, display_info, player,
     steaminstall, utilities, screenstream, screenstream_h264, audioswitch,
-    ledcontrol, openrgb, wlclipboard,
+    ledcontrol, openrgb, wlclipboard, medialaunch,
   };
 }
 

@@ -9,7 +9,7 @@ import {
 } from 'react-native';
 
 import { usePoll } from '@/hooks/usePoll';
-import { api, hostKey, PlayerOp, PlayerPlayback, PlayerState } from '@/lib/api';
+import { api, hostKey, MediaApp, MediaAppsState, PlayerOp, PlayerPlayback, PlayerState } from '@/lib/api';
 import { hapticError, hapticHeavy, hapticLight, hapticSuccess } from '@/lib/haptics';
 import { MEDIA_HOLD_MS } from '@/lib/mediaSeek';
 import { useSettings } from '@/lib/SettingsContext';
@@ -214,6 +214,76 @@ export function WatchPanel() {
   const searchable = state?.searchable ?? [];
   const recents = useWatchRecents();
 
+  // Native media apps installed on the box (agent >= 2.9.110, cap `medialaunch`).
+  // Polled independently of the web Player: a box can have Kodi without the
+  // Couchside Player tile. A slow 20s cadence — the installed set rarely changes.
+  const mediaAppsPoll = usePoll<MediaAppsState | null>(
+    () => api.mediaApps(settings),
+    20000,
+    ready && configured,
+    hostKey(settings),
+  );
+  const mediaApps = mediaAppsPoll.data?.apps ?? [];
+
+  // Launch a native media app (optionally a named action like Kodi Fullscreen).
+  // The box is the authority: an unknown id 404s having launched nothing. No
+  // optimistic "running" card — native apps report no playback state back.
+  const launchApp = useCallback(
+    async (appId: string, actionId?: string) => {
+      hapticLight();
+      const token = `app:${appId}${actionId ? ':' + actionId : ''}`;
+      setBusy(token);
+      setError(null);
+      try {
+        const ok = await api.launchMediaApp(settings, appId, actionId);
+        if (ok) hapticSuccess();
+        else { hapticError(); setError('The box couldn’t launch that app.'); }
+      } finally {
+        setBusy(null);
+      }
+    },
+    [settings],
+  );
+
+  // "APPS ON THE BOX" — the native media apps grid, rendered both on the full
+  // Watch surface and on a box that has media apps but no web Player (so it is
+  // built once here and dropped into both return sites).
+  const mediaGrid = mediaApps.length > 0 ? (
+    <>
+      <Text style={styles.section}>APPS ON THE BOX</Text>
+      <View style={styles.grid}>
+        {mediaApps.map((appItem: MediaApp) => (
+          <View key={appItem.id} style={styles.mediaCol}>
+            <Pressable
+              onPress={() => launchApp(appItem.id)}
+              disabled={busy !== null}
+              testID={`media-app-${appItem.id}`}
+              style={({ pressed }) => [styles.tile, styles.mediaTile, pressed && styles.pressed]}
+            >
+              <View style={[styles.tileAccent, { backgroundColor: ACCENTS[appItem.id] ?? t.slate }]} />
+              <Text style={styles.tileText}>
+                {busy === `app:${appItem.id}` ? 'Opening…' : appItem.name}
+              </Text>
+            </Pressable>
+            {appItem.actions.map((a) => (
+              <Pressable
+                key={a.id}
+                onPress={() => launchApp(appItem.id, a.id)}
+                disabled={busy !== null}
+                testID={`media-action-${appItem.id}-${a.id}`}
+                style={({ pressed }) => [styles.mediaAction, pressed && styles.pressed]}
+              >
+                <Text style={styles.mediaActionText} numberOfLines={1}>
+                  {busy === `app:${appItem.id}:${a.id}` ? 'Opening…' : a.name}
+                </Text>
+              </Pressable>
+            ))}
+          </View>
+        ))}
+      </View>
+    </>
+  ) : null;
+
   const open = useCallback(
     async (service: string, path = '', query = '') => {
       hapticLight();
@@ -365,6 +435,18 @@ export function WatchPanel() {
 
   // 404 from the box (no tile, or no Widevine-capable browser) surfaces as null.
   if (!state) {
+    // No web Player tile — but the box may still have native media apps to
+    // launch (the two caps are independent). Show just their grid rather than a
+    // dead-end "not installed" screen.
+    if (mediaGrid) {
+      return (
+        <View style={styles.root}>
+          <ScrollView style={styles.root} contentContainerStyle={styles.content}>
+            {mediaGrid}
+          </ScrollView>
+        </View>
+      );
+    }
     return (
       <View style={styles.empty}>
         <Text style={styles.emptyTitle}>Player not installed</Text>
@@ -764,6 +846,8 @@ export function WatchPanel() {
         </Text>
       ) : null}
 
+      {mediaGrid}
+
       <Text style={styles.section}>SERVICES</Text>
       <View style={styles.grid}>
         {services.map((id) => {
@@ -958,6 +1042,15 @@ const makeStyles = (t: Palette) =>
       marginBottom: 8,
     },
     tileText: { color: t.text, fontSize: 14, fontWeight: '600', textAlign: 'center' },
+    // A media app + its optional action chips stacked in one grid cell.
+    mediaCol: { minWidth: '30%', flexGrow: 1, gap: 6 },
+    mediaTile: { minWidth: undefined, flexGrow: undefined, width: '100%' },
+    mediaAction: {
+      alignItems: 'center', justifyContent: 'center',
+      paddingVertical: 9, paddingHorizontal: 8, borderRadius: 9,
+      backgroundColor: t.inset, borderColor: t.cardBorder, borderWidth: StyleSheet.hairlineWidth,
+    },
+    mediaActionText: { color: t.textDim, fontSize: 12, fontWeight: '600' },
     tileTextActive: { color: t.green },
     pressed: { opacity: 0.7 },
   });

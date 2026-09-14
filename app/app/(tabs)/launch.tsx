@@ -641,7 +641,12 @@ function LaunchScreen() {
   // Chrome and still never want streaming on the Launch tab, and turning the
   // pref on can never conjure the segment onto a box with no player.
   const watchEnabled = usePref('watchEnabled');
-  const showWatch = activeBox?.caps?.player === true && watchEnabled;
+  // Watch shows when the box has the web Player (cap `player`) OR native media
+  // apps to launch (cap `medialaunch`, agent >= 2.9.110) — the two are
+  // independent, so a box with Kodi but no Couchside Player tile still gets the
+  // segment. Both ride the same watchEnabled opt-in.
+  const showWatch =
+    (activeBox?.caps?.player === true || activeBox?.caps?.medialaunch === true) && watchEnabled;
   // DERIVED, not stored. If the pref is switched off (or the box is swapped for
   // one with no player) while WATCH is showing, the segment row disappears —
   // and a stored 'watch' would strand the user on a panel with no way back.

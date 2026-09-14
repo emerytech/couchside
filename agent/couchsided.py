@@ -26,6 +26,7 @@ import os
 import random
 import re
 import select
+import shlex
 import shutil
 import signal
 import socket
@@ -49,7 +50,7 @@ except ImportError:  # pragma: no cover
     fcntl = None
 
 APP_NAME = "couchside-agent"
-VERSION = "2.9.109"
+VERSION = "2.9.110"
 UID = os.getuid()
 XDG_RUNTIME_DIR = "/run/user/%d" % UID
 
@@ -1858,7 +1859,7 @@ def set_caps(mock):
                  "streamhost", "steammenus", "boxbattery", "file_upload",
                  "session_default", "display_info", "player", "screenstream",
                  "screenstream_h264", "audioswitch", "ledcontrol",
-                 "openrgb", "wlclipboard")}
+                 "openrgb", "wlclipboard", "medialaunch")}
         return
     CAPS = {
         "gamepad": _uinput_writable(),
@@ -1918,6 +1919,10 @@ def set_caps(mock):
         # False in Game Mode: gamescope exposes a socket but no data device, so
         # the same single-socket gate that keeps phone->box paste honest applies.
         "wlclipboard": safe(wlclipboard_available),
+        # Launch a natively-installed media app (Kodi/Plex/Jellyfin/Moonlight/
+        # VLC/Spotify) from the phone via its curated XDG .desktop entry.
+        # Linux-only; absent when the box has none of the curated apps.
+        "medialaunch": safe(medialaunch_available),
     }
 
 
@@ -2916,6 +2921,217 @@ _PLAYER_SEARCHABLE = ()
 # only the canonical host rejected the one service whose deep-link pattern is
 # verified. Never used to decide what may be OPENED.
 _PLAYER_SERVICE_HOSTS = {}
+
+
+# --- native media apps (Kodi/Plex/Jellyfin/Moonlight/VLC/Spotify) -----------
+# Launch a natively-installed media app from the phone via its curated XDG
+# .desktop entry -- the thing the web-only Player can't reach. The whole feature
+# is an ALLOWLIST: the client sends an app_id (and optional action_id), both
+# LOOKED UP in a table this agent built by matching a CURATED set of known
+# .desktop filenames against the box's SYSTEM application dirs. Nothing the
+# client sends is ever a path, an Exec line, or a command (CLAUDE.md 3;
+# project_media-player.md 5b).
+#
+# SYSTEM DIRS ONLY. ~/.local/share/applications is deliberately EXCLUDED: it is
+# user-writable, so a browser download or a game's installer could plant a
+# malicious tv.kodi.Kodi.desktop there and turn a tile tap into code execution.
+# Reading only root-owned dirs makes that attack structurally impossible.
+# Module constant so tests repoint it at a fixture tree.
+_MEDIA_APP_DIRS = (
+    "/usr/share/applications",
+    "/usr/local/share/applications",
+    "/var/lib/flatpak/exports/share/applications",
+)
+
+# The curated known-media list: (id, display name, candidate .desktop basenames
+# in preference order). NOT blanket discovery of every .desktop on the box --
+# that is a glob, which CLAUDE.md 3.3 forbids, and the exact attack above.
+# Adding an app is adding an entry. Filenames come from the real hardware survey
+# (project_media-player.md) plus the common flatpak/native ids.
+_MEDIA_CATALOG = (
+    ("kodi", "Kodi",
+     ("tv.kodi.Kodi.desktop", "org.xbmc.Kodi.desktop", "kodi.desktop")),
+    ("plex", "Plex",
+     ("tv.plex.PlexHTPC.desktop", "com.plexapp.plexhtpc.desktop",
+      "plexhtpc.desktop", "plexmediaplayer.desktop")),
+    ("jellyfin", "Jellyfin",
+     ("com.github.iwalton3.jellyfin-media-player.desktop",
+      "org.jellyfin.JellyfinMediaPlayer.desktop",
+      "jellyfinmediaplayer.desktop")),
+    ("moonlight", "Moonlight",
+     ("com.moonlight_stream.Moonlight.desktop", "moonlight.desktop")),
+    ("vlc", "VLC",
+     ("org.videolan.VLC.desktop", "vlc.desktop")),
+    ("spotify", "Spotify",
+     ("com.spotify.Client.desktop", "spotify.desktop")),
+)
+
+# XDG Exec field codes. Each is a placeholder for a file/URL/icon the launcher
+# would substitute; we launch with NO argument, so every one is DROPPED. Handled
+# at the TOKEN level after shlex.split -- never a regex on the raw string, which
+# would mangle a literal %% (an escaped percent) or a % inside a quoted arg.
+_XDG_FIELD_CODES = frozenset(
+    ("%f", "%F", "%u", "%U", "%i", "%c", "%k",
+     "%d", "%D", "%n", "%N", "%v", "%m"))
+
+_MEDIA_APPS = {}   # {id: {"name", "exec": [argv], "actions": {aid: {name,exec}}}}
+
+
+def _desktop_exec_argv(exec_str):
+    """An XDG Exec= value -> an argv LIST, field codes stripped, or [] if it
+    can't be parsed. shlex.split first (so quoting is honoured), then drop any
+    standalone field-code token, then unescape %% -> % in what remains. A
+    launcher wrapper (`flatpak run ... tv.kodi.Kodi`) is returned WHOLE -- argv[0]
+    is never assumed to be the app, so we do not try to 'find the real binary'."""
+    try:
+        toks = shlex.split(exec_str)
+    except ValueError:
+        return []
+    out = []
+    for tok in toks:
+        if tok in _XDG_FIELD_CODES:
+            continue
+        out.append(tok.replace("%%", "%"))
+    return out
+
+
+def _parse_desktop(path):
+    """Parse a .desktop file into {"name","exec","actions"}, or None if it has no
+    usable [Desktop Entry] Exec. Section-aware: [Desktop Entry] vs
+    [Desktop Action <id>], so an action's Exec is never confused with the main
+    one, and only actions DECLARED in the entry's Actions= are offered. Never
+    raises; an unparseable file returns None (degrade closed)."""
+    entry_name = None
+    entry_exec = None
+    actions_decl = ()
+    groups = {}          # {action_id: {"name":..., "exec_str":...}}
+    section = None
+    try:
+        with open(path, "r", encoding="utf-8", errors="replace") as f:
+            for raw in f:
+                line = raw.strip()
+                if line.startswith("[") and line.endswith("]"):
+                    section = line[1:-1].strip()
+                    continue
+                if line.startswith("#") or "=" not in line:
+                    continue
+                key, _, val = line.partition("=")
+                key = key.strip()
+                val = val.strip()
+                if section == "Desktop Entry":
+                    if key == "Name" and entry_name is None:
+                        entry_name = val
+                    elif key == "Exec" and entry_exec is None:
+                        entry_exec = val
+                    elif key == "Actions":
+                        actions_decl = tuple(a for a in val.split(";") if a)
+                elif section and section.startswith("Desktop Action "):
+                    aid = section[len("Desktop Action "):].strip()
+                    g = groups.setdefault(aid, {})
+                    if key == "Name" and "name" not in g:
+                        g["name"] = val
+                    elif key == "Exec" and "exec_str" not in g:
+                        g["exec_str"] = val
+    except OSError:
+        return None
+    argv = _desktop_exec_argv(entry_exec) if entry_exec else []
+    if not argv:
+        return None   # no runnable main Exec -> not offered
+    actions = {}
+    for aid in actions_decl:
+        g = groups.get(aid)
+        if not g or not g.get("exec_str"):
+            continue
+        a_argv = _desktop_exec_argv(g["exec_str"])
+        if not a_argv:
+            continue
+        actions[aid] = {"name": g.get("name") or aid, "exec": a_argv}
+    return {"name": entry_name or "", "exec": argv, "actions": actions}
+
+
+def _find_desktop(basenames):
+    """First existing .desktop among `basenames`, searched in the SYSTEM dirs
+    only (never ~/.local). A path, or None."""
+    for base in basenames:
+        for d in _MEDIA_APP_DIRS:
+            p = os.path.join(d, base)
+            if os.path.isfile(p):
+                return p
+    return None
+
+
+def set_media_apps(mock):
+    """Build _MEDIA_APPS by matching the curated catalog against the box's
+    system .desktop files. Empty table -> the capability is absent
+    (probe-and-appear). Call BEFORE set_caps so `medialaunch` reflects the scan.
+    Degrades closed: an unparseable entry is skipped, not offered."""
+    global _MEDIA_APPS
+    if mock:
+        _MEDIA_APPS = {
+            "kodi": {"name": "Kodi",
+                     "exec": ["/usr/bin/flatpak", "run", "tv.kodi.Kodi"],
+                     "actions": {"Fullscreen":
+                                 {"name": "Open in fullscreen",
+                                  "exec": ["/usr/bin/flatpak", "run",
+                                           "tv.kodi.Kodi", "--fullscreen"]}}},
+            "plex": {"name": "Plex",
+                     "exec": ["/usr/bin/flatpak", "run", "tv.plex.PlexHTPC"],
+                     "actions": {}},
+        }
+        return
+    apps = {}
+    for app_id, name, basenames in _MEDIA_CATALOG:
+        path = _find_desktop(basenames)
+        if not path:
+            continue
+        parsed = _parse_desktop(path)
+        if not parsed:
+            continue
+        apps[app_id] = {"name": parsed["name"] or name,
+                        "exec": parsed["exec"], "actions": parsed["actions"]}
+    _MEDIA_APPS = apps
+
+
+def medialaunch_available():
+    """True when the box has at least one curated native media app. Never raises."""
+    try:
+        return bool(_MEDIA_APPS)
+    except Exception:
+        return False
+
+
+def media_apps_state(mock):
+    """Payload for GET /api/player/media: the native media apps this box can
+    launch, each with any TV/fullscreen actions. Read-only. The Exec argv is
+    NEVER sent to the client -- only ids and display names."""
+    _ = mock
+    apps = []
+    for app_id, rec in sorted(_MEDIA_APPS.items()):
+        apps.append({
+            "id": app_id,
+            "name": rec.get("name") or app_id,
+            "actions": [{"id": aid, "name": a.get("name") or aid}
+                        for aid, a in sorted(rec.get("actions", {}).items())],
+        })
+    return {"available": bool(apps), "apps": apps}
+
+
+def media_launch(app_id, action_id, mock):
+    """Look up (app_id, action_id) in _MEDIA_APPS and launch it. Raises
+    ValueError for an unknown app or action -- NOTHING runs in that case. The
+    client string only ever SELECTS a record; the argv comes from the box's own
+    .desktop file, never from the request."""
+    if not isinstance(app_id, str) or app_id not in _MEDIA_APPS:
+        raise ValueError("unknown app")
+    rec = _MEDIA_APPS[app_id]
+    if action_id:
+        if (not isinstance(action_id, str)
+                or action_id not in rec.get("actions", {})):
+            raise ValueError("unknown action")
+        argv = rec["actions"][action_id]["exec"]
+    else:
+        argv = rec["exec"]
+    return mock_launch(argv) if mock else real_launch(argv)
 
 
 def _pl_ask(*args, timeout=15):
@@ -24156,6 +24372,14 @@ class Handler(BaseHTTPRequestHandler):
                     self._send(404, {"error": "player not installed"}, started)
                 else:
                     self._send(200, player_info(), started)
+            elif path == "/api/player/media":
+                # READ-ONLY: the natively-installed media apps this box can launch
+                # (cap `medialaunch`), each with any TV/fullscreen actions.
+                # INDEPENDENT of the Couchside Player tile. Always 200 with
+                # `available` (like /api/audio): 404 = agent too old,
+                # available:false = no curated app here. No client input reaches
+                # it. Launch is POST /api/player/media.
+                self._send(200, media_apps_state(self.mock), started)
             elif path == "/api/couch-mode/status":
                 # Full ceremony job every poll (never a delta) so a phone joining
                 # mid-run catches up for free. Gated like the Couch Mode control
@@ -25168,6 +25392,28 @@ class Handler(BaseHTTPRequestHandler):
                                      "error": "unknown launcher"}, started)
                     return
                 result = mock_launch(argv) if self.mock else real_launch(argv)
+                self._send(200, result, started)
+                return
+
+            # POST /api/player/media {app_id, action_id?}: launch a curated native
+            # media app. Both ids are LOOKED UP in _MEDIA_APPS -- an unknown one
+            # is a 404 with nothing launched; the argv comes from the box's own
+            # .desktop file, never from the request.
+            if path == "/api/player/media":
+                try:
+                    req = json.loads(body.decode("utf-8")) if body else {}
+                except (ValueError, UnicodeDecodeError):
+                    self._send(400, {"ok": False, "error": "bad json"}, started)
+                    return
+                if not isinstance(req, dict):
+                    self._send(400, {"ok": False, "error": "bad json"}, started)
+                    return
+                try:
+                    result = media_launch(req.get("app_id"),
+                                          req.get("action_id"), self.mock)
+                except ValueError as e:
+                    self._send(404, {"ok": False, "error": str(e)}, started)
+                    return
                 self._send(200, result, started)
                 return
 
@@ -27511,6 +27757,7 @@ def main():
     # Asks the player tile for its own service list and browser verdict, so no
     # request path has to spawn it just to answer "can this box do it".
     set_player(args.mock)
+    set_media_apps(args.mock)  # scans curated .desktop files; before set_caps
     set_guide(args.mock)  # arms the guide-hold watcher when opted in
     osk_arm(args.mock)  # tails Steam's UI log; silent no-op without it
     set_couchmode(args.mock)  # ceremony engine honors --mock

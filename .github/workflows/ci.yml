@@ -883,6 +883,16 @@ jobs:
       - name: Unit tests (clipboard read)
         run: python3 tests/test_clipboard_read.py
 
+      # Native media-app launch (GET/POST /api/player/media, cap medialaunch):
+      # the client sends only an app_id/action_id, both LOOKED UP in a table the
+      # agent built from CURATED .desktop files in SYSTEM dirs only. Pins the
+      # allowlist refusal on a real_launch SPY (nothing runs on a bad id),
+      # field-code stripping / %% escaping / shlex quoting against verbatim
+      # hardware fixtures, the §5b planted-user-dir exclusion, the auth gate on
+      # GET and POST, and five of the six cap edit sites.
+      - name: Unit tests (media launcher)
+        run: python3 tests/test_media_launcher.py
+
       # The /api/actions route dispatch. A non-allowlisted id must be 404'd AND
       # dispatch nothing (asserted on a spy, not inferred from the status code) —
       # this route hands ids to subprocess, so a hole here runs arbitrary

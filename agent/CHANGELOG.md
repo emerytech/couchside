@@ -18,6 +18,16 @@ the same thing regardless of what actually changed.
 Write for the person holding the phone, not for the commit log. They are
 deciding whether to press "Update now" on a machine across the room.
 
+## 2.9.110
+
+**Open your media apps from the phone.** If the box has Kodi, Plex, Jellyfin,
+Moonlight, VLC or Spotify installed natively, they now show up in Watch and
+launch with a tap — no more being limited to the web services. Kodi opens
+straight into its fullscreen TV mode where it offers one.
+
+Only apps Couchside knows by name are offered, and it only ever launches the
+box's own copy — nothing you send from the phone becomes a command.
+
 ## 2.9.109
 
 **Paste from the box, and watch the network move.** Copy something on the box
