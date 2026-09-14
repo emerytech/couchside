@@ -18,6 +18,18 @@ the same thing regardless of what actually changed.
 Write for the person holding the phone, not for the commit log. They are
 deciding whether to press "Update now" on a machine across the room.
 
+## 2.9.109
+
+**Paste from the box, and watch the network move.** Copy something on the box
+— a link, a login code, a path — and pull it straight onto your phone with a
+tap, no typing it back by hand. And the Console's vitals now show live network
+throughput, so you can see a download actually pulling instead of guessing from
+the progress bar.
+
+Both are read-only and stay on your LAN. Paste-from-box works on a desktop
+session; in Steam's Game Mode the clipboard isn't reachable, so it quietly
+doesn't offer it there.
+
 ## 2.9.108
 
 **Your phone stays paired.** Some people found their phone losing its

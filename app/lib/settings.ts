@@ -333,13 +333,18 @@ function normalizeCaps(raw: unknown): BoxCaps | undefined {
   // from capsEqual) and the cap never persists, so the OpenRGB card re-probes
   // /api/openrgb every launch.
   const openrgb = bool('openrgb');
+  // wlclipboard = read the box clipboard back to the phone (agent >= 2.9.109).
+  // Same optional-cap drop trap: omit it from the RETURN object below (or from
+  // capsEqual) and the cap never persists, so "Paste from box" re-probes
+  // /api/clipboard every launch.
+  const wlclipboard = bool('wlclipboard');
   return {
     gamepad, steam, media, tv, screen, power_schedule,
     screensaver, couchmode, bigpicture, desktop, steamlink, gaming, streamhost,
     steammenus,
     boxbattery, launchers, file_upload, session_default, display_info, player,
     steaminstall, utilities, screenstream, screenstream_h264, audioswitch,
-    ledcontrol, openrgb,
+    ledcontrol, openrgb, wlclipboard,
   };
 }
 

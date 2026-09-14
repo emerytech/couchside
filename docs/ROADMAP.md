@@ -920,8 +920,11 @@ network and is useful alone.
   key (all six edit sites — the sixth is `protocol/protocol.json`), and tests proving a
   non-allowlisted service_id registers nothing.
 
-> 📋 **OPEN — still not built (reconciled 2026-08-27).**
-> Not built — only phone->box text entry (wl-copy); no /api/clipboard read route, no wlclipboard cap, no consent-gated box->phone copy.
+> 🟡 **PARTIAL (2026-09-14, #526).** The box->phone READ half shipped: GET /api/clipboard
+> (cap `wlclipboard`, all six sites), read-only via wl-paste, and a "Paste from box" pull on
+> the note pad that appends the box clipboard. Harness-pressed. STILL NOT built: the
+> consent-gated phone->box "put this on the box clipboard" write (the other direction beyond
+> the existing non-ASCII paste path). Ships with agent 2.9.109.
 >
 ### Two-way clipboard (box <-> phone)
 - **priority:** P2 · **risk:** low · **affects:** agent + app · **depends_on:** none
@@ -1035,8 +1038,12 @@ network and is useful alone.
 - **Unverified:** none of these have been read on a DISCRETE-GPU box or a desktop; the
   hwmon paths in particular vary by driver.
 
-> 📋 **OPEN — still not built (reconciled 2026-08-27).**
-> Not built — agent reports link info but never samples /proc/net/dev for a byte-rate delta.
+> ✅ **DONE (2026-09-14, #526).** read_net_rate() samples /proc/net/dev across status polls
+> (lock-guarded last-sample; lo excluded; first-poll/reset omit; idle reports 0), spliced as
+> additive net_rx_bps/net_tx_bps. App shows a "↓/↑ rate" subline under the VITALS strip (not a
+> 6th tile — the strip is at the 375pt wrap limit). Harness-pressed. Ships with agent 2.9.109.
+> KI-085: the /proc/net/dev fixture is synthetic (boxes offline); capture a real one before
+> trusting an absolute rate.
 >
 ### Live network throughput on Console
 - **priority:** P3 · **risk:** low · **affects:** agent + app · **depends_on:** none
@@ -1194,8 +1201,21 @@ recommendation was wrong, not merely superseded.
   down when the controller role is released (overlaps the auto-drop-pad feature above).
 - **Output:** the numbers, plus a KNOWN_ISSUES entry only if a real regression is found.
 
-> 📋 **OPEN — still not built (reconciled 2026-08-27).**
-> Not found — Notifications / In Game / Remote Play slugs are still missing from STEAM_MENUS.
+> 🔴 **BLOCKED ON HARDWARE (revisited 2026-09-14).** Investigated again: every obvious slug for
+> all three panels is ALREADY measured-absent (agent comment ~21969, and the MEASURED_ABSENT
+> regression set in tests/test_steam_menus.py fails CI on any of them) — notifications,
+> notification, alerts, ingame, in-game, overlay, gameoverlay, remoteplay, remote-play,
+> streaming, broadcast, and more. The Steam UI bundle only literals `settings/{audio,friends,
+> ingame,voice}`, and of those `ingame`/`voice` were BOTH measured absent in Game Mode — Game
+> Mode's settings routing differs from desktop. So the slugs are UNKNOWN, not un-typed. The only
+> completion path: fire candidate steam:// URLs on a real Steam machine in Game Mode and
+> screen-capture where each lands (GET /api/screen/frame), using the 3-try protocol in
+> [[steam-detection-traps]] (anchor on a deliberately-invalid slug so "screen unchanged" == fake;
+> settle ~7s; require two identical frames; run a known-bad AND known-good control every sweep).
+> Both home boxes were OFFLINE on 2026-09-14. Do NOT ship a guessed slug — it either trips the
+> regression test or silently opens the wrong settings page, which the whole subsystem's honesty
+> discipline exists to prevent. Mechanical edit once a slug is proven: one (id,label) tuple in
+> STEAM_MENUS + remove it from MEASURED_ABSENT + optional GROUPS placement in SteamMenusPanel.
 >
 ### Find the missing Steam settings slugs
 - **priority:** P3 · **risk:** none · **affects:** agent only
@@ -1350,8 +1370,30 @@ recommendation was wrong, not merely superseded.
 - **Estimate:** Phase 1 in a few focused sessions; the win port took 0.3.x→0.4.3 to reach
   parity, but it also invented the non-Linux skeleton this port inherits.
 
-> 📋 **OPEN — still not built (reconciled 2026-08-27).**
-> Not built — /api/usb-wake enumeration exists dark; no app screen calls it, no usbwake cap, no arming.
+> 🔴 **DESIGN READY, BLOCKED ON HARDWARE (revisited 2026-09-14).** Full compliant construction
+> mapped against the real helper code:
+> - Arming writes `enabled`/`disabled` to `/sys/bus/usb/devices/<id>/power/wakeup` — root-only,
+>   and the id is CLIENT-supplied. This is the product's FIRST client-id-derived root sysfs
+>   write, so it MUST go through a new frozen helper verb `usb.wake-arm` (couchside-helper.py),
+>   NOT an agent-side write (the agent is not root). The id is validated by MEMBERSHIP in the
+>   box's own live enumeration (`id in os.listdir(_USB_DEVICES_DIR)` with the iface-node skip),
+>   never interpolated/sanitised — the `_session_installed` precedent (helper 172-187); the
+>   written VALUE is a fixed literal from {enabled,disabled} chosen by a boolean, no client
+>   string reaches the path or the file body.
+> - Cap `usbwake` at all six sites; `usbwake_available()` = enumerable devices AND an arming
+>   path exists (NOT "writable device", which is False on every stock box — the ledcontrol trap).
+> - App: a ControllerWakeSheet off RemotePowerBar beside the WoL-armed warning; per-device arm
+>   toggle, `transient` phrases a spurious-wake warning but NEVER gates, `writable` disables rows.
+> - Cross-file: adding the 10th verb bumps the "nine verbs" count in the helper header,
+>   couchside-helper.service, install.sh, README, and project_privileged-helper.md together.
+> **Why blocked:** two things are unverifiable with the boxes offline — (a) the arm write
+> actually toggling wake on real hardware, and (b) shipping DARK. Adding the verb lights the cap
+> on every updated box with wake devices, so it would NOT be dark by default; a true opt-in needs
+> a NEW install-time marker (like `allow-decky`) that install.sh writes only on consent, which
+> also needs a box to verify. Per the codebase's own greetd precedent (verb_session_set_boot),
+> root code with no machine to verify against is REFUSED, not shipped. Build the moment a box is
+> up: fake `/sys/bus/usb/devices` tree tests the id-membership refusal headlessly (the security
+> core); the physical wake + install grant need the box. Both home boxes OFFLINE on 2026-09-14.
 >
 ### Controller-wake arming — light up /api/usb-wake + opt-in root arming
 - **priority:** P2 · **risk:** medium (root write via helper; spurious-wake support burden if

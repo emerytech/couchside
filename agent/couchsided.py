@@ -49,7 +49,7 @@ except ImportError:  # pragma: no cover
     fcntl = None
 
 APP_NAME = "couchside-agent"
-VERSION = "2.9.108"
+VERSION = "2.9.109"
 UID = os.getuid()
 XDG_RUNTIME_DIR = "/run/user/%d" % UID
 
@@ -1227,6 +1227,82 @@ def net_info_cached():
     return _NET_CACHE["val"]
 
 
+# --- live network throughput (Console VITALS) ------------------------------
+# A byte-rate delta across two /proc/net/dev reads. Unlike read_net() (WoL
+# facts, cached 30s) this is a *rate*, so it needs two samples over a known
+# interval. The first status poll has no prior sample and returns None -- the
+# omit-when-unavailable contract, so old apps and the very first read both just
+# see no field. Lock-guarded: /api/status is polled concurrently by every phone
+# AND by Fleet, so the shared last-sample must not be torn between readers.
+_PROC_NET_DEV = "/proc/net/dev"
+_NET_RATE = {"at": None, "rx": None, "tx": None}  # monotonic ts + last totals
+_NET_RATE_LOCK = threading.Lock()
+
+
+def _read_net_totals():
+    """Sum RX and TX bytes across real interfaces from /proc/net/dev, or
+    (None, None) if it can't be read. `lo` is skipped (loopback is not throughput
+    anyone means), as are down/virtual ifaces with no counters. Never raises."""
+    try:
+        with open(_PROC_NET_DEV) as f:
+            lines = f.readlines()
+    except OSError:
+        return (None, None)
+    rx_total = tx_total = 0
+    seen = False
+    for line in lines[2:]:  # first two lines are the column headers
+        if ":" not in line:
+            continue
+        iface, _, rest = line.partition(":")
+        iface = iface.strip()
+        if iface == "lo":
+            continue
+        cols = rest.split()
+        if len(cols) < 9:
+            continue
+        try:
+            rx = int(cols[0])   # Receive bytes
+            tx = int(cols[8])   # Transmit bytes
+        except ValueError:
+            continue
+        rx_total += rx
+        tx_total += tx
+        seen = True
+    if not seen:
+        return (None, None)
+    return (rx_total, tx_total)
+
+
+def read_net_rate(now=None):
+    """Live network throughput as (rx_bps, tx_bps) in BYTES/sec, or (None, None)
+    when it can't be computed: the first call (no prior sample to diff), an
+    unreadable /proc/net/dev, or a counter that ran backwards (interface reset /
+    32-bit wrap) -- in which case the baseline is re-seeded and this poll omits
+    the field rather than reporting a garbage spike. Degrades closed."""
+    if now is None:
+        now = time.monotonic()
+    rx, tx = _read_net_totals()
+    if rx is None:
+        return (None, None)
+    with _NET_RATE_LOCK:
+        prev_at = _NET_RATE["at"]
+        prev_rx = _NET_RATE["rx"]
+        prev_tx = _NET_RATE["tx"]
+        _NET_RATE["at"] = now
+        _NET_RATE["rx"] = rx
+        _NET_RATE["tx"] = tx
+    if prev_at is None:
+        return (None, None)
+    elapsed = now - prev_at
+    if elapsed <= 0:
+        return (None, None)
+    d_rx = rx - prev_rx
+    d_tx = tx - prev_tx
+    if d_rx < 0 or d_tx < 0:  # counter reset/wrap -- baseline already re-seeded
+        return (None, None)
+    return (int(d_rx / elapsed), int(d_tx / elapsed))
+
+
 def read_load():
     try:
         return [round(x, 2) for x in os.getloadavg()]
@@ -1782,7 +1858,7 @@ def set_caps(mock):
                  "streamhost", "steammenus", "boxbattery", "file_upload",
                  "session_default", "display_info", "player", "screenstream",
                  "screenstream_h264", "audioswitch", "ledcontrol",
-                 "openrgb")}
+                 "openrgb", "wlclipboard")}
         return
     CAPS = {
         "gamepad": _uinput_writable(),
@@ -1837,6 +1913,11 @@ def set_caps(mock):
         # multi-zone scanner. Absent unless the user installed OpenRGB and its
         # server answers on loopback (degrade closed).
         "openrgb": safe(openrgb_available),
+        # Read the box's current clipboard back to the phone ("Paste from box"),
+        # via wl-paste on a single wayland session. Linux/Wayland only, read-only.
+        # False in Game Mode: gamescope exposes a socket but no data device, so
+        # the same single-socket gate that keeps phone->box paste honest applies.
+        "wlclipboard": safe(wlclipboard_available),
     }
 
 
@@ -3992,6 +4073,7 @@ def real_status():
     mem = read_mem()
     battery = read_box_battery()
     cpu = read_cpu_freq()
+    net_rx, net_tx = read_net_rate()
     display = display_info()
     audio = audio_info()
     now = int(time.time())
@@ -4026,6 +4108,15 @@ def real_status():
         **({"display": display} if display else {}),
         **({"audio": audio} if audio else {}),
         "net": net_info_cached(),
+        # Live network throughput in BYTES/sec, sampled as a delta between this
+        # status poll and the previous one. ADDITIVE scalars (siblings of `net`,
+        # not inside it), OMITTED ENTIRELY on the very first poll (no prior
+        # sample to diff), on a counter reset, and on a box that can't read
+        # /proc/net/dev, so old apps ignore them and new ones treat absence as
+        # "not measured" rather than an idle 0 (agent >= 2.9.109). Gated on
+        # `is not None` so a genuinely idle 0 bps still reports.
+        **({"net_rx_bps": net_rx, "net_tx_bps": net_tx}
+           if net_rx is not None else {}),
         "agent_version": VERSION,
         # CAPS is a boot-time snapshot, but a few caps are SESSION-volatile — they
         # flip with every Game Mode <-> desktop switch — so recompute them per
@@ -8961,6 +9052,10 @@ def mock_status():
         "audio": mock_audio_info(),
         "net": {"iface": "eth0", "mac": "de:ad:be:ef:00:01",
                 "wired": True, "wol_armed": True},
+        # Live throughput so the VITALS throughput line is exercisable in the
+        # harness: ~12 MB/s down, ~1.1 MB/s up (a game download + chat upstream).
+        "net_rx_bps": 12_400_000,
+        "net_tx_bps": 1_120_000,
         # A POINT-RELEASE distro (name + version + a separate build string) —
         # the shape with the most fields, so the harness renders the busiest
         # case. A rolling box sends only name + version.
@@ -19407,6 +19502,54 @@ def clipboard_paste(text, kbd, mock, entry):
     return True
 
 
+# Cap the clipboard we hand back to the phone. A wayland clipboard can hold a
+# whole document (or an image target rendered as a huge text blob); this route
+# is for pasting a URL/token/snippet, so a generous line-or-two ceiling keeps a
+# runaway selection from bloating the status-sized JSON response.
+_CLIPBOARD_READ_MAX = 64 * 1024
+
+
+def wlclipboard_available():
+    """True when the box can READ its clipboard back to the phone: wl-paste on
+    PATH and exactly one live wayland socket (the same single-socket safety gate
+    _paste_available uses, so a Game Mode gamescope session -- socket present,
+    no data device -- and a multi-seat desktop both degrade closed). Read-only
+    probe; never raises (degrade closed, CLAUDE.md 3.7). Unlike _paste_available
+    it does not run a wl-copy roundtrip: reading needs no write, and this route
+    must never disturb the user's clipboard just to answer whether it can."""
+    try:
+        if shutil.which("wl-paste") is None:
+            return False
+        return len(_wayland_display_sockets()) == 1
+    except Exception:
+        return False
+
+
+def clipboard_read(mock):
+    """Payload for GET /api/clipboard: the box's current clipboard text, for the
+    phone's "Paste from box". Read-only. Always returns an `available` flag (like
+    /api/audio): a 404 means the agent is too old, `available: false` means no
+    wl-paste / wrong session here. In --mock, a fixed sample so the harness can
+    exercise the paste-in off-box. Degrades closed -- any failure is
+    `available: false`, never a stale or partial reply."""
+    if mock:
+        return {"available": True, "text": "couchside clipboard sample — ✨"}
+    if not wlclipboard_available():
+        return {"available": False, "text": None}
+    try:
+        rb = subprocess.run(["wl-paste", "-n"], env=_paste_env(), timeout=2,
+                            stdout=subprocess.PIPE, stderr=subprocess.DEVNULL)
+    except Exception:
+        return {"available": False, "text": None}
+    if rb.returncode != 0:
+        # An empty clipboard makes wl-paste exit non-zero -- that is "nothing to
+        # paste", not a fault. Report available with empty text so the app can
+        # say "clipboard is empty" rather than "unavailable".
+        return {"available": True, "text": ""}
+    text = rb.stdout[:_CLIPBOARD_READ_MAX].decode("utf-8", "replace")
+    return {"available": True, "text": text}
+
+
 # ---------------------------------------------------------------------------
 # Controller trigger: GUIDE-button hold -> Couch Mode (opt-in).
 #
@@ -23964,6 +24107,13 @@ class Handler(BaseHTTPRequestHandler):
                 # tells "agent too old" (404) apart from "no pactl here"
                 # (available:false). The set is POST /api/audio/default.
                 self._send(200, audio_state(self.mock), started)
+            elif path == "/api/clipboard":
+                # READ-ONLY: the box's current clipboard text, for the phone's
+                # "Paste from box" (cap `wlclipboard`, Linux/Wayland only). Always
+                # 200 with `available` (like /api/audio): 404 = agent too old,
+                # available:false = no wl-paste / wrong session. No client input
+                # reaches it -- the argv is a fixed ["wl-paste","-n"].
+                self._send(200, clipboard_read(self.mock), started)
             elif path == "/api/leds":
                 # READ-ONLY: the writable front/status/RGB LEDs this box exposes +
                 # their state, for the light-bar card (cap `ledcontrol`). Always

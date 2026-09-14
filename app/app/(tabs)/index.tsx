@@ -24,6 +24,7 @@ import { usePoll } from '@/hooks/usePoll';
 import { useStreak } from '@/hooks/useStreak';
 import { api, ApiError, hostKey, humanizeUptime, Status, Unit } from '@/lib/api';
 import { fmtLastSeen, noteBoxSeen } from '@/lib/lastSeen';
+import { fmtRate } from '@/lib/netRate';
 import { useConsoleLayout, effectiveOrder, moveSection, setConsoleLayout } from '@/lib/consoleLayout';
 import { hapticSelection } from '@/lib/haptics';
 import { setPref, usePref } from '@/lib/prefs';
@@ -250,6 +251,17 @@ function ConsoleScreen() {
             <Text style={styles.vsub} numberOfLines={1}>
               up {humanizeUptime(s.uptime_s)}{s.ip ? `  \u00b7  ${s.ip}` : ''}
             </Text>
+            {/* Live network throughput (agent >= 2.9.109). A SUBLINE, not a 6th
+                tile: the five-cell strip is already at the 375pt wrap limit, and
+                throughput is two numbers (down + up) that a single tile can't
+                hold. Key-presence gate like BATT/CLOCK \u2014 the agent OMITS the
+                fields on the first poll / a box that can't read /proc/net/dev, so
+                the line simply is not there rather than showing a dash. */}
+            {s.net_rx_bps != null && (
+              <Text style={styles.vnet} numberOfLines={1}>
+                {`\u2193 ${fmtRate(s.net_rx_bps)}   \u2191 ${fmtRate(s.net_tx_bps ?? 0)}`}
+              </Text>
+            )}
           </Card>
         </TourAnchor>
 
@@ -617,6 +629,10 @@ const makeStyles = (t: Palette) => StyleSheet.create({
   vlabel: { color: t.textFaint, fontFamily: mono, fontSize: 10, letterSpacing: 0.5 },
   vval: { ...numeric, fontSize: 18, fontWeight: '700', marginTop: 2 },
   vsub: { color: t.textFaint, fontFamily: mono, fontSize: 11, marginTop: 8 },
+  // Network throughput line under the uptime/ip line. Tabular so ↓/↑ columns
+  // don't jitter as the rate changes; textDim (a touch brighter than vsub) so
+  // a moving number reads as live without competing with the strip values.
+  vnet: { color: t.textDim, fontFamily: mono, fontSize: 11, marginTop: 3, fontVariant: ['tabular-nums'] },
   doneBtn: {
     backgroundColor: t.blue, borderRadius: 999,
     paddingVertical: 8, paddingHorizontal: 22,

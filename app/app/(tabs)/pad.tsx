@@ -2062,8 +2062,10 @@ function PadScreen() {
 
       {mode === 'note' ? (
         // A local text scratchpad. Renders in place of the box-driving surfaces;
-        // the mode bar above stays visible, so a swipe/tap still exits.
-        <NotePad />
+        // the mode bar above stays visible, so a swipe/tap still exits. `settings`
+        // lets it offer a read-only "Paste from box" pull when the box supports it
+        // (cap wlclipboard); the note itself stays on-device.
+        <NotePad settings={settings} />
       ) : mode === 'menus' ? (
         // MUST scroll: TabScreen's body is a plain View, and this list is ~16
         // chips across five sections -- taller than the pane on a phone. The
