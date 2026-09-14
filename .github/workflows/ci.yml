@@ -874,6 +874,15 @@ jobs:
       - name: Unit tests (console sensors)
         run: python3 tests/test_console_sensors.py
 
+      # Clipboard READ (GET /api/clipboard, cap wlclipboard): the box hands its
+      # current clipboard back to the phone via a fixed ["wl-paste","-n"] (no
+      # client input reaches it). Pins the auth gate, both probe states
+      # (available true/false + empty), the size cap, the no-injection-surface
+      # contract (stray query ignored, trailing path 404s), and five of the six
+      # cap edit sites (the sixth, protocol.json, is in the parity test).
+      - name: Unit tests (clipboard read)
+        run: python3 tests/test_clipboard_read.py
+
       # The /api/actions route dispatch. A non-allowlisted id must be 404'd AND
       # dispatch nothing (asserted on a spy, not inferred from the status code) —
       # this route hands ids to subprocess, so a hole here runs arbitrary

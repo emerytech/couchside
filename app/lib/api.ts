@@ -262,6 +262,13 @@ export type BoxCaps = {
    * multi-zone scanner.
    */
   openrgb?: boolean;
+  /**
+   * Box clipboard READ — "Paste from box" (agent >= 2.9.109, cap `wlclipboard`,
+   * Linux/Wayland only). undefined = unknown/probe (older agent, Windows);
+   * false = no wl-paste, or a Game Mode / multi-seat session where the clipboard
+   * isn't reachable. Gates the "Paste from box" control on the note pad.
+   */
+  wlclipboard?: boolean;
 };
 
 /** One Setup → Utilities helper + its live state, from GET /api/utilities.
@@ -697,6 +704,14 @@ export type AudioState = {
   sinks: AudioSink[];
 };
 
+/** GET /api/clipboard: the box's current clipboard text, for "Paste from box"
+    (cap `wlclipboard`). `available: false` = no wl-paste / unreachable session
+    (the control hides); `text: ''` = the box clipboard is empty. */
+export type ClipboardState = {
+  available: boolean;
+  text: string | null;
+};
+
 /** An 8-bit RGB colour, as the app and agent both speak it (0–255 per channel,
     device-independent — the agent scales to the LED's own range). */
 export type Rgb = { r: number; g: number; b: number };
@@ -950,6 +965,13 @@ export type Status = {
     /** energy_performance_preference, verbatim (e.g. "balance_performance"). */
     epp?: string;
   };
+  /** Live network throughput in BYTES/sec (agent >= 2.9.109), sampled as a delta
+      between status polls. Siblings of `net` (the WoL fact block), not inside it.
+      ABSENT on older agents, on the very first poll (no prior sample to diff),
+      and on a counter reset — omission, never a zero-for-unknown. A genuinely
+      idle link still reports 0. */
+  net_rx_bps?: number;
+  net_tx_bps?: number;
 };
 
 export type UnitScope = 'system' | 'user';
@@ -1680,7 +1702,8 @@ export function capsEqual(a?: BoxCaps, b?: BoxCaps): boolean {
     a.screenstream_h264 === b.screenstream_h264 &&
     a.audioswitch === b.audioswitch &&
     a.ledcontrol === b.ledcontrol &&
-    a.openrgb === b.openrgb
+    a.openrgb === b.openrgb &&
+    a.wlclipboard === b.wlclipboard
   );
 }
 
@@ -3231,6 +3254,21 @@ export const api = {
   ): Promise<AudioState | null> {
     return probeGated(caps?.audioswitch, () =>
       probeOrNull(request<AudioState>(settings, '/api/audio')));
+  },
+
+  /**
+   * The box's current clipboard text (agent >= 2.9.109, cap `wlclipboard`,
+   * Linux/Wayland only), for "Paste from box". Probe-and-appear: null on a 404
+   * (older agent) so the control hides; an `available: false` payload (no
+   * wl-paste, or an unreachable Game Mode / multi-seat session) reads as "no"
+   * too. Read-only — this never changes the box's clipboard.
+   */
+  clipboard(
+    settings: ConnSettings,
+    caps: BoxCaps | undefined = cachedCaps(settings),
+  ): Promise<ClipboardState | null> {
+    return probeGated(caps?.wlclipboard, () =>
+      probeOrNull(request<ClipboardState>(settings, '/api/clipboard')));
   },
 
   /**

@@ -195,7 +195,8 @@
       "steamlink",
       "steammenus",
       "streamhost",
-      "utilities"
+      "utilities",
+      "wlclipboard"
     ]
   },
   "windowsOnlyCapabilities": {

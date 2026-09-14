@@ -1,12 +1,12 @@
 #!/usr/bin/env python3
-"""Tests for the Console's CPU-frequency sensor (read_cpu_freq) and its additive
-splice into GET /api/status.
+"""Tests for the Console's CPU-frequency sensor (read_cpu_freq), the network
+throughput sensor (read_net_rate), and their additive splice into GET /api/status.
 
 Run: python3 tests/test_console_sensors.py
 
-Drives the REAL agent function against a filesystem fixture — the per-CPU sysfs
-root is a module constant (_CPUFREQ_DIR) the test repoints, so nothing is
-reimplemented.
+Drives the REAL agent functions against filesystem fixtures — the per-CPU sysfs
+root and /proc/net/dev path are module constants (_CPUFREQ_DIR, _PROC_NET_DEV)
+the tests repoint, so nothing is reimplemented.
 
 The cpufreq tree here is SYNTHETIC, not a verbatim hardware capture: the repo has
 no dumped /sys/devices/system/cpu tree, and CI has no handheld to read one from.
@@ -17,6 +17,14 @@ carries the real intent, which is exactly why read_cpu_freq surfaces both. The
 shape is faithful to that; the file paths are the documented cpufreq ABI. Read
 the values off a box before shipping any UI copy that quotes them (CLAUDE.md
 §11.1: test the thing).
+
+The /proc/net/dev fixture is likewise SYNTHETIC (both home boxes were offline
+when this shipped, and CI has no Linux box to capture one from). The format is
+the documented, stable kernel ABI — two header lines, then `iface: rx_bytes
+rx_packets ... tx_bytes ...` with rx at column 0 and tx at column 8. The delta
+math (bytes/elapsed) is exercised with an explicit clock, so it needs no real
+values; capture a real /proc/net/dev off a box before trusting any absolute rate
+in the wild (KI-085).
 """
 import importlib.util
 import os
@@ -156,13 +164,188 @@ def test_status_omits_cpu_when_absent():
         t.close()
 
 
+# --- network throughput (read_net_rate) ------------------------------------
+
+# SYNTHETIC /proc/net/dev (see module docstring). lo carries traffic the reader
+# MUST exclude; eth0 is the real interface; wlan0 is idle. Column 0 after the
+# `iface:` is rx_bytes, column 8 is tx_bytes.
+_NETDEV_HEADER = (
+    "Inter-|   Receive                                                |  Transmit\n"
+    " face |bytes    packets errs drop fifo frame compressed multicast|"
+    "bytes    packets errs drop fifo colls carrier compressed\n"
+)
+
+
+def _netdev(eth_rx, eth_tx, lo_rx=100000, lo_tx=100000):
+    # A body with lo (must be skipped), eth0 (the real one), wlan0 (idle).
+    return _NETDEV_HEADER + (
+        "    lo: %8d     500    0    0    0     0          0         0 "
+        "%8d     500    0    0    0     0       0          0\n"
+        "  eth0: %8d    2000    0    0    0     0          0         0 "
+        "%8d    1500    0    0    0     0       0          0\n"
+        "  wlan0:       0       0    0    0    0     0          0         0 "
+        "      0       0    0    0    0     0       0          0\n"
+    ) % (lo_rx, lo_tx, eth_rx, eth_tx)
+
+
+class NetDev:
+    """A fake /proc/net/dev the REAL read_net_rate reads, with the module's
+    last-sample state reset so each test starts from a clean first-call."""
+
+    def __init__(self):
+        self.dir = tempfile.mkdtemp(prefix="netdev-")
+        self.path = os.path.join(self.dir, "net_dev")
+        self._old_path = cs._PROC_NET_DEV
+        cs._PROC_NET_DEV = self.path
+        self._old_state = dict(cs._NET_RATE)
+        cs._NET_RATE.update({"at": None, "rx": None, "tx": None})
+
+    def write(self, text):
+        with open(self.path, "w") as f:
+            f.write(text)
+
+    def close(self):
+        cs._PROC_NET_DEV = self._old_path
+        cs._NET_RATE.update(self._old_state)
+        import shutil
+        shutil.rmtree(self.dir, ignore_errors=True)
+
+
+def test_net_rate_first_call_is_none():
+    """No prior sample to diff -> (None, None), the omit path (not a fake 0)."""
+    print("test_net_rate_first_call_is_none")
+    n = NetDev()
+    try:
+        n.write(_netdev(1_000_000, 500_000))
+        check("first call omitted", cs.read_net_rate(now=10.0), (None, None))
+    finally:
+        n.close()
+
+
+def test_net_rate_delta():
+    """Second sample: summed rx/tx delta over a known interval. lo advances too
+    but is EXCLUDED (the control — counting it would inflate rx)."""
+    print("test_net_rate_delta")
+    n = NetDev()
+    try:
+        n.write(_netdev(1_000_000, 500_000, lo_rx=100000, lo_tx=100000))
+        cs.read_net_rate(now=10.0)  # seed
+        # eth0 +2,000,000 rx / +1,000,000 tx over 2.0s; lo also +9,000,000 (must
+        # NOT count) -> rx 1,000,000 B/s, tx 500,000 B/s.
+        n.write(_netdev(3_000_000, 1_500_000, lo_rx=9_100_000, lo_tx=9_100_000))
+        check("rx_bps excludes lo", cs.read_net_rate(now=12.0), (1_000_000, 500_000))
+    finally:
+        n.close()
+
+
+def test_net_rate_idle_reports_zero():
+    """A genuinely idle link reports 0 (gated on is-not-None, not truthiness) —
+    the CONTROL proving 0 is a real reading, not the unavailable sentinel."""
+    print("test_net_rate_idle_reports_zero")
+    n = NetDev()
+    try:
+        n.write(_netdev(1_000_000, 500_000))
+        cs.read_net_rate(now=10.0)
+        n.write(_netdev(1_000_000, 500_000))  # no change
+        check("idle -> (0, 0), not (None, None)", cs.read_net_rate(now=12.0), (0, 0))
+    finally:
+        n.close()
+
+
+def test_net_rate_counter_reset_omitted():
+    """A counter that ran backwards (iface reset / wrap) -> (None, None), and the
+    baseline is re-seeded rather than reported as a garbage negative spike."""
+    print("test_net_rate_counter_reset_omitted")
+    n = NetDev()
+    try:
+        n.write(_netdev(5_000_000, 5_000_000))
+        cs.read_net_rate(now=10.0)
+        n.write(_netdev(1_000, 1_000))  # reset
+        check("reset omitted", cs.read_net_rate(now=12.0), (None, None))
+        # baseline re-seeded to the reset values -> the NEXT interval computes fine.
+        n.write(_netdev(1_000 + 400_000, 1_000 + 200_000))
+        check("recovers after reset", cs.read_net_rate(now=14.0), (200_000, 100_000))
+    finally:
+        n.close()
+
+
+def test_net_rate_unreadable_degrades_closed():
+    """An unreadable /proc/net/dev -> (None, None), never raises."""
+    print("test_net_rate_unreadable_degrades_closed")
+    n = NetDev()
+    try:
+        cs._PROC_NET_DEV = os.path.join(n.dir, "does-not-exist")
+        check("missing file omitted", cs.read_net_rate(now=10.0), (None, None))
+    finally:
+        n.close()
+
+
+def test_net_rate_garbage_line_skipped():
+    """A malformed data line is skipped, not parsed — eth0 still summed."""
+    print("test_net_rate_garbage_line_skipped")
+    n = NetDev()
+    try:
+        body = _NETDEV_HEADER + (
+            "  eth0: 1000000    2000    0    0    0     0          0         0 "
+            "500000    1500    0    0    0     0       0          0\n"
+            "  junk-no-colon-or-columns\n"
+        )
+        n.write(body)
+        cs.read_net_rate(now=10.0)
+        body2 = _NETDEV_HEADER + (
+            "  eth0: 1200000    2200    0    0    0     0          0         0 "
+            "600000    1600    0    0    0     0       0          0\n"
+            "  junk-no-colon-or-columns\n"
+        )
+        n.write(body2)
+        check("garbage skipped, eth0 summed", cs.read_net_rate(now=12.0), (100_000, 50_000))
+    finally:
+        n.close()
+
+
+def test_status_splices_net_rate_when_present(monkey=None):
+    """real_status() carries net_rx_bps/net_tx_bps when the reader yields a rate,
+    and OMITS them (like `cpu`) when it yields (None, None). Two-state check —
+    the reader is stubbed so this doesn't depend on interval timing."""
+    print("test_status_splices_net_rate")
+    orig = cs.read_net_rate
+    try:
+        cs.read_net_rate = lambda now=None: (2_000_000, 400_000)
+        st = cs.real_status()
+        check("net_rx_bps present", st.get("net_rx_bps"), 2_000_000)
+        check("net_tx_bps present", st.get("net_tx_bps"), 400_000)
+        check("net (WoL block) untouched", "net" in st, True)
+        cs.read_net_rate = lambda now=None: (None, None)
+        st2 = cs.real_status()
+        check("net_rx_bps omitted when unavailable", "net_rx_bps" in st2, False)
+        check("net_tx_bps omitted when unavailable", "net_tx_bps" in st2, False)
+    finally:
+        cs.read_net_rate = orig
+
+
+def test_mock_status_carries_net_rate():
+    """--mock reports both fields so the harness can exercise the VITALS line."""
+    print("test_mock_status_carries_net_rate")
+    st = cs.mock_status()
+    check("mock net_rx_bps present", isinstance(st.get("net_rx_bps"), int), True)
+    check("mock net_tx_bps present", isinstance(st.get("net_tx_bps"), int), True)
+
+
 if __name__ == "__main__":
     for fn in (test_full_handheld_reading,
                test_no_cpufreq_degrades_to_empty,
                test_optional_fields_omitted,
                test_garbage_cur_freq_omitted,
                test_status_splices_cpu_when_present,
-               test_status_omits_cpu_when_absent):
+               test_status_omits_cpu_when_absent,
+               test_net_rate_first_call_is_none,
+               test_net_rate_delta,
+               test_net_rate_idle_reports_zero,
+               test_net_rate_counter_reset_omitted,
+               test_net_rate_unreadable_degrades_closed,
+               test_net_rate_garbage_line_skipped,
+               test_status_splices_net_rate_when_present,
+               test_mock_status_carries_net_rate):
         fn()
     if FAILURES:
         print("\n%d FAILED: %s" % (len(FAILURES), ", ".join(FAILURES)))
