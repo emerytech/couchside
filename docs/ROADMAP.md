@@ -725,8 +725,17 @@ network and is useful alone.
   updates ship the agent binary WITHOUT the installer, the helper must be detected and optional
   with the sudo path kept for a full release cycle.
 
-> 📋 **OPEN — still not built (reconciled 2026-08-27).**
-> Not built — no XDG Desktop Actions launcher for native Kodi/Plex/Jellyfin/Moonlight/VLC; Player still web-URL-only, Kodi combos only control an already-open app.
+> 🟡 **BUILT IN CODE, agent release HELD on hardware (2026-09-14, #528).** GET/POST
+> /api/player/media + cap `medialaunch` (six sites) + a curated `.desktop` scanner
+> (kodi/plex/jellyfin/moonlight/vlc/spotify) reading SYSTEM dirs only (~/.local excluded);
+> section-aware parse, token-level field-code strip + `%%` unescape + shlex quoting, argv-list
+> launch via real_launch; Kodi's Fullscreen action exposed. App: WatchPanel "APPS ON THE BOX"
+> grid, Watch shows on player OR medialaunch. Security is fully unit-tested (allowlist refusal on
+> a spy, planted-user-dir exclusion, verbatim fixtures) + harness-pressed (correct argv POSTed).
+> **Agent 2.9.110 is NOT released:** the REAL on-TV launch is unverified (both boxes offline);
+> in Game Mode surfacing may need Steam registration (v1 does a direct launch, correct on a
+> desktop session; a wrong argv fails closed). Cut the release + screen-capture the launch when a
+> box is up. STILL open in this entry: the screensaver-inhibit-while-playing measurement (§Phase 7).
 >
 ### Couchside Player Phase 7 — native media apps via `.desktop` + Actions
 - **priority:** P2 · **risk:** medium · **affects:** tile + agent + app · **depends_on:**

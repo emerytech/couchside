@@ -269,6 +269,14 @@ export type BoxCaps = {
    * isn't reachable. Gates the "Paste from box" control on the note pad.
    */
   wlclipboard?: boolean;
+  /**
+   * Launch natively-installed media apps (Kodi/Plex/Jellyfin/Moonlight/VLC/
+   * Spotify) from the phone (agent >= 2.9.110, cap `medialaunch`, Linux only).
+   * undefined = unknown/probe (older agent, Windows); false = the box has none
+   * of the curated apps. Gates the "Apps on the box" grid in Watch, independent
+   * of the Couchside Player tile (cap `player`).
+   */
+  medialaunch?: boolean;
 };
 
 /** One Setup → Utilities helper + its live state, from GET /api/utilities.
@@ -566,6 +574,23 @@ export type PlayerState = {
    * be opened — the box still re-validates.
    */
   service_hosts?: Record<string, string[]>;
+};
+
+/** A natively-installed media app the box can launch (GET /api/player/media,
+    cap `medialaunch`). `actions` are optional TV/fullscreen variants (e.g. Kodi
+    exposes an "Open in fullscreen"). The box never sends the launch command —
+    only ids and names; the launch is by id (see api.launchMediaApp). */
+export type MediaApp = {
+  id: string;
+  name: string;
+  actions: { id: string; name: string }[];
+};
+
+/** GET /api/player/media: the native media apps the box can launch.
+    `available: false` = no curated app on this box (the grid hides). */
+export type MediaAppsState = {
+  available: boolean;
+  apps: MediaApp[];
 };
 
 export type PlayerPlayback = {
@@ -1703,7 +1728,8 @@ export function capsEqual(a?: BoxCaps, b?: BoxCaps): boolean {
     a.audioswitch === b.audioswitch &&
     a.ledcontrol === b.ledcontrol &&
     a.openrgb === b.openrgb &&
-    a.wlclipboard === b.wlclipboard
+    a.wlclipboard === b.wlclipboard &&
+    a.medialaunch === b.medialaunch
   );
 }
 
@@ -3167,6 +3193,36 @@ export const api = {
   ): Promise<PlayerState | null> {
     return probeGated(caps?.player, () =>
       probeOrNull(request<PlayerState>(settings, '/api/player')));
+  },
+
+  /**
+   * The natively-installed media apps the box can launch (agent >= 2.9.110, cap
+   * `medialaunch`, Linux only). Probe-and-appear: null on a 404 (older agent) so
+   * the grid hides; an `available: false` payload (no curated app) reads as "no"
+   * too. Independent of the Couchside Player tile (cap `player`).
+   */
+  mediaApps(
+    settings: ConnSettings,
+    caps: BoxCaps | undefined = cachedCaps(settings),
+  ): Promise<MediaAppsState | null> {
+    return probeGated(caps?.medialaunch, () =>
+      probeOrNull(request<MediaAppsState>(settings, '/api/player/media')));
+  },
+
+  /**
+   * Launch a native media app by id (optionally a named action like Kodi's
+   * "Fullscreen"). The box looks both up in its own curated table — an unknown
+   * app or action comes back 404 having launched nothing; the launch command
+   * comes from the box's own .desktop file, never from here. Resolves false on
+   * any failure; the caller re-reads state rather than trusting this return.
+   */
+  launchMediaApp(settings: ConnSettings, appId: string, actionId?: string): Promise<boolean> {
+    return request<{ ok: boolean }>(settings, '/api/player/media', {
+      method: 'POST',
+      body: actionId ? { app_id: appId, action_id: actionId } : { app_id: appId },
+    })
+      .then((r) => !!r?.ok)
+      .catch(() => false);
   },
 
   /**
