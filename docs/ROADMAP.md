@@ -1118,8 +1118,15 @@ recommendation was wrong, not merely superseded.
   Worth building behind the existing web harness and pressing, rather than assuming — the
   harness CAN exercise this one, unlike row-overflow or cover art.
 
-> 📋 **OPEN — still not built (reconciled 2026-08-27).**
-> Not built — landscape only spreads the gamepad/move pad; no mini-QWERTY + trackpad desktop layout exists.
+> ✅ **DONE (2026-09-14, #527).** Rotating the Pad tab to landscape turns the non-gamepad
+> surfaces (not gamepad/move/note) into a trackpad + mini-QWERTY laptop layout for the desktop.
+> Reuses `useTrackpad` + `DesktopKeys` over the Pad's own GamepadClient (no new socket); the
+> orientation policy grants `allow-landscape` for those modes when the pref is on. Gated by the
+> `landscapeLaptop` pref (default ON, opt-out in Preferences → INPUT & PAD) per the owner
+> requirement below — rotating by accident can't silently change the UI. Harness-verified
+> (pref on = laptop renders + buttons register; pref off = portrait stays). NOT verified: send
+> over a live gamepad socket (mock leaves it "connecting"; path reused verbatim) or a real
+> rotated device.
 >
 ### Landscape "laptop mode" — mini QWERTY + trackpad
 - **priority:** P2 · **risk:** low · **affects:** app only · **depends_on:** none
