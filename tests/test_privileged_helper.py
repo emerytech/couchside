@@ -296,11 +296,61 @@ finally:
     H._DECKY_MARKER, H._DECKY_WRAPPER = saved_marker, saved_wrapper
 
 print()
+print("usb.wake-arm: id validated by MEMBERSHIP, value is a fixed literal")
+# The write is open()+write, not _run, so it is tested against a temp device tree
+# rather than the SPAWNS spy. The safety property: a client id that is not an
+# actual device-listing entry (traversal, interface node, junk) NEVER produces a
+# write — proven by asserting the target file is untouched.
+import shutil as _shutil
+_usbdir = tempfile.mkdtemp(prefix="usbwake-")
+_saved_usb = H._USB_WAKE_DIR
+H._USB_WAKE_DIR = _usbdir
+try:
+    # A real wake device "1-3" with a power/wakeup file, and an interface node.
+    os.makedirs(os.path.join(_usbdir, "1-3", "power"))
+    wp = os.path.join(_usbdir, "1-3", "power", "wakeup")
+    open(wp, "w").write("disabled")
+    os.makedirs(os.path.join(_usbdir, "1-3:1.0"))          # interface node, no wakeup
+    os.makedirs(os.path.join(_usbdir, "usb1", "power"))     # a device with NO wakeup file
+    # Happy path: arm -> the fixed literal "enabled" lands in the real file.
+    ok, _ = H.verb_usb_wake_arm({"id": "1-3", "on": True})
+    check("arm known device -> ok", ok, True)
+    check("wakeup file now enabled", open(wp).read().strip(), "enabled")
+    ok, _ = H.verb_usb_wake_arm({"id": "1-3", "on": False})
+    check("disarm known device -> ok", ok, True)
+    check("wakeup file now disabled", open(wp).read().strip(), "disabled")
+    # Refusals: NOTHING is written (the file stays "disabled" from above).
+    for bad in ("../../etc/passwd", "1-3:1.0", "usb1", "nope", "1-3/../1-3",
+                "", ".", "1-9"):
+        arg = H._usb_wake_arg({"id": bad, "on": True})
+        if arg is None:
+            refused = True          # rejected at the shape gate
+        else:
+            ok, _ = H.verb_usb_wake_arm(arg)
+            refused = not ok
+        check("refuse id %r, nothing armed" % (bad,),
+              refused and open(wp).read().strip() == "disabled", True)
+    # Shape gate: non-bool `on`, missing keys, non-dict.
+    check("reject non-bool on", H._usb_wake_arg({"id": "1-3", "on": "yes"}), None)
+    check("reject missing on", H._usb_wake_arg({"id": "1-3"}), None)
+    check("reject non-dict arg", H._usb_wake_arg("1-3"), None)
+    # dispatch(): known verb + bad arg -> "invalid argument" (verb PRESENT, the
+    # capability probe the agent uses); unknown verb -> "unknown verb".
+    r = H.dispatch({"verb": "usb.wake-arm", "arg": {"id": "1-3:1.0", "on": True}})
+    check("bad-arg reply names the verb (probe: present)",
+          "invalid argument" in r.get("error", ""), True)
+    r = H.dispatch({"verb": "usb.nope", "arg": {}})
+    check("unknown verb reply (probe: absent)", r.get("error"), "unknown verb")
+finally:
+    H._USB_WAKE_DIR = _saved_usb
+    _shutil.rmtree(_usbdir, ignore_errors=True)
+
+print()
 print("the verb table is small enough to audit")
-# Eight through helper 1.0.x; 1.1.0 added decky.loader. The count is spelled
-# out in the helper's header, its .service comment, install.sh (g2), README
-# and project_privileged-helper.md — all move together.
-check("nine verbs, no more", len(H.VERBS), 9)
+# Eight through helper 1.0.x; 1.1.0 added decky.loader; 1.2.0 added usb.wake-arm.
+# The count is spelled out in the helper's header and project_privileged-helper.md
+# — move them together.
+check("ten verbs, no more", len(H.VERBS), 10)
 
 print()
 if FAILURES:

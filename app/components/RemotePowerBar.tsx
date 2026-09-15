@@ -4,10 +4,11 @@ import { Alert, Modal, PanResponder, Platform, Pressable, StyleSheet, Text, View
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
 import { CouchModeSheet } from '@/components/CouchModeSheet';
+import { ControllerWakeSheet } from '@/components/ControllerWakeSheet';
 import { ScreensaverSheet } from '@/components/ScreensaverSheet';
 import { SleepTimerSheet } from '@/components/SleepTimerSheet';
 import { usePoll } from '@/hooks/usePoll';
-import { api, Displays, hostKey, PowerSchedule, Screensaver, Status, Tv, TvOp, VolumeTarget } from '@/lib/api';
+import { api, Displays, hostKey, PowerSchedule, Screensaver, Status, Tv, TvOp, UsbWakeState, VolumeTarget } from '@/lib/api';
 import { hapticError, hapticLight, hapticSuccess } from '@/lib/haptics';
 import { getPref, usePref } from '@/lib/prefs';
 import { normalizeMac, isValidLanIp } from '@/lib/settings';
@@ -286,6 +287,18 @@ export function RemotePowerBar({ compact = false }: { compact?: boolean }) {
   );
   const saver = reachable ? saverPoll.data ?? null : null;
   const [saverOpen, setSaverOpen] = React.useState(false);
+
+  // USB wake sources (agent >= 2.9.111, cap usbwake). Gated on the cap, which the
+  // agent only sets when there ARE wake devices AND a helper new enough to arm
+  // them — so this list is fetched only where arming actually works.
+  const wakePoll = usePoll<UsbWakeState | null>(
+    () => api.usbWake(settings),
+    15000,
+    reachable && settings.caps?.usbwake === true,
+    boxKey,
+  );
+  const wakeDevices = (reachable && wakePoll.data?.devices) || [];
+  const [wakeOpen, setWakeOpen] = React.useState(false);
 
   // Couch Mode displays (agent >= 2.9, SteamOS/Bazzite desktop w/ TV). Probe-
   // and-appear: null hides the header button; caps.couchmode === false skips it.
@@ -883,6 +896,23 @@ export function RemotePowerBar({ compact = false }: { compact?: boolean }) {
                 </Pressable>
               )}
 
+              {/* Controller / USB wake sources (agent >= 2.9.111, cap usbwake) */}
+              {wakeDevices.length > 0 && (
+                <Pressable
+                  onPress={() => {
+                    setOpen(false);
+                    setWakeOpen(true);
+                  }}
+                  style={({ pressed }) => [styles.bigBtn, pressed && styles.pressed]}>
+                  <Ionicons name="game-controller-outline" size={22} color={t.text} />
+                  <Text style={styles.bigLabel}>
+                    {`Wake devices${
+                      wakeDevices.some((d) => d.armed) ? ` · ${wakeDevices.filter((d) => d.armed).length} armed` : ''
+                    }`}
+                  </Text>
+                </Pressable>
+              )}
+
               {hasTvPower && (
                 <View style={styles.tvPowerRow}>
                   <Pressable
@@ -1023,6 +1053,13 @@ export function RemotePowerBar({ compact = false }: { compact?: boolean }) {
         saver={saver}
         onChanged={saverPoll.refresh}
         onClose={() => setSaverOpen(false)}
+      />
+      <ControllerWakeSheet
+        visible={wakeOpen}
+        settings={settings}
+        devices={wakeDevices}
+        onChanged={wakePoll.refresh}
+        onClose={() => setWakeOpen(false)}
       />
       <CouchModeSheet
         visible={couchOpen}

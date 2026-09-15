@@ -1387,30 +1387,22 @@ recommendation was wrong, not merely superseded.
 - **Estimate:** Phase 1 in a few focused sessions; the win port took 0.3.x→0.4.3 to reach
   parity, but it also invented the non-Linux skeleton this port inherits.
 
-> 🔴 **DESIGN READY, BLOCKED ON HARDWARE (revisited 2026-09-14).** Full compliant construction
-> mapped against the real helper code:
-> - Arming writes `enabled`/`disabled` to `/sys/bus/usb/devices/<id>/power/wakeup` — root-only,
->   and the id is CLIENT-supplied. This is the product's FIRST client-id-derived root sysfs
->   write, so it MUST go through a new frozen helper verb `usb.wake-arm` (couchside-helper.py),
->   NOT an agent-side write (the agent is not root). The id is validated by MEMBERSHIP in the
->   box's own live enumeration (`id in os.listdir(_USB_DEVICES_DIR)` with the iface-node skip),
->   never interpolated/sanitised — the `_session_installed` precedent (helper 172-187); the
->   written VALUE is a fixed literal from {enabled,disabled} chosen by a boolean, no client
->   string reaches the path or the file body.
-> - Cap `usbwake` at all six sites; `usbwake_available()` = enumerable devices AND an arming
->   path exists (NOT "writable device", which is False on every stock box — the ledcontrol trap).
-> - App: a ControllerWakeSheet off RemotePowerBar beside the WoL-armed warning; per-device arm
->   toggle, `transient` phrases a spurious-wake warning but NEVER gates, `writable` disables rows.
-> - Cross-file: adding the 10th verb bumps the "nine verbs" count in the helper header,
->   couchside-helper.service, install.sh, README, and project_privileged-helper.md together.
-> **Why blocked:** two things are unverifiable with the boxes offline — (a) the arm write
-> actually toggling wake on real hardware, and (b) shipping DARK. Adding the verb lights the cap
-> on every updated box with wake devices, so it would NOT be dark by default; a true opt-in needs
-> a NEW install-time marker (like `allow-decky`) that install.sh writes only on consent, which
-> also needs a box to verify. Per the codebase's own greetd precedent (verb_session_set_boot),
-> root code with no machine to verify against is REFUSED, not shipped. Build the moment a box is
-> up: fake `/sys/bus/usb/devices` tree tests the id-membership refusal headlessly (the security
-> core); the physical wake + install grant need the box. Both home boxes OFFLINE on 2026-09-14.
+> 🟡 **BUILT (2026-09-15, #530); arm-write hardware pass PENDING; agent 2.9.111 HELD.** Helper
+> verb `usb.wake-arm` (helper 1.2.0, id validated by os.listdir MEMBERSHIP, fixed enabled/disabled
+> value); agent POST /api/usb-wake/arm (membership refusal, helper-call); cap `usbwake` six sites,
+> `usbwake_available()` = enumerable devices AND the helper KNOWS the verb (probed via dispatch's
+> unknown-verb-vs-invalid-arg reply — so an old-helper box never shows a dead toggle, which
+> ALSO solves the "ships dark" concern without a new install marker). App: ControllerWakeSheet off
+> RemotePowerBar. Security fully unit-tested (temp-sysfs-tree write, traversal/interface refusal
+> with nothing written, helper spy) + harness-pressed (menu → sheet → toggle → POST → re-read);
+> enumeration + helper-socket-present verified on the Steam Machine. **Cross-file:** verb count
+> 9→10 lives only in the helper header + test_privileged_helper (the .service/install.sh/README
+> did NOT carry a literal count — grep-confirmed).
+> **NOT verified — the arm write on real hardware.** It needs helper 1.2.0 installed as root on
+> the box; `deck` sudo is password-gated over ssh, so I can't deploy it. Arm a device + watch the
+> box wake once a box has the new helper, THEN release 2.9.111. Also unresolved: whether
+> `couchside update` actually refreshes the HELPER on boxes (if it only fetches couchsided.py, the
+> cap stays dark everywhere until a box re-runs install.sh — confirm before relying on reach).
 >
 ### Controller-wake arming — light up /api/usb-wake + opt-in root arming
 - **priority:** P2 · **risk:** medium (root write via helper; spurious-wake support burden if

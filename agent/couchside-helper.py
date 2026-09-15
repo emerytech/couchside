@@ -11,11 +11,14 @@ never wrote, so that path never worked on any box), and KI-050. It also meant a
 box whose display manager changed could not be repaired by the agent alone —
 install.sh had to be re-run.
 
-This process replaces all of it with NINE VERBS behind a local unix socket.
+This process replaces all of it with TEN VERBS behind a local unix socket.
 The DM name stops being part of a grant and becomes an internal detail here,
 so a box that changes display manager repairs itself on the next call.
 (Eight verbs through 1.0.x; 1.1.0 added `decky.loader`, which starts a pinned
-oneshot unit rather than doing any work itself — see verb_decky_loader.)
+oneshot unit rather than doing any work itself — see verb_decky_loader. 1.2.0
+added `usb.wake-arm`, which writes enabled/disabled to a USB device's
+power/wakeup — the id is validated by membership in the kernel's own device
+listing, never interpolated; see verb_usb_wake_arm.)
 
 WHAT THIS IS NOT
 ----------------
@@ -51,7 +54,7 @@ import struct
 import subprocess
 import sys
 
-VERSION = "1.1.0"
+VERSION = "1.2.0"
 
 SOCKET_PATH = "/run/couchside/helper.sock"
 # The uid allowed to talk to us. Baked in at install time via --uid; there is
@@ -388,6 +391,63 @@ def verb_decky_loader(mode):
 # THE WHOLE PRIVILEGED SURFACE, on one screen. Each entry is
 # (handler, argument validator or None). A verb not in here is a 404.
 
+# ---------------------------------------------------------------- usb.wake-arm
+#
+# Arm/disarm a USB device as a wake source: write "enabled"/"disabled" to
+# /sys/bus/usb/devices/<id>/power/wakeup. The <id> is CLIENT-supplied (the agent
+# passes through what the phone tapped), so this is the product's first path that
+# turns a client string into a root-owned sysfs path — and the whole safety of it
+# is that the id is validated by MEMBERSHIP in the kernel's own device listing,
+# never interpolated or cleaned (the _session_installed rule). An id with a
+# separator, a "..", or an interface-node ":" can never equal an os.listdir()
+# entry, so traversal is structurally impossible. The value written is a fixed
+# literal chosen by a boolean; no client string ever reaches the file body.
+_USB_WAKE_DIR = "/sys/bus/usb/devices"
+
+
+def _usb_wake_arg(v):
+    """Shape-only gate for {"id": <basename>, "on": <bool>}. Existence and
+    membership are checked in the verb against the box's own device listing; the
+    shape is rejected here too so a bad request fails at the boundary."""
+    if not isinstance(v, dict):
+        return None
+    dev = v.get("id")
+    on = v.get("on")
+    if not isinstance(dev, str) or not dev or not isinstance(on, bool):
+        return None
+    if "/" in dev or "\\" in dev or ":" in dev or dev.startswith("."):
+        return None
+    return {"id": dev, "on": on}
+
+
+def verb_usb_wake_arm(arg):
+    """Write enabled/disabled to a USB device's power/wakeup. `arg["id"]` is
+    accepted ONLY if it is a member of the kernel's device listing AND actually
+    owns a power/wakeup file (interface nodes and non-wake devices are refused,
+    nothing written). The path is built from that verified basename; the body is
+    a fixed literal, never the request."""
+    dev = arg["id"]
+    try:
+        present = dev in os.listdir(_USB_WAKE_DIR)
+    except OSError as e:
+        return False, "cannot read %s: %s" % (_USB_WAKE_DIR, e)
+    if not present:
+        return False, "no such usb device: %s" % dev
+    wake_path = os.path.join(_USB_WAKE_DIR, dev, "power", "wakeup")
+    if not os.path.isfile(wake_path):
+        return False, "%s is not a wake source" % dev
+    body = "enabled" if arg["on"] else "disabled"
+    try:
+        # A sysfs attribute: a plain write, NOT the atomic tmp+replace of
+        # _write_root_file (sysfs rejects rename). The value is one of exactly
+        # two fixed literals.
+        with open(wake_path, "w", encoding="ascii") as f:
+            f.write(body)
+    except OSError as e:
+        return False, "write failed: %s" % e
+    return True, "%s wake %s" % (dev, body)
+
+
 def _one_of(choices):
     return lambda v: v if isinstance(v, str) and v in choices else None
 
@@ -418,6 +478,7 @@ VERBS = {
     "update.flatpak":     (verb_update_flatpak, None),
     "update.os":          (verb_update_os, None),
     "decky.loader":       (verb_decky_loader, _one_of(tuple(_DECKY_UNITS))),
+    "usb.wake-arm":       (verb_usb_wake_arm, _usb_wake_arg),
 }
 
 

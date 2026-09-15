@@ -50,7 +50,7 @@ except ImportError:  # pragma: no cover
     fcntl = None
 
 APP_NAME = "couchside-agent"
-VERSION = "2.9.110"
+VERSION = "2.9.111"
 UID = os.getuid()
 XDG_RUNTIME_DIR = "/run/user/%d" % UID
 
@@ -1859,7 +1859,7 @@ def set_caps(mock):
                  "streamhost", "steammenus", "boxbattery", "file_upload",
                  "session_default", "display_info", "player", "screenstream",
                  "screenstream_h264", "audioswitch", "ledcontrol",
-                 "openrgb", "wlclipboard", "medialaunch")}
+                 "openrgb", "wlclipboard", "medialaunch", "usbwake")}
         return
     CAPS = {
         "gamepad": _uinput_writable(),
@@ -1923,6 +1923,10 @@ def set_caps(mock):
         # VLC/Spotify) from the phone via its curated XDG .desktop entry.
         # Linux-only; absent when the box has none of the curated apps.
         "medialaunch": safe(medialaunch_available),
+        # Arm a USB device as a wake source from the phone. Linux-only; absent
+        # unless the box has wake sources AND a helper new enough to arm them
+        # (the write is root-owned sysfs, done through the privileged helper).
+        "usbwake": safe(usbwake_available),
     }
 
 
@@ -7951,6 +7955,33 @@ def _helper_call(verb, arg=None, timeout=10):
         # fallback still enforces every original constraint, so degrading to it
         # never widens anything.
         return None
+
+
+def _helper_supports(verb):
+    """True when the INSTALLED helper knows `verb`. Probes with a deliberately
+    invalid arg: dispatch() replies 'unknown verb' for a missing verb and
+    'invalid argument for <verb>' for a present one, and neither runs anything.
+    Returns False when there is no helper or the verb is unknown -- so a box on
+    an older helper never advertises a capability its helper can't fulfil (which
+    would be a dead control). Read-only; never raises."""
+    try:
+        r = _helper_call(verb, {"__probe__": True})
+        return isinstance(r, dict) and "invalid argument" in (r.get("error") or "")
+    except Exception:
+        return False
+
+
+def usbwake_available():
+    """True when the box has USB wake sources AND a helper that can arm them.
+    The helper gate is load-bearing: arming writes a root-owned sysfs file
+    (/sys/.../power/wakeup) through the helper's usb.wake-arm verb, so a box whose
+    helper predates that verb -- or has no helper -- must NOT advertise the
+    capability, or the arm toggle in the app would be a dead control. Never
+    raises."""
+    try:
+        return bool(usb_wake_devices()) and _helper_supports("usb.wake-arm")
+    except Exception:
+        return False
 
 
 # ------------------------------------------------------ remote-desktop portal
@@ -24309,9 +24340,10 @@ class Handler(BaseHTTPRequestHandler):
                 # 404 when the box exposes none (no sysfs, or nothing armable),
                 # so a box that cannot do this shows no control at all.
                 #
-                # Arming is NOT done here and never will be from this route: it
-                # writes /sys/.../power/wakeup, which needs root. That stays a
-                # deliberate, documented, opt-in step.
+                # Arming is NOT done here -- this route stays read-only. It is a
+                # separate POST /api/usb-wake/arm (cap `usbwake`), which writes
+                # /sys/.../power/wakeup through the privileged helper (root), only
+                # for a device id this enumeration actually returned.
                 devs = ([{"id": "1-2", "vendor": "28de", "product_id": "1304",
                           "name": "Steam Controller Puck", "wake": "disabled",
                           "armed": False, "root_hub": False, "hub": False,
@@ -25439,6 +25471,48 @@ class Handler(BaseHTTPRequestHandler):
                     self._send(404, {"ok": False, "error": str(e)}, started)
                     return
                 self._send(200, result, started)
+                return
+
+            # POST /api/usb-wake/arm {id, on}: arm/disarm a USB wake source. The
+            # id MUST be one this box's enumeration returned -- an unknown id is a
+            # 404 with nothing written; the root sysfs write goes through the
+            # helper's usb.wake-arm verb (cap `usbwake`), which re-validates the id
+            # by membership. Nothing the client sends becomes a path.
+            if path == "/api/usb-wake/arm":
+                try:
+                    req = json.loads(body.decode("utf-8")) if body else {}
+                except (ValueError, UnicodeDecodeError):
+                    self._send(400, {"ok": False, "error": "bad json"}, started)
+                    return
+                dev = req.get("id") if isinstance(req, dict) else None
+                on = req.get("on") if isinstance(req, dict) else None
+                if not isinstance(dev, str) or not isinstance(on, bool):
+                    self._send(400, {"ok": False, "error": "bad request"}, started)
+                    return
+                if self.mock:
+                    if dev not in ("1-2", "usb1"):
+                        self._send(404, {"ok": False,
+                                         "error": "unknown device"}, started)
+                        return
+                    self._send(200, {"ok": True, "id": dev, "armed": on}, started)
+                    return
+                # Membership: only an id the enumeration returned may be armed.
+                # The helper re-checks, but refuse here too so a bad id never
+                # reaches it.
+                if dev not in {d["id"] for d in usb_wake_devices()}:
+                    self._send(404, {"ok": False,
+                                     "error": "unknown device"}, started)
+                    return
+                r = _helper_call("usb.wake-arm", {"id": dev, "on": on})
+                if r is None:
+                    self._send(503, {"ok": False,
+                                     "error": "no helper to arm with"}, started)
+                    return
+                ok = bool(r.get("ok"))
+                self._send(200 if ok else 500,
+                           {"ok": ok, "id": dev, "armed": on,
+                            **({"error": r.get("error")} if not ok else {})},
+                           started)
                 return
 
             # POST /api/utilities/<id>/run: run a Utilities tenant's state-changing

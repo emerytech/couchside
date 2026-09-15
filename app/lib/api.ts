@@ -277,6 +277,13 @@ export type BoxCaps = {
    * of the Couchside Player tile (cap `player`).
    */
   medialaunch?: boolean;
+  /**
+   * Arm a USB device as a wake source from the phone (agent >= 2.9.111, cap
+   * `usbwake`, Linux only). undefined = unknown/probe (older agent, Windows);
+   * false = no wake sources, or no helper new enough to arm them. Gates the
+   * "Wake devices" control in the power menu.
+   */
+  usbwake?: boolean;
 };
 
 /** One Setup → Utilities helper + its live state, from GET /api/utilities.
@@ -592,6 +599,27 @@ export type MediaAppsState = {
   available: boolean;
   apps: MediaApp[];
 };
+
+/** A USB device that can be a wake source (GET /api/usb-wake, cap `usbwake`).
+    `armed` is the current state; `transient` = a leaf device that may power itself
+    off (arming it can cause spurious wakes — a UX warning, never a gate);
+    `writable` = the box could arm it even by root (a false here means it can't be
+    changed at all). */
+export type UsbWakeDevice = {
+  id: string;
+  vendor: string;
+  product_id: string;
+  name: string;
+  wake: string;
+  armed: boolean;
+  root_hub: boolean;
+  hub: boolean;
+  transient: boolean;
+  writable: boolean;
+};
+
+/** GET /api/usb-wake: the wake sources this box can arm. */
+export type UsbWakeState = { devices: UsbWakeDevice[] };
 
 export type PlayerPlayback = {
   playing: boolean;
@@ -1729,7 +1757,8 @@ export function capsEqual(a?: BoxCaps, b?: BoxCaps): boolean {
     a.ledcontrol === b.ledcontrol &&
     a.openrgb === b.openrgb &&
     a.wlclipboard === b.wlclipboard &&
-    a.medialaunch === b.medialaunch
+    a.medialaunch === b.medialaunch &&
+    a.usbwake === b.usbwake
   );
 }
 
@@ -3220,6 +3249,36 @@ export const api = {
     return request<{ ok: boolean }>(settings, '/api/player/media', {
       method: 'POST',
       body: actionId ? { app_id: appId, action_id: actionId } : { app_id: appId },
+    })
+      .then((r) => !!r?.ok)
+      .catch(() => false);
+  },
+
+  /**
+   * The USB wake sources this box can arm (agent >= 2.9.111, cap `usbwake`,
+   * Linux only). Probe-and-appear: null on a 404 (older agent / nothing armable)
+   * so the control hides. Gated on `usbwake` — which requires a helper new enough
+   * to actually arm, so the list is only fetched where arming will work.
+   */
+  usbWake(
+    settings: ConnSettings,
+    caps: BoxCaps | undefined = cachedCaps(settings),
+  ): Promise<UsbWakeState | null> {
+    return probeGated(caps?.usbwake, () =>
+      probeOrNull(request<UsbWakeState>(settings, '/api/usb-wake')));
+  },
+
+  /**
+   * Arm (or disarm) a USB device as a wake source by id. The box accepts only an
+   * id its own enumeration returned — an unknown one comes back 404 having
+   * written nothing; the root sysfs write is done by the box's privileged helper.
+   * Resolves false on any failure; the caller re-reads usbWake() to show the REAL
+   * state rather than trusting this return.
+   */
+  usbWakeArm(settings: ConnSettings, id: string, on: boolean): Promise<boolean> {
+    return request<{ ok: boolean }>(settings, '/api/usb-wake/arm', {
+      method: 'POST',
+      body: { id, on },
     })
       .then((r) => !!r?.ok)
       .catch(() => false);
