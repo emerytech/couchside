@@ -1387,7 +1387,17 @@ recommendation was wrong, not merely superseded.
 - **Estimate:** Phase 1 in a few focused sessions; the win port took 0.3.x→0.4.3 to reach
   parity, but it also invented the non-Linux skeleton this port inherits.
 
-> 🟡 **BUILT (2026-09-15, #530); arm-write hardware pass PENDING; agent 2.9.111 HELD.** Helper
+> ✅ **DONE + RELEASED + HARDWARE-VERIFIED (2026-09-15, #530).** agent 2.9.111 + helper 1.2.0 +
+> Decky v0.2.83 shipped. On the Steam Machine (helper 1.2.0): POST /api/usb-wake/arm {id:"1-3",
+> on:false} → sysfs power/wakeup=disabled; {on:true} → enabled (restored). Interface node
+> `1-3:1.0` and traversal `../../etc/passwd` → 404, NOTHING written. `usbwake` cap flips True with
+> helper 1.2.0, dark without. A literal sleep→wake wasn't eyeballed, but writing `enabled` to
+> power/wakeup IS the kernel wake mechanism. REACH: ssh `couchside update` is agent-only and does
+> NOT refresh the helper — the helper updates via the FULL install.sh run as the normal user (NOT
+> sudo; install.sh refuses root) or a Decky-plugin box's root plugin_loader. Original design notes
+> below.
+>
+> 🟡 **(superseded by the DONE banner above)** BUILT (2026-09-15, #530); Helper
 > verb `usb.wake-arm` (helper 1.2.0, id validated by os.listdir MEMBERSHIP, fixed enabled/disabled
 > value); agent POST /api/usb-wake/arm (membership refusal, helper-call); cap `usbwake` six sites,
 > `usbwake_available()` = enumerable devices AND the helper KNOWS the verb (probed via dispatch's
