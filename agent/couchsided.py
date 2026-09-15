@@ -3093,9 +3093,16 @@ def set_media_apps(mock):
 
 
 def medialaunch_available():
-    """True when the box has at least one curated native media app. Never raises."""
+    """True when the box has a curated native media app AND is currently in a
+    DESKTOP session. The desktop-session gate is load-bearing, not cosmetic:
+    hardware-confirmed 2026-09-15 that a direct .desktop launch spawns the app but
+    does NOT surface on the TV in Game Mode (gamescope shows only what Steam
+    focuses). Offering the tile in Game Mode would be a dead control, the exact
+    thing this project hunts down. Game Mode support needs the steam-registration
+    path (Phase 7b). Session-volatile, so real_status recomputes it per request.
+    Never raises."""
     try:
-        return bool(_MEDIA_APPS)
+        return bool(_MEDIA_APPS) and desktop_available()
     except Exception:
         return False
 
@@ -4339,7 +4346,13 @@ def real_status():
         # request or the app would freeze at whatever session the agent booted in.
         # `desktop` is a cheap pgrep; screenstream[_h264] track the portal backend
         # (present on desktop, absent in Game Mode) and share a short-TTL probe.
-        "caps": dict(CAPS, desktop=desktop_available(), **live_screenstream_caps()),
+        # `medialaunch` is session-volatile too: a direct .desktop launch only
+        # SURFACES on the TV in a desktop session (gamescope shows only what Steam
+        # focuses, hardware-confirmed 2026-09-15), so it is offered only there —
+        # Game Mode needs the steam-registration path (Phase 7b), not yet built.
+        "caps": dict(CAPS, desktop=desktop_available(),
+                     medialaunch=medialaunch_available(),
+                     **live_screenstream_caps()),
         # False when the config dir isn't writable by the agent user, so the app
         # can warn that TV pairing / launcher edits won't persist (agent >= 2.9.12).
         "config_writable": CONFIG_WRITABLE,
@@ -22325,14 +22338,22 @@ def _stream_data_bound():
 # page. So a wrong entry would present as a working button that goes somewhere
 # else — worse than a missing one. Hence measured, never guessed.
 #
+# RE-MEASURED on the Steam Machine (SteamOS Game Mode) 2026-09-15: `notifications`
+# and `ingame` now land on the Notifications and In Game pages (screen-captured,
+# with an invalid-anchor control that stayed on the default System page and a
+# System->slug navigation each time). They were previously measured ABSENT; Steam
+# changed the routing. This is exactly why the list is measured and never
+# grepped, and why a slug can move between the two lists over Steam versions.
+#
 # Verified ABSENT (Steam fell back to the default page) — do NOT re-add one of
-# these without capturing the screen first: internet, ingame, notifications,
-# notification, alerts, in-game, overlay, gameoverlay, ingameoverlay, interface,
-# broadcast, remoteplay, remote-play, remoteplaysettings, account, voice, music,
-# compatibility, developer, wifi, connectivity, steamnetwork, general,
-# steamcloud, streaming, recording. Several of those panels DO exist in Steam's UI (Notifications,
-# In Game, Remote Play are all visible in the sidebar) — their slugs are simply
-# something else and have not been found yet.
+# these without capturing the screen first: internet, notification, alerts,
+# in-game, overlay, gameoverlay, ingameoverlay, interface, broadcast, remoteplay,
+# remote-play, remoteplaysettings, remoteplayclient, streamingclient, account,
+# voice, music, compatibility, developer, wifi, connectivity, steamnetwork,
+# general, steamcloud, streaming, recording. REMOTE PLAY is the one sidebar panel
+# whose slug is still unfound — seven variants tried and all fell to the default
+# (2026-09-15). The SteamUI bundle only literals audio/friends/ingame/voice, so
+# it may have no direct open/settings slug in Game Mode at all.
 #
 # "system" is deliberately absent for a different reason: it IS the default
 # page, so it is indistinguishable from an invalid slug by screen capture. It
@@ -22353,7 +22374,10 @@ STEAM_MENUS = (
     ("keyboard", "Keyboard"),
     ("customization", "Customization"),
     ("accessibility", "Accessibility"),
+    # In Game + Notifications: re-measured working 2026-09-15 (see note above).
+    ("ingame", "In Game"),
     ("friends", "Friends & Chat"),
+    ("notifications", "Notifications"),
     ("family", "Family"),
     ("cloud", "Cloud"),
     ("security", "Security"),

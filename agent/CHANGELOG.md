@@ -20,13 +20,18 @@ deciding whether to press "Update now" on a machine across the room.
 
 ## 2.9.110
 
-**Open your media apps from the phone.** If the box has Kodi, Plex, Jellyfin,
-Moonlight, VLC or Spotify installed natively, they now show up in Watch and
-launch with a tap — no more being limited to the web services. Kodi opens
-straight into its fullscreen TV mode where it offers one.
+**Open your media apps from the phone.** On a box running the DESKTOP session, if
+it has Kodi, Plex, Jellyfin, Moonlight, VLC or Spotify installed natively, they
+now show up in Watch and launch with a tap — no more being limited to the web
+services. Kodi opens straight into its fullscreen TV mode where it offers one.
+(On a Steam Deck / Steam Machine in Game Mode the tiles stay hidden for now —
+launching a native app there needs a bit more plumbing, coming in a later update.)
 
 Only apps Couchside knows by name are offered, and it only ever launches the
 box's own copy — nothing you send from the phone becomes a command.
+
+**More Steam settings shortcuts.** The Pad's Steam menu can now jump straight to
+the Notifications and In Game settings pages, alongside the ones it already had.
 
 ## 2.9.109
 

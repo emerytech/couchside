@@ -41,10 +41,15 @@ def check(cond, label):
 # settings page for every one of these, i.e. they are NOT real panels. Some of
 # the PANELS do exist in Steam's sidebar (Notifications, In Game, Remote Play) —
 # these particular SLUGS just are not how you reach them.
+# `ingame` and `notifications` were here until 2026-09-15, when they were
+# re-measured WORKING on the Steam Machine (SteamOS Game Mode) — Steam changed the
+# routing. Moved into STEAM_MENUS; a slug can migrate between the two lists across
+# Steam versions, which is why both are hardware-measured, never grepped.
 MEASURED_ABSENT = frozenset({
-    "internet", "ingame", "notifications", "notification", "alerts", "in-game",
+    "internet", "notification", "alerts", "in-game",
     "overlay", "gameoverlay", "ingameoverlay", "interface", "broadcast",
-    "remoteplay", "remote-play", "remoteplaysettings", "account", "voice",
+    "remoteplay", "remote-play", "remoteplaysettings", "remoteplayclient",
+    "streamingclient", "account", "voice",
     "music", "compatibility", "developer", "wifi", "connectivity",
     "steamnetwork", "general", "steamcloud", "streaming", "recording",
 })

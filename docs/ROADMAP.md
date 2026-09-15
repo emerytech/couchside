@@ -732,10 +732,17 @@ network and is useful alone.
 > launch via real_launch; Kodi's Fullscreen action exposed. App: WatchPanel "APPS ON THE BOX"
 > grid, Watch shows on player OR medialaunch. Security is fully unit-tested (allowlist refusal on
 > a spy, planted-user-dir exclusion, verbatim fixtures) + harness-pressed (correct argv POSTed).
-> **Agent 2.9.110 is NOT released:** the REAL on-TV launch is unverified (both boxes offline);
-> in Game Mode surfacing may need Steam registration (v1 does a direct launch, correct on a
-> desktop session; a wrong argv fails closed). Cut the release + screen-capture the launch when a
-> box is up. STILL open in this entry: the screensaver-inhibit-while-playing measurement (§Phase 7).
+> **HARDWARE FINDING (2026-09-15, Steam Machine, #529):** a direct .desktop launch SPAWNS the app
+> (kate ran) but does NOT surface on the TV in Game Mode — gamescope shows only what Steam focuses
+> (§2). So `medialaunch` now GATES on a desktop session (`desktop_available()`), verified False in
+> Game Mode even with an app present. Desktop-session boxes (Nobara HTPC etc.) get working tiles;
+> Deck/Steam Machine in Game Mode hide them (no dead control). **Agent 2.9.110 ready to release**
+> once #529 merges (media desktop-gated + Steam slugs). STILL OPEN: **Phase 7b** — Game-Mode
+> support via the steam-registration path (steamos-add-to-steam + steam://rungameid, like the
+> Player tile) so native apps surface in Game Mode; and the media tiles surfacing on a real
+> desktop-session box is UNVERIFIED (none online — but it's a standard real_launch subprocess,
+> gated so it can never be a dead control). Also open: the screensaver-inhibit-while-playing
+> measurement (§Phase 7).
 >
 ### Couchside Player Phase 7 — native media apps via `.desktop` + Actions
 - **priority:** P2 · **risk:** medium · **affects:** tile + agent + app · **depends_on:**
@@ -1217,21 +1224,15 @@ recommendation was wrong, not merely superseded.
   down when the controller role is released (overlaps the auto-drop-pad feature above).
 - **Output:** the numbers, plus a KNOWN_ISSUES entry only if a real regression is found.
 
-> 🔴 **BLOCKED ON HARDWARE (revisited 2026-09-14).** Investigated again: every obvious slug for
-> all three panels is ALREADY measured-absent (agent comment ~21969, and the MEASURED_ABSENT
-> regression set in tests/test_steam_menus.py fails CI on any of them) — notifications,
-> notification, alerts, ingame, in-game, overlay, gameoverlay, remoteplay, remote-play,
-> streaming, broadcast, and more. The Steam UI bundle only literals `settings/{audio,friends,
-> ingame,voice}`, and of those `ingame`/`voice` were BOTH measured absent in Game Mode — Game
-> Mode's settings routing differs from desktop. So the slugs are UNKNOWN, not un-typed. The only
-> completion path: fire candidate steam:// URLs on a real Steam machine in Game Mode and
-> screen-capture where each lands (GET /api/screen/frame), using the 3-try protocol in
-> [[steam-detection-traps]] (anchor on a deliberately-invalid slug so "screen unchanged" == fake;
-> settle ~7s; require two identical frames; run a known-bad AND known-good control every sweep).
-> Both home boxes were OFFLINE on 2026-09-14. Do NOT ship a guessed slug — it either trips the
-> regression test or silently opens the wrong settings page, which the whole subsystem's honesty
-> discipline exists to prevent. Mechanical edit once a slug is proven: one (id,label) tuple in
-> STEAM_MENUS + remove it from MEASURED_ABSENT + optional GROUPS placement in SteamMenusPanel.
+> 🟢 **2 of 3 DONE (2026-09-15, #529).** Fired candidates live on the Steam Machine (SteamOS Game
+> Mode) + screen-captured: `notifications` and `ingame` NOW land on their pages (reproduced twice,
+> with an invalid-anchor control on the default System page) — they had been measured-absent;
+> Steam changed the routing, which is exactly why this is measured not grepped. Both shipped in
+> STEAM_MENUS (agent 2.9.110) and removed from MEASURED_ABSENT. **Remote Play still unfound:**
+> seven variants (remoteplay, remote_play, remote-play, remoteplaysettings, remoteplayclient,
+> streaming, streamingclient) all fell to the default System page. The SteamUI bundle only
+> literals audio/friends/ingame/voice, so Remote Play may have no direct open/settings slug in
+> Game Mode. Leave it open; re-fire if Steam changes again.
 >
 ### Find the missing Steam settings slugs
 - **priority:** P3 · **risk:** none · **affects:** agent only
