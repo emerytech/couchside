@@ -893,6 +893,15 @@ jobs:
       - name: Unit tests (media launcher)
         run: python3 tests/test_media_launcher.py
 
+      # USB-wake ARM (POST /api/usb-wake/arm, cap usbwake): the product's first
+      # client-id -> root-owned-sysfs write. Pins the auth gate, membership
+      # validation (an unknown/traversal id is 404 with the helper NEVER called,
+      # on a spy), the exact {id,on} handed to the helper, the no-helper 503, and
+      # five of the six cap edit sites. The root write itself is in
+      # test_privileged_helper.py (verb_usb_wake_arm against a temp device tree).
+      - name: Unit tests (usb-wake arm)
+        run: python3 tests/test_usb_wake_arm.py
+
       # The /api/actions route dispatch. A non-allowlisted id must be 404'd AND
       # dispatch nothing (asserted on a spy, not inferred from the status code) —
       # this route hands ids to subprocess, so a hole here runs arbitrary

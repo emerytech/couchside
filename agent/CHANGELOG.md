@@ -18,6 +18,15 @@ the same thing regardless of what actually changed.
 Write for the person holding the phone, not for the commit log. They are
 deciding whether to press "Update now" on a machine across the room.
 
+## 2.9.111
+
+**Arm your controller to wake the box.** If a controller (or its dongle) can wake
+the machine from sleep, you can now turn that on from the phone — pick the device
+in the power menu and arm it, instead of hunting through BIOS or a terminal. It
+only offers devices the box actually reports as wake-capable, and the change is
+made by the box's own privileged helper — nothing you send from the phone becomes
+a command or a file path.
+
 ## 2.9.110
 
 **Open your media apps from the phone.** On a box running the DESKTOP session, if
