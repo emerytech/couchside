@@ -50,7 +50,7 @@ except ImportError:  # pragma: no cover
     fcntl = None
 
 APP_NAME = "couchside-agent"
-VERSION = "2.9.111"
+VERSION = "2.9.112"
 UID = os.getuid()
 XDG_RUNTIME_DIR = "/run/user/%d" % UID
 
@@ -3096,17 +3096,31 @@ def set_media_apps(mock):
     _MEDIA_APPS = apps
 
 
-def medialaunch_available():
-    """True when the box has a curated native media app AND is currently in a
-    DESKTOP session. The desktop-session gate is load-bearing, not cosmetic:
-    hardware-confirmed 2026-09-15 that a direct .desktop launch spawns the app but
-    does NOT surface on the TV in Game Mode (gamescope shows only what Steam
-    focuses). Offering the tile in Game Mode would be a dead control, the exact
-    thing this project hunts down. Game Mode support needs the steam-registration
-    path (Phase 7b). Session-volatile, so real_status recomputes it per request.
-    Never raises."""
+def _media_relay_ok():
+    """True when a native media app can be surfaced in GAME MODE by relaying
+    through the Steam-registered player tile: the tile re-reads its conf and
+    execs the app itself, because gamescope only surfaces what Steam focuses (a
+    direct spawn runs invisibly there -- hardware-confirmed 2026-09-15). Needs
+    the tile file + steam + steamos-add-to-steam; the browser is NOT required (a
+    media app is not the player's browser). Never raises."""
     try:
-        return bool(_MEDIA_APPS) and desktop_available()
+        return (os.path.isfile(PLAYER_TILE)
+                and shutil.which("steam") is not None
+                and shutil.which("steamos-add-to-steam") is not None)
+    except Exception:
+        return False
+
+
+def medialaunch_available():
+    """True when the box has a curated native media app AND a way to actually
+    SURFACE it: a desktop session (a direct launch shows itself) OR the player
+    tile to relay through in Game Mode (see _media_relay_ok). Hardware-confirmed
+    2026-09-15 that a direct .desktop launch spawns but does NOT surface on the TV
+    in Game Mode, so offering the tiles there without the relay would be a dead
+    control. Session-volatile (desktop_available flips with the session), so
+    real_status recomputes it per request. Never raises."""
+    try:
+        return bool(_MEDIA_APPS) and (desktop_available() or _media_relay_ok())
     except Exception:
         return False
 
@@ -3131,7 +3145,15 @@ def media_launch(app_id, action_id, mock):
     """Look up (app_id, action_id) in _MEDIA_APPS and launch it. Raises
     ValueError for an unknown app or action -- NOTHING runs in that case. The
     client string only ever SELECTS a record; the argv comes from the box's own
-    .desktop file, never from the request."""
+    .desktop file, never from the request.
+
+    HOW it launches depends on the session (Phase 7b):
+      - DESKTOP session -> a direct real_launch; the app shows its own window.
+      - GAME MODE -> relay through the Steam-registered player tile (write
+        `mediaapp` into the tile's conf + fire its rungameid, reusing the tile's
+        whole stop->register->fire lifecycle). A direct spawn would run invisibly
+        in Game Mode. The tile has its OWN frozen media catalog (the allowlist
+        lives in the tile, as with services); the agent only passes the id."""
     if not isinstance(app_id, str) or app_id not in _MEDIA_APPS:
         raise ValueError("unknown app")
     rec = _MEDIA_APPS[app_id]
@@ -3142,7 +3164,17 @@ def media_launch(app_id, action_id, mock):
         argv = rec["actions"][action_id]["exec"]
     else:
         argv = rec["exec"]
-    return mock_launch(argv) if mock else real_launch(argv)
+    if mock:
+        return mock_launch(argv)
+    if desktop_available():
+        return real_launch(argv)
+    if _media_relay_ok():
+        was_running = _pl_running()
+        _pl_media_conf_write(app_id, action_id)
+        _pl_relaunch(_pl_appid(), was_running)   # stop -> register-if-fresh -> rungameid
+        return {"ok": True, "relay": "steam"}
+    # Cap should have hidden this; fall back to a direct launch rather than 500.
+    return real_launch(argv)
 
 
 def _pl_ask(*args, timeout=15):
@@ -3347,6 +3379,20 @@ def _pl_conf_write(service, path, query="", hub=False, url=""):
             f.write("query=%s\n" % query)
         elif path:
             f.write("path=%s\n" % path)
+
+
+def _pl_media_conf_write(app_id, action_id):
+    """Write the player conf so the tile launches a NATIVE media app (Phase 7b,
+    Game Mode) instead of a browser. Fresh conf (open 'w'), so it never mixes
+    with a stale `service=`/`url=`; the tile checks `mediaapp` FIRST. The id is
+    one the tile's own frozen catalog must recognise -- an unknown one launches
+    nothing there. action_id (e.g. Kodi's Fullscreen) selects a fixed flag in the
+    tile, never client text."""
+    os.makedirs(os.path.dirname(PLAYER_CONF), exist_ok=True)
+    with open(PLAYER_CONF, "w") as f:
+        f.write("mediaapp=%s\n" % app_id)
+        if action_id:
+            f.write("mediaaction=%s\n" % action_id)
 
 
 def _pl_validate(service, path):

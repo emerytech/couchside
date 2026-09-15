@@ -442,7 +442,16 @@ read_conf() {
     HUB=""
     URL_RAW=""
     UI_SCALE=""
+    MEDIA_APP=""
+    MEDIA_ACTION=""
     [ -f "$CONF" ] || return 0
+    # Native media app (Phase 7b): the agent writes these in Game Mode so this
+    # tile launches Kodi/Plex/etc. THROUGH Steam (gamescope only surfaces what
+    # Steam focuses). The id is looked up in a frozen table (media_app_cmd), never
+    # interpolated; the action selects a fixed flag. Parsed here, dispatched in
+    # main() BEFORE the browser path, so a service launch is completely unaffected.
+    MEDIA_APP=$(sed -n 's/^mediaapp=\(.*\)$/\1/p' "$CONF" | tail -1)
+    MEDIA_ACTION=$(sed -n 's/^mediaaction=\(.*\)$/\1/p' "$CONF" | tail -1)
     # Parse strictly: only these keys, only from `key=value` lines. Anything
     # else in the file is ignored rather than interpreted.
     HUB=$(sed -n 's/^hub=\(.*\)$/\1/p' "$CONF" | tail -1)
@@ -459,6 +468,54 @@ read_conf() {
         1|1.25|1.5|1.75|2) : ;;
         *) UI_SCALE="" ;;
     esac
+}
+
+# Native media app command table (Phase 7b). A FROZEN case table — the id is
+# LOOKED UP, never interpolated — mirroring service_url()'s allowlist rule. These
+# are the flatpak ids for the curated media apps; a box that installed one as a
+# NATIVE package (not flatpak) is not covered by the Game-Mode relay in v1 and
+# falls closed here (desktop-session launch handles it directly in the agent).
+# Prints the argv, one token per line, or exits non-zero for an unknown id.
+media_app_cmd() {
+    local id="$1"
+    case "$id" in
+        kodi)      printf '%s\n' flatpak run tv.kodi.Kodi ;;
+        plex)      printf '%s\n' flatpak run tv.plex.PlexHTPC ;;
+        jellyfin)  printf '%s\n' flatpak run com.github.iwalton3.jellyfin-media-player ;;
+        moonlight) printf '%s\n' flatpak run com.moonlight_stream.Moonlight ;;
+        vlc)       printf '%s\n' flatpak run org.videolan.VLC ;;
+        spotify)   printf '%s\n' flatpak run com.spotify.Client ;;
+        *) return 1 ;;
+    esac
+}
+
+# A fixed extra flag for a known (app, action) pair — never client text. Only
+# Kodi exposes a fullscreen action today; everything else adds nothing.
+media_app_action_flag() {
+    case "$1:$2" in
+        kodi:Fullscreen) printf '%s\n' --fullscreen ;;
+        *) : ;;
+    esac
+}
+
+# Launch a native media app and HOLD the process, so Steam's reaper (which owns
+# our process group) stops the whole thing — the same discipline the browser
+# path uses below. A non-table id launches NOTHING and exits non-zero.
+run_media_app() {
+    local id="$1" action="$2"
+    local -a cmd=()
+    local tok
+    while IFS= read -r tok; do cmd+=("$tok"); done < <(media_app_cmd "$id") || true
+    if [ "${#cmd[@]}" -eq 0 ]; then
+        log "refused: unknown media app '$id'"
+        return 1
+    fi
+    while IFS= read -r tok; do [ -n "$tok" ] && cmd+=("$tok"); done < <(media_app_action_flag "$id" "$action")
+    log "launching media app: ${cmd[*]}"
+    "${cmd[@]}" &
+    local child=$!
+    echo "$child" > "$PIDFILE"
+    wait "$child"
 }
 
 # Build a SEARCH url: frozen prefix from the table + the encoded query.
@@ -537,6 +594,10 @@ validate_open_url() {
 # They exercise the real functions above; they do not reimplement them.
 case "${1:-}" in
     --print-ozone) pick_ozone; exit 0 ;;
+    --media-cmd)   # resolved argv for a media app (+ optional action), or exit 1
+        media_app_cmd "${2:-}" || exit 1
+        media_app_action_flag "${2:-}" "${3:-}"
+        exit 0 ;;
     --print-url)   build_url "${2:-}" "${3:-}" || exit 1; exit 0 ;;
     --print-open-url) validate_open_url "${2:-}" || exit 1; exit 0 ;;
     --print-search) build_search_url "${2:-}" "${3:-}" || exit 1; exit 0 ;;
@@ -568,6 +629,20 @@ fi
 echo "$$" > "$PIDFILE"
 
 read_conf
+
+# Native media app (Phase 7b) SHORT-CIRCUITS the browser path entirely: if the
+# agent wrote mediaapp=, launch that app and hold it, then exit. A non-table id
+# launches nothing. This is BEFORE resolve_browser because a media app has
+# nothing to do with the Widevine browser.
+if [ -n "${MEDIA_APP:-}" ]; then
+    if run_media_app "$MEDIA_APP" "${MEDIA_ACTION:-}"; then
+        rm -f "$PIDFILE"
+        exit 0
+    fi
+    rm -f "$PIDFILE"
+    exit 4
+fi
+
 SERVICE="${SERVICE:-netflix}"
 
 # Resolve the browser FIRST: the hub page is written into the CHOSEN browser's

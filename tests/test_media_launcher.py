@@ -173,6 +173,50 @@ finally:
 
 
 # ---------------------------------------------------------------------------
+print("\nPhase 7b: launch PATH is chosen by session (direct desktop vs Steam relay)")
+# ---------------------------------------------------------------------------
+# Same _MEDIA_APPS as above (kodi/plex). Stub the session probes + both launch
+# paths; assert the RIGHT one fires and the other does not.
+mt = MediaTree({"tv.kodi.Kodi.desktop": KODI, "tv.plex.PlexHTPC.desktop": PLEX})
+_saved = (cs.desktop_available, cs._media_relay_ok, cs.real_launch,
+          cs._pl_running, cs._pl_media_conf_write, cs._pl_relaunch, cs._pl_appid)
+try:
+    calls = {"direct": [], "conf": [], "relaunch": []}
+    cs.real_launch = lambda argv: (calls["direct"].append(list(argv)) or {"ok": True})
+    cs._pl_running = lambda: False
+    cs._pl_appid = lambda: 4242
+    cs._pl_media_conf_write = lambda app, act: calls["conf"].append((app, act))
+    cs._pl_relaunch = lambda aid, was: calls["relaunch"].append((aid, was))
+    # DESKTOP session -> direct launch, no relay.
+    cs.desktop_available = lambda: True
+    cs._media_relay_ok = lambda: True
+    for k in calls:
+        calls[k].clear()
+    cs.media_launch("kodi", None, False)
+    check(len(calls["direct"]) == 1 and not calls["conf"] and not calls["relaunch"],
+          "desktop session -> DIRECT launch, no relay", calls)
+    # GAME MODE (no desktop) + relay available -> relay, no direct launch.
+    cs.desktop_available = lambda: False
+    cs._media_relay_ok = lambda: True
+    for k in calls:
+        calls[k].clear()
+    r = cs.media_launch("kodi", "Fullscreen", False)
+    check(calls["conf"] == [("kodi", "Fullscreen")] and calls["relaunch"] == [(4242, False)]
+          and not calls["direct"] and r.get("relay") == "steam",
+          "game mode -> RELAY (conf write + rungameid), no direct launch", calls)
+    # Cap tracks it: available when relay is possible even without a desktop.
+    cs.desktop_available = lambda: False
+    cs._media_relay_ok = lambda: True
+    check(cs.medialaunch_available() is True, "cap available via relay in game mode")
+    cs._media_relay_ok = lambda: False
+    check(cs.medialaunch_available() is False, "cap absent when neither desktop nor relay")
+finally:
+    (cs.desktop_available, cs._media_relay_ok, cs.real_launch,
+     cs._pl_running, cs._pl_media_conf_write, cs._pl_relaunch, cs._pl_appid) = _saved
+    mt.close()
+
+
+# ---------------------------------------------------------------------------
 print("\n§5b: a planted ~/.local .desktop is NOT offered (system dirs only)")
 # ---------------------------------------------------------------------------
 # The malicious file sits in the fake USER dir, which is on disk but not in the
