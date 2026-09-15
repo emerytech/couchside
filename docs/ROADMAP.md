@@ -737,11 +737,15 @@ network and is useful alone.
 > (§2). So `medialaunch` now GATES on a desktop session (`desktop_available()`), verified False in
 > Game Mode even with an app present. Desktop-session boxes (Nobara HTPC etc.) get working tiles;
 > Deck/Steam Machine in Game Mode hide them (no dead control). **Agent 2.9.110 ready to release**
-> once #529 merges (media desktop-gated + Steam slugs). STILL OPEN: **Phase 7b** — Game-Mode
-> support via the steam-registration path (steamos-add-to-steam + steam://rungameid, like the
-> Player tile) so native apps surface in Game Mode; and the media tiles surfacing on a real
-> desktop-session box is UNVERIFIED (none online — but it's a standard real_launch subprocess,
-> gated so it can never be a dead control). Also open: the screensaver-inhibit-while-playing
+> once #529 merges (media desktop-gated + Steam slugs). **Phase 7b BUILT + HELD (#532, agent
+> 2.9.112):** Game-Mode support via the player-tile RELAY — media_launch writes `mediaapp=<id>`
+> into the player conf + reuses _pl_relaunch (stop→register→rungameid); the tile has a frozen
+> flatpak media catalog (allowlist in the tile) and an additive branch before the browser path.
+> medialaunch now = has-app AND (desktop OR _media_relay_ok). Unit-tested (path-by-session; tile
+> --media-cmd catalog). HELD: the on-TV surface via the relay is UNVERIFIED (needs a curated media
+> app on a box with disk + the player tile; Steam Machine /home 99% full, no tile there). Tile
+> catalog is flatpak-only (native-package installs fall closed in Game Mode). STILL OPEN: the
+> desktop-session direct-launch surface (never eyeballed) and the screensaver-inhibit-while-playing
 > measurement (§Phase 7).
 >
 ### Couchside Player Phase 7 — native media apps via `.desktop` + Actions

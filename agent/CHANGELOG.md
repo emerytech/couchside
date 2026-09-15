@@ -27,6 +27,14 @@ only offers devices the box actually reports as wake-capable, and the change is
 made by the box's own privileged helper — nothing you send from the phone becomes
 a command or a file path.
 
+## 2.9.112
+
+**Your media apps now open on the TV in Game Mode too.** Kodi, Plex and the rest
+used to only launch when the box was on its desktop; on a Steam Deck / Steam
+Machine in Game Mode the tiles were hidden. Now they launch there as well, by
+opening through Steam so the app actually shows up on the TV. Still only the apps
+Couchside knows by name, still the box's own copy.
+
 ## 2.9.110
 
 **Open your media apps from the phone.** On a box running the DESKTOP session, if

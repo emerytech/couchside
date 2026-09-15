@@ -136,6 +136,33 @@ check("a service with no pattern still opens its home page",
       rc == 0 and out == "https://www.netflix.com/", out)
 
 # ---------------------------------------------------------------------------
+print("\nmedia app catalog (Phase 7b) — id looked up, unknown launches nothing")
+# ---------------------------------------------------------------------------
+# The Game-Mode relay: the agent writes mediaapp=<id>; the tile resolves the id
+# in its OWN frozen table (the allowlist lives here). --media-cmd prints the argv.
+rc, out = tile("--media-cmd", "kodi", "Fullscreen")
+check("kodi+Fullscreen -> flatpak run tv.kodi.Kodi --fullscreen",
+      rc == 0 and out.split() == ["flatpak", "run", "tv.kodi.Kodi", "--fullscreen"], out)
+rc, out = tile("--media-cmd", "plex")
+check("plex -> flatpak run tv.plex.PlexHTPC (no action)",
+      rc == 0 and out.split() == ["flatpak", "run", "tv.plex.PlexHTPC"], out)
+rc, out = tile("--media-cmd", "kodi")
+check("kodi with NO action -> no --fullscreen appended",
+      rc == 0 and "--fullscreen" not in out.split(), out)
+# Unknown id and an unknown action both refuse-or-ignore, never inject.
+rc, out = tile("--media-cmd", "not-a-real-app")
+check("unknown media id -> exit 1, nothing", rc == 1, (rc, out))
+rc, out = tile("--media-cmd", "kodi", "../../evil")
+check("unknown action -> no extra flag (fixed table, never client text)",
+      rc == 0 and out.split() == ["flatpak", "run", "tv.kodi.Kodi"], out)
+# Every curated app resolves to a `flatpak run` argv (no shelled command).
+for app in ("kodi", "plex", "jellyfin", "moonlight", "vlc", "spotify"):
+    rc, out = tile("--media-cmd", app)
+    toks = out.split()
+    check("%s resolves to a flatpak-run argv" % app,
+          rc == 0 and toks[:2] == ["flatpak", "run"] and len(toks) == 3, out)
+
+# ---------------------------------------------------------------------------
 print("\ndisplay backend — both directions, because one is not a measurement")
 # ---------------------------------------------------------------------------
 rc, out = tile("--print-ozone", env={"WAYLAND_DISPLAY": "wayland-0"})
