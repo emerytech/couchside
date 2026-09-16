@@ -725,7 +725,7 @@ network and is useful alone.
   updates ship the agent binary WITHOUT the installer, the helper must be detected and optional
   with the sudo path kept for a full release cycle.
 
-> 🟡 **BUILT IN CODE, agent release HELD on hardware (2026-09-14, #528).** GET/POST
+> ✅ **RELEASED + HARDWARE-VERIFIED (agent 2.9.110 desktop-gate #529, agent 2.9.112 Game-Mode relay #532).** GET/POST
 > /api/player/media + cap `medialaunch` (six sites) + a curated `.desktop` scanner
 > (kodi/plex/jellyfin/moonlight/vlc/spotify) reading SYSTEM dirs only (~/.local excluded);
 > section-aware parse, token-level field-code strip + `%%` unescape + shlex quoting, argv-list
@@ -742,9 +742,16 @@ network and is useful alone.
 > into the player conf + reuses _pl_relaunch (stop→register→rungameid); the tile has a frozen
 > flatpak media catalog (allowlist in the tile) and an additive branch before the browser path.
 > medialaunch now = has-app AND (desktop OR _media_relay_ok). Unit-tested (path-by-session; tile
-> --media-cmd catalog). HELD: the on-TV surface via the relay is UNVERIFIED (needs a curated media
-> app on a box with disk + the player tile; Steam Machine /home 99% full, no tile there). Tile
-> catalog is flatpak-only (native-package installs fall closed in Game Mode). STILL OPEN: the
+> --media-cmd catalog). **RELEASED + HARDWARE-VERIFIED (2026-09-15, Steam Machine, agent 2.9.112 +
+> Decky v0.2.84):** installed Kodi (flatpak --user), swapped in the 2.9.112 tile, POST
+> /api/player/media {kodi} → relay {"ok":true,"relay":"steam"} → tile fired the registered player
+> shortcut's rungameid → **Kodi SURFACED on the TV in Game Mode** (screen-captured). The box already
+> had the player tile registered, so the relay reused ONE shortcut — no new library entry, the whole
+> point of the design. Tile catalog is flatpak-only (native-package installs fall closed in Game
+> Mode). **REAL PRODUCT GAP found:** a --user flatpak (Deck Discover installs) exports to
+> ~/.local/share/flatpak/exports/share/applications, which the SYSTEM-dirs-only scan does NOT cover —
+> the test agent needed that dir added to find Kodi. Follow-up KI: add the user flatpak exports dir to
+> _MEDIA_APP_DIRS (flatpak-managed, less plantable than ~/.local/share/applications). STILL OPEN: the
 > desktop-session direct-launch surface (never eyeballed) and the screensaver-inhibit-while-playing
 > measurement (§Phase 7).
 >
