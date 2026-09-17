@@ -1,9 +1,6 @@
-A new opening animation — the Couchside couch, with its live green dot, greets you on launch.
-
-Plus a calmer, more customizable interface:
-- The Console opens to a compact vitals strip — temperature, load and memory at a glance, with the full detail a tap away.
-- Reorder or hide cards on the Fleet and Actions tabs too: press and hold a card, or tap the sliders icon. The same customize gesture the Console already had.
-- A shorter, friendlier first-run tour.
-- Tidier Settings, with the polling controls grouped on their own.
-
-Plus polish and reliability fixes throughout.
+• Launch Kodi, Plex, Jellyfin, Moonlight, VLC and Spotify from your phone — now in Steam's Game Mode too.
+• Live network speed on the Console.
+• Copy on the box, paste on your phone.
+• Turn your phone sideways for a laptop-style trackpad and keyboard.
+• Wake the box from sleep with a controller.
+• More Steam shortcuts, plus fixes for adding non-Steam apps.
