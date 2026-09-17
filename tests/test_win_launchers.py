@@ -291,6 +291,33 @@ def test_launchers_cap_five_sites():
     check("caps?.launchers" in layout, "app _layout gates the Launch tab on launchers")
 
 
+def test_create_disabled_403_is_windows_correct():
+    print("launchers: the create-disabled 403 gives Windows steps, not a Linux CLI")
+    src = open(AGENT, encoding="utf-8").read()
+    i = src.index("if not ALLOW_APP_LAUNCHERS")
+    blk = src[i:i + 900]
+    # It used to tell Windows users to run `couchside allow-launchers on` -- a CLI
+    # that exists only in the Linux install.sh, so the 403 was a dead end (the bug
+    # a paying customer hit). Both directions: the wrong text is GONE and the
+    # right text (config.json + %ProgramData% + tray restart) is present.
+    check("couchside allow-launchers" not in blk,
+          "403 no longer names the Linux-only `couchside allow-launchers` CLI")
+    check("allow_app_launchers" in blk and "config.json" in blk
+          and "ProgramData" in blk,
+          "403 points to allow_app_launchers in %ProgramData%\\Couchside\\config.json")
+
+
+def test_get_launchers_emits_create_enabled():
+    print("launchers: GET /api/launchers reports create_enabled (the app reads it)")
+    src = open(AGENT, encoding="utf-8").read()
+    # The app hides its Add affordance only on an explicit create_enabled=false,
+    # so the agent MUST send the field; the Linux agent emits it too (its own
+    # suite is the control). Assert the Windows GET handler carries it, mirrored
+    # to the gate.
+    check('"create_enabled": bool(ALLOW_APP_LAUNCHERS)' in src,
+          "GET /api/launchers includes create_enabled mirrored to the gate")
+
+
 if __name__ == "__main__":
     test_epic_transform()
     test_epic_discovery_reads_files()
@@ -303,6 +330,8 @@ if __name__ == "__main__":
     test_list_launchers_merges_all_stores()
     test_auto_ids_not_creatable_or_deletable()
     test_launchers_cap_five_sites()
+    test_create_disabled_403_is_windows_correct()
+    test_get_launchers_emits_create_enabled()
     print()
     if _fail:
         print("FAILED: %d" % len(_fail))

@@ -29,6 +29,7 @@ import { PlaylogCard } from '@/components/PlaylogCard';
 import { EditableSection } from '@/components/EditableSection';
 import { effectiveOrder, moveSection } from '@/lib/cardLayout';
 import { useLaunchLayout, setLaunchLayout } from '@/lib/launchLayout';
+import { buildLauncherArgv } from '@/lib/launcherArgv';
 import { useCompat } from '@/hooks/useCompat';
 import { type Compat, deckLabel, protonLabel } from '@/lib/compat';
 import { LibraryFilterSheet } from '@/components/LibraryFilterSheet';
@@ -515,13 +516,15 @@ function AddLauncherForm({ visible, onClose, onSubmit }: AddFormProps) {
   const t = useTheme();
   const styles = useThemedStyles(makeStyles);
   const [label, setLabel] = useState('');
-  const [cmd, setCmd] = useState('');
+  const [program, setProgram] = useState('');
+  const [argstr, setArgstr] = useState('');
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
   const reset = useCallback(() => {
     setLabel('');
-    setCmd('');
+    setProgram('');
+    setArgstr('');
     setError(null);
     setBusy(false);
   }, []);
@@ -533,14 +536,16 @@ function AddLauncherForm({ visible, onClose, onSubmit }: AddFormProps) {
 
   const submit = useCallback(async () => {
     const trimmedLabel = label.trim();
-    // Split the command on whitespace into an argv list.
-    const argv = cmd.trim().split(/\s+/).filter(Boolean);
+    // argv[0] is the program VERBATIM (spaces in a path are fine); only the
+    // optional arguments are tokenized. This is the fix for spaced Windows
+    // paths that the old whitespace split mangled.
+    const argv = buildLauncherArgv(program, argstr);
     if (!trimmedLabel) {
       setError('Enter a label.');
       return;
     }
     if (argv.length === 0) {
-      setError('Enter a command to run.');
+      setError('Enter the program to run.');
       return;
     }
     setBusy(true);
@@ -553,7 +558,7 @@ function AddLauncherForm({ visible, onClose, onSubmit }: AddFormProps) {
       setError(e instanceof Error ? e.message : String(e));
       setBusy(false);
     }
-  }, [label, cmd, onSubmit, reset, onClose]);
+  }, [label, program, argstr, onSubmit, reset, onClose]);
 
   return (
     <Modal visible={visible} transparent animationType="fade" onRequestClose={close}>
@@ -565,24 +570,36 @@ function AddLauncherForm({ visible, onClose, onSubmit }: AddFormProps) {
           <TextInput
             value={label}
             onChangeText={setLabel}
-            placeholder="e.g. RetroArch"
+            placeholder="e.g. Kodi"
             placeholderTextColor={t.textFaint}
             style={styles.input}
             autoCapitalize="none"
             autoCorrect={false}
           />
 
-          <Text style={styles.formLabel}>Command</Text>
+          <Text style={styles.formLabel}>Program</Text>
           <TextInput
-            value={cmd}
-            onChangeText={setCmd}
-            placeholder="e.g. flatpak run org.libretro.RetroArch"
+            value={program}
+            onChangeText={setProgram}
+            placeholder={'e.g. C:\\Program Files\\Kodi\\kodi.exe'}
             placeholderTextColor={t.textFaint}
             style={styles.input}
             autoCapitalize="none"
             autoCorrect={false}
           />
-          <Text style={styles.formHint}>Split on spaces into an argv list.</Text>
+          <Text style={styles.formHint}>The full path or command, taken as-is — spaces in a path are fine.</Text>
+
+          <Text style={styles.formLabel}>Arguments (optional)</Text>
+          <TextInput
+            value={argstr}
+            onChangeText={setArgstr}
+            placeholder="e.g. --fullscreen"
+            placeholderTextColor={t.textFaint}
+            style={styles.input}
+            autoCapitalize="none"
+            autoCorrect={false}
+          />
+          <Text style={styles.formHint}>Space-separated. Wrap a value in "quotes" if it has a space.</Text>
 
           {error && <Text style={styles.formError}>{error}</Text>}
 
@@ -663,12 +680,29 @@ function LaunchScreen() {
   const configured = settings.host.trim().length > 0;
 
   const boxKey = hostKey(settings); // resetKey: clear stale data on box switch
-  const list = usePoll<{ launchers: Launcher[] }>(
+  const list = usePoll<{ launchers: Launcher[]; create_enabled?: boolean }>(
     () => api.launchers(settings),
     30000,
     ready && configured,
     boxKey,
   );
+
+  // Does the box let the phone CREATE launchers? Only an explicit false hides
+  // the Add affordance: an older agent omits create_enabled (undefined), and
+  // hiding Add on those would wrongly strip a working feature. When it IS off,
+  // tapping Add explains how to turn it on instead of opening a form that 403s.
+  const createDisabled = list.data?.create_enabled === false;
+  const openAdd = useCallback(() => {
+    if (createDisabled) {
+      Alert.alert(
+        'Adding apps is off on this box',
+        'Turn it on in the box’s Couchside config — set "allow_app_launchers": true and restart the agent — then pull down to refresh. Steam, Epic and GOG games still appear automatically.',
+      );
+      return;
+    }
+    hapticLight();
+    setAddOpen(true);
+  }, [createDisabled]);
 
   const showToast = useCallback((msg: string) => {
     setToast(msg);
@@ -899,13 +933,14 @@ function LaunchScreen() {
         {/* Nothing to add a launcher to until a box is paired. */}
         {configured && (
           <Pressable
-            onPress={() => {
-              hapticLight();
-              setAddOpen(true);
-            }}
-            style={({ pressed }) => [styles.addBtn, pressed && styles.pressed]}>
-            <Ionicons name="add" size={18} color={t.blue} />
-            <Text style={styles.addBtnText}>Add</Text>
+            onPress={openAdd}
+            style={({ pressed }) => [
+              styles.addBtn,
+              createDisabled && styles.addBtnMuted,
+              pressed && styles.pressed,
+            ]}>
+            <Ionicons name="add" size={18} color={createDisabled ? t.textFaint : t.blue} />
+            <Text style={[styles.addBtnText, createDisabled && styles.addBtnTextMuted]}>Add</Text>
           </Pressable>
         )}
         {/* CUSTOMIZE: same hold-to-edit entry as the Console (games section only,
@@ -1022,7 +1057,7 @@ function LaunchScreen() {
               also add a custom launcher for anything else.
             </Text>
             <Pressable
-              onPress={() => setAddOpen(true)}
+              onPress={openAdd}
               style={({ pressed }) => [styles.emptyAddBtn, pressed && styles.pressed]}>
               <Ionicons name="add" size={18} color={t.bg} />
               <Text style={styles.emptyAddText}>Add a launcher</Text>
@@ -1228,6 +1263,8 @@ const makeStyles = (t: Palette) => StyleSheet.create({
     paddingHorizontal: 14,
   },
   addBtnText: { color: t.blue, fontSize: 14, fontWeight: '700', fontFamily: mono },
+  addBtnMuted: { opacity: 0.6 },
+  addBtnTextMuted: { color: t.textFaint },
 
   list: { flex: 1 },
   row: { flexDirection: 'row' },

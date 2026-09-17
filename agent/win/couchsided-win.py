@@ -85,7 +85,7 @@ except ImportError:
 # Same app id the phone expects (AGENT_APPS in app/lib/api.ts); the Windows
 # agent versions independently of the Linux one.
 APP_NAME = "couchside-agent"
-VERSION = "0.4.6-win"
+VERSION = "0.4.7-win"
 
 _PROGRAMDATA = os.environ.get("ProgramData", r"C:\ProgramData")
 DEFAULT_CONFIG_PATH = os.path.join(_PROGRAMDATA, "Couchside", "config.json")
@@ -5612,10 +5612,15 @@ class Handler(BaseHTTPRequestHandler):
             # box-side opt-in. Triggering owner-defined launchers stays open.
             if path == "/api/launchers":
                 if not ALLOW_APP_LAUNCHERS:
+                    # Windows has no `couchside` CLI (that verb is Linux-only);
+                    # the switch here is the config file the installer writes.
                     self._send(403, {"ok": False, "error":
                                      "creating launchers from the app is disabled "
-                                     "on this box (enable with: couchside "
-                                     "allow-launchers on)"}, started)
+                                     "on this box. To turn it on, set "
+                                     "\"allow_app_launchers\": true in "
+                                     "%ProgramData%\\Couchside\\config.json and "
+                                     "restart the Couchside agent (tray icon "
+                                     "→ Restart)."}, started)
                     return
                 self._handle_add_launcher(body, started)
                 return
