@@ -36,4 +36,15 @@ export function useCapsSync(): void {
       void update({ caps });
     }
   }, [caps, settings.caps, update]);
+
+  // Learn the agent's version the same way (persisted like caps/mac). A tab can
+  // then tell a Windows box from a Linux one without its own status poll — used
+  // by the Launch tab's platform-aware "adding is off" hint. Writes once per
+  // real change (version is stable); same host-keyed poll guards mis-attribution.
+  const version = status.data?.agent_version;
+  useEffect(() => {
+    if (version && version !== settings.version) {
+      void update({ version });
+    }
+  }, [version, settings.version, update]);
 }

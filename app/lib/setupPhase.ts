@@ -74,9 +74,20 @@ export function supportsPinPairing(version: string): boolean {
   // Windows builds carry the suffix; anything else is read as the Linux track.
   // A future `0.5.0-win-rc1` fails endsWith, is read as Linux, and lands
   // unsupported — wrong but CLOSED, and it costs one tap, not a dead end.
-  return v.toLowerCase().endsWith('-win')
+  return isWindowsAgent(v)
     ? cmpVersion(v, PIN_PAIR_MIN_WINDOWS) >= 0
     : cmpVersion(v, PIN_PAIR_MIN_LINUX) >= 0;
+}
+
+/**
+ * Is this the Windows agent? The Windows build is the ONLY one that carries the
+ * `-win` suffix on its version string (agent/win VERSION = "0.4.x-win"); every
+ * other track (Linux) reads as not-Windows. `undefined` (version not yet
+ * learned / older agent) answers false — the caller must treat that as "unknown
+ * platform" and stay generic, never assert Windows on a guess.
+ */
+export function isWindowsAgent(version?: string): boolean {
+  return (version ?? '').trim().toLowerCase().endsWith('-win');
 }
 
 // ---------------------------------------------------------------------------
