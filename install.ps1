@@ -49,6 +49,8 @@ param(
                              # token holder can then drive admin app windows with the
                              # virtual input (the command allowlist still holds — no
                              # arbitrary shell). Default OFF (least privilege).
+    [switch]$NoElevated,     # explicitly non-elevated; suppresses the interactive
+                             # prompt (for scripted/unattended installs)
     [string]$Ref = 'main',   # git ref to download the agent from
     [switch]$FromInstaller   # set by CouchsideSetup.exe: the elevated relaunch must
                              # WAIT (so the installer's Exec() tracks the real
@@ -99,6 +101,8 @@ if (-not (Test-Admin)) {
     if ($NoFirewall)     { $fwd += '-NoFirewall' }
     if ($NoGamepad)      { $fwd += '-NoGamepad' }
     if ($KeepHibernate)  { $fwd += '-KeepHibernate' }
+    if ($Elevated)       { $fwd += '-Elevated' }
+    if ($NoElevated)     { $fwd += '-NoElevated' }
     if ($FromInstaller)  { $fwd += '-FromInstaller' }
     $fwd += "-Port $Port"; $fwd += "-Ref $Ref"
     # A human running this directly wants -NoExit so the elevated window stays up to
@@ -578,6 +582,20 @@ $action = if ($arg) {
     New-ScheduledTaskAction -Execute $exe -WorkingDirectory $InstallDir
 }
 $trigger   = New-ScheduledTaskTrigger -AtLogOn -User $env:USERNAME
+# Discoverable choice, never the silent default: if the user didn't decide via a
+# flag and we have a console to ask in (a human running install.ps1, not the
+# silent CouchsideSetup.exe path), prompt — defaulting to No. They can also flip
+# it later from the tray icon.
+if (-not $Elevated -and -not $NoElevated -and -not $FromInstaller -and [Environment]::UserInteractive) {
+    Write-Host ""
+    Write-Host "Let the phone control ADMIN windows (games with anticheat, admin apps)?" -ForegroundColor Cyan
+    Write-Host "  Windows blocks a normal program from controlling admin windows, so to reach"
+    Write-Host "  them the agent has to run as administrator. Trade-off: a phone holding this"
+    Write-Host "  box's token could then drive admin app windows. Most people don't need this."
+    Write-Host "  You can change it any time from the Couchside tray icon." -ForegroundColor DarkGray
+    $ans = Read-Host "  Control admin windows? [y/N]"
+    if ($ans -match '^\s*(y|yes)\s*$') { $Elevated = $true }
+}
 # -RunLevel Limited (non-elevated) is the default + least-privilege posture. With
 # -Elevated the at-logon task runs Highest (admin) with NO UAC prompt, so the
 # phone's mouse/keyboard can drive ADMIN app windows that Windows UIPI otherwise

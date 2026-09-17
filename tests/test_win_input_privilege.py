@@ -68,11 +68,35 @@ def test_status_carries_input_privilege():
 
 
 def test_install_elevated_flag_wired():
-    print("input_privilege: install.ps1 -Elevated sets the task RunLevel")
+    print("input_privilege: install.ps1 -Elevated sets the task RunLevel + prompts")
     ps = open(os.path.join(HERE, "..", "install.ps1"), encoding="utf-8").read()
     check("[switch]$Elevated" in ps, "install.ps1 declares -Elevated")
+    check("[switch]$NoElevated" in ps, "install.ps1 declares -NoElevated (suppress prompt)")
     check("if ($Elevated) { 'Highest' } else { 'Limited' }" in ps,
           "-Elevated -> RunLevel Highest, else Limited (default non-elevated)")
+    # Discoverable, not silent: an interactive install with no flag PROMPTS, and
+    # the default is No (only an explicit y/yes flips $Elevated).
+    check("Control admin windows? [y/N]" in ps, "interactive install prompts (default No)")
+    check("-not $Elevated -and -not $NoElevated -and -not $FromInstaller" in ps,
+          "prompt is skipped when a flag decided it or the install is silent")
+    # Both flags forwarded through the UAC self-elevation relaunch (or the choice
+    # is lost when the script re-runs elevated).
+    check("if ($Elevated)       { $fwd += '-Elevated' }" in ps
+          and "if ($NoElevated)     { $fwd += '-NoElevated' }" in ps,
+          "-Elevated/-NoElevated forwarded across the elevation relaunch")
+
+
+def test_tray_admin_toggle_wired():
+    print("input_privilege: the tray exposes a discoverable 'Control admin windows' toggle")
+    tray = open(os.path.join(HERE, "..", "agent", "win", "couchside-tray.pyw"),
+                encoding="utf-8").read()
+    check("def agent_elevated(" in tray and "def set_agent_elevated(" in tray,
+          "tray reads + writes the elevated state")
+    check("Control admin windows" in tray, "tray shows the labeled checkbox")
+    check('"runas"' in tray, "enabling elevates via UAC (ShellExecute runas)")
+    check("RunLevel %s" in tray and "Set-ScheduledTask" in tray,
+          "re-registers the task RunLevel (Highest/Limited), preserving action+trigger")
+    check("askyesno" in tray, "confirms before ENABLING (a security escalation)")
 
 
 if __name__ == "__main__":
@@ -80,6 +104,7 @@ if __name__ == "__main__":
     test_never_raises()
     test_status_carries_input_privilege()
     test_install_elevated_flag_wired()
+    test_tray_admin_toggle_wired()
     print()
     if _fail:
         print("FAILED: %d" % len(_fail))

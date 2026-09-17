@@ -72,11 +72,19 @@ work on normal apps but **stop when an elevated app is in focus** — a game wit
 anticheat, an admin terminal, Task Manager, an installer. The agent reports this
 as `input_privilege` on `/api/status` so the app can explain it.
 
-- **`install.ps1 -Elevated`** runs the at-logon task with **Highest** privileges
-  (admin, no UAC prompt for an admin account) → the phone can drive admin windows.
-  Tradeoff: a LAN token holder can then move the mouse/type into admin app windows
-  (the command allowlist still holds — no arbitrary shell). Opt-in; re-run without
-  `-Elevated` to revert. Standard (non-admin) accounts can't use Highest.
+Two discoverable ways to turn it on (never the silent default):
+
+- **At install:** a human running `install.ps1` interactively is **asked** ("Control
+  admin windows? [y/N]", default **No**). `-Elevated` / `-NoElevated` answer it
+  non-interactively; the silent `CouchsideSetup.exe` path defaults to No.
+- **From the tray:** a **"Control admin windows"** checkbox. Ticking it confirms,
+  then re-registers the agent task's RunLevel (a **UAC prompt**, since that needs
+  admin) and restarts it; unticking reverts. The tray itself stays non-elevated.
+
+Under the hood: `-Elevated` runs the at-logon task at **Highest** (admin, no UAC
+prompt for an admin account). Tradeoff: a LAN token holder can then move the mouse
+/ type into admin app windows (the command allowlist still holds — no arbitrary
+shell). Standard (non-admin) accounts can't use Highest.
 - **Future (security-correct):** a signed, Program-Files-installed **uiAccess**
   build reaches admin windows *without* the agent being admin — see
   [`couchside.manifest`](couchside.manifest) and docs/ROADMAP.md. Needs a

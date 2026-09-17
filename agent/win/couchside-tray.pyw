@@ -156,6 +156,42 @@ def set_logon(enabled):
                      "/ENABLE" if enabled else "/DISABLE")[0]
 
 
+def agent_elevated():
+    """True if the agent task runs ELEVATED (RunLevel Highest) — i.e. the phone
+    can control admin windows. Reads the task XML; needs no admin. None on error."""
+    ok, out = _schtasks("/Query", "/TN", TASK_NAME, "/XML", "ONE")
+    if not ok:
+        return None
+    # schtasks XML uses <RunLevel>HighestAvailable</RunLevel> for elevated,
+    # <RunLevel>LeastPrivilege</RunLevel> (or the element omitted) for standard.
+    return "HighestAvailable" in out
+
+
+def set_agent_elevated(on):
+    """Switch the agent task between elevated (Highest = can control admin
+    windows) and standard (Limited) and restart it. Re-registering the RunLevel
+    needs admin, so this ELEVATES via UAC (ShellExecute 'runas'); the tray itself
+    stays non-elevated. Returns True if the UAC prompt was accepted (the change
+    then happens in the elevated child). Uses the ScheduledTasks module's
+    Set-ScheduledTask -Principal, which preserves the action + trigger."""
+    rl = "Highest" if on else "Limited"
+    ps = (
+        "$ErrorActionPreference='Stop';"
+        "$p=New-ScheduledTaskPrincipal -UserId $env:USERNAME "
+        "-LogonType Interactive -RunLevel %s;"
+        "Set-ScheduledTask -TaskName '%s' -Principal $p | Out-Null;"
+        "Start-ScheduledTask -TaskName '%s'"
+    ) % (rl, TASK_NAME, TASK_NAME)
+    params = '-NoProfile -WindowStyle Hidden -Command "%s"' % ps
+    try:
+        # ShellExecuteW returns >32 on success (UAC accepted); SW_HIDE = 0.
+        rc = ctypes.windll.shell32.ShellExecuteW(
+            None, "runas", "powershell.exe", params, None, 0)
+        return int(rc) > 32
+    except Exception:
+        return False
+
+
 def ping_running(port, timeout=1.5):
     """True if the agent answers /api/ping on loopback (proves it is actually
     serving, not merely that the task exists)."""
@@ -409,6 +445,22 @@ class Panel:
             highlightthickness=0, font=("Consolas", 10))
         chk.pack(anchor="w", pady=(10, 0))
 
+        # Control-admin-windows toggle (elevated). OFF by default (least
+        # privilege). Flipping it re-registers the agent task's RunLevel, which
+        # needs admin -> a UAC prompt. Discoverable here so the choice is a
+        # conscious one, never the silent default.
+        self.elevated_var = tk.BooleanVar(value=bool(agent_elevated()))
+        echk = tk.Checkbutton(
+            outer, text="  Control admin windows", variable=self.elevated_var,
+            command=self.on_elevated, fg=TEXT, bg=BG, selectcolor=INSET,
+            activebackground=BG, activeforeground=TEXT, bd=0,
+            highlightthickness=0, font=("Consolas", 10))
+        echk.pack(anchor="w", pady=(4, 0))
+        tk.Label(outer, text="   runs the agent as admin (needed for games,\n"
+                 "   admin apps); a phone with your token could then\n"
+                 "   drive admin windows", fg=FAINT, bg=BG, justify="left",
+                 font=("Consolas", 8)).pack(anchor="w")
+
         # Footer
         foot = tk.Frame(outer, bg=BG)
         foot.pack(fill="x", pady=(10, 0))
@@ -521,6 +573,35 @@ class Panel:
     def on_logon(self):
         want = self.logon_var.get()
         threading.Thread(target=lambda: set_logon(want), daemon=True).start()
+
+    def on_elevated(self):
+        """Toggle 'Control admin windows' (elevated agent). Confirms before
+        ENABLING (a security escalation), then re-registers the task via UAC and
+        re-syncs the checkbox to the TRUE state (the user can decline the prompt)."""
+        want = self.elevated_var.get()
+        if want:
+            from tkinter import messagebox
+            ok = messagebox.askyesno(
+                "Control admin windows?",
+                "This runs the Couchside agent as administrator so the phone can "
+                "control admin apps and games.\n\n"
+                "Trade-off: a phone holding this box's token could then drive "
+                "admin windows with the virtual mouse/keyboard. Enable only if you "
+                "trust every device on your network.\n\nContinue? (Windows will ask "
+                "for permission.)")
+            if not ok:
+                self.elevated_var.set(False)  # revert; nothing changed
+                return
+
+        def run():
+            accepted = set_agent_elevated(want)
+            # Re-read the real state: the UAC prompt may have been declined, or the
+            # re-register may have failed. Never leave the checkbox lying.
+            actual = agent_elevated()
+            self.app.root.after(0, lambda: self.elevated_var.set(bool(actual)))
+            if accepted:
+                self.app.root.after(1200, self.app.poll_now)
+        threading.Thread(target=run, daemon=True).start()
 
     def on_pair_page(self):
         webbrowser.open("http://127.0.0.1:%d/pair" % self.app.port)
