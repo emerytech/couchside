@@ -799,6 +799,12 @@ jobs:
       - name: Unit tests (Windows game launchers)
         run: python3 tests/test_win_launchers.py
 
+      # The `gamepad` cap must reflect a real ViGEmBus connect, not just the DLL
+      # loading — a driver-less box that reported gamepad:true wedged the phone
+      # app in a render loop (client crash 2026-09-17). Both directions + cache.
+      - name: Unit tests (Windows gamepad capability)
+        run: python3 tests/test_win_gamepad_cap.py
+
       # The agent's own log rides the watchlist as a pseudo-unit so it reaches
       # the Logs picker; `sc query` can only ever say it does not exist, which
       # showed as a permanent yellow warning on a real Windows box. Pins the

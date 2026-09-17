@@ -19,7 +19,10 @@ import { useImmersive } from '@/lib/immersive';
 import { SettingsProvider } from '@/lib/SettingsContext';
 import { useResolvedScheme, useTheme } from '@/lib/theme';
 
-export { ErrorBoundary } from 'expo-router';
+// Branded, recoverable crash screen in place of expo-router's raw default —
+// a render loop must land somewhere the user can read and retry from, not a
+// persistent stack trace. See components/AppErrorBoundary.
+export { ErrorBoundary } from '@/components/AppErrorBoundary';
 
 export const unstable_settings = {
   initialRouteName: '(tabs)',
