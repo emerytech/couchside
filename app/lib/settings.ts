@@ -77,6 +77,14 @@ export type Box = {
   fp?: string;
   /** Normalized RSA modulus the pinned transport compares against at connect. */
   pinModulus?: string;
+  /**
+   * The agent's own version string, learned from /api/status's `agent_version`
+   * and persisted like `mac`/`caps` (see hooks/useCapsSync). Lets a tab tell a
+   * Windows box (suffix `-win`) from a Linux one WITHOUT its own status poll —
+   * e.g. the Launch tab's "adding is off" hint names the platform's real enable
+   * step. Undefined until first learned / on a box never reached this session.
+   */
+  version?: string;
 };
 
 /**
@@ -103,6 +111,8 @@ export type Settings = {
   tlsPort?: number;
   fp?: string;
   pinModulus?: string;
+  /** Agent version of the active box (see Box.version). */
+  version?: string;
 };
 
 /** Safe placeholder used when no box is active (nothing paired yet). */

@@ -30,6 +30,7 @@ import { EditableSection } from '@/components/EditableSection';
 import { effectiveOrder, moveSection } from '@/lib/cardLayout';
 import { useLaunchLayout, setLaunchLayout } from '@/lib/launchLayout';
 import { buildLauncherArgv } from '@/lib/launcherArgv';
+import { isWindowsAgent } from '@/lib/setupPhase';
 import { useCompat } from '@/hooks/useCompat';
 import { type Compat, deckLabel, protonLabel } from '@/lib/compat';
 import { LibraryFilterSheet } from '@/components/LibraryFilterSheet';
@@ -587,7 +588,7 @@ function AddLauncherForm({ visible, onClose, onSubmit }: AddFormProps) {
             autoCapitalize="none"
             autoCorrect={false}
           />
-          <Text style={styles.formHint}>The full path or command, taken as-is — spaces in a path are fine.</Text>
+          <Text style={styles.formHint}>Just the program — its path or name. Everything after it goes in Arguments. Spaces in a path are fine.</Text>
 
           <Text style={styles.formLabel}>Arguments (optional)</Text>
           <TextInput
@@ -694,15 +695,26 @@ function LaunchScreen() {
   const createDisabled = list.data?.create_enabled === false;
   const openAdd = useCallback(() => {
     if (createDisabled) {
+      // Name the platform's REAL enable step. The version is learned onto the
+      // box by useCapsSync (agent_version), so no status poll here. Unknown
+      // (never learned / older agent) stays generic and names both, never
+      // guessing Windows. Linux has the one-line CLI; Windows edits the config.
+      const v = settings.version;
+      const step =
+        v === undefined
+          ? 'On the box, turn it on: run  couchside allow-launchers on  (Linux/SteamOS), or set "allow_app_launchers": true in the Couchside config and restart (Windows).'
+          : isWindowsAgent(v)
+            ? 'On the box, set "allow_app_launchers": true in %ProgramData%\\Couchside\\config.json, then restart the agent (tray icon → Restart).'
+            : 'On the box, run  couchside allow-launchers on  (it restarts itself).';
       Alert.alert(
         'Adding apps is off on this box',
-        'Turn it on in the box’s Couchside config — set "allow_app_launchers": true and restart the agent — then pull down to refresh. Steam, Epic and GOG games still appear automatically.',
+        step + ' Then pull down to refresh. Steam, Epic and GOG games still appear automatically.',
       );
       return;
     }
     hapticLight();
     setAddOpen(true);
-  }, [createDisabled]);
+  }, [createDisabled, settings.version]);
 
   const showToast = useCallback((msg: string) => {
     setToast(msg);

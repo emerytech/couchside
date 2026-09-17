@@ -31,6 +31,7 @@ import {
   PIN_PAIR_MIN_WINDOWS,
   stepMarks,
   supportsPinPairing,
+  isWindowsAgent,
   SWEEP_FAST_WINDOW_MS,
   SWEEP_GAP_BACKOFF_MS,
   SWEEP_GAP_MS,
@@ -508,4 +509,21 @@ test('one too-old box does not hide boxes that CAN be paired', () => {
   // CONTROL: with nothing usable found, a too-old box IS reported as such.
   const only = nextPhase({ k: 'looking', since: 0, sweeps: 1 }, { t: 'FOUND', box: old });
   assert.equal(only.k, 'unsupported');
+});
+
+test('isWindowsAgent: only the -win suffix is Windows (both directions + a control)', () => {
+  // Windows: the ONLY track that carries -win.
+  assert.equal(isWindowsAgent('0.4.7-win'), true, 'current Windows agent');
+  assert.equal(isWindowsAgent('0.4.2-win'), true);
+  assert.equal(isWindowsAgent('  2.9.61-WIN  '), true, 'trim + case-insensitive');
+  // Linux control: a real Linux version that is KNOWN, must read false (so the
+  // Launch hint names the Linux CLI, not the Windows config path).
+  assert.equal(isWindowsAgent('2.9.112'), false, 'Linux agent');
+  assert.equal(isWindowsAgent('2.9.61'), false);
+  // Unknown = false, so the caller stays generic and never asserts Windows on a
+  // guess (undefined until useCapsSync learns it / on an older agent).
+  assert.equal(isWindowsAgent(undefined), false, 'not yet learned');
+  assert.equal(isWindowsAgent(''), false);
+  // A win token that is not the suffix must not match.
+  assert.equal(isWindowsAgent('0.4.7-window'), false, 'substring, not suffix');
 });

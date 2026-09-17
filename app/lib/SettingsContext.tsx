@@ -307,6 +307,7 @@ export function useSettings(): SettingsContextValue {
       tlsPort: activeBox.tlsPort,
       fp: activeBox.fp,
       pinModulus: activeBox.pinModulus,
+      version: activeBox.version,
     };
   }, [activeBox]);
 
