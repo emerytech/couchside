@@ -85,7 +85,7 @@ except ImportError:
 # Same app id the phone expects (AGENT_APPS in app/lib/api.ts); the Windows
 # agent versions independently of the Linux one.
 APP_NAME = "couchside-agent"
-VERSION = "0.4.7-win"
+VERSION = "0.4.8-win"
 
 _PROGRAMDATA = os.environ.get("ProgramData", r"C:\ProgramData")
 DEFAULT_CONFIG_PATH = os.path.join(_PROGRAMDATA, "Couchside", "config.json")
@@ -960,7 +960,10 @@ def net_info_cached():
 # for the full rationale. Mirrors the same six flags so one app codebase reads
 # either agent. Snapshotted once in main() after the detectors run; a hint, not
 # authority; absent on older agents (app keeps its 404 fallbacks); all True in
-# --mock. vigem_available() is a load-only DLL check (no bus connect).
+# --mock. The `gamepad` cap uses vigem_ready() (a real ViGEmBus connect probe),
+# NOT vigem_available() (DLL-only) — and it is re-probed LIVE in real_status, not
+# frozen, so a bus that appears/disappears after startup is reflected without a
+# restart.
 CAPS = {}  # set once by set_caps() in main(); returned by real_/mock_status
 
 
@@ -989,7 +992,10 @@ def set_caps(mock):
         CAPS["desktop"] = False
         return
     CAPS = {
-        "gamepad": safe(vigem_available),
+        # vigem_ready(), NOT vigem_available(): the cap must reflect an actual
+        # ViGEmBus connect, not just the DLL loading, or a driver-less box reports
+        # gamepad:true and the app opens a pad it can never create (see vigem_ready).
+        "gamepad": safe(vigem_ready),
         "steam": _steam_root() is not None,
         "launchers": safe(_any_launcher_source),
         "media": safe(smtc_available),
@@ -1047,7 +1053,11 @@ def real_status():
         "disks": read_disks(),
         "net": net_info_cached(),
         "agent_version": VERSION,
-        "caps": CAPS,
+        # gamepad is re-probed live (cached, self-healing) rather than read from
+        # the frozen startup snapshot: the ViGEmBus driver can come up (or go
+        # away) after the agent started, and a stale true here is what wedges the
+        # app's pad. The other caps are stable startup facts. See vigem_ready().
+        "caps": dict(CAPS, gamepad=vigem_ready()),
         "history": _history_snapshot(),
     }
 
@@ -4179,11 +4189,50 @@ def _vigem_load_dll():
 
 def vigem_available():
     """True when ViGEmClient.dll loads. A hint (the ViGEmBus driver could still
-    be down); the gamepad WS connect is the ground-truth check."""
+    be down); the gamepad WS connect is the ground-truth check. Do NOT use this
+    for the `gamepad` capability — use vigem_ready(), which probes the bus."""
     try:
         return _vigem_load_dll() is not None
     except Exception:
         return False
+
+
+# Ground-truth gamepad-cap probe, cached. `vigem_available()` (DLL-only) is a
+# FALSE POSITIVE on a box where the installer dropped ViGEmClient.dll but the
+# ViGEmBus *driver* did not install (kernel drivers fail silently far more often
+# than a DLL copy). The app trusts caps.gamepad to decide whether to open the
+# pad; a false positive means it opens /ws/gamepad, the agent's vigem_connect
+# fails 0xE0000001, and the pad screen wedges (a client-reported crash loop,
+# 2026-09-17). So gamepad availability must reflect an ACTUAL bus connect.
+#
+# Cheap + self-healing: _load_vigem() alloc+connects the shared client (it does
+# NOT add a virtual target — no phantom pad appears at probe time) and caches it
+# on success. Cache the boolean with a short TTL so /api/status (reachability-
+# critical, must never block) isn't reconnecting every poll, and so a driver
+# installed AFTER the agent started heals within one TTL instead of needing a
+# restart. Never raises.
+_GAMEPAD_CAP = {"at": 0.0, "ok": None, "ttl": 30.0}
+_GAMEPAD_CAP_LOCK = threading.Lock()
+
+
+def vigem_ready():
+    """True only if ViGEmClient.dll loads AND the ViGEmBus driver accepts a
+    connection. Backs the `gamepad` capability. Cached (TTL); never raises."""
+    now = time.monotonic()
+    with _GAMEPAD_CAP_LOCK:
+        c = _GAMEPAD_CAP
+        if c["ok"] is not None and now - c["at"] <= c["ttl"]:
+            return c["ok"]
+        c["at"] = now
+    ok = False
+    try:
+        _load_vigem()  # alloc + connect; raises if the bus driver is down
+        ok = True
+    except Exception:
+        ok = False
+    with _GAMEPAD_CAP_LOCK:
+        _GAMEPAD_CAP["ok"] = ok
+    return ok
 
 
 def _load_vigem():
@@ -6326,6 +6375,45 @@ class QuietThreadingHTTPServer(ThreadingHTTPServer):
         super().handle_error(request, client_address)
 
 
+# Console input mode bits (Win32). QuickEdit ships ON: a click/drag in the
+# console window (including grabbing its title bar to move or minimize it) enters
+# selection mode and SUSPENDS the process until a key is pressed. This agent logs
+# every request, so it blocks on the next stdout write and the phone's inputs
+# freeze mid-session. Turning QuickEdit off makes a stray click harmless.
+_STD_INPUT_HANDLE_DWORD = 0xFFFFFFF6  # (DWORD)(STD_INPUT_HANDLE = -10)
+_ENABLE_QUICK_EDIT_MODE = 0x0040
+_ENABLE_EXTENDED_FLAGS = 0x0080
+
+
+def _harden_console():
+    """Disable QuickEdit Mode on our own console, if we have one. No-ops when we
+    run windowless (the scheduled task uses pythonw — GetConsoleMode fails on a
+    non-console handle) and on ANY failure: this must never block startup.
+
+    NOTE: this fixes the click/minimize FREEZE, not the close-KILLS-it problem —
+    a foreground console process cannot cleanly survive its window closing. The
+    fix for that is running windowless (the installer's at-logon scheduled task);
+    running the agent by hand in a visible console is a debugging convenience, not
+    the supported mode.
+    """
+    if not IS_WINDOWS or _kernel32 is None:
+        return
+    try:
+        _kernel32.GetStdHandle.restype = ctypes.c_void_p
+        _kernel32.GetStdHandle.argtypes = [ctypes.c_uint32]
+        _kernel32.GetConsoleMode.argtypes = [ctypes.c_void_p,
+                                             ctypes.POINTER(ctypes.c_uint32)]
+        _kernel32.SetConsoleMode.argtypes = [ctypes.c_void_p, ctypes.c_uint32]
+        h = _kernel32.GetStdHandle(_STD_INPUT_HANDLE_DWORD)
+        mode = ctypes.c_uint32()
+        if not h or not _kernel32.GetConsoleMode(h, ctypes.byref(mode)):
+            return  # no real console (windowless / redirected) -> nothing to do
+        new = (mode.value & ~_ENABLE_QUICK_EDIT_MODE) | _ENABLE_EXTENDED_FLAGS
+        _kernel32.SetConsoleMode(h, new)
+    except Exception:
+        pass
+
+
 def main():
     # FIRST: start the log tee, so even a startup crash lands somewhere readable.
     # Under pythonw.exe (how the scheduled task runs us) there is no console and
@@ -6357,6 +6445,7 @@ def main():
     set_power_schedule(args.mock)
     set_caps(args.mock)  # after the detectors above; snapshots CAPS
     if IS_WINDOWS and not args.mock:
+        _harden_console()  # a stray click on the console must not freeze inputs
         start_load_sampler()
     port = args.port if args.port is not None else (CONFIG_PORT or DEFAULT_PORT)
 

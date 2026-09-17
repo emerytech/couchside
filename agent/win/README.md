@@ -76,6 +76,22 @@ genuinely needs admin — e.g. `net stop` on a service — will fail; like the
 Linux sudoers model, privileged actions are an explicit opt-in you own, by
 running the task elevated at your own risk.)
 
+### Run it windowless — don't leave it in a console
+
+The scheduled task runs the agent **windowless** under `pythonw`, which is the
+supported mode. If you launch it by hand in a visible console (handy for watching
+the request log), remember that **that console _is_ the agent process**: closing
+the window kills it, and inputs stop. Two guards help but don't replace the task:
+
+- **QuickEdit is auto-disabled** on the agent's own console at startup, so a
+  stray click or grabbing the title bar to move/minimize the window can't put it
+  into selection mode and freeze the process mid-session.
+- Closing the window still terminates it — a foreground console process can't
+  cleanly survive its window closing. Restart it with the tray widget's
+  Start/Restart, `Start-ScheduledTask -TaskName "Couchside Agent"`, or by logging
+  out and back in (the task is at-logon). For normal use, let the task run it and
+  there is no window to close.
+
 ### Virtual gamepad prerequisite: ViGEmBus
 
 The gamepad emulates a real Xbox 360 pad through the
