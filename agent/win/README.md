@@ -61,7 +61,26 @@ powershell -ExecutionPolicy Bypass -File install.ps1 -Uninstall
 ```
 
 Flags: `-Port <n>`, `-NoGamepad`, `-NoFirewall`, `-KeepHibernate`,
-`-Uninstall`.
+`-Elevated`, `-Uninstall`.
+
+### Controlling admin windows (UIPI) — `-Elevated`
+
+The agent runs **non-elevated** by default (least privilege — a LAN token must
+never grant admin). Windows **UIPI** blocks a non-elevated process from injecting
+input into a **higher-integrity foreground window**, so the phone's mouse/keyboard
+work on normal apps but **stop when an elevated app is in focus** — a game with
+anticheat, an admin terminal, Task Manager, an installer. The agent reports this
+as `input_privilege` on `/api/status` so the app can explain it.
+
+- **`install.ps1 -Elevated`** runs the at-logon task with **Highest** privileges
+  (admin, no UAC prompt for an admin account) → the phone can drive admin windows.
+  Tradeoff: a LAN token holder can then move the mouse/type into admin app windows
+  (the command allowlist still holds — no arbitrary shell). Opt-in; re-run without
+  `-Elevated` to revert. Standard (non-admin) accounts can't use Highest.
+- **Future (security-correct):** a signed, Program-Files-installed **uiAccess**
+  build reaches admin windows *without* the agent being admin — see
+  [`couchside.manifest`](couchside.manifest) and docs/ROADMAP.md. Needs a
+  code-signing cert; neither path can drive the UAC consent dialog (secure desktop).
 
 ### Why a Scheduled Task and not a Windows service
 

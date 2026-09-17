@@ -431,6 +431,40 @@ Each entry now carries a `✅ DONE` / `🟡 PARTIAL` / `📋 OPEN` banner with i
 
 ## 📋 Planned
 
+### Windows uiAccess signed-exe build — drive ADMIN windows without an elevated agent (tester report 2026-09-17)
+- **priority:** P2 · **risk:** medium (build/install pipeline change; gated on a code-signing cert) ·
+  **affects:** agent/win build.ps1 + install.ps1 + a signed exe · **depends_on:** a code-signing cert
+- **Origin:** tester on Windows — "the mouse stops when I alt-tab to another window." ROOT CAUSE =
+  Windows **UIPI**: a NON-elevated process cannot SendInput into a higher-integrity foreground window
+  (elevated app / game+anticheat / admin terminal / installer). The agent runs non-elevated by design
+  (a LAN token must not grant admin). The code already flagged this "unavoidable" limit
+  ([agent/win/couchsided-win.py](agent/win/couchsided-win.py), the `_input_reachable` comment).
+- **SHIPPED already (agent 0.4.9-win, this session):** (a) the agent reports `input_privilege`
+  `{elevated, uiaccess}` on /api/status (additive, degrade-closed) so the app can explain the limit +
+  the fix; (b) **`install.ps1 -Elevated`** opt-in runs the at-logon task Highest (admin, no UAC prompt
+  for an admin account) → reaches every window, at the cost of a bigger blast radius. That is the
+  interim fix. This item is the SECURITY-CORRECT one.
+- **The build (uiAccess):** a **signed, secure-located, uiAccess=true exe** gets the UIAccess token
+  flag and can inject into elevated windows WITHOUT being admin. Three Windows-enforced requirements,
+  all mandatory: (1) Authenticode-signed (OV is enough — EV not required); (2) installed under
+  `%ProgramFiles%` (NOT %LOCALAPPDATA%); (3) manifest `level="asInvoker" uiAccess="true"` (already
+  written: [agent/win/couchside.manifest](agent/win/couchside.manifest)). uiAccess is **exe-only** — a
+  `pythonw couchsided-win.py` install can never have it (the manifest lives on the exe, and python.exe
+  is Microsoft's), so the signed exe must become the Windows delivery vehicle for this to apply.
+- **Pipeline to implement when a cert lands (~2-3 eng days):** build.ps1 → PyInstaller **--onedir**
+  (NOT onefile: the onefile bootloader extracts to %TEMP% and re-launches, breaking the secure-location
+  rule + flaky with uiAccess) → `mt.exe -manifest agent/win/couchside.manifest
+  -outputresource:couchside-agent.exe;#1` → `signtool sign /fd sha256 /tr <timestamp> /td sha256 /a`
+  (guarded on a cert thumbprint/eSigner creds, inert without). install.ps1 → place the signed onedir
+  under `%ProgramFiles%\Couchside\` (installer already self-elevates), task runs it non-elevated
+  (asInvoker). Agent already detects `TokenUIAccess` (`_process_privilege`) → reports `uiaccess:true`.
+  VERIFY on hardware: `input_privilege.uiaccess==true` AND actually inject into an elevated window.
+- **LIMIT (set expectations):** even uiAccess cannot drive the **UAC consent dialog** (secure desktop).
+- **Cost/timeline:** cert is the long pole — **Azure Trusted Signing ~$120/yr** (cloud, no token,
+  ~1wk if ets3d LLC qualifies for its org-history requirement) OR **OV cert + hardware token
+  ~$200-400/yr** (~1-2wk incl. token shipping). Since 2023 the key must live on a token/HSM. You want
+  code-signing anyway (SmartScreen), so uiAccess is a modest add on top.
+
 ### Windows GPU + CPU telemetry via HWiNFO/LHM — unlocks the "AMD Link alternative" positioning (customer report 2026-09-16 + demand audit 2026-09-17)
 - **priority:** P2, **raised** — this is the single build that turns a validated, low-competition
   search term ("AMD Link alternative") from an over-claim into a fact on Windows · **risk:** low ·

@@ -42,6 +42,13 @@ param(
     [switch]$NoFirewall,
     [switch]$NoGamepad,      # skip the ViGEmBus virtual-controller install
     [switch]$KeepHibernate,  # skip `powercfg /hibernate off`
+    [switch]$Elevated,       # run the agent task ELEVATED (admin). OPT-IN: lets the
+                             # phone's mouse/keyboard drive ADMIN app windows (Windows
+                             # UIPI blocks a non-elevated agent from injecting into a
+                             # higher-integrity foreground window). Tradeoff: a LAN
+                             # token holder can then drive admin app windows with the
+                             # virtual input (the command allowlist still holds — no
+                             # arbitrary shell). Default OFF (least privilege).
     [string]$Ref = 'main',   # git ref to download the agent from
     [switch]$FromInstaller   # set by CouchsideSetup.exe: the elevated relaunch must
                              # WAIT (so the installer's Exec() tracks the real
@@ -571,7 +578,18 @@ $action = if ($arg) {
     New-ScheduledTaskAction -Execute $exe -WorkingDirectory $InstallDir
 }
 $trigger   = New-ScheduledTaskTrigger -AtLogOn -User $env:USERNAME
-$principal = New-ScheduledTaskPrincipal -UserId $env:USERNAME -LogonType Interactive -RunLevel Limited
+# -RunLevel Limited (non-elevated) is the default + least-privilege posture. With
+# -Elevated the at-logon task runs Highest (admin) with NO UAC prompt, so the
+# phone's mouse/keyboard can drive ADMIN app windows that Windows UIPI otherwise
+# blocks a non-elevated agent from. Only works for an ADMIN account (Highest can't
+# elevate a standard user). Opt-in; the tradeoff is documented in agent/win/README.
+$runLevel = if ($Elevated) { 'Highest' } else { 'Limited' }
+if ($Elevated) {
+    Write-Host "  agent task will run ELEVATED (Highest) — the phone can control admin windows." -ForegroundColor Yellow
+    Write-Host "  (A LAN token holder can then drive admin app windows via virtual input; the" -ForegroundColor Yellow
+    Write-Host "   command allowlist still holds. Re-run without -Elevated to revert.)" -ForegroundColor Yellow
+}
+$principal = New-ScheduledTaskPrincipal -UserId $env:USERNAME -LogonType Interactive -RunLevel $runLevel
 $settings  = New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries `
     -StartWhenAvailable -RestartCount 999 -RestartInterval (New-TimeSpan -Minutes 1) `
     -ExecutionTimeLimit (New-TimeSpan -Seconds 0)
