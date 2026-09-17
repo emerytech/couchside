@@ -1,0 +1,33 @@
+<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<!--
+  uiAccess manifest for the SIGNED Couchside agent exe.
+
+  This is NOT used by the pythonw/script install (a manifest lives on the exe,
+  and python.exe/pythonw.exe are Microsoft's, unsigned by us). It is embedded on
+  a PyInstaller-built couchside-agent.exe (mt.exe), which is then Authenticode-
+  signed and installed under %ProgramFiles%\Couchside\.
+
+  With all THREE conditions met — signed + secure location (Program Files) +
+  this manifest — Windows grants the process the UIAccess token flag: it can
+  inject input (SendInput) into ELEVATED foreground windows WITHOUT the agent
+  itself being admin. That fixes "the mouse stops when I alt-tab to an admin
+  app" (Windows UIPI) while keeping the agent non-elevated (least privilege).
+
+  Limit: even uiAccess cannot drive the UAC consent dialog (secure desktop).
+
+  See docs/ROADMAP.md ("Windows uiAccess signed-exe build") for the full pipeline
+  (cert, onedir PyInstaller, mt.exe embed, signtool, Program-Files install).
+  Requires a code-signing cert — inert until that lands; the manifest is harmless
+  on an unsigned/user-located build (Windows simply ignores uiAccess=true).
+-->
+<assembly xmlns="urn:schemas-microsoft-com:asm.v1" manifestVersion="1.0">
+  <trustInfo xmlns="urn:schemas-microsoft-com:asm.v3">
+    <security>
+      <requestedPrivileges>
+        <!-- asInvoker: run at the user's integrity (NOT elevated). uiAccess=true:
+             the trusted-signed-in-Program-Files escape from UIPI. -->
+        <requestedExecutionLevel level="asInvoker" uiAccess="true" />
+      </requestedPrivileges>
+    </security>
+  </trustInfo>
+</assembly>

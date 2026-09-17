@@ -85,7 +85,7 @@ except ImportError:
 # Same app id the phone expects (AGENT_APPS in app/lib/api.ts); the Windows
 # agent versions independently of the Linux one.
 APP_NAME = "couchside-agent"
-VERSION = "0.4.8-win"
+VERSION = "0.4.9-win"
 
 _PROGRAMDATA = os.environ.get("ProgramData", r"C:\ProgramData")
 DEFAULT_CONFIG_PATH = os.path.join(_PROGRAMDATA, "Couchside", "config.json")
@@ -1053,6 +1053,10 @@ def real_status():
         "disks": read_disks(),
         "net": net_info_cached(),
         "agent_version": VERSION,
+        # WHY mouse/keyboard can't drive an admin window when the agent is not
+        # elevated (Windows UIPI). Additive; the app uses it to explain the limit
+        # and point at the fix (run elevated, or the signed uiAccess build).
+        "input_privilege": _process_privilege(),
         # gamepad is re-probed live (cached, self-healing) rather than read from
         # the frozen startup snapshot: the ViGEmBus driver can come up (or go
         # away) after the agent started, and a stale true here is what wedges the
@@ -1329,6 +1333,7 @@ def mock_status():
                 "mac": "de:ad:be:ef:00:02", "wired": True, "wol_armed": True},
         "agent_version": VERSION,
         "caps": CAPS,
+        "input_privilege": {"elevated": False, "uiaccess": False},
         "history": _history_snapshot(),
     }
 
@@ -2508,6 +2513,56 @@ def _input_reachable():
     _INPUT_REACH_CACHE["t"] = now
     _INPUT_REACH_CACHE["ok"] = ok
     return ok
+
+
+# This process's input privilege — WHY the mouse "stops when I alt-tab to an
+# admin app". A NON-elevated process cannot SendInput into a foreground window
+# running at HIGHER integrity (Windows UIPI); it works on same/lower-integrity
+# windows (incl. the agent's own console) and is silently dropped on elevated
+# ones (games+anticheat, admin terminals, Task Manager, installers). Two escapes:
+#   elevated  — the agent runs as admin (install.ps1 -Elevated); reaches every
+#               window, bigger blast radius (a LAN token drives admin app windows).
+#   uiaccess  — the UIAccess token flag: a SIGNED, secure-located (Program Files),
+#               uiAccess=true exe reaches elevated windows WITHOUT being admin.
+#               Requires the signed-exe build (roadmap); a plain pythonw script
+#               can never have it. Neither can drive the UAC consent secure desktop.
+# Fixed for the process lifetime, so computed once. Reported additively on
+# /api/status as `input_privilege` so the app can explain the limit + the fix.
+_TOKEN_QUERY = 0x0008
+_TokenElevation = 20   # TOKEN_INFORMATION_CLASS.TokenElevation
+_TokenUIAccess = 26    # TOKEN_INFORMATION_CLASS.TokenUIAccess
+_PRIVILEGE_CACHE = None
+
+
+def _process_privilege():
+    """{'elevated': bool, 'uiaccess': bool} for THIS process token. Never raises;
+    all-False off Windows and on any probe failure (degrade closed)."""
+    global _PRIVILEGE_CACHE
+    if _PRIVILEGE_CACHE is not None:
+        return _PRIVILEGE_CACHE
+    result = {"elevated": False, "uiaccess": False}
+    if IS_WINDOWS and _kernel32 is not None:
+        try:
+            advapi32 = ctypes.WinDLL("advapi32", use_last_error=True)
+            htok = ctypes.c_void_p()
+            if advapi32.OpenProcessToken(_kernel32.GetCurrentProcess(),
+                                         _TOKEN_QUERY, ctypes.byref(htok)):
+                try:
+                    def _q(info_class):
+                        val = ctypes.c_uint32(0)
+                        ret = ctypes.c_uint32(0)
+                        ok = advapi32.GetTokenInformation(
+                            htok, info_class, ctypes.byref(val), 4,
+                            ctypes.byref(ret))
+                        return bool(ok and val.value)
+                    result = {"elevated": _q(_TokenElevation),
+                              "uiaccess": _q(_TokenUIAccess)}
+                finally:
+                    _kernel32.CloseHandle(htok)
+        except Exception:
+            result = {"elevated": False, "uiaccess": False}
+    _PRIVILEGE_CACHE = result
+    return result
 
 
 # ---------------------------------------------------------------------------
