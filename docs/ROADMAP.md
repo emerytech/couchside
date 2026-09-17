@@ -431,8 +431,10 @@ Each entry now carries a `✅ DONE` / `🟡 PARTIAL` / `📋 OPEN` banner with i
 
 ## 📋 Planned
 
-### Windows CPU temperature — a fallback source when the board exposes no ACPI zone (customer report 2026-09-16)
-- **priority:** P2 · **risk:** low · **affects:** agent (Windows) + app + site · **depends_on:** nothing
+### Windows GPU + CPU telemetry via HWiNFO/LHM — unlocks the "AMD Link alternative" positioning (customer report 2026-09-16 + demand audit 2026-09-17)
+- **priority:** P2, **raised** — this is the single build that turns a validated, low-competition
+  search term ("AMD Link alternative") from an over-claim into a fact on Windows · **risk:** low ·
+  **affects:** agent (Windows) + app + site + store copy · **depends_on:** nothing
 - **Origin:** a paying Windows customer — *"the temps for my cpu aren't showing"* — on an ASRock
   B760I / i7-14700. The Windows agent has ONE temp source: PowerShell
   `Get-CimInstance -Namespace root/wmi MSAcpi_ThermalZoneTemperature`
@@ -454,6 +456,31 @@ Each entry now carries a `✅ DONE` / `🟡 PARTIAL` / `📋 OPEN` banner with i
   status field so the app can say *why* the tile is blank instead of a bare em-dash. Both directions
   + a control per §11. NOTE: HWiNFO/LHM read paths were UNMEASURABLE in the report session (test box
   had no interactive login loaded and none of the tools were running) — measure on a box that runs one.
+- **The bigger prize — GPU telemetry (this is why the priority went up).** Verified 2026-09-17 by
+  grepping [agent/win/couchsided-win.py](agent/win/couchsided-win.py): the Windows agent's status
+  payload is `load, cpu_temp_c, mem, disks, net, battery` and reports **ZERO GPU fields** — no GPU
+  temp, power, clock or VRAM (the Linux agent reads all of those per-card from amdgpu sysfs,
+  couchsided.py:20433). The **same** HWiNFO/LHM sources this item already taps also expose full **GPU
+  temp / power / clock / fan** for any vendor (AMD/NVIDIA/Intel) — so one fallback reader gives the
+  Windows agent its FIRST GPU telemetry AND fixes CPU temp in one pass. Add `gpu`/`gpus` to the
+  Windows status payload (mirror the Linux shape: name, temp_c, power_w, clock_mhz, vram_used/total,
+  busy_pct) so the app's existing GPU dashboard just lights up on Windows.
+- **Why it matters (demand audit 2026-09-17, [[couchside-seo-marketing]] / the audit memo).** AMD
+  discontinued **AMD Link** in Q1 2024 and pointed users only to Steam Link/Moonlight — which STREAM
+  but do NOT monitor temps, so "monitor my gaming box from my phone" is a vacated, uncontested job and
+  "**AMD Link alternative**" is keyword gold. BUT the term's audience is overwhelmingly **Windows**,
+  and today Couchside is a true AMD-Link replacement ONLY on Linux/amdgpu (Steam Deck, Bazzite): it
+  has the full GPU HUD there, none on Windows. **Do NOT put "AMD Link alternative" in Windows-facing
+  store copy until this ships** — claiming a GPU monitor that shows nothing is the category's #1
+  one-star complaint. Until then, scope the claim to Linux/Deck. This build is the unlock.
+- **Explicitly OUT of scope for this item (separate backlog note):** **FPS / frametime.** AMD Link
+  showed per-game FPS; Couchside reads system sensors, not the frame pipeline. Real per-game FPS on
+  Windows means a PresentMon-class hook (or reading an overlay's shared memory) — a much bigger,
+  separate feature. The HWiNFO/LHM path gives temps/power/clocks/fans, NOT FPS. Set expectations: the
+  AMD-Link-alternative claim rests on the telemetry HUD, not on FPS. Also note the cadence gap — the
+  app polls status every 2–5 s (a dashboard), not a sub-second live overlay; fine for "is it hot?",
+  not a live frametime graph. If a live HUD is ever wanted, that is its own item (a faster sensor-only
+  websocket stream), not this one.
 
 ### Windows "let the phone add apps" — a tray toggle for the launcher-create gate (customer report 2026-09-16)
 - **priority:** P2 · **risk:** low · **affects:** agent/win tray (`couchside-tray.pyw`) + app · **depends_on:** nothing
