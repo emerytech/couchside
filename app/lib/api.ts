@@ -2353,8 +2353,16 @@ export const api = {
   // ---------- launchers ----------
 
   /** List discovered Steam games + user-defined custom launchers. */
-  launchers(settings: ConnSettings): Promise<{ launchers: Launcher[] }> {
-    return request<{ launchers: Launcher[] }>(settings, '/api/launchers');
+  launchers(
+    settings: ConnSettings,
+  ): Promise<{ launchers: Launcher[]; create_enabled?: boolean }> {
+    // create_enabled: may the phone POST /api/launchers to create a launcher?
+    // Additive; agents before it omit the field (undefined), which the UI reads
+    // as "unknown, leave Add enabled" -- only an explicit false hides it.
+    return request<{ launchers: Launcher[]; create_enabled?: boolean }>(
+      settings,
+      '/api/launchers',
+    );
   },
 
   /**

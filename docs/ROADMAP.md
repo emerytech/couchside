@@ -431,6 +431,59 @@ Each entry now carries a `✅ DONE` / `🟡 PARTIAL` / `📋 OPEN` banner with i
 
 ## 📋 Planned
 
+### Windows CPU temperature — a fallback source when the board exposes no ACPI zone (customer report 2026-09-16)
+- **priority:** P2 · **risk:** low · **affects:** agent (Windows) + app + site · **depends_on:** nothing
+- **Origin:** a paying Windows customer — *"the temps for my cpu aren't showing"* — on an ASRock
+  B760I / i7-14700. The Windows agent has ONE temp source: PowerShell
+  `Get-CimInstance -Namespace root/wmi MSAcpi_ThermalZoneTemperature`
+  ([agent/win/couchsided-win.py:764](agent/win/couchsided-win.py)). Hardware-measured on the test
+  rig (EMERY-PC, same board class): that class returns **"Not supported" even as full admin** —
+  most modern desktop boards expose no ACPI thermal zone, so the reading is blank forever (re-probed
+  every 10 min, same result). The namespace/Kelvin math are correct — this is NOT a code bug, it is a
+  missing-source gap. Linux/Deck read `hwmon` directly and always work; this is the concrete thing
+  behind *"windows is a bit worse."*
+- **What shipped already (2026-09-16, PR #534 + ets3d):** honesty only — the site now caveats CPU
+  temp as board-dependent on Windows (couchside.tv homepage table + features page).
+- **The fix (build):** add fallback temp sources, in a fixed order, all stdlib / no third-party
+  import, degrade-closed: (a) **LibreHardwareMonitor** WMI namespace `root/LibreHardwareMonitor`
+  (Sensor class, SensorType=Temperature) when the user runs LHM; (b) **HWiNFO** shared memory
+  (`Global\HWiNFO_SENS_SM2`) or its gadget-registry export when HWiNFO runs with Shared Memory
+  Support; (c) **MSI Afterburner** `MAHMSharedMemory`. All require the USER to run that (free,
+  common-on-gaming-PCs) software — none is a Couchside dependency; when none is present, stay blank.
+  Also: **log the probe miss once** (today it is swallowed silently) and add an **additive**
+  status field so the app can say *why* the tile is blank instead of a bare em-dash. Both directions
+  + a control per §11. NOTE: HWiNFO/LHM read paths were UNMEASURABLE in the report session (test box
+  had no interactive login loaded and none of the tools were running) — measure on a box that runs one.
+
+### Windows "let the phone add apps" — a tray toggle for the launcher-create gate (customer report 2026-09-16)
+- **priority:** P2 · **risk:** low · **affects:** agent/win tray (`couchside-tray.pyw`) + app · **depends_on:** nothing
+- **Origin:** same customer report. PR #534 fixed the two dead ends (the 403 no longer cites a
+  Linux-only CLI; the app reads `create_enabled` and stops offering a blind Add; the spaced-path
+  split is fixed). What is STILL missing on Windows is a one-tap way to FLIP the gate: Linux has
+  `couchside allow-launchers on`, Windows has only a config.json hand-edit. Add a **tray checkbox**
+  ("Let the phone add apps") in `couchside-tray.pyw` that writes `allow_app_launchers` into
+  `%ProgramData%\Couchside\config.json` and restarts the agent task — the same shape as the existing
+  start-at-logon toggle. Parity item; small.
+- **Backlog behind it (from the report triage, lower value):** curated Windows media catalog by .exe
+  (Kodi/Plex parity with Linux `_MEDIA_CATALOG`); `shortcuts.vdf` non-Steam scan; Start-Menu `.lnk`
+  discovery. Each must keep client ids as lookups into an agent-owned table + argv-list launch.
+
+### Android R8 obfuscation below Play's threshold — "fix by Feb 2027" (Play Console warning, seen 2026-09-16)
+- **priority:** P3 (deadline is ~16 months out) · **risk:** medium (obfuscation can break RN /
+  native-module reflection — needs a real-device smoke after) · **affects:** app Android build only
+- **Origin:** Play Console "Take action → DEX code optimization is below our threshold — Obfuscation
+  (1%)" on Android bundle 2.9.58, *"fix by Feb 2027."* Confirmed cause: `app/app.json`
+  expo-build-properties `android` block sets only `usesCleartextTraffic: true` — **no**
+  `enableProguardInReleaseBuilds`, so release AABs ship essentially un-obfuscated (R8 minify at
+  Expo's default).
+- **Fix:** add `enableProguardInReleaseBuilds: true` (and consider
+  `enableShrinkResourcesInReleaseBuilds: true`) to that android block, then a **CLOUD** Android
+  build (local Android is broken on Darwin 27 — [[MEMORY]] local-android-build-broken-darwin27) and
+  submit. **Verify BOTH ways per §11:** the app still launches + pairs + drives the gamepad on a real
+  device (obfuscation famously breaks anything reflection/`keep`-sensitive — add ProGuard `-keep`
+  rules if a native module misbehaves), AND the next Play bundle clears the DEX-optimization warning.
+  Not urgent; do it on the next Android release cycle, well before Feb 2027.
+
 > ✅ **DONE — shipped, verified on `main` (reconciled 2026-08-27). Move to Completed.**
 > SHIPPED end-to-end (P1-P5 + stream ticket): agent TLS default-on, app pins via boxTls.ts — move to Completed.
 >
