@@ -432,8 +432,16 @@ Each entry now carries a `✅ DONE` / `🟡 PARTIAL` / `📋 OPEN` banner with i
 ## 📋 Planned
 
 ### Windows uiAccess signed-exe build — drive ADMIN windows without an elevated agent (tester report 2026-09-17)
-- **priority:** P2 · **risk:** medium (build/install pipeline change; gated on a code-signing cert) ·
-  **affects:** agent/win build.ps1 + install.ps1 + a signed exe · **depends_on:** a code-signing cert
+- **DECISION 2026-09-17 — PARKED (owner call): not worth a recurring code-signing cert for a $4.99
+  one-time app.** The `install.ps1 -Elevated` opt-in (SHIPPED, agent 0.4.9-win, free) is the accepted
+  answer for driving admin windows; uiAccess stays here only if a signing cert is ever bought for
+  another reason (e.g. SmartScreen). The manifest + agent TokenUIAccess detection already exist and are
+  inert without a cert — no need to rebuild if revived. Note: signing's OTHER benefit (no SmartScreen
+  "unknown publisher" warning) is minor here anyway — the mainstream install is the `irm | iex`
+  PowerShell + python path, not a prebuilt exe, so most users never hit an unsigned-exe prompt.
+- **priority:** 💡 backlog (was P2) · **risk:** medium (build/install pipeline change; gated on a
+  code-signing cert) · **affects:** agent/win build.ps1 + install.ps1 + a signed exe · **depends_on:**
+  a code-signing cert (PARKED)
 - **Origin:** tester on Windows — "the mouse stops when I alt-tab to another window." ROOT CAUSE =
   Windows **UIPI**: a NON-elevated process cannot SendInput into a higher-integrity foreground window
   (elevated app / game+anticheat / admin terminal / installer). The agent runs non-elevated by design
