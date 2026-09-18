@@ -712,6 +712,13 @@ jobs:
       - name: Installer add-on policy (player)
         run: bash tests/test_installer_player.sh install.sh
 
+      # install.ps1 must be pure ASCII: PS 5.1 reads a BOM-less UTF-8 .ps1 as
+      # Windows-1252 and mangles any multi-byte char, breaking the parse and
+      # BOTH Windows install paths (irm|iex + the CouchsideSetup.exe wizard). A
+      # stray em-dash did exactly that (2026-09-18).
+      - name: install.ps1 is pure ASCII (PS 5.1 safety)
+        run: python3 tests/test_install_ps1_ascii.py
+
       # Distro neutrality (the CachyOS/Arch pass). The installer's two
       # distro-aware spots — firewall backend, python3 hint — must stay
       # capability-probed, never distro-named, and a firewall is only touched
