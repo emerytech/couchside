@@ -65,6 +65,13 @@ def test_status_carries_input_privilege():
     ms = cw.mock_status()
     check(ms.get("input_privilege") == {"elevated": False, "uiaccess": False},
           "mock_status().input_privilege is the standard shape")
+    # Regression guard (hardware-caught 2026-09-17): without argtypes/restype the
+    # 64-bit token/handle args truncate to c_int, the calls fail, and the probe
+    # degrades-closed to always-False (reported elevated:false on an elevated box).
+    check("GetCurrentProcess.restype" in src
+          and "OpenProcessToken.argtypes" in src
+          and "GetTokenInformation.argtypes" in src,
+          "token Win32 calls set argtypes/restype (no 64-bit handle truncation)")
 
 
 def test_install_elevated_flag_wired():

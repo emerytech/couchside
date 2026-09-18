@@ -85,7 +85,7 @@ except ImportError:
 # Same app id the phone expects (AGENT_APPS in app/lib/api.ts); the Windows
 # agent versions independently of the Linux one.
 APP_NAME = "couchside-agent"
-VERSION = "0.4.9-win"
+VERSION = "0.4.10-win"
 
 _PROGRAMDATA = os.environ.get("ProgramData", r"C:\ProgramData")
 DEFAULT_CONFIG_PATH = os.path.join(_PROGRAMDATA, "Couchside", "config.json")
@@ -2544,6 +2544,22 @@ def _process_privilege():
     if IS_WINDOWS and _kernel32 is not None:
         try:
             advapi32 = ctypes.WinDLL("advapi32", use_last_error=True)
+            # argtypes/restype are LOAD-BEARING on 64-bit Windows: without them
+            # ctypes assumes c_int (32-bit) for every arg + the return, which
+            # TRUNCATES the GetCurrentProcess pseudo-handle and the token/pointer
+            # handles to 32 bits. The calls then fail and this degrades-closed to
+            # all-False — i.e. the cap silently reports "not elevated" on an
+            # elevated box (caught only on real hardware, 2026-09-17).
+            _kernel32.GetCurrentProcess.restype = ctypes.c_void_p
+            _kernel32.CloseHandle.argtypes = [ctypes.c_void_p]
+            advapi32.OpenProcessToken.argtypes = [
+                ctypes.c_void_p, ctypes.c_uint32,
+                ctypes.POINTER(ctypes.c_void_p)]
+            advapi32.OpenProcessToken.restype = ctypes.c_int
+            advapi32.GetTokenInformation.argtypes = [
+                ctypes.c_void_p, ctypes.c_int, ctypes.c_void_p,
+                ctypes.c_uint32, ctypes.POINTER(ctypes.c_uint32)]
+            advapi32.GetTokenInformation.restype = ctypes.c_int
             htok = ctypes.c_void_p()
             if advapi32.OpenProcessToken(_kernel32.GetCurrentProcess(),
                                          _TOKEN_QUERY, ctypes.byref(htok)):
