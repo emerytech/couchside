@@ -47,7 +47,7 @@ param(
                              # UIPI blocks a non-elevated agent from injecting into a
                              # higher-integrity foreground window). Tradeoff: a LAN
                              # token holder can then drive admin app windows with the
-                             # virtual input (the command allowlist still holds — no
+                             # virtual input (the command allowlist still holds - no
                              # arbitrary shell). Default OFF (least privilege).
     [switch]$NoElevated,     # explicitly non-elevated; suppresses the interactive
                              # prompt (for scripted/unattended installs)
@@ -584,7 +584,7 @@ $action = if ($arg) {
 $trigger   = New-ScheduledTaskTrigger -AtLogOn -User $env:USERNAME
 # Discoverable choice, never the silent default: if the user didn't decide via a
 # flag and we have a console to ask in (a human running install.ps1, not the
-# silent CouchsideSetup.exe path), prompt — defaulting to No. They can also flip
+# silent CouchsideSetup.exe path), prompt - defaulting to No. They can also flip
 # it later from the tray icon.
 if (-not $Elevated -and -not $NoElevated -and -not $FromInstaller -and [Environment]::UserInteractive) {
     Write-Host ""
@@ -603,7 +603,7 @@ if (-not $Elevated -and -not $NoElevated -and -not $FromInstaller -and [Environm
 # elevate a standard user). Opt-in; the tradeoff is documented in agent/win/README.
 $runLevel = if ($Elevated) { 'Highest' } else { 'Limited' }
 if ($Elevated) {
-    Write-Host "  agent task will run ELEVATED (Highest) — the phone can control admin windows." -ForegroundColor Yellow
+    Write-Host "  agent task will run ELEVATED (Highest) - the phone can control admin windows." -ForegroundColor Yellow
     Write-Host "  (A LAN token holder can then drive admin app windows via virtual input; the" -ForegroundColor Yellow
     Write-Host "   command allowlist still holds. Re-run without -Elevated to revert.)" -ForegroundColor Yellow
 }
