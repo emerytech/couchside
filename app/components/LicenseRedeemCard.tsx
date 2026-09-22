@@ -1,10 +1,18 @@
 import React, { useCallback, useEffect, useState } from 'react';
-import { Pressable, StyleSheet, Text, TextInput, View } from 'react-native';
+import { Linking, Pressable, StyleSheet, Text, TextInput, View } from 'react-native';
 
 import { getLicenseeName, isGenuinelyPurchased } from '@/lib/entitlement';
 import { useEntitlement } from '@/lib/EntitlementContext';
 import { mono, useThemedStyles } from '@/lib/theme';
 import type { Palette } from '@/lib/theme';
+
+/**
+ * Where "Buy a license" sends people. Deliberately a couchside.tv page, NOT the
+ * payment processor's checkout link directly: the APK is a compiled binary, so
+ * pointing it at the web page means the processor / price / checkout can change
+ * with zero app rebuild. The page hosts the actual Buy button + redeem steps.
+ */
+const BUY_URL = 'https://couchside.tv/direct';
 
 /**
  * Direct-edition unlock: paste the signed license key the maintainer issued on
@@ -93,6 +101,12 @@ export function LicenseRedeemCard({ compact = false }: { compact?: boolean }) {
         Bought Couchside direct? Paste the key from your purchase email. It unlocks this
         device offline — no account, no store.
       </Text>
+      <Pressable
+        onPress={() => void Linking.openURL(BUY_URL)}
+        hitSlop={8}
+        style={({ pressed }) => [styles.buyLink, pressed && styles.pressed]}>
+        <Text style={styles.buyLinkText}>Don't have a key? Buy a license →</Text>
+      </Pressable>
     </View>
   );
 }
@@ -139,6 +153,9 @@ const makeStyles = (t: Palette) => StyleSheet.create({
   licensed: { color: t.green, fontSize: 13, fontWeight: '700', fontFamily: mono, textAlign: 'center' },
   msg: { fontSize: 12, fontFamily: mono, marginTop: 12 },
   hint: { color: t.textDim, fontSize: 12, lineHeight: 17, marginTop: 12 },
+  buyLink: { marginTop: 14, alignSelf: 'center' },
+  buyLinkText: { color: t.blue, fontSize: 13, fontWeight: '700', fontFamily: mono },
+  pressed: { opacity: 0.6 },
   // Palette values reached through the stylesheet so the component stays props-free.
   _placeholder: { color: t.textDim },
   _ok: { color: t.green },
