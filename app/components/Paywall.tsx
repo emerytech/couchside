@@ -2,7 +2,7 @@ import React, { useCallback, useEffect, useState } from 'react';
 import { Image, Pressable, StyleSheet, Text, View } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
-import { recordPurchaseDate } from '@/lib/entitlement';
+import { recordPurchaseDate, IS_DIRECT_BUILD } from '@/lib/entitlement';
 import { useEntitlement } from '@/lib/EntitlementContext';
 import {
   buy,
@@ -12,6 +12,7 @@ import {
   openRedeemCode,
   REDEEM_STORE_NAME,
 } from '@/lib/purchase';
+import { LicenseRedeemCard } from '@/components/LicenseRedeemCard';
 import { mono, useThemedStyles } from '@/lib/theme';
 import type { Palette } from '@/lib/theme';
 
@@ -100,41 +101,49 @@ export default function Paywall() {
           supports the work. No subscription, no account, no tracking.
         </Text>
 
-        <Pressable
-          onPress={onBuy}
-          disabled={busy != null}
-          style={({ pressed }) => [
-            styles.buyBtn,
-            (pressed || busy != null) && styles.pressed,
-          ]}>
-          <Text style={styles.buyBtnText}>
-            {busy === 'buy' ? 'PURCHASING…' : `UNLOCK ${price ?? FALLBACK_PRICE}`}
-          </Text>
-        </Pressable>
+        {/* Direct (off-store) edition unlocks with a signed license key; it has
+            no in-app purchase, so the redeem card stands in for Buy/Restore. */}
+        {IS_DIRECT_BUILD ? (
+          <LicenseRedeemCard compact />
+        ) : (
+          <>
+            <Pressable
+              onPress={onBuy}
+              disabled={busy != null}
+              style={({ pressed }) => [
+                styles.buyBtn,
+                (pressed || busy != null) && styles.pressed,
+              ]}>
+              <Text style={styles.buyBtnText}>
+                {busy === 'buy' ? 'PURCHASING…' : `UNLOCK ${price ?? FALLBACK_PRICE}`}
+              </Text>
+            </Pressable>
 
-        <Pressable
-          onPress={onRestore}
-          disabled={busy != null}
-          style={({ pressed }) => [
-            styles.restoreBtn,
-            (pressed || busy != null) && styles.pressed,
-          ]}>
-          <Text style={styles.restoreBtnText}>
-            {busy === 'restore' ? 'RESTORING…' : 'RESTORE PURCHASES'}
-          </Text>
-        </Pressable>
+            <Pressable
+              onPress={onRestore}
+              disabled={busy != null}
+              style={({ pressed }) => [
+                styles.restoreBtn,
+                (pressed || busy != null) && styles.pressed,
+              ]}>
+              <Text style={styles.restoreBtnText}>
+                {busy === 'restore' ? 'RESTORING…' : 'RESTORE PURCHASES'}
+              </Text>
+            </Pressable>
 
-        {error != null && <Text style={styles.error}>{error}</Text>}
+            {error != null && <Text style={styles.error}>{error}</Text>}
 
-        <Pressable
-          onPress={() => void openRedeemCode()}
-          disabled={busy != null}
-          hitSlop={8}
-          style={({ pressed }) => [styles.redeemHint, pressed && styles.pressed]}>
-          <Text style={styles.redeemHintText}>
-            Have a code? Redeem it in the {REDEEM_STORE_NAME}, then tap Restore.
-          </Text>
-        </Pressable>
+            <Pressable
+              onPress={() => void openRedeemCode()}
+              disabled={busy != null}
+              hitSlop={8}
+              style={({ pressed }) => [styles.redeemHint, pressed && styles.pressed]}>
+              <Text style={styles.redeemHintText}>
+                Have a code? Redeem it in the {REDEEM_STORE_NAME}, then tap Restore.
+              </Text>
+            </Pressable>
+          </>
+        )}
       </View>
     </View>
   );

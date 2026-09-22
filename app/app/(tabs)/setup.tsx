@@ -40,8 +40,9 @@ import { TourAnchor } from '@/components/TourAnchor';
 import { registerScroller } from '@/hooks/useTourAnchor';
 import { useLockOrientation } from '@/hooks/useLockOrientation';
 import { api, ApiError } from '@/lib/api';
-import { isGenuinelyPurchased, recordPurchaseDate } from '@/lib/entitlement';
+import { isGenuinelyPurchased, recordPurchaseDate, IS_DIRECT_BUILD } from '@/lib/entitlement';
 import { useEntitlement } from '@/lib/EntitlementContext';
+import { LicenseRedeemCard } from '@/components/LicenseRedeemCard';
 import { openWriteReview } from '@/lib/review';
 import {
   hapticLight,
@@ -2289,44 +2290,51 @@ function SetupBody() {
               <EarlyAdopterBadge />
               <EntitlementPill />
             </View>
-            <View style={styles.card}>
-              <CardHeader icon="card-outline" label="PURCHASE" />
-              {!isGenuinelyPurchased(entitlement) && (
+            {/* Direct (off-store) edition unlocks via a signed license key, not
+                the store. Its build has no in-app purchase to offer, so it shows
+                the redeem card in place of Buy/Restore. */}
+            {IS_DIRECT_BUILD ? (
+              <LicenseRedeemCard />
+            ) : (
+              <View style={styles.card}>
+                <CardHeader icon="card-outline" label="PURCHASE" />
+                {!isGenuinelyPurchased(entitlement) && (
+                  <Pressable
+                    onPress={onBuy}
+                    disabled={buying || restoring}
+                    style={({ pressed }) => [styles.btnBuy, (pressed || buying) && styles.pressed]}>
+                    <Text style={styles.btnBuyText}>
+                      {buying ? 'PURCHASING…' : `UNLOCK ${price ?? '$4.99'}`}
+                    </Text>
+                  </Pressable>
+                )}
                 <Pressable
-                  onPress={onBuy}
-                  disabled={buying || restoring}
-                  style={({ pressed }) => [styles.btnBuy, (pressed || buying) && styles.pressed]}>
-                  <Text style={styles.btnBuyText}>
-                    {buying ? 'PURCHASING…' : `UNLOCK ${price ?? '$4.99'}`}
+                  onPress={onRestore}
+                  disabled={restoring || buying}
+                  style={({ pressed }) => [styles.btnRestore, (pressed || restoring) && styles.pressed]}>
+                  <Text style={styles.btnRestoreText}>
+                    {restoring ? 'RESTORING…' : 'RESTORE PURCHASES'}
                   </Text>
                 </Pressable>
-              )}
-              <Pressable
-                onPress={onRestore}
-                disabled={restoring || buying}
-                style={({ pressed }) => [styles.btnRestore, (pressed || restoring) && styles.pressed]}>
-                <Text style={styles.btnRestoreText}>
-                  {restoring ? 'RESTORING…' : 'RESTORE PURCHASES'}
-                </Text>
-              </Pressable>
-              {restoreMsg != null && (
-                <Text style={[styles.restoreMsg, { color: restoreMsg.ok ? t.green : t.red }]}>
-                  {restoreMsg.text}
-                </Text>
-              )}
-              {!isGenuinelyPurchased(entitlement) && (
-                <Text style={styles.purchaseHint}>
-                  One-time unlock · no subscription, no account, no tracking.
-                </Text>
-              )}
-              {!isGenuinelyPurchased(entitlement) && (
-                <Pressable onPress={() => void openRedeemCode()} hitSlop={8}>
-                  <Text style={styles.redeemHint}>
-                    Have a code? Redeem it in the {REDEEM_STORE_NAME}, then tap Restore Purchases.
+                {restoreMsg != null && (
+                  <Text style={[styles.restoreMsg, { color: restoreMsg.ok ? t.green : t.red }]}>
+                    {restoreMsg.text}
                   </Text>
-                </Pressable>
-              )}
-            </View>
+                )}
+                {!isGenuinelyPurchased(entitlement) && (
+                  <Text style={styles.purchaseHint}>
+                    One-time unlock · no subscription, no account, no tracking.
+                  </Text>
+                )}
+                {!isGenuinelyPurchased(entitlement) && (
+                  <Pressable onPress={() => void openRedeemCode()} hitSlop={8}>
+                    <Text style={styles.redeemHint}>
+                      Have a code? Redeem it in the {REDEEM_STORE_NAME}, then tap Restore Purchases.
+                    </Text>
+                  </Pressable>
+                )}
+              </View>
+            )}
 
             {/* User-initiated, always available. This LINKS OUT to the store's
                 write-review page — it must never call requestReview(): Apple

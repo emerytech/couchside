@@ -609,6 +609,19 @@ Where the wiring is the thing that can rot, assert it by READING THE SOURCE:
   game sheet really calls `toggleBookmarked`, the grid really filters by the bookmark set.
 - `lib/__tests__/onboarding.test.ts` — every screen states an orientation policy; the
   install copy quotes a banner `install.sh` genuinely prints.
+- `lib/__tests__/entitlementDirect.test.ts` — the direct-edition license gate. `entitlement.ts`
+  imports `react-native`, so bare Node can't execute it (same reason `restoreSync.ts` exists);
+  this reads the source to pin a SECURITY-critical ordering: the direct build returns from
+  `revalidateWithStore` BEFORE any store fail-open (else the off-store APK unlocks for anyone),
+  the stored key is re-verified every read (not trusted as a flag), and a refused key writes
+  nothing. See `docs/DIRECT_EDITION_LICENSING.md`.
+
+**Build-flag editions (`EXPO_PUBLIC_*`).** `IS_BETA_BUILD` and `IS_DIRECT_BUILD` are per-build
+constants inlined at export time, not runtime toggles — set on their EAS profile's `env`, unset
+elsewhere. When adding one, remember the store fail-open: `revalidateWithStore` treats an
+unreachable store as `purchased`, which is correct for a self-compiled build but WRONG for any
+build distributed off-store (its store is unreachable by definition). Gate the fail-open on the
+edition flag and keep store-only UI (IAP buttons) behind `!IS_DIRECT_BUILD`.
 
 **Always verify a guard in BOTH directions** — break the thing, watch the test fail, put it
 back. A guard that cannot fail is the bug it was written to prevent. One of these reported

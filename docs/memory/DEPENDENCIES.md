@@ -69,6 +69,7 @@ cannot be done in JS alone.
 | `expo-constants` | `~57.0.2` | App metadata in `setup.tsx`. Used *alongside* `expo-application`, not instead of it (see the warning below). |
 | `expo-application` | `~57.0.2` | The correct source of the native build number in `setup.tsx`. There is an explicit comment there: `Constants.nativeBuildVersion` does **not** exist in SDK 57 but still typechecks via an index signature — this package is the fix. |
 | `qrcode` | `^1.5.4` | Pairing QR generation. Only `QRCode.create()` is used, for its raw bit matrix — `components/QrView.tsx` draws that matrix as merged rows of `View`s, because `toDataURL`/`toString` need a browser canvas or Node `zlib`, neither of which exists in RN (this previously rendered a blank modal on-device). |
+| `node-forge` | `^1.3.1` | Pure-JS crypto that runs in Hermes. Original use: TV certificate minting for app-direct Google TV / smart-TV pairing (`lib/tvdirect/*`). Added 2026-09-22: `lib/license.ts` uses `forge.pki.ed25519.verify` for offline **license-key** verification (direct off-store edition — see `docs/DIRECT_EDITION_LICENSING.md`). Keys are signed out-of-band by `scripts/make-license.mjs` using node's own `crypto` Ed25519; the two interoperate (both RFC 8032), proven by `lib/__tests__/license.test.ts` rather than assumed. |
 
 ### In-app purchase
 
