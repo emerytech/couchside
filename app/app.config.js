@@ -11,6 +11,13 @@
 // update over it — exactly the "don't mess up the store listing" risk. Giving it
 // its own identity keeps the two completely independent.
 module.exports = ({ config }) => {
+  // Web design-review demo (EXPO_PUBLIC_DEMO=1): served under /couchside/app/ on
+  // couchside.tv, so its assets need that subpath baseUrl. Build-branch only,
+  // like everything in this file; store/direct builds never set the flag.
+  if (process.env.EXPO_PUBLIC_DEMO === '1') {
+    config.experiments = { ...(config.experiments || {}), baseUrl: '/couchside/app' };
+  }
+
   if (process.env.EXPO_PUBLIC_DIRECT !== '1') return config;
 
   config.name = 'Couchside Direct';
