@@ -7,12 +7,13 @@ import { mono, useThemedStyles } from '@/lib/theme';
 import type { Palette } from '@/lib/theme';
 
 /**
- * Where "Buy a license" sends people. Deliberately a couchside.tv page, NOT the
- * payment processor's checkout link directly: the APK is a compiled binary, so
- * pointing it at the web page means the processor / price / checkout can change
- * with zero app rebuild. The page hosts the actual Buy button + redeem steps.
+ * Where "Buy a license" sends people: straight into the Lemon Squeezy checkout.
+ * Someone tapping this already has the app, so they want to pay, not read the
+ * /direct landing page. TRADE-OFF: this hardcodes the checkout URL into the
+ * binary, so changing the processor/product means an app rebuild — swap this for
+ * a couchside.tv/buy redirect if that ever needs to be a web-only change.
  */
-const BUY_URL = 'https://couchside.tv/direct';
+const BUY_URL = 'https://ets3d.lemonsqueezy.com/checkout/buy/c8cef4ba-820c-4488-8fd1-97dfe4659169';
 
 /**
  * Direct-edition unlock: paste the signed license key the maintainer issued on
