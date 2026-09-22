@@ -13,6 +13,7 @@ import {
   getEntitlement,
   markPurchased,
   recordPurchaseDate,
+  redeemLicenseKey,
   revalidateWithStore,
   TRIAL_DAYS,
 } from './entitlement';
@@ -65,6 +66,8 @@ type EntitlementContextValue = {
   refresh: () => Promise<void>;
   /** Persist a completed unlock purchase and refresh. */
   recordPurchase: () => Promise<void>;
+  /** Redeem a direct-edition license key; unlocks + announces on success. */
+  redeemLicense: (key: string) => Promise<{ ok: boolean; name?: string; error?: string }>;
 };
 
 const EntitlementContext = createContext<EntitlementContextValue>({
@@ -77,6 +80,7 @@ const EntitlementContext = createContext<EntitlementContextValue>({
   ready: false,
   refresh: async () => {},
   recordPurchase: async () => {},
+  redeemLicense: async () => ({ ok: false }),
 });
 
 export function EntitlementProvider({ children }: { children: React.ReactNode }) {
@@ -117,6 +121,21 @@ export function EntitlementProvider({ children }: { children: React.ReactNode })
     }
   }, []);
 
+  const redeemLicense = useCallback(async (key: string) => {
+    const wasPurchased = stateRef.current === 'purchased';
+    const result = await redeemLicenseKey(key);
+    if (!result.ok) return result;
+    // The key is already persisted; re-read so getEntitlement re-verifies it and
+    // the gate unmounts, and announce the same one-shot unlock toast as a buy.
+    const next = await getEntitlement();
+    setEntitlement(next);
+    if (!unlockAnnounced && !wasPurchased && next.state === 'purchased') {
+      unlockAnnounced = true;
+      emitUnlocked({ isEarlyAdopter: next.isEarlyAdopter });
+    }
+    return result;
+  }, []);
+
   useEffect(() => {
     let cancelled = false;
     (async () => {
@@ -146,8 +165,8 @@ export function EntitlementProvider({ children }: { children: React.ReactNode })
   }, [recordPurchase]);
 
   const value = useMemo(
-    () => ({ entitlement, ready, refresh, recordPurchase }),
-    [entitlement, ready, refresh, recordPurchase],
+    () => ({ entitlement, ready, refresh, recordPurchase, redeemLicense }),
+    [entitlement, ready, refresh, recordPurchase, redeemLicense],
   );
 
   return <EntitlementContext.Provider value={value}>{children}</EntitlementContext.Provider>;

@@ -19,6 +19,7 @@ import { Platform } from 'react-native';
 import * as SecureStore from 'expo-secure-store';
 
 import { getProduct, restore } from './purchase';
+import { verifyLicenseKey } from './license';
 
 export type EntitlementState = 'trial' | 'expired' | 'purchased';
 export type Entitlement = {
@@ -49,6 +50,8 @@ const FIRST_LAUNCH_KEY = 'couchpilot.entitlement.first-launch.v1';
 const PURCHASED_KEY = 'couchpilot.entitlement.unlocked.v1';
 /** Cached original purchase date (ms) when the store reported one. */
 const PURCHASE_DATE_KEY = 'couchpilot.entitlement.purchase-date.v1';
+/** The raw redeemed license key (direct edition). Re-verified on every read. */
+const LICENSE_KEY = 'couchpilot.entitlement.license.v1';
 
 /**
  * Beta builds unlock everything so testers never hit the trial or the paywall
@@ -67,6 +70,69 @@ const BETA_ENTITLEMENT: Entitlement = {
   isEarlyAdopter: false,
   unlockedByFallback: false,
 };
+
+/**
+ * True on the DIRECT (off-store) edition, set ONLY on the `direct` EAS profile
+ * via EXPO_PUBLIC_DIRECT=1. This build is sold and handed out directly (no Play
+ * / App Store), so:
+ *   - it unlocks ONLY via a signed license key (redeemLicenseKey below), and
+ *   - it must NOT fail-open to 'purchased' when the store is unreachable the way
+ *     a self-compiled build does (revalidateWithStore) — an off-store APK has no
+ *     store by definition, so that fail-open would unlock it for anyone who got
+ *     the file. That is the whole point of shipping it locked.
+ * Inlined at build time like every EXPO_PUBLIC_* constant, so it is a per-build
+ * flag, not a runtime toggle. The store builds leave it unset and are unchanged.
+ */
+export const IS_DIRECT_BUILD = process.env.EXPO_PUBLIC_DIRECT === '1';
+
+/** Friendly, non-leaky reasons a pasted key was refused. */
+const LICENSE_ERROR_TEXT: Record<string, string> = {
+  format: "That doesn't look like a Couchside license key.",
+  signature: "This key isn't valid. Check you pasted it exactly as sent.",
+  payload: 'This key is malformed. Ask for a fresh one.',
+};
+
+export type RedeemResult = { ok: true; name: string } | { ok: false; error: string };
+
+/**
+ * Re-verify the stored license key against the baked-in public key. Done on
+ * every entitlement read (it is a cheap offline signature check), so a corrupted
+ * or hand-edited stored blob unlocks nothing — only a genuinely signed key does.
+ * Returns the licensee name, or null when there is no valid stored key.
+ */
+async function verifiedLicenseName(): Promise<string | null> {
+  let raw: string | null;
+  try {
+    raw = await storageGet(LICENSE_KEY);
+  } catch {
+    return null; // unreadable storage: no license, stay gated (degrade closed)
+  }
+  if (!raw) return null;
+  const r = verifyLicenseKey(raw);
+  return r.ok ? r.payload.name : null;
+}
+
+/** The licensee's name if a valid key is stored, else null (for the UI badge). */
+export async function getLicenseeName(): Promise<string | null> {
+  return verifiedLicenseName();
+}
+
+/**
+ * Redeem a pasted license key. Verifies the Ed25519 signature offline; on
+ * success persists the raw key (re-verified on every future launch) and the
+ * caller refreshes the entitlement. Never partially applies: a refused key
+ * writes nothing.
+ */
+export async function redeemLicenseKey(input: string): Promise<RedeemResult> {
+  const r = verifyLicenseKey(input);
+  if (!r.ok) return { ok: false, error: LICENSE_ERROR_TEXT[r.error] ?? 'This key could not be verified.' };
+  try {
+    await storageSet(LICENSE_KEY, r.raw);
+  } catch {
+    return { ok: false, error: "Couldn't save the key on this device. Try again." };
+  }
+  return { ok: true, name: r.payload.name };
+}
 
 /**
  * True only for a real, owned unlock — never for the store-unreachable
@@ -182,6 +248,12 @@ export async function markPurchased(): Promise<void> {
 export async function getEntitlement(): Promise<Entitlement> {
   // Beta builds are unlocked outright, ahead of the trial clock and the cache.
   if (BETA_UNLOCK) return BETA_ENTITLEMENT;
+  // A validly signed license key (direct edition) is a genuine unlock, checked
+  // ahead of the store cache. Re-verified here every read, so it cannot be faked
+  // by tampering with storage.
+  if (await verifiedLicenseName()) {
+    return { state: 'purchased', trialDaysLeft: 0, isEarlyAdopter: false, unlockedByFallback: false };
+  }
   try {
     if ((await storageGet(PURCHASED_KEY)) === '1') {
       return {
@@ -219,6 +291,10 @@ export async function revalidateWithStore(local: Entitlement): Promise<Entitleme
   // Beta builds stay unlocked without ever touching the store (so Android open
   // testers are not prompted to buy, and nothing can downgrade them).
   if (BETA_UNLOCK) return BETA_ENTITLEMENT;
+  // The direct edition has no store to validate against and must never fail-open
+  // (see IS_DIRECT_BUILD). Its only unlock is the signed license key, already
+  // resolved by getEntitlement into `local`; trust it verbatim and stop here.
+  if (IS_DIRECT_BUILD) return local;
   if (local.state === 'purchased') {
     // Already unlocked locally. Opportunistically confirm the purchase date so
     // the Early Adopter badge can appear even if we cached the purchase before

@@ -1649,6 +1649,36 @@ recommendation was wrong, not merely superseded.
   (same-version → restarting → success), screenshot of green "Updated / Now running 2.9.86.".
   NOT re-run on the real steamdeck yet — owner to confirm at next agent bump.
 
+### Direct-edition licensing — off-store unlock via signed key (2026-09-22)
+- **was:** owner ask (de-Googled-Android fan can't use Play/App Store, wants to pay; leak fear
+  about handing out an unlocked APK) · **affects:** app, tooling · **branch/PR:**
+  `claude/direct-edition-licensing`
+- **What:** a `direct` build (`EXPO_PUBLIC_DIRECT=1`, EAS `direct` profile, Android APK) ships
+  **locked** and unlocks only against an **offline-verified Ed25519 license key** the maintainer
+  signs. A leaked direct APK grants nothing; only a valid, buyer-stamped key does. Store builds
+  are untouched (redeem UI gated on `IS_DIRECT_BUILD`, so App/Play stay IAP-only — no
+  anti-steering surface).
+- **The load-bearing gotcha:** `revalidateWithStore()` fail-opens to `purchased` when the store
+  is unreachable (so self-compiled builds aren't locked out). An off-store APK has no reachable
+  store *by definition*, so a guard `if (IS_DIRECT_BUILD) return local;` runs BEFORE any fail-open
+  — otherwise the sideloaded APK would unlock for anyone. Pinned by
+  `app/lib/__tests__/entitlementDirect.test.ts` (source-scan, since `entitlement.ts` imports RN).
+- **Code:** `app/lib/license.ts` (pure, node-forge Ed25519 verify, baked-in public key) ·
+  `entitlement.ts` (`IS_DIRECT_BUILD`, `redeemLicenseKey`, `getLicenseeName`, license checked
+  before the trial clock, re-verified every read) · `EntitlementContext.redeemLicense` ·
+  `components/LicenseRedeemCard.tsx` · `setup.tsx` + `Paywall.tsx` swap Buy/Restore for the card ·
+  `eas.json` `direct` profile · `scripts/make-license.mjs` (offline signing CLI, node `crypto`).
+- **Keys:** private key OFFLINE at `~/.config/couchside/license-ed25519.key`; public key baked in
+  `license.ts`. Full reference + future license-manager (Stripe/Gumroad/Ko-fi webhook) wiring in
+  `docs/DIRECT_EDITION_LICENSING.md`.
+- **Verified:** `license.test.ts` (8) proves node-`crypto` sign ↔ node-forge verify interop,
+  tamper/wrong-key/malformed all rejected, production key rejects throwaway tokens. A real
+  production-signed token verifies through the app's own code path. Web harness (direct build,
+  BOTH directions **pressed, not just rendered**): valid key → "Unlocked / Licensed to Harness
+  Test", persists across reload; tampered key → "This key isn't valid", stays on trial.
+  **NOT yet verified:** node-forge Ed25519 in Hermes on-device; full redeem on a real `direct`
+  APK across a cold start (both flagged in the doc §9).
+
 ### Couch Mode gamescope-session filename fix — VERIFIED on hardware 2026-08-10 (Legion Go S)
 - **was:** P2 (owner-reported 2026-08-10) · **affects:** agent · **branch/PR:**
   `claude/couchmode-gamescope-session-detect` → #432
