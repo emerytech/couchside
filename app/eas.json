@@ -29,7 +29,7 @@
     },
     "direct": {
       "distribution": "internal",
-      "autoIncrement": true,
+      "autoIncrement": false,
       "env": {
         "EXPO_PUBLIC_DIRECT": "1"
       },

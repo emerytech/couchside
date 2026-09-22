@@ -1223,7 +1223,9 @@ function SetupBody() {
           <Ionicons name="lock-open-outline" size={18} color={t.blue} />
           <View style={styles.unlockRowBody}>
             <Text style={styles.unlockRowTitle}>
-              Enjoying Couchside? Unlock for {price ?? '$4.99'}
+              {IS_DIRECT_BUILD
+                ? 'Enjoying Couchside? Unlock with a license'
+                : `Enjoying Couchside? Unlock for ${price ?? '$7.99'}`}
             </Text>
             <Text style={styles.unlockRowSub}>
               {entitlement.trialDaysLeft > 0
@@ -2304,7 +2306,7 @@ function SetupBody() {
                     disabled={buying || restoring}
                     style={({ pressed }) => [styles.btnBuy, (pressed || buying) && styles.pressed]}>
                     <Text style={styles.btnBuyText}>
-                      {buying ? 'PURCHASING…' : `UNLOCK ${price ?? '$4.99'}`}
+                      {buying ? 'PURCHASING…' : `UNLOCK ${price ?? '$7.99'}`}
                     </Text>
                   </Pressable>
                 )}

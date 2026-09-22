@@ -15,7 +15,7 @@
  *   - Every key is stamped with the buyer's name (surfaced in-app) and a unique
  *     id, so a shared key is traceable to whoever it was issued to.
  *
- * This is a $4.99 one-time unlock, not a DRM fortress: the goal is to make
+ * This is a low-cost one-time unlock, not a DRM fortress: the goal is to make
  * casual leaking pointless and shared keys attributable, not to stop a
  * determined cracker (who could patch any build, store or not).
  *

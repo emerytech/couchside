@@ -16,7 +16,7 @@ import { LicenseRedeemCard } from '@/components/LicenseRedeemCard';
 import { mono, useThemedStyles } from '@/lib/theme';
 import type { Palette } from '@/lib/theme';
 
-const FALLBACK_PRICE = '$4.99';
+const FALLBACK_PRICE = '$7.99';
 
 /**
  * Full-screen gate shown on Console/Actions/Pad/Logs once the 7-day trial is
