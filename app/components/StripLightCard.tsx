@@ -24,7 +24,9 @@ import { TrackSlider } from '@/components/TrackSlider';
 import { usePoll } from '@/hooks/usePoll';
 import { api, hostKey, type LedEffect, type LedInfo, type LedsState, type LedTheme, type Rgb } from '@/lib/api';
 import { hapticLight } from '@/lib/haptics';
-import { cssRgb, hexRgb, hueToRgb, rgbToHue, HUE_STOPS } from '@/lib/ledColor';
+import {
+  cssRgb, hexRgb, hueToRgb, hsToRgb, rgbToHs, HUE_STOPS, satStops, speedToMs,
+} from '@/lib/ledColor';
 import {
   addPreset, isBuiltinPreset, removePreset, useLedPresets, type LedPreset,
 } from '@/lib/ledPresets';
@@ -50,11 +52,14 @@ const EFFECTS: { id: StripEffect; label: string }[] = [
   { id: 'rainbow', label: 'Rainbow' },
   { id: 'breathe', label: 'Breathe' },
 ];
-const SPEEDS = [
-  { label: 'Slow', pct: 25, ms: 150 },
-  { label: 'Med', pct: 55, ms: 90 },
-  { label: 'Fast', pct: 90, ms: 55 },
-];
+/** Speed is a continuous 1–100 dial; the label just anchors the readout so a
+ *  number still reads as slow/fast. The per-frame ms of the old app-side fallback
+ *  now comes from speedToMs() instead of a 3-step lookup. */
+function speedLabel(v: number): string {
+  if (v <= 33) return 'Slow';
+  if (v <= 66) return 'Med';
+  return 'Fast';
+}
 // Brightness levels a tap on a single LED cycles UP through, then off:
 // off -> 35 -> 70 -> 100 -> off.
 const CELL_STEPS = [35, 70, 100];
@@ -109,6 +114,7 @@ export function StripLightCard() {
   const [selKey, setSelKey] = useState<string | null>(null);
   const [effect, setEffect] = useState<StripEffect>('solid');
   const [hue, setHue] = useState(0);
+  const [sat, setSat] = useState(100);
   const [bright, setBright] = useState(100);
   const [speedPct, setSpeedPct] = useState(55);
   // Sweep direction for the agent-rendered directional effects (circle/comet/wipe).
@@ -169,7 +175,7 @@ export function StripLightCard() {
 
   const colorRef = useRef<Rgb>({ r: 255, g: 0, b: 0 });
   const brightRef = useRef(100);
-  colorRef.current = hueToRgb(hue);
+  colorRef.current = hsToRgb(hue, sat);
   brightRef.current = bright;
 
   const seeded = useRef<string | null>(null);
@@ -180,10 +186,12 @@ export function StripLightCard() {
     setFrame(displayLeds(strip).map((l) => (l.brightness_pct > 0 ? l.color : null)));
     setCellBright(displayLeds(strip).map((l) => l.brightness_pct));
     const a = strip && poll.data?.active?.[`strip:${agentStrip?.prefix}`];
-    if (a) { setEffect(a.effect as StripEffect); setBright(a.brightness); if (a.color) setHue(rgbToHue(a.color)); }
-    else {
+    if (a) {
+      setEffect(a.effect as StripEffect); setBright(a.brightness);
+      if (a.color) { const hs = rgbToHs(a.color); setHue(hs.h); setSat(hs.s); }
+    } else {
       const lit = strip.leds.find((l) => l.color && l.brightness_pct > 0);
-      if (lit?.color) setHue(rgbToHue(lit.color));
+      if (lit?.color) { const hs = rgbToHs(lit.color); setHue(hs.h); setSat(hs.s); }
     }
   }, [strip, agentStrip, poll.data]);
 
@@ -195,7 +203,7 @@ export function StripLightCard() {
     let tick = 0;
     let first = true;
     let last: (Rgb | null)[] = new Array(n).fill(null);
-    const ms = SPEEDS.find((s) => s.pct === speedPct)?.ms ?? 90;
+    const ms = speedToMs(speedPct);
     const timer = setInterval(() => {
       const next = computeFrame(effect, n, tick, colorRef.current);
       const b = Math.round(brightRef.current);
@@ -216,7 +224,7 @@ export function StripLightCard() {
   // Cells, paints and patterns all operate in PHYSICAL order (flipped for the
   // Steam Machine so the row matches the strip).
   const orderedLeds = displayLeds(strip);
-  const color = hueToRgb(hue);
+  const color = hsToRgb(hue, sat);
   const AGENT_ANIMATED = ['scanner', 'rainbow', 'breathe', 'circle', 'comet', 'wipe', 'twinkle'];
   const animated = AGENT_ANIMATED.includes(effect);
   const shown = agentMode
@@ -252,20 +260,24 @@ export function StripLightCard() {
   // pass the new value explicitly — reading speedPct here would send the PREVIOUS
   // speed (stale closure: setSpeedPct hasn't re-rendered yet). Sliders re-render on
   // each onChange before onCommit, so they call reapply() with no arg (current).
-  const reapply = (over?: { speed?: number; reverse?: boolean }) => {
+  const reapply = (over?: { speed?: number; reverse?: boolean; color?: Rgb }) => {
+    // A hue/sat commit passes the fresh colour explicitly (reading `color` here
+    // would send the PREVIOUS tick's colour on a tap — setHue/setSat haven't
+    // re-rendered yet), mirroring the speed override.
+    const col = over?.color ?? color;
     if (agentMode && agentStrip && effect !== 'off') {
       void api.setStripEffect(settings, agentStrip.prefix, {
         effect: effect as LedEffect, brightness: Math.round(bright),
         speed: Math.round(over?.speed ?? speedPct),
         reverse: over?.reverse ?? reverse,
-        ...(effect === 'rainbow' ? {} : { color }),
+        ...(effect === 'rainbow' ? {} : { color: col }),
       }).catch(() => {});
       return;
     }
     if (effect === 'solid') {
       const b = Math.round(bright);
-      orderedLeds.forEach((l) => void api.setLed(settings, l.name, { color, brightness: b }).catch(() => {}));
-      setFrame(orderedLeds.map(() => color));
+      orderedLeds.forEach((l) => void api.setLed(settings, l.name, { color: col, brightness: b }).catch(() => {}));
+      setFrame(orderedLeds.map(() => col));
     }
   };
 
@@ -447,8 +459,6 @@ export function StripLightCard() {
   /** Coerce any saved preset effect to one the strip runs. */
   const toStripEffect = (e: LedEffect): StripEffect =>
     (EFFECTS.some((x) => x.id === e) ? e : 'breathe') as StripEffect;
-  const nearestSpeed = (p: number) =>
-    SPEEDS.reduce((b, s) => (Math.abs(s.pct - p) < Math.abs(b - p) ? s.pct : b), 55);
 
   const applyPreset = (p: LedPreset) => {
     hapticLight();
@@ -562,12 +572,12 @@ export function StripLightCard() {
       return;
     }
     const e = toStripEffect(p.effect);
-    const h = p.color ? rgbToHue(p.color) : hue;
-    setEffect(e); setHue(h); setBright(p.brightness); setSpeedPct(nearestSpeed(p.speed));
+    const hs = p.color ? rgbToHs(p.color) : { h: hue, s: sat };
+    setEffect(e); setHue(hs.h); setSat(hs.s); setBright(p.brightness); setSpeedPct(p.speed);
     if (agentMode && agentStrip) {
       void api.setStripEffect(settings, agentStrip.prefix, {
         effect: e as LedEffect, brightness: p.brightness, speed: p.speed,
-        ...(e === 'rainbow' ? {} : { color: p.color ?? hueToRgb(h) }),
+        ...(e === 'rainbow' ? {} : { color: p.color ?? hsToRgb(hs.h, hs.s) }),
       }).then(() => poll.refresh()).catch(() => {});
     } else {
       void applyEffect(e);
@@ -680,24 +690,23 @@ export function StripLightCard() {
         })}
       </View>
 
-      {/* SPEED — animated effects only. */}
+      {/* SPEED — animated effects only. Continuous 1–100 dial. */}
       {animated && (
         <>
-          <Text style={styles.sectionLabel}>SPEED</Text>
-          <View style={styles.chipRow}>
-            {SPEEDS.map((s) => {
-              const on = speedPct === s.pct;
-              return (
-                <Pressable
-                  key={s.label} onPress={() => { hapticLight(); setSpeedPct(s.pct); if (agentMode) reapply({ speed: s.pct }); }}
-                  accessibilityRole="button" accessibilityState={{ selected: on }}
-                  accessibilityLabel={`Speed ${s.label}`}
-                  style={({ pressed }) => [styles.chip, on && styles.chipOn, pressed && styles.pressed]}>
-                  <Text style={[styles.chipText, on && styles.chipTextOn]}>{s.label}</Text>
-                </Pressable>
-              );
-            })}
+          <View style={styles.sliderHeader}>
+            <Text style={styles.sectionLabel}>SPEED</Text>
+            <Text style={styles.readout}>{speedLabel(speedPct)} · {Math.round(speedPct)}</Text>
           </View>
+          <TrackSlider
+            value={speedPct} min={1} max={100} onChange={setSpeedPct}
+            onCommit={(v) => { if (agentMode) reapply({ speed: v }); }}
+            thumbColor={t.blue} accessibilityLabel="Effect speed"
+            renderTrack={(pct) => (
+              <View style={styles.brightTrack}>
+                <View style={[styles.brightFill, { width: `${pct * 100}%`, backgroundColor: t.blue }]} />
+              </View>
+            )}
+          />
         </>
       )}
 
@@ -723,19 +732,34 @@ export function StripLightCard() {
         </>
       )}
 
-      {/* COLOUR — hidden for rainbow (its own hues) and off. */}
+      {/* COLOUR — hidden for rainbow (its own hues) and off. Hue + saturation
+          (saturation 0 = white) with a live swatch + hex readout. */}
       {strip.rgb && effect !== 'rainbow' && effect !== 'off' && (
         <>
           <View style={styles.sliderHeader}>
             <Text style={styles.sectionLabel}>COLOUR</Text>
-            <View style={[styles.swatchPreview, { backgroundColor: cssRgb(color) }]} />
+            <View style={styles.headerRight}>
+              <Text style={styles.readout}>{hexRgb(color)}</Text>
+              <View style={[styles.swatchPreview, { backgroundColor: cssRgb(color) }]} />
+            </View>
           </View>
           <TrackSlider
-            value={hue} min={0} max={360} onChange={setHue} onCommit={() => reapply()}
+            value={hue} min={0} max={360} onChange={setHue}
+            onCommit={(v) => reapply({ color: hsToRgb(v, sat) })}
             thumbColor={cssRgb(color)} accessibilityLabel="Strip colour hue"
             renderTrack={() => (
               <View style={styles.hueFill}>
                 {HUE_STOPS.map((c, i) => (<View key={i} style={{ flex: 1, backgroundColor: c }} />))}
+              </View>
+            )}
+          />
+          <TrackSlider
+            value={sat} min={0} max={100} onChange={setSat}
+            onCommit={(v) => reapply({ color: hsToRgb(hue, v) })}
+            thumbColor={cssRgb(color)} accessibilityLabel="Strip colour saturation"
+            renderTrack={() => (
+              <View style={styles.hueFill}>
+                {satStops(hue).map((c, i) => (<View key={i} style={{ flex: 1, backgroundColor: c }} />))}
               </View>
             )}
           />
@@ -1017,7 +1041,8 @@ const makeStyles = (t: Palette) =>
       color: t.textFaint, fontSize: 10, fontWeight: '700', letterSpacing: 1.2, fontFamily: mono,
       marginTop: 14, marginBottom: 8,
     },
-    sliderHeader: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between' },
+    sliderHeader: { flexDirection: 'row', alignItems: 'flex-end', justifyContent: 'space-between' },
+    readout: { color: t.textDim, fontSize: 11, fontFamily: mono, marginBottom: 2 },
     swatchPreview: { width: 22, height: 22, borderRadius: 6, borderWidth: 1, borderColor: t.cardBorder, marginTop: 10 },
 
     chipRow: { flexDirection: 'row', flexWrap: 'wrap', gap: 6 },

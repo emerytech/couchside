@@ -175,3 +175,39 @@ kernel LED path shipped hardware-unverified.
 - Reboot race: OS may reset LEDs at login after our restore → restore with a short retry.
 - Sliders unverifiable in harness → on-device proof required (§6, §11).
 - No OpenRGB hardware reachable this session → mock-server tests + explicit hardware gate.
+
+---
+
+## Depth pass — SignalBar parity (2026-09-23, agent 2.9.113)
+
+Owner benchmarked us vs **SignalBar** (Decky light-bar plugin): its edge = "timing controls +
+in-depth customize." Key finding: the depth gap was UI truncation, not protocol — the agent
+already validated speed 1–100 and full {r,g,b}.
+
+**P1 (app-only):** speed 3-chips → continuous 1–100 slider (all three cards); hue-only → hue +
+**saturation** (`hsToRgb`/`rgbToHs`/`satStops` in `lib/ledColor.ts`, value stays owned by the
+brightness slider) + hex readout. `StripLightCard.reapply()` gained an explicit `color` override
+so a hue/sat commit can't send the previous tick's colour on a tap; `speedToMs()` replaced the
+3-step ms lookup for the old app-fallback sweep.
+
+**P2 (additive agent params):** envelope SHAPE on POST /api/leds/effect — `attack` (0–100,
+breathe/pulse rise fraction) + `duty` (1–99, strobe on-time %). **Single-LED software renderer
+only** (`_fx_frame` + new `_fx_env`); firmware strip effects (breathe/pulse/strobe→`breath`) and
+OpenRGB have NO per-frame hook and ignore them. Pipeline: `_validate_effect_body` now returns a
+**7-tuple** `(effect,color,speed,brightness,reverse,shape,error)` — BOTH unpack sites
+(/api/leds/effect, /api/openrgb/set) updated; `apply_led_effect(...,shape=None)` folds shape into
+`params` so it auto-persists (`_LED_PERSIST`) + auto-surfaces in `active` (`_led_active_map`);
+`_led_restore` re-validates (junk → default); mock echoes it. New GET /api/leds **`shape:true`**
+= probe-and-appear so the app shows the SHAPE control only where the box supports it. App SHAPE
+slider lives on `RgbLedCard` ONLY (single-LED path — where it acts; never a dead control).
+
+**Verified:** 100-file suite green + new `test_led_effects` cases (observe-both-states: strobe
+duty 90 ON / 10 OFF; breathe fast>slow attack; junk-drop on restore). Harness pressed (not
+rendered): saturation→box `{182,239,255}`, speed→85, duty→21, attack→12, all re-read from GET.
+NOT verified: real hardware; OpenRGB card sliders not independently pressed (code-identical to
+proven LIGHT card).
+
+**Next (owner-picked, → ROADMAP Planned "SignalBar-style reactive/ambient LED modes"):**
+perf+battery meter, playtime countdown+event flashes, artwork ambient — a new agent-rendered
+`led-fx` telemetry SOURCE (signals all already in the agent), additive payload not a new cap.
+Plus remaining shape knobs (tail/width for agent-rendered strip sweeps in `_seq_compute_frame`).

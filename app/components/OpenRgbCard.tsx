@@ -27,7 +27,7 @@ import {
   api, hostKey, type LedEffect, type OpenRgbController, type OpenRgbState,
 } from '@/lib/api';
 import { hapticLight } from '@/lib/haptics';
-import { cssRgb, hueToRgb, rgbToHue, HUE_STOPS } from '@/lib/ledColor';
+import { cssRgb, hexRgb, hsToRgb, rgbToHs, HUE_STOPS, satStops } from '@/lib/ledColor';
 import { useSkinKit } from '@/lib/skin';
 import { useSettings } from '@/lib/SettingsContext';
 import { mono, useTheme, useThemedStyles, type Palette } from '@/lib/theme';
@@ -44,11 +44,12 @@ const EFFECTS: { id: LedEffect; label: string }[] = [
   { id: 'strobe', label: 'Strobe' },
   { id: 'scanner', label: 'Scanner' },
 ];
-const SPEEDS = [
-  { label: 'Slow', value: 25 },
-  { label: 'Med', value: 55 },
-  { label: 'Fast', value: 90 },
-];
+/** Speed is a continuous 1–100 dial; the label anchors the readout. */
+function speedLabel(v: number): string {
+  if (v <= 33) return 'Slow';
+  if (v <= 66) return 'Med';
+  return 'Fast';
+}
 
 export function OpenRgbCard() {
   const t = useTheme();
@@ -61,6 +62,7 @@ export function OpenRgbCard() {
   const [selIdx, setSelIdx] = useState<number | null>(null);
   const [effect, setEffect] = useState<LedEffect>('solid');
   const [hue, setHue] = useState(0);
+  const [sat, setSat] = useState(100);
   const [bright, setBright] = useState(100);
   const [speed, setSpeed] = useState(55);
   const seeded = useRef<number | null>(null);
@@ -80,7 +82,9 @@ export function OpenRgbCard() {
     setEffect(a?.effect ?? 'solid');
     setSpeed(a?.speed ?? 55);
     setBright(a?.brightness ?? 100);
-    setHue(a?.color ? rgbToHue(a.color) : 0);
+    const hs = a?.color ? rgbToHs(a.color) : { h: 0, s: 100 };
+    setHue(hs.h);
+    setSat(hs.s);
   }, [dev, d]);
 
   if (!d || !d.available || !dev || ctrls.length === 0) return null;
@@ -88,18 +92,20 @@ export function OpenRgbCard() {
   const supported = d.effects ?? EFFECTS.map((e) => e.id);
   const shown = EFFECTS.filter((e) => supported.includes(e.id));
   const animated = effect !== 'solid' && effect !== 'off';
-  const color = hueToRgb(hue);
+  const color = hsToRgb(hue, sat);
 
-  const send = async (over: Partial<{ effect: LedEffect; hue: number; bright: number; speed: number }>) => {
+  const send = async (over: Partial<{ effect: LedEffect; hue: number; sat: number; bright: number; speed: number }>) => {
     if (busy || !dev) return;
     let eff = over.effect ?? effect;
-    if (over.effect === undefined && (over.hue !== undefined || over.bright !== undefined) && eff === 'off') {
+    if (over.effect === undefined
+        && (over.hue !== undefined || over.sat !== undefined || over.bright !== undefined)
+        && eff === 'off') {
       eff = 'solid';
       setEffect('solid');
     }
     const b = Math.round(over.bright ?? bright);
     const sp = Math.round(over.speed ?? speed);
-    const col = hueToRgb(over.hue ?? hue);
+    const col = hsToRgb(over.hue ?? hue, over.sat ?? sat);
     hapticLight();
     setBusy(true);
     try {
@@ -184,37 +190,41 @@ export function OpenRgbCard() {
         })}
       </View>
 
-      {/* SPEED — animated effects only. */}
+      {/* SPEED — animated effects only. Continuous 1–100 dial. */}
       {animated && (
         <>
-          <Text style={styles.sectionLabel}>SPEED</Text>
-          <View style={styles.chipRow}>
-            {SPEEDS.map((s) => {
-              const on = Math.abs(speed - s.value) <= 15;
-              return (
-                <Pressable
-                  key={s.label}
-                  onPress={() => { setSpeed(s.value); void send({ speed: s.value }); }}
-                  disabled={busy}
-                  accessibilityRole="button"
-                  accessibilityState={{ selected: on, disabled: busy }}
-                  accessibilityLabel={`Speed ${s.label}`}
-                  style={({ pressed }) => [
-                    styles.chip, on && styles.chipOn, pressed && !busy && styles.pressed]}>
-                  <Text style={[styles.chipText, on && styles.chipTextOn]}>{s.label}</Text>
-                </Pressable>
-              );
-            })}
+          <View style={styles.sliderHeader}>
+            <Text style={styles.sectionLabel}>SPEED</Text>
+            <Text style={styles.readout}>{speedLabel(speed)} · {Math.round(speed)}</Text>
           </View>
+          <TrackSlider
+            value={speed}
+            min={1}
+            max={100}
+            disabled={busy}
+            onChange={setSpeed}
+            onCommit={(v) => void send({ speed: v })}
+            thumbColor={t.blue}
+            accessibilityLabel="Effect speed"
+            renderTrack={(pct) => (
+              <View style={styles.brightTrack}>
+                <View style={[styles.brightFill, { width: `${pct * 100}%`, backgroundColor: t.blue }]} />
+              </View>
+            )}
+          />
         </>
       )}
 
-      {/* COLOUR — hidden for rainbow (cycles its own) and off. */}
+      {/* COLOUR — hidden for rainbow (cycles its own) and off. Hue + saturation
+          (saturation 0 = white) with a live swatch + hex readout. */}
       {effect !== 'rainbow' && effect !== 'off' && (
         <>
           <View style={styles.sliderHeader}>
             <Text style={styles.sectionLabel}>COLOUR</Text>
-            <View style={[styles.swatchPreview, { backgroundColor: cssRgb(color) }]} />
+            <View style={styles.headerRight}>
+              <Text style={styles.readout}>{hexRgb(color)}</Text>
+              <View style={[styles.swatchPreview, { backgroundColor: cssRgb(color) }]} />
+            </View>
           </View>
           <TrackSlider
             value={hue}
@@ -228,6 +238,23 @@ export function OpenRgbCard() {
             renderTrack={() => (
               <View style={styles.hueFill}>
                 {HUE_STOPS.map((c, i) => (
+                  <View key={i} style={{ flex: 1, backgroundColor: c }} />
+                ))}
+              </View>
+            )}
+          />
+          <TrackSlider
+            value={sat}
+            min={0}
+            max={100}
+            disabled={busy}
+            onChange={setSat}
+            onCommit={(v) => void send({ sat: v })}
+            thumbColor={cssRgb(color)}
+            accessibilityLabel="System RGB colour saturation"
+            renderTrack={() => (
+              <View style={styles.hueFill}>
+                {satStops(hue).map((c, i) => (
                   <View key={i} style={{ flex: 1, backgroundColor: c }} />
                 ))}
               </View>
@@ -290,7 +317,10 @@ const makeStyles = (t: Palette) =>
       fontFamily: mono, marginTop: 14, marginBottom: 8,
     },
     sliderHeader: {
-      flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between',
+      flexDirection: 'row', alignItems: 'flex-end', justifyContent: 'space-between',
+    },
+    readout: {
+      color: t.textDim, fontSize: 11, fontFamily: mono, marginBottom: 2,
     },
     swatchPreview: {
       width: 22, height: 22, borderRadius: 6, borderWidth: 1, borderColor: t.cardBorder,
