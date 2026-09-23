@@ -35,7 +35,7 @@ import {
 } from '@/lib/api';
 import { hapticLight } from '@/lib/haptics';
 import { PresetNameModal } from '@/components/PresetNameModal';
-import { cssRgb, hexRgb, hueToRgb, rgbToHue, HUE_STOPS } from '@/lib/ledColor';
+import { cssRgb, hexRgb, hsToRgb, rgbToHs, HUE_STOPS, satStops } from '@/lib/ledColor';
 import { detectStrips } from '@/lib/ledStrip';
 import {
   addPreset, isBuiltinPreset, removePreset, useLedPresets, type LedPreset,
@@ -69,11 +69,14 @@ const EFFECT_META: Record<LedEffect, { label: string; usesColor: boolean }> = {
 /** A mono LED can't show colour, so only these effects make sense on one. */
 const MONO_EFFECTS: LedEffect[] = ['solid', 'off', 'breathe', 'pulse', 'strobe'];
 
-const SPEEDS: { label: string; value: number }[] = [
-  { label: 'Slow', value: 25 },
-  { label: 'Med', value: 55 },
-  { label: 'Fast', value: 90 },
-];
+/** Speed is a continuous 1–100 dial (the agent has always validated the full
+ *  range; the old 3-chip Slow/Med/Fast picker just threw ~97 steps away). These
+ *  anchor the readout label so a number still reads as fast/slow at a glance. */
+function speedLabel(v: number): string {
+  if (v <= 33) return 'Slow';
+  if (v <= 66) return 'Med';
+  return 'Fast';
+}
 
 export function RgbLedCard() {
   const t = useTheme();
@@ -92,8 +95,12 @@ export function RgbLedCard() {
   // user's edits drive the UI (poll is a backstop, not the source of truth).
   const [effect, setEffect] = useState<LedEffect>('solid');
   const [hue, setHue] = useState(0);
+  const [sat, setSat] = useState(100);
   const [bright, setBright] = useState(100);
   const [speed, setSpeed] = useState(55);
+  // Envelope SHAPE: attack (breathe/pulse rise fraction) + duty (strobe on-time %).
+  const [attack, setAttack] = useState(50);
+  const [duty, setDuty] = useState(50);
   const seeded = useRef<string | null>(null);
 
   const poll = usePoll<LedsState | null>(
@@ -115,8 +122,12 @@ export function RgbLedCard() {
     setEffect(a?.effect ?? 'solid');
     setSpeed(a?.speed ?? 55);
     setBright(a?.brightness ?? led.brightness_pct ?? 100);
+    setAttack(a?.attack ?? 50);
+    setDuty(a?.duty ?? 50);
     const c = a?.color ?? led.color;
-    setHue(c ? rgbToHue(c) : 0);
+    const hs = c ? rgbToHs(c) : { h: 0, s: 100 };
+    setHue(hs.h);
+    setSat(hs.s);
   }, [led, d]);
 
   // Render nothing when: old agent / no writable LED / nothing notable — OR when
@@ -132,22 +143,33 @@ export function RgbLedCard() {
     .filter((e) => e !== 'manual') // `manual` is a strip painter, not a single-LED effect
     .filter((e) => (led.rgb ? true : MONO_EFFECTS.includes(e)));
   const animated = effect !== 'solid' && effect !== 'off';
-  const color = hueToRgb(hue);
+  const color = hsToRgb(hue, sat);
+  // Envelope shape rides the single-LED renderer only (agent >= 2.9.113 sets
+  // `shape`). attack shapes breathe/pulse; duty shapes strobe. Hidden otherwise
+  // so it never renders as a control that does nothing (probe-and-appear).
+  const shapeOk = d.shape === true;
+  const usesAttack = shapeOk && (effect === 'breathe' || effect === 'pulse');
+  const usesDuty = shapeOk && effect === 'strobe';
 
   /** One place that turns the current editor state into a box write, then
    *  re-reads. `over` lets a control apply its brand-new value in the same tick
    *  (setState is async). Editing colour/brightness while 'off' switches to solid. */
-  const send = async (over: Partial<{ effect: LedEffect; hue: number; bright: number; speed: number }>) => {
+  const send = async (over: Partial<{ effect: LedEffect; hue: number; sat: number; bright: number; speed: number; attack: number; duty: number }>) => {
     if (busy || !led) return;
     let eff = over.effect ?? effect;
-    if (over.effect === undefined && (over.hue !== undefined || over.bright !== undefined) && eff === 'off') {
+    if (over.effect === undefined
+        && (over.hue !== undefined || over.sat !== undefined || over.bright !== undefined)
+        && eff === 'off') {
       eff = 'solid';
       setEffect('solid');
     }
     const h = over.hue ?? hue;
+    const s = over.sat ?? sat;
     const b = Math.round(over.bright ?? bright);
     const sp = Math.round(over.speed ?? speed);
-    const col = hueToRgb(h);
+    const at = Math.round(over.attack ?? attack);
+    const dy = Math.round(over.duty ?? duty);
+    const col = hsToRgb(h, s);
     hapticLight();
     setBusy(true);
     try {
@@ -160,6 +182,8 @@ export function RgbLedCard() {
         await api.setLedEffect(settings, led.name, {
           effect: eff, speed: sp, brightness: b,
           ...(led.rgb && EFFECT_META[eff].usesColor ? { color: col } : {}),
+          ...(shapeOk && (eff === 'breathe' || eff === 'pulse') ? { attack: at } : {}),
+          ...(shapeOk && eff === 'strobe' ? { duty: dy } : {}),
         });
       }
     } finally {
@@ -169,9 +193,9 @@ export function RgbLedCard() {
   };
 
   const applyPreset = (p: LedPreset) => {
-    const h = p.color ? rgbToHue(p.color) : hue;
-    setEffect(p.effect); setHue(h); setBright(p.brightness); setSpeed(p.speed);
-    void send({ effect: p.effect, hue: h, bright: p.brightness, speed: p.speed });
+    const hs = p.color ? rgbToHs(p.color) : { h: hue, s: sat };
+    setEffect(p.effect); setHue(hs.h); setSat(hs.s); setBright(p.brightness); setSpeed(p.speed);
+    void send({ effect: p.effect, hue: hs.h, sat: hs.s, bright: p.brightness, speed: p.speed });
   };
 
   const saveCurrent = () => {
@@ -265,37 +289,95 @@ export function RgbLedCard() {
         </>
       )}
 
-      {/* SPEED — only for an animated effect. */}
+      {/* SPEED — only for an animated effect. Continuous 1–100 (the agent has
+          always accepted the full range); the label anchors it as slow/fast. */}
       {animated && (
         <>
-          <Text style={styles.sectionLabel}>SPEED</Text>
-          <View style={styles.chipRow}>
-            {SPEEDS.map((s) => {
-              const on = Math.abs(speed - s.value) <= 15;
-              return (
-                <Pressable
-                  key={s.label}
-                  onPress={() => { setSpeed(s.value); void send({ speed: s.value }); }}
-                  disabled={busy}
-                  accessibilityRole="button"
-                  accessibilityState={{ selected: on, disabled: busy }}
-                  accessibilityLabel={`Speed ${s.label}`}
-                  style={({ pressed }) => [
-                    styles.chip, on && styles.chipOn, pressed && !busy && styles.pressed]}>
-                  <Text style={[styles.chipText, on && styles.chipTextOn]}>{s.label}</Text>
-                </Pressable>
-              );
-            })}
+          <View style={styles.sliderHeader}>
+            <Text style={styles.sectionLabel}>SPEED</Text>
+            <Text style={styles.readout}>{speedLabel(speed)} · {Math.round(speed)}</Text>
           </View>
+          <TrackSlider
+            value={speed}
+            min={1}
+            max={100}
+            disabled={busy}
+            onChange={setSpeed}
+            onCommit={(v) => void send({ speed: v })}
+            thumbColor={t.blue}
+            accessibilityLabel="Effect speed"
+            renderTrack={(pct) => (
+              <View style={styles.brightTrack}>
+                <View style={[styles.brightFill, { width: `${pct * 100}%`, backgroundColor: t.blue }]} />
+              </View>
+            )}
+          />
         </>
       )}
 
-      {/* COLOUR — rgb LEDs only. Hue slider + a live swatch. */}
+      {/* SHAPE — envelope depth for the software-rendered effects (agent >= 2.9.113).
+          ATTACK skews breathe/pulse toward a snappy or slow rise; DUTY sets a
+          strobe's on-time. Shown only where the effect uses it and the box
+          supports it, so it's never a control that does nothing. */}
+      {usesAttack && (
+        <>
+          <View style={styles.sliderHeader}>
+            <Text style={styles.sectionLabel}>SHAPE · ATTACK</Text>
+            <Text style={styles.readout}>
+              {attack <= 33 ? 'Snap' : attack >= 67 ? 'Swell' : 'Even'} · {Math.round(attack)}
+            </Text>
+          </View>
+          <TrackSlider
+            value={attack}
+            min={0}
+            max={100}
+            disabled={busy}
+            onChange={setAttack}
+            onCommit={(v) => void send({ attack: v })}
+            thumbColor={t.blue}
+            accessibilityLabel="Effect attack shape"
+            renderTrack={(pct) => (
+              <View style={styles.brightTrack}>
+                <View style={[styles.brightFill, { width: `${pct * 100}%`, backgroundColor: t.blue }]} />
+              </View>
+            )}
+          />
+        </>
+      )}
+      {usesDuty && (
+        <>
+          <View style={styles.sliderHeader}>
+            <Text style={styles.sectionLabel}>SHAPE · DUTY</Text>
+            <Text style={styles.readout}>{Math.round(duty)}% on</Text>
+          </View>
+          <TrackSlider
+            value={duty}
+            min={1}
+            max={99}
+            disabled={busy}
+            onChange={setDuty}
+            onCommit={(v) => void send({ duty: v })}
+            thumbColor={t.blue}
+            accessibilityLabel="Strobe duty cycle"
+            renderTrack={(pct) => (
+              <View style={styles.brightTrack}>
+                <View style={[styles.brightFill, { width: `${pct * 100}%`, backgroundColor: t.blue }]} />
+              </View>
+            )}
+          />
+        </>
+      )}
+
+      {/* COLOUR — rgb LEDs only. Hue + saturation sliders (saturation 0 = white,
+          so pastels and whites are reachable) with a live swatch + hex readout. */}
       {led.rgb && effect !== 'rainbow' && effect !== 'off' && (
         <>
           <View style={styles.sliderHeader}>
             <Text style={styles.sectionLabel}>COLOUR</Text>
-            <View style={[styles.swatchPreview, { backgroundColor: cssRgb(color) }]} />
+            <View style={styles.headerRight}>
+              <Text style={styles.readout}>{hexRgb(color)}</Text>
+              <View style={[styles.swatchPreview, { backgroundColor: cssRgb(color) }]} />
+            </View>
           </View>
           <TrackSlider
             value={hue}
@@ -309,6 +391,23 @@ export function RgbLedCard() {
             renderTrack={() => (
               <View style={styles.hueFill}>
                 {HUE_STOPS.map((c, i) => (
+                  <View key={i} style={{ flex: 1, backgroundColor: c }} />
+                ))}
+              </View>
+            )}
+          />
+          <TrackSlider
+            value={sat}
+            min={0}
+            max={100}
+            disabled={busy}
+            onChange={setSat}
+            onCommit={(v) => void send({ sat: v })}
+            thumbColor={cssRgb(color)}
+            accessibilityLabel="Light colour saturation"
+            renderTrack={() => (
+              <View style={styles.hueFill}>
+                {satStops(hue).map((c, i) => (
                   <View key={i} style={{ flex: 1, backgroundColor: c }} />
                 ))}
               </View>
@@ -401,7 +500,10 @@ const makeStyles = (t: Palette) =>
       fontFamily: mono, marginTop: 14, marginBottom: 8,
     },
     sliderHeader: {
-      flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between',
+      flexDirection: 'row', alignItems: 'flex-end', justifyContent: 'space-between',
+    },
+    readout: {
+      color: t.textDim, fontSize: 11, fontFamily: mono, marginBottom: 2,
     },
     swatchPreview: {
       width: 22, height: 22, borderRadius: 6, borderWidth: 1, borderColor: t.cardBorder,

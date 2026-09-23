@@ -5412,15 +5412,18 @@ def leds_state(mock):
         pubs = [_mock_led_public(l["name"]) for l in MOCK_LEDS if l["writable"]]
         strips = _led_strips([l["name"] for l in MOCK_LEDS if l["writable"]])
         return {"available": any(p["notable"] for p in pubs), "leds": pubs,
-                "effects": list(_LED_EFFECTS),
+                "effects": list(_LED_EFFECTS), "shape": True,
                 "active": {k: dict(v) for k, v in _MOCK_FX.items()},
                 "strips": [_mock_strip_public(p, m) for p, m in strips.items()]}
     names = _list_led_names()
     raws = [_read_led_raw(n) for n in names]
     pubs = [_led_public(r) for r in raws if r and r["writable"]]
     strips = _led_strips(names)
+    # `shape: True` = this agent's single-LED renderer honours the envelope params
+    # (breathe/pulse `attack`, strobe `duty`). Additive probe-and-appear flag: the
+    # app shows the SHAPE control only when present, so older agents stay clean.
     return {"available": any(p["notable"] for p in pubs), "leds": pubs,
-            "effects": list(_LED_EFFECTS), "active": _led_active_map(),
+            "effects": list(_LED_EFFECTS), "shape": True, "active": _led_active_map(),
             "strips": [_strip_public(p, m) for p, m in strips.items()]}
 
 
@@ -5620,21 +5623,46 @@ def _fx_period(speed):
     return 6.0 - (s / 100.0) * 5.5
 
 
+def _fx_env(phase, attack):
+    """A 0..1 rise/fall envelope over one cycle `phase` (0..1), where `attack` is
+    the fraction of the cycle spent RISING (0..1, clamped away from the ends).
+    attack 0.5 -> a symmetric peak; low attack -> snap up + slow fade (a throb);
+    high attack -> slow swell + quick drop. Sine-eased so the turn is smooth."""
+    a = min(0.95, max(0.05, attack))
+    x = phase / a if phase < a else 1.0 - (phase - a) / (1.0 - a)
+    return (1 - math.cos(math.pi * max(0.0, min(1.0, x)))) / 2  # ease 0->1->0
+
+
 def _fx_frame(effect, params, t):
     """(color|None, brightness_pct) for `effect` at elapsed time t seconds.
-    color None -> leave the LED's colour, drive brightness only."""
+    color None -> leave the LED's colour, drive brightness only.
+
+    Optional envelope shape: `attack` (0-100) skews breathe/pulse toward a fast
+    or slow rise; `duty` (1-99) sets a strobe's on-time %. Both default to the
+    former fixed behaviour when absent, so old clients are unchanged."""
     target = params.get("brightness")
     target = 100 if not _is_pct(target) else target
     color = params.get("color")
     period = _fx_period(params.get("speed"))
+    attack = params.get("attack")
     if effect == "breathe":
-        frac = (math.sin(2 * math.pi * (t / period) - math.pi / 2) + 1) / 2
+        if _is_pct(attack):
+            frac = _fx_env((t % period) / period, attack / 100.0)
+        else:
+            frac = (math.sin(2 * math.pi * (t / period) - math.pi / 2) + 1) / 2
         return color, int(round(target * frac))
     if effect == "pulse":
-        frac = 1.0 - (t % period) / period          # sharp on, linear fade
+        if _is_pct(attack):
+            frac = _fx_env((t % period) / period, attack / 100.0)
+        else:
+            frac = 1.0 - (t % period) / period      # sharp on, linear fade
         return color, int(round(target * frac))
     if effect == "strobe":
-        return color, (target if (t % period) < period / 2 else 0)
+        duty = params.get("duty")
+        on = period * (duty / 100.0) if (isinstance(duty, int)
+                                         and not isinstance(duty, bool)
+                                         and 1 <= duty <= 99) else period / 2
+        return color, (target if (t % period) < on else 0)
     if effect == "rainbow":
         r, g, b = colorsys.hsv_to_rgb((t / period) % 1.0, 1.0, 1.0)
         return ({"r": int(r * 255), "g": int(g * 255), "b": int(b * 255)}, target)
@@ -5765,13 +5793,15 @@ def _led_active_map():
                 if s.get("effect") not in _LED_STATIC}
 
 
-def apply_led_effect(name, effect, color, speed, brightness):
+def apply_led_effect(name, effect, color, speed, brightness, shape=None):
     """Start/replace an effect (or a solid/off) on LED `name`.
 
     ALLOWLIST (CLAUDE.md §3): `name` must be an EXACT writable member of the
     freshly re-read /sys/class/leds set -- else None (caller -> 404) and nothing
     is touched. Effect id is checked against the frozen _LED_EFFECTS; params were
-    range-checked by the caller. Returns {"ok":True,"active":..} |
+    range-checked by the caller. `shape` is the validated envelope dict
+    ({attack,duty}) folded into the render params (auto-persisted + auto-surfaced
+    in `active`). Returns {"ok":True,"active":..} |
     {"ok":False,"status":..,"error":..} | None."""
     if effect not in _LED_EFFECTS:
         return {"ok": False, "status": 400, "error": "unknown effect"}
@@ -5797,6 +5827,14 @@ def apply_led_effect(name, effect, color, speed, brightness):
     params = {"color": color,
               "speed": speed if _is_pct(speed, 1) else 50,
               "brightness": brightness if _is_pct(brightness) else 100}
+    # Envelope shape (attack/duty) rides in params -> _fx_frame reads it, and it is
+    # persisted + reflected in `active` for free. Only known keys are folded in.
+    if isinstance(shape, dict):
+        if _is_pct(shape.get("attack")):
+            params["attack"] = shape["attack"]
+        d = shape.get("duty")
+        if isinstance(d, int) and not isinstance(d, bool) and 1 <= d <= 99:
+            params["duty"] = d
     if raw["rgb"] and params["color"] is None:
         params["color"] = raw["color"] or (
             {"r": 255, "g": 0, "b": 0} if effect == "scanner"
@@ -5809,9 +5847,12 @@ def apply_led_effect(name, effect, color, speed, brightness):
     with _FX_LOCK:
         _LED_PERSIST[name] = dict(params, effect=effect)
     _led_state_save()
-    return {"ok": True, "led": name,
-            "active": {"effect": effect, "color": params["color"],
-                       "speed": params["speed"], "brightness": params["brightness"]}}
+    active = {"effect": effect, "color": params["color"],
+              "speed": params["speed"], "brightness": params["brightness"]}
+    for k in ("attack", "duty"):
+        if k in params:
+            active[k] = params[k]
+    return {"ok": True, "led": name, "active": active}
 
 
 # Map an app effect id -> the go_s firmware effect that best matches it. The software
@@ -5860,24 +5901,41 @@ def _apply_gated_effect(name, raw, effect, params):
 
 def _validate_effect_body(req):
     """Shape check for POST /api/leds/effect. Returns
-    (effect, color|None, speed|None, brightness|None, reverse:bool, error|None).
-    Rejects, never sanitises."""
+    (effect, color|None, speed|None, brightness|None, reverse:bool, shape:dict,
+    error|None). Rejects, never sanitises.
+
+    `shape` collects the optional per-effect ENVELOPE params -- `attack` (0-100,
+    the rise fraction of a breathe/pulse cycle) and `duty` (1-99, a strobe's
+    on-time %). They ride the single-LED software renderer (_fx_frame); the strip
+    firmware and OpenRGB backends have no per-frame hook and ignore them. Absent
+    keys leave the effect at its former default, so this stays purely additive."""
     effect = req.get("effect")
     if effect not in _LED_EFFECTS:
-        return None, None, None, None, False, "unknown effect"
+        return None, None, None, None, False, {}, "unknown effect"
     color = req.get("color")
     if color is not None and not _is_rgb_triple(color):
-        return None, None, None, None, False, "color must be {r,g,b} ints 0-255"
+        return None, None, None, None, False, {}, "color must be {r,g,b} ints 0-255"
     speed = req.get("speed")
     if speed is not None and not _is_pct(speed, 1):
-        return None, None, None, None, False, "speed must be an int 1-100"
+        return None, None, None, None, False, {}, "speed must be an int 1-100"
     brightness = req.get("brightness")
     if brightness is not None and not _is_pct(brightness):
-        return None, None, None, None, False, "brightness must be an int 0-100"
+        return None, None, None, None, False, {}, "brightness must be an int 0-100"
     reverse = req.get("reverse")
     if reverse is not None and not isinstance(reverse, bool):
-        return None, None, None, None, False, "reverse must be a boolean"
-    return effect, color, speed, brightness, bool(reverse), None
+        return None, None, None, None, False, {}, "reverse must be a boolean"
+    shape = {}
+    attack = req.get("attack")
+    if attack is not None:
+        if not _is_pct(attack):
+            return None, None, None, None, False, {}, "attack must be an int 0-100"
+        shape["attack"] = attack
+    duty = req.get("duty")
+    if duty is not None:
+        if not (isinstance(duty, int) and not isinstance(duty, bool) and 1 <= duty <= 99):
+            return None, None, None, None, False, {}, "duty must be an int 1-99"
+        shape["duty"] = duty
+    return effect, color, speed, brightness, bool(reverse), shape, None
 
 
 def _led_restore():
@@ -5919,6 +5977,14 @@ def _led_restore():
         speed = st.get("speed") if _is_pct(st.get("speed"), 1) else 50
         brightness = st.get("brightness") if _is_pct(st.get("brightness")) else 100
         reverse = bool(st.get("reverse"))
+        # Envelope shape is re-validated from the file, never trusted; junk drops
+        # to the effect's default (§3.6). Only the single-LED renderer uses it.
+        shape = {}
+        if _is_pct(st.get("attack")):
+            shape["attack"] = st["attack"]
+        _d = st.get("duty")
+        if isinstance(_d, int) and not isinstance(_d, bool) and 1 <= _d <= 99:
+            shape["duty"] = _d
         try:
             if name.startswith("strip:"):
                 # A persisted strip (firmware effect): re-arm the whole strip so a
@@ -5927,7 +5993,7 @@ def _led_restore():
                 if prefix in strips:
                     apply_strip_effect(prefix, effect, color, speed, brightness, reverse)
             elif name in live:
-                apply_led_effect(name, effect, color, speed, brightness)
+                apply_led_effect(name, effect, color, speed, brightness, shape)
         except OSError:
             pass
 
@@ -25255,7 +25321,7 @@ class Handler(BaseHTTPRequestHandler):
                                started)
                     return
                 led_name = req.get("led")
-                effect, color, speed, brightness, reverse, verr = _validate_effect_body(req)
+                effect, color, speed, brightness, reverse, shape, verr = _validate_effect_body(req)
                 if verr is not None:
                     self._send(400, {"error": verr}, started)
                     return
@@ -25311,11 +25377,12 @@ class Handler(BaseHTTPRequestHandler):
                         _MOCK_FX[led_name] = {
                             "effect": effect, "color": color,
                             "speed": speed if speed is not None else 50,
-                            "brightness": brightness if brightness is not None else 100}
+                            "brightness": brightness if brightness is not None else 100,
+                            **shape}
                     self._send(200, {"ok": True, "led": led_name,
                                      "active": _MOCK_FX.get(led_name)}, started)
                     return
-                res = apply_led_effect(led_name, effect, color, speed, brightness)
+                res = apply_led_effect(led_name, effect, color, speed, brightness, shape)
                 if res is None:
                     self._send(404, {"error": "unknown led"}, started)
                     return
@@ -25338,7 +25405,7 @@ class Handler(BaseHTTPRequestHandler):
                                started)
                     return
                 device = req.get("device")
-                effect, color, speed, brightness, reverse, verr = _validate_effect_body(req)
+                effect, color, speed, brightness, reverse, shape, verr = _validate_effect_body(req)
                 if verr is not None:
                     self._send(400, {"error": verr}, started)
                     return

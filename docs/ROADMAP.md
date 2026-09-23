@@ -431,6 +431,29 @@ Each entry now carries a `✅ DONE` / `🟡 PARTIAL` / `📋 OPEN` banner with i
 
 ## 📋 Planned
 
+### SignalBar-style reactive / ambient LED modes (owner ask 2026-09-23)
+- **priority:** P2 · **risk:** med (new agent-rendered `led-fx` telemetry source; safety-adjacent
+  render thread) · **affects:** agent + app · **depends_on:** LED control depth (Completed 2026-09-23)
+- **why:** SignalBar's loved feature isn't manual control (we already have more) — it's the bar
+  driving ITSELF from live state. Owner picked, in order: **performance + battery meter**, **playtime
+  countdown + event flashes**, **artwork ambient**. Every raw signal already exists in the agent:
+  vitals cpu/gpu temp+load (`read_cpu_temp_c` ~1345, `_gpu_sensors` ~20533), pad battery
+  (`_pad_battery` ~20938), per-game playtime (`_steam_playtime` ~9687), on-disk cover/hero art
+  (librarycache ~10001), screen frames. Gap is architecture, not data.
+- **shape:** a new backend-agnostic `led-fx` SOURCE that reads live telemetry each tick instead of a
+  static colour, running on the box (configured from the phone, runs with the app closed — the whole
+  point). Plumb via **additive `/api/leds` payload fields** (probe-and-appear), NOT a new cap
+  (recommended; reversible). SignalBar-depth per-mode config is the point: Responsive/Balanced/Smooth
+  smoothing, Cool/Mid/Hot threshold colours (45/78 °C defaults), low-batt 5–30 %, timer 5–240 min +
+  bar-scale.
+- **constraints / honesty:** reactive meters need an ADDRESSABLE strip (valve-leds / OpenRGB); mono
+  status LEDs degrade to coarse (battery=colour shift, playtime=breathe→strobe). Multi-distro, NOT
+  Deck-only → performance/battery work on any box; artwork/playtime are Steam-gated. Achievement
+  events have no clean non-Decky hook → punted; screenshot/notification are tractable.
+- **also here — remaining effect-shape knobs:** tail/width for the agent-rendered strip sweeps
+  (scanner/comet in `_seq_compute_frame`), same additive-param pipeline as attack/duty. Firmware
+  strip effects (breathe/pulse/strobe→`breath`) have no per-frame hook — shape can't apply there.
+
 ### Windows uiAccess signed-exe build — drive ADMIN windows without an elevated agent (tester report 2026-09-17)
 - **DECISION 2026-09-17 — PARKED (owner call): not worth a recurring code-signing cert for a $4.99
   one-time app.** The `install.ps1 -Elevated` opt-in (SHIPPED, agent 0.4.9-win, free) is the accepted
@@ -1581,6 +1604,50 @@ recommendation was wrong, not merely superseded.
 ---
 
 ## ✅ Completed
+
+### LED control depth — SignalBar parity pass 1 (timing + colour + effect shape) — 2026-09-23
+- **why:** owner compared us to SignalBar (Decky light-bar plugin) — "the timing controls and
+  ability to more in-depth customize the LEDs is what puts SignalBar ahead." Mapped both surfaces:
+  the gap was mostly UI truncation, not a protocol limit. · **affects:** agent + app · **risk:** low
+  (additive; rides the existing `ledcontrol` cap, no new cap, no firmware path touched)
+- **P1 (app-only, no agent change): continuous timing + full colour.**
+  - Speed: the 3-chip Slow/Med/Fast (25/55/90) → a **continuous 1–100 slider** with a live readout,
+    on all three cards (LIGHT / STRIP / SYSTEM RGB). The agent had always validated speed 1–100
+    (`_validate_effect_body`); the UI was discarding ~97 steps.
+  - Colour: hue-only → **hue + saturation** (`hsToRgb`/`rgbToHs` in `lib/ledColor.ts`) with a hex
+    readout. Saturation 0 = white, so pastels/whites are finally reachable — the agent always
+    accepted any {r,g,b}; the picker never sent them. Value stays owned by the brightness slider.
+  - Strip `reapply()` now takes an explicit colour override so a hue/sat commit can't send the
+    previous tick's colour on a tap.
+- **P2 (additive agent params + app SHAPE controls): effect envelope shape.**
+  - New optional body params on POST /api/leds/effect — `attack` (0–100, breathe/pulse rise
+    fraction) and `duty` (1–99, strobe on-time %). Consumed by the single-LED software renderer
+    (`_fx_frame`, new `_fx_env`); firmware strip effects and OpenRGB have no per-frame hook and
+    ignore them. Both default to the former fixed behaviour when absent (purely additive).
+  - Threaded end-to-end: validator (now a 7-tuple; both unpack sites updated) → `apply_led_effect`
+    (folds shape into `params`, so it auto-persists + auto-surfaces in `active`) → `_fx_frame` →
+    `_led_restore` (re-validates, junk dropped) → mock echo. New GET /api/leds `shape:true` flag =
+    probe-and-appear so the app shows the SHAPE control only where the box supports it.
+  - App: `RgbLedCard` grows a `SHAPE · ATTACK` / `SHAPE · DUTY` slider (single-LED card only —
+    where the params actually act, never a dead control). `LedActive`/`LedsState`/`setLedEffect`
+    gained the additive fields.
+- **allowlist verification:** effect ids stay a frozen `_LED_EFFECTS` lookup; new params are
+  range-checked-and-rejected (`_is_pct` / explicit 1–99), never sanitised; no new route, no
+  `shell=True`, no path from client input; additive payload only (old app ↔ new agent verified via
+  `test_protocol_parity`); no new cap (six-site rule not triggered — `ledcontrol` gates it).
+- **verified how:** whole test suite (100 files) green incl. new `test_led_effects` cases
+  (validator reject of bad attack/duty, `_fx_frame` observe-BOTH-states — strobe duty 90 ON vs 10
+  OFF, breathe fast-attack brighter early than slow — and shape persist + junk-drop on restore).
+  Web harness (`scripts/web-dev.sh`, mock box), controls PRESSED not just rendered: saturation →
+  box stored `{182,239,255}` (a pastel the old picker couldn't make); continuous speed → box 85;
+  strobe duty slider → box `duty:21`; breathe attack slider → box `attack:12`; all confirmed by
+  re-reading GET /api/leds, not the echo. Agent tag on ship: **2.9.113** (bump on release).
+- **NOT verified:** real hardware (harness-only, like the LED Studio ship); SYSTEM RGB (OpenRGB)
+  card's new sliders not independently pressed in-harness (code-identical to the proven LIGHT card
+  + tap flakiness) — eyeball on device.
+- **follow-ons (see `📋 Planned` → SignalBar-style reactive LED modes):** reactive/ambient modes
+  (perf+battery meter, playtime countdown, artwork ambient) and more shape knobs (tail/width for
+  scanner/comet on the agent-rendered strip sweeps).
 
 ### LED strip stand-down — stop fighting Steam for the light bar — 2026-09-08
 - **was:** owner-reported "light bar spazzing on the Steam machine" while a game ran and a
