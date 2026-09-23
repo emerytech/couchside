@@ -816,6 +816,11 @@ export type LedActive = {
   color: Rgb | null;
   speed: number;
   brightness: number;
+  // Envelope shape (agents that advertise `shape:true`), single-LED software renderer only:
+  // `attack` = rise fraction of a breathe/pulse cycle (0-100); `duty` = a
+  // strobe's on-time % (1-99). Absent on older agents / other effects.
+  attack?: number;
+  duty?: number;
 };
 
 /** An addressable STRIP the agent groups from `prefix[N]` LED nodes (agent >=
@@ -839,6 +844,9 @@ export type LedsState = {
   effects?: LedEffect[];
   /** Per-LED (and per-strip, keyed `strip:<prefix>`) running effect (agent >= 2.9.84). */
   active?: Record<string, LedActive>;
+  /** True when the single-LED renderer honours envelope shape params (breathe/pulse
+      `attack`, strobe `duty`; gated on this flag, not a version). Absent → the app hides SHAPE. */
+  shape?: boolean;
   /** Addressable strips the agent can drive as a whole (agent >= 2.9.85). Absent
       on older agents → the app falls back to driving the sweep itself. */
   strips?: StripInfo[];
@@ -3483,7 +3491,11 @@ export const api = {
   setLedEffect(
     settings: ConnSettings,
     led: string,
-    patch: { effect: LedEffect; color?: Rgb; speed?: number; brightness?: number },
+    patch: {
+      effect: LedEffect; color?: Rgb; speed?: number; brightness?: number;
+      // Optional envelope shape (gated on GET /api/leds `shape:true`); ignored by older agents.
+      attack?: number; duty?: number;
+    },
   ): Promise<boolean> {
     return request<{ ok: boolean }>(settings, '/api/leds/effect', {
       method: 'POST',
