@@ -431,6 +431,27 @@ Each entry now carries a `✅ DONE` / `🟡 PARTIAL` / `📋 OPEN` banner with i
 
 ## 📋 Planned
 
+### Deck overlay — a Decky-free Game-Mode quick panel via gamescope (owner request 2026-09-24)
+- **priority:** P2 · **risk:** high until a Phase-0 hardware prototype proves it · **affects:** agent
+  (in-session launcher + hotkey listener), install.sh, a new overlay launcher, Utilities/Setup ·
+  **depends_on:** Phase-0 validation on a real Deck. Full spec: `docs/memory/project_deck-overlay.md`.
+- **Why:** the durable answer to **KI-004** (Decky breaks on every Steam CEF update because it injects
+  into Steam's private frontend) + the Decky store's AI-dev gatekeeping. Give Deck/SteamOS users an
+  on-box quick panel that touches NEITHER Decky NOR Steam's frontend — and defer to Decky when it is
+  present + healthy (coexistence, exactly like install.sh).
+- **Mechanism:** overlay at the COMPOSITOR layer, not the Steam-UI layer. A borderless Xwayland window
+  with the `GAMESCOPE_EXTERNAL_OVERLAY` atom, composited by gamescope over Game Mode (no CEF hooks, so
+  a Steam update cannot break it). Panel content = the console we ALREADY serve on localhost, shown in
+  a kiosk browser (reuse the Player's Chromium-launch infra) → the FULL console, same UI as the phone,
+  not a cramped plugin. Toggle = a configurable hotkey via the existing evdev/uinput path, not a Steam
+  button. Launched in-session via `systemd-run --user` as an allowlisted subprocess (agent stays
+  stdlib/single-file).
+- **THE GATE:** it is UNPROVEN that gamescope's external-overlay atom will composite AND grab/release
+  input on current SteamOS/Bazzite gamescope. **Phase 0 = prove it on hardware (both shown and hidden
+  states observed) BEFORE any feature code.** If input-grab fails, the fallback is a focus-swap panel
+  (the game pauses) — still Decky-free, worse UX. Not zero-maintenance either: a gamescope bump could
+  break it (far rarer than Steam CEF, not never) — say so to users.
+
 ### Windows uiAccess signed-exe build — drive ADMIN windows without an elevated agent (tester report 2026-09-17)
 - **DECISION 2026-09-17 — PARKED (owner call): not worth a recurring code-signing cert for a $4.99
   one-time app.** The `install.ps1 -Elevated` opt-in (SHIPPED, agent 0.4.9-win, free) is the accepted
