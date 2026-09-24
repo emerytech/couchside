@@ -1667,10 +1667,11 @@ recommendation was wrong, not merely superseded.
   `entitlement.ts` (`IS_DIRECT_BUILD`, `redeemLicenseKey`, `getLicenseeName`, license checked
   before the trial clock, re-verified every read) · `EntitlementContext.redeemLicense` ·
   `components/LicenseRedeemCard.tsx` · `setup.tsx` + `Paywall.tsx` swap Buy/Restore for the card ·
-  `eas.json` `direct` profile · `scripts/make-license.mjs` (offline signing CLI, node `crypto`).
+  `eas.json` `direct` profile. The offline signing CLI + issuer webhook live in the PRIVATE
+  `couchside-licensing` repo (kept out of this public repo).
 - **Keys:** private key OFFLINE at `~/.config/couchside/license-ed25519.key`; public key baked in
-  `license.ts`. Full reference + future license-manager (Stripe/Gumroad/Ko-fi webhook) wiring in
-  `docs/DIRECT_EDITION_LICENSING.md`.
+  `license.ts`. Full reference + license-manager (Polar/Lemon Squeezy webhook) wiring live in
+  the PRIVATE `couchside-licensing` repo.
 - **Verified:** `license.test.ts` (8) proves node-`crypto` sign ↔ node-forge verify interop,
   tamper/wrong-key/malformed all rejected, production key rejects throwaway tokens. A real
   production-signed token verifies through the app's own code path. Web harness (direct build,
