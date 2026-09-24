@@ -2,7 +2,7 @@
  * License-key verification (app/lib/license.ts).
  *
  * Proves the exact thing that would otherwise only be assumed: a key SIGNED by
- * the offline tool (scripts/make-license.mjs uses node's crypto Ed25519) VERIFIES
+ * the offline tool (private couchside-licensing repo, node's crypto Ed25519) VERIFIES
  * inside the app (license.ts uses node-forge's Ed25519). Both are RFC 8032, but
  * "both are standard" is a claim; this test is the evidence — sign with node
  * crypto here, verify through the real app code path.

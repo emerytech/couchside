@@ -8,7 +8,8 @@
  *
  * The direct edition ships LOCKED. It unlocks only when the buyer pastes a key
  * signed by the private half of an Ed25519 keypair the maintainer holds offline
- * (scripts/make-license.mjs). This module has only the PUBLIC half and verifies
+ * (the issuer/CLI live in the private couchside-licensing repo). This module has
+ * only the PUBLIC half and verifies
  * the signature with no network call. Therefore:
  *   - A leaked APK grants nothing: without a valid key it is just the trial.
  *   - A key cannot be forged without the offline private key.
@@ -26,8 +27,9 @@ import forge from 'node-forge';
 import { Buffer } from 'buffer';
 
 /**
- * Raw 32-byte Ed25519 PUBLIC key, base64url. The private half is offline (see
- * scripts/make-license.mjs). Rotating this constant invalidates every key ever
+ * Raw 32-byte Ed25519 PUBLIC key, base64url. The private half is offline (the
+ * issuer lives in the private couchside-licensing repo). Rotating this constant
+ * invalidates every key ever
  * issued for builds that shipped it, so it changes only with a keypair rollover.
  */
 export const LICENSE_PUBLIC_KEY_B64URL = 'XxWSktkSVbF9GseRqnxYlE1RK71KwCT7-ZUjv64s3Yc';
