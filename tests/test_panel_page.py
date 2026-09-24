@@ -52,6 +52,11 @@ def test_panel_page_embeds_token_and_calls_api():
     check("polls the authed status route", "/api/status" in html, True)
     # Self-contained: no external resources (works on a box with no net).
     check("no external http(s) resources", "http://" not in html and "https://" not in html, True)
+    # Phase 1b: the panel is built against the REAL real_status() shape, not guessed
+    # field names. Each vital it renders must name a key real_status() actually emits;
+    # a typo here (e.g. battery.percent instead of .pct) ships a tile that never fills.
+    for field in ("cpu_temp_c", "s.load", "mem", "battery", "cpu", "net_rx_bps", "uptime_s"):
+        check("draws vital %s" % field, field in html, True)
 
 
 def _server():

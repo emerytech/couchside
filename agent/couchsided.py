@@ -23656,15 +23656,14 @@ def _udp_discovery_responder(port):
 
 def render_panel_page(token, port):
     """The on-box Steam Deck quick panel (GET /panel): a self-contained control
-    surface meant to be shown in Game Mode via a kiosk-browser focus-swap — the
-    Decky-free alternative (docs/memory/project_deck-overlay.md, Phase 1a). It is
-    LOOPBACK-ONLY + Host-checked like /pair because it embeds the bearer token so
-    the box's OWN browser can call the local API; nothing on the LAN may render it.
-    No external resources: works on a box with no net. Phase 1a is deliberately
-    minimal — it proves launch -> render -> token-authed API call -> dismiss; the
-    real vitals/actions UI is Phase 1b (built against the actual /api/status shape).
-    The token is injected as a JSON string literal (json.dumps) so it is safely
-    escaped for the inline <script>."""
+    surface shown in Game Mode via a kiosk-browser focus-swap — the Decky-free
+    alternative (docs/memory/project_deck-overlay.md). LOOPBACK-ONLY + Host-checked
+    like /pair because it embeds the bearer token so the box's OWN browser can call
+    the local API; nothing on the LAN may render it. No external resources: works on
+    a box with no net. Phase 1b renders live vitals from /api/status (fields match
+    real_status(); every one is optional and drawn only when present — an old agent
+    or a box without a battery/cpufreq simply shows fewer tiles). The token is
+    injected as a JSON string literal (json.dumps), safely escaped for the script."""
     tok_js = json.dumps(token)
     return (
         "<!doctype html><html lang=\"en\"><head>"
@@ -23673,30 +23672,51 @@ def render_panel_page(token, port):
         "<title>Couchside</title>"
         "<style>"
         "html,body{margin:0;height:100%;background:#0b1220;color:#e8ecf3;"
-        "font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;}"
-        "body{display:flex;flex-direction:column;padding:5vmin;box-sizing:border-box;}"
-        "header{display:flex;align-items:baseline;gap:.9em;flex-wrap:wrap;}"
-        "h1{font-size:min(7vmin,44px);font-weight:700;margin:0;}"
-        ".v{color:#8b95a7;font-size:min(3vmin,18px);}"
-        ".accent{height:5px;width:96px;background:#f5c64b;border-radius:3px;margin:1.6vmin 0 4vmin;}"
-        ".tile{background:#131c2e;border-radius:16px;padding:3vmin;max-width:520px;}"
-        ".k{color:#8b95a7;font-size:min(2.8vmin,15px);text-transform:uppercase;letter-spacing:.6px;}"
-        ".val{font-size:min(6vmin,34px);font-weight:650;margin-top:.35em;}"
-        ".val.ok{color:#3ddc84;}.val.bad{color:#ff6b6b;}"
-        ".hint{margin-top:auto;color:#6b7688;font-size:min(2.6vmin,15px);}"
+        "font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;"
+        "-webkit-font-smoothing:antialiased;}"
+        "body{display:flex;flex-direction:column;padding:4vmin 5vmin;box-sizing:border-box;}"
+        "header{display:flex;align-items:baseline;gap:.6em;flex-wrap:wrap;}"
+        "h1{font-size:min(6vmin,40px);font-weight:700;margin:0;}"
+        ".v{color:#8b95a7;font-size:min(2.8vmin,17px);}"
+        ".dot{width:.6em;height:.6em;border-radius:50%;display:inline-block;margin-left:.2em;"
+        "background:#3ddc84;box-shadow:0 0 8px #3ddc84a0;}"
+        ".dot.bad{background:#ff6b6b;box-shadow:0 0 8px #ff6b6ba0;}"
+        ".accent{height:4px;width:88px;background:#f5c64b;border-radius:2px;margin:1.4vmin 0 3vmin;}"
+        ".grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(200px,1fr));gap:2.2vmin;}"
+        ".tile{background:#131c2e;border-radius:16px;padding:2.6vmin 2.8vmin;}"
+        ".k{color:#8b95a7;font-size:min(2.4vmin,13px);text-transform:uppercase;letter-spacing:.7px;}"
+        ".val{font-size:min(5.4vmin,32px);font-weight:650;margin-top:.3em;line-height:1.1;}"
+        ".sub{color:#8b95a7;font-size:min(2.4vmin,14px);margin-top:.25em;}"
+        ".hint{margin-top:auto;padding-top:3vmin;color:#6b7688;font-size:min(2.5vmin,14px);}"
         "</style></head><body>"
-        "<header><h1>Couchside</h1><span class=\"v\" id=\"host\">connecting…</span></header>"
+        "<header><h1>Couchside</h1><span class=\"v\" id=\"host\">connecting\u2026</span>"
+        "<span class=\"dot bad\" id=\"dot\"></span></header>"
         "<div class=\"accent\"></div>"
-        "<div class=\"tile\"><div class=\"k\">Agent</div><div class=\"val\" id=\"st\">…</div></div>"
-        "<p class=\"hint\">On-box panel · press the <b>STEAM</b> button or <b>B</b> to close.</p>"
+        "<div class=\"grid\" id=\"grid\"></div>"
+        "<p class=\"hint\">On-box panel \u00b7 press the <b>STEAM</b> button or <b>B</b> to close.</p>"
         "<script>(function(){"
         "var T=" + tok_js + ";"
-        "function j(p,auth){var o=auth?{headers:{Authorization:'Bearer '+T}}:undefined;"
-        "return fetch(p,o).then(function(r){return r.ok?r.json():Promise.reject(r.status);});}"
-        "function set(id,txt,cls){var e=document.getElementById(id);e.textContent=txt;if(cls)e.className='val '+cls;}"
-        "j('/api/ping',false).then(function(p){document.getElementById('host').textContent=(p.host||'box')+' · v'+(p.version||'?');}).catch(function(){});"
-        "function tick(){j('/api/status',true).then(function(){set('st','connected','ok');})"
-        ".catch(function(c){set('st',c===401?'auth failed':'offline','bad');});}"
+        "function j(p){return fetch(p,{headers:{Authorization:'Bearer '+T}}).then(function(r){return r.ok?r.json():Promise.reject(r.status);});}"
+        "function el(t,c,h){var e=document.createElement(t);if(c)e.className=c;if(h!=null)e.innerHTML=h;return e;}"
+        "function tile(k,val,sub){var t=el('div','tile');t.appendChild(el('div','k',k));"
+        "t.appendChild(el('div','val',val));if(sub)t.appendChild(el('div','sub',sub));return t;}"
+        "function upt(s){s=Math.floor(s||0);var d=Math.floor(s/86400),h=Math.floor(s%86400/3600),m=Math.floor(s%3600/60);"
+        "return d?d+'d '+h+'h':(h?h+'h '+m+'m':m+'m');}"
+        "function bps(b){b=b||0;if(b<1024)return b+' B/s';if(b<1048576)return (b/1024).toFixed(0)+' KB/s';return (b/1048576).toFixed(1)+' MB/s';}"
+        "function draw(s){"
+        "document.getElementById('host').textContent=(s.hostname||'box')+' \u00b7 v'+(s.agent_version||'?');"
+        "document.getElementById('dot').className='dot';"
+        "var g=document.getElementById('grid');g.innerHTML='';"
+        "if(s.cpu_temp_c!=null)g.appendChild(tile('CPU temp',Math.round(s.cpu_temp_c)+'\u00b0'));"
+        "if(s.load&&s.load.length)g.appendChild(tile('Load',s.load[0].toFixed(2),'1 min'));"
+        "var m=s.mem||{};if(m.total_mb)g.appendChild(tile('Memory',Math.round(m.used_mb*100/m.total_mb)+'%',(m.used_mb/1024).toFixed(1)+' / '+(m.total_mb/1024).toFixed(1)+' GB'));"
+        "var b=s.battery;if(b&&b.pct!=null)g.appendChild(tile('Battery',b.pct+'%',b.status||''));"
+        "var c=s.cpu;if(c&&c.cur_mhz)g.appendChild(tile('CPU clock',(c.cur_mhz/1000).toFixed(1)+' GHz',c.governor||''));"
+        "if(s.net_rx_bps!=null)g.appendChild(tile('Network','\u2193 '+bps(s.net_rx_bps),'\u2191 '+bps(s.net_tx_bps)));"
+        "g.appendChild(tile('Uptime',upt(s.uptime_s)));"
+        "}"
+        "function off(){document.getElementById('dot').className='dot bad';}"
+        "function tick(){j('/api/status').then(draw).catch(off);}"
         "tick();setInterval(tick,3000);"
         "})();</script></body></html>"
     )
