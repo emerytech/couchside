@@ -47,3 +47,4 @@ app/build-*.ipa
 app/build-*.tar.gz
 scratchpad-atv/
 app/build-*.aab
+license-webhook/.wrangler/

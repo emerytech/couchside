@@ -5,6 +5,8 @@ compatibility_date = "2026-09-01"
 # Non-secret config. Secrets (below) are set with `wrangler secret put`, never here.
 [vars]
 FROM_EMAIL = "Couchside <licenses@couchside.tv>"
+# Polar (polar.sh) product id — only mint a key for this product. Org ets3d.
+POLAR_PRODUCT_ID = "38d231f8-514f-427c-90fb-d0f82000fb1b"
 # LS_VARIANT_ID = ""   # optional: only issue for the Couchside Direct variant id
 
 # Optional but recommended — KV for idempotency (dedupe issued orders so a

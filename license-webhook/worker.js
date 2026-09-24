@@ -1,21 +1,21 @@
 /**
- * Couchside Direct — Lemon Squeezy license auto-issuer (Cloudflare Worker).
+ * Couchside Direct — license auto-issuer (Cloudflare Worker).
  *
- * Lemon Squeezy fires an `order_created` webhook on every order. This worker:
- *   1. verifies the LS webhook signature (HMAC-SHA256 of the raw body),
- *   2. GATES on a real order — live (not test_mode), paid, not refunded, and
- *      (optionally) our variant — so a test/refunded/other order mints NOTHING,
- *   3. signs an Ed25519 license key with the offline license key (same key
- *      scripts/make-license.mjs uses; WebCrypto Ed25519 <-> node-forge verify is
- *      proven), stamped with the buyer's name + order id,
- *   4. emails it to the buyer via Resend.
+ * Turns a real purchase into an emailed, offline-signed Couchside license key.
+ * Supports TWO processors on the same endpoint (branch on the incoming headers):
+ *
+ *   - POLAR (polar.sh): Standard Webhooks signature (webhook-id / webhook-timestamp
+ *     / webhook-signature headers, whsec_-prefixed base64 secret). Event `order.paid`
+ *     (or a paid `order.created`). POLAR_WEBHOOK_SECRET.
+ *   - LEMON SQUEEZY: hex HMAC-SHA256 in the X-Signature header. Event `order_created`.
+ *     LS_WEBHOOK_SECRET. (Kept so old LS wiring still works; LS is being phased out.)
+ *
+ * Both paths GATE on a real, paid, non-refunded, non-test order, then sign an Ed25519
+ * license key with the offline license key (WebCrypto Ed25519 <-> the app's node-forge
+ * verify is proven) stamped with the buyer's name + order id, and email it via Resend.
  *
  * The license private key lives ONLY as the encrypted secret
  * LICENSE_PRIVATE_KEY_PKCS8_B64 (base64 of the PKCS#8 DER). Nothing here is in git.
- *
- * Idempotency: iat is derived from the order's own created_at, so a re-delivered
- * webhook produces the SAME token; the optional KV binding ISSUED also dedupes
- * the email. Without KV a redelivery would re-email the same key — harmless.
  */
 const PREFIX = 'CS1';
 const EDITION = 'direct';
@@ -26,59 +26,94 @@ export default {
     if (request.method !== 'POST') return new Response('method not allowed', { status: 405 });
 
     const raw = await request.text();
-
-    // 1. Verify the Lemon Squeezy signature (hex HMAC-SHA256 of the raw body).
-    const ok = await verifyLsSignature(raw, request.headers.get('X-Signature') || '', env.LS_WEBHOOK_SECRET);
-    if (!ok) return json({ error: 'invalid signature' }, 401);
-
-    let event;
-    try { event = JSON.parse(raw); } catch { return json({ error: 'bad json' }, 400); }
-
-    const eventName = event?.meta?.event_name;
-    if (eventName !== 'order_created') return json({ skipped: `event=${eventName}` }, 200);
-
-    const a = event?.data?.attributes || {};
-    const orderId = String(event?.data?.id ?? a.identifier ?? '');
-
-    // 2. Gate: only a real, paid, non-refunded order for our product.
-    if (a.test_mode === true) return json({ skipped: 'test_mode' }, 200);
-    if (a.status !== 'paid') return json({ skipped: `status=${a.status}` }, 200);
-    if (a.refunded === true) return json({ skipped: 'refunded' }, 200);
-    if (env.LS_VARIANT_ID && String(a.first_order_item?.variant_id ?? '') !== String(env.LS_VARIANT_ID)) {
-      return json({ skipped: 'other variant' }, 200);
+    // Route by processor. Polar sends Standard Webhooks headers; LS sends X-Signature.
+    if (request.headers.get('webhook-signature') || request.headers.get('webhook-id')) {
+      return handlePolar(raw, request.headers, env, ctx);
     }
-
-    const email = a.user_email;
-    const name = (a.user_name || '').trim() || 'Couchside customer';
-    if (!email) return json({ error: 'no buyer email on order' }, 200);
-
-    // 3. Idempotency: skip if this order was already issued.
-    if (env.ISSUED) {
-      const prior = await env.ISSUED.get(orderId);
-      if (prior) return json({ ok: true, already_issued: true }, 200);
-    }
-
-    // 4. Sign the license key (iat from the order so it's deterministic).
-    const iat = Number.isFinite(Date.parse(a.created_at)) ? Math.floor(Date.parse(a.created_at) / 1000) : nowSeconds();
-    const keyId = (await sha256hex(orderId + ':' + EDITION)).slice(0, 8);
-    const token = await signLicense(env.LICENSE_PRIVATE_KEY_PKCS8_B64, { name, email, orderId, keyId, iat });
-
-    // 5. Email it.
-    try {
-      await sendKeyEmail(env, email, name, token);
-    } catch (e) {
-      // Don't 500 — LS would retry forever. Log + 200; the order is in ISSUED-less
-      // limbo, so surface it: return the token so it shows in the LS webhook log
-      // for manual send. (Consider alerting here.)
-      return json({ ok: false, email_error: String(e), token_for_manual_send: token }, 200);
-    }
-
-    if (env.ISSUED) ctx.waitUntil(env.ISSUED.put(orderId, token, { expirationTtl: 60 * 60 * 24 * 730 }));
-    return json({ ok: true, issued_to: name }, 200);
+    return handleLemonSqueezy(raw, request.headers, env, ctx);
   },
 };
 
-// ---------- crypto ----------
+// ---------- Polar (Standard Webhooks) ----------
+
+async function handlePolar(raw, headers, env, ctx) {
+  const ok = await verifyStandardWebhook(raw, headers, env.POLAR_WEBHOOK_SECRET);
+  if (!ok) return json({ error: 'invalid signature' }, 401);
+
+  let event;
+  try { event = JSON.parse(raw); } catch { return json({ error: 'bad json' }, 400); }
+
+  const type = event?.type;
+  if (type !== 'order.paid' && type !== 'order.created') return json({ skipped: `event=${type}` }, 200);
+
+  const d = event?.data || {};
+  // Gate: a real, paid order. Polar's order.paid is already paid; be defensive anyway.
+  const paid = type === 'order.paid' || d.paid === true || d.status === 'paid';
+  if (!paid) return json({ skipped: `not paid (${d.status})` }, 200);
+  if (d.refunded === true || d.status === 'refunded') return json({ skipped: 'refunded' }, 200);
+
+  // Optional: only mint for our product/variant.
+  const productId = String(d.product_id ?? d.product?.id ?? d.items?.[0]?.product_id ?? '');
+  if (env.POLAR_PRODUCT_ID && productId !== String(env.POLAR_PRODUCT_ID)) {
+    return json({ skipped: 'other product' }, 200);
+  }
+
+  const email = d.customer?.email || d.user?.email || d.customer_email || d.email;
+  const name = (d.customer?.name || d.customer?.public_name || d.user?.public_name || '').trim() || 'Couchside customer';
+  const orderId = String(d.id ?? d.checkout_id ?? '');
+  if (!email) return json({ error: 'no buyer email on order', order: orderId }, 200);
+
+  const createdAt = d.created_at || d.modified_at;
+  const iat = Number.isFinite(Date.parse(createdAt)) ? Math.floor(Date.parse(createdAt) / 1000) : nowSeconds();
+  return issueAndEmail(env, ctx, { source: 'polar', orderId, email, name, iat });
+}
+
+async function verifyStandardWebhook(raw, headers, secret) {
+  const id = headers.get('webhook-id');
+  const ts = headers.get('webhook-timestamp');
+  const sigHeader = headers.get('webhook-signature');
+  if (!secret || !id || !ts || !sigHeader) return false;
+
+  // Reject stale timestamps (±5 min) to blunt replay.
+  const t = parseInt(ts, 10);
+  if (!Number.isFinite(t) || Math.abs(nowSeconds() - t) > 300) return false;
+
+  const keyB64 = secret.startsWith('whsec_') ? secret.slice(6) : secret;
+  const keyBytes = b64ToBytes(keyB64);
+  const key = await crypto.subtle.importKey('raw', keyBytes, { name: 'HMAC', hash: 'SHA-256' }, false, ['sign']);
+  const mac = new Uint8Array(await crypto.subtle.sign('HMAC', key, new TextEncoder().encode(`${id}.${ts}.${raw}`)));
+  const expected = bytesToB64(mac);
+  // Header is a space-separated list of `v1,<b64sig>` (possibly several).
+  const provided = sigHeader.split(' ').map((p) => (p.includes(',') ? p.split(',')[1] : p));
+  return provided.some((p) => timingSafeEqualStr(p, expected));
+}
+
+// ---------- Lemon Squeezy (hex HMAC) ----------
+
+async function handleLemonSqueezy(raw, headers, env, ctx) {
+  const ok = await verifyLsSignature(raw, headers.get('X-Signature') || '', env.LS_WEBHOOK_SECRET);
+  if (!ok) return json({ error: 'invalid signature' }, 401);
+
+  let event;
+  try { event = JSON.parse(raw); } catch { return json({ error: 'bad json' }, 400); }
+
+  const eventName = event?.meta?.event_name;
+  if (eventName !== 'order_created') return json({ skipped: `event=${eventName}` }, 200);
+
+  const a = event?.data?.attributes || {};
+  const orderId = String(event?.data?.id ?? a.identifier ?? '');
+  if (a.test_mode === true) return json({ skipped: 'test_mode' }, 200);
+  if (a.status !== 'paid') return json({ skipped: `status=${a.status}` }, 200);
+  if (a.refunded === true) return json({ skipped: 'refunded' }, 200);
+  if (env.LS_VARIANT_ID && String(a.first_order_item?.variant_id ?? '') !== String(env.LS_VARIANT_ID)) {
+    return json({ skipped: 'other variant' }, 200);
+  }
+  const email = a.user_email;
+  const name = (a.user_name || '').trim() || 'Couchside customer';
+  if (!email) return json({ error: 'no buyer email on order' }, 200);
+  const iat = Number.isFinite(Date.parse(a.created_at)) ? Math.floor(Date.parse(a.created_at) / 1000) : nowSeconds();
+  return issueAndEmail(env, ctx, { source: 'lemonsqueezy', orderId, email, name, iat });
+}
 
 async function verifyLsSignature(raw, sigHex, secret) {
   if (!secret || !sigHex) return false;
@@ -86,7 +121,29 @@ async function verifyLsSignature(raw, sigHex, secret) {
     'raw', new TextEncoder().encode(secret), { name: 'HMAC', hash: 'SHA-256' }, false, ['sign'],
   );
   const mac = new Uint8Array(await crypto.subtle.sign('HMAC', key, new TextEncoder().encode(raw)));
-  return timingSafeEqualHex(toHex(mac), sigHex.trim().toLowerCase());
+  return timingSafeEqualStr(toHex(mac), sigHex.trim().toLowerCase());
+}
+
+// ---------- shared: issue + email ----------
+
+async function issueAndEmail(env, ctx, { source, orderId, email, name, iat }) {
+  // Idempotency: skip if this order was already issued (KV optional).
+  const dedupeKey = `${source}:${orderId}`;
+  if (env.ISSUED && orderId) {
+    const prior = await env.ISSUED.get(dedupeKey);
+    if (prior) return json({ ok: true, already_issued: true, source }, 200);
+  }
+
+  const keyId = (await sha256hex(`${source}:${orderId}:${EDITION}`)).slice(0, 8);
+  const token = await signLicense(env.LICENSE_PRIVATE_KEY_PKCS8_B64, { name, email, orderId, keyId, iat });
+
+  try {
+    await sendKeyEmail(env, email, name, token);
+  } catch (e) {
+    return json({ ok: false, source, email_error: String(e), token_for_manual_send: token }, 200);
+  }
+  if (env.ISSUED && orderId) ctx.waitUntil(env.ISSUED.put(dedupeKey, token, { expirationTtl: 60 * 60 * 24 * 730 }));
+  return json({ ok: true, source, issued_to: name }, 200);
 }
 
 async function signLicense(privB64, { name, email, orderId, keyId, iat }) {
@@ -98,8 +155,8 @@ async function signLicense(privB64, { name, email, orderId, keyId, iat }) {
 }
 
 async function sha256hex(s) {
-  const d = new Uint8Array(await crypto.subtle.digest('SHA-256', new TextEncoder().encode(s)));
-  return toHex(d);
+  const dgst = new Uint8Array(await crypto.subtle.digest('SHA-256', new TextEncoder().encode(s)));
+  return toHex(dgst);
 }
 
 // ---------- email (Resend) ----------
@@ -127,17 +184,15 @@ async function sendKeyEmail(env, to, name, token) {
 function nowSeconds() { return Math.floor(Date.now() / 1000); }
 function json(obj, status) { return new Response(JSON.stringify(obj), { status, headers: { 'Content-Type': 'application/json' } }); }
 function toHex(bytes) { return [...bytes].map((b) => b.toString(16).padStart(2, '0')).join(''); }
-function bytesToB64url(bytes) {
-  let s = ''; for (const b of bytes) s += String.fromCharCode(b);
-  return btoa(s).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
-}
+function bytesToB64(bytes) { let s = ''; for (const b of bytes) s += String.fromCharCode(b); return btoa(s); }
+function bytesToB64url(bytes) { return bytesToB64(bytes).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, ''); }
 function b64ToBytes(b64) {
   const s = atob(b64.replace(/-/g, '+').replace(/_/g, '/'));
   const out = new Uint8Array(s.length);
   for (let i = 0; i < s.length; i++) out[i] = s.charCodeAt(i);
   return out;
 }
-function timingSafeEqualHex(a, b) {
+function timingSafeEqualStr(a, b) {
   if (a.length !== b.length) return false;
   let diff = 0;
   for (let i = 0; i < a.length; i++) diff |= a.charCodeAt(i) ^ b.charCodeAt(i);
