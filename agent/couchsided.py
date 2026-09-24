@@ -3731,6 +3731,37 @@ def player_open(service, path="", query="", url=""):
     return {"ok": True, "starting": True, "service": service}
 
 
+def _panel_url():
+    """The on-box quick-panel URL for the kiosk to load. Plaintext DEFAULT_PORT
+    (a kiosk over the self-signed TLS port would hit a cert wall) + loopback host
+    (the /panel route is loopback-only). Agent-generated, NEVER client-supplied."""
+    return "http://localhost:%d/panel" % DEFAULT_PORT
+
+
+def panel_open():
+    """Open the on-box quick panel (GET /panel) in Game Mode via the Player's
+    kiosk-launch path — steamos-add-to-steam + steam://rungameid, the focus-swap
+    that makes a window show over Game Mode. A plain launch is NOT adopted by
+    gamescope (Phase 0, docs/memory/project_deck-overlay.md), so we reuse the
+    Player's proven Steam-shortcut mechanism. The tile is pointed at the FIXED,
+    agent-generated local /panel URL, so this needs no _pl_validate_open_url (that
+    gates USER-supplied free URLs; this is our own loopback page). The panel and
+    the streaming Player share one single-instance tile."""
+    if PL_MOCK:
+        _PL_MOCK.update(running=True, service="", path="", query="", url=_panel_url())
+        return {"ok": True, "starting": True, "url": _panel_url()}
+    if not player_available():
+        raise RuntimeError("panel launcher not installed on this box")
+    with _PL_LOCK:
+        _pl_conf_write("", "", "", url=_panel_url())
+        was_running = _pl_running()
+        if was_running:
+            player_close()
+        appid = _pl_appid()
+    _pl_relaunch(appid, was_running)
+    return {"ok": True, "starting": True}
+
+
 # ---------------------------------------------------------------------------
 # Player transport over CDP (play/pause/seek).
 #
@@ -26174,6 +26205,43 @@ class Handler(BaseHTTPRequestHandler):
                 return
 
             # POST /api/screensaver: {"op":"start","theme"?,"tier"?} | {"op":"stop"}
+            # POST /api/panel: {"op":"open"} launches the on-box quick panel in
+            # Game Mode (the Decky-free focus-swap panel, docs/memory/project_deck-
+            # overlay.md); {"op":"close"} stops it. NO client-supplied values — the
+            # panel URL is agent-generated (_panel_url) and the tile is reused from
+            # the Player, so there is nothing to validate/sanitise. Rate-limited on
+            # the SAME clock as the Player's open (KI-019: a token holder must not be
+            # able to strobe the TV).
+            if path == "/api/panel":
+                if not player_available():
+                    self._send(404, {"error": "panel launcher not installed"}, started)
+                    return
+                try:
+                    req = json.loads(body.decode("utf-8")) if body else {}
+                    if not isinstance(req, dict):
+                        raise ValueError
+                    op = req.get("op")
+                except (ValueError, UnicodeDecodeError):
+                    self._send(400, {"error": "json body with op required"}, started)
+                    return
+                if op == "open":
+                    now = time.time()
+                    if now - _pl_last_open[0] < _PL_OPEN_MIN_INTERVAL_S:
+                        self._send(429, {"error": "slow down"}, started)
+                        return
+                    _pl_last_open[0] = now
+                    try:
+                        self._send(200, panel_open(), started)
+                    except RuntimeError as e:
+                        self._send(409, {"error": str(e)}, started)
+                    return
+                if op == "close":
+                    player_close()
+                    self._send(200, {"ok": True}, started)
+                    return
+                self._send(400, {"error": "unknown op"}, started)
+                return
+
             # POST /api/player: {"op":"open","service":"max","path":"/video/..."}
             #                   {"op":"close"}
             #

@@ -78,6 +78,46 @@ def _get(port, path, host_header=None):
     return resp.status, data
 
 
+def _post(port, path, body=b"", token=None):
+    conn = http.client.HTTPConnection("127.0.0.1", port, timeout=5)
+    headers = {"Authorization": "Bearer " + token} if token else {}
+    conn.request("POST", path, body=body, headers=headers)
+    resp = conn.getresponse()
+    data = resp.read().decode("utf-8", "replace")
+    conn.close()
+    return resp.status, data
+
+
+def test_panel_launch_route():
+    """POST /api/panel {op:open|close}: bearer-authed, no client-supplied values,
+    op-validated (unknown op is a 400, not a pass-through). player availability is
+    mocked so this runs off a Deck; panel_open uses the Player mock."""
+    print("test_panel_launch_route")
+    real_avail, real_mock = cs.player_available, cs.PL_MOCK
+    cs.player_available = lambda: True
+    cs.PL_MOCK = True
+    cs._pl_last_open[0] = 0.0
+    srv, port = _server()
+    try:
+        # No credential -> the bearer gate refuses before anything launches.
+        st, _ = _post(port, "/api/panel", b'{"op":"open"}')
+        check("POST /api/panel without token: 401", st, 401)
+        # Authed open -> 200 starting.
+        st, body = _post(port, "/api/panel", b'{"op":"open"}', token=TOKEN)
+        check("authed open: 200", st, 200)
+        check("open reports starting", '"starting": true' in body, True)
+        # Unknown op is rejected, not silently accepted.
+        st, _ = _post(port, "/api/panel", b'{"op":"nope"}', token=TOKEN)
+        check("unknown op: 400", st, 400)
+        # A non-object body is a 400, never a 500.
+        st, _ = _post(port, "/api/panel", b'[]', token=TOKEN)
+        check("non-object body: 400", st, 400)
+    finally:
+        srv.shutdown()
+        srv.server_close()
+        cs.player_available, cs.PL_MOCK = real_avail, real_mock
+
+
 def test_panel_route_end_to_end():
     print("test_panel_route_end_to_end")
     srv, port = _server()
@@ -105,6 +145,7 @@ def test_panel_route_end_to_end():
 
 if __name__ == "__main__":
     for fn in (test_panel_page_embeds_token_and_calls_api,
+               test_panel_launch_route,
                test_panel_route_end_to_end):
         fn()
     if FAILURES:
