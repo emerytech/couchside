@@ -23623,6 +23623,54 @@ def _udp_discovery_responder(port):
             pass
 
 
+def render_panel_page(token, port):
+    """The on-box Steam Deck quick panel (GET /panel): a self-contained control
+    surface meant to be shown in Game Mode via a kiosk-browser focus-swap — the
+    Decky-free alternative (docs/memory/project_deck-overlay.md, Phase 1a). It is
+    LOOPBACK-ONLY + Host-checked like /pair because it embeds the bearer token so
+    the box's OWN browser can call the local API; nothing on the LAN may render it.
+    No external resources: works on a box with no net. Phase 1a is deliberately
+    minimal — it proves launch -> render -> token-authed API call -> dismiss; the
+    real vitals/actions UI is Phase 1b (built against the actual /api/status shape).
+    The token is injected as a JSON string literal (json.dumps) so it is safely
+    escaped for the inline <script>."""
+    tok_js = json.dumps(token)
+    return (
+        "<!doctype html><html lang=\"en\"><head>"
+        "<meta charset=\"utf-8\">"
+        "<meta name=\"viewport\" content=\"width=device-width,initial-scale=1\">"
+        "<title>Couchside</title>"
+        "<style>"
+        "html,body{margin:0;height:100%;background:#0b1220;color:#e8ecf3;"
+        "font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;}"
+        "body{display:flex;flex-direction:column;padding:5vmin;box-sizing:border-box;}"
+        "header{display:flex;align-items:baseline;gap:.9em;flex-wrap:wrap;}"
+        "h1{font-size:min(7vmin,44px);font-weight:700;margin:0;}"
+        ".v{color:#8b95a7;font-size:min(3vmin,18px);}"
+        ".accent{height:5px;width:96px;background:#f5c64b;border-radius:3px;margin:1.6vmin 0 4vmin;}"
+        ".tile{background:#131c2e;border-radius:16px;padding:3vmin;max-width:520px;}"
+        ".k{color:#8b95a7;font-size:min(2.8vmin,15px);text-transform:uppercase;letter-spacing:.6px;}"
+        ".val{font-size:min(6vmin,34px);font-weight:650;margin-top:.35em;}"
+        ".val.ok{color:#3ddc84;}.val.bad{color:#ff6b6b;}"
+        ".hint{margin-top:auto;color:#6b7688;font-size:min(2.6vmin,15px);}"
+        "</style></head><body>"
+        "<header><h1>Couchside</h1><span class=\"v\" id=\"host\">connecting…</span></header>"
+        "<div class=\"accent\"></div>"
+        "<div class=\"tile\"><div class=\"k\">Agent</div><div class=\"val\" id=\"st\">…</div></div>"
+        "<p class=\"hint\">On-box panel · press the <b>STEAM</b> button or <b>B</b> to close.</p>"
+        "<script>(function(){"
+        "var T=" + tok_js + ";"
+        "function j(p,auth){var o=auth?{headers:{Authorization:'Bearer '+T}}:undefined;"
+        "return fetch(p,o).then(function(r){return r.ok?r.json():Promise.reject(r.status);});}"
+        "function set(id,txt,cls){var e=document.getElementById(id);e.textContent=txt;if(cls)e.className='val '+cls;}"
+        "j('/api/ping',false).then(function(p){document.getElementById('host').textContent=(p.host||'box')+' · v'+(p.version||'?');}).catch(function(){});"
+        "function tick(){j('/api/status',true).then(function(){set('st','connected','ok');})"
+        ".catch(function(c){set('st',c===401?'auth failed':'offline','bad');});}"
+        "tick();setInterval(tick,3000);"
+        "})();</script></body></html>"
+    )
+
+
 def render_pair_page(token, port):
     """Self-contained dark HTML page rendering the pairing QR offline.
 
@@ -24077,6 +24125,19 @@ class Handler(BaseHTTPRequestHandler):
                     self._send(403, {"error": "forbidden"}, started)
                     return
                 self._send_html(200, render_update_page(), started)
+                return
+
+            if path == "/panel":
+                # LOCALHOST-ONLY, same two gates as /pair: the on-box Deck quick
+                # panel embeds the bearer token so the box's own kiosk browser can
+                # call the local API, so a non-loopback client MUST NOT see it
+                # (docs/memory/project_deck-overlay.md). The loopback + Host checks
+                # ARE the security model — this page is never under /api and never
+                # bearer-authed itself.
+                if not self._is_loopback() or not self._host_header_is_local():
+                    self._send(403, {"error": "forbidden"}, started)
+                    return
+                self._send_html(200, render_panel_page(self._current_token(), self.port), started)
                 return
 
             if path == "/api/pair/status":
