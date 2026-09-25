@@ -435,6 +435,24 @@ Each entry now carries a `✅ DONE` / `🟡 PARTIAL` / `📋 OPEN` banner with i
 - **priority:** P2 · **risk:** high until a Phase-0 hardware prototype proves it · **affects:** agent
   (in-session launcher + hotkey listener), install.sh, a new overlay launcher, Utilities/Setup ·
   **depends_on:** Phase-0 validation on a real Deck. Full spec: `docs/memory/project_deck-overlay.md`.
+- **STATUS 2026-09-24 (HW-verified on the box):**
+  - **Phase 0 DONE — the mechanism below is superseded.** A true compositor overlay is NOT viable on a
+    stock box: gamescope has ONE `GAMESCOPE_EXTERNAL_OVERLAY` slot and `mangoapp` holds it permanently.
+    The realistic path is a **focus-swap kiosk panel** (the game pauses while it is up), which the Player
+    already ships (`steamos-add-to-steam` + `steam://rungameid`). So the panel ≈ "the Player, pointed at
+    a new on-box page."
+  - **Phase 1a DONE (PR #552):** `GET /panel` serves a self-contained page gated loopback+Host EXACTLY
+    like `/pair` (it embeds the bearer token); `POST /api/panel {op:open|close}` launches/closes it in
+    Game Mode via the Player's kiosk path (bearer-authed, op-validated, rate-limited).
+  - **Phase 1b DONE (PR #552):** the page renders LIVE vitals from `/api/status` (temp, load, memory,
+    battery, CPU clock, network, uptime — each field independently optional, degrades to fewer tiles)
+    plus a **Quick actions** grid from `/api/actions` (POST by server-provided id, looked up in the
+    ACTIONS allowlist; `danger:high` arms a 3s cancellable countdown). **HW-verified on `steam-machine`:**
+    launched in Game Mode, rendered fullscreen with live box vitals + all 7 real allowlist actions.
+  - **Still open:** (1c) hotkey toggle via the non-grabbing evdev reader; a **dedicated panel tile**
+    (today it reuses the Player's single kiosk tile/conf — transient clobber, self-heals on next Player
+    open — a second Steam-shortcut registration is its own HW-gated task); Decky coexistence (defer when
+    Decky is present + healthy).
 - **Why:** the durable answer to **KI-004** (Decky breaks on every Steam CEF update because it injects
   into Steam's private frontend) + the Decky store's AI-dev gatekeeping. Give Deck/SteamOS users an
   on-box quick panel that touches NEITHER Decky NOR Steam's frontend — and defer to Decky when it is

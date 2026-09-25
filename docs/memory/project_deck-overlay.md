@@ -1,9 +1,18 @@
 # Project: Deck overlay — a Decky-free Game-Mode quick panel via gamescope
 
-**Status:** 📋 Drafted 2026-09-24. NOT prototyped. The gamescope-overlay mechanism
-below is asserted from general knowledge of gamescope/SteamOS, **NOT verified on
-hardware** — Phase 0 exists precisely to prove it before a line of feature code is
-written. Owner requested the spec (Discord/session 2026-09-24).
+**Status:** 🔨 In progress. Phase 0 + Phase 1a + Phase 1b DONE and HW-verified
+2026-09-24 (PR #552). **The gamescope-overlay mechanism described below was DISPROVEN
+in Phase 0** and is kept only as recorded reasoning: gamescope has ONE
+`GAMESCOPE_EXTERNAL_OVERLAY` slot and `mangoapp` holds it permanently, so a true
+composite-over-the-game overlay is not viable on a stock box. The shipped path is a
+**focus-swap kiosk panel** (the game pauses while it is up) reusing the Player's
+`steamos-add-to-steam` + `steam://rungameid` launch. `GET /panel` serves the page
+(loopback+Host gated like `/pair`, embeds the token); `POST /api/panel {op:open|close}`
+launches/closes it; the page renders live `/api/status` vitals + a `/api/actions` quick-
+actions grid (high-danger arms a countdown). **Live running status: see the ROADMAP
+"Deck overlay" STATUS block and the auto-memory `deck-overlay-gamescope.md`.** Remaining:
+hotkey toggle (Phase 2), dedicated panel tile, Decky coexistence (Phase 3). The phased
+spec below is retained as the original plan.
 
 **The honest gate, recorded before anyone falls in love with this:** the entire
 premise rests on ONE unproven claim — that gamescope's external-overlay atom will
