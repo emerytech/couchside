@@ -9,10 +9,11 @@ import {
 } from 'react-native';
 
 import { usePoll } from '@/hooks/usePoll';
-import { api, hostKey, MediaApp, MediaAppsState, PlayerOp, PlayerPlayback, PlayerState } from '@/lib/api';
+import { api, ApiError, hostKey, MediaApp, MediaAppsState, PlayerOp, PlayerPlayback, PlayerState } from '@/lib/api';
 import { hapticError, hapticHeavy, hapticLight, hapticSuccess } from '@/lib/haptics';
 import { MEDIA_HOLD_MS } from '@/lib/mediaSeek';
 import { useSettings } from '@/lib/SettingsContext';
+import { supportsBoxPanel } from '@/lib/setupPhase';
 import { clearRecents, noteRecent, useWatchRecents } from '@/lib/watchRecents';
 import { useTheme, useThemedStyles, type Palette } from '@/lib/theme';
 import { WatchDpad } from '@/components/WatchDpad';
@@ -363,6 +364,38 @@ export function WatchPanel() {
     }
   }, [settings, player]);
 
+  // The on-box quick panel (agent >= 2.9.113): Couchside's own vitals + quick
+  // actions on the BOX's screen in Game Mode, without Decky. It rides the Player
+  // tile, so the Stop button on the now-card closes it too, and /api/player
+  // reports it as running with an empty service. Gated on the agent version the
+  // status poll has LEARNED (settings.version, re-learned every poll) rather than
+  // on a 404 at press time — the same degrade-closed rule as PIN pairing: an
+  // unknown version hides the button instead of offering one that fails.
+  const canShowPanel = supportsBoxPanel(settings.version);
+  const showPanel = useCallback(async () => {
+    hapticLight();
+    setBusy('__panel__');
+    setError(null);
+    try {
+      await api.panelOp(settings, 'open');
+      hapticSuccess();
+      setPending('__panel__');
+      scrollRef.current?.scrollTo({ y: 0, animated: true });
+      player.refresh();
+    } catch (e) {
+      hapticError();
+      // A 404 here means the route is absent: the version gate was stale or the
+      // box was downgraded. Name the fix rather than echoing "not found".
+      setError(
+        e instanceof ApiError && e.kind === 'http' && e.status === 404
+          ? 'This box needs agent 2.9.113 or newer for the on-box panel.'
+          : `The box wouldn’t open the panel. ${e instanceof Error ? e.message : ''}`.trim(),
+      );
+    } finally {
+      setBusy(null);
+    }
+  }, [settings, player]);
+
   const parsedLink = useMemo(
     () =>
       link.trim()
@@ -488,7 +521,10 @@ export function WatchPanel() {
               >
                 ON THE TV
               </Text>
-              <Text style={styles.nowService}>{label(state.service)}</Text>
+              <Text style={styles.nowService}>
+                {/* The panel and a free-URL page both report an empty service. */}
+                {state.service ? label(state.service) : 'The box’s own screen'}
+              </Text>
               {playback?.title ? (
                 <Text style={styles.nowPath} numberOfLines={1}>
                   {playback.title}
@@ -692,7 +728,7 @@ export function WatchPanel() {
                 STARTING
               </Text>
               <Text style={styles.nowService}>
-                {pending === '__web__' ? 'Web page' : label(pending)}
+                {pending === '__web__' ? 'Web page' : pending === '__panel__' ? 'Couchside panel' : label(pending)}
               </Text>
               <Text style={styles.nowPath}>Opening on the TV…</Text>
             </View>
@@ -723,6 +759,22 @@ export function WatchPanel() {
           {busy === 'hub' ? 'Opening…' : 'Show the home screen on the TV'}
         </Text>
       </Pressable>
+
+      {/* Couchside's own panel on the box's screen — vitals + quick actions in
+          Game Mode with no Decky. Hidden until the status poll has learned an
+          agent version that serves it (supportsBoxPanel). */}
+      {canShowPanel ? (
+        <Pressable
+          onPress={showPanel}
+          disabled={busy !== null}
+          testID="watch-panel"
+          style={({ pressed }) => [styles.hubBtn, pressed && styles.pressed]}
+        >
+          <Text style={styles.hubBtnText}>
+            {busy === '__panel__' ? 'Opening…' : 'Show the Couchside panel on the TV'}
+          </Text>
+        </Pressable>
+      ) : null}
 
       {recents.length > 0 && (
         <>

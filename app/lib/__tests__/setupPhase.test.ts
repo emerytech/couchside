@@ -31,6 +31,8 @@ import {
   PIN_PAIR_MIN_WINDOWS,
   stepMarks,
   supportsPinPairing,
+  supportsBoxPanel,
+  BOX_PANEL_MIN_LINUX,
   isWindowsAgent,
   SWEEP_FAST_WINDOW_MS,
   SWEEP_GAP_BACKOFF_MS,
@@ -526,4 +528,27 @@ test('isWindowsAgent: only the -win suffix is Windows (both directions + a contr
   assert.equal(isWindowsAgent(''), false);
   // A win token that is not the suffix must not match.
   assert.equal(isWindowsAgent('0.4.7-window'), false, 'substring, not suffix');
+});
+
+// ---------------------------------------------------------------------------
+// supportsBoxPanel — the on-box quick panel button's version gate (§11.2: both
+// directions; a gate that only ever says "no" would also pass a one-sided test).
+// ---------------------------------------------------------------------------
+
+test('supportsBoxPanel: the floor and everything above it answer true', () => {
+  assert.equal(BOX_PANEL_MIN_LINUX, '2.9.113', 'floor is the release that added POST /api/panel');
+  assert.equal(supportsBoxPanel('2.9.113'), true, 'the exact floor');
+  assert.equal(supportsBoxPanel('2.9.114'), true, 'one patch above');
+  assert.equal(supportsBoxPanel('2.10.0'), true, 'numeric compare: 2.10 > 2.9 (a string compare gets this wrong)');
+  assert.equal(supportsBoxPanel(' 2.9.113 '), true, 'whitespace around the version is tolerated');
+});
+
+test('supportsBoxPanel: below the floor, Windows, and unknown all DEGRADE CLOSED', () => {
+  assert.equal(supportsBoxPanel('2.9.112'), false, 'the last agent without /api/panel');
+  assert.equal(supportsBoxPanel('2.9.9'), false, 'numeric compare the other way: 2.9.9 < 2.9.113');
+  assert.equal(supportsBoxPanel('0.4.12-win'), false, 'Windows agent has no /api/panel even at its current version');
+  assert.equal(supportsBoxPanel('9.9.9-win'), false, 'any Windows version stays false');
+  assert.equal(supportsBoxPanel(''), false, 'empty');
+  assert.equal(supportsBoxPanel(undefined), false, 'not yet learned from a status poll');
+  assert.equal(supportsBoxPanel('dev'), false, 'unparseable');
 });

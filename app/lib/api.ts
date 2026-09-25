@@ -3324,6 +3324,25 @@ export const api = {
     });
   },
 
+  /**
+   * The on-box quick panel (agent >= 2.9.113): Couchside's own vitals + quick
+   * actions shown on the BOX's screen in Game Mode, without Decky. It rides the
+   * Player tile's kiosk launch, so it needs caps.player and shares the Player's
+   * open rate-limit; while it is up, /api/player reports running with an empty
+   * service, and the Player's 'close' closes it too. The page URL is fixed on
+   * the box — nothing is sent but the op. Older agents 404 (route absent); gate
+   * the button on supportsBoxPanel(settings.version) rather than on the error.
+   */
+  panelOp(
+    settings: ConnSettings,
+    op: 'open' | 'close',
+  ): Promise<{ ok: boolean; starting?: boolean; url?: string }> {
+    return request(settings, '/api/panel', {
+      method: 'POST',
+      body: { op },
+    });
+  },
+
   /** Start the screensaver (optionally switching theme/tier) or stop it. */
   screensaverOp(
     settings: ConnSettings,
