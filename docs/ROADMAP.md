@@ -449,8 +449,10 @@ Each entry now carries a `✅ DONE` / `🟡 PARTIAL` / `📋 OPEN` banner with i
     plus a **Quick actions** grid from `/api/actions` (POST by server-provided id, looked up in the
     ACTIONS allowlist; `danger:high` arms a 3s cancellable countdown). **HW-verified on `steam-machine`:**
     launched in Game Mode, rendered fullscreen with live box vitals + all 7 real allowlist actions.
-  - **RELEASED in agent 2.9.113 (2026-09-25, PR #553; Decky v0.2.85 bundles it).** Ships DARK — no
-    app button opens the panel yet (`POST /api/panel` exists; the app-side button is the next step).
+  - **RELEASED in agent 2.9.113 (2026-09-25, PR #553; Decky v0.2.85 bundles it).** Agent side is live;
+    the **app button** (Launch → Watch → "Show the Couchside panel on the TV", gated on
+    `supportsBoxPanel(settings.version)` ≥ 2.9.113, hidden on Windows/unknown) is built and
+    harness-pressed — users see it once the next app build ships.
     The same release fixed **KI-087** on BOTH agents: the shared loopback Host gate prefix-matched
     `"127."`, a DNS-rebinding hole on `/pair`, `/update`, `/panel`; now parsed via `ipaddress`.
   - **Still open:** (1c) hotkey toggle via the non-grabbing evdev reader; a **dedicated panel tile**
