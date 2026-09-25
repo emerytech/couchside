@@ -1,6 +1,2 @@
-• Launch Kodi, Plex, Jellyfin, Moonlight, VLC and Spotify from your phone — now in Steam's Game Mode too.
-• Live network speed on the Console.
-• Copy on the box, paste on your phone.
-• Turn your phone sideways for a laptop-style trackpad and keyboard.
-• Wake the box from sleep with a controller.
-• More Steam shortcuts, plus fixes for adding non-Steam apps.
+• Show the Couchside panel on your Steam Deck's own screen from Launch › Watch — live temperatures, memory and uptime plus the quick actions, in Game Mode, without Decky (needs the box service 2.9.113 or newer).
+• Pairs with service 2.9.113's security fix for the box's local pages.
