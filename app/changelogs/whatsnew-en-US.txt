@@ -1,2 +1,2 @@
-Open the Couchside panel on your Steam Deck's own screen from Launch > Watch: live temperatures, memory and uptime plus the quick actions, in Game Mode, without Decky (needs the box service 2.9.113 or newer).
-Pairs with service 2.9.113's security fix for the box's local pages.
+• Show the Couchside panel on your Steam Deck's own screen from Launch › Watch — live temperatures, memory and uptime plus the quick actions, in Game Mode, without Decky (needs the box service 2.9.113 or newer).
+• Pairs with service 2.9.113's security fix for the box's local pages.
