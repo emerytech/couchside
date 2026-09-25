@@ -23995,13 +23995,26 @@ class Handler(BaseHTTPRequestHandler):
         http://attacker.tld:PORT/pair: the socket peer IS loopback then, but
         the Host header still says attacker.tld. The legitimate launcher opens
         http://localhost:PORT/pair, so requiring a loopback Host costs nothing.
+
+        The host, once the brackets/port are stripped, must be EXACTLY a
+        loopback name or address. It is matched by parsing, not by prefix: a
+        `startswith("127.")` test used to pass here, but it also accepts a
+        rebindable hostname like `127.0.0.1.evil.com` (a name an attacker points
+        at 127.0.0.1), which defeats the whole gate. `ipaddress.ip_address`
+        rejects anything that is not a real IP, so only genuine 127.0.0.0/8
+        addresses (and the two explicit names) get through.
         """
         host = (self.headers.get("Host") or "").strip().lower()
         if host.startswith("["):  # [::1] or [::1]:port
             host = host[1:].split("]", 1)[0]
         elif host.count(":") == 1:
             host = host.rsplit(":", 1)[0]  # strip :port
-        return host in ("localhost", "::1") or host.startswith("127.")
+        if host in ("localhost", "::1"):
+            return True
+        try:
+            return ipaddress.ip_address(host).is_loopback
+        except ValueError:
+            return False
 
     def _current_token(self):
         """The token to advertise on /pair: fresh from the token file if we

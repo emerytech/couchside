@@ -146,6 +146,23 @@ def test_panel_route_end_to_end():
         check("foreign Host GET /panel: 403", st, 403)
         check("foreign Host GET /panel: no token leaked", TOKEN in body, False)
 
+        # The subtle rebinding names: a hostname that merely STARTS "127." is NOT
+        # a loopback address — an attacker can point 127.0.0.1.evil.com (or
+        # 127.example.com) at 127.0.0.1. The old startswith("127.") gate let these
+        # through and leaked the token. They must 403 with no token in the body.
+        for spoof in ("127.0.0.1.evil.com", "127.example.com"):
+            st, body = _get(port, "/panel", host_header="%s:%d" % (spoof, port))
+            check("rebinding Host %s: 403" % spoof, st, 403)
+            check("rebinding Host %s: no token leaked" % spoof, TOKEN in body, False)
+
+        # The other direction (§11.2, observe BOTH states): the real loopback names
+        # the box's own kiosk browser uses MUST still serve the page + token, or the
+        # fix would have broken reachability.
+        for ok in ("localhost:%d" % port, "127.0.0.1:%d" % port, "127.0.0.53:%d" % port):
+            st, body = _get(port, "/panel", host_header=ok)
+            check("loopback Host %s: 200" % ok, st, 200)
+            check("loopback Host %s: serves the token" % ok, TOKEN in body, True)
+
         # A trailing slash resolves to the same route (do_GET rstrips it).
         st, _ = _get(port, "/panel/")
         check("GET /panel/ (trailing slash): 200", st, 200)
