@@ -559,6 +559,8 @@ jobs:
       # authed + op-validated. See docs/memory/project_deck-overlay.md.
       - name: Unit tests (deck panel page)
         run: python3 tests/test_panel_page.py
+      - name: Unit tests (windows agent host gate)
+        run: python3 tests/test_win_host_gate.py
 
       # The on-box UPDATE progress page. It polls /api/ping across the agent's
       # own restart. SUCCESS (version changed) is the ONE state that stops the

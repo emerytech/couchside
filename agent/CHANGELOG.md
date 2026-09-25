@@ -18,6 +18,23 @@ the same thing regardless of what actually changed.
 Write for the person holding the phone, not for the commit log. They are
 deciding whether to press "Update now" on a machine across the room.
 
+## 2.9.113
+
+**Security fix for the box's own local pages.** The pages the box shows only to
+itself — the pairing QR, the update screen, and the new on-box quick panel — first
+check that the request really came from the box, not from somewhere on your
+network. That check accepted a specially crafted web address that merely *looked*
+local (it began with "127."); it now requires a genuinely local address. The only
+way to reach this was a web page loaded in a browser running on the box itself,
+and we have no indication anyone did — but please update. The Windows agent
+(0.4.12-win) gets the same fix.
+
+**Groundwork for a Steam Deck quick panel.** The box can now show a small
+Couchside panel on its own screen in Game Mode — live temperatures, memory and
+uptime plus the same quick actions as the phone — without Decky and without
+touching Steam's own interface. Nothing new appears in the app yet; a later app
+update will add the button that opens it.
+
 ## 2.9.111
 
 **Arm your controller to wake the box.** If a controller (or its dongle) can wake
