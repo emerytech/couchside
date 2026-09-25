@@ -23688,11 +23688,21 @@ def render_panel_page(token, port):
         ".val{font-size:min(5.4vmin,32px);font-weight:650;margin-top:.3em;line-height:1.1;}"
         ".sub{color:#8b95a7;font-size:min(2.4vmin,14px);margin-top:.25em;}"
         ".hint{margin-top:auto;padding-top:3vmin;color:#6b7688;font-size:min(2.5vmin,14px);}"
+        ".sec{font-size:min(3vmin,18px);color:#c7cede;margin:3.6vmin 0 1.6vmin;font-weight:600;}"
+        ".acts{display:grid;grid-template-columns:repeat(auto-fill,minmax(220px,1fr));gap:1.8vmin;}"
+        ".btn{appearance:none;border:0;text-align:left;cursor:pointer;background:#182238;color:#e8ecf3;"
+        "border-radius:14px;padding:2.2vmin 2.4vmin;font:inherit;font-size:min(3.2vmin,17px);font-weight:600;}"
+        ".btn .bd{display:block;color:#8b95a7;font-size:min(2.3vmin,13px);font-weight:400;margin-top:.3em;}"
+        ".btn.high{background:#2a1620;box-shadow:inset 0 0 0 1px #d3556a55;}"
+        ".btn.arm{background:#7a2233;color:#fff;}"
+        ".btn:active{filter:brightness(1.25);}"
         "</style></head><body>"
         "<header><h1>Couchside</h1><span class=\"v\" id=\"host\">connecting\u2026</span>"
         "<span class=\"dot bad\" id=\"dot\"></span></header>"
         "<div class=\"accent\"></div>"
         "<div class=\"grid\" id=\"grid\"></div>"
+        "<h2 class=\"sec\" id=\"actsh\" style=\"display:none\">Quick actions</h2>"
+        "<div class=\"acts\" id=\"acts\"></div>"
         "<p class=\"hint\">On-box panel \u00b7 press the <b>STEAM</b> button or <b>B</b> to close.</p>"
         "<script>(function(){"
         "var T=" + tok_js + ";"
@@ -23717,7 +23727,23 @@ def render_panel_page(token, port):
         "}"
         "function off(){document.getElementById('dot').className='dot bad';}"
         "function tick(){j('/api/status').then(draw).catch(off);}"
-        "tick();setInterval(tick,3000);"
+        # Quick actions. The id is server-provided (from /api/actions) and looked
+        # up in the agent's ACTIONS allowlist on POST (unknown -> 404); the panel
+        # never composes an id. danger=='high' arms a 3s cancellable countdown
+        # (reboot/poweroff/restart-session) before firing; lesser actions fire on
+        # tap. A second tap during the countdown cancels.
+        "function act(a){"
+        "function lbl(x){b.textContent=x;if(a.description){var d=el('span','bd');d.textContent=a.description;b.appendChild(d);}}"
+        "var b=el('button','btn'+(a.danger=='high'?' high':'')),armed=false,timer=null,left=0;"
+        "function reset(){armed=false;left=0;if(timer){clearInterval(timer);timer=null;}b.className='btn'+(a.danger=='high'?' high':'');lbl(a.label);}"
+        "function fire(){reset();b.textContent=a.label+' …';fetch('/api/actions/'+a.id,{method:'POST',headers:{Authorization:'Bearer '+T}}).then(function(){setTimeout(reset,1500);},function(){setTimeout(reset,1500);});}"
+        "function tick2(){if(left<=0){fire();return;}b.textContent=a.label+' in '+left+'… tap to cancel';left--;}"
+        "b.onclick=function(){if(a.danger!='high'){fire();return;}if(armed){reset();return;}armed=true;left=3;b.className='btn arm';tick2();timer=setInterval(tick2,1000);};"
+        "lbl(a.label);return b;}"
+        "function loadActions(){j('/api/actions').then(function(d){var a=(d&&d.actions)||[];if(!a.length)return;"
+        "document.getElementById('actsh').style.display='';var w=document.getElementById('acts');w.innerHTML='';"
+        "a.forEach(function(x){w.appendChild(act(x));});}).catch(function(){});}"
+        "tick();setInterval(tick,3000);loadActions();"
         "})();</script></body></html>"
     )
 

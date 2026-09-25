@@ -57,6 +57,12 @@ def test_panel_page_embeds_token_and_calls_api():
     # a typo here (e.g. battery.percent instead of .pct) ships a tile that never fills.
     for field in ("cpu_temp_c", "s.load", "mem", "battery", "cpu", "net_rx_bps", "uptime_s"):
         check("draws vital %s" % field, field in html, True)
+    # Phase 1b actions: the panel reads the allowlist from /api/actions and POSTs
+    # by SERVER-PROVIDED id (never composes one); the agent looks each id up in
+    # ACTIONS and 404s an unknown one. A high-danger action arms before firing.
+    check("loads the actions allowlist", "/api/actions'" in html, True)
+    check("posts an action by looked-up id", "/api/actions/'+a.id" in html, True)
+    check("high-danger arms a cancellable countdown", "tap to cancel" in html, True)
 
 
 def _server():
