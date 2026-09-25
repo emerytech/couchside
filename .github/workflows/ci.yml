@@ -554,6 +554,12 @@ jobs:
       - name: Unit tests (pairing page)
         run: python3 tests/test_pair_page.py
 
+      # The on-box Deck quick panel (Deck overlay). Guards that /panel is
+      # loopback+Host gated (embeds the token) and that POST /api/panel is
+      # authed + op-validated. See docs/memory/project_deck-overlay.md.
+      - name: Unit tests (deck panel page)
+        run: python3 tests/test_panel_page.py
+
       # The on-box UPDATE progress page. It polls /api/ping across the agent's
       # own restart. SUCCESS (version changed) is the ONE state that stops the
       # poll; unreachable == restarting and reachable-but-unchanged == still

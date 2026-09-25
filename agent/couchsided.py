@@ -3731,6 +3731,37 @@ def player_open(service, path="", query="", url=""):
     return {"ok": True, "starting": True, "service": service}
 
 
+def _panel_url():
+    """The on-box quick-panel URL for the kiosk to load. Plaintext DEFAULT_PORT
+    (a kiosk over the self-signed TLS port would hit a cert wall) + loopback host
+    (the /panel route is loopback-only). Agent-generated, NEVER client-supplied."""
+    return "http://localhost:%d/panel" % DEFAULT_PORT
+
+
+def panel_open():
+    """Open the on-box quick panel (GET /panel) in Game Mode via the Player's
+    kiosk-launch path — steamos-add-to-steam + steam://rungameid, the focus-swap
+    that makes a window show over Game Mode. A plain launch is NOT adopted by
+    gamescope (Phase 0, docs/memory/project_deck-overlay.md), so we reuse the
+    Player's proven Steam-shortcut mechanism. The tile is pointed at the FIXED,
+    agent-generated local /panel URL, so this needs no _pl_validate_open_url (that
+    gates USER-supplied free URLs; this is our own loopback page). The panel and
+    the streaming Player share one single-instance tile."""
+    if PL_MOCK:
+        _PL_MOCK.update(running=True, service="", path="", query="", url=_panel_url())
+        return {"ok": True, "starting": True, "url": _panel_url()}
+    if not player_available():
+        raise RuntimeError("panel launcher not installed on this box")
+    with _PL_LOCK:
+        _pl_conf_write("", "", "", url=_panel_url())
+        was_running = _pl_running()
+        if was_running:
+            player_close()
+        appid = _pl_appid()
+    _pl_relaunch(appid, was_running)
+    return {"ok": True, "starting": True}
+
+
 # ---------------------------------------------------------------------------
 # Player transport over CDP (play/pause/seek).
 #
@@ -23623,6 +23654,100 @@ def _udp_discovery_responder(port):
             pass
 
 
+def render_panel_page(token, port):
+    """The on-box Steam Deck quick panel (GET /panel): a self-contained control
+    surface shown in Game Mode via a kiosk-browser focus-swap — the Decky-free
+    alternative (docs/memory/project_deck-overlay.md). LOOPBACK-ONLY + Host-checked
+    like /pair because it embeds the bearer token so the box's OWN browser can call
+    the local API; nothing on the LAN may render it. No external resources: works on
+    a box with no net. Phase 1b renders live vitals from /api/status (fields match
+    real_status(); every one is optional and drawn only when present — an old agent
+    or a box without a battery/cpufreq simply shows fewer tiles). The token is
+    injected as a JSON string literal (json.dumps), safely escaped for the script."""
+    tok_js = json.dumps(token)
+    return (
+        "<!doctype html><html lang=\"en\"><head>"
+        "<meta charset=\"utf-8\">"
+        "<meta name=\"viewport\" content=\"width=device-width,initial-scale=1\">"
+        "<title>Couchside</title>"
+        "<style>"
+        "html,body{margin:0;height:100%;background:#0b1220;color:#e8ecf3;"
+        "font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;"
+        "-webkit-font-smoothing:antialiased;}"
+        "body{display:flex;flex-direction:column;padding:4vmin 5vmin;box-sizing:border-box;}"
+        "header{display:flex;align-items:baseline;gap:.6em;flex-wrap:wrap;}"
+        "h1{font-size:min(6vmin,40px);font-weight:700;margin:0;}"
+        ".v{color:#8b95a7;font-size:min(2.8vmin,17px);}"
+        ".dot{width:.6em;height:.6em;border-radius:50%;display:inline-block;margin-left:.2em;"
+        "background:#3ddc84;box-shadow:0 0 8px #3ddc84a0;}"
+        ".dot.bad{background:#ff6b6b;box-shadow:0 0 8px #ff6b6ba0;}"
+        ".accent{height:4px;width:88px;background:#f5c64b;border-radius:2px;margin:1.4vmin 0 3vmin;}"
+        ".grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(200px,1fr));gap:2.2vmin;}"
+        ".tile{background:#131c2e;border-radius:16px;padding:2.6vmin 2.8vmin;}"
+        ".k{color:#8b95a7;font-size:min(2.4vmin,13px);text-transform:uppercase;letter-spacing:.7px;}"
+        ".val{font-size:min(5.4vmin,32px);font-weight:650;margin-top:.3em;line-height:1.1;}"
+        ".sub{color:#8b95a7;font-size:min(2.4vmin,14px);margin-top:.25em;}"
+        ".hint{margin-top:auto;padding-top:3vmin;color:#6b7688;font-size:min(2.5vmin,14px);}"
+        ".sec{font-size:min(3vmin,18px);color:#c7cede;margin:3.6vmin 0 1.6vmin;font-weight:600;}"
+        ".acts{display:grid;grid-template-columns:repeat(auto-fill,minmax(220px,1fr));gap:1.8vmin;}"
+        ".btn{appearance:none;border:0;text-align:left;cursor:pointer;background:#182238;color:#e8ecf3;"
+        "border-radius:14px;padding:2.2vmin 2.4vmin;font:inherit;font-size:min(3.2vmin,17px);font-weight:600;}"
+        ".btn .bd{display:block;color:#8b95a7;font-size:min(2.3vmin,13px);font-weight:400;margin-top:.3em;}"
+        ".btn.high{background:#2a1620;box-shadow:inset 0 0 0 1px #d3556a55;}"
+        ".btn.arm{background:#7a2233;color:#fff;}"
+        ".btn:active{filter:brightness(1.25);}"
+        "</style></head><body>"
+        "<header><h1>Couchside</h1><span class=\"v\" id=\"host\">connecting\u2026</span>"
+        "<span class=\"dot bad\" id=\"dot\"></span></header>"
+        "<div class=\"accent\"></div>"
+        "<div class=\"grid\" id=\"grid\"></div>"
+        "<h2 class=\"sec\" id=\"actsh\" style=\"display:none\">Quick actions</h2>"
+        "<div class=\"acts\" id=\"acts\"></div>"
+        "<p class=\"hint\">On-box panel \u00b7 press the <b>STEAM</b> button or <b>B</b> to close.</p>"
+        "<script>(function(){"
+        "var T=" + tok_js + ";"
+        "function j(p){return fetch(p,{headers:{Authorization:'Bearer '+T}}).then(function(r){return r.ok?r.json():Promise.reject(r.status);});}"
+        "function el(t,c,h){var e=document.createElement(t);if(c)e.className=c;if(h!=null)e.innerHTML=h;return e;}"
+        "function tile(k,val,sub){var t=el('div','tile');t.appendChild(el('div','k',k));"
+        "t.appendChild(el('div','val',val));if(sub)t.appendChild(el('div','sub',sub));return t;}"
+        "function upt(s){s=Math.floor(s||0);var d=Math.floor(s/86400),h=Math.floor(s%86400/3600),m=Math.floor(s%3600/60);"
+        "return d?d+'d '+h+'h':(h?h+'h '+m+'m':m+'m');}"
+        "function bps(b){b=b||0;if(b<1024)return b+' B/s';if(b<1048576)return (b/1024).toFixed(0)+' KB/s';return (b/1048576).toFixed(1)+' MB/s';}"
+        "function draw(s){"
+        "document.getElementById('host').textContent=(s.hostname||'box')+' \u00b7 v'+(s.agent_version||'?');"
+        "document.getElementById('dot').className='dot';"
+        "var g=document.getElementById('grid');g.innerHTML='';"
+        "if(s.cpu_temp_c!=null)g.appendChild(tile('CPU temp',Math.round(s.cpu_temp_c)+'\u00b0'));"
+        "if(s.load&&s.load.length)g.appendChild(tile('Load',s.load[0].toFixed(2),'1 min'));"
+        "var m=s.mem||{};if(m.total_mb)g.appendChild(tile('Memory',Math.round(m.used_mb*100/m.total_mb)+'%',(m.used_mb/1024).toFixed(1)+' / '+(m.total_mb/1024).toFixed(1)+' GB'));"
+        "var b=s.battery;if(b&&b.pct!=null)g.appendChild(tile('Battery',b.pct+'%',b.status||''));"
+        "var c=s.cpu;if(c&&c.cur_mhz)g.appendChild(tile('CPU clock',(c.cur_mhz/1000).toFixed(1)+' GHz',c.governor||''));"
+        "if(s.net_rx_bps!=null)g.appendChild(tile('Network','\u2193 '+bps(s.net_rx_bps),'\u2191 '+bps(s.net_tx_bps)));"
+        "g.appendChild(tile('Uptime',upt(s.uptime_s)));"
+        "}"
+        "function off(){document.getElementById('dot').className='dot bad';}"
+        "function tick(){j('/api/status').then(draw).catch(off);}"
+        # Quick actions. The id is server-provided (from /api/actions) and looked
+        # up in the agent's ACTIONS allowlist on POST (unknown -> 404); the panel
+        # never composes an id. danger=='high' arms a 3s cancellable countdown
+        # (reboot/poweroff/restart-session) before firing; lesser actions fire on
+        # tap. A second tap during the countdown cancels.
+        "function act(a){"
+        "function lbl(x){b.textContent=x;if(a.description){var d=el('span','bd');d.textContent=a.description;b.appendChild(d);}}"
+        "var b=el('button','btn'+(a.danger=='high'?' high':'')),armed=false,timer=null,left=0;"
+        "function reset(){armed=false;left=0;if(timer){clearInterval(timer);timer=null;}b.className='btn'+(a.danger=='high'?' high':'');lbl(a.label);}"
+        "function fire(){reset();b.textContent=a.label+' …';fetch('/api/actions/'+a.id,{method:'POST',headers:{Authorization:'Bearer '+T}}).then(function(){setTimeout(reset,1500);},function(){setTimeout(reset,1500);});}"
+        "function tick2(){if(left<=0){fire();return;}b.textContent=a.label+' in '+left+'… tap to cancel';left--;}"
+        "b.onclick=function(){if(a.danger!='high'){fire();return;}if(armed){reset();return;}armed=true;left=3;b.className='btn arm';tick2();timer=setInterval(tick2,1000);};"
+        "lbl(a.label);return b;}"
+        "function loadActions(){j('/api/actions').then(function(d){var a=(d&&d.actions)||[];if(!a.length)return;"
+        "document.getElementById('actsh').style.display='';var w=document.getElementById('acts');w.innerHTML='';"
+        "a.forEach(function(x){w.appendChild(act(x));});}).catch(function(){});}"
+        "tick();setInterval(tick,3000);loadActions();"
+        "})();</script></body></html>"
+    )
+
+
 def render_pair_page(token, port):
     """Self-contained dark HTML page rendering the pairing QR offline.
 
@@ -23870,13 +23995,26 @@ class Handler(BaseHTTPRequestHandler):
         http://attacker.tld:PORT/pair: the socket peer IS loopback then, but
         the Host header still says attacker.tld. The legitimate launcher opens
         http://localhost:PORT/pair, so requiring a loopback Host costs nothing.
+
+        The host, once the brackets/port are stripped, must be EXACTLY a
+        loopback name or address. It is matched by parsing, not by prefix: a
+        `startswith("127.")` test used to pass here, but it also accepts a
+        rebindable hostname like `127.0.0.1.evil.com` (a name an attacker points
+        at 127.0.0.1), which defeats the whole gate. `ipaddress.ip_address`
+        rejects anything that is not a real IP, so only genuine 127.0.0.0/8
+        addresses (and the two explicit names) get through.
         """
         host = (self.headers.get("Host") or "").strip().lower()
         if host.startswith("["):  # [::1] or [::1]:port
             host = host[1:].split("]", 1)[0]
         elif host.count(":") == 1:
             host = host.rsplit(":", 1)[0]  # strip :port
-        return host in ("localhost", "::1") or host.startswith("127.")
+        if host in ("localhost", "::1"):
+            return True
+        try:
+            return ipaddress.ip_address(host).is_loopback
+        except ValueError:
+            return False
 
     def _current_token(self):
         """The token to advertise on /pair: fresh from the token file if we
@@ -24077,6 +24215,19 @@ class Handler(BaseHTTPRequestHandler):
                     self._send(403, {"error": "forbidden"}, started)
                     return
                 self._send_html(200, render_update_page(), started)
+                return
+
+            if path == "/panel":
+                # LOCALHOST-ONLY, same two gates as /pair: the on-box Deck quick
+                # panel embeds the bearer token so the box's own kiosk browser can
+                # call the local API, so a non-loopback client MUST NOT see it
+                # (docs/memory/project_deck-overlay.md). The loopback + Host checks
+                # ARE the security model — this page is never under /api and never
+                # bearer-authed itself.
+                if not self._is_loopback() or not self._host_header_is_local():
+                    self._send(403, {"error": "forbidden"}, started)
+                    return
+                self._send_html(200, render_panel_page(self._current_token(), self.port), started)
                 return
 
             if path == "/api/pair/status":
@@ -26113,6 +26264,43 @@ class Handler(BaseHTTPRequestHandler):
                 return
 
             # POST /api/screensaver: {"op":"start","theme"?,"tier"?} | {"op":"stop"}
+            # POST /api/panel: {"op":"open"} launches the on-box quick panel in
+            # Game Mode (the Decky-free focus-swap panel, docs/memory/project_deck-
+            # overlay.md); {"op":"close"} stops it. NO client-supplied values — the
+            # panel URL is agent-generated (_panel_url) and the tile is reused from
+            # the Player, so there is nothing to validate/sanitise. Rate-limited on
+            # the SAME clock as the Player's open (KI-019: a token holder must not be
+            # able to strobe the TV).
+            if path == "/api/panel":
+                if not player_available():
+                    self._send(404, {"error": "panel launcher not installed"}, started)
+                    return
+                try:
+                    req = json.loads(body.decode("utf-8")) if body else {}
+                    if not isinstance(req, dict):
+                        raise ValueError
+                    op = req.get("op")
+                except (ValueError, UnicodeDecodeError):
+                    self._send(400, {"error": "json body with op required"}, started)
+                    return
+                if op == "open":
+                    now = time.time()
+                    if now - _pl_last_open[0] < _PL_OPEN_MIN_INTERVAL_S:
+                        self._send(429, {"error": "slow down"}, started)
+                        return
+                    _pl_last_open[0] = now
+                    try:
+                        self._send(200, panel_open(), started)
+                    except RuntimeError as e:
+                        self._send(409, {"error": str(e)}, started)
+                    return
+                if op == "close":
+                    player_close()
+                    self._send(200, {"ok": True}, started)
+                    return
+                self._send(400, {"error": "unknown op"}, started)
+                return
+
             # POST /api/player: {"op":"open","service":"max","path":"/video/..."}
             #                   {"op":"close"}
             #
