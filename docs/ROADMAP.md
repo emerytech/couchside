@@ -449,6 +449,10 @@ Each entry now carries a `✅ DONE` / `🟡 PARTIAL` / `📋 OPEN` banner with i
     plus a **Quick actions** grid from `/api/actions` (POST by server-provided id, looked up in the
     ACTIONS allowlist; `danger:high` arms a 3s cancellable countdown). **HW-verified on `steam-machine`:**
     launched in Game Mode, rendered fullscreen with live box vitals + all 7 real allowlist actions.
+  - **RELEASED in agent 2.9.113 (2026-09-25, PR #553; Decky v0.2.85 bundles it).** Ships DARK — no
+    app button opens the panel yet (`POST /api/panel` exists; the app-side button is the next step).
+    The same release fixed **KI-087** on BOTH agents: the shared loopback Host gate prefix-matched
+    `"127."`, a DNS-rebinding hole on `/pair`, `/update`, `/panel`; now parsed via `ipaddress`.
   - **Still open:** (1c) hotkey toggle via the non-grabbing evdev reader; a **dedicated panel tile**
     (today it reuses the Player's single kiosk tile/conf — transient clobber, self-heals on next Player
     open — a second Steam-shortcut registration is its own HW-gated task); Decky coexistence (defer when
