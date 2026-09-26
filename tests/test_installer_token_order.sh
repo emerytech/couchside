@@ -40,6 +40,19 @@ check "the block contains the mirror restore" $?
 printf '%s\n' "$block" | grep -q 'mv -f -- "$t" "$STATE_DIR/token"'
 check "the block contains the (e0) mirror sync" $?
 
+# STATIC pin for section (e) and the config reads, which sit outside the lifted
+# block: no privileged command may name $CONFIG_FILE at all. The config lives in
+# the user-owned STATE_DIR and install.sh runs as that user, so any `sudo ...
+# $CONFIG_FILE` is a root operation through a user-controlled path (KI-093).
+# Review 2026-09-26 reproduced GNU install's path-based chmod following a swapped
+# symlink 98/3000 times. Pre-fix installers have several such lines -> FAIL.
+# The match requires $CONFIG_FILE to be an ARGUMENT of the sudo'd command: no
+# `|`, `&&`, `;` or `)` in between. `sudo cat -- "$LEGACY_CONFIG" | ( ... "$CONFIG_FILE" )`
+# is root reading root-owned /etc and THIS user writing -- allowed by design.
+n_priv="$(grep -vE '^\s*#' "$SRC" | grep -cE '\bsudo\b[^|&;()]*\$CONFIG_FILE' || true)"
+[ "${n_priv:-0}" -eq 0 ]
+check "no privileged command names \$CONFIG_FILE anywhere in the installer (found $n_priv)" $?
+
 tmp="$(mktemp -d)"
 trap 'rm -rf "$tmp"' EXIT
 

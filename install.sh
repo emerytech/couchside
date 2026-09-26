@@ -1298,7 +1298,10 @@ if sudo test -s "$LEGACY_CONFIG" && ! sudo test -L "$LEGACY_CONFIG" && ! [ -s "$
     # `sudo mv; sudo chown; sudo chmod` trio operated as root through the user
     # dir -- a planted symlink between the steps redirected the chown. A symlink
     # sitting at $CONFIG_FILE is replaced by the mv, never followed.
-    if sudo cat -- "$LEGACY_CONFIG" | ( umask 077; t="$STATE_DIR/.config.$$"; cat > "$t" && mv -f -- "$t" "$CONFIG_FILE" ); then
+    # `[ -s "$t" ]` before the mv: a failed/denied root read yields an EMPTY pipe
+    # with rc 0 from the inner cat, and landing a 0-byte config would make (e)
+    # mint a fresh default and strand the legacy pairings for good (review nit).
+    if sudo cat -- "$LEGACY_CONFIG" | ( umask 077; t="$STATE_DIR/.config.$$"; cat > "$t" && [ -s "$t" ] && mv -f -- "$t" "$CONFIG_FILE" || { rm -f -- "$t"; false; } ); then
         sudo rm -f -- "$LEGACY_CONFIG"
     else
         note "  could not write $CONFIG_FILE; leaving $LEGACY_CONFIG in place"
@@ -1342,7 +1345,11 @@ fi
 # ---------------------------------------------------------------------------
 # (e) Initial config.json (only if absent)
 # ---------------------------------------------------------------------------
-if sudo test -s "$CONFIG_FILE"; then
+# No sudo on $CONFIG_FILE, read or write: it lives in the user-owned STATE_DIR and
+# install.sh runs as that user. A root `install`/`test` here operated through a
+# user-controlled path (KI-093 class; GNU install's path-based chmod follows a
+# symlink swapped in after the create -- reproduced 98/3000 in review).
+if [ -s "$CONFIG_FILE" ]; then
     say "Config $CONFIG_FILE already exists, keeping it"
 else
     say "Generating initial $CONFIG_FILE"
@@ -1400,7 +1407,7 @@ print(json.dumps({"units": units, "actions": actions, "action_order": order}, in
 PYEOF
     # User-owned so the agent (running as the desktop user) can rewrite it on
     # every TV pairing / launcher edit. 0600 — it holds TV client certs/keys.
-    sudo install -m 0600 -o "$USER_NAME" "$WORK_DIR/config.json" "$CONFIG_FILE"
+    ( umask 077; t="$STATE_DIR/.config.$$"; cp -- "$WORK_DIR/config.json" "$t" && mv -f -- "$t" "$CONFIG_FILE" )
 fi
 
 # ---------------------------------------------------------------------------
@@ -2178,7 +2185,7 @@ fi
 # ---------------------------------------------------------------------------
 # (h) Firewall (Bazzite/Fedora ships firewalld; SteamOS generally has none)
 # ---------------------------------------------------------------------------
-PORT="$(sudo cat "$CONFIG_FILE" 2>/dev/null | python3 -c 'import json,sys
+PORT="$(cat "$CONFIG_FILE" 2>/dev/null | python3 -c 'import json,sys
 try: print(json.load(sys.stdin).get("port") or '"$PORT_DEFAULT"')
 except Exception: print('"$PORT_DEFAULT"')' 2>/dev/null || echo "$PORT_DEFAULT")"
 
@@ -2190,7 +2197,7 @@ except Exception: print('"$PORT_DEFAULT"')' 2>/dev/null || echo "$PORT_DEFAULT")
 # (ufw default-deny, strict firewalld zones) advertises a TLS port the phone
 # can't reach — and a pinned app FAILS CLOSED rather than downgrading, so the
 # box would read as offline.
-TLS_PORT="$(sudo cat "$CONFIG_FILE" 2>/dev/null | python3 -c 'import json,sys
+TLS_PORT="$(cat "$CONFIG_FILE" 2>/dev/null | python3 -c 'import json,sys
 try:
     tls = json.load(sys.stdin).get("tls")
     if isinstance(tls, dict) and not tls.get("enabled", True):
