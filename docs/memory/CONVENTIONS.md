@@ -806,3 +806,30 @@ Two smaller rules the same work established:
   a client timeout on a job-shaped POST is NEVER reported as failure — the poll is the truth; and
   a screen's shared confirm helpers are exported from its card component (`DeckyCard.tsx`) rather
   than a fourth file when the three surfaces must show the same Alert word for word.
+
+## Installer: an owner's choice outlives the run that made it (install.sh, 2026-09-26)
+
+Most installer runs are UNATTENDED and pass NO flags: `couchside update` and the app's update
+button (`update_apply`) both pipe couchside.tv/install.sh into `bash`. So a flag that expresses
+an owner's preference is only half a feature until the choice is persisted — `--no-decky` existed
+for months and the next update undid it. Established by the Decky-panel opt-out
+(`DECKY_PANEL_OFF`, `decky_panel_resolve` in `install.sh`):
+
+- **Where it lives decides whether it survives.** An owner preference that only the installer
+  reads is a presence-only marker in the user-owned `STATE_DIR` (`/var/lib/couchside/…`), NOT
+  `/etc/couchside`: a SteamOS update dropped `/etc/couchside` wholesale while `/var/lib/couchside`
+  survived (KI-088). Contrast `/etc/couchside/allow-decky`, which is a ROOT consent read by the
+  helper, a unit and a root wrapper — that one belongs in root-owned `/etc`. Presence is the gate;
+  the file's text is for a human and is never parsed.
+- **Every persisted "off" has an explicit "on"** (`--no-decky` / `--decky`), contradictory flags
+  exit 2 (reject, don't guess), and every run that honours the marker PRINTS the way back.
+- **Infer a choice only from an unambiguous signal.** "Stamp says we installed the panel, Decky
+  Loader is still there, the panel dir is gone" = the owner removed it. "Stamp AND panel both
+  gone" is also what a lost `/etc` looks like, so it keeps the old default. When the opt-in
+  flag runs, drop any state that would re-trigger the inference if its own work fails (the stale
+  stamp), or an offline `--decky` silently flips back to "off" next run.
+- **Test the shipped regions, not copies.** `tests/test_installer_decky_panel.sh` lifts the flag
+  loop, the `# Decky co-existence:` block and `# (h2)`…`# (i) Migration` out of `install.sh` by
+  those heading comments — keep them stable — and runs them under `set -euo pipefail` with a
+  sandbox-enforcing `sudo` shim and state-modelling `systemctl`/`curl` stubs. Pass the pre-fix
+  installer as argv[2] to replay every "unchanged" scenario against it byte-for-byte.
