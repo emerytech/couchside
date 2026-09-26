@@ -993,6 +993,15 @@ jobs:
       - name: Unit tests (play release notes are verified after commit)
         run: python3 tests/test_play_release_notes.py
 
+      # A Hermes release stack is `index.android.bundle:1:<offset>` and only the
+      # source map from that exact build can read it; the build box re-clones
+      # per release, so a map not archived at build time is gone for good. The
+      # build script must archive <artifact>-vc<N>.map WITH its APK, prove the
+      # map belongs to that APK, and fail closed (archive nothing) without one.
+      # Fake build tree + --archive-only: no Gradle, no SDK, no network.
+      - name: Unit tests (Android build archives the Hermes source map)
+        run: python3 tests/test_android_build_archive.py
+
       - uses: actions/setup-node@v7
         with:
           node-version: "22"
