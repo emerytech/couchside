@@ -22,6 +22,13 @@
       "runtimeArgs": ["scripts/web-dev.sh", "8199", "--mock-decky", "not_installed"],
       "port": 8199,
       "autoPort": false
+    },
+    {
+      "name": "couchside-web-harness-install-health",
+      "runtimeExecutable": "bash",
+      "runtimeArgs": ["scripts/web-dev.sh", "8199", "--mock-install-health", "damaged"],
+      "port": 8199,
+      "autoPort": false
     }
   ]
 }

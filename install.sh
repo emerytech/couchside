@@ -635,6 +635,13 @@ if [ "$UNINSTALL" -eq 1 ]; then
     sudo rm -rf /etc/couchside/openpuck
     sudo udevadm control --reload-rules 2>/dev/null || true
     note "removed the udev/modules-load drop-ins"
+    # The (g1) manifest describes an install that no longer exists; a kept
+    # STATE_DIR must not carry it into a later, different install.
+    sudo rm -f "$STATE_DIR/install-manifest"
+    # (f4) SteamOS keep-list drop-in: nothing of ours left to keep. (If the
+    # owner keeps $ETC_DIR below, the next SteamOS update drops it -- which is
+    # what an uninstall asked for anyway.)
+    sudo rm -f /etc/atomic-update.conf.d/couchside.conf
     if [ "$NO_DECKY" -eq 0 ] && sudo test -d "$DECKY_PLUGIN_DIR"; then
         sudo rm -rf "$DECKY_PLUGIN_DIR"
         sudo rm -f "$DECKY_STAMP"
@@ -1121,16 +1128,51 @@ fi
 # the STATE_DIR mirror (or a minted token) is still a live install: accept either
 # copy, or a phone-triggered update on exactly that box would fall into the sudo
 # section below and abort detached.
+# This path writes NOTHING under /etc, so it cannot repair a box whose OS update
+# took part of /etc away (a SteamOS image update drops /etc/couchside, the udev
+# rules and modules-load; docs/memory/steamos-etc-persistence.md). Say so plainly
+# rather than report a clean update over a damaged install. Readable as the
+# desktop user: the token is theirs, the rest are world-readable. (The sudo grant
+# cannot be checked from here -- /etc/sudoers.d is root-only -- the agent's
+# install_health does that.)
+_cs_quick_path_damage_note() {
+    local p lost=""
+    for p in "$TOKEN_FILE" /etc/udev/rules.d/99-couchside-uinput.rules \
+             /etc/modules-load.d/couchside-uinput.conf \
+             /etc/udev/rules.d/99-couchside-rtc.rules; do
+        [ -s "$p" ] || lost="$lost $p"
+    done
+    [ -n "$lost" ] || return 0
+    note "WARNING: this box's installation is damaged -- missing:$lost"
+    note "(an OS update can remove these). A quick update cannot restore them."
+    note "Re-run the installer from a terminal on the box (Desktop Mode on a Deck):"
+    note "  curl -fsSL https://couchside.tv/install.sh | bash$(_cs_optout_flags)"
+}
+# " -s -- --no-sudoers" when the (g1) manifest says this box was installed with
+# --no-sudoers, so the repair we print never installs the grant the owner
+# declined. Read as this user (the manifest is ours); no manifest = no flags.
+_cs_optout_flags() {
+    local m="$STATE_DIR/install-manifest"
+    if [ -f "$m" ] && [ ! -L "$m" ] && grep -qx 'token_canonical' "$m" 2>/dev/null \
+       && ! grep -qx 'sudoers_grant' "$m" 2>/dev/null; then
+        printf ' -s -- --no-sudoers'
+    fi
+}
 if [ "$CAN_PRIVILEGE" -eq 0 ] && { [ -s "$TOKEN_FILE" ] || [ -s "$STATE_DIR/token" ]; } \
    && systemctl is-active --quiet couchside.service 2>/dev/null; then
     if sudo -n systemctl restart --no-block couchside.service 2>/dev/null; then
         say "Updated the agent and restarted couchside.service (no password needed)."
         note "Quick update: agent binary only. If the service file or sudo grants"
         note "also changed, re-run this installer from a terminal to apply those."
+        _cs_quick_path_damage_note
         exit 0
     fi
-    # No restart grant yet (installed before this build). The new agent is on
-    # disk; the running one is stale and we can't reload it without a password.
+    # No restart grant (installed before this build, OR the grant was dropped by
+    # an OS update together with the rest of /etc -- on SteamOS that is the
+    # common case, so the damage note must fire HERE too, not only after a
+    # successful restart). The new agent is on disk; the running one is stale
+    # and we can't reload it without a password.
+    _cs_quick_path_damage_note
     note "The agent was downloaded, but reloading it needs a password this"
     note "detached update doesn't have. Run this once in a terminal on the box:"
     note "  curl -fsSL https://couchside.tv/install.sh | bash"
@@ -1144,39 +1186,82 @@ fi
 say "Setting up $ETC_DIR (sudo may prompt for your password)"
 sudo mkdir -p "$ETC_DIR"
 
-MIGRATED_TOKEN=""
-if sudo test -s "$TOKEN_FILE"; then
+# Read a token candidate SAFELY into a shell value (KI-093). Refuses a symlink,
+# accepts only one token-shaped line, and prints it; empty on reject. Root then
+# writes the validated VALUE into root-owned /etc -- never a copy through the
+# candidate path. WHO reads depends on who owns the directory:
+#   _safe_token_from PATH        as this user -- for the STATE_DIR mirror. That
+#                                dir is user-owned (e0), so its contents are
+#                                user-controlled; root must not open them.
+#                                (No sudo: install.sh refuses root and already
+#                                runs AS $USER_NAME.)
+#   _safe_token_from PATH root   as root -- ONLY for /etc/<old-name>/token,
+#                                whose directory is root-owned 0755 so the user
+#                                cannot plant anything there, and whose token
+#                                may be root-only 0600 on a never-upgraded box.
+_safe_token_from() {
+    local src="$1" S="" v
+    [ "${2:-}" = root ] && S=sudo
+    $S test -f "$src" 2>/dev/null || return 1
+    $S test -L "$src" 2>/dev/null && return 1
+    v="$($S head -n 1 -- "$src" 2>/dev/null | tr -d '\r\n')" || return 1
+    case "$v" in ''|*[!A-Za-z0-9_-]*) return 1 ;; esac
+    [ "${#v}" -ge 16 ] && [ "${#v}" -le 256 ] || return 1
+    printf '%s' "$v"
+}
+
+# A regular, non-empty, non-symlink canonical token is authoritative. Anything
+# else at that path is damage and is rebuilt below.
+CANON_OK=0
+if sudo test -f "$TOKEN_FILE" && sudo test -s "$TOKEN_FILE" && ! sudo test -L "$TOKEN_FILE"; then
+    CANON_OK=1
+fi
+MIGRATED_VALUE=""
+MIGRATED_FROM=""
+if [ "$CANON_OK" -eq 1 ]; then
     note "token already exists, keeping it (existing phone pairings keep working)"
 else
     # The agent (>= 2.9.114) keeps a MIRROR of the token in STATE_DIR, which
     # survived when a SteamOS 3.8.28 update removed /etc/couchside/token on a
-    # user's Deck. If the canonical file is gone but the mirror is there, THAT is
-    # the live token the phones are paired to -- restore it; minting a fresh one
-    # here would silently break every pairing that still worked.
-    if sudo test -s "$STATE_DIR/token"; then
-        MIGRATED_TOKEN="$STATE_DIR/token"
+    # user's Deck. If the canonical file is gone but the mirror is a valid token,
+    # THAT is the token the phones are paired to RIGHT NOW -- restore it; minting
+    # a fresh one here would silently break every pairing that still worked.
+    #
+    # The mirror OUTRANKS every pre-rename install: a leftover /etc/couchpilot or
+    # /etc/rescue-agent token is from an install retired long ago (section (i)
+    # keeps those dirs on purpose), and letting it win would un-pair every phone.
+    # Old installs are consulted ONLY when there is no valid mirror
+    # (tests/test_installer_token_order.sh).
+    if v="$(_safe_token_from "$STATE_DIR/token")"; then
+        MIGRATED_VALUE="$v"; MIGRATED_FROM="$STATE_DIR/token"
+    else
+        # Prior installs live under root-owned /etc/<name>: not user-plantable,
+        # so read as root (the token may be root-only 0600 on a box that never
+        # upgraded), same symlink + shape guard. OLD_INSTALLS is oldest-first
+        # and the last hit wins.
+        for entry in "${OLD_INSTALLS[@]}"; do
+            old_token="${entry%%|*}/token"
+            if v="$(_safe_token_from "$old_token" root)"; then
+                MIGRATED_VALUE="$v"; MIGRATED_FROM="$old_token"
+            fi
+        done
     fi
-    # Look for a token to inherit from any prior install (newest-named first so
-    # couchpilot wins over rescue-agent if somehow both are present).
-    for entry in "${OLD_INSTALLS[@]}"; do
-        old_etc="${entry%%|*}"
-        old_token="${old_etc}/token"
-        if sudo test -s "$old_token"; then
-            MIGRATED_TOKEN="$old_token"
-        fi
-    done
 fi
-if sudo test -s "$TOKEN_FILE"; then
+# Root writes only a VALIDATED VALUE. `rm -f` first, so `tee` always creates a
+# fresh regular file at $TOKEN_FILE rather than writing into whatever is there.
+if [ "$CANON_OK" -eq 1 ]; then
     :
-elif [ -n "$MIGRATED_TOKEN" ]; then
-    note "migrating token from $MIGRATED_TOKEN (existing phone pairings keep working)"
-    sudo cp "$MIGRATED_TOKEN" "$TOKEN_FILE"
+elif [ -n "$MIGRATED_VALUE" ]; then
+    note "migrating token from $MIGRATED_FROM (existing phone pairings keep working)"
+    sudo rm -f "$TOKEN_FILE"
+    printf '%s\n' "$MIGRATED_VALUE" | sudo tee "$TOKEN_FILE" > /dev/null
 else
     note "generating new pairing token"
-    # FRESH install (no prior token, nothing migrated) — this is the ONE case
-    # the pairing tutorial auto-opens for. The two branches above keep their
-    # token, so re-runs and upgrades leave FRESH_TOKEN at 0 and stay silent.
+    # FRESH install (no valid token anywhere) -- the ONE case the pairing tutorial
+    # auto-opens for. The branches above keep their token, so re-runs and
+    # upgrades leave FRESH_TOKEN at 0 and stay silent.
     FRESH_TOKEN=1
+    sudo rm -f "$TOKEN_FILE"
     if command -v openssl >/dev/null 2>&1; then
         openssl rand -hex 24 | sudo tee "$TOKEN_FILE" > /dev/null
     else
@@ -1200,15 +1285,27 @@ sudo chmod 700 "$STATE_DIR"
 # /etc/couchside/token first and falls back to this copy only if that file is
 # ever lost. ALWAYS overwrite: the canonical file is the truth, so after any
 # rotation (new-token, the Decky plugin's Regenerate) the mirror must follow.
-sudo cp "$TOKEN_FILE" "$STATE_DIR/token"
-sudo chmod 600 "$STATE_DIR/token"
-sudo chown "$USER_NAME" "$STATE_DIR/token"
+# Written AS THIS USER, no sudo (install.sh refuses root and runs as $USER_NAME):
+# temp file + mv inside the dir they own, so root never writes through a path
+# under STATE_DIR and nothing planted there can redirect a privileged write
+# (KI-093). $TOKEN_FILE is user-readable after the chown just above.
+( umask 077; t="$STATE_DIR/.token.$$"; cp -- "$TOKEN_FILE" "$t" && mv -f -- "$t" "$STATE_DIR/token" )
 LEGACY_CONFIG="${ETC_DIR}/config.json"
-if sudo test -s "$LEGACY_CONFIG" && ! sudo test -s "$CONFIG_FILE"; then
+if sudo test -s "$LEGACY_CONFIG" && ! sudo test -L "$LEGACY_CONFIG" && ! [ -s "$CONFIG_FILE" ]; then
     note "migrating config $LEGACY_CONFIG -> $CONFIG_FILE (pairings preserved)"
-    sudo mv "$LEGACY_CONFIG" "$CONFIG_FILE"
-    sudo chown "$USER_NAME" "$CONFIG_FILE"
-    sudo chmod 600 "$CONFIG_FILE"
+    # KI-093 rule: root READS from root-owned /etc (not user-plantable) and THIS
+    # USER writes into the user-owned STATE_DIR via temp+mv. The old
+    # `sudo mv; sudo chown; sudo chmod` trio operated as root through the user
+    # dir -- a planted symlink between the steps redirected the chown. A symlink
+    # sitting at $CONFIG_FILE is replaced by the mv, never followed.
+    # `[ -s "$t" ]` before the mv: a failed/denied root read yields an EMPTY pipe
+    # with rc 0 from the inner cat, and landing a 0-byte config would make (e)
+    # mint a fresh default and strand the legacy pairings for good (review nit).
+    if sudo cat -- "$LEGACY_CONFIG" | ( umask 077; t="$STATE_DIR/.config.$$"; cat > "$t" && [ -s "$t" ] && mv -f -- "$t" "$CONFIG_FILE" || { rm -f -- "$t"; false; } ); then
+        sudo rm -f -- "$LEGACY_CONFIG"
+    else
+        note "  could not write $CONFIG_FILE; leaving $LEGACY_CONFIG in place"
+    fi
 fi
 
 # ---------------------------------------------------------------------------
@@ -1248,7 +1345,11 @@ fi
 # ---------------------------------------------------------------------------
 # (e) Initial config.json (only if absent)
 # ---------------------------------------------------------------------------
-if sudo test -s "$CONFIG_FILE"; then
+# No sudo on $CONFIG_FILE, read or write: it lives in the user-owned STATE_DIR and
+# install.sh runs as that user. A root `install`/`test` here operated through a
+# user-controlled path (KI-093 class; GNU install's path-based chmod follows a
+# symlink swapped in after the create -- reproduced 98/3000 in review).
+if [ -s "$CONFIG_FILE" ]; then
     say "Config $CONFIG_FILE already exists, keeping it"
 else
     say "Generating initial $CONFIG_FILE"
@@ -1306,7 +1407,7 @@ print(json.dumps({"units": units, "actions": actions, "action_order": order}, in
 PYEOF
     # User-owned so the agent (running as the desktop user) can rewrite it on
     # every TV pairing / launcher edit. 0600 — it holds TV client certs/keys.
-    sudo install -m 0600 -o "$USER_NAME" "$WORK_DIR/config.json" "$CONFIG_FILE"
+    ( umask 077; t="$STATE_DIR/.config.$$"; cp -- "$WORK_DIR/config.json" "$t" && mv -f -- "$t" "$CONFIG_FILE" )
 fi
 
 # ---------------------------------------------------------------------------
@@ -1851,6 +1952,56 @@ else
 fi
 
 # ---------------------------------------------------------------------------
+# (f4) SteamOS: ask the OS to KEEP our /etc files across image updates
+# ---------------------------------------------------------------------------
+# A SteamOS atomic update throws away every /etc change EXCEPT the paths on a
+# keep-list (Valve steamos-customizations, read 2026-09-26 at tag
+# jupiter-20260916.1 -- full citations in docs/memory/steamos-etc-persistence.md):
+#   atomic-update/rauc/atomic-update-keep.conf.in:1-2  "When an atomic update is
+#     applied, all changes made in /etc will be lost. The only exceptions are the
+#     files and directories listed below."
+#   ...:14  it also reads every drop-in "/etc/atomic-update.conf.d/*.conf"
+#   ...:38  "/etc/systemd/system/*.service" -- why couchside.service survived
+#   misc/libexec/holo-sync-var.in:332-340 builds the rsync include list from both,
+#     :389-390 `--include-from=<list> --exclude="*"` drops everything else.
+# CONFIRMED on the Deck OLED itself (SteamOS 3.9.2, read-only): its installed
+# /usr/lib/rauc/atomic-update-keep.conf is that same list, and
+# /usr/lib/holo/holo-sync-var:233-240,286-288 is that same filter. The Deck's
+# /etc overlay upper held couchside.service and nothing else of ours -- exactly
+# the damage observed: the unit (listed) and /var survived; /etc/couchside, the
+# udev rules, modules-load and the sudoers grant (not listed) were dropped.
+#
+# The drop-in is the OS's own supported mechanism (Tailscale's and the Nix
+# installer's SteamOS paths use the same directory). It names ONLY files this
+# installer owns -- never a distro file, which would shadow Valve's future edits
+# (the warning in example-additional-keep-list.conf.in) -- and it widens nothing:
+# it keeps the grants and files the owner already installed from being silently
+# revoked by an update. Written only where the drop-in dir exists (SteamOS); a
+# Bazzite/ostree box keeps /etc on its own (hash-verified across 43 -> 44). The
+# units (*.service/*.socket) and the SDDM drop-in are already on Valve's list.
+if [ -d /etc/atomic-update.conf.d ]; then
+    say "SteamOS: keeping Couchside's /etc files across OS updates (/etc/atomic-update.conf.d/couchside.conf)"
+    cat > "$WORK_DIR/couchside-keep.conf" <<'KEEPCONF'
+# Couchside: keep the installer's own /etc files across SteamOS updates.
+# Written by the Couchside installer; removed by `install.sh --uninstall`.
+# '*' matches within one path segment, '**' across segments (SteamOS keep-list
+# syntax). Only Couchside-owned paths -- never a file the OS ships.
+/etc/couchside/**
+/etc/sudoers.d/zz-couchside
+/etc/sudoers.d/zz-couchside-updates
+/etc/sudoers.d/zz-couchside-decky
+/etc/udev/rules.d/99-couchside-uinput.rules
+/etc/udev/rules.d/99-couchside-rtc.rules
+/etc/udev/rules.d/99-couchside-cec.rules
+/etc/udev/rules.d/99-couchside-openpuck.rules
+/etc/modules-load.d/couchside-uinput.conf
+/etc/systemd/network/50-couchside-wol.link
+KEEPCONF
+    sudo install -m 0644 -o root -g root "$WORK_DIR/couchside-keep.conf" \
+        /etc/atomic-update.conf.d/couchside.conf
+fi
+
+# ---------------------------------------------------------------------------
 # (g) systemd unit
 # ---------------------------------------------------------------------------
 say "Installing systemd unit $UNIT_DST"
@@ -1874,6 +2025,45 @@ if ! grep -q -- '--config' "$WORK_DIR/couchside.service.rendered"; then
         "$WORK_DIR/couchside.service.rendered"
 fi
 sudo install -m 0644 -o root -g root "$WORK_DIR/couchside.service.rendered" "$UNIT_DST"
+
+# ---------------------------------------------------------------------------
+# (g1) Install manifest: which root-owned pieces THIS run laid down
+# ---------------------------------------------------------------------------
+# Every piece in /etc above is (re)written UNCONDITIONALLY on a full run --
+# nothing is skipped as "already installed" -- so re-running this installer is
+# THE repair for a box whose OS update took part of /etc away (SteamOS drops
+# /etc/couchside, the udev rules and modules-load; see
+# docs/memory/steamos-etc-persistence.md). The token is the one piece that is
+# kept rather than rewritten, and (d) restores it from the STATE_DIR mirror.
+#
+# The agent reports a piece listed here that has gone missing as
+# `install_health` on /api/status, and the app tells the owner to re-run this.
+# The list is what separates LOST from NEVER INSTALLED (a box set up before a
+# rule existed must not read as damaged), so it names exactly what this run
+# wrote: with --no-sudoers there is no grant and no journal wrapper to lose.
+# Ids only -- never paths; the agent maps them through its own frozen table and
+# ignores anything it does not know. Lives in STATE_DIR because that survives
+# the SteamOS update that takes /etc. Written BEFORE the restart below, so the
+# restarted agent reads it.
+INSTALL_MANIFEST="$STATE_DIR/install-manifest"
+{
+    echo "# Couchside install manifest -- written by install.sh on every full run."
+    echo "# One piece id per line; the agent reports any of these that go missing."
+    echo "token_canonical"
+    if [ "$NO_SUDOERS" -eq 0 ]; then
+        echo "sudoers_grant"
+        echo "journal_wrapper"
+    fi
+    echo "udev_uinput"
+    echo "modules_uinput"
+    echo "udev_rtc"
+    echo "udev_cec"
+    echo "udev_openpuck"
+    echo "systemd_unit"
+} > "$WORK_DIR/install-manifest"
+# As THIS user, no sudo: the manifest lives in the user-owned STATE_DIR (KI-093
+# rule), and install.sh already runs as $USER_NAME.
+install -m 0644 "$WORK_DIR/install-manifest" "$INSTALL_MANIFEST"
 
 # ---------------------------------------------------------------------------
 # (g2) privileged helper — replaces the sudoers surface, one verb at a time
@@ -1995,7 +2185,7 @@ fi
 # ---------------------------------------------------------------------------
 # (h) Firewall (Bazzite/Fedora ships firewalld; SteamOS generally has none)
 # ---------------------------------------------------------------------------
-PORT="$(sudo cat "$CONFIG_FILE" 2>/dev/null | python3 -c 'import json,sys
+PORT="$(cat "$CONFIG_FILE" 2>/dev/null | python3 -c 'import json,sys
 try: print(json.load(sys.stdin).get("port") or '"$PORT_DEFAULT"')
 except Exception: print('"$PORT_DEFAULT"')' 2>/dev/null || echo "$PORT_DEFAULT")"
 
@@ -2007,7 +2197,7 @@ except Exception: print('"$PORT_DEFAULT"')' 2>/dev/null || echo "$PORT_DEFAULT")
 # (ufw default-deny, strict firewalld zones) advertises a TLS port the phone
 # can't reach — and a pinned app FAILS CLOSED rather than downgrading, so the
 # box would read as offline.
-TLS_PORT="$(sudo cat "$CONFIG_FILE" 2>/dev/null | python3 -c 'import json,sys
+TLS_PORT="$(cat "$CONFIG_FILE" 2>/dev/null | python3 -c 'import json,sys
 try:
     tls = json.load(sys.stdin).get("tls")
     if isinstance(tls, dict) and not tls.get("enabled", True):
@@ -2304,6 +2494,27 @@ PY
     verline="Latest release: ${tag}"
     [ -n "$latest" ] && verline="${verline} (agent ${latest})"
 
+    # Already current is NOT the same as healthy. An OS update can take the
+    # installer's root-owned files out of /etc while the agent binary in $HOME
+    # stays current (SteamOS dropped /etc/couchside, the udev rules and
+    # modules-load on a real Deck while the agent kept running). The full
+    # installer rewrites every one of them, so a damaged box must not be told
+    # "Nothing to update" -- it reinstalls instead. Readable as this user: the
+    # token is ours, the rest are world-readable.
+    lost=""
+    for p in /etc/couchside/token /etc/udev/rules.d/99-couchside-uinput.rules \
+             /etc/modules-load.d/couchside-uinput.conf \
+             /etc/udev/rules.d/99-couchside-rtc.rules; do
+      [ -s "$p" ] || lost="$lost $p"
+    done
+    if [ -n "$lost" ] && [ "$force" -ne 1 ]; then
+      echo
+      echo "This box's installation is damaged -- missing:$lost"
+      echo "(an OS update can remove these). Re-running the installer to restore them;"
+      echo "that needs your password unless passwordless sudo is set up on this box."
+      force=1
+    fi
+
     # Already current (and not forced): say so plainly and stop. No misleading
     # prompt, no needless reinstall.
     if [ "$available" -eq 0 ] && [ "$force" -ne 1 ]; then
@@ -2351,10 +2562,21 @@ PY
       echo "Decky Loader detected — updating the Couchside plugin (it owns the agent on this box)."
     fi
     echo "Updating from ${INSTALL_URL} ..."
+    # A box installed with --no-sudoers has a (g1) manifest that names
+    # token_canonical but no sudoers_grant. Carry the flag into the re-run so a
+    # damage-triggered reinstall never installs the grant the owner declined.
+    # Read as this user (the manifest is ours); no manifest -> no flags.
+    flags=""
+    m=/var/lib/couchside/install-manifest
+    if [ -f "$m" ] && [ ! -L "$m" ] && grep -qx token_canonical "$m" 2>/dev/null \
+       && ! grep -qx sudoers_grant "$m" 2>/dev/null; then
+      flags=" -s -- --no-sudoers"
+      echo "(installed with --no-sudoers; keeping that)"
+    fi
     # exec so THIS couchside process is replaced by the updater: the installer
     # overwrites this very script, and a still-running bash would then read the
     # new file's bytes at its old offset and error out. exec frees our file.
-    exec bash -c "curl -fsSL '$INSTALL_URL' | bash"
+    exec bash -c "curl -fsSL '$INSTALL_URL' | bash$flags"
     ;;
   pair)
     exec "${DIR}/couchside-pair"

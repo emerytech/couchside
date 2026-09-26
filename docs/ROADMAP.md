@@ -16,6 +16,22 @@ Each entry now carries a `✅ DONE` / `🟡 PARTIAL` / `📋 OPEN` banner with i
 
 ## 🔨 In Progress
 
+### SteamOS keeps dropping our /etc files — keep-list + install_health + installer repair (KI-088 follow-up, 2026-09-26)
+- **priority:** P1 · **risk:** medium (touches install.sh's root section) · **affects:** agent, install.sh, app · **depends_on:** agent 2.9.114 token mirror (shipped)
+- **Status:** 🔨 draft PR on `feat/install-health`. Not merged, not released.
+- **Why:** a SteamOS image update drops every `/etc` change that is not on Valve's keep-list. The
+  Deck OLED lost `/etc/couchside`, the udev rules, modules-load and the sudoers grant, while the
+  unit survived. Mechanism verified on the Deck (read-only) against Valve's source:
+  `docs/memory/steamos-etc-persistence.md`.
+- **Built:** install.sh (f4) SteamOS keep-list drop-in; (g1) install manifest; unconditional
+  re-write confirmed and test-pinned; (d) mirror now beats pre-rename tokens; `couchside update`
+  reinstalls a damaged box; quick-path damage note. Agent `install_health` on `/api/status`,
+  additive (not a cap). App Console banner with the one-liner + Copy.
+- **Gate to Done:** release the agent + install.sh, re-run the installer on the Deck (restores
+  everything + writes the drop-in), then apply the NEXT SteamOS update and confirm the footprint
+  survives. Follow-ups: Decky plugin writes the same drop-in + manifest; move the SteamOS helper
+  fallback out of the user-owned `/var/lib/couchside` (task chip filed).
+
 ### App crash export — local error log, Copy/Share, native-crash help, source-map archive (field report 2026-09-26)
 - **priority:** P1 (a paying direct-edition user cannot report a crash) · **risk:** low-medium
   (sits in the path of every JS fatal — chained, never swallows, control-tested) · **affects:**

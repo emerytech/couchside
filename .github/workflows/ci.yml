@@ -579,6 +579,15 @@ jobs:
         run: python3 tests/test_win_host_gate.py
       - name: Unit tests (token resilience)
         run: python3 tests/test_token_resilience.py
+      # A SteamOS image update took /etc/couchside, the udev rules and
+      # modules-load off a real Deck and NOTHING said so for a month: the
+      # gamepad, scheduled wake and journal just degraded. install_health on
+      # /api/status reports each lost piece so the app can say "re-run the
+      # installer". Both directions: all present -> ok; each piece removed ->
+      # reported; could-not-look -> unknown and NEVER ok; a piece this box never
+      # had (no manifest) is not a false alarm on a healthy box.
+      - name: Unit tests (install health)
+        run: python3 tests/test_install_health.py
 
       # The on-box UPDATE progress page. It polls /api/ping across the agent's
       # own restart. SUCCESS (version changed) is the ONE state that stops the
@@ -781,6 +790,32 @@ jobs:
       # sudo that cannot prompt and asserts the run continues.
       - name: Optional steps cannot abort a no-root update
         run: bash tests/test_update_no_root.sh install.sh
+
+      # install.sh (d): the live token MIRROR must beat a leftover pre-rename
+      # (couchpilot / rescue-agent) token. The old order restored the dead token
+      # over the live one AND then synced the mirror to it, un-pairing every
+      # phone on exactly the boxes the mirror exists to protect. Runs the REAL
+      # (d)+(e0) lines against a tmp root.
+      - name: Installer token restore order
+        run: bash tests/test_installer_token_order.sh install.sh
+
+      # Re-running install.sh is THE repair for a box whose OS update took part
+      # of /etc (SteamOS keeps the unit but drops /etc/couchside + udev rules).
+      # Every root-owned piece must be rewritten unconditionally -- a
+      # skip-if-installed guard keyed on anything SteamOS keeps would never
+      # restore the rest -- and the (g1) manifest must match what the agent's
+      # install_health checks. Real blocks, tmp root, agent reads the result.
+      - name: Installer restores lost root pieces
+        run: bash tests/test_installer_restore.sh install.sh
+
+      # SteamOS discards every /etc change on an image update EXCEPT paths on
+      # a keep-list (Valve steamos-customizations holo-sync-var). The Deck OLED
+      # lost /etc/couchside, the udev rules and modules-load that way while the
+      # unit (on Valve's list) survived. install.sh (f4) adds a drop-in naming
+      # only Couchside's own files. Runs Valve's include/exclude rules with real
+      # rsync over a fake /etc upper, with and without the drop-in (control).
+      - name: Installer keeps its files across SteamOS updates
+        run: bash tests/test_installer_steamos_keep.sh install.sh
 
       # The release scripts used to "self-verify" a signature against a pubkey
       # derived from the key that had just signed it — true by construction for

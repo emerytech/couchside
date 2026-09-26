@@ -883,6 +883,34 @@ Two smaller rules the same work established:
   a screen's shared confirm helpers are exported from its card component (`DeckyCard.tsx`) rather
   than a fourth file when the three surfaces must show the same Alert word for word.
 
+## Root-owned install files: four edit sites, and SteamOS drops them by default
+
+Added 2026-09-26 (`feat/install-health`). SteamOS throws away every `/etc` change that
+is not on its keep-list at each image update. That is how a Deck lost `/etc/couchside`,
+the udev rules and modules-load while `couchside.service` (on Valve's list) survived. See
+[`steamos-etc-persistence.md`](steamos-etc-persistence.md). So a new root-owned file that
+`install.sh` writes under `/etc` needs ALL of:
+
+1. **The write itself, UNCONDITIONAL on a full run.** Never guard it with "already
+   installed?". Re-running the installer is the documented repair, and a guard keyed on
+   anything SteamOS keeps (the unit, say) would never restore the rest.
+   `tests/test_installer_restore.sh` catches exactly that mutation.
+2. **The (f4) keep-list drop-in** (`/etc/atomic-update.conf.d/couchside.conf`). Use the
+   exact path, or `/etc/couchside/**` for our own directory. Never a path the OS or
+   pacman owns (a kept copy shadows upstream edits forever). Never `/etc/**`.
+   `tests/test_installer_steamos_keep.sh` pins it.
+3. **If losing it breaks a feature: a frozen id** in the agent's `_INSTALL_PIECE_IDS` +
+   `_INSTALL_PIECE_PATHS`, the (g1) manifest `echo` in `install.sh`, and a label in
+   `app/lib/installHealth.ts` `PIECE_LABELS`. The app test reads the agent's table and
+   fails on an id without a label. A file that only some boxes get (the WoL `.link`,
+   opt-in wrappers) stays out of the table: the agent cannot tell "not applicable" from
+   "lost".
+4. **`--uninstall`** removes it (and README's manual-uninstall block names it).
+
+The Decky plugin writes a subset of the same files and does NOT yet write the drop-in
+or the manifest (follow-up). A plugin-only box has no manifest, so the agent checks
+only the default set.
+
 ## Installer: an owner's choice outlives the run that made it (install.sh, 2026-09-26)
 
 Most installer runs are UNATTENDED and pass NO flags: `couchside update` and the app's update
