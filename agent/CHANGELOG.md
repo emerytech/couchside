@@ -18,6 +18,17 @@ the same thing regardless of what actually changed.
 Write for the person holding the phone, not for the commit log. They are
 deciding whether to press "Update now" on a machine across the room.
 
+## 2.9.114
+
+**The box no longer goes dark if its pairing key goes missing.** After a SteamOS
+3.8.28 update, at least one Steam Deck lost the file that holds its pairing key, and
+the box service refused to start, so the phone just saw the box as offline. The
+service now keeps a backup copy of the key next to its other settings, in a place
+that survived that update, and uses it if the original is ever lost, so your phones
+stay paired. Existing boxes make the copy on their own the next time the service
+starts. If both are ever missing, the service still comes up and shows a fresh
+pairing QR (`couchside pair`) instead of staying dark.
+
 ## 2.9.113
 
 **Security fix for the box's own local pages.** The pages the box shows only to
