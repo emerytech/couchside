@@ -1186,16 +1186,25 @@ fi
 say "Setting up $ETC_DIR (sudo may prompt for your password)"
 sudo mkdir -p "$ETC_DIR"
 
-# Read a token candidate SAFELY into a shell value. A candidate under the
-# USER-owned STATE_DIR is a user-controlled path, so root never opens it: the
-# read runs as $USER_NAME, refuses a symlink, and accepts only one token-shaped
-# line. Root then writes the validated VALUE into root-owned /etc -- never a
-# copy through the candidate path (KI-093). Prints the token; empty on reject.
+# Read a token candidate SAFELY into a shell value (KI-093). Refuses a symlink,
+# accepts only one token-shaped line, and prints it; empty on reject. Root then
+# writes the validated VALUE into root-owned /etc -- never a copy through the
+# candidate path. WHO reads depends on who owns the directory:
+#   _safe_token_from PATH        as this user -- for the STATE_DIR mirror. That
+#                                dir is user-owned (e0), so its contents are
+#                                user-controlled; root must not open them.
+#                                (No sudo: install.sh refuses root and already
+#                                runs AS $USER_NAME.)
+#   _safe_token_from PATH root   as root -- ONLY for /etc/<old-name>/token,
+#                                whose directory is root-owned 0755 so the user
+#                                cannot plant anything there, and whose token
+#                                may be root-only 0600 on a never-upgraded box.
 _safe_token_from() {
-    local src="$1" v
-    sudo -u "$USER_NAME" test -f "$src" 2>/dev/null || return 1
-    sudo -u "$USER_NAME" test -L "$src" 2>/dev/null && return 1
-    v="$(sudo -u "$USER_NAME" head -n 1 -- "$src" 2>/dev/null | tr -d '\r\n')" || return 1
+    local src="$1" S="" v
+    [ "${2:-}" = root ] && S=sudo
+    $S test -f "$src" 2>/dev/null || return 1
+    $S test -L "$src" 2>/dev/null && return 1
+    v="$($S head -n 1 -- "$src" 2>/dev/null | tr -d '\r\n')" || return 1
     case "$v" in ''|*[!A-Za-z0-9_-]*) return 1 ;; esac
     [ "${#v}" -ge 16 ] && [ "${#v}" -le 256 ] || return 1
     printf '%s' "$v"
@@ -1226,12 +1235,13 @@ else
     if v="$(_safe_token_from "$STATE_DIR/token")"; then
         MIGRATED_VALUE="$v"; MIGRATED_FROM="$STATE_DIR/token"
     else
-        # Prior installs live under root-owned /etc/<name>; read with the same
-        # guard (they chown their token to the user). OLD_INSTALLS is
-        # oldest-first and the last hit wins.
+        # Prior installs live under root-owned /etc/<name>: not user-plantable,
+        # so read as root (the token may be root-only 0600 on a box that never
+        # upgraded), same symlink + shape guard. OLD_INSTALLS is oldest-first
+        # and the last hit wins.
         for entry in "${OLD_INSTALLS[@]}"; do
             old_token="${entry%%|*}/token"
-            if v="$(_safe_token_from "$old_token")"; then
+            if v="$(_safe_token_from "$old_token" root)"; then
                 MIGRATED_VALUE="$v"; MIGRATED_FROM="$old_token"
             fi
         done
@@ -1275,17 +1285,24 @@ sudo chmod 700 "$STATE_DIR"
 # /etc/couchside/token first and falls back to this copy only if that file is
 # ever lost. ALWAYS overwrite: the canonical file is the truth, so after any
 # rotation (new-token, the Decky plugin's Regenerate) the mirror must follow.
-# Written AS THE USER (temp file + mv inside the dir they own): root never
-# writes through a path under STATE_DIR, so nothing planted there can redirect
-# a privileged write (KI-093). $TOKEN_FILE is user-readable after the chown.
-sudo -u "$USER_NAME" sh -c 'umask 077; t="$1/.token.$$"; cp -- "$2" "$t" && mv -f -- "$t" "$1/token"' \
-    _ "$STATE_DIR" "$TOKEN_FILE"
+# Written AS THIS USER, no sudo (install.sh refuses root and runs as $USER_NAME):
+# temp file + mv inside the dir they own, so root never writes through a path
+# under STATE_DIR and nothing planted there can redirect a privileged write
+# (KI-093). $TOKEN_FILE is user-readable after the chown just above.
+( umask 077; t="$STATE_DIR/.token.$$"; cp -- "$TOKEN_FILE" "$t" && mv -f -- "$t" "$STATE_DIR/token" )
 LEGACY_CONFIG="${ETC_DIR}/config.json"
-if sudo test -s "$LEGACY_CONFIG" && ! sudo test -s "$CONFIG_FILE"; then
+if sudo test -s "$LEGACY_CONFIG" && ! sudo test -L "$LEGACY_CONFIG" && ! [ -s "$CONFIG_FILE" ]; then
     note "migrating config $LEGACY_CONFIG -> $CONFIG_FILE (pairings preserved)"
-    sudo mv "$LEGACY_CONFIG" "$CONFIG_FILE"
-    sudo chown "$USER_NAME" "$CONFIG_FILE"
-    sudo chmod 600 "$CONFIG_FILE"
+    # KI-093 rule: root READS from root-owned /etc (not user-plantable) and THIS
+    # USER writes into the user-owned STATE_DIR via temp+mv. The old
+    # `sudo mv; sudo chown; sudo chmod` trio operated as root through the user
+    # dir -- a planted symlink between the steps redirected the chown. A symlink
+    # sitting at $CONFIG_FILE is replaced by the mv, never followed.
+    if sudo cat -- "$LEGACY_CONFIG" | ( umask 077; t="$STATE_DIR/.config.$$"; cat > "$t" && mv -f -- "$t" "$CONFIG_FILE" ); then
+        sudo rm -f -- "$LEGACY_CONFIG"
+    else
+        note "  could not write $CONFIG_FILE; leaving $LEGACY_CONFIG in place"
+    fi
 fi
 
 # ---------------------------------------------------------------------------
@@ -2037,8 +2054,9 @@ INSTALL_MANIFEST="$STATE_DIR/install-manifest"
     echo "udev_openpuck"
     echo "systemd_unit"
 } > "$WORK_DIR/install-manifest"
-# As the user: the manifest lives in the user-owned STATE_DIR (KI-093 rule).
-sudo -u "$USER_NAME" install -m 0644 "$WORK_DIR/install-manifest" "$INSTALL_MANIFEST"
+# As THIS user, no sudo: the manifest lives in the user-owned STATE_DIR (KI-093
+# rule), and install.sh already runs as $USER_NAME.
+install -m 0644 "$WORK_DIR/install-manifest" "$INSTALL_MANIFEST"
 
 # ---------------------------------------------------------------------------
 # (g2) privileged helper — replaces the sudoers surface, one verb at a time
@@ -2485,7 +2503,8 @@ PY
     if [ -n "$lost" ] && [ "$force" -ne 1 ]; then
       echo
       echo "This box's installation is damaged -- missing:$lost"
-      echo "(an OS update can remove these). Reinstalling to restore them."
+      echo "(an OS update can remove these). Re-running the installer to restore them;"
+      echo "that needs your password unless passwordless sudo is set up on this box."
       force=1
     fi
 

@@ -31,13 +31,13 @@ check() { if [ "$2" -eq 0 ]; then echo "  PASS  $1"; else echo "  FAIL  $1"; fai
 
 # The block: from the (d) header down to (e0)'s mirror sync (inclusive), i.e.
 # everything up to the legacy-config migration that follows it.
-block="$(awk '/^# \(d\) Token: /{f=1} f&&/^LEGACY_CONFIG=/{exit} f' "$SRC")"
+block="$(awk '/^# \(d\) Token: /{f=1} f&&/^# \(e0\) Which display manager/{exit} f' "$SRC")"
 lines=$(printf '%s\n' "$block" | wc -l | tr -d ' ')
-[ "$lines" -gt 20 ] && [ "$lines" -lt 200 ]
+[ "$lines" -gt 20 ] && [ "$lines" -lt 260 ]
 check "(d)+(e0) block extracts and is bounded ($lines lines)" $?
 printf '%s\n' "$block" | grep -q 'MIGRATED_FROM="$STATE_DIR/token"'
 check "the block contains the mirror restore" $?
-printf '%s\n' "$block" | grep -q 'mv -f -- "$t" "$1/token"'
+printf '%s\n' "$block" | grep -q 'mv -f -- "$t" "$STATE_DIR/token"'
 check "the block contains the (e0) mirror sync" $?
 
 tmp="$(mktemp -d)"
@@ -49,15 +49,21 @@ new_root() {
     root="$tmp/$1"
     mkdir -p "$root/etc" "$root/var/lib"
 }
+# Pass-through sudo for the tmp root. Also swallows `sudo -u USER` (the KI-093
+# reads/writes ran that way for a while; harmless to keep). A scenario may set
+# SUDO_SHIM to a different function body to model an attacker (see the legacy
+# config race case).
+DEFAULT_SHIM='sudo() { if [ "${1:-}" = -u ]; then shift 2; fi; "$@"; }'
 run_d() {
     {
         echo 'set -euo pipefail'
         echo 'say()  { echo "==> $*"; }'
         echo 'note() { echo "    $*"; }'
-        echo 'sudo() { if [ "${1:-}" = -u ]; then shift 2; fi; "$@"; }'
+        echo "${SUDO_SHIM:-$DEFAULT_SHIM}"
         echo "ETC_DIR='$root/etc/couchside'"
         echo "TOKEN_FILE='$root/etc/couchside/token'"
         echo "STATE_DIR='$root/var/lib/couchside'"
+        echo "CONFIG_FILE='$root/var/lib/couchside/config.json'"
         echo "USER_NAME='$(id -un)'"
         echo 'FRESH_TOKEN=0'
         echo 'OLD_INSTALLS=('
@@ -170,6 +176,34 @@ printf '%s' "$t" | grep -Eq '^[0-9a-f]{48}$'
 check "garbage rejected -> a fresh hex token was minted" $?
 [ "$(tok "$root/var/lib/couchside/token")" = "$t" ]
 check "mirror re-synced to the fresh canonical" $?
+
+echo "KI-093: legacy /etc config migration survives a mv->chown race (attacker swaps a symlink in)"
+# The hole (review 2026-09-26, reproduced 5/5 in a container): the old trio
+# `sudo mv LEGACY CONFIG; sudo chown; sudo chmod` ran as root THROUGH the
+# user-owned dir. Between mv landing the file and chown/chmod, the user swaps
+# config.json for a symlink; chmod/chown follow it. The shim below plays that
+# attacker: right after any root `mv` lands, it replaces the destination with a
+# link to a victim. The fixed block never runs a root op on that path (root only
+# reads /etc; THIS user writes via temp+mv), so the hook is inert and the
+# victim stays untouched.
+new_root legacy_config_race
+put "$root/etc/couchside/token" "canonical-token-value-1"
+put "$root/etc/couchside/config.json" '{"legacy": true}'
+put "$root/victim3" "CONFIG-VICTIM"
+chmod 644 "$root/victim3"
+mkdir -p "$root/var/lib/couchside"
+SUDO_SHIM="sudo() { if [ \"\${1:-}\" = -u ]; then shift 2; fi; if [ \"\$1\" = mv ]; then command mv \"\${@:2}\" || return \$?; ln -sfn '$root/victim3' \"\${@: -1}\"; return 0; fi; \"\$@\"; }"
+out="$(SUDO_SHIM="$SUDO_SHIM" run_d)"; rc=$?
+unset SUDO_SHIM
+check "the block ran (rc=$rc)" "$rc"
+[ ! -L "$root/var/lib/couchside/config.json" ] && [ "$(tok "$root/var/lib/couchside/config.json")" = '{"legacy":true}' ]
+check "config.json is a regular file holding the legacy config (no root mv for the attacker to race)" $?
+[ "$(tok "$root/victim3")" = "CONFIG-VICTIM" ] && [ "$(mode "$root/victim3")" = "644" ]
+check "the victim's content and mode are untouched (no chmod/chown through a swapped link)" $?
+[ ! -e "$root/etc/couchside/config.json" ]
+check "the legacy /etc copy was removed after a successful migration" $?
+[ "$(mode "$root/var/lib/couchside/config.json")" = "600" ]
+check "migrated config is 0600" $?
 
 echo "KI-093: a symlink AT the canonical path is damage, rebuilt from the mirror"
 new_root canonical_symlink

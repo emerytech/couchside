@@ -4607,12 +4607,18 @@ _INSTALL_GRANT_NEEDLE = JOURNAL_WRAPPER
 # frozen entries get CHECKED, never a path, never anything that runs.
 INSTALL_MANIFEST = "/var/lib/couchside/install-manifest"
 # Without a manifest (every box until its next full install, and Decky-plugin
-# installs, which write no manifest): only the pieces BOTH installers have written
-# since July 2026. udev_cec / udev_openpuck are install.sh-only and newer, so
-# they are checked only when a manifest says they were laid down.
+# installs, which write no manifest): only the pieces that EVERY install has
+# written since July 2026 -- both installers, with or without --no-sudoers.
+# udev_cec / udev_openpuck are install.sh-only and newer; sudoers_grant and
+# journal_wrapper are absent BY CHOICE on a --no-sudoers box (install.sh writes
+# the wrapper only in the sudoers-on branch), and a pre-manifest box cannot say
+# which it is. So all four are checked only when a manifest names them.
+# Checking the grant/wrapper by default put a non-dismissable "damaged" banner
+# on every healthy --no-sudoers box (review finding, 2026-09-26). A SteamOS
+# /etc loss is still caught without them: it takes token_canonical and the
+# udev/modules-load pieces in the same sweep.
 _INSTALL_DEFAULT_EXPECTED = frozenset((
-    "token_canonical", "sudoers_grant", "journal_wrapper", "udev_uinput",
-    "modules_uinput", "udev_rtc", "systemd_unit",
+    "token_canonical", "udev_uinput", "modules_uinput", "udev_rtc", "systemd_unit",
 ))
 # /etc only changes across an OS update (a reboot, so a fresh agent) or an
 # installer run (which restarts the agent), so the answer is effectively static
@@ -4755,9 +4761,10 @@ def set_install_health_mock(state):
 
 def mock_install_health():
     if _INSTALL_HEALTH_MOCK["state"] == "damaged":
+        # == what a no-manifest Deck that lost /etc/couchside + udev + modules-load
+        # reports (the grant/wrapper are manifest-gated; see _INSTALL_DEFAULT_EXPECTED).
         return {"ok": False,
-                "missing": ["token_canonical", "sudoers_grant", "journal_wrapper",
-                            "udev_uinput", "modules_uinput", "udev_rtc"],
+                "missing": ["token_canonical", "udev_uinput", "modules_uinput", "udev_rtc"],
                 "unknown": [], "no_sudoers": False}
     return {"ok": True, "missing": [], "unknown": [], "no_sudoers": False}
 

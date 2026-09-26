@@ -188,6 +188,29 @@ def test_sudoers_grant_missing_is_reported():
         check("the probe ran `sudo -n -l` exactly once", b.run.calls, 1)
 
 
+def test_pre_manifest_no_sudoers_box_is_not_damaged():
+    """Review finding 2026-09-26: a box installed with --no-sudoers BEFORE manifests
+    existed has no wrapper and no grant BY CHOICE and no manifest to say so. It
+    must read healthy (no banner, no repair command that would install the
+    declined grant). CONTROL: the same absence WITH a full manifest IS damage."""
+    print("test_pre_manifest_no_sudoers_box_is_not_damaged")
+    with Box() as b:
+        b.no_manifest()
+        os.remove(b.paths["journal_wrapper"])
+        b.sudo(_Run(0, LISTING_NOT_GRANTED))      # sudo lists, our grant is not in effect
+        h = cs.install_health_compute()
+        check("no manifest + no wrapper + no grant -> healthy, nothing missing",
+              (h["ok"], h["missing"], h["unknown"]), (True, [], []))
+        check("...and no opt-out claimed without a manifest (unknown, not asserted)", h["no_sudoers"], False)
+        check("sudo was not even probed (grant not in the default set)", b.run.calls, 0)
+    with Box() as b:                              # CONTROL: manifest names both -> reported
+        os.remove(b.paths["journal_wrapper"])
+        b.sudo(_Run(0, LISTING_NOT_GRANTED))
+        h = cs.install_health_compute()
+        check("CONTROL: with a full manifest the same absence IS damage",
+              (h["ok"], h["missing"]), (False, ["sudoers_grant", "journal_wrapper"]))
+
+
 def test_the_deck_case_whole_etc_dir_gone():
     """What the Deck OLED actually lost (read on the box 2026-09-26): /etc/couchside/
     as a directory, the udev rules, modules-load and the sudoers file; the unit
@@ -202,10 +225,14 @@ def test_the_deck_case_whole_etc_dir_gone():
             os.remove(b.paths[pid])
         b.sudo(_Run(0, LISTING_DECK))                                 # verbatim, rc 0
         h = cs.install_health_compute()
+        # The grant + wrapper are NOT in the no-manifest default set (a --no-sudoers
+        # box lacks both by choice and a pre-manifest box cannot say which it is);
+        # the /etc loss is still caught by the token + udev + modules-load pieces.
         check("the lost pieces are missing, in table order (== the Deck's own answer)",
-              h["missing"], ["token_canonical", "sudoers_grant", "journal_wrapper",
-                             "udev_uinput", "modules_uinput", "udev_rtc"])
+              h["missing"], ["token_canonical", "udev_uinput", "modules_uinput", "udev_rtc"])
         check("nothing unknown: the Deck's sudo listed fine", h["unknown"], [])
+        check("grant/wrapper not judged without a manifest",
+              [p for p in ("sudoers_grant", "journal_wrapper") if p in h["missing"] + h["unknown"]], [])
         check("ok is false", h["ok"], False)
         check("the surviving unit is not reported", "systemd_unit" in h["missing"] + h["unknown"], False)
         check("mock `damaged` is the same shape the Deck returned",
@@ -424,7 +451,8 @@ def test_paths_match_install_sh():
 
 if __name__ == "__main__":
     for fn in (test_all_present_is_ok, test_each_file_piece_missing_is_reported,
-               test_sudoers_grant_missing_is_reported, test_the_deck_case_whole_etc_dir_gone,
+               test_sudoers_grant_missing_is_reported, test_pre_manifest_no_sudoers_box_is_not_damaged,
+               test_the_deck_case_whole_etc_dir_gone,
                test_unreadable_is_unknown_never_ok, test_empty_or_wrong_type_is_missing,
                test_manifest_decides_what_is_expected, test_cache_and_copies,
                test_sudo_state_tristate_and_old_callers,

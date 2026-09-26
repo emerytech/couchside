@@ -540,7 +540,7 @@ function ConsoleScreen() {
           </View>
         )}
 
-        {/* Box installation damaged (agent >= 2.9.115): an OS update took
+        {/* Box installation damaged (agent >= 2.9.116): an OS update took
             root-owned install pieces out of /etc. Probe-and-appear on the
             field — older agents omit it and the banner renders nothing; it
             also renders nothing for pieces the box merely could not check. */}

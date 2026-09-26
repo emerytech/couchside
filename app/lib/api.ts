@@ -1027,7 +1027,7 @@ export type Status = {
   net_rx_bps?: number;
   net_tx_bps?: number;
   /** Is the root-owned footprint the installer laid down still there (agent >=
-      2.9.115)? ABSENT on older agents — show nothing. A SteamOS image update can
+      2.9.116)? ABSENT on older agents — show nothing. A SteamOS image update can
       take back part of /etc (it dropped /etc/couchside and the udev rules on a
       real Deck). `ok` is false for a piece that could not be CHECKED too, so the
       banner keys off a non-empty `missing`, never `ok` alone — see

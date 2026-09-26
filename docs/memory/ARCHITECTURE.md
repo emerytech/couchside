@@ -444,7 +444,8 @@ Three layers, added 2026-09-26:
    `sudo -n -l` probe (`_sudo_nopasswd_state`), where "could not list" means unknown.
    `ok` is never true while anything is unknown. `/var/lib/couchside/install-manifest`
    (ids that `install.sh` (g1) wrote) separates "lost" from "never installed". Without
-   a manifest, only the pieces both installers have written since July 2026 are
+   a manifest, only the pieces EVERY install has written since July 2026 (both
+   installers, with or without `--no-sudoers`) are
    checked. The app (`lib/installHealth.ts`, `components/InstallHealthBanner.tsx`)
    shows its banner only on a non-empty `missing`.
 3. **Repair**: every `/etc` piece is rewritten unconditionally on a full install run.
