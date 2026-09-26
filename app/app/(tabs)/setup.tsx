@@ -72,6 +72,8 @@ import { resetTips } from '@/lib/tips';
 import { setPref, usePref } from '@/lib/prefs';
 import { sectionOpen, toggleCollapsed, type PrefSectionId } from '@/lib/prefSections';
 import { THEME_PICKER } from '@/lib/gameTheme';
+import { aliasFromValue, iconValue } from '@/lib/appIcon';
+import { appIconChoices, currentAppIcon, setAppIcon } from '@/lib/appIconNative';
 import { SKINS, SKIN_KEYS, setSkin, useSkinKey } from '@/lib/skin';
 import { EFFECTS, EFFECT_KEYS, toggleEffect, useActiveEffects, useEffects } from '@/lib/effects';
 import {
@@ -930,6 +932,8 @@ function SetupBody() {
   const themeMode = useThemeMode();
   const accent = useAccent();
   const themePack = useThemePack();
+  const appIcons = appIconChoices();
+  const [appIcon, setAppIconState] = useState<string | null>(() => currentAppIcon());
   const skinKey = useSkinKey();
   const effectsList = useEffects();
   const activeFx = useActiveEffects();
@@ -1669,6 +1673,26 @@ function SetupBody() {
                   hapticSelection();
                 }}
               />
+              {/* APP ICON: only builds that declare choices in expo.extra.appIcons render
+                  this (the direct edition: gold Pro default + the Play Store icon; the
+                  store app declares none). The OS-enabled launcher alias IS the stored
+                  state, read back after every switch rather than assumed. */}
+              {appIcons.length > 1 && (
+                <SegPref
+                  label="App icon"
+                  sub="Home-screen icon. Pinned shortcuts may reset on some launchers."
+                  options={appIcons.map((c) => ({ value: iconValue(c.alias), label: c.label }))}
+                  value={iconValue(appIcon)}
+                  onSelect={(v) => {
+                    const alias = aliasFromValue(v, appIcons);
+                    if (alias === undefined) return;
+                    hapticSelection();
+                    void setAppIcon(alias)
+                      .then((now) => setAppIconState(now))
+                      .catch(() => setAppIconState(currentAppIcon()));
+                  }}
+                />
+              )}
               {/* LOOK = a whole palette, not just an accent (owner ask 2026-09-02).
                   One horizontal row of preview cards, each drawn in ITS OWN colours
                   for the scheme in effect, so a light-mode phone previews the light

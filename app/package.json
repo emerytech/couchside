@@ -8,6 +8,7 @@
     "@lottiefiles/dotlottie-react": "^0.13.5",
     "buffer": "^6.0.3",
     "expo": "~57.0.8",
+    "expo-alternate-app-icons": "8.0.0",
     "expo-application": "~57.0.2",
     "expo-build-properties": "~57.0.7",
     "expo-camera": "~57.0.3",

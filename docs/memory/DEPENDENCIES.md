@@ -307,3 +307,17 @@ neither is tracked by git. Confirmed via `git ls-files`. The Ed25519 release
 signing keys live outside the repo entirely (`~/couchside-release.key` and the
 rollover backup) — losing both means losing the ability to ship updates, so the
 offline backup is not optional.
+
+### expo-alternate-app-icons 8.0.0 (app, pinned exact) — added 2026-09-26
+- **What:** config plugin + native module for alternate launcher icons. Android: one `<activity-alias>`
+  `.MainActivity<Name>` per declared icon (disabled by default, own adaptive-icon mipmaps generated at prebuild),
+  switched with `PackageManager.setComponentEnabledSetting` — enable new THEN disable old, `DONT_KILL_APP`.
+  iOS: `setAlternateIconName`. Web shim: `supportsAlternateIcons = false`.
+- **Why:** a direct-edition user wanted the Play Store icon instead of the gold Pro one. Writing our own Kotlin
+  module + manifest plugin was the alternative; this is small, maintained, peer `expo >= 53`, and its generated
+  APK is what we verify (aapt: aliases present, one enabled) rather than trusting the claim.
+- **Where configured:** ONLY in `build/direct-apk`'s `app.config.js` (plugin entry + `expo.extra.appIcons`
+  declaring `[Pro (default), Standard]`). `main` installs the package but declares nothing, so the store APK only
+  links the module; `lib/appIcon.ts` parses `extra.appIcons` defensively (malformed → no row).
+- **Risk:** launcher quirks (pinned shortcuts reset; brief disappearance on some OEMs). Every icon is fixed at
+  build time (new icon = new APK). Verify on hardware both ways with a cold start after each switch.
