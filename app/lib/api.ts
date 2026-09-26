@@ -6,6 +6,7 @@ import { Buffer } from 'buffer';
 import { isPinMismatchError, pinnedRequest, type PinnedResponse } from './boxTransport.ts';
 import { isDeclaredTooLarge, isUsableBodySize } from './responseCap';
 import { ensureImageTicket, getImageTicket, mintUploadTicket } from './ticket.ts';
+import type { InstallHealth } from './installHealth.ts';
 import { Settings } from './settings';
 
 /** The subset of Settings the API client actually needs. */
@@ -1025,6 +1026,13 @@ export type Status = {
       idle link still reports 0. */
   net_rx_bps?: number;
   net_tx_bps?: number;
+  /** Is the root-owned footprint the installer laid down still there (agent >=
+      2.9.115)? ABSENT on older agents — show nothing. A SteamOS image update can
+      take back part of /etc (it dropped /etc/couchside and the udev rules on a
+      real Deck). `ok` is false for a piece that could not be CHECKED too, so the
+      banner keys off a non-empty `missing`, never `ok` alone — see
+      lib/installHealth.ts (damagedPieces). */
+  install_health?: InstallHealth;
 };
 
 export type UnitScope = 'system' | 'user';

@@ -32,6 +32,7 @@ import shutil
 import signal
 import socket
 import ssl
+import stat
 import struct
 import subprocess
 import sys
@@ -982,18 +983,35 @@ def _nopasswd_last_match(rules_text, needle):
     return bool(allowed)
 
 
-def _sudo_nopasswd_allows(needle):
-    """True when sudoers ACTUALLY permits the command without a password —
-    last-match evaluated (see _nopasswd_last_match). False on any failure: a
-    missing grant must HIDE an action, never offer a dead one."""
+def _sudo_nopasswd_state(needle):
+    """Tri-state form of _sudo_nopasswd_allows, for a caller that must tell
+    "the grant is not there" apart from "could not look" (install_health):
+
+      True   `sudo -n -l` listed the rules and the LAST match for `needle` is
+             NOPASSWD (see _nopasswd_last_match);
+      False  it listed them and the last match is not NOPASSWD, or nothing
+             matches: the grant is genuinely not in effect;
+      None   no listing at all -- sudo absent, timed out, or refused to list
+             without a password. Under sudo's default `listpw=any` a user with
+             NO NOPASSWD rule left cannot list, so a box that lost every grant
+             lands here too; but a box with `Defaults listpw=always` lands here
+             WITH its grants intact, so "could not list" is reported as not
+             known, never inferred to be missing. Never raises."""
     try:
         r = subprocess.run(["sudo", "-n", "-l"], capture_output=True,
                            timeout=4, text=True)
         if r.returncode != 0:
-            return False
-        return _nopasswd_last_match(r.stdout, needle)
+            return None
+        return bool(_nopasswd_last_match(r.stdout, needle))
     except Exception:
-        return False
+        return None
+
+
+def _sudo_nopasswd_allows(needle):
+    """True when sudoers ACTUALLY permits the command without a password —
+    last-match evaluated (see _nopasswd_last_match). False on any failure: a
+    missing grant must HIDE an action, never offer a dead one."""
+    return _sudo_nopasswd_state(needle) is True
 
 
 def _can_sudo_suspend():
@@ -4453,6 +4471,13 @@ def real_status():
         # "Expecting ',' delimiter: line 12 column 3" or "units must be a
         # non-empty list", so the phone can name the problem.
         **({"config_error": CONFIG_ERROR} if CONFIG_ERROR else {}),
+        # Is the root-owned footprint install.sh laid down still there (agent >=
+        # 2.9.115)? ADDITIVE: {"ok", "missing": [ids], "unknown": [ids]}, ids
+        # from the frozen _INSTALL_PIECE_IDS table. A SteamOS image update can
+        # take back part of /etc; the app shows "re-run the installer" on a
+        # non-empty `missing`. ok is never true for a piece that could not be
+        # checked (degrade closed). Memoised, see install_health().
+        "install_health": install_health(),
         "history": _history_snapshot(),
     }
 
@@ -4520,6 +4545,201 @@ def real_journal(unit, scope, lines):
         env = _user_env()
     r = subprocess.run(cmd, capture_output=True, text=True, timeout=15, env=env)
     return r.stdout.splitlines()
+
+
+# ---------------------------------------------------------------------------
+# Install health: is the root-owned footprint the installer laid down still there?
+# ---------------------------------------------------------------------------
+# WHY. An OS image update can silently take back part of /etc. On the
+# maintainer's Steam Deck OLED (SteamOS 3.8.24) /etc/couchside/ (token + the
+# sudo-granted journal wrapper), every /etc/udev/rules.d/99-couchside-*.rules
+# and /etc/modules-load.d/couchside-uinput.conf were GONE from 2026-08-26 on,
+# while /etc/systemd/system/couchside.service and /var/lib/couchside survived;
+# a user's Deck showed the same after SteamOS 3.8.28 (KI-088). Nothing on the
+# box said so: the agent (>= 2.9.114) kept serving from the token mirror, and
+# the gamepad / scheduled wake / journal just quietly degraded. A Bazzite box
+# kept every one of these files across a bootc 43 -> 44 upgrade (hash-identical),
+# so this is a SteamOS behaviour, not a Couchside bug -- see
+# docs/memory/steamos-etc-persistence.md for what SteamOS keeps and why. The
+# remedy is always the same: re-run the installer from a terminal on the box
+# (the phone-triggered quick update has no password, so it cannot write /etc).
+#
+# The ids below are the WIRE CONTRACT for `install_health` on /api/status. The
+# table is FROZEN: a piece is added by adding an explicit entry, and only for a
+# file install.sh actually writes. Paths are module constants so tests can point
+# them at a fixture tree (CONVENTIONS: filesystem roots are module constants).
+_INSTALL_PIECE_IDS = (
+    "token_canonical",   # (d)  /etc/couchside/token -- canonical pairing token
+    "sudoers_grant",     # (f)  /etc/sudoers.d/zz-couchside -- probed, not stat'd
+    "journal_wrapper",   # (f)  /etc/couchside/couchside-journal
+    "udev_uinput",       # (f2) virtual gamepad node access
+    "modules_uinput",    # (f2) uinput autoload at boot
+    "udev_rtc",          # (f2) scheduled-wake RTC access
+    "udev_cec",          # (f2) HDMI-CEC node access (install.sh >= 2026-08-08)
+    "udev_openpuck",     # (f2) OpenPuck WebUSB uaccess (install.sh >= 2026-08-20)
+    "systemd_unit",      # (g)  /etc/systemd/system/couchside.service
+)
+_INSTALL_PIECE_PATHS = {
+    "token_canonical": LEGACY_TOKEN_FILE,
+    "journal_wrapper": JOURNAL_WRAPPER,
+    "udev_uinput": "/etc/udev/rules.d/99-couchside-uinput.rules",
+    "modules_uinput": "/etc/modules-load.d/couchside-uinput.conf",
+    "udev_rtc": "/etc/udev/rules.d/99-couchside-rtc.rules",
+    "udev_cec": "/etc/udev/rules.d/99-couchside-cec.rules",
+    "udev_openpuck": "/etc/udev/rules.d/99-couchside-openpuck.rules",
+    "systemd_unit": "/etc/systemd/system/couchside.service",
+}
+# sudoers_grant has NO path on purpose: /etc/sudoers.d is 0750 root on Arch and
+# SteamOS, so a stat as the desktop user fails EACCES whether or not the file is
+# there. What matters is whether the grant is IN EFFECT, which the last-match
+# sudo probe answers (_sudo_nopasswd_state). The needle is the journal-wrapper
+# grant because it is the one couchside-specific rule BOTH installers (install.sh
+# and the Decky plugin) write -- reboot/poweroff could come from a distro rule.
+_INSTALL_GRANT_NEEDLE = JOURNAL_WRAPPER
+# What install.sh says it wrote on its last full run: one piece id per line,
+# `#` comments ignored, unknown ids ignored (a newer installer may know more
+# pieces than this agent). Lives in the state dir, which survived the SteamOS
+# update that took /etc. It is what separates "LOST" from "NEVER INSTALLED": a
+# box installed before udev_cec/udev_openpuck existed, and since updated only by
+# the passwordless quick path, never had those files -- reporting them as damage
+# would put a false alarm on a healthy box. Diagnostic only: it selects which
+# frozen entries get CHECKED, never a path, never anything that runs.
+INSTALL_MANIFEST = "/var/lib/couchside/install-manifest"
+# Without a manifest (every box until its next full install, and Decky-plugin
+# installs, which write no manifest): only the pieces BOTH installers have written
+# since July 2026. udev_cec / udev_openpuck are install.sh-only and newer, so
+# they are checked only when a manifest says they were laid down.
+_INSTALL_DEFAULT_EXPECTED = frozenset((
+    "token_canonical", "sudoers_grant", "journal_wrapper", "udev_uinput",
+    "modules_uinput", "udev_rtc", "systemd_unit",
+))
+# /etc only changes across an OS update (a reboot, so a fresh agent) or an
+# installer run (which restarts the agent), so the answer is effectively static
+# per process; the TTL just bounds staleness for anything done by hand. Long on
+# purpose: every miss runs `sudo -n -l`, which sudo logs.
+_INSTALL_HEALTH_TTL = 600.0
+_INSTALL_HEALTH_CACHE = {"at": None, "value": None}
+_INSTALL_HEALTH_LOCK = threading.Lock()
+
+
+def _install_piece_state(path):
+    """'present' | 'missing' | 'unknown' for one installed file. Never raises.
+
+    Present = a NON-EMPTY REGULAR file: every piece install.sh writes has
+    content, and its own guard for the token is `test -s`, so an empty file or a
+    directory in its place is as broken as an absent one. ENOENT / ENOTDIR (the
+    file or a parent directory is gone -- /etc/couchside itself vanished on the
+    Deck) is missing. Any OTHER OSError (EACCES on an unreadable parent, EIO) is
+    UNKNOWN: we could not look, so we claim neither present nor missing."""
+    try:
+        st = os.stat(path)
+    except (FileNotFoundError, NotADirectoryError):
+        return "missing"
+    except (OSError, ValueError):
+        return "unknown"
+    if stat.S_ISREG(st.st_mode) and st.st_size > 0:
+        return "present"
+    return "missing"
+
+
+def _install_expected():
+    """The piece ids to check: INSTALL_MANIFEST's, or _INSTALL_DEFAULT_EXPECTED
+    when there is no usable manifest (absent, unreadable, or naming no known
+    id). Never raises."""
+    try:
+        with open(INSTALL_MANIFEST, encoding="utf-8", errors="replace") as f:
+            text = f.read(8192)
+    except (OSError, ValueError):
+        return _INSTALL_DEFAULT_EXPECTED
+    named = {ln.strip() for ln in text.splitlines()} & set(_INSTALL_PIECE_IDS)
+    return frozenset(named) or _INSTALL_DEFAULT_EXPECTED
+
+
+def install_health_compute():
+    """{"ok", "missing", "unknown"} for the expected pieces, uncached.
+
+    `missing` and `unknown` are id lists in table order. ok is True ONLY when
+    every expected piece was checked AND present: a piece the agent could not
+    check (unknown) is never counted as fine -- degrade closed. The app shows
+    its "installation is damaged" banner only on a non-empty `missing`, so an
+    unknown alone never raises a false alarm either. Never raises: an unexpected
+    failure reports every expected piece as unknown."""
+    expected = _install_expected()
+    try:
+        missing, unknown = [], []
+        for pid in _INSTALL_PIECE_IDS:
+            if pid not in expected:
+                continue
+            if pid == "sudoers_grant":
+                has = _sudo_nopasswd_state(_INSTALL_GRANT_NEEDLE)
+                state = "unknown" if has is None else ("present" if has else "missing")
+            else:
+                state = _install_piece_state(_INSTALL_PIECE_PATHS[pid])
+            if state == "missing":
+                missing.append(pid)
+            elif state != "present":
+                unknown.append(pid)
+        return {"ok": not missing and not unknown,
+                "missing": missing, "unknown": unknown}
+    except Exception:
+        return {"ok": False, "missing": [],
+                "unknown": [p for p in _INSTALL_PIECE_IDS if p in expected]}
+
+
+def install_health():
+    """install_health_compute(), memoised for _INSTALL_HEALTH_TTL. Returns a
+    fresh copy each call so no caller can mutate the cached lists."""
+    now = time.monotonic()
+    with _INSTALL_HEALTH_LOCK:
+        at, val = _INSTALL_HEALTH_CACHE["at"], _INSTALL_HEALTH_CACHE["value"]
+    if val is None or at is None or now - at >= _INSTALL_HEALTH_TTL:
+        val = install_health_compute()
+        with _INSTALL_HEALTH_LOCK:
+            _INSTALL_HEALTH_CACHE["at"], _INSTALL_HEALTH_CACHE["value"] = now, val
+    return {"ok": val["ok"], "missing": list(val["missing"]),
+            "unknown": list(val["unknown"])}
+
+
+def install_health_log_startup():
+    """One journal line at startup when anything is missing, so a support
+    `journalctl -u couchside` shows the damage without the app. Never raises."""
+    try:
+        h = install_health()
+    except Exception:
+        return
+    if h["missing"]:
+        print("WARNING: Couchside installation is damaged -- missing: %s. "
+              "Re-run the installer from a terminal on this box: "
+              "curl -fsSL https://couchside.tv/install.sh | bash"
+              % ", ".join(h["missing"]), file=sys.stderr, flush=True)
+    elif h["unknown"]:
+        print("install health: could not check %s" % ", ".join(h["unknown"]),
+              flush=True)
+
+
+# --mock install health, for the web harness (--mock-install-health <state>,
+# the --mock-<feature> <state> pattern). `damaged` is EXACTLY what this code
+# returned when run read-only on the Steam Deck OLED (SteamOS 3.9.2,
+# 2026-09-26): /etc/couchside, the udev rules and modules-load gone, and the
+# grant missing -- `sudo -n -l` listed fine there (SteamOS ships its own
+# NOPASSWD rules for `deck`), it just no longer names our wrapper.
+_INSTALL_HEALTH_MOCK_STATES = ("ok", "damaged")
+_INSTALL_HEALTH_MOCK = {"state": "ok"}
+
+
+def set_install_health_mock(state):
+    """Arm the mock install-health block (main(), --mock only). Unknown states
+    fall back to `ok`: argparse already restricts the choices."""
+    _INSTALL_HEALTH_MOCK["state"] = state if state in _INSTALL_HEALTH_MOCK_STATES else "ok"
+
+
+def mock_install_health():
+    if _INSTALL_HEALTH_MOCK["state"] == "damaged":
+        return {"ok": False,
+                "missing": ["token_canonical", "sudoers_grant", "journal_wrapper",
+                            "udev_uinput", "modules_uinput", "udev_rtc"],
+                "unknown": []}
+    return {"ok": True, "missing": [], "unknown": []}
 
 
 # Actions that take the box down, and are therefore the last chance to write
@@ -9412,6 +9632,8 @@ def mock_status():
         "agent_version": VERSION,
         "caps": CAPS,
         "config_writable": True,
+        # Healthy by default; `--mock-install-health damaged` for the banner.
+        "install_health": mock_install_health(),
         "history": _history_snapshot(),
     }
 
@@ -28145,6 +28367,12 @@ def main():
                    metavar="STATE",
                    help="--mock only: initial Decky Loader state (one of %s)"
                         % ", ".join(_DECKY_MOCK_STATES))
+    # Same pattern: `damaged` makes /api/status carry the install_health block a
+    # SteamOS update leaves behind, so the app's banner can be pressed off-box.
+    p.add_argument("--mock-install-health", default="ok",
+                   choices=_INSTALL_HEALTH_MOCK_STATES, metavar="STATE",
+                   help="--mock only: install_health in /api/status (one of %s)"
+                        % ", ".join(_INSTALL_HEALTH_MOCK_STATES))
     p.add_argument("--tls", action="store_true",
                    help="force-enable the HTTPS listener (overrides config "
                         "tls.enabled; ephemeral cert, not persisted; dev/CI)")
@@ -28168,6 +28396,11 @@ def main():
     _inject_decky_action(args.mock)
     if args.mock:
         set_decky_mock(args.mock_decky)
+        set_install_health_mock(args.mock_install_health)
+    else:
+        # Warms the install_health cache (so the first status poll does not pay
+        # for `sudo -n -l`) and leaves one journal line when /etc lost pieces.
+        install_health_log_startup()
     # A plugin job that was running when install.sh restarted us resumes its
     # read-back from the disk record (or is marked interrupted when stale).
     _decky_jobs_resume(args.mock)
