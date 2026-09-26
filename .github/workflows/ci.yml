@@ -133,6 +133,15 @@ jobs:
       - name: Unit tests (led strip)
         run: python3 tests/test_led_strip.py
 
+      # Reactive LED meters (SignalBar-style): the strip renders LIVE telemetry --
+      # meter_cpu (load length + temperature colour) and meter_battery. Proves the
+      # meter ids are frozen + wired into both effect sets, config params are
+      # rejected not sanitised, a short bar vs a long bar and cool vs hot colour
+      # (observe both), an unreadable signal degrades to a DARK frame (never a
+      # fabricated fill), and persistence round-trips + is revalidated on restore.
+      - name: Unit tests (led meters)
+        run: python3 tests/test_led_meters.py
+
       # Steam grabs valve-leds for its own use (download progress) by writing
       # multi_intensity in the SAME manual mode our sequence engine paints in, so
       # our repaint fights it and the bar flickers (seen on hardware). The engine

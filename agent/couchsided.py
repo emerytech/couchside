@@ -5702,6 +5702,8 @@ def leds_state(mock):
         strips = _led_strips([l["name"] for l in MOCK_LEDS if l["writable"]])
         return {"available": any(p["notable"] for p in pubs), "leds": pubs,
                 "effects": list(_LED_EFFECTS), "shape": True,
+                "reactive": {"meters": ["meter_cpu", "meter_battery"],
+                             "signals": {"cpu_temp": True, "battery": True}},
                 "active": {k: dict(v) for k, v in _MOCK_FX.items()},
                 "strips": [_mock_strip_public(p, m) for p, m in strips.items()]}
     names = _list_led_names()
@@ -5712,8 +5714,25 @@ def leds_state(mock):
     # (breathe/pulse `attack`, strobe `duty`). Additive probe-and-appear flag: the
     # app shows the SHAPE control only when present, so older agents stay clean.
     return {"available": any(p["notable"] for p in pubs), "leds": pubs,
-            "effects": list(_LED_EFFECTS), "shape": True, "active": _led_active_map(),
+            "effects": list(_LED_EFFECTS), "shape": True,
+            "reactive": _reactive_probe(bool(strips)), "active": _led_active_map(),
             "strips": [_strip_public(p, m) for p, m in strips.items()]}
+
+
+def _reactive_probe(has_strip):
+    """What reactive meters this box can drive RIGHT NOW (probe-and-appear). Meters
+    render on an addressable STRIP, so with none present the list is empty and the
+    app offers nothing. A meter appears only when its signal actually reads -> no
+    dead meter (§3.7 degrade closed). Read-only, best-effort."""
+    if not has_strip:
+        return {"meters": [], "signals": {}}
+    has_temp = read_cpu_temp_c() is not None
+    has_batt = bool(read_box_battery())
+    meters = ["meter_cpu"]                    # CPU busy is available on any Linux box
+    if has_batt:
+        meters.append("meter_battery")
+    return {"meters": meters,
+            "signals": {"cpu_temp": has_temp, "battery": has_batt}}
 
 
 def _led_realpath_ok(name):
@@ -5892,8 +5911,14 @@ _LED_STATE_CONF = os.path.expanduser("~/.config/couchside/leds.json")
 # Frozen allowlist of effect ids (looked up, never interpolated). 'solid'/'off'
 # are one-shot (no animation); the rest animate on the render thread.
 _LED_EFFECTS = ("solid", "off", "breathe", "pulse", "rainbow", "strobe",
-                "scanner", "manual", "circle", "comet", "wipe", "twinkle")
+                "scanner", "manual", "circle", "comet", "wipe", "twinkle",
+                # Reactive meters (SignalBar-style): the strip renders LIVE
+                # telemetry. Agent-rendered like the sweeps below; strip-only.
+                "meter_cpu", "meter_battery")
 _LED_STATIC = frozenset(("solid", "off"))
+# The reactive meters, looked up (never interpolated). Each renders a live 0..100
+# signal as a bar; unavailable signal -> dark (degrade closed, §3.7).
+_LED_METERS = frozenset(("meter_cpu", "meter_battery"))
 
 _FX_TICK = 0.033                 # ~30 fps render cadence
 _FX_LOCK = threading.RLock()
@@ -6094,6 +6119,12 @@ def apply_led_effect(name, effect, color, speed, brightness, shape=None):
     {"ok":False,"status":..,"error":..} | None."""
     if effect not in _LED_EFFECTS:
         return {"ok": False, "status": 400, "error": "unknown effect"}
+    # A reactive meter renders live telemetry across the WHOLE strip; the single-LED
+    # software renderer (_fx_frame) has no meter case and would fall through to a
+    # SOLID fill that never reads a signal and never degrades dark (§3.7). Reject it
+    # here -- covers the /api/leds/effect single-LED handler AND _led_restore.
+    if effect in _LED_METERS:
+        return {"ok": False, "status": 400, "error": "meter effects require a strip target"}
     if (not isinstance(name, str) or "/" in name or ".." in name
             or "\x00" in name or name not in _list_led_names()
             or not _led_realpath_ok(name)):
@@ -6274,13 +6305,20 @@ def _led_restore():
         _d = st.get("duty")
         if isinstance(_d, int) and not isinstance(_d, bool) and 1 <= _d <= 99:
             shape["duty"] = _d
+        # Reactive-meter config re-validated from the file (never trusted, §3.6);
+        # junk drops to defaults. Only the meter effects consume it.
+        meter = None
+        if effect in _LED_METERS and isinstance(st.get("meter"), dict):
+            mc, merr = _validate_meter_cfg(st["meter"])
+            meter = mc if merr is None else {}
         try:
             if name.startswith("strip:"):
                 # A persisted strip (firmware effect): re-arm the whole strip so a
                 # reboot brings back the night-rider without the phone.
                 prefix = name[len("strip:"):]
                 if prefix in strips:
-                    apply_strip_effect(prefix, effect, color, speed, brightness, reverse)
+                    apply_strip_effect(prefix, effect, color, speed, brightness,
+                                       reverse, meter)
             elif name in live:
                 apply_led_effect(name, effect, color, speed, brightness, shape)
         except OSError:
@@ -6389,7 +6427,8 @@ _STRIP_COLOUR_FX = ("scanner", "breathe", "pulse", "strobe", "solid")
 # Strip effects the AGENT renders per-LED (no firmware effect exists for them):
 # a one-way "circle"/comet the render thread sweeps + wraps. These are looked up
 # like any effect id; the agent owns every frame (fixed-literal writers, §3).
-_STRIP_SEQ_EFFECTS = ("circle", "comet", "wipe", "twinkle")
+_STRIP_SEQ_EFFECTS = ("circle", "comet", "wipe", "twinkle",
+                      "meter_cpu", "meter_battery")
 
 
 def _led_strips(names=None):
@@ -6521,6 +6560,176 @@ def _seq_frame_twinkle(n, t, period, color):
     return frame
 
 
+# ---- Reactive meters: the strip renders LIVE telemetry (SignalBar-style) ------
+# A meter is an agent-rendered strip effect (rides the _seq_* engine, so it
+# inherits the ~30fps loop AND the Steam stand-down protection in _seq_render). Bar
+# LENGTH = a smoothed 0..100 signal; COLOUR = temperature (perf) or charge level
+# (battery). It reads ONLY the existing validated telemetry accessors; a signal it
+# cannot read renders DARK -- never a fabricated value (§3.7 degrade closed).
+# EMA alpha per smoothing profile, applied once per render frame (~30 fps):
+# higher = snappier. This is SignalBar's Responsive / Balanced / Smooth.
+_METER_SMOOTH = {"responsive": 0.30, "balanced": 0.12, "smooth": 0.045}
+_METER_SMOOTH_IDS = frozenset(_METER_SMOOTH)
+_METER_LAYOUTS = frozenset(("linear", "mirrored"))
+_METER_SAMPLE_S = 0.5            # re-read telemetry at most this often (SignalBar cadence)
+# Cool -> Mid -> Hot temperature ramp, interpolated across [cool, hot] °C.
+_METER_TEMP_STOPS = ({"r": 0, "g": 120, "b": 255},    # cool = blue
+                     {"r": 0, "g": 210, "b": 90},     # mid  = green
+                     {"r": 255, "g": 40, "b": 0})     # hot  = red
+_METER_BATT_OK = {"r": 0, "g": 210, "b": 90}
+_METER_BATT_MID = {"r": 255, "g": 170, "b": 0}
+_METER_BATT_LOW = {"r": 255, "g": 30, "b": 0}
+# Defaults chosen to match SignalBar's out-of-box perf/battery meter.
+_METER_DEFAULTS = {"cool": 45, "hot": 78, "low": 20,
+                   "layout": "linear", "smooth": "balanced"}
+
+
+def _meter_lerp(a, b, k):
+    k = 0.0 if k < 0 else 1.0 if k > 1 else k
+    return {"r": int(round(a["r"] + (b["r"] - a["r"]) * k)),
+            "g": int(round(a["g"] + (b["g"] - a["g"]) * k)),
+            "b": int(round(a["b"] + (b["b"] - a["b"]) * k))}
+
+
+def _meter_temp_color(temp_c, cool, hot):
+    """Cool->Mid->Hot interpolated across [cool, hot]. temp None -> the mid stop, so
+    a box with no temperature sensor still shows a (neutral-coloured) load bar."""
+    if temp_c is None:
+        return dict(_METER_TEMP_STOPS[1])
+    span = (hot - cool) if hot > cool else 1
+    k = (temp_c - cool) / span
+    k = 0.0 if k < 0 else 1.0 if k > 1 else k
+    if k <= 0.5:
+        return _meter_lerp(_METER_TEMP_STOPS[0], _METER_TEMP_STOPS[1], k * 2)
+    return _meter_lerp(_METER_TEMP_STOPS[1], _METER_TEMP_STOPS[2], (k - 0.5) * 2)
+
+
+def _meter_frame(kind, cfg, n, value, temp):
+    """PURE per-LED frame (list of {r,g,b}|None) for a meter. `value` 0..100 is the
+    fill %, `temp` the colour driver for the perf meter. value None -> all dark
+    (signal unavailable; NEVER a fabricated fill). Count-based fill so lit=0 lights
+    nothing and lit=100 lights every LED, with no float edge cases. Unit-tested by
+    observing short-vs-long bar and cool-vs-hot colour (§11)."""
+    n = max(0, int(n))
+    if value is None:
+        return [None] * n
+    v = 0.0 if value < 0 else 100.0 if value > 100 else float(value)
+    if kind == "meter_battery":
+        low = cfg.get("low", _METER_DEFAULTS["low"])
+        col = (_METER_BATT_LOW if v <= low
+               else _METER_BATT_MID if v <= low * 2
+               else _METER_BATT_OK)
+    else:  # meter_cpu (performance): length = load, colour = temperature
+        col = _meter_temp_color(temp, cfg.get("cool", _METER_DEFAULTS["cool"]),
+                                cfg.get("hot", _METER_DEFAULTS["hot"]))
+    lit = int(round(v / 100.0 * n))
+    if cfg.get("layout") == "mirrored":
+        # Light the `lit` LEDs closest to the centre, growing outward.
+        centremost = sorted(range(n), key=lambda i: abs(i + 0.5 - n / 2.0))
+        on = set(centremost[:lit])
+        return [dict(col) if i in on else None for i in range(n)]
+    return [dict(col) if i < lit else None for i in range(n)]
+
+
+def _cpu_busy_pct(prev):
+    """Instantaneous CPU utilisation 0..100 from /proc/stat jiffie deltas, over the
+    window since `prev` (a (total, idle) snapshot, or None on the first sample).
+    Returns (pct|None, new_snapshot): pct is None on the FIRST sample or a zero/bad
+    delta; the snapshot is ALWAYS returned so the caller can advance its own window.
+
+    State is PER-CALLER (passed in / returned), not a module global -- two meter_cpu
+    strips sampling at once must not steal each other's baseline. Read-only, never
+    raises; an unreadable /proc/stat returns (None, prev) leaving the window intact."""
+    try:
+        with open("/proc/stat") as f:
+            parts = f.readline().split()
+        if not parts or parts[0] != "cpu":
+            return None, prev
+        vals = [int(x) for x in parts[1:8]]          # user nice system idle iowait irq softirq
+        idle = vals[3] + vals[4]                      # idle + iowait
+        total = sum(vals)
+    except (OSError, ValueError, IndexError):
+        return None, prev
+    snap = (total, idle)
+    if not prev:
+        return None, snap
+    dt = total - prev[0]
+    if dt <= 0:
+        return None, snap
+    pct = (1.0 - (idle - prev[1]) / dt) * 100.0
+    return (0.0 if pct < 0 else 100.0 if pct > 100 else pct), snap
+
+
+def _meter_read(kind, cpu_prev=None):
+    """(value 0..100 | None, temp_c | None, cpu_snap) from live telemetry. `cpu_prev`
+    is this meter's own last /proc/stat snapshot; `cpu_snap` is the fresh one to
+    store back (None for the battery meter, which reads an absolute value). Reads
+    only the existing validated accessors; degrade closed -> value None when the
+    signal is unreadable, so the frame goes dark rather than inventing a value."""
+    if kind == "meter_battery":
+        b = read_box_battery()
+        pct = b.get("pct") if isinstance(b, dict) else None
+        return (float(pct) if isinstance(pct, (int, float))
+                and not isinstance(pct, bool) else None), None, None
+    # meter_cpu: length from CPU busy%, colour from CPU temperature.
+    pct, snap = _cpu_busy_pct(cpu_prev)
+    return pct, read_cpu_temp_c(), snap
+
+
+def _seq_meter_frame(spec, now):
+    """One frame of a reactive meter: re-sample telemetry at most every
+    _METER_SAMPLE_S, EMA-smooth the value toward the sample each frame, then render
+    via the PURE _meter_frame. Mutates only this spec's smoothing state."""
+    n = len(spec["members"])
+    kind = spec["effect"]
+    cfg = spec.get("meter") or {}
+    if now - spec.get("_sampled_at", -1e9) >= _METER_SAMPLE_S:
+        val, temp, cpu_snap = _meter_read(kind, spec.get("_cpu_prev"))
+        spec["_target"], spec["_temp"], spec["_sampled_at"] = val, temp, now
+        if kind == "meter_cpu":
+            spec["_cpu_prev"] = cpu_snap        # per-spec sampling window (not a global)
+    target = spec.get("_target")
+    if target is None:
+        spec["_ema"] = None
+        return [None] * n            # signal unavailable -> dark (degrade closed)
+    alpha = _METER_SMOOTH.get(cfg.get("smooth"), _METER_SMOOTH["balanced"])
+    ema = spec.get("_ema")
+    ema = target if ema is None else ema + (target - ema) * alpha
+    spec["_ema"] = ema
+    return _meter_frame(kind, cfg, n, ema, spec.get("_temp"))
+
+
+def _validate_meter_cfg(req):
+    """(meter_cfg dict, error|None) for a reactive meter's config. Every field is
+    OPTIONAL with a SignalBar default; each is range-checked and REJECTED (never
+    sanitised, §3.6). Returns {} when the body carries no meter config."""
+    cfg = {}
+    layout = req.get("layout")
+    if layout is not None:
+        if layout not in _METER_LAYOUTS:
+            return None, "layout must be linear|mirrored"
+        cfg["layout"] = layout
+    smooth = req.get("smooth")
+    if smooth is not None:
+        if smooth not in _METER_SMOOTH_IDS:
+            return None, "smooth must be responsive|balanced|smooth"
+        cfg["smooth"] = smooth
+    for key, lo, hi in (("cool", 0, 120), ("hot", 0, 120), ("low", 5, 50)):
+        v = req.get(key)
+        if v is not None:
+            if not (isinstance(v, int) and not isinstance(v, bool) and lo <= v <= hi):
+                return None, "%s must be an int %d-%d" % (key, lo, hi)
+            cfg[key] = v
+    # Cross-check the EFFECTIVE pair (a single-sided body fills the other bound from
+    # _METER_DEFAULTS at render time, so validating only when both are present let an
+    # inverted effective pair through -> the temp ramp collapses to a 1 degC step).
+    eff_cool = cfg.get("cool", _METER_DEFAULTS["cool"])
+    eff_hot = cfg.get("hot", _METER_DEFAULTS["hot"])
+    if eff_cool >= eff_hot:
+        return None, "cool must be below hot"
+    return cfg, None
+
+
 def _seq_compute_frame(spec, now):
     """The per-LED frame for this strip animation at time `now`, or None if there's
     nothing to draw. Pure time+geometry -> colour; performs no writes so it stays
@@ -6529,6 +6738,8 @@ def _seq_compute_frame(spec, now):
     n = len(members)
     t = now - spec["t0"]
     e = spec["effect"]
+    if e in _LED_METERS:
+        return _seq_meter_frame(spec, now)
     period = _seq_period(spec["speed"])
     color = spec["color"]
     rev = bool(spec.get("reverse"))
@@ -6728,9 +6939,11 @@ def _seq_ensure_thread():
             _SEQ_THREAD[0].start()
 
 
-def _seq_start(prefix, members, effect, color, speed, brightness, reverse=False):
+def _seq_start(prefix, members, effect, color, speed, brightness, reverse=False,
+               meter=None):
     """Begin an agent-rendered animation on the strip: flip every member to manual
-    (so the firmware isn't also animating), register the spec, start the thread."""
+    (so the firmware isn't also animating), register the spec, start the thread.
+    `meter` (a validated config dict) is carried for the reactive-meter effects."""
     raws = {n: _read_led_raw(n) for n in members}
     for n in members:
         try:
@@ -6744,6 +6957,7 @@ def _seq_start(prefix, members, effect, color, speed, brightness, reverse=False)
             "speed": speed if _is_pct(speed, 1) else 50,
             "brightness": brightness if _is_pct(brightness) else 100,
             "reverse": bool(reverse),
+            "meter": dict(meter) if isinstance(meter, dict) else None,
             "t0": time.monotonic(), "raws": raws}
     _seq_ensure_thread()
 
@@ -6754,14 +6968,16 @@ def _seq_stop(prefix):
         _SEQ_ACTIVE.pop(prefix, None)
 
 
-def apply_strip_effect(prefix, effect, color, speed, brightness, reverse=False):
+def apply_strip_effect(prefix, effect, color, speed, brightness, reverse=False,
+                       meter=None):
     """Set an addressable strip to a FIRMWARE effect (or a manual solid/off).
 
     Returns {"ok":True,"active":..} | {"ok":False,"status":..} | None(->404).
     The heavy lifting is the driver's: for a hardware effect we set the base
     colour/brightness then write `effect`=<firmware name> + `delay`, and the strip
     animates itself. `solid` paints every LED (effect=manual); `off` zeroes them.
-    `reverse` only affects the agent-rendered sweeps (circle/comet/wipe)."""
+    `reverse` only affects the agent-rendered sweeps (circle/comet/wipe); `meter`
+    (a validated config dict) only the reactive meters (meter_cpu/meter_battery)."""
     if effect not in _LED_EFFECTS:
         return {"ok": False, "status": 400, "error": "unknown effect"}
     if not isinstance(prefix, str):
@@ -6787,17 +7003,18 @@ def apply_strip_effect(prefix, effect, color, speed, brightness, reverse=False):
     # so a reboot re-arms it via _seq_start again.
     if effect in _STRIP_SEQ_EFFECTS:
         rev = bool(reverse)
-        _seq_start(prefix, members, effect, col, sp, b, rev)
+        mcfg = dict(meter) if (effect in _LED_METERS and isinstance(meter, dict)) else None
+        _seq_start(prefix, members, effect, col, sp, b, rev, mcfg)
+        active = {"effect": effect, "color": col, "speed": sp,
+                  "brightness": b, "reverse": rev}
+        if mcfg is not None:
+            active["meter"] = mcfg
         with _FX_LOCK:
             for m in members:
                 _LED_PERSIST.pop(m, None)
-            _LED_PERSIST["strip:" + prefix] = {"effect": effect, "color": col,
-                                               "speed": sp, "brightness": b,
-                                               "reverse": rev}
+            _LED_PERSIST["strip:" + prefix] = dict(active)
         _led_state_save()
-        return {"ok": True, "strip": prefix,
-                "active": {"effect": effect, "color": col, "speed": sp,
-                           "brightness": b, "reverse": rev}}
+        return {"ok": True, "strip": prefix, "active": active}
     # A firmware / manual effect supersedes any running agent animation here.
     _seq_stop(prefix)
 
@@ -7471,6 +7688,10 @@ def apply_openrgb(device, effect, color, speed, brightness):
     None."""
     if effect not in _LED_EFFECTS:
         return {"ok": False, "status": 400, "error": "unknown effect"}
+    # Meters are strip-only (telemetry across the bar); OpenRGB has no meter render
+    # path, so reject rather than fall through to a fabricated fill (§3.7).
+    if effect in _LED_METERS:
+        return {"ok": False, "status": 400, "error": "meter effects require a strip target"}
     if not isinstance(device, int) or isinstance(device, bool):
         return None
     ctrls = _orgb_list(force=True)
@@ -26186,6 +26407,14 @@ class Handler(BaseHTTPRequestHandler):
                 # from the live listdir, effect id is frozen, params range-checked.
                 strip_name = req.get("strip")
                 if strip_name is not None:
+                    # Reactive-meter config (SignalBar-depth) is validated + rejected
+                    # here; only the meter effects carry it.
+                    meter = {}
+                    if effect in _LED_METERS:
+                        meter, merr = _validate_meter_cfg(req)
+                        if merr is not None:
+                            self._send(400, {"error": merr}, started)
+                            return
                     if self.mock:
                         ms = _led_strips([l["name"] for l in MOCK_LEDS if l["writable"]])
                         if not isinstance(strip_name, str) or strip_name not in ms:
@@ -26199,11 +26428,13 @@ class Handler(BaseHTTPRequestHandler):
                                 "effect": effect,
                                 "color": color if color is not None else {"r": 255, "g": 0, "b": 0},
                                 "speed": speed if speed is not None else 50,
-                                "brightness": brightness if brightness is not None else 100}
+                                "brightness": brightness if brightness is not None else 100,
+                                **({"meter": meter} if meter else {})}
                         self._send(200, {"ok": True, "strip": strip_name,
                                          "active": _MOCK_FX.get(key)}, started)
                         return
-                    res = apply_strip_effect(strip_name, effect, color, speed, brightness, reverse)
+                    res = apply_strip_effect(strip_name, effect, color, speed, brightness,
+                                             reverse, meter)
                     if res is None:
                         self._send(404, {"error": "unknown strip"}, started)
                         return
