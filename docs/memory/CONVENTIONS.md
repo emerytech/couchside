@@ -104,6 +104,28 @@ and the frozen `_DM_CONF_DIRS` table (`sddm`, `plasmalogin`) — conf dir, drop-
 only itself; the symlink proves which manager runs. No detected manager (or no grant for
 the detected one) = no capability, no action — never a fallback to SDDM.
 
+### Anything written for the NEXT boot is resolved against the NEXT image — or not written
+
+The boot-session drop-in is armed at shutdown from the RUNNING image's session files. On
+the reboot that applies a staged ostree update, "the next boot" is a different image:
+Bazzite 43 -> 44 (living-room box, 2026-09-26) armed `gamescope-session.desktop`, 44 does
+not ship it, SDDM failed autologin and parked the TV at a greeter. Rules since then:
+
+- **A staged OS update (`_OSTREE_STAGED_DEPLOYMENT`, `/run/ostree/staged-deployment`)
+  means arm writes nothing** and disarms; the platform's own autologin decides that one
+  boot, and the stored preference re-arms from the next shutdown on the new image.
+  (`ostree-finalize-staged` runs after our ExecStop, so the marker is still present then.)
+- **Cleanup keys on OWNERSHIP, not on the current backend.** consume removes *our* drop-in
+  whenever it carries a Session=, even when the backend has since become steamosctl — an
+  update can flip the backend and orphan a file we wrote under the old one.
+- **A rescue reuses an existing allowlisted action, never a new command.** The stranded-box
+  rescue fires the stock `restart-session` argv only when our drop-in named a positively
+  missing session, it was verified cleared, the platform's merged config names an installed
+  session, and seat0 is greeter-only on two consecutive `loginctl` reads. Unknown at any
+  step = do nothing.
+- Every session filename in `_GAMESCOPE_SESSION_FILES` is a measured entry, and its ORDER is
+  the resolver's policy (the distro's own autologin name must win).
+
 ### Don't fight a shared device — stand down on a readback-survival check
 
 When the agent animates a device the platform ALSO writes, cooperate instead of
@@ -340,6 +362,39 @@ deliberately. It is what distinguishes "the handler never fired" from "it fired 
 at `NaN`" — two failures that look identical on screen. `add()` also rejects non-finite
 coordinates explicitly for the same reason.
 
+### App errors: the local error log, and what it can never see
+
+`lib/crashLog.ts` (wiring) + `lib/crashLogCore.ts` (pure, bare-Node tested) keep the last 20
+app errors ON THE PHONE for the user to Copy or Share. Nothing is sent anywhere — no crash
+SaaS, ever (no analytics, CLAUDE.md). Rules, each load-bearing:
+
+1. **Chain, never swallow.** `chainGlobalHandler` records FIRST, then calls the previous
+   `ErrorUtils` handler with the identical arguments. That handler is what shows the dev red
+   box and what turns a release fatal into a process exit. Recording is try/caught so it can
+   never change how an error is handled. Control-tested (drop the `prev(...)` call and three
+   tests fail).
+2. **The fatal path writes SYNCHRONOUSLY** (`SecureStore.setItem`, not `setItemAsync`), then
+   chains. A release fatal ends the process moments after the handler returns; an async write
+   may never land. Every write of the log is sync (an async write racing a later sync one can
+   land last with an older snapshot and erase the fatal); non-fatal bursts are coalesced.
+3. **Native crashes run no JS and cannot be logged.** The best the app does is a session
+   marker written sync on every active/inactive transition: a marker still reading `fg` at the
+   next launch becomes an inferred "closed unexpectedly" entry with no stack, and the banner
+   points at `adb logcat -b crash` (help text in the Setup card names the package id).
+   Native release builds only — a web or Metro reload also "dies on screen".
+4. **Redact before storing.** `token=…`, `"token":"…"` and `Bearer …` are scrubbed from
+   messages and stacks; a pasted bug report must never carry a box token.
+5. **Degrade closed on bad storage.** `parseLog` never throws (it runs at import, before any
+   UI); a corrupt blob reads as an empty log, bad entries are dropped individually.
+6. **`ErrorUtils` on web: present here, not guaranteed.** It is RN's error-guard polyfill,
+   and this project's Metro config applies RN's polyfills to web too (MEASURED in the harness
+   2026-09-26: `ErrorUtils.getGlobalHandler()` is our wrapper; the default beneath it
+   re-throws). So the harness drives the REAL path from the console —
+   `ErrorUtils.reportFatalError(new Error('x'))` must throw the same object back (not
+   swallowed) and leave the fatal in `localStorage['couchside.errorlog.v1']` in the SAME tick
+   (sync write), and a reload must show the banner. The code still guards for its absence.
+   What web cannot exercise: the session marker (native release builds only) and SecureStore.
+
 ---
 
 ## 4. Git / PRs
@@ -452,6 +507,49 @@ Two traps, both hit for real:
 Worktrees also accumulate: eleven of them reached ~27 GB, of which ~17 GB was regenerable
 `node_modules` / `ios` / `android`. Prune them with `git worktree remove` — **removing a worktree
 does not delete its branch**, so the work survives in git; commit anything uncommitted first.
+
+### Android builds on the Linux build box archive the Hermes source map
+
+A release stack from the field reads `index.android.bundle:1:<bytecode offset>`; only the
+source map from THAT exact build turns it back into file:line. The Linux build box (gandalf —
+local Android builds hang on this Mac, see the maintainer notes) re-clones for every release,
+so a map not copied out at build time is gone. **Every APK up to vc109 shipped with no map.**
+
+`scripts/android-local-build.sh` is the build recipe, run ON the build box from a fresh
+checkout of the release branch (`build/direct-apk` for the direct edition, with `--direct`):
+
+```
+JAVA_HOME=<jdk21> ANDROID_HOME=<sdk> scripts/android-local-build.sh [--direct] [--out DIR]
+```
+
+It runs `npm ci` → `expo prebuild -p android --clean --no-install` → `gradlew
+:app:assembleRelease --no-daemon`, then archives next to each other in `--out` (default: the
+directory containing the checkout, never inside it — `app/build` is not ignored by version
+control):
+
+| file | what |
+|---|---|
+| `couchside[-direct]-<ver>-vc<N>.apk` | the APK as built |
+| `couchside[-direct]-<ver>-vc<N>.map` | `android/app/build/generated/sourcemaps/react/release/index.android.bundle.map` |
+| `couchside[-direct]-<ver>-vc<N>.r8-mapping.txt` | only once R8 minify is on (ROADMAP) |
+| `couchside[-direct]-<ver>-vc<N>.sha256` | sums, incl. the Hermes bundle inside the APK |
+
+Identity (version, versionCode, package) is read from the BUILT APK (`aapt2 dump badging`,
+falling back to AGP's `output-metadata.json`) — never from app.json. It proves the map
+belongs to the APK (the bundle inside the APK is byte-identical to the one the map was
+composed from), fails closed and archives nothing when the map is missing, and refuses to
+overwrite a different archive at the same name without `--force` (the direct edition's
+versionCode is hand-set, so a rebuild at the same vc is possible). `--archive-only` archives
+an existing build without rebuilding. Tested by `tests/test_android_build_archive.py`.
+
+Copy the `.map` off the box with the APK (`scp`) and keep it with the release. To read a
+crash report from the app's error log (its header names the version + build + package):
+
+```
+cd app && npx metro-symbolicate ../<archive>/couchside-2.9.62-vc110.map < stack.txt
+```
+
+The iOS equivalent (dSYM + the JS map inside the IPA build) is NOT covered yet.
 
 ---
 
@@ -812,3 +910,30 @@ the udev rules and modules-load while `couchside.service` (on Valve's list) surv
 The Decky plugin writes a subset of the same files and does NOT yet write the drop-in
 or the manifest (follow-up). A plugin-only box has no manifest, so the agent checks
 only the default set.
+
+## Installer: an owner's choice outlives the run that made it (install.sh, 2026-09-26)
+
+Most installer runs are UNATTENDED and pass NO flags: `couchside update` and the app's update
+button (`update_apply`) both pipe couchside.tv/install.sh into `bash`. So a flag that expresses
+an owner's preference is only half a feature until the choice is persisted — `--no-decky` existed
+for months and the next update undid it. Established by the Decky-panel opt-out
+(`DECKY_PANEL_OFF`, `decky_panel_resolve` in `install.sh`):
+
+- **Where it lives decides whether it survives.** An owner preference that only the installer
+  reads is a presence-only marker in the user-owned `STATE_DIR` (`/var/lib/couchside/…`), NOT
+  `/etc/couchside`: a SteamOS update dropped `/etc/couchside` wholesale while `/var/lib/couchside`
+  survived (KI-088). Contrast `/etc/couchside/allow-decky`, which is a ROOT consent read by the
+  helper, a unit and a root wrapper — that one belongs in root-owned `/etc`. Presence is the gate;
+  the file's text is for a human and is never parsed.
+- **Every persisted "off" has an explicit "on"** (`--no-decky` / `--decky`), contradictory flags
+  exit 2 (reject, don't guess), and every run that honours the marker PRINTS the way back.
+- **Infer a choice only from an unambiguous signal.** "Stamp says we installed the panel, Decky
+  Loader is still there, the panel dir is gone" = the owner removed it. "Stamp AND panel both
+  gone" is also what a lost `/etc` looks like, so it keeps the old default. When the opt-in
+  flag runs, drop any state that would re-trigger the inference if its own work fails (the stale
+  stamp), or an offline `--decky` silently flips back to "off" next run.
+- **Test the shipped regions, not copies.** `tests/test_installer_decky_panel.sh` lifts the flag
+  loop, the `# Decky co-existence:` block and `# (h2)`…`# (i) Migration` out of `install.sh` by
+  those heading comments — keep them stable — and runs them under `set -euo pipefail` with a
+  sandbox-enforcing `sudo` shim and state-modelling `systemctl`/`curl` stubs. Pass the pre-fix
+  installer as argv[2] to replay every "unchanged" scenario against it byte-for-byte.

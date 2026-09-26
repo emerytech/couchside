@@ -535,9 +535,752 @@ def test_steamosctl_set_uses_mode_arg(tmp):
          cs.CONFIG_PATH, cs._installed_session_files) = real
 
 
+# ---------------------------------------------------------------------------
+# Bazzite 43 -> 44: the OS update that stranded the living-room box.
+#
+# MEASURED 2026-09-26 on 10.1.1.60 (agent 2.9.114, session_default "game"):
+# the ExecStop arm at the update's shutdown wrote Session=gamescope-session
+# .desktop (a 43 name), 44 does not ship it, SDDM logged
+#     Unable to find autologin session entry "gamescope-session.desktop"
+#     Autologin failed!
+# and seat0 came up as an sddm GREETER. On 44 `steamosctl` answers, the backend
+# flipped to "steamosctl", and consume() walked away from the file it wrote.
+#
+# Every fixture below is VERBATIM off that box (bazzite-deck 44.20260921.0,
+# systemd 259), captured read-only over ssh on 2026-09-26 AFTER the owner had
+# recovered it by hand — except where a comment says SYNTHESISED, because the
+# state it models no longer existed to capture.
+# ---------------------------------------------------------------------------
+
+# ls /usr/share/wayland-sessions   (/usr/share/xsessions is empty on 44)
+BAZZITE44_SESSIONS = {"gamescope-session-ogui-steam.desktop",
+                      "gamescope-session-steam.desktop", "plasma.desktop"}
+# Bazzite 43's session set, as already pinned by the KI-038 test above (the
+# same box, captured before the update).
+BAZZITE43_SESSIONS = {"gamescope-session.desktop", "gamescope-session-steam.desktop",
+                      "plasma.desktop", "plasma-steamos-wayland-oneshot.desktop",
+                      "plasma-steamos-oneshot.desktop"}
+# /usr/lib/sddm/sddm.conf.d/ — the image's own autologin (sys layer)
+BAZZITE44_SYS_CONF = {
+    "holo.conf": '[General]\nDisplayServer=wayland\n\n[Autologin]\nRelogin=true\nSession=gamescope-session-ogui-steam.desktop\n',
+    "plasma-wayland.conf": '[General]\nDisplayServer=wayland\nGreeterEnvironment=QT_WAYLAND_SHELL_INTEGRATION=layer-shell\nInputMethod=\n\n[Wayland]\nCompositorCommand=kwin_wayland --no-global-shortcuts --no-lockscreen --inputmethod plasma-keyboard --locale1\n',
+}
+# /etc/sddm.conf.d/ — everything present on 44 after the owner's repair. The
+# blank legacy zz-couchside file is OURS (neutralised pre-2.9.64 name).
+BAZZITE44_ETC_CONF = {
+    "99-plasma-setup.conf": '[Autologin]\nUser=plasma-setup\nSession=plasma\n',
+    "virtualkbd.conf": '[General]\nInputMethod=qtvirtualkeyboard\n',
+    "zz-bazzite-autologin.conf": '[Autologin]\nUser=bazzite\n',
+    "zz-couchside-session.conf": "# Superseded by zzz-couchside-session.conf (Couchside >= 2.9.64).\n# Left blank deliberately: this name sorted BEFORE the display\n# manager's own drop-in and so could never win. Safe to delete.\n",
+    "zz-holo-autologin.conf": '[Autologin]\nSession=gamescope-session-ogui-steam.desktop\n',
+}
+# The stranding drop-in. RECONSTRUCTED: the owner had deleted it before this
+# capture. The Session= value is proven by SDDM's own journal line on 44 (above)
+# and by the 43 arm log "[session] arm: game -> gamescope-session.desktop (ok)";
+# the body is exactly what _dm_write composes.
+STRANDING_DROPIN = ("# Written by Couchside. Delete this file to restore the box's\n"
+                    "# original boot behaviour; nothing else was modified.\n"
+                    "[Autologin]\n"
+                    "Session=gamescope-session.desktop\n")
+
+# `loginctl list-sessions --no-legend` and `loginctl show-session <id> -p Class
+# -p Seat`, VERBATIM on 44 with the box in its Game Mode user session (session
+# 33 is the capturing ssh login).
+LOGIND_USER_ON_SEAT = (
+    ' 1 1000 bazzite -     2777  manager -    no -\n'
+    '15 1000 bazzite seat0 7465  user    tty1 no -\n'
+    '33 1000 bazzite -     20572 user    -    no -\n',
+    {"1": 'Seat=\nClass=manager\n', "15": 'Seat=seat0\nClass=user\n',
+     "33": 'Seat=\nClass=user\n'})
+# The STRANDED seat. SYNTHESISED — the box was no longer at the greeter when
+# captured — from the stranded boot's logind journal:
+#   New session '1' of user 'bazzite' with class 'manager' and type 'unspecified'.
+#   New session 'c1' of user 'sddm' with class 'greeter' and type 'wayland'.
+#   New session '2' of user 'sddm' with class 'manager-early' and type 'unspecified'.
+# (sddm is uid 958 per the same boot's pam_unix line; c1's leader is the
+# sddm-helper pid that opened it.) Line layout copied from the verbatim capture.
+# Seat=seat0 for c1 is INFERRED (SDDM starts its greeter on seat0); logind's
+# journal line does not print the seat.
+LOGIND_GREETER_ONLY = (
+    ' 1 1000 bazzite -     2777  manager       -    no -\n'
+    ' 2  958 sddm    -     2835  manager-early -    no -\n'
+    'c1  958 sddm    seat0 2830  greeter       tty1 no -\n',
+    {"1": 'Seat=\nClass=manager\n', "2": 'Seat=\nClass=manager-early\n',
+     "c1": 'Seat=seat0\nClass=greeter\n'})
+# Before the display manager has started: only the linger manager session
+# (journal: session '1' existed at 11:40:48.267, sddm started at .298).
+LOGIND_EMPTY_SEAT = (' 1 1000 bazzite -     2777  manager -    no -\n',
+                     {"1": 'Seat=\nClass=manager\n'})
+
+STOCK_RESTART = {"label": "Restart Session", "description": "x", "danger": "high",
+                 "cmd": ["sudo", "systemctl", "restart", "sddm"],
+                 "user_env": False, "detached": False}
+
+
+class Box:
+    """A hermetic Bazzite box for the arm/consume/rescue tests: conf layers in a
+    temp dir, a fake subprocess.run that PERFORMS `sudo -n tee` on those files
+    (so assertions read what SDDM would merge), answers steamosctl the way 43 or
+    44 does, replays a scripted sequence of logind states, and RECORDS — never
+    runs — anything else. Every identity source the code consults is owned here
+    (CONVENTIONS: a fake must own every identity source), including the helper
+    socket, so running this file on a real box can never touch the real one."""
+
+    NAMES = ("subprocess.run", "_sudo_nopasswd_allows", "detect_display_manager",
+             "_display_manager_unit_name", "_installed_session_files",
+             "CONFIG_PATH", "_DM_CONF_DIRS", "_DM_SYS_CONF_DIRS", "_DM_MAIN_CONFS",
+             "_DM_STATE_FILES", "_arm_hook_installed", "_helper_call",
+             "_OSTREE_STAGED_DEPLOYMENT", "_SESSION_RESCUE_POLL_S",
+             "_SESSION_RESCUE_WATCH_S", "ACTIONS")
+
+    def __init__(self, tmp, image=44, pref="game", stale_dropin=True):
+        self.tmp = tmp
+        self.saved = {}
+        for n in self.NAMES:
+            obj, attr = (cs.subprocess, "run") if n == "subprocess.run" else (cs, n)
+            self.saved[n] = getattr(obj, attr, None)
+        self.sysd = os.path.join(tmp, "usr-lib-sddm.conf.d")
+        self.etcd = os.path.join(tmp, "etc-sddm.conf.d")
+        for d in (self.sysd, self.etcd):
+            os.makedirs(d, exist_ok=True)
+        for name, body in BAZZITE44_SYS_CONF.items():
+            self._write(os.path.join(self.sysd, name), body)
+        for name, body in BAZZITE44_ETC_CONF.items():
+            self._write(os.path.join(self.etcd, name), body)
+        self.dropin = os.path.join(self.etcd, "zzz-couchside-session.conf")
+        if stale_dropin:
+            self._write(self.dropin, STRANDING_DROPIN)
+        self.image = image
+        self.seat = [LOGIND_USER_ON_SEAT]
+        self.calls = []
+        self.tees = []
+        self.restarts = []
+        self.restart_ok = True
+        self.tee_ok = True
+        cs.subprocess.run = self.run
+        cs._sudo_nopasswd_allows = lambda needle: True
+        cs.detect_display_manager = lambda: "sddm"
+        cs._display_manager_unit_name = lambda: "sddm"
+        self.installed = set(BAZZITE44_SESSIONS if image == 44 else BAZZITE43_SESSIONS)
+        cs._installed_session_files = lambda: set(self.installed)
+        cs.CONFIG_PATH = os.path.join(tmp, "config.json")
+        self._write(cs.CONFIG_PATH, '{"units": [], "session_default": "%s"}' % pref
+                    if pref else '{"units": []}')
+        cs._DM_CONF_DIRS = {"sddm": self.etcd, "plasmalogin": self.etcd}
+        cs._DM_SYS_CONF_DIRS = {"sddm": self.sysd, "plasmalogin": self.sysd}
+        cs._DM_MAIN_CONFS = {"sddm": os.path.join(tmp, "absent-sddm.conf"),
+                             "plasmalogin": os.path.join(tmp, "absent-pl.conf")}
+        cs._DM_STATE_FILES = {}
+        cs._arm_hook_installed = lambda: True
+        cs._helper_call = lambda *a, **k: None   # no helper: the sudo path
+        self.staged = os.path.join(tmp, "run-ostree-staged-deployment")
+        cs._OSTREE_STAGED_DEPLOYMENT = self.staged
+        cs._SESSION_RESCUE_POLL_S = 0.005
+        cs._SESSION_RESCUE_WATCH_S = 1.0
+        cs.ACTIONS = dict(self.saved["ACTIONS"] or {}, **{"restart-session": dict(STOCK_RESTART)})
+        cs._SESSION_RESCUE_THREAD = None
+
+    @staticmethod
+    def _write(path, body):
+        with open(path, "w") as f:
+            f.write(body)
+
+    def platform_files(self):
+        """Bytes of every file that is NOT ours, for the never-touch check."""
+        out = {}
+        for d in (self.sysd, self.etcd):
+            for n in sorted(os.listdir(d)):
+                if n in ("zzz-couchside-session.conf", "zz-couchside-session.conf"):
+                    continue
+                with open(os.path.join(d, n), "rb") as f:
+                    out[os.path.join(os.path.basename(d), n)] = f.read()
+        return out
+
+    def run(self, argv, **kw):
+        argv = list(argv)
+        self.calls.append(argv)
+
+        class R:
+            pass
+        r = R()
+        r.returncode, r.stdout, r.stderr = 0, "", ""
+        if argv[:3] == ["sudo", "-n", "tee"]:
+            self.tees.append(argv[3])
+            if not self.tee_ok:
+                r.returncode, r.stderr = 1, "sudo: a password is required"
+                return r
+            with open(argv[3], "w") as fh:
+                fh.write(kw.get("input", ""))
+        elif argv[:2] == ["steamosctl", "get-default-login-mode"]:
+            if self.image == 44:
+                r.stdout = "game\n"   # 44: the interface answers
+            else:                     # 43: verbatim exit-0 lie (top of file)
+                r.stderr = ("Error: org.freedesktop.DBus.Error.UnknownInterface: "
+                            "Unknown interface 'com.steampowered.SteamOSManager1."
+                            "SessionManagement1'")
+        elif argv[:3] == ["loginctl", "list-sessions", "--no-legend"]:
+            state = self.seat[0] if len(self.seat) == 1 else self.seat.pop(0)
+            self._shown = state[1]
+            r.stdout = state[0]
+        elif argv[:2] == ["loginctl", "show-session"]:
+            body = self._shown.get(argv[2])
+            if body is None:
+                r.returncode, r.stderr = 1, "No session '%s' known" % argv[2]
+            else:
+                r.stdout = body
+        elif argv[:3] == ["sudo", "systemctl", "restart"]:
+            self.restarts.append(argv)
+            if not self.restart_ok:
+                r.returncode, r.stderr = 1, "sudo: a password is required"
+        return r
+
+    def join_rescue(self):
+        t = getattr(cs, "_SESSION_RESCUE_THREAD", None)
+        if t is not None:
+            t.join(10)
+
+    def restore(self):
+        for n, v in self.saved.items():
+            obj, attr = (cs.subprocess, "run") if n == "subprocess.run" else (cs, n)
+            setattr(obj, attr, v)
+
+
+def test_bazzite44_session_names():
+    """couchmode + autologin resolver on the 44 image, and 43/SteamOS unchanged.
+
+    The resolver must land on the name Bazzite 44's OWN autologin uses
+    (holo.conf / zz-holo-autologin.conf, verbatim) — not merely any gamescope
+    name — and a 43 box, which has BOTH gamescope-session.desktop and
+    gamescope-session-steam.desktop, must resolve exactly as before."""
+    print("test_bazzite44_session_names")
+    saved = (cs._installed_session_files, cs._GAMESCOPE_SESSION_FILES)
+    try:
+        distro_own = BAZZITE44_ETC_CONF["zz-holo-autologin.conf"].split("Session=")[1].strip()
+        cs._installed_session_files = lambda: set(BAZZITE44_SESSIONS)
+        check("bazzite 44 resolves to the name its OWN autologin boots",
+              cs._gamescope_session_for_autologin(), distro_own)
+        check("...which is gamescope-session-ogui-steam.desktop",
+              distro_own, "gamescope-session-ogui-steam.desktop")
+        # CONTROL: the pre-fix tuple on the same box. This is the bug — nothing
+        # to arm, and (in test_couchmode_gate) no couchmode cap.
+        cs._GAMESCOPE_SESSION_FILES = ("gamescope-session.desktop",
+                                       "gamescope-wayland.desktop")
+        check("CONTROL: the pre-fix name set finds nothing on 44",
+              cs._gamescope_session_for_autologin(), None)
+        cs._GAMESCOPE_SESSION_FILES = saved[1]
+        # Unchanged elsewhere: 43 keeps the name ITS autologin used (steamos.conf
+        # Session=gamescope-session.desktop, verbatim in main()), and the
+        # SteamOS / Legion Go S sets are untouched.
+        cs._installed_session_files = lambda: set(BAZZITE43_SESSIONS)
+        check("bazzite 43 still resolves to gamescope-session.desktop",
+              cs._gamescope_session_for_autologin(), "gamescope-session.desktop")
+        cs._installed_session_files = lambda: {"gamescope-session.desktop",
+                                               "plasma.desktop", "plasmax11.desktop"}
+        check("steamos still resolves to gamescope-session.desktop",
+              cs._gamescope_session_for_autologin(), "gamescope-session.desktop")
+        cs._installed_session_files = lambda: {"gamescope-wayland.desktop",
+                                               "plasma.desktop", "plasmax11.desktop"}
+        check("legion go s still resolves to gamescope-wayland.desktop",
+              cs._gamescope_session_for_autologin(), "gamescope-wayland.desktop")
+        # Only the plain-steam 44 name installed: still a real Game Mode session.
+        cs._installed_session_files = lambda: {"gamescope-session-steam.desktop",
+                                               "plasma.desktop"}
+        check("gamescope-session-steam alone is accepted",
+              cs._gamescope_session_for_autologin(), "gamescope-session-steam.desktop")
+    finally:
+        cs._installed_session_files, cs._GAMESCOPE_SESSION_FILES = saved
+
+
+def test_getter_reads_a_bazzite44_record_as_game(tmp):
+    """The name->mode reader must know the 44 names too, or a drop-in-backend
+    box whose record names gamescope-session-ogui-steam.desktop reads
+    "unknown". Verbatim 44 conf layers; control with the pre-fix tuple.
+
+    DELIBERATELY SYNTHETIC COMBINATION: the real 44 box answers steamosctl, so
+    its getter never reaches this reader. The 43-style steamosctl failure is
+    used here to force the sddm backend and exercise the name->mode mapping on
+    44's verbatim layers — i.e. any sddm-backend image that adopts these names."""
+    print("test_getter_reads_a_bazzite44_record_as_game")
+    box = Box(tmp, image=43, pref="last", stale_dropin=False)
+    saved_tuple = cs._GAMESCOPE_SESSION_FILES
+    try:
+        # sddm backend (43's steamosctl lie), pref "last" -> reads the merged
+        # config, which on these verbatim layers names the ogui-steam session.
+        check("merged 44 config names ogui-steam",
+              cs._dm_current_session_file("sddm"), "gamescope-session-ogui-steam.desktop")
+        check("getter maps it to game", cs.session_default_get()["mode"], "game")
+        cs._GAMESCOPE_SESSION_FILES = ("gamescope-session.desktop",
+                                       "gamescope-wayland.desktop")
+        check("CONTROL: the pre-fix name set reads it as unknown",
+              cs.session_default_get()["mode"], "unknown")
+    finally:
+        cs._GAMESCOPE_SESSION_FILES = saved_tuple
+        box.restore()
+
+
+def test_consume_removes_an_orphaned_dropin(tmp):
+    """Orphan cleanup, both directions, and the platform's files never touched.
+
+    THE BUG: on 44 the backend is steamosctl, and consume() returned before
+    looking at our file — so the zzz- drop-in armed under 43 (naming a session
+    44 lacks) survived every boot. Seat is a user session here, so this test
+    isolates the cleanup from the rescue."""
+    print("test_consume_removes_an_orphaned_dropin")
+    box = Box(tmp, image=44, pref="game", stale_dropin=True)
+    try:
+        before = box.platform_files()
+        check("precondition: backend on 44 is steamosctl",
+              cs.session_default_backend(), "steamosctl")
+        check("precondition: our drop-in names the missing 43 session",
+              cs._last_session_line(box.dropin), "gamescope-session.desktop")
+        cs.session_default_consume()
+        box.join_rescue()
+        check("consume removes our orphaned Session= whatever the backend",
+              cs._last_session_line(box.dropin), "")
+        check("...leaving the platform's own autologin in charge",
+              cs._dm_current_session_file("sddm"), "gamescope-session-ogui-steam.desktop")
+        check("...wrote ONLY our two paths (zzz- and the legacy zz-)",
+              sorted(set(os.path.basename(p) for p in box.tees)),
+              ["zz-couchside-session.conf", "zzz-couchside-session.conf"])
+        check("...and every platform file is byte-identical", box.platform_files(), before)
+        check("...and the stored preference survives", cs.session_default_pref(), "game")
+        check("user session on seat0 -> no display-manager restart", box.restarts, [])
+
+        # Direction 2: nothing of ours present -> nothing written at all.
+        box.tees[:] = []
+        os.remove(box.dropin)
+        cs.session_default_consume()
+        box.join_rescue()
+        check("absent drop-in: consume writes nothing to it",
+              [p for p in box.tees if p.endswith("zzz-couchside-session.conf")], [])
+        check("absent drop-in: platform files still byte-identical",
+              box.platform_files(), before)
+
+        # Migration rule kept: a preference that only lives in the drop-in is
+        # adopted into config BEFORE the blanking, on a steamosctl box too.
+        Box._write(box.dropin, STRANDING_DROPIN)
+        Box._write(cs.CONFIG_PATH, '{"units": []}')
+        cs.session_default_consume()
+        box.join_rescue()
+        check("drop-in-only preference is adopted into config first",
+              cs.session_default_pref(), "game")
+        check("...and only then blanked", cs._last_session_line(box.dropin), "")
+
+        # ...and if that save FAILS, the file that still holds it is left alone.
+        Box._write(box.dropin, STRANDING_DROPIN)
+        Box._write(cs.CONFIG_PATH, '{"units": []}')
+        real_set = cs._config_set_field
+
+        def boom(*a, **k):
+            raise OSError("read-only config")
+        cs._config_set_field = boom
+        try:
+            cs.session_default_consume()
+            box.join_rescue()
+        finally:
+            cs._config_set_field = real_set
+        check("unsaved preference -> drop-in NOT blanked (no data loss)",
+              cs._last_session_line(box.dropin), "gamescope-session.desktop")
+    finally:
+        box.restore()
+
+
+def test_staged_os_update_is_never_armed(tmp):
+    """A staged image update -> arm writes NOTHING (disarms instead); no staged
+    update -> arm writes as before. The 43 box: sddm backend, pref game."""
+    print("test_staged_os_update_is_never_armed")
+    box = Box(tmp, image=43, pref="game", stale_dropin=False)
+    try:
+        check("precondition: 43 backend is sddm", cs.session_default_backend(), "sddm")
+        # Not staged: the ordinary shutdown still arms (the feature still works).
+        cs.session_default_arm()
+        check("not staged -> arm writes the 43 session",
+              cs._last_session_line(box.dropin), "gamescope-session.desktop")
+        # Staged: the next boot is 44. The 2026-09-26 stranding, prevented.
+        Box._write(box.dropin, "")
+        Box._write(box.staged, "")
+        cs.session_default_arm()
+        check("staged -> arm writes NO Session= (platform decides that boot)",
+              cs._last_session_line(box.dropin), "")
+        # A stale armed file (e.g. from an agent restart's ExecStop) is cleared,
+        # not left to name a session the new image may not have.
+        Box._write(box.dropin, STRANDING_DROPIN)
+        cs.session_default_arm()
+        check("staged -> an already-armed drop-in is DISARMED",
+              cs._last_session_line(box.dropin), "")
+        # Same for desktop.
+        with cs.CONFIG_LOCK:
+            cs._config_set_field(cs.SESSION_DEFAULT_CONFIG_KEY, "desktop")
+        cs.session_default_arm()
+        check("staged -> desktop preference is not armed either",
+              cs._last_session_line(box.dropin), "")
+        check("...and the preference itself is kept for the next shutdown",
+              cs.session_default_pref(), "desktop")
+        # Update applied/cleared: arming resumes, from the stored preference.
+        os.remove(box.staged)
+        cs.session_default_arm()
+        check("staged marker gone -> arm resumes",
+              cs._last_session_line(box.dropin) in BAZZITE43_SESSIONS, True)
+    finally:
+        box.restore()
+
+
+def test_seat_parser_on_verbatim_logind():
+    """_seat_session_classes on the verbatim systemd-259 output, plus the shapes
+    that must degrade to UNKNOWN (never to a decision)."""
+    print("test_seat_parser_on_verbatim_logind")
+    if not hasattr(cs, "_seat_session_classes"):
+        check("_seat_session_classes exists", False, True)
+        return
+    real = cs.subprocess.run
+    tmp = tempfile.mkdtemp()
+    box = Box(tmp)
+    try:
+        box.seat = [LOGIND_USER_ON_SEAT]
+        check("verbatim 44 user seat -> [user]", cs._seat_session_classes(), ["user"])
+        check("...classified occupied",
+              cs._seat_state(cs._seat_session_classes()), "occupied")
+        box.seat = [LOGIND_GREETER_ONLY]
+        check("stranded seat -> [greeter] (manager/manager-early have no seat)",
+              cs._seat_session_classes(), ["greeter"])
+        check("...classified greeter-only",
+              cs._seat_state(cs._seat_session_classes()), "greeter-only")
+        box.seat = [LOGIND_EMPTY_SEAT]
+        check("before the DM starts -> [] (empty)", cs._seat_session_classes(), [])
+        check("...classified empty", cs._seat_state([]), "empty")
+        # A greeter next to a user session (fast-user-switch, lock screen...) is
+        # someone on the seat.
+        check("greeter + user -> occupied", cs._seat_state(["greeter", "user"]), "occupied")
+        check("a class never seen -> occupied, not greeter-only",
+              cs._seat_state(["lock-screen"]), "occupied")
+        # Unknown shapes are None — the watcher never decides on them.
+        box.seat = [("weird;id 1000 x seat0\n", {})]
+        check("non-alphanumeric session id -> None (reject, not sanitise)",
+              cs._seat_session_classes(), None)
+        box.seat = [("c9  958 sddm seat0 1 greeter tty1 no -\n", {})]
+        check("show-session fails (session vanished) -> None",
+              cs._seat_session_classes(), None)
+        check("None classifies as unknown", cs._seat_state(None), "unknown")
+
+        def failing(argv, **kw):
+            class R:
+                pass
+            r = R()
+            r.returncode, r.stdout, r.stderr = 1, "", "Failed to connect to bus"
+            return r
+        cs.subprocess.run = failing
+        check("loginctl failing -> None", cs._seat_session_classes(), None)
+
+        def raising(argv, **kw):
+            raise FileNotFoundError("loginctl")
+        cs.subprocess.run = raising
+        check("no loginctl binary -> None (never raises)", cs._seat_session_classes(), None)
+    finally:
+        cs.subprocess.run = real
+        box.restore()
+        import shutil
+        shutil.rmtree(tmp, ignore_errors=True)
+
+
+def test_review_fixes_2026_09_26(tmp_root):
+    """Three findings from the adversarial review of the Bazzite-44 fix, both
+    directions each."""
+    print("test_review_fixes_2026_09_26")
+    n = [0]
+
+    def fresh(**kw):
+        n[0] += 1
+        d = os.path.join(tmp_root, "rf%d" % n[0])
+        os.makedirs(d)
+        return Box(d, **kw)
+
+    # (1) MEDIUM: a hook-less box (backend None) keeps a WORKING drop-in ...
+    box = fresh(image=43)
+    try:
+        cs._arm_hook_installed = lambda: False          # pre-2.9.67 unit -> backend None
+        check("hook-less 43 box -> backend None", cs.session_default_backend(), None)
+        cs.session_default_consume()
+        check("working drop-in on a hook-less box is KEPT (it is the preference)",
+              cs._last_session_line(box.dropin), "gamescope-session.desktop")
+    finally:
+        box.restore()
+    # ... but one naming a session this image LACKS is still removed.
+    box = fresh(image=43)
+    try:
+        cs._arm_hook_installed = lambda: False
+        box.installed = set(BAZZITE44_SESSIONS)          # image lost the name
+        cs.session_default_consume()
+        check("hook-less box, drop-in names a MISSING session -> removed",
+              cs._last_session_line(box.dropin), "")
+    finally:
+        box.restore()
+
+    # (3) the rescue needs a configured [Autologin] User= ...
+    box = fresh(image=44)
+    try:
+        Box._write(os.path.join(box.etcd, "zz-bazzite-autologin.conf"), "[Autologin]\n")
+        Box._write(os.path.join(box.etcd, "99-plasma-setup.conf"), "[Autologin]\nSession=plasma\n")
+        box.seat = [LOGIND_GREETER_ONLY]
+        cs.session_default_consume()
+        box.join_rescue()
+        check("no [Autologin] User= -> greeter is normal -> NO restart", box.restarts, [])
+        check("...drop-in still removed", cs._last_session_line(box.dropin), "")
+    finally:
+        box.restore()
+    # ... and with the measured User=bazzite it still fires (control for the gate).
+    box = fresh(image=44)
+    try:
+        check("merged autologin user on the verbatim 44 layers",
+              cs._dm_current_autologin_user("sddm"), "bazzite")
+        box.seat = [LOGIND_GREETER_ONLY]
+        cs.session_default_consume()
+        box.join_rescue()
+        check("User=bazzite + greeter + missing session -> ONE restart", len(box.restarts), 1)
+    finally:
+        box.restore()
+
+    # (2) the app-update path: a drop-in-backend box (steamosctl silent) stranded
+    # by a stale name; the NEW code's ExecStop arm rewrites a VALID name before the
+    # new process starts -> consume must still rescue, via the note.
+    box = fresh(image=43)
+    try:
+        box.installed = set(BAZZITE44_SESSIONS)          # stale name no longer shipped
+        box.seat = [LOGIND_GREETER_ONLY]
+        cs.session_default_arm()                          # ExecStop of the update restart
+        check("arm rewrote a VALID name", cs._last_session_line(box.dropin),
+              "gamescope-session-ogui-steam.desktop")
+        check("...and left the stranded note", os.path.exists(cs._stranded_note_path()), True)
+        cs.session_default_consume()                      # the new process starts
+        box.join_rescue()
+        check("rescue still fires after the rewrite (via the note)", len(box.restarts), 1)
+        check("note consumed (cannot fire twice)", os.path.exists(cs._stranded_note_path()), False)
+    finally:
+        box.restore()
+    # Control: a normal shutdown with a VALID drop-in leaves no note, no rescue.
+    box = fresh(image=43, stale_dropin=False)
+    try:
+        box.seat = [LOGIND_GREETER_ONLY]
+        cs.session_default_arm()
+        check("valid config -> no stranded note", os.path.exists(cs._stranded_note_path()), False)
+        cs.session_default_consume()
+        box.join_rescue()
+        check("valid config + greeter -> NO restart", box.restarts, [])
+    finally:
+        box.restore()
+
+
+def test_rescue_fires_only_when_stranded_at_the_greeter(tmp_root):
+    """The rescue, end to end through consume(): it restarts the display manager
+    through the EXISTING restart-session argv only when our drop-in named a
+    missing session AND seat0 holds nothing but a greeter — and never twice."""
+    print("test_rescue_fires_only_when_stranded_at_the_greeter")
+    import shutil
+    n = [0]
+
+    def fresh(**kw):
+        n[0] += 1
+        d = os.path.join(tmp_root, "case%d" % n[0])
+        os.makedirs(d)
+        return Box(d, **kw)
+
+    # 1. THE MEASURED FAILURE: 44, stale 43 drop-in, seat0 = greeter.
+    box = fresh(image=44)
+    try:
+        box.seat = [LOGIND_GREETER_ONLY]
+        cs.session_default_consume()
+        box.join_rescue()
+        check("stranded at the greeter -> ONE display-manager restart",
+              box.restarts, [["sudo", "systemctl", "restart", "sddm"]])
+        check("...through the stock restart-session argv, nothing new",
+              box.restarts[:1] == [STOCK_RESTART["cmd"]], True)
+        check("...and only AFTER our drop-in was cleared",
+              cs._last_session_line(box.dropin), "")
+        # Idempotent: the next start (the agent restarts, or the box reboots
+        # into the fixed config) finds nothing to rescue.
+        cs._SESSION_RESCUE_THREAD = None
+        cs.session_default_consume()
+        box.join_rescue()
+        check("a second consume cannot fire again (file already clear)",
+              len(box.restarts), 1)
+    finally:
+        box.restore()
+
+    # 2. User session on seat0 -> never, even with the missing-session drop-in.
+    box = fresh(image=44)
+    try:
+        box.seat = [LOGIND_USER_ON_SEAT]
+        cs.session_default_consume()
+        box.join_rescue()
+        check("user session on seat0 -> NO restart", box.restarts, [])
+        check("...but the orphan is still removed", cs._last_session_line(box.dropin), "")
+    finally:
+        box.restore()
+
+    # 3. Greeter, but our drop-in named an INSTALLED session (a normal armed
+    # boot where the user has since logged out) -> not ours to rescue.
+    box = fresh(image=44)
+    try:
+        Box._write(box.dropin, STRANDING_DROPIN.replace(
+            "gamescope-session.desktop", "gamescope-session-ogui-steam.desktop"))
+        box.seat = [LOGIND_GREETER_ONLY]
+        cs.session_default_consume()
+        box.join_rescue()
+        check("greeter + drop-in naming an INSTALLED session -> NO restart",
+              box.restarts, [])
+    finally:
+        box.restore()
+
+    # 4. The DM has not started yet when the agent does (measured: agent 120 ms
+    # ahead of sddm) -> keep watching, then fire once the greeter shows.
+    box = fresh(image=44)
+    try:
+        box.seat = [LOGIND_EMPTY_SEAT, LOGIND_EMPTY_SEAT, LOGIND_GREETER_ONLY]
+        cs.session_default_consume()
+        box.join_rescue()
+        check("empty seat, then greeter -> waits, then ONE restart",
+              len(box.restarts), 1)
+    finally:
+        box.restore()
+
+    # 5. A greeter seen once, then the user logs in -> never fire (two
+    # consecutive greeter-only reads are required).
+    box = fresh(image=44)
+    try:
+        box.seat = [LOGIND_GREETER_ONLY, LOGIND_USER_ON_SEAT]
+        cs.session_default_consume()
+        box.join_rescue()
+        check("greeter once then a user session -> NO restart", box.restarts, [])
+    finally:
+        box.restore()
+
+    # 6. logind unreadable the whole window -> gives up, never guesses.
+    box = fresh(image=44)
+    try:
+        box.seat = [("weird;id\n", {})]
+        cs.session_default_consume()
+        box.join_rescue()
+        check("logind unknown for the whole window -> NO restart", box.restarts, [])
+    finally:
+        box.restore()
+
+    # 7. No stock restart-session action (no grant, or owner-customised) ->
+    # blocked, loudly; never a new command.
+    for label, actions in (("absent", {}),
+                           ("owner-customised", {"restart-session": dict(
+                               STOCK_RESTART, cmd=["/usr/local/bin/my-restart"])}),
+                           ("aimed at another manager", {"restart-session": dict(
+                               STOCK_RESTART, cmd=["sudo", "systemctl", "restart",
+                                                   "plasmalogin"])})):
+        box = fresh(image=44)
+        try:
+            cs.ACTIONS = actions
+            box.seat = [LOGIND_GREETER_ONLY]
+            cs.session_default_consume()
+            box.join_rescue()
+            check("restart-session %s -> nothing runs" % label,
+                  box.restarts + [c for c in box.calls if c[:1] == ["/usr/local/bin/my-restart"]],
+                  [])
+            check("...the orphan is still removed (%s)" % label,
+                  cs._last_session_line(box.dropin), "")
+        finally:
+            box.restore()
+
+    # 8. Could not clear the drop-in -> a restart would fail autologin again.
+    box = fresh(image=44)
+    try:
+        box.tee_ok = False
+        box.seat = [LOGIND_GREETER_ONLY]
+        cs.session_default_consume()
+        box.join_rescue()
+        check("drop-in not cleared -> NO restart", box.restarts, [])
+    finally:
+        box.restore()
+
+    # 9. The platform's own config names nothing installed either -> a restart
+    # autologins nowhere; do not kill a greeter someone may be typing into.
+    box = fresh(image=44)
+    try:
+        os.remove(os.path.join(box.sysd, "holo.conf"))
+        os.remove(os.path.join(box.etcd, "zz-holo-autologin.conf"))
+        box.installed.discard("plasma.desktop")  # 99-plasma-setup's "plasma"
+        box.seat = [LOGIND_GREETER_ONLY]
+        cs.session_default_consume()
+        box.join_rescue()
+        check("platform names no installed session -> NO restart", box.restarts, [])
+    finally:
+        box.restore()
+
+    # 10. Session dirs unreadable -> "missing" is unknown, not absent.
+    box = fresh(image=44)
+    try:
+        box.installed = set()
+        box.seat = [LOGIND_GREETER_ONLY]
+        cs.session_default_consume()
+        box.join_rescue()
+        check("unreadable session dirs -> NO restart", box.restarts, [])
+    finally:
+        box.restore()
+
+    # 11. The bare-name normalisation SDDM does: platform "plasma" (verbatim
+    # 99-plasma-setup.conf) counts as the installed plasma.desktop.
+    box = fresh(image=44)
+    try:
+        os.remove(os.path.join(box.sysd, "holo.conf"))
+        os.remove(os.path.join(box.etcd, "zz-holo-autologin.conf"))
+        box.seat = [LOGIND_GREETER_ONLY]
+        cs.session_default_consume()
+        box.join_rescue()
+        check("platform names bare 'plasma' (installed as plasma.desktop) -> restart",
+              len(box.restarts), 1)
+    finally:
+        box.restore()
+
+    # 13. The rescue can never take agent startup down: main() calls consume
+    # unguarded before the server binds.
+    box = fresh(image=44)
+    real_start = getattr(cs, "_session_rescue_start", None)
+    try:
+        def explode(*a, **k):
+            raise RuntimeError("can't start new thread")
+        cs._session_rescue_start = explode
+        raised = None
+        try:
+            cs.session_default_consume()
+        except Exception as e:
+            raised = e
+        check("a failing rescue launch never escapes consume()", raised, None)
+        check("...and the orphan was still removed first",
+              cs._last_session_line(box.dropin), "")
+    finally:
+        if real_start is not None:
+            cs._session_rescue_start = real_start
+        box.restore()
+
+    # 12. --mock never runs any of it.
+    box = fresh(image=44)
+    try:
+        box.seat = [LOGIND_GREETER_ONLY]
+        cs.session_default_consume(mock=True)
+        box.join_rescue()
+        check("mock consume touches nothing",
+              (box.restarts, box.tees, cs._last_session_line(box.dropin)),
+              ([], [], "gamescope-session.desktop"))
+    finally:
+        box.restore()
+
+
 def main():
     real_run = cs.subprocess.run
     real_sudo = cs._sudo_nopasswd_allows
+    # HERMETIC, for every test in this file. arm() now reads libostree's
+    # staged-update marker, so point it at a path that cannot exist (on an
+    # ostree box with an update staged, the real one would flip every arm test).
+    # And never let a test reach a REAL couchside-helper socket: on a box that
+    # runs one, clear-boot/set-boot would edit the real /etc drop-in. On CI
+    # neither exists, so this changes nothing there.
+    _hermetic = tempfile.mkdtemp()
+    cs._OSTREE_STAGED_DEPLOYMENT = os.path.join(_hermetic, "never-staged")
+    cs._helper_call = lambda *a, **k: None
 
     print("the exit-0 lie (Bazzite)")
     # Verbatim from the real box, including the 0 exit status.
@@ -696,6 +1439,22 @@ def main():
     finally:
         import shutil
         shutil.rmtree(_g, ignore_errors=True)
+
+    print()
+    print("Bazzite 43 -> 44: the OS update that stranded the living-room box")
+    test_bazzite44_session_names()
+    test_seat_parser_on_verbatim_logind()
+    for fn in (test_getter_reads_a_bazzite44_record_as_game,
+               test_consume_removes_an_orphaned_dropin,
+               test_staged_os_update_is_never_armed,
+               test_rescue_fires_only_when_stranded_at_the_greeter,
+               test_review_fixes_2026_09_26):
+        _d = tempfile.mkdtemp()
+        try:
+            fn(_d)
+        finally:
+            import shutil
+            shutil.rmtree(_d, ignore_errors=True)
 
     print("the drop-in body (both conf-dir managers)")
     written = {}

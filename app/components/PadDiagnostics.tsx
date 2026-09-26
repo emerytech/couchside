@@ -25,9 +25,12 @@
  * `stale` is the literal predicate the recovery gates on, so the panel answers
  * "could it even have fired?" rather than leaving that to inference.
  */
-import { useCallback, useEffect, useState } from 'react';
+import * as Clipboard from 'expo-clipboard';
+import { useEffect, useRef, useState } from 'react';
 import { Modal, Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
 
+import { APP_LABEL } from '@/lib/appVersion';
+import { redact } from '@/lib/crashLogCore';
 import { getWsTrace, type GamepadClient } from '@/lib/gamepad';
 import { tpTrace } from '@/hooks/useTrackpad';
 import { hapticLight } from '@/lib/haptics';
@@ -61,9 +64,17 @@ export function PadDiagnostics({ visible, onClose, client }: Props) {
     return () => clearInterval(id);
   }, [visible]);
 
-  const copy = useCallback(() => {
-    hapticLight();
-  }, []);
+  // COPY puts the whole readout on the clipboard as text, so an episode can be
+  // pasted into a bug report instead of screenshotted in three scrolls. (It
+  // used to be the sheet's own onPress and only vibrated — nothing was copied.)
+  const [copied, setCopied] = useState<'idle' | 'ok' | 'fail'>('idle');
+  const copyTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  useEffect(
+    () => () => {
+      if (copyTimer.current) clearTimeout(copyTimer.current);
+    },
+    [],
+  );
 
   if (!visible) return null;
 
@@ -119,11 +130,35 @@ export function PadDiagnostics({ visible, onClose, client }: Props) {
     ['last move', g.lastMoveAt ? age(Date.now() - g.lastMoveAt) : '—'],
   ];
 
+  const copy = async () => {
+    hapticLight();
+    const section = (title: string, list: [string, string | number, boolean?][]) =>
+      [title, ...list.map(([k, v, warn]) => `  ${k}: ${String(v)}${warn ? '  <-' : ''}`)].join('\n');
+    const text = [
+      `Couchside pad diagnostics · app ${APP_LABEL} · ${new Date().toISOString()}`,
+      section('LIVE', rows),
+      section('COUNTERS', counters),
+      section('GESTURE (touch surface)', gestures),
+      ...(t.lastError ? [`LAST ERROR\n  ${t.lastError}`] : []),
+    ].join('\n\n');
+    let ok = false;
+    try {
+      // The pad socket's URL carries ?token=; never let an error that quotes it
+      // reach the clipboard (same scrub as the error log).
+      ok = await Clipboard.setStringAsync(redact(text));
+    } catch {
+      ok = false;
+    }
+    setCopied(ok ? 'ok' : 'fail');
+    if (copyTimer.current) clearTimeout(copyTimer.current);
+    copyTimer.current = setTimeout(() => setCopied('idle'), 2000);
+  };
+
   return (
     <Modal visible transparent animationType="fade" onRequestClose={onClose}>
       <Pressable style={styles.backdrop} onPress={onClose}>
         {/* Inner press swallows taps so touching the sheet doesn't dismiss it. */}
-        <Pressable style={styles.sheet} onPress={copy}>
+        <Pressable style={styles.sheet} onPress={() => {}}>
           <Text style={styles.title}>Connection diagnostics</Text>
           <Text style={styles.hint}>
             Swipe the trackpad while this is open. If{' '}
@@ -164,9 +199,19 @@ export function PadDiagnostics({ visible, onClose, client }: Props) {
             )}
           </ScrollView>
 
-          <Pressable style={styles.btn} onPress={onClose}>
-            <Text style={styles.btnText}>Close</Text>
-          </Pressable>
+          <View style={styles.btnRow}>
+            <Pressable
+              style={[styles.btn, styles.btnAlt]}
+              onPress={() => void copy()}
+              accessibilityRole="button">
+              <Text style={[styles.btnText, styles.btnAltText]}>
+                {copied === 'ok' ? 'Copied ✓' : copied === 'fail' ? 'Couldn’t copy' : 'Copy'}
+              </Text>
+            </Pressable>
+            <Pressable style={styles.btn} onPress={onClose} accessibilityRole="button">
+              <Text style={styles.btnText}>Close</Text>
+            </Pressable>
+          </View>
         </Pressable>
       </Pressable>
     </Modal>
@@ -210,12 +255,15 @@ const makeStyles = (t: Palette) =>
     v: { color: t.text, fontSize: 12, fontFamily: mono, fontWeight: '700' },
     warn: { color: t.amber },
     err: { color: t.red, fontSize: 11, fontFamily: mono, lineHeight: 15 },
+    btnRow: { flexDirection: 'row', gap: 8, marginTop: 6 },
     btn: {
+      flex: 1,
       backgroundColor: t.blue,
       borderRadius: 9,
       paddingVertical: 9,
       alignItems: 'center',
-      marginTop: 6,
     },
     btnText: { color: t.onAccent, fontSize: 13, fontWeight: '700' },
+    btnAlt: { backgroundColor: t.inset, borderColor: t.cardBorder, borderWidth: 1 },
+    btnAltText: { color: t.text },
   });

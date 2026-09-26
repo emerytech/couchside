@@ -229,6 +229,10 @@ jobs:
       # its exit status: on Bazzite it prints a D-Bus UnknownInterface error and
       # exits 0, so an exit-code probe would claim the backend works on every
       # Bazzite box. The first test is that exact lie.
+      # It also pins the OS-update stranding (Bazzite 43 -> 44, 2026-09-26):
+      # arm must not write a session name at the shutdown that applies a staged
+      # image, consume must remove our drop-in whatever the backend, and the
+      # restart-session rescue may fire only at a greeter-only seat0.
       - name: Unit tests (boot session default)
         run: python3 tests/test_session_default.py
 
@@ -410,6 +414,8 @@ jobs:
       # sessions and a connected panel was refused by its NAME — hiding the
       # toggle, the desktop cluster and the guide hold together. Now it probes
       # the tools plus both switch targets; these pin both directions.
+      # Bazzite 44 renamed its Game Mode session, and the update silently
+      # dropped couchmode from caps; the 44 listing is pinned here verbatim.
       - name: Unit tests (couch mode gate)
         run: python3 tests/test_couchmode_gate.py
 
@@ -753,6 +759,18 @@ jobs:
       - name: Installer CLI + token-redaction pins
         run: bash tests/test_installer_cli.sh install.sh
 
+      # An owner who removes the Couchside panel in Decky's own plugin list (or
+      # passes --no-decky) must STAY Decky-free. Every plain run -- including
+      # `couchside update` and the phone's update button, which pass no flags --
+      # used to reinstall the panel and re-do the dormant disable/enable hand-off
+      # to it, a hand-off that has already raced a real box offline. Runs the
+      # REAL service block + h2/h3 + exit trap lifted from install.sh against
+      # stubbed sudo/systemctl/curl, both directions: removal remembered and
+      # standalone, --decky restores coexistence, and never-removed boxes keep
+      # today's exact behaviour (control-checked against the pre-fix installer).
+      - name: Installer Decky panel removal is remembered
+        run: bash tests/test_installer_decky_panel.sh install.sh
+
       # An OPTIONAL step must never abort an app-triggered update. install.sh
       # runs `set -euo pipefail` and the phone runs it DETACHED, so on a box
       # whose user has a sudo password there is no tty and no root — an
@@ -1027,6 +1045,15 @@ jobs:
       # `cryptography`, which the runner does not install.
       - name: Unit tests (play release notes are verified after commit)
         run: python3 tests/test_play_release_notes.py
+
+      # A Hermes release stack is `index.android.bundle:1:<offset>` and only the
+      # source map from that exact build can read it; the build box re-clones
+      # per release, so a map not archived at build time is gone for good. The
+      # build script must archive <artifact>-vc<N>.map WITH its APK, prove the
+      # map belongs to that APK, and fail closed (archive nothing) without one.
+      # Fake build tree + --archive-only: no Gradle, no SDK, no network.
+      - name: Unit tests (Android build archives the Hermes source map)
+        run: python3 tests/test_android_build_archive.py
 
       - uses: actions/setup-node@v7
         with:

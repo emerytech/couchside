@@ -28,8 +28,15 @@ The only outbound internet call in the whole system is the box's own GitHub upda
 
 ### Auth model
 
-One shared bearer token per box, stored at `/etc/couchside/token`, loaded at startup and
-re-readable so a regenerated token needs no restart (`_current_token`, `:9412-9424`).
+One shared bearer token per box. **Canonical copy `/etc/couchside/token`**, plus a 0600
+**mirror `/var/lib/couchside/token`** the agent re-syncs on every start (agent >= 2.9.114,
+KI-088). `resolve_token()` reads canonical first (every rotation path writes it — `couchside
+new-token`, the Decky panel's Regenerate, the installer — so a backup must never outrank it),
+falls back to the mirror when an OS update has dropped `/etc/couchside` (SteamOS does), and
+with nothing readable MINTS, persists to the mirror and keeps serving — it never exits, because
+a crash-looping agent is unreachable and cannot be re-paired. The file the token came from is
+re-read per render by `/pair` and `/panel` (`_current_token`), so a regenerated token shows
+there without a restart; the auth gate itself compares against the value loaded at startup.
 
 ```python
 def _authorized(self):
@@ -52,6 +59,12 @@ Rules that fall out of that:
   responses (`_send:9463-9465`).
 - Unauthenticated routes are exactly four: `/api/ping`, `/pair`, `/api/pair/start`,
   `/api/pair/finish` (plus `/api/pair/status`).
+- **Loopback-only pages that embed or act on the token** — `/pair`, `/update`, `/panel` — use
+  the two-gate model: socket peer is loopback (`_is_loopback`) AND the Host header names
+  loopback (`_host_header_is_local`, anti-DNS-rebinding). The Host check **parses** the address
+  (`localhost`, `::1`, or `ipaddress.ip_address(h).is_loopback`) — a `startswith("127.")` test
+  accepted `127.0.0.1.evil.com` (KI-087). A new page of this kind copies the `/pair` gate and
+  adds the rebind-name test.
 
 ### Discovery and pairing
 
@@ -99,6 +112,10 @@ app/
   lib/SettingsContext.tsx  React context over settings.ts.
   lib/entitlement.ts       IAP unlock state; purchase.ts drives the store.
   lib/boxDiscovery.ts      HTTP /24 sweep + UDP probe, merged.
+  lib/crashLog.ts          Local error log: chains RN's global JS error handler (never swallows), the
+                           'closed unexpectedly' session marker, Copy/Share text. Pure half in
+                           crashLogCore.ts (bare-Node tested). On the phone only; never sent.
+  lib/appVersion.ts        Native version/build/applicationId — one definition (About row, crash reports).
   hooks/useCapsSync.ts     Always-mounted 30s caps healer (see §3).
   hooks/usePoll.ts         Generic poll-with-resetKey hook every card uses.
   components/              One file per surface: RemoteView, RemotePowerBar, GamingCard, etc.
@@ -120,6 +137,7 @@ scripts/
   play-release-notes.py    Play Console release notes upload.
   ws-latency-test.py       Cold-path latency harness for /ws/gamepad.
   web-dev.sh / web-dev-proxy.py  Local web dev against a real box.
+  android-local-build.sh   Linux build-box APK build + archive <artifact>-vc<N>.map (Hermes source map).
 
 .github/workflows/
   ci.yml                   compile job (py_compile all three entrypoints incl. the Windows agent,
@@ -370,7 +388,42 @@ Reanimated shared values keep advancing when read from JS. A probe that samples 
 reports PASS against a frozen DOM. Measure the *painted* result
 (`getComputedStyle(el).opacity` over time). See CONVENTIONS §"Verifying app UI".
 
-### 3j. The install footprint vs OS updates (`install_health`)
+### 3j. The on-box quick panel (`/panel`) — added #552/#555, agent 2.9.113
+
+A Decky-free Game-Mode panel: `render_panel_page()` serves live vitals (from `/api/status`,
+every field optional) and a quick-actions grid (from `/api/actions`; buttons POST
+server-provided ids, `danger:"high"` arms a 3 s cancellable countdown). `POST /api/panel
+{op:open|close}` opens it through the **Player's Steam-shortcut kiosk launch** — a focus-swap
+(the game pauses). A true overlay is not viable on a stock box: gamescope has one
+`GAMESCOPE_EXTERNAL_OVERLAY` slot and `mangoapp` holds it. The panel reuses the Player's single
+tile/conf (a known, self-healing clobber). App: Launch → Watch → "Show the Couchside panel on
+the TV", gated on `supportsBoxPanel(settings.version)` (Linux ≥ 2.9.113; Windows/unknown hidden).
+
+### 3k. Boot-session preference: arm while OFF, consume at start (KI-051, KI-090)
+
+"Boots into: Game/Desktop" on drop-in display managers (sddm, plasmalogin) is a
+`zzz-couchside-session.conf` that exists **only while the box is off**:
+`session_default_arm()` writes it from the stored preference at the unit's ExecStop
+(`--arm-boot-session`, also on every service restart), and `session_default_consume()` blanks
+it at startup so nothing of ours can defeat a runtime session switch (Steam's own "Switch to
+Desktop" included). `steamosctl` (SteamOS, and Bazzite ≥ 44) and greetd own their own state and
+get no drop-in. Hard-won rules: never write a session name that is not installed (`_dm_write`
+refuses — a missing name drops SDDM at the greeter); session names differ per image
+(`_GAMESCOPE_SESSION_FILES`); and, from the Bazzite 43→44 update (PR #559): remove our drop-in
+whatever the current backend (a backend switch orphaned it), do not arm while an ostree update is
+staged (`/run/ostree/staged-deployment` — finalize runs after our ExecStop), and rescue a box our
+stale drop-in parked at the greeter through the EXISTING restart-session action only.
+
+### 3l. Root-run code and user-writable paths (Decky plugin, couchside-decky#10)
+
+The Decky plugin's backend runs as **root**; `/var/lib/couchside` (and `$HOME`) belong to the
+desktop user — the account every game and the LAN-exposed agent run as. Root I/O there must not
+follow symlinks: O_NOFOLLOW fds + fstat/fchown/fchmod for reads and ownership repair; writes via a
+fresh O_EXCL|O_NOFOLLOW temp file + fchown + `os.replace()`; never trust content read there into
+root-owned files without validating it. The `$HOME` install tree (`~/.local/opt/couchside`) still
+needs this treatment (privilege-dropped writes) — KI-089.
+
+### 3m. The install footprint vs OS updates (`install_health`)
 
 The installer writes root-owned files under `/etc`: the token and wrappers in
 `/etc/couchside/`, the sudoers grants, udev rules, modules-load, the unit and the WoL

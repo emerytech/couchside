@@ -102,6 +102,8 @@ The installer copies the service to `~/.local/opt/couchside/`, generates a token
 
 **Steam Deck / SteamOS:** a SteamOS update throws away every change in `/etc` that is not on its keep-list, so on SteamOS the installer also writes `/etc/atomic-update.conf.d/couchside.conf`, which lists only Couchside's own files there. If a box was installed before that and an update already took them, the app shows **"Box installation is damaged"**. Re-running the installer command above in a terminal on the box (Desktop Mode on a Deck) puts them back. It keeps your existing pairing when the box still has its backup copy of the token, which Couchside 2.9.114 and later keep. An update started from the phone can't do this, because it has no password to write system files.
 
+**Decky Loader box?** The installer also adds the Couchside Game Mode panel to Decky and lets it run the service. Don't want the panel? Remove Couchside in Decky's **Settings → Plugins**. The service keeps running, and the next update notices the panel is gone, remembers that (`/var/lib/couchside/no-decky-panel`) and runs `couchside.service` on its own from then on instead of putting the panel back. `curl -fsSL https://couchside.tv/install.sh | bash -s -- --no-decky` does the same up front; `... | bash -s -- --decky` brings the panel back.
+
 Running **Bazzite**? The same steps are in the official [Bazzite documentation](https://docs.bazzite.gg/Advanced/couchside/). On **Windows**, download [`CouchsideSetup.exe`](https://couchside.tv/windows) instead and double-click it.
 
 ## Get the app

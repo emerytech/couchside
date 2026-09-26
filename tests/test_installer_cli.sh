@@ -106,6 +106,47 @@ grep -q 'NOT live yet' "$tmp2"
 check "a failed restart warns instead of '|| true'" $?
 rm -f "$tmp2"
 
+echo "couchside update tells the truth about who runs the agent (Decky panel on/off)"
+# `couchside update` announced "updating the Couchside plugin (it owns the agent)"
+# whenever ~/homebrew/plugins existed -- litter Decky's own uninstaller leaves
+# behind, and a box whose owner removed the panel has no plugin at all. Since
+# the installer now remembers a panel opt-out (/var/lib/couchside/no-decky-panel,
+# see tests/test_installer_decky_panel.sh) the line must follow the same facts.
+# The REAL if/elif is lifted from the CLI and run against a temp tree.
+tmp3="$(mktemp -d)" && [ -d "$tmp3" ] || { echo "mktemp failed"; exit 2; }
+awk '/^cat > "\$CLI" <<'"'"'CLIEOF'"'"'$/{f=1;next} /^CLIEOF$/{f=0} f' "$SRC" > "$tmp3/cli"
+awk '/^  update[|]upgrade\)$/,/^    ;;$/' "$tmp3/cli" > "$tmp3/update"
+lines=$(wc -l < "$tmp3/update" | tr -d ' ')
+[ "$lines" -gt 20 ] && [ "$lines" -lt 140 ]; check "update block is bounded ($lines lines)" $?
+awk '/^    if \[ -e \/var\/lib\/couchside\/no-decky-panel \]; then$/,/^    fi$/' "$tmp3/update" > "$tmp3/msg"
+lines=$(wc -l < "$tmp3/msg" | tr -d ' ')
+[ "$lines" -gt 3 ] && [ "$lines" -lt 12 ]; check "the panel-state message block is found + bounded ($lines lines)" $?
+sed -e "s#/var/lib/couchside/no-decky-panel#$tmp3/marker#" \
+    -e "s#/etc/systemd/system/plugin_loader.service#$tmp3/plugin_loader.service#" \
+    "$tmp3/msg" > "$tmp3/msg.t"
+n=$(grep -c "$tmp3/" "$tmp3/msg.t" | tr -d ' ')
+[ "$n" -eq 2 ]; check "both hardcoded paths repointed ($n)" $?
+say_update() { ( HOME="$tmp3/home"; INSTALL_URL="https://couchside.tv/install.sh"; eval "$(cat "$tmp3/msg.t")" ) 2>&1; }
+reset3() { rm -rf "${tmp3:?}/home" "${tmp3:?}/marker" "${tmp3:?}/plugin_loader.service"; mkdir -p "$tmp3/home"; }
+reset3; : > "$tmp3/plugin_loader.service"; mkdir -p "$tmp3/home/homebrew/plugins/Couchside"
+say_update | grep -q 'updating the Couchside plugin'
+check "Decky + panel present -> 'updating the Couchside plugin' (unchanged)" $?
+: > "$tmp3/marker"
+out="$(say_update)"
+printf '%s' "$out" | grep -q 'OFF on this box' && ! printf '%s' "$out" | grep -q 'Couchside plugin (it owns'
+check "panel turned off -> says OFF, never claims the plugin owns the agent" $?
+printf '%s' "$out" | grep -q 'bash -s -- --decky'
+check "...and names the way back (--decky)" $?
+reset3; : > "$tmp3/plugin_loader.service"; mkdir -p "$tmp3/home/homebrew/plugins"
+[ -z "$(say_update)" ]
+check "Decky but the panel removed (before the installer records it) -> no plugin claim" $?
+reset3; mkdir -p "$tmp3/home/homebrew/plugins/Couchside"
+[ -z "$(say_update)" ]
+check "~/homebrew litter left by Decky's uninstaller -> no plugin claim" $?
+rm -rf "$tmp3"
+grep -q -- '--no-decky   (or --decky)' "$SRC"
+check "couchside help names --no-decky / --decky" $?
+
 echo "firewall opens the TLS port"
 grep -q 'firewall-cmd --add-port="${TLS_PORT}/tcp" --permanent' "$SRC"
 check "firewalld branch opens the TLS port" $?
