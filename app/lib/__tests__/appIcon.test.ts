@@ -102,3 +102,27 @@ test('picker values round-trip; an unknown value is refused rather than sent to 
   assert.equal(aliasFromValue('Standard', choices), 'Standard');
   assert.equal(aliasFromValue('Nope', choices), undefined);
 });
+
+test('a preview KEY is kept; anything path-like or hostile is dropped (the choice stays, text fallback)', () => {
+  const parsed = parseAppIconChoices([
+    { label: 'Pro', preview: 'pro' },
+    { alias: 'Standard', label: 'Standard', preview: 'standard' },
+    { alias: 'Evil', label: 'Evil', preview: '../../assets/images/secret.png' },
+    { alias: 'Up', label: 'Up', preview: 'Standard' }, // keys are lowercase identifiers
+    { alias: 'Num', label: 'Num', preview: 42 },
+  ]);
+  assert.deepEqual(parsed, [
+    { alias: null, label: 'Pro', preview: 'pro' },
+    { alias: 'Standard', label: 'Standard', preview: 'standard' },
+    { alias: 'Evil', label: 'Evil' },
+    { alias: 'Up', label: 'Up' },
+    { alias: 'Num', label: 'Num' },
+  ]);
+});
+
+test('no preview declared is fine: choices parse exactly as before (the text-button fallback)', () => {
+  assert.deepEqual(parseAppIconChoices([{ label: 'Pro' }, { alias: 'Standard', label: 'Standard' }]), [
+    { alias: null, label: 'Pro' },
+    { alias: 'Standard', label: 'Standard' },
+  ]);
+});
