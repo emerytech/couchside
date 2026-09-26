@@ -1065,6 +1065,30 @@ if [ -f "$WORK_DIR/qr.py" ] && python3 -m py_compile "$WORK_DIR/qr.py" 2>/dev/nu
     install -m 0755 "$WORK_DIR/qr.py" "$INSTALL_DIR/qr.py"
 fi
 
+# --no-decky / --decky on the passwordless fast path (review finding, PR #558):
+# they are CHOICES, not privileged work. The marker lives in the user-owned
+# STATE_DIR, so save them here -- the fast path below exits long before
+# decky_panel_resolve runs, and silently dropping the flag would leave the owner
+# believing it took. The panel itself is only added or removed by the next full
+# (privileged) install, so say that too.
+if [ "$CAN_PRIVILEGE" -eq 0 ]; then
+    if [ "$NO_DECKY" -eq 1 ]; then
+        decky_panel_mark_off "you ran install.sh --no-decky"
+        if [ -e "$DECKY_PANEL_OFF" ]; then
+            note "--no-decky: saved; later updates keep the Couchside panel off. A panel"
+            note "already in Decky's list stays until you remove it there (Decky > Settings > Plugins)."
+        fi
+    elif [ "$DECKY_OPTIN" -eq 1 ]; then
+        rm -f "${DECKY_PANEL_OFF:?}" 2>/dev/null || true
+        if [ -e "$DECKY_PANEL_OFF" ]; then
+            note "--decky: couldn't remove $DECKY_PANEL_OFF; re-run the installer from a terminal."
+        else
+            note "--decky: saved; the Couchside panel is added on the next full install (run the"
+            note "installer from a terminal on the box: curl -fsSL https://couchside.tv/install.sh | bash)."
+        fi
+    fi
+fi
+
 # ---------------------------------------------------------------------------
 # (c2) Detached update fast-path — restart without a password, or finish clean
 # ---------------------------------------------------------------------------

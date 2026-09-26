@@ -68,6 +68,7 @@ load_regions() { # $1 = installer path
     SERVICE="$(awk '/^# Decky co-existence:/,/^fi$/' "$1")"
     PANEL="$(awk '/^# \(h2\) Optional: Decky Loader Game Mode panel$/,/^# \(i\) Migration/' "$1")"
     MARKER_LINE="$(grep -m1 '^DECKY_PANEL_OFF=' "$1" || true)"
+    FASTFLAGS="$(awk '/^# --no-decky \/ --decky on the passwordless fast path/,/^fi$/' "$1")"  # absent pre-fix
     local name v n
     for name in FN_DETECT FN_TRAP PARSE SERVICE PANEL; do
         eval "v=\$$name"
@@ -191,6 +192,25 @@ run() { # flags...  -> RC; stdout+stderr in $T/out; calls in $T/calls; $T/owns
         eval "$SERVICE"
         eval "$PANEL"
         echo "${DECKY_OWNS_AGENT:-unset}" > "$T/owns"
+    ) > "$T/out" 2>&1
+    RC=$?
+}
+# The passwordless fast path (CAN_PRIVILEGE=0) exits before decky_panel_resolve;
+# run ONLY the block that must save the flag choice before it.
+run_fast() { # flags...
+    : > "$T/calls"
+    (
+        set -euo pipefail
+        HOME="$HOME_T"
+        note() { echo "    $*"; }
+        usage() { echo "(usage)"; }
+        NO_DECKY=0; DECKY_OPTIN=0; CAN_PRIVILEGE=0
+        if [ -n "$MARKER_LINE" ]; then eval "$MARKER_LINE"; else DECKY_PANEL_OFF="$STATE_DIR/no-decky-panel"; fi
+        if [ -n "$FN_MARK" ]; then eval "$FN_MARK"; fi
+        parse() { eval "$PARSE"; }
+        parse "$@"
+        if [ -n "$FASTFLAGS" ]; then eval "$FASTFLAGS"; fi
+        true
     ) > "$T/out" 2>&1
     RC=$?
 }
@@ -380,6 +400,20 @@ run
 check "no marker: only a box WITH Decky can have had the panel removed through it" no "$(exists "$MARKER")"
 check "standalone as before" "0/enabled+active" "$(calls 'systemctl disable --now couchside.service')/$(svc)"
 replay "Decky uninstalled"
+
+echo
+echo "passwordless fast path (CAN_PRIVILEGE=0): the flag choice is SAVED, not dropped"
+fresh_box
+run_fast --no-decky
+check "--no-decky on the fast path writes the marker" yes "$(exists "$MARKER")"
+check "...and says it was saved" yes "$(said '--no-decky: saved')"
+run_fast --decky
+check "--decky on the fast path removes the marker" no "$(exists "$MARKER")"
+check "...and says the panel comes on the next full install" yes "$(said '--decky: saved')"
+fresh_box; run_fast
+check "no flags on the fast path: absent marker stays absent" no "$(exists "$MARKER")"
+fresh_box; : > "$MARKER"; run_fast
+check "no flags on the fast path: present marker stays present" yes "$(exists "$MARKER")"
 
 echo
 echo "flags are documented"
