@@ -16,6 +16,28 @@ Each entry now carries a `✅ DONE` / `🟡 PARTIAL` / `📋 OPEN` banner with i
 
 ## 🔨 In Progress
 
+### App crash export — local error log, Copy/Share, native-crash help, source-map archive (field report 2026-09-26)
+- **priority:** P1 (a paying direct-edition user cannot report a crash) · **risk:** low-medium
+  (sits in the path of every JS fatal — chained, never swallows, control-tested) · **affects:**
+  app + build recipe (no agent change) · **depends_on:** none
+- **Origin:** a direct-edition APK user on Android 15 reported intermittent crashes while
+  spamming buttons on the Pad tab's Remote mode. There was no way to get a crash out without
+  adb: the crash screen showed 4 lines of `error.message`, nothing persisted, the Pad
+  diagnostics "copy" only vibrated, and no APK had an archived Hermes source map.
+- **Built (branch `feat/app-crash-export`, DRAFT PR):** crash screen Copy details + Show
+  details; local ring buffer of the last 20 errors (`lib/crashLog.ts` / `crashLogCore.ts`) fed
+  by a chained `ErrorUtils` handler (sync SecureStore write before the fatal proceeds) and the
+  error boundary; a "closed unexpectedly" session marker for native deaths; next-launch banner
+  (once per crash); Setup › Account › APP ERROR LOG with Copy / Share / Clear and `adb logcat -b
+  crash` help naming the package id; Pad diagnostics Copy that copies;
+  `scripts/android-local-build.sh` archiving `<artifact>-vc<N>.map` next to the APK.
+- **Gate to Done:** on a real Android release build — a forced JS fatal lands in the log and the
+  banner offers it on relaunch; a real native crash yields the inferred exit entry; the map from
+  the build box symbolicates a stack copied from the app (none of these are device-verified yet).
+- **Not in scope:** iOS dSYM / JS-map archiving; unhandled promise rejections (RN 0.86 on
+  Hermes tracks them only under `__DEV__`, straight into ExceptionsManager — they never reach
+  `ErrorUtils` and do not crash; `Libraries/Core/polyfillPromise.js`); any upload of any kind.
+
 > 🔨 **IN PROGRESS 2026-09-06 — branch `feat/decky-manager` (agent 2.9.105 · helper 1.1.0 · app 2.9.58).** Spec: `docs/memory/project_decky-manager.md` (adversarially reviewed, revision 2). Was: 📋 OPEN since the 2026-08-27 reconciliation.
 > **Scope built:** (a) install / repair-or-update / uninstall Decky Loader from the phone via ONE root wrapper (`/etc/couchside/couchside-decky-loader`, an install.sh heredoc) run only through a pinned oneshot template unit, started by helper verb `decky.loader` or an exact-argv sudoers grant; (b) KI-004 made explicit — a stopped loader is a STATE (`installed_stopped`, `stopped_reason:self_stop_recent`) with the existing `restart-decky` action and Repair offered, never a silent restart; (c) plugin listing (filesystem, containment-checked), per-plugin update / uninstall / reload as jobs over the loader's loopback WebSocket (own bounded client), store browse/search + icon proxy + install by store id; (d) one box-side opt-in `couchside allow-decky on|off|status` (offered once by an interactive install), marker read by helper, unit and wrapper; (e) Utilities tenant `decky`, Setup `DeckyCard`, `app/app/decky.tsx`; (f) `--mock-decky <state>` harness.
 > **Not in scope (follow-ups F1–F9, spec §17):** enable/disable/hide/freeze; picking an older store version; "update all" / the Decky slice of "update everything"; loader self-update through Decky's own updater (deliberately never); prerelease channel; vendoring the wrapper into couchside-decky for plugin-only boxes (`needs_installer` until F5); marker-gating the standing `restart plugin_loader` grant (F9).
