@@ -229,6 +229,10 @@ jobs:
       # its exit status: on Bazzite it prints a D-Bus UnknownInterface error and
       # exits 0, so an exit-code probe would claim the backend works on every
       # Bazzite box. The first test is that exact lie.
+      # It also pins the OS-update stranding (Bazzite 43 -> 44, 2026-09-26):
+      # arm must not write a session name at the shutdown that applies a staged
+      # image, consume must remove our drop-in whatever the backend, and the
+      # restart-session rescue may fire only at a greeter-only seat0.
       - name: Unit tests (boot session default)
         run: python3 tests/test_session_default.py
 
@@ -410,6 +414,8 @@ jobs:
       # sessions and a connected panel was refused by its NAME — hiding the
       # toggle, the desktop cluster and the guide hold together. Now it probes
       # the tools plus both switch targets; these pin both directions.
+      # Bazzite 44 renamed its Game Mode session, and the update silently
+      # dropped couchmode from caps; the 44 listing is pinned here verbatim.
       - name: Unit tests (couch mode gate)
         run: python3 tests/test_couchmode_gate.py
 
