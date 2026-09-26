@@ -16,6 +16,34 @@ Each entry now carries a `✅ DONE` / `🟡 PARTIAL` / `📋 OPEN` banner with i
 
 ## 🔨 In Progress
 
+### User-selectable app icon — store icon vs. gold Pro in the direct edition (user request 2026-09-26)
+- **priority:** P3 · **risk:** low-medium (manifest surgery via a config plugin; launcher quirks) ·
+  **affects:** app (direct edition first; store app + iOS later if wanted), `build/direct-apk` config plugin ·
+  **depends_on:** nothing shipped; the direct APK already overrides the icon in `app.config.js`.
+- **Why:** a direct-edition user prefers the Play Store icon over the gold "Pro" one and asked for a choice.
+  Android has no alternate-icon API; the standard mechanism is one `<activity-alias>` per icon (each with
+  its own adaptive-icon resources and optional label), exactly one enabled, switched at runtime with
+  `PackageManager.setComponentEnabledSetting()` — enable the new alias BEFORE disabling the old one, with
+  `DONT_KILL_APP` (some OEM launchers kill the app mid-switch otherwise). Works in any APK, store or direct;
+  iOS gets the same feature through `setAlternateIconName`.
+- **Plan:** (1) config plugin (or `expo-alternate-app-icons`, verified against the INSTALLED SDK 57 / RN 0.86
+  packages — never assumed) that injects two aliases + copies the store and gold icon sets at prebuild;
+  (2) Setup › Appearance row "App icon: Standard / Pro" (Theme packs is the natural home); (3) default stays
+  gold, opt-in to standard — or flip the default, owner's call; (4) HW test on the Razr: switch both ways,
+  cold start after each, pinned-shortcut behaviour, the app never disappears for more than a moment.
+- **Caveats to state in the UI:** pinned shortcuts/widgets bound to the old alias can reset on some launchers;
+  every icon must exist at build time (new icon = new APK). Stopgap for the user today: any launcher with icon
+  overrides (Nova, Lawnchair, Samsung Theme Park) or an icon pack.
+- **STATUS 2026-09-26: 🔨 IN PROGRESS — branch `feat/app-icon-choice`.** `expo-alternate-app-icons` 8.0.0 pinned;
+  `lib/appIcon.ts` (pure parser of `expo.extra.appIcons`, bare-node tests 6/6) + `lib/appIconNative.ts`;
+  Setup › APPEARANCE "App icon" SegPref renders only when a build declares ≥2 choices. Store build declares
+  none. Review round 1 (fix-first): the package's runtime switch keys on the LAUNCH Activity, so a second switch
+  in one process no-ops → switching now done by our local module `app/modules/app-icon-switch` (PackageManager
+  truth, enable-then-disable-others, refuse undeclared); direct config declares `android.intentFilters` so
+  aliases keep the couchside:// deep link; alias names PascalCase + append-only forever. Next: re-verify → merge; `build/direct-apk` declares [Pro default, Standard], vc5; gandalf build;
+  aapt proof of the aliases; Razr press-test both ways with cold starts; host.
+- **Ships in:** direct vc5; store app/iOS only if asked.
+
 ### SteamOS keeps dropping our /etc files — keep-list + install_health + installer repair (KI-088 follow-up, 2026-09-26)
 - **priority:** P1 · **risk:** medium (touches install.sh's root section) · **affects:** agent, install.sh, app · **depends_on:** agent 2.9.114 token mirror (shipped)
 - **Status:** 🔨 draft PR on `feat/install-health`. Not merged, not released.

@@ -65,6 +65,10 @@ const EFFECT_META: Record<LedEffect, { label: string; usesColor: boolean }> = {
   comet: { label: 'Comet', usesColor: true },
   wipe: { label: 'Wipe', usesColor: true },
   twinkle: { label: 'Twinkle', usesColor: true },
+  // Reactive meters are strip-only (rendered from live telemetry); never offered
+  // on this single-LED card — present only to satisfy the Record<LedEffect> type.
+  meter_cpu: { label: 'CPU', usesColor: false },
+  meter_battery: { label: 'Battery', usesColor: false },
 };
 /** A mono LED can't show colour, so only these effects make sense on one. */
 const MONO_EFFECTS: LedEffect[] = ['solid', 'off', 'breathe', 'pulse', 'strobe'];
@@ -141,6 +145,7 @@ export function RgbLedCard() {
 
   const supported: LedEffect[] = (d.effects ?? ['solid', 'off'])
     .filter((e) => e !== 'manual') // `manual` is a strip painter, not a single-LED effect
+    .filter((e) => e !== 'meter_cpu' && e !== 'meter_battery') // meters are strip-only (agent 400s them here)
     .filter((e) => (led.rgb ? true : MONO_EFFECTS.includes(e)));
   const animated = effect !== 'solid' && effect !== 'off';
   const color = hsToRgb(hue, sat);

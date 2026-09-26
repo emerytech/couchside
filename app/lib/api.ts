@@ -807,7 +807,22 @@ export type LedEffect =
   // so they survive the phone closing like the firmware effects. `circle` = a dot
   // that wraps; `comet` = a long fading trail; `wipe` = fill one way then clear;
   // `twinkle` = random sparkle in the picked colour.
-  | 'circle' | 'comet' | 'wipe' | 'twinkle';
+  | 'circle' | 'comet' | 'wipe' | 'twinkle'
+  // Reactive meters (agents that advertise a `reactive` block): the strip renders
+  // LIVE telemetry — `meter_cpu` = CPU load bar coloured by temperature;
+  // `meter_battery` = charge gauge. Strip-only.
+  | 'meter_cpu' | 'meter_battery';
+
+/** Config for a reactive meter (SignalBar-style). All optional with box defaults. */
+export type MeterSmooth = 'responsive' | 'balanced' | 'smooth';
+export type MeterLayout = 'linear' | 'mirrored';
+export type MeterCfg = {
+  layout?: MeterLayout;
+  smooth?: MeterSmooth;
+  cool?: number;   // meter_cpu: temperature (°C) at the cool end of the colour ramp
+  hot?: number;    // meter_cpu: temperature (°C) at the hot end
+  low?: number;    // meter_battery: the low-battery threshold %
+};
 
 /** The effect currently running on an LED (from GET /api/leds `active`). Absent
     for an LED showing a plain solid colour (that's read from LedInfo instead). */
@@ -816,6 +831,8 @@ export type LedActive = {
   color: Rgb | null;
   speed: number;
   brightness: number;
+  /** Reactive-meter config, present only for meter_* effects. */
+  meter?: MeterCfg;
   // Envelope shape (agents that advertise `shape:true`), single-LED software renderer only:
   // `attack` = rise fraction of a breathe/pulse cycle (0-100); `duty` = a
   // strobe's on-time % (1-99). Absent on older agents / other effects.
@@ -850,6 +867,11 @@ export type LedsState = {
   /** Addressable strips the agent can drive as a whole (agent >= 2.9.85). Absent
       on older agents → the app falls back to driving the sweep itself. */
   strips?: StripInfo[];
+  /** Reactive meters this box can drive RIGHT NOW (probe-and-appear). `meters` is
+      the offered meter effect ids (only those whose signal reads + a strip exists);
+      `signals` says which live inputs are present. Absent → the agent has no
+      reactive support and the app hides the REACTIVE section. */
+  reactive?: { meters: LedEffect[]; signals: Record<string, boolean> };
 };
 
 /** One OpenRGB controller from GET /api/openrgb (agent >= 2.9.84, cap `openrgb`).
@@ -3519,6 +3541,8 @@ export const api = {
       // Reverse the sweep direction (agent-rendered circle/comet/wipe only;
       // agent >= 2.9.90). Ignored by firmware effects + older agents.
       reverse?: boolean;
+      // Reactive-meter config (meter_cpu/meter_battery only); ignored otherwise.
+      layout?: MeterLayout; smooth?: MeterSmooth; cool?: number; hot?: number; low?: number;
     },
   ): Promise<boolean> {
     return request<{ ok: boolean }>(settings, '/api/leds/effect', {

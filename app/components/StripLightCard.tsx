@@ -20,6 +20,7 @@ import React, { useEffect, useRef, useState } from 'react';
 import { Alert, Pressable, StyleSheet, Text, View } from 'react-native';
 
 import { PresetNameModal } from '@/components/PresetNameModal';
+import { ReactiveMeterControls } from '@/components/ReactiveMeterControls';
 import { TrackSlider } from '@/components/TrackSlider';
 import { usePoll } from '@/hooks/usePoll';
 import { api, hostKey, type LedEffect, type LedInfo, type LedsState, type LedTheme, type Rgb } from '@/lib/api';
@@ -960,6 +961,18 @@ export function StripLightCard() {
             </>
           )}
         </>
+      )}
+
+      {/* REACTIVE — the bar renders live telemetry (CPU / battery). Probe-and-appear:
+          only when the agent advertised a reactive.meters list AND it owns the strip. */}
+      {agentMode && agentStrip && (poll.data?.reactive?.meters?.length ?? 0) > 0 && (
+        <ReactiveMeterControls
+          settings={settings}
+          strip={agentStrip.prefix}
+          meters={poll.data!.reactive!.meters}
+          active={poll.data?.active?.[`strip:${agentStrip.prefix}`]}
+          onApplied={() => poll.refresh()}
+        />
       )}
 
       {/* BOX THEMES — built-in animations served by the box (agent >= 2.9.97),
