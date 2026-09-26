@@ -982,6 +982,93 @@ def test_seat_parser_on_verbatim_logind():
         shutil.rmtree(tmp, ignore_errors=True)
 
 
+def test_review_fixes_2026_09_26(tmp_root):
+    """Three findings from the adversarial review of the Bazzite-44 fix, both
+    directions each."""
+    print("test_review_fixes_2026_09_26")
+    n = [0]
+
+    def fresh(**kw):
+        n[0] += 1
+        d = os.path.join(tmp_root, "rf%d" % n[0])
+        os.makedirs(d)
+        return Box(d, **kw)
+
+    # (1) MEDIUM: a hook-less box (backend None) keeps a WORKING drop-in ...
+    box = fresh(image=43)
+    try:
+        cs._arm_hook_installed = lambda: False          # pre-2.9.67 unit -> backend None
+        check("hook-less 43 box -> backend None", cs.session_default_backend(), None)
+        cs.session_default_consume()
+        check("working drop-in on a hook-less box is KEPT (it is the preference)",
+              cs._last_session_line(box.dropin), "gamescope-session.desktop")
+    finally:
+        box.restore()
+    # ... but one naming a session this image LACKS is still removed.
+    box = fresh(image=43)
+    try:
+        cs._arm_hook_installed = lambda: False
+        box.installed = set(BAZZITE44_SESSIONS)          # image lost the name
+        cs.session_default_consume()
+        check("hook-less box, drop-in names a MISSING session -> removed",
+              cs._last_session_line(box.dropin), "")
+    finally:
+        box.restore()
+
+    # (3) the rescue needs a configured [Autologin] User= ...
+    box = fresh(image=44)
+    try:
+        Box._write(os.path.join(box.etcd, "zz-bazzite-autologin.conf"), "[Autologin]\n")
+        Box._write(os.path.join(box.etcd, "99-plasma-setup.conf"), "[Autologin]\nSession=plasma\n")
+        box.seat = [LOGIND_GREETER_ONLY]
+        cs.session_default_consume()
+        box.join_rescue()
+        check("no [Autologin] User= -> greeter is normal -> NO restart", box.restarts, [])
+        check("...drop-in still removed", cs._last_session_line(box.dropin), "")
+    finally:
+        box.restore()
+    # ... and with the measured User=bazzite it still fires (control for the gate).
+    box = fresh(image=44)
+    try:
+        check("merged autologin user on the verbatim 44 layers",
+              cs._dm_current_autologin_user("sddm"), "bazzite")
+        box.seat = [LOGIND_GREETER_ONLY]
+        cs.session_default_consume()
+        box.join_rescue()
+        check("User=bazzite + greeter + missing session -> ONE restart", len(box.restarts), 1)
+    finally:
+        box.restore()
+
+    # (2) the app-update path: a drop-in-backend box (steamosctl silent) stranded
+    # by a stale name; the NEW code's ExecStop arm rewrites a VALID name before the
+    # new process starts -> consume must still rescue, via the note.
+    box = fresh(image=43)
+    try:
+        box.installed = set(BAZZITE44_SESSIONS)          # stale name no longer shipped
+        box.seat = [LOGIND_GREETER_ONLY]
+        cs.session_default_arm()                          # ExecStop of the update restart
+        check("arm rewrote a VALID name", cs._last_session_line(box.dropin),
+              "gamescope-session-ogui-steam.desktop")
+        check("...and left the stranded note", os.path.exists(cs._stranded_note_path()), True)
+        cs.session_default_consume()                      # the new process starts
+        box.join_rescue()
+        check("rescue still fires after the rewrite (via the note)", len(box.restarts), 1)
+        check("note consumed (cannot fire twice)", os.path.exists(cs._stranded_note_path()), False)
+    finally:
+        box.restore()
+    # Control: a normal shutdown with a VALID drop-in leaves no note, no rescue.
+    box = fresh(image=43, stale_dropin=False)
+    try:
+        box.seat = [LOGIND_GREETER_ONLY]
+        cs.session_default_arm()
+        check("valid config -> no stranded note", os.path.exists(cs._stranded_note_path()), False)
+        cs.session_default_consume()
+        box.join_rescue()
+        check("valid config + greeter -> NO restart", box.restarts, [])
+    finally:
+        box.restore()
+
+
 def test_rescue_fires_only_when_stranded_at_the_greeter(tmp_root):
     """The rescue, end to end through consume(): it restarts the display manager
     through the EXISTING restart-session argv only when our drop-in named a
@@ -1360,7 +1447,8 @@ def main():
     for fn in (test_getter_reads_a_bazzite44_record_as_game,
                test_consume_removes_an_orphaned_dropin,
                test_staged_os_update_is_never_armed,
-               test_rescue_fires_only_when_stranded_at_the_greeter):
+               test_rescue_fires_only_when_stranded_at_the_greeter,
+               test_review_fixes_2026_09_26):
         _d = tempfile.mkdtemp()
         try:
             fn(_d)

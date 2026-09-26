@@ -7972,6 +7972,87 @@ _DM_STATE_FILES = {"sddm": "/var/lib/sddm/state.conf",
                    "plasmalogin": "/var/lib/plasmalogin/state.conf"}
 
 
+def _last_user_line(path, found=""):
+    """Last `User=` value in `path`, or `found` unchanged when unreadable/absent.
+    Same line-scan as _last_session_line (the key only occurs under [Autologin]
+    in practice)."""
+    try:
+        with open(path, "r", encoding="utf-8", errors="replace") as f:
+            for line in f:
+                line = line.strip()
+                if line.lower().startswith("user="):
+                    found = line.split("=", 1)[1].strip()
+    except OSError:
+        pass
+    return found
+
+
+def _dm_current_autologin_user(dm):
+    """The [Autologin] User= the display manager will use, merged in its own
+    order (sys conf.d, /etc conf.d, then the main conf), or "" when none is
+    configured. SDDM only autologs in when this is non-empty (Display::start),
+    so an empty answer means the greeter IS this box's normal state."""
+    confdir = _DM_CONF_DIRS.get(dm)
+    if not confdir:
+        return ""
+    found = ""
+    for d in (_DM_SYS_CONF_DIRS.get(dm), confdir):
+        if not d:
+            continue
+        try:
+            names = sorted(fn for fn in os.listdir(d) if fn.endswith(".conf"))
+        except OSError:
+            names = []
+        for fn in names:
+            found = _last_user_line(os.path.join(d, fn), found)
+    return _last_user_line(_DM_MAIN_CONFS.get(dm, ""), found)
+
+
+def _stranded_note_path():
+    """Where arm leaves the stale session name for the next start's consume.
+    Beside config.json (the agent-writable state dir); resolved at call time so
+    tests repoint it with CONFIG_PATH."""
+    return os.path.join(os.path.dirname(CONFIG_PATH), "session-stranded")
+
+
+def _remember_stranded(dm):
+    """Called by arm BEFORE it rewrites or clears our drop-in. If the drop-in
+    names a session this image does not have, this boot's autologin already
+    failed and the box is at the greeter. An app-triggered update proves why the
+    note is needed: install.sh replaces the binary, then restarts the service,
+    so the NEW code's ExecStop arm rewrites a VALID name before the new process
+    starts, and consume would find nothing stale to rescue. Best effort."""
+    named = _last_session_line(_dm_dropin(dm))
+    if not named:
+        return
+    installed = _installed_session_files()
+    if not installed or named in installed:
+        return
+    try:
+        with open(_stranded_note_path(), "w") as f:
+            f.write(named + "\n")
+        print("[session] arm: our drop-in named %r, which this image does not "
+              "ship; noted it so the next start can rescue a stranded greeter"
+              % named, flush=True)
+    except OSError:
+        pass
+
+
+def _take_stranded_note():
+    """Read and delete the note _remember_stranded left, or ""."""
+    p = _stranded_note_path()
+    try:
+        with open(p, "r", encoding="utf-8", errors="replace") as f:
+            name = os.path.basename(f.read().strip())
+    except OSError:
+        return ""
+    try:
+        os.unlink(p)
+    except OSError:
+        pass
+    return name
+
+
 def _dm_current_session_file(dm):
     """The session file the display manager will autologin into, best-effort.
 
@@ -8530,11 +8611,24 @@ def session_default_consume(mock=False):
               % (SERVICE_UNIT_PATH, _ARM_FLAG), flush=True)
     dropin = _dm_dropin(dm)
     named = _last_session_line(dropin)
+    noted = _take_stranded_note()
     # "Missing" needs a POSITIVE miss: an unreadable session dir is unknown, not
     # absent (the same rule _dm_write applies), and unknown never restarts a
     # display manager.
-    installed = _installed_session_files() if named else set()
+    installed = _installed_session_files() if (named or noted) else set()
     missing = bool(named and installed and named not in installed)
+    # A stale name the previous process's ExecStop arm noted before it rewrote
+    # the drop-in (the app-update path) is the same evidence, one step removed.
+    rescue_name = named if missing else (
+        noted if (noted and installed and noted not in installed) else "")
+    if backend is None and named and not missing:
+        # No arm hook (a pre-2.9.67 unit that the app's fast-path update never
+        # rewrote): on this box our drop-in IS the working boot preference and
+        # nothing would ever re-arm it, so blanking it would silently delete the
+        # owner's choice. Leave it, as before 2026-09-26. A drop-in naming a
+        # session this image LACKS is removed regardless: it cannot work, and it
+        # strands the box at the greeter.
+        return
     if named and backend not in _DM_CONF_DIRS:
         print("[session] consume: removing an ORPHANED %s drop-in (Session=%s): "
               "backend %r owns this box's boot mode now, so nothing of ours "
@@ -8545,12 +8639,12 @@ def session_default_consume(mock=False):
         return  # preference not saved -> do NOT blank the file that still holds it
     if _dm_disarm(dm):
         _dm_neutralise_legacy(dm)
-    if missing:
+    if rescue_name:
         # main() calls consume unguarded, before the server binds: nothing on
         # the rescue path may take agent startup down with it (reachability is
         # the product — a crash-looping agent at a greeter is the worst case).
         try:
-            _session_rescue_start(dm, named)
+            _session_rescue_start(dm, rescue_name)
         except Exception as e:
             print("[session] rescue not started: %s" % str(e)[:160], flush=True)
 
@@ -8756,6 +8850,14 @@ def _session_rescue_start(dm, missing):
               "installed session either; a restart would not autologin anywhere"
               % (missing, dm, platform or None), flush=True)
         return None
+    if not _dm_current_autologin_user(dm):
+        # SDDM only autologs in with a non-empty [Autologin] User=. Without one
+        # the greeter is this box's NORMAL state (the owner logs in by hand), so
+        # a restart would only flash the login screen.
+        print("[session] RESCUE NOT ATTEMPTED: removed our drop-in (it named the "
+              "missing %r), but %s has no [Autologin] User= configured, so a "
+              "greeter is expected here" % (missing, dm), flush=True)
+        return None
     print("[session] our %s drop-in named %r, which this OS image does not "
           "ship; removed it (the platform's own %r decides from here). Watching "
           "%s for up to %ds in case this boot is already parked at the greeter."
@@ -8796,6 +8898,9 @@ def session_default_arm():
         print("[session] arm: no writable display manager detected; nothing to do",
               flush=True)
         return
+    # Every branch below rewrites or clears our drop-in; keep the evidence of a
+    # stranding first (see _remember_stranded).
+    _remember_stranded(dm)
     if pref in (None, "last"):
         print("[session] arm: preference %r needs no drop-in (platform decides)"
               % (pref,), flush=True)
