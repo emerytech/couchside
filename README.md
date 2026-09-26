@@ -100,6 +100,8 @@ curl -fsSL https://couchside.tv/install.sh | bash
 
 The installer copies the service to `~/.local/opt/couchside/`, generates a token at `/etc/couchside/token`, installs a scoped sudoers rule, enables `couchside.service`, opens `8787/tcp` in the local firewall, and finishes by printing a pairing QR code.
 
+**Decky Loader box?** The installer also adds the Couchside Game Mode panel to Decky and lets it run the service. Don't want the panel? Remove Couchside in Decky's **Settings → Plugins**. The service keeps running, and the next update notices the panel is gone, remembers that (`/var/lib/couchside/no-decky-panel`) and runs `couchside.service` on its own from then on instead of putting the panel back. `curl -fsSL https://couchside.tv/install.sh | bash -s -- --no-decky` does the same up front; `... | bash -s -- --decky` brings the panel back.
+
 Running **Bazzite**? The same steps are in the official [Bazzite documentation](https://docs.bazzite.gg/Advanced/couchside/). On **Windows**, download [`CouchsideSetup.exe`](https://couchside.tv/windows) instead and double-click it.
 
 ## Get the app

@@ -744,6 +744,18 @@ jobs:
       - name: Installer CLI + token-redaction pins
         run: bash tests/test_installer_cli.sh install.sh
 
+      # An owner who removes the Couchside panel in Decky's own plugin list (or
+      # passes --no-decky) must STAY Decky-free. Every plain run -- including
+      # `couchside update` and the phone's update button, which pass no flags --
+      # used to reinstall the panel and re-do the dormant disable/enable hand-off
+      # to it, a hand-off that has already raced a real box offline. Runs the
+      # REAL service block + h2/h3 + exit trap lifted from install.sh against
+      # stubbed sudo/systemctl/curl, both directions: removal remembered and
+      # standalone, --decky restores coexistence, and never-removed boxes keep
+      # today's exact behaviour (control-checked against the pre-fix installer).
+      - name: Installer Decky panel removal is remembered
+        run: bash tests/test_installer_decky_panel.sh install.sh
+
       # An OPTIONAL step must never abort an app-triggered update. install.sh
       # runs `set -euo pipefail` and the phone runs it DETACHED, so on a box
       # whose user has a sudo password there is no tty and no root — an

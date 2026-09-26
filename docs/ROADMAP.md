@@ -16,6 +16,32 @@ Each entry now carries a `✅ DONE` / `🟡 PARTIAL` / `📋 OPEN` banner with i
 
 ## 🔨 In Progress
 
+### Decky-free: removing the Couchside panel in Decky is remembered (user report 2026-09-26)
+- **priority:** P1 · **risk:** medium (the installer's Decky hand-off runs on every update) ·
+  **affects:** `install.sh` (+ `couchside update` text, README) · **depends_on:** none
+- **Status 2026-09-26:** BUILT on `fix/installer-decky-removal` (draft PR). Shell-tested both
+  directions (`tests/test_installer_decky_panel.sh`, 71 checks) and control-checked: against the
+  pre-fix installer the removal cases fail and every never-removed case replays byte-identical.
+  **NOT hardware-verified, NOT deployed** — it reaches boxes only once couchside.tv/install.sh is
+  re-synced from a release (the phone update and `couchside update` both fetch that copy).
+- **Problem:** removing Couchside in Decky's own Settings > Plugins is safe (no `_uninstall`; the
+  service keeps running), but `decky_installed()` tests for Decky LOADER, so every plain run —
+  including `couchside update` and the app's update button — re-did the dormant `disable --now`
+  hand-off AND reinstalled the panel ("stamp matches but the plugin is gone -> reinstall").
+  `--no-decky` was not persisted.
+- **Fix:** `decky_panel_resolve` decides once per run. Stamp present + panel dir gone + Decky
+  installed ⇒ the owner removed it ⇒ write `/var/lib/couchside/no-decky-panel` (STATE_DIR, survives
+  the KI-088 /etc loss) and take the standalone branch (enabled + restarted, `DECKY_OWNS_AGENT=0`, so
+  no h3 poll and no exit-trap re-arm). `--no-decky` writes the same marker; `--decky` clears it
+  (and a stale stamp, so a failed reinstall is not re-read as "removed"). Stamp AND panel both
+  absent stays ambiguous ⇒ today's behaviour (install). Never-removed boxes: unchanged.
+- **Gate to Done:** the maintainer HW steps in the PR body on bazzite 10.1.1.60, then an
+  install.sh release + couchside.tv sync.
+- **Follow-ups (not in this change):** app copy `DECKY_PANEL_MISSING` ("Re-run the Couchside
+  installer to add the Couchside panel") should say `--decky` for boxes that opted out; a panel
+  DISABLED (not removed) in Decky still gets the dormant hand-off; the coexistence hand-off race
+  itself (inapp-update-decky-race) is untouched for boxes that keep the panel.
+
 > 🔨 **IN PROGRESS 2026-09-06 — branch `feat/decky-manager` (agent 2.9.105 · helper 1.1.0 · app 2.9.58).** Spec: `docs/memory/project_decky-manager.md` (adversarially reviewed, revision 2). Was: 📋 OPEN since the 2026-08-27 reconciliation.
 > **Scope built:** (a) install / repair-or-update / uninstall Decky Loader from the phone via ONE root wrapper (`/etc/couchside/couchside-decky-loader`, an install.sh heredoc) run only through a pinned oneshot template unit, started by helper verb `decky.loader` or an exact-argv sudoers grant; (b) KI-004 made explicit — a stopped loader is a STATE (`installed_stopped`, `stopped_reason:self_stop_recent`) with the existing `restart-decky` action and Repair offered, never a silent restart; (c) plugin listing (filesystem, containment-checked), per-plugin update / uninstall / reload as jobs over the loader's loopback WebSocket (own bounded client), store browse/search + icon proxy + install by store id; (d) one box-side opt-in `couchside allow-decky on|off|status` (offered once by an interactive install), marker read by helper, unit and wrapper; (e) Utilities tenant `decky`, Setup `DeckyCard`, `app/app/decky.tsx`; (f) `--mock-decky <state>` harness.
 > **Not in scope (follow-ups F1–F9, spec §17):** enable/disable/hide/freeze; picking an older store version; "update all" / the Decky slice of "update everything"; loader self-update through Decky's own updater (deliberately never); prerelease channel; vendoring the wrapper into couchside-decky for plugin-only boxes (`needs_installer` until F5); marker-gating the standing `restart plugin_loader` grant (F9).
