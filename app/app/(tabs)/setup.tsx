@@ -74,7 +74,13 @@ import { setPref, usePref } from '@/lib/prefs';
 import { sectionOpen, toggleCollapsed, type PrefSectionId } from '@/lib/prefSections';
 import { THEME_PICKER } from '@/lib/gameTheme';
 import { aliasFromValue, iconValue } from '@/lib/appIcon';
-import { appIconChoices, currentAppIcon, setAppIcon } from '@/lib/appIconNative';
+import {
+  appIconChoices,
+  currentAppIcon,
+  pendingAppIcon,
+  requestAppIcon,
+  subscribeAppIcon,
+} from '@/lib/appIconNative';
 import { previewFor } from '@/lib/appIconPreviews';
 import { SKINS, SKIN_KEYS, setSkin, useSkinKey } from '@/lib/skin';
 import { EFFECTS, EFFECT_KEYS, toggleEffect, useActiveEffects, useEffects } from '@/lib/effects';
@@ -937,6 +943,17 @@ function SetupBody() {
   const appIcons = appIconChoices();
   // currentAppIcon() makes no native call unless this build declares a choice.
   const [appIcon, setAppIconState] = useState<string | null>(() => currentAppIcon());
+  // A tap only REQUESTS an icon; lib/appIconNative applies it when the app goes to
+  // the background (Android closes an activity whose component is disabled).
+  const [iconPending, setIconPending] = useState<string | null | undefined>(() => pendingAppIcon());
+  useEffect(() => {
+    if (appIcons.length < 2) return;
+    return subscribeAppIcon(() => {
+      setIconPending(pendingAppIcon());
+      setAppIconState(currentAppIcon());
+    });
+  }, [appIcons.length]);
+  const iconSelected = iconPending !== undefined ? iconPending : appIcon;
   const skinKey = useSkinKey();
   const effectsList = useEffects();
   const activeFx = useActiveEffects();
@@ -1689,12 +1706,13 @@ function SetupBody() {
                     <View style={styles.prefBody}>
                       <Text style={styles.prefLabel}>App icon</Text>
                       <Text style={styles.prefSub}>
-                        Tap the icon you want on your home screen. Pinned shortcuts may reset on some launchers.
+                        Tap the icon you want. It changes on your home screen when you leave Couchside. Pinned shortcuts may reset on some launchers.
                       </Text>
                     </View>
                     <View style={styles.iconRow}>
                       {appIcons.map((c) => {
-                        const on = appIcon === c.alias;
+                        const on = iconSelected === c.alias;
+                        const waiting = on && iconPending !== undefined;
                         return (
                           <Pressable
                             key={iconValue(c.alias)}
@@ -1703,9 +1721,11 @@ function SetupBody() {
                               const alias = aliasFromValue(iconValue(c.alias), appIcons);
                               if (alias === undefined) return;
                               hapticSelection();
-                              void setAppIcon(alias)
-                                .then((now) => setAppIconState(now))
-                                .catch(() => setAppIconState(currentAppIcon()));
+                              try {
+                                requestAppIcon(alias);
+                              } catch {
+                                // not a declared icon: nothing requested
+                              }
                             }}
                             accessibilityRole="button"
                             accessibilityState={{ selected: on }}
@@ -1718,7 +1738,9 @@ function SetupBody() {
                             ]}>
                             <Image source={previewFor(c.preview)!} style={styles.iconImg} />
                             <Text style={[styles.iconLabel, { color: on ? t.accent : t.text }]}>{c.label}</Text>
-                            <Text style={[styles.iconState, { color: t.textFaint }]}>{on ? 'In use' : 'Tap to use'}</Text>
+                            <Text style={[styles.iconState, { color: waiting ? t.accent : t.textFaint }]}>
+                              {waiting ? 'Switches when you leave' : on ? 'In use' : 'Tap to use'}
+                            </Text>
                           </Pressable>
                         );
                       })}
@@ -1728,16 +1750,18 @@ function SetupBody() {
               ) : appIcons.length > 1 ? (
                 <SegPref
                   label="App icon"
-                  sub="Home-screen icon. Pinned shortcuts may reset on some launchers."
+                  sub="Home-screen icon. Changes when you leave Couchside. Pinned shortcuts may reset on some launchers."
                   options={appIcons.map((c) => ({ value: iconValue(c.alias), label: c.label }))}
-                  value={iconValue(appIcon)}
+                  value={iconValue(iconSelected)}
                   onSelect={(v) => {
                     const alias = aliasFromValue(v, appIcons);
                     if (alias === undefined) return;
                     hapticSelection();
-                    void setAppIcon(alias)
-                      .then((now) => setAppIconState(now))
-                      .catch(() => setAppIconState(currentAppIcon()));
+                    try {
+                      requestAppIcon(alias);
+                    } catch {
+                      // not a declared icon: nothing requested
+                    }
                   }}
                 />
               ) : null}
