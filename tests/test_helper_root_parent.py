@@ -81,9 +81,27 @@ def main():
         if name != "HELPER_DIR":
             varmap.setdefault(name, val)
 
+    class Unresolved(KeyError):
+        pass
+
+    def expand(v):
+        """Substitute every ${VAR}/$VAR from varmap and normalise ('..', '//').
+        Raises Unresolved for a name this test cannot resolve: we then cannot
+        prove where a root-run binary lands, and that is a FAILURE, never a
+        silent skip (review finding on PR #564: a "$STATE_DIR/libexec" spelling
+        slipped past a literal-only check)."""
+        def sub(m):
+            name = m.group(1) or m.group(2)
+            if name not in varmap:
+                raise Unresolved(name)
+            return varmap[name]
+        return os.path.normpath(re.sub(r"\$\{(\w+)\}|\$(\w+)", sub, v))
+
     def resolve(tok):
-        m2 = re.fullmatch(r"\$\{?(\w+)\}?", tok)
-        return varmap.get(m2.group(1), tok) if m2 else tok
+        try:
+            return expand(tok)
+        except Unresolved:
+            return tok
 
     # Every directory install.sh CREATES with `install -d ... -o O -g G ... PATH`.
     # $HELPER_DIR is deferred to helper_dir_owners (it holds whichever value is
@@ -117,12 +135,21 @@ def main():
             return created[path] == ("root", "root")
         return helper_dir_owners == {("root", "root")}
 
-    # Every value assigned to HELPER_DIR (default + the SteamOS fallback).
-    helper_dirs = re.findall(r'HELPER_DIR="([^"]+)"', src)
-    check(len(helper_dirs) >= 2,
-          "expected at least a default + fallback HELPER_DIR, found %r" % helper_dirs)
-    literal_dirs = [d for d in helper_dirs if "$" not in d]
-    check(literal_dirs, "no literal HELPER_DIR path found")
+    # Every value assigned to HELPER_DIR (default + the SteamOS fallback),
+    # RESOLVED: a $VAR spelling is judged by the path it denotes, and one this
+    # test cannot resolve fails the run outright.
+    raw_dirs = re.findall(r'HELPER_DIR="([^"]+)"', src)
+    check(len(raw_dirs) >= 2,
+          "expected at least a default + fallback HELPER_DIR, found %r" % raw_dirs)
+    literal_dirs = []
+    for v in raw_dirs:
+        try:
+            literal_dirs.append(expand(v))
+        except Unresolved as e:
+            check(False, "HELPER_DIR %r uses $%s, which this test cannot resolve -- "
+                         "cannot prove where the root helper lands" % (v, e.args[0]))
+    check(literal_dirs, "no HELPER_DIR path found")
+    state_dir = os.path.normpath(state_dir)
     check(helper_dir_owners == {("root", "root")},
           "some `install -d $HELPER_DIR` is not -o root -g root: %r" % (helper_dir_owners,))
 
