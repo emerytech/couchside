@@ -115,6 +115,12 @@ app/
   lib/crashLog.ts          Local error log: chains RN's global JS error handler (never swallows), the
                            'closed unexpectedly' session marker, Copy/Share text. Pure half in
                            crashLogCore.ts (bare-Node tested). On the phone only; never sent.
+                           On Android 11+ a marker left at `fg` is checked against the OS's own
+                           exit record (modules/exit-reason → ApplicationExitInfo) BEFORE it is
+                           called a crash: updates / Force stop record nothing, system kills are
+                           logged without a banner, no record → "may have" (classifyExit).
+  modules/                 Local Expo modules, autolinked from here with no config: app-icon-switch
+                           (launcher alias switch), exit-reason (previous process's exit reason).
   lib/appVersion.ts        Native version/build/applicationId — one definition (About row, crash reports).
   hooks/useCapsSync.ts     Always-mounted 30s caps healer (see §3).
   hooks/usePoll.ts         Generic poll-with-resetKey hook every card uses.

@@ -23,7 +23,7 @@ import { Platform, Pressable, Share, StyleSheet, Text, View } from 'react-native
 
 import { ANDROID_PACKAGES, APP_ID } from '@/lib/appVersion';
 import { clearCrashLog, crashReport, useCrashLog, type CrashEntry } from '@/lib/crashLog';
-import { kindLabel } from '@/lib/crashLogCore';
+import { exitSummary, kindLabel } from '@/lib/crashLogCore';
 import { hapticLight } from '@/lib/haptics';
 import { mono, useTheme, useThemedStyles, type Palette } from '@/lib/theme';
 
@@ -205,7 +205,7 @@ function EntryRow({ e, styles }: { e: CrashEntry; styles: ReturnType<typeof make
         </Text>
       </View>
       <Text style={styles.entryMsg} numberOfLines={3}>
-        {e.kind === 'exit' ? 'No app error captured — likely a native crash.' : `${e.name}: ${e.message}`}
+        {e.kind === 'exit' ? exitSummary(e) : `${e.name}: ${e.message}`}
       </Text>
       {(!!e.route || !!e.app) && (
         <Text style={styles.entryMeta} numberOfLines={1}>
