@@ -370,6 +370,38 @@ Reanimated shared values keep advancing when read from JS. A probe that samples 
 reports PASS against a frozen DOM. Measure the *painted* result
 (`getComputedStyle(el).opacity` over time). See CONVENTIONS §"Verifying app UI".
 
+### 3j. The install footprint vs OS updates (`install_health`)
+
+The installer writes root-owned files under `/etc`: the token and wrappers in
+`/etc/couchside/`, the sudoers grants, udev rules, modules-load, the unit and the WoL
+`.link`. The agent's own state lives in `/var/lib/couchside` (user-owned). **SteamOS
+drops every `/etc` change that is not on its keep-list at every image update**. The
+unit survives because `*.service` is listed; the rest does not. Bazzite/ostree carries
+`/etc` through upgrades intact. The full mechanism, with Valve file:line citations and
+what was read on the Deck, is in [`steamos-etc-persistence.md`](steamos-etc-persistence.md).
+
+Three layers, added 2026-09-26:
+
+1. **Prevent**: `install.sh` (f4) writes `/etc/atomic-update.conf.d/couchside.conf`,
+   SteamOS's own keep-list drop-in. It names only Couchside-owned paths.
+2. **Detect**: `/api/status` carries `install_health: {ok, missing, unknown}`
+   (`install_health()` in the agent, 600 s memo). Ids come from the frozen
+   `_INSTALL_PIECE_IDS` table. A file is checked by `os.stat`: ENOENT means missing,
+   any other error means unknown. The sudoers grant is checked with the last-match
+   `sudo -n -l` probe (`_sudo_nopasswd_state`), where "could not list" means unknown.
+   `ok` is never true while anything is unknown. `/var/lib/couchside/install-manifest`
+   (ids that `install.sh` (g1) wrote) separates "lost" from "never installed". Without
+   a manifest, only the pieces both installers have written since July 2026 are
+   checked. The app (`lib/installHealth.ts`, `components/InstallHealthBanner.tsx`)
+   shows its banner only on a non-empty `missing`.
+3. **Repair**: every `/etc` piece is rewritten unconditionally on a full install run.
+   (d) restores the token from the mirror, and the mirror beats pre-rename tokens.
+   `couchside update` no longer short-circuits on a damaged box. The passwordless quick
+   path cannot write `/etc`, so it prints the damage and the terminal one-liner.
+
+This is a status FIELD, not a capability: no six-site change, and `protocol/protocol.json`
+lists caps only.
+
 ## 4. External integrations
 
 **Steam.** Root discovery + library enumeration via line-scanned `libraryfolders.vdf`
