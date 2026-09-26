@@ -16,6 +16,27 @@ Each entry now carries a `✅ DONE` / `🟡 PARTIAL` / `📋 OPEN` banner with i
 
 ## 🔨 In Progress
 
+### App crash export — local error log, Copy/Share, native-crash help, source-map archive (field report 2026-09-26)
+- **priority:** P1 (a paying direct-edition user cannot report a crash) · **risk:** low-medium
+  (sits in the path of every JS fatal — chained, never swallows, control-tested) · **affects:**
+  app + build recipe (no agent change) · **depends_on:** none
+- **Origin:** a direct-edition APK user on Android 15 reported intermittent crashes while
+  spamming buttons on the Pad tab's Remote mode. There was no way to get a crash out without
+  adb: the crash screen showed 4 lines of `error.message`, nothing persisted, the Pad
+  diagnostics "copy" only vibrated, and no APK had an archived Hermes source map.
+- **Built (branch `feat/app-crash-export`, DRAFT PR):** crash screen Copy details + Show
+  details; local ring buffer of the last 20 errors (`lib/crashLog.ts` / `crashLogCore.ts`) fed
+  by a chained `ErrorUtils` handler (sync SecureStore write before the fatal proceeds) and the
+  error boundary; a "closed unexpectedly" session marker for native deaths; next-launch banner
+  (once per crash); Setup › Account › APP ERROR LOG with Copy / Share / Clear and `adb logcat -b
+  crash` help naming the package id; Pad diagnostics Copy that copies;
+  `scripts/android-local-build.sh` archiving `<artifact>-vc<N>.map` next to the APK.
+- **Gate to Done:** on a real Android release build — a forced JS fatal lands in the log and the
+  banner offers it on relaunch; a real native crash yields the inferred exit entry; the map from
+  the build box symbolicates a stack copied from the app (none of these are device-verified yet).
+- **Not in scope:** iOS dSYM / JS-map archiving; unhandled promise rejections (RN 0.86 on
+  Hermes tracks them only under `__DEV__`, straight into ExceptionsManager — they never reach
+  `ErrorUtils` and do not crash; `Libraries/Core/polyfillPromise.js`); any upload of any kind.
 ### Decky-free: removing the Couchside panel in Decky is remembered (user report 2026-09-26)
 - **priority:** P1 · **risk:** medium (the installer's Decky hand-off runs on every update) ·
   **affects:** `install.sh` (+ `couchside update` text, README) · **depends_on:** none

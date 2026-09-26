@@ -112,6 +112,10 @@ app/
   lib/SettingsContext.tsx  React context over settings.ts.
   lib/entitlement.ts       IAP unlock state; purchase.ts drives the store.
   lib/boxDiscovery.ts      HTTP /24 sweep + UDP probe, merged.
+  lib/crashLog.ts          Local error log: chains RN's global JS error handler (never swallows), the
+                           'closed unexpectedly' session marker, Copy/Share text. Pure half in
+                           crashLogCore.ts (bare-Node tested). On the phone only; never sent.
+  lib/appVersion.ts        Native version/build/applicationId — one definition (About row, crash reports).
   hooks/useCapsSync.ts     Always-mounted 30s caps healer (see §3).
   hooks/usePoll.ts         Generic poll-with-resetKey hook every card uses.
   components/              One file per surface: RemoteView, RemotePowerBar, GamingCard, etc.
@@ -133,6 +137,7 @@ scripts/
   play-release-notes.py    Play Console release notes upload.
   ws-latency-test.py       Cold-path latency harness for /ws/gamepad.
   web-dev.sh / web-dev-proxy.py  Local web dev against a real box.
+  android-local-build.sh   Linux build-box APK build + archive <artifact>-vc<N>.map (Hermes source map).
 
 .github/workflows/
   ci.yml                   compile job (py_compile all three entrypoints incl. the Windows agent,

@@ -1,8 +1,6 @@
 import { createContext, useContext } from 'react';
 import type { StyleProp, ViewStyle } from 'react-native';
 import Ionicons from '@expo/vector-icons/Ionicons';
-import * as Application from 'expo-application';
-import Constants from 'expo-constants';
 import * as Linking from 'expo-linking';
 import { useLocalSearchParams, useRouter } from 'expo-router';
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
@@ -40,6 +38,8 @@ import { TourAnchor } from '@/components/TourAnchor';
 import { registerScroller } from '@/hooks/useTourAnchor';
 import { useLockOrientation } from '@/hooks/useLockOrientation';
 import { api, ApiError } from '@/lib/api';
+import { APP_BUILD, APP_VERSION } from '@/lib/appVersion';
+import { CrashLogCard } from '@/components/CrashLogCard';
 import { isGenuinelyPurchased, recordPurchaseDate, IS_DIRECT_BUILD } from '@/lib/entitlement';
 import { useEntitlement } from '@/lib/EntitlementContext';
 import { LicenseRedeemCard } from '@/components/LicenseRedeemCard';
@@ -114,27 +114,8 @@ import {
  */
 const QR_SIZE = 232;
 
-// About-row app version. Read the NATIVE values — CFBundleShortVersionString /
-// CFBundleVersion on iOS, versionName / versionCode on Android — because
-// `expoConfig` is baked from app.json when the JS bundle is built and can lag
-// the actual binary: a TestFlight build 46 install reported "build 45", which
-// sent us chasing a phantom install problem. expoConfig is only a fallback
-// (e.g. Expo Go, where the native values are the host app's).
-//
-// These come from expo-application. `Constants.nativeBuildVersion` does NOT
-// exist in SDK 57 — expo-constants only carries a deprecation note pointing
-// here — and reading it off Constants silently yields undefined (it typechecks
-// only because those manifest types have a `Record<string, any>` index
-// signature), which would quietly reinstate the very bug this fixes.
-const APP_VERSION =
-  Application.nativeApplicationVersion ?? Constants.expoConfig?.version ?? '—';
-const APP_BUILD =
-  Application.nativeBuildVersion ??
-  (Platform.OS === 'ios'
-    ? Constants.expoConfig?.ios?.buildNumber ?? ''
-    : Constants.expoConfig?.android?.versionCode != null
-      ? String(Constants.expoConfig.android.versionCode)
-      : '');
+// About-row app version: the NATIVE values, via lib/appVersion (the comment
+// explaining why native and not expoConfig moved there with them).
 
 // SETUP_GUIDE_URL now lives with the card that owns the "install the agent"
 // story (components/SetupProgress.tsx) and is imported above — one definition,
@@ -2376,6 +2357,11 @@ function SetupBody() {
               </View>
               <Ionicons name="open-outline" size={16} color={t.textDim} />
             </Pressable>
+
+            {/* The phone app's own recent errors + how to get a native crash
+                out of the phone. NOT gated (unlike the journal): a user whose
+                trial ended must still be able to report a crash. */}
+            <CrashLogCard />
 
             <View style={styles.aboutRow}>
               <Ionicons name="information-circle-outline" size={16} color={t.textDim} />
