@@ -513,6 +513,26 @@ Each entry now carries a `✅ DONE` / `🟡 PARTIAL` / `📋 OPEN` banner with i
 
 ## 📋 Planned
 
+### User-selectable app icon — store icon vs. gold Pro in the direct edition (user request 2026-09-26)
+- **priority:** P3 · **risk:** low-medium (manifest surgery via a config plugin; launcher quirks) ·
+  **affects:** app (direct edition first; store app + iOS later if wanted), `build/direct-apk` config plugin ·
+  **depends_on:** nothing shipped; the direct APK already overrides the icon in `app.config.js`.
+- **Why:** a direct-edition user prefers the Play Store icon over the gold "Pro" one and asked for a choice.
+  Android has no alternate-icon API; the standard mechanism is one `<activity-alias>` per icon (each with
+  its own adaptive-icon resources and optional label), exactly one enabled, switched at runtime with
+  `PackageManager.setComponentEnabledSetting()` — enable the new alias BEFORE disabling the old one, with
+  `DONT_KILL_APP` (some OEM launchers kill the app mid-switch otherwise). Works in any APK, store or direct;
+  iOS gets the same feature through `setAlternateIconName`.
+- **Plan:** (1) config plugin (or `expo-alternate-app-icons`, verified against the INSTALLED SDK 57 / RN 0.86
+  packages — never assumed) that injects two aliases + copies the store and gold icon sets at prebuild;
+  (2) Setup › Appearance row "App icon: Standard / Pro" (Theme packs is the natural home); (3) default stays
+  gold, opt-in to standard — or flip the default, owner's call; (4) HW test on the Razr: switch both ways,
+  cold start after each, pinned-shortcut behaviour, the app never disappears for more than a moment.
+- **Caveats to state in the UI:** pinned shortcuts/widgets bound to the old alias can reset on some launchers;
+  every icon must exist at build time (new icon = new APK). Stopgap for the user today: any launcher with icon
+  overrides (Nova, Lawnchair, Samsung Theme Park) or an icon pack.
+- **Ships in:** the next direct rebuild after vc4 (i.e. vc5); store app/iOS only if asked.
+
 ### Deck overlay — a Decky-free Game-Mode quick panel via gamescope (owner request 2026-09-24)
 - **priority:** P2 · **risk:** high until a Phase-0 hardware prototype proves it · **affects:** agent
   (in-session launcher + hotkey listener), install.sh, a new overlay launcher, Utilities/Setup ·
