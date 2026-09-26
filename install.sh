@@ -519,6 +519,13 @@ if [ "$UNINSTALL" -eq 1 ]; then
     sudo rm -rf /etc/couchside/openpuck
     sudo udevadm control --reload-rules 2>/dev/null || true
     note "removed the udev/modules-load drop-ins"
+    # The (g1) manifest describes an install that no longer exists; a kept
+    # STATE_DIR must not carry it into a later, different install.
+    sudo rm -f "$STATE_DIR/install-manifest"
+    # (f4) SteamOS keep-list drop-in: nothing of ours left to keep. (If the
+    # owner keeps $ETC_DIR below, the next SteamOS update drops it -- which is
+    # what an uninstall asked for anyway.)
+    sudo rm -f /etc/atomic-update.conf.d/couchside.conf
     if [ "$NO_DECKY" -eq 0 ] && sudo test -d "$DECKY_PLUGIN_DIR"; then
         sudo rm -rf "$DECKY_PLUGIN_DIR"
         sudo rm -f "$DECKY_STAMP"
@@ -981,12 +988,33 @@ fi
 # the STATE_DIR mirror (or a minted token) is still a live install: accept either
 # copy, or a phone-triggered update on exactly that box would fall into the sudo
 # section below and abort detached.
+# This path writes NOTHING under /etc, so it cannot repair a box whose OS update
+# took part of /etc away (a SteamOS image update drops /etc/couchside, the udev
+# rules and modules-load; docs/memory/steamos-etc-persistence.md). Say so plainly
+# rather than report a clean update over a damaged install. Readable as the
+# desktop user: the token is theirs, the rest are world-readable. (The sudo grant
+# cannot be checked from here -- /etc/sudoers.d is root-only -- the agent's
+# install_health does that.)
+_cs_quick_path_damage_note() {
+    local p lost=""
+    for p in "$TOKEN_FILE" /etc/udev/rules.d/99-couchside-uinput.rules \
+             /etc/modules-load.d/couchside-uinput.conf \
+             /etc/udev/rules.d/99-couchside-rtc.rules; do
+        [ -s "$p" ] || lost="$lost $p"
+    done
+    [ -n "$lost" ] || return 0
+    note "WARNING: this box's installation is damaged -- missing:$lost"
+    note "(an OS update can remove these). A quick update cannot restore them."
+    note "Re-run the installer from a terminal on the box (Desktop Mode on a Deck):"
+    note "  curl -fsSL https://couchside.tv/install.sh | bash"
+}
 if [ "$CAN_PRIVILEGE" -eq 0 ] && { [ -s "$TOKEN_FILE" ] || [ -s "$STATE_DIR/token" ]; } \
    && systemctl is-active --quiet couchside.service 2>/dev/null; then
     if sudo -n systemctl restart --no-block couchside.service 2>/dev/null; then
         say "Updated the agent and restarted couchside.service (no password needed)."
         note "Quick update: agent binary only. If the service file or sudo grants"
         note "also changed, re-run this installer from a terminal to apply those."
+        _cs_quick_path_damage_note
         exit 0
     fi
     # No restart grant yet (installed before this build). The new agent is on
@@ -1013,18 +1041,28 @@ else
     # user's Deck. If the canonical file is gone but the mirror is there, THAT is
     # the live token the phones are paired to -- restore it; minting a fresh one
     # here would silently break every pairing that still worked.
+    #
+    # The mirror OUTRANKS every pre-rename install: it is the token this agent
+    # is serving RIGHT NOW. A leftover /etc/couchpilot or /etc/rescue-agent token
+    # is from an install that was retired long ago (section (i) keeps those dirs
+    # on purpose), so letting it win would swap the live token for a dead one and
+    # un-pair every phone. That is exactly what the old order did: this loop ran
+    # AFTER the mirror check and overwrote MIGRATED_TOKEN. Old installs are
+    # consulted ONLY when there is no mirror (tests/test_installer_token_order.sh).
     if sudo test -s "$STATE_DIR/token"; then
         MIGRATED_TOKEN="$STATE_DIR/token"
+    else
+        # Look for a token to inherit from any prior install. OLD_INSTALLS is
+        # oldest-first and the last hit wins, so couchpilot beats rescue-agent if
+        # somehow both are present.
+        for entry in "${OLD_INSTALLS[@]}"; do
+            old_etc="${entry%%|*}"
+            old_token="${old_etc}/token"
+            if sudo test -s "$old_token"; then
+                MIGRATED_TOKEN="$old_token"
+            fi
+        done
     fi
-    # Look for a token to inherit from any prior install (newest-named first so
-    # couchpilot wins over rescue-agent if somehow both are present).
-    for entry in "${OLD_INSTALLS[@]}"; do
-        old_etc="${entry%%|*}"
-        old_token="${old_etc}/token"
-        if sudo test -s "$old_token"; then
-            MIGRATED_TOKEN="$old_token"
-        fi
-    done
 fi
 if sudo test -s "$TOKEN_FILE"; then
     :
@@ -1708,6 +1746,56 @@ else
 fi
 
 # ---------------------------------------------------------------------------
+# (f4) SteamOS: ask the OS to KEEP our /etc files across image updates
+# ---------------------------------------------------------------------------
+# A SteamOS atomic update throws away every /etc change EXCEPT the paths on a
+# keep-list (Valve steamos-customizations, read 2026-09-26 at tag
+# jupiter-20260916.1 -- full citations in docs/memory/steamos-etc-persistence.md):
+#   atomic-update/rauc/atomic-update-keep.conf.in:1-2  "When an atomic update is
+#     applied, all changes made in /etc will be lost. The only exceptions are the
+#     files and directories listed below."
+#   ...:14  it also reads every drop-in "/etc/atomic-update.conf.d/*.conf"
+#   ...:38  "/etc/systemd/system/*.service" -- why couchside.service survived
+#   misc/libexec/holo-sync-var.in:332-340 builds the rsync include list from both,
+#     :389-390 `--include-from=<list> --exclude="*"` drops everything else.
+# CONFIRMED on the Deck OLED itself (SteamOS 3.9.2, read-only): its installed
+# /usr/lib/rauc/atomic-update-keep.conf is that same list, and
+# /usr/lib/holo/holo-sync-var:233-240,286-288 is that same filter. The Deck's
+# /etc overlay upper held couchside.service and nothing else of ours -- exactly
+# the damage observed: the unit (listed) and /var survived; /etc/couchside, the
+# udev rules, modules-load and the sudoers grant (not listed) were dropped.
+#
+# The drop-in is the OS's own supported mechanism (Tailscale's and the Nix
+# installer's SteamOS paths use the same directory). It names ONLY files this
+# installer owns -- never a distro file, which would shadow Valve's future edits
+# (the warning in example-additional-keep-list.conf.in) -- and it widens nothing:
+# it keeps the grants and files the owner already installed from being silently
+# revoked by an update. Written only where the drop-in dir exists (SteamOS); a
+# Bazzite/ostree box keeps /etc on its own (hash-verified across 43 -> 44). The
+# units (*.service/*.socket) and the SDDM drop-in are already on Valve's list.
+if [ -d /etc/atomic-update.conf.d ]; then
+    say "SteamOS: keeping Couchside's /etc files across OS updates (/etc/atomic-update.conf.d/couchside.conf)"
+    cat > "$WORK_DIR/couchside-keep.conf" <<'KEEPCONF'
+# Couchside: keep the installer's own /etc files across SteamOS updates.
+# Written by the Couchside installer; removed by `install.sh --uninstall`.
+# '*' matches within one path segment, '**' across segments (SteamOS keep-list
+# syntax). Only Couchside-owned paths -- never a file the OS ships.
+/etc/couchside/**
+/etc/sudoers.d/zz-couchside
+/etc/sudoers.d/zz-couchside-updates
+/etc/sudoers.d/zz-couchside-decky
+/etc/udev/rules.d/99-couchside-uinput.rules
+/etc/udev/rules.d/99-couchside-rtc.rules
+/etc/udev/rules.d/99-couchside-cec.rules
+/etc/udev/rules.d/99-couchside-openpuck.rules
+/etc/modules-load.d/couchside-uinput.conf
+/etc/systemd/network/50-couchside-wol.link
+KEEPCONF
+    sudo install -m 0644 -o root -g root "$WORK_DIR/couchside-keep.conf" \
+        /etc/atomic-update.conf.d/couchside.conf
+fi
+
+# ---------------------------------------------------------------------------
 # (g) systemd unit
 # ---------------------------------------------------------------------------
 say "Installing systemd unit $UNIT_DST"
@@ -1731,6 +1819,43 @@ if ! grep -q -- '--config' "$WORK_DIR/couchside.service.rendered"; then
         "$WORK_DIR/couchside.service.rendered"
 fi
 sudo install -m 0644 -o root -g root "$WORK_DIR/couchside.service.rendered" "$UNIT_DST"
+
+# ---------------------------------------------------------------------------
+# (g1) Install manifest: which root-owned pieces THIS run laid down
+# ---------------------------------------------------------------------------
+# Every piece in /etc above is (re)written UNCONDITIONALLY on a full run --
+# nothing is skipped as "already installed" -- so re-running this installer is
+# THE repair for a box whose OS update took part of /etc away (SteamOS drops
+# /etc/couchside, the udev rules and modules-load; see
+# docs/memory/steamos-etc-persistence.md). The token is the one piece that is
+# kept rather than rewritten, and (d) restores it from the STATE_DIR mirror.
+#
+# The agent reports a piece listed here that has gone missing as
+# `install_health` on /api/status, and the app tells the owner to re-run this.
+# The list is what separates LOST from NEVER INSTALLED (a box set up before a
+# rule existed must not read as damaged), so it names exactly what this run
+# wrote: with --no-sudoers there is no grant and no journal wrapper to lose.
+# Ids only -- never paths; the agent maps them through its own frozen table and
+# ignores anything it does not know. Lives in STATE_DIR because that survives
+# the SteamOS update that takes /etc. Written BEFORE the restart below, so the
+# restarted agent reads it.
+INSTALL_MANIFEST="$STATE_DIR/install-manifest"
+{
+    echo "# Couchside install manifest -- written by install.sh on every full run."
+    echo "# One piece id per line; the agent reports any of these that go missing."
+    echo "token_canonical"
+    if [ "$NO_SUDOERS" -eq 0 ]; then
+        echo "sudoers_grant"
+        echo "journal_wrapper"
+    fi
+    echo "udev_uinput"
+    echo "modules_uinput"
+    echo "udev_rtc"
+    echo "udev_cec"
+    echo "udev_openpuck"
+    echo "systemd_unit"
+} > "$WORK_DIR/install-manifest"
+sudo install -m 0644 -o "$USER_NAME" "$WORK_DIR/install-manifest" "$INSTALL_MANIFEST"
 
 # ---------------------------------------------------------------------------
 # (g2) privileged helper — replaces the sudoers surface, one verb at a time
@@ -2126,6 +2251,26 @@ PY
 
     verline="Latest release: ${tag}"
     [ -n "$latest" ] && verline="${verline} (agent ${latest})"
+
+    # Already current is NOT the same as healthy. An OS update can take the
+    # installer's root-owned files out of /etc while the agent binary in $HOME
+    # stays current (SteamOS dropped /etc/couchside, the udev rules and
+    # modules-load on a real Deck while the agent kept running). The full
+    # installer rewrites every one of them, so a damaged box must not be told
+    # "Nothing to update" -- it reinstalls instead. Readable as this user: the
+    # token is ours, the rest are world-readable.
+    lost=""
+    for p in /etc/couchside/token /etc/udev/rules.d/99-couchside-uinput.rules \
+             /etc/modules-load.d/couchside-uinput.conf \
+             /etc/udev/rules.d/99-couchside-rtc.rules; do
+      [ -s "$p" ] || lost="$lost $p"
+    done
+    if [ -n "$lost" ] && [ "$force" -ne 1 ]; then
+      echo
+      echo "This box's installation is damaged -- missing:$lost"
+      echo "(an OS update can remove these). Reinstalling to restore them."
+      force=1
+    fi
 
     # Already current (and not forced): say so plainly and stop. No misleading
     # prompt, no needless reinstall.
