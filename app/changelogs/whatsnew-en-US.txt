@@ -1,2 +1,3 @@
-• Show the Couchside panel on your Steam Deck's own screen from Launch › Watch — live temperatures, memory and uptime plus the quick actions, in Game Mode, without Decky (needs the box service 2.9.113 or newer).
-• Pairs with service 2.9.113's security fix for the box's local pages.
+• Crash reports you can actually send: if the app ever closes unexpectedly, the next launch offers the error log, and Setup › Account › App error log lets you copy or share it (nothing is sent automatically).
+• Console shows "Box installation is damaged" with the one command that fixes it when a SteamOS update strips the box's files (box service 2.9.116 or newer).
+• LED strips follow the SignalBar more faithfully — smoother timing, saturation and effect shape.
