@@ -18,6 +18,19 @@ the same thing regardless of what actually changed.
 Write for the person holding the phone, not for the commit log. They are
 deciding whether to press "Update now" on a machine across the room.
 
+## 2.9.115
+
+**Your box comes back to Game Mode after a Bazzite update.** On boxes set to "Boots into:
+Game Mode" in Couchside, updating to Bazzite 44 could leave the TV sitting at a login
+screen: the setting still pointed at Game Mode's old name, which Bazzite 44 renamed. The
+service now notices that on its own, clears it, and brings the box back to Game Mode, and it
+no longer changes that setting while an OS update is waiting to install. Couch Mode works on
+Bazzite 44 again too.
+
+**Removing the Couchside panel from Decky now sticks.** If you remove Couchside from Decky's
+plugin list, updates no longer put it back, and the box keeps running Couchside on its own.
+Want it back later? Run the installer on the box with `--decky`.
+
 ## 2.9.114
 
 **The box no longer goes dark if its pairing key goes missing.** After a SteamOS
