@@ -1,6 +1,6 @@
 /**
  * "Box installation is damaged" — shown on the Console when the agent reports
- * root-owned install pieces missing (install_health, agent >= 2.9.115).
+ * root-owned install pieces missing (install_health, agent >= 2.9.116).
  *
  * Renders NOTHING unless the box positively said pieces are missing: older
  * agents omit the field, and a piece the agent merely could not check is not
@@ -21,7 +21,7 @@ import {
   damagedHeadline,
   damagedPieces,
   pieceLabel,
-  REPAIR_COMMAND,
+  repairCommand,
   REPAIR_HINT,
   uncheckedPieces,
 } from '@/lib/installHealth';
@@ -40,11 +40,12 @@ export function InstallHealthBanner({ health }: { health: unknown }) {
   const missing = damagedPieces(health);
   if (!missing) return null;
   const unchecked = uncheckedPieces(health);
+  const command = repairCommand(health);
 
   const copy = async () => {
     hapticLight();
     try {
-      await Clipboard.setStringAsync(REPAIR_COMMAND);
+      await Clipboard.setStringAsync(command);
       setCopied(true);
       if (timer.current) clearTimeout(timer.current);
       timer.current = setTimeout(() => setCopied(false), 2000);
@@ -62,7 +63,7 @@ export function InstallHealthBanner({ health }: { health: unknown }) {
       <Text style={styles.hint}>{REPAIR_HINT}</Text>
       <View style={styles.cmdRow}>
         <Text style={styles.cmd} selectable>
-          {REPAIR_COMMAND}
+          {command}
         </Text>
       </View>
       <Pressable

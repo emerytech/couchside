@@ -52,7 +52,7 @@ except ImportError:  # pragma: no cover
     fcntl = None
 
 APP_NAME = "couchside-agent"
-VERSION = "2.9.115"
+VERSION = "2.9.116"
 UID = os.getuid()
 XDG_RUNTIME_DIR = "/run/user/%d" % UID
 
@@ -4472,7 +4472,8 @@ def real_status():
         # non-empty list", so the phone can name the problem.
         **({"config_error": CONFIG_ERROR} if CONFIG_ERROR else {}),
         # Is the root-owned footprint install.sh laid down still there (agent >=
-        # 2.9.115)? ADDITIVE: {"ok", "missing": [ids], "unknown": [ids]}, ids
+        # 2.9.116)? ADDITIVE: {"ok", "missing": [ids], "unknown": [ids],
+        # "no_sudoers": bool}, ids
         # from the frozen _INSTALL_PIECE_IDS table. A SteamOS image update can
         # take back part of /etc; the app shows "re-run the installer" on a
         # non-empty `missing`. ok is never true for a piece that could not be
@@ -4655,8 +4656,24 @@ def _install_expected():
     return frozenset(named) or _INSTALL_DEFAULT_EXPECTED
 
 
+def _install_sudoers_optout():
+    """True only when a manifest EXISTS and names known pieces but not
+    sudoers_grant: the owner ran install.sh --no-sudoers. The app then shows a
+    repair command that carries --no-sudoers too, so following the banner never
+    installs the grant they declined. An absent / unreadable / empty manifest is
+    NOT an opt-out (older boxes and Decky-plugin installs write none). Never
+    raises."""
+    try:
+        with open(INSTALL_MANIFEST, encoding="utf-8", errors="replace") as f:
+            text = f.read(8192)
+    except (OSError, ValueError):
+        return False
+    named = {ln.strip() for ln in text.splitlines()} & set(_INSTALL_PIECE_IDS)
+    return bool(named) and "sudoers_grant" not in named
+
+
 def install_health_compute():
-    """{"ok", "missing", "unknown"} for the expected pieces, uncached.
+    """{"ok", "missing", "unknown", "no_sudoers"} for the expected pieces, uncached.
 
     `missing` and `unknown` are id lists in table order. ok is True ONLY when
     every expected piece was checked AND present: a piece the agent could not
@@ -4680,10 +4697,12 @@ def install_health_compute():
             elif state != "present":
                 unknown.append(pid)
         return {"ok": not missing and not unknown,
-                "missing": missing, "unknown": unknown}
+                "missing": missing, "unknown": unknown,
+                "no_sudoers": _install_sudoers_optout()}
     except Exception:
         return {"ok": False, "missing": [],
-                "unknown": [p for p in _INSTALL_PIECE_IDS if p in expected]}
+                "unknown": [p for p in _INSTALL_PIECE_IDS if p in expected],
+                "no_sudoers": False}
 
 
 def install_health():
@@ -4697,7 +4716,8 @@ def install_health():
         with _INSTALL_HEALTH_LOCK:
             _INSTALL_HEALTH_CACHE["at"], _INSTALL_HEALTH_CACHE["value"] = now, val
     return {"ok": val["ok"], "missing": list(val["missing"]),
-            "unknown": list(val["unknown"])}
+            "unknown": list(val["unknown"]),
+            "no_sudoers": bool(val.get("no_sudoers", False))}
 
 
 def install_health_log_startup():
@@ -4738,8 +4758,8 @@ def mock_install_health():
         return {"ok": False,
                 "missing": ["token_canonical", "sudoers_grant", "journal_wrapper",
                             "udev_uinput", "modules_uinput", "udev_rtc"],
-                "unknown": []}
-    return {"ok": True, "missing": [], "unknown": []}
+                "unknown": [], "no_sudoers": False}
+    return {"ok": True, "missing": [], "unknown": [], "no_sudoers": False}
 
 
 # Actions that take the box down, and are therefore the last chance to write

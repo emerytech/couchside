@@ -20,6 +20,7 @@ import {
   pieceLabel,
   PIECE_LABELS,
   REPAIR_COMMAND,
+  repairCommand,
   REPAIR_HINT,
   uncheckedPieces,
 } from '../installHealth.ts';
@@ -96,4 +97,17 @@ test('unchecked pieces are listed separately and never throw', () => {
   assert.deepEqual(uncheckedPieces(DECK), []);
   assert.deepEqual(uncheckedPieces(undefined), []);
   assert.deepEqual(uncheckedPieces({ ok: false }), []);
+});
+
+test('a --no-sudoers box gets a repair command that keeps the opt-out', () => {
+  assert.equal(
+    repairCommand({ ok: false, missing: ['token_canonical'], no_sudoers: true }),
+    'curl -fsSL https://couchside.tv/install.sh | bash -s -- --no-sudoers',
+  );
+  // Only a literal true opts out: absent, older agent, or a malformed value = plain command.
+  assert.equal(repairCommand({ ok: false, missing: ['token_canonical'] }), REPAIR_COMMAND);
+  assert.equal(repairCommand({ ok: false, missing: ['token_canonical'], no_sudoers: 'yes' }), REPAIR_COMMAND);
+  assert.equal(repairCommand({ ok: false, missing: ['token_canonical'], no_sudoers: 1 }), REPAIR_COMMAND);
+  assert.equal(repairCommand(undefined), REPAIR_COMMAND);
+  assert.equal(repairCommand(null), REPAIR_COMMAND);
 });

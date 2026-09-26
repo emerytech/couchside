@@ -162,7 +162,8 @@ def test_all_present_is_ok():
     print("test_all_present_is_ok")
     with Box():
         h = cs.install_health_compute()
-        check("every piece present + grant in effect -> ok", h, {"ok": True, "missing": [], "unknown": []})
+        check("every piece present + grant in effect -> ok", h,
+              {"ok": True, "missing": [], "unknown": [], "no_sudoers": False})
 
 
 def test_each_file_piece_missing_is_reported():
@@ -269,7 +270,8 @@ def test_manifest_decides_what_is_expected():
         for pid in newer:
             os.remove(b.paths[pid])
         check("no manifest: never-installed newer rules are not a false alarm",
-              cs.install_health_compute(), {"ok": True, "missing": [], "unknown": []})
+              cs.install_health_compute(),
+              {"ok": True, "missing": [], "unknown": [], "no_sudoers": False})
     # ...CONTROL: the same box WITH a manifest naming them -> reported.
     with Box() as b:
         for pid in newer:
@@ -289,21 +291,28 @@ def test_manifest_decides_what_is_expected():
         os.remove(b.paths["journal_wrapper"])
         b.sudo(_Run(1, ""))
         h = cs.install_health_compute()
-        check("--no-sudoers manifest: wrapper + grant not checked -> ok",
-              h, {"ok": True, "missing": [], "unknown": []})
+        # no_sudoers True HERE and only here: the app then shows a repair command
+        # carrying --no-sudoers, so following the banner keeps the owner's choice.
+        check("--no-sudoers manifest: wrapper + grant not checked -> ok, opt-out reported",
+              h, {"ok": True, "missing": [], "unknown": [], "no_sudoers": True})
         check("...and sudo was never run for it", b.run.calls, 0)
     # A manifest naming nothing we know (garbage / a future-only id) falls back to
     # the default set rather than checking NOTHING (which would read as ok).
     with Box() as b:
         b.manifest(["future_piece", "../../etc/shadow"], extra="token_canonical_x\n")
         os.remove(b.paths["token_canonical"])
+        h = cs.install_health_compute()
         check("unknown-only manifest -> default set, loss still reported",
-              cs.install_health_compute()["missing"], ["token_canonical"])
+              h["missing"], ["token_canonical"])
+        check("...and an unknown-only manifest is NOT an opt-out (control)", h["no_sudoers"], False)
     # Unknown ids are ignored, known ones kept; a manifest can never add a PATH.
     with Box() as b:
         b.manifest(["token_canonical", "/etc/shadow", "future_piece"])
         h = cs.install_health_compute()
-        check("mixed manifest: only the known id is checked", h, {"ok": True, "missing": [], "unknown": []})
+        # A manifest that names known ids but not sudoers_grant reads as the
+        # --no-sudoers install that (g1) writes in exactly that shape.
+        check("mixed manifest: only the known id is checked", h,
+              {"ok": True, "missing": [], "unknown": [], "no_sudoers": True})
         check("sudo not run (grant not in this manifest)", b.run.calls, 0)
 
 
@@ -365,7 +374,7 @@ def test_status_carries_it_only_behind_auth():
         st, body = get({"Authorization": "Bearer " + "t" * 48})
         check("with token -> 200", st, 200)
         check("mock default is healthy", json.loads(body).get("install_health"),
-              {"ok": True, "missing": [], "unknown": []})
+              {"ok": True, "missing": [], "unknown": [], "no_sudoers": False})
         cs.set_install_health_mock("damaged")
         h = json.loads(get({"Authorization": "Bearer " + "t" * 48})[1]).get("install_health")
         check("damaged mock: ok false", h["ok"], False)

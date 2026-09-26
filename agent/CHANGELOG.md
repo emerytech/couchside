@@ -18,6 +18,20 @@ the same thing regardless of what actually changed.
 Write for the person holding the phone, not for the commit log. They are
 deciding whether to press "Update now" on a machine across the room.
 
+## 2.9.116
+
+**Your Steam Deck keeps Couchside through SteamOS updates.** A SteamOS update throws away
+most changes to the system folder, and that has been taking Couchside's pairing token file,
+its controller rules and its sudo permissions with it, while the service itself kept
+running with pieces missing. The box now tells SteamOS to keep those files, so the next
+update leaves them alone. If an earlier update already took some, the app's Console shows
+"Box installation is damaged" with the one command that puts them back, and running that
+command keeps your existing phone pairings.
+
+**Safer handling of the pairing key on the box.** The installer no longer lets a file
+planted in the service's own state folder steer where it writes the pairing key. A box
+installed with `--no-sudoers` now gets a repair command that keeps that choice.
+
 ## 2.9.115
 
 **Your box comes back to Game Mode after a Bazzite update.** On boxes set to "Boots into:

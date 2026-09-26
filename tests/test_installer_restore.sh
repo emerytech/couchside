@@ -59,6 +59,8 @@ run_blocks() { # run_blocks <NO_SUDOERS>
         # Pass-through sudo; install's -o/-g need real root, so drop them.
         cat <<'SUDO'
 sudo() {
+    # `sudo -u USER cmd` -> run cmd as ourselves (the tmp root is ours anyway).
+    if [ "${1:-}" = -u ]; then shift 2; fi
     if [ "$1" = install ]; then
         shift
         local a=()
@@ -134,7 +136,7 @@ check "manifest names all nine pieces ($ids)" $?
 # The token is (d)'s job (tests/test_installer_token_order.sh); give it one here
 # so the agent's verdict is about the pieces THESE blocks own.
 printf 'tok\n' > "$root/etc/couchside/token"
-[ "$(health)" = '{"missing": [], "ok": true, "unknown": []}' ]
+[ "$(health)" = '{"missing": [], "no_sudoers": false, "ok": true, "unknown": []}' ]
 check "the agent reads the fresh install as healthy" $?
 
 echo "every manifest id is one the agent knows (no drift)"
@@ -153,12 +155,12 @@ before="$(sha)"
 rm -rf "$root/etc/couchside"
 rm -f "$root"/etc/udev/rules.d/99-couchside-*.rules "$root/etc/modules-load.d/couchside-uinput.conf"
 h="$(health)"
-[ "$h" = '{"missing": ["token_canonical", "journal_wrapper", "udev_uinput", "modules_uinput", "udev_rtc", "udev_cec", "udev_openpuck"], "ok": false, "unknown": []}' ]
+[ "$h" = '{"missing": ["token_canonical", "journal_wrapper", "udev_uinput", "modules_uinput", "udev_rtc", "udev_cec", "udev_openpuck"], "no_sudoers": false, "ok": false, "unknown": []}' ]
 check "CONTROL: agent reports the damage before the re-run ($h)" $?
 run_blocks 0; rc=$?
 check "re-run ok (rc=$rc)" "$rc"
 printf 'tok\n' > "$root/etc/couchside/token"      # (d) restores this one from the mirror
-[ "$(health)" = '{"missing": [], "ok": true, "unknown": []}' ]
+[ "$(health)" = '{"missing": [], "no_sudoers": false, "ok": true, "unknown": []}' ]
 check "after the re-run nothing is missing" $?
 [ "$(sha)" = "$before" ]
 check "restored files are byte-identical to the first install" $?
@@ -179,8 +181,8 @@ ids="$(grep -v '^#' "$root/var/lib/couchside/install-manifest" | tr '\n' ' ')"
 [ "$ids" = "token_canonical udev_uinput modules_uinput udev_rtc udev_cec udev_openpuck systemd_unit " ]
 check "manifest omits sudoers_grant + journal_wrapper ($ids)" $?
 printf 'tok\n' > "$root/etc/couchside/token"
-[ "$(health)" = '{"missing": [], "ok": true, "unknown": []}' ]
-check "the agent does not call a --no-sudoers box damaged" $?
+[ "$(health)" = '{"missing": [], "no_sudoers": true, "ok": true, "unknown": []}' ]
+check "the agent does not call a --no-sudoers box damaged, and reports the opt-out" $?
 
 echo "uninstall drops the manifest"
 grep -q 'sudo rm -f "$STATE_DIR/install-manifest"' "$SRC"

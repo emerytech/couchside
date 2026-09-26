@@ -1141,7 +1141,17 @@ _cs_quick_path_damage_note() {
     note "WARNING: this box's installation is damaged -- missing:$lost"
     note "(an OS update can remove these). A quick update cannot restore them."
     note "Re-run the installer from a terminal on the box (Desktop Mode on a Deck):"
-    note "  curl -fsSL https://couchside.tv/install.sh | bash"
+    note "  curl -fsSL https://couchside.tv/install.sh | bash$(_cs_optout_flags)"
+}
+# " -s -- --no-sudoers" when the (g1) manifest says this box was installed with
+# --no-sudoers, so the repair we print never installs the grant the owner
+# declined. Read as this user (the manifest is ours); no manifest = no flags.
+_cs_optout_flags() {
+    local m="$STATE_DIR/install-manifest"
+    if [ -f "$m" ] && [ ! -L "$m" ] && grep -qx 'token_canonical' "$m" 2>/dev/null \
+       && ! grep -qx 'sudoers_grant' "$m" 2>/dev/null; then
+        printf ' -s -- --no-sudoers'
+    fi
 }
 if [ "$CAN_PRIVILEGE" -eq 0 ] && { [ -s "$TOKEN_FILE" ] || [ -s "$STATE_DIR/token" ]; } \
    && systemctl is-active --quiet couchside.service 2>/dev/null; then
@@ -1152,8 +1162,12 @@ if [ "$CAN_PRIVILEGE" -eq 0 ] && { [ -s "$TOKEN_FILE" ] || [ -s "$STATE_DIR/toke
         _cs_quick_path_damage_note
         exit 0
     fi
-    # No restart grant yet (installed before this build). The new agent is on
-    # disk; the running one is stale and we can't reload it without a password.
+    # No restart grant (installed before this build, OR the grant was dropped by
+    # an OS update together with the rest of /etc -- on SteamOS that is the
+    # common case, so the damage note must fire HERE too, not only after a
+    # successful restart). The new agent is on disk; the running one is stale
+    # and we can't reload it without a password.
+    _cs_quick_path_damage_note
     note "The agent was downloaded, but reloading it needs a password this"
     note "detached update doesn't have. Run this once in a terminal on the box:"
     note "  curl -fsSL https://couchside.tv/install.sh | bash"
@@ -1167,49 +1181,72 @@ fi
 say "Setting up $ETC_DIR (sudo may prompt for your password)"
 sudo mkdir -p "$ETC_DIR"
 
-MIGRATED_TOKEN=""
-if sudo test -s "$TOKEN_FILE"; then
+# Read a token candidate SAFELY into a shell value. A candidate under the
+# USER-owned STATE_DIR is a user-controlled path, so root never opens it: the
+# read runs as $USER_NAME, refuses a symlink, and accepts only one token-shaped
+# line. Root then writes the validated VALUE into root-owned /etc -- never a
+# copy through the candidate path (KI-093). Prints the token; empty on reject.
+_safe_token_from() {
+    local src="$1" v
+    sudo -u "$USER_NAME" test -f "$src" 2>/dev/null || return 1
+    sudo -u "$USER_NAME" test -L "$src" 2>/dev/null && return 1
+    v="$(sudo -u "$USER_NAME" head -n 1 -- "$src" 2>/dev/null | tr -d '\r\n')" || return 1
+    case "$v" in ''|*[!A-Za-z0-9_-]*) return 1 ;; esac
+    [ "${#v}" -ge 16 ] && [ "${#v}" -le 256 ] || return 1
+    printf '%s' "$v"
+}
+
+# A regular, non-empty, non-symlink canonical token is authoritative. Anything
+# else at that path is damage and is rebuilt below.
+CANON_OK=0
+if sudo test -f "$TOKEN_FILE" && sudo test -s "$TOKEN_FILE" && ! sudo test -L "$TOKEN_FILE"; then
+    CANON_OK=1
+fi
+MIGRATED_VALUE=""
+MIGRATED_FROM=""
+if [ "$CANON_OK" -eq 1 ]; then
     note "token already exists, keeping it (existing phone pairings keep working)"
 else
     # The agent (>= 2.9.114) keeps a MIRROR of the token in STATE_DIR, which
     # survived when a SteamOS 3.8.28 update removed /etc/couchside/token on a
-    # user's Deck. If the canonical file is gone but the mirror is there, THAT is
-    # the live token the phones are paired to -- restore it; minting a fresh one
-    # here would silently break every pairing that still worked.
+    # user's Deck. If the canonical file is gone but the mirror is a valid token,
+    # THAT is the token the phones are paired to RIGHT NOW -- restore it; minting
+    # a fresh one here would silently break every pairing that still worked.
     #
-    # The mirror OUTRANKS every pre-rename install: it is the token this agent
-    # is serving RIGHT NOW. A leftover /etc/couchpilot or /etc/rescue-agent token
-    # is from an install that was retired long ago (section (i) keeps those dirs
-    # on purpose), so letting it win would swap the live token for a dead one and
-    # un-pair every phone. That is exactly what the old order did: this loop ran
-    # AFTER the mirror check and overwrote MIGRATED_TOKEN. Old installs are
-    # consulted ONLY when there is no mirror (tests/test_installer_token_order.sh).
-    if sudo test -s "$STATE_DIR/token"; then
-        MIGRATED_TOKEN="$STATE_DIR/token"
+    # The mirror OUTRANKS every pre-rename install: a leftover /etc/couchpilot or
+    # /etc/rescue-agent token is from an install retired long ago (section (i)
+    # keeps those dirs on purpose), and letting it win would un-pair every phone.
+    # Old installs are consulted ONLY when there is no valid mirror
+    # (tests/test_installer_token_order.sh).
+    if v="$(_safe_token_from "$STATE_DIR/token")"; then
+        MIGRATED_VALUE="$v"; MIGRATED_FROM="$STATE_DIR/token"
     else
-        # Look for a token to inherit from any prior install. OLD_INSTALLS is
-        # oldest-first and the last hit wins, so couchpilot beats rescue-agent if
-        # somehow both are present.
+        # Prior installs live under root-owned /etc/<name>; read with the same
+        # guard (they chown their token to the user). OLD_INSTALLS is
+        # oldest-first and the last hit wins.
         for entry in "${OLD_INSTALLS[@]}"; do
-            old_etc="${entry%%|*}"
-            old_token="${old_etc}/token"
-            if sudo test -s "$old_token"; then
-                MIGRATED_TOKEN="$old_token"
+            old_token="${entry%%|*}/token"
+            if v="$(_safe_token_from "$old_token")"; then
+                MIGRATED_VALUE="$v"; MIGRATED_FROM="$old_token"
             fi
         done
     fi
 fi
-if sudo test -s "$TOKEN_FILE"; then
+# Root writes only a VALIDATED VALUE. `rm -f` first, so `tee` always creates a
+# fresh regular file at $TOKEN_FILE rather than writing into whatever is there.
+if [ "$CANON_OK" -eq 1 ]; then
     :
-elif [ -n "$MIGRATED_TOKEN" ]; then
-    note "migrating token from $MIGRATED_TOKEN (existing phone pairings keep working)"
-    sudo cp "$MIGRATED_TOKEN" "$TOKEN_FILE"
+elif [ -n "$MIGRATED_VALUE" ]; then
+    note "migrating token from $MIGRATED_FROM (existing phone pairings keep working)"
+    sudo rm -f "$TOKEN_FILE"
+    printf '%s\n' "$MIGRATED_VALUE" | sudo tee "$TOKEN_FILE" > /dev/null
 else
     note "generating new pairing token"
-    # FRESH install (no prior token, nothing migrated) — this is the ONE case
-    # the pairing tutorial auto-opens for. The two branches above keep their
-    # token, so re-runs and upgrades leave FRESH_TOKEN at 0 and stay silent.
+    # FRESH install (no valid token anywhere) -- the ONE case the pairing tutorial
+    # auto-opens for. The branches above keep their token, so re-runs and
+    # upgrades leave FRESH_TOKEN at 0 and stay silent.
     FRESH_TOKEN=1
+    sudo rm -f "$TOKEN_FILE"
     if command -v openssl >/dev/null 2>&1; then
         openssl rand -hex 24 | sudo tee "$TOKEN_FILE" > /dev/null
     else
@@ -1233,9 +1270,11 @@ sudo chmod 700 "$STATE_DIR"
 # /etc/couchside/token first and falls back to this copy only if that file is
 # ever lost. ALWAYS overwrite: the canonical file is the truth, so after any
 # rotation (new-token, the Decky plugin's Regenerate) the mirror must follow.
-sudo cp "$TOKEN_FILE" "$STATE_DIR/token"
-sudo chmod 600 "$STATE_DIR/token"
-sudo chown "$USER_NAME" "$STATE_DIR/token"
+# Written AS THE USER (temp file + mv inside the dir they own): root never
+# writes through a path under STATE_DIR, so nothing planted there can redirect
+# a privileged write (KI-093). $TOKEN_FILE is user-readable after the chown.
+sudo -u "$USER_NAME" sh -c 'umask 077; t="$1/.token.$$"; cp -- "$2" "$t" && mv -f -- "$t" "$1/token"' \
+    _ "$STATE_DIR" "$TOKEN_FILE"
 LEGACY_CONFIG="${ETC_DIR}/config.json"
 if sudo test -s "$LEGACY_CONFIG" && ! sudo test -s "$CONFIG_FILE"; then
     note "migrating config $LEGACY_CONFIG -> $CONFIG_FILE (pairings preserved)"
@@ -1990,7 +2029,8 @@ INSTALL_MANIFEST="$STATE_DIR/install-manifest"
     echo "udev_openpuck"
     echo "systemd_unit"
 } > "$WORK_DIR/install-manifest"
-sudo install -m 0644 -o "$USER_NAME" "$WORK_DIR/install-manifest" "$INSTALL_MANIFEST"
+# As the user: the manifest lives in the user-owned STATE_DIR (KI-093 rule).
+sudo -u "$USER_NAME" install -m 0644 "$WORK_DIR/install-manifest" "$INSTALL_MANIFEST"
 
 # ---------------------------------------------------------------------------
 # (g2) privileged helper — replaces the sudoers surface, one verb at a time
@@ -2461,10 +2501,21 @@ PY
       echo "Decky Loader detected — updating the Couchside plugin (it owns the agent on this box)."
     fi
     echo "Updating from ${INSTALL_URL} ..."
+    # A box installed with --no-sudoers has a (g1) manifest that names
+    # token_canonical but no sudoers_grant. Carry the flag into the re-run so a
+    # damage-triggered reinstall never installs the grant the owner declined.
+    # Read as this user (the manifest is ours); no manifest -> no flags.
+    flags=""
+    m=/var/lib/couchside/install-manifest
+    if [ -f "$m" ] && [ ! -L "$m" ] && grep -qx token_canonical "$m" 2>/dev/null \
+       && ! grep -qx sudoers_grant "$m" 2>/dev/null; then
+      flags=" -s -- --no-sudoers"
+      echo "(installed with --no-sudoers; keeping that)"
+    fi
     # exec so THIS couchside process is replaced by the updater: the installer
     # overwrites this very script, and a still-running bash would then read the
     # new file's bytes at its old offset and error out. exec frees our file.
-    exec bash -c "curl -fsSL '$INSTALL_URL' | bash"
+    exec bash -c "curl -fsSL '$INSTALL_URL' | bash$flags"
     ;;
   pair)
     exec "${DIR}/couchside-pair"

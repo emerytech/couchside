@@ -5,7 +5,7 @@
  * WHY. A SteamOS image update took /etc/couchside (token + journal wrapper), the
  * udev rules and the uinput modules-load file off a real Steam Deck while the
  * agent kept running, and nothing said so for a month: the gamepad, scheduled
- * wake and system journal just quietly degraded. The agent (>= 2.9.115) now
+ * wake and system journal just quietly degraded. The agent (>= 2.9.116) now
  * reports `install_health` on /api/status: `{ok, missing: [ids], unknown: [ids]}`.
  *
  * RULES (tests: lib/__tests__/installHealth.test.ts):
@@ -25,7 +25,7 @@
  */
 import { INSTALL_COMMAND } from './onboarding.ts';
 
-/** GET /api/status → install_health (agent >= 2.9.115). */
+/** GET /api/status → install_health (agent >= 2.9.116). */
 export type InstallHealth = {
   /** True only when every expected piece was checked AND present. */
   ok: boolean;
@@ -33,10 +33,26 @@ export type InstallHealth = {
   missing: string[];
   /** Piece ids the agent could not check (e.g. sudo would not list rules). */
   unknown?: string[];
+  /** True when the box was installed with --no-sudoers (agent >= 2.9.116). */
+  no_sudoers?: boolean;
 };
 
 /** The one-line repair, identical to the first-install command. */
 export const REPAIR_COMMAND = INSTALL_COMMAND;
+
+/**
+ * The repair command FOR THIS BOX. A box installed with --no-sudoers reports
+ * `install_health.no_sudoers: true`; its repair carries the same flag, so
+ * following the banner never installs the sudo grant its owner declined.
+ * Anything but a literal `true` (absent, older agent, malformed) is the plain
+ * command.
+ */
+export function repairCommand(health: unknown): string {
+  const h = health as { no_sudoers?: unknown } | null;
+  return h != null && typeof h === 'object' && h.no_sudoers === true
+    ? `${INSTALL_COMMAND} -s -- --no-sudoers`
+    : INSTALL_COMMAND;
+}
 
 /** Short human names for the agent's piece ids. Kept to a few words each: the
  *  banner lists several on one phone-width line. */

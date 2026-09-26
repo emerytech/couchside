@@ -19,6 +19,11 @@
 #   git show 380ea1f:install.sh > /tmp/old.sh && bash tests/test_installer_token_order.sh /tmp/old.sh
 # and "mirror beats a leftover couchpilot token" FAILS (it restores the
 # couchpilot token) -- measured 2026-09-26.
+#
+# CONTROL for the KI-093 cases below (root I/O through the user-owned mirror):
+#   git show d57c573:install.sh > /tmp/pre093.sh && bash tests/test_installer_token_order.sh /tmp/pre093.sh
+# the symlink cases FAIL there: canonical receives the link target's bytes and
+# the target's mode is changed through the link -- measured 2026-09-26.
 set -u
 SRC="${1:?usage: test_installer_token_order.sh /path/to/install.sh}"
 fails=0
@@ -28,11 +33,11 @@ check() { if [ "$2" -eq 0 ]; then echo "  PASS  $1"; else echo "  FAIL  $1"; fai
 # everything up to the legacy-config migration that follows it.
 block="$(awk '/^# \(d\) Token: /{f=1} f&&/^LEGACY_CONFIG=/{exit} f' "$SRC")"
 lines=$(printf '%s\n' "$block" | wc -l | tr -d ' ')
-[ "$lines" -gt 20 ] && [ "$lines" -lt 140 ]
+[ "$lines" -gt 20 ] && [ "$lines" -lt 200 ]
 check "(d)+(e0) block extracts and is bounded ($lines lines)" $?
-printf '%s\n' "$block" | grep -q 'MIGRATED_TOKEN="$STATE_DIR/token"'
+printf '%s\n' "$block" | grep -q 'MIGRATED_FROM="$STATE_DIR/token"'
 check "the block contains the mirror restore" $?
-printf '%s\n' "$block" | grep -q 'sudo cp "$TOKEN_FILE" "$STATE_DIR/token"'
+printf '%s\n' "$block" | grep -q 'mv -f -- "$t" "$1/token"'
 check "the block contains the (e0) mirror sync" $?
 
 tmp="$(mktemp -d)"
@@ -49,7 +54,7 @@ run_d() {
         echo 'set -euo pipefail'
         echo 'say()  { echo "==> $*"; }'
         echo 'note() { echo "    $*"; }'
-        echo 'sudo() { "$@"; }'
+        echo 'sudo() { if [ "${1:-}" = -u ]; then shift 2; fi; "$@"; }'
         echo "ETC_DIR='$root/etc/couchside'"
         echo "TOKEN_FILE='$root/etc/couchside/token'"
         echo "STATE_DIR='$root/var/lib/couchside'"
@@ -128,11 +133,56 @@ check "both copies stay 0600" $?
 
 echo "the Deck case: /etc/couchside GONE, mirror survived"
 new_root deck
-put "$root/var/lib/couchside/token" "deck-live-token"
+put "$root/var/lib/couchside/token" "deck-live-token-0001"
 run_d >/dev/null; rc=$?
 check "the block ran (rc=$rc)" "$rc"
-[ "$(tok "$root/etc/couchside/token")" = "deck-live-token" ]
+[ "$(tok "$root/etc/couchside/token")" = "deck-live-token-0001" ]
 check "canonical restored from the mirror (phones stay paired)" $?
+
+echo "KI-093: a SYMLINK planted at the mirror is refused, never copied through"
+new_root mirror_symlink
+put "$root/victim" "VICTIM-CONTENTS-must-not-move"
+chmod 644 "$root/victim"
+mkdir -p "$root/var/lib/couchside"
+ln -s "$root/victim" "$root/var/lib/couchside/token"
+out="$(run_d)"; rc=$?
+check "the block ran (rc=$rc)" "$rc"
+[ "$(tok "$root/etc/couchside/token")" != "VICTIM-CONTENTS-must-not-move" ]
+check "canonical did NOT receive the link target's contents" $?
+[ "$(tok "$root/victim")" = "VICTIM-CONTENTS-must-not-move" ]
+check "the link target's contents are untouched (no write through the link)" $?
+[ "$(mode "$root/victim")" = "644" ]
+check "the link target's mode is untouched (no chmod through the link)" $?
+[ ! -L "$root/var/lib/couchside/token" ] && [ -f "$root/var/lib/couchside/token" ]
+check "the mirror is now a regular file, not the planted link" $?
+[ "$(tok "$root/var/lib/couchside/token")" = "$(tok "$root/etc/couchside/token")" ]
+check "and it mirrors the (fresh) canonical token" $?
+printf '%s\n' "$out" | grep -q 'FRESH_TOKEN=1'
+check "a refused mirror with nothing else to inherit = fresh install" $?
+
+echo "KI-093: a mirror that is not token-shaped is refused"
+new_root mirror_garbage
+put "$root/var/lib/couchside/token" "not a token: has spaces"
+out="$(run_d)"; rc=$?
+check "the block ran (rc=$rc)" "$rc"
+t="$(tok "$root/etc/couchside/token")"
+printf '%s' "$t" | grep -Eq '^[0-9a-f]{48}$'
+check "garbage rejected -> a fresh hex token was minted" $?
+[ "$(tok "$root/var/lib/couchside/token")" = "$t" ]
+check "mirror re-synced to the fresh canonical" $?
+
+echo "KI-093: a symlink AT the canonical path is damage, rebuilt from the mirror"
+new_root canonical_symlink
+put "$root/victim2" "CANON-VICTIM"
+put "$root/var/lib/couchside/token" "live-mirror-token-value"
+mkdir -p "$root/etc/couchside"
+ln -s "$root/victim2" "$root/etc/couchside/token"
+run_d >/dev/null; rc=$?
+check "the block ran (rc=$rc)" "$rc"
+[ ! -L "$root/etc/couchside/token" ] && [ "$(tok "$root/etc/couchside/token")" = "live-mirror-token-value" ]
+check "canonical is a real file holding the mirror's token (link replaced, not followed)" $?
+[ "$(tok "$root/victim2")" = "CANON-VICTIM" ]
+check "the canonical link's target is untouched" $?
 
 echo
 if [ "$fails" -gt 0 ]; then echo "FAILED: $fails"; exit 1; fi
