@@ -34,13 +34,17 @@ import * as SecureStore from 'expo-secure-store';
 import { useSyncExternalStore } from 'react';
 import { AppState, Platform, type AppStateStatus } from 'react-native';
 
+import { lastExitReason } from '../modules/exit-reason';
+
 import { APP_ID, APP_LABEL } from './appVersion';
 import {
   appendEntry,
   chainGlobalHandler,
   clearPending,
   emptyLog,
+  classifyExit,
   exitEntryFromMarker,
+  exitRaisesBanner,
   formatReport,
   makeEntry,
   markPending,
@@ -218,10 +222,17 @@ function install(): void {
   if (markersEnabled) {
     // Previous process: did it die on screen with no JS fatal recorded?
     const newest = log.entries[log.entries.length - 1];
-    const exit = exitEntryFromMarker(parseMarker(readSync(SESSION_KEY)), undefined, newest?.lastTs ?? 0);
+    const prev = parseMarker(readSync(SESSION_KEY));
+    // Ask the OS why that process ended (Android 11+) before calling it a crash:
+    // an APK/Play update or a Force stop also leaves the marker at `fg`. Only
+    // consulted when the marker says it died on screen. lastExitReason() never throws.
+    const info = prev?.state === 'fg' ? lastExitReason() : null;
+    const decision = prev?.state === 'fg' ? classifyExit(info, prev.ts, Platform.OS) : undefined;
+    const exit = exitEntryFromMarker(prev, undefined, newest?.lastTs ?? 0, decision, info);
     if (exit) {
       const res = appendEntry(log, exit);
-      log = markPending(res.log, res.id);
+      // A system kill (low memory, …) is logged for diagnosis but raises no banner.
+      log = exitRaisesBanner(exit) ? markPending(res.log, res.id) : res.log;
       persistNow();
     }
     const now = AppState.currentState;

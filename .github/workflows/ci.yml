@@ -142,6 +142,15 @@ jobs:
       - name: Unit tests (led meters)
         run: python3 tests/test_led_meters.py
 
+      # Playtime countdown LED mode: the strip starts full and DRAINS as a personal
+      # timer runs down, stepping start -> amber (<15m) -> red (<5m) -> a whole-bar
+      # white flash (<8s) -> dark. Proves the effect is strip-only (rejected on the
+      # single-LED path, §3.7), config is rejected not sanitised, every colour stage
+      # and the shrinking length (observe all states), and that the wall-clock
+      # deadline is persisted so a restore RESUMES the real remaining time.
+      - name: Unit tests (led playtime)
+        run: python3 tests/test_led_playtime.py
+
       # Steam grabs valve-leds for its own use (download progress) by writing
       # multi_intensity in the SAME manual mode our sequence engine paints in, so
       # our repaint fights it and the bar flickers (seen on hardware). The engine

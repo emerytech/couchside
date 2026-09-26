@@ -54,6 +54,11 @@ export type CrashEntry = {
   app: string;
   /** Last screen path known when it happened ('' if unknown). Best effort. */
   route: string;
+  /** `exit` only: how the OS classified the previous process's death (see classifyExit).
+   *  Absent on entries recorded before 2026-09-26 and on non-exit kinds. */
+  exitVerdict?: ExitVerdict;
+  /** `exit` only: Android ApplicationExitInfo reason code, or EXIT_REASON_UNAVAILABLE. */
+  exitCode?: number;
 };
 
 export type CrashLog = {
@@ -275,6 +280,12 @@ function sanitizeEntry(raw: unknown): CrashEntry | null {
     stack: str(o.stack, STACK_MAX),
     app: str(o.app, APP_MAX),
     route: str(o.route, ROUTE_MAX),
+    ...(o.kind === 'exit' && typeof o.exitVerdict === 'string' && (EXIT_VERDICTS as readonly string[]).includes(o.exitVerdict)
+      ? { exitVerdict: o.exitVerdict as ExitVerdict }
+      : {}),
+    ...(o.kind === 'exit' && typeof o.exitCode === 'number' && Number.isInteger(o.exitCode) && o.exitCode >= -1 && o.exitCode <= 99
+      ? { exitCode: o.exitCode }
+      : {}),
   };
 }
 
@@ -339,6 +350,167 @@ export function serializeMarker(m: SessionMarker): string {
   return JSON.stringify(m);
 }
 
+// ---------------------------------------------------------------- exit reason (Android 11+)
+
+/**
+ * WHY. A marker still reading `fg` only says the previous process ended while on
+ * screen. On a real phone that is far more often an APK/Play UPDATE or a Force
+ * stop than a crash (Razr 2023, Android 16, 2026-09-26: `dumpsys activity
+ * exit-info` said PACKAGE_UPDATED and FORCE STOP while the banner claimed "likely a
+ * native crash"). Android 11+ records WHY each process died
+ * (ActivityManager.getHistoricalProcessExitReasons -> ApplicationExitInfo); the
+ * local module app/modules/exit-reason reads the newest record and this pure code
+ * decides what to say. Codes are ApplicationExitInfo.REASON_* (verified against
+ * the android-36.1 SDK sources).
+ *
+ * VERDICTS:
+ *   crash   — CRASH, CRASH_NATIVE, ANR, INITIALIZATION_FAILURE: the app failed.
+ *             Entry + next-launch banner, worded with what Android reported.
+ *   system  — LOW_MEMORY, SIGNALED, EXCESSIVE_RESOURCE_USAGE: the system ended a
+ *             process that was on screen. Not a crash in the app, but the user saw
+ *             it vanish and it matters for diagnosis (e.g. memory pressure while
+ *             streaming), so it is LOGGED — with no banner. SIGNALED belongs here
+ *             because on devices without LMK reporting a low-memory kill is
+ *             reported as SIGNALED + SIGKILL (ApplicationExitInfo javadoc).
+ *   benign  — every other known reason (PACKAGE_UPDATED, USER_REQUESTED = Force
+ *             stop / swipe from Recents, EXIT_SELF, USER_STOPPED,
+ *             PERMISSION_CHANGE, DEPENDENCY_DIED, OTHER, FREEZER,
+ *             PACKAGE_STATE_CHANGE). Nothing recorded: an update is not an error.
+ *   unknown — no usable record: OS call unavailable (< Android 11, iOS has no
+ *             module), failed, REASON_UNKNOWN, a code this build does not know, or
+ *             a record OLDER than the marker (it describes an earlier process).
+ *             Degrade closed: keep the old inference, but say "may have".
+ *   legacy  — iOS and entries recorded before this change: today's wording.
+ *             (iOS does not update or force-kill a FOREGROUND app, so an `fg`
+ *             marker there is still most likely a crash.)
+ */
+export type ExitVerdict = 'crash' | 'system' | 'benign' | 'unknown' | 'legacy';
+export const EXIT_VERDICTS: readonly ExitVerdict[] = ['crash', 'system', 'benign', 'unknown', 'legacy'];
+
+/** The OS call was not available or failed. */
+export const EXIT_REASON_UNAVAILABLE = -1;
+
+/** ApplicationExitInfo.REASON_* -> name (android-36.1 sources). */
+export const EXIT_REASON_NAMES: Readonly<Record<number, string>> = {
+  0: 'UNKNOWN',
+  1: 'EXIT_SELF',
+  2: 'SIGNALED',
+  3: 'LOW_MEMORY',
+  4: 'CRASH',
+  5: 'CRASH_NATIVE',
+  6: 'ANR',
+  7: 'INITIALIZATION_FAILURE',
+  8: 'PERMISSION_CHANGE',
+  9: 'EXCESSIVE_RESOURCE_USAGE',
+  10: 'USER_REQUESTED',
+  11: 'USER_STOPPED',
+  12: 'DEPENDENCY_DIED',
+  13: 'OTHER',
+  14: 'FREEZER',
+  15: 'PACKAGE_STATE_CHANGE',
+  16: 'PACKAGE_UPDATED',
+};
+const CRASH_CODES: readonly number[] = [4, 5, 6, 7];
+const SYSTEM_CODES: readonly number[] = [2, 3, 9];
+const BENIGN_CODES: readonly number[] = [1, 8, 10, 11, 12, 13, 14, 15, 16];
+
+/** The newest ApplicationExitInfo record, as the native module reports it. */
+export type ExitInfo = { reason: number; timestamp: number; status?: number; description?: string };
+
+/** A record may be stamped slightly before the marker's last write by clock rounding. */
+export const EXIT_STALE_SLACK_MS = 2_000;
+
+export function exitReasonName(code: number | undefined): string {
+  if (code === undefined || code === EXIT_REASON_UNAVAILABLE) return 'unavailable';
+  return EXIT_REASON_NAMES[code] ?? `code ${code}`;
+}
+
+/**
+ * Decide what the previous process's death means. `info` is null when the OS
+ * call is unavailable or failed; `platform` is Platform.OS. Pure, never throws.
+ */
+export function classifyExit(
+  info: ExitInfo | null | undefined,
+  markerTs: number,
+  platform: string,
+): { verdict: ExitVerdict; code: number } {
+  if (platform === 'ios') return { verdict: 'legacy', code: EXIT_REASON_UNAVAILABLE };
+  if (!info || typeof info.reason !== 'number' || !Number.isInteger(info.reason)) {
+    return { verdict: 'unknown', code: EXIT_REASON_UNAVAILABLE };
+  }
+  const code = info.reason;
+  // A record older than the marker describes an EARLIER process, not the one
+  // that wrote `fg` — say nothing specific about it.
+  if (!(typeof info.timestamp === 'number' && Number.isFinite(info.timestamp)) ||
+      info.timestamp + EXIT_STALE_SLACK_MS < markerTs) {
+    return { verdict: 'unknown', code };
+  }
+  if (CRASH_CODES.includes(code)) return { verdict: 'crash', code };
+  if (SYSTEM_CODES.includes(code)) return { verdict: 'system', code };
+  if (BENIGN_CODES.includes(code)) return { verdict: 'benign', code };
+  return { verdict: 'unknown', code }; // REASON_UNKNOWN (0) or a future code
+}
+
+/** Does this exit entry raise the next-launch banner? System kills are logged quietly. */
+export function exitRaisesBanner(e: Pick<CrashEntry, 'kind' | 'exitVerdict'>): boolean {
+  if (e.kind !== 'exit') return true;
+  return e.exitVerdict !== 'system' && e.exitVerdict !== 'benign';
+}
+
+const CRASH_TEXT: Readonly<Record<number, { name: string; says: string; banner: string }>> = {
+  4: { name: 'Crash', says: 'an unhandled Java/Kotlin exception', banner: 'Android reports it crashed (unhandled exception).' },
+  5: { name: 'Native crash', says: 'a crash in native code', banner: 'Android reports it crashed in native code.' },
+  6: { name: 'Not responding', says: 'that it stopped responding (ANR)', banner: 'Android closed it because it stopped responding.' },
+  7: { name: 'Failed to start', says: 'a failure while starting', banner: 'Android reports it failed while starting.' },
+};
+const WHEN = 'The time shown is the last moment it was known to be running on screen.';
+
+/** One line for the App error log card. */
+export function exitSummary(e: Pick<CrashEntry, 'exitVerdict' | 'exitCode'>): string {
+  const name = exitReasonName(e.exitCode);
+  switch (e.exitVerdict) {
+    case 'crash':
+      return `Android reports: ${CRASH_TEXT[e.exitCode ?? -1]?.name.toLowerCase() ?? 'crash'} (${name}).`;
+    case 'system':
+      return `Closed by the system (${name}) — not a crash in the app.`;
+    case 'unknown':
+      return 'No app error captured — may have been a native crash.';
+    default:
+      return 'No app error captured — likely a native crash.';
+  }
+}
+
+/** The banner's explanatory sentence for an exit entry. */
+export function exitBannerText(e: Pick<CrashEntry, 'exitVerdict' | 'exitCode'>): string {
+  const tail = ' Copy what was recorded; Setup › Account › App error log explains how to get the full system crash log.';
+  if (e.exitVerdict === 'crash') return (CRASH_TEXT[e.exitCode ?? -1]?.banner ?? 'Android reports it crashed.') + tail;
+  if (e.exitVerdict === 'unknown') return 'No app error was captured, so it may have been a native crash.' + tail;
+  return 'No app error was captured, so it was likely a native crash.' + tail;
+}
+
+function exitName(verdict: ExitVerdict, code: number): string {
+  if (verdict === 'crash') return CRASH_TEXT[code]?.name ?? 'Crash';
+  if (verdict === 'system') return 'Closed by the system';
+  return 'Closed unexpectedly';
+}
+
+function exitMessage(verdict: ExitVerdict, code: number, info?: ExitInfo | null): string {
+  const name = exitReasonName(code);
+  const reasonTag = code === EXIT_REASON_UNAVAILABLE ? '' : ` (Android exit reason ${name}, ${code}${
+    name === 'SIGNALED' && typeof info?.status === 'number' ? `, signal ${info.status}` : ''})`;
+  switch (verdict) {
+    case 'crash':
+      return `Android reports ${CRASH_TEXT[code]?.says ?? 'a crash'}${reasonTag}. No JavaScript error was recorded, so there is no stack here; the system crash log has the details. ${WHEN}`;
+    case 'system':
+      return `Android closed Couchside while it was on screen${reasonTag}. This is not a crash in the app: the phone was short on memory or the system ended the process. ${WHEN}`;
+    case 'unknown':
+      return `Couchside closed while it was on screen and no JavaScript error was recorded. It may have been a native crash, or the system ended the app. Android gave no usable exit reason${
+        code === EXIT_REASON_UNAVAILABLE ? ' (it needs Android 11 or newer)' : reasonTag}. ${WHEN}`;
+    default:
+      return EXIT_MESSAGE;
+  }
+}
+
 export const EXIT_MESSAGE =
   'Couchside closed while it was on screen and no JavaScript error was recorded. ' +
   'That usually means a native crash, or the system ended the app (for example, low memory). ' +
@@ -358,8 +530,13 @@ export function exitEntryFromMarker(
   prev: SessionMarker | null,
   id?: string,
   lastRecorded = 0,
+  decision?: { verdict: ExitVerdict; code: number },
+  info?: ExitInfo | null,
 ): CrashEntry | null {
   if (!prev || prev.state !== 'fg') return null;
+  const d = decision ?? { verdict: 'legacy' as ExitVerdict, code: EXIT_REASON_UNAVAILABLE };
+  // An update, a Force stop, a permission change...: the process ended on purpose.
+  if (d.verdict === 'benign') return null;
   const ts = Math.max(prev.ts, Number.isFinite(lastRecorded) ? lastRecorded : 0);
   return {
     id: id ?? newId(ts),
@@ -367,11 +544,12 @@ export function exitEntryFromMarker(
     lastTs: ts,
     count: 1,
     kind: 'exit',
-    name: 'Closed unexpectedly',
-    message: EXIT_MESSAGE,
+    name: exitName(d.verdict, d.code),
+    message: truncate(exitMessage(d.verdict, d.code, info), MESSAGE_MAX),
     stack: '',
     app: prev.app,
     route: prev.route,
+    ...(decision ? { exitVerdict: d.verdict, exitCode: d.code } : {}),
   };
 }
 

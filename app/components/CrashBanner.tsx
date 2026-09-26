@@ -22,6 +22,7 @@ import { Pressable, StyleSheet, Text, View } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
 import { crashReport, dismissPendingCrash, noteRoute, usePendingCrash } from '@/lib/crashLog';
+import { exitBannerText } from '@/lib/crashLogCore';
 import { hapticLight } from '@/lib/haptics';
 import { mono, useThemedStyles, type Palette } from '@/lib/theme';
 
@@ -64,7 +65,7 @@ export function CrashBanner() {
         </View>
         <Text style={styles.sub}>
           {native
-            ? 'No app error was captured, so it was likely a native crash. Copy what was recorded; Setup › Account › App error log explains how to get the full system crash log.'
+            ? exitBannerText(pending)
             : 'An error was recorded just before it closed. Copy the details to include in a bug report.'}
         </Text>
         {failed && (

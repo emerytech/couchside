@@ -5702,7 +5702,7 @@ def leds_state(mock):
         strips = _led_strips([l["name"] for l in MOCK_LEDS if l["writable"]])
         return {"available": any(p["notable"] for p in pubs), "leds": pubs,
                 "effects": list(_LED_EFFECTS), "shape": True,
-                "reactive": {"meters": ["meter_cpu", "meter_battery"],
+                "reactive": {"meters": ["meter_cpu", "meter_battery"], "playtime": True,
                              "signals": {"cpu_temp": True, "battery": True}},
                 "active": {k: dict(v) for k, v in _MOCK_FX.items()},
                 "strips": [_mock_strip_public(p, m) for p, m in strips.items()]}
@@ -5720,18 +5720,22 @@ def leds_state(mock):
 
 
 def _reactive_probe(has_strip):
-    """What reactive meters this box can drive RIGHT NOW (probe-and-appear). Meters
-    render on an addressable STRIP, so with none present the list is empty and the
-    app offers nothing. A meter appears only when its signal actually reads -> no
-    dead meter (§3.7 degrade closed). Read-only, best-effort."""
+    """What reactive modes this box can drive RIGHT NOW (probe-and-appear). All
+    render on an addressable STRIP, so with none present nothing is offered. A live
+    METER appears only when its signal actually reads -> no dead meter (§3.7). The
+    `playtime` countdown needs no live signal, so it is offered whenever a strip
+    exists. Read-only, best-effort.
+
+    `meters` (the live-telemetry meters) is kept for older apps; `playtime` is an
+    additive flag the newer app reads to add the countdown to its mode picker."""
     if not has_strip:
-        return {"meters": [], "signals": {}}
+        return {"meters": [], "playtime": False, "signals": {}}
     has_temp = read_cpu_temp_c() is not None
     has_batt = bool(read_box_battery())
     meters = ["meter_cpu"]                    # CPU busy is available on any Linux box
     if has_batt:
         meters.append("meter_battery")
-    return {"meters": meters,
+    return {"meters": meters, "playtime": True,
             "signals": {"cpu_temp": has_temp, "battery": has_batt}}
 
 
@@ -5914,7 +5918,9 @@ _LED_EFFECTS = ("solid", "off", "breathe", "pulse", "rainbow", "strobe",
                 "scanner", "manual", "circle", "comet", "wipe", "twinkle",
                 # Reactive meters (SignalBar-style): the strip renders LIVE
                 # telemetry. Agent-rendered like the sweeps below; strip-only.
-                "meter_cpu", "meter_battery")
+                "meter_cpu", "meter_battery",
+                # Playtime countdown: a strip-drained timer (agent-rendered).
+                "playtime")
 _LED_STATIC = frozenset(("solid", "off"))
 # The reactive meters, looked up (never interpolated). Each renders a live 0..100
 # signal as a bar; unavailable signal -> dark (degrade closed, §3.7).
@@ -6119,12 +6125,12 @@ def apply_led_effect(name, effect, color, speed, brightness, shape=None):
     {"ok":False,"status":..,"error":..} | None."""
     if effect not in _LED_EFFECTS:
         return {"ok": False, "status": 400, "error": "unknown effect"}
-    # A reactive meter renders live telemetry across the WHOLE strip; the single-LED
-    # software renderer (_fx_frame) has no meter case and would fall through to a
-    # SOLID fill that never reads a signal and never degrades dark (§3.7). Reject it
-    # here -- covers the /api/leds/effect single-LED handler AND _led_restore.
-    if effect in _LED_METERS:
-        return {"ok": False, "status": 400, "error": "meter effects require a strip target"}
+    # Reactive meters + the playtime countdown render across the WHOLE strip; the
+    # single-LED software renderer (_fx_frame) has no case for them and would fall
+    # through to a SOLID fill that never reads a signal and never degrades dark
+    # (§3.7). Reject here -- covers the single-LED handler AND _led_restore.
+    if effect in _LED_METERS or effect == "playtime":
+        return {"ok": False, "status": 400, "error": "this effect requires a strip target"}
     if (not isinstance(name, str) or "/" in name or ".." in name
             or "\x00" in name or name not in _list_led_names()
             or not _led_realpath_ok(name)):
@@ -6311,6 +6317,17 @@ def _led_restore():
         if effect in _LED_METERS and isinstance(st.get("meter"), dict):
             mc, merr = _validate_meter_cfg(st["meter"])
             meter = mc if merr is None else {}
+        # Playtime countdown re-validated + the wall-clock DEADLINE carried through so
+        # the timer RESUMES its real remaining time across a reboot (never trusts the
+        # file; junk cfg -> a fresh default timer). An already-expired deadline just
+        # renders dark.
+        playtime = None
+        if effect == "playtime" and isinstance(st.get("playtime"), dict):
+            pc, perr = _validate_playtime_cfg(st["playtime"])
+            playtime = pc if perr is None else {}
+            dl = st["playtime"].get("deadline")
+            if perr is None and isinstance(dl, (int, float)) and not isinstance(dl, bool):
+                playtime["deadline"] = dl
         try:
             if name.startswith("strip:"):
                 # A persisted strip (firmware effect): re-arm the whole strip so a
@@ -6318,7 +6335,7 @@ def _led_restore():
                 prefix = name[len("strip:"):]
                 if prefix in strips:
                     apply_strip_effect(prefix, effect, color, speed, brightness,
-                                       reverse, meter)
+                                       reverse, meter, playtime)
             elif name in live:
                 apply_led_effect(name, effect, color, speed, brightness, shape)
         except OSError:
@@ -6428,7 +6445,7 @@ _STRIP_COLOUR_FX = ("scanner", "breathe", "pulse", "strobe", "solid")
 # a one-way "circle"/comet the render thread sweeps + wraps. These are looked up
 # like any effect id; the agent owns every frame (fixed-literal writers, §3).
 _STRIP_SEQ_EFFECTS = ("circle", "comet", "wipe", "twinkle",
-                      "meter_cpu", "meter_battery")
+                      "meter_cpu", "meter_battery", "playtime")
 
 
 def _led_strips(names=None):
@@ -6730,6 +6747,101 @@ def _validate_meter_cfg(req):
     return cfg, None
 
 
+# ---- Playtime countdown: a strip-drained timer (SignalBar-style) --------------
+# The bar starts full and DRAINS as a personal timer runs down; colour steps
+# start -> amber under 15 min -> red under 5 min, and the final 8 s flashes the
+# whole bar white. Agent-rendered on the _seq_* thread so it keeps counting with
+# the app closed, and the DEADLINE is a wall-clock epoch persisted with the effect
+# -> a reboot RESUMES the real remaining time (not a restart).
+_PLAYTIME_DEFAULTS = {"minutes": 60, "scale": 0}   # scale 0 = timer-length bar; 1..4 = fixed N-hour full bar
+_PLAYTIME_SCALES = frozenset((0, 1, 2, 3, 4))
+_PLAYTIME_AMBER = {"r": 255, "g": 150, "b": 0}
+_PLAYTIME_RED = {"r": 255, "g": 30, "b": 0}
+_PLAYTIME_FLASH = {"r": 255, "g": 255, "b": 255}
+_PLAYTIME_START = {"r": 255, "g": 255, "b": 255}   # default start colour (white)
+_PLAYTIME_AMBER_S = 15 * 60
+_PLAYTIME_RED_S = 5 * 60
+_PLAYTIME_FLASH_S = 8
+
+
+def _playtime_frame(cfg, n, remaining_s, now_s):
+    """PURE per-LED frame for the countdown. `remaining_s` seconds left; `now_s` the
+    wall clock drives the final-seconds flash phase. Bar LENGTH = remaining / the
+    bar-scale reference; COLOUR steps start -> amber (<15m) -> red (<5m); the final
+    8 s flashes the WHOLE bar white (a clear alert, not a 1-LED sliver); zero -> dark.
+    Unit-tested by observing the length shrink and each colour stage (§11)."""
+    n = max(0, int(n))
+    if n == 0:
+        return []
+    rem = 0.0 if remaining_s is None or remaining_s < 0 else float(remaining_s)
+    if rem <= 0:
+        return [None] * n                       # expired -> dark
+    if rem <= _PLAYTIME_FLASH_S:
+        on = int(now_s * 2) % 2 == 0            # ~2 Hz whole-bar flash
+        return [dict(_PLAYTIME_FLASH) if on else None for _ in range(n)]
+    minutes = cfg.get("minutes", _PLAYTIME_DEFAULTS["minutes"])
+    scale = cfg.get("scale", 0)
+    total = (minutes * 60) if not scale else (scale * 3600)
+    frac = (rem / total) if total > 0 else 0.0
+    frac = 0.0 if frac < 0 else 1.0 if frac > 1 else frac
+    if rem <= _PLAYTIME_RED_S:
+        col = _PLAYTIME_RED
+    elif rem <= _PLAYTIME_AMBER_S:
+        col = _PLAYTIME_AMBER
+    else:
+        col = cfg.get("color") or _PLAYTIME_START
+    # Keep at least ONE LED lit while time remains, so the warning colour is still
+    # visible in the final minutes of a long timer (when the bar is nearly empty)
+    # instead of going dark and looking switched off. Zero is only reached at expiry.
+    lit = max(1, int(round(frac * n)))
+    if cfg.get("layout") == "mirrored":
+        centremost = sorted(range(n), key=lambda i: abs(i + 0.5 - n / 2.0))
+        onset = set(centremost[:lit])
+        return [dict(col) if i in onset else None for i in range(n)]
+    return [dict(col) if i < lit else None for i in range(n)]
+
+
+def _seq_playtime_frame(spec, now):
+    """One frame of the countdown: read the persisted wall-clock DEADLINE, compute
+    the real remaining time, render via the pure _playtime_frame. `now` (monotonic)
+    is unused -- the countdown is against the wall clock so it survives a reboot."""
+    n = len(spec["members"])
+    cfg = spec.get("playtime") or {}
+    deadline = cfg.get("deadline")
+    if not isinstance(deadline, (int, float)) or isinstance(deadline, bool):
+        return [None] * n
+    wall = time.time()
+    return _playtime_frame(cfg, n, deadline - wall, wall)
+
+
+def _validate_playtime_cfg(req):
+    """(playtime_cfg dict, error|None) for the countdown. Every field OPTIONAL with a
+    SignalBar default; each range-checked and REJECTED (never sanitised, §3.6). The
+    DEADLINE is NOT a client field -- it is stamped by apply_strip_effect."""
+    cfg = {}
+    m = req.get("minutes")
+    if m is not None:
+        if not (isinstance(m, int) and not isinstance(m, bool) and 5 <= m <= 240):
+            return None, "minutes must be an int 5-240"
+        cfg["minutes"] = m
+    scale = req.get("scale")
+    if scale is not None:
+        if isinstance(scale, bool) or scale not in _PLAYTIME_SCALES:
+            return None, "scale must be 0 (timer) or 1-4 (fixed hours)"
+        cfg["scale"] = scale
+    layout = req.get("layout")
+    if layout is not None:
+        if layout not in _METER_LAYOUTS:
+            return None, "layout must be linear|mirrored"
+        cfg["layout"] = layout
+    color = req.get("color")
+    if color is not None:
+        if not _is_rgb_triple(color):
+            return None, "color must be {r,g,b} ints 0-255"
+        cfg["color"] = color
+    return cfg, None
+
+
 def _seq_compute_frame(spec, now):
     """The per-LED frame for this strip animation at time `now`, or None if there's
     nothing to draw. Pure time+geometry -> colour; performs no writes so it stays
@@ -6740,6 +6852,8 @@ def _seq_compute_frame(spec, now):
     e = spec["effect"]
     if e in _LED_METERS:
         return _seq_meter_frame(spec, now)
+    if e == "playtime":
+        return _seq_playtime_frame(spec, now)
     period = _seq_period(spec["speed"])
     color = spec["color"]
     rev = bool(spec.get("reverse"))
@@ -6940,10 +7054,11 @@ def _seq_ensure_thread():
 
 
 def _seq_start(prefix, members, effect, color, speed, brightness, reverse=False,
-               meter=None):
+               meter=None, playtime=None):
     """Begin an agent-rendered animation on the strip: flip every member to manual
     (so the firmware isn't also animating), register the spec, start the thread.
-    `meter` (a validated config dict) is carried for the reactive-meter effects."""
+    `meter` / `playtime` (validated config dicts) are carried for the reactive-meter
+    and countdown effects respectively."""
     raws = {n: _read_led_raw(n) for n in members}
     for n in members:
         try:
@@ -6958,6 +7073,7 @@ def _seq_start(prefix, members, effect, color, speed, brightness, reverse=False,
             "brightness": brightness if _is_pct(brightness) else 100,
             "reverse": bool(reverse),
             "meter": dict(meter) if isinstance(meter, dict) else None,
+            "playtime": dict(playtime) if isinstance(playtime, dict) else None,
             "t0": time.monotonic(), "raws": raws}
     _seq_ensure_thread()
 
@@ -6969,7 +7085,7 @@ def _seq_stop(prefix):
 
 
 def apply_strip_effect(prefix, effect, color, speed, brightness, reverse=False,
-                       meter=None):
+                       meter=None, playtime=None):
     """Set an addressable strip to a FIRMWARE effect (or a manual solid/off).
 
     Returns {"ok":True,"active":..} | {"ok":False,"status":..} | None(->404).
@@ -7004,11 +7120,21 @@ def apply_strip_effect(prefix, effect, color, speed, brightness, reverse=False,
     if effect in _STRIP_SEQ_EFFECTS:
         rev = bool(reverse)
         mcfg = dict(meter) if (effect in _LED_METERS and isinstance(meter, dict)) else None
-        _seq_start(prefix, members, effect, col, sp, b, rev, mcfg)
+        pcfg = None
+        if effect == "playtime":
+            pcfg = dict(playtime) if isinstance(playtime, dict) else {}
+            pcfg.setdefault("minutes", _PLAYTIME_DEFAULTS["minutes"])
+            # Stamp the wall-clock deadline for a FRESH timer; a restore passes the
+            # stored deadline through so the countdown RESUMES its real remaining time.
+            if not isinstance(pcfg.get("deadline"), (int, float)) or isinstance(pcfg.get("deadline"), bool):
+                pcfg["deadline"] = time.time() + pcfg["minutes"] * 60
+        _seq_start(prefix, members, effect, col, sp, b, rev, mcfg, pcfg)
         active = {"effect": effect, "color": col, "speed": sp,
                   "brightness": b, "reverse": rev}
         if mcfg is not None:
             active["meter"] = mcfg
+        if pcfg is not None:
+            active["playtime"] = pcfg
         with _FX_LOCK:
             for m in members:
                 _LED_PERSIST.pop(m, None)
@@ -7688,10 +7814,10 @@ def apply_openrgb(device, effect, color, speed, brightness):
     None."""
     if effect not in _LED_EFFECTS:
         return {"ok": False, "status": 400, "error": "unknown effect"}
-    # Meters are strip-only (telemetry across the bar); OpenRGB has no meter render
-    # path, so reject rather than fall through to a fabricated fill (§3.7).
-    if effect in _LED_METERS:
-        return {"ok": False, "status": 400, "error": "meter effects require a strip target"}
+    # Meters + playtime are strip-only (rendered across the bar); OpenRGB has no
+    # render path for them, so reject rather than fall through to a fabricated fill (§3.7).
+    if effect in _LED_METERS or effect == "playtime":
+        return {"ok": False, "status": 400, "error": "this effect requires a strip target"}
     if not isinstance(device, int) or isinstance(device, bool):
         return None
     ctrls = _orgb_list(force=True)
@@ -26407,13 +26533,18 @@ class Handler(BaseHTTPRequestHandler):
                 # from the live listdir, effect id is frozen, params range-checked.
                 strip_name = req.get("strip")
                 if strip_name is not None:
-                    # Reactive-meter config (SignalBar-depth) is validated + rejected
-                    # here; only the meter effects carry it.
-                    meter = {}
+                    # Reactive-mode config (SignalBar-depth) is validated + rejected
+                    # here; only the matching effect carries it.
+                    meter, playtime = {}, {}
                     if effect in _LED_METERS:
                         meter, merr = _validate_meter_cfg(req)
                         if merr is not None:
                             self._send(400, {"error": merr}, started)
+                            return
+                    elif effect == "playtime":
+                        playtime, perr = _validate_playtime_cfg(req)
+                        if perr is not None:
+                            self._send(400, {"error": perr}, started)
                             return
                     if self.mock:
                         ms = _led_strips([l["name"] for l in MOCK_LEDS if l["writable"]])
@@ -26424,17 +26555,23 @@ class Handler(BaseHTTPRequestHandler):
                         if effect in _LED_STATIC:
                             _MOCK_FX.pop(key, None)
                         else:
+                            pt = None
+                            if effect == "playtime":
+                                pt = dict(playtime)
+                                pt.setdefault("minutes", _PLAYTIME_DEFAULTS["minutes"])
+                                pt["deadline"] = time.time() + pt["minutes"] * 60
                             _MOCK_FX[key] = {
                                 "effect": effect,
                                 "color": color if color is not None else {"r": 255, "g": 0, "b": 0},
                                 "speed": speed if speed is not None else 50,
                                 "brightness": brightness if brightness is not None else 100,
-                                **({"meter": meter} if meter else {})}
+                                **({"meter": meter} if meter else {}),
+                                **({"playtime": pt} if pt is not None else {})}
                         self._send(200, {"ok": True, "strip": strip_name,
                                          "active": _MOCK_FX.get(key)}, started)
                         return
                     res = apply_strip_effect(strip_name, effect, color, speed, brightness,
-                                             reverse, meter)
+                                             reverse, meter, playtime)
                     if res is None:
                         self._send(404, {"error": "unknown strip"}, started)
                         return

@@ -18,7 +18,14 @@
  * no choices means no row — a bad config hides a preference, never crashes Setup.
  */
 
-/** One selectable icon. `alias === null` is the build's default launcher icon. */
+/**
+ * One selectable icon. `alias === null` is the build's default launcher icon.
+ *
+ * DECLARE the default by OMITTING `alias` — never `alias: null`. The release build's embedded
+ * config (assets/app.config, generated at gradle time) serialized null as {} on a real APK
+ * (direct vc5, 2026-09-26); this parser correctly refuses {}, which left no default and hid
+ * the row. A missing key cannot be mangled.
+ */
 export type AppIconChoice = {
   /** Alias name as declared to the plugin (`.MainActivity<Alias>`), or null for the default icon. */
   alias: string | null;
