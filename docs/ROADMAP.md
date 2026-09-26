@@ -37,6 +37,50 @@ Each entry now carries a `✅ DONE` / `🟡 PARTIAL` / `📋 OPEN` banner with i
 - **Not in scope:** iOS dSYM / JS-map archiving; unhandled promise rejections (RN 0.86 on
   Hermes tracks them only under `__DEV__`, straight into ExceptionsManager — they never reach
   `ErrorUtils` and do not crash; `Libraries/Core/polyfillPromise.js`); any upload of any kind.
+### Decky-free: removing the Couchside panel in Decky is remembered (user report 2026-09-26)
+- **priority:** P1 · **risk:** medium (the installer's Decky hand-off runs on every update) ·
+  **affects:** `install.sh` (+ `couchside update` text, README) · **depends_on:** none
+- **Status 2026-09-26:** BUILT on `fix/installer-decky-removal` (draft PR). Shell-tested both
+  directions (`tests/test_installer_decky_panel.sh`, 71 checks) and control-checked: against the
+  pre-fix installer the removal cases fail and every never-removed case replays byte-identical.
+  **NOT hardware-verified, NOT deployed** — it reaches boxes only once couchside.tv/install.sh is
+  re-synced from a release (the phone update and `couchside update` both fetch that copy).
+- **Problem:** removing Couchside in Decky's own Settings > Plugins is safe (no `_uninstall`; the
+  service keeps running), but `decky_installed()` tests for Decky LOADER, so every plain run —
+  including `couchside update` and the app's update button — re-did the dormant `disable --now`
+  hand-off AND reinstalled the panel ("stamp matches but the plugin is gone -> reinstall").
+  `--no-decky` was not persisted.
+- **Fix:** `decky_panel_resolve` decides once per run. Stamp present + panel dir gone + Decky
+  installed ⇒ the owner removed it ⇒ write `/var/lib/couchside/no-decky-panel` (STATE_DIR, survives
+  the KI-088 /etc loss) and take the standalone branch (enabled + restarted, `DECKY_OWNS_AGENT=0`, so
+  no h3 poll and no exit-trap re-arm). `--no-decky` writes the same marker; `--decky` clears it
+  (and a stale stamp, so a failed reinstall is not re-read as "removed"). Stamp AND panel both
+  absent stays ambiguous ⇒ today's behaviour (install). Never-removed boxes: unchanged.
+- **Gate to Done:** the maintainer HW steps in the PR body on bazzite 10.1.1.60, then an
+  install.sh release + couchside.tv sync.
+- **Follow-ups (not in this change):** app copy `DECKY_PANEL_MISSING` ("Re-run the Couchside
+  installer to add the Couchside panel") should say `--decky` for boxes that opted out; a panel
+  DISABLED (not removed) in Decky still gets the dormant hand-off; the coexistence hand-off race
+  itself (inapp-update-decky-race) is untouched for boxes that keep the panel.
+### Boot session survives an OS image update (Bazzite 43 -> 44 stranding) — draft PR, branch `fix/session-os-update`
+- **priority:** P0 (a box stranded at the SDDM greeter after an OS update) · **risk:** medium
+  (touches the arm/consume lifecycle and adds an unattended display-manager restart) ·
+  **affects:** agent · **depends_on:** none
+- **Measured 2026-09-26 on the living-room Bazzite box (10.1.1.60, agent 2.9.114, pref game):**
+  the ExecStop arm at the 43 -> 44 update's shutdown wrote `Session=gamescope-session.desktop`
+  (resolved against 43); 44 ships only `gamescope-session-ogui-steam.desktop` /
+  `gamescope-session-steam.desktop` / `plasma.desktop`, so SDDM logged "Unable to find
+  autologin session entry" and came up at a greeter. On 44 `steamosctl` answers, the backend
+  flipped to steamosctl, and consume walked away from the orphaned drop-in. 44 also lost the
+  `couchmode` cap (unknown session names).
+- **Built:** 44 names in `_GAMESCOPE_SESSION_FILES` (ordered so the distro's own autologin name
+  wins); consume removes our drop-in whatever the backend (migration rule kept); arm skips and
+  disarms when `/run/ostree/staged-deployment` exists; one-shot bounded rescue that fires the
+  EXISTING stock `restart-session` action only when our drop-in named a missing session and
+  seat0 is greeter-only. Tests in `test_session_default.py` / `test_couchmode_gate.py`, with
+  controls that fail on the old code.
+- **Gate to Done:** the maintainer's hardware steps in the PR body (greeter rescue on a real
+  stranded boot, a staged-update reboot that arms nothing, couchmode back in caps on 44).
 
 > 🔨 **IN PROGRESS 2026-09-06 — branch `feat/decky-manager` (agent 2.9.105 · helper 1.1.0 · app 2.9.58).** Spec: `docs/memory/project_decky-manager.md` (adversarially reviewed, revision 2). Was: 📋 OPEN since the 2026-08-27 reconciliation.
 > **Scope built:** (a) install / repair-or-update / uninstall Decky Loader from the phone via ONE root wrapper (`/etc/couchside/couchside-decky-loader`, an install.sh heredoc) run only through a pinned oneshot template unit, started by helper verb `decky.loader` or an exact-argv sudoers grant; (b) KI-004 made explicit — a stopped loader is a STATE (`installed_stopped`, `stopped_reason:self_stop_recent`) with the existing `restart-decky` action and Repair offered, never a silent restart; (c) plugin listing (filesystem, containment-checked), per-plugin update / uninstall / reload as jobs over the loader's loopback WebSocket (own bounded client), store browse/search + icon proxy + install by store id; (d) one box-side opt-in `couchside allow-decky on|off|status` (offered once by an interactive install), marker read by helper, unit and wrapper; (e) Utilities tenant `decky`, Setup `DeckyCard`, `app/app/decky.tsx`; (f) `--mock-decky <state>` harness.

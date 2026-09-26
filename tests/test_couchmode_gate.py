@@ -74,6 +74,14 @@ STEAMOS = ["gamescope-session.desktop", "plasma.desktop", "plasmax11.desktop"]
 # sessions as STEAMOS, but the gamescope session ships as gamescope-WAYLAND
 # .desktop — the single hardcoded name refused it while it sat in Game Mode.
 LEGIONGOS = ["gamescope-wayland.desktop", "plasma.desktop", "plasmax11.desktop"]
+# Bazzite 44 (bazzite-deck 44.20260921.0 — the SAME living-room box as BAZZITE
+# above, after its 43 -> 44 image update). VERBATIM `ls /usr/share/wayland-
+# sessions`, 2026-09-26; /usr/share/xsessions is empty. gamescope-session.desktop
+# is GONE, so the pre-fix name set dropped `couchmode` from caps (the box's own
+# journal: present in the last 43 boot's caps line, absent on 44, with
+# `bigpicture` offered instead).
+BAZZITE44 = ["gamescope-session-ogui-steam.desktop",
+             "gamescope-session-steam.desktop", "plasma.desktop"]
 # Bazzite publishes GNOME variants too, and they carry "bazzite" in os-release
 # so the OLD gate said yes to them. Plasma is absent; the desktop cluster must
 # NOT depend on it (see _desktop_session_installed).
@@ -124,6 +132,38 @@ def main():
         dirs.append(setup(["gamescope-wayland.desktop"]))
         check("gamescope-wayland but NO desktop session -> refused (control)",
               cs.couchmode_available(), False)
+
+        print()
+        print("Bazzite 44 renamed its Game Mode session (43 -> 44 image update)")
+        dirs.append(setup(BAZZITE44))
+        check("bazzite 44 (ogui-steam / steam sessions) offers Couch Mode",
+              cs.couchmode_available(), True)
+        check("...and the Big Picture fallback is NOT offered alongside it",
+              cs.bigpicture_available(), False)
+        check("bazzite 44 offers the desktop cluster (in the desktop)",
+              cs.desktop_available(), True)
+        # CONTROL: the pre-fix name set on the same verbatim listing. This is
+        # the regression the box showed — couchmode gone after the update.
+        real_names = cs._GAMESCOPE_SESSION_FILES
+        try:
+            cs._GAMESCOPE_SESSION_FILES = ("gamescope-session.desktop",
+                                           "gamescope-wayland.desktop")
+            check("CONTROL: pre-fix names refuse the bazzite 44 box",
+                  cs.couchmode_available(), False)
+        finally:
+            cs._GAMESCOPE_SESSION_FILES = real_names
+        # Each 44 name counts on its own, and still needs a desktop to return to.
+        dirs.append(setup(["gamescope-session-steam.desktop", "plasma.desktop"]))
+        check("gamescope-session-steam alone + plasma -> offered",
+              cs.couchmode_available(), True)
+        dirs.append(setup(["gamescope-session-ogui-steam.desktop"]))
+        check("ogui-steam but NO desktop session -> refused (control)",
+              cs.couchmode_available(), False)
+        # SteamOS/Legion Go S unchanged by the new names (both-direction pin).
+        for label, sessions in (("steamos", STEAMOS), ("legion go s", LEGIONGOS)):
+            dirs.append(setup(sessions))
+            check("%s unchanged: still offers Couch Mode" % label,
+                  cs.couchmode_available(), True)
 
         print()
         print("...and it is the SESSIONS that decide, not the distro name")

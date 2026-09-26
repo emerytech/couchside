@@ -222,7 +222,11 @@ export const DECKY_HELPER_OUTDATED =
 export const DECKY_NEEDS_INSTALLER = 'Re-run the installer on the box to add the Decky installer.';
 export const DECKY_TV_ASKING = 'Decky may be asking on the TV.';
 export const DECKY_UNIT_DRIFTED = "Decky's updater replaced the service file — Repair re-pins it.";
-export const DECKY_PANEL_MISSING = 'Re-run the Couchside installer to add the Couchside panel.';
+// Also shown to owners who REMOVED the panel on purpose: install.sh now remembers
+// that (/var/lib/couchside/no-decky-panel) and a plain re-run will not add it back,
+// so name the opt-in flag rather than promise something a plain re-run won't do.
+export const DECKY_PANEL_MISSING =
+  'To add the Couchside panel, re-run the installer on the box with --decky: curl -fsSL https://couchside.tv/install.sh | bash -s -- --decky';
 export const DECKY_STEAM_RESTART = 'Installed. Restart Steam or reboot to see the Decky menu.';
 export const DECKY_REPAIR_STABLE = 'Repair installs the latest stable loader.';
 export const DECKY_UNINSTALL_KEEPS = 'Your plugins and settings are kept.';

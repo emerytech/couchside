@@ -7,9 +7,14 @@
 #
 # Or from a git checkout:  ./install.sh
 #
-# Flags:
+# Flags (full list: --help):
 #   --no-sudoers   skip installing /etc/sudoers.d/couchside (high-danger
 #                  actions and system journal reads will fail without it)
+#   --no-decky     turn the Decky Loader Game Mode panel OFF for this box and
+#                  REMEMBER it: couchside.service runs standalone, and later
+#                  plain runs (couchside update, the app's update) keep it off
+#   --decky        turn the panel back ON (undoes --no-decky, or a removal of
+#                  the panel from Decky's own plugin list)
 #   --uninstall    remove the agent (asks before deleting the token/sudoers)
 #   --help         this text
 set -euo pipefail
@@ -172,6 +177,20 @@ DECKY_PLUGIN_DIR="${DECKY_PLUGINS}/Couchside"
 # plugin_loader restarts DECKY ITSELF, reloading every OTHER plugin the user
 # has, so it must not happen for no reason (KI-037).
 DECKY_STAMP="/etc/couchside/decky-plugin.sha256"
+# The owner's "no Couchside panel in Decky on this box" choice, PERSISTED.
+# Written by --no-decky, or when this installer finds the panel IT installed
+# (DECKY_STAMP present) gone from Decky's plugin dir while Decky Loader is still
+# installed -- i.e. the owner removed it from Decky's own Settings > Plugins
+# list. Removing it there is otherwise harmless (the plugin has no _uninstall;
+# couchside.service keeps running), but every plain run used to put it straight
+# back and re-do the dormant hand-off to it -- including `couchside update` and
+# the app's update button, which pass no flags. While this file exists every run
+# skips the panel and runs couchside.service STANDALONE. --decky removes it.
+# Lives in the user-owned STATE_DIR, NOT /etc/couchside: a SteamOS update has
+# been observed to drop /etc/couchside wholesale while /var/lib/couchside
+# survived (KI-088), and losing THIS file would silently reinstall the panel on
+# the next update. Presence is the whole gate; the text inside is for a human.
+DECKY_PANEL_OFF="${STATE_DIR}/no-decky-panel"
 # What actually proves Decky Loader is INSTALLED. Its own uninstaller removes
 # the unit and homebrew/services/PluginLoader but LEAVES homebrew/plugins behind
 # (see decky-loader dist/uninstall.sh), so `[ -d "$DECKY_PLUGINS" ]` reports a
@@ -184,6 +203,83 @@ DECKY_LOADER="${HOME}/homebrew/services/PluginLoader"
 
 decky_installed() {
     [ -f "$DECKY_UNIT" ] || [ -e "$DECKY_LOADER" ]
+}
+
+# Record the owner's panel opt-out (see DECKY_PANEL_OFF). Written as the desktop
+# user into the user-owned STATE_DIR (section e0 chowns it on every run). Never
+# fatal: a failed write is reported and this run still skips the panel.
+decky_panel_mark_off() { # $1 = how the owner turned it off (for the human reading the file)
+    if { printf '%s\n' \
+            "# Written by install.sh: the Couchside panel for Decky Loader is OFF on this box" \
+            "# ($1). couchside.service runs on its own and updates will not reinstall" \
+            "# the panel. Turn it back on with:" \
+            "#   curl -fsSL https://couchside.tv/install.sh | bash -s -- --decky" \
+            > "$DECKY_PANEL_OFF"; } 2>/dev/null; then
+        return 0
+    fi
+    note "couldn't save that choice to $DECKY_PANEL_OFF; this run still skips the panel."
+    return 0
+}
+
+# Decide ONCE per run whether this install manages the Couchside Decky panel
+# (DECKY_PANEL=1: install/refresh it and hand the agent to the plugin, when Decky
+# Loader is installed) or runs couchside.service standalone (DECKY_PANEL=0).
+# First match wins:
+#   --decky           opt back in: drop the marker, and drop the stamp when the
+#                     panel is not on disk (else a reinstall that fails -- e.g.
+#                     offline -- would read as "removed" on the next run and
+#                     silently opt the owner back out) -> 1
+#   --no-decky        persist the opt-out -> 0
+#   marker present    the owner already chose -> 0
+#   Decky installed + stamp present + panel dir gone
+#                     we installed it and the owner removed it in Decky: record
+#                     that and do NOT reinstall it -> 0
+#   anything else     today's behaviour -> 1. That includes stamp AND panel both
+#                     absent, which is "never installed" OR "removed, then
+#                     /etc/couchside was lost" (KI-088) and cannot be told apart.
+# Only a box WITH Decky Loader can have had the panel removed through it, so the
+# removal inference is gated on decky_installed; the flags persist regardless.
+decky_panel_resolve() {
+    DECKY_PANEL=1
+    if [ "${DECKY_OPTIN:-0}" -eq 1 ]; then
+        sudo rm -f "$DECKY_PANEL_OFF" 2>/dev/null || true
+        if ! sudo test -d "$DECKY_PLUGIN_DIR"; then
+            sudo rm -f "$DECKY_STAMP" 2>/dev/null || true
+        fi
+        if sudo test -e "$DECKY_PANEL_OFF"; then
+            note "--decky: couldn't remove $DECKY_PANEL_OFF; later updates will still skip the panel."
+        elif decky_installed; then
+            note "--decky: the Couchside panel for Decky Loader is ON for this box again."
+        else
+            note "--decky: panel ON, but Decky Loader isn't installed; it is added on the first run after it is."
+        fi
+        return 0
+    fi
+    local why=""
+    if [ "${NO_DECKY:-0}" -eq 1 ]; then
+        DECKY_PANEL=0
+        decky_panel_mark_off "you ran install.sh --no-decky"
+        why="--no-decky: Couchside panel for Decky Loader OFF, and remembered for later updates."
+    elif sudo test -e "$DECKY_PANEL_OFF"; then
+        DECKY_PANEL=0
+        # Stay quiet about a Decky panel on a box that has no Decky.
+        decky_installed || return 0
+        why="Couchside panel for Decky Loader: OFF on this box (you chose that earlier)."
+    elif decky_installed && sudo test -s "$DECKY_STAMP" && ! sudo test -d "$DECKY_PLUGIN_DIR"; then
+        DECKY_PANEL=0
+        decky_panel_mark_off "you removed the Couchside plugin in Decky Loader"
+        why="The Couchside panel was removed from Decky Loader, so it will NOT be reinstalled."
+    else
+        return 0
+    fi
+    note "$why"
+    note "couchside.service runs on its own (choice saved in $DECKY_PANEL_OFF)."
+    if sudo test -d "$DECKY_PLUGIN_DIR"; then
+        note "The panel is still in Decky's plugin list and will no longer be updated from"
+        note "here: remove it in Decky > Settings > Plugins, or re-run with --decky to keep it."
+    fi
+    note "Want the panel back?  curl -fsSL https://couchside.tv/install.sh | bash -s -- --decky"
+    return 0
 }
 
 # Decky Loader MANAGER (agent 2.9.105+, project_decky-manager.md §4): the
@@ -226,6 +322,8 @@ OLD_INSTALLS=(
 NO_SUDOERS=0
 UNINSTALL=0
 NO_DECKY=0
+DECKY_OPTIN=0   # --decky: undo a persisted panel opt-out (see DECKY_PANEL_OFF)
+DECKY_PANEL=1   # resolved once per run by decky_panel_resolve
 NO_OPEN=0
 SHOW_TOKEN=0
 FRESH_TOKEN=0   # flipped to 1 only on a truly fresh token mint (see below)
@@ -234,12 +332,19 @@ usage() {
     cat <<'USAGE'
 Couchside box agent installer. Run ON the box as your desktop user.
 
-Usage: install.sh [--no-sudoers] [--no-decky] [--screensaver] [--no-screensaver] [--no-open] [--uninstall] [--help]
+Usage: install.sh [--no-sudoers] [--no-decky|--decky] [--screensaver] [--no-screensaver] [--no-open] [--uninstall] [--help]
 
   (no flags)        install/upgrade the agent (idempotent, safe to re-run)
   --no-sudoers      skip installing /etc/sudoers.d/couchside (high-danger
                     actions and system journal reads will fail without it)
-  --no-decky        skip the Decky Loader Game Mode panel even if Decky is found
+  --no-decky        turn the Decky Loader Game Mode panel OFF for this box and
+                    remember it (saved in /var/lib/couchside/no-decky-panel):
+                    couchside.service runs on its own, and later plain runs
+                    (couchside update, the app's update button) keep it off.
+                    Removing Couchside in Decky's Settings > Plugins does the
+                    same: the next run notices and remembers it.
+                    With --uninstall: leave the panel in place.
+  --decky           turn the panel back ON (undoes --no-decky or a removal)
   --screensaver     install the Couchside screensaver add-on without asking
   --no-screensaver  skip the Couchside screensaver add-on
   --player          install the Couchside Player add-on (EXPERIMENTAL)
@@ -268,6 +373,7 @@ for arg in "$@"; do
     case "$arg" in
         --no-sudoers)     NO_SUDOERS=1 ;;
         --no-decky)       NO_DECKY=1 ;;
+        --decky)          DECKY_OPTIN=1 ;;
         --screensaver)    COUCHSIDE_SCREENSAVER=1 ;;
         --no-screensaver) COUCHSIDE_SCREENSAVER=0 ;;
         --player)         COUCHSIDE_PLAYER=1 ;;
@@ -279,6 +385,11 @@ for arg in "$@"; do
         *) echo "error: unknown flag: $arg" >&2; usage >&2; exit 2 ;;
     esac
 done
+# Reject rather than guess which one was meant.
+if [ "$NO_DECKY" -eq 1 ] && [ "$DECKY_OPTIN" -eq 1 ]; then
+    echo "error: --decky and --no-decky contradict each other; pass one" >&2
+    exit 2
+fi
 # WANT_SCREENSAVER is resolved below, once ask_yn is defined (see the gate).
 
 say()  { echo "==> $*"; }
@@ -952,6 +1063,30 @@ fi
 # terminal pairing QR works without qrencode. Its absence just prints the URL.
 if [ -f "$WORK_DIR/qr.py" ] && python3 -m py_compile "$WORK_DIR/qr.py" 2>/dev/null; then
     install -m 0755 "$WORK_DIR/qr.py" "$INSTALL_DIR/qr.py"
+fi
+
+# --no-decky / --decky on the passwordless fast path (review finding, PR #558):
+# they are CHOICES, not privileged work. The marker lives in the user-owned
+# STATE_DIR, so save them here -- the fast path below exits long before
+# decky_panel_resolve runs, and silently dropping the flag would leave the owner
+# believing it took. The panel itself is only added or removed by the next full
+# (privileged) install, so say that too.
+if [ "$CAN_PRIVILEGE" -eq 0 ]; then
+    if [ "$NO_DECKY" -eq 1 ]; then
+        decky_panel_mark_off "you ran install.sh --no-decky"
+        if [ -e "$DECKY_PANEL_OFF" ]; then
+            note "--no-decky: saved; later updates keep the Couchside panel off. A panel"
+            note "already in Decky's list stays until you remove it there (Decky > Settings > Plugins)."
+        fi
+    elif [ "$DECKY_OPTIN" -eq 1 ]; then
+        rm -f "${DECKY_PANEL_OFF:?}" 2>/dev/null || true
+        if [ -e "$DECKY_PANEL_OFF" ]; then
+            note "--decky: couldn't remove $DECKY_PANEL_OFF; re-run the installer from a terminal."
+        else
+            note "--decky: saved; the Couchside panel is added on the next full install (run the"
+            note "installer from a terminal on the box: curl -fsSL https://couchside.tv/install.sh | bash)."
+        fi
+    fi
 fi
 
 # ---------------------------------------------------------------------------
@@ -1804,7 +1939,14 @@ sudo systemctl daemon-reload
 # so the two installs don't fight over the file + port; the plugin block below
 # (or the plugin itself) activates it. Without Decky, this service is the sole
 # supervisor and is enabled + started normally.
-if [ "$NO_DECKY" -eq 0 ] && decky_installed; then
+#
+# UNLESS the owner has turned the panel off (decky_panel_resolve: --no-decky, or
+# the panel we installed has since been removed in Decky itself; persisted in
+# DECKY_PANEL_OFF). Then there is no plugin to hand the agent to, so this is a
+# plain box: enabled + restarted right here. No dormant gap, no h3 poll, no
+# exit-trap re-arm -- all three key off DECKY_OWNS_AGENT, which stays 0.
+decky_panel_resolve
+if [ "$DECKY_PANEL" -eq 1 ] && decky_installed; then
     DECKY_OWNS_AGENT=1
     sudo systemctl disable --now couchside.service 2>/dev/null || true
     note "Decky Loader detected → standalone couchside.service left DORMANT (the Couchside plugin manages the agent)."
@@ -2161,7 +2303,16 @@ PY
     # Decky-aware (it refreshes the plugin and leaves the standalone service
     # dormant for the plugin to run), so `couchside update` still does the right
     # thing — it just updates the plugin rather than the standalone service.
-    if [ -d "$HOME/homebrew/plugins" ]; then
+    # UNLESS the owner turned the panel off: the installer remembers that in
+    # /var/lib/couchside/no-decky-panel and runs the standalone service, so say
+    # that instead of promising a plugin update. The plugin line needs Decky
+    # Loader itself AND our panel on disk -- a bare ~/homebrew/plugins is left
+    # behind by Decky's own uninstaller and proves neither.
+    if [ -e /var/lib/couchside/no-decky-panel ]; then
+      echo "The Couchside panel for Decky Loader is OFF on this box — updating the standalone agent."
+      echo "(Want the panel back?  curl -fsSL ${INSTALL_URL} | bash -s -- --decky)"
+    elif [ -d "$HOME/homebrew/plugins/Couchside" ] \
+         && { [ -f /etc/systemd/system/plugin_loader.service ] || [ -e "$HOME/homebrew/services/PluginLoader" ]; }; then
       echo "Decky Loader detected — updating the Couchside plugin (it owns the agent on this box)."
     fi
     echo "Updating from ${INSTALL_URL} ..."
@@ -2510,6 +2661,8 @@ couchside — manage the Couchside agent on this box
   couchside pair            show the pairing QR on this box's screen
   couchside version         print the installed agent version
   couchside status          show the agent service status
+Decky Loader panel off (remembered across updates) / back on:
+  curl -fsSL https://couchside.tv/install.sh | bash -s -- --no-decky   (or --decky)
 USAGE
     ;;
   *)
@@ -2862,9 +3015,11 @@ fi
 # the Quick Access Menu without the plugin store. The panel is a convenience on
 # top of the agent, not the agent itself, so nothing here is allowed to abort
 # the install: the whole thing runs inside an `if` condition (set -e is
-# suspended there) and any failure just prints a note and moves on. --no-decky
-# skips it entirely.
-if [ "$NO_DECKY" -eq 0 ] && decky_installed; then
+# suspended there) and any failure just prints a note and moves on. A panel the
+# owner turned off (DECKY_PANEL=0: --no-decky, or removed in Decky; see
+# decky_panel_resolve) skips it entirely -- not installed, not updated, and an
+# existing copy is not touched.
+if [ "$DECKY_PANEL" -eq 1 ] && decky_installed; then
     say "Decky Loader detected: installing the Couchside Game Mode panel"
     decky_tmp="$(mktemp -d)"
     # Decky's plugin dir is root-owned (same as a store install), so place the
@@ -2941,8 +3096,11 @@ if [ "$NO_DECKY" -eq 0 ] && decky_installed; then
     #
     # The stamp is the VERIFIED TARBALL's checksum rather than a version string:
     # it needs no parsing, and it also catches a republished same-version build.
-    # Guarded on the plugin dir still existing, so a user who deleted the plugin
-    # gets it back even when the stamp matches.
+    # Guarded on the plugin dir still existing: a matching stamp with no panel on
+    # disk is never "up to date". A panel the OWNER removed in Decky no longer
+    # gets reinstalled through this: decky_panel_resolve sees stamp-without-panel
+    # first, records the opt-out and turns this whole block off. (--decky, the one
+    # way back in, drops such a stale stamp before we get here.)
     decky_stamp_of() {
         # The hash line for our tarball, as already verified above.
         awk '$2 == "Couchside.tar.gz" || $2 == "*Couchside.tar.gz" {print $1}' \
@@ -2954,7 +3112,8 @@ if [ "$NO_DECKY" -eq 0 ] && decky_installed; then
         [ -n "$want" ] || return 1
         have="$(sudo cat "$DECKY_STAMP" 2>/dev/null)" || return 1
         [ "$want" = "$have" ] || return 1
-        # Stamp matches but the plugin is gone (user removed it) -> reinstall.
+        # Stamp matches but the plugin dir is gone -> not up to date. (An owner
+        # removal never reaches here; decky_panel_resolve caught it above.)
         sudo test -d "$DECKY_PLUGIN_DIR" || return 1
         return 0
     }
