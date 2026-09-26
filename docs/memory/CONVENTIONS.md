@@ -104,6 +104,28 @@ and the frozen `_DM_CONF_DIRS` table (`sddm`, `plasmalogin`) — conf dir, drop-
 only itself; the symlink proves which manager runs. No detected manager (or no grant for
 the detected one) = no capability, no action — never a fallback to SDDM.
 
+### Anything written for the NEXT boot is resolved against the NEXT image — or not written
+
+The boot-session drop-in is armed at shutdown from the RUNNING image's session files. On
+the reboot that applies a staged ostree update, "the next boot" is a different image:
+Bazzite 43 -> 44 (living-room box, 2026-09-26) armed `gamescope-session.desktop`, 44 does
+not ship it, SDDM failed autologin and parked the TV at a greeter. Rules since then:
+
+- **A staged OS update (`_OSTREE_STAGED_DEPLOYMENT`, `/run/ostree/staged-deployment`)
+  means arm writes nothing** and disarms; the platform's own autologin decides that one
+  boot, and the stored preference re-arms from the next shutdown on the new image.
+  (`ostree-finalize-staged` runs after our ExecStop, so the marker is still present then.)
+- **Cleanup keys on OWNERSHIP, not on the current backend.** consume removes *our* drop-in
+  whenever it carries a Session=, even when the backend has since become steamosctl — an
+  update can flip the backend and orphan a file we wrote under the old one.
+- **A rescue reuses an existing allowlisted action, never a new command.** The stranded-box
+  rescue fires the stock `restart-session` argv only when our drop-in named a positively
+  missing session, it was verified cleared, the platform's merged config names an installed
+  session, and seat0 is greeter-only on two consecutive `loginctl` reads. Unknown at any
+  step = do nothing.
+- Every session filename in `_GAMESCOPE_SESSION_FILES` is a measured entry, and its ORDER is
+  the resolver's policy (the distro's own autologin name must win).
+
 ### Don't fight a shared device — stand down on a readback-survival check
 
 When the agent animates a device the platform ALSO writes, cooperate instead of
