@@ -22246,6 +22246,147 @@ def _active_output():
     return (ext or outs)[0]
 
 
+# ---- "What to play next" recommendation engine (READ-ONLY, LAN, local data) ---
+# Ranks INSTALLED Steam games for tonight from signals that live ON THE BOX only:
+# total hours and days-since-last-played (Steam's own localconfig.vdf). No cloud,
+# no accounts, no genre/metadata API -- honest about what a local box can know. The
+# route is a bearer-gated GET that computes and returns picks; it NEVER launches
+# anything (the app uses the existing steam-launch path for that), so no client
+# value becomes a command, path, or id here. Rides the existing `steam` cap.
+def _reco_ago(days):
+    """A human 'time since' from a day count (float), or 'today'."""
+    if days is None:
+        return "never played"
+    if days < 1:
+        return "today"
+    if days < 2:
+        return "yesterday"
+    if days < 14:
+        return "%d days ago" % int(days)
+    if days < 60:
+        return "%d weeks ago" % int(days / 7)
+    return "%d months ago" % max(1, int(days / 30))
+
+
+def _reco_score(hours, days):
+    """(score, bucket, tag, reason) for ONE game from local signals only -- total
+    `hours` and `days` since last played (None = never). Higher score = better
+    'play next'. Pure + deterministic (unit-tested, observe every bucket)."""
+    h = round(hours, 1)
+    if days is not None and days <= 4 and hours >= 0.5:
+        return (92.0 - days * 4 + min(hours, 50) * 0.2, "streak", "On a streak",
+                "%gh in · last played %s — pick the run back up." % (h, _reco_ago(days)))
+    if hours >= 2 and days is not None and 7 <= days <= 75:
+        return (72.0 - abs(days - 21) * 0.25, "unfinished", "Unfinished",
+                "%gh in · untouched for %s — unfinished business." % (h, _reco_ago(days)))
+    if hours > 30 and (days is None or days > 90):
+        return (62.0 + min(hours, 120) * 0.1, "rediscover", "Rediscover",
+                "You loved this — %gh, %s." % (h, _reco_ago(days)))
+    if hours >= 15:
+        return (50.0 + min(hours, 120) * 0.15, "comfort", "Comfort game",
+                "Your go-to — %gh and counting." % h)
+    return (40.0 + hours * 0.2, "backlog", "Back to it",
+            "%gh in%s." % (h, (" · " + _reco_ago(days)) if days is not None else ""))
+
+
+def _reco_rank(playtime, installed, now, limit=5):
+    """Rank INSTALLED games for 'what to play next'. `playtime` = {appid: {playtime_min,
+    last_played}}, `installed` = set of appid strings, `now` = wall clock. Returns
+    {"primary": pick|None, "alternates": [...], "counts": {...}} where a pick is
+    name-less (the caller attaches the name). Only INSTALLED games are offered (you
+    can launch them now); alternates are DIVERSIFIED across buckets so the row shows
+    varied angles. Pure + deterministic. §11: observe both a strong and empty case."""
+    cands = []
+    for appid, rec in (playtime or {}).items():
+        if appid not in installed:
+            continue                       # only recommend what can launch right now
+        hours = max(0.0, (rec.get("playtime_min") or 0) / 60.0)
+        lp = rec.get("last_played") or 0
+        days = (now - lp) / 86400.0 if lp > 0 else None
+        score, bucket, tag, reason = _reco_score(hours, days)
+        cands.append({"appid": str(appid), "hours": round(hours, 1),
+                      "days_since": None if days is None else int(days),
+                      "installed": True, "score": round(score, 1),
+                      "bucket": bucket, "tag": tag, "reason": reason})
+    for appid in installed:
+        if appid not in playtime:          # installed but never launched -> "fresh"
+            cands.append({"appid": str(appid), "hours": 0.0, "days_since": None,
+                          "installed": True, "score": 52.0, "bucket": "fresh",
+                          "tag": "Never played", "reason": "Installed but never launched — give it a shot."})
+    cands.sort(key=lambda c: (c["score"], c["appid"]), reverse=True)
+    counts = {}
+    for c in cands:
+        counts[c["bucket"]] = counts.get(c["bucket"], 0) + 1
+    if not cands:
+        return {"primary": None, "alternates": [], "counts": counts}
+    primary = cands[0]
+    seen = {primary["bucket"]}
+    alts = []
+    for c in cands[1:]:                    # one best-of per OTHER bucket first
+        if len(alts) >= limit:
+            break
+        if c["bucket"] not in seen:
+            alts.append(c)
+            seen.add(c["bucket"])
+    for c in cands[1:]:                    # then fill remaining slots by score
+        if len(alts) >= limit:
+            break
+        if c is not primary and c not in alts:
+            alts.append(c)
+    return {"primary": primary, "alternates": alts[:limit], "counts": counts}
+
+
+def _recommend_payload(limit=5):
+    """The /api/recommend body: analyse local Steam play history + installs and
+    return ranked picks with names. `available: False` when there is nothing to
+    recommend (no Steam, or no installed game with any signal). Read-only."""
+    now = int(time.time())
+    root = _steam_root()
+    if root is None:
+        return {"available": False, "generated": now, "primary": None, "alternates": [], "counts": {}}
+    playtime = _steam_playtime(root)
+    installed = _installed_appids(root)
+    names = _steam_appinfo_names()
+    ranked = _reco_rank(playtime, installed, time.time(), limit)
+
+    def _named(p):
+        if p is None:
+            return None
+        q = dict(p)
+        try:
+            q["name"] = names.get(int(p["appid"])) or ("App %s" % p["appid"])
+        except (ValueError, TypeError):
+            q["name"] = "App %s" % p["appid"]
+        return q
+
+    return {"available": ranked["primary"] is not None, "generated": now,
+            "primary": _named(ranked["primary"]),
+            "alternates": [_named(a) for a in ranked["alternates"]],
+            "counts": ranked["counts"]}
+
+
+def mock_recommend():
+    """Illustrative /api/recommend body for --mock (the web harness)."""
+    now = int(time.time())
+    def pick(appid, name, hours, days, tag, bucket, reason, score):
+        return {"appid": appid, "name": name, "hours": hours, "days_since": days,
+                "installed": True, "score": score, "bucket": bucket, "tag": tag, "reason": reason}
+    return {"available": True, "generated": now,
+            "primary": pick("1145360", "Hades", 22.4, 1, "On a streak", "streak",
+                            "22.4h in · last played yesterday — pick the run back up.", 91.5),
+            "alternates": [
+                pick("588650", "Dead Cells", 27.1, 5, "Comfort game", "comfort",
+                     "Your go-to — 27.1h and counting.", 63.0),
+                pick("632470", "Disco Elysium", 11.2, 24, "Unfinished", "unfinished",
+                     "11.2h in · untouched for 3 weeks — unfinished business.", 71.3),
+                pick("367520", "Hollow Knight", 41.0, 130, "Rediscover", "rediscover",
+                     "You loved this — 41h, 4 months.", 66.1),
+                pick("2231450", "Pizza Tower", 0.0, None, "Never played", "fresh",
+                     "Installed but never launched — give it a shot.", 52.0),
+            ],
+            "counts": {"streak": 1, "comfort": 3, "unfinished": 2, "rediscover": 1, "fresh": 4}}
+
+
 def _gaming_payload():
     """The /api/gaming body — every field independently optional; omit anything
     that could not be read rather than emit a null the app must special-case.
@@ -25843,6 +25984,16 @@ class Handler(BaseHTTPRequestHandler):
                     self._send(404, {"error": "no gaming context"}, started)
                 else:
                     data = mock_gaming() if self.mock else _gaming_payload()
+                    self._send(200, data, started)
+            elif path == "/api/recommend":
+                # "What to play next" — ranks INSTALLED Steam games from local play
+                # history (hours + recency). READ-ONLY: it recommends, it never
+                # launches (the app uses the existing steam-launch path). Probe-and-
+                # appear: 404 without Steam so old/non-gaming boxes hide the feature.
+                if not self.mock and _steam_root() is None:
+                    self._send(404, {"error": "no steam"}, started)
+                else:
+                    data = mock_recommend() if self.mock else _recommend_payload()
                     self._send(200, data, started)
             elif path == "/api/stream-host":
                 # Steam Remote Play with this box as the HOST (phase 4a, detect
