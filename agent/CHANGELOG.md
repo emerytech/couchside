@@ -18,6 +18,61 @@ the same thing regardless of what actually changed.
 Write for the person holding the phone, not for the commit log. They are
 deciding whether to press "Update now" on a machine across the room.
 
+## 2.9.116
+
+**Your Steam Deck keeps Couchside through SteamOS updates.** A SteamOS update throws away
+most changes to the system folder, and that has been taking Couchside's pairing token file,
+its controller rules and its sudo permissions with it, while the service itself kept
+running with pieces missing. The box now tells SteamOS to keep those files, so the next
+update leaves them alone. If an earlier update already took some, the app's Console shows
+"Box installation is damaged" with the one command that puts them back, and running that
+command keeps your existing phone pairings.
+
+**Safer handling of the pairing key on the box.** The installer no longer lets a file
+planted in the service's own state folder steer where it writes the pairing key. A box
+installed with `--no-sudoers` now gets a repair command that keeps that choice.
+
+## 2.9.115
+
+**Your box comes back to Game Mode after a Bazzite update.** On boxes set to "Boots into:
+Game Mode" in Couchside, updating to Bazzite 44 could leave the TV sitting at a login
+screen: the setting still pointed at Game Mode's old name, which Bazzite 44 renamed. The
+service now notices that on its own, clears it, and brings the box back to Game Mode, and it
+no longer changes that setting while an OS update is waiting to install. Couch Mode works on
+Bazzite 44 again too.
+
+**Removing the Couchside panel from Decky now sticks.** If you remove Couchside from Decky's
+plugin list, updates no longer put it back, and the box keeps running Couchside on its own.
+Want it back later? Run the installer on the box with `--decky`.
+
+## 2.9.114
+
+**The box no longer goes dark if its pairing key goes missing.** After a SteamOS
+3.8.28 update, at least one Steam Deck lost the file that holds its pairing key, and
+the box service refused to start, so the phone just saw the box as offline. The
+service now keeps a backup copy of the key next to its other settings, in a place
+that survived that update, and uses it if the original is ever lost, so your phones
+stay paired. Existing boxes make the copy on their own the next time the service
+starts. If both are ever missing, the service still comes up and shows a fresh
+pairing QR (`couchside pair`) instead of staying dark.
+
+## 2.9.113
+
+**Security fix for the box's own local pages.** The pages the box shows only to
+itself — the pairing QR, the update screen, and the new on-box quick panel — first
+check that the request really came from the box, not from somewhere on your
+network. That check accepted a specially crafted web address that merely *looked*
+local (it began with "127."); it now requires a genuinely local address. The only
+way to reach this was a web page loaded in a browser running on the box itself,
+and we have no indication anyone did — but please update. The Windows agent
+(0.4.12-win) gets the same fix.
+
+**Groundwork for a Steam Deck quick panel.** The box can now show a small
+Couchside panel on its own screen in Game Mode — live temperatures, memory and
+uptime plus the same quick actions as the phone — without Decky and without
+touching Steam's own interface. Nothing new appears in the app yet; a later app
+update will add the button that opens it.
+
 ## 2.9.111
 
 **Arm your controller to wake the box.** If a controller (or its dongle) can wake

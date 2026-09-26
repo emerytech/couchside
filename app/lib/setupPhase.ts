@@ -79,6 +79,28 @@ export function supportsPinPairing(version: string): boolean {
     : cmpVersion(v, PIN_PAIR_MIN_LINUX) >= 0;
 }
 
+/** First Linux agent that serves the on-box quick panel (`POST /api/panel`). */
+export const BOX_PANEL_MIN_LINUX = '2.9.113';
+
+/**
+ * Can this agent show the Couchside quick panel on the box's own screen?
+ *
+ * Same shape and the same DEGRADE-CLOSED rule as supportsPinPairing: empty,
+ * unlearned or unparseable answers false, so the Watch tab hides the button
+ * rather than offering one that 404s. The version comes from settings.version,
+ * which useCapsSync re-learns from every status poll — so a box updated after
+ * pairing grows the button within one poll, no re-pair needed.
+ *
+ * Windows answers false on purpose: the Windows agent has no /api/panel (the
+ * panel rides the Linux Player tile's Game-Mode kiosk launch).
+ */
+export function supportsBoxPanel(version?: string): boolean {
+  const v = (version ?? '').trim();
+  if (!v || !/^\d/.test(v)) return false;
+  if (isWindowsAgent(v)) return false;
+  return cmpVersion(v, BOX_PANEL_MIN_LINUX) >= 0;
+}
+
 /**
  * Is this the Windows agent? The Windows build is the ONLY one that carries the
  * `-win` suffix on its version string (agent/win VERSION = "0.4.x-win"); every

@@ -16,6 +16,88 @@ Each entry now carries a `✅ DONE` / `🟡 PARTIAL` / `📋 OPEN` banner with i
 
 ## 🔨 In Progress
 
+### SteamOS keeps dropping our /etc files — keep-list + install_health + installer repair (KI-088 follow-up, 2026-09-26)
+- **priority:** P1 · **risk:** medium (touches install.sh's root section) · **affects:** agent, install.sh, app · **depends_on:** agent 2.9.114 token mirror (shipped)
+- **Status:** 🔨 draft PR on `feat/install-health`. Not merged, not released.
+- **Why:** a SteamOS image update drops every `/etc` change that is not on Valve's keep-list. The
+  Deck OLED lost `/etc/couchside`, the udev rules, modules-load and the sudoers grant, while the
+  unit survived. Mechanism verified on the Deck (read-only) against Valve's source:
+  `docs/memory/steamos-etc-persistence.md`.
+- **Built:** install.sh (f4) SteamOS keep-list drop-in; (g1) install manifest; unconditional
+  re-write confirmed and test-pinned; (d) mirror now beats pre-rename tokens; `couchside update`
+  reinstalls a damaged box; quick-path damage note. Agent `install_health` on `/api/status`,
+  additive (not a cap). App Console banner with the one-liner + Copy.
+- **Gate to Done:** release the agent + install.sh, re-run the installer on the Deck (restores
+  everything + writes the drop-in), then apply the NEXT SteamOS update and confirm the footprint
+  survives. Follow-ups: Decky plugin writes the same drop-in + manifest; move the SteamOS helper
+  fallback out of the user-owned `/var/lib/couchside` (task chip filed).
+
+### App crash export — local error log, Copy/Share, native-crash help, source-map archive (field report 2026-09-26)
+- **priority:** P1 (a paying direct-edition user cannot report a crash) · **risk:** low-medium
+  (sits in the path of every JS fatal — chained, never swallows, control-tested) · **affects:**
+  app + build recipe (no agent change) · **depends_on:** none
+- **Origin:** a direct-edition APK user on Android 15 reported intermittent crashes while
+  spamming buttons on the Pad tab's Remote mode. There was no way to get a crash out without
+  adb: the crash screen showed 4 lines of `error.message`, nothing persisted, the Pad
+  diagnostics "copy" only vibrated, and no APK had an archived Hermes source map.
+- **Built (branch `feat/app-crash-export`, DRAFT PR):** crash screen Copy details + Show
+  details; local ring buffer of the last 20 errors (`lib/crashLog.ts` / `crashLogCore.ts`) fed
+  by a chained `ErrorUtils` handler (sync SecureStore write before the fatal proceeds) and the
+  error boundary; a "closed unexpectedly" session marker for native deaths; next-launch banner
+  (once per crash); Setup › Account › APP ERROR LOG with Copy / Share / Clear and `adb logcat -b
+  crash` help naming the package id; Pad diagnostics Copy that copies;
+  `scripts/android-local-build.sh` archiving `<artifact>-vc<N>.map` next to the APK.
+- **Gate to Done:** on a real Android release build — a forced JS fatal lands in the log and the
+  banner offers it on relaunch; a real native crash yields the inferred exit entry; the map from
+  the build box symbolicates a stack copied from the app (none of these are device-verified yet).
+- **Not in scope:** iOS dSYM / JS-map archiving; unhandled promise rejections (RN 0.86 on
+  Hermes tracks them only under `__DEV__`, straight into ExceptionsManager — they never reach
+  `ErrorUtils` and do not crash; `Libraries/Core/polyfillPromise.js`); any upload of any kind.
+### Decky-free: removing the Couchside panel in Decky is remembered (user report 2026-09-26)
+- **priority:** P1 · **risk:** medium (the installer's Decky hand-off runs on every update) ·
+  **affects:** `install.sh` (+ `couchside update` text, README) · **depends_on:** none
+- **Status 2026-09-26:** BUILT on `fix/installer-decky-removal` (draft PR). Shell-tested both
+  directions (`tests/test_installer_decky_panel.sh`, 71 checks) and control-checked: against the
+  pre-fix installer the removal cases fail and every never-removed case replays byte-identical.
+  **NOT hardware-verified, NOT deployed** — it reaches boxes only once couchside.tv/install.sh is
+  re-synced from a release (the phone update and `couchside update` both fetch that copy).
+- **Problem:** removing Couchside in Decky's own Settings > Plugins is safe (no `_uninstall`; the
+  service keeps running), but `decky_installed()` tests for Decky LOADER, so every plain run —
+  including `couchside update` and the app's update button — re-did the dormant `disable --now`
+  hand-off AND reinstalled the panel ("stamp matches but the plugin is gone -> reinstall").
+  `--no-decky` was not persisted.
+- **Fix:** `decky_panel_resolve` decides once per run. Stamp present + panel dir gone + Decky
+  installed ⇒ the owner removed it ⇒ write `/var/lib/couchside/no-decky-panel` (STATE_DIR, survives
+  the KI-088 /etc loss) and take the standalone branch (enabled + restarted, `DECKY_OWNS_AGENT=0`, so
+  no h3 poll and no exit-trap re-arm). `--no-decky` writes the same marker; `--decky` clears it
+  (and a stale stamp, so a failed reinstall is not re-read as "removed"). Stamp AND panel both
+  absent stays ambiguous ⇒ today's behaviour (install). Never-removed boxes: unchanged.
+- **Gate to Done:** the maintainer HW steps in the PR body on bazzite 10.1.1.60, then an
+  install.sh release + couchside.tv sync.
+- **Follow-ups (not in this change):** app copy `DECKY_PANEL_MISSING` ("Re-run the Couchside
+  installer to add the Couchside panel") should say `--decky` for boxes that opted out; a panel
+  DISABLED (not removed) in Decky still gets the dormant hand-off; the coexistence hand-off race
+  itself (inapp-update-decky-race) is untouched for boxes that keep the panel.
+### Boot session survives an OS image update (Bazzite 43 -> 44 stranding) — draft PR, branch `fix/session-os-update`
+- **priority:** P0 (a box stranded at the SDDM greeter after an OS update) · **risk:** medium
+  (touches the arm/consume lifecycle and adds an unattended display-manager restart) ·
+  **affects:** agent · **depends_on:** none
+- **Measured 2026-09-26 on the living-room Bazzite box (10.1.1.60, agent 2.9.114, pref game):**
+  the ExecStop arm at the 43 -> 44 update's shutdown wrote `Session=gamescope-session.desktop`
+  (resolved against 43); 44 ships only `gamescope-session-ogui-steam.desktop` /
+  `gamescope-session-steam.desktop` / `plasma.desktop`, so SDDM logged "Unable to find
+  autologin session entry" and came up at a greeter. On 44 `steamosctl` answers, the backend
+  flipped to steamosctl, and consume walked away from the orphaned drop-in. 44 also lost the
+  `couchmode` cap (unknown session names).
+- **Built:** 44 names in `_GAMESCOPE_SESSION_FILES` (ordered so the distro's own autologin name
+  wins); consume removes our drop-in whatever the backend (migration rule kept); arm skips and
+  disarms when `/run/ostree/staged-deployment` exists; one-shot bounded rescue that fires the
+  EXISTING stock `restart-session` action only when our drop-in named a missing session and
+  seat0 is greeter-only. Tests in `test_session_default.py` / `test_couchmode_gate.py`, with
+  controls that fail on the old code.
+- **Gate to Done:** the maintainer's hardware steps in the PR body (greeter rescue on a real
+  stranded boot, a staged-update reboot that arms nothing, couchmode back in caps on 44).
+
 > 🔨 **IN PROGRESS 2026-09-06 — branch `feat/decky-manager` (agent 2.9.105 · helper 1.1.0 · app 2.9.58).** Spec: `docs/memory/project_decky-manager.md` (adversarially reviewed, revision 2). Was: 📋 OPEN since the 2026-08-27 reconciliation.
 > **Scope built:** (a) install / repair-or-update / uninstall Decky Loader from the phone via ONE root wrapper (`/etc/couchside/couchside-decky-loader`, an install.sh heredoc) run only through a pinned oneshot template unit, started by helper verb `decky.loader` or an exact-argv sudoers grant; (b) KI-004 made explicit — a stopped loader is a STATE (`installed_stopped`, `stopped_reason:self_stop_recent`) with the existing `restart-decky` action and Repair offered, never a silent restart; (c) plugin listing (filesystem, containment-checked), per-plugin update / uninstall / reload as jobs over the loader's loopback WebSocket (own bounded client), store browse/search + icon proxy + install by store id; (d) one box-side opt-in `couchside allow-decky on|off|status` (offered once by an interactive install), marker read by helper, unit and wrapper; (e) Utilities tenant `decky`, Setup `DeckyCard`, `app/app/decky.tsx`; (f) `--mock-decky <state>` harness.
 > **Not in scope (follow-ups F1–F9, spec §17):** enable/disable/hide/freeze; picking an older store version; "update all" / the Decky slice of "update everything"; loader self-update through Decky's own updater (deliberately never); prerelease channel; vendoring the wrapper into couchside-decky for plugin-only boxes (`needs_installer` until F5); marker-gating the standing `restart plugin_loader` grant (F9).
@@ -430,6 +512,73 @@ Each entry now carries a `✅ DONE` / `🟡 PARTIAL` / `📋 OPEN` banner with i
   game mode defaults to TOUCH (tap-to-point), Mouse as a toggle.** Detail in [[remote-desktop-and-screen-capture]].
 
 ## 📋 Planned
+
+### Deck overlay — a Decky-free Game-Mode quick panel via gamescope (owner request 2026-09-24)
+- **priority:** P2 · **risk:** high until a Phase-0 hardware prototype proves it · **affects:** agent
+  (in-session launcher + hotkey listener), install.sh, a new overlay launcher, Utilities/Setup ·
+  **depends_on:** Phase-0 validation on a real Deck. Full spec: `docs/memory/project_deck-overlay.md`.
+- **STATUS 2026-09-24 (HW-verified on the box):**
+  - **Phase 0 DONE — the mechanism below is superseded.** A true compositor overlay is NOT viable on a
+    stock box: gamescope has ONE `GAMESCOPE_EXTERNAL_OVERLAY` slot and `mangoapp` holds it permanently.
+    The realistic path is a **focus-swap kiosk panel** (the game pauses while it is up), which the Player
+    already ships (`steamos-add-to-steam` + `steam://rungameid`). So the panel ≈ "the Player, pointed at
+    a new on-box page."
+  - **Phase 1a DONE (PR #552):** `GET /panel` serves a self-contained page gated loopback+Host EXACTLY
+    like `/pair` (it embeds the bearer token); `POST /api/panel {op:open|close}` launches/closes it in
+    Game Mode via the Player's kiosk path (bearer-authed, op-validated, rate-limited).
+  - **Phase 1b DONE (PR #552):** the page renders LIVE vitals from `/api/status` (temp, load, memory,
+    battery, CPU clock, network, uptime — each field independently optional, degrades to fewer tiles)
+    plus a **Quick actions** grid from `/api/actions` (POST by server-provided id, looked up in the
+    ACTIONS allowlist; `danger:high` arms a 3s cancellable countdown). **HW-verified on `steam-machine`:**
+    launched in Game Mode, rendered fullscreen with live box vitals + all 7 real allowlist actions.
+  - **RELEASED in agent 2.9.113 (2026-09-25, PR #553; Decky v0.2.85 bundles it).** Agent side is live;
+    the **app button** (Launch → Watch → "Show the Couchside panel on the TV", gated on
+    `supportsBoxPanel(settings.version)` ≥ 2.9.113, hidden on Windows/unknown) is built and
+    harness-pressed — users see it once the next app build ships.
+    The same release fixed **KI-087** on BOTH agents: the shared loopback Host gate prefix-matched
+    `"127."`, a DNS-rebinding hole on `/pair`, `/update`, `/panel`; now parsed via `ipaddress`.
+  - **Still open:** (1c) hotkey toggle via the non-grabbing evdev reader; a **dedicated panel tile**
+    (today it reuses the Player's single kiosk tile/conf — transient clobber, self-heals on next Player
+    open — a second Steam-shortcut registration is its own HW-gated task); Decky coexistence (defer when
+    Decky is present + healthy).
+- **Why:** the durable answer to **KI-004** (Decky breaks on every Steam CEF update because it injects
+  into Steam's private frontend) + the Decky store's AI-dev gatekeeping. Give Deck/SteamOS users an
+  on-box quick panel that touches NEITHER Decky NOR Steam's frontend — and defer to Decky when it is
+  present + healthy (coexistence, exactly like install.sh).
+- **Mechanism:** overlay at the COMPOSITOR layer, not the Steam-UI layer. A borderless Xwayland window
+  with the `GAMESCOPE_EXTERNAL_OVERLAY` atom, composited by gamescope over Game Mode (no CEF hooks, so
+  a Steam update cannot break it). Panel content = the console we ALREADY serve on localhost, shown in
+  a kiosk browser (reuse the Player's Chromium-launch infra) → the FULL console, same UI as the phone,
+  not a cramped plugin. Toggle = a configurable hotkey via the existing evdev/uinput path, not a Steam
+  button. Launched in-session via `systemd-run --user` as an allowlisted subprocess (agent stays
+  stdlib/single-file).
+- **THE GATE:** it is UNPROVEN that gamescope's external-overlay atom will composite AND grab/release
+  input on current SteamOS/Bazzite gamescope. **Phase 0 = prove it on hardware (both shown and hidden
+  states observed) BEFORE any feature code.** If input-grab fails, the fallback is a focus-swap panel
+  (the game pauses) — still Decky-free, worse UX. Not zero-maintenance either: a gamescope bump could
+  break it (far rarer than Steam CEF, not never) — say so to users.
+### SignalBar-style reactive / ambient LED modes (owner ask 2026-09-23)
+- **priority:** P2 · **risk:** med (new agent-rendered `led-fx` telemetry source; safety-adjacent
+  render thread) · **affects:** agent + app · **depends_on:** LED control depth (Completed 2026-09-23)
+- **why:** SignalBar's loved feature isn't manual control (we already have more) — it's the bar
+  driving ITSELF from live state. Owner picked, in order: **performance + battery meter**, **playtime
+  countdown + event flashes**, **artwork ambient**. Every raw signal already exists in the agent:
+  vitals cpu/gpu temp+load (`read_cpu_temp_c` ~1345, `_gpu_sensors` ~20533), pad battery
+  (`_pad_battery` ~20938), per-game playtime (`_steam_playtime` ~9687), on-disk cover/hero art
+  (librarycache ~10001), screen frames. Gap is architecture, not data.
+- **shape:** a new backend-agnostic `led-fx` SOURCE that reads live telemetry each tick instead of a
+  static colour, running on the box (configured from the phone, runs with the app closed — the whole
+  point). Plumb via **additive `/api/leds` payload fields** (probe-and-appear), NOT a new cap
+  (recommended; reversible). SignalBar-depth per-mode config is the point: Responsive/Balanced/Smooth
+  smoothing, Cool/Mid/Hot threshold colours (45/78 °C defaults), low-batt 5–30 %, timer 5–240 min +
+  bar-scale.
+- **constraints / honesty:** reactive meters need an ADDRESSABLE strip (valve-leds / OpenRGB); mono
+  status LEDs degrade to coarse (battery=colour shift, playtime=breathe→strobe). Multi-distro, NOT
+  Deck-only → performance/battery work on any box; artwork/playtime are Steam-gated. Achievement
+  events have no clean non-Decky hook → punted; screenshot/notification are tractable.
+- **also here — remaining effect-shape knobs:** tail/width for the agent-rendered strip sweeps
+  (scanner/comet in `_seq_compute_frame`), same additive-param pipeline as attack/duty. Firmware
+  strip effects (breathe/pulse/strobe→`breath`) have no per-frame hook — shape can't apply there.
 
 ### Windows uiAccess signed-exe build — drive ADMIN windows without an elevated agent (tester report 2026-09-17)
 - **DECISION 2026-09-17 — PARKED (owner call): not worth a recurring code-signing cert for a $4.99
@@ -1582,6 +1731,50 @@ recommendation was wrong, not merely superseded.
 
 ## ✅ Completed
 
+### LED control depth — SignalBar parity pass 1 (timing + colour + effect shape) — 2026-09-23
+- **why:** owner compared us to SignalBar (Decky light-bar plugin) — "the timing controls and
+  ability to more in-depth customize the LEDs is what puts SignalBar ahead." Mapped both surfaces:
+  the gap was mostly UI truncation, not a protocol limit. · **affects:** agent + app · **risk:** low
+  (additive; rides the existing `ledcontrol` cap, no new cap, no firmware path touched)
+- **P1 (app-only, no agent change): continuous timing + full colour.**
+  - Speed: the 3-chip Slow/Med/Fast (25/55/90) → a **continuous 1–100 slider** with a live readout,
+    on all three cards (LIGHT / STRIP / SYSTEM RGB). The agent had always validated speed 1–100
+    (`_validate_effect_body`); the UI was discarding ~97 steps.
+  - Colour: hue-only → **hue + saturation** (`hsToRgb`/`rgbToHs` in `lib/ledColor.ts`) with a hex
+    readout. Saturation 0 = white, so pastels/whites are finally reachable — the agent always
+    accepted any {r,g,b}; the picker never sent them. Value stays owned by the brightness slider.
+  - Strip `reapply()` now takes an explicit colour override so a hue/sat commit can't send the
+    previous tick's colour on a tap.
+- **P2 (additive agent params + app SHAPE controls): effect envelope shape.**
+  - New optional body params on POST /api/leds/effect — `attack` (0–100, breathe/pulse rise
+    fraction) and `duty` (1–99, strobe on-time %). Consumed by the single-LED software renderer
+    (`_fx_frame`, new `_fx_env`); firmware strip effects and OpenRGB have no per-frame hook and
+    ignore them. Both default to the former fixed behaviour when absent (purely additive).
+  - Threaded end-to-end: validator (now a 7-tuple; both unpack sites updated) → `apply_led_effect`
+    (folds shape into `params`, so it auto-persists + auto-surfaces in `active`) → `_fx_frame` →
+    `_led_restore` (re-validates, junk dropped) → mock echo. New GET /api/leds `shape:true` flag =
+    probe-and-appear so the app shows the SHAPE control only where the box supports it.
+  - App: `RgbLedCard` grows a `SHAPE · ATTACK` / `SHAPE · DUTY` slider (single-LED card only —
+    where the params actually act, never a dead control). `LedActive`/`LedsState`/`setLedEffect`
+    gained the additive fields.
+- **allowlist verification:** effect ids stay a frozen `_LED_EFFECTS` lookup; new params are
+  range-checked-and-rejected (`_is_pct` / explicit 1–99), never sanitised; no new route, no
+  `shell=True`, no path from client input; additive payload only (old app ↔ new agent verified via
+  `test_protocol_parity`); no new cap (six-site rule not triggered — `ledcontrol` gates it).
+- **verified how:** whole test suite (100 files) green incl. new `test_led_effects` cases
+  (validator reject of bad attack/duty, `_fx_frame` observe-BOTH-states — strobe duty 90 ON vs 10
+  OFF, breathe fast-attack brighter early than slow — and shape persist + junk-drop on restore).
+  Web harness (`scripts/web-dev.sh`, mock box), controls PRESSED not just rendered: saturation →
+  box stored `{182,239,255}` (a pastel the old picker couldn't make); continuous speed → box 85;
+  strobe duty slider → box `duty:21`; breathe attack slider → box `attack:12`; all confirmed by
+  re-reading GET /api/leds, not the echo. Ships in the next agent release after 2.9.116 (unreleased as of this entry).
+- **NOT verified:** real hardware (harness-only, like the LED Studio ship); SYSTEM RGB (OpenRGB)
+  card's new sliders not independently pressed in-harness (code-identical to the proven LIGHT card
+  + tap flakiness) — eyeball on device.
+- **follow-ons (see `📋 Planned` → SignalBar-style reactive LED modes):** reactive/ambient modes
+  (perf+battery meter, playtime countdown, artwork ambient) and more shape knobs (tail/width for
+  scanner/comet on the agent-rendered strip sweeps).
+
 ### LED strip stand-down — stop fighting Steam for the light bar — 2026-09-08
 - **was:** owner-reported "light bar spazzing on the Steam machine" while a game ran and a
   download was in flight, LED set to rainbow · **affects:** agent (`agent/couchsided.py`)
@@ -1667,10 +1860,11 @@ recommendation was wrong, not merely superseded.
   `entitlement.ts` (`IS_DIRECT_BUILD`, `redeemLicenseKey`, `getLicenseeName`, license checked
   before the trial clock, re-verified every read) · `EntitlementContext.redeemLicense` ·
   `components/LicenseRedeemCard.tsx` · `setup.tsx` + `Paywall.tsx` swap Buy/Restore for the card ·
-  `eas.json` `direct` profile · `scripts/make-license.mjs` (offline signing CLI, node `crypto`).
+  `eas.json` `direct` profile. The offline signing CLI + issuer webhook live in the PRIVATE
+  `couchside-licensing` repo (kept out of this public repo).
 - **Keys:** private key OFFLINE at `~/.config/couchside/license-ed25519.key`; public key baked in
-  `license.ts`. Full reference + future license-manager (Stripe/Gumroad/Ko-fi webhook) wiring in
-  `docs/DIRECT_EDITION_LICENSING.md`.
+  `license.ts`. Full reference + license-manager (Polar/Lemon Squeezy webhook) wiring live in
+  the PRIVATE `couchside-licensing` repo.
 - **Verified:** `license.test.ts` (8) proves node-`crypto` sign ↔ node-forge verify interop,
   tamper/wrong-key/malformed all rejected, production key rejects throwaway tokens. A real
   production-signed token verifies through the app's own code path. Web harness (direct build,

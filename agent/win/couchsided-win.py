@@ -37,6 +37,7 @@ import ctypes
 import glob
 import hashlib
 import hmac
+import ipaddress
 import json
 import os
 import random
@@ -85,7 +86,7 @@ except ImportError:
 # Same app id the phone expects (AGENT_APPS in app/lib/api.ts); the Windows
 # agent versions independently of the Linux one.
 APP_NAME = "couchside-agent"
-VERSION = "0.4.11-win"
+VERSION = "0.4.12-win"
 
 _PROGRAMDATA = os.environ.get("ProgramData", r"C:\ProgramData")
 DEFAULT_CONFIG_PATH = os.path.join(_PROGRAMDATA, "Couchside", "config.json")
@@ -5348,13 +5349,25 @@ class Handler(BaseHTTPRequestHandler):
 
     def _host_header_is_local(self):
         """True iff the request's Host header names loopback (anti-DNS-
-        rebinding gate for /pair)."""
+        rebinding gate for /pair).
+
+        Matched by PARSING, not by prefix: a `startswith("127.")` test used to
+        pass here, but it also accepts a rebindable hostname such as
+        127.0.0.1.evil.com (a name an attacker points at 127.0.0.1), which
+        defeats the gate. ipaddress.ip_address rejects anything that is not a
+        real IP, so only genuine loopback addresses (and the two explicit
+        names) get through. Same fix as the Linux agent (KI-087)."""
         host = (self.headers.get("Host") or "").strip().lower()
         if host.startswith("["):
             host = host[1:].split("]", 1)[0]
         elif host.count(":") == 1:
             host = host.rsplit(":", 1)[0]
-        return host in ("localhost", "::1") or host.startswith("127.")
+        if host in ("localhost", "::1"):
+            return True
+        try:
+            return ipaddress.ip_address(host).is_loopback
+        except ValueError:
+            return False
 
     def _current_token(self):
         """The token to advertise on /pair: fresh from the token file if we

@@ -105,23 +105,33 @@ def _reset_engine():
 
 def test_validate_effect_body():
     print("effect body validation (reject, don't sanitise)")
-    e, c, s, b, rev, err = cs._validate_effect_body({"effect": "breathe"})
-    check(err is None and e == "breathe" and rev is False,
-          "accepts a bare known effect (reverse defaults False)")
-    e, c, s, b, rev, err = cs._validate_effect_body(
+    e, c, s, b, rev, sh, err = cs._validate_effect_body({"effect": "breathe"})
+    check(err is None and e == "breathe" and rev is False and sh == {},
+          "accepts a bare known effect (reverse defaults False, no shape)")
+    e, c, s, b, rev, sh, err = cs._validate_effect_body(
         {"effect": "circle", "speed": 80, "brightness": 40,
          "color": {"r": 1, "g": 2, "b": 3}, "reverse": True})
     check(err is None and s == 80 and b == 40 and c == {"r": 1, "g": 2, "b": 3}
           and rev is True, "accepts full valid params incl. reverse")
+    # shape (attack/duty) is optional + additive
+    e, c, s, b, rev, sh, err = cs._validate_effect_body(
+        {"effect": "breathe", "attack": 0, "duty": 50})
+    check(err is None and sh == {"attack": 0, "duty": 50},
+          "accepts attack 0-100 + duty 1-99 into shape")
     bad = [{"effect": "nope"}, {"effect": "breathe", "speed": 0},
            {"effect": "breathe", "speed": 101}, {"effect": "breathe", "speed": True},
            {"effect": "breathe", "brightness": -1}, {"effect": "breathe", "brightness": 101},
            {"effect": "breathe", "color": {"r": 256, "g": 0, "b": 0}},
            {"effect": "breathe", "color": [1, 2, 3]},
-           {"effect": "breathe", "reverse": "yes"}, {}]
+           {"effect": "breathe", "reverse": "yes"},
+           {"effect": "breathe", "attack": -1}, {"effect": "breathe", "attack": 101},
+           {"effect": "breathe", "attack": True},
+           {"effect": "strobe", "duty": 0}, {"effect": "strobe", "duty": 100},
+           {"effect": "strobe", "duty": True}, {}]
     for body in bad:
-        _, _, _, _, _, err = cs._validate_effect_body(body)
-        check(err is not None, "rejects %s" % body)
+        out = cs._validate_effect_body(body)
+        check(out[-1] is not None and out[5] == {},
+              "rejects %s (no shape leaks)" % body)
 
 
 def test_frame_bounds():
@@ -309,6 +319,70 @@ def test_normal_led_not_gated():
         restore()
 
 
+def test_shape_reshapes_frame():
+    print("shape: attack/duty actually change the frame (observe BOTH states)")
+    # strobe duty: at t just past 60% of the period, duty=90 is ON, duty=10 is OFF.
+    period = cs._fx_period(50)
+    t = period * 0.6
+    _, b_hi = cs._fx_frame("strobe", {"color": {"r": 255, "g": 0, "b": 0},
+                                      "speed": 50, "brightness": 100, "duty": 90}, t)
+    _, b_lo = cs._fx_frame("strobe", {"color": {"r": 255, "g": 0, "b": 0},
+                                      "speed": 50, "brightness": 100, "duty": 10}, t)
+    check(b_hi == 100 and b_lo == 0,
+          "strobe duty 90 is ON and duty 10 is OFF at 60%% of the cycle")
+    # a strobe with no duty keeps the former 50%% behaviour (backward compatible).
+    _, b_def = cs._fx_frame("strobe", {"color": {"r": 255, "g": 0, "b": 0},
+                                       "speed": 50, "brightness": 100}, period * 0.25)
+    _, b_def2 = cs._fx_frame("strobe", {"color": {"r": 255, "g": 0, "b": 0},
+                                        "speed": 50, "brightness": 100}, period * 0.75)
+    check(b_def == 100 and b_def2 == 0, "no-duty strobe unchanged (50%% duty)")
+    # breathe attack: a fast attack (10) peaks EARLY, a slow attack (90) peaks LATE,
+    # so at 15%% of the cycle the fast-attack frame is brighter than the slow one.
+    tp = period * 0.15
+    _, ba_fast = cs._fx_frame("breathe", {"color": None, "speed": 50,
+                                          "brightness": 100, "attack": 10}, tp)
+    _, ba_slow = cs._fx_frame("breathe", {"color": None, "speed": 50,
+                                          "brightness": 100, "attack": 90}, tp)
+    check(ba_fast > ba_slow, "breathe fast-attack is brighter early than slow-attack")
+    # every attack/duty combination still stays within 0..target
+    oob = False
+    for atk in (0, 25, 50, 75, 100):
+        for i in range(120):
+            _, bb = cs._fx_frame("breathe", {"color": None, "speed": 50,
+                                             "brightness": 70, "attack": atk}, i * 0.05)
+            if bb is not None and not (0 <= bb <= 70):
+                oob = True
+    check(not oob, "shaped breathe brightness always within 0..target")
+
+
+def test_shape_persists_and_restores():
+    print("shape: persisted with the effect + REVALIDATED on restore (junk dropped)")
+    writes = []
+    restore = _install_fake(writes)
+    try:
+        res = cs.apply_led_effect("multicolor:front", "strobe",
+                                  {"r": 255, "g": 0, "b": 0}, 60, 100, {"duty": 80})
+        check(res and res.get("ok") and res["active"].get("duty") == 80,
+              "duty echoed in the POST active response")
+        check(cs._led_state_load().get("multicolor:front", {}).get("duty") == 80,
+              "duty persisted to disk alongside the effect")
+        check(cs._led_active_map().get("multicolor:front", {}).get("duty") == 80,
+              "GET active map carries the duty")
+        # a junk shape value in the file must NOT drive a write -> dropped on restore
+        import json
+        with open(cs._LED_STATE_CONF, "w") as f:
+            json.dump({"version": 1, "leds": {"multicolor:front": {
+                "effect": "strobe", "color": {"r": 255, "g": 0, "b": 0},
+                "speed": 60, "brightness": 100, "duty": 999}}}, f)
+        _reset_engine()
+        cs._led_restore()
+        time.sleep(0.05)
+        check("duty" not in cs._led_active_map().get("multicolor:front", {}),
+              "out-of-range duty in the file is dropped on restore (default used)")
+    finally:
+        restore()
+
+
 def test_mock_effect_observable():
     print("mock: selecting an effect moves GET /api/leds `active` (observe both)")
     saved = dict(cs._MOCK_FX)
@@ -335,6 +409,8 @@ if __name__ == "__main__":
     test_allowlist_effect()
     test_animate_then_solid_lifecycle()
     test_persistence_restore_revalidates()
+    test_shape_reshapes_frame()
+    test_shape_persists_and_restores()
     test_gated_go_s_led()
     test_normal_led_not_gated()
     test_mock_effect_observable()

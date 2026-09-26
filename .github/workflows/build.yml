@@ -1,0 +1,44 @@
+# Mobile app build — calls the shared self-hosted reusable workflow in
+# emerytech/mobile-ci, which runs `eas build --local` on self-hosted runners
+# (macOS `macbook-publish` for iOS, a Linux runner for Android). $0 EAS cloud
+# build minutes. Per-app config stays in app/eas.json + EAS-hosted credentials,
+# pulled at build time via the EXPO_TOKEN repo secret.
+#
+# Expo app root is app/ (repo root is the Python agent), hence working-directory.
+#
+# Rollout (see the self-hosted-EAS notes):
+#   Phase 1 (now):   dispatch-only, ios, submit=false. Build, download the .ipa,
+#                    submit from the Mac as today.
+#   Phase 2:         flip submit on ONLY after submit creds are EAS-hosted or
+#                    injected (app/asc-key.p8 + ../secrets/play-service-account.json
+#                    are gitignored, absent in CI) AND the build-number source is
+#                    fixed (appVersionSource:local + autoIncrement collides in CI).
+#   Phase 3:         uncomment the tag trigger below, build-only, once dispatch is proven.
+name: Build
+
+on:
+  workflow_dispatch:
+    inputs:
+      platform:
+        description: which store target to build
+        type: choice
+        options: [ios, android, all]
+        default: ios
+      submit:
+        description: submit to the store after build (needs submit creds wired — see header)
+        type: boolean
+        default: false
+  # Phase 3 — enable only after the dispatch path is proven and build numbers are safe:
+  # push:
+  #   tags: ['v*']
+
+jobs:
+  build:
+    uses: emerytech/mobile-ci/.github/workflows/eas-local-build.yml@main
+    with:
+      platform: ${{ inputs.platform || 'ios' }}
+      profile: production
+      submit: ${{ inputs.submit || false }}
+      working-directory: app
+    secrets:
+      EXPO_TOKEN: ${{ secrets.EXPO_TOKEN }}

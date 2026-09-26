@@ -1,3 +1,6 @@
+// FIRST: chain the global JS error handler into the local error log before any
+// other module or screen can throw (lib/crashLog). Nothing is ever sent.
+import '@/lib/crashLog';
 import '@/lib/demo'; // no-op unless EXPO_PUBLIC_DEMO=1 (web design-review fixture)
 import { DarkTheme, DefaultTheme, Stack, ThemeProvider } from 'expo-router';
 import { StatusBar } from 'expo-status-bar';
@@ -10,6 +13,7 @@ import { ReviewToast } from '@/components/ReviewToast';
 import { AppUpdateReminderToast } from '@/components/AppUpdateReminderToast';
 import { TrialEndsToast } from '@/components/TrialEndsToast';
 import { AppToast } from '@/components/AppToast';
+import { CrashBanner } from '@/components/CrashBanner';
 import { SplashIntro } from '@/components/SplashIntro';
 import { UnlockToast } from '@/components/UnlockToast';
 import { TapCapture } from '@/components/TouchIndicatorLayer';
@@ -119,6 +123,10 @@ export default function RootLayout() {
           {/* Rare nudge that the MANUAL app-update check exists (Setup > Account);
               off via the pref or its own "Don't show again". */}
           <AppUpdateReminderToast />
+          {/* "Closed unexpectedly — copy details?" on the launch after a crash,
+              once per crash. Also reports the current route to the error log.
+              Before SplashIntro so the splash covers it until it fades. */}
+          <CrashBanner />
           {/* Brief app-opening animation. Last child = drawn on top; covers the
               tree until it fades, then unmounts (once per launch). */}
           <SplashIntro />

@@ -24,6 +24,7 @@ import json
 import math
 import os
 import random
+import secrets
 import re
 import select
 import shlex
@@ -31,6 +32,7 @@ import shutil
 import signal
 import socket
 import ssl
+import stat
 import struct
 import subprocess
 import sys
@@ -50,11 +52,21 @@ except ImportError:  # pragma: no cover
     fcntl = None
 
 APP_NAME = "couchside-agent"
-VERSION = "2.9.112"
+VERSION = "2.9.116"
 UID = os.getuid()
 XDG_RUNTIME_DIR = "/run/user/%d" % UID
 
 DEFAULT_CONFIG_PATH = "/etc/couchside/config.json"
+# The pairing token. /etc/couchside/token (the --token-file default) is the
+# CANONICAL copy: every rotation path writes it (`couchside new-token`, the Decky
+# plugin's Regenerate, the installer), so it is always read first. TOKEN_STATE_DIR
+# holds a MIRROR the agent keeps in step with it (0600, the same user-owned dir as
+# config.json) and falls back to only when the canonical file is gone -- a Steam
+# Deck lost /etc/couchside/token across a SteamOS 3.8.28 update while
+# /var/lib/couchside survived, and the agent crash-looped. Reading the mirror
+# FIRST would be wrong: after a rotation it would keep the revoked token alive.
+TOKEN_STATE_DIR = "/var/lib/couchside"
+LEGACY_TOKEN_FILE = "/etc/couchside/token"
 DEFAULT_PORT = 8787
 DEFAULT_TLS_PORT = 8788  # HTTPS listener when tls.enabled; plaintext stays on DEFAULT_PORT
 
@@ -971,18 +983,35 @@ def _nopasswd_last_match(rules_text, needle):
     return bool(allowed)
 
 
-def _sudo_nopasswd_allows(needle):
-    """True when sudoers ACTUALLY permits the command without a password —
-    last-match evaluated (see _nopasswd_last_match). False on any failure: a
-    missing grant must HIDE an action, never offer a dead one."""
+def _sudo_nopasswd_state(needle):
+    """Tri-state form of _sudo_nopasswd_allows, for a caller that must tell
+    "the grant is not there" apart from "could not look" (install_health):
+
+      True   `sudo -n -l` listed the rules and the LAST match for `needle` is
+             NOPASSWD (see _nopasswd_last_match);
+      False  it listed them and the last match is not NOPASSWD, or nothing
+             matches: the grant is genuinely not in effect;
+      None   no listing at all -- sudo absent, timed out, or refused to list
+             without a password. Under sudo's default `listpw=any` a user with
+             NO NOPASSWD rule left cannot list, so a box that lost every grant
+             lands here too; but a box with `Defaults listpw=always` lands here
+             WITH its grants intact, so "could not list" is reported as not
+             known, never inferred to be missing. Never raises."""
     try:
         r = subprocess.run(["sudo", "-n", "-l"], capture_output=True,
                            timeout=4, text=True)
         if r.returncode != 0:
-            return False
-        return _nopasswd_last_match(r.stdout, needle)
+            return None
+        return bool(_nopasswd_last_match(r.stdout, needle))
     except Exception:
-        return False
+        return None
+
+
+def _sudo_nopasswd_allows(needle):
+    """True when sudoers ACTUALLY permits the command without a password —
+    last-match evaluated (see _nopasswd_last_match). False on any failure: a
+    missing grant must HIDE an action, never offer a dead one."""
+    return _sudo_nopasswd_state(needle) is True
 
 
 def _can_sudo_suspend():
@@ -3731,6 +3760,37 @@ def player_open(service, path="", query="", url=""):
     return {"ok": True, "starting": True, "service": service}
 
 
+def _panel_url():
+    """The on-box quick-panel URL for the kiosk to load. Plaintext DEFAULT_PORT
+    (a kiosk over the self-signed TLS port would hit a cert wall) + loopback host
+    (the /panel route is loopback-only). Agent-generated, NEVER client-supplied."""
+    return "http://localhost:%d/panel" % DEFAULT_PORT
+
+
+def panel_open():
+    """Open the on-box quick panel (GET /panel) in Game Mode via the Player's
+    kiosk-launch path — steamos-add-to-steam + steam://rungameid, the focus-swap
+    that makes a window show over Game Mode. A plain launch is NOT adopted by
+    gamescope (Phase 0, docs/memory/project_deck-overlay.md), so we reuse the
+    Player's proven Steam-shortcut mechanism. The tile is pointed at the FIXED,
+    agent-generated local /panel URL, so this needs no _pl_validate_open_url (that
+    gates USER-supplied free URLs; this is our own loopback page). The panel and
+    the streaming Player share one single-instance tile."""
+    if PL_MOCK:
+        _PL_MOCK.update(running=True, service="", path="", query="", url=_panel_url())
+        return {"ok": True, "starting": True, "url": _panel_url()}
+    if not player_available():
+        raise RuntimeError("panel launcher not installed on this box")
+    with _PL_LOCK:
+        _pl_conf_write("", "", "", url=_panel_url())
+        was_running = _pl_running()
+        if was_running:
+            player_close()
+        appid = _pl_appid()
+    _pl_relaunch(appid, was_running)
+    return {"ok": True, "starting": True}
+
+
 # ---------------------------------------------------------------------------
 # Player transport over CDP (play/pause/seek).
 #
@@ -4411,6 +4471,14 @@ def real_status():
         # "Expecting ',' delimiter: line 12 column 3" or "units must be a
         # non-empty list", so the phone can name the problem.
         **({"config_error": CONFIG_ERROR} if CONFIG_ERROR else {}),
+        # Is the root-owned footprint install.sh laid down still there (agent >=
+        # 2.9.116)? ADDITIVE: {"ok", "missing": [ids], "unknown": [ids],
+        # "no_sudoers": bool}, ids
+        # from the frozen _INSTALL_PIECE_IDS table. A SteamOS image update can
+        # take back part of /etc; the app shows "re-run the installer" on a
+        # non-empty `missing`. ok is never true for a piece that could not be
+        # checked (degrade closed). Memoised, see install_health().
+        "install_health": install_health(),
         "history": _history_snapshot(),
     }
 
@@ -4478,6 +4546,227 @@ def real_journal(unit, scope, lines):
         env = _user_env()
     r = subprocess.run(cmd, capture_output=True, text=True, timeout=15, env=env)
     return r.stdout.splitlines()
+
+
+# ---------------------------------------------------------------------------
+# Install health: is the root-owned footprint the installer laid down still there?
+# ---------------------------------------------------------------------------
+# WHY. An OS image update can silently take back part of /etc. On the
+# maintainer's Steam Deck OLED (SteamOS 3.8.24) /etc/couchside/ (token + the
+# sudo-granted journal wrapper), every /etc/udev/rules.d/99-couchside-*.rules
+# and /etc/modules-load.d/couchside-uinput.conf were GONE from 2026-08-26 on,
+# while /etc/systemd/system/couchside.service and /var/lib/couchside survived;
+# a user's Deck showed the same after SteamOS 3.8.28 (KI-088). Nothing on the
+# box said so: the agent (>= 2.9.114) kept serving from the token mirror, and
+# the gamepad / scheduled wake / journal just quietly degraded. A Bazzite box
+# kept every one of these files across a bootc 43 -> 44 upgrade (hash-identical),
+# so this is a SteamOS behaviour, not a Couchside bug -- see
+# docs/memory/steamos-etc-persistence.md for what SteamOS keeps and why. The
+# remedy is always the same: re-run the installer from a terminal on the box
+# (the phone-triggered quick update has no password, so it cannot write /etc).
+#
+# The ids below are the WIRE CONTRACT for `install_health` on /api/status. The
+# table is FROZEN: a piece is added by adding an explicit entry, and only for a
+# file install.sh actually writes. Paths are module constants so tests can point
+# them at a fixture tree (CONVENTIONS: filesystem roots are module constants).
+_INSTALL_PIECE_IDS = (
+    "token_canonical",   # (d)  /etc/couchside/token -- canonical pairing token
+    "sudoers_grant",     # (f)  /etc/sudoers.d/zz-couchside -- probed, not stat'd
+    "journal_wrapper",   # (f)  /etc/couchside/couchside-journal
+    "udev_uinput",       # (f2) virtual gamepad node access
+    "modules_uinput",    # (f2) uinput autoload at boot
+    "udev_rtc",          # (f2) scheduled-wake RTC access
+    "udev_cec",          # (f2) HDMI-CEC node access (install.sh >= 2026-08-08)
+    "udev_openpuck",     # (f2) OpenPuck WebUSB uaccess (install.sh >= 2026-08-20)
+    "systemd_unit",      # (g)  /etc/systemd/system/couchside.service
+)
+_INSTALL_PIECE_PATHS = {
+    "token_canonical": LEGACY_TOKEN_FILE,
+    "journal_wrapper": JOURNAL_WRAPPER,
+    "udev_uinput": "/etc/udev/rules.d/99-couchside-uinput.rules",
+    "modules_uinput": "/etc/modules-load.d/couchside-uinput.conf",
+    "udev_rtc": "/etc/udev/rules.d/99-couchside-rtc.rules",
+    "udev_cec": "/etc/udev/rules.d/99-couchside-cec.rules",
+    "udev_openpuck": "/etc/udev/rules.d/99-couchside-openpuck.rules",
+    "systemd_unit": "/etc/systemd/system/couchside.service",
+}
+# sudoers_grant has NO path on purpose: /etc/sudoers.d is 0750 root on Arch and
+# SteamOS, so a stat as the desktop user fails EACCES whether or not the file is
+# there. What matters is whether the grant is IN EFFECT, which the last-match
+# sudo probe answers (_sudo_nopasswd_state). The needle is the journal-wrapper
+# grant because it is the one couchside-specific rule BOTH installers (install.sh
+# and the Decky plugin) write -- reboot/poweroff could come from a distro rule.
+_INSTALL_GRANT_NEEDLE = JOURNAL_WRAPPER
+# What install.sh says it wrote on its last full run: one piece id per line,
+# `#` comments ignored, unknown ids ignored (a newer installer may know more
+# pieces than this agent). Lives in the state dir, which survived the SteamOS
+# update that took /etc. It is what separates "LOST" from "NEVER INSTALLED": a
+# box installed before udev_cec/udev_openpuck existed, and since updated only by
+# the passwordless quick path, never had those files -- reporting them as damage
+# would put a false alarm on a healthy box. Diagnostic only: it selects which
+# frozen entries get CHECKED, never a path, never anything that runs.
+INSTALL_MANIFEST = "/var/lib/couchside/install-manifest"
+# Without a manifest (every box until its next full install, and Decky-plugin
+# installs, which write no manifest): only the pieces that EVERY install has
+# written since July 2026 -- both installers, with or without --no-sudoers.
+# udev_cec / udev_openpuck are install.sh-only and newer; sudoers_grant and
+# journal_wrapper are absent BY CHOICE on a --no-sudoers box (install.sh writes
+# the wrapper only in the sudoers-on branch), and a pre-manifest box cannot say
+# which it is. So all four are checked only when a manifest names them.
+# Checking the grant/wrapper by default put a non-dismissable "damaged" banner
+# on every healthy --no-sudoers box (review finding, 2026-09-26). A SteamOS
+# /etc loss is still caught without them: it takes token_canonical and the
+# udev/modules-load pieces in the same sweep.
+_INSTALL_DEFAULT_EXPECTED = frozenset((
+    "token_canonical", "udev_uinput", "modules_uinput", "udev_rtc", "systemd_unit",
+))
+# /etc only changes across an OS update (a reboot, so a fresh agent) or an
+# installer run (which restarts the agent), so the answer is effectively static
+# per process; the TTL just bounds staleness for anything done by hand. Long on
+# purpose: every miss runs `sudo -n -l`, which sudo logs.
+_INSTALL_HEALTH_TTL = 600.0
+_INSTALL_HEALTH_CACHE = {"at": None, "value": None}
+_INSTALL_HEALTH_LOCK = threading.Lock()
+
+
+def _install_piece_state(path):
+    """'present' | 'missing' | 'unknown' for one installed file. Never raises.
+
+    Present = a NON-EMPTY REGULAR file: every piece install.sh writes has
+    content, and its own guard for the token is `test -s`, so an empty file or a
+    directory in its place is as broken as an absent one. ENOENT / ENOTDIR (the
+    file or a parent directory is gone -- /etc/couchside itself vanished on the
+    Deck) is missing. Any OTHER OSError (EACCES on an unreadable parent, EIO) is
+    UNKNOWN: we could not look, so we claim neither present nor missing."""
+    try:
+        st = os.stat(path)
+    except (FileNotFoundError, NotADirectoryError):
+        return "missing"
+    except (OSError, ValueError):
+        return "unknown"
+    if stat.S_ISREG(st.st_mode) and st.st_size > 0:
+        return "present"
+    return "missing"
+
+
+def _install_expected():
+    """The piece ids to check: INSTALL_MANIFEST's, or _INSTALL_DEFAULT_EXPECTED
+    when there is no usable manifest (absent, unreadable, or naming no known
+    id). Never raises."""
+    try:
+        with open(INSTALL_MANIFEST, encoding="utf-8", errors="replace") as f:
+            text = f.read(8192)
+    except (OSError, ValueError):
+        return _INSTALL_DEFAULT_EXPECTED
+    named = {ln.strip() for ln in text.splitlines()} & set(_INSTALL_PIECE_IDS)
+    return frozenset(named) or _INSTALL_DEFAULT_EXPECTED
+
+
+def _install_sudoers_optout():
+    """True only when a manifest EXISTS and names known pieces but not
+    sudoers_grant: the owner ran install.sh --no-sudoers. The app then shows a
+    repair command that carries --no-sudoers too, so following the banner never
+    installs the grant they declined. An absent / unreadable / empty manifest is
+    NOT an opt-out (older boxes and Decky-plugin installs write none). Never
+    raises."""
+    try:
+        with open(INSTALL_MANIFEST, encoding="utf-8", errors="replace") as f:
+            text = f.read(8192)
+    except (OSError, ValueError):
+        return False
+    named = {ln.strip() for ln in text.splitlines()} & set(_INSTALL_PIECE_IDS)
+    return bool(named) and "sudoers_grant" not in named
+
+
+def install_health_compute():
+    """{"ok", "missing", "unknown", "no_sudoers"} for the expected pieces, uncached.
+
+    `missing` and `unknown` are id lists in table order. ok is True ONLY when
+    every expected piece was checked AND present: a piece the agent could not
+    check (unknown) is never counted as fine -- degrade closed. The app shows
+    its "installation is damaged" banner only on a non-empty `missing`, so an
+    unknown alone never raises a false alarm either. Never raises: an unexpected
+    failure reports every expected piece as unknown."""
+    expected = _install_expected()
+    try:
+        missing, unknown = [], []
+        for pid in _INSTALL_PIECE_IDS:
+            if pid not in expected:
+                continue
+            if pid == "sudoers_grant":
+                has = _sudo_nopasswd_state(_INSTALL_GRANT_NEEDLE)
+                state = "unknown" if has is None else ("present" if has else "missing")
+            else:
+                state = _install_piece_state(_INSTALL_PIECE_PATHS[pid])
+            if state == "missing":
+                missing.append(pid)
+            elif state != "present":
+                unknown.append(pid)
+        return {"ok": not missing and not unknown,
+                "missing": missing, "unknown": unknown,
+                "no_sudoers": _install_sudoers_optout()}
+    except Exception:
+        return {"ok": False, "missing": [],
+                "unknown": [p for p in _INSTALL_PIECE_IDS if p in expected],
+                "no_sudoers": False}
+
+
+def install_health():
+    """install_health_compute(), memoised for _INSTALL_HEALTH_TTL. Returns a
+    fresh copy each call so no caller can mutate the cached lists."""
+    now = time.monotonic()
+    with _INSTALL_HEALTH_LOCK:
+        at, val = _INSTALL_HEALTH_CACHE["at"], _INSTALL_HEALTH_CACHE["value"]
+    if val is None or at is None or now - at >= _INSTALL_HEALTH_TTL:
+        val = install_health_compute()
+        with _INSTALL_HEALTH_LOCK:
+            _INSTALL_HEALTH_CACHE["at"], _INSTALL_HEALTH_CACHE["value"] = now, val
+    return {"ok": val["ok"], "missing": list(val["missing"]),
+            "unknown": list(val["unknown"]),
+            "no_sudoers": bool(val.get("no_sudoers", False))}
+
+
+def install_health_log_startup():
+    """One journal line at startup when anything is missing, so a support
+    `journalctl -u couchside` shows the damage without the app. Never raises."""
+    try:
+        h = install_health()
+    except Exception:
+        return
+    if h["missing"]:
+        print("WARNING: Couchside installation is damaged -- missing: %s. "
+              "Re-run the installer from a terminal on this box: "
+              "curl -fsSL https://couchside.tv/install.sh | bash"
+              % ", ".join(h["missing"]), file=sys.stderr, flush=True)
+    elif h["unknown"]:
+        print("install health: could not check %s" % ", ".join(h["unknown"]),
+              flush=True)
+
+
+# --mock install health, for the web harness (--mock-install-health <state>,
+# the --mock-<feature> <state> pattern). `damaged` is EXACTLY what this code
+# returned when run read-only on the Steam Deck OLED (SteamOS 3.9.2,
+# 2026-09-26): /etc/couchside, the udev rules and modules-load gone, and the
+# grant missing -- `sudo -n -l` listed fine there (SteamOS ships its own
+# NOPASSWD rules for `deck`), it just no longer names our wrapper.
+_INSTALL_HEALTH_MOCK_STATES = ("ok", "damaged")
+_INSTALL_HEALTH_MOCK = {"state": "ok"}
+
+
+def set_install_health_mock(state):
+    """Arm the mock install-health block (main(), --mock only). Unknown states
+    fall back to `ok`: argparse already restricts the choices."""
+    _INSTALL_HEALTH_MOCK["state"] = state if state in _INSTALL_HEALTH_MOCK_STATES else "ok"
+
+
+def mock_install_health():
+    if _INSTALL_HEALTH_MOCK["state"] == "damaged":
+        # == what a no-manifest Deck that lost /etc/couchside + udev + modules-load
+        # reports (the grant/wrapper are manifest-gated; see _INSTALL_DEFAULT_EXPECTED).
+        return {"ok": False,
+                "missing": ["token_canonical", "udev_uinput", "modules_uinput", "udev_rtc"],
+                "unknown": [], "no_sudoers": False}
+    return {"ok": True, "missing": [], "unknown": [], "no_sudoers": False}
 
 
 # Actions that take the box down, and are therefore the last chance to write
@@ -5412,15 +5701,18 @@ def leds_state(mock):
         pubs = [_mock_led_public(l["name"]) for l in MOCK_LEDS if l["writable"]]
         strips = _led_strips([l["name"] for l in MOCK_LEDS if l["writable"]])
         return {"available": any(p["notable"] for p in pubs), "leds": pubs,
-                "effects": list(_LED_EFFECTS),
+                "effects": list(_LED_EFFECTS), "shape": True,
                 "active": {k: dict(v) for k, v in _MOCK_FX.items()},
                 "strips": [_mock_strip_public(p, m) for p, m in strips.items()]}
     names = _list_led_names()
     raws = [_read_led_raw(n) for n in names]
     pubs = [_led_public(r) for r in raws if r and r["writable"]]
     strips = _led_strips(names)
+    # `shape: True` = this agent's single-LED renderer honours the envelope params
+    # (breathe/pulse `attack`, strobe `duty`). Additive probe-and-appear flag: the
+    # app shows the SHAPE control only when present, so older agents stay clean.
     return {"available": any(p["notable"] for p in pubs), "leds": pubs,
-            "effects": list(_LED_EFFECTS), "active": _led_active_map(),
+            "effects": list(_LED_EFFECTS), "shape": True, "active": _led_active_map(),
             "strips": [_strip_public(p, m) for p, m in strips.items()]}
 
 
@@ -5620,21 +5912,46 @@ def _fx_period(speed):
     return 6.0 - (s / 100.0) * 5.5
 
 
+def _fx_env(phase, attack):
+    """A 0..1 rise/fall envelope over one cycle `phase` (0..1), where `attack` is
+    the fraction of the cycle spent RISING (0..1, clamped away from the ends).
+    attack 0.5 -> a symmetric peak; low attack -> snap up + slow fade (a throb);
+    high attack -> slow swell + quick drop. Sine-eased so the turn is smooth."""
+    a = min(0.95, max(0.05, attack))
+    x = phase / a if phase < a else 1.0 - (phase - a) / (1.0 - a)
+    return (1 - math.cos(math.pi * max(0.0, min(1.0, x)))) / 2  # ease 0->1->0
+
+
 def _fx_frame(effect, params, t):
     """(color|None, brightness_pct) for `effect` at elapsed time t seconds.
-    color None -> leave the LED's colour, drive brightness only."""
+    color None -> leave the LED's colour, drive brightness only.
+
+    Optional envelope shape: `attack` (0-100) skews breathe/pulse toward a fast
+    or slow rise; `duty` (1-99) sets a strobe's on-time %. Both default to the
+    former fixed behaviour when absent, so old clients are unchanged."""
     target = params.get("brightness")
     target = 100 if not _is_pct(target) else target
     color = params.get("color")
     period = _fx_period(params.get("speed"))
+    attack = params.get("attack")
     if effect == "breathe":
-        frac = (math.sin(2 * math.pi * (t / period) - math.pi / 2) + 1) / 2
+        if _is_pct(attack):
+            frac = _fx_env((t % period) / period, attack / 100.0)
+        else:
+            frac = (math.sin(2 * math.pi * (t / period) - math.pi / 2) + 1) / 2
         return color, int(round(target * frac))
     if effect == "pulse":
-        frac = 1.0 - (t % period) / period          # sharp on, linear fade
+        if _is_pct(attack):
+            frac = _fx_env((t % period) / period, attack / 100.0)
+        else:
+            frac = 1.0 - (t % period) / period      # sharp on, linear fade
         return color, int(round(target * frac))
     if effect == "strobe":
-        return color, (target if (t % period) < period / 2 else 0)
+        duty = params.get("duty")
+        on = period * (duty / 100.0) if (isinstance(duty, int)
+                                         and not isinstance(duty, bool)
+                                         and 1 <= duty <= 99) else period / 2
+        return color, (target if (t % period) < on else 0)
     if effect == "rainbow":
         r, g, b = colorsys.hsv_to_rgb((t / period) % 1.0, 1.0, 1.0)
         return ({"r": int(r * 255), "g": int(g * 255), "b": int(b * 255)}, target)
@@ -5765,13 +6082,15 @@ def _led_active_map():
                 if s.get("effect") not in _LED_STATIC}
 
 
-def apply_led_effect(name, effect, color, speed, brightness):
+def apply_led_effect(name, effect, color, speed, brightness, shape=None):
     """Start/replace an effect (or a solid/off) on LED `name`.
 
     ALLOWLIST (CLAUDE.md §3): `name` must be an EXACT writable member of the
     freshly re-read /sys/class/leds set -- else None (caller -> 404) and nothing
     is touched. Effect id is checked against the frozen _LED_EFFECTS; params were
-    range-checked by the caller. Returns {"ok":True,"active":..} |
+    range-checked by the caller. `shape` is the validated envelope dict
+    ({attack,duty}) folded into the render params (auto-persisted + auto-surfaced
+    in `active`). Returns {"ok":True,"active":..} |
     {"ok":False,"status":..,"error":..} | None."""
     if effect not in _LED_EFFECTS:
         return {"ok": False, "status": 400, "error": "unknown effect"}
@@ -5797,6 +6116,14 @@ def apply_led_effect(name, effect, color, speed, brightness):
     params = {"color": color,
               "speed": speed if _is_pct(speed, 1) else 50,
               "brightness": brightness if _is_pct(brightness) else 100}
+    # Envelope shape (attack/duty) rides in params -> _fx_frame reads it, and it is
+    # persisted + reflected in `active` for free. Only known keys are folded in.
+    if isinstance(shape, dict):
+        if _is_pct(shape.get("attack")):
+            params["attack"] = shape["attack"]
+        d = shape.get("duty")
+        if isinstance(d, int) and not isinstance(d, bool) and 1 <= d <= 99:
+            params["duty"] = d
     if raw["rgb"] and params["color"] is None:
         params["color"] = raw["color"] or (
             {"r": 255, "g": 0, "b": 0} if effect == "scanner"
@@ -5809,9 +6136,12 @@ def apply_led_effect(name, effect, color, speed, brightness):
     with _FX_LOCK:
         _LED_PERSIST[name] = dict(params, effect=effect)
     _led_state_save()
-    return {"ok": True, "led": name,
-            "active": {"effect": effect, "color": params["color"],
-                       "speed": params["speed"], "brightness": params["brightness"]}}
+    active = {"effect": effect, "color": params["color"],
+              "speed": params["speed"], "brightness": params["brightness"]}
+    for k in ("attack", "duty"):
+        if k in params:
+            active[k] = params[k]
+    return {"ok": True, "led": name, "active": active}
 
 
 # Map an app effect id -> the go_s firmware effect that best matches it. The software
@@ -5860,24 +6190,41 @@ def _apply_gated_effect(name, raw, effect, params):
 
 def _validate_effect_body(req):
     """Shape check for POST /api/leds/effect. Returns
-    (effect, color|None, speed|None, brightness|None, reverse:bool, error|None).
-    Rejects, never sanitises."""
+    (effect, color|None, speed|None, brightness|None, reverse:bool, shape:dict,
+    error|None). Rejects, never sanitises.
+
+    `shape` collects the optional per-effect ENVELOPE params -- `attack` (0-100,
+    the rise fraction of a breathe/pulse cycle) and `duty` (1-99, a strobe's
+    on-time %). They ride the single-LED software renderer (_fx_frame); the strip
+    firmware and OpenRGB backends have no per-frame hook and ignore them. Absent
+    keys leave the effect at its former default, so this stays purely additive."""
     effect = req.get("effect")
     if effect not in _LED_EFFECTS:
-        return None, None, None, None, False, "unknown effect"
+        return None, None, None, None, False, {}, "unknown effect"
     color = req.get("color")
     if color is not None and not _is_rgb_triple(color):
-        return None, None, None, None, False, "color must be {r,g,b} ints 0-255"
+        return None, None, None, None, False, {}, "color must be {r,g,b} ints 0-255"
     speed = req.get("speed")
     if speed is not None and not _is_pct(speed, 1):
-        return None, None, None, None, False, "speed must be an int 1-100"
+        return None, None, None, None, False, {}, "speed must be an int 1-100"
     brightness = req.get("brightness")
     if brightness is not None and not _is_pct(brightness):
-        return None, None, None, None, False, "brightness must be an int 0-100"
+        return None, None, None, None, False, {}, "brightness must be an int 0-100"
     reverse = req.get("reverse")
     if reverse is not None and not isinstance(reverse, bool):
-        return None, None, None, None, False, "reverse must be a boolean"
-    return effect, color, speed, brightness, bool(reverse), None
+        return None, None, None, None, False, {}, "reverse must be a boolean"
+    shape = {}
+    attack = req.get("attack")
+    if attack is not None:
+        if not _is_pct(attack):
+            return None, None, None, None, False, {}, "attack must be an int 0-100"
+        shape["attack"] = attack
+    duty = req.get("duty")
+    if duty is not None:
+        if not (isinstance(duty, int) and not isinstance(duty, bool) and 1 <= duty <= 99):
+            return None, None, None, None, False, {}, "duty must be an int 1-99"
+        shape["duty"] = duty
+    return effect, color, speed, brightness, bool(reverse), shape, None
 
 
 def _led_restore():
@@ -5919,6 +6266,14 @@ def _led_restore():
         speed = st.get("speed") if _is_pct(st.get("speed"), 1) else 50
         brightness = st.get("brightness") if _is_pct(st.get("brightness")) else 100
         reverse = bool(st.get("reverse"))
+        # Envelope shape is re-validated from the file, never trusted; junk drops
+        # to the effect's default (§3.6). Only the single-LED renderer uses it.
+        shape = {}
+        if _is_pct(st.get("attack")):
+            shape["attack"] = st["attack"]
+        _d = st.get("duty")
+        if isinstance(_d, int) and not isinstance(_d, bool) and 1 <= _d <= 99:
+            shape["duty"] = _d
         try:
             if name.startswith("strip:"):
                 # A persisted strip (firmware effect): re-arm the whole strip so a
@@ -5927,7 +6282,7 @@ def _led_restore():
                 if prefix in strips:
                     apply_strip_effect(prefix, effect, color, speed, brightness, reverse)
             elif name in live:
-                apply_led_effect(name, effect, color, speed, brightness)
+                apply_led_effect(name, effect, color, speed, brightness, shape)
         except OSError:
             pass
 
@@ -7381,18 +7736,52 @@ def _dm_dropin_legacy(dm):
 
 GAMESCOPE_SESSION_FILE = "gamescope-session.desktop"
 # The gamescope Game Mode session ships under different .desktop names across
-# images: SteamOS/Bazzite/ChimeraOS use gamescope-session.desktop, but some
-# SteamOS builds ship gamescope-wayland.desktop (MEASURED on a Legion Go S,
-# SteamOS 3.8.16, 2026-08-10: its /usr/share/wayland-sessions held
-# gamescope-wayland.desktop + plasma.desktop + plasmax11.desktop, so the single
-# hardcoded name above made _couchmode_platform_ok() refuse a box that was
-# literally sitting in Game Mode — the app then showed the Big Picture fallback).
-# This set gates DETECTION only (_couchmode_platform_ok / couchmode_available).
-# The autologin WRITE path still keys on the single GAMESCOPE_SESSION_FILE and is
-# deliberately unchanged here: writing a session name the box does not have is the
-# stranding failure _write_autologin already guards against, and resolving the
-# box's real name for that path is a separate, higher-risk change (see ROADMAP).
-_GAMESCOPE_SESSION_FILES = (GAMESCOPE_SESSION_FILE, "gamescope-wayland.desktop")
+# images, and every name here was MEASURED on a real box, never guessed:
+#
+#   gamescope-session.desktop   CachyOS deckify, older SteamOS images, and
+#                               Bazzite up to 43 (43 shipped it next to
+#                               gamescope-session-steam.desktop, and its own
+#                               autologin named THIS one).
+#   gamescope-wayland.desktop   newer SteamOS. Legion Go S, SteamOS 3.8.16,
+#                               2026-08-10: wayland-sessions held only it +
+#                               plasma.desktop + plasmax11.desktop, so the single
+#                               hardcoded name refused a box sitting in Game Mode.
+#                               (A Deck on SteamOS 3.9.2 ships the same name,
+#                               reported 2026-09-26; its boot mode is steamosctl's.)
+#   gamescope-session-ogui-steam.desktop
+#   gamescope-session-steam.desktop
+#                               Bazzite 44 (bazzite-deck 44.20260921.0, living-room
+#                               box 10.1.1.60, 2026-09-26): wayland-sessions holds
+#                               exactly these two + plasma.desktop. There is NO
+#                               gamescope-session.desktop any more, and the image's
+#                               own autologin (/usr/lib/sddm/sddm.conf.d/holo.conf
+#                               and /etc/sddm.conf.d/zz-holo-autologin.conf) names
+#                               gamescope-session-ogui-steam.desktop, whose Exec=
+#                               is `gamescope-session-plus ogui-steam`, the session
+#                               the box runs in Game Mode.
+#
+# THE 44 PAIR IS WHY THIS SET MATTERS TWICE. Without it the 43 -> 44 update
+# (a) dropped `couchmode` from caps (_couchmode_platform_ok saw no known name; the
+# box offered the Big Picture fallback instead), and (b) left nothing the
+# autologin resolver could name. The resolver below walks this tuple IN ORDER and
+# takes the first INSTALLED name, so the order is the policy: the historic names
+# first (a 43 box, which has both gamescope-session.desktop and
+# gamescope-session-steam.desktop, still resolves to the one its own autologin
+# uses — unchanged), then ogui-steam BEFORE plain steam, because ogui-steam is the
+# name Bazzite 44's own autologin boots. A name absent from a box never matches,
+# so adding names cannot change what an older image resolves to.
+#
+# Used by DETECTION (_couchmode_platform_ok), the autologin resolver
+# (_gamescope_session_for_autologin, which every writer goes through — _dm_write
+# still refuses any name that is not installed) and the name->mode readers
+# (session_default_get, _migrate_dropin_into_config). A frozen tuple, never a
+# pattern (§3.3): a new image gets a new MEASURED entry.
+_GAMESCOPE_SESSION_FILES = (
+    GAMESCOPE_SESSION_FILE,
+    "gamescope-wayland.desktop",
+    "gamescope-session-ogui-steam.desktop",
+    "gamescope-session-steam.desktop",
+)
 
 
 def _steamosctl_session_ok():
@@ -7457,6 +7846,42 @@ _DISARMED_DROPIN_BODY = (
     "# It is written on shutdown and blanked at startup, so it can never\n"
     "# override a session switch (including Steam's own). Deleting this file\n"
     "# is always safe.\n")
+
+
+# libostree's run-state marker for a STAGED deployment: an OS image update that
+# has been downloaded and will be finalized — and booted — at the end of this
+# shutdown. A module constant so tests can point it at a temp file.
+#
+# WHY ARMING MUST CHECK IT (measured on the Bazzite living-room box, 10.1.1.60,
+# 2026-09-26). The drop-in's Session= is resolved against the RUNNING image's
+# session files. On the reboot that applied the staged Bazzite 43 -> 44 update,
+# the ExecStop arm logged "[session] arm: game -> gamescope-session.desktop (ok)"
+# two seconds after `systemctl reboot` — a name 43 had and 44 does not ship.
+# SDDM on 44: 'Unable to find autologin session entry "gamescope-session.desktop"'
+# then 'Autologin failed!', and seat0 came up as an sddm GREETER session: the
+# KI-038 stranding, reached through an OS update instead of a bad fallback.
+#
+# The timing is on our side: ostree-finalize-staged.service does its work in its
+# ExecStop and is ordered Before=/Conflicts=final.target, i.e. at the very END of
+# shutdown, after couchside.service has already stopped — so while our ExecStop
+# (and the in-agent arm before a phone-driven reboot) runs, a staged update is
+# still announced by this file. SteamOS (A/B partitions, not ostree) never has
+# it, which is fine: its boot mode belongs to steamosctl anyway.
+_OSTREE_STAGED_DEPLOYMENT = "/run/ostree/staged-deployment"
+
+
+def _os_update_staged():
+    """True when an OS image update is staged to apply on this shutdown.
+
+    Deliberately a bare existence check. Finalization can be LOCKED
+    (rpm-ostree --lock-finalization adds staged-deployment-locked, and that
+    reboot keeps the old image) — we still treat it as staged: skipping one arm
+    is the harmless direction (the platform's own autologin decides one boot),
+    whereas guessing wrong the other way is the stranding. Never raises."""
+    try:
+        return os.path.exists(_OSTREE_STAGED_DEPLOYMENT)
+    except Exception:
+        return False
 
 
 def session_default_pref():
@@ -7858,6 +8283,87 @@ _DM_SYS_CONF_DIRS = {"sddm": "/usr/lib/sddm/sddm.conf.d",
 _DM_MAIN_CONFS = {"sddm": "/etc/sddm.conf", "plasmalogin": "/etc/plasmalogin.conf"}
 _DM_STATE_FILES = {"sddm": "/var/lib/sddm/state.conf",
                    "plasmalogin": "/var/lib/plasmalogin/state.conf"}
+
+
+def _last_user_line(path, found=""):
+    """Last `User=` value in `path`, or `found` unchanged when unreadable/absent.
+    Same line-scan as _last_session_line (the key only occurs under [Autologin]
+    in practice)."""
+    try:
+        with open(path, "r", encoding="utf-8", errors="replace") as f:
+            for line in f:
+                line = line.strip()
+                if line.lower().startswith("user="):
+                    found = line.split("=", 1)[1].strip()
+    except OSError:
+        pass
+    return found
+
+
+def _dm_current_autologin_user(dm):
+    """The [Autologin] User= the display manager will use, merged in its own
+    order (sys conf.d, /etc conf.d, then the main conf), or "" when none is
+    configured. SDDM only autologs in when this is non-empty (Display::start),
+    so an empty answer means the greeter IS this box's normal state."""
+    confdir = _DM_CONF_DIRS.get(dm)
+    if not confdir:
+        return ""
+    found = ""
+    for d in (_DM_SYS_CONF_DIRS.get(dm), confdir):
+        if not d:
+            continue
+        try:
+            names = sorted(fn for fn in os.listdir(d) if fn.endswith(".conf"))
+        except OSError:
+            names = []
+        for fn in names:
+            found = _last_user_line(os.path.join(d, fn), found)
+    return _last_user_line(_DM_MAIN_CONFS.get(dm, ""), found)
+
+
+def _stranded_note_path():
+    """Where arm leaves the stale session name for the next start's consume.
+    Beside config.json (the agent-writable state dir); resolved at call time so
+    tests repoint it with CONFIG_PATH."""
+    return os.path.join(os.path.dirname(CONFIG_PATH), "session-stranded")
+
+
+def _remember_stranded(dm):
+    """Called by arm BEFORE it rewrites or clears our drop-in. If the drop-in
+    names a session this image does not have, this boot's autologin already
+    failed and the box is at the greeter. An app-triggered update proves why the
+    note is needed: install.sh replaces the binary, then restarts the service,
+    so the NEW code's ExecStop arm rewrites a VALID name before the new process
+    starts, and consume would find nothing stale to rescue. Best effort."""
+    named = _last_session_line(_dm_dropin(dm))
+    if not named:
+        return
+    installed = _installed_session_files()
+    if not installed or named in installed:
+        return
+    try:
+        with open(_stranded_note_path(), "w") as f:
+            f.write(named + "\n")
+        print("[session] arm: our drop-in named %r, which this image does not "
+              "ship; noted it so the next start can rescue a stranded greeter"
+              % named, flush=True)
+    except OSError:
+        pass
+
+
+def _take_stranded_note():
+    """Read and delete the note _remember_stranded left, or ""."""
+    p = _stranded_note_path()
+    try:
+        with open(p, "r", encoding="utf-8", errors="replace") as f:
+            name = os.path.basename(f.read().strip())
+    except OSError:
+        return ""
+    try:
+        os.unlink(p)
+    except OSError:
+        pass
+    return name
 
 
 def _dm_current_session_file(dm):
@@ -8370,40 +8876,311 @@ def _migrate_dropin_into_config(dm):
 def session_default_consume(mock=False):
     """Startup half of the arm/consume cycle: disarm the drop-in.
 
-    The agent only runs after the display manager has already autologged in, so
-    by the time this executes the preference has done its job for this boot.
-    Blanking it here is what guarantees that nothing of ours can defeat a
-    session switch for the rest of the box's uptime — the failure the owner hit
-    with Steam's own button.
+    By the time this runs the display manager has either autologged in or tried
+    to, so the preference has done its job for this boot. Blanking it here is
+    what guarantees that nothing of ours can defeat a session switch for the
+    rest of the box's uptime — the failure the owner hit with Steam's own button.
+
+    OURS IS REMOVED WHATEVER THE CURRENT BACKEND IS. This used to return early
+    unless the backend was a drop-in manager, on the theory that a steamosctl
+    Deck or a greetd box has nothing of ours to consume. The Bazzite 43 -> 44
+    update disproved it (living-room box, 2026-09-26): 43 had no working
+    steamosctl, so the sddm backend armed zzz-couchside-session.conf at the
+    update's shutdown; on 44 `steamosctl get-default-login-mode` ANSWERS, the
+    backend became "steamosctl", and this function walked away from the file it
+    had written — ORPHANED, naming a session 44 does not ship, and re-read by
+    SDDM at every boot. The file is ours whatever the backend (the drop-in path
+    derives from the DETECTED manager, and the platform's own files are never
+    touched), so if it carries a Session= line it goes.
+
+    The migration rule is unchanged: a preference that only lives in the drop-in
+    (pre-2.9.67) is adopted into config BEFORE blanking, and if that save fails
+    the file is left alone.
+
+    Also the trigger for the stranded-box rescue (_session_rescue_start): when
+    the file we are removing named a session this image does not have, SDDM has
+    probably already failed autologin and parked seat0 at a greeter.
 
     Best-effort and silent on failure: a box with no grant simply keeps whatever
     is on disk, which is the pre-2.9.67 behaviour, not something worse."""
     if mock:
         return
-    # Only for the managers we actually write drop-ins for. A steamosctl Deck
-    # keeps its preference in Valve's own state and a greetd box in its
-    # config.toml; blanking or arming anything here would fight the real owner
-    # of that setting.
-    if session_default_backend() not in _DM_CONF_DIRS:
-        return
+    # The drop-in lives in the DETECTED manager's conf dir; a greetd/gdm box has
+    # none of ours to consume (greetd's config.toml is owned by its own writer).
     dm = detect_display_manager()
     if dm not in _DM_CONF_DIRS:
         return
-    if not _arm_hook_installed():
+    backend = session_default_backend()
+    if backend != "steamosctl" and not _arm_hook_installed():
         # Say it ONCE, at startup, where support will find it. The capability is
         # already hidden (see _dm_session_ok); this explains why, and what fixes
-        # it, without a per-request log line.
+        # it, without a per-request log line. (Before 2026-09-26 this sat behind
+        # "backend is a drop-in manager", which _dm_session_ok can only return
+        # WITH the hook installed — so it could never print.)
         print("[session] %s has no %s ExecStop, so the boot preference cannot be "
               "written for the next boot: the setting is hidden. Re-run the "
               "installer from a terminal to restore it. (Rebooting FROM THE APP "
               "still applies a preference already stored.)"
               % (SERVICE_UNIT_PATH, _ARM_FLAG), flush=True)
+    dropin = _dm_dropin(dm)
+    named = _last_session_line(dropin)
+    noted = _take_stranded_note()
+    # "Missing" needs a POSITIVE miss: an unreadable session dir is unknown, not
+    # absent (the same rule _dm_write applies), and unknown never restarts a
+    # display manager.
+    installed = _installed_session_files() if (named or noted) else set()
+    missing = bool(named and installed and named not in installed)
+    # A stale name the previous process's ExecStop arm noted before it rewrote
+    # the drop-in (the app-update path) is the same evidence, one step removed.
+    rescue_name = named if missing else (
+        noted if (noted and installed and noted not in installed) else "")
+    if backend is None and named and not missing:
+        # No arm hook (a pre-2.9.67 unit that the app's fast-path update never
+        # rewrote): on this box our drop-in IS the working boot preference and
+        # nothing would ever re-arm it, so blanking it would silently delete the
+        # owner's choice. Leave it, as before 2026-09-26. A drop-in naming a
+        # session this image LACKS is removed regardless: it cannot work, and it
+        # strands the box at the greeter.
+        return
+    if named and backend not in _DM_CONF_DIRS:
+        print("[session] consume: removing an ORPHANED %s drop-in (Session=%s): "
+              "backend %r owns this box's boot mode now, so nothing of ours "
+              "should be steering autologin" % (dm, named, backend), flush=True)
     try:
         _migrate_dropin_into_config(dm)
     except Exception:
         return  # preference not saved -> do NOT blank the file that still holds it
     if _dm_disarm(dm):
         _dm_neutralise_legacy(dm)
+    if rescue_name:
+        # main() calls consume unguarded, before the server binds: nothing on
+        # the rescue path may take agent startup down with it (reachability is
+        # the product — a crash-looping agent at a greeter is the worst case).
+        try:
+            _session_rescue_start(dm, rescue_name)
+        except Exception as e:
+            print("[session] rescue not started: %s" % str(e)[:160], flush=True)
+
+
+# ---------------------------------------------------------------------------
+# Stranded-box rescue.
+#
+# The failure it exists for, measured on the Bazzite living-room box 2026-09-26:
+# the 43 -> 44 image update left our drop-in naming gamescope-session.desktop,
+# which 44 does not ship. The boot journal:
+#
+#   11:40:48.177 couchside.service started
+#   11:40:48.298 sddm.service started
+#   11:40:48.373 sddm: Unable to find autologin session entry "gamescope-session.desktop"
+#   11:40:48.373 sddm: Autologin failed!
+#   11:40:48.436 logind: New session 'c1' of user 'sddm' with class 'greeter'
+#
+# ...and the TV sat at a password prompt until the owner fixed it over ssh.
+# Removing the drop-in (consume, above) fixes the NEXT boot; this fixes THIS one.
+# The agent is a system service, so it is up and reachable at the greeter — which
+# is the only reason a rescue is possible at all.
+#
+# All of these must hold, or nothing happens:
+#   1. at startup OUR drop-in named a session that is POSITIVELY not installed;
+#   2. consume removed it, VERIFIED by reading it back (a restart that re-reads
+#      the same bad file would just fail again);
+#   3. the display manager's merged config now names a session that IS
+#      installed (otherwise a restart autologins nowhere and only kills the
+#      greeter someone may be typing into);
+#   4. every logind session on seat0 is class "greeter" — seen on TWO
+#      consecutive polls, the second immediately before the restart. Any other
+#      class there (a user session, a lock screen, a class this code has never
+#      seen) means someone is on the seat: never fire;
+#   5. the existing restart-session action is present, still the STOCK argv
+#      (`sudo systemctl restart <unit>`), aimed at the detected unit. No new
+#      command, no new sudo grant; an owner-customised action is not ours to
+#      fire unattended.
+#
+# Idempotent by construction: (1) cannot be true again once the file is blank,
+# and a process fires at most once. The watch is bounded because the agent can
+# start before the display manager (it did here, by 120 ms), so "no session on
+# seat0 yet" means wait, not give up — but never forever.
+# ---------------------------------------------------------------------------
+
+_LOGIND_SEAT = "seat0"
+_SESSION_RESCUE_WATCH_S = 120.0
+_SESSION_RESCUE_POLL_S = 2.0
+# Set by _session_rescue_start so tests (and nothing else) can join the watcher.
+_SESSION_RESCUE_THREAD = None
+
+
+def _seat_session_classes(seat=_LOGIND_SEAT):
+    """Class of every logind session on `seat`: a list ([] = none), or None when
+    logind cannot be read completely. Never raises.
+
+    `loginctl list-sessions --no-legend` only for the IDs — its first column is
+    the session id on every systemd version, while the rest of the layout moved
+    (systemd 259 on Bazzite 44 prints SESSION UID USER SEAT LEADER CLASS TTY IDLE
+    SINCE). Seat and Class then come from `show-session -p Class -p Seat`, whose
+    key=value shape is stable. Unprivileged (MEASURED: works as the desktop user).
+
+    A session id that is not plain alphanumerics is an output shape we do not
+    understand: the whole answer becomes None (reject, do not sanitise), and so
+    does any show-session failure — a session that vanished between the two
+    calls might have been the user's. Unknown never fires a rescue."""
+    try:
+        r = subprocess.run(["loginctl", "list-sessions", "--no-legend"],
+                           capture_output=True, text=True, timeout=5)
+    except Exception:
+        return None
+    if r.returncode != 0:
+        return None
+    classes = []
+    for line in (r.stdout or "").splitlines():
+        parts = line.split()
+        if not parts:
+            continue
+        sid = parts[0]
+        if not re.fullmatch(r"[A-Za-z0-9]{1,32}", sid):
+            return None
+        try:
+            s = subprocess.run(["loginctl", "show-session", sid,
+                                "-p", "Class", "-p", "Seat"],
+                               capture_output=True, text=True, timeout=5)
+        except Exception:
+            return None
+        if s.returncode != 0:
+            return None
+        props = {}
+        for kv in (s.stdout or "").splitlines():
+            if "=" in kv:
+                k, v = kv.split("=", 1)
+                props[k.strip()] = v.strip()
+        if props.get("Seat") == seat:
+            classes.append(props.get("Class", ""))
+    return classes
+
+
+def _seat_state(classes):
+    """Classify _seat_session_classes() output for the rescue:
+    "unknown" (None) | "empty" | "greeter-only" | "occupied". "occupied" is
+    ANY non-greeter class — user, lock-screen, or one we have never seen."""
+    if classes is None:
+        return "unknown"
+    if not classes:
+        return "empty"
+    if all(c == "greeter" for c in classes):
+        return "greeter-only"
+    return "occupied"
+
+
+def _restart_session_action_for(unit):
+    """True when ACTIONS["restart-session"] is the stock argv aimed at `unit`.
+
+    _retarget_restart_session has already aimed the stock action at the detected
+    manager — or removed it when sudoers has no NOPASSWD grant — so this is the
+    existing, already-allowlisted rescue button, and nothing wider."""
+    act = ACTIONS.get("restart-session")
+    if not act or not unit:
+        return False
+    cmd = act.get("cmd")
+    return _is_stock_restart_session_cmd(cmd) and cmd[3] == unit
+
+
+def _session_rescue_watch(dm, missing):
+    """Bounded watch of seat0; restarts the display manager ONCE if the box is
+    sitting at a greeter. Returns True only when the restart ran and reported
+    ok. Runs on its own thread (_session_rescue_start); never raises."""
+    deadline = time.monotonic() + _SESSION_RESCUE_WATCH_S
+    greeter_seen = 0
+    try:
+        while True:
+            state = _seat_state(_seat_session_classes())
+            if state == "occupied":
+                print("[session] rescue: a non-greeter session is on %s; "
+                      "autologin worked, no restart needed" % _LOGIND_SEAT,
+                      flush=True)
+                return False
+            if state == "greeter-only":
+                greeter_seen += 1
+                if greeter_seen >= 2:
+                    break
+            else:
+                greeter_seen = 0
+            if time.monotonic() >= deadline:
+                print("[session] rescue: gave up after %ds (%s last seen as %s); "
+                      "if the TV shows a login screen, log in or run "
+                      "`sudo systemctl restart %s`"
+                      % (int(_SESSION_RESCUE_WATCH_S), _LOGIND_SEAT, state, dm),
+                      flush=True)
+                return False
+            time.sleep(_SESSION_RESCUE_POLL_S)
+        unit = _display_manager_unit_name()
+        if not _restart_session_action_for(unit):
+            print("[session] RESCUE BLOCKED: %s is stuck at the %s greeter "
+                  "(autologin named the missing %r), but there is no stock "
+                  "restart-session action for %r to fire. Log in on the TV, or "
+                  "run `sudo systemctl restart %s`; the next boot is already "
+                  "fixed." % (_LOGIND_SEAT, dm, missing, unit, unit or dm),
+                  flush=True)
+            return False
+        print("[session] RESCUE: %s is stuck at the %s greeter because "
+              "autologin named %r, which this OS image does not ship. Our "
+              "drop-in is gone; restarting %s through the restart-session "
+              "action so the platform's own autologin runs now."
+              % (_LOGIND_SEAT, dm, missing, unit), flush=True)
+        r = real_action("restart-session")
+        ok = bool(r.get("ok"))
+        print("[session] RESCUE: restart-session %s (exit %s)%s"
+              % ("ok" if ok else "FAILED", r.get("exit_code"),
+                 "" if ok else ": " + (r.get("stderr") or "").strip()[:160]),
+              flush=True)
+        return ok
+    except Exception as e:
+        print("[session] rescue aborted: %s" % str(e)[:160], flush=True)
+        return False
+
+
+def _session_rescue_start(dm, missing):
+    """Gate + launch for the stranded-box rescue (conditions 2 and 3 of the block
+    above; the watcher owns 4 and 5). Returns the watcher thread, or None when a
+    gate refused — each refusal is logged loudly, because a box in this state is
+    by definition one somebody is about to debug."""
+    global _SESSION_RESCUE_THREAD
+    if _last_session_line(_dm_dropin(dm)):
+        print("[session] RESCUE NOT ATTEMPTED: our %s drop-in still names %r "
+              "(could not clear it), so restarting %s would fail autologin again"
+              % (dm, missing, dm), flush=True)
+        return None
+    platform = _dm_current_session_file(dm)
+    # Real distro configs use bare names ("Session=plasma", verbatim on Bazzite
+    # 44's 99-plasma-setup.conf and CachyOS's sys conf). SDDM's
+    # Display::findSessionEntry appends ".desktop" before looking the entry up
+    # (READ in SDDM's src/daemon/Display.cpp, 2026-09-26 — the same function
+    # that logs "Unable to find autologin session entry"), so compare the way it
+    # will. That file also shows why a restart is a rescue at all: a fresh
+    # daemon has `first` set, and `first || Relogin` re-attempts autologin.
+    if platform and not platform.endswith(".desktop"):
+        platform += ".desktop"
+    if not platform or platform not in _installed_session_files():
+        print("[session] RESCUE NOT ATTEMPTED: removed our drop-in (it named the "
+              "missing %r), but %s's own config names %r, which is not an "
+              "installed session either; a restart would not autologin anywhere"
+              % (missing, dm, platform or None), flush=True)
+        return None
+    if not _dm_current_autologin_user(dm):
+        # SDDM only autologs in with a non-empty [Autologin] User=. Without one
+        # the greeter is this box's NORMAL state (the owner logs in by hand), so
+        # a restart would only flash the login screen.
+        print("[session] RESCUE NOT ATTEMPTED: removed our drop-in (it named the "
+              "missing %r), but %s has no [Autologin] User= configured, so a "
+              "greeter is expected here" % (missing, dm), flush=True)
+        return None
+    print("[session] our %s drop-in named %r, which this OS image does not "
+          "ship; removed it (the platform's own %r decides from here). Watching "
+          "%s for up to %ds in case this boot is already parked at the greeter."
+          % (dm, missing, platform, _LOGIND_SEAT, int(_SESSION_RESCUE_WATCH_S)),
+          flush=True)
+    t = threading.Thread(target=_session_rescue_watch, args=(dm, missing),
+                         daemon=True, name="session-rescue")
+    _SESSION_RESCUE_THREAD = t
+    t.start()
+    return t
 
 
 def session_default_arm():
@@ -8434,9 +9211,28 @@ def session_default_arm():
         print("[session] arm: no writable display manager detected; nothing to do",
               flush=True)
         return
+    # Every branch below rewrites or clears our drop-in; keep the evidence of a
+    # stranding first (see _remember_stranded).
+    _remember_stranded(dm)
     if pref in (None, "last"):
         print("[session] arm: preference %r needs no drop-in (platform decides)"
               % (pref,), flush=True)
+        _dm_disarm(dm)
+        return
+    if _os_update_staged():
+        # The next boot is a DIFFERENT OS image, and the session file below would
+        # be resolved against THIS one. That is exactly how the Bazzite 43 -> 44
+        # update stranded the living-room box (see _OSTREE_STAGED_DEPLOYMENT):
+        # a name valid on 43, armed at the update's shutdown, absent on 44. The
+        # new image's session names are unknowable from here, so we own nothing
+        # for this one boot — the platform's own autologin decides it, exactly
+        # like "last" — and the stored preference re-arms from the next shutdown
+        # on the new image, resolved against ITS session files.
+        print("[session] arm: an OS image update is staged (%s); NOT arming %r "
+              "for this boot: the next image's session names are unknown, so "
+              "its own autologin decides. The preference is kept and applies "
+              "from the next shutdown." % (_OSTREE_STAGED_DEPLOYMENT, pref),
+              flush=True)
         _dm_disarm(dm)
         return
     if pref == "game":
@@ -8616,9 +9412,11 @@ def _gamescope_session_for_autologin():
     """The gamescope Game Mode session file that EXISTS on this box, or None.
 
     The Game-Mode mirror of _desktop_session_for_autologin(): images name the
-    session differently — gamescope-session.desktop on SteamOS/Bazzite/ChimeraOS,
-    gamescope-wayland.desktop on some SteamOS builds (MEASURED on a Legion Go S,
-    SteamOS 3.8.16, 2026-08-10) — so writing the single hardcoded name into an
+    session differently — gamescope-session.desktop on CachyOS/older SteamOS/
+    Bazzite <= 43, gamescope-wayland.desktop on some SteamOS builds (MEASURED on a Legion
+    Go S, SteamOS 3.8.16, 2026-08-10), gamescope-session-ogui-steam.desktop on
+    Bazzite 44 (MEASURED 2026-09-26; see _GAMESCOPE_SESSION_FILES for why the
+    tuple's ORDER is the policy) — so writing the single hardcoded name into an
     autologin entry strands a box whose real session is named otherwise, the same
     greeter-drop _dm_write already refuses. Degrades CLOSED like the desktop side:
     None (refuse) when the dirs cannot be enumerated or no known gamescope session
@@ -9370,6 +10168,8 @@ def mock_status():
         "agent_version": VERSION,
         "caps": CAPS,
         "config_writable": True,
+        # Healthy by default; `--mock-install-health damaged` for the banner.
+        "install_health": mock_install_health(),
         "history": _history_snapshot(),
     }
 
@@ -23623,6 +24423,100 @@ def _udp_discovery_responder(port):
             pass
 
 
+def render_panel_page(token, port):
+    """The on-box Steam Deck quick panel (GET /panel): a self-contained control
+    surface shown in Game Mode via a kiosk-browser focus-swap — the Decky-free
+    alternative (docs/memory/project_deck-overlay.md). LOOPBACK-ONLY + Host-checked
+    like /pair because it embeds the bearer token so the box's OWN browser can call
+    the local API; nothing on the LAN may render it. No external resources: works on
+    a box with no net. Phase 1b renders live vitals from /api/status (fields match
+    real_status(); every one is optional and drawn only when present — an old agent
+    or a box without a battery/cpufreq simply shows fewer tiles). The token is
+    injected as a JSON string literal (json.dumps), safely escaped for the script."""
+    tok_js = json.dumps(token)
+    return (
+        "<!doctype html><html lang=\"en\"><head>"
+        "<meta charset=\"utf-8\">"
+        "<meta name=\"viewport\" content=\"width=device-width,initial-scale=1\">"
+        "<title>Couchside</title>"
+        "<style>"
+        "html,body{margin:0;height:100%;background:#0b1220;color:#e8ecf3;"
+        "font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;"
+        "-webkit-font-smoothing:antialiased;}"
+        "body{display:flex;flex-direction:column;padding:4vmin 5vmin;box-sizing:border-box;}"
+        "header{display:flex;align-items:baseline;gap:.6em;flex-wrap:wrap;}"
+        "h1{font-size:min(6vmin,40px);font-weight:700;margin:0;}"
+        ".v{color:#8b95a7;font-size:min(2.8vmin,17px);}"
+        ".dot{width:.6em;height:.6em;border-radius:50%;display:inline-block;margin-left:.2em;"
+        "background:#3ddc84;box-shadow:0 0 8px #3ddc84a0;}"
+        ".dot.bad{background:#ff6b6b;box-shadow:0 0 8px #ff6b6ba0;}"
+        ".accent{height:4px;width:88px;background:#f5c64b;border-radius:2px;margin:1.4vmin 0 3vmin;}"
+        ".grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(200px,1fr));gap:2.2vmin;}"
+        ".tile{background:#131c2e;border-radius:16px;padding:2.6vmin 2.8vmin;}"
+        ".k{color:#8b95a7;font-size:min(2.4vmin,13px);text-transform:uppercase;letter-spacing:.7px;}"
+        ".val{font-size:min(5.4vmin,32px);font-weight:650;margin-top:.3em;line-height:1.1;}"
+        ".sub{color:#8b95a7;font-size:min(2.4vmin,14px);margin-top:.25em;}"
+        ".hint{margin-top:auto;padding-top:3vmin;color:#6b7688;font-size:min(2.5vmin,14px);}"
+        ".sec{font-size:min(3vmin,18px);color:#c7cede;margin:3.6vmin 0 1.6vmin;font-weight:600;}"
+        ".acts{display:grid;grid-template-columns:repeat(auto-fill,minmax(220px,1fr));gap:1.8vmin;}"
+        ".btn{appearance:none;border:0;text-align:left;cursor:pointer;background:#182238;color:#e8ecf3;"
+        "border-radius:14px;padding:2.2vmin 2.4vmin;font:inherit;font-size:min(3.2vmin,17px);font-weight:600;}"
+        ".btn .bd{display:block;color:#8b95a7;font-size:min(2.3vmin,13px);font-weight:400;margin-top:.3em;}"
+        ".btn.high{background:#2a1620;box-shadow:inset 0 0 0 1px #d3556a55;}"
+        ".btn.arm{background:#7a2233;color:#fff;}"
+        ".btn:active{filter:brightness(1.25);}"
+        "</style></head><body>"
+        "<header><h1>Couchside</h1><span class=\"v\" id=\"host\">connecting\u2026</span>"
+        "<span class=\"dot bad\" id=\"dot\"></span></header>"
+        "<div class=\"accent\"></div>"
+        "<div class=\"grid\" id=\"grid\"></div>"
+        "<h2 class=\"sec\" id=\"actsh\" style=\"display:none\">Quick actions</h2>"
+        "<div class=\"acts\" id=\"acts\"></div>"
+        "<p class=\"hint\">On-box panel \u00b7 press the <b>STEAM</b> button or <b>B</b> to close.</p>"
+        "<script>(function(){"
+        "var T=" + tok_js + ";"
+        "function j(p){return fetch(p,{headers:{Authorization:'Bearer '+T}}).then(function(r){return r.ok?r.json():Promise.reject(r.status);});}"
+        "function el(t,c,h){var e=document.createElement(t);if(c)e.className=c;if(h!=null)e.innerHTML=h;return e;}"
+        "function tile(k,val,sub){var t=el('div','tile');t.appendChild(el('div','k',k));"
+        "t.appendChild(el('div','val',val));if(sub)t.appendChild(el('div','sub',sub));return t;}"
+        "function upt(s){s=Math.floor(s||0);var d=Math.floor(s/86400),h=Math.floor(s%86400/3600),m=Math.floor(s%3600/60);"
+        "return d?d+'d '+h+'h':(h?h+'h '+m+'m':m+'m');}"
+        "function bps(b){b=b||0;if(b<1024)return b+' B/s';if(b<1048576)return (b/1024).toFixed(0)+' KB/s';return (b/1048576).toFixed(1)+' MB/s';}"
+        "function draw(s){"
+        "document.getElementById('host').textContent=(s.hostname||'box')+' \u00b7 v'+(s.agent_version||'?');"
+        "document.getElementById('dot').className='dot';"
+        "var g=document.getElementById('grid');g.innerHTML='';"
+        "if(s.cpu_temp_c!=null)g.appendChild(tile('CPU temp',Math.round(s.cpu_temp_c)+'\u00b0'));"
+        "if(s.load&&s.load.length)g.appendChild(tile('Load',s.load[0].toFixed(2),'1 min'));"
+        "var m=s.mem||{};if(m.total_mb)g.appendChild(tile('Memory',Math.round(m.used_mb*100/m.total_mb)+'%',(m.used_mb/1024).toFixed(1)+' / '+(m.total_mb/1024).toFixed(1)+' GB'));"
+        "var b=s.battery;if(b&&b.pct!=null)g.appendChild(tile('Battery',b.pct+'%',b.status||''));"
+        "var c=s.cpu;if(c&&c.cur_mhz)g.appendChild(tile('CPU clock',(c.cur_mhz/1000).toFixed(1)+' GHz',c.governor||''));"
+        "if(s.net_rx_bps!=null)g.appendChild(tile('Network','\u2193 '+bps(s.net_rx_bps),'\u2191 '+bps(s.net_tx_bps)));"
+        "g.appendChild(tile('Uptime',upt(s.uptime_s)));"
+        "}"
+        "function off(){document.getElementById('dot').className='dot bad';}"
+        "function tick(){j('/api/status').then(draw).catch(off);}"
+        # Quick actions. The id is server-provided (from /api/actions) and looked
+        # up in the agent's ACTIONS allowlist on POST (unknown -> 404); the panel
+        # never composes an id. danger=='high' arms a 3s cancellable countdown
+        # (reboot/poweroff/restart-session) before firing; lesser actions fire on
+        # tap. A second tap during the countdown cancels.
+        "function act(a){"
+        "function lbl(x){b.textContent=x;if(a.description){var d=el('span','bd');d.textContent=a.description;b.appendChild(d);}}"
+        "var b=el('button','btn'+(a.danger=='high'?' high':'')),armed=false,timer=null,left=0;"
+        "function reset(){armed=false;left=0;if(timer){clearInterval(timer);timer=null;}b.className='btn'+(a.danger=='high'?' high':'');lbl(a.label);}"
+        "function fire(){reset();b.textContent=a.label+' …';fetch('/api/actions/'+a.id,{method:'POST',headers:{Authorization:'Bearer '+T}}).then(function(){setTimeout(reset,1500);},function(){setTimeout(reset,1500);});}"
+        "function tick2(){if(left<=0){fire();return;}b.textContent=a.label+' in '+left+'… tap to cancel';left--;}"
+        "b.onclick=function(){if(a.danger!='high'){fire();return;}if(armed){reset();return;}armed=true;left=3;b.className='btn arm';tick2();timer=setInterval(tick2,1000);};"
+        "lbl(a.label);return b;}"
+        "function loadActions(){j('/api/actions').then(function(d){var a=(d&&d.actions)||[];if(!a.length)return;"
+        "document.getElementById('actsh').style.display='';var w=document.getElementById('acts');w.innerHTML='';"
+        "a.forEach(function(x){w.appendChild(act(x));});}).catch(function(){});}"
+        "tick();setInterval(tick,3000);loadActions();"
+        "})();</script></body></html>"
+    )
+
+
 def render_pair_page(token, port):
     """Self-contained dark HTML page rendering the pairing QR offline.
 
@@ -23870,13 +24764,26 @@ class Handler(BaseHTTPRequestHandler):
         http://attacker.tld:PORT/pair: the socket peer IS loopback then, but
         the Host header still says attacker.tld. The legitimate launcher opens
         http://localhost:PORT/pair, so requiring a loopback Host costs nothing.
+
+        The host, once the brackets/port are stripped, must be EXACTLY a
+        loopback name or address. It is matched by parsing, not by prefix: a
+        `startswith("127.")` test used to pass here, but it also accepts a
+        rebindable hostname like `127.0.0.1.evil.com` (a name an attacker points
+        at 127.0.0.1), which defeats the whole gate. `ipaddress.ip_address`
+        rejects anything that is not a real IP, so only genuine 127.0.0.0/8
+        addresses (and the two explicit names) get through.
         """
         host = (self.headers.get("Host") or "").strip().lower()
         if host.startswith("["):  # [::1] or [::1]:port
             host = host[1:].split("]", 1)[0]
         elif host.count(":") == 1:
             host = host.rsplit(":", 1)[0]  # strip :port
-        return host in ("localhost", "::1") or host.startswith("127.")
+        if host in ("localhost", "::1"):
+            return True
+        try:
+            return ipaddress.ip_address(host).is_loopback
+        except ValueError:
+            return False
 
     def _current_token(self):
         """The token to advertise on /pair: fresh from the token file if we
@@ -24077,6 +24984,19 @@ class Handler(BaseHTTPRequestHandler):
                     self._send(403, {"error": "forbidden"}, started)
                     return
                 self._send_html(200, render_update_page(), started)
+                return
+
+            if path == "/panel":
+                # LOCALHOST-ONLY, same two gates as /pair: the on-box Deck quick
+                # panel embeds the bearer token so the box's own kiosk browser can
+                # call the local API, so a non-loopback client MUST NOT see it
+                # (docs/memory/project_deck-overlay.md). The loopback + Host checks
+                # ARE the security model — this page is never under /api and never
+                # bearer-authed itself.
+                if not self._is_loopback() or not self._host_header_is_local():
+                    self._send(403, {"error": "forbidden"}, started)
+                    return
+                self._send_html(200, render_panel_page(self._current_token(), self.port), started)
                 return
 
             if path == "/api/pair/status":
@@ -25255,7 +26175,7 @@ class Handler(BaseHTTPRequestHandler):
                                started)
                     return
                 led_name = req.get("led")
-                effect, color, speed, brightness, reverse, verr = _validate_effect_body(req)
+                effect, color, speed, brightness, reverse, shape, verr = _validate_effect_body(req)
                 if verr is not None:
                     self._send(400, {"error": verr}, started)
                     return
@@ -25311,11 +26231,12 @@ class Handler(BaseHTTPRequestHandler):
                         _MOCK_FX[led_name] = {
                             "effect": effect, "color": color,
                             "speed": speed if speed is not None else 50,
-                            "brightness": brightness if brightness is not None else 100}
+                            "brightness": brightness if brightness is not None else 100,
+                            **shape}
                     self._send(200, {"ok": True, "led": led_name,
                                      "active": _MOCK_FX.get(led_name)}, started)
                     return
-                res = apply_led_effect(led_name, effect, color, speed, brightness)
+                res = apply_led_effect(led_name, effect, color, speed, brightness, shape)
                 if res is None:
                     self._send(404, {"error": "unknown led"}, started)
                     return
@@ -25338,7 +26259,7 @@ class Handler(BaseHTTPRequestHandler):
                                started)
                     return
                 device = req.get("device")
-                effect, color, speed, brightness, reverse, verr = _validate_effect_body(req)
+                effect, color, speed, brightness, reverse, shape, verr = _validate_effect_body(req)
                 if verr is not None:
                     self._send(400, {"error": verr}, started)
                     return
@@ -26113,6 +27034,43 @@ class Handler(BaseHTTPRequestHandler):
                 return
 
             # POST /api/screensaver: {"op":"start","theme"?,"tier"?} | {"op":"stop"}
+            # POST /api/panel: {"op":"open"} launches the on-box quick panel in
+            # Game Mode (the Decky-free focus-swap panel, docs/memory/project_deck-
+            # overlay.md); {"op":"close"} stops it. NO client-supplied values — the
+            # panel URL is agent-generated (_panel_url) and the tile is reused from
+            # the Player, so there is nothing to validate/sanitise. Rate-limited on
+            # the SAME clock as the Player's open (KI-019: a token holder must not be
+            # able to strobe the TV).
+            if path == "/api/panel":
+                if not player_available():
+                    self._send(404, {"error": "panel launcher not installed"}, started)
+                    return
+                try:
+                    req = json.loads(body.decode("utf-8")) if body else {}
+                    if not isinstance(req, dict):
+                        raise ValueError
+                    op = req.get("op")
+                except (ValueError, UnicodeDecodeError):
+                    self._send(400, {"error": "json body with op required"}, started)
+                    return
+                if op == "open":
+                    now = time.time()
+                    if now - _pl_last_open[0] < _PL_OPEN_MIN_INTERVAL_S:
+                        self._send(429, {"error": "slow down"}, started)
+                        return
+                    _pl_last_open[0] = now
+                    try:
+                        self._send(200, panel_open(), started)
+                    except RuntimeError as e:
+                        self._send(409, {"error": str(e)}, started)
+                    return
+                if op == "close":
+                    player_close()
+                    self._send(200, {"ok": True}, started)
+                    return
+                self._send(400, {"error": "unknown op"}, started)
+                return
+
             # POST /api/player: {"op":"open","service":"max","path":"/video/..."}
             #                   {"op":"close"}
             #
@@ -27824,22 +28782,102 @@ class BoundedThreadingHTTPServer(ThreadingHTTPServer):
                 pass
 
 
-def load_token(args):
-    if args.token:
-        return args.token
+def _read_token_file(path):
+    """The token in `path`, or None if unreadable/empty. Never raises."""
     try:
-        with open(args.token_file) as f:
-            token = f.read().strip()
-        if not token:
-            print("error: token file %s is empty" % args.token_file,
-                  file=sys.stderr)
-            sys.exit(1)
-        return token
-    except OSError as e:
-        print("error: cannot read token file %s: %s" % (args.token_file, e),
-              file=sys.stderr)
-        sys.exit(1)
+        with open(path) as f:
+            tok = f.read().strip()
+    except OSError:
+        return None
+    return tok or None
 
+
+def _write_token_file(path, token):
+    """Persist `token` at `path` mode 0600 (dir created 0700 if missing).
+    Returns True on success, False on any OSError — callers degrade, not die."""
+    try:
+        d = os.path.dirname(path)
+        if d:
+            os.makedirs(d, mode=0o700, exist_ok=True)
+        fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+        with os.fdopen(fd, "w") as f:
+            f.write(token + "\n")
+        os.chmod(path, 0o600)
+        return True
+    except OSError:
+        return False
+
+
+def token_candidates(token_file):
+    """Read order, most authoritative first: the configured --token-file
+    (canonical), the stock /etc path if --token-file points elsewhere, then the
+    state-dir mirror. Deduplicated, order preserved."""
+    cands = []
+    for c in (token_file, LEGACY_TOKEN_FILE, os.path.join(TOKEN_STATE_DIR, "token")):
+        if c and c not in cands:
+            cands.append(c)
+    return cands
+
+
+def resolve_token(token_file, explicit_token=None):
+    """Find (or, as a last resort, mint) the bearer token. Returns
+    (token, path, minted); `path` is the file the token came from (None for
+    --token or an in-memory token) and is what /pair re-reads per render, so a
+    Regenerate that rewrites the canonical file shows up there immediately.
+
+    Reachability is protected (CLAUDE.md section 4): a missing token FILE must
+    never crash-loop the box into unreachability. Rules, in order:
+      1. --token wins; nothing is read or written.
+      2. The first readable, non-empty candidate wins, canonical first. When it
+         is not the mirror, the mirror is (re)written 0600 to match, so a
+         rotation that wrote only the canonical file is followed on the next
+         start and the fallback always holds the CURRENT token.
+      3. Only the mirror is readable -> serve it (paired phones keep working)
+         and say the canonical file should be restored.
+      4. Nothing readable -> mint secrets.token_hex(24) (install.sh's format),
+         persist it 0600 (mirror first: the service user can write there, not
+         to /etc), warn loudly that phones must re-pair, and KEEP SERVING. A
+         fresh random token authorizes nobody until scanned: degrade closed.
+      5. Nothing writable either -> hold the minted token in memory for this
+         run and say so."""
+    if explicit_token:
+        return explicit_token, None, False
+    mirror = os.path.join(TOKEN_STATE_DIR, "token")
+    cands = token_candidates(token_file)
+    for path in cands:
+        tok = _read_token_file(path)
+        if not tok:
+            continue
+        if path == mirror and path != token_file:
+            print("WARNING: %s is missing; serving the mirrored token from %s "
+                  "(paired phones keep working). Re-run the installer to restore %s."
+                  % (token_file, mirror, token_file), file=sys.stderr, flush=True)
+        elif path != mirror and _read_token_file(mirror) != tok:
+            if _write_token_file(mirror, tok):
+                print("token: mirrored %s -> %s (the fallback if %s is ever lost)"
+                      % (path, mirror, path), flush=True)
+            else:
+                print("warning: could not mirror the token to %s; losing %s would "
+                      "need a re-pair" % (mirror, path), file=sys.stderr, flush=True)
+        return tok, path, False
+    tok = secrets.token_hex(24)
+    for path in [mirror] + [c for c in cands if c != mirror]:
+        if _write_token_file(path, tok):
+            print("WARNING: no pairing token found at any of %s -- minted a NEW one at %s. "
+                  "Every paired phone must re-pair: run `couchside pair` on the box "
+                  "(or open the app's Setup tab) to show the QR."
+                  % (", ".join(cands), path), file=sys.stderr, flush=True)
+            return tok, path, True
+    print("WARNING: no pairing token found and none of %s is writable -- using an "
+          "in-memory token for this run only. Re-pair via `couchside pair`; fix the "
+          "directory permissions so the token can persist." % ", ".join(cands),
+          file=sys.stderr, flush=True)
+    return tok, None, True
+
+
+def load_token(args):
+    """Startup token load. Kept for callers; see resolve_token for the rules."""
+    return resolve_token(args.token_file, args.token)[0]
 
 def main():
     p = argparse.ArgumentParser(description="Couchside box agent")
@@ -27866,6 +28904,12 @@ def main():
                    metavar="STATE",
                    help="--mock only: initial Decky Loader state (one of %s)"
                         % ", ".join(_DECKY_MOCK_STATES))
+    # Same pattern: `damaged` makes /api/status carry the install_health block a
+    # SteamOS update leaves behind, so the app's banner can be pressed off-box.
+    p.add_argument("--mock-install-health", default="ok",
+                   choices=_INSTALL_HEALTH_MOCK_STATES, metavar="STATE",
+                   help="--mock only: install_health in /api/status (one of %s)"
+                        % ", ".join(_INSTALL_HEALTH_MOCK_STATES))
     p.add_argument("--tls", action="store_true",
                    help="force-enable the HTTPS listener (overrides config "
                         "tls.enabled; ephemeral cert, not persisted; dev/CI)")
@@ -27889,6 +28933,11 @@ def main():
     _inject_decky_action(args.mock)
     if args.mock:
         set_decky_mock(args.mock_decky)
+        set_install_health_mock(args.mock_install_health)
+    else:
+        # Warms the install_health cache (so the first status poll does not pay
+        # for `sudo -n -l`) and leaves one journal line when /etc lost pieces.
+        install_health_log_startup()
     # A plugin job that was running when install.sh restarted us resumes its
     # read-back from the disk record (or is marked interrupted when stale).
     _decky_jobs_resume(args.mock)
@@ -27908,10 +28957,14 @@ def main():
     set_caps(args.mock)  # after the detectors above; snapshots CAPS
     port = args.port if args.port is not None else (CONFIG_PORT or DEFAULT_PORT)
 
-    Handler.token = load_token(args)
+    Handler.token, _token_path, _token_minted = resolve_token(
+        args.token_file, args.token)
     # Remembered so GET /pair can re-read the current token (unless a literal
     # --token was supplied, in which case there is no file to re-read).
-    Handler.token_file = None if args.token else args.token_file
+    # /pair re-reads this file on every render so a regenerated token is picked
+    # up without a restart — it must be the file the token actually came from
+    # (or was minted into), not the configured path that may no longer exist.
+    Handler.token_file = _token_path
     Handler.port = port
     Handler.mock = args.mock
 

@@ -14,6 +14,7 @@ import { StripLightCard } from '@/components/StripLightCard';
 import { OpenRgbCard } from '@/components/OpenRgbCard';
 import { FileDropCard } from '@/components/FileDropCard';
 import { GamingCard } from '@/components/GamingCard';
+import { InstallHealthBanner } from '@/components/InstallHealthBanner';
 import { NowPlayingCard } from '@/components/NowPlayingCard';
 import { ScreenPreview } from '@/components/ScreenPreview';
 import { StreakCelebration } from '@/components/StreakCard';
@@ -538,6 +539,12 @@ function ConsoleScreen() {
               )}
           </View>
         )}
+
+        {/* Box installation damaged (agent >= 2.9.116): an OS update took
+            root-owned install pieces out of /etc. Probe-and-appear on the
+            field — older agents omit it and the banner renders nothing; it
+            also renders nothing for pieces the box merely could not check. */}
+        {reachable && <InstallHealthBanner health={s?.install_health} />}
 
         {/* Movable cards: order + hidden from the hold-to-edit layout pref.
             Each wrapped in EditableSection (long-press → edit; ↑ ↓ hide). The

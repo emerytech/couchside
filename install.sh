@@ -7,9 +7,14 @@
 #
 # Or from a git checkout:  ./install.sh
 #
-# Flags:
+# Flags (full list: --help):
 #   --no-sudoers   skip installing /etc/sudoers.d/couchside (high-danger
 #                  actions and system journal reads will fail without it)
+#   --no-decky     turn the Decky Loader Game Mode panel OFF for this box and
+#                  REMEMBER it: couchside.service runs standalone, and later
+#                  plain runs (couchside update, the app's update) keep it off
+#   --decky        turn the panel back ON (undoes --no-decky, or a removal of
+#                  the panel from Decky's own plugin list)
 #   --uninstall    remove the agent (asks before deleting the token/sudoers)
 #   --help         this text
 set -euo pipefail
@@ -172,6 +177,20 @@ DECKY_PLUGIN_DIR="${DECKY_PLUGINS}/Couchside"
 # plugin_loader restarts DECKY ITSELF, reloading every OTHER plugin the user
 # has, so it must not happen for no reason (KI-037).
 DECKY_STAMP="/etc/couchside/decky-plugin.sha256"
+# The owner's "no Couchside panel in Decky on this box" choice, PERSISTED.
+# Written by --no-decky, or when this installer finds the panel IT installed
+# (DECKY_STAMP present) gone from Decky's plugin dir while Decky Loader is still
+# installed -- i.e. the owner removed it from Decky's own Settings > Plugins
+# list. Removing it there is otherwise harmless (the plugin has no _uninstall;
+# couchside.service keeps running), but every plain run used to put it straight
+# back and re-do the dormant hand-off to it -- including `couchside update` and
+# the app's update button, which pass no flags. While this file exists every run
+# skips the panel and runs couchside.service STANDALONE. --decky removes it.
+# Lives in the user-owned STATE_DIR, NOT /etc/couchside: a SteamOS update has
+# been observed to drop /etc/couchside wholesale while /var/lib/couchside
+# survived (KI-088), and losing THIS file would silently reinstall the panel on
+# the next update. Presence is the whole gate; the text inside is for a human.
+DECKY_PANEL_OFF="${STATE_DIR}/no-decky-panel"
 # What actually proves Decky Loader is INSTALLED. Its own uninstaller removes
 # the unit and homebrew/services/PluginLoader but LEAVES homebrew/plugins behind
 # (see decky-loader dist/uninstall.sh), so `[ -d "$DECKY_PLUGINS" ]` reports a
@@ -184,6 +203,83 @@ DECKY_LOADER="${HOME}/homebrew/services/PluginLoader"
 
 decky_installed() {
     [ -f "$DECKY_UNIT" ] || [ -e "$DECKY_LOADER" ]
+}
+
+# Record the owner's panel opt-out (see DECKY_PANEL_OFF). Written as the desktop
+# user into the user-owned STATE_DIR (section e0 chowns it on every run). Never
+# fatal: a failed write is reported and this run still skips the panel.
+decky_panel_mark_off() { # $1 = how the owner turned it off (for the human reading the file)
+    if { printf '%s\n' \
+            "# Written by install.sh: the Couchside panel for Decky Loader is OFF on this box" \
+            "# ($1). couchside.service runs on its own and updates will not reinstall" \
+            "# the panel. Turn it back on with:" \
+            "#   curl -fsSL https://couchside.tv/install.sh | bash -s -- --decky" \
+            > "$DECKY_PANEL_OFF"; } 2>/dev/null; then
+        return 0
+    fi
+    note "couldn't save that choice to $DECKY_PANEL_OFF; this run still skips the panel."
+    return 0
+}
+
+# Decide ONCE per run whether this install manages the Couchside Decky panel
+# (DECKY_PANEL=1: install/refresh it and hand the agent to the plugin, when Decky
+# Loader is installed) or runs couchside.service standalone (DECKY_PANEL=0).
+# First match wins:
+#   --decky           opt back in: drop the marker, and drop the stamp when the
+#                     panel is not on disk (else a reinstall that fails -- e.g.
+#                     offline -- would read as "removed" on the next run and
+#                     silently opt the owner back out) -> 1
+#   --no-decky        persist the opt-out -> 0
+#   marker present    the owner already chose -> 0
+#   Decky installed + stamp present + panel dir gone
+#                     we installed it and the owner removed it in Decky: record
+#                     that and do NOT reinstall it -> 0
+#   anything else     today's behaviour -> 1. That includes stamp AND panel both
+#                     absent, which is "never installed" OR "removed, then
+#                     /etc/couchside was lost" (KI-088) and cannot be told apart.
+# Only a box WITH Decky Loader can have had the panel removed through it, so the
+# removal inference is gated on decky_installed; the flags persist regardless.
+decky_panel_resolve() {
+    DECKY_PANEL=1
+    if [ "${DECKY_OPTIN:-0}" -eq 1 ]; then
+        sudo rm -f "$DECKY_PANEL_OFF" 2>/dev/null || true
+        if ! sudo test -d "$DECKY_PLUGIN_DIR"; then
+            sudo rm -f "$DECKY_STAMP" 2>/dev/null || true
+        fi
+        if sudo test -e "$DECKY_PANEL_OFF"; then
+            note "--decky: couldn't remove $DECKY_PANEL_OFF; later updates will still skip the panel."
+        elif decky_installed; then
+            note "--decky: the Couchside panel for Decky Loader is ON for this box again."
+        else
+            note "--decky: panel ON, but Decky Loader isn't installed; it is added on the first run after it is."
+        fi
+        return 0
+    fi
+    local why=""
+    if [ "${NO_DECKY:-0}" -eq 1 ]; then
+        DECKY_PANEL=0
+        decky_panel_mark_off "you ran install.sh --no-decky"
+        why="--no-decky: Couchside panel for Decky Loader OFF, and remembered for later updates."
+    elif sudo test -e "$DECKY_PANEL_OFF"; then
+        DECKY_PANEL=0
+        # Stay quiet about a Decky panel on a box that has no Decky.
+        decky_installed || return 0
+        why="Couchside panel for Decky Loader: OFF on this box (you chose that earlier)."
+    elif decky_installed && sudo test -s "$DECKY_STAMP" && ! sudo test -d "$DECKY_PLUGIN_DIR"; then
+        DECKY_PANEL=0
+        decky_panel_mark_off "you removed the Couchside plugin in Decky Loader"
+        why="The Couchside panel was removed from Decky Loader, so it will NOT be reinstalled."
+    else
+        return 0
+    fi
+    note "$why"
+    note "couchside.service runs on its own (choice saved in $DECKY_PANEL_OFF)."
+    if sudo test -d "$DECKY_PLUGIN_DIR"; then
+        note "The panel is still in Decky's plugin list and will no longer be updated from"
+        note "here: remove it in Decky > Settings > Plugins, or re-run with --decky to keep it."
+    fi
+    note "Want the panel back?  curl -fsSL https://couchside.tv/install.sh | bash -s -- --decky"
+    return 0
 }
 
 # Decky Loader MANAGER (agent 2.9.105+, project_decky-manager.md §4): the
@@ -226,6 +322,8 @@ OLD_INSTALLS=(
 NO_SUDOERS=0
 UNINSTALL=0
 NO_DECKY=0
+DECKY_OPTIN=0   # --decky: undo a persisted panel opt-out (see DECKY_PANEL_OFF)
+DECKY_PANEL=1   # resolved once per run by decky_panel_resolve
 NO_OPEN=0
 SHOW_TOKEN=0
 FRESH_TOKEN=0   # flipped to 1 only on a truly fresh token mint (see below)
@@ -234,12 +332,19 @@ usage() {
     cat <<'USAGE'
 Couchside box agent installer. Run ON the box as your desktop user.
 
-Usage: install.sh [--no-sudoers] [--no-decky] [--screensaver] [--no-screensaver] [--no-open] [--uninstall] [--help]
+Usage: install.sh [--no-sudoers] [--no-decky|--decky] [--screensaver] [--no-screensaver] [--no-open] [--uninstall] [--help]
 
   (no flags)        install/upgrade the agent (idempotent, safe to re-run)
   --no-sudoers      skip installing /etc/sudoers.d/couchside (high-danger
                     actions and system journal reads will fail without it)
-  --no-decky        skip the Decky Loader Game Mode panel even if Decky is found
+  --no-decky        turn the Decky Loader Game Mode panel OFF for this box and
+                    remember it (saved in /var/lib/couchside/no-decky-panel):
+                    couchside.service runs on its own, and later plain runs
+                    (couchside update, the app's update button) keep it off.
+                    Removing Couchside in Decky's Settings > Plugins does the
+                    same: the next run notices and remembers it.
+                    With --uninstall: leave the panel in place.
+  --decky           turn the panel back ON (undoes --no-decky or a removal)
   --screensaver     install the Couchside screensaver add-on without asking
   --no-screensaver  skip the Couchside screensaver add-on
   --player          install the Couchside Player add-on (EXPERIMENTAL)
@@ -268,6 +373,7 @@ for arg in "$@"; do
     case "$arg" in
         --no-sudoers)     NO_SUDOERS=1 ;;
         --no-decky)       NO_DECKY=1 ;;
+        --decky)          DECKY_OPTIN=1 ;;
         --screensaver)    COUCHSIDE_SCREENSAVER=1 ;;
         --no-screensaver) COUCHSIDE_SCREENSAVER=0 ;;
         --player)         COUCHSIDE_PLAYER=1 ;;
@@ -279,6 +385,11 @@ for arg in "$@"; do
         *) echo "error: unknown flag: $arg" >&2; usage >&2; exit 2 ;;
     esac
 done
+# Reject rather than guess which one was meant.
+if [ "$NO_DECKY" -eq 1 ] && [ "$DECKY_OPTIN" -eq 1 ]; then
+    echo "error: --decky and --no-decky contradict each other; pass one" >&2
+    exit 2
+fi
 # WANT_SCREENSAVER is resolved below, once ask_yn is defined (see the gate).
 
 say()  { echo "==> $*"; }
@@ -492,6 +603,11 @@ if [ "$UNINSTALL" -eq 1 ]; then
     sudo rm -f /etc/systemd/system/couchside-helper.socket \
                /etc/systemd/system/couchside-helper.service \
                /usr/local/libexec/couchside-helper.py
+    # The SteamOS fallback tree (KI-092) and the old pre-KI-092 location. The
+    # old one sits in $STATE_DIR, which is only purged when the owner also
+    # removes $ETC_DIR below -- drop it here so a kept state dir never retains
+    # a root file a root unit once ran.
+    sudo rm -rf /var/lib/couchside-root /var/lib/couchside/libexec
     # The Decky Loader MANAGER pieces (agent 2.9.105+): stop a run in flight
     # (its EXIT trap rolls the box back to the previous loader), then drop the
     # wrapper, the unit template, the opt-in marker + declined stamp + grant,
@@ -519,6 +635,13 @@ if [ "$UNINSTALL" -eq 1 ]; then
     sudo rm -rf /etc/couchside/openpuck
     sudo udevadm control --reload-rules 2>/dev/null || true
     note "removed the udev/modules-load drop-ins"
+    # The (g1) manifest describes an install that no longer exists; a kept
+    # STATE_DIR must not carry it into a later, different install.
+    sudo rm -f "$STATE_DIR/install-manifest"
+    # (f4) SteamOS keep-list drop-in: nothing of ours left to keep. (If the
+    # owner keeps $ETC_DIR below, the next SteamOS update drops it -- which is
+    # what an uninstall asked for anyway.)
+    sudo rm -f /etc/atomic-update.conf.d/couchside.conf
     if [ "$NO_DECKY" -eq 0 ] && sudo test -d "$DECKY_PLUGIN_DIR"; then
         sudo rm -rf "$DECKY_PLUGIN_DIR"
         sudo rm -f "$DECKY_STAMP"
@@ -954,6 +1077,30 @@ if [ -f "$WORK_DIR/qr.py" ] && python3 -m py_compile "$WORK_DIR/qr.py" 2>/dev/nu
     install -m 0755 "$WORK_DIR/qr.py" "$INSTALL_DIR/qr.py"
 fi
 
+# --no-decky / --decky on the passwordless fast path (review finding, PR #558):
+# they are CHOICES, not privileged work. The marker lives in the user-owned
+# STATE_DIR, so save them here -- the fast path below exits long before
+# decky_panel_resolve runs, and silently dropping the flag would leave the owner
+# believing it took. The panel itself is only added or removed by the next full
+# (privileged) install, so say that too.
+if [ "$CAN_PRIVILEGE" -eq 0 ]; then
+    if [ "$NO_DECKY" -eq 1 ]; then
+        decky_panel_mark_off "you ran install.sh --no-decky"
+        if [ -e "$DECKY_PANEL_OFF" ]; then
+            note "--no-decky: saved; later updates keep the Couchside panel off. A panel"
+            note "already in Decky's list stays until you remove it there (Decky > Settings > Plugins)."
+        fi
+    elif [ "$DECKY_OPTIN" -eq 1 ]; then
+        rm -f "${DECKY_PANEL_OFF:?}" 2>/dev/null || true
+        if [ -e "$DECKY_PANEL_OFF" ]; then
+            note "--decky: couldn't remove $DECKY_PANEL_OFF; re-run the installer from a terminal."
+        else
+            note "--decky: saved; the Couchside panel is added on the next full install (run the"
+            note "installer from a terminal on the box: curl -fsSL https://couchside.tv/install.sh | bash)."
+        fi
+    fi
+fi
+
 # ---------------------------------------------------------------------------
 # (c2) Detached update fast-path — restart without a password, or finish clean
 # ---------------------------------------------------------------------------
@@ -977,16 +1124,55 @@ fi
 # Decky) -- so DON'T gate on "Decky absent", which wrongly skipped exactly that
 # box. A pure Decky setup leaves couchside.service INACTIVE (the plugin runs its
 # own copy), so is-active is false there and the fast-path correctly stands down.
-if [ "$CAN_PRIVILEGE" -eq 0 ] && [ -s "$TOKEN_FILE" ] \
+# A box whose /etc token was lost but whose agent (>= 2.9.114) is serving from
+# the STATE_DIR mirror (or a minted token) is still a live install: accept either
+# copy, or a phone-triggered update on exactly that box would fall into the sudo
+# section below and abort detached.
+# This path writes NOTHING under /etc, so it cannot repair a box whose OS update
+# took part of /etc away (a SteamOS image update drops /etc/couchside, the udev
+# rules and modules-load; docs/memory/steamos-etc-persistence.md). Say so plainly
+# rather than report a clean update over a damaged install. Readable as the
+# desktop user: the token is theirs, the rest are world-readable. (The sudo grant
+# cannot be checked from here -- /etc/sudoers.d is root-only -- the agent's
+# install_health does that.)
+_cs_quick_path_damage_note() {
+    local p lost=""
+    for p in "$TOKEN_FILE" /etc/udev/rules.d/99-couchside-uinput.rules \
+             /etc/modules-load.d/couchside-uinput.conf \
+             /etc/udev/rules.d/99-couchside-rtc.rules; do
+        [ -s "$p" ] || lost="$lost $p"
+    done
+    [ -n "$lost" ] || return 0
+    note "WARNING: this box's installation is damaged -- missing:$lost"
+    note "(an OS update can remove these). A quick update cannot restore them."
+    note "Re-run the installer from a terminal on the box (Desktop Mode on a Deck):"
+    note "  curl -fsSL https://couchside.tv/install.sh | bash$(_cs_optout_flags)"
+}
+# " -s -- --no-sudoers" when the (g1) manifest says this box was installed with
+# --no-sudoers, so the repair we print never installs the grant the owner
+# declined. Read as this user (the manifest is ours); no manifest = no flags.
+_cs_optout_flags() {
+    local m="$STATE_DIR/install-manifest"
+    if [ -f "$m" ] && [ ! -L "$m" ] && grep -qx 'token_canonical' "$m" 2>/dev/null \
+       && ! grep -qx 'sudoers_grant' "$m" 2>/dev/null; then
+        printf ' -s -- --no-sudoers'
+    fi
+}
+if [ "$CAN_PRIVILEGE" -eq 0 ] && { [ -s "$TOKEN_FILE" ] || [ -s "$STATE_DIR/token" ]; } \
    && systemctl is-active --quiet couchside.service 2>/dev/null; then
     if sudo -n systemctl restart --no-block couchside.service 2>/dev/null; then
         say "Updated the agent and restarted couchside.service (no password needed)."
         note "Quick update: agent binary only. If the service file or sudo grants"
         note "also changed, re-run this installer from a terminal to apply those."
+        _cs_quick_path_damage_note
         exit 0
     fi
-    # No restart grant yet (installed before this build). The new agent is on
-    # disk; the running one is stale and we can't reload it without a password.
+    # No restart grant (installed before this build, OR the grant was dropped by
+    # an OS update together with the rest of /etc -- on SteamOS that is the
+    # common case, so the damage note must fire HERE too, not only after a
+    # successful restart). The new agent is on disk; the running one is stale
+    # and we can't reload it without a password.
+    _cs_quick_path_damage_note
     note "The agent was downloaded, but reloading it needs a password this"
     note "detached update doesn't have. Run this once in a terminal on the box:"
     note "  curl -fsSL https://couchside.tv/install.sh | bash"
@@ -1000,31 +1186,82 @@ fi
 say "Setting up $ETC_DIR (sudo may prompt for your password)"
 sudo mkdir -p "$ETC_DIR"
 
-MIGRATED_TOKEN=""
-if sudo test -s "$TOKEN_FILE"; then
+# Read a token candidate SAFELY into a shell value (KI-093). Refuses a symlink,
+# accepts only one token-shaped line, and prints it; empty on reject. Root then
+# writes the validated VALUE into root-owned /etc -- never a copy through the
+# candidate path. WHO reads depends on who owns the directory:
+#   _safe_token_from PATH        as this user -- for the STATE_DIR mirror. That
+#                                dir is user-owned (e0), so its contents are
+#                                user-controlled; root must not open them.
+#                                (No sudo: install.sh refuses root and already
+#                                runs AS $USER_NAME.)
+#   _safe_token_from PATH root   as root -- ONLY for /etc/<old-name>/token,
+#                                whose directory is root-owned 0755 so the user
+#                                cannot plant anything there, and whose token
+#                                may be root-only 0600 on a never-upgraded box.
+_safe_token_from() {
+    local src="$1" S="" v
+    [ "${2:-}" = root ] && S=sudo
+    $S test -f "$src" 2>/dev/null || return 1
+    $S test -L "$src" 2>/dev/null && return 1
+    v="$($S head -n 1 -- "$src" 2>/dev/null | tr -d '\r\n')" || return 1
+    case "$v" in ''|*[!A-Za-z0-9_-]*) return 1 ;; esac
+    [ "${#v}" -ge 16 ] && [ "${#v}" -le 256 ] || return 1
+    printf '%s' "$v"
+}
+
+# A regular, non-empty, non-symlink canonical token is authoritative. Anything
+# else at that path is damage and is rebuilt below.
+CANON_OK=0
+if sudo test -f "$TOKEN_FILE" && sudo test -s "$TOKEN_FILE" && ! sudo test -L "$TOKEN_FILE"; then
+    CANON_OK=1
+fi
+MIGRATED_VALUE=""
+MIGRATED_FROM=""
+if [ "$CANON_OK" -eq 1 ]; then
     note "token already exists, keeping it (existing phone pairings keep working)"
 else
-    # Look for a token to inherit from any prior install (newest-named first so
-    # couchpilot wins over rescue-agent if somehow both are present).
-    for entry in "${OLD_INSTALLS[@]}"; do
-        old_etc="${entry%%|*}"
-        old_token="${old_etc}/token"
-        if sudo test -s "$old_token"; then
-            MIGRATED_TOKEN="$old_token"
-        fi
-    done
+    # The agent (>= 2.9.114) keeps a MIRROR of the token in STATE_DIR, which
+    # survived when a SteamOS 3.8.28 update removed /etc/couchside/token on a
+    # user's Deck. If the canonical file is gone but the mirror is a valid token,
+    # THAT is the token the phones are paired to RIGHT NOW -- restore it; minting
+    # a fresh one here would silently break every pairing that still worked.
+    #
+    # The mirror OUTRANKS every pre-rename install: a leftover /etc/couchpilot or
+    # /etc/rescue-agent token is from an install retired long ago (section (i)
+    # keeps those dirs on purpose), and letting it win would un-pair every phone.
+    # Old installs are consulted ONLY when there is no valid mirror
+    # (tests/test_installer_token_order.sh).
+    if v="$(_safe_token_from "$STATE_DIR/token")"; then
+        MIGRATED_VALUE="$v"; MIGRATED_FROM="$STATE_DIR/token"
+    else
+        # Prior installs live under root-owned /etc/<name>: not user-plantable,
+        # so read as root (the token may be root-only 0600 on a box that never
+        # upgraded), same symlink + shape guard. OLD_INSTALLS is oldest-first
+        # and the last hit wins.
+        for entry in "${OLD_INSTALLS[@]}"; do
+            old_token="${entry%%|*}/token"
+            if v="$(_safe_token_from "$old_token" root)"; then
+                MIGRATED_VALUE="$v"; MIGRATED_FROM="$old_token"
+            fi
+        done
+    fi
 fi
-if sudo test -s "$TOKEN_FILE"; then
+# Root writes only a VALIDATED VALUE. `rm -f` first, so `tee` always creates a
+# fresh regular file at $TOKEN_FILE rather than writing into whatever is there.
+if [ "$CANON_OK" -eq 1 ]; then
     :
-elif [ -n "$MIGRATED_TOKEN" ]; then
-    note "migrating token from $MIGRATED_TOKEN (existing phone pairings keep working)"
-    sudo cp "$MIGRATED_TOKEN" "$TOKEN_FILE"
+elif [ -n "$MIGRATED_VALUE" ]; then
+    note "migrating token from $MIGRATED_FROM (existing phone pairings keep working)"
+    sudo rm -f "$TOKEN_FILE"
+    printf '%s\n' "$MIGRATED_VALUE" | sudo tee "$TOKEN_FILE" > /dev/null
 else
     note "generating new pairing token"
-    # FRESH install (no prior token, nothing migrated) — this is the ONE case
-    # the pairing tutorial auto-opens for. The two branches above keep their
-    # token, so re-runs and upgrades leave FRESH_TOKEN at 0 and stay silent.
+    # FRESH install (no valid token anywhere) -- the ONE case the pairing tutorial
+    # auto-opens for. The branches above keep their token, so re-runs and
+    # upgrades leave FRESH_TOKEN at 0 and stay silent.
     FRESH_TOKEN=1
+    sudo rm -f "$TOKEN_FILE"
     if command -v openssl >/dev/null 2>&1; then
         openssl rand -hex 24 | sudo tee "$TOKEN_FILE" > /dev/null
     else
@@ -1044,12 +1281,31 @@ sudo chown "$USER_NAME" "$TOKEN_FILE"
 sudo mkdir -p "$STATE_DIR"
 sudo chown "$USER_NAME" "$STATE_DIR"
 sudo chmod 700 "$STATE_DIR"
+# Mirror the canonical token into STATE_DIR (0600, user-owned). The agent reads
+# /etc/couchside/token first and falls back to this copy only if that file is
+# ever lost. ALWAYS overwrite: the canonical file is the truth, so after any
+# rotation (new-token, the Decky plugin's Regenerate) the mirror must follow.
+# Written AS THIS USER, no sudo (install.sh refuses root and runs as $USER_NAME):
+# temp file + mv inside the dir they own, so root never writes through a path
+# under STATE_DIR and nothing planted there can redirect a privileged write
+# (KI-093). $TOKEN_FILE is user-readable after the chown just above.
+( umask 077; t="$STATE_DIR/.token.$$"; cp -- "$TOKEN_FILE" "$t" && mv -f -- "$t" "$STATE_DIR/token" )
 LEGACY_CONFIG="${ETC_DIR}/config.json"
-if sudo test -s "$LEGACY_CONFIG" && ! sudo test -s "$CONFIG_FILE"; then
+if sudo test -s "$LEGACY_CONFIG" && ! sudo test -L "$LEGACY_CONFIG" && ! [ -s "$CONFIG_FILE" ]; then
     note "migrating config $LEGACY_CONFIG -> $CONFIG_FILE (pairings preserved)"
-    sudo mv "$LEGACY_CONFIG" "$CONFIG_FILE"
-    sudo chown "$USER_NAME" "$CONFIG_FILE"
-    sudo chmod 600 "$CONFIG_FILE"
+    # KI-093 rule: root READS from root-owned /etc (not user-plantable) and THIS
+    # USER writes into the user-owned STATE_DIR via temp+mv. The old
+    # `sudo mv; sudo chown; sudo chmod` trio operated as root through the user
+    # dir -- a planted symlink between the steps redirected the chown. A symlink
+    # sitting at $CONFIG_FILE is replaced by the mv, never followed.
+    # `[ -s "$t" ]` before the mv: a failed/denied root read yields an EMPTY pipe
+    # with rc 0 from the inner cat, and landing a 0-byte config would make (e)
+    # mint a fresh default and strand the legacy pairings for good (review nit).
+    if sudo cat -- "$LEGACY_CONFIG" | ( umask 077; t="$STATE_DIR/.config.$$"; cat > "$t" && [ -s "$t" ] && mv -f -- "$t" "$CONFIG_FILE" || { rm -f -- "$t"; false; } ); then
+        sudo rm -f -- "$LEGACY_CONFIG"
+    else
+        note "  could not write $CONFIG_FILE; leaving $LEGACY_CONFIG in place"
+    fi
 fi
 
 # ---------------------------------------------------------------------------
@@ -1089,7 +1345,11 @@ fi
 # ---------------------------------------------------------------------------
 # (e) Initial config.json (only if absent)
 # ---------------------------------------------------------------------------
-if sudo test -s "$CONFIG_FILE"; then
+# No sudo on $CONFIG_FILE, read or write: it lives in the user-owned STATE_DIR and
+# install.sh runs as that user. A root `install`/`test` here operated through a
+# user-controlled path (KI-093 class; GNU install's path-based chmod follows a
+# symlink swapped in after the create -- reproduced 98/3000 in review).
+if [ -s "$CONFIG_FILE" ]; then
     say "Config $CONFIG_FILE already exists, keeping it"
 else
     say "Generating initial $CONFIG_FILE"
@@ -1147,7 +1407,7 @@ print(json.dumps({"units": units, "actions": actions, "action_order": order}, in
 PYEOF
     # User-owned so the agent (running as the desktop user) can rewrite it on
     # every TV pairing / launcher edit. 0600 — it holds TV client certs/keys.
-    sudo install -m 0600 -o "$USER_NAME" "$WORK_DIR/config.json" "$CONFIG_FILE"
+    ( umask 077; t="$STATE_DIR/.config.$$"; cp -- "$WORK_DIR/config.json" "$t" && mv -f -- "$t" "$CONFIG_FILE" )
 fi
 
 # ---------------------------------------------------------------------------
@@ -1373,8 +1633,11 @@ decky_bake_safe() {
     return 0
 }
 # Where install.sh (g2) puts the helper, first choice first. A box that took
-# the SteamOS fallback has it under /var/lib.
-DECKY_HELPER_CANDIDATES="/usr/local/libexec/couchside-helper.py /var/lib/couchside/libexec/couchside-helper.py"
+# the SteamOS fallback has it under /var/lib/couchside-root (KI-092). The old
+# /var/lib/couchside/libexec location stays LAST, read-only: this list only
+# feeds the version probe below, and a box that has not re-run the installer
+# since KI-092 still has its helper there. Nothing here executes a candidate.
+DECKY_HELPER_CANDIDATES="/usr/local/libexec/couchside-helper.py /var/lib/couchside-root/libexec/couchside-helper.py /var/lib/couchside/libexec/couchside-helper.py"
 DECKY_OLD_HELPER=""
 decky_helper_too_old() {
     # True (0) when the helper this box will END UP WITH predates the
@@ -1689,6 +1952,56 @@ else
 fi
 
 # ---------------------------------------------------------------------------
+# (f4) SteamOS: ask the OS to KEEP our /etc files across image updates
+# ---------------------------------------------------------------------------
+# A SteamOS atomic update throws away every /etc change EXCEPT the paths on a
+# keep-list (Valve steamos-customizations, read 2026-09-26 at tag
+# jupiter-20260916.1 -- full citations in docs/memory/steamos-etc-persistence.md):
+#   atomic-update/rauc/atomic-update-keep.conf.in:1-2  "When an atomic update is
+#     applied, all changes made in /etc will be lost. The only exceptions are the
+#     files and directories listed below."
+#   ...:14  it also reads every drop-in "/etc/atomic-update.conf.d/*.conf"
+#   ...:38  "/etc/systemd/system/*.service" -- why couchside.service survived
+#   misc/libexec/holo-sync-var.in:332-340 builds the rsync include list from both,
+#     :389-390 `--include-from=<list> --exclude="*"` drops everything else.
+# CONFIRMED on the Deck OLED itself (SteamOS 3.9.2, read-only): its installed
+# /usr/lib/rauc/atomic-update-keep.conf is that same list, and
+# /usr/lib/holo/holo-sync-var:233-240,286-288 is that same filter. The Deck's
+# /etc overlay upper held couchside.service and nothing else of ours -- exactly
+# the damage observed: the unit (listed) and /var survived; /etc/couchside, the
+# udev rules, modules-load and the sudoers grant (not listed) were dropped.
+#
+# The drop-in is the OS's own supported mechanism (Tailscale's and the Nix
+# installer's SteamOS paths use the same directory). It names ONLY files this
+# installer owns -- never a distro file, which would shadow Valve's future edits
+# (the warning in example-additional-keep-list.conf.in) -- and it widens nothing:
+# it keeps the grants and files the owner already installed from being silently
+# revoked by an update. Written only where the drop-in dir exists (SteamOS); a
+# Bazzite/ostree box keeps /etc on its own (hash-verified across 43 -> 44). The
+# units (*.service/*.socket) and the SDDM drop-in are already on Valve's list.
+if [ -d /etc/atomic-update.conf.d ]; then
+    say "SteamOS: keeping Couchside's /etc files across OS updates (/etc/atomic-update.conf.d/couchside.conf)"
+    cat > "$WORK_DIR/couchside-keep.conf" <<'KEEPCONF'
+# Couchside: keep the installer's own /etc files across SteamOS updates.
+# Written by the Couchside installer; removed by `install.sh --uninstall`.
+# '*' matches within one path segment, '**' across segments (SteamOS keep-list
+# syntax). Only Couchside-owned paths -- never a file the OS ships.
+/etc/couchside/**
+/etc/sudoers.d/zz-couchside
+/etc/sudoers.d/zz-couchside-updates
+/etc/sudoers.d/zz-couchside-decky
+/etc/udev/rules.d/99-couchside-uinput.rules
+/etc/udev/rules.d/99-couchside-rtc.rules
+/etc/udev/rules.d/99-couchside-cec.rules
+/etc/udev/rules.d/99-couchside-openpuck.rules
+/etc/modules-load.d/couchside-uinput.conf
+/etc/systemd/network/50-couchside-wol.link
+KEEPCONF
+    sudo install -m 0644 -o root -g root "$WORK_DIR/couchside-keep.conf" \
+        /etc/atomic-update.conf.d/couchside.conf
+fi
+
+# ---------------------------------------------------------------------------
 # (g) systemd unit
 # ---------------------------------------------------------------------------
 say "Installing systemd unit $UNIT_DST"
@@ -1714,6 +2027,45 @@ fi
 sudo install -m 0644 -o root -g root "$WORK_DIR/couchside.service.rendered" "$UNIT_DST"
 
 # ---------------------------------------------------------------------------
+# (g1) Install manifest: which root-owned pieces THIS run laid down
+# ---------------------------------------------------------------------------
+# Every piece in /etc above is (re)written UNCONDITIONALLY on a full run --
+# nothing is skipped as "already installed" -- so re-running this installer is
+# THE repair for a box whose OS update took part of /etc away (SteamOS drops
+# /etc/couchside, the udev rules and modules-load; see
+# docs/memory/steamos-etc-persistence.md). The token is the one piece that is
+# kept rather than rewritten, and (d) restores it from the STATE_DIR mirror.
+#
+# The agent reports a piece listed here that has gone missing as
+# `install_health` on /api/status, and the app tells the owner to re-run this.
+# The list is what separates LOST from NEVER INSTALLED (a box set up before a
+# rule existed must not read as damaged), so it names exactly what this run
+# wrote: with --no-sudoers there is no grant and no journal wrapper to lose.
+# Ids only -- never paths; the agent maps them through its own frozen table and
+# ignores anything it does not know. Lives in STATE_DIR because that survives
+# the SteamOS update that takes /etc. Written BEFORE the restart below, so the
+# restarted agent reads it.
+INSTALL_MANIFEST="$STATE_DIR/install-manifest"
+{
+    echo "# Couchside install manifest -- written by install.sh on every full run."
+    echo "# One piece id per line; the agent reports any of these that go missing."
+    echo "token_canonical"
+    if [ "$NO_SUDOERS" -eq 0 ]; then
+        echo "sudoers_grant"
+        echo "journal_wrapper"
+    fi
+    echo "udev_uinput"
+    echo "modules_uinput"
+    echo "udev_rtc"
+    echo "udev_cec"
+    echo "udev_openpuck"
+    echo "systemd_unit"
+} > "$WORK_DIR/install-manifest"
+# As THIS user, no sudo: the manifest lives in the user-owned STATE_DIR (KI-093
+# rule), and install.sh already runs as $USER_NAME.
+install -m 0644 "$WORK_DIR/install-manifest" "$INSTALL_MANIFEST"
+
+# ---------------------------------------------------------------------------
 # (g2) privileged helper — replaces the sudoers surface, one verb at a time
 # ---------------------------------------------------------------------------
 # The helper is the ONLY root process in the product: nine frozen verbs behind
@@ -1737,13 +2089,28 @@ if [ -f "$WORK_DIR/couchside-helper.py" ] && \
     #   install: cannot change owner and permissions of '/usr/local/libexec':
     #   No such file or directory
     # and the installer exited 1 before the helper, socket or unit landed.
-    # /var/lib is writable on every target we support and is still ROOT-OWNED,
-    # which is the property that matters (see the note above: a root-run helper
-    # in a user-writable directory is privilege escalation).
+    #
+    # The SteamOS fallback goes UNDER /var (writable, and copied whole across
+    # image updates, so it persists -- docs/memory/steamos-etc-persistence.md),
+    # but in its OWN root-owned tree, NEVER inside $STATE_DIR. What matters is
+    # that EVERY ANCESTOR of the helper is root-owned, not just the helper file.
+    # The earlier fallback was /var/lib/couchside/libexec, reasoning "/var/lib is
+    # root-owned" -- but /var/lib/couchside itself is chowned to the desktop user
+    # in (e0), so the helper dir had a user-writable PARENT. With no sticky bit,
+    # the user (or anything running as them, e.g. a compromised agent) can rename
+    # our root-owned libexec aside, mkdir their own, and drop code that this root
+    # unit runs at its next restart: user-to-root (KI-092, reproduced in a
+    # container). So the fallback is /var/lib/couchside-root/libexec, where
+    # /var/lib (OS-owned), /var/lib/couchside-root and libexec are ALL
+    # root:root 0755 and none is $STATE_DIR. tests/test_helper_root_parent.py
+    # pins this.
     HELPER_DIR="/usr/local/libexec"
     if ! sudo install -d -m 0755 -o root -g root "$HELPER_DIR" 2>/dev/null; then
-        HELPER_DIR="/var/lib/couchside/libexec"
+        HELPER_DIR="/var/lib/couchside-root/libexec"
         say "  /usr/local is read-only (SteamOS?) — installing the helper to $HELPER_DIR"
+        # Create each level explicitly as root:root 0755, so no ancestor can ever
+        # be the user-owned $STATE_DIR (do NOT nest this under /var/lib/couchside).
+        sudo install -d -m 0755 -o root -g root /var/lib/couchside-root
         sudo install -d -m 0755 -o root -g root "$HELPER_DIR"
     fi
     HELPER_PATH="$HELPER_DIR/couchside-helper.py"
@@ -1759,6 +2126,18 @@ if [ -f "$WORK_DIR/couchside-helper.py" ] && \
         "$WORK_DIR/couchside-helper.service.rendered" \
         /etc/systemd/system/couchside-helper.service
     sudo systemctl daemon-reload
+    # Migrate a box that took the OLD, vulnerable SteamOS fallback
+    # (/var/lib/couchside/libexec, KI-092). Done only AFTER the unit above was
+    # re-rendered + reloaded with the new $HELPER_PATH: from here nothing runs
+    # the old copy, so removing it can't race a helper restart into code the
+    # user re-planted there (removing it first would open that window).
+    # Unconditional -- whichever HELPER_DIR this run chose, that path is never a
+    # valid helper location any more. rm -rf on the literal path removes a
+    # planted symlink itself rather than following it. No-op if absent.
+    if sudo test -e /var/lib/couchside/libexec; then
+        sudo rm -rf /var/lib/couchside/libexec
+        note "  removed the old helper copy from the user-owned state dir (/var/lib/couchside/libexec; KI-092)"
+    fi
     sudo systemctl enable --now couchside-helper.socket >/dev/null 2>&1 || true
     # Load the NEW helper code. The helper is socket-activated with Accept=no —
     # ONE long-lived process, Restart=always — so replacing the .py above does
@@ -1785,7 +2164,14 @@ sudo systemctl daemon-reload
 # so the two installs don't fight over the file + port; the plugin block below
 # (or the plugin itself) activates it. Without Decky, this service is the sole
 # supervisor and is enabled + started normally.
-if [ "$NO_DECKY" -eq 0 ] && decky_installed; then
+#
+# UNLESS the owner has turned the panel off (decky_panel_resolve: --no-decky, or
+# the panel we installed has since been removed in Decky itself; persisted in
+# DECKY_PANEL_OFF). Then there is no plugin to hand the agent to, so this is a
+# plain box: enabled + restarted right here. No dormant gap, no h3 poll, no
+# exit-trap re-arm -- all three key off DECKY_OWNS_AGENT, which stays 0.
+decky_panel_resolve
+if [ "$DECKY_PANEL" -eq 1 ] && decky_installed; then
     DECKY_OWNS_AGENT=1
     sudo systemctl disable --now couchside.service 2>/dev/null || true
     note "Decky Loader detected → standalone couchside.service left DORMANT (the Couchside plugin manages the agent)."
@@ -1799,7 +2185,7 @@ fi
 # ---------------------------------------------------------------------------
 # (h) Firewall (Bazzite/Fedora ships firewalld; SteamOS generally has none)
 # ---------------------------------------------------------------------------
-PORT="$(sudo cat "$CONFIG_FILE" 2>/dev/null | python3 -c 'import json,sys
+PORT="$(cat "$CONFIG_FILE" 2>/dev/null | python3 -c 'import json,sys
 try: print(json.load(sys.stdin).get("port") or '"$PORT_DEFAULT"')
 except Exception: print('"$PORT_DEFAULT"')' 2>/dev/null || echo "$PORT_DEFAULT")"
 
@@ -1811,7 +2197,7 @@ except Exception: print('"$PORT_DEFAULT"')' 2>/dev/null || echo "$PORT_DEFAULT")
 # (ufw default-deny, strict firewalld zones) advertises a TLS port the phone
 # can't reach — and a pinned app FAILS CLOSED rather than downgrading, so the
 # box would read as offline.
-TLS_PORT="$(sudo cat "$CONFIG_FILE" 2>/dev/null | python3 -c 'import json,sys
+TLS_PORT="$(cat "$CONFIG_FILE" 2>/dev/null | python3 -c 'import json,sys
 try:
     tls = json.load(sys.stdin).get("tls")
     if isinstance(tls, dict) and not tls.get("enabled", True):
@@ -2108,6 +2494,27 @@ PY
     verline="Latest release: ${tag}"
     [ -n "$latest" ] && verline="${verline} (agent ${latest})"
 
+    # Already current is NOT the same as healthy. An OS update can take the
+    # installer's root-owned files out of /etc while the agent binary in $HOME
+    # stays current (SteamOS dropped /etc/couchside, the udev rules and
+    # modules-load on a real Deck while the agent kept running). The full
+    # installer rewrites every one of them, so a damaged box must not be told
+    # "Nothing to update" -- it reinstalls instead. Readable as this user: the
+    # token is ours, the rest are world-readable.
+    lost=""
+    for p in /etc/couchside/token /etc/udev/rules.d/99-couchside-uinput.rules \
+             /etc/modules-load.d/couchside-uinput.conf \
+             /etc/udev/rules.d/99-couchside-rtc.rules; do
+      [ -s "$p" ] || lost="$lost $p"
+    done
+    if [ -n "$lost" ] && [ "$force" -ne 1 ]; then
+      echo
+      echo "This box's installation is damaged -- missing:$lost"
+      echo "(an OS update can remove these). Re-running the installer to restore them;"
+      echo "that needs your password unless passwordless sudo is set up on this box."
+      force=1
+    fi
+
     # Already current (and not forced): say so plainly and stop. No misleading
     # prompt, no needless reinstall.
     if [ "$available" -eq 0 ] && [ "$force" -ne 1 ]; then
@@ -2142,14 +2549,34 @@ PY
     # Decky-aware (it refreshes the plugin and leaves the standalone service
     # dormant for the plugin to run), so `couchside update` still does the right
     # thing — it just updates the plugin rather than the standalone service.
-    if [ -d "$HOME/homebrew/plugins" ]; then
+    # UNLESS the owner turned the panel off: the installer remembers that in
+    # /var/lib/couchside/no-decky-panel and runs the standalone service, so say
+    # that instead of promising a plugin update. The plugin line needs Decky
+    # Loader itself AND our panel on disk -- a bare ~/homebrew/plugins is left
+    # behind by Decky's own uninstaller and proves neither.
+    if [ -e /var/lib/couchside/no-decky-panel ]; then
+      echo "The Couchside panel for Decky Loader is OFF on this box — updating the standalone agent."
+      echo "(Want the panel back?  curl -fsSL ${INSTALL_URL} | bash -s -- --decky)"
+    elif [ -d "$HOME/homebrew/plugins/Couchside" ] \
+         && { [ -f /etc/systemd/system/plugin_loader.service ] || [ -e "$HOME/homebrew/services/PluginLoader" ]; }; then
       echo "Decky Loader detected — updating the Couchside plugin (it owns the agent on this box)."
     fi
     echo "Updating from ${INSTALL_URL} ..."
+    # A box installed with --no-sudoers has a (g1) manifest that names
+    # token_canonical but no sudoers_grant. Carry the flag into the re-run so a
+    # damage-triggered reinstall never installs the grant the owner declined.
+    # Read as this user (the manifest is ours); no manifest -> no flags.
+    flags=""
+    m=/var/lib/couchside/install-manifest
+    if [ -f "$m" ] && [ ! -L "$m" ] && grep -qx token_canonical "$m" 2>/dev/null \
+       && ! grep -qx sudoers_grant "$m" 2>/dev/null; then
+      flags=" -s -- --no-sudoers"
+      echo "(installed with --no-sudoers; keeping that)"
+    fi
     # exec so THIS couchside process is replaced by the updater: the installer
     # overwrites this very script, and a still-running bash would then read the
     # new file's bytes at its old offset and error out. exec frees our file.
-    exec bash -c "curl -fsSL '$INSTALL_URL' | bash"
+    exec bash -c "curl -fsSL '$INSTALL_URL' | bash$flags"
     ;;
   pair)
     exec "${DIR}/couchside-pair"
@@ -2390,9 +2817,20 @@ PY
     else
       new="$(python3 -c 'import secrets; print(secrets.token_hex(24))')"
     fi
+    # Canonical first: the agent reads /etc/couchside/token before anything
+    # else, so this write IS the revocation. Recreate the directory if an OS
+    # update removed it.
+    sudo mkdir -p "$(dirname "$TOKEN_FILE")"
     printf '%s\n' "$new" | sudo tee "$TOKEN_FILE" >/dev/null || { echo "failed to write $TOKEN_FILE" >&2; exit 1; }
     sudo chmod 600 "$TOKEN_FILE"
     sudo chown "$(id -un)" "$TOKEN_FILE"
+    # Mirror (the agent's fallback if the file above is ever lost). The agent
+    # also re-syncs it on start, so a failure here is not fatal.
+    STATE_TOKEN="/var/lib/couchside/token"
+    if sudo test -d "$(dirname "$STATE_TOKEN")"; then
+      { printf '%s\n' "$new" | sudo tee "$STATE_TOKEN" >/dev/null && sudo chmod 600 "$STATE_TOKEN" && sudo chown "$(id -un)" "$STATE_TOKEN"; } \
+        || echo "note: could not update $STATE_TOKEN (the agent re-syncs it on restart)" >&2
+    fi
     # Restart so the auth gate compares against the NEW token (the agent loads
     # it at startup; without this the old token would still authorize).
     _restart_agent
@@ -2480,6 +2918,8 @@ couchside — manage the Couchside agent on this box
   couchside pair            show the pairing QR on this box's screen
   couchside version         print the installed agent version
   couchside status          show the agent service status
+Decky Loader panel off (remembered across updates) / back on:
+  curl -fsSL https://couchside.tv/install.sh | bash -s -- --no-decky   (or --decky)
 USAGE
     ;;
   *)
@@ -2832,9 +3272,11 @@ fi
 # the Quick Access Menu without the plugin store. The panel is a convenience on
 # top of the agent, not the agent itself, so nothing here is allowed to abort
 # the install: the whole thing runs inside an `if` condition (set -e is
-# suspended there) and any failure just prints a note and moves on. --no-decky
-# skips it entirely.
-if [ "$NO_DECKY" -eq 0 ] && decky_installed; then
+# suspended there) and any failure just prints a note and moves on. A panel the
+# owner turned off (DECKY_PANEL=0: --no-decky, or removed in Decky; see
+# decky_panel_resolve) skips it entirely -- not installed, not updated, and an
+# existing copy is not touched.
+if [ "$DECKY_PANEL" -eq 1 ] && decky_installed; then
     say "Decky Loader detected: installing the Couchside Game Mode panel"
     decky_tmp="$(mktemp -d)"
     # Decky's plugin dir is root-owned (same as a store install), so place the
@@ -2911,8 +3353,11 @@ if [ "$NO_DECKY" -eq 0 ] && decky_installed; then
     #
     # The stamp is the VERIFIED TARBALL's checksum rather than a version string:
     # it needs no parsing, and it also catches a republished same-version build.
-    # Guarded on the plugin dir still existing, so a user who deleted the plugin
-    # gets it back even when the stamp matches.
+    # Guarded on the plugin dir still existing: a matching stamp with no panel on
+    # disk is never "up to date". A panel the OWNER removed in Decky no longer
+    # gets reinstalled through this: decky_panel_resolve sees stamp-without-panel
+    # first, records the opt-out and turns this whole block off. (--decky, the one
+    # way back in, drops such a stale stamp before we get here.)
     decky_stamp_of() {
         # The hash line for our tarball, as already verified above.
         awk '$2 == "Couchside.tar.gz" || $2 == "*Couchside.tar.gz" {print $1}' \
@@ -2924,7 +3369,8 @@ if [ "$NO_DECKY" -eq 0 ] && decky_installed; then
         [ -n "$want" ] || return 1
         have="$(sudo cat "$DECKY_STAMP" 2>/dev/null)" || return 1
         [ "$want" = "$have" ] || return 1
-        # Stamp matches but the plugin is gone (user removed it) -> reinstall.
+        # Stamp matches but the plugin dir is gone -> not up to date. (An owner
+        # removal never reaches here; decky_panel_resolve caught it above.)
         sudo test -d "$DECKY_PLUGIN_DIR" || return 1
         return 0
     }

@@ -6,6 +6,7 @@ import { Buffer } from 'buffer';
 import { isPinMismatchError, pinnedRequest, type PinnedResponse } from './boxTransport.ts';
 import { isDeclaredTooLarge, isUsableBodySize } from './responseCap';
 import { ensureImageTicket, getImageTicket, mintUploadTicket } from './ticket.ts';
+import type { InstallHealth } from './installHealth.ts';
 import { Settings } from './settings';
 
 /** The subset of Settings the API client actually needs. */
@@ -815,6 +816,11 @@ export type LedActive = {
   color: Rgb | null;
   speed: number;
   brightness: number;
+  // Envelope shape (agents that advertise `shape:true`), single-LED software renderer only:
+  // `attack` = rise fraction of a breathe/pulse cycle (0-100); `duty` = a
+  // strobe's on-time % (1-99). Absent on older agents / other effects.
+  attack?: number;
+  duty?: number;
 };
 
 /** An addressable STRIP the agent groups from `prefix[N]` LED nodes (agent >=
@@ -838,6 +844,9 @@ export type LedsState = {
   effects?: LedEffect[];
   /** Per-LED (and per-strip, keyed `strip:<prefix>`) running effect (agent >= 2.9.84). */
   active?: Record<string, LedActive>;
+  /** True when the single-LED renderer honours envelope shape params (breathe/pulse
+      `attack`, strobe `duty`; gated on this flag, not a version). Absent → the app hides SHAPE. */
+  shape?: boolean;
   /** Addressable strips the agent can drive as a whole (agent >= 2.9.85). Absent
       on older agents → the app falls back to driving the sweep itself. */
   strips?: StripInfo[];
@@ -1025,6 +1034,13 @@ export type Status = {
       idle link still reports 0. */
   net_rx_bps?: number;
   net_tx_bps?: number;
+  /** Is the root-owned footprint the installer laid down still there (agent >=
+      2.9.116)? ABSENT on older agents — show nothing. A SteamOS image update can
+      take back part of /etc (it dropped /etc/couchside and the udev rules on a
+      real Deck). `ok` is false for a piece that could not be CHECKED too, so the
+      banner keys off a non-empty `missing`, never `ok` alone — see
+      lib/installHealth.ts (damagedPieces). */
+  install_health?: InstallHealth;
 };
 
 export type UnitScope = 'system' | 'user';
@@ -3324,6 +3340,25 @@ export const api = {
     });
   },
 
+  /**
+   * The on-box quick panel (agent >= 2.9.113): Couchside's own vitals + quick
+   * actions shown on the BOX's screen in Game Mode, without Decky. It rides the
+   * Player tile's kiosk launch, so it needs caps.player and shares the Player's
+   * open rate-limit; while it is up, /api/player reports running with an empty
+   * service, and the Player's 'close' closes it too. The page URL is fixed on
+   * the box — nothing is sent but the op. Older agents 404 (route absent); gate
+   * the button on supportsBoxPanel(settings.version) rather than on the error.
+   */
+  panelOp(
+    settings: ConnSettings,
+    op: 'open' | 'close',
+  ): Promise<{ ok: boolean; starting?: boolean; url?: string }> {
+    return request(settings, '/api/panel', {
+      method: 'POST',
+      body: { op },
+    });
+  },
+
   /** Start the screensaver (optionally switching theme/tier) or stop it. */
   screensaverOp(
     settings: ConnSettings,
@@ -3456,7 +3491,11 @@ export const api = {
   setLedEffect(
     settings: ConnSettings,
     led: string,
-    patch: { effect: LedEffect; color?: Rgb; speed?: number; brightness?: number },
+    patch: {
+      effect: LedEffect; color?: Rgb; speed?: number; brightness?: number;
+      // Optional envelope shape (gated on GET /api/leds `shape:true`); ignored by older agents.
+      attack?: number; duty?: number;
+    },
   ): Promise<boolean> {
     return request<{ ok: boolean }>(settings, '/api/leds/effect', {
       method: 'POST',
