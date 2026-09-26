@@ -57,6 +57,7 @@ test('malformed entries are dropped, never thrown on', () => {
     { alias: null, label: 'Pro' },
     { alias: 'Standard', label: 'Standard' },
     { alias: '../Evil', label: 'nope' }, // alias must be a plain identifier (it becomes a class-name suffix)
+    { alias: 'standard', label: 'nope' }, // must be PascalCase: the plugin PascalCases names, so this would point at a component that does not exist
     { alias: 'Bad Name', label: 'nope' },
     { alias: 'Ok', label: '' }, // empty label
     { alias: 'Ok2', label: 'x'.repeat(25) }, // over-long label

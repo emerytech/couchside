@@ -29,7 +29,10 @@ export type AppIconChoice = {
 /** Sentinel the segmented picker uses for the default (null alias) choice. */
 export const DEFAULT_ICON_VALUE = '__default__';
 
-const ALIAS_RE = /^[A-Za-z][A-Za-z0-9]{0,31}$/;
+// PascalCase, because the alias becomes the class-name suffix `.MainActivity<Alias>` and the
+// prebuild plugin PascalCases whatever it is given — a lowercase declaration would name a
+// component that does not exist. Requiring the canonical form here keeps the two in step.
+const ALIAS_RE = /^[A-Z][A-Za-z0-9]{0,31}$/;
 
 /**
  * Parse `expo.extra.appIcons` into an ordered, de-duplicated choice list.

@@ -933,6 +933,7 @@ function SetupBody() {
   const accent = useAccent();
   const themePack = useThemePack();
   const appIcons = appIconChoices();
+  // currentAppIcon() makes no native call unless this build declares a choice.
   const [appIcon, setAppIconState] = useState<string | null>(() => currentAppIcon());
   const skinKey = useSkinKey();
   const effectsList = useEffects();
@@ -1675,8 +1676,9 @@ function SetupBody() {
               />
               {/* APP ICON: only builds that declare choices in expo.extra.appIcons render
                   this (the direct edition: gold Pro default + the Play Store icon; the
-                  store app declares none). The OS-enabled launcher alias IS the stored
-                  state, read back after every switch rather than assumed. */}
+                  store app declares none). The launcher component PackageManager has
+                  ENABLED is the stored state; our local module (modules/app-icon-switch)
+                  reads it back after every switch rather than echoing the request. */}
               {appIcons.length > 1 && (
                 <SegPref
                   label="App icon"

@@ -319,5 +319,19 @@ offline backup is not optional.
 - **Where configured:** ONLY in `build/direct-apk`'s `app.config.js` (plugin entry + `expo.extra.appIcons`
   declaring `[Pro (default), Standard]`). `main` installs the package but declares nothing, so the store APK only
   links the module; `lib/appIcon.ts` parses `extra.appIcons` defensively (malformed → no row).
+- **Used ONLY as the prebuild plugin.** Its runtime switch is NOT used: it derives the "current" icon from the
+  launching Activity's component (fixed for the process), so a second switch in one session silently no-ops
+  while MainActivity stays disabled (review 2026-09-26). Switching is done by OUR local module
+  `app/modules/app-icon-switch` (Android, Kotlin, ~100 lines): PackageManager truth, enable target first, then
+  disable every other launcher component, refuse undeclared names, DONT_KILL_APP.
+- **Deep links:** MainActivity alone carries the `couchside://` VIEW filter unless `android.intentFilters` is
+  declared — the direct app.config.js declares it so the plugin copies the filter onto every alias.
+- **PERMANENCE RULE (latent launcher brick):** for `com.ets3d.rescueremote.direct` the plugin entry and every
+  alias NAME ever shipped are append-only — never rename or remove one. A user who picked an alias has
+  MainActivity DISABLED (persisted across updates); a later build without that alias leaves them with no
+  launcher icon and no way back in except adb/uninstall. Release recipe: `aapt dump xmltree` the new APK and
+  check its `.MainActivity<Alias>` set is a superset of the previously shipped one.
 - **Risk:** launcher quirks (pinned shortcuts reset; brief disappearance on some OEMs). Every icon is fixed at
-  build time (new icon = new APK). Verify on hardware both ways with a cold start after each switch.
+  build time (new icon = new APK). Device protocol: Pro→Standard→Pro WITHOUT a restart, `dumpsys package …`
+  enabled/disabled components must match the picker after each tap; then cold start and re-check; then
+  `am start -a android.intent.action.VIEW -d 'couchside://…'` with Standard selected (and Pro as control).

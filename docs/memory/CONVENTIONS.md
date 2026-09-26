@@ -948,3 +948,8 @@ direct edition's icon choices, anything keyed to a bundle id or a build-only bra
 the parser import-free so the bare-Node test glob covers it, and test the ABSENT case as the control: the store
 build must render nothing. Anything a native module is asked to act on must first be validated against the
 declared list (`aliasFromValue`), so a stale or foreign value never reaches PackageManager.
+
+**Launcher components are append-only.** Anything that becomes an Android `<activity-alias>` (app icons) is a
+name PackageManager persists per user across updates. Once a direct build ships an alias, that name and the
+plugin entry that generates it stay in every later build; add new ones, never rename or drop. The release
+recipe checks the new APK's alias set is a superset of the shipped one (`aapt dump xmltree`).

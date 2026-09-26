@@ -37,7 +37,10 @@ Each entry now carries a `✅ DONE` / `🟡 PARTIAL` / `📋 OPEN` banner with i
 - **STATUS 2026-09-26: 🔨 IN PROGRESS — branch `feat/app-icon-choice`.** `expo-alternate-app-icons` 8.0.0 pinned;
   `lib/appIcon.ts` (pure parser of `expo.extra.appIcons`, bare-node tests 6/6) + `lib/appIconNative.ts`;
   Setup › APPEARANCE "App icon" SegPref renders only when a build declares ≥2 choices. Store build declares
-  none. Next: PR → review → merge; `build/direct-apk` declares [Pro default, Standard], vc5; gandalf build;
+  none. Review round 1 (fix-first): the package's runtime switch keys on the LAUNCH Activity, so a second switch
+  in one process no-ops → switching now done by our local module `app/modules/app-icon-switch` (PackageManager
+  truth, enable-then-disable-others, refuse undeclared); direct config declares `android.intentFilters` so
+  aliases keep the couchside:// deep link; alias names PascalCase + append-only forever. Next: re-verify → merge; `build/direct-apk` declares [Pro default, Standard], vc5; gandalf build;
   aapt proof of the aliases; Razr press-test both ways with cold starts; host.
 - **Ships in:** direct vc5; store app/iOS only if asked.
 
