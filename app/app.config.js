@@ -79,7 +79,11 @@ module.exports = ({ config }) => {
   ];
   config.extra = {
     ...(config.extra || {}),
-    appIcons: [{ alias: null, label: 'Pro' }, ...APP_ICONS.map(({ alias, label }) => ({ alias, label }))],
+    // The DEFAULT entry OMITS `alias` (lib/appIcon.ts treats a missing alias as the default).
+    // Never write `alias: null` here: the release build's embedded config (assets/app.config,
+    // generated at gradle time) serialized null as {} on the vc5 test build (2026-09-26), the
+    // parser rightly refused {}, and the App icon row silently did not render on the device.
+    appIcons: [{ label: 'Pro' }, ...APP_ICONS.map(({ alias, label }) => ({ alias, label }))],
   };
   // The couchside:// deep-link filter lives on MainActivity by default. When an alias is the
   // enabled launcher, MainActivity is DISABLED and stops resolving intents — so declare the
