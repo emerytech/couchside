@@ -151,6 +151,15 @@ jobs:
       - name: Unit tests (led playtime)
         run: python3 tests/test_led_playtime.py
 
+      # "What to play next" recommendation engine (GET /api/recommend). READ-ONLY:
+      # it ranks INSTALLED Steam games from LOCAL play history (hours + recency)
+      # and returns picks; it never launches anything. Proves every bucket is
+      # reachable and tagged, only installed games are offered, alternates are
+      # diversified, names attach from appinfo, and it degrades closed (no Steam /
+      # nothing installed -> available False, never a fabricated pick).
+      - name: Unit tests (recommend)
+        run: python3 tests/test_reco.py
+
       # Steam grabs valve-leds for its own use (download progress) by writing
       # multi_intensity in the SAME manual mode our sequence engine paints in, so
       # our repaint fights it and the bar flickers (seen on hardware). The engine
