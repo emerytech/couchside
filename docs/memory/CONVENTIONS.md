@@ -949,6 +949,12 @@ the parser import-free so the bare-Node test glob covers it, and test the ABSENT
 build must render nothing. Anything a native module is asked to act on must first be validated against the
 declared list (`aliasFromValue`), so a stale or foreign value never reaches PackageManager.
 
+**Never put `null` in `expo.extra`.** The release build's embedded config (`assets/app.config`, written at
+gradle time) serialized `null` as `{}` on a real APK (direct vc5, 2026-09-26): the default icon entry arrived as
+`{"alias": {}}`, the parser refused it, and the App icon row silently never rendered. Express "none/default" by
+OMITTING the key. Read `assets/app.config` out of the built APK to verify what the app will actually see; the
+dynamic-config evaluation on the Mac showed `null` and was not evidence.
+
 **Launcher components are append-only.** Anything that becomes an Android `<activity-alias>` (app icons) is a
 name PackageManager persists per user across updates. Once a direct build ships an alias, that name and the
 plugin entry that generates it stay in every later build; add new ones, never rename or drop. The release
