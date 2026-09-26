@@ -20,13 +20,14 @@ deciding whether to press "Update now" on a machine across the room.
 
 ## 2.9.114
 
-**Your box now survives a SteamOS update.** SteamOS 3.8.28 wiped the folder that held
-the pairing key on at least one Steam Deck, and the box service refused to start — the
-phone just saw it as offline. The key now lives where the box keeps its other settings
-(a place that survives updates), existing boxes move it there on their own the next time
-the service starts, and if the key is ever missing anyway the service comes up and shows
-a fresh pairing QR (`couchside pair`) instead of staying dark. Nothing changes for phones
-that are already paired.
+**The box no longer goes dark if its pairing key goes missing.** After a SteamOS
+3.8.28 update, at least one Steam Deck lost the file that holds its pairing key, and
+the box service refused to start, so the phone just saw the box as offline. The
+service now keeps a backup copy of the key next to its other settings, in a place
+that survived that update, and uses it if the original is ever lost, so your phones
+stay paired. Existing boxes make the copy on their own the next time the service
+starts. If both are ever missing, the service still comes up and shows a fresh
+pairing QR (`couchside pair`) instead of staying dark.
 
 ## 2.9.113
 

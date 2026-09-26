@@ -56,13 +56,14 @@ UID = os.getuid()
 XDG_RUNTIME_DIR = "/run/user/%d" % UID
 
 DEFAULT_CONFIG_PATH = "/etc/couchside/config.json"
-# Where the token LIVES now. /etc/couchside/token was the original home, but on
-# an image-based OS (SteamOS) an update can wipe /etc while /var survives — a
-# user's box crash-looped on "cannot read token file" after SteamOS 3.8.28 with
-# its config.json (in /var/lib/couchside) intact. The state dir is user-owned
-# (install.sh chowns it 700) and persists, so the token resolves from here
-# first and /etc/couchside/token is read only as the legacy location, then
-# migrated in. Nothing here is a secret path — the FILE is 0600.
+# The pairing token. /etc/couchside/token (the --token-file default) is the
+# CANONICAL copy: every rotation path writes it (`couchside new-token`, the Decky
+# plugin's Regenerate, the installer), so it is always read first. TOKEN_STATE_DIR
+# holds a MIRROR the agent keeps in step with it (0600, the same user-owned dir as
+# config.json) and falls back to only when the canonical file is gone -- a Steam
+# Deck lost /etc/couchside/token across a SteamOS 3.8.28 update while
+# /var/lib/couchside survived, and the agent crash-looped. Reading the mirror
+# FIRST would be wrong: after a rotation it would keep the revoked token alive.
 TOKEN_STATE_DIR = "/var/lib/couchside"
 LEGACY_TOKEN_FILE = "/etc/couchside/token"
 DEFAULT_PORT = 8787
@@ -28048,69 +28049,76 @@ def _write_token_file(path, token):
         return False
 
 
-def token_candidates(token_file, config_path):
-    """Ordered places a token may live. The persisted state dir comes FIRST
-    (it survives an OS image update), the configured/legacy /etc path last as
-    the migration source. Deduplicated, order preserved."""
+def token_candidates(token_file):
+    """Read order, most authoritative first: the configured --token-file
+    (canonical), the stock /etc path if --token-file points elsewhere, then the
+    state-dir mirror. Deduplicated, order preserved."""
     cands = []
-    cfg_dir = os.path.dirname(os.path.abspath(config_path)) if config_path else ""
-    for c in (os.path.join(TOKEN_STATE_DIR, "token"),
-              os.path.join(cfg_dir, "token") if cfg_dir else None,
-              token_file, LEGACY_TOKEN_FILE):
+    for c in (token_file, LEGACY_TOKEN_FILE, os.path.join(TOKEN_STATE_DIR, "token")):
         if c and c not in cands:
             cands.append(c)
     return cands
 
 
-def resolve_token(token_file, config_path, explicit_token=None):
-    """Find (or mint) the bearer token. Returns (token, path, minted).
+def resolve_token(token_file, explicit_token=None):
+    """Find (or, as a last resort, mint) the bearer token. Returns
+    (token, path, minted); `path` is the file the token came from (None for
+    --token or an in-memory token) and is what /pair re-reads per render, so a
+    Regenerate that rewrites the canonical file shows up there immediately.
 
-    Reachability is protected (CLAUDE.md §4): a box whose token FILE vanished
-    must not crash-loop into unreachability — it must come up, keep /api/ping
-    and the on-box /pair page alive, and let the owner re-pair. So:
-      1. an explicit --token wins (path None, nothing written);
-      2. the first readable, non-empty candidate wins; if it was NOT the
-         state-dir file, the token is also copied there (0600) so the next
-         /etc wipe is harmless — a self-migration every existing box gets on
-         its next restart;
-      3. nothing readable -> mint secrets.token_hex(24) (install.sh's format),
-         persist it to the first writable candidate, log LOUDLY that every
-         paired phone must re-pair. A brand-new random token authorizes nobody
-         until they scan it: degrade CLOSED, still reachable.
-    If no candidate is even writable, the minted token lives in memory for
-    this run (path None) and the warning says so."""
+    Reachability is protected (CLAUDE.md section 4): a missing token FILE must
+    never crash-loop the box into unreachability. Rules, in order:
+      1. --token wins; nothing is read or written.
+      2. The first readable, non-empty candidate wins, canonical first. When it
+         is not the mirror, the mirror is (re)written 0600 to match, so a
+         rotation that wrote only the canonical file is followed on the next
+         start and the fallback always holds the CURRENT token.
+      3. Only the mirror is readable -> serve it (paired phones keep working)
+         and say the canonical file should be restored.
+      4. Nothing readable -> mint secrets.token_hex(24) (install.sh's format),
+         persist it 0600 (mirror first: the service user can write there, not
+         to /etc), warn loudly that phones must re-pair, and KEEP SERVING. A
+         fresh random token authorizes nobody until scanned: degrade closed.
+      5. Nothing writable either -> hold the minted token in memory for this
+         run and say so."""
     if explicit_token:
         return explicit_token, None, False
-    cands = token_candidates(token_file, config_path)
+    mirror = os.path.join(TOKEN_STATE_DIR, "token")
+    cands = token_candidates(token_file)
     for path in cands:
         tok = _read_token_file(path)
-        if tok:
-            state_path = cands[0]
-            if path != state_path and _read_token_file(state_path) is None:
-                if _write_token_file(state_path, tok):
-                    print("token: migrated %s -> %s (survives OS image updates)"
-                          % (path, state_path), flush=True)
-                    return tok, state_path, False
-            return tok, path, False
+        if not tok:
+            continue
+        if path == mirror and path != token_file:
+            print("WARNING: %s is missing; serving the mirrored token from %s "
+                  "(paired phones keep working). Re-run the installer to restore %s."
+                  % (token_file, mirror, token_file), file=sys.stderr, flush=True)
+        elif path != mirror and _read_token_file(mirror) != tok:
+            if _write_token_file(mirror, tok):
+                print("token: mirrored %s -> %s (the fallback if %s is ever lost)"
+                      % (path, mirror, path), flush=True)
+            else:
+                print("warning: could not mirror the token to %s; losing %s would "
+                      "need a re-pair" % (mirror, path), file=sys.stderr, flush=True)
+        return tok, path, False
     tok = secrets.token_hex(24)
-    for path in cands:
+    for path in [mirror] + [c for c in cands if c != mirror]:
         if _write_token_file(path, tok):
-            print("WARNING: no pairing token found at any of %s — minted a NEW one at %s. "
-                  "Every paired phone must re-pair: run `couchside pair` on the box (or open "
-                  "the app's Setup tab) to show the QR." % (", ".join(cands), path),
-                  file=sys.stderr, flush=True)
+            print("WARNING: no pairing token found at any of %s -- minted a NEW one at %s. "
+                  "Every paired phone must re-pair: run `couchside pair` on the box "
+                  "(or open the app's Setup tab) to show the QR."
+                  % (", ".join(cands), path), file=sys.stderr, flush=True)
             return tok, path, True
-    print("WARNING: no pairing token found and none of %s is writable — using an in-memory "
-          "token for this run only. Re-pair via `couchside pair`; fix the directory permissions "
-          "so the token can persist." % ", ".join(cands), file=sys.stderr, flush=True)
+    print("WARNING: no pairing token found and none of %s is writable -- using an "
+          "in-memory token for this run only. Re-pair via `couchside pair`; fix the "
+          "directory permissions so the token can persist." % ", ".join(cands),
+          file=sys.stderr, flush=True)
     return tok, None, True
 
 
 def load_token(args):
     """Startup token load. Kept for callers; see resolve_token for the rules."""
-    tok, _path, _minted = resolve_token(args.token_file, args.config, args.token)
-    return tok
-
+    return resolve_token(args.token_file, args.token)[0]
 
 def main():
     p = argparse.ArgumentParser(description="Couchside box agent")
@@ -28180,7 +28188,7 @@ def main():
     port = args.port if args.port is not None else (CONFIG_PORT or DEFAULT_PORT)
 
     Handler.token, _token_path, _token_minted = resolve_token(
-        args.token_file, args.config, args.token)
+        args.token_file, args.token)
     # Remembered so GET /pair can re-read the current token (unless a literal
     # --token was supplied, in which case there is no file to re-read).
     # /pair re-reads this file on every render so a regenerated token is picked

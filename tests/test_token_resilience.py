@@ -1,20 +1,21 @@
 #!/usr/bin/env python3
-"""The token must survive an OS image update — and its absence must never make
-the box unreachable (CLAUDE.md §4 "Reachability is protected").
+"""The pairing token must survive losing its file, and rotation must still revoke.
 
 Run: python3 tests/test_token_resilience.py
 
-WHY. A Steam Deck user reported (SteamOS 3.8.28) that the update wiped /etc,
-taking /etc/couchside/token with it while /var/lib/couchside/config.json
-survived. The agent printed "cannot read token file" and exited 1; with
-Restart=always the box crash-looped every 3 s — unreachable, /pair dead, no
-way to re-pair. Reproduced 2026-09-26: a missing --token-file exited 1 in 0.5 s.
+WHY. A Steam Deck user (SteamOS 3.8.28) lost /etc/couchside/token across an OS
+update while /var/lib/couchside survived. The agent printed "cannot read token
+file" and exited 1; with Restart=always the box crash-looped every 3 s, so it was
+unreachable and could not be re-paired (CLAUDE.md section 4). Reproduced
+2026-09-26: a missing --token-file exited 1 in 0.5 s.
 
-resolve_token() now (1) prefers the persisted state dir, (2) migrates a legacy
-/etc token into it, (3) mints + persists a new token when none exists and KEEPS
-SERVING, (4) falls back to an in-memory token if nothing is writable. Both
-directions are asserted: the happy paths AND that the minted token authorizes
-nobody (degrade closed) yet /api/ping and loopback /pair still answer.
+DESIGN under test (resolve_token): /etc/couchside/token stays CANONICAL because
+every rotation path writes it; the agent keeps a 0600 MIRROR in the state dir and
+falls back to it only when the canonical file is gone; with nothing readable it
+mints, persists, and keeps serving. A first design read the mirror FIRST, which
+would have kept a rotated-away token alive after `couchside new-token` or the
+Decky plugin's Regenerate: revocation that does not revoke. test_rotation_is_honored
+pins that shut, in both directions.
 """
 import http.client
 import importlib.util
@@ -46,104 +47,124 @@ def _mode(path):
     return stat.S_IMODE(os.stat(path).st_mode)
 
 
-def _with_state_dir(fn):
-    """Run fn(tmp, state_dir, legacy_file, cfg) with TOKEN_STATE_DIR/LEGACY
-    redirected into a tmpdir so nothing touches the real box."""
+def _put(path, text):
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    with open(path, "w") as f:
+        f.write(text + "\n")
+
+
+def _box(fn):
+    """fn(canonical, mirror) with TOKEN_STATE_DIR / LEGACY_TOKEN_FILE redirected
+    into a tmpdir, so nothing touches a real box."""
     tmp = tempfile.mkdtemp()
-    state = os.path.join(tmp, "state")
-    legacy = os.path.join(tmp, "etc", "token")
-    cfg = os.path.join(state, "config.json")
+    state = os.path.join(tmp, "var-lib-couchside")
+    canonical = os.path.join(tmp, "etc-couchside", "token")
     os.makedirs(state, mode=0o700)
-    open(cfg, "w").write("{}")
     saved = (cs.TOKEN_STATE_DIR, cs.LEGACY_TOKEN_FILE)
-    cs.TOKEN_STATE_DIR, cs.LEGACY_TOKEN_FILE = state, legacy
+    cs.TOKEN_STATE_DIR, cs.LEGACY_TOKEN_FILE = state, canonical
     try:
-        fn(tmp, state, legacy, cfg)
+        fn(canonical, os.path.join(state, "token"))
     finally:
         cs.TOKEN_STATE_DIR, cs.LEGACY_TOKEN_FILE = saved
 
 
 def test_explicit_token_wins():
     print("test_explicit_token_wins")
-    def body(tmp, state, legacy, cfg):
-        tok, path, minted = cs.resolve_token(legacy, cfg, explicit_token="cli-token")
+    def body(canonical, mirror):
+        _put(canonical, "etc-token")
+        tok, path, minted = cs.resolve_token(canonical, explicit_token="cli-token")
         check("explicit --token is used", tok, "cli-token")
-        check("explicit token: no path, nothing written", (path, os.path.exists(os.path.join(state, "token"))), (None, False))
+        check("explicit token: no path, mirror untouched", (path, os.path.exists(mirror)), (None, False))
         check("explicit token: not minted", minted, False)
-    _with_state_dir(body)
+    _box(body)
 
 
-def test_state_dir_token_preferred():
-    print("test_state_dir_token_preferred")
-    def body(tmp, state, legacy, cfg):
-        os.makedirs(os.path.dirname(legacy)); open(legacy, "w").write("legacy-token\n")
-        open(os.path.join(state, "token"), "w").write("state-token\n")
-        tok, path, minted = cs.resolve_token(legacy, cfg)
-        check("state-dir token wins over legacy /etc", tok, "state-token")
-        check("path is the state-dir file", path, os.path.join(state, "token"))
+def test_canonical_wins_and_mirror_created():
+    print("test_canonical_wins_and_mirror_created")
+    def body(canonical, mirror):
+        _put(canonical, "etc-token")
+        tok, path, minted = cs.resolve_token(canonical)
+        check("canonical /etc token is served", tok, "etc-token")
+        check("path is the canonical file (what /pair re-reads)", path, canonical)
+        check("mirror created with the same token", cs._read_token_file(mirror), "etc-token")
+        check("mirror is 0600", _mode(mirror), 0o600)
         check("not minted", minted, False)
-    _with_state_dir(body)
+    _box(body)
 
 
-def test_legacy_token_used_and_migrated():
-    print("test_legacy_token_used_and_migrated")
-    def body(tmp, state, legacy, cfg):
-        os.makedirs(os.path.dirname(legacy)); open(legacy, "w").write("legacy-token\n")
-        tok, path, minted = cs.resolve_token(legacy, cfg)
-        check("legacy /etc token is used (existing pairings keep working)", tok, "legacy-token")
-        sp = os.path.join(state, "token")
-        check("legacy token MIGRATED into the state dir", cs._read_token_file(sp), "legacy-token")
-        check("migrated copy is 0600", _mode(sp), 0o600)
-        check("resolved path is now the state-dir copy (what /pair re-reads)", path, sp)
+def test_rotation_is_honored():
+    """THE revocation guard. Mirror holds the OLD token, canonical the NEW one
+    (what `couchside new-token` / Decky Regenerate leave behind before the
+    restart). The agent must serve NEW and drag the mirror along."""
+    print("test_rotation_is_honored")
+    def body(canonical, mirror):
+        _put(mirror, "old-revoked-token")
+        _put(canonical, "new-rotated-token")
+        tok, path, minted = cs.resolve_token(canonical)
+        check("rotated (canonical) token is served", tok, "new-rotated-token")
+        check("the revoked token is NOT served", tok != "old-revoked-token", True)
+        check("mirror re-synced to the rotated token", cs._read_token_file(mirror), "new-rotated-token")
+        check("path is canonical", path, canonical)
+    _box(body)
+
+
+def test_lost_canonical_falls_back_to_mirror():
+    """The user's case on a box that had already been mirrored: the canonical
+    file vanished; phones must stay paired."""
+    print("test_lost_canonical_falls_back_to_mirror")
+    def body(canonical, mirror):
+        _put(mirror, "paired-token")
+        tok, path, minted = cs.resolve_token(canonical)
+        check("mirror token is served (phones stay paired)", tok, "paired-token")
+        check("path is the mirror", path, mirror)
         check("not minted", minted, False)
-    _with_state_dir(body)
+        check("canonical is not recreated by the agent (not its file to write)", os.path.exists(canonical), False)
+    _box(body)
 
 
 def test_missing_everywhere_mints_and_persists():
-    """THE user's case: /etc wiped, state dir intact but no token anywhere."""
+    """The user's actual box (2.9.113 never mirrored): nothing anywhere."""
     print("test_missing_everywhere_mints_and_persists")
-    def body(tmp, state, legacy, cfg):
-        tok, path, minted = cs.resolve_token(legacy, cfg)
+    def body(canonical, mirror):
+        tok, path, minted = cs.resolve_token(canonical)
         check("a token was minted (no exit, no exception)", bool(tok) and minted, True)
-        check("minted token is 24-byte hex like install.sh's", len(tok) == 48 and all(c in "0123456789abcdef" for c in tok), True)
-        sp = os.path.join(state, "token")
-        check("minted token persisted to the state dir", cs._read_token_file(sp), tok)
-        check("persisted 0600", _mode(sp), 0o600)
-        check("resolved path is the persisted file", path, sp)
-        # Second start: the minted token is FOUND, not re-minted (pairings stick).
-        tok2, path2, minted2 = cs.resolve_token(legacy, cfg)
-        check("next start reuses the persisted token", (tok2, minted2), (tok, False))
-    _with_state_dir(body)
+        check("minted token is 24-byte hex like install.sh's",
+              len(tok) == 48 and all(c in "0123456789abcdef" for c in tok), True)
+        check("minted token persisted to the mirror", cs._read_token_file(mirror), tok)
+        check("persisted 0600", _mode(mirror), 0o600)
+        check("path is the mirror", path, mirror)
+        tok2, _p2, minted2 = cs.resolve_token(canonical)
+        check("next start reuses it (no re-mint, pairings stick)", (tok2, minted2), (tok, False))
+    _box(body)
 
 
 def test_nothing_writable_keeps_serving_in_memory():
     print("test_nothing_writable_keeps_serving_in_memory")
     if os.geteuid() == 0:
-        print("  SKIP  running as root — permission bits do not bind")
+        print("  SKIP  running as root; permission bits do not bind")
         return
-    def body(tmp, state, legacy, cfg):
-        os.chmod(state, 0o500)                      # state dir read-only
+    def body(canonical, mirror):
+        state = os.path.dirname(mirror)
+        etc_parent = os.path.dirname(os.path.dirname(canonical))
+        os.chmod(state, 0o500)
+        os.chmod(etc_parent, 0o500)
         try:
-            # legacy path's parent does not exist AND cannot be created: make
-            # the parent's parent read-only too.
-            os.makedirs(os.path.dirname(os.path.dirname(legacy)), exist_ok=True)
-            os.chmod(os.path.dirname(os.path.dirname(legacy)), 0o500)
-            tok, path, minted = cs.resolve_token(legacy, cfg)
-            check("still returns a token (no crash) when nothing is writable", bool(tok) and minted, True)
+            tok, path, minted = cs.resolve_token(canonical)
+            check("still returns a token when nothing is writable", bool(tok) and minted, True)
             check("in-memory: no path", path, None)
         finally:
             os.chmod(state, 0o700)
-            os.chmod(os.path.dirname(os.path.dirname(legacy)), 0o700)
-    _with_state_dir(body)
+            os.chmod(etc_parent, 0o700)
+    _box(body)
 
 
 def test_agent_serves_with_minted_token():
-    """End to end: token file missing -> the server still answers /api/ping,
-    the minted token authorizes /api/status, a made-up token does NOT, and the
-    loopback /pair page carries the minted token so the owner can re-pair."""
+    """End to end: no token anywhere -> /api/ping answers, the minted token
+    authorizes /api/status, a guessed one gets 401, loopback /pair carries the
+    minted token so the owner can re-pair."""
     print("test_agent_serves_with_minted_token")
-    def body(tmp, state, legacy, cfg):
-        tok, path, minted = cs.resolve_token(legacy, cfg)
+    def body(canonical, mirror):
+        tok, path, _minted = cs.resolve_token(canonical)
         cs.Handler.token, cs.Handler.token_file, cs.Handler.mock = tok, path, True
         srv = ThreadingHTTPServer(("127.0.0.1", 0), cs.Handler)
         cs.Handler.port = port = srv.server_address[1]
@@ -151,23 +172,31 @@ def test_agent_serves_with_minted_token():
         try:
             def get(p, hdr=None):
                 c = http.client.HTTPConnection("127.0.0.1", port, timeout=5)
-                c.request("GET", p, headers=hdr or {}); r = c.getresponse(); b = r.read().decode("utf-8", "replace"); c.close()
+                c.request("GET", p, headers=hdr or {})
+                r = c.getresponse()
+                b = r.read().decode("utf-8", "replace")
+                c.close()
                 return r.status, b
             check("/api/ping answers (reachable)", get("/api/ping")[0], 200)
-            check("minted token authorizes /api/status", get("/api/status", {"Authorization": "Bearer " + tok})[0], 200)
-            check("a guessed token is refused (degrade closed)", get("/api/status", {"Authorization": "Bearer " + "0" * 48})[0], 401)
-            st, body_ = get("/pair")
+            check("minted token authorizes /api/status",
+                  get("/api/status", {"Authorization": "Bearer " + tok})[0], 200)
+            check("a guessed token is refused (degrade closed)",
+                  get("/api/status", {"Authorization": "Bearer " + "0" * 48})[0], 401)
+            st, page = get("/pair")
             check("loopback /pair renders", st, 200)
-            check("/pair carries the minted token for re-pairing", tok in body_, True)
+            check("/pair carries the minted token for re-pairing", tok in page, True)
         finally:
-            srv.shutdown(); srv.server_close()
-    _with_state_dir(body)
+            srv.shutdown()
+            srv.server_close()
+    _box(body)
 
 
 if __name__ == "__main__":
-    for fn in (test_explicit_token_wins, test_state_dir_token_preferred,
-               test_legacy_token_used_and_migrated, test_missing_everywhere_mints_and_persists,
-               test_nothing_writable_keeps_serving_in_memory, test_agent_serves_with_minted_token):
+    for fn in (test_explicit_token_wins, test_canonical_wins_and_mirror_created,
+               test_rotation_is_honored, test_lost_canonical_falls_back_to_mirror,
+               test_missing_everywhere_mints_and_persists,
+               test_nothing_writable_keeps_serving_in_memory,
+               test_agent_serves_with_minted_token):
         fn()
     if FAILURES:
         print("\n%d FAILED: %s" % (len(FAILURES), ", ".join(FAILURES)))

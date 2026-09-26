@@ -977,7 +977,11 @@ fi
 # Decky) -- so DON'T gate on "Decky absent", which wrongly skipped exactly that
 # box. A pure Decky setup leaves couchside.service INACTIVE (the plugin runs its
 # own copy), so is-active is false there and the fast-path correctly stands down.
-if [ "$CAN_PRIVILEGE" -eq 0 ] && [ -s "$TOKEN_FILE" ] \
+# A box whose /etc token was lost but whose agent (>= 2.9.114) is serving from
+# the STATE_DIR mirror (or a minted token) is still a live install: accept either
+# copy, or a phone-triggered update on exactly that box would fall into the sudo
+# section below and abort detached.
+if [ "$CAN_PRIVILEGE" -eq 0 ] && { [ -s "$TOKEN_FILE" ] || [ -s "$STATE_DIR/token" ]; } \
    && systemctl is-active --quiet couchside.service 2>/dev/null; then
     if sudo -n systemctl restart --no-block couchside.service 2>/dev/null; then
         say "Updated the agent and restarted couchside.service (no password needed)."
@@ -1004,11 +1008,11 @@ MIGRATED_TOKEN=""
 if sudo test -s "$TOKEN_FILE"; then
     note "token already exists, keeping it (existing phone pairings keep working)"
 else
-    # The agent (>= 2.9.114) keeps its token in STATE_DIR, which survives an OS
-    # image update that wipes /etc (SteamOS 3.8.28 did exactly that to a user's
-    # box). If /etc/couchside/token is gone but the state-dir copy is there,
-    # THAT is the live token the phones are paired to — inherit it; minting a
-    # fresh one here would silently break every pairing that still worked.
+    # The agent (>= 2.9.114) keeps a MIRROR of the token in STATE_DIR, which
+    # survived when a SteamOS 3.8.28 update removed /etc/couchside/token on a
+    # user's Deck. If the canonical file is gone but the mirror is there, THAT is
+    # the live token the phones are paired to -- restore it; minting a fresh one
+    # here would silently break every pairing that still worked.
     if sudo test -s "$STATE_DIR/token"; then
         MIGRATED_TOKEN="$STATE_DIR/token"
     fi
@@ -1052,13 +1056,11 @@ sudo chown "$USER_NAME" "$TOKEN_FILE"
 sudo mkdir -p "$STATE_DIR"
 sudo chown "$USER_NAME" "$STATE_DIR"
 sudo chmod 700 "$STATE_DIR"
-# Keep a copy of the token in STATE_DIR (0600, user-owned): this is the copy the
-# agent reads FIRST and the one that survives an /etc wipe. Never overwrite an
-# existing state-dir token — if both exist they were kept in step by new-token,
-# and if they ever differ the state-dir one is what the agent is serving.
-if ! sudo test -s "$STATE_DIR/token"; then
-    sudo cp "$TOKEN_FILE" "$STATE_DIR/token"
-fi
+# Mirror the canonical token into STATE_DIR (0600, user-owned). The agent reads
+# /etc/couchside/token first and falls back to this copy only if that file is
+# ever lost. ALWAYS overwrite: the canonical file is the truth, so after any
+# rotation (new-token, the Decky plugin's Regenerate) the mirror must follow.
+sudo cp "$TOKEN_FILE" "$STATE_DIR/token"
 sudo chmod 600 "$STATE_DIR/token"
 sudo chown "$USER_NAME" "$STATE_DIR/token"
 LEGACY_CONFIG="${ETC_DIR}/config.json"
@@ -2407,19 +2409,19 @@ PY
     else
       new="$(python3 -c 'import secrets; print(secrets.token_hex(24))')"
     fi
-    # The state dir is the copy the agent reads FIRST (it survives /etc being
-    # wiped by an OS update); /etc/couchside/token is kept in step as the legacy
-    # location when its directory still exists. Write the state dir first: if
-    # only one write lands, it must be the one the agent will actually use.
+    # Canonical first: the agent reads /etc/couchside/token before anything
+    # else, so this write IS the revocation. Recreate the directory if an OS
+    # update removed it.
+    sudo mkdir -p "$(dirname "$TOKEN_FILE")"
+    printf '%s\n' "$new" | sudo tee "$TOKEN_FILE" >/dev/null || { echo "failed to write $TOKEN_FILE" >&2; exit 1; }
+    sudo chmod 600 "$TOKEN_FILE"
+    sudo chown "$(id -un)" "$TOKEN_FILE"
+    # Mirror (the agent's fallback if the file above is ever lost). The agent
+    # also re-syncs it on start, so a failure here is not fatal.
     STATE_TOKEN="/var/lib/couchside/token"
-    sudo mkdir -p "$(dirname "$STATE_TOKEN")"
-    printf '%s\n' "$new" | sudo tee "$STATE_TOKEN" >/dev/null || { echo "failed to write $STATE_TOKEN" >&2; exit 1; }
-    sudo chmod 600 "$STATE_TOKEN"
-    sudo chown "$(id -un)" "$STATE_TOKEN"
-    if sudo test -d "$(dirname "$TOKEN_FILE")"; then
-      printf '%s\n' "$new" | sudo tee "$TOKEN_FILE" >/dev/null || echo "note: could not update legacy $TOKEN_FILE (state-dir copy is authoritative)" >&2
-      sudo chmod 600 "$TOKEN_FILE" 2>/dev/null || true
-      sudo chown "$(id -un)" "$TOKEN_FILE" 2>/dev/null || true
+    if sudo test -d "$(dirname "$STATE_TOKEN")"; then
+      { printf '%s\n' "$new" | sudo tee "$STATE_TOKEN" >/dev/null && sudo chmod 600 "$STATE_TOKEN" && sudo chown "$(id -un)" "$STATE_TOKEN"; } \
+        || echo "note: could not update $STATE_TOKEN (the agent re-syncs it on restart)" >&2
     fi
     # Restart so the auth gate compares against the NEW token (the agent loads
     # it at startup; without this the old token would still authorize).
