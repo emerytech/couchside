@@ -1004,6 +1004,14 @@ MIGRATED_TOKEN=""
 if sudo test -s "$TOKEN_FILE"; then
     note "token already exists, keeping it (existing phone pairings keep working)"
 else
+    # The agent (>= 2.9.114) keeps its token in STATE_DIR, which survives an OS
+    # image update that wipes /etc (SteamOS 3.8.28 did exactly that to a user's
+    # box). If /etc/couchside/token is gone but the state-dir copy is there,
+    # THAT is the live token the phones are paired to — inherit it; minting a
+    # fresh one here would silently break every pairing that still worked.
+    if sudo test -s "$STATE_DIR/token"; then
+        MIGRATED_TOKEN="$STATE_DIR/token"
+    fi
     # Look for a token to inherit from any prior install (newest-named first so
     # couchpilot wins over rescue-agent if somehow both are present).
     for entry in "${OLD_INSTALLS[@]}"; do
@@ -1044,6 +1052,15 @@ sudo chown "$USER_NAME" "$TOKEN_FILE"
 sudo mkdir -p "$STATE_DIR"
 sudo chown "$USER_NAME" "$STATE_DIR"
 sudo chmod 700 "$STATE_DIR"
+# Keep a copy of the token in STATE_DIR (0600, user-owned): this is the copy the
+# agent reads FIRST and the one that survives an /etc wipe. Never overwrite an
+# existing state-dir token — if both exist they were kept in step by new-token,
+# and if they ever differ the state-dir one is what the agent is serving.
+if ! sudo test -s "$STATE_DIR/token"; then
+    sudo cp "$TOKEN_FILE" "$STATE_DIR/token"
+fi
+sudo chmod 600 "$STATE_DIR/token"
+sudo chown "$USER_NAME" "$STATE_DIR/token"
 LEGACY_CONFIG="${ETC_DIR}/config.json"
 if sudo test -s "$LEGACY_CONFIG" && ! sudo test -s "$CONFIG_FILE"; then
     note "migrating config $LEGACY_CONFIG -> $CONFIG_FILE (pairings preserved)"
@@ -2390,9 +2407,20 @@ PY
     else
       new="$(python3 -c 'import secrets; print(secrets.token_hex(24))')"
     fi
-    printf '%s\n' "$new" | sudo tee "$TOKEN_FILE" >/dev/null || { echo "failed to write $TOKEN_FILE" >&2; exit 1; }
-    sudo chmod 600 "$TOKEN_FILE"
-    sudo chown "$(id -un)" "$TOKEN_FILE"
+    # The state dir is the copy the agent reads FIRST (it survives /etc being
+    # wiped by an OS update); /etc/couchside/token is kept in step as the legacy
+    # location when its directory still exists. Write the state dir first: if
+    # only one write lands, it must be the one the agent will actually use.
+    STATE_TOKEN="/var/lib/couchside/token"
+    sudo mkdir -p "$(dirname "$STATE_TOKEN")"
+    printf '%s\n' "$new" | sudo tee "$STATE_TOKEN" >/dev/null || { echo "failed to write $STATE_TOKEN" >&2; exit 1; }
+    sudo chmod 600 "$STATE_TOKEN"
+    sudo chown "$(id -un)" "$STATE_TOKEN"
+    if sudo test -d "$(dirname "$TOKEN_FILE")"; then
+      printf '%s\n' "$new" | sudo tee "$TOKEN_FILE" >/dev/null || echo "note: could not update legacy $TOKEN_FILE (state-dir copy is authoritative)" >&2
+      sudo chmod 600 "$TOKEN_FILE" 2>/dev/null || true
+      sudo chown "$(id -un)" "$TOKEN_FILE" 2>/dev/null || true
+    fi
     # Restart so the auth gate compares against the NEW token (the agent loads
     # it at startup; without this the old token would still authorize).
     _restart_agent

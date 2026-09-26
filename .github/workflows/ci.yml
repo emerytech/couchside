@@ -561,6 +561,8 @@ jobs:
         run: python3 tests/test_panel_page.py
       - name: Unit tests (windows agent host gate)
         run: python3 tests/test_win_host_gate.py
+      - name: Unit tests (token resilience)
+        run: python3 tests/test_token_resilience.py
 
       # The on-box UPDATE progress page. It polls /api/ping across the agent's
       # own restart. SUCCESS (version changed) is the ONE state that stops the
