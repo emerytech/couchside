@@ -811,7 +811,10 @@ export type LedEffect =
   // Reactive meters (agents that advertise a `reactive` block): the strip renders
   // LIVE telemetry — `meter_cpu` = CPU load bar coloured by temperature;
   // `meter_battery` = charge gauge. Strip-only.
-  | 'meter_cpu' | 'meter_battery';
+  | 'meter_cpu' | 'meter_battery'
+  // Playtime countdown (agents that advertise `reactive.playtime`): the strip starts
+  // full and drains as a personal timer runs down. Strip-only.
+  | 'playtime';
 
 /** Config for a reactive meter (SignalBar-style). All optional with box defaults. */
 export type MeterSmooth = 'responsive' | 'balanced' | 'smooth';
@@ -824,6 +827,16 @@ export type MeterCfg = {
   low?: number;    // meter_battery: the low-battery threshold %
 };
 
+/** Config for the playtime countdown. The box stamps a `deadline` (unix seconds)
+    and echoes it back; the app reads it to show remaining time. */
+export type PlaytimeCfg = {
+  minutes?: number;          // timer length, 5–240
+  scale?: number;            // 0 = timer-length bar; 1–4 = fixed N-hour full bar
+  layout?: MeterLayout;
+  color?: Rgb;               // start colour (before the amber/red warning stages)
+  deadline?: number;         // box-stamped unix-seconds deadline (read-only to the app)
+};
+
 /** The effect currently running on an LED (from GET /api/leds `active`). Absent
     for an LED showing a plain solid colour (that's read from LedInfo instead). */
 export type LedActive = {
@@ -833,6 +846,8 @@ export type LedActive = {
   brightness: number;
   /** Reactive-meter config, present only for meter_* effects. */
   meter?: MeterCfg;
+  /** Playtime countdown config (incl. the box-stamped deadline), present only for `playtime`. */
+  playtime?: PlaytimeCfg;
   // Envelope shape (agents that advertise `shape:true`), single-LED software renderer only:
   // `attack` = rise fraction of a breathe/pulse cycle (0-100); `duty` = a
   // strobe's on-time % (1-99). Absent on older agents / other effects.
@@ -871,7 +886,12 @@ export type LedsState = {
       the offered meter effect ids (only those whose signal reads + a strip exists);
       `signals` says which live inputs are present. Absent → the agent has no
       reactive support and the app hides the REACTIVE section. */
-  reactive?: { meters: LedEffect[]; signals: Record<string, boolean> };
+  reactive?: {
+    meters: LedEffect[];
+    /** True when the agent can drive the playtime countdown (agent advertises it). */
+    playtime?: boolean;
+    signals: Record<string, boolean>;
+  };
 };
 
 /** One OpenRGB controller from GET /api/openrgb (agent >= 2.9.84, cap `openrgb`).
@@ -3543,6 +3563,8 @@ export const api = {
       reverse?: boolean;
       // Reactive-meter config (meter_cpu/meter_battery only); ignored otherwise.
       layout?: MeterLayout; smooth?: MeterSmooth; cool?: number; hot?: number; low?: number;
+      // Playtime countdown config (playtime only); ignored otherwise.
+      minutes?: number; scale?: number;
     },
   ): Promise<boolean> {
     return request<{ ok: boolean }>(settings, '/api/leds/effect', {
