@@ -267,6 +267,16 @@ jobs:
       - name: Unit tests (privileged helper verb table)
         run: python3 tests/test_privileged_helper.py
 
+      # The helper is root-run, so EVERY ancestor of its on-disk path must be
+      # root-owned: a user-writable parent lets the desktop user rename our dir
+      # aside and drop code root then runs (KI-092, reproduced in a container).
+      # This asserts on install.sh text that no HELPER_DIR is under the
+      # user-owned $STATE_DIR and every created ancestor is root:root. It fails
+      # on the pre-fix installer, where the SteamOS fallback was
+      # /var/lib/couchside/libexec.
+      - name: Unit tests (helper path has only root-owned ancestors)
+        run: python3 tests/test_helper_root_parent.py install.sh
+
       # The macOS agent's first slice. Runs on ubuntu (probes are patched), but
       # the numbers it pins were measured on a real Mac — a first slice that had
       # only ever run in CI is what this project's rules forbid.

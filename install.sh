@@ -603,6 +603,11 @@ if [ "$UNINSTALL" -eq 1 ]; then
     sudo rm -f /etc/systemd/system/couchside-helper.socket \
                /etc/systemd/system/couchside-helper.service \
                /usr/local/libexec/couchside-helper.py
+    # The SteamOS fallback tree (KI-092) and the old pre-KI-092 location. The
+    # old one sits in $STATE_DIR, which is only purged when the owner also
+    # removes $ETC_DIR below -- drop it here so a kept state dir never retains
+    # a root file a root unit once ran.
+    sudo rm -rf /var/lib/couchside-root /var/lib/couchside/libexec
     # The Decky Loader MANAGER pieces (agent 2.9.105+): stop a run in flight
     # (its EXIT trap rolls the box back to the previous loader), then drop the
     # wrapper, the unit template, the opt-in marker + declined stamp + grant,
@@ -1527,8 +1532,11 @@ decky_bake_safe() {
     return 0
 }
 # Where install.sh (g2) puts the helper, first choice first. A box that took
-# the SteamOS fallback has it under /var/lib.
-DECKY_HELPER_CANDIDATES="/usr/local/libexec/couchside-helper.py /var/lib/couchside/libexec/couchside-helper.py"
+# the SteamOS fallback has it under /var/lib/couchside-root (KI-092). The old
+# /var/lib/couchside/libexec location stays LAST, read-only: this list only
+# feeds the version probe below, and a box that has not re-run the installer
+# since KI-092 still has its helper there. Nothing here executes a candidate.
+DECKY_HELPER_CANDIDATES="/usr/local/libexec/couchside-helper.py /var/lib/couchside-root/libexec/couchside-helper.py /var/lib/couchside/libexec/couchside-helper.py"
 DECKY_OLD_HELPER=""
 decky_helper_too_old() {
     # True (0) when the helper this box will END UP WITH predates the
@@ -1891,13 +1899,28 @@ if [ -f "$WORK_DIR/couchside-helper.py" ] && \
     #   install: cannot change owner and permissions of '/usr/local/libexec':
     #   No such file or directory
     # and the installer exited 1 before the helper, socket or unit landed.
-    # /var/lib is writable on every target we support and is still ROOT-OWNED,
-    # which is the property that matters (see the note above: a root-run helper
-    # in a user-writable directory is privilege escalation).
+    #
+    # The SteamOS fallback goes UNDER /var (writable, and copied whole across
+    # image updates, so it persists -- docs/memory/steamos-etc-persistence.md),
+    # but in its OWN root-owned tree, NEVER inside $STATE_DIR. What matters is
+    # that EVERY ANCESTOR of the helper is root-owned, not just the helper file.
+    # The earlier fallback was /var/lib/couchside/libexec, reasoning "/var/lib is
+    # root-owned" -- but /var/lib/couchside itself is chowned to the desktop user
+    # in (e0), so the helper dir had a user-writable PARENT. With no sticky bit,
+    # the user (or anything running as them, e.g. a compromised agent) can rename
+    # our root-owned libexec aside, mkdir their own, and drop code that this root
+    # unit runs at its next restart: user-to-root (KI-092, reproduced in a
+    # container). So the fallback is /var/lib/couchside-root/libexec, where
+    # /var/lib (OS-owned), /var/lib/couchside-root and libexec are ALL
+    # root:root 0755 and none is $STATE_DIR. tests/test_helper_root_parent.py
+    # pins this.
     HELPER_DIR="/usr/local/libexec"
     if ! sudo install -d -m 0755 -o root -g root "$HELPER_DIR" 2>/dev/null; then
-        HELPER_DIR="/var/lib/couchside/libexec"
+        HELPER_DIR="/var/lib/couchside-root/libexec"
         say "  /usr/local is read-only (SteamOS?) — installing the helper to $HELPER_DIR"
+        # Create each level explicitly as root:root 0755, so no ancestor can ever
+        # be the user-owned $STATE_DIR (do NOT nest this under /var/lib/couchside).
+        sudo install -d -m 0755 -o root -g root /var/lib/couchside-root
         sudo install -d -m 0755 -o root -g root "$HELPER_DIR"
     fi
     HELPER_PATH="$HELPER_DIR/couchside-helper.py"
@@ -1913,6 +1936,18 @@ if [ -f "$WORK_DIR/couchside-helper.py" ] && \
         "$WORK_DIR/couchside-helper.service.rendered" \
         /etc/systemd/system/couchside-helper.service
     sudo systemctl daemon-reload
+    # Migrate a box that took the OLD, vulnerable SteamOS fallback
+    # (/var/lib/couchside/libexec, KI-092). Done only AFTER the unit above was
+    # re-rendered + reloaded with the new $HELPER_PATH: from here nothing runs
+    # the old copy, so removing it can't race a helper restart into code the
+    # user re-planted there (removing it first would open that window).
+    # Unconditional -- whichever HELPER_DIR this run chose, that path is never a
+    # valid helper location any more. rm -rf on the literal path removes a
+    # planted symlink itself rather than following it. No-op if absent.
+    if sudo test -e /var/lib/couchside/libexec; then
+        sudo rm -rf /var/lib/couchside/libexec
+        note "  removed the old helper copy from the user-owned state dir (/var/lib/couchside/libexec; KI-092)"
+    fi
     sudo systemctl enable --now couchside-helper.socket >/dev/null 2>&1 || true
     # Load the NEW helper code. The helper is socket-activated with Accept=no —
     # ONE long-lived process, Restart=always — so replacing the .py above does
