@@ -21,6 +21,28 @@ test('the direct-edition declaration parses to two choices, default first as dec
   ]);
 });
 
+test('the default is declared by OMITTING alias (what the direct build ships)', () => {
+  assert.deepEqual(
+    parseAppIconChoices([{ label: 'Pro' }, { alias: 'Standard', label: 'Standard' }]),
+    [
+      { alias: null, label: 'Pro' },
+      { alias: 'Standard', label: 'Standard' },
+    ],
+  );
+});
+
+test('a null alias mangled to {} by the release config pipeline is refused, not guessed (control)', () => {
+  // Observed in assets/app.config of the first direct vc5 APK: {"alias": {}, "label": "Pro"}.
+  // Refusing it (fail closed: no row) is correct; the fix is the declaration, not the parser.
+  assert.deepEqual(
+    parseAppIconChoices([
+      { alias: {}, label: 'Pro' },
+      { alias: 'Standard', label: 'Standard' },
+    ]),
+    [],
+  );
+});
+
 test('no declaration (the store build) means no choices, so no Setup row', () => {
   assert.deepEqual(parseAppIconChoices(undefined), []);
   assert.deepEqual(parseAppIconChoices(null), []);
