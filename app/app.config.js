@@ -42,13 +42,57 @@ module.exports = ({ config }) => {
     // app's sequence. The `direct` EAS profile sets autoIncrement:false, so this
     // fixed value is authoritative; bump it by hand when cutting a new direct APK
     // (Android refuses to install over an equal-or-lower versionCode).
-    versionCode: 4,
+    versionCode: 5,
     adaptiveIcon: {
       ...(config.android.adaptiveIcon || {}),
       foregroundImage: './assets/images/android-icon-direct-foreground.png',
       backgroundImage: './assets/images/android-icon-direct-background.png',
     },
   };
+
+  // USER-SELECTABLE HOME-SCREEN ICON (roadmap 2026-09-26; PR #569 carries the app code).
+  // ONE source list feeds BOTH the prebuild plugin (which generates `.MainActivity<Name>`
+  // aliases + adaptive-icon resources) and `extra.appIcons` (what the app renders), so the
+  // two can never disagree on a name. The DEFAULT launcher icon stays the gold Pro set above
+  // (plain MainActivity, alias null). Names are PascalCase (the plugin PascalCases them).
+  //
+  // RULES FOR EVERY FUTURE DIRECT BUILD (review finding 2026-09-26): this plugin entry and every
+  // alias name ever shipped are PERMANENT — append-only, never renamed or removed. A user who
+  // picked an alias has MainActivity DISABLED in PackageManager (persisted across updates); a
+  // build without that alias would leave them with NO launcher icon and no way in.
+  // The release recipe checks the new APK's alias set is a superset of the shipped one.
+  const APP_ICONS = [
+    {
+      alias: 'Standard',
+      label: 'Standard',
+      ios: './assets/images/icon.png',
+      android: {
+        foregroundImage: './assets/images/android-icon-foreground.png',
+        backgroundImage: './assets/images/android-icon-background.png',
+        monochromeImage: './assets/images/android-icon-monochrome.png',
+      },
+    },
+  ];
+  config.plugins = [
+    ...(config.plugins || []),
+    ['expo-alternate-app-icons', APP_ICONS.map(({ alias, ios, android }) => ({ name: alias, ios, android }))],
+  ];
+  config.extra = {
+    ...(config.extra || {}),
+    appIcons: [{ alias: null, label: 'Pro' }, ...APP_ICONS.map(({ alias, label }) => ({ alias, label }))],
+  };
+  // The couchside:// deep-link filter lives on MainActivity by default. When an alias is the
+  // enabled launcher, MainActivity is DISABLED and stops resolving intents — so declare the
+  // scheme filter explicitly here: the plugin copies `android.intentFilters` onto every alias,
+  // and pairing links keep working whichever icon is active (review finding 2026-09-26).
+  config.android.intentFilters = [
+    ...(config.android.intentFilters || []),
+    {
+      action: 'VIEW',
+      category: ['DEFAULT', 'BROWSABLE'],
+      data: [{ scheme: 'couchside' }],
+    },
+  ];
   if (config.ios) {
     config.ios = {
       ...config.ios,
