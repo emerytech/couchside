@@ -363,3 +363,24 @@ test('pending: points at a real entry or nothing', () => {
   }
   assert.equal(l.pending, null);
 });
+
+test('redact: tokens never reach the log through the STACK or the ROUTE either', () => {
+  // The review found only the message was asserted: dropping redact() from the
+  // stack or the route kept every test green. A stack whose head DIFFERS from the
+  // message (so it is not deduped away), carrying all three token shapes, plus a
+  // route with a token query.
+  const e = err(
+    'plain message',
+    'Error: different head\n' +
+      '    at pair (index.android.bundle:1:2345) couchside://pair#token=LEAK1\n' +
+      '    at json {"host":"box","token":"LEAK2"}\n' +
+      '    at hdr Authorization: Bearer LEAK3',
+  );
+  const entry = makeEntry(e, 'error', T0, { ...CTX, route: '/pair?host=box&token=LEAK4' });
+  const all = JSON.stringify(entry);
+  for (const leak of ['LEAK1', 'LEAK2', 'LEAK3', 'LEAK4']) {
+    assert.ok(!all.includes(leak), `${leak} must be redacted (entry: ${all})`);
+  }
+  assert.ok(entry.stack.includes('index.android.bundle:1:2345'), 'the useful frame survives redaction');
+});
+

@@ -20,7 +20,8 @@
 #   couchside-2.9.61-vc109.apk      the APK exactly as built
 #   couchside-2.9.61-vc109.map      android/app/build/generated/sourcemaps/react/
 #                                   release/index.android.bundle.map
-#   couchside-2.9.61-vc109.sha256   apk + map + the Hermes bundle inside the APK
+#   couchside-2.9.61-vc109.sha256   apk + map (verify with: sha256sum -c <file>)
+#   couchside-2.9.61-vc109.bundle-sha256   the Hermes bundle INSIDE the APK
 #   couchside-2.9.61-vc109.r8-mapping.txt   only if R8 minify is on (it is not
 #                                   yet; ROADMAP "Android R8 obfuscation") — the
 #                                   JVM-side twin, for obfuscated Java frames
@@ -184,8 +185,13 @@ done
 for ext in $EXTS; do place "$(srcof "$ext")" "$OUT/$BASE.$ext"; done
 {
   for ext in $EXTS; do echo "$(sha256 "$OUT/$BASE.$ext")  $BASE.$ext"; done
-  if [ -n "$APK_BUNDLE_SHA" ]; then echo "$APK_BUNDLE_SHA  $BASE.apk!/assets/index.android.bundle"; fi
 } >"$OUT/$BASE.sha256"
+# The Hermes bundle INSIDE the APK is not a file on disk, so its hash lives in its
+# own file: keeping it out of $BASE.sha256 lets `sha256sum -c` / `shasum -a 256 -c`
+# verify the archive cleanly (a non-file line made every check exit 1).
+if [ -n "$APK_BUNDLE_SHA" ]; then
+  echo "$APK_BUNDLE_SHA  $BASE.apk!/assets/index.android.bundle" >"$OUT/$BASE.bundle-sha256"
+fi
 
 echo
 echo "archived:"

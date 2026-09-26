@@ -79,11 +79,16 @@ export function ErrorBoundary({ error, retry }: Props) {
           this is just the app. Tap Try again, and if it keeps happening, make sure the
           Couchside service on your box is up to date.
         </Text>
-        {!!error?.message && (
+        {/* Render the box for a message OR an opened stack: an error thrown with an
+            empty message (`new Error()`) still has a stack, and "Show details"
+            must show it rather than do nothing. */}
+        {(!!error?.message || (showStack && !!stack)) && (
           <View style={[styles.detail, { backgroundColor: c.card, borderColor: c.border }]}>
-            <Text style={[styles.detailText, { color: c.dim }]} numberOfLines={4}>
-              {error.message}
-            </Text>
+            {!!error?.message && (
+              <Text style={[styles.detailText, { color: c.dim }]} numberOfLines={4}>
+                {error.message}
+              </Text>
+            )}
             {showStack && !!stack && (
               <ScrollView style={styles.stackScroll} nestedScrollEnabled>
                 <Text style={[styles.stackText, { color: c.dim }]} selectable>

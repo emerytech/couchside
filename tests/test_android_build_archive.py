@@ -113,6 +113,7 @@ def test_happy_path_store():
         rc, log = run(app, out)
         check("exit 0", rc, 0)
         check("files", listing(out), ["couchside-2.9.61-vc109.apk",
+                                      "couchside-2.9.61-vc109.bundle-sha256",
                                       "couchside-2.9.61-vc109.map",
                                       "couchside-2.9.61-vc109.sha256"])
         if rc == 0:
@@ -120,10 +121,18 @@ def test_happy_path_store():
             src_apk = os.path.join(app, "android/app/build/outputs/apk/release/app-release.apk")
             check("apk copied byte-for-byte", read(os.path.join(out, "couchside-2.9.61-vc109.apk")), read(src_apk))
             sums = read(os.path.join(out, "couchside-2.9.61-vc109.sha256")).decode()
-            check("sha256 names apk, map and the bundle inside the apk",
+            check("sha256 names ONLY real sibling files (apk, map)",
                   [ln.split("  ", 1)[1] for ln in sums.strip().splitlines()],
-                  ["couchside-2.9.61-vc109.apk", "couchside-2.9.61-vc109.map",
-                   "couchside-2.9.61-vc109.apk!/assets/index.android.bundle"])
+                  ["couchside-2.9.61-vc109.apk", "couchside-2.9.61-vc109.map"])
+            bsum = read(os.path.join(out, "couchside-2.9.61-vc109.bundle-sha256")).decode()
+            check("the in-APK bundle hash is kept, in its own file",
+                  bsum.strip().split("  ", 1)[1], "couchside-2.9.61-vc109.apk!/assets/index.android.bundle")
+            # The archive must verify with the stock tools (review finding: a
+            # non-file line made `-c` exit 1 every time).
+            tool = (["sha256sum", "-c"] if shutil.which("sha256sum") else ["shasum", "-a", "256", "-c"])
+            chk = subprocess.run(tool + ["couchside-2.9.61-vc109.sha256"], cwd=out,
+                                 capture_output=True, text=True)
+            check("%s passes on the archive" % " ".join(tool), chk.returncode, 0)
             check("says it proved the bundle match", "APK bundle matches" in log, True)
             check("prints the symbolicate recipe", "metro-symbolicate" in log, True)
 
@@ -136,6 +145,7 @@ def test_direct_edition_prefix():
         rc, _ = run(app, out)
         check("exit 0", rc, 0)
         check("files", listing(out), ["couchside-direct-2.9.61-vc3.apk",
+                                      "couchside-direct-2.9.61-vc3.bundle-sha256",
                                       "couchside-direct-2.9.61-vc3.map",
                                       "couchside-direct-2.9.61-vc3.sha256"])
     print("--direct against a store APK is refused (wrong checkout)")
@@ -156,6 +166,7 @@ def test_r8_mapping_archived_when_present():
         rc, _ = run(app, out)
         check("exit 0", rc, 0)
         check("files", listing(out), ["couchside-2.9.61-vc109.apk",
+                                      "couchside-2.9.61-vc109.bundle-sha256",
                                       "couchside-2.9.61-vc109.map",
                                       "couchside-2.9.61-vc109.r8-mapping.txt",
                                       "couchside-2.9.61-vc109.sha256"])
