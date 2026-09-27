@@ -29,12 +29,14 @@ fighting it.
 
 **A playtime countdown on the strip.** Set a timer and the bar drains as it runs down,
 turning amber, then red near the end, with a flash in the last seconds. It follows the same
-rule: Steam's own lights come first.
+rule: Steam's own lights come first. When the timer runs out, the strip goes dark once and is
+handed back, and a timer that ran out while the box was off stays finished after a reboot.
 
 **Finer LED control.** Effect speed is now a smooth slider instead of three steps, and
 colours can be softened all the way to white.
 
-These need Couchside 2.9.63 or newer on your phone.
+These need Couchside 2.9.63 or newer on your phone. Older app versions keep working as
+before and simply don't show the new modes.
 
 ## 2.9.116
 

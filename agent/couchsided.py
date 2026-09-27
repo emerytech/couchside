@@ -5701,7 +5701,7 @@ def leds_state(mock):
         pubs = [_mock_led_public(l["name"]) for l in MOCK_LEDS if l["writable"]]
         strips = _led_strips([l["name"] for l in MOCK_LEDS if l["writable"]])
         return {"available": any(p["notable"] for p in pubs), "leds": pubs,
-                "effects": list(_LED_EFFECTS), "shape": True,
+                "effects": list(_LED_EFFECTS_ADVERTISED), "shape": True,
                 "reactive": {"meters": ["meter_cpu", "meter_battery"], "playtime": True,
                              "signals": {"cpu_temp": True, "battery": True}},
                 "active": {k: dict(v) for k, v in _MOCK_FX.items()},
@@ -5714,7 +5714,7 @@ def leds_state(mock):
     # (breathe/pulse `attack`, strobe `duty`). Additive probe-and-appear flag: the
     # app shows the SHAPE control only when present, so older agents stay clean.
     return {"available": any(p["notable"] for p in pubs), "leds": pubs,
-            "effects": list(_LED_EFFECTS), "shape": True,
+            "effects": list(_LED_EFFECTS_ADVERTISED), "shape": True,
             "reactive": _reactive_probe(bool(strips)), "active": _led_active_map(),
             "strips": [_strip_public(p, m) for p, m in strips.items()]}
 
@@ -5925,6 +5925,14 @@ _LED_STATIC = frozenset(("solid", "off"))
 # The reactive meters, looked up (never interpolated). Each renders a live 0..100
 # signal as a bar; unavailable signal -> dark (degrade closed, §3.7).
 _LED_METERS = frozenset(("meter_cpu", "meter_battery"))
+# Strip-only effects (rendered across the bar). Advertised through GET /api/leds
+# `reactive`, NEVER in `effects`: every shipped app up to 2.9.62 looks up a label for
+# each `effects` id in a fixed table and CRASHES on an unknown one (RgbLedCard:
+# EFFECT_META[e].label on an RGB LED). `effects` is the single-LED menu those apps
+# render, so it keeps exactly the ids they know. Review finding, release 2.9.117;
+# pinned by tests/test_led_review_2917.py. Response shapes are additive only (§4).
+_LED_STRIP_ONLY = frozenset(_LED_METERS | {"playtime"})
+_LED_EFFECTS_ADVERTISED = tuple(e for e in _LED_EFFECTS if e not in _LED_STRIP_ONLY)
 
 _FX_TICK = 0.033                 # ~30 fps render cadence
 _FX_LOCK = threading.RLock()
@@ -6319,15 +6327,23 @@ def _led_restore():
             meter = mc if merr is None else {}
         # Playtime countdown re-validated + the wall-clock DEADLINE carried through so
         # the timer RESUMES its real remaining time across a reboot (never trusts the
-        # file; junk cfg -> a fresh default timer). An already-expired deadline just
-        # renders dark.
+        # file; junk cfg or a non-finite deadline -> a fresh default timer). A
+        # countdown that already expired is dropped, not re-armed (2.9.117).
         playtime = None
         if effect == "playtime" and isinstance(st.get("playtime"), dict):
             pc, perr = _validate_playtime_cfg(st["playtime"])
             playtime = pc if perr is None else {}
             dl = st["playtime"].get("deadline")
-            if perr is None and isinstance(dl, (int, float)) and not isinstance(dl, bool):
+            if perr is None and isinstance(dl, (int, float)) and not isinstance(dl, bool) \
+                    and math.isfinite(dl):
                 playtime["deadline"] = dl
+                if dl <= time.time():
+                    # It finished while the box was off: nothing to resume. Forget it
+                    # instead of re-arming a dark bar that blanks Steam's lights.
+                    with _FX_LOCK:
+                        _LED_PERSIST.pop(name, None)
+                    _led_state_save()
+                    continue
         try:
             if name.startswith("strip:"):
                 # A persisted strip (firmware effect): re-arm the whole strip so a
@@ -6723,12 +6739,12 @@ def _validate_meter_cfg(req):
     cfg = {}
     layout = req.get("layout")
     if layout is not None:
-        if layout not in _METER_LAYOUTS:
+        if not isinstance(layout, str) or layout not in _METER_LAYOUTS:
             return None, "layout must be linear|mirrored"
         cfg["layout"] = layout
     smooth = req.get("smooth")
     if smooth is not None:
-        if smooth not in _METER_SMOOTH_IDS:
+        if not isinstance(smooth, str) or smooth not in _METER_SMOOTH_IDS:
             return None, "smooth must be responsive|balanced|smooth"
         cfg["smooth"] = smooth
     for key, lo, hi in (("cool", 0, 120), ("hot", 0, 120), ("low", 5, 50)):
@@ -6811,6 +6827,8 @@ def _seq_playtime_frame(spec, now):
     if not isinstance(deadline, (int, float)) or isinstance(deadline, bool):
         return [None] * n
     wall = time.time()
+    if deadline - wall <= 0:
+        spec["_expired"] = True        # _seq_loop finishes it after this (dark) frame
     return _playtime_frame(cfg, n, deadline - wall, wall)
 
 
@@ -6826,12 +6844,12 @@ def _validate_playtime_cfg(req):
         cfg["minutes"] = m
     scale = req.get("scale")
     if scale is not None:
-        if isinstance(scale, bool) or scale not in _PLAYTIME_SCALES:
+        if isinstance(scale, bool) or not isinstance(scale, int) or scale not in _PLAYTIME_SCALES:
             return None, "scale must be 0 (timer) or 1-4 (fixed hours)"
         cfg["scale"] = scale
     layout = req.get("layout")
     if layout is not None:
-        if layout not in _METER_LAYOUTS:
+        if not isinstance(layout, str) or layout not in _METER_LAYOUTS:
             return None, "layout must be linear|mirrored"
         cfg["layout"] = layout
     color = req.get("color")
@@ -7011,6 +7029,19 @@ def _seq_render(spec, now):
     frame = _seq_compute_frame(spec, now)
     if frame is None:
         return
+    # A frame that lights NOTHING has no canary, so the stand-down check cannot see
+    # Steam take the bar -- repainting it every tick just blanks Steam's own light-bar
+    # animation at ~30fps (the flicker 2.9.106 fixed). Paint a dark frame ONCE, then
+    # leave the strip alone until a frame lights something again (an idle CPU meter,
+    # an unreadable battery, a finished countdown). Forget the stale canary so the
+    # first lit frame afterwards is not scored as a Steam write. Review, 2.9.117.
+    if _seq_canary_index(frame) is None:
+        if spec.get("_dark"):
+            return
+        spec["_dark"] = True
+        spec.pop("_canary", None)
+    else:
+        spec["_dark"] = False
     if spec.get("_down", False):
         # Leave Steam's bar alone; just probe one node on a slow cadence, checking
         # whether the PREVIOUS probe write survived the interval.
@@ -7041,7 +7072,30 @@ def _seq_loop():
         now = time.monotonic()
         for spec in active:
             _seq_render(spec, now)
+        for spec in active:
+            if spec.get("_expired"):
+                _playtime_finish(spec)
         _FX_STOP.wait(_SEQ_TICK)
+
+
+def _playtime_finish(spec):
+    """A countdown reached zero: stop rendering it and FORGET it, so the strip goes
+    back to Steam/firmware instead of being held dark forever and re-armed on every
+    boot (review finding, 2.9.117). Only drops the persisted entry if it is still this
+    countdown (a newer effect set meanwhile is left alone)."""
+    prefix = spec.get("prefix")
+    if not prefix:
+        return
+    with _SEQ_LOCK:
+        if _SEQ_ACTIVE.get(prefix) is spec:
+            _SEQ_ACTIVE.pop(prefix, None)
+    with _FX_LOCK:
+        cur = _LED_PERSIST.get("strip:" + prefix)
+        drop = isinstance(cur, dict) and cur.get("effect") == "playtime"
+        if drop:
+            _LED_PERSIST.pop("strip:" + prefix, None)
+    if drop:
+        _led_state_save()
 
 
 def _seq_ensure_thread():
@@ -7074,6 +7128,7 @@ def _seq_start(prefix, members, effect, color, speed, brightness, reverse=False,
             "reverse": bool(reverse),
             "meter": dict(meter) if isinstance(meter, dict) else None,
             "playtime": dict(playtime) if isinstance(playtime, dict) else None,
+            "prefix": prefix,
             "t0": time.monotonic(), "raws": raws}
     _seq_ensure_thread()
 
@@ -7794,7 +7849,7 @@ def openrgb_state(mock):
     if mock:
         return {"available": bool(MOCK_ORGB), "server": "%s:%d" % (_ORGB_HOST, _ORGB_PORT),
                 "controllers": [dict(c) for c in MOCK_ORGB],
-                "effects": list(_LED_EFFECTS),
+                "effects": list(_LED_EFFECTS_ADVERTISED),
                 "active": {str(k): dict(v) for k, v in _MOCK_ORGB_FX.items()}}
     ctrls = _orgb_list()
     with _ORGB_FX_LOCK:
@@ -7802,7 +7857,7 @@ def openrgb_state(mock):
     return {"available": bool(ctrls), "server": ("%s:%d" % (_ORGB_HOST, _ORGB_PORT)) if ctrls else None,
             "controllers": [{"index": c["index"], "name": c["name"],
                              "led_count": c["led_count"], "zones": c["zones"]} for c in ctrls],
-            "effects": list(_LED_EFFECTS), "active": active}
+            "effects": list(_LED_EFFECTS_ADVERTISED), "active": active}
 
 
 def apply_openrgb(device, effect, color, speed, brightness):
@@ -22300,6 +22355,8 @@ def _reco_rank(playtime, installed, now, limit=5):
     for appid, rec in (playtime or {}).items():
         if appid not in installed:
             continue                       # only recommend what can launch right now
+        if str(appid) in STEAM_TOOL_APPIDS:
+            continue                       # runtimes/redistributables are not games
         hours = max(0.0, (rec.get("playtime_min") or 0) / 60.0)
         lp = rec.get("last_played") or 0
         days = (now - lp) / 86400.0 if lp > 0 else None
@@ -22309,6 +22366,8 @@ def _reco_rank(playtime, installed, now, limit=5):
                       "installed": True, "score": round(score, 1),
                       "bucket": bucket, "tag": tag, "reason": reason})
     for appid in installed:
+        if str(appid) in STEAM_TOOL_APPIDS:
+            continue
         if appid not in playtime:          # installed but never launched -> "fresh"
             cands.append({"appid": str(appid), "hours": 0.0, "days_since": None,
                           "installed": True, "score": 52.0, "bucket": "fresh",
@@ -22345,8 +22404,17 @@ def _recommend_payload(limit=5):
     if root is None:
         return {"available": False, "generated": now, "primary": None, "alternates": [], "counts": {}}
     playtime = _steam_playtime(root)
-    installed = _installed_appids(root)
     names = _steam_appinfo_names()
+
+    def _nm(a):
+        try:
+            return names.get(int(a)) or ""
+        except (ValueError, TypeError):
+            return ""
+    # Steam runtimes / Proton / redistributables are installed on every Linux box and
+    # never "played": left in, they win the "Never played" bucket and become the pick
+    # (review finding, 2.9.117) -- and the launch path refuses them anyway.
+    installed = {a for a in _installed_appids(root) if not _is_steam_tool(str(a), _nm(a))}
     ranked = _reco_rank(playtime, installed, time.time(), limit)
 
     def _named(p):
@@ -26692,6 +26760,12 @@ class Handler(BaseHTTPRequestHandler):
                         if merr is not None:
                             self._send(400, {"error": merr}, started)
                             return
+                        # Only a meter the box actually offers (probe-and-appear): an
+                        # unreadable battery would otherwise render dark forever.
+                        if not self.mock and effect not in _reactive_probe(True).get("meters", ()):
+                            self._send(400, {"error": "that meter is not available on this box"},
+                                       started)
+                            return
                     elif effect == "playtime":
                         playtime, perr = _validate_playtime_cfg(req)
                         if perr is not None:
@@ -26735,6 +26809,12 @@ class Handler(BaseHTTPRequestHandler):
                                   if l["name"] == led_name), None)
                     if not isinstance(led_name, str) or match is None:
                         self._send(404, {"error": "unknown led"}, started)
+                        return
+                    if effect in _LED_STRIP_ONLY:
+                        # Same answer as the real path (apply_led_effect), so the
+                        # harness cannot show a single-LED meter that the box 400s.
+                        self._send(400, {"error": "this effect requires a strip target"},
+                                   started)
                         return
                     if effect in _LED_STATIC:
                         # solid/off moves colour/brightness like /set; no anim.
@@ -26788,6 +26868,10 @@ class Handler(BaseHTTPRequestHandler):
                     if not isinstance(device, int) or isinstance(device, bool) \
                             or match is None:
                         self._send(404, {"error": "unknown device"}, started)
+                        return
+                    if effect in _LED_STRIP_ONLY:        # same answer as apply_openrgb
+                        self._send(400, {"error": "this effect requires a strip target"},
+                                   started)
                         return
                     if effect in _LED_STATIC:
                         _MOCK_ORGB_FX.pop(device, None)
