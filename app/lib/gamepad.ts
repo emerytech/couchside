@@ -306,6 +306,25 @@ const BACKOFF_MS = [150, 1000, 2000, 4000];
  * alternation can try the other address.
  */
 const CONNECT_TIMEOUT_MS = 4000;
+/**
+ * Connect budget handed to the PINNED (secure-box) socket, kept BELOW
+ * CONNECT_TIMEOUT_MS on purpose.
+ *
+ * A pinned connect is not just a TCP dial: connectPinned (boxTls) does the TLS
+ * handshake AND polls getPeerCertificate() to verify the modulus, up to its own
+ * cert-poll deadline. With that deadline at its 6 s default and this client's
+ * connect watchdog at 4 s, a reconnect on a secure box kept getting ABORTED by the
+ * watchdog at 4 s while the pin check was still polling — the socket never reached
+ * OPEN, `attempt` never reset (it only reset on a server frame), and each aborted
+ * dial stacked the backoff (150→1000→2000→4000 ≈ 8 s of dead cursor). Handing the
+ * pinned socket a 3 s budget makes connectPinned's OWN timer fire FIRST on a
+ * genuinely dead/slow target — a clean reject → onclose → one snappy backoff step —
+ * so the socket is never left stuck in CONNECTING for the blunt watchdog to abort a
+ * connect that was about to succeed. A healthy LAN cert-verify is a few ms, far
+ * inside this. The 4 s watchdog stays as the backstop for a stalled WS upgrade.
+ * Plaintext ws:// ignores it (no such option); it only shapes the secure path.
+ */
+const PINNED_CONNECT_TIMEOUT_MS = 3000;
 
 export type GamepadStatusListener = (status: GamepadStatus, dev: string | null) => void;
 
@@ -1063,7 +1082,11 @@ export class GamepadClient {
 
     let ws: BoxSocketLike;
     try {
-      ws = openBoxSocket({ host: target, port, secure, tlsPort, pinModulus }, path);
+      ws = openBoxSocket(
+        { host: target, port, secure, tlsPort, pinModulus },
+        path,
+        { timeoutMs: PINNED_CONNECT_TIMEOUT_MS },
+      );
     } catch {
       this.setStatus('error', null);
       this.scheduleReconnect();
@@ -1088,6 +1111,14 @@ export class GamepadClient {
     ws.onopen = () => {
       if (ws !== this.ws) return;
       this.clearConnectWatchdog();
+      // Reset the reconnect backoff the moment the socket is genuinely OPEN — a
+      // completed WS upgrade (pin verified + 101 received on a secure box) is proof
+      // of a working pipe, so the NEXT drop should retry in one fast step, not carry
+      // a backoff stacked by earlier failed dials. `hello` also resets it, but that
+      // is one server frame away and a drop between OPEN and hello would otherwise
+      // keep the stacked backoff; resetting here makes the reset reliable and means
+      // a fast re-drop right after connecting still recovers in ~one step.
+      this.attempt = 0;
       // Start the keepalive HERE, on the socket opening, not on a server
       // message.
       //
