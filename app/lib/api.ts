@@ -3,7 +3,8 @@
  * Base URL: http://<host>:<port>  (default port 8787)
  */
 import { Buffer } from 'buffer';
-import { isPinMismatchError, pinnedRequest, type PinnedResponse } from './boxTransport.ts';
+import { isPinMismatchError, isPinnedTimeoutError, pinnedRequest, type PinnedResponse } from './boxTransport.ts';
+import { raceIpFirst, ttlMemo } from './boxRoute.ts';
 import { isDeclaredTooLarge, isUsableBodySize } from './responseCap';
 import { ensureImageTicket, getImageTicket, mintUploadTicket } from './ticket.ts';
 import type { InstallHealth } from './installHealth.ts';
@@ -2023,6 +2024,9 @@ async function attempt(
   // Fleet tab stuck forever at "probing…", and raceGet's Promise.any waiting on
   // a hostname path that never rejects). This timer guarantees the JS promise
   // always settles, so a stuck lookup degrades to a clean timeout + retry.
+  // On the pinned path it is only a backstop: pinnedRequest's own deadline is
+  // `timeoutMs` from the same moment (it covers queue wait + connect), so the
+  // pool always settles first and never writes a request this call gave up on.
   let hardTimer: ReturnType<typeof setTimeout> | undefined;
   const hardDeadline = new Promise<never>((_, reject) => {
     hardTimer = setTimeout(
@@ -2034,8 +2038,9 @@ async function attempt(
     // Secure box (spec §2/P5): the bearer token rides a modulus-pinned TLS
     // socket, never a cleartext header. FAIL CLOSED — there is deliberately no
     // http fallback here, because a blocked/spoofed TLS port must NOT be allowed
-    // to downgrade the token back onto the wire. (The probe/ping/pair paths stay
-    // plaintext: they are pre-auth and carry no token.)
+    // to downgrade the token back onto the wire. (The pair paths and plainPing
+    // are plaintext: pre-auth, no token. probeTarget on a secure box rides this
+    // pinned path, so the pin itself vouches for the cached IP.)
     if (settings.secure && settings.pinModulus && settings.tlsPort) {
       const pr = await Promise.race([
         pinnedRequest(host, settings.tlsPort, settings.pinModulus, {
@@ -2061,6 +2066,12 @@ async function attempt(
     return await Promise.race([fetchPromise, hardDeadline]);
   } catch (e: unknown) {
     if (e instanceof ApiError) throw e; // hard-deadline timeout, already shaped
+    if (isPinnedTimeoutError(e)) {
+      // The pinned pool's own deadline (queue wait + connect + reply). Same
+      // meaning as the plaintext AbortError below: callers show "still working"
+      // for a POST that may have landed, and let the poll decide.
+      throw new ApiError('timeout', `Timed out after ${timeoutMs / 1000}s`);
+    }
     if (isPinMismatchError(e)) {
       // A secure box presented an unexpected cert. Fail closed, do NOT retry over
       // plaintext; surface as unreachable so the reconnect loop keeps trying the
@@ -2091,7 +2102,8 @@ async function attempt(
       // as itself WITHOUT tls_port will never bring the secure link back on its
       // own — the user has to fix it or re-pair — and config_ok:false says why.
       // lastIp is validated (isValidLanIp) by normalizeBox before it is ever
-      // stored, so it is safe to try as-is.
+      // stored, so it is safe to try as-is. plainPing is memoized per host for
+      // PLAIN_PING_TTL_MS, so a burst of failures is not a burst of pings.
       const plain =
         (await plainPing(settings.host, settings)) ??
         (settings.lastIp ? await plainPing(settings.lastIp, settings) : null);
@@ -2129,6 +2141,9 @@ const GET_RACE_STAGGER_MS = 250;
  * Happy-Eyeballs for idempotent GETs: race the cached IP (identity-probed
  * first, so the bearer token still never goes to an unproven address) against
  * the configured hostname, staggered so the fast path usually wins alone.
+ * Once the IP probe has PROVEN the box, the hostname joins only if the IP
+ * request itself fails (raceIpFirst in boxRoute.ts has the full rule and the
+ * 2026-09-26 network that needed it).
  * Safe only for GETs — a double-send of a POST could run an action twice.
  * Returns the first success; if both fail, throws the hostname path's error
  * (it matches what the single-attempt flow would have reported).
@@ -2139,35 +2154,12 @@ async function raceGet(
   opts: { method?: 'GET' | 'POST' | 'DELETE'; auth?: boolean; timeoutMs?: number; body?: unknown },
   fallbackIp: string,
 ): Promise<{ res: Response; usedHost: string }> {
-  let settled = false;
-  const ipPath = (async () => {
-    if (!(await probeTarget(fallbackIp, settings))) {
-      throw new ApiError('unreachable', 'cached IP did not answer as this box');
-    }
-    const res = await attempt(fallbackIp, settings, path, opts);
-    return { res, usedHost: fallbackIp };
-  })();
-  const hostPath = (async () => {
-    await new Promise((r) => setTimeout(r, GET_RACE_STAGGER_MS));
-    if (settled) {
-      // The IP already won; don't fire a redundant fetch.
-      throw new ApiError('unreachable', 'cached IP path won');
-    }
-    const res = await attempt(settings.host, settings, path, opts);
-    return { res, usedHost: settings.host };
-  })();
-  // Swallow the loser's eventual rejection so it can't surface as unhandled.
-  ipPath.catch(() => {});
-  hostPath.catch(() => {});
-  try {
-    const winner = await Promise.any([ipPath, hostPath]);
-    settled = true;
-    return winner;
-  } catch {
-    settled = true;
-    // Both paths failed. Re-throw the hostname error for a familiar message.
-    return await hostPath;
-  }
+  return raceIpFirst({
+    staggerMs: GET_RACE_STAGGER_MS,
+    probeIp: () => probeTarget(fallbackIp, settings),
+    viaIp: async () => ({ res: await attempt(fallbackIp, settings, path, opts), usedHost: fallbackIp }),
+    viaHost: async () => ({ res: await attempt(settings.host, settings, path, opts), usedHost: settings.host }),
+  });
 }
 
 /**
@@ -2181,18 +2173,31 @@ async function raceGet(
  * used to say "may be restarting" indefinitely.
  */
 async function plainPing(host: string, settings: ConnSettings): Promise<Ping | null> {
-  try {
-    const res = await attempt(host, settings, '/api/ping', {
-      auth: false,
-      timeoutMs: PROBE_TIMEOUT_MS,
-    });
-    if (!res.ok) return null;
-    const body: unknown = await res.json();
-    return pingMatchesBox(body, settings.host) ? (body as Ping) : null;
-  } catch {
-    return null;
-  }
+  return plainPingMemo(`${settings.host}|${host}:${settings.port}`, async () => {
+    try {
+      // PLAINTEXT, and it has to be: `secure: false` keeps attempt() off the
+      // pinned path. Until 2026-09-26 this passed the secure settings through, so
+      // the "plaintext" ping went over the pinned transport and, when that
+      // failed, re-entered attempt()'s own secure-failure branch, which called
+      // plainPing again: an unbounded connect loop against a host that refuses
+      // (measured with a fake socket: a POST that never settled, ~35k hostname
+      // connects in 1.5 s). auth:false, so the token is never on this request.
+      const res = await attempt(host, { ...settings, secure: false }, '/api/ping', {
+        auth: false,
+        timeoutMs: PROBE_TIMEOUT_MS,
+      });
+      if (!res.ok) return null;
+      const body: unknown = await res.json();
+      return pingMatchesBox(body, settings.host) ? (body as Ping) : null;
+    } catch {
+      return null;
+    }
+  });
 }
+
+/** How long one plainPing answer (including "no answer") is reused per host. */
+const PLAIN_PING_TTL_MS = 5000;
+const plainPingMemo = ttlMemo<Ping | null>(PLAIN_PING_TTL_MS);
 
 /**
  * Unauthenticated identity probe: does `host` answer /api/ping AS this box
