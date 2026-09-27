@@ -5701,8 +5701,8 @@ def leds_state(mock):
         # A finished countdown is forgotten, like the real agent's _playtime_finish,
         # so the harness shows the same "after it ends" state a box does.
         now = time.time()
-        for k in [k for k, v in _MOCK_FX.items()
-                  if v.get("effect") == "playtime"
+        for k in [k for k, v in list(_MOCK_FX.items())    # snapshot: a concurrent GET
+                  if v.get("effect") == "playtime"        # must not "dict changed size"
                   and isinstance((v.get("playtime") or {}).get("deadline"), (int, float))
                   and v["playtime"]["deadline"] <= now]:
             _MOCK_FX.pop(k, None)
@@ -6348,9 +6348,18 @@ def _led_restore():
                 if dl <= time.time():
                     # It finished while the box was off: nothing to resume. Forget it
                     # instead of re-arming a dark bar that blanks Steam's lights.
+                    # Drop it only if it is still THIS expired countdown -- a POST
+                    # landing during boot restore must keep its own entry.
+                    dropped = False
                     with _FX_LOCK:
-                        _LED_PERSIST.pop(name, None)
-                    _led_state_save()
+                        cur = _LED_PERSIST.get(name)
+                        if (isinstance(cur, dict) and cur.get("effect") == "playtime"
+                                and isinstance(cur.get("playtime"), dict)
+                                and cur["playtime"].get("deadline") == dl):
+                            _LED_PERSIST.pop(name, None)
+                            dropped = True
+                    if dropped:
+                        _led_state_save()
                     continue
         try:
             if name.startswith("strip:"):
@@ -7051,6 +7060,18 @@ def _seq_render(spec, now):
         if spec.get("_dark"):
             return
         spec["_dark"] = True
+        # Stood down, and a now-dark frame (a flat-idle CPU meter, an ended
+        # countdown) would leave our last one-LED probe lit forever -- a dark frame
+        # gives nothing to re-probe with, so we would never repaint it. If that node
+        # still reads back EXACTLY our probe value, Steam has not touched it since,
+        # so dimming that single member is safe and clears the stray LED (delta
+        # review, pinned by test_led_review_2917).
+        cn = spec.get("_canary", (None, None))
+        if spec.get("_down") and _seq_canary_matches(*cn):
+            try:
+                _led_write(cn[0], "brightness", "0")
+            except OSError:
+                pass
     else:
         spec["_dark"] = False
     if spec.get("_down", False):
@@ -7058,10 +7079,16 @@ def _seq_render(spec, now):
         # whether the PREVIOUS probe write survived the interval.
         if now < spec.get("_probe_at", 0.0):
             return
-        matched = _seq_canary_matches(*spec.get("_canary", (None, None)))
         ci = _seq_canary_index(frame)
-        if ci is not None:
-            spec["_canary"] = _seq_paint(spec, frame, only_index=ci)
+        if ci is None:
+            return                        # nothing lit to probe with; keep this
+            #                               probe slot for the next LIT frame, and
+            #                               never score the kept canary against a
+            #                               dark frame (it may have been written
+            #                               while Steam still owned the bar, which
+            #                               delayed resume). Delta review, 2.9.117.
+        matched = _seq_canary_matches(*spec.get("_canary", (None, None)))
+        spec["_canary"] = _seq_paint(spec, frame, only_index=ci)
         _seq_standdown_decide(spec, matched, now)
         if spec.get("_down", False):
             spec["_probe_at"] = now + _SEQ_PROBE_INTERVAL

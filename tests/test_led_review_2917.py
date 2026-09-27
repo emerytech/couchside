@@ -366,6 +366,108 @@ def test_g_dark_frames_still_resume():
               "%s: stood down under Steam, resumed %ss after release" % (label, resumed))
 
 
+def _resume_ticks(effect, speed=50, meter_seq=None):
+    down, secs = _resume_after_release(effect, speed=speed, meter_seq=meter_seq)
+    return down, secs
+
+
+def test_g2_dark_frame_effects_resume_promptly():
+    print("G2: a dark-frame effect resumes SOON after release (no stale-canary delay)")
+    for label, kw in (("wipe speed 55 (app default)", {"effect": "wipe", "speed": 55}),
+                      ("wipe speed 100", {"effect": "wipe", "speed": 100}),
+                      ("meter_cpu flapping 1/5%", {"effect": "meter_cpu", "meter_seq": (1.0, 5.0)})):
+        down, secs = _resume_ticks(**kw)
+        # 04a7315 never resumed; the first 2.9.117 cut resumed but as slow as ~13 s on
+        # a dark-tick collision. The fix keeps it well under the old worst case.
+        check(down and secs is not None and secs < 9.0,
+              "%s resumes %ss after release (< 9 s, no dark-tick delay)" % (label, secs))
+
+
+def test_fixc_dark_tick_does_not_burn_the_probe_slot():
+    print("fixC: a stood-down dark tick neither advances the probe clock nor repaints")
+    saved = (cs._led_write, cs._led_read_attr, getattr(cs, "_meter_read", None))
+    writes = []
+    cs._led_write = lambda name, attr, v: writes.append((name, attr, v))
+    cs._led_read_attr = lambda name, attr: None            # canary unreadable -> matched None
+    cs._meter_read = lambda kind, prev=None: (0.0, 50.0, None)   # 0% -> a fully DARK frame
+    try:
+        members = ["valve-leds[%d]" % i for i in range(17)]
+        sp = {"members": members, "effect": "meter_cpu", "color": {"r": 255, "g": 0, "b": 0},
+              "speed": 50, "brightness": 100, "reverse": False, "t0": 0.0,
+              "raws": {m: dict(_FAKE["valve-leds[0]"], name=m) for m in members},
+              "meter": {}, "prefix": "valve-leds",
+              # Already stood down, probe due now, one clean hit banked, a lit canary
+              # from before it went dark (so the mutant has something to mis-score).
+              "_down": True, "_dark": False, "_hit": 1, "_miss": 0,
+              "_probe_at": 5.0, "_canary": ("valve-leds[0]", "0 147 205")}
+        cs._seq_render(sp, 10.0)
+        check(sp.get("_probe_at") == 5.0,
+              "dark tick does NOT push _probe_at forward (the slot waits for a lit frame)")
+        check(not any(w[1] == "multi_intensity" for w in writes),
+              "dark tick writes no colour (never repaints the whole dark strip over Steam)")
+    finally:
+        cs._led_write, cs._led_read_attr = saved[0], saved[1]
+        if saved[2] is not None:
+            cs._meter_read = saved[2]
+
+
+def test_stray_probe_led_cleared_when_frame_goes_dark():
+    print("stray LED: a stood-down probe is dimmed once the frame goes fully dark")
+    # Drive _seq_render directly: stand the strip down under Steam, then feed a
+    # permanently-dark frame (an ended countdown / flat-idle meter). The one member
+    # our probe lit must be written brightness 0, and only if Steam left it alone.
+    import itertools
+    hw, steam = {}, {"on": True}
+    saved = (cs._led_write, cs._led_read_attr)
+    writes = []
+    def w(name, attr, v):
+        if attr == "multi_intensity":
+            hw[name] = v
+        if attr == "brightness":
+            writes.append((name, v))
+    cs._led_write = lambda name, attr, v: w(name, attr, v)
+    cs._led_read_attr = lambda name, attr: (("0 0 0" if steam["on"] else hw.get(name))
+                                            if attr == "multi_intensity" else None)
+    try:
+        n = 17
+        members = ["valve-leds[%d]" % i for i in range(n)]
+        sp = {"members": members, "effect": "meter_cpu", "color": {"r": 255, "g": 0, "b": 0},
+              "speed": 50, "brightness": 100, "reverse": False, "t0": 0.0,
+              "raws": {m: dict(_FAKE["valve-leds[0]"], name=m) for m in members},
+              "meter": {}, "prefix": "valve-leds"}
+        cs._meter_read = lambda kind, prev=None: (30.0, 50.0, None)     # busy: lights the bar
+        tt = 0.0
+        while tt < 5.0:                             # Steam owns the bar -> we stand down
+            cs._seq_render(sp, tt); tt += 0.033
+        check(sp.get("_down"), "strip stood down under Steam")
+        steam["on"] = False                         # Steam lets go; a lit probe lands
+        while tt < 9.0:
+            cs._seq_render(sp, tt); tt += 0.033     # resumes/probes on lit frames; canary is ours
+        cn = sp.get("_canary", (None, None))
+        # Now the box goes flat idle: the smoothed meter decays to 0 lit LEDs.
+        cs._meter_read = lambda kind, prev=None: (0.0, 50.0, None)
+        writes.clear()
+        while tt < 20.0:
+            cs._seq_render(sp, tt); tt += 0.033
+        cleared = [wr for wr in writes if wr[1] == "0"]
+        check(len(cleared) >= 1, "the stray probe LED is written brightness 0 once the frame goes dark")
+        # Control: if Steam owns the node (canary reads back NOT ours) we must not write it.
+        steam["on"] = True                          # Steam clobbers every node
+        cs._meter_read = lambda kind, prev=None: (30.0, 50.0, None)
+        while tt < 26.0:
+            cs._seq_render(sp, tt); tt += 0.033     # re-arm: a lit tick then decay, Steam owning
+        cs._meter_read = lambda kind, prev=None: (0.0, 50.0, None)
+        writes.clear()
+        while tt < 34.0:
+            cs._seq_render(sp, tt); tt += 0.033
+        check(not any(wr[1] == "0" for wr in writes),
+              "control: nothing written to clear when Steam owns the node (canary not ours)")
+    finally:
+        cs._led_write, cs._led_read_attr = saved
+        if hasattr(cs, "_meter_read"):
+            pass
+
+
 def test_mock_forgets_finished_countdown():
     print("mock: GET forgets a countdown that has finished (same as a real box)")
     saved = dict(cs._MOCK_FX)
@@ -532,6 +634,9 @@ if __name__ == "__main__":
     test_c_boot_restore_skips_expired()
     test_h_finish_keeps_a_restarted_countdown()
     test_g_dark_frames_still_resume()
+    test_g2_dark_frame_effects_resume_promptly()
+    test_fixc_dark_tick_does_not_burn_the_probe_slot()
+    test_stray_probe_led_cleared_when_frame_goes_dark()
     test_mock_forgets_finished_countdown()
     test_d_e_route_rejections()
     test_mock_single_led_refuses_strip_only()
