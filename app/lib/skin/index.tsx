@@ -8,6 +8,7 @@
  */
 import { Platform } from 'react-native';
 
+import { IS_PROTOTYPE_BUILD } from '@/lib/entitlement';
 import { getThemeSkin, loadThemePrefs, setThemeSkin, useThemeSkin } from '@/lib/theme';
 import { classicSkin } from './classic';
 import { reactorSkin } from './reactor';
@@ -15,12 +16,13 @@ import { studioSkin } from './studio';
 import { slateSkin } from './slate';
 import { paperSkin } from './paper';
 import { panelSkin } from './panel';
+import { reserveSkin } from './reserve';
 import type { SkinKit } from './kit';
 
 export * from './kit';
 export * from './motion';
 
-export type SkinKey = 'classic' | 'reactor' | 'studio' | 'slate' | 'paper' | 'panel';
+export type SkinKey = 'classic' | 'reactor' | 'studio' | 'slate' | 'paper' | 'panel' | 'reserve';
 
 /**
  * The two surviving directions. 'vitals' (motion-only, life-support) and 'hud'
@@ -34,16 +36,20 @@ export const SKINS: Record<SkinKey, SkinKit> = {
   slate: slateSkin,
   paper: paperSkin,
   panel: panelSkin,
+  reserve: reserveSkin,
 };
 
 export const SKIN_KEYS = Object.keys(SKINS) as SkinKey[];
 
 /**
- * What ships. 'classic' is kept as a comparison control: it is today's exact
- * pre-redesign look, so `?skin=classic` in the web harness is a live A/B
- * against the shipped 2.9.11 dashboard rather than a screenshot from memory.
+ * What ships when the user has no saved theme pref. Production defaults to
+ * 'reactor' (the shipped look); the PROTOTYPE build defaults to 'reserve' so the
+ * whole app wears the new premium direction for on-device evaluation. Both remain
+ * user-selectable in the Theme Builder; this only sets the fresh-install default.
+ * (The prototype is a separate package with its own storage, so its fresh install
+ * has no pref and lands on 'reserve'.)
  */
-const DEFAULT_SKIN: SkinKey = 'reactor';
+const DEFAULT_SKIN: SkinKey = IS_PROTOTYPE_BUILD ? 'reserve' : 'reactor';
 
 export function isSkinKey(v: unknown): v is SkinKey {
   return typeof v === 'string' && (SKIN_KEYS as string[]).includes(v);
