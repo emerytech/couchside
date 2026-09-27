@@ -914,7 +914,10 @@ function LaunchScreen() {
     installable: <InstallableSection />,
     playlog: <PlaylogCard />,
     downloads: <DownloadsSection downloads={downloads} />,
-    streamfrompc: steamlink?.available ? <SteamLinkSection data={steamlink} onStream={streamLaunch} /> : null,
+    streamfrompc:
+      steamlink?.available && Array.isArray(steamlink.hosts)
+        ? <SteamLinkSection data={steamlink} onStream={streamLaunch} />
+        : null,
   };
   const renderLaunchCards = () =>
     launchOrder.map((id) => {
