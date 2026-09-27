@@ -27,7 +27,8 @@ import { api, ApiError, hostKey, humanizeUptime, Status, Unit } from '@/lib/api'
 import { fmtLastSeen, noteBoxSeen } from '@/lib/lastSeen';
 import { fmtRate } from '@/lib/netRate';
 import { useConsoleLayout, effectiveOrder, moveSection, setConsoleLayout } from '@/lib/consoleLayout';
-import { hapticSelection } from '@/lib/haptics';
+import { hapticLight, hapticSelection } from '@/lib/haptics';
+import { IS_PROTOTYPE_BUILD } from '@/lib/entitlement';
 import { setPref, usePref } from '@/lib/prefs';
 import { useSkinKit, VitalsContext, vitality } from '@/lib/skin';
 import { EffectsOverlays } from '@/lib/effects';
@@ -95,7 +96,17 @@ function ConsoleScreen() {
   const units = usePoll<{ units: Unit[] }>(
     () => api.units(settings), 10000, ready && configured, boxKey);
 
-  const s = status.data;
+  // A status counts as usable only when it carries the core stat objects the
+  // Console (and its cards) dereference — mem/cpu/os/disks. An agent mid-restart
+  // can answer /api/status with a truthy but PARTIAL body (an {error}-shaped or
+  // incomplete dict), and every `s.mem.*` / `s.cpu.*` / `s.os.*` / `s.disks` access
+  // below assumes a complete payload. Gating here (degrade closed) turns that one
+  // transient poll into the normal "unreachable/loading" state for a cycle instead
+  // of throwing "Cannot read property 'pressure'/'used_mb'/… of undefined" and
+  // taking down the whole tab. Every real agent always sends these four (memPct and
+  // the vitals/disks cards have always dereferenced them unconditionally).
+  const raw = status.data;
+  const s = raw && raw.mem && raw.cpu && raw.os && raw.disks ? raw : null;
   const reachable = configured && status.error == null && s != null;
   // Counted only once the box has actually ANSWERED — an app opened to find the
   // box dead must not be congratulated for it.
@@ -380,7 +391,10 @@ function ConsoleScreen() {
           <Text style={styles.unitErr}>{units.error.message}</Text>
         ) : units.data ? (
           <View style={styles.chips}>
-            {units.data.units.filter((u) => !u.log_only).map((u) => (
+            {/* `?? []`: a transient/partial /api/units body (e.g. the agent mid-
+                restart) can be a truthy object with no `units` array — never crash
+                the whole Console over it. */}
+            {(units.data.units ?? []).filter((u) => !u.log_only).map((u) => (
               <UnitChip key={`${u.scope}:${u.name}`} unit={u} />
             ))}
           </View>
@@ -485,6 +499,25 @@ function ConsoleScreen() {
             </TourAnchor>
           )}
         </View>
+
+        {/* PROTOTYPE doorway — a prototype-build-only entry into the redesigned
+            "what to play next" experience. Gated by IS_PROTOTYPE_BUILD so a
+            production build never shows it. Opens a full-screen route; the
+            traditional Console is untouched. */}
+        {IS_PROTOTYPE_BUILD && configured && reachable && (
+          <Pressable
+            onPress={() => { hapticLight(); router.push('/reserve'); }}
+            accessibilityRole="button"
+            accessibilityLabel="Open the What to play next prototype"
+            style={({ pressed }) => [styles.protoDoor, pressed && styles.pressed]}>
+            <View style={styles.protoDoorLeft}>
+              <Text style={styles.protoDoorK}>PROTOTYPE · NEW LOOK</Text>
+              <Text style={styles.protoDoorT}>What to play next</Text>
+              <Text style={styles.protoDoorS}>Recommended from your play history</Text>
+            </View>
+            <Text style={styles.protoDoorArrow}>→</Text>
+          </Pressable>
+        )}
 
         {/* Fresh install: nothing paired yet, so nothing is "unreachable". */}
         {!configured && (
@@ -607,6 +640,17 @@ function ConsoleScreen() {
 const makeStyles = (t: Palette) => StyleSheet.create({
   screen: { flex: 1, backgroundColor: t.bg },
   scroll: { flex: 1 },
+  protoDoor: {
+    flexDirection: 'row', alignItems: 'center', gap: 12,
+    marginHorizontal: 16, marginTop: 6, marginBottom: 2, padding: 16,
+    borderRadius: 18, borderWidth: 1, borderColor: 'rgba(52,211,153,0.35)',
+    backgroundColor: 'rgba(52,211,153,0.07)',
+  },
+  protoDoorLeft: { flex: 1 },
+  protoDoorK: { color: t.green, fontFamily: mono, fontSize: 10, letterSpacing: 1.5, fontWeight: '700' },
+  protoDoorT: { color: t.text, fontSize: 17, fontWeight: '800', marginTop: 4, letterSpacing: -0.3 },
+  protoDoorS: { color: t.textDim, fontSize: 12, marginTop: 2 },
+  protoDoorArrow: { color: t.green, fontSize: 22, fontWeight: '700' },
   editBar: {
     position: 'absolute', left: 0, right: 0, bottom: 0,
     flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between',
