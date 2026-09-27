@@ -103,18 +103,24 @@ def test_degrade_closed():
 def test_payload_attaches_names():
     print("payload attaches game NAMES from appinfo; reads only local data")
     import time
-    saved = {k: getattr(cs, k) for k in ("_steam_root", "_steam_playtime", "_installed_appids", "_steam_appinfo_names")}
+    saved = {k: getattr(cs, k) for k in ("_steam_root", "_steam_playtime", "_installed_appids", "_appinfo_names")}
     try:
         cs._steam_root = lambda: "/fake/steam"
         # _recommend_payload ranks against the REAL wall clock, so anchor last_played to now.
         cs._steam_playtime = lambda root: {"1145360": {"playtime_min": 1344, "last_played": int(time.time()) - DAY}}
-        cs._installed_appids = lambda root: {"1145360"}
-        cs._steam_appinfo_names = lambda: {1145360: "Hades"}
+        # A real game (Hades) + a Steam TOOL (228980) both installed; the tool must
+        # be excluded from recommendations.
+        cs._installed_appids = lambda root: {"1145360", "228980"}
+        cs._appinfo_names = lambda: {1145360: {"name": "Hades", "type": "game"},
+                                     228980: {"name": "Steamworks Common Redistributables", "type": "tool"}}
         p = cs._recommend_payload()
         check(p["available"] is True and p["primary"]["name"] == "Hades",
               "primary carries the resolved name (Hades)")
         check(p["primary"]["bucket"] == "streak" and p["primary"]["hours"] == 22.4,
               "hours + bucket computed from the local playtime record")
+        allnames = [p["primary"]["name"]] + [a["name"] for a in p["alternates"]]
+        check(all("Redistributables" not in n for n in allnames),
+              "Steam tools/redistributables are NEVER recommended")
     finally:
         for k, v in saved.items():
             setattr(cs, k, v)

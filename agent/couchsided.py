@@ -22346,7 +22346,21 @@ def _recommend_payload(limit=5):
         return {"available": False, "generated": now, "primary": None, "alternates": [], "counts": {}}
     playtime = _steam_playtime(root)
     installed = _installed_appids(root)
-    names = _steam_appinfo_names()
+    meta = _appinfo_names()          # {int appid: {"name","type"}}
+
+    def _is_game(appid_str):
+        # Never recommend Steam tools/runtimes/redistributables, or non-game
+        # entries (DLC, demos, soundtracks). MISSING type -> keep it: a real game
+        # with no appinfo metadata must not be dropped (degrade toward the game).
+        if appid_str in STEAM_TOOL_APPIDS:
+            return False
+        try:
+            typ = (meta.get(int(appid_str)) or {}).get("type")
+        except (ValueError, TypeError):
+            typ = None
+        return typ is None or str(typ).lower() == "game"
+
+    installed = {a for a in installed if _is_game(a)}
     ranked = _reco_rank(playtime, installed, time.time(), limit)
 
     def _named(p):
@@ -22354,7 +22368,7 @@ def _recommend_payload(limit=5):
             return None
         q = dict(p)
         try:
-            q["name"] = names.get(int(p["appid"])) or ("App %s" % p["appid"])
+            q["name"] = (meta.get(int(p["appid"])) or {}).get("name") or ("App %s" % p["appid"])
         except (ValueError, TypeError):
             q["name"] = "App %s" % p["appid"]
         return q
