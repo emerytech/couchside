@@ -131,12 +131,8 @@ export function PrototypeHome() {
             <Text style={styles.headline} numberOfLines={1}>{headline}</Text>
           </View>
         </View>
-        <Pressable
-          onPress={() => { hapticLight(); router.push('/setup'); }}
-          hitSlop={10} accessibilityRole="button" accessibilityLabel="Settings"
-          style={({ pressed }) => [styles.headerBtn, pressed && styles.pressed]}>
-          <Text style={styles.headerBtnIco}>⚙</Text>
-        </Pressable>
+        {/* Settings lives on the always-visible gear in the global top bar
+            (BoxSwitcher), so the Home header no longer carries its own. */}
       </View>
 
       {/* greeting + hero title */}

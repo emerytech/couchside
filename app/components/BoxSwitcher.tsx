@@ -19,6 +19,7 @@ import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
 import { LockBadge } from '@/components/EncryptionBadge';
 import { RemotePowerBar } from '@/components/RemotePowerBar';
+import { IS_PROTOTYPE_BUILD } from '@/lib/entitlement';
 import { hapticSelection } from '@/lib/haptics';
 import {
   BoxReachability,
@@ -124,7 +125,22 @@ export function BoxSwitcher() {
         </Pressable>
 
         {/* Power + volume controls fill the otherwise-empty right of the row. */}
-        <RemotePowerBar compact={compactPowerBar} />
+        <View style={styles.headerRight}>
+          <RemotePowerBar compact={compactPowerBar} />
+          {/* PROTOTYPE: the Setup tab is dropped from the bottom bar there, so
+              Settings needs an ALWAYS-VISIBLE home — this gear, on every tab's
+              header — not just the entry buried in the dropdown below. */}
+          {IS_PROTOTYPE_BUILD && (
+            <Pressable
+              onPress={goToSetup}
+              hitSlop={8}
+              accessibilityRole="button"
+              accessibilityLabel="Settings"
+              style={({ pressed }) => [styles.gearBtn, pressed && styles.pressed]}>
+              <Ionicons name="settings-sharp" size={19} color={t.textDim} />
+            </Pressable>
+          )}
+        </View>
       </View>
 
       {/* Dropdown sheet: a Modal so it floats above tab content without any
@@ -213,6 +229,17 @@ const makeStyles = (t: Palette) => StyleSheet.create({
     alignItems: 'center',
     justifyContent: 'space-between',
     gap: 8,
+  },
+  headerRight: { flexDirection: 'row', alignItems: 'center', gap: 8 },
+  gearBtn: {
+    width: 40,
+    height: 40,
+    borderRadius: 20,
+    alignItems: 'center',
+    justifyContent: 'center',
+    borderWidth: 1,
+    borderColor: t.cardBorder,
+    backgroundColor: t.card,
   },
   pill: {
     flexDirection: 'row',

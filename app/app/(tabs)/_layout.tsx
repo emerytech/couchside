@@ -78,7 +78,9 @@ export default function TabLayout() {
     ...(remoteOnly ? [] : ['actions']),
     ...(hidePad ? [] : ['pad']),
     ...(hideLaunch ? [] : ['launch']),
-    'setup',
+    // PROTOTYPE: Setup leaves the bottom bar (reachable from the always-visible
+    // gear in the top header), so it also leaves the tab order the tour walks.
+    ...(IS_PROTOTYPE_BUILD ? [] : ['setup']),
   ];
   const onboardingDone = usePref('onboardingDone');
   const whatsNewOffered = usePref('whatsNewOffered');
@@ -332,6 +334,10 @@ export default function TabLayout() {
         options={{
           title: 'Setup',
           tabBarIcon: ({ color }) => <Ionicons name="settings-sharp" size={24} color={color} />,
+          // PROTOTYPE: dropped from the bottom bar; reachable from the always-visible
+          // gear in the top header (BoxSwitcher) and the box-switcher menu. Still a
+          // route, so first-run pairing redirects and deep links keep working.
+          href: IS_PROTOTYPE_BUILD ? null : undefined,
         }}
       />
     </Tabs>
