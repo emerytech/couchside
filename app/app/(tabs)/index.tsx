@@ -29,6 +29,7 @@ import { fmtRate } from '@/lib/netRate';
 import { useConsoleLayout, effectiveOrder, moveSection, setConsoleLayout } from '@/lib/consoleLayout';
 import { hapticLight, hapticSelection } from '@/lib/haptics';
 import { IS_PROTOTYPE_BUILD } from '@/lib/entitlement';
+import { PrototypeHome } from '@/components/PrototypeHome';
 import { setPref, usePref } from '@/lib/prefs';
 import { useSkinKit, VitalsContext, vitality } from '@/lib/skin';
 import { EffectsOverlays } from '@/lib/effects';
@@ -73,7 +74,9 @@ export default function ConsoleTab() {
   return (
     <TabScreen>
       <Gated>
-        <ConsoleScreen />
+        {/* PROTOTYPE front door: the "what to play next" home replaces the ops
+            Console as the landing tab. Production is unchanged. */}
+        {IS_PROTOTYPE_BUILD ? <PrototypeHome /> : <ConsoleScreen />}
       </Gated>
     </TabScreen>
   );
