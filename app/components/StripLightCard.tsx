@@ -17,7 +17,7 @@
  */
 import Ionicons from '@expo/vector-icons/Ionicons';
 import React, { useEffect, useRef, useState } from 'react';
-import { Alert, Pressable, StyleSheet, Text, View } from 'react-native';
+import { Alert, Platform, Pressable, StyleSheet, Text, View } from 'react-native';
 
 import { PresetNameModal } from '@/components/PresetNameModal';
 import { ReactiveModeControls } from '@/components/reactive/ReactiveModeControls';
@@ -161,12 +161,18 @@ export function StripLightCard() {
   // an RGB strip, AND a game is actually running (a known appid to fetch a cover
   // for). Same probe-and-appear discipline as the reactive/theme controls. The
   // running game comes from the gaming card the app already polls elsewhere.
+  // Only feeds the "paint from artwork" control (aura), which today decodes the
+  // cover on web only. Poll the running game solely when that control can appear,
+  // so a box with no addressable strip / no aura never polls /api/gaming here.
+  const auraAvailable = agentMode && !!agentStrip && strip?.rgb && poll.data?.aura === true
+    && Platform.OS === 'web';
   const gamePoll = usePoll<Awaited<ReturnType<typeof api.gaming>>>(
-    () => api.gaming(settings), POLL_MS, ready && configured, hostKey(settings));
+    () => api.gaming(settings), POLL_MS, ready && configured && auraAvailable, hostKey(settings));
   const gameAppid = gamePoll.data?.game?.appid ?? null;
   const gameLabel = gamePoll.data?.game?.label ?? '';
-  const auraReady = agentMode && !!agentStrip && strip?.rgb && poll.data?.aura === true
-    && gameAppid != null;
+  // Web only: native cover decode is Phase 1b (auraArt.decodeToRgba returns null off
+  // web), so the control must not appear on a phone where every tap would fail.
+  const auraReady = auraAvailable && gameAppid != null;
 
   /** Sample the running game's cover into one colour per LED and paint it. The
    *  colours are DATA — the agent re-validates every channel and looks the strip

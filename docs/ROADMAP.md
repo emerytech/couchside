@@ -23,12 +23,17 @@ Each entry now carries a `✅ DONE` / `🟡 PARTIAL` / `📋 OPEN` banner with i
   **depends_on:** LED Studio strip engine (`_seq_*`, done).
 - **status:** Phase 1 BUILT + harness-verified (pressed the control on the mock Console → cover fetched,
   canvas-decoded, sampled to 8 colours, `POST /api/leds/aura → 200`, GET active reflects `effect:aura`).
-  NOT hardware-verified (no strip photons). Agent tests + sampler unit test green; `tsc` clean.
+  NOT hardware-verified (no strip photons). The "Paint from artwork" CONTROL is gated to
+  web/harness ONLY (`Platform.OS === 'web'`) because native cover decode is Phase 1b — the
+  endpoint + sampler are proven, but a phone can't decode the cover yet, so the button is
+  hidden on native rather than shipped guaranteed-to-fail. Agent tests + sampler unit test
+  green; `tsc` clean.
 - **allowlist:** strip prefix looked up in the live strip set (404 unknown, never interpolated); `colors` is a
   fixed-shape validated frame (list of exactly the strip's member count, each `{r,g,b}` 0-255, else 400 and
   nothing painted); paints via the existing `_seq` fixed-literal writers, so Steam stand-down + the 2.9.117
   dark-frame guard still apply. Gated on the existing `ledcontrol`/strip cap — NO new cap.
-- **left open:** native (non-web) cover decode (today web/harness only → degrades to a message); a Phase-2
+- **left open:** Phase 1b = native (iOS/Android) cover decode (a pure-JS JPEG/PNG decoder feeding the same
+  sampler) so the control can appear on a phone; a Phase-2
   per-game aura theme LIBRARY that reuses this same N-colour route.
 
 ### User-selectable app icon — store icon vs. gold Pro in the direct edition (user request 2026-09-26)
