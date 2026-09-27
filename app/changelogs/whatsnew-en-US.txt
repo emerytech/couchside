@@ -1,3 +1,4 @@
-• Crash reports you can actually send: if the app ever closes unexpectedly, the next launch offers the error log, and Setup › Account › App error log lets you copy or share it (nothing is sent automatically).
-• Console shows "Box installation is damaged" with the one command that fixes it when a SteamOS update strips the box's files (box service 2.9.116 or newer).
-• LED strips follow the SignalBar more faithfully — smoother timing, saturation and effect shape.
+• Crash reports you can send: Setup › Account › App error log keeps recent errors to copy or share (nothing is sent automatically).
+• "Closed unexpectedly" now appears only after a real crash, not after an update or force-stop.
+• Console shows "Box installation is damaged" with the one command that fixes it (box service 2.9.116+).
+• Ready for the next box service: live CPU, GPU and battery meters on LED strips, and a playtime countdown.
