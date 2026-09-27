@@ -95,7 +95,17 @@ function ConsoleScreen() {
   const units = usePoll<{ units: Unit[] }>(
     () => api.units(settings), 10000, ready && configured, boxKey);
 
-  const s = status.data;
+  // A status counts as usable only when it carries the core stat objects the
+  // Console (and its cards) dereference — mem/cpu/os/disks. An agent mid-restart
+  // can answer /api/status with a truthy but PARTIAL body (an {error}-shaped or
+  // incomplete dict), and every `s.mem.*` / `s.cpu.*` / `s.os.*` / `s.disks` access
+  // below assumes a complete payload. Gating here (degrade closed) turns that one
+  // transient poll into the normal "unreachable/loading" state for a cycle instead
+  // of throwing "Cannot read property 'pressure'/'used_mb'/… of undefined" and
+  // taking down the whole tab. Every real agent always sends these four (memPct and
+  // the vitals/disks cards have always dereferenced them unconditionally).
+  const raw = status.data;
+  const s = raw && raw.mem && raw.cpu && raw.os && raw.disks ? raw : null;
   const reachable = configured && status.error == null && s != null;
   // Counted only once the box has actually ANSWERED — an app opened to find the
   // box dead must not be congratulated for it.
@@ -380,7 +390,10 @@ function ConsoleScreen() {
           <Text style={styles.unitErr}>{units.error.message}</Text>
         ) : units.data ? (
           <View style={styles.chips}>
-            {units.data.units.filter((u) => !u.log_only).map((u) => (
+            {/* `?? []`: a transient/partial /api/units body (e.g. the agent mid-
+                restart) can be a truthy object with no `units` array — never crash
+                the whole Console over it. */}
+            {(units.data.units ?? []).filter((u) => !u.log_only).map((u) => (
               <UnitChip key={`${u.scope}:${u.name}`} unit={u} />
             ))}
           </View>

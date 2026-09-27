@@ -151,6 +151,25 @@ jobs:
       - name: Unit tests (led playtime)
         run: python3 tests/test_led_playtime.py
 
+      # "What to play next" recommendation engine (GET /api/recommend). READ-ONLY:
+      # it ranks INSTALLED Steam games from LOCAL play history (hours + recency)
+      # and returns picks; it never launches anything. Proves every bucket is
+      # reachable and tagged, only installed games are offered, alternates are
+      # diversified, names attach from appinfo, and it degrades closed (no Steam /
+      # nothing installed -> available False, never a fabricated pick).
+      - name: Unit tests (recommend)
+        run: python3 tests/test_reco.py
+
+      # Adversarial-review fixes cut into agent 2.9.117. Pins that GET /api/leds
+      # `effects` stays the 12 ids shipped apps can label (strip-only meters and the
+      # countdown go through `reactive`, or apps <= 2.9.62 crash), that an all-dark
+      # strip frame is painted once instead of blanking Steam's bar every tick, that
+      # an expired countdown is forgotten (and never re-armed at boot), that a meter
+      # the box cannot read is refused, that non-scalar config is a 400 not a 500,
+      # and that Steam runtimes are never recommended. Every fix has a control.
+      - name: Unit tests (2.9.117 review fixes)
+        run: python3 tests/test_led_review_2917.py
+
       # Steam grabs valve-leds for its own use (download progress) by writing
       # multi_intensity in the SAME manual mode our sequence engine paints in, so
       # our repaint fights it and the bar flickers (seen on hardware). The engine

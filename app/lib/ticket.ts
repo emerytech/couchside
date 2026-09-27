@@ -64,7 +64,8 @@ export function ensureImageTicket(c: Conn, host: string): void {
 }
 
 /** Mint a fresh SINGLE-USE upload ticket over the pinned channel. Null on failure
- *  (caller then degrades to the token header — a rare, single-request exposure). */
+ *  (not pinnable, or the pinned request failed). The caller FAILS CLOSED on null
+ *  for a secure box — it never degrades to a cleartext token header (KI-096). */
 export async function mintUploadTicket(c: Conn, host: string): Promise<string | null> {
   if (!canPin(c)) return null;
   try {

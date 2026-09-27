@@ -24,21 +24,16 @@
 import { Buffer } from 'buffer';
 import TcpSocket from 'react-native-tcp-socket';
 
-import { httpFrameLength, normalizeModulus, parseHttpResponse, type PinnedResponse } from './boxTlsCodec';
+import { normalizeModulus, type PinnedResponse } from './boxTlsCodec';
+import { PinnedConn, frameHttpRequest, type PinnedSocket } from './boxTlsConn';
 
 export { normalizeModulus, parseHttpResponse } from './boxTlsCodec';
 export type { PinnedResponse } from './boxTlsCodec';
+export { PinnedTimeoutError } from './boxTlsConn';
+export type { PinnedSocket } from './boxTlsConn';
 // Pairing-time forge helpers live in boxTlsPair (no native import); re-exported
 // here for convenience.
 export { certFpFromPem, modulusFromPem, resolveTlsPin, type TlsPin } from './boxTlsPair';
-
-/** A live, pinned TLS byte stream. Mirrors the shape lib/tvdirect uses. */
-export type PinnedSocket = {
-  write(bytes: Uint8Array): void;
-  onData(cb: (bytes: Uint8Array) => void): void;
-  onClose(cb: () => void): void;
-  close(): void;
-};
 
 export class PinMismatchError extends Error {
   constructor(
@@ -119,7 +114,14 @@ export function connectPinned(
             write: (b) => sock.write(Buffer.from(b) as unknown as string),
             onData: (cb) => { dataCb = cb; },
             onClose: (cb) => { closeCb = cb; },
-            close: () => { try { sock.destroy(); } catch {} },
+            // Detach BEFORE destroy: RN delivers the close event (and any bytes
+            // already queued) asynchronously AFTER destroy(), and nothing that
+            // arrives then may reach whoever held this socket.
+            close: () => {
+              dataCb = null;
+              closeCb = null;
+              try { sock.destroy(); } catch {}
+            },
           });
         })();
       },
@@ -135,136 +137,9 @@ export function connectPinned(
 
 // ---- Hand-rolled HTTP/1.1 client over a REUSED pinned socket ----------------
 //
-// A per-box persistent connection: connect + verify the modulus ONCE, then reuse
-// the socket for every request with HTTP/1.1 keep-alive + Content-Length framing.
-// The alternative — a fresh TLS handshake + getPeerCertificate retry PER request —
-// stacks into seconds of latency on repeated calls (the screen still-frame poll,
-// dozens of connects per second). Requests to one box are serialized over its one
-// socket; the connection self-heals on close/error (the pin is re-verified on the
-// reconnect). The agent is HTTP/1.1 and sends an exact Content-Length on every
-// response, so framing on a reused socket is safe.
-
-function u8concat(a: Uint8Array, b: Uint8Array): Uint8Array {
-  const out = new Uint8Array(a.length + b.length);
-  out.set(a);
-  out.set(b, a.length);
-  return out;
-}
-
-type PendingReq = {
-  bytes: Uint8Array;
-  resolve: (r: PinnedResponse) => void;
-  reject: (e: Error) => void;
-  timeoutMs: number;
-};
-
-class PinnedConn {
-  private sock: PinnedSocket | null = null;
-  private connectP: Promise<PinnedSocket> | null = null;
-  private queue: PendingReq[] = [];
-  private active: PendingReq | null = null;
-  private timer: ReturnType<typeof setTimeout> | null = null;
-  private buf: Uint8Array = new Uint8Array(0);
-  private wantLen = -1; // total bytes (headers+body) of the in-flight response, -1 until headers parse
-
-  constructor(
-    private host: string,
-    private port: number,
-    private pin: string,
-    private caPem?: string,
-  ) {}
-
-  request(bytes: Uint8Array, timeoutMs: number): Promise<PinnedResponse> {
-    return new Promise((resolve, reject) => {
-      this.queue.push({ bytes, resolve, reject, timeoutMs });
-      void this.pump();
-    });
-  }
-
-  private ensureSock(): Promise<PinnedSocket> {
-    if (this.sock) return Promise.resolve(this.sock);
-    if (!this.connectP) {
-      this.connectP = connectPinned(this.host, this.port, this.pin, { caPem: this.caPem })
-        .then((s) => {
-          this.sock = s;
-          this.buf = new Uint8Array(0);
-          s.onData((b) => this.onData(b));
-          s.onClose(() => this.onClose());
-          return s;
-        })
-        .finally(() => {
-          this.connectP = null;
-        });
-    }
-    return this.connectP;
-  }
-
-  private async pump(): Promise<void> {
-    if (this.active || this.queue.length === 0) return;
-    const req = this.queue[0];
-    this.active = req;
-    this.wantLen = -1;
-    let sock: PinnedSocket;
-    try {
-      sock = await this.ensureSock();
-    } catch (e) {
-      this.failActive(e as Error);
-      return;
-    }
-    this.timer = setTimeout(() => this.failActive(new Error('pinned request timeout')), req.timeoutMs);
-    try {
-      sock.write(req.bytes);
-    } catch (e) {
-      this.failActive(e as Error);
-    }
-  }
-
-  private onData(bytes: Uint8Array): void {
-    if (!this.active) return; // stray bytes with nothing in flight — drop
-    this.buf = u8concat(this.buf, bytes);
-    if (this.wantLen < 0) {
-      this.wantLen = httpFrameLength(this.buf);
-      if (this.wantLen < 0) return; // headers still arriving
-    }
-    if (this.buf.length < this.wantLen) return; // body still arriving
-    const raw = this.buf.subarray(0, this.wantLen);
-    const rest = this.buf.slice(this.wantLen);
-    const parsed = parseHttpResponse(raw);
-    const req = this.active;
-    if (this.timer) { clearTimeout(this.timer); this.timer = null; }
-    this.queue.shift();
-    this.active = null;
-    this.wantLen = -1;
-    this.buf = rest;
-    if (parsed) req!.resolve(parsed);
-    else req!.reject(new Error('malformed HTTP response'));
-    void this.pump();
-  }
-
-  private failActive(e: Error): void {
-    const req = this.active;
-    if (this.timer) { clearTimeout(this.timer); this.timer = null; }
-    this.active = null;
-    this.wantLen = -1;
-    // A mid-response error may have left the stream desynced — drop the socket so
-    // the next request reconnects and re-verifies the pin.
-    try { this.sock?.close(); } catch {}
-    this.sock = null;
-    this.buf = new Uint8Array(0);
-    if (req) {
-      this.queue.shift();
-      req.reject(e);
-    }
-    void this.pump();
-  }
-
-  private onClose(): void {
-    this.sock = null;
-    this.buf = new Uint8Array(0);
-    if (this.active) this.failActive(new Error('pinned socket closed'));
-    else void this.pump();
-  }
-}
+// The per-box keep-alive connection (queue, framing, deadlines, connect backoff,
+// stale-socket guard) lives in boxTlsConn.ts so it is testable without the native
+// module; this file only wires the real, pin-verifying connect into it.
 
 const POOL = new Map<string, PinnedConn>();
 
@@ -272,6 +147,7 @@ const POOL = new Map<string, PinnedConn>();
  * One HTTP/1.1 request over a REUSED, modulus-pinned keep-alive socket to the box.
  * Replaces fetch for box calls when the box is secure. Requests to the same box
  * share one TLS connection (handshake + pin verify amortized), serialized in order.
+ * `timeoutMs` runs from this call and covers queue wait + connect + response.
  */
 export function pinnedRequest(
   host: string,
@@ -282,17 +158,9 @@ export function pinnedRequest(
   const key = `${host}:${port}:${pinModulus.slice(0, 16)}`;
   let conn = POOL.get(key);
   if (!conn) {
-    conn = new PinnedConn(host, port, pinModulus, req.caPem);
+    const caPem = req.caPem;
+    conn = new PinnedConn(() => connectPinned(host, port, pinModulus, { caPem }));
     POOL.set(key, conn);
   }
-  const method = req.method ?? 'GET';
-  const bodyBytes = req.body ? Buffer.from(req.body, 'utf8') : null;
-  let head = `${method} ${req.path} HTTP/1.1\r\nHost: ${host}\r\nConnection: keep-alive\r\n`;
-  if (req.token) head += `Authorization: Bearer ${req.token}\r\n`;
-  if (bodyBytes) head += `Content-Type: application/json\r\nContent-Length: ${bodyBytes.length}\r\n`;
-  head += '\r\n';
-  const reqBytes = bodyBytes
-    ? u8concat(new Uint8Array(Buffer.from(head, 'utf8')), new Uint8Array(bodyBytes))
-    : new Uint8Array(Buffer.from(head, 'utf8'));
-  return conn.request(reqBytes, req.timeoutMs ?? 12000);
+  return conn.request(frameHttpRequest(host, req), req.timeoutMs ?? 12000);
 }

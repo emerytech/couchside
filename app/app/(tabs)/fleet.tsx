@@ -9,6 +9,7 @@ import { TabScreen } from '@/components/TabScreen';
 import { useFocusEffect } from 'expo-router';
 import { useLockOrientation } from '@/hooks/useLockOrientation';
 import { api, Status } from '@/lib/api';
+import { connFromBox } from '@/lib/boxConn';
 import { effectiveOrder, moveSection } from '@/lib/cardLayout';
 import { useFleetLayout, setFleetLayout } from '@/lib/fleetLayout';
 import { hapticSelection } from '@/lib/haptics';
@@ -84,7 +85,7 @@ function useFleetStatus(boxes: Box[], intervalMs: number): FleetMap {
         for (const box of boxesRef.current) {
           if (inFlight.current.has(box.id)) continue;
           inFlight.current.add(box.id);
-          const conn = { host: box.host, port: box.port, token: box.token, lastIp: box.lastIp };
+          const conn = connFromBox(box);   // carries secure/tlsPort/pinModulus (KI-096)
           void api
             .status(conn)
             .then((s) => {

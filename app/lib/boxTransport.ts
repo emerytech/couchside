@@ -65,6 +65,12 @@ export function isPinMismatchError(e: unknown): boolean {
   return e instanceof Error && e.name === 'PinMismatchError';
 }
 
+/** True if `e` is a pinned request that ran out of time (boxTlsConn
+ *  PinnedTimeoutError), without statically importing its class. */
+export function isPinnedTimeoutError(e: unknown): boolean {
+  return e instanceof Error && e.name === 'PinnedTimeoutError';
+}
+
 /**
  * Open a box WebSocket — pinned when the box is `secure` (token rides the
  * encrypted, cert-pinned handshake path), plaintext `ws://` otherwise. `path`
