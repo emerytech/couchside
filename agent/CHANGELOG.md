@@ -20,14 +20,16 @@ deciding whether to press "Update now" on a machine across the room.
 
 ## 2.9.117
 
-**Your LED strip can show how the box is doing.** Pick a reactive mode on the strip card
-and the bar tracks the box live: a CPU meter whose length follows how busy the processor is
-and whose colour warms with its temperature, or a battery meter on handhelds. The strip
-still steps aside when Steam wants the lights, as before.
+**Your LED strip can show how the box is doing.** On boxes with an addressable light strip,
+pick a reactive mode on the strip card and the bar tracks the box live: a CPU meter whose
+length follows how busy the processor is and whose colour warms with its temperature, plus a
+battery meter on boxes that have a battery. When Steam is driving the lights itself (Steam's
+own light-bar animation in Game Mode, for example), Couchside steps aside and waits instead of
+fighting it.
 
 **A playtime countdown on the strip.** Set a timer and the bar drains as it runs down,
-turning amber, then red near the end, with a flash in the last seconds. Handy for "one more
-match" nights.
+turning amber, then red near the end, with a flash in the last seconds. It follows the same
+rule: Steam's own lights come first.
 
 **Finer LED control.** Effect speed is now a smooth slider instead of three steps, and
 colours can be softened all the way to white.
