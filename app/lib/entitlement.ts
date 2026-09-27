@@ -85,6 +85,16 @@ const BETA_ENTITLEMENT: Entitlement = {
  */
 export const IS_DIRECT_BUILD = process.env.EXPO_PUBLIC_DIRECT === '1';
 
+/**
+ * PROTOTYPE build flag. Set ONLY on the `prototype` EAS profile via
+ * EXPO_PUBLIC_PROTOTYPE=1 (inlined at build time like every EXPO_PUBLIC_*). It
+ * gates unfinished, experiment-only features (the "what to play next" reco card,
+ * redesign spikes) so a production/store build NEVER shows them, and drives the
+ * on-screen PROTOTYPE badge. A prototype build also ships under a distinct app
+ * name + package id, so it installs alongside production and can't be confused.
+ */
+export const IS_PROTOTYPE_BUILD = process.env.EXPO_PUBLIC_PROTOTYPE === '1';
+
 /** Friendly, non-leaky reasons a pasted key was refused. */
 const LICENSE_ERROR_TEXT: Record<string, string> = {
   format: "That doesn't look like a Couchside license key.",

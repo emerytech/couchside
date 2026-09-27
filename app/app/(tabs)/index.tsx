@@ -27,7 +27,8 @@ import { api, ApiError, hostKey, humanizeUptime, Status, Unit } from '@/lib/api'
 import { fmtLastSeen, noteBoxSeen } from '@/lib/lastSeen';
 import { fmtRate } from '@/lib/netRate';
 import { useConsoleLayout, effectiveOrder, moveSection, setConsoleLayout } from '@/lib/consoleLayout';
-import { hapticSelection } from '@/lib/haptics';
+import { hapticLight, hapticSelection } from '@/lib/haptics';
+import { IS_PROTOTYPE_BUILD } from '@/lib/entitlement';
 import { setPref, usePref } from '@/lib/prefs';
 import { useSkinKit, VitalsContext, vitality } from '@/lib/skin';
 import { EffectsOverlays } from '@/lib/effects';
@@ -486,6 +487,25 @@ function ConsoleScreen() {
           )}
         </View>
 
+        {/* PROTOTYPE doorway — a prototype-build-only entry into the redesigned
+            "what to play next" experience. Gated by IS_PROTOTYPE_BUILD so a
+            production build never shows it. Opens a full-screen route; the
+            traditional Console is untouched. */}
+        {IS_PROTOTYPE_BUILD && configured && reachable && (
+          <Pressable
+            onPress={() => { hapticLight(); router.push('/reserve'); }}
+            accessibilityRole="button"
+            accessibilityLabel="Open the What to play next prototype"
+            style={({ pressed }) => [styles.protoDoor, pressed && styles.pressed]}>
+            <View style={styles.protoDoorLeft}>
+              <Text style={styles.protoDoorK}>PROTOTYPE · NEW LOOK</Text>
+              <Text style={styles.protoDoorT}>What to play next</Text>
+              <Text style={styles.protoDoorS}>Recommended from your play history</Text>
+            </View>
+            <Text style={styles.protoDoorArrow}>→</Text>
+          </Pressable>
+        )}
+
         {/* Fresh install: nothing paired yet, so nothing is "unreachable". */}
         {!configured && (
           <View style={styles.emptyCard}>
@@ -607,6 +627,17 @@ function ConsoleScreen() {
 const makeStyles = (t: Palette) => StyleSheet.create({
   screen: { flex: 1, backgroundColor: t.bg },
   scroll: { flex: 1 },
+  protoDoor: {
+    flexDirection: 'row', alignItems: 'center', gap: 12,
+    marginHorizontal: 16, marginTop: 6, marginBottom: 2, padding: 16,
+    borderRadius: 18, borderWidth: 1, borderColor: 'rgba(52,211,153,0.35)',
+    backgroundColor: 'rgba(52,211,153,0.07)',
+  },
+  protoDoorLeft: { flex: 1 },
+  protoDoorK: { color: t.green, fontFamily: mono, fontSize: 10, letterSpacing: 1.5, fontWeight: '700' },
+  protoDoorT: { color: t.text, fontSize: 17, fontWeight: '800', marginTop: 4, letterSpacing: -0.3 },
+  protoDoorS: { color: t.textDim, fontSize: 12, marginTop: 2 },
+  protoDoorArrow: { color: t.green, fontSize: 22, fontWeight: '700' },
   editBar: {
     position: 'absolute', left: 0, right: 0, bottom: 0,
     flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between',

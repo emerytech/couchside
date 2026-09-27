@@ -60,6 +60,19 @@
       "ios": {
         "simulator": true
       }
+    },
+    "prototype": {
+      "extends": "preview",
+      "env": {
+        "EXPO_PUBLIC_PROTOTYPE": "1"
+      },
+      "android": {
+        "buildType": "apk"
+      },
+      "ios": {
+        "simulator": false
+      },
+      "channel": "prototype"
     }
   },
   "submit": {

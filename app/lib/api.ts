@@ -1277,6 +1277,28 @@ export type GpuInfo = {
   clock_mhz?: number;
 };
 
+/** One "what to play next" pick from GET /api/recommend (agent >= 2.9.63). All
+ *  fields come from the box's LOCAL Steam data. `bucket` is the reason category
+ *  (streak/unfinished/rediscover/comfort/fresh/backlog); `reason` is a human line. */
+export type RecoPick = {
+  appid: string;
+  name: string;
+  hours: number;
+  days_since: number | null;
+  installed: boolean;
+  bucket: string;
+  tag: string;
+  reason: string;
+  score: number;
+};
+export type Recommendation = {
+  available: boolean;
+  generated: number;
+  primary: RecoPick | null;
+  alternates: RecoPick[];
+  counts: Record<string, number>;
+};
+
 export type Gaming = {
   /** The primary GPU — the discrete card when a box has one. Unchanged field,
    *  still sent by every agent, so older app code keeps working. */
@@ -2744,6 +2766,18 @@ export const api = {
   ): Promise<Gaming | null> {
     return probeGated(caps?.gaming, () =>
       probeOrNull(request<Gaming>(settings, '/api/gaming')));
+  },
+
+  /** "What to play next" — ranked picks from the box's LOCAL Steam play history
+   *  (agent >= 2.9.63, GET /api/recommend). Read-only; the app launches a pick via
+   *  the existing steam-launch path (`launch(settings, 'steam:'+appid)`). null on
+   *  an older agent (404) or a box with no Steam — probe-and-appear. */
+  recommend(
+    settings: ConnSettings,
+    caps: BoxCaps | undefined = cachedCaps(settings),
+  ): Promise<Recommendation | null> {
+    return probeGated(caps?.gaming, () =>
+      probeOrNull(request<Recommendation>(settings, '/api/recommend')));
   },
 
   /**
