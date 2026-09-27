@@ -44,6 +44,19 @@ export type PinnedSocket = {
   write(bytes: Uint8Array): void;
   onData(cb: (bytes: Uint8Array) => void): void;
   onClose(cb: () => void): void;
+  /**
+   * OPTIONAL. A post-open transport error on the live socket.
+   *
+   * react-native-tcp-socket's write() is fire-and-forget on a single writeExecutor
+   * thread: a failed write does NOT throw at the call site, it surfaces later as the
+   * socket's `error` event (which connectPinned used to SWALLOW once settled). Wiring
+   * this lets a consumer flip to a dead-socket state on that FIRST error instead of
+   * waiting for RN's much-later `close`, during which it would keep writing frames
+   * into a socket that is already gone. The WebSocket client (boxWsConn) wires it;
+   * the HTTP pool (PinnedConn) does not (it degrades on close/desync instead), so it
+   * is optional and a socket may omit it.
+   */
+  onError?(cb: (e: Error) => void): void;
   close(): void;
 };
 

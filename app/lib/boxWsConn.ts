@@ -72,6 +72,13 @@ export class PinnedWsConn {
         // Identity-guarded: after handleClose drops `sock`, its late events are ignored.
         sock.onData((b) => { if (this.sock === sock) this.onBytes(b); });
         sock.onClose(() => { if (this.sock === sock) this.handleClose(); });
+        // A post-open transport error (a fire-and-forget write that failed on RN's
+        // worker thread) means this socket is dead. Treat it as a clean close: flip
+        // to CLOSED and fire onclose ONCE, so send() stops writing into a socket the
+        // OS has already given up on — instead of feeding it frames until RN's much-
+        // later `close` finally lands. Not fail(): a mid-stream drop is a disconnect,
+        // not an app-visible error, and onclose is what drives the reconnect.
+        sock.onError?.(() => { if (this.sock === sock) this.handleClose(); });
         // No sha1 -> accept header not verified; the modulus pin already
         // authenticated the peer (ws.ts handshake still requires a 101).
         const { request } = handshake(host, { randomBytes: wsRandomBytes }, path);

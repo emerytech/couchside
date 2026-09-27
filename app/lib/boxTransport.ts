@@ -79,10 +79,14 @@ export function isPinnedTimeoutError(e: unknown): boolean {
 export function openBoxSocket(
   conn: { host: string; port: number; secure?: boolean; tlsPort?: number; pinModulus?: string },
   path: string,
+  opts?: { timeoutMs?: number },
 ): BoxSocketLike {
   if (conn.secure && conn.pinModulus && conn.tlsPort) {
     const Ctor = nativeWs().PinnedWebSocket;
-    return new Ctor(conn.host, conn.tlsPort, conn.pinModulus, path);
+    // timeoutMs bounds the pinned connect (TLS handshake + modulus cert-poll). The
+    // gamepad passes a short one so a reconnect's verify fits inside its connect
+    // watchdog. The plaintext WebSocket has no such option, so it is pinned-only.
+    return new Ctor(conn.host, conn.tlsPort, conn.pinModulus, path, { timeoutMs: opts?.timeoutMs });
   }
   return new WebSocket(`ws://${conn.host}:${conn.port}${path}`) as unknown as BoxSocketLike;
 }

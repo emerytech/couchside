@@ -85,6 +85,7 @@ export function connectPinned(
     let settled = false;
     let dataCb: ((b: Uint8Array) => void) | null = null;
     let closeCb: (() => void) | null = null;
+    let errorCb: ((e: Error) => void) | null = null;
     const fail = (e: Error) => {
       if (settled) return;
       settled = true;
@@ -99,9 +100,24 @@ export function connectPinned(
     const sock = (TcpSocket.connectTLS as unknown as (o: Record<string, unknown>, cb: () => void) => any)(
       tlsOpts,
       () => {
-        // Secure (encrypted) — now authenticate by modulus before resolving.
+        // Secure (encrypted). TCP_NODELAY: the gamepad streams ~90 Hz tiny frames,
+        // so Nagle can coalesce/delay them into visible cursor stutter. Set it here,
+        // via setNoDelay() on the LIVE socket — react-native-tcp-socket's native
+        // connect() ignores a `noDelay` CONNECT option (only localAddress/interface/
+        // reuseAddress/localPort/connectTimeout are read; Nagle is toggled only by
+        // the separate setNoDelay() method, which exists on Android AND iOS). Best
+        // effort: guarded + try/catch so a build without it cannot break connect.
+        try {
+          const s = sock as unknown as { setNoDelay?: (v?: boolean) => void };
+          if (typeof s.setNoDelay === 'function') s.setNoDelay(true);
+        } catch { /* Nagle stays on; correctness unaffected */ }
+        // Now authenticate by modulus before resolving. Cap the cert poll at the
+        // connect budget: a caller with a short timeoutMs (the gamepad socket, so a
+        // reconnect's cert-verify fits inside its connect watchdog) must not let
+        // readLiveModulus keep polling to its 6 s default past the point the connect
+        // itself has already timed out. min() keeps the 6 s cap for the default path.
         void (async () => {
-          const live = await readLiveModulus(sock);
+          const live = await readLiveModulus(sock, Math.min(timeoutMs, 6000));
           if (settled) return;
           if (!live || live !== pinModulus) {
             clearTimeout(timer);
@@ -111,15 +127,30 @@ export function connectPinned(
           settled = true;
           clearTimeout(timer);
           resolve({
-            write: (b) => sock.write(Buffer.from(b) as unknown as string),
+            // A write can fail AFTER open (RN's write is fire-and-forget on a worker
+            // thread, so a broken pipe surfaces as the 'error' event below, not here)
+            // — but a synchronous throw is still possible. Route it to errorCb when a
+            // consumer wired one (the WS client), else rethrow so the HTTP pool's own
+            // try/catch (PinnedConn.pump) still sees it. Never both.
+            write: (b) => {
+              try {
+                sock.write(Buffer.from(b) as unknown as string);
+              } catch (e) {
+                const err = e instanceof Error ? e : new Error(String(e));
+                if (errorCb) errorCb(err);
+                else throw err;
+              }
+            },
             onData: (cb) => { dataCb = cb; },
             onClose: (cb) => { closeCb = cb; },
+            onError: (cb) => { errorCb = cb; },
             // Detach BEFORE destroy: RN delivers the close event (and any bytes
             // already queued) asynchronously AFTER destroy(), and nothing that
             // arrives then may reach whoever held this socket.
             close: () => {
               dataCb = null;
               closeCb = null;
+              errorCb = null;
               try { sock.destroy(); } catch {}
             },
           });
@@ -130,7 +161,12 @@ export function connectPinned(
       const bytes = typeof d === 'string' ? Uint8Array.from(Buffer.from(d, 'base64')) : Uint8Array.from(d);
       dataCb?.(bytes);
     });
-    sock.on('error', (e: Error) => fail(e));
+    // Pre-settle: a connect/handshake error rejects the connect (unchanged). Post-
+    // settle: the socket was live and just died — hand it to errorCb (the WS client
+    // tears down NOW instead of writing into a dead socket until RN's lagging close).
+    // The HTTP pool wires no errorCb, so its post-settle errors still no-op here and
+    // it degrades on the following 'close' exactly as before.
+    sock.on('error', (e: Error) => { if (settled) errorCb?.(e); else fail(e); });
     sock.on('close', () => { if (settled) closeCb?.(); else fail(new Error('socket closed before TLS pin verified')); });
   });
 }
