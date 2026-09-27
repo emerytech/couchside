@@ -4,6 +4,7 @@ import { currentStep, isFinalStep } from '@/lib/tour';
 import { useCallback, useEffect, useRef, useState } from 'react';
 
 import { useCapsSync } from '@/hooks/useCapsSync';
+import { IS_PROTOTYPE_BUILD } from '@/lib/entitlement';
 import { hapticSelection } from '@/lib/haptics';
 import { useImmersive } from '@/lib/immersive';
 import { usePref } from '@/lib/prefs';
@@ -69,6 +70,9 @@ export default function TabLayout() {
   // two cannot drift.
   const tabOrder = [
     'index',
+    // PROTOTYPE: the reco Home owns 'index', so the ops dashboard rides a dedicated
+    // 'System' tab (hidden with a null href in production and in remote-only mode).
+    ...(IS_PROTOTYPE_BUILD && !remoteOnly ? ['system'] : []),
     ...(remoteOnly ? ['remote'] : []),
     ...(!remoteOnly && boxes.length >= 2 ? ['fleet'] : []),
     ...(remoteOnly ? [] : ['actions']),
@@ -246,11 +250,27 @@ export default function TabLayout() {
       <Tabs.Screen
         name="index"
         options={{
-          title: 'Console',
-          tabBarIcon: ({ color }) => <Ionicons name="pulse" size={24} color={color} />,
+          // PROTOTYPE: the index tab is the reco "What to play next" Home; production
+          // keeps it as the ops Console. Only the label/icon change here — the swap of
+          // what renders lives in index.tsx, gated on the same flag.
+          title: IS_PROTOTYPE_BUILD ? 'Home' : 'Console',
+          tabBarIcon: ({ color }) => (
+            <Ionicons name={IS_PROTOTYPE_BUILD ? 'home' : 'pulse'} size={24} color={color} />
+          ),
           // A box dashboard with no box is an empty screen, so Console goes too
           // in remote-only mode — the only tab left is the Remote (plus Setup).
           href: remoteOnly ? null : undefined,
+        }}
+      />
+      {/* PROTOTYPE-only: the ops dashboard, moved off the landing tab so the reco
+          Home can lead. Hidden in production (null href) — there the same content
+          stays on the index/Console tab. */}
+      <Tabs.Screen
+        name="system"
+        options={{
+          title: 'System',
+          tabBarIcon: ({ color }) => <Ionicons name="pulse" size={24} color={color} />,
+          href: IS_PROTOTYPE_BUILD && !remoteOnly ? undefined : null,
         }}
       />
       {/* The TV remote. Present only in remote-only mode: a box owner already

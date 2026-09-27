@@ -82,7 +82,10 @@ export default function ConsoleTab() {
   );
 }
 
-function ConsoleScreen() {
+// Exported so the prototype's dedicated "System" tab (app/(tabs)/system.tsx) can
+// render the ops dashboard once the reco Home takes the landing slot. In
+// production ConsoleTab renders it as the index tab exactly as before.
+export function ConsoleScreen() {
   const t = useTheme();
   const styles = useThemedStyles(makeStyles);
   const { Screen, Card, Bar, Dot, Spark, BigMetric, text: tk } = useSkinKit();
