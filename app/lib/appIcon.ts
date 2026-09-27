@@ -29,8 +29,10 @@
 export type AppIconChoice = {
   /** Alias name as declared to the plugin (`.MainActivity<Alias>`), or null for the default icon. */
   alias: string | null;
-  /** Short label for the segmented picker. */
+  /** Short label for the picker. */
   label: string;
+  /** Optional preview KEY (looked up in lib/appIconPreviews.ts), e.g. 'pro' | 'standard'. */
+  preview?: string;
 };
 
 /** Sentinel the segmented picker uses for the default (null alias) choice. */
@@ -40,6 +42,8 @@ export const DEFAULT_ICON_VALUE = '__default__';
 // prebuild plugin PascalCases whatever it is given — a lowercase declaration would name a
 // component that does not exist. Requiring the canonical form here keeps the two in step.
 const ALIAS_RE = /^[A-Z][A-Za-z0-9]{0,31}$/;
+// A preview is a KEY into a static table, never a path: lowercase identifier only.
+const PREVIEW_RE = /^[a-z][a-z0-9-]{0,31}$/;
 
 /**
  * Parse `expo.extra.appIcons` into an ordered, de-duplicated choice list.
@@ -53,7 +57,7 @@ export function parseAppIconChoices(raw: unknown): AppIconChoice[] {
   const seen = new Set<string>();
   for (const item of raw) {
     if (item == null || typeof item !== 'object') continue;
-    const { alias, label } = item as { alias?: unknown; label?: unknown };
+    const { alias, label, preview } = item as { alias?: unknown; label?: unknown; preview?: unknown };
     if (typeof label !== 'string' || label.trim() === '' || label.length > 24) continue;
     let a: string | null;
     if (alias === null || alias === undefined) a = null;
@@ -62,7 +66,9 @@ export function parseAppIconChoices(raw: unknown): AppIconChoice[] {
     const key = a ?? DEFAULT_ICON_VALUE;
     if (seen.has(key)) continue;
     seen.add(key);
-    out.push({ alias: a, label: label.trim() });
+    const choice: AppIconChoice = { alias: a, label: label.trim() };
+    if (typeof preview === 'string' && PREVIEW_RE.test(preview)) choice.preview = preview;
+    out.push(choice);
   }
   const defaults = out.filter((c) => c.alias === null).length;
   if (out.length < 2 || defaults !== 1) return [];

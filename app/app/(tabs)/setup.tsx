@@ -6,6 +6,7 @@ import { useLocalSearchParams, useRouter } from 'expo-router';
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   Alert,
+  Image,
   KeyboardAvoidingView,
   Modal,
   Platform,
@@ -73,7 +74,14 @@ import { setPref, usePref } from '@/lib/prefs';
 import { sectionOpen, toggleCollapsed, type PrefSectionId } from '@/lib/prefSections';
 import { THEME_PICKER } from '@/lib/gameTheme';
 import { aliasFromValue, iconValue } from '@/lib/appIcon';
-import { appIconChoices, currentAppIcon, setAppIcon } from '@/lib/appIconNative';
+import {
+  appIconChoices,
+  currentAppIcon,
+  pendingAppIcon,
+  requestAppIcon,
+  subscribeAppIcon,
+} from '@/lib/appIconNative';
+import { previewFor } from '@/lib/appIconPreviews';
 import { SKINS, SKIN_KEYS, setSkin, useSkinKey } from '@/lib/skin';
 import { EFFECTS, EFFECT_KEYS, toggleEffect, useActiveEffects, useEffects } from '@/lib/effects';
 import {
@@ -935,6 +943,17 @@ function SetupBody() {
   const appIcons = appIconChoices();
   // currentAppIcon() makes no native call unless this build declares a choice.
   const [appIcon, setAppIconState] = useState<string | null>(() => currentAppIcon());
+  // A tap only REQUESTS an icon; lib/appIconNative applies it when the app goes to
+  // the background (Android closes an activity whose component is disabled).
+  const [iconPending, setIconPending] = useState<string | null | undefined>(() => pendingAppIcon());
+  useEffect(() => {
+    if (appIcons.length < 2) return;
+    return subscribeAppIcon(() => {
+      setIconPending(pendingAppIcon());
+      setAppIconState(currentAppIcon());
+    });
+  }, [appIcons.length]);
+  const iconSelected = iconPending !== undefined ? iconPending : appIcon;
   const skinKey = useSkinKey();
   const effectsList = useEffects();
   const activeFx = useActiveEffects();
@@ -1679,22 +1698,73 @@ function SetupBody() {
                   store app declares none). The launcher component PackageManager has
                   ENABLED is the stored state; our local module (modules/app-icon-switch)
                   reads it back after every switch rather than echoing the request. */}
-              {appIcons.length > 1 && (
+              {appIcons.length > 1 && appIcons.every((c) => previewFor(c.preview)) ? (
+                // Side-by-side previews (owner ask 2026-09-26): tap the icon you want on
+                // the home screen. Same card language as Look / Skin below.
+                <PrefFilterable label="App icon" sub="Home-screen icon launcher Pro Standard">
+                  <View style={styles.prefCol}>
+                    <View style={styles.prefBody}>
+                      <Text style={styles.prefLabel}>App icon</Text>
+                      <Text style={styles.prefSub}>
+                        Tap the icon you want. It changes on your home screen when you leave Couchside. Pinned shortcuts may reset on some launchers.
+                      </Text>
+                    </View>
+                    <View style={styles.iconRow}>
+                      {appIcons.map((c) => {
+                        const on = iconSelected === c.alias;
+                        const waiting = on && iconPending !== undefined;
+                        return (
+                          <Pressable
+                            key={iconValue(c.alias)}
+                            onPress={() => {
+                              if (on) return;
+                              const alias = aliasFromValue(iconValue(c.alias), appIcons);
+                              if (alias === undefined) return;
+                              hapticSelection();
+                              try {
+                                requestAppIcon(alias);
+                              } catch {
+                                // not a declared icon: nothing requested
+                              }
+                            }}
+                            accessibilityRole="button"
+                            accessibilityState={{ selected: on }}
+                            accessibilityLabel={`${c.label} app icon`}
+                            style={({ pressed }) => [
+                              styles.iconCard,
+                              { borderColor: on ? t.accent : t.cardBorder },
+                              on && styles.iconCardActive,
+                              pressed && { opacity: 0.8 },
+                            ]}>
+                            <Image source={previewFor(c.preview)!} style={styles.iconImg} />
+                            <Text style={[styles.iconLabel, { color: on ? t.accent : t.text }]}>{c.label}</Text>
+                            <Text style={[styles.iconState, { color: waiting ? t.accent : t.textFaint }]}>
+                              {waiting ? 'Switches when you leave' : on ? 'In use' : 'Tap to use'}
+                            </Text>
+                          </Pressable>
+                        );
+                      })}
+                    </View>
+                  </View>
+                </PrefFilterable>
+              ) : appIcons.length > 1 ? (
                 <SegPref
                   label="App icon"
-                  sub="Home-screen icon. Pinned shortcuts may reset on some launchers."
+                  sub="Home-screen icon. Changes when you leave Couchside. Pinned shortcuts may reset on some launchers."
                   options={appIcons.map((c) => ({ value: iconValue(c.alias), label: c.label }))}
-                  value={iconValue(appIcon)}
+                  value={iconValue(iconSelected)}
                   onSelect={(v) => {
                     const alias = aliasFromValue(v, appIcons);
                     if (alias === undefined) return;
                     hapticSelection();
-                    void setAppIcon(alias)
-                      .then((now) => setAppIconState(now))
-                      .catch(() => setAppIconState(currentAppIcon()));
+                    try {
+                      requestAppIcon(alias);
+                    } catch {
+                      // not a declared icon: nothing requested
+                    }
                   }}
                 />
-              )}
+              ) : null}
               {/* LOOK = a whole palette, not just an accent (owner ask 2026-09-02).
                   One horizontal row of preview cards, each drawn in ITS OWN colours
                   for the scheme in effect, so a light-mode phone previews the light
@@ -2801,6 +2871,13 @@ const makeStyles = (t: Palette) => StyleSheet.create({
   // Theme-pack "Look" cards: each is painted in the pack's OWN palette (inline),
   // so these carry only geometry. Border colour is set inline (accent when on).
   packRow: { flexDirection: 'row', gap: 10, paddingVertical: 4, paddingRight: 8 },
+  iconRow: { flexDirection: 'row', gap: 12, paddingVertical: 4 },
+  iconCard: { flex: 1, maxWidth: 150, alignItems: 'center', borderRadius: 14, borderWidth: 1, paddingVertical: 12, paddingHorizontal: 8 },
+  iconCardActive: { borderWidth: 2 },
+  // Roughly a launcher's rounded-square mask, so the preview reads like the home screen.
+  iconImg: { width: 64, height: 64, borderRadius: 16 },
+  iconLabel: { fontSize: 13, fontWeight: '800', fontFamily: mono, marginTop: 8 },
+  iconState: { fontSize: 10, marginTop: 2 },
   packCard: { width: 128, borderRadius: 12, borderWidth: 1, padding: 10 },
   packCardActive: { borderWidth: 2 },
   packInner: { borderRadius: 8, borderWidth: 1, padding: 8, gap: 5, marginBottom: 8 },
