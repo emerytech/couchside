@@ -18,6 +18,22 @@ the same thing regardless of what actually changed.
 Write for the person holding the phone, not for the commit log. They are
 deciding whether to press "Update now" on a machine across the room.
 
+## 2.9.117
+
+**Your LED strip can show how the box is doing.** Pick a reactive mode on the strip card
+and the bar tracks the box live: a CPU meter whose length follows how busy the processor is
+and whose colour warms with its temperature, or a battery meter on handhelds. The strip
+still steps aside when Steam wants the lights, as before.
+
+**A playtime countdown on the strip.** Set a timer and the bar drains as it runs down,
+turning amber, then red near the end, with a flash in the last seconds. Handy for "one more
+match" nights.
+
+**Finer LED control.** Effect speed is now a smooth slider instead of three steps, and
+colours can be softened all the way to white.
+
+These need Couchside 2.9.63 or newer on your phone.
+
 ## 2.9.116
 
 **Your Steam Deck keeps Couchside through SteamOS updates.** A SteamOS update throws away
