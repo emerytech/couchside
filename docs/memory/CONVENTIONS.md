@@ -289,6 +289,26 @@ POST/DELETE probe first and then send **exactly once, never retried**, because R
 distinguish "never connected" from "delivered then lost" and a retried POST could reboot the box
 twice (`app/lib/api.ts:935-967`).
 
+### Long-lived sockets: guard every event, deadline from enqueue, back off connects
+
+React Native delivers a destroyed socket's `close` event (and any bytes already queued)
+**after** `destroy()` returns. Any object that holds a socket across requests (the pinned pool
+`app/lib/boxTlsConn.ts`, the pinned WS `app/lib/boxWsConn.ts`) therefore:
+- registers handlers that check the socket is still the CURRENT one (`if (this.sock === s)`)
+  and clears its reference before calling `close()`; `connectPinned`'s `close()` also detaches
+  its callbacks before `destroy()`;
+- starts a request's deadline when it is ENQUEUED, not when it reaches the socket, and drops an
+  expired request without writing it (a caller that gave up must never have its POST sent later);
+- backs off after a failed connect (0.5 s doubling to 8 s) and fails requests during the cooldown
+  with the SAME error object, so a `PinMismatchError` stays one.
+This shipped as crossed replies on 2026-09-26 (`/api/audio` got the `/api/leds` body) and a
+~88 sockets/s storm against a refusing host. Tests: `app/lib/__tests__/boxTlsConn.test.ts`,
+`boxWsConn.test.ts` (fake socket that keeps its callbacks after close, like RN).
+
+A diagnostic that runs on a transport failure must not be able to take the failing path itself:
+`api.ts` `plainPing` passes `secure: false` because, going through the pinned path, it re-entered
+`attempt()`'s own failure branch and looped.
+
 ### Typed payloads
 
 Every agent response has an exported type with per-field doc comments recording the agent version

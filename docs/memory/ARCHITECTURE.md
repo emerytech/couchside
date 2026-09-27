@@ -122,6 +122,14 @@ app/
   modules/                 Local Expo modules, autolinked from here with no config: app-icon-switch
                            (launcher alias switch), exit-reason (previous process's exit reason).
   lib/appVersion.ts        Native version/build/applicationId — one definition (About row, crash reports).
+  lib/boxTls.ts            Pinned TLS for a `secure` box: connectPinned (modulus pin checked before a
+                           byte is written) + the per-box keep-alive POOL. Native; wires into:
+  lib/boxTlsConn.ts        PinnedConn, install-free: one socket per box, requests serialized, deadline
+                           from ENQUEUE (an expired request is never written), connect backoff 0.5→8 s
+                           reusing the failure's error, every socket event identity-guarded (RN fires
+                           close/data AFTER destroy). boxWsConn.ts is the same for the pinned WS.
+  lib/boxRoute.ts          raceIpFirst (GET host race: hostname joins only if the IP is unproven or
+                           its request fails) + ttlMemo (throttles attempt()'s plaintext diagnostics).
   hooks/useCapsSync.ts     Always-mounted 30s caps healer (see §3).
   hooks/usePoll.ts         Generic poll-with-resetKey hook every card uses.
   components/              One file per surface: RemoteView, RemotePowerBar, GamingCard, etc.
