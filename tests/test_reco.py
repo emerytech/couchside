@@ -126,6 +126,56 @@ def test_payload_attaches_names():
             setattr(cs, k, v)
 
 
+def test_persona():
+    print("_steam_persona reads loginusers.vdf; prefers MostRecent; recommend attaches it")
+    import tempfile, time
+    # loginusers.vdf shape copied from a real Steam install (two accounts, one flagged
+    # MostRecent). Tabs-and-quotes text VDF, exactly as Steam writes it.
+    vdf = (
+        '"users"\n{\n'
+        '\t"76561198000000001"\n\t{\n'
+        '\t\t"AccountName"\t\t"alice"\n'
+        '\t\t"PersonaName"\t\t"Alice"\n'
+        '\t\t"MostRecent"\t\t"0"\n'
+        '\t\t"Timestamp"\t\t"1700000000"\n\t}\n'
+        '\t"76561198000000002"\n\t{\n'
+        '\t\t"AccountName"\t\t"bob"\n'
+        '\t\t"PersonaName"\t\t"Bob the Builder"\n'
+        '\t\t"MostRecent"\t\t"1"\n'
+        '\t\t"Timestamp"\t\t"1700000100"\n\t}\n}\n'
+    )
+    with tempfile.TemporaryDirectory() as root:
+        os.makedirs(os.path.join(root, "config"))
+        with open(os.path.join(root, "config", "loginusers.vdf"), "w") as fh:
+            fh.write(vdf)
+        check(cs._steam_persona(root) == "Bob the Builder",
+              "the MostRecent account's PersonaName wins")
+        # Single account, no MostRecent flag -> that account's persona.
+        with open(os.path.join(root, "config", "loginusers.vdf"), "w") as fh:
+            fh.write('"users"\n{\n\t"7656119900"\n\t{\n\t\t"PersonaName"\t\t"Solo"\n\t}\n}\n')
+        check(cs._steam_persona(root) == "Solo", "a lone account's persona is used")
+    check(cs._steam_persona("/no/such/steam/root") is None, "missing file -> None (never raises)")
+    check(cs._steam_persona(None) is None, "no root -> None")
+
+    # _recommend_payload attaches persona when readable, omits it otherwise.
+    saved = {k: getattr(cs, k) for k in ("_steam_root", "_steam_playtime", "_installed_appids",
+                                         "_appinfo_names", "_steam_persona")}
+    try:
+        cs._steam_root = lambda: "/fake/steam"
+        cs._steam_playtime = lambda root: {"1145360": {"playtime_min": 1344, "last_played": int(time.time()) - DAY}}
+        cs._installed_appids = lambda root: {"1145360"}
+        cs._appinfo_names = lambda: {1145360: {"name": "Hades", "type": "game"}}
+        cs._steam_persona = lambda root: "Taylor"
+        p = cs._recommend_payload()
+        check(p.get("persona") == "Taylor", "recommend payload carries the persona when present")
+        cs._steam_persona = lambda root: None
+        p2 = cs._recommend_payload()
+        check("persona" not in p2, "persona is OMITTED when unreadable (probe-and-appear)")
+    finally:
+        for k, v in saved.items():
+            setattr(cs, k, v)
+
+
 def test_mock_observable():
     print("mock: /api/recommend body is well-formed and playable")
     m = cs.mock_recommend()
@@ -141,6 +191,7 @@ if __name__ == "__main__":
     test_rank_fresh_and_diversify()
     test_degrade_closed()
     test_payload_attaches_names()
+    test_persona()
     test_mock_observable()
     print()
     if _fail:

@@ -1297,6 +1297,10 @@ export type Recommendation = {
   primary: RecoPick | null;
   alternates: RecoPick[];
   counts: Record<string, number>;
+  /** The Steam persona name read from the box's LOCAL loginusers/localconfig (agent
+   *  >= 2.9.64) — for a "Good evening, <name>" greeting. Optional/probe-and-appear:
+   *  absent on older agents or when it can't be read, so the app just drops the name. */
+  persona?: string;
 };
 
 export type Gaming = {

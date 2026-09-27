@@ -22336,6 +22336,40 @@ def _reco_rank(playtime, installed, now, limit=5):
     return {"primary": primary, "alternates": alts[:limit], "counts": counts}
 
 
+def _steam_persona(root):
+    """The Steam PersonaName of the MOST-RECENT account on this box, read LOCALLY
+    from config/loginusers.vdf (line-scan, pure-stdlib — Steam ships no parser we can
+    import). None when the file is unreadable or has no persona. Read-only and never
+    leaves the box (the app only uses it for a "Good evening, <name>" greeting);
+    never raises."""
+    if not root:
+        return None
+    try:
+        with open(os.path.join(root, "config", "loginusers.vdf"),
+                  "r", encoding="utf-8", errors="replace") as fh:
+            text = fh.read()
+    except Exception:
+        return None
+    # Each account is a `"<steamid>" { … }` block carrying a PersonaName and an
+    # optional `"MostRecent" "1"`. Track the current block's persona; prefer the
+    # MostRecent one, else the first seen (covers the single-account box).
+    first = None
+    cur = None
+    most_recent = None
+    for raw in text.splitlines():
+        s = raw.strip()
+        if s.startswith('"PersonaName"'):
+            v = _vdf_line_val(s)
+            if v:
+                cur = v
+                if first is None:
+                    first = v
+        elif s.startswith('"MostRecent"'):
+            if _vdf_line_val(s) == "1" and cur:
+                most_recent = cur
+    return most_recent or first or None
+
+
 def _recommend_payload(limit=5):
     """The /api/recommend body: analyse local Steam play history + installs and
     return ranked picks with names. `available: False` when there is nothing to
@@ -22373,10 +22407,16 @@ def _recommend_payload(limit=5):
             q["name"] = "App %s" % p["appid"]
         return q
 
-    return {"available": ranked["primary"] is not None, "generated": now,
+    body = {"available": ranked["primary"] is not None, "generated": now,
             "primary": _named(ranked["primary"]),
             "alternates": [_named(a) for a in ranked["alternates"]],
             "counts": ranked["counts"]}
+    # Probe-and-appear: only present when we could read it, so an older app just sees
+    # the field missing and drops the name.
+    persona = _steam_persona(root)
+    if persona:
+        body["persona"] = persona
+    return body
 
 
 def mock_recommend():
@@ -22398,7 +22438,8 @@ def mock_recommend():
                 pick("2231450", "Pizza Tower", 0.0, None, "Never played", "fresh",
                      "Installed but never launched — give it a shot.", 52.0),
             ],
-            "counts": {"streak": 1, "comfort": 3, "unfinished": 2, "rediscover": 1, "fresh": 4}}
+            "counts": {"streak": 1, "comfort": 3, "unfinished": 2, "rediscover": 1, "fresh": 4},
+            "persona": "Taylor"}
 
 
 def _gaming_payload():

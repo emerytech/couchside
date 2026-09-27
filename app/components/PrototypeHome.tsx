@@ -15,6 +15,7 @@
  * here is optional-chained — a partial payload from a box mid-restart must never
  * throw. See the Console's status gate for the same rule.
  */
+import { LinearGradient } from 'expo-linear-gradient';
 import { router } from 'expo-router';
 import React, { useMemo, useState } from 'react';
 import { ActivityIndicator, Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
@@ -25,7 +26,7 @@ import {
   api, hostKey, type ConnSettings, type Recommendation, type RecoPick, type Status,
 } from '@/lib/api';
 import { hapticLight, hapticMedium } from '@/lib/haptics';
-import { useSettings, useBoxes } from '@/lib/SettingsContext';
+import { useBoxOnlineStatus, useBoxes, useSettings } from '@/lib/SettingsContext';
 import { mono, useTheme, useThemedStyles, type Palette } from '@/lib/theme';
 
 const num = (s: string): number => { const n = parseInt(s, 10); return Number.isFinite(n) ? n : 0; };
@@ -47,11 +48,15 @@ function hueOf(appid: string): number {
   for (let i = 0; i < appid.length; i += 1) h = (h * 31 + appid.charCodeAt(i)) % 360;
   return h;
 }
-/** The card fill for a game: rich but dark enough that white text sits on it directly.
- *  Flat + dependency-free (no gradient lib); a true top→bottom gradient is a follow-up
- *  behind expo-linear-gradient. A hairline top highlight fakes "lit from above" with no seam. */
-const gameFill = (appid: string): string => `hsl(${hueOf(appid)}, 50%, 32%)`;
-const gameEdge = (appid: string): string => `hsl(${hueOf(appid)}, 60%, 62%)`;
+/** A per-game gradient — bright top-left → dark bottom-right, derived from the appid so
+ *  each game keeps ONE look. Rich but dark enough that white text sits on it directly.
+ *  (A stand-in for a real art-derived colour until the agent can hand one back.) */
+const gameGradient = (appid: string): readonly [string, string, string] => {
+  const h = hueOf(appid);
+  return [`hsl(${h}, 64%, 44%)`, `hsl(${h}, 56%, 30%)`, `hsl(${h}, 52%, 19%)`];
+};
+const GRAD_START = { x: 0, y: 0 } as const;
+const GRAD_END = { x: 1, y: 1 } as const;
 
 /** How the days-since number reads as a phrase. */
 function lastPlayed(days: number | null): string | null {
@@ -81,6 +86,10 @@ export function PrototypeHome() {
   const { settings, ready } = useSettings();
   const { activeBox } = useBoxes();
   const configured = !!settings.host && !!settings.token;
+  // Same lightweight /api/ping signal the top-bar chip uses, so the header dot never
+  // disagrees with it (and it keeps flapping-detection off the heavy /api/status poll).
+  const onlineMap = useBoxOnlineStatus(activeBox ? [activeBox] : [], { intervalMs: 8000 });
+  const boxOnline = configured && !!activeBox && onlineMap[activeBox.id] === 'reachable';
 
   const reco = usePoll<Recommendation | null>(
     () => api.recommend(settings), 60000, ready && configured, hostKey(settings));
@@ -91,18 +100,27 @@ export function PrototypeHome() {
   const picks: RecoPick[] = d && d.available && d.primary ? [d.primary, ...(d.alternates ?? [])] : [];
   const hero = picks[0];
   const alternates = picks.slice(1);
+  const persona = d?.persona?.trim() || null;
   const [launching, setLaunching] = useState<string | null>(null);
 
   // Header facts — every field optional-chained; a partial status must not throw.
   const s = status.data;
-  const online = configured && status.error == null && s != null;
   const host = activeBox?.name || s?.hostname || settings.host || 'your box';
   const tempC = s?.cpu_temp_c ?? null;
+  // FLAKY-LINK UX: usePoll keeps the last-good data on a later error, so `picks` stay
+  // put through a drop. When the box is not confirmed up right now but we still have
+  // picks to show, say "reconnecting…" over the STALE picks instead of blanking to
+  // OFFLINE — much calmer on a marginal link than the content vanishing every dip.
+  const reconnecting = configured && !boxOnline && picks.length > 0;
+  const dotColor = boxOnline ? t.green : reconnecting ? t.amber : t.red;
   const headline = useMemo(() => {
-    const bits = [online ? 'ONLINE' : 'OFFLINE'];
-    if (tempC != null) bits.push(`${Math.round(tempC)}°`);
-    return bits.join('  ·  ');
-  }, [online, tempC]);
+    if (boxOnline) {
+      const bits = ['ONLINE'];
+      if (tempC != null) bits.push(`${Math.round(tempC)}°`);
+      return bits.join('  ·  ');
+    }
+    return reconnecting ? 'RECONNECTING…' : 'OFFLINE';
+  }, [boxOnline, tempC, reconnecting]);
 
   const launch = async (p: RecoPick): Promise<void> => {
     if (launching) return;
@@ -123,8 +141,8 @@ export function PrototypeHome() {
       {/* compact status header */}
       <View style={styles.header}>
         <View style={styles.headerLeft}>
-          <View style={[styles.statusDot, { backgroundColor: online ? t.green : t.red }]}>
-            <View style={[styles.statusHalo, { backgroundColor: online ? t.green : t.red }]} />
+          <View style={[styles.statusDot, { backgroundColor: dotColor }]}>
+            <View style={[styles.statusHalo, { backgroundColor: dotColor }]} />
           </View>
           <View style={{ flex: 1, minWidth: 0 }}>
             <Text style={styles.host} numberOfLines={1}>{host}</Text>
@@ -136,7 +154,9 @@ export function PrototypeHome() {
       </View>
 
       {/* greeting + hero title */}
-      <Text style={styles.greeting}>{greeting().toUpperCase()}</Text>
+      <Text style={styles.greeting}>
+        {(persona ? `${greeting()}, ${persona}` : greeting()).toUpperCase()}
+      </Text>
       <Text style={styles.h1}>What to play next</Text>
 
       {!hero ? (
@@ -158,8 +178,14 @@ export function PrototypeHome() {
           {/* HERO PICK */}
           <Pressable
             onPress={() => launch(hero)}
-            style={({ pressed }) => [styles.hero, { backgroundColor: gameFill(hero.appid) }, pressed && styles.heroPress]}>
-            <View pointerEvents="none" style={[styles.cardEdge, { backgroundColor: gameEdge(hero.appid) }]} />
+            style={({ pressed }) => [styles.hero, pressed && styles.heroPress]}>
+            <LinearGradient
+              colors={gameGradient(hero.appid)}
+              start={GRAD_START}
+              end={GRAD_END}
+              style={StyleSheet.absoluteFill}
+              pointerEvents="none"
+            />
             <View style={styles.heroTopRow}>
               <View style={styles.pickPill}><Text style={styles.pickPillTxt}>TONIGHT'S PICK</Text></View>
               <View style={styles.matchPill}>
@@ -201,8 +227,14 @@ export function PrototypeHome() {
                     key={p.appid + i}
                     onPress={() => launch(p)}
                     style={({ pressed }) => [styles.alt, pressed && styles.pressed]}>
-                    <View style={[styles.altArt, { backgroundColor: gameFill(p.appid) }]}>
-                      <View pointerEvents="none" style={[styles.cardEdge, { backgroundColor: gameEdge(p.appid) }]} />
+                    <View style={styles.altArt}>
+                      <LinearGradient
+                        colors={gameGradient(p.appid)}
+                        start={GRAD_START}
+                        end={GRAD_END}
+                        style={StyleSheet.absoluteFill}
+                        pointerEvents="none"
+                      />
                       <Text style={styles.altName} numberOfLines={2}>{p.name}</Text>
                     </View>
                     <Text style={styles.altBucket} numberOfLines={1}>{p.tag}</Text>
