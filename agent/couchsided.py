@@ -5698,6 +5698,14 @@ def leds_state(mock):
     keyboard indicators. Read-only. --mock returns MOCK_LEDS merged with the
     remembered mock state so the harness can observe a change."""
     if mock:
+        # A finished countdown is forgotten, like the real agent's _playtime_finish,
+        # so the harness shows the same "after it ends" state a box does.
+        now = time.time()
+        for k in [k for k, v in _MOCK_FX.items()
+                  if v.get("effect") == "playtime"
+                  and isinstance((v.get("playtime") or {}).get("deadline"), (int, float))
+                  and v["playtime"]["deadline"] <= now]:
+            _MOCK_FX.pop(k, None)
         pubs = [_mock_led_public(l["name"]) for l in MOCK_LEDS if l["writable"]]
         strips = _led_strips([l["name"] for l in MOCK_LEDS if l["writable"]])
         return {"available": any(p["notable"] for p in pubs), "leds": pubs,
@@ -7033,13 +7041,16 @@ def _seq_render(spec, now):
     # Steam take the bar -- repainting it every tick just blanks Steam's own light-bar
     # animation at ~30fps (the flicker 2.9.106 fixed). Paint a dark frame ONCE, then
     # leave the strip alone until a frame lights something again (an idle CPU meter,
-    # an unreadable battery, a finished countdown). Forget the stale canary so the
-    # first lit frame afterwards is not scored as a Steam write. Review, 2.9.117.
+    # an unreadable battery, a finished countdown). Review, 2.9.117.
+    # The canary is deliberately KEPT: painting the dark frame already records
+    # (None, None) when we are live, and while stood down it is the node being
+    # probed -- dropping it on every dark frame meant a wipe (dark once per period)
+    # or an idle meter never scored a clean probe and never resumed after Steam
+    # let go (delta review, pinned by test_led_review_2917).
     if _seq_canary_index(frame) is None:
         if spec.get("_dark"):
             return
         spec["_dark"] = True
-        spec.pop("_canary", None)
     else:
         spec["_dark"] = False
     if spec.get("_down", False):
@@ -7087,11 +7098,17 @@ def _playtime_finish(spec):
     if not prefix:
         return
     with _SEQ_LOCK:
-        if _SEQ_ACTIVE.get(prefix) is spec:
-            _SEQ_ACTIVE.pop(prefix, None)
+        if _SEQ_ACTIVE.get(prefix) is not spec:
+            return                      # replaced meanwhile (a new timer, an effect)
+        _SEQ_ACTIVE.pop(prefix, None)
+    mine = (spec.get("playtime") or {}).get("deadline")
     with _FX_LOCK:
         cur = _LED_PERSIST.get("strip:" + prefix)
-        drop = isinstance(cur, dict) and cur.get("effect") == "playtime"
+        # A POST can land between the two locks; a restarted countdown has its own
+        # deadline, so only the entry carrying THIS deadline is ours to forget.
+        drop = (isinstance(cur, dict) and cur.get("effect") == "playtime"
+                and isinstance(cur.get("playtime"), dict)
+                and mine is not None and cur["playtime"].get("deadline") == mine)
         if drop:
             _LED_PERSIST.pop("strip:" + prefix, None)
     if drop:

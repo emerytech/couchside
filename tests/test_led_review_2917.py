@@ -15,6 +15,12 @@ Run: python3 tests/test_led_review_2917.py
      battery meter) instead of rendering a dark bar forever. Nothing is written.
   E  Non-scalar config values (lists/objects) are a 400, never a 500 TypeError.
   F  Steam runtimes / Proton / redistributables are never recommended.
+  Delta review of the fix itself:
+  G  A stood-down strip whose effect has all-dark frames (wipe once per period, an
+     idle CPU meter) still RESUMES once Steam lets go. The first cut dropped the
+     probe canary on every dark frame and those strips stayed stood down forever.
+  H  Finishing an old countdown never forgets a countdown restarted after it
+     (identity in the render set AND the persisted deadline must both match).
 
 Pure stdlib, no pytest -- same style as test_led_playtime.py.
 """
@@ -129,7 +135,7 @@ def test_a_effects_list_is_what_shipped_apps_know():
     saved = (cs.read_cpu_temp_c, cs.read_box_battery)
     try:
         cs.read_cpu_temp_c = lambda: 50.0
-        cs.read_box_battery = lambda: {"percent": 80}
+        cs.read_box_battery = lambda: {"pct": 80}
         st = cs.leds_state(False)
         check(st["effects"] == _SHIPPED_APP_EFFECTS,
               "real `effects` == the 12 ids apps <= 2.9.62 can label")
@@ -208,7 +214,10 @@ def test_c_expired_countdown_is_forgotten():
         # Not expired yet: finishing must not be triggered by a live frame.
         cs._seq_playtime_frame(sp, 0.0)
         check(not sp.get("_expired"), "a running countdown is not marked expired")
-        sp["playtime"]["deadline"] = time.time() - 1
+        # The same timer, now past its deadline (spec + persisted copy agree).
+        cs.apply_strip_effect("valve-leds", "playtime", None, 50, 100, False, None,
+                              {"minutes": 30, "scale": 0, "deadline": time.time() - 1})
+        sp = cs._SEQ_ACTIVE.get("valve-leds")
         cs._seq_playtime_frame(sp, 0.0)
         check(sp.get("_expired") is True, "a countdown past its deadline is marked expired")
         cs._playtime_finish(sp)
@@ -226,8 +235,7 @@ def test_c_render_loop_finishes_expired():
     restore, _ = _install(writes)
     try:
         cs.apply_strip_effect("valve-leds", "playtime", None, 50, 100, False, None,
-                              {"minutes": 30})
-        cs._SEQ_ACTIVE["valve-leds"]["playtime"]["deadline"] = time.time() - 1
+                              {"minutes": 30, "deadline": time.time() - 1})
         th = threading.Thread(target=cs._seq_loop, daemon=True)
         th.start()
         th.join(3.0)
@@ -261,6 +269,119 @@ def test_c_finish_leaves_a_newer_effect_alone():
               "the newer comet stays persisted")
     finally:
         restore()
+
+
+def test_h_finish_keeps_a_restarted_countdown():
+    print("H: finishing an old countdown never forgets one restarted after it")
+    writes = []
+    restore, tmp = _install(writes)
+    try:
+        cs.apply_strip_effect("valve-leds", "playtime", None, 50, 100, False, None,
+                              {"minutes": 30, "deadline": time.time() - 1})
+        old = cs._SEQ_ACTIVE.get("valve-leds")
+        cs._seq_playtime_frame(old, 0.0)
+        check(old.get("_expired") is True, "old countdown marked expired by the render thread")
+        # The user restarts the timer before the loop gets to finish the old one.
+        cs.apply_strip_effect("valve-leds", "playtime", None, 50, 100, False, None,
+                              {"minutes": 20})
+        new_dl = cs._SEQ_ACTIVE["valve-leds"]["playtime"]["deadline"]
+        cs._playtime_finish(old)
+        check(cs._SEQ_ACTIVE.get("valve-leds") is not None
+              and cs._SEQ_ACTIVE["valve-leds"] is not old, "the new countdown keeps rendering")
+        per = cs._LED_PERSIST.get("strip:valve-leds", {})
+        check(per.get("effect") == "playtime" and per.get("playtime", {}).get("deadline") == new_dl,
+              "the new countdown stays persisted (GET active + reboot keep it)")
+        # Between-locks race: the render set still holds the old spec, but a newer
+        # countdown already replaced the persisted entry. Only OUR deadline is dropped.
+        with cs._SEQ_LOCK:
+            cs._SEQ_ACTIVE["valve-leds"] = old
+        cs._playtime_finish(old)
+        check("valve-leds" not in cs._SEQ_ACTIVE, "old spec leaves the render set")
+        check(cs._LED_PERSIST.get("strip:valve-leds", {}).get("playtime", {}).get("deadline") == new_dl,
+              "a persisted countdown with a different deadline is left alone")
+        # The other half of the window: a POST has already put a NEW spec in the
+        # render set but not yet rewritten the saved entry (still the old deadline).
+        # The strip belongs to the new effect now, so finishing the old spec is a no-op.
+        cs.apply_strip_effect("valve-leds", "playtime", None, 50, 100, False, None,
+                              {"minutes": 30, "deadline": time.time() - 1})
+        old2 = cs._SEQ_ACTIVE["valve-leds"]
+        newer = dict(old2, effect="comet", playtime=None)
+        with cs._SEQ_LOCK:
+            cs._SEQ_ACTIVE["valve-leds"] = newer
+        cs._playtime_finish(old2)
+        check(cs._SEQ_ACTIVE.get("valve-leds") is newer
+              and "strip:valve-leds" in cs._LED_PERSIST,
+              "once the strip belongs to a newer spec, finishing the old one touches nothing")
+    finally:
+        restore()
+
+
+def _resume_after_release(effect, speed=50, meter_seq=None):
+    """Steam owns the bar for 5 s (reads back black), then lets go. Returns
+    (stood_down, seconds_to_resume or None within 60 s simulated)."""
+    import itertools
+    hw, steam = {}, {"on": True}
+    saved = (cs._led_write, cs._led_read_attr, getattr(cs, "_meter_read", None))
+    cs._led_write = lambda name, attr, v: hw.__setitem__(name, v) if attr == "multi_intensity" else None
+    cs._led_read_attr = lambda name, attr: (("0 0 0" if steam["on"] else hw.get(name))
+                                            if attr == "multi_intensity" else None)
+    if meter_seq is not None:
+        vals = itertools.cycle(meter_seq)
+        cs._meter_read = lambda kind, prev=None: (next(vals), 50.0, None)
+    try:
+        n = 17
+        members = ["valve-leds[%d]" % i for i in range(n)]
+        sp = {"members": members, "effect": effect, "color": {"r": 255, "g": 0, "b": 0},
+              "speed": speed, "brightness": 100, "reverse": False, "t0": 0.0,
+              "raws": {m: dict(_FAKE["valve-leds[0]"], name=m) for m in members},
+              "meter": {}, "prefix": "valve-leds"}
+        t = 0.0
+        while t < 5.0:
+            cs._seq_render(sp, t)
+            t += 0.033
+        down = bool(sp.get("_down"))
+        steam["on"] = False
+        freed = t
+        while t < freed + 60.0:
+            cs._seq_render(sp, t)
+            t += 0.033
+            if not sp.get("_down"):
+                return down, round(t - freed, 1)
+        return down, None
+    finally:
+        cs._led_write, cs._led_read_attr = saved[0], saved[1]
+        if saved[2] is not None:
+            cs._meter_read = saved[2]
+
+
+def test_g_dark_frames_still_resume():
+    print("G: a stood-down strip with all-dark frames still resumes when Steam lets go")
+    for label, kw in (("circle (control, never all dark)", {"effect": "circle", "speed": 100}),
+                      ("meter_cpu busy (control)", {"effect": "meter_cpu", "meter_seq": (30.0, 40.0)}),
+                      ("wipe speed 100", {"effect": "wipe", "speed": 100}),
+                      ("wipe speed 55 (app default)", {"effect": "wipe", "speed": 55}),
+                      ("meter_cpu idle 1%/5%", {"effect": "meter_cpu", "meter_seq": (1.0, 5.0)})):
+        down, resumed = _resume_after_release(**kw)
+        check(down and resumed is not None and resumed < 15.0,
+              "%s: stood down under Steam, resumed %ss after release" % (label, resumed))
+
+
+def test_mock_forgets_finished_countdown():
+    print("mock: GET forgets a countdown that has finished (same as a real box)")
+    saved = dict(cs._MOCK_FX)
+    try:
+        cs._MOCK_FX.clear()
+        cs._MOCK_FX["strip:valve-leds"] = {"effect": "playtime", "brightness": 100,
+            "playtime": {"minutes": 5, "deadline": time.time() - 1}}
+        check("strip:valve-leds" not in cs.leds_state(True)["active"],
+              "expired mock countdown is gone from active")
+        cs._MOCK_FX["strip:valve-leds"] = {"effect": "playtime", "brightness": 100,
+            "playtime": {"minutes": 5, "deadline": time.time() + 120}}
+        check("strip:valve-leds" in cs.leds_state(True)["active"],
+              "control: a running mock countdown stays in active")
+    finally:
+        cs._MOCK_FX.clear()
+        cs._MOCK_FX.update(saved)
 
 
 def _restore_with_deadline(deadline):
@@ -409,6 +530,9 @@ if __name__ == "__main__":
     test_c_render_loop_finishes_expired()
     test_c_finish_leaves_a_newer_effect_alone()
     test_c_boot_restore_skips_expired()
+    test_h_finish_keeps_a_restarted_countdown()
+    test_g_dark_frames_still_resume()
+    test_mock_forgets_finished_countdown()
     test_d_e_route_rejections()
     test_mock_single_led_refuses_strip_only()
     test_f_reco_skips_steam_tools()
