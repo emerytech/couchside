@@ -29,7 +29,7 @@ module.exports = ({ config }) => {
     // Own versionCode line, independent of the store app (Android compares only
     // within a package). Bump by hand per prototype APK so `adb install -r` over the
     // previously-installed prototype is never refused as a downgrade.
-    versionCode: 116,
+    versionCode: 117,
   };
 
   return config;
