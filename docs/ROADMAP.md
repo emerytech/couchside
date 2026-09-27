@@ -16,6 +16,21 @@ Each entry now carries a `✅ DONE` / `🟡 PARTIAL` / `📋 OPEN` banner with i
 
 ## 🔨 In Progress
 
+### Game Aura — paint the strip from game artwork (Phase 1, PR `feat/game-aura-artwork`)
+- **priority:** P3 · **risk:** low (additive route + app-side sampler; no new cap, no agent image lib) ·
+  **affects:** agent `POST /api/leds/aura` + the `aura` payload flag; app `lib/auraPalette` (pure sampler),
+  `lib/auraArt` (fetch+decode+sample), `api.paintStripAura`, StripLightCard "Paint from game artwork" control ·
+  **depends_on:** LED Studio strip engine (`_seq_*`, done).
+- **status:** Phase 1 BUILT + harness-verified (pressed the control on the mock Console → cover fetched,
+  canvas-decoded, sampled to 8 colours, `POST /api/leds/aura → 200`, GET active reflects `effect:aura`).
+  NOT hardware-verified (no strip photons). Agent tests + sampler unit test green; `tsc` clean.
+- **allowlist:** strip prefix looked up in the live strip set (404 unknown, never interpolated); `colors` is a
+  fixed-shape validated frame (list of exactly the strip's member count, each `{r,g,b}` 0-255, else 400 and
+  nothing painted); paints via the existing `_seq` fixed-literal writers, so Steam stand-down + the 2.9.117
+  dark-frame guard still apply. Gated on the existing `ledcontrol`/strip cap — NO new cap.
+- **left open:** native (non-web) cover decode (today web/harness only → degrades to a message); a Phase-2
+  per-game aura theme LIBRARY that reuses this same N-colour route.
+
 ### User-selectable app icon — store icon vs. gold Pro in the direct edition (user request 2026-09-26)
 - **priority:** P3 · **risk:** low-medium (manifest surgery via a config plugin; launcher quirks) ·
   **affects:** app (direct edition first; store app + iOS later if wanted), `build/direct-apk` config plugin ·
