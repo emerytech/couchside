@@ -269,10 +269,13 @@ function CeremonyView({
 }) {
   const running = job.state === 'running';
   const failed = job.state === 'failed';
+  // `stages` may be absent on a partial/mid-restart job body; default to [] so the
+  // .some/.find/.map below never throw and kill the sheet.
+  const stages = Array.isArray(job.stages) ? job.stages : [];
   // A completed ceremony where a non-fatal stage (audio) failed -> amber note.
-  const softFail = job.state === 'done' && job.stages.some(
+  const softFail = job.state === 'done' && stages.some(
     (s) => s.state === 'failed' && !s.fatal);
-  const fatalStage = job.stages.find((s) => s.state === 'failed' && s.fatal);
+  const fatalStage = stages.find((s) => s.state === 'failed' && s.fatal);
 
   // Show the per-stage breakdown ONLY when something went wrong.
   //
@@ -292,7 +295,7 @@ function CeremonyView({
     <>
       {showStages && (
         <View style={styles.stageList}>
-          {job.stages.map((s) => <StageRow key={s.key} stage={s} t={t} styles={styles} />)}
+          {stages.map((s) => <StageRow key={s.key} stage={s} t={t} styles={styles} />)}
         </View>
       )}
 

@@ -42,7 +42,7 @@ export function LogsPanel() {
   const boxKey = hostKey(settings); // resetKey: clear stale data on box switch
   const units = usePoll<{ units: Unit[] }>(() => api.units(settings), 3600_000, ready, boxKey);
   const picker =
-    units.data && units.data.units.length > 0 ? toPicker(units.data.units) : FALLBACK_UNITS;
+    units.data?.units?.length ? toPicker(units.data.units) : FALLBACK_UNITS;
 
   const target = picker[Math.min(selected, picker.length - 1)];
 
@@ -65,7 +65,9 @@ export function LogsPanel() {
   );
 
   // Inverted list: newest journal line (last in the array) renders at the bottom.
-  const lines = journal.data ? [...journal.data.lines].reverse() : [];
+  // Guard `lines`: a partial/mid-restart journal body can be truthy with no `lines`
+  // array, and `[...undefined]` throws "not iterable" and kills the tab.
+  const lines = Array.isArray(journal.data?.lines) ? [...journal.data.lines].reverse() : [];
 
   return (
     <View style={styles.root}>
