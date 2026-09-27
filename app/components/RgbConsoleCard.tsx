@@ -37,7 +37,7 @@ import { mono, useTheme, useThemedStyles, type Palette } from '@/lib/theme';
  *  cards it stands in for (both poll /api/leds at 15s). */
 const POLL_MS = 15000;
 /** Cap on preview dots so a 17-LED strip stays one tidy row. */
-const MAX_SWATCHES = 10;
+const MAX_SWATCHES = 6;
 
 export function RgbConsoleCard() {
   const t = useTheme();
@@ -89,11 +89,11 @@ export function RgbConsoleCard() {
           <View style={styles.meta}>
             <Text style={styles.device} numberOfLines={1}>
               {summary.device}
-              {moreText ? <Text style={styles.more}>{moreText}</Text> : null}
             </Text>
             <Text style={styles.effect} numberOfLines={1}>
               {summary.effectLabel}
               {brightnessText}
+              {moreText ? <Text style={styles.more}>{moreText}</Text> : null}
             </Text>
           </View>
 
@@ -113,7 +113,7 @@ const makeStyles = (t: Palette) =>
   StyleSheet.create({
     row: { flexDirection: 'row', alignItems: 'center', gap: 12 },
     pressed: { opacity: 0.7 },
-    swatches: { flexDirection: 'row', flexWrap: 'wrap', gap: 3, maxWidth: 150 },
+    swatches: { flexDirection: 'row', gap: 3, flexShrink: 0 },
     swatch: {
       width: 13,
       height: 13,

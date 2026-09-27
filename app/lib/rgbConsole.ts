@@ -56,12 +56,16 @@ const EFFECT_LABELS: Record<string, string> = {
   meter_battery: 'Battery meter',
   playtime: 'Playtime',
   aura: 'Game Aura',
+  sequence: 'Sequence',
 };
 
 /** Effect id → display label; an unknown id falls back to itself (never blank). */
 export function effectLabel(effect?: string | null): string {
   if (!effect) return 'Solid';
-  return EFFECT_LABELS[effect] ?? effect;
+  // Known ids map to a friendly label; an unmapped id (a newer agent's effect)
+  // reads as a proper noun ("my_fx" -> "My fx") instead of raw lowercase.
+  return EFFECT_LABELS[effect]
+    ?? (effect.charAt(0).toUpperCase() + effect.slice(1).replace(/_/g, ' '));
 }
 
 const clamp255 = (n: number): number => Math.max(0, Math.min(255, Math.round(n)));

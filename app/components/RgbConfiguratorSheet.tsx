@@ -18,6 +18,7 @@
 import Ionicons from '@expo/vector-icons/Ionicons';
 import React from 'react';
 import { Modal, Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
+import { GestureHandlerRootView } from 'react-native-gesture-handler';
 
 import { OpenRgbCard } from '@/components/OpenRgbCard';
 import { RgbLedCard } from '@/components/RgbLedCard';
@@ -36,6 +37,12 @@ export function RgbConfiguratorSheet({
 
   return (
     <Modal visible={visible} animationType="slide" transparent onRequestClose={onClose}>
+      {/* RN <Modal> presents its children in a SEPARATE native view tree that is
+          NOT under the app-root GestureHandlerRootView (_layout.tsx), so every
+          react-native-gesture-handler control inside the relocated cards (the
+          brightness / hue / saturation / speed TrackSliders) would be dead on
+          native without this inner root. Documented RNGH fix for Modals. */}
+      <GestureHandlerRootView style={{ flex: 1 }}>
       <View style={styles.backdrop}>
         {/* Tap the dimmed area above the sheet to dismiss (the sheet itself does
             not, so a control tap never closes it). */}
@@ -73,6 +80,7 @@ export function RgbConfiguratorSheet({
           </ScrollView>
         </View>
       </View>
+      </GestureHandlerRootView>
     </Modal>
   );
 }

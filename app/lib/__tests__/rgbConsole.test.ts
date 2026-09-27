@@ -170,11 +170,15 @@ test('Game Aura uses the painted palette for the preview', () => {
   assert.deepEqual(s!.swatches, palette);
 });
 
-test('effectLabel maps known ids and falls back to the id', () => {
+test('effectLabel maps known ids and Title-cases an unmapped id', () => {
   assert.equal(effectLabel('meter_cpu'), 'CPU meter');
   assert.equal(effectLabel('manual'), 'Custom');
+  assert.equal(effectLabel('sequence'), 'Sequence');
+  assert.equal(effectLabel('aura'), 'Game Aura');
   assert.equal(effectLabel(undefined), 'Solid');
-  assert.equal(effectLabel('mystery'), 'mystery');
+  // an unmapped id (a newer agent's effect) reads as a proper noun, not raw lowercase
+  assert.equal(effectLabel('mystery'), 'Mystery');
+  assert.equal(effectLabel('my_new_fx'), 'My new fx');
 });
 
 test('scaleRgb dims and clamps', () => {
