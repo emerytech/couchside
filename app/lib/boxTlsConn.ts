@@ -120,7 +120,7 @@ export class PinnedConn {
 
   constructor(connect: () => Promise<PinnedSocket>, opts?: PinnedConnOpts) {
     this.connect = connect;
-    this.now = opts?.now ?? (() => Date.now());
+    this.now = opts?.now ?? (() => (globalThis.performance?.now?.() ?? Date.now()));   // monotonic: a backward wall-clock step must not stretch the cooldown
   }
 
   request(bytes: Uint8Array, timeoutMs: number): Promise<PinnedResponse> {

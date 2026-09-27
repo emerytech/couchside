@@ -12,6 +12,7 @@ import { api, Displays, hostKey, PowerSchedule, Screensaver, Status, Tv, TvOp, U
 import { hapticError, hapticLight, hapticSuccess } from '@/lib/haptics';
 import { getPref, usePref } from '@/lib/prefs';
 import { normalizeMac, isValidLanIp } from '@/lib/settings';
+import { connFromBox } from '@/lib/boxConn';
 import { useBoxes, useSettings } from '@/lib/SettingsContext';
 import { mono, useTheme, useThemedStyles } from '@/lib/theme';
 import type { Palette } from '@/lib/theme';
@@ -567,7 +568,7 @@ export function RemotePowerBar({ compact = false }: { compact?: boolean }) {
         if (b.id === activeBoxId) continue;
         try {
           const r = await api.wolRelay(
-            { host: b.host, port: b.port, token: b.token, lastIp: b.lastIp },
+            connFromBox(b),   // carries secure/tlsPort/pinModulus (KI-096)
             mac,
           );
           if (r?.ok) {

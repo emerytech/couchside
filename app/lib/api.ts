@@ -1866,14 +1866,18 @@ export async function uploadFile(
   let headers: Record<string, string> = { Authorization: `Bearer ${settings.token}` };
   // Secure box: the native streamed uploader can't pin, so keep the token off the
   // wire with a SINGLE-USE ticket (minted over the pinned channel). The file bytes
-  // still ride plaintext http (documented residual), but the token does not. A rare
-  // mint failure falls back to the token header for just this one request.
+  // still ride plaintext http (documented residual), but the token does not.
+  // FAIL CLOSED: if the mint fails (a pin mismatch, or the pool's connect cooldown
+  // after a transient failure), we must NOT fall back to putting the bearer token
+  // in a cleartext header — that is exactly the leak KI-096 is about. Better one
+  // failed upload the user can retry than a token on the wire.
   if (settings.secure && settings.pinModulus && settings.tlsPort) {
     const t = await mintUploadTicket(settings, host);
-    if (t) {
-      url = `http://${host}:${settings.port}/api/upload?name=${encodeURIComponent(name)}&ticket=${encodeURIComponent(t)}`;
-      headers = {};
+    if (!t) {
+      throw new ApiError('unreachable', 'Could not secure the upload — try again');
     }
+    url = `http://${host}:${settings.port}/api/upload?name=${encodeURIComponent(name)}&ticket=${encodeURIComponent(t)}`;
+    headers = {};
   }
   const task = new File(fileUri).createUploadTask(url, {
     httpMethod: 'POST',
@@ -2067,9 +2071,15 @@ async function attempt(
   } catch (e: unknown) {
     if (e instanceof ApiError) throw e; // hard-deadline timeout, already shaped
     if (isPinnedTimeoutError(e)) {
-      // The pinned pool's own deadline (queue wait + connect + reply). Same
-      // meaning as the plaintext AbortError below: callers show "still working"
-      // for a POST that may have landed, and let the poll decide.
+      // The pinned pool's own deadline (queue wait + connect + reply). If the
+      // request was never WRITTEN (expired in the queue / during connect, sent
+      // === false), it definitely did not land, so surface it as unreachable so a
+      // POST is shown as retryable instead of "may have landed" — a never-sent
+      // POST can be retried with no double-send. A request that WAS written keeps
+      // the plaintext-AbortError meaning ("still working", let the poll decide).
+      if ((e as { sent?: boolean }).sent === false) {
+        throw new ApiError('unreachable', 'Not sent — the box was busy; try again');
+      }
       throw new ApiError('timeout', `Timed out after ${timeoutMs / 1000}s`);
     }
     if (isPinMismatchError(e)) {
