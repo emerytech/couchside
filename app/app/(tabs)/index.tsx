@@ -381,7 +381,10 @@ function ConsoleScreen() {
           <Text style={styles.unitErr}>{units.error.message}</Text>
         ) : units.data ? (
           <View style={styles.chips}>
-            {units.data.units.filter((u) => !u.log_only).map((u) => (
+            {/* `?? []`: a transient/partial /api/units body (e.g. the agent mid-
+                restart) can be a truthy object with no `units` array — never crash
+                the whole Console over it. */}
+            {(units.data.units ?? []).filter((u) => !u.log_only).map((u) => (
               <UnitChip key={`${u.scope}:${u.name}`} unit={u} />
             ))}
           </View>
