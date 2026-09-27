@@ -17,7 +17,7 @@
  */
 import Ionicons from '@expo/vector-icons/Ionicons';
 import React, { useEffect, useRef, useState } from 'react';
-import { Alert, Pressable, StyleSheet, Text, View } from 'react-native';
+import { Alert, Platform, Pressable, StyleSheet, Text, View } from 'react-native';
 
 import { PresetNameModal } from '@/components/PresetNameModal';
 import { ReactiveModeControls } from '@/components/reactive/ReactiveModeControls';
@@ -31,6 +31,7 @@ import {
 import {
   addPreset, isBuiltinPreset, removePreset, useLedPresets, type LedPreset,
 } from '@/lib/ledPresets';
+import { sampleGameAura } from '@/lib/auraArt';
 import { detectStrips, type LedStrip } from '@/lib/ledStrip';
 import { useSkinKit } from '@/lib/skin';
 import { useSettings } from '@/lib/SettingsContext';
@@ -154,6 +155,47 @@ export function StripLightCard() {
     ? (poll.data?.strips ?? []).find((s) => strip.key === `strip:${s.prefix}`)
     : undefined;
   const agentMode = !!agentStrip;
+
+  // GAME AURA — "paint the strip from the running game's cover art". The control
+  // appears only when the box can do it (agent advertises `aura`), the agent owns
+  // an RGB strip, AND a game is actually running (a known appid to fetch a cover
+  // for). Same probe-and-appear discipline as the reactive/theme controls. The
+  // running game comes from the gaming card the app already polls elsewhere.
+  // Only feeds the "paint from artwork" control (aura), which today decodes the
+  // cover on web only. Poll the running game solely when that control can appear,
+  // so a box with no addressable strip / no aura never polls /api/gaming here.
+  const auraAvailable = agentMode && !!agentStrip && strip?.rgb && poll.data?.aura === true
+    && Platform.OS === 'web';
+  const gamePoll = usePoll<Awaited<ReturnType<typeof api.gaming>>>(
+    () => api.gaming(settings), POLL_MS, ready && configured && auraAvailable, hostKey(settings));
+  const gameAppid = gamePoll.data?.game?.appid ?? null;
+  const gameLabel = gamePoll.data?.game?.label ?? '';
+  // Web only: native cover decode is Phase 1b (auraArt.decodeToRgba returns null off
+  // web), so the control must not appear on a phone where every tap would fail.
+  const auraReady = auraAvailable && gameAppid != null;
+
+  /** Sample the running game's cover into one colour per LED and paint it. The
+   *  colours are DATA — the agent re-validates every channel and looks the strip
+   *  up in its live set (POST /api/leds/aura). On a platform that can't decode the
+   *  cover (native, today) or a fetch/decode miss, say so rather than fail silent. */
+  const paintFromArtwork = async () => {
+    if (!agentStrip || gameAppid == null || busy) return;
+    hapticLight();
+    setBusy(true);
+    try {
+      const palette = await sampleGameAura(settings, gameAppid, agentStrip.count);
+      if (!palette) {
+        Alert.alert('Couldn’t read the cover',
+          'The game’s cover art couldn’t be fetched or sampled on this device.');
+        return;
+      }
+      const ok = await api.paintStripAura(settings, agentStrip.prefix, palette);
+      if (!ok) Alert.alert('Aura not applied', 'The box rejected the palette or is unreachable.');
+    } finally {
+      await poll.refresh();
+      setBusy(false);
+    }
+  };
 
   // Fetch the box's built-in theme catalog once the box is reachable. Themes
   // live on the box, so a box update adds new ones with no app resubmit; a 404
@@ -993,6 +1035,27 @@ export function StripLightCard() {
                 <Text style={styles.chipText} numberOfLines={1}>{th.label}</Text>
               </Pressable>
             ))}
+          </View>
+        </>
+      ) : null}
+
+      {/* GAME AURA — sample the running game's cover into one colour per LED and
+          paint the strip. Probe-and-appear: only when the box advertised `aura`,
+          the agent owns this RGB strip, AND a game is running (a known appid). */}
+      {auraReady ? (
+        <>
+          <Text style={styles.sectionLabel}>GAME AURA</Text>
+          <View style={styles.chipRow}>
+            <Pressable
+              onPress={() => void paintFromArtwork()} disabled={busy}
+              accessibilityRole="button"
+              accessibilityLabel="Paint the strip from the running game's artwork"
+              style={({ pressed }) => [styles.savePreset, pressed && styles.pressed, busy && styles.pressed]}>
+              <Ionicons name="color-palette-outline" size={14} color={t.blue} />
+              <Text style={[styles.chipText, { color: t.blue }]} numberOfLines={1}>
+                {gameLabel ? `Paint from ${gameLabel}` : 'Paint from game artwork'}
+              </Text>
+            </Pressable>
           </View>
         </>
       ) : null}

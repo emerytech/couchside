@@ -5712,6 +5712,10 @@ def leds_state(mock):
                 "effects": list(_LED_EFFECTS_ADVERTISED), "shape": True,
                 "reactive": {"meters": ["meter_cpu", "meter_battery"], "playtime": True,
                              "signals": {"cpu_temp": True, "battery": True}},
+                # Additive probe-and-appear flag (§4): this agent has POST
+                # /api/leds/aura, so the app may offer "paint from game artwork" on
+                # an addressable strip. Older agents omit it -> the app hides it.
+                "aura": bool(strips),
                 "active": {k: dict(v) for k, v in _MOCK_FX.items()},
                 "strips": [_mock_strip_public(p, m) for p, m in strips.items()]}
     names = _list_led_names()
@@ -5723,7 +5727,10 @@ def leds_state(mock):
     # app shows the SHAPE control only when present, so older agents stay clean.
     return {"available": any(p["notable"] for p in pubs), "leds": pubs,
             "effects": list(_LED_EFFECTS_ADVERTISED), "shape": True,
-            "reactive": _reactive_probe(bool(strips)), "active": _led_active_map(),
+            "reactive": _reactive_probe(bool(strips)),
+            # Additive probe-and-appear flag (§4): POST /api/leds/aura exists here
+            # AND a strip is present to paint. Absent on older agents -> app hides it.
+            "aura": bool(strips), "active": _led_active_map(),
             "strips": [_strip_public(p, m) for p, m in strips.items()]}
 
 
@@ -6313,6 +6320,22 @@ def _led_restore():
                 except OSError:
                     pass
             continue
+        # A Game Aura is a static per-LED palette -> re-arm via its own path. Like
+        # the sequence case, the colours are RE-VALIDATED from the file (never
+        # trusted, §3.6); a junk/short list is dropped rather than painted, and
+        # apply_strip_aura re-checks the strip + normalizes to its member count.
+        if effect == "aura" and name.startswith("strip:"):
+            prefix = name[len("strip:"):]
+            colors = st.get("colors")
+            members = strips.get(prefix)
+            if (members and isinstance(colors, list)
+                    and len(colors) == len(members)
+                    and all(_is_rgb_triple(c) for c in colors)):
+                try:
+                    apply_strip_aura(prefix, colors)
+                except OSError:
+                    pass
+            continue
         if effect not in _LED_EFFECTS:
             continue
         color = st.get("color") if _is_rgb_triple(st.get("color")) else None
@@ -6889,6 +6912,13 @@ def _seq_compute_frame(spec, now):
         return _seq_meter_frame(spec, now)
     if e == "playtime":
         return _seq_playtime_frame(spec, now)
+    if e == "aura":
+        # A STATIC per-LED palette (Game Aura): the frame never changes with time,
+        # so we just re-lay the stored one every tick. Rendering it through the
+        # _seq engine (rather than a one-shot paint) is deliberate -- it gets the
+        # SAME Steam stand-down + dark-frame guard as every other seq effect, so a
+        # dark aura is painted once and an owned strip is left to Steam.
+        return spec.get("frame")
     period = _seq_period(spec["speed"])
     color = spec["color"]
     rev = bool(spec.get("reverse"))
@@ -7363,6 +7393,81 @@ def apply_strip_sequence(prefix, frames, hold_ms, brightness, loop=True, holds=N
     if hnorm is not None:
         active["holds"] = hnorm
     return {"ok": True, "strip": prefix, "active": active}
+
+
+def _validate_aura_colors(colors, n):
+    """Shape check for the Game Aura frame (POST /api/leds/aura): EXACTLY `n`
+    {r,g,b} triples (ints 0-255), one per strip member. REJECTS -- never sanitises
+    (§3.6): a non-list, the wrong length, or any element that is not an exact RGB
+    triple is an error, and NOTHING is painted. Returns (frame, None) | (None,
+    error). `n` is the LIVE member count of the looked-up strip, so this is the
+    only place the client's colour count is bound to a real strip's size.
+
+    The colours are DATA. They are validated here and then written to the strip's
+    OWN members via the fixed-literal multi_intensity/brightness writers; no client
+    value ever becomes a path, an attribute name, or a command (§3)."""
+    if not isinstance(colors, list):
+        return None, "colors must be a list"
+    if len(colors) != n:
+        return None, "colors must have exactly %d entries (one per LED)" % n
+    for c in colors:
+        if not _is_rgb_triple(c):
+            return None, "each color must be {r,g,b} ints 0-255"
+    return [dict(c) for c in colors], None
+
+
+def apply_strip_aura(prefix, colors):
+    """Paint a STATIC per-LED palette across an addressable strip (Game Aura).
+
+    The general form behind "paint the strip from the running game's artwork":
+    the app samples a cover into ONE colour per LED and posts the frame; a Phase-2
+    per-game aura library reuses this same route with its own N-colour frames. It
+    is a one-frame `sequence` in spirit, but its OWN effect id so GET /api/leds
+    `active` names it and the app can show a distinct aura state.
+
+    ALLOWLIST (§3): `prefix` is LOOKED UP in the live strip set (None -> caller
+    404s); it is NEVER interpolated. `colors` is validated colour DATA -- the
+    render thread owns every write via the fixed-literal writers. The frame is
+    re-validated + normalized to EXACTLY the member count here (defence in depth,
+    like apply_strip_sequence) so nothing client-shaped can reach a write even if
+    the strip changed size between the handler's check and this call.
+
+    Registers on the _seq engine (so the Steam stand-down + 2.9.117 dark-frame
+    guard apply) and persists like any strip effect, so a reboot re-arms it.
+    Returns {"ok":True,..} | None (-> 404)."""
+    if not isinstance(prefix, str):
+        return None
+    members = _led_strips().get(prefix)
+    if not members:
+        return None
+    raws = {n: _read_led_raw(n) for n in members}
+    if not all(r and r["writable"] for r in raws.values()):
+        return None
+    n = len(members)
+    # Normalize to EXACTLY n members: keep only valid RGB triples, pad short with
+    # None (an off cell). The handler already rejects a wrong length with a 400;
+    # this is the last guard so a write is never client-shaped (§3.6).
+    frame = [(colors[i] if i < len(colors) and _is_rgb_triple(colors[i]) else None)
+             for i in range(n)]
+    for name in members:
+        try:
+            _led_write(name, "effect", "manual")
+        except OSError:
+            pass
+    with _SEQ_LOCK:
+        _SEQ_ACTIVE[prefix] = {
+            "members": members, "effect": "aura", "frame": frame,
+            "color": {"r": 255, "g": 255, "b": 255}, "speed": 50, "brightness": 100,
+            "prefix": prefix, "t0": time.monotonic(), "raws": raws}
+    _seq_ensure_thread()
+    persist = {"effect": "aura", "colors": [dict(c) if c else None for c in frame],
+               "brightness": 100}
+    with _FX_LOCK:
+        for m in members:
+            _LED_PERSIST.pop(m, None)
+        _LED_PERSIST["strip:" + prefix] = dict(persist)
+    _led_state_save()
+    return {"ok": True, "strip": prefix, "active": dict(persist)}
 
 
 # ---------------------------------------------------------------------------
@@ -26728,6 +26833,59 @@ class Handler(BaseHTTPRequestHandler):
                     self._send(404, {"error": "unknown strip"}, started)
                     return
                 self._send(200, res, started)
+                return
+
+            if path == "/api/leds/aura":
+                # GAME AURA: paint a STATIC per-LED palette across a strip. Body is
+                # a FIXED shape -- { strip: <prefix>, colors: [{r,g,b}, ...] } -- with
+                # ONE colour per strip member (the app samples a game's cover into N
+                # colours). This is a general N-colour frame; a Phase-2 per-game aura
+                # library reuses this same route.
+                #
+                # ALLOWLIST (§3): the strip PREFIX is LOOKED UP in the live strip set
+                # (mock: MOCK_LEDS) and 404s if unknown -- never interpolated. `colors`
+                # is DATA: it must be a list of EXACTLY the strip's member count, each
+                # an {r,g,b} of ints 0-255 (rejected, not sanitised -> 400, nothing
+                # painted). The validated ints are written to the strip's OWN members
+                # via the fixed-literal multi_intensity/brightness writers; no client
+                # value becomes a path, an attr name, or a command. Bearer-gated like
+                # every state-changing route (the auth gate above already ran).
+                try:
+                    req = json.loads(body.decode("utf-8")) if body else {}
+                    if not isinstance(req, dict):
+                        raise ValueError("body must be a JSON object")
+                except (ValueError, TypeError, UnicodeDecodeError):
+                    self._send(400, {"error": "body must be a JSON object"}, started)
+                    return
+                strip_name = req.get("strip")
+                colors = req.get("colors")
+                # Look up the strip FIRST (both paths) so `colors` is validated
+                # against the REAL member count; an unknown strip 404s and nothing
+                # is even shape-checked against it.
+                if self.mock:
+                    strips = _led_strips([l["name"] for l in MOCK_LEDS if l["writable"]])
+                else:
+                    strips = _led_strips()
+                members = strips.get(strip_name) if isinstance(strip_name, str) else None
+                if not members:
+                    self._send(404, {"error": "unknown strip"}, started)
+                    return
+                frame, verr = _validate_aura_colors(colors, len(members))
+                if verr is not None:
+                    self._send(400, {"error": verr}, started)
+                    return
+                if self.mock:
+                    active = {"effect": "aura", "colors": frame, "brightness": 100}
+                    _MOCK_FX["strip:" + strip_name] = active
+                    self._send(200, {"ok": True, "strip": strip_name,
+                                     "active": active}, started)
+                    return
+                res = apply_strip_aura(strip_name, frame)
+                if res is None:
+                    self._send(404, {"error": "unknown strip"}, started)
+                    return
+                self._send(res.get("status", 200) if not res.get("ok") else 200,
+                           res, started)
                 return
 
             if path == "/api/leds/theme":
