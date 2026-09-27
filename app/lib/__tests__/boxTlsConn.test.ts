@@ -5,9 +5,10 @@
  * Steam Machine showed Console crashes ("Cannot read property 'pressure' of
  * undefined") and an audio card fed a body with no `sinks`: requests were getting
  * OTHER requests' replies, and the app opened sockets at ~88/s at 70-160% CPU.
- * Every case below reproduces one of those failures with a fake socket and FAILS
- * against the pre-fix PinnedConn (proved by running this file against a copy of
- * the old class with only its connect injected):
+ * Every case below except the first ("control") and the last (framing) reproduces
+ * one of those failures with a fake socket and FAILS against the pre-fix
+ * PinnedConn (proved by running this file against a copy of the old class with
+ * only its connect injected: 10 fail, the 2 controls pass):
  *
  *  - LATE DATA / LATE CLOSE / CHAIN: RN delivers a destroyed socket's close (and
  *    any queued bytes) AFTER destroy(). The old pool stayed wired to it, so a
