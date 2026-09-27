@@ -541,6 +541,69 @@ Each entry now carries a `✅ DONE` / `🟡 PARTIAL` / `📋 OPEN` banner with i
 
 ## 📋 Planned
 
+### View + share your Steam achievements (user request 2026-09-26)
+- **priority:** P2 · **risk:** medium (a NEW parser for a proprietary, undocumented binary
+  format that drifts across Steam updates; a NEW client-appid path; the visual share card needs
+  net-new native deps) · **affects:** agent (local reads) + app (optional opt-in internet for
+  global rarity ONLY) · **depends_on:** nothing hard-blocks local viewing. Full spec:
+  `docs/memory/project_steam-achievements.md` (5 phases, Phase 0 = HW spike first).
+- **Data is LOCAL — no key, no internet.** Definitions in `appcache/stats/UserGameStatsSchema_<appid>.bin`,
+  per-user unlock state in `UserGameStats_<accountid>_<appid>.bin` (`data.AchievementTimes` =
+  {index: unix_ts}; present = unlocked+dated, absent = locked; total from the schema → count/%
+  offline). Binary KeyValues, the same family the agent already parses in `_appinfo_bvdf`
+  (couchsided.py:11256, pure `struct`, no new import). Icons on disk → served over the LAN like cover
+  art, never fetched.
+- **LAN-only split:** the AGENT does local reads only — a new read-only, token-authed
+  `GET /api/steam/achievements?appid=`, additive probe-and-appear fields. §3 gate: the appid is
+  LOOKED UP against the on-disk `UserGameStatsSchema_*` set (that set IS the allowlist, like the
+  shipped `_installable_appids`), numeric-only, path contained under `appcache/stats`; absent = 404,
+  never a pass-through; degrade closed on any parse failure. Global RARITY % is NOT on disk → APP-side,
+  opt-in, off by default (compat-lookup infra); the agent never fetches it.
+- **Honesty caveats (§11):** PARTIAL CACHE — only LAUNCHED games have these files; owned-but-never-
+  launched reads "no data", never "0". FRESHNESS — a client cache, can be stale → "as of last sync".
+  Format is proprietary/undocumented → fail closed, fixture-tested on real HW.
+- **Share:** TEXT share works TODAY (RN's built-in `Share`, see `CrashLogCard.tsx`) — ship first,
+  free. A VISUAL showcase card is net-new (`react-native-view-shot` → PNG + `expo-sharing`/Share url +
+  a dev-client rebuild; `app/package.json` has neither today).
+- **Dedupe:** net-new — NOT the achievement-EVENTS LED hook punted under **SignalBar-style reactive /
+  ambient LED modes** (a real-time trigger with "no clean non-Decky hook"); static VIEWING of earned
+  achievements is a different, untried path. Rarity fetch follows the app-side-internet opt-in
+  precedent from **Install a game you own but have not downloaded** / **Library triage**.
+
+### Track Steam store sales + alert on a watched game's discount (user request 2026-09-26)
+- **priority:** P2 for price VIEWING · P3 for the sale ALERT (best-effort only) · **risk:** medium —
+  viewing is low-risk (reuses the shipped keyless `appdetails` infra; the one trap is the 30-day cache
+  TTL, right for name/type but WRONG for price); the alert is medium-high (net-new native deps + a
+  permission prompt + an unreliable OS-throttled background path) · **affects:** app ONLY — the agent
+  gains ZERO outbound path and stays LAN-only · **depends_on:** the app-side keyless
+  `store.steampowered.com/api/appdetails` path is already LIVE (`lib/steamStore.ts` +
+  `steamStoreParse.ts`, gated on the opt-in `compatLookups` pref). Full spec:
+  `docs/memory/project_steam-sales.md` (3 phases).
+- **Price VIEWING is nearly free.** `price_overview` (initial / final / discount_percent /
+  final_formatted / currency) rides in the SAME `appdetails` payload the app already fetches for
+  name/type (`steamStoreParse.ts:41` — "rides in the SAME payload … no extra request"); it is just
+  NOT parsed today → a net-new field on `parseAppDetails`. No Web API key. Surface a "-N%" badge +
+  price on tiles + `GameSheet` with a buy deep-link (`lib/steamLinks.ts`), reusing the opt-in
+  `compatLookups` pref. CAVEATS: SPLIT the cache — the current 30-day TTL (`steamStore.ts`) would
+  surface expired sale prices → short-TTL (hours); `price_overview` is region/currency-specific
+  (IP-geolocated absent `&cc=`); stay polite against Valve's ~200/5min cap.
+- **LAN-only split:** ALL app-side. The AGENT never fetches `store.steampowered.com` (its only
+  outbound URLs are agent-chosen, non-client-steered: self-update / Decky store / OpenPuck). It only
+  supplies the LOCAL appid lists the app resolves. ZERO agent network path added.
+- **The ALERT is the hard part — state it honestly:** Couchside has NO server and NO reliable
+  background. `app/package.json` has NEITHER `expo-notifications` NOR any background-fetch/task-manager
+  package (only `expo-clipboard`), so even best-effort scheduling is net-new native deps + a permission
+  prompt. The wall is in code at `hooks/useDownloadWatch.ts:13-16` and in **Install a game you own but
+  have not downloaded**. Most that is possible on SDK 57 / RN 0.86: an OS-THROTTLED, unreliable
+  best-effort background wake polls the watch list's prices app-side and fires a LOCAL notification on a
+  drop — NEVER a guaranteed server push. Ship the alert as explicitly best-effort, or ship Phases 1–2
+  (viewing + an in-app "on sale now" list, the reliable core) and stop.
+- **Dedupe:** net-new (only grep hit is "wholesale") — NOT the "Notifications" Steam-settings slug in
+  **Find the missing Steam settings slugs**, NOT the Fleet-units watchlist. Extends the keyless
+  `appdetails` path from **Install a game you own but have not downloaded** and the opt-in fetch pattern
+  from **Library triage**. ToS: prefer the vetted keyless `appdetails` over scraping IsThereAnyDeal /
+  SteamDB (library-triage Phase 3 was DROPPED for scraping HowLongToBeat).
+
 ### Deck overlay — a Decky-free Game-Mode quick panel via gamescope (owner request 2026-09-24)
 - **priority:** P2 · **risk:** high until a Phase-0 hardware prototype proves it · **affects:** agent
   (in-session launcher + hotkey listener), install.sh, a new overlay launcher, Utilities/Setup ·
