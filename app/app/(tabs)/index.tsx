@@ -32,7 +32,7 @@ import { setPref, usePref } from '@/lib/prefs';
 import { useSkinKit, VitalsContext, vitality } from '@/lib/skin';
 import { EffectsOverlays } from '@/lib/effects';
 import { noteBoxReachable } from '@/lib/review';
-import { useSettings } from '@/lib/SettingsContext';
+import { useBoxes, useBoxOnlineStatus, useSettings } from '@/lib/SettingsContext';
 import { batteryColor, mono, numeric, pctColor, tempColor, useTheme, useThemedStyles } from '@/lib/theme';
 import type { Palette } from '@/lib/theme';
 
@@ -106,7 +106,25 @@ function ConsoleScreen() {
   // the vitals/disks cards have always dereferenced them unconditionally).
   const raw = status.data;
   const s = raw && raw.mem && raw.cpu && raw.os && raw.disks ? raw : null;
+  // `reachable` = we have COMPLETE, current status data. It gates the box's LIVE
+  // DATA (vitals, version, streak) and stays strict on purpose.
   const reachable = configured && status.error == null && s != null;
+  // `boxOnline` = the box answers the lightweight /api/ping — the SAME signal the
+  // top-bar BoxSwitcher chip shows. The header dot/label and the unreachable banner
+  // use THIS so they never disagree with the chip: on a marginal link the heavy
+  // /api/status can time out (no data yet) while /api/ping still succeeds, and that
+  // is "reachable, dashboard loading", not "offline". A box that is truly down fails
+  // the ping too, so the "works when the TV is black" unreachable banner still fires.
+  const { activeBox } = useBoxes();
+  const onlineMap = useBoxOnlineStatus(activeBox ? [activeBox] : [], { intervalMs: 8000 });
+  const boxOnline = configured && !!activeBox && onlineMap[activeBox.id] === 'reachable';
+  // A box that PINGS but whose /api/status keeps failing with an actionable reason
+  // (key changed, or TLS off) still needs the banner + re-pair — pingable is not
+  // usable there. Everything else that pings is just "loading", no scary banner.
+  const authIssue =
+    boxOnline &&
+    status.error instanceof ApiError &&
+    (status.error.hint === 'repair' || status.error.hint === 'secure_down');
   // Counted only once the box has actually ANSWERED — an app opened to find the
   // box dead must not be congratulated for it.
   const streakEnabled = usePref('streakCelebrations');
@@ -456,13 +474,19 @@ function ConsoleScreen() {
         <Screen>
         {/* Status header */}
         <View style={styles.header}>
-          <Dot color={reachable ? t.green : t.red} size={14} live={reachable} />
+          <Dot color={boxOnline ? t.green : t.red} size={14} live={boxOnline} />
           <Text style={[styles.hostname, tk?.heading]}>
             {s?.hostname ?? (configured ? settings.host : 'Couchside')}
           </Text>
           <View style={styles.headerRight}>
             <Text style={styles.headerSub}>
-              {reachable ? `service v${s?.agent_version}` : configured ? 'offline' : 'not set up'}
+              {s
+                ? `service v${s.agent_version}`
+                : boxOnline
+                  ? 'connecting…'
+                  : configured
+                    ? 'offline'
+                    : 'not set up'}
             </Text>
             {/* Which OS the box runs (agent >= 2.9.34). Absent on older agents
                 and on any box that could not read /etc/os-release, so it is
@@ -520,11 +544,17 @@ function ConsoleScreen() {
         )}
 
         {/* Unreachable banner: the whole point of this app. Wake lives in the
-            top bar (RemotePowerBar), so this keeps just the retry. */}
-        {configured && status.error != null && (
+            top bar (RemotePowerBar), so this keeps just the retry. Gated on the
+            PING (boxOnline), not on a /api/status timeout — so a reachable box with
+            a slow dashboard shows "connecting…", not a false "unreachable" that
+            disagrees with the green chip. A box that pings but can't be used (auth/
+            TLS issue) still gets the banner via authIssue. */}
+        {configured && (!boxOnline || authIssue) && (
           <View style={styles.banner}>
-            <Text style={styles.bannerTitle}>BOX UNREACHABLE</Text>
-            <Text style={styles.bannerDetail}>{status.error.message}</Text>
+            <Text style={styles.bannerTitle}>{boxOnline ? "CAN'T CONNECT" : 'BOX UNREACHABLE'}</Text>
+            <Text style={styles.bannerDetail}>
+              {status.error?.message ?? 'The box is not answering pings.'}
+            </Text>
             <Text style={styles.bannerDetail}>
               last seen: {fmtLastSeen(status.lastSuccess ?? settings.lastSeen ?? null)}
             </Text>
