@@ -21,6 +21,7 @@ import { useCallback, useState } from 'react';
 import { Linking, Platform, Pressable, StyleSheet, Text, View } from 'react-native';
 
 import { decideAppUpdate, Manifest, parseItunesLookup, Result } from '@/lib/appUpdate';
+import { IS_DIRECT_BUILD } from '@/lib/entitlement';
 import { hapticLight } from '@/lib/haptics';
 import { mono, useTheme, useThemedStyles } from '@/lib/theme';
 import type { Palette } from '@/lib/theme';
@@ -44,6 +45,11 @@ async function fetchJson(url: string): Promise<unknown | null> {
 /** Normalize each store's response into the shape decideAppUpdate consumes, so
  *  the tested pure comparison is identical for both platforms. */
 async function loadManifest(): Promise<Manifest | null> {
+  // The direct (off-store) edition reads the same couchside.tv manifest — it
+  // carries a `direct` entry with the latest sideload versionCode + download URL.
+  if (IS_DIRECT_BUILD) {
+    return (await fetchJson(ANDROID_MANIFEST_URL)) as Manifest | null;
+  }
   if (Platform.OS === 'ios') {
     const ios = parseItunesLookup(await fetchJson(IOS_LOOKUP_URL));
     return ios ? { ios } : null;
@@ -60,6 +66,7 @@ async function checkAppUpdate(): Promise<Result> {
     Platform.OS,
     Application.nativeApplicationVersion, // "2.9.21"
     Application.nativeBuildVersion, // iOS build / Android versionCode
+    IS_DIRECT_BUILD,
   );
 }
 
@@ -82,7 +89,7 @@ export function AppUpdateRow() {
     void Linking.openURL(url).catch(() => {});
   };
 
-  const store = Platform.OS === 'ios' ? 'App Store' : 'Play Store';
+  const store = IS_DIRECT_BUILD ? 'Download' : Platform.OS === 'ios' ? 'App Store' : 'Play Store';
 
   return (
     <View style={styles.card}>
@@ -115,7 +122,9 @@ export function AppUpdateRow() {
       {/* Transparency, always shown and platform-accurate: exactly what this
           reaches out to, and that nothing about the user is sent. */}
       <Text style={styles.note}>
-        {Platform.OS === 'ios'
+        {IS_DIRECT_BUILD
+          ? 'Manual only. Tapping Check asks couchside.tv for the latest direct-edition version; Download fetches the new APK — nothing about you or your box is sent.'
+          : Platform.OS === 'ios'
           ? 'Manual only. Tapping Check asks the App Store for Couchside’s latest version — nothing about you or your box is sent.'
           : 'Manual only. Tapping Check asks couchside.tv for the current Play Store version (Google has no public version API) — nothing about you or your box is sent.'}
       </Text>
