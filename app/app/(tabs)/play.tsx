@@ -18,6 +18,7 @@ import { useConfirm } from '@/components/ConfirmDialog';
 import { Gated } from '@/components/Gated';
 import { TabScreen } from '@/components/TabScreen';
 import { SteamProfileCard } from '@/components/SteamProfileCard';
+import { WishlistAlertsBanner } from '@/components/WishlistAlertsBanner';
 import { SteamDealsRow } from '@/components/SteamDealsRow';
 import { SteamWishlistRow } from '@/components/SteamWishlistRow';
 import { useLockOrientation } from '@/hooks/useLockOrientation';
@@ -132,6 +133,7 @@ function PlayScreen() {
           tintColor={t.green} colors={[t.green]} />
       }>
       <NowPlayingCard />
+      <WishlistAlertsBanner />
       <SteamProfileCard />
       <Text style={styles.eyebrow}>{eyebrow}</Text>
       <Text style={styles.h1}>What to play next</Text>

@@ -53,7 +53,7 @@ except ImportError:  # pragma: no cover
     fcntl = None
 
 APP_NAME = "couchside-agent"
-VERSION = "2.9.126"
+VERSION = "2.9.127"
 UID = os.getuid()
 XDG_RUNTIME_DIR = "/run/user/%d" % UID
 
@@ -23379,6 +23379,151 @@ _STEAM_PLAYTIME_KEEP = 70  # days of history to retain
 _STEAM_PLAYTIME_TOL = 3    # max days a baseline may sit before a window edge
 
 
+# --- Wishlist price alerts: the box remembers what your wishlist games cost the
+# LAST time you looked, and flags what's cheaper now. No background thread and no
+# cloud: it's a per-account snapshot ("last-seen final price" per appid) plus an
+# on-demand diff against the current on-sale wishlist (which _steam_wishlist_payload
+# already fetches + caches). The phone triggers it on open (and, best-effort, from a
+# background-fetch) and ACKs to move the baseline. Stored 0600 in the user's own dir,
+# keyed by steamid64. Degrade closed; never raises.
+_STEAM_WL_WATCH_CONF = os.path.expanduser("~/.config/couchside/wishlist_watch.json")
+
+
+def _steam_wl_watch_load():
+    try:
+        with open(_STEAM_WL_WATCH_CONF, "r", encoding="utf-8") as fh:
+            d = json.load(fh)
+        return d if isinstance(d, dict) else {}
+    except Exception:
+        return {}
+
+
+def _steam_wl_watch_save(d):
+    directory = os.path.dirname(_STEAM_WL_WATCH_CONF)
+    try:
+        os.makedirs(directory, exist_ok=True)
+    except OSError:
+        return
+    if not os.access(directory, os.W_OK | os.X_OK):
+        return
+    fd, tmp = tempfile.mkstemp(prefix=".couchside-wlwatch-", dir=directory)
+    ok = False
+    try:
+        os.fchmod(fd, 0o600)
+        with os.fdopen(fd, "w", encoding="utf-8") as f:
+            fd = -1
+            json.dump(d, f)
+            f.write("\n")
+            f.flush()
+            os.fsync(f.fileno())
+        os.replace(tmp, _STEAM_WL_WATCH_CONF)
+        ok = True
+    except Exception:
+        pass
+    finally:
+        if fd != -1:
+            try:
+                os.close(fd)
+            except OSError:
+                pass
+        if not ok:
+            try:
+                os.unlink(tmp)
+            except OSError:
+                pass
+
+
+def _steam_wl_alerts_payload():
+    """GET /api/steam/wishlist/alerts: which wishlist games DROPPED (are new on sale,
+    or cheaper than the last time you looked) + which are at an all-time low. Read-only
+    — the app ACKs to move the baseline. {"configured": False} without a Steam key;
+    "primed": false the first time, so the app can seed the baseline without a noisy
+    "everything dropped" alert."""
+    if not _steam_webapi_configured():
+        return {"configured": False}
+    # Capture the account BEFORE the fetch so the baseline we diff against belongs
+    # to the same account the on_sale list was fetched for (a mid-fetch account
+    # switch must not mix one account's prices with another's baseline).
+    with _STEAM_WEBAPI_LOCK:
+        sid = _STEAM_WEBAPI["steamid64"]
+    wl = _steam_wishlist_payload()
+    if not wl.get("connected"):
+        return {"configured": True, "connected": False}
+    on_sale = wl.get("on_sale") or []
+    seen = _steam_wl_watch_load().get(sid)
+    primed = isinstance(seen, dict)
+    seen = seen if isinstance(seen, dict) else {}
+
+    lows = {}
+    if _itad_configured() and on_sale:
+        lp = _itad_lows_payload([it["appid"] for it in on_sale])
+        if isinstance(lp.get("lows"), dict):
+            lows = lp["lows"]
+
+    def _prev(aid):
+        try:
+            v = seen.get(aid)
+            return int(v) if v is not None else None
+        except (TypeError, ValueError):
+            return None
+
+    alerts = []
+    for it in on_sale:
+        aid = it["appid"]
+        prev = _prev(aid)
+        if not (primed and (prev is None or it["final"] < prev)):
+            continue  # not new, and not cheaper than last look
+        a = {"appid": aid, "name": it.get("name"), "final": it["final"],
+             "original": it["original"], "discount_percent": it["discount_percent"],
+             "currency": it["currency"]}
+        if prev is not None:
+            a["prev_final"] = prev
+        low = lows.get(aid)
+        try:
+            if low and it["final"] / 100.0 <= float(low.get("amount")) + 0.005:
+                a["at_low"] = True
+        except (TypeError, ValueError):
+            pass
+        alerts.append(a)
+
+    return {"configured": True, "connected": True, "primed": primed,
+            "alerts": alerts, "count": len(alerts),
+            "count_low": sum(1 for a in alerts if a.get("at_low"))}
+
+
+def _steam_wl_ack():
+    """POST /api/steam/wishlist/alerts/ack: record the CURRENT on-sale prices as the
+    baseline for this account, so the next check only flags games that got cheaper
+    after this. Guarded against a concurrent account switch (TOCTOU)."""
+    if not _steam_webapi_configured():
+        return {"ok": False}
+    with _STEAM_WEBAPI_LOCK:
+        sid = _STEAM_WEBAPI["steamid64"]
+    if not sid:
+        return {"ok": False}
+    wl = _steam_wishlist_payload()
+    if not wl.get("connected"):
+        return {"ok": False, "connected": False}
+    on_sale = wl.get("on_sale") or []
+    allw = _steam_wl_watch_load()
+    try:
+        allw[sid] = {it["appid"]: int(it["final"]) for it in on_sale}
+    except (TypeError, ValueError, KeyError):
+        return {"ok": False}
+    if _steam_cache_ok(sid):
+        _steam_wl_watch_save(allw)
+    return {"ok": True, "seen": len(on_sale)}
+
+
+def mock_steam_wl_alerts_payload():
+    return {"configured": True, "connected": True, "primed": True, "alerts": [
+        {"appid": "1086940", "name": "Baldur's Gate 3", "final": 4199, "original": 5999,
+         "discount_percent": 30, "currency": "USD", "prev_final": 4799, "at_low": True},
+        {"appid": "374320", "name": "DARK SOULS III", "final": 1499, "original": 5999,
+         "discount_percent": 75, "currency": "USD", "prev_final": 1999}],
+        "count": 2, "count_low": 1}
+
+
 def _pt_day(offset_days=0):
     return time.strftime("%Y-%m-%d", time.localtime(time.time() - offset_days * 86400))
 
@@ -27437,6 +27582,12 @@ class Handler(BaseHTTPRequestHandler):
                 # client input. Bearer-gated; probe-and-appear.
                 self._send(200, mock_steam_wishlist_payload() if self.mock
                            else _steam_wishlist_payload(), started)
+            elif path == "/api/steam/wishlist/alerts":
+                # Opt-in: wishlist games that dropped since you last looked + which are
+                # at an all-time low. A read-only diff against the box's per-account
+                # price baseline. No client input; bearer-gated; probe-and-appear.
+                self._send(200, mock_steam_wl_alerts_payload() if self.mock
+                           else _steam_wl_alerts_payload(), started)
             elif path == "/api/itad":
                 # Opt-in IsThereAnyDeal status: is a key configured (MASKED, never
                 # the full key). Separate third-party integration from Steam.
@@ -28028,6 +28179,12 @@ class Handler(BaseHTTPRequestHandler):
                 if not self.mock:
                     _itad_clear()
                 self._send(200, {"configured": False}, started)
+                return
+            if path == "/api/steam/wishlist/alerts/ack":
+                # Move the wishlist-alert baseline to the current prices, so the next
+                # check only flags games that got cheaper after this. Bearer-gated,
+                # idempotent, no request body needed.
+                self._send(200, {"ok": True} if self.mock else _steam_wl_ack(), started)
                 return
             if path == "/api/steam/menus":
                 # _read_body() hands back BYTES, not a parsed object — decode
