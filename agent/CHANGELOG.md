@@ -18,6 +18,12 @@ the same thing regardless of what actually changed.
 Write for the person holding the phone, not for the commit log. They are
 deciding whether to press "Update now" on a machine across the room.
 
+## 2.9.123
+
+**Wishlist on sale.** With Steam connected, Couchside can show which games on your
+Steam wishlist are discounted right now, with the price and how much off. It checks
+only your own wishlist, only while the integration is on, about once an hour.
+
 ## 2.9.122
 
 **Achievement progress.** With Steam connected, Couchside can show how far you are in a

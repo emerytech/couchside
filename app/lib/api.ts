@@ -1361,6 +1361,15 @@ export type SteamAchievements = {
   percent?: number;
   rarest?: { name: string; global_pct: number };
 };
+
+/** GET /api/steam/wishlist (agent >= 2.9.123) — the owner's wishlist size + which
+ *  of those games are discounted now (same shape as a deal). */
+export type SteamWishlist = {
+  configured: boolean;
+  connected?: boolean;
+  count?: number;
+  on_sale?: SteamDeal[];
+};
 export type SteamMenus = { menus: SteamMenu[] };
 
 /** One GPU as the box reports it (agent >= 2.9.43; `card` >= 2.9.67). */
@@ -2953,6 +2962,11 @@ export const api = {
   steamAchievements(settings: ConnSettings, appid: string): Promise<SteamAchievements | null> {
     return probeOrNull(request<SteamAchievements>(
       settings, `/api/steam/achievements?appid=${encodeURIComponent(appid)}`));
+  },
+
+  /** The owner's wishlist size + which games are on sale (agent >= 2.9.123). */
+  steamWishlist(settings: ConnSettings): Promise<SteamWishlist | null> {
+    return probeOrNull(request<SteamWishlist>(settings, '/api/steam/wishlist'));
   },
 
   /**
