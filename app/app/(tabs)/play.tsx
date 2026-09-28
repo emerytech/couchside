@@ -15,6 +15,7 @@ import { ActivityIndicator, Image, Pressable, RefreshControl, ScrollView, StyleS
 import { Gated } from '@/components/Gated';
 import { TabScreen } from '@/components/TabScreen';
 import { SteamProfileCard } from '@/components/SteamProfileCard';
+import { SteamDealsRow } from '@/components/SteamDealsRow';
 import { useLockOrientation } from '@/hooks/useLockOrientation';
 import { usePoll } from '@/hooks/usePoll';
 import { api, hostKey, type Recommendation, type RecoPick } from '@/lib/api';
@@ -161,6 +162,7 @@ function PlayScreen() {
         </>
       )}
 
+      <SteamDealsRow />
       <Text style={styles.foot}>
         Recommendations from your on-box play history · nothing leaves your network
       </Text>

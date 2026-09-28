@@ -1329,6 +1329,25 @@ export type SteamLibrary = {
   top?: SteamGameBrief;
   recent?: SteamGameBrief[];
 };
+
+/** One on-sale game. `final`/`original` are the discounted/list price in the
+ *  currency's minor units (cents). */
+export type SteamDeal = {
+  appid: string;
+  name: string;
+  discount_percent: number;
+  final: number;
+  original: number;
+  currency: string;
+};
+/** GET /api/steam/deals (agent >= 2.9.121) — current Steam specials, keyless from
+ *  the public Storefront, shown only while the Steam integration is on. */
+export type SteamDeals = {
+  configured: boolean;
+  connected?: boolean;
+  region?: string;
+  items?: SteamDeal[];
+};
 export type SteamMenus = { menus: SteamMenu[] };
 
 /** One GPU as the box reports it (agent >= 2.9.43; `card` >= 2.9.67). */
@@ -2908,6 +2927,12 @@ export const api = {
   /** Whole-library aggregates (agent >= 2.9.120). null / {configured:false} hide. */
   steamLibrary(settings: ConnSettings): Promise<SteamLibrary | null> {
     return probeOrNull(request<SteamLibrary>(settings, '/api/steam/library'));
+  },
+
+  /** Current Steam specials (agent >= 2.9.121). null / {configured:false} hide the
+   *  row. Keyless on the box side; shown only while the integration is connected. */
+  steamDeals(settings: ConnSettings): Promise<SteamDeals | null> {
+    return probeOrNull(request<SteamDeals>(settings, '/api/steam/deals'));
   },
 
   /**
