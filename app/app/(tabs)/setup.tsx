@@ -29,6 +29,7 @@ import { QrView } from '@/components/QrView';
 import { BoxScanPair } from '@/components/BoxScanPair';
 import { FleetDashboard } from '@/components/FleetDashboard';
 import { SteamIntegrationCard } from '@/components/SteamIntegrationCard';
+import { ItadIntegrationCard } from '@/components/ItadIntegrationCard';
 import { DirectTvSetup } from '@/components/DirectTvSetup';
 import { BoxScanQr } from '@/components/BoxScanQr';
 import { SetupProgress, SETUP_GUIDE_URL } from '@/components/SetupProgress';
@@ -1492,6 +1493,9 @@ function SetupBody() {
             {/* Advanced: opt-in Steam Web API key. Self-hides on an agent
                 without the feature (probe-and-appear) and on a non-Steam box. */}
             {activeBox?.caps?.steam !== false && <SteamIntegrationCard />}
+            {/* ITAD all-time-low prices — a SEPARATE opt-in next to the Steam key.
+                Probe-and-appear (api.itadStatus -> null on an older agent). */}
+            {activeBox?.caps?.steam !== false && <ItadIntegrationCard />}
             {/* Find-as-you-type. ~25 controls across six groups is past the
                 point where scanning works, and half of them live in one card.
                 Filtering beats reorganising here: it costs no navigation layer

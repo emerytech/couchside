@@ -53,7 +53,7 @@ except ImportError:  # pragma: no cover
     fcntl = None
 
 APP_NAME = "couchside-agent"
-VERSION = "2.9.124"
+VERSION = "2.9.125"
 UID = os.getuid()
 XDG_RUNTIME_DIR = "/run/user/%d" % UID
 
@@ -23465,6 +23465,325 @@ def _steam_playtime_deltas(acct, total_min):
     return {"played_7d": _delta(7), "played_30d": _delta(30)}
 
 
+# ---------------------------------------------------------------------------
+# ITAD (IsThereAnyDeal) — opt-in price-history integration. A SECOND third-party
+# API, gated by its OWN key (the user registers a free app at
+# isthereanydeal.com/apps/my/). It powers the "all-time low" badge on the deals +
+# wishlist rows: is this sale actually the cheapest it's ever been? Handling
+# MIRRORS the Steam key exactly — box-side, 0600, in the user's OWN config dir,
+# masked in the status route, NEVER logged, NEVER returned in full. The key rides
+# in the ITAD-API-Key HEADER (kept out of the URL), the host + path are fixed
+# literals, and every param is a validated value, so nothing client-shaped can
+# steer the request (no SSRF). ITAD data is GLOBAL (a game's all-time low is not
+# per-user), so there is NO per-account cache to reset. Degrade closed throughout.
+# ---------------------------------------------------------------------------
+_ITAD_HOST = "https://api.isthereanydeal.com"
+_ITAD_CONF = os.path.expanduser("~/.config/couchside/itad.json")
+
+
+class _ItadNoRedirect(urllib.request.HTTPRedirectHandler):
+    """Never follow a redirect. The ITAD API answers with JSON 200s, so a 3xx is
+    anomalous; following it would RE-SEND the ITAD-API-Key header to the redirect
+    target (possibly another host). Refusing leaves the 3xx to fail the status
+    check below -> degrade closed, key never leaves the fixed host."""
+
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        return None
+
+
+_ITAD_OPENER = urllib.request.build_opener(_ItadNoRedirect)
+_ITAD_TIMEOUT = 6.0
+_ITAD = {"apikey": None}
+_ITAD_LOCK = threading.Lock()
+_ITAD_ID_CACHE = {}        # appid -> {"ts": float, "val": uuid or None}
+_ITAD_ID_TTL = 86400.0     # the appid->ITAD-id map is stable; cache a day
+_ITAD_LOW_CACHE = {}       # "uuid|cc" -> {"ts": float, "val": low dict or None}
+_ITAD_LOW_TTL = 21600.0    # an all-time low moves rarely; 6h
+_ITAD_CACHE_MAX = 512
+_ITAD_MAX_LOOKUPS = 30     # bound the per-request appid->id resolves
+_ITAD_MAX_IDS = 100        # ITAD caps a historylow batch at 200; stay well under
+
+
+def _valid_itad_apikey(s):
+    """An ITAD app key: 16-128 chars of [A-Za-z0-9]. The strict charset means it can
+    never carry a path/query separator or header-injection byte. Reject anything
+    else — never sanitise (section 3.6)."""
+    return isinstance(s, str) and bool(re.fullmatch(r"[A-Za-z0-9]{16,128}", s))
+
+
+def _valid_itad_id(s):
+    """An ITAD game id is a UUID: hex digits + dashes, 32-40 chars. The charset can
+    only ever be a UUID in the request. We only ever send ids ITAD itself returned;
+    validate anyway (defence in depth)."""
+    return isinstance(s, str) and bool(re.fullmatch(r"[0-9a-fA-F-]{32,40}", s))
+
+
+def _itad_load():
+    """Read the stored ITAD key into memory at startup. Degrade closed: a missing /
+    unreadable / garbage / ill-formed file leaves the feature simply off. Never raises."""
+    try:
+        with open(_ITAD_CONF, "r", encoding="utf-8") as fh:
+            d = json.load(fh)
+        key = d.get("apikey")
+        if _valid_itad_apikey(key):
+            with _ITAD_LOCK:
+                _ITAD["apikey"] = key
+    except Exception:
+        pass
+
+
+def _itad_save(apikey):
+    """Persist the ITAD key 0600 in the user's OWN config dir via temp-file +
+    os.replace (0600 set BEFORE any bytes land). The agent runs as the user, so this
+    needs no root and touches nothing outside ~/.config/couchside. Returns True on
+    success. Wipes the price caches (a new key is a fresh session, not a new account)."""
+    directory = os.path.dirname(_ITAD_CONF)
+    try:
+        os.makedirs(directory, exist_ok=True)
+    except OSError:
+        return False
+    if not os.access(directory, os.W_OK | os.X_OK):
+        return False
+    fd, tmp = tempfile.mkstemp(prefix=".couchside-itad-", dir=directory)
+    ok = False
+    try:
+        os.fchmod(fd, 0o600)  # 0600 before any bytes land (mkstemp is 0600 already)
+        with os.fdopen(fd, "w", encoding="utf-8") as f:
+            fd = -1  # fdopen now owns the descriptor and will close it
+            json.dump({"apikey": apikey}, f)
+            f.write("\n")
+            f.flush()
+            os.fsync(f.fileno())
+        os.replace(tmp, _ITAD_CONF)
+        ok = True
+    except Exception:
+        pass
+    finally:
+        if fd != -1:            # fchmod/fdopen raised before ownership transferred
+            try:
+                os.close(fd)
+            except OSError:
+                pass
+        if not ok:
+            try:
+                os.unlink(tmp)
+            except OSError:
+                pass
+    if not ok:
+        return False
+    with _ITAD_LOCK:
+        _ITAD["apikey"] = apikey
+    _ITAD_ID_CACHE.clear()
+    _ITAD_LOW_CACHE.clear()
+    return True
+
+
+def _itad_clear():
+    """Forget the ITAD key: wipe memory + caches + delete the file. Never raises."""
+    with _ITAD_LOCK:
+        _ITAD["apikey"] = None
+    _ITAD_ID_CACHE.clear()
+    _ITAD_LOW_CACHE.clear()
+    try:
+        os.unlink(_ITAD_CONF)
+    except OSError:
+        pass
+
+
+def _itad_configured():
+    with _ITAD_LOCK:
+        return bool(_ITAD["apikey"])
+
+
+def _itad_request(method, path, params, json_body=None, apikey=None,
+                  timeout=_ITAD_TIMEOUT):
+    """ONE ITAD API call. `path` is a FIXED literal the caller chose (never client
+    input); `params` are validated values; the secret key rides in the ITAD-API-Key
+    HEADER (never the URL, never logged). `json_body` (a validated list) is sent for
+    POST. `apikey` overrides the stored key (used to test a candidate before storing).
+    Returns parsed JSON, or None on ANY failure (degrade closed)."""
+    if apikey is None:
+        with _ITAD_LOCK:
+            apikey = _ITAD["apikey"]
+    if not apikey:
+        return None
+    try:
+        url = "%s/%s?%s" % (_ITAD_HOST, path, urllib.parse.urlencode(params))
+        data = None
+        headers = {"User-Agent": "couchside-agent/%s" % VERSION,
+                   "ITAD-API-Key": apikey}
+        if json_body is not None:
+            data = json.dumps(json_body).encode("utf-8")
+            headers["Content-Type"] = "application/json"
+        req = urllib.request.Request(url, data=data, headers=headers, method=method)
+        with _ITAD_OPENER.open(req, timeout=timeout) as r:
+            if getattr(r, "status", 200) != 200:
+                return None
+            return json.loads(r.read(1 << 20).decode("utf-8", "replace"))
+    except Exception:
+        return None
+
+
+def _itad_probe(apikey):
+    """True if ITAD accepts this key — a trivial lookup returns a well-formed answer.
+    Used to TEST a candidate key before storing it (a bad key 401s -> False)."""
+    d = _itad_request("GET", "games/lookup/v1", {"appid": "730"}, apikey=apikey)
+    return isinstance(d, dict) and "found" in d
+
+
+def _itad_lookup_id(appid):
+    """Resolve a Steam appid (digits) to an ITAD game UUID, or None. Cached ~1 day."""
+    if not _valid_appid(appid):
+        return None
+    now = time.monotonic()
+    ent = _ITAD_ID_CACHE.get(appid)
+    if ent is not None and now - ent["ts"] < _ITAD_ID_TTL:
+        return ent["val"]
+    d = _itad_request("GET", "games/lookup/v1", {"appid": appid})
+    uuid = None
+    try:
+        if d.get("found") and _valid_itad_id(str(d["game"]["id"])):
+            uuid = str(d["game"]["id"])
+    except Exception:
+        uuid = None
+    if len(_ITAD_ID_CACHE) < _ITAD_CACHE_MAX or appid in _ITAD_ID_CACHE:
+        _ITAD_ID_CACHE[appid] = {"ts": now, "val": uuid}
+    return uuid
+
+
+def _itad_extract_lows(d):
+    """Normalise the historylow response into {uuid: {amount, currency, shop?, date?}}.
+    ITAD has moved this shape around, so accept the object-keyed-by-uuid form, the
+    {games:{historylow:{...}}} form, and a list of {id, ...}. Degrade closed: a field
+    we can't read is skipped, never guessed."""
+    out = {}
+
+    def _one(uuid, v):
+        if not isinstance(v, dict):
+            return
+        price = v.get("price") if isinstance(v.get("price"), dict) else v.get("low")
+        if not isinstance(price, dict):
+            return
+        try:
+            amount = float(price.get("amount"))
+        except (TypeError, ValueError):
+            return
+        # NaN/Inf pass float() but serialise to invalid JSON (NaN/Infinity), which
+        # would make the ENTIRE /api/itad/lows body unparseable for the app. Reject.
+        if amount != amount or amount == float("inf") or amount == float("-inf"):
+            return
+        rec = {"amount": round(amount, 2), "currency": str(price.get("currency") or "")}
+        shop = v.get("shop")
+        if isinstance(shop, dict) and shop.get("name"):
+            rec["shop"] = str(shop["name"])
+        ts = v.get("timestamp") or v.get("date")
+        if ts:
+            rec["date"] = str(ts)[:10]
+        out[str(uuid)] = rec
+
+    try:
+        node = d
+        if isinstance(d, dict) and isinstance(d.get("games"), dict):
+            hl = d["games"].get("historylow")
+            if isinstance(hl, dict):
+                node = hl
+        if isinstance(node, dict):
+            for uuid, v in node.items():
+                if _valid_itad_id(str(uuid)):
+                    _one(uuid, v)
+        elif isinstance(node, list):
+            for it in node:
+                if isinstance(it, dict) and _valid_itad_id(str(it.get("id"))):
+                    _one(it.get("id"), it)
+    except Exception:
+        return {}
+    return out
+
+
+def _itad_historylow(ids, cc):
+    """POST the all-time lows for a list of ITAD UUIDs, region cc. Returns
+    {uuid: {amount, currency, shop?, date?}} (only those ITAD answered), or None on a
+    request failure. The body is a validated list of UUIDs the agent chose."""
+    ids = [i for i in ids if _valid_itad_id(i)][:_ITAD_MAX_IDS]
+    if not ids:
+        return {}
+    d = _itad_request("POST", "games/historylow/v1", {"country": cc}, json_body=ids)
+    if d is None:
+        return None
+    return _itad_extract_lows(d)
+
+
+def _itad_lows_payload(appids):
+    """GET /api/itad/lows?appids=CSV: the all-time-low price per Steam appid, for the
+    "lowest ever" badge on the deals + wishlist rows. {"configured": False} without an
+    ITAD key. Resolves each appid to an ITAD id (cached ~1d), then ONE batched
+    historylow call for the cache-misses. Omits appids ITAD has no low for."""
+    if not _itad_configured():
+        return {"configured": False}
+    cc = _steam_country()
+    now = time.monotonic()
+    id_map = {}                       # appid -> uuid
+    for a in appids[:_ITAD_MAX_LOOKUPS]:
+        uuid = _itad_lookup_id(a)
+        if uuid:
+            id_map[a] = uuid
+    if not id_map:
+        return {"configured": True, "connected": True, "region": cc, "lows": {}}
+
+    lows_by_uuid = {}
+    need = []
+    for uuid in set(id_map.values()):
+        ent = _ITAD_LOW_CACHE.get(uuid + "|" + cc)
+        if ent is not None and now - ent["ts"] < _ITAD_LOW_TTL:
+            if ent["val"] is not None:
+                lows_by_uuid[uuid] = ent["val"]
+        else:
+            need.append(uuid)
+
+    if need:
+        fetched = _itad_historylow(need, cc)
+        if fetched is None:
+            if not lows_by_uuid:
+                return {"configured": True, "connected": False}
+        else:
+            for uuid in need:
+                rec = fetched.get(uuid)
+                k = uuid + "|" + cc
+                if len(_ITAD_LOW_CACHE) < _ITAD_CACHE_MAX or k in _ITAD_LOW_CACHE:
+                    _ITAD_LOW_CACHE[k] = {"ts": now, "val": rec}
+                if rec:
+                    lows_by_uuid[uuid] = rec
+
+    lows = {a: lows_by_uuid[uuid] for a, uuid in id_map.items() if uuid in lows_by_uuid}
+    return {"configured": True, "connected": True, "region": cc, "lows": lows}
+
+
+def _itad_status():
+    """The GET /api/itad body: whether an ITAD key is configured + the MASKED key.
+    NEVER returns the full key. Additive / probe-and-appear (older agents 404)."""
+    with _ITAD_LOCK:
+        key = _ITAD["apikey"]
+    if not key:
+        return {"configured": False}
+    return {"configured": True, "apikey_masked": _mask_apikey(key)}
+
+
+def mock_itad_status():
+    return {"configured": True, "apikey_masked": "•" * 28 + "CD34"}
+
+
+def mock_itad_lows_payload(appids):
+    base = {
+        "1245620": {"amount": 23.99, "currency": "USD", "shop": "Steam", "date": "2025-06-20"},
+        "1091500": {"amount": 14.99, "currency": "USD", "shop": "GreenManGaming", "date": "2024-12-01"},
+        "413150": {"amount": 4.99, "currency": "USD", "shop": "Steam", "date": "2023-11-24"},
+        "1086940": {"amount": 41.99, "currency": "USD", "shop": "Steam", "date": "2025-03-14"},
+        "1174180": {"amount": 19.79, "currency": "USD", "shop": "Steam", "date": "2024-11-27"},
+    }
+    return {"configured": True, "connected": True, "region": "us",
+            "lows": {a: base[a] for a in appids if a in base}}
+
+
 def _gaming_payload():
     """The /api/gaming body — every field independently optional; omit anything
     that could not be read rather than emit a null the app must special-case.
@@ -27102,6 +27421,24 @@ class Handler(BaseHTTPRequestHandler):
                 # client input. Bearer-gated; probe-and-appear.
                 self._send(200, mock_steam_wishlist_payload() if self.mock
                            else _steam_wishlist_payload(), started)
+            elif path == "/api/itad":
+                # Opt-in IsThereAnyDeal status: is a key configured (MASKED, never
+                # the full key). Separate third-party integration from Steam.
+                # Bearer-gated (the do_GET gate ran); probe-and-appear.
+                self._send(200, mock_itad_status() if self.mock
+                           else _itad_status(), started)
+            elif path == "/api/itad/lows":
+                # Opt-in: all-time-low price per Steam appid, for the "lowest ever"
+                # badge. `appids` is a comma-separated query param; EACH element is
+                # VALIDATED to digits (reject, never sanitise) and the count is
+                # bounded before any outbound call. Bearer-gated; probe-and-appear.
+                raw = (parse_qs(parsed.query).get("appids") or [""])[0]
+                appids = [a for a in raw.split(",") if a]
+                if not appids or len(appids) > 50 or not all(_valid_appid(a) for a in appids):
+                    self._send(400, {"error": "appids must be 1-50 comma-separated numeric ids"}, started)
+                    return
+                self._send(200, mock_itad_lows_payload(appids) if self.mock
+                           else _itad_lows_payload(appids), started)
             elif path == "/api/recommend":
                 # "What to play next" — ranks INSTALLED Steam games from local play
                 # history (hours + recency). READ-ONLY: it recommends, it never
@@ -27640,6 +27977,40 @@ class Handler(BaseHTTPRequestHandler):
                 # Forget the stored key. Bearer-gated, idempotent.
                 if not self.mock:
                     _steam_webapi_clear()
+                self._send(200, {"configured": False}, started)
+                return
+            if path == "/api/itad":
+                # Store the user's IsThereAnyDeal app key. A SECRET: bearer-gated
+                # (the auth gate above ran), validated by FORMAT (reject, never
+                # sanitise), TESTED against ITAD before storing, kept 0600 in the
+                # user's OWN config dir, NEVER echoed back (the GET masks it).
+                # Degrade closed: if ITAD does not accept it, a 400 and nothing stored.
+                try:
+                    req = json.loads(body.decode("utf-8")) if body else {}
+                    if not isinstance(req, dict):
+                        raise ValueError("body must be a JSON object")
+                except (ValueError, TypeError, UnicodeDecodeError):
+                    self._send(400, {"error": "body must be a JSON object"}, started)
+                    return
+                apikey = req.get("apikey")
+                if not _valid_itad_apikey(apikey):
+                    self._send(400, {"error": "apikey must be 16-128 letters/digits"}, started)
+                    return
+                if self.mock:
+                    self._send(200, mock_itad_status(), started)
+                    return
+                if not _itad_probe(apikey):
+                    self._send(400, {"error": "IsThereAnyDeal did not accept that key (check it was copied whole)"}, started)
+                    return
+                if not _itad_save(apikey):
+                    self._send(500, {"error": "could not save the ITAD key on the box"}, started)
+                    return
+                self._send(200, _itad_status(), started)
+                return
+            if path == "/api/itad/disconnect":
+                # Forget the stored ITAD key. Bearer-gated, idempotent.
+                if not self.mock:
+                    _itad_clear()
                 self._send(200, {"configured": False}, started)
                 return
             if path == "/api/steam/menus":
@@ -30669,6 +31040,7 @@ def main():
 
     load_config(args.config)
     _steam_webapi_load()  # opt-in Steam Web API key (user-owned, degrade-closed)
+    _itad_load()  # opt-in IsThereAnyDeal key (user-owned, degrade-closed)
     if args.arm_boot_session:
         # Nothing else runs: no server, no probes, no capability scan. Just
         # write the drop-in and get out of the shutdown's way.
