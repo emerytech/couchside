@@ -18,6 +18,14 @@ the same thing regardless of what actually changed.
 Write for the person holding the phone, not for the commit log. They are
 deciding whether to press "Update now" on a machine across the room.
 
+## 2.9.124
+
+**Weekly and monthly play time.** When Steam is connected, the Play tab now shows
+how many hours you've played across your whole library in the last 7 and 30 days,
+alongside the existing two-week figure. The agent keeps a small daily total on the
+box (in your own config dir, never uploaded) so it can show real week/month trends
+that Steam's API doesn't expose directly.
+
 ## 2.9.123
 
 **Wishlist on sale.** With Steam connected, Couchside can show which games on your

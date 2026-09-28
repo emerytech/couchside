@@ -17,7 +17,7 @@ import { useSettings } from '@/lib/SettingsContext';
 import { mono, useTheme, useThemedStyles, type Palette } from '@/lib/theme';
 
 const num = (s: string) => { const n = parseInt(s, 10); return Number.isFinite(n) ? n : 0; };
-const fmtHours = (h?: number) => {
+const fmtHours = (h?: number | null) => {
   if (h == null) return '—';
   if (h >= 100) return `${Math.round(h)}h`;
   return `${h.toFixed(1)}h`;
@@ -91,6 +91,13 @@ export function SteamProfileCard() {
             <Stat styles={styles} label="BACKLOG" value={String(lib.backlog ?? 0)} />
             <Stat styles={styles} label="2 WEEKS" value={fmtHours(lib.hours_2weeks)} />
           </View>
+          {(lib.played_7d != null || lib.played_30d != null) && (
+            <Text style={styles.trendLine}>
+              Played <Text style={styles.trendVal}>{fmtHours(lib.played_7d)}</Text> this week
+              {'  ·  '}
+              <Text style={styles.trendVal}>{fmtHours(lib.played_30d)}</Text> this month
+            </Text>
+          )}
           {lib.top && (
             <Text style={styles.topLine} numberOfLines={1}>
               Most played: <Text style={styles.topName}>{lib.top.name}</Text> · {fmtHours(lib.top.hours)}
@@ -155,6 +162,8 @@ const makeStyles = (t: Palette) =>
     achRare: { color: t.green },
     topLine: { color: t.textDim, fontSize: 12, marginTop: 12 },
     topName: { color: t.text, fontWeight: '700' },
+    trendLine: { color: t.textDim, fontSize: 12, marginTop: 10 },
+    trendVal: { color: t.text, fontWeight: '700' },
     railLabel: { color: t.textFaint, fontFamily: mono, fontSize: 10, letterSpacing: 1.5, marginTop: 16, marginBottom: 10 },
     rail: { gap: 10, paddingRight: 6 },
     recentItem: { width: 110 },

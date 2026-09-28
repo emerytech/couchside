@@ -53,7 +53,7 @@ except ImportError:  # pragma: no cover
     fcntl = None
 
 APP_NAME = "couchside-agent"
-VERSION = "2.9.123"
+VERSION = "2.9.124"
 UID = os.getuid()
 XDG_RUNTIME_DIR = "/run/user/%d" % UID
 
@@ -22993,6 +22993,8 @@ def _steam_library_payload():
     GetOwnedGames call. {"configured": False} without a key."""
     if not _steam_webapi_configured():
         return {"configured": False}
+    with _STEAM_WEBAPI_LOCK:
+        _sid = _STEAM_WEBAPI["steamid64"]
     games = _steam_owned_cached()
     if games is None:
         return {"configured": True, "connected": False}
@@ -23025,10 +23027,19 @@ def _steam_library_payload():
         if wk > 0:
             recent.append(g)
     recent.sort(key=lambda g: _mins(g, "playtime_2weeks"), reverse=True)
+    # True this-week / this-month need a daily snapshot of lifetime minutes, keyed by
+    # account (Steam only exposes "last 2 weeks" + lifetime). Piggybacks on this fetch.
+    # Only record if the box is STILL on the account this fetch started for, so a
+    # concurrent account switch can't file account A's total under account B (TOCTOU).
+    if _sid and _steam_cache_ok(_sid):
+        _pt = _steam_playtime_deltas(_steam_playtime_record(_sid, total_min), total_min)
+    else:
+        _pt = {"played_7d": None, "played_30d": None}
     body = {"configured": True, "connected": True,
             "count": count, "played": played, "backlog": count - played,
             "total_hours": round(total_min / 60.0, 1),
             "hours_2weeks": round(sum(_mins(g, "playtime_2weeks") for g in recent) / 60.0, 1),
+            "played_7d": _pt["played_7d"], "played_30d": _pt["played_30d"],
             "recent": [_slim(g, "playtime_2weeks") for g in recent[:8]]}
     if top is not None and _mins(top, "playtime_forever") > 0:
         body["top"] = _slim(top, "playtime_forever")
@@ -23046,6 +23057,7 @@ def mock_steam_profile_payload():
 def mock_steam_library_payload():
     return {"configured": True, "connected": True, "count": 312, "played": 47,
             "backlog": 265, "total_hours": 1240.5, "hours_2weeks": 6.2,
+            "played_7d": 4.1, "played_30d": None,
             "top": {"appid": "1245620", "name": "Elden Ring", "hours": 210.4},
             "recent": [
                 {"appid": "1145350", "name": "Hades II", "hours": 3.2},
@@ -23343,6 +23355,114 @@ def mock_steam_wishlist_payload():
          "final": 4799, "original": 5999, "currency": "USD"},
         {"appid": "1174180", "name": "Red Dead Redemption 2", "discount_percent": 67,
          "final": 1979, "original": 5999, "currency": "USD"}]}
+
+
+# --- Playtime tracker: Steam only exposes "last 2 weeks" + lifetime, so to show
+# true this-week / this-month we snapshot the library's TOTAL minutes once a day,
+# keyed by account, and diff. Piggybacks on the library fetch (no extra API call).
+# Stored 0600 in the user's own dir, keyed by steamid64 (so it survives a transient
+# disconnect and never mixes accounts), pruned to ~70 days. Never raises.
+_STEAM_PLAYTIME_CONF = os.path.expanduser("~/.config/couchside/steam_playtime.json")
+_STEAM_PLAYTIME_KEEP = 70  # days of history to retain
+_STEAM_PLAYTIME_TOL = 3    # max days a baseline may sit before a window edge
+
+
+def _pt_day(offset_days=0):
+    return time.strftime("%Y-%m-%d", time.localtime(time.time() - offset_days * 86400))
+
+
+def _steam_playtime_load():
+    try:
+        with open(_STEAM_PLAYTIME_CONF, "r", encoding="utf-8") as fh:
+            d = json.load(fh)
+        return d if isinstance(d, dict) else {}
+    except Exception:
+        return {}
+
+
+def _steam_playtime_save(d):
+    directory = os.path.dirname(_STEAM_PLAYTIME_CONF)
+    try:
+        os.makedirs(directory, exist_ok=True)
+    except OSError:
+        return
+    if not os.access(directory, os.W_OK | os.X_OK):
+        return
+    tmp = None
+    try:
+        fd, tmp = tempfile.mkstemp(prefix=".couchside-playtime-", dir=directory)
+        os.fchmod(fd, 0o600)
+        with os.fdopen(fd, "w", encoding="utf-8") as f:
+            json.dump(d, f)
+            f.flush()
+            os.fsync(f.fileno())
+        os.replace(tmp, _STEAM_PLAYTIME_CONF)
+    except Exception:
+        if tmp is not None:
+            try:
+                os.unlink(tmp)
+            except OSError:
+                pass
+
+
+def _steam_playtime_record(sid, total_min):
+    """Record today's total library minutes for `sid`, once per day (latest read of
+    the day wins). Prunes to the last ~70 days. Skips the disk write when today's
+    value is unchanged. Returns the account's {date: minutes} dict. Never raises."""
+    if not sid:
+        return {}
+    try:
+        total_min = int(total_min)
+    except (TypeError, ValueError):
+        return {}
+    today = _pt_day(0)
+    alld = _steam_playtime_load()
+    acct = alld.get(sid)
+    if not isinstance(acct, dict):
+        acct = {}
+    if acct.get(today) == total_min:
+        return acct  # nothing new today
+    acct[today] = total_min
+    cutoff = _pt_day(_STEAM_PLAYTIME_KEEP)
+    acct = {k: v for k, v in acct.items() if isinstance(k, str) and k >= cutoff}
+    alld[sid] = acct
+    _steam_playtime_save(alld)
+    return acct
+
+
+def _steam_playtime_deltas(acct, total_min):
+    """From an account's date->minutes snapshots + today's total, hours played in the
+    last 7 and 30 days. None for a window with no old-enough snapshot yet."""
+    try:
+        total_min = int(total_min)
+    except (TypeError, ValueError):
+        return {"played_7d": None, "played_30d": None}
+
+    def _delta(days):
+        target = _pt_day(days)
+        base = None
+        base_date = None
+        for k, v in (acct or {}).items():
+            if not isinstance(k, str) or k > target:
+                continue
+            try:
+                vi = int(v)
+            except (TypeError, ValueError):
+                continue
+            if base_date is None or k > base_date:
+                base_date = k
+                base = vi
+        if base is None:
+            return None
+        # Degrade closed: if the nearest baseline sits well BEFORE the window edge
+        # (a gap — box off / no library fetch for days), the diff would span more
+        # than N days. An honest "not enough recent history" beats an inflated
+        # number, so None out anything older than the edge by more than the tolerance.
+        if base_date < _pt_day(days + _STEAM_PLAYTIME_TOL):
+            return None
+        return round(max(0, total_min - base) / 60.0, 1)
+
+    return {"played_7d": _delta(7), "played_30d": _delta(30)}
 
 
 def _gaming_payload():

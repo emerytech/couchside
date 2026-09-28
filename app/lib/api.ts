@@ -1326,6 +1326,10 @@ export type SteamLibrary = {
   backlog?: number;
   total_hours?: number;
   hours_2weeks?: number;
+  /** Lifetime hours played in the last 7 / 30 days, from the agent's daily
+   *  snapshot. null until an old-enough snapshot exists (first ~week/month). */
+  played_7d?: number | null;
+  played_30d?: number | null;
   top?: SteamGameBrief;
   recent?: SteamGameBrief[];
 };
