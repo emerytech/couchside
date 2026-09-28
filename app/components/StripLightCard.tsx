@@ -116,6 +116,9 @@ export function StripLightCard() {
 
   const [selKey, setSelKey] = useState<string | null>(null);
   const [effect, setEffect] = useState<StripEffect>('solid');
+  // The aura the user last tapped in the picker — highlights its row and shows
+  // the applied gradient in the in-sheet preview immediately (poll then confirms).
+  const [appliedAuraId, setAppliedAuraId] = useState<string | null>(null);
   const [hue, setHue] = useState(0);
   const [sat, setSat] = useState(100);
   const [bright, setBright] = useState(100);
@@ -220,8 +223,15 @@ export function StripLightCard() {
       const frame = auraToFrame(aura.palette, agentStrip.count);
       // Guard: only post a correctly-sized frame (the agent 400s any other length).
       if (frame.length !== agentStrip.count) return;
+      // Immediate in-sheet feedback: paint the preview + mark the row active now,
+      // so the tap visibly does something (the poll.refresh below then confirms).
+      setFrame(frame.map((c) => c));
+      setAppliedAuraId(aura.id);
       const ok = await api.paintStripAura(settings, agentStrip.prefix, frame);
-      if (!ok) Alert.alert('Aura not applied', 'The box rejected the palette or is unreachable.');
+      if (!ok) {
+        setAppliedAuraId(null);
+        Alert.alert('Aura not applied', 'The box rejected the palette or is unreachable.');
+      }
     } finally {
       await poll.refresh();
       setBusy(false);
@@ -1120,15 +1130,17 @@ export function StripLightCard() {
           <View style={styles.auraList}>
             {auraList.map((aura) => {
               const isSug = !!suggestedAura && aura.id === suggestedAura.id;
+              const isActive = aura.id === appliedAuraId;
               return (
                 <Pressable
                   key={aura.id}
                   onPress={() => void applyAura(aura)}
                   disabled={busy}
                   accessibilityRole="button"
+                  accessibilityState={{ selected: isActive }}
                   accessibilityLabel={`Paint the strip with the ${aura.label} aura`}
                   style={({ pressed }) => [
-                    styles.auraRow, isSug && styles.auraRowSug,
+                    styles.auraRow, isSug && styles.auraRowSug, isActive && styles.auraRowActive,
                     pressed && styles.pressed, busy && styles.pressed,
                   ]}>
                   <View style={styles.auraBar}>
@@ -1143,7 +1155,9 @@ export function StripLightCard() {
                     <Text style={styles.auraLabel} numberOfLines={1}>{aura.label}</Text>
                     <Text style={styles.auraEffect} numberOfLines={1}>{aura.effect}</Text>
                   </View>
-                  {isSug ? (
+                  {isActive ? (
+                    <Ionicons name="checkmark-circle" size={14} color={t.blue} style={styles.auraTag} />
+                  ) : isSug ? (
                     <Ionicons name="sparkles" size={13} color={t.blue} style={styles.auraTag} />
                   ) : null}
                 </Pressable>
@@ -1276,6 +1290,7 @@ const makeStyles = (t: Palette) =>
       paddingVertical: 7, paddingHorizontal: 8,
     },
     auraRowSug: { borderColor: t.blue, backgroundColor: t.card },
+    auraRowActive: { borderColor: t.blue, backgroundColor: t.card },
     auraBar: {
       width: 64, height: 18, borderRadius: 5, overflow: 'hidden', flexDirection: 'row',
       borderWidth: StyleSheet.hairlineWidth, borderColor: t.cardBorder,
