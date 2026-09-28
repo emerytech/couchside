@@ -78,6 +78,7 @@ for good in ("1", "1145350", "440"):
     check(cs._valid_appid(good), "valid appid: %s" % good)
 for bad in ("", "12345678", "abc", "12a", "-5", None, 440):
     check(not cs._valid_appid(bad), "rejected appid: %r" % (bad,))
+check(not cs._valid_appid("\u0663\u0664"), "non-ASCII (Arabic-Indic) digits rejected")
 
 
 # ---------------------------------------------------------------------------
