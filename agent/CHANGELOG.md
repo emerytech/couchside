@@ -18,6 +18,13 @@ the same thing regardless of what actually changed.
 Write for the person holding the phone, not for the commit log. They are
 deciding whether to press "Update now" on a machine across the room.
 
+## 2.9.121
+
+**See what's on sale.** With Steam connected, Couchside adds an "On sale now" row —
+current Steam specials with their discount and price, in your region. It's a public
+price list (no account needed for it), shown only while your Steam integration is on,
+and it refreshes about once an hour.
+
 ## 2.9.120
 
 **Your Steam profile, on the box.** If you've connected a Steam Web API key, Couchside
