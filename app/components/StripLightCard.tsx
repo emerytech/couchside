@@ -230,9 +230,9 @@ export function StripLightCard() {
    *  The frame is DATA — the agent re-validates every channel and rejects any frame
    *  whose length ≠ the strip's LED count, so we size it to agentStrip.count. v1
    *  paints a STATIC gradient; aura.effect is not animated here (that needs agent work). */
-  const applyAura = async (aura: Aura) => {
+  const applyAura = async (aura: Aura, silent = false) => {
     if (!agentStrip || busy) return;
-    hapticLight();
+    if (!silent) hapticLight();
     setBusy(true);
     try {
       // Spread the palette, applying the current vividness lift per cell so the
@@ -262,14 +262,17 @@ export function StripLightCard() {
   const prevVivid = useRef<AuraVividness>(vividness);
   useEffect(() => {
     if (prevVivid.current === vividness) return;
+    // A change made mid-paint (busy) must NOT be lost: leave prevVivid untouched
+    // and wait — this effect also keys on `busy`, so it re-runs when the strip is
+    // free and then re-paints. Advancing the ref only after the guard is the fix.
+    if (busy) return;
     prevVivid.current = vividness;
-    if (!appliedAuraId || !agentStrip || busy) return;
+    if (!appliedAuraId || !agentStrip) return;
     const aura = AURAS.find((a) => a.id === appliedAuraId);
-    if (aura) void applyAura(aura);
-    // Intentionally keyed on vividness only: appliedAuraId/agentStrip/busy are
-    // read as latest, and we must not re-fire when only those change.
+    if (aura) void applyAura(aura, true);   // silent: the chip tap already gave the haptic
+    // appliedAuraId/agentStrip read as latest; we re-fire only on vividness or busy.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [vividness]);
+  }, [vividness, busy]);
 
   // AUTO-SUGGEST — if the running game matches a library aura (by Steam appid),
   // surface it first. `game.appid` is a number; the library stores appids as
