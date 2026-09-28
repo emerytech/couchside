@@ -53,7 +53,7 @@ except ImportError:  # pragma: no cover
     fcntl = None
 
 APP_NAME = "couchside-agent"
-VERSION = "2.9.119"
+VERSION = "2.9.125"
 UID = os.getuid()
 XDG_RUNTIME_DIR = "/run/user/%d" % UID
 
@@ -22749,6 +22749,13 @@ def _steam_webapi_save(steamid64, apikey):
         _STEAM_WEBAPI["apikey"] = apikey
     _STEAM_SUMMARY_CACHE["ts"] = 0.0
     _STEAM_SUMMARY_CACHE["val"] = None
+    _STEAM_OWNED_CACHE["ts"] = 0.0
+    _STEAM_OWNED_CACHE["val"] = None
+    _STEAM_LEVEL_CACHE["ts"] = 0.0
+    _STEAM_LEVEL_CACHE["val"] = None
+    _STEAM_ACH_CACHE.clear()
+    _STEAM_WISHLIST_CACHE["ts"] = 0.0
+    _STEAM_WISHLIST_CACHE["val"] = None
     return True
 
 
@@ -22759,6 +22766,13 @@ def _steam_webapi_clear():
         _STEAM_WEBAPI["apikey"] = None
     _STEAM_SUMMARY_CACHE["ts"] = 0.0
     _STEAM_SUMMARY_CACHE["val"] = None
+    _STEAM_OWNED_CACHE["ts"] = 0.0
+    _STEAM_OWNED_CACHE["val"] = None
+    _STEAM_LEVEL_CACHE["ts"] = 0.0
+    _STEAM_LEVEL_CACHE["val"] = None
+    _STEAM_ACH_CACHE.clear()
+    _STEAM_WISHLIST_CACHE["ts"] = 0.0
+    _STEAM_WISHLIST_CACHE["val"] = None
     try:
         os.unlink(_STEAM_WEBAPI_CONF)
     except OSError:
@@ -22768,6 +22782,14 @@ def _steam_webapi_clear():
 def _steam_webapi_configured():
     with _STEAM_WEBAPI_LOCK:
         return bool(_STEAM_WEBAPI["steamid64"] and _STEAM_WEBAPI["apikey"])
+
+
+def _steam_cache_ok(sid):
+    """True only if the box is STILL on the account `sid` that a fetch started for.
+    Guards every per-account cache WRITE so an in-flight fetch cannot resurrect a
+    slot that a concurrent account switch just wiped (TOCTOU)."""
+    with _STEAM_WEBAPI_LOCK:
+        return _STEAM_WEBAPI["steamid64"] == sid
 
 
 def _steam_api_get(interface, method, version, params, timeout=_STEAM_WEBAPI_TIMEOUT):
@@ -22832,7 +22854,7 @@ def _steam_summary_cached():
         sid = _STEAM_WEBAPI["steamid64"]
         key = _STEAM_WEBAPI["apikey"]
     summ = _steam_get_summary(sid, key)
-    if summ is not None:
+    if summ is not None and _steam_cache_ok(sid):
         _STEAM_SUMMARY_CACHE["ts"] = now
         _STEAM_SUMMARY_CACHE["val"] = summ
     return summ
@@ -22863,6 +22885,903 @@ def mock_steam_webapi_status():
     return {"configured": True, "steamid64": "76561197960287930",
             "apikey_masked": "•" * 28 + "AB12", "connected": True,
             "persona": "Taylor", "avatar": "https://avatars.example/steam.jpg"}
+
+
+# --- Phase 1: profile / now-playing + whole-library, from the same opt-in key.
+# Two more read-only GETs (GetOwnedGames, GetSteamLevel) on the SAME fixed-host
+# client. Cached longer than the summary (a library changes rarely). Everything
+# is only-when-configured + degrade-closed, so a slow/absent Steam never affects
+# anything else and older apps just don't fetch these.
+_STEAM_OWNED_CACHE = {"ts": 0.0, "val": None}
+_STEAM_OWNED_TTL = 3600.0
+_STEAM_LEVEL_CACHE = {"ts": 0.0, "val": None}
+_STEAM_LEVEL_TTL = 3600.0
+_STEAM_PERSONA_STATES = {0: "Offline", 1: "Online", 2: "Busy", 3: "Away",
+                         4: "Snooze", 5: "Looking to trade", 6: "Looking to play"}
+
+
+def _steam_get_owned(steamid64, apikey):
+    """The owner's IPlayerService/GetOwnedGames list, or None. include_appinfo for
+    names, include_played_free_games so F2P time counts. Degrade closed."""
+    d = _steam_api_get("IPlayerService", "GetOwnedGames", "0001",
+                       {"key": apikey, "steamid": steamid64,
+                        "include_appinfo": 1, "include_played_free_games": 1})
+    try:
+        games = d["response"]["games"]
+        return games if isinstance(games, list) else None
+    except Exception:
+        return None
+
+
+def _steam_get_level(steamid64, apikey):
+    """The owner's Steam level (int) or None."""
+    d = _steam_api_get("IPlayerService", "GetSteamLevel", "0001",
+                       {"key": apikey, "steamid": steamid64})
+    try:
+        return int(d["response"]["player_level"])
+    except Exception:
+        return None
+
+
+def _steam_owned_cached():
+    if not _steam_webapi_configured():
+        return None
+    now = time.monotonic()
+    if (_STEAM_OWNED_CACHE["val"] is not None
+            and now - _STEAM_OWNED_CACHE["ts"] < _STEAM_OWNED_TTL):
+        return _STEAM_OWNED_CACHE["val"]
+    with _STEAM_WEBAPI_LOCK:
+        sid = _STEAM_WEBAPI["steamid64"]
+        key = _STEAM_WEBAPI["apikey"]
+    games = _steam_get_owned(sid, key)
+    if games is not None and _steam_cache_ok(sid):
+        _STEAM_OWNED_CACHE["ts"] = now
+        _STEAM_OWNED_CACHE["val"] = games
+    return games
+
+
+def _steam_level_cached():
+    if not _steam_webapi_configured():
+        return None
+    now = time.monotonic()
+    if (_STEAM_LEVEL_CACHE["val"] is not None
+            and now - _STEAM_LEVEL_CACHE["ts"] < _STEAM_LEVEL_TTL):
+        return _STEAM_LEVEL_CACHE["val"]
+    with _STEAM_WEBAPI_LOCK:
+        sid = _STEAM_WEBAPI["steamid64"]
+        key = _STEAM_WEBAPI["apikey"]
+    lv = _steam_get_level(sid, key)
+    if lv is not None and _steam_cache_ok(sid):
+        _STEAM_LEVEL_CACHE["ts"] = now
+        _STEAM_LEVEL_CACHE["val"] = lv
+    return lv
+
+
+def _steam_profile_payload():
+    """GET /api/steam/profile: the owner's live profile card — persona, avatar,
+    online state, what they're playing (even on another device), Steam level.
+    {"configured": False} without a key; connected False when Steam is unreachable."""
+    if not _steam_webapi_configured():
+        return {"configured": False}
+    summ = _steam_summary_cached()
+    if summ is None:
+        return {"configured": True, "connected": False}
+    try:
+        state_code = int(summ.get("personastate") or 0)
+    except (TypeError, ValueError):
+        state_code = 0
+    body = {"configured": True, "connected": True,
+            "persona": summ.get("personaname"),
+            "avatar": (summ.get("avatarfull") or summ.get("avatarmedium")
+                       or summ.get("avatar")),
+            "state_code": state_code,
+            "state": _STEAM_PERSONA_STATES.get(state_code, "Online"),
+            "playing": summ.get("gameextrainfo"),
+            "profileurl": summ.get("profileurl")}
+    if summ.get("gameid"):
+        body["gameid"] = str(summ.get("gameid"))
+    lv = _steam_level_cached()
+    if lv is not None:
+        body["level"] = lv
+    return body
+
+
+def _steam_library_payload():
+    """GET /api/steam/library: whole-library aggregates for the stat tile + the
+    "jump back in" rail — total games, total hours, most-played title, last-two-weeks
+    hours, backlog (owned but never played), and the recently played. ONE
+    GetOwnedGames call. {"configured": False} without a key."""
+    if not _steam_webapi_configured():
+        return {"configured": False}
+    with _STEAM_WEBAPI_LOCK:
+        _sid = _STEAM_WEBAPI["steamid64"]
+    games = _steam_owned_cached()
+    if games is None:
+        return {"configured": True, "connected": False}
+    games = [g for g in games if isinstance(g, dict)]
+
+    def _mins(g, key):
+        try:
+            return int(g.get(key) or 0)
+        except (TypeError, ValueError):
+            return 0
+
+    def _slim(g, key):
+        return {"appid": str(g.get("appid")),
+                "name": g.get("name") or ("App %s" % g.get("appid")),
+                "hours": round(_mins(g, key) / 60.0, 1)}
+
+    count = len(games)
+    total_min = 0
+    played = 0
+    top = None
+    recent = []
+    for g in games:
+        m = _mins(g, "playtime_forever")
+        total_min += m
+        if m > 0:
+            played += 1
+        if top is None or m > _mins(top, "playtime_forever"):
+            top = g
+        wk = _mins(g, "playtime_2weeks")
+        if wk > 0:
+            recent.append(g)
+    recent.sort(key=lambda g: _mins(g, "playtime_2weeks"), reverse=True)
+    # True this-week / this-month need a daily snapshot of lifetime minutes, keyed by
+    # account (Steam only exposes "last 2 weeks" + lifetime). Piggybacks on this fetch.
+    # Only record if the box is STILL on the account this fetch started for, so a
+    # concurrent account switch can't file account A's total under account B (TOCTOU).
+    if _sid and _steam_cache_ok(_sid):
+        _pt = _steam_playtime_deltas(_steam_playtime_record(_sid, total_min), total_min)
+    else:
+        _pt = {"played_7d": None, "played_30d": None}
+    body = {"configured": True, "connected": True,
+            "count": count, "played": played, "backlog": count - played,
+            "total_hours": round(total_min / 60.0, 1),
+            "hours_2weeks": round(sum(_mins(g, "playtime_2weeks") for g in recent) / 60.0, 1),
+            "played_7d": _pt["played_7d"], "played_30d": _pt["played_30d"],
+            "recent": [_slim(g, "playtime_2weeks") for g in recent[:8]]}
+    if top is not None and _mins(top, "playtime_forever") > 0:
+        body["top"] = _slim(top, "playtime_forever")
+    return body
+
+
+def mock_steam_profile_payload():
+    return {"configured": True, "connected": True, "persona": "Taylor",
+            "avatar": "https://avatars.example/steam_full.jpg",
+            "state_code": 1, "state": "Online", "playing": "Hades II",
+            "gameid": "1145350", "level": 42,
+            "profileurl": "https://steamcommunity.com/id/taylor/"}
+
+
+def mock_steam_library_payload():
+    return {"configured": True, "connected": True, "count": 312, "played": 47,
+            "backlog": 265, "total_hours": 1240.5, "hours_2weeks": 6.2,
+            "played_7d": 4.1, "played_30d": None,
+            "top": {"appid": "1245620", "name": "Elden Ring", "hours": 210.4},
+            "recent": [
+                {"appid": "1145350", "name": "Hades II", "hours": 3.2},
+                {"appid": "1245620", "name": "Elden Ring", "hours": 2.1},
+                {"appid": "413150", "name": "Stardew Valley", "hours": 0.9}]}
+
+
+# --- "On sale now": current Steam specials, KEYLESS from the public Storefront.
+# A SECOND fixed host (store.steampowered.com; no key, no account). Still gated on
+# the Steam integration being ON, so ALL Steam outbound stays behind the ONE opt-in.
+# The region is the box's OWN country (from its locale) or "us", validated to two
+# lowercase letters so it can never carry anything into the request. Cached ~1h;
+# degrade closed. No secret is involved. NOT per-account, so no save/clear reset.
+_STEAM_STORE_HOST = "https://store.steampowered.com"
+_STEAM_DEALS_CACHE = {"ts": 0.0, "val": None, "cc": None}
+_STEAM_DEALS_TTL = 3600.0
+
+
+def _steam_country():
+    """A 2-letter lowercase country for Storefront pricing, from the box locale, or
+    'us'. The regex guarantees the result is exactly [a-z]{2}, so it can only ever be
+    a country code in the request."""
+    for var in ("LC_ALL", "LC_MONETARY", "LANG"):
+        m = re.search(r"_([A-Za-z]{2})", os.environ.get(var) or "")
+        if m:
+            return m.group(1).lower()
+    return "us"
+
+
+def _steam_store_get(endpoint, params, timeout=_STEAM_WEBAPI_TIMEOUT):
+    """ONE public Storefront GET (no key). `endpoint` is a FIXED literal the caller
+    chose; `params` are validated values. Fixed host + HTTPS + urlencoded query, so
+    no value steers the host/path. Returns parsed JSON or None (degrade closed).
+    Never logs; there is no secret on this path."""
+    try:
+        url = "%s/api/%s?%s" % (_STEAM_STORE_HOST, endpoint,
+                                urllib.parse.urlencode(params))
+        req = urllib.request.Request(
+            url, headers={"User-Agent": "couchside-agent/%s" % VERSION})
+        with urllib.request.urlopen(req, timeout=timeout) as r:
+            if getattr(r, "status", 200) != 200:
+                return None
+            return json.loads(r.read(1 << 21).decode("utf-8", "replace"))
+    except Exception:
+        return None
+
+
+def _steam_featured(cc):
+    """Current specials from featuredcategories, as a slim list, or None. Prices are
+    in the currency's minor units (cents). Skips any malformed item."""
+    d = _steam_store_get("featuredcategories", {"cc": cc, "l": "english"})
+    try:
+        items = d["specials"]["items"]
+    except Exception:
+        return None
+    if not isinstance(items, list):
+        return None
+    out = []
+    for it in items:
+        if not isinstance(it, dict) or it.get("id") is None:
+            continue
+
+        def _int(k):
+            try:
+                return int(it.get(k) or 0)
+            except (TypeError, ValueError):
+                return 0
+        out.append({"appid": str(it.get("id")),
+                    "name": it.get("name") or ("App %s" % it.get("id")),
+                    "discount_percent": _int("discount_percent"),
+                    "final": _int("final_price"),
+                    "original": _int("original_price"),
+                    "currency": it.get("currency") or ""})
+    return out
+
+
+def _steam_deals_payload():
+    """GET /api/steam/deals: the "on sale now" row. Gated on the Steam integration
+    being ON (keeps ALL Steam outbound behind the one opt-in). {"configured": False}
+    without it; connected:False when the Storefront is unreachable."""
+    if not _steam_webapi_configured():
+        return {"configured": False}
+    cc = _steam_country()
+    now = time.monotonic()
+    if (_STEAM_DEALS_CACHE["val"] is not None and _STEAM_DEALS_CACHE["cc"] == cc
+            and now - _STEAM_DEALS_CACHE["ts"] < _STEAM_DEALS_TTL):
+        items = _STEAM_DEALS_CACHE["val"]
+    else:
+        items = _steam_featured(cc)
+        if items is not None:
+            _STEAM_DEALS_CACHE["ts"] = now
+            _STEAM_DEALS_CACHE["val"] = items
+            _STEAM_DEALS_CACHE["cc"] = cc
+    if items is None:
+        return {"configured": True, "connected": False}
+    return {"configured": True, "connected": True, "region": cc, "items": items[:20]}
+
+
+def mock_steam_deals_payload():
+    return {"configured": True, "connected": True, "region": "us", "items": [
+        {"appid": "1245620", "name": "Elden Ring", "discount_percent": 30,
+         "final": 4199, "original": 5999, "currency": "USD"},
+        {"appid": "1091500", "name": "Cyberpunk 2077", "discount_percent": 50,
+         "final": 2999, "original": 5999, "currency": "USD"},
+        {"appid": "413150", "name": "Stardew Valley", "discount_percent": 20,
+         "final": 1199, "original": 1499, "currency": "USD"}]}
+
+
+# --- Achievement progress + rarest-unlocked for a game, from the opt-in key.
+# The app passes the game's appid (the running game, or a pick); the agent returns
+# the owner's progress + the rarest achievement they've unlocked (global % from the
+# KEY-FREE GetGlobalAchievementPercentagesForApp). Per-account, so the cache is
+# wiped on save/clear like the owned/level caches. Bounded per-appid cache, 60s TTL.
+_STEAM_ACH_CACHE = {}          # appid -> {"ts": float, "val": dict}
+_STEAM_ACH_TTL = 60.0
+_STEAM_ACH_CACHE_MAX = 32
+
+
+def _valid_appid(s):
+    """A Steam appid is 1-7 ASCII digits. Reject anything else (never sanitise)."""
+    return isinstance(s, str) and 1 <= len(s) <= 7 and s.isascii() and s.isdigit()
+
+
+def _steam_get_global_pct(appid):
+    """{apiname: global_unlock_percent} for a game, from the KEY-FREE endpoint, or
+    {} on any failure. Used only to rank the owner's own unlocks by rarity."""
+    d = _steam_api_get("ISteamUserStats", "GetGlobalAchievementPercentagesForApp",
+                       "0002", {"gameid": appid})
+    try:
+        out = {}
+        for a in d["achievementpercentages"]["achievements"]:
+            if isinstance(a, dict) and a.get("name") is not None:
+                try:
+                    out[str(a["name"])] = float(a.get("percent") or 0.0)
+                except (TypeError, ValueError):
+                    pass
+        return out
+    except Exception:
+        return {}
+
+
+def _steam_achievements_payload(appid):
+    """GET /api/steam/achievements?appid=<digits>: the owner's achievement progress
+    for one game + their rarest unlocked. {"configured": False} without a key;
+    connected:false when Steam is unreachable; has_achievements:false for a game with
+    none (or a profile that hides them). Cached 60s per appid. `appid` is already
+    validated (digits) by the route."""
+    if not _steam_webapi_configured():
+        return {"configured": False}
+    now = time.monotonic()
+    ent = _STEAM_ACH_CACHE.get(appid)
+    if ent is not None and now - ent["ts"] < _STEAM_ACH_TTL:
+        return ent["val"]
+    with _STEAM_WEBAPI_LOCK:
+        sid = _STEAM_WEBAPI["steamid64"]
+        key = _STEAM_WEBAPI["apikey"]
+    d = _steam_api_get("ISteamUserStats", "GetPlayerAchievements", "0001",
+                       {"key": key, "steamid": sid, "appid": appid, "l": "english"})
+    if d is None:
+        return {"configured": True, "connected": False, "appid": appid}
+    try:
+        ps = d["playerstats"]
+    except Exception:
+        return {"configured": True, "connected": False, "appid": appid}
+    if not ps.get("success"):
+        body = {"configured": True, "connected": True, "appid": appid,
+                "has_achievements": False}
+    else:
+        achs = ps.get("achievements")
+        if not isinstance(achs, list):
+            achs = []
+        total = len(achs)
+        unlocked = sum(1 for a in achs if isinstance(a, dict) and a.get("achieved"))
+        gpct = _steam_get_global_pct(appid)
+        rarest = None
+        for a in achs:
+            if not isinstance(a, dict) or not a.get("achieved"):
+                continue
+            pct = gpct.get(a.get("apiname"))
+            if pct is None:
+                continue
+            if rarest is None or pct < rarest["global_pct"]:
+                rarest = {"name": a.get("name") or a.get("apiname"),
+                          "global_pct": round(pct, 1)}
+        body = {"configured": True, "connected": True, "appid": appid,
+                "has_achievements": total > 0, "unlocked": unlocked, "total": total,
+                "percent": int(round(100.0 * unlocked / total)) if total else 0,
+                "rarest": rarest}
+    # bounded cache
+    if _steam_cache_ok(sid):
+        if len(_STEAM_ACH_CACHE) >= _STEAM_ACH_CACHE_MAX:
+            _STEAM_ACH_CACHE.clear()
+        _STEAM_ACH_CACHE[appid] = {"ts": now, "val": body}
+    return body
+
+
+def mock_steam_achievements_payload(appid):
+    return {"configured": True, "connected": True, "appid": appid or "1145350",
+            "has_achievements": True, "unlocked": 18, "total": 33, "percent": 55,
+            "rarest": {"name": "Isolated", "global_pct": 2.4}}
+
+
+# --- Wishlist sale-watch: which of the owner's wishlist games are discounted now.
+# GetWishlist (needs the key) gives appids; ONE batched Storefront appdetails price
+# call finds the discounted ones; names are fetched only for those (bounded). Per-
+# account, so the cache is wiped on save/clear. Cached ~1h; degrade closed. Bounded:
+# at most WL_CONSIDER price-checked + WL_MAX named, so a huge wishlist can't fan out.
+_STEAM_WISHLIST_CACHE = {"ts": 0.0, "val": None}
+_STEAM_WISHLIST_TTL = 3600.0
+_STEAM_WL_CONSIDER = 50
+_STEAM_WL_MAX = 12
+
+
+def _steam_get_wishlist(steamid64, apikey):
+    """The owner's wishlist appids (validated digits) via IPlayerService-style
+    IWishlistService/GetWishlist, or None. Order is the wishlist's own priority."""
+    d = _steam_api_get("IWishlistService", "GetWishlist", "0001",
+                       {"key": apikey, "steamid": steamid64})
+    try:
+        items = d["response"]["items"]
+    except Exception:
+        return None
+    if not isinstance(items, list):
+        return None
+    out = []
+    for it in items:
+        if not isinstance(it, dict) or it.get("appid") is None:
+            continue
+        aid = str(it.get("appid"))
+        if aid.isascii() and aid.isdigit() and 1 <= len(aid) <= 7:
+            out.append(aid)
+    return out
+
+
+def _steam_wishlist_payload():
+    """GET /api/steam/wishlist: the owner's wishlist size + which of those games are
+    on sale right now (name, discount, price). {"configured": False} without a key;
+    connected:false when the wishlist can't be read. Bounded + cached ~1h."""
+    if not _steam_webapi_configured():
+        return {"configured": False}
+    now = time.monotonic()
+    if (_STEAM_WISHLIST_CACHE["val"] is not None
+            and now - _STEAM_WISHLIST_CACHE["ts"] < _STEAM_WISHLIST_TTL):
+        return _STEAM_WISHLIST_CACHE["val"]
+    with _STEAM_WEBAPI_LOCK:
+        sid = _STEAM_WEBAPI["steamid64"]
+        key = _STEAM_WEBAPI["apikey"]
+    appids = _steam_get_wishlist(sid, key)
+    if appids is None:
+        return {"configured": True, "connected": False}
+
+    def _int(v):
+        try:
+            return int(v or 0)
+        except (TypeError, ValueError):
+            return 0
+
+    cc = _steam_country()
+    consider = appids[:_STEAM_WL_CONSIDER]
+    on_sale = []
+    if consider:
+        pd = _steam_store_get("appdetails",
+                              {"appids": ",".join(consider), "filters": "price_overview", "cc": cc})
+        if isinstance(pd, dict):
+            for aid in consider:
+                e = pd.get(aid)
+                if not isinstance(e, dict) or not e.get("success"):
+                    continue
+                po = (e.get("data") or {}).get("price_overview")
+                if not isinstance(po, dict):
+                    continue
+                if _int(po.get("discount_percent")) > 0:
+                    on_sale.append({"appid": aid,
+                                    "discount_percent": _int(po.get("discount_percent")),
+                                    "final": _int(po.get("final")),
+                                    "original": _int(po.get("initial")),
+                                    "currency": po.get("currency") or ""})
+        # names only for the ones we'll show (bounded)
+        for it in on_sale[:_STEAM_WL_MAX]:
+            nd = _steam_store_get("appdetails", {"appids": it["appid"], "filters": "basic", "cc": cc})
+            entry = nd.get(it["appid"]) if isinstance(nd, dict) else None
+            name = (entry.get("data") or {}).get("name") if isinstance(entry, dict) else None
+            it["name"] = name or ("App %s" % it["appid"])
+    body = {"configured": True, "connected": True, "count": len(appids),
+            "on_sale": on_sale[:_STEAM_WL_MAX]}
+    if _steam_cache_ok(sid):
+        _STEAM_WISHLIST_CACHE["ts"] = now
+        _STEAM_WISHLIST_CACHE["val"] = body
+    return body
+
+
+def mock_steam_wishlist_payload():
+    return {"configured": True, "connected": True, "count": 41, "on_sale": [
+        {"appid": "1086940", "name": "Baldur's Gate 3", "discount_percent": 20,
+         "final": 4799, "original": 5999, "currency": "USD"},
+        {"appid": "1174180", "name": "Red Dead Redemption 2", "discount_percent": 67,
+         "final": 1979, "original": 5999, "currency": "USD"}]}
+
+
+# --- Playtime tracker: Steam only exposes "last 2 weeks" + lifetime, so to show
+# true this-week / this-month we snapshot the library's TOTAL minutes once a day,
+# keyed by account, and diff. Piggybacks on the library fetch (no extra API call).
+# Stored 0600 in the user's own dir, keyed by steamid64 (so it survives a transient
+# disconnect and never mixes accounts), pruned to ~70 days. Never raises.
+_STEAM_PLAYTIME_CONF = os.path.expanduser("~/.config/couchside/steam_playtime.json")
+_STEAM_PLAYTIME_KEEP = 70  # days of history to retain
+_STEAM_PLAYTIME_TOL = 3    # max days a baseline may sit before a window edge
+
+
+def _pt_day(offset_days=0):
+    return time.strftime("%Y-%m-%d", time.localtime(time.time() - offset_days * 86400))
+
+
+def _steam_playtime_load():
+    try:
+        with open(_STEAM_PLAYTIME_CONF, "r", encoding="utf-8") as fh:
+            d = json.load(fh)
+        return d if isinstance(d, dict) else {}
+    except Exception:
+        return {}
+
+
+def _steam_playtime_save(d):
+    directory = os.path.dirname(_STEAM_PLAYTIME_CONF)
+    try:
+        os.makedirs(directory, exist_ok=True)
+    except OSError:
+        return
+    if not os.access(directory, os.W_OK | os.X_OK):
+        return
+    tmp = None
+    try:
+        fd, tmp = tempfile.mkstemp(prefix=".couchside-playtime-", dir=directory)
+        os.fchmod(fd, 0o600)
+        with os.fdopen(fd, "w", encoding="utf-8") as f:
+            json.dump(d, f)
+            f.flush()
+            os.fsync(f.fileno())
+        os.replace(tmp, _STEAM_PLAYTIME_CONF)
+    except Exception:
+        if tmp is not None:
+            try:
+                os.unlink(tmp)
+            except OSError:
+                pass
+
+
+def _steam_playtime_record(sid, total_min):
+    """Record today's total library minutes for `sid`, once per day (latest read of
+    the day wins). Prunes to the last ~70 days. Skips the disk write when today's
+    value is unchanged. Returns the account's {date: minutes} dict. Never raises."""
+    if not sid:
+        return {}
+    try:
+        total_min = int(total_min)
+    except (TypeError, ValueError):
+        return {}
+    today = _pt_day(0)
+    alld = _steam_playtime_load()
+    acct = alld.get(sid)
+    if not isinstance(acct, dict):
+        acct = {}
+    if acct.get(today) == total_min:
+        return acct  # nothing new today
+    acct[today] = total_min
+    cutoff = _pt_day(_STEAM_PLAYTIME_KEEP)
+    acct = {k: v for k, v in acct.items() if isinstance(k, str) and k >= cutoff}
+    alld[sid] = acct
+    _steam_playtime_save(alld)
+    return acct
+
+
+def _steam_playtime_deltas(acct, total_min):
+    """From an account's date->minutes snapshots + today's total, hours played in the
+    last 7 and 30 days. None for a window with no old-enough snapshot yet."""
+    try:
+        total_min = int(total_min)
+    except (TypeError, ValueError):
+        return {"played_7d": None, "played_30d": None}
+
+    def _delta(days):
+        target = _pt_day(days)
+        base = None
+        base_date = None
+        for k, v in (acct or {}).items():
+            if not isinstance(k, str) or k > target:
+                continue
+            try:
+                vi = int(v)
+            except (TypeError, ValueError):
+                continue
+            if base_date is None or k > base_date:
+                base_date = k
+                base = vi
+        if base is None:
+            return None
+        # Degrade closed: if the nearest baseline sits well BEFORE the window edge
+        # (a gap — box off / no library fetch for days), the diff would span more
+        # than N days. An honest "not enough recent history" beats an inflated
+        # number, so None out anything older than the edge by more than the tolerance.
+        if base_date < _pt_day(days + _STEAM_PLAYTIME_TOL):
+            return None
+        return round(max(0, total_min - base) / 60.0, 1)
+
+    return {"played_7d": _delta(7), "played_30d": _delta(30)}
+
+
+# ---------------------------------------------------------------------------
+# ITAD (IsThereAnyDeal) — opt-in price-history integration. A SECOND third-party
+# API, gated by its OWN key (the user registers a free app at
+# isthereanydeal.com/apps/my/). It powers the "all-time low" badge on the deals +
+# wishlist rows: is this sale actually the cheapest it's ever been? Handling
+# MIRRORS the Steam key exactly — box-side, 0600, in the user's OWN config dir,
+# masked in the status route, NEVER logged, NEVER returned in full. The key rides
+# in the ITAD-API-Key HEADER (kept out of the URL), the host + path are fixed
+# literals, and every param is a validated value, so nothing client-shaped can
+# steer the request (no SSRF). ITAD data is GLOBAL (a game's all-time low is not
+# per-user), so there is NO per-account cache to reset. Degrade closed throughout.
+# ---------------------------------------------------------------------------
+_ITAD_HOST = "https://api.isthereanydeal.com"
+_ITAD_CONF = os.path.expanduser("~/.config/couchside/itad.json")
+
+
+class _ItadNoRedirect(urllib.request.HTTPRedirectHandler):
+    """Never follow a redirect. The ITAD API answers with JSON 200s, so a 3xx is
+    anomalous; following it would RE-SEND the ITAD-API-Key header to the redirect
+    target (possibly another host). Refusing leaves the 3xx to fail the status
+    check below -> degrade closed, key never leaves the fixed host."""
+
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        return None
+
+
+_ITAD_OPENER = urllib.request.build_opener(_ItadNoRedirect)
+_ITAD_TIMEOUT = 6.0
+_ITAD = {"apikey": None}
+_ITAD_LOCK = threading.Lock()
+_ITAD_ID_CACHE = {}        # appid -> {"ts": float, "val": uuid or None}
+_ITAD_ID_TTL = 86400.0     # the appid->ITAD-id map is stable; cache a day
+_ITAD_LOW_CACHE = {}       # "uuid|cc" -> {"ts": float, "val": low dict or None}
+_ITAD_LOW_TTL = 21600.0    # an all-time low moves rarely; 6h
+_ITAD_CACHE_MAX = 512
+_ITAD_MAX_LOOKUPS = 30     # bound the per-request appid->id resolves
+_ITAD_MAX_IDS = 100        # ITAD caps a historylow batch at 200; stay well under
+
+
+def _valid_itad_apikey(s):
+    """An ITAD app key: 16-128 chars of [A-Za-z0-9]. The strict charset means it can
+    never carry a path/query separator or header-injection byte. Reject anything
+    else — never sanitise (section 3.6)."""
+    return isinstance(s, str) and bool(re.fullmatch(r"[A-Za-z0-9]{16,128}", s))
+
+
+def _valid_itad_id(s):
+    """An ITAD game id is a UUID: hex digits + dashes, 32-40 chars. The charset can
+    only ever be a UUID in the request. We only ever send ids ITAD itself returned;
+    validate anyway (defence in depth)."""
+    return isinstance(s, str) and bool(re.fullmatch(r"[0-9a-fA-F-]{32,40}", s))
+
+
+def _itad_load():
+    """Read the stored ITAD key into memory at startup. Degrade closed: a missing /
+    unreadable / garbage / ill-formed file leaves the feature simply off. Never raises."""
+    try:
+        with open(_ITAD_CONF, "r", encoding="utf-8") as fh:
+            d = json.load(fh)
+        key = d.get("apikey")
+        if _valid_itad_apikey(key):
+            with _ITAD_LOCK:
+                _ITAD["apikey"] = key
+    except Exception:
+        pass
+
+
+def _itad_save(apikey):
+    """Persist the ITAD key 0600 in the user's OWN config dir via temp-file +
+    os.replace (0600 set BEFORE any bytes land). The agent runs as the user, so this
+    needs no root and touches nothing outside ~/.config/couchside. Returns True on
+    success. Wipes the price caches (a new key is a fresh session, not a new account)."""
+    directory = os.path.dirname(_ITAD_CONF)
+    try:
+        os.makedirs(directory, exist_ok=True)
+    except OSError:
+        return False
+    if not os.access(directory, os.W_OK | os.X_OK):
+        return False
+    fd, tmp = tempfile.mkstemp(prefix=".couchside-itad-", dir=directory)
+    ok = False
+    try:
+        os.fchmod(fd, 0o600)  # 0600 before any bytes land (mkstemp is 0600 already)
+        with os.fdopen(fd, "w", encoding="utf-8") as f:
+            fd = -1  # fdopen now owns the descriptor and will close it
+            json.dump({"apikey": apikey}, f)
+            f.write("\n")
+            f.flush()
+            os.fsync(f.fileno())
+        os.replace(tmp, _ITAD_CONF)
+        ok = True
+    except Exception:
+        pass
+    finally:
+        if fd != -1:            # fchmod/fdopen raised before ownership transferred
+            try:
+                os.close(fd)
+            except OSError:
+                pass
+        if not ok:
+            try:
+                os.unlink(tmp)
+            except OSError:
+                pass
+    if not ok:
+        return False
+    with _ITAD_LOCK:
+        _ITAD["apikey"] = apikey
+    _ITAD_ID_CACHE.clear()
+    _ITAD_LOW_CACHE.clear()
+    return True
+
+
+def _itad_clear():
+    """Forget the ITAD key: wipe memory + caches + delete the file. Never raises."""
+    with _ITAD_LOCK:
+        _ITAD["apikey"] = None
+    _ITAD_ID_CACHE.clear()
+    _ITAD_LOW_CACHE.clear()
+    try:
+        os.unlink(_ITAD_CONF)
+    except OSError:
+        pass
+
+
+def _itad_configured():
+    with _ITAD_LOCK:
+        return bool(_ITAD["apikey"])
+
+
+def _itad_request(method, path, params, json_body=None, apikey=None,
+                  timeout=_ITAD_TIMEOUT):
+    """ONE ITAD API call. `path` is a FIXED literal the caller chose (never client
+    input); `params` are validated values; the secret key rides in the ITAD-API-Key
+    HEADER (never the URL, never logged). `json_body` (a validated list) is sent for
+    POST. `apikey` overrides the stored key (used to test a candidate before storing).
+    Returns parsed JSON, or None on ANY failure (degrade closed)."""
+    if apikey is None:
+        with _ITAD_LOCK:
+            apikey = _ITAD["apikey"]
+    if not apikey:
+        return None
+    try:
+        url = "%s/%s?%s" % (_ITAD_HOST, path, urllib.parse.urlencode(params))
+        data = None
+        headers = {"User-Agent": "couchside-agent/%s" % VERSION,
+                   "ITAD-API-Key": apikey}
+        if json_body is not None:
+            data = json.dumps(json_body).encode("utf-8")
+            headers["Content-Type"] = "application/json"
+        req = urllib.request.Request(url, data=data, headers=headers, method=method)
+        with _ITAD_OPENER.open(req, timeout=timeout) as r:
+            if getattr(r, "status", 200) != 200:
+                return None
+            return json.loads(r.read(1 << 20).decode("utf-8", "replace"))
+    except Exception:
+        return None
+
+
+def _itad_probe(apikey):
+    """True if ITAD accepts this key — a trivial lookup returns a well-formed answer.
+    Used to TEST a candidate key before storing it (a bad key 401s -> False)."""
+    d = _itad_request("GET", "games/lookup/v1", {"appid": "730"}, apikey=apikey)
+    return isinstance(d, dict) and "found" in d
+
+
+def _itad_lookup_id(appid):
+    """Resolve a Steam appid (digits) to an ITAD game UUID, or None. Cached ~1 day."""
+    if not _valid_appid(appid):
+        return None
+    now = time.monotonic()
+    ent = _ITAD_ID_CACHE.get(appid)
+    if ent is not None and now - ent["ts"] < _ITAD_ID_TTL:
+        return ent["val"]
+    d = _itad_request("GET", "games/lookup/v1", {"appid": appid})
+    uuid = None
+    try:
+        if d.get("found") and _valid_itad_id(str(d["game"]["id"])):
+            uuid = str(d["game"]["id"])
+    except Exception:
+        uuid = None
+    if len(_ITAD_ID_CACHE) < _ITAD_CACHE_MAX or appid in _ITAD_ID_CACHE:
+        _ITAD_ID_CACHE[appid] = {"ts": now, "val": uuid}
+    return uuid
+
+
+def _itad_extract_lows(d):
+    """Normalise the historylow response into {uuid: {amount, currency, shop?, date?}}.
+    ITAD has moved this shape around, so accept the object-keyed-by-uuid form, the
+    {games:{historylow:{...}}} form, and a list of {id, ...}. Degrade closed: a field
+    we can't read is skipped, never guessed."""
+    out = {}
+
+    def _one(uuid, v):
+        if not isinstance(v, dict):
+            return
+        price = v.get("price") if isinstance(v.get("price"), dict) else v.get("low")
+        if not isinstance(price, dict):
+            return
+        try:
+            amount = float(price.get("amount"))
+        except (TypeError, ValueError):
+            return
+        # NaN/Inf pass float() but serialise to invalid JSON (NaN/Infinity), which
+        # would make the ENTIRE /api/itad/lows body unparseable for the app. Reject.
+        if amount != amount or amount == float("inf") or amount == float("-inf"):
+            return
+        rec = {"amount": round(amount, 2), "currency": str(price.get("currency") or "")}
+        shop = v.get("shop")
+        if isinstance(shop, dict) and shop.get("name"):
+            rec["shop"] = str(shop["name"])
+        ts = v.get("timestamp") or v.get("date")
+        if ts:
+            rec["date"] = str(ts)[:10]
+        out[str(uuid)] = rec
+
+    try:
+        node = d
+        if isinstance(d, dict) and isinstance(d.get("games"), dict):
+            hl = d["games"].get("historylow")
+            if isinstance(hl, dict):
+                node = hl
+        if isinstance(node, dict):
+            for uuid, v in node.items():
+                if _valid_itad_id(str(uuid)):
+                    _one(uuid, v)
+        elif isinstance(node, list):
+            for it in node:
+                if isinstance(it, dict) and _valid_itad_id(str(it.get("id"))):
+                    _one(it.get("id"), it)
+    except Exception:
+        return {}
+    return out
+
+
+def _itad_historylow(ids, cc):
+    """POST the all-time lows for a list of ITAD UUIDs, region cc. Returns
+    {uuid: {amount, currency, shop?, date?}} (only those ITAD answered), or None on a
+    request failure. The body is a validated list of UUIDs the agent chose."""
+    ids = [i for i in ids if _valid_itad_id(i)][:_ITAD_MAX_IDS]
+    if not ids:
+        return {}
+    d = _itad_request("POST", "games/historylow/v1", {"country": cc}, json_body=ids)
+    if d is None:
+        return None
+    return _itad_extract_lows(d)
+
+
+def _itad_lows_payload(appids):
+    """GET /api/itad/lows?appids=CSV: the all-time-low price per Steam appid, for the
+    "lowest ever" badge on the deals + wishlist rows. {"configured": False} without an
+    ITAD key. Resolves each appid to an ITAD id (cached ~1d), then ONE batched
+    historylow call for the cache-misses. Omits appids ITAD has no low for."""
+    if not _itad_configured():
+        return {"configured": False}
+    cc = _steam_country()
+    now = time.monotonic()
+    id_map = {}                       # appid -> uuid
+    for a in appids[:_ITAD_MAX_LOOKUPS]:
+        uuid = _itad_lookup_id(a)
+        if uuid:
+            id_map[a] = uuid
+    if not id_map:
+        return {"configured": True, "connected": True, "region": cc, "lows": {}}
+
+    lows_by_uuid = {}
+    need = []
+    for uuid in set(id_map.values()):
+        ent = _ITAD_LOW_CACHE.get(uuid + "|" + cc)
+        if ent is not None and now - ent["ts"] < _ITAD_LOW_TTL:
+            if ent["val"] is not None:
+                lows_by_uuid[uuid] = ent["val"]
+        else:
+            need.append(uuid)
+
+    if need:
+        fetched = _itad_historylow(need, cc)
+        if fetched is None:
+            if not lows_by_uuid:
+                return {"configured": True, "connected": False}
+        else:
+            for uuid in need:
+                rec = fetched.get(uuid)
+                k = uuid + "|" + cc
+                if len(_ITAD_LOW_CACHE) < _ITAD_CACHE_MAX or k in _ITAD_LOW_CACHE:
+                    _ITAD_LOW_CACHE[k] = {"ts": now, "val": rec}
+                if rec:
+                    lows_by_uuid[uuid] = rec
+
+    lows = {a: lows_by_uuid[uuid] for a, uuid in id_map.items() if uuid in lows_by_uuid}
+    return {"configured": True, "connected": True, "region": cc, "lows": lows}
+
+
+def _itad_status():
+    """The GET /api/itad body: whether an ITAD key is configured + the MASKED key.
+    NEVER returns the full key. Additive / probe-and-appear (older agents 404)."""
+    with _ITAD_LOCK:
+        key = _ITAD["apikey"]
+    if not key:
+        return {"configured": False}
+    return {"configured": True, "apikey_masked": _mask_apikey(key)}
+
+
+def mock_itad_status():
+    return {"configured": True, "apikey_masked": "•" * 28 + "CD34"}
+
+
+def mock_itad_lows_payload(appids):
+    base = {
+        "1245620": {"amount": 23.99, "currency": "USD", "shop": "Steam", "date": "2025-06-20"},
+        "1091500": {"amount": 14.99, "currency": "USD", "shop": "GreenManGaming", "date": "2024-12-01"},
+        "413150": {"amount": 4.99, "currency": "USD", "shop": "Steam", "date": "2023-11-24"},
+        "1086940": {"amount": 41.99, "currency": "USD", "shop": "Steam", "date": "2025-03-14"},
+        "1174180": {"amount": 19.79, "currency": "USD", "shop": "Steam", "date": "2024-11-27"},
+    }
+    return {"configured": True, "connected": True, "region": "us",
+            "lows": {a: base[a] for a in appids if a in base}}
 
 
 def _gaming_payload():
@@ -26470,6 +27389,56 @@ class Handler(BaseHTTPRequestHandler):
                 # do_GET auth gate above already ran.
                 self._send(200, {"configured": False} if self.mock
                            else _steam_webapi_status(), started)
+            elif path == "/api/steam/profile":
+                # Opt-in: the owner's live Steam profile card (persona/avatar/state/
+                # now-playing/level). {configured:false} without a key; probe-and-
+                # appear (older agents 404). Bearer-gated: the do_GET gate ran.
+                self._send(200, mock_steam_profile_payload() if self.mock
+                           else _steam_profile_payload(), started)
+            elif path == "/api/steam/library":
+                # Opt-in: whole-library aggregates (totals, top game, backlog,
+                # recently played) from one GetOwnedGames call. Probe-and-appear.
+                self._send(200, mock_steam_library_payload() if self.mock
+                           else _steam_library_payload(), started)
+            elif path == "/api/steam/deals":
+                # Opt-in "on sale now" row (keyless public Storefront). Gated on the
+                # Steam integration being on so all Steam outbound stays behind one
+                # toggle; probe-and-appear. Bearer-gated: the do_GET gate ran.
+                self._send(200, mock_steam_deals_payload() if self.mock
+                           else _steam_deals_payload(), started)
+            elif path == "/api/steam/achievements":
+                # Opt-in: the owner's achievement progress for one game. `appid` is a
+                # query param VALIDATED to digits (reject, never sanitise) before it
+                # reaches the Steam API. Bearer-gated; probe-and-appear.
+                appid = (parse_qs(parsed.query).get("appid") or [""])[0]
+                if not _valid_appid(appid):
+                    self._send(400, {"error": "appid must be digits"}, started)
+                    return
+                self._send(200, mock_steam_achievements_payload(appid) if self.mock
+                           else _steam_achievements_payload(appid), started)
+            elif path == "/api/steam/wishlist":
+                # Opt-in: which of the owner's wishlist games are on sale now. No
+                # client input. Bearer-gated; probe-and-appear.
+                self._send(200, mock_steam_wishlist_payload() if self.mock
+                           else _steam_wishlist_payload(), started)
+            elif path == "/api/itad":
+                # Opt-in IsThereAnyDeal status: is a key configured (MASKED, never
+                # the full key). Separate third-party integration from Steam.
+                # Bearer-gated (the do_GET gate ran); probe-and-appear.
+                self._send(200, mock_itad_status() if self.mock
+                           else _itad_status(), started)
+            elif path == "/api/itad/lows":
+                # Opt-in: all-time-low price per Steam appid, for the "lowest ever"
+                # badge. `appids` is a comma-separated query param; EACH element is
+                # VALIDATED to digits (reject, never sanitise) and the count is
+                # bounded before any outbound call. Bearer-gated; probe-and-appear.
+                raw = (parse_qs(parsed.query).get("appids") or [""])[0]
+                appids = [a for a in raw.split(",") if a]
+                if not appids or len(appids) > 50 or not all(_valid_appid(a) for a in appids):
+                    self._send(400, {"error": "appids must be 1-50 comma-separated numeric ids"}, started)
+                    return
+                self._send(200, mock_itad_lows_payload(appids) if self.mock
+                           else _itad_lows_payload(appids), started)
             elif path == "/api/recommend":
                 # "What to play next" — ranks INSTALLED Steam games from local play
                 # history (hours + recency). READ-ONLY: it recommends, it never
@@ -27008,6 +27977,40 @@ class Handler(BaseHTTPRequestHandler):
                 # Forget the stored key. Bearer-gated, idempotent.
                 if not self.mock:
                     _steam_webapi_clear()
+                self._send(200, {"configured": False}, started)
+                return
+            if path == "/api/itad":
+                # Store the user's IsThereAnyDeal app key. A SECRET: bearer-gated
+                # (the auth gate above ran), validated by FORMAT (reject, never
+                # sanitise), TESTED against ITAD before storing, kept 0600 in the
+                # user's OWN config dir, NEVER echoed back (the GET masks it).
+                # Degrade closed: if ITAD does not accept it, a 400 and nothing stored.
+                try:
+                    req = json.loads(body.decode("utf-8")) if body else {}
+                    if not isinstance(req, dict):
+                        raise ValueError("body must be a JSON object")
+                except (ValueError, TypeError, UnicodeDecodeError):
+                    self._send(400, {"error": "body must be a JSON object"}, started)
+                    return
+                apikey = req.get("apikey")
+                if not _valid_itad_apikey(apikey):
+                    self._send(400, {"error": "apikey must be 16-128 letters/digits"}, started)
+                    return
+                if self.mock:
+                    self._send(200, mock_itad_status(), started)
+                    return
+                if not _itad_probe(apikey):
+                    self._send(400, {"error": "IsThereAnyDeal did not accept that key (check it was copied whole)"}, started)
+                    return
+                if not _itad_save(apikey):
+                    self._send(500, {"error": "could not save the ITAD key on the box"}, started)
+                    return
+                self._send(200, _itad_status(), started)
+                return
+            if path == "/api/itad/disconnect":
+                # Forget the stored ITAD key. Bearer-gated, idempotent.
+                if not self.mock:
+                    _itad_clear()
                 self._send(200, {"configured": False}, started)
                 return
             if path == "/api/steam/menus":
@@ -30037,6 +31040,7 @@ def main():
 
     load_config(args.config)
     _steam_webapi_load()  # opt-in Steam Web API key (user-owned, degrade-closed)
+    _itad_load()  # opt-in IsThereAnyDeal key (user-owned, degrade-closed)
     if args.arm_boot_session:
         # Nothing else runs: no server, no probes, no capability scan. Just
         # write the drop-in and get out of the shutdown's way.

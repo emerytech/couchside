@@ -168,6 +168,24 @@ jobs:
       - name: Unit tests (steam web api)
         run: python3 tests/test_steam_webapi.py
 
+      - name: Unit tests (steam profile/library)
+        run: python3 tests/test_steam_profile.py
+
+      - name: Unit tests (steam deals)
+        run: python3 tests/test_steam_deals.py
+
+      - name: Unit tests (steam achievements)
+        run: python3 tests/test_steam_achievements.py
+
+      - name: Unit tests (steam wishlist)
+        run: python3 tests/test_steam_wishlist.py
+
+      - name: Unit tests (steam playtime tracker)
+        run: python3 tests/test_steam_playtime_tracker.py
+
+      - name: Unit tests (ITAD price history)
+        run: python3 tests/test_itad.py
+
       # Adversarial-review fixes cut into agent 2.9.117. Pins that GET /api/leds
       # `effects` stays the 12 ids shipped apps can label (strip-only meters and the
       # countdown go through `reactive`, or apps <= 2.9.62 crash), that an all-dark

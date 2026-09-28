@@ -1299,6 +1299,99 @@ export type SteamWebApiStatus = {
   persona?: string;
   avatar?: string;
 };
+
+/** GET /api/steam/profile (agent >= 2.9.120) — the owner's live Steam profile.
+ *  `configured` false without a key; `connected` false when Steam is unreachable.
+ *  Reads only the user's own public profile; the key never reaches the app. */
+export type SteamProfile = {
+  configured: boolean;
+  connected?: boolean;
+  persona?: string;
+  avatar?: string;
+  state?: string;
+  state_code?: number;
+  playing?: string;
+  gameid?: string;
+  level?: number;
+  profileurl?: string;
+};
+/** One game in the library rail. */
+export type SteamGameBrief = { appid: string; name: string; hours: number };
+/** GET /api/steam/library (agent >= 2.9.120) — whole-library aggregates. */
+export type SteamLibrary = {
+  configured: boolean;
+  connected?: boolean;
+  count?: number;
+  played?: number;
+  backlog?: number;
+  total_hours?: number;
+  hours_2weeks?: number;
+  /** Lifetime hours played in the last 7 / 30 days, from the agent's daily
+   *  snapshot. null until an old-enough snapshot exists (first ~week/month). */
+  played_7d?: number | null;
+  played_30d?: number | null;
+  top?: SteamGameBrief;
+  recent?: SteamGameBrief[];
+};
+
+/** One on-sale game. `final`/`original` are the discounted/list price in the
+ *  currency's minor units (cents). */
+export type SteamDeal = {
+  appid: string;
+  name: string;
+  discount_percent: number;
+  final: number;
+  original: number;
+  currency: string;
+};
+/** GET /api/steam/deals (agent >= 2.9.121) — current Steam specials, keyless from
+ *  the public Storefront, shown only while the Steam integration is on. */
+export type SteamDeals = {
+  configured: boolean;
+  connected?: boolean;
+  region?: string;
+  items?: SteamDeal[];
+};
+
+/** GET /api/steam/achievements?appid= (agent >= 2.9.122) — the owner's progress in
+ *  one game + the rarest achievement they've unlocked (global unlock %). */
+export type SteamAchievements = {
+  configured: boolean;
+  connected?: boolean;
+  appid?: string;
+  has_achievements?: boolean;
+  unlocked?: number;
+  total?: number;
+  percent?: number;
+  rarest?: { name: string; global_pct: number };
+};
+
+/** GET /api/steam/wishlist (agent >= 2.9.123) — the owner's wishlist size + which
+ *  of those games are discounted now (same shape as a deal). */
+export type SteamWishlist = {
+  configured: boolean;
+  connected?: boolean;
+  count?: number;
+  on_sale?: SteamDeal[];
+};
+/** GET /api/itad (agent >= 2.9.125) — opt-in IsThereAnyDeal status. A SEPARATE
+ *  opt-in from Steam. The full key never reaches the app; `apikey_masked` shows
+ *  only the last 4. null (probe-and-appear) on an older agent. */
+export type ItadStatus = {
+  configured: boolean;
+  apikey_masked?: string;
+};
+/** One game's all-time-low. NOTE `amount` is a MAJOR-unit float (e.g. 4.99),
+ *  unlike SteamDeal.final/original which are minor units (cents). */
+export type ItadLow = { amount: number; currency: string; shop?: string; date?: string };
+/** GET /api/itad/lows?appids= (agent >= 2.9.125) — all-time-low per Steam appid,
+ *  keyed by appid. Only appids ITAD has a low for are present. */
+export type ItadLows = {
+  configured: boolean;
+  connected?: boolean;
+  region?: string;
+  lows?: Record<string, ItadLow>;
+};
 export type SteamMenus = { menus: SteamMenu[] };
 
 /** One GPU as the box reports it (agent >= 2.9.43; `card` >= 2.9.67). */
@@ -2867,6 +2960,61 @@ export const api = {
     return request<SteamWebApiStatus>(settings, '/api/steam/webapi/disconnect', {
       method: 'POST', body: {},
     });
+  },
+
+  /** The owner's live Steam profile (agent >= 2.9.120). null on an older agent
+   *  (404); {configured:false} when no key is set — either way the card hides. */
+  steamProfile(settings: ConnSettings): Promise<SteamProfile | null> {
+    return probeOrNull(request<SteamProfile>(settings, '/api/steam/profile'));
+  },
+
+  /** Whole-library aggregates (agent >= 2.9.120). null / {configured:false} hide. */
+  steamLibrary(settings: ConnSettings): Promise<SteamLibrary | null> {
+    return probeOrNull(request<SteamLibrary>(settings, '/api/steam/library'));
+  },
+
+  /** Current Steam specials (agent >= 2.9.121). null / {configured:false} hide the
+   *  row. Keyless on the box side; shown only while the integration is connected. */
+  steamDeals(settings: ConnSettings): Promise<SteamDeals | null> {
+    return probeOrNull(request<SteamDeals>(settings, '/api/steam/deals'));
+  },
+
+  /** Achievement progress for one game (agent >= 2.9.122). `appid` is validated
+   *  server-side to digits. null / {configured:false} hide the display. */
+  steamAchievements(settings: ConnSettings, appid: string): Promise<SteamAchievements | null> {
+    return probeOrNull(request<SteamAchievements>(
+      settings, `/api/steam/achievements?appid=${encodeURIComponent(appid)}`));
+  },
+
+  /** The owner's wishlist size + which games are on sale (agent >= 2.9.123). */
+  steamWishlist(settings: ConnSettings): Promise<SteamWishlist | null> {
+    return probeOrNull(request<SteamWishlist>(settings, '/api/steam/wishlist'));
+  },
+
+  /** Opt-in IsThereAnyDeal status (agent >= 2.9.125). null on an older agent (404).
+   *  The full key never comes back. */
+  itadStatus(settings: ConnSettings): Promise<ItadStatus | null> {
+    return probeOrNull(request<ItadStatus>(settings, '/api/itad'));
+  },
+
+  /** Store the user's IsThereAnyDeal API key on the box. The agent validates +
+   *  TESTS against ITAD and rejects a bad key (throws with the reason). Returns the
+   *  new status (masked). */
+  itadConnect(settings: ConnSettings, apikey: string): Promise<ItadStatus> {
+    return request<ItadStatus>(settings, '/api/itad', { method: 'POST', body: { apikey } });
+  },
+
+  /** Forget the stored ITAD key on the box. Idempotent. */
+  itadDisconnect(settings: ConnSettings): Promise<ItadStatus> {
+    return request<ItadStatus>(settings, '/api/itad/disconnect', { method: 'POST', body: {} });
+  },
+
+  /** All-time-low price per Steam appid (agent >= 2.9.125). Pass the visible appids;
+   *  the agent bounds the fan-out. null / {configured:false} hide the badges. */
+  itadLows(settings: ConnSettings, appids: string[]): Promise<ItadLows | null> {
+    if (!appids.length) return Promise.resolve(null);
+    const q = appids.map((a) => encodeURIComponent(a)).join(',');
+    return probeOrNull(request<ItadLows>(settings, `/api/itad/lows?appids=${q}`));
   },
 
   /**

@@ -561,6 +561,31 @@ Each entry now carries a `✅ DONE` / `🟡 PARTIAL` / `📋 OPEN` banner with i
 
 ## 📋 Planned
 
+### Engagement layer — recurring reasons to open Couchside (owner ask 2026-09-28)
+- **priority:** P2 · **risk:** low->medium per phase · **affects:** agent + app (+ couchside.tv guides)
+  · **depends_on:** the shipped Steam integration. Full spec: `docs/memory/project_engagement-layer.md`
+  (phases 0-4 + M). Thesis: aggregate the Steam-adjacent data (price/all-time-low, compat,
+  time-to-beat, progress) into per-game *decisions*, and keep Couchside's edge — every pick/deal is a
+  one-tap **launch/install on the box**, which pure-companion apps can't do. No cloud/accounts, ever.
+- **Phase 0 — ITAD all-time-low (IN PROGRESS, `feat/itad-price-check`).** Opt-in IsThereAnyDeal key
+  (mirrors the Steam key: box-side 0600, masked, never logged, guide page + in-app link). Deals +
+  Wishlist rows gain an "is this the lowest ever?" badge. Agent fixed-host client
+  (api.isthereanydeal.com) lookup/v1 + historylow/v1; new `GET /api/itad/lows?appids=`; global data,
+  no per-account cache; degrade-closed. couchside.tv `/itad-setup` guide like `/steam-setup`.
+- **Phase 1 — Box-watched wishlist price-drop alerts (owner-picked).** The always-on box polls
+  wishlist prices; app shows "N dropped / all-time low" on open + optional **local** notification
+  (expo-notifications, NOT cloud push — refused). Turns the no-cloud constraint into a differentiator.
+- **Phase 2 — Home-screen widget (owner-picked).** Tonight's pick / best wishlist deal -> daily
+  re-engagement. expo-widgets (already transitive).
+- **Phase 3 — Discover: in-app Steam store search (owner-picked).** Search the catalog -> per-game
+  card -> "Add to wishlist" or "Install on box". Keyless Steam Storefront.
+- **Phase 4 — Per-game recommended settings (owner-picked, lowest pri).** Community-sourced Deck
+  settings per game; data source TBD (ToS review first).
+- **Phase M — couchside.tv marketing (owner ask 2026-09-28).** Showcase the Steam + engagement suite
+  on the site: market what's live now, add each feature as it ships, plus the `/itad-setup` guide.
+  Repo `~/Developer/ets3d`; gaming-first; never name a competitor on the public site.
+
+
 ### View + share your Steam achievements (user request 2026-09-26)
 - **priority:** P2 · **risk:** medium (a NEW parser for a proprietary, undocumented binary
   format that drifts across Steam updates; a NEW client-appid path; the visual share card needs

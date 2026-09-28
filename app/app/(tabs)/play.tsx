@@ -10,10 +10,15 @@
  * not a separate paywall, just part of the app.
  */
 import React, { useCallback, useEffect, useState } from 'react';
-import { ActivityIndicator, Image, Linking, Pressable, RefreshControl, ScrollView, StyleSheet, Text, View } from 'react-native';
+import { ActivityIndicator, Alert, Image, Linking, Pressable, RefreshControl, ScrollView, StyleSheet, Text, View } from 'react-native';
+
+import { NowPlayingCard } from '@/components/GamingCard';
 
 import { Gated } from '@/components/Gated';
 import { TabScreen } from '@/components/TabScreen';
+import { SteamProfileCard } from '@/components/SteamProfileCard';
+import { SteamDealsRow } from '@/components/SteamDealsRow';
+import { SteamWishlistRow } from '@/components/SteamWishlistRow';
 import { useLockOrientation } from '@/hooks/useLockOrientation';
 import { usePoll } from '@/hooks/usePoll';
 import { api, hostKey, type Recommendation, type RecoPick } from '@/lib/api';
@@ -82,12 +87,25 @@ function PlayScreen() {
   const boxName = activeBox?.name ?? 'your box';
   const eyebrow = d?.persona ? `Evening, ${d.persona}` : `Tonight on ${boxName}`;
 
-  const launch = async (p: RecoPick) => {
+  // Confirm first — a stray tap on a game card shouldn't yank a game onto the TV.
+  const launch = (p: RecoPick) => {
     if (launching) return;
-    hapticMedium();
-    setLaunching(p.appid);
-    try { await api.launch(settings, `steam:${p.appid}`); }
-    finally { setLaunching(null); }
+    hapticLight();
+    Alert.alert(
+      'Launch on the box?',
+      `Start "${p.name}" on ${activeBox?.name ?? 'the box'}?`,
+      [
+        { text: 'Cancel', style: 'cancel' },
+        {
+          text: 'Launch',
+          onPress: () => {
+            hapticMedium();
+            setLaunching(p.appid);
+            void api.launch(settings, `steam:${p.appid}`).finally(() => setLaunching(null));
+          },
+        },
+      ],
+    );
   };
 
   const cover = (p: RecoPick) => api.steamCoverSource(settings, num(p.appid));
@@ -117,6 +135,8 @@ function PlayScreen() {
         <RefreshControl refreshing={refreshing} onRefresh={onRefresh}
           tintColor={t.green} colors={[t.green]} />
       }>
+      <NowPlayingCard />
+      <SteamProfileCard />
       <Text style={styles.eyebrow}>{eyebrow}</Text>
       <Text style={styles.h1}>What to play next</Text>
 
@@ -170,6 +190,8 @@ function PlayScreen() {
         </>
       )}
 
+      <SteamWishlistRow />
+      <SteamDealsRow />
       <Text style={styles.foot}>
         Recommendations from your on-box play history · nothing leaves your network
       </Text>

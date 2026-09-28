@@ -18,6 +18,50 @@ the same thing regardless of what actually changed.
 Write for the person holding the phone, not for the commit log. They are
 deciding whether to press "Update now" on a machine across the room.
 
+## 2.9.125
+
+**All-time-low prices (IsThereAnyDeal).** Add your own free IsThereAnyDeal API key
+(Setup, next to the Steam key, with a link to the guide) and Couchside marks which
+games in your deals and wishlist are at their lowest price ever — not just "on sale."
+The key is opt-in, stored only on the box, never shown again, and used only to look
+up all-time lows for the games you're already viewing.
+
+## 2.9.124
+
+**Weekly and monthly play time.** When Steam is connected, the Play tab now shows
+how many hours you've played across your whole library in the last 7 and 30 days,
+alongside the existing two-week figure. The agent keeps a small daily total on the
+box (in your own config dir, never uploaded) so it can show real week/month trends
+that Steam's API doesn't expose directly.
+
+## 2.9.123
+
+**Wishlist on sale.** With Steam connected, Couchside can show which games on your
+Steam wishlist are discounted right now, with the price and how much off. It checks
+only your own wishlist, only while the integration is on, about once an hour.
+
+## 2.9.122
+
+**Achievement progress.** With Steam connected, Couchside can show how far you are in a
+game's achievements and highlight the rarest one you've earned — the percentage of all
+players who have it. Reads only your own achievements, only while the integration is on.
+
+## 2.9.121
+
+**See what's on sale.** With Steam connected, Couchside adds an "On sale now" row —
+current Steam specials with their discount and price, in your region. It's a public
+price list (no account needed for it), shown only while your Steam integration is on,
+and it refreshes about once an hour.
+
+## 2.9.120
+
+**Your Steam profile, on the box.** If you've connected a Steam Web API key, Couchside
+now shows a profile card — your avatar, name, whether you're online, what you're playing
+(even on another device), and your Steam level — plus a snapshot of your whole library:
+how many games you own, total hours, your most-played, and how big the backlog is. All of
+it reads only your own Steam account, only when you've opted in, and nothing new leaves the
+box beyond the same Steam calls.
+
 ## 2.9.119
 
 **Connect your Steam account for smarter picks (optional).** In the app's Advanced
