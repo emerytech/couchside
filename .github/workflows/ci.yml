@@ -186,6 +186,9 @@ jobs:
       - name: Unit tests (ITAD price history)
         run: python3 tests/test_itad.py
 
+      - name: Unit tests (wishlist price alerts)
+        run: python3 tests/test_steam_wl_alerts.py
+
       # Adversarial-review fixes cut into agent 2.9.117. Pins that GET /api/leds
       # `effects` stays the 12 ids shipped apps can label (strip-only meters and the
       # countdown go through `reactive`, or apps <= 2.9.62 crash), that an all-dark

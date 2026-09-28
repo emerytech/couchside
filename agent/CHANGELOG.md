@@ -18,6 +18,21 @@ the same thing regardless of what actually changed.
 Write for the person holding the phone, not for the commit log. They are
 deciding whether to press "Update now" on a machine across the room.
 
+## 2.9.127
+
+**Wishlist price drops.** With Steam connected, the Play tab now flags the games on
+your wishlist that got cheaper since you last looked — and which are at their lowest
+price ever (when IsThereAnyDeal is set up). The box remembers the prices for you; no
+cloud, no account, and it only ever looks at your own wishlist.
+
+## 2.9.126
+
+**Fixes.** All-time-low prices (IsThereAnyDeal) now show up: the box was reading
+IsThereAnyDeal's price data one level too shallow, so every lookup silently came
+back empty. It also now sends your region in the format IsThereAnyDeal expects.
+And a recommendation that read "untouched for 4 weeks ago" now reads "untouched
+for 4 weeks."
+
 ## 2.9.125
 
 **All-time-low prices (IsThereAnyDeal).** Add your own free IsThereAnyDeal API key

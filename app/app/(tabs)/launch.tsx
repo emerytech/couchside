@@ -11,7 +11,6 @@ import {
   Alert,
   Image,
   Modal,
-  Platform,
   Pressable,
   RefreshControl,
   ScrollView,
@@ -22,6 +21,7 @@ import {
   View,
 } from 'react-native';
 
+import { useConfirm } from '@/components/ConfirmDialog';
 import { Gated } from '@/components/Gated';
 import { GameSheet } from '@/components/GameSheet';
 import { InstallableSection } from '@/components/InstallableSection';
@@ -59,19 +59,6 @@ import { useBoxes, useSettings } from '@/lib/SettingsContext';
 import { mono, useTheme, useThemedStyles, type Palette } from '@/lib/theme';
 import { NowPlayingCard } from '@/components/GamingCard';
 import { WatchPanel } from '@/components/WatchPanel';
-
-/** Cross-platform confirm (Alert buttons are no-ops on web). */
-function confirmDelete(label: string, onConfirm: () => void) {
-  if (Platform.OS === 'web') {
-    // eslint-disable-next-line no-alert
-    if (typeof window !== 'undefined' && window.confirm(`Delete "${label}"?`)) onConfirm();
-    return;
-  }
-  Alert.alert('Delete launcher', `Delete "${label}"?`, [
-    { text: 'Cancel', style: 'cancel' },
-    { text: 'Delete', style: 'destructive', onPress: onConfirm },
-  ]);
-}
 
 // ---------- Tile ----------
 
@@ -665,6 +652,7 @@ const TOAST_MS = 1500;
 function LaunchScreen() {
   const t = useTheme();
   const styles = useThemedStyles(makeStyles);
+  const confirm = useConfirm();
   const { settings, ready } = useSettings();
   const { activeBox } = useBoxes();
   const { width } = useWindowDimensions();
@@ -808,19 +796,24 @@ function LaunchScreen() {
   );
 
   const remove = useCallback(
-    (l: Launcher) => {
-      confirmDelete(l.label, async () => {
-        try {
-          await api.deleteLauncher(settings, l.id);
-          hapticSuccess();
-          list.refresh();
-        } catch (e: unknown) {
-          hapticError();
-          showToast(e instanceof Error ? e.message : 'Delete failed');
-        }
+    async (l: Launcher) => {
+      const ok = await confirm({
+        title: 'Delete launcher',
+        message: `Delete "${l.label}"?`,
+        confirmText: 'Delete',
+        destructive: true,
       });
+      if (!ok) return;
+      try {
+        await api.deleteLauncher(settings, l.id);
+        hapticSuccess();
+        list.refresh();
+      } catch (e: unknown) {
+        hapticError();
+        showToast(e instanceof Error ? e.message : 'Delete failed');
+      }
     },
-    [settings, list, showToast],
+    [settings, list, showToast, confirm],
   );
 
   const add = useCallback(

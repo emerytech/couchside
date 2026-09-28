@@ -21,6 +21,7 @@ import { DeepLinkHandler } from '@/lib/DeepLink';
 import { EntitlementProvider } from '@/lib/EntitlementContext';
 import { useImmersive } from '@/lib/immersive';
 import { SettingsProvider } from '@/lib/SettingsContext';
+import { ConfirmProvider } from '@/components/ConfirmDialog';
 import { useResolvedScheme, useTheme } from '@/lib/theme';
 
 // Branded, recoverable crash screen in place of expo-router's raw default —
@@ -58,6 +59,7 @@ export default function RootLayout() {
     <SettingsProvider>
       <EntitlementProvider>
         <ThemeProvider value={navTheme}>
+          <ConfirmProvider>
           <StatusBar style={scheme === 'light' ? 'dark' : 'light'} />
           <DeepLinkHandler />
           {/* Touch indicators wrap the whole tree because they read the responder
@@ -131,6 +133,7 @@ export default function RootLayout() {
               tree until it fades, then unmounts (once per launch). */}
           <SplashIntro />
         </TapCapture>
+          </ConfirmProvider>
         </ThemeProvider>
       </EntitlementProvider>
     </SettingsProvider>

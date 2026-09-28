@@ -9,7 +9,9 @@
  */
 import Ionicons from '@expo/vector-icons/Ionicons';
 import React, { useEffect, useState } from 'react';
-import { Alert, Image, Pressable, StyleSheet, Text, View } from 'react-native';
+import { Image, Pressable, StyleSheet, Text, View } from 'react-native';
+
+import { useConfirm } from './ConfirmDialog';
 import { hapticLight } from '@/lib/haptics';
 
 import { usePoll } from '@/hooks/usePoll';
@@ -78,6 +80,7 @@ export function NowPlayingCard() {
   const t = useTheme();
   const styles = useThemedStyles(makeStyles);
   const { settings, ready } = useSettings();
+  const confirm = useConfirm();
   const configured = !!settings.host && !!settings.token;
   const [stopping, setStopping] = useState(false);
   const poll = usePoll<Gaming | null>(
@@ -99,26 +102,20 @@ export function NowPlayingCard() {
         {game.label ?? `App ${game.appid}`}
       </Text>
       <Pressable
-        onPress={() => {
+        onPress={async () => {
           hapticLight();
-          Alert.alert(
-            'Close this game?',
-            `${game.label ?? 'The running game'} will be asked to quit. Unsaved progress may be lost.`,
-            [
-              { text: 'Cancel', style: 'cancel' },
-              {
-                text: 'Close game',
-                style: 'destructive',
-                onPress: () => {
-                  setStopping(true);
-                  void api.stopGame(settings).finally(() => {
-                    setStopping(false);
-                    poll.refresh();
-                  });
-                },
-              },
-            ],
-          );
+          const ok = await confirm({
+            title: 'Close this game?',
+            message: `${game.label ?? 'The running game'} will be asked to quit. Unsaved progress may be lost.`,
+            confirmText: 'Close game',
+            destructive: true,
+          });
+          if (!ok) return;
+          setStopping(true);
+          void api.stopGame(settings).finally(() => {
+            setStopping(false);
+            poll.refresh();
+          });
         }}
         disabled={stopping}
         style={({ pressed }) => [styles.stopBtn, pressed && { opacity: 0.7 }]}>
@@ -215,6 +212,7 @@ export function GamingCard() {
   const styles = useThemedStyles(makeStyles);
   const { Card, Bar, text: tk } = useSkinKit();
   const { settings, ready } = useSettings();
+  const confirm = useConfirm();
   const configured = !!settings.host && !!settings.token;
 
   // Adaptive cadence: fast while a game is running, slow when idle. `fast` is
@@ -274,28 +272,22 @@ export function GamingCard() {
             )}
           </View>
           <Pressable
-            onPress={() => {
+            onPress={async () => {
               hapticLight();
-              Alert.alert(
-                'Close this game?',
-                `${g.game?.label ?? 'The running game'} will be asked to quit. Unsaved progress may be lost.`,
-                [
-                  { text: 'Cancel', style: 'cancel' },
-                  {
-                    text: 'Close game',
-                    style: 'destructive',
-                    onPress: () => {
-                      setStopping(true);
-                      void api.stopGame(settings).finally(() => {
-                        setStopping(false);
-                        // Refresh either way: on success the card should empty,
-                        // and on failure the truth is whatever the box says.
-                        poll.refresh();
-                      });
-                    },
-                  },
-                ],
-              );
+              const ok = await confirm({
+                title: 'Close this game?',
+                message: `${g.game?.label ?? 'The running game'} will be asked to quit. Unsaved progress may be lost.`,
+                confirmText: 'Close game',
+                destructive: true,
+              });
+              if (!ok) return;
+              setStopping(true);
+              void api.stopGame(settings).finally(() => {
+                setStopping(false);
+                // Refresh either way: on success the card should empty,
+                // and on failure the truth is whatever the box says.
+                poll.refresh();
+              });
             }}
             disabled={stopping}
             style={({ pressed }) => [styles.stopBtn, pressed && { opacity: 0.7 }]}>

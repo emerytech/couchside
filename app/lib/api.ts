@@ -1374,6 +1374,20 @@ export type SteamWishlist = {
   count?: number;
   on_sale?: SteamDeal[];
 };
+
+/** One wishlist game flagged by the price-drop watcher. `final`/`original`/`prev_final`
+ *  are cents. `at_low` = at/below its ITAD all-time low. */
+export type SteamWishlistAlert = SteamDeal & { prev_final?: number; at_low?: boolean };
+/** GET /api/steam/wishlist/alerts (agent >= 2.9.127) — wishlist games that dropped
+ *  since you last looked. `primed` false the first time (seed the baseline, no alert). */
+export type SteamWishlistAlerts = {
+  configured: boolean;
+  connected?: boolean;
+  primed?: boolean;
+  alerts?: SteamWishlistAlert[];
+  count?: number;
+  count_low?: number;
+};
 /** GET /api/itad (agent >= 2.9.125) — opt-in IsThereAnyDeal status. A SEPARATE
  *  opt-in from Steam. The full key never reaches the app; `apikey_masked` shows
  *  only the last 4. null (probe-and-appear) on an older agent. */
@@ -2989,6 +3003,17 @@ export const api = {
   /** The owner's wishlist size + which games are on sale (agent >= 2.9.123). */
   steamWishlist(settings: ConnSettings): Promise<SteamWishlist | null> {
     return probeOrNull(request<SteamWishlist>(settings, '/api/steam/wishlist'));
+  },
+
+  /** Wishlist games that dropped since you last looked (agent >= 2.9.127). null /
+   *  {configured:false} hide the banner. */
+  steamWishlistAlerts(settings: ConnSettings): Promise<SteamWishlistAlerts | null> {
+    return probeOrNull(request<SteamWishlistAlerts>(settings, '/api/steam/wishlist/alerts'));
+  },
+
+  /** Move the wishlist-alert baseline to the current prices (mark them seen). */
+  steamWishlistAlertsAck(settings: ConnSettings): Promise<{ ok: boolean }> {
+    return request<{ ok: boolean }>(settings, '/api/steam/wishlist/alerts/ack', { method: 'POST', body: {} });
   },
 
   /** Opt-in IsThereAnyDeal status (agent >= 2.9.125). null on an older agent (404).

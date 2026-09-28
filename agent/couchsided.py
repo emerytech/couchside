@@ -53,7 +53,7 @@ except ImportError:  # pragma: no cover
     fcntl = None
 
 APP_NAME = "couchside-agent"
-VERSION = "2.9.125"
+VERSION = "2.9.127"
 UID = os.getuid()
 XDG_RUNTIME_DIR = "/run/user/%d" % UID
 
@@ -22473,6 +22473,18 @@ def _reco_ago(days):
     return "%d months ago" % max(1, int(days / 30))
 
 
+def _reco_span(days):
+    """A DURATION (no 'ago') for 'untouched for %s' phrasing, so the reason reads
+    'untouched for 4 weeks' rather than the doubled 'untouched for 4 weeks ago'."""
+    if days is None or days < 1:
+        return "a while"
+    if days < 14:
+        return "%d days" % int(days)
+    if days < 60:
+        return "%d weeks" % int(days / 7)
+    return "%d months" % max(1, int(days / 30))
+
+
 def _reco_score(hours, days):
     """(score, bucket, tag, reason) for ONE game from local signals only -- total
     `hours` and `days` since last played (None = never). Higher score = better
@@ -22483,7 +22495,7 @@ def _reco_score(hours, days):
                 "%gh in · last played %s — pick the run back up." % (h, _reco_ago(days)))
     if hours >= 2 and days is not None and 7 <= days <= 75:
         return (72.0 - abs(days - 21) * 0.25, "unfinished", "Unfinished",
-                "%gh in · untouched for %s — unfinished business." % (h, _reco_ago(days)))
+                "%gh in · untouched for %s — unfinished business." % (h, _reco_span(days)))
     if hours > 30 and (days is None or days > 90):
         return (62.0 + min(hours, 120) * 0.1, "rediscover", "Rediscover",
                 "You loved this — %gh, %s." % (h, _reco_ago(days)))
@@ -23367,6 +23379,151 @@ _STEAM_PLAYTIME_KEEP = 70  # days of history to retain
 _STEAM_PLAYTIME_TOL = 3    # max days a baseline may sit before a window edge
 
 
+# --- Wishlist price alerts: the box remembers what your wishlist games cost the
+# LAST time you looked, and flags what's cheaper now. No background thread and no
+# cloud: it's a per-account snapshot ("last-seen final price" per appid) plus an
+# on-demand diff against the current on-sale wishlist (which _steam_wishlist_payload
+# already fetches + caches). The phone triggers it on open (and, best-effort, from a
+# background-fetch) and ACKs to move the baseline. Stored 0600 in the user's own dir,
+# keyed by steamid64. Degrade closed; never raises.
+_STEAM_WL_WATCH_CONF = os.path.expanduser("~/.config/couchside/wishlist_watch.json")
+
+
+def _steam_wl_watch_load():
+    try:
+        with open(_STEAM_WL_WATCH_CONF, "r", encoding="utf-8") as fh:
+            d = json.load(fh)
+        return d if isinstance(d, dict) else {}
+    except Exception:
+        return {}
+
+
+def _steam_wl_watch_save(d):
+    directory = os.path.dirname(_STEAM_WL_WATCH_CONF)
+    try:
+        os.makedirs(directory, exist_ok=True)
+    except OSError:
+        return
+    if not os.access(directory, os.W_OK | os.X_OK):
+        return
+    fd, tmp = tempfile.mkstemp(prefix=".couchside-wlwatch-", dir=directory)
+    ok = False
+    try:
+        os.fchmod(fd, 0o600)
+        with os.fdopen(fd, "w", encoding="utf-8") as f:
+            fd = -1
+            json.dump(d, f)
+            f.write("\n")
+            f.flush()
+            os.fsync(f.fileno())
+        os.replace(tmp, _STEAM_WL_WATCH_CONF)
+        ok = True
+    except Exception:
+        pass
+    finally:
+        if fd != -1:
+            try:
+                os.close(fd)
+            except OSError:
+                pass
+        if not ok:
+            try:
+                os.unlink(tmp)
+            except OSError:
+                pass
+
+
+def _steam_wl_alerts_payload():
+    """GET /api/steam/wishlist/alerts: which wishlist games DROPPED (are new on sale,
+    or cheaper than the last time you looked) + which are at an all-time low. Read-only
+    — the app ACKs to move the baseline. {"configured": False} without a Steam key;
+    "primed": false the first time, so the app can seed the baseline without a noisy
+    "everything dropped" alert."""
+    if not _steam_webapi_configured():
+        return {"configured": False}
+    # Capture the account BEFORE the fetch so the baseline we diff against belongs
+    # to the same account the on_sale list was fetched for (a mid-fetch account
+    # switch must not mix one account's prices with another's baseline).
+    with _STEAM_WEBAPI_LOCK:
+        sid = _STEAM_WEBAPI["steamid64"]
+    wl = _steam_wishlist_payload()
+    if not wl.get("connected"):
+        return {"configured": True, "connected": False}
+    on_sale = wl.get("on_sale") or []
+    seen = _steam_wl_watch_load().get(sid)
+    primed = isinstance(seen, dict)
+    seen = seen if isinstance(seen, dict) else {}
+
+    lows = {}
+    if _itad_configured() and on_sale:
+        lp = _itad_lows_payload([it["appid"] for it in on_sale])
+        if isinstance(lp.get("lows"), dict):
+            lows = lp["lows"]
+
+    def _prev(aid):
+        try:
+            v = seen.get(aid)
+            return int(v) if v is not None else None
+        except (TypeError, ValueError):
+            return None
+
+    alerts = []
+    for it in on_sale:
+        aid = it["appid"]
+        prev = _prev(aid)
+        if not (primed and (prev is None or it["final"] < prev)):
+            continue  # not new, and not cheaper than last look
+        a = {"appid": aid, "name": it.get("name"), "final": it["final"],
+             "original": it["original"], "discount_percent": it["discount_percent"],
+             "currency": it["currency"]}
+        if prev is not None:
+            a["prev_final"] = prev
+        low = lows.get(aid)
+        try:
+            if low and it["final"] / 100.0 <= float(low.get("amount")) + 0.005:
+                a["at_low"] = True
+        except (TypeError, ValueError):
+            pass
+        alerts.append(a)
+
+    return {"configured": True, "connected": True, "primed": primed,
+            "alerts": alerts, "count": len(alerts),
+            "count_low": sum(1 for a in alerts if a.get("at_low"))}
+
+
+def _steam_wl_ack():
+    """POST /api/steam/wishlist/alerts/ack: record the CURRENT on-sale prices as the
+    baseline for this account, so the next check only flags games that got cheaper
+    after this. Guarded against a concurrent account switch (TOCTOU)."""
+    if not _steam_webapi_configured():
+        return {"ok": False}
+    with _STEAM_WEBAPI_LOCK:
+        sid = _STEAM_WEBAPI["steamid64"]
+    if not sid:
+        return {"ok": False}
+    wl = _steam_wishlist_payload()
+    if not wl.get("connected"):
+        return {"ok": False, "connected": False}
+    on_sale = wl.get("on_sale") or []
+    allw = _steam_wl_watch_load()
+    try:
+        allw[sid] = {it["appid"]: int(it["final"]) for it in on_sale}
+    except (TypeError, ValueError, KeyError):
+        return {"ok": False}
+    if _steam_cache_ok(sid):
+        _steam_wl_watch_save(allw)
+    return {"ok": True, "seen": len(on_sale)}
+
+
+def mock_steam_wl_alerts_payload():
+    return {"configured": True, "connected": True, "primed": True, "alerts": [
+        {"appid": "1086940", "name": "Baldur's Gate 3", "final": 4199, "original": 5999,
+         "discount_percent": 30, "currency": "USD", "prev_final": 4799, "at_low": True},
+        {"appid": "374320", "name": "DARK SOULS III", "final": 1499, "original": 5999,
+         "discount_percent": 75, "currency": "USD", "prev_final": 1999}],
+        "count": 2, "count_low": 1}
+
+
 def _pt_day(offset_days=0):
     return time.strftime("%Y-%m-%d", time.localtime(time.time() - offset_days * 86400))
 
@@ -23653,48 +23810,52 @@ def _itad_lookup_id(appid):
 
 def _itad_extract_lows(d):
     """Normalise the historylow response into {uuid: {amount, currency, shop?, date?}}.
-    ITAD has moved this shape around, so accept the object-keyed-by-uuid form, the
-    {games:{historylow:{...}}} form, and a list of {id, ...}. Degrade closed: a field
-    we can't read is skipped, never guessed."""
+    The real ITAD v2 shape is a TOP-LEVEL ARRAY of {id, low:{shop:{id,name},
+    price:{amount, amountInt, currency}, regular, cut, timestamp}} — the all-time-low
+    is at low.price.amount (NOT low.amount). A keyed-by-uuid object is accepted too
+    (defence). Degrade closed: a field we can't read is skipped, never guessed."""
     out = {}
 
-    def _one(uuid, v):
-        if not isinstance(v, dict):
+    def _one(uuid, low):
+        if not isinstance(low, dict):
             return
-        price = v.get("price") if isinstance(v.get("price"), dict) else v.get("low")
+        price = low.get("price")
         if not isinstance(price, dict):
             return
         try:
             amount = float(price.get("amount"))
         except (TypeError, ValueError):
             return
-        # NaN/Inf pass float() but serialise to invalid JSON (NaN/Infinity), which
-        # would make the ENTIRE /api/itad/lows body unparseable for the app. Reject.
+        # NaN/Inf pass float() but serialise to invalid JSON; reject.
         if amount != amount or amount == float("inf") or amount == float("-inf"):
             return
         rec = {"amount": round(amount, 2), "currency": str(price.get("currency") or "")}
-        shop = v.get("shop")
+        shop = low.get("shop")
         if isinstance(shop, dict) and shop.get("name"):
             rec["shop"] = str(shop["name"])
-        ts = v.get("timestamp") or v.get("date")
+        ts = low.get("timestamp") or low.get("date")
         if ts:
             rec["date"] = str(ts)[:10]
         out[str(uuid)] = rec
 
+    def _low_of(v):
+        # the record for a game: its {shop, price, ...} lives under "low"; some
+        # forms hand it back inline. Prefer the nested "low".
+        return v.get("low") if isinstance(v, dict) and isinstance(v.get("low"), dict) else v
+
     try:
         node = d
-        if isinstance(d, dict) and isinstance(d.get("games"), dict):
-            hl = d["games"].get("historylow")
-            if isinstance(hl, dict):
-                node = hl
-        if isinstance(node, dict):
-            for uuid, v in node.items():
-                if _valid_itad_id(str(uuid)):
-                    _one(uuid, v)
-        elif isinstance(node, list):
+        if (isinstance(d, dict) and isinstance(d.get("games"), dict)
+                and d["games"].get("historylow") is not None):
+            node = d["games"]["historylow"]
+        if isinstance(node, list):
             for it in node:
                 if isinstance(it, dict) and _valid_itad_id(str(it.get("id"))):
-                    _one(it.get("id"), it)
+                    _one(it.get("id"), _low_of(it))
+        elif isinstance(node, dict):
+            for uuid, v in node.items():
+                if _valid_itad_id(str(uuid)) and isinstance(v, dict):
+                    _one(uuid, _low_of(v))
     except Exception:
         return {}
     return out
@@ -23707,7 +23868,7 @@ def _itad_historylow(ids, cc):
     ids = [i for i in ids if _valid_itad_id(i)][:_ITAD_MAX_IDS]
     if not ids:
         return {}
-    d = _itad_request("POST", "games/historylow/v1", {"country": cc}, json_body=ids)
+    d = _itad_request("POST", "games/historylow/v1", {"country": (cc or "us").upper()}, json_body=ids)
     if d is None:
         return None
     return _itad_extract_lows(d)
@@ -27421,6 +27582,12 @@ class Handler(BaseHTTPRequestHandler):
                 # client input. Bearer-gated; probe-and-appear.
                 self._send(200, mock_steam_wishlist_payload() if self.mock
                            else _steam_wishlist_payload(), started)
+            elif path == "/api/steam/wishlist/alerts":
+                # Opt-in: wishlist games that dropped since you last looked + which are
+                # at an all-time low. A read-only diff against the box's per-account
+                # price baseline. No client input; bearer-gated; probe-and-appear.
+                self._send(200, mock_steam_wl_alerts_payload() if self.mock
+                           else _steam_wl_alerts_payload(), started)
             elif path == "/api/itad":
                 # Opt-in IsThereAnyDeal status: is a key configured (MASKED, never
                 # the full key). Separate third-party integration from Steam.
@@ -28012,6 +28179,12 @@ class Handler(BaseHTTPRequestHandler):
                 if not self.mock:
                     _itad_clear()
                 self._send(200, {"configured": False}, started)
+                return
+            if path == "/api/steam/wishlist/alerts/ack":
+                # Move the wishlist-alert baseline to the current prices, so the next
+                # check only flags games that got cheaper after this. Bearer-gated,
+                # idempotent, no request body needed.
+                self._send(200, {"ok": True} if self.mock else _steam_wl_ack(), started)
                 return
             if path == "/api/steam/menus":
                 # _read_body() hands back BYTES, not a parsed object — decode
