@@ -1260,6 +1260,32 @@ export type SteamLink = { available: boolean; hosts: StreamHost[] };
  */
 /** One Steam settings panel the box can jump to (agent >= 2.9.31). */
 export type SteamMenu = { id: string; label: string };
+
+/** One "what to play next" pick from GET /api/recommend (agent >= 2.9.63). All
+ *  fields come from the box's LOCAL Steam data. `bucket` is the reason category
+ *  (streak/unfinished/rediscover/comfort/fresh/backlog); `reason` is a human line. */
+export type RecoPick = {
+  appid: string;
+  name: string;
+  hours: number;
+  days_since: number | null;
+  installed: boolean;
+  bucket: string;
+  tag: string;
+  reason: string;
+  score: number;
+};
+/** GET /api/recommend body. `persona` (agent >= 2.9.118) is the box's most-recent
+ *  Steam account name, read locally — present only when readable (probe-and-appear),
+ *  used for a greeting; older agents simply omit it. */
+export type Recommendation = {
+  available: boolean;
+  generated: number;
+  primary: RecoPick | null;
+  alternates: RecoPick[];
+  counts: Record<string, number>;
+  persona?: string;
+};
 export type SteamMenus = { menus: SteamMenu[] };
 
 /** One GPU as the box reports it (agent >= 2.9.43; `card` >= 2.9.67). */
@@ -2791,6 +2817,18 @@ export const api = {
   ): Promise<Gaming | null> {
     return probeGated(caps?.gaming, () =>
       probeOrNull(request<Gaming>(settings, '/api/gaming')));
+  },
+
+  /** "What to play next" — ranked picks from the box's LOCAL Steam play history
+   *  (agent >= 2.9.63, GET /api/recommend). Read-only; a pick launches via the
+   *  existing steam path (`launch(settings, 'steam:'+appid)`). null on an older
+   *  agent (404) or a box with no Steam — probe-and-appear, so the tab hides. */
+  recommend(
+    settings: ConnSettings,
+    caps: BoxCaps | undefined = cachedCaps(settings),
+  ): Promise<Recommendation | null> {
+    return probeGated(caps?.gaming, () =>
+      probeOrNull(request<Recommendation>(settings, '/api/recommend')));
   },
 
   /**

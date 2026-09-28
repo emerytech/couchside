@@ -27,6 +27,7 @@ import { Gated } from '@/components/Gated';
 import { LogsPanel } from '@/components/LogsPanel';
 import { QrView } from '@/components/QrView';
 import { BoxScanPair } from '@/components/BoxScanPair';
+import { FleetDashboard } from '@/components/FleetDashboard';
 import { DirectTvSetup } from '@/components/DirectTvSetup';
 import { BoxScanQr } from '@/components/BoxScanQr';
 import { SetupProgress, SETUP_GUIDE_URL } from '@/components/SetupProgress';
@@ -1266,8 +1267,11 @@ function SetupBody() {
         keyboardShouldPersistTaps="handled">
         {tab === 'boxes' && (
           <>
-            {/* ---- Fleet list ---- */}
-            <Text style={styles.sectionLabel}>YOUR FLEET</Text>
+            {/* At-a-glance live vitals + tap-to-switch + reorder/hide, moved here
+                from the old Fleet tab. Only useful with several boxes. */}
+            {boxes.length >= 2 && <FleetDashboard />}
+            {/* ---- Box management list (pair / edit / remove) ---- */}
+            <Text style={styles.sectionLabel}>{boxes.length >= 2 ? 'MANAGE BOXES' : 'YOUR FLEET'}</Text>
         {boxes.length === 0 ? (
           /* The empty state is the whole funnel: measured, ~9-15 strangers
              downloaded the app in its first six days and ~0 paired a box. The
