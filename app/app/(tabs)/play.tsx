@@ -10,7 +10,7 @@
  * not a separate paywall, just part of the app.
  */
 import React, { useCallback, useEffect, useState } from 'react';
-import { ActivityIndicator, Image, Pressable, RefreshControl, ScrollView, StyleSheet, Text, View } from 'react-native';
+import { ActivityIndicator, Image, Linking, Pressable, RefreshControl, ScrollView, StyleSheet, Text, View } from 'react-native';
 
 import { Gated } from '@/components/Gated';
 import { TabScreen } from '@/components/TabScreen';
@@ -23,6 +23,17 @@ import { useBoxes, useSettings } from '@/lib/SettingsContext';
 import { mono, useTheme, useThemedStyles, type Palette } from '@/lib/theme';
 
 const num = (s: string) => { const n = parseInt(s, 10); return Number.isFinite(n) ? n : 0; };
+
+/** Open the Steam app on THIS phone. Tries the custom scheme (opens the app when
+ *  installed), then the s.team universal link (the app, or the Steam site in a
+ *  browser if the app isn't there). openURL (not canOpenURL) so no native
+ *  LSApplicationQueriesSchemes entry is needed — works in any build. */
+async function openSteamApp() {
+  hapticLight();
+  for (const url of ['steam://open/main', 'steam://', 'https://s.team/']) {
+    try { await Linking.openURL(url); return; } catch { /* try the next */ }
+  }
+}
 
 export default function PlayTab() {
   useLockOrientation('portrait');
@@ -164,6 +175,11 @@ function PlayScreen() {
       <Text style={styles.foot}>
         Recommendations from your on-box play history · nothing leaves your network
       </Text>
+      <Pressable onPress={openSteamApp}
+        accessibilityRole="button" accessibilityLabel="Open the Steam app on this phone"
+        style={({ pressed }) => [styles.steamBtn, pressed && styles.pressed]}>
+        <Text style={styles.steamBtnTxt}>Open the Steam app  ↗</Text>
+      </Pressable>
     </ScrollView>
   );
 }
@@ -218,4 +234,10 @@ const makeStyles = (t: Palette) =>
     pressed: { opacity: 0.6 },
 
     foot: { color: t.textFaint, fontSize: 11, lineHeight: 16, marginTop: 24, textAlign: 'center' },
+    steamBtn: {
+      alignSelf: 'center', marginTop: 16,
+      borderColor: t.cardBorder, borderWidth: 1, borderRadius: 999,
+      paddingVertical: 10, paddingHorizontal: 20,
+    },
+    steamBtnTxt: { color: t.textDim, fontSize: 13, fontWeight: '600' },
   });
