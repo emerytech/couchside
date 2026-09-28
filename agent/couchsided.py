@@ -53,7 +53,7 @@ except ImportError:  # pragma: no cover
     fcntl = None
 
 APP_NAME = "couchside-agent"
-VERSION = "2.9.122"
+VERSION = "2.9.123"
 UID = os.getuid()
 XDG_RUNTIME_DIR = "/run/user/%d" % UID
 
@@ -22754,6 +22754,8 @@ def _steam_webapi_save(steamid64, apikey):
     _STEAM_LEVEL_CACHE["ts"] = 0.0
     _STEAM_LEVEL_CACHE["val"] = None
     _STEAM_ACH_CACHE.clear()
+    _STEAM_WISHLIST_CACHE["ts"] = 0.0
+    _STEAM_WISHLIST_CACHE["val"] = None
     return True
 
 
@@ -22769,6 +22771,8 @@ def _steam_webapi_clear():
     _STEAM_LEVEL_CACHE["ts"] = 0.0
     _STEAM_LEVEL_CACHE["val"] = None
     _STEAM_ACH_CACHE.clear()
+    _STEAM_WISHLIST_CACHE["ts"] = 0.0
+    _STEAM_WISHLIST_CACHE["val"] = None
     try:
         os.unlink(_STEAM_WEBAPI_CONF)
     except OSError:
@@ -23233,6 +23237,102 @@ def mock_steam_achievements_payload(appid):
     return {"configured": True, "connected": True, "appid": appid or "1145350",
             "has_achievements": True, "unlocked": 18, "total": 33, "percent": 55,
             "rarest": {"name": "Isolated", "global_pct": 2.4}}
+
+
+# --- Wishlist sale-watch: which of the owner's wishlist games are discounted now.
+# GetWishlist (needs the key) gives appids; ONE batched Storefront appdetails price
+# call finds the discounted ones; names are fetched only for those (bounded). Per-
+# account, so the cache is wiped on save/clear. Cached ~1h; degrade closed. Bounded:
+# at most WL_CONSIDER price-checked + WL_MAX named, so a huge wishlist can't fan out.
+_STEAM_WISHLIST_CACHE = {"ts": 0.0, "val": None}
+_STEAM_WISHLIST_TTL = 3600.0
+_STEAM_WL_CONSIDER = 50
+_STEAM_WL_MAX = 12
+
+
+def _steam_get_wishlist(steamid64, apikey):
+    """The owner's wishlist appids (validated digits) via IPlayerService-style
+    IWishlistService/GetWishlist, or None. Order is the wishlist's own priority."""
+    d = _steam_api_get("IWishlistService", "GetWishlist", "0001",
+                       {"key": apikey, "steamid": steamid64})
+    try:
+        items = d["response"]["items"]
+    except Exception:
+        return None
+    if not isinstance(items, list):
+        return None
+    out = []
+    for it in items:
+        if not isinstance(it, dict) or it.get("appid") is None:
+            continue
+        aid = str(it.get("appid"))
+        if aid.isascii() and aid.isdigit() and 1 <= len(aid) <= 7:
+            out.append(aid)
+    return out
+
+
+def _steam_wishlist_payload():
+    """GET /api/steam/wishlist: the owner's wishlist size + which of those games are
+    on sale right now (name, discount, price). {"configured": False} without a key;
+    connected:false when the wishlist can't be read. Bounded + cached ~1h."""
+    if not _steam_webapi_configured():
+        return {"configured": False}
+    now = time.monotonic()
+    if (_STEAM_WISHLIST_CACHE["val"] is not None
+            and now - _STEAM_WISHLIST_CACHE["ts"] < _STEAM_WISHLIST_TTL):
+        return _STEAM_WISHLIST_CACHE["val"]
+    with _STEAM_WEBAPI_LOCK:
+        sid = _STEAM_WEBAPI["steamid64"]
+        key = _STEAM_WEBAPI["apikey"]
+    appids = _steam_get_wishlist(sid, key)
+    if appids is None:
+        return {"configured": True, "connected": False}
+
+    def _int(v):
+        try:
+            return int(v or 0)
+        except (TypeError, ValueError):
+            return 0
+
+    cc = _steam_country()
+    consider = appids[:_STEAM_WL_CONSIDER]
+    on_sale = []
+    if consider:
+        pd = _steam_store_get("appdetails",
+                              {"appids": ",".join(consider), "filters": "price_overview", "cc": cc})
+        if isinstance(pd, dict):
+            for aid in consider:
+                e = pd.get(aid)
+                if not isinstance(e, dict) or not e.get("success"):
+                    continue
+                po = (e.get("data") or {}).get("price_overview")
+                if not isinstance(po, dict):
+                    continue
+                if _int(po.get("discount_percent")) > 0:
+                    on_sale.append({"appid": aid,
+                                    "discount_percent": _int(po.get("discount_percent")),
+                                    "final": _int(po.get("final")),
+                                    "original": _int(po.get("initial")),
+                                    "currency": po.get("currency") or ""})
+        # names only for the ones we'll show (bounded)
+        for it in on_sale[:_STEAM_WL_MAX]:
+            nd = _steam_store_get("appdetails", {"appids": it["appid"], "filters": "basic", "cc": cc})
+            entry = nd.get(it["appid"]) if isinstance(nd, dict) else None
+            name = (entry.get("data") or {}).get("name") if isinstance(entry, dict) else None
+            it["name"] = name or ("App %s" % it["appid"])
+    body = {"configured": True, "connected": True, "count": len(appids),
+            "on_sale": on_sale[:_STEAM_WL_MAX]}
+    _STEAM_WISHLIST_CACHE["ts"] = now
+    _STEAM_WISHLIST_CACHE["val"] = body
+    return body
+
+
+def mock_steam_wishlist_payload():
+    return {"configured": True, "connected": True, "count": 41, "on_sale": [
+        {"appid": "1086940", "name": "Baldur's Gate 3", "discount_percent": 20,
+         "final": 4799, "original": 5999, "currency": "USD"},
+        {"appid": "1174180", "name": "Red Dead Redemption 2", "discount_percent": 67,
+         "final": 1979, "original": 5999, "currency": "USD"}]}
 
 
 def _gaming_payload():
@@ -26867,6 +26967,11 @@ class Handler(BaseHTTPRequestHandler):
                     return
                 self._send(200, mock_steam_achievements_payload(appid) if self.mock
                            else _steam_achievements_payload(appid), started)
+            elif path == "/api/steam/wishlist":
+                # Opt-in: which of the owner's wishlist games are on sale now. No
+                # client input. Bearer-gated; probe-and-appear.
+                self._send(200, mock_steam_wishlist_payload() if self.mock
+                           else _steam_wishlist_payload(), started)
             elif path == "/api/recommend":
                 # "What to play next" — ranks INSTALLED Steam games from local play
                 # history (hours + recency). READ-ONLY: it recommends, it never
