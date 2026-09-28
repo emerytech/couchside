@@ -1,1 +1,3 @@
-A new opening animation greets you on launch. Plus a calmer, more customizable app: the Console opens to a compact vitals strip (temperature, load and memory at a glance) with the detail a tap away; reorder or hide cards on the Fleet and Actions tabs too (press and hold a card, or tap the sliders icon); a shorter first-run tour; and tidier Settings. Plus polish and reliability fixes throughout.
+• Your Steam library, on the couch: the Play tab recommends what to play tonight, shows your profile and playtime, and launches on the box in one tap.
+• Deals & wishlist: see what's on sale and — with a free IsThereAnyDeal key — which games are at their LOWEST price ever, plus a heads-up when a wishlist game drops.
+• Polished confirm dialogs; Advanced settings tidied up.
