@@ -28,6 +28,7 @@ import { LogsPanel } from '@/components/LogsPanel';
 import { QrView } from '@/components/QrView';
 import { BoxScanPair } from '@/components/BoxScanPair';
 import { FleetDashboard } from '@/components/FleetDashboard';
+import { SteamIntegrationCard } from '@/components/SteamIntegrationCard';
 import { DirectTvSetup } from '@/components/DirectTvSetup';
 import { BoxScanQr } from '@/components/BoxScanQr';
 import { SetupProgress, SETUP_GUIDE_URL } from '@/components/SetupProgress';
@@ -1488,6 +1489,9 @@ function SetupBody() {
 
         {tab === 'prefs' && (
           <PrefFilterCtx.Provider value={prefFilter}>
+            {/* Advanced: opt-in Steam Web API key. Self-hides on an agent
+                without the feature (probe-and-appear) and on a non-Steam box. */}
+            {activeBox?.caps?.steam !== false && <SteamIntegrationCard />}
             {/* Find-as-you-type. ~25 controls across six groups is past the
                 point where scanning works, and half of them live in one card.
                 Filtering beats reorganising here: it costs no navigation layer

@@ -160,6 +160,14 @@ jobs:
       - name: Unit tests (recommend)
         run: python3 tests/test_reco.py
 
+      # Opt-in Steam Web API: the box's ONE outbound internet path. Proves the key
+      # is validated by format (reject not sanitise), stored 0600 in the user's own
+      # dir, NEVER returned (masked), cleared on disconnect; the client degrades
+      # closed on any urlopen failure; and the endpoint is bearer-gated (401),
+      # rejects bad input (400), and refuses a key/profile Steam does not accept.
+      - name: Unit tests (steam web api)
+        run: python3 tests/test_steam_webapi.py
+
       # Adversarial-review fixes cut into agent 2.9.117. Pins that GET /api/leds
       # `effects` stays the 12 ids shipped apps can label (strip-only meters and the
       # countdown go through `reactive`, or apps <= 2.9.62 crash), that an all-dark

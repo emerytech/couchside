@@ -18,6 +18,18 @@ the same thing regardless of what actually changed.
 Write for the person holding the phone, not for the commit log. They are
 deciding whether to press "Update now" on a machine across the room.
 
+## 2.9.119
+
+**Connect your Steam account for smarter picks (optional).** In the app's Advanced
+settings you can now add your Steam profile and a free Steam Web API key. With it,
+Couchside pulls your own Steam library and profile to make What-to-Play smarter and
+add a few personal touches. It is entirely optional and stays off until you add a
+key; the key lives only on your box, never leaves it except to talk to Steam itself,
+and you can disconnect any time. This is the ONLY thing on the box that reaches the
+internet — everything else stays on your network.
+
+Set it up from a recent app; older apps simply don't show the option.
+
 ## 2.9.118
 
 **Game Aura — your strip lights up in the game's colours.** On a box with an addressable LED

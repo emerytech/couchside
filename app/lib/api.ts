@@ -1286,6 +1286,19 @@ export type Recommendation = {
   counts: Record<string, number>;
   persona?: string;
 };
+
+/** GET /api/steam/webapi — the OPT-IN Steam Web API status (agent >= 2.9.119).
+ *  The full key NEVER reaches the app; `apikey_masked` shows only the last 4.
+ *  `connected` is a live check against Steam. null (probe-and-appear) on an agent
+ *  without the feature, so the Advanced card only appears where it works. */
+export type SteamWebApiStatus = {
+  configured: boolean;
+  steamid64?: string;
+  apikey_masked?: string;
+  connected?: boolean;
+  persona?: string;
+  avatar?: string;
+};
 export type SteamMenus = { menus: SteamMenu[] };
 
 /** One GPU as the box reports it (agent >= 2.9.43; `card` >= 2.9.67). */
@@ -2829,6 +2842,31 @@ export const api = {
   ): Promise<Recommendation | null> {
     return probeGated(caps?.gaming, () =>
       probeOrNull(request<Recommendation>(settings, '/api/recommend')));
+  },
+
+  /** OPT-IN Steam Web API status (agent >= 2.9.119). null on an older agent (404)
+   *  so the Advanced card is probe-and-appear. The full key never comes back. */
+  steamWebApi(settings: ConnSettings): Promise<SteamWebApiStatus | null> {
+    return probeOrNull(request<SteamWebApiStatus>(settings, '/api/steam/webapi'));
+  },
+
+  /** Store the user's SteamID64 (or vanity name) + Steam Web API key on the box.
+   *  The agent validates + TESTS against Steam and rejects a bad pair (throws with
+   *  the reason). Returns the new status (masked). The key rides one authed POST. */
+  steamWebApiConnect(
+    settings: ConnSettings,
+    payload: { steamid64?: string; vanity?: string; apikey: string },
+  ): Promise<SteamWebApiStatus> {
+    return request<SteamWebApiStatus>(settings, '/api/steam/webapi', {
+      method: 'POST', body: payload,
+    });
+  },
+
+  /** Forget the stored Steam key on the box. Idempotent. */
+  steamWebApiDisconnect(settings: ConnSettings): Promise<SteamWebApiStatus> {
+    return request<SteamWebApiStatus>(settings, '/api/steam/webapi/disconnect', {
+      method: 'POST', body: {},
+    });
   },
 
   /**

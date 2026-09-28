@@ -42,6 +42,7 @@ import threading
 import time
 import urllib.error
 import urllib.request
+import urllib.parse
 import zlib
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import urlparse, parse_qs, quote, unquote
@@ -52,7 +53,7 @@ except ImportError:  # pragma: no cover
     fcntl = None
 
 APP_NAME = "couchside-agent"
-VERSION = "2.9.118"
+VERSION = "2.9.119"
 UID = os.getuid()
 XDG_RUNTIME_DIR = "/run/user/%d" % UID
 
@@ -22645,6 +22646,225 @@ def mock_recommend():
             "persona": "Taylor"}
 
 
+# ---------------------------------------------------------------------------
+# STEAM WEB API — OPT-IN, and the box's ONE outbound internet call.
+#
+# The user pastes their own SteamID64 (or vanity profile name) + a free Steam Web
+# API key (steamcommunity.com/dev/apikey) in the app's Advanced settings. With it
+# the box MAY call https://api.steampowered.com to enrich What-to-Play and show
+# the user's OWN Steam data. This is the ONLY place the agent talks to the
+# internet; it is OFF unless the user configures it; nothing about the box leaves
+# — only the user's key rides out, to Steam, over HTTPS. The key is stored 0600 in
+# the user's OWN config dir (no root, no helper), NEVER logged, NEVER returned
+# (masked in the status), and cleared on disconnect. Every call is a single stdlib
+# GET with a FIXED host + FIXED path + validated params, so no client value can
+# steer the request (no SSRF), and every failure degrades to "unavailable" so the
+# local reco keeps working untouched.
+# ---------------------------------------------------------------------------
+_STEAM_WEBAPI_HOST = "https://api.steampowered.com"
+_STEAM_WEBAPI_CONF = os.path.expanduser("~/.config/couchside/steam_webapi.json")
+_STEAM_WEBAPI_TIMEOUT = 6.0
+_STEAM_WEBAPI = {"steamid64": None, "apikey": None}
+_STEAM_WEBAPI_LOCK = threading.Lock()
+_STEAM_SUMMARY_CACHE = {"ts": 0.0, "val": None}
+_STEAM_SUMMARY_TTL = 30.0
+
+
+def _valid_steamid64(s):
+    """A SteamID64 is exactly 17 ASCII digits in the individual-account range
+    (starts 7656119...). Reject anything else — never sanitise (section 3.6)."""
+    return (isinstance(s, str) and len(s) == 17 and s.isascii() and s.isdigit()
+            and s.startswith("7656119"))
+
+
+def _valid_steam_apikey(s):
+    """A Steam Web API key is exactly 32 hex characters. Reject anything else."""
+    if not isinstance(s, str) or len(s) != 32 or not s.isascii():
+        return False
+    try:
+        int(s, 16)
+        return True
+    except ValueError:
+        return False
+
+
+def _valid_steam_vanity(s):
+    """A vanity segment: 2-64 chars of [A-Za-z0-9_-]. The strict charset means it
+    can never carry a path or query separator into the request."""
+    return isinstance(s, str) and bool(re.fullmatch(r"[A-Za-z0-9_-]{2,64}", s))
+
+
+def _mask_apikey(key):
+    """Show only the last 4 of a key, never the whole thing."""
+    if not isinstance(key, str) or len(key) < 4:
+        return None
+    return "•" * (len(key) - 4) + key[-4:]
+
+
+def _steam_webapi_load():
+    """Read the stored {steamid64, apikey} into memory at startup. Degrade closed:
+    a missing / unreadable / garbage / ill-formed file leaves the feature simply
+    off. Never raises."""
+    try:
+        with open(_STEAM_WEBAPI_CONF, "r", encoding="utf-8") as fh:
+            d = json.load(fh)
+        sid = d.get("steamid64")
+        key = d.get("apikey")
+        if _valid_steamid64(sid) and _valid_steam_apikey(key):
+            with _STEAM_WEBAPI_LOCK:
+                _STEAM_WEBAPI["steamid64"] = sid
+                _STEAM_WEBAPI["apikey"] = key
+    except Exception:
+        pass
+
+
+def _steam_webapi_save(steamid64, apikey):
+    """Persist the key 0600 in the user's OWN config dir via temp-file + os.replace.
+    The agent runs as the user, so this needs no root and touches nothing outside
+    ~/.config/couchside. Returns True on success. Sets 0600 BEFORE any bytes land."""
+    directory = os.path.dirname(_STEAM_WEBAPI_CONF)
+    try:
+        os.makedirs(directory, exist_ok=True)
+    except OSError:
+        return False
+    if not os.access(directory, os.W_OK | os.X_OK):
+        return False
+    fd, tmp = tempfile.mkstemp(prefix=".couchside-steam-", dir=directory)
+    try:
+        os.fchmod(fd, 0o600)
+        with os.fdopen(fd, "w", encoding="utf-8") as f:
+            json.dump({"steamid64": steamid64, "apikey": apikey}, f)
+            f.write("\n")
+            f.flush()
+            os.fsync(f.fileno())
+        os.replace(tmp, _STEAM_WEBAPI_CONF)
+    except Exception:
+        try:
+            os.unlink(tmp)
+        except OSError:
+            pass
+        return False
+    with _STEAM_WEBAPI_LOCK:
+        _STEAM_WEBAPI["steamid64"] = steamid64
+        _STEAM_WEBAPI["apikey"] = apikey
+    _STEAM_SUMMARY_CACHE["ts"] = 0.0
+    _STEAM_SUMMARY_CACHE["val"] = None
+    return True
+
+
+def _steam_webapi_clear():
+    """Forget the key: wipe memory + delete the file. Never raises."""
+    with _STEAM_WEBAPI_LOCK:
+        _STEAM_WEBAPI["steamid64"] = None
+        _STEAM_WEBAPI["apikey"] = None
+    _STEAM_SUMMARY_CACHE["ts"] = 0.0
+    _STEAM_SUMMARY_CACHE["val"] = None
+    try:
+        os.unlink(_STEAM_WEBAPI_CONF)
+    except OSError:
+        pass
+
+
+def _steam_webapi_configured():
+    with _STEAM_WEBAPI_LOCK:
+        return bool(_STEAM_WEBAPI["steamid64"] and _STEAM_WEBAPI["apikey"])
+
+
+def _steam_api_get(interface, method, version, params, timeout=_STEAM_WEBAPI_TIMEOUT):
+    """ONE Steam Web API GET. `interface`, `method`, `version` are FIXED literals
+    the CALLER chose (never client input); `params` are validated values. Host +
+    path are fixed, so nothing client-shaped steers the request (no SSRF). Returns
+    the parsed JSON dict, or None on ANY failure (degrade closed). The URL carries
+    the secret key, so it is NEVER logged and no exception text is surfaced."""
+    try:
+        query = urllib.parse.urlencode(params)
+        url = "%s/%s/%s/v%s/?%s" % (_STEAM_WEBAPI_HOST, interface, method,
+                                    version, query)
+        req = urllib.request.Request(
+            url, headers={"User-Agent": "couchside-agent/%s" % VERSION})
+        with urllib.request.urlopen(req, timeout=timeout) as r:
+            if getattr(r, "status", 200) != 200:
+                return None
+            return json.loads(r.read(1 << 20).decode("utf-8", "replace"))
+    except Exception:
+        return None
+
+
+def _steam_get_summary(steamid64, apikey):
+    """The owner's ISteamUser/GetPlayerSummaries entry, or None. Doubles as the
+    key-validity probe: a bad key or profile yields no player."""
+    d = _steam_api_get("ISteamUser", "GetPlayerSummaries", "0002",
+                       {"key": apikey, "steamids": steamid64})
+    try:
+        players = d["response"]["players"]
+        for p in players:
+            if str(p.get("steamid")) == steamid64:
+                return p
+        return players[0] if players else None
+    except Exception:
+        return None
+
+
+def _steam_resolve_vanity(vanity, apikey):
+    """Resolve a vanity profile name to a SteamID64 via ISteamUser/ResolveVanityURL,
+    or None, so the user can paste their profile name instead of the 17-digit id."""
+    d = _steam_api_get("ISteamUser", "ResolveVanityURL", "0001",
+                       {"key": apikey, "vanityurl": vanity})
+    try:
+        r = d["response"]
+        if r.get("success") == 1 and _valid_steamid64(str(r.get("steamid"))):
+            return str(r["steamid"])
+    except Exception:
+        pass
+    return None
+
+
+def _steam_summary_cached():
+    """The owner's profile summary with a short TTL cache, so the status route does
+    not hammer Steam. None when unconfigured or unreachable."""
+    if not _steam_webapi_configured():
+        return None
+    now = time.monotonic()
+    if (_STEAM_SUMMARY_CACHE["val"] is not None
+            and now - _STEAM_SUMMARY_CACHE["ts"] < _STEAM_SUMMARY_TTL):
+        return _STEAM_SUMMARY_CACHE["val"]
+    with _STEAM_WEBAPI_LOCK:
+        sid = _STEAM_WEBAPI["steamid64"]
+        key = _STEAM_WEBAPI["apikey"]
+    summ = _steam_get_summary(sid, key)
+    if summ is not None:
+        _STEAM_SUMMARY_CACHE["ts"] = now
+        _STEAM_SUMMARY_CACHE["val"] = summ
+    return summ
+
+
+def _steam_webapi_status():
+    """The GET /api/steam/webapi body: whether a key is configured, the MASKED key,
+    and a live connectivity check (persona/avatar) when reachable. NEVER returns the
+    full key. Additive / probe-and-appear (absent route on older agents)."""
+    with _STEAM_WEBAPI_LOCK:
+        sid = _STEAM_WEBAPI["steamid64"]
+        key = _STEAM_WEBAPI["apikey"]
+    if not (sid and key):
+        return {"configured": False}
+    summ = _steam_summary_cached()
+    body = {"configured": True, "steamid64": sid,
+            "apikey_masked": _mask_apikey(key),
+            "connected": summ is not None}
+    if summ is not None:
+        body["persona"] = summ.get("personaname")
+        body["avatar"] = summ.get("avatarmedium") or summ.get("avatar")
+    return body
+
+
+def mock_steam_webapi_status():
+    """Harness: the CONNECTED state, so the app's Steam-integration card can be
+    driven without a real key."""
+    return {"configured": True, "steamid64": "76561197960287930",
+            "apikey_masked": "•" * 28 + "AB12", "connected": True,
+            "persona": "Taylor", "avatar": "https://avatars.example/steam.jpg"}
+
+
 def _gaming_payload():
     """The /api/gaming body — every field independently optional; omit anything
     that could not be read rather than emit a null the app must special-case.
@@ -26243,6 +26463,13 @@ class Handler(BaseHTTPRequestHandler):
                 else:
                     data = mock_gaming() if self.mock else _gaming_payload()
                     self._send(200, data, started)
+            elif path == "/api/steam/webapi":
+                # Opt-in Steam Web API status: is a key configured, and does it
+                # connect (persona/avatar). NEVER returns the full key (masked).
+                # Probe-and-appear (absent on older agents). Bearer-gated: the
+                # do_GET auth gate above already ran.
+                self._send(200, {"configured": False} if self.mock
+                           else _steam_webapi_status(), started)
             elif path == "/api/recommend":
                 # "What to play next" — ranks INSTALLED Steam games from local play
                 # history (hours + recency). READ-ONLY: it recommends, it never
@@ -26735,6 +26962,53 @@ class Handler(BaseHTTPRequestHandler):
                 ok = steam_goto(place)
                 self._send(200 if ok else 500,
                            {"ok": bool(ok), "id": place}, started)
+                return
+            if path == "/api/steam/webapi":
+                # Store the user's Steam Web API key + SteamID64 (or resolve a
+                # vanity name). The key is a SECRET: bearer-gated (the auth gate
+                # above already ran), validated by FORMAT (reject, never sanitise),
+                # TESTED against Steam before storing, kept 0600 in the user's OWN
+                # config dir, and NEVER echoed back (the GET masks it). Degrade
+                # closed: if Steam does not accept the pair, a 400 and nothing is
+                # stored.
+                try:
+                    req = json.loads(body.decode("utf-8")) if body else {}
+                    if not isinstance(req, dict):
+                        raise ValueError("body must be a JSON object")
+                except (ValueError, TypeError, UnicodeDecodeError):
+                    self._send(400, {"error": "body must be a JSON object"}, started)
+                    return
+                apikey = req.get("apikey")
+                if not _valid_steam_apikey(apikey):
+                    self._send(400, {"error": "apikey must be 32 hex characters"}, started)
+                    return
+                if self.mock:
+                    self._send(200, mock_steam_webapi_status(), started)
+                    return
+                sid = req.get("steamid64")
+                if not _valid_steamid64(sid):
+                    vanity = req.get("vanity")
+                    if _valid_steam_vanity(vanity):
+                        sid = _steam_resolve_vanity(vanity, apikey)
+                        if not sid:
+                            self._send(400, {"error": "could not resolve that Steam profile name (check the name and the key)"}, started)
+                            return
+                    else:
+                        self._send(400, {"error": "provide steamid64 (17 digits) or a vanity profile name"}, started)
+                        return
+                if _steam_get_summary(sid, apikey) is None:
+                    self._send(400, {"error": "Steam did not accept that key + profile (check both, and that the key has no domain restriction)"}, started)
+                    return
+                if not _steam_webapi_save(sid, apikey):
+                    self._send(500, {"error": "could not save the Steam key on the box"}, started)
+                    return
+                self._send(200, _steam_webapi_status(), started)
+                return
+            if path == "/api/steam/webapi/disconnect":
+                # Forget the stored key. Bearer-gated, idempotent.
+                if not self.mock:
+                    _steam_webapi_clear()
+                self._send(200, {"configured": False}, started)
                 return
             if path == "/api/steam/menus":
                 # _read_body() hands back BYTES, not a parsed object — decode
@@ -29762,6 +30036,7 @@ def main():
     args = p.parse_args()
 
     load_config(args.config)
+    _steam_webapi_load()  # opt-in Steam Web API key (user-owned, degrade-closed)
     if args.arm_boot_session:
         # Nothing else runs: no server, no probes, no capability scan. Just
         # write the drop-in and get out of the shutdown's way.
