@@ -140,6 +140,31 @@ finally:
 
 
 # ---------------------------------------------------------------------------
+print("\nTOCTOU: an account switch DURING a fetch is not cached (audit fix)")
+# ---------------------------------------------------------------------------
+_saved2 = {k: getattr(cs, k) for k in ("_steam_get_wishlist", "_steam_store_get")}
+try:
+    _configure()  # account A
+    cs._STEAM_WISHLIST_CACHE["ts"] = 0.0
+    cs._STEAM_WISHLIST_CACHE["val"] = None
+
+    def _switch_midfetch(sid, key):
+        # A concurrent POST switches the box to account B while this fetch runs.
+        with cs._STEAM_WEBAPI_LOCK:
+            cs._STEAM_WEBAPI["steamid64"] = "76561198000000009"
+        return ["1086940"]
+    cs._steam_get_wishlist = _switch_midfetch
+    cs._steam_store_get = _fake_store
+    cs._steam_wishlist_payload()
+    check(cs._STEAM_WISHLIST_CACHE["val"] is None,
+          "account switched mid-fetch -> result NOT written to cache (no bleed)")
+finally:
+    for k, v in _saved2.items():
+        setattr(cs, k, v)
+    _unconfigure()
+
+
+# ---------------------------------------------------------------------------
 print("\ncache invalidation on reconfigure (no cross-account bleed)")
 # ---------------------------------------------------------------------------
 import tempfile

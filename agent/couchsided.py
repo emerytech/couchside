@@ -22784,6 +22784,14 @@ def _steam_webapi_configured():
         return bool(_STEAM_WEBAPI["steamid64"] and _STEAM_WEBAPI["apikey"])
 
 
+def _steam_cache_ok(sid):
+    """True only if the box is STILL on the account `sid` that a fetch started for.
+    Guards every per-account cache WRITE so an in-flight fetch cannot resurrect a
+    slot that a concurrent account switch just wiped (TOCTOU)."""
+    with _STEAM_WEBAPI_LOCK:
+        return _STEAM_WEBAPI["steamid64"] == sid
+
+
 def _steam_api_get(interface, method, version, params, timeout=_STEAM_WEBAPI_TIMEOUT):
     """ONE Steam Web API GET. `interface`, `method`, `version` are FIXED literals
     the CALLER chose (never client input); `params` are validated values. Host +
@@ -22846,7 +22854,7 @@ def _steam_summary_cached():
         sid = _STEAM_WEBAPI["steamid64"]
         key = _STEAM_WEBAPI["apikey"]
     summ = _steam_get_summary(sid, key)
-    if summ is not None:
+    if summ is not None and _steam_cache_ok(sid):
         _STEAM_SUMMARY_CACHE["ts"] = now
         _STEAM_SUMMARY_CACHE["val"] = summ
     return summ
@@ -22926,7 +22934,7 @@ def _steam_owned_cached():
         sid = _STEAM_WEBAPI["steamid64"]
         key = _STEAM_WEBAPI["apikey"]
     games = _steam_get_owned(sid, key)
-    if games is not None:
+    if games is not None and _steam_cache_ok(sid):
         _STEAM_OWNED_CACHE["ts"] = now
         _STEAM_OWNED_CACHE["val"] = games
     return games
@@ -22943,7 +22951,7 @@ def _steam_level_cached():
         sid = _STEAM_WEBAPI["steamid64"]
         key = _STEAM_WEBAPI["apikey"]
     lv = _steam_get_level(sid, key)
-    if lv is not None:
+    if lv is not None and _steam_cache_ok(sid):
         _STEAM_LEVEL_CACHE["ts"] = now
         _STEAM_LEVEL_CACHE["val"] = lv
     return lv
@@ -23227,9 +23235,10 @@ def _steam_achievements_payload(appid):
                 "percent": int(round(100.0 * unlocked / total)) if total else 0,
                 "rarest": rarest}
     # bounded cache
-    if len(_STEAM_ACH_CACHE) >= _STEAM_ACH_CACHE_MAX:
-        _STEAM_ACH_CACHE.clear()
-    _STEAM_ACH_CACHE[appid] = {"ts": now, "val": body}
+    if _steam_cache_ok(sid):
+        if len(_STEAM_ACH_CACHE) >= _STEAM_ACH_CACHE_MAX:
+            _STEAM_ACH_CACHE.clear()
+        _STEAM_ACH_CACHE[appid] = {"ts": now, "val": body}
     return body
 
 
@@ -23322,8 +23331,9 @@ def _steam_wishlist_payload():
             it["name"] = name or ("App %s" % it["appid"])
     body = {"configured": True, "connected": True, "count": len(appids),
             "on_sale": on_sale[:_STEAM_WL_MAX]}
-    _STEAM_WISHLIST_CACHE["ts"] = now
-    _STEAM_WISHLIST_CACHE["val"] = body
+    if _steam_cache_ok(sid):
+        _STEAM_WISHLIST_CACHE["ts"] = now
+        _STEAM_WISHLIST_CACHE["val"] = body
     return body
 
 
