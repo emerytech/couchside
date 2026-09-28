@@ -9,8 +9,8 @@
  * Same access level as every other tab (wrapped in <Gated>): the recommender is
  * not a separate paywall, just part of the app.
  */
-import React, { useState } from 'react';
-import { ActivityIndicator, Image, Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
+import React, { useCallback, useEffect, useState } from 'react';
+import { ActivityIndicator, Image, Pressable, RefreshControl, ScrollView, StyleSheet, Text, View } from 'react-native';
 
 import { Gated } from '@/components/Gated';
 import { TabScreen } from '@/components/TabScreen';
@@ -50,6 +50,22 @@ function PlayScreen() {
   const hero = picks[sel] ?? picks[0];
   const [launching, setLaunching] = useState<string | null>(null);
 
+  // Pull-to-refresh: re-fetch the picks AND advance which one leads. The engine
+  // is deterministic, so a bare refetch would show the same hero; rotating `sel`
+  // means "none of these appeal — show me the next candidate" actually surfaces a
+  // different game, wrapping through the pool.
+  const [refreshing, setRefreshing] = useState(false);
+  const onRefresh = useCallback(() => {
+    hapticLight();
+    setSel((s) => (picks.length ? (s + 1) % picks.length : 0));
+    setRefreshing(true);
+    poll.refresh();
+  }, [picks.length, poll]);
+  // End the spinner once the refetch settles.
+  useEffect(() => {
+    if (refreshing && !poll.loading) setRefreshing(false);
+  }, [refreshing, poll.loading]);
+
   // Greeting: prefer the box's most-recent Steam persona (agent >= 2.9.118), else
   // the box's name. Absent persona just falls back — probe-and-appear.
   const boxName = activeBox?.name ?? 'your box';
@@ -85,7 +101,11 @@ function PlayScreen() {
 
   return (
     <ScrollView showsVerticalScrollIndicator={false}
-      contentContainerStyle={styles.scroll}>
+      contentContainerStyle={styles.scroll}
+      refreshControl={
+        <RefreshControl refreshing={refreshing} onRefresh={onRefresh}
+          tintColor={t.green} colors={[t.green]} />
+      }>
       <Text style={styles.eyebrow}>{eyebrow}</Text>
       <Text style={styles.h1}>What to play next</Text>
 
