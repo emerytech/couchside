@@ -33,6 +33,8 @@ export function SteamIntegrationCard() {
   const [apiKey, setApiKey] = useState('');
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  // Once set up, the card collapses to a one-line summary; tap the header to expand.
+  const [expanded, setExpanded] = useState(false);
 
   const refresh = useCallback(async () => {
     if (!ready || !configured) return;
@@ -90,15 +92,29 @@ export function SteamIntegrationCard() {
   // Probe-and-appear: an agent without the feature returns null -> render nothing.
   if (status === null) return null;
 
+  const collapsible = !!status && status.configured;
+
   return (
     <View style={styles.card}>
-      <View style={styles.headerRow}>
+      <Pressable
+        onPress={() => collapsible && setExpanded((e) => !e)}
+        disabled={!collapsible}
+        style={styles.headerRow}>
         <Text style={styles.title}>STEAM INTEGRATION</Text>
         <View style={styles.advChip}><Text style={styles.advChipTxt}>ADVANCED</Text></View>
-      </View>
+        {collapsible ? (
+          <Text style={styles.chevron}>{expanded ? '▴' : '▾'}</Text>
+        ) : null}
+      </Pressable>
 
       {status === undefined ? (
         <ActivityIndicator color={t.green} style={{ marginVertical: 16 }} />
+      ) : status.configured && !expanded ? (
+        <Text style={styles.collapsedSummary} numberOfLines={1}>
+          {status.persona ?? 'Steam account'}
+          {'  ·  '}{status.connected ? 'Connected' : 'Saved — Steam unreachable'}
+          {status.apikey_masked ? `  ·  key ${status.apikey_masked}` : ''}
+        </Text>
       ) : status.configured ? (
         <View style={styles.connectedBox}>
           <View style={styles.connectedRow}>
@@ -188,6 +204,8 @@ const makeStyles = (t: Palette) =>
     },
     headerRow: { flexDirection: 'row', alignItems: 'center', gap: 8, marginBottom: 10 },
     title: { color: t.textFaint, fontFamily: mono, fontSize: 11, letterSpacing: 1.5 },
+    chevron: { color: t.textDim, fontSize: 14, marginLeft: 'auto', paddingLeft: 8 },
+    collapsedSummary: { color: t.textDim, fontSize: 13 },
     advChip: {
       backgroundColor: t.bg, borderColor: t.cardBorder, borderWidth: 1,
       borderRadius: 6, paddingHorizontal: 6, paddingVertical: 2,

@@ -168,7 +168,8 @@ try:
     cs._steam_wishlist_payload = _switch
     cs._steam_wl_ack()
     ondisk = cs._steam_wl_watch_load()
-    check(SID_A not in ondisk, "account switched mid-ack -> NOT written under account A", ondisk)
+    check(SID_A not in ondisk and SID_B not in ondisk,
+          "account switched mid-ack -> NOTHING written (sid captured before fetch; guard skips)", ondisk)
 finally:
     for k, v in _saved2.items():
         setattr(cs, k, v)

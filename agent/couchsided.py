@@ -23441,12 +23441,15 @@ def _steam_wl_alerts_payload():
     "everything dropped" alert."""
     if not _steam_webapi_configured():
         return {"configured": False}
+    # Capture the account BEFORE the fetch so the baseline we diff against belongs
+    # to the same account the on_sale list was fetched for (a mid-fetch account
+    # switch must not mix one account's prices with another's baseline).
+    with _STEAM_WEBAPI_LOCK:
+        sid = _STEAM_WEBAPI["steamid64"]
     wl = _steam_wishlist_payload()
     if not wl.get("connected"):
         return {"configured": True, "connected": False}
     on_sale = wl.get("on_sale") or []
-    with _STEAM_WEBAPI_LOCK:
-        sid = _STEAM_WEBAPI["steamid64"]
     seen = _steam_wl_watch_load().get(sid)
     primed = isinstance(seen, dict)
     seen = seen if isinstance(seen, dict) else {}
@@ -23494,14 +23497,14 @@ def _steam_wl_ack():
     after this. Guarded against a concurrent account switch (TOCTOU)."""
     if not _steam_webapi_configured():
         return {"ok": False}
-    wl = _steam_wishlist_payload()
-    if not wl.get("connected"):
-        return {"ok": False, "connected": False}
-    on_sale = wl.get("on_sale") or []
     with _STEAM_WEBAPI_LOCK:
         sid = _STEAM_WEBAPI["steamid64"]
     if not sid:
         return {"ok": False}
+    wl = _steam_wishlist_payload()
+    if not wl.get("connected"):
+        return {"ok": False, "connected": False}
+    on_sale = wl.get("on_sale") or []
     allw = _steam_wl_watch_load()
     try:
         allw[sid] = {it["appid"]: int(it["final"]) for it in on_sale}

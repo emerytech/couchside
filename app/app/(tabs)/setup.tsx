@@ -1486,12 +1486,6 @@ function SetupBody() {
 
         {tab === 'prefs' && (
           <PrefFilterCtx.Provider value={prefFilter}>
-            {/* Advanced: opt-in Steam Web API key. Self-hides on an agent
-                without the feature (probe-and-appear) and on a non-Steam box. */}
-            {activeBox?.caps?.steam !== false && <SteamIntegrationCard />}
-            {/* ITAD all-time-low prices — a SEPARATE opt-in next to the Steam key.
-                Probe-and-appear (api.itadStatus -> null on an older agent). */}
-            {activeBox?.caps?.steam !== false && <ItadIntegrationCard />}
             {/* Find-as-you-type. ~25 controls across six groups is past the
                 point where scanning works, and half of them live in one card.
                 Filtering beats reorganising here: it costs no navigation layer
@@ -2358,6 +2352,12 @@ function SetupBody() {
                 }}
               />
             </PrefSection>
+            {/* Advanced integrations live at the BOTTOM — opt-in, and each collapses
+                to a one-line summary once it's set up. Hidden while filtering (they
+                aren't matchable pref rows). Probe-and-appear: self-hide on an agent
+                without the feature and on a non-Steam box. */}
+            {!prefQuery && activeBox?.caps?.steam !== false && <SteamIntegrationCard />}
+            {!prefQuery && activeBox?.caps?.steam !== false && <ItadIntegrationCard />}
             {prefNoMatch && <PrefNoMatches query={prefQuery.trim()} />}
           </PrefFilterCtx.Provider>
         )}
