@@ -1,4 +1,3 @@
-• Crash reports you can send: Setup › Account › App error log keeps recent errors to copy or share (nothing is sent automatically).
-• "Closed unexpectedly" now appears only after a real crash, not after an update or force-stop.
-• Console shows "Box installation is damaged" with the one command that fixes it (box service 2.9.116+).
-• Ready for the next box service: live CPU, GPU and battery meters on LED strips, and a playtime countdown.
+• Your Steam library, on the couch: the Play tab recommends what to play tonight, shows your profile and playtime, and launches on the box in one tap.
+• Deals & wishlist: see what's on sale and — with a free IsThereAnyDeal key — which games are at their LOWEST price ever, plus a heads-up when a wishlist game drops.
+• Polished confirm dialogs; Advanced settings tidied up.
