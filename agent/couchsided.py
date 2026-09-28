@@ -23154,7 +23154,7 @@ _STEAM_ACH_CACHE_MAX = 32
 
 def _valid_appid(s):
     """A Steam appid is 1-7 ASCII digits. Reject anything else (never sanitise)."""
-    return isinstance(s, str) and 1 <= len(s) <= 7 and s.isdigit()
+    return isinstance(s, str) and 1 <= len(s) <= 7 and s.isascii() and s.isdigit()
 
 
 def _steam_get_global_pct(appid):
