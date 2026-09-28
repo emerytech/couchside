@@ -53,7 +53,7 @@ except ImportError:  # pragma: no cover
     fcntl = None
 
 APP_NAME = "couchside-agent"
-VERSION = "2.9.120"
+VERSION = "2.9.121"
 UID = os.getuid()
 XDG_RUNTIME_DIR = "/run/user/%d" % UID
 
@@ -23039,6 +23039,107 @@ def mock_steam_library_payload():
                 {"appid": "413150", "name": "Stardew Valley", "hours": 0.9}]}
 
 
+# --- "On sale now": current Steam specials, KEYLESS from the public Storefront.
+# A SECOND fixed host (store.steampowered.com; no key, no account). Still gated on
+# the Steam integration being ON, so ALL Steam outbound stays behind the ONE opt-in.
+# The region is the box's OWN country (from its locale) or "us", validated to two
+# lowercase letters so it can never carry anything into the request. Cached ~1h;
+# degrade closed. No secret is involved. NOT per-account, so no save/clear reset.
+_STEAM_STORE_HOST = "https://store.steampowered.com"
+_STEAM_DEALS_CACHE = {"ts": 0.0, "val": None, "cc": None}
+_STEAM_DEALS_TTL = 3600.0
+
+
+def _steam_country():
+    """A 2-letter lowercase country for Storefront pricing, from the box locale, or
+    'us'. The regex guarantees the result is exactly [a-z]{2}, so it can only ever be
+    a country code in the request."""
+    for var in ("LC_ALL", "LC_MONETARY", "LANG"):
+        m = re.search(r"_([A-Za-z]{2})", os.environ.get(var) or "")
+        if m:
+            return m.group(1).lower()
+    return "us"
+
+
+def _steam_store_get(endpoint, params, timeout=_STEAM_WEBAPI_TIMEOUT):
+    """ONE public Storefront GET (no key). `endpoint` is a FIXED literal the caller
+    chose; `params` are validated values. Fixed host + HTTPS + urlencoded query, so
+    no value steers the host/path. Returns parsed JSON or None (degrade closed).
+    Never logs; there is no secret on this path."""
+    try:
+        url = "%s/api/%s?%s" % (_STEAM_STORE_HOST, endpoint,
+                                urllib.parse.urlencode(params))
+        req = urllib.request.Request(
+            url, headers={"User-Agent": "couchside-agent/%s" % VERSION})
+        with urllib.request.urlopen(req, timeout=timeout) as r:
+            if getattr(r, "status", 200) != 200:
+                return None
+            return json.loads(r.read(1 << 21).decode("utf-8", "replace"))
+    except Exception:
+        return None
+
+
+def _steam_featured(cc):
+    """Current specials from featuredcategories, as a slim list, or None. Prices are
+    in the currency's minor units (cents). Skips any malformed item."""
+    d = _steam_store_get("featuredcategories", {"cc": cc, "l": "english"})
+    try:
+        items = d["specials"]["items"]
+    except Exception:
+        return None
+    if not isinstance(items, list):
+        return None
+    out = []
+    for it in items:
+        if not isinstance(it, dict) or it.get("id") is None:
+            continue
+
+        def _int(k):
+            try:
+                return int(it.get(k) or 0)
+            except (TypeError, ValueError):
+                return 0
+        out.append({"appid": str(it.get("id")),
+                    "name": it.get("name") or ("App %s" % it.get("id")),
+                    "discount_percent": _int("discount_percent"),
+                    "final": _int("final_price"),
+                    "original": _int("original_price"),
+                    "currency": it.get("currency") or ""})
+    return out
+
+
+def _steam_deals_payload():
+    """GET /api/steam/deals: the "on sale now" row. Gated on the Steam integration
+    being ON (keeps ALL Steam outbound behind the one opt-in). {"configured": False}
+    without it; connected:False when the Storefront is unreachable."""
+    if not _steam_webapi_configured():
+        return {"configured": False}
+    cc = _steam_country()
+    now = time.monotonic()
+    if (_STEAM_DEALS_CACHE["val"] is not None and _STEAM_DEALS_CACHE["cc"] == cc
+            and now - _STEAM_DEALS_CACHE["ts"] < _STEAM_DEALS_TTL):
+        items = _STEAM_DEALS_CACHE["val"]
+    else:
+        items = _steam_featured(cc)
+        if items is not None:
+            _STEAM_DEALS_CACHE["ts"] = now
+            _STEAM_DEALS_CACHE["val"] = items
+            _STEAM_DEALS_CACHE["cc"] = cc
+    if items is None:
+        return {"configured": True, "connected": False}
+    return {"configured": True, "connected": True, "region": cc, "items": items[:20]}
+
+
+def mock_steam_deals_payload():
+    return {"configured": True, "connected": True, "region": "us", "items": [
+        {"appid": "1245620", "name": "Elden Ring", "discount_percent": 30,
+         "final": 4199, "original": 5999, "currency": "USD"},
+        {"appid": "1091500", "name": "Cyberpunk 2077", "discount_percent": 50,
+         "final": 2999, "original": 5999, "currency": "USD"},
+        {"appid": "413150", "name": "Stardew Valley", "discount_percent": 20,
+         "final": 1199, "original": 1499, "currency": "USD"}]}
+
+
 def _gaming_payload():
     """The /api/gaming body — every field independently optional; omit anything
     that could not be read rather than emit a null the app must special-case.
@@ -26655,6 +26756,12 @@ class Handler(BaseHTTPRequestHandler):
                 # recently played) from one GetOwnedGames call. Probe-and-appear.
                 self._send(200, mock_steam_library_payload() if self.mock
                            else _steam_library_payload(), started)
+            elif path == "/api/steam/deals":
+                # Opt-in "on sale now" row (keyless public Storefront). Gated on the
+                # Steam integration being on so all Steam outbound stays behind one
+                # toggle; probe-and-appear. Bearer-gated: the do_GET gate ran.
+                self._send(200, mock_steam_deals_payload() if self.mock
+                           else _steam_deals_payload(), started)
             elif path == "/api/recommend":
                 # "What to play next" — ranks INSTALLED Steam games from local play
                 # history (hours + recency). READ-ONLY: it recommends, it never

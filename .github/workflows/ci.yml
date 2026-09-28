@@ -171,6 +171,9 @@ jobs:
       - name: Unit tests (steam profile/library)
         run: python3 tests/test_steam_profile.py
 
+      - name: Unit tests (steam deals)
+        run: python3 tests/test_steam_deals.py
+
       # Adversarial-review fixes cut into agent 2.9.117. Pins that GET /api/leds
       # `effects` stays the 12 ids shipped apps can label (strip-only meters and the
       # countdown go through `reactive`, or apps <= 2.9.62 crash), that an all-dark
