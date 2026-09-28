@@ -255,6 +255,13 @@ function StoreRow({
 
 // ---------- the page ----------
 
+// STABLE reference — an inline options object re-fires expo-router's <Stack.Screen>
+// layout effect (navigation.setOptions) on every render, and this screen re-renders
+// constantly from its four polls, which ran setOptions away into "Maximum update
+// depth exceeded" (crash log 2026-09-28, screen /decky). A module const fixes it:
+// the effect's deps are stable, so setOptions runs once on mount.
+const SCREEN_OPTIONS = { headerShown: false };
+
 type ListItem =
   | { key: string; kind: 'plugin'; p: DeckyPlugin }
   | { key: string; kind: 'store'; e: DeckyStoreEntry }
@@ -875,7 +882,7 @@ export default function DeckyPage() {
 
   return (
     <View style={[styles.screen, { paddingTop: insets.top }]}>
-      <Stack.Screen options={{ headerShown: false }} />
+      <Stack.Screen options={SCREEN_OPTIONS} />
       <View style={styles.header}>
         <Pressable onPress={() => router.back()} hitSlop={12} accessibilityRole="button" accessibilityLabel="Back">
           <Ionicons name="chevron-back" size={26} color={t.text} />
