@@ -53,7 +53,7 @@ except ImportError:  # pragma: no cover
     fcntl = None
 
 APP_NAME = "couchside-agent"
-VERSION = "2.9.125"
+VERSION = "2.9.126"
 UID = os.getuid()
 XDG_RUNTIME_DIR = "/run/user/%d" % UID
 
@@ -22473,6 +22473,18 @@ def _reco_ago(days):
     return "%d months ago" % max(1, int(days / 30))
 
 
+def _reco_span(days):
+    """A DURATION (no 'ago') for 'untouched for %s' phrasing, so the reason reads
+    'untouched for 4 weeks' rather than the doubled 'untouched for 4 weeks ago'."""
+    if days is None or days < 1:
+        return "a while"
+    if days < 14:
+        return "%d days" % int(days)
+    if days < 60:
+        return "%d weeks" % int(days / 7)
+    return "%d months" % max(1, int(days / 30))
+
+
 def _reco_score(hours, days):
     """(score, bucket, tag, reason) for ONE game from local signals only -- total
     `hours` and `days` since last played (None = never). Higher score = better
@@ -22483,7 +22495,7 @@ def _reco_score(hours, days):
                 "%gh in · last played %s — pick the run back up." % (h, _reco_ago(days)))
     if hours >= 2 and days is not None and 7 <= days <= 75:
         return (72.0 - abs(days - 21) * 0.25, "unfinished", "Unfinished",
-                "%gh in · untouched for %s — unfinished business." % (h, _reco_ago(days)))
+                "%gh in · untouched for %s — unfinished business." % (h, _reco_span(days)))
     if hours > 30 and (days is None or days > 90):
         return (62.0 + min(hours, 120) * 0.1, "rediscover", "Rediscover",
                 "You loved this — %gh, %s." % (h, _reco_ago(days)))
@@ -23653,48 +23665,52 @@ def _itad_lookup_id(appid):
 
 def _itad_extract_lows(d):
     """Normalise the historylow response into {uuid: {amount, currency, shop?, date?}}.
-    ITAD has moved this shape around, so accept the object-keyed-by-uuid form, the
-    {games:{historylow:{...}}} form, and a list of {id, ...}. Degrade closed: a field
-    we can't read is skipped, never guessed."""
+    The real ITAD v2 shape is a TOP-LEVEL ARRAY of {id, low:{shop:{id,name},
+    price:{amount, amountInt, currency}, regular, cut, timestamp}} — the all-time-low
+    is at low.price.amount (NOT low.amount). A keyed-by-uuid object is accepted too
+    (defence). Degrade closed: a field we can't read is skipped, never guessed."""
     out = {}
 
-    def _one(uuid, v):
-        if not isinstance(v, dict):
+    def _one(uuid, low):
+        if not isinstance(low, dict):
             return
-        price = v.get("price") if isinstance(v.get("price"), dict) else v.get("low")
+        price = low.get("price")
         if not isinstance(price, dict):
             return
         try:
             amount = float(price.get("amount"))
         except (TypeError, ValueError):
             return
-        # NaN/Inf pass float() but serialise to invalid JSON (NaN/Infinity), which
-        # would make the ENTIRE /api/itad/lows body unparseable for the app. Reject.
+        # NaN/Inf pass float() but serialise to invalid JSON; reject.
         if amount != amount or amount == float("inf") or amount == float("-inf"):
             return
         rec = {"amount": round(amount, 2), "currency": str(price.get("currency") or "")}
-        shop = v.get("shop")
+        shop = low.get("shop")
         if isinstance(shop, dict) and shop.get("name"):
             rec["shop"] = str(shop["name"])
-        ts = v.get("timestamp") or v.get("date")
+        ts = low.get("timestamp") or low.get("date")
         if ts:
             rec["date"] = str(ts)[:10]
         out[str(uuid)] = rec
 
+    def _low_of(v):
+        # the record for a game: its {shop, price, ...} lives under "low"; some
+        # forms hand it back inline. Prefer the nested "low".
+        return v.get("low") if isinstance(v, dict) and isinstance(v.get("low"), dict) else v
+
     try:
         node = d
-        if isinstance(d, dict) and isinstance(d.get("games"), dict):
-            hl = d["games"].get("historylow")
-            if isinstance(hl, dict):
-                node = hl
-        if isinstance(node, dict):
-            for uuid, v in node.items():
-                if _valid_itad_id(str(uuid)):
-                    _one(uuid, v)
-        elif isinstance(node, list):
+        if (isinstance(d, dict) and isinstance(d.get("games"), dict)
+                and d["games"].get("historylow") is not None):
+            node = d["games"]["historylow"]
+        if isinstance(node, list):
             for it in node:
                 if isinstance(it, dict) and _valid_itad_id(str(it.get("id"))):
-                    _one(it.get("id"), it)
+                    _one(it.get("id"), _low_of(it))
+        elif isinstance(node, dict):
+            for uuid, v in node.items():
+                if _valid_itad_id(str(uuid)) and isinstance(v, dict):
+                    _one(uuid, _low_of(v))
     except Exception:
         return {}
     return out
@@ -23707,7 +23723,7 @@ def _itad_historylow(ids, cc):
     ids = [i for i in ids if _valid_itad_id(i)][:_ITAD_MAX_IDS]
     if not ids:
         return {}
-    d = _itad_request("POST", "games/historylow/v1", {"country": cc}, json_body=ids)
+    d = _itad_request("POST", "games/historylow/v1", {"country": (cc or "us").upper()}, json_body=ids)
     if d is None:
         return None
     return _itad_extract_lows(d)

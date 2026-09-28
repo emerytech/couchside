@@ -1,7 +1,5 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
-  Alert,
-  Platform,
   Pressable,
   ScrollView,
   StyleSheet,
@@ -13,6 +11,7 @@ import { useFocusEffect } from 'expo-router';
 import Ionicons from '@expo/vector-icons/Ionicons';
 
 import { ArmedActionBar } from '@/components/ArmedActionBar';
+import { useConfirm } from '@/components/ConfirmDialog';
 import { BootSessionCard } from '@/components/BootSessionCard';
 import { DeckyActionCard } from '@/components/DeckyActionCard';
 import { EditableSection } from '@/components/EditableSection';
@@ -75,19 +74,6 @@ const BADGE_TEXT: Record<Danger, string> = {
  *  absent (height ~0) so it shows no orphan reorder/hide controls. */
 const SECTION_ORDER = ['decky', 'boot', 'routine', 'medium', 'high'] as const;
 
-/** Confirm helper that also works on web (Alert buttons are no-ops on web). */
-function confirm(title: string, message: string, onConfirm: () => void) {
-  if (Platform.OS === 'web') {
-    // eslint-disable-next-line no-alert
-    if (typeof window !== 'undefined' && window.confirm(`${title}\n\n${message}`)) onConfirm();
-    return;
-  }
-  Alert.alert(title, message, [
-    { text: 'Cancel', style: 'cancel' },
-    { text: 'Run', style: 'destructive', onPress: onConfirm },
-  ]);
-}
-
 type RunRecord = {
   action: ActionInfo;
   result?: ActionResult;
@@ -110,6 +96,7 @@ function ActionsScreen() {
   const t = useTheme();
   const styles = useThemedStyles(makeStyles);
   const { settings, ready } = useSettings();
+  const confirm = useConfirm();
   const [run, setRun] = useState<RunRecord | null>(null);
 
   const DANGER_COLOR = useMemo<Record<Danger, string>>(
@@ -169,18 +156,23 @@ function ActionsScreen() {
   const { armed, arm, cancel, fireNow } = useArmedAction(hostKey(settings));
 
   const onTap = useCallback(
-    (action: ActionInfo) => {
+    async (action: ActionInfo) => {
       hapticLight();
-      confirm(action.label, `${action.description}\n\nRun this action?`, () => {
-        if (action.danger === 'high') {
-          // One confirm, then a cancellable countdown — not a second blind dialog.
-          arm(action.label, () => execute(action));
-        } else {
-          execute(action);
-        }
+      const ok = await confirm({
+        title: action.label,
+        message: `${action.description}\n\nRun this action?`,
+        confirmText: 'Run',
+        destructive: true,
       });
+      if (!ok) return;
+      if (action.danger === 'high') {
+        // One confirm, then a cancellable countdown — not a second blind dialog.
+        arm(action.label, () => execute(action));
+      } else {
+        execute(action);
+      }
     },
-    [execute, arm],
+    [execute, arm, confirm],
   );
 
   // Leaving the Actions tab also aborts a pending countdown. Tab screens are

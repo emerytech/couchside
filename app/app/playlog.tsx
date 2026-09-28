@@ -32,6 +32,7 @@ import {
 } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
+import { useConfirm } from '@/components/ConfirmDialog';
 import { GameSheet } from '@/components/GameSheet';
 import { useLockOrientation } from '@/hooks/useLockOrientation';
 import {
@@ -87,6 +88,7 @@ export default function PlaylogScreen() {
   const insets = useSafeAreaInsets();
   useLockOrientation('portrait'); // like every screen but the Pad
 
+  const confirm = useConfirm();
   const { settings, ready } = useSettings();
   const configured = settings.host.trim().length > 0;
   const marks = useLibraryMarks();
@@ -290,16 +292,12 @@ export default function PlaylogScreen() {
       }
     };
     const q = `Install "${name}"? A prompt appears on your box's screen to approve it — use a controller, or your phone's Pad.`;
-    if (Platform.OS === 'web') {
-      // eslint-disable-next-line no-alert
-      if (typeof window !== 'undefined' && window.confirm(q)) void go();
-      return;
-    }
-    Alert.alert('Install game', q, [
-      { text: 'Cancel', style: 'cancel' },
-      { text: 'Install', onPress: () => { void go(); } },
-    ]);
-  }, [settings]);
+    void (async () => {
+      const ok = await confirm({ title: 'Install game', message: q, confirmText: 'Install' });
+      if (!ok) return;
+      void go();
+    })();
+  }, [settings, confirm]);
 
   const clearNowPlaying = useCallback((l: Launcher) => {
     hapticLight();

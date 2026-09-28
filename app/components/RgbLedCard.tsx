@@ -28,6 +28,7 @@ import Ionicons from '@expo/vector-icons/Ionicons';
 import React, { useEffect, useRef, useState } from 'react';
 import { ActivityIndicator, Alert, Pressable, StyleSheet, Text, View } from 'react-native';
 
+import { useConfirm } from './ConfirmDialog';
 import { TrackSlider } from '@/components/TrackSlider';
 import { usePoll } from '@/hooks/usePoll';
 import {
@@ -90,6 +91,7 @@ function speedLabel(v: number): string {
 export function RgbLedCard() {
   const t = useTheme();
   const styles = useThemedStyles(makeStyles);
+  const confirm = useConfirm();
   const { Card } = useSkinKit();
   const { settings, ready } = useSettings();
   const configured = !!settings.host && !!settings.token;
@@ -220,15 +222,19 @@ export function RgbLedCard() {
     });
   };
 
-  const confirmDelete = (p: LedPreset) => {
+  const confirmDelete = async (p: LedPreset) => {
     if (isBuiltinPreset(p.id)) {
       Alert.alert('Built-in preset', `"${p.label}" is preinstalled and can't be deleted.`);
       return;
     }
-    Alert.alert('Delete preset', `Remove "${p.label}"?`, [
-      { text: 'Cancel', style: 'cancel' },
-      { text: 'Delete', style: 'destructive', onPress: () => void removePreset(p.id) },
-    ]);
+    const ok = await confirm({
+      title: 'Delete preset',
+      message: `Remove "${p.label}"?`,
+      confirmText: 'Delete',
+      destructive: true,
+    });
+    if (!ok) return;
+    void removePreset(p.id);
   };
 
   return (

@@ -17,6 +17,7 @@ import {
   Alert, KeyboardAvoidingView, Platform, Pressable, StyleSheet, Text, TextInput, View,
 } from 'react-native';
 
+import { useConfirm } from './ConfirmDialog';
 import { api } from '@/lib/api';
 import { hapticLight } from '@/lib/haptics';
 import { clearNote, getNoteText, NOTE_MAX, setNoteText, useNoteText } from '@/lib/note';
@@ -36,6 +37,7 @@ function notify(msg: string): void {
 export function NotePad({ settings }: { settings?: Settings }) {
   const t = useTheme();
   const styles = useThemedStyles(makeStyles);
+  const confirm = useConfirm();
   const text = useNoteText();
   const [pasting, setPasting] = useState(false);
 
@@ -43,18 +45,17 @@ export function NotePad({ settings }: { settings?: Settings }) {
   // agent, Windows, Game Mode, no wl-paste) hides the control entirely.
   const canPaste = settings?.caps?.wlclipboard === true;
 
-  const onClear = useCallback(() => {
-    const go = () => { hapticLight(); void clearNote(); };
-    if (Platform.OS === 'web') {
-      // eslint-disable-next-line no-alert
-      if (typeof window !== 'undefined' && window.confirm('Clear this note?')) go();
-      return;
-    }
-    Alert.alert('Clear note', 'Erase everything in this note?', [
-      { text: 'Cancel', style: 'cancel' },
-      { text: 'Clear', style: 'destructive', onPress: go },
-    ]);
-  }, []);
+  const onClear = useCallback(async () => {
+    const ok = await confirm({
+      title: 'Clear note',
+      message: 'Erase everything in this note?',
+      confirmText: 'Clear',
+      destructive: true,
+    });
+    if (!ok) return;
+    hapticLight();
+    void clearNote();
+  }, [confirm]);
 
   const onPasteFromBox = useCallback(async () => {
     if (!settings || pasting) return;

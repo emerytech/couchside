@@ -17,11 +17,12 @@
  */
 import Ionicons from '@expo/vector-icons/Ionicons';
 import { useCallback, useRef, useState } from 'react';
-import { Alert, Pressable, StyleSheet, Text, View } from 'react-native';
+import { Pressable, StyleSheet, Text, View } from 'react-native';
 
 import { usePoll } from '@/hooks/usePoll';
 import { useArmedAction } from '@/hooks/useArmedAction';
 import { ArmedActionBar } from '@/components/ArmedActionBar';
+import { useConfirm } from './ConfirmDialog';
 import { api, FlatpakStatus, hostKey, OsStatus } from '@/lib/api';
 import { flatpakStartMessage, isFlatpakUpdateComplete } from '@/lib/flatpakUpdate';
 import { hapticLight } from '@/lib/haptics';
@@ -90,6 +91,7 @@ function Row({
 export function SystemUpdatesCard() {
   const t = useTheme();
   const styles = useThemedStyles(makeStyles);
+  const confirm = useConfirm();
   const { settings } = useSettings();
   const configured = settings.host.trim().length > 0;
 
@@ -255,12 +257,16 @@ export function SystemUpdatesCard() {
       }
     })();
   }, [settings]);
-  const reboot = useCallback(() => {
-    Alert.alert('Reboot the box?', 'This applies the staged OS update. Any unsaved work will be lost.', [
-      { text: 'Cancel', style: 'cancel' },
-      { text: 'Reboot', style: 'destructive', onPress: () => arm('Reboot the box', runReboot) },
-    ]);
-  }, [arm, runReboot]);
+  const reboot = useCallback(async () => {
+    const ok = await confirm({
+      title: 'Reboot the box?',
+      message: 'This applies the staged OS update. Any unsaved work will be lost.',
+      confirmText: 'Reboot',
+      destructive: true,
+    });
+    if (!ok) return;
+    arm('Reboot the box', runReboot);
+  }, [arm, runReboot, confirm]);
 
   if (!configured || (!hasFp && !hasOs)) return null;
 

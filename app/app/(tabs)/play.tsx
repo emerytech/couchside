@@ -10,9 +10,10 @@
  * not a separate paywall, just part of the app.
  */
 import React, { useCallback, useEffect, useState } from 'react';
-import { ActivityIndicator, Alert, Image, Linking, Pressable, RefreshControl, ScrollView, StyleSheet, Text, View } from 'react-native';
+import { ActivityIndicator, Image, Linking, Pressable, RefreshControl, ScrollView, StyleSheet, Text, View } from 'react-native';
 
 import { NowPlayingCard } from '@/components/GamingCard';
+import { useConfirm } from '@/components/ConfirmDialog';
 
 import { Gated } from '@/components/Gated';
 import { TabScreen } from '@/components/TabScreen';
@@ -55,6 +56,7 @@ function PlayScreen() {
   const styles = useThemedStyles(makeStyles);
   const { settings, ready } = useSettings();
   const { activeBox } = useBoxes();
+  const confirm = useConfirm();
   const configured = !!settings.host && !!settings.token;
 
   const poll = usePoll<Recommendation | null>(
@@ -88,24 +90,18 @@ function PlayScreen() {
   const eyebrow = d?.persona ? `Evening, ${d.persona}` : `Tonight on ${boxName}`;
 
   // Confirm first — a stray tap on a game card shouldn't yank a game onto the TV.
-  const launch = (p: RecoPick) => {
+  const launch = async (p: RecoPick) => {
     if (launching) return;
     hapticLight();
-    Alert.alert(
-      'Launch on the box?',
-      `Start "${p.name}" on ${activeBox?.name ?? 'the box'}?`,
-      [
-        { text: 'Cancel', style: 'cancel' },
-        {
-          text: 'Launch',
-          onPress: () => {
-            hapticMedium();
-            setLaunching(p.appid);
-            void api.launch(settings, `steam:${p.appid}`).finally(() => setLaunching(null));
-          },
-        },
-      ],
-    );
+    const ok = await confirm({
+      title: 'Launch on the box?',
+      message: `Start "${p.name}" on ${activeBox?.name ?? 'the box'}?`,
+      confirmText: 'Launch',
+    });
+    if (!ok) return;
+    hapticMedium();
+    setLaunching(p.appid);
+    void api.launch(settings, `steam:${p.appid}`).finally(() => setLaunching(null));
   };
 
   const cover = (p: RecoPick) => api.steamCoverSource(settings, num(p.appid));

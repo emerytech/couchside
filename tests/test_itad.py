@@ -121,16 +121,24 @@ finally:
 # ---------------------------------------------------------------------------
 print("\n_itad_extract_lows — parses ITAD's shape variants, degrades closed")
 # ---------------------------------------------------------------------------
-keyed = {UUID_A: {"price": {"amount": 4.99, "currency": "USD"}, "shop": {"id": 61, "name": "Steam"}, "timestamp": "2023-11-24T00:00:00Z"}}
-nested = {"games": {"historylow": {UUID_B: {"price": {"amount": 9.5, "currency": "EUR"}, "timestamp": "2024-01-02"}}}}
-listed = [{"id": UUID_A, "low": {"amount": 1.0, "currency": "USD"}}]
-r1 = cs._itad_extract_lows(keyed)
-check(r1.get(UUID_A, {}).get("amount") == 4.99 and r1[UUID_A]["shop"] == "Steam" and r1[UUID_A]["date"] == "2023-11-24",
-      "object-keyed-by-uuid parsed (amount/shop/date)", r1)
-r2 = cs._itad_extract_lows(nested)
-check(r2.get(UUID_B, {}).get("amount") == 9.5 and r2[UUID_B]["currency"] == "EUR", "games.historylow form parsed", r2)
-r3 = cs._itad_extract_lows(listed)
-check(r3.get(UUID_A, {}).get("amount") == 1.0, "list-of-{id,low} form parsed", r3)
+# The REAL v2 shape (verified against ITAD's OpenAPI examples): a TOP-LEVEL array of
+# {id, low:{shop:{id,name}, price:{amount,amountInt,currency}, regular, cut, timestamp}}.
+# The all-time-low is at low.price.amount (NOT low.amount — that was the shipped bug).
+real = [{"id": UUID_A, "low": {"shop": {"id": 47, "name": "MacGameStore"},
+                               "price": {"amount": 3.99, "amountInt": 399, "currency": "USD"},
+                               "regular": {"amount": 19.99, "currency": "USD"}, "cut": 82,
+                               "timestamp": "2022-11-27T21:33:36+01:00"}}]
+r1 = cs._itad_extract_lows(real)
+check(r1.get(UUID_A, {}).get("amount") == 3.99 and r1[UUID_A]["currency"] == "USD"
+      and r1[UUID_A]["shop"] == "MacGameStore" and r1[UUID_A]["date"] == "2022-11-27",
+      "REAL array: low.price.amount / low.shop.name / low.timestamp", r1)
+# a keyed-by-uuid variant (defensive), record inline without a 'low' wrapper
+keyed = {UUID_B: {"price": {"amount": 9.5, "currency": "EUR"}, "shop": {"name": "GOG"}, "timestamp": "2024-01-02"}}
+r2 = cs._itad_extract_lows(keyed)
+check(r2.get(UUID_B, {}).get("amount") == 9.5 and r2[UUID_B]["currency"] == "EUR", "keyed-by-uuid variant parsed", r2)
+# the OLD shallow shape (low.amount, no low.price) must now yield NOTHING (that WAS the bug)
+check(cs._itad_extract_lows([{"id": UUID_A, "low": {"amount": 1.0, "currency": "USD"}}]) == {},
+      "low without a nested price object -> skipped (the bug's shape)")
 check(cs._itad_extract_lows({UUID_A: {"price": {"amount": "bad"}}}) == {}, "non-numeric amount skipped")
 check(cs._itad_extract_lows("garbage") == {}, "garbage -> {} (never raises)")
 check(cs._itad_extract_lows({UUID_A: {"price": {"amount": float("nan")}}}) == {}, "NaN amount omitted (would poison json)")
@@ -142,6 +150,22 @@ _json.dumps(_mixed)  # must be valid JSON (no NaN/Infinity tokens)
 
 
 # ---------------------------------------------------------------------------
+print("\n_itad_historylow — country is sent UPPERCASE (ITAD requires ISO alpha-2 upper)")
+# ---------------------------------------------------------------------------
+_capreq = cs._itad_request
+try:
+    seen = {}
+    def _cap(method, path, params, json_body=None, apikey=None, timeout=None):
+        seen["params"] = params
+        return [{"id": UUID_A, "low": {"price": {"amount": 5.0, "currency": "USD"}}}]
+    cs._itad_request = _cap
+    out = cs._itad_historylow([UUID_A], "de")
+    check(seen.get("params", {}).get("country") == "DE", "lowercase 'de' -> 'DE' on the wire", seen)
+    check(out.get(UUID_A, {}).get("amount") == 5.0, "real-shape record parsed end-to-end", out)
+finally:
+    cs._itad_request = _capreq
+
+
 print("\n_itad_lows_payload — resolve, batch, bound, cache, omit, degrade")
 # ---------------------------------------------------------------------------
 _saved = {k: getattr(cs, k) for k in ("_itad_lookup_id", "_itad_historylow", "_itad_configured")}

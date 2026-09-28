@@ -8,6 +8,7 @@ import Ionicons from '@expo/vector-icons/Ionicons';
 import React, { useCallback, useState } from 'react';
 import { Modal, Pressable, StyleSheet, Text, View } from 'react-native';
 
+import { useConfirm } from './ConfirmDialog';
 import { api, ConnSettings, PowerSchedule } from '@/lib/api';
 import { hapticError, hapticLight, hapticWarning } from '@/lib/haptics';
 import { mono, numeric, useTheme, useThemedStyles } from '@/lib/theme';
@@ -42,6 +43,7 @@ export function SleepTimerSheet({
 }) {
   const t = useTheme();
   const styles = useThemedStyles(makeStyles);
+  const confirm = useConfirm();
   const [action, setAction] = useState<'suspend' | 'poweroff'>('suspend');
   const [busy, setBusy] = useState(false);
 
@@ -63,21 +65,19 @@ export function SleepTimerSheet({
       if (action === 'poweroff') {
         // Power off is not cancelable from the app once asleep; confirm.
         hapticWarning();
-        // eslint-disable-next-line no-alert
-        const { Alert, Platform } = require('react-native') as typeof import('react-native');
-        if (Platform.OS === 'web') {
-          if (typeof window !== 'undefined' && window.confirm(`Power off in ${minutes} min?`)) void doArm();
-          return;
-        }
-        Alert.alert('Power off', `Power the box off in ${minutes} minutes?`, [
-          { text: 'Cancel', style: 'cancel' },
-          { text: 'Power off', style: 'destructive', onPress: () => void doArm() },
-        ]);
+        const ok = await confirm({
+          title: 'Power off',
+          message: `Power the box off in ${minutes} minutes?`,
+          confirmText: 'Power off',
+          destructive: true,
+        });
+        if (!ok) return;
+        void doArm();
         return;
       }
       void doArm();
     },
-    [action, busy, settings, onChanged],
+    [action, busy, settings, onChanged, confirm],
   );
 
   const cancelSleep = useCallback(async () => {
