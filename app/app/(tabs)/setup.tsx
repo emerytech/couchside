@@ -5,7 +5,6 @@ import * as Linking from 'expo-linking';
 import { useLocalSearchParams, useRouter } from 'expo-router';
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
-  Alert,
   Image,
   KeyboardAvoidingView,
   Modal,
@@ -21,6 +20,7 @@ import {
 
 import { AgentUpdateBanner } from '@/components/AgentUpdateBanner';
 import { AppUpdateRow } from '@/components/AppUpdateRow';
+import { useConfirm } from '@/components/ConfirmDialog';
 import { SystemUpdatesCard } from '@/components/SystemUpdatesCard';
 import { DeckyCard } from '@/components/DeckyCard';
 import { Gated } from '@/components/Gated';
@@ -259,19 +259,6 @@ function dotColor(status: BoxReachability | undefined, t: Palette): string {
   if (status === 'reachable') return t.green;
   if (status === 'offline') return t.slate;
   return t.amber;
-}
-
-/** Cross-platform confirm (Alert buttons are no-ops on web). */
-function confirmRemove(name: string, onConfirm: () => void) {
-  if (Platform.OS === 'web') {
-    // eslint-disable-next-line no-alert
-    if (typeof window !== 'undefined' && window.confirm(`Remove "${name}"?`)) onConfirm();
-    return;
-  }
-  Alert.alert('Remove box', `Remove "${name}"?`, [
-    { text: 'Cancel', style: 'cancel' },
-    { text: 'Remove', style: 'destructive', onPress: onConfirm },
-  ]);
 }
 
 /**
@@ -890,6 +877,7 @@ function SetupBody() {
   const [prefQuery, setPrefQuery] = useState('');
   const t = useTheme();
   const styles = useThemedStyles(makeStyles);
+  const confirm = useConfirm();
   // While a query is active the card chrome dissolves. Two things go wrong
   // without it: a card whose every row was filtered out still draws as an empty
   // bordered box, and the cards that DO have a hit chop the survivors into
@@ -1348,7 +1336,15 @@ function SetupBody() {
                       <Text style={styles.iconBtnText}>EDIT</Text>
                     </Pressable>
                     <Pressable
-                      onPress={() => confirmRemove(box.name, () => void removeBox(box.id))}
+                      onPress={async () => {
+                        const ok = await confirm({
+                          title: 'Remove box',
+                          message: `Remove "${box.name}"?`,
+                          confirmText: 'Remove',
+                          destructive: true,
+                        });
+                        if (ok) void removeBox(box.id);
+                      }}
                       hitSlop={8}
                       style={styles.iconBtn}>
                       <Text style={[styles.iconBtnText, { color: t.red }]}>REMOVE</Text>

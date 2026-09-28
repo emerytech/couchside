@@ -1,8 +1,9 @@
 import Ionicons from '@expo/vector-icons/Ionicons';
 import React from 'react';
-import { Alert, Modal, PanResponder, Platform, Pressable, StyleSheet, Text, View } from 'react-native';
+import { Alert, Modal, PanResponder, Pressable, StyleSheet, Text, View } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
+import { useConfirm } from './ConfirmDialog';
 import { CouchModeSheet } from '@/components/CouchModeSheet';
 import { ControllerWakeSheet } from '@/components/ControllerWakeSheet';
 import { ScreensaverSheet } from '@/components/ScreensaverSheet';
@@ -19,19 +20,6 @@ import type { Palette } from '@/lib/theme';
 import { sendWol, wolAvailable } from '@/lib/wol';
 
 type IoniconName = React.ComponentProps<typeof Ionicons>['name'];
-
-/** Confirm dialog; on web Alert buttons are no-ops, so use window.confirm there. */
-function confirmSuspend(message: string, onConfirm: () => void) {
-  if (Platform.OS === 'web') {
-    // eslint-disable-next-line no-alert
-    if (typeof window !== 'undefined' && window.confirm(message)) onConfirm();
-    return;
-  }
-  Alert.alert('Suspend box', message, [
-    { text: 'Cancel', style: 'cancel' },
-    { text: 'Suspend', style: 'default', onPress: onConfirm },
-  ]);
-}
 
 const STEP_PX = 14; // jog mode: horizontal drag distance per one volume step
 const STEP_MIN_MS = 55; // jog mode: floor between fired steps
@@ -187,6 +175,7 @@ export function RemotePowerBar({ compact = false }: { compact?: boolean }) {
   const t = useTheme();
   const styles = useThemedStyles(makeStyles);
   const insets = useSafeAreaInsets();
+  const confirm = useConfirm();
   const { settings, ready, update } = useSettings();
   // Other boxes in the fleet are potential Wake-on-LAN relays: iOS blocks UDP
   // for apps, so an awake box must broadcast the magic packet for a sleeping one.
@@ -541,15 +530,19 @@ export function RemotePowerBar({ compact = false }: { compact?: boolean }) {
       })();
     };
     // Skippable confirmation: on for the cautious, off for one-tap nightly sleep.
-    if (getPref('confirmSuspend')) {
-      confirmSuspend(
-        'Put the box to sleep? It will drop offline; wake it with the power button here.',
-        runSuspend,
-      );
-    } else {
+    if (!getPref('confirmSuspend')) {
       runSuspend();
+      return;
     }
-  }, [settings]);
+    void (async () => {
+      const ok = await confirm({
+        title: 'Suspend box',
+        message: 'Put the box to sleep? It will drop offline; wake it with the power button here.',
+        confirmText: 'Suspend',
+      });
+      if (ok) runSuspend();
+    })();
+  }, [settings, confirm]);
 
   const onWake = React.useCallback(() => {
     const mac = settings.mac;

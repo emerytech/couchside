@@ -23,8 +23,9 @@
 import Ionicons from '@expo/vector-icons/Ionicons';
 import { router } from 'expo-router';
 import { useCallback, useEffect, useRef, useState } from 'react';
-import { ActivityIndicator, Alert, Platform, Pressable, StyleSheet, Switch, Text, View } from 'react-native';
+import { ActivityIndicator, Pressable, StyleSheet, Switch, Text, View } from 'react-native';
 
+import { useConfirm } from './ConfirmDialog';
 import {
   confirmDeckyLoaderInstall, confirmRestartDecky, toneColor, useDeckyLoaderOp,
 } from '@/components/DeckyCard';
@@ -72,6 +73,7 @@ export function UtilitiesSection({
 }) {
   const t = useTheme();
   const styles = useThemedStyles(makeStyles);
+  const confirm = useConfirm();
   const { settings } = useSettings();
   const [utils, setUtils] = useState<Utility[] | null>(null);
   const [busy, setBusy] = useState<string | null>(null); // utility id being run
@@ -206,20 +208,16 @@ export function UtilitiesSection({
       : 'Flash the OpenPuck firmware to the plugged-in board? It reboots as '
         + 'a Steam Controller Puck when done. The bootloader is kept, so you can '
         + 're-flash any time.';
-    if (Platform.OS === 'web') {
-      // eslint-disable-next-line no-alert
-      if (typeof window !== 'undefined' && window.confirm(q)) void doFlash(variant);
-      return;
-    }
-    Alert.alert(
-      variant === 'latest' ? 'Flash newest firmware?' : 'Flash OpenPuck receiver?',
-      q,
-      [
-        { text: 'Cancel', style: 'cancel' },
-        { text: 'Flash', onPress: () => { void doFlash(variant); } },
-      ],
-    );
-  }, [latest, doFlash]);
+    void (async () => {
+      const ok = await confirm({
+        title: variant === 'latest' ? 'Flash newest firmware?' : 'Flash OpenPuck receiver?',
+        message: q,
+        confirmText: 'Flash',
+      });
+      if (!ok) return;
+      void doFlash(variant);
+    })();
+  }, [latest, doFlash, confirm]);
 
   // Turning auto-flash ON is the batch consent (replaces the per-board prompt),
   // so it confirms once and resets the counter for a fresh run.
@@ -230,16 +228,11 @@ export function UtilitiesSection({
     const q = 'Auto-flash will flash the OpenPuck firmware onto EVERY board you '
       + 'plug in, with no prompt each time. Plug boards in one after another; '
       + 'each reboots as a Steam Controller Puck. Turn it off when you’re done.';
-    if (Platform.OS === 'web') {
-      // eslint-disable-next-line no-alert
-      if (typeof window !== 'undefined' && window.confirm(q)) start();
-      return;
-    }
-    Alert.alert('Turn on auto-flash?', q, [
-      { text: 'Cancel', style: 'cancel' },
-      { text: 'Turn on', onPress: start },
-    ]);
-  }, []);
+    void (async () => {
+      const ok = await confirm({ title: 'Turn on auto-flash?', message: q, confirmText: 'Turn on' });
+      if (ok) start();
+    })();
+  }, [confirm]);
 
   // Open the OpenPuck WebUSB configurator ON THE BOX's browser (that is where
   // the puck is plugged, and WebUSB only reaches a device on the same machine).

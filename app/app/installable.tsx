@@ -25,6 +25,7 @@ import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
 import { type Compat, deckLabel, protonLabel } from '@/lib/compat';
 import { fetchCompat } from '@/lib/compatFetch';
+import { useConfirm } from '@/components/ConfirmDialog';
 import { useLockOrientation } from '@/hooks/useLockOrientation';
 import { api } from '@/lib/api';
 import { hapticLight } from '@/lib/haptics';
@@ -64,20 +65,6 @@ function runsWell(c: Compat | undefined): boolean {
  *  6=Positive, 7=Very Positive, 8=Overwhelmingly, plus 9). */
 function reviewIsPositive(r: SteamReview | null | undefined): boolean {
   return !!r && r.score >= 6;
-}
-
-/** steam://install pops an approve prompt on the box (verified) — say so. */
-function confirmInstall(label: string, onConfirm: () => void) {
-  const q = `Install "${label}"? A prompt appears on your box's screen to approve it — use a controller, or your phone's Pad.`;
-  if (Platform.OS === 'web') {
-    // eslint-disable-next-line no-alert
-    if (typeof window !== 'undefined' && window.confirm(q)) onConfirm();
-    return;
-  }
-  Alert.alert('Install game', q, [
-    { text: 'Cancel', style: 'cancel' },
-    { text: 'Install', onPress: onConfirm },
-  ]);
 }
 
 /** Metacritic's own colour convention: green >=75, yellow 50–74, red <50. */
@@ -142,6 +129,7 @@ function GameSheet({
 }) {
   const t = useTheme();
   const styles = useThemedStyles(makeStyles);
+  const confirm = useConfirm();
   const { settings } = useSettings();
   const source = api.steamCoverSource(settings, appid);
   const [failed, setFailed] = useState(false);
@@ -163,7 +151,13 @@ function GameSheet({
 
   const install = () => {
     hapticLight();
-    confirmInstall(name, async () => {
+    void (async () => {
+      const ok = await confirm({
+        title: 'Install game',
+        message: `Install "${name}"? A prompt appears on your box's screen to approve it — use a controller, or your phone's Pad.`,
+        confirmText: 'Install',
+      });
+      if (!ok) return;
       setBusy(true);
       try {
         const res = await api.launch(settings, `install:${appid}`);
@@ -180,7 +174,7 @@ function GameSheet({
       } finally {
         setBusy(false);
       }
-    });
+    })();
   };
 
   const mc = d?.metacritic;
