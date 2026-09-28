@@ -18,6 +18,12 @@ the same thing regardless of what actually changed.
 Write for the person holding the phone, not for the commit log. They are
 deciding whether to press "Update now" on a machine across the room.
 
+## 2.9.122
+
+**Achievement progress.** With Steam connected, Couchside can show how far you are in a
+game's achievements and highlight the rarest one you've earned — the percentage of all
+players who have it. Reads only your own achievements, only while the integration is on.
+
 ## 2.9.121
 
 **See what's on sale.** With Steam connected, Couchside adds an "On sale now" row —

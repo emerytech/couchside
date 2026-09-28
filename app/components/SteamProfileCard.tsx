@@ -12,7 +12,7 @@ import React from 'react';
 import { Image, ScrollView, StyleSheet, Text, View } from 'react-native';
 
 import { usePoll } from '@/hooks/usePoll';
-import { api, hostKey, type SteamLibrary, type SteamProfile } from '@/lib/api';
+import { api, hostKey, type SteamAchievements, type SteamLibrary, type SteamProfile } from '@/lib/api';
 import { useSettings } from '@/lib/SettingsContext';
 import { mono, useTheme, useThemedStyles, type Palette } from '@/lib/theme';
 
@@ -33,12 +33,18 @@ export function SteamProfileCard() {
     () => api.steamProfile(settings), 60000, ready && configured, hostKey(settings));
   const library = usePoll<SteamLibrary | null>(
     () => api.steamLibrary(settings), 600000, ready && configured, hostKey(settings));
+  // Achievement progress for the game being played right now, if any.
+  const gameid = profile.data?.gameid;
+  const ach = usePoll<SteamAchievements | null>(
+    () => (gameid ? api.steamAchievements(settings, gameid) : Promise.resolve(null)),
+    60000, ready && configured && !!gameid, `${hostKey(settings)}:ach:${gameid ?? ''}`);
 
   const p = profile.data;
   // Probe-and-appear: only when a key is set AND Steam answered.
   if (!p || !p.configured || !p.connected) return null;
 
   const lib = library.data && library.data.configured && library.data.connected ? library.data : null;
+  const a = ach.data && ach.data.connected && ach.data.has_achievements ? ach.data : null;
   const cover = (appid: string) => api.steamCoverSource(settings, num(appid));
   const stateLine = p.playing ? `Playing ${p.playing}` : (p.state ?? 'Online');
   const online = !!p.playing || (p.state_code != null && p.state_code !== 0);
@@ -64,6 +70,18 @@ export function SteamProfileCard() {
           </View>
         </View>
       </View>
+
+      {a && (
+        <View style={styles.achRow}>
+          <View style={styles.achBar}>
+            <View style={[styles.achFill, { width: `${Math.max(2, Math.min(100, a.percent ?? 0))}%` }]} />
+          </View>
+          <Text style={styles.achTxt} numberOfLines={1}>
+            {a.unlocked}/{a.total} achievements
+            {a.rarest ? <Text style={styles.achRare}>  ·  rarest {a.rarest.name} ({a.rarest.global_pct}%)</Text> : null}
+          </Text>
+        </View>
+      )}
 
       {lib && (
         <>
@@ -130,6 +148,11 @@ const makeStyles = (t: Palette) =>
     stat: { flex: 1 },
     statLabel: { color: t.textFaint, fontFamily: mono, fontSize: 9, letterSpacing: 1 },
     statValue: { color: t.text, fontSize: 18, fontWeight: '800', marginTop: 2 },
+    achRow: { marginTop: 12, gap: 6 },
+    achBar: { height: 5, borderRadius: 3, backgroundColor: t.bg, overflow: 'hidden' },
+    achFill: { height: 5, borderRadius: 3, backgroundColor: t.green },
+    achTxt: { color: t.textDim, fontSize: 12 },
+    achRare: { color: t.green },
     topLine: { color: t.textDim, fontSize: 12, marginTop: 12 },
     topName: { color: t.text, fontWeight: '700' },
     railLabel: { color: t.textFaint, fontFamily: mono, fontSize: 10, letterSpacing: 1.5, marginTop: 16, marginBottom: 10 },
