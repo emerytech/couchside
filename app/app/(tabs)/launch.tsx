@@ -291,7 +291,14 @@ function QueuedRow({ d }: { d: SteamDownload }) {
 function DownloadsSection({ downloads }: { downloads: SteamDownload[] }) {
   const t = useTheme();
   const styles = useThemedStyles(makeStyles);
+  const { settings } = useSettings();
   const [showQueue, setShowQueue] = useState(false);
+  // Open Steam's own Downloads page ON THE BOX, to verify the transfer and watch
+  // detailed progress on the machine. 'downloads' is an allowlisted steam:// menu.
+  const openBoxDownloads = () => {
+    hapticLight();
+    void api.openSteamMenu(settings, 'downloads').catch(() => {});
+  };
   // Gate inside the component, not at the call site: the hooks above must run
   // unconditionally, and any future second call site inherits the pref for free.
   if (downloads.length === 0) return null;
@@ -304,6 +311,14 @@ function DownloadsSection({ downloads }: { downloads: SteamDownload[] }) {
           <View style={styles.dlHeader}>
             <Ionicons name="cloud-download" size={14} color={t.blue} />
             <Text style={styles.dlHeaderText}>DOWNLOADING</Text>
+            <Pressable
+              onPress={openBoxDownloads}
+              hitSlop={8}
+              accessibilityRole="button"
+              accessibilityLabel="Open Steam Downloads on the box"
+              style={({ pressed }) => [styles.dlOpenBtn, pressed && { opacity: 0.6 }]}>
+              <Text style={styles.dlOpenText}>OPEN ON BOX ↗</Text>
+            </Pressable>
           </View>
           {active.map((d) => (
             <DownloadRow key={d.appid} d={d} />
@@ -1317,6 +1332,8 @@ const makeStyles = (t: Palette) => StyleSheet.create({
     borderTopWidth: 1,
     paddingTop: 12,
   },
+  dlOpenBtn: { marginLeft: 'auto', paddingVertical: 2, paddingHorizontal: 4 },
+  dlOpenText: { color: t.blue, fontSize: 10, fontWeight: '700', fontFamily: mono, letterSpacing: 0.5 },
   dlHeaderText: {
     color: t.textDim,
     fontSize: 11,
