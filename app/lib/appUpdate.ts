@@ -7,6 +7,9 @@
 export type Manifest = {
   ios?: { version?: string; url?: string };
   android?: { versionCode?: number; version?: string; url?: string };
+  /** The off-store DIRECT edition: its own versionCode line, and its update is a
+   *  download from couchside.tv (not a store). Android-only build. */
+  direct?: { versionCode?: number; version?: string; url?: string };
 };
 
 export type Result =
@@ -41,8 +44,19 @@ export function decideAppUpdate(
   platform: string,
   curVersion: string | null,
   curBuild: string | null,
+  direct = false,
 ): Result {
   if (!m) return { state: 'unknown' };
+  if (direct) {
+    // The off-store direct edition compares its OWN versionCode line (never the
+    // store app's), and the update is a download from couchside.tv, not a store.
+    const latestVc = m.direct?.versionCode;
+    const curVc = parseInt(curBuild ?? '', 10);
+    const url = m.direct?.url;
+    const shown = m.direct?.version ?? '';
+    if (!latestVc || !Number.isFinite(curVc) || !url) return { state: 'unknown' };
+    return latestVc > curVc ? { state: 'update', latest: shown, url } : { state: 'current' };
+  }
   if (platform === 'ios') {
     const latest = m.ios?.version;
     const url = m.ios?.url;

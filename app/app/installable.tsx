@@ -282,6 +282,11 @@ function GameSheet({
 
 const COLUMNS = 3;
 
+// Stable reference (see decky.tsx): an inline options object re-fires
+// <Stack.Screen>'s setOptions layout effect on every render; this list polls, so
+// a module const keeps it from looping into "Maximum update depth".
+const SCREEN_OPTIONS = { headerShown: false };
+
 export default function InstallablePage() {
   const t = useTheme();
   const styles = useThemedStyles(makeStyles);
@@ -472,7 +477,7 @@ export default function InstallablePage() {
 
   return (
     <View style={[styles.screen, { paddingTop: insets.top }]}>
-      <Stack.Screen options={{ headerShown: false }} />
+      <Stack.Screen options={SCREEN_OPTIONS} />
       <View style={styles.header}>
         <Pressable onPress={() => router.back()} hitSlop={12} accessibilityRole="button" accessibilityLabel="Back">
           <Ionicons name="chevron-back" size={26} color={t.text} />
