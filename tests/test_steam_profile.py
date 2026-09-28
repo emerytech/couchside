@@ -110,6 +110,46 @@ finally:
     _unconfigure()
 
 
+print("\ncache invalidation on reconfigure — no cross-account bleed (audit fix)")
+import tempfile
+_sc = cs._STEAM_WEBAPI_CONF
+_td = tempfile.mkdtemp()
+cs._STEAM_WEBAPI_CONF = os.path.join(_td, "s.json")
+try:
+    # Seed account-A owned/level caches, then reconfigure to another key: the
+    # owned + level caches MUST be wiped (they used to survive -> account B saw
+    # account A's library/level for up to an hour on a shared box).
+    cs._STEAM_OWNED_CACHE["ts"] = 999.0
+    cs._STEAM_OWNED_CACHE["val"] = OWNED
+    cs._STEAM_LEVEL_CACHE["ts"] = 999.0
+    cs._STEAM_LEVEL_CACHE["val"] = 99
+    cs._steam_webapi_save(GOOD_ID, GOOD_KEY)
+    check(cs._STEAM_OWNED_CACHE["val"] is None and cs._STEAM_LEVEL_CACHE["val"] is None,
+          "save() wipes owned + level caches (no cross-account bleed)")
+    cs._STEAM_OWNED_CACHE["val"] = OWNED
+    cs._STEAM_LEVEL_CACHE["val"] = 99
+    cs._steam_webapi_clear()
+    check(cs._STEAM_OWNED_CACHE["val"] is None and cs._STEAM_LEVEL_CACHE["val"] is None,
+          "clear() wipes owned + level caches")
+finally:
+    cs._STEAM_WEBAPI_CONF = _sc
+    import shutil
+    shutil.rmtree(_td, ignore_errors=True)
+    cs._steam_webapi_clear()
+
+print("\naggregation tolerates non-dict list elements (defence in depth)")
+_savedo = cs._steam_owned_cached
+try:
+    _configure()
+    cs._steam_owned_cached = lambda: [OWNED[0], None, "junk", 7,
+                                      {"appid": 99, "name": "X", "playtime_forever": 60}]
+    lib = cs._steam_library_payload()
+    check(lib["count"] == 2, "non-dict elements skipped (count = 2 real games)", lib)
+finally:
+    cs._steam_owned_cached = _savedo
+    _unconfigure()
+
+
 # ===========================================================================
 # HTTP — bearer gate + happy path
 # ===========================================================================

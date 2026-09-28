@@ -22749,6 +22749,10 @@ def _steam_webapi_save(steamid64, apikey):
         _STEAM_WEBAPI["apikey"] = apikey
     _STEAM_SUMMARY_CACHE["ts"] = 0.0
     _STEAM_SUMMARY_CACHE["val"] = None
+    _STEAM_OWNED_CACHE["ts"] = 0.0
+    _STEAM_OWNED_CACHE["val"] = None
+    _STEAM_LEVEL_CACHE["ts"] = 0.0
+    _STEAM_LEVEL_CACHE["val"] = None
     return True
 
 
@@ -22759,6 +22763,10 @@ def _steam_webapi_clear():
         _STEAM_WEBAPI["apikey"] = None
     _STEAM_SUMMARY_CACHE["ts"] = 0.0
     _STEAM_SUMMARY_CACHE["val"] = None
+    _STEAM_OWNED_CACHE["ts"] = 0.0
+    _STEAM_OWNED_CACHE["val"] = None
+    _STEAM_LEVEL_CACHE["ts"] = 0.0
+    _STEAM_LEVEL_CACHE["val"] = None
     try:
         os.unlink(_STEAM_WEBAPI_CONF)
     except OSError:
@@ -22974,6 +22982,7 @@ def _steam_library_payload():
     games = _steam_owned_cached()
     if games is None:
         return {"configured": True, "connected": False}
+    games = [g for g in games if isinstance(g, dict)]
 
     def _mins(g, key):
         try:
