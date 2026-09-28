@@ -18,6 +18,15 @@ the same thing regardless of what actually changed.
 Write for the person holding the phone, not for the commit log. They are
 deciding whether to press "Update now" on a machine across the room.
 
+## 2.9.120
+
+**Your Steam profile, on the box.** If you've connected a Steam Web API key, Couchside
+now shows a profile card — your avatar, name, whether you're online, what you're playing
+(even on another device), and your Steam level — plus a snapshot of your whole library:
+how many games you own, total hours, your most-played, and how big the backlog is. All of
+it reads only your own Steam account, only when you've opted in, and nothing new leaves the
+box beyond the same Steam calls.
+
 ## 2.9.119
 
 **Connect your Steam account for smarter picks (optional).** In the app's Advanced
