@@ -63,6 +63,14 @@ export default function TabLayout() {
     caps?.launchers === false ||
     (caps?.launchers === undefined && caps?.steam === false);
 
+  // "What to play next" (Play tab) needs on-box Steam play history. Gated on the
+  // SAME `gaming` cap that api.recommend() probes against, so the tab and the
+  // request agree: hide only when the box explicitly reports no gaming; an
+  // undefined cap (older agent) leaves it shown and the screen degrades to its
+  // empty state — never hide on a guess. Took the old Fleet tab's slot (Fleet's
+  // live dashboard moved into Setup > Boxes).
+  const hidePlay = remoteOnly || caps?.gaming === false;
+
   // The tour spotlights a tab by POSITION, so it needs the order actually
   // rendered — caps and remote-only mode change both which tabs exist and where
   // they sit. Derived from the same flags the <Tabs.Screen> entries use, so the
@@ -70,7 +78,7 @@ export default function TabLayout() {
   const tabOrder = [
     'index',
     ...(remoteOnly ? ['remote'] : []),
-    ...(!remoteOnly && boxes.length >= 2 ? ['fleet'] : []),
+    ...(hidePlay ? [] : ['play']),
     ...(remoteOnly ? [] : ['actions']),
     ...(hidePad ? [] : ['pad']),
     ...(hideLaunch ? [] : ['launch']),
@@ -222,10 +230,10 @@ export default function TabLayout() {
       router.replace('/(tabs)');
       return;
     }
-    if ((hidePad && leaf === 'pad') || (hideLaunch && leaf === 'launch')) {
+    if ((hidePad && leaf === 'pad') || (hideLaunch && leaf === 'launch') || (hidePlay && leaf === 'play')) {
       router.replace('/(tabs)');
     }
-  }, [ready, hidePad, hideLaunch, remoteOnly, segments]);
+  }, [ready, hidePad, hideLaunch, hidePlay, remoteOnly, segments]);
 
   return (
     <>
@@ -266,12 +274,13 @@ export default function TabLayout() {
         }}
       />
       <Tabs.Screen
-        name="fleet"
+        name="play"
         options={{
-          title: 'Fleet',
-          tabBarIcon: ({ color }) => <Ionicons name="server" size={24} color={color} />,
-          // Only useful with several boxes; single-box users keep a clean bar.
-          href: !remoteOnly && boxes.length >= 2 ? undefined : null,
+          title: 'Play',
+          tabBarIcon: ({ color }) => <Ionicons name="sparkles" size={24} color={color} />,
+          // Shown for a box that can game (has Steam); hidden in remote-only mode
+          // and on a box that reports no gaming. api.recommend() probes the same cap.
+          href: hidePlay ? null : undefined,
         }}
       />
       <Tabs.Screen

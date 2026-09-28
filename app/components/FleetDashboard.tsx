@@ -1,13 +1,10 @@
 import { router } from 'expo-router';
 import Ionicons from '@expo/vector-icons/Ionicons';
 import React, { useState } from 'react';
-import { AppState, AppStateStatus, Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
+import { AppState, AppStateStatus, Pressable, StyleSheet, Text, View } from 'react-native';
 
 import { EditableSection } from '@/components/EditableSection';
-import { Gated } from '@/components/Gated';
-import { TabScreen } from '@/components/TabScreen';
 import { useFocusEffect } from 'expo-router';
-import { useLockOrientation } from '@/hooks/useLockOrientation';
 import { api, Status } from '@/lib/api';
 import { connFromBox } from '@/lib/boxConn';
 import { effectiveOrder, moveSection } from '@/lib/cardLayout';
@@ -33,17 +30,18 @@ type FleetEntry = {
 type FleetMap = Record<string, FleetEntry>;
 
 /**
- * Poll /api/status for EVERY box while the Fleet tab is focused. The
+ * Poll /api/status for EVERY box while this dashboard is focused. The
  * single-target usePoll can't fan out, so this follows useBoxOnlineStatus's
  * shape instead (SettingsContext): one in-flight request per box, paused on
  * background/blur, entries pruned when a box is removed.
+ *
+ * `enabled` lets the host (Setup's Boxes sub-tab) stop the fan-out when the
+ * dashboard is not on screen, so switching to another Setup sub-tab does not
+ * keep polling the whole fleet.
  */
-function useFleetStatus(boxes: Box[], intervalMs: number): FleetMap {
+function useFleetStatus(boxes: Box[], intervalMs: number, enabled: boolean): FleetMap {
   const [map, setMap] = React.useState<FleetMap>({});
 
-  // Persist each box's last-reachable time (throttled) so a DOWN tile shows a
-  // real "last seen" after an app restart instead of "never". A ref keeps the
-  // focus effect's deps as [intervalMs] rather than re-subscribing on identity.
   const { updateBox } = useBoxes();
   const updateBoxRef = React.useRef(updateBox);
   updateBoxRef.current = updateBox;
@@ -77,6 +75,7 @@ function useFleetStatus(boxes: Box[], intervalMs: number): FleetMap {
 
   useFocusEffect(
     React.useCallback(() => {
+      if (!enabled) return;
       let appActive = AppState.currentState === 'active' || AppState.currentState == null;
       let interval: ReturnType<typeof setInterval> | null = null;
 
@@ -85,7 +84,7 @@ function useFleetStatus(boxes: Box[], intervalMs: number): FleetMap {
         for (const box of boxesRef.current) {
           if (inFlight.current.has(box.id)) continue;
           inFlight.current.add(box.id);
-          const conn = connFromBox(box);   // carries secure/tlsPort/pinModulus (KI-096)
+          const conn = connFromBox(box); // carries secure/tlsPort/pinModulus (KI-096)
           void api
             .status(conn)
             .then((s) => {
@@ -140,7 +139,7 @@ function useFleetStatus(boxes: Box[], intervalMs: number): FleetMap {
         stop();
         sub.remove();
       };
-    }, [intervalMs]),
+    }, [intervalMs, enabled]),
   );
 
   return map;
@@ -160,9 +159,6 @@ function Tile({ box, entry, active, index, onPress }: {
   const up = entry != null && entry.error == null && s != null;
   const memPct = s ? Math.round((s.mem.used_mb / s.mem.total_mb) * 100) : 0;
 
-  // Each tile carries its OWN vitals: one box idling next to one under load
-  // should visibly differ. A box that is down is not alive, whatever it last
-  // reported.
   const vitals = React.useMemo(
     () => ({ v: up ? vitality(s?.load?.[0], s?.cpu_temp_c) : 0, alive: up }),
     [up, s?.load, s?.cpu_temp_c],
@@ -206,7 +202,6 @@ function Tile({ box, entry, active, index, onPress }: {
                 <Text style={[styles.metricValue, { color: pctColor(memPct, t) }]}>{memPct}%</Text>
               </View>
             </View>
-            {/* Load trend, indented to align with the metrics row. */}
             <View style={styles.sparkWrap}>
               <Spark values={s.history?.load} color={t.blue} height={16} />
             </View>
@@ -223,41 +218,29 @@ function Tile({ box, entry, active, index, onPress }: {
   );
 }
 
-export default function FleetTab() {
-  useLockOrientation('portrait');
-  return (
-    <TabScreen>
-      <Gated>
-        <FleetScreen />
-      </Gated>
-    </TabScreen>
-  );
-}
-
-function FleetScreen() {
+/**
+ * The at-a-glance multi-box view: live TEMP/LOAD/MEM tiles, tap to switch active
+ * box, hold-to-edit reorder + hide. Formerly the standalone Fleet tab; now a
+ * section embedded at the top of Setup's Boxes sub-tab (the management list of
+ * pair/edit/remove lives below it). Renders nothing when there is fewer than one
+ * box; the caller decides whether to mount it (Boxes sub-tab shows it at 2+).
+ *
+ * No ScrollView of its own — the host screen scrolls. The Done control renders
+ * inline (not an absolute bottom bar) so it works inside Setup's own layout.
+ */
+export function FleetDashboard() {
   const t = useTheme();
+  const styles = useThemedStyles(makeStyles);
   const { boxes, activeBoxId, switchBox } = useBoxes();
   const statusInterval = usePref('statusIntervalMs');
-  const fleet = useFleetStatus(boxes, statusInterval);
-  const styles = useThemedStyles(makeStyles);
-  const { Screen, SectionTitle } = useSkinKit();
-
-  // Hold-to-edit reorder + hide, same store/pattern as the Console tab, but the
-  // ids are BOX ids: order is which box sits where, hidden is boxes tucked out of
-  // the fleet list (still paired, still switchable from Setup). effectiveOrder
-  // reconciles against the live boxes each render, so pairing appends and
-  // unpairing drops cleanly.
-  const layout = useFleetLayout();
   const [editing, setEditing] = useState(false);
-  const [present, setPresent] = useState<Record<string, boolean>>({});
+  const fleet = useFleetStatus(boxes, statusInterval, boxes.length > 0);
+
+  const layout = useFleetLayout();
   const canonical = boxes.map((b) => b.id);
   const order = effectiveOrder(layout.order, canonical);
   const hidden = new Set(layout.hidden);
   const boxById = new Map(boxes.map((b) => [b.id, b]));
-  const setPres = (id: string, p: boolean) =>
-    setPresent((prev) => (prev[id] === p ? prev : { ...prev, [id]: p }));
-  // Every tile renders content, so "visible" is the ordered ids that aren't
-  // hidden — that is what the up/down arrows step through.
   const visible = order.filter((id) => boxById.has(id) && !hidden.has(id));
   const moveTile = (id: string, dir: -1 | 1) =>
     setFleetLayout({ order: moveSection(order, visible, id, dir), hidden: layout.hidden });
@@ -266,69 +249,60 @@ function FleetScreen() {
     if (h.has(id)) h.delete(id); else h.add(id);
     setFleetLayout({ order, hidden: [...h] });
   };
+  const [present, setPresent] = useState<Record<string, boolean>>({});
+  const setPres = (id: string, p: boolean) =>
+    setPresent((prev) => (prev[id] === p ? prev : { ...prev, [id]: p }));
+
+  if (boxes.length === 0) return null;
 
   return (
-    <View style={styles.screen}>
-      <ScrollView
-        style={styles.scroll}
-        contentContainerStyle={{ paddingTop: 12, paddingBottom: 32, paddingHorizontal: 14 }}>
-        <Screen>
-          <View style={styles.headerRow}>
-            <SectionTitle>YOUR FLEET</SectionTitle>
-            {/* CUSTOMIZE: a visible way into the same hold-to-edit mode, and the
-                only way back in when every box is hidden. Gone while editing —
-                the Done bar owns the exit. */}
-            {!editing && boxes.length > 0 && (
-              <Pressable
-                onPress={() => { hapticSelection(); setEditing(true); }}
-                accessibilityRole="button"
-                accessibilityLabel="Reorder or hide boxes"
-                hitSlop={8}
-                style={({ pressed }) => [styles.customizeBtn, pressed && styles.pressed]}>
-                <Ionicons name="options-outline" size={18} color={t.textDim} />
-              </Pressable>
-            )}
-          </View>
-          {order.map((id, i) => {
-            const box = boxById.get(id);
-            if (box == null) return null;
-            return (
-              <EditableSection
-                key={id}
-                editing={editing}
-                hidden={hidden.has(id)}
-                isFirst={visible[0] === id}
-                isLast={visible[visible.length - 1] === id}
-                onEnterEdit={() => setEditing(true)}
-                onPresent={(p) => setPres(id, p)}
-                onUp={() => moveTile(id, -1)}
-                onDown={() => moveTile(id, 1)}
-                onToggleHide={() => toggleHide(id)}
-                inertWhileEditing>
-                <Tile
-                  box={box}
-                  entry={fleet[box.id]}
-                  active={box.id === activeBoxId}
-                  index={i}
-                  onPress={() => {
-                    // A tap while editing belongs to the reorder/hide strip
-                    // (inertWhileEditing already blocks it); guard anyway.
-                    if (editing) return;
-                    switchBox(box.id);
-                    // Land on the box's Console; a box whose gaming tabs are
-                    // hidden still always has Console.
-                    router.replace('/(tabs)');
-                  }}
-                />
-              </EditableSection>
-            );
-          })}
-        </Screen>
-      </ScrollView>
-      {/* Edit-layout bar: hold any tile (or tap Customize) to enter; reorder/hide
-          then Done. Matches the Console tab. */}
+    <View style={styles.wrap}>
+      <View style={styles.headerRow}>
+        <Text style={styles.sectionLabel}>FLEET · LIVE</Text>
+        {!editing && (
+          <Pressable
+            onPress={() => { hapticSelection(); setEditing(true); }}
+            accessibilityRole="button"
+            accessibilityLabel="Reorder or hide boxes"
+            hitSlop={8}
+            style={({ pressed }) => [styles.customizeBtn, pressed && styles.pressed]}>
+            <Ionicons name="options-outline" size={18} color={t.textDim} />
+          </Pressable>
+        )}
+      </View>
+      {order.map((id, i) => {
+        const box = boxById.get(id);
+        if (box == null) return null;
+        return (
+          <EditableSection
+            key={id}
+            editing={editing}
+            hidden={hidden.has(id)}
+            isFirst={visible[0] === id}
+            isLast={visible[visible.length - 1] === id}
+            onEnterEdit={() => setEditing(true)}
+            onPresent={(p) => setPres(id, p)}
+            onUp={() => moveTile(id, -1)}
+            onDown={() => moveTile(id, 1)}
+            onToggleHide={() => toggleHide(id)}
+            inertWhileEditing>
+            <Tile
+              box={box}
+              entry={fleet[box.id]}
+              active={box.id === activeBoxId}
+              index={i}
+              onPress={() => {
+                if (editing) return;
+                switchBox(box.id);
+                // Land on the switched box's Console.
+                router.replace('/(tabs)');
+              }}
+            />
+          </EditableSection>
+        );
+      })}
       {editing && (
-        <View style={styles.editBar}>
+        <View style={styles.editRow}>
           <Text style={styles.editHint}>Reorder or hide boxes</Text>
           <Pressable
             onPress={() => setEditing(false)}
@@ -344,17 +318,18 @@ function FleetScreen() {
 }
 
 const makeStyles = (t: Palette) => StyleSheet.create({
-  screen: { flex: 1, backgroundColor: t.bg },
-  scroll: { flex: 1 },
-  // The title row now also holds the Customize entry point, so the bare
-  // SectionTitle's own margin is dropped in favour of the row's.
+  wrap: { marginBottom: 18 },
   headerRow: { flexDirection: 'row', alignItems: 'center', marginBottom: 10 },
+  sectionLabel: {
+    color: t.textFaint,
+    fontFamily: mono,
+    fontSize: 11,
+    letterSpacing: 1.5,
+  },
   customizeBtn: { marginLeft: 'auto', padding: 6, borderRadius: 8 },
-  editBar: {
-    position: 'absolute', left: 0, right: 0, bottom: 0,
+  editRow: {
     flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between',
-    paddingHorizontal: 16, paddingTop: 12, paddingBottom: 28,
-    backgroundColor: t.card, borderTopColor: t.cardBorder, borderTopWidth: 1,
+    paddingTop: 10,
   },
   editHint: { color: t.textDim, fontSize: 13 },
   doneBtn: {
@@ -362,26 +337,8 @@ const makeStyles = (t: Palette) => StyleSheet.create({
     paddingVertical: 8, paddingHorizontal: 22,
   },
   doneText: { color: t.onAccent, fontWeight: '700', fontSize: 14 },
-  sectionTitle: {
-    color: t.textFaint,
-    fontFamily: mono,
-    fontSize: 11,
-    letterSpacing: 1.5,
-    marginBottom: 10,
-  },
-  tile: {
-    backgroundColor: t.card,
-    borderColor: t.cardBorder,
-    borderWidth: 1,
-    borderRadius: 12,
-    padding: 14,
-    marginBottom: 10,
-  },
-  tileActive: { borderColor: t.blue },
-  tileDown: { borderColor: t.redDeep },
   pressed: { opacity: 0.7 },
   tileHeader: { flexDirection: 'row', alignItems: 'center', gap: 8 },
-  dot: { width: 9, height: 9, borderRadius: 5 },
   tileName: {
     color: t.text,
     fontFamily: mono,

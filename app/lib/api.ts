@@ -1260,6 +1260,45 @@ export type SteamLink = { available: boolean; hosts: StreamHost[] };
  */
 /** One Steam settings panel the box can jump to (agent >= 2.9.31). */
 export type SteamMenu = { id: string; label: string };
+
+/** One "what to play next" pick from GET /api/recommend (agent >= 2.9.63). All
+ *  fields come from the box's LOCAL Steam data. `bucket` is the reason category
+ *  (streak/unfinished/rediscover/comfort/fresh/backlog); `reason` is a human line. */
+export type RecoPick = {
+  appid: string;
+  name: string;
+  hours: number;
+  days_since: number | null;
+  installed: boolean;
+  bucket: string;
+  tag: string;
+  reason: string;
+  score: number;
+};
+/** GET /api/recommend body. `persona` (agent >= 2.9.118) is the box's most-recent
+ *  Steam account name, read locally — present only when readable (probe-and-appear),
+ *  used for a greeting; older agents simply omit it. */
+export type Recommendation = {
+  available: boolean;
+  generated: number;
+  primary: RecoPick | null;
+  alternates: RecoPick[];
+  counts: Record<string, number>;
+  persona?: string;
+};
+
+/** GET /api/steam/webapi — the OPT-IN Steam Web API status (agent >= 2.9.119).
+ *  The full key NEVER reaches the app; `apikey_masked` shows only the last 4.
+ *  `connected` is a live check against Steam. null (probe-and-appear) on an agent
+ *  without the feature, so the Advanced card only appears where it works. */
+export type SteamWebApiStatus = {
+  configured: boolean;
+  steamid64?: string;
+  apikey_masked?: string;
+  connected?: boolean;
+  persona?: string;
+  avatar?: string;
+};
 export type SteamMenus = { menus: SteamMenu[] };
 
 /** One GPU as the box reports it (agent >= 2.9.43; `card` >= 2.9.67). */
@@ -2791,6 +2830,43 @@ export const api = {
   ): Promise<Gaming | null> {
     return probeGated(caps?.gaming, () =>
       probeOrNull(request<Gaming>(settings, '/api/gaming')));
+  },
+
+  /** "What to play next" — ranked picks from the box's LOCAL Steam play history
+   *  (agent >= 2.9.63, GET /api/recommend). Read-only; a pick launches via the
+   *  existing steam path (`launch(settings, 'steam:'+appid)`). null on an older
+   *  agent (404) or a box with no Steam — probe-and-appear, so the tab hides. */
+  recommend(
+    settings: ConnSettings,
+    caps: BoxCaps | undefined = cachedCaps(settings),
+  ): Promise<Recommendation | null> {
+    return probeGated(caps?.gaming, () =>
+      probeOrNull(request<Recommendation>(settings, '/api/recommend')));
+  },
+
+  /** OPT-IN Steam Web API status (agent >= 2.9.119). null on an older agent (404)
+   *  so the Advanced card is probe-and-appear. The full key never comes back. */
+  steamWebApi(settings: ConnSettings): Promise<SteamWebApiStatus | null> {
+    return probeOrNull(request<SteamWebApiStatus>(settings, '/api/steam/webapi'));
+  },
+
+  /** Store the user's SteamID64 (or vanity name) + Steam Web API key on the box.
+   *  The agent validates + TESTS against Steam and rejects a bad pair (throws with
+   *  the reason). Returns the new status (masked). The key rides one authed POST. */
+  steamWebApiConnect(
+    settings: ConnSettings,
+    payload: { steamid64?: string; vanity?: string; apikey: string },
+  ): Promise<SteamWebApiStatus> {
+    return request<SteamWebApiStatus>(settings, '/api/steam/webapi', {
+      method: 'POST', body: payload,
+    });
+  },
+
+  /** Forget the stored Steam key on the box. Idempotent. */
+  steamWebApiDisconnect(settings: ConnSettings): Promise<SteamWebApiStatus> {
+    return request<SteamWebApiStatus>(settings, '/api/steam/webapi/disconnect', {
+      method: 'POST', body: {},
+    });
   },
 
   /**
