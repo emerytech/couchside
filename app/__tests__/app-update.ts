@@ -64,6 +64,21 @@ eq('unknown platform -> unknown', decideAppUpdate(M, 'web', '2.9.17', '1'), { st
 eq('manifest missing the url -> unknown (no dead store link)',
    decideAppUpdate({ ios: { version: '2.9.21' } }, 'ios', '2.9.17', '75'), { state: 'unknown' });
 
+// --- direct (off-store) edition: its OWN versionCode line + a couchside.tv URL,
+// NEVER the store app's android entry (curBuild is the direct build's versionCode).
+const D = { android: { versionCode: 117, url: 'play' }, direct: { versionCode: 13, version: '2.9.71', url: 'https://couchside.tv/direct/' } };
+eq('direct: newer direct versionCode -> update with the couchside.tv url',
+   decideAppUpdate(D, 'android', '2.9.70', '12', true),
+   { state: 'update', latest: '2.9.71', url: 'https://couchside.tv/direct/' });
+eq('direct: same versionCode -> current',
+   decideAppUpdate(D, 'android', '2.9.71', '13', true), { state: 'current' });
+eq('direct ignores the store android entry (would falsely say 117>12)',
+   decideAppUpdate({ android: { versionCode: 117, url: 'play' } }, 'android', '2.9.70', '12', true),
+   { state: 'unknown' });
+eq('direct: missing direct entry -> unknown (no wrong update)',
+   decideAppUpdate({ android: { versionCode: 117, url: 'play' } }, 'android', '2.9.70', '12', true),
+   { state: 'unknown' });
+
 console.log('parseItunesLookup (App Store path)');
 // A real-shaped Apple response -> the iOS manifest fields.
 eq('extracts version + store url',
