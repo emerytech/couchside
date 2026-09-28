@@ -53,7 +53,7 @@ except ImportError:  # pragma: no cover
     fcntl = None
 
 APP_NAME = "couchside-agent"
-VERSION = "2.9.121"
+VERSION = "2.9.122"
 UID = os.getuid()
 XDG_RUNTIME_DIR = "/run/user/%d" % UID
 
@@ -22753,6 +22753,7 @@ def _steam_webapi_save(steamid64, apikey):
     _STEAM_OWNED_CACHE["val"] = None
     _STEAM_LEVEL_CACHE["ts"] = 0.0
     _STEAM_LEVEL_CACHE["val"] = None
+    _STEAM_ACH_CACHE.clear()
     return True
 
 
@@ -22767,6 +22768,7 @@ def _steam_webapi_clear():
     _STEAM_OWNED_CACHE["val"] = None
     _STEAM_LEVEL_CACHE["ts"] = 0.0
     _STEAM_LEVEL_CACHE["val"] = None
+    _STEAM_ACH_CACHE.clear()
     try:
         os.unlink(_STEAM_WEBAPI_CONF)
     except OSError:
@@ -23138,6 +23140,99 @@ def mock_steam_deals_payload():
          "final": 2999, "original": 5999, "currency": "USD"},
         {"appid": "413150", "name": "Stardew Valley", "discount_percent": 20,
          "final": 1199, "original": 1499, "currency": "USD"}]}
+
+
+# --- Achievement progress + rarest-unlocked for a game, from the opt-in key.
+# The app passes the game's appid (the running game, or a pick); the agent returns
+# the owner's progress + the rarest achievement they've unlocked (global % from the
+# KEY-FREE GetGlobalAchievementPercentagesForApp). Per-account, so the cache is
+# wiped on save/clear like the owned/level caches. Bounded per-appid cache, 60s TTL.
+_STEAM_ACH_CACHE = {}          # appid -> {"ts": float, "val": dict}
+_STEAM_ACH_TTL = 60.0
+_STEAM_ACH_CACHE_MAX = 32
+
+
+def _valid_appid(s):
+    """A Steam appid is 1-7 ASCII digits. Reject anything else (never sanitise)."""
+    return isinstance(s, str) and 1 <= len(s) <= 7 and s.isdigit()
+
+
+def _steam_get_global_pct(appid):
+    """{apiname: global_unlock_percent} for a game, from the KEY-FREE endpoint, or
+    {} on any failure. Used only to rank the owner's own unlocks by rarity."""
+    d = _steam_api_get("ISteamUserStats", "GetGlobalAchievementPercentagesForApp",
+                       "0002", {"gameid": appid})
+    try:
+        out = {}
+        for a in d["achievementpercentages"]["achievements"]:
+            if isinstance(a, dict) and a.get("name") is not None:
+                try:
+                    out[str(a["name"])] = float(a.get("percent") or 0.0)
+                except (TypeError, ValueError):
+                    pass
+        return out
+    except Exception:
+        return {}
+
+
+def _steam_achievements_payload(appid):
+    """GET /api/steam/achievements?appid=<digits>: the owner's achievement progress
+    for one game + their rarest unlocked. {"configured": False} without a key;
+    connected:false when Steam is unreachable; has_achievements:false for a game with
+    none (or a profile that hides them). Cached 60s per appid. `appid` is already
+    validated (digits) by the route."""
+    if not _steam_webapi_configured():
+        return {"configured": False}
+    now = time.monotonic()
+    ent = _STEAM_ACH_CACHE.get(appid)
+    if ent is not None and now - ent["ts"] < _STEAM_ACH_TTL:
+        return ent["val"]
+    with _STEAM_WEBAPI_LOCK:
+        sid = _STEAM_WEBAPI["steamid64"]
+        key = _STEAM_WEBAPI["apikey"]
+    d = _steam_api_get("ISteamUserStats", "GetPlayerAchievements", "0001",
+                       {"key": key, "steamid": sid, "appid": appid, "l": "english"})
+    if d is None:
+        return {"configured": True, "connected": False, "appid": appid}
+    try:
+        ps = d["playerstats"]
+    except Exception:
+        return {"configured": True, "connected": False, "appid": appid}
+    if not ps.get("success"):
+        body = {"configured": True, "connected": True, "appid": appid,
+                "has_achievements": False}
+    else:
+        achs = ps.get("achievements")
+        if not isinstance(achs, list):
+            achs = []
+        total = len(achs)
+        unlocked = sum(1 for a in achs if isinstance(a, dict) and a.get("achieved"))
+        gpct = _steam_get_global_pct(appid)
+        rarest = None
+        for a in achs:
+            if not isinstance(a, dict) or not a.get("achieved"):
+                continue
+            pct = gpct.get(a.get("apiname"))
+            if pct is None:
+                continue
+            if rarest is None or pct < rarest["global_pct"]:
+                rarest = {"name": a.get("name") or a.get("apiname"),
+                          "global_pct": round(pct, 1)}
+        body = {"configured": True, "connected": True, "appid": appid,
+                "has_achievements": total > 0, "unlocked": unlocked, "total": total,
+                "percent": int(round(100.0 * unlocked / total)) if total else 0,
+                "rarest": rarest}
+    # bounded cache
+    if len(_STEAM_ACH_CACHE) >= _STEAM_ACH_CACHE_MAX:
+        _STEAM_ACH_CACHE.clear()
+    _STEAM_ACH_CACHE[appid] = {"ts": now, "val": body}
+    return body
+
+
+def mock_steam_achievements_payload(appid):
+    return {"configured": True, "connected": True, "appid": appid or "1145350",
+            "has_achievements": True, "unlocked": 18, "total": 33, "percent": 55,
+            "rarest": {"name": "Isolated", "global_pct": 2.4}}
 
 
 def _gaming_payload():
@@ -26762,6 +26857,16 @@ class Handler(BaseHTTPRequestHandler):
                 # toggle; probe-and-appear. Bearer-gated: the do_GET gate ran.
                 self._send(200, mock_steam_deals_payload() if self.mock
                            else _steam_deals_payload(), started)
+            elif path == "/api/steam/achievements":
+                # Opt-in: the owner's achievement progress for one game. `appid` is a
+                # query param VALIDATED to digits (reject, never sanitise) before it
+                # reaches the Steam API. Bearer-gated; probe-and-appear.
+                appid = (parse_qs(parsed.query).get("appid") or [""])[0]
+                if not _valid_appid(appid):
+                    self._send(400, {"error": "appid must be digits"}, started)
+                    return
+                self._send(200, mock_steam_achievements_payload(appid) if self.mock
+                           else _steam_achievements_payload(appid), started)
             elif path == "/api/recommend":
                 # "What to play next" — ranks INSTALLED Steam games from local play
                 # history (hours + recency). READ-ONLY: it recommends, it never

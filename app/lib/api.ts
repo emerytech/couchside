@@ -1348,6 +1348,19 @@ export type SteamDeals = {
   region?: string;
   items?: SteamDeal[];
 };
+
+/** GET /api/steam/achievements?appid= (agent >= 2.9.122) — the owner's progress in
+ *  one game + the rarest achievement they've unlocked (global unlock %). */
+export type SteamAchievements = {
+  configured: boolean;
+  connected?: boolean;
+  appid?: string;
+  has_achievements?: boolean;
+  unlocked?: number;
+  total?: number;
+  percent?: number;
+  rarest?: { name: string; global_pct: number };
+};
 export type SteamMenus = { menus: SteamMenu[] };
 
 /** One GPU as the box reports it (agent >= 2.9.43; `card` >= 2.9.67). */
@@ -2933,6 +2946,13 @@ export const api = {
    *  row. Keyless on the box side; shown only while the integration is connected. */
   steamDeals(settings: ConnSettings): Promise<SteamDeals | null> {
     return probeOrNull(request<SteamDeals>(settings, '/api/steam/deals'));
+  },
+
+  /** Achievement progress for one game (agent >= 2.9.122). `appid` is validated
+   *  server-side to digits. null / {configured:false} hide the display. */
+  steamAchievements(settings: ConnSettings, appid: string): Promise<SteamAchievements | null> {
+    return probeOrNull(request<SteamAchievements>(
+      settings, `/api/steam/achievements?appid=${encodeURIComponent(appid)}`));
   },
 
   /**
