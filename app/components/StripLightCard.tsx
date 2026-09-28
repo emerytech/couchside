@@ -17,7 +17,7 @@
  */
 import Ionicons from '@expo/vector-icons/Ionicons';
 import React, { useEffect, useRef, useState } from 'react';
-import { Alert, Pressable, StyleSheet, Text, View } from 'react-native';
+import { Alert, Platform, Pressable, StyleSheet, Text, View } from 'react-native';
 
 import { PresetNameModal } from '@/components/PresetNameModal';
 import { ReactiveModeControls } from '@/components/reactive/ReactiveModeControls';
@@ -31,6 +31,8 @@ import {
 import {
   addPreset, isBuiltinPreset, removePreset, useLedPresets, type LedPreset,
 } from '@/lib/ledPresets';
+import { sampleGameAura } from '@/lib/auraArt';
+import { AURAS, auraToFrame, type Aura } from '@/lib/auraLibrary';
 import { detectStrips, type LedStrip } from '@/lib/ledStrip';
 import { useSkinKit } from '@/lib/skin';
 import { useSettings } from '@/lib/SettingsContext';
@@ -114,6 +116,9 @@ export function StripLightCard() {
 
   const [selKey, setSelKey] = useState<string | null>(null);
   const [effect, setEffect] = useState<StripEffect>('solid');
+  // The aura the user last tapped in the picker — highlights its row and shows
+  // the applied gradient in the in-sheet preview immediately (poll then confirms).
+  const [appliedAuraId, setAppliedAuraId] = useState<string | null>(null);
   const [hue, setHue] = useState(0);
   const [sat, setSat] = useState(100);
   const [bright, setBright] = useState(100);
@@ -154,6 +159,96 @@ export function StripLightCard() {
     ? (poll.data?.strips ?? []).find((s) => strip.key === `strip:${s.prefix}`)
     : undefined;
   const agentMode = !!agentStrip;
+
+  // GAME AURA — "paint the strip from the running game's cover art". The control
+  // appears only when the box can do it (agent advertises `aura`), the agent owns
+  // an RGB strip, AND a game is actually running (a known appid to fetch a cover
+  // for). Same probe-and-appear discipline as the reactive/theme controls. The
+  // running game comes from the gaming card the app already polls elsewhere.
+  // Only feeds the "paint from artwork" control (aura), which today decodes the
+  // cover on web only. Poll the running game solely when that control can appear,
+  // so a box with no addressable strip / no aura never polls /api/gaming here.
+  const auraAvailable = agentMode && !!agentStrip && strip?.rgb && poll.data?.aura === true
+    && Platform.OS === 'web';
+  // GAME AURA LIBRARY (Phase 2) — the curated per-game palette picker. Same box
+  // requirement as the artwork paint (an agent-owned RGB strip + the /api/leds/aura
+  // endpoint), but NO web-only gate: a library palette is baked data spread by
+  // auraToFrame(), so there is no image decode and it works on native too.
+  const auraLibReady = agentMode && !!agentStrip && !!strip?.rgb && poll.data?.aura === true;
+  // Poll the running game whenever EITHER aura control can appear (artwork paint,
+  // web-only; or the library picker, any platform) so auto-suggest has an appid —
+  // a box with no addressable strip / no aura still never polls /api/gaming here.
+  const gamePoll = usePoll<Awaited<ReturnType<typeof api.gaming>>>(
+    () => api.gaming(settings), POLL_MS, ready && configured && (auraAvailable || auraLibReady),
+    hostKey(settings));
+  const gameAppid = gamePoll.data?.game?.appid ?? null;
+  const gameLabel = gamePoll.data?.game?.label ?? '';
+  // Web only: native cover decode is Phase 1b (auraArt.decodeToRgba returns null off
+  // web), so the control must not appear on a phone where every tap would fail.
+  const auraReady = auraAvailable && gameAppid != null;
+
+  /** Sample the running game's cover into one colour per LED and paint it. The
+   *  colours are DATA — the agent re-validates every channel and looks the strip
+   *  up in its live set (POST /api/leds/aura). On a platform that can't decode the
+   *  cover (native, today) or a fetch/decode miss, say so rather than fail silent. */
+  const paintFromArtwork = async () => {
+    if (!agentStrip || gameAppid == null || busy) return;
+    hapticLight();
+    setBusy(true);
+    try {
+      const palette = await sampleGameAura(settings, gameAppid, agentStrip.count);
+      if (!palette) {
+        Alert.alert('Couldn’t read the cover',
+          'The game’s cover art couldn’t be fetched or sampled on this device.');
+        return;
+      }
+      const ok = await api.paintStripAura(settings, agentStrip.prefix, palette);
+      if (!ok) Alert.alert('Aura not applied', 'The box rejected the palette or is unreachable.');
+    } finally {
+      await poll.refresh();
+      setBusy(false);
+    }
+  };
+
+  /** Apply a curated library aura: spread its palette across the strip's LEDs and
+   *  paint that frame via the SAME endpoint as the artwork paint (POST /api/leds/aura).
+   *  The frame is DATA — the agent re-validates every channel and rejects any frame
+   *  whose length ≠ the strip's LED count, so we size it to agentStrip.count. v1
+   *  paints a STATIC gradient; aura.effect is not animated here (that needs agent work). */
+  const applyAura = async (aura: Aura) => {
+    if (!agentStrip || busy) return;
+    hapticLight();
+    setBusy(true);
+    try {
+      const frame = auraToFrame(aura.palette, agentStrip.count);
+      // Guard: only post a correctly-sized frame (the agent 400s any other length).
+      if (frame.length !== agentStrip.count) return;
+      // Immediate in-sheet feedback: paint the preview + mark the row active now,
+      // so the tap visibly does something (the poll.refresh below then confirms).
+      setFrame(frame.map((c) => c));
+      setAppliedAuraId(aura.id);
+      const ok = await api.paintStripAura(settings, agentStrip.prefix, frame);
+      if (!ok) {
+        setAppliedAuraId(null);
+        Alert.alert('Aura not applied', 'The box rejected the palette or is unreachable.');
+      }
+    } finally {
+      await poll.refresh();
+      setBusy(false);
+    }
+  };
+
+  // AUTO-SUGGEST — if the running game matches a library aura (by Steam appid),
+  // surface it first. `game.appid` is a number; the library stores appids as
+  // strings, so compare stringified. Ambient auras (appid '') never match.
+  const suggestedAura: Aura | null = gameAppid != null
+    ? AURAS.find((a) => a.appid !== '' && a.appid === String(gameAppid)) ?? null
+    : null;
+  // Render order: the suggestion first, then the rest of the library in its
+  // canonical order (deduped so the suggested one isn't listed twice).
+  const auraList: readonly Aura[] = suggestedAura
+    ? [suggestedAura, ...AURAS.filter((a) => a.id !== suggestedAura.id)]
+    : AURAS;
 
   // Fetch the box's built-in theme catalog once the box is reachable. Themes
   // live on the box, so a box update adds new ones with no app resubmit; a 404
@@ -997,6 +1092,81 @@ export function StripLightCard() {
         </>
       ) : null}
 
+      {/* GAME AURA — sample the running game's cover into one colour per LED and
+          paint the strip. Probe-and-appear: only when the box advertised `aura`,
+          the agent owns this RGB strip, AND a game is running (a known appid). */}
+      {auraReady ? (
+        <>
+          <Text style={styles.sectionLabel}>GAME AURA</Text>
+          <View style={styles.chipRow}>
+            <Pressable
+              onPress={() => void paintFromArtwork()} disabled={busy}
+              accessibilityRole="button"
+              accessibilityLabel="Paint the strip from the running game's artwork"
+              style={({ pressed }) => [styles.savePreset, pressed && styles.pressed, busy && styles.pressed]}>
+              <Ionicons name="color-palette-outline" size={14} color={t.blue} />
+              <Text style={[styles.chipText, { color: t.blue }]} numberOfLines={1}>
+                {gameLabel ? `Paint from ${gameLabel}` : 'Paint from game artwork'}
+              </Text>
+            </Pressable>
+          </View>
+        </>
+      ) : null}
+
+      {/* AURA LIBRARY — a curated table of per-game palettes (lib/auraLibrary).
+          Tapping one spreads its colours across the strip's LEDs (auraToFrame)
+          and paints that frame via the SAME POST /api/leds/aura as the artwork
+          paint above — but with NO image decode, so it works on native too. v1
+          paints a STATIC gradient; the effect name is only a hint for the future
+          animated version. Auto-suggests the running game's aura first. */}
+      {auraLibReady ? (
+        <>
+          <Text style={styles.sectionLabel}>AURA LIBRARY</Text>
+          {suggestedAura ? (
+            <Text style={styles.auraSuggest} numberOfLines={1}>
+              Suggested for {gameLabel || suggestedAura.label}
+            </Text>
+          ) : null}
+          <View style={styles.auraList}>
+            {auraList.map((aura) => {
+              const isSug = !!suggestedAura && aura.id === suggestedAura.id;
+              const isActive = aura.id === appliedAuraId;
+              return (
+                <Pressable
+                  key={aura.id}
+                  onPress={() => void applyAura(aura)}
+                  disabled={busy}
+                  accessibilityRole="button"
+                  accessibilityState={{ selected: isActive }}
+                  accessibilityLabel={`Paint the strip with the ${aura.label} aura`}
+                  style={({ pressed }) => [
+                    styles.auraRow, isSug && styles.auraRowSug, isActive && styles.auraRowActive,
+                    pressed && styles.pressed, busy && styles.pressed,
+                  ]}>
+                  <View style={styles.auraBar}>
+                    {aura.palette.map((c, i) => (
+                      <View
+                        key={i}
+                        style={{ flex: 1, backgroundColor: cssRgb({ r: c[0], g: c[1], b: c[2] }) }}
+                      />
+                    ))}
+                  </View>
+                  <View style={styles.auraMeta}>
+                    <Text style={styles.auraLabel} numberOfLines={1}>{aura.label}</Text>
+                    <Text style={styles.auraEffect} numberOfLines={1}>{aura.effect}</Text>
+                  </View>
+                  {isActive ? (
+                    <Ionicons name="checkmark-circle" size={14} color={t.blue} style={styles.auraTag} />
+                  ) : isSug ? (
+                    <Ionicons name="sparkles" size={13} color={t.blue} style={styles.auraTag} />
+                  ) : null}
+                </Pressable>
+              );
+            })}
+          </View>
+        </>
+      ) : null}
+
       {/* PRESETS — saved profiles, applied to the whole strip. When the box
           serves themes, drop our built-in seeds (the box owns those now) and
           keep only the user's own saved presets. */}
@@ -1109,6 +1279,29 @@ const makeStyles = (t: Palette) =>
       borderColor: t.blue, borderWidth: 1, borderRadius: 999,
       paddingVertical: 6, paddingHorizontal: 10,
     },
+
+    // GAME AURA LIBRARY picker — stacked rows (a colour-bar preview + label),
+    // scrollable within the tall configurator sheet.
+    auraSuggest: { color: t.blue, fontSize: 11, fontFamily: mono, marginTop: -2, marginBottom: 8 },
+    auraList: { gap: 6 },
+    auraRow: {
+      flexDirection: 'row', alignItems: 'center', gap: 10,
+      borderColor: t.cardBorder, borderWidth: 1, borderRadius: 10,
+      paddingVertical: 7, paddingHorizontal: 8,
+    },
+    auraRowSug: { borderColor: t.blue, backgroundColor: t.card },
+    auraRowActive: { borderColor: t.blue, backgroundColor: t.card },
+    auraBar: {
+      width: 64, height: 18, borderRadius: 5, overflow: 'hidden', flexDirection: 'row',
+      borderWidth: StyleSheet.hairlineWidth, borderColor: t.cardBorder,
+    },
+    auraMeta: { flex: 1, minWidth: 0 },
+    auraLabel: { color: t.text, fontSize: 13, fontFamily: mono },
+    auraEffect: {
+      color: t.textFaint, fontSize: 10, fontFamily: mono, marginTop: 1,
+      textTransform: 'uppercase', letterSpacing: 0.5,
+    },
+    auraTag: { paddingHorizontal: 2 },
 
     hint: { color: t.textFaint, fontSize: 11, fontFamily: mono, marginTop: 10 },
   });

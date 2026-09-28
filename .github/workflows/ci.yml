@@ -180,6 +180,16 @@ jobs:
       - name: Unit tests (led stand-down)
         run: python3 tests/test_led_standdown.py
 
+      # Game Aura — POST /api/leds/aura paints a static per-LED palette (the app
+      # samples a game's cover into one colour per LED). Asserts the allowlist:
+      # the strip prefix is looked up (404 unknown, never interpolated) and the
+      # `colors` frame is validated DATA -- a wrong length / out-of-range channel /
+      # non-list / unknown strip paints NOTHING (400/404). Also the §6 trio: happy
+      # (200, observable in the mock active), 401 auth-fail, and rejects. Proves a
+      # valid frame reaches the fixed-literal writers AND a rejected one does not.
+      - name: Unit tests (led game aura)
+        run: python3 tests/test_led_aura.py
+
       # Which filesystems the dashboard reports. A Deck owner was shown
       # "3.5 / 5.0 GB, 69%" because read_disks() only looked at "/" -- which on
       # SteamOS is a small READ-ONLY rootfs -- and never mentioned /home. Asserts

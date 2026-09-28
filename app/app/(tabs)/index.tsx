@@ -9,9 +9,7 @@ import { TourAnchor } from '@/components/TourAnchor';
 import { registerScroller } from '@/hooks/useTourAnchor';
 import { DisplayAudioCard } from '@/components/DisplayAudioCard';
 import { AudioOutputCard } from '@/components/AudioOutputCard';
-import { RgbLedCard } from '@/components/RgbLedCard';
-import { StripLightCard } from '@/components/StripLightCard';
-import { OpenRgbCard } from '@/components/OpenRgbCard';
+import { RgbConsoleCard } from '@/components/RgbConsoleCard';
 import { FileDropCard } from '@/components/FileDropCard';
 import { GamingCard } from '@/components/GamingCard';
 import { InstallHealthBanner } from '@/components/InstallHealthBanner';
@@ -176,7 +174,7 @@ function ConsoleScreen() {
 
   // --- Console card layout: hold-to-edit reorder + hide (persisted) --------
   const CARD_ORDER_CANON = [
-    'nowplaying', 'streamhost', 'gaming', 'vitals', 'screen', 'display', 'audio', 'leds', 'stripleds', 'openrgb', 'units', 'filedrop',
+    'nowplaying', 'streamhost', 'gaming', 'vitals', 'screen', 'display', 'audio', 'rgb', 'units', 'filedrop',
   ];
   const cardLayout = useConsoleLayout();
   const [editingCards, setEditingCards] = useState(false);
@@ -194,7 +192,7 @@ function ConsoleScreen() {
   // it went. The split is by card id, so a user's saved order is respected
   // inside each group and reorder moves stay within a group. The fold is forced
   // open while editing so every card — hidden ones included — is reachable.
-  const MORE_IDS = new Set(['screen', 'display', 'audio', 'leds', 'stripleds', 'openrgb', 'units', 'filedrop']);
+  const MORE_IDS = new Set(['screen', 'display', 'audio', 'rgb', 'units', 'filedrop']);
   const primaryOrder = cardOrder.filter((id) => !MORE_IDS.has(id));
   const moreOrder = cardOrder.filter((id) => MORE_IDS.has(id));
   const moreCollapsedPref = usePref('consoleMoreCollapsed');
@@ -381,9 +379,9 @@ function ConsoleScreen() {
       </TourAnchor>
     ),
     audio: <AudioOutputCard />,
-    leds: <RgbLedCard />,
-    stripleds: <StripLightCard />,
-    openrgb: <OpenRgbCard />,
+    // One compact card stands in for the three inline lighting cards; the full
+    // controls (StripLightCard + RgbLedCard + OpenRgbCard) open in a sheet.
+    rgb: <RgbConsoleCard />,
     units: configured ? (
       <Card title="UNITS" index={5}>
         {units.error != null && !units.data ? (

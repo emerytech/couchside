@@ -815,7 +815,11 @@ export type LedEffect =
   | 'meter_cpu' | 'meter_battery'
   // Playtime countdown (agents that advertise `reactive.playtime`): the strip starts
   // full and drains as a personal timer runs down. Strip-only.
-  | 'playtime';
+  | 'playtime'
+  // Game Aura (agents that advertise `aura: true`): a STATIC per-LED palette the
+  // app paints from a game's cover art via POST /api/leds/aura. Strip-only; carries
+  // its colours in `colors`, not a single `color`.
+  | 'aura';
 
 /** Config for a reactive meter (SignalBar-style). All optional with box defaults. */
 export type MeterSmooth = 'responsive' | 'balanced' | 'smooth';
@@ -849,6 +853,8 @@ export type LedActive = {
   meter?: MeterCfg;
   /** Playtime countdown config (incl. the box-stamped deadline), present only for `playtime`. */
   playtime?: PlaytimeCfg;
+  /** The painted per-LED palette, present only for `aura` (one entry per strip LED). */
+  colors?: Rgb[];
   // Envelope shape (agents that advertise `shape:true`), single-LED software renderer only:
   // `attack` = rise fraction of a breathe/pulse cycle (0-100); `duty` = a
   // strobe's on-time % (1-99). Absent on older agents / other effects.
@@ -883,6 +889,10 @@ export type LedsState = {
   /** Addressable strips the agent can drive as a whole (agent >= 2.9.85). Absent
       on older agents → the app falls back to driving the sweep itself. */
   strips?: StripInfo[];
+  /** True when the box has POST /api/leds/aura AND a strip to paint — the app may
+      offer "paint the strip from game artwork" (Game Aura). Additive probe-and-
+      appear flag; absent on older agents → the app hides the control. */
+  aura?: boolean;
   /** Reactive meters this box can drive RIGHT NOW (probe-and-appear). `meters` is
       the offered meter effect ids (only those whose signal reads + a strip exists);
       `signals` says which live inputs are present. Absent → the agent has no
@@ -1971,6 +1981,28 @@ export async function mediaArtSource(
   // amplifying it ~1.33x and handing a giant string to <Image>.
   if (!isUsableBodySize(r.bytes.byteLength)) return null;
   return `data:${r.contentType};base64,${Buffer.from(r.bytes).toString('base64')}`;
+}
+
+/**
+ * Fetch a Steam game's cover art as RAW BYTES (for Game Aura's app-side decode).
+ * Same source as steamCoverSource — the box's OWN local Steam cache, so the phone
+ * never contacts Steam or a CDN — but returns the bytes + content-type so the
+ * caller can decode + sample them (lib/auraArt) rather than hand a URL to <Image>.
+ * Bearer/ticket auth and the secure-vs-plaintext split are handled by binaryGet.
+ * Resolves null on 404 (art not cached / older agent), an oversized body, or any
+ * transport error, so the caller degrades to "no aura".
+ */
+export async function steamCoverBytes(
+  settings: ConnSettings,
+  appid: number,
+  signal?: AbortSignal,
+): Promise<{ contentType: string; bytes: Uint8Array } | null> {
+  const path = `/api/steam/${encodeURIComponent(String(appid))}/cover`;
+  const r = await binaryGet(settings, path, signal);
+  if (!r) return null;
+  if (isDeclaredTooLarge(r.declaredLen)) return null;
+  if (!isUsableBodySize(r.bytes.byteLength)) return null;
+  return { contentType: r.contentType, bytes: r.bytes };
 }
 
 /**
@@ -3647,6 +3679,31 @@ export const api = {
     return request<{ ok: boolean }>(settings, '/api/leds/theme', {
       method: 'POST',
       body: { strip, theme, ...(brightness != null ? { brightness: Math.round(brightness) } : {}) },
+    })
+      .then((r) => !!r?.ok)
+      .catch(() => false);
+  },
+
+  /**
+   * Game Aura (agent advertises `aura: true`): paint a STATIC per-LED palette
+   * across a strip — one `{r,g,b}` per LED, sampled app-side from a game's cover
+   * art (see lib/auraPalette + lib/auraArt). `strip` is a prefix the box sent in
+   * leds()'s `strips`; the agent looks it up (404 otherwise) and REJECTS a frame
+   * whose length ≠ the strip's LED count or whose channels fall outside 0-255, so
+   * a bad frame paints nothing. `colors` must therefore already be exactly the
+   * strip's LED count (the caller sizes the sample to it). The agent renders it on
+   * its own thread and persists it, so it survives the app closing and a reboot.
+   * Resolves false on any failure; the caller re-reads /api/leds for the real
+   * state (§11). Older agents 404 → false, and the control was hidden anyway.
+   */
+  paintStripAura(
+    settings: ConnSettings,
+    strip: string,
+    colors: Rgb[],
+  ): Promise<boolean> {
+    return request<{ ok: boolean }>(settings, '/api/leds/aura', {
+      method: 'POST',
+      body: { strip, colors },
     })
       .then((r) => !!r?.ok)
       .catch(() => false);

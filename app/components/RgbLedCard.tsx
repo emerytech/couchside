@@ -70,6 +70,10 @@ const EFFECT_META: Record<LedEffect, { label: string; usesColor: boolean }> = {
   meter_cpu: { label: 'CPU', usesColor: false },
   meter_battery: { label: 'Battery', usesColor: false },
   playtime: { label: 'Playtime', usesColor: false },
+  // Game Aura is strip-only (a per-LED palette painted from cover art via its own
+  // route); never offered on this single-LED card — present only to satisfy the
+  // Record<LedEffect> type.
+  aura: { label: 'Game Aura', usesColor: false },
 };
 /** A mono LED can't show colour, so only these effects make sense on one. */
 const MONO_EFFECTS: LedEffect[] = ['solid', 'off', 'breathe', 'pulse', 'strobe'];
