@@ -18,6 +18,14 @@ the same thing regardless of what actually changed.
 Write for the person holding the phone, not for the commit log. They are
 deciding whether to press "Update now" on a machine across the room.
 
+## 2.9.125
+
+**All-time-low prices (IsThereAnyDeal).** Add your own free IsThereAnyDeal API key
+(Setup, next to the Steam key, with a link to the guide) and Couchside marks which
+games in your deals and wishlist are at their lowest price ever — not just "on sale."
+The key is opt-in, stored only on the box, never shown again, and used only to look
+up all-time lows for the games you're already viewing.
+
 ## 2.9.124
 
 **Weekly and monthly play time.** When Steam is connected, the Play tab now shows

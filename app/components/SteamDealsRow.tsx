@@ -9,7 +9,7 @@ import React from 'react';
 import { Image, Linking, Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
 
 import { usePoll } from '@/hooks/usePoll';
-import { api, hostKey, type SteamDeals } from '@/lib/api';
+import { api, hostKey, type SteamDeals, type ItadLows } from '@/lib/api';
 import { hapticLight } from '@/lib/haptics';
 import { useSettings } from '@/lib/SettingsContext';
 import { mono, useTheme, useThemedStyles, type Palette } from '@/lib/theme';
@@ -20,6 +20,13 @@ function price(cents: number, currency: string): string {
   const sym = CURRENCY[currency] ?? '';
   const amount = (cents / 100).toFixed(currency === 'JPY' ? 0 : 2);
   return sym ? `${sym}${amount}` : `${amount} ${currency}`.trim();
+}
+
+// ITAD returns the all-time low as a MAJOR-unit float (4.99), not cents.
+function priceMajor(amount: number, currency: string): string {
+  const sym = CURRENCY[currency] ?? '';
+  const a = amount.toFixed(currency === 'JPY' ? 0 : 2);
+  return sym ? `${sym}${a}` : `${a} ${currency}`.trim();
 }
 
 // Public Steam capsule for a game (the box may not have unowned games cached, so
@@ -37,6 +44,16 @@ export function SteamDealsRow() {
 
   const d = deals.data;
   const items = d && d.configured && d.connected ? (d.items ?? []) : [];
+
+  // All-time-low overlay (agent >= 2.9.125, opt-in ITAD key). Probe-and-appear:
+  // null/{configured:false} -> no badges. Bounded + cached on the box.
+  const appids = items.map((i) => i.appid);
+  const lowsResp = usePoll<ItadLows | null>(
+    () => api.itadLows(settings, appids), 1800000,
+    ready && configured && appids.length > 0, `${hostKey(settings)}|deals-lows`);
+  const lows = lowsResp.data && lowsResp.data.configured && lowsResp.data.connected
+    ? (lowsResp.data.lows ?? {}) : {};
+
   if (items.length === 0) return null;
 
   const open = (appid: string) => {
@@ -65,6 +82,17 @@ export function SteamDealsRow() {
               )}
               <Text style={styles.now}>{it.final > 0 ? price(it.final, it.currency) : 'Free'}</Text>
             </View>
+            {(() => {
+              const low = lows[it.appid];
+              if (!low) return null;
+              // current price is cents, ITAD low is major units.
+              const isLowest = it.final / 100 <= low.amount + 0.005;
+              return isLowest ? (
+                <View style={styles.atlBadge}><Text style={styles.atlBadgeTxt}>LOWEST EVER</Text></View>
+              ) : (
+                <Text style={styles.atl} numberOfLines={1}>All-time low {priceMajor(low.amount, low.currency)}</Text>
+              );
+            })()}
           </Pressable>
         ))}
       </ScrollView>
@@ -89,5 +117,11 @@ const makeStyles = (t: Palette) =>
     priceRow: { flexDirection: 'row', alignItems: 'baseline', gap: 6, marginTop: 2 },
     was: { color: t.textFaint, fontSize: 11, textDecorationLine: 'line-through' },
     now: { color: t.green, fontSize: 13, fontWeight: '700' },
+    atl: { color: t.textDim, fontSize: 10, marginTop: 3 },
+    atlBadge: {
+      alignSelf: 'flex-start', marginTop: 4, backgroundColor: t.blue,
+      borderRadius: 5, paddingHorizontal: 5, paddingVertical: 1,
+    },
+    atlBadgeTxt: { color: t.onAccent, fontWeight: '800', fontSize: 9, letterSpacing: 0.5 },
     pressed: { opacity: 0.6 },
   });
