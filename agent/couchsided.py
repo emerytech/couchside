@@ -53,7 +53,7 @@ except ImportError:  # pragma: no cover
     fcntl = None
 
 APP_NAME = "couchside-agent"
-VERSION = "2.9.119"
+VERSION = "2.9.120"
 UID = os.getuid()
 XDG_RUNTIME_DIR = "/run/user/%d" % UID
 
@@ -22865,6 +22865,171 @@ def mock_steam_webapi_status():
             "persona": "Taylor", "avatar": "https://avatars.example/steam.jpg"}
 
 
+# --- Phase 1: profile / now-playing + whole-library, from the same opt-in key.
+# Two more read-only GETs (GetOwnedGames, GetSteamLevel) on the SAME fixed-host
+# client. Cached longer than the summary (a library changes rarely). Everything
+# is only-when-configured + degrade-closed, so a slow/absent Steam never affects
+# anything else and older apps just don't fetch these.
+_STEAM_OWNED_CACHE = {"ts": 0.0, "val": None}
+_STEAM_OWNED_TTL = 3600.0
+_STEAM_LEVEL_CACHE = {"ts": 0.0, "val": None}
+_STEAM_LEVEL_TTL = 3600.0
+_STEAM_PERSONA_STATES = {0: "Offline", 1: "Online", 2: "Busy", 3: "Away",
+                         4: "Snooze", 5: "Looking to trade", 6: "Looking to play"}
+
+
+def _steam_get_owned(steamid64, apikey):
+    """The owner's IPlayerService/GetOwnedGames list, or None. include_appinfo for
+    names, include_played_free_games so F2P time counts. Degrade closed."""
+    d = _steam_api_get("IPlayerService", "GetOwnedGames", "0001",
+                       {"key": apikey, "steamid": steamid64,
+                        "include_appinfo": 1, "include_played_free_games": 1})
+    try:
+        games = d["response"]["games"]
+        return games if isinstance(games, list) else None
+    except Exception:
+        return None
+
+
+def _steam_get_level(steamid64, apikey):
+    """The owner's Steam level (int) or None."""
+    d = _steam_api_get("IPlayerService", "GetSteamLevel", "0001",
+                       {"key": apikey, "steamid": steamid64})
+    try:
+        return int(d["response"]["player_level"])
+    except Exception:
+        return None
+
+
+def _steam_owned_cached():
+    if not _steam_webapi_configured():
+        return None
+    now = time.monotonic()
+    if (_STEAM_OWNED_CACHE["val"] is not None
+            and now - _STEAM_OWNED_CACHE["ts"] < _STEAM_OWNED_TTL):
+        return _STEAM_OWNED_CACHE["val"]
+    with _STEAM_WEBAPI_LOCK:
+        sid = _STEAM_WEBAPI["steamid64"]
+        key = _STEAM_WEBAPI["apikey"]
+    games = _steam_get_owned(sid, key)
+    if games is not None:
+        _STEAM_OWNED_CACHE["ts"] = now
+        _STEAM_OWNED_CACHE["val"] = games
+    return games
+
+
+def _steam_level_cached():
+    if not _steam_webapi_configured():
+        return None
+    now = time.monotonic()
+    if (_STEAM_LEVEL_CACHE["val"] is not None
+            and now - _STEAM_LEVEL_CACHE["ts"] < _STEAM_LEVEL_TTL):
+        return _STEAM_LEVEL_CACHE["val"]
+    with _STEAM_WEBAPI_LOCK:
+        sid = _STEAM_WEBAPI["steamid64"]
+        key = _STEAM_WEBAPI["apikey"]
+    lv = _steam_get_level(sid, key)
+    if lv is not None:
+        _STEAM_LEVEL_CACHE["ts"] = now
+        _STEAM_LEVEL_CACHE["val"] = lv
+    return lv
+
+
+def _steam_profile_payload():
+    """GET /api/steam/profile: the owner's live profile card — persona, avatar,
+    online state, what they're playing (even on another device), Steam level.
+    {"configured": False} without a key; connected False when Steam is unreachable."""
+    if not _steam_webapi_configured():
+        return {"configured": False}
+    summ = _steam_summary_cached()
+    if summ is None:
+        return {"configured": True, "connected": False}
+    try:
+        state_code = int(summ.get("personastate") or 0)
+    except (TypeError, ValueError):
+        state_code = 0
+    body = {"configured": True, "connected": True,
+            "persona": summ.get("personaname"),
+            "avatar": (summ.get("avatarfull") or summ.get("avatarmedium")
+                       or summ.get("avatar")),
+            "state_code": state_code,
+            "state": _STEAM_PERSONA_STATES.get(state_code, "Online"),
+            "playing": summ.get("gameextrainfo"),
+            "profileurl": summ.get("profileurl")}
+    if summ.get("gameid"):
+        body["gameid"] = str(summ.get("gameid"))
+    lv = _steam_level_cached()
+    if lv is not None:
+        body["level"] = lv
+    return body
+
+
+def _steam_library_payload():
+    """GET /api/steam/library: whole-library aggregates for the stat tile + the
+    "jump back in" rail — total games, total hours, most-played title, last-two-weeks
+    hours, backlog (owned but never played), and the recently played. ONE
+    GetOwnedGames call. {"configured": False} without a key."""
+    if not _steam_webapi_configured():
+        return {"configured": False}
+    games = _steam_owned_cached()
+    if games is None:
+        return {"configured": True, "connected": False}
+
+    def _mins(g, key):
+        try:
+            return int(g.get(key) or 0)
+        except (TypeError, ValueError):
+            return 0
+
+    def _slim(g, key):
+        return {"appid": str(g.get("appid")),
+                "name": g.get("name") or ("App %s" % g.get("appid")),
+                "hours": round(_mins(g, key) / 60.0, 1)}
+
+    count = len(games)
+    total_min = 0
+    played = 0
+    top = None
+    recent = []
+    for g in games:
+        m = _mins(g, "playtime_forever")
+        total_min += m
+        if m > 0:
+            played += 1
+        if top is None or m > _mins(top, "playtime_forever"):
+            top = g
+        wk = _mins(g, "playtime_2weeks")
+        if wk > 0:
+            recent.append(g)
+    recent.sort(key=lambda g: _mins(g, "playtime_2weeks"), reverse=True)
+    body = {"configured": True, "connected": True,
+            "count": count, "played": played, "backlog": count - played,
+            "total_hours": round(total_min / 60.0, 1),
+            "hours_2weeks": round(sum(_mins(g, "playtime_2weeks") for g in recent) / 60.0, 1),
+            "recent": [_slim(g, "playtime_2weeks") for g in recent[:8]]}
+    if top is not None and _mins(top, "playtime_forever") > 0:
+        body["top"] = _slim(top, "playtime_forever")
+    return body
+
+
+def mock_steam_profile_payload():
+    return {"configured": True, "connected": True, "persona": "Taylor",
+            "avatar": "https://avatars.example/steam_full.jpg",
+            "state_code": 1, "state": "Online", "playing": "Hades II",
+            "gameid": "1145350", "level": 42,
+            "profileurl": "https://steamcommunity.com/id/taylor/"}
+
+
+def mock_steam_library_payload():
+    return {"configured": True, "connected": True, "count": 312, "played": 47,
+            "backlog": 265, "total_hours": 1240.5, "hours_2weeks": 6.2,
+            "top": {"appid": "1245620", "name": "Elden Ring", "hours": 210.4},
+            "recent": [
+                {"appid": "1145350", "name": "Hades II", "hours": 3.2},
+                {"appid": "1245620", "name": "Elden Ring", "hours": 2.1},
+                {"appid": "413150", "name": "Stardew Valley", "hours": 0.9}]}
+
+
 def _gaming_payload():
     """The /api/gaming body — every field independently optional; omit anything
     that could not be read rather than emit a null the app must special-case.
@@ -26470,6 +26635,17 @@ class Handler(BaseHTTPRequestHandler):
                 # do_GET auth gate above already ran.
                 self._send(200, {"configured": False} if self.mock
                            else _steam_webapi_status(), started)
+            elif path == "/api/steam/profile":
+                # Opt-in: the owner's live Steam profile card (persona/avatar/state/
+                # now-playing/level). {configured:false} without a key; probe-and-
+                # appear (older agents 404). Bearer-gated: the do_GET gate ran.
+                self._send(200, mock_steam_profile_payload() if self.mock
+                           else _steam_profile_payload(), started)
+            elif path == "/api/steam/library":
+                # Opt-in: whole-library aggregates (totals, top game, backlog,
+                # recently played) from one GetOwnedGames call. Probe-and-appear.
+                self._send(200, mock_steam_library_payload() if self.mock
+                           else _steam_library_payload(), started)
             elif path == "/api/recommend":
                 # "What to play next" — ranks INSTALLED Steam games from local play
                 # history (hours + recency). READ-ONLY: it recommends, it never

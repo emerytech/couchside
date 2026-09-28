@@ -14,6 +14,7 @@ import { ActivityIndicator, Image, Pressable, RefreshControl, ScrollView, StyleS
 
 import { Gated } from '@/components/Gated';
 import { TabScreen } from '@/components/TabScreen';
+import { SteamProfileCard } from '@/components/SteamProfileCard';
 import { useLockOrientation } from '@/hooks/useLockOrientation';
 import { usePoll } from '@/hooks/usePoll';
 import { api, hostKey, type Recommendation, type RecoPick } from '@/lib/api';
@@ -106,6 +107,7 @@ function PlayScreen() {
         <RefreshControl refreshing={refreshing} onRefresh={onRefresh}
           tintColor={t.green} colors={[t.green]} />
       }>
+      <SteamProfileCard />
       <Text style={styles.eyebrow}>{eyebrow}</Text>
       <Text style={styles.h1}>What to play next</Text>
 

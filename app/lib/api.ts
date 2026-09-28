@@ -1299,6 +1299,36 @@ export type SteamWebApiStatus = {
   persona?: string;
   avatar?: string;
 };
+
+/** GET /api/steam/profile (agent >= 2.9.120) — the owner's live Steam profile.
+ *  `configured` false without a key; `connected` false when Steam is unreachable.
+ *  Reads only the user's own public profile; the key never reaches the app. */
+export type SteamProfile = {
+  configured: boolean;
+  connected?: boolean;
+  persona?: string;
+  avatar?: string;
+  state?: string;
+  state_code?: number;
+  playing?: string;
+  gameid?: string;
+  level?: number;
+  profileurl?: string;
+};
+/** One game in the library rail. */
+export type SteamGameBrief = { appid: string; name: string; hours: number };
+/** GET /api/steam/library (agent >= 2.9.120) — whole-library aggregates. */
+export type SteamLibrary = {
+  configured: boolean;
+  connected?: boolean;
+  count?: number;
+  played?: number;
+  backlog?: number;
+  total_hours?: number;
+  hours_2weeks?: number;
+  top?: SteamGameBrief;
+  recent?: SteamGameBrief[];
+};
 export type SteamMenus = { menus: SteamMenu[] };
 
 /** One GPU as the box reports it (agent >= 2.9.43; `card` >= 2.9.67). */
@@ -2867,6 +2897,17 @@ export const api = {
     return request<SteamWebApiStatus>(settings, '/api/steam/webapi/disconnect', {
       method: 'POST', body: {},
     });
+  },
+
+  /** The owner's live Steam profile (agent >= 2.9.120). null on an older agent
+   *  (404); {configured:false} when no key is set — either way the card hides. */
+  steamProfile(settings: ConnSettings): Promise<SteamProfile | null> {
+    return probeOrNull(request<SteamProfile>(settings, '/api/steam/profile'));
+  },
+
+  /** Whole-library aggregates (agent >= 2.9.120). null / {configured:false} hide. */
+  steamLibrary(settings: ConnSettings): Promise<SteamLibrary | null> {
+    return probeOrNull(request<SteamLibrary>(settings, '/api/steam/library'));
   },
 
   /**
