@@ -18,6 +18,19 @@ the same thing regardless of what actually changed.
 Write for the person holding the phone, not for the commit log. They are
 deciding whether to press "Update now" on a machine across the room.
 
+## 2.9.118
+
+**Game Aura — your strip lights up in the game's colours.** On a box with an addressable LED
+strip, Couchside can now wash the bar in colours pulled from the game you're playing: open the
+strip's lighting card, and it suggests an aura for whatever's running, or pick one yourself from
+the built-in library. A Faithful / Subtle / Punchy control keeps the original palette or pushes
+it brighter. The aura stays until you change it, and — like every other strip effect — it steps
+aside the moment Steam drives the lights itself, then picks back up when Steam is done.
+
+This is the box side of the Aura library that shipped in the app: update the box and the auras
+you already see on your phone start actually painting the strip. Needs Couchside 2.9.66 or newer
+on your phone; older app versions keep working exactly as before.
+
 ## 2.9.117
 
 **Your LED strip can show how the box is doing.** On boxes with an addressable light strip,
