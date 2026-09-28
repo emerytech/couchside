@@ -32,13 +32,24 @@ import {
   addPreset, isBuiltinPreset, removePreset, useLedPresets, type LedPreset,
 } from '@/lib/ledPresets';
 import { sampleGameAura } from '@/lib/auraArt';
-import { AURAS, auraToFrame, type Aura } from '@/lib/auraLibrary';
+import {
+  AURAS, AURA_VIVIDNESS, auraToFrame, vivify, type Aura, type AuraVividness,
+} from '@/lib/auraLibrary';
+import { setPref, usePref } from '@/lib/prefs';
 import { detectStrips, type LedStrip } from '@/lib/ledStrip';
 import { useSkinKit } from '@/lib/skin';
 import { useSettings } from '@/lib/SettingsContext';
 import { mono, useTheme, useThemedStyles, type Palette } from '@/lib/theme';
 
 const POLL_MS = 15000;
+
+/** Display labels for the aura vividness segmented control (values live in
+ *  lib/auraLibrary AURA_VIVIDNESS; the pref persists the value). */
+const VIVID_LABEL: Record<AuraVividness, string> = {
+  faithful: 'Faithful',
+  subtle: 'Subtle',
+  punchy: 'Punchy',
+};
 
 type StripEffect =
   | 'solid' | 'off' | 'manual' | 'scanner' | 'rainbow' | 'breathe'
@@ -119,6 +130,10 @@ export function StripLightCard() {
   // The aura the user last tapped in the picker — highlights its row and shows
   // the applied gradient in the in-sheet preview immediately (poll then confirms).
   const [appliedAuraId, setAppliedAuraId] = useState<string | null>(null);
+  // AURA vividness lift (Faithful / Subtle / Punchy) — a per-viewer display
+  // choice for the library only. Read live so the segmented control and the row
+  // previews re-render on change, and the applied aura re-paints (effect below).
+  const vividness = usePref('auraVividness');
   const [hue, setHue] = useState(0);
   const [sat, setSat] = useState(100);
   const [bright, setBright] = useState(100);
@@ -220,7 +235,9 @@ export function StripLightCard() {
     hapticLight();
     setBusy(true);
     try {
-      const frame = auraToFrame(aura.palette, agentStrip.count);
+      // Spread the palette, applying the current vividness lift per cell so the
+      // painted frame matches the level the user picked (Faithful = raw palette).
+      const frame = auraToFrame(aura.palette, agentStrip.count, vividness);
       // Guard: only post a correctly-sized frame (the agent 400s any other length).
       if (frame.length !== agentStrip.count) return;
       // Immediate in-sheet feedback: paint the preview + mark the row active now,
@@ -237,6 +254,22 @@ export function StripLightCard() {
       setBusy(false);
     }
   };
+
+  // LIVE RE-PAINT — when the vividness pref changes while an aura is applied,
+  // re-paint that same aura at the new level so the change is visible on the
+  // strip immediately (not only the next time a row is tapped). Guarded by a ref
+  // so it fires only on an actual change, never on mount or unrelated re-renders.
+  const prevVivid = useRef<AuraVividness>(vividness);
+  useEffect(() => {
+    if (prevVivid.current === vividness) return;
+    prevVivid.current = vividness;
+    if (!appliedAuraId || !agentStrip || busy) return;
+    const aura = AURAS.find((a) => a.id === appliedAuraId);
+    if (aura) void applyAura(aura);
+    // Intentionally keyed on vividness only: appliedAuraId/agentStrip/busy are
+    // read as latest, and we must not re-fire when only those change.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [vividness]);
 
   // AUTO-SUGGEST — if the running game matches a library aura (by Steam appid),
   // surface it first. `game.appid` is a number; the library stores appids as
@@ -1122,6 +1155,29 @@ export function StripLightCard() {
       {auraLibReady ? (
         <>
           <Text style={styles.sectionLabel}>AURA LIBRARY</Text>
+          {/* VIVIDNESS — how hard to lift each palette onto the diffused bar.
+              Faithful = raw palette; Punchy = every LED vivid. Changing it
+              re-paints the applied aura live (effect above) and re-tints the
+              row previews below. */}
+          <View style={styles.vividRow}>
+            <Text style={styles.vividLabel}>Vividness</Text>
+            <View style={styles.chipRow}>
+              {AURA_VIVIDNESS.map((lv) => {
+                const on = vividness === lv;
+                return (
+                  <Pressable
+                    key={lv}
+                    onPress={() => { hapticLight(); void setPref('auraVividness', lv); }}
+                    accessibilityRole="button"
+                    accessibilityState={{ selected: on }}
+                    accessibilityLabel={`Vividness ${VIVID_LABEL[lv]}`}
+                    style={({ pressed }) => [styles.chip, on && styles.chipOn, pressed && styles.pressed]}>
+                    <Text style={[styles.chipText, on && styles.chipTextOn]}>{VIVID_LABEL[lv]}</Text>
+                  </Pressable>
+                );
+              })}
+            </View>
+          </View>
           {suggestedAura ? (
             <Text style={styles.auraSuggest} numberOfLines={1}>
               Suggested for {gameLabel || suggestedAura.label}
@@ -1147,7 +1203,9 @@ export function StripLightCard() {
                     {aura.palette.map((c, i) => (
                       <View
                         key={i}
-                        style={{ flex: 1, backgroundColor: cssRgb({ r: c[0], g: c[1], b: c[2] }) }}
+                        // Lift the preview stops by the current level so the row
+                        // matches what will actually paint.
+                        style={{ flex: 1, backgroundColor: cssRgb(vivify({ r: c[0], g: c[1], b: c[2] }, vividness)) }}
                       />
                     ))}
                   </View>
@@ -1282,6 +1340,13 @@ const makeStyles = (t: Palette) =>
 
     // GAME AURA LIBRARY picker — stacked rows (a colour-bar preview + label),
     // scrollable within the tall configurator sheet.
+    // Vividness control: a small caption over the 3 wrapping chips, so it stays
+    // readable at phone width in the tall sheet even if the chips wrap.
+    vividRow: { marginBottom: 10, gap: 6 },
+    vividLabel: {
+      color: t.textDim, fontSize: 11, fontFamily: mono,
+      textTransform: 'uppercase', letterSpacing: 0.5,
+    },
     auraSuggest: { color: t.blue, fontSize: 11, fontFamily: mono, marginTop: -2, marginBottom: 8 },
     auraList: { gap: 6 },
     auraRow: {

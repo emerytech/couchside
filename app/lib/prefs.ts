@@ -23,6 +23,7 @@ import {
 } from './mediaSeek';
 import { PadMode } from './settings';
 import { isControllerThemePref, type ControllerThemePref } from './gameTheme';
+import { isAuraVividness, type AuraVividness } from './auraLibrary';
 
 /** Tabs the app can open on. Values are the expo-router route names ('index' is
  *  Console). Setup is deliberately not offered: nobody wants to land there, and
@@ -215,6 +216,14 @@ export type Prefs = {
    *  theme key. Applied to the immersive controller only (MOVE / landscape
    *  pad). Default 'auto' keeps the game-detection behaviour. */
   controllerTheme: ControllerThemePref;
+  /** GAME AURA vividness: how hard the curated library lift pushes a palette
+   *  onto the diffused strip. 'faithful' = the raw palette; 'subtle' = a light
+   *  value-floor lift; 'punchy' = every LED vivid, no muddy sections. Default
+   *  'subtle' — several palettes carry a dark brand-accent stop that reads muddy
+   *  on the bar even at full brightness, so a gentle floor is the better first
+   *  impression. Applies ONLY to the aura library, never the box LED-theme
+   *  catalog. See lib/auraLibrary.ts (vivify / auraToFrame). */
+  auraVividness: AuraVividness;
   /** Collapse the pill + mode tabs + button/keyboard rows so the trackpad
    *  surface fills the pane for edge-to-edge scrolling. Trackpad mode only;
    *  a floating chip restores the chrome. */
@@ -345,6 +354,7 @@ export const DEFAULTS: Prefs = {
   padCombosHold: false,
   padHints: true,
   controllerTheme: 'auto',
+  auraVividness: 'subtle',
   padTrackpadLarge: false,
   padLargeToggle: true,
   askToSwitchControl: true,
@@ -472,6 +482,9 @@ function normalize(raw: unknown): Prefs {
     controllerTheme: isControllerThemePref(o.controllerTheme)
       ? o.controllerTheme
       : DEFAULTS.controllerTheme,
+    auraVividness: isAuraVividness(o.auraVividness)
+      ? o.auraVividness
+      : DEFAULTS.auraVividness,
     padTrackpadLarge: bool(o.padTrackpadLarge, DEFAULTS.padTrackpadLarge),
     padLargeToggle: bool(o.padLargeToggle, DEFAULTS.padLargeToggle),
     askToSwitchControl: bool(o.askToSwitchControl, DEFAULTS.askToSwitchControl),

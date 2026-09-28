@@ -14,9 +14,32 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 
-import { AURAS, auraToFrame, type RGB, type Rgb } from '../auraLibrary.ts';
+import {
+  AURAS, AURA_VIVIDNESS, auraToFrame, isAuraVividness, vivify,
+  type AuraVividness, type RGB, type Rgb,
+} from '../auraLibrary.ts';
 
 const eq = (c: Rgb, r: number, g: number, b: number) => c.r === r && c.g === g && c.b === b;
+
+/** Hue (0..360) of a colour, for the hue-preservation checks. Undefined for
+ *  greys (delta 0); those tests use chromatic stops only. */
+const hueOf = (c: Rgb): number => {
+  const r = c.r / 255, g = c.g / 255, b = c.b / 255;
+  const max = Math.max(r, g, b), min = Math.min(r, g, b), d = max - min;
+  if (d === 0) return NaN;
+  let h: number;
+  if (max === r) h = ((g - b) / d) % 6;
+  else if (max === g) h = (b - r) / d + 2;
+  else h = (r - g) / d + 4;
+  h *= 60;
+  return h < 0 ? h + 360 : h;
+};
+const maxCh = (c: Rgb) => Math.max(c.r, c.g, c.b);
+/** Smallest signed angular gap between two hues, in degrees (0..180). */
+const hueGap = (a: number, b: number) => {
+  const d = Math.abs(a - b) % 360;
+  return d > 180 ? 360 - d : d;
+};
 
 test('a 2-colour palette over 3 cells is [c0, midpoint, c1]', () => {
   const pal: RGB[] = [[0, 0, 0], [20, 40, 60]];
@@ -135,4 +158,129 @@ test('the table is frozen (cannot be mutated at runtime)', () => {
   assert.ok(Object.isFrozen(AURAS), 'AURAS array frozen');
   assert.ok(Object.isFrozen(AURAS[0]), 'each aura frozen');
   assert.ok(Object.isFrozen(AURAS[0].palette), 'each palette frozen');
+});
+
+// ---- Vividness: vivify() ----
+// The lift is a per-viewer DISPLAY choice for the aura library. Faithful must be
+// a pure no-op; the lifts raise the HSV value to a floor and nudge saturation
+// while preserving HUE, so a dark stop reads without going a different colour.
+
+test('AURA_VIVIDNESS is the three known levels and the guard accepts only them', () => {
+  assert.deepEqual([...AURA_VIVIDNESS], ['faithful', 'subtle', 'punchy']);
+  for (const lv of AURA_VIVIDNESS) assert.ok(isAuraVividness(lv), `${lv} is valid`);
+  for (const bad of ['bright', '', 'FAITHFUL', 0, null, undefined, {}]) {
+    assert.ok(!isAuraVividness(bad), `${JSON.stringify(bad)} rejected`);
+  }
+});
+
+test("vivify 'faithful' returns the input rounded+clamped, unchanged in range", () => {
+  // In-range ints pass straight through (byte-identical to the old spreader).
+  assert.deepEqual(vivify({ r: 20, g: 30, b: 70 }, 'faithful'), { r: 20, g: 30, b: 70 });
+  // The default level is 'faithful'.
+  assert.deepEqual(vivify({ r: 200, g: 25, b: 35 }), { r: 200, g: 25, b: 35 });
+  // Floats round; out-of-range clamps — but no hue/level lift is applied.
+  assert.deepEqual(vivify({ r: -5, g: 300, b: 128.6 }, 'faithful'), { r: 0, g: 255, b: 129 });
+});
+
+test("vivify 'punchy' lifts a dark stop's max channel above the floor and keeps its hue", () => {
+  const dark: Rgb = { r: 20, g: 30, b: 70 }; // a dark blue brand-accent stop
+  const before = maxCh(dark);
+  const out = vivify(dark, 'punchy');
+  const floorCh = Math.floor(0.62 * 255); // 158 — the punchy value floor in channels
+  assert.ok(maxCh(out) > before, `max channel lifted: ${before} -> ${maxCh(out)}`);
+  assert.ok(maxCh(out) >= floorCh, `max channel clears the floor: ${maxCh(out)} >= ${floorCh}`);
+  // Hue is preserved — a dark blue becomes a bright blue, not a bright anything-else.
+  assert.ok(hueGap(hueOf(dark), hueOf(out)) <= 6,
+    `hue preserved: ${hueOf(dark).toFixed(1)} vs ${hueOf(out).toFixed(1)}`);
+});
+
+test('vivify barely changes an already-bright stop (its value is not lifted)', () => {
+  const bright: Rgb = { r: 102, g: 192, b: 244 }; // value already well above the floor
+  for (const lv of ['subtle', 'punchy'] as AuraVividness[]) {
+    const out = vivify(bright, lv);
+    // Value = the max channel; since it already clears the floor it is untouched.
+    assert.equal(maxCh(out), 244, `${lv}: max channel unchanged`);
+    // Overall it stays close to the original (saturation only nudges the low channel).
+    for (const k of ['r', 'g', 'b'] as const) {
+      assert.ok(Math.abs(out[k] - bright[k]) <= 40, `${lv}: ${k} barely moved (${bright[k]} -> ${out[k]})`);
+    }
+    // And hue is preserved.
+    assert.ok(hueGap(hueOf(bright), hueOf(out)) <= 6, `${lv}: hue preserved`);
+  }
+});
+
+test('vivify keeps a grey stop grey (saturation 0 stays 0) while it may brighten', () => {
+  for (const lv of ['subtle', 'punchy'] as AuraVividness[]) {
+    const mid = vivify({ r: 120, g: 120, b: 120 }, lv);
+    assert.ok(mid.r === mid.g && mid.g === mid.b, `${lv}: mid grey stays grey -> ${JSON.stringify(mid)}`);
+    const dark = vivify({ r: 30, g: 30, b: 30 }, lv);
+    assert.ok(dark.r === dark.g && dark.g === dark.b, `${lv}: dark grey stays grey -> ${JSON.stringify(dark)}`);
+    assert.ok(dark.r > 30, `${lv}: dark grey is lifted (${dark.r} > 30)`);
+  }
+});
+
+test('vivify preserves hue across chromatic stops and both lift levels', () => {
+  const stops: Rgb[] = [
+    { r: 20, g: 30, b: 70 },   // dark blue
+    { r: 110, g: 40, b: 20 },  // dark brown/orange
+    { r: 40, g: 90, b: 30 },   // dark green
+    { r: 90, g: 20, b: 90 },   // dark magenta
+  ];
+  for (const s of stops) {
+    for (const lv of ['subtle', 'punchy'] as AuraVividness[]) {
+      const out = vivify(s, lv);
+      assert.ok(hueGap(hueOf(s), hueOf(out)) <= 6,
+        `${lv}: hue of ${JSON.stringify(s)} preserved (${hueOf(s).toFixed(1)} vs ${hueOf(out).toFixed(1)})`);
+    }
+  }
+});
+
+// ---- Vividness: auraToFrame(palette, n, level) ----
+
+test("auraToFrame default level is 'faithful' — byte-identical to the 2-arg call", () => {
+  const pal: RGB[] = [[200, 230, 240], [20, 30, 70], [60, 150, 160]];
+  for (const n of [1, 3, 8, 17]) {
+    assert.deepEqual(auraToFrame(pal, n), auraToFrame(pal, n, 'faithful'),
+      `n=${n}: omitting the level equals passing 'faithful'`);
+  }
+  // And still the exact known interpolation (guards against a regression in the
+  // faithful path even though vivify now sits in the loop).
+  assert.deepEqual(auraToFrame([[0, 0, 0], [100, 100, 100], [200, 200, 200]], 5, 'faithful'), [
+    { r: 0, g: 0, b: 0 },
+    { r: 50, g: 50, b: 50 },
+    { r: 100, g: 100, b: 100 },
+    { r: 150, g: 150, b: 150 },
+    { r: 200, g: 200, b: 200 },
+  ]);
+});
+
+test("auraToFrame 'punchy' leaves NO muddy cell — every LED clears the value floor", () => {
+  // Hollow Knight's palette carries a near-black {20,30,70} stop, so the raw
+  // (faithful) spread has dim cells; punchy must lift every cell above the floor.
+  const pal: RGB[] = [[200, 230, 240], [20, 30, 70], [60, 150, 160]];
+  const faithful = auraToFrame(pal, 17, 'faithful');
+  const punchy = auraToFrame(pal, 17, 'punchy');
+  assert.equal(punchy.length, 17);
+  // The test is only meaningful if faithful actually HAS a muddy region.
+  assert.ok(faithful.some((c) => maxCh(c) < 120), 'faithful spread has a dim cell (control)');
+  // Punchy: no cell below the ~0.62 value floor (158 in channel terms, allow -1 for rounding).
+  for (const c of punchy) {
+    assert.ok(maxCh(c) >= 157, `punchy cell not muddy: ${JSON.stringify(c)} maxCh=${maxCh(c)}`);
+  }
+  // The two levels genuinely differ (fails if auraToFrame ignored the level).
+  assert.notDeepEqual(punchy, faithful, 'punchy differs from faithful');
+});
+
+test("auraToFrame 'subtle' lifts less than 'punchy' but still floors the dim cells", () => {
+  const pal: RGB[] = [[200, 230, 240], [20, 30, 70], [60, 150, 160]];
+  const subtle = auraToFrame(pal, 17, 'subtle');
+  const punchy = auraToFrame(pal, 17, 'punchy');
+  // Subtle floor is ~0.45 -> 115 in channels (allow -1 for rounding).
+  for (const c of subtle) {
+    assert.ok(maxCh(c) >= 114, `subtle cell floored: ${JSON.stringify(c)} maxCh=${maxCh(c)}`);
+  }
+  // The dimmest cell under subtle is no brighter than the dimmest under punchy.
+  const dimSubtle = Math.min(...subtle.map(maxCh));
+  const dimPunchy = Math.min(...punchy.map(maxCh));
+  assert.ok(dimSubtle <= dimPunchy, `subtle floor (${dimSubtle}) <= punchy floor (${dimPunchy})`);
 });
