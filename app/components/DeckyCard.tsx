@@ -230,7 +230,7 @@ export function DeckyCard() {
           <Ionicons name="apps-outline" size={14} color={t.textDim} />
           <Text style={styles.rowLabel}>Plugins</Text>
           <Text style={styles.rowValue} numberOfLines={1}>
-            {`${pl.plugins.length} installed`}
+            {`${pl.plugins?.length ?? 0} installed`}
             {updates != null ? ` · ${updates} update${updates === 1 ? '' : 's'}` : ''}
           </Text>
         </View>

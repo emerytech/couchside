@@ -56,7 +56,11 @@ export function AudioOutputCard() {
 
   const d = poll.data;
   // Old agent, no pactl, or nothing to switch between -> render nothing at all.
-  if (!d || !d.available || d.sinks.length === 0) return null;
+  // `!d.sinks?.length` (not `d.sinks.length === 0`) so a truthy-but-partial body
+  // whose `sinks` key is absent degrades closed instead of throwing "reading
+  // 'length' of undefined" — the sibling DisplayAudioCard guards the same way, and
+  // this also protects the d.sinks.map() below.
+  if (!d || !d.available || !d.sinks?.length) return null;
 
   const onPick = async (s: AudioSink) => {
     if (busy || s.default) return; // already the default, or a switch in flight
