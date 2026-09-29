@@ -1,2 +1,4 @@
-• Fixes a crash that could hit when opening the Decky Loader manager screen.
-• Small polish and stability improvements.
+• Wishlist price-drop alerts: with Steam connected, get a notification when a game on your wishlist gets cheaper — even with the app closed (opt-in).
+• New Android home-screen widget: tonight's pick and your best wishlist deal at a glance, one tap into the app.
+• Discover: search the Steam store from the Play tab and open any game in Steam.
+• Fixes and polish.
