@@ -3,7 +3,7 @@
     "name": "Couchside",
     "slug": "rescue-remote",
     "owner": "ets3d-llc",
-    "version": "2.9.71",
+    "version": "2.9.72",
     "orientation": "default",
     "icon": "./assets/images/icon.png",
     "scheme": "couchside",
@@ -11,7 +11,7 @@
     "ios": {
       "supportsTablet": true,
       "bundleIdentifier": "com.ets3d.rescueremote",
-      "buildNumber": "230",
+      "buildNumber": "231",
       "infoPlist": {
         "ITSAppUsesNonExemptEncryption": false,
         "NSAppTransportSecurity": {
@@ -20,6 +20,12 @@
         "NSLocalNetworkUsageDescription": "Couchside connects to the Couchside service on your media center or Steam machine over your local network.",
         "NSBonjourServices": [
           "_http._tcp"
+        ],
+        "UIBackgroundModes": [
+          "processing"
+        ],
+        "BGTaskSchedulerPermittedIdentifiers": [
+          "com.expo.modules.backgroundtask.processing"
         ]
       }
     },
@@ -32,7 +38,7 @@
         "monochromeImage": "./assets/images/android-icon-monochrome.png"
       },
       "predictiveBackGestureEnabled": false,
-      "versionCode": 118
+      "versionCode": 119
     },
     "web": {
       "bundler": "metro",
@@ -68,7 +74,25 @@
         }
       ],
       "expo-status-bar",
-      "expo-web-browser"
+      "expo-web-browser",
+      "expo-notifications",
+      [
+        "react-native-android-widget",
+        {
+          "widgets": [
+            {
+              "name": "CouchsideWidget",
+              "label": "Couchside — Tonight",
+              "description": "Tonight's pick and your best wishlist deal",
+              "minWidth": "180dp",
+              "minHeight": "110dp",
+              "targetCellWidth": 4,
+              "targetCellHeight": 2,
+              "resizeMode": "horizontal|vertical"
+            }
+          ]
+        }
+      ]
     ],
     "experiments": {
       "typedRoutes": true
