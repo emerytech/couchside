@@ -1169,6 +1169,13 @@ jobs:
       - name: Unit tests (wishlist notify decision)
         run: node --experimental-strip-types app/__tests__/wishlist-notify.ts
 
+      # The Android home-screen widget shows exactly what this pure builder
+      # produces (the render is device-only). Risk: tonight's-pick selection,
+      # best-drop selection (biggest % off, ties by price), price formatting, and
+      # the empty state — all degrade to null/empty, never a bogus line.
+      - name: Unit tests (widget payload)
+        run: node --experimental-strip-types app/__tests__/widget-payload.ts
+
       # KI-002: the app had NO automated signal of any kind. Every escaped bug
       # this project has paid for lately was in app/ -- a tap shipped broken to
       # TestFlight, a link that overflowed only on Android, a button occluded

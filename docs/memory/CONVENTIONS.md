@@ -996,3 +996,20 @@ for the Phase 1b wishlist notifier:
 The stub's exports must match the native module's shape exactly (same names, same signatures) or `tsc`
 fails. Keep the stub tiny and behaviorally honest — e.g. a toggle's enable/disable stub may still flip the
 PREF (so the switch is exercisable in the harness) but must do NO native work.
+
+## Home-screen widget: a custom app entry, Android-only imports (2026-09-28)
+
+`react-native-android-widget` runs a HEADLESS JS task (widget add / update / resize / periodic) that loads the
+app's `package.json main` entry, so the task handler must be registered THERE, not just in `_layout.tsx`. Hence
+`main` is a custom **`index.js`** (iOS + web: just `import 'expo-router/entry'`) plus **`index.android.js`**
+(registers `widgetTaskHandler` via `registerWidgetTaskHandler`, then `require('expo-router/entry')` LAST so the
+handler is registered before the router loads). Metro resolves `index.android.js` on Android automatically.
+
+Keep every RNW-importing module (`lib/widget/render.tsx`, `widgetTaskHandler.ts`, `update.android.ts`) on
+Android-only import paths — they're reached only from `index.android.js` or the `.android.ts` writer. The app
+calls the platform-neutral `lib/widget/update.ts` (a no-op on iOS/web), so react-native-android-widget never
+enters the iOS/web bundle. The pure `lib/widget/widgetPayload.ts` (what the widget displays) is the only
+unit-testable piece; the render, the App-Widget provider, and the tap are device-only (screenshot proof).
+
+**The direct-APK fork (`build/direct-apk`, `app.config.js`) needs the widget plugin + config added separately**,
+or the sideload the owner runs on the Razr ships without the widget.
