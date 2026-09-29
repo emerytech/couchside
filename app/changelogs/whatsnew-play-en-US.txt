@@ -1,3 +1,2 @@
-• Your Steam library, on the couch: the Play tab recommends what to play tonight, shows your profile and playtime, and launches on the box in one tap.
-• Deals & wishlist: see what's on sale and — with a free IsThereAnyDeal key — which games are at their LOWEST price ever, plus a heads-up when a wishlist game drops.
-• Polished confirm dialogs; Advanced settings tidied up.
+• Fixes a crash that could hit when opening the Decky Loader manager screen.
+• Small polish and stability improvements.

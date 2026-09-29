@@ -643,6 +643,31 @@ Each entry now carries a `✅ DONE` / `🟡 PARTIAL` / `📋 OPEN` banner with i
   best-effort background wake polls the watch list's prices app-side and fires a LOCAL notification on a
   drop — NEVER a guaranteed server push. Ship the alert as explicitly best-effort, or ship Phases 1–2
   (viewing + an in-app "on sale now" list, the reliable core) and stop.
+  - **✅ Phase 1a DONE (app 2.9.70 / agent 2.9.127):** on-open Play-tab `WishlistAlertsBanner` +
+    `GET /api/steam/wishlist/alerts` (per-account last-seen baseline, seed-on-first-look). The reliable core.
+  - **✅ Phase 1b DONE (branch `feat/wishlist-alert-notifications`, this build):** the explicitly
+    best-effort background LOCAL notification. Added `expo-notifications` + `expo-background-task` +
+    `expo-task-manager` (SDK-57 pinned); headless `TaskManager` task (`lib/wishlistAlertTask.ts`, defined
+    at module scope, imported at the app root) reuses the SAME `decideWishlistNotify` logic as the banner,
+    reaches the box over the LAN, fires ONE notification on a drop, then acks (so the banner won't
+    double-nag). Opt-in Prefs toggle (OFF by default, asks notification permission). Honest ceiling stated
+    in the toggle copy: LAN-only + OS-throttled. Native/web split via `.web` stubs so the harness stays
+    clean. Decision logic unit-tested (both states); on-device background firing + tap deep-link are
+    inherently un-harnessable (need an EAS build on a real device).
+  - **✅ Phase 2 (Android widget) DONE (branch `feat/wishlist-alert-notifications`, this build):** a home-screen
+    widget (`react-native-android-widget`, Android-first per owner) showing tonight's pick + best wishlist drop.
+    Widget UI in JSX (zero Kotlin); pure `lib/widget/widgetPayload.ts` builder (unit-tested) is the source of truth;
+    the Play tab writes the snapshot, the widget shows it (no networking in-widget); tap opens Play. Custom app
+    entry (`index.js` / `index.android.js`) registers the headless task handler. iOS widget + the direct-APK
+    config-plugin wiring are the remaining follow-ups. On-device render/tap NOT harness-verifiable — needs an
+    Android build on a real device (the owner's Razr).
+  - **✅ Phase 3 (Discover) DONE (branch `feat/wishlist-alert-notifications`, this build):** in-app Steam store
+    search. APP-SIDE + KEYLESS (`lib/steamSearch` → store.steampowered.com storesearch) — leaves the PHONE,
+    never the box; gated on the SAME `compatLookups` opt-in as the other store lookups, with plain disclosure
+    that search terms go to Steam. Dedicated `/discover` route pushed from a Play-tab entry; tap a result →
+    `openInSteamStore`. Parser unit-tested against a VERBATIM captured response. Harness-verified end-to-end
+    (gate → enable → debounced search fires the correct URL → clean empty state on the web CORS block); real
+    results are device-only (browser CORS; native has none). No agent change, no new dep.
 - **Dedupe:** net-new (only grep hit is "wholesale") — NOT the "Notifications" Steam-settings slug in
   **Find the missing Steam settings slugs**, NOT the Fleet-units watchlist. Extends the keyless
   `appdetails` path from **Install a game you own but have not downloaded** and the opt-in fetch pattern

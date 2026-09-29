@@ -11,6 +11,7 @@
  */
 import React, { useCallback, useEffect, useState } from 'react';
 import { ActivityIndicator, Image, Linking, Pressable, RefreshControl, ScrollView, StyleSheet, Text, View } from 'react-native';
+import { router } from 'expo-router';
 
 import { NowPlayingCard } from '@/components/GamingCard';
 import { useConfirm } from '@/components/ConfirmDialog';
@@ -24,6 +25,8 @@ import { SteamWishlistRow } from '@/components/SteamWishlistRow';
 import { useLockOrientation } from '@/hooks/useLockOrientation';
 import { usePoll } from '@/hooks/usePoll';
 import { api, hostKey, type Recommendation, type RecoPick } from '@/lib/api';
+import { buildWidgetPayload } from '@/lib/widget/widgetPayload';
+import { updateCouchsideWidget } from '@/lib/widget/update';
 import { hapticLight, hapticMedium } from '@/lib/haptics';
 import { useBoxes, useSettings } from '@/lib/SettingsContext';
 import { mono, useTheme, useThemedStyles, type Palette } from '@/lib/theme';
@@ -84,6 +87,23 @@ function PlayScreen() {
   useEffect(() => {
     if (refreshing && !poll.loading) setRefreshing(false);
   }, [refreshing, poll.loading]);
+
+  // Keep the Android home-screen widget's snapshot fresh from the SAME data this
+  // tab shows (tonight's pick + the best wishlist drop). No-op on iOS/web
+  // (lib/widget/update.ts). The wishlist fetch is a plain GET — it does NOT ack,
+  // so it never disturbs the on-open banner's baseline. Re-runs when the reco
+  // changes or the box switches.
+  useEffect(() => {
+    if (!ready || !configured) return;
+    let alive = true;
+    void (async () => {
+      const alerts = await api.steamWishlistAlerts(settings).catch(() => null);
+      if (!alive) return;
+      await updateCouchsideWidget(buildWidgetPayload(d, alerts, Date.now()));
+    })();
+    return () => { alive = false; };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [ready, configured, d?.generated, hostKey(settings)]);
 
   // Greeting: prefer the box's most-recent Steam persona (agent >= 2.9.118), else
   // the box's name. Absent persona just falls back — probe-and-appear.
@@ -188,6 +208,19 @@ function PlayScreen() {
         </>
       )}
 
+      {/* Discover — keyless in-app Steam store search. App-side + opt-in; the
+          screen states searches go to Steam from the phone. Shown where the box
+          has Steam (probe-and-appear like the rows below). */}
+      {activeBox?.caps?.steam !== false && (
+        <Pressable
+          onPress={() => { hapticLight(); router.push('/discover'); }}
+          accessibilityRole="button" accessibilityLabel="Search the Steam store"
+          style={({ pressed }) => [styles.discover, pressed && styles.pressed]}>
+          <Text style={styles.discoverTxt}>Search the Steam store</Text>
+          <Text style={styles.discoverArrow}>›</Text>
+        </Pressable>
+      )}
+
       <SteamWishlistRow />
       <SteamDealsRow />
       <Text style={styles.foot}>
@@ -258,4 +291,11 @@ const makeStyles = (t: Palette) =>
       paddingVertical: 10, paddingHorizontal: 20,
     },
     steamBtnTxt: { color: t.textDim, fontSize: 13, fontWeight: '600' },
+    discover: {
+      flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between',
+      backgroundColor: t.card, borderColor: t.cardBorder, borderWidth: 1, borderRadius: 12,
+      paddingVertical: 12, paddingHorizontal: 14, marginTop: 8, marginBottom: 8,
+    },
+    discoverTxt: { color: t.text, fontSize: 14, fontWeight: '600' },
+    discoverArrow: { color: t.textDim, fontSize: 18, fontWeight: '700' },
   });

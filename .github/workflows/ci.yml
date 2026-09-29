@@ -1162,6 +1162,26 @@ jobs:
       - name: Unit tests (app update check)
         run: node --experimental-strip-types app/__tests__/app-update.ts
 
+      # Background wishlist price-drop notifier's decision + copy. The native
+      # task is a thin shell around this pure logic; the risk is WHEN it fires
+      # and never firing a false one (first-look seed vs a real drop vs the
+      # off-LAN/unconfigured degrade paths — both states observed).
+      - name: Unit tests (wishlist notify decision)
+        run: node --experimental-strip-types app/__tests__/wishlist-notify.ts
+
+      # The Android home-screen widget shows exactly what this pure builder
+      # produces (the render is device-only). Risk: tonight's-pick selection,
+      # best-drop selection (biggest % off, ties by price), price formatting, and
+      # the empty state — all degrade to null/empty, never a bogus line.
+      - name: Unit tests (widget payload)
+        run: node --experimental-strip-types app/__tests__/widget-payload.ts
+
+      # Discover's keyless Steam store-search parser, checked against a VERBATIM
+      # captured storesearch response (fixtures/storesearch-halflife.json) plus
+      # controls for the discount derivation, type filter, and degrade paths.
+      - name: Unit tests (steam store search parser)
+        run: node --experimental-strip-types app/__tests__/steam-search.ts
+
       # KI-002: the app had NO automated signal of any kind. Every escaped bug
       # this project has paid for lately was in app/ -- a tap shipped broken to
       # TestFlight, a link that overflowed only on Android, a button occluded

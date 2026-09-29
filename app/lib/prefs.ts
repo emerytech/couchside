@@ -51,6 +51,13 @@ export type Prefs = {
    *  appids still says something about what you own, so it is a switch the user
    *  throws rather than a default they discover later. */
   compatLookups: boolean;
+  /** Background wishlist price-drop notifications (lib/wishlistAlertTask).
+   *
+   *  OFF by default and opt-in — it asks the OS for notification permission and
+   *  registers a background task. Best-effort by nature: LAN-only (the phone
+   *  must be home with the box up) and OS-throttled, so it complements, never
+   *  replaces, the on-open Play-tab banner. Nothing leaves the phone or box. */
+  wishlistNotify: boolean;
   /** Setup → Utilities: one-click hardware/setup helpers (flash an OpenPuck
    *  receiver, enable HDMI-CEC). OFF by default and opt-in, because these run
    *  firmware flashes / system changes on the box — a surface the user should
@@ -325,6 +332,7 @@ export const DEFAULTS: Prefs = {
   confirmSuspend: true,
   streakCelebrations: true,
   compatLookups: false,
+  wishlistNotify: false,
   utilitiesEnabled: false,
   featureTour: true,
   remoteOnlyMode: false,
@@ -459,6 +467,7 @@ function normalize(raw: unknown): Prefs {
       typeof o.confirmSuspend === 'boolean' ? o.confirmSuspend : DEFAULTS.confirmSuspend,
     streakCelebrations: bool(o.streakCelebrations, DEFAULTS.streakCelebrations),
     compatLookups: bool(o.compatLookups, DEFAULTS.compatLookups),
+    wishlistNotify: bool(o.wishlistNotify, DEFAULTS.wishlistNotify),
     utilitiesEnabled: bool(o.utilitiesEnabled, DEFAULTS.utilitiesEnabled),
     featureTour: bool(o.featureTour, DEFAULTS.featureTour),
     remoteOnlyMode: bool(o.remoteOnlyMode, DEFAULTS.remoteOnlyMode),
