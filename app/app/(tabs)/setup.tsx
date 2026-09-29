@@ -30,6 +30,7 @@ import { BoxScanPair } from '@/components/BoxScanPair';
 import { FleetDashboard } from '@/components/FleetDashboard';
 import { SteamIntegrationCard } from '@/components/SteamIntegrationCard';
 import { ItadIntegrationCard } from '@/components/ItadIntegrationCard';
+import { WishlistNotifyToggle } from '@/components/WishlistNotifyToggle';
 import { DirectTvSetup } from '@/components/DirectTvSetup';
 import { BoxScanQr } from '@/components/BoxScanQr';
 import { SetupProgress, SETUP_GUIDE_URL } from '@/components/SetupProgress';
@@ -2357,6 +2358,7 @@ function SetupBody() {
                 aren't matchable pref rows). Probe-and-appear: self-hide on an agent
                 without the feature and on a non-Steam box. */}
             {!prefQuery && activeBox?.caps?.steam !== false && <SteamIntegrationCard />}
+            {!prefQuery && activeBox?.caps?.steam !== false && <WishlistNotifyToggle />}
             {!prefQuery && activeBox?.caps?.steam !== false && <ItadIntegrationCard />}
             {prefNoMatch && <PrefNoMatches query={prefQuery.trim()} />}
           </PrefFilterCtx.Provider>

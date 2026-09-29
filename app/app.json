@@ -20,6 +20,12 @@
         "NSLocalNetworkUsageDescription": "Couchside connects to the Couchside service on your media center or Steam machine over your local network.",
         "NSBonjourServices": [
           "_http._tcp"
+        ],
+        "UIBackgroundModes": [
+          "processing"
+        ],
+        "BGTaskSchedulerPermittedIdentifiers": [
+          "com.expo.modules.backgroundtask.processing"
         ]
       }
     },
@@ -68,7 +74,8 @@
         }
       ],
       "expo-status-bar",
-      "expo-web-browser"
+      "expo-web-browser",
+      "expo-notifications"
     ],
     "experiments": {
       "typedRoutes": true

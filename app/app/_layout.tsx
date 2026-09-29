@@ -2,9 +2,14 @@
 // other module or screen can throw (lib/crashLog). Nothing is ever sent.
 import '@/lib/crashLog';
 import '@/lib/demo'; // no-op unless EXPO_PUBLIC_DEMO=1 (web design-review fixture)
+// Side-effect import: defines the background wishlist-alert TaskManager task at
+// module scope so it is registered in both the foreground app and the headless
+// background JS context. Resolves to a no-op stub on web (wishlistAlertTask.web).
+import '@/lib/wishlistAlertTask';
 import { DarkTheme, DefaultTheme, Stack, ThemeProvider } from 'expo-router';
 import { StatusBar } from 'expo-status-bar';
 import { useMemo } from 'react';
+import { Platform } from 'react-native';
 import { GestureHandlerRootView } from 'react-native-gesture-handler';
 import 'react-native-reanimated';
 
@@ -18,6 +23,7 @@ import { SplashIntro } from '@/components/SplashIntro';
 import { UnlockToast } from '@/components/UnlockToast';
 import { TapCapture } from '@/components/TouchIndicatorLayer';
 import { DeepLinkHandler } from '@/lib/DeepLink';
+import { WishlistNotifyBridge } from '@/components/WishlistNotifyBridge';
 import { EntitlementProvider } from '@/lib/EntitlementContext';
 import { useImmersive } from '@/lib/immersive';
 import { SettingsProvider } from '@/lib/SettingsContext';
@@ -62,6 +68,10 @@ export default function RootLayout() {
           <ConfirmProvider>
           <StatusBar style={scheme === 'light' ? 'dark' : 'light'} />
           <DeepLinkHandler />
+          {/* Re-registers the background wishlist watch on start and opens Play on
+              a notification tap. Native-only: the notification-response hook has
+              no web runtime. */}
+          {Platform.OS !== 'web' && <WishlistNotifyBridge />}
           {/* Touch indicators wrap the whole tree because they read the responder
               system in the CAPTURE phase -- an ancestor, not a sibling overlay.
               Rendered unconditionally and gated internally on the pref: if the
