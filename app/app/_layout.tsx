@@ -121,6 +121,9 @@ export default function RootLayout() {
                 is ~110 entries and virtualises; probe-and-appear — the push
                 only exists where /api/decky/loader answered. */}
             <Stack.Screen name="decky" options={{ headerShown: false }} />
+            {/* Discover — keyless in-app Steam store search (pushed from Play).
+                App-side, opt-in; see app/discover.tsx. */}
+            <Stack.Screen name="discover" options={{ headerShown: false }} />
           </Stack>
           {/* Global overlay: survives the Paywall unmount on unlock (see UnlockToast). */}
           <UnlockToast />

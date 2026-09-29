@@ -11,6 +11,7 @@
  */
 import React, { useCallback, useEffect, useState } from 'react';
 import { ActivityIndicator, Image, Linking, Pressable, RefreshControl, ScrollView, StyleSheet, Text, View } from 'react-native';
+import { router } from 'expo-router';
 
 import { NowPlayingCard } from '@/components/GamingCard';
 import { useConfirm } from '@/components/ConfirmDialog';
@@ -207,6 +208,19 @@ function PlayScreen() {
         </>
       )}
 
+      {/* Discover — keyless in-app Steam store search. App-side + opt-in; the
+          screen states searches go to Steam from the phone. Shown where the box
+          has Steam (probe-and-appear like the rows below). */}
+      {activeBox?.caps?.steam !== false && (
+        <Pressable
+          onPress={() => { hapticLight(); router.push('/discover'); }}
+          accessibilityRole="button" accessibilityLabel="Search the Steam store"
+          style={({ pressed }) => [styles.discover, pressed && styles.pressed]}>
+          <Text style={styles.discoverTxt}>Search the Steam store</Text>
+          <Text style={styles.discoverArrow}>›</Text>
+        </Pressable>
+      )}
+
       <SteamWishlistRow />
       <SteamDealsRow />
       <Text style={styles.foot}>
@@ -277,4 +291,11 @@ const makeStyles = (t: Palette) =>
       paddingVertical: 10, paddingHorizontal: 20,
     },
     steamBtnTxt: { color: t.textDim, fontSize: 13, fontWeight: '600' },
+    discover: {
+      flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between',
+      backgroundColor: t.card, borderColor: t.cardBorder, borderWidth: 1, borderRadius: 12,
+      paddingVertical: 12, paddingHorizontal: 14, marginTop: 8, marginBottom: 8,
+    },
+    discoverTxt: { color: t.text, fontSize: 14, fontWeight: '600' },
+    discoverArrow: { color: t.textDim, fontSize: 18, fontWeight: '700' },
   });
