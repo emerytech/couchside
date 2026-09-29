@@ -92,7 +92,8 @@
             }
           ]
         }
-      ]
+      ],
+      "./plugins/withoutApsEnvironment"
     ],
     "experiments": {
       "typedRoutes": true
