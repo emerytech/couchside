@@ -4,6 +4,19 @@
 
 Couchside pairs a native iOS & Android app with a tiny, dependency-free Python service that runs on a SteamOS / Bazzite HTPC, a Steam Deck, or any systemd Linux machine. When gamescope wedges into a black screen and the TV shows nothing, Couchside is the screen: see live vitals, read the logs, restart the display session, or become an Xbox 360 controller, all from the couch and entirely on your own LAN. No cloud, no accounts, no analytics.
 
+## Release versions
+
+The phone app and the service on your gaming box have separate version numbers. Build numbers identify a specific app package and are counted separately for each distribution.
+
+| Component | Version | Build | Release information |
+| --- | --- | --- | --- |
+| iOS app | 2.9.73 | 236 | Submitted to the App Store on October 2, 2026 |
+| Google Play app | 2.9.73 | 121 | Submitted to Google Play on October 2, 2026 |
+| Android Direct app | 2.9.73 | 18 | [Download APK](https://couchside.tv/direct/) |
+| Linux service (gaming box) | 2.9.128 | — | [Service release](https://github.com/emerytech/couchside/releases/latest) |
+
+Store availability depends on review and rollout. See [release notes](https://couchside.tv/updates/) for details. The service release keeps its historical `v2.9.60` tag to preserve existing updater URLs; its title and `agent-version.txt` identify the current service version. Direct downloads likewise retain their stable `couchside-direct` tag.
+
 ## See it in action
 
 Real footage — a phone driving Steam Big Picture on the TV over the LAN, nothing staged.
