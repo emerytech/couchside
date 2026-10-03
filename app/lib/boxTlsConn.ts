@@ -109,6 +109,7 @@ type PendingReq = {
   reject: (e: Error) => void;
   timer: ReturnType<typeof setTimeout> | null;
   done: boolean;
+  deadline: number;
 };
 
 export type PinnedConnOpts = {
@@ -144,7 +145,8 @@ export class PinnedConn {
         reject(this.lastErr!);
         return;
       }
-      const req: PendingReq = { bytes, resolve, reject, timer: null, done: false };
+      const req: PendingReq = { bytes, resolve, reject, timer: null, done: false,
+        deadline: this.now() + Math.max(0, timeoutMs) };
       // The deadline runs from ENQUEUE and covers queue wait + connect + reply.
       // The caller's own deadline starts at the same moment and is later, so the
       // pool always settles first and an abandoned request is never written.
@@ -160,6 +162,12 @@ export class PinnedConn {
 
   private pump(): void {
     if (this.active || this.queue.length === 0) return;
+    // Timers can be delayed by a busy JS thread. Recheck elapsed time before
+    // sending: a queued power/volume command must not execute after its budget.
+    while (this.queue.length && this.now() >= this.queue[0].deadline) {
+      this.settle(this.queue.shift()!, new PinnedTimeoutError(false), null);
+    }
+    if (!this.queue.length) return;
     const sock = this.sock;
     if (!sock) {
       this.startConnect();

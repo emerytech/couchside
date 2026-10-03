@@ -14,6 +14,7 @@ import { Image, Pressable, StyleSheet, Text, View } from 'react-native';
 import { useConfirm } from './ConfirmDialog';
 import { hapticLight } from '@/lib/haptics';
 
+import { PlayDataProvider, useHasPlayData, usePlayPoll, usePlaySession } from '@/hooks/usePlayPoll';
 import { usePoll } from '@/hooks/usePoll';
 import { api, Gaming, GpuInfo, hostKey } from '@/lib/api';
 import { useSkinKit } from '@/lib/skin';
@@ -77,13 +78,18 @@ function humanizeRun(secs: number): string {
  * at rather than two.
  */
 export function NowPlayingCard() {
+  const hasProvider = useHasPlayData();
+  return hasProvider ? <NowPlayingContent /> : <PlayDataProvider><NowPlayingContent /></PlayDataProvider>;
+}
+function NowPlayingContent() {
+  const { demo } = usePlaySession();
   const t = useTheme();
   const styles = useThemedStyles(makeStyles);
   const { settings, ready } = useSettings();
   const confirm = useConfirm();
   const configured = !!settings.host && !!settings.token;
   const [stopping, setStopping] = useState(false);
-  const poll = usePoll<Gaming | null>(
+  const poll = usePlayPoll<Gaming | null>('gaming',
     () => api.gaming(settings), 5000, ready && configured, hostKey(settings));
   const g = poll.data;
   if (!g?.game) return null;
@@ -117,10 +123,10 @@ export function NowPlayingCard() {
             poll.refresh();
           });
         }}
-        disabled={stopping}
-        style={({ pressed }) => [styles.stopBtn, pressed && { opacity: 0.7 }]}>
+        disabled={stopping || demo}
+        style={({ pressed }) => [styles.stopBtn, { alignSelf: 'flex-end', borderWidth: 0, marginTop: 0, paddingHorizontal: 8 }, pressed && { opacity: 0.7 }]}>
         <Ionicons name="stop-circle-outline" size={15} color={t.red} />
-        <Text style={styles.stopText}>{stopping ? 'CLOSING…' : 'CLOSE GAME'}</Text>
+        <Text style={styles.stopText}>{demo ? 'DEMO' : stopping ? 'CLOSING…' : 'CLOSE GAME'}</Text>
       </Pressable>
     </View>
   );
