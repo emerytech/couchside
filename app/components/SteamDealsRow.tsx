@@ -8,7 +8,8 @@
 import React from 'react';
 import { Image, Linking, Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
 
-import { usePoll } from '@/hooks/usePoll';
+import { usePlayPoll, usePlaySession } from '@/hooks/usePlayPoll';
+import { PlayArtwork } from './PlayArtwork';
 import { api, hostKey, type SteamDeals, type ItadLows } from '@/lib/api';
 import { hapticLight } from '@/lib/haptics';
 import { useSettings } from '@/lib/SettingsContext';
@@ -39,7 +40,7 @@ export function SteamDealsRow() {
   const { settings, ready } = useSettings();
   const configured = !!settings.host && !!settings.token;
 
-  const deals = usePoll<SteamDeals | null>(
+  const deals = usePlayPoll<SteamDeals | null>('deals',
     () => api.steamDeals(settings), 1800000, ready && configured, hostKey(settings));
 
   const d = deals.data;
@@ -48,9 +49,9 @@ export function SteamDealsRow() {
   // All-time-low overlay (agent >= 2.9.125, opt-in ITAD key). Probe-and-appear:
   // null/{configured:false} -> no badges. Bounded + cached on the box.
   const appids = items.map((i) => i.appid);
-  const lowsResp = usePoll<ItadLows | null>(
+  const lowsResp = usePlayPoll<ItadLows | null>('lows',
     () => api.itadLows(settings, appids), 1800000,
-    ready && configured && appids.length > 0, `${hostKey(settings)}|deals-lows`);
+    ready && configured && appids.length > 0, `${hostKey(settings)}|deals-lows|${appids.join(",")}`);
   const lows = lowsResp.data && lowsResp.data.configured && lowsResp.data.connected
     ? (lowsResp.data.lows ?? {}) : {};
 
@@ -70,7 +71,7 @@ export function SteamDealsRow() {
             accessibilityRole="button" accessibilityLabel={`${it.name}, ${it.discount_percent}% off — open on Steam`}
             style={({ pressed }) => [styles.card, pressed && styles.pressed]}>
             <View style={styles.artWrap}>
-              <Image source={{ uri: capsule(it.appid) }} style={styles.art} resizeMode="cover" />
+              <PlayArtwork source={{ uri: capsule(it.appid) }} title={it.name} style={styles.art} />
               {it.discount_percent > 0 && (
                 <View style={styles.badge}><Text style={styles.badgeTxt}>-{it.discount_percent}%</Text></View>
               )}

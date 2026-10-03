@@ -8,10 +8,11 @@
  * configured + connected, so it's invisible for anyone who hasn't opted in or on an
  * older agent. Reads only the user's own public Steam data.
  */
-import React from 'react';
-import { Image, ScrollView, StyleSheet, Text, View } from 'react-native';
+import React, { useState } from 'react';
+import { Pressable, Image, ScrollView, StyleSheet, Text, View } from 'react-native';
 
-import { usePoll } from '@/hooks/usePoll';
+import { usePlayPoll, usePlaySession } from '@/hooks/usePlayPoll';
+import { PlayArtwork } from './PlayArtwork';
 import { api, hostKey, type SteamAchievements, type SteamLibrary, type SteamProfile } from '@/lib/api';
 import { useSettings } from '@/lib/SettingsContext';
 import { mono, useTheme, useThemedStyles, type Palette } from '@/lib/theme';
@@ -24,20 +25,22 @@ const fmtHours = (h?: number | null) => {
 };
 
 export function SteamProfileCard() {
+  const [expanded, setExpanded] = useState(false);
+  const { demo } = usePlaySession();
   const t = useTheme();
   const styles = useThemedStyles(makeStyles);
   const { settings, ready } = useSettings();
   const configured = !!settings.host && !!settings.token;
 
-  const profile = usePoll<SteamProfile | null>(
+  const profile = usePlayPoll<SteamProfile | null>('profile',
     () => api.steamProfile(settings), 60000, ready && configured, hostKey(settings));
-  const library = usePoll<SteamLibrary | null>(
-    () => api.steamLibrary(settings), 600000, ready && configured, hostKey(settings));
+  const library = usePlayPoll<SteamLibrary | null>('library',
+    () => api.steamLibrary(settings), 600000, ready && configured && expanded, hostKey(settings));
   // Achievement progress for the game being played right now, if any.
   const gameid = profile.data?.gameid;
-  const ach = usePoll<SteamAchievements | null>(
+  const ach = usePlayPoll<SteamAchievements | null>('achievements',
     () => (gameid ? api.steamAchievements(settings, gameid) : Promise.resolve(null)),
-    60000, ready && configured && !!gameid, `${hostKey(settings)}:ach:${gameid ?? ''}`);
+    60000, ready && configured && !!gameid && expanded, `${hostKey(settings)}:ach:${gameid ?? ''}`);
 
   const p = profile.data;
   // Probe-and-appear: only when a key is set AND Steam answered.
@@ -52,7 +55,7 @@ export function SteamProfileCard() {
   return (
     <View style={styles.card}>
       <View style={styles.headRow}>
-        {p.avatar ? (
+        {p.avatar && !demo ? (
           <Image source={{ uri: p.avatar }} style={styles.avatar} />
         ) : (
           <View style={[styles.avatar, styles.avatarFallback]} />
@@ -71,7 +74,8 @@ export function SteamProfileCard() {
         </View>
       </View>
 
-      {a && (
+      <Pressable onPress={() => setExpanded(v => !v)} accessibilityRole="button" accessibilityLabel={expanded ? "Hide Steam stats" : "Show Steam stats"} accessibilityState={{ expanded }} style={{ paddingTop: 10, paddingBottom: 4 }}><Text style={{ color: t.green, fontWeight: '600' }}>{expanded ? "Hide stats ↑" : "Stats & achievements ↓"}</Text></Pressable>
+      {expanded && a && (
         <View style={styles.achRow}>
           <View style={styles.achBar}>
             <View style={[styles.achFill, { width: `${Math.max(2, Math.min(100, a.percent ?? 0))}%` }]} />
@@ -83,7 +87,7 @@ export function SteamProfileCard() {
         </View>
       )}
 
-      {lib && (
+      {expanded && lib && (
         <>
           <View style={styles.statsRow}>
             <Stat styles={styles} label="GAMES" value={String(lib.count ?? 0)} />
@@ -109,7 +113,7 @@ export function SteamProfileCard() {
               <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.rail}>
                 {lib.recent.map((g) => (
                   <View key={g.appid} style={styles.recentItem}>
-                    <Image source={cover(g.appid)} style={styles.recentArt} resizeMode="cover" />
+                    <PlayArtwork source={cover(g.appid)} title={g.name} style={styles.recentArt} />
                     <Text style={styles.recentName} numberOfLines={1}>{g.name}</Text>
                     <Text style={styles.recentHours}>{fmtHours(g.hours)} · 2 wks</Text>
                   </View>

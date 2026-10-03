@@ -1,4 +1,7 @@
-• Wishlist price-drop alerts: with Steam connected, get a notification when a game on your wishlist gets cheaper — even with the app closed (opt-in).
-• New Android home-screen widget: tonight's pick and your best wishlist deal at a glance, one tap into the app.
-• Discover: search the Steam store from the Play tab and open any game in Steam.
-• Fixes and polish.
+A new Play tab helps you choose what to play next, with a now-playing card, Steam library stats, achievement progress, wishlist discounts and optional sample-data mode.
+
+Connect Steam and optionally IsThereAnyDeal on your box for price-drop alerts and historical-low comparisons. These optional features use their respective online services.
+
+Game Aura adds artwork-inspired lighting and per-game presets on supported LED hardware. Expanded strip controls include reactive meters and a playtime countdown.
+
+This release also makes Play faster to revisit, fixes excessive background requests that could delay controls, and prevents expired queued commands from being sent. Agent 2.9.128 improves Steam refreshes, temporary network failures and account switching.

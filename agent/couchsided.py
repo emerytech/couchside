@@ -53,7 +53,7 @@ except ImportError:  # pragma: no cover
     fcntl = None
 
 APP_NAME = "couchside-agent"
-VERSION = "2.9.127"
+VERSION = "2.9.128"
 UID = os.getuid()
 XDG_RUNTIME_DIR = "/run/user/%d" % UID
 
@@ -22678,8 +22678,111 @@ _STEAM_WEBAPI_CONF = os.path.expanduser("~/.config/couchside/steam_webapi.json")
 _STEAM_WEBAPI_TIMEOUT = 6.0
 _STEAM_WEBAPI = {"steamid64": None, "apikey": None}
 _STEAM_WEBAPI_LOCK = threading.Lock()
+_STEAM_WEBAPI_WRITE_LOCK = threading.Lock()
 _STEAM_SUMMARY_CACHE = {"ts": 0.0, "val": None}
 _STEAM_SUMMARY_TTL = 30.0
+
+
+# One bounded refresh per cache slot. HTTP readers only wait briefly; slow Steam
+# calls run outside the config lock and never occupy the phone's connection for
+# a chain of six-second upstream timeouts. Account generations also reject ABA
+# (A -> B -> A) completions and same-account credential replacements.
+_STEAM_CACHE_GENERATION = 0
+_STEAM_REFRESH_SLOTS = threading.BoundedSemaphore(4)
+_STEAM_REFRESH_CONTEXT = threading.local()
+_STEAM_CACHE_WAIT = 0.15
+_STEAM_CACHE_RETRY = 15.0
+_STEAM_REFRESH_BUDGET = 8.0
+
+
+def _steam_account_locked():
+    return (_STEAM_CACHE_GENERATION, _STEAM_WEBAPI["steamid64"], _STEAM_WEBAPI["apikey"])
+
+
+def _steam_account():
+    with _STEAM_WEBAPI_LOCK:
+        return _steam_account_locked()
+
+
+def _steam_account_current(owner):
+    with _STEAM_WEBAPI_LOCK:
+        return owner == _steam_account_locked()
+
+
+def _steam_reset_caches_locked():
+    global _STEAM_CACHE_GENERATION
+    _STEAM_CACHE_GENERATION += 1
+    for cache in (_STEAM_SUMMARY_CACHE, _STEAM_OWNED_CACHE, _STEAM_LEVEL_CACHE,
+                  _STEAM_WISHLIST_CACHE, _STEAM_DEALS_CACHE):
+        cache.clear()
+        cache.update(ts=0.0, val=None)
+    _STEAM_ACH_CACHE.clear()
+
+
+def _steam_cached_fetch(cache, ttl, fetch):
+    """Single-flight, stale-on-error cache. fetch(sid, key) returns None on failure.
+    Account selection, invalidation and publication share ONE lock. The network
+    never holds it. A cold request waits at most CACHE_WAIT; a warm one never
+    waits. Retry failures after a short backoff, retaining the last good value.
+    """
+    with _STEAM_WEBAPI_LOCK:
+        owner = _steam_account_locked()
+        _, sid, key = owner
+        if not (sid and key):
+            return None
+        # A caller may still hold an achievement slot that account invalidation
+        # removed from the index. Never reuse that detached slot's old value.
+        if cache.get("owner", owner) != owner:
+            cache.update(ts=0.0, val=None, retry_at=0)
+            cache.pop("loading", None)
+        cache["owner"] = owner
+        now = time.monotonic()
+        value = cache.get("val")
+        if value is not None and now - cache.get("ts", 0) < ttl:
+            return value
+        done = cache.get("loading")
+        if done is None and now >= cache.get("retry_at", 0):
+            if not _STEAM_REFRESH_SLOTS.acquire(blocking=False):
+                return value
+            done = threading.Event()
+            cache["loading"] = done
+
+            def refresh():
+                result = None
+                try:
+                    _STEAM_REFRESH_CONTEXT.deadline = time.monotonic() + _STEAM_REFRESH_BUDGET
+                    _STEAM_REFRESH_CONTEXT.owner = owner
+                    result = fetch(sid, key)
+                except Exception:
+                    pass  # Never expose URLs/API keys from upstream exceptions.
+                finally:
+                    with _STEAM_WEBAPI_LOCK:
+                        if owner == _steam_account_locked() and cache.get("loading") is done:
+                            cache.pop("loading", None)
+                            if result is not None:
+                                cache.update(ts=time.monotonic(), val=result, retry_at=0)
+                            else:
+                                cache["retry_at"] = time.monotonic() + _STEAM_CACHE_RETRY
+                    _STEAM_REFRESH_SLOTS.release()
+                    done.set()
+            try:
+                threading.Thread(target=refresh, name="steam-cache", daemon=True).start()
+            except Exception:
+                cache.pop("loading", None)
+                _STEAM_REFRESH_SLOTS.release()
+                done.set()
+    if value is None and done is not None:
+        done.wait(_STEAM_CACHE_WAIT)
+    with _STEAM_WEBAPI_LOCK:
+        return cache.get("val") if owner == _steam_account_locked() else None
+
+
+def _steam_upstream_timeout(timeout):
+    owner = getattr(_STEAM_REFRESH_CONTEXT, "owner", None)
+    if owner is not None and not _steam_account_current(owner):
+        return 0.0
+    deadline = getattr(_STEAM_REFRESH_CONTEXT, "deadline", None)
+    return min(timeout, deadline - time.monotonic()) if deadline is not None else timeout
 
 
 def _valid_steamid64(s):
@@ -22731,6 +22834,11 @@ def _steam_webapi_load():
 
 
 def _steam_webapi_save(steamid64, apikey):
+    with _STEAM_WEBAPI_WRITE_LOCK:
+        return _steam_webapi_save_serial(steamid64, apikey)
+
+
+def _steam_webapi_save_serial(steamid64, apikey):
     """Persist the key 0600 in the user's OWN config dir via temp-file + os.replace.
     The agent runs as the user, so this needs no root and touches nothing outside
     ~/.config/couchside. Returns True on success. Sets 0600 BEFORE any bytes land."""
@@ -22759,32 +22867,21 @@ def _steam_webapi_save(steamid64, apikey):
     with _STEAM_WEBAPI_LOCK:
         _STEAM_WEBAPI["steamid64"] = steamid64
         _STEAM_WEBAPI["apikey"] = apikey
-    _STEAM_SUMMARY_CACHE["ts"] = 0.0
-    _STEAM_SUMMARY_CACHE["val"] = None
-    _STEAM_OWNED_CACHE["ts"] = 0.0
-    _STEAM_OWNED_CACHE["val"] = None
-    _STEAM_LEVEL_CACHE["ts"] = 0.0
-    _STEAM_LEVEL_CACHE["val"] = None
-    _STEAM_ACH_CACHE.clear()
-    _STEAM_WISHLIST_CACHE["ts"] = 0.0
-    _STEAM_WISHLIST_CACHE["val"] = None
+        _steam_reset_caches_locked()
     return True
 
 
 def _steam_webapi_clear():
+    with _STEAM_WEBAPI_WRITE_LOCK:
+        _steam_webapi_clear_serial()
+
+
+def _steam_webapi_clear_serial():
     """Forget the key: wipe memory + delete the file. Never raises."""
     with _STEAM_WEBAPI_LOCK:
         _STEAM_WEBAPI["steamid64"] = None
         _STEAM_WEBAPI["apikey"] = None
-    _STEAM_SUMMARY_CACHE["ts"] = 0.0
-    _STEAM_SUMMARY_CACHE["val"] = None
-    _STEAM_OWNED_CACHE["ts"] = 0.0
-    _STEAM_OWNED_CACHE["val"] = None
-    _STEAM_LEVEL_CACHE["ts"] = 0.0
-    _STEAM_LEVEL_CACHE["val"] = None
-    _STEAM_ACH_CACHE.clear()
-    _STEAM_WISHLIST_CACHE["ts"] = 0.0
-    _STEAM_WISHLIST_CACHE["val"] = None
+        _steam_reset_caches_locked()
     try:
         os.unlink(_STEAM_WEBAPI_CONF)
     except OSError:
@@ -22810,6 +22907,9 @@ def _steam_api_get(interface, method, version, params, timeout=_STEAM_WEBAPI_TIM
     path are fixed, so nothing client-shaped steers the request (no SSRF). Returns
     the parsed JSON dict, or None on ANY failure (degrade closed). The URL carries
     the secret key, so it is NEVER logged and no exception text is surfaced."""
+    timeout = _steam_upstream_timeout(timeout)
+    if timeout <= 0:
+        return None
     try:
         query = urllib.parse.urlencode(params)
         url = "%s/%s/%s/v%s/?%s" % (_STEAM_WEBAPI_HOST, interface, method,
@@ -22854,34 +22954,22 @@ def _steam_resolve_vanity(vanity, apikey):
 
 
 def _steam_summary_cached():
-    """The owner's profile summary with a short TTL cache, so the status route does
-    not hammer Steam. None when unconfigured or unreachable."""
-    if not _steam_webapi_configured():
-        return None
-    now = time.monotonic()
-    if (_STEAM_SUMMARY_CACHE["val"] is not None
-            and now - _STEAM_SUMMARY_CACHE["ts"] < _STEAM_SUMMARY_TTL):
-        return _STEAM_SUMMARY_CACHE["val"]
-    with _STEAM_WEBAPI_LOCK:
-        sid = _STEAM_WEBAPI["steamid64"]
-        key = _STEAM_WEBAPI["apikey"]
-    summ = _steam_get_summary(sid, key)
-    if summ is not None and _steam_cache_ok(sid):
-        _STEAM_SUMMARY_CACHE["ts"] = now
-        _STEAM_SUMMARY_CACHE["val"] = summ
-    return summ
+    return _steam_cached_fetch(_STEAM_SUMMARY_CACHE, _STEAM_SUMMARY_TTL, _steam_get_summary)
 
 
 def _steam_webapi_status():
     """The GET /api/steam/webapi body: whether a key is configured, the MASKED key,
     and a live connectivity check (persona/avatar) when reachable. NEVER returns the
     full key. Additive / probe-and-appear (absent route on older agents)."""
+    owner = _steam_account()
     with _STEAM_WEBAPI_LOCK:
         sid = _STEAM_WEBAPI["steamid64"]
         key = _STEAM_WEBAPI["apikey"]
     if not (sid and key):
         return {"configured": False}
     summ = _steam_summary_cached()
+    if not _steam_account_current(owner):
+        return {"configured": _steam_webapi_configured(), "connected": False}
     body = {"configured": True, "steamid64": sid,
             "apikey_masked": _mask_apikey(key),
             "connected": summ is not None}
@@ -22936,43 +23024,18 @@ def _steam_get_level(steamid64, apikey):
 
 
 def _steam_owned_cached():
-    if not _steam_webapi_configured():
-        return None
-    now = time.monotonic()
-    if (_STEAM_OWNED_CACHE["val"] is not None
-            and now - _STEAM_OWNED_CACHE["ts"] < _STEAM_OWNED_TTL):
-        return _STEAM_OWNED_CACHE["val"]
-    with _STEAM_WEBAPI_LOCK:
-        sid = _STEAM_WEBAPI["steamid64"]
-        key = _STEAM_WEBAPI["apikey"]
-    games = _steam_get_owned(sid, key)
-    if games is not None and _steam_cache_ok(sid):
-        _STEAM_OWNED_CACHE["ts"] = now
-        _STEAM_OWNED_CACHE["val"] = games
-    return games
+    return _steam_cached_fetch(_STEAM_OWNED_CACHE, _STEAM_OWNED_TTL, _steam_get_owned)
 
 
 def _steam_level_cached():
-    if not _steam_webapi_configured():
-        return None
-    now = time.monotonic()
-    if (_STEAM_LEVEL_CACHE["val"] is not None
-            and now - _STEAM_LEVEL_CACHE["ts"] < _STEAM_LEVEL_TTL):
-        return _STEAM_LEVEL_CACHE["val"]
-    with _STEAM_WEBAPI_LOCK:
-        sid = _STEAM_WEBAPI["steamid64"]
-        key = _STEAM_WEBAPI["apikey"]
-    lv = _steam_get_level(sid, key)
-    if lv is not None and _steam_cache_ok(sid):
-        _STEAM_LEVEL_CACHE["ts"] = now
-        _STEAM_LEVEL_CACHE["val"] = lv
-    return lv
+    return _steam_cached_fetch(_STEAM_LEVEL_CACHE, _STEAM_LEVEL_TTL, _steam_get_level)
 
 
 def _steam_profile_payload():
     """GET /api/steam/profile: the owner's live profile card — persona, avatar,
     online state, what they're playing (even on another device), Steam level.
     {"configured": False} without a key; connected False when Steam is unreachable."""
+    owner = _steam_account()
     if not _steam_webapi_configured():
         return {"configured": False}
     summ = _steam_summary_cached()
@@ -22995,6 +23058,8 @@ def _steam_profile_payload():
     lv = _steam_level_cached()
     if lv is not None:
         body["level"] = lv
+    if not _steam_account_current(owner):
+        return {"configured": _steam_webapi_configured(), "connected": False}
     return body
 
 
@@ -23003,12 +23068,13 @@ def _steam_library_payload():
     "jump back in" rail — total games, total hours, most-played title, last-two-weeks
     hours, backlog (owned but never played), and the recently played. ONE
     GetOwnedGames call. {"configured": False} without a key."""
+    owner = _steam_account()
     if not _steam_webapi_configured():
         return {"configured": False}
     with _STEAM_WEBAPI_LOCK:
         _sid = _STEAM_WEBAPI["steamid64"]
     games = _steam_owned_cached()
-    if games is None:
+    if games is None or not _steam_account_current(owner):
         return {"configured": True, "connected": False}
     games = [g for g in games if isinstance(g, dict)]
 
@@ -23043,10 +23109,11 @@ def _steam_library_payload():
     # account (Steam only exposes "last 2 weeks" + lifetime). Piggybacks on this fetch.
     # Only record if the box is STILL on the account this fetch started for, so a
     # concurrent account switch can't file account A's total under account B (TOCTOU).
-    if _sid and _steam_cache_ok(_sid):
-        _pt = _steam_playtime_deltas(_steam_playtime_record(_sid, total_min), total_min)
-    else:
-        _pt = {"played_7d": None, "played_30d": None}
+    with _STEAM_WEBAPI_LOCK:
+        if _sid and owner == _steam_account_locked():
+            _pt = _steam_playtime_deltas(_steam_playtime_record(_sid, total_min), total_min)
+        else:
+            _pt = {"played_7d": None, "played_30d": None}
     body = {"configured": True, "connected": True,
             "count": count, "played": played, "backlog": count - played,
             "total_hours": round(total_min / 60.0, 1),
@@ -23055,6 +23122,8 @@ def _steam_library_payload():
             "recent": [_slim(g, "playtime_2weeks") for g in recent[:8]]}
     if top is not None and _mins(top, "playtime_forever") > 0:
         body["top"] = _slim(top, "playtime_forever")
+    if not _steam_account_current(owner):
+        return {"configured": _steam_webapi_configured(), "connected": False}
     return body
 
 
@@ -23104,6 +23173,9 @@ def _steam_store_get(endpoint, params, timeout=_STEAM_WEBAPI_TIMEOUT):
     chose; `params` are validated values. Fixed host + HTTPS + urlencoded query, so
     no value steers the host/path. Returns parsed JSON or None (degrade closed).
     Never logs; there is no secret on this path."""
+    timeout = _steam_upstream_timeout(timeout)
+    if timeout <= 0:
+        return None
     try:
         url = "%s/api/%s?%s" % (_STEAM_STORE_HOST, endpoint,
                                 urllib.parse.urlencode(params))
@@ -23153,16 +23225,12 @@ def _steam_deals_payload():
     if not _steam_webapi_configured():
         return {"configured": False}
     cc = _steam_country()
-    now = time.monotonic()
-    if (_STEAM_DEALS_CACHE["val"] is not None and _STEAM_DEALS_CACHE["cc"] == cc
-            and now - _STEAM_DEALS_CACHE["ts"] < _STEAM_DEALS_TTL):
-        items = _STEAM_DEALS_CACHE["val"]
-    else:
-        items = _steam_featured(cc)
-        if items is not None:
-            _STEAM_DEALS_CACHE["ts"] = now
-            _STEAM_DEALS_CACHE["val"] = items
-            _STEAM_DEALS_CACHE["cc"] = cc
+    with _STEAM_WEBAPI_LOCK:
+        if _STEAM_DEALS_CACHE.get("cc") != cc:
+            _STEAM_DEALS_CACHE.clear()
+            _STEAM_DEALS_CACHE.update(ts=0.0, val=None, cc=cc)
+    items = _steam_cached_fetch(_STEAM_DEALS_CACHE, _STEAM_DEALS_TTL,
+                                lambda sid, key: _steam_featured(cc))
     if items is None:
         return {"configured": True, "connected": False}
     return {"configured": True, "connected": True, "region": cc, "items": items[:20]}
@@ -23212,28 +23280,34 @@ def _steam_get_global_pct(appid):
 
 
 def _steam_achievements_payload(appid):
-    """GET /api/steam/achievements?appid=<digits>: the owner's achievement progress
-    for one game + their rarest unlocked. {"configured": False} without a key;
-    connected:false when Steam is unreachable; has_achievements:false for a game with
-    none (or a profile that hides them). Cached 60s per appid. `appid` is already
-    validated (digits) by the route."""
     if not _steam_webapi_configured():
         return {"configured": False}
-    now = time.monotonic()
-    ent = _STEAM_ACH_CACHE.get(appid)
-    if ent is not None and now - ent["ts"] < _STEAM_ACH_TTL:
-        return ent["val"]
+    if not _valid_appid(appid):
+        return {"configured": True, "connected": False}
     with _STEAM_WEBAPI_LOCK:
-        sid = _STEAM_WEBAPI["steamid64"]
-        key = _STEAM_WEBAPI["apikey"]
+        if appid not in _STEAM_ACH_CACHE:
+            if len(_STEAM_ACH_CACHE) >= _STEAM_ACH_CACHE_MAX:
+                # Do not evict in-flight slots (which would duplicate work).
+                idle = next((k for k, v in _STEAM_ACH_CACHE.items() if not v.get("loading")), None)
+                if idle is None:
+                    return {"configured": True, "connected": False, "appid": appid}
+                del _STEAM_ACH_CACHE[idle]
+            _STEAM_ACH_CACHE[appid] = {"ts": 0.0, "val": None}
+        ent = _STEAM_ACH_CACHE[appid]
+    value = _steam_cached_fetch(ent, _STEAM_ACH_TTL,
+                                lambda sid, key: _steam_fetch_achievements(appid, sid, key))
+    return value if value is not None else {"configured": True, "connected": False, "appid": appid}
+
+
+def _steam_fetch_achievements(appid, sid, key):
     d = _steam_api_get("ISteamUserStats", "GetPlayerAchievements", "0001",
                        {"key": key, "steamid": sid, "appid": appid, "l": "english"})
     if d is None:
-        return {"configured": True, "connected": False, "appid": appid}
+        return None
     try:
         ps = d["playerstats"]
     except Exception:
-        return {"configured": True, "connected": False, "appid": appid}
+        return None
     if not ps.get("success"):
         body = {"configured": True, "connected": True, "appid": appid,
                 "has_achievements": False}
@@ -23258,11 +23332,6 @@ def _steam_achievements_payload(appid):
                 "has_achievements": total > 0, "unlocked": unlocked, "total": total,
                 "percent": int(round(100.0 * unlocked / total)) if total else 0,
                 "rarest": rarest}
-    # bounded cache
-    if _steam_cache_ok(sid):
-        if len(_STEAM_ACH_CACHE) >= _STEAM_ACH_CACHE_MAX:
-            _STEAM_ACH_CACHE.clear()
-        _STEAM_ACH_CACHE[appid] = {"ts": now, "val": body}
     return body
 
 
@@ -23305,21 +23374,17 @@ def _steam_get_wishlist(steamid64, apikey):
 
 
 def _steam_wishlist_payload():
-    """GET /api/steam/wishlist: the owner's wishlist size + which of those games are
-    on sale right now (name, discount, price). {"configured": False} without a key;
-    connected:false when the wishlist can't be read. Bounded + cached ~1h."""
     if not _steam_webapi_configured():
         return {"configured": False}
-    now = time.monotonic()
-    if (_STEAM_WISHLIST_CACHE["val"] is not None
-            and now - _STEAM_WISHLIST_CACHE["ts"] < _STEAM_WISHLIST_TTL):
-        return _STEAM_WISHLIST_CACHE["val"]
-    with _STEAM_WEBAPI_LOCK:
-        sid = _STEAM_WEBAPI["steamid64"]
-        key = _STEAM_WEBAPI["apikey"]
+    value = _steam_cached_fetch(_STEAM_WISHLIST_CACHE, _STEAM_WISHLIST_TTL,
+                                _steam_fetch_wishlist)
+    return value if value is not None else {"configured": True, "connected": False}
+
+
+def _steam_fetch_wishlist(sid, key):
     appids = _steam_get_wishlist(sid, key)
     if appids is None:
-        return {"configured": True, "connected": False}
+        return None
 
     def _int(v):
         try:
@@ -23333,6 +23398,8 @@ def _steam_wishlist_payload():
     if consider:
         pd = _steam_store_get("appdetails",
                               {"appids": ",".join(consider), "filters": "price_overview", "cc": cc})
+        if not isinstance(pd, dict) or not pd:
+            return None  # Upstream failure is not a successful empty sale list.
         if isinstance(pd, dict):
             for aid in consider:
                 e = pd.get(aid)
@@ -23355,9 +23422,6 @@ def _steam_wishlist_payload():
             it["name"] = name or ("App %s" % it["appid"])
     body = {"configured": True, "connected": True, "count": len(appids),
             "on_sale": on_sale[:_STEAM_WL_MAX]}
-    if _steam_cache_ok(sid):
-        _STEAM_WISHLIST_CACHE["ts"] = now
-        _STEAM_WISHLIST_CACHE["val"] = body
     return body
 
 
@@ -23439,6 +23503,7 @@ def _steam_wl_alerts_payload():
     — the app ACKs to move the baseline. {"configured": False} without a Steam key;
     "primed": false the first time, so the app can seed the baseline without a noisy
     "everything dropped" alert."""
+    owner = _steam_account()
     if not _steam_webapi_configured():
         return {"configured": False}
     # Capture the account BEFORE the fetch so the baseline we diff against belongs
@@ -23447,7 +23512,7 @@ def _steam_wl_alerts_payload():
     with _STEAM_WEBAPI_LOCK:
         sid = _STEAM_WEBAPI["steamid64"]
     wl = _steam_wishlist_payload()
-    if not wl.get("connected"):
+    if not wl.get("connected") or not _steam_account_current(owner):
         return {"configured": True, "connected": False}
     on_sale = wl.get("on_sale") or []
     seen = _steam_wl_watch_load().get(sid)
@@ -23486,6 +23551,8 @@ def _steam_wl_alerts_payload():
             pass
         alerts.append(a)
 
+    if not _steam_account_current(owner):
+        return {"configured": _steam_webapi_configured(), "connected": False}
     return {"configured": True, "connected": True, "primed": primed,
             "alerts": alerts, "count": len(alerts),
             "count_low": sum(1 for a in alerts if a.get("at_low"))}
@@ -23495,6 +23562,7 @@ def _steam_wl_ack():
     """POST /api/steam/wishlist/alerts/ack: record the CURRENT on-sale prices as the
     baseline for this account, so the next check only flags games that got cheaper
     after this. Guarded against a concurrent account switch (TOCTOU)."""
+    owner = _steam_account()
     if not _steam_webapi_configured():
         return {"ok": False}
     with _STEAM_WEBAPI_LOCK:
@@ -23502,7 +23570,7 @@ def _steam_wl_ack():
     if not sid:
         return {"ok": False}
     wl = _steam_wishlist_payload()
-    if not wl.get("connected"):
+    if not wl.get("connected") or not _steam_account_current(owner):
         return {"ok": False, "connected": False}
     on_sale = wl.get("on_sale") or []
     allw = _steam_wl_watch_load()
@@ -23510,7 +23578,9 @@ def _steam_wl_ack():
         allw[sid] = {it["appid"]: int(it["final"]) for it in on_sale}
     except (TypeError, ValueError, KeyError):
         return {"ok": False}
-    if _steam_cache_ok(sid):
+    with _STEAM_WEBAPI_LOCK:
+        if owner != _steam_account_locked():
+            return {"ok": False}
         _steam_wl_watch_save(allw)
     return {"ok": True, "seen": len(on_sale)}
 

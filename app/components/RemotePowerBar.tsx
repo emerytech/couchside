@@ -12,7 +12,6 @@ import { usePoll } from '@/hooks/usePoll';
 import { api, Displays, hostKey, PowerSchedule, Screensaver, Status, Tv, TvOp, UsbWakeState, VolumeTarget } from '@/lib/api';
 import { hapticError, hapticLight, hapticSuccess } from '@/lib/haptics';
 import { getPref, usePref } from '@/lib/prefs';
-import { normalizeMac, isValidLanIp } from '@/lib/settings';
 import { connFromBox } from '@/lib/boxConn';
 import { useBoxes, useSettings } from '@/lib/SettingsContext';
 import { mono, useTheme, useThemedStyles } from '@/lib/theme';
@@ -201,21 +200,9 @@ export function RemotePowerBar({ compact = false }: { compact?: boolean }) {
   const s = status.data;
   const reachable = configured && status.error == null && s != null;
 
-  // Learn the box MAC from status so Wake-on-LAN works after it goes offline.
-  React.useEffect(() => {
-    const mac = normalizeMac(s?.net?.mac);
-    if (mac && mac !== settings.mac) void update({ mac });
-  }, [s?.net?.mac, settings.mac, update]);
-
-  // Learn + REFRESH the box's LAN IP from status (agent >= 2.9.22). lastIp is
-  // otherwise written only at pairing, so a box added by hostname never got one
-  // and a box whose DHCP lease drifted kept a stale one — leaving raceGet's
-  // cached-IP fallback unable to engage when mDNS (.local) breaks, e.g. right
-  // after an agent restart. Refreshing every poll keeps the fallback live.
-  React.useEffect(() => {
-    const ip = s?.ip;
-    if (ip && isValidLanIp(ip) && ip !== settings.lastIp) void update({ lastIp: ip });
-  }, [s?.ip, settings.lastIp, update]);
+  // Address/MAC learning belongs to the single tab-layout useCapsSync poll.
+  // Per-tab snapshots can disagree on a dual-interface box and must not
+  // write each other back into Settings on every render.
 
   // Learn + persist the box's capability summary from status (agent >= 2.8.2),
   // so the tab bar can hide gaming tabs on a server box immediately on next

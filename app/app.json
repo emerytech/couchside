@@ -3,7 +3,7 @@
     "name": "Couchside",
     "slug": "rescue-remote",
     "owner": "ets3d-llc",
-    "version": "2.9.72",
+    "version": "2.9.73",
     "orientation": "default",
     "icon": "./assets/images/icon.png",
     "scheme": "couchside",
@@ -11,7 +11,7 @@
     "ios": {
       "supportsTablet": true,
       "bundleIdentifier": "com.ets3d.rescueremote",
-      "buildNumber": "232",
+      "buildNumber": "236",
       "infoPlist": {
         "ITSAppUsesNonExemptEncryption": false,
         "NSAppTransportSecurity": {
@@ -38,7 +38,7 @@
         "monochromeImage": "./assets/images/android-icon-monochrome.png"
       },
       "predictiveBackGestureEnabled": false,
-      "versionCode": 119
+      "versionCode": 121
     },
     "web": {
       "bundler": "metro",
@@ -83,7 +83,7 @@
           "widgets": [
             {
               "name": "CouchsideWidget",
-              "label": "Couchside — Tonight",
+              "label": "Couchside \u2014 Tonight",
               "description": "Tonight's pick and your best wishlist deal",
               "minWidth": "180dp",
               "minHeight": "110dp",

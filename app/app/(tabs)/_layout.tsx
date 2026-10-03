@@ -1,5 +1,6 @@
+import { useLicenseActivation } from '@/hooks/useLicenseActivation';
 import Ionicons from '@expo/vector-icons/Ionicons';
-import { router, Tabs, useSegments } from 'expo-router';
+import { router, Tabs, useSegments, useRootNavigationState } from 'expo-router';
 import { currentStep, isFinalStep } from '@/lib/tour';
 import { useCallback, useEffect, useRef, useState } from 'react';
 
@@ -31,6 +32,8 @@ export const unstable_settings = {
 
 export default function TabLayout() {
   const t = useTheme();
+  const navigationReady = !!useRootNavigationState()?.key;
+  const activation = useLicenseActivation();
   const { boxes, activeBox, ready } = useBoxes();
   const landingTab = usePref('landingTab');
   // REMOTE-ONLY MODE: the app is just a smart-TV remote, no box anywhere. Every
@@ -88,7 +91,7 @@ export default function TabLayout() {
   const whatsNewOffered = usePref('whatsNewOffered');
   const { tvs } = useTvs();
   const tourEnabled = usePref('featureTour');
-  const tour = useFeatureTour(boxes.length > 0, tourEnabled);
+  const tour = useFeatureTour(boxes.length > 0, tourEnabled && !activation);
   const thanksVisible = useTourThanks();
   // Offer the new first-run flow to people who were already set up before it
   // existed — the exact mirror of the fleet guard, which refuses to force it on
@@ -131,6 +134,7 @@ export default function TabLayout() {
   const tourTab = tourStep?.tab ?? null;
   const navigatedFor = useRef<string | null>(null);
   useEffect(() => {
+    if (!navigationReady || activation) return;
     if (!tourTab) {
       navigatedFor.current = null;
       return;
@@ -155,7 +159,7 @@ export default function TabLayout() {
     }
     navigatedFor.current = tourTab;
     router.replace(tourTab === 'index' ? '/(tabs)' : `/(tabs)/${tourTab}`);
-  }, [tourTab, segments]);
+  }, [tourTab, segments, navigationReady, activation]);
 
   // On true first run (persisted fleet loaded, but empty) send the user to
   // Setup to pair. Otherwise honour the landing-tab preference.
@@ -170,7 +174,8 @@ export default function TabLayout() {
   // Pad still needs Setup first, or they land on a remote wired to nothing.
   const redirected = useRef(false);
   useEffect(() => {
-    if (!ready || redirected.current) return;
+    if (!ready || !navigationReady || redirected.current) return;
+    if (activation) { redirected.current = true; return; }
     // THE TOUR OWNS NAVIGATION WHILE IT IS UP. This effect is declared after the
     // tour's, so without this guard it ran second and overwrote the tour's first
     // step — the tour opened on Console's copy while the app sat on Pad, and the
@@ -208,13 +213,13 @@ export default function TabLayout() {
     // one-shot redirect guarded by `redirected`, and re-running it when the
     // flag flips would fight the navigation that flip just caused.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [ready, boxes.length, landingTab, remoteOnly]);
+  }, [ready, boxes.length, landingTab, remoteOnly, navigationReady, activation]);
 
   // Bounce off a tab hidden for the active box — landing on the Pad initial
   // route for a server box, or switching from an HTPC to a server box while the
   // Pad/Launch tab is focused. Sends the user to Console (the tabs index).
   useEffect(() => {
-    if (!ready) return;
+    if (!ready || !navigationReady || activation) return;
     const leaf = segments[segments.length - 1];
     // Remote-only hides every box tab INCLUDING Console, so the bounce target
     // is the Remote, not the tabs index. This is also what carries a runtime
@@ -233,7 +238,7 @@ export default function TabLayout() {
     if ((hidePad && leaf === 'pad') || (hideLaunch && leaf === 'launch') || (hidePlay && leaf === 'play')) {
       router.replace('/(tabs)');
     }
-  }, [ready, hidePad, hideLaunch, hidePlay, remoteOnly, segments]);
+  }, [ready, hidePad, hideLaunch, hidePlay, remoteOnly, segments, navigationReady, activation]);
 
   return (
     <>

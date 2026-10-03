@@ -1,3 +1,4 @@
+import { clearLicenseActivation, type LicenseActivation } from '@/lib/licenseActivation';
 import React, { useCallback, useEffect, useState } from 'react';
 import { Linking, Pressable, StyleSheet, Text, TextInput, View } from 'react-native';
 
@@ -23,16 +24,23 @@ const BUY_URL = 'https://ets3d.lemonsqueezy.com/checkout/buy/c8cef4ba-820c-4488-
  *
  * `compact` drops the card chrome so this can sit inside the full-screen Paywall.
  */
-export function LicenseRedeemCard({ compact = false }: { compact?: boolean }) {
+export function LicenseRedeemCard({ compact = false, activation = null }: { compact?: boolean; activation?: LicenseActivation | null }) {
   const { entitlement, redeemLicense } = useEntitlement();
   const styles = useThemedStyles(makeStyles);
 
-  const [key, setKey] = useState('');
+  const [key, setKey] = useState(activation?.key ?? '');
   const [busy, setBusy] = useState(false);
   const [msg, setMsg] = useState<{ text: string; ok: boolean } | null>(null);
   const [name, setName] = useState<string | null>(null);
 
   const purchased = isGenuinelyPurchased(entitlement);
+  useEffect(() => {
+    if (activation?.key) {
+      setKey(activation.key);
+      setMsg(null);
+    }
+  }, [activation?.id, activation?.key]);
+
 
   useEffect(() => {
     let cancelled = false;
@@ -52,11 +60,12 @@ export function LicenseRedeemCard({ compact = false }: { compact?: boolean }) {
       setName(result.name ?? null);
       setMsg({ text: `Unlocked — licensed to ${result.name}. Thank you!`, ok: true });
       setKey('');
+      if (activation) clearLicenseActivation(activation.id);
     } else {
       setMsg({ text: result.error ?? 'Could not verify that key.', ok: false });
     }
     setBusy(false);
-  }, [key, busy, redeemLicense]);
+  }, [key, busy, redeemLicense, activation]);
 
   if (purchased) {
     return (
@@ -72,6 +81,7 @@ export function LicenseRedeemCard({ compact = false }: { compact?: boolean }) {
     <View style={compact ? styles.compact : styles.card}>
       {!compact && <Text style={styles.header}>REDEEM LICENSE KEY</Text>}
       <TextInput
+        accessibilityLabel="License key"
         value={key}
         onChangeText={setKey}
         placeholder="CS1.…"
@@ -99,7 +109,7 @@ export function LicenseRedeemCard({ compact = false }: { compact?: boolean }) {
         </Text>
       )}
       <Text style={styles.hint}>
-        Bought Couchside direct? Paste the key from your purchase email. It unlocks this
+        {activation?.key ? 'Your emailed key is filled in. Tap Redeem to verify and unlock.' : 'Bought Couchside direct? Paste the key from your purchase email.'} It unlocks this
         device offline — no account, no store.
       </Text>
       <Pressable

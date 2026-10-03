@@ -1,8 +1,10 @@
-import { useCallback, useEffect } from 'react';
+import { useCallback, useEffect, useRef } from 'react';
 
 import { usePoll } from '@/hooks/usePoll';
 import { api, capsEqual, hostKey, Status } from '@/lib/api';
 import { useSettings } from '@/lib/SettingsContext';
+import { isValidLanIp, normalizeMac } from '@/lib/settings';
+import type { Settings } from '@/lib/settings';
 
 /**
  * Keep the ACTIVE box's persisted caps in sync with what its service actually
@@ -30,21 +32,19 @@ export function useCapsSync(): void {
   const poll = useCallback(() => api.status(settings), [settings]);
   const status = usePoll<Status>(
     poll, CAPS_SYNC_MS, ready && configured, hostKey(settings));
-  const caps = status.data?.caps;
+  // Consume each response once. Settings updates (including the switcher's
+  // ping-based IP learner) must never reapply this poll's older snapshot.
+  const consumed = useRef<Status | null>(null);
   useEffect(() => {
-    if (caps && !capsEqual(caps, settings.caps)) {
-      void update({ caps });
-    }
-  }, [caps, settings.caps, update]);
-
-  // Learn the agent's version the same way (persisted like caps/mac). A tab can
-  // then tell a Windows box from a Linux one without its own status poll — used
-  // by the Launch tab's platform-aware "adding is off" hint. Writes once per
-  // real change (version is stable); same host-keyed poll guards mis-attribution.
-  const version = status.data?.agent_version;
-  useEffect(() => {
-    if (version && version !== settings.version) {
-      void update({ version });
-    }
-  }, [version, settings.version, update]);
+    const data = status.data;
+    if (!data || status.dataKey !== hostKey(settings) || consumed.current === data) return;
+    consumed.current = data;
+    const patch: Partial<Settings> = {};
+    if (data.caps && !capsEqual(data.caps, settings.caps)) patch.caps = data.caps;
+    if (data.agent_version && data.agent_version !== settings.version) patch.version = data.agent_version;
+    const mac = normalizeMac(data.net?.mac);
+    if (mac && mac !== settings.mac) patch.mac = mac;
+    if (data.ip && isValidLanIp(data.ip) && data.ip !== settings.lastIp) patch.lastIp = data.ip;
+    if (Object.keys(patch).length) void update(patch);
+  }, [status.data, status.dataKey, settings, update]);
 }

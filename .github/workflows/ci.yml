@@ -179,6 +179,8 @@ jobs:
 
       - name: Unit tests (steam wishlist)
         run: python3 tests/test_steam_wishlist.py
+      - name: Steam refresh concurrency, deadlines and account isolation
+        run: python3 tests/test_steam_cache_concurrency.py
 
       - name: Unit tests (steam playtime tracker)
         run: python3 tests/test_steam_playtime_tracker.py

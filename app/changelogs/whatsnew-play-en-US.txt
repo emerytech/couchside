@@ -1,4 +1,4 @@
-• Wishlist price-drop alerts: with Steam connected, get a notification when a game on your wishlist gets cheaper — even with the app closed (opt-in).
-• New Android home-screen widget: tonight's pick and your best wishlist deal at a glance, one tap into the app.
-• Discover: search the Steam store from the Play tab and open any game in Steam.
-• Fixes and polish.
+• Faster Play tab with cached sections and optional demo mode.
+• Fixed excessive background requests that could delay loading and controls.
+• Expired queued commands are discarded before sending.
+• With agent 2.9.128: shared background Steam refreshes, more reliable wishlist prices and better account switching.

@@ -6,6 +6,7 @@
  * seeds the baseline and shows nothing — no noisy "everything dropped." Probe-and-
  * appear: renders nothing on an older agent or without a Steam key.
  */
+import { usePlaySession } from '@/hooks/usePlayPoll';
 import { Ionicons } from '@expo/vector-icons';
 import React, { useEffect, useState } from 'react';
 import { Pressable, StyleSheet, Text, View } from 'react-native';
@@ -15,41 +16,21 @@ import { hapticLight } from '@/lib/haptics';
 import { useSettings } from '@/lib/SettingsContext';
 import { mono, useTheme, useThemedStyles, type Palette } from '@/lib/theme';
 
-export function WishlistAlertsBanner() {
+export function WishlistAlertsBanner({ data }: { data: SteamWishlistAlerts | null }) {
   const t = useTheme();
   const styles = useThemedStyles(makeStyles);
-  const { settings, ready } = useSettings();
-  const configured = !!settings.host && !!settings.token;
-  const [data, setData] = useState<SteamWishlistAlerts | null | undefined>(undefined);
+  const { settings } = useSettings();
+  const { demo } = usePlaySession();
   const [dismissed, setDismissed] = useState(false);
-
-  useEffect(() => {
-    if (!ready || !configured) return;
-    let alive = true;
-    setDismissed(false);
-    void (async () => {
-      const d = await api.steamWishlistAlerts(settings).catch(() => null);
-      if (!alive) return;
-      // First look: seed the baseline silently, show nothing this time.
-      if (d && d.configured && d.connected && d.primed === false) {
-        void api.steamWishlistAlertsAck(settings).catch(() => {});
-        setData(null);
-        return;
-      }
-      setData(d);
-    })();
-    return () => { alive = false; };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [ready, configured, hostKey(settings)]);
-
+  useEffect(() => { setDismissed(false); }, [data]);
   const d = data;
-  if (dismissed || !d || !d.configured || !d.connected || !(d.count && d.count > 0)) return null;
+  if (dismissed || !d || !d.configured || !d.connected || d.primed === false || !(d.count && d.count > 0)) return null;
 
   const onTap = () => {
     hapticLight();
     // Mark the current prices as seen so this doesn't nag on the next open; the
     // wishlist row just below already shows which games and their prices.
-    void api.steamWishlistAlertsAck(settings).catch(() => {});
+    if (!demo) void api.steamWishlistAlertsAck(settings).catch(() => {});
     setDismissed(true);
   };
 
