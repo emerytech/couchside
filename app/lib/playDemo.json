@@ -1,0 +1,271 @@
+{
+  "recommend": {
+    "available": true,
+    "generated": 1790975836,
+    "primary": {
+      "appid": "1145360",
+      "name": "Hades",
+      "hours": 22.4,
+      "days_since": 1,
+      "installed": true,
+      "score": 91.5,
+      "bucket": "streak",
+      "tag": "On a streak",
+      "reason": "22.4h in \u00b7 last played yesterday \u2014 pick the run back up."
+    },
+    "alternates": [
+      {
+        "appid": "588650",
+        "name": "Dead Cells",
+        "hours": 27.1,
+        "days_since": 5,
+        "installed": true,
+        "score": 63.0,
+        "bucket": "comfort",
+        "tag": "Comfort game",
+        "reason": "Your go-to \u2014 27.1h and counting."
+      },
+      {
+        "appid": "632470",
+        "name": "Disco Elysium",
+        "hours": 11.2,
+        "days_since": 24,
+        "installed": true,
+        "score": 71.3,
+        "bucket": "unfinished",
+        "tag": "Unfinished",
+        "reason": "11.2h in \u00b7 untouched for 3 weeks \u2014 unfinished business."
+      },
+      {
+        "appid": "367520",
+        "name": "Hollow Knight",
+        "hours": 41.0,
+        "days_since": 130,
+        "installed": true,
+        "score": 66.1,
+        "bucket": "rediscover",
+        "tag": "Rediscover",
+        "reason": "You loved this \u2014 41h, 4 months."
+      },
+      {
+        "appid": "2231450",
+        "name": "Pizza Tower",
+        "hours": 0.0,
+        "days_since": null,
+        "installed": true,
+        "score": 52.0,
+        "bucket": "fresh",
+        "tag": "Never played",
+        "reason": "Installed but never launched \u2014 give it a shot."
+      }
+    ],
+    "counts": {
+      "streak": 1,
+      "comfort": 3,
+      "unfinished": 2,
+      "rediscover": 1,
+      "fresh": 4
+    },
+    "persona": "Taylor"
+  },
+  "profile": {
+    "configured": true,
+    "connected": true,
+    "persona": "Taylor",
+    "avatar": "https://avatars.example/steam_full.jpg",
+    "state_code": 1,
+    "state": "Online",
+    "playing": "Hades II",
+    "gameid": "1145350",
+    "level": 42,
+    "profileurl": "https://steamcommunity.com/id/taylor/"
+  },
+  "library": {
+    "configured": true,
+    "connected": true,
+    "count": 312,
+    "played": 47,
+    "backlog": 265,
+    "total_hours": 1240.5,
+    "hours_2weeks": 6.2,
+    "played_7d": 4.1,
+    "played_30d": null,
+    "top": {
+      "appid": "1245620",
+      "name": "Elden Ring",
+      "hours": 210.4
+    },
+    "recent": [
+      {
+        "appid": "1145350",
+        "name": "Hades II",
+        "hours": 3.2
+      },
+      {
+        "appid": "1245620",
+        "name": "Elden Ring",
+        "hours": 2.1
+      },
+      {
+        "appid": "413150",
+        "name": "Stardew Valley",
+        "hours": 0.9
+      }
+    ]
+  },
+  "deals": {
+    "configured": true,
+    "connected": true,
+    "region": "us",
+    "items": [
+      {
+        "appid": "1245620",
+        "name": "Elden Ring",
+        "discount_percent": 30,
+        "final": 4199,
+        "original": 5999,
+        "currency": "USD"
+      },
+      {
+        "appid": "1091500",
+        "name": "Cyberpunk 2077",
+        "discount_percent": 50,
+        "final": 2999,
+        "original": 5999,
+        "currency": "USD"
+      },
+      {
+        "appid": "413150",
+        "name": "Stardew Valley",
+        "discount_percent": 20,
+        "final": 1199,
+        "original": 1499,
+        "currency": "USD"
+      }
+    ]
+  },
+  "wishlist": {
+    "configured": true,
+    "connected": true,
+    "count": 41,
+    "on_sale": [
+      {
+        "appid": "1086940",
+        "name": "Baldur's Gate 3",
+        "discount_percent": 20,
+        "final": 4799,
+        "original": 5999,
+        "currency": "USD"
+      },
+      {
+        "appid": "1174180",
+        "name": "Red Dead Redemption 2",
+        "discount_percent": 67,
+        "final": 1979,
+        "original": 5999,
+        "currency": "USD"
+      }
+    ]
+  },
+  "alerts": {
+    "configured": true,
+    "connected": true,
+    "primed": true,
+    "alerts": [
+      {
+        "appid": "1086940",
+        "name": "Baldur's Gate 3",
+        "final": 4199,
+        "original": 5999,
+        "discount_percent": 30,
+        "currency": "USD",
+        "prev_final": 4799,
+        "at_low": true
+      },
+      {
+        "appid": "374320",
+        "name": "DARK SOULS III",
+        "final": 1499,
+        "original": 5999,
+        "discount_percent": 75,
+        "currency": "USD",
+        "prev_final": 1999
+      }
+    ],
+    "count": 2,
+    "count_low": 1
+  },
+  "gaming": {
+    "gpu": {
+      "name": "amdgpu",
+      "card": "card1",
+      "temp_c": 61.0,
+      "vram_used_mb": 3300,
+      "vram_total_mb": 8192,
+      "gtt_used_mb": 210,
+      "gtt_total_mb": 4096,
+      "busy_pct": 63,
+      "power_w": 42.5,
+      "clock_mhz": 2400
+    },
+    "gpus": [
+      {
+        "name": "amdgpu",
+        "card": "card0",
+        "temp_c": 47.0,
+        "vram_used_mb": 19,
+        "vram_total_mb": 512,
+        "gtt_used_mb": 15,
+        "gtt_total_mb": 19659,
+        "busy_pct": 3,
+        "power_w": 4.5,
+        "clock_mhz": 800
+      },
+      {
+        "name": "amdgpu",
+        "card": "card1",
+        "temp_c": 61.0,
+        "vram_used_mb": 3300,
+        "vram_total_mb": 8192,
+        "gtt_used_mb": 210,
+        "gtt_total_mb": 4096,
+        "busy_pct": 63,
+        "power_w": 42.5,
+        "clock_mhz": 2400
+      }
+    ],
+    "game": {
+      "appid": 1091500,
+      "label": "Cyberpunk 2077"
+    },
+    "output": {
+      "name": "DP-1",
+      "internal": false
+    },
+    "controllers": [
+      {
+        "uniq": "dc:2c:26:aa:bb:cc",
+        "name": "Xbox Wireless Controller",
+        "battery_pct": 62,
+        "battery_status": "Discharging"
+      }
+    ],
+    "session": "gamescope"
+  },
+  "achievements": {
+    "configured": true,
+    "connected": true,
+    "appid": "1145360",
+    "has_achievements": true,
+    "unlocked": 18,
+    "total": 33,
+    "percent": 55,
+    "rarest": {
+      "name": "Isolated",
+      "global_pct": 2.4
+    }
+  },
+  "lows": {
+    "configured": false
+  }
+}

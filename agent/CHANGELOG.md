@@ -18,6 +18,19 @@ the same thing regardless of what actually changed.
 Write for the person holding the phone, not for the commit log. They are
 deciding whether to press "Update now" on a machine across the room.
 
+## 2.9.128
+
+**More responsive Steam data.** Slow Steam lookups now refresh in the background,
+with a limit on simultaneous requests. Previously loaded data stays available
+during temporary failures, and concurrent phone requests share the same refresh.
+
+**More reliable wishlist prices.** Failed price lookups are retried instead of
+being saved as an empty sale list. Switching Steam accounts also discards pending
+results from the previous account.
+
+Includes wishlist price-drop alerts from 2.9.127, with optional IsThereAnyDeal
+all-time-low comparisons.
+
 ## 2.9.127
 
 **Wishlist price drops.** With Steam connected, the Play tab now flags the games on

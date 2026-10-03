@@ -1,2 +1,4 @@
-• Fixes a crash that could hit when opening the Decky Loader manager screen.
-• Small polish and stability improvements.
+• Faster Play tab with cached sections and optional demo mode.
+• Fixed excessive background requests that could delay loading and controls.
+• Expired queued commands are discarded before sending.
+• With agent 2.9.128: shared background Steam refreshes, more reliable wishlist prices and better account switching.

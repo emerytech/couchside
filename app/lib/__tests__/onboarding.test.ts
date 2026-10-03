@@ -124,6 +124,8 @@ test('every screen locks orientation except the Pad, which allows landscape', as
     // +not-found is a dead-end error page with one line of text; it has nothing
     // to reflow and no input path.
     if (rel === '+not-found.tsx') continue;
+    // Expo's native-intent hook is URL middleware, not a rendered screen.
+    if (rel === '+native-intent.tsx') continue;
     const src = readFileSync(p, 'utf8');
     assert.ok(src.includes('useLockOrientation('), `${rel} must state an orientation policy`);
     const mentionsLandscape =

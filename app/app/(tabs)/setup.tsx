@@ -1,8 +1,10 @@
+import { resetLicenseActivation } from '@/lib/licenseActivation';
+import { useLicenseActivation } from '@/hooks/useLicenseActivation';
 import { createContext, useContext } from 'react';
 import type { StyleProp, ViewStyle } from 'react-native';
 import Ionicons from '@expo/vector-icons/Ionicons';
 import * as Linking from 'expo-linking';
-import { useLocalSearchParams, useRouter } from 'expo-router';
+import { useFocusEffect, useLocalSearchParams, useRouter } from 'expo-router';
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   Image,
@@ -1172,17 +1174,18 @@ function SetupBody() {
   // Active category tab (Boxes / Preferences / Account).
   const [tab, setTab] = useState<SetupTab>('boxes');
 
-  // Deep-link straight to the purchase: the trial nudge banner pushes
-  // /setup?tab=account. Clear the param once applied, so tapping the banner
-  // again still lands here instead of being swallowed as a no-op re-render.
+  // Select locally; clearing params during cold startup used to navigate before
+  // the root navigator mounted. Re-apply on focus and every new activation.
   const params = useLocalSearchParams<{ tab?: string }>();
   const router = useRouter();
-  useEffect(() => {
-    if (params.tab === 'account') {
+  const licenseActivation = useLicenseActivation();
+  // Release the in-memory key when the user leaves activation; never persist it.
+  useFocusEffect(useCallback(() => () => resetLicenseActivation(), []));
+  useFocusEffect(useCallback(() => {
+    if (params.tab === 'account' || (IS_DIRECT_BUILD && licenseActivation?.key)) {
       setTab('account');
-      router.setParams({ tab: undefined });
     }
-  }, [params.tab, router]);
+  }, [params.tab, licenseActivation?.id]));
 
   // Let the feature tour scroll a section into view before spotlighting it.
   // DELIBERATELY the body ScrollView, never the Logs FlatList: Logs renders
@@ -2383,7 +2386,7 @@ function SetupBody() {
                 the store. Its build has no in-app purchase to offer, so it shows
                 the redeem card in place of Buy/Restore. */}
             {IS_DIRECT_BUILD ? (
-              <LicenseRedeemCard />
+              <LicenseRedeemCard activation={licenseActivation} />
             ) : (
               <View style={styles.card}>
                 <CardHeader icon="card-outline" label="PURCHASE" />
