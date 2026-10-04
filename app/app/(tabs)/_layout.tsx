@@ -1,3 +1,4 @@
+import { TabSwipeContext } from '@/components/TabSwipeContext';
 import { useLicenseActivation } from '@/hooks/useLicenseActivation';
 import Ionicons from '@expo/vector-icons/Ionicons';
 import { router, Tabs, useSegments, useRootNavigationState } from 'expo-router';
@@ -79,8 +80,7 @@ export default function TabLayout() {
   // they sit. Derived from the same flags the <Tabs.Screen> entries use, so the
   // two cannot drift.
   const tabOrder = [
-    'index',
-    ...(remoteOnly ? ['remote'] : []),
+    ...(remoteOnly ? ['remote'] : ['index']),
     ...(hidePlay ? [] : ['play']),
     ...(remoteOnly ? [] : ['actions']),
     ...(hidePad ? [] : ['pad']),
@@ -242,10 +242,15 @@ export default function TabLayout() {
 
   return (
     <>
+    <TabSwipeContext.Provider value={{ order: tabOrder, enabled: !tour.visible && !thanksVisible && !offerVisible && !activation }}>
     <Tabs
       screenListeners={{ tabPress: () => hapticSelection() }}
       screenOptions={{
         headerShown: false,
+        // Keep iOS's native container type stable. Switching none/fade replaces
+        // it and remounts tab state; animated detachment can also leave a scene
+        // blank after tour navigation. TabScreen owns the optional content fade.
+        animation: 'none',
         tabBarActiveTintColor: t.blue,
         tabBarInactiveTintColor: t.textFaint,
         tabBarStyle: immersive
@@ -329,6 +334,7 @@ export default function TabLayout() {
         }}
       />
     </Tabs>
+    </TabSwipeContext.Provider>
     {tour.visible ? (
       <FeatureTour
         state={tour.state}

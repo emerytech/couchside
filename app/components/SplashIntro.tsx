@@ -17,6 +17,7 @@ import LottieView from 'lottie-react-native';
 import { useCallback, useEffect, useState } from 'react';
 import { StyleSheet, Text, View } from 'react-native';
 import Animated, {
+  cancelAnimation,
   Easing,
   runOnJS,
   useAnimatedStyle,
@@ -24,6 +25,7 @@ import Animated, {
   withTiming,
 } from 'react-native-reanimated';
 
+import { useReducedMotion } from '@/lib/skin/motion';
 import { mono, useTheme } from '@/lib/theme';
 
 // The Lottie composition. 1024x1024, transparent, ~2s (op120 @ 60fps).
@@ -40,36 +42,40 @@ let hasPlayed = false;
 // a hair past the Lottie's own 2.0s so it only ever acts as a safety net.
 const KILL_MS = 2600;
 
-export function SplashIntro() {
+export function SplashIntro({ replay = false, onFinish }: { replay?: boolean; onFinish?: () => void } = {}) {
   const t = useTheme();
-  const [done, setDone] = useState(hasPlayed);
+  const reduced = useReducedMotion();
+  const [done, setDone] = useState(!replay && hasPlayed);
   const overlay = useSharedValue(1); // whole-overlay opacity, 1 -> 0 at the end
+
+  const finish = useCallback(() => { setDone(true); onFinish?.(); }, [onFinish]);
 
   const fadeOut = useCallback(() => {
     overlay.value = withTiming(
       0,
       { duration: 340, easing: Easing.in(Easing.cubic) },
       (finished) => {
-        if (finished) runOnJS(setDone)(true);
+        if (finished) runOnJS(finish)();
       },
     );
-  }, [overlay]);
+  }, [overlay, finish]);
 
   useEffect(() => {
-    if (hasPlayed) return;
-    hasPlayed = true;
+    if (done) return;
+    if (!replay) hasPlayed = true;
+    if (reduced) { cancelAnimation(overlay); finish(); return; }
     const kill = setTimeout(fadeOut, KILL_MS);
-    return () => clearTimeout(kill);
-  }, [fadeOut]);
+    return () => { clearTimeout(kill); cancelAnimation(overlay); };
+  }, [done, replay, reduced, finish, fadeOut, overlay]);
 
   const overlayStyle = useAnimatedStyle(() => ({ opacity: overlay.value }));
 
-  if (done) return null;
+  if (done || reduced) return null;
 
   return (
     <Animated.View
       style={[styles.fill, { backgroundColor: t.bg }, overlayStyle]}
-      pointerEvents="none"
+      pointerEvents={replay ? "auto" : "none"}
       accessibilityElementsHidden
       importantForAccessibility="no-hide-descendants">
       <View style={styles.center}>
@@ -79,7 +85,7 @@ export function SplashIntro() {
             autoPlay
             loop={false}
             resizeMode="contain"
-            onAnimationFinish={fadeOut}
+            onAnimationFinish={(cancelled) => { if (!cancelled) fadeOut(); }}
             style={styles.lottie}
           />
           {/* Wordmark, absolutely placed just under the couch (which sits mid-

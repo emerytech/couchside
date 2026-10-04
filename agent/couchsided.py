@@ -53,7 +53,7 @@ except ImportError:  # pragma: no cover
     fcntl = None
 
 APP_NAME = "couchside-agent"
-VERSION = "2.9.128"
+VERSION = "2.9.129"
 UID = os.getuid()
 XDG_RUNTIME_DIR = "/run/user/%d" % UID
 
@@ -1238,14 +1238,54 @@ def _iface_wol_armed(iface):
     return None
 
 
+def _wake_iface(default_iface):
+    """Choose physical linked Ethernet for wake independently of the IP route.
+
+    Wi-Fi can own the default route while a dock NIC supplies the only working
+    wake source. Exclude virtual bridges/tunnels and disconnected adapters.
+    Prefer confirmed magic-packet support, then the routed wired adapter.
+    """
+    candidates = []
+    try:
+        names = sorted(os.listdir("/sys/class/net"))
+    except OSError:
+        names = []
+    for name in names:
+        base = "/sys/class/net/%s" % name
+        if not os.path.exists(base + "/device") or not _iface_wired(name):
+            continue
+        try:
+            with open(base + "/carrier") as f:
+                if f.read().strip() != "1":
+                    continue
+        except OSError:
+            continue
+        mac = _iface_mac(name)
+        if not mac or mac == "00:00:00:00:00:00":
+            continue
+        armed = _iface_wol_armed(name)
+        candidates.append((0 if armed is True else 1 if armed is None else 2,
+                           0 if name == default_iface else 1, name, armed))
+    if candidates:
+        _, _, name, armed = min(candidates)
+        return name, armed
+    return default_iface, _iface_wol_armed(default_iface) if default_iface else None
+
+
 def read_net():
-    """Primary-interface facts for the app's Wake-on-LAN power path. Every field
-    degrades to None when it can't be read."""
-    iface = _default_iface()
+    """Wake-interface facts; the connection route is reported separately.
+
+    Keep mac/wired/wol_armed on the same wake adapter so existing apps learn
+    the correct MAC too. No route or network configuration is changed.
+    """
+    route_iface = _default_iface()
+    iface, armed = _wake_iface(route_iface)
     if not iface:
-        return {"iface": None, "mac": None, "wired": None, "wol_armed": None}
+        return {"iface": None, "mac": None, "wired": None, "wol_armed": None,
+                "route_iface": route_iface}
     return {"iface": iface, "mac": _iface_mac(iface),
-            "wired": _iface_wired(iface), "wol_armed": _iface_wol_armed(iface)}
+            "wired": _iface_wired(iface), "wol_armed": armed,
+            "route_iface": route_iface}
 
 
 def net_info_cached():
@@ -6494,14 +6534,14 @@ _STRIP_RE = re.compile(r"^(.*)\[(\d+)\]$")
 # our effect id -> the firmware effect name we try (only used if the device's
 # effect_index actually offers it; else we fall back to a per-LED manual paint).
 _STRIP_HW_MAP = {"scanner": "patrol", "breathe": "breath", "rainbow": "rainbow",
-                 "pulse": "breath", "strobe": "breath", "solid": "manual",
+                 "pulse": "breath", "solid": "manual",
                  "manual": "manual", "off": "off"}
 # effects whose look depends on the picked colour (set multi_intensity first).
 _STRIP_COLOUR_FX = ("scanner", "breathe", "pulse", "strobe", "solid")
 # Strip effects the AGENT renders per-LED (no firmware effect exists for them):
 # a one-way "circle"/comet the render thread sweeps + wraps. These are looked up
 # like any effect id; the agent owns every frame (fixed-literal writers, §3).
-_STRIP_SEQ_EFFECTS = ("circle", "comet", "wipe", "twinkle",
+_STRIP_SEQ_EFFECTS = ("circle", "comet", "wipe", "twinkle", "strobe",
                       "meter_cpu", "meter_battery", "playtime")
 
 
@@ -6923,6 +6963,10 @@ def _seq_compute_frame(spec, now):
     period = _seq_period(spec["speed"])
     color = spec["color"]
     rev = bool(spec.get("reverse"))
+    if e == "strobe":
+        # A square wave: equal on/off holds, never substituted with breathing.
+        on = int(max(0.0, t) / max(0.03, period / 2.0)) % 2 == 0
+        return [dict(color) if on else None for _ in range(n)]
     if e == "circle":
         return _seq_frame_sweep(n, t, period, color, _SEQ_TAIL, rev)
     if e == "comet":
@@ -7131,20 +7175,46 @@ def _seq_render(spec, now):
     _seq_standdown_decide(spec, matched, now)
 
 
+def _seq_next_delay(spec, now):
+    """Wake at timed-frame boundaries, not 33ms after finishing a paint."""
+    if spec.get("effect") != "sequence":
+        return _SEQ_TICK
+    frames = spec.get("frames") or []
+    holds = spec.get("holds") or [spec.get("hold_ms", 500)] * len(frames)
+    total = sum(holds) / 1000.0
+    if not holds or total <= 0:
+        return _SEQ_TICK
+    elapsed = max(0.0, now - spec["t0"])
+    if not spec.get("loop", True) and elapsed >= total:
+        return _SEQ_TICK
+    phase = elapsed % total if spec.get("loop", True) else elapsed
+    boundary = 0.0
+    for hold in holds:
+        boundary += hold / 1000.0
+        if boundary > phase + 0.000001:
+            return min(_SEQ_TICK, max(0.001, boundary - phase))
+    return 0.001
+
+
 def _seq_loop():
-    """Render every active agent strip animation until none remain (or shutdown)."""
+    """Render against monotonic deadlines; painting time consumes the budget."""
     while not _FX_STOP.is_set():
         with _SEQ_LOCK:
-            active = list(_SEQ_ACTIVE.values())
+            active = list(_SEQ_ACTIVE.items())
         if not active:
             return
-        now = time.monotonic()
-        for spec in active:
-            _seq_render(spec, now)
-        for spec in active:
+        due = time.monotonic() + _SEQ_TICK
+        for prefix, spec in active:
+            now = time.monotonic()
+            with _SEQ_LOCK:
+                if _SEQ_ACTIVE.get(prefix) is not spec:
+                    continue
+                _seq_render(spec, now)
+            due = min(due, now + _seq_next_delay(spec, now))
+        for prefix, spec in active:
             if spec.get("_expired"):
                 _playtime_finish(spec)
-        _FX_STOP.wait(_SEQ_TICK)
+        _FX_STOP.wait(max(0.001, due - time.monotonic()))
 
 
 def _playtime_finish(spec):
@@ -27438,7 +27508,11 @@ class Handler(BaseHTTPRequestHandler):
                 if not devs:
                     self._send(404, {"error": "not found"}, started)
                 else:
-                    self._send(200, {"devices": devs}, started)
+                    manageable = self.mock or _helper_supports("usb.wake-arm")
+                    persistent = self.mock or _helper_supports("usb.wake-save")
+                    for d in devs:
+                        d["writable"] = manageable
+                    self._send(200, {"devices": devs, "persistent_supported": persistent}, started)
             elif path == "/api/display-info":
                 # READ-ONLY description of the panel this box is driving plus the
                 # default audio devices. Distinct from /api/displays below, which
@@ -28836,14 +28910,15 @@ class Handler(BaseHTTPRequestHandler):
                     self._send(404, {"ok": False,
                                      "error": "unknown device"}, started)
                     return
-                r = _helper_call("usb.wake-arm", {"id": dev, "on": on})
+                persistent = _helper_supports("usb.wake-save")
+                r = _helper_call("usb.wake-save" if persistent else "usb.wake-arm", {"id": dev, "on": on})
                 if r is None:
                     self._send(503, {"ok": False,
                                      "error": "no helper to arm with"}, started)
                     return
                 ok = bool(r.get("ok"))
                 self._send(200 if ok else 500,
-                           {"ok": ok, "id": dev, "armed": on,
+                           {"ok": ok, "id": dev, "armed": on, "persistent": persistent,
                             **({"error": r.get("error")} if not ok else {})},
                            started)
                 return

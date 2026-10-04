@@ -1,7 +1,11 @@
-A new Play tab helps you choose what to play next, with a now-playing card, Steam library stats, achievement progress, wishlist discounts and optional sample-data mode.
+Welcome to a smoother Couchside.
 
-Connect Steam and optionally IsThereAnyDeal on your box for price-drop alerts and historical-low comparisons. These optional features use their respective online services.
+A new welcome guide explains the project and helps you pair your first box, with optional Steam, IsThereAnyDeal and Decky setup guidance.
 
-Game Aura adds artwork-inspired lighting and per-game presets on supported LED hardware. Expanded strip controls include reactive meters and a playtime countdown.
+Your Boxes screen combines live vitals and management in one card. Refined animations respect your Preferences and Reduce Motion setting, and swipe navigation avoids sliders and other touch controls.
 
-This release also makes Play faster to revisit, fixes excessive background requests that could delay controls, and prevents expired queued commands from being sent. Agent 2.9.128 improves Steam refreshes, temporary network failures and account switching.
+Wake Box now shows progress, elapsed time and connection confirmation. Ethernet wake detection and faster relay handling improve waking supported machines.
+
+Custom lighting adds clearer sequence timing and real strobe effects. Updated Wake devices settings verify saves and explain when persistence is available.
+
+Update the Linux service to 2.9.129 for the matching wake and lighting improvements. Wake support depends on your network and hardware settings.

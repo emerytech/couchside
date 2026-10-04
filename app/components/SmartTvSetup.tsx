@@ -1,3 +1,4 @@
+import { blockTabSwipe } from '@/lib/tabSwipe';
 import Ionicons from '@expo/vector-icons/Ionicons';
 import React, { useCallback, useState } from 'react';
 import { Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
@@ -101,7 +102,7 @@ export function SmartTvSetup({ settings }: { settings: ConnSettings }) {
       {backends.length > 1 ? (
         <View style={styles.pickerBlock}>
           <Text style={styles.pickerLabel}>Remote drives</Text>
-          <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.segment}>
+          <ScrollView onTouchStart={blockTabSwipe} horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.segment}>
             {backends.map((b) => (
               <Pressable
                 key={b}

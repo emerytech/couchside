@@ -11,7 +11,8 @@ import { StatusBar } from 'expo-status-bar';
 import { useMemo } from 'react';
 import { Platform } from 'react-native';
 import { GestureHandlerRootView } from 'react-native-gesture-handler';
-import 'react-native-reanimated';
+import { ReduceMotion, ReducedMotionConfig } from 'react-native-reanimated';
+import { useReducedMotion } from '@/lib/skin/motion';
 
 import { ReviewPrompt } from '@/components/ReviewPrompt';
 import { ReviewToast } from '@/components/ReviewToast';
@@ -41,6 +42,7 @@ export const unstable_settings = {
 
 export default function RootLayout() {
   const t = useTheme();
+  const reducedMotion = useReducedMotion();
   const scheme = useResolvedScheme();
   // Full-screen controller on screen: NO dismissal gesture at all (see the
   // Stack.Screen options below).
@@ -79,7 +81,8 @@ export default function RootLayout() {
               and drop the screen you were about to record. Observe-only; it must
               never become the responder. */}
           <TapCapture>
-          <Stack>
+          <ReducedMotionConfig mode={reducedMotion ? ReduceMotion.Always : ReduceMotion.System} />
+          <Stack screenOptions={{ animation: reducedMotion ? 'none' : 'default' }}>
             {/* THE BACK GESTURE IS A DRAG, AND THIS APP IS MADE OF DRAGS.
                 iOS ONLY — both options below are no-ops on Android, which is
                 exactly how the bug was reported: "only occurs in iOS, Android

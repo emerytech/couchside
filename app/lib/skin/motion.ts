@@ -9,9 +9,11 @@
  *  * Reduced motion is a hard stop, not a slowdown. When the OS asks for less
  *    motion the shared values sit at their mid-point and nothing is scheduled.
  */
-import { useEffect, useState } from 'react';
+import { createContext, useContext, useEffect, useState } from 'react';
 import { AccessibilityInfo, Platform } from 'react-native';
+import { usePref } from '../prefs';
 import {
+  cancelAnimation,
   Easing,
   useDerivedValue,
   useSharedValue,
@@ -52,6 +54,7 @@ function motionForcedOff(): boolean {
  * prefers-reduced-motion media query.
  */
 export function useReducedMotion(): boolean {
+  const animationsEnabled = usePref('animationsEnabled');
   const [reduced, setReduced] = useState(motionForcedOff);
 
   useEffect(() => {
@@ -60,7 +63,7 @@ export function useReducedMotion(): boolean {
     let alive = true;
     void AccessibilityInfo.isReduceMotionEnabled().then((v) => {
       if (alive) setReduced(!!v);
-    });
+    }).catch(() => { /* Keep the current preference if the platform query fails. */ });
     const sub = AccessibilityInfo.addEventListener('reduceMotionChanged', (v) => {
       setReduced(!!v);
     });
@@ -70,7 +73,15 @@ export function useReducedMotion(): boolean {
     };
   }, []);
 
-  return reduced;
+  return reduced || !animationsEnabled;
+}
+
+/** Set once by the tab frame; consumers do not need navigation subscriptions. */
+export const MotionActivityContext = createContext(true);
+export function useAmbientMotion(): boolean {
+  const active = useContext(MotionActivityContext);
+  const reduced = useReducedMotion();
+  return active && !reduced;
 }
 
 // ---------------------------------------------------------------------------
@@ -92,13 +103,13 @@ export const BREATH_REST = 0.5;
  */
 export function useBreath(periodMs: number, enabled = true): SharedValue<number> {
   const v = useSharedValue(BREATH_REST);
-  const reduced = useReducedMotion();
-  const on = enabled && !reduced;
+  const active = useAmbientMotion();
+  const on = enabled && active;
 
   useEffect(() => {
+    cancelAnimation(v);
     if (!on) {
-      // Cancel any in-flight repeat by overwriting with a static value.
-      v.value = withTiming(BREATH_REST, { duration: 200 });
+      v.value = BREATH_REST;
       return;
     }
     v.value = BREATH_REST;
@@ -110,6 +121,7 @@ export function useBreath(periodMs: number, enabled = true): SharedValue<number>
       -1,
       true,
     );
+    return () => cancelAnimation(v);
   }, [on, periodMs, v]);
 
   return v;

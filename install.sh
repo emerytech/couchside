@@ -631,6 +631,7 @@ if [ "$UNINSTALL" -eq 1 ]; then
                /etc/udev/rules.d/99-couchside-rtc.rules \
                /etc/udev/rules.d/99-couchside-cec.rules \
                /etc/udev/rules.d/99-couchside-openpuck.rules \
+               /etc/udev/rules.d/99-couchside-usb-wake-*.rules \
                /etc/modules-load.d/couchside-uinput.conf
     sudo rm -rf /etc/couchside/openpuck
     sudo udevadm control --reload-rules 2>/dev/null || true
@@ -1994,6 +1995,7 @@ if [ -d /etc/atomic-update.conf.d ]; then
 /etc/udev/rules.d/99-couchside-rtc.rules
 /etc/udev/rules.d/99-couchside-cec.rules
 /etc/udev/rules.d/99-couchside-openpuck.rules
+/etc/udev/rules.d/99-couchside-usb-wake-*.rules
 /etc/modules-load.d/couchside-uinput.conf
 /etc/systemd/network/50-couchside-wol.link
 KEEPCONF

@@ -28,7 +28,9 @@
  */
 import Ionicons from '@expo/vector-icons/Ionicons';
 import React from 'react';
-import { Pressable, StyleSheet, Text, useWindowDimensions, View } from 'react-native';
+import { Image, Pressable, ScrollView, StyleSheet, Text, useWindowDimensions, View } from 'react-native';
+import Animated, { FadeIn } from 'react-native-reanimated';
+import { useReducedMotion } from '@/lib/skin/motion';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
 import { measureAnchor, screenHasAnchors, scrollTabBy, subscribeAnchorLayout } from '@/hooks/useTourAnchor';
@@ -99,6 +101,7 @@ export function FeatureTour({
   onSkip: () => void;
 }) {
   const t = useTheme();
+  const reducedMotion = useReducedMotion();
   const styles = useThemedStyles(makeStyles);
   const { width, height } = useWindowDimensions();
   const insets = useSafeAreaInsets();
@@ -242,10 +245,18 @@ export function FeatureTour({
   if (!step) return null;
   // A tab this build does not show (remote-only hides the box tabs) has nothing
   // to point at.
-  if (idx < 0) return null;
+
   // Still measuring, or skipping: draw nothing rather than flash a hole in the
   // wrong place for a frame.
-  if (!hole) return null;
+  if (!hole || idx < 0) return (
+    <View style={[styles.card, { bottom: insets.bottom + TAB_BAR_H + 16 }]}>
+      <Text style={styles.count}>{stepLabel(state)}</Text>
+      <Text style={styles.body} accessibilityLiveRegion="polite">Finding the next control…</Text>
+      <Pressable onPress={onSkip} accessibilityRole="button" accessibilityLabel="Skip the tour" style={styles.skipBtn}>
+        <Text style={styles.skipText}>Skip tour</Text>
+      </Pressable>
+    </View>
+  );
 
   const panels = dimRects(width, height, hole);
   const slot = cardSlot(hole, height, cardH, CARD_GAP, insets.top + 8, insets.bottom + 8);
@@ -279,13 +290,18 @@ export function FeatureTour({
         ]}
       />
 
-      <View
-        style={[styles.card, { top: slot.top }]}
+      <Animated.View key={state.step} entering={reducedMotion ? undefined : FadeIn.duration(160)}
+        style={[styles.card, { top: slot.top, maxHeight: height - insets.top - insets.bottom - 24 }]}
         onLayout={(e) => setCardH(e.nativeEvent.layout.height)}
         pointerEvents="box-none">
-        <Text style={styles.count}>{stepLabel(state)}</Text>
+        <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8 }}>
+          <Image source={require('../assets/images/icon.png')} style={{ width: 24, height: 24 }} accessibilityLabel="Couchside" />
+          <Text style={styles.count}>{stepLabel(state)}</Text>
+        </View>
+        <ScrollView style={{ flexShrink: 1 }} contentContainerStyle={{ gap: 8 }}>
         <Text style={styles.title}>{step.title}</Text>
         <Text style={styles.body}>{step.body}</Text>
+        </ScrollView>
         {/* Skip sits BESIDE Next, not as small print in a corner: a tour with a
             dozen steps needs an obvious way out, or it is a hostage situation. */}
         <View style={styles.actions}>
@@ -309,7 +325,7 @@ export function FeatureTour({
             accessibilityRole="button"
             accessibilityLabel="Skip the tour"
             style={({ pressed }) => [styles.skipBtn, pressed && styles.pressed]}>
-            <Text style={styles.skipText}>SKIP TOUR</Text>
+            <Text style={styles.skipText}>Skip tour</Text>
           </Pressable>
           <Pressable
             onPress={() => {
@@ -318,11 +334,11 @@ export function FeatureTour({
             }}
             accessibilityRole="button"
             style={({ pressed }) => [styles.next, pressed && styles.pressed]}>
-            <Text style={styles.nextText}>{isLast(state) ? 'DONE' : 'GOT IT'}</Text>
-            {isLast(state) ? null : <Ionicons name="arrow-forward" size={14} color={t.onGreen} />}
+            <Text style={styles.nextText}>{isLast(state) ? 'Done' : 'Next'}</Text>
+            {isLast(state) ? null : <Ionicons name="arrow-forward" size={14} color={t.onAccent} />}
           </Pressable>
         </View>
-      </View>
+      </Animated.View>
     </View>
   );
 }
@@ -378,7 +394,7 @@ const makeStyles = (t: Palette) =>
       borderWidth: 1,
       borderColor: t.cardBorder,
     },
-    skipText: { color: t.textDim, fontSize: 13, fontWeight: '800', letterSpacing: 1, fontFamily: mono },
+    skipText: { color: t.textDim, fontSize: 13, fontWeight: '600' },
     title: { color: t.text, fontSize: 17, fontWeight: '800' },
     body: { color: t.textDim, fontSize: 13, lineHeight: 19 },
     next: {
@@ -387,10 +403,10 @@ const makeStyles = (t: Palette) =>
       alignItems: 'center',
       justifyContent: 'center',
       gap: 7,
-      backgroundColor: t.green,
+      backgroundColor: t.accent,
       borderRadius: 11,
       paddingVertical: 12,
     },
-    nextText: { color: t.onGreen, fontSize: 13, fontWeight: '900', letterSpacing: 1, fontFamily: mono },
+    nextText: { color: t.onAccent, fontSize: 15, fontWeight: '600' },
     pressed: { opacity: 0.7 },
   });
