@@ -10,8 +10,8 @@ The phone app and the service on your gaming box have separate version numbers. 
 
 | Component | Version | Build | Release information |
 | --- | --- | --- | --- |
-| iOS app | 2.9.74 | 243 | Production release being prepared |
-| Google Play app | 2.9.74 | 122 | Production release being prepared |
+| iOS app | 2.9.74 | 243 | [Store review and rollout status](https://couchside.tv/updates/) |
+| Google Play app | 2.9.74 | 122 | [Store review and rollout status](https://couchside.tv/updates/) |
 | Android Direct app | 2.9.74 | 26 | [Download APK](https://couchside.tv/direct/) |
 | Linux service (gaming box) | 2.9.129 | — | [Service release](https://github.com/emerytech/couchside/releases/latest) |
 
