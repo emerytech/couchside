@@ -83,11 +83,25 @@ export function UtilitiesSection({
   const [checking, setChecking] = useState(false);
   const live = useRef(true);
   const lastUtils = useRef<Utility[] | null>(null);
+  // True once a REAL answer has landed (feature present, or an exact 404 = this
+  // box can't offer it). Stays false through transient failures so the retry
+  // effect below keeps re-probing; reset on a box switch so the new box probes
+  // from scratch. Without it a transient failure left `utils` null forever and
+  // the OpenPuck card never came back after the box woke.
+  const [probed, setProbed] = useState(false);
 
   const canProbe = caps?.utilities !== false;
 
   const refresh = useCallback(async () => {
-    const res = await api.utilities(settings);
+    let res: { utilities: Utility[] } | null;
+    try {
+      res = await api.utilities(settings); // null ONLY on an exact 404
+    } catch {
+      // Transient failure (box asleep, timeout, 5xx): leave `utils` unchanged —
+      // degrade closed while unknown — and let the retry effect re-probe. Do NOT
+      // set null here: null is "box can't offer this" and hides the card.
+      return;
+    }
     if (!live.current) return;
     const next = res ? res.utilities : null;
     // A state flip makes any old flash note stale — the fresh status line is the
@@ -108,14 +122,28 @@ export function UtilitiesSection({
     }
     lastUtils.current = next;
     setUtils(next);
+    setProbed(true); // a real answer landed (feature present, or 404 = absent)
   }, [settings]);
 
   useEffect(() => {
     live.current = true;
+    setProbed(false); // a new box (or a caps flip) re-probes from scratch
     if (!canProbe) { setUtils(null); return; }
     void refresh();
     return () => { live.current = false; };
   }, [refresh, canProbe]);
+
+  // Retry the first probe while the box hasn't answered yet. api.utilities
+  // THROWS on a transient failure (box asleep, 5xx); the old code left that
+  // rejection unhandled and `utils` stuck at null, so the OpenPuck card stayed
+  // missing after the box came back until the section re-mounted. Re-probe every
+  // 3s until a real answer lands — success shows the card, an exact 404 sets
+  // `probed` and leaves it hidden. Both stop this retry.
+  useEffect(() => {
+    if (!canProbe || probed) return undefined;
+    const id = setInterval(() => { void refresh(); }, 3000);
+    return () => clearInterval(id);
+  }, [canProbe, probed, refresh]);
 
   // Auto-flash (batch) mode: flash every board plugged in, one after another,
   // with no per-board prompt. The toggle IS the consent. Implemented purely
