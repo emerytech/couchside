@@ -2907,13 +2907,22 @@ export const api = {
       .catch(() => false);
   },
 
+  /**
+   * Navigate the Steam UI to a known destination (agent >= 2.9.42).
+   *
+   * Resolves to the agent's `ok` on a 200, and THROWS on every failure — a
+   * 404 (route missing, agent too old to support search) no differently from a
+   * transient timeout/5xx. It deliberately does NOT `.catch(() => false)` any
+   * more: that collapsed "agent can't do this" and "box was briefly
+   * unreachable" into one `false`, so a single dropped Search tap hid the
+   * button for the rest of the app session on every box. The caller tells the
+   * two apart by `ApiError.status === 404` (see pad.tsx steamSearch).
+   */
   steamGoto(settings: ConnSettings, id: 'home'): Promise<boolean> {
     return request<{ ok: boolean }>(settings, '/api/steam/goto', {
       method: 'POST',
       body: { id },
-    })
-      .then((r) => !!r?.ok)
-      .catch(() => false);
+    }).then((r) => !!r?.ok);
   },
 
   steamlink(
