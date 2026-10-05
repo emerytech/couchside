@@ -41,7 +41,12 @@ export function useCapsSync(): void {
     consumed.current = data;
     const patch: Partial<Settings> = {};
     if (data.caps && !capsEqual(data.caps, settings.caps)) patch.caps = data.caps;
-    if (data.agent_version && data.agent_version !== settings.version) patch.version = data.agent_version;
+    // Persist only a non-empty STRING, so this layer and normalizeBox agree on
+    // what a version is: a value one accepts but the other drops would be
+    // re-learned and re-dropped every launch (the per-launch write this guards).
+    if (typeof data.agent_version === 'string' && data.agent_version && data.agent_version !== settings.version) {
+      patch.version = data.agent_version;
+    }
     const mac = normalizeMac(data.net?.mac);
     if (mac && mac !== settings.mac) patch.mac = mac;
     if (data.ip && isValidLanIp(data.ip) && data.ip !== settings.lastIp) patch.lastIp = data.ip;
