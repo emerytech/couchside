@@ -2,7 +2,7 @@ import { TabSwipeContext } from '@/components/TabSwipeContext';
 import { useLicenseActivation } from '@/hooks/useLicenseActivation';
 import Ionicons from '@expo/vector-icons/Ionicons';
 import { router, Tabs, useSegments, useRootNavigationState } from 'expo-router';
-import { currentStep, isFinalStep } from '@/lib/tour';
+import { currentStep, isFinalStep, tourLink } from '@/lib/tour';
 import { useCallback, useEffect, useRef, useState } from 'react';
 
 import { useCapsSync } from '@/hooks/useCapsSync';
@@ -51,7 +51,9 @@ export default function TabLayout() {
   // Always-mounted caps safety net: heals a stale persisted caps snapshot
   // (e.g. couchmode:false cached before the box became capable) no matter
   // which tab the user lives on. See hooks/useCapsSync.ts for the field bug.
-  useCapsSync();
+  // Its poll doubles as the feature tour's "is the box answering" signal: it is
+  // the only status poll mounted on every tab.
+  const boxPoll = useCapsSync();
 
   // A "server box" (headless: no virtual gamepad, no Steam) reports these false
   // in /api/status caps, so its gaming tabs are hidden. Undefined caps (unknown,
@@ -339,6 +341,9 @@ export default function TabLayout() {
       <FeatureTour
         state={tour.state}
         tabOrder={tabOrder}
+        link={tourLink({ hasData: boxPoll.data != null, hasError: boxPoll.error != null })}
+        linkAt={boxPoll.lastSuccess}
+        onRecheck={boxPoll.refresh}
         onNext={tourNext}
         onBack={tour.back}
         onSkip={tour.skip}
