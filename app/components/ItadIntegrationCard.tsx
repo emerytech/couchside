@@ -7,12 +7,13 @@
  * support it (api.itadStatus -> null on 404), so the card only shows where it works.
  * A "How to get your key" link opens the couchside.tv guide.
  */
-import React, { useCallback, useEffect, useState } from 'react';
+import React, { useCallback, useState } from 'react';
 import {
   ActivityIndicator, Linking, Pressable, StyleSheet, Text, TextInput, View,
 } from 'react-native';
 
-import { ApiError, api, type ItadStatus } from '@/lib/api';
+import { usePoll } from '@/hooks/usePoll';
+import { ApiError, api, hostKey, type ItadStatus } from '@/lib/api';
 import { hapticLight } from '@/lib/haptics';
 import { useSettings } from '@/lib/SettingsContext';
 import { mono, useTheme, useThemedStyles, type Palette } from '@/lib/theme';
@@ -25,24 +26,22 @@ export function ItadIntegrationCard() {
   const { settings, ready } = useSettings();
   const configured = !!settings.host && !!settings.token;
 
-  // undefined = still loading; null = agent doesn't support it (hide the card).
-  const [status, setStatus] = useState<ItadStatus | null | undefined>(undefined);
+  // usePoll, NOT a one-shot try/catch that mapped EVERY error to null. null MUST
+  // mean only "agent doesn't support it" (api.itadStatus -> null on an exact
+  // 404), because null hides the card; the old catch also set null on a
+  // transient failure, so one bad fetch hid the card for good. usePoll keeps the
+  // card hidden while unknown (degrade closed) and a throwing fetch retries
+  // every ~2s, so it returns when the box is reachable again. A mutation calls
+  // poll.refresh() to re-read the box (the source of truth).
+  const poll = usePoll(
+    () => api.itadStatus(settings), 30_000, ready && configured, hostKey(settings));
+  const status = poll.data; // ItadStatus (show) | null (404, hide)
+  const loading = status == null && poll.loading && poll.error == null;
   const [apiKey, setApiKey] = useState('');
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   // Once set up, the card collapses to a one-line summary; tap the header to expand.
   const [expanded, setExpanded] = useState(false);
-
-  const refresh = useCallback(async () => {
-    if (!ready || !configured) return;
-    try {
-      setStatus(await api.itadStatus(settings));
-    } catch {
-      setStatus(null);
-    }
-  }, [ready, configured, settings]);
-
-  useEffect(() => { void refresh(); }, [refresh]);
 
   const connect = async () => {
     const key = apiKey.trim();
@@ -54,8 +53,8 @@ export function ItadIntegrationCard() {
     setError(null);
     setBusy(true);
     try {
-      const s = await api.itadConnect(settings, key);
-      setStatus(s);
+      await api.itadConnect(settings, key);
+      poll.refresh(); // re-read the box's new status (source of truth)
       setApiKey('');
     } catch (e) {
       setError(e instanceof ApiError && e.message ? e.message
@@ -69,7 +68,8 @@ export function ItadIntegrationCard() {
     hapticLight();
     setBusy(true);
     try {
-      setStatus(await api.itadDisconnect(settings));
+      await api.itadDisconnect(settings);
+      poll.refresh();
     } catch {
       // best-effort; a failed disconnect leaves the card as-is
     } finally {
@@ -79,8 +79,10 @@ export function ItadIntegrationCard() {
 
   const openGuide = () => { hapticLight(); void Linking.openURL(GUIDE_URL); };
 
-  // Probe-and-appear: an agent without the feature returns null -> render nothing.
-  if (status === null) return null;
+  // Probe-and-appear: render nothing once we KNOW the box can't offer it (null
+  // after a real answer) OR while a transient failure leaves us hidden and
+  // retrying. Only the first in-flight probe shows the spinner (`loading`).
+  if (status == null && !loading) return null;
 
   const collapsible = !!status && status.configured;
 
@@ -97,7 +99,7 @@ export function ItadIntegrationCard() {
         ) : null}
       </Pressable>
 
-      {status === undefined ? (
+      {status == null ? (
         <ActivityIndicator color={t.green} style={{ marginVertical: 16 }} />
       ) : status.configured && !expanded ? (
         <Text style={styles.collapsedSummary} numberOfLines={1}>
