@@ -17,6 +17,15 @@
  * have it". The tour used to explain the library filter to people whose library
  * was too small to show one. See hooks/useTourAnchor.ts.
  *
+ * EXCEPT WHEN THE BOX IS NOT ANSWERING. Three steps point at things the box
+ * draws (vitals, the library, the action list). With the box unreachable all
+ * three are "absent", and the tour used to walk straight past them without a
+ * word and open on "3 of 6" — found on a real iPhone. A `needsBox` step now
+ * skips quietly only on a box that has answered since the step opened; a box
+ * that is down HOLDS the step behind a "Box not connected" notice that has its
+ * own Next and Skip, and gives way by itself if the box comes back. The rule is
+ * absentAnchorVerdict() in lib/tour.ts, tested there.
+ *
  * NO MASKING LIBRARY: React Native has no cross-platform cutout, so the dim is
  * four Views around the target. No dependency, no SVG, and it behaves the same
  * on both platforms.
@@ -28,7 +37,7 @@
  */
 import Ionicons from '@expo/vector-icons/Ionicons';
 import React from 'react';
-import { Image, Pressable, ScrollView, StyleSheet, Text, useWindowDimensions, View } from 'react-native';
+import { AccessibilityInfo, Image, Pressable, ScrollView, StyleSheet, Text, useWindowDimensions, View } from 'react-native';
 import Animated, { FadeIn } from 'react-native-reanimated';
 import { useReducedMotion } from '@/lib/skin/motion';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
@@ -36,14 +45,21 @@ import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { measureAnchor, screenHasAnchors, scrollTabBy, subscribeAnchorLayout } from '@/hooks/useTourAnchor';
 import { hapticLight } from '@/lib/haptics';
 import {
+  absentAnchorVerdict,
   anchorHole,
   cardSlot,
   currentStep,
   dimRects,
+  onlineSinceMs,
   scrollDeltaFor,
   spotlightRect,
   stepLabel,
+  TOUR_CHECKING,
+  TOUR_HOLD_RECHECK_MS,
+  TOUR_OFFLINE_BODY,
+  TOUR_OFFLINE_TITLE,
   type Rect,
+  type TourLink,
   type TourState,
 } from '@/lib/tour';
 import { mono, useTheme, useThemedStyles, type Palette } from '@/lib/theme';
@@ -86,6 +102,9 @@ const delay = (ms: number) => new Promise<void>((r) => setTimeout(r, ms));
 export function FeatureTour({
   state,
   tabOrder,
+  link,
+  linkAt,
+  onRecheck,
   onNext,
   onBack,
   onSkip,
@@ -95,6 +114,12 @@ export function FeatureTour({
    *  rather than assuming, because caps and remote-only mode change both the
    *  count and the positions. */
   tabOrder: string[];
+  /** What the always-mounted status poll believes about the box. */
+  link: TourLink;
+  /** Unix ms of that poll's last successful answer, or null. */
+  linkAt: number | null;
+  /** Ask that poll for a fresh answer now. */
+  onRecheck: () => void;
   onNext: () => void;
   /** Step back, for a mis-tapped GOT IT. */
   onBack: () => void;
@@ -111,10 +136,28 @@ export function FeatureTour({
 
   const [hole, setHole] = React.useState<Rect | null>(null);
   const [cardH, setCardH] = React.useState(150);
+  /** Why the current step is still waiting, when the reason is worth saying.
+   *  KEYED TO THE STEP so a notice left over from the previous step can never
+   *  paint under the next step's counter for a frame. */
+  const [hold, setHold] = React.useState<{ step: number; kind: 'checking' | 'offline' } | null>(null);
+  const held = hold && hold.step === state.step ? hold.kind : null;
+  /** The measuring loop reads the box through this, NOT through the effect's
+   *  dependencies: a poll result must never restart the step. */
+  const box = React.useRef({ link, linkAt, onRecheck });
+  box.current = { link, linkAt, onRecheck };
+  /** What the measuring loop has learned about the box during THIS STEP. A ref
+   *  keyed by step, not loop locals: the loop restarts on a tab-bar reshuffle
+   *  or a resize, and a fresh loop that forgot the box had been down would skip
+   *  the step without the settle — the original bug, through the side door. */
+  const stepMem = React.useRef<{ step: number; startedAt: number; sawDown: boolean; asked: boolean } | null>(null);
   /** Bumped on every step change so a slow measurement from the PREVIOUS step
    *  cannot land after the user has already moved on and draw a hole over the
    *  wrong element. */
   const runId = React.useRef(0);
+  // ...and on unmount. A held step keeps measuring with no time limit, so
+  // without this "Skip tour" would leave a loop alive that could call onNext()
+  // against a later replay.
+  React.useEffect(() => () => { runId.current += 1; }, []);
   /** Scroll corrections spent on the CURRENT step; reset when the step changes.
    *  Bounds the chase-the-anchor loop below. */
   const corrections = React.useRef(0);
@@ -130,6 +173,7 @@ export function FeatureTour({
     const live = () => runId.current === mine;
     corrections.current = 0;
     setHole(null);
+    setHold(null);
 
     if (!step) return;
 
@@ -156,9 +200,17 @@ export function FeatureTour({
       return;
     }
 
+    const needsBox = step.needsBox === true;
+    const myStep = state.step;
+    if (stepMem.current?.step !== myStep) {
+      stepMem.current = { step: myStep, startedAt: Date.now(), sawDown: false, asked: false };
+    }
+    const mem = stepMem.current;
+
     void (async () => {
       let rect: Rect | null = null;
-      for (let waited = 0; ; waited += RETRY_EVERY_MS) {
+      let since: number | null = null;
+      for (let waited = 0; ; ) {
         if (!live()) return;
         rect = await measureAnchor(anchor);
         if (rect) break;
@@ -167,8 +219,35 @@ export function FeatureTour({
         // filter that needs 8+ games, an action group this box does not report)
         // and no amount of waiting will conjure it.
         const budget = (await screenHasAnchors(anchor)) ? READY_GIVE_UP_MS : RETRY_FOR_MS;
-        if (waited >= budget) break;
-        await delay(RETRY_EVERY_MS);
+        if (!live()) return;
+        const now = box.current;
+        // Only an answer NEWER than this step counts: the poll runs every 30s
+        // and holds its last payload, so "online" alone can be half a minute
+        // stale. Ask once rather than skip a step on an old reading.
+        const confirmed = now.linkAt != null && now.linkAt >= mem.startedAt;
+        since = onlineSinceMs(since, now.link, waited);
+        if (now.link !== 'online') mem.sawDown = true;
+        if (needsBox && now.link === 'online' && !confirmed && !mem.asked) {
+          mem.asked = true;
+          now.onRecheck();
+        }
+        const verdict = absentAnchorVerdict({
+          needsBox,
+          link: now.link,
+          waitedMs: waited,
+          budgetMs: budget,
+          onlineSince: since,
+          confirmed,
+          sawDown: mem.sawDown,
+        });
+        if (verdict === 'skip') break;
+        const kind = verdict === 'wait' ? null : verdict;
+        setHold((h) =>
+          kind == null ? null : h && h.step === myStep && h.kind === kind ? h : { step: myStep, kind },
+        );
+        const pause = verdict === 'offline' ? TOUR_HOLD_RECHECK_MS : RETRY_EVERY_MS;
+        await delay(pause);
+        waited += pause;
       }
       if (!live()) return;
 
@@ -177,6 +256,7 @@ export function FeatureTour({
         onNext();
         return;
       }
+      setHold(null);
 
       const dy = scrollDeltaFor(rect, bandTop, bandBottom);
       if (dy !== 0 && scrollTabBy(tab as string, dy)) {
@@ -242,21 +322,92 @@ export function FeatureTour({
     });
   }, [anchor, hole, width, height]);
 
+  // The notice HOLDS the tour until a press, so a screen-reader user has to be
+  // told it is there: accessibilityRole="alert" on a plain View is inert on
+  // iOS, and accessibilityLiveRegion is Android-only. Once per held step.
+  const showOffline = held === 'offline' && idx >= 0;
+  React.useEffect(() => {
+    if (showOffline) AccessibilityInfo.announceForAccessibility(`${TOUR_OFFLINE_TITLE}. ${TOUR_OFFLINE_BODY}`);
+  }, [showOffline, state.step]);
+
   if (!step) return null;
   // A tab this build does not show (remote-only hides the box tabs) has nothing
   // to point at.
 
   // Still measuring, or skipping: draw nothing rather than flash a hole in the
   // wrong place for a frame.
-  if (!hole || idx < 0) return (
-    <View style={[styles.card, { bottom: insets.bottom + TAB_BAR_H + 16 }]}>
-      <Text style={styles.count}>{stepLabel(state)}</Text>
-      <Text style={styles.body} accessibilityLiveRegion="polite">Finding the next control…</Text>
-      <Pressable onPress={onSkip} accessibilityRole="button" accessibilityLabel="Skip the tour" style={styles.skipBtn}>
-        <Text style={styles.skipText}>Skip tour</Text>
-      </Pressable>
-    </View>
-  );
+  if (!hole || idx < 0) {
+    const bottom = insets.bottom + TAB_BAR_H + 16;
+    // The box is not answering and this step points at something it draws.
+    // Say so and wait for a press, instead of walking past the step. NO DIM and
+    // no spotlight: the screen behind carries the controls for this state on
+    // the SAME tab (Retry, Wake box, the box picker) and they stay tappable.
+    // Other tabs do not: the layout pins the tour's tab, so Setup is reached
+    // by Next or Skip tour, not by the tab bar.
+    if (showOffline) {
+      return (
+        <View
+          accessibilityRole="alert"
+          // Capped at half the screen: the body scrolls, and at large text
+          // sizes a taller card would sit on the Retry it is meant to leave
+          // reachable.
+          style={[
+            styles.card,
+            styles.notice,
+            { bottom, maxHeight: Math.min(height - insets.top - bottom - 8, Math.round(height * 0.5)) },
+          ]}>
+          <View style={styles.noticeHead}>
+            <Ionicons name="warning-outline" size={16} color={t.amber} />
+            <Text style={styles.count}>{stepLabel(state)}</Text>
+          </View>
+          <ScrollView style={{ flexShrink: 1 }} contentContainerStyle={{ gap: 8 }}>
+            <Text style={styles.title}>{TOUR_OFFLINE_TITLE}</Text>
+            <Text style={styles.body} accessibilityLiveRegion="polite">{TOUR_OFFLINE_BODY}</Text>
+          </ScrollView>
+          <View style={styles.actions}>
+            <Pressable
+              onPress={() => {
+                hapticLight();
+                onSkip();
+              }}
+              accessibilityRole="button"
+              accessibilityLabel="Skip the tour"
+              style={({ pressed }) => [styles.skipBtn, pressed && styles.pressed]}>
+              <Text style={styles.skipText}>Skip tour</Text>
+            </Pressable>
+            <Pressable
+              onPress={() => {
+                hapticLight();
+                onNext();
+              }}
+              accessibilityRole="button"
+              style={({ pressed }) => [styles.next, pressed && styles.pressed]}>
+              <Text style={styles.nextText}>{isLast(state) ? 'Done' : 'Next'}</Text>
+              {isLast(state) ? null : <Ionicons name="arrow-forward" size={14} color={t.onAccent} />}
+            </Pressable>
+          </View>
+        </View>
+      );
+    }
+    return (
+      <View style={[styles.card, { bottom }]}>
+        <Text style={styles.count}>{stepLabel(state)}</Text>
+        <Text style={styles.body} accessibilityLiveRegion="polite">
+          {held === 'checking' && idx >= 0 ? TOUR_CHECKING : 'Finding the next control…'}
+        </Text>
+        {/* Skip keeps to the LEFT HALF, the same slot it has on the notice, and
+            the right half stays empty. This card replaces the notice at the
+            same position the moment Next is pressed; a full-width Skip put the
+            second tap of a double-tap on "Skip tour", ending the tour for good. */}
+        <View style={styles.actions}>
+          <Pressable onPress={onSkip} accessibilityRole="button" accessibilityLabel="Skip the tour" style={styles.skipBtn}>
+            <Text style={styles.skipText}>Skip tour</Text>
+          </Pressable>
+          <View style={{ flex: 1 }} pointerEvents="none" />
+        </View>
+      </View>
+    );
+  }
 
   const panels = dimRects(width, height, hole);
   const slot = cardSlot(hole, height, cardH, CARD_GAP, insets.top + 8, insets.bottom + 8);
@@ -372,6 +523,10 @@ const makeStyles = (t: Palette) =>
       padding: 16,
       gap: 8,
     },
+    // Attention, not alarm: amber as a border on the ordinary card, the same
+    // way the rest of the app marks "pending". Red is for the box's own banner.
+    notice: { borderColor: t.amber },
+    noticeHead: { flexDirection: 'row', alignItems: 'center', gap: 8 },
     count: { color: t.textDim, fontSize: 11, letterSpacing: 1, fontFamily: mono },
     actions: { flexDirection: 'row', gap: 10, marginTop: 4 },
     backBtn: {
