@@ -62,6 +62,28 @@ test('metadata is learned in one write and identical new responses cause no writ
   h.snapshot({ ...d }); h.render();
   assert.equal(h.writes.length, 1);
 });
+test('a persisted version that matches the agent causes no launch write; an upgrade writes only version', () => {
+  const h = harness();
+  // Cold launch: everything already learned and persisted (loadBoxes keeps version).
+  h.patch({ version: '2.9.129', mac: 'aa:bb:cc:dd:ee:ff', caps: { gaming: true } });
+  const d = { ip: '10.1.1.38', net: { mac: 'aa:bb:cc:dd:ee:ff' }, caps: { gaming: true }, agent_version: '2.9.129' };
+  h.snapshot(d); h.render();
+  assert.equal(h.writes.length, 0);
+  // Control: the box's service was updated while the app was closed.
+  h.snapshot({ ...d, agent_version: '2.9.130' }); h.render();
+  assert.equal(h.writes.length, 1);
+  assert.deepEqual({ ...h.writes[0] }, { version: '2.9.130' }); // spread: patch was built in the vm realm
+});
+test('a non-string agent_version is never persisted', () => {
+  const h = harness();
+  h.patch({ version: '2.9.129' });
+  for (const v of [2129, true, { v: '2.9.130' }]) {
+    h.snapshot({ ip: '10.1.1.38', agent_version: v }); h.render();
+  }
+  assert.equal(h.writes.length, 0);
+  h.snapshot({ ip: '10.1.1.38', agent_version: '2.9.130' }); h.render();
+  assert.deepEqual(h.writes.map((w) => ({ ...w })), [{ version: '2.9.130' }]);
+});
 test('per-tab power bars cannot persist stale network metadata', () => {
   const bar = readFileSync(new URL('../../components/RemotePowerBar.tsx', import.meta.url), 'utf8');
   assert.doesNotMatch(bar, /update\(\{\s*(?:lastIp|mac)\b/);
