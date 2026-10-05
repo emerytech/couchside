@@ -341,29 +341,48 @@ export function RemotePowerBar({ compact = false }: { compact?: boolean }) {
   }, [polledSession]);
 
   // Suspend-action availability, once per connect (agent >= 2.6 with the rule).
-  const [hasSuspend, setHasSuspend] = React.useState(false);
-  const suspendProbedFor = React.useRef<string | null>(null);
+  //
+  // KEYED TO THE BOX, NOT TO `settings`. This effect used to depend on the
+  // whole settings object and cancel its request in cleanup. Settings is
+  // rebuilt whenever anything about the box is saved, and the learners save
+  // right after a box answers — so the probe was cancelled ~30ms after it was
+  // sent, the re-run saw "already probed" and asked nothing, and the answer
+  // (which listed suspend) was thrown away. Suspend vanished from the menu
+  // until the box next dropped offline. Measured in the harness, 2026-10-04.
+  //
+  // So: an answer applies unless a NEWER probe superseded it (box switch or a
+  // reconnect), the answer remembers which box it is for, and a failed probe
+  // clears itself so the next successful status poll asks again. Until then
+  // the button stays hidden — degrade closed, never offer a dead action.
+  const [suspendFor, setSuspendFor] = React.useState<{ key: string; ok: boolean } | null>(null);
+  const hasSuspend = suspendFor?.key === boxKey && suspendFor.ok;
+  const suspendProbe = React.useRef<{ key: string } | null>(null);
+  const settingsRef = React.useRef(settings);
+  settingsRef.current = settings;
   React.useEffect(() => {
     if (!reachable) {
-      suspendProbedFor.current = null;
+      suspendProbe.current = null;
       return;
     }
-    const key = `${settings.host}:${settings.port}`;
-    if (suspendProbedFor.current === key) return;
-    suspendProbedFor.current = key;
-    let cancelled = false;
+    if (suspendProbe.current?.key === boxKey) return; // asked (or asking) this box already
+    const mine = { key: boxKey };
+    suspendProbe.current = mine;
     api
-      .actions(settings)
+      .actions(settingsRef.current)
       .then((r) => {
-        if (!cancelled) setHasSuspend(r.actions.some((a) => a.id === 'suspend'));
+        if (suspendProbe.current === mine) {
+          setSuspendFor({ key: mine.key, ok: r.actions.some((a) => a.id === 'suspend') });
+        }
       })
       .catch(() => {
-        if (!cancelled) setHasSuspend(false);
+        if (suspendProbe.current === mine) {
+          setSuspendFor({ key: mine.key, ok: false });
+          suspendProbe.current = null;
+        }
       });
-    return () => {
-      cancelled = true;
-    };
-  }, [reachable, settings]);
+    // status.lastSuccess re-runs this after a failed probe, which is what
+    // retries it; with a probe already done or in flight it returns at once.
+  }, [reachable, boxKey, status.lastSuccess]);
 
   const [busy, setBusy] = React.useState(false);
   const [wakePhase, setWakePhase] = React.useState<'idle' | 'sending' | 'waiting' | 'awake' | 'timeout' | 'failed'>('idle');
