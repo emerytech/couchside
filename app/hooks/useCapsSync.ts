@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useRef } from 'react';
 
-import { usePoll } from '@/hooks/usePoll';
+import { usePoll, type PollState } from '@/hooks/usePoll';
 import { api, capsEqual, hostKey, Status } from '@/lib/api';
 import { useSettings } from '@/lib/SettingsContext';
 import { isValidLanIp, normalizeMac } from '@/lib/settings';
@@ -23,10 +23,14 @@ import type { Settings } from '@/lib/settings';
  * object every poll) so storage is written once per real change, and hostKey
  * as resetKey so a stale instance can never attribute one box's caps to
  * another (that exact mis-attribution once ping-ponged writes forever).
+ *
+ * RETURNS ITS POLL. This is the only status poll that is mounted on every tab,
+ * so the tabs layout reads it as the feature tour's "is the box answering"
+ * signal (lib/tour.ts tourLink) rather than starting a second pinger.
  */
 const CAPS_SYNC_MS = 30_000;
 
-export function useCapsSync(): void {
+export function useCapsSync(): PollState<Status> {
   const { settings, ready, update } = useSettings();
   const configured = settings.host.trim().length > 0;
   const poll = useCallback(() => api.status(settings), [settings]);
@@ -41,10 +45,16 @@ export function useCapsSync(): void {
     consumed.current = data;
     const patch: Partial<Settings> = {};
     if (data.caps && !capsEqual(data.caps, settings.caps)) patch.caps = data.caps;
-    if (data.agent_version && data.agent_version !== settings.version) patch.version = data.agent_version;
+    // Persist only a non-empty STRING, so this layer and normalizeBox agree on
+    // what a version is: a value one accepts but the other drops would be
+    // re-learned and re-dropped every launch (the per-launch write this guards).
+    if (typeof data.agent_version === 'string' && data.agent_version && data.agent_version !== settings.version) {
+      patch.version = data.agent_version;
+    }
     const mac = normalizeMac(data.net?.mac);
     if (mac && mac !== settings.mac) patch.mac = mac;
     if (data.ip && isValidLanIp(data.ip) && data.ip !== settings.lastIp) patch.lastIp = data.ip;
     if (Object.keys(patch).length) void update(patch);
   }, [status.data, status.dataKey, settings, update]);
+  return status;
 }

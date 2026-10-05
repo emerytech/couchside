@@ -39,6 +39,12 @@ jobs:
       # every phone connect) — are invisible to the --mock smoke test below and
       # otherwise need real hardware plus a controller to catch. Pure stdlib, no
       # pytest, runs in well under a second.
+      - name: Unit tests (wake selection, persistent USB wake, lighting timing)
+        run: |
+          python3 tests/test_wake_network.py
+          python3 tests/test_usb_wake_persistence.py
+          python3 tests/test_led_timing.py
+
       - name: Unit tests (guide-hold trigger)
         run: python3 tests/test_guide_hold.py
 

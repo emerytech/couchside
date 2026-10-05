@@ -350,7 +350,7 @@ print("the verb table is small enough to audit")
 # Eight through helper 1.0.x; 1.1.0 added decky.loader; 1.2.0 added usb.wake-arm.
 # The count is spelled out in the helper's header and project_privileged-helper.md
 # — move them together.
-check("ten verbs, no more", len(H.VERBS), 10)
+check("eleven verbs, no more", len(H.VERBS), 11)
 
 print()
 if FAILURES:

@@ -1,4 +1,1 @@
-• Faster Play tab with cached sections and optional demo mode.
-• Fixed excessive background requests that could delay loading and controls.
-• Expired queued commands are discarded before sending.
-• With agent 2.9.128: shared background Steam refreshes, more reliable wishlist prices and better account switching.
+A warmer welcome and easier first setup. Boxes now combines live vitals and management. Smoother optional animations and swipe navigation respect touch controls. Wake Box shows progress and confirms reconnection, with improved Ethernet wake detection. Custom lighting has more accurate sequences and strobe timing. Wake devices verifies saved settings. Update your Linux service to 2.9.129 for the matching improvements.

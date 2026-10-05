@@ -1,3 +1,4 @@
+import { blockTabSwipe } from '@/lib/tabSwipe';
 /**
  * Play — "what to play next". Ranks the box's INSTALLED Steam games from its
  * LOCAL play history (agent >= 2.9.63, GET /api/recommend) and offers a pick to
@@ -166,7 +167,7 @@ function PlayScreen() {
       {picks.length > 1 && (
         <>
           <Text style={styles.sectionK}>More for tonight</Text>
-          <ScrollView horizontal showsHorizontalScrollIndicator={false}
+          <ScrollView onTouchStart={blockTabSwipe} horizontal showsHorizontalScrollIndicator={false}
             contentContainerStyle={styles.rail}>
             {picks.map((p, i) => {
               const on = i === sel;

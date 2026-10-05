@@ -1,3 +1,4 @@
+import { blockTabSwipe } from '@/lib/tabSwipe';
 /**
  * "On your wishlist" — the games on the owner's Steam wishlist that are discounted
  * right now (agent >= 2.9.123). Shown on the Play tab above the general deals row
@@ -57,7 +58,7 @@ export function SteamWishlistRow() {
   return (
     <View style={styles.wrap}>
       <Text style={styles.label}>ON YOUR WISHLIST  ·  {items.length} ON SALE</Text>
-      <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.rail}>
+      <ScrollView onTouchStart={blockTabSwipe} horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.rail}>
         {items.map((it) => (
           <Pressable key={it.appid} onPress={() => open(it.appid)}
             accessibilityRole="button" accessibilityLabel={`${it.name}, ${it.discount_percent}% off — open on Steam`}

@@ -1,3 +1,4 @@
+import { blockTabSwipe } from '@/lib/tabSwipe';
 /**
  * "On sale now" — current Steam specials, shown on the Play tab when the Steam
  * integration is connected (agent >= 2.9.121). Keyless on the box side (public
@@ -65,7 +66,7 @@ export function SteamDealsRow() {
   return (
     <View style={styles.wrap}>
       <Text style={styles.label}>ON SALE NOW</Text>
-      <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.rail}>
+      <ScrollView onTouchStart={blockTabSwipe} horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.rail}>
         {items.map((it) => (
           <Pressable key={it.appid} onPress={() => open(it.appid)}
             accessibilityRole="button" accessibilityLabel={`${it.name}, ${it.discount_percent}% off — open on Steam`}

@@ -18,6 +18,13 @@ the same thing regardless of what actually changed.
 Write for the person holding the phone, not for the commit log. They are
 deciding whether to press "Update now" on a machine across the room.
 
+## 2.9.129
+
+- Wake Box now uses the connected Ethernet adapter's wake address even when Wi-Fi carries other traffic. This improves waking machines connected by both Ethernet and Wi-Fi.
+- Custom lighting sequences keep accurate frame timing, including real on/off strobe effects and delays between frames.
+- Wake devices can save a verified setting for a specific USB port and device model with privileged helper 1.3.0. Saved rules survive reboots and SteamOS updates and are removed when Couchside is uninstalled. Older helpers retain session-only support.
+- Includes the responsive Play/Steam library caches and control-queue improvements from 2.9.128.
+
 ## 2.9.128
 
 **More responsive Steam data.** Slow Steam lookups now refresh in the background,
