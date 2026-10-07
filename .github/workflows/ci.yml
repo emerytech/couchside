@@ -953,7 +953,12 @@ jobs:
       #    HERE. Autolinking keys off package.json (measured), which is why the
       #    dependency and plugin must arrive together or not at all.
       - name: Unit tests (camera is pairing-only + mic-less; demo mode unmergeable)
-        run: python3 tests/test_no_camera_in_shipping_app.py
+        run: |
+          if [ "$GITHUB_REF" = "refs/heads/build/direct-apk" ]; then
+            python3 tests/test_no_camera_in_shipping_app.py --direct
+          else
+            python3 tests/test_no_camera_in_shipping_app.py
+          fi
 
       # Windows non-Steam launchers (Epic / GOG / Xbox). These take a client id,
       # so the load-bearing gate is allowlist-by-lookup: the id is matched in a

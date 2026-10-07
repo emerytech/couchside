@@ -47,6 +47,8 @@ demo mode; back it out (it builds from its own branch, see docs/DEMO_MODE.md
 there). Pure stdlib, like every other test here.
 """
 import json
+import os
+import subprocess
 import sys
 from pathlib import Path
 
@@ -87,7 +89,10 @@ for dep in BANNED_DEPS:
 
 # --------------------------------------------------- app.config.js (the fork mechanism)
 
+direct = "--direct" in sys.argv
 for name in ("app.config.js", "app.config.ts", "app.config.mjs", "app.config.cjs"):
+    if direct and name == "app.config.js":
+        continue
     check(
         not (APP / name).exists(),
         f"app/{name} exists. On main, app.json is the single source of truth for the "
@@ -99,6 +104,17 @@ for name in ("app.config.js", "app.config.ts", "app.config.mjs", "app.config.cjs
 
 app_json = json.loads((APP / "app.json").read_text())
 expo = app_json["expo"]
+if direct:
+    # The Direct build branch intentionally has its own package/icon config.
+    # Inspect the resolved config, retaining every camera/microphone guard.
+    script = "const base=require('./app.json').expo; const f=require('./app.config.js'); console.log(JSON.stringify(f({config:base})))"
+    def resolved(value):
+        env = dict(os.environ, EXPO_PUBLIC_DIRECT=value, EXPO_PUBLIC_DEMO="0")
+        return json.loads(subprocess.check_output(["node", "-e", script], cwd=APP, env=env, text=True))
+    check(resolved("0") == expo, "Direct config must leave the store config unchanged")
+    expo = resolved("1")
+    check(expo.get("android", {}).get("package") == "com.ets3d.rescueremote.direct", "Direct package identity must be exact")
+    check(expo.get("ios", {}).get("bundleIdentifier") == "com.ets3d.rescueremote.direct", "Direct iOS identity must be exact")
 
 raw_plugins = expo.get("plugins", [])
 plugin_names = [p[0] if isinstance(p, list) else p for p in raw_plugins]
