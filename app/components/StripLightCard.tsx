@@ -17,7 +17,7 @@
  */
 import Ionicons from '@expo/vector-icons/Ionicons';
 import React, { useEffect, useRef, useState } from 'react';
-import { Alert, Platform, Pressable, StyleSheet, Text, View } from 'react-native';
+import { Alert, Platform, Pressable, StyleSheet, Text, TextInput, View } from 'react-native';
 
 import { useConfirm } from './ConfirmDialog';
 import { PresetNameModal } from '@/components/PresetNameModal';
@@ -25,6 +25,7 @@ import { ReactiveModeControls } from '@/components/reactive/ReactiveModeControls
 import { TrackSlider } from '@/components/TrackSlider';
 import { usePoll } from '@/hooks/usePoll';
 import { api, hostKey, type LedEffect, type LedInfo, type LedsState, type LedTheme, type Rgb } from '@/lib/api';
+import { makeSequenceTemplate, type SequenceTemplate } from '@/lib/ledSequence';
 import { hapticLight } from '@/lib/haptics';
 import {
   cssRgb, hexRgb, hueToRgb, hsToRgb, rgbToHs, HUE_STOPS, satStops, speedToMs,
@@ -54,7 +55,7 @@ const VIVID_LABEL: Record<AuraVividness, string> = {
 
 type StripEffect =
   | 'solid' | 'off' | 'manual' | 'scanner' | 'rainbow' | 'breathe'
-  | 'circle' | 'comet' | 'wipe' | 'twinkle';
+  | 'circle' | 'comet' | 'wipe' | 'twinkle' | 'strobe';
 const EFFECTS: { id: StripEffect; label: string }[] = [
   { id: 'solid', label: 'Solid' },
   { id: 'manual', label: 'Manual' },
@@ -64,6 +65,7 @@ const EFFECTS: { id: StripEffect; label: string }[] = [
   { id: 'comet', label: 'Comet' },
   { id: 'wipe', label: 'Wipe' },
   { id: 'twinkle', label: 'Twinkle' },
+  { id: 'strobe', label: 'Strobe' },
   { id: 'rainbow', label: 'Rainbow' },
   { id: 'breathe', label: 'Breathe' },
 ];
@@ -104,6 +106,7 @@ function displayLeds(strip: LedStrip): LedInfo[] {
 
 /** One frame of the APP-driven fallback animation (only used on old agents). */
 function computeFrame(effect: StripEffect, n: number, t: number, color: Rgb): (Rgb | null)[] {
+  if (effect === 'strobe') return Array.from({ length: n }, () => Math.floor(t) % 2 === 0 ? color : null);
   const period = (n - 1) * 2 || 1;
   const cyc = t % period;
   const pos = cyc < n - 1 ? cyc : period - cyc;
@@ -148,12 +151,17 @@ export function StripLightCard() {
   const [altHue, setAltHue] = useState(210);      // default a blue alternate
   const [cycleMs, setCycleMs] = useState(500);    // ms between the two frames
   // N-FRAME EDITOR: captured frames (colours already baked with per-LED brightness).
-  // >= 2 frames -> plays as a looping sequence on the box; tap a frame to load it
+  // Draft frames are sent only by Play / restart; tap a frame to load it
   // back into the grid for editing/re-capture. `frameHold` holds one duration (ms)
   // per frame (each frame can linger a different length); `selFrame` is the frame
   // currently loaded for editing (its per-frame timer is shown).
   const [seqFrames, setSeqFrames] = useState<(Rgb | null)[][]>([]);
   const [frameHold, setFrameHold] = useState<number[]>([]);
+  const [seqLoop, setSeqLoop] = useState(true);
+  const [seqMessage, setSeqMessage] = useState('Edits stay here until you press Play.');
+  const [seqBusy, setSeqBusy] = useState(false);
+  const seqSending = useRef(false);
+  const draftRevision = useRef(0);
   const [selFrame, setSelFrame] = useState<number | null>(null);
   const [frame, setFrame] = useState<(Rgb | null)[]>([]);
   // Per-LED brightness % (0 = off). A tap on a cell cycles it up the CELL_STEPS
@@ -470,7 +478,7 @@ export function StripLightCard() {
     setFrame(newFrame);
     setCellBright(newBright);
     // DIRECT EDIT: when a captured frame is selected, the grid IS that frame —
-    // painting updates it in place and re-plays the show live (no re-capture step).
+    // painting updates the draft in place without restarting playback.
     if (selFrame != null && selFrame < seqFrames.length) {
       const baked = orderedLeds.map((_, k) => {
         const c = newFrame[k]; const b = newBright[k] ?? (c ? 100 : 0);
@@ -478,7 +486,7 @@ export function StripLightCard() {
       });
       const nf = seqFrames.map((f, k) => (k === selFrame ? baked : f));
       setSeqFrames(nf);
-      if (nf.length >= 2) pushSeq(nf, frameHold);
+      if (nf.length >= 1) pushSeq(nf, frameHold);
       else applyMainPattern(baked, newBright);
       return;
     }
@@ -497,31 +505,75 @@ export function StripLightCard() {
       return c && b > 0 ? scale(c as Rgb, b / 100) : null;
     });
 
-  /** Play a list of frames on the box as a looping sequence, each frame held for
-   *  its own duration (frameHold, one ms per frame). Older agents ignore `holds`
-   *  and fall back to the first frame's hold. */
-  const pushSeq = (fr: (Rgb | null)[][], holds: number[]) => {
-    if (!agentMode || !agentStrip || fr.length < 1) return;
-    const hs = holds.slice(0, fr.length);
-    void api.setStripSequence(settings, agentStrip.prefix, {
-      frames: fr, holdMs: hs[0] ?? cycleMs, holds: hs, loop: true, brightness: 100,
-    }).catch(() => {});
+  /** Mark the draft dirty. Only the explicit Play button writes a sequence. */
+  const pushSeq = (_frames: (Rgb | null)[][], _holds: number[]) => {
+    draftRevision.current++;
+    setSeqMessage('Unapplied edits · press Play to restart with this sequence.');
+  };
+
+  const runSequence = async (stop = false) => {
+    if (!agentMode || !agentStrip || seqSending.current) return;
+    if (!stop && !seqFrames.length) return;
+    const revision = draftRevision.current;
+    seqSending.current = true;
+    setSeqBusy(true);
+    setSeqMessage(stop ? 'Stopping…' : 'Applying…');
+    try {
+      const ok = stop
+        ? await api.setStripEffect(settings, agentStrip.prefix, { effect: 'off' })
+        : await api.setStripSequence(settings, agentStrip.prefix, {
+          frames: seqFrames, holdMs: frameHold[0] ?? cycleMs,
+          holds: frameHold, loop: seqLoop, brightness: 100,
+        });
+      setSeqMessage(ok && !stop && revision !== draftRevision.current ? 'Applied the earlier draft · press Play to apply your newer edits.' : ok
+        ? stop ? 'Stopped · lights off. Your draft is kept.' : 'Sequence accepted by the box. Steam may temporarily take control of its lights.'
+        : 'Could not apply. Check the connection and press Play or Stop to retry.');
+      if (ok) poll.refresh();
+      return ok;
+    } finally {
+      seqSending.current = false;
+      setSeqBusy(false);
+    }
+  };
+
+  const loadTemplate = async (kind: SequenceTemplate) => {
+    if (seqFrames.length && !(await confirm({ title: 'Replace draft?', message: 'This replaces the frames in your editor. Saved presets are kept.', confirmText: 'Replace' }))) return;
+    const draft = makeSequenceTemplate(kind, orderedLeds.length, color);
+    setSeqFrames(draft.frames); setFrameHold(draft.holds); setSelFrame(0); setSeqLoop(true);
+    setFrame(draft.frames[0]); setCellBright(draft.frames[0].map(c => c ? 100 : 0));
+    pushSeq(draft.frames, draft.holds);
+  };
+
+  const canAddFrame = () => {
+    if (seqFrames.length < 64) return true;
+    Alert.alert('64-frame limit', 'Remove a frame before adding another.');
+    return false;
+  };
+  const addDelay = () => {
+    if (!canAddFrame()) return;
+    const next = [...seqFrames, orderedLeds.map(() => null)];
+    const holds = [...frameHold, 1000];
+    setSeqFrames(next); setFrameHold(holds); setSelFrame(next.length - 1);
+    setFrame(orderedLeds.map(() => null)); setCellBright(orderedLeds.map(() => 0));
+    pushSeq(next, holds);
   };
 
   /** Add the current grid as a NEW frame at the end + select it (so you tweak
-   *  forward from the look you have). Auto-plays once there are >= 2. */
+   *  forward from the look you have). Playback is explicit. */
   const addFrame = () => {
+    if (!canAddFrame()) return;
     hapticLight();
     const next = [...seqFrames, bakeCurrent()];
     const holds = [...frameHold, cycleMs];
     setSeqFrames(next);
     setFrameHold(holds);
     setSelFrame(next.length - 1);
-    if (next.length >= 2) pushSeq(next, holds);
+    if (next.length >= 1) pushSeq(next, holds);
   };
 
   /** Duplicate frame i (insert a copy right after it) + select the copy. */
   const duplicateFrame = (i: number) => {
+    if (!canAddFrame()) return;
     hapticLight();
     const src = seqFrames[i];
     if (!src) return;
@@ -530,7 +582,7 @@ export function StripLightCard() {
     setSeqFrames(nf);
     setFrameHold(nh);
     setSelFrame(i + 1);
-    if (nf.length >= 2) pushSeq(nf, nh);
+    if (nf.length >= 1) pushSeq(nf, nh);
   };
 
   /** Move frame i one slot left (-1) or right (+1); reorders the show. */
@@ -543,7 +595,7 @@ export function StripLightCard() {
     setSeqFrames(nf);
     setFrameHold(nh);
     setSelFrame(j);
-    if (nf.length >= 2) pushSeq(nf, nh);
+    if (nf.length >= 1) pushSeq(nf, nh);
   };
 
   /** Load a captured frame back into the grid so it can be tweaked + re-captured. */
@@ -564,27 +616,29 @@ export function StripLightCard() {
     setSeqFrames(next);
     setFrameHold(holds);
     setSelFrame((cur) => (cur == null ? null : cur === i ? null : cur > i ? cur - 1 : cur));
-    if (next.length >= 2) pushSeq(next, holds);
-    else if (next.length === 1) applyMainPattern(next[0], next[0].map((c) => (c ? 100 : 0)));
+    if (next.length >= 1) pushSeq(next, holds);
+    else pushSeq(next, holds);
   };
 
   /** Set every frame's hold to `ms` (the global "all frames" cadence). */
   const setAllHolds = (ms: number) => {
     const holds = seqFrames.map(() => ms);
     setFrameHold(holds);
-    if (seqFrames.length >= 2) pushSeq(seqFrames, holds);
+    if (seqFrames.length >= 1) pushSeq(seqFrames, holds);
   };
 
   /** Override just the selected frame's hold (ms). */
   const setFrameHoldAt = (i: number, ms: number, commit: boolean) => {
     const holds = frameHold.map((h, k) => (k === i ? ms : h));
     setFrameHold(holds);
-    if (commit && seqFrames.length >= 2) pushSeq(seqFrames, holds);
+    if (commit && seqFrames.length >= 1) pushSeq(seqFrames, holds);
   };
 
   /** Wipe the captured sequence back to an empty editor. */
-  const clearSeq = () => {
+  const clearSeq = async () => {
+    if (!(await runSequence(true))) return;
     hapticLight();
+    setSeqMessage('Stopped and cleared.');
     setSeqFrames([]);
     setFrameHold([]);
     setSelFrame(null);
@@ -607,11 +661,8 @@ export function StripLightCard() {
       setSelFrame(0);
       setFrame(frames[0].map((c) => c));
       setCellBright(frames[0].map((c) => (c ? 100 : 0)));
-      if (agentMode && agentStrip) {
-        void api.setStripSequence(settings, agentStrip.prefix, {
-          frames, holdMs: holds[0] ?? 500, holds, loop: p.sequence.loop ?? true, brightness: 100,
-        }).then(() => poll.refresh()).catch(() => {});
-      }
+      setSeqLoop(p.sequence.loop ?? true);
+      pushSeq(frames, holds);
       return;
     }
     // A GENERATOR preset (Police): build a strip-sized timed sequence + play it on
@@ -753,7 +804,7 @@ export function StripLightCard() {
       build: (name) => ({
         label: name, effect: 'manual', color: null,
         speed: Math.round(speedPct), brightness: 100,
-        sequence: { frames, holds, loop: true },
+        sequence: { frames, holds, loop: seqLoop },
       }),
     });
   };
@@ -971,7 +1022,7 @@ export function StripLightCard() {
       )}
 
       {/* SEQUENCE — the N-frame editor: paint frames, the box loops them into a
-          light show. The grid IS the selected frame; editing it plays live. */}
+          light show. The grid edits a draft; Play applies it to the box. */}
       {effect === 'manual' && (
         <>
           <View style={styles.sliderHeader}>
@@ -995,9 +1046,27 @@ export function StripLightCard() {
           </View>
           <Text style={styles.hint}>
             {seqFrames.length === 0
-              ? 'Paint a look above, then tap ＋ New frame. Add a few and the box loops them into a show.'
-              : 'Tap a frame to edit it — the grid becomes that frame and plays live. ＋ New frame duplicates it to tweak forward.'}
+              ? 'Paint a look, then add a frame. Add an off delay for a pause between flashes.'
+              : 'Tap a frame to edit its lights and duration. Changes stay in the draft until you press Play.'}
           </Text>
+          <View style={[styles.frameTools, { flexWrap: 'wrap' }]}>
+            {(['double-flash', 'fade', 'flicker'] as const).map(kind => (
+              <Pressable key={kind} onPress={() => void loadTemplate(kind)} accessibilityRole="button" style={styles.toolBtn}>
+                <Text style={{ color: t.text }}>{kind === 'double-flash' ? 'Double flash' : kind === 'fade' ? 'Fade' : 'Flicker'}</Text>
+              </Pressable>
+            ))}
+          </View>
+          <Text style={styles.hint} accessibilityLiveRegion="polite">{seqMessage}</Text>
+          <View style={[styles.frameTools, { flexWrap: 'wrap' }]}>
+            <Pressable disabled={seqBusy || !seqFrames.length} onPress={() => void runSequence()}
+              accessibilityRole="button" style={styles.toolBtn}><Text style={{ color: t.blue }}>Play / restart</Text></Pressable>
+            <Pressable disabled={seqBusy} onPress={() => void runSequence(true)}
+              accessibilityRole="button" style={styles.toolBtn}><Text style={{ color: t.text }}>Stop</Text></Pressable>
+            <Pressable onPress={addDelay} accessibilityRole="button" style={styles.toolBtn}>
+              <Text style={{ color: t.text }}>＋ Off delay</Text></Pressable>
+            <Pressable onPress={() => { setSeqLoop(!seqLoop); pushSeq(seqFrames, frameHold); }}
+              accessibilityRole="button" style={styles.toolBtn}><Text style={{ color: t.text }}>{seqLoop ? 'Loop' : 'Once · hold last'}</Text></Pressable>
+          </View>
           {seqFrames.length > 0 && (
             <>
               <View style={styles.filmstrip}>
@@ -1015,7 +1084,7 @@ export function StripLightCard() {
                         ))}
                       </View>
                       <Text style={[styles.filmIdx, selFrame === fi && { color: t.text }]}>
-                        {fi + 1} · {((frameHold[fi] ?? cycleMs) / 1000).toFixed(1)}s
+                        {fi + 1} · {(frameHold[fi] ?? cycleMs) < 1000 ? `${Math.round(frameHold[fi] ?? cycleMs)}ms` : `${Number(((frameHold[fi] ?? cycleMs) / 1000).toFixed(2))}s`}
                       </Text>
                     </Pressable>
                     <Pressable onPress={() => removeFrame(fi)} hitSlop={6}
@@ -1047,7 +1116,7 @@ export function StripLightCard() {
                   </Pressable>
                 </View>
               )}
-              {seqFrames.length >= 2 && (
+              {seqFrames.length >= 1 && (
                 <>
                   {/* PER-FRAME timer: overrides just the frame loaded in the grid. */}
                   {selFrame != null && selFrame < seqFrames.length && (
@@ -1058,8 +1127,18 @@ export function StripLightCard() {
                           {((frameHold[selFrame] ?? cycleMs) / 1000).toFixed(2)}s
                         </Text>
                       </View>
+                      <TextInput key={`${selFrame}:${frameHold[selFrame]}`} keyboardType="number-pad"
+                        accessibilityLabel="Frame duration in milliseconds, 30 to 60000"
+                        defaultValue={String(Math.round(frameHold[selFrame] ?? cycleMs))}
+                        style={{ color: t.text, borderColor: t.cardBorder, borderWidth: 1, padding: 12, borderRadius: 8 }}
+                        onEndEditing={(event) => {
+                          const value = Number(event.nativeEvent.text);
+                          if (Number.isInteger(value) && value >= 30 && value <= 60000) setFrameHoldAt(selFrame, value, true);
+                          else Alert.alert('Frame duration', 'Enter a whole number from 30 to 60000 milliseconds.');
+                        }} />
+                      <Text style={styles.hint}>Milliseconds · 1000 = 1 second. Very short frames depend on the strip’s write speed.</Text>
                       <TrackSlider
-                        value={frameHold[selFrame] ?? cycleMs} min={100} max={5000}
+                        value={frameHold[selFrame] ?? cycleMs} min={30} max={60000}
                         onChange={(v) => setFrameHoldAt(selFrame, v, false)}
                         onCommit={(v) => setFrameHoldAt(selFrame, v, true)}
                         thumbColor={t.text} accessibilityLabel="This frame's hold time"

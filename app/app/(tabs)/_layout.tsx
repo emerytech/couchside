@@ -1,7 +1,8 @@
+import { TabSwipeContext } from '@/components/TabSwipeContext';
 import { useLicenseActivation } from '@/hooks/useLicenseActivation';
 import Ionicons from '@expo/vector-icons/Ionicons';
 import { router, Tabs, useSegments, useRootNavigationState } from 'expo-router';
-import { currentStep, isFinalStep } from '@/lib/tour';
+import { currentStep, isFinalStep, tourLink } from '@/lib/tour';
 import { useCallback, useEffect, useRef, useState } from 'react';
 
 import { useCapsSync } from '@/hooks/useCapsSync';
@@ -50,7 +51,9 @@ export default function TabLayout() {
   // Always-mounted caps safety net: heals a stale persisted caps snapshot
   // (e.g. couchmode:false cached before the box became capable) no matter
   // which tab the user lives on. See hooks/useCapsSync.ts for the field bug.
-  useCapsSync();
+  // Its poll doubles as the feature tour's "is the box answering" signal: it is
+  // the only status poll mounted on every tab.
+  const boxPoll = useCapsSync();
 
   // A "server box" (headless: no virtual gamepad, no Steam) reports these false
   // in /api/status caps, so its gaming tabs are hidden. Undefined caps (unknown,
@@ -79,8 +82,7 @@ export default function TabLayout() {
   // they sit. Derived from the same flags the <Tabs.Screen> entries use, so the
   // two cannot drift.
   const tabOrder = [
-    'index',
-    ...(remoteOnly ? ['remote'] : []),
+    ...(remoteOnly ? ['remote'] : ['index']),
     ...(hidePlay ? [] : ['play']),
     ...(remoteOnly ? [] : ['actions']),
     ...(hidePad ? [] : ['pad']),
@@ -242,10 +244,15 @@ export default function TabLayout() {
 
   return (
     <>
+    <TabSwipeContext.Provider value={{ order: tabOrder, enabled: !tour.visible && !thanksVisible && !offerVisible && !activation }}>
     <Tabs
       screenListeners={{ tabPress: () => hapticSelection() }}
       screenOptions={{
         headerShown: false,
+        // Keep iOS's native container type stable. Switching none/fade replaces
+        // it and remounts tab state; animated detachment can also leave a scene
+        // blank after tour navigation. TabScreen owns the optional content fade.
+        animation: 'none',
         tabBarActiveTintColor: t.blue,
         tabBarInactiveTintColor: t.textFaint,
         tabBarStyle: immersive
@@ -329,10 +336,14 @@ export default function TabLayout() {
         }}
       />
     </Tabs>
+    </TabSwipeContext.Provider>
     {tour.visible ? (
       <FeatureTour
         state={tour.state}
         tabOrder={tabOrder}
+        link={tourLink({ hasData: boxPoll.data != null, hasError: boxPoll.error != null })}
+        linkAt={boxPoll.lastSuccess}
+        onRecheck={boxPoll.refresh}
         onNext={tourNext}
         onBack={tour.back}
         onSkip={tour.skip}

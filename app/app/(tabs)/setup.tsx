@@ -1,3 +1,4 @@
+import { blockTabSwipe } from '@/lib/tabSwipe';
 import { resetLicenseActivation } from '@/lib/licenseActivation';
 import { useLicenseActivation } from '@/hooks/useLicenseActivation';
 import { createContext, useContext } from 'react';
@@ -9,6 +10,7 @@ import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import {
   Image,
   KeyboardAvoidingView,
+  LayoutAnimation,
   Modal,
   Platform,
   Pressable,
@@ -41,6 +43,7 @@ import { buildPairLink } from '@/lib/pairLink';
 import { GuideHoldSetup } from '@/components/GuideHoldSetup';
 import { SmartTvSetup } from '@/components/SmartTvSetup';
 import { TabScreen } from '@/components/TabScreen';
+import { useReducedMotion } from '@/lib/skin/motion';
 import { TourAnchor } from '@/components/TourAnchor';
 import { registerScroller } from '@/hooks/useTourAnchor';
 import { useLockOrientation } from '@/hooks/useLockOrientation';
@@ -100,7 +103,7 @@ import {
 } from '@/lib/purchase';
 import { Box, DEFAULT_PORT, normalizeMac } from '@/lib/settings';
 import { VolumeTarget } from '@/lib/api';
-import { useBoxes, useBoxOnlineStatus, BoxReachability } from '@/lib/SettingsContext';
+import { useBoxes } from '@/lib/SettingsContext';
 import {
   ACCENTS,
   ACCENT_KEYS,
@@ -258,11 +261,6 @@ function EarlyAdopterBadge() {
   );
 }
 
-function dotColor(status: BoxReachability | undefined, t: Palette): string {
-  if (status === 'reachable') return t.green;
-  if (status === 'offline') return t.slate;
-  return t.amber;
-}
 
 /**
  * Inline editor for an existing box's connection values. Opens under the box
@@ -650,6 +648,7 @@ export function TogglePref({
         <Text style={styles.prefSub}>{sub}</Text>
       </View>
       <Switch
+        accessibilityLabel={label}
         value={value}
         onValueChange={onValueChange}
         trackColor={{ false: t.inset, true: t.blue }}
@@ -877,6 +876,17 @@ function PrefSection({
 }
 
 function SetupBody() {
+  const reducedMotion = useReducedMotion();
+  const animateSection = () => {
+    if (!reducedMotion && Platform.OS !== 'web') {
+      LayoutAnimation.configureNext({
+        duration: 180,
+        update: { type: LayoutAnimation.Types.easeInEaseOut },
+        create: { type: LayoutAnimation.Types.easeInEaseOut, property: LayoutAnimation.Properties.opacity },
+        delete: { type: LayoutAnimation.Types.easeInEaseOut, property: LayoutAnimation.Properties.opacity },
+      });
+    }
+  };
   const [prefQuery, setPrefQuery] = useState('');
   const t = useTheme();
   const styles = useThemedStyles(makeStyles);
@@ -919,9 +929,9 @@ function SetupBody() {
     switchBox,
   } = useBoxes();
 
-  const status = useBoxOnlineStatus(boxes, { active: true, intervalMs: 10000 });
   const activeBox = boxes.find((b) => b.id === activeBoxId);
   const hapticsOn = useHapticsEnabled();
+  const animationsEnabled = usePref('animationsEnabled');
   const keepAwakeOn = useKeepAwakeEnabled();
   const keepAwakeTimeout = useKeepAwakeTimeoutMin();
   const mediaSkipSec = usePref('mediaSkipSec');
@@ -1083,6 +1093,8 @@ function SetupBody() {
   // Scan + PIN is the primary way to add a box; the manual host/port/token card
   // is a collapsed "advanced" fallback (headless / cross-subnet / non-Linux).
   const [showManual, setShowManual] = useState(false);
+  const [showAddBox, setShowAddBox] = useState(false);
+  const [boxMenuId, setBoxMenuId] = useState<string | null>(null);
   // The TV-remote block is tall — toggle, blurb, scan, IP, brand picker, MAC,
   // pair button — and someone who owns a box scrolls past all of it every time
   // they open Setup. Collapsed by default for them; open by default for someone
@@ -1170,6 +1182,9 @@ function SetupBody() {
   // Which box (if any) has its inline edit panel open. Tapping a box card
   // toggles this; only one box edits at a time.
   const [editingId, setEditingId] = useState<string | null>(null);
+  const fleetCollapsed = usePref('fleetCollapsed');
+  // Keep first-time setup visible; mounted fleet tiles poll only while expanded.
+  const fleetOpen = boxes.length === 0 || !fleetCollapsed;
 
   // Active category tab (Boxes / Preferences / Account).
   const [tab, setTab] = useState<SetupTab>('boxes');
@@ -1219,21 +1234,22 @@ function SetupBody() {
             hapticLight();
             setTab('account');
           }}
-          style={({ pressed }) => [styles.unlockRow, pressed && styles.pressed]}>
+          style={({ pressed }) => [styles.unlockRow, boxes.length > 0 && styles.unlockCompact, pressed && styles.pressed]}
+          accessibilityRole="button" accessibilityLabel="Trial status and unlock options">
           <Ionicons name="lock-open-outline" size={18} color={t.blue} />
           <View style={styles.unlockRowBody}>
             <Text style={styles.unlockRowTitle}>
-              {IS_DIRECT_BUILD
+              {boxes.length > 0 ? (entitlement.trialDaysLeft > 0 ? `${entitlement.trialDaysLeft} day${entitlement.trialDaysLeft === 1 ? '' : 's'} left in trial · Unlock` : 'Trial ended · Unlock Couchside') : IS_DIRECT_BUILD
                 ? 'Enjoying Couchside? Unlock with a license'
                 : `Enjoying Couchside? Unlock for ${price ?? '$7.99'}`}
             </Text>
-            <Text style={styles.unlockRowSub}>
+            {boxes.length === 0 && <Text style={styles.unlockRowSub}>
               {entitlement.trialDaysLeft > 0
                 ? `Trial: ${entitlement.trialDaysLeft} day${
                     entitlement.trialDaysLeft === 1 ? '' : 's'
                   } left · one-time purchase, no subscription · supports the work`
                 : 'Trial ended · one-time purchase, no subscription · supports the work'}
-            </Text>
+            </Text>}
           </View>
           <Ionicons name="chevron-forward" size={18} color={t.textDim} />
         </Pressable>
@@ -1261,11 +1277,28 @@ function SetupBody() {
         keyboardShouldPersistTaps="handled">
         {tab === 'boxes' && (
           <>
-            {/* At-a-glance live vitals + tap-to-switch + reorder/hide, moved here
-                from the old Fleet tab. Only useful with several boxes. */}
-            {boxes.length >= 2 && <FleetDashboard />}
-            {/* ---- Box management list (pair / edit / remove) ---- */}
-            <Text style={styles.sectionLabel}>{boxes.length >= 2 ? 'MANAGE BOXES' : 'YOUR FLEET'}</Text>
+            <View style={styles.fleetSection}>
+              <Pressable
+                onPress={() => {
+                  hapticSelection();
+                  animateSection();
+                  void setPref('fleetCollapsed', !fleetCollapsed);
+                }}
+                disabled={boxes.length === 0}
+                accessibilityRole="button"
+                accessibilityLabel="Your boxes"
+                accessibilityState={{ expanded: fleetOpen, disabled: boxes.length === 0 }}
+                style={styles.fleetToggle}>
+                <Ionicons name="hardware-chip-outline" size={20} color={t.textDim} />
+                <View style={styles.boxBody}>
+                  <Text style={styles.boxName}>Your boxes</Text>
+                  <Text style={styles.boxHost} numberOfLines={1}>
+                    {boxes.length === 0 ? 'Connect your first box' : `${boxes.length} ${boxes.length === 1 ? 'box' : 'boxes'} · ${boxes.find((box) => box.id === activeBoxId)?.name ?? 'No active box'}`}
+                  </Text>
+                </View>
+                {boxes.length > 0 && <Ionicons name={fleetOpen ? 'chevron-up' : 'chevron-down'} size={18} color={t.textDim} />}
+              </Pressable>
+              {fleetOpen && <View style={styles.fleetContent}>
         {boxes.length === 0 ? (
           /* The empty state is the whole funnel: measured, ~9-15 strangers
              downloaded the app in its first six days and ~0 paired a box. The
@@ -1274,26 +1307,11 @@ function SetupBody() {
              guide link inside it as the escape hatch. */
           <SetupProgress />
         ) : (
-          boxes.map((box) => {
+          <FleetDashboard onEditConnection={(box) => setEditingId(box.id)} renderManagement={(box) => {
             const isActive = box.id === activeBoxId;
             const isEditing = editingId === box.id;
             return (
-              <View key={box.id} style={styles.boxCard}>
-                <Pressable
-                  onPress={() => setEditingId(isEditing ? null : box.id)}
-                  style={styles.boxMain}>
-                  <View style={[styles.boxDot, { backgroundColor: dotColor(status[box.id], t) }]} />
-                  <View style={styles.boxBody}>
-                    <Text style={styles.boxName} numberOfLines={1}>
-                      {box.name}
-                      {isActive && <Text style={styles.activeTag}>  · active</Text>}
-                    </Text>
-                    <Text style={styles.boxHost} numberOfLines={1}>
-                      {box.host}:{box.port}
-                    </Text>
-                  </View>
-                  <Text style={styles.chevron}>{isEditing ? '✕' : 'EDIT ›'}</Text>
-                </Pressable>
+              <View>
                 {isEditing ? (
                   <BoxEditPanel
                     key={`${box.id}|${box.host}|${box.port}|${box.token}`}
@@ -1323,24 +1341,34 @@ function SetupBody() {
                           switchBox(box.id);
                         }}
                         hitSlop={8}
-                        style={styles.iconBtn}>
+                        accessibilityRole="button" accessibilityLabel={`Set ${box.name} active`}
+                        style={[styles.iconBtn, styles.activateBtn]}>
                         <Text style={[styles.iconBtnText, { color: t.blue }]}>SET ACTIVE</Text>
                       </Pressable>
                     )}
                     <Pressable
-                      onPress={() => setQrBox(box)}
-                      hitSlop={8}
-                      style={styles.iconBtn}>
-                      <Text style={[styles.iconBtnText, { color: t.textDim }]}>SHOW QR</Text>
-                    </Pressable>
-                    <Pressable
-                      onPress={() => setEditingId(box.id)}
-                      hitSlop={8}
+                      onPress={() => { setBoxMenuId(null); setEditingId(box.id); }}
+                      accessibilityRole="button" accessibilityLabel={`Edit ${box.name}`}
                       style={styles.iconBtn}>
                       <Text style={styles.iconBtnText}>EDIT</Text>
                     </Pressable>
                     <Pressable
+                      onPress={() => setBoxMenuId(boxMenuId === box.id ? null : box.id)}
+                      accessibilityRole="button" accessibilityLabel={`More options for ${box.name}`}
+                      accessibilityState={{ expanded: boxMenuId === box.id }}
+                      style={styles.iconBtn}>
+                      <Ionicons name="ellipsis-horizontal" size={20} color={t.textDim} />
+                    </Pressable>
+                    {boxMenuId === box.id && <View style={styles.boxOverflow}>
+                    <Pressable
+                      onPress={() => { setBoxMenuId(null); setQrBox(box); }}
+                      accessibilityRole="button" accessibilityLabel={`Show pairing QR for ${box.name}`}
+                      style={styles.iconBtn}>
+                      <Text style={styles.iconBtnText}>SHOW PAIRING QR</Text>
+                    </Pressable>
+                    <Pressable
                       onPress={async () => {
+                        setBoxMenuId(null);
                         const ok = await confirm({
                           title: 'Remove box',
                           message: `Remove "${box.name}"?`,
@@ -1349,16 +1377,21 @@ function SetupBody() {
                         });
                         if (ok) void removeBox(box.id);
                       }}
+                      accessibilityRole="button" accessibilityLabel={`Remove ${box.name}`}
                       hitSlop={8}
                       style={styles.iconBtn}>
                       <Text style={[styles.iconBtnText, { color: t.red }]}>REMOVE</Text>
                     </Pressable>
+                    </View>}
                   </View>
                 )}
               </View>
             );
-          })
+          }} />
         )}
+
+              </View>}
+            </View>
 
         {/* ---- TV remote without a box ---- */}
         {/* Above the box-pairing section on purpose: someone who has no gaming
@@ -1381,7 +1414,14 @@ function SetupBody() {
         {(showTvRemote ?? tvRemoteOpenByDefault) ? <DirectTvSetup /> : null}
 
         {/* ---- Add / pair ---- */}
-        <Text style={[styles.sectionLabel, { marginTop: 18 }]}>ADD / PAIR A BOX</Text>
+        <Pressable onPress={() => { animateSection(); setShowAddBox((v) => !v); }}
+          disabled={boxes.length === 0} accessibilityRole="button" accessibilityLabel="Add box"
+          accessibilityState={{ expanded: boxes.length === 0 || showAddBox, disabled: boxes.length === 0 }}
+          style={styles.advancedToggle}>
+          <Text style={styles.advancedToggleText}>＋ Add box</Text>
+          <Ionicons name={boxes.length === 0 || showAddBox ? 'chevron-up' : 'chevron-down'} size={16} color={t.textDim} />
+        </Pressable>
+        {(boxes.length === 0 || showAddBox) && <>
         {/* Scan the LAN + PIN-pair (no IP/token typing) is the primary method.
             Hidden on builds without the UDP native module — the manual card then
             carries the whole flow. */}
@@ -1391,7 +1431,7 @@ function SetupBody() {
         </View>
         {/* Manual host/port/token: collapsed fallback for headless / cross-subnet
             / non-Linux boxes that scanning can't reach. */}
-        <Pressable onPress={() => setShowManual((v) => !v)} style={styles.advancedToggle}>
+        <Pressable onPress={() => { animateSection(); setShowManual((v) => !v); }} style={styles.advancedToggle}>
           <Text style={styles.advancedToggleText}>Add by IP (advanced)</Text>
           <Ionicons name={showManual ? 'chevron-up' : 'chevron-down'} size={16} color={t.textDim} />
         </Pressable>
@@ -1485,6 +1525,7 @@ function SetupBody() {
         </View>
         </>
         ) : null}
+        </>}
           </>
         )}
 
@@ -1516,6 +1557,9 @@ function SetupBody() {
               )}
             </View>
             <PrefSection id="general" icon="options-outline" label="GENERAL" style={prefCardGroupStyle}>
+              <TogglePref label="Animations"
+                sub="Opening animation, tab transitions, and decorative motion. Your phone’s Reduce Motion setting always takes priority."
+                value={animationsEnabled} onValueChange={(v) => { void setPref('animationsEnabled', v); }} />
               <PrefFilterable
                 label="Haptic feedback"
                 sub="Vibration on taps, buttons, swipes, and actions.">
@@ -1788,6 +1832,7 @@ function SetupBody() {
                 </View>
                 <ScrollView
                   horizontal
+                  onTouchStart={blockTabSwipe}
                   showsHorizontalScrollIndicator={false}
                   contentContainerStyle={styles.packRow}>
                   {THEME_PACK_KEYS.map((k) => {
@@ -1840,6 +1885,7 @@ function SetupBody() {
                 </View>
                 <ScrollView
                   horizontal
+                  onTouchStart={blockTabSwipe}
                   showsHorizontalScrollIndicator={false}
                   contentContainerStyle={styles.packRow}>
                   {SKIN_KEYS.map((k) => {
@@ -2666,6 +2712,15 @@ const makeStyles = (t: Palette) => StyleSheet.create({
   // emptyText / emptyLink* moved with the empty state they styled, into
   // components/SetupProgress.tsx — including the two comments that record why
   // alignItems is flex-start and why flex:1 on the label is load-bearing.
+  fleetSection: {
+    backgroundColor: t.card,
+    borderColor: t.cardBorder,
+    borderWidth: 1,
+    borderRadius: 12,
+    marginBottom: 12,
+  },
+  fleetToggle: { flexDirection: 'row', alignItems: 'center', gap: 12, padding: 14, minHeight: 64 },
+  fleetContent: { paddingHorizontal: 12, paddingBottom: 4 },
   boxCard: {
     backgroundColor: t.card,
     borderColor: t.cardBorder,
@@ -2737,7 +2792,7 @@ const makeStyles = (t: Palette) => StyleSheet.create({
     rowGap: 8,
     marginTop: 10,
   },
-  iconBtn: { paddingVertical: 2 },
+  iconBtn: { paddingVertical: 10, minHeight: 44, justifyContent: 'center' },
   iconBtnText: {
     color: t.textDim,
     fontSize: 11,
@@ -2814,6 +2869,9 @@ const makeStyles = (t: Palette) => StyleSheet.create({
     borderWidth: 1,
     borderRadius: 12,
   },
+  unlockCompact: { paddingVertical: 8, borderWidth: 0, backgroundColor: t.inset },
+  boxOverflow: { width: '100%', flexDirection: 'row', justifyContent: 'flex-end', gap: 18, paddingTop: 8 },
+  activateBtn: { backgroundColor: t.inset, borderRadius: 8, paddingHorizontal: 10 },
   unlockRowBody: { flex: 1 },
   unlockRowTitle: { color: t.text, fontSize: 14, fontWeight: '800' },
   unlockRowSub: { color: t.textDim, fontSize: 11, marginTop: 2 },

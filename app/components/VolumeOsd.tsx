@@ -1,3 +1,4 @@
+import { useReducedMotion } from '@/lib/skin/motion';
 /**
  * A transient volume overlay ("OSD"). It flashes at the bottom of the screen the
  * moment Couchside runs a volume op, so the user sees the change on the phone
@@ -58,6 +59,7 @@ const LABEL: Record<VolumeDir, string> = { up: 'VOLUME', down: 'VOLUME', mute: '
 
 export default function VolumeOsd() {
   const styles = useThemedStyles(makeStyles);
+  const reducedMotion = useReducedMotion();
   const insets = useSafeAreaInsets();
   const nudge = useVolumeNudge();
   const opacity = React.useRef(new Animated.Value(0)).current;
@@ -68,13 +70,14 @@ export default function VolumeOsd() {
   React.useEffect(() => {
     if (!nudge) return;
     setShown(nudge.dir);
-    Animated.parallel([
+    if (reducedMotion) { opacity.setValue(1); lift.setValue(1); }
+    else Animated.parallel([
       Animated.timing(opacity, { toValue: 1, duration: 120, useNativeDriver: true }),
       Animated.spring(lift, { toValue: 1, useNativeDriver: true, speed: 20, bounciness: 6 }),
     ]).start();
     if (hideTimer.current) clearTimeout(hideTimer.current);
     hideTimer.current = setTimeout(() => {
-      Animated.timing(opacity, { toValue: 0, duration: 260, useNativeDriver: true }).start(
+      Animated.timing(opacity, { toValue: 0, duration: reducedMotion ? 0 : 260, useNativeDriver: true }).start(
         ({ finished }) => {
           if (finished) {
             setShown(null);
@@ -85,9 +88,10 @@ export default function VolumeOsd() {
     }, HOLD_MS);
     return () => {
       if (hideTimer.current) clearTimeout(hideTimer.current);
+      opacity.stopAnimation(); lift.stopAnimation();
     };
     // fire on every nudge, including a repeat of the same direction
-  }, [nudge, opacity, lift]);
+  }, [nudge, opacity, lift, reducedMotion]);
 
   if (shown == null) return null;
 

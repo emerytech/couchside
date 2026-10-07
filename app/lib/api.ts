@@ -5,6 +5,7 @@
 import { Buffer } from 'buffer';
 import { isPinMismatchError, isPinnedTimeoutError, pinnedRequest, type PinnedResponse } from './boxTransport.ts';
 import { raceIpFirst, ttlMemo } from './boxRoute.ts';
+import { connIsPinned } from './boxConn';
 import { isDeclaredTooLarge, isUsableBodySize } from './responseCap';
 import { ensureImageTicket, getImageTicket, mintUploadTicket } from './ticket.ts';
 import type { InstallHealth } from './installHealth.ts';
@@ -2344,7 +2345,11 @@ async function raceGet(
 ): Promise<{ res: Response; usedHost: string }> {
   return raceIpFirst({
     staggerMs: GET_RACE_STAGGER_MS,
-    probeIp: () => probeTarget(fallbackIp, settings),
+    // The pinned handshake verifies identity before sending any HTTP bytes.
+    // A separate ping on that same serial socket doubles queued traffic and
+    // can time out before an otherwise healthy status request even starts.
+    // Plaintext connections still require the explicit identity probe.
+    probeIp: () => connIsPinned(settings) ? Promise.resolve(true) : probeTarget(fallbackIp, settings),
     viaIp: async () => ({ res: await attempt(fallbackIp, settings, path, opts), usedHost: fallbackIp }),
     viaHost: async () => ({ res: await attempt(settings.host, settings, path, opts), usedHost: settings.host }),
   });
@@ -2440,6 +2445,12 @@ async function request<T>(
     // probe and send straight there.
     usedHost = resolveEffectiveHost(settings);
     res = await attempt(usedHost, settings, path, opts);
+  } else if (method !== 'GET' && fallback && connIsPinned(settings)) {
+    // TLS authenticates the destination before HTTP bytes are written. Send
+    // once to the cached IPv4 address; don't probe an unusable mDNS/IPv6 route
+    // before every control command. Never retry a possibly delivered POST.
+    usedHost = fallback;
+    res = await attempt(fallback, settings, path, opts);
   } else if (method === 'GET' && fallback) {
     // Idempotent + a cached IP known: race both addresses (IP-first, see
     // raceGet). Double-delivery is harmless for a GET, and this removes the
@@ -2907,13 +2918,22 @@ export const api = {
       .catch(() => false);
   },
 
+  /**
+   * Navigate the Steam UI to a known destination (agent >= 2.9.42).
+   *
+   * Resolves to the agent's `ok` on a 200, and THROWS on every failure — a
+   * 404 (route missing, agent too old to support search) no differently from a
+   * transient timeout/5xx. It deliberately does NOT `.catch(() => false)` any
+   * more: that collapsed "agent can't do this" and "box was briefly
+   * unreachable" into one `false`, so a single dropped Search tap hid the
+   * button for the rest of the app session on every box. The caller tells the
+   * two apart by `ApiError.status === 404` (see pad.tsx steamSearch).
+   */
   steamGoto(settings: ConnSettings, id: 'home'): Promise<boolean> {
     return request<{ ok: boolean }>(settings, '/api/steam/goto', {
       method: 'POST',
       body: { id },
-    })
-      .then((r) => !!r?.ok)
-      .catch(() => false);
+    }).then((r) => !!r?.ok);
   },
 
   steamlink(
@@ -3637,13 +3657,12 @@ export const api = {
    * Resolves false on any failure; the caller re-reads usbWake() to show the REAL
    * state rather than trusting this return.
    */
-  usbWakeArm(settings: ConnSettings, id: string, on: boolean): Promise<boolean> {
-    return request<{ ok: boolean }>(settings, '/api/usb-wake/arm', {
+  usbWakeArm(settings: ConnSettings, id: string, on: boolean): Promise<{ ok: boolean; persistent?: boolean }> {
+    return request<{ ok: boolean; persistent?: boolean }>(settings, '/api/usb-wake/arm', {
       method: 'POST',
       body: { id, on },
-    })
-      .then((r) => !!r?.ok)
-      .catch(() => false);
+      timeoutMs: 12000,
+    });
   },
 
   /**

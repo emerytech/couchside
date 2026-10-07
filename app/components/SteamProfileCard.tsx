@@ -1,3 +1,4 @@
+import { blockTabSwipe } from '@/lib/tabSwipe';
 /**
  * The owner's live Steam profile + whole-library snapshot, shown at the top of the
  * Play tab when a Steam Web API key is connected (agent >= 2.9.120). Avatar, name,
@@ -110,7 +111,7 @@ export function SteamProfileCard() {
           {lib.recent && lib.recent.length > 0 && (
             <>
               <Text style={styles.railLabel}>JUMP BACK IN</Text>
-              <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.rail}>
+              <ScrollView onTouchStart={blockTabSwipe} horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.rail}>
                 {lib.recent.map((g) => (
                   <View key={g.appid} style={styles.recentItem}>
                     <PlayArtwork source={cover(g.appid)} title={g.name} style={styles.recentArt} />
