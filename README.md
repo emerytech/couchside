@@ -10,9 +10,9 @@ The phone app and the service on your gaming box have separate version numbers. 
 
 | Component | Version | Build | Release information |
 | --- | --- | --- | --- |
-| iOS app | 2.9.74 | 243 | [Store review and rollout status](https://couchside.tv/updates/) |
-| Google Play app | 2.9.74 | 122 | [Store review and rollout status](https://couchside.tv/updates/) |
-| Android Direct app | 2.9.74 | 26 | [Download APK](https://couchside.tv/direct/) |
+| iOS app | 2.9.74 | 247 | [Store review and rollout status](https://couchside.tv/updates/) |
+| Google Play app | 2.9.74 | 123 | [Store review and rollout status](https://couchside.tv/updates/) |
+| Android Direct app | 2.9.74 | 29 | [Download APK](https://couchside.tv/direct/) |
 | Linux service (gaming box) | 2.9.129 | — | [Service release](https://github.com/emerytech/couchside/releases/latest) |
 
 Store availability depends on review and rollout. See [release notes](https://couchside.tv/updates/) for details. The service release keeps its historical `v2.9.60` tag to preserve existing updater URLs; its title and `agent-version.txt` identify the current service version. Direct downloads likewise retain their stable `couchside-direct` tag.
