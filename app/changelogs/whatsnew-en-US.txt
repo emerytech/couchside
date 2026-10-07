@@ -9,3 +9,5 @@ Wake Box now shows progress, elapsed time and connection confirmation. Ethernet 
 Custom lighting adds clearer sequence timing and real strobe effects. Updated Wake devices settings verify saves and explain when persistence is available.
 
 Update the Linux service to 2.9.129 for the matching wake and lighting improvements. Wake support depends on your network and hardware settings.
+
+This update also keeps setup guidance visible when a box is asleep, restores optional features after temporary connection failures, and improves Suspend availability after reconnecting.
