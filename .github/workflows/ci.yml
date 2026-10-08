@@ -45,6 +45,11 @@ jobs:
           python3 tests/test_usb_wake_persistence.py
           python3 tests/test_led_timing.py
 
+      - name: Controller diagnostics and recovery
+        run: |
+          python3 tests/test_controller_health.py
+          python3 tests/test_gamepad_live_capability.py
+
       - name: Unit tests (guide-hold trigger)
         run: python3 tests/test_guide_hold.py
 
