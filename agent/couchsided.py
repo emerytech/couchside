@@ -53,7 +53,7 @@ except ImportError:  # pragma: no cover
     fcntl = None
 
 APP_NAME = "couchside-agent"
-VERSION = "2.9.129"
+VERSION = "2.9.130"
 UID = os.getuid()
 XDG_RUNTIME_DIR = "/run/user/%d" % UID
 
@@ -1907,6 +1907,46 @@ def _uinput_writable():
         return os.access("/dev/uinput", os.W_OK)
     except Exception:
         return False
+
+
+_CONTROLLER_FAILURE = None
+_CONTROLLER_FAILURE_LOCK = threading.Lock()
+
+
+def _controller_creation_result(error=None):
+    global _CONTROLLER_FAILURE
+    with _CONTROLLER_FAILURE_LOCK:
+        if error is None:
+            _CONTROLLER_FAILURE = None
+        else:
+            code = getattr(error, "errno", None)
+            state = ("device_missing" if code in (errno.ENOENT, errno.ENODEV)
+                     else "access_denied" if code in (errno.EACCES, errno.EPERM)
+                     else "creation_failed")
+            _CONTROLLER_FAILURE = {"state": state, "failed_at": int(time.time())}
+
+
+def controller_health():
+    """Probe from the actual service identity, without creating input devices.
+    Opening uinput is not UI_DEV_CREATE and emits no controller/key events.
+    Only classify observed errors; never expose raw exception text or paths.
+    """
+    try:
+        fd = os.open("/dev/uinput", os.O_WRONLY | os.O_NONBLOCK)
+        os.close(fd)
+    except OSError as error:
+        code = error.errno
+        state = ("device_missing" if code in (errno.ENOENT, errno.ENODEV)
+                 else "access_denied" if code in (errno.EACCES, errno.EPERM)
+                 else "unknown")
+        return {"state": state}
+    with _CONTROLLER_FAILURE_LOCK:
+        failure = dict(_CONTROLLER_FAILURE) if _CONTROLLER_FAILURE else None
+    # A prior creation attempt can fail even though the node opens now.
+    # Keep the observed attempt until a successful creation or service restart.
+    if failure:
+        return {"state": "creation_failed", "failed_at": failure["failed_at"]}
+    return {"state": "accessible"}  # access does not prove successful creation
 
 
 def set_caps(mock):
@@ -4501,7 +4541,8 @@ def real_status():
         # SURFACES on the TV in a desktop session (gamescope shows only what Steam
         # focuses, hardware-confirmed 2026-09-15), so it is offered only there —
         # Game Mode needs the steam-registration path (Phase 7b), not yet built.
-        "caps": dict(CAPS, desktop=desktop_available(),
+        "caps": dict(CAPS, gamepad=_uinput_writable(),
+                     desktop=desktop_available(),
                      medialaunch=medialaunch_available(),
                      **live_screenstream_caps()),
         # False when the config dir isn't writable by the agent user, so the app
@@ -26031,7 +26072,11 @@ def _make_holder(entry, mock):
     if not entry.get("nopad") and entry.get("device") is None:
         try:
             entry["device"] = MockGamepad() if mock else UInputGamepad()
+            if not mock:
+                _controller_creation_result()
         except Exception as e:
+            if not mock:
+                _controller_creation_result(e)
             print("[gamepad] device create failed: %s" % e, flush=True)
             _wsend_json(entry, {"t": "err", "msg": "uinput unavailable: %s" % e})
             _wsend_op(entry, WS_OP_CLOSE)
@@ -27299,6 +27344,8 @@ class Handler(BaseHTTPRequestHandler):
                 except OSError:
                     pass
                 self._send(200, data, started)
+            elif path == "/api/controller-health":
+                self._send(200, {"state": "accessible"} if self.mock else controller_health(), started)
             elif path == "/api/units":
                 units = mock_units() if self.mock else real_units()
                 self._send(200, {"units": units}, started)
