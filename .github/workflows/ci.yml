@@ -959,7 +959,11 @@ jobs:
       #    dependency and plugin must arrive together or not at all.
       - name: Unit tests (camera is pairing-only + mic-less; demo mode unmergeable)
         run: |
-          if [ "$GITHUB_REF" = "refs/heads/build/direct-apk" ]; then
+          # PRs use refs/pull/... rather than the destination branch ref.
+          # Main-bound PRs still run the strict store policy.
+          if [ "$GITHUB_REF" = "refs/heads/build/direct-apk" ] ||
+             [ "${GITHUB_BASE_REF:-}" = "build/direct-apk" ] ||
+             [[ "$GITHUB_REF" == refs/heads/codex/direct-* ]]; then
             python3 tests/test_no_camera_in_shipping_app.py --direct
           else
             python3 tests/test_no_camera_in_shipping_app.py
