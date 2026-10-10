@@ -15,7 +15,7 @@ The phone app and the service on your gaming box have separate version numbers. 
 | Android Direct app | 2.9.75 | 30 | [Download APK](https://couchside.tv/direct/) |
 | Linux service (gaming box) | 2.9.131 | — | [Service release](https://github.com/emerytech/couchside/releases/latest) |
 
-Store availability depends on review and rollout. See [release notes](https://couchside.tv/updates/) for details. The service release keeps its historical `v2.9.60` tag to preserve existing updater URLs; its title and `agent-version.txt` identify the current service version. Direct downloads likewise retain their stable `couchside-direct` tag.
+Store availability depends on review and rollout. See [release notes](https://couchside.tv/updates/) for details. The latest signed service release is tagged `v2.9.75`; its title and `agent-version.txt` identify service version `2.9.131`. The installers and updater use the stable latest-release URL. Historical releases remain available, and Direct downloads retain their stable `couchside-direct` tag.
 
 ## See it in action
 
@@ -81,7 +81,7 @@ that binary, the corresponding source is offered at the exact shipped tag
 - **Controller handoff:** when a second phone joins a box you're already driving, it asks and you tap Pass — instead of silently stealing input.
 - **Stay current from the couch:** the app can ask the box whether a newer signed release exists and — if you opted in at the box — install it, verifying the maintainer signature first.
 - **Decky Loader, from the couch (opt-in):** install, repair or remove Decky Loader on the box, see your installed plugins with their updates, reload or remove one at a time, and install new ones from the official Decky store — all from a Decky screen in the app. It needs a one-time `couchside allow-decky on` on the box, because it lets the phone manage a root-level service; the command spells out what that means before it does anything (see **Security model**).
-- **Wake a sleeping box:** send a Wake-on-LAN magic packet from the phone, or have an **already-awake box wake a sleeping one** for you (the only route on iOS, where the OS blocks apps from broadcasting).
+- **Wake a sleeping box:** send a Wake-on-LAN magic packet directly from Android or iPhone (iOS app 2.9.75 and later, with Local Network permission). Apple's approved multicast capability enables direct iPhone broadcast; an **already-awake box can relay the wake request** as a fallback. Wake support depends on the box and network configuration.
 - **Volume, mute, and box power.** A control next to the device picker adjusts the box's own OS volume and mute (a real drag-to-set 0–100 slider on SteamOS/Bazzite). On an HDMI-CEC or RS-232 setup you can switch it to drive the TV/panel instead — and on an RS-232 panel, also switch the display's input source, blank the screen without cutting power to an OPS box, and pass factory-remote keys. The same control suspends the box and, once it is offline, wakes it back up with a Wake-on-LAN magic packet.
 
 ## Control your TV
