@@ -607,9 +607,10 @@ export function RemotePowerBar({ compact = false }: { compact?: boolean }) {
       let ok = false;
       let phoneErr: string | null = null;
 
-      // Android can broadcast immediately; do not make it wait for sleeping
-      // fleet relays. A short burst tolerates a dropped Wi-Fi broadcast.
-      if (wolAvailable && Platform.OS === 'android') {
+      // Native builds can broadcast immediately (iOS carries the approved
+      // multicast entitlement). Do not wait for sleeping fleet relays.
+      // A short burst tolerates a dropped Wi-Fi broadcast.
+      if (wolAvailable && Platform.OS !== 'web') {
         setWakeDetail('Sending wake packets from this phone…');
         for (let attempt = 0; attempt < 3 && current(); attempt++) {
           try {
@@ -649,7 +650,7 @@ export function RemotePowerBar({ compact = false }: { compact?: boolean }) {
       }
 
       if (!current()) return;
-      if (!ok && wolAvailable && Platform.OS !== 'android') {
+      if (!ok && wolAvailable && Platform.OS === 'web') {
         setWakeDetail('Sending a wake request from this phone…');
         try {
           ok = await sendWol(mac, { ip: settings.lastIp });

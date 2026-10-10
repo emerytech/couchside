@@ -16,6 +16,12 @@ Each entry now carries a `✅ DONE` / `🟡 PARTIAL` / `📋 OPEN` banner with i
 
 ## 🔨 In Progress
 
+### Security hardening — phase 1: ticket permissions (2026-10-09)
+- **priority:** P1 · **risk:** low-medium (authorization) · **affects:** Linux agent and tests · **depends_on:** existing TLS tickets.
+- **Status:** implemented locally on `codex/security-ticket-scope`; verified with a physical iPhone against an isolated server on the test box, not released or installed as its production service.
+- Preserve existing ticket URLs, response shape and bearer-authenticated uploads while enforcing image/upload scopes.
+- Regression coverage includes image loading, actual file uploads, expiry, replay rejection and concurrent single-use requests. iPhone 2.9.75 (248) rendered test covers and uploaded a byte-verified file through the native picker; Android verification and production rollout remain. Existing native image/upload HTTP ticket transport is unchanged and does not encrypt payloads.
+
 ### Game Aura — paint the strip from game artwork (Phase 1, PR `feat/game-aura-artwork`)
 - **priority:** P3 · **risk:** low (additive route + app-side sampler; no new cap, no agent image lib) ·
   **affects:** agent `POST /api/leds/aura` + the `aura` payload flag; app `lib/auraPalette` (pure sampler),
