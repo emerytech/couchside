@@ -271,24 +271,28 @@ CONFIG_SAMSUNG = None  # optional {"host","mac","token"} Samsung Tizen TV config
 # those requests. A ticket is NOT the bearer token: it grants only cover-art reads
 # for a few minutes (multi-use) or ONE file upload (single-use), never box control.
 # So even if a ticket is sniffed off the plaintext URL, the real token stays secret.
-_TICKETS = {}                 # ticket_hex -> {"exp": epoch, "once": bool}
+_TICKETS = {}                 # ticket_hex -> {"exp": epoch, "scope": "image"|"upload"}
 _TICKETS_LOCK = threading.Lock()
 _TICKET_TTL = 300             # seconds
 
 def _mint_ticket(once=False):
-    """Mint a short-lived ticket. once=True -> single-use (file upload)."""
+    """Keep the existing mint API: default=image; once=True=single-use upload."""
     t = os.urandom(16).hex()
     now = time.time()
     with _TICKETS_LOCK:
         for k in [k for k, v in _TICKETS.items() if v["exp"] < now]:
             _TICKETS.pop(k, None)  # opportunistic prune of the expired
-        _TICKETS[t] = {"exp": now + _TICKET_TTL, "once": bool(once)}
+        _TICKETS[t] = {"exp": now + _TICKET_TTL,
+                       "scope": "upload" if once else "image"}
     return t
 
-def _ticket_ok(t):
-    """True iff t is an unexpired ticket. A single-use ticket is CONSUMED here, so
-    a sniffed upload ticket cannot be replayed (the real upload already burned it)."""
-    if not t:
+def _ticket_ok(t, scope):
+    """Authorize only the endpoint's fixed scope; upload consumption is atomic.
+
+    Image tickets travel on plaintext cover requests and must never authorize a
+    write. A wrong-scope request is refused without consuming the valid ticket.
+    """
+    if not t or scope not in ("image", "upload"):
         return False
     now = time.time()
     with _TICKETS_LOCK:
@@ -296,7 +300,9 @@ def _ticket_ok(t):
         if not v or v["exp"] < now:
             _TICKETS.pop(t, None)
             return False
-        if v["once"]:
+        if v.get("scope") != scope:
+            return False
+        if scope == "upload":
             _TICKETS.pop(t, None)
         return True
 CONFIG_ROKU = None  # optional {"host","name"} Roku (ECP) TV config
@@ -27141,7 +27147,7 @@ class Handler(BaseHTTPRequestHandler):
         # is accepted for image GETs so the app never puts the real bearer token on
         # an un-pinnable <Image> request on a TLS box. Reads only -- no state-changing
         # route uses _authorized_image, and a ticket can never satisfy _authorized().
-        if ticket and _ticket_ok(ticket):
+        if ticket and _ticket_ok(ticket, "image"):
             return True
         return bool(supplied) and hmac.compare_digest(supplied, self.token)
 
@@ -28194,7 +28200,7 @@ class Handler(BaseHTTPRequestHandler):
                     tk = (parse_qs(parsed.query).get("ticket") or [""])[0]
                 except Exception:
                     tk = ""
-                if tk and _ticket_ok(tk):
+                if tk and _ticket_ok(tk, "upload"):
                     self._handle_upload(parsed, started)
                     return
 
