@@ -477,9 +477,9 @@ jobs:
 
       # TLS (P5): short-lived tickets let the un-pinnable native <Image> loader +
       # streamed uploader avoid putting the bearer token on the wire on a TLS box.
-      # The load-bearing invariants: mint is bearer-gated, a ticket authorizes only
-      # image GETs (never a control route like /api/status), and a single-use upload
-      # ticket is burned on first use so a sniffed URL can't be replayed.
+      # Mint is bearer-gated; image tickets cannot authorize uploads or controls.
+      # Upload tickets cannot read images and are consumed atomically on upload,
+      # including concurrent requests; existing app URLs and bearer auth still work.
       - name: Unit tests (TLS tickets)
         run: python3 tests/test_tls_ticket.py
 

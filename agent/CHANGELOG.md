@@ -18,6 +18,12 @@ the same thing regardless of what actually changed.
 Write for the person holding the phone, not for the commit log. They are
 deciding whether to press "Update now" on a machine across the room.
 
+## 2.9.131
+
+- Tighten permissions on short-lived transfer tickets: image tickets can only read images, and upload tickets can only authorize one file upload.
+- Keep existing apps, pairing credentials, image loading and file-upload interfaces compatible.
+- Includes 2.9.130 controller diagnostics and automatic refresh of virtual-controller access after recovery.
+
 ## 2.9.130
 
 - Refresh virtual-controller access in status responses so a startup permission failure does not remain cached after recovery.
