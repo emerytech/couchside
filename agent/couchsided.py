@@ -53,7 +53,7 @@ except ImportError:  # pragma: no cover
     fcntl = None
 
 APP_NAME = "couchside-agent"
-VERSION = "2.9.129"
+VERSION = "2.9.131"
 UID = os.getuid()
 XDG_RUNTIME_DIR = "/run/user/%d" % UID
 
@@ -271,24 +271,28 @@ CONFIG_SAMSUNG = None  # optional {"host","mac","token"} Samsung Tizen TV config
 # those requests. A ticket is NOT the bearer token: it grants only cover-art reads
 # for a few minutes (multi-use) or ONE file upload (single-use), never box control.
 # So even if a ticket is sniffed off the plaintext URL, the real token stays secret.
-_TICKETS = {}                 # ticket_hex -> {"exp": epoch, "once": bool}
+_TICKETS = {}                 # ticket_hex -> {"exp": epoch, "scope": "image"|"upload"}
 _TICKETS_LOCK = threading.Lock()
 _TICKET_TTL = 300             # seconds
 
 def _mint_ticket(once=False):
-    """Mint a short-lived ticket. once=True -> single-use (file upload)."""
+    """Keep the existing mint API: default=image; once=True=single-use upload."""
     t = os.urandom(16).hex()
     now = time.time()
     with _TICKETS_LOCK:
         for k in [k for k, v in _TICKETS.items() if v["exp"] < now]:
             _TICKETS.pop(k, None)  # opportunistic prune of the expired
-        _TICKETS[t] = {"exp": now + _TICKET_TTL, "once": bool(once)}
+        _TICKETS[t] = {"exp": now + _TICKET_TTL,
+                       "scope": "upload" if once else "image"}
     return t
 
-def _ticket_ok(t):
-    """True iff t is an unexpired ticket. A single-use ticket is CONSUMED here, so
-    a sniffed upload ticket cannot be replayed (the real upload already burned it)."""
-    if not t:
+def _ticket_ok(t, scope):
+    """Authorize only the endpoint's fixed scope; upload consumption is atomic.
+
+    Image tickets travel on plaintext cover requests and must never authorize a
+    write. A wrong-scope request is refused without consuming the valid ticket.
+    """
+    if not t or scope not in ("image", "upload"):
         return False
     now = time.time()
     with _TICKETS_LOCK:
@@ -296,7 +300,9 @@ def _ticket_ok(t):
         if not v or v["exp"] < now:
             _TICKETS.pop(t, None)
             return False
-        if v["once"]:
+        if v.get("scope") != scope:
+            return False
+        if scope == "upload":
             _TICKETS.pop(t, None)
         return True
 CONFIG_ROKU = None  # optional {"host","name"} Roku (ECP) TV config
@@ -1907,6 +1913,46 @@ def _uinput_writable():
         return os.access("/dev/uinput", os.W_OK)
     except Exception:
         return False
+
+
+_CONTROLLER_FAILURE = None
+_CONTROLLER_FAILURE_LOCK = threading.Lock()
+
+
+def _controller_creation_result(error=None):
+    global _CONTROLLER_FAILURE
+    with _CONTROLLER_FAILURE_LOCK:
+        if error is None:
+            _CONTROLLER_FAILURE = None
+        else:
+            code = getattr(error, "errno", None)
+            state = ("device_missing" if code in (errno.ENOENT, errno.ENODEV)
+                     else "access_denied" if code in (errno.EACCES, errno.EPERM)
+                     else "creation_failed")
+            _CONTROLLER_FAILURE = {"state": state, "failed_at": int(time.time())}
+
+
+def controller_health():
+    """Probe from the actual service identity, without creating input devices.
+    Opening uinput is not UI_DEV_CREATE and emits no controller/key events.
+    Only classify observed errors; never expose raw exception text or paths.
+    """
+    try:
+        fd = os.open("/dev/uinput", os.O_WRONLY | os.O_NONBLOCK)
+        os.close(fd)
+    except OSError as error:
+        code = error.errno
+        state = ("device_missing" if code in (errno.ENOENT, errno.ENODEV)
+                 else "access_denied" if code in (errno.EACCES, errno.EPERM)
+                 else "unknown")
+        return {"state": state}
+    with _CONTROLLER_FAILURE_LOCK:
+        failure = dict(_CONTROLLER_FAILURE) if _CONTROLLER_FAILURE else None
+    # A prior creation attempt can fail even though the node opens now.
+    # Keep the observed attempt until a successful creation or service restart.
+    if failure:
+        return {"state": "creation_failed", "failed_at": failure["failed_at"]}
+    return {"state": "accessible"}  # access does not prove successful creation
 
 
 def set_caps(mock):
@@ -4501,7 +4547,8 @@ def real_status():
         # SURFACES on the TV in a desktop session (gamescope shows only what Steam
         # focuses, hardware-confirmed 2026-09-15), so it is offered only there —
         # Game Mode needs the steam-registration path (Phase 7b), not yet built.
-        "caps": dict(CAPS, desktop=desktop_available(),
+        "caps": dict(CAPS, gamepad=_uinput_writable(),
+                     desktop=desktop_available(),
                      medialaunch=medialaunch_available(),
                      **live_screenstream_caps()),
         # False when the config dir isn't writable by the agent user, so the app
@@ -26031,7 +26078,11 @@ def _make_holder(entry, mock):
     if not entry.get("nopad") and entry.get("device") is None:
         try:
             entry["device"] = MockGamepad() if mock else UInputGamepad()
+            if not mock:
+                _controller_creation_result()
         except Exception as e:
+            if not mock:
+                _controller_creation_result(e)
             print("[gamepad] device create failed: %s" % e, flush=True)
             _wsend_json(entry, {"t": "err", "msg": "uinput unavailable: %s" % e})
             _wsend_op(entry, WS_OP_CLOSE)
@@ -27096,7 +27147,7 @@ class Handler(BaseHTTPRequestHandler):
         # is accepted for image GETs so the app never puts the real bearer token on
         # an un-pinnable <Image> request on a TLS box. Reads only -- no state-changing
         # route uses _authorized_image, and a ticket can never satisfy _authorized().
-        if ticket and _ticket_ok(ticket):
+        if ticket and _ticket_ok(ticket, "image"):
             return True
         return bool(supplied) and hmac.compare_digest(supplied, self.token)
 
@@ -27299,6 +27350,8 @@ class Handler(BaseHTTPRequestHandler):
                 except OSError:
                     pass
                 self._send(200, data, started)
+            elif path == "/api/controller-health":
+                self._send(200, {"state": "accessible"} if self.mock else controller_health(), started)
             elif path == "/api/units":
                 units = mock_units() if self.mock else real_units()
                 self._send(200, {"units": units}, started)
@@ -28147,7 +28200,7 @@ class Handler(BaseHTTPRequestHandler):
                     tk = (parse_qs(parsed.query).get("ticket") or [""])[0]
                 except Exception:
                     tk = ""
-                if tk and _ticket_ok(tk):
+                if tk and _ticket_ok(tk, "upload"):
                     self._handle_upload(parsed, started)
                     return
 

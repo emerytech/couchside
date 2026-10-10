@@ -1,13 +1,7 @@
-Welcome to a smoother Couchside.
+Wake your gaming box directly from your iPhone.
 
-A new welcome guide explains the project and helps you pair your first box, with optional Steam, IsThereAnyDeal and Decky setup guidance.
+Couchside now uses Apple's approved local-network multicast capability to send Wake-on-LAN packets immediately, before trying another box as a relay. Wake progress and connection confirmation remain visible, and relay fallback is still available.
 
-Your Boxes screen combines live vitals and management in one card. Refined animations respect your Preferences and Reduce Motion setting, and swipe navigation avoids sliders and other touch controls.
+Wake support depends on your network and your gaming box's hardware settings. Allow Local Network access when prompted.
 
-Wake Box now shows progress, elapsed time and connection confirmation. Ethernet wake detection and faster relay handling improve waking supported machines.
-
-Custom lighting adds clearer sequence timing and real strobe effects. Updated Wake devices settings verify saves and explain when persistence is available.
-
-Update the Linux service to 2.9.129 for the matching wake and lighting improvements. Wake support depends on your network and hardware settings.
-
-This update also keeps setup guidance visible when a box is asleep, restores optional features after temporary connection failures, and improves Suspend availability after reconnecting.
+Linux service 2.9.131 also tightens permissions for short-lived image and file-upload tickets while keeping existing apps compatible. Update the service from Couchside to receive the security improvement.

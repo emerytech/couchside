@@ -18,6 +18,18 @@ the same thing regardless of what actually changed.
 Write for the person holding the phone, not for the commit log. They are
 deciding whether to press "Update now" on a machine across the room.
 
+## 2.9.131
+
+- Tighten permissions on short-lived transfer tickets: image tickets can only read images, and upload tickets can only authorize one file upload.
+- Keep existing apps, pairing credentials, image loading and file-upload interfaces compatible.
+- Includes 2.9.130 controller diagnostics and automatic refresh of virtual-controller access after recovery.
+
+## 2.9.130
+
+- Refresh virtual-controller access in status responses so a startup permission failure does not remain cached after recovery.
+- Add authenticated controller diagnostics distinguishing a missing input device, denied access, and a failed controller-creation attempt. Successful creation clears the recorded failure.
+- Diagnostics do not create devices, change permissions, or alter input timing. Decky uses these details to offer targeted help instead of a generic reinstall message.
+
 ## 2.9.129
 
 - Wake Box now uses the connected Ethernet adapter's wake address even when Wi-Fi carries other traffic. This improves waking machines connected by both Ethernet and Wi-Fi.

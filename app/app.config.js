@@ -42,7 +42,7 @@ module.exports = ({ config }) => {
     // app's sequence. The `direct` EAS profile sets autoIncrement:false, so this
     // fixed value is authoritative; bump it by hand when cutting a new direct APK
     // (Android refuses to install over an equal-or-lower versionCode).
-    versionCode: 29,
+    versionCode: 30,
     adaptiveIcon: {
       ...(config.android.adaptiveIcon || {}),
       foregroundImage: './assets/images/android-icon-direct-foreground.png',
