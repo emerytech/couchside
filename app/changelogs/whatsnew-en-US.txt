@@ -1,7 +1,7 @@
 Wake your gaming box directly from your iPhone.
 
-Couchside now uses Apple's approved local-network multicast capability to send Wake-on-LAN packets immediately, before trying another box as a relay. Wake progress and connection confirmation remain visible, and relay fallback is still available.
+Couchside uses Apple's approved local-network multicast capability to send Wake-on-LAN packets immediately, with visible progress and relay fallback. Wake support depends on your network and hardware settings; allow Local Network access when prompted.
 
-Wake support depends on your network and your gaming box's hardware settings. Allow Local Network access when prompted.
+Couch Mode now clearly separates TV-control warnings from Game Mode readiness. When you're using a handheld's built-in screen, it explains that audio stays on the box instead of reporting an audio failure.
 
-Linux service 2.9.131 also tightens permissions for short-lived image and file-upload tickets while keeping existing apps compatible. Update the service from Couchside to receive the security improvement.
+Update the Linux service to 2.9.133 for secure-connection responsiveness, safer file-upload handling, and a clearer explanation when automatic TV input switching is unavailable.
