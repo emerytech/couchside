@@ -39,10 +39,15 @@ def check(name, got, want):
         FAILURES.append(name)
 
 
-def _run(*, tv_backend, external, switch_ok, gamescope_up, sink, output="DP-1"):
+def _run(*, tv_backend, external, switch_ok, gamescope_up, sink, output="DP-1",
+         tv_results=None):
     """Stub the environment primitives, run the real ceremony, return the
     terminal job snapshot."""
-    cs.tv_send = lambda op, hdr: ({"ok": True} if tv_backend else None)
+    def tv_send(op, hdr):
+        if tv_results is not None and op in tv_results:
+            return tv_results[op]
+        return {"ok": True} if tv_backend else None
+    cs.tv_send = tv_send
     cs._connected_outputs = lambda: (
         [{"name": "DP-1", "internal": False}] if external
         else [{"name": "eDP-1", "internal": True}])
@@ -136,6 +141,35 @@ def test_internal_only():
     check("ceremony done", j["state"], "done")
 
 
+def test_tv_power_without_automatic_input():
+    print("paired TV can power on but cannot select the box input")
+    j = _run(tv_backend=True, external=True, switch_ok=True,
+             gamescope_up=True, sink="hdmi", tv_results={"source_box": None})
+    check("TV power still succeeds", _stage(j, "tv_power_on")["state"], "ok")
+    check("unsupported automatic input is skipped", _stage(j, "tv_input")["state"],
+          "skipped")
+    check("input reason describes the unsupported operation",
+          _stage(j, "tv_input").get("reason"),
+          "automatic TV input switching is unavailable")
+    check("Game Mode still completes", j["state"], "done")
+    check("audio still routes", _stage(j, "audio")["state"], "ok")
+
+
+def test_tv_power_failure_on_internal_screen():
+    print("TV certificate failure does not make built-in audio a failure")
+    error = "SSLError: [SSL: SSLV3_ALERT_CERTIFICATE_UNKNOWN] certificate unknown"
+    j = _run(tv_backend=True, external=False, switch_ok=True,
+             gamescope_up=True, sink=None, output="",
+             tv_results={"power_on": {"ok": False, "stderr": error},
+                         "source_box": None})
+    check("TV failure remains visible", _stage(j, "tv_power_on")["state"], "failed")
+    check("TV diagnostic is preserved", _stage(j, "tv_power_on").get("reason"), error)
+    check("built-in display is skipped", _stage(j, "output")["state"], "skipped")
+    check("built-in audio is skipped, not failed", _stage(j, "audio")["state"], "skipped")
+    check("verified Game Mode remains successful", j["state"], "done")
+    check("legacy result stays successful", j["ok"], True)
+
+
 def test_start_is_immediate_and_joins():
     print("start returns immediately; a second start joins")
     # slow the switch so the first job is still running when we call again
@@ -163,7 +197,9 @@ def test_start_is_immediate_and_joins():
 if __name__ == "__main__":
     for fn in (test_happy, test_no_tv_backend, test_audio_sink_missing_bug_b,
                test_gamescope_never_up_bug_a, test_switch_tool_failed,
-               test_internal_only, test_start_is_immediate_and_joins):
+               test_internal_only, test_tv_power_without_automatic_input,
+               test_tv_power_failure_on_internal_screen,
+               test_start_is_immediate_and_joins):
         fn()
     print()
     if FAILURES:
