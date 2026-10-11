@@ -14,6 +14,7 @@ import { ActivityIndicator, Modal, Pressable, StyleSheet, Text, View } from 'rea
 
 import { usePoll } from '@/hooks/usePoll';
 import { api, CeremonyStage, CeremonyStatus, ConnSettings, Displays, hostKey } from '@/lib/api';
+import { couchModeSummary } from '@/lib/couchModeSummary';
 import { hapticError, hapticLight, hapticSuccess } from '@/lib/haptics';
 import { mono, Palette, useTheme, useThemedStyles } from '@/lib/theme';
 
@@ -153,7 +154,7 @@ export function CouchModeSheet({
             <>
               <View style={styles.armedRow}>
                 <Ionicons name="game-controller" size={18} color={t.green} />
-                <Text style={styles.armedText}>Gaming on the TV</Text>
+                <Text style={styles.armedText}>Game Mode is active</Text>
               </View>
               <Pressable
                 disabled={busy}
@@ -272,10 +273,10 @@ function CeremonyView({
   // `stages` may be absent on a partial/mid-restart job body; default to [] so the
   // .some/.find/.map below never throw and kill the sheet.
   const stages = Array.isArray(job.stages) ? job.stages : [];
-  // A completed ceremony where a non-fatal stage (audio) failed -> amber note.
+  // Any optional stage failure gets an amber note naming the affected stages.
   const softFail = job.state === 'done' && stages.some(
     (s) => s.state === 'failed' && !s.fatal);
-  const fatalStage = stages.find((s) => s.state === 'failed' && s.fatal);
+  const summary = couchModeSummary(job);
 
   // Show the per-stage breakdown ONLY when something went wrong.
   //
@@ -302,7 +303,7 @@ function CeremonyView({
       {running && (
         <View style={styles.simpleState}>
           <ActivityIndicator size="large" color={t.blue} />
-          <Text style={styles.summaryRunning}>Flinging to the TV…</Text>
+          <Text style={styles.summaryRunning}>{summary}</Text>
         </View>
       )}
       {job.state === 'done' && !softFail && (
@@ -311,16 +312,16 @@ function CeremonyView({
         </View>
       )}
       {job.state === 'done' && !softFail && (
-        <Text style={[styles.summary, { color: t.green }]}>On the TV.</Text>
+        <Text style={[styles.summary, { color: t.green }]}>{summary}</Text>
       )}
       {softFail && (
         <Text style={[styles.summary, { color: t.amber }]}>
-          On the TV — but the sound didn&apos;t move. Check the audio row.
+          {summary}
         </Text>
       )}
       {failed && (
         <Text style={[styles.summary, { color: t.red }]}>
-          Couldn&apos;t reach Game Mode{fatalStage?.reason ? ` — ${fatalStage.reason}` : ''}.
+          {summary}
         </Text>
       )}
 
