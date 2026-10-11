@@ -1,0 +1,12 @@
+plugins {
+  id 'org.jetbrains.kotlin.jvm' version '2.1.20'
+  id 'application'
+}
+repositories { mavenCentral() }
+kotlin { jvmToolchain(17) }
+sourceSets.main.kotlin {
+  srcDirs '.', '../../app/modules/couchside-file-transfer/android/src/main/java/expo/modules/couchsidefiletransfer'
+  exclude 'CouchsideFileTransferModule.kt', 'build/**'
+}
+dependencies { implementation 'com.squareup.okhttp3:okhttp:4.9.2' }
+application { mainClass = 'expo.modules.couchsidefiletransfer.UploadHarnessKt' }

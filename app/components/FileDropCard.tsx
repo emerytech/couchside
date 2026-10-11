@@ -3,7 +3,7 @@
  *
  * Pick any file on the phone and stream it to the box's drop dir
  * (~/Downloads/Couchside) via POST /api/upload. The bytes go straight from disk
- * to the wire (expo-file-system upload task), so a multi-GB game/video is fine,
+ * to the wire (pinned HTTPS for secure pairings), so a multi-GB game/video is fine,
  * and progress is shown live.
  *
  * Probe-and-appear: the card exists ONLY when the box explicitly reports the
@@ -17,6 +17,7 @@ import { useCallback, useEffect, useState } from 'react';
 import { Pressable, StyleSheet, Text, View } from 'react-native';
 
 import { api } from '@/lib/api';
+import { needsSecureUpload } from '@/lib/fileUpload';
 import { hapticLight, hapticSuccess } from '@/lib/haptics';
 import { useSettings } from '@/lib/SettingsContext';
 import { mono, useThemedStyles } from '@/lib/theme';
@@ -114,6 +115,12 @@ export function FileDropCard() {
         <Ionicons name="cloud-upload-outline" size={16} color={styles.iconColor.color} />
         <Text style={styles.title}>Send a file to your box</Text>
       </View>
+
+      <Text style={styles.hint}>
+        {needsSecureUpload(settings)
+          ? 'Files are encrypted in transit to your paired box.'
+          : 'This box uses an unencrypted connection. Pair securely for encrypted file transfers.'}
+      </Text>
 
       {phase === 'done' ? (
         // Size included on purpose: a LAN drop is usually instant, so "✓ Sent"

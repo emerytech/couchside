@@ -1,0 +1,33 @@
+name: Native upload security
+on:
+  pull_request:
+  push:
+    branches: [main, build/direct-apk]
+permissions:
+  contents: read
+
+jobs:
+  android-transport:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-java@v5
+        with:
+          distribution: temurin
+          java-version: '17'
+      - uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: '8.13'
+      - name: Compile production OkHttp uploader and test harness
+        run: gradle -p tests/native-upload installDist --console=plain
+      - name: Verify Android TLS uploads against the agent
+        run: python3 tests/test_native_upload.py --client tests/native-upload/build/install/couchside-native-upload-tests/bin/couchside-native-upload-tests
+
+  apple-transport:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v7
+      - name: Compile production URLSession uploader and test harness
+        run: swiftc app/modules/couchside-file-transfer/ios/PinnedUpload.swift tests/native-upload/main.swift -o "$RUNNER_TEMP/upload-test"
+      - name: Verify Apple TLS uploads against the agent
+        run: python3 tests/test_native_upload.py --client "$RUNNER_TEMP/upload-test"

@@ -8,6 +8,7 @@ import { raceIpFirst, ttlMemo } from './boxRoute.ts';
 import { connIsPinned } from './boxConn';
 import { isDeclaredTooLarge, isUsableBodySize } from './responseCap';
 import { ensureImageTicket, getImageTicket, mintUploadTicket } from './ticket.ts';
+import { sendFile } from './fileUpload.ts';
 import type { InstallHealth } from './installHealth.ts';
 import { Settings } from './settings';
 
@@ -2003,7 +2004,7 @@ export type RevealResult = { opened: boolean; path?: string; reason?: string };
 /**
  * Upload a local file to the box's drop dir (POST /api/upload, agent >= 2.9.54).
  *
- * Streams the file straight from disk via expo-file-system's upload task — the
+ * Streams from disk via pinned native HTTPS (legacy HTTP uses Expo) — the
  * bytes never pass through JS memory, so a multi-GB game is fine — and reports
  * progress as a 0..1 fraction. `name` is sent as a query param; the agent
  * REJECTS anything that isn't a bare, contained filename, so pass a basename.
@@ -2017,34 +2018,27 @@ export async function uploadFile(
   name: string,
   onProgress?: (fraction: number) => void,
 ): Promise<UploadResult> {
-  const { File, UploadType } = await import('expo-file-system');
   const host = resolveEffectiveHost(settings);
-  let url = `${baseUrl({ host, port: settings.port })}/api/upload?name=${encodeURIComponent(name)}`;
-  let headers: Record<string, string> = { Authorization: `Bearer ${settings.token}` };
-  // Secure box: the native streamed uploader can't pin, so keep the token off the
-  // wire with a SINGLE-USE ticket (minted over the pinned channel). The file bytes
-  // still ride plaintext http (documented residual), but the token does not.
-  // FAIL CLOSED: if the mint fails (a pin mismatch, or the pool's connect cooldown
-  // after a transient failure), we must NOT fall back to putting the bearer token
-  // in a cleartext header — that is exactly the leak KI-096 is about. Better one
-  // failed upload the user can retry than a token on the wire.
-  if (settings.secure && settings.pinModulus && settings.tlsPort) {
-    const t = await mintUploadTicket(settings, host);
-    if (!t) {
-      throw new ApiError('unreachable', 'Could not secure the upload — try again');
-    }
-    url = `http://${host}:${settings.port}/api/upload?name=${encodeURIComponent(name)}&ticket=${encodeURIComponent(t)}`;
-    headers = {};
-  }
-  const task = new File(fileUri).createUploadTask(url, {
-    httpMethod: 'POST',
-    uploadType: UploadType.BINARY_CONTENT,
-    headers,
-    onProgress: ({ bytesSent, totalBytes }: { bytesSent: number; totalBytes: number }) => {
-      if (onProgress && totalBytes > 0) onProgress(bytesSent / totalBytes);
+  const res = await sendFile({ ...settings, host }, fileUri, name, {
+    mintTicket: () => mintUploadTicket(settings, host),
+    secure: async (options, progress) => {
+      const { uploadPinnedFile } = await import('./fileUploadNative');
+      return uploadPinnedFile(options, progress);
     },
-  });
-  const res = await task.uploadAsync();
+    legacy: async (url, uri, token, progress) => {
+      const { File, UploadType } = await import('expo-file-system');
+      const result = await new File(uri).createUploadTask(url, {
+        httpMethod: 'POST',
+        uploadType: UploadType.BINARY_CONTENT,
+        headers: { Authorization: `Bearer ${token}` },
+        onProgress: ({ bytesSent, totalBytes }: { bytesSent: number; totalBytes: number }) => {
+          if (totalBytes > 0) progress?.(bytesSent / totalBytes);
+        },
+      }).uploadAsync();
+      if (!result) throw new ApiError('unreachable', 'Upload did not complete — try again');
+      return result;
+    },
+  }, onProgress);
   if (!res || res.status < 200 || res.status >= 300) {
     throw new ApiError('http', `Upload failed (HTTP ${res?.status ?? '?'})`, res?.status);
   }

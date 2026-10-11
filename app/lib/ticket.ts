@@ -1,12 +1,15 @@
 /**
- * Short-lived TLS tickets for the un-pinnable native loaders (TLS P5).
+ * Short-lived scoped authorization for native image loaders and file uploads.
  *
  * The app pins its own socket for the API/WS, but the platform <Image> loader
- * (cover art) and the streamed file uploader cannot pin a self-signed cert. So on
+ * (cover art) cannot pin a self-signed cert. So on
  * a `secure` box the app mints a ticket over the ALREADY-PINNED channel (agent
  * POST /api/ticket) and passes it as ?ticket= on those requests — the real bearer
  * token never rides those cleartext URLs. A ticket grants only cover reads
  * (multi-use, short TTL) or one upload (single-use); it can't drive the box.
+ * File uploads now use a dedicated pinned HTTPS native module as well: their
+ * tickets retain least authority, and their payloads are encrypted. The image
+ * loader remains a separate HTTP path; a ticket alone is not encryption.
  *
  * Plaintext boxes keep ?token= (there is no TLS to protect anyway). Imports only
  * the fast-glob-safe boxTransport boundary — no native package at module load.
