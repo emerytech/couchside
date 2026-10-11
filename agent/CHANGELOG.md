@@ -18,6 +18,12 @@ the same thing regardless of what actually changed.
 Write for the person holding the phone, not for the commit log. They are
 deciding whether to press "Update now" on a machine across the room.
 
+## 2.9.133
+
+- Couch Mode now explains when automatic TV input switching is unavailable, without implying that a paired TV has no working controls. TV power, session switching, display and audio behavior are unchanged.
+- Includes 2.9.132 secure-connection responsiveness and private, atomic file uploads, plus the earlier transfer-ticket permission and controller-diagnostic improvements.
+- This is an agent update; no phone app update is required for the clearer stage explanation.
+
 ## 2.9.132
 
 - Keep secure connections responsive when another device opens a TLS connection without finishing it. Incomplete handshakes now have a short deadline within the existing connection limit.

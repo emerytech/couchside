@@ -53,7 +53,7 @@ except ImportError:  # pragma: no cover
     fcntl = None
 
 APP_NAME = "couchside-agent"
-VERSION = "2.9.132"
+VERSION = "2.9.133"
 UID = os.getuid()
 XDG_RUNTIME_DIR = "/run/user/%d" % UID
 
@@ -10323,7 +10323,7 @@ def _couch_do_tv_power():
 def _couch_do_tv_input():
     r = tv_send("source_box", False)
     return r if r is not None else {"skipped": True,
-                                    "reason": "no TV control backend"}
+                                    "reason": "automatic TV input switching is unavailable"}
 
 
 def _couch_verify_gamescope():
