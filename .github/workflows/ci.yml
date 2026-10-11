@@ -467,6 +467,11 @@ jobs:
       - name: Unit tests (TLS reachability smoke)
         run: python3 tests/test_tls_smoke.py
 
+      # Handshakes must stay off the accept loop and inside the worker cap.
+      # Idle/malformed peers expire without blocking other HTTPS/WSS clients.
+      - name: Unit tests (TLS handshake isolation)
+        run: python3 tests/test_tls_handshake.py
+
       # TLS (P2): availability is advertised on the three pre-auth surfaces a
       # TLS-aware app can reach (GET /api/ping, the UDP discovery reply, the
       # pairing QR). The load-bearing assertion is the additive control — when TLS

@@ -20,9 +20,14 @@ import http.client
 import json
 import importlib.util
 import os
+import socket
+import stat
 import tempfile
 import threading
+from concurrent.futures import ThreadPoolExecutor
+from contextlib import contextmanager
 from http.server import ThreadingHTTPServer
+from unittest.mock import patch
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 AGENT = os.path.join(HERE, "..", "agent", "couchsided.py")
@@ -68,11 +73,170 @@ def _post(port, path, body=b"", token=TOKEN):
     return resp.status, data
 
 
+@contextmanager
+def isolated_upload_server():
+    """Real HTTP handlers, synthetic credentials, disposable filesystem only."""
+    with tempfile.TemporaryDirectory(prefix="couchdrop_regression_") as root:
+        drop = os.path.join(root, "drop")
+        with patch.dict(os.environ, {"COUCHSIDE_DROP_DIR": drop}), \
+                patch.object(cs.Handler, "token", TOKEN), \
+                patch.object(cs.Handler, "token_file", None):
+            srv = ThreadingHTTPServer(("127.0.0.1", 0), cs.Handler)
+            thread = threading.Thread(target=srv.serve_forever, daemon=True)
+            thread.start()
+            try:
+                os.mkdir(drop)
+                yield srv.server_address[1], drop, root
+            finally:
+                srv.shutdown()
+                srv.server_close()
+                thread.join(timeout=5)
+
+
+def test_owned_staging_and_overwrite():
+    print("upload: existing .part paths are never opened or removed")
+    with isolated_upload_server() as (port, drop, root):
+        target = os.path.join(root, "outside.txt")
+        with open(target, "wb") as f:
+            f.write(b"keep outside")
+        stage = os.path.join(drop, "save.bin.part")
+        os.symlink(target, stage)
+        status, data = _post(port, "/api/upload?name=save.bin", b"first")
+        check(status == 200, "upload ignores attacker-chosen .part symlink")
+        check(open(target, "rb").read() == b"keep outside", "outside target unchanged")
+        check(os.path.islink(stage), "upload never removes another file's symlink")
+        if os.path.lexists(stage):
+            os.unlink(stage)
+        with open(stage, "wb") as f:
+            f.write(b"unrelated partial")
+        status, data = _post(port, "/api/upload?name=save.bin", b"replacement")
+        check(status == 200, "same-name overwrite still succeeds")
+        check(os.path.exists(stage) and open(stage, "rb").read() == b"unrelated partial",
+              "unrelated partial unchanged")
+        check(open(os.path.join(drop, "save.bin"), "rb").read() == b"replacement",
+              "destination contains the complete replacement")
+        check(json.loads(data) == {"ok": True, "name": "save.bin", "bytes": 11,
+                                  "path": os.path.realpath(os.path.join(drop, "save.bin"))},
+              "successful response contract unchanged")
+        check(sorted(os.listdir(drop)) == ["save.bin", "save.bin.part"],
+              "no owned staging files left behind")
+        check(stat.S_IMODE(os.stat(os.path.join(drop, "save.bin")).st_mode) == 0o600,
+              "uploaded file is readable and writable only by its owner")
+
+
+def test_destination_symlinks():
+    print("upload: reject existing destination symlinks, contain a late swap")
+    with isolated_upload_server() as (port, drop, root):
+        for label, target in (("outside", os.path.join(root, "outside.txt")),
+                              ("inside", os.path.join(drop, "inside.txt"))):
+            with open(target, "wb") as f:
+                f.write(b"original")
+            dest = os.path.join(drop, label + ".bin")
+            os.symlink(target, dest)
+            status, _ = _post(port, "/api/upload?name=" + label + ".bin", b"changed")
+            check(status == 400, label + " destination symlink rejected")
+            check(open(target, "rb").read() == b"original", label + " target preserved")
+            check(os.path.islink(dest), label + " rejected link preserved")
+
+        # Swap the destination after validation but before commit: replacement
+        # must replace the link itself, never follow it to the outside file.
+        late = os.path.join(drop, "late.bin")
+        real_replace = os.replace
+
+        def swap_then_replace(src, dest):
+            os.symlink(os.path.join(root, "outside.txt"), dest)
+            return real_replace(src, dest)
+
+        with patch.object(cs.os, "replace", swap_then_replace):
+            status, _ = _post(port, "/api/upload?name=late.bin", b"safe")
+        check(status == 200 and not os.path.islink(late), "late link replaced as an entry")
+        check(open(os.path.join(root, "outside.txt"), "rb").read() == b"original",
+              "late link target never written")
+
+
+def test_concurrent_same_name():
+    print("upload: concurrent same-name requests commit complete independent files")
+    with isolated_upload_server() as (port, drop, root):
+        first_ready = threading.Event()
+        release_first = threading.Event()
+        real_replace = os.replace
+
+        def ordered_replace(src, dest):
+            if not first_ready.is_set():
+                first_ready.set()
+                if not release_first.wait(5):
+                    raise OSError("test timed out waiting for second upload")
+            return real_replace(src, dest)
+
+        with patch.object(cs.os, "replace", ordered_replace), ThreadPoolExecutor(1) as pool:
+            first = pool.submit(_post, port, "/api/upload?name=shared.bin", b"A" * 4096)
+            try:
+                check(first_ready.wait(5), "first request fully staged before second begins")
+                second_status, _ = _post(port, "/api/upload?name=shared.bin", b"B" * 8192)
+                check(second_status == 200, "second request commits successfully")
+                check(open(os.path.join(drop, "shared.bin"), "rb").read() == b"B" * 8192,
+                      "second payload published whole")
+            finally:
+                release_first.set()
+            first_status, _ = first.result(timeout=5)
+        check(first_status == 200, "first request also commits successfully")
+        check(open(os.path.join(drop, "shared.bin"), "rb").read() == b"A" * 4096,
+              "last completed request wins without mixed bytes")
+        check(os.listdir(drop) == ["shared.bin"], "concurrent staging fully cleaned")
+
+
+def _post_declared(port, body, length):
+    """Send a truncated body or rejected header through an actual TCP socket."""
+    conn = http.client.HTTPConnection("127.0.0.1", port, timeout=5)
+    try:
+        conn.putrequest("POST", "/api/upload?name=keep.bin")
+        conn.putheader("Authorization", "Bearer " + TOKEN)
+        conn.putheader("Content-Length", str(length))
+        conn.endheaders(body)
+        conn.sock.shutdown(socket.SHUT_WR)
+        resp = conn.getresponse()
+        resp.read()
+        return resp.status
+    finally:
+        conn.close()
+
+
+def test_upload_failures():
+    print("upload: failed requests preserve existing files and remove only owned staging")
+    with isolated_upload_server() as (port, drop, root):
+        dest = os.path.join(drop, "keep.bin")
+        with open(dest, "wb") as f:
+            f.write(b"keep me")
+        check(_post_declared(port, b"short", 20) == 400, "interrupted upload rejected")
+        check(_post_declared(port, b"", 0) == 411, "missing length rejected")
+        check(_post_declared(port, b"", cs.Handler.MAX_UPLOAD_BYTES + 1) == 413,
+              "oversized upload rejected before body read")
+        with patch.object(cs.tempfile, "mkstemp", side_effect=OSError("disk full")):
+            status, _ = _post(port, "/api/upload?name=keep.bin", b"new bytes")
+        check(status == 500, "staging creation failure reported")
+        real_fdopen = os.fdopen
+
+        @contextmanager
+        def failing_writer(fd, mode):
+            with real_fdopen(fd, mode) as f:
+                with patch.object(f, "write", side_effect=OSError("disk full")):
+                    yield f
+
+        with patch.object(cs.os, "fdopen", failing_writer):
+            status, _ = _post(port, "/api/upload?name=keep.bin", b"new bytes")
+        check(status == 500, "mid-write failure reported and staging cleaned")
+        with patch.object(cs.os, "replace", side_effect=OSError("cannot commit")):
+            status, _ = _post(port, "/api/upload?name=keep.bin", b"new bytes")
+        check(status == 500, "commit failure reported")
+        check(open(dest, "rb").read() == b"keep me", "all failures preserve destination")
+        check(os.listdir(drop) == ["keep.bin"], "all failed staging removed")
+
+
 def test_happy_path():
     print("upload: authed valid name -> file lands with exact bytes")
     srv, port, drop, _ = _server()
     try:
-        payload = b"couchside forever unlock rules" * 100
+        payload = b"couchside file upload" * 120000  # cross multiple 1 MiB reads
         status, _ = _post(port, "/api/upload?name=save.bin", payload)
         check(status == 200, "200 OK")
         dest = os.path.join(drop, "save.bin")
@@ -169,6 +333,10 @@ if __name__ == "__main__":
     test_reject_bad_names()
     test_capability_wired()
     test_reveal_requires_auth_and_gates_on_desktop()
+    test_owned_staging_and_overwrite()
+    test_destination_symlinks()
+    test_concurrent_same_name()
+    test_upload_failures()
     if _fail:
         print("\n%d check(s) failed" % len(_fail))
         raise SystemExit(1)

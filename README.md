@@ -136,9 +136,9 @@ Free 7-day trial with every feature unlocked, then a one-time unlock ($4.99 summ
 
 ## Security model
 
-Couchside is deliberately small and boring about security:
+Couchside separates local control, pairing and optional privileged operations:
 
-- **Bearer token auth.** Every API route except the reachability ping requires `Authorization: Bearer <token>`; the gamepad WebSocket authenticates before the handshake completes. Comparisons are constant-time (`hmac.compare_digest`). The token file is `chmod 600`; on the phone it lives in the iOS Keychain / Android Keystore.
+- **Bearer token auth.** Control APIs require `Authorization: Bearer <token>`; discovery and PIN pairing have separate gates. Native image reads and file uploads can instead use short-lived, scoped tickets. The gamepad WebSocket authenticates before the handshake completes. Comparisons are constant-time (`hmac.compare_digest`). The token file is `chmod 600`; on the phone it lives in the iOS Keychain / Android Keystore.
 - **Scoped sudo, nothing more.** The installer writes a `visudo`-validated sudoers file granting the service user passwordless sudo for a fixed set of **exactly-argument** commands — no wildcards, no globs, no directories. Six are always granted:
 
   | grant | why |
@@ -166,8 +166,8 @@ Couchside is deliberately small and boring about security:
   Plugins are different: the **bytes are handled entirely by Decky Loader itself** — it downloads the zip from its own CDN, checks the SHA-256 the store publishes (Couchside always passes the hash so that check runs), extracts and starts it. The agent only talks to the loader over its loopback API, after confirming that what listens on port 1337 really is a root-owned Decky process. Plugins run as your desktop user, or — if a plugin is **flagged for it** in the store — **as root**; the confirmation on the phone says which. Decky's own in-app updater is not exposed (it un-pins the service file and follows whatever pre-release channel the box picked); the one loader-update path is Repair, which re-runs the same wrapper. `couchside allow-decky off` removes the grant and the marker; `couchside uninstall` removes all of it and leaves your Decky install alone.
 - **Launchers run as you, and creating them remotely is opt-in.** Beyond the fixed privileged actions, the app can *trigger* launchers — auto-discovered Steam games plus any custom commands the box owner defined. A launcher's command runs as the **desktop user, never root**. Because a custom launcher is an arbitrary command, *creating* one over the network is **off by default**: run `couchside allow-launchers on` to enable it, otherwise a bearer token can only trigger launchers you set up on the box, not mint new ones. (The same token can already synthesize keystrokes through the virtual gamepad, so treat the token as user-level trust on a machine you control — which is why it stays on your LAN.)
 - **Journal access is allowlisted.** Only units on the configured watchlist can be read, with line counts clamped server-side, so a leaked token can't be used to trawl the whole system journal.
-- **The one outbound call the app makes.** Couchside talks to your box and, for updates, nothing else — with a single, manual exception you trigger yourself. In Setup › Account, *Check for app update* asks whether a newer Couchside is published: on iOS it queries Apple's own App Store lookup directly; on Android it reads a static version file from couchside.tv (Google Play has no public version API). It sends **nothing** about you, your box, or your usage — just "what version is live?" — and it never runs on its own. (The box-side *agent* update check runs on the box precisely so the app itself never reaches the internet for box data.)
-- **LAN-only by design.** The API is plain HTTP on port 8787 and is meant to stay on your local network. The firewall rule opens the port locally; **do not port-forward it**. There is no relay, no cloud endpoint, and the app never talks to anything except your service.
+- **Local control, optional internet integrations.** Box control does not require a cloud relay. Updates, app-store purchases and optional integrations use internet services; the app is not entirely offline. Check the relevant integration before making privacy or network claims.
+- **Transport protection.** Paired clients use pinned TLS for supported API/WebSocket connections, normally on port 8788. Legacy HTTP on port 8787 remains. Native image and file-upload paths use scoped tickets over HTTP; those tickets limit authority but **do not encrypt the payload**. Keep service ports on your trusted local network; **do not port-forward them**.
 - No client-addressable file routes. The service serves image bytes on four routes only: the album-art image a running media player advertises (realpath-allowlisted, image-sniffed, 2 MiB cap; client passes a player id, never a path); an on-demand screen-preview frame captured to a tmpfs file that's deleted right after (rate-clamped, off by default in the app); Steam cover art from the box's own library cache (client passes an app id); and the Decky store icon proxy (client passes a store id looked up in the box's own cached store list — the box fetches the icon from Decky's CDN with the host pinned and **no redirects followed**, caps it at 1 MiB, sniffs it as an image, and serves it from cache; the phone never talks to the CDN). Subprocesses run with `shell=False`, errors return brief JSON, never tracebacks.
 
 ## The `couchside` command — enabling extra features
@@ -228,21 +228,18 @@ Then delete the app from your phone.
 
 ## Development
 
-```
-agent/   couchsided.py: pure-stdlib Python 3 daemon (HTTP API + gamepad WebSocket)
-agent/win/  Windows port of the service (same API; SendInput + ViGEmBus)
-app/     Expo / React Native app for iOS & Android (tabs: Console, Fleet, Actions, Pad, Launch, Setup; the journal viewer lives inside Setup)
-docs/    privacy policy, images
-store/   App Store & Google Play metadata, review notes, screenshot plan
-```
+Start with [CONTRIBUTING.md](CONTRIBUTING.md) for setup, focused test commands and
+review expectations. The [code map](docs/CODE_MAP.md) shows the main components,
+request flow and security boundaries without depending on source line numbers.
 
-Develop the app without hardware using the service's mock mode on your Mac:
+- `agent/`: Linux service, privileged helper and platform ports.
+- `app/`: Expo / React Native phone app, native modules and tests.
+- Decky integration lives in the separate `emerytech/couchside-decky` repository.
+- `protocol/`, `tests/`, `.github/workflows/`: shared contracts, regression checks and delivery.
 
-```sh
-python3 agent/couchsided.py --mock --host 127.0.0.1 --port 8787 --token devtoken
-```
-
-Mock mode serves believable fake data and never executes real commands. The HTTP API and the `/ws/gamepad` WebSocket protocol (v2) are documented in [`agent/README.md`](agent/README.md).
+Use [scripts/web-dev.sh](scripts/web-dev.sh) for a local browser preview. Mock mode
+is useful for UI work, but does not replace device tests or isolate filesystem
+writes. The API reference is in [agent/README.md](agent/README.md).
 
 ## Pricing & license
 
