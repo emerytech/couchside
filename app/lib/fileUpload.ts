@@ -4,6 +4,7 @@ export type UploadConnection = {
   secure?: boolean; tlsPort?: number; pinModulus?: string;
 };
 export type UploadReply = { status: number; body: string };
+export type UploadResult = { ok: boolean; name: string; bytes: number; path: string };
 export type UploadProgress = (fraction: number) => void;
 export type SecureUpload = {
   host: string; port: number; pinModulus: string; ticket: string;
@@ -14,6 +15,21 @@ export type UploadDrivers = {
   secure: (upload: SecureUpload, progress?: UploadProgress) => Promise<UploadReply>;
   legacy: (url: string, fileUri: string, token: string, progress?: UploadProgress) => Promise<UploadReply>;
 };
+
+/** A successful HTTP status alone is not proof that the box saved the file. */
+export function parseUploadResult(body: string): UploadResult {
+  let value: unknown;
+  try { value = JSON.parse(body); } catch { /* report a safe, consistent message below */ }
+  if (value && typeof value === 'object') {
+    const result = value as Record<string, unknown>;
+    if (result.ok === true && typeof result.name === 'string' && result.name.length > 0
+        && typeof result.bytes === 'number' && Number.isSafeInteger(result.bytes) && result.bytes > 0
+        && typeof result.path === 'string' && result.path.length > 0) {
+      return { ok: true, name: result.name, bytes: result.bytes, path: result.path };
+    }
+  }
+  throw new Error('The box did not confirm the upload. Check its download folder before retrying.');
+}
 
 /** A retained pin is also a security commitment, even if a flag was lost. */
 export function needsSecureUpload(conn: UploadConnection): boolean {

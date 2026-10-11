@@ -21,3 +21,20 @@ export async function uploadPinnedFile(options: SecureUpload, progress?: UploadP
     subscription.remove();
   }
 }
+
+/** Compatibility adapter used only for an explicitly unencrypted pairing. */
+export async function uploadLegacyFile(
+  url: string, fileUri: string, token: string, progress?: UploadProgress,
+): Promise<UploadReply> {
+  const { File, UploadType } = await import('expo-file-system');
+  const result = await new File(fileUri).createUploadTask(url, {
+    httpMethod: 'POST',
+    uploadType: UploadType.BINARY_CONTENT,
+    headers: { Authorization: `Bearer ${token}` },
+    onProgress: ({ bytesSent, totalBytes }: { bytesSent: number; totalBytes: number }) => {
+      if (totalBytes > 0) progress?.(bytesSent / totalBytes);
+    },
+  }).uploadAsync();
+  if (!result) throw new Error('Upload did not complete — try again.');
+  return result;
+}

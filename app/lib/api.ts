@@ -8,7 +8,7 @@ import { raceIpFirst, ttlMemo } from './boxRoute.ts';
 import { connIsPinned } from './boxConn';
 import { isDeclaredTooLarge, isUsableBodySize } from './responseCap';
 import { ensureImageTicket, getImageTicket, mintUploadTicket } from './ticket.ts';
-import { sendFile } from './fileUpload.ts';
+import { sendFile, parseUploadResult, type UploadResult } from './fileUpload.ts';
 import type { InstallHealth } from './installHealth.ts';
 import { Settings } from './settings';
 
@@ -1995,7 +1995,7 @@ export type SessionDefault = {
 };
 
 /** Result of a successful POST /api/upload (agent >= 2.9.54). */
-export type UploadResult = { ok: boolean; name: string; bytes: number; path: string };
+export type { UploadResult } from './fileUpload.ts';
 
 /** Result of POST /api/upload/reveal (agent >= 2.9.55). `opened` is false with a
  *  human-readable `reason` when the box can't raise a file manager (Game Mode). */
@@ -2009,8 +2009,8 @@ export type RevealResult = { opened: boolean; path?: string; reason?: string };
  * progress as a 0..1 fraction. `name` is sent as a query param; the agent
  * REJECTS anything that isn't a bare, contained filename, so pass a basename.
  *
- * expo-file-system is imported lazily so this native-only module never has to
- * load in the web dev harness that drives the rest of the app.
+ * Native adapters are lazy imports; policy and receipt validation are pure and
+ * covered by fileUpload.test.ts without loading Expo in the test harness.
  */
 export async function uploadFile(
   settings: ConnSettings,
@@ -2026,27 +2026,14 @@ export async function uploadFile(
       return uploadPinnedFile(options, progress);
     },
     legacy: async (url, uri, token, progress) => {
-      const { File, UploadType } = await import('expo-file-system');
-      const result = await new File(uri).createUploadTask(url, {
-        httpMethod: 'POST',
-        uploadType: UploadType.BINARY_CONTENT,
-        headers: { Authorization: `Bearer ${token}` },
-        onProgress: ({ bytesSent, totalBytes }: { bytesSent: number; totalBytes: number }) => {
-          if (totalBytes > 0) progress?.(bytesSent / totalBytes);
-        },
-      }).uploadAsync();
-      if (!result) throw new ApiError('unreachable', 'Upload did not complete — try again');
-      return result;
+      const { uploadLegacyFile } = await import('./fileUploadNative');
+      return uploadLegacyFile(url, uri, token, progress);
     },
   }, onProgress);
   if (!res || res.status < 200 || res.status >= 300) {
     throw new ApiError('http', `Upload failed (HTTP ${res?.status ?? '?'})`, res?.status);
   }
-  try {
-    return JSON.parse(res.body) as UploadResult;
-  } catch {
-    return { ok: true, name, bytes: 0, path: '' };
-  }
+  return parseUploadResult(res.body);
 }
 
 /** base64-encode raw bytes for the /ws/screen stream client, which turns each
