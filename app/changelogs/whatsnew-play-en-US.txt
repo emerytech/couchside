@@ -1,1 +1,3 @@
-Compatibility update for Linux service 2.9.131, which tightens permissions for short-lived image and file-upload tickets. Update the service from Couchside to receive the security improvement. Android's direct Wake-on-LAN, progress display and relay fallback remain available; wake support depends on your network and hardware settings.
+Couch Mode now separates TV-control warnings from Game Mode readiness. On a handheld's built-in screen, it explains that audio stays on the box instead of reporting an audio failure.
+
+Update the Linux service to 2.9.133 for secure-connection responsiveness, safer file uploads, and a clearer TV-input explanation. Existing controls and Android Wake-on-LAN are unchanged.
