@@ -4,13 +4,27 @@ Inferred from the code as it stands (agent 2.9.31 / app 2.9.11). These are the c
 repo *already follows* — read this before adding code so new work matches, and update it when a
 convention genuinely changes rather than letting the doc drift.
 
+Current navigation and contribution guidance: [code map](../CODE_MAP.md) and
+[CONTRIBUTING.md](../../CONTRIBUTING.md). Historical examples and source line numbers
+below must be checked against current code.
+
 ---
 
 ## 1. Python agent (`agent/couchsided.py`)
 
+### TLS connection lifecycle
+
+Keep TLS handshakes out of the accept loop. `_tls_start` wraps the listener with
+`do_handshake_on_connect=False`; `BoundedThreadingHTTPServer` negotiates in an
+already-admitted worker under a dedicated five-second timeout, then restores the
+socket timeout before constructing the handler. Failed negotiations close their
+socket and release their slot. Established HTTP and WebSocket handlers retain
+their own timeout policies. Preserve this ordering when changing the server;
+`tests/test_tls_handshake.py` exercises it through real loopback connections.
+
 ### Pure stdlib, single file
 
-The agent is one ~11k-line file with **zero third-party dependencies** — the import block is all
+The deployed Linux agent is one file with **zero third-party dependencies** — the import block is all
 stdlib (`agent/couchsided.py:14-35`). This is load-bearing: the agent is fetched as a raw signed
 `.py` onto SteamOS/Bazzite (immutable-ish, no pip) and run by systemd. Do not add a dependency, and
 do not split the file without solving the single-file install path first.

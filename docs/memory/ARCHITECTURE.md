@@ -1,8 +1,9 @@
 # Couchside — Architecture
 
-Living-room box control from a phone. **LAN-only, bearer-token authed, no cloud, no account.**
-The only outbound internet call in the whole system is the box's own GitHub update check
-(`agent/couchsided.py:1004-1013`) — the phone app never leaves your network.
+Living-room box control from a phone, with local pairing and optional internet integrations.
+For current entry points and transport boundaries, start with [the code map](../CODE_MAP.md).
+This older design notebook retains historical examples and line numbers; verify those against
+current source before implementing a change.
 
 ---
 
@@ -10,21 +11,21 @@ The only outbound internet call in the whole system is the box's own GitHub upda
 
 | Component | Language / runtime | Lives in | Role |
 |---|---|---|---|
-| Phone app | Expo / React Native / TypeScript (expo-router) | `app/` | The remote. Talks HTTP + one WebSocket to a box. |
-| Linux agent | Python 3, **pure stdlib**, single file | `agent/couchsided.py` (11,121 lines) | The daemon on the SteamOS/Bazzite/Linux box. |
+| Phone app | Expo / React Native / TypeScript (expo-router) | `app/` | The remote. Uses API and WebSocket transports to a box. |
+| Linux agent | Python 3, **pure stdlib**, single file | `agent/couchsided.py` | The daemon on the SteamOS/Bazzite/Linux box. |
 | Windows agent | Python 3 stdlib + `ctypes` Win32 | `agent/win/couchsided-win.py` | Same API contract v1 on a Windows HTPC. |
-| Decky plugin | Python backend + React (Decky Loader) | `couchside-decky/` | Installs/manages the agent from Game Mode, no terminal. |
+| Decky plugin | Python backend + React (Decky Loader) | Separate `emerytech/couchside-decky` repo | Installs/manages the agent from Game Mode, no terminal. |
 | Installers | bash / PowerShell | `install.sh`, `install.ps1` | Signed release assets; write unit, sudoers, udev, token. |
 
 ### Wire protocol
 
-- **HTTP**, port **8787** (`DEFAULT_PORT`, `agent/couchsided.py:50`; app mirror `app/lib/settings.ts:86`).
-  Server is `ThreadingHTTPServer` with `protocol_version = "HTTP/1.1"`, per-connection
-  `timeout = 30`, and a hard `MAX_BODY_BYTES = 8 MiB` enforced *before* any body read
-  (`agent/couchsided.py:9355-9369`).
-- **WebSocket**, same port, single route `/ws/gamepad` — hand-rolled framing, no library
-  (`WS_GUID` at `agent/couchsided.py:8673`, upgrade at `:10662-10695`). App side:
-  `ws://<host>:<port>/ws/gamepad?token=…` (`app/lib/gamepad.ts:577`).
+- **Pinned TLS API/WebSockets** normally use port **8788**. Legacy HTTP remains on
+  **8787**. Start with `Handler`, `_tls_start` and `BoundedThreadingHTTPServer` on
+  the agent; `boxTransport.ts`, `boxTls.ts` and `boxWs.ts` on the app.
+- WebSockets include input and streaming paths; each must authorize before upgrade.
+  Native image/file loaders use scoped HTTP tickets, which do not encrypt payloads.
+- Request limits vary by route. JSON body limits and streamed upload limits are
+  separate; inspect the handler before changing either.
 
 ### Auth model
 
@@ -49,16 +50,17 @@ def _authorized(self):
 `agent/couchsided.py:9494-9499`
 
 Rules that fall out of that:
-- Every `/api/*` route is gated (`do_GET:9571`, `do_POST:9889`). Auth happens **before** the
-  body is read on POST, then the size cap, then the read — an unauthenticated client can't
-  make the agent allocate.
+- Control routes require authorization before their handler runs. Discovery and PIN
+  pairing have separate checks; image and upload routes also accept scoped tickets.
+  Inspect the current `do_GET` / `do_POST` dispatch for the exact route policy.
 - The WS token rides `?token=` and is checked **before** the 101 handshake (`:10669-10673`).
   Query strings are redacted from the access log (`_log:9445-9451`) because journald output
   is itself served back over `/api/journal`.
 - **No CORS headers, deliberately** — `ACAO:*` would let a malicious browser tab read
   responses (`_send:9463-9465`).
-- Unauthenticated routes are exactly four: `/api/ping`, `/pair`, `/api/pair/start`,
-  `/api/pair/finish` (plus `/api/pair/status`).
+- Public discovery and PIN-pairing routes are exceptions to bearer authentication;
+  local token pages require the additional gates below. Consult current dispatch
+  rather than treating this historical notebook as a complete endpoint inventory.
 - **Loopback-only pages that embed or act on the token** — `/pair`, `/update`, `/panel` — use
   the two-gate model: socket peer is loopback (`_is_loopback`) AND the Host header names
   loopback (`_host_header_is_local`, anti-DNS-rebinding). The Host check **parses** the address
@@ -70,8 +72,9 @@ Rules that fall out of that:
 
 1. **Discovery.** Two probes run in parallel and merge by IP (`app/lib/boxDiscovery.ts:1-16`):
    an HTTP sweep of the phone's /24 hitting unauth `GET /api/ping`, and a UDP broadcast of
-   `COUCHSIDE_DISCOVER?` (`agent/couchsided.py:9257`). The HTTP sweep is the reliable path —
-   **iOS blocks UDP on the local network**, so UDP is a fast-path bonus only.
+   `COUCHSIDE_DISCOVER?` (`agent/couchsided.py:9257`). HTTP probing remains a fallback. iOS broadcast/multicast support depends on
+   the signed entitlement and local-network permission; current multicast-enabled
+   builds must retain that entitlement in their provisioning profile.
    `/api/ping` returns `{ok, app, version, ip, host}` where `ip` is
    `self.connection.getsockname()[0]` — the LAN address the phone actually reached, cached by
    the app as a fallback for when mDNS `.local` dies (SteamOS Game Mode Wi-Fi power-save).
@@ -95,7 +98,7 @@ Rules that fall out of that:
 
 ```
 agent/
-  couchsided.py            The entire Linux agent. Single file, pure stdlib, ~11k lines.
+  couchsided.py            The entire Linux agent. Single deployed file, pure stdlib.
   couchside.service        systemd unit TEMPLATE; install.sh substitutes __USER__/__UID__/__EXEC__.
   couchside-screensaver.sh Aerial screensaver runner launched via a Steam shortcut.
   qr.py                    Terminal/HTML QR renderer for the pairing link (stdlib, no qrcode dep).

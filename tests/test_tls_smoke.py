@@ -26,7 +26,6 @@ import json
 import os
 import ssl
 import threading
-from http.server import ThreadingHTTPServer
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 AGENT = os.path.join(HERE, "..", "agent", "couchsided.py")
@@ -47,7 +46,7 @@ def check(cond, label, detail=""):
         _fail.append(label)
 
 
-class _QuietServer(ThreadingHTTPServer):
+class _QuietServer(cs.BoundedThreadingHTTPServer):
     """A smoke test opens and drops sockets deliberately (a bare handshake to read
     the peer cert; abrupt closes). Those surface as ConnectionReset/SSL errors in
     the worker thread, which stock ThreadingHTTPServer prints as a scary traceback.
@@ -77,7 +76,8 @@ def _tls_server():
     cs.Handler.tls_info = {"cert_pem": info["cert_pem"], "fp": info["fp"],
                            "spki": info["spki"], "port": info["port"]}
     srv = _QuietServer(("127.0.0.1", 0), cs.Handler)
-    srv.socket = ctx.wrap_socket(srv.socket, server_side=True)
+    srv.socket = ctx.wrap_socket(srv.socket, server_side=True,
+                                do_handshake_on_connect=False)
     threading.Thread(target=srv.serve_forever, daemon=True).start()
     return srv, srv.server_address[1], info
 

@@ -18,6 +18,13 @@ the same thing regardless of what actually changed.
 Write for the person holding the phone, not for the commit log. They are
 deciding whether to press "Update now" on a machine across the room.
 
+## 2.9.132
+
+- Keep secure connections responsive when another device opens a TLS connection without finishing it. Incomplete handshakes now have a short deadline within the existing connection limit.
+- Make file uploads safer: each transfer uses its own private temporary file and publishes the complete file atomically. Interrupted or simultaneous transfers cannot share a partial file, and existing destination symlinks are rejected.
+- Completed uploads are readable and writable only by the box's desktop user. Existing apps, pairing credentials, upload interfaces and ordinary same-name replacements stay compatible.
+- Includes 2.9.131 scoped transfer-ticket permissions and 2.9.130 controller diagnostics. This is an agent update; no phone app update is required.
+
 ## 2.9.131
 
 - Tighten permissions on short-lived transfer tickets: image tickets can only read images, and upload tickets can only authorize one file upload.

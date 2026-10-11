@@ -18,9 +18,20 @@ Each entry now carries a `✅ DONE` / `🟡 PARTIAL` / `📋 OPEN` banner with i
 
 ### Security hardening — phase 1: ticket permissions (2026-10-09)
 - **priority:** P1 · **risk:** low-medium (authorization) · **affects:** Linux agent and tests · **depends_on:** existing TLS tickets.
-- **Status:** implemented locally on `codex/security-ticket-scope`; verified with a physical iPhone against an isolated server on the test box, not released or installed as its production service.
+- **Status:** released in Linux agent 2.9.131 with app release 2.9.75 (2026-10-10, PR #624). Verified with a physical iPhone against an isolated server before release.
 - Preserve existing ticket URLs, response shape and bearer-authenticated uploads while enforcing image/upload scopes.
-- Regression coverage includes image loading, actual file uploads, expiry, replay rejection and concurrent single-use requests. iPhone 2.9.75 (248) rendered test covers and uploaded a byte-verified file through the native picker; Android verification and production rollout remain. Existing native image/upload HTTP ticket transport is unchanged and does not encrypt payloads.
+- Regression coverage includes image loading, actual file uploads, expiry, replay rejection and concurrent single-use requests. iPhone 2.9.75 (248) rendered test covers and uploaded a byte-verified file through the native picker; a fresh physical Android upload check was not part of that release verification. Existing native image/upload HTTP ticket transport is unchanged and does not encrypt payloads.
+
+### Security hardening — phase 2: private upload staging (2026-10-11)
+- **priority:** P1 · **risk:** low-medium (file handling) · **affects:** Linux agent, regression tests and maintainer docs.
+- **Status:** prepared for Linux agent 2.9.132; not published. Each upload owns a unique private staging file, rejects existing destination symlinks and atomically replaces the final file. Existing route, ticket/bearer auth and success response are unchanged.
+- Eight focused suites pass (302 checks), including interrupted writes, disk failures and simultaneous same-name uploads. Razr native uploads passed against isolated patched servers on physical SteamOS and Bazzite machines. A fresh iPhone native upload passed against the corrected Bazzite fixture with three unfinished TLS peers present, matching bytes/hash and mode `0600`. Corrected-fixture native iPhone upload on SteamOS was not verified. No app build or production install is included in this phase.
+- Contributor guide and symbol-based code map establish current entry points. A future agent module split needs a separate signed packaging and rollback design.
+
+### Security hardening — phase 3: TLS handshake isolation (2026-10-11)
+- **priority:** P1 · **risk:** low-medium (connection lifecycle) · **affects:** Linux agent and TLS tests.
+- **Status:** prepared for Linux agent 2.9.132; not published. TLS negotiation runs inside the existing capped workers with a five-second deadline, so an idle handshake cannot monopolize the accept loop. Established HTTP/WebSocket timeout policies and certificates are unchanged.
+- Verified locally: 43 handshake checks plus nine surrounding suites, including idle/partial/malformed peers, worker-cap recovery, thread-start failure, authenticated HTTPS/WSS and the existing TLS watchdog. The pre-fix control fails eight checks. Seven selected suites and 15 isolated LAN checks passed on each physical SteamOS/Bazzite machine; Razr native uploads passed with three unfinished TLS peers present. Corrected-fixture iPhone/Bazzite authenticated status and native upload also passed during contention; corrected-fixture native iPhone upload on SteamOS was not verified. Production services were unchanged during these checks. Release remains separate; no structural refactoring or app reporting change is included.
 
 ### Game Aura — paint the strip from game artwork (Phase 1, PR `feat/game-aura-artwork`)
 - **priority:** P3 · **risk:** low (additive route + app-side sampler; no new cap, no agent image lib) ·

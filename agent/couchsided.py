@@ -53,7 +53,7 @@ except ImportError:  # pragma: no cover
     fcntl = None
 
 APP_NAME = "couchside-agent"
-VERSION = "2.9.131"
+VERSION = "2.9.132"
 UID = os.getuid()
 XDG_RUNTIME_DIR = "/run/user/%d" % UID
 
@@ -27921,10 +27921,11 @@ class Handler(BaseHTTPRequestHandler):
         return self.rfile.read(n)
 
     def _handle_upload(self, parsed, started):
-        """Stream a phone->box file upload to the drop dir. Bearer-gated by the
+        """Stream a phone->box file upload to the drop dir. Authorized by the
         caller. The filename must be a bare, contained name (rejected, not
-        sanitised, otherwise); the destination is realpath-verified to stay inside
-        the drop root; the body is copied in 1 MiB chunks under a hard size cap.
+        sanitised, otherwise); symlink destinations are rejected. The body is
+        copied in 1 MiB chunks to an exclusively created, private temporary file
+        in the drop root, then atomically replaces the requested directory entry.
         Any error path that has not fully consumed the body closes the connection
         so an undrained upload can't desync the keep-alive stream."""
         qs = parse_qs(parsed.query)
@@ -27937,9 +27938,12 @@ class Handler(BaseHTTPRequestHandler):
             self._send(400, {"error": "invalid filename"}, started)
             return
         root = _drop_dir()
-        dest = os.path.realpath(os.path.join(root, name))
-        # Containment (§3.5): the resolved path must stay under the drop root.
-        if dest != root and not dest.startswith(root + os.sep):
+        dest = os.path.join(root, name)
+        resolved = os.path.realpath(dest)
+        # Do not follow even an in-root destination symlink. Keep the original
+        # directory entry for os.replace: a link added AFTER this check is then
+        # replaced, not followed. The configured drop root itself is trusted.
+        if os.path.islink(dest) or not resolved.startswith(root + os.sep):
             self.close_connection = True
             self._send(400, {"error": "invalid filename"}, started)
             return
@@ -27955,10 +27959,18 @@ class Handler(BaseHTTPRequestHandler):
             self.close_connection = True
             self._send(413, {"error": "file too large"}, started)
             return
-        tmp = dest + ".part"
+        tmp = None
+        fd = None
         written = 0
+        error = None
         try:
-            with open(tmp, "wb") as f:
+            # A fixed <name>.part follows planted links and lets simultaneous
+            # uploads share one file. mkstemp creates a unique 0600 file with
+            # O_EXCL; only this request owns and cleans it. Staging on the same
+            # filesystem keeps the final replace atomic (last completion wins).
+            fd, tmp = tempfile.mkstemp(prefix=".couchside-upload-", suffix=".part", dir=root)
+            with os.fdopen(fd, "wb") as f:
+                fd = None  # the file object now owns the descriptor
                 remaining = length
                 while remaining > 0:
                     chunk = self.rfile.read(min(1024 * 1024, remaining))
@@ -27967,22 +27979,22 @@ class Handler(BaseHTTPRequestHandler):
                     f.write(chunk)
                     remaining -= len(chunk)
                     written += len(chunk)
+            if written != length:
+                error = (400, "incomplete upload")
+            else:
+                os.replace(tmp, dest)  # atomic swap once fully received
+                tmp = None  # no staging file remains for us to clean
         except OSError:
-            self._unlink_quiet(tmp)
-            self._send(500, {"error": "write failed"}, started)
-            return
-        if written != length:
-            # Short read: client hung up mid-upload. Drop the partial and close
-            # the now-desynced keep-alive connection.
-            self._unlink_quiet(tmp)
+            error = (500, "write failed")
+        finally:
+            if fd is not None:
+                os.close(fd)
+            if tmp is not None:
+                self._unlink_quiet(tmp)
+        if error is not None:
+            # Clean staging before replying. A failure may leave bytes undrained.
             self.close_connection = True
-            self._send(400, {"error": "incomplete upload"}, started)
-            return
-        try:
-            os.replace(tmp, dest)  # atomic swap into place once fully received
-        except OSError:
-            self._unlink_quiet(tmp)
-            self._send(500, {"error": "write failed"}, started)
+            self._send(error[0], {"error": error[1]}, started)
             return
         self._send(200, {"ok": True, "name": name, "bytes": written,
                          "path": dest}, started)
@@ -31152,7 +31164,10 @@ def _tls_start(host, handler_cls, force_enable=False):
             ctx.load_cert_chain(certfile=info["cert_path"], keyfile=info["key_path"])
             tls_srv = BoundedThreadingHTTPServer((host, port), handler_cls)
             tls_srv.daemon_threads = True
-            tls_srv.socket = ctx.wrap_socket(tls_srv.socket, server_side=True)
+            # accept() must not negotiate TLS: an idle peer would block the
+            # listener before worker admission or Handler's read timeout.
+            tls_srv.socket = ctx.wrap_socket(tls_srv.socket, server_side=True,
+                                            do_handshake_on_connect=False)
         except OSError as e:
             # EADDRINUSE (or similar) during the restart race: the old process
             # has not released the listening socket yet. Back off and retry --
@@ -31248,9 +31263,11 @@ class BoundedThreadingHTTPServer(ThreadingHTTPServer):
     closed and the connection rejected. Released when the request finishes.
 
     Note: the long-lived /ws/gamepad connection holds a slot for the entire
-    Pad session, so the cap must comfortably exceed a household's phones.
+    Pad session, so the cap must comfortably exceed a household's phones. TLS
+    handshakes use the same capped workers, with their own short deadline.
     """
     _MAX_CONNECTIONS = 128
+    _TLS_HANDSHAKE_TIMEOUT_S = 5.0
 
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
@@ -31264,10 +31281,29 @@ class BoundedThreadingHTTPServer(ThreadingHTTPServer):
             except Exception:
                 pass
             return
-        super().process_request(request, client_address)
+        try:
+            super().process_request(request, client_address)
+        except Exception:
+            # No worker owns the slot if thread creation fails. The server's
+            # _handle_request_noblock exception path closes the accepted socket.
+            self._conn_sem.release()
+            raise
 
     def process_request_thread(self, request, client_address):
         try:
+            if isinstance(request, ssl.SSLSocket):
+                try:
+                    previous_timeout = request.gettimeout()
+                    request.settimeout(self._TLS_HANDSHAKE_TIMEOUT_S)
+                    request.do_handshake()
+                    # Only negotiation gets the short deadline. Handler.setup
+                    # and the WS loops retain their existing read timeouts.
+                    request.settimeout(previous_timeout)
+                except OSError:
+                    # Timeout, malformed TLS or a dropped peer: close quietly,
+                    # without reaching the HTTP handler or flooding the log.
+                    self.shutdown_request(request)
+                    return
             super().process_request_thread(request, client_address)
         finally:
             try:
