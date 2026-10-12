@@ -369,3 +369,24 @@ test('stalled JS timers: a late connection cannot send an expired command', asyn
   await rejected;
   assert.equal(sock.writes.length, 0);
 });
+
+test('a closed pooled socket identifies ticket reconnects without replaying control requests', async () => {
+  const { mintUploadTicket } = await import('../ticket.ts');
+  const socks: FakeSock[] = [];
+  const ticket = 'c'.repeat(32);
+  const pool = new PinnedConn(async () => {
+    const s = new FakeSock(socks.length);
+    socks.push(s);
+    s.responder = (socket) => socket.id === 0 ? socket.emitClose() : socket.emit(http({ ticket }));
+    return s;
+  });
+  const conn = { host: 'box.local', port: 8787, secure: true, tlsPort: 8788,
+    pinModulus: 'a'.repeat(512), token: 'synthetic' };
+  const result = await mintUploadTicket(conn, conn.host,
+    (host, _port, _pin, req) => pool.request(frameHttpRequest(host, req), 100));
+  assert.equal(result, ticket);
+  assert.equal(socks.length, 2);
+  assert.equal(socks[0].writes.length, 1);
+  assert.equal(socks[1].writes.length, 1);
+  assert.ok(socks.every(s => s.writes[0].startsWith('POST /api/ticket?once=1 ')));
+});

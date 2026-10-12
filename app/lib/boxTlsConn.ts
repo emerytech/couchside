@@ -60,6 +60,14 @@ export type PinnedSocket = {
   close(): void;
 };
 
+/** A reused socket closed before its current reply completed. */
+export class PinnedSocketClosedError extends Error {
+  constructor() {
+    super('pinned socket closed');
+    this.name = 'PinnedSocketClosedError';
+  }
+}
+
 /**
  * A pinned request that ran out of time. `sent` says whether its bytes reached
  * the socket: true means the box may have acted on it; false means it expired
@@ -311,6 +319,6 @@ export class PinnedConn {
   private onClose(): void {
     // Only reached for the CURRENT socket (identity guard at registration).
     this.sock = null;
-    this.failActive(new Error('pinned socket closed'));
+    this.failActive(new PinnedSocketClosedError());
   }
 }

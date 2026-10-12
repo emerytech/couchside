@@ -69,17 +69,28 @@ export function ensureImageTicket(c: Conn, host: string): void {
 /** Mint a fresh SINGLE-USE upload ticket over the pinned channel. Null on failure
  *  (not pinnable, or the pinned request failed). The caller FAILS CLOSED on null
  *  for a secure box — it never degrades to a cleartext token header (KI-096). */
-export async function mintUploadTicket(c: Conn, host: string): Promise<string | null> {
+export async function mintUploadTicket(
+  c: Conn, host: string, request = pinnedRequest,
+): Promise<string | null> {
   if (!canPin(c)) return null;
-  try {
-    const r = await pinnedRequest(host, c.tlsPort, c.pinModulus, {
-      method: 'POST',
-      path: '/api/ticket?once=1',
-      token: c.token,
-    });
-    const j = JSON.parse(r.body || '{}');
-    return typeof j.ticket === 'string' && j.ticket ? j.ticket : null;
-  } catch {
-    return null;
+  for (let attempt = 0; attempt < 2; attempt++) {
+    try {
+      const r = await request(host, c.tlsPort, c.pinModulus, {
+        method: 'POST',
+        path: '/api/ticket?once=1',
+        token: c.token,
+      });
+      if (r.status !== 200) return null;
+      const j = JSON.parse(r.body || '{}');
+      return typeof j.ticket === 'string' && /^[0-9a-f]{32}$/i.test(j.ticket) ? j.ticket : null;
+    } catch (error) {
+      // A phone's file picker can outlive the pooled socket. The transport has
+      // already discarded that socket; retry once and re-verify the saved pin.
+      // Minting only creates an expiring ticket: no file or control command has
+      // been sent. Never retry the upload POST itself, or trust/auth failures.
+      if (attempt === 0 && error instanceof Error && error.name === 'PinnedSocketClosedError') continue;
+      return null;
+    }
   }
+  return null;
 }
