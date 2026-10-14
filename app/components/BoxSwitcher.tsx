@@ -1,7 +1,7 @@
 /**
  * Apple-TV-remote-style device picker, rendered as a persistent header pill on
  * every tab. Shows the active box (name + a live reachability dot) and, on tap,
- * drops a card listing the whole fleet with per-box online dots: tap one to
+ * drops a card listing visible boxes with per-box online dots: tap one to
  * switch, or "+ Add a box" to jump to Setup.
  */
 import Ionicons from '@expo/vector-icons/Ionicons';
@@ -20,6 +20,7 @@ import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { LockBadge } from '@/components/EncryptionBadge';
 import { RemotePowerBar } from '@/components/RemotePowerBar';
 import { hapticSelection } from '@/lib/haptics';
+import { useFleetLayout } from '@/lib/fleetLayout';
 import {
   BoxReachability,
   useBoxes,
@@ -71,7 +72,11 @@ export function BoxSwitcher() {
     setOpen(false);
   };
 
-  const sortedBoxes = useMemo(() => boxes, [boxes]);
+  const layout = useFleetLayout();
+  const visibleBoxes = useMemo(() => {
+    const hidden = new Set(layout.hidden);
+    return boxes.filter((box) => !hidden.has(box.id));
+  }, [boxes, layout.hidden]);
 
   /**
    * Measured width of the header row, and the threshold below which the Couch
@@ -139,7 +144,7 @@ export function BoxSwitcher() {
           <View style={[styles.dropWrap, { paddingTop: insets.top + 8 }]}>
             {/* Stop propagation: taps inside the card shouldn't dismiss it. */}
             <Pressable style={styles.card} onPress={() => {}}>
-              {sortedBoxes.map((box) => {
+              {visibleBoxes.map((box) => {
                 const isActive = box.id === activeBoxId;
                 return (
                   <Pressable
