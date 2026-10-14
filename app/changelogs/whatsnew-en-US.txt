@@ -1,7 +1,7 @@
-Wake your gaming box directly from your iPhone.
+Safer file transfers to your Couchside box.
 
-Couchside uses Apple's approved local-network multicast capability to send Wake-on-LAN packets immediately, with visible progress and relay fallback. Wake support depends on your network and hardware settings; allow Local Network access when prompted.
+• File uploads now use encrypted HTTPS when your box is paired securely.
+• Improved upload progress, failure handling, and recovery after choosing a file.
+• Existing legacy connections remain supported, with a clear unencrypted-transfer warning.
 
-Couch Mode now clearly separates TV-control warnings from Game Mode readiness. When you're using a handheld's built-in screen, it explains that audio stays on the box instead of reporting an audio failure.
-
-Update the Linux service to 2.9.133 for secure-connection responsiveness, safer file-upload handling, and a clearer explanation when automatic TV input switching is unavailable.
+Keep Couchside open until your transfer finishes.
