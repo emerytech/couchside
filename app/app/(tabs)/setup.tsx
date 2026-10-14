@@ -2474,6 +2474,31 @@ function SetupBody() {
               </View>
             )}
 
+            <Pressable
+              accessibilityRole="link"
+              accessibilityLabel="Couchside news and updates"
+              accessibilityHint="Opens the optional email signup page in your browser"
+              onPress={() => {
+                hapticLight();
+                void Linking.openURL('https://couchside.tv/news/').catch(() => {
+                  void confirm({
+                    title: 'Open Couchside news',
+                    message: 'Your browser could not open. Visit couchside.tv/news to sign up for optional email updates.',
+                    confirmText: 'OK',
+                  });
+                });
+              }}
+              style={({ pressed }) => [styles.rateRow, pressed && styles.pressed]}>
+              <Ionicons name="mail-outline" size={18} color={t.green} />
+              <View style={styles.rateBody}>
+                <Text style={styles.rateTitle}>Couchside news &amp; updates</Text>
+                <Text style={styles.rateSub}>
+                  Optional emails about new features and setup tips. Confirm by email; unsubscribe anytime.
+                </Text>
+              </View>
+              <Ionicons name="open-outline" size={16} color={t.textDim} />
+            </Pressable>
+
             {/* User-initiated, always available. This LINKS OUT to the store's
                 write-review page — it must never call requestReview(): Apple
                 does not allow the native sheet to be summoned by a tap. The
