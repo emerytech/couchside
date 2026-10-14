@@ -1,8 +1,7 @@
 # Couchside code map
 
-This is the starting map for contributors, checked against the 2.9.75 app /
-2.9.131 Linux agent baseline and the 2.9.132 release candidate identified below. Search by
-symbol rather than relying on line numbers.
+This is the starting map for contributors. Search by symbol rather than relying
+on line numbers; release numbers in older design notes are historical.
 Update this page when ownership or a security boundary changes. Older design
 notes in `docs/memory/` contain historical examples, not a current route inventory.
 
@@ -30,6 +29,15 @@ Pinned native TLS uses `boxTls.ts` and `boxTlsConn.ts`; WebSocket transport uses
 separate lifecycle in `gamepad.ts`; a successful status request does not establish
 that the input connection is healthy.
 
+For file uploads, `api.uploadFile` resolves the box address and calls the policy in
+`fileUpload.ts`. The policy mints a one-use ticket over the existing pinned API,
+then `fileUploadNative.ts` calls `modules/couchside-file-transfer`. Swift uses a
+per-transfer URLSession and Android uses a per-transfer OkHttp client. Both verify
+the saved RSA key before sending, refuse redirects, bound the response to 64 KiB,
+and stream files without passing their contents through JavaScript. Their trust
+configuration is isolated from other network clients. Agent upload routes and
+pairing storage are unchanged. Expo remains the uploader for legacy HTTP boxes.
+
 On Linux, `Handler.do_GET` and `Handler.do_POST` route requests. Check the route's
 authorization **before** following it to a handler. `_authorized` handles bearer
 credentials; `_authorized_image`, `_mint_ticket` and `_ticket_ok` cover scoped
@@ -55,7 +63,7 @@ All symbols below are in `agent/couchsided.py` unless indicated otherwise.
 | Where does the Steam library response come from? | `_steam_library_payload` |
 | How does the service start and serve TLS? | `main`, `BoundedThreadingHTTPServer`, `_tls_ensure`, `_tls_start`, `_tls_supervisor` |
 
-The unreleased 2.9.132 TLS fix defers listener negotiation to `BoundedThreadingHTTPServer` workers.
+The 2.9.132 TLS fix defers listener negotiation to `BoundedThreadingHTTPServer` workers.
 The worker cap includes incomplete handshakes; their five-second deadline is
 separate from established HTTP and WebSocket read timeouts. Do not move a blocking
 handshake into `accept()` or `get_request()` when changing this path. See
@@ -74,9 +82,11 @@ rg -n '/api/upload|_handle_upload' agent/couchsided.py tests app/lib
   public port forward. The paired token represents substantial control of the
   desktop session, not just access to harmless metrics.
 - Pinned API/WebSocket TLS normally uses port 8788; legacy HTTP on 8787 remains.
-  Do not describe all traffic as encrypted. Existing native image/file loaders
-  use short-lived tickets over HTTP: scoped authorization does **not** encrypt
-  the image or uploaded file. Inspect the caller's actual transport.
+  Do not describe all traffic as encrypted. The new native file-upload module
+  streams over pinned HTTPS for secure pairings, with no HTTP fallback. It needs
+  a new native app build; older apps still use upload tickets over HTTP. Native
+  cover-art image loaders and explicit legacy pairings remain HTTP. Scoped
+  authorization alone does **not** encrypt payloads.
 - Box control has no required cloud relay. Optional integrations, app stores,
   purchases and update checks do use internet services. LAN control does not
   imply that the app never makes an internet request.
@@ -86,7 +96,7 @@ rg -n '/api/upload|_handle_upload' agent/couchsided.py tests app/lib
 - Upload names are bare filenames beneath the configured drop directory. That
   directory is trusted configuration, not a sandbox against other code running
   as the same OS user. Uploads should stage privately and commit atomically.
-  The unreleased 2.9.132 private-staging fix also makes completed uploads owner-readable/writable (0600);
+  The 2.9.132 private-staging fix also makes completed uploads owner-readable/writable (0600);
   another OS user needs an explicit permission change to read them.
 - Keep privileged commands allowlisted and validate their arguments. Linux,
   Windows and macOS share contracts but do not have identical implementations.

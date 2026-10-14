@@ -1,0 +1,15 @@
+apply plugin: 'com.android.library'
+apply plugin: 'expo-module-gradle-plugin'
+
+group = 'expo.modules.couchsidefiletransfer'
+version = '0.1.0'
+
+android {
+  namespace 'expo.modules.couchsidefiletransfer'
+  defaultConfig { versionCode 1; versionName '0.1.0' }
+}
+
+dependencies {
+  // Same version as React Native's existing HTTP client; no new networking stack.
+  implementation 'com.squareup.okhttp3:okhttp:4.9.2'
+}

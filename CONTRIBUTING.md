@@ -26,7 +26,7 @@ Mock mode also is not a filesystem sandbox: use temporary paths for file tests.
 
 | Change | Useful starting checks |
 | --- | --- |
-| File uploads | `python3 tests/test_upload.py` and `python3 tests/test_tls_ticket.py` |
+| File uploads | `python3 tests/test_upload.py`, `python3 tests/test_tls_ticket.py`, app `fileUpload.test.ts`, and native transport checks below |
 | Authentication, pairing or TLS | `python3 tests/test_tls_ticket.py`, `python3 tests/test_pair_page.py`, `python3 tests/test_tls_smoke.py` |
 | Action/configuration dispatch | `python3 tests/test_actions_inject.py` and `python3 tests/test_config_write.py` |
 | Shared API contract | `python3 tests/test_protocol_parity.py` plus affected platform tests |
@@ -82,3 +82,28 @@ For device-affecting work, arrange a focused check on the affected hardware befo
 release. Record the exact app and agent builds used. Keep publication, signed
 artifacts and release notes as an explicit release step; a local test pass does
 not mean that customers have received the change.
+
+## Native file-upload checks
+
+The native uploader has small transport cores that compile independently of Expo.
+`.github/workflows/native-upload.yml` runs both against the real agent upload
+handler on loopback, using temporary certificates, tickets and files:
+
+```sh
+# Android transport (JDK 17, Gradle 8.13)
+gradle -p tests/native-upload installDist
+python3 tests/test_native_upload.py --client tests/native-upload/build/install/couchside-native-upload-tests/bin/couchside-native-upload-tests
+
+# Apple transport (macOS with Xcode)
+swiftc app/modules/couchside-file-transfer/ios/PinnedUpload.swift tests/native-upload/main.swift -o /tmp/couchside-upload-test
+python3 tests/test_native_upload.py --client /tmp/couchside-upload-test
+```
+
+These check real TLS, a wrong saved key, redirects, stalled/disconnected transfers,
+response limits, one-use authorization and exact binary file contents. They do not
+exercise the Expo bridge, document picker, phone suspension or background tasks.
+Before release, compile both app modules and test a fresh native build on iPhone
+and Android: send a small file and a large file, compare hashes on the box, leave
+and resume the app during transfer, test a disconnect, then retry. Verify progress,
+existing pairings and the legacy HTTP path. A JavaScript-only update cannot add
+this module to an older binary; it fails closed if the module is absent.
