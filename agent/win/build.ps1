@@ -17,7 +17,8 @@ param([switch]$NoGamepad)
 $ErrorActionPreference = 'Stop'
 $here = Split-Path -Parent $MyInvocation.MyCommand.Path
 
-python -m pip install --upgrade pyinstaller | Out-Null
+python -m pip install --upgrade pyinstaller 'cryptography==46.0.7' | Out-Null
+if ($LASTEXITCODE -ne 0) { throw 'Build dependency installation failed' }
 
 # qr.py is the shared encoder in agent/; a standalone copy may sit next to
 # this script. Put both on PyInstaller's module search path so `import qr`
@@ -35,6 +36,7 @@ $piArgs = @(
     '--paths', $here,
     '--paths', $qrPath,
     '--hidden-import', 'qr',
+    '--collect-all', 'cryptography',
     # Pin outputs under agent/win regardless of the invoker's cwd, so the
     # "Built:" path below (and the README instructions) are always right.
     '--distpath', (Join-Path $here 'dist'),
