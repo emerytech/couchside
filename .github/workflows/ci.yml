@@ -35,8 +35,10 @@ jobs:
 
       - name: Theme and lighting regression tests
         run: |
-          python3 -m unittest discover -s tests -p 'test_steam_themes*.py'
-          python3 -m unittest discover -s tests -p 'test_theme*.py'
+          python3 -m unittest discover -s tests -p 'test_steam_themes.py'
+          python3 -m unittest discover -s tests -p 'test_steam_themes_installer.py'
+          python3 -m unittest discover -s tests -p 'test_theme_format.py'
+          python3 -m unittest discover -s tests -p 'test_theme_game_stats.py'
           python3 tests/test_legion_go2_lighting.py
           python3 tests/test_ring_motion_preview.py
           python3 tests/test_ring_program.py
