@@ -1,3 +1,4 @@
+import { useLockOrientation } from '@/hooks/useLockOrientation';
 import { Stack, useLocalSearchParams } from 'expo-router';
 import { useEffect, useRef, useState } from 'react';
 import { Pressable, ScrollView, Share, Platform, Switch, Text, TextInput, View } from 'react-native';
@@ -26,6 +27,7 @@ const STORAGE = 'couchside.theme-studio.drafts.v1';
 type Draft = { id: string; theme: ThemeDocument };
 const backgrounds = { original: '#142438', midnight: '#171730', ocean: '#125661', forest: '#234132', sunset: '#704151' };
 export default function ThemeStudio() {
+  useLockOrientation('portrait');
   const t = useTheme();
   const { boxId } = useLocalSearchParams<{ boxId?: string }>();
   const { boxes, activeBox } = useBoxes();

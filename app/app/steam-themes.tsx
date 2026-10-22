@@ -1,3 +1,4 @@
+import { useLockOrientation } from '@/hooks/useLockOrientation';
 import { Stack, router, useLocalSearchParams } from 'expo-router';
 import { useEffect, useRef, useState } from 'react';
 import { ActivityIndicator, Image, KeyboardAvoidingView, Platform, Pressable, ScrollView, StyleSheet, Switch, Text, TextInput, View } from 'react-native';
@@ -26,6 +27,7 @@ function LayoutPreview({ theme }: { theme: SteamTheme }) {
 }
 
 export default function SteamThemesScreen() {
+  useLockOrientation('portrait');
   const { boxId } = useLocalSearchParams<{ boxId?: string }>();
   const { boxes, activeBox, ready } = useBoxes();
   const t = useTheme();
