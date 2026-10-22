@@ -1363,5 +1363,5 @@ jobs:
       - uses: actions/setup-python@v7
         with:
           python-version: '3.12'
-      - run: python -m pip install --only-binary=:all: cryptography==46.0.7
+      - run: 'python -m pip install --only-binary=:all: cryptography==46.0.7'
       - run: python tests/test_win_https_upload.py -q
