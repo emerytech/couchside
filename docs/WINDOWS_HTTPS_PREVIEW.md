@@ -29,9 +29,24 @@ Live Windows transfer: 28,672,000 bytes, SHA-256 matched, approximately 1.05s.
 All 16 HTTPS status requests passed alongside eight idle TLS peers; max 37ms.
 iPhone secure pairing and green-lock/file-upload-capability UI verified.
 Pinned WSS upgrade passed, with existing Android holder respected.
-Native iPhone file-picker transfer and hands-on input remain pending.
+Native iPhone file-picker upload passed: the existing 65-byte Couchside test
+file arrived in Downloads/Couchside and the app displayed the secure receipt.
+Hands-on input while Android owns the controller remains pending.
 GitHub transport tests passed on Windows and Ubuntu; main-repository CI passed.
 
 Rollback on the test PC uses the saved prior agent and removes only the preview
 HTTPS firewall rule; token/config files are not replaced. Installer uninstall
 removes the HTTPS rule without deleting uploaded user files.
+
+## Separate pre-existing app follow-ups
+
+The Console status guard currently requires `cpu` and `os`, although both fields
+are optional in the app's Status contract. Windows omits those Linux-oriented
+facts, so a reachable Windows box may show "connecting" despite successful
+status responses, units, controller connection, and file uploads. Fix the app's
+optional-field guard separately; do not invent CPU clocks/OS measurements in
+the Windows agent to satisfy it.
+
+The iPhone scan displayed the agent at an unreachable address during this test;
+pairing at the verified LAN address with its SSH-verified certificate succeeded.
+The discovery/network-path discrepancy is not considered passed or diagnosed.
