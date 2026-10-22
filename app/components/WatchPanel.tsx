@@ -18,6 +18,9 @@ import { clearRecents, noteRecent, useWatchRecents } from '@/lib/watchRecents';
 import { useTheme, useThemedStyles, type Palette } from '@/lib/theme';
 import { WatchDpad } from '@/components/WatchDpad';
 import { useDesktopKeyboard } from '@/components/DesktopKeyboard';
+import { blockTabSwipe } from '@/lib/tabSwipe';
+import { orderFavoriteServices } from '@/lib/watchFavoriteOrder';
+import { toggleWatchFavorite, useWatchFavorites } from '@/lib/watchFavorites';
 import { GamepadClient } from '@/lib/gamepad';
 
 /**
@@ -199,7 +202,8 @@ export function WatchPanel() {
   );
 
   const state = player.data;
-  const services = state?.services ?? [];
+  const favorites = useWatchFavorites();
+  const services = orderFavoriteServices(state?.services ?? [], favorites);
   const activeService = state?.surface?.kind === 'home' ? ''
     : state?.surface?.kind === 'service' ? state.surface.service : state?.service ?? '';
   const atHome = state?.surface?.kind === 'home';
@@ -540,6 +544,7 @@ export function WatchPanel() {
         <Text style={styles.searchBtnText}>{busy === 'hub' ? 'Opening…' : '⌂ Home'}</Text>
       </Pressable>
       <ScrollView horizontal showsHorizontalScrollIndicator={false}
+        onTouchStart={blockTabSwipe} directionalLockEnabled
         contentContainerStyle={styles.switcherServices}>
         {services.map((id) => (
           <Pressable key={id} onPress={() => open(id)} disabled={busy !== null}
@@ -547,7 +552,7 @@ export function WatchPanel() {
             accessibilityState={{ selected: state.running && activeService === id }}
             testID={`watch-switch-${id}`} style={[styles.serviceShortcut,
               state.running && activeService === id && { borderColor: t.accent }]}>
-            <Text style={styles.searchBtnText}>{busy === id ? 'Opening…' : label(id)}</Text>
+            <Text style={styles.searchBtnText}>{busy === id ? 'Opening…' : `${favorites.includes(id) ? '★ ' : ''}${label(id)}`}</Text>
           </Pressable>
         ))}
       </ScrollView>
@@ -1001,6 +1006,7 @@ export function WatchPanel() {
       ) : null}
 
       <Text style={styles.section}>SERVICES</Text>
+      <Text style={{ color: t.textFaint }}>Hold an app to add or remove it from favorites.</Text>
       <View style={styles.grid}>
         {services.map((id) => {
           const active = state.running && activeService === id;
@@ -1010,6 +1016,9 @@ export function WatchPanel() {
               onPress={() => open(id)}
               disabled={busy !== null}
               testID={`watch-service-${id}`}
+              onLongPress={() => { toggleWatchFavorite(id); hapticLight(); }}
+              accessibilityRole="button"
+              accessibilityHint="Hold to add or remove favorite"
               style={({ pressed }) => [
                 styles.tile,
                 active && styles.tileActive,
@@ -1023,7 +1032,7 @@ export function WatchPanel() {
                 ]}
               />
               <Text style={[styles.tileText, active && styles.tileTextActive]}>
-                {busy === id ? 'Opening…' : label(id)}
+                {busy === id ? 'Opening…' : `${favorites.includes(id) ? '★ ' : ''}${label(id)}`}
               </Text>
             </Pressable>
           );

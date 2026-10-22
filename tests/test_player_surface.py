@@ -2,7 +2,7 @@
 import importlib.util
 from pathlib import Path
 import unittest
-from unittest.mock import MagicMock, patch
+from unittest.mock import create_autospec, patch
 
 ROOT = Path(__file__).resolve().parents[1]
 SPEC = importlib.util.spec_from_file_location("player_surface_agent", ROOT / "agent/couchsided.py")
@@ -44,7 +44,7 @@ class SurfaceTest(unittest.TestCase):
 
 class SwitchTest(unittest.TestCase):
     def test_only_frozen_home_reaches_cdp(self):
-        client = MagicMock()
+        client = create_autospec(cs._PlayerCDP, instance=True)
         client._call.return_value = {"frameId": "frame"}
         with (patch.object(cs, "_PLAYER_SERVICE_URLS", HOMES),
               patch.object(cs, "_pl_cdp_port", return_value=1234),
@@ -57,7 +57,7 @@ class SwitchTest(unittest.TestCase):
             client.close.assert_called_once()
 
     def test_browser_error_falls_back(self):
-        client = MagicMock()
+        client = create_autospec(cs._PlayerCDP, instance=True)
         client._call.return_value = {"errorText": "failed"}
         with (patch.object(cs, "_PLAYER_SERVICE_URLS", HOMES),
               patch.object(cs, "_pl_cdp_port", return_value=1234),
@@ -83,6 +83,91 @@ class SwitchTest(unittest.TestCase):
             switch.assert_not_called()
             close.assert_called_once()
             relaunch.assert_called_once_with(42, True)
+
+
+class HubSwitchTest(unittest.TestCase):
+    def test_only_fixed_local_page_reaches_browser(self):
+        client = create_autospec(cs._PlayerCDP, instance=True)
+        client._call.return_value = {"frameId": "home"}
+        with (patch.object(cs, "_pl_cdp_port", return_value=1234),
+              patch.object(cs, "_pl_ask") as prepare,
+              patch.object(cs, "_PlayerCDP", return_value=client) as constructor):
+            for bad in (None, "https://example.com/", "file:///etc/passwd",
+                        "file:///tmp/hub.html", "file:///home/deck/../etc/hub.html"):
+                prepare.return_value = bad
+                self.assertFalse(cs._pl_switch_hub())
+            constructor.assert_not_called()
+            prepare.return_value = "file://" + cs.os.path.expanduser(
+                "~/.var/app/com.google.Chrome/config/couchside-player/hub.html")
+            self.assertTrue(cs._pl_switch_hub())
+            client._call.assert_called_once_with("Page.navigate", {"url": prepare.return_value})
+            client.close.assert_called_once()
+
+    def test_home_reuse_and_failure_fallback(self):
+        with (patch.object(cs, "PL_MOCK", False),
+              patch.object(cs, "player_available", return_value=True),
+              patch.object(cs, "_pl_conf_read", return_value=("netflix", "", "")),
+              patch.object(cs, "player_surface", return_value={"kind": "service", "service": "youtube"}),
+              patch.object(cs, "_pl_conf_write") as conf,
+              patch.object(cs, "_pl_running", return_value=True),
+              patch.object(cs, "_pl_switch_hub", return_value=True) as switch,
+              patch.object(cs, "player_close") as close,
+              patch.object(cs, "_pl_appid", return_value=42),
+              patch.object(cs, "_pl_relaunch") as relaunch):
+            self.assertTrue(cs.player_hub()["reused"])
+            conf.assert_called_once_with("youtube", "", "", hub=True)
+            close.assert_not_called()
+            relaunch.assert_not_called()
+            switch.return_value = False
+            cs.player_hub()
+            close.assert_called_once()
+            relaunch.assert_called_once_with(42, True)
+
+
+class EnterTest(unittest.TestCase):
+    def test_enter_includes_character_only_on_key_down(self):
+        client = object.__new__(cs._PlayerCDP)
+        from unittest.mock import Mock
+        client._call = Mock()
+        client.dispatch_key("Enter", "Enter", 13)
+        events = [c.args[1] for c in client._call.call_args_list]
+        self.assertEqual([e["type"] for e in events], ["keyDown", "keyUp"])
+        self.assertEqual(events[0]["text"], "\r")
+        self.assertNotIn("text", events[1])
+        client._call.reset_mock()
+        client.dispatch_key("Escape", "Escape", 27)
+        self.assertTrue(all("text" not in c.args[1] for c in client._call.call_args_list))
+
+
+class BackTest(unittest.TestCase):
+    def test_history_back_and_overlay_escape(self):
+        client = create_autospec(cs._PlayerCDP, instance=True)
+        client.evaluate.return_value = False
+        client._call.return_value = {"currentIndex": 1, "entries": [{"id": 7}, {"id": 9}]}
+        with (patch.object(cs, "_pl_cdp_port", return_value=1234),
+              patch.object(cs, "_PlayerCDP", return_value=client)):
+            self.assertTrue(cs._pl_cdp_key("back"))
+            client._call.assert_any_call("Page.navigateToHistoryEntry", {"entryId": 7})
+            client.dispatch_key.assert_not_called()
+            client.reset_mock()
+            client.evaluate.return_value = True
+            cs._pl_cdp_key("back")
+            client.dispatch_key.assert_called_once_with("Escape", "Escape", 27)
+            client._call.assert_not_called()
+
+    def test_missing_history_uses_escape_and_ok_stays_enter(self):
+        client = create_autospec(cs._PlayerCDP, instance=True)
+        client.evaluate.return_value = False
+        client._call.return_value = {"currentIndex": 0, "entries": []}
+        with (patch.object(cs, "_pl_cdp_port", return_value=1234),
+              patch.object(cs, "_PlayerCDP", return_value=client)):
+            cs._pl_cdp_key("back")
+            client.dispatch_key.assert_called_once_with("Escape", "Escape", 27)
+            client.reset_mock()
+            cs._pl_cdp_key("ok")
+            client.dispatch_key.assert_called_once_with("Enter", "Enter", 13)
+            client.evaluate.assert_not_called()
+            client._call.assert_not_called()
 
 
 if __name__ == "__main__":

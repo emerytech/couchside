@@ -4132,6 +4132,17 @@ _PL_JS_NAV_BODY = """(function(){
     if (score < bestScore){ bestScore = score; best = c; }
   }
   if (!best) return false;
+  // Streaming sites often suppress keyboard focus rings. Add one scoped to
+  // the control selected by this remote; never change its activation behavior.
+  if (!document.getElementById('couchside-remote-focus-style')) {
+    var ring = document.createElement('style');
+    ring.id = 'couchside-remote-focus-style';
+    ring.textContent = '[data-couchside-remote-focus]:focus {outline: 4px solid #fff !important; outline-offset: 3px !important; box-shadow: 0 0 0 7px #111b !important;}';
+    (document.head || document.documentElement).appendChild(ring);
+  }
+  var old = document.querySelector('[data-couchside-remote-focus]');
+  if (old) old.removeAttribute('data-couchside-remote-focus');
+  best.el.setAttribute('data-couchside-remote-focus', '');
   best.el.focus({preventScroll: true});
   best.el.scrollIntoView({block: 'center', inline: 'nearest'});
   return true;
@@ -4319,10 +4330,14 @@ class _PlayerCDP:
         it is isTrusted, so sites like Netflix that ignore synthetic JS events
         still act on it. key/code/vk are always module constants."""
         for typ in ("keyDown", "keyUp"):
-            self._call("Input.dispatchKeyEvent", {
-                "type": typ, "key": key, "code": code,
-                "windowsVirtualKeyCode": vk, "nativeVirtualKeyCode": vk,
-            })
+            event = {"type": typ, "key": key, "code": code,
+                     "windowsVirtualKeyCode": vk, "nativeVirtualKeyCode": vk}
+            # Enter's character is required for Chromium's native button
+            # activation (Netflix profiles use buttons, not ordinary links).
+            if key == "Enter" and typ == "keyDown":
+                event["text"] = "\r"
+                event["unmodifiedText"] = "\r"
+            self._call("Input.dispatchKeyEvent", event)
         return True
 
 
@@ -4452,6 +4467,15 @@ PLAYER_CDP_KEYS = {
 }
 
 
+PLAYER_JS_BACK_OVERLAY = """Boolean(document.fullscreenElement ||
+  Array.from(document.querySelectorAll('dialog[open],[role="dialog"],[aria-modal="true"]'))
+    .some(e => {
+      var r = e.getBoundingClientRect(), s = getComputedStyle(e);
+      return r.width > 0 && r.height > 0 && s.visibility !== 'hidden' &&
+        s.display !== 'none' && e.getAttribute('aria-hidden') !== 'true';
+    }))"""
+
+
 def _pl_cdp_key(name):
     """Dispatch one allowlisted trusted key to the player's page. None on any
     failure (degrade closed). `name` is a frozen-dict key, never interpolated."""
@@ -4464,6 +4488,18 @@ def _pl_cdp_key(name):
     cdp = None
     try:
         cdp = _PlayerCDP(port)
+        if name == "back":
+            # Dismiss an overlay/fullscreen first. Otherwise Back means browser
+            # history, not Escape (ordinary service pages ignore Escape).
+            overlay = cdp.evaluate(PLAYER_JS_BACK_OVERLAY)
+            if not overlay:
+                history = cdp._call("Page.getNavigationHistory", {})
+                entries, index = history.get("entries", []), history.get("currentIndex", 0)
+                if isinstance(index, int) and 0 < index < len(entries):
+                    entry_id = entries[index - 1].get("id")
+                    if isinstance(entry_id, int) and not isinstance(entry_id, bool):
+                        cdp._call("Page.navigateToHistoryEntry", {"entryId": entry_id})
+                        return True
         return cdp.dispatch_key(*spec)
     except (OSError, ValueError, KeyError):
         return None
@@ -4523,6 +4559,33 @@ def player_nav(op):
     return {"ok": bool(ok), "op": op}
 
 
+def _pl_switch_hub():
+    """Warm return to the tile-authored local page. No client URL is accepted."""
+    port = _pl_cdp_port()
+    if port is None:
+        return False
+    url = _pl_ask("--prepare-hub")
+    # Restrict even the helper output to the Player's fixed profile locations.
+    profiles = [os.path.expanduser("~/.cache/couchside/player-profile")]
+    profiles.extend(os.path.expanduser("~/.var/app/%s/config/couchside-player" % app)
+                    for app in ("com.google.Chrome", "com.brave.Browser",
+                                "com.vivaldi.Vivaldi", "com.microsoft.Edge",
+                                "io.github.ungoogled_software.ungoogled_chromium",
+                                "org.chromium.Chromium"))
+    if url not in ["file://" + profile + "/hub.html" for profile in profiles]:
+        return False
+    cdp = None
+    try:
+        cdp = _PlayerCDP(port)
+        result = cdp._call("Page.navigate", {"url": url})
+        return bool(result.get("frameId")) and not result.get("errorText")
+    except (OSError, ValueError, KeyError, TypeError):
+        return False
+    finally:
+        if cdp is not None:
+            cdp.close()
+
+
 def player_hub():
     """Open the tile's OWN page — the service grid it writes from the frozen
     table, with a focus ring a d-pad step can land on.
@@ -4543,6 +4606,8 @@ def player_hub():
             service = live["service"]
         _pl_conf_write(service or "netflix", "", "", hub=True)
         was_running = _pl_running()
+        if was_running and _pl_switch_hub():
+            return {"ok": True, "starting": True, "hub": True, "reused": True}
         if was_running:
             player_close()
         appid = _pl_appid()

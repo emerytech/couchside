@@ -661,6 +661,13 @@ case "${1:-}" in
     --print-url)   build_url "${2:-}" "${3:-}" || exit 1; exit 0 ;;
     --print-open-url) validate_open_url "${2:-}" || exit 1; exit 0 ;;
     --print-search) build_search_url "${2:-}" "${3:-}" || exit 1; exit 0 ;;
+    --prepare-hub)
+        # Fixed local page only; read the agent-written selection, and use the
+        # chosen browser's sandbox path just as the normal launch does.
+        read_conf
+        resolve_browser || exit 1
+        write_hub && printf 'file://%s\n' "$HUB_FILE"
+        exit $? ;;
     --print-hub)   write_hub && printf 'file://%s\n' "$HUB_FILE"; exit $? ;;
     --print-sample-page) write_sample && printf 'file://%s\n' "$PROFILE/sample.html"; exit $? ;;
     --print-sample-launch)
