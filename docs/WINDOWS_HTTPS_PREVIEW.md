@@ -86,3 +86,30 @@ isolated temporary prefix rather than installing the Expo dependency tree.
 This is targeted compatibility evidence, not a claim of exhaustive device,
 VPN, router, or controller-input coverage. The earlier native iPhone upload
 and pinned HTTPS transfer checks are recorded above.
+
+### Follow-up control and transfer checks (2026-10-22)
+
+On iPhone 268, a right swipe moved Steam focus to the next game, and tapping
+Select opened its details without launching the game. On Razr Direct 42,
+requesting control displayed the iPhone Keep/Pass prompt; accepting Pass
+activated the Android ViGEm controller. The Android Windows-key button
+opened Windows Start. Both clients retained secure pairing.
+
+Fast Android text entry exposed a client-side batching bug: native change
+events could diff against the previous render's text and repeat characters.
+The keyboard now advances its ref synchronously before forwarding each delta,
+and all local-clear paths reset that baseline. Three source-handler tests
+exercise queued React state, duplicate events, paste, replacement, deletion,
+and clear/retype. Full local app/hook suite: 800 passed; TypeScript passed.
+This fix is committed for the next app build; it is NOT in installed iOS 268
+or Direct 42, and its physical-device verification remains pending.
+
+Repeated live Windows transfer check: 28,672,000-byte HTTPS upload completed
+in 3,018.5 ms and matched SHA-256. Duplicate names, plaintext upload and
+single-use ticket replay remained rejected. With eight idle TLS peers, all
+16 status requests succeeded (median 26.7 ms, max 33.3 ms). These are local
+network measurements, not general performance guarantees.
+
+The next native iPhone upload is paused at Apple's Mirroring authentication
+prompt. Razr native file-picker upload remains pending reliable navigation
+to Console. Neither is counted as a new completed phone upload test.
