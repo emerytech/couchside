@@ -24,10 +24,10 @@ class InstallerChoice(unittest.TestCase):
             run(tty=True, yes=False); self.assertFalse(json.loads(path.read_text())['installed'])
             run(tty=True, yes=True); self.assertFalse(json.loads(path.read_text())['installed'])
             run('1'); value = json.loads(path.read_text()); self.assertTrue(value['installed']); self.assertFalse(value['enabled'])
-            value.update(enabled=True, theme='orbit', motion=False); path.write_text(json.dumps(value))
+            value.update(enabled=True, theme='crossbar', motion=False, studio={'format':'couchside-theme','version':1,'name':'My theme'}); path.write_text(json.dumps(value))
             run(); self.assertEqual(json.loads(path.read_text()), value)
             run('1'); self.assertEqual(json.loads(path.read_text()), value)
-            run('0'); after=json.loads(path.read_text()); self.assertFalse(after['installed']); self.assertFalse(after['enabled']); self.assertEqual(after['theme'], 'orbit')
+            run('0'); after=json.loads(path.read_text()); self.assertFalse(after['installed']); self.assertFalse(after['enabled']); self.assertEqual(after['theme'], 'crossbar')
             before=path.read_text(); run('invalid'); self.assertEqual(path.read_text(), before)
 
 if __name__ == '__main__': unittest.main()

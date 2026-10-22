@@ -3671,6 +3671,10 @@ try:
                         "motion": (True, False)}.items():
         if old.get(key) in values and type(old.get(key)) is type(data[key]):
             data[key] = old[key]
+    # Preserve the user document across opt-in changes. The agent validates the
+    # bounded JSON document before rendering; the installer never executes it.
+    if isinstance(old.get("studio"), dict):
+        data["studio"] = old["studio"]
 except (OSError, ValueError, AttributeError):
     pass
 data["installed"] = os.environ["COUCHSIDE_THEMES_CHOICE"] == "1"
