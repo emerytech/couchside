@@ -296,6 +296,21 @@ export type BoxCaps = {
  *  cec: 'enabled' | 'needs_enable' | 'no_adapter'). */
 export type Utility = { id: string; state: string; label: string; description: string };
 
+export type ControllerReceivers = {
+  supported: boolean;
+  scan_status: 'ok' | 'unavailable';
+  pairing_available: boolean;
+  pairing_method: 'steam_controller_settings';
+  receivers: {
+    id: string;
+    kind: 'steam_machine' | 'external_puck';
+    label: string;
+    usb_id: string;
+    status: 'detected';
+    flashable: false;
+  }[];
+};
+
 /** GET /api/utilities/openpuck/latest — the OpenPuck fork's newest release vs the
  *  build the box pins, for the opt-in "check for newer firmware" control. Read-only;
  *  `available: false` means the box couldn't reach GitHub (an `error` string says
@@ -2690,6 +2705,14 @@ export const api = {
    */
   utilities(settings: ConnSettings): Promise<{ utilities: Utility[] } | null> {
     return probeOrNull(request<{ utilities: Utility[] }>(settings, '/api/utilities'));
+  },
+
+  controllerReceivers(settings: ConnSettings): Promise<ControllerReceivers | null> {
+    return probeOrNull(request<ControllerReceivers>(settings, '/api/controller-receivers'));
+  },
+
+  pairControllerReceiver(settings: ConnSettings): Promise<{ ok: boolean; dispatched: boolean; paired: null; message: string }> {
+    return request(settings, '/api/controller-receivers/pair', { method: 'POST', body: {} });
   },
 
   /**

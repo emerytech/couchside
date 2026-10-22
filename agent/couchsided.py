@@ -13676,6 +13676,75 @@ def _openpuck_state():
     return "no_board"
 
 
+# Receiver presence is not a firmware/DFU target or proof of a paired controller.
+# 1305 can also be emulated by OpenPuck; identify the advertised receiver type,
+# not the physical enclosure. Never read bonds, keys, serials or raw HID here.
+_CONTROLLER_RECEIVER_TYPES = {
+    "1304": ("external_puck", "External controller receiver"),
+    "1305": ("steam_machine", "Steam Machine controller receiver"),
+}
+_receiver_pair_lock = threading.Lock()
+_receiver_pair_last = None
+
+
+def controller_receivers_state(mock=False):
+    if mock:
+        return {"supported": True, "scan_status": "ok", "pairing_available": True,
+                "pairing_method": "steam_controller_settings", "receivers": [
+                    {"id": "usb-1-3", "kind": "steam_machine",
+                     "label": "Steam Machine controller receiver", "usb_id": "28de:1305",
+                     "status": "detected", "flashable": False}]}
+    result = {"supported": os.path.isdir(_USB_DEVICES_DIR), "scan_status": "unavailable",
+              "receivers": [], "pairing_available": False,
+              "pairing_method": "steam_controller_settings"}
+    try:
+        names = sorted(os.listdir(_USB_DEVICES_DIR))
+    except OSError:
+        return result
+    result["scan_status"] = "ok"
+    for name in names:
+        # Physical USB device entries, not one row per interface or root hub.
+        if not re.fullmatch(r"[0-9]+-[0-9]+(?:\.[0-9]+)*", name):
+            continue
+        base = os.path.join(_USB_DEVICES_DIR, name)
+        vid = (_usb_read(os.path.join(base, "idVendor")) or "").lower()
+        pid = (_usb_read(os.path.join(base, "idProduct")) or "").lower()
+        if vid != "28de" or pid not in _CONTROLLER_RECEIVER_TYPES:
+            continue
+        kind, label = _CONTROLLER_RECEIVER_TYPES[pid]
+        result["receivers"].append({"id": "usb-" + name, "kind": kind, "label": label,
+                                     "usb_id": vid + ":" + pid,
+                                     "status": "detected", "flashable": False})
+    result["pairing_available"] = bool(result["receivers"] and
+                                        steammenus_available() and shutil.which("steam"))
+    return result
+
+
+def controller_receivers_pair(mock=False):
+    """Dispatch Steam's existing Controller page; never claim pairing succeeded.
+
+    Steam owns receiver selection and Add Controller. No raw HID writes, bond
+    cloning, firmware or helper/root operation is involved.
+    """
+    global _receiver_pair_last
+    with _receiver_pair_lock:
+        state = controller_receivers_state(mock)
+        if not state["pairing_available"]:
+            return 409, {"ok": False, "error": "A detected receiver and Steam are required."}
+        now = time.monotonic()
+        if _receiver_pair_last is not None and now - _receiver_pair_last < 3:
+            return 429, {"ok": False, "error": "Wait before opening Steam again."}
+        _receiver_pair_last = now
+        try:
+            opened = mock or open_steam_menu("controller")
+        except (OSError, ValueError):
+            opened = False
+        if not opened:
+            return 409, {"ok": False, "error": "Steam's Controller screen could not be opened."}
+        return 200, {"ok": True, "dispatched": True, "paired": None,
+                     "message": "Requested Steam Controller settings. On the TV, choose Add Controller and complete pairing there."}
+
+
 def _cec_devices_exist():
     try:
         return bool(glob.glob("/dev/cec[0-9]"))
@@ -28217,6 +28286,8 @@ class Handler(BaseHTTPRequestHandler):
                 # when Steam or the library cache is absent — degrades closed.
                 games = (MOCK_INSTALLABLE if self.mock else _installable_games())
                 self._send(200, {"games": games, "count": len(games)}, started)
+            elif path == "/api/controller-receivers":
+                self._send(200, controller_receivers_state(self.mock), started)
             elif path == "/api/utilities":
                 # Setup -> Utilities: each supported utility + its live state
                 # (openpuck: board_ready/puck_present/no_board; cec: enabled/
@@ -29257,6 +29328,18 @@ class Handler(BaseHTTPRequestHandler):
                 # check only flags games that got cheaper after this. Bearer-gated,
                 # idempotent, no request body needed.
                 self._send(200, {"ok": True} if self.mock else _steam_wl_ack(), started)
+                return
+            if path == "/api/controller-receivers/pair":
+                try:
+                    req = json.loads(body.decode("utf-8"))
+                except (ValueError, UnicodeDecodeError):
+                    req = None
+                # No client-supplied path, URL, slot, key, firmware or command.
+                if not isinstance(req, dict) or req:
+                    self._send(400, {"ok": False, "error": "An empty JSON object is required."}, started)
+                    return
+                status, result = controller_receivers_pair(self.mock)
+                self._send(status, result, started)
                 return
             if path == "/api/steam/menus":
                 # _read_body() hands back BYTES, not a parsed object — decode

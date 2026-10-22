@@ -26,6 +26,7 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import { ActivityIndicator, Pressable, StyleSheet, Switch, Text, View } from 'react-native';
 
 import { useConfirm } from './ConfirmDialog';
+import { ControllerReceiversPanel } from './ControllerReceiversPanel';
 import {
   confirmDeckyLoaderInstall, confirmRestartDecky, toneColor, useDeckyLoaderOp,
 } from '@/components/DeckyCard';
@@ -491,6 +492,7 @@ export function UtilitiesSection({
 
   return (
     <View style={styles.wrap}>
+      {context === 'setup' ? <ControllerReceiversPanel /> : null}
       <Text style={styles.h}>{context === 'actions' ? 'OPENPUCK RECEIVER' : 'UTILITIES'}</Text>
       {shown.map((u) => {
         const p = present(u);

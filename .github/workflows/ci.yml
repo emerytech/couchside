@@ -1137,6 +1137,9 @@ jobs:
       - name: Unit tests (utilities detection)
         run: python3 tests/test_utilities.py
 
+      - name: Unit tests (controller receivers and Steam pairing handoff)
+        run: python3 tests/test_controller_receivers.py
+
       # _unreadable_reason() — why a controller cannot be read. The app used to
       # tell every affected user to re-run install.sh, which on a Legion Go S
       # cannot work: a POSIX ACL grants the user, and mode 000 collapses the
@@ -1230,6 +1233,8 @@ jobs:
         run: npm ci --prefix app --no-audit --no-fund
       - name: Typecheck the app
         run: npx --prefix app tsc --noEmit -p app
+      - name: Receiver UI fixture rendering
+        run: node scripts/test-controller-receiver-ui.cjs
 
   smoke:
     runs-on: ubuntu-latest
