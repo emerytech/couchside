@@ -92,7 +92,7 @@ except ImportError:
 # Same app id the phone expects (AGENT_APPS in app/lib/api.ts); the Windows
 # agent versions independently of the Linux one.
 APP_NAME = "couchside-agent"
-VERSION = "0.4.13-win"
+VERSION = "0.4.14-win"
 
 _PROGRAMDATA = os.environ.get("ProgramData", r"C:\ProgramData")
 DEFAULT_CONFIG_PATH = os.path.join(_PROGRAMDATA, "Couchside", "config.json")
@@ -5354,6 +5354,12 @@ def _udp_discovery_responder(port):
         short = socket.gethostname().split(".")[0] or "couchside"
         payload = {"couchside": True, "name": short,
                    "host": short + ".local", "port": port, "version": VERSION}
+        try:
+            with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as route:
+                route.connect(addr)
+                payload['ip'] = route.getsockname()[0]
+        except OSError:
+            pass  # older clients still use the reply source / HTTP sweep
         adv = _tls_public()
         if adv:
             payload.update(tls_port=adv['port'], tls_fp=adv['fp'], tls_spki=adv['spki'])
