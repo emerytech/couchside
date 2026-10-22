@@ -5354,12 +5354,11 @@ def _udp_discovery_responder(port):
         short = socket.gethostname().split(".")[0] or "couchside"
         payload = {"couchside": True, "name": short,
                    "host": short + ".local", "port": port, "version": VERSION}
-        try:
-            with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as route:
-                route.connect(addr)
-                payload['ip'] = route.getsockname()[0]
-        except OSError:
-            pass  # older clients still use the reply source / HTTP sweep
+        # A VPN return path can select its tunnel IP even for a LAN probe.
+        # Advertise the same primary LAN address used by on-box pairing instead.
+        lan_ip = _pair_lan_ip()
+        if lan_ip:
+            payload['ip'] = lan_ip
         adv = _tls_public()
         if adv:
             payload.update(tls_port=adv['port'], tls_fp=adv['fp'], tls_spki=adv['spki'])
