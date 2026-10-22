@@ -18,6 +18,13 @@ the same thing regardless of what actually changed.
 Write for the person holding the phone, not for the commit log. They are
 deciding whether to press "Update now" on a machine across the room.
 
+## 2.9.134
+
+- Add optional Couchside Themes (Beta), with console-style layouts, a theme picker and Theme Studio. Themes remain off until applied, and Steam's normal home can be restored.
+- Expand supported lighting effects and editable sequences, including supported handheld ring controls. Available effects depend on the lighting hardware.
+- Add the optional Couchside Player sample-film prototype, with playback progress, pause, seek and stop controls from the phone.
+- Includes 2.9.133's clearer Couch Mode explanations and the earlier secure-connection, private file-upload and controller-diagnostic improvements. Existing pairing and controls remain compatible.
+
 ## 2.9.133
 
 - Couch Mode now explains when automatic TV input switching is unavailable, without implying that a paired TV has no working controls. TV power, session switching, display and audio behavior are unchanged.
