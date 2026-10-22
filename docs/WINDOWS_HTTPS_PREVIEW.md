@@ -27,7 +27,10 @@ legacy controls, auth rejection, malformed/oversized uploads, unsafe Windows
 filenames, interrupted-file cleanup, ticket replay and idle TLS responsiveness.
 Live Windows transfer: 28,672,000 bytes, SHA-256 matched, approximately 1.05s.
 All 16 HTTPS status requests passed alongside eight idle TLS peers; max 37ms.
-Manual phone/controller and native-picker verification remains pending.
+iPhone secure pairing and green-lock/file-upload-capability UI verified.
+Pinned WSS upgrade passed, with existing Android holder respected.
+Native iPhone file-picker transfer and hands-on input remain pending.
+GitHub transport tests passed on Windows and Ubuntu; main-repository CI passed.
 
 Rollback on the test PC uses the saved prior agent and removes only the preview
 HTTPS firewall rule; token/config files are not replaced. Installer uninstall
