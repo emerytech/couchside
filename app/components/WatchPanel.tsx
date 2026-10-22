@@ -181,6 +181,11 @@ export function WatchPanel() {
   // Jump the panel to the top when an open starts, so the Starting/Now card is
   // on screen instead of below the fold the user tapped from.
   const scrollRef = useRef<ScrollView | null>(null);
+  const switcherRef = useRef<ScrollView | null>(null);
+  const switcherOffset = useRef(0);
+  const scrollApps = (direction: -1 | 1) => switcherRef.current?.scrollTo({
+    x: Math.max(0, switcherOffset.current + direction * 240), animated: true,
+  });
   // The gamepad session is OWNED here (WatchDpad runs its lifecycle) so the
   // phone-keyboard hook can share it: typing rides the same {t:'kt'} path,
   // and the compose bar must render at panel root, outside the ScrollView.
@@ -537,14 +542,19 @@ export function WatchPanel() {
 
   return (
     <View style={styles.root}>
-    <View style={styles.switcher} testID="watch-app-switcher">
+    <View style={styles.switcher} testID="watch-app-switcher" onTouchStart={blockTabSwipe}>
       <Pressable onPress={() => transport('hub')} disabled={busy !== null}
         accessibilityRole="button" accessibilityLabel="Player Home on TV"
         testID="watch-home" style={styles.homeShortcut}>
         <Text style={styles.searchBtnText}>{busy === 'hub' ? 'Opening…' : '⌂ Home'}</Text>
       </Pressable>
-      <ScrollView horizontal showsHorizontalScrollIndicator={false}
-        onTouchStart={blockTabSwipe} directionalLockEnabled
+      <Pressable onPress={() => scrollApps(-1)} style={styles.stripArrow}
+        accessibilityRole="button" accessibilityLabel="Previous apps" testID="watch-apps-previous">
+        <Text style={styles.searchBtnText}>‹</Text>
+      </Pressable>
+      <ScrollView ref={switcherRef} horizontal showsHorizontalScrollIndicator={false}
+        onScroll={event => { switcherOffset.current = event.nativeEvent.contentOffset.x; }}
+        scrollEventThrottle={16} onTouchStart={blockTabSwipe} directionalLockEnabled
         contentContainerStyle={styles.switcherServices}>
         {services.map((id) => (
           <Pressable key={id} onPress={() => open(id)} disabled={busy !== null}
@@ -556,6 +566,10 @@ export function WatchPanel() {
           </Pressable>
         ))}
       </ScrollView>
+      <Pressable onPress={() => scrollApps(1)} style={styles.stripArrow}
+        accessibilityRole="button" accessibilityLabel="More apps" testID="watch-apps-next">
+        <Text style={styles.searchBtnText}>›</Text>
+      </Pressable>
     </View>
     <ScrollView
       ref={scrollRef}
@@ -599,6 +613,14 @@ export function WatchPanel() {
                 </Text>
               ) : null}
             </View>
+            {activeService ? (
+              <Pressable onPress={() => { toggleWatchFavorite(activeService); hapticLight(); }}
+                accessibilityRole="button" accessibilityState={{ selected: favorites.includes(activeService) }}
+                accessibilityLabel={`${favorites.includes(activeService) ? 'Remove' : 'Add'} ${label(activeService)} ${favorites.includes(activeService) ? 'from' : 'to'} favorites`}
+                testID="watch-favorite" style={styles.homeShortcut}>
+                <Text style={styles.searchBtnText}>{favorites.includes(activeService) ? '★' : '☆'}</Text>
+              </Pressable>
+            ) : null}
             <Pressable
               onPress={stop}
               disabled={busy !== null}
@@ -1050,6 +1072,7 @@ const makeStyles = (t: Palette) =>
   StyleSheet.create({
     root: { flex: 1 },
     switcher: { flexDirection: 'row', gap: 8, padding: 12, borderBottomWidth: StyleSheet.hairlineWidth, borderBottomColor: t.cardBorder },
+    stripArrow: { minWidth: 32, minHeight: 44, alignItems: 'center', justifyContent: 'center', borderRadius: 12, backgroundColor: t.card },
     homeShortcut: { justifyContent: 'center', paddingHorizontal: 14, minHeight: 44, backgroundColor: t.card, borderRadius: 12 },
     switcherServices: { gap: 8 },
     serviceShortcut: { justifyContent: 'center', paddingHorizontal: 14, minHeight: 44, backgroundColor: t.card, borderRadius: 12, borderWidth: 1, borderColor: t.cardBorder },

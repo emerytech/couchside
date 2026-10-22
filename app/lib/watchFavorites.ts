@@ -10,6 +10,7 @@ let cache: string[] = [];
 let loaded = false;
 let loading = false;
 const listeners = new Set<() => void>();
+let writes = Promise.resolve();
 
 function emit() {
   listeners.forEach((l) => l());
@@ -72,7 +73,8 @@ export function toggleWatchFavorite(service: string): void {
   cache = cache.includes(service) ? cache.filter(id => id !== service)
     : normalizeFavorites([...cache, service]);
   emit();
-  void writeStore(JSON.stringify(cache));
+  const value = JSON.stringify(cache);
+  writes = writes.then(() => writeStore(value));
 }
 
 function subscribe(listener: () => void): () => void {
