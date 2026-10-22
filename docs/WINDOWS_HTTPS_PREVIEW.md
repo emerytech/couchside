@@ -38,15 +38,24 @@ Rollback on the test PC uses the saved prior agent and removes only the preview
 HTTPS firewall rule; token/config files are not replaced. Installer uninstall
 removes the HTTPS rule without deleting uploaded user files.
 
-## Separate pre-existing app follow-ups
+## Windows discovery/status compatibility
 
-The Console status guard currently requires `cpu` and `os`, although both fields
-are optional in the app's Status contract. Windows omits those Linux-oriented
-facts, so a reachable Windows box may show "connecting" despite successful
-status responses, units, controller connection, and file uploads. Fix the app's
-optional-field guard separately; do not invent CPU clocks/OS measurements in
-the Windows agent to satisfy it.
+The discovery reply is observed arriving from the router even when the probe
+is sent directly to the PC. Agent 0.4.14 advertises its primary LAN address,
+using the on-box pairing address rather than the VPN return interface.
+The app treats this as a hint only: it accepts a private literal, verifies
+HTTP agent identity/version and any advertised TLS fingerprint, then lists
+the verified endpoint. Duplicate datagrams and late async results are bounded.
+Old agents without the new address field retain the verified source fallback.
 
-The iPhone scan displayed the agent at an unreachable address during this test;
-pairing at the verified LAN address with its SSH-verified certificate succeeded.
-The discovery/network-path discrepancy is not considered passed or diagnosed.
+The Console guard now checks the core memory/load/disk values it dereferences;
+CPU-frequency and OS metadata remain optional, as defined by the protocol.
+It accepts Windows and older Linux payloads without inventing measurements and
+continues to reject incomplete/error-shaped responses.
+
+Tests: 772 app tests passed before the final lifecycle additions; eight targeted
+compatibility tests cover relay address verification, pin/identity mismatch,
+unsafe hints, old-agent fallback, duplicate replies, late scan completion,
+Windows/older Linux status and malformed core data. TypeScript passes.
+The live relayed-UDP-to-verified-HTTP check selects the actual PC address.
+An internal build is required for these app changes; production is unchanged.
