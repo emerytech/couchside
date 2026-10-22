@@ -1348,6 +1348,14 @@ jobs:
           node tests/test_player_hub.cjs
           node tests/test_player_catalog_identity.cjs
 
+      # Storage tests transpile mocked native imports; keep their compiler
+      # isolated so the fast job does not install the full Expo dependency tree.
+      - name: Prepare storage-test TypeScript compiler
+        run: |
+          npm install --prefix "$RUNNER_TEMP/couchside-test-compiler" typescript@5.9.2 --no-save --no-package-lock --no-audit --no-fund
+          mkdir -p app/node_modules
+          ln -s "$RUNNER_TEMP/couchside-test-compiler/node_modules/typescript" app/node_modules/typescript
+
       - name: Input-path unit tests (gamepad lifecycle + trackpad gestures)
         run: node --experimental-strip-types --test --test-timeout=60000 lib/__tests__/*.test.ts hooks/__tests__/*.test.ts
         working-directory: app
