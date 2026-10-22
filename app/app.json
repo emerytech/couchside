@@ -96,7 +96,8 @@
             }
           ]
         }
-      ]
+      ],
+      "./plugins/withDirectUpdater"
     ],
     "experiments": {
       "typedRoutes": true

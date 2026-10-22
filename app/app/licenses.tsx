@@ -10,6 +10,7 @@
  * the exact shipped tag IS that offer. Nothing on this screen is interactive beyond
  * the links; it exists to satisfy attribution + the source offer.
  */
+import { HUESYNC_LICENSE } from '@/lib/lightingAttribution';
 import Ionicons from '@expo/vector-icons/Ionicons';
 import * as Linking from 'expo-linking';
 import { Stack, router } from 'expo-router';
@@ -99,6 +100,18 @@ export default function LicensesScreen() {
             <LinkRow icon="git-network-outline" label="EmeryTech fork" url={OPENPUCK.forkUrl} />
             <LinkRow icon="document-text-outline" label="AGPL-3.0 license text" url={OPENPUCK.licenseUrl} />
           </View>
+        </View>
+
+        <View style={[styles.card, { marginTop: 16 }]}>
+          <Text style={styles.cardTitle}>Handheld lighting — HueSync</Text>
+          <Text style={styles.cardMeta}>BSD 3-Clause · honjow</Text>
+          <Text style={styles.body}>
+            Couchside’s Legion Go 2 sysfs support adapts HueSync’s driver sequence.
+            Thanks to honjow and the earlier ayaled projects by MiZai2 and Gawah,
+            and Steam Deck Homebrew. Couchside’s adaptation does not imply their endorsement.
+          </Text>
+          <LinkRow icon="git-branch-outline" label="HueSync source used for this adaptation" url="https://github.com/honjow/HueSync/tree/575fba4acd054f00629e5998eafef30169ee2005" />
+          <Text style={styles.body}>{HUESYNC_LICENSE}</Text>
         </View>
 
         <Text style={styles.footer}>

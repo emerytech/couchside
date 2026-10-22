@@ -15,6 +15,7 @@
  * error. TRAP (see [[expo-sdk57-api-traps]]): Constants.nativeBuildVersion
  * typechecks but does not exist; use expo-application.
  */
+import { DirectUpdateButton } from './DirectUpdateButton';
 import Ionicons from '@expo/vector-icons/Ionicons';
 import * as Application from 'expo-application';
 import { useCallback, useState } from 'react';
@@ -105,12 +106,12 @@ export function AppUpdateRow() {
                   ? 'Couchside app is up to date'
                   : 'Couldn’t check right now'}
         </Text>
-        {result.state === 'update' ? (
+        {result.state === 'update' ? (IS_DIRECT_BUILD ? null : (
           <Pressable onPress={() => open(result.url)} hitSlop={8} style={styles.btn}>
             <Ionicons name="open-outline" size={13} color={t.blue} />
             <Text style={styles.btnText}>{store}</Text>
           </Pressable>
-        ) : (
+        )) : (
           <Pressable onPress={() => void check()} hitSlop={8} style={styles.btn}>
             <Ionicons name="refresh" size={13} color={t.blue} />
             <Text style={styles.btnText}>
@@ -119,11 +120,12 @@ export function AppUpdateRow() {
           </Pressable>
         )}
       </View>
+      {IS_DIRECT_BUILD && result.state === 'update' && <DirectUpdateButton key={result.url} url={result.url} />}
       {/* Transparency, always shown and platform-accurate: exactly what this
           reaches out to, and that nothing about the user is sent. */}
       <Text style={styles.note}>
         {IS_DIRECT_BUILD
-          ? 'Manual only. Tapping Check asks couchside.tv for the latest direct-edition version; Download fetches the new APK — nothing about you or your box is sent.'
+          ? 'Manual only. Tapping Check asks couchside.tv for the latest direct-edition version; Download fetches and verifies the full APK, then Android asks you to confirm the update. No uninstall is needed.'
           : Platform.OS === 'ios'
           ? 'Manual only. Tapping Check asks the App Store for Couchside’s latest version — nothing about you or your box is sent.'
           : 'Manual only. Tapping Check asks couchside.tv for the current Play Store version (Google has no public version API) — nothing about you or your box is sent.'}
