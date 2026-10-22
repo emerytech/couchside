@@ -16,6 +16,13 @@ Each entry now carries a `✅ DONE` / `🟡 PARTIAL` / `📋 OPEN` banner with i
 
 ## 🔨 In Progress
 
+### Player sample catalog prototype (2026-10-20)
+- **priority:** P2 · **risk:** medium (playback) · **affects:** Linux player + Watch · **depends_on:** installed Couchside Player.
+- Isolated branch `codex/player-catalog-prototype`; one embedded Stremio-shaped catalog with the Big Buck Bunny trailer, fixed source lookup, existing Chrome playback and phone transport.
+- Local API, browser playback and Watch button checks pass. A repeatable real HTTP-to-Chrome acceptance script passed on 2026-10-21, including Stop and title cleanup. Steam/gamescope launch, audio output and physical-phone checks remain pending; deployment requires explicit owner coordination.
+- First hardware trial failed and Player was rolled back with Themes baseline intact. A Linux request-thread/parent-death defect has since been reproduced and corrected using persistent browser ownership; local regression and revised hardware launch/control checks pass. The hardware retest exposed small centered video on the TV; Player-only rollback completed. A dedicated viewport-filling TV surface is now prepared and passes local multi-size browser checks; actual 4K TV sizing passed the approved retest, but moving playback froze with a captured decoder error. Player-only rollback verified; a test-only software-decoding mitigation and explicit failure telemetry are prepared, with real local frame-progress/seek/reopen checks. The approved software-decoding hardware retest passed sustained video motion, seek/pause/mute, reopen, and full sample completion, with user TV confirmation. All 220 protected Themes files and existing Steam shortcuts remained unchanged. The isolated test remains installed but stopped; native phone-app validation and arbitrary-media support remain outstanding. The subsequent existing-iPhone compatibility package passed local checks, but its new Steam shortcut launch did not start and that deployment was rolled back. Production sample sizing/software decoding and shared media-error reporting are now fixed and locally checked; integrated Steam/Flatpak and installed-phone acceptance are still pending. Player is not yet hardware release-accepted.
+- This is a fixed sample provider, not general third-party Stremio add-on installation. See `docs/PLAYER_CATALOG_PROTOTYPE.md`.
+
 ### Security hardening — phase 1: ticket permissions (2026-10-09)
 - **priority:** P1 · **risk:** low-medium (authorization) · **affects:** Linux agent and tests · **depends_on:** existing TLS tickets.
 - **Status:** released in Linux agent 2.9.131 with app release 2.9.75 (2026-10-10, PR #624). Verified with a physical iPhone against an isolated server before release.

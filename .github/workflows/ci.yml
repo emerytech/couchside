@@ -830,6 +830,12 @@ jobs:
       - name: Unit tests (player API + caps)
         run: python3 tests/test_player_api.py
 
+      - name: Unit tests (isolated player package)
+        run: python3 tests/test_player_isolated.py
+
+      - name: Unit tests (player catalog)
+        run: python3 tests/test_player_catalog.py
+
       # Player transport over CDP. Runtime.evaluate runs arbitrary JS in a
       # browser signed into the user's streaming accounts, so the whole design
       # is lookup-only: an op id selects a script CONSTANT, and a numeric

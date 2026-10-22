@@ -531,7 +531,17 @@ export type InstallableGame = { appid: number; name?: string; type?: string };
  * first to drift. `service_urls` exists so a pasted or shared link can be split
  * into (service, path) using the box's own hosts.
  */
+export type PlayerCatalog = {
+  id: string;
+  name: string;
+  type: 'movie';
+  metas: { id: string; type: 'movie'; name: string; description: string; credit: string; license: string }[];
+};
+
 export type PlayerState = {
+  /** Optional: old boxes simply omit the sample catalog. */
+  catalog?: PlayerCatalog;
+  catalog_video?: PlayerCatalog["metas"][number] | null;
   available: boolean;
   running: boolean;
   /** Service id the tile is pointed at ('' before anything has been opened). */
@@ -634,6 +644,11 @@ export type PlayerPlayback = {
   duration: number;
   muted: boolean;
   title: string;
+  /** Optional on older agents. A media error must not appear as playing. */
+  error?: { code: number; message: string } | null;
+  ready?: number;
+  seeking?: boolean;
+  decodedFrames?: number;
 };
 
 /** Transport ops the box accepts. Anything else is refused with a 404. */
@@ -3694,6 +3709,12 @@ export const api = {
    * nothing and launched nothing. The app does not pre-judge — it surfaces the
    * refusal.
    */
+  playerCatalogOpen(settings: ConnSettings, videoId: string): Promise<{ ok: boolean }> {
+    return request(settings, '/api/player', {
+      method: 'POST', body: { op: 'catalog-open', video_id: videoId },
+    });
+  },
+
   playerOp(
     settings: ConnSettings,
     op: PlayerOp,

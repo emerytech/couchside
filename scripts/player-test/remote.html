@@ -1,0 +1,18 @@
+<!doctype html><html lang="en"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Couchside Player Test</title>
+<style>body{background:#0c1320;color:#eaf0fa;font:17px system-ui;max-width:480px;margin:30px auto;padding:20px}button,input{font:inherit;padding:14px;border:1px solid #364759;border-radius:12px;background:#192638;color:inherit;box-sizing:border-box}input{width:100%}button{margin:6px 0}button:disabled{opacity:.45}.row{display:flex;gap:8px;flex-wrap:wrap}#notice{color:#a9b9cf;min-height:3em}#connect{display:flex;gap:8px}progress{width:100%}small{color:#a9b9cf}</style>
+<h1>Couchside Player Test</h1><p>This temporary remote controls only the test trailer.</p>
+<label for="token">Private test token</label><div id="connect"><input id="token" type="password" autocomplete="off" autocapitalize="off" spellcheck="false"><button id="pair">Connect</button></div>
+<p id="notice" role="status">Launch the test shortcut, then enter its private test token.</p>
+<h2 id="title">Sample films</h2><p>Big Buck Bunny — trailer</p><small>© Blender Foundation · CC BY 3.0</small><br>
+<button id="open" disabled>Play on TV</button><p id="status">Not connected</p><progress id="progress" value="0" max="33"></progress>
+<div class="row"><button id="pause" disabled>Play / pause</button><button id="back" disabled>−10 seconds</button><button id="forward" disabled>+10 seconds</button><button id="mute" disabled>Mute</button><button id="stop" disabled>Stop video</button></div>
+<p><small>Stop video keeps the test remote running. Exit the test shortcut through Steam to end the session. Themes settings are not part of this remote.</small></p>
+<script>
+let credential='',busy=false,connected=false;const $=id=>document.getElementById(id);const controls=['open','pause','back','forward','mute','stop'];let running=false;
+function enable(){controls.forEach(id=>$(id).disabled=busy||!connected||(id!=='open'&&!running));}
+async function request(body){let r=await fetch('/api/player',{method:body?'POST':'GET',headers:{Authorization:'Bearer '+credential,...(body?{'Content-Type':'application/json'}:{})},...(body?{body:JSON.stringify(body)}:{})});let d=await r.json();if(!r.ok)throw Error(d.error||'Request refused');return d;}
+async function refresh(){try{let d=await request();connected=true;running=d.running;let v=d.playback;$('status').textContent=v?.error?`Playback failed: ${v.error.message}. Stop and retry.`:v?`${v.playing?'Playing':'Paused'} · ${Math.floor(v.position)} / ${Math.floor(v.duration)} seconds`:running?'Loading video…':'Video stopped';$('progress').max=v?.duration||33;$('progress').value=v?.position||0;$('mute').textContent=v?.muted?'Unmute':'Mute';enable();}catch(e){connected=false;enable();$('notice').textContent=e.message;}}
+async function command(body){busy=true;enable();$('notice').textContent='Working…';try{let d=await request(body);if(!d.ok)throw Error('The video is not ready yet.');await refresh();$('notice').textContent='Ready';}catch(e){$('notice').textContent=e.message;}finally{busy=false;enable();}}
+$('pair').onclick=async()=>{credential=$('token').value.trim();$('token').value='';await refresh();if(connected)$('notice').textContent='Connected to the isolated Player test';};
+$('open').onclick=()=>command({op:'catalog-open',video_id:'couchside:bbb-trailer'});$('pause').onclick=()=>command({op:'playpause'});$('back').onclick=()=>command({op:'seek',secs:-10});$('forward').onclick=()=>command({op:'seek',secs:10});$('mute').onclick=()=>command({op:'mute'});$('stop').onclick=()=>command({op:'close'});setInterval(()=>{if(connected&&!busy)refresh();},1500);
+</script></html>

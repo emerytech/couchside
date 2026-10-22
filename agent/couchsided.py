@@ -3693,6 +3693,56 @@ def _pl_install_grid_art(appid):
             print("[player] grid art copy skipped (%s)" % e, flush=True)
 
 
+# Prototype provider: Stremio-shaped catalog/metas/streams, embedded so the box
+# remains stdlib-only. Only IDs cross the control boundary; never source URLs.
+_PLAYER_CATALOG = {
+    "id": "couchside-samples", "name": "Sample films", "type": "movie",
+    "metas": [{"id": "couchside:bbb-trailer", "type": "movie",
+               "name": "Big Buck Bunny — trailer",
+               "description": "A short Blender Foundation film preview. Play on your TV, then use your phone to pause, skip, or mute.",
+               "credit": "© Blender Foundation | peach.blender.org | CC BY 3.0",
+               "license": "https://creativecommons.org/licenses/by/3.0/"}],
+}
+_PLAYER_CATALOG_STREAMS = {
+    "couchside:bbb-trailer": {
+        "url": "https://media.w3.org/2010/05/bunny/trailer.mp4",
+        "name": "W3C sample • MP4",
+    },
+}
+
+
+def player_catalog():
+    # Copy via JSON so callers cannot mutate the authoritative table.
+    return json.loads(json.dumps(_PLAYER_CATALOG))
+
+
+def player_catalog_current():
+    # Config remembers the last launch; it is not evidence of active playback.
+    if not (_PL_MOCK["running"] if PL_MOCK else _pl_running()):
+        return None
+    url = _PL_MOCK.get("url", "") if PL_MOCK and not _PL_MOCK.get("service") else ""
+    if not PL_MOCK:
+        try:
+            with open(PLAYER_CONF) as f:
+                for line in f:
+                    if line.startswith("url="):
+                        url = line.strip()[4:]
+        except OSError:
+            pass
+    for video in _PLAYER_CATALOG["metas"]:
+        if _PLAYER_CATALOG_STREAMS[video["id"]]["url"] == url:
+            return dict(video)
+    return None
+
+
+def player_catalog_open(video_id):
+    if not isinstance(video_id, str) or video_id not in _PLAYER_CATALOG_STREAMS:
+        raise ValueError("unknown catalog video")
+    # player_open already handles validation, locking, close/relaunch and Steam
+    # registration. The URL here is a source constant, not the free-URL tier.
+    return player_open("", url=_PLAYER_CATALOG_STREAMS[video_id]["url"])
+
+
 def player_info():
     """Live state. `services` is the tile's own list, so the app never carries a
     hardcoded copy either."""
@@ -3703,6 +3753,8 @@ def player_info():
         return {"available": True, "running": _PL_MOCK["running"],
                 "service": _PL_MOCK["service"], "path": _PL_MOCK["path"],
                 "query": _PL_MOCK.get("query", ""),
+                "catalog": player_catalog(),
+                "catalog_video": player_catalog_current(),
                 "services": list(_PLAYER_SERVICES),
                 "service_urls": dict(_PLAYER_SERVICE_URLS),
                 "searchable": list(_PLAYER_SEARCHABLE),
@@ -3717,6 +3769,8 @@ def player_info():
     service, path, query = _pl_conf_read()
     return {"available": player_available(), "running": _pl_running(),
             "service": service, "path": path, "query": query,
+            "catalog": player_catalog(),
+            "catalog_video": player_catalog_current(),
             "services": list(_PLAYER_SERVICES),
             "service_urls": dict(_PLAYER_SERVICE_URLS),
             "searchable": list(_PLAYER_SEARCHABLE),
@@ -3828,7 +3882,7 @@ def player_open(service, path="", query="", url=""):
             raise ValueError("unknown service or path not allowed")
     if PL_MOCK:
         _PL_MOCK.update(running=True, service=service, path=path or "",
-                        query=query or "")
+                        query=query or "", url="")
         return {"ok": True, "running": True, "url": url}
     if not player_available():
         raise RuntimeError("player not installed on this box")
@@ -3927,10 +3981,16 @@ _PL_JS_PICK = """
 
 PLAYER_JS_STATE = (
     "(function(){%s if (!v) return null;"
-    " return {playing: !v.paused && !v.ended,"
+    " var q=v.getVideoPlaybackQuality?v.getVideoPlaybackQuality():null;"
+    " var messages={1:'playback aborted',2:'media network error',"
+    " 3:'video decode failed',4:'media source unsupported'};"
+    " return {playing: !v.paused && !v.ended && !v.error && v.readyState>=2,"
     "         position: v.currentTime || 0,"
     "         duration: isFinite(v.duration) ? v.duration : 0,"
-    "         muted: !!v.muted, title: document.title || ''};"
+    "         muted: !!v.muted, title: document.title || '',"
+    "         ready:v.readyState, seeking:!!v.seeking,"
+    "         decodedFrames:q?q.totalVideoFrames:(v.webkitDecodedFrameCount||0),"
+    "         error:v.error?{code:v.error.code,message:messages[v.error.code]||'media error'}:null};"
     "})()" % _PL_JS_PICK)
 
 # op id -> agent-authored script. Frozen: an id that is not a key never runs.
@@ -4416,7 +4476,7 @@ def player_hub():
     the phone does not cover — someone opening the tile from the Steam library
     with a controller and no phone in hand."""
     if PL_MOCK:
-        _PL_MOCK.update(running=True, service="", path="", query="")
+        _PL_MOCK.update(running=True, service="", path="", query="", url="")
         return {"ok": True, "running": True, "hub": True}
     if not player_available():
         raise RuntimeError("player not installed on this box")
@@ -30330,6 +30390,25 @@ class Handler(BaseHTTPRequestHandler):
                         self._send(409, {"error": str(e)}, started)
                         return
                     self._send(200, r, started)
+                elif op == "catalog-open":
+                    # Strict shape prevents an extra URL field being mistaken
+                    # for something honored by this fixed-provider operation.
+                    if set(req) != {"op", "video_id"}:
+                        self._send(400, {"error": "video id required"}, started)
+                        return
+                    video_id = req.get("video_id")
+                    if not isinstance(video_id, str) or video_id not in _PLAYER_CATALOG_STREAMS:
+                        self._send(404, {"error": "unknown catalog video"}, started)
+                        return
+                    now = time.time()
+                    if now - _pl_last_open[0] < _PL_OPEN_MIN_INTERVAL_S:
+                        self._send(429, {"error": "slow down"}, started)
+                        return
+                    _pl_last_open[0] = now
+                    try:
+                        self._send(200, player_catalog_open(video_id), started)
+                    except RuntimeError as e:
+                        self._send(409, {"error": str(e)}, started)
                 elif op == "hub":
                     try:
                         self._send(200, player_hub(), started)
