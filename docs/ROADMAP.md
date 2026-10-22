@@ -16,6 +16,15 @@ Each entry now carries a `✅ DONE` / `🟡 PARTIAL` / `📋 OPEN` banner with i
 
 ## 🔨 In Progress
 
+### Player discovery, library and controller receivers — backup preview
+
+- Local test builds: iOS267 and Android Direct43, version2.9.78. No production release.
+- Player navigation now has warm Home/service switching, explicit Browse/Playback modes, visible focus, favorites and app-strip arrows.
+- Discovery/My Library uses a replaceable metadata-provider interface, licensed sample catalog, saved titles, watched flags and device-local progress for positively identified playback. Automatic resume and real movie/TV provider access are pending.
+- Authenticated receiver detection distinguishes external/internal-style USB receivers from flashable boards. Pair/manage opens Steam Controller settings; it never claims bonding succeeded. New receiver/history capabilities need the matching agent update, not deployed with these app previews.
+- Themes/Studio and existing lighting work remain included. Native Android updater, encrypted-upload, icon-switch and crash-report modules were verified in Direct43 after correcting the build archive filter.
+
+
 ### Player sample catalog prototype (2026-10-20)
 - **priority:** P2 · **risk:** medium (playback) · **affects:** Linux player + Watch · **depends_on:** installed Couchside Player.
 - Isolated branch `codex/player-catalog-prototype`; one embedded Stremio-shaped catalog with the Big Buck Bunny trailer, fixed source lookup, existing Chrome playback and phone transport.
