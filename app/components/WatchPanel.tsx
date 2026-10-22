@@ -164,6 +164,7 @@ export function WatchPanel() {
   const [error, setError] = useState<string | null>(null);
   const [link, setLink] = useState('');
   const [query, setQuery] = useState('');
+  const [remoteMode, setRemoteMode] = useState<'browse' | 'playback'>('browse');
   // True while a finger is on the d-pad's swipe surface. The ScrollView must
   // not scroll during it, or a vertical swipe scrolls the panel instead of
   // stepping the TV's focus a row.
@@ -199,17 +200,33 @@ export function WatchPanel() {
 
   const state = player.data;
   const services = state?.services ?? [];
+  const activeService = state?.surface?.kind === 'home' ? ''
+    : state?.surface?.kind === 'service' ? state.surface.service : state?.service ?? '';
+  const atHome = state?.surface?.kind === 'home';
+  // Autoplay trailers on service home pages are not evidence that the user
+  // started watching a title. Keep navigation stable until they choose a mode.
+  React.useEffect(() => {
+    setRemoteMode(state?.catalog_video ? 'playback' : 'browse');
+  }, [hostKey(settings), activeService, state?.catalog_video?.id]);
 
-  // Poll confirmed the player is up (or it never came up): drop the optimism.
+  // A browser already running is not confirmation that it switched apps.
+  const pendingConfirmed = state?.running === true && (
+    pending === '__hub__' ? atHome
+      : pending === activeService || pending === state?.catalog_video?.name
+        || pending === '__web__' || pending === '__panel__'
+  );
   React.useEffect(() => {
     if (!pending) return undefined;
-    if (state?.running) {
+    if (pendingConfirmed) {
       setPending(null);
       return undefined;
     }
-    const timer = setTimeout(() => setPending(null), 25_000);
+    const timer = setTimeout(() => {
+      setPending(null);
+      setError('Couldn’t confirm the TV opened that screen. Try Home or open the app again.');
+    }, 25_000);
     return () => clearTimeout(timer);
-  }, [pending, state?.running]);
+  }, [pending, pendingConfirmed]);
   // Which services can be searched is the BOX's answer, not a guess here:
   // a verified search URL exists for some services and not others.
   const searchable = state?.searchable ?? [];
@@ -293,6 +310,7 @@ export function WatchPanel() {
       try {
         // A query and a deep-link path are mutually exclusive, same as on the
         // box — sending both would leave the winner to the agent's read order.
+        gpRef.current?.noteUserActivity();
         await api.playerOp(
           settings,
           'open',
@@ -432,7 +450,12 @@ export function WatchPanel() {
       setBusy(op);
       setError(null);
       try {
+        gpRef.current?.noteUserActivity();
         await api.playerOp(settings, op, opts);
+        if (op === 'hub') {
+          setPending('__hub__');
+          scrollRef.current?.scrollTo({ y: 0, animated: true });
+        }
         player.refresh();
       } catch (e) {
         hapticError();
@@ -510,6 +533,25 @@ export function WatchPanel() {
 
   return (
     <View style={styles.root}>
+    <View style={styles.switcher} testID="watch-app-switcher">
+      <Pressable onPress={() => transport('hub')} disabled={busy !== null}
+        accessibilityRole="button" accessibilityLabel="Player Home on TV"
+        testID="watch-home" style={styles.homeShortcut}>
+        <Text style={styles.searchBtnText}>{busy === 'hub' ? 'Opening…' : '⌂ Home'}</Text>
+      </Pressable>
+      <ScrollView horizontal showsHorizontalScrollIndicator={false}
+        contentContainerStyle={styles.switcherServices}>
+        {services.map((id) => (
+          <Pressable key={id} onPress={() => open(id)} disabled={busy !== null}
+            accessibilityRole="button" accessibilityLabel={`Open ${label(id)} on TV`}
+            accessibilityState={{ selected: state.running && activeService === id }}
+            testID={`watch-switch-${id}`} style={[styles.serviceShortcut,
+              state.running && activeService === id && { borderColor: t.accent }]}>
+            <Text style={styles.searchBtnText}>{busy === id ? 'Opening…' : label(id)}</Text>
+          </Pressable>
+        ))}
+      </ScrollView>
+    </View>
     <ScrollView
       ref={scrollRef}
       style={styles.root}
@@ -517,14 +559,14 @@ export function WatchPanel() {
       keyboardShouldPersistTaps="handled"
       scrollEnabled={!dpadGesture}
     >
-      {state.running ? (
+      {state.running && !pending ? (
         <View
           style={[
             styles.nowCard,
             // Service-branded card: the accent the tile carries follows the
             // service onto the now-playing card, so Netflix feels like
             // Netflix's card and not a generic player shell.
-            { borderLeftColor: ACCENTS[state.service ?? ''] ?? t.accent, borderLeftWidth: 3 },
+            { borderLeftColor: ACCENTS[activeService] ?? t.accent, borderLeftWidth: 3 },
           ]}
           testID="watch-now-playing"
         >
@@ -533,14 +575,14 @@ export function WatchPanel() {
               <Text
                 style={[
                   styles.nowLabel,
-                  { color: ACCENTS[state.service ?? ''] ?? t.green },
+                  { color: ACCENTS[activeService] ?? t.green },
                 ]}
               >
                 ON THE TV
               </Text>
               <Text style={styles.nowService}>
                 {/* The panel and a free-URL page both report an empty service. */}
-                {state.catalog_video?.name ?? (state.service ? label(state.service) : 'The box’s own screen')}
+                {atHome ? 'Player Home' : state.catalog_video?.name ?? (activeService ? label(activeService) : 'The box’s own screen')}
               </Text>
               {playback?.title ? (
                 <Text style={styles.nowPath} numberOfLines={1}>
@@ -564,6 +606,19 @@ export function WatchPanel() {
             </Pressable>
           </View>
 
+          <View style={styles.btnRow} testID="watch-remote-mode">
+            {(['browse', 'playback'] as const).map((mode) => (
+              <Pressable key={mode} onPress={() => { hapticLight(); setRemoteMode(mode); }}
+                accessibilityRole="button" accessibilityState={{ selected: remoteMode === mode }}
+                testID={`watch-mode-${mode}`} disabled={mode === 'playback' && !playback}
+                style={[styles.tBtn, remoteMode === mode && styles.tBtnMain]}>
+                <Text style={[styles.tBtnText, remoteMode === mode && styles.tBtnMainText]}>
+                  {mode === 'browse' ? 'Browse' : 'Playback'}
+                </Text>
+              </Pressable>
+            ))}
+          </View>
+
           {/* D-pad drives the page's focus ring (Netflix/YouTube tile grids,
               and any web page). Rides the existing uinput key path, so it shows
               for ANY open page — not gated on <video> like the scrubber below. */}
@@ -576,9 +631,9 @@ export function WatchPanel() {
             client={gpRef.current}
             onKeyboard={kb.toggle}
             keyboardOpen={kb.open}
-            // Transport mode while a video actually plays — the page has no
-            // focusable controls then, so tile nav would be a silent no-op.
-            playing={playback?.playing === true}
+            // Explicit mode keeps service-home trailers from silently turning
+            // browsing gestures into seek or volume commands.
+            playing={remoteMode === 'playback'}
             onSeek={(dir) => {
               const secs = dir > 0 ? fwd : back;
               if (secs != null) transport('seek', { secs });
@@ -750,7 +805,7 @@ export function WatchPanel() {
                 STARTING
               </Text>
               <Text style={styles.nowService}>
-                {pending === '__web__' ? 'Web page' : pending === '__panel__' ? 'Couchside panel' : label(pending)}
+                {pending === '__hub__' ? 'Player Home' : pending === '__web__' ? 'Web page' : pending === '__panel__' ? 'Couchside panel' : label(pending)}
               </Text>
               <Text style={styles.nowPath}>Opening on the TV…</Text>
             </View>
@@ -948,7 +1003,7 @@ export function WatchPanel() {
       <Text style={styles.section}>SERVICES</Text>
       <View style={styles.grid}>
         {services.map((id) => {
-          const active = state.running && state.service === id;
+          const active = state.running && activeService === id;
           return (
             <Pressable
               key={id}
@@ -985,6 +1040,10 @@ export function WatchPanel() {
 const makeStyles = (t: Palette) =>
   StyleSheet.create({
     root: { flex: 1 },
+    switcher: { flexDirection: 'row', gap: 8, padding: 12, borderBottomWidth: StyleSheet.hairlineWidth, borderBottomColor: t.cardBorder },
+    homeShortcut: { justifyContent: 'center', paddingHorizontal: 14, minHeight: 44, backgroundColor: t.card, borderRadius: 12 },
+    switcherServices: { gap: 8 },
+    serviceShortcut: { justifyContent: 'center', paddingHorizontal: 14, minHeight: 44, backgroundColor: t.card, borderRadius: 12, borderWidth: 1, borderColor: t.cardBorder },
     content: { padding: 16, paddingBottom: 48, gap: 12 },
     empty: { flex: 1, alignItems: 'center', justifyContent: 'center', padding: 32, gap: 8 },
     emptyTitle: { color: t.text, fontSize: 17, fontWeight: '700' },

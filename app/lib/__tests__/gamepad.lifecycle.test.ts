@@ -336,3 +336,26 @@ process.on('exit', () => {
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   (Date as any).now = realDateNow;
 });
+
+
+test('browser remote activity wakes without clicking, coalescing or queuing', () => {
+  const c = freshClient();
+  c.noteUserActivity();
+  assert.equal(MockWebSocket.instances.length, 0);
+  c.connect(CONN, { deviceName: 'phone' });
+  const ws = MockWebSocket.instances[0];
+  c.noteUserActivity();
+  assert.equal(ws.sent.length, 0, 'no activity before control handshake');
+  ws.openAndHello();
+  ws.sent = [];
+  c.noteUserActivity();
+  assert.deepEqual(ws.sent.map(s => JSON.parse(s)), [
+    { t: 'm', dx: 1, dy: 0 }, { t: 'm', dx: -1, dy: 0 },
+  ]);
+  c.noteUserActivity();
+  assert.equal(ws.sent.length, 2, 'rapid repeated gestures are throttled');
+  NOW += 1001;
+  c.noteUserActivity();
+  assert.equal(ws.sent.length, 4);
+  c.close();
+});

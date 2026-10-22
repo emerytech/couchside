@@ -539,6 +539,8 @@ export type PlayerCatalog = {
 };
 
 export type PlayerState = {
+  /** Live page classification; no browsing URL or account information. */
+  surface?: { kind: 'home' } | { kind: 'service'; service: string } | null;
   /** Optional: old boxes simply omit the sample catalog. */
   catalog?: PlayerCatalog;
   catalog_video?: PlayerCatalog["metas"][number] | null;

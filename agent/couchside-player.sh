@@ -228,7 +228,7 @@ write_hub() {
 <!doctype html><html><head><meta charset=utf-8><title>Couchside</title><style>
 html,body{margin:0;height:100%;background:#0b1220;color:#e5ecf8;
   font-family:system-ui,sans-serif;overflow:hidden}
-h1{font-size:2.2vw;letter-spacing:.4em;margin:5vh 0 1vh;text-align:center;
+h1{font-size:2.2vw;letter-spacing:.3em;margin:7vh 0 1.5vh;text-align:center;
   color:#e5ecf8;font-weight:800}
 p.sub{text-align:center;color:#8b97ad;margin:0 0 5vh;font-size:1.2vw}
 span.beta{color:#fbbf24;font-size:.95vw;letter-spacing:.08em}
@@ -239,8 +239,10 @@ a.tile{display:flex;align-items:center;justify-content:center;gap:.8vw;height:11
   color:#e5ecf8;text-decoration:none;font-size:1.4vw;font-weight:600;
   transition:transform .08s ease}
 /* The focus ring is the whole point: it is what a d-pad step lands ON. */
-a.tile:focus{outline:none;border-color:#34d399;background:#0e1526;
-  color:#34d399;transform:scale(1.06)}
+a.tile:focus{outline:3px solid #e5ecf8;outline-offset:5px;border-color:#34d399;background:#1c3049;
+  color:#fff;transform:scale(1.06);box-shadow:0 10px 35px #0008}
+@media(prefers-reduced-motion:reduce){a.tile{transition:none}a.tile:focus{transform:none}}
+footer{text-align:center;color:#a7b5ca;font-size:1.1vw;margin-top:5vh}
 /* The service's OWN icon, fetched live by the browser from the service itself.
    Nothing is bundled or redistributed — that is the whole reason it is done
    this way instead of shipping logo files with the app. */
@@ -254,11 +256,12 @@ HTMLHEAD
             url="$(service_url "$svc")" || continue
             host="${url#https://}"; host="${host%%/*}"
             icon="$(service_icon "$svc" 2>/dev/null || true)"
-            printf '<a class=tile href="%s"><img class=ico data-host="%s" data-icon="%s">%s</a>\n' \
-                "$url" "$host" "$icon" "$(service_label "$svc")"
+            printf '<a class=tile data-service="%s" href="%s"><img class=ico data-host="%s" data-icon="%s">%s</a>\n' \
+                "$svc" "$url" "$host" "$icon" "$(service_label "$svc")"
         done
         cat <<'HTMLTAIL'
 </div>
+<footer>Swipe to browse &nbsp; · &nbsp; Tap to open &nbsp; · &nbsp; Home on your phone returns here</footer>
 <script>
 /* Arrow-key navigation with a real focus model. Five columns, matching the
    CSS grid. Native <a> handles Enter, so there is no click synthesis here. */
@@ -284,17 +287,32 @@ HTMLHEAD
   img.src = chain[0];
 });
 var COLS = 5, tiles = [].slice.call(document.querySelectorAll('a.tile')), at = 0;
+var LAST_SERVICE = 'couchside.player.lastService';
+// Focus can also be moved by the phone's spatial navigator or a pointer.
+// Track the actual tile, rather than keeping a second stale navigation index.
+document.addEventListener('focusin', function(e) {
+  var i = tiles.indexOf(e.target);
+  if (i < 0) return;
+  at = i;
+  try { localStorage.setItem(LAST_SERVICE, tiles[at].dataset.service); } catch (_) {}
+});
 function go(i){ at = Math.max(0, Math.min(tiles.length - 1, i)); tiles[at].focus(); }
+function restore(){
+  var saved = ''; try { saved = localStorage.getItem(LAST_SERVICE); } catch (_) {}
+  var i = tiles.findIndex(function(tile){ return tile.dataset.service === saved; });
+  if (tiles.length) go(i < 0 ? 0 : i);
+}
 document.addEventListener('keydown', function (e) {
   var k = e.key;
-  if (k === 'ArrowRight') go(at + 1);
-  else if (k === 'ArrowLeft') go(at - 1);
+  if (k === 'ArrowRight') go(Math.min(at + 1, Math.floor(at / COLS) * COLS + COLS - 1));
+  else if (k === 'ArrowLeft') go(Math.max(at - 1, Math.floor(at / COLS) * COLS));
   else if (k === 'ArrowDown') go(at + COLS);
   else if (k === 'ArrowUp') go(at - COLS);
   else return;
   e.preventDefault();
 });
-if (tiles.length) go(0);
+restore();
+window.addEventListener('pageshow', restore);
 </script></body></html>
 HTMLTAIL
     } > "$HUB_FILE"

@@ -841,6 +841,20 @@ export class GamepadClient {
    * server creates the virtual mouse on the first frame. Zero-delta calls are
    * dropped so idle drags emit nothing.
    */
+  private lastUserActivityAt = 0;
+
+  /** Browser commands bypass OS idle detection. Emit an immediate opposite
+   * pair of tiny pointer movements, without clicking or accumulating a delta.
+   * Never connect, queue or send while waiting for control. */
+  noteUserActivity(): void {
+    if (this.getStatus() !== 'connected') return;
+    const now = Date.now();
+    if (now - this.lastUserActivityAt < 1000) return;
+    this.lastUserActivityAt = now;
+    this.sendRaw({ t: 'm', dx: 1, dy: 0 });
+    this.sendRaw({ t: 'm', dx: -1, dy: 0 });
+  }
+
   sendMouseMove(dx: number, dy: number): void {
     const idx = Math.round(dx);
     const idy = Math.round(dy);

@@ -319,12 +319,14 @@ export function WatchDpad({
    *  >= 2.9.96) and falling back to the uinput key on older boxes. */
   const okAction = () => {
     if (!holding) return;
+    client.noteUserActivity();
     hapticLight();
     if (keyOps?.includes('ok')) api.playerOp(settings, 'ok').catch(() => {});
     else pressQuiet('enter');
   };
   const backAction = () => {
     if (!holding) return;
+    client.noteUserActivity();
     hapticLight();
     if (keyOps?.includes('back')) api.playerOp(settings, 'back').catch(() => {});
     else pressQuiet('esc');
@@ -384,6 +386,7 @@ export function WatchDpad({
       onStartShouldSetPanResponder: () => true,
       onMoveShouldSetPanResponder: () => true,
       onPanResponderGrant: () => {
+        clientRefStable.current.noteUserActivity();
         gestureRef.current(true);
         track.current = {
           consumedX: 0,

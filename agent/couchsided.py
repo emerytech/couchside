@@ -3743,6 +3743,36 @@ def player_catalog_open(video_id):
     return player_open("", url=_PLAYER_CATALOG_STREAMS[video_id]["url"])
 
 
+def player_surface():
+    """Classify the live browser target without exposing its URL or account data.
+
+    The launch config is only a memory of the last request. Home and links
+    selected on the TV can change the actual page without rewriting that file.
+    """
+    if PL_MOCK or not _pl_running():
+        return None
+    port = _pl_cdp_port()
+    if port is None:
+        return None
+    try:
+        pages = [p for p in _pl_http_get(port, "/json/list")
+                 if p.get("type") == "page" and p.get("webSocketDebuggerUrl")]
+        loaded = [p for p in pages if str(p.get("url", "")).startswith(("http://", "https://"))]
+        if not (loaded or pages):
+            return None
+        parsed = urllib.parse.urlsplit((loaded or pages)[0].get("url", ""))
+        if parsed.scheme == "file" and parsed.path.endswith("/hub.html"):
+            return {"kind": "home"}
+        if parsed.scheme == "https":
+            for service, home in _PLAYER_SERVICE_URLS.items():
+                hosts = [urllib.parse.urlsplit(home).hostname] + list(_PLAYER_SERVICE_HOSTS.get(service, ()))
+                if parsed.hostname in hosts:
+                    return {"kind": "service", "service": service}
+    except (OSError, ValueError, KeyError, TypeError):
+        pass
+    return None
+
+
 def player_info():
     """Live state. `services` is the tile's own list, so the app never carries a
     hardcoded copy either."""
@@ -3751,6 +3781,7 @@ def player_info():
         # narrower shape is how a UI gets built against a payload the box never
         # sends — the harness showed no transport at all until this matched.
         return {"available": True, "running": _PL_MOCK["running"],
+                "surface": None,
                 "service": _PL_MOCK["service"], "path": _PL_MOCK["path"],
                 "query": _PL_MOCK.get("query", ""),
                 "catalog": player_catalog(),
@@ -3768,6 +3799,7 @@ def player_info():
                 "seek_secs": list(PLAYER_SEEK_SECS)}
     service, path, query = _pl_conf_read()
     return {"available": player_available(), "running": _pl_running(),
+            "surface": player_surface(),
             "service": service, "path": path, "query": query,
             "catalog": player_catalog(),
             "catalog_video": player_catalog_current(),
@@ -3837,6 +3869,29 @@ def _pl_relaunch(appid, was_running):
     threading.Thread(target=launch, daemon=True).start()
 
 
+def _pl_switch_service(service):
+    """Reuse the existing Player for a frozen service HOME only.
+
+    Never accepts a URL, path or search text. Custom links retain their existing
+    validated relaunch path; CDP stays loopback-only and is never proxied.
+    """
+    if not isinstance(service, str) or service not in _PLAYER_SERVICE_URLS:
+        return False
+    port = _pl_cdp_port()
+    if port is None:
+        return False
+    cdp = None
+    try:
+        cdp = _PlayerCDP(port)
+        result = cdp._call("Page.navigate", {"url": _PLAYER_SERVICE_URLS[service]})
+        return bool(result.get("frameId")) and not result.get("errorText")
+    except (OSError, ValueError, KeyError, TypeError):
+        return False
+    finally:
+        if cdp is not None:
+            cdp.close()
+
+
 def player_open(service, path="", query="", url=""):
     """Point the tile at an allowlisted service and launch it through Steam.
 
@@ -3889,10 +3944,11 @@ def player_open(service, path="", query="", url=""):
 
     with _PL_LOCK:
         _pl_conf_write(service, path or "", query or "")
-        # The tile is single-instance and reads its conf at START, so switching
-        # services while it is up MUST stop it first — otherwise the rungameid
-        # below is a no-op and the request silently does nothing.
+        # A known service home can reuse the browser. Search, deep links and
+        # an unavailable CDP session retain the established Steam relaunch path.
         was_running = _pl_running()
+        if was_running and not path and not query and _pl_switch_service(service):
+            return {"ok": True, "starting": True, "service": service, "reused": True}
         if was_running:
             player_close()
         appid = _pl_appid()
