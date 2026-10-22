@@ -4834,6 +4834,234 @@ def _gamepad_keepalive_loop():
             pass
 
 
+# ---------------------------------------------------------------------------
+# Foreground-window + caret watcher (Windows). Two producers share one ~0.35s
+# poll of the foreground window, both pushed to the HOLDER only (a waiter cannot
+# type, and foreground is just context for the one driving):
+#
+#   1. CARET / text-field focus -> {"t":"osk"} EDGE-TRIGGERED on not-focused ->
+#      focused. This is EXACT parity with the Linux agent's _osk_notify
+#      (agent/couchsided.py): the app's onOsk (app/app/(tabs)/pad.tsx) raises the
+#      pad keyboard so the phone types into the focused Win32 field. No protocol
+#      or caps change -- {"t":"osk"} is an existing outbound push the app already
+#      handles (gamepad.ts msg.t === 'osk'); Linux only lacked a Windows producer.
+#      GetGUIThreadInfo(0, &g) reports the FOREGROUND thread's caret; a field is
+#      focused when g.hwndCaret is non-null OR (g.flags & GUI_CARETBLINKING).
+#      LIMIT, documented not a bug: many apps and most browsers draw their own
+#      caret and report NONE through this API, so auto-raise fires for native
+#      Win32 fields (Notepad, Explorer rename, common dialogs, Win32 edit
+#      controls) and is silent elsewhere. (Recipe adapted to stdlib ctypes from
+#      civercras/pc-remote-app "Mando" caret_active; no third-party dep added.)
+#
+#   2. FOREGROUND app -> {"t":"foreground","title":str,"exe":str}, pushed
+#      ON-CHANGE. ADDITIVE outbound frame with no required app consumer yet (the
+#      app ignores unknown t), groundwork for per-app smart buttons (ROADMAP).
+#      GetForegroundWindow -> GetClassNameW filter (skip the two taskbar windows;
+#      special-case the desktop host) -> GetWindowTextW title + PID->exe basename
+#      via OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION)+QueryFullProcessImageNameW.
+#
+# Pure stdlib ctypes/user32, DEGRADES CLOSED: every probe returns None/"" on any
+# failure or off Windows, a None tick pushes nothing and leaves last-state
+# untouched, and the loop never raises out of its thread. The argtypes/restype
+# pinning is load-bearing on 64-bit Windows (see _process_privilege): without it
+# ctypes assumes 32-bit c_int and truncates the HWND/handle pointers.
+# ---------------------------------------------------------------------------
+FG_POLL_INTERVAL_S = 0.35
+GUI_CARETBLINKING = 0x1
+PROCESS_QUERY_LIMITED_INFORMATION = 0x1000
+
+# Window classes that are never a "foreground app": the primary + per-monitor
+# taskbar. A tick that lands on one pushes nothing (holder keeps its last app).
+_FG_SKIP_CLASSES = frozenset(("Shell_TrayWnd", "Shell_SecondaryTrayWnd"))
+# The desktop itself (Program Manager / the wallpaper host WorkerW) -- reported
+# as a named app rather than skipped, so "I'm on the desktop" is a real state.
+_FG_DESKTOP_CLASSES = frozenset(("Progman", "WorkerW"))
+
+
+class _GUITHREADINFO(ctypes.Structure):
+    _fields_ = [
+        ("cbSize", ctypes.c_uint32),
+        ("flags", ctypes.c_uint32),
+        ("hwndActive", ctypes.c_void_p),
+        ("hwndFocus", ctypes.c_void_p),
+        ("hwndCapture", ctypes.c_void_p),
+        ("hwndMenuOwner", ctypes.c_void_p),
+        ("hwndMoveSize", ctypes.c_void_p),
+        ("hwndCaret", ctypes.c_void_p),
+        ("rcCaret", ctypes.c_long * 4),  # RECT (left, top, right, bottom)
+    ]
+
+
+def _caret_field_focused(hwnd_caret, flags):
+    """A text field is focused when the foreground thread owns a caret
+    (hwndCaret non-null) OR the caret is blinking (GUI_CARETBLINKING). Pure --
+    no ctypes, so a test drives it on any platform. Mirrors Mando's caret_active."""
+    return bool(hwnd_caret) or bool(flags & GUI_CARETBLINKING)
+
+
+def _fg_classify(class_name):
+    """Map a window class to 'skip' (taskbar), 'desktop', or 'window'. Pure.
+    An unknown or empty class is a real app we simply don't special-case -> 'window'."""
+    if class_name in _FG_SKIP_CLASSES:
+        return "skip"
+    if class_name in _FG_DESKTOP_CLASSES:
+        return "desktop"
+    return "window"
+
+
+def _exe_basename(path):
+    """Last path component of a Windows image path, split on BOTH separators.
+    Pure -- and deliberately not os.path.basename, which ignores backslashes off
+    Windows, so the unit test (run on POSIX) would miss the real split. '' for a
+    falsy path."""
+    if not path:
+        return ""
+    s = str(path)
+    s = s.rsplit("\\", 1)[-1]
+    s = s.rsplit("/", 1)[-1]
+    return s
+
+
+def _fg_exe_for_pid(pid):
+    """exe basename for a pid via OpenProcess(QUERY_LIMITED)+QueryFullProcessImageNameW.
+    '' on any failure (degrade closed). Always closes the handle it opened."""
+    if not pid or not IS_WINDOWS or _kernel32 is None:
+        return ""
+    try:
+        _kernel32.OpenProcess.argtypes = [ctypes.c_uint32, ctypes.c_int,
+                                          ctypes.c_uint32]
+        _kernel32.OpenProcess.restype = ctypes.c_void_p
+        h = _kernel32.OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, 0, pid)
+        if not h:
+            return ""
+        try:
+            buf = ctypes.create_unicode_buffer(32768)  # MAX extended path
+            size = ctypes.c_uint32(32768)
+            _kernel32.QueryFullProcessImageNameW.argtypes = [
+                ctypes.c_void_p, ctypes.c_uint32, ctypes.c_wchar_p,
+                ctypes.POINTER(ctypes.c_uint32)]
+            _kernel32.QueryFullProcessImageNameW.restype = ctypes.c_int
+            if _kernel32.QueryFullProcessImageNameW(h, 0, buf,
+                                                    ctypes.byref(size)):
+                return _exe_basename(buf.value)
+            return ""
+        finally:
+            _kernel32.CloseHandle.argtypes = [ctypes.c_void_p]
+            _kernel32.CloseHandle(h)
+    except Exception:
+        return ""
+
+
+def _caret_query():
+    """True/False whether the foreground thread has a focused text field, or
+    None when unknown (degrade closed). GetGUIThreadInfo(0, ...) targets the
+    foreground thread. Never raises."""
+    if not IS_WINDOWS or _user32 is None:
+        return None
+    try:
+        gti = _GUITHREADINFO()
+        gti.cbSize = ctypes.sizeof(gti)
+        _user32.GetGUIThreadInfo.argtypes = [ctypes.c_uint32,
+                                             ctypes.POINTER(_GUITHREADINFO)]
+        _user32.GetGUIThreadInfo.restype = ctypes.c_int
+        if not _user32.GetGUIThreadInfo(0, ctypes.byref(gti)):
+            return None
+        return _caret_field_focused(gti.hwndCaret, gti.flags)
+    except Exception:
+        return None
+
+
+def _fg_query():
+    """Foreground window as {'title': str, 'exe': str}, or None when there is no
+    reportable foreground (taskbar, no window) or any probe fails. Never raises."""
+    if not IS_WINDOWS or _user32 is None or _kernel32 is None:
+        return None
+    try:
+        _user32.GetForegroundWindow.restype = ctypes.c_void_p
+        hwnd = _user32.GetForegroundWindow()
+        if not hwnd:
+            return None
+        cls = ctypes.create_unicode_buffer(256)
+        _user32.GetClassNameW.argtypes = [ctypes.c_void_p, ctypes.c_wchar_p,
+                                          ctypes.c_int]
+        _user32.GetClassNameW(hwnd, cls, 256)
+        kind = _fg_classify(cls.value)
+        if kind == "skip":
+            return None
+        if kind == "desktop":
+            return {"title": "Desktop", "exe": "explorer.exe"}
+        title = ctypes.create_unicode_buffer(512)
+        _user32.GetWindowTextW.argtypes = [ctypes.c_void_p, ctypes.c_wchar_p,
+                                           ctypes.c_int]
+        _user32.GetWindowTextW(hwnd, title, 512)
+        pid = ctypes.c_uint32(0)
+        _user32.GetWindowThreadProcessId.argtypes = [
+            ctypes.c_void_p, ctypes.POINTER(ctypes.c_uint32)]
+        _user32.GetWindowThreadProcessId(hwnd, ctypes.byref(pid))
+        return {"title": title.value, "exe": _fg_exe_for_pid(pid.value)}
+    except Exception:
+        return None
+
+
+def _fg_notify_osk():
+    """Tell the CURRENT holder its box just focused a text field. Holder only --
+    a waiter cannot type. Best-effort (_wsend_json never raises). Parity with the
+    Linux agent's _osk_notify."""
+    with GAMEPAD_LOCK:
+        holder = GAMEPAD_HOLDER
+    if holder is not None:
+        _wsend_json(holder, {"t": "osk"})
+
+
+def _fg_notify_foreground(info):
+    """Push the current foreground app to the holder as an additive frame."""
+    with GAMEPAD_LOCK:
+        holder = GAMEPAD_HOLDER
+    if holder is not None:
+        _wsend_json(holder, {"t": "foreground",
+                             "title": info.get("title", ""),
+                             "exe": info.get("exe", "")})
+
+
+# Watcher state: last caret-focus bool and last (title, exe) key, for the
+# edge/on-change dedup. Module-level so the live loop keeps it across ticks.
+_FG_STATE = {"caret": None, "fg": None}
+
+
+def _fg_watch_tick(caret_fn=_caret_query, fg_fn=_fg_query,
+                   osk_fn=_fg_notify_osk, fg_notify_fn=_fg_notify_foreground,
+                   state=None):
+    """One poll tick. Pushes osk on a not-focused -> focused caret EDGE, and a
+    foreground frame when (title, exe) CHANGES. The probes/pushes and the state
+    dict are injectable so a test drives it deterministically with no Win32.
+    A None probe (degrade closed) pushes nothing and leaves last-state untouched.
+    Split out so one tick can be driven in isolation. Never raises."""
+    st = _FG_STATE if state is None else state
+    caret = caret_fn()
+    if caret is True and st.get("caret") is not True:
+        osk_fn()                     # field just gained focus -> raise keyboard
+    if caret is not None:
+        st["caret"] = caret
+    info = fg_fn()
+    if info is not None:
+        key = (info.get("title", ""), info.get("exe", ""))
+        if key != st.get("fg"):
+            st["fg"] = key
+            fg_notify_fn(info)
+
+
+def _fg_watch_loop():
+    """Forever: poll the foreground window every FG_POLL_INTERVAL_S. Daemon
+    thread started in main() only on real Windows; guarded so it can never take
+    the agent down."""
+    while True:
+        time.sleep(FG_POLL_INTERVAL_S)
+        try:
+            _fg_watch_tick()
+        except Exception:  # a watcher must never die on a transient probe error
+            pass
+
+
 def _release_devices(entry):
     """Demote a session that stays connected as a waiter: destroy its gamepad
     (one pad per holder — the new holder brings its own) but KEEP the mouse and
@@ -6546,6 +6774,13 @@ def main():
     # the session alive even while the app's own JS keepalive timer is frozen (iOS).
     threading.Thread(target=_gamepad_keepalive_loop,
                      daemon=True, name="gp-keepalive").start()
+    # Foreground-window + caret watcher: pushes {"t":"osk"} on text-field focus
+    # (raises the app's keyboard, parity with the Linux Steam osk signal) and an
+    # additive {"t":"foreground"} frame on app switch. Real Windows only -- the
+    # probes degrade closed off-Windows, but there is nothing to watch in --mock.
+    if IS_WINDOWS and not args.mock:
+        threading.Thread(target=_fg_watch_loop,
+                         daemon=True, name="fg-watch").start()
     # LAN discovery: answer the app's UDP probe so this box shows up in
     # "Scan for boxes" as fast as a Linux box does.
     threading.Thread(target=_udp_discovery_responder, args=(port,),
