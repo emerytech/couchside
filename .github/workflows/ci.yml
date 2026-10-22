@@ -1145,6 +1145,17 @@ jobs:
       - name: Unit tests (controller unreadable reason)
         run: python3 tests/test_guide_unreadable_reason.py
 
+      # Windows foreground-window + caret watcher. Two producers: a caret-focus
+      # edge pushes the existing {"t":"osk"} signal (raises the app keyboard,
+      # parity with the Linux Steam osk watcher) and an app switch pushes an
+      # additive {"t":"foreground"} frame. The pure logic (caret decision, class
+      # filter, exe-basename split) and the tick's edge/on-change dedup run here;
+      # the ctypes/user32 calls cannot (no WinDLL on the ubuntu runner) and are
+      # verify-on-real-Windows. Source-guarded: the probes degrade closed to None
+      # off Windows, which this suite asserts.
+      - name: Unit tests (windows foreground + caret watcher)
+        run: python3 tests/test_fg_watch.py
+
       # The guard for the class of bug above: a suite in tests/ that no workflow
       # runs is now itself a CI failure, in both directions (orphaned file, and
       # a step pointing at a file that no longer exists).
