@@ -57,6 +57,7 @@ that binary, the corresponding source is offered at the exact shipped tag
 
 ## Features
 
+- **SteamOS Themes (Beta, optional):** choose seven home layouts or make a draft in Theme Studio from **Settings → Boxes → Steam appearance**. Requires Decky Loader and an updated Couchside companion. Themes start off until you apply one; restore **Steam default** from the app or Decky panel at any time. Custom themes use a bounded settings format, not executable theme code.
 - **Live console:** hostname, uptime, CPU temperature, load averages, memory and per-disk usage with color-coded bars, refreshed every few seconds. A big red BOX UNREACHABLE banner (with last-seen time) when the box drops off the network, which is exactly when you need it.
 - **systemd unit health:** a watchlist of system and user units (display manager, the Couchside service itself, your own services) with active/failed state at a glance.
 - **One-tap runbook actions:** grouped by what they interrupt, every action confirmed before it runs and *double*-confirmed when it ends your session:
