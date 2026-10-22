@@ -13,7 +13,7 @@ try {
   assert.equal(ids.length,14);assert.equal(new Set(ids).size,14);
   const events={},storage=new Map();let active=null;
   const tiles=ids.map(id=>({dataset:{service:id},focus(){active=this;events.focusin?.({target:this});}}));
-  const context={document:{querySelectorAll:s=>s==='a.tile'?tiles:[],addEventListener:(name,fn)=>events[name]=fn},window:{addEventListener:(name,fn)=>events[name]=fn},localStorage:{getItem:k=>storage.get(k),setItem:(k,v)=>storage.set(k,v)}};
+  const context={document:{querySelectorAll:s=>s==='a.tile'?tiles:[],getElementById:()=>null,addEventListener:(name,fn)=>events[name]=fn},window:{addEventListener:(name,fn)=>events[name]=fn},localStorage:{getItem:k=>storage.get(k),setItem:(k,v)=>storage.set(k,v)}};
   vm.runInNewContext(html.match(/<script>([\s\S]*?)<\/script>/)[1],context);
   const key=k=>events.keydown({key:k,preventDefault(){}});
   assert.equal(active,tiles[0]);key('ArrowLeft');assert.equal(active,tiles[0]);
@@ -24,5 +24,9 @@ try {
   key('ArrowUp');assert.equal(active,tiles[8]);
   events.pageshow();assert.equal(active,tiles[8],'return restores selected service');
   storage.set('couchside.player.lastService','untrusted-not-in-table');events.pageshow();assert.equal(active,tiles[0],'unknown saved service falls back safely');
+  const preferred={dataset:{service:ids[6]}};
+  context.document.getElementById=()=>preferred;
+  events.pageshow();assert.equal(active,tiles[6],'explicit current service wins on return Home');
+  tiles[7].focus();events.pageshow();assert.equal(active,tiles[7],'preference consumed; browser Back keeps new focus');
   console.log('TV hub: generated allowlist, external focus, row edges, partial row, return and invalid-storage fallback passed');
 } finally {rmSync(dir,{recursive:true,force:true});}

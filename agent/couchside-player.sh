@@ -251,6 +251,10 @@ img.ico{width:2.6vw;height:2.6vw;object-fit:contain;border-radius:.4vw;flex:none
 <h1>COUCHSIDE</h1><p class=sub>Pick a service &middot; or drive it from your phone<br><span class=beta>experimental &mdash; expect rough edges</span></p>
 <div class=grid id=g>
 HTMLHEAD
+        local preferred="${SERVICE:-}"
+        if service_url "$preferred" >/dev/null 2>&1; then
+            printf '<span id=last-service data-service="%s" hidden></span>\n' "$preferred"
+        fi
         local svc url host icon
         for svc in $(bash "$0" --list-services 2>/dev/null); do
             url="$(service_url "$svc")" || continue
@@ -298,7 +302,10 @@ document.addEventListener('focusin', function(e) {
 });
 function go(i){ at = Math.max(0, Math.min(tiles.length - 1, i)); tiles[at].focus(); }
 function restore(){
-  var saved = ''; try { saved = localStorage.getItem(LAST_SERVICE); } catch (_) {}
+  var preferred = document.getElementById('last-service');
+  var saved = preferred ? preferred.dataset.service : '';
+  if (preferred) preferred.dataset.service = '';
+  if (!saved) { try { saved = localStorage.getItem(LAST_SERVICE); } catch (_) {} }
   var i = tiles.findIndex(function(tile){ return tile.dataset.service === saved; });
   if (tiles.length) go(i < 0 ? 0 : i);
 }

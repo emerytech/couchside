@@ -4538,6 +4538,9 @@ def player_hub():
         raise RuntimeError("player not installed on this box")
     with _PL_LOCK:
         service, _, _ = _pl_conf_read()
+        live = player_surface()
+        if live and live.get("kind") == "service":
+            service = live["service"]
         _pl_conf_write(service or "netflix", "", "", hub=True)
         was_running = _pl_running()
         if was_running:
