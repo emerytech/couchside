@@ -1312,6 +1312,17 @@ function SetupBody() {
             const isEditing = editingId === box.id;
             return (
               <View>
+                {box.caps?.steam !== false && !isEditing && <Pressable
+                  onPress={() => router.push({ pathname: '/steam-themes', params: { boxId: box.id } })}
+                  accessibilityRole="button" accessibilityLabel={`Steam appearance for ${box.name}`}
+                  style={{ flexDirection: 'row', alignItems: 'center', gap: 12, paddingVertical: 16, borderBottomWidth: StyleSheet.hairlineWidth, borderBottomColor: t.cardBorder }}>
+                  <Ionicons name="color-palette-outline" size={22} color={t.blue} />
+                  <View style={{ flex: 1, gap: 3 }}>
+                    <Text style={{ color: t.text, fontWeight: '700' }}>Steam appearance <Text style={{ color: t.blue, fontSize: 11 }}>BETA</Text></Text>
+                    <Text style={{ color: t.textDim, fontSize: 12 }}>Choose how Steam looks on this box</Text>
+                  </View>
+                  <Ionicons name="chevron-forward" size={18} color={t.textDim} />
+                </Pressable>}
                 {isEditing ? (
                   <BoxEditPanel
                     key={`${box.id}|${box.host}|${box.port}|${box.token}`}

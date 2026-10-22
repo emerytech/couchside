@@ -125,7 +125,7 @@ export function StripLightCard() {
   const { Card } = useSkinKit();
   const { settings, ready } = useSettings();
   const configured = !!settings.host && !!settings.token;
-  const presets = useLedPresets();
+  const presets = useLedPresets().filter((p) => !p.ringProgram);
   // Built-in themes SERVED BY THE BOX (agent >= 2.9.97). null = not fetched yet
   // or an older agent (404) -> we fall back to the app's own built-in seeds.
   const [themes, setThemes] = useState<LedTheme[] | null>(null);

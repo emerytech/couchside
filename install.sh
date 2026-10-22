@@ -347,6 +347,8 @@ Usage: install.sh [--no-sudoers] [--no-decky|--decky] [--screensaver] [--no-scre
   --decky           turn the panel back ON (undoes --no-decky or a removal)
   --screensaver     install the Couchside screensaver add-on without asking
   --no-screensaver  skip the Couchside screensaver add-on
+  --themes          enable the optional SteamOS themes add-on
+  --no-themes       disable themes and restore the normal Steam home
   --player          install the Couchside Player add-on (EXPERIMENTAL)
   --no-player       skip the Couchside Player add-on
   --no-open         don't auto-open the on-screen pairing tutorial on a fresh
@@ -376,6 +378,8 @@ for arg in "$@"; do
         --decky)          DECKY_OPTIN=1 ;;
         --screensaver)    COUCHSIDE_SCREENSAVER=1 ;;
         --no-screensaver) COUCHSIDE_SCREENSAVER=0 ;;
+        --themes)         COUCHSIDE_THEMES=1 ;;
+        --no-themes)      COUCHSIDE_THEMES=0 ;;
         --player)         COUCHSIDE_PLAYER=1 ;;
         --no-player)      COUCHSIDE_PLAYER=0 ;;
         --no-open)        NO_OPEN=1 ;;
@@ -3635,5 +3639,68 @@ offer_decky_optin() {
     fi
 }
 offer_decky_optin
+
+# Theme choice is independent of the service and remembered across upgrades.
+# Non-interactive runs never opt in. No Steam files or rootfs are patched here.
+offer_steam_themes() {
+    local choice="${COUCHSIDE_THEMES:-}" state="${STATE_DIR}/steam-themes.json"
+    if [ -z "$choice" ]; then
+        [ -e "$state" ] && return 0
+        decky_steam_root_present || return 0
+        decky_have_tty || return 0
+        say "Optional: Couchside themes for SteamOS (Beta)"
+        note "Choose dashboard, carousel or grid layouts from your phone."
+        note "Requires Decky Loader and a compatible Couchside companion."
+        if ask_yn "Add Couchside themes (Beta)?"; then choice=1; else choice=0; fi
+    fi
+    case "$choice" in 0|1) ;; *) note "COUCHSIDE_THEMES must be 0 or 1; keeping the existing choice."; return 0 ;; esac
+    # Write as the desktop user, not root. Validation and atomic replace also
+    # preserve a previously selected layout when the add-on is disabled.
+    if ! COUCHSIDE_THEMES_CHOICE="$choice" COUCHSIDE_THEMES_STATE="$state" python3 - <<'PYTHEMES'
+import json, os, tempfile
+path = os.environ["COUCHSIDE_THEMES_STATE"]
+data = {"version": 1, "installed": False, "enabled": False,
+        "theme": "couchside", "accent": "teal", "motion": True}
+previously_enabled = False
+try:
+    with open(path) as f:
+        old = json.loads(f.read(4096))
+    previously_enabled = old.get("installed") is True and old.get("enabled") is True
+    for key, values in {"theme": ("couchside", "orbit", "shelf", "wave", "channels", "crossbar", "horizon"),
+                        "accent": ("teal", "blue", "violet", "amber"),
+                        "motion": (True, False)}.items():
+        if old.get(key) in values and type(old.get(key)) is type(data[key]):
+            data[key] = old[key]
+    # Preserve the user document across opt-in changes. The agent validates the
+    # bounded JSON document before rendering; the installer never executes it.
+    if isinstance(old.get("studio"), dict):
+        data["studio"] = old["studio"]
+except (OSError, ValueError, AttributeError):
+    pass
+data["installed"] = os.environ["COUCHSIDE_THEMES_CHOICE"] == "1"
+data["enabled"] = data["installed"] and previously_enabled
+# First installation opts into the add-on without replacing the home screen.
+fd, tmp = tempfile.mkstemp(prefix=".steam-themes-", dir=os.path.dirname(path))
+try:
+    with os.fdopen(fd, "w") as f:
+        json.dump(data, f)
+        f.flush()
+        os.fsync(f.fileno())
+    os.replace(tmp, path)
+finally:
+    if os.path.exists(tmp): os.unlink(tmp)
+PYTHEMES
+    then
+        note "Could not save themes choice; the Couchside service is unaffected."
+        return 0
+    fi
+    if [ "$choice" = 1 ]; then
+        note "Themes enabled. Choose a layout in the app under Settings > Boxes > Steam appearance (Beta)."
+        decky_installed || note "Install Decky Loader from the app before applying a theme."
+    else
+        note "Themes disabled. The companion will restore Steam's normal home screen."
+    fi
+}
+offer_steam_themes
 
 } # end partial-download guard — see the matching `{` near the top

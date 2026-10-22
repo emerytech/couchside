@@ -31,6 +31,10 @@ export function LicenseRedeemCard({ compact = false, activation = null }: { comp
   const [key, setKey] = useState(activation?.key ?? '');
   const [busy, setBusy] = useState(false);
   const [msg, setMsg] = useState<{ text: string; ok: boolean } | null>(null);
+  const [recover, setRecover] = useState(false);
+  const [email, setEmail] = useState('');
+  const [recovering, setRecovering] = useState(false);
+  const [recoveryMessage, setRecoveryMessage] = useState<string | null>(null);
   const [name, setName] = useState<string | null>(null);
 
   const purchased = isGenuinelyPurchased(entitlement);
@@ -66,6 +70,33 @@ export function LicenseRedeemCard({ compact = false, activation = null }: { comp
     }
     setBusy(false);
   }, [key, busy, redeemLicense, activation]);
+
+  const onRecover = async () => {
+    if (recovering) return;
+    const normalized = email.trim();
+    if (normalized.length > 254 || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(normalized)) {
+      setRecoveryMessage('Enter the email used for your Direct purchase.');
+      return;
+    }
+    setRecovering(true);
+    setRecoveryMessage(null);
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), 15000);
+    try {
+      const response = await fetch('https://couchside-license-webhook.taylor-c24.workers.dev/recover', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ email: normalized }), signal: controller.signal,
+      });
+      setRecoveryMessage(response.status === 202
+        ? 'If a purchase matches that email, we’ll send its license. Check your inbox and spam folder, then tap Open in Couchside in the email.'
+        : 'Recovery is temporarily unavailable. Try again later or contact support@couchside.tv.');
+    } catch {
+      setRecoveryMessage('Couldn’t reach license recovery. Check your internet connection and try again.');
+    } finally {
+      clearTimeout(timeout);
+      setRecovering(false);
+    }
+  };
 
   if (purchased) {
     return (
@@ -107,6 +138,37 @@ export function LicenseRedeemCard({ compact = false, activation = null }: { comp
         <Text style={[styles.msg, { color: msg.ok ? styles._ok.color : styles._err.color }]}>
           {msg.text}
         </Text>
+      )}
+      <Pressable
+        onPress={() => setRecover(!recover)}
+        accessibilityRole="button"
+        accessibilityState={{ expanded: recover }}
+        style={({ pressed }) => [styles.buyLink, pressed && styles.pressed]}>
+        <Text style={styles.buyLinkText}>Already purchased? Recover my license</Text>
+      </Pressable>
+      {recover && (
+        <View>
+          <Text style={styles.hint}>Use your Direct purchase email. We’ll email your key; it won’t be shown here. This does not restore Play Store purchases.</Text>
+          <TextInput
+            accessibilityLabel="Purchase email"
+            value={email} onChangeText={setEmail}
+            placeholder="Purchase email address"
+            placeholderTextColor={styles._placeholder.color}
+            autoCapitalize="none" autoCorrect={false}
+            autoComplete="email" keyboardType="email-address"
+            maxLength={254} editable={!recovering}
+            style={[styles.input, { marginTop: 12 }]}
+          />
+          <Pressable onPress={() => void onRecover()} disabled={recovering || !email.trim()}
+            accessibilityRole="button"
+            style={({ pressed }) => [styles.btn, (pressed || recovering || !email.trim()) && styles.btnMuted]}>
+            <Text style={styles.btnText}>{recovering ? 'REQUESTING…' : 'EMAIL MY LICENSE'}</Text>
+          </Pressable>
+          {recoveryMessage && <Text accessibilityLiveRegion="polite" style={styles.hint}>{recoveryMessage}</Text>}
+          <Pressable onPress={() => void Linking.openURL('mailto:support@couchside.tv?subject=Couchside%20Direct%20license%20recovery')} style={styles.buyLink}>
+            <Text style={styles.buyLinkText}>Can’t find the email? Contact support</Text>
+          </Pressable>
+        </View>
       )}
       <Text style={styles.hint}>
         {activation?.key ? 'Your emailed key is filled in. Tap Redeem to verify and unlock.' : 'Bought Couchside direct? Paste the key from your purchase email.'} It unlocks this

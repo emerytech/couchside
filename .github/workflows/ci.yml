@@ -33,6 +33,16 @@ jobs:
             agent/qr.py
           echo "py_compile OK"
 
+      - name: Theme and lighting regression tests
+        run: |
+          python3 -m unittest discover -s tests -p 'test_steam_themes.py'
+          python3 -m unittest discover -s tests -p 'test_steam_themes_installer.py'
+          python3 -m unittest discover -s tests -p 'test_theme_format.py'
+          python3 -m unittest discover -s tests -p 'test_theme_game_stats.py'
+          python3 tests/test_legion_go2_lighting.py
+          python3 tests/test_ring_motion_preview.py
+          python3 tests/test_ring_program.py
+
       # The guide-hold trigger fires a SESSION SWITCH, which tears down the
       # user's desktop and any unsaved work. Its two dangerous failure modes —
       # firing on a tap, and matching the agent's OWN emulated pad (created on
@@ -821,6 +831,12 @@ jobs:
       # re-probes forever.
       - name: Unit tests (player API + caps)
         run: python3 tests/test_player_api.py
+
+      - name: Unit tests (isolated player package)
+        run: python3 tests/test_player_isolated.py
+
+      - name: Unit tests (player catalog)
+        run: python3 tests/test_player_catalog.py
 
       # Player transport over CDP. Runtime.evaluate runs arbitrary JS in a
       # browser signed into the user's streaming accounts, so the whole design

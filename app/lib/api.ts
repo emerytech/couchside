@@ -3,6 +3,7 @@
  * Base URL: http://<host>:<port>  (default port 8787)
  */
 import { Buffer } from 'buffer';
+import type { SteamThemesState, SteamThemeSettings } from './steamThemes';
 import { isPinMismatchError, isPinnedTimeoutError, pinnedRequest, type PinnedResponse } from './boxTransport.ts';
 import { raceIpFirst, ttlMemo } from './boxRoute.ts';
 import { connIsPinned } from './boxConn';
@@ -530,7 +531,17 @@ export type InstallableGame = { appid: number; name?: string; type?: string };
  * first to drift. `service_urls` exists so a pasted or shared link can be split
  * into (service, path) using the box's own hosts.
  */
+export type PlayerCatalog = {
+  id: string;
+  name: string;
+  type: 'movie';
+  metas: { id: string; type: 'movie'; name: string; description: string; credit: string; license: string }[];
+};
+
 export type PlayerState = {
+  /** Optional: old boxes simply omit the sample catalog. */
+  catalog?: PlayerCatalog;
+  catalog_video?: PlayerCatalog["metas"][number] | null;
   available: boolean;
   running: boolean;
   /** Service id the tile is pointed at ('' before anything has been opened). */
@@ -633,6 +644,11 @@ export type PlayerPlayback = {
   duration: number;
   muted: boolean;
   title: string;
+  /** Optional on older agents. A media error must not appear as playing. */
+  error?: { code: number; message: string } | null;
+  ready?: number;
+  seeking?: boolean;
+  decodedFrames?: number;
 };
 
 /** Transport ops the box accepts. Anything else is refused with a 404. */
@@ -780,6 +796,14 @@ export type LedTheme = { id: string; label: string; accent?: Rgb | null };
 /** One controllable LED from GET /api/leds (agent >= 2.9.81, cap `ledcontrol`).
     `name` is the /sys/class/leds node id the setter POSTs back verbatim. */
 export type LedInfo = {
+  /** Optional device-specific restrictions; older agents use global capabilities. */
+  effects?: LedEffect[];
+  shape?: boolean;
+  /** Driver controls both joystick rings as one device. */
+  ring_control?: 'linked';
+  ring_scenes?: boolean;
+  /** Bounded, explicitly requested motion test; absent until hardware is verified. */
+  ring_motion_preview?: boolean;
   name: string;
   desc: string;
   /** True for a multicolour LED (has colour swatches); false = brightness only. */
@@ -801,6 +825,31 @@ export type LedInfo = {
     `off` are one-shot (no animation); the rest run on the box until changed.
     `scanner` is the KITT sweep — real across multiple LEDs (OpenRGB), a
     bounce-pulse on a single kernel LED. */
+export type RingProgram = {
+  scene: 'aurora' | 'ember' | 'ocean' | 'cyberpunk';
+  brightness: number;
+  period: number;
+  night: { enabled: boolean; start: number; end: number; brightness: number };
+};
+export type RingProgramState = { program: RingProgram | null; error: string | null; timezone: string };
+
+/** Temporary LampArray test. The box restores its previous lighting after 10s. */
+export type RingMotionPreview = {
+  effect: 'ball' | 'comet' | 'bounce';
+  direction: 'clockwise' | 'counterclockwise';
+  color: Rgb;
+  colorShift: boolean;
+  trail: number;
+  period: number;
+  brightness: number;
+};
+export type RingMotionState = {
+  available: boolean;
+  active: boolean;
+  error: string | null;
+  remaining_ms: number;
+};
+
 export type LedEffect =
   | 'solid' | 'off' | 'breathe' | 'pulse' | 'rainbow' | 'strobe' | 'scanner'
   // `manual` = a per-LED painted pattern on a strip (agent >= 2.9.85); the
@@ -2683,6 +2732,13 @@ export const api = {
    * Setup card, the Utilities row and the /decky screen. Memoised box-side
    * (<500 ms) so the 2 s poll during a loader op is cheap.
    */
+  steamThemes(settings: ConnSettings): Promise<SteamThemesState | null> {
+    return probeOrNull(request<SteamThemesState>(settings, '/api/steam/themes'));
+  },
+  saveSteamTheme(settings: ConnSettings, value: Partial<SteamThemeSettings>): Promise<SteamThemesState> {
+    return request<SteamThemesState>(settings, '/api/steam/themes', { method: 'POST', body: value });
+  },
+
   deckyLoader(settings: ConnSettings): Promise<DeckyLoader | null> {
     return probeOrNull(request<DeckyLoader>(settings, '/api/decky/loader'));
   },
@@ -3653,6 +3709,12 @@ export const api = {
    * nothing and launched nothing. The app does not pre-judge — it surfaces the
    * refusal.
    */
+  playerCatalogOpen(settings: ConnSettings, videoId: string): Promise<{ ok: boolean }> {
+    return request(settings, '/api/player', {
+      method: 'POST', body: { op: 'catalog-open', video_id: videoId },
+    });
+  },
+
   playerOp(
     settings: ConnSettings,
     op: PlayerOp,
@@ -3826,6 +3888,26 @@ export const api = {
    * else. The agent persists the choice so a reboot restores it. Resolves false
    * on any failure; the caller re-reads /api/leds for the real state (§11).
    */
+  ringProgram(settings: ConnSettings): Promise<RingProgramState> {
+    return request<RingProgramState>(settings, '/api/leds/ring-program');
+  },
+  setRingProgram(settings: ConnSettings, program: RingProgram | null): Promise<RingProgramState> {
+    return request<RingProgramState>(settings, '/api/leds/ring-program', {
+      method: 'POST', body: { program },
+    });
+  },
+  ringMotion(settings: ConnSettings): Promise<RingMotionState> {
+    return request<RingMotionState>(settings, '/api/leds/ring-motion');
+  },
+  setRingMotion(
+    settings: ConnSettings,
+    command: { preview: RingMotionPreview } | { stop: true },
+  ): Promise<RingMotionState> {
+    return request<RingMotionState>(settings, '/api/leds/ring-motion', {
+      method: 'POST', body: command,
+    });
+  },
+
   setLedEffect(
     settings: ConnSettings,
     led: string,

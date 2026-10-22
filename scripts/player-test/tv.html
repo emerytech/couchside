@@ -1,0 +1,19 @@
+<!doctype html>
+<html lang="en">
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Big Buck Bunny — Couchside Player Test</title>
+<style>
+html, body { margin: 0; width: 100%; height: 100%; overflow: hidden; background: #000; }
+video { display: block; width: 100vw; height: 100vh; object-fit: contain; object-position: center; }
+#message { position: fixed; inset: 0; display: grid; place-items: center; color: #fff; font: 24px system-ui; pointer-events: none; }
+#message[hidden] { display: none; }
+</style>
+<video id="film" autoplay playsinline preload="auto" src="__SAMPLE_URL__" aria-label="Big Buck Bunny trailer"></video>
+<div id="message" role="status">Loading video…</div>
+<script>
+const film = document.getElementById('film'), message = document.getElementById('message');
+film.addEventListener('loadeddata', () => { message.hidden = true; });
+film.addEventListener('error', () => { message.hidden = false; message.textContent = film.error?.code === 3 ? 'Video decode failed. Stop and retry from the test remote.' : 'Video unavailable. Stop and retry from the test remote.'; });
+</script>
+</html>

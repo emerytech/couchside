@@ -19,13 +19,14 @@ import * as SecureStore from 'expo-secure-store';
 import { useSyncExternalStore } from 'react';
 import { Platform } from 'react-native';
 
-import type { LedEffect, Rgb } from './api';
+import type { LedEffect, Rgb, RingProgram } from './api';
 
 const KEY = 'couchside.ledpresets.v1';
 /** Bounded so a runaway library can't blow SecureStore's per-item size limit. */
 export const PRESET_MAX = 40;
 
 export type LedPreset = {
+  ringProgram?: RingProgram;
   id: string;
   label: string;
   effect: LedEffect;
@@ -105,6 +106,19 @@ const isRgb = (c: unknown): c is Rgb =>
 
 /** Coerce a stored `sequence` into a clean shape, or undefined if malformed. A
  *  valid sequence has >= 2 colour frames and one hold (ms) per frame. */
+export function normalizeRingProgram(raw: unknown): RingProgram | undefined {
+  if (!raw || typeof raw !== 'object') return;
+  const p = raw as RingProgram;
+  const n = p.night;
+  const integer = (v: number, lo: number, hi: number) => Number.isInteger(v) && v >= lo && v <= hi;
+  if (!['aurora', 'ember', 'ocean', 'cyberpunk'].includes(p.scene)
+      || !integer(p.period, 5, 120) || !integer(p.brightness, 0, 100)
+      || !n || typeof n.enabled !== 'boolean' || !integer(n.start, 0, 1439)
+      || !integer(n.end, 0, 1439) || n.start === n.end || !integer(n.brightness, 0, 100)) return;
+  return { scene: p.scene, period: p.period, brightness: p.brightness,
+    night: { enabled: n.enabled, start: n.start, end: n.end, brightness: n.brightness } };
+}
+
 function normalizeSequence(raw: unknown): LedPreset['sequence'] {
   if (!raw || typeof raw !== 'object') return undefined;
   const s = raw as Record<string, unknown>;
@@ -140,6 +154,7 @@ function normalize(raw: unknown): LedPreset[] {
       generator: (p.generator === 'police' || p.generator === 'rainbowflow'
         || p.generator === 'heartbeat' || p.generator === 'portal') ? p.generator : undefined,
       sequence: normalizeSequence(p.sequence),
+      ringProgram: normalizeRingProgram(p.ringProgram),
     });
     if (out.length >= PRESET_MAX) break;
   }

@@ -249,6 +249,11 @@ export function DeckyCard() {
         </Text>
       ) : null}
 
+      {l.installed && <Pressable onPress={() => router.push('/steam-themes')}
+        accessibilityRole="button" style={styles.btn}>
+        <Text style={styles.btnText}>Steam appearance · Beta ›</Text>
+      </Pressable>}
+
       {l.installed ? (
         <Pressable
           onPress={() => { hapticLight(); router.push('/decky'); }}

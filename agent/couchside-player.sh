@@ -186,6 +186,41 @@ service_icon() {
 # ---------------------------------------------------------------------------
 HUB_FILE="$PROFILE/hub.html"
 
+# Fixed catalog sample only. Keep streaming sites on their existing browser
+# path/decoder; neither a phone URL nor a service page is interpolated here.
+SAMPLE_SOURCE='https://media.w3.org/2010/05/bunny/trailer.mp4'
+write_sample() {
+    mkdir -p "$PROFILE" 2>/dev/null || return 1
+    cat > "$PROFILE/sample.html" <<'SAMPLEHTML'
+<!doctype html><html lang="en"><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Big Buck Bunny — Couchside Player</title>
+<style>
+html,body{margin:0;width:100%;height:100%;overflow:hidden;background:#000}
+video{display:block;width:100vw;height:100vh;object-fit:contain;object-position:center}
+#message{position:fixed;inset:0;display:grid;place-items:center;color:#fff;font:24px system-ui;pointer-events:none}
+#message[hidden]{display:none}
+</style>
+<video id="film" autoplay playsinline preload="auto" src="https://media.w3.org/2010/05/bunny/trailer.mp4" aria-label="Big Buck Bunny trailer"></video>
+<div id="message" role="status">Loading video…</div>
+<script>
+const film=document.getElementById('film'),message=document.getElementById('message');
+film.addEventListener('loadeddata',()=>{message.hidden=true});
+film.addEventListener('error',()=>{message.hidden=false;message.textContent=film.error?.code===3?'Video decode failed. Stop and retry from your phone.':'Video unavailable. Stop and retry from your phone.'});
+</script></html>
+SAMPLEHTML
+}
+
+prepare_sample() {
+    SAMPLE_VIDEO=0
+    if [ "$URL" = "$SAMPLE_SOURCE" ]; then
+        write_sample || return 1
+        URL="file://$PROFILE/sample.html"
+        SAMPLE_VIDEO=1
+        SAMPLE_ARGS=(--disable-accelerated-video-decode --autoplay-policy=no-user-gesture-required)
+    fi
+}
+
 write_hub() {
     mkdir -p "$PROFILE" 2>/dev/null || return 1
     {
@@ -602,6 +637,13 @@ case "${1:-}" in
     --print-open-url) validate_open_url "${2:-}" || exit 1; exit 0 ;;
     --print-search) build_search_url "${2:-}" "${3:-}" || exit 1; exit 0 ;;
     --print-hub)   write_hub && printf 'file://%s\n' "$HUB_FILE"; exit $? ;;
+    --print-sample-page) write_sample && printf 'file://%s\n' "$PROFILE/sample.html"; exit $? ;;
+    --print-sample-launch)
+        URL="${2:-}"
+        prepare_sample || exit 1
+        printf '%s\n' "$URL"
+        if [ "$SAMPLE_VIDEO" = "1" ]; then printf '%s\n' "${SAMPLE_ARGS[@]}"; fi
+        exit 0 ;;
     --print-hosts) service_hosts "${2:-}" || exit 1; exit 0 ;;
     --list-searchable)
         for s in youtube netflix twitch crunchyroll; do
@@ -674,6 +716,11 @@ if [ -z "$URL" ]; then
     rm -f "$PIDFILE"
     exit 2
 fi
+if ! prepare_sample; then
+    log "could not prepare sample video surface; refusing to launch"
+    rm -f "$PIDFILE"
+    exit 2
+fi
 
 # Wait for a previous Chrome to release the profile before launching.
 #
@@ -728,6 +775,7 @@ CHROME_ARGS=(
     --start-fullscreen
     --app="$URL"
 )
+if [ "$SAMPLE_VIDEO" = "1" ]; then CHROME_ARGS+=("${SAMPLE_ARGS[@]}"); fi
 # Couch zoom: whitelisted in read_conf (a literal 1|1.25|1.5|1.75|2), so this
 # argv element can only ever be one of five fixed strings.
 [ -n "$UI_SCALE" ] && CHROME_ARGS+=(--force-device-scale-factor="$UI_SCALE")
