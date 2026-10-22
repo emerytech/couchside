@@ -18,6 +18,7 @@ import { Buffer } from 'buffer';
 import * as Network from 'expo-network';
 
 import { DEFAULT_PORT } from './settings';
+import { verifyDiscoveryEndpoint } from './discoveryEndpoint';
 
 // Native module; require in a try/catch so a build predating the dependency
 // disables the UDP probe instead of crashing at startup. The HTTP sweep does
@@ -248,24 +249,23 @@ function udpProbe(
     };
 
     socket.once('error', finish);
+    const checking = new Set<string>();
     socket.on('message', (msg: Buffer, rinfo: { address: string }) => {
+      if (done || msg.length > 4096) return;
       try {
         const d = JSON.parse(msg.toString());
-        if (d && d.couchside) {
-          const box: FoundBox = {
-            name: typeof d.name === 'string' ? d.name : rinfo.address,
-            host: typeof d.host === 'string' ? d.host : rinfo.address,
-            ip: rinfo.address,
-            port: typeof d.port === 'number' ? d.port : port,
-            version: typeof d.version === 'string' ? d.version : '',
-            ...readTlsAdvert(d),
-          };
-          found.set(rinfo.address, box);
-          // Same drain fix as the HTTP sweep: replies land in milliseconds but
-          // were held until the timer fired. The reporter dedupes the
-          // directed+global double reply.
-          report(box);
-        }
+        if (!d || typeof d !== 'object' || Array.isArray(d)) return;
+        const key = `${rinfo.address}:${String(d.port)}:${String(d.ip)}`;
+        // Bound verification work and collapse directed/global duplicate replies.
+        if (checking.has(key) || checking.size >= 64) return;
+        checking.add(key);
+        void verifyDiscoveryEndpoint(d, rinfo.address, port,
+          (ip, p) => done ? Promise.resolve(null) : pingHost(ip, p, Math.min(1000, timeoutMs)))
+          .then(box => {
+            if (done || !box) return;
+            found.set(box.ip, box);
+            report(box);
+          }).catch(() => {});
       } catch {
         // not our reply; ignore
       }
