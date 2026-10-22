@@ -37,6 +37,8 @@ $piArgs = @(
     '--paths', $qrPath,
     '--hidden-import', 'qr',
     '--collect-all', 'cryptography',
+    # Preserve upstream distribution metadata, including dependency licenses.
+    '--recursive-copy-metadata', 'cryptography',
     # Pin outputs under agent/win regardless of the invoker's cwd, so the
     # "Built:" path below (and the README instructions) are always right.
     '--distpath', (Join-Path $here 'dist'),
