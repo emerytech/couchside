@@ -4037,17 +4037,19 @@ _PL_JS_PICK = """
 
 PLAYER_JS_STATE = (
     "(function(){%s if (!v) return null;"
+    " var catalog=%s, catalogId=catalog[v.currentSrc]||null;"
     " var q=v.getVideoPlaybackQuality?v.getVideoPlaybackQuality():null;"
     " var messages={1:'playback aborted',2:'media network error',"
     " 3:'video decode failed',4:'media source unsupported'};"
     " return {playing: !v.paused && !v.ended && !v.error && v.readyState>=2,"
+    "         catalog_id:catalogId,"
     "         position: v.currentTime || 0,"
     "         duration: isFinite(v.duration) ? v.duration : 0,"
     "         muted: !!v.muted, title: document.title || '',"
     "         ready:v.readyState, seeking:!!v.seeking,"
     "         decodedFrames:q?q.totalVideoFrames:(v.webkitDecodedFrameCount||0),"
     "         error:v.error?{code:v.error.code,message:messages[v.error.code]||'media error'}:null};"
-    "})()" % _PL_JS_PICK)
+    "})()" % (_PL_JS_PICK, json.dumps({entry["url"]: key for key, entry in _PLAYER_CATALOG_STREAMS.items()})))
 
 # op id -> agent-authored script. Frozen: an id that is not a key never runs.
 PLAYER_JS_OPS = {

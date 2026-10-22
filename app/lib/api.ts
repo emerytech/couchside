@@ -640,6 +640,8 @@ export type UsbWakeState = { devices: UsbWakeDevice[] };
 
 export type PlayerPlayback = {
   playing: boolean;
+  /** Exact current media source matched by the agent; absent on older agents. */
+  catalog_id?: string | null;
   /** Seconds. */
   position: number;
   /** Seconds; 0 for a live stream or before metadata loads. */

@@ -1,4 +1,4 @@
-import React, { useCallback, useMemo, useRef, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   Pressable,
   ScrollView,
@@ -22,6 +22,9 @@ import { blockTabSwipe } from '@/lib/tabSwipe';
 import { orderFavoriteServices } from '@/lib/watchFavoriteOrder';
 import { toggleWatchFavorite, useWatchFavorites } from '@/lib/watchFavorites';
 import { GamepadClient } from '@/lib/gamepad';
+import { WatchDiscovery } from '@/components/WatchDiscovery';
+import { boxCatalogProvider } from '@/lib/player/discovery';
+import { playerLibrary } from '@/lib/player/libraryStore';
 
 /**
  * DISPLAY ONLY. This is not an allowlist and must never become one — the box's
@@ -168,6 +171,7 @@ export function WatchPanel() {
   const [link, setLink] = useState('');
   const [query, setQuery] = useState('');
   const [remoteMode, setRemoteMode] = useState<'browse' | 'playback'>('browse');
+  const [section, setSection] = useState<'remote' | 'discover' | 'library'>('remote');
   // True while a finger is on the d-pad's swipe surface. The ScrollView must
   // not scroll during it, or a vertical swipe scrolls the panel instead of
   // stepping the TV's focus a row.
@@ -207,6 +211,19 @@ export function WatchPanel() {
   );
 
   const state = player.data;
+  const catalogSignature = JSON.stringify(state?.catalog ?? null);
+  const catalogProvider = useMemo(() => boxCatalogProvider(state?.catalog), [catalogSignature]);
+  const playableIds = useMemo(() => new Set(state?.catalog?.metas.map(v => v.id) ?? []), [state?.catalog]);
+  useEffect(() => {
+    const p = state?.playback;
+    // Older agents cannot prove which media produced a playback sample.
+    // Do not infer viewing history from a last-opened URL or page title.
+    const video = state?.catalog?.metas.find(v => v.id === p?.catalog_id);
+    if (!state?.running || !video || !p || p.error || p.seeking || (p.ready ?? 0) < 2) return;
+    void catalogProvider.details(video.id, new AbortController().signal).then(title => {
+      if (title) void playerLibrary.recordProgress(title, p.position, p.duration);
+    });
+  }, [state, catalogProvider]);
   const favorites = useWatchFavorites();
   const services = orderFavoriteServices(state?.services ?? [], favorites);
   const activeService = state?.surface?.kind === 'home' ? ''
@@ -482,6 +499,7 @@ export function WatchPanel() {
     setError(null);
     try {
       await api.playerCatalogOpen(settings, videoId);
+      setSection('remote');
       setPending(name);
       scrollRef.current?.scrollTo({ y: 0, animated: true });
       player.refresh();
@@ -498,20 +516,39 @@ export function WatchPanel() {
     if (webLink) openUrl(webLink);              // free-URL tier (box opted in)
   }, [parsedLink, webLink, open, openUrl]);
 
+  const sections = <View style={styles.switcher} testID="watch-sections">
+    {(['remote', 'discover', 'library'] as const).map(tab => <Pressable key={tab}
+      accessibilityRole="button" accessibilityState={{ selected: section === tab }}
+      onPress={() => { setSection(tab); scrollRef.current?.scrollTo({ y: 0, animated: false }); }}
+      style={[styles.homeShortcut, section === tab && { borderWidth: 1, borderColor: t.accent }]}>
+      <Text style={styles.searchBtnText}>{tab === 'remote' ? 'Remote' : tab === 'discover' ? 'Discover' : 'My Library'}</Text>
+    </Pressable>)}
+  </View>;
+
+  // Personal titles remain available when a box is offline or not paired.
+  if (section !== 'remote') return <View style={styles.root}>{sections}
+    <ScrollView ref={scrollRef} contentContainerStyle={styles.content} keyboardShouldPersistTaps="handled">
+      {error ? <Text accessibilityRole="alert" style={styles.error}>{error}</Text> : null}
+      <WatchDiscovery provider={catalogProvider} mode={section} playableIds={playableIds}
+        busy={busy !== null || !configured || !state}
+        onPlay={title => { void openCatalog(title.ref.id, title.name); }} />
+    </ScrollView>
+  </View>;
+
   if (!configured) {
     return (
-      <View style={styles.empty}>
+      <View style={styles.root}>{sections}<View style={styles.empty}>
         <Text style={styles.emptyTitle}>No box paired yet</Text>
         <Text style={styles.emptyBody}>Pair a box in Setup to use the player.</Text>
-      </View>
+      </View></View>
     );
   }
 
   if (player.loading && !state) {
     return (
-      <View style={styles.empty}>
+      <View style={styles.root}>{sections}<View style={styles.empty}>
         <Text style={styles.emptyBody}>Checking the box…</Text>
-      </View>
+      </View></View>
     );
   }
 
@@ -523,6 +560,7 @@ export function WatchPanel() {
     if (mediaGrid) {
       return (
         <View style={styles.root}>
+          {sections}
           <ScrollView style={styles.root} contentContainerStyle={styles.content}>
             {mediaGrid}
           </ScrollView>
@@ -530,13 +568,13 @@ export function WatchPanel() {
       );
     }
     return (
-      <View style={styles.empty}>
+      <View style={styles.root}>{sections}<View style={styles.empty}>
         <Text style={styles.emptyTitle}>Player not installed</Text>
         <Text style={styles.emptyBody}>
           This box doesn’t have the Couchside Player, or has no browser that can
           play protected video.
         </Text>
-      </View>
+      </View></View>
     );
   }
 
@@ -571,6 +609,7 @@ export function WatchPanel() {
         <Text style={styles.searchBtnText}>›</Text>
       </Pressable>
     </View>
+    {sections}
     <ScrollView
       ref={scrollRef}
       style={styles.root}
