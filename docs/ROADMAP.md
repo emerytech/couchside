@@ -47,8 +47,13 @@ Each entry now carries a `✅ DONE` / `🟡 PARTIAL` / `📋 OPEN` banner with i
 - **status:** BUILT + unit-tested on the mac dev host (`tests/test_fg_watch.py`): the pure caret-focus
   decision (`hwndCaret` non-null OR `GUI_CARETBLINKING`), the edge-trigger dedup (one `{"t":"osk"}` per
   not-focused→focused edge, re-fires after blur), and degrade-closed off Windows all green; `py_compile`
-  + protocol parity green. NOT verified on real Windows — `ctypes.WinDLL` can't load on macOS, so
-  `GetGUIThreadInfo` is unexercised. Needs EMERY-PC: focus a Notepad field → app keyboard raises.
+  + protocol parity green.
+- **VERIFIED on real Windows (EMERY-PC, session 2 desktop, Python 3.12.7 64-bit, 2026-10-21):** a
+  standalone probe mirroring the exact ctypes calls fired `CARET EDGE -> would push {"t":"osk"}`
+  (hwndCaret=0x30994, non-null) ONCE per field focus — `GetGUIThreadInfo(0, ...)` returns a real caret
+  handle on a focused field and the edge dedup holds (not continuous). Headless-SSH run separately
+  confirmed degrade-closed on real hardware (no foreground → None, no exception). NOT re-exercised: the
+  final WebSocket send + app `onOsk` keyboard-raise, which is the PRE-EXISTING osk path (unchanged here).
 - **allowlist:** no client input — a background poll that only READS the foreground thread's caret and
   pushes an existing signal to the holder. Degrades closed (probe failure → None → no push).
 - **left open:** real-Windows verification; documented API limit — many apps and most browsers draw their
@@ -61,9 +66,11 @@ Each entry now carries a `✅ DONE` / `🟡 PARTIAL` / `📋 OPEN` banner with i
   **depends_on:** nothing.
 - **status:** BUILT + unit-tested on mac (class filter: skip `Shell_TrayWnd`/`Shell_SecondaryTrayWnd`,
   special-case `Progman`/`WorkerW`; exe-basename split on both separators; on-change dedup pushes once per
-  distinct `(title, exe)`). App safely ignores the unknown frame (else-if chain, no throw). NOT verified on
-  real Windows — `GetForegroundWindow`/`QueryFullProcessImageNameW` unexercised on macOS. Needs EMERY-PC:
-  alt-tab → one frame with the right title + exe basename.
+  distinct `(title, exe)`). App safely ignores the unknown frame (else-if chain, no throw).
+- **VERIFIED on real Windows (EMERY-PC, 2026-10-21):** the probe pushed `{"t":"foreground"}` once per app
+  switch with the correct title + exe basename — `powershell.exe`, `SearchHost.exe` (Windows Search), and
+  `new 1 - Notepad++` → `notepad++.exe`. `GetForegroundWindow` + `GetWindowTextW` +
+  `QueryFullProcessImageNameW` work and the on-change dedup holds (one frame per real switch).
 - **allowlist:** no client input; read-only foreground probe, holder-only push, degrade-closed.
 - **left open:** real-Windows verification; the app-side per-app smart-button consumer is a SEPARATE larger
   ROADMAP item (Planned) and intentionally not built here — this just lays the additive signal.
