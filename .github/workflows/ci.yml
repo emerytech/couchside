@@ -33,6 +33,14 @@ jobs:
             agent/qr.py
           echo "py_compile OK"
 
+      - name: Theme and lighting regression tests
+        run: |
+          python3 -m unittest discover -s tests -p 'test_steam_themes*.py'
+          python3 -m unittest discover -s tests -p 'test_theme*.py'
+          python3 tests/test_legion_go2_lighting.py
+          python3 tests/test_ring_motion_preview.py
+          python3 tests/test_ring_program.py
+
       # The guide-hold trigger fires a SESSION SWITCH, which tears down the
       # user's desktop and any unsaved work. Its two dangerous failure modes —
       # firing on a tap, and matching the agent's OWN emulated pad (created on
