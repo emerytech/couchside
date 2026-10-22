@@ -59,3 +59,30 @@ unsafe hints, old-agent fallback, duplicate replies, late scan completion,
 Windows/older Linux status and malformed core data. TypeScript passes.
 The live relayed-UDP-to-verified-HTTP check selects the actual PC address.
 An internal build is required for these app changes; production is unchanged.
+
+### Internal iPhone build 268 verification (2026-10-22)
+
+Built from integrated source `fca8ae0385fe2c69add6bb2f86d2868a191f2670`,
+retaining the prior Player preview work. The signed 2.9.78 (268) IPA passed
+multicast entitlement and native HTTPS module checks and is in the existing
+internal TestFlight group; no public release was submitted.
+
+On the physical iPhone 17 Pro Max using Mirroring:
+
+- Updating 267 to 268 retained both saved boxes and secure pairing.
+- Windows 0.4.14 displayed its hostname, service version, memory, disks and
+  live vitals instead of the previous persistent connecting placeholder.
+- Scan found the Windows agent at its verified LAN address, not the forwarded
+  UDP source/router address. Selecting the result reached the PC PIN flow.
+  No duplicate pairing was saved during this check.
+- Switching to the existing SteamOS box loaded its live console, then the
+  existing Windows connection remained available.
+
+Integrated CI run 39871389670 passed compile, smoke, app-input, and both
+Windows/Ubuntu transport jobs. Two pre-existing Player tests need TypeScript
+to transpile mocked native imports; CI now supplies that compiler in an
+isolated temporary prefix rather than installing the Expo dependency tree.
+
+This is targeted compatibility evidence, not a claim of exhaustive device,
+VPN, router, or controller-input coverage. The earlier native iPhone upload
+and pinned HTTPS transfer checks are recorded above.
