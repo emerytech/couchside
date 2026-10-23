@@ -138,3 +138,29 @@ installed and no security permission changed.
 These checks complete the two pending native upload checks above. Direct 42
 still predates the Console status fix and keyboard batching fix, so a fresh
 Android preview remains necessary to verify those changes physically.
+
+### Follow-up previews 269 / Direct 44 (2026-10-22)
+
+Frozen source: `145d128` on `codex/windows-compat-preview-268`, including
+the keyboard baseline fix, discovery endpoint verification, and optional
+Windows status-field compatibility. Existing Player, themes/Theme Studio,
+lighting, receiver controls and license public key were retained.
+
+- Direct 44: compiled on Gandalf under `/tank/build-storage`; signed with the
+  established Direct certificate. APK/native module, manifest alias, scheme,
+  license-key and Hermes/source-map checks passed. SHA-256:
+  `6e11cfc5a4cb6386cb70efca559b6a83311546d5fff953829b25777f722797dc`.
+- Installed Direct 44 over physical Razr build 42 using an in-place ADB update;
+  no uninstall. Verified installed versionCode 44, retained secure Windows
+  pairing, and working live Windows Console status. Keyboard fix device
+  validation remains pending reliable mirror input.
+- iOS 269: signed multicast entitlement/profile and bundle identity verified;
+  retained feature checks passed. IPA SHA-256:
+  `2875df78eb17ddb9cdb1a96d37f4a8cce761e8e6b5ede04bfa179094eb388ffa`. Apple accepted upload delivery
+  `f063056d-75a6-4be8-a023-aa6c63d1c872`; at this checkpoint it is still
+  awaiting appearance/processing in App Store Connect. This is an internal
+  preview, not an App Store review submission or public release.
+
+Build scripts, manifests, source provenance, native-module and icon provenance,
+checksums and private build logs are saved locally in the preview artifact
+folder. Secrets, signing keys, Claude files and private logs were not committed.
