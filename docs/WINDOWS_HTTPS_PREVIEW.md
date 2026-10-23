@@ -113,3 +113,28 @@ network measurements, not general performance guarantees.
 The next native iPhone upload is paused at Apple's Mirroring authentication
 prompt. Razr native file-picker upload remains pending reliable navigation
 to Console. Neither is counted as a new completed phone upload test.
+
+### Native phone uploads completed (2026-10-22)
+
+After owner authentication, iPhone 268 selected the disposable
+`couchside-https-interruption.txt` through the native Files picker. Windows
+received 16,777,216 bytes. SHA-256 matched the original iCloud Drive test file:
+`341aacac661ccb210720bedaa9ead5d668fe5ea41a73532fc147c71e34040df1`.
+
+Razr Direct 42 selected `couchside-android-windows-test.bin` through Android's
+OPEN_DOCUMENT picker. Windows received 1,310,720 bytes; SHA-256 matched the
+prepared test payload:
+`e92df7e0136e8d408d2b23dc818a9ab32aa5b284df7a8c9dd84c67d5229c47db`.
+The signed/pinned native HTTPS upload path was used on both phones. Existing
+Windows files were not overwritten. These two disposable files were retained
+for inspection in the user's Windows Downloads/Couchside folder.
+
+Android mirror coordinate targeting was unreliable; the owner opened Console
+and the picker, and keyboard focus/Enter selected the verified test payload.
+This limitation is not evidence of an app tab-touch failure. An unrelated
+installer prompt encountered during targeting was canceled; no APK was
+installed and no security permission changed.
+
+These checks complete the two pending native upload checks above. Direct 42
+still predates the Console status fix and keyboard batching fix, so a fresh
+Android preview remains necessary to verify those changes physically.
