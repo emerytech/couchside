@@ -32,6 +32,7 @@ Mock mode also is not a filesystem sandbox: use temporary paths for file tests.
 | Shared API contract | `python3 tests/test_protocol_parity.py` plus affected platform tests |
 | App code | Typecheck above, then affected tests under `app/lib/__tests__` or `app/hooks/__tests__` |
 | Adding an agent test | `python3 tests/test_ci_wiring.py`; add the new suite to CI |
+| Agent imports or dependencies | `python3 tests/test_agent_dependencies.py` |
 
 These are starting points, not the whole release gate. The executable inventory
 is [.github/workflows/ci.yml](.github/workflows/ci.yml). Read the relevant job for
@@ -69,6 +70,22 @@ The Linux agent is distributed as a **signed single file**. Splitting it into
 imports changes the installer and update contract. First design signed packaging,
 installation, upgrade and rollback together; until then, improve internal
 boundaries and tests without breaking the deployed artifact.
+
+### Core Python dependency policy
+
+CI parses all import statements in the Linux daemon, Windows daemon and shared
+`agent/qr.py`, including imports inside functions and platform guards. Core files
+use Python's standard library; only the Windows daemon may import the bundled
+`qr` sibling. The sibling is checked too. Common dynamic-import calls and relative
+imports are rejected rather than silently skipped. This is a static architecture
+check, not a complete detector for arbitrary Python loading or dependency risks.
+
+Optional standalone processes (for example the GObject portal) are outside this
+core policy. New exceptions require a reviewed, narrowly scoped policy change
+and dependency documentation; installing a package in CI does not approve it.
+The separate Windows HTTPS preview uses PyCA `cryptography` for certificate
+generation. When that preview is integrated, include its explicit Windows-only
+exception and tests in the same PR; do not relax the Linux daemon policy.
 
 ## Before sharing or releasing
 
