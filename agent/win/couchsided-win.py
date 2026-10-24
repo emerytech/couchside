@@ -32,6 +32,7 @@ authed action/launcher API must never hand LAN clients admin execution.
 """
 
 import argparse
+from pathlib import Path
 import base64
 import ctypes
 import glob
@@ -41,12 +42,17 @@ import ipaddress
 import json
 import os
 import random
+import re
 import shutil
 import socket
+import ssl
+import tempfile
+import secrets
+import datetime
+import csv
 import struct
 import subprocess
 import sys
-import tempfile
 import threading
 import time
 import urllib.error
@@ -86,7 +92,7 @@ except ImportError:
 # Same app id the phone expects (AGENT_APPS in app/lib/api.ts); the Windows
 # agent versions independently of the Linux one.
 APP_NAME = "couchside-agent"
-VERSION = "0.4.12-win"
+VERSION = "0.4.14-win"
 
 _PROGRAMDATA = os.environ.get("ProgramData", r"C:\ProgramData")
 DEFAULT_CONFIG_PATH = os.path.join(_PROGRAMDATA, "Couchside", "config.json")
@@ -5274,6 +5280,9 @@ def build_pair_url(token, port):
     ip = _pair_lan_ip()
     if ip:
         url += "&ip=" + quote(ip, safe="")
+    adv = _tls_public()
+    if adv:
+        url += "&tlsport=%d&fp=%s" % (adv['port'], adv['fp'])
     return url
 
 
@@ -5343,9 +5352,17 @@ def _udp_discovery_responder(port):
         if not data.startswith(COUCHSIDE_DISCOVER_MAGIC):
             continue
         short = socket.gethostname().split(".")[0] or "couchside"
-        reply = json.dumps({"couchside": True, "name": short,
-                            "host": short + ".local", "port": port,
-                            "version": VERSION}).encode()
+        payload = {"couchside": True, "name": short,
+                   "host": short + ".local", "port": port, "version": VERSION}
+        # A VPN return path can select its tunnel IP even for a LAN probe.
+        # Advertise the same primary LAN address used by on-box pairing instead.
+        lan_ip = _pair_lan_ip()
+        if lan_ip:
+            payload['ip'] = lan_ip
+        adv = _tls_public()
+        if adv:
+            payload.update(tls_port=adv['port'], tls_fp=adv['fp'], tls_spki=adv['spki'])
+        reply = json.dumps(payload).encode()
         try:
             s.sendto(reply, addr)
         except OSError:
@@ -5545,6 +5562,147 @@ def render_pair_page(token, port):
 # ---------------------------------------------------------------------------
 
 
+
+# HTTPS is additive: legacy controls stay on HTTP; uploads require TLS.
+TLS_ADVERT = None
+_UPLOAD_TICKETS = {}
+_UPLOAD_TICKET_LOCK = threading.Lock()
+_UPLOAD_SLOTS = threading.BoundedSemaphore(2)
+
+
+def _tls_public():
+    return dict(TLS_ADVERT or {})
+
+
+def _ticket_mint():
+    now = time.monotonic()
+    with _UPLOAD_TICKET_LOCK:
+        for k, expiry in list(_UPLOAD_TICKETS.items()):
+            if expiry <= now:
+                del _UPLOAD_TICKETS[k]
+        if len(_UPLOAD_TICKETS) >= 128:
+            raise ValueError("too many outstanding tickets")
+        ticket = secrets.token_hex(16)
+        _UPLOAD_TICKETS[ticket] = now + 120
+    return ticket
+
+
+def _ticket_consume(ticket):
+    with _UPLOAD_TICKET_LOCK:
+        expiry = _UPLOAD_TICKETS.pop(ticket, 0)
+    return expiry > time.monotonic()
+
+
+def _upload_name(name):
+    # Windows paths also have ADS, device aliases, trailing-dot and Unicode
+    # normalization hazards. Accept one literal leaf; never rewrite a bad name.
+    if (not isinstance(name, str) or not name or len(name) > 180
+            or name != name.strip() or name.endswith('.')
+            or any(ord(c) < 32 or c in '<>:"/\\|?*' for c in name)
+            or name in ('.', '..')
+            or name.split('.')[0].rstrip(' ').upper() in
+               {'CON', 'PRN', 'AUX', 'NUL', 'CLOCK$', 'CONIN$', 'CONOUT$'}
+            or re.match(r'^(COM|LPT)([0-9]|[¹²³])$', name.split('.')[0], re.I)):
+        raise ValueError("invalid filename")
+    return name
+
+
+def _drop_dir():
+    # Fixed user destination: never supplied by a network client.
+    root = os.path.join(os.path.expanduser('~'), 'Downloads', 'Couchside')
+    os.makedirs(root, exist_ok=True)
+    return os.path.realpath(root)
+
+
+def _tls_identity(root):
+    # Only certificate generation uses PyCA; sockets and transfers use stdlib.
+    from cryptography import x509
+    from cryptography.x509.oid import NameOID, ExtendedKeyUsageOID
+    from cryptography.hazmat.primitives import hashes, serialization
+    from cryptography.hazmat.primitives.asymmetric import rsa
+    os.makedirs(root, mode=0o700, exist_ok=True)
+    if IS_WINDOWS:
+        who = subprocess.run(['whoami', '/user', '/fo', 'csv', '/nh'],
+                             capture_output=True, text=True, check=True)
+        sid = next(csv.reader(who.stdout.strip().splitlines()))[1]
+        if not re.fullmatch(r'S-1-[0-9-]+', sid):
+            raise ValueError('cannot identify certificate owner')
+        subprocess.run(['icacls', root, '/inheritance:r', '/grant:r',
+                        '*'+sid+':(OI)(CI)F', '*S-1-5-18:(OI)(CI)F'],
+                       capture_output=True, check=True)
+    else:
+        os.chmod(root, 0o700)
+    kp, cp = os.path.join(root, 'key.pem'), os.path.join(root, 'cert.pem')
+    if os.path.exists(kp):
+        key = serialization.load_pem_private_key(Path(kp).read_bytes(), password=None)
+    else:
+        # Never replace a previously trusted identity on a parse failure.
+        key = rsa.generate_private_key(public_exponent=65537, key_size=2048)
+        fd = os.open(kp, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+        with os.fdopen(fd, 'wb') as f:
+            f.write(key.private_bytes(serialization.Encoding.PEM,
+                serialization.PrivateFormat.PKCS8, serialization.NoEncryption()))
+    short = socket.gethostname().split('.')[0]
+    names = [x509.DNSName('localhost'), x509.DNSName(short), x509.DNSName(short+'.local'),
+             x509.IPAddress(ipaddress.ip_address('127.0.0.1'))]
+    ip = _pair_lan_ip()
+    if ip:
+        names.append(x509.IPAddress(ipaddress.ip_address(ip)))
+    cert = None
+    if os.path.exists(cp):
+        cert = x509.load_pem_x509_certificate(Path(cp).read_bytes())
+        existing = cert.extensions.get_extension_for_class(x509.SubjectAlternativeName).value
+        if (not all(n in existing for n in names)
+                or cert.not_valid_after_utc < datetime.datetime.now(datetime.timezone.utc)+datetime.timedelta(days=7)):
+            cert = None
+    if cert is None:
+        now = datetime.datetime.now(datetime.timezone.utc)
+        subject = x509.Name([x509.NameAttribute(NameOID.COMMON_NAME, 'couchside')])
+        cert = (x509.CertificateBuilder().subject_name(subject).issuer_name(subject)
+                .public_key(key.public_key()).serial_number(x509.random_serial_number())
+                .not_valid_before(now-datetime.timedelta(minutes=5))
+                .not_valid_after(now+datetime.timedelta(days=3650))
+                .add_extension(x509.SubjectAlternativeName(names), critical=False)
+                .add_extension(x509.BasicConstraints(ca=False, path_length=None), critical=True)
+                .add_extension(x509.KeyUsage(True,False,True,False,False,False,False,None,None), critical=True)
+                .add_extension(x509.ExtendedKeyUsage([ExtendedKeyUsageOID.SERVER_AUTH]), critical=False)
+                .sign(key, hashes.SHA256()))
+        fd, tmp = tempfile.mkstemp(dir=root, prefix='cert-', suffix='.tmp')
+        try:
+            with os.fdopen(fd, 'wb') as f:
+                f.write(cert.public_bytes(serialization.Encoding.PEM))
+            os.replace(tmp, cp)
+        finally:
+            if os.path.exists(tmp): os.unlink(tmp)
+    public = key.public_key().public_bytes(serialization.Encoding.DER,
+                                           serialization.PublicFormat.SubjectPublicKeyInfo)
+    if cert.public_key().public_bytes(serialization.Encoding.DER,
+            serialization.PublicFormat.SubjectPublicKeyInfo) != public:
+        raise ValueError('certificate/key mismatch')
+    return cp, kp, {'fp': cert.fingerprint(hashes.SHA256()).hex(),
+                    'spki': hashlib.sha256(public).hexdigest(),
+                    'cert': cert.public_bytes(serialization.Encoding.PEM).decode('ascii')}
+
+
+def _start_https(host, port, root):
+    global TLS_ADVERT
+    cp, kp, info = _tls_identity(root)
+    ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
+    ctx.minimum_version = ssl.TLSVersion.TLSv1_2
+    ctx.load_cert_chain(cp, kp)
+    server = QuietThreadingHTTPServer((host, port), Handler)
+    server.daemon_threads = True
+    try:
+        server.socket = ctx.wrap_socket(server.socket, server_side=True,
+                                       do_handshake_on_connect=False)
+        threading.Thread(target=server.serve_forever, daemon=True, name='https').start()
+    except Exception:
+        server.server_close()
+        raise
+    TLS_ADVERT = dict(info, port=server.server_port)
+    return server
+
+
 class Handler(BaseHTTPRequestHandler):
     server_version = APP_NAME + "/" + VERSION
     protocol_version = "HTTP/1.1"
@@ -5553,6 +5711,8 @@ class Handler(BaseHTTPRequestHandler):
     # body read (see _read_body) so an unauthenticated LAN client can't force a
     # huge allocation via a large Content-Length. 8 MiB comfortably covers the
     # only bodies this agent accepts (tiny launcher/volume/power JSON).
+    timeout = 30
+    MAX_UPLOAD_BYTES = 8 * 1024 * 1024 * 1024
     MAX_BODY_BYTES = 8 * 1024 * 1024
 
     # set by main()
@@ -5680,6 +5840,63 @@ class Handler(BaseHTTPRequestHandler):
             self.wfile.write(data)
         self._log(code, started)
 
+
+    def _handle_upload(self, parsed, started):
+        self.close_connection = True  # a rejected/partial body must not be reused
+        try:
+            name = _upload_name((parse_qs(parsed.query).get('name') or [''])[0])
+        except ValueError:
+            self._send(400, {'error': 'invalid filename'}, started)
+            return
+        lengths = self.headers.get_all('Content-Length') or []
+        if self.headers.get('Transfer-Encoding') or len(lengths) != 1 or not re.fullmatch(r'[0-9]+', lengths[0]):
+            self._send(411, {'error': 'one content length required'}, started)
+            return
+        length = int(lengths[0])
+        if not 0 < length <= self.MAX_UPLOAD_BYTES:
+            self._send(413 if length else 411, {'error': 'invalid file size'}, started)
+            return
+        if not _UPLOAD_SLOTS.acquire(blocking=False):
+            self._send(429, {'error': 'uploads busy'}, started)
+            return
+        tmp = None
+        try:
+            root = _drop_dir()
+            dest = os.path.join(root, name)
+            # No overwrites, links, device aliases or automatic execution.
+            if os.path.lexists(dest):
+                self._send(409, {'error': 'file already exists'}, started)
+                return
+            if shutil.disk_usage(root).free < length + 64*1024*1024:
+                self._send(507, {'error': 'not enough free space'}, started)
+                return
+            fd, tmp = tempfile.mkstemp(dir=root, prefix='.couchside-upload-', suffix='.part')
+            written = 0
+            with os.fdopen(fd, 'wb') as f:
+                while written < length:
+                    chunk = self.rfile.read(min(1024*1024, length-written))
+                    if not chunk:
+                        raise ValueError('incomplete upload')
+                    f.write(chunk)
+                    written += len(chunk)
+            # Atomic no-clobber publication: hard-link creation fails if another
+            # transfer/local user created the destination during the stream.
+            os.link(tmp, dest)
+            os.unlink(tmp)
+            tmp = None
+            self._send(200, {'ok': True, 'name': name, 'bytes': written, 'path': dest}, started)
+        except FileExistsError:
+            self._send(409, {'error': 'file already exists'}, started)
+        except (ValueError, TimeoutError):
+            self._send(400, {'error': 'incomplete upload'}, started)
+        except OSError:
+            self._send(500, {'error': 'write failed'}, started)
+        finally:
+            if tmp is not None:
+                try: os.unlink(tmp)
+                except OSError: pass
+            _UPLOAD_SLOTS.release()
+
     def _authorized(self):
         auth = self.headers.get("Authorization", "")
         if not auth.startswith("Bearer "):
@@ -5737,9 +5954,17 @@ class Handler(BaseHTTPRequestHandler):
                 except OSError:
                     own_ip = None
                 short_host = socket.gethostname().split(".")[0] or None
-                self._send(200, {"ok": True, "app": APP_NAME,
-                                 "version": VERSION, "ip": own_ip,
-                                 "host": short_host}, started)
+                resp = {"ok": True, "app": APP_NAME, "version": VERSION,
+                        "ip": own_ip, "host": short_host}
+                adv = _tls_public()
+                if adv:
+                    resp.update(tls_port=adv['port'], tls_fp=adv['fp'], tls_spki=adv['spki'])
+                self._send(200, resp, started)
+                return
+
+            if path == "/api/tls/cert":
+                info = _tls_public()
+                self._send(200 if info else 404, info or {"error": "tls not enabled"}, started)
                 return
 
             if not path.startswith("/api/"):
@@ -5752,6 +5977,7 @@ class Handler(BaseHTTPRequestHandler):
 
             if path == "/api/status":
                 data = mock_status() if self.mock else real_status()
+                data['caps'] = dict(data.get('caps') or {}, file_upload=bool(TLS_ADVERT))
                 self._send(200, data, started)
             elif path == "/api/units":
                 units = mock_units() if self.mock else real_units()
@@ -5922,7 +6148,9 @@ class Handler(BaseHTTPRequestHandler):
                     # not throw another window at whoever is at the PC.
                     if fresh:
                         pair_show_on_box(self.port)
-                    self._send(200, {"ok": True, "ttl": ttl}, started)
+                    adv = _tls_public()
+                    extra = ({'tls_port':adv['port'], 'tls_fp':adv['fp'], 'tls_spki':adv['spki']} if adv else {})
+                    self._send(200, dict({"ok": True, "ttl": ttl}, **extra), started)
                     return
                 # .get() OUTSIDE the try: a body that parses but is not an object
                 # ([], "x", 5) raised AttributeError past this tuple and answered
@@ -5937,16 +6165,42 @@ class Handler(BaseHTTPRequestHandler):
                 except ValueError as e:
                     self._send(403, {"ok": False, "error": str(e)}, started)
                     return
-                self._send(200, {"ok": True, "token": self._current_token(),
-                                 "port": self.port}, started)
+                adv = _tls_public()
+                extra = ({'tls_port':adv['port'], 'tls_fp':adv['fp'], 'tls_spki':adv['spki']} if adv else {})
+                self._send(200, dict({"ok": True, "token": self._current_token(),
+                                 "port": self.port}, **extra), started)
                 return
 
             # Authorize BEFORE reading the body: an unauthenticated client must
             # not be able to make us allocate for its body. Reject + close so the
             # undrained body can't desync a keep-alive connection.
-            if not self._authorized():
+            ticket = (parse_qs(parsed.query).get('ticket') or [''])[0]
+            secure = isinstance(self.connection, ssl.SSLSocket)
+            ticket_ok = (path == '/api/upload' and secure and ticket and _ticket_consume(ticket))
+            if not (self._authorized() or ticket_ok):
                 self.close_connection = True
                 self._send(401, {"error": "unauthorized"}, started)
+                return
+
+            if path in ('/api/upload', '/api/ticket'):
+                if not secure:
+                    self.close_connection = True
+                    self._send(426, {'error': 'HTTPS required'}, started)
+                    return
+                if path == '/api/upload':
+                    self._handle_upload(parsed, started)
+                    return
+                # No request body is needed. Reject malformed framing explicitly.
+                if self.headers.get('Transfer-Encoding') or self.headers.get('Content-Length', '0') != '0':
+                    self.close_connection = True
+                    self._send(400, {'error': 'ticket request must be empty'}, started)
+                    return
+                try:
+                    ticket = _ticket_mint()
+                except ValueError:
+                    self._send(429, {'error': 'too many outstanding tickets'}, started)
+                    return
+                self._send(200, {'ticket': ticket, 'ttl': 120}, started)
                 return
 
             # Authorized: now enforce the size cap, then read the body.
@@ -5955,6 +6209,19 @@ class Handler(BaseHTTPRequestHandler):
                 self._send(413, {"error": "request body too large"}, started)
                 return
             body = self._read_body()
+
+            if path == '/api/upload/reveal':
+                try:
+                    root = _drop_dir()
+                    if self.mock:
+                        opened = False
+                    else:
+                        os.startfile(root)
+                        opened = True
+                    self._send(200, {'opened': opened, 'path': root}, started)
+                except OSError:
+                    self._send(200, {'opened': False, 'reason': 'file manager unavailable'}, started)
+                return
 
             prefix = "/api/actions/"
             if path.startswith(prefix):
@@ -6668,7 +6935,64 @@ def load_token(args):
         sys.exit(1)
 
 
-class QuietThreadingHTTPServer(ThreadingHTTPServer):
+class BoundedThreadingHTTPServer(ThreadingHTTPServer):
+    """ThreadingHTTPServer with a hard cap on concurrent connections so a
+    connection flood cannot exhaust threads/FDs. A non-blocking semaphore is
+    acquired before the worker thread is spawned; over the cap the socket is
+    closed and the connection rejected. Released when the request finishes.
+
+    Note: the long-lived /ws/gamepad connection holds a slot for the entire
+    Pad session, so the cap must comfortably exceed a household's phones. TLS
+    handshakes use the same capped workers, with their own short deadline.
+    """
+    request_queue_size = 128
+    _MAX_CONNECTIONS = 128
+    _TLS_HANDSHAKE_TIMEOUT_S = 5.0
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self._conn_sem = threading.BoundedSemaphore(self._MAX_CONNECTIONS)
+
+    def process_request(self, request, client_address):
+        if not self._conn_sem.acquire(blocking=False):
+            # Over the concurrency cap: reject rather than pile up threads.
+            try:
+                self.shutdown_request(request)
+            except Exception:
+                pass
+            return
+        try:
+            super().process_request(request, client_address)
+        except Exception:
+            # No worker owns the slot if thread creation fails. The server's
+            # _handle_request_noblock exception path closes the accepted socket.
+            self._conn_sem.release()
+            raise
+
+    def process_request_thread(self, request, client_address):
+        try:
+            if isinstance(request, ssl.SSLSocket):
+                try:
+                    previous_timeout = request.gettimeout()
+                    request.settimeout(self._TLS_HANDSHAKE_TIMEOUT_S)
+                    request.do_handshake()
+                    # Only negotiation gets the short deadline. Handler.setup
+                    # and the WS loops retain their existing read timeouts.
+                    request.settimeout(previous_timeout)
+                except OSError:
+                    # Timeout, malformed TLS or a dropped peer: close quietly,
+                    # without reaching the HTTP handler or flooding the log.
+                    self.shutdown_request(request)
+                    return
+            super().process_request_thread(request, client_address)
+        finally:
+            try:
+                self._conn_sem.release()
+            except ValueError:
+                pass
+
+
+class QuietThreadingHTTPServer(BoundedThreadingHTTPServer):
     """ThreadingHTTPServer that doesn't dump a traceback when a client drops
     the connection. The app (and any LAN poller) freely abandons keep-alive
     sockets between requests, and on Windows that abrupt close surfaces as
@@ -6743,6 +7067,9 @@ def main():
                    help="literal token (overrides --token-file; dev only)")
     p.add_argument("--mock", action="store_true",
                    help="serve fake data, never run real commands")
+    p.add_argument('--tls-port', type=int, default=None, help='HTTPS port (default HTTP port + 1)')
+    p.add_argument('--no-tls', action='store_true', help='disable HTTPS; uploads unavailable')
+    p.add_argument('--tls-dir', default=os.path.join(os.environ.get('LOCALAPPDATA', os.path.expanduser('~')), 'Couchside', 'tls'))
     args = p.parse_args()
 
     if not IS_WINDOWS and not args.mock:
@@ -6770,6 +7097,14 @@ def main():
 
     server = QuietThreadingHTTPServer((args.host, port), Handler)
     server.daemon_threads = True
+    tls_server = None
+    if not args.no_tls:
+        try:
+            tls_server = _start_https(args.host, args.tls_port or port + 1, args.tls_dir)
+            print('HTTPS ready on port %d' % TLS_ADVERT['port'], flush=True)
+        except Exception as e:
+            # Legacy control is preserved, but uploads never fall back to HTTP.
+            print('HTTPS unavailable (%s); legacy controls remain, uploads disabled' % type(e).__name__, flush=True)
     # Box-driven gamepad keepalive: PING idle sockets so their OS auto-PONG keeps
     # the session alive even while the app's own JS keepalive timer is frozen (iOS).
     threading.Thread(target=_gamepad_keepalive_loop,
@@ -6798,6 +7133,9 @@ def main():
         pass
     finally:
         server.server_close()
+        if tls_server:
+            tls_server.shutdown()
+            tls_server.server_close()
 
 
 if __name__ == "__main__":

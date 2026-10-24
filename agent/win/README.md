@@ -215,3 +215,8 @@ that way (so a misclassified home LAN pairs, while a truly-private box stays
 Private-only). If the box roams to untrusted Wi-Fi, tighten the rule to
 Private and rely on the bearer token, which every route but `/api/ping`
 requires regardless.
+
+## HTTPS preview
+
+See [Windows HTTPS preview](../../docs/WINDOWS_HTTPS_PREVIEW.md) for dependencies,
+pairing, transfer restrictions, test evidence and compatibility limits.
