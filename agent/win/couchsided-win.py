@@ -1,7 +1,8 @@
 #!/usr/bin/env python3
 """couchsided-win.py: Windows box-side agent for Couchside.
 
-Pure python3 stdlib (ctypes for Win32). Serves the same Couchside agent API
+Python3 stdlib (ctypes for Win32), plus PyCA for HTTPS certificate creation.
+Serves the same Couchside agent API
 contract v1 as the Linux agent (agent/couchsided.py) on port 8787, so the
 phone app pairs and talks to a Windows HTPC exactly like a SteamOS/Bazzite
 box. Also runs on macOS/Linux in --mock mode for phone-app development.

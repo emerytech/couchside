@@ -100,10 +100,10 @@ cannot be done in JS alone.
 
 ---
 
-## 2. The agent — zero third-party dependencies
+## 2. The Linux agent — zero third-party dependencies
 
 `agent/couchsided.py` is ~11,100 lines in **one file** with **no imports outside
-the Python 3 standard library**. Same for `agent/qr.py`, `agent/win/couchsided-win.py`,
+the Python 3 standard library**. Same for `agent/qr.py`,
 `couchside-decky/main.py`, `cec-bridge/couchside-cec-bridge.py`, and every file
 in `tests/`.
 
@@ -191,10 +191,18 @@ The heavy hitters, by role:
 
 ### Windows agent
 
-`agent/win/couchsided-win.py` holds the same line. Instead of `pywin32` or
+`agent/win/couchsided-win.py` uses no input-wrapper dependencies. Instead of `pywin32` or
 `pynput` it uses **`ctypes`** to call Win32 directly (`SendInput`, WTS session
-queries), plus `winreg` for registry access. Its only non-stdlib-shaped import
-is `qr` — the sibling `agent/qr.py`, in-repo.
+queries), plus `winreg` for registry access and the bundled `agent/qr.py`.
+
+The approved Windows-only HTTPS exception is `cryptography==46.0.7`, used only
+inside `_tls_identity` to create the persistent RSA certificate and key. TLS
+sockets and streamed uploads use Python stdlib. The installer/build pins PyCA;
+the executable preserves its dependency/license metadata. The dedicated Windows
+TLS tests also require this package. `tests/test_agent_dependencies.py` permits
+only the six reviewed symbols in that module-level Windows function and rejects
+other locations/modules, wildcard imports and imports in Linux/QR. This exception
+does not change the Linux daemon's deployment or dependency policy.
 
 ### External runtime endpoints the agent talks to — Decky manager (agent 2.9.105+)
 

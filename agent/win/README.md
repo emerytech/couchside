@@ -6,7 +6,8 @@ app pairs with and controls a Windows HTPC exactly like a SteamOS/Bazzite
 box — health, service watchlist, event-log tails, recovery actions, Steam
 game launching, TV/volume control, and the virtual gamepad/mouse/keyboard.
 
-Pure Python stdlib (`ctypes` for Win32); no pip dependencies. Runs as
+Python stdlib (`ctypes` for Win32), with pinned PyCA `cryptography==46.0.7`
+used only to create the persistent HTTPS certificate. Runs as
 `couchsided-win.py` (Python 3.9+) or as a self-contained
 `couchside-agent.exe` built with `build.ps1`.
 
