@@ -91,8 +91,32 @@ class Sources(unittest.TestCase):
             result = a.real_cec_select_source('cec-2.0.0.0')
             self.assertTrue(result['ok'])
             self.assertFalse(result['confirmed'])
+            self.assertEqual(run.call_args_list[0].args[0], [
+                '/usr/bin/cec-ctl', '-d', '/dev/cec0', '--to', '4',
+                '--user-control-pressed', 'ui-cmd=power-on-function',
+                '--user-control-released'])
             self.assertEqual(run.call_args.args[0], ['/usr/bin/cec-ctl', '-d', '/dev/cec0', '--set-stream-path', 'phys-addr=2.0.0.0'])
             self.assertNotIn('shell', run.call_args.kwargs)
+
+    def test_untrusted_logical_address_cannot_reach_command(self):
+        self.cache()
+        with patch.object(a, 'cec_current', return_value=CEC), \
+                patch.object(a.subprocess, 'run') as run:
+            for value in (None, '4', '--help', 0, 5, 15, True):
+                a._CEC_SOURCES['sources'][1]['logical_address'] = value
+                self.assertFalse(a.real_cec_select_source('cec-2.0.0.0')['ok'])
+            run.assert_not_called()
+
+    def test_unsupported_wake_key_still_requests_routing(self):
+        self.cache()
+        class Proc:
+            returncode = 0
+        with patch.object(a, 'cec_current', return_value=CEC), \
+                patch.object(a, '_cec_phys_addr', return_value='4.0.0.0'), \
+                patch.object(a.time, 'sleep'), \
+                patch.object(a.subprocess, 'run', side_effect=[OSError(), Proc()]) as run:
+            self.assertTrue(a.real_cec_select_source('cec-2.0.0.0')['ok'])
+            self.assertIn('--set-stream-path', run.call_args.args[0])
 
     def test_stale_hotplug_busy_fail_closed(self):
         self.cache()
@@ -114,7 +138,21 @@ class Sources(unittest.TestCase):
         self.cache()
         with patch.object(a, 'cec_current', return_value=CEC), patch.object(a, '_cec_phys_addr', return_value='4.0.0.0'), patch.object(a, 'real_cec_source_box', return_value={'ok': True}) as own:
             self.assertTrue(a.real_cec_select_source('cec-4.0.0.0')['ok'])
-            own.assert_called_once()
+            own.assert_called_once_with(preserve_adapter=True)
+
+    def test_picker_preserves_configured_cec_identity(self):
+        class Proc:
+            returncode = 0
+
+        with patch.object(a, 'cec_current', return_value=CEC), \
+                patch.object(a, '_cec_phys_addr', return_value='4.0.0.0'), \
+                patch.object(a.time, 'sleep'), \
+                patch.object(a.subprocess, 'run', return_value=Proc()) as run:
+            self.assertTrue(a.real_cec_source_box(preserve_adapter=True)['ok'])
+            commands = [call.args[0] for call in run.call_args_list]
+            self.assertEqual(len(commands), 3)
+            self.assertTrue(all('--playback' not in argv for argv in commands))
+            self.assertEqual(commands[1][-2:], ['--active-source', 'phys-addr=4.0.0.0'])
 
     def test_panel_and_unsupported_unchanged(self):
         with patch.object(a, 'panel_available', return_value=True):

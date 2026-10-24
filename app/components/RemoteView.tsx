@@ -536,7 +536,7 @@ export function RemoteView({
       )}
 
       {tv?.sources_backend === 'cec' && <View style={styles.sourceRow}>
-        <Text style={[styles.sourceText, { flexShrink: 1, textAlign: 'center' }]}>{tv.sources_loading ? 'Finding TV inputs…' : sourceFeedback || tv.sources_error || 'CEC devices only; some TV inputs may not appear.'}</Text>
+        <Text style={[styles.sourceText, { flexShrink: 1, textAlign: 'center' }]}>{tv.sources_loading ? 'Finding TV inputs…' : sourceFeedback || tv.sources_error || 'Selecting a CEC device may wake it. Some TV inputs may not appear.'}</Text>
         <Pressable disabled={sourceBusy || tv.sources_loading} accessibilityRole="button" accessibilityLabel="Refresh TV inputs"
           onPress={() => { setSourceFeedback(''); void api.tvRefreshSources(settings).then(tvPoll.refresh).catch(() => setSourceFeedback('Could not refresh inputs.')); }}>
           <Text style={styles.sourceText}>Refresh inputs</Text>

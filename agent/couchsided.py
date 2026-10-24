@@ -17255,7 +17255,7 @@ def _cec_source_box_available():
     return bool(cec and cec.get("tool") == "cec-ctl")
 
 
-def real_cec_source_box():
+def real_cec_source_box(*, preserve_adapter=False):
     """CEC One Touch Play: switch the TV to THIS box's HDMI input. Image View On
     (wake; harmless if already on), then an Active Source broadcast carrying the
     box's OWN physical address, re-sent once to beat a TV that returns to its
@@ -17266,7 +17266,10 @@ def real_cec_source_box():
     regex-validated (never a client value). `--playback` claims the playback
     logical address so the Active Source comes from a valid source -- without it
     some TVs ignore it. cec-ctl only; degrades closed if the address is
-    unreadable. ActionResult-shaped."""
+    unreadable. The inventory picker can preserve the already-configured adapter
+    instead of re-claiming it (which resets its OSD name/vendor). The existing
+    standalone path retains its established playback-claim behavior.
+    ActionResult-shaped."""
     start = time.monotonic()
 
     def done(ok, err=""):
@@ -17280,7 +17283,9 @@ def real_cec_source_box():
     addr = _cec_phys_addr(cec)
     if addr is None:
         return done(False, "could not read this box's CEC physical address")
-    base = [cec["bin"], "-d", cec["device"], "--playback"]
+    base = [cec["bin"], "-d", cec["device"]]
+    if not preserve_adapter:
+        base.append("--playback")
     announce = base + ["--active-source", "phys-addr=" + addr]
     try:
         r1 = subprocess.run(base + ["--to", "0", "--image-view-on"],
@@ -17323,9 +17328,10 @@ def _cec_parse_sources(output):
     rows = []
     current = {"is_box": True}
     for line in output.splitlines():
-        if re.match(r"\s*System Information for device \d+\b", line):
+        device = re.match(r"\s*System Information for device (\d+)\b", line)
+        if device:
             rows.append(current)
-            current = {"is_box": False}
+            current = {"is_box": False, "logical_address": int(device.group(1))}
         m = re.match(r"\s*(Physical Address|OSD Name|Primary Device Type)\s*:\s*(.*)", line)
         if m:
             current[m.group(1)] = m.group(2).strip().strip("'")
@@ -17339,7 +17345,8 @@ def _cec_parse_sources(output):
         port = int(addr.split(".")[0], 16)
         own = bool(row["is_box"])
         label = (label or ("This box" if own else "CEC device")) + " · HDMI %d" % port
-        result.setdefault(addr, {"id": "cec-" + addr, "label": label, "is_box": own})
+        result.setdefault(addr, {"id": "cec-" + addr, "label": label, "is_box": own,
+                                 "logical_address": row.get("logical_address")})
     return list(result.values())
 
 
@@ -17409,13 +17416,26 @@ def real_cec_select_source(sid):
     own = next((v for v in rows if v["is_box"]), None)
     if not selected or not own or not _cec_valid_address(selected["id"][4:]):
         return result(False, "Select an input from the detected CEC devices")
+    logical = selected.get("logical_address")
+    if not selected["is_box"] and (type(logical) is not int or not 1 <= logical <= 14 or logical == 5):
+        return result(False, "The selected CEC device address is unavailable. Refresh inputs")
     if not _CEC_SWITCH_LOCK.acquire(blocking=False):
         return result(False, "An input switch is already in progress")
     try:
         if _cec_phys_addr(cec) != own["id"][4:]:
             return result(False, "HDMI connection changed. Refresh the input list")
         if selected["is_box"]:
-            return real_cec_source_box()
+            return real_cec_source_box(preserve_adapter=True)
+        # Standby sources (confirmed with Apple TV) can ignore Set Stream Path.
+        # A discrete Power On key wakes only the selected inventoried device;
+        # never use a toggle or broadcast standby/power operations here.
+        try:
+            subprocess.run([cec["bin"], "-d", cec["device"], "--to", str(logical),
+                            "--user-control-pressed", "ui-cmd=power-on-function",
+                            "--user-control-released"], capture_output=True, timeout=3)
+        except (OSError, subprocess.TimeoutExpired):
+            pass  # Older devices may not support the key; still request routing.
+        time.sleep(0.6)
         # Request routing; do not impersonate another source via Active Source.
         # Successful transmission is not proof that the TV accepted the request.
         r = subprocess.run([cec["bin"], "-d", cec["device"], "--set-stream-path",

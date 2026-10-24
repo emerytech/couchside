@@ -1047,7 +1047,7 @@ export function RemotePowerBar({ compact = false }: { compact?: boolean }) {
                     ))}
                   </View>
                   {tv?.sources_backend === 'cec' && <>
-                    <Text style={styles.sourceHint}>{sourceFeedback || 'CEC devices only. Empty ports and devices without CEC may not appear.'}</Text>
+                    <Text style={styles.sourceHint}>{sourceFeedback || 'Selecting a CEC device may wake it. Empty ports and devices without CEC may not appear.'}</Text>
                     <Pressable disabled={busy || tv.sources_loading} accessibilityRole="button" accessibilityLabel="Refresh TV inputs"
                       onPress={() => { setSourceFeedback(''); void api.tvRefreshSources(settings).then(refreshTv).catch(() => setSourceFeedback('Could not refresh inputs. Try again.')); }}>
                       <Text style={styles.sourcePillText}>Refresh inputs</Text>
