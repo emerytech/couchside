@@ -156,6 +156,43 @@ def test_blocked_input_keeps_holder_and_resumes_without_reconnecting():
         check(not close.called, "no close frame or reconnect is requested")
 
 
+def test_admin_boundary_is_reported_even_when_sendinput_would_succeed():
+    print("input blocked: detect UIPI before a silently accepted input call")
+    handler = cw.Handler.__new__(cw.Handler)
+    handler.mock = False
+    target = type("Mouse", (), {})()
+    target.emit = Mock()
+    entry = {"held": True, "mouse": target}
+    sent = []
+    payload = json.dumps({"t": "m", "dx": 20, "dy": 0}).encode()
+    with patch.object(cw, "_input_reachable", return_value=True), \
+            patch.object(cw, "_process_privilege", return_value={"elevated": False, "uiaccess": False}), \
+            patch.object(cw, "_foreground_is_elevated", side_effect=[True, True, True, False]), \
+            patch.object(cw, "_wsend_json", side_effect=lambda _entry, msg: sent.append(msg)), \
+            patch.object(cw, "_wsend_op") as close:
+        # First input checks the boundary, then the warning's classifier probes
+        # it again. Repeated blocked input sends no duplicate warning.
+        handler._gamepad_message(None, entry, payload)
+        handler._gamepad_message(None, entry, payload)
+        check(not target.emit.called, "known admin boundary never injects input")
+        handler._gamepad_message(None, entry, payload)
+        check(target.emit.call_count == 1, "normal foreground accepts the next input")
+        check([msg["t"] for msg in sent] == ["blocked", "resumed"],
+              "silent boundary warns once and clears without reconnecting")
+        check("Administrator app" in sent[0]["msg"], "phone receives the administrator recovery instruction")
+        check(entry["held"] and not close.called, "holder and socket are retained")
+
+    for privilege, foreground in (({"elevated": False, "uiaccess": False}, None),
+                                  ({"elevated": True, "uiaccess": False}, True),
+                                  ({"elevated": False, "uiaccess": True}, True)):
+        target.emit.reset_mock()
+        with patch.object(cw, "_input_reachable", return_value=True), \
+                patch.object(cw, "_process_privilege", return_value=privilege), \
+                patch.object(cw, "_foreground_is_elevated", return_value=foreground):
+            handler._gamepad_message(None, entry, payload)
+        check(target.emit.call_count == 1, "unknown foreground or existing input privilege keeps injection behavior")
+
+
 if __name__ == "__main__":
     test_privilege_shape_and_degrade_closed()
     test_never_raises()
@@ -164,6 +201,7 @@ if __name__ == "__main__":
     test_tray_admin_toggle_wired()
     test_blocked_reason_distinguishes_admin_session_and_security_prompt()
     test_blocked_input_keeps_holder_and_resumes_without_reconnecting()
+    test_admin_boundary_is_reported_even_when_sendinput_would_succeed()
     print()
     if _fail:
         print("FAILED: %d" % len(_fail))

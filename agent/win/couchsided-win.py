@@ -6938,6 +6938,17 @@ class Handler(BaseHTTPRequestHandler):
             self._note_input_error(entry, slot,
                 OSError("agent session not active (disconnected or switched away)"))
             return True
+        if slot in ("mouse", "keyboard") and not self.mock:
+            privilege = _process_privilege()
+            if (not privilege["elevated"] and not privilege["uiaccess"]
+                    and _foreground_is_elevated() is True):
+                # On the physical console SendInput can report success while
+                # UIPI still discards the event. Do not wait for an OSError to
+                # explain this known boundary. Unknown foregrounds retain the
+                # normal injection path; ViGEm and media controls are unchanged.
+                self._note_input_error(entry, slot,
+                    OSError("administrator foreground blocks normal input"))
+                return True
 
         try:
             target.emit(events)
