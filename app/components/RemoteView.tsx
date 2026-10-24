@@ -74,6 +74,9 @@ export function RemoteView({
   const hasTvText = tv?.text === true;
   const hasSourceKey = tv?.source_key === true;
   const sources = tv?.sources ?? [];
+  const [sourceBusy, setSourceBusy] = useState(false);
+  const [sourceFeedback, setSourceFeedback] = useState('');
+  useEffect(() => setSourceFeedback(''), [settings.host, settings.port]);
   const canBlank = tv?.screen_toggle === true;
   // Backend pushes an on-TV focus signal (webOS): we auto-raise the text sheet
   // on focus and dismiss it on blur. Held in a ref too so the (once-registered)
@@ -270,11 +273,19 @@ export function RemoteView({
   }, [settings]);
 
   const source = useCallback(
-    (id: string) => {
+    async (id: string) => {
+      if (sourceBusy) return;
       hapticLight();
-      void api.tvSelectSource(settings, id).catch(() => {});
+      setSourceBusy(true);
+      try {
+        const result = await api.tvSelectSource(settings, id);
+        if (!result.ok) throw new Error(result.stderr || 'Input request failed');
+        setSourceFeedback('Input requested. If the TV does not switch, use its remote.');
+      } catch (e) {
+        setSourceFeedback(e instanceof Error ? e.message : 'Input request failed');
+      } finally { setSourceBusy(false); }
     },
-    [settings],
+    [settings, sourceBusy],
   );
 
   // ---- desktop nav senders (SteamOS/Bazzite Plasma, via the WS uinput) ------
@@ -498,14 +509,17 @@ export function RemoteView({
         )}
       </View>
 
-      {/* Source row (RS-232 panels only) */}
-      {sources.length > 0 && (
+      {/* Server-detected inputs; CEC never fabricates missing TV ports. */}
+      {(sources.length > 0 || tv?.source_picker) && (
         <View style={styles.sourceRow}>
           {sources.map((s) => {
             const isBox = s.id === 'ops';
             return (
               <Pressable
                 key={s.id}
+                accessibilityRole="button"
+                accessibilityLabel={`Switch TV input to ${s.label}`}
+                disabled={sourceBusy || tv?.sources_loading}
                 onPress={() => source(s.id)}
                 style={({ pressed }) => [
                   styles.sourcePill,
@@ -520,6 +534,14 @@ export function RemoteView({
           })}
         </View>
       )}
+
+      {tv?.sources_backend === 'cec' && <View style={styles.sourceRow}>
+        <Text style={[styles.sourceText, { flexShrink: 1, textAlign: 'center' }]}>{tv.sources_loading ? 'Finding TV inputs…' : sourceFeedback || tv.sources_error || 'CEC devices only; some TV inputs may not appear.'}</Text>
+        <Pressable disabled={sourceBusy || tv.sources_loading} accessibilityRole="button" accessibilityLabel="Refresh TV inputs"
+          onPress={() => { setSourceFeedback(''); void api.tvRefreshSources(settings).then(tvPoll.refresh).catch(() => setSourceFeedback('Could not refresh inputs.')); }}>
+          <Text style={styles.sourceText}>Refresh inputs</Text>
+        </Pressable>
+      </View>}
 
       {/* On-TV text entry (webOS / Samsung / Roku). Gated by tv.text. */}
       <Modal
@@ -1057,6 +1079,7 @@ const makeStyles = (t: Palette) => StyleSheet.create({
 
   sourceRow: { flexDirection: 'row', flexWrap: 'wrap', justifyContent: 'center', gap: 8 },
   sourcePill: {
+    maxWidth: '100%',
     paddingVertical: 10,
     paddingHorizontal: 14,
     borderRadius: 10,

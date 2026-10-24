@@ -1770,9 +1770,8 @@ export type Tv = {
   /** Current box mute state at probe time (agent >= 2.6.5), or null if unknown. */
   muted?: boolean | null;
   /**
-   * The panel can jump its input to the box's OPS slot (agent >= 2.6.7). Only
-   * the RS-232 panel backend reports this, so the "Switch to box" button is
-   * hidden on CEC/soft boxes — it is an opt-in RS-232 feature.
+   * Jump the display to this box: RS-232 input selection or CEC One Touch Play
+   * on supported kernel adapters. Older agents may report this for panels only.
    */
   source_box?: boolean;
   /**
@@ -1782,11 +1781,15 @@ export type Tv = {
    */
   screen_toggle?: boolean;
   /**
-   * Display inputs the panel can switch to (agent >= 2.6.9): the app renders a
-   * source picker and POSTs /api/tv/source/<id>. Panel (RS-232) only — empty or
-   * absent on CEC/soft boxes, which can't route a display's input.
+   * Panel inputs or devices discovered on a supported CEC adapter. CEC cannot
+   * enumerate every empty/non-CEC TV port. IDs are server-issued allowlist keys.
    */
-  sources?: { id: string; label: string }[];
+  sources?: { id: string; label: string; is_box?: boolean }[];
+  /** Detected CEC inputs are cached; scanning never blocks the control poll. */
+  source_picker?: boolean;
+  sources_loading?: boolean;
+  sources_error?: string | null;
+  sources_backend?: 'panel' | 'cec';
   /**
    * Factory-remote / nav key emulation via POST /api/tv/key/<k> (agent >=
    * 2.7.0 for the RS-232 panel; agent >= 2.9.7 also for the network smart-TV
@@ -3343,9 +3346,12 @@ export const api = {
     });
   },
 
-  /**
-   * Switch the display to input `id` (one of Tv.sources; RS-232 panel only).
-   */
+  /** Refresh the server's input inventory without blocking on a CEC bus scan. */
+  tvRefreshSources(settings: ConnSettings): Promise<{ sources: NonNullable<Tv['sources']>; loading: boolean }> {
+    return request(settings, '/api/tv/sources?refresh=1');
+  },
+
+  /** Request one listed input; CEC transmission is not a TV acknowledgement. */
   tvSelectSource(settings: ConnSettings, id: string): Promise<ActionResult> {
     return request<ActionResult>(settings, `/api/tv/source/${encodeURIComponent(id)}`, {
       method: 'POST',

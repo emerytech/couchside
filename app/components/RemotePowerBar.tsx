@@ -385,6 +385,8 @@ export function RemotePowerBar({ compact = false }: { compact?: boolean }) {
   }, [reachable, boxKey, status.lastSuccess]);
 
   const [busy, setBusy] = React.useState(false);
+  const [sourceFeedback, setSourceFeedback] = React.useState('');
+  React.useEffect(() => setSourceFeedback(''), [boxKey]);
   const [wakePhase, setWakePhase] = React.useState<'idle' | 'sending' | 'waiting' | 'awake' | 'timeout' | 'failed'>('idle');
   const [wakeDetail, setWakeDetail] = React.useState('');
   const [wakeStarted, setWakeStarted] = React.useState(0);
@@ -533,15 +535,18 @@ export function RemotePowerBar({ compact = false }: { compact?: boolean }) {
     }
   }, [settings]);
 
-  // Switch the display to a specific input (RS-232 panel source picker).
+  // Request a panel/CEC source. Transmission alone does not confirm TV routing.
   const onSelectSource = React.useCallback(
     async (id: string) => {
       hapticLight();
       setBusy(true);
       try {
-        await api.tvSelectSource(settings, id);
+        const result = await api.tvSelectSource(settings, id);
+        if (!result.ok) throw new Error(result.stderr || 'The TV input request failed');
+        setSourceFeedback('Input request sent. If the TV does not switch, use its remote.');
         hapticSuccess();
-      } catch {
+      } catch (e) {
+        setSourceFeedback(e instanceof Error ? e.message : 'The TV input request failed');
         hapticError();
       } finally {
         setBusy(false);
@@ -682,8 +687,8 @@ export function RemotePowerBar({ compact = false }: { compact?: boolean }) {
   const hasVolume = reachable && (boxVol || tvVol);
   const canToggleVolume = boxVol && tvVol;
   const hasTvPower = reachable && tv?.tv_power === true;
-  // RS-232-only capabilities (panel backend). Gated so CEC/soft boxes never
-  // show these buttons — they keep the standard power/volume UI.
+  // Input lists come from the panel or a supported CEC adapter; blanking stays
+  // panel-only. Older agents omit the added CEC discovery fields.
   const sources = (reachable && tv?.sources) || [];
   const canSourceBox = reachable && tv?.source_box === true;
   const canBlankScreen = reachable && tv?.screen_toggle === true;
@@ -1023,23 +1028,36 @@ export function RemotePowerBar({ compact = false }: { compact?: boolean }) {
                 </View>
               )}
 
-              {sources.length > 0 ? (
+              {reachable && (sources.length > 0 || tv?.source_picker) && (
                 <View style={styles.sourceSection}>
-                  <Text style={styles.sourceHdr}>SOURCE</Text>
+                  <Text style={styles.sourceHdr}>TV INPUTS</Text>
+                  {tv?.sources_loading && <Text style={styles.sourceHint}>Looking for CEC devices…</Text>}
+                  {!!tv?.sources_error && <Text style={styles.sourceHint}>{tv.sources_error}</Text>}
                   <View style={styles.sourceGrid}>
                     {sources.map((s) => (
                       <Pressable
                         key={s.id}
-                        disabled={busy}
+                        accessibilityRole="button"
+                        accessibilityLabel={`Switch TV input to ${s.label}`}
+                        disabled={busy || tv?.sources_loading}
                         onPress={() => onSelectSource(s.id)}
-                        style={({ pressed }) => [styles.sourcePill, pressed && styles.pressed]}>
+                        style={({ pressed }) => [styles.sourcePill, (busy || tv?.sources_loading) && { opacity: 0.5 }, pressed && styles.pressed]}>
                         <Text style={styles.sourcePillText}>{s.label}</Text>
                       </Pressable>
                     ))}
                   </View>
+                  {tv?.sources_backend === 'cec' && <>
+                    <Text style={styles.sourceHint}>{sourceFeedback || 'CEC devices only. Empty ports and devices without CEC may not appear.'}</Text>
+                    <Pressable disabled={busy || tv.sources_loading} accessibilityRole="button" accessibilityLabel="Refresh TV inputs"
+                      onPress={() => { setSourceFeedback(''); void api.tvRefreshSources(settings).then(refreshTv).catch(() => setSourceFeedback('Could not refresh inputs. Try again.')); }}>
+                      <Text style={styles.sourcePillText}>Refresh inputs</Text>
+                    </Pressable>
+                  </>}
                 </View>
-              ) : (
-                canSourceBox && (
+              )}
+
+              {canSourceBox && (tv?.sources_loading || !!tv?.sources_error ||
+                !sources.some(s => s.is_box || s.id === 'ops')) && (
                   <Pressable
                     disabled={busy}
                     onPress={onSwitchToBox}
@@ -1047,7 +1065,6 @@ export function RemotePowerBar({ compact = false }: { compact?: boolean }) {
                     <Ionicons name="tv" size={18} color={t.green} />
                     <Text style={[styles.sourceBtnText, { color: t.green }]}>Switch to Box</Text>
                   </Pressable>
-                )
               )}
 
               {canBlankScreen && (
@@ -1315,6 +1332,7 @@ const makeStyles = (t: Palette) => StyleSheet.create({
     letterSpacing: 0.5,
   },
   sourceSection: { gap: 6 },
+  sourceHint: { color: t.textDim, fontSize: 12, lineHeight: 18 },
   sourceHdr: {
     color: t.textFaint,
     fontSize: 11,
@@ -1325,6 +1343,7 @@ const makeStyles = (t: Palette) => StyleSheet.create({
   },
   sourceGrid: { flexDirection: 'row', flexWrap: 'wrap', gap: 6 },
   sourcePill: {
+    maxWidth: '100%',
     paddingVertical: 9,
     paddingHorizontal: 12,
     borderRadius: 8,
@@ -1332,7 +1351,7 @@ const makeStyles = (t: Palette) => StyleSheet.create({
     borderWidth: 1,
     borderColor: t.cardBorder,
   },
-  sourcePillText: { color: t.text, fontSize: 12, fontWeight: '700', fontFamily: mono },
+  sourcePillText: { flexShrink: 1, color: t.text, fontSize: 12, fontWeight: '700', fontFamily: mono },
   sliderRow: { flexDirection: 'row', alignItems: 'center', gap: 10, paddingHorizontal: 2 },
   sliderTrack: {
     flex: 1,
