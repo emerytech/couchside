@@ -11,6 +11,10 @@ used only to create the persistent HTTPS certificate. Runs as
 `couchsided-win.py` (Python 3.9+) or as a self-contained
 `couchside-agent.exe` built with `build.ps1`.
 
+Release executables run without a console window. Diagnostics stay in
+`%LOCALAPPDATA%\Couchside\logs\agent.log` and the app's Logs view.
+Use `build.ps1 -Console` only for a developer build with terminal output.
+
 ## Install (one line)
 
 Open **PowerShell** on the box and run — it self-elevates via UAC:
