@@ -33,6 +33,9 @@ jobs:
             agent/qr.py
           echo "py_compile OK"
 
+      - name: Core agent dependency policy
+        run: python3 tests/test_agent_dependencies.py
+
       - name: Theme and lighting regression tests
         run: |
           python3 -m unittest discover -s tests -p 'test_steam_themes.py'
