@@ -155,3 +155,35 @@ verifies that repeated refusals retain the holder/socket and that the next
 successful input clears the warning without reconnecting. The foreground-token
 query was also run in a normal interactive Windows session and correctly reported
 the normal desktop as non-elevated.
+
+
+## Administrator-boundary preview — 2026-10-24
+
+Draft PR #645 and Windows mirror PR #5 add a specific normal-privilege warning
+for administrator windows, separate from an inactive/RDP session or unknown
+lock/security prompt. Physical-console testing found that a successful
+SendInput return is not sufficient evidence that the foreground consumed the
+event. A known elevated foreground is now checked before mouse/keyboard
+injection when the agent has neither elevation nor UIAccess. Unknown
+foregrounds keep the existing injection path; ViGEm and media commands are
+unchanged. No agent privilege, firewall or driver changes are required.
+
+The final windowless preview executable was built from Windows mirror commit
+8e3ccc9 (CI run 40066571993), SHA-256
+`9bce54559b0816576e91b556150e70fd794be28331eaf53244dbc1e17cf84be7`.
+It was installed on the existing Windows test PC. The Limited startup task,
+token/configuration/TLS hashes and file ACLs match the protected backup.
+Android Direct 45 displayed the specific administrator warning, retained its
+connection, then cleared the warning and resumed when a normal desktop became
+foreground. Its three saved boxes, secure Windows pairing, Direct license and
+original installation date survived the in-place update from Direct 44.
+
+iOS 2.9.79 (271) is a processed internal TestFlight preview. Its signed
+multicast entitlement and provisioning entitlement were checked in the actual
+IPA. The first 2.9.78 (270) binary was rejected because that version train was
+closed; it was not published. Physical iPhone checks of the updated preview
+remain pending at this checkpoint.
+
+Local privilege, gamepad capability, windowless log and dependency checks pass.
+Both draft PRs have passing CI. Publication is explicitly on hold. Device
+logs/screenshots, credentials and the protected rollback files remain local.
