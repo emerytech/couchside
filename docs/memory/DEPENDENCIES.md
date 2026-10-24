@@ -1,8 +1,9 @@
 # DEPENDENCIES
 
 Every meaningful dependency, its version, and why it is there. Two halves of the
-product with two opposite dependency philosophies: the **app** leans on the Expo
-ecosystem, the **agent** has none at all.
+product with different dependency policies: the **app** leans on the Expo
+ecosystem, the **Linux agent** stays stdlib-only, and the **Windows agent** has
+one narrowly scoped PyCA exception for HTTPS certificate creation.
 
 Source of truth: `app/package.json`, `app/app.json` (plugins),
 `agent/couchsided.py`, `scripts/`. Update this file any time a dependency is

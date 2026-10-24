@@ -59,3 +59,42 @@ unsafe hints, old-agent fallback, duplicate replies, late scan completion,
 Windows/older Linux status and malformed core data. TypeScript passes.
 The live relayed-UDP-to-verified-HTTP check selects the actual PC address.
 An internal build is required for these app changes; production is unchanged.
+
+## Release-candidate verification — 2026-10-23
+
+Draft PR #643 combines the Windows HTTPS/discovery work, the native keyboard
+batching fix, and the caret watcher from PR #637. It deliberately excludes the
+separate Player/receiver prototype. PR #637 must not be merged separately after
+the combined candidate lands. No public release or store submission has occurred.
+
+The installed Windows 0.4.14 agent's executable Python definitions match this
+candidate; its module documentation now records the PyCA exception. Existing
+pairing, certificate identity and configuration were retained during testing.
+
+Physical-device checks used TestFlight 2.9.78 (269) and Android Direct
+2.9.78 (44), against a disposable, non-elevated Windows text field. Both phones
+passed rapid typing, repeated backspace, append, select-all/clear and retype.
+The iPhone also passed Greek Unicode input. An accented-character attempt was
+inconclusive: Mirroring did not insert the character into the phone's own field;
+Windows matched the phone field. This is not evidence of accented-input support
+or a Windows input failure. A manual phone-keyboard accent test remains useful.
+One later attempt ran while the phone was on Home and was discarded; refocusing
+Couchside and repeating clear/retype passed. No arbitrary desktop typing was used.
+
+The caret watcher was observed opening the native phone keyboard when the
+disposable Windows field gained focus. Its PR tests cover foreground changes,
+caret/OSK probes and change-only publication. Pure Windows definitions are
+unchanged from the installed preview; only the relevant app paths from the
+broader internal phone builds are included in this candidate.
+
+Validation: 785 app/hook tests, TypeScript, six dependency-policy tests, caret
+tests and eight HTTPS transport tests passed locally. GitHub checks passed for
+Windows and Ubuntu transport, Apple and Android native transport, app input,
+compile and smoke. The scoped dependency guard permits only the six reviewed
+PyCA imports inside Windows `_tls_identity`; Linux and QR remain stdlib-only.
+
+Before publication, merge/reconcile the draft candidate and superseded caret PR,
+produce and verify release artifacts from that exact source, and run an installer
+upgrade smoke check retaining existing pairing and certificate files. The current
+checks do not certify a newly packaged executable or a clean Windows installation.
+Keep this an ordinary-user agent: typing into elevated applications is unsupported.
