@@ -22,6 +22,7 @@ import { useLockOrientation } from '@/hooks/useLockOrientation';
 import { usePoll } from '@/hooks/usePoll';
 import { useStreak } from '@/hooks/useStreak';
 import { api, ApiError, hostKey, humanizeUptime, Status, Unit } from '@/lib/api';
+import { usableConsoleStatus } from '@/lib/consoleStatus';
 import { fmtLastSeen, noteBoxSeen } from '@/lib/lastSeen';
 import { fmtRate } from '@/lib/netRate';
 import { useConsoleLayout, effectiveOrder, moveSection, setConsoleLayout } from '@/lib/consoleLayout';
@@ -93,17 +94,9 @@ function ConsoleScreen() {
   const units = usePoll<{ units: Unit[] }>(
     () => api.units(settings), 10000, ready && configured, boxKey);
 
-  // A status counts as usable only when it carries the core stat objects the
-  // Console (and its cards) dereference — mem/cpu/os/disks. An agent mid-restart
-  // can answer /api/status with a truthy but PARTIAL body (an {error}-shaped or
-  // incomplete dict), and every `s.mem.*` / `s.cpu.*` / `s.os.*` / `s.disks` access
-  // below assumes a complete payload. Gating here (degrade closed) turns that one
-  // transient poll into the normal "unreachable/loading" state for a cycle instead
-  // of throwing "Cannot read property 'pressure'/'used_mb'/… of undefined" and
-  // taking down the whole tab. Every real agent always sends these four (memPct and
-  // the vitals/disks cards have always dereferenced them unconditionally).
-  const raw = status.data;
-  const s = raw && raw.mem && raw.cpu && raw.os && raw.disks ? raw : null;
+  // Reject incomplete core stats, while retaining optional CPU/OS metadata.
+  // Windows and older Linux agents legitimately omit those optional fields.
+  const s = usableConsoleStatus(status.data);
   // `reachable` = we have COMPLETE, current status data. It gates the box's LIVE
   // DATA (vitals, version, streak) and stays strict on purpose.
   const reachable = configured && status.error == null && s != null;

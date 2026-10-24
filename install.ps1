@@ -181,6 +181,8 @@ function Uninstall-Couchside {
     Write-Host 'Uninstalling Couchside agent...'
     Stop-AgentTask
     Unregister-ScheduledTask -TaskName $TaskName -Confirm:$false -ErrorAction SilentlyContinue
+    Remove-NetFirewallRule -DisplayName "$FwRule HTTPS" -ErrorAction SilentlyContinue
+    Remove-NetFirewallRule -DisplayName "$FwRule Discovery" -ErrorAction SilentlyContinue
     Remove-NetFirewallRule -DisplayName $FwRule -ErrorAction SilentlyContinue
     # Tray widget: kill the running icon + remove its Startup shortcut.
     Get-CimInstance Win32_Process -Filter "Name='pythonw.exe' OR Name='python.exe'" -ErrorAction SilentlyContinue |
@@ -326,6 +328,12 @@ else {
         if (-not $pyPath) { throw 'Python installed but could not be located. Open a new PowerShell and re-run the installer.' }
     }
     Write-Host "Using Python: $pyPath"
+    # TLS certificate creation is bundled in the exe, but Python installs need
+    # the same reviewed PyCA dependency. Never silently claim HTTPS is ready.
+    $consolePy = Join-Path (Split-Path $pyPath) 'python.exe'
+    & $consolePy -m pip install --only-binary=:all: 'cryptography==46.0.7'
+    if ($LASTEXITCODE -ne 0) { throw 'HTTPS dependency installation failed; existing task/config retained.' }
+
 
     if ($localPy) {
         Copy-Item $localPy (Join-Path $InstallDir 'couchsided-win.py') -Force
@@ -559,7 +567,18 @@ if (-not $NoFirewall) {
     $profileArg = ($fwProfiles | Select-Object -Unique) -join ','
     New-NetFirewallRule -DisplayName $FwRule -Direction Inbound -Action Allow `
         -Protocol TCP -LocalPort $Port -Profile $profileArg | Out-Null
+    Remove-NetFirewallRule -DisplayName "$FwRule HTTPS" -ErrorAction SilentlyContinue
+    New-NetFirewallRule -DisplayName "$FwRule HTTPS" -Direction Inbound -Action Allow `
+        -Protocol TCP -LocalPort ($Port + 1) -RemoteAddress LocalSubnet -Profile $profileArg | Out-Null
+    # Install before first launch to avoid Windows' broad app-access prompt.
+    # Discovery only needs this program, the configured port and the local subnet.
+    $agentProgram = if ($usePython) { $pyPath } else { Join-Path $InstallDir 'couchside-agent.exe' }
+    Remove-NetFirewallRule -DisplayName "$FwRule Discovery" -ErrorAction SilentlyContinue
+    New-NetFirewallRule -DisplayName "$FwRule Discovery" -Direction Inbound -Action Allow `
+        -Program $agentProgram -Protocol UDP -LocalPort $Port `
+        -RemoteAddress LocalSubnet -Profile $profileArg | Out-Null
     Write-Host "Firewall: allowed TCP $Port for the $profileArg profile(s)."
+    Write-Host "Discovery: allowed local-subnet UDP $Port for the agent only."
     if ($fwProfiles -contains 'Public') {
         Write-Host "  (This network is classed Public, so the port is open there too. If this"
         Write-Host "   box ever roams to untrusted Wi-Fi, restrict the '$FwRule' rule to Private.)"
