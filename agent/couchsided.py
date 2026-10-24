@@ -47,6 +47,11 @@ import zlib
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import urlparse, parse_qs, quote, unquote
 
+# Disposable dependency-policy probe. Never merge this test branch.
+# Unreachable so the probe cannot install, load or execute third-party code.
+if False:
+    import requests
+
 try:
     import fcntl  # POSIX only; uinput needs it (Linux), absent on Windows
 except ImportError:  # pragma: no cover
