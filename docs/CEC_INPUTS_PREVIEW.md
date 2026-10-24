@@ -31,6 +31,20 @@ inputs keep their existing IDs and commands. Unsupported adapters omit the list.
   reconnects. A cached address is never forced onto a disconnected adapter.
 - Mock mode never scans or routes real CEC hardware.
 
+## Paired TV input-menu navigation
+
+CEC inventory does not identify a PC that has no CEC transmitter. In Pad → Remote,
+choose TV and its paired remote, then Inputs to open the TV's own menu. Use the
+TV arrows and OK to choose any input the TV offers, including the PC. A separate
+remote choice is explicit in the request and does not change the CEC power/volume
+preference. With multiple paired remotes, no other TV is chosen silently.
+
+The server accepts only an available configured remote and a known key name.
+Client-supplied addresses, arbitrary keycodes, unavailable pairings, and extra
+body fields are refused. Old body-less/empty-object requests keep their existing
+hardware-backend behavior. TV mode keeps the D-pad active and hides the box's
+desktop trackpad/shortcuts so those controls cannot accidentally navigate the PC.
+
 ## Verification
 
 The inventory parser was checked against a live Steam Machine CEC scan containing
@@ -42,10 +56,19 @@ owner visually confirmed Apple TV appeared followed by the Steam Machine on
 return. The return command also preserved the adapter's identity. This verifies
 that hardware combination; other TVs can still ignore CEC routing requests.
 
+A separate process used the existing Google TV pairing to send Input Menu and
+Back. The remote protocol accepted both; the on-screen result has not been
+visually confirmed. The service's CEC preference and its installed source were
+not changed. The new named-remote picker and Inputs action were checked in a
+390×844 browser fixture, with a successful mock HTTP dispatch. Native phone
+builds and a visual hardware menu check are still required for this addition.
+
 `tests/test_cec_sources.py` covers parsing, address validation, caching, scan
 failures, stale/hotplug/busy rejection, fixed subprocess arguments, mock isolation,
 and authenticated HTTP routes. Existing TV source, TV identification, and Couch
 Mode ceremony regression suites are also run. CI includes the new suite.
+The suite also checks explicit remote authentication, malformed requests,
+removed pairing, known-key validation, legacy requests, and mock isolation.
 
 ## Deployment
 

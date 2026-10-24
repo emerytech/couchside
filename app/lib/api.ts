@@ -1796,6 +1796,8 @@ export type Tv = {
    * backends webOS/Samsung/Roku): arrows / ok / menu / home / back.
    */
   keys?: boolean;
+  /** Explicit key-only remote choices; power and volume keep their own backend. */
+  key_backends?: TvBackend[];
   /**
    * A `source` key (POST /api/tv/key/source) opens the TV's input picker (agent
    * >= 2.9.12). Set by Android/Google TV (KEYCODE_TV_INPUT) and Samsung
@@ -3377,9 +3379,10 @@ export const api = {
   },
 
   /** Send one factory-remote / nav key to the active backend (see Tv.keys). */
-  tvKey(settings: ConnSettings, key: TvKey): Promise<ActionResult> {
+  tvKey(settings: ConnSettings, key: TvKey, backend?: TvBackend): Promise<ActionResult> {
     return request<ActionResult>(settings, `/api/tv/key/${key}`, {
       method: 'POST',
+      ...(backend ? { body: { backend } } : {}),
       timeoutMs: 12000,
       // Nav keys are rapid and recoverable, so skip the probe round-trip that
       // the normal POST path does before every send (that overhead is what made

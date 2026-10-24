@@ -15,7 +15,7 @@ import {
 
 import { usePoll } from '@/hooks/usePoll';
 import { useTrackpad } from '@/hooks/useTrackpad';
-import { api, hostKey, Status, Tv, TvKey, TvOp } from '@/lib/api';
+import { api, hostKey, Status, Tv, TvBackend, TvKey, TvOp } from '@/lib/api';
 import { GamepadClient, SpecialKey } from '@/lib/gamepad';
 import { hapticLight, hapticWarning } from '@/lib/haptics';
 import { usePref } from '@/lib/prefs';
@@ -27,6 +27,10 @@ import { mono, useTheme, useThemedStyles, type Palette } from '@/lib/theme';
 let rokuHintShown = false;
 
 type IoniconName = React.ComponentProps<typeof Ionicons>['name'];
+const REMOTE_NAMES: Partial<Record<TvBackend, string>> = {
+  panel: 'Display', webos: 'LG TV', samsung: 'Samsung TV',
+  androidtv: 'Google / Android TV', roku: 'Roku', vidaa: 'Hisense TV',
+};
 
 /**
  * Traditional TV-remote layout for the Pad tab: big circular D-pad with OK,
@@ -70,9 +74,16 @@ export function RemoteView({
   // backend never yields data (404), so the TV clusters still stay hidden.
   const tvPoll = usePoll<Tv>(() => api.tv(settings), 15000, true, hostKey(settings));
   const tv = tvPoll.data?.available ? tvPoll.data : null;
+  const [remoteChoice, setRemoteChoice] = useState<TvBackend>();
+  const remotes = tv?.key_backends;
+  const remoteBackend = remotes?.includes(remoteChoice as TvBackend) ? remoteChoice
+    : remotes?.includes(tv?.backend as TvBackend) ? tv?.backend
+    : remotes?.length === 1 ? remotes[0] : undefined;
+  useEffect(() => setRemoteChoice(undefined), [settings.host, settings.port]);
   const hasTvKeys = tv?.keys === true;
-  const hasTvText = tv?.text === true;
-  const hasSourceKey = tv?.source_key === true;
+  const hasTvText = tv?.text === true && (!remotes || remoteBackend === tv.backend);
+  const hasSourceKey = remotes ? remoteBackend === 'androidtv' || remoteBackend === 'samsung'
+    : tv?.source_key === true;
   const sources = tv?.sources ?? [];
   const [sourceBusy, setSourceBusy] = useState(false);
   const [sourceFeedback, setSourceFeedback] = useState('');
@@ -184,7 +195,7 @@ export function RemoteView({
   // Nav-circle input surface: the classic D-pad, or a relative-mouse trackpad
   // (desktop only). Force back to the D-pad if the box leaves desktop mode.
   const [surface, setSurface] = useState<'dpad' | 'track'>('dpad');
-  const trackpad = hasDesktop && surface === 'track';
+  const trackpad = nav === 'box' && hasDesktop && surface === 'track';
   const [joyActive, setJoyActive] = useState(false);
   // The nav circle is ELASTIC: it sizes to whatever vertical space is left
   // after the fixed rows (which vary — TV keys, the desktop cluster). Measured
@@ -204,10 +215,17 @@ export function RemoteView({
 
   const tvKey = useCallback(
     (k: TvKey) => {
+      if (remotes && !remoteBackend) {
+        Alert.alert('Choose a TV remote', 'Select the paired TV you want to control.');
+        return;
+      }
       hapticLight();
       api
-        .tvKey(settings, k)
+        .tvKey(settings, k, remoteBackend)
         .then((r) => {
+          if (k === 'source' && r && r.ok === false && r.hint !== 'roku_control_disabled') {
+            Alert.alert('TV command not sent', 'Check that the TV is on and connected, then try again.');
+          }
           // A reachable Roku that refuses control (403) means its "Control by
           // mobile apps" network access isn't permissive. Tell the user how to
           // fix it — once per session so a held D-pad doesn't spam alerts.
@@ -219,9 +237,11 @@ export function RemoteView({
             );
           }
         })
-        .catch(() => {});
+        .catch(() => {
+          if (k === 'source') Alert.alert('TV command not sent', 'Check the connection and try again.');
+        });
     },
-    [settings],
+    [settings, remotes, remoteBackend],
   );
 
   // Keyboard mode: no virtual pad exists to press, so the same taps go out as
@@ -371,9 +391,12 @@ export function RemoteView({
           </View>
           {hasSourceKey && target === 'tv' && (
             <Pressable
+              accessibilityRole="button"
+              accessibilityLabel="Open TV input menu"
               onPress={() => tvKey('source')}
-              style={({ pressed }) => [styles.iconBtn, pressed && styles.pressed]}>
+              style={({ pressed }) => [styles.inputMenuBtn, pressed && styles.pressed]}>
               <Ionicons name="swap-horizontal" size={20} color={t.blue} />
+              <Text style={styles.segText}>Inputs</Text>
             </Pressable>
           )}
           {hasTvText && target === 'tv' && (
@@ -393,9 +416,23 @@ export function RemoteView({
           )}
         </View>
       )}
+      {target === 'tv' && !!remotes?.length && (
+        <View style={styles.remoteChoices}>
+          {remotes.map((backend) => (
+            <Pressable key={backend} accessibilityRole="button"
+              accessibilityState={{ selected: backend === remoteBackend }}
+              onPress={() => setRemoteChoice(backend)}
+              style={[styles.seg, backend === remoteBackend && styles.segActive]}>
+              <Text style={[styles.segText, backend === remoteBackend && styles.segTextActive]}>
+                {REMOTE_NAMES[backend] ?? 'TV remote'}
+              </Text>
+            </Pressable>
+          ))}
+        </View>
+      )}
 
       {/* Nav-circle surface toggle: D-pad vs trackpad (desktop boxes only) */}
-      {hasDesktop && (
+      {hasDesktop && nav === 'box' && (
         <View style={styles.surfaceSeg}>
           {(['dpad', 'track'] as const).map((s) => (
             <Pressable
@@ -459,7 +496,7 @@ export function RemoteView({
       </View>
 
       {/* Desktop cluster: Plasma start menu, overview, esc, explicit clicks */}
-      {hasDesktop && (
+      {hasDesktop && nav === 'box' && (
         <View style={styles.deskCluster}>
           <DeskBtn icon="grid" label="START" onPress={startMenu} />
           <DeskBtn icon="copy-outline" label="OVERVIEW" onPress={overview} />
@@ -513,7 +550,7 @@ export function RemoteView({
       {(sources.length > 0 || tv?.source_picker) && (
         <View style={styles.sourceRow}>
           {sources.map((s) => {
-            const isBox = s.id === 'ops';
+            const isBox = s.is_box || s.id === 'ops';
             return (
               <Pressable
                 key={s.id}
@@ -900,6 +937,10 @@ const makeStyles = (t: Palette) => StyleSheet.create({
   pressed: { opacity: 0.6 },
 
   targetRow: { flexDirection: 'row', alignItems: 'center', gap: 10 },
+  remoteChoices: { flexDirection: 'row', flexWrap: 'wrap', gap: 6 },
+  inputMenuBtn: { flexDirection: 'row', alignItems: 'center', gap: 6, minHeight: 44,
+    paddingHorizontal: 10, borderRadius: 10, backgroundColor: t.card,
+    borderWidth: 1, borderColor: t.cardBorder },
   targetSeg: {
     flex: 1,
     flexDirection: 'row',

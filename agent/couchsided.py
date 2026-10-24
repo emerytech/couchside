@@ -19994,6 +19994,16 @@ def tv_backends_available():
     return [name for name, probe in _tv_backend_probes() if _probe_ok(probe)]
 
 
+def tv_key_backends_available():
+    """Paired/configured remotes that can navigate a TV's own input menu.
+
+    Keep this separate from the power/volume preference. A client must choose
+    the remote explicitly; a CEC command must never silently target another TV.
+    """
+    return [name for name in tv_backends_available()
+            if name in ("panel", "webos", "samsung", "androidtv", "roku", "vidaa")]
+
+
 def _tv_hw_backend():
     """The external TV backend for power (and TV volume, when chosen).
 
@@ -20107,6 +20117,7 @@ def tv_info():
         "keys": (panel_available() or webos_available()
                  or samsung_available() or roku_available()
                  or androidtv_available() or vidaa_available()),
+        "key_backends": tv_key_backends_available(),
         # A "source" key opens the TV's input picker (agent >= 2.9.12). Android/
         # Google TV (KEYCODE_TV_INPUT) and Samsung (KEY_SOURCE) have one; webOS/
         # Roku don't (no single input-menu key), and the RS-232 panel uses its
@@ -29993,11 +30004,27 @@ class Handler(BaseHTTPRequestHandler):
 
             # POST /api/tv/key/<k>: factory-remote / nav key. The RS-232 panel
             # drives the Newline OSD; a paired webOS TV drives its pointer nav.
-            # The active hardware backend selects the key vocabulary + sender.
+            # Older clients use the active hardware backend. New clients may
+            # explicitly choose an already paired remote for keys only, leaving
+            # the CEC power/volume choice untouched. Never accept a host/code.
             keyprefix = "/api/tv/key/"
             if path.startswith(keyprefix):
                 k = unquote(path[len(keyprefix):])
                 backend = _tv_hw_backend()
+                if body:
+                    try:
+                        req = json.loads(body.decode("utf-8"))
+                        if (not isinstance(req, dict) or set(req) - {"backend"}
+                                or ("backend" in req and not isinstance(req["backend"], str))):
+                            raise ValueError()
+                    except (ValueError, UnicodeDecodeError):
+                        self._send(400, {"error": "select a configured TV remote"}, started)
+                        return
+                    if "backend" in req:
+                        if req["backend"] not in tv_key_backends_available():
+                            self._send(409, {"error": "TV remote is no longer available"}, started)
+                            return
+                        backend = req["backend"]
                 if backend == "webos" and k in _WEBOS_KEYS:
                     result = (mock_webos("key %s" % k) if self.mock
                               else real_webos_key(k))

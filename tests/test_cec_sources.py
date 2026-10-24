@@ -209,10 +209,11 @@ class Routes(unittest.TestCase):
         cls.http.server_close()
         cls.thread.join()
 
-    def request(self, method, path, auth):
+    def request(self, method, path, auth, body=None):
         c = http.client.HTTPConnection('127.0.0.1', self.http.server_port, timeout=3)
         headers = {'Authorization': 'Bearer cec-route-test-only'} if auth else {}
-        c.request(method, path, body=b'' if method == 'POST' else None, headers=headers)
+        c.request(method, path, body=(json.dumps(body).encode() if body is not None
+                  else b'' if method == 'POST' else None), headers=headers)
         r = c.getresponse()
         status = r.status
         data = json.loads(r.read())
@@ -254,5 +255,53 @@ class Routes(unittest.TestCase):
             status, _ = self.request('POST', '/api/tv/source/cec-2.0.0.0%3Breboot', True)
             self.assertEqual(status, 409)
             run.assert_not_called()
+
+    def test_explicit_paired_remote_preserves_cec_power_choice(self):
+        with patch.object(a, '_tv_hw_backend', return_value='cec'), \
+                patch.object(a, 'tv_key_backends_available', return_value=['androidtv']), \
+                patch.object(a, 'real_androidtv_key', return_value={'ok': True}) as send:
+            status, data = self.request('POST', '/api/tv/key/source', True,
+                                        {'backend': 'androidtv'})
+            self.assertEqual(status, 200)
+            self.assertTrue(data['ok'])
+            send.assert_called_once_with('source')
+            # Body-less legacy requests still use the active hardware backend.
+            self.assertEqual(self.request('POST', '/api/tv/key/source', True)[0], 404)
+            self.assertEqual(self.request('POST', '/api/tv/key/source', True, {})[0], 404)
+            self.assertEqual(send.call_count, 1)
+
+    def test_explicit_remote_auth_validation_and_removed_pairing(self):
+        with patch.object(a, '_tv_hw_backend', return_value='cec'), \
+                patch.object(a, 'tv_key_backends_available', return_value=['androidtv']), \
+                patch.object(a, 'real_androidtv_key') as send:
+            self.assertEqual(self.request('POST', '/api/tv/key/source', False,
+                                        {'backend': 'androidtv'})[0], 401)
+            for body in ([], 'androidtv', {'host': '10.0.0.1'},
+                         {'backend': 243}, {'backend': 'androidtv', 'code': 243}):
+                self.assertEqual(self.request('POST', '/api/tv/key/source', True, body)[0], 400)
+            for backend in ('cec', 'samsung', '10.0.0.1', '--help'):
+                self.assertEqual(self.request('POST', '/api/tv/key/source', True,
+                                            {'backend': backend})[0], 409)
+            self.assertEqual(self.request('POST', '/api/tv/key/245', True,
+                                        {'backend': 'androidtv'})[0], 404)
+            send.assert_not_called()
+        with patch.object(a, 'tv_key_backends_available', return_value=[]), \
+                patch.object(a, 'real_androidtv_key') as send:
+            self.assertEqual(self.request('POST', '/api/tv/key/source', True,
+                                        {'backend': 'androidtv'})[0], 409)
+            send.assert_not_called()
+
+    def test_explicit_remote_mock_never_sends_to_tv(self):
+        self.http.RequestHandlerClass.mock = True
+        try:
+            with patch.object(a, 'tv_key_backends_available', return_value=['androidtv']), \
+                    patch.object(a, 'real_androidtv_key') as real:
+                status, data = self.request('POST', '/api/tv/key/source', True,
+                                            {'backend': 'androidtv'})
+                self.assertEqual(status, 200)
+                self.assertTrue(data['ok'])
+                real.assert_not_called()
+        finally:
+            self.http.RequestHandlerClass.mock = False
 if __name__ == '__main__':
     unittest.main()
