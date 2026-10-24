@@ -87,13 +87,6 @@ The separate Windows HTTPS preview uses PyCA `cryptography` for certificate
 generation. When that preview is integrated, include its explicit Windows-only
 exception and tests in the same PR; do not relax the Linux daemon policy.
 
-Striff provides an additional advisory architecture check on this public
-repository. Its findings need human review and do not replace the executable
-dependency guard, security tests or device checks. Striff is not a required merge
-check; an unavailable service or disputed finding must not hold up a security fix.
-The installation is limited to this repository, with no private repositories
-selected. Changing that scope requires a separate access review.
-
 ## Before sharing or releasing
 
 Review the exact staged diff and file list. Do not include pairing tokens, TV
