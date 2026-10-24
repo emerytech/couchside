@@ -181,8 +181,13 @@ original installation date survived the in-place update from Direct 44.
 iOS 2.9.79 (271) is a processed internal TestFlight preview. Its signed
 multicast entitlement and provisioning entitlement were checked in the actual
 IPA. The first 2.9.78 (270) binary was rejected because that version train was
-closed; it was not published. Physical iPhone checks of the updated preview
-remain pending at this checkpoint.
+closed; it was not published. The physical iPhone was updated to 271 through TestFlight. Its three saved
+boxes, secure Windows/Steam pairings and unlocked status survived. The
+administrator warning appeared, then cleared on the next normal-desktop
+gesture without reconnecting. Both phones displayed the configured TV remote
+chooser and sent Inputs followed by Back through the installed Steam agent;
+each request returned 200. The TV menu appearance still needs owner visual
+confirmation; protocol acceptance is not proof of TV screen state.
 
 Local privilege, gamepad capability, windowless log and dependency checks pass.
 The native foreground probe was also measured for 1,000 calls on Windows:
