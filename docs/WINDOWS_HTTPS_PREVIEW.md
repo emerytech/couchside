@@ -185,5 +185,7 @@ closed; it was not published. Physical iPhone checks of the updated preview
 remain pending at this checkpoint.
 
 Local privilege, gamepad capability, windowless log and dependency checks pass.
+The native foreground probe was also measured for 1,000 calls on Windows:
+mean 0.025 ms, p95 0.054 ms; process handle count stayed at 117.
 Both draft PRs have passing CI. Publication is explicitly on hold. Device
 logs/screenshots, credentials and the protected rollback files remain local.
