@@ -2589,6 +2589,67 @@ def _process_privilege():
     return result
 
 
+def _foreground_is_elevated():
+    """Read the foreground process's elevation; None when it cannot be queried.
+
+    No window activation or privilege changes. Pin every handle signature for
+    64-bit Windows, and close both query handles on all paths.
+    """
+    if not IS_WINDOWS or _kernel32 is None:
+        return None
+    try:
+        user32 = ctypes.WinDLL("user32", use_last_error=True)
+        advapi32 = ctypes.WinDLL("advapi32", use_last_error=True)
+        user32.GetForegroundWindow.restype = ctypes.c_void_p
+        user32.GetWindowThreadProcessId.argtypes = [ctypes.c_void_p,
+                                                   ctypes.POINTER(ctypes.c_uint32)]
+        _kernel32.OpenProcess.argtypes = [ctypes.c_uint32, ctypes.c_int,
+                                          ctypes.c_uint32]
+        _kernel32.OpenProcess.restype = ctypes.c_void_p
+        _kernel32.CloseHandle.argtypes = [ctypes.c_void_p]
+        advapi32.OpenProcessToken.argtypes = [ctypes.c_void_p, ctypes.c_uint32,
+                                              ctypes.POINTER(ctypes.c_void_p)]
+        advapi32.GetTokenInformation.argtypes = [ctypes.c_void_p, ctypes.c_int,
+                                                 ctypes.c_void_p, ctypes.c_uint32,
+                                                 ctypes.POINTER(ctypes.c_uint32)]
+        pid = ctypes.c_uint32()
+        hwnd = user32.GetForegroundWindow()
+        if not hwnd:
+            return None  # lock/UAC secure desktop, or no foreground window
+        user32.GetWindowThreadProcessId(hwnd, ctypes.byref(pid))
+        process = _kernel32.OpenProcess(0x1000, False, pid.value)
+        if not process:
+            return None
+        try:
+            token = ctypes.c_void_p()
+            if not advapi32.OpenProcessToken(process, _TOKEN_QUERY, ctypes.byref(token)):
+                return None
+            try:
+                value, length = ctypes.c_uint32(), ctypes.c_uint32()
+                if advapi32.GetTokenInformation(token, _TokenElevation,
+                        ctypes.byref(value), 4, ctypes.byref(length)):
+                    return bool(value.value)
+                return None
+            finally:
+                _kernel32.CloseHandle(token)
+        finally:
+            _kernel32.CloseHandle(process)
+    except Exception:
+        return None
+
+
+def _input_blocked_message():
+    if not _input_reachable():
+        return ("Windows session inactive. Sign in on the PC; "
+                "disconnect Remote Desktop.")
+    privilege = _process_privilege()
+    if (not privilege["elevated"] and not privilege["uiaccess"]
+            and _foreground_is_elevated() is True):
+        return ("Administrator app blocks input. Switch to a normal app "
+                "on the PC.")
+    return ("Input paused. Check Windows for a lock screen or security prompt.")
+
+
 # ---------------------------------------------------------------------------
 # Box mute state via Core Audio (ctypes COM, read-only). Best-effort: every
 # failure returns None, which the API contract tolerates (muted: bool|null).
@@ -6903,14 +6964,14 @@ class Handler(BaseHTTPRequestHandler):
         session, logs rate-limited (first failure then <=once/5s so a stuck
         session can't flood the log /api/journal serves back), and tells the
         app ONCE on the transition into the blocked state so the Pad tab can
-        surface a 'input paused — unlock the box' hint."""
+        surface the relevant Windows input-boundary hint."""
         now = time.monotonic()
         n = entry.get("input_err_count", 0) + 1
         entry["input_err_count"] = n
         if not entry.get("input_blocked"):
             entry["input_blocked"] = True
             _wsend_json(entry, {"t": "blocked",
-                "msg": "Input paused — unlock the box or bring it to front."})
+                "msg": _input_blocked_message()})
         last = entry.get("input_err_logged_at", 0.0)
         if n == 1 or now - last > 5.0:
             entry["input_err_logged_at"] = now

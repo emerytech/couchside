@@ -136,3 +136,22 @@ Tested executable source: `d491c10` (standalone mirror `6bc50dd`). SHA-256:
 `62252edb3019aff5f2e9a0a6b6a8316197185af548440e802f3b9d70a393a37d`.
 This windowless artifact supersedes the earlier console preview. Publication
 still requires the normal reviewed merge, release signing and distribution steps.
+
+## Administrator-window input boundary
+
+On the physical TV, normal Windows desktop input and the cursor were verified.
+Alt-Tab then selected elevated RTSS, and Windows refused the normal-privilege
+agent's input. The agent stayed running, with no held modifier keys. A temporary
+administrative recovery task minimized RTSS and was removed afterward.
+
+The blocked-input message now distinguishes an administrator window from an
+inactive/RDP session and a lock/security prompt. It changes no permissions and
+does not attempt to control administrator windows or UAC. The owner chose to keep
+the agent at normal privileges. This warning needs a rebuilt agent executable;
+changing the source alone does not update the installed binary.
+
+The administrator warning fits the existing phone banner. A regression test
+verifies that repeated refusals retain the holder/socket and that the next
+successful input clears the warning without reconnecting. The foreground-token
+query was also run in a normal interactive Windows session and correctly reported
+the normal desktop as non-elevated.
