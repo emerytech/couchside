@@ -93,8 +93,46 @@ Windows and Ubuntu transport, Apple and Android native transport, app input,
 compile and smoke. The scoped dependency guard permits only the six reviewed
 PyCA imports inside Windows `_tls_identity`; Linux and QR remain stdlib-only.
 
-Before publication, merge/reconcile the draft candidate and superseded caret PR,
-produce and verify release artifacts from that exact source, and run an installer
-upgrade smoke check retaining existing pairing and certificate files. The current
-checks do not certify a newly packaged executable or a clean Windows installation.
-Keep this an ordinary-user agent: typing into elevated applications is unsupported.
+At this checkpoint, packaging and installer-upgrade checks were pending; their
+results are recorded below. Keep this an ordinary-user agent: typing into elevated
+applications is unsupported.
+
+## Installer upgrade and background execution — 2026-10-23
+
+The actual installer backend was run on the signed-in Windows test PC, upgrading
+the Python preview to the packaged executable. The final run used
+`-KeepHibernate -NoElevated -FromInstaller`; its normal firewall path was enabled.
+The scheduled task starts the exact packaged candidate with Limited privileges.
+Token, configuration, TLS certificate and private key hashes and their file ACLs
+all match the pre-upgrade snapshot. Existing TLS advertisements are unchanged.
+Both physical phones reconnected using their saved pairings, with all three
+previously saved boxes still listed on each device. No phone app was reinstalled
+or reset during this agent upgrade.
+
+Testing found that the previous console-subsystem executable opened a terminal
+despite running from a scheduled task. Release builds now use the GUI subsystem;
+`build.ps1 -Console` retains a deliberate debugging option. The rotating log works
+with absent stdout/stderr, covered by the existing log regression suite. The final
+executable has PE subsystem 2 and the running agent owns no top-level window.
+
+The installer also creates a program-scoped UDP discovery rule on the configured
+port, restricted to LocalSubnet and the same selected firewall profiles. It is
+removed on uninstall. This avoids the first-launch broad app-access prompt.
+Only the two auto-created executable query rules from this test were removed;
+the product installer does not override a user's explicit firewall blocks.
+
+Packaged-agent HTTPS status and gamepad/upload capabilities passed, and a
+75,776-byte synthetic HTTPS upload matched its destination SHA-256 and was removed.
+The Razr then passed native typing and backspace through the windowless executable
+into the disposable Windows field. The extra packaged-iPhone typing attempt was
+interrupted by a device/app switch; its saved-pairing reconnection check passed.
+The private backup retains the original agent, task XML and identity/config files
+with user/SYSTEM-only directory access. Rollback restores the original agent/task
+without rewriting pairing data. The Inno Setup wrapper compiled successfully in
+the standalone Windows repository's CI; its interactive wizard/UAC flow was not
+retested here. No clean installation or reboot/logon-cycle claim is implied.
+
+Tested executable source: `d491c10` (standalone mirror `6bc50dd`). SHA-256:
+`62252edb3019aff5f2e9a0a6b6a8316197185af548440e802f3b9d70a393a37d`.
+This windowless artifact supersedes the earlier console preview. Publication
+still requires the normal reviewed merge, release signing and distribution steps.
