@@ -1242,7 +1242,9 @@ jobs:
       - name: Install app deps
         run: npm ci --prefix app --no-audit --no-fund
       - name: Verify native Hermes memory-regression fix
-        run: node app/scripts/check-hermes-memory.cjs
+        run: |
+          node --test tests/test_hermes_memory_check.cjs
+          node app/scripts/check-hermes-memory.cjs
       - name: Typecheck the app
         run: npx --prefix app tsc --noEmit -p app
 
