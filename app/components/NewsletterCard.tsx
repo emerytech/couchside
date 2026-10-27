@@ -25,16 +25,34 @@ export function NewsletterCard({ permanent = false }: { permanent?: boolean }) {
     setError(false);
     try {
       await Linking.openURL(NEWSLETTER_URL);
-      if (!permanent) await setPref('newsletterInviteDismissed', true).catch(() => {});
+      await setPref('newsletterInviteDismissed', true).catch(() => {});
     } catch { setError(true); }
     finally { setOpening(false); }
   }
+  if (permanent) return (
+    <View style={{ marginBottom: 14 }}>
+      <Pressable accessibilityRole="link" accessibilityLabel="Couchside news and updates"
+        accessibilityHint="Opens the optional newsletter website; subscription status is not shared with the app"
+        disabled={opening} onPress={() => void open()}
+        style={[styles.compact, { backgroundColor: t.card, borderColor: t.cardBorder }]}>
+        <Ionicons name="mail-outline" size={20} color={t.green} />
+        <View style={{ flex: 1, gap: 3 }}>
+          <Text style={[styles.compactTitle, { color: t.text }]}>Couchside news & updates</Text>
+          <Text style={[styles.compactHint, { color: t.textDim }]}>{opening ? 'Opening…' : 'Optional email news · opens website'}</Text>
+        </View>
+        <Ionicons name="open-outline" size={16} color={t.textDim} />
+      </Pressable>
+      {error && <Text accessibilityRole="alert" style={[styles.body, { color: t.red }]}>
+        Couldn’t open your browser. Visit couchside.tv/news.
+      </Text>}
+    </View>
+  );
   return (
     <View style={[styles.card, { backgroundColor: t.card, borderColor: t.cardBorder }]}>
       <View style={styles.heading}>
         <Ionicons name="mail-outline" size={22} color={t.green} />
         <Text style={[styles.title, { color: t.text }]}>
-          {permanent ? 'Couchside news & updates' : 'Get the Couchside scoop'}
+          Get the Couchside scoop
         </Text>
       </View>
       <Text style={[styles.body, { color: t.textDim }]}>
@@ -47,10 +65,10 @@ export function NewsletterCard({ permanent = false }: { permanent?: boolean }) {
           onPress={() => void open()} style={styles.action}>
           <Text style={[styles.actionText, { color: t.green }]}>{opening ? 'Opening…' : 'Sign up ↗'}</Text>
         </Pressable>
-        {!permanent && <Pressable accessibilityRole="button" accessibilityLabel="Dismiss newsletter invitation"
+        <Pressable accessibilityRole="button" accessibilityLabel="Dismiss newsletter invitation"
           onPress={() => void setPref('newsletterInviteDismissed', true).catch(() => {})} style={styles.action}>
           <Text style={[styles.actionText, { color: t.textDim }]}>No thanks</Text>
-        </Pressable>}
+        </Pressable>
       </View>
       {error && <Text accessibilityRole="alert" style={[styles.body, { color: t.red }]}>
         Couldn’t open your browser. Try again, or visit couchside.tv/news.
@@ -59,6 +77,9 @@ export function NewsletterCard({ permanent = false }: { permanent?: boolean }) {
   );
 }
 const styles = StyleSheet.create({
+  compact: { minHeight: 64, padding: 14, flexDirection: 'row', alignItems: 'center', gap: 12, borderWidth: 1, borderRadius: 14 },
+  compactTitle: { fontSize: 15, fontWeight: '600' },
+  compactHint: { fontSize: 12, lineHeight: 17 },
   card: { padding: 18, borderWidth: 1, borderRadius: 18, marginBottom: 14, gap: 10 },
   heading: { flexDirection: 'row', alignItems: 'center', gap: 10 },
   title: { fontSize: 18, fontWeight: '700', flex: 1 },
