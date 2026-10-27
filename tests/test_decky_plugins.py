@@ -114,10 +114,9 @@ STORE_SYNTHETIC = [
      "image_url": None, "versions": [{"name": "0.3.0", "hash": "b" * 64, "created": "2026-09-06T00:00:00Z"}]},
 ]
 
-# The token the research session's v3.2.8 backend handed out over /auth/token
-# (research.json token.txt, verbatim): 36 chars of [0-9a-f-]. The fake loader
-# serves exactly this so the agent's shape check runs against a real value.
-LOADER_TOKEN = "2a85f0ca-54b8-4a30-a41e-06c4f6f53b91"
+# Deliberately synthetic UUID-shaped credential for the fake loader only.
+# Keep protocol shape faithful without copying a device's authentication token.
+LOADER_TOKEN = "00000000-0000-4000-8000-000000000000"
 
 # /proc/net/tcp rows in the kernel's column layout (net/ipv4/tcp_ipv4.c
 # get_tcp4_sock: sl, local, remote, st, tx:rx, tr:when, retrnsmt, uid, timeout,

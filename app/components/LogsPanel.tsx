@@ -1,3 +1,4 @@
+import { blockTabSwipe } from '@/lib/tabSwipe';
 import React, { useCallback, useState } from 'react';
 import { FlatList, Pressable, ScrollView, StyleSheet, Switch, Text, View } from 'react-native';
 
@@ -77,6 +78,7 @@ export function LogsPanel() {
           watches more than three units (Windows service names are long). */}
       <ScrollView
         horizontal
+        onTouchStart={blockTabSwipe}
         showsHorizontalScrollIndicator={false}
         // flexGrow:0 — a ScrollView in a flex column otherwise claims the height
         // the journal list needs. The panel's own docstring is about the PARENT

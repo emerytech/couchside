@@ -18,6 +18,58 @@ the same thing regardless of what actually changed.
 Write for the person holding the phone, not for the commit log. They are
 deciding whether to press "Update now" on a machine across the room.
 
+## 2.9.134
+
+- Add optional Couchside Themes (Beta), with console-style layouts, a theme picker and Theme Studio. Themes remain off until applied, and Steam's normal home can be restored.
+- Expand supported lighting effects and editable sequences, including supported handheld ring controls. Available effects depend on the lighting hardware.
+- Add the optional Couchside Player sample-film prototype, with playback progress, pause, seek and stop controls from the phone.
+- Includes 2.9.133's clearer Couch Mode explanations and the earlier secure-connection, private file-upload and controller-diagnostic improvements. Existing pairing and controls remain compatible.
+
+## 2.9.133
+
+- Couch Mode now explains when automatic TV input switching is unavailable, without implying that a paired TV has no working controls. TV power, session switching, display and audio behavior are unchanged.
+- Includes 2.9.132 secure-connection responsiveness and private, atomic file uploads, plus the earlier transfer-ticket permission and controller-diagnostic improvements.
+- This is an agent update; no phone app update is required for the clearer stage explanation.
+
+## 2.9.132
+
+- Keep secure connections responsive when another device opens a TLS connection without finishing it. Incomplete handshakes now have a short deadline within the existing connection limit.
+- Make file uploads safer: each transfer uses its own private temporary file and publishes the complete file atomically. Interrupted or simultaneous transfers cannot share a partial file, and existing destination symlinks are rejected.
+- Completed uploads are readable and writable only by the box's desktop user. Existing apps, pairing credentials, upload interfaces and ordinary same-name replacements stay compatible.
+- Includes 2.9.131 scoped transfer-ticket permissions and 2.9.130 controller diagnostics. This is an agent update; no phone app update is required.
+
+## 2.9.131
+
+- Tighten permissions on short-lived transfer tickets: image tickets can only read images, and upload tickets can only authorize one file upload.
+- Keep existing apps, pairing credentials, image loading and file-upload interfaces compatible.
+- Includes 2.9.130 controller diagnostics and automatic refresh of virtual-controller access after recovery.
+
+## 2.9.130
+
+- Refresh virtual-controller access in status responses so a startup permission failure does not remain cached after recovery.
+- Add authenticated controller diagnostics distinguishing a missing input device, denied access, and a failed controller-creation attempt. Successful creation clears the recorded failure.
+- Diagnostics do not create devices, change permissions, or alter input timing. Decky uses these details to offer targeted help instead of a generic reinstall message.
+
+## 2.9.129
+
+- Wake Box now uses the connected Ethernet adapter's wake address even when Wi-Fi carries other traffic. This improves waking machines connected by both Ethernet and Wi-Fi.
+- Custom lighting sequences keep accurate frame timing, including real on/off strobe effects and delays between frames.
+- Wake devices can save a verified setting for a specific USB port and device model with privileged helper 1.3.0. Saved rules survive reboots and SteamOS updates and are removed when Couchside is uninstalled. Older helpers retain session-only support.
+- Includes the responsive Play/Steam library caches and control-queue improvements from 2.9.128.
+
+## 2.9.128
+
+**More responsive Steam data.** Slow Steam lookups now refresh in the background,
+with a limit on simultaneous requests. Previously loaded data stays available
+during temporary failures, and concurrent phone requests share the same refresh.
+
+**More reliable wishlist prices.** Failed price lookups are retried instead of
+being saved as an empty sale list. Switching Steam accounts also discards pending
+results from the previous account.
+
+Includes wishlist price-drop alerts from 2.9.127, with optional IsThereAnyDeal
+all-time-low comparisons.
+
 ## 2.9.127
 
 **Wishlist price drops.** With Steam connected, the Play tab now flags the games on

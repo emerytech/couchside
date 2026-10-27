@@ -1,2 +1,3 @@
-• Fixes a crash that could hit when opening the Decky Loader manager screen.
-• Small polish and stability improvements.
+Couch Mode now separates TV-control warnings from Game Mode readiness. On a handheld's built-in screen, it explains that audio stays on the box instead of reporting an audio failure.
+
+Update the Linux service to 2.9.133 for secure-connection responsiveness, safer file uploads, and a clearer TV-input explanation. Existing controls and Android Wake-on-LAN are unchanged.

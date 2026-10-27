@@ -63,7 +63,7 @@ import { usePoll } from '@/hooks/usePoll';
 import type { Gaming, PlayerState, SteamMenus } from '@/lib/api';
 import { useTrackpad } from '@/hooks/useTrackpad';
 import { useVolumeButtons } from '@/hooks/useVolumeButtons';
-import { api, hostKey, Status } from '@/lib/api';
+import { ApiError, api, hostKey, Status } from '@/lib/api';
 import { ButtonKey, DesktopKey, GamepadClient, GamepadStatus, getWsTrace, SpecialKey, StickKey, SystemChord, TriggerKey } from '@/lib/gamepad';
 import { PadMode } from '@/lib/settings';
 import { useSettings } from '@/lib/SettingsContext';
@@ -1571,8 +1571,19 @@ function PadScreen() {
       setMode('remote');
       return;
     }
-    if (!menusPoll.loading && !hasSteamMenus) setMode('remote');
-  }, [mode, hasSteamMenus, inGameMode, menusPoll.loading, setMode]);
+    // Bounce only on a real NEGATIVE ANSWER, never on a failed fetch. usePoll
+    // leaves data null + loading false after a FAILED first fetch exactly as it
+    // does after a success with no menus, so the old `!loading && !hasSteamMenus`
+    // read a box that was merely ASLEEP at launch as "no Steam" and persisted
+    // padMode 'remote' over the user's saved STEAM mode. `dataKey` is set (to
+    // this box) only by a successful fetch and `error` is null only when the
+    // latest tick succeeded, so this fires solely on a genuine answer (menus
+    // present, or null/empty = box truly has no Steam). A transient failure
+    // holds the mode; usePoll's ~2s retry re-answers when the box wakes.
+    const answered =
+      menusPoll.dataKey === hostKey(settings) && menusPoll.error == null;
+    if (answered && !hasSteamMenus) setMode('remote');
+  }, [mode, hasSteamMenus, inGameMode, menusPoll.dataKey, menusPoll.error, setMode, settings]);
 
   // Swipe mode drives the d-pad as an EXPLICIT hold, not a fire-and-forget
   // pulse.
@@ -1671,32 +1682,38 @@ function PadScreen() {
   const searchOpen = useRef(false);
   // Gated on the box actually having Steam (the same signal that decides
   // whether the STEAM tab exists) AND on being connected, so the button never
-  // appears where it cannot work. steamGoto also resolves false on an older
-  // agent, which stops the arrow walk rather than firing keys blindly.
-  // An agent older than 2.9.42 has no /api/steam/goto, so the button would sit
-  // there doing nothing. There is no cheap way to know up front — the Pad screen
-  // carries no agent_version, and a 404 from a MISSING route is
-  // indistinguishable from a 404 refusing an id — so the button learns from its
-  // own first attempt and then hides for the session. One dead tap, not a
-  // permanently dead control.
+  // appears where it cannot work.
+  //
+  // An agent older than 2.9.42 has no /api/steam/goto; the Pad screen carries no
+  // agent_version, so the button learns from its own first attempt. But it hides
+  // ONLY on an EXACT 404 — the route genuinely missing, i.e. the agent cannot
+  // anchor the Steam UI and the arrow walk would land on the sidebar. Any other
+  // failure (4s timeout, 401, 5xx, box asleep) is TRANSIENT: steamGoto now
+  // throws instead of resolving false, so one dropped tap aborts quietly and
+  // leaves the button for the next try. It used to resolve false on every error
+  // and get read as "unsupported", which hid Search for the whole app session
+  // on every box after a single failed tap. One dead tap, not a dead control.
   const [searchUnsupported, setSearchUnsupported] = useState(false);
   const canSearch =
     hasSteamMenus && inGameMode && status === 'connected' && !searchUnsupported;
   const steamSearch = useCallback(() => {
     haptic();
     void (async () => {
-      const anchored = await api.steamGoto(settings, 'home');
-      if (!anchored) {
-        // Older agent. Do NOT fire the arrows blindly — without the anchor they
-        // land on whatever is focused and open Steam's sidebar menu.
-        setSearchUnsupported(true);
-        return;
+      try {
+        const anchored = await api.steamGoto(settings, 'home');
+        // A 200 with ok:false means the agent could not anchor right now — abort
+        // this tap, but do NOT brand the feature unsupported (it exists).
+        if (!anchored) return;
+        // Let Steam settle on the anchored screen before walking focus.
+        await new Promise((r) => setTimeout(r, STEAM_ANCHOR_SETTLE_MS));
+        await client.focusSteamSearch();
+        searchOpen.current = true;
+        setOskSignal((n) => n + 1);   // raise the phone keyboard
+      } catch (e) {
+        // EXACTLY 404 = route missing = agent too old: hide for the session
+        // (degrade closed). Every other error is transient — keep the button.
+        if (e instanceof ApiError && e.status === 404) setSearchUnsupported(true);
       }
-      // Let Steam settle on the anchored screen before walking focus.
-      await new Promise((r) => setTimeout(r, STEAM_ANCHOR_SETTLE_MS));
-      await client.focusSteamSearch();
-      searchOpen.current = true;
-      setOskSignal((n) => n + 1);   // raise the phone keyboard
     })();
   }, [client, settings]);
 

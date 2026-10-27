@@ -33,12 +33,36 @@ jobs:
             agent/qr.py
           echo "py_compile OK"
 
+      - name: Core agent dependency policy
+        run: python3 tests/test_agent_dependencies.py
+
+      - name: Theme and lighting regression tests
+        run: |
+          python3 -m unittest discover -s tests -p 'test_steam_themes.py'
+          python3 -m unittest discover -s tests -p 'test_steam_themes_installer.py'
+          python3 -m unittest discover -s tests -p 'test_theme_format.py'
+          python3 -m unittest discover -s tests -p 'test_theme_game_stats.py'
+          python3 tests/test_legion_go2_lighting.py
+          python3 tests/test_ring_motion_preview.py
+          python3 tests/test_ring_program.py
+
       # The guide-hold trigger fires a SESSION SWITCH, which tears down the
       # user's desktop and any unsaved work. Its two dangerous failure modes —
       # firing on a tap, and matching the agent's OWN emulated pad (created on
       # every phone connect) — are invisible to the --mock smoke test below and
       # otherwise need real hardware plus a controller to catch. Pure stdlib, no
       # pytest, runs in well under a second.
+      - name: Unit tests (wake selection, persistent USB wake, lighting timing)
+        run: |
+          python3 tests/test_wake_network.py
+          python3 tests/test_usb_wake_persistence.py
+          python3 tests/test_led_timing.py
+
+      - name: Controller diagnostics and recovery
+        run: |
+          python3 tests/test_controller_health.py
+          python3 tests/test_gamepad_live_capability.py
+
       - name: Unit tests (guide-hold trigger)
         run: python3 tests/test_guide_hold.py
 
@@ -179,6 +203,8 @@ jobs:
 
       - name: Unit tests (steam wishlist)
         run: python3 tests/test_steam_wishlist.py
+      - name: Steam refresh concurrency, deadlines and account isolation
+        run: python3 tests/test_steam_cache_concurrency.py
 
       - name: Unit tests (steam playtime tracker)
         run: python3 tests/test_steam_playtime_tracker.py
@@ -454,6 +480,11 @@ jobs:
       - name: Unit tests (TLS reachability smoke)
         run: python3 tests/test_tls_smoke.py
 
+      # Handshakes must stay off the accept loop and inside the worker cap.
+      # Idle/malformed peers expire without blocking other HTTPS/WSS clients.
+      - name: Unit tests (TLS handshake isolation)
+        run: python3 tests/test_tls_handshake.py
+
       # TLS (P2): availability is advertised on the three pre-auth surfaces a
       # TLS-aware app can reach (GET /api/ping, the UDP discovery reply, the
       # pairing QR). The load-bearing assertion is the additive control — when TLS
@@ -464,9 +495,9 @@ jobs:
 
       # TLS (P5): short-lived tickets let the un-pinnable native <Image> loader +
       # streamed uploader avoid putting the bearer token on the wire on a TLS box.
-      # The load-bearing invariants: mint is bearer-gated, a ticket authorizes only
-      # image GETs (never a control route like /api/status), and a single-use upload
-      # ticket is burned on first use so a sniffed URL can't be replayed.
+      # Mint is bearer-gated; image tickets cannot authorize uploads or controls.
+      # Upload tickets cannot read images and are consumed atomically on upload,
+      # including concurrent requests; existing app URLs and bearer auth still work.
       - name: Unit tests (TLS tickets)
         run: python3 tests/test_tls_ticket.py
 
@@ -803,6 +834,12 @@ jobs:
       # re-probes forever.
       - name: Unit tests (player API + caps)
         run: python3 tests/test_player_api.py
+
+      - name: Unit tests (isolated player package)
+        run: python3 tests/test_player_isolated.py
+
+      - name: Unit tests (player catalog)
+        run: python3 tests/test_player_catalog.py
 
       # Player transport over CDP. Runtime.evaluate runs arbitrary JS in a
       # browser signed into the user's streaming accounts, so the whole design
@@ -1161,6 +1198,26 @@ jobs:
       # 2.9.9 < 2.9.21 trap, never a false "update available").
       - name: Unit tests (app update check)
         run: node --experimental-strip-types app/__tests__/app-update.ts
+
+      # Background wishlist price-drop notifier's decision + copy. The native
+      # task is a thin shell around this pure logic; the risk is WHEN it fires
+      # and never firing a false one (first-look seed vs a real drop vs the
+      # off-LAN/unconfigured degrade paths — both states observed).
+      - name: Unit tests (wishlist notify decision)
+        run: node --experimental-strip-types app/__tests__/wishlist-notify.ts
+
+      # The Android home-screen widget shows exactly what this pure builder
+      # produces (the render is device-only). Risk: tonight's-pick selection,
+      # best-drop selection (biggest % off, ties by price), price formatting, and
+      # the empty state — all degrade to null/empty, never a bogus line.
+      - name: Unit tests (widget payload)
+        run: node --experimental-strip-types app/__tests__/widget-payload.ts
+
+      # Discover's keyless Steam store-search parser, checked against a VERBATIM
+      # captured storesearch response (fixtures/storesearch-halflife.json) plus
+      # controls for the discount derivation, type filter, and degrade paths.
+      - name: Unit tests (steam store search parser)
+        run: node --experimental-strip-types app/__tests__/steam-search.ts
 
       # KI-002: the app had NO automated signal of any kind. Every escaped bug
       # this project has paid for lately was in app/ -- a tap shipped broken to

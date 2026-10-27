@@ -32,6 +32,8 @@ export const LANDING_TABS = ['index', 'actions', 'pad', 'launch'] as const;
 export type LandingTab = (typeof LANDING_TABS)[number];
 
 export type Prefs = {
+  /** App motion; the OS Reduce Motion setting always takes priority. */
+  animationsEnabled: boolean;
   /** Ask before suspending the box (the Suspend button in the header). */
   confirmSuspend: boolean;
   /** Celebrate streak milestones (3, 7, 14, 30, 60, 100, 365 days in a row).
@@ -51,6 +53,13 @@ export type Prefs = {
    *  appids still says something about what you own, so it is a switch the user
    *  throws rather than a default they discover later. */
   compatLookups: boolean;
+  /** Background wishlist price-drop notifications (lib/wishlistAlertTask).
+   *
+   *  OFF by default and opt-in — it asks the OS for notification permission and
+   *  registers a background task. Best-effort by nature: LAN-only (the phone
+   *  must be home with the box up) and OS-throttled, so it complements, never
+   *  replaces, the on-open Play-tab banner. Nothing leaves the phone or box. */
+  wishlistNotify: boolean;
   /** Setup → Utilities: one-click hardware/setup helpers (flash an OpenPuck
    *  receiver, enable HDMI-CEC). OFF by default and opt-in, because these run
    *  firmware flashes / system changes on the box — a surface the user should
@@ -149,6 +158,8 @@ export type Prefs = {
    *  Persisted, because a fold you opened should stay open. Driven by the fold
    *  itself, not a Setup toggle — no new switch to find. */
   consoleMoreCollapsed: boolean;
+  /** Boxes section: open on fresh installs, remember explicit collapse. */
+  fleetCollapsed: boolean;
   /** Preferences-tab sections the user folded shut, by id (lib/prefSections.ts —
    *  a frozen list, so unknown ids are dropped on load). Persisted, because a
    *  section you fold away should stay folded; driven by the section header
@@ -322,9 +333,11 @@ export type Prefs = {
 };
 
 export const DEFAULTS: Prefs = {
+  animationsEnabled: true,
   confirmSuspend: true,
   streakCelebrations: true,
   compatLookups: false,
+  wishlistNotify: false,
   utilitiesEnabled: false,
   featureTour: true,
   remoteOnlyMode: false,
@@ -335,6 +348,7 @@ export const DEFAULTS: Prefs = {
   searchButtonSide: 'left',
   streamCollapsed: false,
   consoleMoreCollapsed: true,
+  fleetCollapsed: false,
   prefsCollapsed: [],
   onboardingDone: false,
   whatsNewOffered: false,
@@ -450,15 +464,18 @@ function normalize(raw: unknown): Prefs {
     searchButtonSide: searchSide,
     streamCollapsed,
     consoleMoreCollapsed,
+    fleetCollapsed: bool(o.fleetCollapsed, DEFAULTS.fleetCollapsed),
     prefsCollapsed,
     onboardingDone,
     whatsNewOffered,
     hideNoteMode,
     appUpdateReminder,
+    animationsEnabled: bool(o.animationsEnabled, DEFAULTS.animationsEnabled),
     confirmSuspend:
       typeof o.confirmSuspend === 'boolean' ? o.confirmSuspend : DEFAULTS.confirmSuspend,
     streakCelebrations: bool(o.streakCelebrations, DEFAULTS.streakCelebrations),
     compatLookups: bool(o.compatLookups, DEFAULTS.compatLookups),
+    wishlistNotify: bool(o.wishlistNotify, DEFAULTS.wishlistNotify),
     utilitiesEnabled: bool(o.utilitiesEnabled, DEFAULTS.utilitiesEnabled),
     featureTour: bool(o.featureTour, DEFAULTS.featureTour),
     remoteOnlyMode: bool(o.remoteOnlyMode, DEFAULTS.remoteOnlyMode),

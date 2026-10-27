@@ -1,3 +1,4 @@
+import { blockTabSwipe } from '@/lib/tabSwipe';
 import Ionicons from '@expo/vector-icons/Ionicons';
 import React, { useCallback, useEffect, useState } from 'react';
 import {
@@ -267,7 +268,7 @@ export function TvPairForm({
         <Text style={styles.brandChange}>Change</Text>
       </Pressable>
     ) : (
-      <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.segment}>
+      <ScrollView onTouchStart={blockTabSwipe} horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.segment}>
         {driver.brands.map((b) => (
           <Pressable
             key={b.id}

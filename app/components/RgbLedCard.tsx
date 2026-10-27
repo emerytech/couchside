@@ -35,6 +35,8 @@ import {
   api, hostKey, type LedEffect, type LedInfo, type LedsState, type Rgb,
 } from '@/lib/api';
 import { hapticLight } from '@/lib/haptics';
+import { RingScenes } from '@/components/RingScenes';
+import { RingMotionPreview } from '@/components/RingMotionPreview';
 import { PresetNameModal } from '@/components/PresetNameModal';
 import { cssRgb, hexRgb, hsToRgb, rgbToHs, HUE_STOPS, satStops } from '@/lib/ledColor';
 import { detectStrips } from '@/lib/ledStrip';
@@ -95,7 +97,7 @@ export function RgbLedCard() {
   const { Card } = useSkinKit();
   const { settings, ready } = useSettings();
   const configured = !!settings.host && !!settings.token;
-  const presets = useLedPresets();
+  const presets = useLedPresets().filter((p) => !p.ringProgram);
 
   const [busy, setBusy] = useState(false);
   const [selName, setSelName] = useState<string | null>(null);
@@ -150,16 +152,20 @@ export function RgbLedCard() {
   if (!d || !d.available || !led || leds.length === 0
       || (strips.length > 0 && onlyMonoSingles)) return null;
 
-  const supported: LedEffect[] = (d.effects ?? ['solid', 'off'])
+  const supported: LedEffect[] = (led.effects ?? d.effects ?? ['solid', 'off'])
     .filter((e) => e !== 'manual') // `manual` is a strip painter, not a single-LED effect
     .filter((e) => e !== 'meter_cpu' && e !== 'meter_battery' && e !== 'playtime') // strip-only (agent 400s them here)
     .filter((e) => (led.rgb ? true : MONO_EFFECTS.includes(e)));
+  const linkedRings = led.ring_control === 'linked';
+  const effectMeta = (id: LedEffect) => linkedRings && id === 'circle'
+    ? { label: 'Rainbow Spin', usesColor: false }
+    : EFFECT_META[id];
   const animated = effect !== 'solid' && effect !== 'off';
   const color = hsToRgb(hue, sat);
   // Envelope shape rides the single-LED renderer only (an agent that advertises
   // `shape:true`). attack shapes breathe/pulse; duty shapes strobe. Hidden otherwise
   // so it never renders as a control that does nothing (probe-and-appear).
-  const shapeOk = d.shape === true;
+  const shapeOk = (led.shape ?? d.shape) === true;
   const usesAttack = shapeOk && (effect === 'breathe' || effect === 'pulse');
   const usesDuty = shapeOk && effect === 'strobe';
 
@@ -193,7 +199,7 @@ export function RgbLedCard() {
       } else {
         await api.setLedEffect(settings, led.name, {
           effect: eff, speed: sp, brightness: b,
-          ...(led.rgb && EFFECT_META[eff].usesColor ? { color: col } : {}),
+          ...(led.rgb && effectMeta(eff).usesColor ? { color: col } : {}),
           ...(shapeOk && (eff === 'breathe' || eff === 'pulse') ? { attack: at } : {}),
           ...(shapeOk && eff === 'strobe' ? { duty: dy } : {}),
         });
@@ -212,9 +218,9 @@ export function RgbLedCard() {
 
   const saveCurrent = () => {
     hapticLight();
-    const usesColor = led.rgb && EFFECT_META[effect].usesColor;
+    const usesColor = led.rgb && effectMeta(effect).usesColor;
     setNamePrompt({
-      label: EFFECT_META[effect].label + (usesColor ? ` ${hexRgb(color)}` : ''),
+      label: effectMeta(effect).label + (usesColor ? ` ${hexRgb(color)}` : ''),
       build: (name) => ({
         label: name, effect, color: usesColor ? color : null,
         speed: Math.round(speed), brightness: Math.round(bright),
@@ -278,6 +284,13 @@ export function RgbLedCard() {
         </View>
       )}
 
+      {linkedRings && (
+        <Text style={styles.sectionLabel}>BOTH RINGS · LINKED</Text>
+      )}
+
+      {led.ring_scenes && <RingScenes key={hostKey(settings)} />}
+      {led.ring_motion_preview === true && <RingMotionPreview key={`${hostKey(settings)}:${led.name}`} />}
+
       {/* EFFECT chips (agent >= 2.9.84). */}
       {supported.length > 0 && (
         <>
@@ -292,11 +305,11 @@ export function RgbLedCard() {
                   disabled={busy}
                   accessibilityRole="button"
                   accessibilityState={{ selected: on, disabled: busy }}
-                  accessibilityLabel={`Effect ${EFFECT_META[e].label}`}
+                  accessibilityLabel={`Effect ${effectMeta(e).label}`}
                   style={({ pressed }) => [
                     styles.chip, on && styles.chipOn, pressed && !busy && styles.pressed]}>
                   <Text style={[styles.chipText, on && styles.chipTextOn]}>
-                    {EFFECT_META[e].label}
+                    {effectMeta(e).label}
                   </Text>
                 </Pressable>
               );
@@ -386,7 +399,7 @@ export function RgbLedCard() {
 
       {/* COLOUR — rgb LEDs only. Hue + saturation sliders (saturation 0 = white,
           so pastels and whites are reachable) with a live swatch + hex readout. */}
-      {led.rgb && effect !== 'rainbow' && effect !== 'off' && (
+      {led.rgb && effectMeta(effect).usesColor && (
         <>
           <View style={styles.sliderHeader}>
             <Text style={styles.sectionLabel}>COLOUR</Text>
@@ -458,7 +471,7 @@ export function RgbLedCard() {
       {/* PRESETS — tap to apply, long-press to delete, + to save the current look. */}
       <Text style={styles.sectionLabel}>PRESETS</Text>
       <View style={styles.chipRow}>
-        {presets.map((p) => (
+        {presets.filter((p) => supported.includes(p.effect) && !p.pattern && !p.sequence && !p.generator).map((p) => (
           <Pressable
             key={p.id}
             onPress={() => applyPreset(p)}

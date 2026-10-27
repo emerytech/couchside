@@ -11,14 +11,15 @@ never wrote, so that path never worked on any box), and KI-050. It also meant a
 box whose display manager changed could not be repaired by the agent alone —
 install.sh had to be re-run.
 
-This process replaces all of it with TEN VERBS behind a local unix socket.
+This process replaces all of it with ELEVEN VERBS behind a local unix socket.
 The DM name stops being part of a grant and becomes an internal detail here,
 so a box that changes display manager repairs itself on the next call.
 (Eight verbs through 1.0.x; 1.1.0 added `decky.loader`, which starts a pinned
 oneshot unit rather than doing any work itself — see verb_decky_loader. 1.2.0
 added `usb.wake-arm`, which writes enabled/disabled to a USB device's
 power/wakeup — the id is validated by membership in the kernel's own device
-listing, never interpolated; see verb_usb_wake_arm.)
+listing, never interpolated; see verb_usb_wake_arm. 1.3.0 adds `usb.wake-save`
+for a port-and-model-scoped udev rule plus verified live state.)
 
 WHAT THIS IS NOT
 ----------------
@@ -44,6 +45,7 @@ THE RULES THIS FILE LIVES BY (CLAUDE.md §3)
 Pure python3 stdlib, like the agent. It installs onto machines we do not
 control.
 """
+import hashlib
 import grp
 import json
 import os
@@ -54,7 +56,7 @@ import struct
 import subprocess
 import sys
 
-VERSION = "1.2.0"
+VERSION = "1.3.0"
 
 SOCKET_PATH = "/run/couchside/helper.sock"
 # The uid allowed to talk to us. Baked in at install time via --uid; there is
@@ -448,6 +450,67 @@ def verb_usb_wake_arm(arg):
     return True, "%s wake %s" % (dev, body)
 
 
+_USB_WAKE_RULE_DIR = "/etc/udev/rules.d"
+
+
+def verb_usb_wake_save(arg):
+    """Persist only this USB port and device model, then verify the live write."""
+    if _usb_wake_arg(arg) is None:
+        return False, "invalid USB device"
+    dev = arg["id"]
+    try:
+        if dev not in os.listdir(_USB_WAKE_DIR):
+            return False, "no such usb device"
+        base = os.path.join(_USB_WAKE_DIR, dev)
+        if not os.path.isfile(os.path.join(base, "power/wakeup")):
+            return False, "not a wake source"
+        def read(name):
+            with open(os.path.join(base, name)) as f:
+                return f.read().strip()
+        vendor, product = read("idVendor"), read("idProduct")
+        if not re.fullmatch(r"[0-9a-fA-F]{4}", vendor) or not re.fullmatch(r"[0-9a-fA-F]{4}", product):
+            return False, "invalid hardware identity"
+        r = subprocess.run(["udevadm", "info", "--query=property", "--path=" + base],
+                           capture_output=True, text=True, timeout=5)
+        props = dict(line.split("=", 1) for line in r.stdout.splitlines() if "=" in line)
+        path = props.get("ID_PATH", "")
+        if r.returncode or not re.fullmatch(r"[A-Za-z0-9:._-]{1,240}", path):
+            return False, "cannot identify a stable USB port; no settings changed"
+        key = hashlib.sha256((path + ":" + vendor + ":" + product).encode()).hexdigest()[:24]
+        rule = os.path.join(_USB_WAKE_RULE_DIR, "99-couchside-usb-wake-" + key + ".rules")
+        body = ('# Couchside: this USB port and device model only.\n'
+                'ACTION=="add|change", SUBSYSTEM=="usb", ENV{DEVTYPE}=="usb_device", '
+                'ATTR{idVendor}=="%s", ATTR{idProduct}=="%s", IMPORT{builtin}="path_id", '
+                'ENV{ID_PATH}=="%s", TEST=="power/wakeup", ATTR{power/wakeup}="%s"\n'
+                % (vendor, product, path, "enabled" if arg["on"] else "disabled"))
+        old = None
+        if os.path.exists(rule):
+            with open(rule) as f:
+                old = f.read()
+        previous = read("power/wakeup")
+        ok, detail = _write_root_file(rule, body)
+        if not ok:
+            return False, detail
+        try:
+            subprocess.run(["udevadm", "control", "--reload-rules"], check=True,
+                           capture_output=True, timeout=5)
+            ok, detail = verb_usb_wake_arm(arg)
+            if not ok or read("power/wakeup") != ("enabled" if arg["on"] else "disabled"):
+                raise RuntimeError(detail if not ok else "live verification failed")
+        except Exception as e:
+            # Restore both parts rather than leaving a saved/live mismatch.
+            if old is None:
+                os.unlink(rule)
+            else:
+                _write_root_file(rule, old)
+            verb_usb_wake_arm({"id": dev, "on": previous == "enabled"})
+            subprocess.run(["udevadm", "control", "--reload-rules"], capture_output=True, timeout=5)
+            return False, "could not save wake setting: %s" % e
+        return True, "saved and verified for this USB port"
+    except (OSError, subprocess.SubprocessError) as e:
+        return False, "could not save wake setting: %s" % e
+
+
 def _one_of(choices):
     return lambda v: v if isinstance(v, str) and v in choices else None
 
@@ -479,6 +542,7 @@ VERBS = {
     "update.os":          (verb_update_os, None),
     "decky.loader":       (verb_decky_loader, _one_of(tuple(_DECKY_UNITS))),
     "usb.wake-arm":       (verb_usb_wake_arm, _usb_wake_arg),
+    "usb.wake-save":      (verb_usb_wake_save, _usb_wake_arg),
 }
 
 

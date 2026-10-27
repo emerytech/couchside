@@ -74,7 +74,12 @@ export async function sendWol(mac: string, opts: { ip?: string } = {}): Promise<
     let sent = 0;
     let pending = targets.length * ports.length;
 
+    let settled = false;
+    const timeout = setTimeout(() => finish(), 5000);
     const finish = () => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timeout);
       try {
         socket.close();
       } catch {
@@ -88,6 +93,7 @@ export async function sendWol(mac: string, opts: { ip?: string } = {}): Promise<
       // On a bind failure react-native-udp leaves the socket UNBOUND, so a send
       // would throw synchronously and pre-empt the library's own 'error' emit,
       // hanging this promise. Settle here instead of sending.
+      if (settled) return;
       if (bindErr) {
         finish();
         return;

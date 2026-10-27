@@ -37,6 +37,7 @@
 import React, { useContext, useEffect, useMemo, useRef, useState } from 'react';
 import { Pressable, StyleSheet, Text, View } from 'react-native';
 import Animated, {
+  cancelAnimation,
   Easing,
   useAnimatedStyle,
   useSharedValue,
@@ -56,7 +57,7 @@ import {
 } from '@/lib/theme';
 import { useVitals } from './kit';
 import type { BarProps, CardProps, DotProps, MetricProps, SkinKit, SparkProps } from './kit';
-import { BREATH_REST, breathPeriod, useBreath, useReducedMotion } from './motion';
+import { BREATH_REST, breathPeriod, useBreath, useReducedMotion, useAmbientMotion } from './motion';
 
 // ---------------------------------------------------------------------------
 // Colour helpers -- everything neon in here is derived from the live palette
@@ -160,7 +161,7 @@ const HUM_MS = 14000;
 function Screen({ children }: { children: React.ReactNode }) {
   const t = useTheme();
   const light = useResolvedScheme() === 'light';
-  const reduced = useReducedMotion();
+  const motionActive = useAmbientMotion();
   const { v, alive } = useVitals();
 
   // The one breath clock. Rate rises with exertion; a box that is not answering
@@ -171,7 +172,8 @@ function Screen({ children }: { children: React.ReactNode }) {
   const hum = useSharedValue(0);
 
   useEffect(() => {
-    if (reduced) {
+    cancelAnimation(hum);
+    if (!motionActive || !alive) {
       // Reduced motion gets the ambience parked mid-sweep, never the movement.
       hum.value = 0.5;
       return;
@@ -182,7 +184,8 @@ function Screen({ children }: { children: React.ReactNode }) {
       -1,
       false,
     );
-  }, [reduced, hum]);
+    return () => cancelAnimation(hum);
+  }, [motionActive, alive, hum]);
 
   const humStyle = useAnimatedStyle(() => {
     const span = size.w * 2.4;
@@ -287,21 +290,22 @@ function Card({
   const enter = useSharedValue(0);
   const started = useRef(false);
   useEffect(() => {
-    if (started.current) return;
-    started.current = true;
-    if (reduced) {
+    if (reduced || started.current) {
+      cancelAnimation(enter);
       enter.value = 1;
       return;
     }
+    started.current = true;
     enter.value = withDelay(
-      Math.min(Math.max(0, index), 6) * 55,
-      withTiming(1, { duration: 260, easing: Easing.out(Easing.quad) }),
+      Math.min(Math.max(0, index), 4) * 20,
+      withTiming(1, { duration: 180, easing: Easing.out(Easing.cubic) }),
     );
+    return () => cancelAnimation(enter);
   }, [enter, index, reduced]);
 
   const enterStyle = useAnimatedStyle(() => ({
     opacity: enter.value,
-    transform: [{ translateY: (1 - enter.value) * 8 }],
+    transform: [{ translateY: (1 - enter.value) * 4 }],
   }));
 
   const frameStyle = [
@@ -483,8 +487,8 @@ function Bar({ pct, color, height = 10 }: BarProps) {
   const t = useTheme();
   const light = useResolvedScheme() === 'light';
   const themed = useThemedStyles(makeStyles);
-  const reduced = useReducedMotion();
-  const { v, alive } = useVitals();
+  const motionActive = useAmbientMotion();
+  const { alive } = useVitals();
 
   const p = clamp(pct, 0, 100);
   const sev = severityOf(color, t);
@@ -493,21 +497,23 @@ function Bar({ pct, color, height = 10 }: BarProps) {
 
   // The sweep only runs on a live box, and only when there is enough filled
   // track for it to be a highlight rather than a flicker.
-  const on = alive && !reduced && fillW > SWEEP_W * 0.6;
+  const on = alive && motionActive && fillW > SWEEP_W * 0.6;
   const sweep = useSharedValue(0);
 
   useEffect(() => {
+    cancelAnimation(sweep);
     if (!on) {
       sweep.value = 0;
       return;
     }
     sweep.value = 0;
     sweep.value = withRepeat(
-      withTiming(1, { duration: Math.round(2400 - 900 * clamp(v, 0, 1)), easing: Easing.linear }),
+      withTiming(1, { duration: 2600, easing: Easing.linear }),
       -1,
       false,
     );
-  }, [on, v, sweep]);
+    return () => cancelAnimation(sweep);
+  }, [on, sweep]);
 
   const sweepStyle = useAnimatedStyle(() => {
     const travel = fillW + SWEEP_W;

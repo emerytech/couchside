@@ -444,6 +444,23 @@ export function WatchPanel() {
     [settings, player],
   );
 
+  const openCatalog = useCallback(async (videoId: string, name: string) => {
+    hapticLight();
+    setBusy('catalog');
+    setError(null);
+    try {
+      await api.playerCatalogOpen(settings, videoId);
+      setPending(name);
+      scrollRef.current?.scrollTo({ y: 0, animated: true });
+      player.refresh();
+    } catch (e) {
+      hapticError();
+      setError(e instanceof Error ? e.message : 'Couldn’t start that video.');
+    } finally {
+      setBusy(null);
+    }
+  }, [settings, player]);
+
   const sendLink = useCallback(() => {
     if (parsedLink) { open(parsedLink.service, parsedLink.path); return; }
     if (webLink) openUrl(webLink);              // free-URL tier (box opted in)
@@ -523,7 +540,7 @@ export function WatchPanel() {
               </Text>
               <Text style={styles.nowService}>
                 {/* The panel and a free-URL page both report an empty service. */}
-                {state.service ? label(state.service) : 'The box’s own screen'}
+                {state.catalog_video?.name ?? (state.service ? label(state.service) : 'The box’s own screen')}
               </Text>
               {playback?.title ? (
                 <Text style={styles.nowPath} numberOfLines={1}>
@@ -611,6 +628,11 @@ export function WatchPanel() {
               scrub, and a dead scrubber is worse than no scrubber. */}
           {playback ? (
             <View style={styles.transport} testID="watch-transport">
+              {playback.error ? (
+                <Text style={styles.error} accessibilityRole="alert" testID="watch-playback-error">
+                  Playback failed: {playback.error.message}. Stop and retry.
+                </Text>
+              ) : null}
               <View style={styles.scrubRow}>
                 <Text style={styles.time}>{fmtTime(playback.position)}</Text>
                 <View style={styles.track}>
@@ -899,6 +921,29 @@ export function WatchPanel() {
       ) : null}
 
       {mediaGrid}
+
+      {state.catalog ? (
+        <View testID="watch-catalog">
+          <Text style={styles.section}>{state.catalog.name.toUpperCase()}</Text>
+          {state.catalog.metas.map((video) => (
+            <View key={video.id} style={styles.nowCard}>
+              <Text style={styles.tileText}>{video.name}</Text>
+              <Text style={styles.hint}>{video.description}</Text>
+              <Text style={styles.hint}>{video.credit}</Text>
+              <Pressable
+                accessibilityRole="button"
+                accessibilityLabel={`Play ${video.name} on TV`}
+                testID="watch-catalog-play"
+                disabled={busy !== null}
+                onPress={() => openCatalog(video.id, video.name)}
+                style={({ pressed }) => [styles.tile, pressed && styles.pressed]}
+              >
+                <Text style={styles.tileText}>{busy === 'catalog' ? 'Opening…' : 'Play on TV'}</Text>
+              </Pressable>
+            </View>
+          ))}
+        </View>
+      ) : null}
 
       <Text style={styles.section}>SERVICES</Text>
       <View style={styles.grid}>

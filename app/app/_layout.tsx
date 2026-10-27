@@ -2,11 +2,17 @@
 // other module or screen can throw (lib/crashLog). Nothing is ever sent.
 import '@/lib/crashLog';
 import '@/lib/demo'; // no-op unless EXPO_PUBLIC_DEMO=1 (web design-review fixture)
+// Side-effect import: defines the background wishlist-alert TaskManager task at
+// module scope so it is registered in both the foreground app and the headless
+// background JS context. Resolves to a no-op stub on web (wishlistAlertTask.web).
+import '@/lib/wishlistAlertTask';
 import { DarkTheme, DefaultTheme, Stack, ThemeProvider } from 'expo-router';
 import { StatusBar } from 'expo-status-bar';
 import { useMemo } from 'react';
+import { Platform } from 'react-native';
 import { GestureHandlerRootView } from 'react-native-gesture-handler';
-import 'react-native-reanimated';
+import { ReduceMotion, ReducedMotionConfig } from 'react-native-reanimated';
+import { useReducedMotion } from '@/lib/skin/motion';
 
 import { ReviewPrompt } from '@/components/ReviewPrompt';
 import { ReviewToast } from '@/components/ReviewToast';
@@ -18,6 +24,7 @@ import { SplashIntro } from '@/components/SplashIntro';
 import { UnlockToast } from '@/components/UnlockToast';
 import { TapCapture } from '@/components/TouchIndicatorLayer';
 import { DeepLinkHandler } from '@/lib/DeepLink';
+import { WishlistNotifyBridge } from '@/components/WishlistNotifyBridge';
 import { EntitlementProvider } from '@/lib/EntitlementContext';
 import { useImmersive } from '@/lib/immersive';
 import { SettingsProvider } from '@/lib/SettingsContext';
@@ -35,6 +42,7 @@ export const unstable_settings = {
 
 export default function RootLayout() {
   const t = useTheme();
+  const reducedMotion = useReducedMotion();
   const scheme = useResolvedScheme();
   // Full-screen controller on screen: NO dismissal gesture at all (see the
   // Stack.Screen options below).
@@ -62,6 +70,10 @@ export default function RootLayout() {
           <ConfirmProvider>
           <StatusBar style={scheme === 'light' ? 'dark' : 'light'} />
           <DeepLinkHandler />
+          {/* Re-registers the background wishlist watch on start and opens Play on
+              a notification tap. Native-only: the notification-response hook has
+              no web runtime. */}
+          {Platform.OS !== 'web' && <WishlistNotifyBridge />}
           {/* Touch indicators wrap the whole tree because they read the responder
               system in the CAPTURE phase -- an ancestor, not a sibling overlay.
               Rendered unconditionally and gated internally on the pref: if the
@@ -69,7 +81,8 @@ export default function RootLayout() {
               and drop the screen you were about to record. Observe-only; it must
               never become the responder. */}
           <TapCapture>
-          <Stack>
+          <ReducedMotionConfig mode={reducedMotion ? ReduceMotion.Always : ReduceMotion.System} />
+          <Stack screenOptions={{ animation: reducedMotion ? 'none' : 'default' }}>
             {/* THE BACK GESTURE IS A DRAG, AND THIS APP IS MADE OF DRAGS.
                 iOS ONLY — both options below are no-ops on Android, which is
                 exactly how the bug was reported: "only occurs in iOS, Android
@@ -111,6 +124,9 @@ export default function RootLayout() {
                 is ~110 entries and virtualises; probe-and-appear — the push
                 only exists where /api/decky/loader answered. */}
             <Stack.Screen name="decky" options={{ headerShown: false }} />
+            {/* Discover — keyless in-app Steam store search (pushed from Play).
+                App-side, opt-in; see app/discover.tsx. */}
+            <Stack.Screen name="discover" options={{ headerShown: false }} />
           </Stack>
           {/* Global overlay: survives the Paywall unmount on unlock (see UnlockToast). */}
           <UnlockToast />

@@ -402,10 +402,17 @@ function normalizeBox(raw: unknown): Box | null {
       ? o.pinModulus.toLowerCase()
       : undefined;
   const secure = o.secure === true && tlsPort !== undefined && !!pinModulus ? true : undefined;
+  // Service version (learned from /api/status.agent_version). Keep ANY non-empty
+  // string verbatim — useCapsSync compares the raw agent_version against this, so
+  // trimming or reformatting here would make the two disagree and bring back the
+  // once-per-launch write (and new `settings` object) this field exists to avoid.
+  // Reject-don't-sanitise, like the fields above: a non-string / empty value is
+  // dropped to undefined ("not learned"), never coerced.
+  const version = typeof o.version === 'string' && o.version ? o.version : undefined;
   return {
     id, name, host, port, token, padMode: normalizePadMode(o.padMode),
     lastIp, mac, volumeTarget, caps, lastSeen,
-    secure, tlsPort, fp, pinModulus,
+    secure, tlsPort, fp, pinModulus, version,
   };
 }
 

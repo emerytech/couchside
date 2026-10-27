@@ -3,10 +3,13 @@
  * Base URL: http://<host>:<port>  (default port 8787)
  */
 import { Buffer } from 'buffer';
+import type { SteamThemesState, SteamThemeSettings } from './steamThemes';
 import { isPinMismatchError, isPinnedTimeoutError, pinnedRequest, type PinnedResponse } from './boxTransport.ts';
 import { raceIpFirst, ttlMemo } from './boxRoute.ts';
+import { connIsPinned } from './boxConn';
 import { isDeclaredTooLarge, isUsableBodySize } from './responseCap';
 import { ensureImageTicket, getImageTicket, mintUploadTicket } from './ticket.ts';
+import { sendFile, parseUploadResult, type UploadResult } from './fileUpload.ts';
 import type { InstallHealth } from './installHealth.ts';
 import { Settings } from './settings';
 
@@ -528,7 +531,17 @@ export type InstallableGame = { appid: number; name?: string; type?: string };
  * first to drift. `service_urls` exists so a pasted or shared link can be split
  * into (service, path) using the box's own hosts.
  */
+export type PlayerCatalog = {
+  id: string;
+  name: string;
+  type: 'movie';
+  metas: { id: string; type: 'movie'; name: string; description: string; credit: string; license: string }[];
+};
+
 export type PlayerState = {
+  /** Optional: old boxes simply omit the sample catalog. */
+  catalog?: PlayerCatalog;
+  catalog_video?: PlayerCatalog["metas"][number] | null;
   available: boolean;
   running: boolean;
   /** Service id the tile is pointed at ('' before anything has been opened). */
@@ -631,6 +644,11 @@ export type PlayerPlayback = {
   duration: number;
   muted: boolean;
   title: string;
+  /** Optional on older agents. A media error must not appear as playing. */
+  error?: { code: number; message: string } | null;
+  ready?: number;
+  seeking?: boolean;
+  decodedFrames?: number;
 };
 
 /** Transport ops the box accepts. Anything else is refused with a 404. */
@@ -778,6 +796,14 @@ export type LedTheme = { id: string; label: string; accent?: Rgb | null };
 /** One controllable LED from GET /api/leds (agent >= 2.9.81, cap `ledcontrol`).
     `name` is the /sys/class/leds node id the setter POSTs back verbatim. */
 export type LedInfo = {
+  /** Optional device-specific restrictions; older agents use global capabilities. */
+  effects?: LedEffect[];
+  shape?: boolean;
+  /** Driver controls both joystick rings as one device. */
+  ring_control?: 'linked';
+  ring_scenes?: boolean;
+  /** Bounded, explicitly requested motion test; absent until hardware is verified. */
+  ring_motion_preview?: boolean;
   name: string;
   desc: string;
   /** True for a multicolour LED (has colour swatches); false = brightness only. */
@@ -799,6 +825,31 @@ export type LedInfo = {
     `off` are one-shot (no animation); the rest run on the box until changed.
     `scanner` is the KITT sweep — real across multiple LEDs (OpenRGB), a
     bounce-pulse on a single kernel LED. */
+export type RingProgram = {
+  scene: 'aurora' | 'ember' | 'ocean' | 'cyberpunk';
+  brightness: number;
+  period: number;
+  night: { enabled: boolean; start: number; end: number; brightness: number };
+};
+export type RingProgramState = { program: RingProgram | null; error: string | null; timezone: string };
+
+/** Temporary LampArray test. The box restores its previous lighting after 10s. */
+export type RingMotionPreview = {
+  effect: 'ball' | 'comet' | 'bounce';
+  direction: 'clockwise' | 'counterclockwise';
+  color: Rgb;
+  colorShift: boolean;
+  trail: number;
+  period: number;
+  brightness: number;
+};
+export type RingMotionState = {
+  available: boolean;
+  active: boolean;
+  error: string | null;
+  remaining_ms: number;
+};
+
 export type LedEffect =
   | 'solid' | 'off' | 'breathe' | 'pulse' | 'rainbow' | 'strobe' | 'scanner'
   // `manual` = a per-LED painted pattern on a strip (agent >= 2.9.85); the
@@ -1993,7 +2044,7 @@ export type SessionDefault = {
 };
 
 /** Result of a successful POST /api/upload (agent >= 2.9.54). */
-export type UploadResult = { ok: boolean; name: string; bytes: number; path: string };
+export type { UploadResult } from './fileUpload.ts';
 
 /** Result of POST /api/upload/reveal (agent >= 2.9.55). `opened` is false with a
  *  human-readable `reason` when the box can't raise a file manager (Game Mode). */
@@ -2002,13 +2053,13 @@ export type RevealResult = { opened: boolean; path?: string; reason?: string };
 /**
  * Upload a local file to the box's drop dir (POST /api/upload, agent >= 2.9.54).
  *
- * Streams the file straight from disk via expo-file-system's upload task — the
+ * Streams from disk via pinned native HTTPS (legacy HTTP uses Expo) — the
  * bytes never pass through JS memory, so a multi-GB game is fine — and reports
  * progress as a 0..1 fraction. `name` is sent as a query param; the agent
  * REJECTS anything that isn't a bare, contained filename, so pass a basename.
  *
- * expo-file-system is imported lazily so this native-only module never has to
- * load in the web dev harness that drives the rest of the app.
+ * Native adapters are lazy imports; policy and receipt validation are pure and
+ * covered by fileUpload.test.ts without loading Expo in the test harness.
  */
 export async function uploadFile(
   settings: ConnSettings,
@@ -2016,42 +2067,22 @@ export async function uploadFile(
   name: string,
   onProgress?: (fraction: number) => void,
 ): Promise<UploadResult> {
-  const { File, UploadType } = await import('expo-file-system');
   const host = resolveEffectiveHost(settings);
-  let url = `${baseUrl({ host, port: settings.port })}/api/upload?name=${encodeURIComponent(name)}`;
-  let headers: Record<string, string> = { Authorization: `Bearer ${settings.token}` };
-  // Secure box: the native streamed uploader can't pin, so keep the token off the
-  // wire with a SINGLE-USE ticket (minted over the pinned channel). The file bytes
-  // still ride plaintext http (documented residual), but the token does not.
-  // FAIL CLOSED: if the mint fails (a pin mismatch, or the pool's connect cooldown
-  // after a transient failure), we must NOT fall back to putting the bearer token
-  // in a cleartext header — that is exactly the leak KI-096 is about. Better one
-  // failed upload the user can retry than a token on the wire.
-  if (settings.secure && settings.pinModulus && settings.tlsPort) {
-    const t = await mintUploadTicket(settings, host);
-    if (!t) {
-      throw new ApiError('unreachable', 'Could not secure the upload — try again');
-    }
-    url = `http://${host}:${settings.port}/api/upload?name=${encodeURIComponent(name)}&ticket=${encodeURIComponent(t)}`;
-    headers = {};
-  }
-  const task = new File(fileUri).createUploadTask(url, {
-    httpMethod: 'POST',
-    uploadType: UploadType.BINARY_CONTENT,
-    headers,
-    onProgress: ({ bytesSent, totalBytes }: { bytesSent: number; totalBytes: number }) => {
-      if (onProgress && totalBytes > 0) onProgress(bytesSent / totalBytes);
+  const res = await sendFile({ ...settings, host }, fileUri, name, {
+    mintTicket: () => mintUploadTicket(settings, host),
+    secure: async (options, progress) => {
+      const { uploadPinnedFile } = await import('./fileUploadNative');
+      return uploadPinnedFile(options, progress);
     },
-  });
-  const res = await task.uploadAsync();
+    legacy: async (url, uri, token, progress) => {
+      const { uploadLegacyFile } = await import('./fileUploadNative');
+      return uploadLegacyFile(url, uri, token, progress);
+    },
+  }, onProgress);
   if (!res || res.status < 200 || res.status >= 300) {
     throw new ApiError('http', `Upload failed (HTTP ${res?.status ?? '?'})`, res?.status);
   }
-  try {
-    return JSON.parse(res.body) as UploadResult;
-  } catch {
-    return { ok: true, name, bytes: 0, path: '' };
-  }
+  return parseUploadResult(res.body);
 }
 
 /** base64-encode raw bytes for the /ws/screen stream client, which turns each
@@ -2344,7 +2375,11 @@ async function raceGet(
 ): Promise<{ res: Response; usedHost: string }> {
   return raceIpFirst({
     staggerMs: GET_RACE_STAGGER_MS,
-    probeIp: () => probeTarget(fallbackIp, settings),
+    // The pinned handshake verifies identity before sending any HTTP bytes.
+    // A separate ping on that same serial socket doubles queued traffic and
+    // can time out before an otherwise healthy status request even starts.
+    // Plaintext connections still require the explicit identity probe.
+    probeIp: () => connIsPinned(settings) ? Promise.resolve(true) : probeTarget(fallbackIp, settings),
     viaIp: async () => ({ res: await attempt(fallbackIp, settings, path, opts), usedHost: fallbackIp }),
     viaHost: async () => ({ res: await attempt(settings.host, settings, path, opts), usedHost: settings.host }),
   });
@@ -2440,6 +2475,12 @@ async function request<T>(
     // probe and send straight there.
     usedHost = resolveEffectiveHost(settings);
     res = await attempt(usedHost, settings, path, opts);
+  } else if (method !== 'GET' && fallback && connIsPinned(settings)) {
+    // TLS authenticates the destination before HTTP bytes are written. Send
+    // once to the cached IPv4 address; don't probe an unusable mDNS/IPv6 route
+    // before every control command. Never retry a possibly delivered POST.
+    usedHost = fallback;
+    res = await attempt(fallback, settings, path, opts);
   } else if (method === 'GET' && fallback) {
     // Idempotent + a cached IP known: race both addresses (IP-first, see
     // raceGet). Double-delivery is harmless for a GET, and this removes the
@@ -2691,6 +2732,13 @@ export const api = {
    * Setup card, the Utilities row and the /decky screen. Memoised box-side
    * (<500 ms) so the 2 s poll during a loader op is cheap.
    */
+  steamThemes(settings: ConnSettings): Promise<SteamThemesState | null> {
+    return probeOrNull(request<SteamThemesState>(settings, '/api/steam/themes'));
+  },
+  saveSteamTheme(settings: ConnSettings, value: Partial<SteamThemeSettings>): Promise<SteamThemesState> {
+    return request<SteamThemesState>(settings, '/api/steam/themes', { method: 'POST', body: value });
+  },
+
   deckyLoader(settings: ConnSettings): Promise<DeckyLoader | null> {
     return probeOrNull(request<DeckyLoader>(settings, '/api/decky/loader'));
   },
@@ -2907,13 +2955,22 @@ export const api = {
       .catch(() => false);
   },
 
+  /**
+   * Navigate the Steam UI to a known destination (agent >= 2.9.42).
+   *
+   * Resolves to the agent's `ok` on a 200, and THROWS on every failure — a
+   * 404 (route missing, agent too old to support search) no differently from a
+   * transient timeout/5xx. It deliberately does NOT `.catch(() => false)` any
+   * more: that collapsed "agent can't do this" and "box was briefly
+   * unreachable" into one `false`, so a single dropped Search tap hid the
+   * button for the rest of the app session on every box. The caller tells the
+   * two apart by `ApiError.status === 404` (see pad.tsx steamSearch).
+   */
   steamGoto(settings: ConnSettings, id: 'home'): Promise<boolean> {
     return request<{ ok: boolean }>(settings, '/api/steam/goto', {
       method: 'POST',
       body: { id },
-    })
-      .then((r) => !!r?.ok)
-      .catch(() => false);
+    }).then((r) => !!r?.ok);
   },
 
   steamlink(
@@ -3637,13 +3694,12 @@ export const api = {
    * Resolves false on any failure; the caller re-reads usbWake() to show the REAL
    * state rather than trusting this return.
    */
-  usbWakeArm(settings: ConnSettings, id: string, on: boolean): Promise<boolean> {
-    return request<{ ok: boolean }>(settings, '/api/usb-wake/arm', {
+  usbWakeArm(settings: ConnSettings, id: string, on: boolean): Promise<{ ok: boolean; persistent?: boolean }> {
+    return request<{ ok: boolean; persistent?: boolean }>(settings, '/api/usb-wake/arm', {
       method: 'POST',
       body: { id, on },
-    })
-      .then((r) => !!r?.ok)
-      .catch(() => false);
+      timeoutMs: 12000,
+    });
   },
 
   /**
@@ -3653,6 +3709,12 @@ export const api = {
    * nothing and launched nothing. The app does not pre-judge — it surfaces the
    * refusal.
    */
+  playerCatalogOpen(settings: ConnSettings, videoId: string): Promise<{ ok: boolean }> {
+    return request(settings, '/api/player', {
+      method: 'POST', body: { op: 'catalog-open', video_id: videoId },
+    });
+  },
+
   playerOp(
     settings: ConnSettings,
     op: PlayerOp,
@@ -3826,6 +3888,26 @@ export const api = {
    * else. The agent persists the choice so a reboot restores it. Resolves false
    * on any failure; the caller re-reads /api/leds for the real state (§11).
    */
+  ringProgram(settings: ConnSettings): Promise<RingProgramState> {
+    return request<RingProgramState>(settings, '/api/leds/ring-program');
+  },
+  setRingProgram(settings: ConnSettings, program: RingProgram | null): Promise<RingProgramState> {
+    return request<RingProgramState>(settings, '/api/leds/ring-program', {
+      method: 'POST', body: { program },
+    });
+  },
+  ringMotion(settings: ConnSettings): Promise<RingMotionState> {
+    return request<RingMotionState>(settings, '/api/leds/ring-motion');
+  },
+  setRingMotion(
+    settings: ConnSettings,
+    command: { preview: RingMotionPreview } | { stop: true },
+  ): Promise<RingMotionState> {
+    return request<RingMotionState>(settings, '/api/leds/ring-motion', {
+      method: 'POST', body: command,
+    });
+  },
+
   setLedEffect(
     settings: ConnSettings,
     led: string,

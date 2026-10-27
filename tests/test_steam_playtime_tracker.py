@@ -198,8 +198,8 @@ try:
         return [{"appid": 1, "name": "A", "playtime_forever": 999, "playtime_2weeks": 0}]
     cs._steam_owned_cached = _switch_midfetch
     body = cs._steam_library_payload()
-    check(body["played_7d"] is None and body["played_30d"] is None,
-          "account switched mid-fetch -> deltas None (not attributed)", body)
+    check(body.get("connected") is False and "count" not in body,
+          "account switched mid-fetch -> entire old-account payload rejected", body)
     ondisk = cs._steam_playtime_load()
     check(SID_A not in ondisk and SID_B not in ondisk,
           "no snapshot filed under EITHER account on a mid-fetch switch", ondisk)

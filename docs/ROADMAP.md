@@ -16,6 +16,30 @@ Each entry now carries a `✅ DONE` / `🟡 PARTIAL` / `📋 OPEN` banner with i
 
 ## 🔨 In Progress
 
+### Player sample catalog prototype (2026-10-20)
+- **priority:** P2 · **risk:** medium (playback) · **affects:** Linux player + Watch · **depends_on:** installed Couchside Player.
+- Isolated branch `codex/player-catalog-prototype`; one embedded Stremio-shaped catalog with the Big Buck Bunny trailer, fixed source lookup, existing Chrome playback and phone transport.
+- Local API, browser playback and Watch button checks pass. A repeatable real HTTP-to-Chrome acceptance script passed on 2026-10-21, including Stop and title cleanup. Steam/gamescope launch, audio output and physical-phone checks remain pending; deployment requires explicit owner coordination.
+- First hardware trial failed and Player was rolled back with Themes baseline intact. A Linux request-thread/parent-death defect has since been reproduced and corrected using persistent browser ownership; local regression and revised hardware launch/control checks pass. The hardware retest exposed small centered video on the TV; Player-only rollback completed. A dedicated viewport-filling TV surface is now prepared and passes local multi-size browser checks; actual 4K TV sizing passed the approved retest, but moving playback froze with a captured decoder error. Player-only rollback verified; a test-only software-decoding mitigation and explicit failure telemetry are prepared, with real local frame-progress/seek/reopen checks. The approved software-decoding hardware retest passed sustained video motion, seek/pause/mute, reopen, and full sample completion, with user TV confirmation. All 220 protected Themes files and existing Steam shortcuts remained unchanged. The isolated test remains installed but stopped; native phone-app validation and arbitrary-media support remain outstanding. The subsequent existing-iPhone compatibility package passed local checks, but its new Steam shortcut launch did not start and that deployment was rolled back. Production sample sizing/software decoding and shared media-error reporting are now fixed and locally checked; integrated Steam/Flatpak and installed-phone acceptance are still pending. Player is not yet hardware release-accepted.
+- This is a fixed sample provider, not general third-party Stremio add-on installation. See `docs/PLAYER_CATALOG_PROTOTYPE.md`.
+
+### Security hardening — phase 1: ticket permissions (2026-10-09)
+- **priority:** P1 · **risk:** low-medium (authorization) · **affects:** Linux agent and tests · **depends_on:** existing TLS tickets.
+- **Status:** released in Linux agent 2.9.131 with app release 2.9.75 (2026-10-10, PR #624). Verified with a physical iPhone against an isolated server before release.
+- Preserve existing ticket URLs, response shape and bearer-authenticated uploads while enforcing image/upload scopes.
+- Regression coverage includes image loading, actual file uploads, expiry, replay rejection and concurrent single-use requests. iPhone 2.9.75 (248) rendered test covers and uploaded a byte-verified file through the native picker; a fresh physical Android upload check was not part of that release verification. Existing native image/upload HTTP ticket transport is unchanged and does not encrypt payloads.
+
+### Security hardening — phase 2: private upload staging (2026-10-11)
+- **priority:** P1 · **risk:** low-medium (file handling) · **affects:** Linux agent, regression tests and maintainer docs.
+- **Status:** prepared for Linux agent 2.9.132; not published. Each upload owns a unique private staging file, rejects existing destination symlinks and atomically replaces the final file. Existing route, ticket/bearer auth and success response are unchanged.
+- Eight focused suites pass (302 checks), including interrupted writes, disk failures and simultaneous same-name uploads. Razr native uploads passed against isolated patched servers on physical SteamOS and Bazzite machines. A fresh iPhone native upload passed against the corrected Bazzite fixture with three unfinished TLS peers present, matching bytes/hash and mode `0600`. Corrected-fixture native iPhone upload on SteamOS was not verified. No app build or production install is included in this phase.
+- Contributor guide and symbol-based code map establish current entry points. A future agent module split needs a separate signed packaging and rollback design.
+
+### Security hardening — phase 3: TLS handshake isolation (2026-10-11)
+- **priority:** P1 · **risk:** low-medium (connection lifecycle) · **affects:** Linux agent and TLS tests.
+- **Status:** prepared for Linux agent 2.9.132; not published. TLS negotiation runs inside the existing capped workers with a five-second deadline, so an idle handshake cannot monopolize the accept loop. Established HTTP/WebSocket timeout policies and certificates are unchanged.
+- Verified locally: 43 handshake checks plus nine surrounding suites, including idle/partial/malformed peers, worker-cap recovery, thread-start failure, authenticated HTTPS/WSS and the existing TLS watchdog. The pre-fix control fails eight checks. Seven selected suites and 15 isolated LAN checks passed on each physical SteamOS/Bazzite machine; Razr native uploads passed with three unfinished TLS peers present. Corrected-fixture iPhone/Bazzite authenticated status and native upload also passed during contention; corrected-fixture native iPhone upload on SteamOS was not verified. Production services were unchanged during these checks. Release remains separate; no structural refactoring or app reporting change is included.
+
 ### Game Aura — paint the strip from game artwork (Phase 1, PR `feat/game-aura-artwork`)
 - **priority:** P3 · **risk:** low (additive route + app-side sampler; no new cap, no agent image lib) ·
   **affects:** agent `POST /api/leds/aura` + the `aura` payload flag; app `lib/auraPalette` (pure sampler),
@@ -643,6 +667,31 @@ Each entry now carries a `✅ DONE` / `🟡 PARTIAL` / `📋 OPEN` banner with i
   best-effort background wake polls the watch list's prices app-side and fires a LOCAL notification on a
   drop — NEVER a guaranteed server push. Ship the alert as explicitly best-effort, or ship Phases 1–2
   (viewing + an in-app "on sale now" list, the reliable core) and stop.
+  - **✅ Phase 1a DONE (app 2.9.70 / agent 2.9.127):** on-open Play-tab `WishlistAlertsBanner` +
+    `GET /api/steam/wishlist/alerts` (per-account last-seen baseline, seed-on-first-look). The reliable core.
+  - **✅ Phase 1b DONE (branch `feat/wishlist-alert-notifications`, this build):** the explicitly
+    best-effort background LOCAL notification. Added `expo-notifications` + `expo-background-task` +
+    `expo-task-manager` (SDK-57 pinned); headless `TaskManager` task (`lib/wishlistAlertTask.ts`, defined
+    at module scope, imported at the app root) reuses the SAME `decideWishlistNotify` logic as the banner,
+    reaches the box over the LAN, fires ONE notification on a drop, then acks (so the banner won't
+    double-nag). Opt-in Prefs toggle (OFF by default, asks notification permission). Honest ceiling stated
+    in the toggle copy: LAN-only + OS-throttled. Native/web split via `.web` stubs so the harness stays
+    clean. Decision logic unit-tested (both states); on-device background firing + tap deep-link are
+    inherently un-harnessable (need an EAS build on a real device).
+  - **✅ Phase 2 (Android widget) DONE (branch `feat/wishlist-alert-notifications`, this build):** a home-screen
+    widget (`react-native-android-widget`, Android-first per owner) showing tonight's pick + best wishlist drop.
+    Widget UI in JSX (zero Kotlin); pure `lib/widget/widgetPayload.ts` builder (unit-tested) is the source of truth;
+    the Play tab writes the snapshot, the widget shows it (no networking in-widget); tap opens Play. Custom app
+    entry (`index.js` / `index.android.js`) registers the headless task handler. iOS widget + the direct-APK
+    config-plugin wiring are the remaining follow-ups. On-device render/tap NOT harness-verifiable — needs an
+    Android build on a real device (the owner's Razr).
+  - **✅ Phase 3 (Discover) DONE (branch `feat/wishlist-alert-notifications`, this build):** in-app Steam store
+    search. APP-SIDE + KEYLESS (`lib/steamSearch` → store.steampowered.com storesearch) — leaves the PHONE,
+    never the box; gated on the SAME `compatLookups` opt-in as the other store lookups, with plain disclosure
+    that search terms go to Steam. Dedicated `/discover` route pushed from a Play-tab entry; tap a result →
+    `openInSteamStore`. Parser unit-tested against a VERBATIM captured response. Harness-verified end-to-end
+    (gate → enable → debounced search fires the correct URL → clean empty state on the web CORS block); real
+    results are device-only (browser CORS; native has none). No agent change, no new dep.
 - **Dedupe:** net-new (only grep hit is "wholesale") — NOT the "Notifications" Steam-settings slug in
   **Find the missing Steam settings slugs**, NOT the Fleet-units watchlist. Extends the keyless
   `appdetails` path from **Install a game you own but have not downloaded** and the opt-in fetch pattern

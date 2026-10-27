@@ -4,6 +4,19 @@
 
 Couchside pairs a native iOS & Android app with a tiny, dependency-free Python service that runs on a SteamOS / Bazzite HTPC, a Steam Deck, or any systemd Linux machine. When gamescope wedges into a black screen and the TV shows nothing, Couchside is the screen: see live vitals, read the logs, restart the display session, or become an Xbox 360 controller, all from the couch and entirely on your own LAN. No cloud, no accounts, no analytics.
 
+## Release versions
+
+The phone app and the service on your gaming box have separate version numbers. Build numbers identify a specific app package and are counted separately for each distribution.
+
+| Component | Version | Build | Release information |
+| --- | --- | --- | --- |
+| iOS app | 2.9.78 | 261 | [Store review and rollout status](https://couchside.tv/updates/) |
+| Google Play app | 2.9.78 | 126 | [Store review and rollout status](https://couchside.tv/updates/) |
+| Android Direct app | 2.9.78 | 41 | [Download APK](https://couchside.tv/direct/) |
+| Linux service (gaming box) | 2.9.134 | — | [Service release](https://github.com/emerytech/couchside/releases/latest) |
+
+Store availability depends on review and rollout. See [release notes](https://couchside.tv/updates/) for details. The latest signed service release is tagged `v2.9.78`; its title and `agent-version.txt` identify service version `2.9.134`. The installers and updater use the stable latest-release URL. Historical releases remain available, and Direct downloads retain their stable `couchside-direct` tag.
+
 ## See it in action
 
 Real footage — a phone driving Steam Big Picture on the TV over the LAN, nothing staged.
@@ -44,6 +57,7 @@ that binary, the corresponding source is offered at the exact shipped tag
 
 ## Features
 
+- **SteamOS Themes (Beta, optional):** choose seven home layouts or make a draft in Theme Studio from **Settings → Boxes → Steam appearance**. Requires Decky Loader and an updated Couchside companion. Themes start off until you apply one; restore **Steam default** from the app or Decky panel at any time. Custom themes use a bounded settings format, not executable theme code.
 - **Live console:** hostname, uptime, CPU temperature, load averages, memory and per-disk usage with color-coded bars, refreshed every few seconds. A big red BOX UNREACHABLE banner (with last-seen time) when the box drops off the network, which is exactly when you need it.
 - **systemd unit health:** a watchlist of system and user units (display manager, the Couchside service itself, your own services) with active/failed state at a glance.
 - **One-tap runbook actions:** grouped by what they interrupt, every action confirmed before it runs and *double*-confirmed when it ends your session:
@@ -68,7 +82,7 @@ that binary, the corresponding source is offered at the exact shipped tag
 - **Controller handoff:** when a second phone joins a box you're already driving, it asks and you tap Pass — instead of silently stealing input.
 - **Stay current from the couch:** the app can ask the box whether a newer signed release exists and — if you opted in at the box — install it, verifying the maintainer signature first.
 - **Decky Loader, from the couch (opt-in):** install, repair or remove Decky Loader on the box, see your installed plugins with their updates, reload or remove one at a time, and install new ones from the official Decky store — all from a Decky screen in the app. It needs a one-time `couchside allow-decky on` on the box, because it lets the phone manage a root-level service; the command spells out what that means before it does anything (see **Security model**).
-- **Wake a sleeping box:** send a Wake-on-LAN magic packet from the phone, or have an **already-awake box wake a sleeping one** for you (the only route on iOS, where the OS blocks apps from broadcasting).
+- **Wake a sleeping box:** send a Wake-on-LAN magic packet directly from Android or iPhone (iOS app 2.9.75 and later, with Local Network permission). Apple's approved multicast capability enables direct iPhone broadcast; an **already-awake box can relay the wake request** as a fallback. Wake support depends on the box and network configuration.
 - **Volume, mute, and box power.** A control next to the device picker adjusts the box's own OS volume and mute (a real drag-to-set 0–100 slider on SteamOS/Bazzite). On an HDMI-CEC or RS-232 setup you can switch it to drive the TV/panel instead — and on an RS-232 panel, also switch the display's input source, blank the screen without cutting power to an OPS box, and pass factory-remote keys. The same control suspends the box and, once it is offline, wakes it back up with a Wake-on-LAN magic packet.
 
 ## Control your TV
@@ -123,9 +137,9 @@ Free 7-day trial with every feature unlocked, then a one-time unlock ($4.99 summ
 
 ## Security model
 
-Couchside is deliberately small and boring about security:
+Couchside separates local control, pairing and optional privileged operations:
 
-- **Bearer token auth.** Every API route except the reachability ping requires `Authorization: Bearer <token>`; the gamepad WebSocket authenticates before the handshake completes. Comparisons are constant-time (`hmac.compare_digest`). The token file is `chmod 600`; on the phone it lives in the iOS Keychain / Android Keystore.
+- **Bearer token auth.** Control APIs require `Authorization: Bearer <token>`; discovery and PIN pairing have separate gates. Native image reads and file uploads can instead use short-lived, scoped tickets. The gamepad WebSocket authenticates before the handshake completes. Comparisons are constant-time (`hmac.compare_digest`). The token file is `chmod 600`; on the phone it lives in the iOS Keychain / Android Keystore.
 - **Scoped sudo, nothing more.** The installer writes a `visudo`-validated sudoers file granting the service user passwordless sudo for a fixed set of **exactly-argument** commands — no wildcards, no globs, no directories. Six are always granted:
 
   | grant | why |
@@ -143,7 +157,7 @@ Couchside is deliberately small and boring about security:
 
   The **privileged** actions are a fixed table; there is no route that runs an arbitrary command **as root**. Updating Flatpak apps or the OS from the app is an explicit **opt-in** (`couchside allow-system-updates on`, see the command table below) that adds a *separate* sudoers file granting **one fixed root-owned wrapper each** — never `flatpak` or `rpm-ostree` themselves, whose subcommands (install, run, override, rebase) would be arbitrary root. Off by default.
 
-- **The privileged helper (agent 2.9.69+).** Newer installs also place a small root process, `couchside-helper.py`, socket-activated by systemd. It exists to shrink the sudoers surface above, not to widen it: the same privileged operations are reached through a **frozen verb table** of ten entries (`session.set-boot`, `session.clear-boot`, `dm.restart`, `power`, `unit.restart`, `logs.journal`, `update.flatpak`, `update.os`, — helper 1.1.0+ — `decky.loader`, which only starts the pinned Decky Loader unit described below and refuses without the opt-in marker, and — helper 1.2.0+ — `usb.wake-arm`, which writes `enabled`/`disabled` to a USB device's `power/wakeup` after validating the device id by membership in the kernel's own device listing, never interpolating it into the path), and an unknown verb runs nothing. It never sees a command, a path, or a shell string from a client — a verb selects a handler, and any argument is validated against a closed set before use.
+- **The privileged helper (agent 2.9.69+).** Newer installs also place a small root process, `couchside-helper.py`, socket-activated by systemd. It exists to shrink the sudoers surface above, not to widen it: the same privileged operations are reached through a **frozen verb table** of eleven entries (`session.set-boot`, `session.clear-boot`, `dm.restart`, `power`, `unit.restart`, `logs.journal`, `update.flatpak`, `update.os`, — helper 1.1.0+ — `decky.loader`, which only starts the pinned Decky Loader unit described below and refuses without the opt-in marker, and — helper 1.2.0+ — `usb.wake-arm`, which writes `enabled`/`disabled` to a USB device's `power/wakeup` after validating the device id by membership in the kernel's own device listing, never interpolating it into the path, plus — helper 1.3.0+ — `usb.wake-save`, which persists that setting in a root-owned udev rule scoped to a validated physical USB port and device model, reloads the rules, verifies the live value and rolls back on failure), and an unknown verb runs nothing. It never sees a command, a path, or a shell string from a client — a verb selects a handler, and any argument is validated against a closed set before use.
 
   Two independent auth layers, both fail-closed: the socket is `0660`, owned by the install user's group, so nothing else can connect; and the helper re-checks the caller's uid with `SO_PEERCRED` and refuses anything that is not exactly the install user — including when the uid cannot be read at all. It listens on a **local unix socket only** and is not reachable from the network. It lives in root-owned `/usr/local/libexec`, never a user-writable directory, and `couchside uninstall` removes it along with both units.
 - **Managing Decky Loader from the phone is a separate opt-in (agent 2.9.105+), and here is the thing to know before you turn it on.** Decky Loader runs as root from your home directory. On a Decky box, anyone who can act as your desktop user — including a paired phone, through the gamepad — can become root. That is Decky's design, not something Couchside can wall off; it is true with or without Couchside, and it makes the standing `systemctl restart plugin_loader` grant above a root-exec primitive on such a box. Couchside refuses to make it worse, and says so plainly instead of hiding it.
@@ -153,8 +167,8 @@ Couchside is deliberately small and boring about security:
   Plugins are different: the **bytes are handled entirely by Decky Loader itself** — it downloads the zip from its own CDN, checks the SHA-256 the store publishes (Couchside always passes the hash so that check runs), extracts and starts it. The agent only talks to the loader over its loopback API, after confirming that what listens on port 1337 really is a root-owned Decky process. Plugins run as your desktop user, or — if a plugin is **flagged for it** in the store — **as root**; the confirmation on the phone says which. Decky's own in-app updater is not exposed (it un-pins the service file and follows whatever pre-release channel the box picked); the one loader-update path is Repair, which re-runs the same wrapper. `couchside allow-decky off` removes the grant and the marker; `couchside uninstall` removes all of it and leaves your Decky install alone.
 - **Launchers run as you, and creating them remotely is opt-in.** Beyond the fixed privileged actions, the app can *trigger* launchers — auto-discovered Steam games plus any custom commands the box owner defined. A launcher's command runs as the **desktop user, never root**. Because a custom launcher is an arbitrary command, *creating* one over the network is **off by default**: run `couchside allow-launchers on` to enable it, otherwise a bearer token can only trigger launchers you set up on the box, not mint new ones. (The same token can already synthesize keystrokes through the virtual gamepad, so treat the token as user-level trust on a machine you control — which is why it stays on your LAN.)
 - **Journal access is allowlisted.** Only units on the configured watchlist can be read, with line counts clamped server-side, so a leaked token can't be used to trawl the whole system journal.
-- **The one outbound call the app makes.** Couchside talks to your box and, for updates, nothing else — with a single, manual exception you trigger yourself. In Setup › Account, *Check for app update* asks whether a newer Couchside is published: on iOS it queries Apple's own App Store lookup directly; on Android it reads a static version file from couchside.tv (Google Play has no public version API). It sends **nothing** about you, your box, or your usage — just "what version is live?" — and it never runs on its own. (The box-side *agent* update check runs on the box precisely so the app itself never reaches the internet for box data.)
-- **LAN-only by design.** The API is plain HTTP on port 8787 and is meant to stay on your local network. The firewall rule opens the port locally; **do not port-forward it**. There is no relay, no cloud endpoint, and the app never talks to anything except your service.
+- **Local control, optional internet integrations.** Box control does not require a cloud relay. Updates, app-store purchases and optional integrations use internet services; the app is not entirely offline. Check the relevant integration before making privacy or network claims.
+- **Transport protection.** Paired clients use pinned TLS for supported API/WebSocket connections, normally on port 8788. The native file uploader in this source also streams over pinned HTTPS for secure pairings, without falling back to HTTP. This requires a new native app build; previously published apps still use scoped HTTP upload tickets. Legacy unencrypted pairings and native cover-art image loaders still use HTTP; scoped tickets limit authority but **do not encrypt those payloads**. Keep service ports on your trusted local network; **do not port-forward them**.
 - No client-addressable file routes. The service serves image bytes on four routes only: the album-art image a running media player advertises (realpath-allowlisted, image-sniffed, 2 MiB cap; client passes a player id, never a path); an on-demand screen-preview frame captured to a tmpfs file that's deleted right after (rate-clamped, off by default in the app); Steam cover art from the box's own library cache (client passes an app id); and the Decky store icon proxy (client passes a store id looked up in the box's own cached store list — the box fetches the icon from Decky's CDN with the host pinned and **no redirects followed**, caps it at 1 MiB, sniffs it as an image, and serves it from cache; the phone never talks to the CDN). Subprocesses run with `shell=False`, errors return brief JSON, never tracebacks.
 
 ## The `couchside` command — enabling extra features
@@ -215,21 +229,18 @@ Then delete the app from your phone.
 
 ## Development
 
-```
-agent/   couchsided.py: pure-stdlib Python 3 daemon (HTTP API + gamepad WebSocket)
-agent/win/  Windows port of the service (same API; SendInput + ViGEmBus)
-app/     Expo / React Native app for iOS & Android (tabs: Console, Fleet, Actions, Pad, Launch, Setup; the journal viewer lives inside Setup)
-docs/    privacy policy, images
-store/   App Store & Google Play metadata, review notes, screenshot plan
-```
+Start with [CONTRIBUTING.md](CONTRIBUTING.md) for setup, focused test commands and
+review expectations. The [code map](docs/CODE_MAP.md) shows the main components,
+request flow and security boundaries without depending on source line numbers.
 
-Develop the app without hardware using the service's mock mode on your Mac:
+- `agent/`: Linux service, privileged helper and platform ports.
+- `app/`: Expo / React Native phone app, native modules and tests.
+- Decky integration lives in the separate `emerytech/couchside-decky` repository.
+- `protocol/`, `tests/`, `.github/workflows/`: shared contracts, regression checks and delivery.
 
-```sh
-python3 agent/couchsided.py --mock --host 127.0.0.1 --port 8787 --token devtoken
-```
-
-Mock mode serves believable fake data and never executes real commands. The HTTP API and the `/ws/gamepad` WebSocket protocol (v2) are documented in [`agent/README.md`](agent/README.md).
+Use [scripts/web-dev.sh](scripts/web-dev.sh) for a local browser preview. Mock mode
+is useful for UI work, but does not replace device tests or isolate filesystem
+writes. The API reference is in [agent/README.md](agent/README.md).
 
 ## Pricing & license
 

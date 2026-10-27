@@ -337,3 +337,56 @@ test('frameHttpRequest: bearer token and JSON body are framed exactly', () => {
   const get = Buffer.from(frameHttpRequest('h', { path: '/api/ping' })).toString('utf8');
   assert.equal(get, 'GET /api/ping HTTP/1.1\r\nHost: h\r\nConnection: keep-alive\r\n\r\n');
 });
+
+test('stalled JS timers: expired queued power command is never written when a reply arrives first', async () => {
+  let now = 0;
+  const sock = new FakeSock(1);
+  const conn = new PinnedConn(async () => sock, { now: () => now });
+  const active = conn.request(frameHttpRequest('box', { path: '/api/status' }), 10000);
+  await Promise.resolve();
+  const expired = conn.request(frameHttpRequest('box', { method: 'POST', path: '/api/tv/power_off' }), 1000);
+  const rejected = assert.rejects(expired, (e: any) => e.sent === false);
+  now = 2000; // elapsed time without delivering setTimeout callbacks
+  sock.emit(http({ ok: true }));
+  await active;
+  await rejected;
+  assert.equal(sock.writes.length, 1);
+  const fresh = conn.request(frameHttpRequest('box', { path: '/api/status' }), 1000);
+  sock.emit(http({ fresh: true }));
+  await fresh;
+  assert.equal(sock.writes.length, 2);
+});
+
+test('stalled JS timers: a late connection cannot send an expired command', async () => {
+  let now = 0;
+  const sock = new FakeSock(1);
+  let connected!: (s: PinnedSocket) => void;
+  const conn = new PinnedConn(() => new Promise(resolve => { connected = resolve; }), { now: () => now });
+  const command = conn.request(frameHttpRequest('box', { method: 'POST', path: '/api/tv/volume_up' }), 1000);
+  const rejected = assert.rejects(command, (e: any) => e.sent === false);
+  now = 2000;
+  connected(sock);
+  await rejected;
+  assert.equal(sock.writes.length, 0);
+});
+
+test('a closed pooled socket identifies ticket reconnects without replaying control requests', async () => {
+  const { mintUploadTicket } = await import('../ticket.ts');
+  const socks: FakeSock[] = [];
+  const ticket = 'c'.repeat(32);
+  const pool = new PinnedConn(async () => {
+    const s = new FakeSock(socks.length);
+    socks.push(s);
+    s.responder = (socket) => socket.id === 0 ? socket.emitClose() : socket.emit(http({ ticket }));
+    return s;
+  });
+  const conn = { host: 'box.local', port: 8787, secure: true, tlsPort: 8788,
+    pinModulus: 'a'.repeat(512), token: 'synthetic' };
+  const result = await mintUploadTicket(conn, conn.host,
+    (host, _port, _pin, req) => pool.request(frameHttpRequest(host, req), 100));
+  assert.equal(result, ticket);
+  assert.equal(socks.length, 2);
+  assert.equal(socks[0].writes.length, 1);
+  assert.equal(socks[1].writes.length, 1);
+  assert.ok(socks.every(s => s.writes[0].startsWith('POST /api/ticket?once=1 ')));
+});

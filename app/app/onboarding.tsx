@@ -21,11 +21,16 @@
  */
 import Ionicons from '@expo/vector-icons/Ionicons';
 import * as Clipboard from 'expo-clipboard';
+import * as Linking from 'expo-linking';
 import { router, Stack } from 'expo-router';
 import React, { useCallback, useEffect, useState } from 'react';
-import { BackHandler, Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
+import { BackHandler, Image, Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
+import Animated, { FadeInDown } from 'react-native-reanimated';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
+import { WelcomeGuide } from '@/components/WelcomeGuide';
+import { SplashIntro } from '@/components/SplashIntro';
+import { useReducedMotion } from '@/lib/skin/motion';
 import { DirectTvSetup } from '@/components/DirectTvSetup';
 import { useLockOrientation } from '@/hooks/useLockOrientation';
 import { hapticLight, hapticSelection } from '@/lib/haptics';
@@ -52,6 +57,9 @@ export default function Onboarding() {
   useLockOrientation('portrait');
   const [step, setStep] = useState<OnboardingStep>(FIRST_STEP);
   const [copied, setCopied] = useState(false);
+  const [replayingIntro, setReplayingIntro] = useState(false);
+  const reducedMotion = useReducedMotion();
+  const finishIntro = useCallback(() => { setReplayingIntro(false); setStep('choose'); }, []);
 
   /**
    * Leave for good. AWAITS the pref writes before navigating: the tab layout
@@ -61,7 +69,7 @@ export default function Onboarding() {
    * after a deliberate back-out is a nag.
    */
   const leave = useCallback(async (remoteOnly?: boolean) => {
-    if (remoteOnly) await setPref('remoteOnlyMode', true);
+    if (remoteOnly !== undefined) await setPref('remoteOnlyMode', remoteOnly);
     await setPref('onboardingDone', true);
     router.replace('/(tabs)/setup');
   }, []);
@@ -71,6 +79,7 @@ export default function Onboarding() {
   // moment someone backed out of the install screen to re-read the chooser.
   useEffect(() => {
     const sub = BackHandler.addEventListener('hardwareBackPress', () => {
+      if (replayingIntro) { setReplayingIntro(false); return true; }
       const prev = backFrom(step);
       if (prev) {
         setStep(prev);
@@ -80,7 +89,7 @@ export default function Onboarding() {
       return true;
     });
     return () => sub.remove();
-  }, [step, leave]);
+  }, [step, leave, replayingIntro]);
 
   const choose = (c: DeviceChoice) => {
     hapticSelection();
@@ -94,30 +103,43 @@ export default function Onboarding() {
     setTimeout(() => setCopied(false), 2000);
   };
 
+  if (step === 'welcome') {
+    return <>
+      <Stack.Screen options={{ headerShown: false }} />
+      <WelcomeGuide onStart={() => {
+        hapticLight();
+        if (reducedMotion) setStep('choose');
+        else setReplayingIntro(true);
+      }} onExplore={() => { hapticLight(); void leave(); }} />
+      {replayingIntro && <SplashIntro replay onFinish={finishIntro} />}
+    </>;
+  }
+
   return (
     <>
       <Stack.Screen options={{ headerShown: false }} />
+      {replayingIntro && <SplashIntro replay onFinish={finishIntro} />}
       <View style={[styles.screen, { paddingTop: insets.top + 8, paddingBottom: insets.bottom + 8 }]}>
-        <ScrollView contentContainerStyle={styles.body} keyboardShouldPersistTaps="handled">
-          {step === 'welcome' ? (
-            <>
-              <View style={styles.badge}>
-                <Ionicons name="game-controller" size={22} color={t.green} />
-              </View>
-              <Text style={styles.h1}>Your phone, running the machine under the TV</Text>
-              <Text style={styles.body1}>
-                Couchside turns this phone into the dashboard, the remote and the controller for
-                your living-room box.
-              </Text>
-              <Text style={styles.body1}>
-                No accounts and no cloud — it talks to the machine directly over your Wi-Fi.
-              </Text>
-            </>
-          ) : null}
-
+        {step !== FIRST_STEP && <Pressable
+          onPress={() => { hapticSelection(); const previous = backFrom(step); if (previous) setStep(previous); }}
+          accessibilityRole="button" accessibilityLabel="Back to previous setup step"
+          style={{ minHeight: 44, flexDirection: 'row', alignItems: 'center', gap: 8 }}>
+          <Ionicons name="arrow-back" size={20} color={t.text} /><Text style={styles.note}>Back</Text>
+        </Pressable>}
+        <View style={styles.progressHeader}>
+          <Image source={require('../assets/images/icon.png')} style={styles.brandLogo} accessibilityLabel="Couchside" />
+          <Text style={styles.progressText}>{step === 'choose' ? '1 of 2 · Choose a device' : '2 of 2 · Connect your device'}</Text>
+        </View>
+        <View style={styles.progressTrack} accessibilityRole="progressbar"
+          accessibilityValue={{ min: 0, max: 2, now: step === 'choose' ? 1 : 2 }}>
+          <View style={[styles.progressFill, { width: step === 'choose' ? '50%' : '100%' }]} />
+        </View>
+        <Animated.ScrollView key={step} entering={reducedMotion ? undefined : FadeInDown.duration(180)}
+          contentContainerStyle={styles.body} keyboardShouldPersistTaps="handled">
           {step === 'choose' ? (
             <>
-              <Text style={styles.h1}>What are we setting up?</Text>
+              <Text style={styles.h1}>{'Make yourself\ncomfortable.'}</Text>
+              <Text style={styles.body1}>What would you like to connect?</Text>
               {/* NEITHER card says "recommended". This screen exists precisely
                   because neither audience is the default one. */}
               <Pressable
@@ -139,7 +161,7 @@ export default function Onboarding() {
                 <Text style={styles.cardTitle}>Just a smart TV</Text>
                 {/* Names what works TODAY. Same honesty rule as DirectTvSetup. */}
                 <Text style={styles.cardBody}>
-                  Roku today. LG, Samsung and Google TV need a Couchside box.
+                  Roku, Google TV / Android TV, and LG webOS can connect directly. Samsung and Hisense need a Couchside box.
                 </Text>
               </Pressable>
             </>
@@ -149,8 +171,7 @@ export default function Onboarding() {
             <>
               <Text style={styles.h1}>This part happens on the box</Text>
               <Text style={styles.body1}>
-                Your phone has no way in yet — this line is what fixes that. Sit down at the box,
-                open a terminal, and run:
+                On SteamOS, Bazzite or another supported Linux system, open a terminal on your gaming box and run:
               </Text>
               <View style={styles.cmdWrap}>
                 <Text style={styles.cmd} selectable>
@@ -171,7 +192,11 @@ export default function Onboarding() {
                   {copied ? 'COPIED' : 'COPY'}
                 </Text>
               </Pressable>
-              <Text style={styles.note}>On a Steam Deck, switch to Desktop Mode first.</Text>
+              <Text style={styles.note}>On a Steam Deck, switch to Desktop Mode first. Keep your phone on the same home network.</Text>
+              <Pressable onPress={() => void Linking.openURL('https://couchside.tv/windows/')}
+                accessibilityRole="link" style={styles.ghost}>
+                <Text style={styles.ghostText}>Using Windows? Open the Windows setup guide</Text>
+              </Pressable>
               {/* SteamOS ships the 'deck' user with NO password, so sudo refuses
                   and the installer stops partway. install.sh detects this and
                   says so — but only AFTER you have run it and hit the wall,
@@ -182,8 +207,7 @@ export default function Onboarding() {
                 <Text style={styles.warnText}>
                   First time on a Steam Deck? Run <Text style={styles.inline}>passwd</Text> before
                   the line above — SteamOS ships without one, and the installer needs sudo. On
-                  Bazzite the password is usually <Text style={styles.inline}>bazzite</Text> unless
-                  you changed it.
+                  other systems, use your existing administrator password.
                 </Text>
               </View>
 
@@ -209,30 +233,18 @@ export default function Onboarding() {
               <DirectTvSetup />
             </>
           ) : null}
-        </ScrollView>
+        </Animated.ScrollView>
 
         <View style={styles.footer}>
-          {step === 'welcome' ? (
-            <Pressable
-              onPress={() => {
-                hapticLight();
-                setStep('choose');
-              }}
-              accessibilityRole="button"
-              style={({ pressed }) => [styles.primary, pressed && styles.pressed]}>
-              <Text style={styles.primaryText}>GET STARTED</Text>
-            </Pressable>
-          ) : null}
-
           {step === 'install' ? (
             <Pressable
               onPress={() => {
                 hapticLight();
-                void leave();
+                void leave(false);
               }}
               accessibilityRole="button"
               style={({ pressed }) => [styles.primary, pressed && styles.pressed]}>
-              <Text style={styles.primaryText}>IT&apos;S RUNNING — FIND IT</Text>
+              <Text style={styles.primaryText}>Find my gaming machine</Text>
             </Pressable>
           ) : null}
 
@@ -244,7 +256,7 @@ export default function Onboarding() {
               }}
               accessibilityRole="button"
               style={({ pressed }) => [styles.primary, pressed && styles.pressed]}>
-              <Text style={styles.primaryText}>DONE</Text>
+              <Text style={styles.primaryText}>Continue to remote</Text>
             </Pressable>
           ) : null}
 
@@ -271,7 +283,12 @@ export default function Onboarding() {
 
 const makeStyles = (t: Palette) =>
   StyleSheet.create({
-    screen: { flex: 1, backgroundColor: t.bg, paddingHorizontal: 20 },
+    screen: { flex: 1, backgroundColor: t.bg, paddingHorizontal: 27 },
+    progressHeader: { flexDirection: 'row', alignItems: 'center', gap: 10, marginTop: 10, marginBottom: 12 },
+    brandLogo: { width: 26, height: 26 },
+    progressText: { color: t.textDim, fontSize: 12, flex: 1 },
+    progressTrack: { height: 3, backgroundColor: t.inset, borderRadius: 3, marginBottom: 12 },
+    progressFill: { height: 3, backgroundColor: t.accent, borderRadius: 3 },
     body: { paddingTop: 16, paddingBottom: 24, gap: 14 },
     badge: {
       width: 46,
@@ -284,7 +301,7 @@ const makeStyles = (t: Palette) =>
       borderColor: t.cardBorder,
       marginBottom: 4,
     },
-    h1: { color: t.text, fontSize: 25, fontWeight: '800', lineHeight: 31 },
+    h1: { color: t.text, fontSize: 32, fontWeight: '700', lineHeight: 36, letterSpacing: -0.8 },
     h2: { color: t.text, fontSize: 16, fontWeight: '800', marginTop: 10 },
     body1: { color: t.textDim, fontSize: 14.5, lineHeight: 21 },
     note: { color: t.textFaint, fontSize: 12.5, lineHeight: 18 },
@@ -338,9 +355,10 @@ const makeStyles = (t: Palette) =>
       justifyContent: 'center',
       borderRadius: 13,
       paddingVertical: 15,
-      backgroundColor: t.green,
+      backgroundColor: t.accent,
+      minHeight: 54,
     },
-    primaryText: { color: t.onGreen, fontSize: 13.5, fontWeight: '900', letterSpacing: 1, fontFamily: mono },
+    primaryText: { color: t.onAccent, fontSize: 16, fontWeight: '600' },
     skip: { alignItems: 'center', paddingVertical: 11 },
     skipText: { color: t.textFaint, fontSize: 13 },
     pressed: { opacity: 0.75 },

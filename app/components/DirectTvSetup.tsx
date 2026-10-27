@@ -100,12 +100,11 @@ export function DirectTvSetup() {
           brand picker here — no separate cards. */}
       <TvPairForm driver={driver} onPaired={onPaired} />
 
-      {/* Honest ceiling: LG/Samsung/Hisense still need the box path, which does
+      {/* Honest ceiling: Samsung/Hisense still need the box path, which does
           support them today. */}
       <Text style={styles.note}>
-        LG, Samsung and Hisense still need a Couchside box — the app can’t yet make the kind of
-        encrypted connection those TVs require on its own. With a box they all work: open the
-        box above and use its Smart TV section.
+        Roku, Google TV / Android TV, and LG webOS can connect directly. Samsung and Hisense
+        need a Couchside box; use the box’s Smart TV section after pairing it.
       </Text>
     </View>
   );

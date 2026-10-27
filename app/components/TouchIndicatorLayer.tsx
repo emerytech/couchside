@@ -42,6 +42,7 @@ import {
 } from 'react-native';
 
 import { usePref } from '@/lib/prefs';
+import { useReducedMotion } from '@/lib/skin/motion';
 import { segmentBox, strokeRuns } from '@/lib/touchTrail';
 import { useResolvedScheme, useTheme } from '@/lib/theme';
 
@@ -225,8 +226,11 @@ export function TapCapture({
   children: ReactNode;
   style?: StyleProp<ViewStyle>;
 }) {
-  const on = usePref('showTaps');
-  const trail = usePref('traceDrags');
+  const reducedMotion = useReducedMotion();
+  const showTaps = usePref('showTaps');
+  const on = showTaps && !reducedMotion;
+  const traceDrags = usePref('traceDrags');
+  const trail = traceDrags && !reducedMotion;
   const t = useTheme();
   const scheme = useResolvedScheme();
   const [marks, setMarks] = useState<MarkSpec[]>([]);

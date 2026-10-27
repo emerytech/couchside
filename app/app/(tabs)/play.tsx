@@ -1,3 +1,4 @@
+import { blockTabSwipe } from '@/lib/tabSwipe';
 /**
  * Play — "what to play next". Ranks the box's INSTALLED Steam games from its
  * LOCAL play history (agent >= 2.9.63, GET /api/recommend) and offers a pick to
@@ -10,7 +11,8 @@
  * not a separate paywall, just part of the app.
  */
 import React, { useCallback, useEffect, useState } from 'react';
-import { ActivityIndicator, Image, Linking, Pressable, RefreshControl, ScrollView, StyleSheet, Text, View } from 'react-native';
+import { ActivityIndicator, Platform, Linking, Pressable, RefreshControl, ScrollView, StyleSheet, Text, View } from 'react-native';
+import { router } from 'expo-router';
 
 import { NowPlayingCard } from '@/components/GamingCard';
 import { useConfirm } from '@/components/ConfirmDialog';
@@ -22,8 +24,11 @@ import { WishlistAlertsBanner } from '@/components/WishlistAlertsBanner';
 import { SteamDealsRow } from '@/components/SteamDealsRow';
 import { SteamWishlistRow } from '@/components/SteamWishlistRow';
 import { useLockOrientation } from '@/hooks/useLockOrientation';
-import { usePoll } from '@/hooks/usePoll';
-import { api, hostKey, type Recommendation, type RecoPick } from '@/lib/api';
+import { PlayDataProvider, usePlayPoll, usePlaySession } from '@/hooks/usePlayPoll';
+import { PlayArtwork } from '@/components/PlayArtwork';
+import { api, hostKey, type Recommendation, type RecoPick, type SteamWishlistAlerts } from '@/lib/api';
+import { buildWidgetPayload } from '@/lib/widget/widgetPayload';
+import { updateCouchsideWidget } from '@/lib/widget/update';
 import { hapticLight, hapticMedium } from '@/lib/haptics';
 import { useBoxes, useSettings } from '@/lib/SettingsContext';
 import { mono, useTheme, useThemedStyles, type Palette } from '@/lib/theme';
@@ -43,16 +48,21 @@ async function openSteamApp() {
 
 export default function PlayTab() {
   useLockOrientation('portrait');
+  const { settings } = useSettings();
+  const scope = JSON.stringify([settings.host, settings.port, settings.token, settings.secure, settings.pinModulus]);
   return (
     <TabScreen>
       <Gated>
-        <PlayScreen />
+        <PlayDataProvider key={scope}><PlayScreen /></PlayDataProvider>
       </Gated>
     </TabScreen>
   );
 }
 
 function PlayScreen() {
+  const { demo, setDemo, refreshAll } = usePlaySession();
+  const [extras, setExtras] = useState(false);
+  const [extrasY, setExtrasY] = useState<number | null>(null);
   const t = useTheme();
   const styles = useThemedStyles(makeStyles);
   const { settings, ready } = useSettings();
@@ -60,7 +70,7 @@ function PlayScreen() {
   const confirm = useConfirm();
   const configured = !!settings.host && !!settings.token;
 
-  const poll = usePoll<Recommendation | null>(
+  const poll = usePlayPoll<Recommendation | null>('recommend',
     () => api.recommend(settings), 60000, ready && configured, hostKey(settings));
 
   const d = poll.data;
@@ -69,30 +79,30 @@ function PlayScreen() {
   const hero = picks[sel] ?? picks[0];
   const [launching, setLaunching] = useState<string | null>(null);
 
-  // Pull-to-refresh: re-fetch the picks AND advance which one leads. The engine
-  // is deterministic, so a bare refetch would show the same hero; rotating `sel`
-  // means "none of these appeal — show me the next candidate" actually surfaces a
-  // different game, wrapping through the pool.
+  const alerts = usePlayPoll<SteamWishlistAlerts | null>('alerts',
+    () => api.steamWishlistAlerts(settings), 300000, ready && configured, hostKey(settings));
   const [refreshing, setRefreshing] = useState(false);
-  const onRefresh = useCallback(() => {
-    hapticLight();
-    setSel((s) => (picks.length ? (s + 1) % picks.length : 0));
-    setRefreshing(true);
-    poll.refresh();
-  }, [picks.length, poll]);
-  // End the spinner once the refetch settles.
+  const onRefresh = async () => {
+    if (refreshing) return;
+    hapticLight(); setRefreshing(true);
+    try { await refreshAll(); } finally { setRefreshing(false); }
+  };
   useEffect(() => {
-    if (refreshing && !poll.loading) setRefreshing(false);
-  }, [refreshing, poll.loading]);
+    if (demo || !ready || !configured || !alerts.data) return;
+    if (alerts.data.primed === false) void api.steamWishlistAlertsAck(settings).catch(() => {});
+    if (Platform.OS === 'android' && d) {
+      void updateCouchsideWidget(buildWidgetPayload(d, alerts.data, Date.now())).catch(() => {});
+    }
+  }, [demo, ready, configured, d, alerts.data, settings]);
 
   // Greeting: prefer the box's most-recent Steam persona (agent >= 2.9.118), else
   // the box's name. Absent persona just falls back — probe-and-appear.
   const boxName = activeBox?.name ?? 'your box';
-  const eyebrow = d?.persona ? `Evening, ${d.persona}` : `Tonight on ${boxName}`;
+  const eyebrow = demo ? 'Sample gaming box · no device commands' : d?.persona ? `Ready when you are, ${d.persona}` : `On ${boxName}`;
 
   // Confirm first — a stray tap on a game card shouldn't yank a game onto the TV.
   const launch = async (p: RecoPick) => {
-    if (launching) return;
+    if (launching || demo) return;
     hapticLight();
     const ok = await confirm({
       title: 'Launch on the box?',
@@ -107,41 +117,33 @@ function PlayScreen() {
 
   const cover = (p: RecoPick) => api.steamCoverSource(settings, num(p.appid));
 
-  if (!hero) {
-    return (
-      <View style={styles.empty}>
-        {poll.loading && !d ? (
-          <ActivityIndicator color={t.green} />
-        ) : (
-          <>
-            <Text style={styles.emptyH}>Nothing to recommend yet</Text>
-            <Text style={styles.emptyP}>
-              Play a few games on your box and Couchside will learn what to line up next —
-              straight from your on-box history, nothing leaves your network.
-            </Text>
-          </>
-        )}
-      </View>
-    );
-  }
-
   return (
     <ScrollView showsVerticalScrollIndicator={false}
+      onScroll={e => { if (extrasY !== null && e.nativeEvent.contentOffset.y + e.nativeEvent.layoutMeasurement.height + 240 >= extrasY) setExtras(true); }} scrollEventThrottle={150}
       contentContainerStyle={styles.scroll}
       refreshControl={
         <RefreshControl refreshing={refreshing} onRefresh={onRefresh}
           tintColor={t.green} colors={[t.green]} />
       }>
+      <View style={{ flexDirection: 'row', justifyContent: 'space-between', marginBottom: 12 }}>
+        <Pressable accessibilityRole="button" onPress={() => setDemo(!demo)} style={{ paddingVertical: 8 }}><Text style={{ color: t.green }}>{demo ? 'Exit demo · use my box' : 'Try Play demo'}</Text></Pressable>
+        <Pressable accessibilityRole="button" disabled={refreshing} onPress={onRefresh} style={{ paddingVertical: 8 }}><Text style={{ color: t.textDim }}>{refreshing ? 'Refreshing…' : 'Refresh'}</Text></Pressable>
+      </View>
       <NowPlayingCard />
-      <WishlistAlertsBanner />
-      <SteamProfileCard />
       <Text style={styles.eyebrow}>{eyebrow}</Text>
       <Text style={styles.h1}>What to play next</Text>
 
+      {!hero && <View style={[styles.hero, { minHeight: 170, padding: 20, justifyContent: 'center', gap: 10 }]}>
+        {(poll.loading && (configured || demo)) ? <><ActivityIndicator color={t.green} /><Text style={{ color: t.textDim, textAlign: 'center' }}>Finding your next game…</Text></> : <>
+          <Text style={styles.emptyH}>{poll.error ? 'Couldn’t load your picks' : 'No recommendations yet'}</Text>
+          <Text style={styles.emptyP}>{poll.error ? 'Check your box connection, then tap Refresh. Other sections can still load.' : 'Pair your gaming box and play a few games, or try the demo above.'}</Text>
+        </>}
+      </View>}
+      {hero && <>
       {/* HERO */}
-      <Pressable onPress={() => launch(hero)} style={({ pressed }) => [styles.hero, pressed && styles.heroPress]}
+      <Pressable disabled={demo || !!launching} onPress={() => launch(hero)} style={({ pressed }) => [styles.hero, pressed && styles.heroPress]}
         accessibilityRole="button" accessibilityLabel={`Play ${hero.name} on the box`}>
-        <Image source={cover(hero)} style={styles.heroCover} resizeMode="cover" />
+        <PlayArtwork source={cover(hero)} title={hero.name} style={styles.heroCover} />
         <View style={styles.heroVeil} />
         <View style={styles.heroTop}>
           <View style={styles.badge}><Text style={styles.badgeTxt}>{hero.tag}</Text></View>
@@ -154,17 +156,18 @@ function PlayScreen() {
             <View style={styles.playBtn}>
               {launching === hero.appid
                 ? <ActivityIndicator size="small" color={t.onAccent} />
-                : <Text style={styles.playTxt}>▶  Play on the box</Text>}
+                : <Text style={styles.playTxt}>{demo ? 'Demo preview' : '▶  Play on the box'}</Text>}
             </View>
           </View>
         </View>
       </Pressable>
 
+      <Pressable accessibilityRole="button" accessibilityLabel="Show another pick" onPress={() => { hapticLight(); setSel(n => (n + 1) % picks.length); }} style={{ alignSelf: 'flex-end', paddingVertical: 12 }}><Text style={{ color: t.green }}>Another pick →</Text></Pressable>
       {/* alternates */}
       {picks.length > 1 && (
         <>
           <Text style={styles.sectionK}>More for tonight</Text>
-          <ScrollView horizontal showsHorizontalScrollIndicator={false}
+          <ScrollView onTouchStart={blockTabSwipe} horizontal showsHorizontalScrollIndicator={false}
             contentContainerStyle={styles.rail}>
             {picks.map((p, i) => {
               const on = i === sel;
@@ -173,7 +176,7 @@ function PlayScreen() {
                   accessibilityRole="button" accessibilityLabel={`Show ${p.name}`}
                   style={({ pressed }) => [styles.alt, pressed && styles.pressed]}>
                   <View style={[styles.altArtWrap, on && { borderColor: t.green }]}>
-                    <Image source={cover(p)} style={styles.altArt} resizeMode="cover" />
+                    <PlayArtwork source={cover(p)} title={p.name} style={styles.altArt} />
                     {on && <View style={styles.altOn}><Text style={styles.altOnTxt}>NOW SHOWING</Text></View>}
                   </View>
                   <Text style={styles.altName} numberOfLines={1}>{p.name}</Text>
@@ -188,8 +191,25 @@ function PlayScreen() {
         </>
       )}
 
-      <SteamWishlistRow />
-      <SteamDealsRow />
+      </>}
+      <View style={{ marginTop: 18 }}><SteamProfileCard /></View>
+      <WishlistAlertsBanner data={alerts.data} />
+      {/* Discover — keyless in-app Steam store search. App-side + opt-in; the
+          screen states searches go to Steam from the phone. Shown where the box
+          has Steam (probe-and-appear like the rows below). */}
+      {activeBox?.caps?.steam !== false && (
+        <Pressable
+          onPress={() => { hapticLight(); router.push('/discover'); }}
+          accessibilityRole="button" accessibilityLabel="Search the Steam store"
+          style={({ pressed }) => [styles.discover, pressed && styles.pressed]}>
+          <Text style={styles.discoverTxt}>Search the Steam store</Text>
+          <Text style={styles.discoverArrow}>›</Text>
+        </Pressable>
+      )}
+
+      <View onLayout={e => setExtrasY(e.nativeEvent.layout.y)}>
+        {extras ? <><SteamWishlistRow /><SteamDealsRow /></> : <Pressable accessibilityRole="button" onPress={() => setExtras(true)} style={{ padding: 18 }}><Text style={{ color: t.green }}>Load wishlist & deals ↓</Text></Pressable>}
+      </View>
       <Text style={styles.foot}>
         Recommendations from your on-box play history · nothing leaves your network
       </Text>
@@ -214,7 +234,7 @@ const makeStyles = (t: Palette) =>
 
     hero: {
       borderRadius: 18, overflow: 'hidden', backgroundColor: t.card,
-      borderWidth: 1, borderColor: t.cardBorder, minHeight: 300, justifyContent: 'flex-end',
+      borderWidth: 1, borderColor: t.cardBorder, minHeight: 240, justifyContent: 'flex-end',
     },
     heroPress: { opacity: 0.9 },
     heroCover: { position: 'absolute', top: 0, left: 0, right: 0, bottom: 0 },
@@ -258,4 +278,11 @@ const makeStyles = (t: Palette) =>
       paddingVertical: 10, paddingHorizontal: 20,
     },
     steamBtnTxt: { color: t.textDim, fontSize: 13, fontWeight: '600' },
+    discover: {
+      flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between',
+      backgroundColor: t.card, borderColor: t.cardBorder, borderWidth: 1, borderRadius: 12,
+      paddingVertical: 12, paddingHorizontal: 14, marginTop: 8, marginBottom: 8,
+    },
+    discoverTxt: { color: t.text, fontSize: 14, fontWeight: '600' },
+    discoverArrow: { color: t.textDim, fontSize: 18, fontWeight: '700' },
   });

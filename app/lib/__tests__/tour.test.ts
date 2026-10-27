@@ -9,20 +9,31 @@ import { test } from 'node:test';
 import assert from 'node:assert';
 
 import {
+  absentAnchorVerdict,
   advanceTour,
   anchorHole,
   cardSlot,
   currentStep,
   dimRects,
   dismissTour,
+  onlineSinceMs,
   previousTour,
   isFinalStep,
   scrollDeltaFor,
   shouldRun,
   spotlightRect,
   stepLabel,
+  tourLink,
+  TOUR_CHECK_CAP_MS,
+  TOUR_CHECKING,
+  TOUR_HOLD_RECHECK_MS,
+  TOUR_LINK_SETTLE_MS,
   TOUR_NOT_STARTED,
+  TOUR_OFFLINE_AFTER_MS,
+  TOUR_OFFLINE_BODY,
+  TOUR_OFFLINE_TITLE,
   TOUR_STEPS,
+  type TourLink,
 } from '../tour.ts';
 
 test('the tour does NOT run before a box is paired', () => {
@@ -246,4 +257,293 @@ test('back out of a finished tour returns to its last step (control)', () => {
   assert.equal(back.step, TOUR_STEPS.length - 1);
   assert.equal(back.done, false);
   assert.ok(currentStep(back) !== null, 'and that step actually renders');
+});
+
+// ---------------------------------------------------------------------------
+// A box step whose anchor is absent: skip quietly, wait, or say the box is down.
+//
+// The shipped bug: with the box unreachable the tour walked past every step
+// the box draws and opened on "3 of 6", saying nothing. Found on a real iPhone.
+// ---------------------------------------------------------------------------
+
+test('no answer yet is CHECKING — never reported as "not connected"', () => {
+  assert.equal(tourLink({ hasData: false, hasError: false }), 'checking');
+  assert.equal(tourLink({ hasData: true, hasError: false }), 'online', '(control)');
+  assert.equal(tourLink({ hasData: false, hasError: true }), 'offline');
+  // The poll keeps its last payload across a failure. Old data is not evidence
+  // that the box is there now.
+  assert.equal(tourLink({ hasData: true, hasError: true }), 'offline', 'stale data does not mean online');
+});
+
+test('exactly the box-drawn steps are tagged needsBox, and never the last one', () => {
+  assert.deepEqual(
+    TOUR_STEPS.filter((s) => s.needsBox).map((s) => s.anchor),
+    ['console.cpu', 'launch.grid', 'actions.high'],
+  );
+  // A notice must never be the card whose Next finishes the tour: the thank-you
+  // note is for someone who saw the last step, not someone told it was missing.
+  assert.notEqual(TOUR_STEPS[TOUR_STEPS.length - 1].needsBox, true);
+});
+
+test('onlineSinceMs marks where one unbroken online run began', () => {
+  assert.equal(onlineSinceMs(null, 'online', 300), 300);
+  assert.equal(onlineSinceMs(300, 'online', 900), 300, 'the run keeps its start');
+  assert.equal(onlineSinceMs(0, 'online', 900), 0, 'a run that began at zero is not mistaken for "no run"');
+  assert.equal(onlineSinceMs(300, 'offline', 900), null, 'a failure ends the run');
+  assert.equal(onlineSinceMs(300, 'checking', 900), null);
+  assert.equal(onlineSinceMs(null, 'checking', 0), null, '(control)');
+});
+
+/**
+ * Drive the SHIPPED rule the way FeatureTour's measuring loop does when the
+ * anchor never measures, recording each change of verdict as "verdict@waitedMs".
+ * Uses only shipped functions and the shipped hold interval; the 100 is
+ * RETRY_EVERY_MS, pinned by the wiring guard at the bottom of this file.
+ */
+function timeline(
+  at: (waitedMs: number) => { link: TourLink; confirmed: boolean },
+  opts: { needsBox?: boolean; budgetMs?: number; untilMs?: number } = {},
+): string[] {
+  const { needsBox = true, budgetMs = 700, untilMs = 60_000 } = opts;
+  const out: string[] = [];
+  let since: number | null = null;
+  let last = '';
+  for (let waited = 0; waited <= untilMs; ) {
+    const { link, confirmed } = at(waited);
+    since = onlineSinceMs(since, link, waited);
+    const v = absentAnchorVerdict({ needsBox, link, waitedMs: waited, budgetMs, onlineSince: since, confirmed });
+    if (v !== last) {
+      out.push(`${v}@${waited}`);
+      last = v;
+    }
+    if (v === 'skip') break;
+    waited += v === 'offline' ? TOUR_HOLD_RECHECK_MS : 100;
+  }
+  return out;
+}
+
+const OFFLINE = { link: 'offline' as TourLink, confirmed: false };
+const CHECKING = { link: 'checking' as TourLink, confirmed: false };
+const ONLINE = { link: 'online' as TourLink, confirmed: true };
+const STALE = { link: 'online' as TourLink, confirmed: false };
+
+test('THE BUG: a box that is down HOLDS the step — it is never skipped', () => {
+  // Through a full minute: told at 0.7s, and no skip however long it stays down.
+  assert.deepEqual(timeline(() => OFFLINE, { budgetMs: 700 }), ['wait@0', 'offline@700']);
+});
+
+test('a known-down box does not sit out the 4s first-poll budget before saying so', () => {
+  // Launch and Actions have no measurable sibling offline, so their budget is
+  // the full 4000ms. A failed poll is already an answer.
+  assert.deepEqual(timeline(() => OFFLINE, { budgetMs: 4000 }), ['wait@0', 'offline@700']);
+});
+
+test('still probing says "checking", and only a FAILED poll turns it into the notice', () => {
+  assert.deepEqual(
+    timeline((w) => (w < 5000 ? CHECKING : OFFLINE), { budgetMs: 700 }),
+    ['wait@0', 'checking@700', 'offline@5000'],
+  );
+});
+
+test('a poll that never settles is capped, so the step cannot wait forever', () => {
+  assert.deepEqual(timeline(() => CHECKING), ['wait@0', 'checking@700', `offline@${TOUR_CHECK_CAP_MS}`]);
+});
+
+test('an answering box that lacks the feature still skips quietly at the old budget (control)', () => {
+  // Online from the moment the step opened; the confirming answer lands at 100ms.
+  const steady = (w: number) => (w < 100 ? STALE : ONLINE);
+  assert.deepEqual(timeline(steady, { budgetMs: 700 }), ['wait@0', 'skip@700']);
+  assert.deepEqual(timeline(steady, { budgetMs: 4000 }), ['wait@0', 'skip@4000']);
+});
+
+test('a cold start is given until the box answers, then a full settle, before skipping', () => {
+  // This is also the old cold-pair skip: Console has siblings that measure at
+  // once, so its budget is 700ms — shorter than a first status poll. The step
+  // used to be gone before the box had said anything.
+  assert.deepEqual(
+    timeline((w) => (w < 1500 ? CHECKING : ONLINE), { budgetMs: 700 }),
+    ['wait@0', 'checking@700', 'wait@1500', `skip@${1500 + TOUR_LINK_SETTLE_MS}`],
+  );
+});
+
+test('a box that comes back under the notice clears it and gets a full settle', () => {
+  // Offline re-checks every 500ms, so the recovery at 9000 is seen at 9200.
+  assert.deepEqual(
+    timeline((w) => (w < 9000 ? OFFLINE : ONLINE), { budgetMs: 700 }),
+    ['wait@0', 'offline@700', 'wait@9200', `skip@${9200 + TOUR_LINK_SETTLE_MS}`],
+  );
+});
+
+test('one failed poll shows the notice briefly, then a recovery still never costs the step', () => {
+  assert.deepEqual(
+    timeline((w) => (w < 2000 ? OFFLINE : ONLINE), { budgetMs: 4000 }),
+    ['wait@0', 'offline@700', 'wait@2200', `skip@${2200 + TOUR_LINK_SETTLE_MS}`],
+  );
+});
+
+test('a box that drops mid-tour cannot be skipped on its stale "online" reading', () => {
+  // The poll still says online from 30s ago; the fresh request fails at 4300.
+  assert.deepEqual(
+    timeline((w) => (w < 4300 ? STALE : OFFLINE), { budgetMs: 4000 }),
+    ['wait@0', 'checking@4000', 'offline@4300'],
+  );
+  // And a stale reading that is never refreshed ends at the cap, not at a skip.
+  assert.deepEqual(timeline(() => STALE), ['wait@0', 'checking@700', `offline@${TOUR_CHECK_CAP_MS}`]);
+});
+
+test('a restarted loop that first sees the box online still settles if the box was down this step', () => {
+  // The measuring loop restarts when the box's first answer reshuffles the tab
+  // bar (its caps arrive with it) or the window resizes. A fresh loop's first
+  // pass sees 'online', so onlineSince is 0 — which alone reads as "answering
+  // since the step opened". Found by a reviewer in a React rig: the step was
+  // skipped 0.7s after the box came back, before the screen had drawn it.
+  const at = (sawDown: boolean, waitedMs: number) =>
+    absentAnchorVerdict({ needsBox: true, link: 'online', waitedMs, budgetMs: 700, onlineSince: 0, confirmed: true, sawDown });
+  assert.equal(at(false, 700), 'skip', 'answering all step long: the old budget (control)');
+  assert.equal(at(true, 700), 'wait', 'was down this step: no shortcut');
+  assert.equal(at(true, TOUR_LINK_SETTLE_MS - 100), 'wait');
+  assert.equal(at(true, TOUR_LINK_SETTLE_MS), 'skip', 'and a full settle from the restart');
+});
+
+test('the settle outlasts one full retry cycle of the screen’s own poll', async () => {
+  // The screen draws the control from its OWN request on its own timer. When
+  // the box comes back that request may be about to time out and then wait out
+  // its back-off. Settling sooner skips the step the notice just promised.
+  const { readFileSync } = await import('node:fs');
+  const { join } = await import('node:path');
+  const read = (p: string) => readFileSync(join(import.meta.dirname, '../..', p), 'utf8');
+  const retry = Number(/const ERROR_RETRY_MS = (\d+);/.exec(read('hooks/usePoll.ts'))?.[1]);
+  const timeout = Number(/const TIMEOUT_MS = (\d+);/.exec(read('lib/api.ts'))?.[1]);
+  assert.ok(retry > 0 && timeout > 0, 'found both constants (control)');
+  assert.ok(TOUR_LINK_SETTLE_MS >= retry + timeout, `settle ${TOUR_LINK_SETTLE_MS} < retry ${retry} + timeout ${timeout}`);
+  // A probe still in flight (abort + 1s hard deadline) must not be capped into
+  // "not connected", and the cap must sit beyond a recovery settle.
+  assert.ok(TOUR_CHECK_CAP_MS > timeout + 1000 && TOUR_CHECK_CAP_MS > TOUR_LINK_SETTLE_MS);
+  assert.equal(TOUR_OFFLINE_AFTER_MS, 700, 'matches READY_GIVE_UP_MS: a screen holding old data gets its usual chance');
+});
+
+test('a step the phone draws by itself ignores the box entirely (control)', () => {
+  assert.deepEqual(timeline(() => OFFLINE, { needsBox: false, budgetMs: 700 }), ['wait@0', 'skip@700']);
+  assert.deepEqual(timeline(() => OFFLINE, { needsBox: false, budgetMs: 4000 }), ['wait@0', 'skip@4000']);
+  assert.deepEqual(timeline(() => CHECKING, { needsBox: false, budgetMs: 700 }), ['wait@0', 'skip@700']);
+});
+
+test('the verdict holds its invariants across every combination', () => {
+  const links: TourLink[] = ['checking', 'online', 'offline'];
+  const waits = [0, 100, 600, 700, 3900, 4000, 11_900, 12_000, 60_000];
+  let cases = 0;
+  for (const needsBox of [true, false]) {
+    for (const link of links) {
+      for (const confirmed of [true, false]) {
+        for (const budgetMs of [700, 4000]) {
+          for (const waitedMs of waits) {
+            const sinces = link === 'online' ? [0, Math.floor(waitedMs / 2), waitedMs] : [null];
+            for (const onlineSince of sinces) {
+              cases += 1;
+              const v = absentAnchorVerdict({ needsBox, link, waitedMs, budgetMs, onlineSince, confirmed });
+              const tag = JSON.stringify({ needsBox, link, confirmed, budgetMs, waitedMs, onlineSince });
+              if (!needsBox) {
+                assert.equal(v, waitedMs >= budgetMs ? 'skip' : 'wait', `a phone-drawn step keeps the old rule ${tag}`);
+                continue;
+              }
+              if (v === 'skip') {
+                assert.ok(link === 'online' && confirmed, `skipped without a fresh answer from the box ${tag}`);
+                assert.ok(waitedMs >= budgetMs, `skipped before the screen's own budget ${tag}`);
+              }
+              if (link === 'offline') {
+                assert.equal(v, waitedMs >= TOUR_OFFLINE_AFTER_MS ? 'offline' : 'wait', tag);
+              }
+              if (link === 'checking' && waitedMs < TOUR_CHECK_CAP_MS) {
+                assert.ok(v === 'wait' || v === 'checking', `probing was reported as down ${tag}`);
+              }
+              if (link !== 'offline' && (link === 'checking' || !confirmed) && waitedMs >= TOUR_CHECK_CAP_MS && waitedMs >= budgetMs) {
+                assert.equal(v, 'offline', `nothing waits past the cap ${tag}`);
+              }
+              if (link === 'online' && waitedMs < budgetMs) assert.equal(v, 'wait', tag);
+            }
+          }
+        }
+      }
+    }
+  }
+  assert.ok(cases > 300, 'the sweep actually ran (control)');
+});
+
+test('the notice says what happened and names the replay control as Setup labels it', async () => {
+  assert.equal(TOUR_OFFLINE_TITLE, 'Box not connected');
+  assert.equal(TOUR_CHECKING, 'Checking the box…');
+  assert.ok(TOUR_OFFLINE_BODY.includes('Next'), 'says how to carry on');
+  assert.ok(TOUR_OFFLINE_BODY.includes('Setup › Prefs › Replay the feature tour'), 'says how to see the step later');
+  assert.ok(!TOUR_OFFLINE_BODY.includes("'"), 'typographic apostrophes, like the rest of the 2.9.74 copy');
+  // The path in the copy is a promise about another screen. Pin the other end.
+  const { readFileSync } = await import('node:fs');
+  const { join } = await import('node:path');
+  const setup = readFileSync(join(import.meta.dirname, '../../app/(tabs)/setup.tsx'), 'utf8');
+  assert.ok(setup.includes('label="Replay the feature tour"'), 'Setup still has that control');
+  assert.ok(setup.includes("label: 'Prefs'"), 'under a tab still called Prefs');
+});
+
+test('the component is actually wired to the rule (source guard)', async () => {
+  // FeatureTour imports react-native and cannot run in bare Node, so the wiring
+  // that makes the tests above mean anything is pinned by reading the source.
+  const { readFileSync } = await import('node:fs');
+  const { join } = await import('node:path');
+  const read = (p: string) => readFileSync(join(import.meta.dirname, '../..', p), 'utf8');
+
+  const tour = read('components/FeatureTour.tsx');
+  // CODE ONLY: comments and the import block mention every name below, so a
+  // plain includes() passed with the bug reintroduced (a reviewer proved it).
+  const code = tour
+    .replace(/\/\*[\s\S]*?\*\//g, '')
+    .replace(/^\s*\/\/.*$/gm, '')
+    .replace(/\{\/\*[\s\S]*?\*\/\}/g, '')
+    .replace(/^import[\s\S]*?from '[^']+';$/gm, '');
+  for (const site of [
+    'const verdict = absentAnchorVerdict({',
+    // The ONE way out of the loop without a measured anchor. A break on
+    // 'offline' as well is the shipped bug.
+    "if (verdict === 'skip') break;",
+    'since = onlineSinceMs(since, now.link, waited);',
+    'now.linkAt >= mem.startedAt',
+    'now.onRecheck();',
+    "if (now.link !== 'online') mem.sawDown = true;",
+    'sawDown: mem.sawDown,',
+    "verdict === 'offline' ? TOUR_HOLD_RECHECK_MS : RETRY_EVERY_MS",
+    '{TOUR_OFFLINE_TITLE}',
+    '{TOUR_OFFLINE_BODY}',
+    'TOUR_CHECKING',
+    // VoiceOver is told the tour is waiting for a press (role="alert" on a
+    // plain View is inert on iOS).
+    'if (showOffline) AccessibilityInfo.announceForAccessibility(',
+    "const showOffline = held === 'offline' && idx >= 0;",
+  ]) {
+    assert.ok(code.includes(site), `FeatureTour no longer does: ${site}`);
+  }
+  assert.equal((code.match(/verdict === 'skip'/g) ?? []).length, 1, 'skip is decided in exactly one place');
+  // The notice's Next advances; its Skip ends. Not swapped, not merged.
+  const notice = code.slice(code.indexOf('if (showOffline)'), code.indexOf('Finding the next control'));
+  assert.match(notice, /onSkip\(\);[\s\S]*accessibilityLabel="Skip the tour"[\s\S]*onNext\(\);/);
+  // timeline() above steps at 100ms; that is only honest while this holds.
+  assert.ok(tour.includes('const RETRY_EVERY_MS = 100;'), 'the retry interval the timelines assume');
+  // A held step measures with no time limit. Unmount must invalidate the loop
+  // on every path, or Skip leaves one alive that can advance a later replay.
+  assert.match(tour, /useEffect\(\(\) => \(\) => \{\s*runId\.current \+= 1;?\s*\}, \[\]\)/, 'unmount invalidates the measuring loop');
+  // A poll result must never RESTART the step: the loop reads the box through a
+  // ref, so the box must stay out of the measuring effect's dependencies.
+  assert.ok(
+    tour.includes('}, [state.step, anchor, tab, idx, order, width, height, insets.bottom]);'),
+    'the measuring effect depends on the step and geometry only',
+  );
+
+  const layout = read('app/(tabs)/_layout.tsx');
+  assert.match(layout, /const boxPoll = useCapsSync\(\)/, 'the layout keeps the poll it mounts');
+  assert.match(
+    layout,
+    /<FeatureTour[\s\S]{0,400}?link=\{tourLink\(\{ hasData: boxPoll\.data != null, hasError: boxPoll\.error != null \}\)\}/,
+    'and hands the tour that poll’s verdict',
+  );
+  assert.match(layout, /<FeatureTour[\s\S]{0,400}?linkAt=\{boxPoll\.lastSuccess\}/, 'with the time of its last answer');
+  assert.match(layout, /<FeatureTour[\s\S]{0,400}?onRecheck=\{boxPoll\.refresh\}/, 'and a way to ask again');
+
+  assert.ok(read('hooks/useCapsSync.ts').includes('return status;'), 'useCapsSync returns its poll');
 });

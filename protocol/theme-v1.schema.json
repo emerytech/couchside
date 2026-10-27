@@ -1,0 +1,71 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://couchside.tv/schemas/theme-v1.json",
+  "title": "Couchside Theme v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "format",
+    "version",
+    "name",
+    "author",
+    "layout",
+    "accent",
+    "wallpaper",
+    "motion",
+    "stats"
+  ],
+  "properties": {
+    "format": {
+      "const": "couchside-theme"
+    },
+    "version": {
+      "const": 1
+    },
+    "name": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 60,
+      "pattern": "^[^\\u0000-\\u001f\\u007f]*\\S[^\\u0000-\\u001f\\u007f]*$"
+    },
+    "author": {
+      "type": "string",
+      "maxLength": 80,
+      "pattern": "^[^\\u0000-\\u001f\\u007f]*$"
+    },
+    "layout": {
+      "enum": [
+        "couchside",
+        "orbit",
+        "shelf",
+        "wave",
+        "channels",
+        "crossbar",
+        "horizon"
+      ]
+    },
+    "accent": {
+      "enum": [
+        "teal",
+        "blue",
+        "violet",
+        "amber"
+      ]
+    },
+    "wallpaper": {
+      "enum": [
+        "original",
+        "midnight",
+        "ocean",
+        "forest",
+        "sunset"
+      ]
+    },
+    "motion": {
+      "type": "boolean"
+    },
+    "stats": {
+      "type": "boolean"
+    }
+  }
+}

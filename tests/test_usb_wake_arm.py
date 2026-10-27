@@ -122,8 +122,29 @@ try:
         status, r = _req(port, "POST", "/api/usb-wake/arm",
                          body=json.dumps({"id": "1-3", "on": True}))
         check(status == 200 and r.get("ok") is True, "known id -> 200 ok", (status, r))
-        check(helper_calls == [("usb.wake-arm", {"id": "1-3", "on": True})],
+        check(helper_calls == [("usb.wake-save", {"__probe__": True}), ("usb.wake-arm", {"id": "1-3", "on": True})],
               "helper called with exact verb + {id,on}", helper_calls)
+    finally:
+        srv.shutdown()
+
+    # New helper: writable reflects helper access, not unprivileged sysfs access.
+    def persistent_helper(verb, arg=None, timeout=10):
+        helper_calls.append((verb, arg))
+        if arg == {"__probe__": True}:
+            return {"ok": False, "error": "invalid argument for " + verb}
+        return {"ok": True}
+    cs._helper_call = persistent_helper
+    srv, port = _server(mock=False)
+    try:
+        status, r = _req(port, "GET", "/api/usb-wake")
+        check(status == 200 and all(d["writable"] for d in r["devices"]),
+              "helper access makes root-owned wake files manageable", r)
+        helper_calls.clear()
+        status, r = _req(port, "POST", "/api/usb-wake/arm",
+                         body=json.dumps({"id": "1-3", "on": True}))
+        check(status == 200 and r.get("persistent") is True and
+              helper_calls[-1] == ("usb.wake-save", {"id": "1-3", "on": True}),
+              "new helper saves persistently", (status, r, helper_calls))
     finally:
         srv.shutdown()
 

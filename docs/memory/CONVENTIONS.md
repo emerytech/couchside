@@ -4,13 +4,27 @@ Inferred from the code as it stands (agent 2.9.31 / app 2.9.11). These are the c
 repo *already follows* — read this before adding code so new work matches, and update it when a
 convention genuinely changes rather than letting the doc drift.
 
+Current navigation and contribution guidance: [code map](../CODE_MAP.md) and
+[CONTRIBUTING.md](../../CONTRIBUTING.md). Historical examples and source line numbers
+below must be checked against current code.
+
 ---
 
 ## 1. Python agent (`agent/couchsided.py`)
 
+### TLS connection lifecycle
+
+Keep TLS handshakes out of the accept loop. `_tls_start` wraps the listener with
+`do_handshake_on_connect=False`; `BoundedThreadingHTTPServer` negotiates in an
+already-admitted worker under a dedicated five-second timeout, then restores the
+socket timeout before constructing the handler. Failed negotiations close their
+socket and release their slot. Established HTTP and WebSocket handlers retain
+their own timeout policies. Preserve this ordering when changing the server;
+`tests/test_tls_handshake.py` exercises it through real loopback connections.
+
 ### Pure stdlib, single file
 
-The agent is one ~11k-line file with **zero third-party dependencies** — the import block is all
+The deployed Linux agent is one file with **zero third-party dependencies** — the import block is all
 stdlib (`agent/couchsided.py:14-35`). This is load-bearing: the agent is fetched as a raw signed
 `.py` onto SteamOS/Bazzite (immutable-ish, no pip) and run by systemd. Do not add a dependency, and
 do not split the file without solving the single-file install path first.
@@ -979,3 +993,37 @@ dynamic-config evaluation on the Mac showed `null` and was not evidence.
 name PackageManager persists per user across updates. Once a direct build ships an alias, that name and the
 plugin entry that generates it stay in every later build; add new ones, never rename or drop. The release
 recipe checks the new APK's alias set is a superset of the shipped one (`aapt dump xmltree`).
+
+## Native-only modules: a `.web` stub keeps them out of the harness bundle (2026-09-28)
+
+A module that imports a package with no useful web runtime (background-task, notifications, uinput-ish
+native surfaces) must not break the web dev harness, which bundles the whole app. Two moves, used together
+for the Phase 1b wishlist notifier:
+
+- **Guard the CALLS** with `Platform.OS !== 'web'` (or mount a component native-only in `_layout.tsx`), AND
+- **Give the module a `.web.ts` / `.web.tsx` sibling** that re-exports the SAME symbols as no-ops. Metro
+  resolves the `.web` file on web, so the native package is never imported there at all. Guards alone are
+  not enough: a top-level `import * as Foo from 'native-pkg'` still executes at module load on web (that is
+  how a benign but noisy `[expo-notifications]` push-token warning leaked in before the bridge got a
+  `.web.tsx` stub). The `.web` stub is what actually keeps the native import out of the web graph.
+
+The stub's exports must match the native module's shape exactly (same names, same signatures) or `tsc`
+fails. Keep the stub tiny and behaviorally honest — e.g. a toggle's enable/disable stub may still flip the
+PREF (so the switch is exercisable in the harness) but must do NO native work.
+
+## Home-screen widget: a custom app entry, Android-only imports (2026-09-28)
+
+`react-native-android-widget` runs a HEADLESS JS task (widget add / update / resize / periodic) that loads the
+app's `package.json main` entry, so the task handler must be registered THERE, not just in `_layout.tsx`. Hence
+`main` is a custom **`index.js`** (iOS + web: just `import 'expo-router/entry'`) plus **`index.android.js`**
+(registers `widgetTaskHandler` via `registerWidgetTaskHandler`, then `require('expo-router/entry')` LAST so the
+handler is registered before the router loads). Metro resolves `index.android.js` on Android automatically.
+
+Keep every RNW-importing module (`lib/widget/render.tsx`, `widgetTaskHandler.ts`, `update.android.ts`) on
+Android-only import paths — they're reached only from `index.android.js` or the `.android.ts` writer. The app
+calls the platform-neutral `lib/widget/update.ts` (a no-op on iOS/web), so react-native-android-widget never
+enters the iOS/web bundle. The pure `lib/widget/widgetPayload.ts` (what the widget displays) is the only
+unit-testable piece; the render, the App-Widget provider, and the tap are device-only (screenshot proof).
+
+**The direct-APK fork (`build/direct-apk`, `app.config.js`) needs the widget plugin + config added separately**,
+or the sideload the owner runs on the Razr ships without the widget.

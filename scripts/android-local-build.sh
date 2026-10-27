@@ -85,6 +85,13 @@ sha256() {
 if [ "$ARCHIVE_ONLY" -eq 0 ]; then
   [ -n "${JAVA_HOME:-}" ] && [ -d "$JAVA_HOME" ] || die "JAVA_HOME is not a directory (JDK 21 on the build box)"
   [ -n "${ANDROID_HOME:-}" ] && [ -d "$ANDROID_HOME" ] || die "ANDROID_HOME is not a directory"
+  # Main keeps app.json authoritative for store builds. Materialize the Direct
+  # config only inside an explicitly requested Direct build and remove it on exit.
+  if [ "$DIRECT" -eq 1 ] && [ ! -e "$APP/app.config.js" ]; then
+    [ -f "$ROOT/scripts/direct-app-config.cjs" ] || die "Direct config template missing"
+    cp "$ROOT/scripts/direct-app-config.cjs" "$APP/app.config.js"
+    trap 'rm -f "$APP/app.config.js"' EXIT
+  fi
   echo "==> npm ci"
   (cd "$APP" && npm ci --no-audit --no-fund)
   echo "==> expo prebuild (android, clean)$([ "$DIRECT" -eq 1 ] && echo ' — DIRECT edition')"

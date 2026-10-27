@@ -38,6 +38,13 @@ export type TourStep = {
    * The rule: never describe a control the user cannot see.
    */
   anchor?: string;
+  /**
+   * The anchor is drawn from data THIS BOX sends (vitals, the library, the
+   * action list), so its absence has two meanings: "the box does not have
+   * this" and "the box is not answering". Only the first may skip quietly.
+   * The second holds the step behind a notice — see absentAnchorVerdict().
+   */
+  needsBox?: boolean;
   title: string;
   body: string;
 };
@@ -46,12 +53,15 @@ export const TOUR_STEPS: TourStep[] = [
   // Six steps, one per place a new user would otherwise miss the point. The tour
   // was 16 and read as a manual; trimmed to the handful that teach something the
   // UI does not make obvious on its own. Steps whose anchor is absent still
-  // self-skip (see useTourAnchor), so a box missing one surface just shows fewer.
+  // self-skip (see useTourAnchor), so a box missing one surface just shows fewer
+  // — EXCEPT a `needsBox` step while the box is not answering, which holds
+  // behind a "Box not connected" notice instead of vanishing.
 
   // CONSOLE — why the app exists.
   {
     tab: 'index',
     anchor: 'console.cpu',
+    needsBox: true,
     title: 'Is the box even awake?',
     body: 'Temperature, load, memory and disks, live. The first thing to check when the TV is black and the controller does nothing.',
   },
@@ -60,6 +70,7 @@ export const TOUR_STEPS: TourStep[] = [
   {
     tab: 'launch',
     anchor: 'launch.grid',
+    needsBox: true,
     title: 'Tap asks before it launches',
     body: 'Your library with cover art — no Big Picture, no D-pad hunting. A tap opens the game rather than starting it, with playtime and when you last opened it; launching takes over the TV, so it is never one stray tap.',
   },
@@ -88,6 +99,7 @@ export const TOUR_STEPS: TourStep[] = [
   {
     tab: 'actions',
     anchor: 'actions.high',
+    needsBox: true,
     title: 'Unstick a frozen display',
     // NAME THE CONTROL AS IT IS LABELLED. Saying "restart the display" sent users
     // hunting for a button that does not exist; and the action is tagged red and
@@ -179,6 +191,114 @@ export function stepLabel(state: TourState): string {
   const n = Math.min(state.step + 1, TOUR_STEPS.length);
   return `${n} of ${TOUR_STEPS.length}`;
 }
+
+// ---------------------------------------------------------------------------
+// A box step whose anchor is not on screen
+//
+// "Absent anchor = skip" is right when the box is answering: it genuinely does
+// not have the thing. It is WRONG when the box is not answering, because then
+// every box-drawn control is absent and the tour walked straight past the
+// steps that explain why the app exists, saying nothing. Found on a real
+// iPhone: with the box unreachable the tour opened on "3 of 6".
+//
+// So the tour is told what the always-mounted status poll believes, and a
+// `needsBox` step may only skip quietly on a box that has ANSWERED SINCE THE
+// STEP OPENED. Anything else waits, and a box that is known to be down holds
+// the step behind a notice with its own way forward.
+// ---------------------------------------------------------------------------
+
+/** What the status poll believes about the box right now. */
+export type TourLink = 'checking' | 'online' | 'offline';
+
+/**
+ * A failed request is 'offline' even while old data is still held — the poll
+ * keeps its last payload across an error, and a stale reading is not evidence
+ * the box is there. No answer of either kind yet is 'checking', which must
+ * never be reported as "not connected": a first poll can take seconds.
+ */
+export function tourLink(poll: { hasData: boolean; hasError: boolean }): TourLink {
+  if (poll.hasError) return 'offline';
+  return poll.hasData ? 'online' : 'checking';
+}
+
+/** A failed poll is already an answer: do not sit out the first-poll budget
+ *  behind "Finding the next control…" when the box is known to be down. The
+ *  short wait still lets a screen holding earlier data draw the control. */
+export const TOUR_OFFLINE_AFTER_MS = 700;
+/** How long the screen gets to draw the control once a box that was NOT
+ *  answering when the step opened starts to (cold start, or coming back).
+ *
+ *  ONE FULL RETRY CYCLE OF THE SCREEN'S OWN POLL, not a round number. The
+ *  screen fetches on its own usePoll timer: when the box comes back it may be
+ *  midway through a request that is about to time out (api.ts TIMEOUT_MS, 4s)
+ *  and then wait out its error back-off (usePoll ERROR_RETRY_MS, 2s). A shorter
+ *  settle skipped the step the notice had just promised would appear — the
+ *  original bug, on the recovery path. A test pins this against both. */
+export const TOUR_LINK_SETTLE_MS = 6000;
+/** Longest a step may sit on "Checking the box…" before saying so plainly. */
+export const TOUR_CHECK_CAP_MS = 12_000;
+/** Re-measure interval while the notice is up. */
+export const TOUR_HOLD_RECHECK_MS = 500;
+
+/** The `waitedMs` at which the link's current unbroken 'online' run began;
+ *  null when it is not online now. */
+export function onlineSinceMs(prev: number | null, link: TourLink, waitedMs: number): number | null {
+  return link === 'online' ? prev ?? waitedMs : null;
+}
+
+/**
+ * wait     keep looking, show the ordinary placeholder
+ * checking keep looking, but say the box has not answered yet
+ * offline  hold the step behind the "Box not connected" notice (keep looking)
+ * skip     the control is genuinely absent: move on quietly
+ */
+export type AbsentAnchorVerdict = 'wait' | 'checking' | 'offline' | 'skip';
+
+/** The anchor did not measure on this pass. What now? */
+export function absentAnchorVerdict(a: {
+  needsBox: boolean;
+  link: TourLink;
+  waitedMs: number;
+  /** The screen's own give-up budget, passed in unchanged. */
+  budgetMs: number;
+  /** From onlineSinceMs(). */
+  onlineSince: number | null;
+  /** A status answer NEWER than the start of this step exists. */
+  confirmed: boolean;
+  /**
+   * The box has been seen NOT answering at some point during this step.
+   * Needed because the measuring loop restarts (a tab-bar reshuffle when the
+   * box's first answer brings its caps, a window resize): a fresh loop that
+   * first sees 'online' would otherwise read onlineSince 0 as "answering since
+   * the step opened" and skip without the settle.
+   */
+  sawDown?: boolean;
+}): AbsentAnchorVerdict {
+  // A step drawn by the phone alone keeps the old rule and never asks the box.
+  if (!a.needsBox) return a.waitedMs >= a.budgetMs ? 'skip' : 'wait';
+  if (a.link === 'offline') return a.waitedMs >= TOUR_OFFLINE_AFTER_MS ? 'offline' : 'wait';
+  if (a.waitedMs < a.budgetMs) return 'wait';
+  if (a.link === 'checking' || !a.confirmed) {
+    return a.waitedMs >= TOUR_CHECK_CAP_MS ? 'offline' : 'checking';
+  }
+  // Answering since the step opened: today's budget. Otherwise the screen gets
+  // a full settle from the first answer before the control is called absent.
+  const steady = a.onlineSince === 0 && a.sawDown !== true;
+  const settled =
+    steady || (a.onlineSince != null && a.waitedMs - a.onlineSince >= TOUR_LINK_SETTLE_MS);
+  return settled ? 'skip' : 'wait';
+}
+
+export const TOUR_CHECKING = 'Checking the box…';
+export const TOUR_OFFLINE_TITLE = 'Box not connected';
+/** Names the control exactly as Setup labels it — a test pins both ends.
+ *
+ *  CAUSE-NEUTRAL ON PURPOSE. The signal is "/api/status is failing", which is
+ *  a sleeping box, a phone on the wrong Wi-Fi, a rejected token or a key that
+ *  needs re-pairing. "Can't reach the box" was false for the last two, with
+ *  Console's own banner saying something different right behind it. */
+export const TOUR_OFFLINE_BODY =
+  'This step needs the box, and the app isn’t connected to it right now. It appears by itself once the connection is back. Or tap Next to carry on, and replay the tour later from Setup › Prefs › Replay the feature tour.';
 
 // ---------------------------------------------------------------------------
 // Spotlight geometry

@@ -9,12 +9,13 @@
  * Not a paywall and not on by default — it's a power-user convenience the app
  * mounts only for a box that has Steam.
  */
-import React, { useCallback, useEffect, useState } from 'react';
+import React, { useCallback, useState } from 'react';
 import {
   ActivityIndicator, Image, Linking, Pressable, StyleSheet, Text, TextInput, View,
 } from 'react-native';
 
-import { ApiError, api, type SteamWebApiStatus } from '@/lib/api';
+import { usePoll } from '@/hooks/usePoll';
+import { ApiError, api, hostKey, type SteamWebApiStatus } from '@/lib/api';
 import { hapticLight } from '@/lib/haptics';
 import { useSettings } from '@/lib/SettingsContext';
 import { mono, useTheme, useThemedStyles, type Palette } from '@/lib/theme';
@@ -27,25 +28,26 @@ export function SteamIntegrationCard() {
   const { settings, ready } = useSettings();
   const configured = !!settings.host && !!settings.token;
 
-  // undefined = still loading; null = agent doesn't support it (hide the card).
-  const [status, setStatus] = useState<SteamWebApiStatus | null | undefined>(undefined);
+  // usePoll, NOT a one-shot try/catch that mapped EVERY error to null. null MUST
+  // mean only "agent doesn't support it" (api.steamWebApi -> null on an exact
+  // 404), because null hides the card; the old catch also set null on a
+  // transient failure (box asleep, timeout, 5xx), so one bad fetch hid the card
+  // and it never retried. usePoll keeps the card hidden while unknown (degrade
+  // closed) and a throwing fetch retries every ~2s, so the card returns on its
+  // own when the box is reachable again. A mutation calls poll.refresh() to
+  // re-read the box (the source of truth).
+  const poll = usePoll(
+    () => api.steamWebApi(settings), 30_000, ready && configured, hostKey(settings));
+  const status = poll.data; // SteamWebApiStatus (show) | null (404, hide)
+  // Still the very first attempt with no answer yet: show the spinner. After a
+  // failure settles (loading false, still null) the card just stays hidden.
+  const loading = status == null && poll.loading && poll.error == null;
   const [steamId, setSteamId] = useState('');
   const [apiKey, setApiKey] = useState('');
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   // Once set up, the card collapses to a one-line summary; tap the header to expand.
   const [expanded, setExpanded] = useState(false);
-
-  const refresh = useCallback(async () => {
-    if (!ready || !configured) return;
-    try {
-      setStatus(await api.steamWebApi(settings));
-    } catch {
-      setStatus(null);
-    }
-  }, [ready, configured, settings]);
-
-  useEffect(() => { void refresh(); }, [refresh]);
 
   const connect = async () => {
     const id = steamId.trim();
@@ -63,8 +65,8 @@ export function SteamIntegrationCard() {
       const payload = /^\d{17}$/.test(id)
         ? { steamid64: id, apikey: key }
         : { vanity: id, apikey: key };
-      const s = await api.steamWebApiConnect(settings, payload);
-      setStatus(s);
+      await api.steamWebApiConnect(settings, payload);
+      poll.refresh(); // re-read the box's new status (source of truth)
       setApiKey('');
       setSteamId('');
     } catch (e) {
@@ -79,7 +81,8 @@ export function SteamIntegrationCard() {
     hapticLight();
     setBusy(true);
     try {
-      setStatus(await api.steamWebApiDisconnect(settings));
+      await api.steamWebApiDisconnect(settings);
+      poll.refresh();
     } catch {
       // best-effort; a failed disconnect leaves the card as-is
     } finally {
@@ -89,8 +92,10 @@ export function SteamIntegrationCard() {
 
   const openGuide = () => { hapticLight(); void Linking.openURL(GUIDE_URL); };
 
-  // Probe-and-appear: an agent without the feature returns null -> render nothing.
-  if (status === null) return null;
+  // Probe-and-appear: render nothing once we KNOW the box can't offer it (null
+  // after a real answer) OR while a transient failure leaves us hidden and
+  // retrying. Only the first in-flight probe shows the spinner (`loading`).
+  if (status == null && !loading) return null;
 
   const collapsible = !!status && status.configured;
 
@@ -107,7 +112,7 @@ export function SteamIntegrationCard() {
         ) : null}
       </Pressable>
 
-      {status === undefined ? (
+      {status == null ? (
         <ActivityIndicator color={t.green} style={{ marginVertical: 16 }} />
       ) : status.configured && !expanded ? (
         <Text style={styles.collapsedSummary} numberOfLines={1}>

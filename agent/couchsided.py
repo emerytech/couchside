@@ -53,7 +53,7 @@ except ImportError:  # pragma: no cover
     fcntl = None
 
 APP_NAME = "couchside-agent"
-VERSION = "2.9.127"
+VERSION = "2.9.134"
 UID = os.getuid()
 XDG_RUNTIME_DIR = "/run/user/%d" % UID
 
@@ -271,24 +271,28 @@ CONFIG_SAMSUNG = None  # optional {"host","mac","token"} Samsung Tizen TV config
 # those requests. A ticket is NOT the bearer token: it grants only cover-art reads
 # for a few minutes (multi-use) or ONE file upload (single-use), never box control.
 # So even if a ticket is sniffed off the plaintext URL, the real token stays secret.
-_TICKETS = {}                 # ticket_hex -> {"exp": epoch, "once": bool}
+_TICKETS = {}                 # ticket_hex -> {"exp": epoch, "scope": "image"|"upload"}
 _TICKETS_LOCK = threading.Lock()
 _TICKET_TTL = 300             # seconds
 
 def _mint_ticket(once=False):
-    """Mint a short-lived ticket. once=True -> single-use (file upload)."""
+    """Keep the existing mint API: default=image; once=True=single-use upload."""
     t = os.urandom(16).hex()
     now = time.time()
     with _TICKETS_LOCK:
         for k in [k for k, v in _TICKETS.items() if v["exp"] < now]:
             _TICKETS.pop(k, None)  # opportunistic prune of the expired
-        _TICKETS[t] = {"exp": now + _TICKET_TTL, "once": bool(once)}
+        _TICKETS[t] = {"exp": now + _TICKET_TTL,
+                       "scope": "upload" if once else "image"}
     return t
 
-def _ticket_ok(t):
-    """True iff t is an unexpired ticket. A single-use ticket is CONSUMED here, so
-    a sniffed upload ticket cannot be replayed (the real upload already burned it)."""
-    if not t:
+def _ticket_ok(t, scope):
+    """Authorize only the endpoint's fixed scope; upload consumption is atomic.
+
+    Image tickets travel on plaintext cover requests and must never authorize a
+    write. A wrong-scope request is refused without consuming the valid ticket.
+    """
+    if not t or scope not in ("image", "upload"):
         return False
     now = time.time()
     with _TICKETS_LOCK:
@@ -296,7 +300,9 @@ def _ticket_ok(t):
         if not v or v["exp"] < now:
             _TICKETS.pop(t, None)
             return False
-        if v["once"]:
+        if v.get("scope") != scope:
+            return False
+        if scope == "upload":
             _TICKETS.pop(t, None)
         return True
 CONFIG_ROKU = None  # optional {"host","name"} Roku (ECP) TV config
@@ -1238,14 +1244,54 @@ def _iface_wol_armed(iface):
     return None
 
 
+def _wake_iface(default_iface):
+    """Choose physical linked Ethernet for wake independently of the IP route.
+
+    Wi-Fi can own the default route while a dock NIC supplies the only working
+    wake source. Exclude virtual bridges/tunnels and disconnected adapters.
+    Prefer confirmed magic-packet support, then the routed wired adapter.
+    """
+    candidates = []
+    try:
+        names = sorted(os.listdir("/sys/class/net"))
+    except OSError:
+        names = []
+    for name in names:
+        base = "/sys/class/net/%s" % name
+        if not os.path.exists(base + "/device") or not _iface_wired(name):
+            continue
+        try:
+            with open(base + "/carrier") as f:
+                if f.read().strip() != "1":
+                    continue
+        except OSError:
+            continue
+        mac = _iface_mac(name)
+        if not mac or mac == "00:00:00:00:00:00":
+            continue
+        armed = _iface_wol_armed(name)
+        candidates.append((0 if armed is True else 1 if armed is None else 2,
+                           0 if name == default_iface else 1, name, armed))
+    if candidates:
+        _, _, name, armed = min(candidates)
+        return name, armed
+    return default_iface, _iface_wol_armed(default_iface) if default_iface else None
+
+
 def read_net():
-    """Primary-interface facts for the app's Wake-on-LAN power path. Every field
-    degrades to None when it can't be read."""
-    iface = _default_iface()
+    """Wake-interface facts; the connection route is reported separately.
+
+    Keep mac/wired/wol_armed on the same wake adapter so existing apps learn
+    the correct MAC too. No route or network configuration is changed.
+    """
+    route_iface = _default_iface()
+    iface, armed = _wake_iface(route_iface)
     if not iface:
-        return {"iface": None, "mac": None, "wired": None, "wol_armed": None}
+        return {"iface": None, "mac": None, "wired": None, "wol_armed": None,
+                "route_iface": route_iface}
     return {"iface": iface, "mac": _iface_mac(iface),
-            "wired": _iface_wired(iface), "wol_armed": _iface_wol_armed(iface)}
+            "wired": _iface_wired(iface), "wol_armed": armed,
+            "route_iface": route_iface}
 
 
 def net_info_cached():
@@ -1867,6 +1913,46 @@ def _uinput_writable():
         return os.access("/dev/uinput", os.W_OK)
     except Exception:
         return False
+
+
+_CONTROLLER_FAILURE = None
+_CONTROLLER_FAILURE_LOCK = threading.Lock()
+
+
+def _controller_creation_result(error=None):
+    global _CONTROLLER_FAILURE
+    with _CONTROLLER_FAILURE_LOCK:
+        if error is None:
+            _CONTROLLER_FAILURE = None
+        else:
+            code = getattr(error, "errno", None)
+            state = ("device_missing" if code in (errno.ENOENT, errno.ENODEV)
+                     else "access_denied" if code in (errno.EACCES, errno.EPERM)
+                     else "creation_failed")
+            _CONTROLLER_FAILURE = {"state": state, "failed_at": int(time.time())}
+
+
+def controller_health():
+    """Probe from the actual service identity, without creating input devices.
+    Opening uinput is not UI_DEV_CREATE and emits no controller/key events.
+    Only classify observed errors; never expose raw exception text or paths.
+    """
+    try:
+        fd = os.open("/dev/uinput", os.O_WRONLY | os.O_NONBLOCK)
+        os.close(fd)
+    except OSError as error:
+        code = error.errno
+        state = ("device_missing" if code in (errno.ENOENT, errno.ENODEV)
+                 else "access_denied" if code in (errno.EACCES, errno.EPERM)
+                 else "unknown")
+        return {"state": state}
+    with _CONTROLLER_FAILURE_LOCK:
+        failure = dict(_CONTROLLER_FAILURE) if _CONTROLLER_FAILURE else None
+    # A prior creation attempt can fail even though the node opens now.
+    # Keep the observed attempt until a successful creation or service restart.
+    if failure:
+        return {"state": "creation_failed", "failed_at": failure["failed_at"]}
+    return {"state": "accessible"}  # access does not prove successful creation
 
 
 def set_caps(mock):
@@ -3607,6 +3693,56 @@ def _pl_install_grid_art(appid):
             print("[player] grid art copy skipped (%s)" % e, flush=True)
 
 
+# Prototype provider: Stremio-shaped catalog/metas/streams, embedded so the box
+# remains stdlib-only. Only IDs cross the control boundary; never source URLs.
+_PLAYER_CATALOG = {
+    "id": "couchside-samples", "name": "Sample films", "type": "movie",
+    "metas": [{"id": "couchside:bbb-trailer", "type": "movie",
+               "name": "Big Buck Bunny — trailer",
+               "description": "A short Blender Foundation film preview. Play on your TV, then use your phone to pause, skip, or mute.",
+               "credit": "© Blender Foundation | peach.blender.org | CC BY 3.0",
+               "license": "https://creativecommons.org/licenses/by/3.0/"}],
+}
+_PLAYER_CATALOG_STREAMS = {
+    "couchside:bbb-trailer": {
+        "url": "https://media.w3.org/2010/05/bunny/trailer.mp4",
+        "name": "W3C sample • MP4",
+    },
+}
+
+
+def player_catalog():
+    # Copy via JSON so callers cannot mutate the authoritative table.
+    return json.loads(json.dumps(_PLAYER_CATALOG))
+
+
+def player_catalog_current():
+    # Config remembers the last launch; it is not evidence of active playback.
+    if not (_PL_MOCK["running"] if PL_MOCK else _pl_running()):
+        return None
+    url = _PL_MOCK.get("url", "") if PL_MOCK and not _PL_MOCK.get("service") else ""
+    if not PL_MOCK:
+        try:
+            with open(PLAYER_CONF) as f:
+                for line in f:
+                    if line.startswith("url="):
+                        url = line.strip()[4:]
+        except OSError:
+            pass
+    for video in _PLAYER_CATALOG["metas"]:
+        if _PLAYER_CATALOG_STREAMS[video["id"]]["url"] == url:
+            return dict(video)
+    return None
+
+
+def player_catalog_open(video_id):
+    if not isinstance(video_id, str) or video_id not in _PLAYER_CATALOG_STREAMS:
+        raise ValueError("unknown catalog video")
+    # player_open already handles validation, locking, close/relaunch and Steam
+    # registration. The URL here is a source constant, not the free-URL tier.
+    return player_open("", url=_PLAYER_CATALOG_STREAMS[video_id]["url"])
+
+
 def player_info():
     """Live state. `services` is the tile's own list, so the app never carries a
     hardcoded copy either."""
@@ -3617,6 +3753,8 @@ def player_info():
         return {"available": True, "running": _PL_MOCK["running"],
                 "service": _PL_MOCK["service"], "path": _PL_MOCK["path"],
                 "query": _PL_MOCK.get("query", ""),
+                "catalog": player_catalog(),
+                "catalog_video": player_catalog_current(),
                 "services": list(_PLAYER_SERVICES),
                 "service_urls": dict(_PLAYER_SERVICE_URLS),
                 "searchable": list(_PLAYER_SEARCHABLE),
@@ -3631,6 +3769,8 @@ def player_info():
     service, path, query = _pl_conf_read()
     return {"available": player_available(), "running": _pl_running(),
             "service": service, "path": path, "query": query,
+            "catalog": player_catalog(),
+            "catalog_video": player_catalog_current(),
             "services": list(_PLAYER_SERVICES),
             "service_urls": dict(_PLAYER_SERVICE_URLS),
             "searchable": list(_PLAYER_SEARCHABLE),
@@ -3742,7 +3882,7 @@ def player_open(service, path="", query="", url=""):
             raise ValueError("unknown service or path not allowed")
     if PL_MOCK:
         _PL_MOCK.update(running=True, service=service, path=path or "",
-                        query=query or "")
+                        query=query or "", url="")
         return {"ok": True, "running": True, "url": url}
     if not player_available():
         raise RuntimeError("player not installed on this box")
@@ -3841,10 +3981,16 @@ _PL_JS_PICK = """
 
 PLAYER_JS_STATE = (
     "(function(){%s if (!v) return null;"
-    " return {playing: !v.paused && !v.ended,"
+    " var q=v.getVideoPlaybackQuality?v.getVideoPlaybackQuality():null;"
+    " var messages={1:'playback aborted',2:'media network error',"
+    " 3:'video decode failed',4:'media source unsupported'};"
+    " return {playing: !v.paused && !v.ended && !v.error && v.readyState>=2,"
     "         position: v.currentTime || 0,"
     "         duration: isFinite(v.duration) ? v.duration : 0,"
-    "         muted: !!v.muted, title: document.title || ''};"
+    "         muted: !!v.muted, title: document.title || '',"
+    "         ready:v.readyState, seeking:!!v.seeking,"
+    "         decodedFrames:q?q.totalVideoFrames:(v.webkitDecodedFrameCount||0),"
+    "         error:v.error?{code:v.error.code,message:messages[v.error.code]||'media error'}:null};"
     "})()" % _PL_JS_PICK)
 
 # op id -> agent-authored script. Frozen: an id that is not a key never runs.
@@ -4330,7 +4476,7 @@ def player_hub():
     the phone does not cover — someone opening the tile from the Steam library
     with a controller and no phone in hand."""
     if PL_MOCK:
-        _PL_MOCK.update(running=True, service="", path="", query="")
+        _PL_MOCK.update(running=True, service="", path="", query="", url="")
         return {"ok": True, "running": True, "hub": True}
     if not player_available():
         raise RuntimeError("player not installed on this box")
@@ -4461,7 +4607,8 @@ def real_status():
         # SURFACES on the TV in a desktop session (gamescope shows only what Steam
         # focuses, hardware-confirmed 2026-09-15), so it is offered only there —
         # Game Mode needs the steam-registration path (Phase 7b), not yet built.
-        "caps": dict(CAPS, desktop=desktop_available(),
+        "caps": dict(CAPS, gamepad=_uinput_writable(),
+                     desktop=desktop_available(),
                      medialaunch=medialaunch_available(),
                      **live_screenstream_caps()),
         # False when the config dir isn't writable by the agent user, so the app
@@ -5601,6 +5748,75 @@ def _led_color_from_intensity(mi, index, maxint, maxb):
     return out
 
 
+# Legion Go 2 sysfs sequence adapted from honjow/HueSync at
+# 575fba4acd054f00629e5998eafef30169ee2005, py_modules/devices/legion_go2.py.
+# Modified for Couchside 2026-10-14. See HUESYNC-NOTICE.txt for provenance.
+# Keep the full license here too: the agent is also distributed as a single file.
+_GO2_UPSTREAM_LICENSE = """BSD 3-Clause License
+
+Copyright (c) 2024, honjow
+Original Copyright (c) 2022-2024, Steam Deck Homebrew
+
+All rights reserved.
+
+Redistribution and use in source and binary forms, with or without
+modification, are permitted provided that the following conditions are met:
+
+1. Redistributions of source code must retain the above copyright notice, this
+   list of conditions and the following disclaimer.
+
+2. Redistributions in binary form must reproduce the above copyright notice,
+   this list of conditions and the following disclaimer in the documentation
+   and/or other materials provided with the distribution.
+
+3. Neither the name of the copyright holder nor the names of its
+   contributors may be used to endorse or promote products derived from
+   this software without specific prior written permission.
+
+THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS"
+AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
+IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE
+DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT HOLDER OR CONTRIBUTORS BE LIABLE
+FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL
+DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR
+SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER
+CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY,
+OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
+OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE."""
+_GO2_NAME = "go:rgb:joystick_rings"
+# Reuse the existing circle id for the firmware rotation; strip circle stays unchanged.
+_GO2_NATIVE_EFFECTS = {"rainbow": "chroma", "breathe": "breathe", "circle": "rainbow"}
+
+
+def _go2_ready(name):
+    """Exact kernel ABI only; read-only probing never takes control of hardware."""
+    if name != _GO2_NAME:
+        return False
+    required = ("profile", "mode", "effect", "enabled", "brightness", "multi_intensity")
+    return (all(_led_access_w(name, attr) for attr in required)
+            and "custom" in (_led_read_attr(name, "mode_index") or "").split()
+            and "monocolor" in (_led_read_attr(name, "effect_index") or "").split()
+            and "true" in (_led_read_attr(name, "enabled_index") or "").split())
+
+
+def _go2_effects(raw):
+    effects = ["solid", "off"]
+    if _led_access_w(raw["name"], "speed"):
+        effects += [key for key, value in _GO2_NATIVE_EFFECTS.items()
+                    if value in raw.get("dev_effects", ())]
+    return effects
+
+
+def _go2_prepare(name, effect="monocolor", speed=None):
+    # Select profile BEFORE writing its data. Never write mode=dynamic, never
+    # detach a kernel driver, and never touch the embedded controller.
+    _led_write(name, "profile", "3")
+    _led_write(name, "mode", "custom")
+    if speed is not None:
+        _led_write(name, "speed", str(speed))
+    _led_write(name, "effect", effect)
+
+
 def _read_led_raw(name):
     """Read /sys/class/leds/<name> into a full dict (incl. internal `index`/
     `maxint` used by the writer), or None if max_brightness can't be read. `name`
@@ -5621,6 +5837,11 @@ def _read_led_raw(name):
            and set(index).issubset({"red", "green", "blue"}))
     maxint = [int(x) for x in (_led_read_attr(name, "multi_max_intensity") or "").split()
               if x.strip().isdigit()] if rgb else []
+    # hid-lenovo-go stores firmware RGB as three bytes, independently of its
+    # percentage master brightness. Observed on Go 2 (83N0): max_brightness=100,
+    # multi_intensity=1 90 255, with no multi_max_intensity attribute.
+    if name == _GO2_NAME and rgb and not maxint:
+        maxint = [255] * len(index)
     color = _led_color_from_intensity(mi, index, maxint, maxb) if rgb else None
     writable = _led_access_w(name, "brightness") and (
         (not rgb) or _led_access_w(name, "multi_intensity"))
@@ -5640,8 +5861,10 @@ def _read_led_raw(name):
     if _led_access_w(name, "mode") and _led_access_w(name, "enabled"):
         toks = (_led_read_attr(name, "enabled_index") or "").split()
         enable_on = next((t for t in toks if t.lower() in ("true", "1", "on", "enabled")), None)
+    if name == _GO2_NAME:
+        writable = writable and _go2_ready(name)
     dev_effects = tuple((_led_read_attr(name, "effect_index") or "").split()) if enable_on else ()
-    return {"name": name, "desc": name, "rgb": rgb,
+    return {"name": name, "desc": "Legion Go 2 joystick rings" if name == _GO2_NAME else name, "rgb": rgb,
             "notable": _led_notable(name, rgb), "writable": writable,
             "max_brightness": maxb, "brightness": cur, "index": index,
             "maxint": maxint, "color": color,
@@ -5651,11 +5874,16 @@ def _read_led_raw(name):
 def _led_public(raw):
     """Project a raw LED dict to the API fields (drops internal index/maxint)."""
     maxb = raw["max_brightness"]
-    return {"name": raw["name"], "desc": raw["desc"], "rgb": raw["rgb"],
+    public = {"name": raw["name"], "desc": raw["desc"], "rgb": raw["rgb"],
             "notable": raw["notable"], "writable": raw["writable"],
             "max_brightness": maxb, "brightness": raw["brightness"],
             "brightness_pct": round(raw["brightness"] / maxb * 100) if maxb else 0,
             "color": raw["color"]}
+    if raw["name"] == _GO2_NAME:
+        public.update(effects=_go2_effects(raw), shape=False, ring_control="linked", ring_scenes=True)
+        if _ring_motion_available():
+            public["ring_motion_preview"] = True
+    return public
 
 
 def _list_led_names():
@@ -5813,6 +6041,362 @@ def _led_write_color(name, raw, color):
     _led_write(name, "multi_intensity", _led_color_vals(raw, color))
 
 
+# Legion ring scenes: bounded whole-ring frames, never raw HID or per-frame enable.
+_RING_SCENES = {
+    "aurora": [(0, 220, 150), (40, 100, 255), (170, 30, 220)],
+    "ember": [(255, 45, 0), (255, 130, 15), (180, 10, 0)],
+    "ocean": [(0, 45, 180), (0, 190, 220), (0, 95, 255)],
+    "cyberpunk": [(255, 0, 130), (70, 0, 255), (0, 220, 255)],
+}
+_RING_LOCK = threading.RLock()
+_RING_PROGRAM = None
+_RING_ERROR = None
+_RING_THREAD = None
+_RING_FILE = os.path.expanduser("~/.config/couchside/ring-program.json")
+
+# Temporary test helper only: no installer/service integration or raw HID access
+# in the agent. LED enumeration uses a short-lived asynchronous capability cache.
+_RING_MOTION_SOCKET = "/run/couchside-ring-preview.sock"
+_RING_MOTION_PAUSED = False
+_RING_MOTION_CACHE = {"available": False, "active": False, "error": None, "remaining_ms": 0}
+_RING_MOTION_CHECKED = 0
+_RING_MOTION_REFRESHING = False
+_RING_MOTION_MONITOR = None
+
+
+def _ring_motion_socket_ok():
+    try:
+        info = os.lstat(_RING_MOTION_SOCKET)
+        return (stat.S_ISSOCK(info.st_mode) and stat.S_IMODE(info.st_mode) == 0o600
+                and info.st_uid == os.getuid())
+    except OSError:
+        return False
+
+
+def _ring_motion_rpc(request):
+    if not _ring_motion_socket_ok() or not hasattr(socket, "SO_PEERCRED"):
+        raise OSError("temporary ring preview helper unavailable")
+    with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as sock:
+        sock.settimeout(0.5 if request == {"status": True} else 18)
+        sock.connect(_RING_MOTION_SOCKET)
+        # The mode-0600 socket is owned by this user, but its server must be the
+        # manually launched root helper. A user process cannot impersonate it.
+        _, uid, _ = struct.unpack("3i", sock.getsockopt(socket.SOL_SOCKET, socket.SO_PEERCRED, 12))
+        if uid != 0:
+            raise OSError("ring preview helper identity mismatch")
+        sock.sendall(json.dumps(request).encode("utf-8") + b"\n")
+        data = bytearray()
+        while b"\n" not in data:
+            part = sock.recv(2049 - len(data))
+            if not part:
+                raise OSError("incomplete ring preview response")
+            data.extend(part)
+            if len(data) > 2048:
+                raise OSError("ring preview response too large")
+    try:
+        result = json.loads(data.decode("utf-8"))
+        if (not isinstance(result, dict) or type(result.get("available")) is not bool
+                or type(result.get("active")) is not bool
+                or type(result.get("remaining_ms")) is not int
+                or not 0 <= result["remaining_ms"] <= 10000
+                or not (result.get("error") is None or isinstance(result["error"], str))):
+            raise ValueError("bad response")
+        return {key: result[key] for key in ("available", "active", "error", "remaining_ms")}
+    except (ValueError, UnicodeError, KeyError) as exc:
+        raise OSError("invalid ring preview response") from exc
+
+
+def _ring_motion_status():
+    global _RING_MOTION_CACHE, _RING_MOTION_CHECKED, _RING_MOTION_PAUSED
+    with _RING_LOCK:
+        try:
+            result = _ring_motion_rpc({"status": True})
+            # The helper only reports inactive after native restoration. Never
+            # resume scenes on a timeout or while a failed restore is pending.
+            _RING_MOTION_PAUSED = result["active"]
+        except OSError:
+            result = {"available": False, "active": _RING_MOTION_PAUSED,
+                      "error": "Preview helper unavailable; restoration not confirmed."
+                      if _RING_MOTION_PAUSED else None, "remaining_ms": 0}
+        _RING_MOTION_CACHE, _RING_MOTION_CHECKED = result, time.monotonic()
+        return dict(result)
+
+
+def _ring_motion_available():
+    global _RING_MOTION_REFRESHING
+    if _RING_MOTION_PAUSED:
+        return True  # Keep Stop/recovery visible after a helper/restore failure.
+    if not _ring_motion_socket_ok():
+        return False
+    # No socket I/O on the normal LED-status path. The next status poll will
+    # expose the capability after the root peer has been checked asynchronously.
+    with _RING_LOCK:
+        fresh = time.monotonic() - _RING_MOTION_CHECKED < 2
+        if not fresh and not _RING_MOTION_REFRESHING:
+            _RING_MOTION_REFRESHING = True
+            def refresh():
+                global _RING_MOTION_REFRESHING
+                try:
+                    _ring_motion_status()
+                finally:
+                    with _RING_LOCK:
+                        _RING_MOTION_REFRESHING = False
+            threading.Thread(target=refresh, daemon=True, name="ring-preview-status").start()
+        return fresh and (_RING_MOTION_CACHE["available"] or _RING_MOTION_CACHE["active"])
+
+
+def _ring_motion_stop():
+    """Called with the ring lock held, before every native manual/scene write."""
+    global _RING_MOTION_PAUSED, _RING_MOTION_CACHE, _RING_MOTION_CHECKED
+    if not _RING_MOTION_PAUSED:
+        if not _ring_motion_socket_ok():
+            return
+        # An agent restart must discover a preview owned by the still-running
+        # helper before restoring saved scenes or accepting manual LED writes.
+        state = _ring_motion_rpc({"status": True})
+        _RING_MOTION_PAUSED = state["active"]
+        if not _RING_MOTION_PAUSED:
+            return
+    result = _ring_motion_rpc({"stop": True})
+    if result["active"] or result["error"]:
+        raise OSError("ring preview restoration not confirmed")
+    _RING_MOTION_PAUSED = False
+    _RING_MOTION_CACHE, _RING_MOTION_CHECKED = result, time.monotonic()
+
+
+def _ring_motion_validate(request):
+    if request == {"stop": True} and type(request["stop"]) is bool:
+        return request
+    if not isinstance(request, dict) or set(request) != {"preview"}:
+        raise ValueError("preview required")
+    p = request["preview"]
+    if not isinstance(p, dict) or set(p) != {"effect", "direction", "color", "colorShift", "trail", "period", "brightness"}:
+        raise ValueError("invalid preview")
+    if p["effect"] not in ("ball", "comet", "bounce") or p["direction"] not in ("clockwise", "counterclockwise"):
+        raise ValueError("invalid motion")
+    if type(p["colorShift"]) is not bool:
+        raise ValueError("invalid color shift")
+    if not isinstance(p["color"], dict) or set(p["color"]) != {"r", "g", "b"}:
+        raise ValueError("invalid color")
+    if any(type(v) is not int or not 0 <= v <= 255 for v in p["color"].values()):
+        raise ValueError("invalid color")
+    for key, lo, hi in (("trail", 0, 4), ("period", 2, 8), ("brightness", 1, 20)):
+        if type(p[key]) is not int or not lo <= p[key] <= hi:
+            raise ValueError("invalid " + key)
+    return {"preview": {**p, "color": dict(p["color"])}}
+
+
+def _ring_motion_apply(request):
+    global _RING_MOTION_PAUSED, _RING_MOTION_MONITOR, _RING_MOTION_CACHE, _RING_MOTION_CHECKED
+    clean = _ring_motion_validate(request)
+    with _RING_LOCK:
+        if "stop" in clean:
+            _ring_motion_stop()
+            return _ring_motion_status()
+        _ring_motion_stop()
+        ready = _ring_motion_rpc({"status": True})
+        if not ready["available"]:
+            raise OSError("ring preview helper not ready")
+        _RING_MOTION_PAUSED = True
+        try:
+            result = _ring_motion_rpc(clean)
+            if result["error"] or not result["active"]:
+                raise OSError("could not start ring preview")
+        except OSError:
+            _ring_motion_stop()
+            raise
+        _RING_MOTION_CACHE, _RING_MOTION_CHECKED = result, time.monotonic()
+        if _RING_MOTION_MONITOR is None:
+            def monitor():
+                global _RING_MOTION_MONITOR
+                try:
+                    failed_since = None
+                    while not _FX_STOP.wait(0.25):
+                        with _RING_LOCK:
+                            status = _ring_motion_status()
+                            if not status["active"]:
+                                # Release ownership before the lock, so a new
+                                # preview cannot inherit an exiting monitor.
+                                _RING_MOTION_MONITOR = None
+                                return
+                            if status["available"]:
+                                failed_since = None
+                            elif failed_since is None:
+                                failed_since = time.monotonic()
+                            elif time.monotonic() - failed_since >= 30:
+                                _RING_MOTION_MONITOR = None
+                                return  # Remain paused until Stop confirms restoration.
+                finally:
+                    with _RING_LOCK:
+                        if _RING_MOTION_MONITOR is threading.current_thread():
+                            _RING_MOTION_MONITOR = None
+            _RING_MOTION_MONITOR = threading.Thread(target=monitor, daemon=True, name="ring-preview-monitor")
+            _RING_MOTION_MONITOR.start()
+        return dict(result)
+
+
+def _ring_validate(p):
+    if not isinstance(p, dict):
+        raise ValueError("program must be an object")
+    if p.get("scene") not in _RING_SCENES:
+        raise ValueError("unknown scene")
+    for k, low, high in (("brightness", 0, 100), ("period", 5, 120)):
+        if type(p.get(k)) is not int or not low <= p[k] <= high:
+            raise ValueError(k + " is out of range")
+    n = p.get("night")
+    if not isinstance(n, dict) or type(n.get("enabled")) is not bool:
+        raise ValueError("night settings required")
+    for k, high in (("start", 1439), ("end", 1439), ("brightness", 100)):
+        if type(n.get(k)) is not int or not 0 <= n[k] <= high:
+            raise ValueError("invalid night " + k)
+    if n["start"] == n["end"]:
+        raise ValueError("night start and end must differ")
+    return {"scene": p["scene"], "brightness": p["brightness"], "period": p["period"],
+            "night": {k: n[k] for k in ("enabled", "start", "end", "brightness")}}
+
+
+def _ring_save(p):
+    os.makedirs(os.path.dirname(_RING_FILE), exist_ok=True)
+    fd, tmp = tempfile.mkstemp(prefix=".ring-", dir=os.path.dirname(_RING_FILE))
+    try:
+        with os.fdopen(fd, "w") as f:
+            json.dump(p, f)
+            f.flush()
+            os.fsync(f.fileno())
+        os.replace(tmp, _RING_FILE)
+    finally:
+        if os.path.exists(tmp):
+            os.unlink(tmp)
+
+
+def _ring_manual(fn):
+    # Serialize the whole manual write with scene frames. A frame can never land
+    # after the user's manual effect has taken ownership.
+    def wrapped(name, *args, **kwargs):
+        global _RING_PROGRAM, _RING_ERROR
+        if name != _GO2_NAME:
+            return fn(name, *args, **kwargs)
+        with _RING_LOCK:
+            _ring_motion_stop()
+            if _RING_PROGRAM is not None:
+                _ring_save(None)
+                _RING_PROGRAM = None
+                _RING_ERROR = None
+            return fn(name, *args, **kwargs)
+    return wrapped
+
+
+def _ring_frame(p, elapsed, minute):
+    colors = _RING_SCENES[p["scene"]]
+    phase = (elapsed % p["period"]) / p["period"] * len(colors)
+    i = int(phase)
+    mix = phase - i
+    # Smoothstep eliminates abrupt velocity changes at each palette color.
+    mix = mix * mix * (3 - 2 * mix)
+    color = {k: round(colors[i][j] * (1-mix) + colors[(i+1) % len(colors)][j] * mix)
+             for j, k in enumerate(("r", "g", "b"))}
+    n = p["night"]
+    start, end = n["start"], n["end"]
+    inside = start <= minute < end if start < end else minute >= start or minute < end
+    brightness = min(p["brightness"], n["brightness"]) if n["enabled"] and inside else p["brightness"]
+    return color, brightness
+
+
+def _ring_status():
+    with _RING_LOCK:
+        return {"program": _RING_PROGRAM, "error": _RING_ERROR,
+                "timezone": time.tzname[time.localtime().tm_isdst > 0]}
+
+
+def _ring_loop():
+    global _RING_THREAD, _RING_ERROR
+    last = None
+    started = time.monotonic()
+    checked = 0
+    raw = None
+    try:
+        while not _FX_STOP.wait(0.2):
+            with _RING_LOCK:
+                p = _RING_PROGRAM
+                if p is None or _RING_MOTION_PAUSED:
+                    last = None
+                    raw = None
+                    continue
+                try:
+                    now = time.monotonic()
+                    if raw is None or now - checked >= 5:
+                        raw = _read_led_raw(_GO2_NAME)
+                        checked = now
+                        expected_brightness = (str(round(last[1] * raw["max_brightness"] / 100))
+                                               if last is not None and raw else None)
+                        if (_led_read_attr(_GO2_NAME, "profile") != "3"
+                                or _led_read_attr(_GO2_NAME, "mode") != "custom"
+                                or _led_read_attr(_GO2_NAME, "effect") != "monocolor"
+                                or _led_read_attr(_GO2_NAME, "enabled") != "true"
+                                or (expected_brightness is not None and
+                                    _led_read_attr(_GO2_NAME, "brightness") != expected_brightness)):
+                            last = None
+                    if not raw or not raw["writable"]:
+                        raise OSError("Joystick rings unavailable; retry when connected")
+                    if last is None:
+                        _go2_prepare(_GO2_NAME)
+                    lt = time.localtime()
+                    color, brightness = _ring_frame(p, time.monotonic()-started, lt.tm_hour*60+lt.tm_min)
+                    if last is None or color != last[0]:
+                        _led_write_color(_GO2_NAME, raw, color)
+                    if last is None or brightness != last[1]:
+                        _led_write(_GO2_NAME, "brightness", str(round(brightness * raw["max_brightness"] / 100)))
+                    if last is None:
+                        _led_write(_GO2_NAME, "enabled", raw["enable_on"])
+                    last = (color, brightness)
+                    _RING_ERROR = None
+                except OSError:
+                    _RING_ERROR = "Lighting paused: device write failed. Apply the scene again to retry."
+                    # Release ownership before unlocking, so a concurrent retry
+                    # starts a fresh worker rather than inheriting this exiting one.
+                    if _RING_THREAD is threading.current_thread():
+                        _RING_THREAD = None
+                    return  # no tight retries or false success after device removal
+    finally:
+        with _RING_LOCK:
+            if _RING_THREAD is threading.current_thread():
+                _RING_THREAD = None
+
+
+def _ring_apply(p):
+    global _RING_PROGRAM, _RING_THREAD, _RING_ERROR
+    clean = _ring_validate(p) if p is not None else None
+    with _RING_LOCK:
+        _ring_motion_stop()
+        raw = _read_led_raw(_GO2_NAME)
+        if not raw or not raw["writable"]:
+            raise ValueError("Legion joystick rings unavailable")
+        _ring_save(clean)  # report persistence failures rather than pretend it saved
+        _RING_PROGRAM = clean
+        _RING_ERROR = None
+        if clean is None:
+            # Explicit stop means off, not a leftover last frame.
+            result = set_led(_GO2_NAME, 0, None)
+            if not result or not result.get("ok"):
+                raise OSError("could not turn rings off")
+            _fx_note_static(_GO2_NAME, result)
+        elif _RING_THREAD is None:
+            _RING_THREAD = threading.Thread(target=_ring_loop, daemon=True, name="ring-scenes")
+            _RING_THREAD.start()
+    return _ring_status()
+
+
+def _ring_restore():
+    try:
+        with open(_RING_FILE) as f:
+            p = json.load(f)
+        if p is not None:
+            _ring_apply(p)
+    except (OSError, ValueError, TypeError):
+        pass
+
+
+@_ring_manual
 def set_led(name, brightness, color):
     """Apply brightness (0-100) and/or color ({r,g,b} 0-255) to LED `name`.
 
@@ -5843,7 +6427,9 @@ def set_led(name, brightness, color):
                 _led_write(name, "effect", "manual")
             except OSError:
                 pass
-        if raw.get("enable_on"):
+        if name == _GO2_NAME:
+            _go2_prepare(name)
+        elif raw.get("enable_on"):
             # Gated go_s rings: the firmware runs `effect`, so a SOLID colour needs
             # effect=monocolor -- otherwise the last animation (e.g. the factory
             # rainbow spin) keeps running and ignores the colour. Set mode=custom +
@@ -5868,7 +6454,8 @@ def set_led(name, brightness, color):
             try:
                 _led_write(name, "enabled", raw["enable_on"])
             except OSError:
-                pass
+                if name == _GO2_NAME:
+                    raise
     except OSError as e:
         return {"ok": False, "status": 500,
                 "error": (str(e) or "led write failed")}
@@ -6137,6 +6724,7 @@ def _led_active_map():
                 if s.get("effect") not in _LED_STATIC}
 
 
+@_ring_manual
 def apply_led_effect(name, effect, color, speed, brightness, shape=None):
     """Start/replace an effect (or a solid/off) on LED `name`.
 
@@ -6222,7 +6810,12 @@ def _apply_gated_effect(name, raw, effect, params):
     rainbow ignores it. An effect the firmware has no analogue for (scanner) shows the
     colour statically via set_led. Persisted -> re-armed on reboot."""
     dev = raw.get("dev_effects") or ()
-    fw = _GO_S_FX.get(effect)
+    if name == _GO2_NAME:
+        if effect not in _go2_effects(raw):
+            return {"ok": False, "status": 400, "error": "effect unsupported by Legion Go 2 firmware"}
+        fw = _GO2_NATIVE_EFFECTS.get(effect)
+    else:
+        fw = _GO_S_FX.get(effect)
     if not fw or fw not in dev:
         # no firmware analogue -> solid colour (set_led writes effect=monocolor)
         res = set_led(name, params["brightness"], params["color"])
@@ -6233,6 +6826,8 @@ def _apply_gated_effect(name, raw, effect, params):
                 "brightness_pct": res.get("brightness_pct"), "color": res.get("color")}
     b = str(int(params["brightness"] / 100 * raw["max_brightness"] + 0.5))
     try:
+        if name == _GO2_NAME:
+            _go2_prepare(name, fw, params["speed"])
         _led_write(name, "mode", "custom")   # only writable mode; dynamic hangs
         _led_write(name, "effect", fw)       # looked up in the device's effect_index
         if fw == "breathe" and params["color"]:
@@ -6467,6 +7062,7 @@ def _led_restore_worker():
                 break
         except OSError:
             pass
+    _ring_restore()
     while not _FX_STOP.is_set():
         time.sleep(_LED_RECONCILE_INTERVAL_S)
         try:
@@ -6494,14 +7090,14 @@ _STRIP_RE = re.compile(r"^(.*)\[(\d+)\]$")
 # our effect id -> the firmware effect name we try (only used if the device's
 # effect_index actually offers it; else we fall back to a per-LED manual paint).
 _STRIP_HW_MAP = {"scanner": "patrol", "breathe": "breath", "rainbow": "rainbow",
-                 "pulse": "breath", "strobe": "breath", "solid": "manual",
+                 "pulse": "breath", "solid": "manual",
                  "manual": "manual", "off": "off"}
 # effects whose look depends on the picked colour (set multi_intensity first).
 _STRIP_COLOUR_FX = ("scanner", "breathe", "pulse", "strobe", "solid")
 # Strip effects the AGENT renders per-LED (no firmware effect exists for them):
 # a one-way "circle"/comet the render thread sweeps + wraps. These are looked up
 # like any effect id; the agent owns every frame (fixed-literal writers, §3).
-_STRIP_SEQ_EFFECTS = ("circle", "comet", "wipe", "twinkle",
+_STRIP_SEQ_EFFECTS = ("circle", "comet", "wipe", "twinkle", "strobe",
                       "meter_cpu", "meter_battery", "playtime")
 
 
@@ -6923,6 +7519,10 @@ def _seq_compute_frame(spec, now):
     period = _seq_period(spec["speed"])
     color = spec["color"]
     rev = bool(spec.get("reverse"))
+    if e == "strobe":
+        # A square wave: equal on/off holds, never substituted with breathing.
+        on = int(max(0.0, t) / max(0.03, period / 2.0)) % 2 == 0
+        return [dict(color) if on else None for _ in range(n)]
     if e == "circle":
         return _seq_frame_sweep(n, t, period, color, _SEQ_TAIL, rev)
     if e == "comet":
@@ -7131,20 +7731,46 @@ def _seq_render(spec, now):
     _seq_standdown_decide(spec, matched, now)
 
 
+def _seq_next_delay(spec, now):
+    """Wake at timed-frame boundaries, not 33ms after finishing a paint."""
+    if spec.get("effect") != "sequence":
+        return _SEQ_TICK
+    frames = spec.get("frames") or []
+    holds = spec.get("holds") or [spec.get("hold_ms", 500)] * len(frames)
+    total = sum(holds) / 1000.0
+    if not holds or total <= 0:
+        return _SEQ_TICK
+    elapsed = max(0.0, now - spec["t0"])
+    if not spec.get("loop", True) and elapsed >= total:
+        return _SEQ_TICK
+    phase = elapsed % total if spec.get("loop", True) else elapsed
+    boundary = 0.0
+    for hold in holds:
+        boundary += hold / 1000.0
+        if boundary > phase + 0.000001:
+            return min(_SEQ_TICK, max(0.001, boundary - phase))
+    return 0.001
+
+
 def _seq_loop():
-    """Render every active agent strip animation until none remain (or shutdown)."""
+    """Render against monotonic deadlines; painting time consumes the budget."""
     while not _FX_STOP.is_set():
         with _SEQ_LOCK:
-            active = list(_SEQ_ACTIVE.values())
+            active = list(_SEQ_ACTIVE.items())
         if not active:
             return
-        now = time.monotonic()
-        for spec in active:
-            _seq_render(spec, now)
-        for spec in active:
+        due = time.monotonic() + _SEQ_TICK
+        for prefix, spec in active:
+            now = time.monotonic()
+            with _SEQ_LOCK:
+                if _SEQ_ACTIVE.get(prefix) is not spec:
+                    continue
+                _seq_render(spec, now)
+            due = min(due, now + _seq_next_delay(spec, now))
+        for prefix, spec in active:
             if spec.get("_expired"):
                 _playtime_finish(spec)
-        _FX_STOP.wait(_SEQ_TICK)
+        _FX_STOP.wait(max(0.001, due - time.monotonic()))
 
 
 def _playtime_finish(spec):
@@ -10206,7 +10832,7 @@ def _couch_do_tv_power():
 def _couch_do_tv_input():
     r = tv_send("source_box", False)
     return r if r is not None else {"skipped": True,
-                                    "reason": "no TV control backend"}
+                                    "reason": "automatic TV input switching is unavailable"}
 
 
 def _couch_verify_gamescope():
@@ -16088,6 +16714,170 @@ def _is_uf2(path):
         return w0 == 0x0A324655 and w1 == 0x9E5D5157
     except OSError:
         return False
+
+
+# ---- Couchside SteamOS themes (optional companion renderer) ----
+# Settings are data only. Decky's companion reads this file; the agent never
+# evaluates theme code, accepts filesystem paths or downloads theme packages.
+_STEAM_THEME_LOCK = threading.Lock()
+_STEAM_THEME_FILE = os.path.join(TOKEN_STATE_DIR, "steam-themes.json")
+_STEAM_THEME_CATALOG = (
+    {"id": "couchside", "name": "Couchside", "layout": "dashboard",
+     "description": "A calm dashboard with a featured game and your library."},
+    {"id": "orbit", "name": "Orbit", "layout": "carousel",
+     "description": "Large game covers in a horizontal ribbon."},
+    {"id": "shelf", "name": "Shelf", "layout": "grid",
+     "description": "A compact library grid for getting straight to a game."},
+    {"id": "wave", "name": "Wave", "layout": "category-list",
+     "description": "A flowing category rail, vertical game list and highlighted artwork."},
+    {"id": "channels", "name": "Channels", "layout": "channel-grid",
+     "description": "Bright rounded game channels with a clean, spacious tile grid."},
+    {"id": "crossbar", "name": "Crossbar", "layout": "crossbar",
+     "description": "A golden flowing backdrop, horizontal console categories and vertical game list."},
+    {"id": "horizon", "name": "Horizon", "layout": "ribbon",
+     "description": "A deep blue console ribbon with large game tiles and selected-game stats."},
+)
+_STEAM_THEME_DEFAULT = {"version": 1, "installed": False, "enabled": False,
+                        "theme": "couchside", "accent": "teal", "motion": True, "studio": None}
+_STEAM_THEME_MOCK = dict(_STEAM_THEME_DEFAULT, installed=True)
+
+
+def _theme_document_validate(value):
+    if value is None:
+        return None
+    keys = {"format", "version", "name", "author", "layout", "accent", "wallpaper", "motion", "stats"}
+    if not isinstance(value, dict) or set(value) != keys:
+        raise ValueError("unknown or missing theme document fields")
+    if value["format"] != "couchside-theme" or type(value["version"]) is not int or value["version"] != 1:
+        raise ValueError("unsupported theme document")
+    for key, limit in (("name", 60), ("author", 80)):
+        text = value[key]
+        if not isinstance(text, str) or len(text) > limit or any(ord(c) < 32 or ord(c) == 127 for c in text):
+            raise ValueError("invalid theme metadata")
+    if not value["name"].strip():
+        raise ValueError("theme name required")
+    if any(not isinstance(value[k], str) for k in ("layout", "accent", "wallpaper")):
+        raise ValueError("invalid theme option type")
+    if value["layout"] not in {t["id"] for t in _STEAM_THEME_CATALOG} or value["accent"] not in ("teal", "blue", "violet", "amber") or value["wallpaper"] not in ("original", "midnight", "ocean", "forest", "sunset"):
+        raise ValueError("unknown theme option")
+    if type(value["motion"]) is not bool or type(value["stats"]) is not bool:
+        raise ValueError("invalid theme flag")
+    return dict(value, name=value["name"].strip(), author=value["author"].strip())
+
+
+def _steam_theme_validate(data):
+    if not isinstance(data, dict) or set(data) - set(_STEAM_THEME_DEFAULT):
+        raise ValueError("unknown theme settings")
+    result = dict(_STEAM_THEME_DEFAULT, **data)
+    if type(result["version"]) is not int or result["version"] != 1:
+        raise ValueError("unsupported theme settings version")
+    for key in ("installed", "enabled", "motion"):
+        if type(result[key]) is not bool:
+            raise ValueError("%s must be a boolean" % key)
+    if result["theme"] not in ("couchside", "orbit", "shelf", "wave", "channels", "crossbar", "horizon"):
+        raise ValueError("unknown theme")
+    if result["accent"] not in ("teal", "blue", "violet", "amber"):
+        raise ValueError("unknown accent")
+    if result["enabled"] and not result["installed"]:
+        raise ValueError("enable the themes add-on first")
+    result["studio"] = _theme_document_validate(result["studio"])
+    if result["studio"] and any(result[k] != result["studio"][doc] for k, doc in (("theme", "layout"), ("accent", "accent"), ("motion", "motion"))):
+        raise ValueError("theme document must match applied settings")
+    return result
+
+
+def _steam_theme_read():
+    try:
+        fd = os.open(_STEAM_THEME_FILE, os.O_RDONLY | os.O_NONBLOCK |
+                     getattr(os, "O_NOFOLLOW", 0))
+        with os.fdopen(fd, "r") as f:
+            if not stat.S_ISREG(os.fstat(f.fileno()).st_mode):
+                return dict(_STEAM_THEME_DEFAULT)
+            raw = f.read(4097)
+        if len(raw) > 4096:
+            return dict(_STEAM_THEME_DEFAULT)
+        return _steam_theme_validate(json.loads(raw))
+    except (OSError, ValueError, TypeError):
+        return dict(_STEAM_THEME_DEFAULT)
+
+
+def _steam_theme_conflict():
+    """Read-only check: never alter another plugin's settings or permissions."""
+    plugin = os.path.expanduser("~/homebrew/plugins/ThemeHub/plugin.json")
+    settings = os.path.expanduser("~/homebrew/settings/ThemeHub/settings.json")
+    if not os.path.isfile(plugin):
+        return None
+    try:
+        fd = os.open(settings, os.O_RDONLY | os.O_NONBLOCK | getattr(os, "O_NOFOLLOW", 0))
+        with os.fdopen(fd, "r") as stream:
+            if not stat.S_ISREG(os.fstat(stream.fileno()).st_mode):
+                return "ThemeHub is installed. Turn off its themed home before enabling Couchside Themes."
+            raw = stream.read(65537)
+        if len(raw) > 65536:
+            raise ValueError("settings too large")
+        value = json.loads(raw)
+        if not isinstance(value, dict) or value.get("enabled", True) is not False:
+            return "Turn off ThemeHub’s themed home before enabling Couchside Themes."
+        return None
+    except (OSError, ValueError, TypeError):
+        return "ThemeHub is installed. Turn off its themed home before enabling Couchside Themes."
+
+
+def steam_themes_state(mock=False):
+    companion = False
+    studio_ready = False
+    supported = {"couchside", "orbit", "shelf"}
+    if not mock:
+        try:
+            cap, _ = _decky_read_json_capped(os.path.expanduser(
+                "~/homebrew/plugins/Couchside/defaults/themes-capability.json"))
+            companion = isinstance(cap, dict) and cap.get("api") == 1
+            studio_ready = companion and cap.get("studio") == 1
+            if companion and isinstance(cap.get("themes"), list):
+                supported = {item for item in cap["themes"] if isinstance(item, str)}
+        except (OSError, ValueError, TypeError):
+            pass
+    return {"settings": dict(_STEAM_THEME_MOCK) if mock else _steam_theme_read(),
+            "themes": [theme for theme in _STEAM_THEME_CATALOG if mock or theme["id"] in supported],
+            "companion_ready": bool(mock or companion),
+            "studio_ready": bool(mock or studio_ready),
+            "requires": "Decky Loader and the Couchside companion"}
+
+
+def steam_themes_save(data, mock=False):
+    global _STEAM_THEME_MOCK
+    with _STEAM_THEME_LOCK:
+        current = dict(_STEAM_THEME_MOCK) if mock else _steam_theme_read()
+        if not isinstance(data, dict):
+            raise ValueError("expected an object")
+        merged = dict(current, **data)
+        if "studio" not in data and any(k in data for k in ("theme", "accent", "motion")):
+            merged["studio"] = None
+        value = _steam_theme_validate(merged)
+        conflict = None if mock or not value["enabled"] else _steam_theme_conflict()
+        if conflict:
+            raise ValueError(conflict)
+        state = steam_themes_state(mock)
+        if value["enabled"] and value["studio"] and not state["studio_ready"]:
+            raise ValueError("update the Couchside companion to use Theme Studio")
+        if value["enabled"] and (not state["companion_ready"] or value["theme"] not in {item["id"] for item in state["themes"]}):
+            raise ValueError("update the Couchside Decky companion before applying this theme")
+        if mock:
+            _STEAM_THEME_MOCK = value
+        else:
+            # Atomic replace keeps a companion poll from seeing partial JSON.
+            directory = os.path.dirname(_STEAM_THEME_FILE)
+            fd, tmp = tempfile.mkstemp(prefix=".steam-themes-", dir=directory)
+            try:
+                with os.fdopen(fd, "w") as f:
+                    json.dump(value, f)
+                    f.flush()
+                    os.fsync(f.fileno())
+                os.replace(tmp, _STEAM_THEME_FILE)
+            finally:
+                if os.path.exists(tmp):
+                    os.unlink(tmp)
+    return steam_themes_state(mock)
 
 
 def _openpuck_cache_path():
@@ -22678,8 +23468,111 @@ _STEAM_WEBAPI_CONF = os.path.expanduser("~/.config/couchside/steam_webapi.json")
 _STEAM_WEBAPI_TIMEOUT = 6.0
 _STEAM_WEBAPI = {"steamid64": None, "apikey": None}
 _STEAM_WEBAPI_LOCK = threading.Lock()
+_STEAM_WEBAPI_WRITE_LOCK = threading.Lock()
 _STEAM_SUMMARY_CACHE = {"ts": 0.0, "val": None}
 _STEAM_SUMMARY_TTL = 30.0
+
+
+# One bounded refresh per cache slot. HTTP readers only wait briefly; slow Steam
+# calls run outside the config lock and never occupy the phone's connection for
+# a chain of six-second upstream timeouts. Account generations also reject ABA
+# (A -> B -> A) completions and same-account credential replacements.
+_STEAM_CACHE_GENERATION = 0
+_STEAM_REFRESH_SLOTS = threading.BoundedSemaphore(4)
+_STEAM_REFRESH_CONTEXT = threading.local()
+_STEAM_CACHE_WAIT = 0.15
+_STEAM_CACHE_RETRY = 15.0
+_STEAM_REFRESH_BUDGET = 8.0
+
+
+def _steam_account_locked():
+    return (_STEAM_CACHE_GENERATION, _STEAM_WEBAPI["steamid64"], _STEAM_WEBAPI["apikey"])
+
+
+def _steam_account():
+    with _STEAM_WEBAPI_LOCK:
+        return _steam_account_locked()
+
+
+def _steam_account_current(owner):
+    with _STEAM_WEBAPI_LOCK:
+        return owner == _steam_account_locked()
+
+
+def _steam_reset_caches_locked():
+    global _STEAM_CACHE_GENERATION
+    _STEAM_CACHE_GENERATION += 1
+    for cache in (_STEAM_SUMMARY_CACHE, _STEAM_OWNED_CACHE, _STEAM_LEVEL_CACHE,
+                  _STEAM_WISHLIST_CACHE, _STEAM_DEALS_CACHE):
+        cache.clear()
+        cache.update(ts=0.0, val=None)
+    _STEAM_ACH_CACHE.clear()
+
+
+def _steam_cached_fetch(cache, ttl, fetch):
+    """Single-flight, stale-on-error cache. fetch(sid, key) returns None on failure.
+    Account selection, invalidation and publication share ONE lock. The network
+    never holds it. A cold request waits at most CACHE_WAIT; a warm one never
+    waits. Retry failures after a short backoff, retaining the last good value.
+    """
+    with _STEAM_WEBAPI_LOCK:
+        owner = _steam_account_locked()
+        _, sid, key = owner
+        if not (sid and key):
+            return None
+        # A caller may still hold an achievement slot that account invalidation
+        # removed from the index. Never reuse that detached slot's old value.
+        if cache.get("owner", owner) != owner:
+            cache.update(ts=0.0, val=None, retry_at=0)
+            cache.pop("loading", None)
+        cache["owner"] = owner
+        now = time.monotonic()
+        value = cache.get("val")
+        if value is not None and now - cache.get("ts", 0) < ttl:
+            return value
+        done = cache.get("loading")
+        if done is None and now >= cache.get("retry_at", 0):
+            if not _STEAM_REFRESH_SLOTS.acquire(blocking=False):
+                return value
+            done = threading.Event()
+            cache["loading"] = done
+
+            def refresh():
+                result = None
+                try:
+                    _STEAM_REFRESH_CONTEXT.deadline = time.monotonic() + _STEAM_REFRESH_BUDGET
+                    _STEAM_REFRESH_CONTEXT.owner = owner
+                    result = fetch(sid, key)
+                except Exception:
+                    pass  # Never expose URLs/API keys from upstream exceptions.
+                finally:
+                    with _STEAM_WEBAPI_LOCK:
+                        if owner == _steam_account_locked() and cache.get("loading") is done:
+                            cache.pop("loading", None)
+                            if result is not None:
+                                cache.update(ts=time.monotonic(), val=result, retry_at=0)
+                            else:
+                                cache["retry_at"] = time.monotonic() + _STEAM_CACHE_RETRY
+                    _STEAM_REFRESH_SLOTS.release()
+                    done.set()
+            try:
+                threading.Thread(target=refresh, name="steam-cache", daemon=True).start()
+            except Exception:
+                cache.pop("loading", None)
+                _STEAM_REFRESH_SLOTS.release()
+                done.set()
+    if value is None and done is not None:
+        done.wait(_STEAM_CACHE_WAIT)
+    with _STEAM_WEBAPI_LOCK:
+        return cache.get("val") if owner == _steam_account_locked() else None
+
+
+def _steam_upstream_timeout(timeout):
+    owner = getattr(_STEAM_REFRESH_CONTEXT, "owner", None)
+    if owner is not None and not _steam_account_current(owner):
+        return 0.0
+    deadline = getattr(_STEAM_REFRESH_CONTEXT, "deadline", None)
+    return min(timeout, deadline - time.monotonic()) if deadline is not None else timeout
 
 
 def _valid_steamid64(s):
@@ -22731,6 +23624,11 @@ def _steam_webapi_load():
 
 
 def _steam_webapi_save(steamid64, apikey):
+    with _STEAM_WEBAPI_WRITE_LOCK:
+        return _steam_webapi_save_serial(steamid64, apikey)
+
+
+def _steam_webapi_save_serial(steamid64, apikey):
     """Persist the key 0600 in the user's OWN config dir via temp-file + os.replace.
     The agent runs as the user, so this needs no root and touches nothing outside
     ~/.config/couchside. Returns True on success. Sets 0600 BEFORE any bytes land."""
@@ -22759,32 +23657,21 @@ def _steam_webapi_save(steamid64, apikey):
     with _STEAM_WEBAPI_LOCK:
         _STEAM_WEBAPI["steamid64"] = steamid64
         _STEAM_WEBAPI["apikey"] = apikey
-    _STEAM_SUMMARY_CACHE["ts"] = 0.0
-    _STEAM_SUMMARY_CACHE["val"] = None
-    _STEAM_OWNED_CACHE["ts"] = 0.0
-    _STEAM_OWNED_CACHE["val"] = None
-    _STEAM_LEVEL_CACHE["ts"] = 0.0
-    _STEAM_LEVEL_CACHE["val"] = None
-    _STEAM_ACH_CACHE.clear()
-    _STEAM_WISHLIST_CACHE["ts"] = 0.0
-    _STEAM_WISHLIST_CACHE["val"] = None
+        _steam_reset_caches_locked()
     return True
 
 
 def _steam_webapi_clear():
+    with _STEAM_WEBAPI_WRITE_LOCK:
+        _steam_webapi_clear_serial()
+
+
+def _steam_webapi_clear_serial():
     """Forget the key: wipe memory + delete the file. Never raises."""
     with _STEAM_WEBAPI_LOCK:
         _STEAM_WEBAPI["steamid64"] = None
         _STEAM_WEBAPI["apikey"] = None
-    _STEAM_SUMMARY_CACHE["ts"] = 0.0
-    _STEAM_SUMMARY_CACHE["val"] = None
-    _STEAM_OWNED_CACHE["ts"] = 0.0
-    _STEAM_OWNED_CACHE["val"] = None
-    _STEAM_LEVEL_CACHE["ts"] = 0.0
-    _STEAM_LEVEL_CACHE["val"] = None
-    _STEAM_ACH_CACHE.clear()
-    _STEAM_WISHLIST_CACHE["ts"] = 0.0
-    _STEAM_WISHLIST_CACHE["val"] = None
+        _steam_reset_caches_locked()
     try:
         os.unlink(_STEAM_WEBAPI_CONF)
     except OSError:
@@ -22810,6 +23697,9 @@ def _steam_api_get(interface, method, version, params, timeout=_STEAM_WEBAPI_TIM
     path are fixed, so nothing client-shaped steers the request (no SSRF). Returns
     the parsed JSON dict, or None on ANY failure (degrade closed). The URL carries
     the secret key, so it is NEVER logged and no exception text is surfaced."""
+    timeout = _steam_upstream_timeout(timeout)
+    if timeout <= 0:
+        return None
     try:
         query = urllib.parse.urlencode(params)
         url = "%s/%s/%s/v%s/?%s" % (_STEAM_WEBAPI_HOST, interface, method,
@@ -22854,34 +23744,22 @@ def _steam_resolve_vanity(vanity, apikey):
 
 
 def _steam_summary_cached():
-    """The owner's profile summary with a short TTL cache, so the status route does
-    not hammer Steam. None when unconfigured or unreachable."""
-    if not _steam_webapi_configured():
-        return None
-    now = time.monotonic()
-    if (_STEAM_SUMMARY_CACHE["val"] is not None
-            and now - _STEAM_SUMMARY_CACHE["ts"] < _STEAM_SUMMARY_TTL):
-        return _STEAM_SUMMARY_CACHE["val"]
-    with _STEAM_WEBAPI_LOCK:
-        sid = _STEAM_WEBAPI["steamid64"]
-        key = _STEAM_WEBAPI["apikey"]
-    summ = _steam_get_summary(sid, key)
-    if summ is not None and _steam_cache_ok(sid):
-        _STEAM_SUMMARY_CACHE["ts"] = now
-        _STEAM_SUMMARY_CACHE["val"] = summ
-    return summ
+    return _steam_cached_fetch(_STEAM_SUMMARY_CACHE, _STEAM_SUMMARY_TTL, _steam_get_summary)
 
 
 def _steam_webapi_status():
     """The GET /api/steam/webapi body: whether a key is configured, the MASKED key,
     and a live connectivity check (persona/avatar) when reachable. NEVER returns the
     full key. Additive / probe-and-appear (absent route on older agents)."""
+    owner = _steam_account()
     with _STEAM_WEBAPI_LOCK:
         sid = _STEAM_WEBAPI["steamid64"]
         key = _STEAM_WEBAPI["apikey"]
     if not (sid and key):
         return {"configured": False}
     summ = _steam_summary_cached()
+    if not _steam_account_current(owner):
+        return {"configured": _steam_webapi_configured(), "connected": False}
     body = {"configured": True, "steamid64": sid,
             "apikey_masked": _mask_apikey(key),
             "connected": summ is not None}
@@ -22936,43 +23814,18 @@ def _steam_get_level(steamid64, apikey):
 
 
 def _steam_owned_cached():
-    if not _steam_webapi_configured():
-        return None
-    now = time.monotonic()
-    if (_STEAM_OWNED_CACHE["val"] is not None
-            and now - _STEAM_OWNED_CACHE["ts"] < _STEAM_OWNED_TTL):
-        return _STEAM_OWNED_CACHE["val"]
-    with _STEAM_WEBAPI_LOCK:
-        sid = _STEAM_WEBAPI["steamid64"]
-        key = _STEAM_WEBAPI["apikey"]
-    games = _steam_get_owned(sid, key)
-    if games is not None and _steam_cache_ok(sid):
-        _STEAM_OWNED_CACHE["ts"] = now
-        _STEAM_OWNED_CACHE["val"] = games
-    return games
+    return _steam_cached_fetch(_STEAM_OWNED_CACHE, _STEAM_OWNED_TTL, _steam_get_owned)
 
 
 def _steam_level_cached():
-    if not _steam_webapi_configured():
-        return None
-    now = time.monotonic()
-    if (_STEAM_LEVEL_CACHE["val"] is not None
-            and now - _STEAM_LEVEL_CACHE["ts"] < _STEAM_LEVEL_TTL):
-        return _STEAM_LEVEL_CACHE["val"]
-    with _STEAM_WEBAPI_LOCK:
-        sid = _STEAM_WEBAPI["steamid64"]
-        key = _STEAM_WEBAPI["apikey"]
-    lv = _steam_get_level(sid, key)
-    if lv is not None and _steam_cache_ok(sid):
-        _STEAM_LEVEL_CACHE["ts"] = now
-        _STEAM_LEVEL_CACHE["val"] = lv
-    return lv
+    return _steam_cached_fetch(_STEAM_LEVEL_CACHE, _STEAM_LEVEL_TTL, _steam_get_level)
 
 
 def _steam_profile_payload():
     """GET /api/steam/profile: the owner's live profile card — persona, avatar,
     online state, what they're playing (even on another device), Steam level.
     {"configured": False} without a key; connected False when Steam is unreachable."""
+    owner = _steam_account()
     if not _steam_webapi_configured():
         return {"configured": False}
     summ = _steam_summary_cached()
@@ -22995,6 +23848,8 @@ def _steam_profile_payload():
     lv = _steam_level_cached()
     if lv is not None:
         body["level"] = lv
+    if not _steam_account_current(owner):
+        return {"configured": _steam_webapi_configured(), "connected": False}
     return body
 
 
@@ -23003,12 +23858,13 @@ def _steam_library_payload():
     "jump back in" rail — total games, total hours, most-played title, last-two-weeks
     hours, backlog (owned but never played), and the recently played. ONE
     GetOwnedGames call. {"configured": False} without a key."""
+    owner = _steam_account()
     if not _steam_webapi_configured():
         return {"configured": False}
     with _STEAM_WEBAPI_LOCK:
         _sid = _STEAM_WEBAPI["steamid64"]
     games = _steam_owned_cached()
-    if games is None:
+    if games is None or not _steam_account_current(owner):
         return {"configured": True, "connected": False}
     games = [g for g in games if isinstance(g, dict)]
 
@@ -23043,10 +23899,11 @@ def _steam_library_payload():
     # account (Steam only exposes "last 2 weeks" + lifetime). Piggybacks on this fetch.
     # Only record if the box is STILL on the account this fetch started for, so a
     # concurrent account switch can't file account A's total under account B (TOCTOU).
-    if _sid and _steam_cache_ok(_sid):
-        _pt = _steam_playtime_deltas(_steam_playtime_record(_sid, total_min), total_min)
-    else:
-        _pt = {"played_7d": None, "played_30d": None}
+    with _STEAM_WEBAPI_LOCK:
+        if _sid and owner == _steam_account_locked():
+            _pt = _steam_playtime_deltas(_steam_playtime_record(_sid, total_min), total_min)
+        else:
+            _pt = {"played_7d": None, "played_30d": None}
     body = {"configured": True, "connected": True,
             "count": count, "played": played, "backlog": count - played,
             "total_hours": round(total_min / 60.0, 1),
@@ -23055,6 +23912,8 @@ def _steam_library_payload():
             "recent": [_slim(g, "playtime_2weeks") for g in recent[:8]]}
     if top is not None and _mins(top, "playtime_forever") > 0:
         body["top"] = _slim(top, "playtime_forever")
+    if not _steam_account_current(owner):
+        return {"configured": _steam_webapi_configured(), "connected": False}
     return body
 
 
@@ -23104,6 +23963,9 @@ def _steam_store_get(endpoint, params, timeout=_STEAM_WEBAPI_TIMEOUT):
     chose; `params` are validated values. Fixed host + HTTPS + urlencoded query, so
     no value steers the host/path. Returns parsed JSON or None (degrade closed).
     Never logs; there is no secret on this path."""
+    timeout = _steam_upstream_timeout(timeout)
+    if timeout <= 0:
+        return None
     try:
         url = "%s/api/%s?%s" % (_STEAM_STORE_HOST, endpoint,
                                 urllib.parse.urlencode(params))
@@ -23153,16 +24015,12 @@ def _steam_deals_payload():
     if not _steam_webapi_configured():
         return {"configured": False}
     cc = _steam_country()
-    now = time.monotonic()
-    if (_STEAM_DEALS_CACHE["val"] is not None and _STEAM_DEALS_CACHE["cc"] == cc
-            and now - _STEAM_DEALS_CACHE["ts"] < _STEAM_DEALS_TTL):
-        items = _STEAM_DEALS_CACHE["val"]
-    else:
-        items = _steam_featured(cc)
-        if items is not None:
-            _STEAM_DEALS_CACHE["ts"] = now
-            _STEAM_DEALS_CACHE["val"] = items
-            _STEAM_DEALS_CACHE["cc"] = cc
+    with _STEAM_WEBAPI_LOCK:
+        if _STEAM_DEALS_CACHE.get("cc") != cc:
+            _STEAM_DEALS_CACHE.clear()
+            _STEAM_DEALS_CACHE.update(ts=0.0, val=None, cc=cc)
+    items = _steam_cached_fetch(_STEAM_DEALS_CACHE, _STEAM_DEALS_TTL,
+                                lambda sid, key: _steam_featured(cc))
     if items is None:
         return {"configured": True, "connected": False}
     return {"configured": True, "connected": True, "region": cc, "items": items[:20]}
@@ -23212,28 +24070,34 @@ def _steam_get_global_pct(appid):
 
 
 def _steam_achievements_payload(appid):
-    """GET /api/steam/achievements?appid=<digits>: the owner's achievement progress
-    for one game + their rarest unlocked. {"configured": False} without a key;
-    connected:false when Steam is unreachable; has_achievements:false for a game with
-    none (or a profile that hides them). Cached 60s per appid. `appid` is already
-    validated (digits) by the route."""
     if not _steam_webapi_configured():
         return {"configured": False}
-    now = time.monotonic()
-    ent = _STEAM_ACH_CACHE.get(appid)
-    if ent is not None and now - ent["ts"] < _STEAM_ACH_TTL:
-        return ent["val"]
+    if not _valid_appid(appid):
+        return {"configured": True, "connected": False}
     with _STEAM_WEBAPI_LOCK:
-        sid = _STEAM_WEBAPI["steamid64"]
-        key = _STEAM_WEBAPI["apikey"]
+        if appid not in _STEAM_ACH_CACHE:
+            if len(_STEAM_ACH_CACHE) >= _STEAM_ACH_CACHE_MAX:
+                # Do not evict in-flight slots (which would duplicate work).
+                idle = next((k for k, v in _STEAM_ACH_CACHE.items() if not v.get("loading")), None)
+                if idle is None:
+                    return {"configured": True, "connected": False, "appid": appid}
+                del _STEAM_ACH_CACHE[idle]
+            _STEAM_ACH_CACHE[appid] = {"ts": 0.0, "val": None}
+        ent = _STEAM_ACH_CACHE[appid]
+    value = _steam_cached_fetch(ent, _STEAM_ACH_TTL,
+                                lambda sid, key: _steam_fetch_achievements(appid, sid, key))
+    return value if value is not None else {"configured": True, "connected": False, "appid": appid}
+
+
+def _steam_fetch_achievements(appid, sid, key):
     d = _steam_api_get("ISteamUserStats", "GetPlayerAchievements", "0001",
                        {"key": key, "steamid": sid, "appid": appid, "l": "english"})
     if d is None:
-        return {"configured": True, "connected": False, "appid": appid}
+        return None
     try:
         ps = d["playerstats"]
     except Exception:
-        return {"configured": True, "connected": False, "appid": appid}
+        return None
     if not ps.get("success"):
         body = {"configured": True, "connected": True, "appid": appid,
                 "has_achievements": False}
@@ -23258,11 +24122,32 @@ def _steam_achievements_payload(appid):
                 "has_achievements": total > 0, "unlocked": unlocked, "total": total,
                 "percent": int(round(100.0 * unlocked / total)) if total else 0,
                 "rarest": rarest}
-    # bounded cache
-    if _steam_cache_ok(sid):
-        if len(_STEAM_ACH_CACHE) >= _STEAM_ACH_CACHE_MAX:
-            _STEAM_ACH_CACHE.clear()
-        _STEAM_ACH_CACHE[appid] = {"ts": now, "val": body}
+    return body
+
+
+def _steam_theme_game_stats(appid):
+    """Read-only, selected-game summary; existing opt-in/account caches only."""
+    if not _valid_appid(appid):
+        return {}
+    owner = _steam_account()
+    body = {"appid": int(appid), "configured": _steam_webapi_configured()}
+    if not body["configured"]:
+        return body
+    games = _steam_owned_cached()
+    if games is not None:
+        game = next((g for g in games if isinstance(g, dict) and str(g.get("appid")) == str(appid)), None)
+        if game:
+            minutes = game.get("playtime_forever")
+            if type(minutes) is int and 0 <= minutes <= 100000000:
+                body["hours"] = round(minutes / 60.0, 1)
+            last = game.get("rtime_last_played")
+            if type(last) is int and 0 < last <= time.time() + 86400:
+                body["last_played"] = last
+    achievements = _steam_achievements_payload(appid)
+    if achievements.get("connected") and achievements.get("has_achievements"):
+        body["achievements"] = {k: achievements[k] for k in ("unlocked", "total", "percent") if k in achievements}
+    if not _steam_account_current(owner):
+        return {"appid": int(appid), "configured": _steam_webapi_configured()}
     return body
 
 
@@ -23305,21 +24190,17 @@ def _steam_get_wishlist(steamid64, apikey):
 
 
 def _steam_wishlist_payload():
-    """GET /api/steam/wishlist: the owner's wishlist size + which of those games are
-    on sale right now (name, discount, price). {"configured": False} without a key;
-    connected:false when the wishlist can't be read. Bounded + cached ~1h."""
     if not _steam_webapi_configured():
         return {"configured": False}
-    now = time.monotonic()
-    if (_STEAM_WISHLIST_CACHE["val"] is not None
-            and now - _STEAM_WISHLIST_CACHE["ts"] < _STEAM_WISHLIST_TTL):
-        return _STEAM_WISHLIST_CACHE["val"]
-    with _STEAM_WEBAPI_LOCK:
-        sid = _STEAM_WEBAPI["steamid64"]
-        key = _STEAM_WEBAPI["apikey"]
+    value = _steam_cached_fetch(_STEAM_WISHLIST_CACHE, _STEAM_WISHLIST_TTL,
+                                _steam_fetch_wishlist)
+    return value if value is not None else {"configured": True, "connected": False}
+
+
+def _steam_fetch_wishlist(sid, key):
     appids = _steam_get_wishlist(sid, key)
     if appids is None:
-        return {"configured": True, "connected": False}
+        return None
 
     def _int(v):
         try:
@@ -23333,6 +24214,8 @@ def _steam_wishlist_payload():
     if consider:
         pd = _steam_store_get("appdetails",
                               {"appids": ",".join(consider), "filters": "price_overview", "cc": cc})
+        if not isinstance(pd, dict) or not pd:
+            return None  # Upstream failure is not a successful empty sale list.
         if isinstance(pd, dict):
             for aid in consider:
                 e = pd.get(aid)
@@ -23355,9 +24238,6 @@ def _steam_wishlist_payload():
             it["name"] = name or ("App %s" % it["appid"])
     body = {"configured": True, "connected": True, "count": len(appids),
             "on_sale": on_sale[:_STEAM_WL_MAX]}
-    if _steam_cache_ok(sid):
-        _STEAM_WISHLIST_CACHE["ts"] = now
-        _STEAM_WISHLIST_CACHE["val"] = body
     return body
 
 
@@ -23439,6 +24319,7 @@ def _steam_wl_alerts_payload():
     — the app ACKs to move the baseline. {"configured": False} without a Steam key;
     "primed": false the first time, so the app can seed the baseline without a noisy
     "everything dropped" alert."""
+    owner = _steam_account()
     if not _steam_webapi_configured():
         return {"configured": False}
     # Capture the account BEFORE the fetch so the baseline we diff against belongs
@@ -23447,7 +24328,7 @@ def _steam_wl_alerts_payload():
     with _STEAM_WEBAPI_LOCK:
         sid = _STEAM_WEBAPI["steamid64"]
     wl = _steam_wishlist_payload()
-    if not wl.get("connected"):
+    if not wl.get("connected") or not _steam_account_current(owner):
         return {"configured": True, "connected": False}
     on_sale = wl.get("on_sale") or []
     seen = _steam_wl_watch_load().get(sid)
@@ -23486,6 +24367,8 @@ def _steam_wl_alerts_payload():
             pass
         alerts.append(a)
 
+    if not _steam_account_current(owner):
+        return {"configured": _steam_webapi_configured(), "connected": False}
     return {"configured": True, "connected": True, "primed": primed,
             "alerts": alerts, "count": len(alerts),
             "count_low": sum(1 for a in alerts if a.get("at_low"))}
@@ -23495,6 +24378,7 @@ def _steam_wl_ack():
     """POST /api/steam/wishlist/alerts/ack: record the CURRENT on-sale prices as the
     baseline for this account, so the next check only flags games that got cheaper
     after this. Guarded against a concurrent account switch (TOCTOU)."""
+    owner = _steam_account()
     if not _steam_webapi_configured():
         return {"ok": False}
     with _STEAM_WEBAPI_LOCK:
@@ -23502,7 +24386,7 @@ def _steam_wl_ack():
     if not sid:
         return {"ok": False}
     wl = _steam_wishlist_payload()
-    if not wl.get("connected"):
+    if not wl.get("connected") or not _steam_account_current(owner):
         return {"ok": False, "connected": False}
     on_sale = wl.get("on_sale") or []
     allw = _steam_wl_watch_load()
@@ -23510,7 +24394,9 @@ def _steam_wl_ack():
         allw[sid] = {it["appid"]: int(it["final"]) for it in on_sale}
     except (TypeError, ValueError, KeyError):
         return {"ok": False}
-    if _steam_cache_ok(sid):
+    with _STEAM_WEBAPI_LOCK:
+        if owner != _steam_account_locked():
+            return {"ok": False}
         _steam_wl_watch_save(allw)
     return {"ok": True, "seen": len(on_sale)}
 
@@ -25891,7 +26777,11 @@ def _make_holder(entry, mock):
     if not entry.get("nopad") and entry.get("device") is None:
         try:
             entry["device"] = MockGamepad() if mock else UInputGamepad()
+            if not mock:
+                _controller_creation_result()
         except Exception as e:
+            if not mock:
+                _controller_creation_result(e)
             print("[gamepad] device create failed: %s" % e, flush=True)
             _wsend_json(entry, {"t": "err", "msg": "uinput unavailable: %s" % e})
             _wsend_op(entry, WS_OP_CLOSE)
@@ -26956,7 +27846,7 @@ class Handler(BaseHTTPRequestHandler):
         # is accepted for image GETs so the app never puts the real bearer token on
         # an un-pinnable <Image> request on a TLS box. Reads only -- no state-changing
         # route uses _authorized_image, and a ticket can never satisfy _authorized().
-        if ticket and _ticket_ok(ticket):
+        if ticket and _ticket_ok(ticket, "image"):
             return True
         return bool(supplied) and hmac.compare_digest(supplied, self.token)
 
@@ -27145,6 +28035,15 @@ class Handler(BaseHTTPRequestHandler):
                 self._send(401, {"error": "unauthorized"}, started)
                 return
 
+            if path == "/api/leds/ring-program":
+                self._send(200, _ring_status(), started)
+                return
+
+            if path == "/api/leds/ring-motion":
+                self._send(200, {"available": False, "active": False, "error": None, "remaining_ms": 0}
+                           if self.mock else _ring_motion_status(), started)
+                return
+
             if path == "/api/status":
                 data = mock_status() if self.mock else real_status()
                 # The LAN IP the phone actually reached us on. The app caches it
@@ -27159,6 +28058,8 @@ class Handler(BaseHTTPRequestHandler):
                 except OSError:
                     pass
                 self._send(200, data, started)
+            elif path == "/api/controller-health":
+                self._send(200, {"state": "accessible"} if self.mock else controller_health(), started)
             elif path == "/api/units":
                 units = mock_units() if self.mock else real_units()
                 self._send(200, {"units": units}, started)
@@ -27204,6 +28105,8 @@ class Handler(BaseHTTPRequestHandler):
                 # POST .../openpuck/run?variant=latest.
                 self._send(200, (mock_openpuck_latest() if self.mock
                                  else openpuck_latest()), started)
+            elif path == "/api/steam/themes":
+                self._send(200, steam_themes_state(self.mock), started)
             elif path == "/api/decky/loader":
                 # Decky Loader state machine (memoised <=500 ms). Token-only
                 # (filesystem/loopback reads). 404 on a box without a Steam
@@ -27368,7 +28271,11 @@ class Handler(BaseHTTPRequestHandler):
                 if not devs:
                     self._send(404, {"error": "not found"}, started)
                 else:
-                    self._send(200, {"devices": devs}, started)
+                    manageable = self.mock or _helper_supports("usb.wake-arm")
+                    persistent = self.mock or _helper_supports("usb.wake-save")
+                    for d in devs:
+                        d["writable"] = manageable
+                    self._send(200, {"devices": devs, "persistent_supported": persistent}, started)
             elif path == "/api/display-info":
                 # READ-ONLY description of the panel this box is driving plus the
                 # default audio devices. Distinct from /api/displays below, which
@@ -27567,6 +28474,13 @@ class Handler(BaseHTTPRequestHandler):
                 # toggle; probe-and-appear. Bearer-gated: the do_GET gate ran.
                 self._send(200, mock_steam_deals_payload() if self.mock
                            else _steam_deals_payload(), started)
+            elif path == "/api/steam/themes/game":
+                appid = (parse_qs(parsed.query).get("appid") or [""])[0]
+                if not _valid_appid(appid):
+                    self._send(400, {"error": "appid must be digits"}, started)
+                    return
+                self._send(200, {"appid": int(appid), "configured": False} if self.mock
+                           else _steam_theme_game_stats(appid), started)
             elif path == "/api/steam/achievements":
                 # Opt-in: the owner's achievement progress for one game. `appid` is a
                 # query param VALIDATED to digits (reject, never sanitise) before it
@@ -27724,10 +28638,11 @@ class Handler(BaseHTTPRequestHandler):
         return self.rfile.read(n)
 
     def _handle_upload(self, parsed, started):
-        """Stream a phone->box file upload to the drop dir. Bearer-gated by the
+        """Stream a phone->box file upload to the drop dir. Authorized by the
         caller. The filename must be a bare, contained name (rejected, not
-        sanitised, otherwise); the destination is realpath-verified to stay inside
-        the drop root; the body is copied in 1 MiB chunks under a hard size cap.
+        sanitised, otherwise); symlink destinations are rejected. The body is
+        copied in 1 MiB chunks to an exclusively created, private temporary file
+        in the drop root, then atomically replaces the requested directory entry.
         Any error path that has not fully consumed the body closes the connection
         so an undrained upload can't desync the keep-alive stream."""
         qs = parse_qs(parsed.query)
@@ -27740,9 +28655,12 @@ class Handler(BaseHTTPRequestHandler):
             self._send(400, {"error": "invalid filename"}, started)
             return
         root = _drop_dir()
-        dest = os.path.realpath(os.path.join(root, name))
-        # Containment (§3.5): the resolved path must stay under the drop root.
-        if dest != root and not dest.startswith(root + os.sep):
+        dest = os.path.join(root, name)
+        resolved = os.path.realpath(dest)
+        # Do not follow even an in-root destination symlink. Keep the original
+        # directory entry for os.replace: a link added AFTER this check is then
+        # replaced, not followed. The configured drop root itself is trusted.
+        if os.path.islink(dest) or not resolved.startswith(root + os.sep):
             self.close_connection = True
             self._send(400, {"error": "invalid filename"}, started)
             return
@@ -27758,10 +28676,18 @@ class Handler(BaseHTTPRequestHandler):
             self.close_connection = True
             self._send(413, {"error": "file too large"}, started)
             return
-        tmp = dest + ".part"
+        tmp = None
+        fd = None
         written = 0
+        error = None
         try:
-            with open(tmp, "wb") as f:
+            # A fixed <name>.part follows planted links and lets simultaneous
+            # uploads share one file. mkstemp creates a unique 0600 file with
+            # O_EXCL; only this request owns and cleans it. Staging on the same
+            # filesystem keeps the final replace atomic (last completion wins).
+            fd, tmp = tempfile.mkstemp(prefix=".couchside-upload-", suffix=".part", dir=root)
+            with os.fdopen(fd, "wb") as f:
+                fd = None  # the file object now owns the descriptor
                 remaining = length
                 while remaining > 0:
                     chunk = self.rfile.read(min(1024 * 1024, remaining))
@@ -27770,22 +28696,22 @@ class Handler(BaseHTTPRequestHandler):
                     f.write(chunk)
                     remaining -= len(chunk)
                     written += len(chunk)
+            if written != length:
+                error = (400, "incomplete upload")
+            else:
+                os.replace(tmp, dest)  # atomic swap once fully received
+                tmp = None  # no staging file remains for us to clean
         except OSError:
-            self._unlink_quiet(tmp)
-            self._send(500, {"error": "write failed"}, started)
-            return
-        if written != length:
-            # Short read: client hung up mid-upload. Drop the partial and close
-            # the now-desynced keep-alive connection.
-            self._unlink_quiet(tmp)
+            error = (500, "write failed")
+        finally:
+            if fd is not None:
+                os.close(fd)
+            if tmp is not None:
+                self._unlink_quiet(tmp)
+        if error is not None:
+            # Clean staging before replying. A failure may leave bytes undrained.
             self.close_connection = True
-            self._send(400, {"error": "incomplete upload"}, started)
-            return
-        try:
-            os.replace(tmp, dest)  # atomic swap into place once fully received
-        except OSError:
-            self._unlink_quiet(tmp)
-            self._send(500, {"error": "write failed"}, started)
+            self._send(error[0], {"error": error[1]}, started)
             return
         self._send(200, {"ok": True, "name": name, "bytes": written,
                          "path": dest}, started)
@@ -28003,7 +28929,7 @@ class Handler(BaseHTTPRequestHandler):
                     tk = (parse_qs(parsed.query).get("ticket") or [""])[0]
                 except Exception:
                     tk = ""
-                if tk and _ticket_ok(tk):
+                if tk and _ticket_ok(tk, "upload"):
                     self._handle_upload(parsed, started)
                     return
 
@@ -28038,12 +28964,32 @@ class Handler(BaseHTTPRequestHandler):
                 self._handle_upload(parsed, started)
                 return
 
+            if path == "/api/steam/themes":
+                try:
+                    theme_length = int(self.headers.get("Content-Length") or 0)
+                except ValueError:
+                    theme_length = -1
+                if theme_length < 0 or theme_length > 4096:
+                    self.close_connection = True
+                    self._send(413, {"error": "theme settings too large or invalid length"}, started)
+                    return
+
             # Authorized: now enforce the size cap, then read the body.
             if self._body_too_large():
                 self.close_connection = True
                 self._send(413, {"error": "request body too large"}, started)
                 return
             body = self._read_body()
+
+            if path == "/api/steam/themes":
+                try:
+                    req = json.loads(body.decode("utf-8"))
+                    data = steam_themes_save(req, self.mock)
+                except (ValueError, TypeError, UnicodeDecodeError) as e:
+                    self._send(400, {"error": str(e)}, started)
+                    return
+                self._send(200, data, started)
+                return
 
             # POST /api/upload/reveal — open the drop dir in the box's file
             # manager after a drop. Takes NO body and NO parameters: the path is
@@ -28418,6 +29364,33 @@ class Handler(BaseHTTPRequestHandler):
                 self._send(200, res, started)
                 return
 
+            if path == "/api/leds/ring-program":
+                if self.mock:
+                    self._send(404, {"error": "ring scenes unavailable in mock mode"}, started)
+                    return
+                try:
+                    req = json.loads(body.decode("utf-8"))
+                    if not isinstance(req, dict) or "program" not in req:
+                        raise ValueError("program required")
+                    self._send(200, _ring_apply(req["program"]), started)
+                except (ValueError, TypeError):
+                    self._send(400, {"error": "invalid ring program"}, started)
+                except OSError:
+                    self._send(503, {"error": "could not save or apply lighting"}, started)
+                return
+
+            if path == "/api/leds/ring-motion":
+                if self.mock:
+                    self._send(404, {"error": "ring preview unavailable in mock mode"}, started)
+                    return
+                try:
+                    self._send(200, _ring_motion_apply(json.loads(body.decode("utf-8"))), started)
+                except (ValueError, TypeError, UnicodeError):
+                    self._send(400, {"error": "invalid ring preview"}, started)
+                except OSError:
+                    self._send(503, {"error": "could not start or safely stop ring preview"}, started)
+                return
+
             if path == "/api/leds/effect":
                 # Start/replace an animated effect (breathe/pulse/rainbow/strobe/
                 # scanner) or a solid/off on an LED. SAME allowlist shape as
@@ -28766,14 +29739,15 @@ class Handler(BaseHTTPRequestHandler):
                     self._send(404, {"ok": False,
                                      "error": "unknown device"}, started)
                     return
-                r = _helper_call("usb.wake-arm", {"id": dev, "on": on})
+                persistent = _helper_supports("usb.wake-save")
+                r = _helper_call("usb.wake-save" if persistent else "usb.wake-arm", {"id": dev, "on": on})
                 if r is None:
                     self._send(503, {"ok": False,
                                      "error": "no helper to arm with"}, started)
                     return
                 ok = bool(r.get("ok"))
                 self._send(200 if ok else 500,
-                           {"ok": ok, "id": dev, "armed": on,
+                           {"ok": ok, "id": dev, "armed": on, "persistent": persistent,
                             **({"error": r.get("error")} if not ok else {})},
                            started)
                 return
@@ -29416,6 +30390,25 @@ class Handler(BaseHTTPRequestHandler):
                         self._send(409, {"error": str(e)}, started)
                         return
                     self._send(200, r, started)
+                elif op == "catalog-open":
+                    # Strict shape prevents an extra URL field being mistaken
+                    # for something honored by this fixed-provider operation.
+                    if set(req) != {"op", "video_id"}:
+                        self._send(400, {"error": "video id required"}, started)
+                        return
+                    video_id = req.get("video_id")
+                    if not isinstance(video_id, str) or video_id not in _PLAYER_CATALOG_STREAMS:
+                        self._send(404, {"error": "unknown catalog video"}, started)
+                        return
+                    now = time.time()
+                    if now - _pl_last_open[0] < _PL_OPEN_MIN_INTERVAL_S:
+                        self._send(429, {"error": "slow down"}, started)
+                        return
+                    _pl_last_open[0] = now
+                    try:
+                        self._send(200, player_catalog_open(video_id), started)
+                    except RuntimeError as e:
+                        self._send(409, {"error": str(e)}, started)
                 elif op == "hub":
                     try:
                         self._send(200, player_hub(), started)
@@ -30954,7 +31947,10 @@ def _tls_start(host, handler_cls, force_enable=False):
             ctx.load_cert_chain(certfile=info["cert_path"], keyfile=info["key_path"])
             tls_srv = BoundedThreadingHTTPServer((host, port), handler_cls)
             tls_srv.daemon_threads = True
-            tls_srv.socket = ctx.wrap_socket(tls_srv.socket, server_side=True)
+            # accept() must not negotiate TLS: an idle peer would block the
+            # listener before worker admission or Handler's read timeout.
+            tls_srv.socket = ctx.wrap_socket(tls_srv.socket, server_side=True,
+                                            do_handshake_on_connect=False)
         except OSError as e:
             # EADDRINUSE (or similar) during the restart race: the old process
             # has not released the listening socket yet. Back off and retry --
@@ -31050,9 +32046,11 @@ class BoundedThreadingHTTPServer(ThreadingHTTPServer):
     closed and the connection rejected. Released when the request finishes.
 
     Note: the long-lived /ws/gamepad connection holds a slot for the entire
-    Pad session, so the cap must comfortably exceed a household's phones.
+    Pad session, so the cap must comfortably exceed a household's phones. TLS
+    handshakes use the same capped workers, with their own short deadline.
     """
     _MAX_CONNECTIONS = 128
+    _TLS_HANDSHAKE_TIMEOUT_S = 5.0
 
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
@@ -31066,10 +32064,29 @@ class BoundedThreadingHTTPServer(ThreadingHTTPServer):
             except Exception:
                 pass
             return
-        super().process_request(request, client_address)
+        try:
+            super().process_request(request, client_address)
+        except Exception:
+            # No worker owns the slot if thread creation fails. The server's
+            # _handle_request_noblock exception path closes the accepted socket.
+            self._conn_sem.release()
+            raise
 
     def process_request_thread(self, request, client_address):
         try:
+            if isinstance(request, ssl.SSLSocket):
+                try:
+                    previous_timeout = request.gettimeout()
+                    request.settimeout(self._TLS_HANDSHAKE_TIMEOUT_S)
+                    request.do_handshake()
+                    # Only negotiation gets the short deadline. Handler.setup
+                    # and the WS loops retain their existing read timeouts.
+                    request.settimeout(previous_timeout)
+                except OSError:
+                    # Timeout, malformed TLS or a dropped peer: close quietly,
+                    # without reaching the HTTP handler or flooding the log.
+                    self.shutdown_request(request)
+                    return
             super().process_request_thread(request, client_address)
         finally:
             try:

@@ -1,6 +1,6 @@
 import Ionicons from '@expo/vector-icons/Ionicons';
 import React from 'react';
-import { Alert, Modal, PanResponder, Pressable, StyleSheet, Text, View } from 'react-native';
+import { ActivityIndicator, Alert, Modal, Platform, PanResponder, Pressable, ScrollView, StyleSheet, Text, View, useWindowDimensions } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
 import { useConfirm } from './ConfirmDialog';
@@ -12,12 +12,12 @@ import { usePoll } from '@/hooks/usePoll';
 import { api, Displays, hostKey, PowerSchedule, Screensaver, Status, Tv, TvOp, UsbWakeState, VolumeTarget } from '@/lib/api';
 import { hapticError, hapticLight, hapticSuccess } from '@/lib/haptics';
 import { getPref, usePref } from '@/lib/prefs';
-import { normalizeMac, isValidLanIp } from '@/lib/settings';
 import { connFromBox } from '@/lib/boxConn';
 import { useBoxes, useSettings } from '@/lib/SettingsContext';
 import { mono, useTheme, useThemedStyles } from '@/lib/theme';
 import type { Palette } from '@/lib/theme';
 import { sendWol, wolAvailable } from '@/lib/wol';
+import { useReducedMotion } from '@/lib/skin/motion';
 
 type IoniconName = React.ComponentProps<typeof Ionicons>['name'];
 
@@ -175,6 +175,8 @@ export function RemotePowerBar({ compact = false }: { compact?: boolean }) {
   const t = useTheme();
   const styles = useThemedStyles(makeStyles);
   const insets = useSafeAreaInsets();
+  const { height } = useWindowDimensions();
+  const reducedMotion = useReducedMotion();
   const confirm = useConfirm();
   const { settings, ready, update } = useSettings();
   // Other boxes in the fleet are potential Wake-on-LAN relays: iOS blocks UDP
@@ -201,21 +203,9 @@ export function RemotePowerBar({ compact = false }: { compact?: boolean }) {
   const s = status.data;
   const reachable = configured && status.error == null && s != null;
 
-  // Learn the box MAC from status so Wake-on-LAN works after it goes offline.
-  React.useEffect(() => {
-    const mac = normalizeMac(s?.net?.mac);
-    if (mac && mac !== settings.mac) void update({ mac });
-  }, [s?.net?.mac, settings.mac, update]);
-
-  // Learn + REFRESH the box's LAN IP from status (agent >= 2.9.22). lastIp is
-  // otherwise written only at pairing, so a box added by hostname never got one
-  // and a box whose DHCP lease drifted kept a stale one — leaving raceGet's
-  // cached-IP fallback unable to engage when mDNS (.local) breaks, e.g. right
-  // after an agent restart. Refreshing every poll keeps the fallback live.
-  React.useEffect(() => {
-    const ip = s?.ip;
-    if (ip && isValidLanIp(ip) && ip !== settings.lastIp) void update({ lastIp: ip });
-  }, [s?.ip, settings.lastIp, update]);
+  // Address/MAC learning belongs to the single tab-layout useCapsSync poll.
+  // Per-tab snapshots can disagree on a dual-interface box and must not
+  // write each other back into Settings on every render.
 
   // Learn + persist the box's capability summary from status (agent >= 2.8.2),
   // so the tab bar can hide gaming tabs on a server box immediately on next
@@ -351,32 +341,91 @@ export function RemotePowerBar({ compact = false }: { compact?: boolean }) {
   }, [polledSession]);
 
   // Suspend-action availability, once per connect (agent >= 2.6 with the rule).
-  const [hasSuspend, setHasSuspend] = React.useState(false);
-  const suspendProbedFor = React.useRef<string | null>(null);
+  //
+  // KEYED TO THE BOX, NOT TO `settings`. This effect used to depend on the
+  // whole settings object and cancel its request in cleanup. Settings is
+  // rebuilt whenever anything about the box is saved, and the learners save
+  // right after a box answers — so the probe was cancelled ~30ms after it was
+  // sent, the re-run saw "already probed" and asked nothing, and the answer
+  // (which listed suspend) was thrown away. Suspend vanished from the menu
+  // until the box next dropped offline. Measured in the harness, 2026-10-04.
+  //
+  // So: an answer applies unless a NEWER probe superseded it (box switch or a
+  // reconnect), the answer remembers which box it is for, and a failed probe
+  // clears itself so the next successful status poll asks again. Until then
+  // the button stays hidden — degrade closed, never offer a dead action.
+  const [suspendFor, setSuspendFor] = React.useState<{ key: string; ok: boolean } | null>(null);
+  const hasSuspend = suspendFor?.key === boxKey && suspendFor.ok;
+  const suspendProbe = React.useRef<{ key: string } | null>(null);
+  const settingsRef = React.useRef(settings);
+  settingsRef.current = settings;
   React.useEffect(() => {
     if (!reachable) {
-      suspendProbedFor.current = null;
+      suspendProbe.current = null;
       return;
     }
-    const key = `${settings.host}:${settings.port}`;
-    if (suspendProbedFor.current === key) return;
-    suspendProbedFor.current = key;
-    let cancelled = false;
+    if (suspendProbe.current?.key === boxKey) return; // asked (or asking) this box already
+    const mine = { key: boxKey };
+    suspendProbe.current = mine;
     api
-      .actions(settings)
+      .actions(settingsRef.current)
       .then((r) => {
-        if (!cancelled) setHasSuspend(r.actions.some((a) => a.id === 'suspend'));
+        if (suspendProbe.current === mine) {
+          setSuspendFor({ key: mine.key, ok: r.actions.some((a) => a.id === 'suspend') });
+        }
       })
       .catch(() => {
-        if (!cancelled) setHasSuspend(false);
+        if (suspendProbe.current === mine) {
+          setSuspendFor({ key: mine.key, ok: false });
+          suspendProbe.current = null;
+        }
       });
-    return () => {
-      cancelled = true;
-    };
-  }, [reachable, settings]);
+    // status.lastSuccess re-runs this after a failed probe, which is what
+    // retries it; with a probe already done or in flight it returns at once.
+  }, [reachable, boxKey, status.lastSuccess]);
 
   const [busy, setBusy] = React.useState(false);
-  const [waking, setWaking] = React.useState(false);
+  const [wakePhase, setWakePhase] = React.useState<'idle' | 'sending' | 'waiting' | 'awake' | 'timeout' | 'failed'>('idle');
+  const [wakeDetail, setWakeDetail] = React.useState('');
+  const [wakeStarted, setWakeStarted] = React.useState(0);
+  const [wakeElapsed, setWakeElapsed] = React.useState(0);
+  const wakeRun = React.useRef(0);
+  const waking = wakePhase === 'sending' || wakePhase === 'waiting';
+  React.useEffect(() => {
+    wakeRun.current++;
+    setWakePhase('idle');
+    return () => { wakeRun.current++; };
+  }, [boxKey]);
+  React.useEffect(() => {
+    if (!waking) return;
+    const tick = () => {
+      const elapsed = Math.floor((Date.now() - wakeStarted) / 1000);
+      setWakeElapsed(elapsed);
+      if (elapsed >= 90) {
+        wakeRun.current++;
+        setWakePhase('timeout');
+        setWakeDetail('No response yet. The box may still be starting. Check its power and network, then retry.');
+        hapticError();
+      }
+    };
+    const timer = setInterval(tick, 1000);
+    return () => clearInterval(timer);
+  }, [waking, wakeStarted]);
+  React.useEffect(() => {
+    // Clear prior success when the box sleeps again; never show awake offline.
+    if (wakePhase === 'awake' && !reachable) {
+      setWakePhase('idle');
+      return;
+    }
+    // Also recognize a late response after timeout, without resending packets.
+    // A fresh successful response confirms the box, not a UDP send callback.
+    if (wakePhase === 'idle' || wakePhase === 'awake' || !reachable || status.dataKey !== boxKey ||
+        status.lastSuccess == null || status.lastSuccess <= wakeStarted) return;
+    wakeRun.current++;
+    setWakePhase('awake');
+    setWakeDetail('The box is online and responding.');
+    hapticSuccess();
+  }, [wakePhase, reachable, status.dataKey, status.lastSuccess, boxKey, wakeStarted]);
 
   // Where volume actually goes. Declared HERE, above the senders, because
   // hiding the TV target has to bind at the SEND sites too — hiding the segment
@@ -546,57 +595,82 @@ export function RemotePowerBar({ compact = false }: { compact?: boolean }) {
 
   const onWake = React.useCallback(() => {
     const mac = settings.mac;
-    if (!mac) return;
+    if (!mac || waking) return;
     hapticLight();
-    setWaking(true);
+    const run = ++wakeRun.current;
+    const current = () => wakeRun.current === run;
+    setWakeStarted(Date.now());
+    setWakeElapsed(0);
+    setWakePhase('sending');
+    setWakeDetail('Looking for an awake box to relay the wake request…');
     void (async () => {
       let ok = false;
       let phoneErr: string | null = null;
 
-      // 1) Relay through any OTHER box that's awake (agent >= 2.9.13). This is
-      //    the only path that works on iOS, where the OS blocks UDP for apps
-      //    entirely so the phone's own magic packet never leaves the device.
-      //    Asleep / older / unreachable boxes just fail and we try the next.
-      for (const b of boxes) {
-        if (b.id === activeBoxId) continue;
-        try {
-          const r = await api.wolRelay(
-            connFromBox(b),   // carries secure/tlsPort/pinModulus (KI-096)
-            mac,
-          );
-          if (r?.ok) {
-            ok = true;
-            break;
+      // Native builds can broadcast immediately (iOS carries the approved
+      // multicast entitlement). Do not wait for sleeping fleet relays.
+      // A short burst tolerates a dropped Wi-Fi broadcast.
+      if (wolAvailable && Platform.OS !== 'web') {
+        setWakeDetail('Sending wake packets from this phone…');
+        for (let attempt = 0; attempt < 3 && current(); attempt++) {
+          try {
+            ok = (await sendWol(mac, { ip: settings.lastIp })) || ok;
+          } catch (e: unknown) {
+            phoneErr = e instanceof Error ? e.message : String(e);
           }
-        } catch {
-          // that box can't relay — try the next one
+          if (attempt < 2 && current()) await new Promise(resolve => setTimeout(resolve, 150));
+        }
+        if (!current()) return;
+        if (ok) {
+          setWakePhase('waiting');
+          setWakeDetail('Wake packets sent from this phone. Waiting for the box to respond…');
+          status.refresh();
         }
       }
 
-      // 2) Fall back to broadcasting from the phone (works on Android).
-      if (!ok && wolAvailable) {
+      // A LAN relay is an additional delivery path even when the phone's
+      // socket accepted its packet: acceptance does not prove LAN delivery.
+      const relays = boxes.filter(b => b.id !== activeBoxId)
+        .sort((a, b) => (b.lastSeen ?? 0) - (a.lastSeen ?? 0));
+      // Race relays: one stale/off-network saved box must not delay an awake
+      // peer. Each request has its own bounded timeout; only the first success
+      // updates the UI, and all failures are consumed by Promise.any.
+      try {
+        const relay = await Promise.any(relays.map(async b => {
+          if (!current()) throw new Error('Wake cancelled');
+          const r = await api.wolRelay(connFromBox(b), mac);
+          if (!r?.ok) throw new Error('Relay unavailable');
+          return b;
+        }));
+        if (!current()) return;
+        setWakeDetail(`Wake request sent through ${relay.name || relay.host}. Waiting for this box to respond…`);
+        ok = true;
+      } catch {
+        // No awake relay accepted the request; try the supported phone path.
+      }
+
+      if (!current()) return;
+      if (!ok && wolAvailable && Platform.OS === 'web') {
+        setWakeDetail('Sending a wake request from this phone…');
         try {
           ok = await sendWol(mac, { ip: settings.lastIp });
+          if (current() && ok) setWakeDetail('Wake request sent from this phone. Waiting for the box to respond…');
         } catch (e: unknown) {
           phoneErr = e instanceof Error ? e.message : String(e);
         }
       }
 
+      if (!current()) return;
       if (ok) {
-        hapticSuccess();
+        setWakePhase('waiting');
         status.refresh();
       } else {
         hapticError();
-        Alert.alert(
-          'Wake failed',
-          phoneErr ??
-            'No magic packet could be sent. Keep another box awake to wake this one — ' +
-              'iOS blocks phones from broadcasting wake packets directly.',
-        );
+        setWakePhase('failed');
+        setWakeDetail(phoneErr ?? 'No wake request could be sent. Keep another Couchside box awake on the same network, then retry.');
       }
-      setWaking(false);
     })();
-  }, [settings.mac, settings.lastIp, status, boxes, activeBoxId]);
+  }, [settings.mac, settings.lastIp, status, boxes, activeBoxId, waking]);
 
   if (!ready || !configured) return null;
 
@@ -630,6 +704,7 @@ export function RemotePowerBar({ compact = false }: { compact?: boolean }) {
   // Nothing to control on this box right now. (Couch Mode counts: it renders
   // its own header button, so the bar must not bail when it's the only thing.)
   if (
+    wakePhase === 'idle' &&
     !hasBigPicture &&
     !canSuspend &&
     !canWake &&
@@ -793,30 +868,52 @@ export function RemotePowerBar({ compact = false }: { compact?: boolean }) {
           setOpen(true);
         }}
         hitSlop={8}
+        accessibilityRole="button"
+        accessibilityLabel={waking ? 'Power and volume controls, waking box' : 'Power and volume controls'}
+        accessibilityState={{ expanded: open }}
         style={({ pressed }) => [styles.trigger, pressed && styles.pressed]}>
-        <Ionicons name={triggerIcon} size={20} color={t.text} />
+        {waking ? <ActivityIndicator size="small" color={t.green} /> : <Ionicons name={triggerIcon} size={20} color={t.text} />}
         <Ionicons name="chevron-down" size={14} color={t.textDim} />
       </Pressable>
 
       <Modal
         visible={open}
         transparent
-        animationType="fade"
+        animationType={reducedMotion ? "none" : "fade"}
         onRequestClose={() => setOpen(false)}>
         <Pressable style={styles.backdrop} onPress={() => setOpen(false)}>
           <View style={[styles.dropWrap, { paddingTop: insets.top + 8 }]}>
-            <Pressable style={styles.card} onPress={() => {}}>
-              {canWake && (
+            <Pressable style={[styles.card, { maxHeight: height - insets.top - insets.bottom - 24 }]} onPress={() => {}}>
+              <View style={styles.menuHeader}>
+                <View style={{ flex: 1 }}>
+                  <Text style={styles.menuTitle}>Power & volume</Text>
+                  <Text numberOfLines={1} style={styles.menuBox}>{boxes.find(b => b.id === activeBoxId)?.name || settings.host}</Text>
+                </View>
+                <Pressable accessibilityRole="button" accessibilityLabel="Close power controls"
+                  onPress={() => setOpen(false)} style={({ pressed }) => [styles.closeBtn, pressed && styles.pressed]}>
+                  <Ionicons name="close" size={22} color={t.text} />
+                </Pressable>
+              </View>
+              <ScrollView style={{ flexShrink: 1 }} contentContainerStyle={{ gap: 8 }} keyboardShouldPersistTaps="handled">
+              {wakePhase !== 'idle' && (
+                <View accessibilityLiveRegion="polite" style={{ padding: 12, gap: 8 }}>
+                  <Text style={[styles.bigLabel, { color: wakePhase === 'awake' ? t.green : t.text }]}>
+                    {wakePhase === 'sending' ? 'Sending wake request…' : wakePhase === 'waiting' ? 'Waiting for box…' : wakePhase === 'awake' ? 'Box is awake' : wakePhase === 'timeout' ? 'Box hasn’t responded yet' : 'Couldn’t send wake request'}
+                  </Text>
+                  <Text style={styles.warnText}>{wakeDetail}</Text>
+                  {waking && <Text style={styles.warnText}>{wakeElapsed}s elapsed · checking for up to 90s</Text>}
+                </View>
+              )}
+              {(canWake || waking) && (
                 <Pressable
+                  accessibilityRole="button"
+                  accessibilityState={{ disabled: waking, busy: waking }}
                   disabled={waking}
-                  onPress={() => {
-                    setOpen(false);
-                    onWake();
-                  }}
+                  onPress={onWake}
                   style={({ pressed }) => [styles.bigBtn, pressed && styles.pressed]}>
                   <Ionicons name="power" size={22} color={t.green} />
                   <Text style={[styles.bigLabel, { color: t.green }]}>
-                    {waking ? 'Waking…' : 'Wake box'}
+                    {waking ? 'Waking…' : wakePhase === 'timeout' || wakePhase === 'failed' ? 'Retry wake' : 'Wake box'}
                   </Text>
                 </Pressable>
               )}
@@ -900,7 +997,7 @@ export function RemotePowerBar({ compact = false }: { compact?: boolean }) {
                   style={({ pressed }) => [styles.bigBtn, pressed && styles.pressed]}>
                   <Ionicons name="game-controller-outline" size={22} color={t.text} />
                   <Text style={styles.bigLabel}>
-                    {`Wake devices${
+                    {`Controller & USB wake${
                       wakeDevices.some((d) => d.armed) ? ` · ${wakeDevices.filter((d) => d.armed).length} armed` : ''
                     }`}
                   </Text>
@@ -996,12 +1093,17 @@ export function RemotePowerBar({ compact = false }: { compact?: boolean }) {
                   <View style={styles.volRow}>
                     <Pressable
                       disabled={busy}
+                      accessibilityRole="button"
+                      accessibilityLabel={`Lower ${volumeTarget} volume`}
                       onPress={() => sendTv('volume_down')}
                       style={({ pressed }) => [styles.volBtn, pressed && styles.pressed]}>
                       <Ionicons name="volume-low" size={24} color={t.text} />
                     </Pressable>
                     <Pressable
                       disabled={busy}
+                      accessibilityRole="button"
+                      accessibilityLabel={muted ? `Unmute ${volumeTarget}` : `Mute ${volumeTarget}`}
+                      accessibilityHint="Hold to show the volume slider"
                       onPress={onMute}
                       onLongPress={() => {
                         hapticLight();
@@ -1022,6 +1124,8 @@ export function RemotePowerBar({ compact = false }: { compact?: boolean }) {
                     </Pressable>
                     <Pressable
                       disabled={busy}
+                      accessibilityRole="button"
+                      accessibilityLabel={`Raise ${volumeTarget} volume`}
                       onPress={() => sendTv('volume_up')}
                       style={({ pressed }) => [styles.volBtn, pressed && styles.pressed]}>
                       <Ionicons name="volume-high" size={24} color={t.text} />
@@ -1029,6 +1133,7 @@ export function RemotePowerBar({ compact = false }: { compact?: boolean }) {
                   </View>
                 </>
               )}
+              </ScrollView>
             </Pressable>
           </View>
         </Pressable>
@@ -1112,6 +1217,10 @@ const makeStyles = (t: Palette) => StyleSheet.create({
   disabled: { opacity: 0.45 },
   backdrop: { flex: 1, backgroundColor: 'rgba(0,0,0,0.35)' },
   dropWrap: { paddingHorizontal: 14, alignItems: 'flex-end' },
+  menuHeader: { flexDirection: 'row', alignItems: 'center', paddingLeft: 8, gap: 8 },
+  menuTitle: { color: t.text, fontSize: 16, fontWeight: '700' },
+  menuBox: { color: t.textDim, fontSize: 12, marginTop: 3 },
+  closeBtn: { minWidth: 44, minHeight: 44, alignItems: 'center', justifyContent: 'center' },
   card: {
     width: 260,
     maxWidth: '100%',
@@ -1131,7 +1240,8 @@ const makeStyles = (t: Palette) => StyleSheet.create({
     flexDirection: 'row',
     alignItems: 'center',
     gap: 12,
-    height: 52,
+    minHeight: 52,
+    paddingVertical: 12,
     paddingHorizontal: 14,
     borderRadius: 10,
     backgroundColor: t.inset,
@@ -1141,6 +1251,7 @@ const makeStyles = (t: Palette) => StyleSheet.create({
   // sheet — that shipped as the "black text even in dark mode" report. Call
   // sites that want a semantic colour still override inline.
   bigLabel: {
+    flexShrink: 1,
     color: t.text,
     fontSize: 15,
     fontWeight: '800',

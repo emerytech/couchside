@@ -1,3 +1,4 @@
+import { blockTabSwipe } from '@/lib/tabSwipe';
 /**
  * A slider used by the LED editors, built on react-native-gesture-handler so it
  * arbitrates cleanly against the gestures around it:
@@ -71,6 +72,7 @@ export function TrackSlider(props: {
   return (
     <GestureDetector gesture={gesture}>
       <View
+        onTouchStart={blockTabSwipe}
         ref={viewRef}
         onLayout={(_e: LayoutChangeEvent) => measure()}
         accessibilityRole="adjustable"

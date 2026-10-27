@@ -86,8 +86,8 @@ export const SETUP_GUIDE_URL = 'https://couchside.tv/#install';
  *
  * Text here is not load-bearing: stepMarks() keys off the array INDEX. */
 const STEPS = [
-  'On your PC, open a terminal. (On a Steam Deck or in Game Mode, switch to Desktop Mode first.)',
-  'Open couchside.tv and run the install command.',
+  'Keep your phone and gaming box on the same home network. On a Steam Deck, switch to Desktop Mode first.',
+  'Open the setup guide on your gaming box and follow the instructions for its operating system.',
   'Watch this screen — it updates by itself.',
   'A PIN appears on your TV. Type it here.',
 ];

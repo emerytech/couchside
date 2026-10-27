@@ -6,6 +6,7 @@ import { AppState, AppStateStatus, Pressable, StyleSheet, Text, View } from 'rea
 import { EditableSection } from '@/components/EditableSection';
 import { useFocusEffect } from 'expo-router';
 import { api, Status } from '@/lib/api';
+import { fleetHealth } from '@/lib/fleetHealth';
 import { connFromBox } from '@/lib/boxConn';
 import { effectiveOrder, moveSection } from '@/lib/cardLayout';
 import { useFleetLayout, setFleetLayout } from '@/lib/fleetLayout';
@@ -21,6 +22,7 @@ import type { Palette } from '@/lib/theme';
 /** One box's latest fleet snapshot. */
 type FleetEntry = {
   status: Status | null;
+  failures: number;
   /** Message of the last failed poll, or null while reachable. */
   error: string | null;
   /** Unix ms of the last successful poll (for the DOWN tile's last-seen). */
@@ -39,8 +41,9 @@ type FleetMap = Record<string, FleetEntry>;
  * dashboard is not on screen, so switching to another Setup sub-tab does not
  * keep polling the whole fleet.
  */
-function useFleetStatus(boxes: Box[], intervalMs: number, enabled: boolean): FleetMap {
+function useFleetStatus(boxes: Box[], intervalMs: number, enabled: boolean) {
   const [map, setMap] = React.useState<FleetMap>({});
+  const retryRef = React.useRef<((id: string) => void) | null>(null);
 
   const { updateBox } = useBoxes();
   const updateBoxRef = React.useRef(updateBox);
@@ -76,34 +79,42 @@ function useFleetStatus(boxes: Box[], intervalMs: number, enabled: boolean): Fle
   useFocusEffect(
     React.useCallback(() => {
       if (!enabled) return;
+      let current = true;
+      let generation = 0;
       let appActive = AppState.currentState === 'active' || AppState.currentState == null;
       let interval: ReturnType<typeof setInterval> | null = null;
 
-      const tick = () => {
+      const tick = (onlyId?: string) => {
         if (!appActive) return;
         for (const box of boxesRef.current) {
+          if (onlyId && box.id !== onlyId) continue;
           if (inFlight.current.has(box.id)) continue;
           inFlight.current.add(box.id);
+          const requestGeneration = generation;
+          const stillCurrent = () => current && appActive && mounted.current && generation === requestGeneration &&
+            boxesRef.current.some((b) => b.id === box.id && b.host === box.host && b.port === box.port &&
+              b.token === box.token && b.secure === box.secure && b.pinModulus === box.pinModulus && b.tlsPort === box.tlsPort);
           const conn = connFromBox(box); // carries secure/tlsPort/pinModulus (KI-096)
           void api
             .status(conn)
             .then((s) => {
-              if (!mounted.current) return;
+              if (!stillCurrent()) return;
               const now = Date.now();
               noteBoxSeen(box.id, now, (ts) => void updateBoxRef.current(box.id, { lastSeen: ts }));
               setMap((prev) => ({
                 ...prev,
-                [box.id]: { status: s, error: null, lastSuccess: now },
+                [box.id]: { status: s, error: null, failures: 0, lastSuccess: now },
               }));
             })
             .catch((e: unknown) => {
-              if (!mounted.current) return;
+              if (!stillCurrent()) return;
               const msg = e instanceof Error ? e.message : String(e);
               setMap((prev) => ({
                 ...prev,
                 [box.id]: {
                   status: prev[box.id]?.status ?? null,
                   error: msg,
+                  failures: (prev[box.id]?.failures ?? 0) + 1,
                   lastSuccess: prev[box.id]?.lastSuccess ?? null,
                 },
               }));
@@ -117,7 +128,7 @@ function useFleetStatus(boxes: Box[], intervalMs: number, enabled: boolean): Fle
       const start = () => {
         if (interval != null) return;
         tick();
-        interval = setInterval(tick, intervalMs);
+        interval = setInterval(() => tick(), intervalMs);
       };
       const stop = () => {
         if (interval != null) {
@@ -129,34 +140,43 @@ function useFleetStatus(boxes: Box[], intervalMs: number, enabled: boolean): Fle
       const sub = AppState.addEventListener('change', (s: AppStateStatus) => {
         const nowActive = s === 'active';
         if (nowActive === appActive) return;
+        generation++;
         appActive = nowActive;
         if (appActive) start();
         else stop();
       });
+      retryRef.current = (id) => tick(id);
       if (appActive) start();
 
       return () => {
+        current = false;
+        retryRef.current = null;
         stop();
         sub.remove();
       };
     }, [intervalMs, enabled]),
   );
 
-  return map;
+  return { map, retry: (id: string) => retryRef.current?.(id) };
 }
 
-function Tile({ box, entry, active, index, onPress }: {
+function Tile({ box, entry, active, index, onPress, management, onRetry, onEditConnection }: {
   box: Box;
   entry: FleetEntry | undefined;
   active: boolean;
   index: number;
   onPress: () => void;
+  management?: React.ReactNode;
+  onRetry: () => void;
+  onEditConnection?: () => void;
 }) {
   const t = useTheme();
   const styles = useThemedStyles(makeStyles);
   const { Card, Dot, Spark } = useSkinKit();
   const s = entry?.status ?? null;
-  const up = entry != null && entry.error == null && s != null;
+  const health = fleetHealth(entry, Date.now());
+  const up = health === 'online' && s != null;
+  const pending = health === 'checking' || health === 'reconnecting';
   const memPct = s ? Math.round((s.mem.used_mb / s.mem.total_mb) * 100) : 0;
 
   const vitals = React.useMemo(
@@ -167,14 +187,14 @@ function Tile({ box, entry, active, index, onPress }: {
   return (
     <VitalsContext.Provider value={vitals}>
       <Card
-        onPress={onPress}
+        onPress={management ? undefined : onPress}
         selected={active}
         index={index}
-        tone={!up && entry != null ? 'down' : 'default'}>
+        tone={health === 'offline' ? 'down' : 'default'}>
         <View style={styles.tileHeader}>
-          <Dot color={up ? t.green : t.red} size={9} live={up} />
+          <Dot color={up ? t.green : pending ? t.amber : t.red} size={9} live={up} />
           <Text style={styles.tileName} numberOfLines={1}>
-            {s?.hostname ?? box.name}
+            {box.name}
           </Text>
           {active && <Text style={styles.activeTag}>active</Text>}
         </View>
@@ -182,8 +202,11 @@ function Tile({ box, entry, active, index, onPress }: {
           {box.host}:{box.port}
         </Text>
 
-        {up && s ? (
+        {s && health !== 'offline' ? (
           <>
+            {health === 'reconnecting' && <Text style={[styles.downText, { color: t.amber }]}>
+              Reconnecting · showing last reading
+            </Text>}
             <View style={styles.metricsRow}>
               <View style={styles.metric}>
                 <Text style={styles.metricLabel}>TEMP</Text>
@@ -207,12 +230,23 @@ function Tile({ box, entry, active, index, onPress }: {
             </View>
           </>
         ) : (
+          <View>
           <Text style={styles.downText}>
-            {entry == null
-              ? 'probing…'
-              : `DOWN · last seen ${fmtLastSeen(entry.lastSuccess ?? box.lastSeen ?? null)}`}
+            {pending
+              ? health === 'checking' ? 'Checking connection…' : 'Reconnecting…'
+              : `Offline · last seen ${fmtLastSeen(entry?.lastSuccess ?? box.lastSeen ?? null)}`}
           </Text>
+          {entry?.error && <View style={styles.recoveryRow}>
+            <Pressable onPress={onRetry} accessibilityRole="button" accessibilityLabel={`Retry ${box.name}`} style={styles.recoveryButton}>
+              <Text style={{ color: t.blue }}>Retry</Text>
+            </Pressable>
+            {onEditConnection && <Pressable onPress={onEditConnection} accessibilityRole="button" accessibilityLabel={`Edit connection for ${box.name}`} style={styles.recoveryButton}>
+              <Text style={{ color: t.text }}>Edit connection</Text>
+            </Pressable>}
+          </View>}
+          </View>
         )}
+        {management && <View style={styles.management}>{management}</View>}
       </Card>
     </VitalsContext.Provider>
   );
@@ -221,20 +255,20 @@ function Tile({ box, entry, active, index, onPress }: {
 /**
  * The at-a-glance multi-box view: live TEMP/LOAD/MEM tiles, tap to switch active
  * box, hold-to-edit reorder + hide. Formerly the standalone Fleet tab; now a
- * section embedded at the top of Setup's Boxes sub-tab (the management list of
- * pair/edit/remove lives below it). Renders nothing when there is fewer than one
- * box; the caller decides whether to mount it (Boxes sub-tab shows it at 2+).
+ * section in Setup's Boxes sub-tab. Optional management content lives inside each
+ * vitals card; in that mode the card itself is not a navigation target, so form
+ * controls cannot accidentally switch boxes. Renders nothing with no saved boxes.
  *
  * No ScrollView of its own — the host screen scrolls. The Done control renders
  * inline (not an absolute bottom bar) so it works inside Setup's own layout.
  */
-export function FleetDashboard() {
+export function FleetDashboard({ renderManagement, onEditConnection }: { renderManagement?: (box: Box) => React.ReactNode; onEditConnection?: (box: Box) => void }) {
   const t = useTheme();
   const styles = useThemedStyles(makeStyles);
   const { boxes, activeBoxId, switchBox } = useBoxes();
   const statusInterval = usePref('statusIntervalMs');
   const [editing, setEditing] = useState(false);
-  const fleet = useFleetStatus(boxes, statusInterval, boxes.length > 0);
+  const { map: fleet, retry } = useFleetStatus(boxes, statusInterval, boxes.length > 0);
 
   const layout = useFleetLayout();
   const canonical = boxes.map((b) => b.id);
@@ -288,6 +322,9 @@ export function FleetDashboard() {
             inertWhileEditing>
             <Tile
               box={box}
+              management={renderManagement?.(box)}
+              onRetry={() => retry(box.id)}
+              onEditConnection={onEditConnection ? () => onEditConnection(box) : undefined}
               entry={fleet[box.id]}
               active={box.id === activeBoxId}
               index={i}
@@ -319,6 +356,9 @@ export function FleetDashboard() {
 
 const makeStyles = (t: Palette) => StyleSheet.create({
   wrap: { marginBottom: 18 },
+  recoveryRow: { flexDirection: 'row', flexWrap: 'wrap', gap: 12 },
+  recoveryButton: { minHeight: 44, justifyContent: 'center', paddingHorizontal: 8 },
+  management: { marginTop: 12, paddingTop: 4, borderTopWidth: 1, borderTopColor: t.cardBorder },
   headerRow: { flexDirection: 'row', alignItems: 'center', marginBottom: 10 },
   sectionLabel: {
     color: t.textFaint,

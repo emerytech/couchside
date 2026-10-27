@@ -1,2 +1,7 @@
-• Fixes a crash that could hit when opening the Decky Loader manager screen.
-• Small polish and stability improvements.
+Safer file transfers to your Couchside box.
+
+• File uploads now use encrypted HTTPS when your box is paired securely.
+• Improved upload progress, failure handling, and recovery after choosing a file.
+• Existing legacy connections remain supported, with a clear unencrypted-transfer warning.
+
+Keep Couchside open until your transfer finishes.
