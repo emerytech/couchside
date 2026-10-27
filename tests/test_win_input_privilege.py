@@ -16,7 +16,9 @@ any failure / off Windows) so it can never itself report a privilege it lacks.
 Pure stdlib, no pytest.
 """
 import importlib.util
+import json
 import os
+from unittest.mock import Mock, patch
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 AGENT = os.path.join(HERE, "..", "agent", "win", "couchsided-win.py")
@@ -106,12 +108,100 @@ def test_tray_admin_toggle_wired():
     check("askyesno" in tray, "confirms before ENABLING (a security escalation)")
 
 
+def test_blocked_reason_distinguishes_admin_session_and_security_prompt():
+    print("input blocked: explain the actual boundary without changing privileges")
+    normal = {"elevated": False, "uiaccess": False}
+    with patch.object(cw, "_input_reachable", return_value=True), \
+            patch.object(cw, "_process_privilege", return_value=normal), \
+            patch.object(cw, "_foreground_is_elevated", return_value=True):
+        msg = cw._input_blocked_message()
+        check("Administrator app" in msg and "unlock" not in msg,
+              "an admin app is not misreported as a locked PC")
+        check(len(msg) <= 75, "recovery instruction fits the existing phone banner")
+    with patch.object(cw, "_input_reachable", return_value=False), \
+            patch.object(cw, "_foreground_is_elevated") as probe:
+        check("session inactive" in cw._input_blocked_message(),
+              "disconnected/RDP session gets its own instruction")
+        check(not probe.called, "inactive session does not inspect another desktop")
+    with patch.object(cw, "_input_reachable", return_value=True), \
+            patch.object(cw, "_process_privilege", return_value=normal), \
+            patch.object(cw, "_foreground_is_elevated", return_value=None):
+        check("security prompt" in cw._input_blocked_message(),
+              "unknown foreground does not falsely claim an admin-app failure")
+
+
+def test_blocked_input_keeps_holder_and_resumes_without_reconnecting():
+    print("input blocked: hold the session, then recover on successful input")
+    handler = cw.Handler.__new__(cw.Handler)
+    handler.mock = False
+    target = type("Mouse", (), {})()
+    target.emit = Mock(side_effect=[OSError("SendInput refused"),
+                                    OSError("SendInput refused"), None])
+    entry = {"held": True, "mouse": target}
+    payload = json.dumps({"t": "m", "dx": 1, "dy": 1}).encode()
+    sent = []
+    with patch.object(cw, "_input_reachable", return_value=True), \
+            patch.object(cw, "_input_blocked_message", return_value="Administrator app blocks input."), \
+            patch.object(cw, "_wsend_json", side_effect=lambda _entry, msg: sent.append(msg)), \
+            patch.object(cw, "_wsend_op") as close:
+        for _ in range(3):
+            check(handler._gamepad_message(None, entry, payload),
+                  "input failure/success keeps the socket alive")
+        check([msg["t"] for msg in sent] == ["blocked", "resumed"],
+              "one warning per blocked period, followed by resumed")
+        check(entry["held"] and entry["mouse"] is target,
+              "holder and mouse survive the blocked period")
+        check(not entry["input_blocked"] and entry["input_err_count"] == 0,
+              "successful input clears the blocked state")
+        check(not close.called, "no close frame or reconnect is requested")
+
+
+def test_admin_boundary_is_reported_even_when_sendinput_would_succeed():
+    print("input blocked: detect UIPI before a silently accepted input call")
+    handler = cw.Handler.__new__(cw.Handler)
+    handler.mock = False
+    target = type("Mouse", (), {})()
+    target.emit = Mock()
+    entry = {"held": True, "mouse": target}
+    sent = []
+    payload = json.dumps({"t": "m", "dx": 20, "dy": 0}).encode()
+    with patch.object(cw, "_input_reachable", return_value=True), \
+            patch.object(cw, "_process_privilege", return_value={"elevated": False, "uiaccess": False}), \
+            patch.object(cw, "_foreground_is_elevated", side_effect=[True, True, True, False]), \
+            patch.object(cw, "_wsend_json", side_effect=lambda _entry, msg: sent.append(msg)), \
+            patch.object(cw, "_wsend_op") as close:
+        # First input checks the boundary, then the warning's classifier probes
+        # it again. Repeated blocked input sends no duplicate warning.
+        handler._gamepad_message(None, entry, payload)
+        handler._gamepad_message(None, entry, payload)
+        check(not target.emit.called, "known admin boundary never injects input")
+        handler._gamepad_message(None, entry, payload)
+        check(target.emit.call_count == 1, "normal foreground accepts the next input")
+        check([msg["t"] for msg in sent] == ["blocked", "resumed"],
+              "silent boundary warns once and clears without reconnecting")
+        check("Administrator app" in sent[0]["msg"], "phone receives the administrator recovery instruction")
+        check(entry["held"] and not close.called, "holder and socket are retained")
+
+    for privilege, foreground in (({"elevated": False, "uiaccess": False}, None),
+                                  ({"elevated": True, "uiaccess": False}, True),
+                                  ({"elevated": False, "uiaccess": True}, True)):
+        target.emit.reset_mock()
+        with patch.object(cw, "_input_reachable", return_value=True), \
+                patch.object(cw, "_process_privilege", return_value=privilege), \
+                patch.object(cw, "_foreground_is_elevated", return_value=foreground):
+            handler._gamepad_message(None, entry, payload)
+        check(target.emit.call_count == 1, "unknown foreground or existing input privilege keeps injection behavior")
+
+
 if __name__ == "__main__":
     test_privilege_shape_and_degrade_closed()
     test_never_raises()
     test_status_carries_input_privilege()
     test_install_elevated_flag_wired()
     test_tray_admin_toggle_wired()
+    test_blocked_reason_distinguishes_admin_session_and_security_prompt()
+    test_blocked_input_keeps_holder_and_resumes_without_reconnecting()
+    test_admin_boundary_is_reported_even_when_sendinput_would_succeed()
     print()
     if _fail:
         print("FAILED: %d" % len(_fail))
