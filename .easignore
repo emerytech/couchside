@@ -29,3 +29,6 @@ app/credentials/
 *.mobileprovision
 secrets/
 CLAUDE.md
+
+# Local assistant handoffs may contain private operational details.
+CLAUDE.local.md
