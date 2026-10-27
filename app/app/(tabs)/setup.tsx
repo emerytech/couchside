@@ -2558,8 +2558,9 @@ function SetupBody() {
 
 
             <Text style={styles.hint}>
-              Each box&apos;s Couchside service listens on http://&lt;host&gt;:&lt;port&gt;. All routes except
-              /api/ping require the bearer token.
+              Secure pairings use pinned HTTPS/TLS for supported controls and encrypted file transfers.
+              HTTP remains available for discovery and legacy connections. Control requests require
+              authorization; discovery, pairing, and scoped transfer tickets have separate checks.
             </Text>
           </>
         )}
