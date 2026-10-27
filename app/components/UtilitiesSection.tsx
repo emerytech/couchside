@@ -21,9 +21,9 @@
  * entry point appears.
  */
 import Ionicons from '@expo/vector-icons/Ionicons';
-import { router } from 'expo-router';
+import { router, useFocusEffect } from 'expo-router';
 import { useCallback, useEffect, useRef, useState } from 'react';
-import { ActivityIndicator, Pressable, StyleSheet, Switch, Text, View } from 'react-native';
+import { ActivityIndicator, AppState, Pressable, StyleSheet, Switch, Text, View } from 'react-native';
 
 import { useConfirm } from './ConfirmDialog';
 import {
@@ -112,10 +112,9 @@ export function UtilitiesSection({
 
   useEffect(() => {
     live.current = true;
-    if (!canProbe) { setUtils(null); return; }
-    void refresh();
+    if (!canProbe) setUtils(null);
     return () => { live.current = false; };
-  }, [refresh, canProbe]);
+  }, [canProbe]);
 
   // Auto-flash (batch) mode: flash every board plugged in, one after another,
   // with no per-board prompt. The toggle IS the consent. Implemented purely
@@ -176,12 +175,35 @@ export function UtilitiesSection({
   );
 
   // While auto-flash is on, poll the row briskly so a freshly-plugged board is
-  // caught within ~1.5s instead of waiting for the mount-time refresh.
+  // caught within ~1.5s rather than on the slower idle poll below.
   useEffect(() => {
     if (!autoflash || !canProbe) return undefined;
     const id = setInterval(() => { void refresh(); }, 1500);
     return () => clearInterval(id);
   }, [autoflash, canProbe, refresh]);
+
+  // Keep the row live while the card is on screen. Without this the list was
+  // fetched once when the card opened, so a board plugged in AFTER that never
+  // appeared (it sat at no_board while the agent already reported board_ready).
+  // While this screen is focused and the app is active, refetch on focus and
+  // re-poll at a modest cadence; auto-flash already owns the poll when it's on.
+  // Mirrors the FleetDashboard focus + AppState guard so we never poll in the
+  // background.
+  useFocusEffect(
+    useCallback(() => {
+      if (!canProbe) return undefined;
+      void refresh();
+      if (autoflash) return undefined;
+      let appActive = AppState.currentState === 'active' || AppState.currentState == null;
+      const sub = AppState.addEventListener('change', (s) => {
+        const nowActive = s === 'active';
+        if (nowActive && !appActive) void refresh();
+        appActive = nowActive;
+      });
+      const id = setInterval(() => { if (appActive) void refresh(); }, 3000);
+      return () => { clearInterval(id); sub.remove(); };
+    }, [canProbe, autoflash, refresh]),
+  );
 
   // The edge trigger: flash on the rising edge of board_ready, re-arm on leave.
   useEffect(() => {
