@@ -40,8 +40,26 @@ The dependency's MIT notices remain intact. Upstream source:
 - Source reversibility/idempotence and unknown source/version refusal passed.
 - CI fetches only the exact TCP dependency into an isolated directory, without
   lifecycle scripts, then runs these checks against its real Java source.
-- Direct 46 is reserved for an in-place device preview. Build, signer/alias
-  audit, upgrade preservation and on-device reconnect checks are pending.
+- Direct 46 / 2.9.79 built from `e71d442`. The final release-signed APK's DEX
+  contains the guarded cleanup method; this was checked in the actual artifact,
+  in addition to the JVM regression and compiled Java class inspection.
+- The final APK matches the physical Razr's installed release certificate. Its
+  package and permissions are unchanged, and its launcher aliases include every
+  alias shipped in Direct 45. It installed in place over 45, retaining the
+  original first-install time, three saved boxes and unlocked license. Secure Steam-machine
+  reconnection succeeded without re-pairing.
+- Against the real securely paired Steam machine, 12 Pad background/resume
+  cycles and eight rapid Setup/Pad round trips retained the same Android process
+  and logged neither a fatal exception nor the missing-socket crash signature.
+  This is bounded device validation, not proof that every possible race is gone.
+- Native TV Inputs and Back from this build were accepted by the Steam agent.
+  The owner was unavailable to watch the TV, so on-screen menu appearance and
+  dismissal remain unverified.
+
+Signed preview APK SHA-256:
+`bd4cb4a0012b93a01349d4e6edad879aac3a14fb27f2fdd632352709e241ea78`.
+The matching Hermes source map is archived privately with the build. No public
+APK download, update manifest, store submission or release was changed.
 
 Rollback is removal of the postinstall hook, patch script and associated tests,
 followed by a fresh dependency install/rebuild. Never uninstall the phone app to
