@@ -366,3 +366,14 @@ This is a smoke test, not proof of long-duration leak elimination. Longer
 soak and native iOS build/device checks remain separate release gates.
 Expo Doctor still reports existing SDK alignment/metadata warnings; those
 are deliberately not suppressed or folded into this patch.
+
+
+Follow-up validation: a signed native iOS273 cloud build passed signature,
+version and entitlement checks, retaining approved multicast access. Its
+embedded Hermes Mach-O UUID and code-section hash match the checksum-verified
+250829098.0.16 library. No TestFlight/App Review submission occurred.
+A20-minute physical Android navigation/background-resume run completed40
+cycles on the same process without a new crash, retaining saved boxes and
+license. Warm PSS ranged approximately225–237MiB; first/last five-sample
+medians were226/231MiB. This modest growth does not prove a leak-free app.
+An hours-long soak and physical iPhone execution remain validation gates.
