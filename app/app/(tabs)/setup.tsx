@@ -25,6 +25,7 @@ import {
 import { AgentUpdateBanner } from '@/components/AgentUpdateBanner';
 import { AppUpdateRow } from '@/components/AppUpdateRow';
 import { useConfirm } from '@/components/ConfirmDialog';
+import { NewsletterCard } from '@/components/NewsletterCard';
 import { SystemUpdatesCard } from '@/components/SystemUpdatesCard';
 import { DeckyCard } from '@/components/DeckyCard';
 import { Gated } from '@/components/Gated';
@@ -1277,6 +1278,7 @@ function SetupBody() {
         keyboardShouldPersistTaps="handled">
         {tab === 'boxes' && (
           <>
+            <NewsletterCard />
             <View style={styles.fleetSection}>
               <Pressable
                 onPress={() => {
@@ -2430,6 +2432,7 @@ function SetupBody() {
             {/* Phone-app update check (direct, anonymous) sits with the
                 agent check; then the box-software card. */}
             <AppUpdateRow />
+            <NewsletterCard permanent />
             <SystemUpdatesCard />
             {/* Decky Loader: install / manage from the phone. Probe-and-appear on
                 /api/decky/loader; not pref-gated — the box's `couchside
