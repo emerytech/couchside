@@ -572,7 +572,9 @@ jobs:
         run: python3 tests/test_tv_identify.py
 
       - name: Unit tests (tv source_box over CEC)
-        run: python3 tests/test_tv_source_box.py
+        run: |
+          python3 tests/test_tv_source_box.py
+          python3 tests/test_cec_sources.py
 
       # Config load. _parse_config() returns a POSITIONAL tuple that
       # load_config() unpacks, so a new optional section must be threaded

@@ -21,9 +21,9 @@
  * entry point appears.
  */
 import Ionicons from '@expo/vector-icons/Ionicons';
-import { router } from 'expo-router';
+import { router, useFocusEffect } from 'expo-router';
 import { useCallback, useEffect, useRef, useState } from 'react';
-import { ActivityIndicator, Pressable, StyleSheet, Switch, Text, View } from 'react-native';
+import { ActivityIndicator, AppState, Pressable, StyleSheet, Switch, Text, View } from 'react-native';
 
 import { useConfirm } from './ConfirmDialog';
 import {
@@ -210,6 +210,29 @@ export function UtilitiesSection({
     const id = setInterval(() => { void refresh(); }, 1500);
     return () => clearInterval(id);
   }, [autoflash, canProbe, refresh]);
+
+  // Keep the row live while the card is on screen. Without this the list was
+  // fetched once when the card opened, so a board plugged in AFTER that never
+  // appeared (it sat at no_board while the agent already reported board_ready).
+  // While this screen is focused and the app is active, refetch on focus and
+  // re-poll at a modest cadence; auto-flash already owns the poll when it's on,
+  // and #619's probe-retry owns the pre-answer window. Mirrors the
+  // FleetDashboard focus + AppState guard so we never poll in the background.
+  useFocusEffect(
+    useCallback(() => {
+      if (!canProbe) return undefined;
+      void refresh();
+      if (autoflash) return undefined;
+      let appActive = AppState.currentState === 'active' || AppState.currentState == null;
+      const sub = AppState.addEventListener('change', (s) => {
+        const nowActive = s === 'active';
+        if (nowActive && !appActive) void refresh();
+        appActive = nowActive;
+      });
+      const id = setInterval(() => { if (appActive) void refresh(); }, 3000);
+      return () => { clearInterval(id); sub.remove(); };
+    }, [canProbe, autoflash, refresh]),
+  );
 
   // The edge trigger: flash on the rising edge of board_ready, re-arm on leave.
   useEffect(() => {
