@@ -1212,6 +1212,16 @@ jobs:
       - name: Unit tests (app update check)
         run: node --experimental-strip-types app/__tests__/app-update.ts
 
+      # About-row version/build resolution. The component (Setup About row) is
+      # device-only; the risk is the fallback chain. Native getters return ""
+      # (not null) on some builds, and the old `??` chain let the empty string
+      # through -> a blank "Couchside v" (Android 47/48). Pins nonEmpty()'s
+      # empty/whitespace coercion, the native-vs-app.json precedence (both
+      # states), the iOS/Android build source + label word, and the '—' absent
+      # case, with a versionCode-0 control that a falsy check would wrongly drop.
+      - name: Unit tests (app version label)
+        run: node --experimental-strip-types app/__tests__/app-version.ts
+
       # Background wishlist price-drop notifier's decision + copy. The native
       # task is a thin shell around this pure logic; the risk is WHEN it fires
       # and never firing a false one (first-look seed vs a real drop vs the
