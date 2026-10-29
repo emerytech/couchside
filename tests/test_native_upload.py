@@ -106,14 +106,18 @@ def main():
         server.socket = context.wrap_socket(server.socket, server_side=True, do_handshake_on_connect=False)
         threading.Thread(target=server.serve_forever, daemon=True).start()
 
-        def run(name, *, pin=modulus, ticket=None, cancel=False, port=None):
+        def run(name, *, pin=modulus, ticket=None, cancel=False, cancel_before_start=False, port=None):
             if ticket is None:
                 ticket = cs._mint_ticket(True)
             result = subprocess.run([client, str(port or server.server_port), pin, ticket, str(source), name]
-                                    + (["cancel"] if cancel else []), capture_output=True, text=True, timeout=45)
+                                    + (["cancel-before-start"] if cancel_before_start else ["cancel"] if cancel else []), capture_output=True, text=True, timeout=45)
             assert result.returncode == 0, (result.returncode, result.stderr[-2000:])
             status = next((int(line[7:]) for line in result.stdout.splitlines() if line.startswith("STATUS=")), None)
             assert status is not None, result.stdout
+            # Native failure detail must never expose URL/ticket-bearing NSError metadata.
+            for line in result.stdout.splitlines():
+                if line.startswith("FAILURE="):
+                    assert ticket not in line and "http" not in line and "?" not in line, line
             return status, result.stdout
 
         try:
@@ -151,6 +155,10 @@ def main():
                 assert len(requests) == before + 1, "failed POST must not be replayed"
                 print("PASS " + name, flush=True)
 
+            before = len(requests)
+            assert run("fixture-cancel-before-start", cancel_before_start=True)[0] == 0
+            assert len(requests) == before, "pre-start cancellation must not send a request"
+            print("PASS cancellation before start sends no request", flush=True)
             assert run("fixture-cancel", cancel=True)[0] == 0
             print("PASS cancellation completes as failure", flush=True)
             started = time.monotonic()
