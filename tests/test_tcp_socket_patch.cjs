@@ -53,9 +53,13 @@ class ${name} {
   static class TcpSocketServer extends TcpSocket {}
   final ConcurrentHashMap<Integer,TcpSocket> socketMap = new ConcurrentHashMap<>();
   final AtomicInteger errors = new AtomicInteger();
+  final CountDownLatch errorObserved = new CountDownLatch(1);
   final ExecutorService executorService = Executors.newFixedThreadPool(2, r -> {
     Thread t = new Thread(r);
-    t.setUncaughtExceptionHandler((thread,e) -> errors.incrementAndGet());
+    t.setUncaughtExceptionHandler((thread,e) -> {
+      errors.incrementAndGet();
+      errorObserved.countDown();
+    });
     return t;
   });
   TcpSocketClient getTcpClient(int id) {
@@ -81,6 +85,10 @@ class ${name} {
     release.countDown();
     m.executorService.shutdown();
     if(!m.executorService.awaitTermination(5,TimeUnit.SECONDS)) throw new AssertionError("workers leaked");
+    // Executor termination may be signalled before the worker's uncaught-error
+    // handler runs. The unpatched baseline must observe that handler explicitly.
+    if(${expectedErrors}>0 && !m.errorObserved.await(5,TimeUnit.SECONDS))
+      throw new AssertionError("baseline error handler did not run");
     if(m.errors.get()!=${expectedErrors}) throw new AssertionError("uncaught errors: "+m.errors);
     if(stale.closes.get()!=0 || live.closes.get()!=1 || other.closes.get()!=0)
       throw new AssertionError("wrong client closed");
