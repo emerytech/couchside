@@ -177,7 +177,10 @@ private final class AppleUploadContinuationTask: UploadContinuationTask {
     completed = true
     onExpiration = nil
     task.expirationHandler = nil
-    if success { task.progress.completedUnitCount = task.progress.totalUnitCount }
+    if success {
+      task.progress.completedUnitCount = task.progress.totalUnitCount
+      task.updateTitle("Transfer complete", subtitle: "Encrypted transfer · 100%")
+    }
     task.setTaskCompleted(success: success)
   }
 }

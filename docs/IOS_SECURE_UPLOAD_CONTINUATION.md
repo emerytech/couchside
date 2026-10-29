@@ -73,7 +73,9 @@ Windows preview. Owner screenshots show Home Screen activity advancing from
 bytes and an exact SHA-256 match to the synthetic source. This verifies this
 background completion attempt; it does not establish force-quit recovery.
 
-The completed activity retained a stale 99-percent subtitle despite its
-completion checkmark. Completion copy needs a small follow-up. System-activity
+The tested build retained a stale 99-percent subtitle despite its completion
+checkmark. A follow-up updates the successful activity title to “Transfer complete”
+and its subtitle to “Encrypted transfer · 100%” before marking the task complete.
+This display follow-up still needs a fresh device build for visual confirmation. System-activity
 cancellation, staging cleanup/retry, and the remaining device gates above are
 still pending. Release and submission remain on hold.
