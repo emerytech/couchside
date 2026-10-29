@@ -130,3 +130,19 @@ shared-router tests. The StarDesk comparison session independently reviewed
 cancellation/measurement; findings were addressed. Reserve iOS275 for the next
 EAS-cloud owner-only acceptance preview; version remains2.9.79. Android/store
 and agent version allocations are unchanged. Native touch acceptance is pending.
+
+### iPhone275 physical input checkpoint
+
+Cloud artifact source02e667d, app2.9.79(275), installed in place using the existing
+owner-only signing profile after verifying the cloud signature, bundle identity,
+JavaScript hash and unchanged owner entitlements. All13 source CI checks passed.
+The owner confirmed Stardew movement+X, Current landscape dual sticks, and
+Current portrait movement+X worked independently. Windows XInput recordings
+confirmed overlap and independent releases, with neutral observed afterward.
+The Stardew record includes a5.108-second X hold; this is input transport proof,
+not upgraded-tool charging gameplay proof or5seconds of uninterrupted dual hold.
+
+Still pending: physical rotation/background/reconnect and handoff, face/D-pad
+slides, triggers/chrome under holds, final Android shared-handler build/device
+acceptance, and smoke testing the final release binaries. These partial results
+do not complete the whole release gate. No release/submission/email.
