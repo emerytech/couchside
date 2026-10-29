@@ -92,6 +92,8 @@ file then completed in the background with an exact size/SHA-256 match and no
 remaining staging files. The owner supplied the “Transfer complete · 100%”
 Home Screen screenshot for the retry. Temporary test access was removed.
 
-The cancellation message still includes the native error-code/source-location
-wrapper; simplifying that display is a separate polish item. Remaining device
+The cancellation display now maps the known native failure to concise guidance
+without the error-code/source-location wrapper. Upload policy/copy tests cover
+that mapping and unknown native-detail suppression. The installed 273.3 binary
+predates this display-only follow-up; final-build visual confirmation is pending. Remaining device
 gates above still apply. Release and submission remain on hold.
