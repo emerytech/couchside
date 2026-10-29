@@ -336,3 +336,25 @@ process.on('exit', () => {
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   (Date as any).now = realDateNow;
 });
+
+
+test('layout release cancels delayed QAM presses without reconnecting', async () => {
+  const client = freshClient();
+  client.connect(CONN);
+  const ws = MockWebSocket.instances.at(-1)!;
+  ws.openAndHello();
+  client.qamChord();
+  client.releaseAll();
+  const afterRelease = ws.sent.length;
+  await new Promise(resolve => setTimeout(resolve, 220));
+  assert.equal(ws.sent.length, afterRelease, 'old chord must not press A after the surface is gone');
+  assert.equal(MockWebSocket.instances.length, 1, 'changing surfaces does not reconnect');
+  assert.equal(client.getStatus(), 'connected');
+  // Control: an uninterrupted chord still presses and releases A.
+  client.qamChord();
+  await new Promise(resolve => setTimeout(resolve, 220));
+  const frames = ws.sent.slice(afterRelease).map(frame => JSON.parse(frame));
+  assert.ok(frames.some(f => f.t === 'b' && f.k === 'a' && f.v === 1));
+  assert.ok(frames.some(f => f.t === 'b' && f.k === 'a' && f.v === 0));
+  client.close();
+});

@@ -765,13 +765,18 @@ export class GamepadClient {
    * disconnected (sendRaw drops frames when the socket is down), and releaseAll()
    * on blur/close covers a chord interrupted mid-hold.
    */
+  private padReleaseGeneration = 0;
+
   qamChord(): void {
+    const generation = this.padReleaseGeneration;
     this.sendButton('guide', 1);
     // Hold Guide alone first, then press A, so Steam reads a real Guide+A chord
     // (QAM) rather than a bare Guide press (Steam menu). Release A before Guide.
     setTimeout(() => {
+      if (generation !== this.padReleaseGeneration) return;
       this.sendButton('a', 1);
       setTimeout(() => {
+        if (generation !== this.padReleaseGeneration) return;
         this.sendButton('a', 0);
         this.sendButton('guide', 0);
       }, QAM_CHORD_HOLD_MS);
@@ -827,6 +832,8 @@ export class GamepadClient {
 
   /** All buttons up, triggers zeroed, sticks centered. Best-effort. */
   releaseAll(): void {
+    // A delayed QAM press must not outlive the surface that started it.
+    this.padReleaseGeneration += 1;
     for (const k of BUTTON_KEYS) this.sendButton(k, 0);
     this.sendTrigger('lt', 0);
     this.sendTrigger('rt', 0);

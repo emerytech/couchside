@@ -1,3 +1,5 @@
+import { PadPresetSheet } from '@/components/PadPresetSheet';
+import { padPresetLabel } from '@/lib/padPresets';
 import { blockTabSwipe } from '@/lib/tabSwipe';
 import { resetLicenseActivation } from '@/lib/licenseActivation';
 import { useLicenseActivation } from '@/hooks/useLicenseActivation';
@@ -939,6 +941,8 @@ function SetupBody() {
   } = useBoxes();
 
   const activeBox = boxes.find((b) => b.id === activeBoxId);
+  const [padSheet, setPadSheet] = useState<'presets' | 'help' | null>(null);
+  useEffect(() => setPadSheet(null), [activeBoxId]);
   const hapticsOn = useHapticsEnabled();
   const animationsEnabled = usePref('animationsEnabled');
   const keepAwakeOn = useKeepAwakeEnabled();
@@ -2219,6 +2223,10 @@ function SetupBody() {
             {/* What APPEARS on the Pad — every optional row/view can be hidden. How the
                 pad behaves lives in PAD BEHAVIOR, the next card. */}
             <PrefSection id="padLayout" icon="game-controller-outline" label="PAD LAYOUT" style={prefCardStyle}>
+              <NavPref label="Control presets" sub="Optional landscape PAD layouts for this box."
+                value={padPresetLabel(activeBox?.controlPreset)} onPress={() => setPadSheet('presets')} />
+              <PrefAction label="Controller help" sub="Full-screen PAD, rotation tip, and restoring Current controls."
+                icon="help-circle-outline" onPress={() => setPadSheet('help')} />
               <TogglePref
                 label="Mouse buttons"
                 sub="L / M / R click row under the trackpad."
@@ -2579,6 +2587,11 @@ function SetupBody() {
           </>
         )}
       </ScrollView>
+      {padSheet && <PadPresetSheet key={`${activeBoxId}:${padSheet}`} kind={padSheet} box={activeBox}
+        onClose={() => setPadSheet(null)}
+        onApply={async (controlPreset) => {
+          if (activeBoxId) await updateBox(activeBoxId, { controlPreset });
+        }} />}
       <PairingQrModal box={qrBox} onClose={() => setQrBox(null)} />
     </KeyboardAvoidingView>
   );

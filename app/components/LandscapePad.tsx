@@ -21,7 +21,6 @@ import type { GestureResponderEvent, PanResponderGestureState } from 'react-nati
 import { hapticLight, hapticSelection as haptic } from '@/lib/haptics';
 import {
   DPAD,
-  FACE,
   NAV,
   STICK,
   dpadZone,
@@ -33,6 +32,7 @@ import {
   type Rect,
 } from '@/lib/padLayout';
 import type { ButtonKey, StickKey, TriggerKey } from '@/lib/gamepad';
+import { STARDEW_ACTIONS, STARDEW_BACKDROP, stardewActionInput } from '@/lib/padPresets';
 import { mono, type Palette } from '@/lib/theme';
 import { useControllerTheme } from '@/hooks/useControllerTheme';
 import { GameBackdrop } from '@/components/GameBackdrop';
@@ -90,9 +90,9 @@ const inner = (n: PadNode) => ({
 // ---------- A plain momentary button ----------
 
 function PadKey({
-  node, label, color, fontSize, onDown, onUp, u,
+  node, label, actionLabel, color, fontSize, onDown, onUp, u,
 }: {
-  node: PadNode; label: string; color?: string; fontSize?: number;
+  node: PadNode; label: string; actionLabel?: string; color?: string; fontSize?: number;
   onDown: () => void; onUp: () => void; u: number;
 }) {
   const t = useControllerTheme();
@@ -112,7 +112,7 @@ function PadKey({
         onUp();
       }}
       accessibilityRole="button"
-      accessibilityLabel={label}>
+      accessibilityLabel={actionLabel ? `${label} · ${actionLabel}` : label}>
       <View
         style={[
           inner(node),
@@ -134,6 +134,11 @@ function PadKey({
           }}>
           {label}
         </Text>
+        {actionLabel && <Text numberOfLines={2} adjustsFontSizeToFit minimumFontScale={0.8}
+          style={{ color: t.text, fontFamily: mono, fontWeight: '700', textAlign: 'center',
+            paddingHorizontal: 2 * u, fontSize: fontSize ?? 3.4 * u }}>
+          {actionLabel}
+        </Text>}
       </View>
     </Pressable>
   );
@@ -561,7 +566,7 @@ function FaceCluster({
   return (
     <View style={abs(box)} {...responder.panHandlers} accessibilityLabel="Face buttons">
       {nodes.map((n) => {
-        const d = FACE.diaU * u;
+        const d = n.rect.w;
         const id = n.id as FaceId;
         const on = zone === id;
         return (
@@ -798,6 +803,36 @@ export function MovePad({
 }
 
 const NOOP = () => {};
+
+/** Optional game-focused PAD surface, using the same controls and theme resolver. */
+export function StardewPad({
+  background = 'farm', layout, btn, trig, stickMove, stickRelease, locked, onToggleLock, onExit,
+}: Omit<LandscapePadProps, 'onVariant' | 'qam'> & { background?: 'farm' | 'current' }) {
+  const t = useControllerTheme();
+  const { byId, u } = layout;
+  const colors = { a: t.faceTint.a ?? t.green, b: t.faceTint.b ?? t.red, x: t.faceTint.x ?? t.blue, y: t.faceTint.y ?? t.amber };
+  return (
+    <View style={StyleSheet.absoluteFill} testID="stardew-pad">
+      <GameBackdrop backdrop={background === 'current' ? t.backdrop : STARDEW_BACKDROP} landscape fitContainer />
+      <FloatingStick node={byId.move} u={u} label="Move" zoneOutline
+        onMove={stickMove('l')} onRelease={stickRelease('l')} onClick={NOOP} />
+      <Text pointerEvents="none" style={{ position: 'absolute', left: byId.move.rect.x,
+        top: byId.move.rect.y - 6 * u, width: byId.move.rect.w, textAlign: 'center',
+        color: t.textDim, fontFamily: mono, fontSize: 3.4 * u }}>MOVE / MENUS</Text>
+      {STARDEW_ACTIONS.map((action) => (
+        <PadKey key={action.key} node={byId[action.key]} label={action.glyph} actionLabel={action.label}
+          u={u} fontSize={(action.key === 'x' || action.key === 'a' ? 4.5 : 3.2) * u}
+          color={action.key in colors ? colors[action.key as keyof typeof colors] : undefined}
+          {...stardewActionInput(action, { btn, trig })} />
+      ))}
+      <ChromeButton node={byId.lock} u={u} text={locked ? '🔒 LOCKED' : '🔓 AUTO'}
+        color={locked ? t.amber : undefined} onPress={onToggleLock} checked={locked}
+        accessibilityLabel={locked ? 'Orientation locked' : 'Orientation follows the phone'} />
+      <ChromeButton node={byId.exit} u={u} text="✕ EXIT" onPress={onExit}
+        accessibilityLabel="Exit full-screen controller" />
+    </View>
+  );
+}
 
 /**
  * Shown instead of the controller when the screen is too small to draw one that

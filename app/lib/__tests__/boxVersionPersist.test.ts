@@ -4,6 +4,7 @@ import { readFileSync } from 'node:fs';
 import { stripTypeScriptTypes } from 'node:module';
 import { runInNewContext } from 'node:vm';
 import { isValidLanIp } from '../lanIp.ts';
+import { CURRENT_CONTROLS, normalizePadPreset } from '../padPresets.ts';
 
 // A long-paired box must come back from storage with its last-known service
 // version. loadBoxes used to drop Box.version on every cold launch, so
@@ -27,7 +28,7 @@ function coldLaunch(stored: Record<string, string>) {
     setItem: (k: string, v: string) => { stored[k] = v; },
   };
   const context: any = {
-    Platform: { OS: 'web' }, SecureStore: {}, isValidLanIp, window: { localStorage: ls },
+    Platform: { OS: 'web' }, SecureStore: {}, isValidLanIp, normalizePadPreset, window: { localStorage: ls },
   };
   runInNewContext(source, context);
   return context as {
@@ -77,4 +78,30 @@ test('a box that never learned a version stays unknown', async () => {
   const { boxes } = await coldLaunch(persisted({})).loadBoxes();
   assert.equal(boxes.length, 1);
   assert.equal('version' in boxes[0] ? boxes[0].version : undefined, undefined);
+});
+
+test('preset survives cold launch per box; returning to Current preserves the original mode', async () => {
+  const stored: Record<string, string> = {};
+  const stardew = { version: 1, id: 'stardew', size: 'larger' };
+  const base = { host: 'mock.local', port: 8787, token: 't', padMode: 'trackpad' };
+  await coldLaunch(stored).saveBoxes({ boxes: [
+    { ...base, id: 'one', controlPreset: stardew }, { ...base, id: 'two' },
+  ], activeBoxId: 'one' });
+  const state = await coldLaunch(stored).loadBoxes();
+  assert.deepEqual(state.boxes[0].controlPreset, stardew);
+  assert.deepEqual(state.boxes[1].controlPreset, CURRENT_CONTROLS);
+  state.boxes[0].controlPreset = CURRENT_CONTROLS;
+  await coldLaunch(stored).saveBoxes(state);
+  const restored = await coldLaunch(stored).loadBoxes();
+  assert.equal(restored.boxes[0].padMode, 'trackpad');
+  assert.deepEqual(restored.boxes[0].controlPreset, CURRENT_CONTROLS);
+});
+
+test('corrupt preset does not discard a saved box or its settings', async () => {
+  for (const controlPreset of [null, { version: 42, id: 'stardew', size: 'larger' }, { version: 1, id: 'stardew', size: 'invalid' }]) {
+    const { boxes } = await coldLaunch(persisted({ controlPreset })).loadBoxes();
+    assert.equal(boxes.length, 1);
+    assert.equal(boxes[0].padMode, 'swipe');
+    assert.deepEqual(boxes[0].controlPreset, CURRENT_CONTROLS);
+  }
 });
