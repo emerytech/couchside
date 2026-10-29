@@ -36,8 +36,9 @@ Test-only work. No release or store submission is authorized by these results.
 ## Checks and remaining gates
 
 - Keyboard batching/Return and gamepad lifecycle/reconnect: 29 tests passed.
-- TypeScript typecheck passed.
-- Swift typecheck against the iPhoneOS SDK passed.
+- TypeScript typecheck and 21 upload policy tests passed.
+- Swift typecheck against the iPhoneOS SDK and a full unsigned native iOS
+  Release build passed. The compiled app is not signed or installed on a phone.
 - Real TLS transport fixtures pass correct-pin binary transfer, wrong-pin refusal
   before HTTP, plaintext refusal, one-use tickets, redirects, bounded responses,
   disconnection, cancellation, read timeout and recovery. These run on macOS and
