@@ -47,3 +47,37 @@ Test-only work. No release or store submission is authorized by these results.
   build, recording server progress while the app remains at Home and verifying
   the destination's size and SHA-256. Also verify safe error reporting, retry,
   and Return exactly once on both phones. These device gates remain open.
+
+
+## Physical iPhone follow-up: local owner-only build 273.1
+
+A signed ad hoc copy of source `27c0490` was installed in place on the owner's
+registered iPhone. Version 2.9.79 (273.1) is a local artifact metadata override,
+not an App Store/TestFlight build or an app.json version reservation. The existing
+certificate was reused with a single-device profile; the installed app's exact
+entitlement set, including multicast and default keychain behavior, was retained.
+Four saved boxes, the live work-PC pairing and the Early Adopter unlock survived.
+A controlled restart to load the new binary generated an expected inferred
+closed-unexpectedly entry; no spontaneous crash was observed in this test.
+
+- **Foreground PASS:** the synthetic 128 MiB file arrived with exactly 134217728
+  bytes and matching SHA-256. The server reported about 59 seconds for the upload.
+- **Active background continuation observed, completion FAIL:** the owner went
+  Home immediately after sending started. After that confirmation, 29 samples
+  recorded growth from 45 MiB to 61 MiB. Home was also visually confirmed before
+  reopening Couchside. The transfer then expired at roughly 30 seconds; the app
+  displayed the explicit background-time-expired message, and the partial file
+  was removed without publishing a completed destination.
+- Reading Windows directory metadata alone initially reported zero bytes during
+  writing. A read-only open-handle length measurement provided actual progress.
+- The recorder was stopped and the exact temporary firewall test rule removed;
+  original firewall rules were retained.
+
+The bounded grace period is working, but is insufficient for this large upload.
+Do not mark the long-background-transfer release gate passed. Keep large uploads
+in the foreground until a separately reviewed design preserves the current pin,
+scoped-ticket and redirect protections. In particular, Apple's background URL
+sessions always follow redirects, so simply switching configurations would change
+an existing security guarantee. See [Apple's background transfer limitations](https://developer.apple.com/documentation/foundation/downloading-files-in-the-background).
+Phone single-Return retesting remains pending; the event-handler regressions pass.
+No release, main merge, store submission or subscriber email.
