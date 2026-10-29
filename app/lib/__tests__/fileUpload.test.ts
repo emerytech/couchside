@@ -1,6 +1,28 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { sendFile, parseUploadResult, type UploadConnection, type UploadDrivers } from '../fileUpload.ts';
+import { sendFile, parseUploadResult, uploadErrorMessage, type UploadConnection, type UploadDrivers } from '../fileUpload.ts';
+
+test('cancellation copy omits native bridge diagnostics', () => {
+  const error = new Error('ERR_UPLOAD_FAILED: Background sending was stopped by iOS or cancelled in its activity. Select the file again to retry. (at ExpoModulesCore/Promise.swift:65)');
+  assert.equal(uploadErrorMessage(error), 'Background sending was stopped. Select the file again to retry.');
+  assert.equal(uploadErrorMessage(new Error('The upload was cancelled. (at Promise.swift:65)')),
+    'Upload cancelled. Select the file again to retry.');
+});
+
+test('unknown native upload details never appear in the card', () => {
+  const error = Object.assign(new Error('private native details https://example.invalid/?ticket=secret'), { code: 'ERR_UPLOAD_FAILED' });
+  assert.equal(uploadErrorMessage(error), 'Could not send the file securely. Check the box connection and select the file again.');
+  assert.equal(uploadErrorMessage(new Error('ERR_UPLOAD_BUSY: native stack')),
+    'Another file is still sending. Wait for it to finish before trying again.');
+});
+
+test('foreground fallback guidance and existing policy errors remain actionable', () => {
+  assert.equal(uploadErrorMessage(new Error("ERR_UPLOAD_FAILED: iOS ended the upload's background time. Keep Couchside open and select the file again. (at Promise.swift:65)")),
+    'Background sending timed out. Keep Couchside open and select the file again.');
+  assert.equal(uploadErrorMessage(new Error('The box’s secure pairing is incomplete. Pair it again before sending files.')),
+    'The box’s secure pairing is incomplete. Pair it again before sending files.');
+  assert.equal(uploadErrorMessage(null), 'Could not send the file. Select it again to retry.');
+});
 
 const conn: UploadConnection = { host: '192.0.2.10', port: 8787, token: 'synthetic-bearer',
   secure: true, tlsPort: 8788, pinModulus: 'a'.repeat(512) };

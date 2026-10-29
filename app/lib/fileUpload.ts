@@ -6,6 +6,29 @@ export type UploadConnection = {
 export type UploadReply = { status: number; body: string };
 export type UploadResult = { ok: boolean; name: string; bytes: number; path: string };
 export type UploadProgress = (fraction: number) => void;
+
+/** Native exceptions contain bridge diagnostics, not customer-facing copy. */
+export function uploadErrorMessage(error: unknown): string {
+  const message = error instanceof Error ? error.message : '';
+  if (message.includes('Background sending was stopped by iOS or cancelled in its activity.')) {
+    return 'Background sending was stopped. Select the file again to retry.';
+  }
+  if (message.includes('The upload was cancelled.')) {
+    return 'Upload cancelled. Select the file again to retry.';
+  }
+  if (message.includes("iOS ended the upload's background time.")) {
+    return 'Background sending timed out. Keep Couchside open and select the file again.';
+  }
+  const code = error && typeof error === 'object' && 'code' in error ? error.code : '';
+  if (code === 'ERR_UPLOAD_BUSY' || message.includes('ERR_UPLOAD_BUSY')) {
+    return 'Another file is still sending. Wait for it to finish before trying again.';
+  }
+  if (code === 'ERR_UPLOAD_FAILED' || code === 'ERR_UPLOAD_INVALID'
+      || /ERR_UPLOAD_(FAILED|INVALID)/.test(message)) {
+    return 'Could not send the file securely. Check the box connection and select the file again.';
+  }
+  return message || 'Could not send the file. Select it again to retry.';
+}
 export type SecureUpload = {
   host: string; port: number; pinModulus: string; ticket: string;
   fileUri: string; name: string;
