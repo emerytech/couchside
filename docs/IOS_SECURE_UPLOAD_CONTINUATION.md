@@ -76,6 +76,12 @@ background completion attempt; it does not establish force-quit recovery.
 The tested build retained a stale 99-percent subtitle despite its completion
 checkmark. A follow-up updates the successful activity title to “Transfer complete”
 and its subtitle to “Encrypted transfer · 100%” before marking the task complete.
-This display follow-up still needs a fresh device build for visual confirmation. System-activity
-cancellation, staging cleanup/retry, and the remaining device gates above are
-still pending. Release and submission remain on hold.
+Local owner-only build 273.3 verified the follow-up on a physical iPhone. The
+owner confirmed “Transfer complete” and 100 percent while Couchside was
+backgrounded. Server-side samples recorded about 60 seconds of active sending;
+the final 134,217,728-byte file matched the source SHA-256 exactly, with no
+staging parts remaining. The completion-display polish is complete.
+
+The temporary device-test firewall rule was removed and original rules retained.
+System-activity cancellation, cancellation cleanup/retry, and the remaining device
+gates above are still pending. Release and submission remain on hold.
