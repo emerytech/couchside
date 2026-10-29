@@ -23,9 +23,12 @@ authorized by this file.
 
 ## Pending scope — do not advertise as shipped
 
-Custom PAD game modes: #654, currently optional Stardew landscape layouts and
-rotation guidance. Include only after the other session finishes gameplay
-mapping, physical multi-touch and upgraded-tool hold acceptance.
+Custom PAD game modes: #654 source e90aac9, now merged into main as 8782046,
+is integrated on `codex/presets-release-preview-20261029` for acceptance testing.
+Windows gameplay mappings passed on the Razr preset and existing iPhone default
+controls. The new iPhone preset, physical multi-touch and upgraded-tool holds
+remain acceptance gates. Steam Machine mapping verification is owner-deferred;
+its earlier X/Y result is not a reason to swap the client mappings globally.
 
 Android background-progress notifications are not implemented in this candidate.
 Tailscale transfer follow-up is deferred by the owner and is not a release gate.
@@ -44,10 +47,10 @@ ancestor of this combined source. Do not merge duplicate feature branches.
 | Component | Current candidate source/config | Final-release action |
 | --- | --- | --- |
 | App version | 2.9.79 | Confirm after cross-session scope freeze |
-| iOS configured build | 273 | Allocate fresh store build after checking latest reservations |
+| iOS configured build | 274, reserved for EAS acceptance preview | Final release build remains separate |
 | Physical iPhone QA build | 273.3, source d67f482 | Local-only; not a store submission or the new message-copy build |
 | Android Store configured code | 127 | Reconcile latest reservations, then allocate fresh code |
-| Android Direct configured code | 48 | Device was tested on 51; reconcile that artifact and use a higher final code |
+| Android Direct configured code | 48 | Private 51 source 1c0c68a is reconciled; use a higher final code |
 | Linux agent configured version | 2.9.134 | Already published in v2.9.78; changed source needs a new version, provisionally 2.9.135 |
 | Windows agent source version | 0.4.14-win | Confirm final source and release-number availability before packaging |
 
@@ -77,9 +80,9 @@ confuse documentation-only commits with rebuilt binaries.
 
 ### Final integration and build sequence
 
-1. Obtain the finished custom PAD commit and its outstanding gameplay evidence;
+1. Complete acceptance of integrated custom PAD source e90aac9 and its gameplay evidence;
    review and integrate into a held candidate without publishing or merging main.
-2. Reconcile Direct 51 provenance, installed Linux Player differences and all
+2. Direct 51 provenance is reconciled; reconcile installed Linux Player differences and all
    parallel build-number reservations. Keep existing features and signatures.
 3. Freeze exact app/Linux/Windows source commits; run all final CI and parity
    checks. Reconcile old PRs without merging overlapping changes twice.
@@ -95,3 +98,12 @@ confuse documentation-only commits with rebuilt binaries.
    review. Main merges, public downloads/manifests, store submissions and release
    publication require fresh owner approval. Subscriber sends require separate
    approval even after software release.
+
+## Preset acceptance preview checkpoint
+
+2026-10-29: combined app/hook suite 804 passed and TypeScript passed after the
+clean preset merge. Keyboard Return dispatch was retained. EAS cloud preview
+uses iOS build 274, app version 2.9.79; this is not the final version allocation.
+Cloud archive audit excluded private handoffs, operational notes, credentials,
+local test identities and generated output. Build policy remains EAS cloud first.
+Source/build identity and device results will be recorded after artifact verification.
