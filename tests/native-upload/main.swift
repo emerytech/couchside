@@ -7,11 +7,13 @@ do {
   let upload = try PinnedUpload(host: "127.0.0.1", port: Int(args[1])!, modulus: args[2], ticket: args[3],
     name: args[5], file: URL(fileURLWithPath: args[4]), progress: { sent, total in
       precondition(sent <= total && sent > 0)
-    }, complete: { status, body in
+    }, complete: { status, body, failure in
       print("STATUS=\(status ?? 0)")
       if let body { print("BODY=\(body)") }
+      if let failure { print("FAILURE=\(failure.message)") }
       done.signal()
     })
+  if args.count > 6 && args[6] == "cancel-before-start" { upload.cancel() }
   upload.start()
   if args.count > 6 && args[6] == "cancel" {
     DispatchQueue.global().asyncAfter(deadline: .now() + 0.1) { upload.cancel() }

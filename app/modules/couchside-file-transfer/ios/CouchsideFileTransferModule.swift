@@ -25,12 +25,12 @@ public class CouchsideFileTransferModule: Module {
           else { throw PinnedUpload.UploadError.invalid }
         let upload = try PinnedUpload(host: host, port: port, modulus: pin, ticket: ticket, name: name, file: resolved,
           progress: { [weak self] sent, total in self?.sendEvent("progress", ["id": id, "sent": sent, "total": total]) },
-          complete: { [weak self] status, body in
+          complete: { [weak self] status, body, failure in
             if let self {
               self.lock.lock(); self.active = nil; self.lock.unlock()
             }
             if let status, let body { promise.resolve(["status": status, "body": body]) }
-            else { promise.reject("ERR_UPLOAD_FAILED", "Secure upload failed. Check the box connection and saved pairing, then try again.") }
+            else { promise.reject("ERR_UPLOAD_FAILED", failure?.message ?? "Secure upload failed. Select the file again to retry.") }
           })
         self.active = upload
         upload.start()
