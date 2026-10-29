@@ -16,6 +16,14 @@ Each entry now carries a `✅ DONE` / `🟡 PARTIAL` / `📋 OPEN` banner with i
 
 ## 🔨 In Progress
 
+### Optional PAD presets and rotation Help (2026-10-29)
+- **priority:** P2 · **risk:** medium (input lifecycle) · **affects:** phone app only · **depends_on:** existing controller transport and host bindings.
+- **Status:** integrated for the next release cycle; gameplay acceptance remains open. No release is included in this change.
+- Setup → Prefs → PAD Layout offers an inert preview and deliberate Apply/Cancel for Current controls or Stardew Valley, with Standard/Larger controls and an optional farm backdrop. Existing themes, default PAD/MOVE geometry, portrait controls and saved preferences remain intact. Choices are local to each saved box.
+- Includes a one-time, dismissible portrait PAD rotation hint, Help replay, and coordination with the existing tour. Layout transitions release held inputs and reject stale responders.
+- **Before release:** retest actual Use tool/Crafting behavior after tracing the X/Y reversal observed on the Steam Machine. Windows title-menu navigation worked, but encrypted controller connection timeouts prevented gameplay mapping verification. Synthetic button-frame tests do not establish in-game correctness. Also verify upgraded-tool holds and physical multi-touch on the final combined build.
+- **Scope boundary:** no host-agent changes, remote play, dependency changes, private build-number bumps, or publishing steps.
+
 ### Player sample catalog prototype (2026-10-20)
 - **priority:** P2 · **risk:** medium (playback) · **affects:** Linux player + Watch · **depends_on:** installed Couchside Player.
 - Isolated branch `codex/player-catalog-prototype`; one embedded Stremio-shaped catalog with the Big Buck Bunny trailer, fixed source lookup, existing Chrome playback and phone transport.

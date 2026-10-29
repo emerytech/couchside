@@ -399,6 +399,27 @@ export function padLayout(win: Size, insets: Insets): PadLayout {
   return buildLayout(TABLE, win, insets);
 }
 
+/** Opt-in action layout. Current PAD and MOVE geometry stays untouched.
+ * One movement zone and two primary actions; the Xbox identifiers stay explicit.
+ * The left-side chrome has a 26U moat from every input, including expanded hits.
+ */
+export function stardewLayout(win: Size, insets: Insets, size: 'standard' | 'larger'): PadLayout {
+  const large = size === 'larger';
+  const table: Spec[] = [
+    { id: 'lock', w: 18, h: 14, cx: { from: 'left', at: 12 }, cy: { from: 'top', at: 10 }, layer: 9 },
+    { id: 'exit', w: 18, h: 14, cx: { from: 'left', at: 35 }, cy: { from: 'top', at: 10 }, layer: 9 },
+    { id: 'move', w: large ? 64 : 54, h: large ? 40 : 34, cx: { from: 'left', at: 35 }, cy: { from: 'bottom', at: 24 }, layer: 7 },
+    { id: 'lt', w: 24, h: 18, cx: { from: 'right', at: 74 }, cy: { from: 'top', at: 12 }, layer: 1 },
+    { id: 'b', w: 32, h: 18, cx: { from: 'right', at: 44 }, cy: { from: 'top', at: 12 }, layer: 1 },
+    { id: 'rt', w: 24, h: 18, cx: { from: 'right', at: 14 }, cy: { from: 'top', at: 12 }, layer: 1 },
+    { id: 'x', w: large ? 84 : 72, h: large ? 21 : 17, cx: { from: 'right', at: 44 }, cy: { from: 'top', at: 36 }, layer: 1 },
+    { id: 'a', w: large ? 84 : 72, h: large ? 21 : 17, cx: { from: 'right', at: 44 }, cy: { from: 'top', at: 62 }, layer: 1 },
+    { id: 'y', w: 40, h: 18, cx: { from: 'right', at: 66 }, cy: { from: 'bottom', at: 12 }, layer: 1 },
+    { id: 'start', w: 40, h: 18, cx: { from: 'right', at: 22 }, cy: { from: 'bottom', at: 12 }, layer: 1 },
+  ];
+  return buildLayout(table, win, insets);
+}
+
 /**
  * Movement mode. Same play rect, same unit, same floors, same expansion pass,
  * same property tests — a different table. The short-axis floor carries over

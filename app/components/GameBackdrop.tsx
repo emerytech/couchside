@@ -48,10 +48,12 @@ function Scrim() {
 }
 
 export function GameBackdrop({
-  backdrop, landscape,
+  backdrop, landscape, fitContainer = false,
 }: {
   backdrop: Backdrop | null;
   landscape: boolean;
+  /** Explicit sizing for preset art; keep legacy backdrop rendering unchanged. */
+  fitContainer?: boolean;
 }) {
   // Hook first (unconditionally), then the guard: the base colour is the live
   // palette's bg so the backdrop follows theme packs.
@@ -80,7 +82,7 @@ export function GameBackdrop({
       <View style={[StyleSheet.absoluteFill, { backgroundColor: t.bg }]} pointerEvents="none">
         <Image
           source={source as ImageSourcePropType}
-          style={StyleSheet.absoluteFill}
+          style={[StyleSheet.absoluteFill, fitContainer && { width: '100%', height: '100%' }]}
           resizeMode="cover"
         />
         <Scrim />

@@ -18,6 +18,11 @@
 export type BackdropAssets = { portrait: unknown; landscape: unknown };
 
 const REGISTRY: Record<string, BackdropAssets> = {
+  // Original generated farm art, used only by the optional Stardew preset.
+  'stardew-farm': {
+    portrait: require('../assets/gameThemes/stardew-farm-landscape.png'),
+    landscape: require('../assets/gameThemes/stardew-farm-landscape.png'),
+  },
   'vampire-survivors': {
     portrait: require('../assets/gameThemes/vampire-survivors-portrait.webp'),
     landscape: require('../assets/gameThemes/vampire-survivors-landscape.webp'),

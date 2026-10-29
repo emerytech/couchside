@@ -35,6 +35,7 @@
  * alone — a tour that says "your games live here" and then blocks the tab is a
  * lecture, not a tour.
  */
+import { setPref } from '@/lib/prefs';
 import Ionicons from '@expo/vector-icons/Ionicons';
 import React from 'react';
 import { AccessibilityInfo, Image, Pressable, ScrollView, StyleSheet, Text, useWindowDimensions, View } from 'react-native';
@@ -481,6 +482,9 @@ export function FeatureTour({
           <Pressable
             onPress={() => {
               hapticLight();
+              // Acknowledging this existing step teaches rotation too. Automatic
+              // missing-anchor skips and Skip tour must not dismiss the PAD tip.
+              if (step.anchor === 'pad.modes') void setPref('padRotationTipLearned', true);
               onNext();
             }}
             accessibilityRole="button"

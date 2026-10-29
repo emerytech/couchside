@@ -68,6 +68,8 @@ export type Prefs = {
   /** The one-time spotlight tour, shown after the first box is paired. On by
    *  default; turning it off before it has run means it never runs. */
   featureTour: boolean;
+  /** Acknowledged in PAD/Help/the tour, or a usable landscape PAD was shown. */
+  padRotationTipLearned: boolean;
   /** REMOTE-ONLY MODE: the app is just a smart-TV remote, no Couchside box.
    *
    *  For someone with a smart TV and no gaming machine. On, the box tabs
@@ -340,6 +342,7 @@ export const DEFAULTS: Prefs = {
   wishlistNotify: false,
   utilitiesEnabled: false,
   featureTour: true,
+  padRotationTipLearned: false,
   remoteOnlyMode: false,
   landingTab: 'index',
   autoKeyboard: true,
@@ -478,6 +481,7 @@ function normalize(raw: unknown): Prefs {
     wishlistNotify: bool(o.wishlistNotify, DEFAULTS.wishlistNotify),
     utilitiesEnabled: bool(o.utilitiesEnabled, DEFAULTS.utilitiesEnabled),
     featureTour: bool(o.featureTour, DEFAULTS.featureTour),
+    padRotationTipLearned: bool(o.padRotationTipLearned, false),
     remoteOnlyMode: bool(o.remoteOnlyMode, DEFAULTS.remoteOnlyMode),
     landingTab,
     autoKeyboard: bool(o.autoKeyboard, DEFAULTS.autoKeyboard),
@@ -528,18 +532,21 @@ function normalize(raw: unknown): Prefs {
 }
 
 let loadStarted = false;
+let prefsReady = false;
 /** Load the persisted prefs once. Safe to call repeatedly. */
 export async function loadPrefs(): Promise<void> {
   if (loadStarted) return;
   loadStarted = true;
-  const raw = await storageGet(KEY);
-  if (raw == null) return;
   try {
+    const raw = await storageGet(KEY);
+    if (raw == null) return;
     const next = normalize(JSON.parse(raw));
     prefs = next;
-    emitChange();
   } catch {
     // malformed blob: keep defaults
+  } finally {
+    prefsReady = true;
+    emitChange();
   }
 }
 // Kick the load off at import so values are ready by first interaction.
@@ -570,4 +577,9 @@ export function usePref<K extends keyof Prefs>(key: K): Prefs[K] {
     () => prefs[key],
     () => prefs[key],
   );
+}
+
+/** Prevent first-use hints flashing while the saved dismissal is loading. */
+export function usePrefsReady(): boolean {
+  return useSyncExternalStore(subscribe, () => prefsReady, () => false);
 }
