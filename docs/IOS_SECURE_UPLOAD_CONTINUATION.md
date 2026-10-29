@@ -64,3 +64,16 @@ No agent API or dependency change. No release is authorized by this design.
 
 References: [Apple continued processing](https://developer.apple.com/documentation/backgroundtasks/performing-long-running-tasks-on-ios-and-ipados/),
 [background URL session limitations](https://developer.apple.com/documentation/foundation/downloading-files-in-the-background).
+
+## Owner device check (2026-10-29)
+
+Local test-only build 273.2 completed a 128 MiB encrypted upload to the
+Windows preview. Owner screenshots show Home Screen activity advancing from
+8 percent to a completion checkmark. Server readback confirmed 134,217,728
+bytes and an exact SHA-256 match to the synthetic source. This verifies this
+background completion attempt; it does not establish force-quit recovery.
+
+The completed activity retained a stale 99-percent subtitle despite its
+completion checkmark. Completion copy needs a small follow-up. System-activity
+cancellation, staging cleanup/retry, and the remaining device gates above are
+still pending. Release and submission remain on hold.
