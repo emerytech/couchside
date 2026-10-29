@@ -83,5 +83,15 @@ the final 134,217,728-byte file matched the source SHA-256 exactly, with no
 staging parts remaining. The completion-display polish is complete.
 
 The temporary device-test firewall rule was removed and original rules retained.
-System-activity cancellation, cancellation cleanup/retry, and the remaining device
-gates above are still pending. Release and submission remain on hold.
+System-activity cancellation and retry also passed on local build 273.3. The
+owner stopped an active background upload using the activity's Stop control.
+Server observation recorded a partial transfer of about 14 MiB, followed by
+removal of the staging file and no completed destination. Couchside displayed
+the expected cancellation/retry message. A fresh selection of the same 128 MiB
+file then completed in the background with an exact size/SHA-256 match and no
+remaining staging files. The owner supplied the “Transfer complete · 100%”
+Home Screen screenshot for the retry. Temporary test access was removed.
+
+The cancellation message still includes the native error-code/source-location
+wrapper; simplifying that display is a separate polish item. Remaining device
+gates above still apply. Release and submission remain on hold.

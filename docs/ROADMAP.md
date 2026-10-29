@@ -31,8 +31,11 @@ Each entry now carries a `✅ DONE` / `🟡 PARTIAL` / `📋 OPEN` banner with i
 - Physical iPhone build 273.3: 128 MiB background completion passed with exact
   size/hash and no remaining staging parts; owner confirmed the polished
   “Transfer complete” / 100% display. Completion-display polish is complete.
-- System cancellation, cancellation cleanup/retry and remaining device gates are
-  still required; this does not add process-kill recovery or automatic POST replay.
+- Physical iPhone build 273.3 system-activity Stop, partial-file cleanup and fresh
+  background retry passed; the retry matched the source size/hash. Cancellation
+  copy still exposes native error details and can be simplified separately.
+- Remaining device gates still apply; this does not add process-kill recovery or
+  automatic POST replay.
 - Design: `docs/IOS_SECURE_UPLOAD_CONTINUATION.md`. No release authorized.
 
 ### Security hardening — phase 1: ticket permissions (2026-10-09)
