@@ -23,6 +23,21 @@ Each entry now carries a `✅ DONE` / `🟡 PARTIAL` / `📋 OPEN` banner with i
 - First hardware trial failed and Player was rolled back with Themes baseline intact. A Linux request-thread/parent-death defect has since been reproduced and corrected using persistent browser ownership; local regression and revised hardware launch/control checks pass. The hardware retest exposed small centered video on the TV; Player-only rollback completed. A dedicated viewport-filling TV surface is now prepared and passes local multi-size browser checks; actual 4K TV sizing passed the approved retest, but moving playback froze with a captured decoder error. Player-only rollback verified; a test-only software-decoding mitigation and explicit failure telemetry are prepared, with real local frame-progress/seek/reopen checks. The approved software-decoding hardware retest passed sustained video motion, seek/pause/mute, reopen, and full sample completion, with user TV confirmation. All 220 protected Themes files and existing Steam shortcuts remained unchanged. The isolated test remains installed but stopped; native phone-app validation and arbitrary-media support remain outstanding. The subsequent existing-iPhone compatibility package passed local checks, but its new Steam shortcut launch did not start and that deployment was rolled back. Production sample sizing/software decoding and shared media-error reporting are now fixed and locally checked; integrated Steam/Flatpak and installed-phone acceptance are still pending. Player is not yet hardware release-accepted.
 - This is a fixed sample provider, not general third-party Stremio add-on installation. See `docs/PLAYER_CATALOG_PROTOTYPE.md`.
 
+### Secure iOS upload continuation (2026-10-29)
+- **priority:** P1 · **risk:** medium · **affects:** native iOS file-transfer lifecycle.
+- **Status:** implementation and local checks in progress on a separate held branch.
+- iOS26 user-initiated continued-processing tasks preserve existing pin/redirect/ticket
+  protections. Older iOS retains bounded foreground sending. No agent API change.
+- Physical iPhone build 273.3: 128 MiB background completion passed with exact
+  size/hash and no remaining staging parts; owner confirmed the polished
+  “Transfer complete” / 100% display. Completion-display polish is complete.
+- Physical iPhone build 273.3 system-activity Stop, partial-file cleanup and fresh
+  background retry passed; the retry matched the source size/hash. Cancellation
+  copy still exposes native error details and can be simplified separately.
+- Remaining device gates still apply; this does not add process-kill recovery or
+  automatic POST replay.
+- Design: `docs/IOS_SECURE_UPLOAD_CONTINUATION.md`. No release authorized.
+
 ### Security hardening — phase 1: ticket permissions (2026-10-09)
 - **priority:** P1 · **risk:** low-medium (authorization) · **affects:** Linux agent and tests · **depends_on:** existing TLS tickets.
 - **Status:** released in Linux agent 2.9.131 with app release 2.9.75 (2026-10-10, PR #624). Verified with a physical iPhone against an isolated server before release.

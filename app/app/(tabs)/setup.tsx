@@ -430,6 +430,11 @@ function BoxEditPanel({
           <Text style={styles.tokenToggle}>{showToken ? 'HIDE' : 'SHOW'}</Text>
         </Pressable>
       </View>
+      {/* A bearer token is not a saved password. Without these, a secureTextEntry
+          field makes iOS offer to autofill a Passwords entry over it; accepting it
+          (or iOS applying it on blur) saves a box with the WRONG token and no error
+          — every request then 401s and the Console shows "Unauthorized: check
+          token". See KI-101. */}
       <TextInput
         style={styles.input}
         value={token}
@@ -439,6 +444,9 @@ function BoxEditPanel({
         secureTextEntry={!showToken}
         autoCapitalize="none"
         autoCorrect={false}
+        textContentType="none"
+        autoComplete="off"
+        importantForAutofill="no"
       />
 
       <Text style={styles.fieldLabel}>MAC (WAKE-ON-LAN)</Text>
@@ -1487,6 +1495,9 @@ function SetupBody() {
           />
 
           <Text style={styles.fieldLabel}>TOKEN</Text>
+          {/* See the box-editor token field above: suppress OS password autofill
+              so iOS can't silently overwrite a pasted token with a saved password
+              (KI-101). */}
           <TextInput
             style={styles.input}
             value={token}
@@ -1496,6 +1507,9 @@ function SetupBody() {
             secureTextEntry
             autoCapitalize="none"
             autoCorrect={false}
+            textContentType="none"
+            autoComplete="off"
+            importantForAutofill="no"
             editable={ready}
           />
 
