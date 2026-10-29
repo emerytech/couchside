@@ -615,11 +615,10 @@ function KeyboardBar({ autoOpenSignal, onText, onBackspace, onEnter, onSwipeMode
       // or the deletion would be sent twice.
       if (key === 'Backspace') {
         if (valueRef.current.length === 0) onBackspace();
-      } else if (key === 'Enter') {
-        onEnter();
       }
     },
-    [onBackspace, onEnter],
+    // Return belongs to onSubmitEditing, avoiding duplicate native Enter events.
+    [onBackspace],
   );
 
   const t = useTheme();

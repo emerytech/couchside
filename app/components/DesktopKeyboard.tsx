@@ -41,7 +41,11 @@ export function useDesktopKeyboard(
   const openRef = useRef(false);
   const [value, setValue] = useState('');
   const valueRef = useRef(value);
-  valueRef.current = value;
+  // Native text events can arrive before React commits another render.
+  const setValueSynced = useCallback((next: string) => {
+    valueRef.current = next;
+    setValue(next);
+  }, []);
 
   const setOpenSynced = useCallback((v: boolean) => {
     openRef.current = v;
@@ -62,8 +66,8 @@ export function useDesktopKeyboard(
       inputRef.current?.blur();
     }
     setOpenSynced(false);
-    setValue('');
-  }, [setOpenSynced, landscape]);
+    setValueSynced('');
+  }, [setOpenSynced, setValueSynced, landscape]);
 
   const toggle = useCallback(() => {
     hapticLight();
@@ -84,10 +88,10 @@ export function useDesktopKeyboard(
   // just a large insert. Same contract as the Pad's KeyboardBar.
   const onChangeText = useCallback((next: string) => {
     const { backspaces, insert } = textDelta(valueRef.current, next);
+    setValueSynced(next);
     for (let i = 0; i < backspaces; i += 1) client.sendKey('backspace');
     if (insert.length > 0) client.sendText(insert);
-    setValue(next);
-  }, [client]);
+  }, [client, setValueSynced]);
 
   const onKeyPress = useCallback((e: { nativeEvent: { key: string } }) => {
     const key = e.nativeEvent.key;
@@ -95,10 +99,10 @@ export function useDesktopKeyboard(
     // on the box; a non-empty field is left to onChangeText (else doubled).
     if (key === 'Backspace') {
       if (valueRef.current.length === 0) client.sendKey('backspace');
-    } else if (key === 'Enter') {
-      client.sendKey('enter');
     }
   }, [client]);
+
+  // Return is sent only by onSubmitEditing; native keyboards may emit both events.
 
   // Lift the bar above the OS keyboard: window-coord math (edge-to-edge
   // Android doesn't resize the window; iOS KAV misses late mounts).
@@ -122,10 +126,10 @@ export function useDesktopKeyboard(
     const sub = Keyboard.addListener('keyboardDidHide', () => {
       openRef.current = false;
       setOpen(false);
-      setValue('');
+      setValueSynced('');
     });
     return () => sub.remove();
-  }, []);
+  }, [setValueSynced]);
 
   // LANDSCAPE: our own translucent floating keys over the desktop — no opaque
   // system keyboard walling off the screen. Same uinput send path.
@@ -160,7 +164,7 @@ export function useDesktopKeyboard(
         onChangeText={onChangeText}
         onKeyPress={onKeyPress}
         onSubmitEditing={() => client.sendKey('enter')}
-        onBlur={() => { setOpenSynced(false); setValue(''); }}
+        onBlur={() => { setOpenSynced(false); setValueSynced(''); }}
         style={open
           ? [styles.kbInput, landscape && styles.kbInputLandscape, { bottom: 10 + kbLift }]
           : styles.hiddenInput}

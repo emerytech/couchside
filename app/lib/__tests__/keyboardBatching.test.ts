@@ -7,12 +7,14 @@ import vm from 'node:vm';
 // Run the actual event handlers with React state updates deliberately queued:
 // reproduces multiple native TextInput events arriving before another render.
 const source = readFileSync(new URL('../../app/(tabs)/pad.tsx', import.meta.url), 'utf8');
-function callback(name: string): string {
-  const start = source.indexOf(`  const ${name} = useCallback(`);
+const desktop = readFileSync(new URL('../../components/DesktopKeyboard.tsx', import.meta.url), 'utf8');
+function callback(name: string, text = source): string {
+  const start = text.indexOf(`  const ${name} = useCallback(`);
   assert.ok(start >= 0, name);
-  const end = source.indexOf('\n  );', start);
-  const shortEnd = source.indexOf('\n  }, []);', start);
-  return source.slice(start, shortEnd >= 0 && shortEnd < end ? shortEnd + 11 : end + 5);
+  const tail = text.slice(start);
+  const end = /\n  (?:}, \[[^\n]*\]\);|\);)/.exec(tail);
+  assert.ok(end, name);
+  return tail.slice(0, end.index + end[0].length);
 }
 function mount() {
   const delta = source.slice(source.indexOf('export function textDelta'), source.indexOf("\nif (typeof globalThis", source.indexOf('export function textDelta'))).replace('export ', '');
@@ -41,4 +43,49 @@ test('batched duplicate events, paste, replacement and deletion preserve remote 
 test('clearing the local field resets the baseline without deleting remote text', () => {
   const h = mount(); h.handlers.change('first'); h.handlers.clear(); h.handlers.change('second');
   assert.equal(h.remote(), 'firstsecond');
+});
+
+for (const [name, text] of [['Pad', source], ['Desktop', desktop]]) {
+  test(`${name}: native keypress plus submit sends Return exactly once`, () => {
+    let enters = 0, backspaces = 0;
+    const context = vm.createContext({
+      useCallback: (f: unknown) => f, valueRef: { current: '' },
+      onBackspace: () => { backspaces++; }, onEnter: () => { enters++; },
+      client: { sendKey: (key: string) => {
+        if (key === 'enter') enters++; else if (key === 'backspace') backspaces++;
+      } },
+    });
+    const submit = /onSubmitEditing={([^\n]+)}/.exec(text);
+    assert.ok(submit);
+    vm.runInContext(stripTypeScriptTypes(`${callback('onKeyPress', text)}
+      globalThis.press = onKeyPress; globalThis.submit = (${submit[1]});`), context);
+    context.press({ nativeEvent: { key: 'Enter' } });
+    context.submit();
+    assert.equal(enters, 1);
+    context.press({ nativeEvent: { key: 'Backspace' } });
+    assert.equal(backspaces, 1);
+    context.valueRef.current = 'x';
+    context.press({ nativeEvent: { key: 'Backspace' } });
+    assert.equal(backspaces, 1, 'nonempty deletion belongs to the text diff');
+  });
+}
+
+test('Desktop: batched text changes and clear use the latest baseline before render', () => {
+  let remote = '';
+  const context = vm.createContext({
+    useCallback: (f: unknown) => f, valueRef: { current: '' }, setValue: () => {},
+    client: {
+      sendText: (s: string) => { remote += s; },
+      sendKey: (k: string) => { if (k === 'backspace') remote = remote.slice(0, -1); },
+    },
+  });
+  const delta = source.slice(source.indexOf('export function textDelta'), source.indexOf("\nif (typeof globalThis", source.indexOf('export function textDelta'))).replace('export ', '');
+  vm.runInContext(stripTypeScriptTypes(`${delta}
+    ${callback('setValueSynced', desktop)}
+    ${callback('onChangeText', desktop)}
+    globalThis.change = onChangeText; globalThis.clear = () => setValueSynced('');`), context);
+  for (const next of ['r', 'ra', 'rap', 'rapid', 'rapid', 'rapi', 'rapid paste']) context.change(next);
+  assert.equal(remote, 'rapid paste');
+  context.clear(); context.change('new');
+  assert.equal(remote, 'rapid pastenew', 'local clear does not delete remote text');
 });
