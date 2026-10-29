@@ -1037,3 +1037,17 @@ admission; never queue a stale one-use ticket, replay a POST or swap to an
 always-redirecting background URLSession. Callbacks must tolerate expiration,
 cancellation and late grants without attaching them to another upload. Record
 signed phone evidence separately from lifecycle and TLS fixture tests.
+
+### Shared native PAD touch ownership (2026-10-29)
+PAD gameplay uses `padTouches.ts`: layouts supply hit rectangles, frozen protocol
+button/trigger actions, stick mapping and optional slide groups. Native gameplay
+views do not acquire RN's singleton responder; one `PadTouchSurface` routes only
+changed touches by identifier. Count holders by protocol output, not visual ID
+(OK/A and timed QAM can share outputs). Opposite D-pad directions neutralize.
+Cancellation is atomic and can only release outputs; dispose cancels timers.
+Portrait flex controls measure relative to their provider; ancestor geometry
+changes invalidate all hits and generation-guard asynchronous measurements.
+Chrome/recovery/keyboard remain outside gameplay. Tokens still revoke old output
+callbacks on layout, focus, ownership or connection changes. Native multi-touch
+and measured-hit acceptance require physical devices; browser mouse tests and
+pure router tests do not establish that acceptance. No new dependency or wire key.

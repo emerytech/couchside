@@ -107,3 +107,26 @@ uses iOS build 274, app version 2.9.79; this is not the final version allocation
 Cloud archive audit excluded private handoffs, operational notes, credentials,
 local test identities and generated output. Build policy remains EAS cloud first.
 Source/build identity and device results will be recorded after artifact verification.
+
+### Shared PAD acceptance follow-up (held)
+
+The first combined iOS274 acceptance attempt exposed independent-finger input
+failure and hidden connection/ownership status in immersive PAD. It is not a
+completed preset acceptance gate. The follow-up uses one data-driven native PAD
+touch router for Current landscape/portrait, Stardew and MOVE. It preserves each
+layout's stick/button policies, keeps existing output gates, aggregates shared
+button holds and cancels pending timers atomically. Full-screen recovery leaves
+Exit visible. Other modes and agent protocols are unchanged.
+
+Pure-router cases cover overlap in both orders, both release orders, two sticks,
+shared A holds, face rolling, opposite D-pad directions, QAM/click timing,
+cleanup, stale callbacks, actual preset geometry and displaced final releases.
+Physical overlap, portrait hit registration/animation, two sticks, triggers,
+sliding, rotation, background/reconnect and handoff remain acceptance gates on a
+new native preview. No public release or subscriber-send authorization exists.
+
+Shared PAD follow-up: TypeScript and 824 app/hook tests passed, including 20
+shared-router tests. The StarDesk comparison session independently reviewed
+cancellation/measurement; findings were addressed. Reserve iOS275 for the next
+EAS-cloud owner-only acceptance preview; version remains2.9.79. Android/store
+and agent version allocations are unchanged. Native touch acceptance is pending.

@@ -47,6 +47,8 @@ import { StatusBar } from 'expo-status-bar';
 import { ComboPanel } from '@/components/ComboPanel';
 import { Gated } from '@/components/Gated';
 import { LandscapeLaptop } from '@/components/LandscapeLaptop';
+import { PadTouchSurface, PadTouchRow, useMeasuredPadControl } from '@/components/PadTouchSurface';
+import type { PadAction } from '@/lib/padTouches';
 import { LandscapePad, LandscapePadTooSmall, MovePad, StardewPad } from '@/components/LandscapePad';
 import { setImmersive } from '@/lib/immersive';
 import { setRunningAppid } from '@/lib/gameTheme';
@@ -109,6 +111,27 @@ type PadButtonProps = {
 
 function PadButton({ label, onDown, onUp, style, color, fontSize }: PadButtonProps) {
   const styles = useThemedStyles(makeStyles);
+  // This adapter is active only inside the portrait PAD provider.
+  const actions: Record<string, PadAction> = {
+    LT: { kind: 'trigger', key: 'lt' }, RT: { kind: 'trigger', key: 'rt' },
+    LB: { kind: 'button', key: 'lb' }, RB: { kind: 'button', key: 'rb' },
+    SELECT: { kind: 'button', key: 'select' }, STEAM: { kind: 'button', key: 'guide' }, START: { kind: 'button', key: 'start' },
+    '▲': { kind: 'button', key: 'du' }, '▼': { kind: 'button', key: 'dd' }, '◀': { kind: 'button', key: 'dl' }, '▶': { kind: 'button', key: 'dr' },
+    OK: { kind: 'button', key: 'a' }, A: { kind: 'button', key: 'a' }, B: { kind: 'button', key: 'b' }, X: { kind: 'button', key: 'x' }, Y: { kind: 'button', key: 'y' },
+    L3: { kind: 'button', key: 'l3' }, R3: { kind: 'button', key: 'r3' },
+  };
+  const action = actions[label];
+  const touch = useMeasuredPadControl(`portrait:${label}`, hit => label === '⋯'
+    ? { id: `portrait:${label}`, hit, kind: 'command', command: 'qam' }
+    : action ? { id: `portrait:${label}`, hit, kind: 'button', action } : null);
+  if (touch.context) {
+    const pressed = action && touch.context.visual.held.includes(`${action.kind}:${action.key}`);
+    return <View ref={touch.ref} onLayout={touch.onLayout} collapsable={false}
+      style={[styles.btn, style, pressed && styles.btnPressed]} accessible accessibilityRole="button" accessibilityLabel={label}
+      onAccessibilityTap={() => { if (action) touch.context?.activate(action); else if (label === '⋯') touch.context?.command(); }}>
+      <Text style={[styles.btnText, color != null && { color }, fontSize != null && { fontSize }]}>{label}</Text>
+    </View>;
+  }
   return (
     <Pressable
       onPressIn={() => {
@@ -136,11 +159,14 @@ const NUB_SIZE = 56;
 const STICK_RADIUS = (STICK_SIZE - NUB_SIZE) / 2;
 
 type StickProps = {
+  side: StickKey;
   onMove: (x: number, y: number) => void;
   onRelease: () => void;
 };
 
-function Stick({ onMove, onRelease }: StickProps) {
+function Stick({ side, onMove, onRelease }: StickProps) {
+  const touch = useMeasuredPadControl(`portrait:${side}`, hit => ({ id: `portrait:${side}`, hit, kind: 'stick', stick: side,
+    value(dx, dy) { const len = Math.hypot(dx, dy), scale = len > STICK_RADIUS ? STICK_RADIUS / len : 1; return { x: dx * scale / STICK_RADIUS, y: dy * scale / STICK_RADIUS }; } }));
   const pan = useRef(new Animated.ValueXY({ x: 0, y: 0 })).current;
   const cb = useRef({ onMove, onRelease });
   cb.current = { onMove, onRelease };
@@ -183,7 +209,24 @@ function Stick({ onMove, onRelease }: StickProps) {
     }),
   ).current;
 
+  const finger = touch.context?.visual.sticks[`portrait:${side}`];
+  const nativeTouch = touch.context != null;
+  useLayoutEffect(() => {
+    if (!nativeTouch) return;
+    pan.stopAnimation();
+    if (finger) {
+      const len = Math.hypot(finger.dx, finger.dy), scale = len > STICK_RADIUS ? STICK_RADIUS / len : 1;
+      pan.setValue({ x: finger.dx * scale, y: finger.dy * scale });
+    } else Animated.spring(pan, { toValue: { x: 0, y: 0 }, useNativeDriver: false, friction: 6 }).start();
+    return () => { pan.stopAnimation(); };
+  }, [nativeTouch, finger?.dx, finger?.dy, pan]);
   const styles = useThemedStyles(makeStyles);
+  if (touch.context) {
+    return <View ref={touch.ref} collapsable={false} onLayout={touch.onLayout} style={styles.stickPad} accessibilityLabel={`${side === 'l' ? 'Left' : 'Right'} stick`}>
+      <View style={styles.stickCross} pointerEvents="none" />
+      <Animated.View pointerEvents="none" style={[styles.stickNub, { transform: pan.getTranslateTransform() }]} />
+    </View>;
+  }
   return (
     <View style={styles.stickPad} {...responder.panHandlers}>
       <View style={styles.stickCross} pointerEvents="none" />
@@ -1132,8 +1175,8 @@ function PadScreen() {
   // (Stage Manager, Android freeform), which swaps the pad for the too-small
   // card — an unmount the immersive flag never sees. Found in review.
   const layoutIdentity = `${activeBox?.id ?? ''}:${width}:${height}:${insets.top}:${insets.right}:${insets.bottom}:${insets.left}:${mode === 'gamepad' ? `${preset.id}:${preset.size}` : 'current'}`;
-  const surface: PadSurface = { mounted: immersiveLive && landGeom.ok, mode, landscape, layout: layoutIdentity };
-  const surfaceToken = useMemo(() => ({}), [surface.mounted, mode, landscape, layoutIdentity, status, inputBlocked]);
+  const surface: PadSurface = { mounted: (immersiveLive && landGeom.ok) || (!immersiveLive && padFocused && mode === 'gamepad' && !keyboardMode && !remoteOnly && settings.caps?.gamepad !== false), mode, landscape, layout: layoutIdentity };
+  const surfaceToken = useMemo(() => ({}), [surface.mounted, mode, landscape, layoutIdentity, status, inputBlocked, stale]);
   const inputGate = useMemo(() => createSurfaceInputGate(), []);
   const releasedFor = useRef(surface);
   useLayoutEffect(() => {
@@ -1146,10 +1189,10 @@ function PadScreen() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [surface.mounted, surface.mode, surface.landscape, surface.layout, client]);
   useLayoutEffect(() => {
-    if (surface.mounted && status === 'connected' && inputBlocked == null) inputGate.activate(surfaceToken);
+    if (surface.mounted && status === 'connected' && inputBlocked == null && !stale) inputGate.activate(surfaceToken);
     else inputGate.revoke();
     return () => { inputGate.revoke(); client.releaseAll(); };
-  }, [inputGate, surfaceToken, surface.mounted, status, inputBlocked, client]);
+  }, [inputGate, surfaceToken, surface.mounted, status, inputBlocked, stale, client]);
 
   // Rotation counts as learned only after a usable controller actually renders.
   const controllerAvailable = !keyboardMode && !remoteOnly && settings.caps?.gamepad !== false;
@@ -2024,6 +2067,10 @@ function PadScreen() {
     );
   }
   if (immersiveLive) {
+    const recovery = status !== 'connected' || stale || inputBlocked != null;
+    const ownsElsewhere = status === 'waiting' || status === 'released';
+    const recoveryTop = landGeom.ok
+      ? Math.max(landGeom.play.y, ...landGeom.nodes.filter(n => n.layer === 9).map(n => n.hit.y + n.hit.h)) + 8 : 16;
     return (
       <>
         <StatusBar hidden />
@@ -2063,6 +2110,29 @@ function PadScreen() {
             onExit={exitLandscape}
             onVariant={() => setMode('move')}
           />
+        )}
+        {landGeom.ok && recovery && (
+          <View pointerEvents="box-none" style={{ position: 'absolute', top: recoveryTop,
+            left: landGeom.play.x, width: landGeom.play.w,
+            height: Math.max(0, landGeom.play.y + landGeom.play.h - recoveryTop), alignItems: 'center', justifyContent: 'center' }}>
+            <ScrollView style={{ maxWidth: 360, maxHeight: '100%', flexGrow: 0, flexShrink: 1, backgroundColor: t.card,
+              borderWidth: 1, borderColor: t.amber, borderRadius: 12 }} contentContainerStyle={{ padding: 16, gap: 10 }}>
+              <Text style={{ color: t.text, fontWeight: '700', textAlign: 'center' }}>
+                {ownsElsewhere ? (dev ? `${dev} has control` : 'Another phone has control')
+                  : inputBlocked != null && status === 'connected' && !stale ? 'Controller input paused' : 'Controller disconnected'}
+              </Text>
+              <Text style={{ color: t.textDim, textAlign: 'center' }}>
+                {ownsElsewhere ? 'Request control to use this controller.' : inputBlocked != null && status === 'connected' && !stale
+                  ? inputBlocked : 'Reconnect before using the pad. Exit is still available above.'}
+              </Text>
+              {!(status === 'connected' && !stale && inputBlocked != null) && (
+                <Pressable onPress={retry} accessibilityRole="button" style={{ padding: 12, alignItems: 'center' }}>
+                  <Text style={{ color: t.blue, fontWeight: '700' }}>{ownsElsewhere
+                    ? status === 'waiting' && canForce ? 'TAKE CONTROL' : 'REQUEST CONTROL' : 'RECONNECT'}</Text>
+                </Pressable>
+              )}
+            </ScrollView>
+          </View>
         )}
         {/* Handoff survives immersive mode. Another phone asking for control is
             a decision only the person holding this one can make, and ignoring it
@@ -2425,17 +2495,18 @@ function PadScreen() {
       ) : (
         // ---------- Portrait gamepad: original stacked layout ----------
         <>
+          <PadTouchSurface key={`${layoutIdentity}:${status}:${inputBlocked ?? ''}:${stale}`} {...surfaceInputs} style={{ flex: 1 }}>
           {/* Top row: triggers + bumpers */}
-          <View style={styles.topRow}>
+          <PadTouchRow style={styles.topRow}>
             <PadButton label="LT" {...trig('lt')} style={styles.shoulderBtn} />
             <PadButton label="LB" {...btn('lb')} style={styles.shoulderBtn} />
-            <View style={styles.topSpacer} />
+            <PadTouchRow style={styles.topSpacer} />
             <PadButton label="RB" {...btn('rb')} style={styles.shoulderBtn} />
             <PadButton label="RT" {...trig('rt')} style={styles.shoulderBtn} />
-          </View>
+          </PadTouchRow>
 
           {/* Middle row: select / guide / start */}
-          <View style={styles.menuRow}>
+          <PadTouchRow style={styles.menuRow}>
             <PadButton label="SELECT" {...btn('select')} style={styles.menuBtn} fontSize={11} />
             <PadButton
               label="STEAM"
@@ -2453,60 +2524,61 @@ function PadScreen() {
               fontSize={20}
             />
             <PadButton label="START" {...btn('start')} style={styles.menuBtn} fontSize={11} />
-          </View>
+          </PadTouchRow>
 
           {/* Main clusters: d-pad left, ABXY right */}
-          <View style={styles.clusterRow}
+          <PadTouchRow style={styles.clusterRow}
             onLayout={(e) => setPortraitClusterRoom({ key: portraitMeasureKey, room: Math.round(e.nativeEvent.layout.height + (rotationTipVisible ? rotationTipHeight : 0)) })}>
-            <View style={styles.dpad}>
-              <View style={styles.dpadRow}>
-                <View style={styles.dpadSpacer} />
+            <PadTouchRow style={styles.dpad}>
+              <PadTouchRow style={styles.dpadRow}>
+                <PadTouchRow style={styles.dpadSpacer} />
                 <PadButton label="▲" {...btn('du')} style={styles.dpadBtn} />
-                <View style={styles.dpadSpacer} />
-              </View>
-              <View style={styles.dpadRow}>
+                <PadTouchRow style={styles.dpadSpacer} />
+              </PadTouchRow>
+              <PadTouchRow style={styles.dpadRow}>
                 <PadButton label="◀" {...btn('dl')} style={styles.dpadBtn} />
                 {/* Center OK = A: opens/activates the highlighted item. */}
                 <PadButton label="OK" {...btn('a')} style={styles.dpadBtn} color={t.green} fontSize={14} />
                 <PadButton label="▶" {...btn('dr')} style={styles.dpadBtn} />
-              </View>
-              <View style={styles.dpadRow}>
-                <View style={styles.dpadSpacer} />
+              </PadTouchRow>
+              <PadTouchRow style={styles.dpadRow}>
+                <PadTouchRow style={styles.dpadSpacer} />
                 <PadButton label="▼" {...btn('dd')} style={styles.dpadBtn} />
-                <View style={styles.dpadSpacer} />
-              </View>
-            </View>
+                <PadTouchRow style={styles.dpadSpacer} />
+              </PadTouchRow>
+            </PadTouchRow>
 
-            <View style={styles.abxy}>
-              <View style={styles.abxyRow}>
-                <View style={styles.faceSpacer} />
+            <PadTouchRow style={styles.abxy}>
+              <PadTouchRow style={styles.abxyRow}>
+                <PadTouchRow style={styles.faceSpacer} />
                 <PadButton label="Y" {...btn('y')} style={styles.faceBtn} color={t.amber} />
-                <View style={styles.faceSpacer} />
-              </View>
-              <View style={styles.abxyRow}>
+                <PadTouchRow style={styles.faceSpacer} />
+              </PadTouchRow>
+              <PadTouchRow style={styles.abxyRow}>
                 <PadButton label="X" {...btn('x')} style={styles.faceBtn} color={t.blue} />
-                <View style={styles.faceSpacer} />
+                <PadTouchRow style={styles.faceSpacer} />
                 <PadButton label="B" {...btn('b')} style={styles.faceBtn} color={t.red} />
-              </View>
-              <View style={styles.abxyRow}>
-                <View style={styles.faceSpacer} />
+              </PadTouchRow>
+              <PadTouchRow style={styles.abxyRow}>
+                <PadTouchRow style={styles.faceSpacer} />
                 <PadButton label="A" {...btn('a')} style={styles.faceBtn} color={t.green} />
-                <View style={styles.faceSpacer} />
-              </View>
-            </View>
-          </View>
+                <PadTouchRow style={styles.faceSpacer} />
+              </PadTouchRow>
+            </PadTouchRow>
+          </PadTouchRow>
 
           {/* Bottom corners: analog sticks with thumb-click buttons beside them */}
-          <View style={styles.stickRow}>
-            <View style={styles.stickGroup}>
-              <Stick onMove={stickMove('l')} onRelease={stickRelease('l')} />
+          <PadTouchRow style={styles.stickRow}>
+            <PadTouchRow style={styles.stickGroup}>
+              <Stick side="l" onMove={stickMove('l')} onRelease={stickRelease('l')} />
               <PadButton label="L3" {...btn('l3')} style={styles.thumbBtn} fontSize={11} />
-            </View>
-            <View style={styles.stickGroup}>
+            </PadTouchRow>
+            <PadTouchRow style={styles.stickGroup}>
               <PadButton label="R3" {...btn('r3')} style={styles.thumbBtn} fontSize={11} />
-              <Stick onMove={stickMove('r')} onRelease={stickRelease('r')} />
-            </View>
-          </View>
+              <Stick side="r" onMove={stickMove('r')} onRelease={stickRelease('r')} />
+            </PadTouchRow>
+          </PadTouchRow>
+          </PadTouchSurface>
           {keyboardBar}
         </>
       )}
