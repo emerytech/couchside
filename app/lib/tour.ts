@@ -83,7 +83,7 @@ export const TOUR_STEPS: TourStep[] = [
     tab: 'pad',
     anchor: 'pad.modes',
     title: 'The phone is a controller',
-    body: 'Switch to PAD for a real gamepad the box cannot tell from plastic: sticks, D-pad, triggers, haptics. SWIPE works like an Apple TV remote and MOUSE is a trackpad you can type through — for the login boxes a controller cannot handle.',
+    body: 'Switch to PAD for a real gamepad the box cannot tell from plastic: sticks, D-pad, triggers, haptics. While using PAD, turn your phone sideways to expand the gamepad. SWIPE works like an Apple TV remote and MOUSE is a trackpad you can type through — for the login boxes a controller cannot handle.',
   },
   // The shortcut for the mode switch above. Worth its own step because the
   // selector sits at the very top of the screen and this does the same job

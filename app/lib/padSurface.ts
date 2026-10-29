@@ -23,10 +23,26 @@
  *               spread one — every surface remounts while `mounted` and
  *               `mode` both stay put.
  */
-export type PadSurface = { mounted: boolean; mode: string; landscape: boolean };
+export type PadSurface = { mounted: boolean; mode: string; landscape: boolean; layout?: string };
 
 export function surfaceChanged(prev: PadSurface, next: PadSurface): boolean {
   return prev.mounted !== next.mounted
     || prev.mode !== next.mode
-    || prev.landscape !== next.landscape;
+    || prev.landscape !== next.landscape
+    || prev.layout !== next.layout;
+}
+
+/** Old responders/timers must not send after their surface was released.
+ * Tokens are objects, not preset names: leaving and returning to the SAME
+ * preset must not revive a callback belonging to its previous mount.
+ */
+export function createSurfaceInputGate() {
+  let current: object | null = null;
+  return {
+    activate(token: object) { current = token; },
+    revoke() { current = null; },
+    wrap<A extends unknown[]>(token: object, send: (...args: A) => void) {
+      return (...args: A) => { if (current === token) send(...args); };
+    },
+  };
 }

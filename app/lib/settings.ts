@@ -1,3 +1,4 @@
+import { normalizePadPreset, type PadPreset } from './padPresets';
 import { Platform } from 'react-native';
 import { isValidLanIp } from './lanIp';
 import * as SecureStore from 'expo-secure-store';
@@ -30,6 +31,8 @@ export type Box = {
   port: number;
   token: string;
   padMode: PadMode;
+  /** Optional landscape PAD extension, stored only on this saved box. */
+  controlPreset?: PadPreset;
   /**
    * Last IP this box was actually reached on (learned from /api/ping's "ip"
    * field or the pairing QR's &ip= param). Used as an automatic fallback when
@@ -411,6 +414,7 @@ function normalizeBox(raw: unknown): Box | null {
   const version = typeof o.version === 'string' && o.version ? o.version : undefined;
   return {
     id, name, host, port, token, padMode: normalizePadMode(o.padMode),
+    controlPreset: normalizePadPreset(o.controlPreset),
     lastIp, mac, volumeTarget, caps, lastSeen,
     secure, tlsPort, fp, pinModulus, version,
   };

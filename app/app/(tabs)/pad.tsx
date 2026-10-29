@@ -17,12 +17,12 @@ import {
   useKeepAwakeEnabled,
   useKeepAwakeTimeoutMin,
 } from '@/lib/keepAwake';
-import { getPref, setPref, usePref } from '@/lib/prefs';
+import { getPref, setPref, usePref, usePrefsReady } from '@/lib/prefs';
 import { planSteps, type StepState } from '@/lib/swipeSteps';
 import { tvStepDelta } from '@/lib/tvNav';
 import { activateKeepAwakeAsync, deactivateKeepAwake } from 'expo-keep-awake';
 import { useNavigation } from 'expo-router';
-import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import React, { useCallback, useContext, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import {
   Animated,
   AppState,
@@ -47,11 +47,11 @@ import { StatusBar } from 'expo-status-bar';
 import { ComboPanel } from '@/components/ComboPanel';
 import { Gated } from '@/components/Gated';
 import { LandscapeLaptop } from '@/components/LandscapeLaptop';
-import { LandscapePad, LandscapePadTooSmall, MovePad } from '@/components/LandscapePad';
+import { LandscapePad, LandscapePadTooSmall, MovePad, StardewPad } from '@/components/LandscapePad';
 import { setImmersive } from '@/lib/immersive';
 import { setRunningAppid } from '@/lib/gameTheme';
-import { surfaceChanged, type PadSurface } from '@/lib/padSurface';
-import { moveLayout, padLayout, verticalMoveLayout } from '@/lib/padLayout';
+import { surfaceChanged, createSurfaceInputGate, type PadSurface } from '@/lib/padSurface';
+import { moveLayout, padLayout, stardewLayout, verticalMoveLayout } from '@/lib/padLayout';
 import { NotePad } from '@/components/NotePad';
 import { SteamMenusPanel } from '@/components/SteamMenusPanel';
 import { RemoteView } from '@/components/RemoteView';
@@ -66,7 +66,10 @@ import { useVolumeButtons } from '@/hooks/useVolumeButtons';
 import { ApiError, api, hostKey, Status } from '@/lib/api';
 import { ButtonKey, DesktopKey, GamepadClient, GamepadStatus, getWsTrace, SpecialKey, StickKey, SystemChord, TriggerKey } from '@/lib/gamepad';
 import { PadMode } from '@/lib/settings';
-import { useSettings } from '@/lib/SettingsContext';
+import { PadGuidanceContext } from '@/components/PadGuidanceContext';
+import { PadRotationTip } from '@/components/PadRotationTip';
+import { normalizePadPreset, shouldShowRotationTip, rotationTipFits } from '@/lib/padPresets';
+import { useBoxes, useSettings } from '@/lib/SettingsContext';
 import { mono, useTheme, useThemedStyles } from '@/lib/theme';
 import type { Palette } from '@/lib/theme';
 
@@ -888,7 +891,7 @@ function PadScreen() {
   );
   const insets = useSafeAreaInsets();
   const navigation = useNavigation();
-  const { width, height } = useWindowDimensions();
+  const { width, height, fontScale } = useWindowDimensions();
   const landscape = width > height;
   // Landscape "laptop mode" (opt-out pref, default on): the pointer/keyboard
   // surfaces — everything that is NOT the gamepad, move, or the phone-local note
@@ -896,6 +899,12 @@ function PadScreen() {
   // of force-locking to portrait. See the laptop derivation and early return below.
   const landscapeLaptopPref = usePref('landscapeLaptop');
   const { settings, ready, update } = useSettings();
+  const { activeBox } = useBoxes();
+  const preset = normalizePadPreset(activeBox?.controlPreset);
+  const prefsReady = usePrefsReady();
+  const tipLearned = usePref('padRotationTipLearned');
+  const { busy: guidanceBusy, onRotationTipVisibility } = useContext(PadGuidanceContext);
+  const remoteOnly = usePref('remoteOnlyMode');
   // Input mode lives on the active BOX record; with no box paired,
   // SettingsContext.update() is a silent no-op and the mode toggle looked
   // functional but did nothing. Local fallback keeps it switchable (session-
@@ -1035,9 +1044,11 @@ function PadScreen() {
   const landGeom = useMemo(
     () => (mode === 'move'
       ? (landscape ? moveLayout : verticalMoveLayout)
-      : padLayout)({ width, height }, insets),
+      : preset.id === 'stardew' && mode === 'gamepad'
+        ? (win: { width: number; height: number }, safe: typeof insets) => stardewLayout(win, safe, preset.size)
+        : padLayout)({ width, height }, insets),
     // eslint-disable-next-line react-hooks/exhaustive-deps
-    [width, height, insets.top, insets.right, insets.bottom, insets.left, mode, landscape],
+    [width, height, insets.top, insets.right, insets.bottom, insets.left, mode, landscape, preset.id, preset.size],
   );
   /** ✕ in the LANDSCAPE GAMEPAD: force portrait and let rotation re-enter. */
   const exitLandscape = useCallback(() => {
@@ -1109,16 +1120,19 @@ function PadScreen() {
    * switch), unmounts the pad components — and an unmount mid-drag destroys
    * the responder WITHOUT firing its release. Nothing else zeroes the axis:
    * the socket stays healthy, the agent trusts the last frame, and the game
-   * keeps walking in a direction nobody is pushing. One releaseAll() per
-   * surface change is cheap (a handful of zero frames) and idempotent.
+   * keeps walking in a direction nobody is pushing. Neutral frames on a
+   * surface change are cheap (a handful of zero frames) and idempotent.
    */
   // `mounted` is the full pad-on-screen predicate, not just `immersive`: a
   // window can stay landscape-shaped while shrinking below the layout floors
   // (Stage Manager, Android freeform), which swaps the pad for the too-small
   // card — an unmount the immersive flag never sees. Found in review.
-  const surface: PadSurface = { mounted: immersiveLive && landGeom.ok, mode, landscape };
+  const layoutIdentity = `${activeBox?.id ?? ''}:${width}:${height}:${insets.top}:${insets.right}:${insets.bottom}:${insets.left}:${mode === 'gamepad' ? `${preset.id}:${preset.size}` : 'current'}`;
+  const surface: PadSurface = { mounted: immersiveLive && landGeom.ok, mode, landscape, layout: layoutIdentity };
+  const surfaceToken = useMemo(() => ({}), [surface.mounted, mode, landscape, layoutIdentity, status, inputBlocked]);
+  const inputGate = useMemo(() => createSurfaceInputGate(), []);
   const releasedFor = useRef(surface);
-  useEffect(() => {
+  useLayoutEffect(() => {
     if (surfaceChanged(releasedFor.current, surface)) {
       releasedFor.current = surface;
       client.releaseAll();
@@ -1126,7 +1140,22 @@ function PadScreen() {
     // The signature is rebuilt every render; compare by VALUE (surfaceChanged)
     // rather than listing it as a dep, which would fire on every render.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [surface.mounted, surface.mode, surface.landscape, client]);
+  }, [surface.mounted, surface.mode, surface.landscape, surface.layout, client]);
+  useLayoutEffect(() => {
+    if (surface.mounted && status === 'connected' && inputBlocked == null) inputGate.activate(surfaceToken);
+    else inputGate.revoke();
+    return () => { inputGate.revoke(); client.releaseAll(); };
+  }, [inputGate, surfaceToken, surface.mounted, status, inputBlocked, client]);
+
+  // Rotation counts as learned only after a usable controller actually renders.
+  const controllerAvailable = !keyboardMode && !remoteOnly && settings.caps?.gamepad !== false;
+  useEffect(() => {
+    if (prefsReady && !tipLearned && controllerAvailable && mode === 'gamepad' && landscape
+      && immersiveLive && landGeom.ok && status === 'connected' && !stale
+      && inputBlocked == null && controlReq == null && !guidanceBusy) {
+      void setPref('padRotationTipLearned', true);
+    }
+  }, [prefsReady, tipLearned, controllerAvailable, mode, landscape, immersiveLive, landGeom.ok, status, stale, inputBlocked, controlReq, guidanceBusy]);
 
   // Latest settings for connect() calls. The lifecycle effect below keys on
   // the connection identity (host/port/token) only. A background patch to
@@ -1492,6 +1521,21 @@ function PadScreen() {
   const tvNav = mode === 'tvnav' && tvNavEnabled;
   const largePad =
     trackpadLarge && (mode === 'trackpad' || mode === 'swipe' || tvNav);
+  const [rotationTipHeight, setRotationTipHeight] = useState(0);
+  const portraitMeasureKey = `${width}:${height}:${fontScale}:${insets.top}:${insets.right}:${insets.bottom}:${insets.left}`;
+  const [portraitClusterRoom, setPortraitClusterRoom] = useState({ key: '', room: 0 });
+  const rotationTipCandidate = shouldShowRotationTip({
+    ready: prefsReady && ready, learned: tipLearned, focused: padFocused,
+    mode, landscape, available: controllerAvailable, connected: status === 'connected',
+    blocked: stale || inputBlocked != null || controlReq != null || diagOpen || combosOpen,
+    tourVisible: guidanceBusy, selectorVisible: !largePad,
+  });
+  const rotationTipVisible = rotationTipCandidate && portraitClusterRoom.key === portraitMeasureKey
+    && rotationTipFits(portraitClusterRoom.room, rotationTipHeight);
+  useEffect(() => {
+    onRotationTipVisibility(rotationTipVisible);
+    return () => onRotationTipVisibility(false);
+  }, [rotationTipVisible, onRotationTipVisibility]);
   // Auto-raise the phone keyboard when the box raises its own. The counter is
   // what KeyboardBar watches; the ref lets the (memoised) socket callback read
   // the current pref without re-subscribing.
@@ -1516,6 +1560,20 @@ function PadScreen() {
     (k: StickKey) => () => client.sendStick(k, 0, 0),
     [client],
   );
+
+  const surfaceInputs = useMemo(() => ({
+    btn: (k: ButtonKey) => ({
+      onDown: inputGate.wrap(surfaceToken, btn(k).onDown),
+      onUp: inputGate.wrap(surfaceToken, btn(k).onUp),
+    }),
+    trig: (k: TriggerKey) => ({
+      onDown: inputGate.wrap(surfaceToken, trig(k).onDown),
+      onUp: inputGate.wrap(surfaceToken, trig(k).onUp),
+    }),
+    stickMove: (k: StickKey) => inputGate.wrap(surfaceToken, stickMove(k)),
+    stickRelease: (k: StickKey) => inputGate.wrap(surfaceToken, stickRelease(k)),
+    qam: inputGate.wrap(surfaceToken, qam),
+  }), [inputGate, surfaceToken, btn, trig, stickMove, stickRelease, qam]);
 
   const setMode = useCallback(
     (m: PadMode) => {
@@ -1978,9 +2036,8 @@ function PadScreen() {
           // session, same protocol keys — the agent cannot tell modes apart.
           <MovePad
             layout={landGeom}
-            btn={btn}
-            stickMove={stickMove}
-            stickRelease={stickRelease}
+            key={`${layoutIdentity}:${status}:${inputBlocked ?? ''}`}
+            {...surfaceInputs}
             locked={padLock}
             onToggleLock={() => setPadLock((v) => !v)}
             onExit={exitMove}
@@ -1989,14 +2046,14 @@ function PadScreen() {
               setMode('gamepad');
             } : undefined}
           />
+        ) : preset.id === 'stardew' ? (
+          <StardewPad background={preset.background} key={`${layoutIdentity}:${status}:${inputBlocked ?? ''}`} layout={landGeom} {...surfaceInputs}
+            locked={padLock} onToggleLock={() => setPadLock((v) => !v)} onExit={exitLandscape} />
         ) : (
           <LandscapePad
             layout={landGeom}
-            btn={btn}
-            trig={trig}
-            stickMove={stickMove}
-            stickRelease={stickRelease}
-            qam={qam}
+            key={`${layoutIdentity}:${status}:${inputBlocked ?? ''}`}
+            {...surfaceInputs}
             locked={padLock}
             onToggleLock={() => setPadLock((v) => !v)}
             onExit={exitLandscape}
@@ -2098,6 +2155,20 @@ function PadScreen() {
               </Pressable>
             ))}
           </TourAnchor>
+          {rotationTipCandidate && (
+            <View style={{ height: rotationTipVisible ? rotationTipHeight : 0 }} pointerEvents={rotationTipVisible ? 'auto' : 'none'}>
+              {/* Measure the real text, including font scaling, before spending
+                  any of the controller's spare space. Hidden hints cannot take
+                  touches or enter the accessibility tree. */}
+              <View onLayout={(e) => setRotationTipHeight(Math.ceil(e.nativeEvent.layout.height))}
+                accessibilityElementsHidden={!rotationTipVisible}
+                importantForAccessibility={rotationTipVisible ? 'auto' : 'no-hide-descendants'}
+                aria-hidden={!rotationTipVisible}
+                style={{ position: 'absolute', left: 0, right: 0, opacity: rotationTipVisible ? 1 : 0 }}>
+                <PadRotationTip onDismiss={() => { void setPref('padRotationTipLearned', true); }} />
+              </View>
+            </View>
+          )}
         </>
       )}
 
@@ -2381,7 +2452,8 @@ function PadScreen() {
           </View>
 
           {/* Main clusters: d-pad left, ABXY right */}
-          <View style={styles.clusterRow}>
+          <View style={styles.clusterRow}
+            onLayout={(e) => setPortraitClusterRoom({ key: portraitMeasureKey, room: Math.round(e.nativeEvent.layout.height + (rotationTipVisible ? rotationTipHeight : 0)) })}>
             <View style={styles.dpad}>
               <View style={styles.dpadRow}>
                 <View style={styles.dpadSpacer} />
