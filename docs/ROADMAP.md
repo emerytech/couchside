@@ -39,6 +39,41 @@ Each entry now carries a `✅ DONE` / `🟡 PARTIAL` / `📋 OPEN` banner with i
 - **priority:** P1 · **risk:** low-medium (connection lifecycle) · **affects:** Linux agent and TLS tests.
 - **Status:** prepared for Linux agent 2.9.132; not published. TLS negotiation runs inside the existing capped workers with a five-second deadline, so an idle handshake cannot monopolize the accept loop. Established HTTP/WebSocket timeout policies and certificates are unchanged.
 - Verified locally: 43 handshake checks plus nine surrounding suites, including idle/partial/malformed peers, worker-cap recovery, thread-start failure, authenticated HTTPS/WSS and the existing TLS watchdog. The pre-fix control fails eight checks. Seven selected suites and 15 isolated LAN checks passed on each physical SteamOS/Bazzite machine; Razr native uploads passed with three unfinished TLS peers present. Corrected-fixture iPhone/Bazzite authenticated status and native upload also passed during contention; corrected-fixture native iPhone upload on SteamOS was not verified. Production services were unchanged during these checks. Release remains separate; no structural refactoring or app reporting change is included.
+### Windows: caret / text-field detection → auto-raise the app keyboard (osk parity)
+- **priority:** P3 · **risk:** low (read-only Win32 probe + existing outbound push; no new cap, no protocol change) ·
+  **affects:** agent `agent/win/couchsided-win.py` (`_caret_query`, `_fg_watch_tick`, `fg-watch` thread);
+  consumes the EXISTING app path (`gamepad.ts` `msg.t === 'osk'` → `pad.tsx` `onOsk`) ·
+  **depends_on:** the gamepad holder/session infra (done).
+- **status:** BUILT + unit-tested on the mac dev host (`tests/test_fg_watch.py`): the pure caret-focus
+  decision (`hwndCaret` non-null OR `GUI_CARETBLINKING`), the edge-trigger dedup (one `{"t":"osk"}` per
+  not-focused→focused edge, re-fires after blur), and degrade-closed off Windows all green; `py_compile`
+  + protocol parity green.
+- **VERIFIED on real Windows (EMERY-PC, session 2 desktop, Python 3.12.7 64-bit, 2026-10-21):** a
+  standalone probe mirroring the exact ctypes calls fired `CARET EDGE -> would push {"t":"osk"}`
+  (hwndCaret=0x30994, non-null) ONCE per field focus — `GetGUIThreadInfo(0, ...)` returns a real caret
+  handle on a focused field and the edge dedup holds (not continuous). Headless-SSH run separately
+  confirmed degrade-closed on real hardware (no foreground → None, no exception). NOT re-exercised: the
+  final WebSocket send + app `onOsk` keyboard-raise, which is the PRE-EXISTING osk path (unchanged here).
+- **allowlist:** no client input — a background poll that only READS the foreground thread's caret and
+  pushes an existing signal to the holder. Degrades closed (probe failure → None → no push).
+- **left open:** real-Windows verification; documented API limit — many apps and most browsers draw their
+  own caret and report none here, so auto-raise is native-Win32-field only (Notepad, Explorer, dialogs).
+
+### Windows: foreground-app awareness → additive `{"t":"foreground"}` push
+- **priority:** P3 · **risk:** low (additive outbound frame, no app consumer required yet; no cap, no protocol change) ·
+  **affects:** agent `agent/win/couchsided-win.py` (`_fg_query`, `_fg_exe_for_pid`, `_fg_classify`,
+  `_exe_basename`, shared `fg-watch` poll) ·
+  **depends_on:** nothing.
+- **status:** BUILT + unit-tested on mac (class filter: skip `Shell_TrayWnd`/`Shell_SecondaryTrayWnd`,
+  special-case `Progman`/`WorkerW`; exe-basename split on both separators; on-change dedup pushes once per
+  distinct `(title, exe)`). App safely ignores the unknown frame (else-if chain, no throw).
+- **VERIFIED on real Windows (EMERY-PC, 2026-10-21):** the probe pushed `{"t":"foreground"}` once per app
+  switch with the correct title + exe basename — `powershell.exe`, `SearchHost.exe` (Windows Search), and
+  `new 1 - Notepad++` → `notepad++.exe`. `GetForegroundWindow` + `GetWindowTextW` +
+  `QueryFullProcessImageNameW` work and the on-change dedup holds (one frame per real switch).
+- **allowlist:** no client input; read-only foreground probe, holder-only push, degrade-closed.
+- **left open:** real-Windows verification; the app-side per-app smart-button consumer is a SEPARATE larger
+  ROADMAP item (Planned) and intentionally not built here — this just lays the additive signal.
 
 ### Game Aura — paint the strip from game artwork (Phase 1, PR `feat/game-aura-artwork`)
 - **priority:** P3 · **risk:** low (additive route + app-side sampler; no new cap, no agent image lib) ·

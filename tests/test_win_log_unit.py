@@ -15,6 +15,7 @@ Pure stdlib, no pytest — same style as the other agent tests.
 """
 import importlib.util
 import os
+import tempfile
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 AGENT = os.path.join(HERE, "..", "agent", "win", "couchsided-win.py")
@@ -35,6 +36,17 @@ def check(name, cond, detail=""):
 
 def main():
     print("win log-only pseudo-unit")
+
+    # A windowless binary has no stdout/stderr. Keep its diagnostics on disk.
+    with tempfile.TemporaryDirectory() as tmp:
+        path = os.path.join(tmp, "agent.log")
+        stream = cw._Tee(None, path)
+        message = "windowless diagnostic\n"
+        check("windowless log accepts text", stream.write(message) == len(message))
+        stream.flush()
+        with open(path, encoding="utf-8") as f:
+            check("windowless diagnostic reaches file", f.read() == message)
+        check("windowless log is not a terminal", stream.isatty() is False)
 
     # sc.exe does not exist off Windows; real_units() must still be callable
     # because the pseudo-unit is answered without shelling out at all.

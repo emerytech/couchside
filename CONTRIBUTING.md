@@ -83,9 +83,11 @@ check, not a complete detector for arbitrary Python loading or dependency risks.
 Optional standalone processes (for example the GObject portal) are outside this
 core policy. New exceptions require a reviewed, narrowly scoped policy change
 and dependency documentation; installing a package in CI does not approve it.
-The separate Windows HTTPS preview uses PyCA `cryptography` for certificate
-generation. When that preview is integrated, include its explicit Windows-only
-exception and tests in the same PR; do not relax the Linux daemon policy.
+Windows certificate generation has one explicit exception: the six reviewed
+PyCA symbols imported inside the module-level `_tls_identity` function. This
+does not allow other cryptography modules, imports elsewhere, or any third-party
+imports in the Linux daemon or QR helper. `cryptography==46.0.7` is pinned in the
+Windows installer/build tooling; TLS connections and transfers use stdlib.
 
 ## Before sharing or releasing
 

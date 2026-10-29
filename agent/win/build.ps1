@@ -12,12 +12,13 @@
 # (issue #255). Use -NoGamepad only if you deliberately want a build with no
 # controller support.
 
-param([switch]$NoGamepad)
+param([switch]$NoGamepad, [switch]$Console)
 
 $ErrorActionPreference = 'Stop'
 $here = Split-Path -Parent $MyInvocation.MyCommand.Path
 
-python -m pip install --upgrade pyinstaller | Out-Null
+python -m pip install --upgrade pyinstaller 'cryptography==46.0.7' | Out-Null
+if ($LASTEXITCODE -ne 0) { throw 'Build dependency installation failed' }
 
 # qr.py is the shared encoder in agent/; a standalone copy may sit next to
 # this script. Put both on PyInstaller's module search path so `import qr`
@@ -25,8 +26,9 @@ python -m pip install --upgrade pyinstaller | Out-Null
 $qrPath = $here
 if (-not (Test-Path (Join-Path $here 'qr.py'))) { $qrPath = Split-Path $here -Parent }
 
-# --noconsole would swallow the log prints; keep the console build and let the
-# scheduled task hide the window instead. qr.py is bundled as a module;
+# Release builds use the GUI subsystem so a logon task does not open a console.
+# start_agent_log() handles absent streams and keeps the rotating diagnostic log.
+# -Console is an explicit developer/debugging opt-in. qr.py is bundled as a module;
 # ViGEmClient.dll is bundled below (required -- see the block after $piArgs) so
 # the _MEIPASS lookup in _load_vigem finds it.
 $piArgs = @(
@@ -35,12 +37,16 @@ $piArgs = @(
     '--paths', $here,
     '--paths', $qrPath,
     '--hidden-import', 'qr',
+    '--collect-all', 'cryptography',
+    # Preserve upstream distribution metadata, including dependency licenses.
+    '--recursive-copy-metadata', 'cryptography',
     # Pin outputs under agent/win regardless of the invoker's cwd, so the
     # "Built:" path below (and the README instructions) are always right.
     '--distpath', (Join-Path $here 'dist'),
     '--workpath', (Join-Path $here 'build'),
     '--specpath', $here
 )
+$piArgs += $(if ($Console) { '--console' } else { '--noconsole' })
 # ViGEmClient.dll is REQUIRED, and its absence is a hard error rather than a
 # quiet skip. vigem_available() is a DLL-load check, so an agent built without
 # this file reports caps.gamepad=false and the app HIDES THE PAD TAB -- the

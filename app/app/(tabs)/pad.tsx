@@ -453,7 +453,12 @@ function KeyboardBar({ autoOpenSignal, onText, onBackspace, onEnter, onSwipeMode
   // Live mirror: onChangeText/onKeyPress are memoised, and a stale `value` in
   // their closure would diff against the wrong text and send garbage.
   const valueRef = useRef(value);
-  valueRef.current = value;
+  // Native change events can arrive in a batch before React renders again.
+  // Advance the diff baseline synchronously, including every clear path.
+  const setValueSynced = useCallback((next: string) => {
+    valueRef.current = next;
+    setValue(next);
+  }, []);
 
   // Belt-and-suspenders dismiss: hide the OS keyboard AND blur our input, so it
   // works no matter which one is actually holding focus.
@@ -463,9 +468,9 @@ function KeyboardBar({ autoOpenSignal, onText, onBackspace, onEnter, onSwipeMode
     setOpenSynced(false);
     // Read BEFORE clearing — the caller keys off whether a query was entered.
     const typed = valueRef.current.length > 0;
-    setValue('');
+    setValueSynced('');
     onDismiss?.(typed);
-  }, [setOpenSynced, onDismiss]);
+  }, [setOpenSynced, onDismiss, setValueSynced]);
 
   const focus = useCallback(() => {
     haptic();
@@ -525,7 +530,7 @@ function KeyboardBar({ autoOpenSignal, onText, onBackspace, onEnter, onSwipeMode
     const sub = Keyboard.addListener('keyboardDidHide', () => {
       openRef.current = false;
       setOpen(false);
-      setValue('');
+      setValueSynced('');
     });
     return () => sub.remove();
   }, []);
@@ -568,11 +573,11 @@ function KeyboardBar({ autoOpenSignal, onText, onBackspace, onEnter, onSwipeMode
       // rather than assumed to be an append — see textDelta. This is what makes
       // paste work: a pasted chunk is just a large insert.
       const { backspaces, insert } = textDelta(valueRef.current, next);
+      setValueSynced(next);
       for (let i = 0; i < backspaces; i += 1) onBackspace();
       if (insert.length > 0) onText(insert);
-      setValue(next);
     },
-    [onText, onBackspace],
+    [onText, onBackspace, setValueSynced],
   );
 
   /**
@@ -745,7 +750,7 @@ function KeyboardBar({ autoOpenSignal, onText, onBackspace, onEnter, onSwipeMode
         onSubmitEditing={onEnter}
         onBlur={() => {
           setOpenSynced(false);
-          setValue('');
+          setValueSynced('');
         }}
         style={open ? [styles.kbCompose, { bottom: 10 + kbLift }] : styles.hiddenInput}
         onLayout={(e) => setComposeH(e.nativeEvent.layout.height)}
@@ -769,7 +774,7 @@ function KeyboardBar({ autoOpenSignal, onText, onBackspace, onEnter, onSwipeMode
       {open && value.length > 0 && (
         <Pressable
           onPress={() => {
-            setValue('');
+            setValueSynced('');
             inputRef.current?.focus();
           }}
           hitSlop={10}
