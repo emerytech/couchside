@@ -45,6 +45,10 @@ jobs:
     runs-on: macos-latest
     steps:
       - uses: actions/checkout@v7
+      - name: Verify continued-processing lifecycle ordering
+        run: |
+          swiftc app/modules/couchside-file-transfer/ios/UploadContinuation.swift tests/upload-continuation/main.swift -o "$RUNNER_TEMP/continuation-test"
+          "$RUNNER_TEMP/continuation-test"
       - name: Compile production URLSession uploader and test harness
         run: swiftc app/modules/couchside-file-transfer/ios/PinnedUpload.swift tests/native-upload/main.swift -o "$RUNNER_TEMP/upload-test"
       - name: Verify Apple TLS uploads against the agent

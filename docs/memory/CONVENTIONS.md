@@ -1027,3 +1027,13 @@ unit-testable piece; the render, the App-Widget provider, and the tap are device
 
 **The direct-APK fork (`build/direct-apk`, `app.config.js`) needs the widget plugin + config added separately**,
 or the sideload the owner runs on the Razr ships without the widget.
+
+
+### Pinned iOS upload continuation (2026-10-29)
+Keep transport trust separate from OS execution grants. Native upload lifecycle
+runs on main; URLSession data parsing stays on its serial delegate queue. Continued
+processing uses one explicit identifier, foreground user initiation and `.fail`
+admission; never queue a stale one-use ticket, replay a POST or swap to an
+always-redirecting background URLSession. Callbacks must tolerate expiration,
+cancellation and late grants without attaching them to another upload. Record
+signed phone evidence separately from lifecycle and TLS fixture tests.

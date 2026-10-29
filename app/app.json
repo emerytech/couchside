@@ -25,7 +25,8 @@
           "processing"
         ],
         "BGTaskSchedulerPermittedIdentifiers": [
-          "com.expo.modules.backgroundtask.processing"
+          "com.expo.modules.backgroundtask.processing",
+          "com.ets3d.rescueremote.secure-upload"
         ]
       },
       "entitlements": {

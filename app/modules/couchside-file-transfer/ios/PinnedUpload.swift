@@ -24,9 +24,11 @@ final class PinnedUpload: NSObject, URLSessionDataDelegate, URLSessionTaskDelega
   private var started = false
   private var finished = false
   private var cancelled = false
-  private var backgroundExpired = false
+  private var backgroundFailure: Failure?
 #if canImport(UIKit)
   private var backgroundTask: UIBackgroundTaskIdentifier = .invalid
+  private var continuation: UploadContinuationLease?
+  private var networkStarted = false
 #endif
 
   init(host: String, port: Int, modulus: String, ticket: String, name: String, file: URL,
@@ -70,14 +72,38 @@ final class PinnedUpload: NSObject, URLSessionDataDelegate, URLSessionTaskDelega
     // period. This is not a background URLSession or force-quit persistence.
     backgroundTask = UIApplication.shared.beginBackgroundTask(withName: "Couchside secure upload") { [weak self] in
       guard let self, !self.finished else { return }
-      self.backgroundExpired = true
-      self.task?.cancel()
-      self.endBackgroundTask()
+      self.expireBackgroundTransfer()
     }
     guard backgroundTask != .invalid else {
       finish(status: nil, body: nil, failure: .backgroundExpired)
       return
     }
+#if canImport(BackgroundTasks) && !targetEnvironment(macCatalyst)
+    if #available(iOS 26.0, *) {
+      continuation = AppleUploadContinuationScheduler.shared.begin(total: size,
+        granted: { [weak self] in
+          guard let self, !self.finished, !self.cancelled else { return }
+          self.endBackgroundTask()
+          self.startNetworkTransfer()
+        }, expired: { [weak self] in self?.expireBackgroundTransfer(.backgroundStopped) })
+      if continuation != nil {
+        // A successful submission normally grants immediately. Preserve normal
+        // foreground sending if the OS delays its callback unexpectedly.
+        DispatchQueue.main.asyncAfter(deadline: .now() + 5) { [weak self] in self?.startNetworkTransfer() }
+        return
+      }
+    }
+#endif
+#endif
+    startNetworkTransfer()
+  }
+
+  private func startNetworkTransfer() {
+#if canImport(UIKit)
+    guard !networkStarted, !finished, !cancelled else { return }
+    networkStarted = true
+#else
+    guard !finished, !cancelled else { return }
 #endif
     let configuration = URLSessionConfiguration.ephemeral
     configuration.urlCache = nil
@@ -109,7 +135,26 @@ final class PinnedUpload: NSObject, URLSessionDataDelegate, URLSessionTaskDelega
       self.cancelled = true
       self.task?.cancel()
       self.endBackgroundTask()
+#if canImport(UIKit)
+      self.continuation?.finish(success: false)
+      self.continuation = nil
+#endif
+      if self.started && self.task == nil { self.finish(status: nil, body: nil, failure: .cancelled) }
     }
+  }
+
+  private func expireBackgroundTransfer(_ failure: Failure = .backgroundExpired) {
+    guard !finished else { return }
+    backgroundFailure = failure
+    task?.cancel()
+    endBackgroundTask()
+#if canImport(UIKit)
+    continuation?.finish(success: false)
+    continuation = nil
+#endif
+    // An expiration while waiting for the scheduler has no URLSession task
+    // whose completion could release the module's active-upload slot.
+    if task == nil { finish(status: nil, body: nil, failure: failure) }
   }
 
   private func onLifecycleQueue(_ action: @escaping @Sendable () -> Void) {
@@ -134,6 +179,10 @@ final class PinnedUpload: NSObject, URLSessionDataDelegate, URLSessionTaskDelega
     guard !finished else { return }
     finished = true
     endBackgroundTask()
+#if canImport(UIKit)
+    continuation?.finish(success: failure == nil && status.map { (200...299).contains($0) } == true)
+    continuation = nil
+#endif
     session?.invalidateAndCancel()
     session = nil
     task = nil
@@ -187,6 +236,9 @@ final class PinnedUpload: NSObject, URLSessionDataDelegate, URLSessionTaskDelega
     let now = Date()
     if totalBytesSent == size || now.timeIntervalSince(lastProgress) >= 0.1 {
       progress(totalBytesSent, size)
+#if canImport(UIKit)
+      onLifecycleQueue { self.continuation?.report(sent: totalBytesSent) }
+#endif
       lastProgress = now
     }
   }
@@ -200,19 +252,21 @@ final class PinnedUpload: NSObject, URLSessionDataDelegate, URLSessionTaskDelega
     let native = error as NSError?
     let code = native?.domain == NSURLErrorDomain ? native?.code : nil
     onLifecycleQueue {
-      let failure: Failure? = self.backgroundExpired ? .backgroundExpired :
+      let failure: Failure? = self.backgroundFailure ??
         (self.cancelled ? .cancelled : (responseStatus == nil ? .transport(code) : nil))
       self.finish(status: responseStatus, body: body, failure: failure)
     }
   }
 
   enum Failure {
-    case backgroundExpired, cancelled, transport(Int?)
+    case backgroundExpired, backgroundStopped, cancelled, transport(Int?)
 
     var message: String {
       switch self {
       case .backgroundExpired:
         return "iOS ended the upload's background time. Keep Couchside open and select the file again."
+      case .backgroundStopped:
+        return "Background sending was stopped by iOS or cancelled in its activity. Select the file again to retry."
       case .cancelled:
         return "The upload was cancelled. Select the file again to retry."
       case .transport(let code):

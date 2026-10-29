@@ -377,3 +377,11 @@ cycles on the same process without a new crash, retaining saved boxes and
 license. Warm PSS ranged approximately225–237MiB; first/last five-sample
 medians were226/231MiB. This modest growth does not prove a leak-free app.
 An hours-long soak and physical iPhone execution remain validation gates.
+
+
+### Native iOS upload continuation (2026-10-29)
+Apple's built-in BackgroundTasks framework, gated to iOS26 for
+BGContinuedProcessingTask, keeps the existing pinned URLSession uploader active
+for a user-started transfer after Home. No third-party package or agent dependency.
+Older systems and rejected admission retain bounded foreground behavior. See
+`docs/IOS_SECURE_UPLOAD_CONTINUATION.md` for the security and lifecycle constraints.
