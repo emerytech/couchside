@@ -239,3 +239,16 @@ reserved by the separate optional appearance demo; it is not part of this build.
 - Held-input phone handoff, native Linux uploads and broader final-binary/gameplay
   acceptance remain pending. The earlier recorder expired without capturing X;
   only the successful repeat is counted here. No release or subscriber email.
+
+### PAD handoff while holding a control — candidate fix
+
+Native Direct 54 testing found Pass could not be tapped while X remained held.
+The eventual pass after release was neutral, but does not pass this acceptance
+case. PAD Pass/Keep now follow their own touch identifier and activate only
+when that finger ends inside the same button. Drag-out, cancel, re-layout and
+request replacement discard the gesture. Pass retires PAD callbacks and sends
+neutral input before granting control; ordinary non-PAD press handling is retained.
+
+TypeScript and all 834 app tests pass, including nine decision-touch regression
+cases. Direct 55 is reserved for a private native retest; iPhone 277 still lacks
+this fix. No native acceptance or publication is claimed by these checks.
