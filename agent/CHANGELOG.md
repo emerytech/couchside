@@ -18,6 +18,13 @@ the same thing regardless of what actually changed.
 Write for the person holding the phone, not for the commit log. They are
 deciding whether to press "Update now" on a machine across the room.
 
+## 2.9.135
+
+- Add HDMI-CEC source discovery and switching for supported boxes. Devices that do not advertise themselves over CEC may need the TV's own input menu.
+- Includes 2.9.134's optional Couchside Themes (Beta), lighting effects and editable sequences, and optional Couchside Player sample-film prototype.
+- Includes earlier secure-connection and private file-upload improvements. Existing pairing, controls and helper configuration remain compatible.
+- Availability depends on the box, TV and installed optional add-ons. This candidate is not yet published.
+
 ## 2.9.134
 
 - Add optional Couchside Themes (Beta), with console-style layouts, a theme picker and Theme Studio. Themes remain off until applied, and Steam's normal home can be restored.

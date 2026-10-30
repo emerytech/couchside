@@ -1,6 +1,6 @@
 # Next release draft — not published
 
-Prepared 2026-10-29. This is a working draft; final versions and custom PAD
+Updated 2026-10-30. This is a working draft; final versions and custom PAD
 scope require a frozen, reviewed candidate. No release or subscriber send is
 authorized by this file.
 
@@ -54,11 +54,11 @@ ancestor of this combined source. Do not merge duplicate feature branches.
 
 | Component | Current candidate source/config | Final-release action |
 | --- | --- | --- |
-| App version | 2.9.79 | Confirm after cross-session scope freeze |
-| iOS configured build | 277, reserved for Rotate/PREFS acceptance preview | Final release remains separate |
+| App version | 2.9.80 | Held candidate; public release requires approval |
+| iOS configured build | 278, reserved for EAS cloud candidate | Verify artifact and device smoke before submission |
 | Physical iPhone QA build | 277, cloud source ad73a5a | Owner-only installed; saved connection/unlock retained; physical Rotate/PREFS and held-button background/reconnect passed |
-| Android Store configured code | 127 | Reconcile latest reservations, then allocate fresh code |
-| Android Direct configured code | 55, source 159ec3f | Installed in place with matching Direct signer and original first-install time; active Linux pairing retained; held-input handoff limitation deferred by owner; experimental fix removed from current source |
+| Android Store configured code | 128 | Held candidate; verify artifact and signing before submission |
+| Android Direct configured code | 56, reserved for held candidate | Direct55 remains installed until update; verify candidate artifact and upgrade |
 | Linux agent configured version | 2.9.135, source 02e81f6 | Privately installed on an owner Linux laptop; no published release or update-manifest change |
 | Windows agent source version | 0.4.14-win | Confirm final source and release-number availability before packaging |
 
@@ -280,3 +280,14 @@ and non-blocking. Release the gameplay controls before tapping Pass. Normal
 handoff and neutral input cleanup still matter; this deferred gesture is not a
 passed test. The read-only Linux observer was stopped; its final observed state
 was neutral. No release or subscriber send is authorized.
+
+### Candidate version freeze — 2026-10-30
+
+App2.9.80 reserves iOS278, Play128 and Direct56. Runtime source is the reviewed
+`de93d95` baseline, which passed all13CI checks; this allocation changes versions
+and release documentation only. The isolated appearance demo is excluded.
+Linux agent2.9.135 and helper1.3.0 retain the tested bytes. Windows0.4.14-win
+retains the tested installer and runtime, subject to artifact provenance checks.
+No automatic build increment, upload to a store, release tag, public download
+or subscriber send is part of this preparation. Device acceptance of the new
+mobile artifacts remains pending.
