@@ -53,7 +53,7 @@ except ImportError:  # pragma: no cover
     fcntl = None
 
 APP_NAME = "couchside-agent"
-VERSION = "2.9.134"
+VERSION = "2.9.135"
 UID = os.getuid()
 XDG_RUNTIME_DIR = "/run/user/%d" % UID
 
@@ -17255,7 +17255,7 @@ def _cec_source_box_available():
     return bool(cec and cec.get("tool") == "cec-ctl")
 
 
-def real_cec_source_box():
+def real_cec_source_box(*, preserve_adapter=False):
     """CEC One Touch Play: switch the TV to THIS box's HDMI input. Image View On
     (wake; harmless if already on), then an Active Source broadcast carrying the
     box's OWN physical address, re-sent once to beat a TV that returns to its
@@ -17266,7 +17266,10 @@ def real_cec_source_box():
     regex-validated (never a client value). `--playback` claims the playback
     logical address so the Active Source comes from a valid source -- without it
     some TVs ignore it. cec-ctl only; degrades closed if the address is
-    unreadable. ActionResult-shaped."""
+    unreadable. The inventory picker can preserve the already-configured adapter
+    instead of re-claiming it (which resets its OSD name/vendor). The existing
+    standalone path retains its established playback-claim behavior.
+    ActionResult-shaped."""
     start = time.monotonic()
 
     def done(ok, err=""):
@@ -17280,7 +17283,9 @@ def real_cec_source_box():
     addr = _cec_phys_addr(cec)
     if addr is None:
         return done(False, "could not read this box's CEC physical address")
-    base = [cec["bin"], "-d", cec["device"], "--playback"]
+    base = [cec["bin"], "-d", cec["device"]]
+    if not preserve_adapter:
+        base.append("--playback")
     announce = base + ["--active-source", "phys-addr=" + addr]
     try:
         r1 = subprocess.run(base + ["--to", "0", "--image-view-on"],
@@ -17295,6 +17300,152 @@ def real_cec_source_box():
         return done(False, "%s: %s" % (e.__class__.__name__, e))
     ok = r1.returncode == 0 and r2.returncode == 0
     return done(ok, "" if ok else "cec-ctl returned non-zero")
+
+
+# CEC input discovery is bounded background work, never a subprocess in a status
+# request. Only addresses returned by our adapter's latest inventory are routable.
+CEC_SOURCES_TTL_S = 300
+_CEC_SOURCES_LOCK = threading.Lock()
+_CEC_SWITCH_LOCK = threading.Lock()
+_CEC_SOURCES = {"key": None, "t": -1e9, "loading": False,
+                "sources": [], "error": None}
+
+
+def _cec_valid_address(addr):
+    if not isinstance(addr, str) or not re.fullmatch(r"[0-9a-f](\.[0-9a-f]){3}", addr):
+        return False
+    digits = addr.split(".")
+    return (addr not in ("0.0.0.0", "f.f.f.f") and
+            ("0" not in digits or all(d == "0" for d in digits[digits.index("0"):])))
+
+
+def _cec_parse_sources(output):
+    """Parse cec-ctl's own adapter block and per-device system-info blocks.
+
+    Root TV/audio-only nodes are not HDMI video sources. Unknown/empty ports
+    are never fabricated. Device names are display text, never command input.
+    """
+    rows = []
+    current = {"is_box": True}
+    for line in output.splitlines():
+        device = re.match(r"\s*System Information for device (\d+)\b", line)
+        if device:
+            rows.append(current)
+            current = {"is_box": False, "logical_address": int(device.group(1))}
+        m = re.match(r"\s*(Physical Address|OSD Name|Primary Device Type)\s*:\s*(.*)", line)
+        if m:
+            current[m.group(1)] = m.group(2).strip().strip("'")
+    rows.append(current)
+    result = {}
+    for row in rows:
+        addr = row.get("Physical Address", "").lower()
+        if not _cec_valid_address(addr) or row.get("Primary Device Type") in ("TV", "Audio System"):
+            continue
+        label = re.sub(r"[\x00-\x1f\x7f]", "", row.get("OSD Name", ""))[:60].strip()
+        port = int(addr.split(".")[0], 16)
+        own = bool(row["is_box"])
+        label = (label or ("This box" if own else "CEC device")) + " · HDMI %d" % port
+        result.setdefault(addr, {"id": "cec-" + addr, "label": label, "is_box": own,
+                                 "logical_address": row.get("logical_address")})
+    return list(result.values())
+
+
+def _cec_source_key(cec):
+    return (cec["bin"], cec["device"])
+
+
+def _cec_scan_sources(cec, key):
+    error, sources = None, []
+    try:
+        r = subprocess.run([cec["bin"], "-d", cec["device"], "--timeout", "300",
+                            "--show-topology"], capture_output=True, timeout=18)
+        if r.returncode != 0:
+            raise RuntimeError("scan failed")
+        sources = _cec_parse_sources((r.stdout or b"").decode("utf-8", "replace"))
+        if not any(v["is_box"] for v in sources):
+            raise RuntimeError("adapter address unavailable")
+    except Exception:
+        error = "CEC inputs could not be read. Check the HDMI connection and retry."
+    with _CEC_SOURCES_LOCK:
+        if _CEC_SOURCES["key"] == key:
+            _CEC_SOURCES.update(t=time.monotonic(), loading=False,
+                                sources=sources if not error else [], error=error)
+
+
+def tv_sources(mock=False, force=False):
+    if mock or panel_available():
+        return {"available": True, "backend": "panel", "loading": False,
+                "sources": [{"id": sid, "label": label} for sid, label, _ in PANEL_SOURCES]}
+    cec = cec_current()
+    if not cec or cec.get("tool") != "cec-ctl":
+        return {"available": False, "sources": [], "loading": False}
+    key = _cec_source_key(cec)
+    with _CEC_SOURCES_LOCK:
+        if _CEC_SOURCES["key"] != key:
+            _CEC_SOURCES.update(key=key, t=-1e9, loading=False, sources=[], error=None)
+        age = time.monotonic() - _CEC_SOURCES["t"]
+        ttl = 15 if _CEC_SOURCES["error"] else CEC_SOURCES_TTL_S
+        if not _CEC_SOURCES["loading"] and (age >= ttl or (force and age >= 3)):
+            _CEC_SOURCES["loading"] = True
+            try:
+                threading.Thread(target=_cec_scan_sources, args=(dict(cec), key),
+                                 daemon=True, name="cec-inputs").start()
+            except RuntimeError:
+                _CEC_SOURCES.update(loading=False, t=time.monotonic(),
+                                    error="CEC scan could not start. Retry shortly.")
+        return {"available": True, "backend": "cec", "loading": _CEC_SOURCES["loading"],
+                "sources": [dict(v) for v in _CEC_SOURCES["sources"]],
+                "error": _CEC_SOURCES["error"]}
+
+
+def real_cec_select_source(sid):
+    start = time.monotonic()
+    def result(ok, error=""):
+        return {"ok": ok, "exit_code": 0 if ok else -1, "stdout": "", "stderr": error,
+                "duration_ms": int((time.monotonic() - start) * 1000), "confirmed": False}
+    cec = cec_current()
+    if not cec or cec.get("tool") != "cec-ctl":
+        return result(False, "CEC input switching is unavailable")
+    with _CEC_SOURCES_LOCK:
+        state = dict(_CEC_SOURCES)
+        rows = [dict(v) for v in state["sources"]]
+    if (state["key"] != _cec_source_key(cec) or state["error"] or state["loading"] or
+            time.monotonic() - state["t"] > CEC_SOURCES_TTL_S):
+        return result(False, "Refresh the CEC input list before switching")
+    selected = next((v for v in rows if v["id"] == sid), None)
+    own = next((v for v in rows if v["is_box"]), None)
+    if not selected or not own or not _cec_valid_address(selected["id"][4:]):
+        return result(False, "Select an input from the detected CEC devices")
+    logical = selected.get("logical_address")
+    if not selected["is_box"] and (type(logical) is not int or not 1 <= logical <= 14 or logical == 5):
+        return result(False, "The selected CEC device address is unavailable. Refresh inputs")
+    if not _CEC_SWITCH_LOCK.acquire(blocking=False):
+        return result(False, "An input switch is already in progress")
+    try:
+        if _cec_phys_addr(cec) != own["id"][4:]:
+            return result(False, "HDMI connection changed. Refresh the input list")
+        if selected["is_box"]:
+            return real_cec_source_box(preserve_adapter=True)
+        # Standby sources (confirmed with Apple TV) can ignore Set Stream Path.
+        # A discrete Power On key wakes only the selected inventoried device;
+        # never use a toggle or broadcast standby/power operations here.
+        try:
+            subprocess.run([cec["bin"], "-d", cec["device"], "--to", str(logical),
+                            "--user-control-pressed", "ui-cmd=power-on-function",
+                            "--user-control-released"], capture_output=True, timeout=3)
+        except (OSError, subprocess.TimeoutExpired):
+            pass  # Older devices may not support the key; still request routing.
+        time.sleep(0.6)
+        # Request routing; do not impersonate another source via Active Source.
+        # Successful transmission is not proof that the TV accepted the request.
+        r = subprocess.run([cec["bin"], "-d", cec["device"], "--set-stream-path",
+                            "phys-addr=" + selected["id"][4:]],
+                           capture_output=True, timeout=6)
+        return result(r.returncode == 0, "" if r.returncode == 0 else "TV input request failed")
+    except Exception:
+        return result(False, "CEC input request failed. Try the TV remote")
+    finally:
+        _CEC_SWITCH_LOCK.release()
 
 
 # ---- panel backend (RS-232 serial) ----------------------------------------
@@ -19843,6 +19994,16 @@ def tv_backends_available():
     return [name for name, probe in _tv_backend_probes() if _probe_ok(probe)]
 
 
+def tv_key_backends_available():
+    """Paired/configured remotes that can navigate a TV's own input menu.
+
+    Keep this separate from the power/volume preference. A client must choose
+    the remote explicitly; a CEC command must never silently target another TV.
+    """
+    return [name for name in tv_backends_available()
+            if name in ("panel", "webos", "samsung", "androidtv", "roku", "vidaa")]
+
+
 def _tv_hw_backend():
     """The external TV backend for power (and TV volume, when chosen).
 
@@ -19921,6 +20082,7 @@ def tv_info():
         backend, adapter = "cec", (cec["adapter"] if cec else "CEC")
     else:
         backend, adapter = "soft", (SOFT["adapter"] if SOFT else "OS volume keys")
+    inputs = tv_sources()
     return {
         "available": True,
         "backend": backend,
@@ -19939,11 +20101,13 @@ def tv_info():
         # (hardware-confirmed 2026-09-04). Either lights up the app's existing
         # "pull the display to this box" button — no app change needed.
         "source_box": panel_available() or _cec_source_box_available(),
-        # Full display-input picker (panel only). Each entry: {id,label}; the app
-        # POSTs /api/tv/source/<id> to switch. Empty when no panel backend.
-        "sources": ([{"id": sid, "label": label}
-                     for (sid, label, _code) in PANEL_SOURCES]
-                    if panel_available() else []),
+        # Panel inputs or cached CEC devices. Discovery is background-only;
+        # unknown TV ports are never guessed. IDs are server-issued keys.
+        "sources": inputs["sources"],
+        "source_picker": inputs["available"],
+        "sources_loading": inputs["loading"],
+        "sources_error": inputs.get("error"),
+        "sources_backend": inputs.get("backend"),
         # Screen blank/unblank without cutting power (keeps the box alive when an
         # OPS display would otherwise power the box off in standby). Panel-only.
         "screen_toggle": panel_available(),
@@ -19953,6 +20117,7 @@ def tv_info():
         "keys": (panel_available() or webos_available()
                  or samsung_available() or roku_available()
                  or androidtv_available() or vidaa_available()),
+        "key_backends": tv_key_backends_available(),
         # A "source" key opens the TV's input picker (agent >= 2.9.12). Android/
         # Google TV (KEYCODE_TV_INPUT) and Samsung (KEY_SOURCE) have one; webOS/
         # Roku don't (no single input-menu key), and the RS-232 panel uses its
@@ -28245,6 +28410,9 @@ class Handler(BaseHTTPRequestHandler):
                     self._send(404, {"error": "not found"}, started)
                 else:
                     self._send(200, info, started)
+            elif path == "/api/tv/sources":
+                self._send(200, tv_sources(self.mock, force=(
+                    parse_qs(parsed.query).get("refresh") == ["1"])), started)
             elif path == "/api/tv/discover":
                 # LAN scan (mDNS + SSDP, ~3s) so the app can offer a "scan for
                 # TVs" picker instead of a manual IP. Always 200 (possibly an
@@ -29836,11 +30004,27 @@ class Handler(BaseHTTPRequestHandler):
 
             # POST /api/tv/key/<k>: factory-remote / nav key. The RS-232 panel
             # drives the Newline OSD; a paired webOS TV drives its pointer nav.
-            # The active hardware backend selects the key vocabulary + sender.
+            # Older clients use the active hardware backend. New clients may
+            # explicitly choose an already paired remote for keys only, leaving
+            # the CEC power/volume choice untouched. Never accept a host/code.
             keyprefix = "/api/tv/key/"
             if path.startswith(keyprefix):
                 k = unquote(path[len(keyprefix):])
                 backend = _tv_hw_backend()
+                if body:
+                    try:
+                        req = json.loads(body.decode("utf-8"))
+                        if (not isinstance(req, dict) or set(req) - {"backend"}
+                                or ("backend" in req and not isinstance(req["backend"], str))):
+                            raise ValueError()
+                    except (ValueError, UnicodeDecodeError):
+                        self._send(400, {"error": "select a configured TV remote"}, started)
+                        return
+                    if "backend" in req:
+                        if req["backend"] not in tv_key_backends_available():
+                            self._send(409, {"error": "TV remote is no longer available"}, started)
+                            return
+                        backend = req["backend"]
                 if backend == "webos" and k in _WEBOS_KEYS:
                     result = (mock_webos("key %s" % k) if self.mock
                               else real_webos_key(k))
@@ -30227,11 +30411,22 @@ class Handler(BaseHTTPRequestHandler):
                                  "host": host}, started)
                 return
 
-            # POST /api/tv/source/<id>: switch the display input (panel only).
+            # POST /api/tv/source/<id>: panel input or inventoried CEC device.
             # Checked before the generic /api/tv/ route since it is more specific.
             srcprefix = "/api/tv/source/"
             if path.startswith(srcprefix):
                 sid = unquote(path[len(srcprefix):])
+                if sid.startswith("cec-") and not panel_available():
+                    if self.mock:
+                        # Mock mode never scans or routes real HDMI hardware.
+                        self._send(404, {"error": "unknown mock source"}, started)
+                        return
+                    result = real_cec_select_source(sid)
+                    if not result["ok"]:
+                        self._send(409, dict(result, error=result["stderr"]), started)
+                    else:
+                        self._send(200, result, started)
+                    return
                 if not panel_available() or sid not in PANEL_SOURCE_CODES:
                     self._send(404, {"error": "unknown source"}, started)
                     return

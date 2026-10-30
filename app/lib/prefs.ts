@@ -179,6 +179,8 @@ export type Prefs = {
    * no TVs. Someone who already has a box answered the question by having one.
    */
   onboardingDone: boolean;
+  /** Retire the optional news card after dismissal or opening signup. Never reset with the tour. */
+  newsletterInviteDismissed: boolean;
   /**
    * The one-time "there is a new setup walkthrough, want to see it?" offer has
    * been PUT TO the user — accepted or declined, both count.
@@ -354,6 +356,7 @@ export const DEFAULTS: Prefs = {
   fleetCollapsed: false,
   prefsCollapsed: [],
   onboardingDone: false,
+  newsletterInviteDismissed: false,
   whatsNewOffered: false,
   hideNoteMode: false,
   appUpdateReminder: true,
@@ -470,6 +473,7 @@ function normalize(raw: unknown): Prefs {
     fleetCollapsed: bool(o.fleetCollapsed, DEFAULTS.fleetCollapsed),
     prefsCollapsed,
     onboardingDone,
+    newsletterInviteDismissed: bool(o.newsletterInviteDismissed, DEFAULTS.newsletterInviteDismissed),
     whatsNewOffered,
     hideNoteMode,
     appUpdateReminder,

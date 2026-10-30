@@ -21,9 +21,31 @@ CORE_FILES = {
     "agent/qr.py": frozenset(),
 }
 
+# Windows certificate creation only. Never permit the whole cryptography
+# namespace, top-level imports, or a similarly named method/nested function.
+WINDOWS_CERT_IMPORTS = frozenset({
+    ("_tls_identity", "cryptography", "x509"),
+    ("_tls_identity", "cryptography.x509.oid", "NameOID"),
+    ("_tls_identity", "cryptography.x509.oid", "ExtendedKeyUsageOID"),
+    ("_tls_identity", "cryptography.hazmat.primitives", "hashes"),
+    ("_tls_identity", "cryptography.hazmat.primitives", "serialization"),
+    ("_tls_identity", "cryptography.hazmat.primitives.asymmetric", "rsa"),
+})
+SCOPED_IMPORTS = {"agent/win/couchsided-win.py": WINDOWS_CERT_IMPORTS}
 
-def violations(source, local_modules=frozenset()):
+
+def violations(source, local_modules=frozenset(), scoped_imports=frozenset()):
     tree = ast.parse(source)
+    parents = {child: parent for parent in ast.walk(tree) for child in ast.iter_child_nodes(parent)}
+
+    def scope(node):
+        names = []
+        while node in parents:
+            node = parents[node]
+            if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+                names.append(node.name)
+        return ".".join(reversed(names))
+
     failures = []
     dynamic_names = {"__import__"}
     for node in ast.walk(tree):
@@ -38,6 +60,9 @@ def violations(source, local_modules=frozenset()):
                 failures.append((node.lineno, "relative import requires an explicit policy"))
                 continue
             modules = [node.module or ""]
+            if all((scope(node), node.module, alias.name) in scoped_imports
+                   for alias in node.names):
+                modules = []
         else:
             modules = []
         for module in modules:
@@ -56,7 +81,8 @@ class DependencyPolicyTests(unittest.TestCase):
     def test_shipping_core_imports(self):
         for filename, local_modules in CORE_FILES.items():
             with self.subTest(filename=filename):
-                found = violations((ROOT / filename).read_text(encoding="utf-8"), local_modules)
+                found = violations((ROOT / filename).read_text(encoding="utf-8"), local_modules,
+                                   SCOPED_IMPORTS.get(filename, frozenset()))
                 self.assertEqual(found, [], "%s: %s" % (filename, found))
 
     def test_stdlib_including_platform_specific_imports(self):
@@ -84,6 +110,23 @@ class DependencyPolicyTests(unittest.TestCase):
                        "from importlib import import_module as load\nload('requests')"):
             with self.subTest(source=source):
                 self.assertTrue(violations(source))
+
+    def test_windows_crypto_exception_is_function_and_symbol_scoped(self):
+        allowed = "def _tls_identity(root):\n from cryptography import x509\n"
+        self.assertEqual(violations(allowed, scoped_imports=WINDOWS_CERT_IMPORTS), [])
+        self.assertTrue(violations(allowed))  # Linux and QR receive no exception.
+        for source in (
+            "from cryptography import x509",
+            "def unrelated():\n from cryptography import x509\n",
+            "def _tls_identity(root):\n import cryptography\n",
+            "def _tls_identity(root):\n from cryptography import x509, fernet\n",
+            "def _tls_identity(root):\n from cryptography.hazmat.primitives import *\n",
+            "class Other:\n def _tls_identity(self):\n  from cryptography import x509\n",
+            "def outer():\n def _tls_identity(root):\n  from cryptography import x509\n",
+            "def _tls_identity(root):\n __import__('cryptography')\n",
+        ):
+            with self.subTest(source=source):
+                self.assertTrue(violations(source, scoped_imports=WINDOWS_CERT_IMPORTS))
 
 
 if __name__ == "__main__":

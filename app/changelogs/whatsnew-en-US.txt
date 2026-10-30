@@ -1,7 +1,7 @@
-Safer file transfers to your Couchside box.
+Couchside 2.9.80
 
-• File uploads now use encrypted HTTPS when your box is paired securely.
-• Improved upload progress, failure handling, and recovery after choosing a file.
-• Existing legacy connections remain supported, with a clear unencrypted-transfer warning.
-
-Keep Couchside open until your transfer finishes.
+• Custom PAD presets, independent multi-touch, manual Rotate and a Pad settings shortcut.
+• More reliable Windows connections, encrypted uploads and clearer administrator-window warnings.
+• iOS 26 background upload progress, cancellation and completion.
+• TV input controls on compatible setups.
+• Android stability improvements and an optional email-updates invitation.

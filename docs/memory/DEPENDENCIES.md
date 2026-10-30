@@ -1,8 +1,9 @@
 # DEPENDENCIES
 
 Every meaningful dependency, its version, and why it is there. Two halves of the
-product with two opposite dependency philosophies: the **app** leans on the Expo
-ecosystem, the **agent** has none at all.
+product with different dependency policies: the **app** leans on the Expo
+ecosystem, the **Linux agent** stays stdlib-only, and the **Windows agent** has
+one narrowly scoped PyCA exception for HTTPS certificate creation.
 
 Source of truth: `app/package.json`, `app/app.json` (plugins),
 `agent/couchsided.py`, `scripts/`. Update this file any time a dependency is
@@ -19,9 +20,9 @@ prebuilt `ios/` directory checked in.
 
 | Package | Version | Why |
 |---|---|---|
-| `expo` | `~57.0.1` | The SDK itself. Everything below pins to its 57.x train. |
+| `expo` | `57.0.9` (exact) | Minimum SDK57 patch with the Hermes memory-regression fix; kept separate from broader SDK alignment. |
 | `react` / `react-dom` | `19.2.3` | React 19. `react-dom` is only reachable on the web target. |
-| `react-native` | `0.86.0` | The runtime. New Architecture era. |
+| `react-native` | `0.86.2` (exact) | Resolves Hermes runtime/compiler `250829098.0.16`, fixing the upstream Worklets/Reanimated memory regression. |
 
 ### File drop (Console tab, agent >= 2.9.54)
 
@@ -100,10 +101,10 @@ cannot be done in JS alone.
 
 ---
 
-## 2. The agent — zero third-party dependencies
+## 2. The Linux agent — zero third-party dependencies
 
 `agent/couchsided.py` is ~11,100 lines in **one file** with **no imports outside
-the Python 3 standard library**. Same for `agent/qr.py`, `agent/win/couchsided-win.py`,
+the Python 3 standard library**. Same for `agent/qr.py`,
 `couchside-decky/main.py`, `cec-bridge/couchside-cec-bridge.py`, and every file
 in `tests/`.
 
@@ -191,10 +192,18 @@ The heavy hitters, by role:
 
 ### Windows agent
 
-`agent/win/couchsided-win.py` holds the same line. Instead of `pywin32` or
+`agent/win/couchsided-win.py` uses no input-wrapper dependencies. Instead of `pywin32` or
 `pynput` it uses **`ctypes`** to call Win32 directly (`SendInput`, WTS session
-queries), plus `winreg` for registry access. Its only non-stdlib-shaped import
-is `qr` — the sibling `agent/qr.py`, in-repo.
+queries), plus `winreg` for registry access and the bundled `agent/qr.py`.
+
+The approved Windows-only HTTPS exception is `cryptography==46.0.7`, used only
+inside `_tls_identity` to create the persistent RSA certificate and key. TLS
+sockets and streamed uploads use Python stdlib. The installer/build pins PyCA;
+the executable preserves its dependency/license metadata. The dedicated Windows
+TLS tests also require this package. `tests/test_agent_dependencies.py` permits
+only the six reviewed symbols in that module-level Windows function and rejects
+other locations/modules, wildcard imports and imports in Linux/QR. This exception
+does not change the Linux daemon's deployment or dependency policy.
 
 ### External runtime endpoints the agent talks to — Decky manager (agent 2.9.105+)
 
@@ -339,3 +348,40 @@ offline backup is not optional.
   build time (new icon = new APK). Device protocol: Pro→Standard→Pro WITHOUT a restart, `dumpsys package …`
   enabled/disabled components must match the picker after each tap; then cold start and re-check; then
   `am start -a android.intent.action.VIEW -d 'couchside://…'` with Standard selected (and Pro as control).
+
+
+### Hermes memory-regression patch (2026-10-27; isolated candidate)
+
+Exact Expo57.0.9 + RN0.86.2 is the minimum upstream patch described in
+https://expo.dev/changelog/sdk-57#known-regressions. Hermes runtime and
+compiler resolve to250829098.0.16. The installed-native-version check
+`node app/scripts/check-hermes-memory.cjs` rejects affected older engines
+and runtime/compiler mismatches in CI. TCP socket6.4.2 and its cleanup
+patch, Reanimated4.5.0, and Worklets0.10.0 remain unchanged.
+
+TypeScript, app tests and native transport checks passed. A short physical
+Android test retained saved boxes/license across an in-place update and
+completed30 navigation/background-resume cycles without a process restart.
+This is a smoke test, not proof of long-duration leak elimination. Longer
+soak and native iOS build/device checks remain separate release gates.
+Expo Doctor still reports existing SDK alignment/metadata warnings; those
+are deliberately not suppressed or folded into this patch.
+
+
+Follow-up validation: a signed native iOS273 cloud build passed signature,
+version and entitlement checks, retaining approved multicast access. Its
+embedded Hermes Mach-O UUID and code-section hash match the checksum-verified
+250829098.0.16 library. No TestFlight/App Review submission occurred.
+A20-minute physical Android navigation/background-resume run completed40
+cycles on the same process without a new crash, retaining saved boxes and
+license. Warm PSS ranged approximately225–237MiB; first/last five-sample
+medians were226/231MiB. This modest growth does not prove a leak-free app.
+An hours-long soak and physical iPhone execution remain validation gates.
+
+
+### Native iOS upload continuation (2026-10-29)
+Apple's built-in BackgroundTasks framework, gated to iOS26 for
+BGContinuedProcessingTask, keeps the existing pinned URLSession uploader active
+for a user-started transfer after Home. No third-party package or agent dependency.
+Older systems and rejected admission retain bounded foreground behavior. See
+`docs/IOS_SECURE_UPLOAD_CONTINUATION.md` for the security and lifecycle constraints.

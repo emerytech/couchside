@@ -31,6 +31,7 @@ import { dirname, join } from 'node:path';
 import {
   DPAD,
   EXIT_MOAT_U,
+  portraitRotateFits,
   EXPAND_CAP_U,
   moveLayout,
   NAV,
@@ -48,6 +49,15 @@ import {
   type Rect,
   type Size,
 } from '../padLayout.ts';
+
+test('portrait Rotate needs a full 44dp gap without shrinking the four shoulders', () => {
+  assert.equal(portraitRotateFits(320), false);
+  assert.equal(portraitRotateFits(339), false);
+  assert.equal(portraitRotateFits(340), true);
+  assert.equal(portraitRotateFits(375), true);
+  assert.equal(portraitRotateFits(430), true);
+  assert.equal(portraitRotateFits(Number.NaN), false);
+});
 
 // ---------- Devices ----------
 // Landscape dp. Long axis first. `side` is the notch/cutout inset, applied to

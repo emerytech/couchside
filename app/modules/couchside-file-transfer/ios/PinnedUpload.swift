@@ -1,5 +1,8 @@
 import Foundation
 import Security
+#if canImport(UIKit)
+import UIKit
+#endif
 
 /// Per-transfer trust: a self-signed box is identified by its paired RSA key.
 /// Never changes URLSession.shared, the system trust store, or other API clients.
@@ -9,16 +12,27 @@ final class PinnedUpload: NSObject, URLSessionDataDelegate, URLSessionTaskDelega
   private let file: URL
   private let size: Int64
   private let progress: (Int64, Int64) -> Void
-  private let complete: (Int?, String?) -> Void
+  private let complete: (Int?, String?, Failure?) -> Void
   private var session: URLSession?
   private var task: URLSessionUploadTask?
   private var response = Data()
   private var status: Int?
   private var lastProgress = Date.distantPast
   private var failed = false
+  // Lifecycle operations run on the main queue on iOS. Delegate data remains
+  // confined to the serial URLSession queue.
+  private var started = false
+  private var finished = false
+  private var cancelled = false
+  private var backgroundFailure: Failure?
+#if canImport(UIKit)
+  private var backgroundTask: UIBackgroundTaskIdentifier = .invalid
+  private var continuation: UploadContinuationLease?
+  private var networkStarted = false
+#endif
 
   init(host: String, port: Int, modulus: String, ticket: String, name: String, file: URL,
-       progress: @escaping (Int64, Int64) -> Void, complete: @escaping (Int?, String?) -> Void) throws {
+       progress: @escaping (Int64, Int64) -> Void, complete: @escaping (Int?, String?, Failure?) -> Void) throws {
     guard (1...65535).contains(port), modulus.range(of: "^[0-9a-fA-F]{512,2048}$", options: .regularExpression) != nil,
           ticket.range(of: "^[0-9a-fA-F]{32}$", options: .regularExpression) != nil,
           !host.isEmpty, !host.contains(where: { $0.isWhitespace || "/@?#\\".contains($0) }),
@@ -46,6 +60,51 @@ final class PinnedUpload: NSObject, URLSessionDataDelegate, URLSessionTaskDelega
   }
 
   func start() {
+    onLifecycleQueue { self.startTransfer() }
+  }
+
+  private func startTransfer() {
+    guard !started, !finished else { return }
+    started = true
+    guard !cancelled else { finish(status: nil, body: nil, failure: .cancelled); return }
+#if canImport(UIKit)
+    // Keep this pinned, in-process transfer alive for the OS's bounded grace
+    // period. This is not a background URLSession or force-quit persistence.
+    backgroundTask = UIApplication.shared.beginBackgroundTask(withName: "Couchside secure upload") { [weak self] in
+      guard let self, !self.finished else { return }
+      self.expireBackgroundTransfer()
+    }
+    guard backgroundTask != .invalid else {
+      finish(status: nil, body: nil, failure: .backgroundExpired)
+      return
+    }
+#if canImport(BackgroundTasks) && !targetEnvironment(macCatalyst)
+    if #available(iOS 26.0, *) {
+      continuation = AppleUploadContinuationScheduler.shared.begin(total: size,
+        granted: { [weak self] in
+          guard let self, !self.finished, !self.cancelled else { return }
+          self.endBackgroundTask()
+          self.startNetworkTransfer()
+        }, expired: { [weak self] in self?.expireBackgroundTransfer(.backgroundStopped) })
+      if continuation != nil {
+        // A successful submission normally grants immediately. Preserve normal
+        // foreground sending if the OS delays its callback unexpectedly.
+        DispatchQueue.main.asyncAfter(deadline: .now() + 5) { [weak self] in self?.startNetworkTransfer() }
+        return
+      }
+    }
+#endif
+#endif
+    startNetworkTransfer()
+  }
+
+  private func startNetworkTransfer() {
+#if canImport(UIKit)
+    guard !networkStarted, !finished, !cancelled else { return }
+    networkStarted = true
+#else
+    guard !finished, !cancelled else { return }
+#endif
     let configuration = URLSessionConfiguration.ephemeral
     configuration.urlCache = nil
     configuration.httpCookieStorage = nil
@@ -71,7 +130,64 @@ final class PinnedUpload: NSObject, URLSessionDataDelegate, URLSessionTaskDelega
     task.resume()
   }
 
-  func cancel() { task?.cancel() }
+  func cancel() {
+    onLifecycleQueue {
+      self.cancelled = true
+      self.task?.cancel()
+      self.endBackgroundTask()
+#if canImport(UIKit)
+      self.continuation?.finish(success: false)
+      self.continuation = nil
+#endif
+      if self.started && self.task == nil { self.finish(status: nil, body: nil, failure: .cancelled) }
+    }
+  }
+
+  private func expireBackgroundTransfer(_ failure: Failure = .backgroundExpired) {
+    guard !finished else { return }
+    backgroundFailure = failure
+    task?.cancel()
+    endBackgroundTask()
+#if canImport(UIKit)
+    continuation?.finish(success: false)
+    continuation = nil
+#endif
+    // An expiration while waiting for the scheduler has no URLSession task
+    // whose completion could release the module's active-upload slot.
+    if task == nil { finish(status: nil, body: nil, failure: failure) }
+  }
+
+  private func onLifecycleQueue(_ action: @escaping @Sendable () -> Void) {
+#if canImport(UIKit)
+    // Always enqueue, including callers already on main: the module may still
+    // hold its active-upload lock until start()/cancel() returns.
+    DispatchQueue.main.async(execute: action)
+#else
+    action() // The macOS TLS harness has no UIApplication lifecycle.
+#endif
+  }
+
+  private func endBackgroundTask() {
+#if canImport(UIKit)
+    let identifier = backgroundTask
+    backgroundTask = .invalid
+    if identifier != .invalid { UIApplication.shared.endBackgroundTask(identifier) }
+#endif
+  }
+
+  private func finish(status: Int?, body: String?, failure: Failure?) {
+    guard !finished else { return }
+    finished = true
+    endBackgroundTask()
+#if canImport(UIKit)
+    continuation?.finish(success: failure == nil && status.map { (200...299).contains($0) } == true)
+    continuation = nil
+#endif
+    session?.invalidateAndCancel()
+    session = nil
+    task = nil
+    complete(status, body, failure)
+  }
 
   func urlSession(_ session: URLSession, didReceive challenge: URLAuthenticationChallenge,
                   completionHandler: @escaping (URLSession.AuthChallengeDisposition, URLCredential?) -> Void) {
@@ -120,6 +236,9 @@ final class PinnedUpload: NSObject, URLSessionDataDelegate, URLSessionTaskDelega
     let now = Date()
     if totalBytesSent == size || now.timeIntervalSince(lastProgress) >= 0.1 {
       progress(totalBytesSent, size)
+#if canImport(UIKit)
+      onLifecycleQueue { self.continuation?.report(sent: totalBytesSent) }
+#endif
       lastProgress = now
     }
   }
@@ -127,11 +246,34 @@ final class PinnedUpload: NSObject, URLSessionDataDelegate, URLSessionTaskDelega
   func urlSession(_ session: URLSession, task: URLSessionTask, didCompleteWithError error: Error?) {
     let ok = error == nil && !failed
     let body = ok ? String(data: response, encoding: .utf8) : nil
-    session.invalidateAndCancel()
-    self.session = nil
-    self.task = nil
-    // Never expose the native error's URL (which contains the scoped ticket).
-    complete(ok && body != nil ? status : nil, body)
+    let responseStatus = ok && body != nil ? status : nil
+    // Only a numeric URL loading code can cross the bridge. NSError URLs,
+    // userInfo and localized descriptions can include the one-use ticket.
+    let native = error as NSError?
+    let code = native?.domain == NSURLErrorDomain ? native?.code : nil
+    onLifecycleQueue {
+      let failure: Failure? = self.backgroundFailure ??
+        (self.cancelled ? .cancelled : (responseStatus == nil ? .transport(code) : nil))
+      self.finish(status: responseStatus, body: body, failure: failure)
+    }
+  }
+
+  enum Failure {
+    case backgroundExpired, backgroundStopped, cancelled, transport(Int?)
+
+    var message: String {
+      switch self {
+      case .backgroundExpired:
+        return "iOS ended the upload's background time. Keep Couchside open and select the file again."
+      case .backgroundStopped:
+        return "Background sending was stopped by iOS or cancelled in its activity. Select the file again to retry."
+      case .cancelled:
+        return "The upload was cancelled. Select the file again to retry."
+      case .transport(let code):
+        let detail = code.map { " (network code \($0))" } ?? ""
+        return "Secure upload failed\(detail). Check the box connection, then select the file again."
+      }
+    }
   }
 
   enum UploadError: Error { case invalid }

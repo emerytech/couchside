@@ -21,3 +21,34 @@ docs/media/
 *.mov
 *.mp4
 *.heic
+# Signing material belongs in the credentials service, never the source archive.
+app/credentials.json
+app/credentials/
+*.p12
+*.p8
+*.mobileprovision
+secrets/
+CLAUDE.md
+
+# Local assistant handoffs may contain private operational details.
+CLAUDE.local.md
+
+# Private operational notes and test identities must stay off cloud builders.
+docs/BUILD_LOG.md
+docs/memory/DECISIONS.md
+docs/memory/KNOWN_ISSUES.md
+**/*.local.md
+app/lib/__tests__/.atv-identity.json
+app/lib/__tests__/.atv-code.txt
+scripts/player-test/state/
+output/
+*.key
+*.pem
+*.jks
+*.apk
+*.ipa
+*.aab
+*.tar.gz
+.env*.local
+app/play-service-account.json
+*service-account*.json

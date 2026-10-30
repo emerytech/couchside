@@ -1,7 +1,8 @@
 #!/usr/bin/env python3
 """couchsided-win.py: Windows box-side agent for Couchside.
 
-Pure python3 stdlib (ctypes for Win32). Serves the same Couchside agent API
+Python3 stdlib (ctypes for Win32), plus PyCA for HTTPS certificate creation.
+Serves the same Couchside agent API
 contract v1 as the Linux agent (agent/couchsided.py) on port 8787, so the
 phone app pairs and talks to a Windows HTPC exactly like a SteamOS/Bazzite
 box. Also runs on macOS/Linux in --mock mode for phone-app development.
@@ -32,6 +33,7 @@ authed action/launcher API must never hand LAN clients admin execution.
 """
 
 import argparse
+from pathlib import Path
 import base64
 import ctypes
 import glob
@@ -41,12 +43,17 @@ import ipaddress
 import json
 import os
 import random
+import re
 import shutil
 import socket
+import ssl
+import tempfile
+import secrets
+import datetime
+import csv
 import struct
 import subprocess
 import sys
-import tempfile
 import threading
 import time
 import urllib.error
@@ -86,7 +93,7 @@ except ImportError:
 # Same app id the phone expects (AGENT_APPS in app/lib/api.ts); the Windows
 # agent versions independently of the Linux one.
 APP_NAME = "couchside-agent"
-VERSION = "0.4.12-win"
+VERSION = "0.4.14-win"
 
 _PROGRAMDATA = os.environ.get("ProgramData", r"C:\ProgramData")
 DEFAULT_CONFIG_PATH = os.path.join(_PROGRAMDATA, "Couchside", "config.json")
@@ -2582,6 +2589,67 @@ def _process_privilege():
     return result
 
 
+def _foreground_is_elevated():
+    """Read the foreground process's elevation; None when it cannot be queried.
+
+    No window activation or privilege changes. Pin every handle signature for
+    64-bit Windows, and close both query handles on all paths.
+    """
+    if not IS_WINDOWS or _kernel32 is None:
+        return None
+    try:
+        user32 = ctypes.WinDLL("user32", use_last_error=True)
+        advapi32 = ctypes.WinDLL("advapi32", use_last_error=True)
+        user32.GetForegroundWindow.restype = ctypes.c_void_p
+        user32.GetWindowThreadProcessId.argtypes = [ctypes.c_void_p,
+                                                   ctypes.POINTER(ctypes.c_uint32)]
+        _kernel32.OpenProcess.argtypes = [ctypes.c_uint32, ctypes.c_int,
+                                          ctypes.c_uint32]
+        _kernel32.OpenProcess.restype = ctypes.c_void_p
+        _kernel32.CloseHandle.argtypes = [ctypes.c_void_p]
+        advapi32.OpenProcessToken.argtypes = [ctypes.c_void_p, ctypes.c_uint32,
+                                              ctypes.POINTER(ctypes.c_void_p)]
+        advapi32.GetTokenInformation.argtypes = [ctypes.c_void_p, ctypes.c_int,
+                                                 ctypes.c_void_p, ctypes.c_uint32,
+                                                 ctypes.POINTER(ctypes.c_uint32)]
+        pid = ctypes.c_uint32()
+        hwnd = user32.GetForegroundWindow()
+        if not hwnd:
+            return None  # lock/UAC secure desktop, or no foreground window
+        user32.GetWindowThreadProcessId(hwnd, ctypes.byref(pid))
+        process = _kernel32.OpenProcess(0x1000, False, pid.value)
+        if not process:
+            return None
+        try:
+            token = ctypes.c_void_p()
+            if not advapi32.OpenProcessToken(process, _TOKEN_QUERY, ctypes.byref(token)):
+                return None
+            try:
+                value, length = ctypes.c_uint32(), ctypes.c_uint32()
+                if advapi32.GetTokenInformation(token, _TokenElevation,
+                        ctypes.byref(value), 4, ctypes.byref(length)):
+                    return bool(value.value)
+                return None
+            finally:
+                _kernel32.CloseHandle(token)
+        finally:
+            _kernel32.CloseHandle(process)
+    except Exception:
+        return None
+
+
+def _input_blocked_message():
+    if not _input_reachable():
+        return ("Windows session inactive. Sign in on the PC; "
+                "disconnect Remote Desktop.")
+    privilege = _process_privilege()
+    if (not privilege["elevated"] and not privilege["uiaccess"]
+            and _foreground_is_elevated() is True):
+        return ("Administrator app blocks input. Switch to a normal app "
+                "on the PC.")
+    return ("Input paused. Check Windows for a lock screen or security prompt.")
+
+
 # ---------------------------------------------------------------------------
 # Box mute state via Core Audio (ctypes COM, read-only). Best-effort: every
 # failure returns None, which the API contract tolerates (muted: bool|null).
@@ -4834,6 +4902,234 @@ def _gamepad_keepalive_loop():
             pass
 
 
+# ---------------------------------------------------------------------------
+# Foreground-window + caret watcher (Windows). Two producers share one ~0.35s
+# poll of the foreground window, both pushed to the HOLDER only (a waiter cannot
+# type, and foreground is just context for the one driving):
+#
+#   1. CARET / text-field focus -> {"t":"osk"} EDGE-TRIGGERED on not-focused ->
+#      focused. This is EXACT parity with the Linux agent's _osk_notify
+#      (agent/couchsided.py): the app's onOsk (app/app/(tabs)/pad.tsx) raises the
+#      pad keyboard so the phone types into the focused Win32 field. No protocol
+#      or caps change -- {"t":"osk"} is an existing outbound push the app already
+#      handles (gamepad.ts msg.t === 'osk'); Linux only lacked a Windows producer.
+#      GetGUIThreadInfo(0, &g) reports the FOREGROUND thread's caret; a field is
+#      focused when g.hwndCaret is non-null OR (g.flags & GUI_CARETBLINKING).
+#      LIMIT, documented not a bug: many apps and most browsers draw their own
+#      caret and report NONE through this API, so auto-raise fires for native
+#      Win32 fields (Notepad, Explorer rename, common dialogs, Win32 edit
+#      controls) and is silent elsewhere. (Recipe adapted to stdlib ctypes from
+#      civercras/pc-remote-app "Mando" caret_active; no third-party dep added.)
+#
+#   2. FOREGROUND app -> {"t":"foreground","title":str,"exe":str}, pushed
+#      ON-CHANGE. ADDITIVE outbound frame with no required app consumer yet (the
+#      app ignores unknown t), groundwork for per-app smart buttons (ROADMAP).
+#      GetForegroundWindow -> GetClassNameW filter (skip the two taskbar windows;
+#      special-case the desktop host) -> GetWindowTextW title + PID->exe basename
+#      via OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION)+QueryFullProcessImageNameW.
+#
+# Pure stdlib ctypes/user32, DEGRADES CLOSED: every probe returns None/"" on any
+# failure or off Windows, a None tick pushes nothing and leaves last-state
+# untouched, and the loop never raises out of its thread. The argtypes/restype
+# pinning is load-bearing on 64-bit Windows (see _process_privilege): without it
+# ctypes assumes 32-bit c_int and truncates the HWND/handle pointers.
+# ---------------------------------------------------------------------------
+FG_POLL_INTERVAL_S = 0.35
+GUI_CARETBLINKING = 0x1
+PROCESS_QUERY_LIMITED_INFORMATION = 0x1000
+
+# Window classes that are never a "foreground app": the primary + per-monitor
+# taskbar. A tick that lands on one pushes nothing (holder keeps its last app).
+_FG_SKIP_CLASSES = frozenset(("Shell_TrayWnd", "Shell_SecondaryTrayWnd"))
+# The desktop itself (Program Manager / the wallpaper host WorkerW) -- reported
+# as a named app rather than skipped, so "I'm on the desktop" is a real state.
+_FG_DESKTOP_CLASSES = frozenset(("Progman", "WorkerW"))
+
+
+class _GUITHREADINFO(ctypes.Structure):
+    _fields_ = [
+        ("cbSize", ctypes.c_uint32),
+        ("flags", ctypes.c_uint32),
+        ("hwndActive", ctypes.c_void_p),
+        ("hwndFocus", ctypes.c_void_p),
+        ("hwndCapture", ctypes.c_void_p),
+        ("hwndMenuOwner", ctypes.c_void_p),
+        ("hwndMoveSize", ctypes.c_void_p),
+        ("hwndCaret", ctypes.c_void_p),
+        ("rcCaret", ctypes.c_long * 4),  # RECT (left, top, right, bottom)
+    ]
+
+
+def _caret_field_focused(hwnd_caret, flags):
+    """A text field is focused when the foreground thread owns a caret
+    (hwndCaret non-null) OR the caret is blinking (GUI_CARETBLINKING). Pure --
+    no ctypes, so a test drives it on any platform. Mirrors Mando's caret_active."""
+    return bool(hwnd_caret) or bool(flags & GUI_CARETBLINKING)
+
+
+def _fg_classify(class_name):
+    """Map a window class to 'skip' (taskbar), 'desktop', or 'window'. Pure.
+    An unknown or empty class is a real app we simply don't special-case -> 'window'."""
+    if class_name in _FG_SKIP_CLASSES:
+        return "skip"
+    if class_name in _FG_DESKTOP_CLASSES:
+        return "desktop"
+    return "window"
+
+
+def _exe_basename(path):
+    """Last path component of a Windows image path, split on BOTH separators.
+    Pure -- and deliberately not os.path.basename, which ignores backslashes off
+    Windows, so the unit test (run on POSIX) would miss the real split. '' for a
+    falsy path."""
+    if not path:
+        return ""
+    s = str(path)
+    s = s.rsplit("\\", 1)[-1]
+    s = s.rsplit("/", 1)[-1]
+    return s
+
+
+def _fg_exe_for_pid(pid):
+    """exe basename for a pid via OpenProcess(QUERY_LIMITED)+QueryFullProcessImageNameW.
+    '' on any failure (degrade closed). Always closes the handle it opened."""
+    if not pid or not IS_WINDOWS or _kernel32 is None:
+        return ""
+    try:
+        _kernel32.OpenProcess.argtypes = [ctypes.c_uint32, ctypes.c_int,
+                                          ctypes.c_uint32]
+        _kernel32.OpenProcess.restype = ctypes.c_void_p
+        h = _kernel32.OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, 0, pid)
+        if not h:
+            return ""
+        try:
+            buf = ctypes.create_unicode_buffer(32768)  # MAX extended path
+            size = ctypes.c_uint32(32768)
+            _kernel32.QueryFullProcessImageNameW.argtypes = [
+                ctypes.c_void_p, ctypes.c_uint32, ctypes.c_wchar_p,
+                ctypes.POINTER(ctypes.c_uint32)]
+            _kernel32.QueryFullProcessImageNameW.restype = ctypes.c_int
+            if _kernel32.QueryFullProcessImageNameW(h, 0, buf,
+                                                    ctypes.byref(size)):
+                return _exe_basename(buf.value)
+            return ""
+        finally:
+            _kernel32.CloseHandle.argtypes = [ctypes.c_void_p]
+            _kernel32.CloseHandle(h)
+    except Exception:
+        return ""
+
+
+def _caret_query():
+    """True/False whether the foreground thread has a focused text field, or
+    None when unknown (degrade closed). GetGUIThreadInfo(0, ...) targets the
+    foreground thread. Never raises."""
+    if not IS_WINDOWS or _user32 is None:
+        return None
+    try:
+        gti = _GUITHREADINFO()
+        gti.cbSize = ctypes.sizeof(gti)
+        _user32.GetGUIThreadInfo.argtypes = [ctypes.c_uint32,
+                                             ctypes.POINTER(_GUITHREADINFO)]
+        _user32.GetGUIThreadInfo.restype = ctypes.c_int
+        if not _user32.GetGUIThreadInfo(0, ctypes.byref(gti)):
+            return None
+        return _caret_field_focused(gti.hwndCaret, gti.flags)
+    except Exception:
+        return None
+
+
+def _fg_query():
+    """Foreground window as {'title': str, 'exe': str}, or None when there is no
+    reportable foreground (taskbar, no window) or any probe fails. Never raises."""
+    if not IS_WINDOWS or _user32 is None or _kernel32 is None:
+        return None
+    try:
+        _user32.GetForegroundWindow.restype = ctypes.c_void_p
+        hwnd = _user32.GetForegroundWindow()
+        if not hwnd:
+            return None
+        cls = ctypes.create_unicode_buffer(256)
+        _user32.GetClassNameW.argtypes = [ctypes.c_void_p, ctypes.c_wchar_p,
+                                          ctypes.c_int]
+        _user32.GetClassNameW(hwnd, cls, 256)
+        kind = _fg_classify(cls.value)
+        if kind == "skip":
+            return None
+        if kind == "desktop":
+            return {"title": "Desktop", "exe": "explorer.exe"}
+        title = ctypes.create_unicode_buffer(512)
+        _user32.GetWindowTextW.argtypes = [ctypes.c_void_p, ctypes.c_wchar_p,
+                                           ctypes.c_int]
+        _user32.GetWindowTextW(hwnd, title, 512)
+        pid = ctypes.c_uint32(0)
+        _user32.GetWindowThreadProcessId.argtypes = [
+            ctypes.c_void_p, ctypes.POINTER(ctypes.c_uint32)]
+        _user32.GetWindowThreadProcessId(hwnd, ctypes.byref(pid))
+        return {"title": title.value, "exe": _fg_exe_for_pid(pid.value)}
+    except Exception:
+        return None
+
+
+def _fg_notify_osk():
+    """Tell the CURRENT holder its box just focused a text field. Holder only --
+    a waiter cannot type. Best-effort (_wsend_json never raises). Parity with the
+    Linux agent's _osk_notify."""
+    with GAMEPAD_LOCK:
+        holder = GAMEPAD_HOLDER
+    if holder is not None:
+        _wsend_json(holder, {"t": "osk"})
+
+
+def _fg_notify_foreground(info):
+    """Push the current foreground app to the holder as an additive frame."""
+    with GAMEPAD_LOCK:
+        holder = GAMEPAD_HOLDER
+    if holder is not None:
+        _wsend_json(holder, {"t": "foreground",
+                             "title": info.get("title", ""),
+                             "exe": info.get("exe", "")})
+
+
+# Watcher state: last caret-focus bool and last (title, exe) key, for the
+# edge/on-change dedup. Module-level so the live loop keeps it across ticks.
+_FG_STATE = {"caret": None, "fg": None}
+
+
+def _fg_watch_tick(caret_fn=_caret_query, fg_fn=_fg_query,
+                   osk_fn=_fg_notify_osk, fg_notify_fn=_fg_notify_foreground,
+                   state=None):
+    """One poll tick. Pushes osk on a not-focused -> focused caret EDGE, and a
+    foreground frame when (title, exe) CHANGES. The probes/pushes and the state
+    dict are injectable so a test drives it deterministically with no Win32.
+    A None probe (degrade closed) pushes nothing and leaves last-state untouched.
+    Split out so one tick can be driven in isolation. Never raises."""
+    st = _FG_STATE if state is None else state
+    caret = caret_fn()
+    if caret is True and st.get("caret") is not True:
+        osk_fn()                     # field just gained focus -> raise keyboard
+    if caret is not None:
+        st["caret"] = caret
+    info = fg_fn()
+    if info is not None:
+        key = (info.get("title", ""), info.get("exe", ""))
+        if key != st.get("fg"):
+            st["fg"] = key
+            fg_notify_fn(info)
+
+
+def _fg_watch_loop():
+    """Forever: poll the foreground window every FG_POLL_INTERVAL_S. Daemon
+    thread started in main() only on real Windows; guarded so it can never take
+    the agent down."""
+    while True:
+        time.sleep(FG_POLL_INTERVAL_S)
+        try:
+            _fg_watch_tick()
+        except Exception:  # a watcher must never die on a transient probe error
+            pass
+
+
 def _release_devices(entry):
     """Demote a session that stays connected as a waiter: destroy its gamepad
     (one pad per holder — the new holder brings its own) but KEEP the mouse and
@@ -5046,6 +5342,9 @@ def build_pair_url(token, port):
     ip = _pair_lan_ip()
     if ip:
         url += "&ip=" + quote(ip, safe="")
+    adv = _tls_public()
+    if adv:
+        url += "&tlsport=%d&fp=%s" % (adv['port'], adv['fp'])
     return url
 
 
@@ -5115,9 +5414,17 @@ def _udp_discovery_responder(port):
         if not data.startswith(COUCHSIDE_DISCOVER_MAGIC):
             continue
         short = socket.gethostname().split(".")[0] or "couchside"
-        reply = json.dumps({"couchside": True, "name": short,
-                            "host": short + ".local", "port": port,
-                            "version": VERSION}).encode()
+        payload = {"couchside": True, "name": short,
+                   "host": short + ".local", "port": port, "version": VERSION}
+        # A VPN return path can select its tunnel IP even for a LAN probe.
+        # Advertise the same primary LAN address used by on-box pairing instead.
+        lan_ip = _pair_lan_ip()
+        if lan_ip:
+            payload['ip'] = lan_ip
+        adv = _tls_public()
+        if adv:
+            payload.update(tls_port=adv['port'], tls_fp=adv['fp'], tls_spki=adv['spki'])
+        reply = json.dumps(payload).encode()
         try:
             s.sendto(reply, addr)
         except OSError:
@@ -5317,6 +5624,147 @@ def render_pair_page(token, port):
 # ---------------------------------------------------------------------------
 
 
+
+# HTTPS is additive: legacy controls stay on HTTP; uploads require TLS.
+TLS_ADVERT = None
+_UPLOAD_TICKETS = {}
+_UPLOAD_TICKET_LOCK = threading.Lock()
+_UPLOAD_SLOTS = threading.BoundedSemaphore(2)
+
+
+def _tls_public():
+    return dict(TLS_ADVERT or {})
+
+
+def _ticket_mint():
+    now = time.monotonic()
+    with _UPLOAD_TICKET_LOCK:
+        for k, expiry in list(_UPLOAD_TICKETS.items()):
+            if expiry <= now:
+                del _UPLOAD_TICKETS[k]
+        if len(_UPLOAD_TICKETS) >= 128:
+            raise ValueError("too many outstanding tickets")
+        ticket = secrets.token_hex(16)
+        _UPLOAD_TICKETS[ticket] = now + 120
+    return ticket
+
+
+def _ticket_consume(ticket):
+    with _UPLOAD_TICKET_LOCK:
+        expiry = _UPLOAD_TICKETS.pop(ticket, 0)
+    return expiry > time.monotonic()
+
+
+def _upload_name(name):
+    # Windows paths also have ADS, device aliases, trailing-dot and Unicode
+    # normalization hazards. Accept one literal leaf; never rewrite a bad name.
+    if (not isinstance(name, str) or not name or len(name) > 180
+            or name != name.strip() or name.endswith('.')
+            or any(ord(c) < 32 or c in '<>:"/\\|?*' for c in name)
+            or name in ('.', '..')
+            or name.split('.')[0].rstrip(' ').upper() in
+               {'CON', 'PRN', 'AUX', 'NUL', 'CLOCK$', 'CONIN$', 'CONOUT$'}
+            or re.match(r'^(COM|LPT)([0-9]|[¹²³])$', name.split('.')[0], re.I)):
+        raise ValueError("invalid filename")
+    return name
+
+
+def _drop_dir():
+    # Fixed user destination: never supplied by a network client.
+    root = os.path.join(os.path.expanduser('~'), 'Downloads', 'Couchside')
+    os.makedirs(root, exist_ok=True)
+    return os.path.realpath(root)
+
+
+def _tls_identity(root):
+    # Only certificate generation uses PyCA; sockets and transfers use stdlib.
+    from cryptography import x509
+    from cryptography.x509.oid import NameOID, ExtendedKeyUsageOID
+    from cryptography.hazmat.primitives import hashes, serialization
+    from cryptography.hazmat.primitives.asymmetric import rsa
+    os.makedirs(root, mode=0o700, exist_ok=True)
+    if IS_WINDOWS:
+        who = subprocess.run(['whoami', '/user', '/fo', 'csv', '/nh'],
+                             capture_output=True, text=True, check=True)
+        sid = next(csv.reader(who.stdout.strip().splitlines()))[1]
+        if not re.fullmatch(r'S-1-[0-9-]+', sid):
+            raise ValueError('cannot identify certificate owner')
+        subprocess.run(['icacls', root, '/inheritance:r', '/grant:r',
+                        '*'+sid+':(OI)(CI)F', '*S-1-5-18:(OI)(CI)F'],
+                       capture_output=True, check=True)
+    else:
+        os.chmod(root, 0o700)
+    kp, cp = os.path.join(root, 'key.pem'), os.path.join(root, 'cert.pem')
+    if os.path.exists(kp):
+        key = serialization.load_pem_private_key(Path(kp).read_bytes(), password=None)
+    else:
+        # Never replace a previously trusted identity on a parse failure.
+        key = rsa.generate_private_key(public_exponent=65537, key_size=2048)
+        fd = os.open(kp, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+        with os.fdopen(fd, 'wb') as f:
+            f.write(key.private_bytes(serialization.Encoding.PEM,
+                serialization.PrivateFormat.PKCS8, serialization.NoEncryption()))
+    short = socket.gethostname().split('.')[0]
+    names = [x509.DNSName('localhost'), x509.DNSName(short), x509.DNSName(short+'.local'),
+             x509.IPAddress(ipaddress.ip_address('127.0.0.1'))]
+    ip = _pair_lan_ip()
+    if ip:
+        names.append(x509.IPAddress(ipaddress.ip_address(ip)))
+    cert = None
+    if os.path.exists(cp):
+        cert = x509.load_pem_x509_certificate(Path(cp).read_bytes())
+        existing = cert.extensions.get_extension_for_class(x509.SubjectAlternativeName).value
+        if (not all(n in existing for n in names)
+                or cert.not_valid_after_utc < datetime.datetime.now(datetime.timezone.utc)+datetime.timedelta(days=7)):
+            cert = None
+    if cert is None:
+        now = datetime.datetime.now(datetime.timezone.utc)
+        subject = x509.Name([x509.NameAttribute(NameOID.COMMON_NAME, 'couchside')])
+        cert = (x509.CertificateBuilder().subject_name(subject).issuer_name(subject)
+                .public_key(key.public_key()).serial_number(x509.random_serial_number())
+                .not_valid_before(now-datetime.timedelta(minutes=5))
+                .not_valid_after(now+datetime.timedelta(days=3650))
+                .add_extension(x509.SubjectAlternativeName(names), critical=False)
+                .add_extension(x509.BasicConstraints(ca=False, path_length=None), critical=True)
+                .add_extension(x509.KeyUsage(True,False,True,False,False,False,False,None,None), critical=True)
+                .add_extension(x509.ExtendedKeyUsage([ExtendedKeyUsageOID.SERVER_AUTH]), critical=False)
+                .sign(key, hashes.SHA256()))
+        fd, tmp = tempfile.mkstemp(dir=root, prefix='cert-', suffix='.tmp')
+        try:
+            with os.fdopen(fd, 'wb') as f:
+                f.write(cert.public_bytes(serialization.Encoding.PEM))
+            os.replace(tmp, cp)
+        finally:
+            if os.path.exists(tmp): os.unlink(tmp)
+    public = key.public_key().public_bytes(serialization.Encoding.DER,
+                                           serialization.PublicFormat.SubjectPublicKeyInfo)
+    if cert.public_key().public_bytes(serialization.Encoding.DER,
+            serialization.PublicFormat.SubjectPublicKeyInfo) != public:
+        raise ValueError('certificate/key mismatch')
+    return cp, kp, {'fp': cert.fingerprint(hashes.SHA256()).hex(),
+                    'spki': hashlib.sha256(public).hexdigest(),
+                    'cert': cert.public_bytes(serialization.Encoding.PEM).decode('ascii')}
+
+
+def _start_https(host, port, root):
+    global TLS_ADVERT
+    cp, kp, info = _tls_identity(root)
+    ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
+    ctx.minimum_version = ssl.TLSVersion.TLSv1_2
+    ctx.load_cert_chain(cp, kp)
+    server = QuietThreadingHTTPServer((host, port), Handler)
+    server.daemon_threads = True
+    try:
+        server.socket = ctx.wrap_socket(server.socket, server_side=True,
+                                       do_handshake_on_connect=False)
+        threading.Thread(target=server.serve_forever, daemon=True, name='https').start()
+    except Exception:
+        server.server_close()
+        raise
+    TLS_ADVERT = dict(info, port=server.server_port)
+    return server
+
+
 class Handler(BaseHTTPRequestHandler):
     server_version = APP_NAME + "/" + VERSION
     protocol_version = "HTTP/1.1"
@@ -5325,6 +5773,8 @@ class Handler(BaseHTTPRequestHandler):
     # body read (see _read_body) so an unauthenticated LAN client can't force a
     # huge allocation via a large Content-Length. 8 MiB comfortably covers the
     # only bodies this agent accepts (tiny launcher/volume/power JSON).
+    timeout = 30
+    MAX_UPLOAD_BYTES = 8 * 1024 * 1024 * 1024
     MAX_BODY_BYTES = 8 * 1024 * 1024
 
     # set by main()
@@ -5452,6 +5902,63 @@ class Handler(BaseHTTPRequestHandler):
             self.wfile.write(data)
         self._log(code, started)
 
+
+    def _handle_upload(self, parsed, started):
+        self.close_connection = True  # a rejected/partial body must not be reused
+        try:
+            name = _upload_name((parse_qs(parsed.query).get('name') or [''])[0])
+        except ValueError:
+            self._send(400, {'error': 'invalid filename'}, started)
+            return
+        lengths = self.headers.get_all('Content-Length') or []
+        if self.headers.get('Transfer-Encoding') or len(lengths) != 1 or not re.fullmatch(r'[0-9]+', lengths[0]):
+            self._send(411, {'error': 'one content length required'}, started)
+            return
+        length = int(lengths[0])
+        if not 0 < length <= self.MAX_UPLOAD_BYTES:
+            self._send(413 if length else 411, {'error': 'invalid file size'}, started)
+            return
+        if not _UPLOAD_SLOTS.acquire(blocking=False):
+            self._send(429, {'error': 'uploads busy'}, started)
+            return
+        tmp = None
+        try:
+            root = _drop_dir()
+            dest = os.path.join(root, name)
+            # No overwrites, links, device aliases or automatic execution.
+            if os.path.lexists(dest):
+                self._send(409, {'error': 'file already exists'}, started)
+                return
+            if shutil.disk_usage(root).free < length + 64*1024*1024:
+                self._send(507, {'error': 'not enough free space'}, started)
+                return
+            fd, tmp = tempfile.mkstemp(dir=root, prefix='.couchside-upload-', suffix='.part')
+            written = 0
+            with os.fdopen(fd, 'wb') as f:
+                while written < length:
+                    chunk = self.rfile.read(min(1024*1024, length-written))
+                    if not chunk:
+                        raise ValueError('incomplete upload')
+                    f.write(chunk)
+                    written += len(chunk)
+            # Atomic no-clobber publication: hard-link creation fails if another
+            # transfer/local user created the destination during the stream.
+            os.link(tmp, dest)
+            os.unlink(tmp)
+            tmp = None
+            self._send(200, {'ok': True, 'name': name, 'bytes': written, 'path': dest}, started)
+        except FileExistsError:
+            self._send(409, {'error': 'file already exists'}, started)
+        except (ValueError, TimeoutError):
+            self._send(400, {'error': 'incomplete upload'}, started)
+        except OSError:
+            self._send(500, {'error': 'write failed'}, started)
+        finally:
+            if tmp is not None:
+                try: os.unlink(tmp)
+                except OSError: pass
+            _UPLOAD_SLOTS.release()
+
     def _authorized(self):
         auth = self.headers.get("Authorization", "")
         if not auth.startswith("Bearer "):
@@ -5509,9 +6016,17 @@ class Handler(BaseHTTPRequestHandler):
                 except OSError:
                     own_ip = None
                 short_host = socket.gethostname().split(".")[0] or None
-                self._send(200, {"ok": True, "app": APP_NAME,
-                                 "version": VERSION, "ip": own_ip,
-                                 "host": short_host}, started)
+                resp = {"ok": True, "app": APP_NAME, "version": VERSION,
+                        "ip": own_ip, "host": short_host}
+                adv = _tls_public()
+                if adv:
+                    resp.update(tls_port=adv['port'], tls_fp=adv['fp'], tls_spki=adv['spki'])
+                self._send(200, resp, started)
+                return
+
+            if path == "/api/tls/cert":
+                info = _tls_public()
+                self._send(200 if info else 404, info or {"error": "tls not enabled"}, started)
                 return
 
             if not path.startswith("/api/"):
@@ -5524,6 +6039,7 @@ class Handler(BaseHTTPRequestHandler):
 
             if path == "/api/status":
                 data = mock_status() if self.mock else real_status()
+                data['caps'] = dict(data.get('caps') or {}, file_upload=bool(TLS_ADVERT))
                 self._send(200, data, started)
             elif path == "/api/units":
                 units = mock_units() if self.mock else real_units()
@@ -5694,7 +6210,9 @@ class Handler(BaseHTTPRequestHandler):
                     # not throw another window at whoever is at the PC.
                     if fresh:
                         pair_show_on_box(self.port)
-                    self._send(200, {"ok": True, "ttl": ttl}, started)
+                    adv = _tls_public()
+                    extra = ({'tls_port':adv['port'], 'tls_fp':adv['fp'], 'tls_spki':adv['spki']} if adv else {})
+                    self._send(200, dict({"ok": True, "ttl": ttl}, **extra), started)
                     return
                 # .get() OUTSIDE the try: a body that parses but is not an object
                 # ([], "x", 5) raised AttributeError past this tuple and answered
@@ -5709,16 +6227,42 @@ class Handler(BaseHTTPRequestHandler):
                 except ValueError as e:
                     self._send(403, {"ok": False, "error": str(e)}, started)
                     return
-                self._send(200, {"ok": True, "token": self._current_token(),
-                                 "port": self.port}, started)
+                adv = _tls_public()
+                extra = ({'tls_port':adv['port'], 'tls_fp':adv['fp'], 'tls_spki':adv['spki']} if adv else {})
+                self._send(200, dict({"ok": True, "token": self._current_token(),
+                                 "port": self.port}, **extra), started)
                 return
 
             # Authorize BEFORE reading the body: an unauthenticated client must
             # not be able to make us allocate for its body. Reject + close so the
             # undrained body can't desync a keep-alive connection.
-            if not self._authorized():
+            ticket = (parse_qs(parsed.query).get('ticket') or [''])[0]
+            secure = isinstance(self.connection, ssl.SSLSocket)
+            ticket_ok = (path == '/api/upload' and secure and ticket and _ticket_consume(ticket))
+            if not (self._authorized() or ticket_ok):
                 self.close_connection = True
                 self._send(401, {"error": "unauthorized"}, started)
+                return
+
+            if path in ('/api/upload', '/api/ticket'):
+                if not secure:
+                    self.close_connection = True
+                    self._send(426, {'error': 'HTTPS required'}, started)
+                    return
+                if path == '/api/upload':
+                    self._handle_upload(parsed, started)
+                    return
+                # No request body is needed. Reject malformed framing explicitly.
+                if self.headers.get('Transfer-Encoding') or self.headers.get('Content-Length', '0') != '0':
+                    self.close_connection = True
+                    self._send(400, {'error': 'ticket request must be empty'}, started)
+                    return
+                try:
+                    ticket = _ticket_mint()
+                except ValueError:
+                    self._send(429, {'error': 'too many outstanding tickets'}, started)
+                    return
+                self._send(200, {'ticket': ticket, 'ttl': 120}, started)
                 return
 
             # Authorized: now enforce the size cap, then read the body.
@@ -5727,6 +6271,19 @@ class Handler(BaseHTTPRequestHandler):
                 self._send(413, {"error": "request body too large"}, started)
                 return
             body = self._read_body()
+
+            if path == '/api/upload/reveal':
+                try:
+                    root = _drop_dir()
+                    if self.mock:
+                        opened = False
+                    else:
+                        os.startfile(root)
+                        opened = True
+                    self._send(200, {'opened': opened, 'path': root}, started)
+                except OSError:
+                    self._send(200, {'opened': False, 'reason': 'file manager unavailable'}, started)
+                return
 
             prefix = "/api/actions/"
             if path.startswith(prefix):
@@ -6381,6 +6938,17 @@ class Handler(BaseHTTPRequestHandler):
             self._note_input_error(entry, slot,
                 OSError("agent session not active (disconnected or switched away)"))
             return True
+        if slot in ("mouse", "keyboard") and not self.mock:
+            privilege = _process_privilege()
+            if (not privilege["elevated"] and not privilege["uiaccess"]
+                    and _foreground_is_elevated() is True):
+                # On the physical console SendInput can report success while
+                # UIPI still discards the event. Do not wait for an OSError to
+                # explain this known boundary. Unknown foregrounds retain the
+                # normal injection path; ViGEm and media controls are unchanged.
+                self._note_input_error(entry, slot,
+                    OSError("administrator foreground blocks normal input"))
+                return True
 
         try:
             target.emit(events)
@@ -6407,14 +6975,14 @@ class Handler(BaseHTTPRequestHandler):
         session, logs rate-limited (first failure then <=once/5s so a stuck
         session can't flood the log /api/journal serves back), and tells the
         app ONCE on the transition into the blocked state so the Pad tab can
-        surface a 'input paused — unlock the box' hint."""
+        surface the relevant Windows input-boundary hint."""
         now = time.monotonic()
         n = entry.get("input_err_count", 0) + 1
         entry["input_err_count"] = n
         if not entry.get("input_blocked"):
             entry["input_blocked"] = True
             _wsend_json(entry, {"t": "blocked",
-                "msg": "Input paused — unlock the box or bring it to front."})
+                "msg": _input_blocked_message()})
         last = entry.get("input_err_logged_at", 0.0)
         if n == 1 or now - last > 5.0:
             entry["input_err_logged_at"] = now
@@ -6440,7 +7008,64 @@ def load_token(args):
         sys.exit(1)
 
 
-class QuietThreadingHTTPServer(ThreadingHTTPServer):
+class BoundedThreadingHTTPServer(ThreadingHTTPServer):
+    """ThreadingHTTPServer with a hard cap on concurrent connections so a
+    connection flood cannot exhaust threads/FDs. A non-blocking semaphore is
+    acquired before the worker thread is spawned; over the cap the socket is
+    closed and the connection rejected. Released when the request finishes.
+
+    Note: the long-lived /ws/gamepad connection holds a slot for the entire
+    Pad session, so the cap must comfortably exceed a household's phones. TLS
+    handshakes use the same capped workers, with their own short deadline.
+    """
+    request_queue_size = 128
+    _MAX_CONNECTIONS = 128
+    _TLS_HANDSHAKE_TIMEOUT_S = 5.0
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self._conn_sem = threading.BoundedSemaphore(self._MAX_CONNECTIONS)
+
+    def process_request(self, request, client_address):
+        if not self._conn_sem.acquire(blocking=False):
+            # Over the concurrency cap: reject rather than pile up threads.
+            try:
+                self.shutdown_request(request)
+            except Exception:
+                pass
+            return
+        try:
+            super().process_request(request, client_address)
+        except Exception:
+            # No worker owns the slot if thread creation fails. The server's
+            # _handle_request_noblock exception path closes the accepted socket.
+            self._conn_sem.release()
+            raise
+
+    def process_request_thread(self, request, client_address):
+        try:
+            if isinstance(request, ssl.SSLSocket):
+                try:
+                    previous_timeout = request.gettimeout()
+                    request.settimeout(self._TLS_HANDSHAKE_TIMEOUT_S)
+                    request.do_handshake()
+                    # Only negotiation gets the short deadline. Handler.setup
+                    # and the WS loops retain their existing read timeouts.
+                    request.settimeout(previous_timeout)
+                except OSError:
+                    # Timeout, malformed TLS or a dropped peer: close quietly,
+                    # without reaching the HTTP handler or flooding the log.
+                    self.shutdown_request(request)
+                    return
+            super().process_request_thread(request, client_address)
+        finally:
+            try:
+                self._conn_sem.release()
+            except ValueError:
+                pass
+
+
+class QuietThreadingHTTPServer(BoundedThreadingHTTPServer):
     """ThreadingHTTPServer that doesn't dump a traceback when a client drops
     the connection. The app (and any LAN poller) freely abandons keep-alive
     sockets between requests, and on Windows that abrupt close surfaces as
@@ -6515,6 +7140,9 @@ def main():
                    help="literal token (overrides --token-file; dev only)")
     p.add_argument("--mock", action="store_true",
                    help="serve fake data, never run real commands")
+    p.add_argument('--tls-port', type=int, default=None, help='HTTPS port (default HTTP port + 1)')
+    p.add_argument('--no-tls', action='store_true', help='disable HTTPS; uploads unavailable')
+    p.add_argument('--tls-dir', default=os.path.join(os.environ.get('LOCALAPPDATA', os.path.expanduser('~')), 'Couchside', 'tls'))
     args = p.parse_args()
 
     if not IS_WINDOWS and not args.mock:
@@ -6542,10 +7170,25 @@ def main():
 
     server = QuietThreadingHTTPServer((args.host, port), Handler)
     server.daemon_threads = True
+    tls_server = None
+    if not args.no_tls:
+        try:
+            tls_server = _start_https(args.host, args.tls_port or port + 1, args.tls_dir)
+            print('HTTPS ready on port %d' % TLS_ADVERT['port'], flush=True)
+        except Exception as e:
+            # Legacy control is preserved, but uploads never fall back to HTTP.
+            print('HTTPS unavailable (%s); legacy controls remain, uploads disabled' % type(e).__name__, flush=True)
     # Box-driven gamepad keepalive: PING idle sockets so their OS auto-PONG keeps
     # the session alive even while the app's own JS keepalive timer is frozen (iOS).
     threading.Thread(target=_gamepad_keepalive_loop,
                      daemon=True, name="gp-keepalive").start()
+    # Foreground-window + caret watcher: pushes {"t":"osk"} on text-field focus
+    # (raises the app's keyboard, parity with the Linux Steam osk signal) and an
+    # additive {"t":"foreground"} frame on app switch. Real Windows only -- the
+    # probes degrade closed off-Windows, but there is nothing to watch in --mock.
+    if IS_WINDOWS and not args.mock:
+        threading.Thread(target=_fg_watch_loop,
+                         daemon=True, name="fg-watch").start()
     # LAN discovery: answer the app's UDP probe so this box shows up in
     # "Scan for boxes" as fast as a Linux box does.
     threading.Thread(target=_udp_discovery_responder, args=(port,),
@@ -6563,6 +7206,9 @@ def main():
         pass
     finally:
         server.server_close()
+        if tls_server:
+            tls_server.shutdown()
+            tls_server.server_close()
 
 
 if __name__ == "__main__":

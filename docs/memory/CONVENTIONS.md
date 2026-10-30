@@ -1027,3 +1027,42 @@ unit-testable piece; the render, the App-Widget provider, and the tap are device
 
 **The direct-APK fork (`build/direct-apk`, `app.config.js`) needs the widget plugin + config added separately**,
 or the sideload the owner runs on the Razr ships without the widget.
+
+
+### Pinned iOS upload continuation (2026-10-29)
+Keep transport trust separate from OS execution grants. Native upload lifecycle
+runs on main; URLSession data parsing stays on its serial delegate queue. Continued
+processing uses one explicit identifier, foreground user initiation and `.fail`
+admission; never queue a stale one-use ticket, replay a POST or swap to an
+always-redirecting background URLSession. Callbacks must tolerate expiration,
+cancellation and late grants without attaching them to another upload. Record
+signed phone evidence separately from lifecycle and TLS fixture tests.
+
+### Shared native PAD touch ownership (2026-10-29)
+PAD gameplay uses `padTouches.ts`: layouts supply hit rectangles, frozen protocol
+button/trigger actions, stick mapping and optional slide groups. Native gameplay
+views do not acquire RN's singleton responder; one `PadTouchSurface` routes only
+changed touches by identifier. Count holders by protocol output, not visual ID
+(OK/A and timed QAM can share outputs). Opposite D-pad directions neutralize.
+Cancellation is atomic and can only release outputs; dispose cancels timers.
+Portrait flex controls measure relative to their provider; ancestor geometry
+changes invalidate all hits and generation-guard asynchronous measurements.
+Chrome/recovery/keyboard remain outside gameplay. Tokens still revoke old output
+callbacks on layout, focus, ownership or connection changes. Native multi-touch
+and measured-hit acceptance require physical devices; browser mouse tests and
+pure router tests do not establish that acceptance. No new dependency or wire key.
+
+
+### PAD chrome navigation (2026-10-29)
+Rotate/preferences are phone chrome, never wire actions. Revoke the current
+surface gate and releaseAll synchronously, then increment the layout epoch so
+old touch owners/timers cannot revive after an unavailable rotation or a return
+to the same layout. Manual Rotate reuses the PAD landscape lock; Auto and Exit
+keep their existing meaning. Settings deep-link accepts the fixed padLayout
+section with a fresh one-use request ID. Native Fabric measurements must use
+ScrollView innerViewRef (the host view), never the numeric getInnerViewNode handle;
+react-native-web retains its DOM getInnerViewNode fallback. Measure against scroll content (not a
+possibly stale onScroll offset), re-align through orientation/content reflow,
+and stop on the first user gesture. Consumed requests must not reset later
+ordinary Setup visits. Keep portrait Rotate native-only and require a full44dp
+spacer without squeezing existing shoulder controls; Help qualifies availability.

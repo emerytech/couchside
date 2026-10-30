@@ -17,7 +17,7 @@ import { useCallback, useEffect, useState } from 'react';
 import { Pressable, StyleSheet, Text, View } from 'react-native';
 
 import { api } from '@/lib/api';
-import { needsSecureUpload } from '@/lib/fileUpload';
+import { needsSecureUpload, uploadErrorMessage } from '@/lib/fileUpload';
 import { hapticLight, hapticSuccess } from '@/lib/haptics';
 import { useSettings } from '@/lib/SettingsContext';
 import { mono, useThemedStyles } from '@/lib/theme';
@@ -84,7 +84,7 @@ export function FileDropCard() {
       // would make the feature worse to use in exchange for a nicer animation.
       hapticSuccess();
     } catch (e) {
-      setDetail(e instanceof Error ? e.message : 'Upload failed');
+      setDetail(uploadErrorMessage(e));
       setPhase('error');
     }
   }, [settings]);

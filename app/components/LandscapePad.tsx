@@ -13,7 +13,7 @@
  * use a percentage string. It gets a computed layout and draws it.
  */
 import { useCallback, useMemo, useRef, useState } from 'react';
-import { Animated, PanResponder, Pressable, StyleSheet, Text, View } from 'react-native';
+import { Animated, PanResponder, Platform, Pressable, StyleSheet, Text, View } from 'react-native';
 import type { GestureResponderEvent, PanResponderGestureState } from 'react-native';
 
 // Same routing as the portrait pad: every Pad haptic goes through the app-wide
@@ -37,6 +37,8 @@ import { mono, type Palette } from '@/lib/theme';
 import { useControllerTheme } from '@/hooks/useControllerTheme';
 import { GameBackdrop } from '@/components/GameBackdrop';
 import { ThemeSwitcher } from '@/components/ThemeSwitcher';
+import { PadTouchSurface, usePadTouchVisual } from '@/components/PadTouchSurface';
+import { padTouchControls } from '@/lib/padTouchLayouts';
 
 /** Movement under this is still a tap (matches the swipe surface's rule). */
 const TAP_SLOP = 12;
@@ -66,6 +68,8 @@ export type LandscapePadProps = {
   locked: boolean;
   onToggleLock: () => void;
   onExit: () => void;
+  /** Open the existing PAD preferences; never a gamepad protocol action. */
+  onSettings: () => void;
   /** The PAD -> MOVE toggle in the chrome row. */
   onVariant: () => void;
 };
@@ -96,22 +100,27 @@ function PadKey({
   onDown: () => void; onUp: () => void; u: number;
 }) {
   const t = useControllerTheme();
-  const [held, setHeld] = useState(false);
+  const touch = usePadTouchVisual();
+  const Container = touch ? View : Pressable;
+  const actionKey = node.id === 'steam' ? 'guide' : node.id;
+  const [localHeld, setHeld] = useState(false);
+  const held = touch ? touch.visual.held.includes(`${node.id === 'lt' || node.id === 'rt' ? 'trigger' : 'button'}:${actionKey}`) : localHeld;
   return (
-    <Pressable
+    <Container
       style={abs(node.hit)}
-      onPressIn={() => {
+      onPressIn={touch ? undefined : () => {
         setHeld(true);
         // Eyes-off, haptics ARE the pressed state — nobody is looking at the
         // phone to see a colour change.
         haptic();
         onDown();
       }}
-      onPressOut={() => {
+      onPressOut={touch ? undefined : () => {
         setHeld(false);
         onUp();
       }}
-      accessibilityRole="button"
+      accessible accessibilityRole="button"
+      onAccessibilityTap={touch ? () => node.id === 'qam' ? touch.command() : touch.activate({ kind: node.id === 'lt' || node.id === 'rt' ? 'trigger' : 'button', key: actionKey } as import('@/lib/padTouches').PadAction) : undefined}
       accessibilityLabel={actionLabel ? `${label} · ${actionLabel}` : label}>
       <View
         style={[
@@ -140,7 +149,7 @@ function PadKey({
           {actionLabel}
         </Text>}
       </View>
-    </Pressable>
+    </Container>
   );
 }
 
@@ -162,6 +171,7 @@ function FloatingStick({
   zoneOutline?: boolean;
 }) {
   const t = useControllerTheme();
+  const touch = usePadTouchVisual();
   // Where in the container the finger landed. The ring is drawn there, not at
   // the container's centre: the thumb lands where it lands and there is nothing
   // to look at to aim with.
@@ -215,14 +225,17 @@ function FloatingStick({
     [nub],
   );
 
+  const finger = touch?.visual.sticks[node.id];
+  const drawOrigin = touch ? (finger ? { x: finger.x - node.hit.x, y: finger.y - node.hit.y } : null) : origin;
+  const drawNub = finger ? stickNubOffset(finger.dx, finger.dy, u) : { x: 0, y: 0 };
   const ringR = STICK.ringR * u;
   const nubR = STICK.nubR * u;
 
   return (
-    <View style={abs(node.hit)} {...responder.panHandlers} accessibilityLabel={label}>
+    <View style={abs(node.hit)} {...(touch ? {} : responder.panHandlers)} accessibilityLabel={label}>
       {/* Resting state: a faint ring where the stick nominally lives, so it can
           be found by eye the first time. Nothing else is drawn until touch. */}
-      {origin === null ? (
+      {drawOrigin === null ? (
         zoneOutline ? (
           <>
             {/* The whole zone, barely visible — any touch inside starts a drag. */}
@@ -269,8 +282,8 @@ function FloatingStick({
             pointerEvents="none"
             style={{
               position: 'absolute',
-              left: origin.x - ringR,
-              top: origin.y - ringR,
+              left: drawOrigin!.x - ringR,
+              top: drawOrigin!.y - ringR,
               width: ringR * 2,
               height: ringR * 2,
               borderRadius: ringR,
@@ -283,15 +296,15 @@ function FloatingStick({
             pointerEvents="none"
             style={{
               position: 'absolute',
-              left: origin.x - nubR,
-              top: origin.y - nubR,
+              left: drawOrigin!.x - nubR,
+              top: drawOrigin!.y - nubR,
               width: nubR * 2,
               height: nubR * 2,
               borderRadius: nubR,
               backgroundColor: t.cardBorder,
               borderWidth: 1,
               borderColor: t.blue,
-              transform: nub.getTranslateTransform(),
+              transform: touch ? [{ translateX: drawNub.x }, { translateY: drawNub.y }] : nub.getTranslateTransform(),
             }}
           />
         </>
@@ -310,7 +323,9 @@ function Dpad({
   const t = useControllerTheme();
   // dpadZone returns 'du' | 'dd' | 'dl' | 'dr' | 'a' — every one of them a
   // ButtonKey, so nothing needs widening on the way to the wire.
-  const [zone, setZone] = useState<ButtonKey | null>(null);
+  const touch = usePadTouchVisual();
+  const [localZone, setZone] = useState<ButtonKey | null>(null);
+  const zone = touch ? (['du', 'dd', 'dl', 'dr', 'a'] as ButtonKey[]).find(k => touch.visual.held.includes(`button:${k}`)) ?? null : localZone;
   const held = useRef<ButtonKey | null>(null);
   const bt = useRef(btn);
   bt.current = btn;
@@ -373,7 +388,7 @@ function Dpad({
   );
 
   return (
-    <View style={abs(node.hit)} {...responder.panHandlers} accessibilityLabel="D-pad">
+    <View style={abs(node.hit)} {...(touch ? {} : responder.panHandlers)} accessibilityLabel="D-pad">
       <View pointerEvents="none" style={inner(node)}>
         {/* Ring: every pixel inside it does something — four 90° sectors with
             no dead corners, because eyes-off there is nothing to aim at. */}
@@ -416,7 +431,9 @@ function NavPad({
   node: PadNode; u: number; btn: (k: ButtonKey) => Down;
 }) {
   const t = useControllerTheme();
-  const [zone, setZone] = useState<ButtonKey | null>(null);
+  const touch = usePadTouchVisual();
+  const [localZone, setZone] = useState<ButtonKey | null>(null);
+  const zone = touch ? (['du', 'dd', 'dl', 'dr'] as ButtonKey[]).find(k => touch.visual.held.includes(`button:${k}`)) ?? null : localZone;
   const held = useRef<ButtonKey | null>(null);
   const bt = useRef(btn);
   bt.current = btn;
@@ -475,7 +492,7 @@ function NavPad({
   );
 
   return (
-    <View style={abs(node.hit)} {...responder.panHandlers} accessibilityLabel="Menu navigation">
+    <View style={abs(node.hit)} {...(touch ? {} : responder.panHandlers)} accessibilityLabel="Menu navigation">
       <View pointerEvents="none" style={inner(node)}>
         <View
           style={{
@@ -502,6 +519,7 @@ function FaceCluster({
   nodes: PadNode[]; u: number; btn: (k: ButtonKey) => Down; colors: Record<FaceId, string>;
 }) {
   const t = useControllerTheme();
+  const touch = usePadTouchVisual();
   const [zone, setZone] = useState<FaceId | null>(null);
   const held = useRef<FaceId | null>(null);
   const bt = useRef(btn);
@@ -564,11 +582,11 @@ function FaceCluster({
   );
 
   return (
-    <View style={abs(box)} {...responder.panHandlers} accessibilityLabel="Face buttons">
+    <View style={abs(box)} {...(touch ? {} : responder.panHandlers)} accessibilityLabel="Face buttons">
       {nodes.map((n) => {
         const d = n.rect.w;
         const id = n.id as FaceId;
-        const on = zone === id;
+        const on = touch ? touch.visual.held.includes(`button:${id}`) : zone === id;
         return (
           <View
             key={id}
@@ -642,7 +660,7 @@ function ChromeButton({
 }
 
 export function LandscapePad({
-  layout, btn, trig, stickMove, stickRelease, qam, locked, onToggleLock, onExit, onVariant,
+  layout, btn, trig, stickMove, stickRelease, qam, locked, onToggleLock, onExit, onVariant, onSettings,
 }: LandscapePadProps) {
   const t = useControllerTheme();
   const { byId, u } = layout;
@@ -656,10 +674,14 @@ export function LandscapePad({
     y: t.faceTint.y ?? t.amber,
   };
 
+  const controls = useMemo(() => padTouchControls(layout, 'current'), [layout]);
+  const exclusions = useMemo(() => layout.nodes.filter(n => n.layer === 9).map(n => n.hit), [layout]);
+  const Surface = Platform.OS === 'web' ? View : PadTouchSurface;
   return (
     <View style={StyleSheet.absoluteFill}>
       {/* Styled backdrop, when the running game has one. Non-interactive. */}
       <GameBackdrop backdrop={t.backdrop} landscape={layout.play.w > layout.play.h} />
+      <Surface controls={controls} excluded={exclusions} btn={btn} trig={trig} stickMove={stickMove} stickRelease={stickRelease} style={StyleSheet.absoluteFill}>
       {/* Row 1 — shoulders. */}
       <PadKey node={byId.lt} label="LT" u={u} {...trig('lt')} />
       <PadKey node={byId.lb} label="LB" u={u} {...btn('lb')} />
@@ -694,6 +716,7 @@ export function LandscapePad({
       />
       <FaceCluster nodes={FACE_IDS.map((id) => byId[id])} u={u} btn={btn} colors={faceColors} />
 
+      </Surface>
       {/* Chrome. Deliberately NOT auto-hiding on a timer: the three buttons
           cost nothing (they sit in a band that is otherwise empty) and fading
           the only exit on a screen nobody is looking at is a bad trade at any
@@ -715,6 +738,8 @@ export function LandscapePad({
         onPress={onExit}
         accessibilityLabel="Exit full-screen controller"
       />
+      <ChromeButton node={byId.preferences} u={u} text="⚙ PREFS" onPress={onSettings}
+        accessibilityLabel="Open pad settings" />
     </View>
   );
 }
@@ -753,11 +778,15 @@ export function MovePad({
   const t = useControllerTheme();
   const { byId, u } = layout;
 
+  const controls = useMemo(() => padTouchControls(layout, 'move'), [layout]);
+  const exclusions = useMemo(() => layout.nodes.filter(n => n.layer === 9).map(n => n.hit), [layout]);
+  const Surface = Platform.OS === 'web' ? View : PadTouchSurface;
   return (
     <View style={StyleSheet.absoluteFill}>
       {/* Styled backdrop behind everything, when the running game has one.
           pointerEvents:none, so it never touches the input path. */}
       <GameBackdrop backdrop={t.backdrop} landscape={layout.play.w > layout.play.h} />
+      <Surface controls={controls} excluded={exclusions} btn={btn} trig={NO_TRIGGER} stickMove={stickMove} stickRelease={stickRelease} style={StyleSheet.absoluteFill}>
       {/* The movement zone. A tap (no drag) is deliberately NOTHING here — in
           the games this mode serves, a stray A press picks whatever upgrade is
           highlighted. Confirm lives under the right thumb only. */}
@@ -772,6 +801,8 @@ export function MovePad({
       <PadKey node={byId.b} label="B" u={u} color={t.faceTint.b ?? t.red} fontSize={4.4 * u} {...btn('b')} />
       <PadKey node={byId.a} label="A" u={u} color={t.faceTint.a ?? t.green} fontSize={4.4 * u} {...btn('a')} />
 
+      <PadKey node={byId.start} label="START" u={u} fontSize={2.8 * u} {...btn('start')} />
+      </Surface>
       {/* Chrome: in landscape, same row and positions as the gamepad layout so
           the toggle never jumps under the thumb that pressed it. The vertical
           table has no variant node — rotating is the path between layouts. */}
@@ -794,7 +825,6 @@ export function MovePad({
         onPress={onExit}
         accessibilityLabel="Exit full-screen controller"
       />
-      <PadKey node={byId.start} label="START" u={u} fontSize={2.8 * u} {...btn('start')} />
       {/* In-view theme switcher — re-skin the controller on the fly. Rendered
           LAST so its dropdown overlays every control. */}
       <ThemeSwitcher node={byId.theme} play={layout.play} u={u} t={t} />
@@ -803,33 +833,41 @@ export function MovePad({
 }
 
 const NOOP = () => {};
+const NO_TRIGGER = () => ({ onDown: NOOP, onUp: NOOP });
 
 /** Optional game-focused PAD surface, using the same controls and theme resolver. */
 export function StardewPad({
-  background = 'farm', layout, btn, trig, stickMove, stickRelease, locked, onToggleLock, onExit,
+  background = 'farm', layout, btn, trig, stickMove, stickRelease, locked, onToggleLock, onExit, onSettings,
 }: Omit<LandscapePadProps, 'onVariant' | 'qam'> & { background?: 'farm' | 'current' }) {
   const t = useControllerTheme();
   const { byId, u } = layout;
   const colors = { a: t.faceTint.a ?? t.green, b: t.faceTint.b ?? t.red, x: t.faceTint.x ?? t.blue, y: t.faceTint.y ?? t.amber };
+  const controls = useMemo(() => padTouchControls(layout, 'stardew'), [layout]);
+  const exclusions = useMemo(() => layout.nodes.filter(n => n.layer === 9).map(n => n.hit), [layout]);
+  const Surface = Platform.OS === 'web' ? View : PadTouchSurface;
   return (
     <View style={StyleSheet.absoluteFill} testID="stardew-pad">
       <GameBackdrop backdrop={background === 'current' ? t.backdrop : STARDEW_BACKDROP} landscape fitContainer />
+      <Surface controls={controls} excluded={exclusions} btn={btn} trig={trig} stickMove={stickMove} stickRelease={stickRelease} style={StyleSheet.absoluteFill}>
       <FloatingStick node={byId.move} u={u} label="Move" zoneOutline
         onMove={stickMove('l')} onRelease={stickRelease('l')} onClick={NOOP} />
-      <Text pointerEvents="none" style={{ position: 'absolute', left: byId.move.rect.x,
-        top: byId.move.rect.y - 6 * u, width: byId.move.rect.w, textAlign: 'center',
-        color: t.textDim, fontFamily: mono, fontSize: 3.4 * u }}>MOVE / MENUS</Text>
       {STARDEW_ACTIONS.map((action) => (
         <PadKey key={action.key} node={byId[action.key]} label={action.glyph} actionLabel={action.label}
           u={u} fontSize={(action.key === 'x' || action.key === 'a' ? 4.5 : 3.2) * u}
           color={action.key in colors ? colors[action.key as keyof typeof colors] : undefined}
           {...stardewActionInput(action, { btn, trig })} />
       ))}
+      </Surface>
+      <Text pointerEvents="none" style={{ position: 'absolute', left: byId.move.rect.x,
+        top: byId.move.rect.y - 6 * u, width: byId.move.rect.w, textAlign: 'center',
+        color: t.textDim, fontFamily: mono, fontSize: 3.4 * u }}>MOVE / MENUS</Text>
       <ChromeButton node={byId.lock} u={u} text={locked ? '🔒 LOCKED' : '🔓 AUTO'}
         color={locked ? t.amber : undefined} onPress={onToggleLock} checked={locked}
         accessibilityLabel={locked ? 'Orientation locked' : 'Orientation follows the phone'} />
       <ChromeButton node={byId.exit} u={u} text="✕ EXIT" onPress={onExit}
         accessibilityLabel="Exit full-screen controller" />
+      <ChromeButton node={byId.preferences} u={u} text="⚙ PREFS" onPress={onSettings}
+        accessibilityLabel="Open pad settings" />
     </View>
   );
 }

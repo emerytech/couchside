@@ -7,6 +7,24 @@ permissions:
   contents: read
 
 jobs:
+  android-socket-lifecycle:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
+        with:
+          node-version: '22'
+      - uses: actions/setup-java@v5
+        with:
+          distribution: temurin
+          java-version: '17'
+      - name: Fetch isolated TCP dependency without running install scripts
+        run: npm install --prefix "$RUNNER_TEMP/tcp-socket" --ignore-scripts --legacy-peer-deps --no-save --no-audit --no-fund react-native-tcp-socket@6.4.2
+      - name: Reproduce stale cleanup and verify patched native method
+        run: node --test tests/test_tcp_socket_patch.cjs
+        env:
+          TCP_SOCKET_PACKAGE_DIR: ${{ runner.temp }}/tcp-socket/node_modules/react-native-tcp-socket
+
   android-transport:
     runs-on: ubuntu-latest
     steps:
@@ -27,6 +45,10 @@ jobs:
     runs-on: macos-latest
     steps:
       - uses: actions/checkout@v7
+      - name: Verify continued-processing lifecycle ordering
+        run: |
+          swiftc app/modules/couchside-file-transfer/ios/UploadContinuation.swift tests/upload-continuation/main.swift -o "$RUNNER_TEMP/continuation-test"
+          "$RUNNER_TEMP/continuation-test"
       - name: Compile production URLSession uploader and test harness
         run: swiftc app/modules/couchside-file-transfer/ios/PinnedUpload.swift tests/native-upload/main.swift -o "$RUNNER_TEMP/upload-test"
       - name: Verify Apple TLS uploads against the agent

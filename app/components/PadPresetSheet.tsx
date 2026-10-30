@@ -14,7 +14,7 @@ const previewControls = {
   btn: () => ({ onDown: NOOP, onUp: NOOP }),
   trig: () => ({ onDown: NOOP, onUp: NOOP }),
   stickMove: () => NOOP, stickRelease: () => NOOP,
-  qam: NOOP, locked: false, onToggleLock: NOOP, onExit: NOOP, onVariant: NOOP,
+  qam: NOOP, locked: false, onToggleLock: NOOP, onExit: NOOP, onVariant: NOOP, onSettings: NOOP,
 };
 
 /** Uses the actual renderer with inert inputs, never a connection or a live pad. */

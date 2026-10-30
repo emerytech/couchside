@@ -21,7 +21,8 @@ Each entry now carries a `✅ DONE` / `🟡 PARTIAL` / `📋 OPEN` banner with i
 - **Status:** integrated for the next release cycle; gameplay acceptance remains open. No release is included in this change.
 - Setup → Prefs → PAD Layout offers an inert preview and deliberate Apply/Cancel for Current controls or Stardew Valley, with Standard/Larger controls and an optional farm backdrop. Existing themes, default PAD/MOVE geometry, portrait controls and saved preferences remain intact. Choices are local to each saved box.
 - Includes a one-time, dismissible portrait PAD rotation hint, Help replay, and coordination with the existing tour. Layout transitions release held inputs and reject stale responders.
-- **Before release:** retest actual Use tool/Crafting behavior after tracing the X/Y reversal observed on the Steam Machine. Windows title-menu navigation worked, but encrypted controller connection timeouts prevented gameplay mapping verification. Synthetic button-frame tests do not establish in-game correctness. Also verify upgraded-tool holds and physical multi-touch on the final combined build.
+- **Acceptance:** physical iPhone shared PAD overlap and independent releases passed; the owner also confirmed a five-minute Stardew gameplay session on Windows. Steam Machine mapping follow-up is owner-deferred; do not swap client X/Y globally. Remaining gates include lifecycle transitions, broader controls and final-binary acceptance.
+- **PAD chrome follow-up:** portrait Rotate uses the existing landscape lock, with Auto/Exit restoring normal behavior. Current/Stardew horizontal PAD adds a preferences shortcut beside Exit. It opens and reveals PAD Layout, with Controller theme next to Control presets. Actions retire held fingers before rotation/navigation. Native acceptance of these new shortcuts is pending.
 - **Scope boundary:** no host-agent changes, remote play, dependency changes, private build-number bumps, or publishing steps.
 
 ### Player sample catalog prototype (2026-10-20)
@@ -30,6 +31,21 @@ Each entry now carries a `✅ DONE` / `🟡 PARTIAL` / `📋 OPEN` banner with i
 - Local API, browser playback and Watch button checks pass. A repeatable real HTTP-to-Chrome acceptance script passed on 2026-10-21, including Stop and title cleanup. Steam/gamescope launch, audio output and physical-phone checks remain pending; deployment requires explicit owner coordination.
 - First hardware trial failed and Player was rolled back with Themes baseline intact. A Linux request-thread/parent-death defect has since been reproduced and corrected using persistent browser ownership; local regression and revised hardware launch/control checks pass. The hardware retest exposed small centered video on the TV; Player-only rollback completed. A dedicated viewport-filling TV surface is now prepared and passes local multi-size browser checks; actual 4K TV sizing passed the approved retest, but moving playback froze with a captured decoder error. Player-only rollback verified; a test-only software-decoding mitigation and explicit failure telemetry are prepared, with real local frame-progress/seek/reopen checks. The approved software-decoding hardware retest passed sustained video motion, seek/pause/mute, reopen, and full sample completion, with user TV confirmation. All 220 protected Themes files and existing Steam shortcuts remained unchanged. The isolated test remains installed but stopped; native phone-app validation and arbitrary-media support remain outstanding. The subsequent existing-iPhone compatibility package passed local checks, but its new Steam shortcut launch did not start and that deployment was rolled back. Production sample sizing/software decoding and shared media-error reporting are now fixed and locally checked; integrated Steam/Flatpak and installed-phone acceptance are still pending. Player is not yet hardware release-accepted.
 - This is a fixed sample provider, not general third-party Stremio add-on installation. See `docs/PLAYER_CATALOG_PROTOTYPE.md`.
+
+### Secure iOS upload continuation (2026-10-29)
+- **priority:** P1 · **risk:** medium · **affects:** native iOS file-transfer lifecycle.
+- **Status:** implementation and local checks in progress on a separate held branch.
+- iOS26 user-initiated continued-processing tasks preserve existing pin/redirect/ticket
+  protections. Older iOS retains bounded foreground sending. No agent API change.
+- Physical iPhone build 273.3: 128 MiB background completion passed with exact
+  size/hash and no remaining staging parts; owner confirmed the polished
+  “Transfer complete” / 100% display. Completion-display polish is complete.
+- Physical iPhone build 273.3 system-activity Stop, partial-file cleanup and fresh
+  background retry passed; the retry matched the source size/hash. Cancellation
+  copy still exposes native error details and can be simplified separately.
+- Remaining device gates still apply; this does not add process-kill recovery or
+  automatic POST replay.
+- Design: `docs/IOS_SECURE_UPLOAD_CONTINUATION.md`. No release authorized.
 
 ### Security hardening — phase 1: ticket permissions (2026-10-09)
 - **priority:** P1 · **risk:** low-medium (authorization) · **affects:** Linux agent and tests · **depends_on:** existing TLS tickets.
@@ -47,6 +63,41 @@ Each entry now carries a `✅ DONE` / `🟡 PARTIAL` / `📋 OPEN` banner with i
 - **priority:** P1 · **risk:** low-medium (connection lifecycle) · **affects:** Linux agent and TLS tests.
 - **Status:** prepared for Linux agent 2.9.132; not published. TLS negotiation runs inside the existing capped workers with a five-second deadline, so an idle handshake cannot monopolize the accept loop. Established HTTP/WebSocket timeout policies and certificates are unchanged.
 - Verified locally: 43 handshake checks plus nine surrounding suites, including idle/partial/malformed peers, worker-cap recovery, thread-start failure, authenticated HTTPS/WSS and the existing TLS watchdog. The pre-fix control fails eight checks. Seven selected suites and 15 isolated LAN checks passed on each physical SteamOS/Bazzite machine; Razr native uploads passed with three unfinished TLS peers present. Corrected-fixture iPhone/Bazzite authenticated status and native upload also passed during contention; corrected-fixture native iPhone upload on SteamOS was not verified. Production services were unchanged during these checks. Release remains separate; no structural refactoring or app reporting change is included.
+### Windows: caret / text-field detection → auto-raise the app keyboard (osk parity)
+- **priority:** P3 · **risk:** low (read-only Win32 probe + existing outbound push; no new cap, no protocol change) ·
+  **affects:** agent `agent/win/couchsided-win.py` (`_caret_query`, `_fg_watch_tick`, `fg-watch` thread);
+  consumes the EXISTING app path (`gamepad.ts` `msg.t === 'osk'` → `pad.tsx` `onOsk`) ·
+  **depends_on:** the gamepad holder/session infra (done).
+- **status:** BUILT + unit-tested on the mac dev host (`tests/test_fg_watch.py`): the pure caret-focus
+  decision (`hwndCaret` non-null OR `GUI_CARETBLINKING`), the edge-trigger dedup (one `{"t":"osk"}` per
+  not-focused→focused edge, re-fires after blur), and degrade-closed off Windows all green; `py_compile`
+  + protocol parity green.
+- **VERIFIED on real Windows (EMERY-PC, session 2 desktop, Python 3.12.7 64-bit, 2026-10-21):** a
+  standalone probe mirroring the exact ctypes calls fired `CARET EDGE -> would push {"t":"osk"}`
+  (hwndCaret=0x30994, non-null) ONCE per field focus — `GetGUIThreadInfo(0, ...)` returns a real caret
+  handle on a focused field and the edge dedup holds (not continuous). Headless-SSH run separately
+  confirmed degrade-closed on real hardware (no foreground → None, no exception). NOT re-exercised: the
+  final WebSocket send + app `onOsk` keyboard-raise, which is the PRE-EXISTING osk path (unchanged here).
+- **allowlist:** no client input — a background poll that only READS the foreground thread's caret and
+  pushes an existing signal to the holder. Degrades closed (probe failure → None → no push).
+- **left open:** real-Windows verification; documented API limit — many apps and most browsers draw their
+  own caret and report none here, so auto-raise is native-Win32-field only (Notepad, Explorer, dialogs).
+
+### Windows: foreground-app awareness → additive `{"t":"foreground"}` push
+- **priority:** P3 · **risk:** low (additive outbound frame, no app consumer required yet; no cap, no protocol change) ·
+  **affects:** agent `agent/win/couchsided-win.py` (`_fg_query`, `_fg_exe_for_pid`, `_fg_classify`,
+  `_exe_basename`, shared `fg-watch` poll) ·
+  **depends_on:** nothing.
+- **status:** BUILT + unit-tested on mac (class filter: skip `Shell_TrayWnd`/`Shell_SecondaryTrayWnd`,
+  special-case `Progman`/`WorkerW`; exe-basename split on both separators; on-change dedup pushes once per
+  distinct `(title, exe)`). App safely ignores the unknown frame (else-if chain, no throw).
+- **VERIFIED on real Windows (EMERY-PC, 2026-10-21):** the probe pushed `{"t":"foreground"}` once per app
+  switch with the correct title + exe basename — `powershell.exe`, `SearchHost.exe` (Windows Search), and
+  `new 1 - Notepad++` → `notepad++.exe`. `GetForegroundWindow` + `GetWindowTextW` +
+  `QueryFullProcessImageNameW` work and the on-change dedup holds (one frame per real switch).
+- **allowlist:** no client input; read-only foreground probe, holder-only push, degrade-closed.
+- **left open:** real-Windows verification; the app-side per-app smart-button consumer is a SEPARATE larger
+  ROADMAP item (Planned) and intentionally not built here — this just lays the additive signal.
 
 ### Game Aura — paint the strip from game artwork (Phase 1, PR `feat/game-aura-artwork`)
 - **priority:** P3 · **risk:** low (additive route + app-side sampler; no new cap, no agent image lib) ·

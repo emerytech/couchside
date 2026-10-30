@@ -13,6 +13,7 @@ fun main(args: Array<String>) {
     val upload = PinnedUpload("127.0.0.1", args[0].toInt(), args[1], args[2], args[4], File(args[3])) { sent, total ->
       if (sent > total || sent <= 0) error("Invalid progress")
     }
+    if (args.getOrNull(5) == "cancel-before-start") upload.cancel()
     upload.start { status, body ->
       println("STATUS=${status ?: 0}")
       if (body != null) println("BODY=$body")
