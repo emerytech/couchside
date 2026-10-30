@@ -347,3 +347,12 @@ iPhone278 manual Rotate opened the retained Stardew Valley Larger layout. PREFS
 returned upright with PAD LAYOUT, Control presets, Controller theme and Help
 visible; Auto controller theme remained selected. Final iPhone physical controls
 and native encrypted-upload smoke are still pending. Publication remains held.
+
+### iPhone278 physical control smoke — 2026-10-30
+
+The owner confirmed independent movement and X on physical iPhone278. Linux
+recorded overlapping movement/X for over5seconds, X released while movement
+continued, then all controls neutral. Both final mobile candidates now pass the
+focused physical control smoke. The scoped observer was stopped after a neutral
+final snapshot. iPhone278 native encrypted-upload smoke remains pending.
+No release, merge, store submission or subscriber send is authorized.
