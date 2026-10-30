@@ -141,16 +141,18 @@ if (-not (Test-Admin)) {
     }
     try {
         if ($FromInstaller) {
-            # -Wait blocks the outer process so the caller sees the install finish
-            # rather than the async RunAs handoff returning instantly; -PassThru
-            # lets us mirror the child's exit code outward.
+            # Wait for the elevated installer itself, not its descendants (the
+            # pairing browser may remain open indefinitely). Keep the process
+            # handle so its exit code is still available after a quick exit.
             # This exit code is LOAD-BEARING as of couchside-windows 896d4be:
             # CouchsideSetup.exe runs this script from Inno's PrepareToInstall and
             # aborts the wizard (exit code 7, error on screen, nothing installed)
             # when it is non-zero. Before that it ran from a [Run] entry, which
             # never inspects exit codes -- a failed install still showed "Setup
             # completed successfully". So do not swallow a failure here.
-            $child = Start-Process powershell -Verb RunAs -ArgumentList $a -Wait -PassThru
+            $child = Start-Process powershell -Verb RunAs -ArgumentList $a -PassThru
+            $null = $child.Handle
+            $child.WaitForExit()
             exit $child.ExitCode
         }
         Start-Process powershell -Verb RunAs -ArgumentList $a

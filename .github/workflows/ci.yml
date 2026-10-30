@@ -1386,6 +1386,7 @@ jobs:
       - run: 'python -m pip install --only-binary=:all: cryptography==46.0.7'
       - run: python tests/test_win_https_upload.py -q
       - run: python tests/test_win_update_apply.py -q
+      - run: python tests/test_win_update_supervisor.py -q
       - name: Windows installer consent preservation
         if: runner.os == 'Windows'
         run: powershell -NoProfile -ExecutionPolicy Bypass -File tests/test_win_installer_consent.ps1 -Source install.ps1

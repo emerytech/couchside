@@ -841,6 +841,59 @@ def _fetch_asset(url, dest=None, limit=_UPDATE_MAX_BYTES):
         return h.hexdigest()
 
 
+_UPDATE_SUPERVISOR_PS = r'''
+$ErrorActionPreference = 'Stop'
+$stage = $env:COUCHSIDE_UPDATE_STAGE
+$setup = Join-Path $stage 'CouchsideSetup.exe'
+$result = 1
+try {
+    # Recheck the verified bytes immediately before launch. All paths are data,
+    # never PowerShell source, and this process retains the caller's privileges.
+    if ((Get-FileHash -LiteralPath $setup -Algorithm SHA256).Hash -ne $env:COUCHSIDE_UPDATE_SHA256) {
+        throw 'Installer changed after verification'
+    }
+    $args = @('/VERYSILENT', '/SUPPRESSMSGBOXES', '/NORESTART',
+              ('/LOG="' + $env:COUCHSIDE_UPDATE_SETUP_LOG + '"'))
+    $child = Start-Process -FilePath $setup -ArgumentList $args -PassThru
+    $null = $child.Handle
+    $child.WaitForExit()
+    $result = $child.ExitCode
+} catch {
+    [Console]::Error.WriteLine($_.Exception.Message)
+} finally {
+    # Setup normally terminates the agent that requested the update. This
+    # independent supervisor survives that termination and waits for setup.
+    # Never recursively remove a staging tree or follow a reparse point.
+    for ($attempt = 0; $attempt -lt 30; $attempt++) {
+        try {
+            if (-not [IO.Directory]::Exists($stage)) { break }
+            if (([IO.File]::GetAttributes($stage) -band [IO.FileAttributes]::ReparsePoint) -ne 0) { break }
+            if ([IO.File]::Exists($setup)) { [IO.File]::Delete($setup) }
+            [IO.Directory]::Delete($stage, $false)
+            break
+        } catch { Start-Sleep -Seconds 1 }
+    }
+}
+exit $result
+'''
+
+
+def _launch_update_supervisor(stage, digest):
+    ps = os.path.join(os.environ.get('SystemRoot', r'C:\Windows'),
+                      'System32', 'WindowsPowerShell', 'v1.0', 'powershell.exe')
+    env = dict(os.environ, COUCHSIDE_UPDATE_STAGE=stage,
+               COUCHSIDE_UPDATE_SHA256=digest,
+               COUCHSIDE_UPDATE_SETUP_LOG=_UPDATE_LOG + '.setup.txt')
+    command = base64.b64encode(_UPDATE_SUPERVISOR_PS.encode('utf-16le')).decode('ascii')
+    return subprocess.Popen([ps, '-NoProfile', '-NonInteractive', '-EncodedCommand', command],
+                            # PowerShell exits without executing its command under
+                            # DETACHED_PROCESS on Windows. NO_WINDOW still gives it
+                            # a working console environment without a visible window.
+                            env=env, creationflags=(0x08000000 | 0x00000200) if IS_WINDOWS else 0, close_fds=True,
+                            stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
+                            stderr=subprocess.DEVNULL)
+
+
 def _update_apply_worker():
     """Download -> verify SHA256 -> verify Authenticode -> run silently.
     Every failure stops before anything is executed (fail closed)."""
@@ -882,18 +935,12 @@ def _update_apply_worker():
         # Inno Setup silent upgrade. Previously chosen [Tasks] are reused
         # (UsePreviousTasks), so optional changes stay as the user set them.
         # install.ps1 still asks for UAC on this PC's screen.
-        child = subprocess.Popen([setup, "/VERYSILENT", "/SUPPRESSMSGBOXES",
-                          "/NORESTART", "/LOG=" + _UPDATE_LOG + ".setup.txt"],
-                         creationflags=_DETACH_FLAGS, close_fds=True,
-                         stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
-                         stderr=subprocess.DEVNULL)
+        child = _launch_update_supervisor(tmpdir, got)
         with _apply_lock:
             _apply_state.clear()
             _apply_state.update(state="launched", version=latest,
                                 at=int(time.time()))
-        # If this process survives the upgrade, reap and clean the download.
-        # A normal upgrade terminates the old agent; its private staging folder
-        # may then remain for manual cleanup. Never execute leftover downloads.
+        # The supervisor, not the replaceable agent, owns post-install cleanup.
         exit_code = child.wait()
         if exit_code != 0:
             raise RuntimeError("installer exited with code %s" % exit_code)
