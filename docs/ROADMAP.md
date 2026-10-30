@@ -2820,6 +2820,6 @@ release tags.)_
 
 ### In progress — Optional TV appearance packs (2026-10-30)
 - Priority: normal. Risk: medium. Affects: Linux agent, phone Steam appearance/Theme Studio, Decky TV renderer.
-- Depends on: matching companion appearance capability and SteamOS/Bazzite device acceptance.
+- Depends on: matching companion appearance capability and a working Decky frontend.
 - Validated data packs, local import subset, saved PC library, reversible selection and original defaults. See TV_APPEARANCE_PACKS.md.
-- Local implementation and browser/API checks complete; hardware testing pending. Not released.
+- Local/browser/API and SteamOS/Bazzite TV checks complete, including native picker focus fixes. Original device installations restored. Native phone import/Apply and release packaging remain pending. Not released.

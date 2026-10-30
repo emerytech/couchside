@@ -1,4 +1,4 @@
-# TV appearance packs — isolated implementation, pending device acceptance
+# TV appearance packs — isolated implementation and device checks
 
 Optional packs extend the existing authenticated GET/POST `/api/steam/themes`.
 The phone's Steam appearance and Theme Studio screens expose pack selection only
@@ -45,9 +45,24 @@ Apply reached the TV, survived a local agent process restart, and layout-default
 restore removed the appearance wrapper. Steam default handoff also worked.
 Existing companion polling can take up to three seconds to reflect Apply.
 
-No physical SteamOS/Bazzite acceptance yet: Steam Machine mDNS and configured IP
-were unreachable; owner will provide Bazzite details when home. No real machine
-installation, input testing, package signing, push, merge, publication or emails.
+Physical TV checks on 2026-10-30 used temporary matching agent/companion files:
+SteamOS 3.8.16 with Decky 3.3.0, and Bazzite 44 with temporary Decky 3.3.1. Native
+screen captures verified Forest/Harbor, default-color restore and Steam Home;
+Bazzite additionally rendered every layout. Picker preview/Cancel/Apply, saved
+pack retention across agent restarts, and gamepad-path focus were exercised.
+The gamepad inputs used the actual agent connection, not a physical handset.
+
+Hardware testing found and fixed two companion picker defects: previewing layout
+defaults remounted the content and lost scroll/focus; the visually vertical pack
+list declared row navigation, so Down skipped its choices. The stable opt-in
+container and column navigation were verified on both machines. Default installs
+without saved packs retain their original render tree.
+
+Bazzite's original Decky 3.2.7-pre1 frontend failed before Couchside loaded on the
+current Steam client; testing required a compatible loader. Original installations,
+theme settings, pairing/configuration, and Bazzite loader were restored afterward.
+Native phone import/Apply and release packaging remain separate checks. No game
+was launched, and no signing, push, merge, publication or emails occurred.
 
 Source worktrees:
 - couchside-tv-appearance-packs-20261030 (agent and phone)
