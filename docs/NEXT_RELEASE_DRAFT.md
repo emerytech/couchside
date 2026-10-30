@@ -325,3 +325,12 @@ from agent-asset integrity signing. No installer rebuild was necessary.
   short check; that does not establish a root-cause fix for the earlier failure.
 - Final physical controls/ordinary handoff smoke and iPhone278 upgrade/native
   smoke remain open. No public release, store submission or subscriber email.
+
+### iPhone candidate upgrade checkpoint — 2026-10-30
+
+The owner-only iOS278 candidate installed in place; device package readback
+confirms2.9.80(278). Five saved boxes, unlock and the existing Linux pairing
+remained. Live encrypted status and the virtual controller connected. Ordinary
+Pass from iPhone278 to Direct56 worked with gameplay controls released.
+Final physical control smoke and remaining iPhone navigation/upload checks are
+still pending; no release or subscriber send is authorized.
