@@ -1,8 +1,8 @@
 # Next release draft — not published
 
-Updated 2026-10-30. This is a working draft; final versions and custom PAD
-scope require a frozen, reviewed candidate. No release or subscriber send is
-authorized by this file.
+Updated 2026-10-30. Mobile candidates are frozen at `e1ecf7e`, with focused
+owner-device acceptance complete. Later commits document evidence only.
+No release, main merge, store submission or subscriber send is authorized by this file.
 
 ## Customer-facing draft
 
@@ -20,6 +20,8 @@ authorized by this file.
 - Add an optional, dismissible newsletter invitation with signup still available
   from Account. Newsletter release digests remain manually approved.
 - Prevent iOS password autofill from replacing a box's pairing token.
+- Add custom PAD presets, independent multi-touch controls, manual Rotate and
+  a direct shortcut to PAD layout preferences.
 
 ## Pending scope — do not advertise as shipped
 
@@ -40,10 +42,12 @@ not promise recovery after force-quit or process termination.
 
 Working app source: `codex/presets-release-preview-20261029`, held draft #655.
 Includes #649, #650, #652, #653, preset source #654 and the shared PAD follow-up.
-Installed owner previews are cloud iPhone277 from `ad73a5a` and Direct56 from
-`e1ecf7e`. Direct56 removes the unsuccessful held-input handoff experiment.
-iPhone278 is built and verified, with installation pending. The owner deferred
-held-input Pass as non-blocking; ordinary handoff remains part of normal use.
+Installed owner candidates are iPhone278 and Direct56, app2.9.80, frozen source
+`e1ecf7e`. Both in-place upgrades retained five boxes, pairing, unlock and
+preferences. Physical movement/action overlap and independent releases passed
+on both, with Linux recording final neutral states. Manual Rotate/PREFS and
+ordinary handoff in both directions passed. The unsuccessful held-input handoff
+experiment is removed; the owner deferred that gesture as non-blocking.
 The Fabric host-ref correction is included. Rotate/PREFS, settings return, Auto
 and Exit passed on Direct54. Physical iPhone277 Rotate/PREFS landing and both
 phones' held-button background/reconnect checks passed on the Windows preview.
@@ -55,12 +59,12 @@ ancestor of this combined source. Do not merge duplicate feature branches.
 | Component | Current candidate source/config | Final-release action |
 | --- | --- | --- |
 | App version | 2.9.80 | Held candidate; public release requires approval |
-| iOS configured build | 278, reserved for EAS cloud candidate | Verify artifact and device smoke before submission |
-| Physical iPhone QA build | 277, cloud source ad73a5a | Owner-only installed; saved connection/unlock retained; physical Rotate/PREFS and held-button background/reconnect passed |
-| Android Store configured code | 128 | Held candidate; verify artifact and signing before submission |
-| Android Direct configured code | 56, source e1ecf7e | Installed; five boxes, pairing, unlock, controls/theme retained; Rotate/PREFS and encrypted Linux upload passed |
+| iOS configured build | 278, verified EAS cloud source e1ecf7e | Focused owner-only device smoke passed; submission held |
+| Physical iPhone QA build | 278, owner-only QA copy of cloud build | Upgrade, saved state, physical controls, Rotate/PREFS, ordinary handoff and native encrypted Linux upload passed |
+| Android Store configured code | 128, source e1ecf7e | AAB validation/upload signature/maps passed; Play-delivered update remains a delivery-stage check |
+| Android Direct configured code | 56, source e1ecf7e | Upgrade/state retention, physical controls, Rotate/PREFS, ordinary handoff and native encrypted Linux upload passed |
 | Linux agent configured version | 2.9.135, source 02e81f6 | Privately installed on an owner Linux laptop; no published release or update-manifest change |
-| Windows agent source version | 0.4.14-win | Confirm final source and release-number availability before packaging |
+| Windows agent source version | 0.4.14-win, tested artifact source5c96b4d | Exact tested installer/exe retained and verified; Authenticode unsigned, distribution/signing decision pending |
 
 The Windows runtime file byte-matches the separate Windows combined-preview
 branch at `beb0fd7`. Both copies have SHA-256
@@ -84,28 +88,40 @@ confuse documentation-only commits with rebuilt binaries.
 - Local iPhone 273.3: 128 MiB encrypted background completion, system Stop,
   partial-file removal and fresh background retry passed, with exact final
   byte/hash checks and owner-confirmed completion text at 100%.
-- The new cancellation-copy change has local tests, not a new physical install.
+- Cancellation-copy cleanup is included in installed candidates. The final
+  foreground upload smoke does not repeat earlier background/cancellation tests.
+- Final iPhone278 native encrypted foreground upload to Linux2.9.135 passed:
+  128MiB, exact destination size and SHA-256. Direct56 passed a fresh64KiB upload.
+- All13CI checks passed at documentation head `c8d1094`; frozen build source
+  `e1ecf7e` also passed all13. Check the latest documentation head before merging.
 
-### Final integration and build sequence
+### Remaining release actions — held
 
-1. Complete acceptance of integrated custom PAD source e90aac9 and its gameplay evidence;
-   review and integrate into a held candidate without publishing or merging main.
-2. Direct 51 provenance is reconciled; reconcile installed Linux Player differences and all
-   parallel build-number reservations. Keep existing features and signatures.
-3. Freeze exact app/Linux/Windows source commits; run all final CI and parity
-   checks. Reconcile old PRs without merging overlapping changes twice.
-4. Allocate fresh versions/build codes only after the freeze. Build iOS, Android
-   Store/Direct, Windows and Linux candidates from the documented source. Android
-   builds on Gandalf must remain under /tank/build-storage with its guard wrapper.
-5. Verify upgrades retain boxes, pairing and unlock state; smoke-test controls,
-   custom PAD transitions/mappings/holds, uploads and background resume on final
-   artifacts. Preserve existing driver setup and normal Windows privileges.
-6. Decide Windows signing/distribution. SignPath application is separate work;
-   do not claim acceptance, signed artifacts or Store compatibility yet.
-7. Prepare hashes, signed agent assets, notes and rollback details for owner
-   review. Main merges, public downloads/manifests, store submissions and release
-   publication require fresh owner approval. Subscriber sends require separate
-   approval even after software release.
+1. Review the final documentation head and its CI. The frozen mobile source is
+   `e1ecf7e`; subsequent edits are release notes/evidence only. Do not rebuild or
+   consume new build numbers solely for these documentation changes.
+2. Decide Windows Authenticode signing/distribution. Existing installer/exe
+   remain unsigned. SignPath eligibility/acceptance and Store packaging are
+   separate work, not completed requirements or signed-artifact claims.
+3. After fresh owner approval, integrate the exact reviewed source and execute
+   the intended release channels. Verify store processing and public artifacts,
+   including the Play-signed delivered update. Owner-only iPhone signing and the
+   test-signed store APK do not establish final store delivery acceptance.
+4. Keep subscriber sends separately approval-only, including after software
+   publication. No release script, public tag/download/manifest or store
+   submission is authorized by this preparation document.
+
+All prepared packages, Android maps/checksums, signed agent manifest, Windows
+provenance and rollback details are retained privately. The23 agent assets have
+an Ed25519 manifest signature verified against embedded installer trust keys;
+this is distinct from Windows Authenticode. Linux runtime/helper match the
+already-tested bytes. Focused final device smoke is complete, not a claim that
+all optional gestures, prolonged soak or every possible device were tested.
+
+## Historical acceptance checkpoints
+
+The following entries record progress at the time; the current matrix and
+remaining actions above supersede earlier pending-build/test statements.
 
 ## Preset acceptance preview checkpoint
 
@@ -356,3 +372,11 @@ continued, then all controls neutral. Both final mobile candidates now pass the
 focused physical control smoke. The scoped observer was stopped after a neutral
 final snapshot. iPhone278 native encrypted-upload smoke remains pending.
 No release, merge, store submission or subscriber send is authorized.
+
+### Final iPhone278 upload verified — 2026-10-30
+
+Owner completed the native encrypted foreground upload. Linux received the full
+128MiB synthetic fixture with exact expected size and SHA-256. Focused final
+iPhone278/Direct56 device smoke is complete. Previous background/cancellation
+evidence remains separate; this foreground check does not extend those claims.
+No main merge, release, store submission or subscriber email.
