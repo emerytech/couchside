@@ -14,6 +14,7 @@ import { Pressable, StyleSheet, Text, View } from 'react-native';
 
 import { usePoll } from '@/hooks/usePoll';
 import { api, hostKey, UpdateCheck } from '@/lib/api';
+import { agentUpdateStatusText } from '@/lib/agentUpdateStatus';
 import { hapticLight } from '@/lib/haptics';
 import { useSettings } from '@/lib/SettingsContext';
 import { mono, useTheme, useThemedStyles } from '@/lib/theme';
@@ -91,8 +92,7 @@ export function AgentUpdateBanner() {
       // runs a ~6s CEC probe + Steam log watchers) can take minutes to come back
       // up on the new version; a short window meant we gave up before it did and
       // showed "may still be finishing" on an update that actually succeeded.
-      // ~6 min at 3s. This never reports FAILURE — only success or a soft
-      // "still finishing" — and the version display self-corrects once it's up.
+      // ~6 min at 3s. New Windows agents also report explicit verification failures.
       for (let i = 0; i < 120 && !done; i++) {
         await new Promise((r) => setTimeout(r, 3000));
         // Show what the box is ACTUALLY doing. The installer writes a
@@ -108,6 +108,12 @@ export function AgentUpdateBanner() {
           // ignore — the progress line is a nicety, never a blocker
         }
         try {
+          const update = await api.updateCheck(settings);
+          if (update?.apply_state?.state === 'failed') {
+            setMsg(update.apply_state.error || 'The update was stopped. Try installing it on the PC.');
+            done = true;
+            break;
+          }
           const p = await api.ping(settings);
           if (p.version === target) {
             setMsg(`Updated to ${target}. `);
@@ -122,7 +128,7 @@ export function AgentUpdateBanner() {
       if (!done) setMsg('Update started — it may still be finishing. Check the version shortly.');
     } catch (e) {
       const detail = e instanceof Error ? e.message : String(e);
-      setMsg(`Couldn't start the update (${detail}). You can run \`couchside update\` on the box.`);
+      setMsg(`Couldn't start the update (${detail}). Install the update directly on the box.`);
     } finally {
       setApplying(false);
       setStep(null);
@@ -145,11 +151,7 @@ export function AgentUpdateBanner() {
         <Text style={styles.checkStatus} numberOfLines={1}>
           {checking
             ? 'Checking…'
-            : status == null
-              ? 'Service updates'
-              : status.available
-                ? `Update available — service ${status.latest}`
-                : `Up to date — service ${status.installed}`}
+            : agentUpdateStatusText(status)}
         </Text>
         <Pressable
           onPress={() => {
@@ -229,8 +231,9 @@ export function AgentUpdateBanner() {
         </Pressable>
       ) : (
         <Text style={styles.hint}>
-          To update, run <Text style={styles.code}>couchside update</Text> on the box — or
-          enable in-app updates there with <Text style={styles.code}>couchside allow-updates on</Text>.
+          {check.apply_blocked || (check.installed.endsWith('-win')
+            ? 'To update this PC, run the latest Couchside Windows installer on it.'
+            : 'To update, run couchside update on the box, or enable in-app updates with couchside allow-updates on.')}
         </Text>
       )}
     </View>

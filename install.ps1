@@ -42,6 +42,13 @@ param(
     [switch]$NoFirewall,
     [switch]$NoGamepad,      # skip the ViGEmBus virtual-controller install
     [switch]$KeepHibernate,  # skip `powercfg /hibernate off`
+    [switch]$KeepGameBar,    # skip the HKCU ms-gamebar* -> systray.exe override
+                             # (CouchsideSetup.exe passes this unless its optional,
+                             # default-OFF "Game Bar popup" checkbox is ticked)
+    [switch]$DisableUpdateCheck, # explicit opt-out; omission preserves existing consent
+    [switch]$EnableUpdateCheck, # OPT-IN: set allow_update_check=true in config.json
+                             # so the agent may query GitHub for newer releases.
+                             # Without it the agent makes no update-check requests.
     [switch]$Elevated,       # run the agent task ELEVATED (admin). OPT-IN: lets the
                              # phone's mouse/keyboard drive ADMIN app windows (Windows
                              # UIPI blocks a non-elevated agent from injecting into a
@@ -58,6 +65,7 @@ param(
 )
 
 $ErrorActionPreference = 'Stop'
+if ($EnableUpdateCheck -and $DisableUpdateCheck) { throw 'Choose EnableUpdateCheck or DisableUpdateCheck, not both' }
 # GitHub requires TLS 1.2; Windows PowerShell 5.1 may default lower.
 [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
 
@@ -101,10 +109,14 @@ if (-not (Test-Admin)) {
     if ($NoFirewall)     { $fwd += '-NoFirewall' }
     if ($NoGamepad)      { $fwd += '-NoGamepad' }
     if ($KeepHibernate)  { $fwd += '-KeepHibernate' }
+    if ($KeepGameBar)    { $fwd += '-KeepGameBar' }
+    if ($EnableUpdateCheck) { $fwd += '-EnableUpdateCheck' }
+    if ($DisableUpdateCheck) { $fwd += '-DisableUpdateCheck' }
     if ($Elevated)       { $fwd += '-Elevated' }
     if ($NoElevated)     { $fwd += '-NoElevated' }
     if ($FromInstaller)  { $fwd += '-FromInstaller' }
-    $fwd += "-Port $Port"; $fwd += "-Ref $Ref"
+    $fwd += "-Port $Port"
+    if ($PSBoundParameters.ContainsKey('Ref')) { $fwd += "-Ref $Ref" }
     # A human running this directly wants -NoExit so the elevated window stays up to
     # read. The Inno installer wants the opposite: no leftover window, AND the outer
     # (non-elevated) process must block on the elevated child so its Exec() sees real
@@ -272,13 +284,31 @@ function Get-Winget {
 }
 
 function Install-WingetPackage {
-    param([string]$Id, [string]$Label)
+    # -Version pins an exact manifest; winget then checks the downloaded
+    # installer against that manifest's InstallerSha256 before running it.
+    param([string]$Id, [string]$Label, [string]$Version)
     $wg = Get-Winget
     if (-not $wg) { return $false }
-    Write-Host "Installing $Label via winget ($Id)..."
-    & $wg install --id $Id --silent --accept-package-agreements --accept-source-agreements --disable-interactivity 2>&1 | Out-Null
+    $wgArgs = @('install', '--id', $Id, '--exact', '--silent',
+                '--accept-package-agreements', '--accept-source-agreements',
+                '--disable-interactivity')
+    if ($Version) { $wgArgs += @('--version', $Version) }
+    Write-Host "Installing $Label via winget ($Id$(if ($Version) { " $Version" }))..."
+    & $wg @wgArgs 2>&1 | Out-Null
     return $true
 }
+
+# Pinned third-party downloads (verified 2026-10-29):
+#  - ViGEmBus 1.22.0: winget-pkgs manifests/v/ViGEm/ViGEmBus/1.22.0,
+#    InstallerSha256 89220A7865076B342892F98865F3499FB7C4CFD673159E89D352C360FD014C6A
+#    (ViGEmBus_1.22.0_x64_x86_arm64.exe from github.com/nefarius/ViGEmBus).
+#  - vgamepad 0.1.0 sdist from files.pythonhosted.org, and the x64
+#    ViGEmClient.dll inside it. A hash mismatch skips the DLL (fail closed).
+$ViGEmBusVersion      = '1.22.0'
+$VgamepadSdistUrl     = 'https://files.pythonhosted.org/packages/8a/54/0eaddc33f84247963af078f364b37153d09fcd6cdc398f243ec3e8842c56/vgamepad-0.1.0.tar.gz'
+$VgamepadSdistSha256  = '57F6BD01AEC0C172947517FB782D150EF9B285F7F4D524C317374FA5C24A89DE'
+$ViGEmClientDllSha256 = '2BF0CB1D809039573C922737D298A1653D4DBC61408060FF45A9BCFDE82E97D2'
+
 
 # --- 1. resolve the agent source: local checkout, else download --------------
 $here    = if ($PSCommandPath) { Split-Path -Parent $PSCommandPath } else { $null }
@@ -420,7 +450,7 @@ icacls $DataDir /grant "$($env:USERNAME):(OI)(CI)M" | Out-Null
 # --- 2. virtual gamepad: ViGEmBus driver + client DLL (optional) --------------
 if (-not $NoGamepad) {
     if (-not (Get-Service -Name ViGEmBus -ErrorAction SilentlyContinue)) {
-        Install-WingetPackage 'ViGEm.ViGEmBus' 'ViGEmBus (virtual gamepad driver)' | Out-Null
+        Install-WingetPackage 'ViGEm.ViGEmBus' 'ViGEmBus (virtual gamepad driver)' $ViGEmBusVersion | Out-Null
     }
     $dllDest = Join-Path $InstallDir 'ViGEmClient.dll'
     if (-not (Test-Path $dllDest)) {
@@ -441,21 +471,26 @@ if (-not $NoGamepad) {
         # Best-effort throughout: the gamepad is the only thing affected, so a
         # failure here must never abort an otherwise good install.
         try {
-            $tmp = Join-Path $env:TEMP 'couchside-vigem'
+            $tmp = Join-Path $env:TEMP ('couchside-vigem-' + [guid]::NewGuid().ToString('N'))
             New-Item -ItemType Directory -Force -Path $tmp | Out-Null
-            $meta = Invoke-RestMethod -Uri 'https://pypi.org/pypi/vgamepad/json' -TimeoutSec 20
-            $sdist = ($meta.urls | Where-Object { $_.packagetype -eq 'sdist' } |
-                      Select-Object -First 1).url
-            if ($sdist) {
-                $tgz = Join-Path $tmp 'vgamepad.tar.gz'
-                Invoke-WebRequest -Uri $sdist -OutFile $tgz -TimeoutSec 60 -UseBasicParsing
-                & tar.exe -xzf $tgz -C $tmp 2>$null
-                $hit = Get-ChildItem $tmp -Recurse -Filter 'ViGEmClient.dll' -ErrorAction SilentlyContinue |
-                       Where-Object { $_.FullName -match '\\x64\\' } | Select-Object -First 1
-                if ($hit) { Copy-Item $hit.FullName $dllDest -Force }
+            # Pinned version + SHA256 (no "latest" lookup on pypi.org).
+            $tgz = Join-Path $tmp 'vgamepad.tar.gz'
+            Invoke-WebRequest -Uri $VgamepadSdistUrl -OutFile $tgz -TimeoutSec 60 -UseBasicParsing
+            if ((Get-FileHash -Algorithm SHA256 $tgz).Hash -ne $VgamepadSdistSha256) {
+                throw 'vgamepad sdist SHA256 mismatch'
             }
+            & tar.exe -xzf $tgz -C $tmp 2>$null
+            if ($LASTEXITCODE -ne 0) { throw 'vgamepad extraction failed' }
+            $hit = Get-ChildItem $tmp -Recurse -Filter 'ViGEmClient.dll' -ErrorAction SilentlyContinue |
+                   Where-Object { $_.FullName -match '\\x64\\' } | Select-Object -First 1
+            if ($hit -and (Get-FileHash -Algorithm SHA256 $hit.FullName).Hash -eq $ViGEmClientDllSha256) {
+                Copy-Item $hit.FullName $dllDest -Force
+            } elseif ($hit) { throw 'ViGEmClient.dll SHA256 mismatch' }
             Remove-Item $tmp -Recurse -Force -ErrorAction SilentlyContinue
-        } catch { }
+        } catch {
+            Write-Host "ViGEmClient.dll not installed: $($_.Exception.Message)" -ForegroundColor Yellow
+            Remove-Item $tmp -Recurse -Force -ErrorAction SilentlyContinue
+        }
     }
     if (Test-Path $dllDest) { Write-Host 'Virtual gamepad ready (ViGEmBus + client DLL).' }
     else { Write-Host 'Gamepad driver step incomplete; the pad may be unavailable (everything else works).' }
@@ -470,16 +505,21 @@ if (-not $NoGamepad) {
     # below runs as); no effect on other accounts, reversible on --uninstall,
     # no reboot. Steam Big Picture still intercepts Guide first while it is
     # running, so this only changes the "nothing else handled Guide" case.
-    foreach ($s in 'ms-gamebar','ms-gamebarservices','ms-gamingoverlay') {
-        try {
-            $b = "HKCU:\Software\Classes\$s"
-            New-Item "$b\shell\open\command" -Force | Out-Null
-            Set-ItemProperty $b '(default)'    "URL:$s"
-            Set-ItemProperty $b 'URL Protocol' ''
-            Set-ItemProperty "$b\shell\open\command" '(default)' 'systray.exe'
-        } catch { }
+    # Skipped with -KeepGameBar (the Setup wizard's default: the checkbox is OFF).
+    if (-not $KeepGameBar) {
+        foreach ($s in 'ms-gamebar','ms-gamebarservices','ms-gamingoverlay') {
+            try {
+                $b = "HKCU:\Software\Classes\$s"
+                New-Item "$b\shell\open\command" -Force | Out-Null
+                Set-ItemProperty $b '(default)'    "URL:$s"
+                Set-ItemProperty $b 'URL Protocol' ''
+                Set-ItemProperty "$b\shell\open\command" '(default)' 'systray.exe'
+            } catch { }
+        }
+        Write-Host 'Silenced the Xbox Game Bar (ms-gamebar) popup for the Guide button.'
+    } else {
+        Write-Host 'Left Xbox Game Bar links unchanged (-KeepGameBar).'
     }
-    Write-Host 'Silenced the Xbox Game Bar (ms-gamebar) popup for the Guide button.'
 }
 
 # --- 3. token (kept across reinstalls so paired phones keep working) ---------
@@ -546,7 +586,25 @@ if (-not (Test-Path $ConfigPath)) {
     } catch { }
 }
 
+# --- 4b. update check: OPT-IN only ------------------------------------------
+# Explicit opt-in/out; omission preserves previous consent on scripted upgrades.
+# The agent was stopped above, so it cannot race this config update.
+if ($EnableUpdateCheck -or $DisableUpdateCheck) {
+    $cfgObj = Get-Content $ConfigPath -Raw | ConvertFrom-Json
+    $cfgObj | Add-Member -NotePropertyName 'allow_update_check' -NotePropertyValue ([bool]$EnableUpdateCheck) -Force
+    $cfgTemp = Join-Path $DataDir ('config-' + [guid]::NewGuid().ToString('N') + '.tmp')
+    try {
+        [IO.File]::WriteAllText($cfgTemp, ($cfgObj | ConvertTo-Json -Depth 100) + "`n", (New-Object Text.UTF8Encoding($false)))
+        # Replace atomically, retaining the destination's permissions.
+        [IO.File]::Replace($cfgTemp, $ConfigPath, [NullString]::Value)
+    } finally {
+        Remove-Item $cfgTemp -Force -ErrorAction SilentlyContinue
+    }
+    Write-Host ('Optional update checks: ' + [bool]$EnableUpdateCheck)
+}
+
 # --- 5. hibernate off so SetSuspendState means SLEEP, not hibernate ----------
+# Skipped with -KeepHibernate (the Setup wizard's default: the checkbox is OFF).
 if (-not $KeepHibernate) {
     & powercfg /hibernate off | Out-Null
     Write-Host 'Disabled hibernation (so Suspend sleeps to RAM; -KeepHibernate to skip).'

@@ -93,7 +93,7 @@ except ImportError:
 # Same app id the phone expects (AGENT_APPS in app/lib/api.ts); the Windows
 # agent versions independently of the Linux one.
 APP_NAME = "couchside-agent"
-VERSION = "0.4.14-win"
+VERSION = "0.4.15-rc1-win"
 
 _PROGRAMDATA = os.environ.get("ProgramData", r"C:\ProgramData")
 DEFAULT_CONFIG_PATH = os.path.join(_PROGRAMDATA, "Couchside", "config.json")
@@ -305,9 +305,19 @@ CONFIG_PANEL = None
 CONFIG_CEC_BRIDGE = None  # optional {"host","port","token"}: forward TV ops to a Pi
 CONFIG_ROKU = None  # optional {"host","name"}: Roku (ECP) TV, no pairing needed
 # When true, the app may trigger a box-side agent update via POST
-# /api/update/apply. OFF BY DEFAULT: opt-in only on the box (config.json), never
-# by the app itself. See the Linux agent for the full rationale.
+# /api/update/apply. OFF BY DEFAULT: opt-in only on the box (config.json
+# "allow_app_update": true), never by the app itself. Even when on, the route
+# can only install the newest PUBLISHED emerytech/couchside-windows release's
+# CouchsideSetup.exe after its SHA256 and its SignPath Foundation Authenticode
+# signature both verify; it takes no URL, path or arguments from the request,
+# never downgrades, and is refused outright by unsigned/RC/Python builds.
 ALLOW_APP_UPDATE = False
+# When true, the box may query GitHub (github.com release asset + api.github.com)
+# for a newer agent release when the app calls /api/update/check. OFF BY
+# DEFAULT: opt-in via config.json "allow_update_check" (Setup wizard checkbox,
+# default unticked, or install.ps1 -EnableUpdateCheck). When off the agent makes
+# no update-check network requests and the route reports "disabled": true.
+ALLOW_UPDATE_CHECK = False
 # When true, the app may CREATE custom launchers over the network. OFF BY DEFAULT:
 # a launcher argv is run verbatim as the desktop user (real_launch -> Popen), so
 # remote creation is arbitrary user-level command exec for any bearer-token holder.
@@ -521,6 +531,7 @@ def load_config(path):
     """Load config.json into the module globals; fall back to defaults."""
     global WATCHLIST, WATCHLIST_NAMES, ACTIONS, ACTION_ORDER, CONFIG_PORT
     global LAUNCHERS, CONFIG_PATH, CONFIG_PANEL, CONFIG_CEC_BRIDGE, ALLOW_APP_UPDATE
+    global ALLOW_UPDATE_CHECK
     global CONFIG_ROKU, ALLOW_APP_LAUNCHERS
     # ABSOLUTE on purpose: every rewrite derives the temp-file directory from
     # os.path.dirname(CONFIG_PATH), and a relative path has no directory part.
@@ -532,6 +543,7 @@ def load_config(path):
             raw = json.load(f)
         if isinstance(raw, dict):
             ALLOW_APP_UPDATE = bool(raw.get("allow_app_update", False))
+            ALLOW_UPDATE_CHECK = bool(raw.get("allow_update_check", False))
             ALLOW_APP_LAUNCHERS = bool(raw.get("allow_app_launchers", False))
         units, actions, order, port, launchers, panel, cec_bridge, roku = \
             _parse_config(raw)
@@ -568,13 +580,27 @@ def load_config(path):
 # Update check (/api/update/check) + opt-in apply (/api/update/apply).
 # Mirrors the Linux agent (see couchsided.py for the privacy rationale): the
 # BOX does the cached GitHub read; the app reads the result over the LAN and
-# never touches the internet. Windows uses its own version marker
-# (agent-version-win.txt) and installer (install.ps1).
+# never touches the internet. Windows checks its own release repository. Apply installs the signed CouchsideSetup.exe from
+# the emerytech/couchside-windows release (verified; see update_apply).
 # ---------------------------------------------------------------------------
-_UPDATE_LATEST_VER_URL = \
-    "https://github.com/emerytech/couchside/releases/latest/download/agent-version-win.txt"
-_UPDATE_RELEASE_API = "https://api.github.com/repos/emerytech/couchside/releases/latest"
-_UPDATE_INSTALL_PS1 = "https://couchside.tv/install.ps1"
+# App-triggered apply: the signed installer from the couchside-windows repo's
+# latest PUBLISHED release (GitHub's /releases/latest skips drafts and
+# prereleases). Never `iwr ... | iex`: nothing runs unless it verifies.
+_UPDATE_WIN_RELEASE_API = \
+    "https://api.github.com/repos/emerytech/couchside-windows/releases/latest"
+_UPDATE_ASSET_PREFIX = \
+    "https://github.com/emerytech/couchside-windows/releases/download/"
+_UPDATE_SETUP_ASSET = "CouchsideSetup.exe"
+_UPDATE_SUM_ASSET = "CouchsideSetup.exe.sha256"
+# Hosts a release-asset download may be redirected to.
+_UPDATE_DL_HOSTS = ("github.com", "objects.githubusercontent.com",
+                    "release-assets.githubusercontent.com")
+_UPDATE_MAX_BYTES = 200 * 1024 * 1024
+# Authenticode signer (SignPath Foundation's certificate, used by many OSS
+# projects) -- so the per-release SHA256 and ProductName below are what tie
+# the file to Couchside specifically.
+_UPDATE_SIGNER_RE = re.compile(r'(^|,\s*)CN="?SignPath Foundation"?\s*(,|$)')
+_UPDATE_PRODUCT_NAME = "Couchside"
 _UPDATE_TTL_S = 6 * 3600
 _update_cache = {"at": 0.0, "data": None}
 _update_lock = threading.Lock()
@@ -584,8 +610,15 @@ def _http_text(url, timeout=8):
     req = urllib.request.Request(url, headers={
         "User-Agent": "couchside-agent/%s" % VERSION,
         "Accept": "application/vnd.github+json"})
-    with urllib.request.urlopen(req, timeout=timeout) as r:
-        return r.read(1_000_000).decode("utf-8", "replace")
+    # Update metadata is pinned to this repository; no redirect is necessary.
+    if url != _UPDATE_WIN_RELEASE_API:
+        raise ValueError("unexpected update metadata URL")
+    opener = urllib.request.build_opener(_UpdateRedirectHandler(()))
+    with opener.open(req, timeout=timeout) as r:
+        body = r.read(1_000_001)
+        if len(body) > 1_000_000:
+            raise ValueError("update metadata too large")
+        return body.decode("utf-8")
 
 
 def _ver_tuple(s):
@@ -598,7 +631,13 @@ def _ver_tuple(s):
 
 def update_check(force=False):
     """Whether a newer signed Windows agent release exists. Cached 6h; never
-    raises (network failure -> available:false with an error string)."""
+    raises (network failure -> available:false with an error string).
+    Opt-in: with allow_update_check off, returns a "disabled" result without
+    touching the network."""
+    if not ALLOW_UPDATE_CHECK:
+        return {"available": False, "installed": VERSION, "latest": None,
+                "tag": None, "notes": None, "disabled": True,
+                "checked_at": int(time.time())}
     now = time.monotonic()
     with _update_lock:
         c = _update_cache
@@ -606,9 +645,14 @@ def update_check(force=False):
             return c["data"]
     installed = VERSION
     try:
-        latest = _http_text(_UPDATE_LATEST_VER_URL).strip().split()[0]
-        meta = json.loads(_http_text(_UPDATE_RELEASE_API))
-        data = {"available": _ver_tuple(latest) > _ver_tuple(installed),
+        meta = json.loads(_http_text(_UPDATE_WIN_RELEASE_API))
+        latest, _assets = _release_candidate(meta, require_assets=False)
+        installed_number = _release_version(installed)
+        # Preview builds may check versions, but can never apply an update.
+        if installed_number is None:
+            m = re.match(r"^(\d+)\.(\d+)\.(\d+)-", installed)
+            installed_number = tuple(map(int, m.groups())) if m else (0,)
+        data = {"available": _release_version(latest) > installed_number,
                 "installed": installed, "latest": latest,
                 "tag": meta.get("tag_name") or None,
                 "notes": (meta.get("body") or "").strip() or None,
@@ -630,23 +674,266 @@ def mock_update_check():
             "checked_at": int(time.time())}
 
 
+_UPDATE_LOG = os.path.join(os.environ.get("TEMP", os.getcwd()),
+                           "couchside-update.log")
+_apply_lock = threading.Lock()
+_apply_state = {"state": "idle"}     # idle | running | launched | failed
+_self_sig_cache = {}
+_MANUAL_UPDATE_HINT = ("Install the latest CouchsideSetup.exe yourself from "
+                       "https://github.com/emerytech/couchside-windows/releases")
+
+
+def _update_log(msg):
+    line = "%s %s" % (time.strftime("%Y-%m-%d %H:%M:%S"), msg)
+    print("[update] " + msg, flush=True)
+    try:
+        with open(_UPDATE_LOG, "a", encoding="utf-8") as f:
+            f.write(line + "\n")
+    except OSError:
+        pass
+
+
+def _authenticode_info(path):
+    """Get-AuthenticodeSignature + version resource for `path`, via Windows
+    PowerShell by absolute path. The file path goes in through an environment
+    variable, never into the command text. Raises on any failure."""
+    ps_exe = os.path.join(os.environ.get("SystemRoot", r"C:\Windows"),
+                          "System32", "WindowsPowerShell", "v1.0",
+                          "powershell.exe")
+    script = (
+        "$ErrorActionPreference='Stop';"
+        "$p=$env:COUCHSIDE_VERIFY_PATH;"
+        "$s=Get-AuthenticodeSignature -LiteralPath $p;"
+        "$v=(Get-Item -LiteralPath $p).VersionInfo;"
+        "$subj='';if($s.SignerCertificate){$subj=$s.SignerCertificate.Subject};"
+        "[pscustomobject]@{status=[string]$s.Status;subject=$subj;"
+        "timestamped=[bool]$s.TimeStamperCertificate;"
+        "product=([string]$v.ProductName).Trim();version=([string]$v.ProductVersion).Trim()}"
+        "|ConvertTo-Json -Compress")
+    env = dict(os.environ, COUCHSIDE_VERIFY_PATH=os.path.abspath(path))
+    r = subprocess.run([ps_exe, "-NoProfile", "-NonInteractive", "-Command",
+                        script], capture_output=True, text=True, timeout=90,
+                       env=env, creationflags=_RUN_FLAGS)
+    if r.returncode != 0:
+        raise RuntimeError("signature check failed: %s"
+                           % (r.stderr or r.stdout).strip()[:200])
+    return json.loads(r.stdout.strip())
+
+
+def _signpath_signed(info):
+    return (info.get("status") == "Valid"
+            and bool(_UPDATE_SIGNER_RE.search(info.get("subject") or ""))
+            and bool(info.get("timestamped")))
+
+
+def _self_update_blocker():
+    """None if THIS agent may self-update, else a user-facing reason. Only a
+    SignPath-signed couchside-agent.exe can: an unsigned/RC/dev build or a
+    Python-source install has no trusted signing identity to hold the update
+    to, so it refuses rather than install something it can't vouch for."""
+    if not IS_WINDOWS:
+        return "App-triggered updates are only available on Windows."
+    if _release_version(VERSION) is None:
+        return "Preview/development builds cannot apply updates. " + _MANUAL_UPDATE_HINT + "."
+    if not getattr(sys, "frozen", False):
+        return ("This agent runs from Python source, so app-triggered updates "
+                "are unavailable. Re-run install.ps1 to update.")
+    if "blocker" not in _self_sig_cache:
+        try:
+            info = _authenticode_info(sys.executable)
+            _self_sig_cache["blocker"] = None if (_signpath_signed(info) and
+                info.get("product") == _UPDATE_PRODUCT_NAME and
+                _numeric_version(info.get("version")) == _release_version(VERSION) + (0,)) else (
+                "This agent build is not signed by SignPath Foundation "
+                "(signature status: %s), e.g. a release candidate or "
+                "developer build, so app-triggered updates are refused. %s."
+                % (info.get("status") or "unknown", _MANUAL_UPDATE_HINT))
+        except Exception as e:
+            # Not cached: a transient PowerShell failure shouldn't stick.
+            return ("Could not verify this agent's own signature (%s); "
+                    "app-triggered update refused." % str(e)[:120])
+    return _self_sig_cache["blocker"]
+
+
+def _release_version(value):
+    """Only stable Windows release tags are installable (no RC/dev suffix)."""
+    match = re.fullmatch(r"(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)-win", value or "")
+    return tuple(map(int, match.groups())) if match else None
+
+
+def _numeric_version(value):
+    match = re.fullmatch(r"(\d+)\.(\d+)\.(\d+)\.(\d+)", value or "")
+    return tuple(map(int, match.groups())) if match else None
+
+
+def _release_candidate(meta, require_assets=True):
+    if not isinstance(meta, dict) or meta.get("draft") is not False or meta.get("prerelease") is not False:
+        raise ValueError("latest release is not a published stable release")
+    tag = meta.get("tag_name", "")
+    latest = tag[1:] if isinstance(tag, str) and tag.startswith("v") else ""
+    if _release_version(latest) is None:
+        raise ValueError("invalid stable Windows release tag")
+    if not require_assets:
+        return latest, {}
+    assets = {}
+    for asset in meta.get("assets") or []:
+        name = asset.get("name")
+        if name not in (_UPDATE_SETUP_ASSET, _UPDATE_SUM_ASSET):
+            continue
+        expected = _UPDATE_ASSET_PREFIX + tag + "/" + name
+        if name in assets or asset.get("browser_download_url") != expected:
+            raise ValueError("duplicate or unexpected release asset URL")
+        assets[name] = expected
+    if len(assets) != 2:
+        raise ValueError("release lacks installer or checksum")
+    return latest, assets
+
+
+def _validate_update_url(url, hosts):
+    parsed = urlparse(url)
+    if (parsed.scheme != "https" or parsed.hostname not in hosts
+            or parsed.username is not None or parsed.password is not None
+            or parsed.port not in (None, 443) or parsed.fragment):
+        raise ValueError("untrusted update download URL")
+
+
+class _UpdateRedirectHandler(urllib.request.HTTPRedirectHandler):
+    def __init__(self, hosts):
+        self.hosts = hosts
+
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        # Reject BEFORE urllib sends anything to the redirect destination.
+        _validate_update_url(newurl, self.hosts)
+        return super().redirect_request(req, fp, code, msg, headers, newurl)
+
+
+def _fetch_asset(url, dest=None, limit=_UPDATE_MAX_BYTES):
+    """Bounded HTTPS downloads; validate every hop before following it."""
+    _validate_update_url(url, _UPDATE_DL_HOSTS)
+    req = urllib.request.Request(url, headers={"User-Agent": "couchside-agent/%s" % VERSION})
+    opener = urllib.request.build_opener(_UpdateRedirectHandler(_UPDATE_DL_HOSTS))
+    with opener.open(req, timeout=60) as r:
+        _validate_update_url(r.geturl(), _UPDATE_DL_HOSTS)
+        if dest is None:
+            body = r.read(limit + 1)
+            if len(body) > limit:
+                raise ValueError("download too large")
+            return body
+        h, total = hashlib.sha256(), 0
+        created = False
+        try:
+            with open(dest, "xb") as f:
+                created = True
+                while True:
+                    chunk = r.read(1 << 16)
+                    if not chunk:
+                        break
+                    total += len(chunk)
+                    if total > limit:
+                        raise ValueError("download too large")
+                    h.update(chunk)
+                    f.write(chunk)
+        except Exception:
+            # Never leave an incomplete executable available to a later attempt.
+            if created and os.path.isfile(dest):
+                os.unlink(dest)
+            raise
+        return h.hexdigest()
+
+
+def _update_apply_worker():
+    """Download -> verify SHA256 -> verify Authenticode -> run silently.
+    Every failure stops before anything is executed (fail closed)."""
+    tmpdir = None
+    try:
+        meta = json.loads(_http_text(_UPDATE_WIN_RELEASE_API))
+        latest, assets = _release_candidate(meta)
+        tag = meta["tag_name"]
+        installed = _release_version(VERSION)
+        if installed is None or _release_version(latest) <= installed:
+            raise RuntimeError("no newer stable Windows release")
+        setup_url = assets[_UPDATE_SETUP_ASSET]
+        sum_url = assets[_UPDATE_SUM_ASSET]
+        sums = _fetch_asset(sum_url, limit=4096).decode("ascii", "replace")
+        match = re.fullmatch(r"([0-9A-Fa-f]{64})[ \t]+\*?CouchsideSetup\.exe\s*", sums)
+        if not match:
+            raise RuntimeError("invalid installer checksum file")
+        expected = match.group(1).lower()
+        tmpdir = tempfile.mkdtemp(prefix="couchside-update-")
+        setup = os.path.join(tmpdir, _UPDATE_SETUP_ASSET)
+        _update_log("downloading %s %s" % (tag, _UPDATE_SETUP_ASSET))
+        got = _fetch_asset(setup_url, dest=setup)
+        if not hmac.compare_digest(got, expected):
+            raise RuntimeError("SHA256 mismatch (expected %s, got %s)"
+                               % (expected, got))
+        info = _authenticode_info(setup)
+        if not _signpath_signed(info):
+            raise RuntimeError("installer signature not trusted (status %s, "
+                               "signer %r, timestamped %s)"
+                               % (info.get("status"), info.get("subject"),
+                                  info.get("timestamped")))
+        if info.get("product") != _UPDATE_PRODUCT_NAME or \
+                _numeric_version(info.get("version")) != _release_version(latest) + (0,):
+            raise RuntimeError("installer metadata mismatch (product %r, "
+                               "version %r, release %s)"
+                               % (info.get("product"), info.get("version"), tag))
+        _update_log("verified %s (sha256 %s, signer %s); running silently"
+                    % (tag, got, info.get("subject")))
+        # Inno Setup silent upgrade. Previously chosen [Tasks] are reused
+        # (UsePreviousTasks), so optional changes stay as the user set them.
+        # install.ps1 still asks for UAC on this PC's screen.
+        child = subprocess.Popen([setup, "/VERYSILENT", "/SUPPRESSMSGBOXES",
+                          "/NORESTART", "/LOG=" + _UPDATE_LOG + ".setup.txt"],
+                         creationflags=_DETACH_FLAGS, close_fds=True,
+                         stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
+                         stderr=subprocess.DEVNULL)
+        with _apply_lock:
+            _apply_state.clear()
+            _apply_state.update(state="launched", version=latest,
+                                at=int(time.time()))
+        # If this process survives the upgrade, reap and clean the download.
+        # A normal upgrade terminates the old agent; its private staging folder
+        # may then remain for manual cleanup. Never execute leftover downloads.
+        exit_code = child.wait()
+        if exit_code != 0:
+            raise RuntimeError("installer exited with code %s" % exit_code)
+        with _apply_lock:
+            _apply_state.update(state="completed", at=int(time.time()))
+    except Exception as e:
+        _update_log("update refused/failed: %s" % e)
+        with _apply_lock:
+            _apply_state.clear()
+            _apply_state.update(state="failed", error=str(e)[:300],
+                                at=int(time.time()))
+    finally:
+        if tmpdir:
+            shutil.rmtree(tmpdir, ignore_errors=True)
+
+
 def update_apply():
-    """Spawn the PowerShell installer DETACHED so it survives the agent's own
-    restart, and return immediately. Caller must have checked ALLOW_APP_UPDATE.
-    install.ps1 verifies the release before installing."""
-    log = os.path.join(os.environ.get("TEMP", os.getcwd()),
-                       "couchside-update.log")
-    cmd = ("powershell -NoProfile -ExecutionPolicy Bypass -Command "
-           "\"try { iwr -UseBasicParsing '%s' | iex } catch { $_ | Out-String }\" "
-           "> \"%s\" 2>&1" % (_UPDATE_INSTALL_PS1, log))
-    DETACHED_PROCESS = 0x00000008
-    CREATE_NEW_PROCESS_GROUP = 0x00000200
-    subprocess.Popen(cmd, shell=True,
-                     creationflags=DETACHED_PROCESS | CREATE_NEW_PROCESS_GROUP,
-                     stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
-                     stderr=subprocess.DEVNULL, close_fds=True)
-    print("[update] app-triggered update started (log: %s)" % log, flush=True)
-    return {"started": True, "log": log}
+    """Start a verified update in the background. Returns (http_code, body).
+    Caller must have checked ALLOW_APP_UPDATE. Takes nothing from the request:
+    the only possible action is installing the newest published, verified
+    CouchsideSetup.exe."""
+    if not ALLOW_APP_UPDATE:
+        return 403, {"ok": False, "started": False, "error": "app-triggered updates disabled"}
+    blocker = _self_update_blocker()
+    if blocker:
+        return 409, {"ok": False, "started": False, "error": blocker}
+    with _apply_lock:
+        if _apply_state.get("state") in ("running", "launched", "completed"):
+            return 409, {"ok": False, "started": False,
+                         "error": "an update is already in progress"}
+        _apply_state.clear()
+        _apply_state.update(state="running", at=int(time.time()))
+    threading.Thread(target=_update_apply_worker, daemon=True,
+                     name="update-apply").start()
+    return 202, {"ok": True, "started": True, "log": _UPDATE_LOG}
+
+
+def update_apply_state():
+    with _apply_lock:
+        return dict(_apply_state)
 
 
 # ---------------------------------------------------------------------------
@@ -6072,7 +6359,14 @@ class Handler(BaseHTTPRequestHandler):
                 force = parse_qs(parsed.query).get(
                     "force", ["0"])[0] not in ("0", "", "false")
                 data = mock_update_check() if self.mock else update_check(force)
-                data = dict(data, apply_enabled=bool(ALLOW_APP_UPDATE))
+                blocker = _self_update_blocker() if ALLOW_APP_UPDATE and not self.mock else None
+                data = dict(data, apply_enabled=bool(ALLOW_APP_UPDATE and not blocker))
+                if blocker:
+                    data["apply_blocked"] = blocker
+                if ALLOW_APP_UPDATE and not self.mock:
+                    # Read-only: last apply attempt (idle/running/launched/
+                    # failed + error) so the app can show why it was refused.
+                    data["apply_state"] = update_apply_state()
                 self._send(200, data, started)
             elif path == "/api/tv":
                 info = tv_info()
@@ -6334,15 +6628,20 @@ class Handler(BaseHTTPRequestHandler):
                 if not ALLOW_APP_UPDATE:
                     self._send(403, {"ok": False,
                                      "error": "app-triggered updates disabled "
-                                     "(enable with `couchside allow-updates on` "
-                                     "on the box)"}, started)
+                                     "(the PC's owner can enable them by setting "
+                                     "\"allow_app_update\": true in "
+                                     "%ProgramData%\\Couchside\\config.json)"},
+                               started)
                     return
                 if self.mock:
                     self._send(200, {"ok": True, "started": True,
                                      "log": "(mock)"}, started)
                     return
-                result = update_apply()
-                self._send(200, dict(result, ok=True), started)
+                # Request body is ignored on purpose: no URL/args/version from
+                # the network. 409 = refused (unsigned/RC/Python build, or an
+                # update already running); progress via /api/update/check.
+                code, result = update_apply()
+                self._send(code, result, started)
                 return
 
             # POST /api/tv/volume: absolute volume {"level": 0-100, "target":

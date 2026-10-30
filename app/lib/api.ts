@@ -1611,6 +1611,9 @@ export type UpdateCheck = {
    * app shows a working [Update] button only where the owner enabled it.
    */
   apply_enabled?: boolean;
+  disabled?: boolean;
+  apply_blocked?: string;
+  apply_state?: { state: string; error?: string; version?: string; at?: number };
   error?: string;
 };
 

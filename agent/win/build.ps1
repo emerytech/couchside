@@ -12,13 +12,22 @@
 # (issue #255). Use -NoGamepad only if you deliberately want a build with no
 # controller support.
 
-param([switch]$NoGamepad, [switch]$Console)
+# -VersionFile (optional): a PyInstaller VSVersionInfo file. Release CI passes
+# one so couchside-agent.exe carries ProductName/ProductVersion metadata, which
+# SignPath Foundation's file-metadata restrictions require on every signed
+# binary. Omitted -> unchanged behaviour (no version resource), so local and
+# dev builds keep working exactly as before.
+param([switch]$NoGamepad, [switch]$Console, [string]$VersionFile)
 
 $ErrorActionPreference = 'Stop'
 $here = Split-Path -Parent $MyInvocation.MyCommand.Path
 
-python -m pip install --upgrade pyinstaller 'cryptography==46.0.7' | Out-Null
-if ($LASTEXITCODE -ne 0) { throw 'Build dependency installation failed' }
+# Exact versions + SHA256 for every build dependency (pip --require-hashes);
+# regenerate build-requirements.txt with `uv pip compile --generate-hashes`.
+$req = Join-Path $here 'build-requirements.txt'
+if (-not (Test-Path $req)) { throw "build-requirements.txt not found next to build.ps1" }
+python -m pip install --force-reinstall --require-hashes --only-binary=:all: -r $req | Out-Null
+if ($LASTEXITCODE -ne 0) { throw 'Build dependency installation failed (hash mismatch or unavailable)' }
 
 # qr.py is the shared encoder in agent/; a standalone copy may sit next to
 # this script. Put both on PyInstaller's module search path so `import qr`
@@ -86,7 +95,11 @@ if ($NoGamepad) {
     Write-Host '  To build a deliberately gamepad-less agent anyway, pass -NoGamepad.'
     throw 'ViGEmClient.dll missing (see message above)'
 }
-if (-not $NoGamepad) { $piArgs += @('--add-binary', "$dll;.") }
+if (-not $NoGamepad) {
+    $expectedDll = '2BF0CB1D809039573C922737D298A1653D4DBC61408060FF45A9BCFDE82E97D2'
+    if ((Get-FileHash -Algorithm SHA256 $dll).Hash -ne $expectedDll) { throw 'ViGEmClient.dll SHA256 mismatch' }
+    $piArgs += @('--add-binary', "$dll;.")
+}
 
 # Brand icon. Without it PyInstaller stamps its own default, which is what the
 # user sees in Explorer, Task Manager, and — because the installer points
@@ -100,6 +113,10 @@ $ico = @(
     (Join-Path (Split-Path (Split-Path $here -Parent) -Parent) 'brand\couchside.ico')
 ) | Where-Object { Test-Path $_ } | Select-Object -First 1
 if ($ico) { $piArgs += @('--icon', $ico) } else { Write-Host 'No couchside.ico found - building with the default PyInstaller icon.' }
+if ($VersionFile) {
+    if (-not (Test-Path $VersionFile)) { throw "-VersionFile given but $VersionFile does not exist" }
+    $piArgs += @('--version-file', (Resolve-Path $VersionFile).Path)
+}
 $piArgs += (Join-Path $here 'couchsided-win.py')
 
 python -m PyInstaller @piArgs
