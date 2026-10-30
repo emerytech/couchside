@@ -49,10 +49,10 @@ ancestor of this combined source. Do not merge duplicate feature branches.
 | Component | Current candidate source/config | Final-release action |
 | --- | --- | --- |
 | App version | 2.9.79 | Confirm after cross-session scope freeze |
-| iOS configured build | 275, used for EAS acceptance preview | Allocate a fresh number for the next native preview/final candidate |
+| iOS configured build | 276, reserved for Rotate/PREFS acceptance preview | Final release remains separate |
 | Physical iPhone QA build | 275, cloud source 02e667d | Owner-only install; Rotate/preferences shortcuts need a newer binary |
 | Android Store configured code | 127 | Reconcile latest reservations, then allocate fresh code |
-| Android Direct configured code | 48 | Private 51 source 1c0c68a is reconciled; use a higher final code |
+| Android Direct configured code | 52, reserved for shared-PAD/Rotate/PREFS preview | Verify signer and in-place upgrade from private51; final release remains separate |
 | Linux agent configured version | 2.9.134 | Already published in v2.9.78; changed source needs a new version, provisionally 2.9.135 |
 | Windows agent source version | 0.4.14-win | Confirm final source and release-number availability before packaging |
 
@@ -169,3 +169,8 @@ recovery, ordinary Setup-category persistence, theme selection and return with
 the selected preset retained. Browser Rotate is hidden because its orientation
 API is a no-op; native Rotate is only shown with a full44dp shoulder gap. Native
 orientation, held-input navigation and phone return acceptance remain pending.
+
+Owner requested both new test previews: iOS276 through EAS cloud (no submit),
+Direct Android52 on guarded Gandalf tank storage. Version2.9.79 retained; Play127
+unchanged. Artifact identity/signature checks and physical acceptance follow the
+builds; this reservation is not a claim of completion, installation or release.
