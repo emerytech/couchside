@@ -75,6 +75,13 @@ public class FakeSetup { public static int Main(string[] args) {
 spec=importlib.util.spec_from_file_location('qa_agent',os.environ['QA_AGENT'])
 w=importlib.util.module_from_spec(spec);spec.loader.exec_module(w)
 w._UPDATE_LOG=os.path.join(os.environ['COUCHSIDE_TEST_ROOT'],'log with spaces.txt')
+original_popen=w.subprocess.Popen
+log=open(os.path.join(os.environ['COUCHSIDE_TEST_ROOT'],'supervisor-output.txt'),'wb')
+def capture_popen(*args, **kwargs):
+    kwargs['stdout']=log
+    kwargs['stderr']=log
+    return original_popen(*args, **kwargs)
+w.subprocess.Popen=capture_popen
 p=w._launch_update_supervisor(os.environ['COUCHSIDE_UPDATE_STAGE'],os.environ['COUCHSIDE_UPDATE_SHA256'])
 open(os.path.join(os.environ['COUCHSIDE_TEST_ROOT'],'supervisor.pid'),'w').write(str(p.pid))
 rc=p.wait()
@@ -85,7 +92,8 @@ open(os.path.join(os.environ['COUCHSIDE_TEST_ROOT'],'exit'),'w').write(str(rc))
             if not corrupt:
                 self.wait_for(lambda: (case / 'started').exists() or (case / 'exit').exists())
                 self.assertTrue((case / 'started').exists(),
-                                'Supervisor exited before starting fixture')
+                                'Supervisor exited before starting fixture: ' +
+                                (case / 'supervisor-output.txt').read_bytes().decode('utf-8', 'replace'))
                 arguments = (case / 'started').read_text()
                 self.assertIn('/VERYSILENT', arguments)
                 self.assertIn('/LOG=' + str(case / 'log with spaces.txt') + '.setup.txt', arguments)
