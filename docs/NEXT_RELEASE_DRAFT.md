@@ -40,7 +40,10 @@ not promise recovery after force-quit or process termination.
 
 Working app source: `codex/presets-release-preview-20261029`, held draft #655.
 Includes #649, #650, #652, #653, preset source #654 and the shared PAD follow-up.
-Installed owner previews are cloud iPhone277 and Direct54, source `ad73a5a`.
+Installed owner previews are cloud iPhone277 from `ad73a5a` and Direct55 from
+`159ec3f`. Direct55 contains an unsuccessful experimental held-input handoff
+fix. That experiment has been removed from the current source; Direct55 remains
+installed until the next preview. The owner deferred this edge case as non-blocking.
 The Fabric host-ref correction is included. Rotate/PREFS, settings return, Auto
 and Exit passed on Direct54. Physical iPhone277 Rotate/PREFS landing and both
 phones' held-button background/reconnect checks passed on the Windows preview.
@@ -55,7 +58,7 @@ ancestor of this combined source. Do not merge duplicate feature branches.
 | iOS configured build | 277, reserved for Rotate/PREFS acceptance preview | Final release remains separate |
 | Physical iPhone QA build | 277, cloud source ad73a5a | Owner-only installed; saved connection/unlock retained; physical Rotate/PREFS and held-button background/reconnect passed |
 | Android Store configured code | 127 | Reconcile latest reservations, then allocate fresh code |
-| Android Direct configured code | 54, source ad73a5a | Installed in place with matching Direct signer, original first-install time, four saved boxes and existing theme/preset retained |
+| Android Direct configured code | 55, source 159ec3f | Installed in place with matching Direct signer and original first-install time; active Linux pairing retained; held-input handoff limitation deferred by owner; experimental fix removed from current source |
 | Linux agent configured version | 2.9.135, source 02e81f6 | Privately installed on an owner Linux laptop; no published release or update-manifest change |
 | Windows agent source version | 0.4.14-win | Confirm final source and release-number availability before packaging |
 
@@ -73,7 +76,7 @@ confuse documentation-only commits with rebuilt binaries.
   harness failure: executor termination can precede the uncaught-error handler.
   The follow-up waits explicitly for that expected baseline handler; it does not
   change the TCP patch or suppress the assertion. Local isolated JVM test passed.
-- Current local app/hook suite: 792 passed; TypeScript passed. Upload policy/copy
+- Current local app/hook suite after removing the experiment: 825 passed; TypeScript passed. Earlier upload policy/copy
   subset: 24 passed. Agent dependency checks: 6 passed; CEC tests: 20 passed;
   Windows privilege/warning checks passed; agent Python compilation passed.
 - Owner confirms keyboard acceptance complete. Do not reopen it based only on
@@ -236,8 +239,8 @@ reserved by the separate optional appearance demo; it is not part of this build.
   Layout. A read-only observer of only the agent's virtual Xbox device recorded
   X held continuously for 6.84 seconds, then all buttons and axes neutral before
   device teardown. This confirms release for this native preferences transition.
-- Held-input phone handoff, native Linux uploads and broader final-binary/gameplay
-  acceptance remain pending. The earlier recorder expired without capturing X;
+- At this checkpoint, held-input phone handoff, native Linux uploads and broader
+  final-binary/gameplay acceptance remained pending; later results appear below. The earlier recorder expired without capturing X;
   only the successful repeat is counted here. No release or subscriber email.
 
 ### PAD handoff while holding a control — candidate fix
@@ -250,5 +253,30 @@ request replacement discard the gesture. Pass retires PAD callbacks and sends
 neutral input before granting control; ordinary non-PAD press handling is retained.
 
 TypeScript and all 834 app tests pass, including nine decision-touch regression
-cases. Direct 55 is reserved for a private native retest; iPhone 277 still lacks
-this fix. No native acceptance or publication is claimed by these checks.
+cases. Source `159ec3f` passed all 13 CI checks. Direct55 was built and installed
+in place with signer continuity, unchanged first-install time, and verified APK,
+Hermes bundle and source-map checksums. iPhone277 still lacks this fix. Physical
+held-input handoff acceptance remains pending; automated checks do not certify it.
+
+Direct55 native encrypted foreground upload to the Linux candidate passed with
+a synthetic 64 KiB file and an exact destination hash match. The same fixture
+failed before sending any bytes on Direct54 while its connection was stale; the
+agent still answered verified HTTPS locally. Success after the app upgrade/restart
+does not establish that the handoff change fixed that separate connection issue.
+The initial failure remains a follow-up. No release or subscriber email.
+
+
+### Held-input handoff deferred by owner — 2026-10-30
+
+The owner physically retested Direct55 and reported Pass still blocked while X
+was held. The attempted touch-handler change and its experiment-specific tests
+were removed, restoring the previously tested Pass/Keep implementation. The
+shared PAD multi-touch foundation and Rotate/PREFS changes remain intact.
+Direct55 stays allocated and installed; do not reuse its version code or claim
+its binary contains this revert.
+
+The owner explicitly considers simultaneous gameplay input and Pass unnecessary
+and non-blocking. Release the gameplay controls before tapping Pass. Normal
+handoff and neutral input cleanup still matter; this deferred gesture is not a
+passed test. The read-only Linux observer was stopped; its final observed state
+was neutral. No release or subscriber send is authorized.

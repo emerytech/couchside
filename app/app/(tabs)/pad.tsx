@@ -48,7 +48,6 @@ import { ComboPanel } from '@/components/ComboPanel';
 import { Gated } from '@/components/Gated';
 import { LandscapeLaptop } from '@/components/LandscapeLaptop';
 import { PadTouchSurface, PadTouchRow, useMeasuredPadControl } from '@/components/PadTouchSurface';
-import { PadHandoffButton } from '@/components/PadHandoffButton';
 import type { PadAction } from '@/lib/padTouches';
 import { LandscapePad, LandscapePadTooSmall, MovePad, StardewPad } from '@/components/LandscapePad';
 import { setImmersive } from '@/lib/immersive';
@@ -2165,13 +2164,12 @@ function PadScreen() {
             long enough lets the other device force the takeover — so it cannot
             be a piece of chrome that full-screen play hides. */}
         {controlReq != null && (
-          <View key={controlReq} style={styles.handoffOverlay}>
+          <View style={styles.handoffOverlay}>
             <Text style={styles.handoffText} numberOfLines={2}>
               {controlReq} wants control
             </Text>
             <View style={styles.handoffBtns}>
-              <PadHandoffButton
-                label="Keep control"
+              <Pressable
                 onPress={() => {
                   haptic();
                   client.denyControl();
@@ -2179,12 +2177,10 @@ function PadScreen() {
                 }}
                 style={({ pressed }) => [styles.handoffBtn, pressed && styles.btnPressed]}>
                 <Text style={styles.handoffBtnText}>KEEP</Text>
-              </PadHandoffButton>
-              <PadHandoffButton
-                label="Pass control"
+              </Pressable>
+              <Pressable
                 onPress={() => {
                   haptic();
-                  releaseForPadChrome();
                   client.grantControl();
                   setControlReq(null);
                 }}
@@ -2194,7 +2190,7 @@ function PadScreen() {
                   pressed && styles.btnPressed,
                 ]}>
                 <Text style={[styles.handoffBtnText, styles.handoffBtnPassText]}>PASS</Text>
-              </PadHandoffButton>
+              </Pressable>
             </View>
           </View>
         )}
@@ -2286,14 +2282,12 @@ function PadScreen() {
 
       {/* Handoff prompt: another phone wants control of this box. */}
       {controlReq != null && (
-        <View key={controlReq} style={styles.handoffBar}>
+        <View style={styles.handoffBar}>
           <Text style={styles.handoffText} numberOfLines={2}>
             {controlReq} wants control
           </Text>
           <View style={styles.handoffBtns}>
-            <PadHandoffButton
-              nativeTouch={mode === 'gamepad'}
-              label="Keep control"
+            <Pressable
               onPress={() => {
                 haptic();
                 client.denyControl();
@@ -2301,13 +2295,10 @@ function PadScreen() {
               }}
               style={({ pressed }) => [styles.handoffBtn, pressed && styles.btnPressed]}>
               <Text style={styles.handoffBtnText}>KEEP</Text>
-            </PadHandoffButton>
-            <PadHandoffButton
-              nativeTouch={mode === 'gamepad'}
-              label="Pass control"
+            </Pressable>
+            <Pressable
               onPress={() => {
                 haptic();
-                if (mode === 'gamepad') releaseForPadChrome();
                 client.grantControl();
                 setControlReq(null);
               }}
@@ -2317,7 +2308,7 @@ function PadScreen() {
                 pressed && styles.btnPressed,
               ]}>
               <Text style={[styles.handoffBtnText, styles.handoffBtnPassText]}>PASS</Text>
-            </PadHandoffButton>
+            </Pressable>
           </View>
         </View>
       )}
