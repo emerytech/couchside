@@ -291,3 +291,18 @@ retains the tested installer and runtime, subject to artifact provenance checks.
 No automatic build increment, upload to a store, release tag, public download
 or subscriber send is part of this preparation. Device acceptance of the new
 mobile artifacts remains pending.
+
+### Packaging checkpoint — held
+
+Frozen mobile build source `e1ecf7e` passed all13CI checks. EAS cloud iOS278
+and guarded Android Direct56/Play128 builds are in progress. Archive exclusions
+were checked before cloud upload. Store release notes are prepared separately;
+no submission has occurred.
+
+Linux2.9.135/helper1.3.0 and Windows source0.4.14-win match the previously
+tested bytes. The23 agent assets are staged locally with a checksum manifest
+and Ed25519 signature verified against the installer's embedded trust keys.
+The retained Windows installer/executable match the successful build at
+`5c96b4d`; installer payload sources also match the current candidate. Both use
+GUI subsystem2. They remain unsigned for Windows Authenticode; this is separate
+from agent-asset integrity signing. No installer rebuild was necessary.
