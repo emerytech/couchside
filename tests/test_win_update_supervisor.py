@@ -70,6 +70,7 @@ public class FakeSetup { public static int Main(string[] args) {
         # Call the production launcher directly; signing gates remain untouched.
         env = dict(os.environ, COUCHSIDE_UPDATE_STAGE=str(stage),
                    COUCHSIDE_UPDATE_SHA256=digest, COUCHSIDE_TEST_ROOT=str(case),
+                   PSModulePath=str(case / 'nonexistent-modules'),
                    QA_AGENT=str(AGENT), COUCHSIDE_TEST_DESCENDANT="1" if descendant else "0")
         parent_code = """import importlib.util,os
 spec=importlib.util.spec_from_file_location('qa_agent',os.environ['QA_AGENT'])
@@ -115,6 +116,19 @@ open(os.path.join(os.environ['COUCHSIDE_TEST_ROOT'],'exit'),'w').write(str(rc))
                 subprocess.run(['taskkill', '/PID', (case / 'descendant.pid').read_text(), '/T', '/F'], capture_output=True)
             if parent.poll() is None:
                 parent.wait(timeout=40)
+
+    def test_signature_probe_ignores_inherited_module_path(self):
+        # Signature verification must also work when launched under PowerShell 7.
+        env = dict(os.environ, PSModulePath=str(self.root / 'nonexistent-modules'),
+                   QA_AGENT=str(AGENT), QA_FIXTURE=str(self.root / 'fixture.exe'))
+        code = """import importlib.util,os
+spec=importlib.util.spec_from_file_location('qa_agent',os.environ['QA_AGENT'])
+w=importlib.util.module_from_spec(spec);spec.loader.exec_module(w)
+assert w._authenticode_info(os.environ['QA_FIXTURE'])['status']=='NotSigned'
+"""
+        result = subprocess.run([sys.executable, '-c', code], env=env,
+                                capture_output=True, text=True, timeout=100)
+        self.assertEqual(result.returncode, 0, result.stderr)
 
     def test_success_cleanup(self):
         self.exercise()

@@ -693,6 +693,17 @@ def _update_log(msg):
         pass
 
 
+def _windows_update_env(**values):
+    """Use inbox Windows PowerShell modules, not inherited PowerShell 7 paths.
+
+    Limit this to update subprocesses; do not change the agent or user's environment.
+    """
+    env = dict(os.environ, **values)
+    env["PSModulePath"] = os.path.join(os.environ.get("SystemRoot", r"C:\Windows"),
+                                     "System32", "WindowsPowerShell", "v1.0", "Modules")
+    return env
+
+
 def _authenticode_info(path):
     """Get-AuthenticodeSignature + version resource for `path`, via Windows
     PowerShell by absolute path. The file path goes in through an environment
@@ -710,7 +721,7 @@ def _authenticode_info(path):
         "timestamped=[bool]$s.TimeStamperCertificate;"
         "product=([string]$v.ProductName).Trim();version=([string]$v.ProductVersion).Trim()}"
         "|ConvertTo-Json -Compress")
-    env = dict(os.environ, COUCHSIDE_VERIFY_PATH=os.path.abspath(path))
+    env = _windows_update_env(COUCHSIDE_VERIFY_PATH=os.path.abspath(path))
     r = subprocess.run([ps_exe, "-NoProfile", "-NonInteractive", "-Command",
                         script], capture_output=True, text=True, timeout=90,
                        env=env, creationflags=_RUN_FLAGS)
@@ -881,7 +892,7 @@ exit $result
 def _launch_update_supervisor(stage, digest):
     ps = os.path.join(os.environ.get('SystemRoot', r'C:\Windows'),
                       'System32', 'WindowsPowerShell', 'v1.0', 'powershell.exe')
-    env = dict(os.environ, COUCHSIDE_UPDATE_STAGE=stage,
+    env = _windows_update_env(COUCHSIDE_UPDATE_STAGE=stage,
                COUCHSIDE_UPDATE_SHA256=digest,
                COUCHSIDE_UPDATE_SETUP_LOG=_UPDATE_LOG + '.setup.txt')
     command = base64.b64encode(_UPDATE_SUPERVISOR_PS.encode('utf-16le')).decode('ascii')
